@@ -2,7 +2,9 @@
 
 #include <QMainWindow>
 
-class QWidget;
+class DashboardPage;
+class ScriptEditorPage;
+class QStackedWidget;
 
 class MainWindow : public QMainWindow
 {
@@ -14,9 +16,8 @@ public:
 
 private:
     void setupMenuBar();
-    void setupDashboard();
 
-    QWidget *createHeaderBar();
-    QWidget *createContentArea();
-    QWidget *createProjectCard(const QString &name, const QString &modified);
+    QStackedWidget *m_stack = nullptr;
+    DashboardPage *m_dashboard = nullptr;
+    ScriptEditorPage *m_scriptEditor = nullptr;
 };

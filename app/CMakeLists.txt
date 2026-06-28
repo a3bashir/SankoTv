@@ -21,7 +21,8 @@ if(NOT CMAKE_PREFIX_PATH AND WIN32)
 endif()
 
 # --- Find Qt6 -------------------------------------------------------------
-find_package(Qt6 REQUIRED COMPONENTS Widgets)
+# Network is needed for the Claude API call in the Script Editor screen.
+find_package(Qt6 REQUIRED COMPONENTS Widgets Network)
 
 # --- Executable -----------------------------------------------------------
 qt_standard_project_setup()
@@ -30,10 +31,16 @@ qt_add_executable(SankoTV
     src/main.cpp
     src/MainWindow.cpp
     src/MainWindow.h
+    src/DashboardPage.cpp
+    src/DashboardPage.h
+    src/ScriptEditorPage.cpp
+    src/ScriptEditorPage.h
+    src/CodeEditor.cpp
+    src/CodeEditor.h
     resources.qrc
 )
 
-target_link_libraries(SankoTV PRIVATE Qt6::Widgets)
+target_link_libraries(SankoTV PRIVATE Qt6::Widgets Qt6::Network)
 
 # Build as a GUI app on Windows (no console window).
 set_target_properties(SankoTV PROPERTIES
