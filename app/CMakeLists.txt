@@ -30,6 +30,7 @@ qt_add_executable(SankoTV
     src/main.cpp
     src/MainWindow.cpp
     src/MainWindow.h
+    resources.qrc
 )
 
 target_link_libraries(SankoTV PRIVATE Qt6::Widgets)

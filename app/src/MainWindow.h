@@ -2,6 +2,8 @@
 
 #include <QMainWindow>
 
+class QWidget;
+
 class MainWindow : public QMainWindow
 {
     Q_OBJECT
@@ -12,5 +14,9 @@ public:
 
 private:
     void setupMenuBar();
-    void setupCentralWidget();
+    void setupDashboard();
+
+    QWidget *createHeaderBar();
+    QWidget *createContentArea();
+    QWidget *createProjectCard(const QString &name, const QString &modified);
 };

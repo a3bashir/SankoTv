@@ -1,3 +1,6 @@
 /build/
 /vcpkg_installed/
 *.user
+
+# Auto-generated edit backups
+_backups/
