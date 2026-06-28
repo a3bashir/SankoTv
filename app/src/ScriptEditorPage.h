@@ -1,9 +1,9 @@
 #pragma once
 
+#include <QJsonArray>
 #include <QWidget>
 
 class CodeEditor;
-class QJsonArray;
 class QJsonObject;
 class QLabel;
 class QNetworkAccessManager;
@@ -23,6 +23,7 @@ public:
 
 signals:
     void backRequested();
+    void continueRequested(const QJsonArray &scenes);
 
 private slots:
     void onParseClicked();
@@ -49,6 +50,8 @@ private:
 
     QPushButton *m_parseButton = nullptr;
     QPushButton *m_continueButton = nullptr;
+
+    QJsonArray m_scenes; // last parsed/mock scene breakdown, passed to Storyboard
 
     QNetworkAccessManager *m_net = nullptr;
 };

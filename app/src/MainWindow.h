@@ -4,6 +4,7 @@
 
 class DashboardPage;
 class ScriptEditorPage;
+class StoryboardPage;
 class QStackedWidget;
 
 class MainWindow : public QMainWindow
@@ -20,4 +21,5 @@ private:
     QStackedWidget *m_stack = nullptr;
     DashboardPage *m_dashboard = nullptr;
     ScriptEditorPage *m_scriptEditor = nullptr;
+    StoryboardPage *m_storyboard = nullptr;
 };

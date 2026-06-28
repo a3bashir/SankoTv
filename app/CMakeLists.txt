@@ -37,6 +37,11 @@ qt_add_executable(SankoTV
     src/ScriptEditorPage.h
     src/CodeEditor.cpp
     src/CodeEditor.h
+    src/StoryboardPage.cpp
+    src/StoryboardPage.h
+    src/StoryboardModel.h
+    src/DrawingCanvas.cpp
+    src/DrawingCanvas.h
     resources.qrc
 )
 
