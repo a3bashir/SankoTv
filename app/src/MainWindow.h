@@ -8,11 +8,13 @@ class DashboardPage;
 class ScriptEditorPage;
 class StoryboardPage;
 class AnimaticPage;
+class ConsistencyBoard;
 class QStackedWidget;
 class QAction;
 class QJsonArray;
 
 struct Scene;
+struct ConsistencyEntry;
 
 class MainWindow : public QMainWindow
 {
@@ -41,9 +43,11 @@ private:
     ScriptEditorPage *m_scriptEditor = nullptr;
     StoryboardPage *m_storyboard = nullptr;
     AnimaticPage *m_animatic = nullptr;
+    ConsistencyBoard *m_consistencyBoard = nullptr;
 
     // MainWindow owns the scene/panel objects; pages hold non-owning pointers.
     QVector<Scene *> m_scenes;
+    QVector<ConsistencyEntry> m_consistencyEntries;
     QString m_currentProjectPath;
     QString m_projectName = QStringLiteral("Untitled Project");
 

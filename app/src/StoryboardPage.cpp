@@ -497,6 +497,15 @@ QWidget *StoryboardPage::createBottomBar()
     connect(back, &QPushButton::clicked, this, &StoryboardPage::backRequested);
     layout->addWidget(back);
 
+    QPushButton *consistency = new QPushButton(QStringLiteral("Consistency Board"));
+    consistency->setCursor(Qt::PointingHandCursor);
+    consistency->setStyleSheet(QStringLiteral(
+        "QPushButton { background: transparent; color: #cccccc; border: 1px solid #2a2a2a;"
+        " border-radius: 6px; padding: 7px 14px; font-size: 13px; }"
+        "QPushButton:hover { color: #f5a623; border-color: #f5a623; }"));
+    connect(consistency, &QPushButton::clicked, this, &StoryboardPage::consistencyBoardRequested);
+    layout->addWidget(consistency);
+
     layout->addStretch(1);
 
     QPushButton *animatic = new QPushButton(QStringLiteral("Continue to Animatic"));

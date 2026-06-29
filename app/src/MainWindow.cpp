@@ -1,6 +1,7 @@
 #include "MainWindow.h"
 
 #include "AnimaticPage.h"
+#include "ConsistencyBoard.h"
 #include "DashboardPage.h"
 #include "ScriptEditorPage.h"
 #include "StoryboardModel.h"
@@ -20,7 +21,9 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QPixmap>
+#include <QRegularExpression>
 #include <QStackedWidget>
+#include <QUuid>
 #include <Qt>
 
 MainWindow::MainWindow(QWidget *parent)
@@ -35,11 +38,16 @@ MainWindow::MainWindow(QWidget *parent)
     m_scriptEditor = new ScriptEditorPage;
     m_storyboard = new StoryboardPage;
     m_animatic = new AnimaticPage;
+    m_consistencyBoard = new ConsistencyBoard;
 
-    m_stack->addWidget(m_dashboard);     // index 0
-    m_stack->addWidget(m_scriptEditor);  // index 1
-    m_stack->addWidget(m_storyboard);    // index 2
-    m_stack->addWidget(m_animatic);      // index 3
+    m_storyboard->setConsistencyEntries(&m_consistencyEntries); // read-only
+    m_consistencyBoard->setEntries(&m_consistencyEntries);      // read-write
+
+    m_stack->addWidget(m_dashboard);        // index 0
+    m_stack->addWidget(m_scriptEditor);     // index 1
+    m_stack->addWidget(m_storyboard);       // index 2
+    m_stack->addWidget(m_animatic);         // index 3
+    m_stack->addWidget(m_consistencyBoard); // index 4
 
     // Dashboard -> Script Editor (fresh project).
     connect(m_dashboard, &DashboardPage::newProjectRequested, this, [this] {
@@ -73,6 +81,15 @@ MainWindow::MainWindow(QWidget *parent)
         m_stack->setCurrentWidget(m_animatic);
     });
     connect(m_animatic, &AnimaticPage::backRequested, this, [this] {
+        m_stack->setCurrentWidget(m_storyboard);
+    });
+
+    // Storyboard <-> Consistency Board.
+    connect(m_storyboard, &StoryboardPage::consistencyBoardRequested, this, [this] {
+        m_consistencyBoard->refresh();
+        m_stack->setCurrentWidget(m_consistencyBoard);
+    });
+    connect(m_consistencyBoard, &ConsistencyBoard::backRequested, this, [this] {
         m_stack->setCurrentWidget(m_storyboard);
     });
 
@@ -154,6 +171,9 @@ void MainWindow::buildScenesFromJson(const QJsonArray &scenes)
 void MainWindow::onNewProject()
 {
     freeScenes();
+    m_consistencyEntries.clear();
+    if (m_consistencyBoard)
+        m_consistencyBoard->refresh();
     m_currentProjectPath.clear();
     m_projectName = QStringLiteral("Untitled Project");
     updateSaveActions();
@@ -243,10 +263,37 @@ bool MainWindow::saveToPath(const QString &path)
         scenesArray.append(sceneObj);
     }
 
+    // Consistency board entries + their thumbnail PNGs.
+    QJsonArray consistencyArray;
+    for (const ConsistencyEntry &entry : m_consistencyEntries) {
+        QJsonObject entryObj;
+        entryObj[QStringLiteral("id")] = entry.id;
+        entryObj[QStringLiteral("name")] = entry.name;
+        entryObj[QStringLiteral("type")] = entry.type;
+        entryObj[QStringLiteral("description")] = entry.description;
+
+        QJsonArray tagsArray;
+        for (const QString &tag : entry.tags)
+            tagsArray.append(tag);
+        entryObj[QStringLiteral("tags")] = tagsArray;
+
+        QString thumbFile;
+        if (!entry.thumbnail.isNull()) {
+            QString safeName = entry.name;
+            safeName.replace(QRegularExpression(QStringLiteral("[^A-Za-z0-9]+")),
+                             QStringLiteral("_"));
+            thumbFile = QStringLiteral("consistency_%1_%2.png").arg(safeName, entry.id);
+            entry.thumbnail.save(folder + QStringLiteral("/") + thumbFile, "PNG");
+        }
+        entryObj[QStringLiteral("thumbnailFile")] = thumbFile;
+        consistencyArray.append(entryObj);
+    }
+
     QJsonObject root;
     root[QStringLiteral("version")] = 1;
     root[QStringLiteral("projectName")] = m_projectName;
     root[QStringLiteral("scenes")] = scenesArray;
+    root[QStringLiteral("consistencyBoard")] = consistencyArray;
 
     QFile file(path);
     if (!file.open(QIODevice::WriteOnly)) {
@@ -340,6 +387,37 @@ bool MainWindow::loadFromPath(const QString &path)
         if (m_scenes.at(i)->number == 0)
             m_scenes[i]->number = i + 1;
     }
+
+    // Consistency board entries.
+    m_consistencyEntries.clear();
+    const QJsonArray consistencyArray =
+        root.value(QStringLiteral("consistencyBoard")).toArray();
+    for (const QJsonValue &cv : consistencyArray) {
+        const QJsonObject entryObj = cv.toObject();
+        ConsistencyEntry entry;
+        entry.id = entryObj.value(QStringLiteral("id")).toString();
+        if (entry.id.isEmpty())
+            entry.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        entry.name = entryObj.value(QStringLiteral("name")).toString();
+        entry.type = entryObj.value(QStringLiteral("type")).toString();
+        if (entry.type.isEmpty())
+            entry.type = QStringLiteral("Character");
+        entry.description = entryObj.value(QStringLiteral("description")).toString();
+
+        const QJsonArray tagsArray = entryObj.value(QStringLiteral("tags")).toArray();
+        for (const QJsonValue &tv : tagsArray)
+            entry.tags << tv.toString();
+
+        const QString thumbFile = entryObj.value(QStringLiteral("thumbnailFile")).toString();
+        if (!thumbFile.isEmpty()) {
+            QPixmap pm;
+            if (pm.load(folder + QStringLiteral("/") + thumbFile))
+                entry.thumbnail = pm;
+        }
+        m_consistencyEntries.append(entry);
+    }
+    if (m_consistencyBoard)
+        m_consistencyBoard->refresh();
 
     m_currentProjectPath = path;
     updateSaveActions();

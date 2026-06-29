@@ -2,6 +2,7 @@
 
 #include <QPixmap>
 #include <QString>
+#include <QStringList>
 #include <QVector>
 
 // One storyboard panel: its drawing plus shot metadata and an undo history.
@@ -41,3 +42,15 @@ inline Panel *makeBlankPanel()
     panel->pixmap.fill(Qt::white);
     return panel;
 }
+
+// A character or location reference, used by the Consistency Board to keep
+// designs consistent across shots.
+struct ConsistencyEntry
+{
+    QString id;          // UUID, generated on creation
+    QString name;        // e.g. "Elena", "Warehouse Interior"
+    QString type;        // "Character" or "Location"
+    QString description; // costume, hair, distinguishing features
+    QPixmap thumbnail;   // reference image, stored 320x180 (null = placeholder)
+    QStringList tags;    // e.g. ["protagonist", "scene 1", "blue coat"]
+};

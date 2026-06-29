@@ -14,6 +14,7 @@ class QVBoxLayout;
 
 struct Panel;
 struct Scene;
+struct ConsistencyEntry;
 
 // Third pipeline screen: scene list (left), panel grid + drawing canvas
 // (center), and shot info (right). Scenes are passed in from the Script Editor.
@@ -29,9 +30,17 @@ public:
     // this page only holds non-owning pointers.
     void loadScenes(const QVector<Scene *> &scenes);
 
+    // Read-only reference to the project's consistency entries (for future
+    // prompt injection). Not displayed yet.
+    void setConsistencyEntries(const QVector<ConsistencyEntry> *entries)
+    {
+        m_consistencyEntries = entries;
+    }
+
 signals:
     void backRequested();
     void continueToAnimaticRequested(const QVector<Scene *> &scenes);
+    void consistencyBoardRequested();
 
 protected:
     bool eventFilter(QObject *object, QEvent *event) override;
@@ -60,6 +69,7 @@ private:
     Panel *currentPanel() const;
 
     QVector<Scene *> m_scenes;
+    const QVector<ConsistencyEntry> *m_consistencyEntries = nullptr; // read-only
     int m_currentScene = -1;
     int m_currentPanel = -1;
 

@@ -44,6 +44,8 @@ qt_add_executable(SankoTV
     src/DrawingCanvas.h
     src/AnimaticPage.cpp
     src/AnimaticPage.h
+    src/ConsistencyBoard.cpp
+    src/ConsistencyBoard.h
     resources.qrc
 )
 
