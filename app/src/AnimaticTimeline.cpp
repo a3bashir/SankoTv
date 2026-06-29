@@ -6,6 +6,7 @@
 #include <QFontMetrics>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QLinearGradient>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
@@ -504,8 +505,8 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
             const int x0 = contentXToScreen(startFrame * ppf);
             const int x1 = contentXToScreen(endFrame * ppf);
             QRect r(x0, kSceneY, x1 - x0, kSceneH);
-            p.fillRect(r, QColor((sceneOrdinal % 2 == 0) ? "#1a1a1a" : "#181818"));
-            p.setPen(QColor("#2a2a2a"));
+            p.fillRect(r, QColor((sceneOrdinal % 2 == 0) ? "#13112e" : "#0f0d24"));
+            p.setPen(QColor("#2a2766"));
             p.drawLine(r.left(), kSceneY + kSceneH - 1, r.right(), kSceneY + kSceneH - 1);
             // Scene separator.
             p.setPen(QColor("#444444"));
@@ -520,60 +521,137 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
 
     // ----- Panel / shot clips -----
     {
+        p.setRenderHint(QPainter::Antialiasing, true);
         QFont small = font();
         small.setPointSize(7);
         QFont mono(QStringLiteral("Consolas"));
         mono.setPointSize(7);
+
+        constexpr qreal kClipR = 4.0; // corner radius
 
         for (const Block &b : m_blocks) {
             const int x0 = contentXToScreen(b.startFrame * ppf);
             const int x1 = contentXToScreen((b.startFrame + b.frames) * ppf);
             if (x1 < kLabelCol || x0 > contentRight) continue;
             QRect r(x0, kPanelY + 2, x1 - x0, kPanelH - 4);
+            const QRectF rf(r);
 
             const bool current = (b.flatIndex == m_current);
             const bool hovered = (b.flatIndex == m_hoverIndex);
 
-            p.fillRect(r, QColor("#1e3a2e")); // dark green clip
-
+            // Amber bloom around the selected clip: explicit filled rounded rects
+            // stepping outward, opacity rising toward the clip body, drawn under
+            // the clip fill so a visible halo punches through the dark background.
             if (current) {
-                p.setPen(QPen(QColor("#f5a623"), 2));
-                p.drawRect(r.adjusted(1, 1, -1, -1));
-                QColor glow("#f5a623");
-                glow.setAlphaF(0.20);
-                p.setPen(QPen(glow, 1));
-                p.drawRect(r.adjusted(3, 3, -3, -3));
-            } else {
-                p.setPen(QPen(QColor("#2a2a2a"), 1));
-                p.drawRect(r.adjusted(0, 0, -1, -1));
-                if (hovered) {
-                    QColor h("#f5a623");
-                    h.setAlphaF(0.50);
-                    p.setPen(QPen(h, 1));
-                    p.drawRect(r.adjusted(0, 0, -1, -1));
+                struct Glow { qreal off; int alpha; };
+                const Glow glows[3] = {{6.0, 40}, {4.0, 60}, {2.0, 90}};
+                for (const Glow &gl : glows) {
+                    QColor c("f5a623");
+                    c.setAlpha(gl.alpha);
+                    p.setPen(Qt::NoPen);
+                    p.setBrush(c);
+                    p.drawRoundedRect(rf.adjusted(-gl.off, -gl.off, gl.off, gl.off),
+                                      kClipR, kClipR);
                 }
             }
 
-            if (r.width() >= 46) {
-                const QRect inner = r.adjusted(5, 4, -5, -4);
-                p.setFont(small);
+            // Vertical gradient fill (SankoTV purple).
+            QLinearGradient grad(r.left(), r.top(), r.left(), r.bottom());
+            if (current) {
+                grad.setColorAt(0.0, QColor("#3d3894"));
+                grad.setColorAt(1.0, QColor("#2a2570"));
+            } else {
+                grad.setColorAt(0.0, QColor("#2a2766"));
+                grad.setColorAt(1.0, QColor("#1e1a4d"));
+            }
+            p.setPen(Qt::NoPen);
+            p.setBrush(grad);
+            p.drawRoundedRect(rf, kClipR, kClipR);
+
+            // Border (selected: 2px amber; else 1px purple, amber-50% on hover).
+            p.setBrush(Qt::NoBrush);
+            if (current) {
+                QColor amber("f5a623");
+                amber.setAlpha(255);
+                p.setPen(QPen(amber, 2.5));
+                p.drawRoundedRect(rf.adjusted(1, 1, -1, -1), kClipR, kClipR);
+            } else {
+                QColor bord("#3d3894");
+                if (hovered) { bord = QColor("#f5a623"); bord.setAlphaF(0.50); }
+                p.setPen(QPen(bord, 1));
+                p.drawRoundedRect(rf.adjusted(0.5, 0.5, -0.5, -0.5), kClipR, kClipR);
+            }
+
+            // Thumbnail in the left portion of the clip.
+            int thumbW = 0;
+            const bool showThumb = (r.width() >= 50);
+            if (showThumb) {
+                thumbW = qMin(static_cast<int>(r.width() * 0.35), 60);
+                const int thumbH = r.height() - 8;
+                const QRect thumbRect(r.left() + 4, r.top() + 4, thumbW, thumbH);
+
+                QPixmap pix;
+                if (b.sceneIndex < m_scenes.size()) {
+                    Scene *sc = m_scenes.at(b.sceneIndex);
+                    if (b.panelIndex < sc->panels.size())
+                        pix = sc->panels.at(b.panelIndex)->pixmap;
+                }
+
+                p.save();
+                QPainterPath clip;
+                clip.addRoundedRect(QRectF(thumbRect), 2, 2);
+                p.setClipPath(clip, Qt::IntersectClip);
+                if (!pix.isNull()) {
+                    const QPixmap scaled = pix.scaled(
+                        thumbRect.size(), Qt::KeepAspectRatioByExpanding,
+                        Qt::SmoothTransformation);
+                    const int sx = (scaled.width() - thumbRect.width()) / 2;
+                    const int sy = (scaled.height() - thumbRect.height()) / 2;
+                    p.drawPixmap(thumbRect, scaled,
+                                 QRect(sx, sy, thumbRect.width(), thumbRect.height()));
+                } else {
+                    p.fillRect(thumbRect, QColor("#0d0d0d"));
+                }
+                // Dark gradient overlay (left transparent -> right #0a0a0a 60%).
+                QLinearGradient ov(thumbRect.left(), 0, thumbRect.right(), 0);
+                ov.setColorAt(0.0, QColor(0x0a, 0x0a, 0x0a, 0));
+                ov.setColorAt(1.0, QColor(0x0a, 0x0a, 0x0a, 153));
+                p.fillRect(thumbRect, ov);
+                p.restore();
+
+                // Thumbnail border.
+                p.setBrush(Qt::NoBrush);
+                p.setPen(QPen(QColor("#2a2a2a"), 1));
+                p.drawRoundedRect(QRectF(thumbRect).adjusted(0.5, 0.5, -0.5, -0.5), 2, 2);
+            }
+
+            // Clip text, shifted right past the thumbnail.
+            const int textX = showThumb ? (r.left() + thumbW + 8) : (r.left() + 6);
+            const QRect textRect(textX, r.top() + 4, r.right() - textX - 4, r.height() - 8);
+            if (textRect.width() > 8) {
+                QFont bold = small; bold.setBold(true);
+                p.setFont(bold);
                 p.setPen(QColor("#f5a623"));
-                QFont bold = small; bold.setBold(true); p.setFont(bold);
-                p.drawText(inner, Qt::AlignTop | Qt::AlignLeft,
+                p.drawText(textRect, Qt::AlignTop | Qt::AlignLeft,
                            QString::number(b.flatIndex + 1));
                 p.setFont(small);
-                p.setPen(QColor("#9a9a9a"));
+                p.setPen(QColor("#888888"));
                 QFontMetrics fm(small);
-                p.drawText(inner, Qt::AlignBottom | Qt::AlignLeft,
-                           fm.elidedText(b.sceneName, Qt::ElideRight, inner.width() - 24));
+                p.drawText(textRect, Qt::AlignBottom | Qt::AlignLeft,
+                           fm.elidedText(b.sceneName, Qt::ElideRight, textRect.width() - 24));
+            }
 
-                // Duration badge: dark pill bottom-right.
+            // Duration badge: rounded pill, bottom-right (only on wider clips).
+            if (r.width() > 70) {
                 const QString dtext = QStringLiteral("%1s").arg(b.duration);
                 QFontMetrics fmm(mono);
                 const int bw = fmm.horizontalAdvance(dtext) + 8;
-                QRect pill(r.right() - bw - 4, r.bottom() - 16, bw, 13);
-                if (pill.left() > r.left() + 2) {
-                    p.fillRect(pill, QColor("#1a1a1a"));
+                const QRectF pill(r.right() - bw - 4, r.bottom() - 17, bw, 14);
+                if (pill.left() > textX) {
+                    p.setPen(QPen(QColor("#333333"), 1));
+                    p.setBrush(QColor("#111111"));
+                    p.drawRoundedRect(pill, 4, 4);
+                    p.setBrush(Qt::NoBrush);
                     p.setFont(mono);
                     p.setPen(QColor("#ffffff"));
                     p.drawText(pill, Qt::AlignCenter, dtext);
@@ -588,6 +666,7 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
                            QColor("#f5a623"));
             }
         }
+        p.setRenderHint(QPainter::Antialiasing, false);
     }
 
     // ----- Loop region overlay (on the panel track) -----
