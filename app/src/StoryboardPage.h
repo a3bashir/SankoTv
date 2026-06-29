@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QPoint>
 #include <QVector>
 #include <QWidget>
 
@@ -67,6 +68,15 @@ private:
     void refreshCurrentThumb();
     void updateOnionGhost(); // feed the previous panel's pixmap to the canvas
 
+    // Panel reordering (drag within the strip + keyboard).
+    void beginPanelDrag();
+    void updatePanelDrag(const QPoint &globalPos);
+    void finishPanelDrag();
+    void cancelPanelDrag();
+    int dropTargetForX(const QPoint &globalPos) const;
+    void movePanel(int from, int target); // target is an insertion index (0..N)
+    void movePanelBy(int delta);           // keyboard: -1 left, +1 right
+
     Scene *currentScene() const;
     Panel *currentPanel() const;
 
@@ -85,6 +95,15 @@ private:
     QVector<QLabel *> m_panelThumbImages;
     DrawingCanvas *m_canvas = nullptr;
     QPushButton *m_onionButton = nullptr;
+
+    // Drag-reorder state.
+    bool m_panelPressActive = false;
+    bool m_panelDragging = false;
+    int m_dragSourceIndex = -1;
+    int m_dropTarget = -1;
+    QPoint m_dragStartGlobal;
+    QLabel *m_dragGhost = nullptr;        // semi-transparent thumbnail follows cursor
+    QWidget *m_dropIndicator = nullptr;   // amber line between thumbnails
 
     // Right column.
     QComboBox *m_shotType = nullptr;

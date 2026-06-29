@@ -82,6 +82,14 @@ StoryboardPage::StoryboardPage(QWidget *parent)
         if (m_onionButton)
             m_onionButton->toggle(); // emits toggled -> updates canvas + ghost
     });
+
+    // Ctrl+Left / Ctrl+Right move the current panel within its scene.
+    QShortcut *movePanelLeft =
+        new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_Left), this);
+    connect(movePanelLeft, &QShortcut::activated, this, [this] { movePanelBy(-1); });
+    QShortcut *movePanelRight =
+        new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_Right), this);
+    connect(movePanelRight, &QShortcut::activated, this, [this] { movePanelBy(1); });
 }
 
 // --- Left column ----------------------------------------------------------
@@ -670,6 +678,51 @@ Panel *StoryboardPage::currentPanel() const
 
 bool StoryboardPage::eventFilter(QObject *object, QEvent *event)
 {
+    // Panel thumbnails: select on click, drag to reorder.
+    const QVariant panelIdx = object->property("panelIndex");
+    if (panelIdx.isValid()) {
+        switch (event->type()) {
+        case QEvent::MouseButtonPress: {
+            auto *me = static_cast<QMouseEvent *>(event);
+            if (me->button() == Qt::LeftButton) {
+                selectPanel(panelIdx.toInt());
+                m_dragSourceIndex = panelIdx.toInt();
+                m_dragStartGlobal = me->globalPosition().toPoint();
+                m_panelPressActive = true;
+                m_panelDragging = false;
+            }
+            return false; // let the label keep the implicit mouse grab
+        }
+        case QEvent::MouseMove: {
+            auto *me = static_cast<QMouseEvent *>(event);
+            if (!m_panelPressActive || !(me->buttons() & Qt::LeftButton))
+                return false;
+            const QPoint g = me->globalPosition().toPoint();
+            if (!m_panelDragging
+                && (g - m_dragStartGlobal).manhattanLength() >= 8) {
+                beginPanelDrag();
+            }
+            if (m_panelDragging) {
+                updatePanelDrag(g);
+                return true;
+            }
+            return false;
+        }
+        case QEvent::MouseButtonRelease: {
+            auto *me = static_cast<QMouseEvent *>(event);
+            if (me->button() == Qt::LeftButton && m_panelDragging) {
+                finishPanelDrag();
+                return true;
+            }
+            m_panelPressActive = false;
+            return false;
+        }
+        default:
+            break;
+        }
+    }
+
+    // Scene cards: select on click.
     if (event->type() == QEvent::MouseButtonPress
         && static_cast<QMouseEvent *>(event)->button() == Qt::LeftButton) {
         const QVariant sceneIdx = object->property("sceneIndex");
@@ -677,11 +730,130 @@ bool StoryboardPage::eventFilter(QObject *object, QEvent *event)
             selectScene(sceneIdx.toInt());
             return false;
         }
-        const QVariant panelIdx = object->property("panelIndex");
-        if (panelIdx.isValid()) {
-            selectPanel(panelIdx.toInt());
-            return false;
-        }
     }
     return QWidget::eventFilter(object, event);
+}
+
+// --- Panel reordering -----------------------------------------------------
+
+void StoryboardPage::beginPanelDrag()
+{
+    Scene *scene = currentScene();
+    if (!scene || m_dragSourceIndex < 0 || m_dragSourceIndex >= m_panelThumbImages.size())
+        return;
+    m_panelDragging = true;
+
+    // Semi-transparent ghost that follows the cursor.
+    m_dragGhost = new QLabel(nullptr, Qt::FramelessWindowHint | Qt::Tool
+                                          | Qt::WindowStaysOnTopHint
+                                          | Qt::WindowTransparentForInput);
+    m_dragGhost->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+    m_dragGhost->setAttribute(Qt::WA_TranslucentBackground, true);
+    m_dragGhost->setWindowOpacity(0.6);
+    m_dragGhost->setFixedSize(kThumbW, kThumbH);
+    m_dragGhost->setScaledContents(true);
+    m_dragGhost->setPixmap(m_panelThumbImages.at(m_dragSourceIndex)->pixmap());
+    m_dragGhost->show();
+
+    // Amber drop-position indicator, drawn inside the strip container.
+    QWidget *container = m_panelStripLayout->parentWidget();
+    m_dropIndicator = new QWidget(container);
+    m_dropIndicator->setStyleSheet(QStringLiteral("background-color: #f5a623;"));
+    m_dropIndicator->hide();
+}
+
+void StoryboardPage::updatePanelDrag(const QPoint &globalPos)
+{
+    if (m_dragGhost)
+        m_dragGhost->move(globalPos.x() - kThumbW / 2, globalPos.y() - kThumbH / 2);
+
+    m_dropTarget = dropTargetForX(globalPos);
+
+    if (m_dropIndicator && !m_panelThumbs.isEmpty()) {
+        const QRect first = m_panelThumbs.first()->geometry();
+        int x;
+        if (m_dropTarget < m_panelThumbs.size())
+            x = m_panelThumbs.at(m_dropTarget)->geometry().left() - 7;
+        else
+            x = m_panelThumbs.last()->geometry().right() + 5;
+        m_dropIndicator->setGeometry(x, first.top(), 2, first.height());
+        m_dropIndicator->raise();
+        m_dropIndicator->show();
+    }
+}
+
+int StoryboardPage::dropTargetForX(const QPoint &globalPos) const
+{
+    QWidget *container = m_panelStripLayout->parentWidget();
+    if (!container)
+        return 0;
+    const int cx = container->mapFromGlobal(globalPos).x();
+    int target = 0;
+    for (int i = 0; i < m_panelThumbs.size(); ++i) {
+        if (cx > m_panelThumbs.at(i)->geometry().center().x())
+            target = i + 1;
+        else
+            break;
+    }
+    return target;
+}
+
+void StoryboardPage::finishPanelDrag()
+{
+    const int src = m_dragSourceIndex;
+    const int target = m_dropTarget;
+    cancelPanelDrag(); // tears down ghost/indicator, resets flags
+    if (src >= 0)
+        movePanel(src, target);
+}
+
+void StoryboardPage::cancelPanelDrag()
+{
+    if (m_dragGhost) {
+        m_dragGhost->deleteLater();
+        m_dragGhost = nullptr;
+    }
+    if (m_dropIndicator) {
+        m_dropIndicator->deleteLater();
+        m_dropIndicator = nullptr;
+    }
+    m_panelDragging = false;
+    m_panelPressActive = false;
+    m_dragSourceIndex = -1;
+    m_dropTarget = -1;
+}
+
+void StoryboardPage::movePanel(int from, int target)
+{
+    Scene *scene = currentScene();
+    if (!scene || from < 0 || from >= scene->panels.size())
+        return;
+    // Dropping right before or right after itself is a no-op.
+    if (target == from || target == from + 1)
+        return;
+    target = qBound(0, target, scene->panels.size());
+
+    Panel *selected = currentPanel(); // keep selection by pointer
+    Panel *moved = scene->panels.takeAt(from);
+    const int dest = (target > from) ? target - 1 : target;
+    scene->panels.insert(dest, moved);
+
+    rebuildPanelStrip();
+    int newSel = scene->panels.indexOf(selected);
+    if (newSel < 0)
+        newSel = scene->panels.indexOf(moved);
+    selectPanel(newSel >= 0 ? newSel : 0);
+}
+
+void StoryboardPage::movePanelBy(int delta)
+{
+    Scene *scene = currentScene();
+    if (!scene || m_currentPanel < 0)
+        return;
+    const int dst = m_currentPanel + delta;
+    if (dst < 0 || dst >= scene->panels.size())
+        return; // clamp at boundaries, no wrap-around
+    scene->panels.move(m_currentPanel, dst);
+    rebuildPanelStrip();
+    selectPanel(dst);
 }
