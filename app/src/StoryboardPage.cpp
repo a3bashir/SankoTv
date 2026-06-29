@@ -90,6 +90,13 @@ StoryboardPage::StoryboardPage(QWidget *parent)
     QShortcut *movePanelRight =
         new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_Right), this);
     connect(movePanelRight, &QShortcut::activated, this, [this] { movePanelBy(1); });
+
+    // Ctrl+D duplicates the current panel.
+    QShortcut *duplicateShortcut =
+        new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_D), this);
+    connect(duplicateShortcut, &QShortcut::activated, this, [this] { duplicatePanel(); });
+
+    updateDuplicateButton(); // disabled until a panel is selected
 }
 
 // --- Left column ----------------------------------------------------------
@@ -225,6 +232,7 @@ QWidget *StoryboardPage::createCenterColumn()
     m_panelStripLayout->addStretch(1);
 
     strip->setWidget(stripContainer);
+    m_panelScroll = strip; // kept so we can scroll a new panel into view
     layout->addWidget(strip);
 
     // Drawing area (toolbar + canvas).
@@ -532,6 +540,17 @@ QWidget *StoryboardPage::createBottomBar()
     connect(consistency, &QPushButton::clicked, this, &StoryboardPage::consistencyBoardRequested);
     layout->addWidget(consistency);
 
+    m_duplicateButton = new QPushButton(QStringLiteral("Duplicate Panel"));
+    m_duplicateButton->setCursor(Qt::PointingHandCursor);
+    m_duplicateButton->setToolTip(QStringLiteral("Duplicate the selected panel (Ctrl+D)"));
+    m_duplicateButton->setStyleSheet(QStringLiteral(
+        "QPushButton { background: transparent; color: #cccccc; border: 1px solid #2a2a2a;"
+        " border-radius: 6px; padding: 7px 14px; font-size: 13px; }"
+        "QPushButton:hover { color: #f5a623; border-color: #f5a623; }"
+        "QPushButton:disabled { color: #555555; border-color: #1f1f1f; }"));
+    connect(m_duplicateButton, &QPushButton::clicked, this, &StoryboardPage::duplicatePanel);
+    layout->addWidget(m_duplicateButton);
+
     layout->addStretch(1);
 
     QPushButton *animatic = new QPushButton(QStringLiteral("Continue to Animatic"));
@@ -578,6 +597,7 @@ void StoryboardPage::selectScene(int index)
     else {
         m_currentPanel = -1;
         m_canvas->setActivePanel(nullptr);
+        updateDuplicateButton();
     }
 }
 
@@ -591,6 +611,7 @@ void StoryboardPage::selectPanel(int index)
     updatePanelThumbStyles();
     loadShotInfo();
     updateOnionGhost();
+    updateDuplicateButton();
 }
 
 void StoryboardPage::updateOnionGhost()
@@ -856,4 +877,38 @@ void StoryboardPage::movePanelBy(int delta)
     scene->panels.move(m_currentPanel, dst);
     rebuildPanelStrip();
     selectPanel(dst);
+}
+
+void StoryboardPage::duplicatePanel()
+{
+    Scene *scene = currentScene();
+    Panel *source = currentPanel();
+    if (!scene || !source || m_currentPanel < 0)
+        return;
+
+    Panel *copy = new Panel;
+    copy->pixmap = source->pixmap.copy(); // deep copy of the drawing
+    copy->duration = source->duration;
+    copy->shotType = source->shotType;
+    copy->cameraAngle = source->cameraAngle;
+    copy->lens = source->lens;
+    copy->mood = source->mood;
+    copy->notes = source->notes;
+    // undoStack intentionally left empty — the duplicate starts fresh.
+
+    const int insertAt = m_currentPanel + 1;
+    scene->panels.insert(insertAt, copy);
+
+    rebuildPanelStrip();
+    selectPanel(insertAt);
+
+    // Scroll the new panel into view.
+    if (m_panelScroll && insertAt < m_panelThumbs.size())
+        m_panelScroll->ensureWidgetVisible(m_panelThumbs.at(insertAt));
+}
+
+void StoryboardPage::updateDuplicateButton()
+{
+    if (m_duplicateButton)
+        m_duplicateButton->setEnabled(currentPanel() != nullptr);
 }

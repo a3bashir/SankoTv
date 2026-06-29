@@ -12,6 +12,7 @@ class QLabel;
 class QLineEdit;
 class QPlainTextEdit;
 class QPushButton;
+class QScrollArea;
 class QVBoxLayout;
 
 struct Panel;
@@ -77,6 +78,9 @@ private:
     void movePanel(int from, int target); // target is an insertion index (0..N)
     void movePanelBy(int delta);           // keyboard: -1 left, +1 right
 
+    void duplicatePanel();                 // copy current panel, insert after it
+    void updateDuplicateButton();          // enable only when a panel is selected
+
     Scene *currentScene() const;
     Panel *currentPanel() const;
 
@@ -94,7 +98,9 @@ private:
     QVector<QWidget *> m_panelThumbs;
     QVector<QLabel *> m_panelThumbImages;
     DrawingCanvas *m_canvas = nullptr;
+    QScrollArea *m_panelScroll = nullptr;
     QPushButton *m_onionButton = nullptr;
+    QPushButton *m_duplicateButton = nullptr;
 
     // Drag-reorder state.
     bool m_panelPressActive = false;
