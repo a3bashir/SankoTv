@@ -79,7 +79,8 @@ private:
     void movePanelBy(int delta);           // keyboard: -1 left, +1 right
 
     void duplicatePanel();                 // copy current panel, insert after it
-    void updateDuplicateButton();          // enable only when a panel is selected
+    void importImageToPanel();             // file dialog -> canvas->importImage
+    void updateDuplicateButton();          // enable panel-action buttons when a panel is selected
 
     Scene *currentScene() const;
     Panel *currentPanel() const;
@@ -101,6 +102,7 @@ private:
     QScrollArea *m_panelScroll = nullptr;
     QPushButton *m_onionButton = nullptr;
     QPushButton *m_duplicateButton = nullptr;
+    QPushButton *m_importButton = nullptr;
 
     // Drag-reorder state.
     bool m_panelPressActive = false;

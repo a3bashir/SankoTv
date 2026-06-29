@@ -2,11 +2,16 @@
 
 #include "StoryboardModel.h"
 
+#include <QDragEnterEvent>
+#include <QDropEvent>
 #include <QImage>
+#include <QMessageBox>
+#include <QMimeData>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPaintEvent>
 #include <QStack>
+#include <QUrl>
 #include <Qt>
 
 namespace {
@@ -31,6 +36,44 @@ QPixmap buildGhost(const QPixmap &previous)
     return QPixmap::fromImage(img);
 }
 
+bool isImagePath(const QString &path)
+{
+    const QString lower = path.toLower();
+    return lower.endsWith(QLatin1String(".png")) || lower.endsWith(QLatin1String(".jpg"))
+        || lower.endsWith(QLatin1String(".jpeg")) || lower.endsWith(QLatin1String(".webp"));
+}
+
+// True if every pixel is white (RGB ignored alpha) — i.e. an untouched panel.
+bool isBlankPixmap(const QPixmap &pixmap)
+{
+    if (pixmap.isNull())
+        return true;
+    const QImage img = pixmap.toImage().convertToFormat(QImage::Format_ARGB32);
+    for (int y = 0; y < img.height(); ++y) {
+        const QRgb *line = reinterpret_cast<const QRgb *>(img.constScanLine(y));
+        for (int x = 0; x < img.width(); ++x) {
+            if ((line[x] | 0xff000000u) != 0xffffffffu)
+                return false;
+        }
+    }
+    return true;
+}
+
+bool firstImageUrl(const QMimeData *mime, QString *outPath)
+{
+    if (!mime || !mime->hasUrls())
+        return false;
+    const QList<QUrl> urls = mime->urls();
+    if (urls.isEmpty() || !urls.first().isLocalFile())
+        return false;
+    const QString path = urls.first().toLocalFile();
+    if (!isImagePath(path))
+        return false;
+    if (outPath)
+        *outPath = path;
+    return true;
+}
+
 } // namespace
 
 DrawingCanvas::DrawingCanvas(QWidget *parent)
@@ -39,6 +82,7 @@ DrawingCanvas::DrawingCanvas(QWidget *parent)
     setMouseTracking(false);
     setCursor(Qt::CrossCursor);
     setMinimumHeight(220);
+    setAcceptDrops(true); // import images by dropping files onto the canvas
 }
 
 QSize DrawingCanvas::canvasSize()
@@ -64,6 +108,48 @@ void DrawingCanvas::setPreviousPixmap(const QPixmap &previous)
 {
     m_ghost = buildGhost(previous); // null pixmap -> empty ghost
     update();
+}
+
+bool DrawingCanvas::importImage(const QString &filePath)
+{
+    if (!m_panel)
+        return false;
+
+    QPixmap loaded(filePath);
+    if (loaded.isNull()) {
+        QMessageBox::warning(this, QStringLiteral("Import Image"),
+                             QStringLiteral("Could not load the selected image."));
+        return false;
+    }
+
+    // Warn before replacing an existing drawing (skip if the panel is blank).
+    if (!isBlankPixmap(m_panel->pixmap)) {
+        const auto answer = QMessageBox::question(
+            this, QStringLiteral("Import Image"),
+            QStringLiteral("This will replace the current drawing. Continue?"),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+        if (answer != QMessageBox::Yes)
+            return false;
+    }
+
+    pushUndo(); // so Ctrl+Z reverts to the previous drawing
+
+    QPixmap result(canvasSize());
+    result.fill(Qt::black); // pad with the canvas background
+    {
+        QPainter painter(&result);
+        painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
+        QSize target = loaded.size();
+        target.scale(canvasSize(), Qt::KeepAspectRatio);
+        QRect r(QPoint(0, 0), target);
+        r.moveCenter(result.rect().center());
+        painter.drawPixmap(r, loaded);
+    }
+    m_panel->pixmap = result;
+
+    update();
+    emit contentChanged(); // refreshes the panel thumbnail
+    return true;
 }
 
 void DrawingCanvas::setTool(Tool tool)
@@ -298,4 +384,17 @@ void DrawingCanvas::mouseReleaseEvent(QMouseEvent *event)
         m_drawing = false;
         emit contentChanged();
     }
+}
+
+void DrawingCanvas::dragEnterEvent(QDragEnterEvent *event)
+{
+    if (m_panel && firstImageUrl(event->mimeData(), nullptr))
+        event->acceptProposedAction();
+}
+
+void DrawingCanvas::dropEvent(QDropEvent *event)
+{
+    QString path;
+    if (m_panel && firstImageUrl(event->mimeData(), &path) && importImage(path))
+        event->acceptProposedAction();
 }

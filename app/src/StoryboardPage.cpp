@@ -7,6 +7,7 @@
 #include <QColorDialog>
 #include <QComboBox>
 #include <QEvent>
+#include <QFileDialog>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QJsonArray>
@@ -96,7 +97,19 @@ StoryboardPage::StoryboardPage(QWidget *parent)
         new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_D), this);
     connect(duplicateShortcut, &QShortcut::activated, this, [this] { duplicatePanel(); });
 
-    updateDuplicateButton(); // disabled until a panel is selected
+    // Ctrl+I imports an image onto the current panel.
+    QShortcut *importShortcut =
+        new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_I), this);
+    connect(importShortcut, &QShortcut::activated, this, [this] { importImageToPanel(); });
+
+    // Ctrl+Z reverts the last canvas change (drawing or image import).
+    QShortcut *undoShortcut = new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_Z), this);
+    connect(undoShortcut, &QShortcut::activated, this, [this] {
+        if (m_canvas)
+            m_canvas->undo();
+    });
+
+    updateDuplicateButton(); // panel-action buttons disabled until a panel is selected
 }
 
 // --- Left column ----------------------------------------------------------
@@ -551,6 +564,17 @@ QWidget *StoryboardPage::createBottomBar()
     connect(m_duplicateButton, &QPushButton::clicked, this, &StoryboardPage::duplicatePanel);
     layout->addWidget(m_duplicateButton);
 
+    m_importButton = new QPushButton(QStringLiteral("Import Image"));
+    m_importButton->setCursor(Qt::PointingHandCursor);
+    m_importButton->setToolTip(QStringLiteral("Import a reference image onto this panel (Ctrl+I)"));
+    m_importButton->setStyleSheet(QStringLiteral(
+        "QPushButton { background: transparent; color: #cccccc; border: 1px solid #2a2a2a;"
+        " border-radius: 6px; padding: 7px 14px; font-size: 13px; }"
+        "QPushButton:hover { color: #f5a623; border-color: #f5a623; }"
+        "QPushButton:disabled { color: #555555; border-color: #1f1f1f; }"));
+    connect(m_importButton, &QPushButton::clicked, this, &StoryboardPage::importImageToPanel);
+    layout->addWidget(m_importButton);
+
     layout->addStretch(1);
 
     QPushButton *animatic = new QPushButton(QStringLiteral("Continue to Animatic"));
@@ -907,8 +931,23 @@ void StoryboardPage::duplicatePanel()
         m_panelScroll->ensureWidgetVisible(m_panelThumbs.at(insertAt));
 }
 
+void StoryboardPage::importImageToPanel()
+{
+    if (!currentPanel() || !m_canvas)
+        return;
+    const QString path = QFileDialog::getOpenFileName(
+        this, QStringLiteral("Import Image"), QString(),
+        QStringLiteral("Images (*.png *.jpg *.jpeg *.webp)"));
+    if (path.isEmpty())
+        return;
+    m_canvas->importImage(path); // handles blank check, warning, undo, refresh
+}
+
 void StoryboardPage::updateDuplicateButton()
 {
+    const bool hasPanel = (currentPanel() != nullptr);
     if (m_duplicateButton)
-        m_duplicateButton->setEnabled(currentPanel() != nullptr);
+        m_duplicateButton->setEnabled(hasPanel);
+    if (m_importButton)
+        m_importButton->setEnabled(hasPanel);
 }

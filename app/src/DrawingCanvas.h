@@ -6,6 +6,8 @@
 #include <QWidget>
 
 struct Panel;
+class QDragEnterEvent;
+class QDropEvent;
 
 // Freehand drawing surface for a single storyboard panel. Renders the panel's
 // QPixmap scaled-to-fit (letterboxed) and edits it in place via mouse events.
@@ -29,6 +31,11 @@ public:
     // Pass the previous panel's pixmap (or a null pixmap to clear the ghost).
     void setPreviousPixmap(const QPixmap &previous);
 
+    // Load an image file and paint it (scaled-to-fit, black padding) into the
+    // current panel. Warns before replacing a non-blank drawing. Returns true
+    // if the panel was changed. Shared by the button, shortcut, and drop.
+    bool importImage(const QString &filePath);
+
 public slots:
     void setTool(Tool tool);
     void setColor(const QColor &color);
@@ -44,6 +51,8 @@ protected:
     void mousePressEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
     void mouseReleaseEvent(QMouseEvent *event) override;
+    void dragEnterEvent(QDragEnterEvent *event) override;
+    void dropEvent(QDropEvent *event) override;
 
 private:
     QRect displayRect() const;          // where the pixmap is drawn in the widget
