@@ -1,5 +1,6 @@
 #include "AnimaticPage.h"
 
+#include "AnimaticTimeline.h"
 #include "StoryboardModel.h"
 
 #include <QAudioOutput>
@@ -73,9 +74,6 @@ private:
 
 namespace {
 
-constexpr int kThumbW = 80;
-constexpr int kThumbH = 45;
-
 QPushButton *transportButton(const QString &glyph, const QString &tip)
 {
     QPushButton *button = new QPushButton(glyph);
@@ -104,11 +102,22 @@ AnimaticPage::AnimaticPage(QWidget *parent)
     m_timer->setSingleShot(true);
     connect(m_timer, &QTimer::timeout, this, &AnimaticPage::advance);
 
+    // Drives the real-time playhead while playing (50ms cadence).
+    m_playheadTimer = new QTimer(this);
+    m_playheadTimer->setInterval(50);
+    connect(m_playheadTimer, &QTimer::timeout, this, &AnimaticPage::onPlayheadTick);
+
     // Scratch audio playback (created up front so the volume slider can bind).
     m_audioOutput = new QAudioOutput(this);
     m_audioOutput->setVolume(0.8);
     m_player = new QMediaPlayer(this);
     m_player->setAudioOutput(m_audioOutput);
+    // The audio length is only known once the media metadata has loaded; feed
+    // it to the timeline so the waveform can scale.
+    connect(m_player, &QMediaPlayer::durationChanged, this, [this](qint64 d) {
+        if (m_timeline)
+            m_timeline->setAudioLoaded(hasAudio(), d);
+    });
 
     QVBoxLayout *root = new QVBoxLayout(this);
     root->setContentsMargins(0, 0, 0, 0);
@@ -230,163 +239,22 @@ QWidget *AnimaticPage::createTimingStrip()
     QWidget *wrap = new QWidget;
     wrap->setAttribute(Qt::WA_StyledBackground, true);
     wrap->setStyleSheet(QStringLiteral(
-        "background-color: #111111; border-top: 1px solid #1f1f1f;"));
+        "background-color: #0d0d0d; border-top: 1px solid #1f1f1f;"));
     QVBoxLayout *wrapLayout = new QVBoxLayout(wrap);
     wrapLayout->setContentsMargins(0, 0, 0, 0);
     wrapLayout->setSpacing(0);
 
-    // Loop controls row, above the thumbnails.
-    QWidget *loopBar = new QWidget;
-    QHBoxLayout *loopLayout = new QHBoxLayout(loopBar);
-    loopLayout->setContentsMargins(12, 6, 12, 0);
-    loopLayout->setSpacing(6);
-
-    const QString loopBtn = QStringLiteral(
-        "QPushButton { background: transparent; color: #cccccc; border: 1px solid #2a2a2a;"
-        " border-radius: 4px; padding: 3px 9px; font-size: 11px; }"
-        "QPushButton:hover { color: #4dff91; border-color: #4dff91; }");
-
-    QPushButton *setStart = new QPushButton(QStringLiteral("[ Loop"));
-    setStart->setCursor(Qt::PointingHandCursor);
-    setStart->setToolTip(QStringLiteral("Set loop start to the selected panel"));
-    setStart->setStyleSheet(loopBtn);
-    connect(setStart, &QPushButton::clicked, this, &AnimaticPage::setLoopStart);
-    loopLayout->addWidget(setStart);
-
-    QPushButton *setEnd = new QPushButton(QStringLiteral("Loop ]"));
-    setEnd->setCursor(Qt::PointingHandCursor);
-    setEnd->setToolTip(QStringLiteral("Set loop end to the selected panel"));
-    setEnd->setStyleSheet(loopBtn);
-    connect(setEnd, &QPushButton::clicked, this, &AnimaticPage::setLoopEnd);
-    loopLayout->addWidget(setEnd);
-
-    m_clearLoopButton = new QPushButton(QString::fromUtf8("\xE2\x9C\x95 Loop"));
-    m_clearLoopButton->setCursor(Qt::PointingHandCursor);
-    m_clearLoopButton->setToolTip(QStringLiteral("Clear the loop region"));
-    m_clearLoopButton->setStyleSheet(QStringLiteral(
-        "QPushButton { background: transparent; color: #cccccc; border: 1px solid #2a2a2a;"
-        " border-radius: 4px; padding: 3px 9px; font-size: 11px; }"
-        "QPushButton:hover { color: #e06c6c; border-color: #e06c6c; }"));
-    m_clearLoopButton->setVisible(false);
-    connect(m_clearLoopButton, &QPushButton::clicked, this, &AnimaticPage::clearLoop);
-    loopLayout->addWidget(m_clearLoopButton);
-
-    m_loopWarningLabel = new QLabel(QStringLiteral("Set both loop points to activate"));
-    m_loopWarningLabel->setStyleSheet(QStringLiteral("color: #f5a623; font-size: 11px;"));
-    m_loopWarningLabel->setVisible(false);
-    loopLayout->addWidget(m_loopWarningLabel);
-
-    loopLayout->addStretch(1);
-    wrapLayout->addWidget(loopBar);
-
-    // Scrollable thumbnail strip.
-    QScrollArea *strip = new QScrollArea;
-    strip->setWidgetResizable(true);
-    strip->setFixedHeight(100);
-    strip->setFrameShape(QFrame::NoFrame);
-    strip->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
-    strip->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    strip->setStyleSheet(QStringLiteral("QScrollArea { background: transparent; border: none; }"));
-
-    QWidget *container = new QWidget;
-    container->setStyleSheet(QStringLiteral("background: transparent;"));
-    m_stripLayout = new QHBoxLayout(container);
-    m_stripLayout->setContentsMargins(12, 6, 12, 6);
-    m_stripLayout->setSpacing(10);
-    m_stripLayout->addStretch(1);
-
-    strip->setWidget(container);
-    wrapLayout->addWidget(strip);
+    // Professional NLE timeline (zoom toolbar + multi-track canvas). Loop
+    // controls now live in the bottom playback bar (see createControls()).
+    m_timeline = new AnimaticTimeline;
+    m_timeline->setHost(this);
+    connect(m_timeline, &AnimaticTimeline::panelSeekRequested,
+            this, &AnimaticPage::jumpTo);
+    connect(m_timeline, &AnimaticTimeline::durationChanged,
+            this, &AnimaticPage::onDurationChanged);
+    wrapLayout->addWidget(m_timeline);
 
     return wrap;
-}
-
-void AnimaticPage::rebuildTimingStrip()
-{
-    m_thumbs.clear();
-    m_spins.clear();
-    while (QLayoutItem *item = m_stripLayout->takeAt(0)) {
-        if (QWidget *w = item->widget())
-            w->deleteLater();
-        delete item;
-    }
-
-    const QString spinStyle = QStringLiteral(
-        "QSpinBox { background-color: #1a1a1a; color: #ffffff; border: 1px solid #2a2a2a;"
-        " border-radius: 3px; padding: 1px 3px; font-size: 11px; }"
-        "QSpinBox::up-button, QSpinBox::down-button { width: 12px; }");
-
-    for (int i = 0; i < m_items.size(); ++i) {
-        Panel *panel = m_items.at(i).panel;
-
-        QWidget *cell = new QWidget;
-        QVBoxLayout *cl = new QVBoxLayout(cell);
-        cl->setContentsMargins(0, 0, 0, 0);
-        cl->setSpacing(4);
-
-        QLabel *thumb = new QLabel;
-        thumb->setObjectName(QStringLiteral("animaticThumb"));
-        thumb->setProperty("itemIndex", i);
-        thumb->setFixedSize(kThumbW, kThumbH);
-        thumb->setScaledContents(true);
-        thumb->setCursor(Qt::PointingHandCursor);
-
-        // Bake loop-region tint / out-of-region dim into the thumbnail.
-        QPixmap scaled = panel->pixmap.scaled(kThumbW, kThumbH,
-                                              Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
-        if (loopActive()) {
-            const bool inLoop = (i >= m_loopStartIndex && i <= m_loopEndIndex);
-            if (inLoop) {
-                QPainter p(&scaled);
-                p.fillRect(scaled.rect(), QColor(0x4d, 0xff, 0x91, 38)); // green ~15%
-            } else {
-                QPixmap dim(kThumbW, kThumbH);
-                dim.fill(QColor("#0d0d0d"));
-                QPainter p(&dim);
-                p.setOpacity(0.5); // dim to 50%
-                p.drawPixmap(dim.rect(), scaled);
-                scaled = dim;
-            }
-        }
-        thumb->setPixmap(scaled);
-        thumb->installEventFilter(this);
-        cl->addWidget(thumb, 0, Qt::AlignHCenter);
-
-        QSpinBox *spin = new QSpinBox;
-        spin->setRange(1, 30);
-        spin->setValue(panel->duration);
-        spin->setSuffix(QStringLiteral("s"));
-        spin->setFixedWidth(58);
-        spin->setStyleSheet(spinStyle);
-        connect(spin, &QSpinBox::valueChanged, this, [this, panel](int v) {
-            panel->duration = v; // takes effect after the current panel finishes
-            updateTotalLabel();
-        });
-        cl->addWidget(spin, 0, Qt::AlignHCenter);
-
-        m_stripLayout->addWidget(cell);
-        m_thumbs.append(thumb);
-        m_spins.append(spin);
-    }
-
-    m_stripLayout->addStretch(1);
-    updateStripHighlight();
-}
-
-void AnimaticPage::updateStripHighlight()
-{
-    const bool loop = loopActive();
-    for (int i = 0; i < m_thumbs.size(); ++i) {
-        QString rule = (i == m_current)
-            ? QStringLiteral("border: 1px solid #f5a623;")
-            : QStringLiteral("border: 1px solid #2a2a2a;");
-        if (loop && i == m_loopStartIndex)
-            rule += QStringLiteral(" border-left: 2px solid #4dff91;");
-        if (loop && i == m_loopEndIndex)
-            rule += QStringLiteral(" border-right: 2px solid #4dff91;");
-        m_thumbs.at(i)->setStyleSheet(
-            QStringLiteral("QLabel#animaticThumb { %1 }").arg(rule));
-    }
 }
 
 // --- Loop region ----------------------------------------------------------
@@ -426,7 +294,8 @@ void AnimaticPage::setLoopStart()
     m_loopStartIndex = m_current;
     validateLoop();
     updateLoopUi();
-    rebuildTimingStrip();
+    if (m_timeline)
+        m_timeline->setLoopRegion(m_loopStartIndex, m_loopEndIndex);
 }
 
 void AnimaticPage::setLoopEnd()
@@ -436,7 +305,8 @@ void AnimaticPage::setLoopEnd()
     m_loopEndIndex = m_current;
     validateLoop();
     updateLoopUi();
-    rebuildTimingStrip();
+    if (m_timeline)
+        m_timeline->setLoopRegion(m_loopStartIndex, m_loopEndIndex);
 }
 
 void AnimaticPage::clearLoop()
@@ -444,7 +314,8 @@ void AnimaticPage::clearLoop()
     m_loopStartIndex = -1;
     m_loopEndIndex = -1;
     updateLoopUi();
-    rebuildTimingStrip();
+    if (m_timeline)
+        m_timeline->setLoopRegion(m_loopStartIndex, m_loopEndIndex);
 }
 
 void AnimaticPage::updateLoopUi()
@@ -463,24 +334,77 @@ QWidget *AnimaticPage::createControls()
 {
     QWidget *bar = new QWidget;
     bar->setAttribute(Qt::WA_StyledBackground, true);
-    bar->setFixedHeight(60);
+    bar->setFixedHeight(56);
     bar->setStyleSheet(QStringLiteral("background-color: #0d0d0d; border-top: 1px solid #1f1f1f;"));
 
     QHBoxLayout *layout = new QHBoxLayout(bar);
     layout->setContentsMargins(16, 0, 16, 0);
     layout->setSpacing(10);
 
+    // --- LEFT GROUP: loop controls (compact) -----------------------------
+    const QString loopBtn = QStringLiteral(
+        "QPushButton { background: transparent; color: #cccccc; border: 1px solid #2a2a2a;"
+        " border-radius: 4px; padding: 4px 8px; font-size: 11px; }"
+        "QPushButton:hover { color: #4dff91; border-color: #4dff91; }");
+
+    QWidget *loopGroup = new QWidget;
+    QHBoxLayout *loopLayout = new QHBoxLayout(loopGroup);
+    loopLayout->setContentsMargins(0, 0, 0, 0);
+    loopLayout->setSpacing(4);
+
+    QPushButton *setStart = new QPushButton(QStringLiteral("[ Loop"));
+    setStart->setCursor(Qt::PointingHandCursor);
+    setStart->setToolTip(QStringLiteral("Set loop start to the selected panel"));
+    setStart->setStyleSheet(loopBtn);
+    connect(setStart, &QPushButton::clicked, this, &AnimaticPage::setLoopStart);
+    loopLayout->addWidget(setStart);
+
+    QPushButton *setEnd = new QPushButton(QStringLiteral("Loop ]"));
+    setEnd->setCursor(Qt::PointingHandCursor);
+    setEnd->setToolTip(QStringLiteral("Set loop end to the selected panel"));
+    setEnd->setStyleSheet(loopBtn);
+    connect(setEnd, &QPushButton::clicked, this, &AnimaticPage::setLoopEnd);
+    loopLayout->addWidget(setEnd);
+
+    m_clearLoopButton = new QPushButton(QString::fromUtf8("\xE2\x9C\x95"));
+    m_clearLoopButton->setCursor(Qt::PointingHandCursor);
+    m_clearLoopButton->setToolTip(QStringLiteral("Clear the loop region"));
+    m_clearLoopButton->setStyleSheet(QStringLiteral(
+        "QPushButton { background: transparent; color: #cccccc; border: 1px solid #2a2a2a;"
+        " border-radius: 4px; padding: 4px 8px; font-size: 11px; }"
+        "QPushButton:hover { color: #e06c6c; border-color: #e06c6c; }"));
+    m_clearLoopButton->setVisible(false);
+    connect(m_clearLoopButton, &QPushButton::clicked, this, &AnimaticPage::clearLoop);
+    loopLayout->addWidget(m_clearLoopButton);
+
+    m_loopWarningLabel = new QLabel(QStringLiteral("Set both loop points to activate"));
+    m_loopWarningLabel->setStyleSheet(QStringLiteral("color: #f5a623; font-size: 11px;"));
+    m_loopWarningLabel->setVisible(false);
+    loopLayout->addWidget(m_loopWarningLabel);
+
+    layout->addWidget(loopGroup);
     layout->addStretch(1);
 
+    // --- CENTRE GROUP: transport (icons only) ----------------------------
     QPushButton *first = transportButton(QString::fromUtf8("|\xE2\x97\x80"),
                                          QStringLiteral("First panel"));
     connect(first, &QPushButton::clicked, this, &AnimaticPage::goFirst);
     layout->addWidget(first);
 
+    QPushButton *prev = transportButton(QString::fromUtf8("\xE2\x97\x80"),
+                                        QStringLiteral("Previous panel"));
+    connect(prev, &QPushButton::clicked, this, &AnimaticPage::goPrev);
+    layout->addWidget(prev);
+
     m_playButton = transportButton(QString::fromUtf8("\xE2\x96\xB6"),
                                    QStringLiteral("Play / Pause"));
     connect(m_playButton, &QPushButton::clicked, this, &AnimaticPage::togglePlay);
     layout->addWidget(m_playButton);
+
+    QPushButton *next = transportButton(QString::fromUtf8("\xE2\x96\xB6"),
+                                        QStringLiteral("Next panel"));
+    connect(next, &QPushButton::clicked, this, &AnimaticPage::goNext);
+    layout->addWidget(next);
 
     QPushButton *last = transportButton(QString::fromUtf8("\xE2\x96\xB6|"),
                                         QStringLiteral("Last panel"));
@@ -488,6 +412,41 @@ QWidget *AnimaticPage::createControls()
     layout->addWidget(last);
 
     layout->addStretch(1);
+
+    // --- RIGHT GROUP: speed, timecode, total -----------------------------
+    QWidget *speedGroup = new QWidget;
+    QHBoxLayout *speedLayout = new QHBoxLayout(speedGroup);
+    speedLayout->setContentsMargins(0, 0, 0, 0);
+    speedLayout->setSpacing(4);
+
+    m_speedHalfButton = new QPushButton(QStringLiteral("0.5x"));
+    m_speedHalfButton->setCursor(Qt::PointingHandCursor);
+    m_speedHalfButton->setToolTip(QStringLiteral("Play at half speed"));
+    connect(m_speedHalfButton, &QPushButton::clicked, this,
+            [this] { setPlaybackSpeed(0.5f); });
+    speedLayout->addWidget(m_speedHalfButton);
+
+    m_speed1xButton = new QPushButton(QStringLiteral("1x"));
+    m_speed1xButton->setCursor(Qt::PointingHandCursor);
+    m_speed1xButton->setToolTip(QStringLiteral("Play at normal speed"));
+    connect(m_speed1xButton, &QPushButton::clicked, this,
+            [this] { setPlaybackSpeed(1.0f); });
+    speedLayout->addWidget(m_speed1xButton);
+
+    m_speed2xButton = new QPushButton(QStringLiteral("2x"));
+    m_speed2xButton->setCursor(Qt::PointingHandCursor);
+    m_speed2xButton->setToolTip(QStringLiteral("Play at double speed"));
+    connect(m_speed2xButton, &QPushButton::clicked, this,
+            [this] { setPlaybackSpeed(2.0f); });
+    speedLayout->addWidget(m_speed2xButton);
+
+    layout->addWidget(speedGroup);
+    updateSpeedButtons(); // 1x active by default
+
+    m_timecodeLabel = new QLabel(QStringLiteral("00:00:00:00"));
+    m_timecodeLabel->setStyleSheet(QStringLiteral(
+        "color: #f5a623; font-family: 'Courier New'; font-size: 13px;"));
+    layout->addWidget(m_timecodeLabel);
 
     m_totalLabel = new QLabel(QStringLiteral("Total: 0:00"));
     m_totalLabel->setStyleSheet(QStringLiteral("color: #aaaaaa; font-size: 13px;"));
@@ -502,6 +461,7 @@ void AnimaticPage::loadScenes(const QVector<Scene *> &scenes)
 {
     pause();
     m_items.clear();
+    m_scenes = scenes;
 
     // Loop is a session-only tool; reset it whenever the scene set changes.
     m_loopStartIndex = -1;
@@ -513,7 +473,11 @@ void AnimaticPage::loadScenes(const QVector<Scene *> &scenes)
             m_items.append({scene, scene->panels.at(pi), scene->number, pi + 1});
     }
 
-    rebuildTimingStrip();
+    if (m_timeline) {
+        m_timeline->setScenes(m_scenes);
+        m_timeline->setLoopRegion(m_loopStartIndex, m_loopEndIndex);
+        m_timeline->setAudioLoaded(hasAudio(), m_player ? m_player->duration() : 0);
+    }
     m_current = -1;
 
     if (!m_items.isEmpty()) {
@@ -532,12 +496,36 @@ void AnimaticPage::showPanel(int index)
     if (index < 0 || index >= m_items.size())
         return;
     m_current = index;
+    m_elapsedMsInCurrentPanel = 0; // playhead restarts at the new panel's left edge
     const Item &it = m_items.at(index);
     m_display->setPixmap(it.panel->pixmap);
     m_caption->setText(QString::fromUtf8("Scene %1 \xE2\x80\x94 Panel %2")
                            .arg(it.sceneNumber)
                            .arg(it.panelInScene));
-    updateStripHighlight();
+    if (m_timeline)
+        m_timeline->setCurrentPanel(index);
+    updateTimecodeLabel();
+}
+
+void AnimaticPage::updateTimecodeLabel()
+{
+    if (!m_timecodeLabel)
+        return;
+    constexpr int kFps = 24;
+    int frame = 0;
+    for (int i = 0; i < m_current && i < m_items.size(); ++i)
+        frame += qMax(1, m_items.at(i).panel->duration) * kFps;
+    frame += static_cast<int>(m_elapsedMsInCurrentPanel / (1000.0 / kFps));
+    const int ff = frame % kFps;
+    const int totalSec = frame / kFps;
+    const int ss = totalSec % 60;
+    const int mm = (totalSec / 60) % 60;
+    const int hh = totalSec / 3600;
+    m_timecodeLabel->setText(QStringLiteral("%1:%2:%3:%4")
+                                 .arg(hh, 2, 10, QChar('0'))
+                                 .arg(mm, 2, 10, QChar('0'))
+                                 .arg(ss, 2, 10, QChar('0'))
+                                 .arg(ff, 2, 10, QChar('0')));
 }
 
 void AnimaticPage::updateTotalLabel()
@@ -545,7 +533,15 @@ void AnimaticPage::updateTotalLabel()
     int total = 0;
     for (const Item &it : m_items)
         total += it.panel->duration;
-    m_totalLabel->setText(QStringLiteral("Total: ") + formatTime(total));
+
+    // Show the speed-adjusted duration, with a suffix when not at 1x.
+    const int adjusted = qRound(total / static_cast<double>(m_playbackSpeed));
+    QString text = QStringLiteral("Total: ") + formatTime(adjusted);
+    if (m_playbackSpeed < 0.99f)
+        text += QStringLiteral(" (0.5x)");
+    else if (m_playbackSpeed > 1.01f)
+        text += QStringLiteral(" (2x)");
+    m_totalLabel->setText(text);
 }
 
 QString AnimaticPage::formatTime(int seconds) const
@@ -569,8 +565,13 @@ void AnimaticPage::play()
         showPanel(0);
     }
     m_playing = true;
+    m_elapsedMsInCurrentPanel = 0; // fresh dwell for the current panel
     m_playButton->setText(QString::fromUtf8("\xE2\x8F\xB8")); // pause glyph
     scheduleTick();
+    if (m_playheadTimer)
+        m_playheadTimer->start();
+    if (m_timeline)
+        m_timeline->setPlaying(true);
     if (hasAudio())
         m_player->play(); // resumes from current position
 }
@@ -580,6 +581,10 @@ void AnimaticPage::pause()
     m_playing = false;
     if (m_timer)
         m_timer->stop();
+    if (m_playheadTimer)
+        m_playheadTimer->stop();
+    if (m_timeline)
+        m_timeline->setPlaying(false);
     if (m_playButton)
         m_playButton->setText(QString::fromUtf8("\xE2\x96\xB6")); // play glyph
     if (hasAudio())
@@ -594,12 +599,65 @@ void AnimaticPage::togglePlay()
         play();
 }
 
+void AnimaticPage::onPlayheadTick()
+{
+    // Advance the playhead clock. Scale by speed so the playhead still sweeps
+    // the full block in real time at 0.5x / 2x (at 1x this is the spec's 50ms).
+    m_elapsedMsInCurrentPanel += qRound(50.0 * m_playbackSpeed);
+    if (m_timeline)
+        m_timeline->updatePlayhead();
+    updateTimecodeLabel();
+}
+
+void AnimaticPage::onDurationChanged(int sceneIndex, int panelIndex, int newDuration)
+{
+    if (sceneIndex < 0 || sceneIndex >= m_scenes.size())
+        return;
+    Scene *scene = m_scenes.at(sceneIndex);
+    if (panelIndex < 0 || panelIndex >= scene->panels.size())
+        return;
+    scene->panels.at(panelIndex)->duration = qBound(1, newDuration, 30);
+
+    if (m_timeline)
+        m_timeline->setScenes(m_scenes); // reflow block widths from the new value
+    updateTotalLabel();
+}
+
+void AnimaticPage::setPlaybackSpeed(float speed)
+{
+    m_playbackSpeed = speed;
+    updateSpeedButtons();
+    updateTotalLabel();
+    // Intentionally do NOT re-arm the timer: a speed change takes effect on the
+    // next panel (mid-playback) or when Play resumes (while paused).
+}
+
+void AnimaticPage::updateSpeedButtons()
+{
+    const QString outlined = QStringLiteral(
+        "QPushButton { background: transparent; color: #cccccc; border: 1px solid #2a2a2a;"
+        " border-radius: 4px; padding: 5px 11px; font-size: 12px; }"
+        "QPushButton:hover { color: #f5a623; border-color: #f5a623; }");
+    const QString active = QStringLiteral(
+        "QPushButton { background-color: #f5a623; color: #0a0a0a; border: 1px solid #f5a623;"
+        " border-radius: 4px; padding: 5px 11px; font-size: 12px; font-weight: 600; }");
+
+    if (m_speedHalfButton)
+        m_speedHalfButton->setStyleSheet(m_playbackSpeed < 0.99f ? active : outlined);
+    if (m_speed1xButton)
+        m_speed1xButton->setStyleSheet(
+            (m_playbackSpeed >= 0.99f && m_playbackSpeed <= 1.01f) ? active : outlined);
+    if (m_speed2xButton)
+        m_speed2xButton->setStyleSheet(m_playbackSpeed > 1.01f ? active : outlined);
+}
+
 void AnimaticPage::scheduleTick()
 {
     if (m_current < 0 || m_current >= m_items.size())
         return;
-    const int seconds = qMax(1, m_items.at(m_current).panel->duration);
-    m_timer->start(seconds * 1000);
+    const int duration = qMax(1, m_items.at(m_current).panel->duration);
+    const int ms = qRound(duration * 1000.0 / m_playbackSpeed);
+    m_timer->start(ms);
 }
 
 void AnimaticPage::advance()
@@ -655,6 +713,22 @@ void AnimaticPage::goLast()
         scheduleTick();
     if (hasAudio())
         m_player->setPosition(offsetForPanel(m_items.size() - 1));
+}
+
+void AnimaticPage::goPrev()
+{
+    if (m_items.isEmpty())
+        return;
+    const int target = qMax(0, (m_current < 0 ? 0 : m_current) - 1);
+    jumpTo(target);
+}
+
+void AnimaticPage::goNext()
+{
+    if (m_items.isEmpty())
+        return;
+    const int target = qMin(m_items.size() - 1, (m_current < 0 ? 0 : m_current) + 1);
+    jumpTo(target);
 }
 
 void AnimaticPage::jumpTo(int index)
@@ -720,6 +794,8 @@ void AnimaticPage::updateAudioUi()
         if (has)
             m_audioLabel->setText(QFileInfo(m_audioPath).fileName());
     }
+    if (m_timeline)
+        m_timeline->setAudioLoaded(has, m_player ? m_player->duration() : 0);
 }
 
 QString AnimaticPage::audioPath() const
@@ -740,19 +816,6 @@ void AnimaticPage::setAudioPath(const QString &path)
         }
         updateAudioUi();
     }
-}
-
-bool AnimaticPage::eventFilter(QObject *object, QEvent *event)
-{
-    if (event->type() == QEvent::MouseButtonPress
-        && static_cast<QMouseEvent *>(event)->button() == Qt::LeftButton) {
-        const QVariant idx = object->property("itemIndex");
-        if (idx.isValid()) {
-            jumpTo(idx.toInt());
-            return false;
-        }
-    }
-    return QWidget::eventFilter(object, event);
 }
 
 // --- MP4 export -----------------------------------------------------------
