@@ -76,6 +76,13 @@ private:
     bool hasAudio() const;
     qint64 offsetForPanel(int index) const; // ms before this panel
 
+    void setLoopStart();
+    void setLoopEnd();
+    void clearLoop();
+    void validateLoop();   // swap if reversed, clamp to range
+    bool loopActive() const;
+    void updateLoopUi();   // clear button + warning visibility
+
     QVector<Item> m_items;
     int m_current = -1;
     bool m_playing = false;
@@ -99,4 +106,10 @@ private:
     QPushButton *m_removeAudioButton = nullptr;
     QLabel *m_audioLabel = nullptr;
     QSlider *m_volumeSlider = nullptr;
+
+    // Loop region (session-only).
+    int m_loopStartIndex = -1;
+    int m_loopEndIndex = -1;
+    QPushButton *m_clearLoopButton = nullptr;
+    QLabel *m_loopWarningLabel = nullptr;
 };
