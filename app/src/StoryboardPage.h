@@ -10,6 +10,7 @@ class QJsonArray;
 class QLabel;
 class QLineEdit;
 class QPlainTextEdit;
+class QPushButton;
 class QVBoxLayout;
 
 struct Panel;
@@ -64,6 +65,7 @@ private:
     void loadShotInfo();   // current panel -> right column widgets
     void saveShotInfo();   // right column widgets -> current panel
     void refreshCurrentThumb();
+    void updateOnionGhost(); // feed the previous panel's pixmap to the canvas
 
     Scene *currentScene() const;
     Panel *currentPanel() const;
@@ -82,6 +84,7 @@ private:
     QVector<QWidget *> m_panelThumbs;
     QVector<QLabel *> m_panelThumbImages;
     DrawingCanvas *m_canvas = nullptr;
+    QPushButton *m_onionButton = nullptr;
 
     // Right column.
     QComboBox *m_shotType = nullptr;

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QColor>
+#include <QPixmap>
 #include <QPoint>
 #include <QWidget>
 
@@ -21,6 +22,12 @@ public:
     static QSize canvasSize();
 
     void setActivePanel(Panel *panel);
+
+    // Onion skin: a faint blue ghost of the previous panel, display-only.
+    void setOnionSkinEnabled(bool enabled);
+    bool isOnionSkinEnabled() const { return m_onionSkin; }
+    // Pass the previous panel's pixmap (or a null pixmap to clear the ghost).
+    void setPreviousPixmap(const QPixmap &previous);
 
 public slots:
     void setTool(Tool tool);
@@ -57,4 +64,7 @@ private:
     bool m_previewLine = false;
     QPoint m_lineStart;      // widget coords
     QPoint m_lineCurrent;    // widget coords
+
+    bool m_onionSkin = false;
+    QPixmap m_ghost;         // precomputed blue-tinted ghost (display only)
 };

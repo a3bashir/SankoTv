@@ -9,6 +9,30 @@
 #include <QStack>
 #include <Qt>
 
+namespace {
+
+// Build a display-only ghost: previous strokes become semi-transparent blue
+// (#4d9fff) and the white paper becomes fully transparent, so compositing it
+// over the current panel shows a faint blue ghost without washing the canvas.
+QPixmap buildGhost(const QPixmap &previous)
+{
+    if (previous.isNull())
+        return QPixmap();
+    QImage img = previous.toImage().convertToFormat(QImage::Format_ARGB32);
+    const int w = img.width();
+    const int h = img.height();
+    for (int y = 0; y < h; ++y) {
+        QRgb *line = reinterpret_cast<QRgb *>(img.scanLine(y));
+        for (int x = 0; x < w; ++x) {
+            const int alpha = 255 - qGray(line[x]); // dark strokes opaque, white clear
+            line[x] = qRgba(0x4d, 0x9f, 0xff, alpha);
+        }
+    }
+    return QPixmap::fromImage(img);
+}
+
+} // namespace
+
 DrawingCanvas::DrawingCanvas(QWidget *parent)
     : QWidget(parent)
 {
@@ -27,6 +51,18 @@ void DrawingCanvas::setActivePanel(Panel *panel)
     m_panel = panel;
     m_drawing = false;
     m_previewLine = false;
+    update();
+}
+
+void DrawingCanvas::setOnionSkinEnabled(bool enabled)
+{
+    m_onionSkin = enabled;
+    update();
+}
+
+void DrawingCanvas::setPreviousPixmap(const QPixmap &previous)
+{
+    m_ghost = buildGhost(previous); // null pixmap -> empty ghost
     update();
 }
 
@@ -182,6 +218,15 @@ void DrawingCanvas::paintEvent(QPaintEvent *)
     const QRect d = displayRect();
     painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
     painter.drawPixmap(d, m_panel->pixmap);
+
+    // Onion skin: faint blue ghost of the previous panel on top of the opaque
+    // white canvas (display only — never written to Panel::pixmap).
+    if (m_onionSkin && !m_ghost.isNull()) {
+        painter.setOpacity(0.30);
+        painter.drawPixmap(d, m_ghost);
+        painter.setOpacity(1.0);
+    }
+
     painter.setPen(QPen(QColor("#2a2a2a"), 1));
     painter.drawRect(d.adjusted(0, 0, -1, -1));
 

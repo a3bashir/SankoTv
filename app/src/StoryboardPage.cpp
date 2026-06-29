@@ -16,8 +16,10 @@
 #include <QLineEdit>
 #include <QMouseEvent>
 #include <QPlainTextEdit>
+#include <QKeySequence>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QShortcut>
 #include <QSlider>
 #include <QVBoxLayout>
 #include <Qt>
@@ -73,6 +75,13 @@ StoryboardPage::StoryboardPage(QWidget *parent)
 
     root->addLayout(content, 1);
     root->addWidget(createBottomBar());
+
+    // 'O' toggles onion skin.
+    QShortcut *onionShortcut = new QShortcut(QKeySequence(Qt::Key_O), this);
+    connect(onionShortcut, &QShortcut::activated, this, [this] {
+        if (m_onionButton)
+            m_onionButton->toggle(); // emits toggled -> updates canvas + ghost
+    });
 }
 
 // --- Left column ----------------------------------------------------------
@@ -263,6 +272,15 @@ QWidget *StoryboardPage::createToolbar()
     layout->addWidget(eraser);
     layout->addWidget(line);
     layout->addWidget(fill);
+
+    // Onion skin toggle (independent of the exclusive tool group).
+    m_onionButton = toolButton(QStringLiteral("Onion"),
+                               QStringLiteral("Onion skin (O) \xE2\x80\x94 ghost of previous panel"));
+    connect(m_onionButton, &QPushButton::toggled, this, [this](bool on) {
+        m_canvas->setOnionSkinEnabled(on);
+        updateOnionGhost();
+    });
+    layout->addWidget(m_onionButton);
 
     // Color swatch.
     QPushButton *color = new QPushButton;
@@ -564,6 +582,20 @@ void StoryboardPage::selectPanel(int index)
     m_canvas->setActivePanel(scene->panels.at(index));
     updatePanelThumbStyles();
     loadShotInfo();
+    updateOnionGhost();
+}
+
+void StoryboardPage::updateOnionGhost()
+{
+    if (!m_canvas)
+        return;
+    Scene *scene = currentScene();
+    const bool show = m_onionButton && m_onionButton->isChecked() && scene
+        && m_currentPanel > 0 && m_currentPanel < scene->panels.size();
+    if (show)
+        m_canvas->setPreviousPixmap(scene->panels.at(m_currentPanel - 1)->pixmap);
+    else
+        m_canvas->setPreviousPixmap(QPixmap()); // clears the ghost
 }
 
 void StoryboardPage::addPanelToScene(int sceneIndex)
