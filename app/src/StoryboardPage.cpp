@@ -75,12 +75,6 @@ StoryboardPage::StoryboardPage(QWidget *parent)
     root->addWidget(createBottomBar());
 }
 
-StoryboardPage::~StoryboardPage()
-{
-    for (Scene *scene : m_scenes)
-        delete scene;
-}
-
 // --- Left column ----------------------------------------------------------
 
 QWidget *StoryboardPage::createLeftColumn()
@@ -506,10 +500,13 @@ QWidget *StoryboardPage::createBottomBar()
     layout->addStretch(1);
 
     QPushButton *animatic = new QPushButton(QStringLiteral("Continue to Animatic"));
-    animatic->setEnabled(false);
+    animatic->setCursor(Qt::PointingHandCursor);
     animatic->setStyleSheet(QStringLiteral(
-        "QPushButton { background-color: #1c1c1c; color: #555555; border: 1px solid #2a2a2a;"
-        " border-radius: 6px; padding: 9px 22px; font-size: 14px; font-weight: 600; }"));
+        "QPushButton { background-color: #ffffff; color: #0a0a0a; border: none;"
+        " border-radius: 6px; padding: 9px 22px; font-size: 14px; font-weight: 600; }"
+        "QPushButton:hover { background-color: #e6e6e6; }"));
+    connect(animatic, &QPushButton::clicked, this,
+            [this] { emit continueToAnimaticRequested(m_scenes); });
     layout->addWidget(animatic);
 
     return bar;
@@ -517,24 +514,11 @@ QWidget *StoryboardPage::createBottomBar()
 
 // --- Data / selection -----------------------------------------------------
 
-void StoryboardPage::loadScenes(const QJsonArray &scenes)
+void StoryboardPage::loadScenes(const QVector<Scene *> &scenes)
 {
-    for (Scene *scene : m_scenes)
-        delete scene;
-    m_scenes.clear();
+    m_scenes = scenes; // non-owning; MainWindow owns the Scene/Panel objects
     m_currentScene = -1;
     m_currentPanel = -1;
-
-    for (const QJsonValue &value : scenes) {
-        const QJsonObject obj = value.toObject();
-        Scene *scene = new Scene;
-        scene->number = obj.value(QStringLiteral("scene_number")).toInt();
-        scene->location = obj.value(QStringLiteral("location")).toString();
-        scene->timeOfDay = obj.value(QStringLiteral("time_of_day")).toString();
-        scene->action = obj.value(QStringLiteral("action")).toString();
-        scene->panels.append(makePanel()); // start each scene with one blank panel
-        m_scenes.append(scene);
-    }
 
     rebuildSceneList();
     if (!m_scenes.isEmpty())

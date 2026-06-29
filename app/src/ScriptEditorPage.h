@@ -23,7 +23,8 @@ public:
 
 signals:
     void backRequested();
-    void continueRequested(const QJsonArray &scenes);
+    void scenesReady(const QJsonArray &scenes); // emitted after each successful parse
+    void continueRequested();                   // navigate to the Storyboard
 
 private slots:
     void onParseClicked();

@@ -42,6 +42,8 @@ qt_add_executable(SankoTV
     src/StoryboardModel.h
     src/DrawingCanvas.cpp
     src/DrawingCanvas.h
+    src/AnimaticPage.cpp
+    src/AnimaticPage.h
     resources.qrc
 )
 

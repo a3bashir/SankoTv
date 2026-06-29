@@ -13,6 +13,7 @@ struct Panel
     QString lens = QStringLiteral("Normal (35-50mm)");
     QString mood;
     QString notes;
+    int duration = 3; // seconds on screen in the animatic
     QVector<QPixmap> undoStack; // capped to 20 snapshots by DrawingCanvas
 };
 
@@ -31,3 +32,12 @@ struct Scene
             delete panel;
     }
 };
+
+// A fresh panel with a blank white 960x540 (16:9) canvas.
+inline Panel *makeBlankPanel()
+{
+    Panel *panel = new Panel;
+    panel->pixmap = QPixmap(960, 540);
+    panel->pixmap.fill(Qt::white);
+    return panel;
+}

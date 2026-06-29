@@ -349,7 +349,7 @@ QWidget *ScriptEditorPage::createBottomBar()
     m_continueButton = new QPushButton(QStringLiteral("Continue to Storyboard"));
     m_continueButton->setCursor(Qt::PointingHandCursor);
     connect(m_continueButton, &QPushButton::clicked, this,
-            [this] { emit continueRequested(m_scenes); });
+            [this] { emit continueRequested(); });
     layout->addWidget(m_continueButton);
     setContinueEnabled(false);
 
@@ -514,6 +514,8 @@ void ScriptEditorPage::showBreakdownMessage(const QString &text, const QString &
 void ScriptEditorPage::populateScenes(const QJsonArray &scenes, bool demoMode)
 {
     m_scenes = scenes; // remembered for the Continue-to-Storyboard handoff
+    if (!scenes.isEmpty())
+        emit scenesReady(scenes); // let MainWindow materialize Scene objects now
     clearScenes();
 
     // Demo-mode notice at the top of the panel.

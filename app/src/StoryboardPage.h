@@ -23,12 +23,15 @@ class StoryboardPage : public QWidget
 
 public:
     explicit StoryboardPage(QWidget *parent = nullptr);
-    ~StoryboardPage() override;
+    ~StoryboardPage() override = default;
 
-    void loadScenes(const QJsonArray &scenes);
+    // Display the given scenes. Ownership stays with the caller (MainWindow);
+    // this page only holds non-owning pointers.
+    void loadScenes(const QVector<Scene *> &scenes);
 
 signals:
     void backRequested();
+    void continueToAnimaticRequested(const QVector<Scene *> &scenes);
 
 protected:
     bool eventFilter(QObject *object, QEvent *event) override;
