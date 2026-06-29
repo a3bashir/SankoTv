@@ -174,6 +174,8 @@ void MainWindow::onNewProject()
     m_consistencyEntries.clear();
     if (m_consistencyBoard)
         m_consistencyBoard->refresh();
+    if (m_animatic)
+        m_animatic->setAudioPath(QString()); // clear any scratch audio
     m_currentProjectPath.clear();
     m_projectName = QStringLiteral("Untitled Project");
     updateSaveActions();
@@ -294,6 +296,7 @@ bool MainWindow::saveToPath(const QString &path)
     root[QStringLiteral("projectName")] = m_projectName;
     root[QStringLiteral("scenes")] = scenesArray;
     root[QStringLiteral("consistencyBoard")] = consistencyArray;
+    root[QStringLiteral("audioPath")] = m_animatic->audioPath(); // scratch track (path only)
 
     QFile file(path);
     if (!file.open(QIODevice::WriteOnly)) {
@@ -418,6 +421,9 @@ bool MainWindow::loadFromPath(const QString &path)
     }
     if (m_consistencyBoard)
         m_consistencyBoard->refresh();
+
+    // Scratch audio track (loaded only if the file still exists at that path).
+    m_animatic->setAudioPath(root.value(QStringLiteral("audioPath")).toString());
 
     m_currentProjectPath = path;
     updateSaveActions();

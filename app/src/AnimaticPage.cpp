@@ -2,15 +2,18 @@
 
 #include "StoryboardModel.h"
 
+#include <QAudioOutput>
 #include <QCoreApplication>
 #include <QDir>
 #include <QEvent>
 #include <QFile>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QImage>
 #include <QLabel>
+#include <QMediaPlayer>
 #include <QMessageBox>
 #include <QMouseEvent>
 #include <QPainter>
@@ -19,9 +22,11 @@
 #include <QProgressDialog>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QSlider>
 #include <QSpinBox>
 #include <QStandardPaths>
 #include <QTimer>
+#include <QUrl>
 #include <QVBoxLayout>
 #include <Qt>
 
@@ -99,6 +104,12 @@ AnimaticPage::AnimaticPage(QWidget *parent)
     m_timer->setSingleShot(true);
     connect(m_timer, &QTimer::timeout, this, &AnimaticPage::advance);
 
+    // Scratch audio playback (created up front so the volume slider can bind).
+    m_audioOutput = new QAudioOutput(this);
+    m_audioOutput->setVolume(0.8);
+    m_player = new QMediaPlayer(this);
+    m_player->setAudioOutput(m_audioOutput);
+
     QVBoxLayout *root = new QVBoxLayout(this);
     root->setContentsMargins(0, 0, 0, 0);
     root->setSpacing(0);
@@ -140,6 +151,42 @@ QWidget *AnimaticPage::createTopBar()
     layout->addWidget(title);
 
     layout->addStretch(1);
+
+    const QString outlined = QStringLiteral(
+        "QPushButton { background: transparent; color: #cccccc; border: 1px solid #2a2a2a;"
+        " border-radius: 6px; padding: 8px 14px; font-size: 13px; }"
+        "QPushButton:hover { color: #f5a623; border-color: #f5a623; }");
+
+    QPushButton *importAudio = new QPushButton(QStringLiteral("Import Audio"));
+    importAudio->setCursor(Qt::PointingHandCursor);
+    importAudio->setToolTip(QStringLiteral("Import a scratch audio track (WAV/MP3)"));
+    importAudio->setStyleSheet(outlined);
+    connect(importAudio, &QPushButton::clicked, this, &AnimaticPage::onImportAudio);
+    layout->addWidget(importAudio);
+
+    m_removeAudioButton = new QPushButton(QStringLiteral("Remove Audio"));
+    m_removeAudioButton->setCursor(Qt::PointingHandCursor);
+    m_removeAudioButton->setStyleSheet(outlined);
+    m_removeAudioButton->setVisible(false);
+    connect(m_removeAudioButton, &QPushButton::clicked, this, &AnimaticPage::onRemoveAudio);
+    layout->addWidget(m_removeAudioButton);
+
+    m_audioLabel = new QLabel;
+    m_audioLabel->setStyleSheet(QStringLiteral("color: #888888; font-size: 12px;"));
+    m_audioLabel->setVisible(false);
+    layout->addWidget(m_audioLabel);
+
+    m_volumeSlider = new QSlider(Qt::Horizontal);
+    m_volumeSlider->setRange(0, 100);
+    m_volumeSlider->setValue(80);
+    m_volumeSlider->setFixedWidth(60);
+    m_volumeSlider->setToolTip(QStringLiteral("Audio volume"));
+    m_volumeSlider->setVisible(false);
+    connect(m_volumeSlider, &QSlider::valueChanged, this, [this](int v) {
+        if (m_audioOutput)
+            m_audioOutput->setVolume(v / 100.0);
+    });
+    layout->addWidget(m_volumeSlider);
 
     m_exportButton = new QPushButton(QStringLiteral("Export MP4"));
     m_exportButton->setCursor(Qt::PointingHandCursor);
@@ -370,6 +417,8 @@ void AnimaticPage::play()
     m_playing = true;
     m_playButton->setText(QString::fromUtf8("\xE2\x8F\xB8")); // pause glyph
     scheduleTick();
+    if (hasAudio())
+        m_player->play(); // resumes from current position (0 on a fresh start)
 }
 
 void AnimaticPage::pause()
@@ -379,6 +428,8 @@ void AnimaticPage::pause()
         m_timer->stop();
     if (m_playButton)
         m_playButton->setText(QString::fromUtf8("\xE2\x96\xB6")); // play glyph
+    if (hasAudio())
+        m_player->pause();
 }
 
 void AnimaticPage::togglePlay()
@@ -405,6 +456,10 @@ void AnimaticPage::advance()
         // Last panel finished: stop and return to the first.
         pause();
         showPanel(0);
+        if (hasAudio()) {
+            m_player->stop();
+            m_player->setPosition(0);
+        }
         return;
     }
     showPanel(m_current + 1);
@@ -417,6 +472,8 @@ void AnimaticPage::goFirst()
     showPanel(0);
     if (m_playing)
         scheduleTick();
+    if (hasAudio())
+        m_player->setPosition(0);
 }
 
 void AnimaticPage::goLast()
@@ -424,6 +481,8 @@ void AnimaticPage::goLast()
     showPanel(m_items.size() - 1);
     if (m_playing)
         scheduleTick();
+    if (hasAudio())
+        m_player->setPosition(offsetForPanel(m_items.size() - 1));
 }
 
 void AnimaticPage::jumpTo(int index)
@@ -431,6 +490,84 @@ void AnimaticPage::jumpTo(int index)
     showPanel(index);
     if (m_playing)
         scheduleTick();
+    if (hasAudio())
+        m_player->setPosition(offsetForPanel(index)); // seek only, no auto-play
+}
+
+// --- Audio ----------------------------------------------------------------
+
+bool AnimaticPage::hasAudio() const
+{
+    return m_player && !m_audioPath.isEmpty();
+}
+
+qint64 AnimaticPage::offsetForPanel(int index) const
+{
+    qint64 ms = 0;
+    for (int i = 0; i < index && i < m_items.size(); ++i)
+        ms += static_cast<qint64>(qMax(1, m_items.at(i).panel->duration)) * 1000;
+    return ms;
+}
+
+void AnimaticPage::onImportAudio()
+{
+    const QString path = QFileDialog::getOpenFileName(
+        this, QStringLiteral("Import Audio"), QString(),
+        QStringLiteral("Audio (*.wav *.mp3 *.aac *.m4a)"));
+    if (path.isEmpty())
+        return;
+    loadAudioFile(path); // does not auto-play
+}
+
+void AnimaticPage::loadAudioFile(const QString &path)
+{
+    m_audioPath = path;
+    m_player->setSource(QUrl::fromLocalFile(path));
+    updateAudioUi();
+}
+
+void AnimaticPage::onRemoveAudio()
+{
+    m_audioPath.clear();
+    if (m_player) {
+        m_player->stop();
+        m_player->setSource(QUrl());
+    }
+    updateAudioUi();
+}
+
+void AnimaticPage::updateAudioUi()
+{
+    const bool has = !m_audioPath.isEmpty();
+    if (m_removeAudioButton)
+        m_removeAudioButton->setVisible(has);
+    if (m_volumeSlider)
+        m_volumeSlider->setVisible(has);
+    if (m_audioLabel) {
+        m_audioLabel->setVisible(has);
+        if (has)
+            m_audioLabel->setText(QFileInfo(m_audioPath).fileName());
+    }
+}
+
+QString AnimaticPage::audioPath() const
+{
+    return m_audioPath;
+}
+
+void AnimaticPage::setAudioPath(const QString &path)
+{
+    // Used by project load. Adopt the path only if the file still exists.
+    if (!path.isEmpty() && QFileInfo::exists(path)) {
+        loadAudioFile(path);
+    } else {
+        m_audioPath.clear();
+        if (m_player) {
+            m_player->stop();
+            m_player->setSource(QUrl());
+        }
+        updateAudioUi();
+    }
 }
 
 bool AnimaticPage::eventFilter(QObject *object, QEvent *event)
@@ -564,13 +701,24 @@ void AnimaticPage::onExportMp4()
 
     QProcess proc;
     proc.setWorkingDirectory(framesDir.absolutePath());
-    const QStringList args{
-        QStringLiteral("-framerate"), QStringLiteral("24"),
-        QStringLiteral("-i"),         QStringLiteral("frame_%04d.png"),
-        QStringLiteral("-c:v"),       QStringLiteral("libx264"),
-        QStringLiteral("-pix_fmt"),   QStringLiteral("yuv420p"),
-        QStringLiteral("-crf"),       QStringLiteral("23"),
-        QStringLiteral("-y"),         outPath};
+
+    // Mux in the scratch audio track if one is loaded and still on disk.
+    const bool includeAudio = !m_audioPath.isEmpty() && QFileInfo::exists(m_audioPath);
+
+    QStringList args;
+    args << QStringLiteral("-framerate") << QStringLiteral("24")
+         << QStringLiteral("-i") << QStringLiteral("frame_%04d.png");
+    if (includeAudio)
+        args << QStringLiteral("-i") << m_audioPath; // second input
+    args << QStringLiteral("-c:v") << QStringLiteral("libx264");
+    if (includeAudio)
+        args << QStringLiteral("-c:a") << QStringLiteral("aac");
+    args << QStringLiteral("-pix_fmt") << QStringLiteral("yuv420p")
+         << QStringLiteral("-crf") << QStringLiteral("23");
+    if (includeAudio)
+        args << QStringLiteral("-shortest"); // end with the shorter stream
+    args << QStringLiteral("-y") << outPath;
+
     proc.start(ffmpeg, args);
 
     if (!proc.waitForStarted(5000)) {

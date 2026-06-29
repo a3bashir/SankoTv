@@ -1,12 +1,16 @@
 #pragma once
 
+#include <QString>
 #include <QVector>
 #include <QWidget>
 
 class PanelDisplay;
+class QAudioOutput;
 class QHBoxLayout;
 class QLabel;
+class QMediaPlayer;
 class QPushButton;
+class QSlider;
 class QSpinBox;
 class QTimer;
 
@@ -23,6 +27,10 @@ public:
     explicit AnimaticPage(QWidget *parent = nullptr);
 
     void loadScenes(const QVector<Scene *> &scenes);
+
+    // Scratch audio path persistence (used by project save/load).
+    QString audioPath() const;
+    void setAudioPath(const QString &path); // loads silently if the file exists
 
 signals:
     void backRequested();
@@ -61,6 +69,13 @@ private:
 
     void onExportMp4();
 
+    void onImportAudio();
+    void onRemoveAudio();
+    void loadAudioFile(const QString &path);
+    void updateAudioUi();
+    bool hasAudio() const;
+    qint64 offsetForPanel(int index) const; // ms before this panel
+
     QVector<Item> m_items;
     int m_current = -1;
     bool m_playing = false;
@@ -76,4 +91,12 @@ private:
     QPushButton *m_exportButton = nullptr;
     QLabel *m_totalLabel = nullptr;
     QTimer *m_timer = nullptr;
+
+    // Audio.
+    QMediaPlayer *m_player = nullptr;
+    QAudioOutput *m_audioOutput = nullptr;
+    QString m_audioPath;
+    QPushButton *m_removeAudioButton = nullptr;
+    QLabel *m_audioLabel = nullptr;
+    QSlider *m_volumeSlider = nullptr;
 };
