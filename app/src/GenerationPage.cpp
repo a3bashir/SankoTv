@@ -491,79 +491,69 @@ void GenerationPage::updateSessionCost()
 
 // --- Claude prompt building ----------------------------------------------
 
-QVector<const ConsistencyEntry *> GenerationPage::matchedEntries(int index) const
-{
-    QVector<const ConsistencyEntry *> out;
-    if (!m_entries)
-        return out;
-    const Row &row = m_rows.at(index);
-    // Match each entry name against the scene action + location and the panel
-    // notes + mood (case-insensitive substring across all four fields).
-    const QString haystack = (row.scene->action + QStringLiteral(" ")
-                              + row.scene->location + QStringLiteral(" ")
-                              + row.panel->notes + QStringLiteral(" ")
-                              + row.panel->mood).toLower();
-    for (const ConsistencyEntry &e : *m_entries) {
-        if (e.name.isEmpty())
-            continue;
-        if (haystack.contains(e.name.toLower()))
-            out.append(&e);
-    }
-    return out;
-}
-
 QString GenerationPage::buildClaudeRequestBody(int index) const
 {
     const Row &row = m_rows.at(index);
     const Panel *panel = row.panel;
     const Scene *scene = row.scene;
 
-    // Build a numbered list of every matched consistency entry, each with a
-    // type-specific instruction to preserve its exact description.
-    QString consistencyText;
-    const auto matches = matchedEntries(index);
-    for (int i = 0; i < matches.size(); ++i) {
-        const ConsistencyEntry *e = matches.at(i);
-        consistencyText += QStringLiteral("%1. %2 (%3)\n   Description: %4\n")
-                               .arg(i + 1)
-                               .arg(e->name, e->type, e->description);
-        if (e->type.compare(QLatin1String("Character"), Qt::CaseInsensitive) == 0)
-            consistencyText += QStringLiteral(
-                "   INSTRUCTION: This is a recurring CHARACTER. Preserve this exact "
-                "appearance description in the generated prompt so the character "
-                "looks identical across shots.\n");
-        else if (e->type.compare(QLatin1String("Location"), Qt::CaseInsensitive) == 0)
-            consistencyText += QStringLiteral(
-                "   INSTRUCTION: This is a recurring LOCATION. Preserve this exact "
-                "environment description in the generated prompt so the setting "
-                "stays consistent across shots.\n");
-    }
-    if (matches.isEmpty())
-        consistencyText = QStringLiteral("(none matched)\n");
-
-    // When the panel has actual artwork, tell Claude a reference image anchors it.
-    QString visualRef;
-    if (!isBlankPixmap(panel->pixmap))
-        visualRef = QStringLiteral(
-            "\nVISUAL REFERENCE: A hand-drawn reference image accompanies this shot "
-            "and is passed to the video model. Note in the prompt that this reference "
-            "image should anchor the composition and character positioning.\n");
-
-    const QString userContent = QStringLiteral(
+    QString userContent = QStringLiteral(
         "Write a single optimized text-to-video generation prompt for an AI video "
         "model describing this shot. Use clear, concrete visual and cinematic "
         "language. Keep it under 200 words. Return ONLY the prompt text, with no "
-        "preamble, labels, or quotation marks.\n\n"
+        "preamble, labels, or quotation marks.\n\n");
+
+    // Always send the FULL Consistency Board (no name matching) and let Claude
+    // decide, from the plain-English scene/panel context, which entries apply.
+    const int entryCount = m_entries ? m_entries->size() : 0;
+    if (entryCount > 0) {
+        userContent += QStringLiteral(
+            "CONSISTENCY BOARD - characters and locations in this project:\n");
+        for (int i = 0; i < entryCount; ++i) {
+            const ConsistencyEntry &e = m_entries->at(i);
+            userContent += QStringLiteral("%1. [%2] %3 - %4\n")
+                               .arg(i + 1)
+                               .arg(e.type, e.name,
+                                    e.description.isEmpty()
+                                        ? QStringLiteral("(no description)")
+                                        : e.description);
+        }
+        userContent += QStringLiteral("\n");
+    }
+
+    // Current shot context.
+    userContent += QStringLiteral(
         "SHOT METADATA:\n"
         "- Shot type: %1\n- Camera angle: %2\n- Lens: %3\n- Mood: %4\n- Notes: %5\n\n"
-        "SCENE:\n- Location: %6\n- Action: %7\n\n"
-        "CONSISTENCY REFERENCES (preserve every detail below exactly):\n%8%9")
+        "SCENE:\n- Location: %6\n- Action: %7\n\n")
         .arg(panel->shotType, panel->cameraAngle, panel->lens,
              panel->mood.isEmpty() ? QStringLiteral("(unspecified)") : panel->mood,
              panel->notes.isEmpty() ? QStringLiteral("(none)") : panel->notes)
         .arg(scene->location.isEmpty() ? QStringLiteral("(unspecified)") : scene->location,
-             scene->action.isEmpty() ? QStringLiteral("(none)") : scene->action,
-             consistencyText, visualRef);
+             scene->action.isEmpty() ? QStringLiteral("(none)") : scene->action);
+
+    // Relevance instruction — only meaningful when there are board entries.
+    if (entryCount > 0) {
+        userContent += QStringLiteral(
+            "Identify which of the above Consistency Board entries (if any) are "
+            "relevant to this specific shot, based on the scene action, location, "
+            "and notes. For any relevant character, you MUST incorporate their exact "
+            "description from the Consistency Board into the generated video prompt "
+            "including specific visual details like coloring, proportions, "
+            "clothing, or distinguishing features. For any relevant location, you "
+            "MUST incorporate its exact environment description. Do not invent "
+            "details that contradict the Consistency Board. If an entry is not "
+            "relevant to this shot, omit it from your reasoning entirely; only "
+            "reference entries that actually apply to what's happening in this "
+            "panel.\n");
+    }
+
+    // When the panel has actual artwork, tell Claude a reference image anchors it.
+    if (!isBlankPixmap(panel->pixmap))
+        userContent += QStringLiteral(
+            "\nVISUAL REFERENCE: A hand-drawn reference image accompanies this shot "
+            "and is passed to the video model. Note in the prompt that this reference "
+            "image should anchor the composition and character positioning.\n");
 
     QJsonObject userMessage;
     userMessage[QStringLiteral("role")] = QStringLiteral("user");
