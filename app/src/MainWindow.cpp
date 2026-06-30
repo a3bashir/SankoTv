@@ -3,6 +3,7 @@
 #include "AnimaticPage.h"
 #include "ConsistencyBoard.h"
 #include "DashboardPage.h"
+#include "GenerationPage.h"
 #include "ScriptEditorPage.h"
 #include "StoryboardModel.h"
 #include "StoryboardPage.h"
@@ -39,15 +40,18 @@ MainWindow::MainWindow(QWidget *parent)
     m_storyboard = new StoryboardPage;
     m_animatic = new AnimaticPage;
     m_consistencyBoard = new ConsistencyBoard;
+    m_generation = new GenerationPage;
 
     m_storyboard->setConsistencyEntries(&m_consistencyEntries); // read-only
     m_consistencyBoard->setEntries(&m_consistencyEntries);      // read-write
+    m_generation->setConsistencyEntries(&m_consistencyEntries); // read-only
 
     m_stack->addWidget(m_dashboard);        // index 0
     m_stack->addWidget(m_scriptEditor);     // index 1
     m_stack->addWidget(m_storyboard);       // index 2
     m_stack->addWidget(m_animatic);         // index 3
     m_stack->addWidget(m_consistencyBoard); // index 4
+    m_stack->addWidget(m_generation);       // index 5
 
     // Dashboard -> Script Editor (fresh project).
     connect(m_dashboard, &DashboardPage::newProjectRequested, this, [this] {
@@ -82,6 +86,20 @@ MainWindow::MainWindow(QWidget *parent)
     });
     connect(m_animatic, &AnimaticPage::backRequested, this, [this] {
         m_stack->setCurrentWidget(m_storyboard);
+    });
+
+    // Animatic -> Generation (AI video clips via fal.ai).
+    connect(m_animatic, &AnimaticPage::generationRequested, this, [this] {
+        const QString dir = m_currentProjectPath.isEmpty()
+            ? QDir::tempPath() + QStringLiteral("/sankotv_generated")
+            : QFileInfo(m_currentProjectPath).absolutePath();
+        QDir().mkpath(dir);
+        m_generation->setProjectDir(dir);
+        m_generation->loadScenes(m_scenes);
+        m_stack->setCurrentWidget(m_generation);
+    });
+    connect(m_generation, &GenerationPage::backRequested, this, [this] {
+        m_stack->setCurrentWidget(m_animatic);
     });
 
     // Storyboard <-> Consistency Board.
@@ -259,6 +277,9 @@ bool MainWindow::saveToPath(const QString &path)
             panelObj[QStringLiteral("mood")] = panel->mood;
             panelObj[QStringLiteral("notes")] = panel->notes;
             panelObj[QStringLiteral("pixmapFile")] = pngName;
+            panelObj[QStringLiteral("generationStatus")] = panel->generationStatus;
+            panelObj[QStringLiteral("generatedVideoPath")] = panel->generatedVideoPath;
+            panelObj[QStringLiteral("falRequestId")] = panel->falRequestId;
             panelsArray.append(panelObj);
         }
         sceneObj[QStringLiteral("panels")] = panelsArray;
@@ -369,6 +390,12 @@ bool MainWindow::loadFromPath(const QString &path)
                 panel->lens = lens;
             panel->mood = panelObj.value(QStringLiteral("mood")).toString();
             panel->notes = panelObj.value(QStringLiteral("notes")).toString();
+
+            const QString genStatus = panelObj.value(QStringLiteral("generationStatus")).toString();
+            if (!genStatus.isEmpty())
+                panel->generationStatus = genStatus;
+            panel->generatedVideoPath = panelObj.value(QStringLiteral("generatedVideoPath")).toString();
+            panel->falRequestId = panelObj.value(QStringLiteral("falRequestId")).toString();
 
             const QString pngName = panelObj.value(QStringLiteral("pixmapFile")).toString();
             QPixmap pixmap;

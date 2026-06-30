@@ -9,6 +9,7 @@ class ScriptEditorPage;
 class StoryboardPage;
 class AnimaticPage;
 class ConsistencyBoard;
+class GenerationPage;
 class QStackedWidget;
 class QAction;
 class QJsonArray;
@@ -44,6 +45,7 @@ private:
     StoryboardPage *m_storyboard = nullptr;
     AnimaticPage *m_animatic = nullptr;
     ConsistencyBoard *m_consistencyBoard = nullptr;
+    GenerationPage *m_generation = nullptr;
 
     // MainWindow owns the scene/panel objects; pages hold non-owning pointers.
     QVector<Scene *> m_scenes;

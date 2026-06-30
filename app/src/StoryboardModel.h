@@ -16,6 +16,12 @@ struct Panel
     QString notes;
     int duration = 3; // seconds on screen in the animatic
     QVector<QPixmap> undoStack; // capped to 20 snapshots by DrawingCanvas
+
+    // AI video generation (Generation screen).
+    QString generationStatus = QStringLiteral("Not Queued"); // Not Queued, Queued,
+                                                             // Generating, Complete, Failed
+    QString generatedVideoPath; // filename (relative to project folder) once downloaded
+    QString falRequestId;       // fal.ai request id, for polling
 };
 
 // A scene carried over from the Script Editor, owning its panels.

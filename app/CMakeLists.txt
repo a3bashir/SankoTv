@@ -23,7 +23,7 @@ endif()
 # --- Find Qt6 -------------------------------------------------------------
 # Network is needed for the Claude API call in the Script Editor screen.
 # Multimedia is needed for the Animatic scratch-audio track.
-find_package(Qt6 REQUIRED COMPONENTS Widgets Network Multimedia)
+find_package(Qt6 REQUIRED COMPONENTS Widgets Network Multimedia MultimediaWidgets)
 
 # --- Executable -----------------------------------------------------------
 qt_standard_project_setup()
@@ -49,10 +49,12 @@ qt_add_executable(SankoTV
     src/AnimaticTimeline.h
     src/ConsistencyBoard.cpp
     src/ConsistencyBoard.h
+    src/GenerationPage.cpp
+    src/GenerationPage.h
     resources.qrc
 )
 
-target_link_libraries(SankoTV PRIVATE Qt6::Widgets Qt6::Network Qt6::Multimedia)
+target_link_libraries(SankoTV PRIVATE Qt6::Widgets Qt6::Network Qt6::Multimedia Qt6::MultimediaWidgets)
 
 # Build as a GUI app on Windows (no console window).
 set_target_properties(SankoTV PROPERTIES

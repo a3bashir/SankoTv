@@ -209,6 +209,19 @@ QWidget *AnimaticPage::createTopBar()
     connect(m_exportButton, &QPushButton::clicked, this, &AnimaticPage::onExportMp4);
     layout->addWidget(m_exportButton);
 
+    m_generationButton = new QPushButton(QStringLiteral("Continue to Generation"));
+    m_generationButton->setCursor(Qt::PointingHandCursor);
+    m_generationButton->setEnabled(false); // enabled once panels are loaded
+    m_generationButton->setStyleSheet(QStringLiteral(
+        "QPushButton { background-color: #7c6ef6; color: #ffffff; border: none;"
+        " border-radius: 6px; padding: 8px 16px; font-size: 13px; font-weight: 600; }"
+        "QPushButton:hover { background-color: #8f82ff; }"
+        "QPushButton:disabled { background-color: #1c1c1c; color: #555555;"
+        " border: 1px solid #2a2a2a; }"));
+    connect(m_generationButton, &QPushButton::clicked, this,
+            [this] { emit generationRequested(); });
+    layout->addWidget(m_generationButton);
+
     return bar;
 }
 
@@ -488,6 +501,8 @@ void AnimaticPage::loadScenes(const QVector<Scene *> &scenes)
     }
     if (m_exportButton)
         m_exportButton->setEnabled(!m_items.isEmpty());
+    if (m_generationButton)
+        m_generationButton->setEnabled(!m_items.isEmpty());
     updateTotalLabel();
 }
 

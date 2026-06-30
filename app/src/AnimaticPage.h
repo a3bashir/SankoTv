@@ -38,6 +38,7 @@ public:
 
 signals:
     void backRequested();
+    void generationRequested();
 
 private:
     struct Item
@@ -103,6 +104,7 @@ private:
 
     QPushButton *m_playButton = nullptr;
     QPushButton *m_exportButton = nullptr;
+    QPushButton *m_generationButton = nullptr;
     QLabel *m_totalLabel = nullptr;
     QLabel *m_timecodeLabel = nullptr;
     QTimer *m_timer = nullptr;
