@@ -497,14 +497,31 @@ QString GenerationPage::buildClaudeRequestBody(int index) const
     const Panel *panel = row.panel;
     const Scene *scene = row.scene;
 
+    // The storyboard drawing is attached to the request (and described as the
+    // action source) only when the panel actually has artwork.
+    const bool attachImage = !isBlankPixmap(panel->pixmap);
+
     QString userContent = QStringLiteral(
         "Write a single optimized text-to-video generation prompt for an AI video "
         "model describing this shot. Use clear, concrete visual and cinematic "
         "language. Keep it under 200 words. Return ONLY the prompt text, with no "
         "preamble, labels, or quotation marks.\n\n");
 
-    // Always send the FULL Consistency Board (no name matching) and let Claude
-    // decide, from the plain-English scene/panel context, which entries apply.
+    // 1. Storyboard drawing = SOURCE OF TRUTH for the action (image attached below).
+    if (attachImage) {
+        userContent += QStringLiteral(
+            "You are looking at a hand-drawn storyboard panel (attached as an image). "
+            "This drawing is the SOURCE OF TRUTH for what physically happens in this "
+            "shot - the pose, action, composition, character positions, and camera "
+            "framing shown in the drawing must be described accurately in your "
+            "generated prompt. Study the drawing carefully: What is each character "
+            "doing? What direction are they facing or moving? What is their physical "
+            "relationship to other elements in the frame (jumping over something, "
+            "reaching toward something, etc)? Describe this specific action precisely "
+            "- do not default to a generic or passive description of the scene.\n\n");
+    }
+
+    // Full Consistency Board (no name matching) - Claude decides relevance.
     const int entryCount = m_entries ? m_entries->size() : 0;
     if (entryCount > 0) {
         userContent += QStringLiteral(
@@ -532,39 +549,72 @@ QString GenerationPage::buildClaudeRequestBody(int index) const
         .arg(scene->location.isEmpty() ? QStringLiteral("(unspecified)") : scene->location,
              scene->action.isEmpty() ? QStringLiteral("(none)") : scene->action);
 
-    // Relevance instruction — only meaningful when there are board entries.
+    // 2. Consistency Board = SOURCE OF TRUTH for visual design.
     if (entryCount > 0) {
         userContent += QStringLiteral(
             "Identify which of the above Consistency Board entries (if any) are "
-            "relevant to this specific shot, based on the scene action, location, "
-            "and notes. For any relevant character, you MUST incorporate their exact "
-            "description from the Consistency Board into the generated video prompt "
-            "including specific visual details like coloring, proportions, "
-            "clothing, or distinguishing features. For any relevant location, you "
-            "MUST incorporate its exact environment description. Do not invent "
-            "details that contradict the Consistency Board. If an entry is not "
-            "relevant to this shot, omit it from your reasoning entirely; only "
-            "reference entries that actually apply to what's happening in this "
-            "panel.\n");
+            "relevant to this specific shot, based on the storyboard drawing, scene "
+            "action, location, and notes. Only reference entries that actually apply "
+            "to what's happening in this panel; omit irrelevant entries entirely.\n\n"
+            "For any character or location identified above as relevant to this shot, "
+            "their description from the Consistency Board is the SOURCE OF TRUTH for "
+            "visual design - exact proportions, colours, textures, and distinguishing "
+            "features. The storyboard drawing shows WHERE and HOW they move; the "
+            "Consistency Board shows WHAT they look like. Combine both: describe the "
+            "action and composition from the drawing, using the exact character "
+            "design from the Consistency Board. Do not let the drawing's rough sketch "
+            "style override the Consistency Board's specific design details - the "
+            "drawing is for action and layout only, not final visual style. Do not "
+            "invent details that contradict the Consistency Board.\n\n");
     }
 
-    // When the panel has actual artwork, tell Claude a reference image anchors it.
-    if (!isBlankPixmap(panel->pixmap))
-        userContent += QStringLiteral(
-            "\nVISUAL REFERENCE: A hand-drawn reference image accompanies this shot "
-            "and is passed to the video model. Note in the prompt that this reference "
-            "image should anchor the composition and character positioning.\n");
+    // 3. Explicit structure for the final prompt.
+    userContent += QStringLiteral(
+        "Structure your output prompt in this order:\n"
+        "a) The specific action, pose, and movement shown in the storyboard.\n"
+        "b) The specific character design from the Consistency Board for each "
+        "character present.\n"
+        "c) The location/environment design from the Consistency Board, if a "
+        "location entry is relevant.\n"
+        "d) Camera and shot framing from the panel metadata.\n"
+        "e) Style and mood.\n");
 
+    // 4. Attach the storyboard image (vision) only when the panel is not blank.
     QJsonObject userMessage;
     userMessage[QStringLiteral("role")] = QStringLiteral("user");
-    userMessage[QStringLiteral("content")] = userContent;
+    if (attachImage) {
+        QByteArray png;
+        QBuffer buffer(&png);
+        buffer.open(QIODevice::WriteOnly);
+        panel->pixmap.save(&buffer, "PNG");
+        buffer.close();
+
+        QJsonObject source;
+        source[QStringLiteral("type")] = QStringLiteral("base64");
+        source[QStringLiteral("media_type")] = QStringLiteral("image/png");
+        source[QStringLiteral("data")] = QString::fromLatin1(png.toBase64());
+
+        QJsonObject imageBlock;
+        imageBlock[QStringLiteral("type")] = QStringLiteral("image");
+        imageBlock[QStringLiteral("source")] = source;
+
+        QJsonObject textBlock;
+        textBlock[QStringLiteral("type")] = QStringLiteral("text");
+        textBlock[QStringLiteral("text")] = userContent;
+
+        userMessage[QStringLiteral("content")] = QJsonArray{ imageBlock, textBlock };
+    } else {
+        userMessage[QStringLiteral("content")] = userContent; // text only
+    }
 
     QJsonObject body;
     body[QStringLiteral("model")] = QStringLiteral("claude-sonnet-4-6");
     body[QStringLiteral("max_tokens")] = 600;
     body[QStringLiteral("system")] = QStringLiteral(
         "You are a cinematographer writing prompts for an AI video generation model. "
-        "You translate storyboard shot metadata into vivid, concise visual prompts.");
+        "You read hand-drawn storyboards for action and composition, and a "
+        "Consistency Board for exact character and location design, then translate "
+        "them into vivid, concise visual prompts.");
     body[QStringLiteral("messages")] = QJsonArray{ userMessage };
     return QString::fromUtf8(QJsonDocument(body).toJson(QJsonDocument::Compact));
 }
