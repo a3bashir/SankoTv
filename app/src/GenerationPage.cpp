@@ -29,13 +29,13 @@
 
 namespace {
 
-// fal.ai / Seedance 2.0 endpoints.
+// fal.ai / Seedance 2.0 endpoints (verified paths).
 const QString kFalTextToVideo =
-    QStringLiteral("https://fal.run/fal-ai/bytedance/seedance/v2/text-to-video");
+    QStringLiteral("https://fal.run/bytedance/seedance-2.0/text-to-video");
 const QString kFalImageToVideo =
-    QStringLiteral("https://fal.run/fal-ai/bytedance/seedance/v2/image-to-video");
+    QStringLiteral("https://fal.run/bytedance/seedance-2.0/image-to-video");
 const QString kFalRequestsBase =
-    QStringLiteral("https://fal.run/fal-ai/bytedance/seedance/v2/requests/");
+    QStringLiteral("https://fal.run/bytedance/seedance-2.0/requests/");
 
 QString badgeStyle(const QString &status)
 {
@@ -596,7 +596,7 @@ void GenerationPage::callFal(int index)
 
     QJsonObject body;
     body[QStringLiteral("prompt")] = row.prompt;
-    body[QStringLiteral("duration")] = clampedDuration;
+    body[QStringLiteral("duration")] = QString::number(clampedDuration); // string per fal.ai
     body[QStringLiteral("resolution")] = QStringLiteral("720p");
     body[QStringLiteral("aspect_ratio")] = QStringLiteral("16:9");
 
