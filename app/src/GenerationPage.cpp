@@ -182,6 +182,11 @@ QWidget *GenerationPage::createTopBar()
 
     layout->addStretch(1);
 
+    m_sessionCostLabel = new QLabel(QStringLiteral("Session cost: ~$0.00"));
+    m_sessionCostLabel->setStyleSheet(QStringLiteral("color: #888888; font-size: 12px;"));
+    layout->addWidget(m_sessionCostLabel);
+    layout->addSpacing(12);
+
     QPushButton *genAll = new QPushButton(QStringLiteral("Generate All Queued"));
     genAll->setCursor(Qt::PointingHandCursor);
     genAll->setStyleSheet(QStringLiteral(
@@ -312,6 +317,12 @@ QWidget *GenerationPage::buildRow(int index)
     row.spinner->setVisible(false);
     hl->addWidget(row.spinner);
 
+    // Auto-retry suffix, shown beside the spinner during a retry.
+    row.retryLabel = new QLabel;
+    row.retryLabel->setStyleSheet(QStringLiteral("color: #f5a623; font-size: 10px; border:none;"));
+    row.retryLabel->setVisible(false);
+    hl->addWidget(row.retryLabel);
+
     // Status badge.
     row.badge = new QLabel;
     row.badge->setAlignment(Qt::AlignCenter);
@@ -329,6 +340,12 @@ QWidget *GenerationPage::buildRow(int index)
     row.previewBtn->setVisible(false);
     connect(row.previewBtn, &QPushButton::clicked, this, [this, index] { openPreview(index); });
     hl->addWidget(row.previewBtn);
+
+    // Per-shot cost estimate, shown once Complete.
+    row.costLabel = new QLabel;
+    row.costLabel->setStyleSheet(QStringLiteral("color: #888888; font-size: 11px; border:none;"));
+    row.costLabel->setVisible(false);
+    hl->addWidget(row.costLabel);
 
     row.retryBtn = new QPushButton(QStringLiteral("Retry"));
     row.retryBtn->setCursor(Qt::PointingHandCursor);
@@ -375,6 +392,19 @@ void GenerationPage::refreshRow(int index)
         if (generating) row.spinner->start();
         else row.spinner->stop();
     }
+    if (row.retryLabel) {
+        const bool showRetry = generating && row.retryCount > 0;
+        row.retryLabel->setVisible(showRetry);
+        if (showRetry)
+            row.retryLabel->setText(QStringLiteral("(retry %1/2)").arg(row.retryCount));
+    }
+    const bool complete = (status == QLatin1String("Complete"));
+    if (row.costLabel) {
+        row.costLabel->setVisible(complete);
+        if (complete)
+            row.costLabel->setText(QStringLiteral("~$%1")
+                                       .arg(clipCost(row.panel->duration), 0, 'f', 2));
+    }
     if (row.previewBtn)
         row.previewBtn->setVisible(status == QLatin1String("Complete"));
     if (row.retryBtn)
@@ -409,6 +439,7 @@ void GenerationPage::queueRow(int index)
     if (!ensureFalKey())
         return;
     m_rows[index].errorMessage.clear();
+    m_rows[index].retryCount = 0; // a manual Generate/Retry resets the auto-retry budget
     m_rows[index].panel->generationStatus = QStringLiteral("Queued");
     refreshRow(index);
     processQueue();
@@ -444,6 +475,20 @@ void GenerationPage::finishRow(int index)
     processQueue(); // pick up the next queued row, if any
 }
 
+double GenerationPage::clipCost(int durationSeconds)
+{
+    // Flat fal.ai 720p estimate: 5s clip ~ $0.05, 10s clip ~ $0.10.
+    const int clamped = (qBound(1, durationSeconds, 30) <= 7) ? 5 : 10;
+    return clamped == 5 ? 0.05 : 0.10;
+}
+
+void GenerationPage::updateSessionCost()
+{
+    if (m_sessionCostLabel)
+        m_sessionCostLabel->setText(
+            QStringLiteral("Session cost: ~$%1").arg(m_sessionCost, 0, 'f', 2));
+}
+
 // --- Claude prompt building ----------------------------------------------
 
 QVector<const ConsistencyEntry *> GenerationPage::matchedEntries(int index) const
@@ -452,7 +497,12 @@ QVector<const ConsistencyEntry *> GenerationPage::matchedEntries(int index) cons
     if (!m_entries)
         return out;
     const Row &row = m_rows.at(index);
-    const QString haystack = (row.scene->action + QStringLiteral(" ") + row.panel->notes).toLower();
+    // Match each entry name against the scene action + location and the panel
+    // notes + mood (case-insensitive substring across all four fields).
+    const QString haystack = (row.scene->action + QStringLiteral(" ")
+                              + row.scene->location + QStringLiteral(" ")
+                              + row.panel->notes + QStringLiteral(" ")
+                              + row.panel->mood).toLower();
     for (const ConsistencyEntry &e : *m_entries) {
         if (e.name.isEmpty())
             continue;
@@ -468,14 +518,36 @@ QString GenerationPage::buildClaudeRequestBody(int index) const
     const Panel *panel = row.panel;
     const Scene *scene = row.scene;
 
+    // Build a numbered list of every matched consistency entry, each with a
+    // type-specific instruction to preserve its exact description.
     QString consistencyText;
     const auto matches = matchedEntries(index);
-    for (const ConsistencyEntry *e : matches) {
-        consistencyText += QStringLiteral("- %1 (%2): %3\n")
+    for (int i = 0; i < matches.size(); ++i) {
+        const ConsistencyEntry *e = matches.at(i);
+        consistencyText += QStringLiteral("%1. %2 (%3)\n   Description: %4\n")
+                               .arg(i + 1)
                                .arg(e->name, e->type, e->description);
+        if (e->type.compare(QLatin1String("Character"), Qt::CaseInsensitive) == 0)
+            consistencyText += QStringLiteral(
+                "   INSTRUCTION: This is a recurring CHARACTER. Preserve this exact "
+                "appearance description in the generated prompt so the character "
+                "looks identical across shots.\n");
+        else if (e->type.compare(QLatin1String("Location"), Qt::CaseInsensitive) == 0)
+            consistencyText += QStringLiteral(
+                "   INSTRUCTION: This is a recurring LOCATION. Preserve this exact "
+                "environment description in the generated prompt so the setting "
+                "stays consistent across shots.\n");
     }
-    if (consistencyText.isEmpty())
+    if (matches.isEmpty())
         consistencyText = QStringLiteral("(none matched)\n");
+
+    // When the panel has actual artwork, tell Claude a reference image anchors it.
+    QString visualRef;
+    if (!isBlankPixmap(panel->pixmap))
+        visualRef = QStringLiteral(
+            "\nVISUAL REFERENCE: A hand-drawn reference image accompanies this shot "
+            "and is passed to the video model. Note in the prompt that this reference "
+            "image should anchor the composition and character positioning.\n");
 
     const QString userContent = QStringLiteral(
         "Write a single optimized text-to-video generation prompt for an AI video "
@@ -485,13 +557,13 @@ QString GenerationPage::buildClaudeRequestBody(int index) const
         "SHOT METADATA:\n"
         "- Shot type: %1\n- Camera angle: %2\n- Lens: %3\n- Mood: %4\n- Notes: %5\n\n"
         "SCENE:\n- Location: %6\n- Action: %7\n\n"
-        "CONSISTENCY REFERENCES (incorporate appearance/location details when relevant):\n%8")
+        "CONSISTENCY REFERENCES (preserve every detail below exactly):\n%8%9")
         .arg(panel->shotType, panel->cameraAngle, panel->lens,
              panel->mood.isEmpty() ? QStringLiteral("(unspecified)") : panel->mood,
              panel->notes.isEmpty() ? QStringLiteral("(none)") : panel->notes)
         .arg(scene->location.isEmpty() ? QStringLiteral("(unspecified)") : scene->location,
              scene->action.isEmpty() ? QStringLiteral("(none)") : scene->action,
-             consistencyText);
+             consistencyText, visualRef);
 
     QJsonObject userMessage;
     userMessage[QStringLiteral("role")] = QStringLiteral("user");
@@ -511,7 +583,8 @@ void GenerationPage::startClaudePrompt(int index)
 {
     const QByteArray apiKey = qgetenv("ANTHROPIC_API_KEY");
     if (apiKey.isEmpty()) {
-        failRow(index, QStringLiteral("ANTHROPIC_API_KEY is not set; cannot build the prompt."));
+        failRow(index, QStringLiteral("ANTHROPIC_API_KEY is not set; cannot build the prompt."),
+                /*retryable=*/false);
         return;
     }
 
@@ -586,7 +659,7 @@ void GenerationPage::callFal(int index)
 {
     const QByteArray falKey = qgetenv("FAL_API_KEY");
     if (falKey.isEmpty()) {
-        failRow(index, QStringLiteral("FAL_API_KEY is not set."));
+        failRow(index, QStringLiteral("FAL_API_KEY is not set."), /*retryable=*/false);
         return;
     }
 
@@ -767,16 +840,39 @@ void GenerationPage::onVideoDownloaded(int index, QNetworkReply *reply)
 
     row.panel->generatedVideoPath = fileName; // relative, like panel PNGs
     row.panel->generationStatus = QStringLiteral("Complete");
+    row.retryCount = 0;
+
+    // Cost estimate for this clip, and add it to the running session total.
+    row.costEstimate = clipCost(row.panel->duration);
+    m_sessionCost += row.costEstimate;
+    updateSessionCost();
+
     refreshRow(index);
     finishRow(index);
 }
 
-void GenerationPage::failRow(int index, const QString &message)
+void GenerationPage::failRow(int index, const QString &message, bool retryable)
 {
     if (index < 0 || index >= m_rows.size())
         return;
-    m_rows[index].errorMessage = message;
-    m_rows[index].panel->generationStatus = QStringLiteral("Failed");
+    Row &row = m_rows[index];
+    row.errorMessage = message;
+
+    // Auto-retry up to twice (5s apart) before giving up. The row stays in the
+    // "Generating" state and keeps the queue slot, so processing stays serial.
+    if (retryable && row.retryCount < 2) {
+        row.retryCount += 1;
+        row.panel->generationStatus = QStringLiteral("Generating");
+        refreshRow(index); // shows the "(retry N/2)" suffix beside the spinner
+        QTimer::singleShot(5000, this, [this, index] {
+            if (index >= 0 && index < m_rows.size()
+                && m_rows.at(index).panel->generationStatus == QLatin1String("Generating"))
+                startClaudePrompt(index);
+        });
+        return;
+    }
+
+    row.panel->generationStatus = QStringLiteral("Failed");
     refreshRow(index);
     finishRow(index);
 }

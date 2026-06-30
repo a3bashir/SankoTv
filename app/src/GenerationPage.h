@@ -70,10 +70,14 @@ private:
         QPushButton *previewBtn = nullptr;
         QPushButton *retryBtn = nullptr;
         GenSpinner *spinner = nullptr;
+        QLabel *retryLabel = nullptr; // "(retry 1/2)" next to the spinner
+        QLabel *costLabel = nullptr;  // "~$0.05" shown once Complete
         QLabel *promptLink = nullptr; // tiny "View Prompt" debug link
 
         QString prompt;       // Claude-generated, hidden from the main UI
         QString errorMessage; // shown on the Failed badge tooltip
+        int retryCount = 0;     // session-only auto-retry counter (not saved)
+        double costEstimate = 0.0; // ~$ for this clip, set on completion this session
     };
 
     QWidget *createTopBar();
@@ -99,7 +103,10 @@ private:
     void onResultReply(int index, QNetworkReply *reply);
     void downloadVideo(int index, const QString &url);
     void onVideoDownloaded(int index, QNetworkReply *reply);
-    void failRow(int index, const QString &message);
+    // retryable=false skips auto-retry (e.g. a missing API key needs user action).
+    void failRow(int index, const QString &message, bool retryable = true);
+    void updateSessionCost();
+    static double clipCost(int durationSeconds); // ~$ for a clamped clip
 
     // Helpers.
     bool ensureFalKey(); // QMessageBox + false if FAL_API_KEY is missing
@@ -114,6 +121,8 @@ private:
 
     QVector<Row> m_rows;
     QVBoxLayout *m_rowsLayout = nullptr;
+    QLabel *m_sessionCostLabel = nullptr;
+    double m_sessionCost = 0.0; // session total for clips completed this run
 
     QNetworkAccessManager *m_net = nullptr;
     int m_processing = -1; // row index currently being generated, or -1 when idle
