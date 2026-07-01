@@ -4,10 +4,12 @@
 
 #include <QAudioOutput>
 #include <QBuffer>
+#include <QCoreApplication>
 #include <QDialog>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QProcess>
 #include <QHBoxLayout>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -22,6 +24,7 @@
 #include <QPropertyAnimation>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QStandardPaths>
 #include <QTimer>
 #include <QUrl>
 #include <QVBoxLayout>
@@ -482,6 +485,16 @@ double GenerationPage::clipCost(int durationSeconds)
     return clamped == 5 ? 0.05 : 0.10;
 }
 
+QString GenerationPage::findFfmpeg()
+{
+    // Same lookup order as the Animatic's Export MP4: exe folder, then PATH.
+    const QString local =
+        QCoreApplication::applicationDirPath() + QStringLiteral("/ffmpeg.exe");
+    if (QFile::exists(local))
+        return local;
+    return QStandardPaths::findExecutable(QStringLiteral("ffmpeg"));
+}
+
 void GenerationPage::updateSessionCost()
 {
     if (m_sessionCostLabel)
@@ -870,13 +883,56 @@ void GenerationPage::onVideoDownloaded(int index, QNetworkReply *reply)
 
     const QString fileName =
         QStringLiteral("generated_s%1_p%2.mp4").arg(row.sceneIndex).arg(row.panelIndex);
-    QFile file(dir + QStringLiteral("/") + fileName);
-    if (!file.open(QIODevice::WriteOnly)) {
+    const QString finalPath = dir + QStringLiteral("/") + fileName;
+    const QString rawPath = dir
+        + QStringLiteral("/generated_s%1_p%2_raw.mp4").arg(row.sceneIndex).arg(row.panelIndex);
+
+    // Write the raw download first; it may then be trimmed into finalPath.
+    QFile raw(rawPath);
+    if (!raw.open(QIODevice::WriteOnly)) {
         failRow(index, QStringLiteral("Could not write the generated video to disk."));
         return;
     }
-    file.write(bytes);
-    file.close();
+    raw.write(bytes);
+    raw.close();
+
+    // Seedance only renders 5s or 10s. When the panel's actual animatic duration
+    // is shorter than what we asked for, trim the clip down (stream copy, no
+    // re-encode) so the director's pacing from the Animatic is preserved.
+    const int actual = qBound(1, row.panel->duration, 30);
+    const int requested = (actual <= 7) ? 5 : 10;
+
+    bool trimmed = false;
+    if (actual < requested) {
+        const QString ffmpeg = findFfmpeg();
+        if (!ffmpeg.isEmpty()) {
+            QProcess proc;
+            const QStringList args{
+                QStringLiteral("-i"), rawPath,
+                QStringLiteral("-t"), QString::number(actual),
+                QStringLiteral("-c"), QStringLiteral("copy"),
+                QStringLiteral("-y"), finalPath };
+            proc.start(ffmpeg, args);
+            if (proc.waitForStarted(5000) && proc.waitForFinished(30000)
+                && proc.exitStatus() == QProcess::NormalExit && proc.exitCode() == 0
+                && QFileInfo::exists(finalPath)) {
+                trimmed = true;
+            }
+        }
+        // If ffmpeg is missing or the trim fails, fall through and keep the full clip.
+    }
+
+    if (trimmed) {
+        QFile::remove(rawPath); // keep only the trimmed final clip
+    } else {
+        // No trim needed (duration >= requested), ffmpeg missing, or trim failed:
+        // the raw download becomes the final clip unchanged.
+        QFile::remove(finalPath); // clear any stale file at the destination
+        if (!QFile::rename(rawPath, finalPath)) {
+            QFile::copy(rawPath, finalPath);
+            QFile::remove(rawPath);
+        }
+    }
 
     row.panel->generatedVideoPath = fileName; // relative, like panel PNGs
     row.panel->generationStatus = QStringLiteral("Complete");

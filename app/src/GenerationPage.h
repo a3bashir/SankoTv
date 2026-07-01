@@ -107,6 +107,7 @@ private:
     void failRow(int index, const QString &message, bool retryable = true);
     void updateSessionCost();
     static double clipCost(int durationSeconds); // ~$ for a clamped clip
+    static QString findFfmpeg(); // exe dir, then PATH; empty if not found
 
     // Helpers.
     bool ensureFalKey(); // QMessageBox + false if FAL_API_KEY is missing
