@@ -4,6 +4,7 @@
 #include <QVector>
 #include <QWidget>
 
+class CollapsibleDock; // QDockWidget whose title double-click collapses (StoryboardPage.cpp)
 class DrawingCanvas;
 class QCheckBox;
 class QComboBox;
@@ -31,7 +32,7 @@ class StoryboardPage : public QWidget
 
 public:
     explicit StoryboardPage(QWidget *parent = nullptr);
-    ~StoryboardPage() override = default;
+    ~StoryboardPage() override; // persists the dock layout
 
     // Display the given scenes. Ownership stays with the caller (MainWindow);
     // this page only holds non-owning pointers.
@@ -65,7 +66,8 @@ private:
                           bool pressureSize, bool pressureOpacity);
 
     // Dockable panel plumbing (internal QMainWindow hosts the three docks).
-    void installDockViewActions(); // dock toggles into the app's View menu
+    void installDockViewActions(); // dock toggles + Reset Layout in the View menu
+    void applyDefaultDockLayout(); // Layers top-right; Scenes+Shot Info tabbed below
     bool restoreDockState();       // true if a saved layout was applied
     void saveDockState();
 
@@ -118,11 +120,11 @@ private:
     int m_currentPanel = -1;
 
     // Internal dock host: the canvas area is its central widget; Scenes,
-    // Layers, and Shot Info live in QDockWidgets around it.
+    // Layers, and Shot Info live in collapsible QDockWidgets around it.
     QMainWindow *m_dockHost = nullptr;
-    QDockWidget *m_layersDock = nullptr;
-    QDockWidget *m_scenesDock = nullptr;
-    QDockWidget *m_shotInfoDock = nullptr;
+    CollapsibleDock *m_layersDock = nullptr;
+    CollapsibleDock *m_scenesDock = nullptr;
+    CollapsibleDock *m_shotInfoDock = nullptr;
 
     // Left column.
     QVBoxLayout *m_sceneListLayout = nullptr;

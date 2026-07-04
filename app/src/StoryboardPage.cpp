@@ -3,6 +3,7 @@
 #include "DrawingCanvas.h"
 #include "StoryboardModel.h"
 
+#include <QAction>
 #include <QButtonGroup>
 #include <QCheckBox>
 #include <QColorDialog>
@@ -38,7 +39,63 @@
 #include <QVBoxLayout>
 #include <Qt>
 
+// QDockWidget whose title-bar DOUBLE-CLICK collapses/expands the dock instead
+// of Qt's default float toggle (which makes the panel appear to vanish).
+// Floating still works the normal way: dragging the title bar out.
+class CollapsibleDock : public QDockWidget
+{
+public:
+    using QDockWidget::QDockWidget;
+
+    bool isCollapsed() const { return m_collapsed; }
+
+    void setCollapsed(bool collapsed)
+    {
+        if (collapsed == m_collapsed || !widget())
+            return;
+        m_collapsed = collapsed;
+        if (collapsed) {
+            m_expandedHeight = height(); // exact size to restore on expand
+            const int chrome = height() - widget()->height(); // title bar + margins
+            widget()->setVisible(false);
+            setMaximumHeight(qMax(22, chrome));
+        } else {
+            widget()->setVisible(true);
+            setMaximumHeight(QWIDGETSIZE_MAX);
+            if (QMainWindow *host = qobject_cast<QMainWindow *>(parentWidget());
+                host && m_expandedHeight > 0)
+                host->resizeDocks({this}, {m_expandedHeight}, Qt::Vertical);
+        }
+    }
+
+protected:
+    bool event(QEvent *e) override
+    {
+        // Only intercept while docked (floating windows keep native behaviour)
+        // and only for double-clicks in the title-bar area above the content.
+        if (e->type() == QEvent::MouseButtonDblClick && !isFloating()) {
+            const auto *me = static_cast<QMouseEvent *>(e);
+            if (m_collapsed || !widget()
+                || me->position().toPoint().y() < widget()->y()) {
+                setCollapsed(!m_collapsed);
+                e->accept();
+                return true;
+            }
+        }
+        return QDockWidget::event(e);
+    }
+
+private:
+    bool m_collapsed = false;
+    int m_expandedHeight = 0;
+};
+
 namespace {
+
+// Dock-layout schema version: bump to invalidate layouts saved by older
+// builds (restoreState() with a different version returns false, and the
+// default layout is applied instead of a stale/corrupted one).
+constexpr int kDockStateVersion = 2;
 
 constexpr int kThumbW = 160;
 constexpr int kThumbH = 90; // 16:9
@@ -114,8 +171,10 @@ StoryboardPage::StoryboardPage(QWidget *parent)
     // give Closable | Movable | Floatable.
     auto makeDock = [this](const QString &title, const QString &objectName,
                            QWidget *panel) {
-        QDockWidget *dock = new QDockWidget(title, m_dockHost);
-        dock->setObjectName(objectName); // required for saveState()/restoreState()
+        CollapsibleDock *dock = new CollapsibleDock(title, m_dockHost);
+        // Unique objectName BEFORE any restoreState() call: without it,
+        // restoreState() silently fails to match the dock and misplaces it.
+        dock->setObjectName(objectName);
         dock->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
         dock->setWidget(panel);
         return dock;
@@ -127,18 +186,15 @@ StoryboardPage::StoryboardPage(QWidget *parent)
     m_shotInfoDock = makeDock(QStringLiteral("Shot Info"), QStringLiteral("dockShotInfo"),
                               shotInfoPanel);
 
-    // Default layout: Layers on its own (top-right); Scenes + Shot Info as a
-    // tabbed pair below it, Scenes tab in front.
-    m_dockHost->addDockWidget(Qt::RightDockWidgetArea, m_layersDock);
-    m_dockHost->splitDockWidget(m_layersDock, m_scenesDock, Qt::Vertical);
-    m_dockHost->tabifyDockWidget(m_scenesDock, m_shotInfoDock);
-    m_dockHost->resizeDocks({m_layersDock, m_scenesDock}, {220, 220}, Qt::Horizontal);
+    applyDefaultDockLayout();
 
     root->addWidget(m_dockHost, 1);
 
-    // Restore the saved dock layout; on first launch keep the default above.
+    // Restore ONCE, only now that all three docks exist and are added. A
+    // failed restore (no saved state, or a stale/corrupted layout from an
+    // older schema version) falls back to the pristine default layout.
     if (!restoreDockState())
-        m_scenesDock->raise(); // Scenes tab active by default
+        applyDefaultDockLayout();
     connect(QCoreApplication::instance(), &QCoreApplication::aboutToQuit,
             this, [this] { saveDockState(); });
 
@@ -181,7 +237,34 @@ StoryboardPage::StoryboardPage(QWidget *parent)
     updateDuplicateButton(); // panel-action buttons disabled until a panel is selected
 }
 
+// Layout is persisted ONLY here and on app close (aboutToQuit) — never on
+// intermediate dock events, so a mid-session glitch can't be baked in.
+StoryboardPage::~StoryboardPage()
+{
+    saveDockState();
+}
+
 // --- Dock plumbing ----------------------------------------------------------
+
+// The canonical arrangement: Layers alone at the top right; Scenes and
+// Shot Info tabbed together below it, Scenes tab in front. Also used by
+// View -> Reset Layout and as the fallback when a saved state is rejected.
+void StoryboardPage::applyDefaultDockLayout()
+{
+    if (!m_dockHost || !m_layersDock)
+        return;
+    const QList<CollapsibleDock *> docks{m_layersDock, m_scenesDock, m_shotInfoDock};
+    for (CollapsibleDock *dock : docks) {
+        dock->setCollapsed(false);
+        dock->setFloating(false);
+        dock->show();
+    }
+    m_dockHost->addDockWidget(Qt::RightDockWidgetArea, m_layersDock);
+    m_dockHost->splitDockWidget(m_layersDock, m_scenesDock, Qt::Vertical);
+    m_dockHost->tabifyDockWidget(m_scenesDock, m_shotInfoDock);
+    m_dockHost->resizeDocks({m_layersDock, m_scenesDock}, {220, 220}, Qt::Horizontal);
+    m_scenesDock->raise(); // Scenes tab active by default
+}
 
 // Extend the application's View menu (on the top-level MainWindow) with the
 // three dock toggles. toggleViewAction() gives a checkable action that both
@@ -210,6 +293,15 @@ void StoryboardPage::installDockViewActions()
     viewMenu->addAction(m_layersDock->toggleViewAction());
     viewMenu->addAction(m_scenesDock->toggleViewAction());
     viewMenu->addAction(m_shotInfoDock->toggleViewAction());
+
+    // Escape hatch: wipe the persisted layout and go back to the default.
+    viewMenu->addSeparator();
+    QAction *resetLayout = viewMenu->addAction(QStringLiteral("Reset Layout"));
+    connect(resetLayout, &QAction::triggered, this, [this] {
+        QSettings settings(QStringLiteral("SankoTV"), QStringLiteral("SankoTV"));
+        settings.remove(QStringLiteral("storyboard/dockState"));
+        applyDefaultDockLayout();
+    });
 }
 
 bool StoryboardPage::restoreDockState()
@@ -219,7 +311,10 @@ bool StoryboardPage::restoreDockState()
         settings.value(QStringLiteral("storyboard/dockState")).toByteArray();
     if (state.isEmpty())
         return false;
-    return m_dockHost && m_dockHost->restoreState(state);
+    // Versioned restore: layouts written by older builds (different version)
+    // are rejected here — the caller then re-applies the default layout
+    // instead of restoring docks into wrong areas.
+    return m_dockHost && m_dockHost->restoreState(state, kDockStateVersion);
 }
 
 void StoryboardPage::saveDockState()
@@ -227,7 +322,8 @@ void StoryboardPage::saveDockState()
     if (!m_dockHost)
         return;
     QSettings settings(QStringLiteral("SankoTV"), QStringLiteral("SankoTV"));
-    settings.setValue(QStringLiteral("storyboard/dockState"), m_dockHost->saveState());
+    settings.setValue(QStringLiteral("storyboard/dockState"),
+                      m_dockHost->saveState(kDockStateVersion));
 }
 
 // --- Left column ----------------------------------------------------------
