@@ -444,10 +444,16 @@ void DrawingCanvas::stampDab(const QPointF &center, qreal pressure)
         return;
 
     pressure = qBound<qreal>(0.0, pressure, 1.0);
-    const qreal sizeFactor = m_pressureToSize ? qMax<qreal>(0.05, pressure) : 1.0;
     const qreal alphaFactor = m_pressureToOpacity ? pressure : 1.0;
 
-    const qreal radius = qMax(0.5, (m_brushToolSize * sizeFactor) / 2.0);
+    // Pressure-scaled radius with a hard 1.0px floor: however light the
+    // stylus touch, a dab is never smaller than the constant stamp spacing
+    // allows, so consecutive dabs keep overlapping into a continuous line
+    // instead of separating into dots.
+    const qreal baseRadius = m_brushToolSize / 2.0;
+    const qreal radius = m_pressureToSize
+        ? qMax<qreal>(1.0, baseRadius * pressure)
+        : qMax<qreal>(0.5, baseRadius);
     const qreal alpha = qBound(0.0, m_brushToolOpacity * alphaFactor, 1.0);
     if (alpha <= 0.0)
         return;
@@ -494,12 +500,24 @@ void DrawingCanvas::moveBrushStroke(const QPointF &canvasPt, qreal pressure)
     if (dist <= 0.0)
         return;
 
-    // Stamps spaced at 5% of the brush size - dense enough that individual
-    // dabs disappear into a continuous edge. Pressure is interpolated per dab,
-    // and the residual-driven loop below fills arbitrarily large gaps between
-    // input points, so fast strokes stay just as continuous. (The 0.5px floor
-    // only stops tiny brushes from stamping several dabs per pixel.)
-    const double step = qMax(0.5, m_brushToolSize * 0.05);
+    // Stamps spaced at 5% of the BASE brush size (the slider value, never the
+    // pressure-scaled size): dab density is constant at any pressure - light
+    // strokes place just as many dabs as heavy ones, only smaller/fainter.
+    // Pressure is interpolated per dab, and the residual-driven loop below
+    // fills arbitrarily large gaps between input points, so fast strokes stay
+    // just as continuous. (The 0.5px floor only stops tiny brushes from
+    // stamping several dabs per pixel.)
+    double step = qMax(0.5, m_brushToolSize * 0.05);
+
+    // At light pressure the dabs shrink; never let the spacing exceed the
+    // segment's smallest effective dab radius, so consecutive dabs always
+    // overlap (continuous thin line instead of separated dots).
+    if (m_pressureToSize) {
+        const qreal minPressure =
+            qBound<qreal>(0.0, qMin(m_lastBrushPressure, pressure), 1.0);
+        const double effRadius = qMax<qreal>(1.0, (m_brushToolSize / 2.0) * minPressure);
+        step = qMin(step, effRadius);
+    }
     const QPointF dir = delta / dist;
 
     double since = m_stampResidual; // distance travelled since the last dab
