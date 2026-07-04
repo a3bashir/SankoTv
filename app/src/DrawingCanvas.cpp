@@ -14,8 +14,10 @@
 #include <QPainter>
 #include <QPaintEvent>
 #include <QPushButton>
+#include <QRadialGradient>
 #include <QResizeEvent>
 #include <QStack>
+#include <QTabletEvent>
 #include <QUrl>
 #include <QWheelEvent>
 #include <Qt>
@@ -72,6 +74,7 @@ DrawingCanvas::DrawingCanvas(QWidget *parent)
     : QWidget(parent)
 {
     setMouseTracking(false);
+    setTabletTracking(true); // deliver stylus events (with pressure) to tabletEvent
     setCursor(Qt::CrossCursor);
     setMinimumHeight(220);
     setAcceptDrops(true); // import images by dropping files onto the canvas
@@ -215,6 +218,31 @@ void DrawingCanvas::setBrushSize(int size)
     m_brushSize = qBound(1, size, 20);
 }
 
+void DrawingCanvas::setBrushToolSize(int px)
+{
+    m_brushToolSize = qBound(1, px, 200);
+}
+
+void DrawingCanvas::setBrushOpacity(int percent)
+{
+    m_brushToolOpacity = qBound(0, percent, 100) / 100.0;
+}
+
+void DrawingCanvas::setBrushHardness(int percent)
+{
+    m_brushHardness = qBound(0, percent, 100) / 100.0;
+}
+
+void DrawingCanvas::setPressureToSize(bool on)
+{
+    m_pressureToSize = on;
+}
+
+void DrawingCanvas::setPressureToOpacity(bool on)
+{
+    m_pressureToOpacity = on;
+}
+
 // The letterbox fit is the zoom=1.0 baseline; m_zoom scales it and m_panOffset
 // shifts it. Because toCanvas()/scale() derive from this rect, EVERY mouse
 // press/move/release converts screen -> image coordinates through the same
@@ -316,6 +344,15 @@ int DrawingCanvas::penWidth() const
     return qMax(1, qRound(m_brushSize / scale()));
 }
 
+// Float variant for the brush engine: sub-pixel dab placement, no clamping
+// (dabs partially outside the image are clipped by QPainter automatically).
+QPointF DrawingCanvas::toCanvasF(const QPointF &widgetPoint) const
+{
+    const QRect d = displayRect();
+    const double s = scale();
+    return QPointF((widgetPoint.x() - d.x()) / s, (widgetPoint.y() - d.y()) / s);
+}
+
 // Snapshot the ACTIVE layer's pixels (keyed by layer id, so undo still lands
 // on the right layer after reorders or deletions of other layers).
 void DrawingCanvas::pushUndo()
@@ -393,6 +430,84 @@ void DrawingCanvas::floodFill(const QPoint &seed)
     }
 
     layerPtr->image = image.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+    update();
+}
+
+// --- Brush engine (stamp-based, pressure-aware) -----------------------------
+
+// One radial-gradient dab: solid colour core out to `hardness` of the radius,
+// then a falloff to fully transparent at the edge. Composited SourceOver.
+void DrawingCanvas::stampDab(const QPointF &center, qreal pressure)
+{
+    Layer *layer = editableActiveLayer();
+    if (!layer)
+        return;
+
+    pressure = qBound<qreal>(0.0, pressure, 1.0);
+    const qreal sizeFactor = m_pressureToSize ? qMax<qreal>(0.05, pressure) : 1.0;
+    const qreal alphaFactor = m_pressureToOpacity ? pressure : 1.0;
+
+    const qreal radius = qMax(0.5, (m_brushToolSize * sizeFactor) / 2.0);
+    const qreal alpha = qBound(0.0, m_brushToolOpacity * alphaFactor, 1.0);
+    if (alpha <= 0.0)
+        return;
+
+    QColor core = m_color;
+    core.setAlphaF(alpha);
+    QColor edge = m_color;
+    edge.setAlphaF(0.0);
+
+    QRadialGradient gradient(center, radius);
+    gradient.setColorAt(0.0, core);
+    gradient.setColorAt(qBound(0.0, m_brushHardness, 0.99), core); // solid core
+    gradient.setColorAt(1.0, edge);                                // feathered rim
+
+    QPainter painter(&layer->image);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(gradient);
+    painter.drawEllipse(center, radius, radius);
+}
+
+void DrawingCanvas::beginBrushStroke(const QPointF &canvasPt, qreal pressure)
+{
+    m_lastBrushPt = canvasPt;
+    m_lastBrushPressure = pressure;
+    m_stampResidual = 0.0;
+    stampDab(canvasPt, pressure); // dab on the initial press
+    update();
+}
+
+void DrawingCanvas::moveBrushStroke(const QPointF &canvasPt, qreal pressure)
+{
+    const QPointF delta = canvasPt - m_lastBrushPt;
+    const double dist = std::hypot(delta.x(), delta.y());
+    if (dist <= 0.0)
+        return;
+
+    // Stamps spaced at 15% of the brush size; pressure interpolated per dab.
+    const double step = qMax(0.75, m_brushToolSize * 0.15);
+    const QPointF dir = delta / dist;
+
+    double since = m_stampResidual; // distance travelled since the last dab
+    double consumed = 0.0;
+    while (since + (dist - consumed) >= step) {
+        consumed += step - since;
+        since = 0.0;
+        const qreal t = consumed / dist;
+        const qreal p = m_lastBrushPressure + (pressure - m_lastBrushPressure) * t;
+        stampDab(m_lastBrushPt + dir * consumed, p);
+    }
+    m_stampResidual = since + (dist - consumed);
+
+    m_lastBrushPt = canvasPt;
+    m_lastBrushPressure = pressure;
+    update();
+}
+
+void DrawingCanvas::endBrushStroke()
+{
+    m_brushStroke = false;
     update();
 }
 
@@ -580,12 +695,19 @@ void DrawingCanvas::mousePressEvent(QMouseEvent *event)
         return; // locked / hidden / missing layer: ignore strokes, no cursor change
 
     switch (m_tool) {
-    case Brush:
+    case Pen:
     case Eraser: {
         pushUndo();
         m_drawing = true;
         m_lastCanvas = toCanvas(event->pos());
         drawSegment(m_lastCanvas, m_lastCanvas, m_color); // dot on click (eraser clears)
+        break;
+    }
+    case Brush: {
+        // Mouse strokes carry no pressure: fixed 1.0 (tablets use tabletEvent).
+        pushUndo();
+        m_brushStroke = true;
+        beginBrushStroke(toCanvasF(event->position()), 1.0);
         break;
     }
     case Line:
@@ -614,6 +736,10 @@ void DrawingCanvas::mouseMoveEvent(QMouseEvent *event)
         update();
         return;
     }
+    if (m_brushStroke) {
+        moveBrushStroke(toCanvasF(event->position()), 1.0); // mouse: fixed pressure
+        return;
+    }
     if (m_drawing) {
         const QPoint p = toCanvas(event->pos());
         drawSegment(m_lastCanvas, p, m_color);
@@ -629,6 +755,11 @@ void DrawingCanvas::mouseReleaseEvent(QMouseEvent *event)
         setCursor(m_spaceHeld ? Qt::OpenHandCursor : Qt::CrossCursor);
         return;
     }
+    if (m_brushStroke && event->button() == Qt::LeftButton) {
+        endBrushStroke();
+        emit contentChanged();
+        return;
+    }
     if (m_previewLine) {
         m_previewLine = false;
         pushUndo();
@@ -640,6 +771,42 @@ void DrawingCanvas::mouseReleaseEvent(QMouseEvent *event)
         m_drawing = false;
         emit contentChanged();
     }
+}
+
+// Stylus input: real pressure for the Brush tool. Other tools ignore() so Qt
+// synthesizes ordinary mouse events for them (Pen/Line/Fill/Erase unchanged);
+// for Brush we accept() so the same stroke is NOT also delivered as a mouse
+// event (which would double-draw).
+void DrawingCanvas::tabletEvent(QTabletEvent *event)
+{
+    if (m_tool != Brush) {
+        event->ignore();
+        return;
+    }
+
+    switch (event->type()) {
+    case QEvent::TabletPress:
+        if (m_panel && displayRect().contains(event->position().toPoint())
+            && editableActiveLayer()) {
+            pushUndo();
+            m_brushStroke = true;
+            beginBrushStroke(toCanvasF(event->position()), event->pressure());
+        }
+        break;
+    case QEvent::TabletMove:
+        if (m_brushStroke)
+            moveBrushStroke(toCanvasF(event->position()), event->pressure());
+        break;
+    case QEvent::TabletRelease:
+        if (m_brushStroke) {
+            endBrushStroke();
+            emit contentChanged();
+        }
+        break;
+    default:
+        break;
+    }
+    event->accept();
 }
 
 void DrawingCanvas::dragEnterEvent(QDragEnterEvent *event)

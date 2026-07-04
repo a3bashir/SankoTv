@@ -20,7 +20,9 @@ class DrawingCanvas : public QWidget
     Q_OBJECT
 
 public:
-    enum Tool { Brush, Eraser, Line, Fill };
+    // Pen is the original hard QPainter-line tool; Brush is the stamp-based
+    // pressure brush engine.
+    enum Tool { Pen, Brush, Eraser, Line, Fill };
 
     explicit DrawingCanvas(QWidget *parent = nullptr);
 
@@ -55,6 +57,13 @@ public slots:
     void undo();
     void clearCanvas();
 
+    // Brush engine settings (the stamp-based Brush tool only).
+    void setBrushToolSize(int px);       // 1..200, canvas pixels
+    void setBrushOpacity(int percent);   // 0..100
+    void setBrushHardness(int percent);  // 0..100 (100 = sharp edge)
+    void setPressureToSize(bool on);
+    void setPressureToOpacity(bool on);
+
 signals:
     void contentChanged();
     void layersChanged(); // layer added/removed by the canvas (image import)
@@ -64,6 +73,7 @@ protected:
     void mousePressEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
     void mouseReleaseEvent(QMouseEvent *event) override;
+    void tabletEvent(QTabletEvent *event) override;
     void wheelEvent(QWheelEvent *event) override;
     void keyPressEvent(QKeyEvent *event) override;
     void keyReleaseEvent(QKeyEvent *event) override;
@@ -86,6 +96,13 @@ private:
     void drawSegment(const QPoint &from, const QPoint &to, const QColor &color);
     void floodFill(const QPoint &seed);
 
+    // Stamp-based brush stroke pipeline (mouse pressure = 1.0; tablet = real).
+    QPointF toCanvasF(const QPointF &widgetPoint) const; // float, unclamped
+    void beginBrushStroke(const QPointF &canvasPt, qreal pressure);
+    void moveBrushStroke(const QPointF &canvasPt, qreal pressure);
+    void endBrushStroke();
+    void stampDab(const QPointF &center, qreal pressure);
+
     Panel *m_panel = nullptr;
     Tool m_tool = Brush;
     QColor m_color = Qt::black;
@@ -96,6 +113,17 @@ private:
     bool m_previewLine = false;
     QPoint m_lineStart;      // widget coords
     QPoint m_lineCurrent;    // widget coords
+
+    // Brush engine state. Defaults mirror the initial settings-panel values.
+    int m_brushToolSize = 25;        // dab diameter, canvas px
+    double m_brushToolOpacity = 1.0; // 0..1
+    double m_brushHardness = 0.8;    // 0..1
+    bool m_pressureToSize = true;
+    bool m_pressureToOpacity = false;
+    bool m_brushStroke = false;      // brush stroke in progress
+    QPointF m_lastBrushPt;           // canvas coords, float
+    qreal m_lastBrushPressure = 1.0;
+    double m_stampResidual = 0.0;    // distance travelled since the last dab
 
     bool m_onionSkin = false;
     QPixmap m_ghost;         // precomputed blue-tinted ghost (display only)

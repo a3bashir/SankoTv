@@ -4,6 +4,7 @@
 #include "StoryboardModel.h"
 
 #include <QButtonGroup>
+#include <QCheckBox>
 #include <QColorDialog>
 #include <QComboBox>
 #include <QEvent>
@@ -267,6 +268,7 @@ QWidget *StoryboardPage::createCenterColumn()
     drawLayout->setSpacing(0);
 
     drawLayout->addWidget(createToolbar());
+    drawLayout->addWidget(createBrushSettings()); // hidden until Brush is active
 
     m_canvas = new DrawingCanvas;
     connect(m_canvas, &DrawingCanvas::contentChanged, this, &StoryboardPage::refreshCurrentThumb);
@@ -294,23 +296,35 @@ QWidget *StoryboardPage::createToolbar()
     QButtonGroup *tools = new QButtonGroup(this);
     tools->setExclusive(true);
 
-    QPushButton *brush = toolButton(QStringLiteral("Pen"), QStringLiteral("Brush \xE2\x80\x94 freehand"));
+    QPushButton *pen = toolButton(QStringLiteral("Pen"), QStringLiteral("Pen \xE2\x80\x94 hard freehand line"));
+    QPushButton *brushTool = toolButton(QStringLiteral("Brush"),
+                                        QStringLiteral("Brush \xE2\x80\x94 pressure-sensitive, soft-edged"));
     QPushButton *eraser = toolButton(QStringLiteral("Erase"), QStringLiteral("Eraser"));
     QPushButton *line = toolButton(QStringLiteral("Line"), QStringLiteral("Straight line (click-drag)"));
     QPushButton *fill = toolButton(QStringLiteral("Fill"), QStringLiteral("Flood fill"));
-    brush->setChecked(true);
+    pen->setChecked(true);
 
-    tools->addButton(brush);
+    tools->addButton(pen);
+    tools->addButton(brushTool);
     tools->addButton(eraser);
     tools->addButton(line);
     tools->addButton(fill);
 
-    connect(brush, &QPushButton::clicked, this, [this] { m_canvas->setTool(DrawingCanvas::Brush); });
+    connect(pen, &QPushButton::clicked, this, [this] { m_canvas->setTool(DrawingCanvas::Pen); });
+    connect(brushTool, &QPushButton::clicked, this, [this] { m_canvas->setTool(DrawingCanvas::Brush); });
     connect(eraser, &QPushButton::clicked, this, [this] { m_canvas->setTool(DrawingCanvas::Eraser); });
     connect(line, &QPushButton::clicked, this, [this] { m_canvas->setTool(DrawingCanvas::Line); });
     connect(fill, &QPushButton::clicked, this, [this] { m_canvas->setTool(DrawingCanvas::Fill); });
 
-    layout->addWidget(brush);
+    // The brush settings panel tracks the Brush tool's checked state (the
+    // exclusive group unchecks it when any other tool is picked).
+    connect(brushTool, &QPushButton::toggled, this, [this](bool on) {
+        if (m_brushPanel)
+            m_brushPanel->setVisible(on);
+    });
+
+    layout->addWidget(pen);
+    layout->addWidget(brushTool);
     layout->addWidget(eraser);
     layout->addWidget(line);
     layout->addWidget(fill);
@@ -395,6 +409,125 @@ QWidget *StoryboardPage::createToolbar()
     layout->addWidget(clear);
 
     return toolbar;
+}
+
+// Narrow settings column between the toolbar and the canvas; visible only
+// while the Brush tool is active. Initial values mirror DrawingCanvas's
+// brush defaults (size 25, opacity 100%, hardness 80%, P->size on).
+QWidget *StoryboardPage::createBrushSettings()
+{
+    m_brushPanel = new QWidget;
+    m_brushPanel->setAttribute(Qt::WA_StyledBackground, true);
+    m_brushPanel->setFixedWidth(150);
+    m_brushPanel->setStyleSheet(QStringLiteral(
+        "background-color: #111111; border-right: 1px solid #1f1f1f;"));
+    m_brushPanel->setVisible(false);
+
+    QVBoxLayout *layout = new QVBoxLayout(m_brushPanel);
+    layout->setContentsMargins(10, 12, 10, 12);
+    layout->setSpacing(6);
+
+    const QString captionStyle = QStringLiteral("color: #777777; font-size: 10px; border: none;");
+    const QString checkStyle = QStringLiteral(
+        "QCheckBox { color: #cccccc; font-size: 11px; border: none; }"
+        "QCheckBox::indicator { width: 12px; height: 12px; border: 1px solid #2a2a2a;"
+        " border-radius: 2px; background: #1c1c1c; }"
+        "QCheckBox::indicator:checked { background: #f5a623; border-color: #f5a623; }");
+
+    QLabel *header = new QLabel(QStringLiteral("BRUSH"));
+    header->setStyleSheet(QStringLiteral(
+        "color: #888888; font-size: 10px; font-weight: 600; letter-spacing: 1px; border: none;"));
+    layout->addWidget(header);
+
+    // Each slider gets a caption that live-updates with its value.
+    auto addSlider = [&](const QString &name, int min, int max, int value,
+                         QSlider *&outSlider) -> QLabel * {
+        QLabel *caption = new QLabel(QStringLiteral("%1  %2").arg(name).arg(value));
+        caption->setStyleSheet(captionStyle);
+        layout->addWidget(caption);
+        outSlider = new QSlider(Qt::Horizontal);
+        outSlider->setRange(min, max);
+        outSlider->setValue(value);
+        layout->addWidget(outSlider);
+        connect(outSlider, &QSlider::valueChanged, this, [caption, name](int v) {
+            caption->setText(QStringLiteral("%1  %2").arg(name).arg(v));
+        });
+        return caption;
+    };
+
+    addSlider(QStringLiteral("Size"), 1, 200, 25, m_brushSizeSlider);
+    addSlider(QStringLiteral("Opacity"), 0, 100, 100, m_brushOpacitySlider);
+    addSlider(QStringLiteral("Hardness"), 0, 100, 80, m_brushHardnessSlider);
+
+    connect(m_brushSizeSlider, &QSlider::valueChanged, this,
+            [this](int v) { m_canvas->setBrushToolSize(v); });
+    connect(m_brushOpacitySlider, &QSlider::valueChanged, this,
+            [this](int v) { m_canvas->setBrushOpacity(v); });
+    connect(m_brushHardnessSlider, &QSlider::valueChanged, this,
+            [this](int v) { m_canvas->setBrushHardness(v); });
+
+    m_pressureSizeCheck = new QCheckBox(QString::fromUtf8("Pressure \xE2\x86\x92 Size"));
+    m_pressureSizeCheck->setStyleSheet(checkStyle);
+    m_pressureSizeCheck->setChecked(true); // default ON (before connect: no null-canvas call)
+    connect(m_pressureSizeCheck, &QCheckBox::toggled, this,
+            [this](bool on) { m_canvas->setPressureToSize(on); });
+    layout->addWidget(m_pressureSizeCheck);
+
+    m_pressureOpacityCheck = new QCheckBox(QString::fromUtf8("Pressure \xE2\x86\x92 Opacity"));
+    m_pressureOpacityCheck->setStyleSheet(checkStyle);
+    m_pressureOpacityCheck->setChecked(false); // default OFF
+    connect(m_pressureOpacityCheck, &QCheckBox::toggled, this,
+            [this](bool on) { m_canvas->setPressureToOpacity(on); });
+    layout->addWidget(m_pressureOpacityCheck);
+
+    QLabel *presetHeader = new QLabel(QStringLiteral("PRESETS"));
+    presetHeader->setStyleSheet(QStringLiteral(
+        "color: #888888; font-size: 10px; font-weight: 600; letter-spacing: 1px;"
+        " border: none; margin-top: 6px;"));
+    layout->addWidget(presetHeader);
+
+    const QString presetStyle = QStringLiteral(
+        "QPushButton { background-color: #1c1c1c; color: #cccccc; border: 1px solid #2a2a2a;"
+        " border-radius: 4px; font-size: 11px; padding: 4px; }"
+        "QPushButton:hover { border-color: #f5a623; color: #f5a623; }");
+    struct Preset { const char *name; int size, opacity, hardness; bool pSize, pOpacity; };
+    const Preset presets[] = {
+        {"Hard Pencil", 3, 100, 95, true, false},
+        {"Soft Brush", 40, 80, 20, true, true},
+        {"Marker", 25, 60, 70, false, false},
+        {"Ink", 6, 100, 90, true, false},
+    };
+    for (const Preset &p : presets) {
+        QPushButton *button = new QPushButton(QString::fromLatin1(p.name));
+        button->setCursor(Qt::PointingHandCursor);
+        button->setStyleSheet(presetStyle);
+        const Preset preset = p;
+        connect(button, &QPushButton::clicked, this, [this, preset] {
+            applyBrushPreset(preset.size, preset.opacity, preset.hardness,
+                             preset.pSize, preset.pOpacity);
+        });
+        layout->addWidget(button);
+    }
+
+    layout->addStretch(1);
+    return m_brushPanel;
+}
+
+// Presets drive the UI controls; their change signals push into the canvas,
+// so the sliders, checkboxes, and brush engine always agree.
+void StoryboardPage::applyBrushPreset(int size, int opacityPct, int hardnessPct,
+                                      bool pressureSize, bool pressureOpacity)
+{
+    if (m_brushSizeSlider)
+        m_brushSizeSlider->setValue(size);
+    if (m_brushOpacitySlider)
+        m_brushOpacitySlider->setValue(opacityPct);
+    if (m_brushHardnessSlider)
+        m_brushHardnessSlider->setValue(hardnessPct);
+    if (m_pressureSizeCheck)
+        m_pressureSizeCheck->setChecked(pressureSize);
+    if (m_pressureOpacityCheck)
+        m_pressureOpacityCheck->setChecked(pressureOpacity);
 }
 
 void StoryboardPage::rebuildPanelStrip()

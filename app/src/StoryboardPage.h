@@ -5,6 +5,7 @@
 #include <QWidget>
 
 class DrawingCanvas;
+class QCheckBox;
 class QComboBox;
 class QHBoxLayout;
 class QJsonArray;
@@ -56,7 +57,10 @@ private:
     QWidget *createRightColumn();
     QWidget *createLayerPanel();
     QWidget *createToolbar();
+    QWidget *createBrushSettings(); // side panel shown while the Brush tool is active
     QWidget *createBottomBar();
+    void applyBrushPreset(int size, int opacityPct, int hardnessPct,
+                          bool pressureSize, bool pressureOpacity);
 
     // Layer panel (docked, right of the canvas).
     void rebuildLayerPanel();     // rows from the current panel's layer stack
@@ -118,6 +122,13 @@ private:
     QScrollArea *m_panelScroll = nullptr;
     QPushButton *m_onionButton = nullptr;
     QPushButton *m_importButton = nullptr;
+    // Brush settings panel (visible only while the Brush tool is active).
+    QWidget *m_brushPanel = nullptr;
+    QSlider *m_brushSizeSlider = nullptr;
+    QSlider *m_brushOpacitySlider = nullptr;
+    QSlider *m_brushHardnessSlider = nullptr;
+    QCheckBox *m_pressureSizeCheck = nullptr;
+    QCheckBox *m_pressureOpacityCheck = nullptr;
     // Fixed control column (left of the panel strip).
     QPushButton *m_addPanelButton = nullptr;
     QPushButton *m_dupPanelButton = nullptr;
