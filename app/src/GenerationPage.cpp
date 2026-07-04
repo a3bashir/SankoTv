@@ -5,6 +5,7 @@
 #include <QAudioOutput>
 #include <QBuffer>
 #include <QCoreApplication>
+#include <QDateTime>
 #include <QDialog>
 #include <QDir>
 #include <QFile>
@@ -23,10 +24,12 @@
 #include <QPainter>
 #include <QPropertyAnimation>
 #include <QPushButton>
+#include <QRegularExpression>
 #include <QScrollArea>
 #include <QStandardPaths>
 #include <QTimer>
 #include <QUrl>
+#include <QUuid>
 #include <QVBoxLayout>
 #include <QVideoWidget>
 
@@ -262,13 +265,22 @@ QWidget *GenerationPage::buildRow(int index)
 {
     Row &row = m_rows[index];
 
+    // Outer container: the shot row, plus a takes filmstrip beneath it.
     QWidget *w = new QWidget;
     w->setAttribute(Qt::WA_StyledBackground, true);
-    w->setFixedHeight(90);
-    w->setStyleSheet(QStringLiteral(
-        "background-color: #121212; border: 1px solid #1f1f1f; border-radius: 6px;"));
+    QVBoxLayout *outer = new QVBoxLayout(w);
+    outer->setContentsMargins(0, 0, 0, 0);
+    outer->setSpacing(0);
 
-    QHBoxLayout *hl = new QHBoxLayout(w);
+    QWidget *mainRow = new QWidget;
+    row.mainRow = mainRow;
+    mainRow->setAttribute(Qt::WA_StyledBackground, true);
+    mainRow->setFixedHeight(90);
+    mainRow->setStyleSheet(QStringLiteral(
+        "background-color: #121212; border: 1px solid #1f1f1f; border-radius: 6px;"));
+    outer->addWidget(mainRow);
+
+    QHBoxLayout *hl = new QHBoxLayout(mainRow);
     hl->setContentsMargins(10, 10, 10, 10);
     hl->setSpacing(12);
 
@@ -278,8 +290,8 @@ QWidget *GenerationPage::buildRow(int index)
     thumb->setStyleSheet(QStringLiteral("border: 1px solid #2a2a2a; border-radius: 3px;"));
     thumb->setScaledContents(false);
     thumb->setAlignment(Qt::AlignCenter);
-    QPixmap pm = row.panel->pixmap.scaled(120, 68, Qt::KeepAspectRatio,
-                                          Qt::SmoothTransformation);
+    QPixmap pm = row.panel->flattenedPixmap().scaled(120, 68, Qt::KeepAspectRatio,
+                                                     Qt::SmoothTransformation);
     thumb->setPixmap(pm);
     hl->addWidget(thumb);
 
@@ -370,6 +382,16 @@ QWidget *GenerationPage::buildRow(int index)
     connect(row.generateBtn, &QPushButton::clicked, this, [this, index] { queueRow(index); });
     hl->addWidget(row.generateBtn);
 
+    // Takes filmstrip beneath the row (hidden until the panel has takes).
+    row.takesStrip = new QWidget;
+    row.takesStrip->setStyleSheet(QStringLiteral("background: transparent;"));
+    row.takesLayout = new QHBoxLayout(row.takesStrip);
+    row.takesLayout->setContentsMargins(12, 2, 12, 6);
+    row.takesLayout->setSpacing(6);
+    row.takesLayout->addStretch(1);
+    outer->addWidget(row.takesStrip);
+
+    rebuildTakesStrip(index);
     refreshRow(index);
     return w;
 }
@@ -401,22 +423,124 @@ void GenerationPage::refreshRow(int index)
         if (showRetry)
             row.retryLabel->setText(QStringLiteral("(retry %1/2)").arg(row.retryCount));
     }
-    const bool complete = (status == QLatin1String("Complete"));
+    // Cost label: total across ALL of this row's takes.
+    const double cost = rowTakesCost(row.panel);
     if (row.costLabel) {
-        row.costLabel->setVisible(complete);
-        if (complete)
-            row.costLabel->setText(QStringLiteral("~$%1")
-                                       .arg(clipCost(row.panel->duration), 0, 'f', 2));
+        row.costLabel->setVisible(cost > 0.0);
+        if (cost > 0.0)
+            row.costLabel->setText(QStringLiteral("~$%1").arg(cost, 0, 'f', 2));
+    }
+
+    // Main-row Preview shows when the SELECTED take is complete.
+    bool selectedComplete = false;
+    for (const GeneratedTake &t : row.panel->takes) {
+        if (t.id == row.panel->selectedTakeId && t.status == QLatin1String("Complete")) {
+            selectedComplete = true;
+            break;
+        }
     }
     if (row.previewBtn)
-        row.previewBtn->setVisible(status == QLatin1String("Complete"));
+        row.previewBtn->setVisible(selectedComplete);
+
+    // The standalone Retry button is superseded by "Generate Another Take".
     if (row.retryBtn)
-        row.retryBtn->setVisible(status == QLatin1String("Failed"));
-    if (row.generateBtn)
-        row.generateBtn->setVisible(status == QLatin1String("Not Queued")
-                                    || status == QLatin1String("Failed"));
+        row.retryBtn->setVisible(false);
+
+    // Generate / Generate Another Take: available whenever not mid-generation.
+    if (row.generateBtn) {
+        const bool hasTakes = !row.panel->takes.isEmpty();
+        row.generateBtn->setText(hasTakes ? QStringLiteral("Generate Another Take")
+                                          : QStringLiteral("Generate"));
+        const bool busy = (status == QLatin1String("Generating")
+                           || status == QLatin1String("Queued"));
+        row.generateBtn->setVisible(!busy);
+    }
     if (row.promptLink)
         row.promptLink->setVisible(!row.prompt.isEmpty());
+}
+
+void GenerationPage::rebuildTakesStrip(int index)
+{
+    if (index < 0 || index >= m_rows.size())
+        return;
+    Row &row = m_rows[index];
+    if (!row.takesLayout || !row.takesStrip)
+        return;
+
+    // Clear existing chips (leave the trailing stretch to be re-added).
+    while (QLayoutItem *item = row.takesLayout->takeAt(0)) {
+        if (QWidget *wdg = item->widget())
+            wdg->deleteLater();
+        delete item;
+    }
+
+    const QVector<GeneratedTake> &takes = row.panel->takes;
+    row.takesStrip->setVisible(!takes.isEmpty());
+    if (takes.isEmpty()) {
+        row.takesLayout->addStretch(1);
+        return;
+    }
+
+    for (int i = 0; i < takes.size(); ++i) {
+        const GeneratedTake &t = takes.at(i);
+        const bool selected = (t.id == row.panel->selectedTakeId);
+        const bool complete = (t.status == QLatin1String("Complete"));
+        const QString takeId = t.id;
+
+        QWidget *chip = new QWidget;
+        chip->setAttribute(Qt::WA_StyledBackground, true);
+        chip->setStyleSheet(QStringLiteral(
+            "background-color: #161616; border: 1px solid %1; border-radius: 3px;")
+            .arg(selected ? QStringLiteral("#f5a623") : QStringLiteral("#2a2a2a")));
+        QHBoxLayout *cl = new QHBoxLayout(chip);
+        cl->setContentsMargins(6, 2, 6, 2);
+        cl->setSpacing(4);
+
+        // Dot: green = complete, red = failed, amber = still generating.
+        const QString dotColor = complete
+            ? QStringLiteral("#4dff91")
+            : (t.status == QLatin1String("Failed") ? QStringLiteral("#e0504a")
+                                                   : QStringLiteral("#f5a623"));
+        QLabel *dot = new QLabel(QString::fromUtf8("\xE2\x97\x8F")); // filled dot
+        dot->setStyleSheet(QStringLiteral("color: %1; font-size: 8px; border: none;")
+                               .arg(dotColor));
+        cl->addWidget(dot);
+
+        // "Take N" doubles as the select action for the chip.
+        QPushButton *sel = new QPushButton(QStringLiteral("Take %1").arg(i + 1));
+        sel->setCursor(Qt::PointingHandCursor);
+        sel->setStyleSheet(QStringLiteral(
+            "QPushButton { color: #cccccc; background: transparent; border: none;"
+            " font-size: 7pt; } QPushButton:hover { color: #ffffff; }"));
+        connect(sel, &QPushButton::clicked, this,
+                [this, index, takeId] { selectTake(index, takeId); });
+        cl->addWidget(sel);
+
+        if (complete) {
+            QPushButton *pv = new QPushButton(QString::fromUtf8("\xE2\x96\xB6"));
+            pv->setCursor(Qt::PointingHandCursor);
+            pv->setToolTip(QStringLiteral("Preview this take"));
+            pv->setStyleSheet(QStringLiteral(
+                "QPushButton { color: #4dff91; background: transparent; border: none;"
+                " font-size: 7pt; } QPushButton:hover { color: #8f82ff; }"));
+            connect(pv, &QPushButton::clicked, this,
+                    [this, index, takeId] { previewTake(index, takeId); });
+            cl->addWidget(pv);
+        }
+
+        QPushButton *del = new QPushButton(QString::fromUtf8("\xC3\x97")); // times
+        del->setCursor(Qt::PointingHandCursor);
+        del->setToolTip(QStringLiteral("Delete this take"));
+        del->setStyleSheet(QStringLiteral(
+            "QPushButton { color: #888888; background: transparent; border: none;"
+            " font-size: 9pt; } QPushButton:hover { color: #e0504a; }"));
+        connect(del, &QPushButton::clicked, this,
+                [this, index, takeId] { deleteTake(index, takeId); });
+        cl->addWidget(del);
+
+        row.takesLayout->addWidget(chip);
+    }
+    row.takesLayout->addStretch(1);
 }
 
 // --- Queue processing -----------------------------------------------------
@@ -460,10 +584,24 @@ void GenerationPage::processQueue()
     if (m_processing != -1)
         return; // already busy; one job at a time
     for (int i = 0; i < m_rows.size(); ++i) {
-        if (m_rows.at(i).panel->generationStatus == QLatin1String("Queued")) {
+        Row &row = m_rows[i];
+        if (row.panel->generationStatus == QLatin1String("Queued")) {
             m_processing = i;
-            m_rows[i].panel->generationStatus = QStringLiteral("Generating");
+            row.panel->generationStatus = QStringLiteral("Generating");
+
+            // A generation appends a NEW take (it never overwrites). The take's
+            // own file lives at generated_s{}_p{}_take{N}.mp4.
+            GeneratedTake take;
+            take.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+            const int n = nextTakeNumber(row.panel);
+            take.videoPath = QStringLiteral("generated_s%1_p%2_take%3.mp4")
+                                 .arg(row.sceneIndex).arg(row.panelIndex).arg(n);
+            take.status = QStringLiteral("Generating");
+            row.panel->takes.append(take);
+            row.activeTakeId = take.id;
+
             refreshRow(i);
+            rebuildTakesStrip(i);
             startClaudePrompt(i);
             return;
         }
@@ -512,7 +650,7 @@ QString GenerationPage::buildClaudeRequestBody(int index) const
 
     // The storyboard drawing is attached to the request (and described as the
     // action source) only when the panel actually has artwork.
-    const bool attachImage = !isBlankPixmap(panel->pixmap);
+    const bool attachImage = !isBlankPixmap(panel->flattenedPixmap());
 
     QString userContent = QStringLiteral(
         "Write a single optimized text-to-video generation prompt for an AI video "
@@ -599,7 +737,7 @@ QString GenerationPage::buildClaudeRequestBody(int index) const
         QByteArray png;
         QBuffer buffer(&png);
         buffer.open(QIODevice::WriteOnly);
-        panel->pixmap.save(&buffer, "PNG");
+        panel->flattenedPixmap().save(&buffer, "PNG");
         buffer.close();
 
         QJsonObject source;
@@ -718,7 +856,7 @@ void GenerationPage::callFal(int index)
 
     Row &row = m_rows[index];
     const int clampedDuration = (qBound(1, row.panel->duration, 30) <= 7) ? 5 : 10;
-    const bool useImage = !isBlankPixmap(row.panel->pixmap);
+    const bool useImage = !isBlankPixmap(row.panel->flattenedPixmap());
 
     QJsonObject body;
     body[QStringLiteral("prompt")] = row.prompt;
@@ -732,7 +870,7 @@ void GenerationPage::callFal(int index)
         QByteArray png;
         QBuffer buffer(&png);
         buffer.open(QIODevice::WriteOnly);
-        row.panel->pixmap.save(&buffer, "PNG");
+        row.panel->flattenedPixmap().save(&buffer, "PNG");
         buffer.close();
         body[QStringLiteral("image_url")] =
             QStringLiteral("data:image/png;base64,") + QString::fromLatin1(png.toBase64());
@@ -876,16 +1014,25 @@ void GenerationPage::onVideoDownloaded(int index, QNetworkReply *reply)
     const QByteArray bytes = reply->readAll();
 
     Row &row = m_rows[index];
+
+    // Locate the take this download belongs to.
+    GeneratedTake *take = nullptr;
+    for (GeneratedTake &t : row.panel->takes) {
+        if (t.id == row.activeTakeId) { take = &t; break; }
+    }
+    if (!take) {
+        failRow(index, QStringLiteral("Internal error: no active take for this download."));
+        return;
+    }
+
     QString dir = m_projectDir;
     if (dir.isEmpty())
         dir = QDir::tempPath() + QStringLiteral("/sankotv_generated");
     QDir().mkpath(dir);
 
-    const QString fileName =
-        QStringLiteral("generated_s%1_p%2.mp4").arg(row.sceneIndex).arg(row.panelIndex);
+    const QString fileName = take->videoPath; // generated_s{}_p{}_take{N}.mp4
     const QString finalPath = dir + QStringLiteral("/") + fileName;
-    const QString rawPath = dir
-        + QStringLiteral("/generated_s%1_p%2_raw.mp4").arg(row.sceneIndex).arg(row.panelIndex);
+    const QString rawPath = dir + QStringLiteral("/raw_") + fileName;
 
     // Write the raw download first; it may then be trimmed into finalPath.
     QFile raw(rawPath);
@@ -934,16 +1081,33 @@ void GenerationPage::onVideoDownloaded(int index, QNetworkReply *reply)
         }
     }
 
-    row.panel->generatedVideoPath = fileName; // relative, like panel PNGs
-    row.panel->generationStatus = QStringLiteral("Complete");
-    row.retryCount = 0;
+    // Finalize the take record.
+    take->status = QStringLiteral("Complete");
+    take->promptUsed = row.prompt;
+    take->timestamp =
+        QDateTime::currentDateTime().toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"));
+    take->costEstimate = clipCost(row.panel->duration);
 
-    // Cost estimate for this clip, and add it to the running session total.
-    row.costEstimate = clipCost(row.panel->duration);
-    m_sessionCost += row.costEstimate;
+    // Cost tracking sums ALL takes (every generation cost money).
+    m_sessionCost += take->costEstimate;
     updateSessionCost();
 
+    // Auto-select the first successful take; the director may re-choose later.
+    if (row.panel->selectedTakeId.isEmpty())
+        row.panel->selectedTakeId = take->id;
+
+    // Keep the generatedVideoPath mirror in sync with the selected take.
+    for (const GeneratedTake &t : row.panel->takes) {
+        if (t.id == row.panel->selectedTakeId)
+            row.panel->generatedVideoPath = t.videoPath;
+    }
+
+    row.panel->generationStatus = QStringLiteral("Complete");
+    row.retryCount = 0;
+    row.activeTakeId.clear();
+
     refreshRow(index);
+    rebuildTakesStrip(index);
     finishRow(index);
 }
 
@@ -968,8 +1132,19 @@ void GenerationPage::failRow(int index, const QString &message, bool retryable)
         return;
     }
 
+    // Retries exhausted: mark the active take (if any) as Failed.
+    for (GeneratedTake &t : row.panel->takes) {
+        if (t.id == row.activeTakeId) {
+            t.status = QStringLiteral("Failed");
+            t.timestamp =
+                QDateTime::currentDateTime().toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"));
+            break;
+        }
+    }
+    row.activeTakeId.clear();
     row.panel->generationStatus = QStringLiteral("Failed");
     refreshRow(index);
+    rebuildTakesStrip(index);
     finishRow(index);
 }
 
@@ -977,20 +1152,21 @@ void GenerationPage::failRow(int index, const QString &message, bool retryable)
 
 void GenerationPage::openPreview(int index)
 {
+    // The main-row Preview plays the currently selected take.
     const Row &row = m_rows.at(index);
-    QString dir = m_projectDir;
-    if (dir.isEmpty())
-        dir = QDir::tempPath() + QStringLiteral("/sankotv_generated");
-    const QString path = dir + QStringLiteral("/") + row.panel->generatedVideoPath;
-    if (row.panel->generatedVideoPath.isEmpty() || !QFileInfo::exists(path)) {
+    previewTake(index, row.panel->selectedTakeId);
+}
+
+void GenerationPage::openVideoDialog(const QString &path, const QString &title)
+{
+    if (path.isEmpty() || !QFileInfo::exists(path)) {
         QMessageBox::warning(this, QStringLiteral("Preview"),
                              QStringLiteral("The generated video file could not be found."));
         return;
     }
 
     QDialog dialog(this);
-    dialog.setWindowTitle(QStringLiteral("Preview — Scene %1 Panel %2")
-                              .arg(row.scene->number).arg(row.panelIndex + 1));
+    dialog.setWindowTitle(title);
     dialog.resize(800, 480);
     dialog.setStyleSheet(QStringLiteral("background-color: #0a0a0a;"));
 
@@ -1017,4 +1193,97 @@ void GenerationPage::openPreview(int index)
     player->play();
     dialog.exec();
     player->stop();
+}
+
+// --- Version tree (takes) -------------------------------------------------
+
+int GenerationPage::nextTakeNumber(const Panel *panel)
+{
+    // Never reuse a number, even across deletes/reloads: max existing + 1.
+    int maxN = 0;
+    static const QRegularExpression re(QStringLiteral("_take(\\d+)\\.mp4$"));
+    for (const GeneratedTake &t : panel->takes) {
+        const auto m = re.match(t.videoPath);
+        if (m.hasMatch())
+            maxN = qMax(maxN, m.captured(1).toInt());
+    }
+    return maxN + 1;
+}
+
+double GenerationPage::rowTakesCost(const Panel *panel) const
+{
+    double sum = 0.0;
+    for (const GeneratedTake &t : panel->takes)
+        sum += t.costEstimate;
+    return sum;
+}
+
+void GenerationPage::previewTake(int index, const QString &takeId)
+{
+    if (index < 0 || index >= m_rows.size())
+        return;
+    const Row &row = m_rows.at(index);
+    QString videoPath;
+    for (const GeneratedTake &t : row.panel->takes) {
+        if (t.id == takeId) { videoPath = t.videoPath; break; }
+    }
+    QString dir = m_projectDir;
+    if (dir.isEmpty())
+        dir = QDir::tempPath() + QStringLiteral("/sankotv_generated");
+    openVideoDialog(dir + QStringLiteral("/") + videoPath,
+                    QStringLiteral("Preview - Scene %1 Panel %2")
+                        .arg(row.scene->number).arg(row.panelIndex + 1));
+}
+
+void GenerationPage::selectTake(int index, const QString &takeId)
+{
+    if (index < 0 || index >= m_rows.size())
+        return;
+    Row &row = m_rows[index];
+    row.panel->selectedTakeId = takeId;
+    for (const GeneratedTake &t : row.panel->takes) {
+        if (t.id == takeId)
+            row.panel->generatedVideoPath = t.videoPath; // mirror for Export/Save
+    }
+    refreshRow(index);
+    rebuildTakesStrip(index);
+}
+
+void GenerationPage::deleteTake(int index, const QString &takeId)
+{
+    if (index < 0 || index >= m_rows.size())
+        return;
+    Row &row = m_rows[index];
+
+    // Remove the take and delete its video file.
+    QString dir = m_projectDir;
+    if (dir.isEmpty())
+        dir = QDir::tempPath() + QStringLiteral("/sankotv_generated");
+    for (int i = 0; i < row.panel->takes.size(); ++i) {
+        if (row.panel->takes.at(i).id == takeId) {
+            QFile::remove(dir + QStringLiteral("/") + row.panel->takes.at(i).videoPath);
+            row.panel->takes.removeAt(i);
+            break;
+        }
+    }
+
+    // If the deleted take was selected, fall back to the most recent remaining.
+    if (row.panel->selectedTakeId == takeId) {
+        row.panel->selectedTakeId.clear();
+        row.panel->generatedVideoPath.clear();
+        for (int i = row.panel->takes.size() - 1; i >= 0; --i) {
+            if (row.panel->takes.at(i).status == QLatin1String("Complete")) {
+                row.panel->selectedTakeId = row.panel->takes.at(i).id;
+                row.panel->generatedVideoPath = row.panel->takes.at(i).videoPath;
+                break;
+            }
+        }
+    }
+
+    // Reflect a now-empty version tree in the panel status.
+    if (row.panel->takes.isEmpty())
+        row.panel->generationStatus = QStringLiteral("Not Queued");
+
+    refreshRow(index);
+    rebuildTakesStrip(index);
 }

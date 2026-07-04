@@ -513,7 +513,7 @@ void AnimaticPage::showPanel(int index)
     m_current = index;
     m_elapsedMsInCurrentPanel = 0; // playhead restarts at the new panel's left edge
     const Item &it = m_items.at(index);
-    m_display->setPixmap(it.panel->pixmap);
+    m_display->setPixmap(it.panel->flattenedPixmap());
     m_caption->setText(QString::fromUtf8("Scene %1 \xE2\x80\x94 Panel %2")
                            .arg(it.sceneNumber)
                            .arg(it.panelInScene));
@@ -920,7 +920,7 @@ void AnimaticPage::onExportMp4()
     int frameIndex = 0;
     bool cancelled = false;
     for (const Item &it : m_items) {
-        const QImage frame = renderExportFrame(it.panel->pixmap);
+        const QImage frame = renderExportFrame(it.panel->flattenedPixmap());
         const int copies = qMax(1, it.panel->duration) * kFps;
         for (int c = 0; c < copies; ++c) {
             if (progress.wasCanceled()) {

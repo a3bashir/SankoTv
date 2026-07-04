@@ -594,7 +594,7 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
                 if (b.sceneIndex < m_scenes.size()) {
                     Scene *sc = m_scenes.at(b.sceneIndex);
                     if (b.panelIndex < sc->panels.size())
-                        pix = sc->panels.at(b.panelIndex)->pixmap;
+                        pix = sc->panels.at(b.panelIndex)->flattenedPixmap();
                 }
 
                 p.save();

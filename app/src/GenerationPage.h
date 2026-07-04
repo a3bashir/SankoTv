@@ -4,6 +4,7 @@
 #include <QVector>
 #include <QWidget>
 
+class QHBoxLayout;
 class QLabel;
 class QNetworkAccessManager;
 class QNetworkReply;
@@ -11,6 +12,7 @@ class QPushButton;
 class QVBoxLayout;
 
 struct ConsistencyEntry;
+struct GeneratedTake;
 struct Panel;
 struct Scene;
 
@@ -65,19 +67,22 @@ private:
         int panelIndex = 0;
 
         QWidget *widget = nullptr;
+        QWidget *mainRow = nullptr;      // the shot row (thumbnail, badge, buttons)
+        QWidget *takesStrip = nullptr;   // filmstrip of take chips below the row
+        QHBoxLayout *takesLayout = nullptr;
         QLabel *badge = nullptr;
-        QPushButton *generateBtn = nullptr;
-        QPushButton *previewBtn = nullptr;
+        QPushButton *generateBtn = nullptr; // "Generate" / "Generate Another Take"
+        QPushButton *previewBtn = nullptr;  // previews the SELECTED take
         QPushButton *retryBtn = nullptr;
         GenSpinner *spinner = nullptr;
         QLabel *retryLabel = nullptr; // "(retry 1/2)" next to the spinner
-        QLabel *costLabel = nullptr;  // "~$0.05" shown once Complete
+        QLabel *costLabel = nullptr;  // total ~$ across this row's takes
         QLabel *promptLink = nullptr; // tiny "View Prompt" debug link
 
         QString prompt;       // Claude-generated, hidden from the main UI
         QString errorMessage; // shown on the Failed badge tooltip
         int retryCount = 0;     // session-only auto-retry counter (not saved)
-        double costEstimate = 0.0; // ~$ for this clip, set on completion this session
+        QString activeTakeId;   // the take currently being generated
     };
 
     QWidget *createTopBar();
@@ -85,6 +90,14 @@ private:
     void rebuildRows();
     QWidget *buildRow(int index);
     void refreshRow(int index);
+
+    // Version tree (takes) per row.
+    void rebuildTakesStrip(int index);
+    void selectTake(int index, const QString &takeId);
+    void deleteTake(int index, const QString &takeId);
+    void previewTake(int index, const QString &takeId);
+    static int nextTakeNumber(const Panel *panel); // max existing take # + 1
+    double rowTakesCost(const Panel *panel) const; // sum of this row's take costs
 
     // Queue processing (sequential).
     void queueRow(int index);
@@ -114,7 +127,8 @@ private:
     QString buildClaudeRequestBody(int index) const;
     QVector<const ConsistencyEntry *> matchedEntries(int index) const;
     static bool isBlankPixmap(const QPixmap &pixmap);
-    void openPreview(int index);
+    void openPreview(int index); // previews the selected take of a row
+    void openVideoDialog(const QString &path, const QString &title);
 
     QVector<Scene *> m_scenes; // non-owning
     const QVector<ConsistencyEntry> *m_entries = nullptr;
