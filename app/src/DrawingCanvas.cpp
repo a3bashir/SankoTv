@@ -4,6 +4,7 @@
 
 #include <QDragEnterEvent>
 #include <QDropEvent>
+#include <QFileInfo>
 #include <QImage>
 #include <QMessageBox>
 #include <QMimeData>
@@ -41,22 +42,6 @@ bool isImagePath(const QString &path)
     const QString lower = path.toLower();
     return lower.endsWith(QLatin1String(".png")) || lower.endsWith(QLatin1String(".jpg"))
         || lower.endsWith(QLatin1String(".jpeg")) || lower.endsWith(QLatin1String(".webp"));
-}
-
-// True if every pixel is white (RGB ignored alpha) — i.e. an untouched panel.
-bool isBlankPixmap(const QPixmap &pixmap)
-{
-    if (pixmap.isNull())
-        return true;
-    const QImage img = pixmap.toImage().convertToFormat(QImage::Format_ARGB32);
-    for (int y = 0; y < img.height(); ++y) {
-        const QRgb *line = reinterpret_cast<const QRgb *>(img.constScanLine(y));
-        for (int x = 0; x < img.width(); ++x) {
-            if ((line[x] | 0xff000000u) != 0xffffffffu)
-                return false;
-        }
-    }
-    return true;
 }
 
 bool firstImageUrl(const QMimeData *mime, QString *outPath)
@@ -110,44 +95,54 @@ void DrawingCanvas::setPreviousPixmap(const QPixmap &previous)
     update();
 }
 
+// The active layer, but only when it can legally take strokes: locked layers
+// ignore input entirely (no cursor change), hidden layers can't be drawn on
+// (the stroke would be invisible), and a panel with no layers draws nowhere.
+Layer *DrawingCanvas::editableActiveLayer() const
+{
+    if (!m_panel)
+        return nullptr;
+    Layer *layer = m_panel->activeLayer();
+    if (!layer || layer->locked || !layer->visible)
+        return nullptr;
+    return layer;
+}
+
 bool DrawingCanvas::importImage(const QString &filePath)
 {
     if (!m_panel)
         return false;
 
-    QPixmap loaded(filePath);
+    QImage loaded(filePath);
     if (loaded.isNull()) {
         QMessageBox::warning(this, QStringLiteral("Import Image"),
                              QStringLiteral("Could not load the selected image."));
         return false;
     }
 
-    // Warn before replacing an existing drawing (skip if the panel is blank).
-    if (!isBlankPixmap(m_panel->pixmap)) {
-        const auto answer = QMessageBox::question(
-            this, QStringLiteral("Import Image"),
-            QStringLiteral("This will replace the current drawing. Continue?"),
-            QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
-        if (answer != QMessageBox::Yes)
-            return false;
-    }
-
-    pushUndo(); // so Ctrl+Z reverts to the previous drawing
-
-    QPixmap result(canvasSize());
-    result.fill(Qt::black); // pad with the canvas background
+    // The import becomes a NEW image-type layer above the active one — the
+    // existing drawing is never overwritten (delete the layer to discard it).
+    QImage content = makeLayerImage(); // transparent padding around the fit
     {
-        QPainter painter(&result);
+        QPainter painter(&content);
         painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
         QSize target = loaded.size();
         target.scale(canvasSize(), Qt::KeepAspectRatio);
         QRect r(QPoint(0, 0), target);
-        r.moveCenter(result.rect().center());
-        painter.drawPixmap(r, loaded);
+        r.moveCenter(content.rect().center());
+        painter.drawImage(r, loaded);
     }
-    m_panel->pixmap = result;
+
+    Layer layer = makeRasterLayer(QFileInfo(filePath).completeBaseName());
+    layer.type = QStringLiteral("image");
+    layer.image = content;
+
+    const int insertAt = qBound(0, m_panel->activeLayerIndex + 1, m_panel->layers.size());
+    m_panel->layers.insert(insertAt, layer);
+    m_panel->activeLayerIndex = insertAt;
 
     update();
+    emit layersChanged();  // Layer panel rebuilds its rows
     emit contentChanged(); // refreshes the panel thumbnail
     return true;
 }
@@ -184,7 +179,7 @@ double DrawingCanvas::scale() const
     return w > 0 ? w / double(canvasSize().width()) : 1.0;
 }
 
-QPoint DrawingCanvas::toPixmap(const QPoint &widgetPoint) const
+QPoint DrawingCanvas::toCanvas(const QPoint &widgetPoint) const
 {
     const QRect d = displayRect();
     const double s = scale();
@@ -201,21 +196,31 @@ int DrawingCanvas::penWidth() const
     return qMax(1, qRound(m_brushSize / scale()));
 }
 
+// Snapshot the ACTIVE layer's pixels (keyed by layer id, so undo still lands
+// on the right layer after reorders or deletions of other layers).
 void DrawingCanvas::pushUndo()
 {
     if (!m_panel)
         return;
-    m_panel->undoStack.append(m_panel->pixmap.copy());
+    Layer *layer = m_panel->activeLayer();
+    if (!layer)
+        return;
+    m_panel->undoStack.append({layer->id, layer->image.copy()});
     while (m_panel->undoStack.size() > 20)
         m_panel->undoStack.removeFirst();
 }
 
 void DrawingCanvas::drawSegment(const QPoint &from, const QPoint &to, const QColor &color)
 {
-    if (!m_panel)
+    Layer *layer = editableActiveLayer();
+    if (!layer)
         return;
-    QPainter painter(&m_panel->pixmap);
+    QPainter painter(&layer->image);
     painter.setRenderHint(QPainter::Antialiasing, true);
+    // Eraser carves the layer back to TRANSPARENT (revealing layers below /
+    // the white paper) — painting white would smear over lower layers.
+    if (m_tool == Eraser)
+        painter.setCompositionMode(QPainter::CompositionMode_Clear);
     QPen pen(color);
     pen.setWidth(penWidth());
     pen.setCapStyle(Qt::RoundCap);
@@ -228,10 +233,11 @@ void DrawingCanvas::drawSegment(const QPoint &from, const QPoint &to, const QCol
 
 void DrawingCanvas::floodFill(const QPoint &seed)
 {
-    if (!m_panel)
+    Layer *layerPtr = editableActiveLayer();
+    if (!layerPtr)
         return;
 
-    QImage image = m_panel->pixmap.toImage().convertToFormat(QImage::Format_ARGB32);
+    QImage image = layerPtr->image.convertToFormat(QImage::Format_ARGB32);
     if (!image.rect().contains(seed))
         return;
 
@@ -266,25 +272,36 @@ void DrawingCanvas::floodFill(const QPoint &seed)
         }
     }
 
-    m_panel->pixmap = QPixmap::fromImage(image);
+    layerPtr->image = image.convertToFormat(QImage::Format_ARGB32_Premultiplied);
     update();
 }
 
 void DrawingCanvas::undo()
 {
-    if (!m_panel || m_panel->undoStack.isEmpty())
+    if (!m_panel)
         return;
-    m_panel->pixmap = m_panel->undoStack.takeLast();
-    update();
-    emit contentChanged();
+    // Pop entries until one still matches a live layer (the layer of an older
+    // snapshot may have been deleted since).
+    while (!m_panel->undoStack.isEmpty()) {
+        const LayerUndoEntry entry = m_panel->undoStack.takeLast();
+        for (Layer &layer : m_panel->layers) {
+            if (layer.id == entry.layerId) {
+                layer.image = entry.image;
+                update();
+                emit contentChanged();
+                return;
+            }
+        }
+    }
 }
 
 void DrawingCanvas::clearCanvas()
 {
-    if (!m_panel)
+    Layer *layer = editableActiveLayer();
+    if (!layer)
         return;
     pushUndo();
-    m_panel->pixmap.fill(Qt::white);
+    layer->image.fill(Qt::transparent); // clears the ACTIVE layer only
     update();
     emit contentChanged();
 }
@@ -303,10 +320,19 @@ void DrawingCanvas::paintEvent(QPaintEvent *)
 
     const QRect d = displayRect();
     painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
-    painter.drawPixmap(d, m_panel->pixmap);
 
-    // Onion skin: faint blue ghost of the previous panel on top of the opaque
-    // white canvas (display only — never written to Panel::pixmap).
+    // White paper, then every VISIBLE layer bottom-to-top with its opacity.
+    painter.fillRect(d, Qt::white);
+    for (const Layer &layer : m_panel->layers) {
+        if (!layer.visible || layer.image.isNull() || layer.opacity <= 0.0)
+            continue;
+        painter.setOpacity(qBound(0.0, layer.opacity, 1.0));
+        painter.drawImage(d, layer.image);
+    }
+    painter.setOpacity(1.0);
+
+    // Onion skin: faint blue ghost of the previous panel on top of the layers
+    // (display only — never written to any layer).
     if (m_onionSkin && !m_ghost.isNull()) {
         painter.setOpacity(0.30);
         painter.drawPixmap(d, m_ghost);
@@ -316,6 +342,7 @@ void DrawingCanvas::paintEvent(QPaintEvent *)
     painter.setPen(QPen(QColor("#2a2a2a"), 1));
     painter.drawRect(d.adjusted(0, 0, -1, -1));
 
+    // In-progress line preview, always on top of the composite.
     if (m_previewLine) {
         QPen pen(m_color);
         pen.setWidth(m_brushSize);
@@ -331,15 +358,16 @@ void DrawingCanvas::mousePressEvent(QMouseEvent *event)
         return;
     if (!displayRect().contains(event->pos()))
         return;
+    if (!editableActiveLayer())
+        return; // locked / hidden / missing layer: ignore strokes, no cursor change
 
     switch (m_tool) {
     case Brush:
     case Eraser: {
         pushUndo();
         m_drawing = true;
-        m_lastPixmap = toPixmap(event->pos());
-        const QColor c = (m_tool == Eraser) ? QColor(Qt::white) : m_color;
-        drawSegment(m_lastPixmap, m_lastPixmap, c); // dot on click
+        m_lastCanvas = toCanvas(event->pos());
+        drawSegment(m_lastCanvas, m_lastCanvas, m_color); // dot on click (eraser clears)
         break;
     }
     case Line:
@@ -350,7 +378,7 @@ void DrawingCanvas::mousePressEvent(QMouseEvent *event)
         break;
     case Fill:
         pushUndo();
-        floodFill(toPixmap(event->pos()));
+        floodFill(toCanvas(event->pos()));
         emit contentChanged();
         break;
     }
@@ -364,10 +392,9 @@ void DrawingCanvas::mouseMoveEvent(QMouseEvent *event)
         return;
     }
     if (m_drawing) {
-        const QPoint p = toPixmap(event->pos());
-        const QColor c = (m_tool == Eraser) ? QColor(Qt::white) : m_color;
-        drawSegment(m_lastPixmap, p, c);
-        m_lastPixmap = p;
+        const QPoint p = toCanvas(event->pos());
+        drawSegment(m_lastCanvas, p, m_color);
+        m_lastCanvas = p;
     }
 }
 
@@ -376,7 +403,7 @@ void DrawingCanvas::mouseReleaseEvent(QMouseEvent *event)
     if (m_previewLine) {
         m_previewLine = false;
         pushUndo();
-        drawSegment(toPixmap(m_lineStart), toPixmap(event->pos()), m_color);
+        drawSegment(toCanvas(m_lineStart), toCanvas(event->pos()), m_color);
         emit contentChanged();
         return;
     }

@@ -266,8 +266,29 @@ bool MainWindow::saveToPath(const QString &path)
         for (int j = 0; j < scene->panels.size(); ++j) {
             Panel *panel = scene->panels.at(j);
 
+            // Flattened composite — kept for forward-compat (older builds and any
+            // external tool reading pixmapFile still see the merged drawing).
             const QString pngName = QStringLiteral("panel_s%1_p%2.png").arg(i).arg(j);
-            panel->pixmap.save(folder + QStringLiteral("/") + pngName, "PNG");
+            panel->flattenedPixmap().save(folder + QStringLiteral("/") + pngName, "PNG");
+
+            // Layer stack: one PNG per layer + a JSON descriptor array.
+            QJsonArray layersArray;
+            for (int k = 0; k < panel->layers.size(); ++k) {
+                const Layer &layer = panel->layers.at(k);
+                const QString layerPng =
+                    QStringLiteral("panel_s%1_p%2_layer%3.png").arg(i).arg(j).arg(k);
+                layer.image.save(folder + QStringLiteral("/") + layerPng, "PNG");
+
+                QJsonObject layerObj;
+                layerObj[QStringLiteral("id")] = layer.id;
+                layerObj[QStringLiteral("name")] = layer.name;
+                layerObj[QStringLiteral("type")] = layer.type;
+                layerObj[QStringLiteral("visible")] = layer.visible;
+                layerObj[QStringLiteral("opacity")] = layer.opacity;
+                layerObj[QStringLiteral("locked")] = layer.locked;
+                layerObj[QStringLiteral("imageFile")] = layerPng;
+                layersArray.append(layerObj);
+            }
 
             QJsonObject panelObj;
             panelObj[QStringLiteral("duration")] = panel->duration;
@@ -277,9 +298,26 @@ bool MainWindow::saveToPath(const QString &path)
             panelObj[QStringLiteral("mood")] = panel->mood;
             panelObj[QStringLiteral("notes")] = panel->notes;
             panelObj[QStringLiteral("pixmapFile")] = pngName;
+            panelObj[QStringLiteral("layers")] = layersArray;
+            panelObj[QStringLiteral("activeLayerIndex")] = panel->activeLayerIndex;
             panelObj[QStringLiteral("generationStatus")] = panel->generationStatus;
             panelObj[QStringLiteral("generatedVideoPath")] = panel->generatedVideoPath;
             panelObj[QStringLiteral("falRequestId")] = panel->falRequestId;
+
+            // Version tree: all generated takes + which one is selected.
+            QJsonArray takesArray;
+            for (const GeneratedTake &take : panel->takes) {
+                QJsonObject takeObj;
+                takeObj[QStringLiteral("id")] = take.id;
+                takeObj[QStringLiteral("videoPath")] = take.videoPath; // relative filename
+                takeObj[QStringLiteral("promptUsed")] = take.promptUsed;
+                takeObj[QStringLiteral("timestamp")] = take.timestamp;
+                takeObj[QStringLiteral("status")] = take.status;
+                takeObj[QStringLiteral("costEstimate")] = take.costEstimate;
+                takesArray.append(takeObj);
+            }
+            panelObj[QStringLiteral("takes")] = takesArray;
+            panelObj[QStringLiteral("selectedTakeId")] = panel->selectedTakeId;
             panelsArray.append(panelObj);
         }
         sceneObj[QStringLiteral("panels")] = panelsArray;
@@ -397,15 +435,92 @@ bool MainWindow::loadFromPath(const QString &path)
             panel->generatedVideoPath = panelObj.value(QStringLiteral("generatedVideoPath")).toString();
             panel->falRequestId = panelObj.value(QStringLiteral("falRequestId")).toString();
 
-            const QString pngName = panelObj.value(QStringLiteral("pixmapFile")).toString();
-            QPixmap pixmap;
-            if (!pngName.isEmpty())
-                pixmap.load(folder + QStringLiteral("/") + pngName);
-            if (pixmap.isNull()) {
-                pixmap = QPixmap(960, 540);
-                pixmap.fill(Qt::white);
+            // Version tree: reconstruct takes; a take whose file is missing is Failed.
+            panel->takes.clear();
+            const QJsonArray takesArray = panelObj.value(QStringLiteral("takes")).toArray();
+            for (const QJsonValue &tv : takesArray) {
+                const QJsonObject takeObj = tv.toObject();
+                GeneratedTake take;
+                take.id = takeObj.value(QStringLiteral("id")).toString();
+                take.videoPath = takeObj.value(QStringLiteral("videoPath")).toString();
+                take.promptUsed = takeObj.value(QStringLiteral("promptUsed")).toString();
+                take.timestamp = takeObj.value(QStringLiteral("timestamp")).toString();
+                take.status = takeObj.value(QStringLiteral("status")).toString();
+                take.costEstimate = takeObj.value(QStringLiteral("costEstimate")).toDouble();
+                if (take.videoPath.isEmpty()
+                    || !QFileInfo::exists(folder + QStringLiteral("/") + take.videoPath))
+                    take.status = QStringLiteral("Failed");
+                panel->takes.append(take);
             }
-            panel->pixmap = pixmap;
+            panel->selectedTakeId = panelObj.value(QStringLiteral("selectedTakeId")).toString();
+
+            // Migrate pre-takes projects: fold a lone generatedVideoPath into one take.
+            if (panel->takes.isEmpty() && !panel->generatedVideoPath.isEmpty()
+                && panel->generationStatus == QLatin1String("Complete")) {
+                GeneratedTake take;
+                take.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+                take.videoPath = panel->generatedVideoPath;
+                take.status =
+                    QFileInfo::exists(folder + QStringLiteral("/") + take.videoPath)
+                        ? QStringLiteral("Complete")
+                        : QStringLiteral("Failed");
+                panel->takes.append(take);
+                panel->selectedTakeId = take.id;
+            }
+
+            // Keep the generatedVideoPath mirror aligned with the selected take.
+            for (const GeneratedTake &take : panel->takes) {
+                if (take.id == panel->selectedTakeId)
+                    panel->generatedVideoPath = take.videoPath;
+            }
+
+            // Layer stack. New files carry a "layers" array; legacy files (one
+            // PNG per panel) are migrated into a single "Layer 1" raster layer
+            // so old projects open with their drawing intact.
+            panel->layers.clear();
+            const QJsonArray layersArray = panelObj.value(QStringLiteral("layers")).toArray();
+            if (!layersArray.isEmpty()) {
+                for (const QJsonValue &lv : layersArray) {
+                    const QJsonObject layerObj = lv.toObject();
+                    Layer layer;
+                    layer.id = layerObj.value(QStringLiteral("id")).toString();
+                    if (layer.id.isEmpty())
+                        layer.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+                    layer.name = layerObj.value(QStringLiteral("name")).toString();
+                    if (layer.name.isEmpty())
+                        layer.name = QStringLiteral("Layer %1").arg(panel->layers.size() + 1);
+                    layer.type = layerObj.value(QStringLiteral("type")).toString();
+                    if (layer.type.isEmpty())
+                        layer.type = QStringLiteral("raster");
+                    layer.visible = layerObj.value(QStringLiteral("visible")).toBool(true);
+                    layer.opacity = layerObj.value(QStringLiteral("opacity")).toDouble(1.0);
+                    layer.locked = layerObj.value(QStringLiteral("locked")).toBool(false);
+
+                    QImage img;
+                    const QString layerPng = layerObj.value(QStringLiteral("imageFile")).toString();
+                    if (!layerPng.isEmpty())
+                        img.load(folder + QStringLiteral("/") + layerPng);
+                    layer.image = img.isNull()
+                        ? makeLayerImage()
+                        : img.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+                    panel->layers.append(layer);
+                }
+            } else {
+                // BACKWARD COMPAT: old single-PNG project -> one raster layer.
+                const QString pngName = panelObj.value(QStringLiteral("pixmapFile")).toString();
+                QImage img;
+                if (!pngName.isEmpty())
+                    img.load(folder + QStringLiteral("/") + pngName);
+                Layer layer = makeRasterLayer(QStringLiteral("Layer 1"));
+                if (!img.isNull())
+                    layer.image = img.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+                panel->layers.append(layer);
+            }
+            if (panel->layers.isEmpty())
+                panel->layers.append(makeRasterLayer(QStringLiteral("Layer 1")));
+            panel->activeLayerIndex =
+                qBound(0, panelObj.value(QStringLiteral("activeLayerIndex")).toInt(0),
+                       panel->layers.size() - 1);
 
             scene->panels.append(panel);
         }

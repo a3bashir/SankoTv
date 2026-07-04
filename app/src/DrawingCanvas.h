@@ -5,12 +5,14 @@
 #include <QPoint>
 #include <QWidget>
 
+struct Layer;
 struct Panel;
 class QDragEnterEvent;
 class QDropEvent;
 
-// Freehand drawing surface for a single storyboard panel. Renders the panel's
-// QPixmap scaled-to-fit (letterboxed) and edits it in place via mouse events.
+// Freehand drawing surface for a single storyboard panel. Composites the
+// panel's layer stack scaled-to-fit (letterboxed) and edits the ACTIVE layer's
+// QImage in place via mouse events.
 class DrawingCanvas : public QWidget
 {
     Q_OBJECT
@@ -20,7 +22,7 @@ public:
 
     explicit DrawingCanvas(QWidget *parent = nullptr);
 
-    // Fixed 16:9 working resolution for every panel pixmap.
+    // Fixed 16:9 working resolution for every panel layer.
     static QSize canvasSize();
 
     void setActivePanel(Panel *panel);
@@ -28,12 +30,12 @@ public:
     // Onion skin: a faint blue ghost of the previous panel, display-only.
     void setOnionSkinEnabled(bool enabled);
     bool isOnionSkinEnabled() const { return m_onionSkin; }
-    // Pass the previous panel's pixmap (or a null pixmap to clear the ghost).
+    // Pass the previous panel's flattened pixmap (or null to clear the ghost).
     void setPreviousPixmap(const QPixmap &previous);
 
-    // Load an image file and paint it (scaled-to-fit, black padding) into the
-    // current panel. Warns before replacing a non-blank drawing. Returns true
-    // if the panel was changed. Shared by the button, shortcut, and drop.
+    // Import an image file as a NEW image-type layer above the active layer
+    // (scaled to fit the canvas, transparent padding). Returns true on success.
+    // Shared by the button, Ctrl+I shortcut, and file drop.
     bool importImage(const QString &filePath);
 
 public slots:
@@ -45,6 +47,7 @@ public slots:
 
 signals:
     void contentChanged();
+    void layersChanged(); // layer added/removed by the canvas (image import)
 
 protected:
     void paintEvent(QPaintEvent *event) override;
@@ -55,10 +58,11 @@ protected:
     void dropEvent(QDropEvent *event) override;
 
 private:
-    QRect displayRect() const;          // where the pixmap is drawn in the widget
-    double scale() const;               // display px per pixmap px
-    QPoint toPixmap(const QPoint &widgetPoint) const;
-    int penWidth() const;               // brush size mapped into pixmap space
+    QRect displayRect() const;          // where the canvas is drawn in the widget
+    double scale() const;               // display px per canvas px
+    QPoint toCanvas(const QPoint &widgetPoint) const;
+    int penWidth() const;               // brush size mapped into canvas space
+    Layer *editableActiveLayer() const; // active layer if it accepts strokes, else nullptr
     void pushUndo();
     void drawSegment(const QPoint &from, const QPoint &to, const QColor &color);
     void floodFill(const QPoint &seed);
@@ -69,7 +73,7 @@ private:
     int m_brushSize = 4;
 
     bool m_drawing = false;
-    QPoint m_lastPixmap;     // last freehand point, pixmap coords
+    QPoint m_lastCanvas;     // last freehand point, canvas coords
     bool m_previewLine = false;
     QPoint m_lineStart;      // widget coords
     QPoint m_lineCurrent;    // widget coords
