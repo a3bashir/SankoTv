@@ -7,10 +7,12 @@
 class DrawingCanvas;
 class QCheckBox;
 class QComboBox;
+class QDockWidget;
 class QHBoxLayout;
 class QJsonArray;
 class QLabel;
 class QLineEdit;
+class QMainWindow;
 class QPlainTextEdit;
 class QPushButton;
 class QScrollArea;
@@ -62,6 +64,11 @@ private:
     void applyBrushPreset(int size, int opacityPct, int hardnessPct,
                           bool pressureSize, bool pressureOpacity);
 
+    // Dockable panel plumbing (internal QMainWindow hosts the three docks).
+    void installDockViewActions(); // dock toggles into the app's View menu
+    bool restoreDockState();       // true if a saved layout was applied
+    void saveDockState();
+
     // Layer panel (docked, right of the canvas).
     void rebuildLayerPanel();     // rows from the current panel's layer stack
     void setActiveLayer(int index);
@@ -109,6 +116,13 @@ private:
     const QVector<ConsistencyEntry> *m_consistencyEntries = nullptr; // read-only
     int m_currentScene = -1;
     int m_currentPanel = -1;
+
+    // Internal dock host: the canvas area is its central widget; Scenes,
+    // Layers, and Shot Info live in QDockWidgets around it.
+    QMainWindow *m_dockHost = nullptr;
+    QDockWidget *m_layersDock = nullptr;
+    QDockWidget *m_scenesDock = nullptr;
+    QDockWidget *m_shotInfoDock = nullptr;
 
     // Left column.
     QVBoxLayout *m_sceneListLayout = nullptr;

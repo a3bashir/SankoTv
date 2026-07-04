@@ -7,6 +7,8 @@
 #include <QCheckBox>
 #include <QColorDialog>
 #include <QComboBox>
+#include <QCoreApplication>
+#include <QDockWidget>
 #include <QEvent>
 #include <QFileDialog>
 #include <QFrame>
@@ -18,6 +20,9 @@
 #include <QJsonValue>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMainWindow>
+#include <QMenu>
+#include <QMenuBar>
 #include <QMessageBox>
 #include <QMouseEvent>
 #include <QPainter>
@@ -26,8 +31,10 @@
 #include <QKeySequence>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QSettings>
 #include <QShortcut>
 #include <QSlider>
+#include <QTimer>
 #include <QVBoxLayout>
 #include <Qt>
 
@@ -70,16 +77,74 @@ StoryboardPage::StoryboardPage(QWidget *parent)
     root->setContentsMargins(0, 0, 0, 0);
     root->setSpacing(0);
 
-    QHBoxLayout *content = new QHBoxLayout;
-    content->setContentsMargins(0, 0, 0, 0);
-    content->setSpacing(0);
-    content->addWidget(createLeftColumn());
-    content->addWidget(createCenterColumn(), 1);
-    content->addWidget(createLayerPanel()); // docked LAYERS column, right of the canvas
-    content->addWidget(createRightColumn());
+    // Build the panel widgets in the original order (their signal wiring is
+    // established here and must survive the re-parenting into docks below).
+    QWidget *scenesPanel = createLeftColumn();
+    QWidget *centerColumn = createCenterColumn();
+    QWidget *layersPanel = createLayerPanel();
+    QWidget *shotInfoPanel = createRightColumn();
+    QWidget *bottomBar = createBottomBar();
 
-    root->addLayout(content, 1);
-    root->addWidget(createBottomBar());
+    // Internal QMainWindow: QDockWidget needs a QMainWindow host, and one
+    // works fine as an embedded child once flagged as a plain widget.
+    m_dockHost = new QMainWindow;
+    m_dockHost->setWindowFlags(Qt::Widget);
+    m_dockHost->setStyleSheet(QStringLiteral(
+        "QMainWindow { background-color: #0a0a0a; }"
+        "QMainWindow::separator { background: #1f1f1f; width: 4px; height: 4px; }"
+        "QDockWidget { color: #cccccc; font-size: 11px; }"
+        "QDockWidget::title { background: #1a1a1a; padding: 5px 8px;"
+        " border-bottom: 1px solid #2a2a2a; }"
+        "QTabBar::tab { background: #161616; color: #999999; padding: 4px 12px;"
+        " border: 1px solid #2a2a2a; border-bottom: none; font-size: 11px; }"
+        "QTabBar::tab:selected { background: #1a1a1a; color: #f5a623; }"));
+
+    // Central workspace: the canvas area exactly as before (tool column,
+    // brush settings, panel strip, canvas) plus the bottom toolbar.
+    QWidget *central = new QWidget;
+    QVBoxLayout *centralLayout = new QVBoxLayout(central);
+    centralLayout->setContentsMargins(0, 0, 0, 0);
+    centralLayout->setSpacing(0);
+    centralLayout->addWidget(centerColumn, 1);
+    centralLayout->addWidget(bottomBar);
+    m_dockHost->setCentralWidget(central);
+
+    // Docks re-parent the EXISTING panel instances (never recreated, so all
+    // constructor-time connections keep firing). Default features already
+    // give Closable | Movable | Floatable.
+    auto makeDock = [this](const QString &title, const QString &objectName,
+                           QWidget *panel) {
+        QDockWidget *dock = new QDockWidget(title, m_dockHost);
+        dock->setObjectName(objectName); // required for saveState()/restoreState()
+        dock->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
+        dock->setWidget(panel);
+        return dock;
+    };
+    m_layersDock = makeDock(QStringLiteral("Layers"), QStringLiteral("dockLayers"),
+                            layersPanel);
+    m_scenesDock = makeDock(QStringLiteral("Scenes"), QStringLiteral("dockScenes"),
+                            scenesPanel);
+    m_shotInfoDock = makeDock(QStringLiteral("Shot Info"), QStringLiteral("dockShotInfo"),
+                              shotInfoPanel);
+
+    // Default layout: Layers on its own (top-right); Scenes + Shot Info as a
+    // tabbed pair below it, Scenes tab in front.
+    m_dockHost->addDockWidget(Qt::RightDockWidgetArea, m_layersDock);
+    m_dockHost->splitDockWidget(m_layersDock, m_scenesDock, Qt::Vertical);
+    m_dockHost->tabifyDockWidget(m_scenesDock, m_shotInfoDock);
+    m_dockHost->resizeDocks({m_layersDock, m_scenesDock}, {220, 220}, Qt::Horizontal);
+
+    root->addWidget(m_dockHost, 1);
+
+    // Restore the saved dock layout; on first launch keep the default above.
+    if (!restoreDockState())
+        m_scenesDock->raise(); // Scenes tab active by default
+    connect(QCoreApplication::instance(), &QCoreApplication::aboutToQuit,
+            this, [this] { saveDockState(); });
+
+    // The app's menu bar exists only after this page lands in MainWindow's
+    // stack, so hook the View menu once the event loop starts.
+    QTimer::singleShot(0, this, [this] { installDockViewActions(); });
 
     // 'O' toggles onion skin.
     QShortcut *onionShortcut = new QShortcut(QKeySequence(Qt::Key_O), this);
@@ -116,13 +181,62 @@ StoryboardPage::StoryboardPage(QWidget *parent)
     updateDuplicateButton(); // panel-action buttons disabled until a panel is selected
 }
 
+// --- Dock plumbing ----------------------------------------------------------
+
+// Extend the application's View menu (on the top-level MainWindow) with the
+// three dock toggles. toggleViewAction() gives a checkable action that both
+// tracks and controls the dock's visibility.
+void StoryboardPage::installDockViewActions()
+{
+    QMainWindow *top = qobject_cast<QMainWindow *>(window());
+    if (!top || top == m_dockHost || !m_layersDock)
+        return;
+
+    QMenuBar *bar = top->menuBar();
+    QMenu *viewMenu = nullptr;
+    const QList<QAction *> menus = bar->actions();
+    for (QAction *action : menus) {
+        QString title = action->text();
+        title.remove(QLatin1Char('&'));
+        if (action->menu() && title == QLatin1String("View")) {
+            viewMenu = action->menu();
+            break;
+        }
+    }
+    if (!viewMenu)
+        viewMenu = bar->addMenu(QStringLiteral("View"));
+
+    viewMenu->addSeparator();
+    viewMenu->addAction(m_layersDock->toggleViewAction());
+    viewMenu->addAction(m_scenesDock->toggleViewAction());
+    viewMenu->addAction(m_shotInfoDock->toggleViewAction());
+}
+
+bool StoryboardPage::restoreDockState()
+{
+    QSettings settings(QStringLiteral("SankoTV"), QStringLiteral("SankoTV"));
+    const QByteArray state =
+        settings.value(QStringLiteral("storyboard/dockState")).toByteArray();
+    if (state.isEmpty())
+        return false;
+    return m_dockHost && m_dockHost->restoreState(state);
+}
+
+void StoryboardPage::saveDockState()
+{
+    if (!m_dockHost)
+        return;
+    QSettings settings(QStringLiteral("SankoTV"), QStringLiteral("SankoTV"));
+    settings.setValue(QStringLiteral("storyboard/dockState"), m_dockHost->saveState());
+}
+
 // --- Left column ----------------------------------------------------------
 
 QWidget *StoryboardPage::createLeftColumn()
 {
     QWidget *column = new QWidget;
     column->setAttribute(Qt::WA_StyledBackground, true);
-    column->setFixedWidth(200);
+    column->setMinimumWidth(160); // dock-resizable (was fixed 200)
     column->setStyleSheet(QStringLiteral("background-color: #111111;"));
 
     QVBoxLayout *layout = new QVBoxLayout(column);
@@ -591,7 +705,7 @@ QWidget *StoryboardPage::createRightColumn()
 {
     QWidget *column = new QWidget;
     column->setAttribute(Qt::WA_StyledBackground, true);
-    column->setFixedWidth(220);
+    column->setMinimumWidth(180); // dock-resizable (was fixed 220)
     column->setStyleSheet(QStringLiteral("background-color: #111111;"));
 
     QVBoxLayout *layout = new QVBoxLayout(column);
@@ -1308,7 +1422,7 @@ QWidget *StoryboardPage::createLayerPanel()
 {
     QWidget *column = new QWidget;
     column->setAttribute(Qt::WA_StyledBackground, true);
-    column->setFixedWidth(200);
+    column->setMinimumWidth(170); // dock-resizable (was fixed 200)
     column->setStyleSheet(QStringLiteral(
         "background-color: #111111; border-left: 1px solid #1f1f1f;"));
 
