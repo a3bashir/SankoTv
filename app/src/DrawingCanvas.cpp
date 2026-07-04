@@ -457,10 +457,19 @@ void DrawingCanvas::stampDab(const QPointF &center, qreal pressure)
     QColor edge = m_color;
     edge.setAlphaF(0.0);
 
+    // Hardness is remapped so the transparent falloff always occupies at least
+    // the outer ~1.5px of the radius: hardness 1.0 starts the falloff at
+    // (radius - 1.5px), hardness 0.0 near the centre. Even the hardest brush
+    // keeps an anti-aliased rim, so densely spaced dabs fuse into one smooth
+    // edge instead of beading into visible stamp outlines.
+    const qreal maxCore = qMax<qreal>(0.0, (radius - 1.5) / radius);
+    const qreal coreStop = qBound<qreal>(0.0, m_brushHardness * maxCore, 0.995);
+
     QRadialGradient gradient(center, radius);
     gradient.setColorAt(0.0, core);
-    gradient.setColorAt(qBound(0.0, m_brushHardness, 0.99), core); // solid core
-    gradient.setColorAt(1.0, edge);                                // feathered rim
+    if (coreStop > 0.0)
+        gradient.setColorAt(coreStop, core); // solid core ends here
+    gradient.setColorAt(1.0, edge);          // guaranteed feathered rim
 
     QPainter painter(&layer->image);
     painter.setRenderHint(QPainter::Antialiasing, true);
@@ -485,8 +494,12 @@ void DrawingCanvas::moveBrushStroke(const QPointF &canvasPt, qreal pressure)
     if (dist <= 0.0)
         return;
 
-    // Stamps spaced at 15% of the brush size; pressure interpolated per dab.
-    const double step = qMax(0.75, m_brushToolSize * 0.15);
+    // Stamps spaced at 5% of the brush size - dense enough that individual
+    // dabs disappear into a continuous edge. Pressure is interpolated per dab,
+    // and the residual-driven loop below fills arbitrarily large gaps between
+    // input points, so fast strokes stay just as continuous. (The 0.5px floor
+    // only stops tiny brushes from stamping several dabs per pixel.)
+    const double step = qMax(0.5, m_brushToolSize * 0.05);
     const QPointF dir = delta / dist;
 
     double since = m_stampResidual; // distance travelled since the last dab
