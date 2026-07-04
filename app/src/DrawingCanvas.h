@@ -3,12 +3,14 @@
 #include <QColor>
 #include <QPixmap>
 #include <QPoint>
+#include <QPointF>
 #include <QWidget>
 
 struct Layer;
 struct Panel;
 class QDragEnterEvent;
 class QDropEvent;
+class QPushButton;
 
 // Freehand drawing surface for a single storyboard panel. Composites the
 // panel's layer stack scaled-to-fit (letterboxed) and edits the ACTIVE layer's
@@ -38,6 +40,14 @@ public:
     // Shared by the button, Ctrl+I shortcut, and file drop.
     bool importImage(const QString &filePath);
 
+    // Viewport overlays (display-only, never in flattenedPixmap()).
+    void setCameraFrameEnabled(bool enabled);
+    void setSafeAreaEnabled(bool enabled);
+    void setTitleSafeEnabled(bool enabled);
+    bool isCameraFrameEnabled() const { return m_cameraFrame; }
+    bool isSafeAreaEnabled() const { return m_safeArea; }
+    bool isTitleSafeEnabled() const { return m_titleSafe; }
+
 public slots:
     void setTool(Tool tool);
     void setColor(const QColor &color);
@@ -54,13 +64,22 @@ protected:
     void mousePressEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
     void mouseReleaseEvent(QMouseEvent *event) override;
+    void wheelEvent(QWheelEvent *event) override;
+    void keyPressEvent(QKeyEvent *event) override;
+    void keyReleaseEvent(QKeyEvent *event) override;
+    void resizeEvent(QResizeEvent *event) override;
+    void focusOutEvent(QFocusEvent *event) override;
     void dragEnterEvent(QDragEnterEvent *event) override;
     void dropEvent(QDropEvent *event) override;
 
 private:
-    QRect displayRect() const;          // where the canvas is drawn in the widget
-    double scale() const;               // display px per canvas px
+    QRect displayRect() const;          // where the canvas is drawn (zoom + pan applied)
+    double scale() const;               // display px per canvas px (includes zoom)
     QPoint toCanvas(const QPoint &widgetPoint) const;
+    void setZoom(double zoom, const QPointF &anchorScreen); // keeps anchor point fixed
+    void resetView();                   // 100%, recentred
+    void updateZoomUi();                // refresh the percentage button text
+    void positionZoomControls();        // pin the -/%/+ buttons to the corner
     int penWidth() const;               // brush size mapped into canvas space
     Layer *editableActiveLayer() const; // active layer if it accepts strokes, else nullptr
     void pushUndo();
@@ -80,4 +99,20 @@ private:
 
     bool m_onionSkin = false;
     QPixmap m_ghost;         // precomputed blue-tinted ghost (display only)
+
+    // Viewport: zoom + pan.
+    double m_zoom = 1.0;         // 0.25 .. 4.0
+    QPointF m_panOffset;         // screen-px offset from the centred position
+    bool m_spaceHeld = false;    // spacebar pan modifier
+    bool m_panning = false;      // mid-drag (space+left or middle button)
+    QPoint m_panStartScreen;
+    QPointF m_panStartOffset;
+    QPushButton *m_zoomOutButton = nullptr;
+    QPushButton *m_zoomResetButton = nullptr; // shows "100%", click resets view
+    QPushButton *m_zoomInButton = nullptr;
+
+    // Display-only overlays.
+    bool m_cameraFrame = true;   // 16:9 framing + dim outside (ON by default)
+    bool m_safeArea = false;     // action safe, 5% inset
+    bool m_titleSafe = false;    // title safe, 10% inset
 };

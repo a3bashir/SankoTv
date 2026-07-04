@@ -324,6 +324,27 @@ QWidget *StoryboardPage::createToolbar()
     });
     layout->addWidget(m_onionButton);
 
+    // Viewport overlay toggles (display-only; never saved into the artwork).
+    QPushButton *cameraFrame = toolButton(QStringLiteral("Camera\nFrame"),
+                                          QStringLiteral("Camera frame \xE2\x80\x94 16:9 framing, dims outside"));
+    cameraFrame->setFixedHeight(40); // two-line label
+    cameraFrame->setChecked(true);   // camera frame is ON by default
+    connect(cameraFrame, &QPushButton::toggled, this,
+            [this](bool on) { m_canvas->setCameraFrameEnabled(on); });
+    layout->addWidget(cameraFrame);
+
+    QPushButton *safeArea = toolButton(QStringLiteral("Safe Area"),
+                                       QStringLiteral("Action-safe guide \xE2\x80\x94 5% inset"));
+    connect(safeArea, &QPushButton::toggled, this,
+            [this](bool on) { m_canvas->setSafeAreaEnabled(on); });
+    layout->addWidget(safeArea);
+
+    QPushButton *titleSafe = toolButton(QStringLiteral("Title Safe"),
+                                        QStringLiteral("Title-safe guide \xE2\x80\x94 10% inset"));
+    connect(titleSafe, &QPushButton::toggled, this,
+            [this](bool on) { m_canvas->setTitleSafeEnabled(on); });
+    layout->addWidget(titleSafe);
+
     // Color swatch.
     QPushButton *color = new QPushButton;
     color->setCursor(Qt::PointingHandCursor);

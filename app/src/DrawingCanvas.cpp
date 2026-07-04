@@ -5,15 +5,22 @@
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QFileInfo>
+#include <QFocusEvent>
 #include <QImage>
+#include <QKeyEvent>
 #include <QMessageBox>
 #include <QMimeData>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPaintEvent>
+#include <QPushButton>
+#include <QResizeEvent>
 #include <QStack>
 #include <QUrl>
+#include <QWheelEvent>
 #include <Qt>
+
+#include <cmath>
 
 namespace {
 
@@ -68,6 +75,32 @@ DrawingCanvas::DrawingCanvas(QWidget *parent)
     setCursor(Qt::CrossCursor);
     setMinimumHeight(220);
     setAcceptDrops(true); // import images by dropping files onto the canvas
+    setFocusPolicy(Qt::ClickFocus); // needed for the spacebar pan modifier
+
+    // Corner zoom control: "-" | "100%" | "+" (children, always over the canvas).
+    const QString zoomBtn = QStringLiteral(
+        "QPushButton { background-color: #1c1c1c; color: #cccccc; border: 1px solid #2a2a2a;"
+        " border-radius: 3px; font-size: 10px; padding: 0; }"
+        "QPushButton:hover { background-color: #262626; color: #ffffff; }");
+    m_zoomOutButton = new QPushButton(QStringLiteral("-"), this);
+    m_zoomOutButton->setFixedSize(22, 20);
+    m_zoomOutButton->setToolTip(QStringLiteral("Zoom out"));
+    m_zoomResetButton = new QPushButton(QStringLiteral("100%"), this);
+    m_zoomResetButton->setFixedSize(46, 20);
+    m_zoomResetButton->setToolTip(QStringLiteral("Reset zoom to 100% and recentre"));
+    m_zoomInButton = new QPushButton(QStringLiteral("+"), this);
+    m_zoomInButton->setFixedSize(22, 20);
+    m_zoomInButton->setToolTip(QStringLiteral("Zoom in"));
+    for (QPushButton *b : {m_zoomOutButton, m_zoomResetButton, m_zoomInButton}) {
+        b->setCursor(Qt::PointingHandCursor);
+        b->setStyleSheet(zoomBtn);
+        b->setFocusPolicy(Qt::NoFocus); // don't steal the canvas's space-pan focus
+    }
+    connect(m_zoomOutButton, &QPushButton::clicked, this,
+            [this] { setZoom(m_zoom / 1.25, QPointF(width() / 2.0, height() / 2.0)); });
+    connect(m_zoomInButton, &QPushButton::clicked, this,
+            [this] { setZoom(m_zoom * 1.25, QPointF(width() / 2.0, height() / 2.0)); });
+    connect(m_zoomResetButton, &QPushButton::clicked, this, [this] { resetView(); });
 }
 
 QSize DrawingCanvas::canvasSize()
@@ -92,6 +125,24 @@ void DrawingCanvas::setOnionSkinEnabled(bool enabled)
 void DrawingCanvas::setPreviousPixmap(const QPixmap &previous)
 {
     m_ghost = buildGhost(previous); // null pixmap -> empty ghost
+    update();
+}
+
+void DrawingCanvas::setCameraFrameEnabled(bool enabled)
+{
+    m_cameraFrame = enabled;
+    update();
+}
+
+void DrawingCanvas::setSafeAreaEnabled(bool enabled)
+{
+    m_safeArea = enabled;
+    update();
+}
+
+void DrawingCanvas::setTitleSafeEnabled(bool enabled)
+{
+    m_titleSafe = enabled;
     update();
 }
 
@@ -164,13 +215,82 @@ void DrawingCanvas::setBrushSize(int size)
     m_brushSize = qBound(1, size, 20);
 }
 
+// The letterbox fit is the zoom=1.0 baseline; m_zoom scales it and m_panOffset
+// shifts it. Because toCanvas()/scale() derive from this rect, EVERY mouse
+// press/move/release converts screen -> image coordinates through the same
+// zoom+pan mapping, so strokes land under the cursor at any zoom level.
 QRect DrawingCanvas::displayRect() const
 {
     const QSize cs = canvasSize();
-    const double s = qMin(width() / double(cs.width()), height() / double(cs.height()));
+    const double fit = qMin(width() / double(cs.width()), height() / double(cs.height()));
+    const double s = fit * m_zoom;
     const int w = int(cs.width() * s);
     const int h = int(cs.height() * s);
-    return QRect((width() - w) / 2, (height() - h) / 2, w, h);
+    return QRect(qRound((width() - w) / 2.0 + m_panOffset.x()),
+                 qRound((height() - h) / 2.0 + m_panOffset.y()), w, h);
+}
+
+void DrawingCanvas::setZoom(double zoom, const QPointF &anchorScreen)
+{
+    zoom = qBound(0.25, zoom, 4.0);
+    if (qFuzzyCompare(zoom, m_zoom)) {
+        updateZoomUi();
+        return;
+    }
+
+    const QSize cs = canvasSize();
+    const double fit = qMin(width() / double(cs.width()), height() / double(cs.height()));
+
+    // Canvas-space point currently under the anchor (floating, unclamped).
+    const QRect before = displayRect();
+    const double sOld = fit * m_zoom;
+    const QPointF canvasPt((anchorScreen.x() - before.x()) / sOld,
+                           (anchorScreen.y() - before.y()) / sOld);
+
+    m_zoom = zoom;
+
+    // Solve the pan offset so that canvasPt stays exactly under the anchor.
+    const double sNew = fit * m_zoom;
+    const double w = cs.width() * sNew;
+    const double h = cs.height() * sNew;
+    m_panOffset = QPointF(anchorScreen.x() - canvasPt.x() * sNew - (width() - w) / 2.0,
+                          anchorScreen.y() - canvasPt.y() * sNew - (height() - h) / 2.0);
+
+    updateZoomUi();
+    update();
+}
+
+void DrawingCanvas::resetView()
+{
+    m_zoom = 1.0;
+    m_panOffset = QPointF(0, 0);
+    updateZoomUi();
+    update();
+}
+
+void DrawingCanvas::updateZoomUi()
+{
+    if (m_zoomResetButton)
+        m_zoomResetButton->setText(QStringLiteral("%1%").arg(qRound(m_zoom * 100)));
+}
+
+void DrawingCanvas::positionZoomControls()
+{
+    if (!m_zoomOutButton)
+        return;
+    const int y = height() - 28;
+    m_zoomOutButton->move(8, y);
+    m_zoomResetButton->move(8 + 22 + 4, y);
+    m_zoomInButton->move(8 + 22 + 4 + 46 + 4, y);
+    m_zoomOutButton->raise();
+    m_zoomResetButton->raise();
+    m_zoomInButton->raise();
+}
+
+void DrawingCanvas::resizeEvent(QResizeEvent *event)
+{
+    QWidget::resizeEvent(event);
+    positionZoomControls();
 }
 
 double DrawingCanvas::scale() const
@@ -342,6 +462,51 @@ void DrawingCanvas::paintEvent(QPaintEvent *)
     painter.setPen(QPen(QColor("#2a2a2a"), 1));
     painter.drawRect(d.adjusted(0, 0, -1, -1));
 
+    // --- Viewport overlays: DISPLAY-ONLY, drawn after the layers and never
+    // --- written to any layer or included in flattenedPixmap(). All are
+    // --- anchored to the image rect `d`, so they zoom and pan with it.
+
+    // Camera frame: the image is the 16:9 shot; dim everything outside it.
+    if (m_cameraFrame) {
+        const QColor dim(0, 0, 0, 102); // black @ 40%
+        painter.fillRect(QRect(0, 0, width(), d.top()), dim);
+        painter.fillRect(QRect(0, d.bottom() + 1, width(), height() - d.bottom() - 1), dim);
+        painter.fillRect(QRect(0, d.top(), d.left(), d.height()), dim);
+        painter.fillRect(QRect(d.right() + 1, d.top(), width() - d.right() - 1, d.height()), dim);
+        painter.setPen(QPen(QColor("#cccccc"), 1));
+        painter.drawRect(d.adjusted(0, 0, -1, -1));
+    }
+
+    // Action-safe: 5% inset, amber @ 50%.
+    if (m_safeArea) {
+        const int ix = qRound(d.width() * 0.05);
+        const int iy = qRound(d.height() * 0.05);
+        const QRect r = d.adjusted(ix, iy, -ix, -iy);
+        const QColor amber(0xf5, 0xa6, 0x23, 128);
+        painter.setPen(QPen(amber, 1));
+        painter.drawRect(r);
+        QFont f = font();
+        f.setPointSize(7);
+        painter.setFont(f);
+        painter.drawText(r.adjusted(4, 2, -4, -2), Qt::AlignTop | Qt::AlignLeft,
+                         QStringLiteral("ACTION SAFE"));
+    }
+
+    // Title-safe: 10% inset, blue @ 50%.
+    if (m_titleSafe) {
+        const int ix = qRound(d.width() * 0.10);
+        const int iy = qRound(d.height() * 0.10);
+        const QRect r = d.adjusted(ix, iy, -ix, -iy);
+        const QColor blue(0x4d, 0x9f, 0xff, 128);
+        painter.setPen(QPen(blue, 1));
+        painter.drawRect(r);
+        QFont f = font();
+        f.setPointSize(7);
+        painter.setFont(f);
+        painter.drawText(r.adjusted(4, 2, -4, -2), Qt::AlignTop | Qt::AlignLeft,
+                         QStringLiteral("TITLE SAFE"));
+    }
+
     // In-progress line preview, always on top of the composite.
     if (m_previewLine) {
         QPen pen(m_color);
@@ -352,8 +517,61 @@ void DrawingCanvas::paintEvent(QPaintEvent *)
     }
 }
 
+void DrawingCanvas::wheelEvent(QWheelEvent *event)
+{
+    // Ctrl + wheel zooms, centred on the cursor position.
+    if (event->modifiers() & Qt::ControlModifier) {
+        const double steps = event->angleDelta().y() / 120.0;
+        setZoom(m_zoom * std::pow(1.25, steps), event->position());
+        event->accept();
+        return;
+    }
+    event->ignore();
+}
+
+void DrawingCanvas::keyPressEvent(QKeyEvent *event)
+{
+    if (event->key() == Qt::Key_Space && !event->isAutoRepeat()) {
+        m_spaceHeld = true;
+        if (!m_panning)
+            setCursor(Qt::OpenHandCursor);
+        return;
+    }
+    QWidget::keyPressEvent(event);
+}
+
+void DrawingCanvas::keyReleaseEvent(QKeyEvent *event)
+{
+    if (event->key() == Qt::Key_Space && !event->isAutoRepeat()) {
+        m_spaceHeld = false;
+        if (!m_panning)
+            setCursor(Qt::CrossCursor);
+        return;
+    }
+    QWidget::keyReleaseEvent(event);
+}
+
+void DrawingCanvas::focusOutEvent(QFocusEvent *event)
+{
+    // Losing focus mid-hold would otherwise leave the pan modifier stuck on.
+    m_spaceHeld = false;
+    if (!m_panning)
+        setCursor(Qt::CrossCursor);
+    QWidget::focusOutEvent(event);
+}
+
 void DrawingCanvas::mousePressEvent(QMouseEvent *event)
 {
+    // Pan: middle-button drag, or spacebar held + left drag.
+    if (event->button() == Qt::MiddleButton
+        || (m_spaceHeld && event->button() == Qt::LeftButton)) {
+        m_panning = true;
+        m_panStartScreen = event->pos();
+        m_panStartOffset = m_panOffset;
+        setCursor(Qt::ClosedHandCursor);
+        return;
+    }
+
     if (!m_panel || event->button() != Qt::LeftButton)
         return;
     if (!displayRect().contains(event->pos()))
@@ -386,6 +604,11 @@ void DrawingCanvas::mousePressEvent(QMouseEvent *event)
 
 void DrawingCanvas::mouseMoveEvent(QMouseEvent *event)
 {
+    if (m_panning) {
+        m_panOffset = m_panStartOffset + QPointF(event->pos() - m_panStartScreen);
+        update();
+        return;
+    }
     if (m_previewLine) {
         m_lineCurrent = event->pos();
         update();
@@ -400,6 +623,12 @@ void DrawingCanvas::mouseMoveEvent(QMouseEvent *event)
 
 void DrawingCanvas::mouseReleaseEvent(QMouseEvent *event)
 {
+    if (m_panning
+        && (event->button() == Qt::MiddleButton || event->button() == Qt::LeftButton)) {
+        m_panning = false;
+        setCursor(m_spaceHeld ? Qt::OpenHandCursor : Qt::CrossCursor);
+        return;
+    }
     if (m_previewLine) {
         m_previewLine = false;
         pushUndo();
