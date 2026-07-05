@@ -25,6 +25,22 @@ endif()
 # Multimedia is needed for the Animatic scratch-audio track.
 find_package(Qt6 REQUIRED COMPONENTS Widgets Network Multimedia MultimediaWidgets)
 
+# --- Qt Advanced Docking System (LGPL v2.1) --------------------------------
+# LGPL compliance: MUST be linked as a shared DLL (BUILD_STATIC OFF), and its
+# license text is deployed next to the executable (post-build step below).
+include(FetchContent)
+set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE) # ADS demo apps not needed
+set(BUILD_STATIC OFF CACHE BOOL "" FORCE)   # shared library, per LGPL
+FetchContent_Declare(ads
+    GIT_REPOSITORY https://github.com/githubuser0xFFFF/Qt-Advanced-Docking-System.git
+    GIT_TAG 4.3.1
+)
+FetchContent_MakeAvailable(ads)
+# windeployqt assumes every dependency named qt6*.dll is a Qt module living in
+# Qt's bin directory and hard-fails on qt6advanceddocking.dll. Renaming the
+# output DLL sidesteps the heuristic (windeployqt ignores non-qt DLLs).
+set_target_properties(qt6advanceddocking PROPERTIES OUTPUT_NAME "advanceddocking")
+
 # --- Executable -----------------------------------------------------------
 qt_standard_project_setup()
 
@@ -54,7 +70,19 @@ qt_add_executable(SankoTV
     resources.qrc
 )
 
-target_link_libraries(SankoTV PRIVATE Qt6::Widgets Qt6::Network Qt6::Multimedia Qt6::MultimediaWidgets)
+target_link_libraries(SankoTV PRIVATE Qt6::Widgets Qt6::Network Qt6::Multimedia Qt6::MultimediaWidgets
+    ads::qt6advanceddocking)
+
+# Deploy the ADS DLL and its LGPL license text next to SankoTV.exe.
+add_custom_command(TARGET SankoTV POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        $<TARGET_FILE:qt6advanceddocking> $<TARGET_FILE_DIR:SankoTV>
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        ${ads_SOURCE_DIR}/LICENSE
+        $<TARGET_FILE_DIR:SankoTV>/LICENSE.Qt-Advanced-Docking-System.txt
+    COMMENT "Deploying Qt Advanced Docking System DLL + license"
+    VERBATIM
+)
 
 # Build as a GUI app on Windows (no console window).
 set_target_properties(SankoTV PROPERTIES

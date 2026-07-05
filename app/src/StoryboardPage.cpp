@@ -3,13 +3,16 @@
 #include "DrawingCanvas.h"
 #include "StoryboardModel.h"
 
+#include "DockAreaWidget.h"
+#include "DockManager.h"
+#include "DockWidget.h"
+
 #include <QAction>
 #include <QButtonGroup>
 #include <QCheckBox>
 #include <QColorDialog>
 #include <QComboBox>
 #include <QCoreApplication>
-#include <QDockWidget>
 #include <QEvent>
 #include <QFileDialog>
 #include <QFrame>
@@ -39,63 +42,29 @@
 #include <QVBoxLayout>
 #include <Qt>
 
-// QDockWidget whose title-bar DOUBLE-CLICK collapses/expands the dock instead
-// of Qt's default float toggle (which makes the panel appear to vanish).
-// Floating still works the normal way: dragging the title bar out.
-class CollapsibleDock : public QDockWidget
-{
-public:
-    using QDockWidget::QDockWidget;
-
-    bool isCollapsed() const { return m_collapsed; }
-
-    void setCollapsed(bool collapsed)
-    {
-        if (collapsed == m_collapsed || !widget())
-            return;
-        m_collapsed = collapsed;
-        if (collapsed) {
-            m_expandedHeight = height(); // exact size to restore on expand
-            const int chrome = height() - widget()->height(); // title bar + margins
-            widget()->setVisible(false);
-            setMaximumHeight(qMax(22, chrome));
-        } else {
-            widget()->setVisible(true);
-            setMaximumHeight(QWIDGETSIZE_MAX);
-            if (QMainWindow *host = qobject_cast<QMainWindow *>(parentWidget());
-                host && m_expandedHeight > 0)
-                host->resizeDocks({this}, {m_expandedHeight}, Qt::Vertical);
-        }
-    }
-
-protected:
-    bool event(QEvent *e) override
-    {
-        // Only intercept while docked (floating windows keep native behaviour)
-        // and only for double-clicks in the title-bar area above the content.
-        if (e->type() == QEvent::MouseButtonDblClick && !isFloating()) {
-            const auto *me = static_cast<QMouseEvent *>(e);
-            if (m_collapsed || !widget()
-                || me->position().toPoint().y() < widget()->y()) {
-                setCollapsed(!m_collapsed);
-                e->accept();
-                return true;
-            }
-        }
-        return QDockWidget::event(e);
-    }
-
-private:
-    bool m_collapsed = false;
-    int m_expandedHeight = 0;
-};
-
 namespace {
 
-// Dock-layout schema version: bump to invalidate layouts saved by older
-// builds (restoreState() with a different version returns false, and the
-// default layout is applied instead of a stale/corrupted one).
-constexpr int kDockStateVersion = 2;
+// Dock-layout schema version. Bumped to 3 for the ADS migration: layouts
+// saved by the previous QMainWindow-based builds fail to parse/match and the
+// default layout is applied instead.
+constexpr int kDockStateVersion = 3;
+
+// Dark theme for the ADS chrome (tabs, title bars, splitters) to match the
+// app. Setting a stylesheet on CDockManager replaces ADS's bundled light one.
+const char *kAdsDarkStyle =
+    "ads--CDockContainerWidget { background: #0a0a0a; }"
+    "ads--CDockAreaWidget { background: #111111; }"
+    "ads--CDockAreaTitleBar { background: #161616; border-bottom: 1px solid #2a2a2a;"
+    " padding: 0; }"
+    "ads--CDockWidgetTab { background: #161616; border: 1px solid #2a2a2a;"
+    " padding: 2px 6px; }"
+    "ads--CDockWidgetTab QLabel { color: #cccccc; font-size: 11px; }"
+    "ads--CDockWidgetTab[activeTab=\"true\"] { background: #1a1a1a; }"
+    "ads--CDockWidgetTab[activeTab=\"true\"] QLabel { color: #f5a623; }"
+    "ads--CDockWidget { background: #111111; border: none; }"
+    "ads--CDockSplitter::handle { background: #1f1f1f; }"
+    "QToolButton { background: transparent; color: #999999; border: none; }"
+    "QToolButton:hover { background: #262626; color: #f5a623; }";
 
 constexpr int kThumbW = 160;
 constexpr int kThumbH = 90; // 16:9
@@ -142,41 +111,37 @@ StoryboardPage::StoryboardPage(QWidget *parent)
     QWidget *shotInfoPanel = createRightColumn();
     QWidget *bottomBar = createBottomBar();
 
-    // Internal QMainWindow: QDockWidget needs a QMainWindow host, and one
-    // works fine as an embedded child once flagged as a plain widget.
-    m_dockHost = new QMainWindow;
-    m_dockHost->setWindowFlags(Qt::Widget);
-    m_dockHost->setStyleSheet(QStringLiteral(
-        "QMainWindow { background-color: #0a0a0a; }"
-        "QMainWindow::separator { background: #1f1f1f; width: 4px; height: 4px; }"
-        "QDockWidget { color: #cccccc; font-size: 11px; }"
-        "QDockWidget::title { background: #1a1a1a; padding: 5px 8px;"
-        " border-bottom: 1px solid #2a2a2a; }"
-        "QTabBar::tab { background: #161616; color: #999999; padding: 4px 12px;"
-        " border: 1px solid #2a2a2a; border-bottom: none; font-size: 11px; }"
-        "QTabBar::tab:selected { background: #1a1a1a; color: #f5a623; }"));
+    // ADS dock manager hosts everything: native tabbing, drag-to-float,
+    // re-docking, and auto-hide come with it — nothing hand-rolled.
+    ads::CDockManager::setConfigFlag(ads::CDockManager::OpaqueSplitterResize, true);
+    m_dockManager = new ads::CDockManager(this);
+    m_dockManager->setStyleSheet(QString::fromLatin1(kAdsDarkStyle));
+    root->addWidget(m_dockManager, 1);
 
     // Central workspace: the canvas area exactly as before (tool column,
-    // brush settings, panel strip, canvas) plus the bottom toolbar.
+    // brush settings, panel strip, canvas) plus the bottom toolbar. The ADS
+    // central widget is fixed: no tab, not closable/movable.
     QWidget *central = new QWidget;
     QVBoxLayout *centralLayout = new QVBoxLayout(central);
     centralLayout->setContentsMargins(0, 0, 0, 0);
     centralLayout->setSpacing(0);
     centralLayout->addWidget(centerColumn, 1);
     centralLayout->addWidget(bottomBar);
-    m_dockHost->setCentralWidget(central);
 
-    // Docks re-parent the EXISTING panel instances (never recreated, so all
-    // constructor-time connections keep firing). Default features already
-    // give Closable | Movable | Floatable.
-    auto makeDock = [this](const QString &title, const QString &objectName,
-                           QWidget *panel) {
-        CollapsibleDock *dock = new CollapsibleDock(title, m_dockHost);
-        // Unique objectName BEFORE any restoreState() call: without it,
-        // restoreState() silently fails to match the dock and misplaces it.
+    ads::CDockWidget *centralDock = new ads::CDockWidget(QStringLiteral("Canvas"));
+    centralDock->setObjectName(QStringLiteral("dockCanvas"));
+    centralDock->setWidget(central, ads::CDockWidget::ForceNoScrollArea);
+    ads::CDockAreaWidget *centralArea =
+        m_dockManager->setCentralWidget(centralDock); // must precede other docks
+
+    // Dock widgets re-parent the EXISTING panel instances (never recreated,
+    // so all constructor-time connections keep firing). ADS keys saved
+    // layouts on the objectName, which must be unique and stable.
+    auto makeDock = [](const QString &title, const QString &objectName,
+                       QWidget *panel) {
+        ads::CDockWidget *dock = new ads::CDockWidget(title);
         dock->setObjectName(objectName);
-        dock->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
-        dock->setWidget(panel);
+        dock->setWidget(panel, ads::CDockWidget::ForceNoScrollArea);
         return dock;
     };
     m_layersDock = makeDock(QStringLiteral("Layers"), QStringLiteral("dockLayers"),
@@ -186,13 +151,25 @@ StoryboardPage::StoryboardPage(QWidget *parent)
     m_shotInfoDock = makeDock(QStringLiteral("Shot Info"), QStringLiteral("dockShotInfo"),
                               shotInfoPanel);
 
-    applyDefaultDockLayout();
+    // Default layout: Layers docked right; Scenes + Shot Info tabbed below
+    // it, Scenes tab in front.
+    ads::CDockAreaWidget *layersArea =
+        m_dockManager->addDockWidget(ads::RightDockWidgetArea, m_layersDock);
+    ads::CDockAreaWidget *pairArea =
+        m_dockManager->addDockWidget(ads::BottomDockWidgetArea, m_scenesDock, layersArea);
+    m_dockManager->addDockWidgetTabToArea(m_shotInfoDock, pairArea);
+    m_scenesDock->setAsCurrentTab();
+    // Root splitter (contains the central area): canvas | 260px panel column.
+    m_dockManager->setSplitterSizes(centralArea, {1030, 260});
+    // Right column's vertical splitter: Layers over the tabbed pair.
+    m_dockManager->setSplitterSizes(layersArea, {300, 380});
 
-    root->addWidget(m_dockHost, 1);
+    // Snapshot the pristine default so Reset Layout / failed restores can
+    // reproduce it exactly.
+    m_defaultDockState = m_dockManager->saveState(kDockStateVersion);
 
-    // Restore ONCE, only now that all three docks exist and are added. A
-    // failed restore (no saved state, or a stale/corrupted layout from an
-    // older schema version) falls back to the pristine default layout.
+    // Restore ONCE, now that every dock exists. A failed restore (no saved
+    // state, or a layout from the pre-ADS builds) keeps the default.
     if (!restoreDockState())
         applyDefaultDockLayout();
     connect(QCoreApplication::instance(), &QCoreApplication::aboutToQuit,
@@ -246,24 +223,14 @@ StoryboardPage::~StoryboardPage()
 
 // --- Dock plumbing ----------------------------------------------------------
 
-// The canonical arrangement: Layers alone at the top right; Scenes and
-// Shot Info tabbed together below it, Scenes tab in front. Also used by
-// View -> Reset Layout and as the fallback when a saved state is rejected.
+// Reapplies the pristine layout captured at construction (Layers right,
+// Scenes + Shot Info tabbed below it). Used by View -> Reset Layout and as
+// the fallback when a saved state is rejected.
 void StoryboardPage::applyDefaultDockLayout()
 {
-    if (!m_dockHost || !m_layersDock)
+    if (!m_dockManager || m_defaultDockState.isEmpty())
         return;
-    const QList<CollapsibleDock *> docks{m_layersDock, m_scenesDock, m_shotInfoDock};
-    for (CollapsibleDock *dock : docks) {
-        dock->setCollapsed(false);
-        dock->setFloating(false);
-        dock->show();
-    }
-    m_dockHost->addDockWidget(Qt::RightDockWidgetArea, m_layersDock);
-    m_dockHost->splitDockWidget(m_layersDock, m_scenesDock, Qt::Vertical);
-    m_dockHost->tabifyDockWidget(m_scenesDock, m_shotInfoDock);
-    m_dockHost->resizeDocks({m_layersDock, m_scenesDock}, {220, 220}, Qt::Horizontal);
-    m_scenesDock->raise(); // Scenes tab active by default
+    m_dockManager->restoreState(m_defaultDockState, kDockStateVersion);
 }
 
 // Extend the application's View menu (on the top-level MainWindow) with the
@@ -272,7 +239,7 @@ void StoryboardPage::applyDefaultDockLayout()
 void StoryboardPage::installDockViewActions()
 {
     QMainWindow *top = qobject_cast<QMainWindow *>(window());
-    if (!top || top == m_dockHost || !m_layersDock)
+    if (!top || !m_layersDock)
         return;
 
     QMenuBar *bar = top->menuBar();
@@ -302,6 +269,34 @@ void StoryboardPage::installDockViewActions()
         settings.remove(QStringLiteral("storyboard/dockState"));
         applyDefaultDockLayout();
     });
+
+    // LGPL credit for the bundled docking library (license text ships next
+    // to the executable).
+    QMenu *helpMenu = nullptr;
+    const QList<QAction *> topMenus = bar->actions();
+    for (QAction *action : topMenus) {
+        QString title = action->text();
+        title.remove(QLatin1Char('&'));
+        if (action->menu() && title == QLatin1String("Help")) {
+            helpMenu = action->menu();
+            break;
+        }
+    }
+    if (!helpMenu)
+        helpMenu = bar->addMenu(QStringLiteral("Help"));
+    QAction *adsAbout =
+        helpMenu->addAction(QStringLiteral("About Qt Advanced Docking System"));
+    connect(adsAbout, &QAction::triggered, this, [this] {
+        QMessageBox::about(
+            this, QStringLiteral("Qt Advanced Docking System"),
+            QStringLiteral(
+                "SankoTV uses the Qt Advanced Docking System library\n"
+                "(c) Uwe Kindler and contributors, licensed under the\n"
+                "GNU LGPL v2.1 and linked as a shared library.\n\n"
+                "License text: LICENSE.Qt-Advanced-Docking-System.txt\n"
+                "(in the application folder)\n\n"
+                "https://github.com/githubuser0xFFFF/Qt-Advanced-Docking-System"));
+    });
 }
 
 bool StoryboardPage::restoreDockState()
@@ -311,19 +306,19 @@ bool StoryboardPage::restoreDockState()
         settings.value(QStringLiteral("storyboard/dockState")).toByteArray();
     if (state.isEmpty())
         return false;
-    // Versioned restore: layouts written by older builds (different version)
-    // are rejected here — the caller then re-applies the default layout
-    // instead of restoring docks into wrong areas.
-    return m_dockHost && m_dockHost->restoreState(state, kDockStateVersion);
+    // Versioned restore: layouts written by older builds (pre-ADS QMainWindow
+    // blobs, or a different schema version) are rejected here — the caller
+    // then re-applies the default layout.
+    return m_dockManager && m_dockManager->restoreState(state, kDockStateVersion);
 }
 
 void StoryboardPage::saveDockState()
 {
-    if (!m_dockHost)
+    if (!m_dockManager)
         return;
     QSettings settings(QStringLiteral("SankoTV"), QStringLiteral("SankoTV"));
     settings.setValue(QStringLiteral("storyboard/dockState"),
-                      m_dockHost->saveState(kDockStateVersion));
+                      m_dockManager->saveState(kDockStateVersion));
 }
 
 // --- Left column ----------------------------------------------------------
@@ -339,10 +334,7 @@ QWidget *StoryboardPage::createLeftColumn()
     layout->setContentsMargins(12, 14, 12, 12);
     layout->setSpacing(10);
 
-    QLabel *header = new QLabel(QStringLiteral("Scenes"));
-    header->setStyleSheet(QStringLiteral(
-        "color: #ffffff; font-size: 13px; font-weight: 600; letter-spacing: 0.5px;"));
-    layout->addWidget(header);
+    // (No inner heading: the ADS dock tab already names the panel.)
 
     QScrollArea *scroll = new QScrollArea;
     scroll->setWidgetResizable(true);
@@ -808,10 +800,7 @@ QWidget *StoryboardPage::createRightColumn()
     layout->setContentsMargins(14, 14, 14, 14);
     layout->setSpacing(10);
 
-    QLabel *header = new QLabel(QStringLiteral("Shot Info"));
-    header->setStyleSheet(QStringLiteral(
-        "color: #ffffff; font-size: 13px; font-weight: 600; letter-spacing: 0.5px;"));
-    layout->addWidget(header);
+    // (No inner heading: the ADS dock tab already names the panel.)
 
     const QString labelStyle = QStringLiteral("color: #888888; font-size: 11px;");
     const QString fieldStyle = QStringLiteral(
@@ -1526,10 +1515,7 @@ QWidget *StoryboardPage::createLayerPanel()
     layout->setContentsMargins(10, 12, 10, 12);
     layout->setSpacing(8);
 
-    QLabel *title = new QLabel(QStringLiteral("LAYERS"));
-    title->setStyleSheet(QStringLiteral(
-        "color: #777777; font-size: 11px; font-weight: 700; letter-spacing: 2px; border: none;"));
-    layout->addWidget(title);
+    // (No inner heading: the ADS dock tab already names the panel.)
 
     // Opacity of the ACTIVE layer.
     QHBoxLayout *opacityRow = new QHBoxLayout;

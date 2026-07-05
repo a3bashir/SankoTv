@@ -4,21 +4,23 @@
 #include <QVector>
 #include <QWidget>
 
-class CollapsibleDock; // QDockWidget whose title double-click collapses (StoryboardPage.cpp)
 class DrawingCanvas;
 class QCheckBox;
 class QComboBox;
-class QDockWidget;
 class QHBoxLayout;
 class QJsonArray;
 class QLabel;
 class QLineEdit;
-class QMainWindow;
 class QPlainTextEdit;
 class QPushButton;
 class QScrollArea;
 class QSlider;
 class QVBoxLayout;
+
+namespace ads {
+class CDockManager;
+class CDockWidget;
+}
 
 struct Panel;
 struct Scene;
@@ -65,9 +67,9 @@ private:
     void applyBrushPreset(int size, int opacityPct, int hardnessPct,
                           bool pressureSize, bool pressureOpacity);
 
-    // Dockable panel plumbing (internal QMainWindow hosts the three docks).
+    // Dockable panel plumbing (Qt Advanced Docking System hosts the panels).
     void installDockViewActions(); // dock toggles + Reset Layout in the View menu
-    void applyDefaultDockLayout(); // Layers top-right; Scenes+Shot Info tabbed below
+    void applyDefaultDockLayout(); // restores the captured default ADS layout
     bool restoreDockState();       // true if a saved layout was applied
     void saveDockState();
 
@@ -119,12 +121,13 @@ private:
     int m_currentScene = -1;
     int m_currentPanel = -1;
 
-    // Internal dock host: the canvas area is its central widget; Scenes,
-    // Layers, and Shot Info live in collapsible QDockWidgets around it.
-    QMainWindow *m_dockHost = nullptr;
-    CollapsibleDock *m_layersDock = nullptr;
-    CollapsibleDock *m_scenesDock = nullptr;
-    CollapsibleDock *m_shotInfoDock = nullptr;
+    // ADS dock manager: the canvas area is its central widget; Scenes,
+    // Layers, and Shot Info are native ADS dock widgets around it.
+    ads::CDockManager *m_dockManager = nullptr;
+    ads::CDockWidget *m_layersDock = nullptr;
+    ads::CDockWidget *m_scenesDock = nullptr;
+    ads::CDockWidget *m_shotInfoDock = nullptr;
+    QByteArray m_defaultDockState; // pristine layout, captured at construction
 
     // Left column.
     QVBoxLayout *m_sceneListLayout = nullptr;
