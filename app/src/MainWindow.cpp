@@ -7,24 +7,32 @@
 #include "ScriptEditorPage.h"
 #include "StoryboardModel.h"
 #include "StoryboardPage.h"
+#include "SankoSlider.h"
 
 #include <QAction>
+#include <QDialog>
 #include <QDir>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QHBoxLayout>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QKeySequence>
+#include <QLabel>
+#include <QListWidget>
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QPixmap>
+#include <QPushButton>
 #include <QRegularExpression>
+#include <QSettings>
 #include <QStackedWidget>
 #include <QUuid>
+#include <QVBoxLayout>
 #include <Qt>
 
 MainWindow::MainWindow(QWidget *parent)
@@ -142,8 +150,91 @@ void MainWindow::setupMenuBar()
     m_saveAsAct->setShortcut(QKeySequence::SaveAs);
     connect(m_saveAsAct, &QAction::triggered, this, &MainWindow::onSaveProjectAs);
 
-    menuBar()->addMenu(QStringLiteral("Edit"));
+    QMenu *editMenu = menuBar()->addMenu(QStringLiteral("Edit"));
+    QAction *prefsAct = editMenu->addAction(QStringLiteral("Preferences..."));
+    prefsAct->setShortcut(QKeySequence::Preferences);
+    connect(prefsAct, &QAction::triggered, this, &MainWindow::onPreferences);
+
     menuBar()->addMenu(QStringLiteral("View"));
+}
+
+// Modal Preferences dialog: category list on the left, settings pane on the
+// right. Currently one category (Camera) with the safe-area guide opacities;
+// values persist in QSettings and push into the canvas live while dragging.
+void MainWindow::onPreferences()
+{
+    QDialog dialog(this);
+    dialog.setWindowTitle(QStringLiteral("Preferences"));
+    dialog.setFixedSize(520, 300);
+    dialog.setStyleSheet(QStringLiteral(
+        "QDialog { background-color: #161616; }"
+        "QLabel { color: #cccccc; font-size: 11px; }"
+        "QListWidget { background-color: #111111; color: #cccccc; font-size: 12px;"
+        " border: none; border-right: 1px solid #1f1f1f; outline: none; }"
+        "QListWidget::item { padding: 8px 12px; }"
+        "QListWidget::item:selected { background-color: #262626; color: #f5a623; }"
+        "QPushButton { background-color: #1c1c1c; color: #cccccc; border: 1px solid #2a2a2a;"
+        " border-radius: 4px; font-size: 11px; padding: 6px 16px; }"
+        "QPushButton:hover { background-color: #262626; }"));
+
+    QHBoxLayout *split = new QHBoxLayout(&dialog);
+    split->setContentsMargins(0, 0, 0, 0);
+    split->setSpacing(0);
+
+    QListWidget *categories = new QListWidget;
+    categories->setFixedWidth(130);
+    categories->addItem(QStringLiteral("Camera"));
+    categories->setCurrentRow(0);
+    split->addWidget(categories);
+
+    QStackedWidget *pages = new QStackedWidget;
+    split->addWidget(pages, 1);
+    connect(categories, &QListWidget::currentRowChanged, pages, &QStackedWidget::setCurrentIndex);
+
+    // --- Camera page -------------------------------------------------------
+    QWidget *cameraPage = new QWidget;
+    QVBoxLayout *cameraLayout = new QVBoxLayout(cameraPage);
+    cameraLayout->setContentsMargins(16, 16, 16, 12);
+    cameraLayout->setSpacing(6);
+
+    QSettings settings(QStringLiteral("SankoTV"), QStringLiteral("SankoTV"));
+
+    // Each row: caption + SankoSlider (0-100, "%"), seeded from QSettings.
+    // Changes persist immediately and update the canvas overlays live.
+    auto addOpacityRow = [&](const QString &caption, const QString &key,
+                             void (StoryboardPage::*apply)(int)) {
+        QLabel *label = new QLabel(caption);
+        cameraLayout->addWidget(label);
+        SankoSlider *slider = new SankoSlider;
+        slider->setRange(0, 100);
+        slider->setValueSuffix(QStringLiteral("%"));
+        slider->setValue(qBound(0, settings.value(key, 50).toInt(), 100));
+        connect(slider, &SankoSlider::valueChanged, this, [this, key, apply](int v) {
+            QSettings(QStringLiteral("SankoTV"), QStringLiteral("SankoTV")).setValue(key, v);
+            if (m_storyboard)
+                (m_storyboard->*apply)(v);
+        });
+        cameraLayout->addWidget(slider);
+    };
+    addOpacityRow(QStringLiteral("Action Safe Area Opacity"),
+                  QStringLiteral("camera/actionSafeOpacity"),
+                  &StoryboardPage::setActionSafeMaskOpacity);
+    addOpacityRow(QStringLiteral("Title Safe Area Opacity"),
+                  QStringLiteral("camera/titleSafeOpacity"),
+                  &StoryboardPage::setTitleSafeMaskOpacity);
+
+    cameraLayout->addStretch(1);
+
+    QHBoxLayout *buttonRow = new QHBoxLayout;
+    buttonRow->addStretch(1);
+    QPushButton *closeButton = new QPushButton(QStringLiteral("Close"));
+    connect(closeButton, &QPushButton::clicked, &dialog, &QDialog::accept);
+    buttonRow->addWidget(closeButton);
+    cameraLayout->addLayout(buttonRow);
+
+    pages->addWidget(cameraPage);
+
+    dialog.exec();
 }
 
 void MainWindow::updateSaveActions()

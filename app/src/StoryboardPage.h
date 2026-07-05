@@ -48,6 +48,11 @@ public:
         m_consistencyEntries = entries;
     }
 
+    // Preferences > Camera plumbing: safe-area guide opacities in percent,
+    // forwarded live to the drawing canvas.
+    void setActionSafeMaskOpacity(int percent);
+    void setTitleSafeMaskOpacity(int percent);
+
 signals:
     void backRequested();
     void continueToAnimaticRequested(const QVector<Scene *> &scenes);
@@ -62,8 +67,11 @@ private:
     QWidget *createPanelControls(); // fixed, non-scrolling column at the left of the strip
     QWidget *createRightColumn();
     QWidget *createLayerPanel();
-    QWidget *createToolbar();
+    void createFloatingToolbar();   // pill toolbar floating over the canvas
+    QPoint clampedToolbarPos(const QPoint &pos) const; // keep pill inside the canvas
+    void positionFloatingToolbar(); // restore persisted position / re-clamp on resize
     QWidget *createBrushSettings(); // side panel shown while the Brush tool is active
+    QWidget *createCameraPanel();   // side panel shown while the Camera tool is active
     QWidget *createBottomBar();
     void applyBrushPreset(int size, int opacityPct, int hardnessPct,
                           bool pressureSize, bool pressureOpacity);
@@ -144,9 +152,18 @@ private:
     QPushButton *m_importButton = nullptr;
     // Brush settings panel (visible only while the Brush tool is active).
     QWidget *m_brushPanel = nullptr;
-    SankoSlider *m_brushSizeSlider = nullptr; // custom glowing slider (1-200)
-    QSlider *m_brushOpacitySlider = nullptr;
-    QSlider *m_brushHardnessSlider = nullptr;
+    SankoSlider *m_brushSizeSlider = nullptr; // vertical, tool column (1-200)
+    SankoSlider *m_brushOpacitySlider = nullptr;
+    SankoSlider *m_brushHardnessSlider = nullptr;
+    // Camera panel (visible only while the Camera tool is active).
+    QWidget *m_cameraPanel = nullptr;
+    // Floating pill toolbar (child of the canvas, dragged by the dot grip).
+    QWidget *m_floatToolbar = nullptr;
+    QWidget *m_toolbarHandle = nullptr;
+    bool m_toolbarDragging = false;
+    bool m_toolbarPosRestored = false; // QSettings position applied once
+    QPoint m_toolbarDragStart;         // global cursor pos at press
+    QPoint m_toolbarStartPos;          // toolbar pos at press
     QCheckBox *m_pressureSizeCheck = nullptr;
     QCheckBox *m_pressureOpacityCheck = nullptr;
     // Fixed control column (left of the panel strip).

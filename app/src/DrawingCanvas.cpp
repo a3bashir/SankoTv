@@ -16,6 +16,7 @@
 #include <QPushButton>
 #include <QRadialGradient>
 #include <QResizeEvent>
+#include <QSettings>
 #include <QStack>
 #include <QTabletEvent>
 #include <QUrl>
@@ -79,6 +80,13 @@ DrawingCanvas::DrawingCanvas(QWidget *parent)
     setMinimumHeight(220);
     setAcceptDrops(true); // import images by dropping files onto the canvas
     setFocusPolicy(Qt::ClickFocus); // needed for the spacebar pan modifier
+
+    // Persisted safe-area guide opacities (Preferences > Camera).
+    const QSettings settings(QStringLiteral("SankoTV"), QStringLiteral("SankoTV"));
+    m_actionSafeMaskPct =
+        qBound(0, settings.value(QStringLiteral("camera/actionSafeOpacity"), 50).toInt(), 100);
+    m_titleSafeMaskPct =
+        qBound(0, settings.value(QStringLiteral("camera/titleSafeOpacity"), 50).toInt(), 100);
 
     // Corner zoom control: "-" | "100%" | "+" (children, always over the canvas).
     const QString zoomBtn = QStringLiteral(
@@ -146,6 +154,18 @@ void DrawingCanvas::setSafeAreaEnabled(bool enabled)
 void DrawingCanvas::setTitleSafeEnabled(bool enabled)
 {
     m_titleSafe = enabled;
+    update();
+}
+
+void DrawingCanvas::setActionSafeMaskOpacity(int percent)
+{
+    m_actionSafeMaskPct = qBound(0, percent, 100);
+    update();
+}
+
+void DrawingCanvas::setTitleSafeMaskOpacity(int percent)
+{
+    m_titleSafeMaskPct = qBound(0, percent, 100);
     update();
 }
 
@@ -623,12 +643,12 @@ void DrawingCanvas::paintEvent(QPaintEvent *)
         painter.drawRect(d.adjusted(0, 0, -1, -1));
     }
 
-    // Action-safe: 5% inset, amber @ 50%.
+    // Action-safe: 5% inset, amber at the Preferences > Camera opacity.
     if (m_safeArea) {
         const int ix = qRound(d.width() * 0.05);
         const int iy = qRound(d.height() * 0.05);
         const QRect r = d.adjusted(ix, iy, -ix, -iy);
-        const QColor amber(0xf5, 0xa6, 0x23, 128);
+        const QColor amber(0xf5, 0xa6, 0x23, m_actionSafeMaskPct * 255 / 100);
         painter.setPen(QPen(amber, 1));
         painter.drawRect(r);
         QFont f = font();
@@ -638,12 +658,12 @@ void DrawingCanvas::paintEvent(QPaintEvent *)
                          QStringLiteral("ACTION SAFE"));
     }
 
-    // Title-safe: 10% inset, blue @ 50%.
+    // Title-safe: 10% inset, blue at the Preferences > Camera opacity.
     if (m_titleSafe) {
         const int ix = qRound(d.width() * 0.10);
         const int iy = qRound(d.height() * 0.10);
         const QRect r = d.adjusted(ix, iy, -ix, -iy);
-        const QColor blue(0x4d, 0x9f, 0xff, 128);
+        const QColor blue(0x4d, 0x9f, 0xff, m_titleSafeMaskPct * 255 / 100);
         painter.setPen(QPen(blue, 1));
         painter.drawRect(r);
         QFont f = font();
@@ -751,6 +771,8 @@ void DrawingCanvas::mousePressEvent(QMouseEvent *event)
         floodFill(toCanvas(event->pos()));
         emit contentChanged();
         break;
+    case Camera:
+        break; // non-drawing tool: overlays are toggled from the Camera panel
     }
 }
 

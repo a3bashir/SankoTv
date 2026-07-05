@@ -22,8 +22,9 @@ class DrawingCanvas : public QWidget
 public:
     // Brush (the stamp-based pressure engine) is the single drawing tool;
     // pen-like behaviour is a brush preset. Eraser/Line keep the classic
-    // QPainter stroke path.
-    enum Tool { Brush, Eraser, Line, Fill };
+    // QPainter stroke path. Camera is a non-drawing tool: selecting it only
+    // opens the Camera overlay panel; canvas clicks do nothing.
+    enum Tool { Brush, Eraser, Line, Fill, Camera };
 
     explicit DrawingCanvas(QWidget *parent = nullptr);
 
@@ -50,6 +51,11 @@ public:
     bool isCameraFrameEnabled() const { return m_cameraFrame; }
     bool isSafeAreaEnabled() const { return m_safeArea; }
     bool isTitleSafeEnabled() const { return m_titleSafe; }
+
+    // Safe-area guide opacities in percent (Preferences > Camera). Defaults
+    // are loaded from QSettings("SankoTV","SankoTV") in the constructor.
+    void setActionSafeMaskOpacity(int percent); // action-safe amber
+    void setTitleSafeMaskOpacity(int percent);  // title-safe blue
 
 public slots:
     void setTool(Tool tool);
@@ -144,4 +150,6 @@ private:
     bool m_cameraFrame = true;   // 16:9 framing + dim outside (ON by default)
     bool m_safeArea = false;     // action safe, 5% inset
     bool m_titleSafe = false;    // title safe, 10% inset
+    int m_actionSafeMaskPct = 50; // guide opacity, percent (persisted)
+    int m_titleSafeMaskPct = 50;
 };

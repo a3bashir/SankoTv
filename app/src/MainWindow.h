@@ -36,6 +36,7 @@ private:
     void onOpenProject();
     void onSaveProject();
     void onSaveProjectAs();
+    void onPreferences(); // Edit > Preferences... (category list + settings pane)
     bool saveToPath(const QString &path);
     bool loadFromPath(const QString &path);
 

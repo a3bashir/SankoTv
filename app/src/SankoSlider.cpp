@@ -7,7 +7,7 @@
 
 namespace {
 
-constexpr int kGlowBleed = 3;  // extra cross-size around the handle
+constexpr int kBleed = 3;      // extra cross-size padding around the handle
 constexpr int kLabelGap = 6;   // space between the track run and the label
 constexpr int kMinRunH = 90;   // minimum run, horizontal
 constexpr int kMinRunV = 60;   // minimum run, vertical (tight tool column;
@@ -79,7 +79,7 @@ void SankoSlider::setValue(int value)
 
 void SankoSlider::refreshSizeConstraints()
 {
-    const int cross = qMax(m_trackH, m_handle) + 2 * kGlowBleed;
+    const int cross = qMax(m_trackH, m_handle) + 2 * kBleed;
     if (m_orientation == Qt::Horizontal) {
         setMinimumSize(kMinRunH, cross);
         setMaximumSize(QWIDGETSIZE_MAX, cross);
@@ -158,28 +158,15 @@ void SankoSlider::paintEvent(QPaintEvent *)
 
     const qreal c = handleCenterPos();
 
-    // Fill with glow: left->handle when horizontal, BOTTOM->handle when
-    // vertical. The fill's rounding toward the handle hides beneath it.
+    // Flat solid fill (no glow/bloom in any state): left->handle when
+    // horizontal, BOTTOM->handle when vertical. The fill's rounding toward
+    // the handle hides beneath it.
     const QRectF fill = horizontal
         ? QRectF(track.left(), track.top(), c - track.left(), m_trackH)
         : QRectF(track.left(), c, m_trackH, track.bottom() - c);
     const qreal fillRun = horizontal ? fill.width() : fill.height();
     if (fillRun > 0.5 && enabled) {
-        // The bloom QSS cannot do: concentric rounded rects fading outward,
-        // boosted to maximum intensity while the handle is held.
-        const int alphasNormal[4] = {12, 25, 40, 60};   // outermost..innermost
-        const int alphasDragging[4] = {24, 48, 72, 96}; // MAX while dragging
-        const int *alphas = m_dragging ? alphasDragging : alphasNormal;
         p.setPen(Qt::NoPen);
-        for (int ring = 0; ring < 4; ++ring) {
-            const qreal grow = (4 - ring) * 1.4;
-            QColor glow = kPurple;
-            glow.setAlpha(alphas[ring]);
-            p.setBrush(glow);
-            p.drawRoundedRect(fill.adjusted(-grow, -grow, grow, grow),
-                              trackR + grow, trackR + grow);
-        }
-
         p.setBrush(kPurple);
         p.drawRoundedRect(fill, trackR, trackR);
     }

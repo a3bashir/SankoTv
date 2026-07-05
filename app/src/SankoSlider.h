@@ -3,12 +3,10 @@
 #include <QString>
 #include <QWidget>
 
-// Custom-painted horizontal slider with a glowing purple fill (the soft
-// outer bloom QPainter can do and QSS cannot). One class serves two sizes:
-//   OPACITY:    setTrackHeight(14) / setHandleSize(16), range 0-100, "NN%"
-//   BRUSH SIZE: setTrackHeight(25) / setHandleSize(27), range 1-200, "NN"
-// The live value label is painted inside the widget, right of the track,
-// purple monospace. Drop-in for the QSlider API surface the app uses:
+// Custom-painted slider with a flat purple fill, horizontal or vertical,
+// configurable track/handle sizes. The live value label is painted inside
+// the widget (right of a horizontal track, below a vertical one), purple
+// monospace. Drop-in for the QSlider API surface the app uses:
 // value()/setValue()/setRange()/valueChanged(int)/setEnabled().
 class SankoSlider : public QWidget
 {
