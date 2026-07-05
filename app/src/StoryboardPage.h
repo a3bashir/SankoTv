@@ -16,6 +16,7 @@ class QPushButton;
 class QScrollArea;
 class QSlider;
 class QVBoxLayout;
+class SankoSlider;
 
 namespace ads {
 class CDockManager;
@@ -143,7 +144,7 @@ private:
     QPushButton *m_importButton = nullptr;
     // Brush settings panel (visible only while the Brush tool is active).
     QWidget *m_brushPanel = nullptr;
-    QSlider *m_brushSizeSlider = nullptr;
+    SankoSlider *m_brushSizeSlider = nullptr; // custom glowing slider (1-200)
     QSlider *m_brushOpacitySlider = nullptr;
     QSlider *m_brushHardnessSlider = nullptr;
     QCheckBox *m_pressureSizeCheck = nullptr;
@@ -165,8 +166,8 @@ private:
     // Layer panel.
     QVBoxLayout *m_layerListLayout = nullptr;
     QVector<QWidget *> m_layerRows;
-    QSlider *m_layerOpacity = nullptr;
-    QLabel *m_layerOpacityValue = nullptr;
+    SankoSlider *m_layerOpacity = nullptr; // custom glowing opacity slider
+                                           // (paints its own "NN%" label)
     QPushButton *m_layerDeleteButton = nullptr;
     QPushButton *m_layerMergeButton = nullptr;
     bool m_updatingLayerUi = false; // guards the opacity slider feedback loop

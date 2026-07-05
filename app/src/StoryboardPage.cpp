@@ -1,6 +1,8 @@
 #include "StoryboardPage.h"
 
 #include "DrawingCanvas.h"
+#include "SankoDockOverlay.h"
+#include "SankoSlider.h"
 #include "StoryboardModel.h"
 
 #include "DockAreaWidget.h"
@@ -80,7 +82,7 @@ QPushButton *toolButton(const QString &text, const QString &tip)
     button->setToolTip(tip);
     button->setCheckable(true);
     button->setCursor(Qt::PointingHandCursor);
-    button->setFixedHeight(34);
+    button->setFixedHeight(30); // compact: leaves room for the size slider
     button->setStyleSheet(QStringLiteral(
         "QPushButton {"
         "  background-color: #1c1c1c; color: #cccccc; border: 1px solid #2a2a2a;"
@@ -114,9 +116,15 @@ StoryboardPage::StoryboardPage(QWidget *parent)
     // ADS dock manager hosts everything: native tabbing, drag-to-float,
     // re-docking, and auto-hide come with it — nothing hand-rolled.
     ads::CDockManager::setConfigFlag(ads::CDockManager::OpaqueSplitterResize, true);
-    m_dockManager = new ads::CDockManager(this);
+    SankoDockManager *dockManager = new SankoDockManager(this);
+    m_dockManager = dockManager;
     m_dockManager->setStyleSheet(QString::fromLatin1(kAdsDarkStyle));
     root->addWidget(m_dockManager, 1);
+
+    // Photoshop-style drop hints: slim amber edge glow + tab-bar highlight
+    // replace ADS's centre arrows and filled preview rect (visuals only;
+    // parent-owned by the manager).
+    new SankoDockOverlay(dockManager);
 
     // Central workspace: the canvas area exactly as before (tool column,
     // brush settings, panel strip, canvas) plus the bottom toolbar. The ADS
@@ -491,41 +499,47 @@ QWidget *StoryboardPage::createToolbar()
         "background-color: #111111; border-right: 1px solid #1f1f1f;"));
 
     QVBoxLayout *layout = new QVBoxLayout(toolbar);
-    layout->setContentsMargins(8, 12, 8, 12);
-    layout->setSpacing(8);
+    layout->setContentsMargins(8, 10, 8, 10);
+    layout->setSpacing(6);
 
     // Tool selection (exclusive).
     QButtonGroup *tools = new QButtonGroup(this);
     tools->setExclusive(true);
 
-    QPushButton *pen = toolButton(QStringLiteral("Pen"), QStringLiteral("Pen \xE2\x80\x94 hard freehand line"));
     QPushButton *brushTool = toolButton(QStringLiteral("Brush"),
-                                        QStringLiteral("Brush \xE2\x80\x94 pressure-sensitive, soft-edged"));
+                                        QStringLiteral("Brush \xE2\x80\x94 pressure-sensitive; presets include Pen"));
     QPushButton *eraser = toolButton(QStringLiteral("Erase"), QStringLiteral("Eraser"));
     QPushButton *line = toolButton(QStringLiteral("Line"), QStringLiteral("Straight line (click-drag)"));
     QPushButton *fill = toolButton(QStringLiteral("Fill"), QStringLiteral("Flood fill"));
-    pen->setChecked(true);
+    brushTool->setChecked(true); // Brush is the single drawing tool (default)
 
-    tools->addButton(pen);
     tools->addButton(brushTool);
     tools->addButton(eraser);
     tools->addButton(line);
     tools->addButton(fill);
 
-    connect(pen, &QPushButton::clicked, this, [this] { m_canvas->setTool(DrawingCanvas::Pen); });
-    connect(brushTool, &QPushButton::clicked, this, [this] { m_canvas->setTool(DrawingCanvas::Brush); });
-    connect(eraser, &QPushButton::clicked, this, [this] { m_canvas->setTool(DrawingCanvas::Eraser); });
-    connect(line, &QPushButton::clicked, this, [this] { m_canvas->setTool(DrawingCanvas::Line); });
-    connect(fill, &QPushButton::clicked, this, [this] { m_canvas->setTool(DrawingCanvas::Fill); });
+    // Toggled-driven tool selection: the checked state, the canvas tool, and
+    // the brush panel's visibility can never disagree — whichever button the
+    // exclusive group checks IS the active tool.
+    auto bindTool = [this](QPushButton *button, DrawingCanvas::Tool tool) {
+        connect(button, &QPushButton::toggled, this, [this, tool](bool on) {
+            if (on && m_canvas)
+                m_canvas->setTool(tool);
+        });
+    };
+    bindTool(brushTool, DrawingCanvas::Brush);
+    bindTool(eraser, DrawingCanvas::Eraser);
+    bindTool(line, DrawingCanvas::Line);
+    bindTool(fill, DrawingCanvas::Fill);
 
-    // The brush settings panel tracks the Brush tool's checked state (the
-    // exclusive group unchecks it when any other tool is picked).
+    // The brush settings panel is visible ONLY while the Brush tool is the
+    // active tool (the exclusive group unchecks Brush when Erase/Line/Fill
+    // is picked, which hides the panel).
     connect(brushTool, &QPushButton::toggled, this, [this](bool on) {
         if (m_brushPanel)
             m_brushPanel->setVisible(on);
     });
 
-    layout->addWidget(pen);
     layout->addWidget(brushTool);
     layout->addWidget(eraser);
     layout->addWidget(line);
@@ -543,7 +557,7 @@ QWidget *StoryboardPage::createToolbar()
     // Viewport overlay toggles (display-only; never saved into the artwork).
     QPushButton *cameraFrame = toolButton(QStringLiteral("Camera\nFrame"),
                                           QStringLiteral("Camera frame \xE2\x80\x94 16:9 framing, dims outside"));
-    cameraFrame->setFixedHeight(40); // two-line label
+    cameraFrame->setFixedHeight(36); // two-line label
     cameraFrame->setChecked(true);   // camera frame is ON by default
     connect(cameraFrame, &QPushButton::toggled, this,
             [this](bool on) { m_canvas->setCameraFrameEnabled(on); });
@@ -579,17 +593,23 @@ QWidget *StoryboardPage::createToolbar()
     });
     layout->addWidget(color);
 
-    // Brush size slider (vertical).
-    QLabel *sizeLabel = new QLabel(QStringLiteral("Size"));
-    sizeLabel->setAlignment(Qt::AlignCenter);
-    sizeLabel->setStyleSheet(QStringLiteral("color: #777777; font-size: 10px;"));
-    layout->addWidget(sizeLabel);
-
-    QSlider *size = new QSlider(Qt::Vertical);
-    size->setRange(1, 20);
-    size->setValue(4);
-    connect(size, &QSlider::valueChanged, this, [this](int v) { m_canvas->setBrushSize(v); });
-    layout->addWidget(size, 1, Qt::AlignHCenter);
+    // Vertical brush-size slider, where the old Pen Size slider lived.
+    // Always visible (even when the brush panel is hidden); range 1-200,
+    // value label painted below the track.
+    m_brushSizeSlider = new SankoSlider;
+    m_brushSizeSlider->setToolTip(QStringLiteral("Brush size"));
+    m_brushSizeSlider->setOrientation(Qt::Vertical);
+    m_brushSizeSlider->setTrackHeight(25); // track WIDTH when vertical
+    m_brushSizeSlider->setHandleSize(27);
+    m_brushSizeSlider->setRange(1, 200);
+    m_brushSizeSlider->setValue(25); // set BEFORE the connect: m_canvas is
+                                     // not constructed yet at this point
+    connect(m_brushSizeSlider, &SankoSlider::valueChanged, this, [this](int v) {
+        m_canvas->setBrushToolSize(v);
+        // The Eraser and Line widths follow too (clamped to 1-20 inside).
+        m_canvas->setBrushSize(v);
+    });
+    layout->addWidget(m_brushSizeSlider, 1, Qt::AlignHCenter);
 
     // Undo / clear.
     QPushButton *undo = new QPushButton(QStringLiteral("Undo"));
@@ -623,7 +643,11 @@ QWidget *StoryboardPage::createBrushSettings()
     m_brushPanel->setFixedWidth(150);
     m_brushPanel->setStyleSheet(QStringLiteral(
         "background-color: #111111; border-right: 1px solid #1f1f1f;"));
-    m_brushPanel->setVisible(false);
+    // Visible from the start: Brush is now the default (and only) drawing
+    // tool. The toolbar's toggled connection hides it when another tool is
+    // picked. (The toolbar is built before this panel, so its initial
+    // setChecked(true) fired while m_brushPanel was still null.)
+    m_brushPanel->setVisible(true);
 
     QVBoxLayout *layout = new QVBoxLayout(m_brushPanel);
     layout->setContentsMargins(10, 12, 10, 12);
@@ -657,12 +681,10 @@ QWidget *StoryboardPage::createBrushSettings()
         return caption;
     };
 
-    addSlider(QStringLiteral("Size"), 1, 200, 25, m_brushSizeSlider);
+    // (Brush size moved to the vertical SankoSlider in the tool column; the
+    // panel keeps Opacity, Hardness, pressure toggles, and the presets.)
     addSlider(QStringLiteral("Opacity"), 0, 100, 100, m_brushOpacitySlider);
     addSlider(QStringLiteral("Hardness"), 0, 100, 80, m_brushHardnessSlider);
-
-    connect(m_brushSizeSlider, &QSlider::valueChanged, this,
-            [this](int v) { m_canvas->setBrushToolSize(v); });
     connect(m_brushOpacitySlider, &QSlider::valueChanged, this,
             [this](int v) { m_canvas->setBrushOpacity(v); });
     connect(m_brushHardnessSlider, &QSlider::valueChanged, this,
@@ -694,6 +716,8 @@ QWidget *StoryboardPage::createBrushSettings()
         "QPushButton:hover { border-color: #f5a623; color: #f5a623; }");
     struct Preset { const char *name; int size, opacity, hardness; bool pSize, pOpacity; };
     const Preset presets[] = {
+        // "Pen" replaces the old Pen tool: fixed-width, hard-edged, opaque.
+        {"Pen", 4, 100, 100, false, false},
         {"Hard Pencil", 3, 100, 95, true, false},
         {"Soft Brush", 40, 80, 20, true, true},
         {"Marker", 25, 60, 70, false, false},
@@ -1522,17 +1546,21 @@ QWidget *StoryboardPage::createLayerPanel()
     opacityRow->setSpacing(6);
     QLabel *opacityLabel = new QLabel(QStringLiteral("Opacity"));
     opacityLabel->setStyleSheet(QStringLiteral("color: #999999; font-size: 10px; border: none;"));
-    m_layerOpacityValue = new QLabel(QStringLiteral("100%"));
-    m_layerOpacityValue->setStyleSheet(QStringLiteral("color: #f5a623; font-size: 10px; border: none;"));
     opacityRow->addWidget(opacityLabel);
     opacityRow->addStretch(1);
-    opacityRow->addWidget(m_layerOpacityValue);
     layout->addLayout(opacityRow);
 
-    m_layerOpacity = new QSlider(Qt::Horizontal);
+    // Custom glowing slider, opacity preset (track 14 / handle 16, 0-100).
+    // Drop-in for the previous QSlider: same range/value/valueChanged
+    // surface, so the opacity wiring is unchanged. The live "NN%" label is
+    // painted inside the widget, right of the track.
+    m_layerOpacity = new SankoSlider;
+    m_layerOpacity->setTrackHeight(14);
+    m_layerOpacity->setHandleSize(16);
     m_layerOpacity->setRange(0, 100);
+    m_layerOpacity->setValueSuffix(QStringLiteral("%"));
     m_layerOpacity->setValue(100);
-    connect(m_layerOpacity, &QSlider::valueChanged, this, [this](int v) {
+    connect(m_layerOpacity, &SankoSlider::valueChanged, this, [this](int v) {
         if (m_updatingLayerUi)
             return;
         Panel *panel = currentPanel();
@@ -1540,7 +1568,6 @@ QWidget *StoryboardPage::createLayerPanel()
         if (!layer)
             return;
         layer->opacity = v / 100.0;
-        m_layerOpacityValue->setText(QStringLiteral("%1%").arg(v));
         refreshLayerCanvas(); // live: canvas composite + panel thumbnail
     });
     layout->addWidget(m_layerOpacity);
@@ -1621,10 +1648,8 @@ void StoryboardPage::rebuildLayerPanel()
     const int pct = active ? qRound(qBound(0.0, active->opacity, 1.0) * 100.0) : 100;
     if (m_layerOpacity) {
         m_layerOpacity->setEnabled(active != nullptr);
-        m_layerOpacity->setValue(pct);
+        m_layerOpacity->setValue(pct); // slider paints its own "NN%" label
     }
-    if (m_layerOpacityValue)
-        m_layerOpacityValue->setText(QStringLiteral("%1%").arg(pct));
     m_updatingLayerUi = false;
 
     if (m_layerDeleteButton)

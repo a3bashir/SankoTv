@@ -726,7 +726,6 @@ void DrawingCanvas::mousePressEvent(QMouseEvent *event)
         return; // locked / hidden / missing layer: ignore strokes, no cursor change
 
     switch (m_tool) {
-    case Pen:
     case Eraser: {
         pushUndo();
         m_drawing = true;

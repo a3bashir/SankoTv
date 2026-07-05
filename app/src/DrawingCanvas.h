@@ -20,9 +20,10 @@ class DrawingCanvas : public QWidget
     Q_OBJECT
 
 public:
-    // Pen is the original hard QPainter-line tool; Brush is the stamp-based
-    // pressure brush engine.
-    enum Tool { Pen, Brush, Eraser, Line, Fill };
+    // Brush (the stamp-based pressure engine) is the single drawing tool;
+    // pen-like behaviour is a brush preset. Eraser/Line keep the classic
+    // QPainter stroke path.
+    enum Tool { Brush, Eraser, Line, Fill };
 
     explicit DrawingCanvas(QWidget *parent = nullptr);
 
