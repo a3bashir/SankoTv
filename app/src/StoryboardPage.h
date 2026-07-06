@@ -1,12 +1,13 @@
 #pragma once
 
+#include "DrawingCanvas.h" // DrawingCanvas::Tool (persisted selection mode)
+
 #include <QHash>
 #include <QPoint>
 #include <QSet>
 #include <QVector>
 #include <QWidget>
 
-class DrawingCanvas;
 class QCheckBox;
 class QComboBox;
 class QHBoxLayout;
@@ -194,6 +195,9 @@ private:
     QWidget *m_cameraPanel = nullptr;
     // Shapes panel (visible only while the Shapes tool is active).
     QWidget *m_shapesPanel = nullptr;
+    // Last-chosen selection mode: a plain click on the combined Selection
+    // button re-activates it; hold/right-click opens the mode menu.
+    DrawingCanvas::Tool m_selectionMode = DrawingCanvas::SelectRect;
     // Floating overlays (children of the canvas): the pill toolbar plus the
     // Brush Options / Camera panels. Registered grips/headers drag their
     // panel; registered bodies just swallow events (see eventFilter).

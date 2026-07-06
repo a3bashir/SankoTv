@@ -334,9 +334,18 @@ StoryboardPage::StoryboardPage(QWidget *parent)
         new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_Right), this);
     connect(movePanelRight, &QShortcut::activated, this, [this] { movePanelBy(1); });
 
-    // Ctrl+D duplicates the current panel.
-    QShortcut *duplicateShortcut =
+    // Ctrl+D DESELECTS (clears the marching-ants selection mask).
+    QShortcut *deselectShortcut =
         new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_D), this);
+    connect(deselectShortcut, &QShortcut::activated, this, [this] {
+        if (m_canvas)
+            m_canvas->clearSelection();
+    });
+
+    // Ctrl+Shift+D duplicates the current panel (moved off Ctrl+D; the
+    // Duplicate button in the panel-control column is unchanged).
+    QShortcut *duplicateShortcut =
+        new QShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_D), this);
     connect(duplicateShortcut, &QShortcut::activated, this, [this] { duplicatePanel(); });
 
     // Ctrl+I imports an image onto the current panel.
@@ -689,33 +698,63 @@ void StoryboardPage::createFloatingToolbar()
     QButtonGroup *tools = new QButtonGroup(this);
     tools->setExclusive(true);
 
+    QPushButton *move = pillButton("move",
+                                   QStringLiteral("Move \xE2\x80\x94 drag the selected pixels"), true);
     QPushButton *brushTool = pillButton("brush",
                                         QStringLiteral("Brush \xE2\x80\x94 pressure-sensitive; presets include Pen"), true);
     QPushButton *eraser = pillButton("erase", QStringLiteral("Eraser"), true);
     QPushButton *shapes = pillButton("shapes",
                                      QStringLiteral("Shapes \xE2\x80\x94 rectangle, triangle, circle, line, polygon"), true);
     QPushButton *fill = pillButton("fill", QStringLiteral("Flood fill"), true);
-    QPushButton *selRect = pillButton("selrect",
-                                      QStringLiteral("Rectangle Select \xE2\x80\x94 active layer; Esc clears"), true);
-    QPushButton *selEllipse = pillButton("selellipse",
-                                         QStringLiteral("Elliptical Select \xE2\x80\x94 active layer; Esc clears"), true);
-    QPushButton *lasso = pillButton("lasso",
-                                    QStringLiteral("Lasso \xE2\x80\x94 freehand selection, closes on release"), true);
-    QPushButton *move = pillButton("move",
-                                   QStringLiteral("Move \xE2\x80\x94 drag the selected pixels"), true);
+    QPushButton *selection = pillButton("selrect",
+                                        QStringLiteral("Selection \xE2\x80\x94 click to use; hold or right-click"
+                                                       " for Rectangle / Ellipse / Lasso"), true);
     QPushButton *camera = pillButton("camera",
                                      QStringLiteral("Camera overlays \xE2\x80\x94 frame and safe-area guides"), true);
     brushTool->setChecked(true); // Brush is the single drawing tool (default)
 
+    tools->addButton(move);
     tools->addButton(brushTool);
     tools->addButton(eraser);
     tools->addButton(shapes);
     tools->addButton(fill);
-    tools->addButton(selRect);
-    tools->addButton(selEllipse);
-    tools->addButton(lasso);
-    tools->addButton(move);
+    tools->addButton(selection);
     tools->addButton(camera);
+
+    // ONE Selection button for the three modes: a plain click re-activates
+    // the last-chosen mode; click-and-hold or right-click opens the mode
+    // menu, and the button's icon mirrors the choice.
+    QMenu *selectionMenu = new QMenu(m_floatToolbar);
+    selectionMenu->setStyleSheet(QStringLiteral(
+        "QMenu { background-color: #161616; color: #cccccc; border: 1px solid #2a2a2a;"
+        " font-size: 11px; }"
+        "QMenu::item { padding: 5px 18px 5px 8px; }"
+        "QMenu::item:selected { background-color: #262626; color: #f5a623; }"));
+    auto pickSelectionMode = [this, selection](DrawingCanvas::Tool mode, const char *iconKind) {
+        m_selectionMode = mode;
+        selection->setIcon(toolIcon(iconKind));
+        selection->setChecked(true); // the exclusive group unchecks the old tool
+        if (m_canvas)
+            m_canvas->setTool(mode); // also covers "already checked, mode changed"
+    };
+    selectionMenu->addAction(toolIcon("selrect"), QStringLiteral("Rectangle"), this,
+                             [pickSelectionMode] { pickSelectionMode(DrawingCanvas::SelectRect, "selrect"); });
+    selectionMenu->addAction(toolIcon("selellipse"), QStringLiteral("Ellipse"), this,
+                             [pickSelectionMode] { pickSelectionMode(DrawingCanvas::SelectEllipse, "selellipse"); });
+    selectionMenu->addAction(toolIcon("lasso"), QStringLiteral("Lasso"), this,
+                             [pickSelectionMode] { pickSelectionMode(DrawingCanvas::Lasso, "lasso"); });
+    auto popupSelectionMenu = [selection, selectionMenu] {
+        selectionMenu->popup(selection->mapToGlobal(QPoint(selection->width() + 6, 0)));
+    };
+    selection->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(selection, &QPushButton::customContextMenuRequested, this,
+            [popupSelectionMenu](const QPoint &) { popupSelectionMenu(); });
+    connect(selection, &QPushButton::pressed, this, [selection, popupSelectionMenu] {
+        QTimer::singleShot(450, selection, [selection, popupSelectionMenu] {
+            if (selection->isDown()) // still held: click-and-hold opens the menu
+                popupSelectionMenu();
+        });
+    });
 
     // Toggled-driven tool selection: the checked state, the canvas tool, and
     // the brush panel's visibility can never disagree — whichever button the
@@ -726,15 +765,17 @@ void StoryboardPage::createFloatingToolbar()
                 m_canvas->setTool(tool);
         });
     };
+    bindTool(move, DrawingCanvas::Move);
     bindTool(brushTool, DrawingCanvas::Brush);
     bindTool(eraser, DrawingCanvas::Eraser);
     bindTool(shapes, DrawingCanvas::Shapes);
     bindTool(fill, DrawingCanvas::Fill);
-    bindTool(selRect, DrawingCanvas::SelectRect);
-    bindTool(selEllipse, DrawingCanvas::SelectEllipse);
-    bindTool(lasso, DrawingCanvas::Lasso);
-    bindTool(move, DrawingCanvas::Move);
     bindTool(camera, DrawingCanvas::Camera);
+    // The Selection button activates whichever mode was chosen last.
+    connect(selection, &QPushButton::toggled, this, [this](bool on) {
+        if (on && m_canvas)
+            m_canvas->setTool(m_selectionMode);
+    });
 
     // Each tool's options panel is visible ONLY while that tool is active.
     // The exclusive group unchecks the old tool when a new one is picked,
@@ -752,14 +793,12 @@ void StoryboardPage::createFloatingToolbar()
             m_cameraPanel->setVisible(on);
     });
 
+    layout->addWidget(move, 0, Qt::AlignHCenter); // Move sits at the top
     layout->addWidget(brushTool, 0, Qt::AlignHCenter);
     layout->addWidget(eraser, 0, Qt::AlignHCenter);
     layout->addWidget(shapes, 0, Qt::AlignHCenter);
     layout->addWidget(fill, 0, Qt::AlignHCenter);
-    layout->addWidget(selRect, 0, Qt::AlignHCenter);
-    layout->addWidget(selEllipse, 0, Qt::AlignHCenter);
-    layout->addWidget(lasso, 0, Qt::AlignHCenter);
-    layout->addWidget(move, 0, Qt::AlignHCenter);
+    layout->addWidget(selection, 0, Qt::AlignHCenter);
     layout->addWidget(camera, 0, Qt::AlignHCenter);
 
     // Onion skin toggle (independent of the exclusive tool group).
@@ -852,10 +891,10 @@ void StoryboardPage::positionFloatingToolbar()
 {
     if (!m_floatToolbar || !m_canvas)
         return;
-    // Fixed content is 424px (10 tools + swatch + undo/redo + grip + gaps);
-    // the size-slider run flexes 48..185 so the grip always stays reachable
-    // inside the canvas: floor 472, design height 609.
-    m_floatToolbar->setFixedHeight(qBound(472, m_canvas->height() - 12, 609));
+    // Fixed content is 364px (8 tool buttons + swatch + undo/redo + grip +
+    // gaps); the size-slider run flexes 48..185 so the grip always stays
+    // reachable inside the canvas: floor 412, design height 549.
+    m_floatToolbar->setFixedHeight(qBound(412, m_canvas->height() - 12, 549));
     if (!m_toolbarPosRestored) {
         m_toolbarPosRestored = true;
         const QSettings settings(QStringLiteral("SankoTV"), QStringLiteral("SankoTV"));

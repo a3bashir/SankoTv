@@ -92,9 +92,11 @@ DrawingCanvas::DrawingCanvas(QWidget *parent)
     m_titleSafeMaskPct =
         qBound(0, settings.value(QStringLiteral("camera/titleSafeOpacity"), 50).toInt(), 100);
 
-    // Corner zoom control: "-" | "100%" | "+" (children, always over the canvas).
+    // Corner zoom control: "-" | "100%" | "+" (children, always over the
+    // canvas). Same #161616 as the floating toolbar so the "-" button blends
+    // in when the pill sits directly above it.
     const QString zoomBtn = QStringLiteral(
-        "QPushButton { background-color: #1c1c1c; color: #cccccc; border: 1px solid #2a2a2a;"
+        "QPushButton { background-color: #161616; color: #cccccc; border: 1px solid #2a2a2a;"
         " border-radius: 3px; font-size: 10px; padding: 0; }"
         "QPushButton:hover { background-color: #262626; color: #ffffff; }");
     m_zoomOutButton = new QPushButton(QStringLiteral("-"), this);
@@ -581,6 +583,21 @@ QRectF DrawingCanvas::floatBounds() const
     return QRectF(m_floatPos + m_floatDelta, QSizeF(m_floatImg.size()));
 }
 
+// The selection path rasterized once into a hard-edged binary mask (alpha
+// strictly 0 or 255), in boundingRect-local coordinates. DestinationIn with
+// it KEEPS exactly the masked pixels; DestinationOut CLEARS exactly the same
+// set — the two partition the rect with no off-by-one.
+QImage DrawingCanvas::selectionMask(const QRect &boundingRect) const
+{
+    QImage mask(boundingRect.size(), QImage::Format_ARGB32_Premultiplied);
+    mask.fill(Qt::transparent);
+    QPainter painter(&mask);
+    painter.setRenderHint(QPainter::Antialiasing, false);
+    painter.translate(-boundingRect.topLeft());
+    painter.fillPath(m_selPath, Qt::white);
+    return mask;
+}
+
 // Copy is not an edit, so it reads the active layer even when locked.
 void DrawingCanvas::copySelection()
 {
@@ -592,12 +609,10 @@ void DrawingCanvas::copySelection()
     const QRect r = m_selPath.boundingRect().toAlignedRect().intersected(layer->image.rect());
     if (r.isEmpty())
         return;
-    QImage img(r.size(), QImage::Format_ARGB32_Premultiplied);
-    img.fill(Qt::transparent);
+    QImage img = layer->image.copy(r);
     QPainter p(&img);
-    p.translate(-r.topLeft());
-    p.setClipPath(m_selPath); // only pixels inside the mask
-    p.drawImage(0, 0, layer->image);
+    p.setCompositionMode(QPainter::CompositionMode_DestinationIn);
+    p.drawImage(0, 0, selectionMask(r)); // only pixels inside the mask survive
     p.end();
     m_clipImg = img;
     m_clipPos = r.topLeft(); // for Paste in Place
@@ -609,11 +624,13 @@ void DrawingCanvas::cutSelection()
     if (!layer || m_selPath.isEmpty())
         return;
     copySelection();
+    const QRect r = m_selPath.boundingRect().toAlignedRect().intersected(layer->image.rect());
+    if (r.isEmpty())
+        return;
     pushUndo();
     QPainter p(&layer->image);
-    p.setClipPath(m_selPath);
-    p.setCompositionMode(QPainter::CompositionMode_Clear);
-    p.fillRect(layer->image.rect(), Qt::black); // clears to transparent
+    p.setCompositionMode(QPainter::CompositionMode_DestinationOut);
+    p.drawImage(r.topLeft(), selectionMask(r)); // clears exactly the copied pixels
     p.end();
     update();
     emit contentChanged();
@@ -635,10 +652,11 @@ void DrawingCanvas::pasteClipboard(bool atOriginalPos)
     m_floatImg = m_clipImg;
     m_floatDelta = QPointF();
     if (atOriginalPos) {
-        m_floatPos = m_clipPos;
+        m_floatPos = m_clipPos; // integral: captured from an aligned rect
     } else {
         const QPointF viewCentre = toCanvasF(QPointF(width() / 2.0, height() / 2.0));
-        m_floatPos = viewCentre - QPointF(m_clipImg.width() / 2.0, m_clipImg.height() / 2.0);
+        const QPointF raw = viewCentre - QPointF(m_clipImg.width() / 2.0, m_clipImg.height() / 2.0);
+        m_floatPos = QPointF(qRound(raw.x()), qRound(raw.y())); // stay pixel-aligned
     }
     m_selPath = QPainterPath(); // the floating outline replaces the selection
     m_selDrag = false;
@@ -661,19 +679,29 @@ void DrawingCanvas::liftSelection(const QPointF &grabCanvasPt)
     pushUndo();
     m_floatUndoPushed = true;
 
-    QImage lifted(r.size(), QImage::Format_ARGB32_Premultiplied);
-    lifted.fill(Qt::transparent);
-    QPainter p(&lifted);
-    p.translate(-r.topLeft());
-    p.setClipPath(m_selPath);
-    p.drawImage(0, 0, layer->image);
-    p.end();
+    // ONE mask drives both the lift and the clear, so they are
+    // pixel-identical by construction. No clip-path rasterization can
+    // diverge between painters, and non-rectangular selections never clear
+    // their bounding box.
+    const QImage mask = selectionMask(r);
 
-    QPainter clearer(&layer->image);
-    clearer.setClipPath(m_selPath);
-    clearer.setCompositionMode(QPainter::CompositionMode_Clear);
-    clearer.fillRect(r, Qt::black);
-    clearer.end();
+    // LIFT: keep source pixels only where the mask is set (DestinationIn
+    // multiplies by mask alpha — exact keep/kill with a binary mask).
+    QImage lifted = layer->image.copy(r);
+    {
+        QPainter liftPainter(&lifted);
+        liftPainter.setCompositionMode(QPainter::CompositionMode_DestinationIn);
+        liftPainter.drawImage(0, 0, mask);
+    }
+
+    // CLEAR: erase the SAME mask pixels at the SAME origin (DestinationOut
+    // is the exact complement of the lift — together they partition the
+    // source rect with no off-by-one).
+    {
+        QPainter clearPainter(&layer->image);
+        clearPainter.setCompositionMode(QPainter::CompositionMode_DestinationOut);
+        clearPainter.drawImage(r.topLeft(), mask);
+    }
 
     m_floatActive = true;
     m_floatFromPaste = false;
@@ -697,11 +725,18 @@ void DrawingCanvas::commitFloating()
     if (layer) {
         if (!m_floatUndoPushed)
             pushUndo(); // paste: snapshot now; move already snapshot at lift
+        // ONE composite at the final, pixel-aligned position — the layer was
+        // last written at the lift; nothing touched it during the drag.
+        const QPointF target = m_floatPos + m_floatDelta;
+        const QPoint aligned(qRound(target.x()), qRound(target.y()));
         QPainter p(&layer->image);
-        p.drawImage(QPointF(m_floatPos + m_floatDelta), m_floatImg);
+        p.drawImage(aligned, m_floatImg);
         p.end();
-        if (!m_floatFromPaste && !m_selPath.isEmpty())
-            m_selPath.translate(m_floatDelta); // ants follow the moved pixels
+        if (!m_floatFromPaste && !m_selPath.isEmpty()) {
+            // Ants follow the moved pixels, staying on the pixel grid so the
+            // next lift clips exactly the pixels that were just committed.
+            m_selPath.translate(QPointF(aligned) - m_floatPos);
+        }
         emit contentChanged();
     }
     m_floatUndoPushed = false;
@@ -731,6 +766,10 @@ void DrawingCanvas::floodFill(const QPoint &seed)
 
     QImage image = layerPtr->image.convertToFormat(QImage::Format_ARGB32);
     if (!image.rect().contains(seed))
+        return;
+    // With an active selection the fill is confined to the mask: a seed
+    // outside it is a no-op, and the result is written back clipped below.
+    if (!m_selPath.isEmpty() && !m_selPath.contains(QPointF(seed)))
         return;
 
     const QRgb target = image.pixel(seed);
@@ -764,7 +803,17 @@ void DrawingCanvas::floodFill(const QPoint &seed)
         }
     }
 
-    layerPtr->image = image.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+    if (m_selPath.isEmpty()) {
+        layerPtr->image = image.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+    } else {
+        // Selection active: only pixels inside the mask take the fill;
+        // everything outside stays untouched.
+        QPainter p(&layerPtr->image);
+        p.setClipPath(m_selPath);
+        p.setCompositionMode(QPainter::CompositionMode_Source);
+        p.drawImage(0, 0, image);
+        p.end();
+    }
     update();
 }
 
@@ -1251,8 +1300,12 @@ void DrawingCanvas::mouseMoveEvent(QMouseEvent *event)
         return;
     }
     if (m_floatDragging) {
-        m_floatDelta = m_floatGrabDelta + (toCanvasF(event->position()) - m_floatGrabC);
-        update(); // floating pixels follow the drag
+        // Whole-pixel deltas only: the preview matches the commit exactly and
+        // the blit never resamples (fractional offsets would smear edges and
+        // leave half-alpha trails on every subsequent lift).
+        const QPointF raw = m_floatGrabDelta + (toCanvasF(event->position()) - m_floatGrabC);
+        m_floatDelta = QPointF(qRound(raw.x()), qRound(raw.y()));
+        update(); // display-only: the layer is untouched until commit
         return;
     }
     if (m_selDrag) {

@@ -141,6 +141,10 @@ private:
     void cancelShape();     // clears drag + polygon state, no artifacts
 
     // Selection / floating pixels (move-lift or un-committed paste).
+    // The selection path is rasterized ONCE into a hard-edged mask; lift,
+    // clear, copy, and cut all index that same mask so their coverage is
+    // pixel-identical (never the bounding box for ellipse/lasso).
+    QImage selectionMask(const QRect &boundingRect) const;
     void liftSelection(const QPointF &grabCanvasPt); // selection -> floating (undo pushed)
     void commitFloating();      // stamp floating pixels into the active layer
     void cancelFloatingPaste(); // Esc on a floating paste: discard, no artifacts
