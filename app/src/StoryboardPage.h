@@ -55,13 +55,21 @@ public:
     void setActionSafeMaskOpacity(int percent);
     void setTitleSafeMaskOpacity(int percent);
 
-    // Edit-menu panel clipboard. Copy stores an owned deep copy; paste
-    // inserts a fresh clone (new layer UUIDs) each time. Cut is blocked on a
-    // scene's last panel, same rule as Delete.
+    // Edit-menu entry points: route to the CANVAS selection clipboard when a
+    // selection exists (copy/cut) or the last copy came from the canvas
+    // (paste); otherwise fall back to the panel-level clipboard below.
+    void editCopy();
+    void editCut();
+    void editPaste();
+    void editPasteInPlace();
+
+    // Panel-level clipboard. Copy stores an owned deep copy; paste inserts a
+    // fresh clone (new layer UUIDs) each time. Cut is blocked on a scene's
+    // last panel, same rule as Delete.
     void copySelectedPanel();
     void cutSelectedPanel();
-    void pastePanelAfterSelected(); // Ctrl+V: after the selected panel
-    void pastePanelInPlace();       // Ctrl+Shift+V: at the copied-from position
+    void pastePanelAfterSelected(); // after the selected panel
+    void pastePanelInPlace();       // at the copied-from position
     bool hasPanelClipboard() const { return m_panelClipboard != nullptr; }
 
 signals:
@@ -153,6 +161,9 @@ private:
     Panel *m_panelClipboard = nullptr;
     int m_clipboardSceneIndex = -1;
     int m_clipboardPanelIndex = -1;
+    // Which clipboard the LAST copy/cut fed — paste routes to the same one.
+    enum class ClipSource { None, Canvas, PanelLevel };
+    ClipSource m_lastClipSource = ClipSource::None;
 
     // ADS dock manager: the canvas area is its central widget; Scenes,
     // Layers, and Shot Info are native ADS dock widgets around it.

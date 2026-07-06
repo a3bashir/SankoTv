@@ -144,6 +144,34 @@ QPixmap toolIconPixmap(const char *kind, const QColor &color)
     } else if (k == QLatin1String("onion")) {
         p.drawEllipse(QPointF(7.6, 10), 4.6, 4.6);      // two ghost frames
         p.drawEllipse(QPointF(12.4, 10), 4.6, 4.6);
+    } else if (k == QLatin1String("selrect")) {
+        QPen dashed = p.pen();
+        dashed.setDashPattern({2.0, 1.6});
+        p.setPen(dashed);
+        p.drawRect(QRectF(4, 5, 12, 10));
+    } else if (k == QLatin1String("selellipse")) {
+        QPen dashed = p.pen();
+        dashed.setDashPattern({2.0, 1.6});
+        p.setPen(dashed);
+        p.drawEllipse(QRectF(3.5, 5, 13, 10));
+    } else if (k == QLatin1String("lasso")) {
+        QPen dashed = p.pen();
+        dashed.setDashPattern({2.0, 1.6});
+        p.setPen(dashed);
+        QPainterPath loop(QPointF(10, 4)); // irregular closed loop + tail
+        loop.cubicTo(QPointF(16.5, 4.5), QPointF(17, 10), QPointF(13, 12.5));
+        loop.cubicTo(QPointF(10, 14.5), QPointF(4, 14), QPointF(4, 9.5));
+        loop.cubicTo(QPointF(4, 5.5), QPointF(7, 3.7), QPointF(10, 4));
+        p.drawPath(loop);
+        p.setPen(QPen(color, 1.7, Qt::SolidLine, Qt::RoundCap));
+        p.drawLine(QPointF(12, 12.8), QPointF(15, 16.5)); // rope tail
+    } else if (k == QLatin1String("move")) {
+        p.drawLine(QPointF(10, 3.5), QPointF(10, 16.5));  // 4-way arrows
+        p.drawLine(QPointF(3.5, 10), QPointF(16.5, 10));
+        p.drawLine(QPointF(8, 5.5), QPointF(10, 3.5));  p.drawLine(QPointF(12, 5.5), QPointF(10, 3.5));
+        p.drawLine(QPointF(8, 14.5), QPointF(10, 16.5)); p.drawLine(QPointF(12, 14.5), QPointF(10, 16.5));
+        p.drawLine(QPointF(5.5, 8), QPointF(3.5, 10));  p.drawLine(QPointF(5.5, 12), QPointF(3.5, 10));
+        p.drawLine(QPointF(14.5, 8), QPointF(16.5, 10)); p.drawLine(QPointF(14.5, 12), QPointF(16.5, 10));
     } else if (k == QLatin1String("undo")) {
         // tabler arrow-back-up: left arrowhead, run right, hook down.
         p.drawLine(QPointF(8.5, 4.5), QPointF(4, 9));
@@ -634,20 +662,21 @@ void StoryboardPage::createFloatingToolbar()
     m_floatToolbar->installEventFilter(this);
     m_floatEventBlockers.insert(m_floatToolbar);
 
-    // +20% overall length vs the previous 456px: wider gaps/margins, a longer
-    // size-slider run, and a roomier grip — button sizes unchanged.
+    // Ten tool buttons share the pill now (selection tools + Move joined):
+    // compact 28px buttons and tight spacing keep the pill inside the canvas
+    // at the minimum window size; the size-slider run absorbs the rest.
     QVBoxLayout *layout = new QVBoxLayout(m_floatToolbar);
-    layout->setContentsMargins(12, 14, 12, 8);
-    layout->setSpacing(3);
+    layout->setContentsMargins(12, 10, 12, 6);
+    layout->setSpacing(2);
 
     // Icon-only rounded-square buttons; the active one gets the amber square.
     auto pillButton = [](const char *kind, const QString &tip, bool checkable) {
         QPushButton *b = new QPushButton;
         b->setCheckable(checkable);
         b->setCursor(Qt::PointingHandCursor);
-        b->setFixedSize(32, 32);
+        b->setFixedSize(28, 28);
         b->setIcon(toolIcon(kind));
-        b->setIconSize(QSize(18, 18));
+        b->setIconSize(QSize(16, 16));
         b->setToolTip(tip);
         b->setStyleSheet(QStringLiteral(
             "QPushButton { background: transparent; border: none; border-radius: 8px; }"
@@ -666,6 +695,14 @@ void StoryboardPage::createFloatingToolbar()
     QPushButton *shapes = pillButton("shapes",
                                      QStringLiteral("Shapes \xE2\x80\x94 rectangle, triangle, circle, line, polygon"), true);
     QPushButton *fill = pillButton("fill", QStringLiteral("Flood fill"), true);
+    QPushButton *selRect = pillButton("selrect",
+                                      QStringLiteral("Rectangle Select \xE2\x80\x94 active layer; Esc clears"), true);
+    QPushButton *selEllipse = pillButton("selellipse",
+                                         QStringLiteral("Elliptical Select \xE2\x80\x94 active layer; Esc clears"), true);
+    QPushButton *lasso = pillButton("lasso",
+                                    QStringLiteral("Lasso \xE2\x80\x94 freehand selection, closes on release"), true);
+    QPushButton *move = pillButton("move",
+                                   QStringLiteral("Move \xE2\x80\x94 drag the selected pixels"), true);
     QPushButton *camera = pillButton("camera",
                                      QStringLiteral("Camera overlays \xE2\x80\x94 frame and safe-area guides"), true);
     brushTool->setChecked(true); // Brush is the single drawing tool (default)
@@ -674,6 +711,10 @@ void StoryboardPage::createFloatingToolbar()
     tools->addButton(eraser);
     tools->addButton(shapes);
     tools->addButton(fill);
+    tools->addButton(selRect);
+    tools->addButton(selEllipse);
+    tools->addButton(lasso);
+    tools->addButton(move);
     tools->addButton(camera);
 
     // Toggled-driven tool selection: the checked state, the canvas tool, and
@@ -689,6 +730,10 @@ void StoryboardPage::createFloatingToolbar()
     bindTool(eraser, DrawingCanvas::Eraser);
     bindTool(shapes, DrawingCanvas::Shapes);
     bindTool(fill, DrawingCanvas::Fill);
+    bindTool(selRect, DrawingCanvas::SelectRect);
+    bindTool(selEllipse, DrawingCanvas::SelectEllipse);
+    bindTool(lasso, DrawingCanvas::Lasso);
+    bindTool(move, DrawingCanvas::Move);
     bindTool(camera, DrawingCanvas::Camera);
 
     // Each tool's options panel is visible ONLY while that tool is active.
@@ -711,6 +756,10 @@ void StoryboardPage::createFloatingToolbar()
     layout->addWidget(eraser, 0, Qt::AlignHCenter);
     layout->addWidget(shapes, 0, Qt::AlignHCenter);
     layout->addWidget(fill, 0, Qt::AlignHCenter);
+    layout->addWidget(selRect, 0, Qt::AlignHCenter);
+    layout->addWidget(selEllipse, 0, Qt::AlignHCenter);
+    layout->addWidget(lasso, 0, Qt::AlignHCenter);
+    layout->addWidget(move, 0, Qt::AlignHCenter);
     layout->addWidget(camera, 0, Qt::AlignHCenter);
 
     // Onion skin toggle (independent of the exclusive tool group).
@@ -726,7 +775,7 @@ void StoryboardPage::createFloatingToolbar()
     QPushButton *color = new QPushButton;
     color->setCursor(Qt::PointingHandCursor);
     color->setToolTip(QStringLiteral("Color"));
-    color->setFixedSize(26, 26);
+    color->setFixedSize(24, 24);
     color->setStyleSheet(QStringLiteral(
         "QPushButton { background-color: #000000; border: 2px solid #3a3a3a; border-radius: 6px; }"));
     connect(color, &QPushButton::clicked, this, [this, color] {
@@ -750,7 +799,7 @@ void StoryboardPage::createFloatingToolbar()
     m_brushSizeSlider->setHandleSize(27);
     m_brushSizeSlider->setRange(1, 200);
     m_brushSizeSlider->setValue(25);
-    m_brushSizeSlider->setMinimumHeight(80);  // flexible run: the pill trims the
+    m_brushSizeSlider->setMinimumHeight(48);  // flexible run: the pill trims the
     m_brushSizeSlider->setMaximumHeight(185); // slider first on short canvases
                                               // (set after the setters above:
                                               // they reset these constraints)
@@ -776,7 +825,7 @@ void StoryboardPage::createFloatingToolbar()
     QLabel *handle = new QLabel;
     handle->setPixmap(dragDotsPixmap());
     handle->setAlignment(Qt::AlignCenter);
-    handle->setFixedHeight(24);
+    handle->setFixedHeight(20);
     handle->setCursor(Qt::OpenHandCursor);
     handle->setToolTip(QStringLiteral("Drag to move the toolbar"));
     handle->installEventFilter(this);
@@ -803,10 +852,10 @@ void StoryboardPage::positionFloatingToolbar()
 {
     if (!m_floatToolbar || !m_canvas)
         return;
-    // +20% design length (543px), compressed on short canvases: the layout
-    // trims the size-slider run (185 down to 80) so the grip at the bottom
-    // always stays reachable inside the canvas.
-    m_floatToolbar->setFixedHeight(qBound(438, m_canvas->height() - 12, 543));
+    // Fixed content is 424px (10 tools + swatch + undo/redo + grip + gaps);
+    // the size-slider run flexes 48..185 so the grip always stays reachable
+    // inside the canvas: floor 472, design height 609.
+    m_floatToolbar->setFixedHeight(qBound(472, m_canvas->height() - 12, 609));
     if (!m_toolbarPosRestored) {
         m_toolbarPosRestored = true;
         const QSettings settings(QStringLiteral("SankoTV"), QStringLiteral("SankoTV"));
@@ -1787,7 +1836,59 @@ void StoryboardPage::duplicatePanel()
     insertPanelClone(source, m_currentPanel + 1);
 }
 
-// --- Edit-menu panel clipboard ----------------------------------------------
+// --- Edit-menu clipboard routing ----------------------------------------------
+
+// Canvas selection first, panel-level clipboard as the fallback. Paste goes
+// wherever the most recent copy/cut came from.
+
+void StoryboardPage::editCopy()
+{
+    if (m_canvas && m_canvas->hasSelection()) {
+        m_canvas->copySelection();
+        m_lastClipSource = ClipSource::Canvas;
+        emit panelClipboardChanged(true); // enables the paste actions
+        return;
+    }
+    if (currentPanel()) {
+        copySelectedPanel();
+        m_lastClipSource = ClipSource::PanelLevel;
+    }
+}
+
+void StoryboardPage::editCut()
+{
+    if (m_canvas && m_canvas->hasSelection()) {
+        m_canvas->cutSelection();
+        if (m_canvas->hasCanvasClipboard()) { // locked layers block the cut
+            m_lastClipSource = ClipSource::Canvas;
+            emit panelClipboardChanged(true);
+        }
+        return;
+    }
+    if (currentPanel()) {
+        cutSelectedPanel();
+        if (hasPanelClipboard())
+            m_lastClipSource = ClipSource::PanelLevel;
+    }
+}
+
+void StoryboardPage::editPaste()
+{
+    if (m_lastClipSource == ClipSource::Canvas && m_canvas)
+        m_canvas->pasteClipboard(false); // floating, view centre
+    else if (m_lastClipSource == ClipSource::PanelLevel)
+        pastePanelAfterSelected();
+}
+
+void StoryboardPage::editPasteInPlace()
+{
+    if (m_lastClipSource == ClipSource::Canvas && m_canvas)
+        m_canvas->pasteClipboard(true); // exact copied coordinates
+    else if (m_lastClipSource == ClipSource::PanelLevel)
+        pastePanelInPlace();
+}
+
+// --- Panel-level clipboard ----------------------------------------------------
 
 void StoryboardPage::copySelectedPanel()
 {

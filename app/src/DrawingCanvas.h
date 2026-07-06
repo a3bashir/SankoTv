@@ -1,6 +1,8 @@
 #pragma once
 
 #include <QColor>
+#include <QImage>
+#include <QPainterPath>
 #include <QPixmap>
 #include <QPoint>
 #include <QPointF>
@@ -12,6 +14,7 @@ struct Panel;
 class QDragEnterEvent;
 class QDropEvent;
 class QPushButton;
+class QTimer;
 
 // Freehand drawing surface for a single storyboard panel. Composites the
 // panel's layer stack scaled-to-fit (letterboxed) and edits the ACTIVE layer's
@@ -24,9 +27,11 @@ public:
     // Brush (the stamp-based pressure engine) is the single drawing tool;
     // pen-like behaviour is a brush preset. Eraser keeps the classic
     // QPainter stroke path. Shapes stamps geometric primitives (see
-    // ShapeKind). Camera is a non-drawing tool: selecting it only opens the
+    // ShapeKind). SelectRect/SelectEllipse/Lasso define a mask on the
+    // ACTIVE layer (marching ants); Move drags the selected pixels within
+    // that layer. Camera is a non-drawing tool: selecting it only opens the
     // Camera overlay panel; canvas clicks do nothing.
-    enum Tool { Brush, Eraser, Shapes, Fill, Camera };
+    enum Tool { Brush, Eraser, Shapes, Fill, SelectRect, SelectEllipse, Lasso, Move, Camera };
 
     // Shapes-tool primitives. Rectangle/Triangle/Circle/Line commit on drag
     // release; Polygon collects clicked vertices until double-click/Enter
@@ -87,6 +92,15 @@ public slots:
     void setShapeStrokeWidth(int px);    // 1..100, canvas pixels
     void setShapeFill(bool on);          // filled with the current colour
 
+    // Selection + canvas clipboard (ACTIVE layer only). Copy reads even a
+    // locked layer (not an edit); cut/paste/move require an editable one.
+    bool hasSelection() const { return !m_selPath.isEmpty(); }
+    bool hasCanvasClipboard() const { return !m_clipImg.isNull(); }
+    void copySelection();                 // selected pixels -> internal clipboard
+    void cutSelection();                  // copy, then clear to transparent (undoable)
+    void pasteClipboard(bool atOriginalPos); // floating paste; commit on click-away/Enter
+    void clearSelection();                // Esc equivalent
+
 signals:
     void contentChanged();
     void layersChanged(); // layer added/removed by the canvas (image import)
@@ -126,6 +140,13 @@ private:
     void commitPolygon();   // on double-click/Enter; needs >= 3 vertices
     void cancelShape();     // clears drag + polygon state, no artifacts
 
+    // Selection / floating pixels (move-lift or un-committed paste).
+    void liftSelection(const QPointF &grabCanvasPt); // selection -> floating (undo pushed)
+    void commitFloating();      // stamp floating pixels into the active layer
+    void cancelFloatingPaste(); // Esc on a floating paste: discard, no artifacts
+    QRectF floatBounds() const; // floating image bounds in canvas coords
+    void updateAntsTimer();     // marching ants animate only while needed
+
     // Stamp-based brush stroke pipeline (mouse pressure = 1.0; tablet = real).
     QPointF toCanvasF(const QPointF &widgetPoint) const; // float, unclamped
     void beginBrushStroke(const QPointF &canvasPt, qreal pressure);
@@ -149,6 +170,31 @@ private:
     QPointF m_shapeStartC;         // canvas coords
     QPointF m_shapeCurrentC;       // canvas coords (drag end / polygon rubber)
     QVector<QPointF> m_polygonPts; // in-progress polygon vertices, canvas coords
+
+    // Selection state (mask on the ACTIVE layer, canvas coords).
+    QPainterPath m_selPath;        // empty = no selection
+    bool m_selDrag = false;        // dragging out a new selection
+    QPointF m_selStartC;
+    QPointF m_selCurrentC;
+    QVector<QPointF> m_lassoPts;   // freehand outline while dragging
+    QTimer *m_antsTimer = nullptr; // marching-ants animation
+    int m_antsPhase = 0;
+
+    // Floating pixels: a move-lift (commits on release) or an un-committed
+    // paste (commits on click-away/Enter). Display-only until committed.
+    bool m_floatActive = false;
+    bool m_floatFromPaste = false; // paste floats until click-away; move doesn't
+    bool m_floatUndoPushed = false; // move pushes undo at lift, paste at commit
+    bool m_floatDragging = false;
+    QImage m_floatImg;             // lifted/pasted pixels (tight bounding rect)
+    QPointF m_floatPos;            // top-left, canvas coords
+    QPointF m_floatDelta;          // drag offset since lift/paste
+    QPointF m_floatGrabC;          // canvas point where the drag grabbed
+    QPointF m_floatGrabDelta;      // m_floatDelta at grab time
+
+    // Canvas clipboard (Edit menu Copy/Cut/Paste on the selection).
+    QImage m_clipImg;              // copied pixels, tight bounding rect
+    QPointF m_clipPos;             // canvas position they came from
 
     // Brush engine state. Defaults mirror the initial settings-panel values.
     int m_brushToolSize = 25;        // dab diameter, canvas px

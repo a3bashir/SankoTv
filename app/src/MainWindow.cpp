@@ -160,11 +160,13 @@ void MainWindow::setupMenuBar()
 
     QMenu *editMenu = menuBar()->addMenu(QStringLiteral("Edit"));
 
-    // Panel clipboard (Storyboard page only). Focused text fields keep their
-    // native Ctrl+C/X/V: Qt's ShortcutOverride lets editors claim the keys
-    // before these window-level actions fire.
-    auto panelAction = [this, editMenu](const QString &text, const QKeySequence &shortcut,
-                                        void (StoryboardPage::*slot)()) {
+    // Clipboard actions (Storyboard page only). They act on the CANVAS
+    // selection when one exists, falling back to the panel clipboard —
+    // StoryboardPage::editCopy/editCut/editPaste route it. Focused text
+    // fields keep their native Ctrl+C/X/V: Qt's ShortcutOverride lets
+    // editors claim the keys before these window-level actions fire.
+    auto editAction = [this, editMenu](const QString &text, const QKeySequence &shortcut,
+                                       void (StoryboardPage::*slot)()) {
         QAction *action = editMenu->addAction(text);
         action->setShortcut(shortcut);
         connect(action, &QAction::triggered, this, [this, slot] {
@@ -173,15 +175,13 @@ void MainWindow::setupMenuBar()
         });
         return action;
     };
-    panelAction(QStringLiteral("Copy"), QKeySequence::Copy,
-                &StoryboardPage::copySelectedPanel);
-    panelAction(QStringLiteral("Cut"), QKeySequence::Cut,
-                &StoryboardPage::cutSelectedPanel);
-    m_pastePanelAct = panelAction(QStringLiteral("Paste"), QKeySequence::Paste,
-                                  &StoryboardPage::pastePanelAfterSelected);
-    m_pastePanelInPlaceAct = panelAction(QStringLiteral("Paste in Place"),
-                                         QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_V),
-                                         &StoryboardPage::pastePanelInPlace);
+    editAction(QStringLiteral("Copy"), QKeySequence::Copy, &StoryboardPage::editCopy);
+    editAction(QStringLiteral("Cut"), QKeySequence::Cut, &StoryboardPage::editCut);
+    m_pastePanelAct = editAction(QStringLiteral("Paste"), QKeySequence::Paste,
+                                 &StoryboardPage::editPaste);
+    m_pastePanelInPlaceAct = editAction(QStringLiteral("Paste in Place"),
+                                        QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_V),
+                                        &StoryboardPage::editPasteInPlace);
     m_pastePanelAct->setEnabled(false);        // until something is copied
     m_pastePanelInPlaceAct->setEnabled(false); // (wired after m_storyboard exists)
 

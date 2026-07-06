@@ -21,6 +21,7 @@
 #include <QSettings>
 #include <QStack>
 #include <QTabletEvent>
+#include <QTimer>
 #include <QUrl>
 #include <QWheelEvent>
 #include <Qt>
@@ -115,6 +116,15 @@ DrawingCanvas::DrawingCanvas(QWidget *parent)
     connect(m_zoomInButton, &QPushButton::clicked, this,
             [this] { setZoom(m_zoom * 1.25, QPointF(width() / 2.0, height() / 2.0)); });
     connect(m_zoomResetButton, &QPushButton::clicked, this, [this] { resetView(); });
+
+    // Marching ants: advance the dash offset while a selection or floating
+    // paste is on screen (updateAntsTimer() starts/stops it).
+    m_antsTimer = new QTimer(this);
+    m_antsTimer->setInterval(150);
+    connect(m_antsTimer, &QTimer::timeout, this, [this] {
+        m_antsPhase = (m_antsPhase + 1) % 8;
+        update();
+    });
 }
 
 QSize DrawingCanvas::canvasSize()
@@ -127,6 +137,14 @@ void DrawingCanvas::setActivePanel(Panel *panel)
     m_panel = panel;
     m_drawing = false;
     cancelShape(); // preview state never carries across panels
+    // A floating paste is discarded (committing to a DIFFERENT panel's layer
+    // would be wrong) and the selection mask never carries across panels.
+    m_floatActive = false;
+    m_floatDragging = false;
+    m_floatUndoPushed = false;
+    m_floatImg = QImage();
+    m_floatDelta = QPointF();
+    clearSelection();
     update();
 }
 
@@ -232,9 +250,10 @@ bool DrawingCanvas::importImage(const QString &filePath)
 
 void DrawingCanvas::setTool(Tool tool)
 {
+    commitFloating(); // an un-committed paste lands before the tool changes
     m_tool = tool;
     cancelShape(); // an in-progress shape never survives a tool switch
-    update();
+    update();      // the selection itself DOES survive (Select -> Move flow)
 }
 
 void DrawingCanvas::setShapeKind(ShapeKind kind)
@@ -537,6 +556,173 @@ void DrawingCanvas::cancelShape()
     update();
 }
 
+// --- Selection + canvas clipboard (ACTIVE layer only) ------------------------
+
+void DrawingCanvas::clearSelection()
+{
+    m_selPath = QPainterPath();
+    m_selDrag = false;
+    m_lassoPts.clear();
+    updateAntsTimer();
+    update();
+}
+
+void DrawingCanvas::updateAntsTimer()
+{
+    const bool needed = !m_selPath.isEmpty() || m_selDrag || m_floatActive;
+    if (needed && !m_antsTimer->isActive())
+        m_antsTimer->start();
+    else if (!needed && m_antsTimer->isActive())
+        m_antsTimer->stop();
+}
+
+QRectF DrawingCanvas::floatBounds() const
+{
+    return QRectF(m_floatPos + m_floatDelta, QSizeF(m_floatImg.size()));
+}
+
+// Copy is not an edit, so it reads the active layer even when locked.
+void DrawingCanvas::copySelection()
+{
+    if (!m_panel || m_selPath.isEmpty())
+        return;
+    const Layer *layer = m_panel->activeLayer();
+    if (!layer || layer->image.isNull())
+        return;
+    const QRect r = m_selPath.boundingRect().toAlignedRect().intersected(layer->image.rect());
+    if (r.isEmpty())
+        return;
+    QImage img(r.size(), QImage::Format_ARGB32_Premultiplied);
+    img.fill(Qt::transparent);
+    QPainter p(&img);
+    p.translate(-r.topLeft());
+    p.setClipPath(m_selPath); // only pixels inside the mask
+    p.drawImage(0, 0, layer->image);
+    p.end();
+    m_clipImg = img;
+    m_clipPos = r.topLeft(); // for Paste in Place
+}
+
+void DrawingCanvas::cutSelection()
+{
+    Layer *layer = editableActiveLayer(); // locked layers block the edit
+    if (!layer || m_selPath.isEmpty())
+        return;
+    copySelection();
+    pushUndo();
+    QPainter p(&layer->image);
+    p.setClipPath(m_selPath);
+    p.setCompositionMode(QPainter::CompositionMode_Clear);
+    p.fillRect(layer->image.rect(), Qt::black); // clears to transparent
+    p.end();
+    update();
+    emit contentChanged();
+}
+
+// Paste creates FLOATING pixels the user can drag with the Move tool;
+// click-away or Enter commits them, Esc discards. atOriginalPos = the exact
+// coordinates the pixels were copied from; otherwise the view centre.
+void DrawingCanvas::pasteClipboard(bool atOriginalPos)
+{
+    if (m_clipImg.isNull() || !m_panel)
+        return;
+    if (!editableActiveLayer())
+        return; // locked layer: block
+    commitFloating(); // any previous floating paste lands first
+    m_floatActive = true;
+    m_floatFromPaste = true;
+    m_floatUndoPushed = false; // paste pushes undo at commit time
+    m_floatImg = m_clipImg;
+    m_floatDelta = QPointF();
+    if (atOriginalPos) {
+        m_floatPos = m_clipPos;
+    } else {
+        const QPointF viewCentre = toCanvasF(QPointF(width() / 2.0, height() / 2.0));
+        m_floatPos = viewCentre - QPointF(m_clipImg.width() / 2.0, m_clipImg.height() / 2.0);
+    }
+    m_selPath = QPainterPath(); // the floating outline replaces the selection
+    m_selDrag = false;
+    m_lassoPts.clear();
+    updateAntsTimer();
+    update();
+}
+
+// Move tool press inside the selection: pull the selected pixels off the
+// layer (transparent behind) into the floating image. Undo snapshots the
+// layer BEFORE the lift, so one undo reverts the whole move.
+void DrawingCanvas::liftSelection(const QPointF &grabCanvasPt)
+{
+    Layer *layer = editableActiveLayer();
+    if (!layer || m_selPath.isEmpty())
+        return;
+    const QRect r = m_selPath.boundingRect().toAlignedRect().intersected(layer->image.rect());
+    if (r.isEmpty())
+        return;
+    pushUndo();
+    m_floatUndoPushed = true;
+
+    QImage lifted(r.size(), QImage::Format_ARGB32_Premultiplied);
+    lifted.fill(Qt::transparent);
+    QPainter p(&lifted);
+    p.translate(-r.topLeft());
+    p.setClipPath(m_selPath);
+    p.drawImage(0, 0, layer->image);
+    p.end();
+
+    QPainter clearer(&layer->image);
+    clearer.setClipPath(m_selPath);
+    clearer.setCompositionMode(QPainter::CompositionMode_Clear);
+    clearer.fillRect(r, Qt::black);
+    clearer.end();
+
+    m_floatActive = true;
+    m_floatFromPaste = false;
+    m_floatDragging = true;
+    m_floatImg = lifted;
+    m_floatPos = r.topLeft();
+    m_floatDelta = QPointF();
+    m_floatGrabC = grabCanvasPt;
+    m_floatGrabDelta = QPointF();
+    updateAntsTimer();
+    update();
+}
+
+void DrawingCanvas::commitFloating()
+{
+    if (!m_floatActive)
+        return;
+    m_floatActive = false;
+    m_floatDragging = false;
+    Layer *layer = editableActiveLayer();
+    if (layer) {
+        if (!m_floatUndoPushed)
+            pushUndo(); // paste: snapshot now; move already snapshot at lift
+        QPainter p(&layer->image);
+        p.drawImage(QPointF(m_floatPos + m_floatDelta), m_floatImg);
+        p.end();
+        if (!m_floatFromPaste && !m_selPath.isEmpty())
+            m_selPath.translate(m_floatDelta); // ants follow the moved pixels
+        emit contentChanged();
+    }
+    m_floatUndoPushed = false;
+    m_floatDelta = QPointF();
+    m_floatImg = QImage();
+    updateAntsTimer();
+    update();
+}
+
+void DrawingCanvas::cancelFloatingPaste()
+{
+    if (!m_floatActive || !m_floatFromPaste)
+        return;
+    m_floatActive = false; // display-only: discarding leaves no artifacts
+    m_floatDragging = false;
+    m_floatDelta = QPointF();
+    m_floatImg = QImage();
+    updateAntsTimer();
+    update();
+}
+
 void DrawingCanvas::floodFill(const QPoint &seed)
 {
     Layer *layerPtr = editableActiveLayer();
@@ -829,6 +1015,64 @@ void DrawingCanvas::paintEvent(QPaintEvent *)
         paintShapeGeometry(painter, false);
         painter.restore();
     }
+
+    // Floating pixels (mid-move or un-committed paste): display-only until
+    // committed into the layer.
+    if (m_floatActive && !m_floatImg.isNull()) {
+        painter.save();
+        painter.setClipRect(d);
+        painter.translate(d.topLeft());
+        const double s = scale();
+        painter.scale(s, s);
+        painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
+        painter.drawImage(m_floatPos + m_floatDelta, m_floatImg);
+        painter.restore();
+    }
+
+    // Marching ants: the selection outline (translated while its pixels are
+    // mid-move), the in-progress selection drag, or the floating paste
+    // bounds. White underlay + animated black dashes; cosmetic pens stay
+    // 1px at any zoom.
+    if (!m_selPath.isEmpty() || m_selDrag || m_floatActive) {
+        painter.save();
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        painter.setClipRect(d);
+        painter.translate(d.topLeft());
+        const double s = scale();
+        painter.scale(s, s);
+
+        QPainterPath ants;
+        if (m_selDrag) {
+            const QRectF box = QRectF(m_selStartC, m_selCurrentC).normalized();
+            if (m_tool == SelectRect) {
+                ants.addRect(box);
+            } else if (m_tool == SelectEllipse) {
+                ants.addEllipse(box);
+            } else if (m_lassoPts.size() >= 2) {
+                ants.addPolygon(QPolygonF(m_lassoPts));
+            }
+        } else if (m_floatActive) {
+            if (m_floatFromPaste)
+                ants.addRect(floatBounds());
+            else
+                ants = m_selPath.translated(m_floatDelta);
+        } else {
+            ants = m_selPath;
+        }
+
+        painter.setBrush(Qt::NoBrush);
+        QPen underlay(Qt::white, 0);
+        underlay.setCosmetic(true);
+        painter.setPen(underlay);
+        painter.drawPath(ants);
+        QPen dashes(Qt::black, 0);
+        dashes.setCosmetic(true);
+        dashes.setDashPattern({4.0, 4.0});
+        dashes.setDashOffset(m_antsPhase);
+        painter.setPen(dashes);
+        painter.drawPath(ants);
+        painter.restore();
+    }
 }
 
 void DrawingCanvas::wheelEvent(QWheelEvent *event)
@@ -855,6 +1099,23 @@ void DrawingCanvas::keyPressEvent(QKeyEvent *event)
         }
         if (event->key() == Qt::Key_Escape && (m_shapeDrag || !m_polygonPts.isEmpty())) {
             cancelShape();
+            return;
+        }
+    }
+    // Floating paste: Enter commits, Esc discards. A plain selection: Esc
+    // clears it.
+    if ((event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter)
+        && m_floatActive && m_floatFromPaste) {
+        commitFloating();
+        return;
+    }
+    if (event->key() == Qt::Key_Escape) {
+        if (m_floatActive && m_floatFromPaste) {
+            cancelFloatingPaste();
+            return;
+        }
+        if (!m_selPath.isEmpty() || m_selDrag) {
+            clearSelection();
             return;
         }
     }
@@ -901,6 +1162,21 @@ void DrawingCanvas::mousePressEvent(QMouseEvent *event)
 
     if (!m_panel || event->button() != Qt::LeftButton)
         return;
+
+    // Floating paste intercepts every left-click: inside it (Move tool)
+    // starts dragging it, anywhere else commits it and swallows the click.
+    if (m_floatActive && m_floatFromPaste) {
+        const QPointF cpt = toCanvasF(event->position());
+        if (m_tool == Move && floatBounds().contains(cpt)) {
+            m_floatDragging = true;
+            m_floatGrabC = cpt;
+            m_floatGrabDelta = m_floatDelta;
+        } else {
+            commitFloating(); // click-away commits
+        }
+        return;
+    }
+
     if (!displayRect().contains(event->pos()))
         return;
     if (!editableActiveLayer())
@@ -937,6 +1213,31 @@ void DrawingCanvas::mousePressEvent(QMouseEvent *event)
         floodFill(toCanvas(event->pos()));
         emit contentChanged();
         break;
+    case SelectRect:
+    case SelectEllipse:
+        clearSelection(); // a bare click (degenerate drag) just clears
+        m_selDrag = true;
+        m_selStartC = m_selCurrentC = toCanvasF(event->position());
+        updateAntsTimer();
+        update();
+        break;
+    case Lasso:
+        clearSelection();
+        m_selDrag = true;
+        m_lassoPts.clear();
+        m_lassoPts.append(toCanvasF(event->position()));
+        m_selCurrentC = m_lassoPts.first();
+        updateAntsTimer();
+        update();
+        break;
+    case Move: {
+        const QPointF cpt = toCanvasF(event->position());
+        if (!m_selPath.isEmpty() && m_selPath.contains(cpt))
+            liftSelection(cpt); // drag the selected pixels
+        else
+            clearSelection();   // Move click outside the selection clears it
+        break;
+    }
     case Camera:
         break; // non-drawing tool: overlays are toggled from the Camera panel
     }
@@ -947,6 +1248,20 @@ void DrawingCanvas::mouseMoveEvent(QMouseEvent *event)
     if (m_panning) {
         m_panOffset = m_panStartOffset + QPointF(event->pos() - m_panStartScreen);
         update();
+        return;
+    }
+    if (m_floatDragging) {
+        m_floatDelta = m_floatGrabDelta + (toCanvasF(event->position()) - m_floatGrabC);
+        update(); // floating pixels follow the drag
+        return;
+    }
+    if (m_selDrag) {
+        m_selCurrentC = toCanvasF(event->position());
+        if (m_tool == Lasso
+            && (m_lassoPts.isEmpty()
+                || QLineF(m_lassoPts.last(), m_selCurrentC).length() >= 1.0))
+            m_lassoPts.append(m_selCurrentC);
+        update(); // in-progress selection outline
         return;
     }
     if (m_shapeDrag || (m_tool == Shapes && !m_polygonPts.isEmpty())) {
@@ -976,6 +1291,31 @@ void DrawingCanvas::mouseReleaseEvent(QMouseEvent *event)
     if (m_brushStroke && event->button() == Qt::LeftButton) {
         endBrushStroke();
         emit contentChanged();
+        return;
+    }
+    if (m_floatDragging && event->button() == Qt::LeftButton) {
+        m_floatDragging = false;
+        if (!m_floatFromPaste)
+            commitFloating(); // Move commits on release; paste keeps floating
+        return;
+    }
+    if (m_selDrag && event->button() == Qt::LeftButton) {
+        m_selDrag = false;
+        m_selCurrentC = toCanvasF(event->position());
+        QPainterPath path;
+        const QRectF box = QRectF(m_selStartC, m_selCurrentC).normalized();
+        if (m_tool == SelectRect && (box.width() >= 2.0 || box.height() >= 2.0)) {
+            path.addRect(box);
+        } else if (m_tool == SelectEllipse && (box.width() >= 2.0 || box.height() >= 2.0)) {
+            path.addEllipse(box);
+        } else if (m_tool == Lasso && m_lassoPts.size() >= 3) {
+            path.addPolygon(QPolygonF(m_lassoPts)); // closes on release
+            path.closeSubpath();
+        }
+        m_selPath = path; // degenerate drags leave it empty = cleared
+        m_lassoPts.clear();
+        updateAntsTimer();
+        update();
         return;
     }
     if (m_shapeDrag && event->button() == Qt::LeftButton) {
