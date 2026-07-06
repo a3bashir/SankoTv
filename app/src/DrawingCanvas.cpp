@@ -139,11 +139,14 @@ void DrawingCanvas::setActivePanel(Panel *panel)
     m_panel = panel;
     m_drawing = false;
     cancelShape(); // preview state never carries across panels
-    // A floating paste is discarded (committing to a DIFFERENT panel's layer
-    // would be wrong) and the selection mask never carries across panels.
+    // A floating paste or in-progress move is discarded (committing to a
+    // DIFFERENT panel's layer would be wrong; the move never wrote to the
+    // old layer anyway) and the selection mask never carries across panels.
     m_floatActive = false;
     m_floatDragging = false;
-    m_floatUndoPushed = false;
+    m_moveActive = false;
+    m_layerBackup = QImage();
+    m_moveMask = QImage();
     m_floatImg = QImage();
     m_floatDelta = QPointF();
     clearSelection();
@@ -666,7 +669,6 @@ void DrawingCanvas::pasteClipboard(bool atOriginalPos)
     commitFloating(); // any previous floating paste lands first
     m_floatActive = true;
     m_floatFromPaste = true;
-    m_floatUndoPushed = false; // paste pushes undo at commit time
     m_floatImg = m_clipImg;
     if (atOriginalPos) {
         m_floatPos = m_clipPos; // integral: captured from an aligned rect
@@ -683,10 +685,13 @@ void DrawingCanvas::pasteClipboard(bool atOriginalPos)
     update();
 }
 
-// Move tool press inside the selection: pull the selected pixels off the
-// layer (transparent behind) into the floating image. Undo snapshots the
-// layer BEFORE the lift, so one undo reverts the whole move.
-void DrawingCanvas::liftSelection(const QPointF &grabCanvasPt)
+// MOUSE DOWN of a move. Steps 1-4 of the move algorithm:
+//   1) build the selection mask,
+//   2) copy the masked pixels into the floating buffer (complete, sized to
+//      the selection bounding rect, never cropped),
+//   3) snapshot the ENTIRE layer into m_layerBackup,
+//   4) do NOT modify the layer.
+void DrawingCanvas::beginMoveDrag(const QPointF &grabCanvasPt)
 {
     Layer *layer = editableActiveLayer();
     if (!layer || m_selPath.isEmpty())
@@ -694,37 +699,24 @@ void DrawingCanvas::liftSelection(const QPointF &grabCanvasPt)
     const QRect r = m_selPath.boundingRect().toAlignedRect().intersected(layer->image.rect());
     if (r.isEmpty())
         return;
-    pushUndo();
-    m_floatUndoPushed = true;
 
-    // ONE mask drives both the lift and the clear, so they are
-    // pixel-identical by construction. No clip-path rasterization can
-    // diverge between painters, and non-rectangular selections never clear
-    // their bounding box.
-    const QImage mask = selectionMask(r);
+    m_moveMask = selectionMask(r); // ONE mask for buffer + commit clear
+    m_moveSrcRect = r;
 
-    // LIFT: keep source pixels only where the mask is set (DestinationIn
-    // multiplies by mask alpha — exact keep/kill with a binary mask).
-    QImage lifted = layer->image.copy(r);
+    m_floatImg = layer->image.copy(r); // 2) mask-limited copy of the pixels
     {
-        QPainter liftPainter(&lifted);
-        liftPainter.setCompositionMode(QPainter::CompositionMode_DestinationIn);
-        liftPainter.drawImage(0, 0, mask);
+        QPainter bufferPainter(&m_floatImg);
+        bufferPainter.setCompositionMode(QPainter::CompositionMode_DestinationIn);
+        bufferPainter.drawImage(0, 0, m_moveMask);
     }
 
-    // CLEAR: erase the SAME mask pixels at the SAME origin (DestinationOut
-    // is the exact complement of the lift — together they partition the
-    // source rect with no off-by-one).
-    {
-        QPainter clearPainter(&layer->image);
-        clearPainter.setCompositionMode(QPainter::CompositionMode_DestinationOut);
-        clearPainter.drawImage(r.topLeft(), mask);
-    }
+    m_layerBackup = layer->image.copy(); // 3) pristine pre-move snapshot
 
-    m_floatActive = true;
+    // 4) the layer itself stays untouched until mouse up.
+    m_moveActive = true;
+    m_floatActive = true; // drives the paintEvent preview + marching ants
     m_floatFromPaste = false;
     m_floatDragging = true;
-    m_floatImg = lifted;
     m_floatPos = r.topLeft();
     m_floatDelta = QPointF();
     m_floatGrabC = grabCanvasPt;
@@ -733,33 +725,77 @@ void DrawingCanvas::liftSelection(const QPointF &grabCanvasPt)
     update();
 }
 
+// MOUSE UP of a move — the layer is written here, exactly ONCE.
+// Steps 7-11 of the move algorithm.
+void DrawingCanvas::commitMoveDrag()
+{
+    m_floatDragging = false;
+    if (!m_moveActive)
+        return;
+    m_moveActive = false;
+    m_floatActive = false;
+
+    Layer *layer = editableActiveLayer();
+    if (layer && !m_layerBackup.isNull()) {
+        // 7) start from the pristine pre-move layer.
+        QImage result = m_layerBackup;
+
+        // 8) clear the ORIGINAL selection area (masked pixels only, never
+        //    the whole bounding rectangle).
+        {
+            QPainter clearPainter(&result);
+            clearPainter.setCompositionMode(QPainter::CompositionMode_DestinationOut);
+            clearPainter.drawImage(m_moveSrcRect.topLeft(), m_moveMask);
+        }
+
+        // 9) paste the buffer at the final dragged position, SourceOver.
+        //    No clip of any kind is set — QPainter limits the paste only at
+        //    the actual image (canvas) bounds. Because the result starts
+        //    from the backup with the source cleared first, moving onto the
+        //    selection's own former area preserves every pixel.
+        const QPointF target = m_floatPos + m_floatDelta;
+        const QPoint aligned(qRound(target.x()), qRound(target.y()));
+        {
+            QPainter pastePainter(&result);
+            pastePainter.drawImage(aligned, m_floatImg);
+        }
+
+        // 11) ONE undo entry for the whole move: the layer still holds the
+        //     pre-move image right now, so this snapshot IS the original.
+        pushUndo();
+
+        // 10) assign the rebuilt image back and refresh.
+        layer->image = result;
+        if (!m_selPath.isEmpty())
+            m_selPath.translate(QPointF(aligned) - m_floatPos); // ants follow
+        emit contentChanged();
+    }
+
+    m_layerBackup = QImage();
+    m_moveMask = QImage();
+    m_floatImg = QImage();
+    m_floatDelta = QPointF();
+    updateAntsTimer();
+    update();
+}
+
+// Commit of a floating PASTE (click-away / Enter / tool switch).
 void DrawingCanvas::commitFloating()
 {
-    if (!m_floatActive)
+    if (!m_floatActive || !m_floatFromPaste)
         return;
     m_floatActive = false;
     m_floatDragging = false;
     Layer *layer = editableActiveLayer();
     if (layer) {
-        if (!m_floatUndoPushed)
-            pushUndo(); // paste: snapshot now; move already snapshot at lift
-        // ONE composite at the final, pixel-aligned position — the layer was
-        // last written at the lift; nothing touched it during the drag. The
-        // clamp guarantees the whole buffer lands inside the layer image, so
-        // drawImage() cannot discard any of it at the canvas edge.
-        const QPointF target = m_floatPos + clampFloatDelta(m_floatDelta);
+        pushUndo();
+        const QPointF target = m_floatPos + m_floatDelta;
         const QPoint aligned(qRound(target.x()), qRound(target.y()));
         QPainter p(&layer->image);
-        p.drawImage(aligned, m_floatImg);
+        p.drawImage(aligned, m_floatImg); // limited only by the canvas bounds
         p.end();
-        if (!m_floatFromPaste && !m_selPath.isEmpty()) {
-            // Ants follow the moved pixels, staying on the pixel grid so the
-            // next lift clips exactly the pixels that were just committed.
-            m_selPath.translate(QPointF(aligned) - m_floatPos);
-        }
         emit contentChanged();
     }
-    m_floatUndoPushed = false;
     m_floatDelta = QPointF();
     m_floatImg = QImage();
     updateAntsTimer();
@@ -1302,7 +1338,7 @@ void DrawingCanvas::mousePressEvent(QMouseEvent *event)
     case Move: {
         const QPointF cpt = toCanvasF(event->position());
         if (!m_selPath.isEmpty() && m_selPath.contains(cpt))
-            liftSelection(cpt); // drag the selected pixels
+            beginMoveDrag(cpt); // deferred commit: layer untouched until release
         else
             clearSelection();   // Move click outside the selection clears it
         break;
@@ -1321,11 +1357,11 @@ void DrawingCanvas::mouseMoveEvent(QMouseEvent *event)
     }
     if (m_floatDragging) {
         // Whole-pixel deltas only: the preview matches the commit exactly and
-        // the blit never resamples (fractional offsets would smear edges and
-        // leave half-alpha trails on every subsequent lift). Clamped so the
-        // buffer can never hang off-canvas — see clampFloatDelta().
+        // the blit never resamples. The offset is unrestricted — nothing is
+        // written to the layer during the drag, so transiting past a canvas
+        // edge loses nothing; the commit is limited only by canvas bounds.
         const QPointF raw = m_floatGrabDelta + (toCanvasF(event->position()) - m_floatGrabC);
-        m_floatDelta = clampFloatDelta(QPointF(qRound(raw.x()), qRound(raw.y())));
+        m_floatDelta = QPointF(qRound(raw.x()), qRound(raw.y()));
         update(); // display-only: the layer is untouched until commit
         return;
     }
@@ -1369,9 +1405,9 @@ void DrawingCanvas::mouseReleaseEvent(QMouseEvent *event)
     }
     if (m_floatDragging && event->button() == Qt::LeftButton) {
         m_floatDragging = false;
-        if (!m_floatFromPaste)
-            commitFloating(); // Move commits on release; paste keeps floating
-        return;
+        if (m_moveActive)
+            commitMoveDrag(); // the ONLY write of the whole move
+        return;               // a paste keeps floating until click-away/Enter
     }
     if (m_selDrag && event->button() == Qt::LeftButton) {
         m_selDrag = false;

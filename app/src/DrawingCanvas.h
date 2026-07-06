@@ -145,12 +145,16 @@ private:
     // clear, copy, and cut all index that same mask so their coverage is
     // pixel-identical (never the bounding box for ellipse/lasso).
     QImage selectionMask(const QRect &boundingRect) const;
-    // Clamp a drag delta so the floating buffer stays fully inside the
-    // canvas: QPainter::drawImage clips at the layer bounds, so committing
-    // with any part hanging off-canvas would DESTROY those pixels.
+    // Clamp used only to place a fresh PASTE fully on-canvas (positioning,
+    // not clipping).
     QPointF clampFloatDelta(const QPointF &delta) const;
-    void liftSelection(const QPointF &grabCanvasPt); // selection -> floating (undo pushed)
-    void commitFloating();      // stamp floating pixels into the active layer
+    // Move tool, deferred-commit model: the layer is written exactly ONCE,
+    // on mouse up. beginMoveDrag copies the masked pixels + snapshots the
+    // whole layer; commitMoveDrag rebuilds from that snapshot (clear source,
+    // paste at the final offset) and pushes ONE undo entry.
+    void beginMoveDrag(const QPointF &grabCanvasPt);
+    void commitMoveDrag();
+    void commitFloating();      // paste-floating commit (click-away/Enter)
     void cancelFloatingPaste(); // Esc on a floating paste: discard, no artifacts
     QRectF floatBounds() const; // floating image bounds in canvas coords
     void updateAntsTimer();     // marching ants animate only while needed
@@ -188,17 +192,23 @@ private:
     QTimer *m_antsTimer = nullptr; // marching-ants animation
     int m_antsPhase = 0;
 
-    // Floating pixels: a move-lift (commits on release) or an un-committed
+    // Floating pixels: a move drag (commits on release) or an un-committed
     // paste (commits on click-away/Enter). Display-only until committed.
     bool m_floatActive = false;
     bool m_floatFromPaste = false; // paste floats until click-away; move doesn't
-    bool m_floatUndoPushed = false; // move pushes undo at lift, paste at commit
     bool m_floatDragging = false;
-    QImage m_floatImg;             // lifted/pasted pixels (tight bounding rect)
+    QImage m_floatImg;             // complete masked pixels (never cropped)
     QPointF m_floatPos;            // top-left, canvas coords
     QPointF m_floatDelta;          // drag offset since lift/paste
     QPointF m_floatGrabC;          // canvas point where the drag grabbed
     QPointF m_floatGrabDelta;      // m_floatDelta at grab time
+
+    // Move tool deferred-commit state. During the drag the layer is NEVER
+    // written; mouse up rebuilds it once from m_layerBackup.
+    bool m_moveActive = false;     // between Move mouse-down and mouse-up
+    QImage m_layerBackup;          // pristine full copy of the layer at move start
+    QImage m_moveMask;             // selection mask, bounding-rect-local
+    QRect m_moveSrcRect;           // selection bounding rect at move start
 
     // Canvas clipboard (Edit menu Copy/Cut/Paste on the selection).
     QImage m_clipImg;              // copied pixels, tight bounding rect
