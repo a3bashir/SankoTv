@@ -42,7 +42,9 @@
 #include <QSettings>
 #include <QShortcut>
 #include <QSlider>
+#include <QTabletEvent>
 #include <QTimer>
+#include <QToolButton>
 #include <QVBoxLayout>
 #include <Qt>
 
@@ -121,8 +123,9 @@ QPixmap toolIconPixmap(const char *kind, const QColor &color)
         p.drawRoundedRect(QRectF(-6.5, -4, 13, 8), 2, 2);
         p.drawLine(QPointF(-1.5, -4), QPointF(-1.5, 4)); // wedge split
         p.restore();
-    } else if (k == QLatin1String("line")) {
-        p.drawLine(QPointF(4.5, 15.5), QPointF(15.5, 4.5));
+    } else if (k == QLatin1String("shapes")) {
+        p.drawRect(QRectF(4, 4, 8.5, 8.5));           // square behind...
+        p.drawEllipse(QPointF(13.2, 13.2), 4.3, 4.3); // ...overlapping circle
     } else if (k == QLatin1String("fill")) {
         p.save();
         p.translate(9, 9.5);
@@ -173,20 +176,20 @@ QIcon toolIcon(const char *kind)
     return icon;
 }
 
-// Six-dot drag grip: 2 columns x 3 rows of small grey dots.
+// Six-dot drag grip: 3 columns x 2 rows of small grey dots (horizontal).
 QPixmap dragDotsPixmap()
 {
     constexpr qreal dpr = 2.0;
-    QPixmap pm(QSize(32, 40));
+    QPixmap pm(QSize(40, 28));
     pm.setDevicePixelRatio(dpr);
     pm.fill(Qt::transparent);
     QPainter p(&pm);
     p.setRenderHint(QPainter::Antialiasing, true);
     p.setPen(Qt::NoPen);
     p.setBrush(QColor(0x6a, 0x6a, 0x6a));
-    for (int row = 0; row < 3; ++row)
-        for (int col = 0; col < 2; ++col)
-            p.drawEllipse(QPointF(5.5 + col * 5.0, 4.0 + row * 6.0), 1.6, 1.6);
+    for (int row = 0; row < 2; ++row)
+        for (int col = 0; col < 3; ++col)
+            p.drawEllipse(QPointF(5.0 + col * 5.0, 4.0 + row * 6.0), 1.6, 1.6);
     return pm;
 }
 
@@ -213,6 +216,10 @@ StoryboardPage::StoryboardPage(QWidget *parent)
     // ADS dock manager hosts everything: native tabbing, drag-to-float,
     // re-docking, and auto-hide come with it — nothing hand-rolled.
     ads::CDockManager::setConfigFlag(ads::CDockManager::OpaqueSplitterResize, true);
+    // Dock headers keep ONLY the Close button: no undock icon, no tabs-menu
+    // chevron. (Docks can still be dragged out by their tabs.)
+    ads::CDockManager::setConfigFlag(ads::CDockManager::DockAreaHasUndockButton, false);
+    ads::CDockManager::setConfigFlag(ads::CDockManager::DockAreaHasTabsMenuButton, false);
     SankoDockManager *dockManager = new SankoDockManager(this);
     m_dockManager = dockManager;
     m_dockManager->setStyleSheet(QString::fromLatin1(kAdsDarkStyle));
@@ -324,6 +331,7 @@ StoryboardPage::StoryboardPage(QWidget *parent)
 StoryboardPage::~StoryboardPage()
 {
     saveDockState();
+    delete m_panelClipboard; // owned deep copy, independent of any scene
 }
 
 // --- Dock plumbing ----------------------------------------------------------
@@ -365,6 +373,15 @@ void StoryboardPage::installDockViewActions()
     viewMenu->addAction(m_layersDock->toggleViewAction());
     viewMenu->addAction(m_scenesDock->toggleViewAction());
     viewMenu->addAction(m_shotInfoDock->toggleViewAction());
+
+    // Canvas alignment grid (display-only overlay), default OFF.
+    QAction *gridAction = viewMenu->addAction(QStringLiteral("Grid"));
+    gridAction->setCheckable(true);
+    gridAction->setChecked(false);
+    connect(gridAction, &QAction::toggled, this, [this](bool on) {
+        if (m_canvas)
+            m_canvas->setGridEnabled(on);
+    });
 
     // Escape hatch: wipe the persisted layout and go back to the default.
     viewMenu->addSeparator();
@@ -534,8 +551,9 @@ QWidget *StoryboardPage::createCenterColumn()
     QWidget *stripBar = new QWidget;
     stripBar->setAttribute(Qt::WA_StyledBackground, true);
     stripBar->setFixedHeight(140);
+    // 15% lighter than the old #0d0d0d (15% of the way toward white).
     stripBar->setStyleSheet(QStringLiteral(
-        "background-color: #0d0d0d; border-bottom: 1px solid #1f1f1f;"));
+        "background-color: #313131; border-bottom: 1px solid #1f1f1f;"));
     QHBoxLayout *stripBarLayout = new QHBoxLayout(stripBar);
     stripBarLayout->setContentsMargins(0, 0, 0, 0);
     stripBarLayout->setSpacing(0);
@@ -553,7 +571,7 @@ QWidget *StoryboardPage::createCenterColumn()
     strip->setFrameShape(QFrame::NoFrame);
     strip->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     strip->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    strip->setStyleSheet(QStringLiteral("QScrollArea { background-color: #0d0d0d; border: none; }"));
+    strip->setStyleSheet(QStringLiteral("QScrollArea { background-color: #313131; border: none; }"));
 
     QWidget *stripContainer = new QWidget;
     stripContainer->setStyleSheet(QStringLiteral("background: transparent;"));
@@ -578,13 +596,14 @@ QWidget *StoryboardPage::createCenterColumn()
     m_canvas = new DrawingCanvas;
     connect(m_canvas, &DrawingCanvas::contentChanged, this, &StoryboardPage::refreshCurrentThumb);
     connect(m_canvas, &DrawingCanvas::layersChanged, this, &StoryboardPage::rebuildLayerPanel);
-    m_canvas->installEventFilter(this); // re-clamp the floating toolbar on resize
+    m_canvas->installEventFilter(this); // re-clamp the floating overlays on resize
 
-    drawLayout->addWidget(createBrushSettings()); // visible while Brush is active
-    drawLayout->addWidget(createCameraPanel());   // visible while Camera is active
     drawLayout->addWidget(m_canvas, 1);
 
     createFloatingToolbar(); // child of the canvas, raised above it
+    createBrushSettings();   // floating over the canvas, shown with the Brush tool
+    createCameraPanel();     // floating over the canvas, shown with the Camera tool
+    createShapesPanel();     // floating over the canvas, shown with the Shapes tool
 
     layout->addWidget(drawRow, 1);
 
@@ -610,9 +629,16 @@ void StoryboardPage::createFloatingToolbar()
     shadow->setColor(QColor(0, 0, 0, 150));
     m_floatToolbar->setGraphicsEffect(shadow);
 
+    // Swallow every mouse event on the pill body so nothing falls through to
+    // the canvas and draws (see eventFilter).
+    m_floatToolbar->installEventFilter(this);
+    m_floatEventBlockers.insert(m_floatToolbar);
+
+    // +20% overall length vs the previous 456px: wider gaps/margins, a longer
+    // size-slider run, and a roomier grip — button sizes unchanged.
     QVBoxLayout *layout = new QVBoxLayout(m_floatToolbar);
-    layout->setContentsMargins(12, 12, 12, 6);
-    layout->setSpacing(2);
+    layout->setContentsMargins(12, 14, 12, 8);
+    layout->setSpacing(3);
 
     // Icon-only rounded-square buttons; the active one gets the amber square.
     auto pillButton = [](const char *kind, const QString &tip, bool checkable) {
@@ -637,7 +663,8 @@ void StoryboardPage::createFloatingToolbar()
     QPushButton *brushTool = pillButton("brush",
                                         QStringLiteral("Brush \xE2\x80\x94 pressure-sensitive; presets include Pen"), true);
     QPushButton *eraser = pillButton("erase", QStringLiteral("Eraser"), true);
-    QPushButton *line = pillButton("line", QStringLiteral("Straight line (click-drag)"), true);
+    QPushButton *shapes = pillButton("shapes",
+                                     QStringLiteral("Shapes \xE2\x80\x94 rectangle, triangle, circle, line, polygon"), true);
     QPushButton *fill = pillButton("fill", QStringLiteral("Flood fill"), true);
     QPushButton *camera = pillButton("camera",
                                      QStringLiteral("Camera overlays \xE2\x80\x94 frame and safe-area guides"), true);
@@ -645,7 +672,7 @@ void StoryboardPage::createFloatingToolbar()
 
     tools->addButton(brushTool);
     tools->addButton(eraser);
-    tools->addButton(line);
+    tools->addButton(shapes);
     tools->addButton(fill);
     tools->addButton(camera);
 
@@ -660,17 +687,20 @@ void StoryboardPage::createFloatingToolbar()
     };
     bindTool(brushTool, DrawingCanvas::Brush);
     bindTool(eraser, DrawingCanvas::Eraser);
-    bindTool(line, DrawingCanvas::Line);
+    bindTool(shapes, DrawingCanvas::Shapes);
     bindTool(fill, DrawingCanvas::Fill);
     bindTool(camera, DrawingCanvas::Camera);
 
-    // The brush settings panel is visible ONLY while the Brush tool is the
-    // active tool; likewise the Camera panel follows the Camera tool. The
-    // exclusive group unchecks the old tool when a new one is picked, which
-    // hides its panel.
+    // Each tool's options panel is visible ONLY while that tool is active.
+    // The exclusive group unchecks the old tool when a new one is picked,
+    // which hides its panel.
     connect(brushTool, &QPushButton::toggled, this, [this](bool on) {
         if (m_brushPanel)
             m_brushPanel->setVisible(on);
+    });
+    connect(shapes, &QPushButton::toggled, this, [this](bool on) {
+        if (m_shapesPanel)
+            m_shapesPanel->setVisible(on);
     });
     connect(camera, &QPushButton::toggled, this, [this](bool on) {
         if (m_cameraPanel)
@@ -679,7 +709,7 @@ void StoryboardPage::createFloatingToolbar()
 
     layout->addWidget(brushTool, 0, Qt::AlignHCenter);
     layout->addWidget(eraser, 0, Qt::AlignHCenter);
-    layout->addWidget(line, 0, Qt::AlignHCenter);
+    layout->addWidget(shapes, 0, Qt::AlignHCenter);
     layout->addWidget(fill, 0, Qt::AlignHCenter);
     layout->addWidget(camera, 0, Qt::AlignHCenter);
 
@@ -696,7 +726,7 @@ void StoryboardPage::createFloatingToolbar()
     QPushButton *color = new QPushButton;
     color->setCursor(Qt::PointingHandCursor);
     color->setToolTip(QStringLiteral("Color"));
-    color->setFixedSize(22, 22);
+    color->setFixedSize(26, 26);
     color->setStyleSheet(QStringLiteral(
         "QPushButton { background-color: #000000; border: 2px solid #3a3a3a; border-radius: 6px; }"));
     connect(color, &QPushButton::clicked, this, [this, color] {
@@ -720,8 +750,10 @@ void StoryboardPage::createFloatingToolbar()
     m_brushSizeSlider->setHandleSize(27);
     m_brushSizeSlider->setRange(1, 200);
     m_brushSizeSlider->setValue(25);
-    m_brushSizeSlider->setMinimumHeight(80); // after the setters above: they
-    m_brushSizeSlider->setMaximumHeight(80); // would reset these constraints
+    m_brushSizeSlider->setMinimumHeight(80);  // flexible run: the pill trims the
+    m_brushSizeSlider->setMaximumHeight(185); // slider first on short canvases
+                                              // (set after the setters above:
+                                              // they reset these constraints)
     connect(m_brushSizeSlider, &SankoSlider::valueChanged, this, [this](int v) {
         m_canvas->setBrushToolSize(v);
         // The Eraser and Line widths follow too (clamped to 1-20 inside).
@@ -744,43 +776,108 @@ void StoryboardPage::createFloatingToolbar()
     QLabel *handle = new QLabel;
     handle->setPixmap(dragDotsPixmap());
     handle->setAlignment(Qt::AlignCenter);
-    handle->setFixedHeight(20);
+    handle->setFixedHeight(24);
     handle->setCursor(Qt::OpenHandCursor);
     handle->setToolTip(QStringLiteral("Drag to move the toolbar"));
     handle->installEventFilter(this);
-    m_toolbarHandle = handle;
+    m_floatDragSources.insert(handle, m_floatToolbar); // grip moves the pill
     layout->addWidget(handle);
 
     m_floatToolbar->adjustSize(); // fixed content -> final pill size now
     m_floatToolbar->raise();      // above the canvas (and its zoom buttons)
 }
 
-// Keep the pill fully inside the visible canvas.
-QPoint StoryboardPage::clampedToolbarPos(const QPoint &pos) const
+// Keep a floating overlay fully inside the visible canvas.
+QPoint StoryboardPage::clampedFloatPos(const QWidget *panel, const QPoint &pos) const
 {
-    if (!m_floatToolbar || !m_canvas)
+    if (!panel || !m_canvas)
         return pos;
-    const int maxX = qMax(0, m_canvas->width() - m_floatToolbar->width());
-    const int maxY = qMax(0, m_canvas->height() - m_floatToolbar->height());
+    const int maxX = qMax(0, m_canvas->width() - panel->width());
+    const int maxY = qMax(0, m_canvas->height() - panel->height());
     return QPoint(qBound(0, pos.x(), maxX), qBound(0, pos.y(), maxY));
 }
 
-// First call restores the persisted position (or a sensible default);
-// later calls (canvas resizes) just re-clamp the current position.
+// First call restores the pill's persisted position (or a sensible default);
+// later calls (canvas resizes) re-clamp every floating overlay.
 void StoryboardPage::positionFloatingToolbar()
 {
     if (!m_floatToolbar || !m_canvas)
         return;
+    // +20% design length (543px), compressed on short canvases: the layout
+    // trims the size-slider run (185 down to 80) so the grip at the bottom
+    // always stays reachable inside the canvas.
+    m_floatToolbar->setFixedHeight(qBound(438, m_canvas->height() - 12, 543));
     if (!m_toolbarPosRestored) {
         m_toolbarPosRestored = true;
         const QSettings settings(QStringLiteral("SankoTV"), QStringLiteral("SankoTV"));
         const QPoint fallback(16, qMax(0, (m_canvas->height() - m_floatToolbar->height()) / 2));
         const QPoint saved =
             settings.value(QStringLiteral("storyboard/toolbarPos"), fallback).toPoint();
-        m_floatToolbar->move(clampedToolbarPos(saved));
+        m_floatToolbar->move(clampedFloatPos(m_floatToolbar, saved));
     } else {
-        m_floatToolbar->move(clampedToolbarPos(m_floatToolbar->pos()));
+        m_floatToolbar->move(clampedFloatPos(m_floatToolbar, m_floatToolbar->pos()));
     }
+    for (QWidget *panel : {m_brushPanel, m_cameraPanel, m_shapesPanel})
+        if (panel)
+            panel->move(clampedFloatPos(panel, panel->pos()));
+}
+
+// Floating overlay panel over the canvas, styled after the dock headers:
+// dark title bar with ONLY a Close button, draggable by that title bar.
+QWidget *StoryboardPage::createFloatingPanel(const QString &title, QWidget *body)
+{
+    QWidget *panel = new QWidget(m_canvas);
+    panel->setObjectName(QStringLiteral("floatPanel"));
+    panel->setAttribute(Qt::WA_StyledBackground, true);
+    panel->setStyleSheet(QStringLiteral(
+        "QWidget#floatPanel { background-color: #111111; border: 1px solid #2a2a2a; }"));
+
+    auto *shadow = new QGraphicsDropShadowEffect(panel);
+    shadow->setBlurRadius(18);
+    shadow->setOffset(0, 3);
+    shadow->setColor(QColor(0, 0, 0, 150));
+    panel->setGraphicsEffect(shadow);
+
+    QVBoxLayout *layout = new QVBoxLayout(panel);
+    layout->setContentsMargins(1, 1, 1, 1); // inside the 1px border
+    layout->setSpacing(0);
+
+    QWidget *header = new QWidget;
+    header->setObjectName(QStringLiteral("floatPanelHeader"));
+    header->setAttribute(Qt::WA_StyledBackground, true);
+    header->setFixedHeight(26);
+    header->setCursor(Qt::OpenHandCursor);
+    header->setStyleSheet(QStringLiteral(
+        "QWidget#floatPanelHeader { background-color: #161616; border-bottom: 1px solid #2a2a2a; }"));
+    QHBoxLayout *headerLayout = new QHBoxLayout(header);
+    headerLayout->setContentsMargins(8, 0, 4, 0);
+    headerLayout->setSpacing(4);
+    QLabel *titleLabel = new QLabel(title);
+    titleLabel->setStyleSheet(QStringLiteral(
+        "color: #cccccc; font-size: 11px; border: none; background: transparent;"));
+    headerLayout->addWidget(titleLabel);
+    headerLayout->addStretch(1);
+    QToolButton *closeButton = new QToolButton;
+    closeButton->setText(QString::fromUtf8("\xE2\x9C\x95")); // ✕
+    closeButton->setCursor(Qt::PointingHandCursor);
+    closeButton->setToolTip(QStringLiteral("Close"));
+    closeButton->setStyleSheet(QStringLiteral(
+        "QToolButton { background: transparent; color: #999999; border: none;"
+        " font-size: 11px; padding: 2px 6px; }"
+        "QToolButton:hover { background: #262626; color: #f5a623; }"));
+    connect(closeButton, &QToolButton::clicked, panel, &QWidget::hide);
+    headerLayout->addWidget(closeButton);
+
+    layout->addWidget(header);
+    layout->addWidget(body);
+
+    // Drag by the header; swallow stray clicks on both header and body so
+    // nothing falls through to the canvas (see eventFilter).
+    header->installEventFilter(this);
+    panel->installEventFilter(this);
+    m_floatDragSources.insert(header, panel);
+    m_floatEventBlockers.insert(panel);
+    return panel;
 }
 
 // Narrow settings column between the toolbar and the canvas; visible only
@@ -788,19 +885,11 @@ void StoryboardPage::positionFloatingToolbar()
 // brush defaults (size 25, opacity 100%, hardness 80%, P->size on).
 QWidget *StoryboardPage::createBrushSettings()
 {
-    m_brushPanel = new QWidget;
-    m_brushPanel->setAttribute(Qt::WA_StyledBackground, true);
-    m_brushPanel->setFixedWidth(150);
-    m_brushPanel->setStyleSheet(QStringLiteral(
-        "background-color: #111111; border-right: 1px solid #1f1f1f;"));
-    // Visible from the start: Brush is now the default (and only) drawing
-    // tool. The toolbar's toggled connection hides it when another tool is
-    // picked. (The toolbar is built before this panel, so its initial
-    // setChecked(true) fired while m_brushPanel was still null.)
-    m_brushPanel->setVisible(true);
+    QWidget *body = new QWidget;
+    body->setStyleSheet(QStringLiteral("background: transparent;"));
 
-    QVBoxLayout *layout = new QVBoxLayout(m_brushPanel);
-    layout->setContentsMargins(10, 12, 10, 12);
+    QVBoxLayout *layout = new QVBoxLayout(body);
+    layout->setContentsMargins(10, 8, 10, 10);
     layout->setSpacing(6);
 
     const QString captionStyle = QStringLiteral("color: #777777; font-size: 10px; border: none;");
@@ -810,12 +899,7 @@ QWidget *StoryboardPage::createBrushSettings()
         " border-radius: 2px; background: #1c1c1c; }"
         "QCheckBox::indicator:checked { background: #f5a623; border-color: #f5a623; }");
 
-    QLabel *header = new QLabel(QStringLiteral("BRUSH"));
-    header->setStyleSheet(QStringLiteral(
-        "color: #888888; font-size: 10px; font-weight: 600; letter-spacing: 1px; border: none;"));
-    layout->addWidget(header);
-
-    // SankoSliders (compact 14/16 size); each paints its own value label, so
+    // SankoSliders (slim 10/13 size); each paints its own value label, so
     // the caption is just the static name.
     auto addSlider = [&](const QString &name, int min, int max, int value,
                          SankoSlider *&outSlider) {
@@ -823,6 +907,8 @@ QWidget *StoryboardPage::createBrushSettings()
         caption->setStyleSheet(captionStyle);
         layout->addWidget(caption);
         outSlider = new SankoSlider;
+        outSlider->setTrackHeight(10);
+        outSlider->setHandleSize(13);
         outSlider->setRange(min, max);
         outSlider->setValue(value);
         layout->addWidget(outSlider);
@@ -882,29 +968,26 @@ QWidget *StoryboardPage::createBrushSettings()
         layout->addWidget(button);
     }
 
-    layout->addStretch(1);
+    m_brushPanel = createFloatingPanel(QStringLiteral("Brush Options"), body);
+    m_brushPanel->setFixedWidth(170);
+    m_brushPanel->adjustSize();
+    m_brushPanel->move(clampedFloatPos(m_brushPanel, QPoint(84, 12))); // right of the pill
+    m_brushPanel->setVisible(true); // Brush is the default tool; the pill's
+                                    // toggled connection hides it otherwise
+    m_brushPanel->raise();
     return m_brushPanel;
 }
 
-// Narrow settings column shown only while the Camera tool is active. Hosts
-// the display-only viewport overlay toggles (moved from the tool column).
+// Floating overlay shown only while the Camera tool is active. Hosts the
+// display-only viewport overlay toggles.
 QWidget *StoryboardPage::createCameraPanel()
 {
-    m_cameraPanel = new QWidget;
-    m_cameraPanel->setAttribute(Qt::WA_StyledBackground, true);
-    m_cameraPanel->setFixedWidth(150);
-    m_cameraPanel->setStyleSheet(QStringLiteral(
-        "background-color: #111111; border-right: 1px solid #1f1f1f;"));
-    m_cameraPanel->setVisible(false); // Brush is the default tool
+    QWidget *body = new QWidget;
+    body->setStyleSheet(QStringLiteral("background: transparent;"));
 
-    QVBoxLayout *layout = new QVBoxLayout(m_cameraPanel);
-    layout->setContentsMargins(10, 12, 10, 12);
+    QVBoxLayout *layout = new QVBoxLayout(body);
+    layout->setContentsMargins(10, 8, 10, 10);
     layout->setSpacing(6);
-
-    QLabel *header = new QLabel(QStringLiteral("CAMERA"));
-    header->setStyleSheet(QStringLiteral(
-        "color: #888888; font-size: 10px; font-weight: 600; letter-spacing: 1px; border: none;"));
-    layout->addWidget(header);
 
     // Overlay toggles (display-only; never saved into the artwork).
     QPushButton *cameraFrame = toolButton(QStringLiteral("Camera Frame"),
@@ -926,8 +1009,87 @@ QWidget *StoryboardPage::createCameraPanel()
             [this](bool on) { m_canvas->setTitleSafeEnabled(on); });
     layout->addWidget(titleSafe);
 
-    layout->addStretch(1);
+    m_cameraPanel = createFloatingPanel(QStringLiteral("Camera"), body);
+    m_cameraPanel->setFixedWidth(170);
+    m_cameraPanel->adjustSize();
+    m_cameraPanel->move(clampedFloatPos(m_cameraPanel, QPoint(84, 12))); // right of the pill
+    m_cameraPanel->setVisible(false); // Brush is the default tool
+    m_cameraPanel->raise();
     return m_cameraPanel;
+}
+
+// Floating overlay shown only while the Shapes tool is active: shape
+// selector, stroke width, and the fill toggle.
+QWidget *StoryboardPage::createShapesPanel()
+{
+    QWidget *body = new QWidget;
+    body->setStyleSheet(QStringLiteral("background: transparent;"));
+
+    QVBoxLayout *layout = new QVBoxLayout(body);
+    layout->setContentsMargins(10, 8, 10, 10);
+    layout->setSpacing(6);
+
+    // Shape selector (exclusive), Rectangle default.
+    QButtonGroup *kinds = new QButtonGroup(this);
+    kinds->setExclusive(true);
+    auto addKind = [&](const QString &text, const QString &tip,
+                       DrawingCanvas::ShapeKind kind, bool checked) {
+        QPushButton *button = toolButton(text, tip);
+        button->setChecked(checked);
+        kinds->addButton(button);
+        connect(button, &QPushButton::toggled, this, [this, kind](bool on) {
+            if (on && m_canvas)
+                m_canvas->setShapeKind(kind);
+        });
+        layout->addWidget(button);
+    };
+    addKind(QStringLiteral("Rectangle"), QStringLiteral("Click-drag corner to corner"),
+            DrawingCanvas::ShapeRectangle, true);
+    addKind(QStringLiteral("Triangle"),
+            QStringLiteral("Click-drag \xE2\x80\x94 isosceles triangle in the box"),
+            DrawingCanvas::ShapeTriangle, false);
+    addKind(QStringLiteral("Circle"), QStringLiteral("Click-drag \xE2\x80\x94 ellipse in the box"),
+            DrawingCanvas::ShapeCircle, false);
+    addKind(QStringLiteral("Line"), QStringLiteral("Click-drag start to end"),
+            DrawingCanvas::ShapeLine, false);
+    addKind(QStringLiteral("Polygon"),
+            QStringLiteral("Click to place vertices; double-click or Enter closes, Esc cancels"),
+            DrawingCanvas::ShapePolygon, false);
+
+    QLabel *strokeCaption = new QLabel(QStringLiteral("Stroke"));
+    strokeCaption->setStyleSheet(QStringLiteral("color: #777777; font-size: 10px; border: none;"));
+    layout->addWidget(strokeCaption);
+    SankoSlider *stroke = new SankoSlider;
+    stroke->setTrackHeight(10);
+    stroke->setHandleSize(13);
+    stroke->setRange(1, 100);
+    stroke->setValue(4); // mirrors the canvas default
+    connect(stroke, &SankoSlider::valueChanged, this, [this](int v) {
+        if (m_canvas)
+            m_canvas->setShapeStrokeWidth(v);
+    });
+    layout->addWidget(stroke);
+
+    QCheckBox *fillCheck = new QCheckBox(QStringLiteral("Fill"));
+    fillCheck->setStyleSheet(QStringLiteral(
+        "QCheckBox { color: #cccccc; font-size: 11px; border: none; }"
+        "QCheckBox::indicator { width: 12px; height: 12px; border: 1px solid #2a2a2a;"
+        " border-radius: 2px; background: #1c1c1c; }"
+        "QCheckBox::indicator:checked { background: #f5a623; border-color: #f5a623; }"));
+    fillCheck->setChecked(false); // default OFF = outline only
+    connect(fillCheck, &QCheckBox::toggled, this, [this](bool on) {
+        if (m_canvas)
+            m_canvas->setShapeFill(on);
+    });
+    layout->addWidget(fillCheck);
+
+    m_shapesPanel = createFloatingPanel(QStringLiteral("Shapes"), body);
+    m_shapesPanel->setFixedWidth(170);
+    m_shapesPanel->adjustSize();
+    m_shapesPanel->move(clampedFloatPos(m_shapesPanel, QPoint(84, 12))); // right of the pill
+    m_shapesPanel->setVisible(false); // Brush is the default tool
+    m_shapesPanel->raise();
+    return m_shapesPanel;
 }
 
 void StoryboardPage::setActionSafeMaskOpacity(int percent)
@@ -1296,47 +1458,94 @@ Panel *StoryboardPage::currentPanel() const
 
 bool StoryboardPage::eventFilter(QObject *object, QEvent *event)
 {
-    // Floating toolbar: reposition on canvas resize; drag via the dot grip.
+    // Floating overlays (pill toolbar + Brush/Camera panels): reposition on
+    // canvas resize; drag via their registered grip/header.
     if (object == m_canvas && event->type() == QEvent::Resize) {
         positionFloatingToolbar();
         return false;
     }
-    if (object == m_toolbarHandle && m_floatToolbar) {
+    // Grips/headers are QWidgets/QLabels that would IGNORE mouse events;
+    // ignored events propagate to the parent — the canvas — and draw. Every
+    // mouse AND tablet event on them is therefore CONSUMED here (return
+    // true), whether or not it moved anything. Subsequent move/release
+    // events still arrive: Qt targets them at the widget under the press.
+    if (QWidget *dragTarget = m_floatDragSources.value(object)) {
+        QWidget *source = static_cast<QWidget *>(object);
+        const auto beginDrag = [this, dragTarget, source](const QPoint &globalPos) {
+            m_floatDragPanel = dragTarget;
+            m_floatDragStart = globalPos;
+            m_floatStartPos = dragTarget->pos();
+            source->setCursor(Qt::ClosedHandCursor);
+        };
+        const auto moveDrag = [this, dragTarget](const QPoint &globalPos) {
+            if (m_floatDragPanel == dragTarget)
+                dragTarget->move(clampedFloatPos(dragTarget,
+                                                 m_floatStartPos + (globalPos - m_floatDragStart)));
+        };
+        const auto endDrag = [this, dragTarget, source] {
+            if (m_floatDragPanel != dragTarget)
+                return;
+            m_floatDragPanel = nullptr;
+            source->setCursor(Qt::OpenHandCursor);
+            if (dragTarget == m_floatToolbar) // only the pill persists its spot
+                QSettings(QStringLiteral("SankoTV"), QStringLiteral("SankoTV"))
+                    .setValue(QStringLiteral("storyboard/toolbarPos"), dragTarget->pos());
+        };
         switch (event->type()) {
         case QEvent::MouseButtonPress: {
             auto *me = static_cast<QMouseEvent *>(event);
-            if (me->button() == Qt::LeftButton) {
-                m_toolbarDragging = true;
-                m_toolbarDragStart = me->globalPosition().toPoint();
-                m_toolbarStartPos = m_floatToolbar->pos();
-                m_toolbarHandle->setCursor(Qt::ClosedHandCursor);
-            }
-            return false; // let the grip keep the implicit mouse grab
+            if (me->button() == Qt::LeftButton)
+                beginDrag(me->globalPosition().toPoint());
+            return true;
         }
         case QEvent::MouseMove: {
             auto *me = static_cast<QMouseEvent *>(event);
-            if (m_toolbarDragging && (me->buttons() & Qt::LeftButton)) {
-                const QPoint delta = me->globalPosition().toPoint() - m_toolbarDragStart;
-                m_floatToolbar->move(clampedToolbarPos(m_toolbarStartPos + delta));
-                return true;
-            }
-            return false;
+            if (me->buttons() & Qt::LeftButton)
+                moveDrag(me->globalPosition().toPoint());
+            return true;
         }
         case QEvent::MouseButtonRelease: {
-            auto *me = static_cast<QMouseEvent *>(event);
-            if (me->button() == Qt::LeftButton && m_toolbarDragging) {
-                m_toolbarDragging = false;
-                m_toolbarHandle->setCursor(Qt::OpenHandCursor);
-                QSettings(QStringLiteral("SankoTV"), QStringLiteral("SankoTV"))
-                    .setValue(QStringLiteral("storyboard/toolbarPos"), m_floatToolbar->pos());
-                return true;
-            }
-            return false;
+            if (static_cast<QMouseEvent *>(event)->button() == Qt::LeftButton)
+                endDrag();
+            return true;
         }
+        case QEvent::MouseButtonDblClick:
+            return true;
+        case QEvent::TabletPress:
+            beginDrag(static_cast<QTabletEvent *>(event)->globalPosition().toPoint());
+            event->accept();
+            return true;
+        case QEvent::TabletMove:
+            moveDrag(static_cast<QTabletEvent *>(event)->globalPosition().toPoint());
+            event->accept();
+            return true;
+        case QEvent::TabletRelease:
+            endDrag();
+            event->accept();
+            return true;
         default:
             break;
         }
         return false;
+    }
+    // Overlay bodies (margins/gaps between controls): swallow mouse AND
+    // tablet events so they never reach the canvas underneath. Child
+    // buttons/sliders get their events first and are unaffected.
+    if (m_floatEventBlockers.contains(object)) {
+        switch (event->type()) {
+        case QEvent::MouseButtonPress:
+        case QEvent::MouseMove:
+        case QEvent::MouseButtonRelease:
+        case QEvent::MouseButtonDblClick:
+            return true;
+        case QEvent::TabletPress:
+        case QEvent::TabletMove:
+        case QEvent::TabletRelease:
+            event->accept(); // stop mouse-event synthesis as well
+            return true;
+        default:
+            return false;
+        }
     }
 
     // Panel thumbnails: select on click, drag to reorder.
@@ -1534,16 +1743,15 @@ void StoryboardPage::movePanelBy(int delta)
     selectPanel(dst);
 }
 
-void StoryboardPage::duplicatePanel()
+// Deep copy shared by Duplicate and the Edit-menu panel clipboard: layers
+// (QImage is copy-on-write: painting detaches, so assignment is a safe deep
+// copy) with fresh UUIDs so undo/UI never cross panels, plus shot metadata
+// and duration. Undo history and generation state start fresh.
+Panel *StoryboardPage::clonePanel(const Panel *source)
 {
-    Scene *scene = currentScene();
-    Panel *source = currentPanel();
-    if (!scene || !source || m_currentPanel < 0)
-        return;
-
     Panel *copy = new Panel;
-    copy->layers = source->layers; // QImage is copy-on-write: painting detaches, so this is a safe deep copy
-    for (Layer &layer : copy->layers) // fresh ids so undo/UI never cross panels
+    copy->layers = source->layers;
+    for (Layer &layer : copy->layers)
         layer.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
     copy->activeLayerIndex = source->activeLayerIndex;
     copy->duration = source->duration;
@@ -1552,17 +1760,89 @@ void StoryboardPage::duplicatePanel()
     copy->lens = source->lens;
     copy->mood = source->mood;
     copy->notes = source->notes;
-    // undoStack intentionally left empty — the duplicate starts fresh.
+    return copy;
+}
 
-    const int insertAt = m_currentPanel + 1;
-    scene->panels.insert(insertAt, copy);
+// Insert a clone of `panel` into the CURRENT scene at `insertAt`, then
+// select it and scroll it into view. Shared by paste and duplicate.
+void StoryboardPage::insertPanelClone(const Panel *panel, int insertAt)
+{
+    Scene *scene = currentScene();
+    if (!scene || !panel)
+        return;
+    insertAt = qBound(0, insertAt, int(scene->panels.size()));
+    scene->panels.insert(insertAt, clonePanel(panel));
 
     rebuildPanelStrip();
     selectPanel(insertAt);
-
-    // Scroll the new panel into view.
     if (m_panelScroll && insertAt < m_panelThumbs.size())
         m_panelScroll->ensureWidgetVisible(m_panelThumbs.at(insertAt));
+}
+
+void StoryboardPage::duplicatePanel()
+{
+    Panel *source = currentPanel();
+    if (!source || m_currentPanel < 0)
+        return;
+    insertPanelClone(source, m_currentPanel + 1);
+}
+
+// --- Edit-menu panel clipboard ----------------------------------------------
+
+void StoryboardPage::copySelectedPanel()
+{
+    Panel *source = currentPanel();
+    if (!source)
+        return;
+    delete m_panelClipboard;
+    m_panelClipboard = clonePanel(source);
+    m_clipboardSceneIndex = m_currentScene; // source position, for Paste in Place
+    m_clipboardPanelIndex = m_currentPanel;
+    emit panelClipboardChanged(true);
+}
+
+void StoryboardPage::cutSelectedPanel()
+{
+    Scene *scene = currentScene();
+    Panel *source = currentPanel();
+    if (!scene || !source || m_currentPanel < 0)
+        return;
+    if (scene->panels.size() <= 1) { // same rule as Delete
+        QMessageBox::information(this, QStringLiteral("Cut Panel"),
+                                 QStringLiteral("A scene must keep at least one panel."));
+        return;
+    }
+    copySelectedPanel();
+    // No confirmation (unlike Delete): the clipboard copy is the safety net.
+    const int removeAt = m_currentPanel;
+    delete scene->panels.at(removeAt); // Scene owns its Panel objects
+    scene->panels.removeAt(removeAt);
+    rebuildPanelStrip();
+    selectPanel(qBound(0, removeAt, scene->panels.size() - 1)); // nearest remaining
+}
+
+void StoryboardPage::pastePanelAfterSelected()
+{
+    Scene *scene = currentScene();
+    if (!scene || !m_panelClipboard)
+        return;
+    const int insertAt = (m_currentPanel >= 0 && m_currentPanel < scene->panels.size())
+        ? m_currentPanel + 1
+        : scene->panels.size();
+    insertPanelClone(m_panelClipboard, insertAt);
+}
+
+void StoryboardPage::pastePanelInPlace()
+{
+    if (!m_panelClipboard)
+        return;
+    // Back into the scene/position the copy was taken from (clamped if the
+    // scene shrank); no repositioning afterwards. No-op if that scene is gone.
+    if (m_clipboardSceneIndex < 0 || m_clipboardSceneIndex >= m_scenes.size())
+        return;
+    if (m_clipboardSceneIndex != m_currentScene)
+        selectScene(m_clipboardSceneIndex);
+    insertPanelClone(m_panelClipboard, m_clipboardPanelIndex);
 }
 
 void StoryboardPage::importImageToPanel()
@@ -1581,14 +1861,15 @@ void StoryboardPage::importImageToPanel()
 
 namespace {
 
-enum class CtrlIcon { Add, Duplicate, Delete };
+enum class CtrlIcon { Add, Duplicate, Clear, Delete };
 
 // Crisp painted glyphs (no font/emoji dependency). knockout = the colour drawn
 // behind the front square of the Duplicate icon so the two squares read as
 // stacked rather than as overlapping outlines.
 QIcon paintCtrlIcon(CtrlIcon kind, const QColor &color, const QColor &knockout)
 {
-    QPixmap pm(20, 20);
+    QPixmap pm(40, 40);          // 2x for a crisp downscale to the icon size
+    pm.setDevicePixelRatio(2.0); // logical 20x20 drawing grid, as before
     pm.fill(Qt::transparent);
     QPainter p(&pm);
     p.setRenderHint(QPainter::Antialiasing, true);
@@ -1606,6 +1887,11 @@ QIcon paintCtrlIcon(CtrlIcon kind, const QColor &color, const QColor &knockout)
         p.setBrush(knockout);                                     // hide the overlap
         p.drawRoundedRect(QRectF(3.5, 7.5, 9, 9), 1.5, 1.5);      // front square
         p.setBrush(Qt::NoBrush);
+    } else if (kind == CtrlIcon::Clear) {
+        // Panel frame with an X through the drawing area.
+        p.drawRoundedRect(QRectF(3.5, 4.5, 13, 11), 1.5, 1.5);
+        p.drawLine(QPointF(7, 7.5), QPointF(13, 12.5));
+        p.drawLine(QPointF(13, 7.5), QPointF(7, 12.5));
     } else { // Delete: trash can
         p.drawLine(QPointF(4, 6), QPointF(16, 6));                 // lid
         p.drawLine(QPointF(8, 6), QPointF(8.6, 4)); p.drawLine(QPointF(12, 6), QPointF(11.4, 4)); // handle
@@ -1623,9 +1909,9 @@ QPushButton *makeCtrlButton(CtrlIcon kind, const QColor &iconColor,
 {
     QPushButton *button = new QPushButton;
     button->setCursor(Qt::PointingHandCursor);
-    button->setFixedSize(40, 40);
-    button->setIcon(paintCtrlIcon(kind, iconColor, QColor(0x0d, 0x0d, 0x0d)));
-    button->setIconSize(QSize(20, 20));
+    button->setFixedSize(28, 28);       // 30% down from the original 40x40
+    button->setIcon(paintCtrlIcon(kind, iconColor, QColor(0x31, 0x31, 0x31))); // knockout = column bg
+    button->setIconSize(QSize(12, 12)); // glyph +20%; box stays 28x28
     button->setToolTip(tooltipHtml); // Qt renders HTML tooltips automatically
     button->setStyleSheet(styleSheet);
     return button;
@@ -1638,11 +1924,11 @@ QWidget *StoryboardPage::createPanelControls()
     QWidget *column = new QWidget;
     column->setAttribute(Qt::WA_StyledBackground, true);
     column->setFixedWidth(56);
-    column->setStyleSheet(QStringLiteral("background-color: #0d0d0d;"));
+    column->setStyleSheet(QStringLiteral("background-color: #313131;")); // matches the strip
 
     QVBoxLayout *layout = new QVBoxLayout(column);
-    layout->setContentsMargins(8, 12, 8, 12);
-    layout->setSpacing(8);
+    layout->setContentsMargins(8, 6, 8, 6);
+    layout->setSpacing(4); // four buttons now share the strip-bar height
 
     // Add — purple fill, white icon.
     m_addPanelButton = makeCtrlButton(
@@ -1653,7 +1939,7 @@ QWidget *StoryboardPage::createPanelControls()
             "QPushButton:hover { background-color: #8f82f8; }"
             "QPushButton:disabled { background-color: #3a3550; }"));
     connect(m_addPanelButton, &QPushButton::clicked, this, [this] { addPanelAfterSelected(); });
-    layout->addWidget(m_addPanelButton);
+    layout->addWidget(m_addPanelButton, 0, Qt::AlignHCenter);
 
     // Duplicate — transparent, light grey icon, grey border.
     m_dupPanelButton = makeCtrlButton(
@@ -1664,7 +1950,27 @@ QWidget *StoryboardPage::createPanelControls()
             "QPushButton:hover { border-color: #5a5a5a; background-color: #161616; }"
             "QPushButton:disabled { border-color: #242424; }"));
     connect(m_dupPanelButton, &QPushButton::clicked, this, [this] { duplicatePanel(); });
-    layout->addWidget(m_dupPanelButton);
+    layout->addWidget(m_dupPanelButton, 0, Qt::AlignHCenter);
+
+    // Clear — wipes the current drawing (destructive: confirms first).
+    m_clearPanelButton = makeCtrlButton(
+        CtrlIcon::Clear, QColor(0xcc, 0xcc, 0xcc),
+        QStringLiteral("<b>Clear Drawing</b> | Clears the selected panel's drawing. Asks first."),
+        QStringLiteral(
+            "QPushButton { background-color: transparent; border: 1px solid #3a3a3a; border-radius: 8px; }"
+            "QPushButton:hover { border-color: #5a5a5a; background-color: #161616; }"
+            "QPushButton:disabled { border-color: #242424; }"));
+    connect(m_clearPanelButton, &QPushButton::clicked, this, [this] {
+        if (!currentPanel())
+            return;
+        const auto answer = QMessageBox::question(
+            this, QStringLiteral("Clear this drawing?"),
+            QStringLiteral("Clear this drawing?"),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+        if (answer == QMessageBox::Yes)
+            m_canvas->clearCanvas();
+    });
+    layout->addWidget(m_clearPanelButton, 0, Qt::AlignHCenter);
 
     // Delete — transparent, red icon, dark-red border.
     m_deletePanelButton = makeCtrlButton(
@@ -1675,7 +1981,7 @@ QWidget *StoryboardPage::createPanelControls()
             "QPushButton:hover { border-color: #e0655f; background-color: #1a0f0f; }"
             "QPushButton:disabled { border-color: #2a1a1a; }"));
     connect(m_deletePanelButton, &QPushButton::clicked, this, [this] { deleteSelectedPanel(); });
-    layout->addWidget(m_deletePanelButton);
+    layout->addWidget(m_deletePanelButton, 0, Qt::AlignHCenter);
 
     layout->addStretch(1); // buttons pinned to the top
     return column;
@@ -1733,6 +2039,8 @@ void StoryboardPage::updateDuplicateButton()
         m_addPanelButton->setEnabled(hasScene);                 // needs a scene to add into
     if (m_dupPanelButton)
         m_dupPanelButton->setEnabled(hasPanel);
+    if (m_clearPanelButton)
+        m_clearPanelButton->setEnabled(hasPanel);
     if (m_deletePanelButton)                                     // blocked on the last remaining panel
         m_deletePanelButton->setEnabled(hasPanel && scene && scene->panels.size() > 1);
     if (m_importButton)
@@ -1801,8 +2109,8 @@ QWidget *StoryboardPage::createLayerPanel()
     // surface, so the opacity wiring is unchanged. The live "NN%" label is
     // painted inside the widget, right of the track.
     m_layerOpacity = new SankoSlider;
-    m_layerOpacity->setTrackHeight(14);
-    m_layerOpacity->setHandleSize(16);
+    m_layerOpacity->setTrackHeight(10);
+    m_layerOpacity->setHandleSize(13);
     m_layerOpacity->setRange(0, 100);
     m_layerOpacity->setValueSuffix(QStringLiteral("%"));
     m_layerOpacity->setValue(100);

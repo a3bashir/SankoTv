@@ -8,9 +8,11 @@
 #include <QFocusEvent>
 #include <QImage>
 #include <QKeyEvent>
+#include <QLineF>
 #include <QMessageBox>
 #include <QMimeData>
 #include <QMouseEvent>
+#include <QPolygonF>
 #include <QPainter>
 #include <QPaintEvent>
 #include <QPushButton>
@@ -24,6 +26,7 @@
 #include <Qt>
 
 #include <cmath>
+#include <utility>
 
 namespace {
 
@@ -123,7 +126,7 @@ void DrawingCanvas::setActivePanel(Panel *panel)
 {
     m_panel = panel;
     m_drawing = false;
-    m_previewLine = false;
+    cancelShape(); // preview state never carries across panels
     update();
 }
 
@@ -154,6 +157,12 @@ void DrawingCanvas::setSafeAreaEnabled(bool enabled)
 void DrawingCanvas::setTitleSafeEnabled(bool enabled)
 {
     m_titleSafe = enabled;
+    update();
+}
+
+void DrawingCanvas::setGridEnabled(bool enabled)
+{
+    m_grid = enabled;
     update();
 }
 
@@ -224,7 +233,26 @@ bool DrawingCanvas::importImage(const QString &filePath)
 void DrawingCanvas::setTool(Tool tool)
 {
     m_tool = tool;
-    m_previewLine = false;
+    cancelShape(); // an in-progress shape never survives a tool switch
+    update();
+}
+
+void DrawingCanvas::setShapeKind(ShapeKind kind)
+{
+    if (m_shapeKind != kind)
+        cancelShape();
+    m_shapeKind = kind;
+}
+
+void DrawingCanvas::setShapeStrokeWidth(int px)
+{
+    m_shapeStroke = qBound(1, px, 100);
+    update(); // a live preview follows the new width
+}
+
+void DrawingCanvas::setShapeFill(bool on)
+{
+    m_shapeFill = on;
     update();
 }
 
@@ -405,6 +433,107 @@ void DrawingCanvas::drawSegment(const QPoint &from, const QPoint &to, const QCol
     painter.setPen(pen);
     painter.drawLine(from, to);
     painter.end();
+    update();
+}
+
+// Draw the current in-progress shape in CANVAS coordinates. The preview
+// paints through the display transform and the commit paints straight into
+// the layer image, so both render identical geometry. closePolygon: a
+// committed polygon closes (and may fill); the preview stays an open
+// polyline with a rubber segment to the cursor.
+void DrawingCanvas::paintShapeGeometry(QPainter &painter, bool closePolygon) const
+{
+    QPen pen(m_color, qMax(1, m_shapeStroke));
+    pen.setCapStyle(Qt::RoundCap);
+    pen.setJoinStyle(Qt::RoundJoin);
+    painter.setPen(pen);
+    painter.setBrush(m_shapeFill ? QBrush(m_color) : Qt::NoBrush);
+
+    const QRectF box = QRectF(m_shapeStartC, m_shapeCurrentC).normalized();
+    switch (m_shapeKind) {
+    case ShapeRectangle:
+        painter.drawRect(box);
+        break;
+    case ShapeCircle:
+        painter.drawEllipse(box); // drag defines the bounding box
+        break;
+    case ShapeTriangle: {
+        QPolygonF triangle; // isosceles: apex centred on the box's top edge
+        triangle << QPointF(box.center().x(), box.top())
+                 << QPointF(box.right(), box.bottom())
+                 << QPointF(box.left(), box.bottom());
+        painter.drawPolygon(triangle);
+        break;
+    }
+    case ShapeLine:
+        painter.drawLine(m_shapeStartC, m_shapeCurrentC);
+        break;
+    case ShapePolygon:
+        if (closePolygon) {
+            painter.drawPolygon(QPolygonF(m_polygonPts));
+        } else if (!m_polygonPts.isEmpty()) {
+            painter.setBrush(Qt::NoBrush); // fill applies only once closed
+            QPolygonF open(m_polygonPts);
+            open << m_shapeCurrentC; // rubber segment to the cursor
+            painter.drawPolyline(open);
+        }
+        break;
+    }
+}
+
+void DrawingCanvas::commitDragShape()
+{
+    m_shapeDrag = false;
+    Layer *layer = editableActiveLayer();
+    if (!layer) {
+        update();
+        return;
+    }
+    const QRectF box = QRectF(m_shapeStartC, m_shapeCurrentC).normalized();
+    const bool needsArea = (m_shapeKind == ShapeRectangle || m_shapeKind == ShapeCircle
+                            || m_shapeKind == ShapeTriangle);
+    if (needsArea && box.width() < 1.0 && box.height() < 1.0) {
+        update(); // degenerate click: nothing to draw, no undo entry
+        return;
+    }
+    pushUndo();
+    QPainter painter(&layer->image);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    paintShapeGeometry(painter, true);
+    painter.end();
+    update();
+    emit contentChanged();
+}
+
+void DrawingCanvas::commitPolygon()
+{
+    // Drop consecutive duplicate vertices — the closing double-click adds
+    // one at the same spot via its own press before this runs.
+    QVector<QPointF> pts;
+    for (const QPointF &pt : std::as_const(m_polygonPts))
+        if (pts.isEmpty() || QLineF(pts.last(), pt).length() >= 1.0)
+            pts.append(pt);
+    m_polygonPts = pts;
+
+    Layer *layer = editableActiveLayer();
+    if (!layer || m_polygonPts.size() < 3) {
+        cancelShape(); // not enough vertices for a shape: no artifacts
+        return;
+    }
+    pushUndo();
+    QPainter painter(&layer->image);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    paintShapeGeometry(painter, true);
+    painter.end();
+    cancelShape();
+    emit contentChanged();
+}
+
+void DrawingCanvas::cancelShape()
+{
+    m_shapeDrag = false;
+    m_polygonPts.clear();
+    setMouseTracking(false); // hover tracking only while a polygon is open
     update();
 }
 
@@ -628,6 +757,20 @@ void DrawingCanvas::paintEvent(QPaintEvent *)
     painter.setPen(QPen(QColor("#2a2a2a"), 1));
     painter.drawRect(d.adjusted(0, 0, -1, -1));
 
+    // Alignment grid (View > Grid): thin #ffffff lines at 8% opacity every
+    // 40 canvas px, anchored to the image rect so it zooms/pans with the
+    // artwork. Display-only — never written to a layer or flattenedPixmap().
+    if (m_grid) {
+        painter.setPen(QPen(QColor(255, 255, 255, 20), 1));
+        const double step = 40.0 * scale();
+        if (step >= 4.0) { // skip when zoomed out so far the grid would be noise
+            for (double x = d.left() + step; x < d.right(); x += step)
+                painter.drawLine(QPointF(x, d.top()), QPointF(x, d.bottom() + 1));
+            for (double y = d.top() + step; y < d.bottom(); y += step)
+                painter.drawLine(QPointF(d.left(), y), QPointF(d.right() + 1, y));
+        }
+    }
+
     // --- Viewport overlays: DISPLAY-ONLY, drawn after the layers and never
     // --- written to any layer or included in flattenedPixmap(). All are
     // --- anchored to the image rect `d`, so they zoom and pan with it.
@@ -673,13 +816,18 @@ void DrawingCanvas::paintEvent(QPaintEvent *)
                          QStringLiteral("TITLE SAFE"));
     }
 
-    // In-progress line preview, always on top of the composite.
-    if (m_previewLine) {
-        QPen pen(m_color);
-        pen.setWidth(m_brushSize);
-        pen.setCapStyle(Qt::RoundCap);
-        painter.setPen(pen);
-        painter.drawLine(m_lineStart, m_lineCurrent);
+    // In-progress shape preview, always on top of the composite. Painted
+    // through the display transform so it matches the committed result
+    // exactly; display-only until commit — cancelling leaves no artifacts.
+    if (m_shapeDrag || (m_tool == Shapes && !m_polygonPts.isEmpty())) {
+        painter.save();
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        painter.setClipRect(d);
+        painter.translate(d.topLeft());
+        const double s = scale();
+        painter.scale(s, s);
+        paintShapeGeometry(painter, false);
+        painter.restore();
     }
 }
 
@@ -697,6 +845,19 @@ void DrawingCanvas::wheelEvent(QWheelEvent *event)
 
 void DrawingCanvas::keyPressEvent(QKeyEvent *event)
 {
+    // Shapes: Enter closes the in-progress polygon, Esc cancels any
+    // in-progress shape without leaving artifacts.
+    if (m_tool == Shapes) {
+        if ((event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter)
+            && !m_polygonPts.isEmpty()) {
+            commitPolygon();
+            return;
+        }
+        if (event->key() == Qt::Key_Escape && (m_shapeDrag || !m_polygonPts.isEmpty())) {
+            cancelShape();
+            return;
+        }
+    }
     if (event->key() == Qt::Key_Space && !event->isAutoRepeat()) {
         m_spaceHeld = true;
         if (!m_panning)
@@ -760,10 +921,15 @@ void DrawingCanvas::mousePressEvent(QMouseEvent *event)
         beginBrushStroke(toCanvasF(event->position()), 1.0);
         break;
     }
-    case Line:
-        m_previewLine = true;
-        m_lineStart = event->pos();
-        m_lineCurrent = event->pos();
+    case Shapes:
+        if (m_shapeKind == ShapePolygon) {
+            m_shapeCurrentC = toCanvasF(event->position());
+            m_polygonPts.append(m_shapeCurrentC);
+            setMouseTracking(true); // rubber segment follows the hover
+        } else {
+            m_shapeDrag = true;
+            m_shapeStartC = m_shapeCurrentC = toCanvasF(event->position());
+        }
         update();
         break;
     case Fill:
@@ -783,9 +949,9 @@ void DrawingCanvas::mouseMoveEvent(QMouseEvent *event)
         update();
         return;
     }
-    if (m_previewLine) {
-        m_lineCurrent = event->pos();
-        update();
+    if (m_shapeDrag || (m_tool == Shapes && !m_polygonPts.isEmpty())) {
+        m_shapeCurrentC = toCanvasF(event->position());
+        update(); // live preview
         return;
     }
     if (m_brushStroke) {
@@ -812,11 +978,9 @@ void DrawingCanvas::mouseReleaseEvent(QMouseEvent *event)
         emit contentChanged();
         return;
     }
-    if (m_previewLine) {
-        m_previewLine = false;
-        pushUndo();
-        drawSegment(toCanvas(m_lineStart), toCanvas(event->pos()), m_color);
-        emit contentChanged();
+    if (m_shapeDrag && event->button() == Qt::LeftButton) {
+        m_shapeCurrentC = toCanvasF(event->position());
+        commitDragShape();
         return;
     }
     if (m_drawing) {
@@ -825,8 +989,20 @@ void DrawingCanvas::mouseReleaseEvent(QMouseEvent *event)
     }
 }
 
+void DrawingCanvas::mouseDoubleClickEvent(QMouseEvent *event)
+{
+    // Double-click closes the in-progress polygon. (Its own press already
+    // appended a vertex at this spot; commitPolygon() dedupes it.)
+    if (m_tool == Shapes && m_shapeKind == ShapePolygon && !m_polygonPts.isEmpty()
+        && event->button() == Qt::LeftButton) {
+        commitPolygon();
+        return;
+    }
+    QWidget::mouseDoubleClickEvent(event);
+}
+
 // Stylus input: real pressure for the Brush tool. Other tools ignore() so Qt
-// synthesizes ordinary mouse events for them (Pen/Line/Fill/Erase unchanged);
+// synthesizes ordinary mouse events for them (Shapes/Fill/Erase unchanged);
 // for Brush we accept() so the same stroke is NOT also delivered as a mouse
 // event (which would double-draw).
 void DrawingCanvas::tabletEvent(QTabletEvent *event)

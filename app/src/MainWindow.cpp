@@ -54,6 +54,14 @@ MainWindow::MainWindow(QWidget *parent)
     m_consistencyBoard->setEntries(&m_consistencyEntries);      // read-write
     m_generation->setConsistencyEntries(&m_consistencyEntries); // read-only
 
+    // Paste / Paste in Place enable once a panel lands on the clipboard.
+    connect(m_storyboard, &StoryboardPage::panelClipboardChanged, this, [this](bool available) {
+        if (m_pastePanelAct)
+            m_pastePanelAct->setEnabled(available);
+        if (m_pastePanelInPlaceAct)
+            m_pastePanelInPlaceAct->setEnabled(available);
+    });
+
     m_stack->addWidget(m_dashboard);        // index 0
     m_stack->addWidget(m_scriptEditor);     // index 1
     m_stack->addWidget(m_storyboard);       // index 2
@@ -151,6 +159,33 @@ void MainWindow::setupMenuBar()
     connect(m_saveAsAct, &QAction::triggered, this, &MainWindow::onSaveProjectAs);
 
     QMenu *editMenu = menuBar()->addMenu(QStringLiteral("Edit"));
+
+    // Panel clipboard (Storyboard page only). Focused text fields keep their
+    // native Ctrl+C/X/V: Qt's ShortcutOverride lets editors claim the keys
+    // before these window-level actions fire.
+    auto panelAction = [this, editMenu](const QString &text, const QKeySequence &shortcut,
+                                        void (StoryboardPage::*slot)()) {
+        QAction *action = editMenu->addAction(text);
+        action->setShortcut(shortcut);
+        connect(action, &QAction::triggered, this, [this, slot] {
+            if (m_stack && m_stack->currentWidget() == m_storyboard && m_storyboard)
+                (m_storyboard->*slot)();
+        });
+        return action;
+    };
+    panelAction(QStringLiteral("Copy"), QKeySequence::Copy,
+                &StoryboardPage::copySelectedPanel);
+    panelAction(QStringLiteral("Cut"), QKeySequence::Cut,
+                &StoryboardPage::cutSelectedPanel);
+    m_pastePanelAct = panelAction(QStringLiteral("Paste"), QKeySequence::Paste,
+                                  &StoryboardPage::pastePanelAfterSelected);
+    m_pastePanelInPlaceAct = panelAction(QStringLiteral("Paste in Place"),
+                                         QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_V),
+                                         &StoryboardPage::pastePanelInPlace);
+    m_pastePanelAct->setEnabled(false);        // until something is copied
+    m_pastePanelInPlaceAct->setEnabled(false); // (wired after m_storyboard exists)
+
+    editMenu->addSeparator();
     QAction *prefsAct = editMenu->addAction(QStringLiteral("Preferences..."));
     prefsAct->setShortcut(QKeySequence::Preferences);
     connect(prefsAct, &QAction::triggered, this, &MainWindow::onPreferences);

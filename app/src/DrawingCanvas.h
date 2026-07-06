@@ -4,6 +4,7 @@
 #include <QPixmap>
 #include <QPoint>
 #include <QPointF>
+#include <QVector>
 #include <QWidget>
 
 struct Layer;
@@ -21,10 +22,16 @@ class DrawingCanvas : public QWidget
 
 public:
     // Brush (the stamp-based pressure engine) is the single drawing tool;
-    // pen-like behaviour is a brush preset. Eraser/Line keep the classic
-    // QPainter stroke path. Camera is a non-drawing tool: selecting it only
-    // opens the Camera overlay panel; canvas clicks do nothing.
-    enum Tool { Brush, Eraser, Line, Fill, Camera };
+    // pen-like behaviour is a brush preset. Eraser keeps the classic
+    // QPainter stroke path. Shapes stamps geometric primitives (see
+    // ShapeKind). Camera is a non-drawing tool: selecting it only opens the
+    // Camera overlay panel; canvas clicks do nothing.
+    enum Tool { Brush, Eraser, Shapes, Fill, Camera };
+
+    // Shapes-tool primitives. Rectangle/Triangle/Circle/Line commit on drag
+    // release; Polygon collects clicked vertices until double-click/Enter
+    // closes it (Esc cancels).
+    enum ShapeKind { ShapeRectangle, ShapeTriangle, ShapeCircle, ShapeLine, ShapePolygon };
 
     explicit DrawingCanvas(QWidget *parent = nullptr);
 
@@ -57,6 +64,10 @@ public:
     void setActionSafeMaskOpacity(int percent); // action-safe amber
     void setTitleSafeMaskOpacity(int percent);  // title-safe blue
 
+    // Light alignment grid (View > Grid), display-only like the overlays.
+    void setGridEnabled(bool enabled);
+    bool isGridEnabled() const { return m_grid; }
+
 public slots:
     void setTool(Tool tool);
     void setColor(const QColor &color);
@@ -71,6 +82,11 @@ public slots:
     void setPressureToSize(bool on);
     void setPressureToOpacity(bool on);
 
+    // Shapes tool settings (Shapes options panel).
+    void setShapeKind(ShapeKind kind);   // cancels any in-progress shape
+    void setShapeStrokeWidth(int px);    // 1..100, canvas pixels
+    void setShapeFill(bool on);          // filled with the current colour
+
 signals:
     void contentChanged();
     void layersChanged(); // layer added/removed by the canvas (image import)
@@ -80,6 +96,7 @@ protected:
     void mousePressEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
     void mouseReleaseEvent(QMouseEvent *event) override;
+    void mouseDoubleClickEvent(QMouseEvent *event) override; // closes a polygon
     void tabletEvent(QTabletEvent *event) override;
     void wheelEvent(QWheelEvent *event) override;
     void keyPressEvent(QKeyEvent *event) override;
@@ -103,6 +120,12 @@ private:
     void drawSegment(const QPoint &from, const QPoint &to, const QColor &color);
     void floodFill(const QPoint &seed);
 
+    // Shapes tool: preview geometry lives in canvas coords until committed.
+    void paintShapeGeometry(QPainter &painter, bool closePolygon) const;
+    void commitDragShape(); // rectangle/triangle/circle/line, on release
+    void commitPolygon();   // on double-click/Enter; needs >= 3 vertices
+    void cancelShape();     // clears drag + polygon state, no artifacts
+
     // Stamp-based brush stroke pipeline (mouse pressure = 1.0; tablet = real).
     QPointF toCanvasF(const QPointF &widgetPoint) const; // float, unclamped
     void beginBrushStroke(const QPointF &canvasPt, qreal pressure);
@@ -117,9 +140,15 @@ private:
 
     bool m_drawing = false;
     QPoint m_lastCanvas;     // last freehand point, canvas coords
-    bool m_previewLine = false;
-    QPoint m_lineStart;      // widget coords
-    QPoint m_lineCurrent;    // widget coords
+
+    // Shapes tool state. Preview-only until committed to the active layer.
+    ShapeKind m_shapeKind = ShapeRectangle;
+    int m_shapeStroke = 4;         // stroke width, canvas px (1..100)
+    bool m_shapeFill = false;      // OFF = outline only
+    bool m_shapeDrag = false;      // drag-defined shape in progress
+    QPointF m_shapeStartC;         // canvas coords
+    QPointF m_shapeCurrentC;       // canvas coords (drag end / polygon rubber)
+    QVector<QPointF> m_polygonPts; // in-progress polygon vertices, canvas coords
 
     // Brush engine state. Defaults mirror the initial settings-panel values.
     int m_brushToolSize = 25;        // dab diameter, canvas px
@@ -147,6 +176,7 @@ private:
     QPushButton *m_zoomInButton = nullptr;
 
     // Display-only overlays.
+    bool m_grid = false;         // alignment grid, 40 canvas px (View > Grid)
     bool m_cameraFrame = true;   // 16:9 framing + dim outside (ON by default)
     bool m_safeArea = false;     // action safe, 5% inset
     bool m_titleSafe = false;    // title safe, 10% inset

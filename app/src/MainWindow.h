@@ -56,4 +56,7 @@ private:
 
     QAction *m_saveAct = nullptr;
     QAction *m_saveAsAct = nullptr;
+    // Edit-menu panel clipboard actions (enabled once a panel is copied).
+    QAction *m_pastePanelAct = nullptr;
+    QAction *m_pastePanelInPlaceAct = nullptr;
 };

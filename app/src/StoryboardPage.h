@@ -1,6 +1,8 @@
 #pragma once
 
+#include <QHash>
 #include <QPoint>
+#include <QSet>
 #include <QVector>
 #include <QWidget>
 
@@ -53,7 +55,17 @@ public:
     void setActionSafeMaskOpacity(int percent);
     void setTitleSafeMaskOpacity(int percent);
 
+    // Edit-menu panel clipboard. Copy stores an owned deep copy; paste
+    // inserts a fresh clone (new layer UUIDs) each time. Cut is blocked on a
+    // scene's last panel, same rule as Delete.
+    void copySelectedPanel();
+    void cutSelectedPanel();
+    void pastePanelAfterSelected(); // Ctrl+V: after the selected panel
+    void pastePanelInPlace();       // Ctrl+Shift+V: at the copied-from position
+    bool hasPanelClipboard() const { return m_panelClipboard != nullptr; }
+
 signals:
+    void panelClipboardChanged(bool available); // enables the paste actions
     void backRequested();
     void continueToAnimaticRequested(const QVector<Scene *> &scenes);
     void consistencyBoardRequested();
@@ -68,10 +80,14 @@ private:
     QWidget *createRightColumn();
     QWidget *createLayerPanel();
     void createFloatingToolbar();   // pill toolbar floating over the canvas
-    QPoint clampedToolbarPos(const QPoint &pos) const; // keep pill inside the canvas
+    QPoint clampedFloatPos(const QWidget *panel, const QPoint &pos) const;
     void positionFloatingToolbar(); // restore persisted position / re-clamp on resize
-    QWidget *createBrushSettings(); // side panel shown while the Brush tool is active
-    QWidget *createCameraPanel();   // side panel shown while the Camera tool is active
+    // Floating overlay panel: dock-style header (title + Close only),
+    // draggable by the header, child of the canvas.
+    QWidget *createFloatingPanel(const QString &title, QWidget *body);
+    QWidget *createBrushSettings(); // floating panel shown while Brush is active
+    QWidget *createCameraPanel();   // floating panel shown while Camera is active
+    QWidget *createShapesPanel();   // floating panel shown while Shapes is active
     QWidget *createBottomBar();
     void applyBrushPreset(int size, int opacityPct, int hardnessPct,
                           bool pressureSize, bool pressureOpacity);
@@ -119,6 +135,8 @@ private:
     void movePanelBy(int delta);           // keyboard: -1 left, +1 right
 
     void duplicatePanel();                 // copy current panel, insert after it
+    static Panel *clonePanel(const Panel *source); // deep copy, fresh layer UUIDs
+    void insertPanelClone(const Panel *panel, int insertAt); // into the current scene
     void importImageToPanel();             // file dialog -> canvas->importImage
     void updateDuplicateButton();          // enable panel-action buttons when a panel is selected
 
@@ -129,6 +147,12 @@ private:
     const QVector<ConsistencyEntry> *m_consistencyEntries = nullptr; // read-only
     int m_currentScene = -1;
     int m_currentPanel = -1;
+
+    // Edit-menu panel clipboard: owned deep copy plus the position it was
+    // copied from (for Paste in Place).
+    Panel *m_panelClipboard = nullptr;
+    int m_clipboardSceneIndex = -1;
+    int m_clipboardPanelIndex = -1;
 
     // ADS dock manager: the canvas area is its central widget; Scenes,
     // Layers, and Shot Info are native ADS dock widgets around it.
@@ -157,18 +181,24 @@ private:
     SankoSlider *m_brushHardnessSlider = nullptr;
     // Camera panel (visible only while the Camera tool is active).
     QWidget *m_cameraPanel = nullptr;
-    // Floating pill toolbar (child of the canvas, dragged by the dot grip).
+    // Shapes panel (visible only while the Shapes tool is active).
+    QWidget *m_shapesPanel = nullptr;
+    // Floating overlays (children of the canvas): the pill toolbar plus the
+    // Brush Options / Camera panels. Registered grips/headers drag their
+    // panel; registered bodies just swallow events (see eventFilter).
     QWidget *m_floatToolbar = nullptr;
-    QWidget *m_toolbarHandle = nullptr;
-    bool m_toolbarDragging = false;
-    bool m_toolbarPosRestored = false; // QSettings position applied once
-    QPoint m_toolbarDragStart;         // global cursor pos at press
-    QPoint m_toolbarStartPos;          // toolbar pos at press
+    bool m_toolbarPosRestored = false;              // QSettings position applied once
+    QHash<QObject *, QWidget *> m_floatDragSources; // grip/header -> panel it moves
+    QSet<QObject *> m_floatEventBlockers;           // bodies: consume, never draw
+    QWidget *m_floatDragPanel = nullptr;            // panel being dragged now
+    QPoint m_floatDragStart;                        // global cursor pos at press
+    QPoint m_floatStartPos;                         // panel pos at press
     QCheckBox *m_pressureSizeCheck = nullptr;
     QCheckBox *m_pressureOpacityCheck = nullptr;
     // Fixed control column (left of the panel strip).
     QPushButton *m_addPanelButton = nullptr;
     QPushButton *m_dupPanelButton = nullptr;
+    QPushButton *m_clearPanelButton = nullptr; // clears the drawing, asks first
     QPushButton *m_deletePanelButton = nullptr;
 
     // Drag-reorder state.
