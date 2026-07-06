@@ -145,6 +145,10 @@ private:
     // clear, copy, and cut all index that same mask so their coverage is
     // pixel-identical (never the bounding box for ellipse/lasso).
     QImage selectionMask(const QRect &boundingRect) const;
+    // Clamp a drag delta so the floating buffer stays fully inside the
+    // canvas: QPainter::drawImage clips at the layer bounds, so committing
+    // with any part hanging off-canvas would DESTROY those pixels.
+    QPointF clampFloatDelta(const QPointF &delta) const;
     void liftSelection(const QPointF &grabCanvasPt); // selection -> floating (undo pushed)
     void commitFloating();      // stamp floating pixels into the active layer
     void cancelFloatingPaste(); // Esc on a floating paste: discard, no artifacts

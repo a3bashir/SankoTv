@@ -583,6 +583,24 @@ QRectF DrawingCanvas::floatBounds() const
     return QRectF(m_floatPos + m_floatDelta, QSizeF(m_floatImg.size()));
 }
 
+// The floating buffer always originated on-canvas, so it always FITS
+// on-canvas: clamp its position so no part ever hangs past an edge. Without
+// this, the commit's drawImage() clips at the layer bounds and any
+// overhanging pixels are permanently destroyed — the "eaten corners" bug.
+// Applied to the drag preview AND the commit, so preview == commit.
+QPointF DrawingCanvas::clampFloatDelta(const QPointF &delta) const
+{
+    if (m_floatImg.isNull())
+        return delta;
+    const QSize cs = canvasSize();
+    const QPointF target = m_floatPos + delta;
+    const qreal maxX = qMax<qreal>(0.0, cs.width() - m_floatImg.width());
+    const qreal maxY = qMax<qreal>(0.0, cs.height() - m_floatImg.height());
+    const QPointF clamped(qBound<qreal>(0.0, target.x(), maxX),
+                          qBound<qreal>(0.0, target.y(), maxY));
+    return clamped - m_floatPos;
+}
+
 // The selection path rasterized once into a hard-edged binary mask (alpha
 // strictly 0 or 255), in boundingRect-local coordinates. DestinationIn with
 // it KEEPS exactly the masked pixels; DestinationOut CLEARS exactly the same
@@ -650,7 +668,6 @@ void DrawingCanvas::pasteClipboard(bool atOriginalPos)
     m_floatFromPaste = true;
     m_floatUndoPushed = false; // paste pushes undo at commit time
     m_floatImg = m_clipImg;
-    m_floatDelta = QPointF();
     if (atOriginalPos) {
         m_floatPos = m_clipPos; // integral: captured from an aligned rect
     } else {
@@ -658,6 +675,7 @@ void DrawingCanvas::pasteClipboard(bool atOriginalPos)
         const QPointF raw = viewCentre - QPointF(m_clipImg.width() / 2.0, m_clipImg.height() / 2.0);
         m_floatPos = QPointF(qRound(raw.x()), qRound(raw.y())); // stay pixel-aligned
     }
+    m_floatDelta = clampFloatDelta(QPointF()); // never spawn hanging off-canvas
     m_selPath = QPainterPath(); // the floating outline replaces the selection
     m_selDrag = false;
     m_lassoPts.clear();
@@ -726,8 +744,10 @@ void DrawingCanvas::commitFloating()
         if (!m_floatUndoPushed)
             pushUndo(); // paste: snapshot now; move already snapshot at lift
         // ONE composite at the final, pixel-aligned position — the layer was
-        // last written at the lift; nothing touched it during the drag.
-        const QPointF target = m_floatPos + m_floatDelta;
+        // last written at the lift; nothing touched it during the drag. The
+        // clamp guarantees the whole buffer lands inside the layer image, so
+        // drawImage() cannot discard any of it at the canvas edge.
+        const QPointF target = m_floatPos + clampFloatDelta(m_floatDelta);
         const QPoint aligned(qRound(target.x()), qRound(target.y()));
         QPainter p(&layer->image);
         p.drawImage(aligned, m_floatImg);
@@ -1302,9 +1322,10 @@ void DrawingCanvas::mouseMoveEvent(QMouseEvent *event)
     if (m_floatDragging) {
         // Whole-pixel deltas only: the preview matches the commit exactly and
         // the blit never resamples (fractional offsets would smear edges and
-        // leave half-alpha trails on every subsequent lift).
+        // leave half-alpha trails on every subsequent lift). Clamped so the
+        // buffer can never hang off-canvas — see clampFloatDelta().
         const QPointF raw = m_floatGrabDelta + (toCanvasF(event->position()) - m_floatGrabC);
-        m_floatDelta = QPointF(qRound(raw.x()), qRound(raw.y()));
+        m_floatDelta = clampFloatDelta(QPointF(qRound(raw.x()), qRound(raw.y())));
         update(); // display-only: the layer is untouched until commit
         return;
     }
@@ -1356,7 +1377,12 @@ void DrawingCanvas::mouseReleaseEvent(QMouseEvent *event)
         m_selDrag = false;
         m_selCurrentC = toCanvasF(event->position());
         QPainterPath path;
-        const QRectF box = QRectF(m_selStartC, m_selCurrentC).normalized();
+        // Snap rect/ellipse bounds to the pixel grid: the ants outline, the
+        // mask, and the lifted pixels then agree EXACTLY (a fractional
+        // outline shaves up to 1px of boundary art off the lift).
+        const QRectF raw = QRectF(m_selStartC, m_selCurrentC).normalized();
+        const QRectF box(QPointF(qRound(raw.left()), qRound(raw.top())),
+                         QPointF(qRound(raw.right()), qRound(raw.bottom())));
         if (m_tool == SelectRect && (box.width() >= 2.0 || box.height() >= 2.0)) {
             path.addRect(box);
         } else if (m_tool == SelectEllipse && (box.width() >= 2.0 || box.height() >= 2.0)) {
