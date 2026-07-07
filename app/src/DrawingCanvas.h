@@ -210,6 +210,10 @@ private:
     QImage m_moveMask;             // selection mask, bounding-rect-local
     QRect m_moveSrcRect;           // selection bounding rect at move start
 
+    // Visual debug: dump the move-pipeline stages to C:\SankoTv\app\debug\.
+    bool m_debugMove = true;
+    void dumpMoveDebug(const QString &name, const QImage &img, bool checker) const;
+
     // Canvas clipboard (Edit menu Copy/Cut/Paste on the selection).
     QImage m_clipImg;              // copied pixels, tight bounding rect
     QPointF m_clipPos;             // canvas position they came from

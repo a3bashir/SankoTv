@@ -2,6 +2,7 @@
 
 #include "StoryboardModel.h"
 
+#include <QDir>
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QFileInfo>
@@ -685,6 +686,32 @@ void DrawingCanvas::pasteClipboard(bool atOriginalPos)
     update();
 }
 
+// Save a move-pipeline stage to C:\SankoTv\app\debug\. `checker` composites
+// the (alpha) image over a checkerboard so transparent regions and clipped
+// edges are visible; otherwise the raw image is saved.
+void DrawingCanvas::dumpMoveDebug(const QString &name, const QImage &img, bool checker) const
+{
+    if (!m_debugMove || img.isNull())
+        return;
+    const QString dir = QStringLiteral("C:/SankoTv/app/debug");
+    QDir().mkpath(dir);
+    QImage out = img.convertToFormat(QImage::Format_ARGB32);
+    if (checker) {
+        QImage bg(out.size(), QImage::Format_ARGB32);
+        const int cell = 8;
+        for (int y = 0; y < bg.height(); ++y)
+            for (int x = 0; x < bg.width(); ++x) {
+                const bool dark = ((x / cell) + (y / cell)) & 1;
+                bg.setPixel(x, y, dark ? qRgb(0x60, 0x60, 0x60) : qRgb(0xa0, 0xa0, 0xa0));
+            }
+        QPainter p(&bg);
+        p.drawImage(0, 0, out);
+        p.end();
+        out = bg;
+    }
+    out.save(dir + QLatin1Char('/') + name);
+}
+
 // MOUSE DOWN of a move. Steps 1-4 of the move algorithm:
 //   1) build the selection mask,
 //   2) copy the masked pixels into the floating buffer (complete, sized to
@@ -711,6 +738,11 @@ void DrawingCanvas::beginMoveDrag(const QPointF &grabCanvasPt)
     }
 
     m_layerBackup = layer->image.copy(); // 3) pristine pre-move snapshot
+
+    // Visual debug: the lifted buffer (on a checkerboard so its true extent
+    // and any clipping are visible) and the full pre-move layer.
+    dumpMoveDebug(QStringLiteral("debug_1_floatBuffer.png"), m_floatImg, true);
+    dumpMoveDebug(QStringLiteral("debug_2_layerBackup.png"), m_layerBackup, false);
 
     // 4) the layer itself stays untouched until mouse up.
     m_moveActive = true;
@@ -747,18 +779,22 @@ void DrawingCanvas::commitMoveDrag()
             clearPainter.setCompositionMode(QPainter::CompositionMode_DestinationOut);
             clearPainter.drawImage(m_moveSrcRect.topLeft(), m_moveMask);
         }
+        dumpMoveDebug(QStringLiteral("debug_3_afterClear.png"), result, false);
 
         // 9) paste the buffer at the final dragged position, SourceOver.
-        //    No clip of any kind is set — QPainter limits the paste only at
-        //    the actual image (canvas) bounds. Because the result starts
-        //    from the backup with the source cleared first, moving onto the
-        //    selection's own former area preserves every pixel.
-        const QPointF target = m_floatPos + m_floatDelta;
+        //    The position is CLAMPED so the whole buffer lands inside the
+        //    canvas — the layer is exactly canvas-sized, so any overhang
+        //    would be clipped and DESTROYED (debug_4). Clamping preserves
+        //    every pixel (the stated goal); the art parks flush at the edge.
+        //    No selection-rect clip is applied. Starting from the backup with
+        //    the source cleared first, moving onto the former area is safe.
+        const QPointF target = m_floatPos + clampFloatDelta(m_floatDelta);
         const QPoint aligned(qRound(target.x()), qRound(target.y()));
         {
             QPainter pastePainter(&result);
             pastePainter.drawImage(aligned, m_floatImg);
         }
+        dumpMoveDebug(QStringLiteral("debug_4_final.png"), result, false);
 
         // 11) ONE undo entry for the whole move: the layer still holds the
         //     pre-move image right now, so this snapshot IS the original.
@@ -1356,12 +1392,14 @@ void DrawingCanvas::mouseMoveEvent(QMouseEvent *event)
         return;
     }
     if (m_floatDragging) {
-        // Whole-pixel deltas only: the preview matches the commit exactly and
-        // the blit never resamples. The offset is unrestricted — nothing is
-        // written to the layer during the drag, so transiting past a canvas
-        // edge loses nothing; the commit is limited only by canvas bounds.
+        // Whole-pixel deltas, CLAMPED so the buffer stays fully on-canvas.
+        // The layer is exactly canvas-sized: pixels released past an edge
+        // cannot be stored and drawImage() would destroy them at commit (the
+        // "eaten corner" — proven by debug_4). Clamping keeps the moved art
+        // flush against the edge instead, so it survives a round trip. The
+        // preview uses the SAME clamp, so preview == commit.
         const QPointF raw = m_floatGrabDelta + (toCanvasF(event->position()) - m_floatGrabC);
-        m_floatDelta = QPointF(qRound(raw.x()), qRound(raw.y()));
+        m_floatDelta = clampFloatDelta(QPointF(qRound(raw.x()), qRound(raw.y())));
         update(); // display-only: the layer is untouched until commit
         return;
     }
