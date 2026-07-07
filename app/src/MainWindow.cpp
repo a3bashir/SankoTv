@@ -647,6 +647,10 @@ bool MainWindow::loadFromPath(const QString &path)
             panel->activeLayerIndex =
                 qBound(0, panelObj.value(QStringLiteral("activeLayerIndex")).toInt(0),
                        panel->layers.size() - 1);
+            // Ensure a locked white Background beneath transparent art layers.
+            // Idempotent: files already saved in the new format are untouched;
+            // legacy opaque-white canvases are migrated without losing art.
+            migratePanelToBackground(panel);
 
             scene->panels.append(panel);
         }

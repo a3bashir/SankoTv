@@ -2490,6 +2490,8 @@ void StoryboardPage::layerDelete()
     Panel *panel = currentPanel();
     if (!panel || panel->layers.size() <= 1)
         return; // the last remaining layer can never be deleted
+    if (panel->layers.at(panel->activeLayerIndex).type == QLatin1String("background"))
+        return; // the Background layer is permanent
     panel->layers.removeAt(panel->activeLayerIndex);
     panel->activeLayerIndex = qBound(0, panel->activeLayerIndex, panel->layers.size() - 1);
     refreshLayerCanvas();
@@ -2504,6 +2506,8 @@ void StoryboardPage::layerMergeDown()
         return;
 
     const int idx = panel->activeLayerIndex;
+    if (panel->layers.at(idx - 1).type == QLatin1String("background"))
+        return; // don't bake art into the Background (keeps it a clean paper layer)
     Layer &below = panel->layers[idx - 1];
     const Layer &top = panel->layers.at(idx);
 

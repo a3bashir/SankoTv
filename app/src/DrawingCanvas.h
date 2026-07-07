@@ -211,7 +211,8 @@ private:
     QRect m_moveSrcRect;           // selection bounding rect at move start
 
     // Visual debug: dump the move-pipeline stages to C:\SankoTv\app\debug\.
-    bool m_debugMove = true;
+    // Off in shipped builds; flip to true to re-inspect the move stages.
+    bool m_debugMove = false;
     void dumpMoveDebug(const QString &name, const QImage &img, bool checker) const;
 
     // Canvas clipboard (Edit menu Copy/Cut/Paste on the selection).
