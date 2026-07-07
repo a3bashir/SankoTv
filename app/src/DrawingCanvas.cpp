@@ -128,6 +128,29 @@ DrawingCanvas::DrawingCanvas(QWidget *parent)
         m_antsPhase = (m_antsPhase + 1) % 8;
         update();
     });
+
+    // Rotate cursor for the transform box's rotation zones (a curved arrow).
+    {
+        QPixmap pm(24, 24);
+        pm.fill(Qt::transparent);
+        QPainter p(&pm);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        QPen pen(Qt::white, 2.4);
+        pen.setCapStyle(Qt::RoundCap);
+        for (int pass = 0; pass < 2; ++pass) {   // white halo, then black stroke
+            pen.setColor(pass ? QColor(20, 20, 20) : Qt::white);
+            pen.setWidthF(pass ? 1.4 : 2.6);
+            p.setPen(pen);
+            p.setBrush(Qt::NoBrush);
+            p.drawArc(QRectF(5, 5, 14, 14), 40 * 16, 260 * 16); // ~C-shaped arc
+            p.setPen(Qt::NoPen);
+            p.setBrush(pass ? QColor(20, 20, 20) : Qt::white);
+            p.drawPolygon(QPolygonF({QPointF(18.5, 5.5), QPointF(22.0, 8.5),
+                                     QPointF(16.5, 9.5)}));       // arrowhead
+        }
+        p.end();
+        m_rotateCursor = QCursor(pm, 12, 12);
+    }
 }
 
 QSize DrawingCanvas::canvasSize()
@@ -137,6 +160,8 @@ QSize DrawingCanvas::canvasSize()
 
 void DrawingCanvas::setActivePanel(Panel *panel)
 {
+    if (m_xformActive)
+        commitTransform(); // finalise onto the CURRENT layer before switching
     m_panel = panel;
     m_drawing = false;
     cancelShape(); // preview state never carries across panels
@@ -257,9 +282,14 @@ bool DrawingCanvas::importImage(const QString &filePath)
 void DrawingCanvas::setTool(Tool tool)
 {
     commitFloating(); // an un-committed paste lands before the tool changes
+    if (m_xformActive && tool != Move)
+        commitTransform(); // leaving Move finalises the transform box
     m_tool = tool;
     cancelShape(); // an in-progress shape never survives a tool switch
-    update();      // the selection itself DOES survive (Select -> Move flow)
+    // Activating Move with a live selection lifts it into the transform box.
+    if (tool == Move && !m_xformActive && !m_selPath.isEmpty())
+        beginTransform();
+    update(); // the selection itself DOES survive (Select -> Move flow)
 }
 
 void DrawingCanvas::setShapeKind(ShapeKind kind)
@@ -566,6 +596,8 @@ void DrawingCanvas::cancelShape()
 
 void DrawingCanvas::clearSelection()
 {
+    if (m_xformActive)
+        cancelTransform(); // deselecting mid-transform discards it (restores backup)
     m_selPath = QPainterPath();
     m_selDrag = false;
     m_lassoPts.clear();
@@ -848,6 +880,262 @@ void DrawingCanvas::cancelFloatingPaste()
     m_floatImg = QImage();
     updateAntsTimer();
     update();
+}
+
+// --- Non-destructive transform box (Move tool) ------------------------------
+
+namespace {
+// Rotate a vector by `deg` degrees (no translation).
+inline QPointF rotVec(qreal deg, const QPointF &v)
+{
+    return QTransform().rotate(deg).map(v);
+}
+constexpr qreal kMinBox = 4.0; // smallest box extent, canvas px (avoids collapse)
+} // namespace
+
+// ACTIVATING Move with a selection: lift the masked pixels into the pristine
+// transform buffer, snapshot the whole layer, clear the source once so the
+// preview shows the art lifted out, and initialise an axis-aligned box.
+void DrawingCanvas::beginTransform()
+{
+    Layer *layer = editableActiveLayer();
+    if (!layer || m_selPath.isEmpty())
+        return;
+    const QRect r = m_selPath.boundingRect().toAlignedRect().intersected(layer->image.rect());
+    if (r.isEmpty())
+        return;
+
+    m_moveMask = selectionMask(r);
+    m_moveSrcRect = r;
+
+    m_transformBuf = layer->image.copy(r); // PRISTINE lifted pixels (never re-transformed)
+    {
+        QPainter p(&m_transformBuf);
+        p.setCompositionMode(QPainter::CompositionMode_DestinationIn);
+        p.drawImage(0, 0, m_moveMask);
+    }
+
+    m_layerBackup = layer->image.copy(); // for commit rebuild + Esc restore
+
+    {
+        QPainter c(&layer->image); // clear the source once (preview shows it gone)
+        c.setCompositionMode(QPainter::CompositionMode_DestinationOut);
+        c.drawImage(r.topLeft(), m_moveMask);
+    }
+
+    m_boxCenter = QRectF(r).center();
+    m_boxW = r.width();
+    m_boxH = r.height();
+    m_boxAngle = 0.0;
+    m_xformActive = true;
+    m_xformMode = XNone;
+    setMouseTracking(true); // hover updates the scale/rotate cursor
+    updateAntsTimer();
+    update();
+}
+
+// Maps the pristine buffer (0..srcW, 0..srcH) onto the current box in CANVAS
+// coordinates: recentre, rotate, scale — always from the ORIGINAL buffer.
+QTransform DrawingCanvas::boxTransform() const
+{
+    const qreal srcW = m_moveSrcRect.width();
+    const qreal srcH = m_moveSrcRect.height();
+    QTransform t;
+    t.translate(m_boxCenter.x(), m_boxCenter.y());
+    t.rotate(m_boxAngle);
+    if (srcW > 0.0 && srcH > 0.0)
+        t.scale(m_boxW / srcW, m_boxH / srcH);
+    t.translate(-srcW / 2.0, -srcH / 2.0);
+    return t;
+}
+
+// The 8 handle points (4 corners + 4 edge midpoints) in canvas coordinates,
+// ordered TL, TR, BR, BL, T, R, B, L.
+QVector<QPointF> DrawingCanvas::boxHandlesCanvas() const
+{
+    const qreal hw = m_boxW / 2.0, hh = m_boxH / 2.0;
+    const QPointF local[8] = {
+        {-hw, -hh}, {hw, -hh}, {hw, hh}, {-hw, hh}, // corners
+        {0, -hh}, {hw, 0}, {0, hh}, {-hw, 0}};      // edge mids
+    QVector<QPointF> pts;
+    pts.reserve(8);
+    for (const QPointF &l : local)
+        pts.append(m_boxCenter + rotVec(m_boxAngle, l));
+    return pts;
+}
+
+// Which part of the box the widget-space point is over. Handles/rotation zones
+// use constant SCREEN tolerances so they stay grabbable at any zoom.
+DrawingCanvas::XformMode DrawingCanvas::hitTestBox(const QPointF &widgetPos) const
+{
+    if (!m_xformActive)
+        return XNone;
+    const QRect d = displayRect();
+    const double s = scale();
+    const QTransform toWidget =
+        QTransform().translate(d.left(), d.top()).scale(s, s);
+
+    const QVector<QPointF> handles = boxHandlesCanvas();
+    const XformMode order[8] = {XScaleTL, XScaleTR, XScaleBR, XScaleBL,
+                                XScaleT, XScaleR, XScaleB, XScaleL};
+    const qreal handleTol = 8.0;  // px
+    const qreal rotateTol = 22.0; // px, just outside the corners
+
+    // Handles first (corners take priority over edges via ordering).
+    for (int i = 0; i < 8; ++i) {
+        const QPointF w = toWidget.map(handles.at(i));
+        if (QLineF(w, widgetPos).length() <= handleTol)
+            return order[i];
+    }
+    // Inside the box body -> move.
+    QPolygonF poly;
+    for (int i = 0; i < 4; ++i)
+        poly << toWidget.map(handles.at(i));
+    if (poly.containsPoint(widgetPos, Qt::OddEvenFill))
+        return XMove;
+    // Just outside a corner -> rotate.
+    for (int i = 0; i < 4; ++i) {
+        const QPointF w = toWidget.map(handles.at(i));
+        if (QLineF(w, widgetPos).length() <= rotateTol)
+            return XRotate;
+    }
+    return XNone;
+}
+
+// Recompute the box from the press-time snapshot (never from the running
+// result) for the active handle. proportional keeps the aspect ratio.
+void DrawingCanvas::applyXformDrag(const QPointF &canvasPos, bool proportional)
+{
+    switch (m_xformMode) {
+    case XMove:
+        m_boxCenter = m_boxCenter0 + (canvasPos - m_dragStartCanvas);
+        break;
+    case XRotate: {
+        const qreal now = std::atan2(canvasPos.y() - m_boxCenter0.y(),
+                                     canvasPos.x() - m_boxCenter0.x());
+        const qreal deltaDeg = (now - m_rotStart0) * 180.0 / M_PI;
+        m_boxAngle = m_boxAngle0 + deltaDeg;
+        break;
+    }
+    default: {
+        // Scale. Signs of the dragged handle in the box's local frame.
+        qreal hx = 0, hy = 0;
+        switch (m_xformMode) {
+        case XScaleTL: hx = -1; hy = -1; break;
+        case XScaleTR: hx = 1;  hy = -1; break;
+        case XScaleBL: hx = -1; hy = 1;  break;
+        case XScaleBR: hx = 1;  hy = 1;  break;
+        case XScaleT:  hy = -1; break;
+        case XScaleB:  hy = 1;  break;
+        case XScaleL:  hx = -1; break;
+        case XScaleR:  hx = 1;  break;
+        default: return;
+        }
+        const qreal hw0 = m_boxW0 / 2.0, hh0 = m_boxH0 / 2.0;
+        // The anchor is the OPPOSITE handle; it stays fixed during the scale.
+        const QPointF anchor =
+            m_boxCenter0 + rotVec(m_boxAngle0, QPointF(-hx * hw0, -hy * hh0));
+        // Cursor in the anchor's axis-aligned frame.
+        const QPointF cur = rotVec(-m_boxAngle0, canvasPos - anchor);
+        qreal newW = (hx != 0.0) ? qMax(kMinBox, qAbs(cur.x())) : m_boxW0;
+        qreal newH = (hy != 0.0) ? qMax(kMinBox, qAbs(cur.y())) : m_boxH0;
+        if (proportional && hx != 0.0 && hy != 0.0) {
+            const qreal f = qMax(newW / m_boxW0, newH / m_boxH0);
+            newW = m_boxW0 * f;
+            newH = m_boxH0 * f;
+        }
+        // New centre = anchor + half the new box toward the dragged handle;
+        // along a free (edge) axis the centre keeps its original projection.
+        const QPointF center0Local = rotVec(-m_boxAngle0, m_boxCenter0 - anchor);
+        const qreal offx = (hx != 0.0) ? hx * newW / 2.0 : center0Local.x();
+        const qreal offy = (hy != 0.0) ? hy * newH / 2.0 : center0Local.y();
+        m_boxCenter = anchor + rotVec(m_boxAngle0, QPointF(offx, offy));
+        m_boxW = newW;
+        m_boxH = newH;
+        m_boxAngle = m_boxAngle0;
+        break;
+    }
+    }
+    update();
+}
+
+void DrawingCanvas::updateXformCursor(XformMode mode)
+{
+    switch (mode) {
+    case XMove:    setCursor(Qt::SizeAllCursor); break;
+    case XRotate:  setCursor(m_rotateCursor); break;
+    case XScaleTL:
+    case XScaleBR: setCursor(Qt::SizeFDiagCursor); break;
+    case XScaleTR:
+    case XScaleBL: setCursor(Qt::SizeBDiagCursor); break;
+    case XScaleT:
+    case XScaleB:  setCursor(Qt::SizeVerCursor); break;
+    case XScaleL:
+    case XScaleR:  setCursor(Qt::SizeHorCursor); break;
+    default:       setCursor(Qt::CrossCursor); break;
+    }
+}
+
+// Bake the transformed buffer into the layer ONCE (start from the pristine
+// backup, clear the source, paste the transformed buffer clipped only by the
+// canvas). Exactly one undo entry = the pristine pre-transform layer.
+void DrawingCanvas::commitTransform()
+{
+    if (!m_xformActive)
+        return;
+    m_xformActive = false;
+    m_xformMode = XNone;
+    setMouseTracking(false);
+
+    Layer *layer = editableActiveLayer();
+    if (layer && !m_layerBackup.isNull()) {
+        layer->image = m_layerBackup; // restore pristine so the undo snapshot is the original
+        pushUndo();
+
+        QImage result = m_layerBackup;
+        {
+            QPainter c(&result);
+            c.setCompositionMode(QPainter::CompositionMode_DestinationOut);
+            c.drawImage(m_moveSrcRect.topLeft(), m_moveMask); // clear source
+        }
+        {
+            QPainter p(&result); // paste the transformed buffer (canvas-bounded)
+            p.setRenderHint(QPainter::SmoothPixmapTransform, true);
+            p.setRenderHint(QPainter::Antialiasing, true);
+            p.setTransform(boxTransform()); // buffer -> canvas; result IS canvas-sized
+            p.drawImage(0, 0, m_transformBuf);
+        }
+        layer->image = result;
+        emit contentChanged();
+    }
+
+    m_transformBuf = QImage();
+    m_layerBackup = QImage();
+    m_moveMask = QImage();
+    clearSelection(); // box + selection gone after a commit
+    setCursor(Qt::CrossCursor);
+    update();
+}
+
+void DrawingCanvas::cancelTransform()
+{
+    if (!m_xformActive)
+        return;
+    m_xformActive = false;
+    m_xformMode = XNone;
+    setMouseTracking(false);
+
+    Layer *layer = editableActiveLayer();
+    if (layer && !m_layerBackup.isNull())
+        layer->image = m_layerBackup; // restore EXACTLY, discard the transform
+
+    m_transformBuf = QImage();
+    m_layerBackup = QImage();
+    m_moveMask = QImage();
+    setCursor(Qt::CrossCursor);
+    updateAntsTimer(); // the selection outline remains
+    update();
+    emit contentChanged();
 }
 
 void DrawingCanvas::floodFill(const QPoint &seed)
@@ -1170,11 +1458,49 @@ void DrawingCanvas::paintEvent(QPaintEvent *)
         painter.restore();
     }
 
+    // Non-destructive transform preview: the PRISTINE buffer rendered through
+    // the current box transform (smooth, antialiased), plus the bounding box
+    // and its 8 handles. The layer is untouched until commit.
+    if (m_xformActive && !m_transformBuf.isNull()) {
+        const QTransform canvasToWidget =
+            QTransform().translate(d.left(), d.top()).scale(scale(), scale());
+
+        painter.save();
+        painter.setClipRect(d);
+        painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        painter.setWorldTransform(boxTransform() * canvasToWidget); // buffer -> canvas -> widget
+        painter.drawImage(0, 0, m_transformBuf);
+        painter.restore();
+
+        // Box outline + handles in WIDGET space (constant screen size).
+        painter.save();
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        const QVector<QPointF> h = boxHandlesCanvas();
+        QVector<QPointF> hw;
+        for (const QPointF &c : h)
+            hw.append(canvasToWidget.map(c));
+        QPolygonF outline;
+        outline << hw.at(0) << hw.at(1) << hw.at(2) << hw.at(3); // corners
+        painter.setBrush(Qt::NoBrush);
+        painter.setPen(QPen(QColor(0, 0, 0, 120), 3));   // dark halo
+        painter.drawPolygon(outline);
+        painter.setPen(QPen(QColor(0xf5, 0xa6, 0x23), 1)); // amber box
+        painter.drawPolygon(outline);
+        for (const QPointF &p : hw) {                    // 8 handle squares
+            const QRectF sq(p.x() - 4, p.y() - 4, 8, 8);
+            painter.setBrush(Qt::white);
+            painter.setPen(QPen(QColor(0x33, 0x33, 0x33), 1));
+            painter.drawRect(sq);
+        }
+        painter.restore();
+    }
+
     // Marching ants: the selection outline (translated while its pixels are
     // mid-move), the in-progress selection drag, or the floating paste
     // bounds. White underlay + animated black dashes; cosmetic pens stay
-    // 1px at any zoom.
-    if (!m_selPath.isEmpty() || m_selDrag || m_floatActive) {
+    // 1px at any zoom. Suppressed while the transform box owns the selection.
+    if (!m_xformActive && (!m_selPath.isEmpty() || m_selDrag || m_floatActive)) {
         painter.save();
         painter.setRenderHint(QPainter::Antialiasing, true);
         painter.setClipRect(d);
@@ -1230,6 +1556,17 @@ void DrawingCanvas::wheelEvent(QWheelEvent *event)
 
 void DrawingCanvas::keyPressEvent(QKeyEvent *event)
 {
+    // Transform box: Enter commits (bakes once), Esc cancels (restores).
+    if (m_xformActive) {
+        if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) {
+            commitTransform();
+            return;
+        }
+        if (event->key() == Qt::Key_Escape) {
+            cancelTransform();
+            return;
+        }
+    }
     // Shapes: Enter closes the in-progress polygon, Esc cancels any
     // in-progress shape without leaving artifacts.
     if (m_tool == Shapes) {
@@ -1304,6 +1641,24 @@ void DrawingCanvas::mousePressEvent(QMouseEvent *event)
     if (!m_panel || event->button() != Qt::LeftButton)
         return;
 
+    // Transform box intercepts every left-click while Move is active, so its
+    // handles/rotation zones work even where they fall outside the canvas
+    // rect. A press on empty space (XNone) is swallowed but keeps the box.
+    if (m_xformActive && m_tool == Move) {
+        m_xformMode = hitTestBox(event->position());
+        if (m_xformMode != XNone) {
+            m_dragStartCanvas = toCanvasF(event->position());
+            m_boxCenter0 = m_boxCenter;
+            m_boxW0 = m_boxW;
+            m_boxH0 = m_boxH;
+            m_boxAngle0 = m_boxAngle;
+            if (m_xformMode == XRotate)
+                m_rotStart0 = std::atan2(m_dragStartCanvas.y() - m_boxCenter.y(),
+                                         m_dragStartCanvas.x() - m_boxCenter.x());
+        }
+        return;
+    }
+
     // Floating paste intercepts every left-click: inside it (Move tool)
     // starts dragging it, anywhere else commits it and swallows the click.
     if (m_floatActive && m_floatFromPaste) {
@@ -1371,14 +1726,10 @@ void DrawingCanvas::mousePressEvent(QMouseEvent *event)
         updateAntsTimer();
         update();
         break;
-    case Move: {
-        const QPointF cpt = toCanvasF(event->position());
-        if (!m_selPath.isEmpty() && m_selPath.contains(cpt))
-            beginMoveDrag(cpt); // deferred commit: layer untouched until release
-        else
-            clearSelection();   // Move click outside the selection clears it
+    case Move:
+        // With a selection, the transform box is active (handled by the
+        // intercept above). Without one, Move does nothing.
         break;
-    }
     case Camera:
         break; // non-drawing tool: overlays are toggled from the Camera panel
     }
@@ -1389,6 +1740,14 @@ void DrawingCanvas::mouseMoveEvent(QMouseEvent *event)
     if (m_panning) {
         m_panOffset = m_panStartOffset + QPointF(event->pos() - m_panStartScreen);
         update();
+        return;
+    }
+    if (m_xformActive && m_tool == Move) {
+        if ((event->buttons() & Qt::LeftButton) && m_xformMode != XNone)
+            applyXformDrag(toCanvasF(event->position()),
+                           event->modifiers() & Qt::ShiftModifier);
+        else
+            updateXformCursor(hitTestBox(event->position())); // hover feedback
         return;
     }
     if (m_floatDragging) {
@@ -1439,6 +1798,10 @@ void DrawingCanvas::mouseReleaseEvent(QMouseEvent *event)
     if (m_brushStroke && event->button() == Qt::LeftButton) {
         endBrushStroke();
         emit contentChanged();
+        return;
+    }
+    if (m_xformActive && m_tool == Move && event->button() == Qt::LeftButton) {
+        m_xformMode = XNone; // end this handle drag; the box stays for more edits
         return;
     }
     if (m_floatDragging && event->button() == Qt::LeftButton) {

@@ -1,9 +1,11 @@
 #pragma once
 
 #include <QColor>
+#include <QCursor>
 #include <QImage>
 #include <QPainterPath>
 #include <QPixmap>
+#include <QTransform>
 #include <QPoint>
 #include <QPointF>
 #include <QVector>
@@ -209,6 +211,37 @@ private:
     QImage m_layerBackup;          // pristine full copy of the layer at move start
     QImage m_moveMask;             // selection mask, bounding-rect-local
     QRect m_moveSrcRect;           // selection bounding rect at move start
+
+    // Non-destructive transform box (Move tool). Activating Move with a
+    // selection lifts the masked pixels into m_transformBuf (the PRISTINE
+    // source, never re-transformed) and shows a bounding box; every
+    // move/scale/rotate re-renders the preview from m_transformBuf through a
+    // fresh QTransform, so there is no cumulative resampling. The layer is
+    // written exactly once on commit (Enter); Esc restores m_layerBackup.
+    enum XformMode { XNone, XMove, XRotate,
+                     XScaleTL, XScaleTR, XScaleBL, XScaleBR,
+                     XScaleT, XScaleB, XScaleL, XScaleR };
+    bool m_xformActive = false;
+    QImage m_transformBuf;         // pristine lifted pixels (m_moveSrcRect-sized)
+    QPointF m_boxCenter;           // current box centre, canvas coords
+    qreal m_boxW = 0.0;            // current box width/height, canvas px
+    qreal m_boxH = 0.0;
+    qreal m_boxAngle = 0.0;        // current box rotation, degrees
+    XformMode m_xformMode = XNone; // active handle while dragging
+    QPointF m_dragStartCanvas;     // pointer at press, canvas coords
+    QPointF m_boxCenter0;          // box snapshot at press (transforms recompute from these)
+    qreal m_boxW0 = 0.0, m_boxH0 = 0.0, m_boxAngle0 = 0.0;
+    qreal m_rotStart0 = 0.0;       // pointer angle at a rotate press, radians
+    QCursor m_rotateCursor;        // curved-arrow cursor for the rotation zones
+
+    void beginTransform();         // lift selection -> box (source cleared on lift)
+    void commitTransform();        // bake once (one undo), clear box
+    void cancelTransform();        // restore m_layerBackup, discard transform
+    QTransform boxTransform() const;                 // buffer -> canvas placement
+    QVector<QPointF> boxHandlesCanvas() const;       // 8 handles, canvas coords
+    XformMode hitTestBox(const QPointF &widgetPos) const;
+    void applyXformDrag(const QPointF &canvasPos, bool proportional);
+    void updateXformCursor(XformMode mode);
 
     // Visual debug: dump the move-pipeline stages to C:\SankoTv\app\debug\.
     // Off in shipped builds; flip to true to re-inspect the move stages.
