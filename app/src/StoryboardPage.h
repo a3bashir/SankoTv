@@ -133,6 +133,7 @@ private:
     void saveShotInfo();   // right column widgets -> current panel
     void refreshCurrentThumb();
     void updateOnionGhost(); // feed the previous panel's pixmap to the canvas
+    void updateLightTable(); // feed the neighbour pixmaps (red prev / green next)
 
     // Panel reordering (drag within the strip + keyboard).
     void beginPanelDrag();
@@ -215,6 +216,7 @@ private:
     QPushButton *m_dupPanelButton = nullptr;
     QPushButton *m_clearPanelButton = nullptr; // clears the drawing, asks first
     QPushButton *m_deletePanelButton = nullptr;
+    QPushButton *m_lightTableButton = nullptr; // toggles neighbour-panel ghosts
 
     // Drag-reorder state.
     bool m_panelPressActive = false;

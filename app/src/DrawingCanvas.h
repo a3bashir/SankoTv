@@ -53,6 +53,15 @@ public:
     // Pass the previous panel's flattened pixmap (or null to clear the ghost).
     void setPreviousPixmap(const QPixmap &previous);
 
+    // Light table: fuller onion skin showing neighbouring panels behind the
+    // current drawing — previous tinted red, next tinted green. Display-only
+    // (never written to any layer, flattenedPixmap, export, or save).
+    void setLightTableEnabled(bool enabled);
+    bool isLightTableEnabled() const { return m_lightTable; }
+    // Raw flattened pixmaps of the previous / next panel (null = none). Tinted
+    // ghosts are built internally.
+    void setLightTablePixmaps(const QPixmap &previous, const QPixmap &next);
+
     // Import an image file as a NEW image-type layer above the active layer
     // (scaled to fit the canvas, transparent padding). Returns true on success.
     // Shared by the button, Ctrl+I shortcut, and file drop.
@@ -265,6 +274,13 @@ private:
 
     bool m_onionSkin = false;
     QPixmap m_ghost;         // precomputed blue-tinted ghost (display only)
+
+    // Light table: red-tinted previous + green-tinted next ghosts, drawn on
+    // the paper behind the current drawing layers (display only, session state).
+    bool m_lightTable = false;
+    QPixmap m_ltPrevGhost;   // previous panel, tinted red
+    QPixmap m_ltNextGhost;   // next panel, tinted green
+    void drawLightTable(QPainter &painter, const QRect &d) const;
 
     // Viewport: zoom + pan.
     double m_zoom = 1.0;         // 0.25 .. 4.0

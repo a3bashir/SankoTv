@@ -52,6 +52,26 @@ QPixmap buildGhost(const QPixmap &previous)
     return QPixmap::fromImage(img);
 }
 
+// Light-table ghost: like buildGhost but with an arbitrary tint — the panel's
+// dark art becomes `tint` (alpha by darkness), white paper becomes transparent.
+QPixmap buildTintedGhost(const QPixmap &flattened, const QColor &tint)
+{
+    if (flattened.isNull())
+        return QPixmap();
+    QImage img = flattened.toImage().convertToFormat(QImage::Format_ARGB32);
+    const int w = img.width();
+    const int h = img.height();
+    const int tr = tint.red(), tg = tint.green(), tb = tint.blue();
+    for (int y = 0; y < h; ++y) {
+        QRgb *line = reinterpret_cast<QRgb *>(img.scanLine(y));
+        for (int x = 0; x < w; ++x) {
+            const int alpha = 255 - qGray(line[x]); // dark art opaque, white clear
+            line[x] = qRgba(tr, tg, tb, alpha);
+        }
+    }
+    return QPixmap::fromImage(img);
+}
+
 bool isImagePath(const QString &path)
 {
     const QString lower = path.toLower();
@@ -189,6 +209,30 @@ void DrawingCanvas::setPreviousPixmap(const QPixmap &previous)
 {
     m_ghost = buildGhost(previous); // null pixmap -> empty ghost
     update();
+}
+
+void DrawingCanvas::setLightTableEnabled(bool enabled)
+{
+    m_lightTable = enabled;
+    update();
+}
+
+void DrawingCanvas::setLightTablePixmaps(const QPixmap &previous, const QPixmap &next)
+{
+    m_ltPrevGhost = buildTintedGhost(previous, QColor(0xff, 0x4d, 0x4d)); // red = previous
+    m_ltNextGhost = buildTintedGhost(next, QColor(0x4d, 0xff, 0x91));     // green = next
+    update();
+}
+
+// Draw the neighbour ghosts at 35% each (previous red under next green).
+void DrawingCanvas::drawLightTable(QPainter &painter, const QRect &d) const
+{
+    painter.setOpacity(0.35);
+    if (!m_ltPrevGhost.isNull())
+        painter.drawPixmap(d, m_ltPrevGhost);
+    if (!m_ltNextGhost.isNull())
+        painter.drawPixmap(d, m_ltNextGhost);
+    painter.setOpacity(1.0);
 }
 
 void DrawingCanvas::setCameraFrameEnabled(bool enabled)
@@ -1352,14 +1396,25 @@ void DrawingCanvas::paintEvent(QPaintEvent *)
     painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
 
     // White paper, then every VISIBLE layer bottom-to-top with its opacity.
+    // Light-table ghosts are drawn ONCE on the paper, just after the
+    // background/paper layer and before the drawing layers, so they sit
+    // behind the current drawing (which occludes them where art exists).
     painter.fillRect(d, Qt::white);
+    bool lightTableDrawn = false;
     for (const Layer &layer : m_panel->layers) {
+        if (m_lightTable && !lightTableDrawn
+            && layer.type != QLatin1String("background")) {
+            drawLightTable(painter, d);
+            lightTableDrawn = true;
+        }
         if (!layer.visible || layer.image.isNull() || layer.opacity <= 0.0)
             continue;
         painter.setOpacity(qBound(0.0, layer.opacity, 1.0));
         painter.drawImage(d, layer.image);
     }
     painter.setOpacity(1.0);
+    if (m_lightTable && !lightTableDrawn) // panel had only a background layer
+        drawLightTable(painter, d);
 
     // Onion skin: faint blue ghost of the previous panel on top of the layers
     // (display only — never written to any layer).

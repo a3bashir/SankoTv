@@ -1457,6 +1457,7 @@ void StoryboardPage::selectPanel(int index)
     updatePanelThumbStyles();
     loadShotInfo();
     updateOnionGhost();
+    updateLightTable();
     updateDuplicateButton();
     rebuildLayerPanel();
 }
@@ -2001,7 +2002,7 @@ void StoryboardPage::importImageToPanel()
 
 namespace {
 
-enum class CtrlIcon { Add, Duplicate, Clear, Delete };
+enum class CtrlIcon { Add, Duplicate, Clear, Delete, LightTable };
 
 // Crisp painted glyphs (no font/emoji dependency). knockout = the colour drawn
 // behind the front square of the Duplicate icon so the two squares read as
@@ -2032,6 +2033,13 @@ QIcon paintCtrlIcon(CtrlIcon kind, const QColor &color, const QColor &knockout)
         p.drawRoundedRect(QRectF(3.5, 4.5, 13, 11), 1.5, 1.5);
         p.drawLine(QPointF(7, 7.5), QPointF(13, 12.5));
         p.drawLine(QPointF(13, 7.5), QPointF(7, 12.5));
+    } else if (kind == CtrlIcon::LightTable) {
+        // Three stacked/offset panel frames (neighbours behind the current).
+        p.drawRoundedRect(QRectF(3, 6, 9, 7), 1.2, 1.2);   // back-left (prev)
+        p.setBrush(knockout);
+        p.drawRoundedRect(QRectF(8, 6, 9, 7), 1.2, 1.2);   // back-right (next)
+        p.drawRoundedRect(QRectF(5.5, 8.5, 9, 7), 1.2, 1.2); // front (current)
+        p.setBrush(Qt::NoBrush);
     } else { // Delete: trash can
         p.drawLine(QPointF(4, 6), QPointF(16, 6));                 // lid
         p.drawLine(QPointF(8, 6), QPointF(8.6, 4)); p.drawLine(QPointF(12, 6), QPointF(11.4, 4)); // handle
@@ -2123,8 +2131,45 @@ QWidget *StoryboardPage::createPanelControls()
     connect(m_deletePanelButton, &QPushButton::clicked, this, [this] { deleteSelectedPanel(); });
     layout->addWidget(m_deletePanelButton, 0, Qt::AlignHCenter);
 
+    // Light Table — checkable toggle (styling is a later restyle pass). Shows
+    // ghosts of the neighbouring panels behind the current drawing.
+    m_lightTableButton = makeCtrlButton(
+        CtrlIcon::LightTable, QColor(0xcc, 0xcc, 0xcc),
+        QStringLiteral("<b>Light Table</b> | Ghost neighbouring panels behind the current "
+                       "one (previous red, next green)."),
+        QStringLiteral(
+            "QPushButton { background-color: transparent; border: 1px solid #3a3a3a; border-radius: 8px; }"
+            "QPushButton:hover { border-color: #5a5a5a; background-color: #161616; }"
+            "QPushButton:checked { background-color: #f5a623; border: none; }"));
+    m_lightTableButton->setCheckable(true);
+    connect(m_lightTableButton, &QPushButton::toggled, this, [this](bool on) {
+        if (m_canvas)
+            m_canvas->setLightTableEnabled(on);
+        updateLightTable();
+    });
+    layout->addWidget(m_lightTableButton, 0, Qt::AlignHCenter);
+
     layout->addStretch(1); // buttons pinned to the top
     return column;
+}
+
+// Feed the current panel's neighbour pixmaps (within the same scene) to the
+// canvas: previous tinted red, next tinted green. Display-only; recomputed
+// whenever the panel changes or panels are added/removed/reordered.
+void StoryboardPage::updateLightTable()
+{
+    if (!m_canvas)
+        return;
+    Scene *scene = currentScene();
+    const bool on = m_lightTableButton && m_lightTableButton->isChecked();
+    QPixmap prev, next;
+    if (on && scene) {
+        if (m_currentPanel > 0 && m_currentPanel < scene->panels.size())
+            prev = scene->panels.at(m_currentPanel - 1)->flattenedPixmap();
+        if (m_currentPanel >= 0 && m_currentPanel + 1 < scene->panels.size())
+            next = scene->panels.at(m_currentPanel + 1)->flattenedPixmap();
+    }
+    m_canvas->setLightTablePixmaps(prev, next); // null pixmaps clear a side
 }
 
 void StoryboardPage::addPanelAfterSelected()
