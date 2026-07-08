@@ -16,6 +16,7 @@ struct Panel;
 class QDragEnterEvent;
 class QDropEvent;
 class QPushButton;
+class QSlider;
 class QTimer;
 
 // Freehand drawing surface for a single storyboard panel. Composites the
@@ -80,6 +81,15 @@ public:
     void setActionSafeMaskOpacity(int percent); // action-safe amber
     void setTitleSafeMaskOpacity(int percent);  // title-safe blue
 
+    // Canvas VIEW transforms (display only; never touch layer pixels/export).
+    void setViewZoom(double zoom);        // 0.25..4, centred on the view
+    void setViewRotation(double degrees); // -180..180, around the view centre
+    void toggleFlipH();                   // horizontal flip of the view
+    void resetViewRotation();             // rotation back to 0
+    double viewZoom() const { return m_zoom; }
+    double viewRotation() const { return m_viewRotation; }
+    bool viewFlipH() const { return m_viewFlipH; }
+
     // Light alignment grid (View > Grid), display-only like the overlays.
     void setGridEnabled(bool enabled);
     bool isGridEnabled() const { return m_grid; }
@@ -115,8 +125,10 @@ public slots:
 signals:
     void contentChanged();
     void layersChanged(); // layer added/removed by the canvas (image import)
+    void viewZoomChanged(double zoom); // wheel/pan zoom -> sync the zoom slider
 
 protected:
+    bool eventFilter(QObject *object, QEvent *event) override; // toolbar grip drag
     void paintEvent(QPaintEvent *event) override;
     void mousePressEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
@@ -132,13 +144,12 @@ protected:
     void dropEvent(QDropEvent *event) override;
 
 private:
-    QRect displayRect() const;          // where the canvas is drawn (zoom + pan applied)
+    QRect displayRect() const;          // axis-aligned zoom+pan rect (pre-rotation)
     double scale() const;               // display px per canvas px (includes zoom)
+    QTransform viewTransform() const;   // canvas -> widget (zoom+pan+rotate+flip)
     QPoint toCanvas(const QPoint &widgetPoint) const;
     void setZoom(double zoom, const QPointF &anchorScreen); // keeps anchor point fixed
     void resetView();                   // 100%, recentred
-    void updateZoomUi();                // refresh the percentage button text
-    void positionZoomControls();        // pin the -/%/+ buttons to the corner
     int penWidth() const;               // brush size mapped into canvas space
     Layer *editableActiveLayer() const; // active layer if it accepts strokes, else nullptr
     void pushUndo();
@@ -289,9 +300,25 @@ private:
     bool m_panning = false;      // mid-drag (space+left or middle button)
     QPoint m_panStartScreen;
     QPointF m_panStartOffset;
-    QPushButton *m_zoomOutButton = nullptr;
-    QPushButton *m_zoomResetButton = nullptr; // shows "100%", click resets view
-    QPushButton *m_zoomInButton = nullptr;
+
+    // Canvas VIEW transforms (display only — the layer pixels, flattenedPixmap,
+    // save, and export are never rotated/flipped/zoomed). Applied as one
+    // QTransform in paintEvent; mouse coords invert it (see viewTransform()).
+    double m_viewRotation = 0.0; // degrees, -180..180
+    bool m_viewFlipH = false;    // horizontal flip
+    // Canvas View Controls toolbar (grip, zoom slider, flip, rotate slider,
+    // reset rotation), floating over the canvas.
+    QWidget *m_viewToolbar = nullptr;
+    QWidget *m_viewGrip = nullptr;
+    QSlider *m_zoomSlider = nullptr;
+    QSlider *m_rotateSlider = nullptr;
+    bool m_syncingViewUi = false; // guards slider<->engine feedback
+    bool m_viewDragging = false;  // dragging the toolbar by its grip
+    QPoint m_viewDragStart;       // global cursor at grip press
+    QPoint m_viewToolbarStart;    // toolbar pos at grip press
+    void buildViewToolbar();
+    void positionViewToolbar();
+    void syncViewToolbar();       // push engine state into the sliders
 
     // Display-only overlays.
     bool m_grid = false;         // alignment grid, 40 canvas px (View > Grid)

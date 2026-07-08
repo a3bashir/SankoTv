@@ -7,8 +7,12 @@
 #include <QDropEvent>
 #include <QFileInfo>
 #include <QFocusEvent>
+#include <QFrame>
+#include <QHBoxLayout>
+#include <QIcon>
 #include <QImage>
 #include <QKeyEvent>
+#include <QLabel>
 #include <QLineF>
 #include <QMessageBox>
 #include <QMimeData>
@@ -20,9 +24,11 @@
 #include <QRadialGradient>
 #include <QResizeEvent>
 #include <QSettings>
+#include <QSlider>
 #include <QStack>
 #include <QTabletEvent>
 #include <QTimer>
+#include <QToolButton>
 #include <QUrl>
 #include <QWheelEvent>
 #include <Qt>
@@ -113,32 +119,9 @@ DrawingCanvas::DrawingCanvas(QWidget *parent)
     m_titleSafeMaskPct =
         qBound(0, settings.value(QStringLiteral("camera/titleSafeOpacity"), 50).toInt(), 100);
 
-    // Corner zoom control: "-" | "100%" | "+" (children, always over the
-    // canvas). Same #161616 as the floating toolbar so the "-" button blends
-    // in when the pill sits directly above it.
-    const QString zoomBtn = QStringLiteral(
-        "QPushButton { background-color: #161616; color: #cccccc; border: 1px solid #2a2a2a;"
-        " border-radius: 3px; font-size: 10px; padding: 0; }"
-        "QPushButton:hover { background-color: #262626; color: #ffffff; }");
-    m_zoomOutButton = new QPushButton(QStringLiteral("-"), this);
-    m_zoomOutButton->setFixedSize(22, 20);
-    m_zoomOutButton->setToolTip(QStringLiteral("Zoom out"));
-    m_zoomResetButton = new QPushButton(QStringLiteral("100%"), this);
-    m_zoomResetButton->setFixedSize(46, 20);
-    m_zoomResetButton->setToolTip(QStringLiteral("Reset zoom to 100% and recentre"));
-    m_zoomInButton = new QPushButton(QStringLiteral("+"), this);
-    m_zoomInButton->setFixedSize(22, 20);
-    m_zoomInButton->setToolTip(QStringLiteral("Zoom in"));
-    for (QPushButton *b : {m_zoomOutButton, m_zoomResetButton, m_zoomInButton}) {
-        b->setCursor(Qt::PointingHandCursor);
-        b->setStyleSheet(zoomBtn);
-        b->setFocusPolicy(Qt::NoFocus); // don't steal the canvas's space-pan focus
-    }
-    connect(m_zoomOutButton, &QPushButton::clicked, this,
-            [this] { setZoom(m_zoom / 1.25, QPointF(width() / 2.0, height() / 2.0)); });
-    connect(m_zoomInButton, &QPushButton::clicked, this,
-            [this] { setZoom(m_zoom * 1.25, QPointF(width() / 2.0, height() / 2.0)); });
-    connect(m_zoomResetButton, &QPushButton::clicked, this, [this] { resetView(); });
+    // Canvas View Controls toolbar (zoom slider, flip, rotate slider, reset
+    // rotation) — a floating bar over the canvas, replacing the old -/%/+.
+    buildViewToolbar();
 
     // Marching ants: advance the dash offset while a selection or floating
     // paste is on screen (updateAntsTimer() starts/stops it).
@@ -409,7 +392,7 @@ void DrawingCanvas::setZoom(double zoom, const QPointF &anchorScreen)
 {
     zoom = qBound(0.25, zoom, 4.0);
     if (qFuzzyCompare(zoom, m_zoom)) {
-        updateZoomUi();
+        syncViewToolbar();
         return;
     }
 
@@ -431,7 +414,8 @@ void DrawingCanvas::setZoom(double zoom, const QPointF &anchorScreen)
     m_panOffset = QPointF(anchorScreen.x() - canvasPt.x() * sNew - (width() - w) / 2.0,
                           anchorScreen.y() - canvasPt.y() * sNew - (height() - h) / 2.0);
 
-    updateZoomUi();
+    syncViewToolbar();
+    emit viewZoomChanged(m_zoom);
     update();
 }
 
@@ -439,33 +423,194 @@ void DrawingCanvas::resetView()
 {
     m_zoom = 1.0;
     m_panOffset = QPointF(0, 0);
-    updateZoomUi();
+    m_viewRotation = 0.0;
+    m_viewFlipH = false;
+    syncViewToolbar();
+    emit viewZoomChanged(m_zoom);
     update();
-}
-
-void DrawingCanvas::updateZoomUi()
-{
-    if (m_zoomResetButton)
-        m_zoomResetButton->setText(QStringLiteral("%1%").arg(qRound(m_zoom * 100)));
-}
-
-void DrawingCanvas::positionZoomControls()
-{
-    if (!m_zoomOutButton)
-        return;
-    const int y = height() - 28;
-    m_zoomOutButton->move(8, y);
-    m_zoomResetButton->move(8 + 22 + 4, y);
-    m_zoomInButton->move(8 + 22 + 4 + 46 + 4, y);
-    m_zoomOutButton->raise();
-    m_zoomResetButton->raise();
-    m_zoomInButton->raise();
 }
 
 void DrawingCanvas::resizeEvent(QResizeEvent *event)
 {
     QWidget::resizeEvent(event);
-    positionZoomControls();
+    positionViewToolbar();
+}
+
+// --- Canvas View Controls (display-only view transforms) --------------------
+
+void DrawingCanvas::setViewZoom(double zoom)
+{
+    setZoom(zoom, QPointF(width() / 2.0, height() / 2.0)); // centred on the view
+}
+
+void DrawingCanvas::setViewRotation(double degrees)
+{
+    m_viewRotation = qBound(-180.0, degrees, 180.0);
+    update();
+}
+
+void DrawingCanvas::toggleFlipH()
+{
+    m_viewFlipH = !m_viewFlipH;
+    update();
+}
+
+void DrawingCanvas::resetViewRotation()
+{
+    m_viewRotation = 0.0; // does not touch zoom or flip
+    if (m_rotateSlider) {
+        const QSignalBlocker block(m_rotateSlider);
+        m_rotateSlider->setValue(0);
+    }
+    update();
+}
+
+namespace {
+constexpr double kZoomMin = 0.25, kZoomMax = 4.0, kZoomSteps = 1000.0;
+// Log map so 0 -> 0.25x, mid -> 1x, max -> 4x.
+double sliderToZoom(int v)
+{
+    return kZoomMin * std::pow(kZoomMax / kZoomMin, v / kZoomSteps);
+}
+int zoomToSlider(double z)
+{
+    z = qBound(kZoomMin, z, kZoomMax);
+    return int(std::round(kZoomSteps * std::log(z / kZoomMin) / std::log(kZoomMax / kZoomMin)));
+}
+} // namespace
+
+void DrawingCanvas::syncViewToolbar()
+{
+    if (m_zoomSlider) {
+        const QSignalBlocker block(m_zoomSlider);
+        m_zoomSlider->setValue(zoomToSlider(m_zoom));
+    }
+}
+
+void DrawingCanvas::positionViewToolbar()
+{
+    if (!m_viewToolbar)
+        return;
+    const int x = (width() - m_viewToolbar->width()) / 2;      // bottom-centre
+    const int y = height() - m_viewToolbar->height() - 12;
+    m_viewToolbar->move(qMax(6, x), qMax(6, y));
+    m_viewToolbar->raise();
+}
+
+void DrawingCanvas::buildViewToolbar()
+{
+    m_viewToolbar = new QWidget(this);
+    m_viewToolbar->setObjectName(QStringLiteral("viewToolbar"));
+    m_viewToolbar->setAttribute(Qt::WA_StyledBackground, true);
+    m_viewToolbar->setFixedHeight(42);
+    m_viewToolbar->setStyleSheet(QStringLiteral(
+        "QWidget#viewToolbar { background-color: #212121; border: 1px solid #1a1a1a;"
+        " border-radius: 12px; }"));
+
+    QHBoxLayout *row = new QHBoxLayout(m_viewToolbar);
+    row->setContentsMargins(10, 0, 12, 0);
+    row->setSpacing(11);
+
+    // Grip: 3 columns x 2 rows of 3x3 dots (#6a6a6a), draggable.
+    QLabel *gripLabel = new QLabel;
+    QPixmap grip(QSize(22, 28));
+    grip.setDevicePixelRatio(2.0);
+    grip.fill(Qt::transparent);
+    {
+        QPainter p(&grip);
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor(0x6a, 0x6a, 0x6a));
+        for (int r = 0; r < 2; ++r)
+            for (int c = 0; c < 3; ++c)
+                p.fillRect(QRectF(1 + c * 5.0, 3 + r * 6.0, 3, 3), QColor(0x6a, 0x6a, 0x6a));
+    }
+    gripLabel->setPixmap(grip);
+    gripLabel->setFixedWidth(13);
+    gripLabel->setCursor(Qt::OpenHandCursor);
+    gripLabel->setToolTip(QStringLiteral("Drag to move"));
+    gripLabel->installEventFilter(this);
+    m_viewGrip = gripLabel;
+    row->addWidget(gripLabel);
+
+    const QString labelCss = QStringLiteral(
+        "color: #cccccc; font-family: 'Inter'; font-size: 11px; font-weight: 600;"
+        " background: transparent; border: none;");
+    const QString sliderCss = QStringLiteral(
+        "QSlider::groove:horizontal { height: 6px; background: #333333; border-radius: 1px; }"
+        "QSlider::sub-page:horizontal { background: #4b82b6; border-radius: 1px; }"
+        "QSlider::add-page:horizontal { background: #333333; border-radius: 1px; }"
+        "QSlider::handle:horizontal { width: 20px; height: 6px; background: #b3b3b3;"
+        " border-radius: 1px; margin: 0; }");
+    auto divider = [] {
+        QFrame *f = new QFrame;
+        f->setFixedSize(1, 20);
+        f->setStyleSheet(QStringLiteral("background-color: #4d4d4d; border: none;"));
+        return f;
+    };
+
+    QLabel *zoomLabel = new QLabel(QStringLiteral("Zoom"));
+    zoomLabel->setStyleSheet(labelCss);
+    row->addWidget(zoomLabel);
+
+    m_zoomSlider = new QSlider(Qt::Horizontal);
+    m_zoomSlider->setFixedSize(112, 16);
+    m_zoomSlider->setRange(0, int(kZoomSteps));
+    m_zoomSlider->setValue(zoomToSlider(m_zoom));
+    m_zoomSlider->setStyleSheet(sliderCss);
+    m_zoomSlider->setToolTip(QStringLiteral("Zoom the view (0.25x – 4x)"));
+    connect(m_zoomSlider, &QSlider::valueChanged, this,
+            [this](int v) { setViewZoom(sliderToZoom(v)); });
+    row->addWidget(m_zoomSlider);
+
+    row->addWidget(divider());
+
+    QToolButton *flip = new QToolButton;
+    flip->setCheckable(true);
+    flip->setCursor(Qt::PointingHandCursor);
+    flip->setFixedSize(24, 24);
+    flip->setIcon(QIcon(QStringLiteral(":/icons/flip.svg")));
+    flip->setIconSize(QSize(21, 17));
+    flip->setToolTip(QStringLiteral("Flip the view horizontally"));
+    flip->setStyleSheet(QStringLiteral(
+        "QToolButton { background: transparent; border: none; border-radius: 4px; }"
+        "QToolButton:hover { background-color: #2e2e2e; }"
+        "QToolButton:checked { background-color: #4b82b6; }"));
+    connect(flip, &QToolButton::toggled, this, [this](bool on) {
+        if (on != m_viewFlipH)
+            toggleFlipH();
+    });
+    row->addWidget(flip);
+
+    row->addWidget(divider());
+
+    QLabel *rotLabel = new QLabel(QStringLiteral("Rotate"));
+    rotLabel->setStyleSheet(labelCss);
+    row->addWidget(rotLabel);
+
+    m_rotateSlider = new QSlider(Qt::Horizontal);
+    m_rotateSlider->setFixedSize(112, 16);
+    m_rotateSlider->setRange(-180, 180);
+    m_rotateSlider->setValue(0);
+    m_rotateSlider->setStyleSheet(sliderCss);
+    m_rotateSlider->setToolTip(QStringLiteral("Rotate the view (-180° – 180°)"));
+    connect(m_rotateSlider, &QSlider::valueChanged, this,
+            [this](int v) { setViewRotation(v); });
+    row->addWidget(m_rotateSlider);
+
+    QToolButton *reset = new QToolButton;
+    reset->setCursor(Qt::PointingHandCursor);
+    reset->setFixedSize(21, 21);
+    reset->setIcon(QIcon(QStringLiteral(":/icons/resetrotation.svg")));
+    reset->setIconSize(QSize(21, 21));
+    reset->setToolTip(QStringLiteral("Reset rotation to 0°"));
+    reset->setStyleSheet(QStringLiteral(
+        "QToolButton { background: transparent; border: none; border-radius: 4px; }"
+        "QToolButton:hover { background-color: #2e2e2e; }"));
+    connect(reset, &QToolButton::clicked, this, [this] { resetViewRotation(); });
+    row->addWidget(reset);
+
+    m_viewToolbar->adjustSize();
+    m_viewToolbar->raise();
 }
 
 double DrawingCanvas::scale() const
@@ -474,16 +619,36 @@ double DrawingCanvas::scale() const
     return w > 0 ? w / double(canvasSize().width()) : 1.0;
 }
 
-QPoint DrawingCanvas::toCanvas(const QPoint &widgetPoint) const
+// The full canvas->widget mapping: zoom+pan (displayRect) then rotation and
+// horizontal flip about the view centre. Every draw and every mouse mapping
+// goes through this (or its inverse), so strokes land under the cursor at any
+// zoom / rotation / flip. Display only — layer pixels never change.
+QTransform DrawingCanvas::viewTransform() const
 {
     const QRect d = displayRect();
     const double s = scale();
+    const QPointF c = QRectF(d).center();
+
+    QTransform base; // canvas -> axis-aligned zoom+pan rect (widget space)
+    base.translate(d.left(), d.top());
+    base.scale(s, s);
+
+    QTransform rf; // rotate + flip about the view centre, in widget space
+    rf.translate(c.x(), c.y());
+    rf.rotate(m_viewRotation);
+    if (m_viewFlipH)
+        rf.scale(-1.0, 1.0);
+    rf.translate(-c.x(), -c.y());
+
+    return base * rf; // canvas -> d -> rotated/flipped widget
+}
+
+QPoint DrawingCanvas::toCanvas(const QPoint &widgetPoint) const
+{
     const QSize cs = canvasSize();
-    int px = int((widgetPoint.x() - d.x()) / s);
-    int py = int((widgetPoint.y() - d.y()) / s);
-    px = qBound(0, px, cs.width() - 1);
-    py = qBound(0, py, cs.height() - 1);
-    return QPoint(px, py);
+    const QPointF p = viewTransform().inverted().map(QPointF(widgetPoint));
+    return QPoint(qBound(0, int(p.x()), cs.width() - 1),
+                  qBound(0, int(p.y()), cs.height() - 1));
 }
 
 int DrawingCanvas::penWidth() const
@@ -495,9 +660,7 @@ int DrawingCanvas::penWidth() const
 // (dabs partially outside the image are clipped by QPainter automatically).
 QPointF DrawingCanvas::toCanvasF(const QPointF &widgetPoint) const
 {
-    const QRect d = displayRect();
-    const double s = scale();
-    return QPointF((widgetPoint.x() - d.x()) / s, (widgetPoint.y() - d.y()) / s);
+    return viewTransform().inverted().map(widgetPoint); // inverse zoom+pan+rotate+flip
 }
 
 // Snapshot the ACTIVE layer's pixels (keyed by layer id, so undo still lands
@@ -1014,10 +1177,7 @@ DrawingCanvas::XformMode DrawingCanvas::hitTestBox(const QPointF &widgetPos) con
 {
     if (!m_xformActive)
         return XNone;
-    const QRect d = displayRect();
-    const double s = scale();
-    const QTransform toWidget =
-        QTransform().translate(d.left(), d.top()).scale(s, s);
+    const QTransform toWidget = viewTransform(); // canvas -> widget (rotate/flip aware)
 
     const QVector<QPointF> handles = boxHandlesCanvas();
     const XformMode order[8] = {XScaleTL, XScaleTR, XScaleBR, XScaleBL,
@@ -1380,6 +1540,45 @@ void DrawingCanvas::clearCanvas()
     emit contentChanged();
 }
 
+// Drag the View Controls toolbar by its grip, clamped inside the canvas.
+bool DrawingCanvas::eventFilter(QObject *object, QEvent *event)
+{
+    if (object == m_viewGrip && m_viewToolbar) {
+        switch (event->type()) {
+        case QEvent::MouseButtonPress: {
+            auto *me = static_cast<QMouseEvent *>(event);
+            if (me->button() == Qt::LeftButton) {
+                m_viewDragging = true;
+                m_viewDragStart = me->globalPosition().toPoint();
+                m_viewToolbarStart = m_viewToolbar->pos();
+                m_viewGrip->setCursor(Qt::ClosedHandCursor);
+            }
+            return true;
+        }
+        case QEvent::MouseMove: {
+            auto *me = static_cast<QMouseEvent *>(event);
+            if (m_viewDragging && (me->buttons() & Qt::LeftButton)) {
+                const QPoint delta = me->globalPosition().toPoint() - m_viewDragStart;
+                QPoint p = m_viewToolbarStart + delta;
+                p.setX(qBound(0, p.x(), qMax(0, width() - m_viewToolbar->width())));
+                p.setY(qBound(0, p.y(), qMax(0, height() - m_viewToolbar->height())));
+                m_viewToolbar->move(p);
+            }
+            return true;
+        }
+        case QEvent::MouseButtonRelease:
+            if (static_cast<QMouseEvent *>(event)->button() == Qt::LeftButton) {
+                m_viewDragging = false;
+                m_viewGrip->setCursor(Qt::OpenHandCursor);
+            }
+            return true;
+        default:
+            break;
+        }
+    }
+    return QWidget::eventFilter(object, event);
+}
+
 void DrawingCanvas::paintEvent(QPaintEvent *)
 {
     QPainter painter(this);
@@ -1392,77 +1591,76 @@ void DrawingCanvas::paintEvent(QPaintEvent *)
         return;
     }
 
-    const QRect d = displayRect();
+    const QSize cs = canvasSize();
+    const QRectF canvasR(0, 0, cs.width(), cs.height());
+    const QRect canvasRi(0, 0, cs.width(), cs.height());
+    const QTransform T = viewTransform(); // canvas -> widget (zoom+pan+rotate+flip)
     painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+
+    // Everything canvas-anchored is drawn in CANVAS coordinates through T, so
+    // it zooms/rotates/flips together with the artwork.
+    painter.save();
+    painter.setWorldTransform(T);
 
     // White paper, then every VISIBLE layer bottom-to-top with its opacity.
     // Light-table ghosts are drawn ONCE on the paper, just after the
-    // background/paper layer and before the drawing layers, so they sit
-    // behind the current drawing (which occludes them where art exists).
-    painter.fillRect(d, Qt::white);
+    // background/paper layer and before the drawing layers.
+    painter.fillRect(canvasR, Qt::white);
     bool lightTableDrawn = false;
     for (const Layer &layer : m_panel->layers) {
         if (m_lightTable && !lightTableDrawn
             && layer.type != QLatin1String("background")) {
-            drawLightTable(painter, d);
+            drawLightTable(painter, canvasRi);
             lightTableDrawn = true;
         }
         if (!layer.visible || layer.image.isNull() || layer.opacity <= 0.0)
             continue;
         painter.setOpacity(qBound(0.0, layer.opacity, 1.0));
-        painter.drawImage(d, layer.image);
+        painter.drawImage(0, 0, layer.image);
     }
     painter.setOpacity(1.0);
     if (m_lightTable && !lightTableDrawn) // panel had only a background layer
-        drawLightTable(painter, d);
+        drawLightTable(painter, canvasRi);
 
-    // Onion skin: faint blue ghost of the previous panel on top of the layers
-    // (display only — never written to any layer).
+    // Onion skin: faint blue ghost of the previous panel (display only).
     if (m_onionSkin && !m_ghost.isNull()) {
         painter.setOpacity(0.30);
-        painter.drawPixmap(d, m_ghost);
+        painter.drawPixmap(canvasRi, m_ghost);
         painter.setOpacity(1.0);
     }
 
-    painter.setPen(QPen(QColor("#2a2a2a"), 1));
-    painter.drawRect(d.adjusted(0, 0, -1, -1));
+    // Cosmetic pens: 1px on screen regardless of zoom/rotation.
+    auto cosmetic = [](const QColor &c, qreal w = 0.0) {
+        QPen p(c, w);
+        p.setCosmetic(true);
+        return p;
+    };
+    painter.setPen(cosmetic(QColor("#2a2a2a")));
+    painter.setBrush(Qt::NoBrush);
+    painter.drawRect(canvasR);
 
-    // Alignment grid (View > Grid): thin #ffffff lines at 8% opacity every
-    // 40 canvas px, anchored to the image rect so it zooms/pans with the
-    // artwork. Display-only — never written to a layer or flattenedPixmap().
-    if (m_grid) {
-        painter.setPen(QPen(QColor(255, 255, 255, 20), 1));
-        const double step = 40.0 * scale();
-        if (step >= 4.0) { // skip when zoomed out so far the grid would be noise
-            for (double x = d.left() + step; x < d.right(); x += step)
-                painter.drawLine(QPointF(x, d.top()), QPointF(x, d.bottom() + 1));
-            for (double y = d.top() + step; y < d.bottom(); y += step)
-                painter.drawLine(QPointF(d.left(), y), QPointF(d.right() + 1, y));
-        }
+    // Alignment grid (View > Grid): thin white lines every 40 canvas px.
+    if (m_grid && 40.0 * scale() >= 4.0) {
+        painter.setPen(cosmetic(QColor(255, 255, 255, 20)));
+        for (double x = 40.0; x < cs.width(); x += 40.0)
+            painter.drawLine(QPointF(x, 0), QPointF(x, cs.height()));
+        for (double y = 40.0; y < cs.height(); y += 40.0)
+            painter.drawLine(QPointF(0, y), QPointF(cs.width(), y));
     }
 
-    // --- Viewport overlays: DISPLAY-ONLY, drawn after the layers and never
-    // --- written to any layer or included in flattenedPixmap(). All are
-    // --- anchored to the image rect `d`, so they zoom and pan with it.
-
-    // Camera frame: the image is the 16:9 shot; dim everything outside it.
+    // Camera-frame outline (the 16:9 shot). The dim OUTSIDE it is drawn in
+    // widget space below, since it spans the rotated frame's complement.
     if (m_cameraFrame) {
-        const QColor dim(0, 0, 0, 102); // black @ 40%
-        painter.fillRect(QRect(0, 0, width(), d.top()), dim);
-        painter.fillRect(QRect(0, d.bottom() + 1, width(), height() - d.bottom() - 1), dim);
-        painter.fillRect(QRect(0, d.top(), d.left(), d.height()), dim);
-        painter.fillRect(QRect(d.right() + 1, d.top(), width() - d.right() - 1, d.height()), dim);
-        painter.setPen(QPen(QColor("#cccccc"), 1));
-        painter.drawRect(d.adjusted(0, 0, -1, -1));
+        painter.setPen(cosmetic(QColor("#cccccc")));
+        painter.drawRect(canvasR);
     }
 
-    // Action-safe: 5% inset, amber at the Preferences > Camera opacity.
+    // Action-safe: 5% inset, amber.
     if (m_safeArea) {
-        const int ix = qRound(d.width() * 0.05);
-        const int iy = qRound(d.height() * 0.05);
-        const QRect r = d.adjusted(ix, iy, -ix, -iy);
-        const QColor amber(0xf5, 0xa6, 0x23, m_actionSafeMaskPct * 255 / 100);
-        painter.setPen(QPen(amber, 1));
+        const QRectF r = canvasR.adjusted(cs.width() * 0.05, cs.height() * 0.05,
+                                          -cs.width() * 0.05, -cs.height() * 0.05);
+        painter.setPen(cosmetic(QColor(0xf5, 0xa6, 0x23, m_actionSafeMaskPct * 255 / 100)));
         painter.drawRect(r);
         QFont f = font();
         f.setPointSize(7);
@@ -1471,13 +1669,11 @@ void DrawingCanvas::paintEvent(QPaintEvent *)
                          QStringLiteral("ACTION SAFE"));
     }
 
-    // Title-safe: 10% inset, blue at the Preferences > Camera opacity.
+    // Title-safe: 10% inset, blue.
     if (m_titleSafe) {
-        const int ix = qRound(d.width() * 0.10);
-        const int iy = qRound(d.height() * 0.10);
-        const QRect r = d.adjusted(ix, iy, -ix, -iy);
-        const QColor blue(0x4d, 0x9f, 0xff, m_titleSafeMaskPct * 255 / 100);
-        painter.setPen(QPen(blue, 1));
+        const QRectF r = canvasR.adjusted(cs.width() * 0.10, cs.height() * 0.10,
+                                          -cs.width() * 0.10, -cs.height() * 0.10);
+        painter.setPen(cosmetic(QColor(0x4d, 0x9f, 0xff, m_titleSafeMaskPct * 255 / 100)));
         painter.drawRect(r);
         QFont f = font();
         f.setPointSize(7);
@@ -1486,55 +1682,45 @@ void DrawingCanvas::paintEvent(QPaintEvent *)
                          QStringLiteral("TITLE SAFE"));
     }
 
-    // In-progress shape preview, always on top of the composite. Painted
-    // through the display transform so it matches the committed result
-    // exactly; display-only until commit — cancelling leaves no artifacts.
-    if (m_shapeDrag || (m_tool == Shapes && !m_polygonPts.isEmpty())) {
-        painter.save();
-        painter.setRenderHint(QPainter::Antialiasing, true);
-        painter.setClipRect(d);
-        painter.translate(d.topLeft());
-        const double s = scale();
-        painter.scale(s, s);
+    // In-progress shape preview (canvas coords, through T).
+    if (m_shapeDrag || (m_tool == Shapes && !m_polygonPts.isEmpty()))
         paintShapeGeometry(painter, false);
-        painter.restore();
-    }
 
-    // Floating pixels (mid-move or un-committed paste): display-only until
-    // committed into the layer.
-    if (m_floatActive && !m_floatImg.isNull()) {
-        painter.save();
-        painter.setClipRect(d);
-        painter.translate(d.topLeft());
-        const double s = scale();
-        painter.scale(s, s);
-        painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
+    // Floating pixels (mid-move or un-committed paste).
+    if (m_floatActive && !m_floatImg.isNull())
         painter.drawImage(m_floatPos + m_floatDelta, m_floatImg);
-        painter.restore();
-    }
 
-    // Non-destructive transform preview: the PRISTINE buffer rendered through
-    // the current box transform (smooth, antialiased), plus the bounding box
-    // and its 8 handles. The layer is untouched until commit.
+    // Non-destructive transform preview: the PRISTINE buffer through the box
+    // transform, still composed with the view transform T.
     if (m_xformActive && !m_transformBuf.isNull()) {
-        const QTransform canvasToWidget =
-            QTransform().translate(d.left(), d.top()).scale(scale(), scale());
-
         painter.save();
-        painter.setClipRect(d);
-        painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
-        painter.setRenderHint(QPainter::Antialiasing, true);
-        painter.setWorldTransform(boxTransform() * canvasToWidget); // buffer -> canvas -> widget
+        painter.setWorldTransform(boxTransform(), true); // compose onto T
         painter.drawImage(0, 0, m_transformBuf);
         painter.restore();
+    }
 
-        // Box outline + handles in WIDGET space (constant screen size).
+    painter.restore(); // leave canvas space; overlays below are widget space
+
+    // Camera-frame dim: the whole widget minus the rotated 16:9 quad.
+    if (m_cameraFrame) {
+        QPolygonF quad;
+        quad << T.map(QPointF(0, 0)) << T.map(QPointF(cs.width(), 0))
+             << T.map(QPointF(cs.width(), cs.height())) << T.map(QPointF(0, cs.height()));
+        QPainterPath outside;
+        outside.addRect(rect());
+        QPainterPath inside;
+        inside.addPolygon(quad);
+        painter.fillPath(outside.subtracted(inside), QColor(0, 0, 0, 102));
+    }
+
+    // Transform box outline + handles: WIDGET space (constant screen size),
+    // corners mapped through T so the box tracks the rotated/flipped preview.
+    if (m_xformActive && !m_transformBuf.isNull()) {
         painter.save();
-        painter.setRenderHint(QPainter::Antialiasing, true);
         const QVector<QPointF> h = boxHandlesCanvas();
         QVector<QPointF> hw;
         for (const QPointF &c : h)
-            hw.append(canvasToWidget.map(c));
+            hw.append(T.map(c));
         QPolygonF outline;
         outline << hw.at(0) << hw.at(1) << hw.at(2) << hw.at(3); // corners
         painter.setBrush(Qt::NoBrush);
@@ -1551,17 +1737,12 @@ void DrawingCanvas::paintEvent(QPaintEvent *)
         painter.restore();
     }
 
-    // Marching ants: the selection outline (translated while its pixels are
-    // mid-move), the in-progress selection drag, or the floating paste
-    // bounds. White underlay + animated black dashes; cosmetic pens stay
-    // 1px at any zoom. Suppressed while the transform box owns the selection.
+    // Marching ants: selection outline / in-progress drag / floating bounds,
+    // drawn in canvas space through T (rotate/flip with the view). Cosmetic
+    // pens keep them 1px on screen.
     if (!m_xformActive && (!m_selPath.isEmpty() || m_selDrag || m_floatActive)) {
         painter.save();
-        painter.setRenderHint(QPainter::Antialiasing, true);
-        painter.setClipRect(d);
-        painter.translate(d.topLeft());
-        const double s = scale();
-        painter.scale(s, s);
+        painter.setWorldTransform(T);
 
         QPainterPath ants;
         if (m_selDrag) {

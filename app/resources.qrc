@@ -6,5 +6,7 @@
         <file>icons/duplicate.svg</file>
         <file>icons/lighttable.svg</file>
         <file>icons/delete.svg</file>
+        <file>icons/flip.svg</file>
+        <file>icons/resetrotation.svg</file>
     </qresource>
 </RCC>
