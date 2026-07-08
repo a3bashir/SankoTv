@@ -73,6 +73,8 @@ qt_add_executable(SankoTV
     src/SankoDockOverlay.h
     src/SankoSlider.cpp
     src/SankoSlider.h
+    src/ZoomToolbar.cpp
+    src/ZoomToolbar.h
     resources.qrc
 )
 

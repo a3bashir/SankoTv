@@ -8,6 +8,7 @@
 #include <QVector>
 #include <QWidget>
 
+class ZoomToolbar;
 class QCheckBox;
 class QComboBox;
 class QHBoxLayout;
@@ -91,6 +92,7 @@ private:
     void createFloatingToolbar();   // pill toolbar floating over the canvas
     QPoint clampedFloatPos(const QWidget *panel, const QPoint &pos) const;
     void positionFloatingToolbar(); // restore persisted position / re-clamp on resize
+    void positionZoomToolbar();     // bottom-centre the view-controls toolbar
     // Floating overlay panel: dock-style header (title + Close only),
     // draggable by the header, child of the canvas.
     QWidget *createFloatingPanel(const QString &title, QWidget *body);
@@ -184,6 +186,7 @@ private:
     QVector<QWidget *> m_panelThumbs;
     QVector<QLabel *> m_panelThumbImages;
     DrawingCanvas *m_canvas = nullptr;
+    ZoomToolbar *m_zoomToolbar = nullptr; // custom-painted view controls
     QScrollArea *m_panelScroll = nullptr;
     QPushButton *m_onionButton = nullptr;
     QPushButton *m_importButton = nullptr;

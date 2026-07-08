@@ -3,6 +3,7 @@
 #include "DrawingCanvas.h"
 #include "SankoDockOverlay.h"
 #include "SankoSlider.h"
+#include "ZoomToolbar.h"
 #include "StoryboardModel.h"
 
 #include "DockAreaWidget.h"
@@ -636,9 +637,33 @@ QWidget *StoryboardPage::createCenterColumn()
     createCameraPanel();     // floating over the canvas, shown with the Camera tool
     createShapesPanel();     // floating over the canvas, shown with the Shapes tool
 
+    // Custom-painted Canvas View Controls toolbar (zoom / flip / rotate),
+    // floating over the canvas and wired to the canvas view transforms.
+    m_zoomToolbar = new ZoomToolbar(m_canvas);
+    m_zoomToolbar->setZoom(m_canvas->viewZoom());
+    m_zoomToolbar->setRotation(m_canvas->viewRotation());
+    m_zoomToolbar->setFlipH(m_canvas->viewFlipH());
+    connect(m_zoomToolbar, &ZoomToolbar::zoomChanged, m_canvas, &DrawingCanvas::setViewZoom);
+    connect(m_zoomToolbar, &ZoomToolbar::rotationChanged, m_canvas, &DrawingCanvas::setViewRotation);
+    connect(m_zoomToolbar, &ZoomToolbar::flipToggled, m_canvas, &DrawingCanvas::toggleFlipH);
+    // Wheel/pan zoom on the canvas syncs the zoom dragger back.
+    connect(m_canvas, &DrawingCanvas::viewZoomChanged, m_zoomToolbar, &ZoomToolbar::setZoom);
+    m_zoomToolbar->show();
+    m_zoomToolbar->raise();
+
     layout->addWidget(drawRow, 1);
 
     return column;
+}
+
+void StoryboardPage::positionZoomToolbar()
+{
+    if (!m_zoomToolbar || !m_canvas)
+        return;
+    const int x = (m_canvas->width() - m_zoomToolbar->width()) / 2; // bottom-centre
+    const int y = m_canvas->height() - m_zoomToolbar->height() - 12;
+    m_zoomToolbar->move(qMax(6, x), qMax(6, y));
+    m_zoomToolbar->raise();
 }
 
 // Floating pill toolbar layered over the canvas: fully-rounded #161616 pill,
@@ -1546,6 +1571,7 @@ bool StoryboardPage::eventFilter(QObject *object, QEvent *event)
     // canvas resize; drag via their registered grip/header.
     if (object == m_canvas && event->type() == QEvent::Resize) {
         positionFloatingToolbar();
+        positionZoomToolbar();
         return false;
     }
     // Grips/headers are QWidgets/QLabels that would IGNORE mouse events;

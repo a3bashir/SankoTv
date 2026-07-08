@@ -119,9 +119,9 @@ DrawingCanvas::DrawingCanvas(QWidget *parent)
     m_titleSafeMaskPct =
         qBound(0, settings.value(QStringLiteral("camera/titleSafeOpacity"), 50).toInt(), 100);
 
-    // Canvas View Controls toolbar (zoom slider, flip, rotate slider, reset
-    // rotation) — a floating bar over the canvas, replacing the old -/%/+.
-    buildViewToolbar();
+    // (The Canvas View Controls toolbar is the custom-painted ZoomToolbar,
+    // created and wired by StoryboardPage. This canvas exposes the view
+    // transform engine — setViewZoom/Rotation, toggleFlipH, viewZoomChanged.)
 
     // Marching ants: advance the dash offset while a selection or floating
     // paste is on screen (updateAntsTimer() starts/stops it).
