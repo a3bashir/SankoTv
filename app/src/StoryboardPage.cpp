@@ -1252,7 +1252,7 @@ void StoryboardPage::updatePanelThumbStyles()
         const bool selected = (i == m_currentPanel);
         m_panelThumbs.at(i)->setStyleSheet(
             selected
-                ? QStringLiteral("QLabel#panelThumb { border: 2px solid #f5a623; border-radius: 4px;"
+                ? QStringLiteral("QLabel#panelThumb { border: 3px solid #f5a623; border-radius: 4px;"
                                  " background-color: #1a1a1a; }")
                 : QStringLiteral("QLabel#panelThumb { border: 1px solid #2a2a2a; border-radius: 4px;"
                                  " background-color: #1a1a1a; }"));
