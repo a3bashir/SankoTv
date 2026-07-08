@@ -23,7 +23,9 @@ endif()
 # --- Find Qt6 -------------------------------------------------------------
 # Network is needed for the Claude API call in the Script Editor screen.
 # Multimedia is needed for the Animatic scratch-audio track.
-find_package(Qt6 REQUIRED COMPONENTS Widgets Network Multimedia MultimediaWidgets)
+# Svg is required for QIcon to render .svg icon resources (without it QIcon
+# silently returns a null icon for SVG files).
+find_package(Qt6 REQUIRED COMPONENTS Widgets Network Multimedia MultimediaWidgets Svg)
 
 # --- Qt Advanced Docking System (LGPL v2.1) --------------------------------
 # LGPL compliance: MUST be linked as a shared DLL (BUILD_STATIC OFF), and its
@@ -75,7 +77,7 @@ qt_add_executable(SankoTV
 )
 
 target_link_libraries(SankoTV PRIVATE Qt6::Widgets Qt6::Network Qt6::Multimedia Qt6::MultimediaWidgets
-    ads::qt6advanceddocking)
+    Qt6::Svg ads::qt6advanceddocking)
 
 # Deploy the ADS DLL and its LGPL license text next to SankoTV.exe.
 add_custom_command(TARGET SankoTV POST_BUILD

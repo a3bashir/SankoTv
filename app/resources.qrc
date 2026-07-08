@@ -2,5 +2,9 @@
 <RCC version="1.0">
     <qresource prefix="/">
         <file>assets/logo.png</file>
+        <file>icons/add.svg</file>
+        <file>icons/duplicate.svg</file>
+        <file>icons/lighttable.svg</file>
+        <file>icons/delete.svg</file>
     </qresource>
 </RCC>

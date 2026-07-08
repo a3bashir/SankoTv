@@ -585,36 +585,30 @@ QWidget *StoryboardPage::createCenterColumn()
     // Panel strip row: a FIXED control column (never scrolls), a thin divider,
     // then the horizontally-scrolling thumbnail area — the column sits OUTSIDE
     // the QScrollArea so it stays pinned at the left edge.
+    // Panel Strip (Figma tokens): height 159, #1a1a1a, horizontal, 10px gap,
+    // 12 top/bottom + 10 left/right padding, items vertically centered.
     QWidget *stripBar = new QWidget;
     stripBar->setAttribute(Qt::WA_StyledBackground, true);
-    stripBar->setFixedHeight(140);
-    // 15% lighter than the old #0d0d0d (15% of the way toward white).
-    stripBar->setStyleSheet(QStringLiteral(
-        "background-color: #313131; border-bottom: 1px solid #1f1f1f;"));
+    stripBar->setFixedHeight(159);
+    stripBar->setStyleSheet(QStringLiteral("background-color: #1a1a1a;"));
     QHBoxLayout *stripBarLayout = new QHBoxLayout(stripBar);
-    stripBarLayout->setContentsMargins(0, 0, 0, 0);
-    stripBarLayout->setSpacing(0);
+    stripBarLayout->setContentsMargins(10, 12, 10, 12);
+    stripBarLayout->setSpacing(10);
 
-    stripBarLayout->addWidget(createPanelControls()); // pinned, non-scrolling
-
-    QFrame *divider = new QFrame; // 0.5px vertical divider (1px is the renderable minimum)
-    divider->setFrameShape(QFrame::VLine);
-    divider->setFixedWidth(1);
-    divider->setStyleSheet(QStringLiteral("background-color: #2a2a2a; border: none;"));
-    stripBarLayout->addWidget(divider);
+    stripBarLayout->addWidget(createPanelControls(), 0, Qt::AlignVCenter); // pinned, non-scrolling
 
     QScrollArea *strip = new QScrollArea;
     strip->setWidgetResizable(true);
     strip->setFrameShape(QFrame::NoFrame);
     strip->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     strip->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    strip->setStyleSheet(QStringLiteral("QScrollArea { background-color: #313131; border: none; }"));
+    strip->setStyleSheet(QStringLiteral("QScrollArea { background-color: #1a1a1a; border: none; }"));
 
     QWidget *stripContainer = new QWidget;
     stripContainer->setStyleSheet(QStringLiteral("background: transparent;"));
     m_panelStripLayout = new QHBoxLayout(stripContainer);
-    m_panelStripLayout->setContentsMargins(14, 12, 14, 12);
-    m_panelStripLayout->setSpacing(12);
+    m_panelStripLayout->setContentsMargins(0, 0, 0, 0);
+    m_panelStripLayout->setSpacing(10);
     m_panelStripLayout->addStretch(1);
 
     strip->setWidget(stripContainer);
@@ -1241,7 +1235,7 @@ void StoryboardPage::rebuildPanelStrip()
                 " background: rgba(0,0,0,140); padding: 1px 4px; border-radius: 3px;"));
             num->move(5, kThumbH - 20);
 
-            m_panelStripLayout->addWidget(thumb);
+            m_panelStripLayout->addWidget(thumb, 0, Qt::AlignVCenter);
             m_panelThumbs.append(thumb);
             m_panelThumbImages.append(thumb);
         }
@@ -1258,9 +1252,10 @@ void StoryboardPage::updatePanelThumbStyles()
         const bool selected = (i == m_currentPanel);
         m_panelThumbs.at(i)->setStyleSheet(
             selected
-                ? QStringLiteral("QLabel#panelThumb { border: 2px solid #f5a623; border-radius: 4px; }")
+                ? QStringLiteral("QLabel#panelThumb { border: 2px solid #f5a623; border-radius: 4px;"
+                                 " background-color: #1a1a1a; }")
                 : QStringLiteral("QLabel#panelThumb { border: 1px solid #2a2a2a; border-radius: 4px;"
-                                 " background-color: #161616; }"));
+                                 " background-color: #1a1a1a; }"));
     }
 }
 
@@ -2069,87 +2064,70 @@ QPushButton *makeCtrlButton(CtrlIcon kind, const QColor &iconColor,
 
 QWidget *StoryboardPage::createPanelControls()
 {
+    // Controls column (Figma tokens): 44px wide, vertical, 6px gap. Four
+    // 44x30 buttons (radius 4, 1.5px #2a2a2a border), SVG icons from :/icons.
+    // Order: Add, Duplicate, Light Table, Delete.
     QWidget *column = new QWidget;
     column->setAttribute(Qt::WA_StyledBackground, true);
-    column->setFixedWidth(56);
-    column->setStyleSheet(QStringLiteral("background-color: #313131;")); // matches the strip
+    column->setFixedWidth(44);
+    column->setStyleSheet(QStringLiteral("background: transparent;"));
 
     QVBoxLayout *layout = new QVBoxLayout(column);
-    layout->setContentsMargins(8, 6, 8, 6);
-    layout->setSpacing(4); // four buttons now share the strip-bar height
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(6);
 
-    // Add — purple fill, white icon.
-    m_addPanelButton = makeCtrlButton(
-        CtrlIcon::Add, QColor(0xff, 0xff, 0xff),
+    // Base style: 44x30, radius 4, 1.5px #2a2a2a border; `bg` fills the face.
+    // `extra` appends per-button rules (hover / checked).
+    auto ctrlButton = [](const QString &iconPath, const QSize &iconSize,
+                         const QString &bg, const QString &tip, const QString &extra) {
+        QPushButton *b = new QPushButton;
+        b->setCursor(Qt::PointingHandCursor);
+        b->setFixedSize(44, 30);
+        b->setIcon(QIcon(iconPath));
+        b->setIconSize(iconSize);
+        b->setToolTip(tip);
+        b->setStyleSheet(QStringLiteral(
+            "QPushButton { background-color: %1; border: 1.5px solid #2a2a2a; border-radius: 4px; }"
+            "QPushButton:disabled { border-color: #242424; }%2").arg(bg, extra));
+        return b;
+    };
+
+    m_addPanelButton = ctrlButton(
+        QStringLiteral(":/icons/add.svg"), QSize(13, 13), QStringLiteral("#7c6ef6"),
         QStringLiteral("<b>Add Panel</b> | Creates a new storyboard panel."),
-        QStringLiteral(
-            "QPushButton { background-color: #7c6ef6; border: none; border-radius: 8px; }"
-            "QPushButton:hover { background-color: #8f82f8; }"
-            "QPushButton:disabled { background-color: #3a3550; }"));
+        QStringLiteral("QPushButton:hover { background-color: #8f82f8; }"));
     connect(m_addPanelButton, &QPushButton::clicked, this, [this] { addPanelAfterSelected(); });
-    layout->addWidget(m_addPanelButton, 0, Qt::AlignHCenter);
+    layout->addWidget(m_addPanelButton);
 
-    // Duplicate — transparent, light grey icon, grey border.
-    m_dupPanelButton = makeCtrlButton(
-        CtrlIcon::Duplicate, QColor(0xcc, 0xcc, 0xcc),
+    m_dupPanelButton = ctrlButton(
+        QStringLiteral(":/icons/duplicate.svg"), QSize(17, 17), QStringLiteral("#111111"),
         QStringLiteral("<b>Duplicate Panel</b> | Copies the selected panel."),
-        QStringLiteral(
-            "QPushButton { background-color: transparent; border: 1px solid #3a3a3a; border-radius: 8px; }"
-            "QPushButton:hover { border-color: #5a5a5a; background-color: #161616; }"
-            "QPushButton:disabled { border-color: #242424; }"));
+        QStringLiteral("QPushButton:hover { border-color: #3a3a3a; }"));
     connect(m_dupPanelButton, &QPushButton::clicked, this, [this] { duplicatePanel(); });
-    layout->addWidget(m_dupPanelButton, 0, Qt::AlignHCenter);
+    layout->addWidget(m_dupPanelButton);
 
-    // Clear — wipes the current drawing (destructive: confirms first).
-    m_clearPanelButton = makeCtrlButton(
-        CtrlIcon::Clear, QColor(0xcc, 0xcc, 0xcc),
-        QStringLiteral("<b>Clear Drawing</b> | Clears the selected panel's drawing. Asks first."),
-        QStringLiteral(
-            "QPushButton { background-color: transparent; border: 1px solid #3a3a3a; border-radius: 8px; }"
-            "QPushButton:hover { border-color: #5a5a5a; background-color: #161616; }"
-            "QPushButton:disabled { border-color: #242424; }"));
-    connect(m_clearPanelButton, &QPushButton::clicked, this, [this] {
-        if (!currentPanel())
-            return;
-        const auto answer = QMessageBox::question(
-            this, QStringLiteral("Clear this drawing?"),
-            QStringLiteral("Clear this drawing?"),
-            QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
-        if (answer == QMessageBox::Yes)
-            m_canvas->clearCanvas();
-    });
-    layout->addWidget(m_clearPanelButton, 0, Qt::AlignHCenter);
-
-    // Delete — transparent, red icon, dark-red border.
-    m_deletePanelButton = makeCtrlButton(
-        CtrlIcon::Delete, QColor(0xe0, 0x65, 0x5f),
-        QStringLiteral("<b>Delete Panel</b> | Removes the selected panel. Asks first."),
-        QStringLiteral(
-            "QPushButton { background-color: transparent; border: 1px solid #5a2a2a; border-radius: 8px; }"
-            "QPushButton:hover { border-color: #e0655f; background-color: #1a0f0f; }"
-            "QPushButton:disabled { border-color: #2a1a1a; }"));
-    connect(m_deletePanelButton, &QPushButton::clicked, this, [this] { deleteSelectedPanel(); });
-    layout->addWidget(m_deletePanelButton, 0, Qt::AlignHCenter);
-
-    // Light Table — checkable toggle (styling is a later restyle pass). Shows
-    // ghosts of the neighbouring panels behind the current drawing.
-    m_lightTableButton = makeCtrlButton(
-        CtrlIcon::LightTable, QColor(0xcc, 0xcc, 0xcc),
+    // Light Table — checkable toggle; amber border marks the ON state.
+    m_lightTableButton = ctrlButton(
+        QStringLiteral(":/icons/lighttable.svg"), QSize(14, 21), QStringLiteral("#111111"),
         QStringLiteral("<b>Light Table</b> | Ghost neighbouring panels behind the current "
                        "one (previous red, next green)."),
-        QStringLiteral(
-            "QPushButton { background-color: transparent; border: 1px solid #3a3a3a; border-radius: 8px; }"
-            "QPushButton:hover { border-color: #5a5a5a; background-color: #161616; }"
-            "QPushButton:checked { background-color: #f5a623; border: none; }"));
+        QStringLiteral("QPushButton:hover { border-color: #3a3a3a; }"
+                       "QPushButton:checked { border: 1.5px solid #f5a623; }"));
     m_lightTableButton->setCheckable(true);
     connect(m_lightTableButton, &QPushButton::toggled, this, [this](bool on) {
         if (m_canvas)
             m_canvas->setLightTableEnabled(on);
         updateLightTable();
     });
-    layout->addWidget(m_lightTableButton, 0, Qt::AlignHCenter);
+    layout->addWidget(m_lightTableButton);
 
-    layout->addStretch(1); // buttons pinned to the top
+    m_deletePanelButton = ctrlButton(
+        QStringLiteral(":/icons/delete.svg"), QSize(14, 15), QStringLiteral("#111111"),
+        QStringLiteral("<b>Delete Panel</b> | Removes the selected panel. Asks first."),
+        QStringLiteral("QPushButton:hover { border-color: #3a3a3a; }"));
+    connect(m_deletePanelButton, &QPushButton::clicked, this, [this] { deleteSelectedPanel(); });
+    layout->addWidget(m_deletePanelButton);
+
     return column;
 }
 
