@@ -8,5 +8,10 @@
         <file>icons/delete.svg</file>
         <file>icons/flip.svg</file>
         <file>icons/resetrotation.svg</file>
+        <file>icons/brush.svg</file>
+        <file>icons/erase.svg</file>
+        <file>icons/fill.svg</file>
+        <file>icons/move.svg</file>
+        <file>icons/undo.svg</file>
     </qresource>
 </RCC>

@@ -92,6 +92,7 @@ private:
     void createFloatingToolbar();   // pill toolbar floating over the canvas
     QPoint clampedFloatPos(const QWidget *panel, const QPoint &pos) const;
     void positionFloatingToolbar(); // restore persisted position / re-clamp on resize
+    void positionExtrasToolbar();   // left-centre the Shapes/Camera/Onion/size bar
     void positionZoomToolbar();     // bottom-centre the view-controls toolbar
     // Floating overlay panel: dock-style header (title + Close only),
     // draggable by the header, child of the canvas.
@@ -205,8 +206,10 @@ private:
     // Floating overlays (children of the canvas): the pill toolbar plus the
     // Brush Options / Camera panels. Registered grips/headers drag their
     // panel; registered bodies just swallow events (see eventFilter).
-    QWidget *m_floatToolbar = nullptr;
+    QWidget *m_floatToolbar = nullptr;  // horizontal Brush/tools bar (Figma 33:110)
+    QWidget *m_extrasToolbar = nullptr; // vertical bar: Shapes/Camera/Onion + size
     bool m_toolbarPosRestored = false;              // QSettings position applied once
+    bool m_extrasPosRestored = false;               // extras bar placed once
     QHash<QObject *, QWidget *> m_floatDragSources; // grip/header -> panel it moves
     QSet<QObject *> m_floatEventBlockers;           // bodies: consume, never draw
     QWidget *m_floatDragPanel = nullptr;            // panel being dragged now
