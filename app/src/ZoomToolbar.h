@@ -4,10 +4,11 @@
 #include <QPoint>
 #include <QWidget>
 
-// Custom-painted Canvas View Controls toolbar (fixed 477x42). Everything is
-// drawn in paintEvent from exact Figma coordinates so it matches pixel-for-
-// pixel; hit-testing uses the same rects. Emits value-change signals that the
-// Storyboard wires to the canvas view transforms (display only).
+// Custom-painted Canvas View Controls toolbar (fixed 523x46, Figma node
+// 86:32). Everything is drawn in paintEvent from exact Figma coordinates so it
+// matches pixel-for-pixel; hit-testing uses the same rects. Emits value-change
+// signals that the Storyboard wires to the canvas view transforms (display
+// only).
 class ZoomToolbar : public QWidget
 {
     Q_OBJECT
@@ -45,5 +46,6 @@ private:
     QPoint m_dragStartGlobal; // grip drag: cursor at press
     QPoint m_toolbarStartPos; // grip drag: toolbar pos at press
 
-    QFont m_labelFont;
+    QFont m_labelFont; // "Zoom" / "Rotate" (9px)
+    QFont m_valueFont; // numeric readouts (8px)
 };

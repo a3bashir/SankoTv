@@ -9,23 +9,32 @@
 
 namespace {
 
-// Exact Figma geometry (origin = toolbar 0,0).
-constexpr int kW = 477, kH = 42, kRadius = 12;
+// Exact Figma geometry (origin = toolbar 0,0), node 86:32.
+constexpr int kW = 523, kH = 46, kRadius = 12;
 
-constexpr int kGripX0 = 21, kGripX1 = 28; // dot columns
-const int kGripRows[3] = {14, 20, 26};    // dot rows
+// Grip: dot matrix inside a 12x20 box at (14,13).
+constexpr int kGripX = 14, kGripY = 13, kGripW = 12, kGripH = 20;
 
-constexpr int kZoomTextX = 42, kLabelY = 15;
-constexpr int kTrackY = 18, kTrackW = 112, kTrackH = 6;
-constexpr int kZoomTrackX = 84;
-constexpr int kDiv1X = 207, kDivY = 11, kDivH = 20;
-constexpr int kFlipX = 219, kFlipY = 9, kFlipS = 24;
-constexpr int kDiv2X = 254;
-constexpr int kRotTextX = 266;
-constexpr int kRotTrackX = 312;
-constexpr int kResetX = 435, kResetY = 11, kResetS = 21;
-
+// A control group ("zoom" / "rotate") is 160 wide; the label sits at its top,
+// the value readout at +138 (right-aligned to the track end), the track 14px
+// below the group top.
+constexpr int kGroupTopY = 11;
+constexpr int kTrackDY = 14;
+constexpr int kTrackY = kGroupTopY + kTrackDY; // 25
+constexpr int kTrackW = 160, kTrackH = 10;
 constexpr int kDraggerW = 20;
+constexpr int kValueDX = 138, kValueW = 22, kValueTopY = 13, kValueH = 15;
+
+constexpr int kZoomGroupX = 45;
+constexpr int kRotGroupX = 310;
+
+constexpr int kDiv1X = 224, kDivY = 12, kDivH = 23;
+constexpr int kFlipX = 244, kFlipY = 10, kFlipS = 27;
+constexpr int kDiv2X = 290;
+constexpr int kResetX = 489, kResetY = 13, kResetS = 21;
+
+// Vertical band that counts as a hit on a track (label row down through track).
+constexpr int kTrackHitY0 = 11, kTrackHitY1 = 40;
 
 constexpr double kZoomMin = 0.25, kZoomMax = 4.0;
 
@@ -50,8 +59,10 @@ ZoomToolbar::ZoomToolbar(QWidget *parent)
     setFixedSize(kW, kH);
     setMouseTracking(false);
     m_labelFont = QFont(QStringLiteral("Inter")); // falls back to the UI font
-    m_labelFont.setPixelSize(11);
+    m_labelFont.setPixelSize(9);
     m_labelFont.setWeight(QFont::DemiBold); // "Semi Bold"
+    m_valueFont = m_labelFont;
+    m_valueFont.setPixelSize(8);
 }
 
 double ZoomToolbar::zoomT() const { return zoomToT(m_zoom); }
@@ -94,36 +105,53 @@ void ZoomToolbar::paintEvent(QPaintEvent *)
     p.setBrush(QColor("#212121"));
     p.drawRoundedRect(body, kRadius, kRadius);
 
-    // Grip: 6 dots (3x3, #6a6a6a).
+    // Grip: 2-column x 3-row dot matrix (#6a6a6a) filling the 12x20 box.
     p.setPen(Qt::NoPen);
     p.setBrush(QColor("#6a6a6a"));
-    for (int row : kGripRows) {
-        p.drawRect(QRect(kGripX0, row, 3, 3));
-        p.drawRect(QRect(kGripX1, row, 3, 3));
+    {
+        const int cols[2] = {kGripX + 3, kGripX + 8};
+        const int rows[3] = {kGripY + 2, kGripY + 9, kGripY + 16};
+        for (int cx : cols)
+            for (int cy : rows)
+                p.drawRect(QRect(cx, cy, 2, 2));
     }
 
     // Labels.
     p.setFont(m_labelFont);
     p.setPen(QColor("#cccccc"));
     const int ascent = QFontMetrics(m_labelFont).ascent();
-    p.drawText(QPointF(kZoomTextX, kLabelY + ascent), QStringLiteral("Zoom"));
-    p.drawText(QPointF(kRotTextX, kLabelY + ascent), QStringLiteral("Rotate"));
+    p.drawText(QPointF(kZoomGroupX, kGroupTopY + ascent), QStringLiteral("Zoom"));
+    p.drawText(QPointF(kRotGroupX, kGroupTopY + ascent), QStringLiteral("Rotate"));
 
-    // A track: #333 base, purple-gradient filled "Control" (#7c6ef6 -> #3725d3
-    // with a faint white top overlay, per Figma), #b3b3b3 dragger.
+    // Numeric readouts, right-aligned to each track's right edge. The box is
+    // widened leftward (right edge pinned at track end) so 4-char values like
+    // "200%" / "-180" don't clip.
+    p.setFont(m_valueFont);
+    const int valueRight = kValueDX + kValueW; // 160 = track right edge
+    const int valueBoxW = 44;
+    p.drawText(QRectF(kZoomGroupX + valueRight - valueBoxW, kValueTopY, valueBoxW, kValueH),
+               Qt::AlignRight | Qt::AlignVCenter,
+               QString::number(qRound(m_zoom * 100.0)) + QLatin1Char('%'));
+    p.drawText(QRectF(kRotGroupX + valueRight - valueBoxW, kValueTopY, valueBoxW, kValueH),
+               Qt::AlignRight | Qt::AlignVCenter,
+               QString::number(qRound(m_rotation)) + QChar(0x00B0));
+
+    // A track: #333 base (radius 2), purple-gradient filled "Control" (270deg
+    // #4b4397 -> #7c6ef6 with a faint white top sheen, per Figma), #b3b3b3
+    // dragger (radius 1).
     auto paintTrack = [&](int trackX, double t) {
         const QRectF track(trackX, kTrackY, kTrackW, kTrackH);
         p.setPen(Qt::NoPen);
         p.setBrush(QColor("#333333"));
-        p.drawRoundedRect(track, 1, 1);
+        p.drawRoundedRect(track, 2, 2);
 
         const double draggerLeft = trackX + t * (kTrackW - kDraggerW);
         const double fillW = draggerLeft + kDraggerW / 2.0 - trackX; // up to dragger centre
         if (fillW > 1.0) {
             const QRectF fillR(trackX, kTrackY, fillW, kTrackH);
             QLinearGradient purple(fillR.left(), 0, fillR.right(), 0); // 270deg: dark left -> light right
-            purple.setColorAt(0.0, QColor("#3725d3"));
-            purple.setColorAt(1.0, QColor("#7c6ef6"));
+            purple.setColorAt(0.0, QColor(75, 67, 151));   // #4b4397
+            purple.setColorAt(1.0, QColor(124, 110, 246)); // #7c6ef6
             p.setPen(Qt::NoPen);
             p.setBrush(purple);
             p.drawRoundedRect(fillR, 1, 1);
@@ -137,8 +165,8 @@ void ZoomToolbar::paintEvent(QPaintEvent *)
         p.setBrush(QColor("#b3b3b3"));
         p.drawRoundedRect(QRectF(draggerLeft, kTrackY, kDraggerW, kTrackH), 1, 1);
     };
-    paintTrack(kZoomTrackX, zoomT());
-    paintTrack(kRotTrackX, rotationT());
+    paintTrack(kZoomGroupX, zoomT());
+    paintTrack(kRotGroupX, rotationT());
 
     // Dividers.
     p.setPen(Qt::NoPen);
@@ -172,11 +200,10 @@ void ZoomToolbar::mousePressEvent(QMouseEvent *event)
     if (event->button() != Qt::LeftButton)
         return;
     const QPoint pos = event->pos();
-    const QRect trackBand(0, kDivY, 0, kDivH); // vertical band for the tracks
-    Q_UNUSED(trackBand);
+    const bool inTrackBand = pos.y() >= kTrackHitY0 && pos.y() <= kTrackHitY1;
 
     // Grip drag (reposition the floating toolbar).
-    if (pos.x() >= kGripX0 - 2 && pos.x() <= kGripX1 + 5) {
+    if (pos.x() >= kGripX - 2 && pos.x() <= kGripX + kGripW + 3) {
         m_drag = DragGrip;
         m_dragStartGlobal = event->globalPosition().toPoint();
         m_toolbarStartPos = this->pos();
@@ -197,20 +224,18 @@ void ZoomToolbar::mousePressEvent(QMouseEvent *event)
         emit rotationChanged(0.0);
         return;
     }
-    // Zoom track (x 84..196).
-    if (pos.x() >= kZoomTrackX && pos.x() <= kZoomTrackX + kTrackW
-        && pos.y() >= kDivY && pos.y() <= kDivY + kDivH) {
+    // Zoom track.
+    if (pos.x() >= kZoomGroupX && pos.x() <= kZoomGroupX + kTrackW && inTrackBand) {
         m_drag = DragZoom;
-        m_zoom = tToZoom((pos.x() - kZoomTrackX) / double(kTrackW));
+        m_zoom = tToZoom((pos.x() - kZoomGroupX) / double(kTrackW));
         update();
         emit zoomChanged(m_zoom);
         return;
     }
-    // Rotate track (x 312..424).
-    if (pos.x() >= kRotTrackX && pos.x() <= kRotTrackX + kTrackW
-        && pos.y() >= kDivY && pos.y() <= kDivY + kDivH) {
+    // Rotate track.
+    if (pos.x() >= kRotGroupX && pos.x() <= kRotGroupX + kTrackW && inTrackBand) {
         m_drag = DragRotate;
-        m_rotation = tToRot((pos.x() - kRotTrackX) / double(kTrackW));
+        m_rotation = tToRot((pos.x() - kRotGroupX) / double(kTrackW));
         update();
         emit rotationChanged(m_rotation);
         return;
@@ -233,12 +258,12 @@ void ZoomToolbar::mouseMoveEvent(QMouseEvent *event)
         break;
     }
     case DragZoom:
-        m_zoom = tToZoom((event->pos().x() - kZoomTrackX) / double(kTrackW));
+        m_zoom = tToZoom((event->pos().x() - kZoomGroupX) / double(kTrackW));
         update();
         emit zoomChanged(m_zoom);
         break;
     case DragRotate:
-        m_rotation = tToRot((event->pos().x() - kRotTrackX) / double(kTrackW));
+        m_rotation = tToRot((event->pos().x() - kRotGroupX) / double(kTrackW));
         update();
         emit rotationChanged(m_rotation);
         break;
