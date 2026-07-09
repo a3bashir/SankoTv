@@ -58,8 +58,8 @@ double tToRot(double t) { return -180.0 + qBound(0.0, t, 1.0) * 360.0; }
 
 } // namespace
 
-ZoomToolbar::ZoomToolbar(QWidget *parent)
-    : QWidget(parent)
+ZoomToolbar::ZoomToolbar(QWidget *anchor, QWidget *parent)
+    : FloatingToolWindow(anchor, QStringLiteral("storyboard/zoomBarPos"), parent)
 {
     setFixedSize(kW, kH);
     setMouseTracking(true); // hover feedback on the Flip / Reset buttons
@@ -68,6 +68,22 @@ ZoomToolbar::ZoomToolbar(QWidget *parent)
     m_labelFont.setWeight(QFont::DemiBold); // "Semi Bold"
     m_valueFont = m_labelFont;
     m_valueFont.setPixelSize(8);
+}
+
+// The grab-dots band on the left is the drag region.
+QRect ZoomToolbar::gripRect() const
+{
+    return QRect(kGripX - 2, 0, kGripW + 5, kH);
+}
+
+// Default spot: bottom-centre of the canvas, 12px up.
+QPoint ZoomToolbar::defaultOffset() const
+{
+    const QWidget *a = anchorWidget();
+    if (!a)
+        return QPoint();
+    return QPoint(qMax(6, (a->width() - width()) / 2),
+                  qMax(6, a->height() - height() - 12));
 }
 
 double ZoomToolbar::zoomT() const { return zoomToT(m_zoom); }
@@ -231,14 +247,9 @@ void ZoomToolbar::mousePressEvent(QMouseEvent *event)
     const QPoint pos = event->pos();
     const bool inTrackBand = pos.y() >= kTrackHitY0 && pos.y() <= kTrackHitY1;
 
-    // Grip drag (reposition the floating toolbar).
-    if (pos.x() >= kGripX - 2 && pos.x() <= kGripX + kGripW + 3) {
-        m_drag = DragGrip;
-        m_dragStartGlobal = event->globalPosition().toPoint();
-        m_toolbarStartPos = this->pos();
-        setCursor(Qt::ClosedHandCursor);
+    // Grip drag: FloatingToolWindow handles it (global coords, clamped).
+    if (handleGripPress(event))
         return;
-    }
     // Flip / Reset buttons: show the pressed state now; the action fires on
     // release if the cursor is still over the same button.
     const Button btn = buttonAt(pos);
@@ -268,19 +279,9 @@ void ZoomToolbar::mousePressEvent(QMouseEvent *event)
 
 void ZoomToolbar::mouseMoveEvent(QMouseEvent *event)
 {
+    if (handleGripMove(event)) // grip drag in progress (base class)
+        return;
     switch (m_drag) {
-    case DragGrip: {
-        const QPoint delta = event->globalPosition().toPoint() - m_dragStartGlobal;
-        QPoint np = m_toolbarStartPos + delta;
-        if (parentWidget()) {
-            const int maxX = qMax(0, parentWidget()->width() - width());
-            const int maxY = qMax(0, parentWidget()->height() - height());
-            np.setX(qBound(0, np.x(), maxX));
-            np.setY(qBound(0, np.y(), maxY));
-        }
-        move(np);
-        break;
-    }
     case DragZoom:
         m_zoom = tToZoom((event->pos().x() - kZoomGroupX) / double(kTrackW));
         update();
@@ -309,8 +310,8 @@ void ZoomToolbar::mouseMoveEvent(QMouseEvent *event)
 
 void ZoomToolbar::mouseReleaseEvent(QMouseEvent *event)
 {
-    if (m_drag == DragGrip)
-        setCursor(Qt::ArrowCursor);
+    if (handleGripRelease(event)) // ends a grip drag + persists the offset
+        return;
     m_drag = DragNone;
 
     // Fire the button action only if released over the same button.

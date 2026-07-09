@@ -69,6 +69,8 @@ qt_add_executable(SankoTV
     src/ConsistencyBoard.h
     src/GenerationPage.cpp
     src/GenerationPage.h
+    src/FloatingToolWindow.cpp
+    src/FloatingToolWindow.h
     src/SankoDockOverlay.cpp
     src/SankoDockOverlay.h
     src/SankoSlider.cpp
