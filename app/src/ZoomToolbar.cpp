@@ -105,15 +105,19 @@ void ZoomToolbar::paintEvent(QPaintEvent *)
     p.setBrush(QColor("#212121"));
     p.drawRoundedRect(body, kRadius, kRadius);
 
-    // Grip: 2-column x 3-row dot matrix (#6a6a6a) filling the 12x20 box.
+    // Grip: 6 dots (2 cols x 3 rows of r=2 circles, #6a6a6a), matching the
+    // Figma grab-dots SVG exactly (circles at relative 2/10 x 2/10/18 in the
+    // 12x20 box).
     p.setPen(Qt::NoPen);
     p.setBrush(QColor("#6a6a6a"));
     {
-        const int cols[2] = {kGripX + 3, kGripX + 8};
-        const int rows[3] = {kGripY + 2, kGripY + 9, kGripY + 16};
-        for (int cx : cols)
-            for (int cy : rows)
-                p.drawRect(QRect(cx, cy, 2, 2));
+        const double gx = kGripX;       // 14
+        const double gy = kGripY + 0.5; // 13.5 (grab-dots frame y in toolbar)
+        const double cols[2] = {gx + 2.0, gx + 10.0};
+        const double rows[3] = {gy + 2.0, gy + 10.0, gy + 18.0};
+        for (double cx : cols)
+            for (double cy : rows)
+                p.drawEllipse(QPointF(cx, cy), 2.0, 2.0);
     }
 
     // Labels.
