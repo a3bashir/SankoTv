@@ -33,8 +33,11 @@
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QEnterEvent>
 #include <QMouseEvent>
+#include <QPaintEvent>
 #include <QPainter>
+#include <QPainterPath>
 #include <QPixmap>
 #include <QSvgRenderer>
 #include <QPlainTextEdit>
@@ -196,23 +199,20 @@ QPixmap toolIconPixmap(const char *kind, const QColor &color)
     return pm;
 }
 
-// Off = idle grey on the pill; On = dark glyph on the amber active square.
+// The tool icons ALWAYS render in this colour, in every state (the button
+// background carries the state, never the icon).
+const QColor kIconColor(0xcc, 0xcc, 0xcc); // #CCCCCC
+
+// Menu-item icon: a single #cccccc glyph (icons never recolor).
 QIcon toolIcon(const char *kind)
 {
-    QIcon icon;
-    icon.addPixmap(toolIconPixmap(kind, QColor(0xc8, 0xc8, 0xc8)), QIcon::Normal, QIcon::Off);
-    icon.addPixmap(toolIconPixmap(kind, QColor(0x16, 0x16, 0x16)), QIcon::Normal, QIcon::On);
-    icon.addPixmap(toolIconPixmap(kind, QColor(0x55, 0x55, 0x55)), QIcon::Disabled, QIcon::Off);
-    return icon;
+    return QIcon(toolIconPixmap(kind, kIconColor));
 }
 
 // --- Exact Figma tool icons (Floating Toolbar Brush, node 33:110) ----------
 // Render the ORIGINAL Figma SVG (its vector art, unmodified) into a 30x30 box
-// at the exact Figma icon size, centred, then tint it for the button state.
-// The colour is the only thing changed per state — the Figma icon itself uses
-// a colour token (var(--fill-0/--stroke-0)), so tinting matches the design.
-QPixmap figIconPixmap(const QString &svgPath, QSizeF iconSize, const QColor &tint,
-                      bool mirror = false)
+// at the exact Figma icon size, centred, then recolour to #cccccc. Antialiased.
+QPixmap figIconPixmap(const QString &svgPath, QSizeF iconSize, bool mirror = false)
 {
     constexpr qreal dpr = 2.0;
     constexpr qreal box = 30.0;
@@ -232,29 +232,16 @@ QPixmap figIconPixmap(const QString &svgPath, QSizeF iconSize, const QColor &tin
                         iconSize.width(), iconSize.height()));
     p.restore();
     p.setCompositionMode(QPainter::CompositionMode_SourceIn);
-    p.fillRect(QRectF(0, 0, box, box), tint);
+    p.fillRect(QRectF(0, 0, box, box), kIconColor);
     p.end();
     return pm;
 }
 
-// Multi-state QIcon from an exact Figma SVG: idle grey (#cccccc, the Figma
-// colour), dark glyph on the active amber square, disabled grey.
-QIcon figToolIcon(const QString &svgPath, QSizeF iconSize, bool mirror = false)
-{
-    QIcon icon;
-    icon.addPixmap(figIconPixmap(svgPath, iconSize, QColor(0xcc, 0xcc, 0xcc), mirror),
-                   QIcon::Normal, QIcon::Off);
-    icon.addPixmap(figIconPixmap(svgPath, iconSize, QColor(0x16, 0x16, 0x16), mirror),
-                   QIcon::Normal, QIcon::On);
-    icon.addPixmap(figIconPixmap(svgPath, iconSize, QColor(0x55, 0x55, 0x55), mirror),
-                   QIcon::Disabled, QIcon::Off);
-    return icon;
-}
-
-// The Figma "select" glyph is a 17x17 rounded-4 dashed rect (1.2px), drawn
-// directly (it is a vector rect in Figma, not an imported icon), centred in
-// the 30x30 box and tinted per state.
-QPixmap selectGlyphPixmap(const QColor &color)
+// The Figma "select" glyph (node 107:168): a 17x17 rounded-4 dashed marquee
+// (1.2px #cccccc) with the cursor arrow (Figma "Polygon 1", #808080) added at
+// the bottom-right, rotated 135 deg. Drawn directly (paint code, no icon file),
+// centred/positioned in the 30x30 box. Antialiased.
+QPixmap selectGlyphPixmap()
 {
     constexpr qreal dpr = 2.0;
     QPixmap pm(QSize(60, 60)); // 30x30 @ 2x
@@ -262,21 +249,152 @@ QPixmap selectGlyphPixmap(const QColor &color)
     pm.fill(Qt::transparent);
     QPainter p(&pm);
     p.setRenderHint(QPainter::Antialiasing, true);
-    QPen pen(color, 1.2, Qt::CustomDashLine, Qt::FlatCap, Qt::MiterJoin);
+    p.setRenderHint(QPainter::SmoothPixmapTransform, true);
+    // Dashed marquee rect @ (6.5, 6.5), 17x17, radius 4.
+    QPen pen(kIconColor, 1.2, Qt::CustomDashLine, Qt::FlatCap, Qt::MiterJoin);
     pen.setDashPattern({2.6, 2.0});
     p.setPen(pen);
     p.setBrush(Qt::NoBrush);
-    p.drawRoundedRect(QRectF((30.0 - 17.0) / 2.0, (30.0 - 17.0) / 2.0, 17.0, 17.0), 4, 4);
+    p.drawRoundedRect(QRectF(6.5, 6.5, 17.0, 17.0), 4, 4);
+    // Cursor arrow: the exact Figma polygon rendered with its 135-deg rotation.
+    static const char kArrowSvg[] =
+        "<svg viewBox=\"0 0 21.4155 7.71296\" xmlns=\"http://www.w3.org/2000/svg\">"
+        "<path d=\"M10.7078 0L21.4155 7.71296H0L10.7078 0Z\" fill=\"#808080\"/></svg>";
+    p.save();
+    p.translate(25.379, 28.379); // Figma container centre
+    p.rotate(135);
+    QSvgRenderer arrow(QByteArray::fromRawData(kArrowSvg, int(sizeof(kArrowSvg) - 1)));
+    arrow.render(&p, QRectF(-10.707, -5.142, 21.4155, 7.71296));
+    p.restore();
     return pm;
 }
 
-QIcon selectGlyphIcon()
+QIcon selectGlyphIcon() { return QIcon(selectGlyphPixmap()); }
+
+// Tool button (Figma 33:110 component): 30x30, radius 6, custom-painted so the
+// corners are smooth (antialiased) and the background carries the state:
+//   Default #212121 · Hover #4C4C4C · Pressed #7C6EF6 · Active(checked) #7C6EF6
+// The icon (always #cccccc) is drawn centred on top and never recolours.
+class ToolButton : public QPushButton
 {
-    QIcon icon;
-    icon.addPixmap(selectGlyphPixmap(QColor(0xcc, 0xcc, 0xcc)), QIcon::Normal, QIcon::Off);
-    icon.addPixmap(selectGlyphPixmap(QColor(0x16, 0x16, 0x16)), QIcon::Normal, QIcon::On);
-    return icon;
-}
+public:
+    explicit ToolButton(const QPixmap &icon, QWidget *parent = nullptr)
+        : QPushButton(parent), m_icon(icon)
+    {
+        setFixedSize(30, 30);
+        setCursor(Qt::PointingHandCursor);
+        setMouseTracking(true); // hover fires without a button held
+    }
+    void setIconPixmap(const QPixmap &pm)
+    {
+        m_icon = pm;
+        update();
+    }
+
+protected:
+    void enterEvent(QEnterEvent *) override { update(); }
+    void leaveEvent(QEvent *) override { update(); }
+    void mousePressEvent(QMouseEvent *e) override
+    {
+        QPushButton::mousePressEvent(e);
+        update();
+    }
+    void mouseReleaseEvent(QMouseEvent *e) override
+    {
+        QPushButton::mouseReleaseEvent(e);
+        update();
+    }
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setRenderHint(QPainter::SmoothPixmapTransform, true);
+        QColor bg(0x21, 0x21, 0x21); // Default
+        if (isDown())
+            bg = QColor(0x7c, 0x6e, 0xf6); // Pressed
+        else if (isChecked())
+            bg = QColor(0x7c, 0x6e, 0xf6); // Active tool
+        else if (isEnabled() && underMouse())
+            bg = QColor(0x4c, 0x4c, 0x4c); // Hover
+        p.setPen(Qt::NoPen);
+        p.setBrush(bg);
+        p.drawRoundedRect(QRectF(0, 0, width(), height()), 6, 6);
+        // Icon centred (by its own logical size); dimmed only when disabled.
+        p.setOpacity(isEnabled() ? 1.0 : 0.4);
+        const qreal dpr = m_icon.devicePixelRatio();
+        const QSizeF sz(m_icon.width() / dpr, m_icon.height() / dpr);
+        p.drawPixmap(QPointF((width() - sz.width()) / 2.0, (height() - sz.height()) / 2.0),
+                     m_icon);
+    }
+
+private:
+    QPixmap m_icon;
+};
+
+// Floating bar body, custom-painted with antialiasing so the 12px rounded
+// corners are smooth against the canvas (a QSS border-radius on an opaque
+// child widget renders jagged). Translucent background -> the corners are
+// truly transparent, not a square fill.
+class RoundedBar : public QWidget
+{
+public:
+    explicit RoundedBar(QWidget *parent = nullptr) : QWidget(parent)
+    {
+        setAttribute(Qt::WA_TranslucentBackground);
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setRenderHint(QPainter::SmoothPixmapTransform, true);
+        const qreal bw = 1.0; // 1px border
+        const QRectF r(bw / 2.0, bw / 2.0, width() - bw, height() - bw);
+        p.setPen(QPen(QColor(0x1a, 0x1a, 0x1a), bw));
+        p.setBrush(QColor(0x21, 0x21, 0x21));
+        p.drawRoundedRect(r, 12, 12);
+    }
+};
+
+// Colour control (Figma node 33:87): a 30x30 rounded-6 box with a 1.5px
+// #808080 border and a 24x25 rounded-4 swatch of the current colour, drawn
+// INSET so it never bleeds over the border. Custom-painted (antialiased) and
+// clipped so the corners stay crisp.
+class ColorSwatchButton : public QPushButton
+{
+public:
+    explicit ColorSwatchButton(QWidget *parent = nullptr) : QPushButton(parent)
+    {
+        setFixedSize(30, 30);
+        setCursor(Qt::PointingHandCursor);
+    }
+    void setSwatchColor(const QColor &c)
+    {
+        m_color = c;
+        update();
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        // Border frame (radius 6), inset by half the pen so it sits inside.
+        const qreal bw = 1.5;
+        const QRectF frame(bw / 2.0, bw / 2.0, width() - bw, height() - bw);
+        p.setPen(QPen(underMouse() ? QColor(0xa0, 0xa0, 0xa0) : QColor(0x80, 0x80, 0x80), bw));
+        p.setBrush(Qt::NoBrush);
+        p.drawRoundedRect(frame, 6, 6);
+        // Inset swatch (24x25 @ (3, 2.5)), fully inside the frame, rounded 4.
+        QPainterPath sw;
+        sw.addRoundedRect(QRectF(3.0, 2.5, 24.0, 25.0), 4, 4);
+        p.fillPath(sw, m_color);
+    }
+
+private:
+    QColor m_color{Qt::black};
+};
 
 // Six-dot drag grip: 3 columns x 2 rows of small grey dots (horizontal).
 QPixmap dragDotsPixmap()
@@ -769,25 +887,13 @@ void StoryboardPage::createFloatingToolbar()
     QButtonGroup *tools = new QButtonGroup(this);
     tools->setExclusive(true);
 
-    // New-style tool button (Figma 33:110 component): 30x30, radius 6. Default
-    // reads as the bar body (#212121); hover #262626, pressed #303030 are the
-    // Default/Hover/Pressed variants; the active tool gets the app's amber.
-    // iconPx = the drawn icon size inside the button (30 for the exact Figma
-    // SVGs, which are pre-composited into a 30x30 pixmap; 20 for procedural).
-    auto toolButton = [](const QIcon &icon, const QString &tip, bool checkable, int iconPx) {
-        QPushButton *b = new QPushButton;
+    // Custom-painted tool button: the background carries the state (Default
+    // #212121 / Hover #4C4C4C / Pressed #7C6EF6 / Active #7C6EF6), the #cccccc
+    // icon never recolours. Antialiased corners.
+    auto toolButton = [](const QPixmap &icon, const QString &tip, bool checkable) {
+        ToolButton *b = new ToolButton(icon);
         b->setCheckable(checkable);
-        b->setCursor(Qt::PointingHandCursor);
-        b->setFixedSize(30, 30);
-        b->setIcon(icon);
-        b->setIconSize(QSize(iconPx, iconPx));
         b->setToolTip(tip);
-        b->setStyleSheet(QStringLiteral(
-            "QPushButton { background: transparent; border: none; border-radius: 6px; }"
-            "QPushButton:hover { background-color: #262626; }"
-            "QPushButton:pressed { background-color: #303030; }"
-            "QPushButton:checked { background-color: #f5a623; }"
-            "QPushButton:disabled { background: transparent; }"));
         return b;
     };
     auto bindTool = [this](QPushButton *button, DrawingCanvas::Tool tool) {
@@ -798,13 +904,11 @@ void StoryboardPage::createFloatingToolbar()
     };
 
     // ---- Horizontal Brush bar (Figma node 33:110) ------------------------
-    m_floatToolbar = new QWidget(m_canvas);
+    // RoundedBar paints its #212121 body + 1px #1a1a1a border with antialiased
+    // 12px corners (a QSS radius on an opaque child renders jagged).
+    m_floatToolbar = new RoundedBar(m_canvas);
     m_floatToolbar->setObjectName(QStringLiteral("floatToolbar"));
-    m_floatToolbar->setAttribute(Qt::WA_StyledBackground, true);
     m_floatToolbar->setFixedHeight(46);
-    m_floatToolbar->setStyleSheet(QStringLiteral(
-        "QWidget#floatToolbar { background-color: #212121; border: 1px solid #1a1a1a;"
-        " border-radius: 12px; }"));
     m_floatToolbar->installEventFilter(this);
     m_floatEventBlockers.insert(m_floatToolbar);
 
@@ -823,22 +927,22 @@ void StoryboardPage::createFloatingToolbar()
     bar->addWidget(grip, 0, Qt::AlignVCenter);
 
     // Exact Figma icons (original SVGs) rendered at their Figma sizes; the
-    // "select" glyph is the Figma dashed rounded rect.
+    // "select" glyph is the Figma dashed marquee + cursor arrow. Tooltips use
+    // the "<b>Name</b> | description" rich-text format.
     QPushButton *brushTool = toolButton(
-        figToolIcon(QStringLiteral(":/icons/brush.svg"), QSizeF(24.1, 21.18)),
-        QStringLiteral("Brush \xE2\x80\x94 pressure-sensitive; presets include Pen"), true, 30);
+        figIconPixmap(QStringLiteral(":/icons/brush.svg"), QSizeF(24.1, 21.18)),
+        QStringLiteral("<b>Brush</b> | Paint strokes on the canvas."), true);
     QPushButton *eraser = toolButton(
-        figToolIcon(QStringLiteral(":/icons/erase.svg"), QSizeF(17.83, 20.03)),
-        QStringLiteral("Eraser"), true, 30);
+        figIconPixmap(QStringLiteral(":/icons/erase.svg"), QSizeF(17.83, 20.03)),
+        QStringLiteral("<b>Erase</b> | Remove parts of the drawing."), true);
     QPushButton *fill = toolButton(
-        figToolIcon(QStringLiteral(":/icons/fill.svg"), QSizeF(18.67, 17.43)),
-        QStringLiteral("Flood fill"), true, 30);
-    QPushButton *selection = toolButton(selectGlyphIcon(),
-        QStringLiteral("Selection \xE2\x80\x94 click to use; hold or right-click"
-                       " for Rectangle / Ellipse / Lasso"), true, 30);
+        figIconPixmap(QStringLiteral(":/icons/fill.svg"), QSizeF(18.67, 17.43)),
+        QStringLiteral("<b>Fill</b> | Fill an area with color."), true);
+    ToolButton *selection = toolButton(selectGlyphPixmap(),
+        QStringLiteral("<b>Select</b> | Select part of the canvas."), true);
     QPushButton *move = toolButton(
-        figToolIcon(QStringLiteral(":/icons/move.svg"), QSizeF(20.4, 20.4)),
-        QStringLiteral("Move \xE2\x80\x94 drag the selected pixels"), true, 30);
+        figIconPixmap(QStringLiteral(":/icons/move.svg"), QSizeF(20.4, 20.4)),
+        QStringLiteral("<b>Move</b> | Move the selected pixels."), true);
     brushTool->setChecked(true); // Brush is the default drawing tool
 
     tools->addButton(brushTool);
@@ -860,13 +964,14 @@ void StoryboardPage::createFloatingToolbar()
         "QMenu { background-color: #161616; color: #cccccc; border: 1px solid #2a2a2a;"
         " font-size: 11px; }"
         "QMenu::item { padding: 5px 18px 5px 8px; }"
-        "QMenu::item:selected { background-color: #262626; color: #f5a623; }"));
+        "QMenu::item:selected { background-color: #4c4c4c; color: #ffffff; }"));
     auto pickSelectionMode = [this, selection](DrawingCanvas::Tool mode, const char *iconKind) {
         m_selectionMode = mode;
-        // Rectangle uses the exact Figma dashed-rect glyph; Ellipse/Lasso keep
-        // their procedural icons (not part of the 33:110 frame).
-        selection->setIcon(mode == DrawingCanvas::SelectRect ? selectGlyphIcon()
-                                                             : toolIcon(iconKind));
+        // Rectangle uses the exact Figma marquee+cursor glyph; Ellipse/Lasso
+        // keep their procedural icons (not part of the 33:110 frame).
+        selection->setIconPixmap(mode == DrawingCanvas::SelectRect
+                                     ? selectGlyphPixmap()
+                                     : toolIconPixmap(iconKind, kIconColor));
         selection->setChecked(true); // the exclusive group unchecks the old tool
         if (m_canvas)
             m_canvas->setTool(mode); // also covers "already checked, mode changed"
@@ -908,31 +1013,17 @@ void StoryboardPage::createFloatingToolbar()
     bar->addWidget(selection, 0, Qt::AlignVCenter);
     bar->addWidget(move, 0, Qt::AlignVCenter);
 
-    // Color control (Figma node 33:87): a 30x30 box with a 1.5px #808080 border
-    // (radius 6) holding a 24x25 rounded-4 swatch that shows the current brush
-    // colour. The swatch is a child label that passes clicks through to the
-    // button, which opens the colour picker.
-    QPushButton *color = new QPushButton;
-    color->setCursor(Qt::PointingHandCursor);
-    color->setToolTip(QStringLiteral("Color"));
-    color->setFixedSize(30, 30);
-    color->setStyleSheet(QStringLiteral(
-        "QPushButton { background: transparent; border: 1.5px solid #808080;"
-        " border-radius: 6px; }"
-        "QPushButton:hover { border-color: #a0a0a0; }"));
-    QLabel *swatch = new QLabel(color);
-    swatch->setFixedSize(24, 25);
-    swatch->move((30 - 24) / 2, (30 - 25) / 2); // centred (3, 2)
-    swatch->setAttribute(Qt::WA_TransparentForMouseEvents);
-    auto swatchStyle = [](const QString &hex) {
-        return QStringLiteral("background-color: %1; border-radius: 4px;").arg(hex);
-    };
-    swatch->setStyleSheet(swatchStyle(QStringLiteral("#000000")));
-    connect(color, &QPushButton::clicked, this, [this, swatch, swatchStyle] {
+    // Color control (Figma node 33:87): custom-painted 30x30 rounded-6 box with
+    // a 1.5px #808080 border and an inset 24x25 rounded-4 swatch that never
+    // bleeds over the border (antialiased).
+    ColorSwatchButton *color = new ColorSwatchButton;
+    color->setToolTip(QStringLiteral("<b>Color</b> | Choose the brush color."));
+    color->setSwatchColor(Qt::black);
+    connect(color, &QPushButton::clicked, this, [this, color] {
         const QColor chosen = QColorDialog::getColor(Qt::black, this, QStringLiteral("Brush color"));
         if (chosen.isValid()) {
             m_canvas->setColor(chosen);
-            swatch->setStyleSheet(swatchStyle(chosen.name()));
+            color->setSwatchColor(chosen);
         }
     });
     bar->addWidget(color, 0, Qt::AlignVCenter);
@@ -945,15 +1036,15 @@ void StoryboardPage::createFloatingToolbar()
 
     // Undo / redo (exact Figma SVG; redo is the undo arrow mirrored).
     QPushButton *undo = toolButton(
-        figToolIcon(QStringLiteral(":/icons/undo.svg"), QSizeF(19.2, 15.2)),
-        QStringLiteral("Undo (Ctrl+Z)"), false, 30);
+        figIconPixmap(QStringLiteral(":/icons/undo.svg"), QSizeF(19.2, 15.2)),
+        QStringLiteral("<b>Undo</b> | Undo the last action."), false);
     connect(undo, &QPushButton::clicked, this, [this] { m_canvas->undo(); });
     bar->addWidget(undo, 0, Qt::AlignVCenter);
 
     // The canvas has no redo stack yet; the button ships disabled. (Flagged.)
     QPushButton *redo = toolButton(
-        figToolIcon(QStringLiteral(":/icons/undo.svg"), QSizeF(19.2, 15.2), /*mirror*/ true),
-        QStringLiteral("Redo \xE2\x80\x94 not available yet"), false, 30);
+        figIconPixmap(QStringLiteral(":/icons/undo.svg"), QSizeF(19.2, 15.2), /*mirror*/ true),
+        QStringLiteral("<b>Redo</b> | Redo the last action."), false);
     redo->setEnabled(false);
     bar->addWidget(redo, 0, Qt::AlignVCenter);
 
@@ -963,12 +1054,8 @@ void StoryboardPage::createFloatingToolbar()
     // ---- Vertical extras bar (Shapes / Camera / Onion + brush size) ------
     // Relocated here so the Brush bar matches Figma 33:110 exactly while these
     // controls stay reachable.
-    m_extrasToolbar = new QWidget(m_canvas);
+    m_extrasToolbar = new RoundedBar(m_canvas);
     m_extrasToolbar->setObjectName(QStringLiteral("extrasToolbar"));
-    m_extrasToolbar->setAttribute(Qt::WA_StyledBackground, true);
-    m_extrasToolbar->setStyleSheet(QStringLiteral(
-        "QWidget#extrasToolbar { background-color: #212121; border: 1px solid #1a1a1a;"
-        " border-radius: 12px; }"));
     m_extrasToolbar->installEventFilter(this);
     m_floatEventBlockers.insert(m_extrasToolbar);
 
@@ -987,10 +1074,10 @@ void StoryboardPage::createFloatingToolbar()
     m_floatDragSources.insert(extrasGrip, m_extrasToolbar);
     extras->addWidget(extrasGrip, 0, Qt::AlignHCenter);
 
-    QPushButton *shapes = toolButton(toolIcon("shapes"),
-        QStringLiteral("Shapes \xE2\x80\x94 rectangle, triangle, circle, line, polygon"), true, 20);
-    QPushButton *camera = toolButton(toolIcon("camera"),
-        QStringLiteral("Camera overlays \xE2\x80\x94 frame and safe-area guides"), true, 20);
+    QPushButton *shapes = toolButton(toolIconPixmap("shapes", kIconColor),
+        QStringLiteral("<b>Shapes</b> | Draw rectangles, circles, lines."), true);
+    QPushButton *camera = toolButton(toolIconPixmap("camera", kIconColor),
+        QStringLiteral("<b>Camera</b> | Frame and safe-area guides."), true);
     tools->addButton(shapes);
     tools->addButton(camera);
     bindTool(shapes, DrawingCanvas::Shapes);
@@ -1007,8 +1094,8 @@ void StoryboardPage::createFloatingToolbar()
     extras->addWidget(camera, 0, Qt::AlignHCenter);
 
     // Onion skin toggle (independent of the exclusive tool group).
-    m_onionButton = toolButton(toolIcon("onion"),
-        QStringLiteral("Onion skin (O) \xE2\x80\x94 ghost of previous panel"), true, 20);
+    m_onionButton = toolButton(toolIconPixmap("onion", kIconColor),
+        QStringLiteral("<b>Onion Skin</b> | Ghost of the previous panel."), true);
     connect(m_onionButton, &QPushButton::toggled, this, [this](bool on) {
         m_canvas->setOnionSkinEnabled(on);
         updateOnionGhost();
@@ -1759,9 +1846,24 @@ bool StoryboardPage::eventFilter(QObject *object, QEvent *event)
             source->setCursor(Qt::ClosedHandCursor);
         };
         const auto moveDrag = [this, dragTarget](const QPoint &globalPos) {
-            if (m_floatDragPanel == dragTarget)
-                dragTarget->move(clampedFloatPos(dragTarget,
-                                                 m_floatStartPos + (globalPos - m_floatDragStart)));
+            if (m_floatDragPanel != dragTarget)
+                return;
+            // Reposition by GEOMETRY only (never resize): clamp the POSITION
+            // inside the canvas; the widget keeps its fixed size at every edge.
+            const QRect before = dragTarget->geometry();
+            dragTarget->move(clampedFloatPos(dragTarget,
+                                             m_floatStartPos + (globalPos - m_floatDragStart)));
+            if (dragTarget->geometry() == before)
+                return; // clamped at an edge: nothing moved, nothing to repaint
+            // Fast-drag repaint fix: on a quick move Qt blits the widget's
+            // backing to the new spot and only invalidates the trailing strip,
+            // so the leading edge (facing motion) is left clipped — worse with
+            // a translucent child. Force a FULL repaint of the toolbar AND
+            // repaint the parent over the UNION of the old and new rects, so no
+            // stale region survives and the moving edge is always complete.
+            if (QWidget *parent = dragTarget->parentWidget())
+                parent->update(before.united(dragTarget->geometry()));
+            dragTarget->update();
         };
         const auto endDrag = [this, dragTarget, source] {
             if (m_floatDragPanel != dragTarget)
