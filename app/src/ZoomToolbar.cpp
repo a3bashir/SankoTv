@@ -10,31 +10,36 @@
 namespace {
 
 // Exact Figma geometry (origin = toolbar 0,0), node 86:32.
-constexpr int kW = 523, kH = 46, kRadius = 12;
+constexpr int kW = 528, kH = 46, kRadius = 12;
 
-// Grip: dot matrix inside a 12x20 box at (14,13).
-constexpr int kGripX = 14, kGripY = 13, kGripW = 12, kGripH = 20;
+// Grip: dot matrix inside a 12x20 box at (12,13).
+constexpr int kGripX = 12, kGripY = 13, kGripW = 12, kGripH = 20;
 
 // A control group ("zoom" / "rotate") is 160 wide; the label sits at its top,
 // the value readout at +138 (right-aligned to the track end), the track 14px
 // below the group top.
-constexpr int kGroupTopY = 11;
-constexpr int kTrackDY = 14;
-constexpr int kTrackY = kGroupTopY + kTrackDY; // 25
+constexpr double kGroupTopY = 10.5;
+constexpr double kTrackY = kGroupTopY + 14.0; // 24.5
 constexpr int kTrackW = 160, kTrackH = 10;
 constexpr int kDraggerW = 20;
-constexpr int kValueDX = 138, kValueW = 22, kValueTopY = 13, kValueH = 15;
+constexpr int kValueDX = 138, kValueW = 22, kValueH = 15;
+constexpr double kValueTopY = 12.5;
 
-constexpr int kZoomGroupX = 45;
-constexpr int kRotGroupX = 310;
+constexpr int kZoomGroupX = 43;
+constexpr int kRotGroupX = 311;
 
-constexpr int kDiv1X = 224, kDivY = 12, kDivH = 23;
-constexpr int kFlipX = 244, kFlipY = 10, kFlipS = 27;
-constexpr int kDiv2X = 290;
-constexpr int kResetX = 489, kResetY = 13, kResetS = 21;
+constexpr double kDivY = 11.5;
+constexpr int kDiv1X = 222, kDivH = 23;
+constexpr int kDiv2X = 291;
+
+// Flip / Reset are 30x30 button boxes (radius 6, bg #212121 = toolbar body, so
+// effectively icon-only); the icon sits centred inside at its Figma size
+// (flip 21.6x17.55, reset 21x21).
+constexpr int kFlipX = 242, kFlipY = 8, kFlipS = 30;
+constexpr int kResetX = 490, kResetY = 8, kResetS = 30;
 
 // Vertical band that counts as a hit on a track (label row down through track).
-constexpr int kTrackHitY0 = 11, kTrackHitY1 = 40;
+constexpr int kTrackHitY0 = 10, kTrackHitY1 = 40;
 
 constexpr double kZoomMin = 0.25, kZoomMax = 4.0;
 
@@ -111,8 +116,8 @@ void ZoomToolbar::paintEvent(QPaintEvent *)
     p.setPen(Qt::NoPen);
     p.setBrush(QColor("#6a6a6a"));
     {
-        const double gx = kGripX;       // 14
-        const double gy = kGripY + 0.5; // 13.5 (grab-dots frame y in toolbar)
+        const double gx = kGripX; // 12
+        const double gy = kGripY; // 13 (grab-dots frame y in toolbar)
         const double cols[2] = {gx + 2.0, gx + 10.0};
         const double rows[3] = {gy + 2.0, gy + 10.0, gy + 18.0};
         for (double cx : cols)
@@ -175,28 +180,31 @@ void ZoomToolbar::paintEvent(QPaintEvent *)
     // Dividers.
     p.setPen(Qt::NoPen);
     p.setBrush(QColor("#4d4d4d"));
-    p.drawRect(QRect(kDiv1X, kDivY, 1, kDivH));
-    p.drawRect(QRect(kDiv2X, kDivY, 1, kDivH));
+    p.drawRect(QRectF(kDiv1X, kDivY, 1, kDivH));
+    p.drawRect(QRectF(kDiv2X, kDivY, 1, kDivH));
 
-    // Flip button: just the icon (no background, per Figma); a faint accent
-    // panel appears only while flip is active, for feedback.
+    // Flip button (30x30 box). The Figma button bg is #212121 = the toolbar
+    // body, so it's effectively icon-only; a faint accent shows while flip is
+    // active, for feedback. Icon rendered at its Figma size, centred.
     if (m_flipH) {
         p.setPen(Qt::NoPen);
         p.setBrush(QColor(124, 110, 246, 60)); // #7c6ef6 @ ~24%
-        p.drawRoundedRect(QRectF(kFlipX, kFlipY, kFlipS, kFlipS), 5, 5);
+        p.drawRoundedRect(QRectF(kFlipX, kFlipY, kFlipS, kFlipS), 6, 6);
     }
     QSvgRenderer flipSvg(QStringLiteral(":/icons/flip.svg"));
     {
-        const double sw = 21.0, sh = 17.0; // flip.svg native aspect
-        const double s = qMin(kFlipS / sw, kFlipS / sh);
-        const double fw = sw * s, fh = sh * s;
+        const double fw = 21.6, fh = 17.55; // Figma flip icon size
         flipSvg.render(&p, QRectF(kFlipX + (kFlipS - fw) / 2.0,
                                   kFlipY + (kFlipS - fh) / 2.0, fw, fh));
     }
 
-    // Reset Rotation button icon.
+    // Reset Rotation button (30x30 box); icon 21x21 centred.
     QSvgRenderer resetSvg(QStringLiteral(":/icons/resetrotation.svg"));
-    resetSvg.render(&p, QRectF(kResetX, kResetY, kResetS, kResetS));
+    {
+        const double rw = 21.0, rh = 21.0;
+        resetSvg.render(&p, QRectF(kResetX + (kResetS - rw) / 2.0,
+                                   kResetY + (kResetS - rh) / 2.0, rw, rh));
+    }
 }
 
 void ZoomToolbar::mousePressEvent(QMouseEvent *event)
