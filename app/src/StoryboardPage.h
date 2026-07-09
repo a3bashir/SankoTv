@@ -203,9 +203,11 @@ private:
     // Last-chosen selection mode: a plain click on the combined Selection
     // button re-activates it; hold/right-click opens the mode menu.
     DrawingCanvas::Tool m_selectionMode = DrawingCanvas::SelectRect;
-    // Floating overlays (children of the canvas): the pill toolbar plus the
-    // Brush Options / Camera panels. Registered grips/headers drag their
-    // panel; registered bodies just swallow events (see eventFilter).
+    // Floating overlays. The two tool bars are PAGE children (raised above
+    // the dock/canvas stack — the canvas repaints constantly and would race a
+    // fast-moving child, clipping it); the option panels remain canvas
+    // children. Registered grips/headers drag their panel; registered bodies
+    // just swallow events (see eventFilter).
     QWidget *m_floatToolbar = nullptr;  // horizontal Brush/tools bar (Figma 33:110)
     QWidget *m_extrasToolbar = nullptr; // vertical bar: Shapes/Camera/Onion + size
     bool m_toolbarPosRestored = false;              // QSettings position applied once
