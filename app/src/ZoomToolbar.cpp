@@ -62,7 +62,7 @@ ZoomToolbar::ZoomToolbar(QWidget *parent)
     : QWidget(parent)
 {
     setFixedSize(kW, kH);
-    setMouseTracking(false);
+    setMouseTracking(true); // hover feedback on the Flip / Reset buttons
     m_labelFont = QFont(QStringLiteral("Inter")); // falls back to the UI font
     m_labelFont.setPixelSize(9);
     m_labelFont.setWeight(QFont::DemiBold); // "Semi Bold"
@@ -183,14 +183,30 @@ void ZoomToolbar::paintEvent(QPaintEvent *)
     p.drawRect(QRectF(kDiv1X, kDivY, 1, kDivH));
     p.drawRect(QRectF(kDiv2X, kDivY, 1, kDivH));
 
-    // Flip button (30x30 box). The Figma button bg is #212121 = the toolbar
-    // body, so it's effectively icon-only; a faint accent shows while flip is
-    // active, for feedback. Icon rendered at its Figma size, centred.
-    if (m_flipH) {
+    // Flip / Reset buttons (30x30 boxes, radius 6). The Figma default bg is
+    // #212121 = the toolbar body (so the default reads as icon-only); hover and
+    // pressed lift it to the app's standard #262626 / #303030. Flip also shows
+    // a purple accent while toggled on. Icons render at their Figma size,
+    // centred.
+    auto paintButtonBg = [&](const QRectF &box, Button which, bool active) {
+        QColor bg(Qt::transparent);
+        if (m_pressed == which)
+            bg = QColor("#303030"); // pressed
+        else if (m_hover == which)
+            bg = QColor("#262626"); // hover
         p.setPen(Qt::NoPen);
-        p.setBrush(QColor(124, 110, 246, 60)); // #7c6ef6 @ ~24%
-        p.drawRoundedRect(QRectF(kFlipX, kFlipY, kFlipS, kFlipS), 6, 6);
-    }
+        if (bg.alpha() > 0) {
+            p.setBrush(bg);
+            p.drawRoundedRect(box, 6, 6);
+        }
+        if (active) { // Flip toggled on: purple accent over any hover/press bg
+            p.setBrush(QColor(124, 110, 246, 60)); // #7c6ef6 @ ~24%
+            p.drawRoundedRect(box, 6, 6);
+        }
+    };
+
+    const QRectF flipBox(kFlipX, kFlipY, kFlipS, kFlipS);
+    paintButtonBg(flipBox, BtnFlip, m_flipH);
     QSvgRenderer flipSvg(QStringLiteral(":/icons/flip.svg"));
     {
         const double fw = 21.6, fh = 17.55; // Figma flip icon size
@@ -198,7 +214,8 @@ void ZoomToolbar::paintEvent(QPaintEvent *)
                                   kFlipY + (kFlipS - fh) / 2.0, fw, fh));
     }
 
-    // Reset Rotation button (30x30 box); icon 21x21 centred.
+    const QRectF resetBox(kResetX, kResetY, kResetS, kResetS);
+    paintButtonBg(resetBox, BtnReset, false);
     QSvgRenderer resetSvg(QStringLiteral(":/icons/resetrotation.svg"));
     {
         const double rw = 21.0, rh = 21.0;
@@ -222,18 +239,13 @@ void ZoomToolbar::mousePressEvent(QMouseEvent *event)
         setCursor(Qt::ClosedHandCursor);
         return;
     }
-    // Flip button.
-    if (QRect(kFlipX, kFlipY, kFlipS, kFlipS).contains(pos)) {
-        m_flipH = !m_flipH;
+    // Flip / Reset buttons: show the pressed state now; the action fires on
+    // release if the cursor is still over the same button.
+    const Button btn = buttonAt(pos);
+    if (btn != BtnNone) {
+        m_pressed = btn;
+        m_hover = BtnNone;
         update();
-        emit flipToggled();
-        return;
-    }
-    // Reset Rotation button.
-    if (QRect(kResetX, kResetY, kResetS, kResetS).contains(pos)) {
-        m_rotation = 0.0;
-        update();
-        emit rotationChanged(0.0);
         return;
     }
     // Zoom track.
@@ -279,15 +291,62 @@ void ZoomToolbar::mouseMoveEvent(QMouseEvent *event)
         update();
         emit rotationChanged(m_rotation);
         break;
-    default:
+    default: {
+        // Not dragging a slider/grip: track hover over the Flip / Reset buttons
+        // (skip while a button is held down so the pressed state stays put).
+        if (m_pressed != BtnNone)
+            break;
+        const Button h = buttonAt(event->pos());
+        if (h != m_hover) {
+            m_hover = h;
+            setCursor(h == BtnNone ? Qt::ArrowCursor : Qt::PointingHandCursor);
+            update();
+        }
         break;
+    }
     }
 }
 
 void ZoomToolbar::mouseReleaseEvent(QMouseEvent *event)
 {
-    Q_UNUSED(event);
     if (m_drag == DragGrip)
         setCursor(Qt::ArrowCursor);
     m_drag = DragNone;
+
+    // Fire the button action only if released over the same button.
+    if (m_pressed != BtnNone) {
+        const QPoint pos = event->position().toPoint();
+        const Button released = buttonAt(pos);
+        if (released == m_pressed) {
+            if (m_pressed == BtnFlip) {
+                m_flipH = !m_flipH;
+                emit flipToggled();
+            } else if (m_pressed == BtnReset) {
+                m_rotation = 0.0;
+                emit rotationChanged(0.0);
+            }
+        }
+        m_pressed = BtnNone;
+        m_hover = released; // resume hover if still over a button
+        setCursor(released == BtnNone ? Qt::ArrowCursor : Qt::PointingHandCursor);
+        update();
+    }
+}
+
+void ZoomToolbar::leaveEvent(QEvent *)
+{
+    if (m_hover != BtnNone) {
+        m_hover = BtnNone;
+        setCursor(Qt::ArrowCursor);
+        update();
+    }
+}
+
+ZoomToolbar::Button ZoomToolbar::buttonAt(const QPoint &pos) const
+{
+    if (QRect(kFlipX, kFlipY, kFlipS, kFlipS).contains(pos))
+        return BtnFlip;
+    if (QRect(kResetX, kResetY, kResetS, kResetS).contains(pos))
+        return BtnReset;
+    return BtnNone;
 }

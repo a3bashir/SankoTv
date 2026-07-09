@@ -4,11 +4,11 @@
 #include <QPoint>
 #include <QWidget>
 
-// Custom-painted Canvas View Controls toolbar (fixed 523x46, Figma node
+// Custom-painted Canvas View Controls toolbar (fixed 528x46, Figma node
 // 86:32). Everything is drawn in paintEvent from exact Figma coordinates so it
-// matches pixel-for-pixel; hit-testing uses the same rects. Emits value-change
-// signals that the Storyboard wires to the canvas view transforms (display
-// only).
+// matches pixel-for-pixel; hit-testing uses the same rects. The Flip and Reset
+// buttons have hover and pressed states. Emits value-change signals that the
+// Storyboard wires to the canvas view transforms (display only).
 class ZoomToolbar : public QWidget
 {
     Q_OBJECT
@@ -31,14 +31,19 @@ protected:
     void mousePressEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
     void mouseReleaseEvent(QMouseEvent *event) override;
+    void leaveEvent(QEvent *event) override;
 
 private:
     enum Drag { DragNone, DragZoom, DragRotate, DragGrip };
+    enum Button { BtnNone, BtnFlip, BtnReset };
 
     double zoomT() const;   // current zoom -> 0..1 along the track (log map)
     double rotationT() const; // current rotation -> 0..1 along the track (linear)
+    Button buttonAt(const QPoint &pos) const; // Flip / Reset hit-test
 
     Drag m_drag = DragNone;
+    Button m_hover = BtnNone;   // button under the cursor
+    Button m_pressed = BtnNone; // button held down
     double m_zoom = 1.0;
     double m_rotation = 0.0;
     bool m_flipH = false;
