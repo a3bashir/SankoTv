@@ -332,15 +332,24 @@ private:
 };
 
 // Floating bar body, custom-painted with antialiasing so the 12px rounded
-// corners are smooth against the canvas (a QSS border-radius on an opaque
-// child widget renders jagged). Translucent background -> the corners are
-// truly transparent, not a square fill.
+// corners are smooth (translucent background -> truly transparent corners).
+// topLevelTool: a frameless OS-composited tool window tied to the parent's
+// window — outside every widget-tree repaint region, so the canvas can never
+// clip it, and it never activates or takes focus (WindowDoesNotAcceptFocus =
+// WS_EX_NOACTIVATE on Windows), so clicking tools leaves the canvas focused.
 class RoundedBar : public QWidget
 {
 public:
-    explicit RoundedBar(QWidget *parent = nullptr) : QWidget(parent)
+    explicit RoundedBar(QWidget *parent = nullptr, bool topLevelTool = false)
+        : QWidget(parent, topLevelTool ? (Qt::Tool | Qt::FramelessWindowHint
+                                          | Qt::WindowDoesNotAcceptFocus)
+                                       : Qt::WindowFlags())
     {
         setAttribute(Qt::WA_TranslucentBackground);
+        if (topLevelTool) {
+            setAttribute(Qt::WA_ShowWithoutActivating);
+            setFocusPolicy(Qt::NoFocus);
+        }
     }
 
 protected:
@@ -906,13 +915,11 @@ void StoryboardPage::createFloatingToolbar()
 
     // ---- Horizontal Brush bar (Figma node 33:110) ------------------------
     // RoundedBar paints its #212121 body + 1px #1a1a1a border with antialiased
-    // 12px corners (a QSS radius on an opaque child renders jagged).
-    // Parented to the PAGE, not the canvas: DrawingCanvas repaints its own
-    // region constantly and raced/overwrote a fast-moving child, clipping the
-    // toolbar's leading edge. As a raised child of the page (a passive
-    // container) it sits above the whole dock/canvas stack and is outside the
-    // canvas's repaint region entirely.
-    m_floatToolbar = new RoundedBar(this);
+    // 12px corners. TOP-LEVEL frameless tool window: in-tree reparenting could
+    // not stop the constantly-repainting canvas from clipping a fast-dragged
+    // bar; an OS-composited window cannot be clipped by it. Qt::Tool ties it
+    // to the main window; it never activates or takes focus.
+    m_floatToolbar = new RoundedBar(this, /*topLevelTool=*/true);
     m_floatToolbar->setObjectName(QStringLiteral("floatToolbar"));
     m_floatToolbar->setFixedHeight(46);
     m_floatToolbar->installEventFilter(this);
@@ -1059,8 +1066,8 @@ void StoryboardPage::createFloatingToolbar()
 
     // ---- Vertical extras bar (Shapes / Camera / Onion + brush size) ------
     // Relocated here so the Brush bar matches Figma 33:110 exactly while these
-    // controls stay reachable. Page child, same as the Brush bar (see above).
-    m_extrasToolbar = new RoundedBar(this);
+    // controls stay reachable. Top-level tool window, same as the Brush bar.
+    m_extrasToolbar = new RoundedBar(this, /*topLevelTool=*/true);
     m_extrasToolbar->setObjectName(QStringLiteral("extrasToolbar"));
     m_extrasToolbar->installEventFilter(this);
     m_floatEventBlockers.insert(m_extrasToolbar);
@@ -1136,16 +1143,26 @@ QPoint StoryboardPage::clampedFloatPos(const QWidget *panel, const QPoint &pos) 
     if (!panel || !m_canvas)
         return pos;
     // POSITION-only clamp to the visible canvas area, in the panel's own
-    // parent coordinate space: canvas children clamp in canvas coords
-    // (origin 0,0); the page-parented toolbars clamp against the canvas
-    // rect mapped into page coords. Width/height are never touched — at an
-    // edge the panel stops at full size.
-    QPoint origin(0, 0);
-    if (panel->parentWidget() && panel->parentWidget() != m_canvas)
-        origin = m_canvas->mapTo(panel->parentWidget(), QPoint(0, 0));
+    // coordinate space: canvas children clamp in canvas coords (origin 0,0);
+    // the top-level tool-window bars clamp against the canvas rect in GLOBAL
+    // screen coords. Width/height are never touched — at an edge the panel
+    // stops at full size.
+    const QPoint origin = canvasOriginFor(panel);
     const int maxX = origin.x() + qMax(0, m_canvas->width() - panel->width());
     const int maxY = origin.y() + qMax(0, m_canvas->height() - panel->height());
     return QPoint(qBound(origin.x(), pos.x(), maxX), qBound(origin.y(), pos.y(), maxY));
+}
+
+// The canvas's top-left in the panel's own coordinate space.
+QPoint StoryboardPage::canvasOriginFor(const QWidget *panel) const
+{
+    if (!m_canvas)
+        return QPoint();
+    if (panel && panel->isWindow()) // top-level bars live in screen coords
+        return m_canvas->mapToGlobal(QPoint(0, 0));
+    if (panel && panel->parentWidget() && panel->parentWidget() != m_canvas)
+        return m_canvas->mapTo(panel->parentWidget(), QPoint(0, 0));
+    return QPoint(0, 0);
 }
 
 // First call restores the pill's persisted position (or a sensible default);
@@ -1154,31 +1171,27 @@ void StoryboardPage::positionFloatingToolbar()
 {
     if (!m_floatToolbar || !m_canvas)
         return;
-    // The bar is a PAGE child, so it is placed in page coordinates: canvas-
-    // relative values (defaults and the persisted position) are offset by the
-    // canvas origin mapped into the page.
-    const QPoint origin = m_canvas->mapTo(this, QPoint(0, 0));
-    const QSettings settings(QStringLiteral("SankoTV"), QStringLiteral("SankoTV"));
-    if (settings.contains(QStringLiteral("storyboard/brushBarPos"))) {
-        // User has dragged it: restore once (saved canvas-relative), then just
-        // re-clamp on resize.
-        if (!m_toolbarPosRestored) {
-            m_toolbarPosRestored = true;
-            m_floatToolbar->move(clampedFloatPos(
-                m_floatToolbar,
-                origin + settings.value(QStringLiteral("storyboard/brushBarPos")).toPoint()));
-        } else {
-            m_floatToolbar->move(clampedFloatPos(m_floatToolbar, m_floatToolbar->pos()));
+    // Top-level tool window: placed in GLOBAL coords at the canvas origin plus
+    // a canvas-relative offset, so it keeps its spot over the canvas when the
+    // main window moves or resizes.
+    if (!m_brushBarInit) {
+        m_brushBarInit = true;
+        const QSettings settings(QStringLiteral("SankoTV"), QStringLiteral("SankoTV"));
+        if (settings.contains(QStringLiteral("storyboard/brushBarPos"))) {
+            m_brushBarOffset =
+                settings.value(QStringLiteral("storyboard/brushBarPos")).toPoint();
+            m_brushBarUserPlaced = true;
         }
-    } else {
-        // No saved position: keep it bottom-centred as the canvas resizes
-        // (stacked just above the zoom toolbar: 46px + its 12px margin).
-        m_floatToolbar->move(clampedFloatPos(
-            m_floatToolbar,
-            origin + QPoint(qMax(6, (m_canvas->width() - m_floatToolbar->width()) / 2),
-                            qMax(6, m_canvas->height() - m_floatToolbar->height() - 46 - 12 - 12))));
     }
-    m_floatToolbar->raise(); // above the dock manager / canvas stack
+    if (!m_brushBarUserPlaced) {
+        // Never dragged: follow the default — bottom-centred, stacked just
+        // above the zoom toolbar (46px tall + its 12px margin).
+        m_brushBarOffset =
+            QPoint(qMax(6, (m_canvas->width() - m_floatToolbar->width()) / 2),
+                   qMax(6, m_canvas->height() - m_floatToolbar->height() - 46 - 12 - 12));
+    }
+    m_floatToolbar->move(clampedFloatPos(
+        m_floatToolbar, canvasOriginFor(m_floatToolbar) + m_brushBarOffset));
     for (QWidget *panel : {m_brushPanel, m_cameraPanel, m_shapesPanel})
         if (panel)
             panel->move(clampedFloatPos(panel, panel->pos()));
@@ -1189,23 +1202,56 @@ void StoryboardPage::positionExtrasToolbar()
 {
     if (!m_extrasToolbar || !m_canvas)
         return;
-    const QPoint origin = m_canvas->mapTo(this, QPoint(0, 0)); // page child
-    const QSettings settings(QStringLiteral("SankoTV"), QStringLiteral("SankoTV"));
-    if (settings.contains(QStringLiteral("storyboard/extrasBarPos"))) {
-        if (!m_extrasPosRestored) {
-            m_extrasPosRestored = true;
-            m_extrasToolbar->move(clampedFloatPos(
-                m_extrasToolbar,
-                origin + settings.value(QStringLiteral("storyboard/extrasBarPos")).toPoint()));
-        } else {
-            m_extrasToolbar->move(clampedFloatPos(m_extrasToolbar, m_extrasToolbar->pos()));
+    if (!m_extrasBarInit) {
+        m_extrasBarInit = true;
+        const QSettings settings(QStringLiteral("SankoTV"), QStringLiteral("SankoTV"));
+        if (settings.contains(QStringLiteral("storyboard/extrasBarPos"))) {
+            m_extrasBarOffset =
+                settings.value(QStringLiteral("storyboard/extrasBarPos")).toPoint();
+            m_extrasBarUserPlaced = true;
         }
-    } else {
-        m_extrasToolbar->move(clampedFloatPos(
-            m_extrasToolbar,
-            origin + QPoint(16, qMax(6, (m_canvas->height() - m_extrasToolbar->height()) / 2))));
     }
-    m_extrasToolbar->raise();
+    if (!m_extrasBarUserPlaced)
+        m_extrasBarOffset =
+            QPoint(16, qMax(6, (m_canvas->height() - m_extrasToolbar->height()) / 2));
+    m_extrasToolbar->move(clampedFloatPos(
+        m_extrasToolbar, canvasOriginFor(m_extrasToolbar) + m_extrasBarOffset));
+}
+
+// The bars are top-level tool windows: they don't show/hide with the page
+// automatically, so mirror the page's visibility and the main window's state
+// (hidden while minimized/hidden, back on restore). WA_ShowWithoutActivating
+// keeps showing them from stealing activation.
+void StoryboardPage::updateFloatingBarsVisibility()
+{
+    QWidget *win = window();
+    const bool visible = isVisible() && win && win->isVisible()
+        && !(win->windowState() & Qt::WindowMinimized);
+    for (QWidget *bar : {m_floatToolbar, m_extrasToolbar})
+        if (bar)
+            bar->setVisible(visible);
+    if (visible) {
+        positionFloatingToolbar();
+        positionExtrasToolbar();
+    }
+}
+
+void StoryboardPage::showEvent(QShowEvent *event)
+{
+    QWidget::showEvent(event);
+    // Follow the main window: reposition the bars on its Move/Resize, hide on
+    // minimize, restore on show (see eventFilter).
+    if (!m_windowFilterInstalled && window()) {
+        window()->installEventFilter(this);
+        m_windowFilterInstalled = true;
+    }
+    updateFloatingBarsVisibility();
+}
+
+void StoryboardPage::hideEvent(QHideEvent *event)
+{
+    QWidget::hideEvent(event);
+    updateFloatingBarsVisibility();
 }
 
 // Floating overlay panel over the canvas, styled after the dock headers:
@@ -1848,9 +1894,31 @@ bool StoryboardPage::eventFilter(QObject *object, QEvent *event)
 {
     // Floating overlays (pill toolbar + Brush/Camera panels): reposition on
     // canvas resize; drag via their registered grip/header.
-    // Resize AND Move: the page-parented bars are placed relative to the
-    // canvas rect mapped into page coords, so a dock-layout shift that moves
-    // the canvas (without resizing it) must re-place them too.
+    // Main-window follow: the top-level tool bars keep their offset over the
+    // canvas when the window moves/resizes, and hide while it is minimized or
+    // hidden (Qt::Tool already keeps them out of other apps' way).
+    if (m_windowFilterInstalled && object == window()) {
+        switch (event->type()) {
+        case QEvent::Move:
+        case QEvent::Resize:
+            if (isVisible()) {
+                positionFloatingToolbar();
+                positionExtrasToolbar();
+            }
+            break;
+        case QEvent::WindowStateChange:
+        case QEvent::Show:
+        case QEvent::Hide:
+            updateFloatingBarsVisibility();
+            break;
+        default:
+            break;
+        }
+        return false; // observe only, never consume main-window events
+    }
+    // Resize AND Move: the bars are placed relative to the canvas rect (in
+    // global coords), so a dock-layout shift that moves the canvas without
+    // resizing it must re-place them too.
     if (object == m_canvas
         && (event->type() == QEvent::Resize || event->type() == QEvent::Move)) {
         positionFloatingToolbar();
@@ -1875,12 +1943,10 @@ bool StoryboardPage::eventFilter(QObject *object, QEvent *event)
             if (m_floatDragPanel != dragTarget)
                 return;
             // POSITION-only move (never resize), clamped to the canvas area in
-            // the target's own parent coordinate space. The toolbars are PAGE
-            // children now — outside DrawingCanvas's repaint region — so the
-            // canvas's constant self-repaints can no longer race/overwrite a
-            // fast-moving bar (the root cause of the leading-edge clipping;
-            // forced update()/repaint() while still a canvas child did not fix
-            // it). A plain move() composites cleanly here.
+            // the target's own coordinate space — GLOBAL screen coords for the
+            // top-level tool-window bars (the OS composites them; nothing in
+            // the widget tree can clip them mid-drag), canvas coords for the
+            // option panels.
             dragTarget->move(clampedFloatPos(dragTarget,
                                              m_floatStartPos + (globalPos - m_floatDragStart)));
         };
@@ -1889,18 +1955,21 @@ bool StoryboardPage::eventFilter(QObject *object, QEvent *event)
                 return;
             m_floatDragPanel = nullptr;
             source->setCursor(Qt::OpenHandCursor);
-            // Persist CANVAS-relative positions (the bars are page children, so
-            // subtract the canvas origin) — stays valid across dock-layout and
-            // window-size changes.
-            const QPoint origin = m_canvas ? m_canvas->mapTo(this, QPoint(0, 0)) : QPoint();
-            if (dragTarget == m_floatToolbar)
+            // Persist CANVAS-relative offsets (the bars are top-level windows,
+            // so subtract the canvas's global origin) — stays valid across
+            // window moves/resizes and dock-layout changes.
+            const QPoint offset = dragTarget->pos() - canvasOriginFor(dragTarget);
+            if (dragTarget == m_floatToolbar) {
+                m_brushBarOffset = offset;
+                m_brushBarUserPlaced = true;
                 QSettings(QStringLiteral("SankoTV"), QStringLiteral("SankoTV"))
-                    .setValue(QStringLiteral("storyboard/brushBarPos"),
-                              dragTarget->pos() - origin);
-            else if (dragTarget == m_extrasToolbar)
+                    .setValue(QStringLiteral("storyboard/brushBarPos"), offset);
+            } else if (dragTarget == m_extrasToolbar) {
+                m_extrasBarOffset = offset;
+                m_extrasBarUserPlaced = true;
                 QSettings(QStringLiteral("SankoTV"), QStringLiteral("SankoTV"))
-                    .setValue(QStringLiteral("storyboard/extrasBarPos"),
-                              dragTarget->pos() - origin);
+                    .setValue(QStringLiteral("storyboard/extrasBarPos"), offset);
+            }
         };
         switch (event->type()) {
         case QEvent::MouseButtonPress: {

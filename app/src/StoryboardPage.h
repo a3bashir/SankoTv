@@ -82,6 +82,9 @@ signals:
 
 protected:
     bool eventFilter(QObject *object, QEvent *event) override;
+    // The top-level tool bars don't show/hide with the page automatically.
+    void showEvent(QShowEvent *event) override;
+    void hideEvent(QHideEvent *event) override;
 
 private:
     QWidget *createLeftColumn();
@@ -91,9 +94,13 @@ private:
     QWidget *createLayerPanel();
     void createFloatingToolbar();   // pill toolbar floating over the canvas
     QPoint clampedFloatPos(const QWidget *panel, const QPoint &pos) const;
-    void positionFloatingToolbar(); // restore persisted position / re-clamp on resize
+    void positionFloatingToolbar(); // place at canvas origin + persisted offset
     void positionExtrasToolbar();   // left-centre the Shapes/Camera/Onion/size bar
     void positionZoomToolbar();     // bottom-centre the view-controls toolbar
+    // Canvas origin in the panel's own coordinate space (global screen coords
+    // for the top-level bars, parent coords otherwise).
+    QPoint canvasOriginFor(const QWidget *panel) const;
+    void updateFloatingBarsVisibility(); // top-level bars mirror page/window state
     // Floating overlay panel: dock-style header (title + Close only),
     // draggable by the header, child of the canvas.
     QWidget *createFloatingPanel(const QString &title, QWidget *body);
@@ -203,15 +210,22 @@ private:
     // Last-chosen selection mode: a plain click on the combined Selection
     // button re-activates it; hold/right-click opens the mode menu.
     DrawingCanvas::Tool m_selectionMode = DrawingCanvas::SelectRect;
-    // Floating overlays. The two tool bars are PAGE children (raised above
-    // the dock/canvas stack — the canvas repaints constantly and would race a
-    // fast-moving child, clipping it); the option panels remain canvas
-    // children. Registered grips/headers drag their panel; registered bodies
-    // just swallow events (see eventFilter).
+    // Floating overlays. The two tool bars are frameless TOP-LEVEL tool
+    // windows (Qt::Tool, OS-composited): no in-tree parent could stop the
+    // constantly-repainting canvas from clipping a fast-dragged bar, but a
+    // separate window can never be clipped by it. They follow the main window
+    // (event filter) and mirror the page's visibility. The option panels
+    // remain canvas children. Registered grips/headers drag their panel;
+    // registered bodies just swallow events (see eventFilter).
     QWidget *m_floatToolbar = nullptr;  // horizontal Brush/tools bar (Figma 33:110)
     QWidget *m_extrasToolbar = nullptr; // vertical bar: Shapes/Camera/Onion + size
-    bool m_toolbarPosRestored = false;              // QSettings position applied once
-    bool m_extrasPosRestored = false;               // extras bar placed once
+    // Canvas-relative offsets of the bars (persisted). userPlaced=false keeps
+    // the default spot (re-derived on resize) until the user drags the bar.
+    QPoint m_brushBarOffset;
+    QPoint m_extrasBarOffset;
+    bool m_brushBarInit = false, m_brushBarUserPlaced = false;
+    bool m_extrasBarInit = false, m_extrasBarUserPlaced = false;
+    bool m_windowFilterInstalled = false; // main-window follow filter installed
     QHash<QObject *, QWidget *> m_floatDragSources; // grip/header -> panel it moves
     QSet<QObject *> m_floatEventBlockers;           // bodies: consume, never draw
     QWidget *m_floatDragPanel = nullptr;            // panel being dragged now
