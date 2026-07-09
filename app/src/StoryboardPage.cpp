@@ -1853,17 +1853,21 @@ bool StoryboardPage::eventFilter(QObject *object, QEvent *event)
             const QRect before = dragTarget->geometry();
             dragTarget->move(clampedFloatPos(dragTarget,
                                              m_floatStartPos + (globalPos - m_floatDragStart)));
-            if (dragTarget->geometry() == before)
+            const QRect after = dragTarget->geometry();
+            if (after == before)
                 return; // clamped at an edge: nothing moved, nothing to repaint
-            // Fast-drag repaint fix: on a quick move Qt blits the widget's
-            // backing to the new spot and only invalidates the trailing strip,
-            // so the leading edge (facing motion) is left clipped — worse with
-            // a translucent child. Force a FULL repaint of the toolbar AND
-            // repaint the parent over the UNION of the old and new rects, so no
-            // stale region survives and the moving edge is always complete.
+            // ROOT-CAUSE FIX. move() lets Qt blit the child's backing to the new
+            // spot and only ASYNCHRONOUSLY invalidate a partial region; during a
+            // continuous fast drag those async paints never catch up, so the
+            // leading edge stays filled with stale canvas pixels (the "moving
+            // mask" clip) — which is why the earlier update()-based fix failed.
+            // Repaint SYNCHRONOUSLY instead: the toolbar redraws its full content
+            // now (correct leading edge), then the canvas repaints the union of
+            // the old and new rects so the vacated area and the translucent
+            // corners are correct too. Region-clipped, so it stays cheap.
+            dragTarget->repaint();
             if (QWidget *parent = dragTarget->parentWidget())
-                parent->update(before.united(dragTarget->geometry()));
-            dragTarget->update();
+                parent->repaint(before.united(after));
         };
         const auto endDrag = [this, dragTarget, source] {
             if (m_floatDragPanel != dragTarget)
