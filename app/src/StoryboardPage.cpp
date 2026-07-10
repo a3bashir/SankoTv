@@ -48,9 +48,11 @@
 #include <QSettings>
 #include <QShortcut>
 #include <QSlider>
+#include <QStyle>
 #include <QTabletEvent>
 #include <QTimer>
 #include <QToolButton>
+#include <QToolTip>
 #include <QVBoxLayout>
 #include <Qt>
 
@@ -443,7 +445,7 @@ protected:
 
 // Selection Modifier toolbar body (Figma "Add Select" 146:67): a
 // FloatingToolWindow (so the canvas never clips it) painting a #212121
-// radius-12 body with NO border and NO shadow. NOT draggable — it sets no grip
+// radius-4 body with NO border and NO shadow. NOT draggable — it sets no grip
 // widget, so gripRect() is empty and the base ignores drags.
 class SelModBar : public FloatingToolWindow
 {
@@ -463,8 +465,8 @@ protected:
         p.fillRect(rect(), Qt::transparent); // clear -> clean corners, no artifact
         p.setCompositionMode(QPainter::CompositionMode_SourceOver);
         p.setPen(Qt::NoPen);
-        p.setBrush(QColor(0x21, 0x21, 0x21)); // #212121, radius 12, no border
-        p.drawRoundedRect(QRectF(0, 0, width(), height()), 12, 12);
+        p.setBrush(QColor(0x21, 0x21, 0x21)); // #212121, radius 4, no border
+        p.drawRoundedRect(QRectF(0, 0, width(), height()), 4, 4);
     }
 };
 
@@ -565,6 +567,25 @@ QPixmap dragDotsPixmapV()
         for (int col = 0; col < 2; ++col)
             p.drawEllipse(QPointF(2.0 + col * 8.0, 2.0 + row * 8.0), 2.0, 2.0);
     return pm;
+}
+
+// Show `text` as a tooltip centred `gap` px ABOVE the top edge of `bar`, so it
+// never overlaps the floating toolbar (Qt's default tip appears at the cursor,
+// which sits inside the bar). The size is measured with a QLabel that mirrors
+// QTipLabel (same font + frame margin + indent), so rich-text tooltips are
+// laid out correctly before placement.
+void showTooltipAboveBar(QWidget *from, QWidget *bar, const QString &text, int gap)
+{
+    QLabel probe;
+    probe.setFont(QToolTip::font());
+    probe.setMargin(1 + bar->style()->pixelMetric(QStyle::PM_ToolTipLabelFrameWidth));
+    probe.setIndent(1);
+    probe.setText(text); // Qt::AutoText: rich text ("<b>..</b>") measured as rendered
+    const QSize tip = probe.sizeHint();
+    const int barTop = bar->mapToGlobal(QPoint(0, 0)).y();
+    const int cx = from->mapToGlobal(QPoint(from->width() / 2, 0)).x();
+    QToolTip::showText(QPoint(cx - tip.width() / 2, barTop - gap - tip.height()),
+                       text, from);
 }
 
 } // namespace
@@ -1075,6 +1096,13 @@ void StoryboardPage::createFloatingToolbar()
     tools->addButton(selection);
     tools->addButton(move);
 
+    // Route every Brush-bar tooltip through eventFilter() so it renders 4px
+    // above the bar instead of at the cursor (where it overlapped the bar).
+    for (QWidget *w : {static_cast<QWidget *>(grip), static_cast<QWidget *>(brushTool),
+                       static_cast<QWidget *>(eraser), static_cast<QWidget *>(fill),
+                       static_cast<QWidget *>(selection), static_cast<QWidget *>(move)})
+        w->installEventFilter(this);
+
     bindTool(brushTool, DrawingCanvas::Brush);
     bindTool(eraser, DrawingCanvas::Eraser);
     bindTool(fill, DrawingCanvas::Fill);
@@ -1194,34 +1222,56 @@ void StoryboardPage::createFloatingToolbar()
     // switches to the Move tool; Select All / Inverse / Deselect act at once.
     SelModBar *selBar = new SelModBar(m_canvas, this);
     m_selModToolbar = selBar;
-    selBar->setFixedHeight(36);
-    QHBoxLayout *selRow = new QHBoxLayout(selBar);
-    selRow->setContentsMargins(12, 4, 12, 4);
-    selRow->setSpacing(11);
-    auto modButton = [](const QPixmap &icon, const QString &tip, bool checkable) {
-        ToolButton *b = new ToolButton(icon);
+    // Figma 146:67 lays this out absolutely, not on an even grid: a 333x43
+    // content area (buttons row + captions) inside pl17/pr13/py8 padding. The
+    // column x's come straight from the design (the caption widths set them).
+    selBar->setFixedSize(17 + 333 + 13, 8 + 43 + 8); // 363 x 59
+
+    // Button left edges within the content area (Figma node x's).
+    auto modButton = [selBar](const QPixmap &icon, const QString &tip, bool checkable,
+                              int x) {
+        ToolButton *b = new ToolButton(icon, selBar);
         b->setFixedSize(29, 29);
         b->setCheckable(checkable);
         b->setStateColors(QColor(0x4c, 0x4c, 0x4c), QColor(0x73, 0x73, 0x73));
-        b->setToolTip(tip); // name only, no description
+        b->setToolTip(tip);  // name only, no description
+        b->move(17 + x, 8);  // pl17 / py8 offset into the content area
         return b;
     };
     ToolButton *addBtn = modButton(
         figIconPixmap(QStringLiteral(":/icons/selmod_add.svg"), QSizeF(18.2, 18.2)),
-        QStringLiteral("Add"), true);
+        QStringLiteral("Add"), true, 0);
     ToolButton *removeBtn = modButton(
         figIconPixmap(QStringLiteral(":/icons/selmod_remove.svg"), QSizeF(18.2, 18.2)),
-        QStringLiteral("Remove"), true);
+        QStringLiteral("Remove"), true, 59);
     ToolButton *moveBtn = modButton(
         figIconPixmap(QStringLiteral(":/icons/selmod_move.svg"), QSizeF(20.6, 20.6)),
-        QStringLiteral("Move"), false);
-    ToolButton *selectAllBtn = modButton(selectAllGlyphPixmap(), QStringLiteral("Select All"), false);
-    ToolButton *inverseBtn = modButton(inverseGlyphPixmap(), QStringLiteral("Inverse"), false);
+        QStringLiteral("Move"), false, 120);
+    ToolButton *selectAllBtn =
+        modButton(selectAllGlyphPixmap(), QStringLiteral("Select All"), false, 179);
+    ToolButton *inverseBtn =
+        modButton(inverseGlyphPixmap(), QStringLiteral("Inverse"), false, 240);
     ToolButton *deselectBtn = modButton(
         figIconPixmap(QStringLiteral(":/icons/selmod_deselect.svg"), QSizeF(18.2, 18.2)),
-        QStringLiteral("Deselect"), false);
-    for (ToolButton *b : {addBtn, removeBtn, moveBtn, selectAllBtn, inverseBtn, deselectBtn})
-        selRow->addWidget(b);
+        QStringLiteral("Deselect"), false, 299);
+
+    // Captions centred under each button (Figma: Inter Semi-Bold 9px #CCCCCC,
+    // top row at content y=32 -> 8+32 in window coords; 3px below the buttons).
+    QFont capFont(QStringLiteral("Inter"));
+    capFont.setPixelSize(9);
+    capFont.setWeight(QFont::DemiBold);
+    const struct { ToolButton *btn; QString text; } captions[] = {
+        {addBtn, QStringLiteral("Add")},        {removeBtn, QStringLiteral("Remove")},
+        {moveBtn, QStringLiteral("Move")},      {selectAllBtn, QStringLiteral("Select All")},
+        {inverseBtn, QStringLiteral("Inverse")}, {deselectBtn, QStringLiteral("Deselect")},
+    };
+    for (const auto &c : captions) {
+        QLabel *cap = new QLabel(c.text, selBar);
+        cap->setFont(capFont);
+        cap->setStyleSheet(QStringLiteral("color:#cccccc;background:transparent;"));
+        cap->adjustSize();
+        cap->move(c.btn->x() + c.btn->width() / 2 - cap->width() / 2, 8 + 32);
+    }
     // Add / Remove: the two combine modes (mutually exclusive; both off =
     // Replace). Active = #7C6EF6 via the checked state.
     connect(addBtn, &QPushButton::clicked, this, [this, addBtn, removeBtn] {
@@ -1239,7 +1289,6 @@ void StoryboardPage::createFloatingToolbar()
     connect(selectAllBtn, &QPushButton::clicked, this, [this] { m_canvas->selectAll(); });
     connect(inverseBtn, &QPushButton::clicked, this, [this] { m_canvas->invertSelection(); });
     connect(deselectBtn, &QPushButton::clicked, this, [this] { m_canvas->clearSelection(); });
-    selBar->adjustSize();
     selBar->setDefaultOffsetProvider([this, selBar] {
         // Bottom-centre, stacked above the zoom bar (46+12+12) and Brush bar
         // (46) with an 8px gap.
@@ -2024,6 +2073,19 @@ bool StoryboardPage::eventFilter(QObject *object, QEvent *event)
     // Floating toolbars/panels manage themselves now: FloatingToolWindow's
     // shared manager watches the canvas and the main window, handling drag,
     // clamping, follow, and show/hide for every registered instance.
+
+    // Floating Brush bar tooltips: place them 4px above the bar (never over it).
+    // The filter is installed on the bar's tooltip-bearing children; catch them
+    // all by matching the top-level window rather than each pointer.
+    if (event->type() == QEvent::ToolTip) {
+        if (QWidget *w = qobject_cast<QWidget *>(object)) {
+            if (m_floatToolbar && w->window() == m_floatToolbar
+                && !w->toolTip().isEmpty()) {
+                showTooltipAboveBar(w, m_floatToolbar, w->toolTip(), 4);
+                return true; // suppress Qt's default at-cursor tooltip
+            }
+        }
+    }
 
     // Panel thumbnails: select on click, drag to reorder.
     const QVariant panelIdx = object->property("panelIndex");
