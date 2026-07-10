@@ -13,5 +13,8 @@
         <file>icons/fill.svg</file>
         <file>icons/move.svg</file>
         <file>icons/undo.svg</file>
+        <file>icons/sel_ellipse.svg</file>
+        <file>icons/sel_freehand.svg</file>
+        <file>icons/sel_polygon.svg</file>
     </qresource>
 </RCC>

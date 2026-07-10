@@ -311,6 +311,10 @@ void DrawingCanvas::setTool(Tool tool)
     commitFloating(); // an un-committed paste lands before the tool changes
     if (m_xformActive && tool != Move)
         commitTransform(); // leaving Move finalises the transform box
+    if (m_tool == SelectPoly && !m_lassoPts.isEmpty()) {
+        m_lassoPts.clear(); // an un-closed polygon selection never survives
+        setMouseTracking(false);
+    }
     m_tool = tool;
     cancelShape(); // an in-progress shape never survives a tool switch
     // Activating Move with a live selection lifts it into the transform box.
@@ -808,13 +812,37 @@ void DrawingCanvas::clearSelection()
     m_selPath = QPainterPath();
     m_selDrag = false;
     m_lassoPts.clear();
+    setMouseTracking(false); // drop any in-progress polygon-selection rubber
+    updateAntsTimer();
+    update();
+}
+
+// Close an in-progress polygon selection (double-click / Enter). Needs >= 3
+// distinct vertices; the closing click's duplicate vertex is dropped.
+void DrawingCanvas::closePolygonSelection()
+{
+    QVector<QPointF> pts = m_lassoPts;
+    if (pts.size() >= 2
+        && QLineF(pts.last(), pts.at(pts.size() - 2)).length() < 1.0)
+        pts.removeLast(); // the double-click's second press landed on the first
+    m_lassoPts.clear();
+    setMouseTracking(false);
+    if (pts.size() >= 3) {
+        QPainterPath path;
+        path.addPolygon(QPolygonF(pts));
+        path.closeSubpath();
+        m_selPath = path;
+    } else {
+        m_selPath = QPainterPath(); // too few points: nothing selected
+    }
     updateAntsTimer();
     update();
 }
 
 void DrawingCanvas::updateAntsTimer()
 {
-    const bool needed = !m_selPath.isEmpty() || m_selDrag || m_floatActive;
+    const bool needed = !m_selPath.isEmpty() || m_selDrag || m_floatActive
+        || (m_tool == SelectPoly && !m_lassoPts.isEmpty()); // building a polygon
     if (needed && !m_antsTimer->isActive())
         m_antsTimer->start();
     else if (!needed && m_antsTimer->isActive())
@@ -1740,7 +1768,9 @@ void DrawingCanvas::paintEvent(QPaintEvent *)
     // Marching ants: selection outline / in-progress drag / floating bounds,
     // drawn in canvas space through T (rotate/flip with the view). Cosmetic
     // pens keep them 1px on screen.
-    if (!m_xformActive && (!m_selPath.isEmpty() || m_selDrag || m_floatActive)) {
+    const bool polyInProgress = m_tool == SelectPoly && !m_lassoPts.isEmpty();
+    if (!m_xformActive
+        && (!m_selPath.isEmpty() || m_selDrag || m_floatActive || polyInProgress)) {
         painter.save();
         painter.setWorldTransform(T);
 
@@ -1754,6 +1784,12 @@ void DrawingCanvas::paintEvent(QPaintEvent *)
             } else if (m_lassoPts.size() >= 2) {
                 ants.addPolygon(QPolygonF(m_lassoPts));
             }
+        } else if (polyInProgress) {
+            // Open polyline through the dropped vertices + a rubber segment to
+            // the cursor (not closed until double-click/Enter).
+            QPolygonF open(m_lassoPts);
+            open.append(m_selCurrentC);
+            ants.addPolygon(open);
         } else if (m_floatActive) {
             if (m_floatFromPaste)
                 ants.addRect(floatBounds());
@@ -1813,6 +1849,21 @@ void DrawingCanvas::keyPressEvent(QKeyEvent *event)
         }
         if (event->key() == Qt::Key_Escape && (m_shapeDrag || !m_polygonPts.isEmpty())) {
             cancelShape();
+            return;
+        }
+    }
+    // Polygon selection: Enter closes the vertices into a selection, Esc
+    // cancels the in-progress polygon (before it becomes a committed mask).
+    if (m_tool == SelectPoly && !m_lassoPts.isEmpty()) {
+        if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) {
+            closePolygonSelection();
+            return;
+        }
+        if (event->key() == Qt::Key_Escape) {
+            m_lassoPts.clear();
+            setMouseTracking(false);
+            updateAntsTimer();
+            update();
             return;
         }
     }
@@ -1962,6 +2013,18 @@ void DrawingCanvas::mousePressEvent(QMouseEvent *event)
         updateAntsTimer();
         update();
         break;
+    case SelectPoly:
+        // Polygon selection: each click drops a vertex (no drag). The first
+        // vertex clears any previous selection; a rubber segment follows the
+        // cursor until double-click/Enter closes it.
+        if (m_lassoPts.isEmpty())
+            clearSelection();
+        m_lassoPts.append(toCanvasF(event->position()));
+        m_selCurrentC = m_lassoPts.last();
+        setMouseTracking(true); // rubber segment tracks the hover
+        updateAntsTimer();
+        update();
+        break;
     case Move:
         // With a selection, the transform box is active (handled by the
         // intercept above). Without one, Move does nothing.
@@ -2005,6 +2068,11 @@ void DrawingCanvas::mouseMoveEvent(QMouseEvent *event)
                 || QLineF(m_lassoPts.last(), m_selCurrentC).length() >= 1.0))
             m_lassoPts.append(m_selCurrentC);
         update(); // in-progress selection outline
+        return;
+    }
+    if (m_tool == SelectPoly && !m_lassoPts.isEmpty()) {
+        m_selCurrentC = toCanvasF(event->position()); // rubber segment endpoint
+        update();
         return;
     }
     if (m_shapeDrag || (m_tool == Shapes && !m_polygonPts.isEmpty())) {
@@ -2088,6 +2156,11 @@ void DrawingCanvas::mouseDoubleClickEvent(QMouseEvent *event)
     if (m_tool == Shapes && m_shapeKind == ShapePolygon && !m_polygonPts.isEmpty()
         && event->button() == Qt::LeftButton) {
         commitPolygon();
+        return;
+    }
+    // Double-click closes an in-progress polygon SELECTION.
+    if (m_tool == SelectPoly && event->button() == Qt::LeftButton) {
+        closePolygonSelection();
         return;
     }
     QWidget::mouseDoubleClickEvent(event);

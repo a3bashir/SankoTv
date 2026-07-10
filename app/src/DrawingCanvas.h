@@ -30,11 +30,15 @@ public:
     // Brush (the stamp-based pressure engine) is the single drawing tool;
     // pen-like behaviour is a brush preset. Eraser keeps the classic
     // QPainter stroke path. Shapes stamps geometric primitives (see
-    // ShapeKind). SelectRect/SelectEllipse/Lasso define a mask on the
-    // ACTIVE layer (marching ants); Move drags the selected pixels within
+    // ShapeKind). SelectRect/SelectEllipse/Lasso/SelectPoly define a mask on
+    // the ACTIVE layer (marching ants); Move drags the selected pixels within
     // that layer. Camera is a non-drawing tool: selecting it only opens the
     // Camera overlay panel; canvas clicks do nothing.
-    enum Tool { Brush, Eraser, Shapes, Fill, SelectRect, SelectEllipse, Lasso, Move, Camera };
+    //   Lasso     = freehand: drag to trace the selection boundary.
+    //   SelectPoly = polygon:  click to drop vertices, double-click/Enter to
+    //                close them into the selection (Esc cancels).
+    enum Tool { Brush, Eraser, Shapes, Fill, SelectRect, SelectEllipse, Lasso,
+                SelectPoly, Move, Camera };
 
     // Shapes-tool primitives. Rectangle/Triangle/Circle/Line commit on drag
     // release; Polygon collects clicked vertices until double-click/Enter
@@ -161,6 +165,7 @@ private:
     void commitDragShape(); // rectangle/triangle/circle/line, on release
     void commitPolygon();   // on double-click/Enter; needs >= 3 vertices
     void cancelShape();     // clears drag + polygon state, no artifacts
+    void closePolygonSelection(); // SelectPoly: vertices -> selection mask
 
     // Selection / floating pixels (move-lift or un-committed paste).
     // The selection path is rasterized ONCE into a hard-edged mask; lift,

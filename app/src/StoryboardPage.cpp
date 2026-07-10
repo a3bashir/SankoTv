@@ -238,6 +238,25 @@ QPixmap figIconPixmap(const QString &svgPath, QSizeF iconSize, bool mirror = fal
     return pm;
 }
 
+// Plain dashed marquee: a 17x17 rounded-4 dashed rect (1.2px #cccccc) centred
+// in the 30x30 box, no cursor arrow (the Selection Shapes popup's Rectangle
+// button, Figma node 125:326). Antialiased.
+QPixmap selectRectGlyphPixmap()
+{
+    constexpr qreal dpr = 2.0;
+    QPixmap pm(QSize(60, 60)); // 30x30 @ 2x
+    pm.setDevicePixelRatio(dpr);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    QPen pen(kIconColor, 1.2, Qt::CustomDashLine, Qt::FlatCap, Qt::MiterJoin);
+    pen.setDashPattern({2.6, 2.0});
+    p.setPen(pen);
+    p.setBrush(Qt::NoBrush);
+    p.drawRoundedRect(QRectF(6.5, 6.5, 17.0, 17.0), 4, 4);
+    return pm;
+}
+
 // The Figma "select" glyph (node 107:168): a 17x17 rounded-4 dashed marquee
 // (1.2px #cccccc) with the cursor arrow (Figma "Polygon 1", #808080) added at
 // the bottom-right, rotated 135 deg. Drawn directly (paint code, no icon file),
@@ -291,6 +310,14 @@ public:
         m_icon = pm;
         update();
     }
+    // Override the hover / pressed background colours (default: toolbar values;
+    // the Selection Shapes popup uses hover #4C4C4C, pressed #737373).
+    void setStateColors(const QColor &hover, const QColor &pressed)
+    {
+        m_hoverBg = hover;
+        m_pressedBg = pressed;
+        update();
+    }
 
 protected:
     void enterEvent(QEnterEvent *) override { update(); }
@@ -312,11 +339,11 @@ protected:
         p.setRenderHint(QPainter::SmoothPixmapTransform, true);
         QColor bg(0x21, 0x21, 0x21); // Default
         if (isDown())
-            bg = QColor(0x7c, 0x6e, 0xf6); // Pressed
+            bg = m_pressedBg; // Pressed
         else if (isChecked())
             bg = QColor(0x7c, 0x6e, 0xf6); // Active tool
         else if (isEnabled() && underMouse())
-            bg = QColor(0x4c, 0x4c, 0x4c); // Hover
+            bg = m_hoverBg; // Hover
         p.setPen(Qt::NoPen);
         p.setBrush(bg);
         p.drawRoundedRect(QRectF(0, 0, width(), height()), 6, 6);
@@ -330,6 +357,31 @@ protected:
 
 private:
     QPixmap m_icon;
+    QColor m_hoverBg{0x4c, 0x4c, 0x4c};   // #4C4C4C
+    QColor m_pressedBg{0x7c, 0x6e, 0xf6}; // #7C6EF6
+};
+
+// Frameless flyout popup (Figma "Select shapes" 128:374): a Qt::Popup window
+// (auto-closes on outside click, grabs input) painting an antialiased rounded-4
+// #212121 body. Icon-only buttons are laid out by the caller.
+class RoundedPopupFrame : public QWidget
+{
+public:
+    explicit RoundedPopupFrame(QWidget *parent = nullptr)
+        : QWidget(parent, Qt::Popup | Qt::FramelessWindowHint)
+    {
+        setAttribute(Qt::WA_TranslucentBackground);
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor(0x21, 0x21, 0x21)); // #212121, radius 4
+        p.drawRoundedRect(QRectF(0, 0, width(), height()), 4, 4);
+    }
 };
 
 // Floating bar body: a FloatingToolWindow (top-level tool window — drag,
@@ -944,44 +996,97 @@ void StoryboardPage::createFloatingToolbar()
     bindTool(fill, DrawingCanvas::Fill);
     bindTool(move, DrawingCanvas::Move);
 
-    // ONE Selection button, three modes: a plain click re-activates the
-    // last-chosen mode; click-and-hold or right-click opens the mode menu, and
-    // the button's icon mirrors the choice.
-    QMenu *selectionMenu = new QMenu(m_floatToolbar);
-    selectionMenu->setStyleSheet(QStringLiteral(
-        "QMenu { background-color: #161616; color: #cccccc; border: 1px solid #2a2a2a;"
-        " font-size: 11px; }"
-        "QMenu::item { padding: 5px 18px 5px 8px; }"
-        "QMenu::item:selected { background-color: #4c4c4c; color: #ffffff; }"));
-    auto pickSelectionMode = [this, selection](DrawingCanvas::Tool mode, const char *iconKind) {
+    // ONE Selection button, FOUR modes (Figma "Select shapes" 128:374):
+    // Rectangle / Ellipse / Freehand / Polygon. A plain click re-activates the
+    // last-chosen mode; click-and-hold or right-click opens the Selection
+    // Shapes popup, and the button's icon mirrors the choice.
+    auto selModeIcon = [](DrawingCanvas::Tool mode) -> QPixmap {
+        switch (mode) {
+        case DrawingCanvas::SelectEllipse:
+            return figIconPixmap(QStringLiteral(":/icons/sel_ellipse.svg"), QSizeF(30, 30));
+        case DrawingCanvas::Lasso:
+            return figIconPixmap(QStringLiteral(":/icons/sel_freehand.svg"), QSizeF(30, 30));
+        case DrawingCanvas::SelectPoly:
+            return figIconPixmap(QStringLiteral(":/icons/sel_polygon.svg"), QSizeF(30, 30));
+        default: // SelectRect: the marquee + cursor glyph (toolbar identity)
+            return selectGlyphPixmap();
+        }
+    };
+    auto pickSelectionMode = [this, selection, selModeIcon](DrawingCanvas::Tool mode) {
         m_selectionMode = mode;
-        // Rectangle uses the exact Figma marquee+cursor glyph; Ellipse/Lasso
-        // keep their procedural icons (not part of the 33:110 frame).
-        selection->setIconPixmap(mode == DrawingCanvas::SelectRect
-                                     ? selectGlyphPixmap()
-                                     : toolIconPixmap(iconKind, kIconColor));
+        selection->setIconPixmap(selModeIcon(mode));
         selection->setChecked(true); // the exclusive group unchecks the old tool
         if (m_canvas)
             m_canvas->setTool(mode); // also covers "already checked, mode changed"
     };
-    selectionMenu->addAction(selectGlyphIcon(), QStringLiteral("Rectangle"), this,
-                             [pickSelectionMode] { pickSelectionMode(DrawingCanvas::SelectRect, "selrect"); });
-    selectionMenu->addAction(toolIcon("selellipse"), QStringLiteral("Ellipse"), this,
-                             [pickSelectionMode] { pickSelectionMode(DrawingCanvas::SelectEllipse, "selellipse"); });
-    selectionMenu->addAction(toolIcon("lasso"), QStringLiteral("Lasso"), this,
-                             [pickSelectionMode] { pickSelectionMode(DrawingCanvas::Lasso, "lasso"); });
-    auto popupSelectionMenu = [selection, selectionMenu] {
-        // Horizontal bar: pop the menu ABOVE the button.
-        selectionMenu->popup(selection->mapToGlobal(
-            QPoint(0, -selectionMenu->sizeHint().height() - 6)));
+
+    // The popup: an icon-only, 4-button flyout matching the Figma exactly
+    // (container #212121 r4, pt3/pr3/pb4/pl6, gap 11; buttons 30x30 r6, hover
+    // #4C4C4C, pressed #737373; Rectangle = drawn dashed marquee, the rest are
+    // the exact Figma SVGs). Tooltips are the tool name only.
+    RoundedPopupFrame *shapesPopup = new RoundedPopupFrame(this);
+    QHBoxLayout *popupLayout = new QHBoxLayout(shapesPopup);
+    popupLayout->setContentsMargins(6, 3, 3, 4);
+    popupLayout->setSpacing(11);
+    struct ModeDef { DrawingCanvas::Tool mode; QPixmap icon; const char *name; };
+    const ModeDef popupModes[] = {
+        {DrawingCanvas::SelectRect, selectRectGlyphPixmap(), "Rectangle"},
+        {DrawingCanvas::SelectEllipse,
+         figIconPixmap(QStringLiteral(":/icons/sel_ellipse.svg"), QSizeF(30, 30)), "Ellipse"},
+        {DrawingCanvas::Lasso,
+         figIconPixmap(QStringLiteral(":/icons/sel_freehand.svg"), QSizeF(30, 30)), "Freehand"},
+        {DrawingCanvas::SelectPoly,
+         figIconPixmap(QStringLiteral(":/icons/sel_polygon.svg"), QSizeF(30, 30)), "Polygon"},
+    };
+    for (const ModeDef &md : popupModes) {
+        ToolButton *b = new ToolButton(md.icon);
+        b->setStateColors(QColor(0x4c, 0x4c, 0x4c), QColor(0x73, 0x73, 0x73));
+        b->setToolTip(QString::fromLatin1(md.name)); // tool name only, no desc
+        const DrawingCanvas::Tool mode = md.mode;
+        connect(b, &QPushButton::clicked, this,
+                [shapesPopup, pickSelectionMode, mode] {
+                    pickSelectionMode(mode);
+                    shapesPopup->hide();
+                });
+        popupLayout->addWidget(b);
+    }
+    shapesPopup->adjustSize();
+
+    // Automatic placement: keep a 4px gap to the Brush toolbar; prefer above,
+    // else below; always fully inside the window and clear of other floats.
+    auto showShapesPopup = [this, selection, shapesPopup] {
+        shapesPopup->adjustSize();
+        const int w = shapesPopup->width(), h = shapesPopup->height();
+        const QRect win = window()->frameGeometry();
+        const QRect barRect = m_floatToolbar->frameGeometry();
+        const QRect selRect(selection->mapToGlobal(QPoint(0, 0)), selection->size());
+        int x = qBound(win.left(), selRect.center().x() - w / 2, win.right() - w + 1);
+        const int gap = 4;
+        const int yAbove = barRect.top() - gap - h;
+        const int yBelow = barRect.bottom() + gap;
+        auto clearAt = [&](int y) {
+            const QRect r(x, y, w, h);
+            if (!win.contains(r))
+                return false;
+            const QWidget *floats[] = {m_extrasToolbar, m_zoomToolbar, m_brushPanel,
+                                       m_cameraPanel, m_shapesPanel};
+            for (const QWidget *fl : floats)
+                if (fl && fl->isVisible() && r.intersects(fl->frameGeometry()))
+                    return false;
+            return true;
+        };
+        int y = clearAt(yAbove) ? yAbove : (clearAt(yBelow) ? yBelow : yAbove);
+        y = qBound(win.top(), y, win.bottom() - h + 1); // stay fully in-window
+        shapesPopup->move(x, y);
+        shapesPopup->show();
     };
     selection->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(selection, &QPushButton::customContextMenuRequested, this,
-            [popupSelectionMenu](const QPoint &) { popupSelectionMenu(); });
-    connect(selection, &QPushButton::pressed, this, [selection, popupSelectionMenu] {
-        QTimer::singleShot(450, selection, [selection, popupSelectionMenu] {
-            if (selection->isDown()) // still held: click-and-hold opens the menu
-                popupSelectionMenu();
+            [showShapesPopup](const QPoint &) { showShapesPopup(); });
+    connect(selection, &QPushButton::pressed, this, [selection, showShapesPopup] {
+        QTimer::singleShot(450, selection, [selection, showShapesPopup] {
+            if (selection->isDown()) // still held: click-and-hold opens the popup
+                showShapesPopup();
         });
     });
     connect(selection, &QPushButton::toggled, this, [this](bool on) {
