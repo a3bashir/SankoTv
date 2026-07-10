@@ -368,7 +368,11 @@ class RoundedPopupFrame : public QWidget
 {
 public:
     explicit RoundedPopupFrame(QWidget *parent = nullptr)
-        : QWidget(parent, Qt::Popup | Qt::FramelessWindowHint)
+        // NoDropShadowWindowHint disables the OS drop shadow that Windows adds
+        // to popup windows — that native shadow is what left the white/grey
+        // artifact at the bottom-right corner of the translucent popup.
+        : QWidget(parent,
+                  Qt::Popup | Qt::FramelessWindowHint | Qt::NoDropShadowWindowHint)
     {
         setAttribute(Qt::WA_TranslucentBackground);
         setAttribute(Qt::WA_NoSystemBackground); // no opaque base behind us
@@ -1096,15 +1100,15 @@ void StoryboardPage::createFloatingToolbar()
         shapesPopup->move(x, y);
         shapesPopup->show();
     };
-    selection->setContextMenuPolicy(Qt::CustomContextMenu);
-    connect(selection, &QPushButton::customContextMenuRequested, this,
-            [showShapesPopup](const QPoint &) { showShapesPopup(); });
-    connect(selection, &QPushButton::pressed, this, [selection, showShapesPopup] {
-        QTimer::singleShot(450, selection, [selection, showShapesPopup] {
-            if (selection->isDown()) // still held: click-and-hold opens the popup
-                showShapesPopup();
-        });
-    });
+    // Clicking Select opens the Shape Selection popup. `clicked` fires on
+    // release — the button's click has fully completed (so it is checked, not
+    // left stuck "down") BEFORE the popup grabs the mouse, keeping the active
+    // state consistent.
+    connect(selection, &QPushButton::clicked, this,
+            [showShapesPopup] { showShapesPopup(); });
+    // The Select button is active whenever a selection mode is the current
+    // tool: becoming checked activates the last-chosen mode; the exclusive tool
+    // group unchecks it the moment any non-selection tool is picked.
     connect(selection, &QPushButton::toggled, this, [this](bool on) {
         if (on && m_canvas)
             m_canvas->setTool(m_selectionMode);
