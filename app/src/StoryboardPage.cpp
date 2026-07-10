@@ -371,6 +371,7 @@ public:
         : QWidget(parent, Qt::Popup | Qt::FramelessWindowHint)
     {
         setAttribute(Qt::WA_TranslucentBackground);
+        setAttribute(Qt::WA_NoSystemBackground); // no opaque base behind us
     }
 
 protected:
@@ -378,6 +379,11 @@ protected:
     {
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing, true);
+        // Clear the whole surface to transparent FIRST so the rounded corners
+        // (and the bottom-right) never keep a stale/opaque base pixel.
+        p.setCompositionMode(QPainter::CompositionMode_Source);
+        p.fillRect(rect(), Qt::transparent);
+        p.setCompositionMode(QPainter::CompositionMode_SourceOver);
         p.setPen(Qt::NoPen);
         p.setBrush(QColor(0x21, 0x21, 0x21)); // #212121, radius 4
         p.drawRoundedRect(QRectF(0, 0, width(), height()), 4, 4);
@@ -1062,8 +1068,10 @@ void StoryboardPage::createFloatingToolbar()
         const QRect selRect(selection->mapToGlobal(QPoint(0, 0)), selection->size());
         int x = qBound(win.left(), selRect.center().x() - w / 2, win.right() - w + 1);
         const int gap = 4;
+        // frameGeometry().bottom()/top() are inclusive edges, so "below" needs
+        // +1 to leave the SAME 4px empty gap that "above" does.
         const int yAbove = barRect.top() - gap - h;
-        const int yBelow = barRect.bottom() + gap;
+        const int yBelow = barRect.bottom() + 1 + gap;
         auto clearAt = [&](int y) {
             const QRect r(x, y, w, h);
             if (!win.contains(r))
@@ -1073,6 +1081,14 @@ void StoryboardPage::createFloatingToolbar()
             for (const QWidget *fl : floats)
                 if (fl && fl->isVisible() && r.intersects(fl->frameGeometry()))
                     return false;
+            // The Panel Strip occupies the band above the canvas; if opening
+            // above would overlap it, fall through to "below".
+            if (m_panelScroll && m_panelScroll->isVisible()) {
+                const QRect strip(m_panelScroll->mapToGlobal(QPoint(0, 0)),
+                                  m_panelScroll->size());
+                if (r.intersects(strip))
+                    return false;
+            }
             return true;
         };
         int y = clearAt(yAbove) ? yAbove : (clearAt(yBelow) ? yBelow : yAbove);

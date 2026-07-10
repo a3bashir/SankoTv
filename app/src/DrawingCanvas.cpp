@@ -1418,13 +1418,34 @@ void DrawingCanvas::floodFill(const QPoint &seed)
     if (m_selPath.isEmpty()) {
         layerPtr->image = image.convertToFormat(QImage::Format_ARGB32_Premultiplied);
     } else {
-        // Selection active: only pixels inside the mask take the fill;
-        // everything outside stays untouched.
-        QPainter p(&layerPtr->image);
-        p.setClipPath(m_selPath);
-        p.setCompositionMode(QPainter::CompositionMode_Source);
-        p.drawImage(0, 0, image);
-        p.end();
+        // Selection active: composite the fill through an ANTIALIASED selection
+        // mask so the filled region has smooth edges. (A hard clip path — or a
+        // binary mask — leaves jagged 1px stair-stepping at the boundary.)
+        const QRect r = m_selPath.boundingRect().toAlignedRect().intersected(image.rect());
+        if (!r.isEmpty()) {
+            // Soft mask: antialiased path fill gives a 1px coverage falloff at
+            // the selection boundary.
+            QImage mask(r.size(), QImage::Format_ARGB32_Premultiplied);
+            mask.fill(Qt::transparent);
+            QPainter mp(&mask);
+            mp.setRenderHint(QPainter::Antialiasing, true);
+            mp.translate(-r.topLeft());
+            mp.fillPath(m_selPath, Qt::white);
+            mp.end();
+            // The flood-filled pixels within the selection bbox, clipped to the
+            // soft mask (alpha = mask coverage).
+            QImage fill = image.copy(r).convertToFormat(QImage::Format_ARGB32_Premultiplied);
+            QPainter fp(&fill);
+            fp.setCompositionMode(QPainter::CompositionMode_DestinationIn);
+            fp.drawImage(0, 0, mask);
+            fp.end();
+            // Blend it over the layer with smooth (antialiased) edges.
+            QPainter p(&layerPtr->image);
+            p.setRenderHint(QPainter::Antialiasing, true);
+            p.setRenderHint(QPainter::SmoothPixmapTransform, true);
+            p.drawImage(r.topLeft(), fill);
+            p.end();
+        }
     }
     update();
 }
