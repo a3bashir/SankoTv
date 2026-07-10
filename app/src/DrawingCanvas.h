@@ -45,6 +45,10 @@ public:
     // closes it (Esc cancels).
     enum ShapeKind { ShapeRectangle, ShapeTriangle, ShapeCircle, ShapeLine, ShapePolygon };
 
+    // How a freshly-drawn selection shape combines with the existing one; the
+    // Selection Modifier toolbar's Add / Remove buttons drive this.
+    enum SelectionOp { SelReplace, SelAdd, SelSubtract };
+
     explicit DrawingCanvas(QWidget *parent = nullptr);
 
     // Fixed 16:9 working resolution for every panel layer.
@@ -117,6 +121,9 @@ public slots:
     void setShapeStrokeWidth(int px);    // 1..100, canvas pixels
     void setShapeFill(bool on);          // filled with the current colour
 
+    void setSelectionOp(SelectionOp op);
+    SelectionOp selectionOp() const { return m_selOp; }
+
     // Selection + canvas clipboard (ACTIVE layer only). Copy reads even a
     // locked layer (not an edit); cut/paste/move require an editable one.
     bool hasSelection() const { return !m_selPath.isEmpty(); }
@@ -125,6 +132,8 @@ public slots:
     void cutSelection();                  // copy, then clear to transparent (undoable)
     void pasteClipboard(bool atOriginalPos); // floating paste; commit on click-away/Enter
     void clearSelection();                // Esc equivalent
+    void selectAll();                     // select the whole canvas
+    void invertSelection();               // canvas minus current selection
 
 signals:
     void contentChanged();
@@ -166,6 +175,7 @@ private:
     void commitPolygon();   // on double-click/Enter; needs >= 3 vertices
     void cancelShape();     // clears drag + polygon state, no artifacts
     void closePolygonSelection(); // SelectPoly: vertices -> selection mask
+    QPainterPath combinedSelection(const QPainterPath &shape) const; // Replace/Add/Sub
 
     // Selection / floating pixels (move-lift or un-committed paste).
     // The selection path is rasterized ONCE into a hard-edged mask; lift,
@@ -212,6 +222,8 @@ private:
 
     // Selection state (mask on the ACTIVE layer, canvas coords).
     QPainterPath m_selPath;        // empty = no selection
+    QPainterPath m_selBase;        // selection before the current Add/Sub drag
+    SelectionOp m_selOp = SelReplace;
     bool m_selDrag = false;        // dragging out a new selection
     QPointF m_selStartC;
     QPointF m_selCurrentC;

@@ -16,5 +16,9 @@
         <file>icons/sel_ellipse.svg</file>
         <file>icons/sel_freehand.svg</file>
         <file>icons/sel_polygon.svg</file>
+        <file>icons/selmod_add.svg</file>
+        <file>icons/selmod_remove.svg</file>
+        <file>icons/selmod_move.svg</file>
+        <file>icons/selmod_deselect.svg</file>
     </qresource>
 </RCC>

@@ -831,10 +831,55 @@ void DrawingCanvas::closePolygonSelection()
         QPainterPath path;
         path.addPolygon(QPolygonF(pts));
         path.closeSubpath();
-        m_selPath = path;
+        m_selPath = combinedSelection(path); // Replace / Add / Subtract
     } else {
-        m_selPath = QPainterPath(); // too few points: nothing selected
+        m_selPath = combinedSelection(QPainterPath()); // too few: keep base (Add/Sub)
     }
+    m_selBase = QPainterPath();
+    updateAntsTimer();
+    update();
+}
+
+// Combine a freshly-drawn selection shape with the pre-drag selection
+// (m_selBase) per the active operation.
+QPainterPath DrawingCanvas::combinedSelection(const QPainterPath &shape) const
+{
+    switch (m_selOp) {
+    case SelAdd:
+        return m_selBase.united(shape);
+    case SelSubtract:
+        return m_selBase.subtracted(shape);
+    default: // SelReplace
+        return shape;
+    }
+}
+
+void DrawingCanvas::setSelectionOp(SelectionOp op)
+{
+    m_selOp = op;
+}
+
+// Select the whole active layer (the canvas rect).
+void DrawingCanvas::selectAll()
+{
+    QPainterPath path;
+    path.addRect(QRectF(QPointF(0, 0), QSizeF(canvasSize())));
+    m_selPath = path;
+    m_selDrag = false;
+    m_lassoPts.clear();
+    updateAntsTimer();
+    update();
+}
+
+// Invert: the canvas rect minus the current selection (an empty selection
+// inverts to the whole canvas).
+void DrawingCanvas::invertSelection()
+{
+    QPainterPath full;
+    full.addRect(QRectF(QPointF(0, 0), QSizeF(canvasSize())));
+    m_selPath = m_selPath.isEmpty() ? full : full.subtracted(m_selPath);
+    m_selDrag = false;
+    m_lassoPts.clear();
     updateAntsTimer();
     update();
 }
@@ -2019,13 +2064,18 @@ void DrawingCanvas::mousePressEvent(QMouseEvent *event)
         break;
     case SelectRect:
     case SelectEllipse:
-        clearSelection(); // a bare click (degenerate drag) just clears
+        // Add/Subtract combine the new shape with the pre-drag selection;
+        // Replace starts fresh. (A bare click = degenerate drag: Replace clears,
+        // Add/Subtract leave the existing selection untouched.)
+        m_selBase = m_selOp == SelReplace ? QPainterPath() : m_selPath;
+        clearSelection();
         m_selDrag = true;
         m_selStartC = m_selCurrentC = toCanvasF(event->position());
         updateAntsTimer();
         update();
         break;
     case Lasso:
+        m_selBase = m_selOp == SelReplace ? QPainterPath() : m_selPath;
         clearSelection();
         m_selDrag = true;
         m_lassoPts.clear();
@@ -2036,10 +2086,12 @@ void DrawingCanvas::mousePressEvent(QMouseEvent *event)
         break;
     case SelectPoly:
         // Polygon selection: each click drops a vertex (no drag). The first
-        // vertex clears any previous selection; a rubber segment follows the
-        // cursor until double-click/Enter closes it.
-        if (m_lassoPts.isEmpty())
+        // vertex captures the pre-drag selection (for Add/Subtract) and clears
+        // the live one; a rubber segment follows the cursor until close.
+        if (m_lassoPts.isEmpty()) {
+            m_selBase = m_selOp == SelReplace ? QPainterPath() : m_selPath;
             clearSelection();
+        }
         m_lassoPts.append(toCanvasF(event->position()));
         m_selCurrentC = m_lassoPts.last();
         setMouseTracking(true); // rubber segment tracks the hover
@@ -2153,7 +2205,10 @@ void DrawingCanvas::mouseReleaseEvent(QMouseEvent *event)
             path.addPolygon(QPolygonF(m_lassoPts)); // closes on release
             path.closeSubpath();
         }
-        m_selPath = path; // degenerate drags leave it empty = cleared
+        // Replace: the new shape (degenerate = cleared). Add/Subtract combine
+        // it with the pre-drag selection (degenerate = base unchanged).
+        m_selPath = combinedSelection(path);
+        m_selBase = QPainterPath();
         m_lassoPts.clear();
         updateAntsTimer();
         update();
