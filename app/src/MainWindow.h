@@ -5,6 +5,7 @@
 #include <QVector>
 
 class DashboardPage;
+class QUndoStack;
 class ScriptEditorPage;
 class StoryboardPage;
 class AnimaticPage;
@@ -41,6 +42,7 @@ private:
     bool loadFromPath(const QString &path);
 
     QStackedWidget *m_stack = nullptr;
+    QUndoStack *m_undoStack = nullptr; // ONE app-wide chronological history
     DashboardPage *m_dashboard = nullptr;
     ScriptEditorPage *m_scriptEditor = nullptr;
     StoryboardPage *m_storyboard = nullptr;

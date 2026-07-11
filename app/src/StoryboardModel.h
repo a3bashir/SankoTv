@@ -34,14 +34,6 @@ struct Layer
     bool locked = false;
 };
 
-// One undo step: a snapshot of a single layer's pixels. Keyed by layer id so
-// undo still lands on the right layer after reorder / delete of other layers.
-struct LayerUndoEntry
-{
-    QString layerId;
-    QImage image;
-};
-
 // A fresh, fully transparent canvas-sized layer image.
 inline QImage makeLayerImage()
 {
@@ -74,8 +66,7 @@ struct Panel
     QString mood;
     QString notes;
     int duration = 3; // seconds on screen in the animatic
-    QVector<LayerUndoEntry> undoStack; // capped to 20 snapshots by DrawingCanvas
-    QVector<LayerUndoEntry> redoStack; // undone snapshots; cleared on a new edit
+    // Undo/redo lives in the app-wide QUndoStack (MainWindow), not per panel.
 
     // AI video generation (Generation screen).
     QString generationStatus = QStringLiteral("Not Queued"); // Not Queued, Queued,

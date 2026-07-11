@@ -51,6 +51,8 @@
 #include <QStyle>
 #include <QTabletEvent>
 #include <QTimer>
+#include <QUndoCommand>
+#include <QUndoStack>
 #include <QToolButton>
 #include <QToolTip>
 #include <QVBoxLayout>
@@ -605,6 +607,96 @@ void showTooltipAboveBar(QWidget *from, QWidget *bar, const QString &text, int g
     QToolTip::showText(QPoint(cx - tip.width() / 2, barTop - gap - tip.height()),
                        text, from);
 }
+
+// --- App-wide undo commands for the panel list --------------------------------
+// Insert covers Add / Duplicate / Paste; ownership of the DETACHED Panel
+// follows the undo state, so a truncated history never leaks or double-frees.
+class InsertPanelCommand : public QUndoCommand
+{
+public:
+    InsertPanelCommand(StoryboardPage *page, Scene *scene, int index,
+                       Panel *panel, const QString &text)
+        : QUndoCommand(text), m_page(page), m_scene(scene), m_index(index),
+          m_panel(panel)
+    {
+    }
+    ~InsertPanelCommand() override
+    {
+        if (m_owns)
+            delete m_panel;
+    }
+    void redo() override
+    {
+        m_page->applyPanelInsertForUndo(m_scene, m_index, m_panel);
+        m_owns = false;
+    }
+    void undo() override
+    {
+        m_page->applyPanelRemoveForUndo(m_scene, m_index);
+        m_owns = true;
+    }
+
+private:
+    StoryboardPage *m_page;
+    Scene *m_scene;
+    int m_index;
+    Panel *m_panel;
+    bool m_owns = true;
+};
+
+// Delete / Cut a panel. The command captures the panel and owns it while it
+// is detached from the scene.
+class RemovePanelCommand : public QUndoCommand
+{
+public:
+    RemovePanelCommand(StoryboardPage *page, Scene *scene, int index,
+                       const QString &text)
+        : QUndoCommand(text), m_page(page), m_scene(scene), m_index(index),
+          m_panel(scene->panels.at(index))
+    {
+    }
+    ~RemovePanelCommand() override
+    {
+        if (m_owns)
+            delete m_panel;
+    }
+    void redo() override
+    {
+        m_page->applyPanelRemoveForUndo(m_scene, m_index);
+        m_owns = true;
+    }
+    void undo() override
+    {
+        m_page->applyPanelInsertForUndo(m_scene, m_index, m_panel);
+        m_owns = false;
+    }
+
+private:
+    StoryboardPage *m_page;
+    Scene *m_scene;
+    int m_index;
+    Panel *m_panel;
+    bool m_owns = false;
+};
+
+// Reorder a panel within its scene (both indices are FINAL positions).
+class MovePanelCommand : public QUndoCommand
+{
+public:
+    MovePanelCommand(StoryboardPage *page, Scene *scene, int from, int to)
+        : QUndoCommand(QStringLiteral("Reorder Panel")), m_page(page),
+          m_scene(scene), m_from(from), m_to(to)
+    {
+    }
+    void redo() override { m_page->applyPanelMoveForUndo(m_scene, m_from, m_to); }
+    void undo() override { m_page->applyPanelMoveForUndo(m_scene, m_to, m_from); }
+
+private:
+    StoryboardPage *m_page;
+    Scene *m_scene;
+    int m_from;
+    int m_to;
+};
 
 } // namespace
 
@@ -2078,6 +2170,8 @@ QWidget *StoryboardPage::createBottomBar()
 
 void StoryboardPage::loadScenes(const QVector<Scene *> &scenes)
 {
+    if (m_undoStack)
+        m_undoStack->clear(); // a fresh document starts with a fresh history
     m_scenes = scenes; // non-owning; MainWindow owns the Scene/Panel objects
     m_currentScene = -1;
     m_currentPanel = -1;
@@ -2137,6 +2231,61 @@ void StoryboardPage::updateOnionGhost()
         m_canvas->setPreviousPixmap(QPixmap()); // clears the ghost
 }
 
+// --- App-wide undo plumbing ---------------------------------------------------
+
+void StoryboardPage::setUndoStack(QUndoStack *stack)
+{
+    m_undoStack = stack;
+    if (m_canvas)
+        m_canvas->setUndoStack(stack);
+}
+
+// Command callbacks: mutate the scene's panel list and refresh, jumping to
+// the affected scene first so undo lands where the user can see it.
+void StoryboardPage::applyPanelInsertForUndo(Scene *scene, int index, Panel *panel)
+{
+    const int sceneIdx = m_scenes.indexOf(scene);
+    if (sceneIdx < 0 || !panel)
+        return;
+    if (sceneIdx != m_currentScene)
+        selectScene(sceneIdx);
+    index = qBound(0, index, int(scene->panels.size()));
+    scene->panels.insert(index, panel);
+    rebuildPanelStrip();
+    selectPanel(index);
+    updateDuplicateButton();
+    if (m_panelScroll && index < m_panelThumbs.size())
+        m_panelScroll->ensureWidgetVisible(m_panelThumbs.at(index));
+}
+
+Panel *StoryboardPage::applyPanelRemoveForUndo(Scene *scene, int index)
+{
+    const int sceneIdx = m_scenes.indexOf(scene);
+    if (sceneIdx < 0 || index < 0 || index >= scene->panels.size())
+        return nullptr;
+    if (sceneIdx != m_currentScene)
+        selectScene(sceneIdx);
+    Panel *panel = scene->panels.takeAt(index);
+    rebuildPanelStrip();
+    if (!scene->panels.isEmpty())
+        selectPanel(qBound(0, index, int(scene->panels.size()) - 1));
+    updateDuplicateButton();
+    return panel;
+}
+
+void StoryboardPage::applyPanelMoveForUndo(Scene *scene, int from, int to)
+{
+    const int sceneIdx = m_scenes.indexOf(scene);
+    if (sceneIdx < 0 || from < 0 || from >= scene->panels.size() || to < 0
+        || to >= scene->panels.size())
+        return;
+    if (sceneIdx != m_currentScene)
+        selectScene(sceneIdx);
+    scene->panels.move(from, to);
+    rebuildPanelStrip();
+    selectPanel(to);
+}
+
 void StoryboardPage::addPanelToScene(int sceneIndex)
 {
     if (sceneIndex < 0 || sceneIndex >= m_scenes.size())
@@ -2145,9 +2294,11 @@ void StoryboardPage::addPanelToScene(int sceneIndex)
         selectScene(sceneIndex);
 
     Scene *scene = m_scenes.at(sceneIndex);
-    scene->panels.append(makePanel());
-    rebuildPanelStrip();
-    selectPanel(scene->panels.size() - 1);
+    if (!m_undoStack)
+        return;
+    m_undoStack->push(new InsertPanelCommand(this, scene, scene->panels.size(),
+                                             makePanel(),
+                                             QStringLiteral("Add Panel")));
 }
 
 // --- Shot info ------------------------------------------------------------
@@ -2396,16 +2547,10 @@ void StoryboardPage::movePanel(int from, int target)
         return;
     target = qBound(0, target, scene->panels.size());
 
-    Panel *selected = currentPanel(); // keep selection by pointer
-    Panel *moved = scene->panels.takeAt(from);
     const int dest = (target > from) ? target - 1 : target;
-    scene->panels.insert(dest, moved);
-
-    rebuildPanelStrip();
-    int newSel = scene->panels.indexOf(selected);
-    if (newSel < 0)
-        newSel = scene->panels.indexOf(moved);
-    selectPanel(newSel >= 0 ? newSel : 0);
+    if (dest == from || !m_undoStack)
+        return;
+    m_undoStack->push(new MovePanelCommand(this, scene, from, dest));
 }
 
 void StoryboardPage::movePanelBy(int delta)
@@ -2416,9 +2561,9 @@ void StoryboardPage::movePanelBy(int delta)
     const int dst = m_currentPanel + delta;
     if (dst < 0 || dst >= scene->panels.size())
         return; // clamp at boundaries, no wrap-around
-    scene->panels.move(m_currentPanel, dst);
-    rebuildPanelStrip();
-    selectPanel(dst);
+    if (!m_undoStack)
+        return;
+    m_undoStack->push(new MovePanelCommand(this, scene, m_currentPanel, dst));
 }
 
 // Deep copy shared by Duplicate and the Edit-menu panel clipboard: layers
@@ -2443,18 +2588,15 @@ Panel *StoryboardPage::clonePanel(const Panel *source)
 
 // Insert a clone of `panel` into the CURRENT scene at `insertAt`, then
 // select it and scroll it into view. Shared by paste and duplicate.
-void StoryboardPage::insertPanelClone(const Panel *panel, int insertAt)
+void StoryboardPage::insertPanelClone(const Panel *panel, int insertAt,
+                                      const QString &text)
 {
     Scene *scene = currentScene();
-    if (!scene || !panel)
+    if (!scene || !panel || !m_undoStack)
         return;
     insertAt = qBound(0, insertAt, int(scene->panels.size()));
-    scene->panels.insert(insertAt, clonePanel(panel));
-
-    rebuildPanelStrip();
-    selectPanel(insertAt);
-    if (m_panelScroll && insertAt < m_panelThumbs.size())
-        m_panelScroll->ensureWidgetVisible(m_panelThumbs.at(insertAt));
+    m_undoStack->push(
+        new InsertPanelCommand(this, scene, insertAt, clonePanel(panel), text));
 }
 
 void StoryboardPage::duplicatePanel()
@@ -2462,7 +2604,7 @@ void StoryboardPage::duplicatePanel()
     Panel *source = currentPanel();
     if (!source || m_currentPanel < 0)
         return;
-    insertPanelClone(source, m_currentPanel + 1);
+    insertPanelClone(source, m_currentPanel + 1, QStringLiteral("Duplicate Panel"));
 }
 
 // --- Edit-menu undo/redo routing -----------------------------------------------
@@ -2480,18 +2622,6 @@ void StoryboardPage::editRedo()
 {
     if (m_canvas)
         m_canvas->redo();
-}
-
-void StoryboardPage::selectionUndo()
-{
-    if (m_canvas)
-        m_canvas->undoSelection();
-}
-
-void StoryboardPage::selectionRedo()
-{
-    if (m_canvas)
-        m_canvas->redoSelection();
 }
 
 // --- Edit-menu clipboard routing ----------------------------------------------
@@ -2572,12 +2702,11 @@ void StoryboardPage::cutSelectedPanel()
         return;
     }
     copySelectedPanel();
-    // No confirmation (unlike Delete): the clipboard copy is the safety net.
-    const int removeAt = m_currentPanel;
-    delete scene->panels.at(removeAt); // Scene owns its Panel objects
-    scene->panels.removeAt(removeAt);
-    rebuildPanelStrip();
-    selectPanel(qBound(0, removeAt, scene->panels.size() - 1)); // nearest remaining
+    // No confirmation (unlike Delete): the clipboard copy AND undo are the nets.
+    if (!m_undoStack)
+        return;
+    m_undoStack->push(new RemovePanelCommand(this, scene, m_currentPanel,
+                                             QStringLiteral("Cut Panel")));
 }
 
 void StoryboardPage::pastePanelAfterSelected()
@@ -2588,7 +2717,7 @@ void StoryboardPage::pastePanelAfterSelected()
     const int insertAt = (m_currentPanel >= 0 && m_currentPanel < scene->panels.size())
         ? m_currentPanel + 1
         : scene->panels.size();
-    insertPanelClone(m_panelClipboard, insertAt);
+    insertPanelClone(m_panelClipboard, insertAt, QStringLiteral("Paste Panel"));
 }
 
 void StoryboardPage::pastePanelInPlace()
@@ -2601,7 +2730,8 @@ void StoryboardPage::pastePanelInPlace()
         return;
     if (m_clipboardSceneIndex != m_currentScene)
         selectScene(m_clipboardSceneIndex);
-    insertPanelClone(m_panelClipboard, m_clipboardPanelIndex);
+    insertPanelClone(m_panelClipboard, m_clipboardPanelIndex,
+                     QStringLiteral("Paste Panel"));
 }
 
 void StoryboardPage::importImageToPanel()
@@ -2782,11 +2912,10 @@ void StoryboardPage::addPanelAfterSelected()
     const int insertAt = (m_currentPanel >= 0 && m_currentPanel < scene->panels.size())
         ? m_currentPanel + 1
         : scene->panels.size();
-    scene->panels.insert(insertAt, makePanel());
-    rebuildPanelStrip();
-    selectPanel(insertAt);
-    if (m_panelScroll && insertAt < m_panelThumbs.size())
-        m_panelScroll->ensureWidgetVisible(m_panelThumbs.at(insertAt));
+    if (!m_undoStack)
+        return;
+    m_undoStack->push(new InsertPanelCommand(this, scene, insertAt, makePanel(),
+                                             QStringLiteral("Add Panel")));
 }
 
 void StoryboardPage::deleteSelectedPanel()
@@ -2803,17 +2932,16 @@ void StoryboardPage::deleteSelectedPanel()
     }
 
     const auto answer = QMessageBox::question(
-        this, QStringLiteral("Delete this panel?"), QStringLiteral("This cannot be undone."),
+        this, QStringLiteral("Delete this panel?"),
+        QStringLiteral("Delete the selected panel? (Undo restores it.)"),
         QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
     if (answer != QMessageBox::Yes)
         return;
 
-    const int removeAt = m_currentPanel;
-    delete scene->panels.at(removeAt); // Scene owns its Panel objects; free the removed one
-    scene->panels.removeAt(removeAt);
-
-    rebuildPanelStrip();
-    selectPanel(qBound(0, removeAt, scene->panels.size() - 1)); // nearest remaining panel
+    if (!m_undoStack)
+        return;
+    m_undoStack->push(new RemovePanelCommand(this, scene, m_currentPanel,
+                                             QStringLiteral("Delete Panel")));
 }
 
 void StoryboardPage::updateDuplicateButton()

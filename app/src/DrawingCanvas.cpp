@@ -33,6 +33,8 @@
 #include <QUrl>
 #include <QWheelEvent>
 #include <Qt>
+#include <QUndoCommand>
+#include <QUndoStack>
 #include <QtMath>
 
 #include <cmath>
@@ -186,6 +188,111 @@ DrawingCanvas::DrawingCanvas(QWidget *parent)
         }
     }
 }
+
+namespace {
+
+// One drawing edit in the app-wide chronological undo history: before/after
+// pixels of just the affected region on one layer (memory-efficient — never
+// two whole-layer copies). The first redo() is skipped because the edit has
+// already been applied interactively by the time the command is pushed.
+class DrawingCommand : public QUndoCommand
+{
+public:
+    DrawingCommand(DrawingCanvas *canvas, Panel *panel, const QString &layerId,
+                   const QRect &region, const QImage &before, const QImage &after,
+                   const QString &text)
+        : QUndoCommand(text), m_canvas(canvas), m_panel(panel),
+          m_layerId(layerId), m_region(region), m_before(before), m_after(after)
+    {
+    }
+    void undo() override
+    {
+        m_canvas->applyLayerRegionForUndo(m_panel, m_layerId, m_region, m_before);
+    }
+    void redo() override
+    {
+        if (m_firstRedo) {
+            m_firstRedo = false; // already applied interactively
+            return;
+        }
+        m_canvas->applyLayerRegionForUndo(m_panel, m_layerId, m_region, m_after);
+    }
+
+private:
+    DrawingCanvas *m_canvas;
+    Panel *m_panel;
+    QString m_layerId;
+    QRect m_region;
+    QImage m_before;
+    QImage m_after;
+    bool m_firstRedo = true;
+};
+
+// One selection-region change in the app-wide history (create/add/remove,
+// select all, inverse, deselect, outline moves). Restores the previous
+// vector path; never touches layer pixels.
+class SelectionCommand : public QUndoCommand
+{
+public:
+    SelectionCommand(DrawingCanvas *canvas, const QPainterPath &before,
+                     const QPainterPath &after)
+        : QUndoCommand(QStringLiteral("Selection")), m_canvas(canvas),
+          m_before(before), m_after(after)
+    {
+    }
+    void undo() override { m_canvas->applySelectionPathForUndo(m_before); }
+    void redo() override
+    {
+        if (m_firstRedo) {
+            m_firstRedo = false;
+            return;
+        }
+        m_canvas->applySelectionPathForUndo(m_after);
+    }
+
+private:
+    DrawingCanvas *m_canvas;
+    QPainterPath m_before;
+    QPainterPath m_after;
+    bool m_firstRedo = true;
+};
+
+// Tight bounding rect of the pixels that differ between two same-sized
+// images (empty when identical).
+QRect diffRegion(const QImage &a, const QImage &b)
+{
+    if (a.size() != b.size() || a.isNull())
+        return b.rect(); // shape changed: treat everything as affected
+    const int w = a.width(), hgt = a.height();
+    int top = -1, bottom = -1;
+    for (int y = 0; y < hgt; ++y) {
+        if (memcmp(a.constScanLine(y), b.constScanLine(y), size_t(w) * 4) != 0) {
+            if (top < 0)
+                top = y;
+            bottom = y;
+        }
+    }
+    if (top < 0)
+        return QRect();
+    int left = w, right = -1;
+    for (int y = top; y <= bottom; ++y) {
+        const QRgb *ra = reinterpret_cast<const QRgb *>(a.constScanLine(y));
+        const QRgb *rb = reinterpret_cast<const QRgb *>(b.constScanLine(y));
+        for (int x = 0; x < left; ++x)
+            if (ra[x] != rb[x]) {
+                left = x;
+                break;
+            }
+        for (int x = w - 1; x > right; --x)
+            if (ra[x] != rb[x]) {
+                right = x;
+                break;
+            }
+    }
+    return QRect(QPoint(left, top), QPoint(right, bottom));
+}
+
+} // namespace
 
 QSize DrawingCanvas::canvasSize()
 {
@@ -738,19 +845,74 @@ QPointF DrawingCanvas::toCanvasF(const QPointF &widgetPoint) const
     return viewTransform().inverted().map(widgetPoint); // inverse zoom+pan+rotate+flip
 }
 
-// Snapshot the ACTIVE layer's pixels (keyed by layer id, so undo still lands
-// on the right layer after reorders or deletions of other layers).
-void DrawingCanvas::pushUndo()
+// --- App-wide undo plumbing --------------------------------------------------
+// beginLayerEdit() snapshots the ACTIVE layer before a mutating operation;
+// finalizeLayerEdit() diffs that snapshot against the layer and pushes ONE
+// region-limited DrawingCommand (before/after sub-images of just the changed
+// rect, keyed by layer id) onto the shared stack. No-op edits push nothing.
+void DrawingCanvas::beginLayerEdit()
 {
+    m_editPanel = nullptr;
     if (!m_panel)
         return;
     Layer *layer = m_panel->activeLayer();
     if (!layer)
         return;
-    m_panel->undoStack.append({layer->id, layer->image.copy()});
-    while (m_panel->undoStack.size() > 20)
-        m_panel->undoStack.removeFirst();
-    m_panel->redoStack.clear(); // a fresh edit invalidates the redo branch
+    m_editPanel = m_panel;
+    m_editLayerId = layer->id;
+    m_editBefore = layer->image.copy();
+}
+
+void DrawingCanvas::finalizeLayerEdit(const QString &text, const QImage &beforeOverride)
+{
+    Panel *panel = m_editPanel;
+    m_editPanel = nullptr;
+    if (!panel || !m_undoStack)
+        return;
+    Layer *target = nullptr;
+    for (Layer &layer : panel->layers)
+        if (layer.id == m_editLayerId)
+            target = &layer;
+    const QImage before = beforeOverride.isNull() ? m_editBefore : beforeOverride;
+    m_editBefore = QImage();
+    if (!target)
+        return;
+    const QRect region = diffRegion(before, target->image);
+    if (region.isEmpty())
+        return;
+    m_undoStack->push(new DrawingCommand(this, panel, m_editLayerId, region,
+                                         before.copy(region),
+                                         target->image.copy(region), text));
+}
+
+// Command callback: write back one region of one layer (Source mode replaces
+// pixels exactly, alpha included), then refresh.
+void DrawingCanvas::applyLayerRegionForUndo(Panel *panel, const QString &layerId,
+                                            const QRect &region, const QImage &pixels)
+{
+    if (!panel)
+        return;
+    for (Layer &layer : panel->layers) {
+        if (layer.id != layerId)
+            continue;
+        QPainter p(&layer.image);
+        p.setCompositionMode(QPainter::CompositionMode_Source);
+        p.drawImage(region.topLeft(), pixels);
+        p.end();
+        break;
+    }
+    update();
+    emit contentChanged();
+}
+
+// Command callback: restore a selection path (display state only).
+void DrawingCanvas::applySelectionPathForUndo(const QPainterPath &path)
+{
+    m_selectionPath = path;
+    m_selDrag = false;
+    m_lassoPts.clear();
+    updateAntsTimer();
+    update();
 }
 
 void DrawingCanvas::drawSegment(const QPoint &from, const QPoint &to, const QColor &color)
@@ -851,11 +1013,12 @@ void DrawingCanvas::commitDragShape()
         update(); // degenerate click: nothing to draw, no undo entry
         return;
     }
-    pushUndo();
+    beginLayerEdit();
     QPainter painter(&layer->image);
     painter.setRenderHint(QPainter::Antialiasing, true);
     paintShapeGeometry(painter, true);
     painter.end();
+    finalizeLayerEdit(QStringLiteral("Shape"));
     update();
     emit contentChanged();
 }
@@ -875,11 +1038,12 @@ void DrawingCanvas::commitPolygon()
         cancelShape(); // not enough vertices for a shape: no artifacts
         return;
     }
-    pushUndo();
+    beginLayerEdit();
     QPainter painter(&layer->image);
     painter.setRenderHint(QPainter::Antialiasing, true);
     paintShapeGeometry(painter, true);
     painter.end();
+    finalizeLayerEdit(QStringLiteral("Shape"));
     cancelShape();
     emit contentChanged();
 }
@@ -956,38 +1120,9 @@ void DrawingCanvas::setSelectionOp(SelectionOp op)
 // are skipped so degenerate clicks never pollute the history.
 void DrawingCanvas::recordSelectionChange(const QPainterPath &before)
 {
-    if (before == m_selectionPath)
+    if (before == m_selectionPath || !m_undoStack)
         return;
-    m_selUndoStack.append(before);
-    while (m_selUndoStack.size() > 20)
-        m_selUndoStack.removeFirst();
-    m_selRedoStack.clear(); // a fresh change invalidates the redo branch
-}
-
-// Undo the last SELECTION change (region only — layer pixels are untouched;
-// drawing has its own undo). Ignored mid-gesture.
-void DrawingCanvas::undoSelection()
-{
-    if (m_xformActive || m_selDrag || m_selOutlineDrag || !m_lassoPts.isEmpty())
-        return;
-    if (m_selUndoStack.isEmpty())
-        return;
-    m_selRedoStack.append(m_selectionPath);
-    m_selectionPath = m_selUndoStack.takeLast();
-    updateAntsTimer();
-    update();
-}
-
-void DrawingCanvas::redoSelection()
-{
-    if (m_xformActive || m_selDrag || m_selOutlineDrag || !m_lassoPts.isEmpty())
-        return;
-    if (m_selRedoStack.isEmpty())
-        return;
-    m_selUndoStack.append(m_selectionPath);
-    m_selectionPath = m_selRedoStack.takeLast();
-    updateAntsTimer();
-    update();
+    m_undoStack->push(new SelectionCommand(this, before, m_selectionPath));
 }
 
 // User-facing deselect (SelMod Deselect button / Esc): clears the selection
@@ -1140,11 +1275,12 @@ void DrawingCanvas::cutSelection()
     const QRect r = m_selectionPath.boundingRect().toAlignedRect().intersected(layer->image.rect());
     if (r.isEmpty())
         return;
-    pushUndo();
+    beginLayerEdit();
     QPainter p(&layer->image);
     p.setCompositionMode(QPainter::CompositionMode_DestinationOut);
     p.drawImage(r.topLeft(), selectionMask(r)); // clears exactly the copied pixels
     p.end();
+    finalizeLayerEdit(QStringLiteral("Cut"));
     update();
     emit contentChanged();
 }
@@ -1289,10 +1425,11 @@ void DrawingCanvas::commitMoveDrag()
 
         // 11) ONE undo entry for the whole move: the layer still holds the
         //     pre-move image right now, so this snapshot IS the original.
-        pushUndo();
+        beginLayerEdit();
 
         // 10) assign the rebuilt image back and refresh.
         layer->image = result;
+        finalizeLayerEdit(QStringLiteral("Move"));
         if (!m_selectionPath.isEmpty())
             m_selectionPath.translate(QPointF(aligned) - m_floatPos); // ants follow
         emit contentChanged();
@@ -1315,12 +1452,13 @@ void DrawingCanvas::commitFloating()
     m_floatDragging = false;
     Layer *layer = editableActiveLayer();
     if (layer) {
-        pushUndo();
+        beginLayerEdit();
         const QPointF target = m_floatPos + m_floatDelta;
         const QPoint aligned(qRound(target.x()), qRound(target.y()));
         QPainter p(&layer->image);
         p.drawImage(aligned, m_floatImg); // limited only by the canvas bounds
         p.end();
+        finalizeLayerEdit(QStringLiteral("Paste"));
         emit contentChanged();
     }
     m_floatDelta = QPointF();
@@ -2119,8 +2257,7 @@ void DrawingCanvas::commitTransform(bool relift)
 
     Layer *layer = editableActiveLayer();
     if (layer && !m_layerBackup.isNull()) {
-        layer->image = m_layerBackup; // restore pristine so the undo snapshot is the original
-        pushUndo();
+        beginLayerEdit(); // identity only; the true 'before' is the backup
 
         QImage result = m_layerBackup;
         {
@@ -2140,6 +2277,7 @@ void DrawingCanvas::commitTransform(bool relift)
             }
         }
         layer->image = result;
+        finalizeLayerEdit(QStringLiteral("Transform"), m_layerBackup);
         emit contentChanged();
     }
 
@@ -2444,54 +2582,32 @@ void DrawingCanvas::endBrushStroke()
         m_strokeMask = StrokeMaskNone;
         m_strokeBuf = QImage();
     }
+    finalizeLayerEdit(QStringLiteral("Brush Stroke"));
     update();
 }
 
 void DrawingCanvas::undo()
 {
-    if (!m_panel)
+    if (!m_undoStack)
         return;
-    // Pop entries until one still matches a live layer (the layer of an older
-    // snapshot may have been deleted since).
-    while (!m_panel->undoStack.isEmpty()) {
-        const LayerUndoEntry entry = m_panel->undoStack.takeLast();
-        for (Layer &layer : m_panel->layers) {
-            if (layer.id == entry.layerId) {
-                // The state being undone becomes redo-able.
-                m_panel->redoStack.append({layer.id, layer.image.copy()});
-                while (m_panel->redoStack.size() > 20)
-                    m_panel->redoStack.removeFirst();
-                layer.image = entry.image;
-                update();
-                emit contentChanged();
-                return;
-            }
-        }
-    }
+    // Resolve any live interactive session first so history stays coherent:
+    // a floating paste lands (as its own command), a live transform box is
+    // discarded back to the pristine artwork.
+    commitFloating();
+    if (m_xformActive)
+        cancelTransform();
+    m_undoStack->undo();
 }
 
-// Re-apply the last undone drawing change. The redo branch survives only
-// until the next fresh edit (pushUndo clears it).
+// Re-apply the exact command that the last undo reversed.
 void DrawingCanvas::redo()
 {
-    if (!m_panel)
+    if (!m_undoStack)
         return;
-    while (!m_panel->redoStack.isEmpty()) {
-        const LayerUndoEntry entry = m_panel->redoStack.takeLast();
-        for (Layer &layer : m_panel->layers) {
-            if (layer.id == entry.layerId) {
-                // The state being replaced goes back onto the undo stack
-                // DIRECTLY (pushUndo would wipe the remaining redo branch).
-                m_panel->undoStack.append({layer.id, layer.image.copy()});
-                while (m_panel->undoStack.size() > 20)
-                    m_panel->undoStack.removeFirst();
-                layer.image = entry.image;
-                update();
-                emit contentChanged();
-                return;
-            }
-        }
-    }
+    commitFloating();
+    if (m_xformActive)
+        cancelTransform();
+    m_undoStack->redo();
 }
 
 void DrawingCanvas::clearCanvas()
@@ -2499,7 +2615,7 @@ void DrawingCanvas::clearCanvas()
     Layer *layer = editableActiveLayer();
     if (!layer)
         return;
-    pushUndo();
+    beginLayerEdit();
     if (!m_selectionPath.isEmpty()) {
         // An active selection scopes the clear: erase through the cached
         // antialiased mask (soft edge), leaving everything else untouched.
@@ -2514,6 +2630,7 @@ void DrawingCanvas::clearCanvas()
     } else {
         layer->image.fill(Qt::transparent); // clears the ACTIVE layer only
     }
+    finalizeLayerEdit(QStringLiteral("Clear"));
     update();
     emit contentChanged();
 }
@@ -3088,7 +3205,7 @@ void DrawingCanvas::mousePressEvent(QMouseEvent *event)
 
     switch (m_tool) {
     case Eraser: {
-        pushUndo();
+        beginLayerEdit();
         m_drawing = true;
         if (!m_selectionPath.isEmpty()) {
             // Same stroke-level masking as the brush: erase coverage builds
@@ -3103,7 +3220,7 @@ void DrawingCanvas::mousePressEvent(QMouseEvent *event)
     }
     case Brush: {
         // Mouse strokes carry no pressure: fixed 1.0 (tablets use tabletEvent).
-        pushUndo();
+        beginLayerEdit();
         m_brushStroke = true;
         beginBrushStroke(toCanvasF(event->position()), 1.0);
         break;
@@ -3120,8 +3237,9 @@ void DrawingCanvas::mousePressEvent(QMouseEvent *event)
         update();
         break;
     case Fill:
-        pushUndo();
+        beginLayerEdit();
         floodFill(toCanvas(event->pos()));
+        finalizeLayerEdit(QStringLiteral("Fill"));
         emit contentChanged();
         break;
     case SelectRect:
@@ -3340,6 +3458,7 @@ void DrawingCanvas::mouseReleaseEvent(QMouseEvent *event)
             m_strokeMask = StrokeMaskNone;
             m_strokeBuf = QImage();
         }
+        finalizeLayerEdit(QStringLiteral("Erase"));
         emit contentChanged();
     }
 }
@@ -3397,7 +3516,7 @@ void DrawingCanvas::tabletEvent(QTabletEvent *event)
     case QEvent::TabletPress:
         if (m_panel && displayRect().contains(event->position().toPoint())
             && editableActiveLayer()) {
-            pushUndo();
+            beginLayerEdit();
             m_brushStroke = true;
             beginBrushStroke(toCanvasF(event->position()), event->pressure());
         }

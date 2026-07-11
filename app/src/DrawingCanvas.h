@@ -16,6 +16,7 @@
 struct Layer;
 struct Panel;
 class QDragEnterEvent;
+class QUndoStack;
 class QDropEvent;
 class QPushButton;
 class QSlider;
@@ -115,8 +116,8 @@ public slots:
     void setTool(Tool tool);
     void setColor(const QColor &color);
     void setBrushSize(int size);
-    void undo();   // drawing history (Ctrl+Z / toolbar Undo)
-    void redo();   // drawing history (Ctrl+Y / toolbar Redo)
+    void undo();   // app-wide history (Ctrl+Z / toolbar Undo)
+    void redo();   // app-wide history (Ctrl+Y / toolbar Redo)
     void clearCanvas();
 
     // Brush engine settings (the stamp-based Brush tool only).
@@ -156,11 +157,13 @@ public slots:
     void selectAll();                     // select the whole canvas
     void invertSelection();               // canvas minus current selection
 
-    // SELECTION history — fully separate from the drawing undo/redo above.
-    // Records selection-region changes only (new/adjusted outlines, select
-    // all, inverse, deselect, outline moves); never touches layer pixels.
-    void undoSelection();
-    void redoSelection();
+    // App-wide undo plumbing. The shared QUndoStack (owned by MainWindow)
+    // receives every mutating action as a QUndoCommand; the commands call
+    // back into these apply methods.
+    void setUndoStack(QUndoStack *stack) { m_undoStack = stack; }
+    void applyLayerRegionForUndo(Panel *panel, const QString &layerId,
+                                 const QRect &region, const QImage &pixels);
+    void applySelectionPathForUndo(const QPainterPath &path);
 
 signals:
     void contentChanged();
@@ -195,7 +198,11 @@ private:
     void resetView();                   // 100%, recentred
     int penWidth() const;               // brush size mapped into canvas space
     Layer *editableActiveLayer() const; // active layer if it accepts strokes, else nullptr
-    void pushUndo();
+    // App-wide undo: snapshot the active layer before a mutating operation,
+    // then diff and push ONE region-limited DrawingCommand when it finishes.
+    void beginLayerEdit();
+    void finalizeLayerEdit(const QString &text,
+                           const QImage &beforeOverride = QImage());
     void drawSegment(const QPoint &from, const QPoint &to, const QColor &color);
     void floodFill(const QPoint &seed);
 
@@ -271,12 +278,15 @@ private:
     bool m_selOutlineDrag = false; // dragging the outline right now
     QPointF m_selOutlineStartC;    // canvas point where the drag grabbed
     QPainterPath m_selOutlineBase; // m_selectionPath at drag start (translated live)
-    // SELECTION history (separate from the drawing undo/redo, which lives on
-    // the Panel). One entry = the selection region before a committed change.
+    // Selection changes push SelectionCommands onto the shared stack.
     void recordSelectionChange(const QPainterPath &before);
-    QVector<QPainterPath> m_selUndoStack;
-    QVector<QPainterPath> m_selRedoStack;
     QPainterPath m_selGestureBase; // selection at gesture start (drag/polygon)
+    // Shared app-wide undo stack (owned by MainWindow) + the in-flight layer
+    // edit snapshot captured by beginLayerEdit().
+    QUndoStack *m_undoStack = nullptr;
+    Panel *m_editPanel = nullptr;
+    QString m_editLayerId;
+    QImage m_editBefore;
     QVector<QPointF> m_lassoPts;   // freehand outline while dragging
     QTimer *m_antsTimer = nullptr; // marching-ants animation
     int m_antsPhase = 0;

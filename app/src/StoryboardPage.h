@@ -19,6 +19,7 @@ class QPlainTextEdit;
 class QPushButton;
 class QScrollArea;
 class QSlider;
+class QUndoStack;
 class QVBoxLayout;
 class SankoSlider;
 
@@ -65,13 +66,19 @@ public:
     void editPaste();
     void editPasteInPlace();
 
-    // Edit-menu undo/redo. Undo/Redo (Ctrl+Z / Ctrl+Y) act on the DRAWING
-    // history — same as the Brush-bar buttons. Undo/Redo Selection act on the
-    // canvas's separate SELECTION history (region only, never pixels).
+    // Edit-menu undo/redo (Ctrl+Z / Ctrl+Y): the app-wide chronological
+    // history — one shared QUndoStack covering drawing, selection, and panel
+    // actions, same as the Brush-bar buttons.
     void editUndo();
     void editRedo();
-    void selectionUndo();
-    void selectionRedo();
+
+    // App-wide undo stack (owned by MainWindow); forwarded to the canvas.
+    void setUndoStack(QUndoStack *stack);
+    // Callbacks for the panel undo commands (see StoryboardPage.cpp): mutate
+    // the scene's panel list and refresh the strip/selection.
+    void applyPanelInsertForUndo(Scene *scene, int index, Panel *panel);
+    Panel *applyPanelRemoveForUndo(Scene *scene, int index);
+    void applyPanelMoveForUndo(Scene *scene, int from, int to);
 
     // Panel-level clipboard. Copy stores an owned deep copy; paste inserts a
     // fresh clone (new layer UUIDs) each time. Cut is blocked on a scene's
@@ -153,7 +160,8 @@ private:
 
     void duplicatePanel();                 // copy current panel, insert after it
     static Panel *clonePanel(const Panel *source); // deep copy, fresh layer UUIDs
-    void insertPanelClone(const Panel *panel, int insertAt); // into the current scene
+    void insertPanelClone(const Panel *panel, int insertAt,
+                          const QString &text); // into the current scene (undoable)
     void importImageToPanel();             // file dialog -> canvas->importImage
     void updateDuplicateButton();          // enable panel-action buttons when a panel is selected
 
@@ -224,6 +232,8 @@ private:
     QPushButton *m_clearPanelButton = nullptr; // clears the drawing, asks first
     QPushButton *m_deletePanelButton = nullptr;
     QPushButton *m_lightTableButton = nullptr; // toggles neighbour-panel ghosts
+
+    QUndoStack *m_undoStack = nullptr; // app-wide history (owned by MainWindow)
 
     // Drag-reorder state.
     bool m_panelPressActive = false;

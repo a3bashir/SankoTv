@@ -31,6 +31,7 @@
 #include <QRegularExpression>
 #include <QSettings>
 #include <QStackedWidget>
+#include <QUndoStack>
 #include <QUuid>
 #include <QVBoxLayout>
 #include <Qt>
@@ -49,6 +50,12 @@ MainWindow::MainWindow(QWidget *parent)
     m_animatic = new AnimaticPage;
     m_consistencyBoard = new ConsistencyBoard;
     m_generation = new GenerationPage;
+
+    // ONE app-wide chronological undo history: drawing, selection, panel,
+    // and transform actions all funnel into this shared stack.
+    m_undoStack = new QUndoStack(this);
+    m_undoStack->setUndoLimit(60);
+    m_storyboard->setUndoStack(m_undoStack);
 
     m_storyboard->setConsistencyEntries(&m_consistencyEntries); // read-only
     m_consistencyBoard->setEntries(&m_consistencyEntries);      // read-write
@@ -175,9 +182,9 @@ void MainWindow::setupMenuBar()
         });
         return action;
     };
-    // Drawing undo/redo (Ctrl+Z / Ctrl+Y or Ctrl+Shift+Z) — same history as
-    // the Brush-bar Undo/Redo buttons. Selection changes have their OWN
-    // history, reached through the separate actions below.
+    // App-wide undo/redo (Ctrl+Z / Ctrl+Y or Ctrl+Shift+Z): ONE chronological
+    // history shared with the Brush-bar Undo/Redo buttons — drawing,
+    // selection, panel, and transform actions in strict order.
     editAction(QStringLiteral("Undo"), QKeySequence(Qt::CTRL | Qt::Key_Z),
                &StoryboardPage::editUndo);
     QAction *redoAct = editAction(QStringLiteral("Redo"),
@@ -197,13 +204,6 @@ void MainWindow::setupMenuBar()
     m_pastePanelAct->setEnabled(false);        // until something is copied
     m_pastePanelInPlaceAct->setEnabled(false); // (wired after m_storyboard exists)
 
-    // Selection undo/redo: the canvas's dedicated selection history (region
-    // only). Deliberately unshortcutted — Ctrl+Z/Ctrl+Y stay on drawing.
-    editMenu->addSeparator();
-    editAction(QStringLiteral("Undo Selection"), QKeySequence(),
-               &StoryboardPage::selectionUndo);
-    editAction(QStringLiteral("Redo Selection"), QKeySequence(),
-               &StoryboardPage::selectionRedo);
 
     editMenu->addSeparator();
     QAction *prefsAct = editMenu->addAction(QStringLiteral("Preferences..."));
