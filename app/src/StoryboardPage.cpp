@@ -259,62 +259,49 @@ QPixmap selectRectGlyphPixmap()
     return pm;
 }
 
-// Selection Modifier "Select All" glyph (Figma 148:64): a 17x17 dashed marquee
-// (1.2px #cccccc, border INSIDE the box like CSS border-box) with a 3x3 grid
-// of 3px #d9d9d9 squares, centred in 30x30. Inner elements are positioned
-// relative to the padding box (inside the border), so their offsets carry the
-// extra 1.2px — that offset is exactly what had the icon looking shifted.
+// Selection Modifier icon (Figma 146:67, updated): render the ORIGINAL SVG at
+// its exact node placement inside the 36x36 button — the 24x24 icon frame sits
+// at (6,6) and every asset bleeds 0.5px past it (stroke on the 0.5-inset
+// marquee), so the SVG's top-left lands at (5.5, 5.5). No recolour: the assets
+// carry their literal colours (#cccccc strokes; Inverse also fills #616161).
+QPixmap selModIconPixmap(const QString &svgPath, QSizeF svgSize)
+{
+    constexpr qreal dpr = 2.0, box = 36.0;
+    QPixmap pm(QSize(int(box * dpr), int(box * dpr)));
+    pm.setDevicePixelRatio(dpr);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    p.setRenderHint(QPainter::SmoothPixmapTransform, true);
+    QSvgRenderer r(svgPath);
+    r.render(&p, QRectF(5.5, 5.5, svgSize.width(), svgSize.height()));
+    return pm;
+}
+
+// Selection Modifier "Select All" glyph (Figma 156:43, updated): a 24x24
+// dashed marquee (1px #cccccc, border INSIDE the box like CSS border-box) with
+// a 3x3 grid of 4px #d9d9d9 squares at padding-box offsets {4, 10, 16}, placed
+// at (6,6) in the 36x36 button box like the SVG icons.
 QPixmap selectAllGlyphPixmap()
 {
-    constexpr qreal dpr = 2.0, ox = 6.5, oy = 6.5; // 17 centred in 30
-    constexpr qreal bw = 1.2;                       // border width, inside
-    QPixmap pm(QSize(60, 60));
+    constexpr qreal dpr = 2.0, box = 36.0, ox = 6.0, oy = 6.0;
+    constexpr qreal bw = 1.0; // border width, inside the 24 box
+    QPixmap pm(QSize(int(box * dpr), int(box * dpr)));
     pm.setDevicePixelRatio(dpr);
     pm.fill(Qt::transparent);
     QPainter p(&pm);
     p.setRenderHint(QPainter::Antialiasing, true);
     QPen pen(kIconColor, bw, Qt::CustomDashLine, Qt::FlatCap, Qt::MiterJoin);
-    pen.setDashPattern({2.5, 2.5});
+    pen.setDashPattern({3.0, 3.0});
     p.setPen(pen);
     p.setBrush(Qt::NoBrush);
-    // Stroke centred on a path inset by bw/2 = border fully inside the 17 box.
-    p.drawRect(QRectF(ox + bw / 2, oy + bw / 2, 17.0 - bw, 17.0 - bw));
+    p.drawRect(QRectF(ox + bw / 2, oy + bw / 2, 24.0 - bw, 24.0 - bw));
     p.setPen(Qt::NoPen);
     p.setBrush(QColor(0xd9, 0xd9, 0xd9));
-    const double grid[] = {2.4, 6.4, 10.4}; // padding-box offsets (Figma)
+    const double grid[] = {4.0, 10.0, 16.0}; // padding-box offsets (Figma)
     for (double gy : grid)
         for (double gx : grid)
-            p.drawRect(QRectF(ox + bw + gx, oy + bw + gy, 3.0, 3.0));
-    return pm;
-}
-
-// Selection Modifier "Inverse" glyph (Figma 148:77): a 17x17 dashed marquee
-// (border inside, as above) with a faintly-filled inner 11x11 dashed rect at
-// padding-box offset (2.4, 2.4), its own 0.7px border also inside. 30x30.
-QPixmap inverseGlyphPixmap()
-{
-    constexpr qreal dpr = 2.0, ox = 6.5, oy = 6.5;
-    constexpr qreal bw = 1.2, ibw = 0.7; // outer / inner border widths, inside
-    QPixmap pm(QSize(60, 60));
-    pm.setDevicePixelRatio(dpr);
-    pm.fill(Qt::transparent);
-    QPainter p(&pm);
-    p.setRenderHint(QPainter::Antialiasing, true);
-    QPen outer(kIconColor, bw, Qt::CustomDashLine, Qt::FlatCap, Qt::MiterJoin);
-    outer.setDashPattern({2.5, 2.5});
-    p.setPen(outer);
-    p.setBrush(Qt::NoBrush);
-    p.drawRect(QRectF(ox + bw / 2, oy + bw / 2, 17.0 - bw, 17.0 - bw));
-    // Inner 11x11 border-box at (2.4, 2.4) inside the outer border.
-    const qreal ix = ox + bw + 2.4, iy = oy + bw + 2.4;
-    p.setPen(Qt::NoPen);
-    p.setBrush(QColor(0xd9, 0xd9, 0xd9, 89)); // rgba(217,217,217,0.35)
-    p.drawRect(QRectF(ix, iy, 11.0, 11.0));
-    QPen inner(kIconColor, ibw, Qt::CustomDashLine, Qt::FlatCap, Qt::MiterJoin);
-    inner.setDashPattern({3.0, 3.0});
-    p.setPen(inner);
-    p.setBrush(Qt::NoBrush);
-    p.drawRect(QRectF(ix + ibw / 2, iy + ibw / 2, 11.0 - ibw, 11.0 - ibw));
+            p.drawRect(QRectF(ox + bw + gx, oy + bw + gy, 4.0, 4.0));
     return pm;
 }
 
@@ -456,9 +443,10 @@ protected:
 };
 
 // Selection Modifier toolbar body (Figma "Add Select" 146:67): a
-// FloatingToolWindow (so the canvas never clips it) painting a #212121
-// radius-4 body with NO border and NO shadow. NOT draggable — it sets no grip
-// widget, so gripRect() is empty and the base ignores drags.
+// FloatingToolWindow (so the canvas never clips it) painting a translucent
+// rgba(33,33,33,0.65) radius-8 body with NO border and NO shadow. NOT
+// draggable — it sets no grip widget, so gripRect() is empty and the base
+// ignores drags.
 class SelModBar : public FloatingToolWindow
 {
 public:
@@ -477,8 +465,8 @@ protected:
         p.fillRect(rect(), Qt::transparent); // clear -> clean corners, no artifact
         p.setCompositionMode(QPainter::CompositionMode_SourceOver);
         p.setPen(Qt::NoPen);
-        p.setBrush(QColor(0x21, 0x21, 0x21)); // #212121, radius 4, no border
-        p.drawRoundedRect(QRectF(0, 0, width(), height()), 4, 4);
+        p.setBrush(QColor(0x21, 0x21, 0x21, 166)); // rgba(33,33,33,0.65), r8
+        p.drawRoundedRect(QRectF(0, 0, width(), height()), 8, 8);
     }
 };
 
@@ -1234,41 +1222,42 @@ void StoryboardPage::createFloatingToolbar()
     // switches to the Move tool; Select All / Inverse / Deselect act at once.
     SelModBar *selBar = new SelModBar(m_canvas, this);
     m_selModToolbar = selBar;
-    // Figma 146:67 lays this out absolutely, not on an even grid: a 333x43
-    // content area (buttons row + captions) inside pl17/pr13/py8 padding. The
-    // column x's come straight from the design (the caption widths set them).
-    selBar->setFixedSize(17 + 333 + 13, 8 + 43 + 8); // 363 x 59
+    // Figma 146:67 (updated): a 531x66 rgba(33,33,33,0.65) radius-8 container,
+    // px17/py8, holding six 36x36 radius-6 #212121 buttons (24x24 icons) with
+    // Inter Semi-Bold 9px #cccccc captions at content y=41. The column x's are
+    // the exact node offsets: 0 / 91 / 182 / 276 / 369 / 462.
+    selBar->setFixedSize(531, 66);
 
-    // Button left edges within the content area (Figma node x's).
     auto modButton = [selBar](const QPixmap &icon, const QString &tip, bool checkable,
                               int x) {
         ToolButton *b = new ToolButton(icon, selBar);
-        b->setFixedSize(29, 29);
+        b->setFixedSize(36, 36);
         b->setCheckable(checkable);
         b->setStateColors(QColor(0x4c, 0x4c, 0x4c), QColor(0x73, 0x73, 0x73));
         b->setToolTip(tip);  // name only, no description
-        b->move(17 + x, 8);  // pl17 / py8 offset into the content area
+        b->move(17 + x, 8);  // px17 / py8 offset into the content area
         return b;
     };
     ToolButton *addBtn = modButton(
-        figIconPixmap(QStringLiteral(":/icons/selmod_add.svg"), QSizeF(18.2, 18.2)),
+        selModIconPixmap(QStringLiteral(":/icons/selmod_add.svg"), QSizeF(25, 25)),
         QStringLiteral("Add"), true, 0);
     ToolButton *removeBtn = modButton(
-        figIconPixmap(QStringLiteral(":/icons/selmod_remove.svg"), QSizeF(18.2, 18.2)),
-        QStringLiteral("Remove"), true, 59);
+        selModIconPixmap(QStringLiteral(":/icons/selmod_remove.svg"), QSizeF(25, 25)),
+        QStringLiteral("Remove"), true, 91);
     ToolButton *moveBtn = modButton(
-        figIconPixmap(QStringLiteral(":/icons/selmod_move.svg"), QSizeF(20.6, 20.6)),
-        QStringLiteral("Move"), true, 120);
+        selModIconPixmap(QStringLiteral(":/icons/selmod_move.svg"), QSizeF(27.5, 26.5)),
+        QStringLiteral("Move"), true, 182);
     ToolButton *selectAllBtn =
-        modButton(selectAllGlyphPixmap(), QStringLiteral("Select All"), false, 179);
-    ToolButton *inverseBtn =
-        modButton(inverseGlyphPixmap(), QStringLiteral("Inverse"), false, 240);
+        modButton(selectAllGlyphPixmap(), QStringLiteral("Select All"), false, 276);
+    ToolButton *inverseBtn = modButton(
+        selModIconPixmap(QStringLiteral(":/icons/selmod_inverse.svg"), QSizeF(25, 25)),
+        QStringLiteral("Inverse"), false, 369);
     ToolButton *deselectBtn = modButton(
-        figIconPixmap(QStringLiteral(":/icons/selmod_deselect.svg"), QSizeF(18.2, 18.2)),
-        QStringLiteral("Deselect"), false, 299);
+        selModIconPixmap(QStringLiteral(":/icons/selmod_deselect.svg"), QSizeF(25, 25)),
+        QStringLiteral("Deselect"), false, 462);
 
     // Captions centred under each button (Figma: Inter Semi-Bold 9px #CCCCCC,
-    // top row at content y=32 -> 8+32 in window coords; 3px below the buttons).
+    // content y=41 -> 8+41 in widget coords, i.e. 5px below the 36px buttons).
     QFont capFont(QStringLiteral("Inter"));
     capFont.setPixelSize(9);
     capFont.setWeight(QFont::DemiBold);
@@ -1282,7 +1271,7 @@ void StoryboardPage::createFloatingToolbar()
         cap->setFont(capFont);
         cap->setStyleSheet(QStringLiteral("color:#cccccc;background:transparent;"));
         cap->adjustSize();
-        cap->move(c.btn->x() + c.btn->width() / 2 - cap->width() / 2, 8 + 32);
+        cap->move(c.btn->x() + c.btn->width() / 2 - cap->width() / 2, 8 + 41);
     }
     // Add / Remove / Move: three mutually exclusive modes (Active = #7C6EF6
     // via the checked state; all off = Replace). Add and Remove set how a

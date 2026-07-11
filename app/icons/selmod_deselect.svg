@@ -1,6 +1,6 @@
-<svg preserveAspectRatio="none" width="100%" height="100%" overflow="visible" style="display: block;" viewBox="0 0 18.2 18.2" fill="none" xmlns="http://www.w3.org/2000/svg">
-<g id="Frame 3">
-<rect x="0.6" y="0.6" width="17" height="17" stroke="#CCCCCC" stroke-width="1.2" stroke-linecap="round" stroke-dasharray="3 3 3 3"/>
-<path id="Vector" d="M7.57992 7.5799L11.5397 11.5397M11.5397 7.5799L7.5799 11.5397" stroke="#CCCCCC" stroke-width="2" stroke-linecap="round"/>
+<svg preserveAspectRatio="none" width="100%" height="100%" overflow="visible" style="display: block;" viewBox="0 0 25 25" fill="none" xmlns="http://www.w3.org/2000/svg">
+<g id="Frame 4">
+<path id="Vector" d="M10.3201 10.3201L12.3 12.3M12.3 12.3L14.2799 14.2799M12.3 12.3L14.2799 10.3201M12.3 12.3L10.3201 14.2799" stroke="#CCCCCC" stroke-width="2" stroke-linecap="round"/>
+<rect id="Rectangle 25" x="0.5" y="0.5" width="24" height="24" stroke="#CCCCCC" stroke-linecap="round" stroke-dasharray="3 3"/>
 </g>
 </svg>

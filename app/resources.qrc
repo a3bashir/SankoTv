@@ -20,5 +20,6 @@
         <file>icons/selmod_remove.svg</file>
         <file>icons/selmod_move.svg</file>
         <file>icons/selmod_deselect.svg</file>
+        <file>icons/selmod_inverse.svg</file>
     </qresource>
 </RCC>
