@@ -124,6 +124,12 @@ public slots:
     void setSelectionOp(SelectionOp op);
     SelectionOp selectionOp() const { return m_selOp; }
 
+    // Selection Modifier "Move": while on, dragging with a selection tool
+    // translates ONLY the selection outline (marching ants) — artwork pixels
+    // are never lifted or altered.
+    void setSelectionOutlineMove(bool on);
+    bool selectionOutlineMove() const { return m_selOutlineMove; }
+
     // Selection + canvas clipboard (ACTIVE layer only). Copy reads even a
     // locked layer (not an edit); cut/paste/move require an editable one.
     bool hasSelection() const { return !m_selPath.isEmpty(); }
@@ -178,10 +184,14 @@ private:
     QPainterPath combinedSelection(const QPainterPath &shape) const; // Replace/Add/Sub
 
     // Selection / floating pixels (move-lift or un-committed paste).
-    // The selection path is rasterized ONCE into a hard-edged mask; lift,
-    // clear, copy, and cut all index that same mask so their coverage is
-    // pixel-identical (never the bounding box for ellipse/lasso).
-    QImage selectionMask(const QRect &boundingRect) const;
+    // The selection path is rasterized ONCE into a mask; lift, clear, copy,
+    // and cut all index that same mask so their coverage is pixel-identical
+    // (never the bounding box for ellipse/lasso). Hard-edged by default;
+    // antialiased=true gives a soft 1px coverage falloff (the transform box
+    // uses it so moved artwork keeps clean edges). Either way DestinationIn
+    // (keep) and DestinationOut (clear) with the SAME mask partition the
+    // pixels exactly: alpha + (1-alpha) sums back to the original.
+    QImage selectionMask(const QRect &boundingRect, bool antialiased = false) const;
     // Clamp used only to place a fresh PASTE fully on-canvas (positioning,
     // not clipping).
     QPointF clampFloatDelta(const QPointF &delta) const;
@@ -227,6 +237,11 @@ private:
     bool m_selDrag = false;        // dragging out a new selection
     QPointF m_selStartC;
     QPointF m_selCurrentC;
+    // Selection Modifier "Move" (outline only, never pixels).
+    bool m_selOutlineMove = false; // the toolbar's Move mode is on
+    bool m_selOutlineDrag = false; // dragging the outline right now
+    QPointF m_selOutlineStartC;    // canvas point where the drag grabbed
+    QPainterPath m_selOutlineBase; // m_selPath at drag start (translated live)
     QVector<QPointF> m_lassoPts;   // freehand outline while dragging
     QTimer *m_antsTimer = nullptr; // marching-ants animation
     int m_antsPhase = 0;
@@ -259,6 +274,8 @@ private:
                      XScaleTL, XScaleTR, XScaleBL, XScaleBR,
                      XScaleT, XScaleB, XScaleL, XScaleR };
     bool m_xformActive = false;
+    bool m_xformAutoSel = false;   // box selection was synthesized from the
+                                   // layer's artwork bounds (no user selection)
     QImage m_transformBuf;         // pristine lifted pixels (m_moveSrcRect-sized)
     QPointF m_boxCenter;           // current box centre, canvas coords
     qreal m_boxW = 0.0;            // current box width/height, canvas px

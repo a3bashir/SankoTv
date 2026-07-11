@@ -306,6 +306,30 @@ bool DrawingCanvas::importImage(const QString &filePath)
     return true;
 }
 
+// Tight bounding rect of the non-transparent pixels (empty if the image is
+// fully transparent). Used to auto-frame the Move tool's transform box.
+static QRect opaquePixelBounds(const QImage &image)
+{
+    const QImage img = image.format() == QImage::Format_ARGB32_Premultiplied
+        ? image
+        : image.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+    int minX = img.width(), minY = img.height(), maxX = -1, maxY = -1;
+    for (int y = 0; y < img.height(); ++y) {
+        const QRgb *line = reinterpret_cast<const QRgb *>(img.constScanLine(y));
+        for (int x = 0; x < img.width(); ++x) {
+            if (qAlpha(line[x]) == 0)
+                continue;
+            minX = qMin(minX, x);
+            maxX = qMax(maxX, x);
+            minY = qMin(minY, y);
+            maxY = y; // rows scan top-to-bottom
+        }
+    }
+    if (maxX < 0)
+        return QRect();
+    return QRect(QPoint(minX, minY), QPoint(maxX, maxY));
+}
+
 void DrawingCanvas::setTool(Tool tool)
 {
     commitFloating(); // an un-committed paste lands before the tool changes
@@ -317,9 +341,25 @@ void DrawingCanvas::setTool(Tool tool)
     }
     m_tool = tool;
     cancelShape(); // an in-progress shape never survives a tool switch
-    // Activating Move with a live selection lifts it into the transform box.
-    if (tool == Move && !m_xformActive && !m_selPath.isEmpty())
-        beginTransform();
+    // Activating Move shows the transform box at once (like Photoshop): a live
+    // selection lifts the selected pixels; with NO selection the box wraps the
+    // layer's whole artwork (synthesized rect selection, dropped on cancel).
+    // An empty layer shows no box.
+    if (tool == Move && !m_xformActive) {
+        if (m_selPath.isEmpty()) {
+            if (Layer *layer = editableActiveLayer()) {
+                const QRect art = opaquePixelBounds(layer->image);
+                if (!art.isEmpty()) {
+                    QPainterPath path;
+                    path.addRect(QRectF(art)); // QRect(P,P) width already spans maxX+1
+                    m_selPath = path;
+                    m_xformAutoSel = true;
+                }
+            }
+        }
+        if (!m_selPath.isEmpty())
+            beginTransform();
+    }
     update(); // the selection itself DOES survive (Select -> Move flow)
 }
 
@@ -859,6 +899,18 @@ void DrawingCanvas::setSelectionOp(SelectionOp op)
     m_selOp = op;
 }
 
+// Selection Modifier "Move": dragging with a selection tool translates ONLY
+// the selection outline. No artwork pixels are lifted, moved, or altered.
+void DrawingCanvas::setSelectionOutlineMove(bool on)
+{
+    m_selOutlineMove = on;
+    if (!on && m_selOutlineDrag) { // mode switched off mid-drag: end it cleanly
+        m_selOutlineDrag = false;
+        m_selOutlineBase = QPainterPath();
+    }
+    update();
+}
+
 // Select the whole active layer (the canvas rect).
 void DrawingCanvas::selectAll()
 {
@@ -917,16 +969,19 @@ QPointF DrawingCanvas::clampFloatDelta(const QPointF &delta) const
     return clamped - m_floatPos;
 }
 
-// The selection path rasterized once into a hard-edged binary mask (alpha
-// strictly 0 or 255), in boundingRect-local coordinates. DestinationIn with
-// it KEEPS exactly the masked pixels; DestinationOut CLEARS exactly the same
-// set — the two partition the rect with no off-by-one.
-QImage DrawingCanvas::selectionMask(const QRect &boundingRect) const
+// The selection path rasterized once into a mask, in boundingRect-local
+// coordinates. Hard-edged (alpha strictly 0/255) by default; antialiased=true
+// adds a soft 1px coverage falloff at the boundary — used by the Move tool's
+// transform pipeline so moved artwork commits with clean, smooth edges.
+// Either way, DestinationIn with it KEEPS exactly the masked coverage and
+// DestinationOut CLEARS exactly the complement — alpha + (1-alpha) partitions
+// the rect with no off-by-one and no double coverage.
+QImage DrawingCanvas::selectionMask(const QRect &boundingRect, bool antialiased) const
 {
     QImage mask(boundingRect.size(), QImage::Format_ARGB32_Premultiplied);
     mask.fill(Qt::transparent);
     QPainter painter(&mask);
-    painter.setRenderHint(QPainter::Antialiasing, false);
+    painter.setRenderHint(QPainter::Antialiasing, antialiased);
     painter.translate(-boundingRect.topLeft());
     painter.fillPath(m_selPath, Qt::white);
     return mask;
@@ -1185,7 +1240,9 @@ void DrawingCanvas::beginTransform()
     if (r.isEmpty())
         return;
 
-    m_moveMask = selectionMask(r);
+    // Antialiased mask: the lift carries a soft 1px edge falloff, so the
+    // committed result has smooth edges instead of jagged mask-cut stairs.
+    m_moveMask = selectionMask(r, true);
     m_moveSrcRect = r;
 
     m_transformBuf = layer->image.copy(r); // PRISTINE lifted pixels (never re-transformed)
@@ -1389,6 +1446,7 @@ void DrawingCanvas::commitTransform()
     m_transformBuf = QImage();
     m_layerBackup = QImage();
     m_moveMask = QImage();
+    m_xformAutoSel = false;
     clearSelection(); // box + selection gone after a commit
     setCursor(Qt::CrossCursor);
     update();
@@ -1409,8 +1467,12 @@ void DrawingCanvas::cancelTransform()
     m_transformBuf = QImage();
     m_layerBackup = QImage();
     m_moveMask = QImage();
+    if (m_xformAutoSel) { // synthesized whole-artwork selection: drop it too
+        m_xformAutoSel = false;
+        m_selPath = QPainterPath();
+    }
     setCursor(Qt::CrossCursor);
-    updateAntsTimer(); // the selection outline remains
+    updateAntsTimer(); // a USER selection outline remains
     update();
     emit contentChanged();
 }
@@ -1864,6 +1926,11 @@ void DrawingCanvas::paintEvent(QPaintEvent *)
         } else {
             ants = m_selPath;
         }
+        // Add/Remove mode: the committed selection (m_selBase) stays visible
+        // the whole time a new shape is being drawn on top of it, so the user
+        // sees exactly what they are adding to / subtracting from.
+        if ((m_selDrag || polyInProgress) && !m_selBase.isEmpty())
+            ants.addPath(m_selBase);
 
         painter.setBrush(Qt::NoBrush);
         QPen underlay(Qt::white, 0);
@@ -2031,6 +2098,17 @@ void DrawingCanvas::mousePressEvent(QMouseEvent *event)
     if (!editableActiveLayer())
         return; // locked / hidden / missing layer: ignore strokes, no cursor change
 
+    // Selection Modifier "Move" mode: with a live selection, dragging any
+    // selection tool translates the OUTLINE only (never pixels).
+    if (m_selOutlineMove && !m_selPath.isEmpty()
+        && (m_tool == SelectRect || m_tool == SelectEllipse || m_tool == Lasso
+            || m_tool == SelectPoly)) {
+        m_selOutlineDrag = true;
+        m_selOutlineStartC = toCanvasF(event->position());
+        m_selOutlineBase = m_selPath;
+        return;
+    }
+
     switch (m_tool) {
     case Eraser: {
         pushUndo();
@@ -2134,6 +2212,14 @@ void DrawingCanvas::mouseMoveEvent(QMouseEvent *event)
         update(); // display-only: the layer is untouched until commit
         return;
     }
+    if (m_selOutlineDrag) {
+        // Outline-only move: whole-pixel deltas keep the region snapped to the
+        // pixel grid, so a later lift/cut covers exactly what the ants show.
+        const QPointF raw = toCanvasF(event->position()) - m_selOutlineStartC;
+        m_selPath = m_selOutlineBase.translated(qRound(raw.x()), qRound(raw.y()));
+        update(); // display only — no layer writes
+        return;
+    }
     if (m_selDrag) {
         m_selCurrentC = toCanvasF(event->position());
         if (m_tool == Lasso
@@ -2186,6 +2272,11 @@ void DrawingCanvas::mouseReleaseEvent(QMouseEvent *event)
         if (m_moveActive)
             commitMoveDrag(); // the ONLY write of the whole move
         return;               // a paste keeps floating until click-away/Enter
+    }
+    if (m_selOutlineDrag && event->button() == Qt::LeftButton) {
+        m_selOutlineDrag = false; // the translated outline IS the selection now
+        m_selOutlineBase = QPainterPath();
+        return;
     }
     if (m_selDrag && event->button() == Qt::LeftButton) {
         m_selDrag = false;

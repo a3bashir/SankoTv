@@ -260,49 +260,61 @@ QPixmap selectRectGlyphPixmap()
 }
 
 // Selection Modifier "Select All" glyph (Figma 148:64): a 17x17 dashed marquee
-// (1.2px #cccccc) with a 3x3 grid of 3px #d9d9d9 squares, centred in 30x30.
+// (1.2px #cccccc, border INSIDE the box like CSS border-box) with a 3x3 grid
+// of 3px #d9d9d9 squares, centred in 30x30. Inner elements are positioned
+// relative to the padding box (inside the border), so their offsets carry the
+// extra 1.2px — that offset is exactly what had the icon looking shifted.
 QPixmap selectAllGlyphPixmap()
 {
     constexpr qreal dpr = 2.0, ox = 6.5, oy = 6.5; // 17 centred in 30
+    constexpr qreal bw = 1.2;                       // border width, inside
     QPixmap pm(QSize(60, 60));
     pm.setDevicePixelRatio(dpr);
     pm.fill(Qt::transparent);
     QPainter p(&pm);
     p.setRenderHint(QPainter::Antialiasing, true);
-    QPen pen(kIconColor, 1.2, Qt::CustomDashLine, Qt::FlatCap, Qt::MiterJoin);
+    QPen pen(kIconColor, bw, Qt::CustomDashLine, Qt::FlatCap, Qt::MiterJoin);
     pen.setDashPattern({2.5, 2.5});
     p.setPen(pen);
     p.setBrush(Qt::NoBrush);
-    p.drawRect(QRectF(ox, oy, 17.0, 17.0));
+    // Stroke centred on a path inset by bw/2 = border fully inside the 17 box.
+    p.drawRect(QRectF(ox + bw / 2, oy + bw / 2, 17.0 - bw, 17.0 - bw));
     p.setPen(Qt::NoPen);
     p.setBrush(QColor(0xd9, 0xd9, 0xd9));
-    const double grid[] = {2.4, 6.4, 10.4};
+    const double grid[] = {2.4, 6.4, 10.4}; // padding-box offsets (Figma)
     for (double gy : grid)
         for (double gx : grid)
-            p.drawRect(QRectF(ox + gx, oy + gy, 3.0, 3.0));
+            p.drawRect(QRectF(ox + bw + gx, oy + bw + gy, 3.0, 3.0));
     return pm;
 }
 
 // Selection Modifier "Inverse" glyph (Figma 148:77): a 17x17 dashed marquee
-// with a faintly-filled inner 11x11 dashed rect, centred in 30x30.
+// (border inside, as above) with a faintly-filled inner 11x11 dashed rect at
+// padding-box offset (2.4, 2.4), its own 0.7px border also inside. 30x30.
 QPixmap inverseGlyphPixmap()
 {
     constexpr qreal dpr = 2.0, ox = 6.5, oy = 6.5;
+    constexpr qreal bw = 1.2, ibw = 0.7; // outer / inner border widths, inside
     QPixmap pm(QSize(60, 60));
     pm.setDevicePixelRatio(dpr);
     pm.fill(Qt::transparent);
     QPainter p(&pm);
     p.setRenderHint(QPainter::Antialiasing, true);
-    QPen outer(kIconColor, 1.2, Qt::CustomDashLine, Qt::FlatCap, Qt::MiterJoin);
+    QPen outer(kIconColor, bw, Qt::CustomDashLine, Qt::FlatCap, Qt::MiterJoin);
     outer.setDashPattern({2.5, 2.5});
     p.setPen(outer);
     p.setBrush(Qt::NoBrush);
-    p.drawRect(QRectF(ox, oy, 17.0, 17.0));
-    QPen inner(kIconColor, 0.7, Qt::CustomDashLine, Qt::FlatCap, Qt::MiterJoin);
+    p.drawRect(QRectF(ox + bw / 2, oy + bw / 2, 17.0 - bw, 17.0 - bw));
+    // Inner 11x11 border-box at (2.4, 2.4) inside the outer border.
+    const qreal ix = ox + bw + 2.4, iy = oy + bw + 2.4;
+    p.setPen(Qt::NoPen);
+    p.setBrush(QColor(0xd9, 0xd9, 0xd9, 89)); // rgba(217,217,217,0.35)
+    p.drawRect(QRectF(ix, iy, 11.0, 11.0));
+    QPen inner(kIconColor, ibw, Qt::CustomDashLine, Qt::FlatCap, Qt::MiterJoin);
     inner.setDashPattern({3.0, 3.0});
     p.setPen(inner);
-    p.setBrush(QColor(0xd9, 0xd9, 0xd9, 89)); // rgba(217,217,217,0.35)
-    p.drawRect(QRectF(ox + 2.4, oy + 2.4, 11.0, 11.0));
+    p.setBrush(Qt::NoBrush);
+    p.drawRect(QRectF(ix + ibw / 2, iy + ibw / 2, 11.0 - ibw, 11.0 - ibw));
     return pm;
 }
 
@@ -1246,7 +1258,7 @@ void StoryboardPage::createFloatingToolbar()
         QStringLiteral("Remove"), true, 59);
     ToolButton *moveBtn = modButton(
         figIconPixmap(QStringLiteral(":/icons/selmod_move.svg"), QSizeF(20.6, 20.6)),
-        QStringLiteral("Move"), false, 120);
+        QStringLiteral("Move"), true, 120);
     ToolButton *selectAllBtn =
         modButton(selectAllGlyphPixmap(), QStringLiteral("Select All"), false, 179);
     ToolButton *inverseBtn =
@@ -1272,20 +1284,31 @@ void StoryboardPage::createFloatingToolbar()
         cap->adjustSize();
         cap->move(c.btn->x() + c.btn->width() / 2 - cap->width() / 2, 8 + 32);
     }
-    // Add / Remove: the two combine modes (mutually exclusive; both off =
-    // Replace). Active = #7C6EF6 via the checked state.
-    connect(addBtn, &QPushButton::clicked, this, [this, addBtn, removeBtn] {
+    // Add / Remove / Move: three mutually exclusive modes (Active = #7C6EF6
+    // via the checked state; all off = Replace). Add and Remove set how a
+    // freshly-drawn shape combines with the selection; Move drags ONLY the
+    // selection outline (marching ants) — never the artwork pixels (the
+    // Brush-bar Move TOOL is the one that transforms artwork).
+    connect(addBtn, &QPushButton::clicked, this, [this, addBtn, removeBtn, moveBtn] {
         removeBtn->setChecked(false);
+        moveBtn->setChecked(false);
+        m_canvas->setSelectionOutlineMove(false);
         m_canvas->setSelectionOp(addBtn->isChecked() ? DrawingCanvas::SelAdd
                                                       : DrawingCanvas::SelReplace);
     });
-    connect(removeBtn, &QPushButton::clicked, this, [this, addBtn, removeBtn] {
+    connect(removeBtn, &QPushButton::clicked, this, [this, addBtn, removeBtn, moveBtn] {
         addBtn->setChecked(false);
+        moveBtn->setChecked(false);
+        m_canvas->setSelectionOutlineMove(false);
         m_canvas->setSelectionOp(removeBtn->isChecked() ? DrawingCanvas::SelSubtract
                                                         : DrawingCanvas::SelReplace);
     });
-    connect(moveBtn, &QPushButton::clicked, this,
-            [this] { m_canvas->setTool(DrawingCanvas::Move); });
+    connect(moveBtn, &QPushButton::clicked, this, [this, addBtn, removeBtn, moveBtn] {
+        addBtn->setChecked(false);
+        removeBtn->setChecked(false);
+        m_canvas->setSelectionOp(DrawingCanvas::SelReplace);
+        m_canvas->setSelectionOutlineMove(moveBtn->isChecked());
+    });
     connect(selectAllBtn, &QPushButton::clicked, this, [this] { m_canvas->selectAll(); });
     connect(inverseBtn, &QPushButton::clicked, this, [this] { m_canvas->invertSelection(); });
     connect(deselectBtn, &QPushButton::clicked, this, [this] { m_canvas->clearSelection(); });
@@ -1296,13 +1319,20 @@ void StoryboardPage::createFloatingToolbar()
                       qMax(6, m_canvas->height() - selBar->height() - 116 - 8));
     });
     // Visible only while a selection tool is active (the Select button's checked
-    // state tracks exactly that); reset the combine mode each time it appears.
-    connect(selection, &QPushButton::toggled, this, [this, addBtn, removeBtn](bool on) {
+    // state tracks exactly that). ADD is the default active mode each time the
+    // bar appears; leaving the selection tools drops outline-move mode.
+    connect(selection, &QPushButton::toggled, this,
+            [this, addBtn, removeBtn, moveBtn](bool on) {
         if (on) {
-            addBtn->setChecked(false);
+            addBtn->setChecked(true); // Add = default selection mode
             removeBtn->setChecked(false);
-            if (m_canvas)
-                m_canvas->setSelectionOp(DrawingCanvas::SelReplace);
+            moveBtn->setChecked(false);
+            if (m_canvas) {
+                m_canvas->setSelectionOp(DrawingCanvas::SelAdd);
+                m_canvas->setSelectionOutlineMove(false);
+            }
+        } else if (m_canvas) {
+            m_canvas->setSelectionOutlineMove(false);
         }
         if (m_selModToolbar)
             m_selModToolbar->setVisible(on);
