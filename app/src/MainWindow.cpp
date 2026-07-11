@@ -175,6 +175,18 @@ void MainWindow::setupMenuBar()
         });
         return action;
     };
+    // Drawing undo/redo (Ctrl+Z / Ctrl+Y or Ctrl+Shift+Z) — same history as
+    // the Brush-bar Undo/Redo buttons. Selection changes have their OWN
+    // history, reached through the separate actions below.
+    editAction(QStringLiteral("Undo"), QKeySequence(Qt::CTRL | Qt::Key_Z),
+               &StoryboardPage::editUndo);
+    QAction *redoAct = editAction(QStringLiteral("Redo"),
+                                  QKeySequence(Qt::CTRL | Qt::Key_Y),
+                                  &StoryboardPage::editRedo);
+    redoAct->setShortcuts({QKeySequence(Qt::CTRL | Qt::Key_Y),
+                           QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_Z)});
+    editMenu->addSeparator();
+
     editAction(QStringLiteral("Copy"), QKeySequence::Copy, &StoryboardPage::editCopy);
     editAction(QStringLiteral("Cut"), QKeySequence::Cut, &StoryboardPage::editCut);
     m_pastePanelAct = editAction(QStringLiteral("Paste"), QKeySequence::Paste,
@@ -184,6 +196,14 @@ void MainWindow::setupMenuBar()
                                         &StoryboardPage::editPasteInPlace);
     m_pastePanelAct->setEnabled(false);        // until something is copied
     m_pastePanelInPlaceAct->setEnabled(false); // (wired after m_storyboard exists)
+
+    // Selection undo/redo: the canvas's dedicated selection history (region
+    // only). Deliberately unshortcutted — Ctrl+Z/Ctrl+Y stay on drawing.
+    editMenu->addSeparator();
+    editAction(QStringLiteral("Undo Selection"), QKeySequence(),
+               &StoryboardPage::selectionUndo);
+    editAction(QStringLiteral("Redo Selection"), QKeySequence(),
+               &StoryboardPage::selectionRedo);
 
     editMenu->addSeparator();
     QAction *prefsAct = editMenu->addAction(QStringLiteral("Preferences..."));

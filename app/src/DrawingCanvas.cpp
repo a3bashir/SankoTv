@@ -719,6 +719,7 @@ void DrawingCanvas::pushUndo()
     m_panel->undoStack.append({layer->id, layer->image.copy()});
     while (m_panel->undoStack.size() > 20)
         m_panel->undoStack.removeFirst();
+    m_panel->redoStack.clear(); // a fresh edit invalidates the redo branch
 }
 
 void DrawingCanvas::drawSegment(const QPoint &from, const QPoint &to, const QColor &color)
@@ -728,6 +729,10 @@ void DrawingCanvas::drawSegment(const QPoint &from, const QPoint &to, const QCol
         return;
     QPainter painter(&layer->image);
     painter.setRenderHint(QPainter::Antialiasing, true);
+    // An active selection is a clip mask: the stroke only affects pixels
+    // inside it (consistent with Brush and Fill).
+    if (!m_selPath.isEmpty())
+        painter.setClipPath(m_selPath);
     // Eraser carves the layer back to TRANSPARENT (revealing layers below /
     // the white paper) — painting white would smear over lower layers.
     if (m_tool == Eraser)
@@ -876,6 +881,7 @@ void DrawingCanvas::closePolygonSelection()
         m_selPath = combinedSelection(QPainterPath()); // too few: keep base (Add/Sub)
     }
     m_selBase = QPainterPath();
+    recordSelectionChange(m_selGestureBase); // one history entry per polygon
     updateAntsTimer();
     update();
 }
@@ -899,6 +905,56 @@ void DrawingCanvas::setSelectionOp(SelectionOp op)
     m_selOp = op;
 }
 
+// --- Selection history (separate from the drawing undo/redo) ---------------
+
+// Record a committed selection-region change: `before` is the selection as it
+// was prior to the change now held in m_selPath. No-ops (unchanged region)
+// are skipped so degenerate clicks never pollute the history.
+void DrawingCanvas::recordSelectionChange(const QPainterPath &before)
+{
+    if (before == m_selPath)
+        return;
+    m_selUndoStack.append(before);
+    while (m_selUndoStack.size() > 20)
+        m_selUndoStack.removeFirst();
+    m_selRedoStack.clear(); // a fresh change invalidates the redo branch
+}
+
+// Undo the last SELECTION change (region only — layer pixels are untouched;
+// drawing has its own undo). Ignored mid-gesture.
+void DrawingCanvas::undoSelection()
+{
+    if (m_xformActive || m_selDrag || m_selOutlineDrag || !m_lassoPts.isEmpty())
+        return;
+    if (m_selUndoStack.isEmpty())
+        return;
+    m_selRedoStack.append(m_selPath);
+    m_selPath = m_selUndoStack.takeLast();
+    updateAntsTimer();
+    update();
+}
+
+void DrawingCanvas::redoSelection()
+{
+    if (m_xformActive || m_selDrag || m_selOutlineDrag || !m_lassoPts.isEmpty())
+        return;
+    if (m_selRedoStack.isEmpty())
+        return;
+    m_selUndoStack.append(m_selPath);
+    m_selPath = m_selRedoStack.takeLast();
+    updateAntsTimer();
+    update();
+}
+
+// User-facing deselect (SelMod Deselect button / Esc): clears the selection
+// AND records it in the selection history, so it can be selection-undone.
+void DrawingCanvas::deselect()
+{
+    const QPainterPath before = m_selPath;
+    clearSelection();
+    recordSelectionChange(before);
+}
+
 // Selection Modifier "Move": dragging with a selection tool translates ONLY
 // the selection outline. No artwork pixels are lifted, moved, or altered.
 void DrawingCanvas::setSelectionOutlineMove(bool on)
@@ -914,11 +970,13 @@ void DrawingCanvas::setSelectionOutlineMove(bool on)
 // Select the whole active layer (the canvas rect).
 void DrawingCanvas::selectAll()
 {
+    const QPainterPath before = m_selPath;
     QPainterPath path;
     path.addRect(QRectF(QPointF(0, 0), QSizeF(canvasSize())));
     m_selPath = path;
     m_selDrag = false;
     m_lassoPts.clear();
+    recordSelectionChange(before);
     updateAntsTimer();
     update();
 }
@@ -927,11 +985,13 @@ void DrawingCanvas::selectAll()
 // inverts to the whole canvas).
 void DrawingCanvas::invertSelection()
 {
+    const QPainterPath before = m_selPath;
     QPainterPath full;
     full.addRect(QRectF(QPointF(0, 0), QSizeF(canvasSize())));
     m_selPath = m_selPath.isEmpty() ? full : full.subtracted(m_selPath);
     m_selDrag = false;
     m_lassoPts.clear();
+    recordSelectionChange(before);
     updateAntsTimer();
     update();
 }
@@ -1603,6 +1663,10 @@ void DrawingCanvas::stampDab(const QPointF &center, qreal pressure)
 
     QPainter painter(&layer->image);
     painter.setRenderHint(QPainter::Antialiasing, true);
+    // An active selection is a clip mask: dabs only affect pixels inside it.
+    // Outside the selection the brush has no effect (matches Erase and Fill).
+    if (!m_selPath.isEmpty())
+        painter.setClipPath(m_selPath);
     painter.setPen(Qt::NoPen);
     painter.setBrush(gradient);
     painter.drawEllipse(center, radius, radius);
@@ -1676,6 +1740,34 @@ void DrawingCanvas::undo()
         const LayerUndoEntry entry = m_panel->undoStack.takeLast();
         for (Layer &layer : m_panel->layers) {
             if (layer.id == entry.layerId) {
+                // The state being undone becomes redo-able.
+                m_panel->redoStack.append({layer.id, layer.image.copy()});
+                while (m_panel->redoStack.size() > 20)
+                    m_panel->redoStack.removeFirst();
+                layer.image = entry.image;
+                update();
+                emit contentChanged();
+                return;
+            }
+        }
+    }
+}
+
+// Re-apply the last undone drawing change. The redo branch survives only
+// until the next fresh edit (pushUndo clears it).
+void DrawingCanvas::redo()
+{
+    if (!m_panel)
+        return;
+    while (!m_panel->redoStack.isEmpty()) {
+        const LayerUndoEntry entry = m_panel->redoStack.takeLast();
+        for (Layer &layer : m_panel->layers) {
+            if (layer.id == entry.layerId) {
+                // The state being replaced goes back onto the undo stack
+                // DIRECTLY (pushUndo would wipe the remaining redo branch).
+                m_panel->undoStack.append({layer.id, layer.image.copy()});
+                while (m_panel->undoStack.size() > 20)
+                    m_panel->undoStack.removeFirst();
                 layer.image = entry.image;
                 update();
                 emit contentChanged();
@@ -2013,7 +2105,7 @@ void DrawingCanvas::keyPressEvent(QKeyEvent *event)
             return;
         }
         if (!m_selPath.isEmpty() || m_selDrag) {
-            clearSelection();
+            deselect(); // recorded in the selection history
             return;
         }
     }
@@ -2145,6 +2237,7 @@ void DrawingCanvas::mousePressEvent(QMouseEvent *event)
         // Add/Subtract combine the new shape with the pre-drag selection;
         // Replace starts fresh. (A bare click = degenerate drag: Replace clears,
         // Add/Subtract leave the existing selection untouched.)
+        m_selGestureBase = m_selPath; // selection-history "before" snapshot
         m_selBase = m_selOp == SelReplace ? QPainterPath() : m_selPath;
         clearSelection();
         m_selDrag = true;
@@ -2153,6 +2246,7 @@ void DrawingCanvas::mousePressEvent(QMouseEvent *event)
         update();
         break;
     case Lasso:
+        m_selGestureBase = m_selPath;
         m_selBase = m_selOp == SelReplace ? QPainterPath() : m_selPath;
         clearSelection();
         m_selDrag = true;
@@ -2167,6 +2261,7 @@ void DrawingCanvas::mousePressEvent(QMouseEvent *event)
         // vertex captures the pre-drag selection (for Add/Subtract) and clears
         // the live one; a rubber segment follows the cursor until close.
         if (m_lassoPts.isEmpty()) {
+            m_selGestureBase = m_selPath;
             m_selBase = m_selOp == SelReplace ? QPainterPath() : m_selPath;
             clearSelection();
         }
@@ -2275,6 +2370,7 @@ void DrawingCanvas::mouseReleaseEvent(QMouseEvent *event)
     }
     if (m_selOutlineDrag && event->button() == Qt::LeftButton) {
         m_selOutlineDrag = false; // the translated outline IS the selection now
+        recordSelectionChange(m_selOutlineBase); // outline moves are undoable too
         m_selOutlineBase = QPainterPath();
         return;
     }
@@ -2301,6 +2397,7 @@ void DrawingCanvas::mouseReleaseEvent(QMouseEvent *event)
         m_selPath = combinedSelection(path);
         m_selBase = QPainterPath();
         m_lassoPts.clear();
+        recordSelectionChange(m_selGestureBase); // one history entry per gesture
         updateAntsTimer();
         update();
         return;

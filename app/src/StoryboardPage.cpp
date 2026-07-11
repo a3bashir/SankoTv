@@ -278,10 +278,11 @@ QPixmap selModIconPixmap(const QString &svgPath, QSizeF svgSize)
     return pm;
 }
 
-// Selection Modifier "Select All" glyph (Figma 156:43, updated): a 24x24
-// dashed marquee (1px #cccccc, border INSIDE the box like CSS border-box) with
-// a 3x3 grid of 4px #d9d9d9 squares at padding-box offsets {4, 10, 16}, placed
-// at (6,6) in the 36x36 button box like the SVG icons.
+// Selection Modifier "Select All" glyph (Figma 156:43): a 24x24 dashed marquee
+// (1px #cccccc, border INSIDE the box like CSS border-box) with a 3x3 grid of
+// 4px #d9d9d9 squares at FRAME offsets {4, 10, 16} — the squares are siblings
+// of the border in the 24x24 icon frame (grid spans 4..20, perfectly centred),
+// NOT children of its padding box. Placed at (6,6) in the 36x36 button box.
 QPixmap selectAllGlyphPixmap()
 {
     constexpr qreal dpr = 2.0, box = 36.0, ox = 6.0, oy = 6.0;
@@ -298,10 +299,10 @@ QPixmap selectAllGlyphPixmap()
     p.drawRect(QRectF(ox + bw / 2, oy + bw / 2, 24.0 - bw, 24.0 - bw));
     p.setPen(Qt::NoPen);
     p.setBrush(QColor(0xd9, 0xd9, 0xd9));
-    const double grid[] = {4.0, 10.0, 16.0}; // padding-box offsets (Figma)
+    const double grid[] = {4.0, 10.0, 16.0}; // frame offsets (Figma), centred
     for (double gy : grid)
         for (double gx : grid)
-            p.drawRect(QRectF(ox + bw + gx, oy + bw + gy, 4.0, 4.0));
+            p.drawRect(QRectF(ox + gx, oy + gy, 4.0, 4.0));
     return pm;
 }
 
@@ -607,6 +608,7 @@ StoryboardPage::StoryboardPage(QWidget *parent)
     QWidget *layersPanel = createLayerPanel();
     QWidget *shotInfoPanel = createRightColumn();
     QWidget *bottomBar = createBottomBar();
+    m_bottomBar = bottomBar; // the SelMod toolbar keeps a 10px gap above it
 
     // ADS dock manager hosts everything: native tabbing, drag-to-float,
     // re-docking, and auto-hide come with it — nothing hand-rolled.
@@ -720,12 +722,9 @@ StoryboardPage::StoryboardPage(QWidget *parent)
         new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_I), this);
     connect(importShortcut, &QShortcut::activated, this, [this] { importImageToPanel(); });
 
-    // Ctrl+Z reverts the last canvas change (drawing or image import).
-    QShortcut *undoShortcut = new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_Z), this);
-    connect(undoShortcut, &QShortcut::activated, this, [this] {
-        if (m_canvas)
-            m_canvas->undo();
-    });
+    // (Ctrl+Z / Ctrl+Y live on the Edit menu's Undo/Redo actions in MainWindow,
+    // routed here via editUndo()/editRedo() — a page-level QShortcut would make
+    // the sequence ambiguous and silently break both.)
 
     updateDuplicateButton(); // panel-action buttons disabled until a panel is selected
 }
@@ -1300,12 +1299,17 @@ void StoryboardPage::createFloatingToolbar()
     });
     connect(selectAllBtn, &QPushButton::clicked, this, [this] { m_canvas->selectAll(); });
     connect(inverseBtn, &QPushButton::clicked, this, [this] { m_canvas->invertSelection(); });
-    connect(deselectBtn, &QPushButton::clicked, this, [this] { m_canvas->clearSelection(); });
+    connect(deselectBtn, &QPushButton::clicked, this, [this] { m_canvas->deselect(); });
     selBar->setDefaultOffsetProvider([this, selBar] {
-        // Bottom-centre, stacked above the zoom bar (46+12+12) and Brush bar
-        // (46) with an 8px gap.
+        // Bottom-centre, 10px above the status bar (the bottom toolbar). The
+        // gap is measured to the bar's real top edge, mapped into canvas
+        // coordinates; if it is hidden, the canvas bottom stands in.
+        int statusTop = m_canvas->height();
+        if (m_bottomBar && m_bottomBar->isVisible())
+            statusTop = m_canvas->mapFromGlobal(
+                m_bottomBar->mapToGlobal(QPoint(0, 0))).y();
         return QPoint(qMax(6, (m_canvas->width() - selBar->width()) / 2),
-                      qMax(6, m_canvas->height() - selBar->height() - 116 - 8));
+                      qMax(6, statusTop - selBar->height() - 10));
     });
     // Visible only while a selection tool is active (the Select button's checked
     // state tracks exactly that). ADD is the default active mode each time the
@@ -1367,11 +1371,10 @@ void StoryboardPage::createFloatingToolbar()
     connect(undo, &QPushButton::clicked, this, [this] { m_canvas->undo(); });
     bar->addWidget(undo, 0, Qt::AlignVCenter);
 
-    // The canvas has no redo stack yet; the button ships disabled. (Flagged.)
     QPushButton *redo = toolButton(
         figIconPixmap(QStringLiteral(":/icons/undo.svg"), QSizeF(19.2, 15.2), /*mirror*/ true),
         QStringLiteral("<b>Redo</b> | Redo the last action."), false);
-    redo->setEnabled(false);
+    connect(redo, &QPushButton::clicked, this, [this] { m_canvas->redo(); });
     bar->addWidget(redo, 0, Qt::AlignVCenter);
 
     m_floatToolbar->adjustSize(); // fixed content -> final bar width
@@ -2343,6 +2346,35 @@ void StoryboardPage::duplicatePanel()
     if (!source || m_currentPanel < 0)
         return;
     insertPanelClone(source, m_currentPanel + 1);
+}
+
+// --- Edit-menu undo/redo routing -----------------------------------------------
+
+// Undo/Redo drive the DRAWING history (same as the Brush-bar buttons);
+// Undo/Redo Selection drive the canvas's separate SELECTION history.
+
+void StoryboardPage::editUndo()
+{
+    if (m_canvas)
+        m_canvas->undo();
+}
+
+void StoryboardPage::editRedo()
+{
+    if (m_canvas)
+        m_canvas->redo();
+}
+
+void StoryboardPage::selectionUndo()
+{
+    if (m_canvas)
+        m_canvas->undoSelection();
+}
+
+void StoryboardPage::selectionRedo()
+{
+    if (m_canvas)
+        m_canvas->redoSelection();
 }
 
 // --- Edit-menu clipboard routing ----------------------------------------------

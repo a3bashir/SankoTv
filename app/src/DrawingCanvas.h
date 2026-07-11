@@ -106,7 +106,8 @@ public slots:
     void setTool(Tool tool);
     void setColor(const QColor &color);
     void setBrushSize(int size);
-    void undo();
+    void undo();   // drawing history (Ctrl+Z / toolbar Undo)
+    void redo();   // drawing history (Ctrl+Y / toolbar Redo)
     void clearCanvas();
 
     // Brush engine settings (the stamp-based Brush tool only).
@@ -138,8 +139,15 @@ public slots:
     void cutSelection();                  // copy, then clear to transparent (undoable)
     void pasteClipboard(bool atOriginalPos); // floating paste; commit on click-away/Enter
     void clearSelection();                // Esc equivalent
+    void deselect();                      // clearSelection + selection-history entry
     void selectAll();                     // select the whole canvas
     void invertSelection();               // canvas minus current selection
+
+    // SELECTION history — fully separate from the drawing undo/redo above.
+    // Records selection-region changes only (new/adjusted outlines, select
+    // all, inverse, deselect, outline moves); never touches layer pixels.
+    void undoSelection();
+    void redoSelection();
 
 signals:
     void contentChanged();
@@ -242,6 +250,12 @@ private:
     bool m_selOutlineDrag = false; // dragging the outline right now
     QPointF m_selOutlineStartC;    // canvas point where the drag grabbed
     QPainterPath m_selOutlineBase; // m_selPath at drag start (translated live)
+    // SELECTION history (separate from the drawing undo/redo, which lives on
+    // the Panel). One entry = the selection region before a committed change.
+    void recordSelectionChange(const QPainterPath &before);
+    QVector<QPainterPath> m_selUndoStack;
+    QVector<QPainterPath> m_selRedoStack;
+    QPainterPath m_selGestureBase; // selection at gesture start (drag/polygon)
     QVector<QPointF> m_lassoPts;   // freehand outline while dragging
     QTimer *m_antsTimer = nullptr; // marching-ants animation
     int m_antsPhase = 0;

@@ -75,6 +75,7 @@ struct Panel
     QString notes;
     int duration = 3; // seconds on screen in the animatic
     QVector<LayerUndoEntry> undoStack; // capped to 20 snapshots by DrawingCanvas
+    QVector<LayerUndoEntry> redoStack; // undone snapshots; cleared on a new edit
 
     // AI video generation (Generation screen).
     QString generationStatus = QStringLiteral("Not Queued"); // Not Queued, Queued,

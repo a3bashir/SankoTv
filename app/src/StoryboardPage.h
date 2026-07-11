@@ -65,6 +65,14 @@ public:
     void editPaste();
     void editPasteInPlace();
 
+    // Edit-menu undo/redo. Undo/Redo (Ctrl+Z / Ctrl+Y) act on the DRAWING
+    // history — same as the Brush-bar buttons. Undo/Redo Selection act on the
+    // canvas's separate SELECTION history (region only, never pixels).
+    void editUndo();
+    void editRedo();
+    void selectionUndo();
+    void selectionRedo();
+
     // Panel-level clipboard. Copy stores an owned deep copy; paste inserts a
     // fresh clone (new layer UUIDs) each time. Cut is blocked on a scene's
     // last panel, same rule as Delete.
@@ -206,6 +214,7 @@ private:
     QWidget *m_floatToolbar = nullptr;  // horizontal Brush/tools bar (Figma 33:110)
     QWidget *m_extrasToolbar = nullptr; // vertical bar: Shapes/Camera/Onion + size
     QWidget *m_selModToolbar = nullptr; // Selection Modifier bar (Figma 146:67)
+    QWidget *m_bottomBar = nullptr;     // status bar; the SelMod bar sits 10px above
     QCheckBox *m_pressureSizeCheck = nullptr;
     QCheckBox *m_pressureOpacityCheck = nullptr;
     // Fixed control column (left of the panel strip).
