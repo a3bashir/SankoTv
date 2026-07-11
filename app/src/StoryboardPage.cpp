@@ -1356,7 +1356,7 @@ void StoryboardPage::createFloatingToolbar()
     // Pivot Point / Skew / Distort / Perspective (see DrawingCanvas).
     SelModBar *moveBar = new SelModBar(m_canvas, this);
     m_moveModToolbar = moveBar;
-    moveBar->setFixedSize(371, 66); // rgba(33,33,33,0.65) r8, px17/py8 content
+    moveBar->setFixedSize(470, 66); // rgba(33,33,33,0.65) r8, px17/py8 content
     auto moveModButton = [moveBar](const QString &svg, const QString &tip, int x) {
         ToolButton *b = new ToolButton(moveModIconPixmap(svg), moveBar);
         b->setFixedSize(36, 36);
@@ -1376,12 +1376,15 @@ void StoryboardPage::createFloatingToolbar()
     ToolButton *perspBtn = moveModButton(
         QStringLiteral(":/icons/movemod_perspective.svg"),
         QStringLiteral("Perspective"), 294);
+    ToolButton *warpBtn = moveModButton(
+        QStringLiteral(":/icons/movemod_warp.svg"), QStringLiteral("Warp"), 393);
 
     // Captions centred under each button (Inter Semi-Bold 9px #CCCCCC, y=41).
     const struct { ToolButton *btn; QString text; } moveCaps[] = {
         {pivotBtn, QStringLiteral("Pivot Point")}, {skewBtn, QStringLiteral("Skew")},
         {distortBtn, QStringLiteral("Distort")},
         {perspBtn, QStringLiteral("Perspective")},
+        {warpBtn, QStringLiteral("Warp")},
     };
     QFont moveCapFont(QStringLiteral("Inter"));
     moveCapFont.setPixelSize(9);
@@ -1397,11 +1400,11 @@ void StoryboardPage::createFloatingToolbar()
     // One mode at a time (Active = #7C6EF6); clicking the active mode again
     // returns to the default move/scale/rotate box. Switching modes keeps the
     // live transform session — only Enter/Esc end it.
-    auto wireMoveMode = [this, pivotBtn, skewBtn, distortBtn, perspBtn](
+    auto wireMoveMode = [this, pivotBtn, skewBtn, distortBtn, perspBtn, warpBtn](
                             ToolButton *btn, DrawingCanvas::XformUiMode mode) {
         connect(btn, &QPushButton::clicked, this,
-                [this, btn, mode, pivotBtn, skewBtn, distortBtn, perspBtn] {
-            for (ToolButton *other : {pivotBtn, skewBtn, distortBtn, perspBtn})
+                [this, btn, mode, pivotBtn, skewBtn, distortBtn, perspBtn, warpBtn] {
+            for (ToolButton *other : {pivotBtn, skewBtn, distortBtn, perspBtn, warpBtn})
                 if (other != btn)
                     other->setChecked(false);
             m_canvas->setXformUiMode(btn->isChecked() ? mode
@@ -1412,6 +1415,7 @@ void StoryboardPage::createFloatingToolbar()
     wireMoveMode(skewBtn, DrawingCanvas::XformSkew);
     wireMoveMode(distortBtn, DrawingCanvas::XformDistort);
     wireMoveMode(perspBtn, DrawingCanvas::XformPerspective);
+    wireMoveMode(warpBtn, DrawingCanvas::XformWarp);
 
     moveBar->setDefaultOffsetProvider([this, moveBar] {
         // Bottom-centre, 10px above the status bar — identical to the
@@ -1426,9 +1430,9 @@ void StoryboardPage::createFloatingToolbar()
     // Visible only while the Move tool is active; each appearance starts in
     // the default transform mode.
     connect(move, &QPushButton::toggled, this,
-            [this, pivotBtn, skewBtn, distortBtn, perspBtn](bool on) {
+            [this, pivotBtn, skewBtn, distortBtn, perspBtn, warpBtn](bool on) {
         if (on) {
-            for (ToolButton *b : {pivotBtn, skewBtn, distortBtn, perspBtn})
+            for (ToolButton *b : {pivotBtn, skewBtn, distortBtn, perspBtn, warpBtn})
                 b->setChecked(false);
             if (m_canvas)
                 m_canvas->setXformUiMode(DrawingCanvas::XformDefault);

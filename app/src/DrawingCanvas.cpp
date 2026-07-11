@@ -334,7 +334,7 @@ void DrawingCanvas::setTool(Tool tool)
 {
     commitFloating(); // an un-committed paste lands before the tool changes
     if (m_xformActive && tool != Move)
-        commitTransform(); // leaving Move finalises the transform box
+        commitTransform(false); // leaving Move finalises the box — no re-lift
     if (m_tool == SelectPoly && !m_lassoPts.isEmpty()) {
         m_lassoPts.clear(); // an un-closed polygon selection never survives
         setMouseTracking(false);
@@ -1333,11 +1333,98 @@ void DrawingCanvas::beginTransform()
     m_quad = QPolygonF({rf.topLeft(), rf.topRight(), rf.bottomRight(), rf.bottomLeft()});
     m_pivot = rf.center();
     m_pivotCustom = false;
+    // Warp mesh: seeded as an even lattice over the lifted rect (pristine).
+    m_warpPts.clear();
+    for (int j = 0; j < kWarpGrid; ++j)
+        for (int i = 0; i < kWarpGrid; ++i)
+            m_warpPts.append(QPointF(
+                rf.left() + rf.width() * i / (kWarpGrid - 1),
+                rf.top() + rf.height() * j / (kWarpGrid - 1)));
+    m_warpDirty = false;
+    m_warpIdx = -1;
     m_xformActive = true;
     m_xformMode = XNone;
     setMouseTracking(true); // hover updates the scale/rotate cursor
     updateAntsTimer();
     update();
+}
+
+// Piecewise mesh rendering: each lattice cell of the PRISTINE buffer is split
+// into two AFFINE triangles (clipped to their warped shape). Triangles — not
+// projective quads — because an extreme control-point pull can make a cell
+// non-convex, and a projective map of a twisted quad passes through infinity
+// and smears across the canvas; affine triangle maps stay finite for ANY
+// point positions (the standard mesh-warp approach). Composes onto the
+// painter's current transform, so the same code serves the live preview
+// (canvas space through the view transform) and the commit (layer space).
+void DrawingCanvas::paintWarpedBuffer(QPainter &p) const
+{
+    const qreal srcW = m_moveSrcRect.width();
+    const qreal srcH = m_moveSrcRect.height();
+    const int cells = kWarpGrid - 1;
+    if (srcW <= 0.0 || srcH <= 0.0 || m_warpPts.size() != kWarpGrid * kWarpGrid)
+        return;
+    auto wp = [this](int i, int j) { return m_warpPts.at(j * kWarpGrid + i); };
+
+    // Affine transform taking source triangle (s0,s1,s2) to (d0,d1,d2).
+    auto triXform = [](const QPointF &s0, const QPointF &s1, const QPointF &s2,
+                       const QPointF &d0, const QPointF &d1, const QPointF &d2,
+                       QTransform *out) {
+        const QPointF u = s1 - s0, v = s2 - s0, U = d1 - d0, V = d2 - d0;
+        const qreal det = u.x() * v.y() - u.y() * v.x();
+        if (qAbs(det) < 1e-9)
+            return false;
+        const qreal m11 = (U.x() * v.y() - V.x() * u.y()) / det;
+        const qreal m12 = (U.y() * v.y() - V.y() * u.y()) / det;
+        const qreal m21 = (V.x() * u.x() - U.x() * v.x()) / det;
+        const qreal m22 = (V.y() * u.x() - U.y() * v.x()) / det;
+        *out = QTransform(m11, m12, m21, m22,
+                          d0.x() - (m11 * s0.x() + m21 * s0.y()),
+                          d0.y() - (m12 * s0.x() + m22 * s0.y()));
+        return true;
+    };
+    // One triangle: clip to its (slightly inflated) warped shape and draw the
+    // source cell through the affine map. The 1.5px vertex inflation makes
+    // adjacent triangles overlap past the antialiased clip ramp, so no
+    // partial-coverage hairline seams survive between cells; at the mesh's
+    // outer boundary the buffer content simply runs out, so the overlap is
+    // invisible there.
+    auto paintTri = [&](const QRectF &src, const QPointF &s0, const QPointF &s1,
+                        const QPointF &s2, const QPointF &d0, const QPointF &d1,
+                        const QPointF &d2) {
+        QTransform t;
+        if (!triXform(s0, s1, s2, d0, d1, d2, &t))
+            return; // degenerate triangle: nothing to draw
+        const QPointF c = (d0 + d1 + d2) / 3.0;
+        QPainterPath clip;
+        QPolygonF tri;
+        for (const QPointF &d : {d0, d1, d2}) {
+            const QPointF r = d - c;
+            const qreal len = std::hypot(r.x(), r.y());
+            tri << (len > 1e-6 ? c + r * ((len + 1.5) / len) : d);
+        }
+        clip.addPolygon(tri);
+        clip.closeSubpath();
+        p.save();
+        p.setClipPath(clip, Qt::IntersectClip);
+        p.setTransform(t, true);
+        p.drawImage(src.topLeft(), m_transformBuf, src);
+        p.restore();
+    };
+
+    for (int j = 0; j < cells; ++j) {
+        for (int i = 0; i < cells; ++i) {
+            const QRectF src(i * srcW / cells, j * srcH / cells,
+                             srcW / cells, srcH / cells);
+            // Cell corners: source rect TL/TR/BR/BL and their warped images.
+            const QPointF sTL = src.topLeft(), sTR = src.topRight();
+            const QPointF sBR = src.bottomRight(), sBL = src.bottomLeft();
+            const QPointF dTL = wp(i, j), dTR = wp(i + 1, j);
+            const QPointF dBR = wp(i + 1, j + 1), dBL = wp(i, j + 1);
+            paintTri(src, sTL, sTR, sBR, dTL, dTR, dBR); // upper-right triangle
+            paintTri(src, sTL, sBR, sBL, dTL, dBR, dBL); // lower-left triangle
+        }
+    }
 }
 
 // The rotate/scale origin: the user-placed pivot (Pivot Point mode), or the
@@ -1383,6 +1470,21 @@ DrawingCanvas::XformMode DrawingCanvas::hitTestBox(const QPointF &widgetPos) con
     if (!m_xformActive)
         return XNone;
     const QTransform toWidget = viewTransform(); // canvas -> widget (rotate/flip aware)
+
+    // Warp mode: only the mesh control points and the body are live (no
+    // scale/rotate handles, like Photoshop's warp). Points win over the body.
+    if (m_xformUiMode == XformWarp) {
+        for (int k = 0; k < m_warpPts.size(); ++k) {
+            if (QLineF(toWidget.map(m_warpPts.at(k)), widgetPos).length() <= 9.0) {
+                m_warpIdx = k;
+                return XWarpPt;
+            }
+        }
+        QPolygonF poly;
+        for (int i = 0; i < 4; ++i)
+            poly << toWidget.map(m_quad.value(i));
+        return poly.containsPoint(widgetPos, Qt::OddEvenFill) ? XMove : XNone;
+    }
 
     // Pivot marker first (Pivot Point mode): it sits inside the body, so it
     // must win over the move hit.
@@ -1471,6 +1573,17 @@ void DrawingCanvas::applyXformDrag(const QPointF &canvasPos, bool proportional)
         m_pivotCustom = true;
         update();
         return; // pivot only — the quad is untouched
+    case XWarpPt:
+        // Warp: the grabbed control point follows the cursor freely; the
+        // mesh renders piecewise from here on. The quad (logical frame) is
+        // untouched.
+        if (m_warpIdx >= 0 && m_warpIdx < m_warpPts.size()
+            && m_warpPts0.size() == m_warpPts.size()) {
+            m_warpPts[m_warpIdx] = m_warpPts0.at(m_warpIdx) + delta;
+            m_warpDirty = true;
+        }
+        update();
+        return;
     case XRotate: {
         const qreal now = std::atan2(canvasPos.y() - m_pivot0.y(),
                                      canvasPos.x() - m_pivot0.x());
@@ -1578,8 +1691,18 @@ void DrawingCanvas::applyXformDrag(const QPointF &canvasPos, bool proportional)
         area2 += quad.at(i).x() * quad.at((i + 1) % 4).y()
                - quad.at((i + 1) % 4).x() * quad.at(i).y();
     }
-    if (convex && qAbs(area2) / 2.0 >= kMinBox * kMinBox)
+    if (convex && qAbs(area2) / 2.0 >= kMinBox * kMinBox) {
+        // Carry the warp mesh along with the quad edit: every lattice point
+        // rides through the same incremental transform, so a warp survives
+        // later moves/scales/rotations (and vice versa) within the session.
+        QTransform inc;
+        if (m_warpPts0.size() == m_warpPts.size()
+            && QTransform::quadToQuad(m_quad0, quad, inc)) {
+            for (int i = 0; i < m_warpPts.size(); ++i)
+                m_warpPts[i] = inc.map(m_warpPts0.at(i));
+        }
         m_quad = quad;
+    }
     update();
 }
 
@@ -1588,6 +1711,7 @@ void DrawingCanvas::updateXformCursor(XformMode mode)
     switch (mode) {
     case XMove:    setCursor(Qt::SizeAllCursor); break;
     case XPivot:   setCursor(Qt::SizeAllCursor); break; // draggable pivot marker
+    case XWarpPt:  setCursor(Qt::SizeAllCursor); break; // draggable mesh point
     case XRotate:  setCursor(m_rotateCursor); break;
     case XScaleTL:
     case XScaleBR: setCursor(Qt::SizeFDiagCursor); break;
@@ -1602,9 +1726,12 @@ void DrawingCanvas::updateXformCursor(XformMode mode)
 }
 
 // Bake the transformed buffer into the layer ONCE (start from the pristine
-// backup, clear the source, paste the transformed buffer clipped only by the
-// canvas). Exactly one undo entry = the pristine pre-transform layer.
-void DrawingCanvas::commitTransform()
+// backup, clear the source, paste the transformed buffer — or the warped
+// mesh — clipped only by the canvas). Exactly one undo entry = the pristine
+// pre-transform layer. relift: while the Move tool remains active the box
+// does not vanish — it resets to a fresh default axis-aligned box around the
+// committed artwork (Photoshop behaviour).
+void DrawingCanvas::commitTransform(bool relift)
 {
     if (!m_xformActive)
         return;
@@ -1627,8 +1754,12 @@ void DrawingCanvas::commitTransform()
             QPainter p(&result); // paste the transformed buffer (canvas-bounded)
             p.setRenderHint(QPainter::SmoothPixmapTransform, true);
             p.setRenderHint(QPainter::Antialiasing, true);
-            p.setTransform(boxTransform()); // buffer -> canvas; result IS canvas-sized
-            p.drawImage(0, 0, m_transformBuf);
+            if (m_warpDirty) {
+                paintWarpedBuffer(p); // piecewise mesh; result IS canvas-sized
+            } else {
+                p.setTransform(boxTransform()); // buffer -> canvas
+                p.drawImage(0, 0, m_transformBuf);
+            }
         }
         layer->image = result;
         emit contentChanged();
@@ -1637,13 +1768,29 @@ void DrawingCanvas::commitTransform()
     m_transformBuf = QImage();
     m_layerBackup = QImage();
     m_moveMask = QImage();
+    m_warpDirty = false;
     m_xformAutoSel = false;
-    clearSelection(); // box + selection gone after a commit
+    clearSelection(); // the committed pixels are no longer "selected"
     setCursor(Qt::CrossCursor);
+
+    // Photoshop-style persistence: the box resets to a fresh axis-aligned
+    // default around the committed artwork and stays up while Move is active.
+    if (relift && m_tool == Move) {
+        if (Layer *l = editableActiveLayer()) {
+            const QRect art = opaquePixelBounds(l->image);
+            if (!art.isEmpty()) {
+                QPainterPath path;
+                path.addRect(QRectF(art));
+                m_selPath = path;
+                m_xformAutoSel = true;
+                beginTransform();
+            }
+        }
+    }
     update();
 }
 
-void DrawingCanvas::cancelTransform()
+void DrawingCanvas::cancelTransform(bool relift)
 {
     if (!m_xformActive)
         return;
@@ -1658,11 +1805,31 @@ void DrawingCanvas::cancelTransform()
     m_transformBuf = QImage();
     m_layerBackup = QImage();
     m_moveMask = QImage();
+    m_warpDirty = false;
     if (m_xformAutoSel) { // synthesized whole-artwork selection: drop it too
         m_xformAutoSel = false;
         m_selPath = QPainterPath();
     }
     setCursor(Qt::CrossCursor);
+
+    // Esc while the Move tool stays active: the box resets to the default
+    // around the restored artwork instead of disappearing.
+    if (relift && m_tool == Move) {
+        if (Layer *l = editableActiveLayer()) {
+            if (m_selPath.isEmpty()) {
+                const QRect art = opaquePixelBounds(l->image);
+                if (!art.isEmpty()) {
+                    QPainterPath path;
+                    path.addRect(QRectF(art));
+                    m_selPath = path;
+                    m_xformAutoSel = true;
+                }
+            }
+            if (!m_selPath.isEmpty())
+                beginTransform();
+        }
+    }
+
     updateAntsTimer(); // a USER selection outline remains
     update();
     emit contentChanged();
@@ -2070,11 +2237,16 @@ void DrawingCanvas::paintEvent(QPaintEvent *)
         painter.drawImage(m_floatPos + m_floatDelta, m_floatImg);
 
     // Non-destructive transform preview: the PRISTINE buffer through the box
-    // transform, still composed with the view transform T.
+    // transform (or the piecewise warp mesh), still composed with the view
+    // transform T.
     if (m_xformActive && !m_transformBuf.isNull()) {
         painter.save();
-        painter.setWorldTransform(boxTransform(), true); // compose onto T
-        painter.drawImage(0, 0, m_transformBuf);
+        if (m_warpDirty) {
+            paintWarpedBuffer(painter); // per-cell quadToQuad, composed onto T
+        } else {
+            painter.setWorldTransform(boxTransform(), true); // compose onto T
+            painter.drawImage(0, 0, m_transformBuf);
+        }
         painter.restore();
     }
 
@@ -2094,24 +2266,53 @@ void DrawingCanvas::paintEvent(QPaintEvent *)
 
     // Transform box outline + handles: WIDGET space (constant screen size),
     // corners mapped through T so the box tracks the rotated/flipped preview.
+    // Photoshop-style: OUTLINE ONLY in the Sanko accent #7C6EF6, no fill.
     if (m_xformActive && !m_transformBuf.isNull()) {
         painter.save();
-        const QVector<QPointF> h = boxHandlesCanvas();
-        QVector<QPointF> hw;
-        for (const QPointF &c : h)
-            hw.append(T.map(c));
-        QPolygonF outline;
-        outline << hw.at(0) << hw.at(1) << hw.at(2) << hw.at(3); // corners
+        const QColor accent(0x7c, 0x6e, 0xf6);
         painter.setBrush(Qt::NoBrush);
-        painter.setPen(QPen(QColor(0, 0, 0, 120), 3));   // dark halo
-        painter.drawPolygon(outline);
-        painter.setPen(QPen(QColor(0xf5, 0xa6, 0x23), 1)); // amber box
-        painter.drawPolygon(outline);
-        for (const QPointF &p : hw) {                    // 8 handle squares
-            const QRectF sq(p.x() - 4, p.y() - 4, 8, 8);
-            painter.setBrush(Qt::white);
-            painter.setPen(QPen(QColor(0x33, 0x33, 0x33), 1));
-            painter.drawRect(sq);
+
+        if (m_xformUiMode == XformWarp) {
+            // Warp: the lattice replaces the box — accent grid lines through
+            // the control points, plus a round handle on every point.
+            auto wpw = [this, &T](int i, int j) {
+                return T.map(m_warpPts.at(j * kWarpGrid + i));
+            };
+            painter.setPen(QPen(QColor(accent.red(), accent.green(),
+                                       accent.blue(), 170), 1));
+            for (int j = 0; j < kWarpGrid; ++j) { // rows
+                QPolygonF row;
+                for (int i = 0; i < kWarpGrid; ++i)
+                    row << wpw(i, j);
+                painter.drawPolyline(row);
+            }
+            for (int i = 0; i < kWarpGrid; ++i) { // columns
+                QPolygonF col;
+                for (int j = 0; j < kWarpGrid; ++j)
+                    col << wpw(i, j);
+                painter.drawPolyline(col);
+            }
+            for (const QPointF &c : m_warpPts) { // control points
+                const QPointF p = T.map(c);
+                painter.setBrush(Qt::white);
+                painter.setPen(QPen(accent, 1.5));
+                painter.drawEllipse(p, 4.0, 4.0);
+            }
+        } else {
+            const QVector<QPointF> h = boxHandlesCanvas();
+            QVector<QPointF> hw;
+            for (const QPointF &c : h)
+                hw.append(T.map(c));
+            QPolygonF outline;
+            outline << hw.at(0) << hw.at(1) << hw.at(2) << hw.at(3); // corners
+            painter.setPen(QPen(accent, 1.5)); // accent outline, no fill
+            painter.drawPolygon(outline);
+            for (const QPointF &p : hw) { // 8 handles: white with accent ring
+                const QRectF sq(p.x() - 4, p.y() - 4, 8, 8);
+                painter.setBrush(Qt::white);
+                painter.setPen(QPen(accent, 1.5));
+                painter.drawRect(sq);
+            }
         }
         // Pivot marker (Photoshop-style reference point): a ringed crosshair
         // at the rotate/scale origin. Shown while Pivot Point mode is active,
@@ -2119,7 +2320,7 @@ void DrawingCanvas::paintEvent(QPaintEvent *)
         if (m_xformUiMode == XformPivot || m_pivotCustom) {
             const QPointF pw = T.map(pivotPoint());
             painter.setBrush(Qt::NoBrush);
-            painter.setPen(QPen(QColor(0, 0, 0, 160), 3));
+            painter.setPen(QPen(accent, 3));
             painter.drawEllipse(pw, 5.5, 5.5);
             painter.setPen(QPen(Qt::white, 1.4));
             painter.drawEllipse(pw, 5.5, 5.5);
@@ -2199,14 +2400,16 @@ void DrawingCanvas::wheelEvent(QWheelEvent *event)
 
 void DrawingCanvas::keyPressEvent(QKeyEvent *event)
 {
-    // Transform box: Enter commits (bakes once), Esc cancels (restores).
+    // Transform box: Enter commits (bakes once), Esc cancels (restores). In
+    // both cases the box RESETS to a fresh default around the artwork while
+    // the Move tool stays active (Photoshop behaviour).
     if (m_xformActive) {
         if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) {
             commitTransform();
             return;
         }
         if (event->key() == Qt::Key_Escape) {
-            cancelTransform();
+            cancelTransform(true);
             return;
         }
     }
@@ -2307,6 +2510,7 @@ void DrawingCanvas::mousePressEvent(QMouseEvent *event)
         if (m_xformMode != XNone) {
             m_dragStartCanvas = toCanvasF(event->position());
             m_quad0 = m_quad;
+            m_warpPts0 = m_warpPts;
             m_pivot0 = m_xformMode == XPivot ? m_pivot : pivotPoint();
             if (m_xformMode == XPivot && !m_pivotCustom)
                 m_pivot0 = pivotPoint(); // start from the tracked centre

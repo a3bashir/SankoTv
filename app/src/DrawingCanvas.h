@@ -51,11 +51,11 @@ public:
     enum SelectionOp { SelReplace, SelAdd, SelSubtract };
 
     // Move tool transform-box interaction mode; the Move Modifier toolbar's
-    // Pivot Point / Skew / Distort / Perspective buttons drive this. Default =
-    // the classic move/scale/rotate box. Switching modes keeps the same live
-    // transform session (commit/cancel ends it).
+    // Pivot Point / Skew / Distort / Perspective / Warp buttons drive this.
+    // Default = the classic move/scale/rotate box. Switching modes keeps the
+    // same live transform session (commit/cancel ends it).
     enum XformUiMode { XformDefault, XformPivot, XformSkew, XformDistort,
-                       XformPerspective };
+                       XformPerspective, XformWarp };
 
     explicit DrawingCanvas(QWidget *parent = nullptr);
 
@@ -302,7 +302,7 @@ private:
     // move/scale/rotate/skew, projective for distort/perspective. m_pivot is
     // the rotation/scale origin (Pivot Point mode relocates it; until then it
     // tracks the quad centre).
-    enum XformMode { XNone, XMove, XRotate, XPivot,
+    enum XformMode { XNone, XMove, XRotate, XPivot, XWarpPt,
                      XScaleTL, XScaleTR, XScaleBL, XScaleBR,
                      XScaleT, XScaleB, XScaleL, XScaleR };
     bool m_xformActive = false;
@@ -321,9 +321,28 @@ private:
     QCursor m_rotateCursor;        // curved-arrow cursor for the rotation zones
     QPointF pivotPoint() const;    // m_pivot when custom, else the quad centre
 
+    // Warp mode: a kWarpGrid x kWarpGrid lattice of draggable control points
+    // (canvas coords, row-major) that locally deform the buffer. The mesh is
+    // seeded bilinearly over the lifted rect; quad edits in the other modes
+    // carry the mesh along through the incremental quad transform, and the
+    // preview/commit switch to piecewise per-cell quadToQuad rendering once a
+    // point has been dragged off the plain quad mapping (m_warpDirty).
+    static constexpr int kWarpGrid = 4;
+    QVector<QPointF> m_warpPts;    // current mesh
+    QVector<QPointF> m_warpPts0;   // mesh snapshot at press
+    bool m_warpDirty = false;      // a control point was moved: render the mesh
+    mutable int m_warpIdx = -1;    // control point under the cursor / dragged
+    void paintWarpedBuffer(QPainter &p) const; // piecewise cells (preview+commit)
+
     void beginTransform();         // lift selection -> box (source cleared on lift)
-    void commitTransform();        // bake once (one undo), clear box
-    void cancelTransform();        // restore m_layerBackup, discard transform
+    // Bake once (one undo). relift: Photoshop-style — while the Move tool
+    // stays active the box does not disappear; it RESETS to a fresh default
+    // axis-aligned box around the committed artwork. setTool passes false
+    // when the user is leaving Move.
+    void commitTransform(bool relift = true);
+    // Restore m_layerBackup exactly. relift (Esc): keep a fresh default box
+    // up while the Move tool remains active.
+    void cancelTransform(bool relift = false);
     QTransform boxTransform() const;                 // buffer -> canvas placement
     QVector<QPointF> boxHandlesCanvas() const;       // 8 handles, canvas coords
     XformMode hitTestBox(const QPointF &widgetPos) const;

@@ -25,5 +25,6 @@
         <file>icons/movemod_skew.svg</file>
         <file>icons/movemod_distort.svg</file>
         <file>icons/movemod_perspective.svg</file>
+        <file>icons/movemod_warp.svg</file>
     </qresource>
 </RCC>
