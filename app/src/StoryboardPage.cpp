@@ -1101,6 +1101,18 @@ QWidget *StoryboardPage::createCenterColumn()
 
     m_canvas = new DrawingCanvas;
     connect(m_canvas, &DrawingCanvas::contentChanged, this, &StoryboardPage::refreshCurrentThumb);
+    // Undo/redo may rewrite a panel that is NOT current; refresh ITS thumb.
+    connect(m_canvas, &DrawingCanvas::panelEdited, this, [this](Panel *panel) {
+        Scene *scene = currentScene();
+        if (!scene)
+            return;
+        const int idx = scene->panels.indexOf(panel);
+        if (idx < 0 || idx >= m_panelThumbImages.size())
+            return;
+        m_panelThumbImages.at(idx)->setPixmap(
+            panel->flattenedPixmap().scaled(kThumbW, kThumbH, Qt::IgnoreAspectRatio,
+                                            Qt::SmoothTransformation));
+    });
     connect(m_canvas, &DrawingCanvas::layersChanged, this, &StoryboardPage::rebuildLayerPanel);
 
     drawLayout->addWidget(m_canvas, 1);

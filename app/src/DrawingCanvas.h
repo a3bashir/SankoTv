@@ -172,6 +172,9 @@ signals:
     // Committing a Warp resets the box to the default move/scale/rotate mode;
     // the Move Modifier toolbar listens and unchecks its mode buttons.
     void xformUiModeReset();
+    // An undo/redo command rewrote this panel's layer data; the page
+    // regenerates that panel's thumbnail from the committed model.
+    void panelEdited(Panel *panel);
 
 protected:
     bool eventFilter(QObject *object, QEvent *event) override; // toolbar grip drag

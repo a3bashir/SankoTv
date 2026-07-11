@@ -922,6 +922,7 @@ void DrawingCanvas::applyLayerRegionForUndo(Panel *panel, const QString &layerId
     }
     update();
     emit contentChanged();
+    emit panelEdited(panel); // the command's OWN panel refreshes its thumbnail
 }
 
 // Command callback: restore a selection path (display state only).
@@ -1684,14 +1685,11 @@ void DrawingCanvas::beginTransform()
         p.setCompositionMode(QPainter::CompositionMode_DestinationIn);
         p.drawImage(0, 0, m_moveMask);
     }
-
-    m_layerBackup = layer->image.copy(); // for commit rebuild + Esc restore
-
-    {
-        QPainter c(&layer->image); // clear the source once (preview shows it gone)
-        c.setCompositionMode(QPainter::CompositionMode_DestinationOut);
-        c.drawImage(r.topLeft(), m_moveMask);
-    }
+    // SINGLE SOURCE OF TRUTH: the panel's layer image is NOT touched during
+    // the session — thumbnails, saves, and panel switches always read the
+    // committed state. The VIEW subtracts the lifted source region and shows
+    // the transformed buffer instead (see paintEvent); commit rewrites the
+    // layer once; cancel simply drops the session buffers.
 
     const QRectF rf(r);
     m_quad = QPolygonF({rf.topLeft(), rf.topRight(), rf.bottomRight(), rf.bottomLeft()});
@@ -1926,6 +1924,16 @@ qreal DrawingCanvas::luminanceBehind(const QPointF &canvasPt) const
             if (!layer.visible || layer.image.isNull() || layer.opacity <= 0.0)
                 continue;
             p.setOpacity(qBound(0.0, layer.opacity, 1.0));
+            if (m_xformActive && !m_transformBuf.isNull()
+                && &layer == m_panel->activeLayer()) {
+                QImage temp = layer.image; // hide the lifted region, as the view does
+                QPainter tp(&temp);
+                tp.setCompositionMode(QPainter::CompositionMode_DestinationOut);
+                tp.drawImage(m_moveSrcRect.topLeft(), m_moveMask);
+                tp.end();
+                p.drawImage(0, 0, temp);
+                continue;
+            }
             p.drawImage(0, 0, layer.image);
         }
     }
@@ -2275,10 +2283,10 @@ void DrawingCanvas::commitTransform(bool relift)
     setMouseTracking(false);
 
     Layer *layer = editableActiveLayer();
-    if (layer && !m_layerBackup.isNull()) {
-        beginLayerEdit(); // identity only; the true 'before' is the backup
+    if (layer && !m_transformBuf.isNull()) {
+        beginLayerEdit(); // the layer IS the intact pre-transform state
 
-        QImage result = m_layerBackup;
+        QImage result = layer->image;
         {
             QPainter c(&result);
             c.setCompositionMode(QPainter::CompositionMode_DestinationOut);
@@ -2295,8 +2303,11 @@ void DrawingCanvas::commitTransform(bool relift)
                 p.drawImage(0, 0, m_transformBuf);
             }
         }
+        // The committed transform becomes the panel MODEL's real state; the
+        // contentChanged emission below regenerates the thumbnail from it
+        // (flattenedPixmap) synchronously.
         layer->image = result;
-        finalizeLayerEdit(QStringLiteral("Transform"), m_layerBackup);
+        finalizeLayerEdit(QStringLiteral("Transform"));
         emit contentChanged();
     }
 
@@ -2345,12 +2356,9 @@ void DrawingCanvas::cancelTransform(bool relift)
     m_xformMode = XNone;
     setMouseTracking(false);
 
-    Layer *layer = editableActiveLayer();
-    if (layer && !m_layerBackup.isNull())
-        layer->image = m_layerBackup; // restore EXACTLY, discard the transform
-
+    // The model was never altered during the session: cancelling only drops
+    // the session buffers, and the intact committed layer shows again.
     m_transformBuf = QImage();
-    m_layerBackup = QImage();
     m_moveMask = QImage();
     m_warpDirty = false;
     m_warpSel.clear();
@@ -2731,6 +2739,19 @@ void DrawingCanvas::paintEvent(QPaintEvent *)
         if (!layer.visible || layer.image.isNull() || layer.opacity <= 0.0)
             continue;
         painter.setOpacity(qBound(0.0, layer.opacity, 1.0));
+        if (m_xformActive && !m_transformBuf.isNull()
+            && &layer == m_panel->activeLayer()) {
+            // Live transform session: the MODEL keeps the committed pixels
+            // (single source of truth); the view hides the lifted source
+            // region here — the transformed buffer is drawn separately below.
+            QImage temp = layer.image;
+            QPainter tp(&temp);
+            tp.setCompositionMode(QPainter::CompositionMode_DestinationOut);
+            tp.drawImage(m_moveSrcRect.topLeft(), m_moveMask);
+            tp.end();
+            painter.drawImage(0, 0, temp);
+            continue;
+        }
         const bool liveStroke = m_strokeMask != StrokeMaskNone
             && &layer == m_panel->activeLayer();
         if (liveStroke && m_strokeMask == StrokeMaskErase) {
