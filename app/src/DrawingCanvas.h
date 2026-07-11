@@ -5,6 +5,7 @@
 #include <QImage>
 #include <QPainterPath>
 #include <QPixmap>
+#include <QPolygonF>
 #include <QTransform>
 #include <QPoint>
 #include <QPointF>
@@ -48,6 +49,13 @@ public:
     // How a freshly-drawn selection shape combines with the existing one; the
     // Selection Modifier toolbar's Add / Remove buttons drive this.
     enum SelectionOp { SelReplace, SelAdd, SelSubtract };
+
+    // Move tool transform-box interaction mode; the Move Modifier toolbar's
+    // Pivot Point / Skew / Distort / Perspective buttons drive this. Default =
+    // the classic move/scale/rotate box. Switching modes keeps the same live
+    // transform session (commit/cancel ends it).
+    enum XformUiMode { XformDefault, XformPivot, XformSkew, XformDistort,
+                       XformPerspective };
 
     explicit DrawingCanvas(QWidget *parent = nullptr);
 
@@ -124,6 +132,10 @@ public slots:
 
     void setSelectionOp(SelectionOp op);
     SelectionOp selectionOp() const { return m_selOp; }
+
+    // Move Modifier toolbar: transform-box interaction mode (see XformUiMode).
+    void setXformUiMode(XformUiMode mode);
+    XformUiMode xformUiMode() const { return m_xformUiMode; }
 
     // Selection Modifier "Move": while on, dragging with a selection tool
     // translates ONLY the selection outline (marching ants) — artwork pixels
@@ -280,27 +292,34 @@ private:
 
     // Non-destructive transform box (Move tool). Activating Move with a
     // selection lifts the masked pixels into m_transformBuf (the PRISTINE
-    // source, never re-transformed) and shows a bounding box; every
-    // move/scale/rotate re-renders the preview from m_transformBuf through a
-    // fresh QTransform, so there is no cumulative resampling. The layer is
-    // written exactly once on commit (Enter); Esc restores m_layerBackup.
-    enum XformMode { XNone, XMove, XRotate,
+    // source, never re-transformed) and shows a bounding box; every edit
+    // re-renders the preview from m_transformBuf through a fresh QTransform,
+    // so there is no cumulative resampling. The layer is written exactly once
+    // on commit (Enter); Esc restores m_layerBackup.
+    //
+    // The box is a free QUAD (corners TL,TR,BR,BL in canvas coords) mapped
+    // from the source rect with QTransform::quadToQuad — affine for
+    // move/scale/rotate/skew, projective for distort/perspective. m_pivot is
+    // the rotation/scale origin (Pivot Point mode relocates it; until then it
+    // tracks the quad centre).
+    enum XformMode { XNone, XMove, XRotate, XPivot,
                      XScaleTL, XScaleTR, XScaleBL, XScaleBR,
                      XScaleT, XScaleB, XScaleL, XScaleR };
     bool m_xformActive = false;
     bool m_xformAutoSel = false;   // box selection was synthesized from the
                                    // layer's artwork bounds (no user selection)
     QImage m_transformBuf;         // pristine lifted pixels (m_moveSrcRect-sized)
-    QPointF m_boxCenter;           // current box centre, canvas coords
-    qreal m_boxW = 0.0;            // current box width/height, canvas px
-    qreal m_boxH = 0.0;
-    qreal m_boxAngle = 0.0;        // current box rotation, degrees
+    QPolygonF m_quad;              // current box corners TL,TR,BR,BL, canvas coords
+    QPointF m_pivot;               // rotate/scale origin (Pivot Point mode)
+    bool m_pivotCustom = false;    // user moved the pivot off the box centre
+    XformUiMode m_xformUiMode = XformDefault;
     XformMode m_xformMode = XNone; // active handle while dragging
     QPointF m_dragStartCanvas;     // pointer at press, canvas coords
-    QPointF m_boxCenter0;          // box snapshot at press (transforms recompute from these)
-    qreal m_boxW0 = 0.0, m_boxH0 = 0.0, m_boxAngle0 = 0.0;
+    QPolygonF m_quad0;             // quad snapshot at press (drags recompute from it)
+    QPointF m_pivot0;              // pivot snapshot at press
     qreal m_rotStart0 = 0.0;       // pointer angle at a rotate press, radians
     QCursor m_rotateCursor;        // curved-arrow cursor for the rotation zones
+    QPointF pivotPoint() const;    // m_pivot when custom, else the quad centre
 
     void beginTransform();         // lift selection -> box (source cleared on lift)
     void commitTransform();        // bake once (one undo), clear box

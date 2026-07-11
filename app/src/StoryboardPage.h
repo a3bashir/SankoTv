@@ -213,8 +213,9 @@ private:
     // all live in that base class (and cover future panels automatically).
     QWidget *m_floatToolbar = nullptr;  // horizontal Brush/tools bar (Figma 33:110)
     QWidget *m_extrasToolbar = nullptr; // vertical bar: Shapes/Camera/Onion + size
-    QWidget *m_selModToolbar = nullptr; // Selection Modifier bar (Figma 146:67)
-    QWidget *m_bottomBar = nullptr;     // status bar; the SelMod bar sits 10px above
+    QWidget *m_selModToolbar = nullptr;  // Selection Modifier bar (Figma 146:67)
+    QWidget *m_moveModToolbar = nullptr; // Move Modifier bar (Figma 161:39)
+    QWidget *m_bottomBar = nullptr;      // status bar; both mod bars sit 10px above
     QCheckBox *m_pressureSizeCheck = nullptr;
     QCheckBox *m_pressureOpacityCheck = nullptr;
     // Fixed control column (left of the panel strip).

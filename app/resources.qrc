@@ -21,5 +21,9 @@
         <file>icons/selmod_move.svg</file>
         <file>icons/selmod_deselect.svg</file>
         <file>icons/selmod_inverse.svg</file>
+        <file>icons/movemod_pivot.svg</file>
+        <file>icons/movemod_skew.svg</file>
+        <file>icons/movemod_distort.svg</file>
+        <file>icons/movemod_perspective.svg</file>
     </qresource>
 </RCC>

@@ -278,6 +278,23 @@ QPixmap selModIconPixmap(const QString &svgPath, QSizeF svgSize)
     return pm;
 }
 
+// Move Modifier icon (Figma 161:39): the asset is the full 36x36 button frame
+// with its background stripped (ToolButton paints the state background), so it
+// renders 1:1 into the 36 box. Colours are literal (#cccccc strokes).
+QPixmap moveModIconPixmap(const QString &svgPath)
+{
+    constexpr qreal dpr = 2.0, box = 36.0;
+    QPixmap pm(QSize(int(box * dpr), int(box * dpr)));
+    pm.setDevicePixelRatio(dpr);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    p.setRenderHint(QPainter::SmoothPixmapTransform, true);
+    QSvgRenderer r(svgPath);
+    r.render(&p, QRectF(0, 0, box, box));
+    return pm;
+}
+
 // Selection Modifier "Select All" glyph (Figma 156:43): a 24x24 dashed marquee
 // (1px #cccccc, border INSIDE the box like CSS border-box) with a 3x3 grid of
 // 4px #d9d9d9 squares at FRAME offsets {4, 10, 16} — the squares are siblings
@@ -1329,6 +1346,95 @@ void StoryboardPage::createFloatingToolbar()
         }
         if (m_selModToolbar)
             m_selModToolbar->setVisible(on);
+    });
+
+    // ---- Move Modifier toolbar (Figma "Move" 161:39) ----------------------
+    // Same behaviour rules as the Selection Modifier bar: bottom-centre, 10px
+    // above the status bar, not movable, auto-shown only while the Move TOOL
+    // is active (the exclusive tool group guarantees the two bars are never
+    // visible together). Buttons switch the transform box's interaction mode:
+    // Pivot Point / Skew / Distort / Perspective (see DrawingCanvas).
+    SelModBar *moveBar = new SelModBar(m_canvas, this);
+    m_moveModToolbar = moveBar;
+    moveBar->setFixedSize(371, 66); // rgba(33,33,33,0.65) r8, px17/py8 content
+    auto moveModButton = [moveBar](const QString &svg, const QString &tip, int x) {
+        ToolButton *b = new ToolButton(moveModIconPixmap(svg), moveBar);
+        b->setFixedSize(36, 36);
+        b->setCheckable(true);
+        b->setStateColors(QColor(0x4c, 0x4c, 0x4c), QColor(0x73, 0x73, 0x73));
+        b->setToolTip(tip);  // name only, no description
+        b->move(17 + x, 8);  // px17 / py8 offset into the content area
+        return b;
+    };
+    // Exact Figma column x's within the 325-wide content frame.
+    ToolButton *pivotBtn = moveModButton(
+        QStringLiteral(":/icons/movemod_pivot.svg"), QStringLiteral("Pivot Point"), 7);
+    ToolButton *skewBtn = moveModButton(
+        QStringLiteral(":/icons/movemod_skew.svg"), QStringLiteral("Skew"), 104);
+    ToolButton *distortBtn = moveModButton(
+        QStringLiteral(":/icons/movemod_distort.svg"), QStringLiteral("Distort"), 195);
+    ToolButton *perspBtn = moveModButton(
+        QStringLiteral(":/icons/movemod_perspective.svg"),
+        QStringLiteral("Perspective"), 294);
+
+    // Captions centred under each button (Inter Semi-Bold 9px #CCCCCC, y=41).
+    const struct { ToolButton *btn; QString text; } moveCaps[] = {
+        {pivotBtn, QStringLiteral("Pivot Point")}, {skewBtn, QStringLiteral("Skew")},
+        {distortBtn, QStringLiteral("Distort")},
+        {perspBtn, QStringLiteral("Perspective")},
+    };
+    QFont moveCapFont(QStringLiteral("Inter"));
+    moveCapFont.setPixelSize(9);
+    moveCapFont.setWeight(QFont::DemiBold);
+    for (const auto &c : moveCaps) {
+        QLabel *cap = new QLabel(c.text, moveBar);
+        cap->setFont(moveCapFont);
+        cap->setStyleSheet(QStringLiteral("color:#cccccc;background:transparent;"));
+        cap->adjustSize();
+        cap->move(c.btn->x() + c.btn->width() / 2 - cap->width() / 2, 8 + 41);
+    }
+
+    // One mode at a time (Active = #7C6EF6); clicking the active mode again
+    // returns to the default move/scale/rotate box. Switching modes keeps the
+    // live transform session — only Enter/Esc end it.
+    auto wireMoveMode = [this, pivotBtn, skewBtn, distortBtn, perspBtn](
+                            ToolButton *btn, DrawingCanvas::XformUiMode mode) {
+        connect(btn, &QPushButton::clicked, this,
+                [this, btn, mode, pivotBtn, skewBtn, distortBtn, perspBtn] {
+            for (ToolButton *other : {pivotBtn, skewBtn, distortBtn, perspBtn})
+                if (other != btn)
+                    other->setChecked(false);
+            m_canvas->setXformUiMode(btn->isChecked() ? mode
+                                                      : DrawingCanvas::XformDefault);
+        });
+    };
+    wireMoveMode(pivotBtn, DrawingCanvas::XformPivot);
+    wireMoveMode(skewBtn, DrawingCanvas::XformSkew);
+    wireMoveMode(distortBtn, DrawingCanvas::XformDistort);
+    wireMoveMode(perspBtn, DrawingCanvas::XformPerspective);
+
+    moveBar->setDefaultOffsetProvider([this, moveBar] {
+        // Bottom-centre, 10px above the status bar — identical to the
+        // Selection Modifier bar's placement rule.
+        int statusTop = m_canvas->height();
+        if (m_bottomBar && m_bottomBar->isVisible())
+            statusTop = m_canvas->mapFromGlobal(
+                m_bottomBar->mapToGlobal(QPoint(0, 0))).y();
+        return QPoint(qMax(6, (m_canvas->width() - moveBar->width()) / 2),
+                      qMax(6, statusTop - moveBar->height() - 10));
+    });
+    // Visible only while the Move tool is active; each appearance starts in
+    // the default transform mode.
+    connect(move, &QPushButton::toggled, this,
+            [this, pivotBtn, skewBtn, distortBtn, perspBtn](bool on) {
+        if (on) {
+            for (ToolButton *b : {pivotBtn, skewBtn, distortBtn, perspBtn})
+                b->setChecked(false);
+            if (m_canvas)
+                m_canvas->setXformUiMode(DrawingCanvas::XformDefault);
+        }
+        if (m_moveModToolbar)
+            m_moveModToolbar->setVisible(on);
     });
 
     // Brush options panel visible only while Brush is the active tool.

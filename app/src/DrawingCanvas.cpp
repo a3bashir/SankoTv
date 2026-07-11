@@ -955,6 +955,15 @@ void DrawingCanvas::deselect()
     recordSelectionChange(before);
 }
 
+// Move Modifier toolbar: switch the transform-box interaction mode. The live
+// transform session (lifted buffer, quad, pivot) carries across mode switches;
+// only commit (Enter) or cancel (Esc) ends it.
+void DrawingCanvas::setXformUiMode(XformUiMode mode)
+{
+    m_xformUiMode = mode;
+    update(); // the pivot marker shows/hides with the mode
+}
+
 // Selection Modifier "Move": dragging with a selection tool translates ONLY
 // the selection outline. No artwork pixels are lifted, moved, or altered.
 void DrawingCanvas::setSelectionOutlineMove(bool on)
@@ -1320,10 +1329,10 @@ void DrawingCanvas::beginTransform()
         c.drawImage(r.topLeft(), m_moveMask);
     }
 
-    m_boxCenter = QRectF(r).center();
-    m_boxW = r.width();
-    m_boxH = r.height();
-    m_boxAngle = 0.0;
+    const QRectF rf(r);
+    m_quad = QPolygonF({rf.topLeft(), rf.topRight(), rf.bottomRight(), rf.bottomLeft()});
+    m_pivot = rf.center();
+    m_pivotCustom = false;
     m_xformActive = true;
     m_xformMode = XNone;
     setMouseTracking(true); // hover updates the scale/rotate cursor
@@ -1331,34 +1340,40 @@ void DrawingCanvas::beginTransform()
     update();
 }
 
-// Maps the pristine buffer (0..srcW, 0..srcH) onto the current box in CANVAS
-// coordinates: recentre, rotate, scale — always from the ORIGINAL buffer.
+// The rotate/scale origin: the user-placed pivot (Pivot Point mode), or the
+// quad centre until one is set.
+QPointF DrawingCanvas::pivotPoint() const
+{
+    if (m_pivotCustom)
+        return m_pivot;
+    return (m_quad.value(0) + m_quad.value(1) + m_quad.value(2) + m_quad.value(3)) / 4.0;
+}
+
+// Maps the pristine buffer (0..srcW, 0..srcH) onto the current quad in CANVAS
+// coordinates — always from the ORIGINAL buffer. quadToQuad yields an affine
+// transform for move/scale/rotate/skew quads and a projective one for
+// distort/perspective; QPainter renders both (TxProject) with smooth filtering.
 QTransform DrawingCanvas::boxTransform() const
 {
     const qreal srcW = m_moveSrcRect.width();
     const qreal srcH = m_moveSrcRect.height();
+    const QPolygonF src({QPointF(0, 0), QPointF(srcW, 0),
+                         QPointF(srcW, srcH), QPointF(0, srcH)});
     QTransform t;
-    t.translate(m_boxCenter.x(), m_boxCenter.y());
-    t.rotate(m_boxAngle);
-    if (srcW > 0.0 && srcH > 0.0)
-        t.scale(m_boxW / srcW, m_boxH / srcH);
-    t.translate(-srcW / 2.0, -srcH / 2.0);
-    return t;
+    if (m_quad.size() == 4 && srcW > 0.0 && srcH > 0.0
+        && QTransform::quadToQuad(src, m_quad, t))
+        return t;
+    return QTransform(); // degenerate quad: identity (drags reject these)
 }
 
 // The 8 handle points (4 corners + 4 edge midpoints) in canvas coordinates,
 // ordered TL, TR, BR, BL, T, R, B, L.
 QVector<QPointF> DrawingCanvas::boxHandlesCanvas() const
 {
-    const qreal hw = m_boxW / 2.0, hh = m_boxH / 2.0;
-    const QPointF local[8] = {
-        {-hw, -hh}, {hw, -hh}, {hw, hh}, {-hw, hh}, // corners
-        {0, -hh}, {hw, 0}, {0, hh}, {-hw, 0}};      // edge mids
-    QVector<QPointF> pts;
-    pts.reserve(8);
-    for (const QPointF &l : local)
-        pts.append(m_boxCenter + rotVec(m_boxAngle, l));
-    return pts;
+    const QPointF tl = m_quad.value(0), tr = m_quad.value(1);
+    const QPointF br = m_quad.value(2), bl = m_quad.value(3);
+    return {tl, tr, br, bl,
+            (tl + tr) / 2.0, (tr + br) / 2.0, (br + bl) / 2.0, (bl + tl) / 2.0};
 }
 
 // Which part of the box the widget-space point is over. Handles/rotation zones
@@ -1368,6 +1383,12 @@ DrawingCanvas::XformMode DrawingCanvas::hitTestBox(const QPointF &widgetPos) con
     if (!m_xformActive)
         return XNone;
     const QTransform toWidget = viewTransform(); // canvas -> widget (rotate/flip aware)
+
+    // Pivot marker first (Pivot Point mode): it sits inside the body, so it
+    // must win over the move hit.
+    if (m_xformUiMode == XformPivot
+        && QLineF(toWidget.map(pivotPoint()), widgetPos).length() <= 10.0)
+        return XPivot;
 
     const QVector<QPointF> handles = boxHandlesCanvas();
     const XformMode order[8] = {XScaleTL, XScaleTR, XScaleBR, XScaleBL,
@@ -1396,60 +1417,169 @@ DrawingCanvas::XformMode DrawingCanvas::hitTestBox(const QPointF &widgetPos) con
     return XNone;
 }
 
-// Recompute the box from the press-time snapshot (never from the running
-// result) for the active handle. proportional keeps the aspect ratio.
+// Recompute the quad from the press-time snapshot (never from the running
+// result) for the active handle, honouring the Move Modifier mode. Matches
+// the familiar Photoshop/Krita free-transform interactions:
+//   Default      corner/edge scale, body move, outside-corner rotate
+//   Pivot Point  rotate/scale about the user-placed pivot marker
+//   Skew         side handles shear along their edge; corners still scale
+//   Distort      corners drag freely; side handles carry their whole edge
+//   Perspective  corner drags converge symmetrically (projective trapezoid)
+// proportional (Shift) keeps the aspect ratio while corner-scaling.
 void DrawingCanvas::applyXformDrag(const QPointF &canvasPos, bool proportional)
 {
+    if (m_quad0.size() != 4)
+        return;
+    const QPointF delta = canvasPos - m_dragStartCanvas;
+
+    // Local frame of the press-time quad: x along its top edge, y along its
+    // left edge (unit vectors). Falls back to the world axes when degenerate.
+    QPointF ux = m_quad0.at(1) - m_quad0.at(0);
+    QPointF uy = m_quad0.at(3) - m_quad0.at(0);
+    const qreal lx = std::hypot(ux.x(), ux.y());
+    const qreal ly = std::hypot(uy.x(), uy.y());
+    ux = lx > 1e-6 ? ux / lx : QPointF(1, 0);
+    uy = ly > 1e-6 ? uy / ly : QPointF(0, 1);
+    const QTransform B(ux.x(), ux.y(), uy.x(), uy.y(), 0.0, 0.0); // local -> canvas
+    const QTransform Binv = B.inverted();
+
+    // Handle description: index of the dragged corner (-1 = edge), the two
+    // corners of a dragged edge, and the axis freedoms for scaling.
+    int corner = -1, e0 = -1, e1 = -1;
+    qreal hx = 0, hy = 0; // scale freedoms (sign = which side of the anchor)
+    switch (m_xformMode) {
+    case XScaleTL: corner = 0; hx = -1; hy = -1; break;
+    case XScaleTR: corner = 1; hx = 1;  hy = -1; break;
+    case XScaleBR: corner = 2; hx = 1;  hy = 1;  break;
+    case XScaleBL: corner = 3; hx = -1; hy = 1;  break;
+    case XScaleT:  e0 = 0; e1 = 1; hy = -1; break;
+    case XScaleR:  e0 = 1; e1 = 2; hx = 1;  break;
+    case XScaleB:  e0 = 2; e1 = 3; hy = 1;  break;
+    case XScaleL:  e0 = 3; e1 = 0; hx = -1; break;
+    default: break;
+    }
+
+    QPolygonF quad = m_quad0;
     switch (m_xformMode) {
     case XMove:
-        m_boxCenter = m_boxCenter0 + (canvasPos - m_dragStartCanvas);
+        quad.translate(delta);
+        if (m_pivotCustom)
+            m_pivot = m_pivot0 + delta; // the pivot rides with the box
         break;
+    case XPivot:
+        m_pivot = m_pivot0 + delta;
+        m_pivotCustom = true;
+        update();
+        return; // pivot only — the quad is untouched
     case XRotate: {
-        const qreal now = std::atan2(canvasPos.y() - m_boxCenter0.y(),
-                                     canvasPos.x() - m_boxCenter0.x());
+        const qreal now = std::atan2(canvasPos.y() - m_pivot0.y(),
+                                     canvasPos.x() - m_pivot0.x());
         const qreal deltaDeg = (now - m_rotStart0) * 180.0 / M_PI;
-        m_boxAngle = m_boxAngle0 + deltaDeg;
+        for (int i = 0; i < 4; ++i)
+            quad[i] = m_pivot0 + rotVec(deltaDeg, m_quad0.at(i) - m_pivot0);
         break;
     }
     default: {
-        // Scale. Signs of the dragged handle in the box's local frame.
-        qreal hx = 0, hy = 0;
+        if (m_xformUiMode == XformDistort) {
+            // Free quad: the corner (or the whole edge) follows the cursor.
+            if (corner >= 0) {
+                quad[corner] = m_quad0.at(corner) + delta;
+            } else {
+                quad[e0] = m_quad0.at(e0) + delta;
+                quad[e1] = m_quad0.at(e1) + delta;
+            }
+            break;
+        }
+        if (m_xformUiMode == XformSkew && corner < 0) {
+            // Shear: the edge slides along its own direction only (the
+            // perpendicular component is discarded), opposite edge fixed.
+            const QPointF d = Binv.map(delta);
+            const QPointF slide = (e0 == 0 || e0 == 2) // T/B edges slide on x
+                ? B.map(QPointF(d.x(), 0))
+                : B.map(QPointF(0, d.y()));            // L/R edges slide on y
+            quad[e0] = m_quad0.at(e0) + slide;
+            quad[e1] = m_quad0.at(e1) + slide;
+            break;
+        }
+        if (m_xformUiMode == XformPerspective && corner >= 0) {
+            // Projective convergence: the dragged corner follows the cursor;
+            // the neighbour on the same horizontal edge mirrors the x motion,
+            // the neighbour on the same vertical edge mirrors the y motion
+            // (classic Photoshop trapezoid / vanishing-point behaviour).
+            static const int hNbr[4] = {1, 0, 3, 2}; // TL<->TR, BR<->BL
+            static const int vNbr[4] = {3, 2, 1, 0}; // TL<->BL, TR<->BR
+            const QPointF d = Binv.map(delta);
+            quad[corner] = m_quad0.at(corner) + delta;
+            quad[hNbr[corner]] = m_quad0.at(hNbr[corner]) - B.map(QPointF(d.x(), 0));
+            quad[vNbr[corner]] = m_quad0.at(vNbr[corner]) - B.map(QPointF(0, d.y()));
+            break;
+        }
+        // Scale (Default/Pivot modes; also Skew corners and Perspective
+        // edges). Anchor = the user pivot when placed, else the opposite
+        // handle. Factors are measured in the local frame; no flips (matches
+        // the old box), floor keeps the box from collapsing.
+        const QVector<QPointF> h0s = [this] {
+            const QPointF tl = m_quad0.at(0), tr = m_quad0.at(1);
+            const QPointF br = m_quad0.at(2), bl = m_quad0.at(3);
+            return QVector<QPointF>{tl, tr, br, bl, (tl + tr) / 2.0,
+                                    (tr + br) / 2.0, (br + bl) / 2.0, (bl + tl) / 2.0};
+        }();
+        int hIdx;
         switch (m_xformMode) {
-        case XScaleTL: hx = -1; hy = -1; break;
-        case XScaleTR: hx = 1;  hy = -1; break;
-        case XScaleBL: hx = -1; hy = 1;  break;
-        case XScaleBR: hx = 1;  hy = 1;  break;
-        case XScaleT:  hy = -1; break;
-        case XScaleB:  hy = 1;  break;
-        case XScaleL:  hx = -1; break;
-        case XScaleR:  hx = 1;  break;
+        case XScaleTL: hIdx = 0; break;
+        case XScaleTR: hIdx = 1; break;
+        case XScaleBR: hIdx = 2; break;
+        case XScaleBL: hIdx = 3; break;
+        case XScaleT:  hIdx = 4; break;
+        case XScaleR:  hIdx = 5; break;
+        case XScaleB:  hIdx = 6; break;
+        case XScaleL:  hIdx = 7; break;
         default: return;
         }
-        const qreal hw0 = m_boxW0 / 2.0, hh0 = m_boxH0 / 2.0;
-        // The anchor is the OPPOSITE handle; it stays fixed during the scale.
-        const QPointF anchor =
-            m_boxCenter0 + rotVec(m_boxAngle0, QPointF(-hx * hw0, -hy * hh0));
-        // Cursor in the anchor's axis-aligned frame.
-        const QPointF cur = rotVec(-m_boxAngle0, canvasPos - anchor);
-        qreal newW = (hx != 0.0) ? qMax(kMinBox, qAbs(cur.x())) : m_boxW0;
-        qreal newH = (hy != 0.0) ? qMax(kMinBox, qAbs(cur.y())) : m_boxH0;
-        if (proportional && hx != 0.0 && hy != 0.0) {
-            const qreal f = qMax(newW / m_boxW0, newH / m_boxH0);
-            newW = m_boxW0 * f;
-            newH = m_boxH0 * f;
+        // Opposite corner for a corner handle, opposite edge-mid for an edge.
+        const QPointF anchorPt = m_pivotCustom
+            ? m_pivot0
+            : (hIdx < 4 ? h0s.at((hIdx + 2) % 4) : h0s.at(4 + ((hIdx - 4) + 2) % 4));
+        const QPointF hLocal = Binv.map(h0s.at(hIdx) - anchorPt);
+        const QPointF cLocal = Binv.map(canvasPos - anchorPt);
+        qreal sx = 1.0, sy = 1.0;
+        if (hx != 0.0 && qAbs(hLocal.x()) > 1e-6)
+            sx = qMax(kMinBox / qMax(lx, kMinBox), qAbs(cLocal.x()) / qAbs(hLocal.x()));
+        if (hy != 0.0 && qAbs(hLocal.y()) > 1e-6)
+            sy = qMax(kMinBox / qMax(ly, kMinBox), qAbs(cLocal.y()) / qAbs(hLocal.y()));
+        if (proportional && hx != 0.0 && hy != 0.0)
+            sx = sy = qMax(sx, sy);
+        for (int i = 0; i < 4; ++i) {
+            const QPointF l = Binv.map(m_quad0.at(i) - anchorPt);
+            quad[i] = anchorPt + B.map(QPointF(l.x() * sx, l.y() * sy));
         }
-        // New centre = anchor + half the new box toward the dragged handle;
-        // along a free (edge) axis the centre keeps its original projection.
-        const QPointF center0Local = rotVec(-m_boxAngle0, m_boxCenter0 - anchor);
-        const qreal offx = (hx != 0.0) ? hx * newW / 2.0 : center0Local.x();
-        const qreal offy = (hy != 0.0) ? hy * newH / 2.0 : center0Local.y();
-        m_boxCenter = anchor + rotVec(m_boxAngle0, QPointF(offx, offy));
-        m_boxW = newW;
-        m_boxH = newH;
-        m_boxAngle = m_boxAngle0;
         break;
     }
     }
+
+    // Accept only sane quads: convex, consistent winding, and above the
+    // minimum area — quadToQuad needs this, and it stops the box from being
+    // dragged inside-out (Photoshop rejects those states the same way).
+    auto cross = [](const QPointF &o, const QPointF &a, const QPointF &b) {
+        return (a.x() - o.x()) * (b.y() - o.y()) - (a.y() - o.y()) * (b.x() - o.x());
+    };
+    qreal area2 = 0.0;
+    bool convex = true;
+    int sign = 0;
+    for (int i = 0; i < 4; ++i) {
+        const qreal c = cross(quad.at(i), quad.at((i + 1) % 4), quad.at((i + 2) % 4));
+        if (c != 0.0) {
+            const int s = c > 0.0 ? 1 : -1;
+            if (sign == 0)
+                sign = s;
+            else if (s != sign)
+                convex = false;
+        }
+        area2 += quad.at(i).x() * quad.at((i + 1) % 4).y()
+               - quad.at((i + 1) % 4).x() * quad.at(i).y();
+    }
+    if (convex && qAbs(area2) / 2.0 >= kMinBox * kMinBox)
+        m_quad = quad;
     update();
 }
 
@@ -1457,6 +1587,7 @@ void DrawingCanvas::updateXformCursor(XformMode mode)
 {
     switch (mode) {
     case XMove:    setCursor(Qt::SizeAllCursor); break;
+    case XPivot:   setCursor(Qt::SizeAllCursor); break; // draggable pivot marker
     case XRotate:  setCursor(m_rotateCursor); break;
     case XScaleTL:
     case XScaleBR: setCursor(Qt::SizeFDiagCursor); break;
@@ -1982,6 +2113,21 @@ void DrawingCanvas::paintEvent(QPaintEvent *)
             painter.setPen(QPen(QColor(0x33, 0x33, 0x33), 1));
             painter.drawRect(sq);
         }
+        // Pivot marker (Photoshop-style reference point): a ringed crosshair
+        // at the rotate/scale origin. Shown while Pivot Point mode is active,
+        // and kept visible in other modes once the user has placed it.
+        if (m_xformUiMode == XformPivot || m_pivotCustom) {
+            const QPointF pw = T.map(pivotPoint());
+            painter.setBrush(Qt::NoBrush);
+            painter.setPen(QPen(QColor(0, 0, 0, 160), 3));
+            painter.drawEllipse(pw, 5.5, 5.5);
+            painter.setPen(QPen(Qt::white, 1.4));
+            painter.drawEllipse(pw, 5.5, 5.5);
+            painter.drawLine(QPointF(pw.x() - 9, pw.y()), QPointF(pw.x() - 3, pw.y()));
+            painter.drawLine(QPointF(pw.x() + 3, pw.y()), QPointF(pw.x() + 9, pw.y()));
+            painter.drawLine(QPointF(pw.x(), pw.y() - 9), QPointF(pw.x(), pw.y() - 3));
+            painter.drawLine(QPointF(pw.x(), pw.y() + 3), QPointF(pw.x(), pw.y() + 9));
+        }
         painter.restore();
     }
 
@@ -2160,13 +2306,13 @@ void DrawingCanvas::mousePressEvent(QMouseEvent *event)
         m_xformMode = hitTestBox(event->position());
         if (m_xformMode != XNone) {
             m_dragStartCanvas = toCanvasF(event->position());
-            m_boxCenter0 = m_boxCenter;
-            m_boxW0 = m_boxW;
-            m_boxH0 = m_boxH;
-            m_boxAngle0 = m_boxAngle;
+            m_quad0 = m_quad;
+            m_pivot0 = m_xformMode == XPivot ? m_pivot : pivotPoint();
+            if (m_xformMode == XPivot && !m_pivotCustom)
+                m_pivot0 = pivotPoint(); // start from the tracked centre
             if (m_xformMode == XRotate)
-                m_rotStart0 = std::atan2(m_dragStartCanvas.y() - m_boxCenter.y(),
-                                         m_dragStartCanvas.x() - m_boxCenter.x());
+                m_rotStart0 = std::atan2(m_dragStartCanvas.y() - m_pivot0.y(),
+                                         m_dragStartCanvas.x() - m_pivot0.x());
         }
         return;
     }
