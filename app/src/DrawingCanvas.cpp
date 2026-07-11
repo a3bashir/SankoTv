@@ -25,6 +25,7 @@
 #include <QResizeEvent>
 #include <QSettings>
 #include <QSlider>
+#include <QHash>
 #include <QStack>
 #include <QTabletEvent>
 #include <QTimer>
@@ -1300,6 +1301,175 @@ constexpr qreal kMinBox = 4.0; // smallest box extent, canvas px (avoids collaps
 // ACTIVATING Move with a selection: lift the masked pixels into the pristine
 // transform buffer, snapshot the whole layer, clear the source once so the
 // preview shows the art lifted out, and initialise an axis-aligned box.
+// Bowyer-Watson Delaunay triangulation. Returns index triples into pts.
+// Grid seeds are exactly cocircular (every lattice cell), which makes the
+// in-circumcircle test ambiguous, so callers pass positions with a tiny
+// deterministic jitter to break ties; the returned topology is used with the
+// UNjittered positions.
+static QVector<int> delaunayTriangulate(const QVector<QPointF> &pts)
+{
+    QVector<int> result;
+    const int n = pts.size();
+    if (n < 3)
+        return result;
+
+    // Super-triangle enclosing every point. It must sit OUTSIDE the
+    // circumcircle of every real triangle — near-collinear point triples
+    // (jittered grid rows) have circumradii in the millions of pixels, so the
+    // super-triangle has to be far larger still or real triangles touching it
+    // get culled with it, leaving holes in the mesh.
+    QRectF bb(pts.first(), QSizeF(0, 0));
+    for (const QPointF &p : pts)
+        bb |= QRectF(p, QSizeF(0, 0));
+    const qreal m = qMax(bb.width(), bb.height()) * 4.0 + 1.0e7;
+    QVector<QPointF> all = pts;
+    all.append(bb.center() + QPointF(-m, -m));
+    all.append(bb.center() + QPointF(m, -m));
+    all.append(bb.center() + QPointF(0, m));
+
+    struct Tri { int a, b, c; };
+    QVector<Tri> tris{{n, n + 1, n + 2}};
+
+    auto inCircumcircle = [&all](const Tri &t, const QPointF &p) {
+        const QPointF A = all.at(t.a) - p, B = all.at(t.b) - p, C = all.at(t.c) - p;
+        const qreal a2 = A.x() * A.x() + A.y() * A.y();
+        const qreal b2 = B.x() * B.x() + B.y() * B.y();
+        const qreal c2 = C.x() * C.x() + C.y() * C.y();
+        const qreal det = A.x() * (B.y() * c2 - C.y() * b2)
+                        - A.y() * (B.x() * c2 - C.x() * b2)
+                        + a2 * (B.x() * C.y() - C.x() * B.y());
+        // Sign convention depends on winding; normalise via the orientation.
+        const qreal orient = (all.at(t.b).x() - all.at(t.a).x())
+                               * (all.at(t.c).y() - all.at(t.a).y())
+                           - (all.at(t.b).y() - all.at(t.a).y())
+                               * (all.at(t.c).x() - all.at(t.a).x());
+        return orient > 0 ? det > 0 : det < 0;
+    };
+
+    for (int i = 0; i < n; ++i) {
+        // Triangles whose circumcircle contains the new point die; their
+        // boundary polygon is re-fanned around the point.
+        QVector<Tri> bad, keep;
+        for (const Tri &t : tris)
+            (inCircumcircle(t, all.at(i)) ? bad : keep).append(t);
+        // Boundary = edges appearing in exactly one bad triangle.
+        QHash<QPair<int, int>, int> edgeCount;
+        auto key = [](int a, int b) { return qMakePair(qMin(a, b), qMax(a, b)); };
+        for (const Tri &t : bad) {
+            ++edgeCount[key(t.a, t.b)];
+            ++edgeCount[key(t.b, t.c)];
+            ++edgeCount[key(t.c, t.a)];
+        }
+        tris = keep;
+        for (const Tri &t : bad) {
+            const QPair<int, int> edges[3] = {{t.a, t.b}, {t.b, t.c}, {t.c, t.a}};
+            for (const auto &e : edges)
+                if (edgeCount.value(key(e.first, e.second)) == 1)
+                    tris.append({e.first, e.second, i});
+        }
+    }
+    for (const Tri &t : tris)
+        if (t.a < n && t.b < n && t.c < n) {
+            result.append(t.a);
+            result.append(t.b);
+            result.append(t.c);
+        }
+    return result;
+}
+
+// Re-triangulate the warp control points in SOURCE space (drag-invariant:
+// dragging destinations never changes the topology; only add/remove does).
+void DrawingCanvas::rebuildWarpTriangulation()
+{
+    QVector<QPointF> src;
+    src.reserve(m_warp.size());
+    for (int i = 0; i < m_warp.size(); ++i) {
+        // Sub-pixel deterministic jitter breaks the exact-cocircular lattice
+        // ties AND keeps near-collinear circumcircles small enough to stay
+        // clear of the super-triangle (see delaunayTriangulate). Topology
+        // only — rendering uses the unjittered positions.
+        const qreal jx = (((i * 7919) % 13) - 6) / 15.0;  // ~±0.4 px
+        const qreal jy = (((i * 104729) % 11) - 5) / 12.0;
+        src.append(m_warp.at(i).src + QPointF(jx, jy));
+    }
+    m_warpTris = delaunayTriangulate(src);
+}
+
+// The warp control point under the widget-space cursor, or -1.
+int DrawingCanvas::warpPointAt(const QPointF &widgetPos) const
+{
+    const QTransform toWidget = viewTransform();
+    for (int i = 0; i < m_warp.size(); ++i)
+        if (QLineF(toWidget.map(m_warp.at(i).dst), widgetPos).length() <= 9.0)
+            return i;
+    return -1;
+}
+
+// Ctrl+click on the mesh: add a control point where clicked. Its SOURCE
+// position comes from the barycentric coordinates of the containing warped
+// triangle (so the new point pins the surface exactly where it was clicked);
+// with an untouched mesh the inverse quad transform serves the same purpose.
+void DrawingCanvas::addWarpPointAt(const QPointF &widgetPos)
+{
+    const QPointF c = toCanvasF(widgetPos);
+    if (warpPointAt(widgetPos) >= 0)
+        return; // over an existing point: that's a remove, not an add
+    QPointF src;
+    bool found = false;
+    for (int t = 0; t + 2 < m_warpTris.size() && !found; t += 3) {
+        const WarpPt &A = m_warp.at(m_warpTris.at(t));
+        const WarpPt &B = m_warp.at(m_warpTris.at(t + 1));
+        const WarpPt &C = m_warp.at(m_warpTris.at(t + 2));
+        const QPointF v0 = B.dst - A.dst, v1 = C.dst - A.dst, v2 = c - A.dst;
+        const qreal den = v0.x() * v1.y() - v1.x() * v0.y();
+        if (qAbs(den) < 1e-9)
+            continue;
+        const qreal u = (v2.x() * v1.y() - v1.x() * v2.y()) / den;
+        const qreal v = (v0.x() * v2.y() - v2.x() * v0.y()) / den;
+        if (u >= -1e-6 && v >= -1e-6 && u + v <= 1.0 + 1e-6) {
+            src = A.src + u * (B.src - A.src) + v * (C.src - A.src);
+            found = true;
+        }
+    }
+    if (!found) {
+        // Untouched mesh: invert the quad map (projective inverse is exact).
+        const QTransform inv = boxTransform().inverted();
+        src = inv.map(c);
+        const QRectF srcRect(0, 0, m_moveSrcRect.width(), m_moveSrcRect.height());
+        if (!m_warpDirty && srcRect.contains(src))
+            found = true;
+    }
+    if (!found)
+        return; // outside the mesh: nothing sensible to add
+    m_warp.append({src, c});
+    m_warpSel = {int(m_warp.size()) - 1}; // the fresh point becomes the selection
+    rebuildWarpTriangulation();
+    update();
+}
+
+// Ctrl+click on a control point: remove it. The four SOURCE-corner anchors
+// are protected — without them the triangulation would stop covering the
+// whole buffer and artwork would vanish at the edges.
+void DrawingCanvas::removeWarpPoint(int index)
+{
+    if (index < 0 || index >= m_warp.size() || m_warp.size() <= 4)
+        return;
+    const qreal srcW = m_moveSrcRect.width(), srcH = m_moveSrcRect.height();
+    const QPointF corners[4] = {{0, 0}, {srcW, 0}, {srcW, srcH}, {0, srcH}};
+    for (const QPointF &corner : corners)
+        if (QLineF(m_warp.at(index).src, corner).length() < 0.5)
+            return; // corner anchor: not removable
+    m_warp.removeAt(index);
+    // Selection indices shift down past the removed one.
+    QSet<int> sel;
+    for (int i : std::as_const(m_warpSel))
+        if (i != index)
+            sel.insert(i > index ? i - 1 : i);
+    m_warpSel = sel;
+    rebuildWarpTriangulation();
+    update();
+}
+
 void DrawingCanvas::beginTransform()
 {
     Layer *layer = editableActiveLayer();
@@ -1333,15 +1503,22 @@ void DrawingCanvas::beginTransform()
     m_quad = QPolygonF({rf.topLeft(), rf.topRight(), rf.bottomRight(), rf.bottomLeft()});
     m_pivot = rf.center();
     m_pivotCustom = false;
-    // Warp mesh: seeded as an even lattice over the lifted rect (pristine).
-    m_warpPts.clear();
+    // Warp mesh: seeded as an even lattice over the lifted rect. src is
+    // buffer-local; dst is the same lattice in canvas coords (identity warp).
+    m_warp.clear();
     for (int j = 0; j < kWarpGrid; ++j)
-        for (int i = 0; i < kWarpGrid; ++i)
-            m_warpPts.append(QPointF(
-                rf.left() + rf.width() * i / (kWarpGrid - 1),
-                rf.top() + rf.height() * j / (kWarpGrid - 1)));
+        for (int i = 0; i < kWarpGrid; ++i) {
+            const qreal fx = qreal(i) / (kWarpGrid - 1);
+            const qreal fy = qreal(j) / (kWarpGrid - 1);
+            m_warp.append({QPointF(rf.width() * fx, rf.height() * fy),
+                           QPointF(rf.left() + rf.width() * fx,
+                                   rf.top() + rf.height() * fy)});
+        }
+    rebuildWarpTriangulation();
+    m_warpSel.clear();
     m_warpDirty = false;
     m_warpIdx = -1;
+    m_warpMarquee = false;
     m_xformActive = true;
     m_xformMode = XNone;
     setMouseTracking(true); // hover updates the scale/rotate cursor
@@ -1361,10 +1538,8 @@ void DrawingCanvas::paintWarpedBuffer(QPainter &p) const
 {
     const qreal srcW = m_moveSrcRect.width();
     const qreal srcH = m_moveSrcRect.height();
-    const int cells = kWarpGrid - 1;
-    if (srcW <= 0.0 || srcH <= 0.0 || m_warpPts.size() != kWarpGrid * kWarpGrid)
+    if (srcW <= 0.0 || srcH <= 0.0 || m_warpTris.size() < 3)
         return;
-    auto wp = [this](int i, int j) { return m_warpPts.at(j * kWarpGrid + i); };
 
     // Affine transform taking source triangle (s0,s1,s2) to (d0,d1,d2).
     auto triXform = [](const QPointF &s0, const QPointF &s1, const QPointF &s2,
@@ -1383,48 +1558,116 @@ void DrawingCanvas::paintWarpedBuffer(QPainter &p) const
                           d0.y() - (m12 * s0.x() + m22 * s0.y()));
         return true;
     };
-    // One triangle: clip to its (slightly inflated) warped shape and draw the
-    // source cell through the affine map. The 1.5px vertex inflation makes
-    // adjacent triangles overlap past the antialiased clip ramp, so no
-    // partial-coverage hairline seams survive between cells; at the mesh's
-    // outer boundary the buffer content simply runs out, so the overlap is
-    // invisible there.
-    auto paintTri = [&](const QRectF &src, const QPointF &s0, const QPointF &s1,
-                        const QPointF &s2, const QPointF &d0, const QPointF &d1,
-                        const QPointF &d2) {
-        QTransform t;
-        if (!triXform(s0, s1, s2, d0, d1, d2, &t))
-            return; // degenerate triangle: nothing to draw
-        const QPointF c = (d0 + d1 + d2) / 3.0;
-        QPainterPath clip;
+
+    for (int t = 0; t + 2 < m_warpTris.size(); t += 3) {
+        const WarpPt &A = m_warp.at(m_warpTris.at(t));
+        const WarpPt &B = m_warp.at(m_warpTris.at(t + 1));
+        const WarpPt &C = m_warp.at(m_warpTris.at(t + 2));
+        QTransform tf;
+        if (!triXform(A.src, B.src, C.src, A.dst, B.dst, C.dst, &tf))
+            continue; // degenerate triangle: nothing to draw
+        // Clip to the inflated warped triangle. Each EDGE is pushed outward
+        // 1.5px along its normal and the vertices re-intersected — radial
+        // vertex inflation under-covers thin triangles' edges, which left
+        // partial-coverage seam pixels; a true edge offset guarantees the
+        // overlap past the antialiased clip ramp on every edge. Vertices are
+        // clamped to 8px of travel so near-degenerate corners cannot explode.
+        const QPointF v[3] = {A.dst, B.dst, C.dst};
+        const QPointF c = (v[0] + v[1] + v[2]) / 3.0;
         QPolygonF tri;
-        for (const QPointF &d : {d0, d1, d2}) {
-            const QPointF r = d - c;
-            const qreal len = std::hypot(r.x(), r.y());
-            tri << (len > 1e-6 ? c + r * ((len + 1.5) / len) : d);
+        for (int k = 0; k < 3; ++k) {
+            // The two edges meeting at vertex k, each offset outward 1.5px:
+            // e=0 the incoming edge (prev -> k), e=1 the outgoing (k -> next).
+            struct Line { QPointF p, d; };
+            Line lines[2];
+            for (int e = 0; e < 2; ++e) {
+                const QPointF a = e == 0 ? v[(k + 2) % 3] : v[k];
+                const QPointF b = e == 0 ? v[k] : v[(k + 1) % 3];
+                const QPointF ab = b - a;
+                const qreal len = std::hypot(ab.x(), ab.y());
+                QPointF n = len > 1e-9 ? QPointF(ab.y() / len, -ab.x() / len)
+                                       : QPointF(0, 0);
+                if (QPointF::dotProduct(n, (a + b) / 2.0 - c) < 0)
+                    n = -n; // outward
+                lines[e] = {a + n * 1.5, ab};
+            }
+            // Intersect the two offset edge lines.
+            const qreal den = lines[0].d.x() * lines[1].d.y()
+                            - lines[0].d.y() * lines[1].d.x();
+            QPointF nv = v[k];
+            if (qAbs(den) > 1e-9) {
+                const QPointF w = lines[1].p - lines[0].p;
+                const qreal s = (w.x() * lines[1].d.y() - w.y() * lines[1].d.x()) / den;
+                nv = lines[0].p + lines[0].d * s;
+            }
+            const QPointF travel = nv - v[k];
+            const qreal tlen = std::hypot(travel.x(), travel.y());
+            if (tlen > 8.0)
+                nv = v[k] + travel * (8.0 / tlen);
+            tri << nv;
         }
+        QPainterPath clip;
         clip.addPolygon(tri);
         clip.closeSubpath();
+        // Source rect: the triangle's source bounds EXPANDED by 2px (clamped
+        // to the buffer). Sampling falls off at the boundary of the source
+        // rect passed to drawImage, so a tight rect leaves translucent seams
+        // along every internal edge — the "grid baked into the artwork" bug.
+        // With the expansion, smooth sampling reads real neighbouring buffer
+        // pixels and internal edges blend seamlessly; the clip still bounds
+        // the painted region.
+        const QRectF srcBounds =
+            QRectF(QPolygonF({A.src, B.src, C.src}).boundingRect())
+                .adjusted(-2, -2, 2, 2)
+                .intersected(QRectF(0, 0, srcW, srcH));
+        if (srcBounds.isEmpty())
+            continue;
         p.save();
         p.setClipPath(clip, Qt::IntersectClip);
-        p.setTransform(t, true);
-        p.drawImage(src.topLeft(), m_transformBuf, src);
+        p.setTransform(tf, true);
+        p.drawImage(srcBounds.topLeft(), m_transformBuf, srcBounds);
         p.restore();
-    };
+    }
+}
 
-    for (int j = 0; j < cells; ++j) {
-        for (int i = 0; i < cells; ++i) {
-            const QRectF src(i * srcW / cells, j * srcH / cells,
-                             srcW / cells, srcH / cells);
-            // Cell corners: source rect TL/TR/BR/BL and their warped images.
-            const QPointF sTL = src.topLeft(), sTR = src.topRight();
-            const QPointF sBR = src.bottomRight(), sBL = src.bottomLeft();
-            const QPointF dTL = wp(i, j), dTR = wp(i + 1, j);
-            const QPointF dBR = wp(i + 1, j + 1), dBL = wp(i, j + 1);
-            paintTri(src, sTL, sTR, sBR, dTL, dTR, dBR); // upper-right triangle
-            paintTri(src, sTL, sBR, sBL, dTL, dBR, dBL); // lower-left triangle
+// Average luminance (0..255) of what the user SEES behind a canvas point:
+// white paper + the visible layers + the live transform preview. Drives the
+// pivot marker's adaptive colour (white over dark art, black over light).
+qreal DrawingCanvas::luminanceBehind(const QPointF &canvasPt) const
+{
+    constexpr int R = 7; // half-extent of the sampled square, canvas px
+    QImage img(2 * R, 2 * R, QImage::Format_ARGB32_Premultiplied);
+    img.fill(Qt::white); // the paper
+    QPainter p(&img);
+    p.setRenderHint(QPainter::SmoothPixmapTransform, true);
+    p.translate(R - canvasPt.x(), R - canvasPt.y());
+    if (m_panel) {
+        for (const Layer &layer : m_panel->layers) {
+            if (!layer.visible || layer.image.isNull() || layer.opacity <= 0.0)
+                continue;
+            p.setOpacity(qBound(0.0, layer.opacity, 1.0));
+            p.drawImage(0, 0, layer.image);
         }
     }
+    p.setOpacity(1.0);
+    if (m_xformActive && !m_transformBuf.isNull()) {
+        if (m_warpDirty) {
+            paintWarpedBuffer(p);
+        } else {
+            p.save();
+            p.setTransform(boxTransform(), true);
+            p.drawImage(0, 0, m_transformBuf);
+            p.restore();
+        }
+    }
+    p.end();
+    qreal sum = 0.0;
+    for (int y = 0; y < img.height(); ++y)
+        for (int x = 0; x < img.width(); ++x) {
+            const QRgb px = img.pixel(x, y);
+            sum += 0.299 * qRed(px) + 0.587 * qGreen(px) + 0.114 * qBlue(px);
+        }
+    return sum / (img.width() * img.height());
 }
 
 // The rotate/scale origin: the user-placed pivot (Pivot Point mode), or the
@@ -1471,19 +1714,15 @@ DrawingCanvas::XformMode DrawingCanvas::hitTestBox(const QPointF &widgetPos) con
         return XNone;
     const QTransform toWidget = viewTransform(); // canvas -> widget (rotate/flip aware)
 
-    // Warp mode: only the mesh control points and the body are live (no
-    // scale/rotate handles, like Photoshop's warp). Points win over the body.
+    // Warp mode: only the mesh control points are live handles (no
+    // scale/rotate; empty-area presses start a marquee — see mousePress).
     if (m_xformUiMode == XformWarp) {
-        for (int k = 0; k < m_warpPts.size(); ++k) {
-            if (QLineF(toWidget.map(m_warpPts.at(k)), widgetPos).length() <= 9.0) {
-                m_warpIdx = k;
-                return XWarpPt;
-            }
+        const int hit = warpPointAt(widgetPos);
+        if (hit >= 0) {
+            m_warpIdx = hit;
+            return XWarpPt;
         }
-        QPolygonF poly;
-        for (int i = 0; i < 4; ++i)
-            poly << toWidget.map(m_quad.value(i));
-        return poly.containsPoint(widgetPos, Qt::OddEvenFill) ? XMove : XNone;
+        return XNone;
     }
 
     // Pivot marker first (Pivot Point mode): it sits inside the body, so it
@@ -1574,12 +1813,13 @@ void DrawingCanvas::applyXformDrag(const QPointF &canvasPos, bool proportional)
         update();
         return; // pivot only — the quad is untouched
     case XWarpPt:
-        // Warp: the grabbed control point follows the cursor freely; the
-        // mesh renders piecewise from here on. The quad (logical frame) is
-        // untouched.
-        if (m_warpIdx >= 0 && m_warpIdx < m_warpPts.size()
-            && m_warpPts0.size() == m_warpPts.size()) {
-            m_warpPts[m_warpIdx] = m_warpPts0.at(m_warpIdx) + delta;
+        // Warp: every SELECTED control point follows the cursor together;
+        // the mesh renders piecewise from here on. The quad (logical frame)
+        // is untouched.
+        if (m_warp0.size() == m_warp.size()) {
+            for (int idx : std::as_const(m_warpSel))
+                if (idx >= 0 && idx < m_warp.size())
+                    m_warp[idx].dst = m_warp0.at(idx).dst + delta;
             m_warpDirty = true;
         }
         update();
@@ -1692,14 +1932,15 @@ void DrawingCanvas::applyXformDrag(const QPointF &canvasPos, bool proportional)
                - quad.at((i + 1) % 4).x() * quad.at(i).y();
     }
     if (convex && qAbs(area2) / 2.0 >= kMinBox * kMinBox) {
-        // Carry the warp mesh along with the quad edit: every lattice point
-        // rides through the same incremental transform, so a warp survives
-        // later moves/scales/rotations (and vice versa) within the session.
+        // Carry the warp mesh along with the quad edit: every control point's
+        // DESTINATION rides through the same incremental transform, so a warp
+        // survives later moves/scales/rotations (and vice versa). Source
+        // positions never change, so the triangulation stays valid.
         QTransform inc;
-        if (m_warpPts0.size() == m_warpPts.size()
+        if (m_warp0.size() == m_warp.size()
             && QTransform::quadToQuad(m_quad0, quad, inc)) {
-            for (int i = 0; i < m_warpPts.size(); ++i)
-                m_warpPts[i] = inc.map(m_warpPts0.at(i));
+            for (int i = 0; i < m_warp.size(); ++i)
+                m_warp[i].dst = inc.map(m_warp0.at(i).dst);
         }
         m_quad = quad;
     }
@@ -1769,6 +2010,8 @@ void DrawingCanvas::commitTransform(bool relift)
     m_layerBackup = QImage();
     m_moveMask = QImage();
     m_warpDirty = false;
+    m_warpSel.clear();
+    m_warpMarquee = false;
     m_xformAutoSel = false;
     clearSelection(); // the committed pixels are no longer "selected"
     setCursor(Qt::CrossCursor);
@@ -1806,6 +2049,8 @@ void DrawingCanvas::cancelTransform(bool relift)
     m_layerBackup = QImage();
     m_moveMask = QImage();
     m_warpDirty = false;
+    m_warpSel.clear();
+    m_warpMarquee = false;
     if (m_xformAutoSel) { // synthesized whole-artwork selection: drop it too
         m_xformAutoSel = false;
         m_selPath = QPainterPath();
@@ -2273,30 +2518,40 @@ void DrawingCanvas::paintEvent(QPaintEvent *)
         painter.setBrush(Qt::NoBrush);
 
         if (m_xformUiMode == XformWarp) {
-            // Warp: the lattice replaces the box — accent grid lines through
-            // the control points, plus a round handle on every point.
-            auto wpw = [this, &T](int i, int j) {
-                return T.map(m_warpPts.at(j * kWarpGrid + i));
-            };
+            // Warp: the mesh replaces the box. DISPLAY-ONLY overlay — never
+            // composited into the layer. Unique triangulation edges in the
+            // accent, then a round handle per point (selected = accent fill).
             painter.setPen(QPen(QColor(accent.red(), accent.green(),
                                        accent.blue(), 170), 1));
-            for (int j = 0; j < kWarpGrid; ++j) { // rows
-                QPolygonF row;
-                for (int i = 0; i < kWarpGrid; ++i)
-                    row << wpw(i, j);
-                painter.drawPolyline(row);
+            QSet<QPair<int, int>> drawn;
+            for (int t = 0; t + 2 < m_warpTris.size(); t += 3) {
+                const int idx[3] = {m_warpTris.at(t), m_warpTris.at(t + 1),
+                                    m_warpTris.at(t + 2)};
+                for (int e = 0; e < 3; ++e) {
+                    const int a = idx[e], b = idx[(e + 1) % 3];
+                    const QPair<int, int> k(qMin(a, b), qMax(a, b));
+                    if (drawn.contains(k))
+                        continue;
+                    drawn.insert(k);
+                    painter.drawLine(T.map(m_warp.at(a).dst),
+                                     T.map(m_warp.at(b).dst));
+                }
             }
-            for (int i = 0; i < kWarpGrid; ++i) { // columns
-                QPolygonF col;
-                for (int j = 0; j < kWarpGrid; ++j)
-                    col << wpw(i, j);
-                painter.drawPolyline(col);
-            }
-            for (const QPointF &c : m_warpPts) { // control points
-                const QPointF p = T.map(c);
-                painter.setBrush(Qt::white);
-                painter.setPen(QPen(accent, 1.5));
+            for (int i = 0; i < m_warp.size(); ++i) { // control points
+                const QPointF p = T.map(m_warp.at(i).dst);
+                painter.setBrush(m_warpSel.contains(i) ? QBrush(accent)
+                                                       : QBrush(Qt::white));
+                painter.setPen(QPen(m_warpSel.contains(i) ? QColor(Qt::white)
+                                                          : accent, 1.5));
                 painter.drawEllipse(p, 4.0, 4.0);
+            }
+            if (m_warpMarquee) { // rubber-band selection box, widget space
+                QPen dash(accent, 1);
+                dash.setStyle(Qt::DashLine);
+                painter.setPen(dash);
+                painter.setBrush(QColor(accent.red(), accent.green(),
+                                        accent.blue(), 30));
+                painter.drawRect(QRectF(m_marqueeStartW, m_marqueeEndW).normalized());
             }
         } else {
             const QVector<QPointF> h = boxHandlesCanvas();
@@ -2316,13 +2571,16 @@ void DrawingCanvas::paintEvent(QPaintEvent *)
         }
         // Pivot marker (Photoshop-style reference point): a ringed crosshair
         // at the rotate/scale origin. Shown while Pivot Point mode is active,
-        // and kept visible in other modes once the user has placed it.
+        // and kept visible in other modes once the user has placed it. The
+        // marker colour ADAPTS to what is behind it — white over dark
+        // artwork, black over light — re-sampled every repaint, so it stays
+        // visible as it is dragged across different areas.
         if (m_xformUiMode == XformPivot || m_pivotCustom) {
-            const QPointF pw = T.map(pivotPoint());
+            const QPointF pv = pivotPoint();
+            const QPointF pw = T.map(pv);
+            const QColor mark = luminanceBehind(pv) < 128.0 ? Qt::white : Qt::black;
             painter.setBrush(Qt::NoBrush);
-            painter.setPen(QPen(accent, 3));
-            painter.drawEllipse(pw, 5.5, 5.5);
-            painter.setPen(QPen(Qt::white, 1.4));
+            painter.setPen(QPen(mark, 1.4));
             painter.drawEllipse(pw, 5.5, 5.5);
             painter.drawLine(QPointF(pw.x() - 9, pw.y()), QPointF(pw.x() - 3, pw.y()));
             painter.drawLine(QPointF(pw.x() + 3, pw.y()), QPointF(pw.x() + 9, pw.y()));
@@ -2506,11 +2764,54 @@ void DrawingCanvas::mousePressEvent(QMouseEvent *event)
     // handles/rotation zones work even where they fall outside the canvas
     // rect. A press on empty space (XNone) is swallowed but keeps the box.
     if (m_xformActive && m_tool == Move) {
+        // Warp mode has its own modifier-aware interactions.
+        if (m_xformUiMode == XformWarp) {
+            const int hit = warpPointAt(event->position());
+            if (event->modifiers() & Qt::ControlModifier) {
+                // Ctrl+click: edit the mesh topology — remove the point under
+                // the cursor, or add one where the mesh was clicked.
+                if (hit >= 0)
+                    removeWarpPoint(hit);
+                else
+                    addWarpPointAt(event->position());
+                return;
+            }
+            if (event->modifiers() & Qt::ShiftModifier) {
+                // Shift+click: toggle the point in/out of the selection.
+                if (hit >= 0) {
+                    if (m_warpSel.contains(hit))
+                        m_warpSel.remove(hit);
+                    else
+                        m_warpSel.insert(hit);
+                    update();
+                }
+                return;
+            }
+            if (hit >= 0) {
+                // Plain press on a point: drag it — together with the rest of
+                // the selection if it belongs to one, alone otherwise.
+                if (!m_warpSel.contains(hit))
+                    m_warpSel = {hit};
+                m_warpIdx = hit;
+                m_xformMode = XWarpPt;
+                m_dragStartCanvas = toCanvasF(event->position());
+                m_warp0 = m_warp;
+                update();
+                return;
+            }
+            // Empty area: rubber-band marquee to select multiple points.
+            m_warpMarquee = true;
+            m_marqueeStartW = m_marqueeEndW = event->position();
+            m_xformMode = XWarpBox;
+            update();
+            return;
+        }
+
         m_xformMode = hitTestBox(event->position());
         if (m_xformMode != XNone) {
             m_dragStartCanvas = toCanvasF(event->position());
             m_quad0 = m_quad;
-            m_warpPts0 = m_warpPts;
+            m_warp0 = m_warp;
             m_pivot0 = m_xformMode == XPivot ? m_pivot : pivotPoint();
             if (m_xformMode == XPivot && !m_pivotCustom)
                 m_pivot0 = pivotPoint(); // start from the tracked centre
@@ -2638,6 +2939,11 @@ void DrawingCanvas::mouseMoveEvent(QMouseEvent *event)
         return;
     }
     if (m_xformActive && m_tool == Move) {
+        if ((event->buttons() & Qt::LeftButton) && m_xformMode == XWarpBox) {
+            m_marqueeEndW = event->position(); // rubber band follows
+            update();
+            return;
+        }
         if ((event->buttons() & Qt::LeftButton) && m_xformMode != XNone)
             applyXformDrag(toCanvasF(event->position()),
                            event->modifiers() & Qt::ShiftModifier);
@@ -2709,6 +3015,17 @@ void DrawingCanvas::mouseReleaseEvent(QMouseEvent *event)
         return;
     }
     if (m_xformActive && m_tool == Move && event->button() == Qt::LeftButton) {
+        if (m_warpMarquee) { // marquee done: points inside become the selection
+            m_warpMarquee = false;
+            const QRectF r = QRectF(m_marqueeStartW, m_marqueeEndW).normalized();
+            const QTransform toWidget = viewTransform();
+            QSet<int> sel;
+            for (int i = 0; i < m_warp.size(); ++i)
+                if (r.contains(toWidget.map(m_warp.at(i).dst)))
+                    sel.insert(i);
+            m_warpSel = sel;
+            update();
+        }
         m_xformMode = XNone; // end this handle drag; the box stays for more edits
         return;
     }

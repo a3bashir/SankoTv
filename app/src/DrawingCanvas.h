@@ -6,6 +6,7 @@
 #include <QPainterPath>
 #include <QPixmap>
 #include <QPolygonF>
+#include <QSet>
 #include <QTransform>
 #include <QPoint>
 #include <QPointF>
@@ -302,7 +303,7 @@ private:
     // move/scale/rotate/skew, projective for distort/perspective. m_pivot is
     // the rotation/scale origin (Pivot Point mode relocates it; until then it
     // tracks the quad centre).
-    enum XformMode { XNone, XMove, XRotate, XPivot, XWarpPt,
+    enum XformMode { XNone, XMove, XRotate, XPivot, XWarpPt, XWarpBox,
                      XScaleTL, XScaleTR, XScaleBL, XScaleBR,
                      XScaleT, XScaleB, XScaleL, XScaleR };
     bool m_xformActive = false;
@@ -321,18 +322,35 @@ private:
     QCursor m_rotateCursor;        // curved-arrow cursor for the rotation zones
     QPointF pivotPoint() const;    // m_pivot when custom, else the quad centre
 
-    // Warp mode: a kWarpGrid x kWarpGrid lattice of draggable control points
-    // (canvas coords, row-major) that locally deform the buffer. The mesh is
-    // seeded bilinearly over the lifted rect; quad edits in the other modes
-    // carry the mesh along through the incremental quad transform, and the
-    // preview/commit switch to piecewise per-cell quadToQuad rendering once a
-    // point has been dragged off the plain quad mapping (m_warpDirty).
+    // Warp mode: an IRREGULAR mesh of draggable control points that locally
+    // deform the buffer. Each point pairs a fixed SOURCE position (buffer
+    // coords) with a draggable DESTINATION (canvas coords); the points are
+    // Delaunay-triangulated in source space (topology is drag-invariant) and
+    // rendered as piecewise affine triangles. Seeded as a kWarpGrid lattice;
+    // Ctrl+click adds/removes points (the 4 source-corner anchors are
+    // protected so the triangulation always covers the whole buffer). Quad
+    // edits in the other modes carry every destination along through the
+    // incremental quad transform. All guides are display-only overlays.
+    struct WarpPt {
+        QPointF src; // buffer coords, fixed after creation
+        QPointF dst; // canvas coords, dragged by the user
+    };
     static constexpr int kWarpGrid = 4;
-    QVector<QPointF> m_warpPts;    // current mesh
-    QVector<QPointF> m_warpPts0;   // mesh snapshot at press
+    QVector<WarpPt> m_warp;        // control points
+    QVector<WarpPt> m_warp0;       // snapshot at press
+    QVector<int> m_warpTris;       // index triples into m_warp (src Delaunay)
+    QSet<int> m_warpSel;           // selected control points (multi-select)
     bool m_warpDirty = false;      // a control point was moved: render the mesh
     mutable int m_warpIdx = -1;    // control point under the cursor / dragged
-    void paintWarpedBuffer(QPainter &p) const; // piecewise cells (preview+commit)
+    bool m_warpMarquee = false;    // rubber-band point selection in progress
+    QPointF m_marqueeStartW;       // marquee corners, WIDGET coords
+    QPointF m_marqueeEndW;
+    void rebuildWarpTriangulation();              // src-space Delaunay
+    int warpPointAt(const QPointF &widgetPos) const;
+    void addWarpPointAt(const QPointF &widgetPos);   // Ctrl+click on the mesh
+    void removeWarpPoint(int index);                 // Ctrl+click on a point
+    void paintWarpedBuffer(QPainter &p) const;    // piecewise triangles
+    qreal luminanceBehind(const QPointF &canvasPt) const; // pivot contrast
 
     void beginTransform();         // lift selection -> box (source cleared on lift)
     // Bake once (one undo). relift: Photoshop-style — while the Move tool
