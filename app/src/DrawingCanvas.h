@@ -382,6 +382,7 @@ private:
     void paintWarpedBuffer(QPainter &p, qreal cellPx) const;
     qreal luminanceBehind(const QPointF &canvasPt) const; // pivot contrast
 
+    void liftDefaultTransformBox(); // Move tool: box around selection/artwork
     void beginTransform();         // lift selection -> box (source cleared on lift)
     // Bake once (one undo). relift: Photoshop-style — while the Move tool
     // stays active the box does not disappear; it RESETS to a fresh default

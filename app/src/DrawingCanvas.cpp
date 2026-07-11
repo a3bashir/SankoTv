@@ -301,14 +301,23 @@ QSize DrawingCanvas::canvasSize()
 
 void DrawingCanvas::setActivePanel(Panel *panel)
 {
+    // Leaving a panel (or re-clicking it) with live canvas-side state: bake
+    // everything into the CURRENT panel's own layers FIRST. A floating paste
+    // commits; a live transform session commits WITHOUT relifting — the
+    // default relift used to hollow the layer again right before the switch,
+    // stranding the artwork in m_transformBuf (the panel's data model went
+    // empty and undo appeared to skip back past committed transforms).
+    commitFloating();
     if (m_xformActive)
-        commitTransform(); // finalise onto the CURRENT layer before switching
+        commitTransform(false);
+
     m_panel = panel;
     m_drawing = false;
+    m_brushStroke = false;
+    m_strokeMask = StrokeMaskNone;
+    m_strokeBuf = QImage();
+    m_editPanel = nullptr; // any in-flight edit snapshot dies with the switch
     cancelShape(); // preview state never carries across panels
-    // A floating paste or in-progress move is discarded (committing to a
-    // DIFFERENT panel's layer would be wrong; the move never wrote to the
-    // old layer anyway) and the selection mask never carries across panels.
     m_floatActive = false;
     m_floatDragging = false;
     m_moveActive = false;
@@ -316,7 +325,10 @@ void DrawingCanvas::setActivePanel(Panel *panel)
     m_moveMask = QImage();
     m_floatImg = QImage();
     m_floatDelta = QPointF();
-    clearSelection();
+    clearSelection(); // the selection mask never carries across panels
+    // The Move tool's transform box follows onto the newly-active panel.
+    if (m_tool == Move && m_panel)
+        liftDefaultTransformBox();
     update();
 }
 
@@ -479,26 +491,33 @@ void DrawingCanvas::setTool(Tool tool)
     }
     m_tool = tool;
     cancelShape(); // an in-progress shape never survives a tool switch
-    // Activating Move shows the transform box at once (like Photoshop): a live
-    // selection lifts the selected pixels; with NO selection the box wraps the
-    // layer's whole artwork (synthesized rect selection, dropped on cancel).
-    // An empty layer shows no box.
-    if (tool == Move && !m_xformActive) {
-        if (m_selectionPath.isEmpty()) {
-            if (Layer *layer = editableActiveLayer()) {
-                const QRect art = opaquePixelBounds(layer->image);
-                if (!art.isEmpty()) {
-                    QPainterPath path;
-                    path.addRect(QRectF(art)); // QRect(P,P) width already spans maxX+1
-                    m_selectionPath = path;
-                    m_xformAutoSel = true;
-                }
+    // Activating Move shows the transform box at once (like Photoshop).
+    if (tool == Move)
+        liftDefaultTransformBox();
+    update(); // the selection itself DOES survive (Select -> Move flow)
+}
+
+// Move tool activation / panel-switch persistence: show the transform box —
+// a live selection lifts the selected pixels; with NO selection the box wraps
+// the layer's whole artwork (synthesized rect selection, dropped on cancel).
+// An empty layer shows no box.
+void DrawingCanvas::liftDefaultTransformBox()
+{
+    if (m_xformActive)
+        return;
+    if (m_selectionPath.isEmpty()) {
+        if (Layer *layer = editableActiveLayer()) {
+            const QRect art = opaquePixelBounds(layer->image);
+            if (!art.isEmpty()) {
+                QPainterPath path;
+                path.addRect(QRectF(art)); // QRect(P,P) width already spans maxX+1
+                m_selectionPath = path;
+                m_xformAutoSel = true;
             }
         }
-        if (!m_selectionPath.isEmpty())
-            beginTransform();
     }
-    update(); // the selection itself DOES survive (Select -> Move flow)
+    if (!m_selectionPath.isEmpty())
+        beginTransform();
 }
 
 void DrawingCanvas::setShapeKind(ShapeKind kind)
