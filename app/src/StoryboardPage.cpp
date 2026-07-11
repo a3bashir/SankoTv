@@ -1416,6 +1416,13 @@ void StoryboardPage::createFloatingToolbar()
     wireMoveMode(distortBtn, DrawingCanvas::XformDistort);
     wireMoveMode(perspBtn, DrawingCanvas::XformPerspective);
     wireMoveMode(warpBtn, DrawingCanvas::XformWarp);
+    // Committing a Warp drops the canvas back to the default box; mirror
+    // that here so no mode button stays lit.
+    connect(m_canvas, &DrawingCanvas::xformUiModeReset, this,
+            [pivotBtn, skewBtn, distortBtn, perspBtn, warpBtn] {
+        for (ToolButton *b : {pivotBtn, skewBtn, distortBtn, perspBtn, warpBtn})
+            b->setChecked(false);
+    });
 
     moveBar->setDefaultOffsetProvider([this, moveBar] {
         // Bottom-centre, 10px above the status bar — identical to the

@@ -175,7 +175,15 @@ DrawingCanvas::DrawingCanvas(QWidget *parent)
             p.drawPolygon(headPoly(65.0, 1, pass ? 1.0 : 1.45));
         }
         p.end();
-        m_rotateCursor = QCursor(pm, 13, 13);
+        // One cursor per corner: the base glyph reads as the TOP-LEFT corner
+        // arrow (it bends around an upper-left corner); the other corners get
+        // the same glyph rotated to bend around THEIR corner.
+        for (int corner = 0; corner < 4; ++corner) { // TL, TR, BR, BL
+            QTransform rot;
+            rot.rotate(90.0 * corner);
+            m_rotateCursors[corner] =
+                QCursor(pm.transformed(rot, Qt::SmoothTransformation), 13, 13);
+        }
     }
 }
 
@@ -1546,6 +1554,10 @@ void DrawingCanvas::paintWarpedBuffer(QPainter &p, qreal cellPx) const
     const qreal srcH = m_moveSrcRect.height();
     if (srcW <= 0.0 || srcH <= 0.0 || !m_tpsValid)
         return;
+    // Quality guarantees regardless of the caller's painter state: smooth
+    // (bilinear) sampling of the PRISTINE buffer and antialiased clips.
+    p.setRenderHint(QPainter::SmoothPixmapTransform, true);
+    p.setRenderHint(QPainter::Antialiasing, true);
     const int nx = qBound(2, qCeil(srcW / cellPx), 96);
     const int ny = qBound(2, qCeil(srcH / cellPx), 96);
 
@@ -1766,11 +1778,14 @@ DrawingCanvas::XformMode DrawingCanvas::hitTestBox(const QPointF &widgetPos) con
         poly << toWidget.map(handles.at(i));
     if (poly.containsPoint(widgetPos, Qt::OddEvenFill))
         return XMove;
-    // Just outside a corner -> rotate.
+    // Just outside a corner -> rotate. Remember WHICH corner so the cursor
+    // can bend around it (handles 0..3 are TL, TR, BR, BL).
     for (int i = 0; i < 4; ++i) {
         const QPointF w = toWidget.map(handles.at(i));
-        if (QLineF(w, widgetPos).length() <= rotateTol)
+        if (QLineF(w, widgetPos).length() <= rotateTol) {
+            m_rotateCorner = i;
             return XRotate;
+        }
     }
     return XNone;
 }
@@ -1972,7 +1987,7 @@ void DrawingCanvas::updateXformCursor(XformMode mode)
     case XMove:    setCursor(Qt::SizeAllCursor); break;
     case XPivot:   setCursor(Qt::SizeAllCursor); break; // draggable pivot marker
     case XWarpPt:  setCursor(Qt::SizeAllCursor); break; // draggable mesh point
-    case XRotate:  setCursor(m_rotateCursor); break;
+    case XRotate:  setCursor(m_rotateCursors[m_rotateCorner & 3]); break;
     case XScaleTL:
     case XScaleBR: setCursor(Qt::SizeFDiagCursor); break;
     case XScaleTR:
@@ -2045,6 +2060,14 @@ void DrawingCanvas::commitTransform(bool relift)
     m_xformAutoSel = false;
     clearSelection(); // the committed pixels are no longer "selected"
     setCursor(Qt::CrossCursor);
+
+    // Committing a Warp returns to the DEFAULT move/scale/rotate box (the
+    // other modes already read as the default box after commit since they
+    // share its handles); the Move Modifier toolbar unchecks via the signal.
+    if (m_xformUiMode == XformWarp) {
+        m_xformUiMode = XformDefault;
+        emit xformUiModeReset();
+    }
 
     // Photoshop-style persistence: the box resets to a fresh axis-aligned
     // default around the committed artwork and stays up while Move is active.

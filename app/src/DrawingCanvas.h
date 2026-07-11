@@ -166,6 +166,9 @@ signals:
     void contentChanged();
     void layersChanged(); // layer added/removed by the canvas (image import)
     void viewZoomChanged(double zoom); // wheel/pan zoom -> sync the zoom slider
+    // Committing a Warp resets the box to the default move/scale/rotate mode;
+    // the Move Modifier toolbar listens and unchecks its mode buttons.
+    void xformUiModeReset();
 
 protected:
     bool eventFilter(QObject *object, QEvent *event) override; // toolbar grip drag
@@ -319,7 +322,10 @@ private:
     QPolygonF m_quad0;             // quad snapshot at press (drags recompute from it)
     QPointF m_pivot0;              // pivot snapshot at press
     qreal m_rotStart0 = 0.0;       // pointer angle at a rotate press, radians
-    QCursor m_rotateCursor;        // curved-arrow cursor for the rotation zones
+    QCursor m_rotateCursors[4];    // curved-arrow cursors, oriented per corner
+                                   // (TL, TR, BR, BL — each bends around its
+                                   // own corner like Photoshop's)
+    mutable int m_rotateCorner = 0; // corner whose rotate zone is hovered
     QPointF pivotPoint() const;    // m_pivot when custom, else the quad centre
 
     // Warp mode: an IRREGULAR mesh of draggable control points that smoothly
