@@ -146,7 +146,7 @@ public slots:
 
     // Selection + canvas clipboard (ACTIVE layer only). Copy reads even a
     // locked layer (not an edit); cut/paste/move require an editable one.
-    bool hasSelection() const { return !m_selPath.isEmpty(); }
+    bool hasSelection() const { return !m_selectionPath.isEmpty(); }
     bool hasCanvasClipboard() const { return !m_clipImg.isNull(); }
     void copySelection();                 // selected pixels -> internal clipboard
     void cutSelection();                  // copy, then clear to transparent (undoable)
@@ -207,15 +207,17 @@ private:
     void closePolygonSelection(); // SelectPoly: vertices -> selection mask
     QPainterPath combinedSelection(const QPainterPath &shape) const; // Replace/Add/Sub
 
-    // Selection / floating pixels (move-lift or un-committed paste).
-    // The selection path is rasterized ONCE into a mask; lift, clear, copy,
-    // and cut all index that same mask so their coverage is pixel-identical
-    // (never the bounding box for ellipse/lasso). Hard-edged by default;
-    // antialiased=true gives a soft 1px coverage falloff (the transform box
-    // uses it so moved artwork keeps clean edges). Either way DestinationIn
-    // (keep) and DestinationOut (clear) with the SAME mask partition the
-    // pixels exactly: alpha + (1-alpha) sums back to the original.
-    QImage selectionMask(const QRect &boundingRect, bool antialiased = false) const;
+    // Selection rasterisation. The selection itself is VECTOR geometry
+    // (m_selectionPath); a grayscale ANTIALIASED coverage mask is generated
+    // from it only when a pixel operation needs one (brush, erase, fill,
+    // lift, clear, copy/cut). cachedSelectionMask() is the full-canvas mask,
+    // rebuilt lazily ONLY when the path has changed — a stroke of hundreds of
+    // dabs rasterises the path exactly once; selectionMask() crops it.
+    // DestinationIn with the mask KEEPS exactly the masked coverage and
+    // DestinationOut CLEARS exactly the complement — alpha + (1-alpha)
+    // partitions the pixels exactly, so cut/lift edges stay clean.
+    const QImage &cachedSelectionMask() const;
+    QImage selectionMask(const QRect &boundingRect) const;
     // Clamp used only to place a fresh PASTE fully on-canvas (positioning,
     // not clipping).
     QPointF clampFloatDelta(const QPointF &delta) const;
@@ -254,8 +256,11 @@ private:
     QPointF m_shapeCurrentC;       // canvas coords (drag end / polygon rubber)
     QVector<QPointF> m_polygonPts; // in-progress polygon vertices, canvas coords
 
-    // Selection state (mask on the ACTIVE layer, canvas coords).
-    QPainterPath m_selPath;        // empty = no selection
+    // Selection state: resolution-independent VECTOR geometry on the ACTIVE
+    // layer (canvas coords). Rasterised lazily via cachedSelectionMask().
+    QPainterPath m_selectionPath;        // empty = no selection
+    mutable QImage m_selMaskCache;       // AA coverage, canvas-sized, lazy
+    mutable QPainterPath m_selMaskPath;  // the path the cache was built from
     QPainterPath m_selBase;        // selection before the current Add/Sub drag
     SelectionOp m_selOp = SelReplace;
     bool m_selDrag = false;        // dragging out a new selection
@@ -265,7 +270,7 @@ private:
     bool m_selOutlineMove = false; // the toolbar's Move mode is on
     bool m_selOutlineDrag = false; // dragging the outline right now
     QPointF m_selOutlineStartC;    // canvas point where the drag grabbed
-    QPainterPath m_selOutlineBase; // m_selPath at drag start (translated live)
+    QPainterPath m_selOutlineBase; // m_selectionPath at drag start (translated live)
     // SELECTION history (separate from the drawing undo/redo, which lives on
     // the Panel). One entry = the selection region before a committed change.
     void recordSelectionChange(const QPainterPath &before);
@@ -390,6 +395,16 @@ private:
     // Canvas clipboard (Edit menu Copy/Cut/Paste on the selection).
     QImage m_clipImg;              // copied pixels, tight bounding rect
     QPointF m_clipPos;             // canvas position they came from
+
+    // Stroke-level selection masking: while a selection is active, the live
+    // brush/eraser stroke accumulates UNMASKED in a scratch buffer and the
+    // cached antialiased mask is applied ONCE (composited each repaint for
+    // the preview, baked into the layer on release). The mask is therefore a
+    // CEILING the stroke can never exceed — overlapping dabs cannot saturate
+    // the soft boundary back to a hard edge (Photoshop semantics).
+    enum StrokeMaskMode { StrokeMaskNone, StrokeMaskPaint, StrokeMaskErase };
+    StrokeMaskMode m_strokeMask = StrokeMaskNone;
+    QImage m_strokeBuf; // canvas-sized scratch holding the live stroke
 
     // Brush engine state. Defaults mirror the initial settings-panel values.
     int m_brushToolSize = 25;        // dab diameter, canvas px

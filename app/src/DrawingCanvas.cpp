@@ -377,18 +377,18 @@ void DrawingCanvas::setTool(Tool tool)
     // layer's whole artwork (synthesized rect selection, dropped on cancel).
     // An empty layer shows no box.
     if (tool == Move && !m_xformActive) {
-        if (m_selPath.isEmpty()) {
+        if (m_selectionPath.isEmpty()) {
             if (Layer *layer = editableActiveLayer()) {
                 const QRect art = opaquePixelBounds(layer->image);
                 if (!art.isEmpty()) {
                     QPainterPath path;
                     path.addRect(QRectF(art)); // QRect(P,P) width already spans maxX+1
-                    m_selPath = path;
+                    m_selectionPath = path;
                     m_xformAutoSel = true;
                 }
             }
         }
-        if (!m_selPath.isEmpty())
+        if (!m_selectionPath.isEmpty())
             beginTransform();
     }
     update(); // the selection itself DOES survive (Select -> Move flow)
@@ -758,20 +758,33 @@ void DrawingCanvas::drawSegment(const QPoint &from, const QPoint &to, const QCol
     Layer *layer = editableActiveLayer();
     if (!layer)
         return;
-    QPainter painter(&layer->image);
-    painter.setRenderHint(QPainter::Antialiasing, true);
-    // An active selection is a clip mask: the stroke only affects pixels
-    // inside it (consistent with Brush and Fill).
-    if (!m_selPath.isEmpty())
-        painter.setClipPath(m_selPath);
-    // Eraser carves the layer back to TRANSPARENT (revealing layers below /
-    // the white paper) — painting white would smear over lower layers.
-    if (m_tool == Eraser)
-        painter.setCompositionMode(QPainter::CompositionMode_Clear);
     QPen pen(color);
     pen.setWidth(penWidth());
     pen.setCapStyle(Qt::RoundCap);
     pen.setJoinStyle(Qt::RoundJoin);
+    if (m_strokeMask == StrokeMaskErase) {
+        // Selection active: the erase stroke accumulates UNMASKED coverage in
+        // the scratch (white alpha); the cached mask caps it once — in the
+        // paintEvent preview live, and on release when it is baked. Soft
+        // selection edges erase softly and can never saturate hard.
+        QPainter sp(&m_strokeBuf);
+        sp.setRenderHint(QPainter::Antialiasing, true);
+        QPen strokePen(Qt::white);
+        strokePen.setWidth(penWidth());
+        strokePen.setCapStyle(Qt::RoundCap);
+        strokePen.setJoinStyle(Qt::RoundJoin);
+        sp.setPen(strokePen);
+        sp.drawLine(from, to);
+        sp.end();
+        update();
+        return;
+    }
+    QPainter painter(&layer->image);
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    // Eraser carves the layer back to TRANSPARENT (revealing layers below /
+    // the white paper) — painting white would smear over lower layers.
+    if (m_tool == Eraser)
+        painter.setCompositionMode(QPainter::CompositionMode_Clear);
     painter.setPen(pen);
     painter.drawLine(from, to);
     painter.end();
@@ -885,7 +898,7 @@ void DrawingCanvas::clearSelection()
 {
     if (m_xformActive)
         cancelTransform(); // deselecting mid-transform discards it (restores backup)
-    m_selPath = QPainterPath();
+    m_selectionPath = QPainterPath();
     m_selDrag = false;
     m_lassoPts.clear();
     setMouseTracking(false); // drop any in-progress polygon-selection rubber
@@ -907,9 +920,9 @@ void DrawingCanvas::closePolygonSelection()
         QPainterPath path;
         path.addPolygon(QPolygonF(pts));
         path.closeSubpath();
-        m_selPath = combinedSelection(path); // Replace / Add / Subtract
+        m_selectionPath = combinedSelection(path); // Replace / Add / Subtract
     } else {
-        m_selPath = combinedSelection(QPainterPath()); // too few: keep base (Add/Sub)
+        m_selectionPath = combinedSelection(QPainterPath()); // too few: keep base (Add/Sub)
     }
     m_selBase = QPainterPath();
     recordSelectionChange(m_selGestureBase); // one history entry per polygon
@@ -939,11 +952,11 @@ void DrawingCanvas::setSelectionOp(SelectionOp op)
 // --- Selection history (separate from the drawing undo/redo) ---------------
 
 // Record a committed selection-region change: `before` is the selection as it
-// was prior to the change now held in m_selPath. No-ops (unchanged region)
+// was prior to the change now held in m_selectionPath. No-ops (unchanged region)
 // are skipped so degenerate clicks never pollute the history.
 void DrawingCanvas::recordSelectionChange(const QPainterPath &before)
 {
-    if (before == m_selPath)
+    if (before == m_selectionPath)
         return;
     m_selUndoStack.append(before);
     while (m_selUndoStack.size() > 20)
@@ -959,8 +972,8 @@ void DrawingCanvas::undoSelection()
         return;
     if (m_selUndoStack.isEmpty())
         return;
-    m_selRedoStack.append(m_selPath);
-    m_selPath = m_selUndoStack.takeLast();
+    m_selRedoStack.append(m_selectionPath);
+    m_selectionPath = m_selUndoStack.takeLast();
     updateAntsTimer();
     update();
 }
@@ -971,8 +984,8 @@ void DrawingCanvas::redoSelection()
         return;
     if (m_selRedoStack.isEmpty())
         return;
-    m_selUndoStack.append(m_selPath);
-    m_selPath = m_selRedoStack.takeLast();
+    m_selUndoStack.append(m_selectionPath);
+    m_selectionPath = m_selRedoStack.takeLast();
     updateAntsTimer();
     update();
 }
@@ -981,7 +994,7 @@ void DrawingCanvas::redoSelection()
 // AND records it in the selection history, so it can be selection-undone.
 void DrawingCanvas::deselect()
 {
-    const QPainterPath before = m_selPath;
+    const QPainterPath before = m_selectionPath;
     clearSelection();
     recordSelectionChange(before);
 }
@@ -1010,10 +1023,10 @@ void DrawingCanvas::setSelectionOutlineMove(bool on)
 // Select the whole active layer (the canvas rect).
 void DrawingCanvas::selectAll()
 {
-    const QPainterPath before = m_selPath;
+    const QPainterPath before = m_selectionPath;
     QPainterPath path;
     path.addRect(QRectF(QPointF(0, 0), QSizeF(canvasSize())));
-    m_selPath = path;
+    m_selectionPath = path;
     m_selDrag = false;
     m_lassoPts.clear();
     recordSelectionChange(before);
@@ -1025,10 +1038,10 @@ void DrawingCanvas::selectAll()
 // inverts to the whole canvas).
 void DrawingCanvas::invertSelection()
 {
-    const QPainterPath before = m_selPath;
+    const QPainterPath before = m_selectionPath;
     QPainterPath full;
     full.addRect(QRectF(QPointF(0, 0), QSizeF(canvasSize())));
-    m_selPath = m_selPath.isEmpty() ? full : full.subtracted(m_selPath);
+    m_selectionPath = m_selectionPath.isEmpty() ? full : full.subtracted(m_selectionPath);
     m_selDrag = false;
     m_lassoPts.clear();
     recordSelectionChange(before);
@@ -1038,7 +1051,7 @@ void DrawingCanvas::invertSelection()
 
 void DrawingCanvas::updateAntsTimer()
 {
-    const bool needed = !m_selPath.isEmpty() || m_selDrag || m_floatActive
+    const bool needed = !m_selectionPath.isEmpty() || m_selDrag || m_floatActive
         || (m_tool == SelectPoly && !m_lassoPts.isEmpty()); // building a polygon
     if (needed && !m_antsTimer->isActive())
         m_antsTimer->start();
@@ -1069,33 +1082,44 @@ QPointF DrawingCanvas::clampFloatDelta(const QPointF &delta) const
     return clamped - m_floatPos;
 }
 
-// The selection path rasterized once into a mask, in boundingRect-local
-// coordinates. Hard-edged (alpha strictly 0/255) by default; antialiased=true
-// adds a soft 1px coverage falloff at the boundary — used by the Move tool's
-// transform pipeline so moved artwork commits with clean, smooth edges.
-// Either way, DestinationIn with it KEEPS exactly the masked coverage and
-// DestinationOut CLEARS exactly the complement — alpha + (1-alpha) partitions
-// the rect with no off-by-one and no double coverage.
-QImage DrawingCanvas::selectionMask(const QRect &boundingRect, bool antialiased) const
+// The vector selection's raster side: a full-canvas ANTIALIASED grayscale
+// coverage mask (white x coverage, premultiplied), rebuilt lazily only when
+// m_selectionPath has changed — the cache is self-invalidating by comparing
+// against the path it was built from, so every place that edits the path
+// (tools, booleans, outline moves, undo/redo) is covered automatically.
+// DestinationIn with the mask KEEPS exactly the masked coverage and
+// DestinationOut CLEARS exactly the complement — alpha + (1-alpha)
+// partitions the pixels with no off-by-one and no double coverage.
+const QImage &DrawingCanvas::cachedSelectionMask() const
 {
-    QImage mask(boundingRect.size(), QImage::Format_ARGB32_Premultiplied);
-    mask.fill(Qt::transparent);
-    QPainter painter(&mask);
-    painter.setRenderHint(QPainter::Antialiasing, antialiased);
-    painter.translate(-boundingRect.topLeft());
-    painter.fillPath(m_selPath, Qt::white);
-    return mask;
+    if (m_selMaskCache.isNull() || m_selMaskPath != m_selectionPath) {
+        m_selMaskCache = QImage(canvasSize(), QImage::Format_ARGB32_Premultiplied);
+        m_selMaskCache.fill(Qt::transparent);
+        QPainter painter(&m_selMaskCache);
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        painter.fillPath(m_selectionPath, Qt::white);
+        painter.end();
+        m_selMaskPath = m_selectionPath;
+    }
+    return m_selMaskCache;
+}
+
+// boundingRect-local crop of the cached mask (rect must lie on-canvas, which
+// every caller guarantees by intersecting with the layer/canvas rect).
+QImage DrawingCanvas::selectionMask(const QRect &boundingRect) const
+{
+    return cachedSelectionMask().copy(boundingRect);
 }
 
 // Copy is not an edit, so it reads the active layer even when locked.
 void DrawingCanvas::copySelection()
 {
-    if (!m_panel || m_selPath.isEmpty())
+    if (!m_panel || m_selectionPath.isEmpty())
         return;
     const Layer *layer = m_panel->activeLayer();
     if (!layer || layer->image.isNull())
         return;
-    const QRect r = m_selPath.boundingRect().toAlignedRect().intersected(layer->image.rect());
+    const QRect r = m_selectionPath.boundingRect().toAlignedRect().intersected(layer->image.rect());
     if (r.isEmpty())
         return;
     QImage img = layer->image.copy(r);
@@ -1110,10 +1134,10 @@ void DrawingCanvas::copySelection()
 void DrawingCanvas::cutSelection()
 {
     Layer *layer = editableActiveLayer(); // locked layers block the edit
-    if (!layer || m_selPath.isEmpty())
+    if (!layer || m_selectionPath.isEmpty())
         return;
     copySelection();
-    const QRect r = m_selPath.boundingRect().toAlignedRect().intersected(layer->image.rect());
+    const QRect r = m_selectionPath.boundingRect().toAlignedRect().intersected(layer->image.rect());
     if (r.isEmpty())
         return;
     pushUndo();
@@ -1146,7 +1170,7 @@ void DrawingCanvas::pasteClipboard(bool atOriginalPos)
         m_floatPos = QPointF(qRound(raw.x()), qRound(raw.y())); // stay pixel-aligned
     }
     m_floatDelta = clampFloatDelta(QPointF()); // never spawn hanging off-canvas
-    m_selPath = QPainterPath(); // the floating outline replaces the selection
+    m_selectionPath = QPainterPath(); // the floating outline replaces the selection
     m_selDrag = false;
     m_lassoPts.clear();
     updateAntsTimer();
@@ -1188,9 +1212,9 @@ void DrawingCanvas::dumpMoveDebug(const QString &name, const QImage &img, bool c
 void DrawingCanvas::beginMoveDrag(const QPointF &grabCanvasPt)
 {
     Layer *layer = editableActiveLayer();
-    if (!layer || m_selPath.isEmpty())
+    if (!layer || m_selectionPath.isEmpty())
         return;
-    const QRect r = m_selPath.boundingRect().toAlignedRect().intersected(layer->image.rect());
+    const QRect r = m_selectionPath.boundingRect().toAlignedRect().intersected(layer->image.rect());
     if (r.isEmpty())
         return;
 
@@ -1269,8 +1293,8 @@ void DrawingCanvas::commitMoveDrag()
 
         // 10) assign the rebuilt image back and refresh.
         layer->image = result;
-        if (!m_selPath.isEmpty())
-            m_selPath.translate(QPointF(aligned) - m_floatPos); // ants follow
+        if (!m_selectionPath.isEmpty())
+            m_selectionPath.translate(QPointF(aligned) - m_floatPos); // ants follow
         emit contentChanged();
     }
 
@@ -1486,15 +1510,15 @@ void DrawingCanvas::removeWarpPoint(int index)
 void DrawingCanvas::beginTransform()
 {
     Layer *layer = editableActiveLayer();
-    if (!layer || m_selPath.isEmpty())
+    if (!layer || m_selectionPath.isEmpty())
         return;
-    const QRect r = m_selPath.boundingRect().toAlignedRect().intersected(layer->image.rect());
+    const QRect r = m_selectionPath.boundingRect().toAlignedRect().intersected(layer->image.rect());
     if (r.isEmpty())
         return;
 
-    // Antialiased mask: the lift carries a soft 1px edge falloff, so the
-    // committed result has smooth edges instead of jagged mask-cut stairs.
-    m_moveMask = selectionMask(r, true);
+    // Antialiased mask (from the cache): the lift carries a soft coverage
+    // falloff, so the committed result has smooth edges, never jagged stairs.
+    m_moveMask = selectionMask(r);
     m_moveSrcRect = r;
 
     m_transformBuf = layer->image.copy(r); // PRISTINE lifted pixels (never re-transformed)
@@ -2147,7 +2171,7 @@ void DrawingCanvas::commitTransform(bool relift)
             if (!art.isEmpty()) {
                 QPainterPath path;
                 path.addRect(QRectF(art));
-                m_selPath = path;
+                m_selectionPath = path;
                 m_xformAutoSel = true;
                 beginTransform();
             }
@@ -2178,7 +2202,7 @@ void DrawingCanvas::cancelTransform(bool relift)
     m_tpsValid = false;
     if (m_xformAutoSel) { // synthesized whole-artwork selection: drop it too
         m_xformAutoSel = false;
-        m_selPath = QPainterPath();
+        m_selectionPath = QPainterPath();
     }
     setCursor(Qt::CrossCursor);
 
@@ -2186,16 +2210,16 @@ void DrawingCanvas::cancelTransform(bool relift)
     // around the restored artwork instead of disappearing.
     if (relift && m_tool == Move) {
         if (Layer *l = editableActiveLayer()) {
-            if (m_selPath.isEmpty()) {
+            if (m_selectionPath.isEmpty()) {
                 const QRect art = opaquePixelBounds(l->image);
                 if (!art.isEmpty()) {
                     QPainterPath path;
                     path.addRect(QRectF(art));
-                    m_selPath = path;
+                    m_selectionPath = path;
                     m_xformAutoSel = true;
                 }
             }
-            if (!m_selPath.isEmpty())
+            if (!m_selectionPath.isEmpty())
                 beginTransform();
         }
     }
@@ -2216,7 +2240,7 @@ void DrawingCanvas::floodFill(const QPoint &seed)
         return;
     // With an active selection the fill is confined to the mask: a seed
     // outside it is a no-op, and the result is written back clipped below.
-    if (!m_selPath.isEmpty() && !m_selPath.contains(QPointF(seed)))
+    if (!m_selectionPath.isEmpty() && !m_selectionPath.contains(QPointF(seed)))
         return;
 
     const QRgb target = image.pixel(seed);
@@ -2250,23 +2274,18 @@ void DrawingCanvas::floodFill(const QPoint &seed)
         }
     }
 
-    if (m_selPath.isEmpty()) {
+    if (m_selectionPath.isEmpty()) {
         layerPtr->image = image.convertToFormat(QImage::Format_ARGB32_Premultiplied);
     } else {
         // Selection active: composite the fill through an ANTIALIASED selection
         // mask so the filled region has smooth edges. (A hard clip path — or a
         // binary mask — leaves jagged 1px stair-stepping at the boundary.)
-        const QRect r = m_selPath.boundingRect().toAlignedRect().intersected(image.rect());
+        const QRect r = m_selectionPath.boundingRect().toAlignedRect().intersected(image.rect());
         if (!r.isEmpty()) {
-            // Soft mask: antialiased path fill gives a 1px coverage falloff at
-            // the selection boundary.
-            QImage mask(r.size(), QImage::Format_ARGB32_Premultiplied);
-            mask.fill(Qt::transparent);
-            QPainter mp(&mask);
-            mp.setRenderHint(QPainter::Antialiasing, true);
-            mp.translate(-r.topLeft());
-            mp.fillPath(m_selPath, Qt::white);
-            mp.end();
+            // Soft mask from the CACHE: antialiased coverage with a 1px
+            // falloff at the selection boundary, rasterised only when the
+            // path last changed.
+            const QImage mask = selectionMask(r);
             // The flood-filled pixels within the selection bbox, clipped to the
             // soft mask (alpha = mask coverage).
             QImage fill = image.copy(r).convertToFormat(QImage::Format_ARGB32_Premultiplied);
@@ -2329,12 +2348,20 @@ void DrawingCanvas::stampDab(const QPointF &center, qreal pressure)
         gradient.setColorAt(coreStop, core); // solid core ends here
     gradient.setColorAt(1.0, edge);          // guaranteed feathered rim
 
+    if (m_strokeMask == StrokeMaskPaint) {
+        // Selection active: the dab lands in the stroke scratch, UNMASKED —
+        // the cached mask multiplies the whole stroke once (see paintEvent
+        // for the live preview and endBrushStroke for the bake), so the soft
+        // boundary can never saturate from overlapping dabs.
+        QPainter painter(&m_strokeBuf);
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(gradient);
+        painter.drawEllipse(center, radius, radius);
+        return;
+    }
     QPainter painter(&layer->image);
     painter.setRenderHint(QPainter::Antialiasing, true);
-    // An active selection is a clip mask: dabs only affect pixels inside it.
-    // Outside the selection the brush has no effect (matches Erase and Fill).
-    if (!m_selPath.isEmpty())
-        painter.setClipPath(m_selPath);
     painter.setPen(Qt::NoPen);
     painter.setBrush(gradient);
     painter.drawEllipse(center, radius, radius);
@@ -2342,6 +2369,13 @@ void DrawingCanvas::stampDab(const QPointF &center, qreal pressure)
 
 void DrawingCanvas::beginBrushStroke(const QPointF &canvasPt, qreal pressure)
 {
+    if (!m_selectionPath.isEmpty()) {
+        // The stroke accumulates unmasked here; the cached mask is applied
+        // once per repaint (preview) and once at the end (bake).
+        m_strokeMask = StrokeMaskPaint;
+        m_strokeBuf = QImage(canvasSize(), QImage::Format_ARGB32_Premultiplied);
+        m_strokeBuf.fill(Qt::transparent);
+    }
     m_lastBrushPt = canvasPt;
     m_lastBrushPressure = pressure;
     m_stampResidual = 0.0;
@@ -2395,6 +2429,21 @@ void DrawingCanvas::moveBrushStroke(const QPointF &canvasPt, qreal pressure)
 void DrawingCanvas::endBrushStroke()
 {
     m_brushStroke = false;
+    if (m_strokeMask == StrokeMaskPaint) {
+        // ONE mask application for the whole stroke: multiply the stroke's
+        // alpha by the cached antialiased coverage and composite.
+        if (Layer *layer = editableActiveLayer()) {
+            QImage masked = m_strokeBuf;
+            QPainter mp(&masked);
+            mp.setCompositionMode(QPainter::CompositionMode_DestinationIn);
+            mp.drawImage(0, 0, cachedSelectionMask());
+            mp.end();
+            QPainter p(&layer->image);
+            p.drawImage(0, 0, masked);
+        }
+        m_strokeMask = StrokeMaskNone;
+        m_strokeBuf = QImage();
+    }
     update();
 }
 
@@ -2451,7 +2500,20 @@ void DrawingCanvas::clearCanvas()
     if (!layer)
         return;
     pushUndo();
-    layer->image.fill(Qt::transparent); // clears the ACTIVE layer only
+    if (!m_selectionPath.isEmpty()) {
+        // An active selection scopes the clear: erase through the cached
+        // antialiased mask (soft edge), leaving everything else untouched.
+        const QRect r = m_selectionPath.boundingRect().toAlignedRect()
+                            .intersected(layer->image.rect());
+        if (!r.isEmpty()) {
+            QPainter p(&layer->image);
+            p.setCompositionMode(QPainter::CompositionMode_DestinationOut);
+            p.drawImage(r.topLeft(), selectionMask(r));
+            p.end();
+        }
+    } else {
+        layer->image.fill(Qt::transparent); // clears the ACTIVE layer only
+    }
     update();
     emit contentChanged();
 }
@@ -2533,7 +2595,34 @@ void DrawingCanvas::paintEvent(QPaintEvent *)
         if (!layer.visible || layer.image.isNull() || layer.opacity <= 0.0)
             continue;
         painter.setOpacity(qBound(0.0, layer.opacity, 1.0));
-        painter.drawImage(0, 0, layer.image);
+        const bool liveStroke = m_strokeMask != StrokeMaskNone
+            && &layer == m_panel->activeLayer();
+        if (liveStroke && m_strokeMask == StrokeMaskErase) {
+            // Live erase preview: the active layer minus the mask-capped
+            // stroke — exactly what the release will bake.
+            QImage temp = layer.image;
+            QImage cut = m_strokeBuf;
+            QPainter cp(&cut);
+            cp.setCompositionMode(QPainter::CompositionMode_DestinationIn);
+            cp.drawImage(0, 0, cachedSelectionMask());
+            cp.end();
+            QPainter tp(&temp);
+            tp.setCompositionMode(QPainter::CompositionMode_DestinationOut);
+            tp.drawImage(0, 0, cut);
+            tp.end();
+            painter.drawImage(0, 0, temp);
+        } else {
+            painter.drawImage(0, 0, layer.image);
+            if (liveStroke && m_strokeMask == StrokeMaskPaint) {
+                // Live paint preview: the mask-capped stroke over the layer.
+                QImage s = m_strokeBuf;
+                QPainter sp(&s);
+                sp.setCompositionMode(QPainter::CompositionMode_DestinationIn);
+                sp.drawImage(0, 0, cachedSelectionMask());
+                sp.end();
+                painter.drawImage(0, 0, s);
+            }
+        }
     }
     painter.setOpacity(1.0);
     if (m_lightTable && !lightTableDrawn) // panel had only a background layer
@@ -2729,7 +2818,7 @@ void DrawingCanvas::paintEvent(QPaintEvent *)
     // pens keep them 1px on screen.
     const bool polyInProgress = m_tool == SelectPoly && !m_lassoPts.isEmpty();
     if (!m_xformActive
-        && (!m_selPath.isEmpty() || m_selDrag || m_floatActive || polyInProgress)) {
+        && (!m_selectionPath.isEmpty() || m_selDrag || m_floatActive || polyInProgress)) {
         painter.save();
         painter.setWorldTransform(T);
 
@@ -2753,9 +2842,9 @@ void DrawingCanvas::paintEvent(QPaintEvent *)
             if (m_floatFromPaste)
                 ants.addRect(floatBounds());
             else
-                ants = m_selPath.translated(m_floatDelta);
+                ants = m_selectionPath.translated(m_floatDelta);
         } else {
-            ants = m_selPath;
+            ants = m_selectionPath;
         }
         // Add/Remove mode: the committed selection (m_selBase) stays visible
         // the whole time a new shape is being drawn on top of it, so the user
@@ -2855,7 +2944,7 @@ void DrawingCanvas::keyPressEvent(QKeyEvent *event)
             cancelFloatingPaste();
             return;
         }
-        if (!m_selPath.isEmpty() || m_selDrag) {
+        if (!m_selectionPath.isEmpty() || m_selDrag) {
             deselect(); // recorded in the selection history
             return;
         }
@@ -2988,12 +3077,12 @@ void DrawingCanvas::mousePressEvent(QMouseEvent *event)
 
     // Selection Modifier "Move" mode: with a live selection, dragging any
     // selection tool translates the OUTLINE only (never pixels).
-    if (m_selOutlineMove && !m_selPath.isEmpty()
+    if (m_selOutlineMove && !m_selectionPath.isEmpty()
         && (m_tool == SelectRect || m_tool == SelectEllipse || m_tool == Lasso
             || m_tool == SelectPoly)) {
         m_selOutlineDrag = true;
         m_selOutlineStartC = toCanvasF(event->position());
-        m_selOutlineBase = m_selPath;
+        m_selOutlineBase = m_selectionPath;
         return;
     }
 
@@ -3001,6 +3090,13 @@ void DrawingCanvas::mousePressEvent(QMouseEvent *event)
     case Eraser: {
         pushUndo();
         m_drawing = true;
+        if (!m_selectionPath.isEmpty()) {
+            // Same stroke-level masking as the brush: erase coverage builds
+            // in the scratch and the mask caps it once (preview + bake).
+            m_strokeMask = StrokeMaskErase;
+            m_strokeBuf = QImage(canvasSize(), QImage::Format_ARGB32_Premultiplied);
+            m_strokeBuf.fill(Qt::transparent);
+        }
         m_lastCanvas = toCanvas(event->pos());
         drawSegment(m_lastCanvas, m_lastCanvas, m_color); // dot on click (eraser clears)
         break;
@@ -3033,8 +3129,8 @@ void DrawingCanvas::mousePressEvent(QMouseEvent *event)
         // Add/Subtract combine the new shape with the pre-drag selection;
         // Replace starts fresh. (A bare click = degenerate drag: Replace clears,
         // Add/Subtract leave the existing selection untouched.)
-        m_selGestureBase = m_selPath; // selection-history "before" snapshot
-        m_selBase = m_selOp == SelReplace ? QPainterPath() : m_selPath;
+        m_selGestureBase = m_selectionPath; // selection-history "before" snapshot
+        m_selBase = m_selOp == SelReplace ? QPainterPath() : m_selectionPath;
         clearSelection();
         m_selDrag = true;
         m_selStartC = m_selCurrentC = toCanvasF(event->position());
@@ -3042,8 +3138,8 @@ void DrawingCanvas::mousePressEvent(QMouseEvent *event)
         update();
         break;
     case Lasso:
-        m_selGestureBase = m_selPath;
-        m_selBase = m_selOp == SelReplace ? QPainterPath() : m_selPath;
+        m_selGestureBase = m_selectionPath;
+        m_selBase = m_selOp == SelReplace ? QPainterPath() : m_selectionPath;
         clearSelection();
         m_selDrag = true;
         m_lassoPts.clear();
@@ -3057,8 +3153,8 @@ void DrawingCanvas::mousePressEvent(QMouseEvent *event)
         // vertex captures the pre-drag selection (for Add/Subtract) and clears
         // the live one; a rubber segment follows the cursor until close.
         if (m_lassoPts.isEmpty()) {
-            m_selGestureBase = m_selPath;
-            m_selBase = m_selOp == SelReplace ? QPainterPath() : m_selPath;
+            m_selGestureBase = m_selectionPath;
+            m_selBase = m_selOp == SelReplace ? QPainterPath() : m_selectionPath;
             clearSelection();
         }
         m_lassoPts.append(toCanvasF(event->position()));
@@ -3120,7 +3216,7 @@ void DrawingCanvas::mouseMoveEvent(QMouseEvent *event)
         // Outline-only move: whole-pixel deltas keep the region snapped to the
         // pixel grid, so a later lift/cut covers exactly what the ants show.
         const QPointF raw = toCanvasF(event->position()) - m_selOutlineStartC;
-        m_selPath = m_selOutlineBase.translated(qRound(raw.x()), qRound(raw.y()));
+        m_selectionPath = m_selOutlineBase.translated(qRound(raw.x()), qRound(raw.y()));
         update(); // display only — no layer writes
         return;
     }
@@ -3214,7 +3310,7 @@ void DrawingCanvas::mouseReleaseEvent(QMouseEvent *event)
         }
         // Replace: the new shape (degenerate = cleared). Add/Subtract combine
         // it with the pre-drag selection (degenerate = base unchanged).
-        m_selPath = combinedSelection(path);
+        m_selectionPath = combinedSelection(path);
         m_selBase = QPainterPath();
         m_lassoPts.clear();
         recordSelectionChange(m_selGestureBase); // one history entry per gesture
@@ -3229,6 +3325,21 @@ void DrawingCanvas::mouseReleaseEvent(QMouseEvent *event)
     }
     if (m_drawing) {
         m_drawing = false;
+        if (m_strokeMask == StrokeMaskErase) {
+            // ONE mask application for the whole erase stroke.
+            if (Layer *layer = editableActiveLayer()) {
+                QImage cut = m_strokeBuf;
+                QPainter cp(&cut);
+                cp.setCompositionMode(QPainter::CompositionMode_DestinationIn);
+                cp.drawImage(0, 0, cachedSelectionMask());
+                cp.end();
+                QPainter p(&layer->image);
+                p.setCompositionMode(QPainter::CompositionMode_DestinationOut);
+                p.drawImage(0, 0, cut);
+            }
+            m_strokeMask = StrokeMaskNone;
+            m_strokeBuf = QImage();
+        }
         emit contentChanged();
     }
 }
