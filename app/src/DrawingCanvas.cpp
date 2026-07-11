@@ -1540,123 +1540,193 @@ void DrawingCanvas::beginTransform()
     update();
 }
 
-// Render the thin-plate-spline warp: the source buffer is subdivided into a
-// DENSE grid of cells (cellPx source pixels each — far finer than the
-// control lattice), grid nodes are mapped through the smooth TPS, and each
-// cell is drawn as two seam-free micro-triangles. At this density the
-// piecewise-affine deviation from the true spline is sub-pixel, so warped
-// line art stays visually smooth and continuous — no faceting. Composes onto
-// the painter's current transform, serving both the live preview (canvas
-// space through the view transform) and the commit (layer space).
+// Render the thin-plate-spline warp at professional quality.
+//
+// Pipeline (identical for the live preview AND the commit, always from the
+// PRISTINE buffer):
+//   1. The smooth TPS is evaluated on a fine source grid (cellPx source px);
+//      each micro-cell is split into two triangles whose mapping is inverted
+//      EXACTLY (barycentric), so the deformation is continuous across every
+//      shared edge -- no seams, and at this density no visible faceting.
+//   2. Every destination pixel is BACKWARD-mapped to source coordinates and
+//      the buffer is sampled with premultiplied-alpha BILINEAR interpolation
+//      (never point sampling): edges fade cleanly, colours never fringe.
+//   3. The whole result is rendered SUPERSAMPLED (kSS x) and downscaled with
+//      Qt::SmoothTransformation -- deformed edges come out antialiased with
+//      no stair-stepping even under strong deformation.
+// The composed image is then drawn ONCE through the painter's transform
+// (view transform for the preview, identity for the commit).
 void DrawingCanvas::paintWarpedBuffer(QPainter &p, qreal cellPx) const
 {
     const qreal srcW = m_moveSrcRect.width();
     const qreal srcH = m_moveSrcRect.height();
-    if (srcW <= 0.0 || srcH <= 0.0 || !m_tpsValid)
+    if (srcW <= 0.0 || srcH <= 0.0 || !m_tpsValid || m_transformBuf.isNull())
         return;
-    // Quality guarantees regardless of the caller's painter state: smooth
-    // (bilinear) sampling of the PRISTINE buffer and antialiased clips.
-    p.setRenderHint(QPainter::SmoothPixmapTransform, true);
-    p.setRenderHint(QPainter::Antialiasing, true);
-    const int nx = qBound(2, qCeil(srcW / cellPx), 96);
-    const int ny = qBound(2, qCeil(srcH / cellPx), 96);
+    // Supersample factor (both preview and commit). 3x, not 2x: where the
+    // warp locally COMPRESSES the artwork, a hard source edge's bilinear ramp
+    // shrinks below one output pixel, and 2x point sampling can step right
+    // over it (aliased binary edges); 3x subsample spacing stays inside the
+    // ramp for the compressions a mesh warp produces.
+    constexpr int kSS = 3;
 
-    // Evaluate the spline once per grid node.
+    const QImage src =
+        m_transformBuf.format() == QImage::Format_ARGB32_Premultiplied
+            ? m_transformBuf
+            : m_transformBuf.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+    const int sw = src.width(), sh = src.height();
+
+    // 1. Forward-map the fine source grid through the spline. The domain
+    // extends ONE pixel beyond the buffer on every side: the bilinear fade at
+    // the artwork boundary needs the outer half of its ramp (source coords
+    // just outside the buffer, sampling toward transparent) rasterised too,
+    // otherwise edges lose their soft half and read harder than they should.
+    const qreal gx0 = -1.0, gy0 = -1.0;
+    const qreal gw = srcW + 2.0, gh = srcH + 2.0;
+    const int nx = qBound(2, qCeil(gw / cellPx), 256);
+    const int ny = qBound(2, qCeil(gh / cellPx), 256);
     QVector<QPointF> node((nx + 1) * (ny + 1));
     QVector<QPointF> snode((nx + 1) * (ny + 1));
     for (int j = 0; j <= ny; ++j)
         for (int i = 0; i <= nx; ++i) {
-            const QPointF sp(srcW * i / nx, srcH * j / ny);
+            const QPointF sp(gx0 + gw * i / nx, gy0 + gh * j / ny);
             snode[j * (nx + 1) + i] = sp;
             node[j * (nx + 1) + i] = warpMap(sp);
         }
 
-    // Affine transform taking source triangle (s0,s1,s2) to (d0,d1,d2).
-    auto triXform = [](const QPointF &s0, const QPointF &s1, const QPointF &s2,
-                       const QPointF &d0, const QPointF &d1, const QPointF &d2,
-                       QTransform *out) {
-        const QPointF u = s1 - s0, v = s2 - s0, U = d1 - d0, V = d2 - d0;
-        const qreal det = u.x() * v.y() - u.y() * v.x();
-        if (qAbs(det) < 1e-9)
-            return false;
-        const qreal m11 = (U.x() * v.y() - V.x() * u.y()) / det;
-        const qreal m12 = (U.y() * v.y() - V.y() * u.y()) / det;
-        const qreal m21 = (V.x() * u.x() - U.x() * v.x()) / det;
-        const qreal m22 = (V.y() * u.x() - U.y() * v.x()) / det;
-        *out = QTransform(m11, m12, m21, m22,
-                          d0.x() - (m11 * s0.x() + m21 * s0.y()),
-                          d0.y() - (m12 * s0.x() + m22 * s0.y()));
-        return true;
-    };
-    // One micro-triangle, clipped to its warped shape inflated by pushing
-    // each EDGE outward 1.0px (vertices re-intersected, travel-clamped): the
-    // overlap swallows the antialiased clip ramp so no seam hairlines
-    // survive, and the +2px-expanded source rect keeps drawImage's boundary
-    // sampling fed with real neighbouring pixels (a tight source rect is
-    // what looked like "grid lines baked into the artwork").
-    auto paintTri = [&](const QPointF &s0, const QPointF &s1, const QPointF &s2,
-                        const QPointF &d0, const QPointF &d1, const QPointF &d2) {
-        QTransform tf;
-        if (!triXform(s0, s1, s2, d0, d1, d2, &tf))
-            return;
-        const QPointF v[3] = {d0, d1, d2};
-        const QPointF c = (v[0] + v[1] + v[2]) / 3.0;
-        QPolygonF tri;
-        for (int k = 0; k < 3; ++k) {
-            struct Line { QPointF p, d; };
-            Line lines[2];
-            for (int e = 0; e < 2; ++e) {
-                const QPointF a = e == 0 ? v[(k + 2) % 3] : v[k];
-                const QPointF b = e == 0 ? v[k] : v[(k + 1) % 3];
-                const QPointF ab = b - a;
-                const qreal len = std::hypot(ab.x(), ab.y());
-                QPointF nrm = len > 1e-9 ? QPointF(ab.y() / len, -ab.x() / len)
-                                         : QPointF(0, 0);
-                if (QPointF::dotProduct(nrm, (a + b) / 2.0 - c) < 0)
-                    nrm = -nrm; // outward
-                lines[e] = {a + nrm * 1.0, ab};
-            }
-            const qreal den = lines[0].d.x() * lines[1].d.y()
-                            - lines[0].d.y() * lines[1].d.x();
-            QPointF nv = v[k];
-            if (qAbs(den) > 1e-9) {
-                const QPointF w = lines[1].p - lines[0].p;
-                const qreal t = (w.x() * lines[1].d.y() - w.y() * lines[1].d.x()) / den;
-                nv = lines[0].p + lines[0].d * t;
-            }
-            const QPointF travel = nv - v[k];
-            const qreal tlen = std::hypot(travel.x(), travel.y());
-            if (tlen > 6.0)
-                nv = v[k] + travel * (6.0 / tlen);
-            tri << nv;
+    // Occupancy: skip cells whose source region (plus a 1px bilinear margin)
+    // is fully transparent. Exact -- built from every buffer pixel.
+    QVector<quint8> occupied(nx * ny, 0);
+    const qreal cw = gw / nx, ch = gh / ny;
+    for (int y = 0; y < sh; ++y) {
+        const QRgb *line = reinterpret_cast<const QRgb *>(src.constScanLine(y));
+        for (int x = 0; x < sw; ++x) {
+            if (qAlpha(line[x]) == 0)
+                continue;
+            const int ci0 = qBound(0, int((x - 1 - gx0) / cw), nx - 1);
+            const int ci1 = qBound(0, int((x + 1 - gx0) / cw), nx - 1);
+            const int cj0 = qBound(0, int((y - 1 - gy0) / ch), ny - 1);
+            const int cj1 = qBound(0, int((y + 1 - gy0) / ch), ny - 1);
+            for (int cj = cj0; cj <= cj1; ++cj)
+                for (int ci = ci0; ci <= ci1; ++ci)
+                    occupied[cj * nx + ci] = 1;
         }
-        QPainterPath clip;
-        clip.addPolygon(tri);
-        clip.closeSubpath();
-        const QRectF srcBounds =
-            QRectF(QPolygonF({s0, s1, s2}).boundingRect())
-                .adjusted(-2, -2, 2, 2)
-                .intersected(QRectF(0, 0, srcW, srcH));
-        if (srcBounds.isEmpty())
+    }
+
+    // Destination bounds (canvas coords), padded for the AA rim and capped so
+    // a wildly-dragged point cannot allocate an absurd buffer.
+    // (Manual min/max: QRectF's union operator IGNORES empty rects, and a
+    // zero-size QRectF around a point is empty — uniting those collapses the
+    // bounds to a single node.)
+    qreal minX = node.first().x(), maxX = minX;
+    qreal minY = node.first().y(), maxY = minY;
+    for (const QPointF &d : node) {
+        minX = qMin(minX, d.x());
+        maxX = qMax(maxX, d.x());
+        minY = qMin(minY, d.y());
+        maxY = qMax(maxY, d.y());
+    }
+    QRectF bboxF(QPointF(minX, minY), QPointF(maxX, maxY));
+    bboxF.adjust(-2, -2, 2, 2);
+    bboxF = bboxF.intersected(QRectF(-256, -256, canvasSize().width() + 512,
+                                     canvasSize().height() + 512));
+    const QRect bbox = bboxF.toAlignedRect();
+    if (bbox.isEmpty())
+        return;
+    const int W = bbox.width() * kSS, H = bbox.height() * kSS;
+    if (qint64(W) * H > qint64(24) * 1024 * 1024)
+        return; // degenerate spline blow-up: refuse rather than stall
+
+    QImage out(W, H, QImage::Format_ARGB32_Premultiplied);
+    out.fill(Qt::transparent);
+    QRgb *outBits = reinterpret_cast<QRgb *>(out.bits());
+    const int outStride = out.bytesPerLine() / 4;
+
+    // Premultiplied bilinear tap; transparent outside the buffer, so the
+    // artwork boundary fades over one source pixel (clean AA, no fringing).
+    auto sample = [&](qreal sx, qreal sy) -> QRgb {
+        const int x0 = qFloor(sx), y0 = qFloor(sy);
+        const qreal fx = sx - x0, fy = sy - y0;
+        auto tap = [&](int tx, int ty) -> QRgb {
+            if (tx < 0 || ty < 0 || tx >= sw || ty >= sh)
+                return 0;
+            return reinterpret_cast<const QRgb *>(src.constScanLine(ty))[tx];
+        };
+        const QRgb c00 = tap(x0, y0), c10 = tap(x0 + 1, y0);
+        const QRgb c01 = tap(x0, y0 + 1), c11 = tap(x0 + 1, y0 + 1);
+        auto lerpC = [&](int shift) {
+            const qreal t0 = ((c00 >> shift) & 0xff) * (1 - fx)
+                           + ((c10 >> shift) & 0xff) * fx;
+            const qreal t1 = ((c01 >> shift) & 0xff) * (1 - fx)
+                           + ((c11 >> shift) & 0xff) * fx;
+            return uint(qBound(0.0, t0 * (1 - fy) + t1 * fy + 0.5, 255.0));
+        };
+        return (lerpC(24) << 24) | (lerpC(16) << 16) | (lerpC(8) << 8) | lerpC(0);
+    };
+
+    // 2. Rasterise each micro-triangle: destination pixels are backward-
+    // mapped with the exact barycentric inverse and bilinearly sampled.
+    auto rasterTri = [&](const QPointF &sa, const QPointF &sb, const QPointF &sc,
+                         QPointF da, QPointF db, QPointF dc) {
+        // Into supersampled offscreen pixel coords.
+        auto toSS = [&](QPointF d) {
+            return QPointF((d.x() - bbox.left()) * kSS, (d.y() - bbox.top()) * kSS);
+        };
+        da = toSS(da); db = toSS(db); dc = toSS(dc);
+        const qreal det = (db.x() - da.x()) * (dc.y() - da.y())
+                        - (db.y() - da.y()) * (dc.x() - da.x());
+        if (qAbs(det) < 1e-12)
             return;
-        p.save();
-        p.setClipPath(clip, Qt::IntersectClip);
-        p.setTransform(tf, true);
-        p.drawImage(srcBounds.topLeft(), m_transformBuf, srcBounds);
-        p.restore();
+        const qreal inv = 1.0 / det;
+        const int minX = qBound(0, qFloor(qMin(da.x(), qMin(db.x(), dc.x()))), W - 1);
+        const int maxX = qBound(0, qCeil(qMax(da.x(), qMax(db.x(), dc.x()))), W - 1);
+        const int minY = qBound(0, qFloor(qMin(da.y(), qMin(db.y(), dc.y()))), H - 1);
+        const int maxY = qBound(0, qCeil(qMax(da.y(), qMax(db.y(), dc.y()))), H - 1);
+        for (int y = minY; y <= maxY; ++y) {
+            QRgb *row = outBits + y * outStride;
+            const qreal py = y + 0.5;
+            for (int x = minX; x <= maxX; ++x) {
+                const qreal px = x + 0.5;
+                const qreal w1 = ((px - da.x()) * (dc.y() - da.y())
+                                - (py - da.y()) * (dc.x() - da.x())) * inv;
+                if (w1 < -1e-6 || w1 > 1.0 + 1e-6)
+                    continue;
+                const qreal w2 = ((db.x() - da.x()) * (py - da.y())
+                                - (db.y() - da.y()) * (px - da.x())) * inv;
+                if (w2 < -1e-6 || w1 + w2 > 1.0 + 1e-6)
+                    continue;
+                const qreal sx = sa.x() + w1 * (sb.x() - sa.x()) + w2 * (sc.x() - sa.x());
+                const qreal sy = sa.y() + w1 * (sb.y() - sa.y()) + w2 * (sc.y() - sa.y());
+                // Sample at the SUPERSAMPLED position: src coords are in
+                // buffer space already (grid is in source pixels).
+                const QRgb v = sample(sx - 0.5, sy - 0.5);
+                if (v != 0)
+                    row[x] = v; // shared-edge overlap rewrites identical values
+            }
+        }
     };
 
     for (int j = 0; j < ny; ++j)
         for (int i = 0; i < nx; ++i) {
-            const int i00 = j * (nx + 1) + i;
-            const int i10 = i00 + 1;
-            const int i01 = i00 + (nx + 1);
-            const int i11 = i01 + 1;
-            paintTri(snode.at(i00), snode.at(i10), snode.at(i11),
-                     node.at(i00), node.at(i10), node.at(i11));
-            paintTri(snode.at(i00), snode.at(i11), snode.at(i01),
-                     node.at(i00), node.at(i11), node.at(i01));
+            if (!occupied.at(j * nx + i))
+                continue;
+            const int i00 = j * (nx + 1) + i, i10 = i00 + 1;
+            const int i01 = i00 + (nx + 1), i11 = i01 + 1;
+            rasterTri(snode.at(i00), snode.at(i10), snode.at(i11),
+                      node.at(i00), node.at(i10), node.at(i11));
+            rasterTri(snode.at(i00), snode.at(i11), snode.at(i01),
+                      node.at(i00), node.at(i11), node.at(i01));
         }
+
+    // 3. Smooth downscale (premultiplied-correct), then ONE draw through
+    // the painter's transform with high-quality hints.
+    const QImage finalImg = out.scaled(bbox.width(), bbox.height(),
+                                       Qt::IgnoreAspectRatio,
+                                       Qt::SmoothTransformation);
+    p.save();
+    p.setRenderHint(QPainter::SmoothPixmapTransform, true);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    p.drawImage(bbox.topLeft(), finalImg);
+    p.restore();
 }
 
 // Average luminance (0..255) of what the user SEES behind a canvas point:
@@ -1681,7 +1751,7 @@ qreal DrawingCanvas::luminanceBehind(const QPointF &canvasPt) const
     p.setOpacity(1.0);
     if (m_xformActive && !m_transformBuf.isNull()) {
         if (m_warpDirty) {
-            paintWarpedBuffer(p, 14.0);
+            paintWarpedBuffer(p, 4.0);
         } else {
             p.save();
             p.setTransform(boxTransform(), true);
@@ -2039,7 +2109,7 @@ void DrawingCanvas::commitTransform(bool relift)
             p.setRenderHint(QPainter::SmoothPixmapTransform, true);
             p.setRenderHint(QPainter::Antialiasing, true);
             if (m_warpDirty) {
-                paintWarpedBuffer(p, 5.0); // fine TPS mesh; result IS canvas-sized
+                paintWarpedBuffer(p, 4.0); // same path+params as the preview
             } else {
                 p.setTransform(boxTransform()); // buffer -> canvas
                 p.drawImage(0, 0, m_transformBuf);
@@ -2542,7 +2612,7 @@ void DrawingCanvas::paintEvent(QPaintEvent *)
     if (m_xformActive && !m_transformBuf.isNull()) {
         painter.save();
         if (m_warpDirty) {
-            paintWarpedBuffer(painter, 14.0); // dense TPS mesh, composed onto T
+            paintWarpedBuffer(painter, 4.0); // same path+params as the commit
         } else {
             painter.setWorldTransform(boxTransform(), true); // compose onto T
             painter.drawImage(0, 0, m_transformBuf);
