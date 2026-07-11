@@ -322,15 +322,17 @@ private:
     QCursor m_rotateCursor;        // curved-arrow cursor for the rotation zones
     QPointF pivotPoint() const;    // m_pivot when custom, else the quad centre
 
-    // Warp mode: an IRREGULAR mesh of draggable control points that locally
+    // Warp mode: an IRREGULAR mesh of draggable control points that smoothly
     // deform the buffer. Each point pairs a fixed SOURCE position (buffer
-    // coords) with a draggable DESTINATION (canvas coords); the points are
-    // Delaunay-triangulated in source space (topology is drag-invariant) and
-    // rendered as piecewise affine triangles. Seeded as a kWarpGrid lattice;
-    // Ctrl+click adds/removes points (the 4 source-corner anchors are
-    // protected so the triangulation always covers the whole buffer). Quad
-    // edits in the other modes carry every destination along through the
-    // incremental quad transform. All guides are display-only overlays.
+    // coords) with a draggable DESTINATION (canvas coords). The deformation
+    // is a THIN-PLATE SPLINE interpolating the control points — globally
+    // smooth (C1+), so clean line art stays smooth with no polygon faceting.
+    // Rendering samples the TPS over a dense subdivided grid (fine cells:
+    // sub-pixel deviation) drawn as seam-free micro-triangles. Seeded as a
+    // kWarpGrid lattice; Ctrl+click adds/removes points (the 4 source-corner
+    // anchors are protected). Quad edits in the other modes carry every
+    // destination along through the incremental quad transform. All guides
+    // are display-only overlays and never bake into the layer.
     struct WarpPt {
         QPointF src; // buffer coords, fixed after creation
         QPointF dst; // canvas coords, dragged by the user
@@ -338,18 +340,25 @@ private:
     static constexpr int kWarpGrid = 4;
     QVector<WarpPt> m_warp;        // control points
     QVector<WarpPt> m_warp0;       // snapshot at press
-    QVector<int> m_warpTris;       // index triples into m_warp (src Delaunay)
     QSet<int> m_warpSel;           // selected control points (multi-select)
     bool m_warpDirty = false;      // a control point was moved: render the mesh
     mutable int m_warpIdx = -1;    // control point under the cursor / dragged
+    int m_warpHoverIdx = -1;       // hovered point (drawn slightly enlarged)
     bool m_warpMarquee = false;    // rubber-band point selection in progress
     QPointF m_marqueeStartW;       // marquee corners, WIDGET coords
     QPointF m_marqueeEndW;
-    void rebuildWarpTriangulation();              // src-space Delaunay
+    // Thin-plate-spline solve of src -> dst (weights per dimension, laid out
+    // [w0..wN-1, a0, ax, ay]); recomputed on every mesh change.
+    QVector<qreal> m_tpsX, m_tpsY;
+    bool m_tpsValid = false;
+    void solveWarpTps();                          // fit the spline to m_warp
+    QPointF warpMap(const QPointF &src) const;    // evaluate the spline
     int warpPointAt(const QPointF &widgetPos) const;
     void addWarpPointAt(const QPointF &widgetPos);   // Ctrl+click on the mesh
     void removeWarpPoint(int index);                 // Ctrl+click on a point
-    void paintWarpedBuffer(QPainter &p) const;    // piecewise triangles
+    // Piecewise render of the TPS at the given source-space cell size (finer
+    // for the commit than the interactive preview).
+    void paintWarpedBuffer(QPainter &p, qreal cellPx) const;
     qreal luminanceBehind(const QPointF &canvasPt) const; // pivot contrast
 
     void beginTransform();         // lift selection -> box (source cleared on lift)
