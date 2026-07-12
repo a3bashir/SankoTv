@@ -1,5 +1,7 @@
 #pragma once
 
+#include "PerspectiveTool.h"
+
 #include <QColor>
 #include <QCursor>
 #include <QImage>
@@ -41,7 +43,7 @@ public:
     //   SelectPoly = polygon:  click to drop vertices, double-click/Enter to
     //                close them into the selection (Esc cancels).
     enum Tool { Brush, Eraser, Shapes, Fill, SelectRect, SelectEllipse, Lasso,
-                SelectPoly, Move, Camera };
+                SelectPoly, Move, Camera, Perspective };
 
     // Shapes-tool primitives. Rectangle/Triangle/Circle/Line commit on drag
     // release; Polygon collects clicked vertices until double-click/Enter
@@ -111,6 +113,10 @@ public:
     // Light alignment grid (View > Grid), display-only like the overlays.
     void setGridEnabled(bool enabled);
     bool isGridEnabled() const { return m_grid; }
+
+    // Perspective guides + snap (display-only overlay; the settings panel and
+    // project save/load talk to the same instance). Call update() after edits.
+    PerspectiveTool *perspective() { return &m_perspective; }
 
 public slots:
     void setTool(Tool tool);
@@ -467,6 +473,10 @@ private:
     void buildViewToolbar();
     void positionViewToolbar();
     void syncViewToolbar();       // push engine state into the sliders
+
+    // Perspective guides (display-only; geometry in canvas coords).
+    PerspectiveTool m_perspective;
+    PerspectiveTool::Handle m_perspHandle = PerspectiveTool::HandleNone;
 
     // Display-only overlays.
     bool m_grid = false;         // alignment grid, 40 canvas px (View > Grid)

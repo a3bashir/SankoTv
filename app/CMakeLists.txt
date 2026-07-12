@@ -79,6 +79,8 @@ qt_add_executable(SankoTV
     src/ZoomToolbar.h
     src/ColorPanel.cpp
     src/ColorPanel.h
+    src/PerspectiveTool.cpp
+    src/PerspectiveTool.h
     resources.qrc
 )
 

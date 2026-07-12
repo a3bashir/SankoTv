@@ -51,6 +51,8 @@
 #include <QSlider>
 #include <QStyle>
 #include <QTabletEvent>
+#include <QPropertyAnimation>
+#include <QScreen>
 #include <QTimer>
 #include <QUndoCommand>
 #include <QUndoStack>
@@ -152,6 +154,19 @@ QPixmap toolIconPixmap(const char *kind, const QColor &color)
         p.drawLine(QPointF(7, 6.5), QPointF(8.2, 4));   // viewfinder bump
         p.drawLine(QPointF(8.2, 4), QPointF(11.8, 4));
         p.drawLine(QPointF(11.8, 4), QPointF(13, 6.5));
+    } else if (k == QLatin1String("perspective")) {
+        // Horizon with two vanishing points and converging rays.
+        p.drawLine(QPointF(2.2, 7.2), QPointF(17.8, 7.2)); // horizon
+        p.drawLine(QPointF(4.4, 7.2), QPointF(15.4, 2.6)); // left VP rays
+        p.drawLine(QPointF(4.4, 7.2), QPointF(15.4, 12.2));
+        p.drawLine(QPointF(15.6, 7.2), QPointF(4.6, 2.6)); // right VP rays
+        p.drawLine(QPointF(15.6, 7.2), QPointF(4.6, 12.2));
+        p.drawLine(QPointF(4.4, 7.2), QPointF(13.2, 17.2)); // floor rays
+        p.drawLine(QPointF(15.6, 7.2), QPointF(6.8, 17.2));
+        p.setPen(Qt::NoPen);
+        p.setBrush(color);
+        p.drawEllipse(QPointF(4.4, 7.2), 1.7, 1.7);  // VP dots
+        p.drawEllipse(QPointF(15.6, 7.2), 1.7, 1.7);
     } else if (k == QLatin1String("onion")) {
         p.drawEllipse(QPointF(7.6, 10), 4.6, 4.6);      // two ghost frames
         p.drawEllipse(QPointF(12.4, 10), 4.6, 4.6);
@@ -590,25 +605,6 @@ QPixmap dragDotsPixmapV()
     return pm;
 }
 
-// Show `text` as a tooltip centred `gap` px ABOVE the top edge of `bar`, so it
-// never overlaps the floating toolbar (Qt's default tip appears at the cursor,
-// which sits inside the bar). The size is measured with a QLabel that mirrors
-// QTipLabel (same font + frame margin + indent), so rich-text tooltips are
-// laid out correctly before placement.
-void showTooltipAboveBar(QWidget *from, QWidget *bar, const QString &text, int gap)
-{
-    QLabel probe;
-    probe.setFont(QToolTip::font());
-    probe.setMargin(1 + bar->style()->pixelMetric(QStyle::PM_ToolTipLabelFrameWidth));
-    probe.setIndent(1);
-    probe.setText(text); // Qt::AutoText: rich text ("<b>..</b>") measured as rendered
-    const QSize tip = probe.sizeHint();
-    const int barTop = bar->mapToGlobal(QPoint(0, 0)).y();
-    const int cx = from->mapToGlobal(QPoint(from->width() / 2, 0)).x();
-    QToolTip::showText(QPoint(cx - tip.width() / 2, barTop - gap - tip.height()),
-                       text, from);
-}
-
 // --- App-wide undo commands for the panel list --------------------------------
 // Insert covers Add / Duplicate / Paste; ownership of the DETACHED Panel
 // follows the undo state, so a truncated history never leaks or double-frees.
@@ -700,6 +696,117 @@ private:
 };
 
 } // namespace
+
+// ONE reusable tooltip for the Floating Brush Toolbar. Every tooltip appears
+// BELOW its button with a constant 4px gap to the toolbar's bottom edge —
+// always OUTSIDE the bar, matching the Color/Undo/Redo placement — and never
+// covers a button. A short hover delay plus a fade-in keeps the appearance
+// smooth; when the pointer chains from one button to the next, the SAME
+// widget just moves and re-texts (no hide/show cycle, so no flicker).
+class SankoTipPopup : public QWidget
+{
+public:
+    explicit SankoTipPopup(QWidget *parent = nullptr)
+        : QWidget(parent, Qt::ToolTip | Qt::FramelessWindowHint
+                              | Qt::NoDropShadowWindowHint)
+    {
+        setObjectName(QStringLiteral("sankoToolbarTip"));
+        setAttribute(Qt::WA_TranslucentBackground);
+        setAttribute(Qt::WA_ShowWithoutActivating);
+        setAttribute(Qt::WA_TransparentForMouseEvents);
+        m_label = new QLabel(this);
+        m_label->setTextFormat(Qt::RichText);
+        m_label->setStyleSheet(QStringLiteral(
+            "color: #cccccc; font-size: 11px; background: transparent;"));
+        auto *layout = new QHBoxLayout(this);
+        layout->setContentsMargins(10, 6, 10, 6);
+        layout->addWidget(m_label);
+
+        m_showTimer.setSingleShot(true);
+        m_showTimer.setInterval(350); // brief, stable hover delay
+        connect(&m_showTimer, &QTimer::timeout, this, [this] { reveal(); });
+        m_hideTimer.setSingleShot(true);
+        m_hideTimer.setInterval(120); // survives the gap between buttons
+        connect(&m_hideTimer, &QTimer::timeout, this, [this] { hide(); });
+        m_fade = new QPropertyAnimation(this, "windowOpacity", this);
+        m_fade->setDuration(120);
+    }
+
+    // Pointer entered `button` (a child of `bar`).
+    void scheduleShow(QWidget *button, QWidget *bar)
+    {
+        m_button = button;
+        m_bar = bar;
+        m_hideTimer.stop();
+        if (isVisible())
+            reveal(); // chain-hover: retarget instantly, stay fully opaque
+        else if (!m_showTimer.isActive())
+            m_showTimer.start();
+    }
+    // Pointer left a button; cancelled if another button is entered promptly.
+    void scheduleHide()
+    {
+        m_showTimer.stop();
+        if (isVisible())
+            m_hideTimer.start();
+    }
+    void hideNow()
+    {
+        m_showTimer.stop();
+        m_hideTimer.stop();
+        hide();
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setPen(QPen(QColor(0x2a, 0x2a, 0x2a), 1));
+        p.setBrush(QColor(0x1a, 0x1a, 0x1a));
+        p.drawRoundedRect(QRectF(0.5, 0.5, width() - 1, height() - 1), 6, 6);
+    }
+
+private:
+    void reveal()
+    {
+        if (!m_button || !m_bar || !m_bar->isVisible())
+            return;
+        m_label->setText(m_button->toolTip());
+        adjustSize();
+        // Below the TOOLBAR with a constant 4px gap (frame bottom edge is
+        // inclusive, hence the +1), centred on the button, kept on-screen.
+        const QRect barRect(m_bar->mapToGlobal(QPoint(0, 0)), m_bar->size());
+        const int centreX =
+            m_button->mapToGlobal(QPoint(m_button->width() / 2, 0)).x();
+        int x = centreX - width() / 2;
+        if (const QScreen *screen = m_bar->screen()) {
+            const QRect avail = screen->availableGeometry();
+            x = qBound(avail.left() + 4, x, avail.right() - width() - 3);
+        }
+        const bool wasVisible = isVisible();
+        move(x, barRect.bottom() + 1 + 4);
+        if (wasVisible) {
+            setWindowOpacity(1.0); // steady while retargeting
+            update();
+        } else {
+            m_fade->stop();
+            setWindowOpacity(0.0);
+            show();
+            m_fade->setStartValue(0.0);
+            m_fade->setEndValue(1.0);
+            m_fade->start();
+        }
+    }
+
+    QLabel *m_label = nullptr;
+    QPropertyAnimation *m_fade = nullptr;
+    QTimer m_showTimer;
+    QTimer m_hideTimer;
+    QWidget *m_button = nullptr;
+    QWidget *m_bar = nullptr;
+};
+
 
 StoryboardPage::StoryboardPage(QWidget *parent)
     : QWidget(parent)
@@ -1121,6 +1228,7 @@ QWidget *StoryboardPage::createCenterColumn()
     createFloatingToolbar(); // FloatingToolWindows anchored to the canvas
     createBrushSettings();   // floating over the canvas, shown with the Brush tool
     createCameraPanel();     // floating over the canvas, shown with the Camera tool
+    createPerspectivePanel(); // floating, shown with the Perspective tool
     createShapesPanel();     // floating over the canvas, shown with the Shapes tool
 
     // Custom-painted Canvas View Controls toolbar (zoom / flip / rotate),
@@ -1217,12 +1325,7 @@ void StoryboardPage::createFloatingToolbar()
     tools->addButton(selection);
     tools->addButton(move);
 
-    // Route every Brush-bar tooltip through eventFilter() so it renders 4px
-    // above the bar instead of at the cursor (where it overlapped the bar).
-    for (QWidget *w : {static_cast<QWidget *>(grip), static_cast<QWidget *>(brushTool),
-                       static_cast<QWidget *>(eraser), static_cast<QWidget *>(fill),
-                       static_cast<QWidget *>(selection), static_cast<QWidget *>(move)})
-        w->installEventFilter(this);
+
 
     bindTool(brushTool, DrawingCanvas::Brush);
     bindTool(eraser, DrawingCanvas::Eraser);
@@ -1610,6 +1713,16 @@ void StoryboardPage::createFloatingToolbar()
     m_floatToolbar->adjustSize(); // fixed content -> final bar width
     // Default spot: bottom-centred, stacked just above the zoom toolbar
     // (46px tall + its 12px margin), re-derived as the canvas resizes.
+    // ONE reused tooltip for the whole bar: every tooltip-bearing child
+    // (tools, grip, Color, Undo, Redo) routes through eventFilter(), which
+    // drives the shared SankoTipPopup — consistent below-the-bar placement.
+    if (!m_toolbarTip)
+        m_toolbarTip = new SankoTipPopup(this);
+    const auto tipChildren = m_floatToolbar->findChildren<QWidget *>();
+    for (QWidget *w : tipChildren)
+        if (!w->toolTip().isEmpty())
+            w->installEventFilter(this);
+
     brushBar->setDefaultOffsetProvider([this, brushBar] {
         return QPoint(qMax(6, (m_canvas->width() - brushBar->width()) / 2),
                       qMax(6, m_canvas->height() - brushBar->height() - 46 - 12 - 12));
@@ -1654,8 +1767,21 @@ void StoryboardPage::createFloatingToolbar()
         if (m_cameraPanel)
             m_cameraPanel->setVisible(on);
     });
+    // Perspective guides tool: non-drawing like Camera — activating it shows
+    // the settings panel and lets VPs / the horizon be dragged on the canvas.
+    QPushButton *perspective = toolButton(toolIconPixmap("perspective", kIconColor),
+        QStringLiteral("<b>Perspective</b> | Perspective guides and snap."), true);
+    tools->addButton(perspective);
+    bindTool(perspective, DrawingCanvas::Perspective);
+    connect(perspective, &QPushButton::toggled, this, [this](bool on) {
+        if (m_perspectivePanel)
+            m_perspectivePanel->setVisible(on);
+        if (on && m_syncPerspective)
+            m_syncPerspective();
+    });
     extras->addWidget(shapes, 0, Qt::AlignHCenter);
     extras->addWidget(camera, 0, Qt::AlignHCenter);
+    extras->addWidget(perspective, 0, Qt::AlignHCenter);
 
     // Onion skin toggle (independent of the exclusive tool group).
     m_onionButton = toolButton(toolIconPixmap("onion", kIconColor),
@@ -1846,6 +1972,156 @@ QWidget *StoryboardPage::createBrushSettings()
 
 // Floating overlay shown only while the Camera tool is active. Hosts the
 // display-only viewport overlay toggles.
+// Perspective settings (Figma 173:36): mode, guide density/colour/opacity/
+// thickness, snap and visibility — all writing straight into the canvas's
+// PerspectiveTool. Minimal Procreate-style rows in the Sanko dark language.
+QWidget *StoryboardPage::createPerspectivePanel()
+{
+    PerspectiveTool *persp = m_canvas->perspective();
+
+    QWidget *body = new QWidget;
+    body->setFixedWidth(212);
+    auto *layout = new QVBoxLayout(body);
+    layout->setContentsMargins(12, 10, 12, 12);
+    layout->setSpacing(8);
+
+    auto sectionLabel = [](const QString &text) {
+        auto *l = new QLabel(text);
+        l->setStyleSheet(QStringLiteral(
+            "color:#808080; font-size:9px; font-weight:600; letter-spacing:1px;"
+            " background:transparent;"));
+        return l;
+    };
+
+    // Mode: 1 / 2 / 3 point segments.
+    layout->addWidget(sectionLabel(QStringLiteral("MODE")));
+    auto *modeRow = new QHBoxLayout;
+    modeRow->setSpacing(4);
+    auto modeButton = [](const QString &text) {
+        auto *b = new QPushButton(text);
+        b->setCheckable(true);
+        b->setCursor(Qt::PointingHandCursor);
+        b->setStyleSheet(QStringLiteral(
+            "QPushButton { background:#161616; color:#808080; border:none;"
+            " border-radius:5px; font-size:10px; padding:5px 0; }"
+            "QPushButton:checked { background:#7c6ef6; color:#ffffff; }"));
+        return b;
+    };
+    QPushButton *mode1 = modeButton(QStringLiteral("1-Point"));
+    QPushButton *mode2 = modeButton(QStringLiteral("2-Point"));
+    QPushButton *mode3 = modeButton(QStringLiteral("3-Point"));
+    auto *modeGroup = new QButtonGroup(body);
+    modeGroup->setExclusive(true);
+    for (QPushButton *b : {mode1, mode2, mode3}) {
+        modeGroup->addButton(b);
+        modeRow->addWidget(b, 1);
+    }
+    auto wireMode = [this, persp](QPushButton *b, PerspectiveTool::Mode mode) {
+        connect(b, &QPushButton::toggled, this, [this, persp, mode](bool on) {
+            if (on) {
+                persp->setMode(mode);
+                m_canvas->update();
+            }
+        });
+    };
+    wireMode(mode1, PerspectiveTool::OnePoint);
+    wireMode(mode2, PerspectiveTool::TwoPoint);
+    wireMode(mode3, PerspectiveTool::ThreePoint);
+    layout->addLayout(modeRow);
+
+    // Guide visibility + snap toggles.
+    auto makeCheck = [](const QString &text) {
+        auto *cb = new QCheckBox(text);
+        cb->setCursor(Qt::PointingHandCursor);
+        cb->setStyleSheet(QStringLiteral(
+            "QCheckBox { color:#cccccc; font-size:11px; background:transparent; }"));
+        return cb;
+    };
+    QCheckBox *visibleCheck = makeCheck(QStringLiteral("Show guides"));
+    connect(visibleCheck, &QCheckBox::toggled, this, [this, persp](bool on) {
+        persp->setVisible(on);
+        m_canvas->update();
+    });
+    layout->addWidget(visibleCheck);
+    QCheckBox *snapCheck = makeCheck(QStringLiteral("Snap to perspective"));
+    connect(snapCheck, &QCheckBox::toggled, this, [this, persp](bool on) {
+        persp->setSnapEnabled(on);
+    });
+    layout->addWidget(snapCheck);
+
+    // Sliders: density / opacity / thickness.
+    auto sliderRow = [&](const QString &name, int min, int max, int value,
+                         const std::function<void(int)> &apply) {
+        layout->addWidget(sectionLabel(name));
+        auto *slider = new SankoSlider;
+        slider->setRange(min, max);
+        slider->setValue(value);
+        slider->setTrackHeight(6);
+        slider->setHandleSize(16);
+        connect(slider, &SankoSlider::valueChanged, this, [this, apply](int v) {
+            apply(v);
+            m_canvas->update();
+        });
+        layout->addWidget(slider);
+        return slider;
+    };
+    SankoSlider *densitySlider = sliderRow(QStringLiteral("DENSITY"), 2, 40,
+                                           persp->density(), [persp](int v) {
+        persp->setDensity(v);
+    });
+    SankoSlider *opacitySlider = sliderRow(QStringLiteral("OPACITY"), 5, 100,
+                                           int(persp->opacity() * 100),
+                                           [persp](int v) {
+        persp->setOpacity(v / 100.0);
+    });
+    SankoSlider *thicknessSlider = sliderRow(QStringLiteral("THICKNESS"), 1, 6,
+                                             int(persp->thickness()),
+                                             [persp](int v) {
+        persp->setThickness(v);
+    });
+
+    // Guide colour swatches.
+    layout->addWidget(sectionLabel(QStringLiteral("COLOR")));
+    auto *swatchRow = new QHBoxLayout;
+    swatchRow->setSpacing(6);
+    const QColor palette[] = {QColor(0x4d, 0x9f, 0xff), QColor(0x4d, 0xd2, 0xa8),
+                              QColor(0xf5, 0xa6, 0x23), QColor(0xf2, 0x5f, 0x8a),
+                              QColor(0x7c, 0x6e, 0xf6), QColor(0xbd, 0xbd, 0xbd)};
+    for (const QColor &sc : palette) {
+        auto *b = new QPushButton;
+        b->setFixedSize(20, 20);
+        b->setCursor(Qt::PointingHandCursor);
+        b->setStyleSheet(QStringLiteral("QPushButton { background:%1; border:1px"
+                                        " solid #2a2a2a; border-radius:4px; }")
+                             .arg(sc.name()));
+        connect(b, &QPushButton::clicked, this, [this, persp, sc] {
+            persp->setColor(sc);
+            m_canvas->update();
+        });
+        swatchRow->addWidget(b);
+    }
+    swatchRow->addStretch(1);
+    layout->addLayout(swatchRow);
+
+    // Panel <- model refresh, used after project load and on panel show.
+    m_syncPerspective = [persp, mode1, mode2, mode3, visibleCheck, snapCheck,
+                         densitySlider, opacitySlider, thicknessSlider] {
+        mode1->setChecked(persp->mode() == PerspectiveTool::OnePoint);
+        mode2->setChecked(persp->mode() == PerspectiveTool::TwoPoint);
+        mode3->setChecked(persp->mode() == PerspectiveTool::ThreePoint);
+        visibleCheck->setChecked(persp->isVisible());
+        snapCheck->setChecked(persp->snapEnabled());
+        densitySlider->setValue(persp->density());
+        opacitySlider->setValue(int(persp->opacity() * 100));
+        thicknessSlider->setValue(int(persp->thickness()));
+    };
+    m_syncPerspective();
+
+    m_perspectivePanel = createFloatingPanel(QStringLiteral("Perspective"), body);
+    m_perspectivePanel->setVisible(false); // Brush is the default tool
+    return m_perspectivePanel;
+}
+
 QWidget *StoryboardPage::createCameraPanel()
 {
     QWidget *body = new QWidget;
@@ -2385,16 +2661,26 @@ bool StoryboardPage::eventFilter(QObject *object, QEvent *event)
     // shared manager watches the canvas and the main window, handling drag,
     // clamping, follow, and show/hide for every registered instance.
 
-    // Floating Brush bar tooltips: place them 4px above the bar (never over it).
-    // The filter is installed on the bar's tooltip-bearing children; catch them
-    // all by matching the top-level window rather than each pointer.
-    if (event->type() == QEvent::ToolTip) {
-        if (QWidget *w = qobject_cast<QWidget *>(object)) {
-            if (m_floatToolbar && w->window() == m_floatToolbar
-                && !w->toolTip().isEmpty()) {
-                showTooltipAboveBar(w, m_floatToolbar, w->toolTip(), 4);
-                return true; // suppress Qt's default at-cursor tooltip
-            }
+    // Floating Brush bar tooltips: one reused popup BELOW the bar (4px gap,
+    // never covering a button), driven by Enter/Leave so chain-hovering
+    // retargets the same widget without any hide/show flicker.
+    if (QWidget *w = qobject_cast<QWidget *>(object);
+        w && m_floatToolbar && m_toolbarTip && w->window() == m_floatToolbar
+        && !w->toolTip().isEmpty()) {
+        switch (event->type()) {
+        case QEvent::ToolTip:
+            return true; // the popup pipeline replaces Qt's at-cursor tip
+        case QEvent::Enter:
+            m_toolbarTip->scheduleShow(w, m_floatToolbar);
+            break;
+        case QEvent::Leave:
+            m_toolbarTip->scheduleHide();
+            break;
+        case QEvent::MouseButtonPress:
+            m_toolbarTip->hideNow(); // a click dismisses the tip
+            break;
+        default:
+            break;
         }
     }
 
@@ -2626,6 +2912,21 @@ void StoryboardPage::duplicatePanel()
     if (!source || m_currentPanel < 0)
         return;
     insertPanelClone(source, m_currentPanel + 1, QStringLiteral("Duplicate Panel"));
+}
+
+// --- Perspective persistence (project save/load) --------------------------------
+
+QJsonObject StoryboardPage::perspectiveToJson() const
+{
+    return m_canvas->perspective()->toJson();
+}
+
+void StoryboardPage::perspectiveFromJson(const QJsonObject &object)
+{
+    m_canvas->perspective()->fromJson(object);
+    if (m_syncPerspective)
+        m_syncPerspective();
+    m_canvas->update();
 }
 
 // --- Edit-menu undo/redo routing -----------------------------------------------

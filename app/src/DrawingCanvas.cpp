@@ -130,6 +130,8 @@ DrawingCanvas::DrawingCanvas(QWidget *parent)
     // Marching ants: advance the dash offset while a selection or floating
     // paste is on screen (updateAntsTimer() starts/stops it).
     m_antsTimer = new QTimer(this);
+    m_perspective.reset(QSizeF(canvasSize()));
+
     m_antsTimer->setInterval(150);
     connect(m_antsTimer, &QTimer::timeout, this, [this] {
         m_antsPhase = (m_antsPhase + 1) % 8;
@@ -2534,6 +2536,7 @@ void DrawingCanvas::stampDab(const QPointF &center, qreal pressure)
 
 void DrawingCanvas::beginBrushStroke(const QPointF &canvasPt, qreal pressure)
 {
+    m_perspective.beginStroke(canvasPt); // snap assist anchors at stroke start
     if (!m_selectionPath.isEmpty()) {
         // The stroke accumulates unmasked here; the cached mask is applied
         // once per repaint (preview) and once at the end (bake).
@@ -2844,6 +2847,16 @@ void DrawingCanvas::paintEvent(QPaintEvent *)
                          QStringLiteral("TITLE SAFE"));
     }
 
+    // Perspective guides: DISPLAY-ONLY overlay — never written into a layer,
+    // never in flattenedPixmap() or exports. Canvas space through T, clipped
+    // to the canvas so the "infinite" rays stop at its edges.
+    if (m_perspective.isVisible()) {
+        painter.save();
+        painter.setClipRect(canvasR);
+        m_perspective.paintGuides(painter, canvasR);
+        painter.restore();
+    }
+
     // In-progress shape preview (canvas coords, through T).
     if (m_shapeDrag || (m_tool == Shapes && !m_polygonPts.isEmpty()))
         paintShapeGeometry(painter, false);
@@ -2879,6 +2892,11 @@ void DrawingCanvas::paintEvent(QPaintEvent *)
         inside.addPolygon(quad);
         painter.fillPath(outside.subtracted(inside), QColor(0, 0, 0, 102));
     }
+
+    // Perspective editing handles (Perspective tool): WIDGET space and NOT
+    // clipped to the canvas — vanishing points may sit outside its bounds.
+    if (m_tool == Perspective && m_panel)
+        m_perspective.paintHandles(painter, T);
 
     // Transform box outline + handles: WIDGET space (constant screen size),
     // corners mapped through T so the box tracks the rotated/flipped preview.
@@ -3227,6 +3245,16 @@ void DrawingCanvas::mousePressEvent(QMouseEvent *event)
         return;
     }
 
+    // Perspective tool: drag VPs / the horizon. Runs BEFORE the on-canvas and
+    // editable-layer gates — vanishing points are draggable outside the
+    // canvas bounds and guide editing never touches pixels.
+    if (m_tool == Perspective) {
+        m_perspHandle = m_perspective.hitTest(event->position(), viewTransform());
+        if (m_perspHandle != PerspectiveTool::HandleNone)
+            update();
+        return;
+    }
+
     if (!displayRect().contains(event->pos()))
         return;
     if (!editableActiveLayer())
@@ -3255,6 +3283,7 @@ void DrawingCanvas::mousePressEvent(QMouseEvent *event)
             m_strokeBuf.fill(Qt::transparent);
         }
         m_lastCanvas = toCanvas(event->pos());
+        m_perspective.beginStroke(toCanvasF(event->position())); // snap anchor
         drawSegment(m_lastCanvas, m_lastCanvas, m_color); // dot on click (eraser clears)
         break;
     }
@@ -3326,7 +3355,8 @@ void DrawingCanvas::mousePressEvent(QMouseEvent *event)
         // intercept above). Without one, Move does nothing.
         break;
     case Camera:
-        break; // non-drawing tool: overlays are toggled from the Camera panel
+    case Perspective: // handled by the intercept above; nothing draws here
+        break; // non-drawing tools: their panels drive the overlays
     }
 }
 
@@ -3335,6 +3365,14 @@ void DrawingCanvas::mouseMoveEvent(QMouseEvent *event)
     if (m_panning) {
         m_panOffset = m_panStartOffset + QPointF(event->pos() - m_panStartScreen);
         update();
+        return;
+    }
+    if (m_tool == Perspective) {
+        if ((event->buttons() & Qt::LeftButton)
+            && m_perspHandle != PerspectiveTool::HandleNone) {
+            m_perspective.dragHandle(m_perspHandle, toCanvasF(event->position()));
+            update();
+        }
         return;
     }
     if (m_xformActive && m_tool == Move) {
@@ -3394,15 +3432,19 @@ void DrawingCanvas::mouseMoveEvent(QMouseEvent *event)
     }
     if (m_shapeDrag || (m_tool == Shapes && !m_polygonPts.isEmpty())) {
         m_shapeCurrentC = toCanvasF(event->position());
+        if (m_shapeDrag && m_shapeKind == ShapeLine) // snap the line to a VP ray
+            m_shapeCurrentC = m_perspective.snapToRay(m_shapeStartC, m_shapeCurrentC);
         update(); // live preview
         return;
     }
     if (m_brushStroke) {
-        moveBrushStroke(toCanvasF(event->position()), 1.0); // mouse: fixed pressure
+        moveBrushStroke(m_perspective.snapPoint(toCanvasF(event->position())),
+                        1.0); // mouse: fixed pressure; snapped to a VP ray
         return;
     }
     if (m_drawing) {
-        const QPoint p = toCanvas(event->pos());
+        const QPoint p =
+            m_perspective.snapPoint(toCanvasF(event->position())).toPoint();
         drawSegment(m_lastCanvas, p, m_color);
         m_lastCanvas = p;
     }
@@ -3414,6 +3456,10 @@ void DrawingCanvas::mouseReleaseEvent(QMouseEvent *event)
         && (event->button() == Qt::MiddleButton || event->button() == Qt::LeftButton)) {
         m_panning = false;
         setCursor(m_spaceHeld ? Qt::OpenHandCursor : Qt::CrossCursor);
+        return;
+    }
+    if (m_tool == Perspective && event->button() == Qt::LeftButton) {
+        m_perspHandle = PerspectiveTool::HandleNone;
         return;
     }
     if (m_brushStroke && event->button() == Qt::LeftButton) {
@@ -3478,6 +3524,8 @@ void DrawingCanvas::mouseReleaseEvent(QMouseEvent *event)
     }
     if (m_shapeDrag && event->button() == Qt::LeftButton) {
         m_shapeCurrentC = toCanvasF(event->position());
+        if (m_shapeKind == ShapeLine) // the commit matches the snapped preview
+            m_shapeCurrentC = m_perspective.snapToRay(m_shapeStartC, m_shapeCurrentC);
         commitDragShape();
         return;
     }
@@ -3563,7 +3611,8 @@ void DrawingCanvas::tabletEvent(QTabletEvent *event)
         break;
     case QEvent::TabletMove:
         if (m_brushStroke)
-            moveBrushStroke(toCanvasF(event->position()), event->pressure());
+            moveBrushStroke(m_perspective.snapPoint(toCanvasF(event->position())),
+                            event->pressure());
         break;
     case QEvent::TabletRelease:
         if (m_brushStroke) {

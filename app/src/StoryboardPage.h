@@ -3,6 +3,7 @@
 #include "DrawingCanvas.h" // DrawingCanvas::Tool (persisted selection mode)
 
 #include <QHash>
+#include <functional>
 #include <QPoint>
 #include <QSet>
 #include <QVector>
@@ -13,6 +14,7 @@ class QCheckBox;
 class QComboBox;
 class QHBoxLayout;
 class QJsonArray;
+class QJsonObject;
 class QLabel;
 class QLineEdit;
 class QPlainTextEdit;
@@ -22,6 +24,7 @@ class QSlider;
 class QUndoStack;
 class QVBoxLayout;
 class SankoSlider;
+class SankoTipPopup;
 
 namespace ads {
 class CDockManager;
@@ -72,6 +75,11 @@ public:
     void editUndo();
     void editRedo();
 
+    // Perspective guide settings, persisted in the project file (delegates
+    // to the canvas's PerspectiveTool; refreshes the settings panel on load).
+    QJsonObject perspectiveToJson() const;
+    void perspectiveFromJson(const QJsonObject &object);
+
     // App-wide undo stack (owned by MainWindow); forwarded to the canvas.
     void setUndoStack(QUndoStack *stack);
     // Callbacks for the panel undo commands (see StoryboardPage.cpp): mutate
@@ -110,6 +118,7 @@ private:
     QWidget *createFloatingPanel(const QString &title, QWidget *body);
     QWidget *createBrushSettings(); // floating panel shown while Brush is active
     QWidget *createCameraPanel();   // floating panel shown while Camera is active
+    QWidget *createPerspectivePanel(); // shown while the Perspective tool is active
     QWidget *createShapesPanel();   // floating panel shown while Shapes is active
     QWidget *createBottomBar();
     void applyBrushPreset(int size, int opacityPct, int hardnessPct,
@@ -210,6 +219,9 @@ private:
     SankoSlider *m_brushHardnessSlider = nullptr;
     // Camera panel (visible only while the Camera tool is active).
     QWidget *m_cameraPanel = nullptr;
+    // Perspective settings panel (visible only while Perspective is active).
+    QWidget *m_perspectivePanel = nullptr;
+    std::function<void()> m_syncPerspective; // panel controls <- canvas model
     // Shapes panel (visible only while the Shapes tool is active).
     QWidget *m_shapesPanel = nullptr;
     // Last-chosen selection mode: a plain click on the combined Selection
@@ -220,6 +232,7 @@ private:
     // main-window follow, page-visibility mirroring, and position persistence
     // all live in that base class (and cover future panels automatically).
     QWidget *m_floatToolbar = nullptr;  // horizontal Brush/tools bar (Figma 33:110)
+    SankoTipPopup *m_toolbarTip = nullptr; // ONE reused tooltip for the Brush bar
     QWidget *m_extrasToolbar = nullptr; // vertical bar: Shapes/Camera/Onion + size
     QWidget *m_selModToolbar = nullptr;  // Selection Modifier bar (Figma 146:67)
     QWidget *m_moveModToolbar = nullptr; // Move Modifier bar (Figma 161:39)

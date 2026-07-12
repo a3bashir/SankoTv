@@ -502,6 +502,7 @@ bool MainWindow::saveToPath(const QString &path)
     root[QStringLiteral("scenes")] = scenesArray;
     root[QStringLiteral("consistencyBoard")] = consistencyArray;
     root[QStringLiteral("audioPath")] = m_animatic->audioPath(); // scratch track (path only)
+    root[QStringLiteral("perspective")] = m_storyboard->perspectiveToJson();
 
     QFile file(path);
     if (!file.open(QIODevice::WriteOnly)) {
@@ -723,6 +724,8 @@ bool MainWindow::loadFromPath(const QString &path)
 
     // Skip the Script Editor: go straight to the Storyboard.
     m_storyboard->loadScenes(m_scenes);
+    m_storyboard->perspectiveFromJson(
+        root.value(QStringLiteral("perspective")).toObject());
     m_stack->setCurrentWidget(m_storyboard);
     return true;
 }
