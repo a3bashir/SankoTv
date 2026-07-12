@@ -130,7 +130,7 @@ DrawingCanvas::DrawingCanvas(QWidget *parent)
     // Marching ants: advance the dash offset while a selection or floating
     // paste is on screen (updateAntsTimer() starts/stops it).
     m_antsTimer = new QTimer(this);
-    m_perspective.reset(QSizeF(canvasSize()));
+    m_perspective.reset();
 
     m_antsTimer->setInterval(150);
     connect(m_antsTimer, &QTimer::timeout, this, [this] {
@@ -2893,6 +2893,26 @@ void DrawingCanvas::paintEvent(QPaintEvent *)
         painter.fillPath(outside.subtracted(inside), QColor(0, 0, 0, 102));
     }
 
+    // Perspective tool with no VPs yet: centred prompt chip over the canvas
+    // (display-only, Sanko dark chip in the Modifier-bar language).
+    if (m_tool == Perspective && m_panel && m_perspective.count() == 0) {
+        const QString msg = QStringLiteral(
+            "Tap on the canvas to create the first Vanishing Point.");
+        QFont chipFont(QStringLiteral("Inter"));
+        chipFont.setPixelSize(12);
+        chipFont.setWeight(QFont::DemiBold);
+        painter.setFont(chipFont);
+        const QFontMetricsF fm(chipFont);
+        QRectF chip(0, 0, fm.horizontalAdvance(msg) + 28, fm.height() + 16);
+        chip.moveCenter(QRectF(displayRect()).center());
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(QColor(0x21, 0x21, 0x21, 166));
+        painter.drawRoundedRect(chip, 8, 8);
+        painter.setPen(QColor(0xcc, 0xcc, 0xcc));
+        painter.drawText(chip, Qt::AlignCenter, msg);
+    }
+
     // Perspective editing handles (Perspective tool): WIDGET space and NOT
     // clipped to the canvas — vanishing points may sit outside its bounds.
     if (m_tool == Perspective && m_panel)
@@ -3245,13 +3265,25 @@ void DrawingCanvas::mousePressEvent(QMouseEvent *event)
         return;
     }
 
-    // Perspective tool: drag VPs / the horizon. Runs BEFORE the on-canvas and
-    // editable-layer gates — vanishing points are draggable outside the
-    // canvas bounds and guide editing never touches pixels.
+    // Perspective tool: press on a VP handle grabs it (select + drag);
+    // pressing empty canvas TAP-CREATES the next VP (VP1 starts the horizon,
+    // VP2 tilts it, a tap clearly off the horizon adds VP3). Runs BEFORE the
+    // on-canvas and editable-layer gates — VP handles are draggable outside
+    // the canvas bounds and guide editing never touches pixels.
     if (m_tool == Perspective) {
         m_perspHandle = m_perspective.hitTest(event->position(), viewTransform());
-        if (m_perspHandle != PerspectiveTool::HandleNone)
+        if (m_perspHandle >= 0) {
+            m_perspective.setSelected(m_perspHandle);
+            emit perspectiveEdited();
             update();
+        } else if (displayRect().contains(event->pos())) {
+            m_perspHandle =
+                m_perspective.addVanishingPoint(toCanvasF(event->position()));
+            if (m_perspHandle >= 0) { // keep dragging to fine-place the new VP
+                emit perspectiveEdited();
+                update();
+            }
+        }
         return;
     }
 
@@ -3368,9 +3400,9 @@ void DrawingCanvas::mouseMoveEvent(QMouseEvent *event)
         return;
     }
     if (m_tool == Perspective) {
-        if ((event->buttons() & Qt::LeftButton)
-            && m_perspHandle != PerspectiveTool::HandleNone) {
-            m_perspective.dragHandle(m_perspHandle, toCanvasF(event->position()));
+        if ((event->buttons() & Qt::LeftButton) && m_perspHandle >= 0) {
+            m_perspective.moveVanishingPoint(m_perspHandle,
+                                             toCanvasF(event->position()));
             update();
         }
         return;
@@ -3459,7 +3491,7 @@ void DrawingCanvas::mouseReleaseEvent(QMouseEvent *event)
         return;
     }
     if (m_tool == Perspective && event->button() == Qt::LeftButton) {
-        m_perspHandle = PerspectiveTool::HandleNone;
+        m_perspHandle = -1;
         return;
     }
     if (m_brushStroke && event->button() == Qt::LeftButton) {
@@ -3553,6 +3585,19 @@ void DrawingCanvas::mouseReleaseEvent(QMouseEvent *event)
 
 void DrawingCanvas::mouseDoubleClickEvent(QMouseEvent *event)
 {
+    // Perspective: double-clicking a VP handle removes that vanishing point
+    // (the horizon and guide fans re-derive from the survivors).
+    if (m_tool == Perspective && event->button() == Qt::LeftButton) {
+        const int hit = m_perspective.hitTest(event->position(), viewTransform());
+        if (hit >= 0) {
+            m_perspective.removeVanishingPoint(hit);
+            m_perspHandle = -1;
+            emit perspectiveEdited();
+            update();
+        }
+        return;
+    }
+
     // Warp: double-clicking a control point resets ONLY that point to its
     // original (un-warped, quad-mapped) position; every other point keeps its
     // deformation. The spline re-solves around the restored point.

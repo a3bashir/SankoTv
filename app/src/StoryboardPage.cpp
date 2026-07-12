@@ -592,6 +592,167 @@ QPixmap dragDotsPixmapV()
     return pm;
 }
 
+// Perspective Modifier slider (Figma 180:121): Inter Semi-Bold 9px label
+// top-left, 8px value top-right, a 10px-high #333 radius-2 track at y14 with
+// a #4B4397->#7C6EF6 gradient fill (white fade on top) reaching the 20x10
+// #b3b3b3 radius-1 dragger. The Hue variant paints the full hue spectrum
+// across the track (per-VP guide colour) and shows no value text. Plain
+// QWidget with an std::function callback — the bar wires it with lambdas.
+class PerspSlider : public QWidget
+{
+public:
+    enum Kind { Value, Hue };
+    PerspSlider(const QString &label, int min, int max, Kind kind,
+                QWidget *parent)
+        : QWidget(parent), m_label(label), m_min(min), m_max(max), m_kind(kind)
+    {
+        setCursor(Qt::PointingHandCursor);
+    }
+
+    std::function<void(int)> onChanged;
+
+    int value() const { return m_value; }
+    void setValue(int v)
+    {
+        v = qBound(m_min, v, m_max);
+        if (v == m_value)
+            return;
+        m_value = v;
+        update();
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        QFont f(QStringLiteral("Inter"));
+        f.setWeight(QFont::DemiBold);
+        f.setPixelSize(9);
+        p.setFont(f);
+        p.setPen(QColor(0xcc, 0xcc, 0xcc));
+        p.drawText(QRectF(0, 0, width(), 15), Qt::AlignLeft | Qt::AlignVCenter,
+                   m_label);
+        if (m_kind == Value) {
+            f.setPixelSize(8);
+            p.setFont(f);
+            p.drawText(QRectF(width() - 22, 2, 22, 15),
+                       Qt::AlignRight | Qt::AlignVCenter,
+                       QString::number(m_value));
+        }
+
+        const QRectF track(0, 14, width(), 10);
+        QPainterPath tp;
+        tp.addRoundedRect(track, 2, 2);
+        p.setPen(Qt::NoPen);
+        if (m_kind == Hue) {
+            QLinearGradient spectrum(track.topLeft(), track.topRight());
+            for (int i = 0; i <= 12; ++i)
+                spectrum.setColorAt(i / 12.0,
+                                    QColor::fromHsvF(qMin(i / 12.0, 0.999), 1.0, 1.0));
+            p.fillPath(tp, spectrum);
+        } else {
+            p.fillPath(tp, QColor(0x33, 0x33, 0x33));
+            const qreal cx = centerForValue();
+            if (cx > 1.0) {
+                const QRectF fill(0, 14, cx, 10);
+                QPainterPath fp;
+                fp.addRoundedRect(fill, 1, 1);
+                QLinearGradient g(fill.topLeft(), fill.topRight());
+                g.setColorAt(0.0, QColor(0x4b, 0x43, 0x97));
+                g.setColorAt(1.0, QColor(0x7c, 0x6e, 0xf6));
+                p.fillPath(fp, g);
+                QLinearGradient sheen(fill.topLeft(), fill.bottomLeft());
+                sheen.setColorAt(0.0, QColor(255, 255, 255, 26));
+                sheen.setColorAt(1.0, QColor(255, 255, 255, 0));
+                p.fillPath(fp, sheen);
+            }
+        }
+        QRectF dragger(centerForValue() - 10.0, 14, 20, 10);
+        dragger.moveLeft(qBound(0.0, dragger.left(), width() - 20.0));
+        QPainterPath dp;
+        dp.addRoundedRect(dragger, 1, 1);
+        p.fillPath(dp, QColor(0xb3, 0xb3, 0xb3));
+    }
+    void mousePressEvent(QMouseEvent *e) override { setFromX(e->position().x()); }
+    void mouseMoveEvent(QMouseEvent *e) override
+    {
+        if (e->buttons() & Qt::LeftButton)
+            setFromX(e->position().x());
+    }
+
+private:
+    qreal centerForValue() const
+    {
+        return (m_value - m_min) * width() / qreal(qMax(1, m_max - m_min));
+    }
+    void setFromX(qreal x)
+    {
+        const int v = m_min
+            + qRound((m_max - m_min) * qBound(0.0, x / qMax(1, width()), 1.0));
+        if (v == m_value)
+            return;
+        m_value = v;
+        update();
+        if (onChanged)
+            onChanged(m_value);
+    }
+
+    QString m_label;
+    int m_min = 0;
+    int m_max = 100;
+    int m_value = 0;
+    Kind m_kind = Value;
+};
+
+// Support Drawing switch (Figma 180:196/197): a 28x10 radius-5 pill — accent
+// #7C6EF6 with the 14x10 #b3b3b3 knob at the right when ON, #4d4d4d with the
+// knob at the left when OFF.
+class PerspToggle : public QWidget
+{
+public:
+    explicit PerspToggle(QWidget *parent) : QWidget(parent)
+    {
+        setFixedSize(28, 10);
+        setCursor(Qt::PointingHandCursor);
+    }
+
+    std::function<void(bool)> onToggled;
+
+    bool isOn() const { return m_on; }
+    void setOn(bool on)
+    {
+        if (on == m_on)
+            return;
+        m_on = on;
+        update();
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setPen(Qt::NoPen);
+        QPainterPath pill;
+        pill.addRoundedRect(QRectF(0, 0, 28, 10), 5, 5);
+        p.fillPath(pill, m_on ? QColor(0x7c, 0x6e, 0xf6) : QColor(0x4d, 0x4d, 0x4d));
+        QPainterPath knob;
+        knob.addRoundedRect(QRectF(m_on ? 14.0 : 0.0, 0, 14, 10), 5, 5);
+        p.fillPath(knob, QColor(0xb3, 0xb3, 0xb3));
+    }
+    void mousePressEvent(QMouseEvent *) override
+    {
+        m_on = !m_on;
+        update();
+        if (onToggled)
+            onToggled(m_on);
+    }
+
+private:
+    bool m_on = false;
+};
+
 // --- App-wide undo commands for the panel list --------------------------------
 // Insert covers Add / Duplicate / Paste; ownership of the DETACHED Panel
 // follows the undo state, so a truncated history never leaks or double-frees.
@@ -1215,7 +1376,7 @@ QWidget *StoryboardPage::createCenterColumn()
     createFloatingToolbar(); // FloatingToolWindows anchored to the canvas
     createBrushSettings();   // floating over the canvas, shown with the Brush tool
     createCameraPanel();     // floating over the canvas, shown with the Camera tool
-    createPerspectivePanel(); // floating, shown with the Perspective tool
+    createPerspectiveModifier(); // shown with the Perspective tool
     createShapesPanel();     // floating over the canvas, shown with the Shapes tool
 
     // Custom-painted Canvas View Controls toolbar (zoom / flip / rotate),
@@ -1860,10 +2021,12 @@ void StoryboardPage::createFloatingToolbar()
     tools->addButton(perspective);
     bindTool(perspective, DrawingCanvas::Perspective);
     connect(perspective, &QPushButton::toggled, this, [this](bool on) {
-        if (m_perspectivePanel)
-            m_perspectivePanel->setVisible(on);
+        if (m_perspModToolbar)
+            m_perspModToolbar->setVisible(on);
         if (on && m_syncPerspective)
             m_syncPerspective();
+        if (m_canvas)
+            m_canvas->update(); // first-tap prompt appears/disappears
     });
 
     // Camera mirrors the extras-bar Camera button (one source of truth: the
@@ -2062,154 +2225,101 @@ QWidget *StoryboardPage::createBrushSettings()
 
 // Floating overlay shown only while the Camera tool is active. Hosts the
 // display-only viewport overlay toggles.
-// Perspective settings (Figma 173:36): mode, guide density/colour/opacity/
-// thickness, snap and visibility — all writing straight into the canvas's
-// PerspectiveTool. Minimal Procreate-style rows in the Sanko dark language.
-QWidget *StoryboardPage::createPerspectivePanel()
+// Perspective Modifier toolbar (Figma 180:121): a 578x92 rgba(33,33,33,0.65)
+// radius-8 bar holding the Density / Opacity / Thickness sliders (exact node
+// offsets, 1x23 #4d4d4d dividers), the full-width Hue Colors spectrum slider,
+// and the Support Drawing snap toggle. Opacity and Hue edit the SELECTED
+// vanishing point (each VP keeps independent colour/opacity); Density and
+// Thickness are shared. Bottom-centre, 10px above the status bar, like the
+// Selection / Move Modifier bars.
+QWidget *StoryboardPage::createPerspectiveModifier()
 {
     PerspectiveTool *persp = m_canvas->perspective();
+    SelModBar *bar = new SelModBar(m_canvas, this);
+    m_perspModToolbar = bar;
+    bar->setFixedSize(578, 92);
 
-    QWidget *body = new QWidget;
-    body->setFixedWidth(212);
-    auto *layout = new QVBoxLayout(body);
-    layout->setContentsMargins(12, 10, 12, 12);
-    layout->setSpacing(8);
+    PerspSlider *density = new PerspSlider(QStringLiteral("Density"), 2, 40,
+                                           PerspSlider::Value, bar);
+    density->setFixedSize(160, 25);
+    density->move(10, 25);
+    PerspSlider *opacity = new PerspSlider(QStringLiteral("Opacity"), 5, 100,
+                                           PerspSlider::Value, bar);
+    opacity->setFixedSize(160, 25);
+    opacity->move(209, 25);
+    PerspSlider *thickness = new PerspSlider(QStringLiteral("Thickness"), 1, 6,
+                                             PerspSlider::Value, bar);
+    thickness->setFixedSize(160, 25);
+    thickness->move(408, 25);
+    PerspSlider *hue = new PerspSlider(QStringLiteral("Hue Colors"), 0, 359,
+                                       PerspSlider::Hue, bar);
+    hue->setFixedSize(558, 25);
+    hue->move(10, 55);
 
-    auto sectionLabel = [](const QString &text) {
-        auto *l = new QLabel(text);
-        l->setStyleSheet(QStringLiteral(
-            "color:#808080; font-size:9px; font-weight:600; letter-spacing:1px;"
-            " background:transparent;"));
-        return l;
-    };
-
-    // Mode: 1 / 2 / 3 point segments.
-    layout->addWidget(sectionLabel(QStringLiteral("MODE")));
-    auto *modeRow = new QHBoxLayout;
-    modeRow->setSpacing(4);
-    auto modeButton = [](const QString &text) {
-        auto *b = new QPushButton(text);
-        b->setCheckable(true);
-        b->setCursor(Qt::PointingHandCursor);
-        b->setStyleSheet(QStringLiteral(
-            "QPushButton { background:#161616; color:#808080; border:none;"
-            " border-radius:5px; font-size:10px; padding:5px 0; }"
-            "QPushButton:checked { background:#7c6ef6; color:#ffffff; }"));
-        return b;
-    };
-    QPushButton *mode1 = modeButton(QStringLiteral("1-Point"));
-    QPushButton *mode2 = modeButton(QStringLiteral("2-Point"));
-    QPushButton *mode3 = modeButton(QStringLiteral("3-Point"));
-    auto *modeGroup = new QButtonGroup(body);
-    modeGroup->setExclusive(true);
-    for (QPushButton *b : {mode1, mode2, mode3}) {
-        modeGroup->addButton(b);
-        modeRow->addWidget(b, 1);
+    for (int x : {189, 388}) {
+        QFrame *divider = new QFrame(bar);
+        divider->setStyleSheet(QStringLiteral("background:#4d4d4d;border:none;"));
+        divider->setFixedSize(1, 23);
+        divider->move(x, 26);
     }
-    auto wireMode = [this, persp](QPushButton *b, PerspectiveTool::Mode mode) {
-        connect(b, &QPushButton::toggled, this, [this, persp, mode](bool on) {
-            if (on) {
-                persp->setMode(mode);
-                m_canvas->update();
-            }
-        });
-    };
-    wireMode(mode1, PerspectiveTool::OnePoint);
-    wireMode(mode2, PerspectiveTool::TwoPoint);
-    wireMode(mode3, PerspectiveTool::ThreePoint);
-    layout->addLayout(modeRow);
 
-    // Guide visibility + snap toggles.
-    auto makeCheck = [](const QString &text) {
-        auto *cb = new QCheckBox(text);
-        cb->setCursor(Qt::PointingHandCursor);
-        cb->setStyleSheet(QStringLiteral(
-            "QCheckBox { color:#cccccc; font-size:11px; background:transparent; }"));
-        return cb;
-    };
-    QCheckBox *visibleCheck = makeCheck(QStringLiteral("Show guides"));
-    connect(visibleCheck, &QCheckBox::toggled, this, [this, persp](bool on) {
-        persp->setVisible(on);
-        m_canvas->update();
-    });
-    layout->addWidget(visibleCheck);
-    QCheckBox *snapCheck = makeCheck(QStringLiteral("Snap to perspective"));
-    connect(snapCheck, &QCheckBox::toggled, this, [this, persp](bool on) {
-        persp->setSnapEnabled(on);
-    });
-    layout->addWidget(snapCheck);
+    QLabel *supportLabel = new QLabel(QStringLiteral("Support Drawing"), bar);
+    QFont supportFont(QStringLiteral("Inter"));
+    supportFont.setPixelSize(8);
+    supportFont.setWeight(QFont::DemiBold);
+    supportLabel->setFont(supportFont);
+    supportLabel->setStyleSheet(
+        QStringLiteral("color:#cccccc;background:transparent;"));
+    supportLabel->setFixedSize(67, 15);
+    supportLabel->move(468, 10);
+    PerspToggle *support = new PerspToggle(bar);
+    support->move(540, 11);
 
-    // Sliders: density / opacity / thickness.
-    auto sliderRow = [&](const QString &name, int min, int max, int value,
-                         const std::function<void(int)> &apply) {
-        layout->addWidget(sectionLabel(name));
-        auto *slider = new SankoSlider;
-        slider->setRange(min, max);
-        slider->setValue(value);
-        slider->setTrackHeight(6);
-        slider->setHandleSize(16);
-        connect(slider, &SankoSlider::valueChanged, this, [this, apply](int v) {
-            apply(v);
-            m_canvas->update();
-        });
-        layout->addWidget(slider);
-        return slider;
-    };
-    SankoSlider *densitySlider = sliderRow(QStringLiteral("DENSITY"), 2, 40,
-                                           persp->density(), [persp](int v) {
+    density->onChanged = [this, persp](int v) {
         persp->setDensity(v);
-    });
-    SankoSlider *opacitySlider = sliderRow(QStringLiteral("OPACITY"), 5, 100,
-                                           int(persp->opacity() * 100),
-                                           [persp](int v) {
-        persp->setOpacity(v / 100.0);
-    });
-    SankoSlider *thicknessSlider = sliderRow(QStringLiteral("THICKNESS"), 1, 6,
-                                             int(persp->thickness()),
-                                             [persp](int v) {
+        m_canvas->update();
+    };
+    opacity->onChanged = [this, persp](int v) {
+        persp->setSelectedOpacity(v / 100.0); // per-VP
+        m_canvas->update();
+    };
+    thickness->onChanged = [this, persp](int v) {
         persp->setThickness(v);
-    });
+        m_canvas->update();
+    };
+    hue->onChanged = [this, persp](int v) {
+        persp->setSelectedColor(QColor::fromHsv(v, 255, 255)); // per-VP
+        m_canvas->update();
+    };
+    support->onToggled = [persp](bool on) { persp->setSnapEnabled(on); };
 
-    // Guide colour swatches.
-    layout->addWidget(sectionLabel(QStringLiteral("COLOR")));
-    auto *swatchRow = new QHBoxLayout;
-    swatchRow->setSpacing(6);
-    const QColor palette[] = {QColor(0x4d, 0x9f, 0xff), QColor(0x4d, 0xd2, 0xa8),
-                              QColor(0xf5, 0xa6, 0x23), QColor(0xf2, 0x5f, 0x8a),
-                              QColor(0x7c, 0x6e, 0xf6), QColor(0xbd, 0xbd, 0xbd)};
-    for (const QColor &sc : palette) {
-        auto *b = new QPushButton;
-        b->setFixedSize(20, 20);
-        b->setCursor(Qt::PointingHandCursor);
-        b->setStyleSheet(QStringLiteral("QPushButton { background:%1; border:1px"
-                                        " solid #2a2a2a; border-radius:4px; }")
-                             .arg(sc.name()));
-        connect(b, &QPushButton::clicked, this, [this, persp, sc] {
-            persp->setColor(sc);
-            m_canvas->update();
-        });
-        swatchRow->addWidget(b);
-    }
-    swatchRow->addStretch(1);
-    layout->addLayout(swatchRow);
-
-    // Panel <- model refresh, used after project load and on panel show.
-    m_syncPerspective = [persp, mode1, mode2, mode3, visibleCheck, snapCheck,
-                         densitySlider, opacitySlider, thicknessSlider] {
-        mode1->setChecked(persp->mode() == PerspectiveTool::OnePoint);
-        mode2->setChecked(persp->mode() == PerspectiveTool::TwoPoint);
-        mode3->setChecked(persp->mode() == PerspectiveTool::ThreePoint);
-        visibleCheck->setChecked(persp->isVisible());
-        snapCheck->setChecked(persp->snapEnabled());
-        densitySlider->setValue(persp->density());
-        opacitySlider->setValue(int(persp->opacity() * 100));
-        thicknessSlider->setValue(int(persp->thickness()));
+    // Toolbar <- model refresh: tool activation, VP create/select (canvas
+    // signal), and project load all re-sync the sliders to the selected VP.
+    m_syncPerspective = [persp, density, opacity, thickness, hue, support] {
+        density->setValue(persp->density());
+        opacity->setValue(qRound(persp->selectedOpacity() * 100.0));
+        thickness->setValue(qRound(persp->thickness()));
+        const int h = persp->selectedColor().hsvHue();
+        hue->setValue(h < 0 ? 0 : h);
+        support->setOn(persp->snapEnabled());
     };
     m_syncPerspective();
+    connect(m_canvas, &DrawingCanvas::perspectiveEdited, this, [this] {
+        if (m_syncPerspective)
+            m_syncPerspective();
+    });
 
-    m_perspectivePanel = createFloatingPanel(QStringLiteral("Perspective"), body);
-    m_perspectivePanel->setVisible(false); // Brush is the default tool
-    return m_perspectivePanel;
+    bar->setDefaultOffsetProvider([this, bar] {
+        int statusTop = m_canvas->height();
+        if (m_bottomBar && m_bottomBar->isVisible())
+            statusTop = m_canvas->mapFromGlobal(
+                m_bottomBar->mapToGlobal(QPoint(0, 0))).y();
+        return QPoint(qMax(6, (m_canvas->width() - bar->width()) / 2),
+                      qMax(6, statusTop - bar->height() - 10));
+    });
+
+    bar->setVisible(false); // shown while the Perspective tool is active
+    return bar;
 }
 
 QWidget *StoryboardPage::createCameraPanel()

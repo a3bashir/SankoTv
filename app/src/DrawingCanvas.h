@@ -181,6 +181,9 @@ signals:
     // An undo/redo command rewrote this panel's layer data; the page
     // regenerates that panel's thumbnail from the committed model.
     void panelEdited(Panel *panel);
+    // A perspective VP was created, selected, or removed: the Perspective
+    // Modifier toolbar re-syncs its per-VP sliders.
+    void perspectiveEdited();
 
 protected:
     bool eventFilter(QObject *object, QEvent *event) override; // toolbar grip drag
@@ -476,7 +479,7 @@ private:
 
     // Perspective guides (display-only; geometry in canvas coords).
     PerspectiveTool m_perspective;
-    PerspectiveTool::Handle m_perspHandle = PerspectiveTool::HandleNone;
+    int m_perspHandle = -1; // VP index being dragged (-1: none)
 
     // Display-only overlays.
     bool m_grid = false;         // alignment grid, 40 canvas px (View > Grid)

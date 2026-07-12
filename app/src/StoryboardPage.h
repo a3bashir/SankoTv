@@ -119,7 +119,7 @@ private:
     QWidget *createFloatingPanel(const QString &title, QWidget *body);
     QWidget *createBrushSettings(); // floating panel shown while Brush is active
     QWidget *createCameraPanel();   // floating panel shown while Camera is active
-    QWidget *createPerspectivePanel(); // shown while the Perspective tool is active
+    QWidget *createPerspectiveModifier(); // shown while Perspective is active
     QWidget *createShapesPanel();   // floating panel shown while Shapes is active
     QWidget *createBottomBar();
     void applyBrushPreset(int size, int opacityPct, int hardnessPct,
@@ -222,9 +222,9 @@ private:
     QWidget *m_cameraPanel = nullptr;
     // Figma "Floating Toolbar Layers" (node 173-36): dock toggles + tools.
     QWidget *m_layersToolbar = nullptr;
-    // Perspective settings panel (visible only while Perspective is active).
-    QWidget *m_perspectivePanel = nullptr;
-    std::function<void()> m_syncPerspective; // panel controls <- canvas model
+    // Perspective Modifier toolbar (visible only while Perspective is active).
+    QWidget *m_perspModToolbar = nullptr;
+    std::function<void()> m_syncPerspective; // toolbar controls <- canvas model
     // Shapes panel (visible only while the Shapes tool is active).
     QWidget *m_shapesPanel = nullptr;
     // Last-chosen selection mode: a plain click on the combined Selection
