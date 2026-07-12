@@ -1,5 +1,7 @@
 #include "StoryboardPage.h"
 
+#include "ColorPanel.h"
+
 #include "DrawingCanvas.h"
 #include "FloatingToolWindow.h"
 #include "SankoDockOverlay.h"
@@ -14,7 +16,6 @@
 #include <QAction>
 #include <QButtonGroup>
 #include <QCheckBox>
-#include <QColorDialog>
 #include <QComboBox>
 #include <QCoreApplication>
 #include <QEvent>
@@ -1570,12 +1571,20 @@ void StoryboardPage::createFloatingToolbar()
     ColorSwatchButton *color = new ColorSwatchButton;
     color->setToolTip(QStringLiteral("<b>Color</b> | Choose the brush color."));
     color->setSwatchColor(Qt::black);
-    connect(color, &QPushButton::clicked, this, [this, color] {
-        const QColor chosen = QColorDialog::getColor(Qt::black, this, QStringLiteral("Brush color"));
-        if (chosen.isValid()) {
-            m_canvas->setColor(chosen);
-            color->setSwatchColor(chosen);
-        }
+    // Procreate-style Colors panel (ColorPanel body inside the standard
+    // floating panel chrome). The swatch toggles it; every live change in the
+    // panel drives the brush color and the swatch immediately.
+    ColorPanel *colorBody = new ColorPanel;
+    colorBody->setColor(Qt::black);
+    QWidget *colorsPanel = createFloatingPanel(QStringLiteral("Colors"), colorBody);
+    colorsPanel->hide();
+    connect(colorBody, &ColorPanel::colorChanged, this,
+            [this, color](const QColor &chosen) {
+        m_canvas->setColor(chosen);
+        color->setSwatchColor(chosen);
+    });
+    connect(color, &QPushButton::clicked, this, [colorsPanel] {
+        colorsPanel->setVisible(!colorsPanel->isVisible());
     });
     bar->addWidget(color, 0, Qt::AlignVCenter);
 
