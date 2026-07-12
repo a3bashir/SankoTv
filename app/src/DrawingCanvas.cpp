@@ -2857,6 +2857,22 @@ void DrawingCanvas::paintEvent(QPaintEvent *)
         painter.restore();
     }
 
+    // Off-canvas VP beacon: ONLY while that VP is actively being dragged, and
+    // clipped strictly OUTSIDE the canvas rect — the artwork is never painted
+    // over. Vanishes on mouse release (m_perspHandle resets to -1).
+    if (m_tool == Perspective && m_perspHandle >= 0) {
+        painter.save();
+        QPainterPath outside;
+        outside.addPolygon(painter.worldTransform().inverted().map(
+            QPolygonF(QRectF(rect()))));
+        outside.closeSubpath();
+        QPainterPath canvasPath;
+        canvasPath.addRect(canvasR);
+        painter.setClipPath(outside.subtracted(canvasPath));
+        m_perspective.paintEdgeIndicator(painter, canvasR, m_perspHandle);
+        painter.restore();
+    }
+
     // In-progress shape preview (canvas coords, through T).
     if (m_shapeDrag || (m_tool == Shapes && !m_polygonPts.isEmpty()))
         paintShapeGeometry(painter, false);

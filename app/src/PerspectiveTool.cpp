@@ -146,11 +146,10 @@ QLineF PerspectiveTool::horizonLine() const
 // the horizon angle, so tilting the horizon sweeps every fan with it, and the
 // spokes pivot around their VP like wheel hubs when it moves. Lines FADE with
 // distance from their VP (radial-gradient pens) instead of stopping abruptly,
-// while still reaching every canvas corner from any VP position. A filled
-// triangular beacon marks each VP that sits outside the canvas (the caller
-// clips to the canvas, leaving an edge wedge aimed at the VP) in the same
-// colour and opacity as that VP's guides; plus the derived horizon. Cosmetic
-// pens keep the on-screen thickness constant at any zoom/rotation.
+// while still reaching every canvas corner from any VP position; plus the
+// derived horizon. (Off-canvas VPs get their edge wedge from
+// paintEdgeIndicator(), drawn drag-only and clipped OUTSIDE the canvas.)
+// Cosmetic pens keep the on-screen thickness constant at any zoom/rotation.
 void PerspectiveTool::paintGuides(QPainter &p, const QRectF &canvasRect) const
 {
     if (m_vps.isEmpty())
@@ -164,25 +163,6 @@ void PerspectiveTool::paintGuides(QPainter &p, const QRectF &canvasRect) const
     const qreal fadeBase = qMax(canvasRect.width(), canvasRect.height()) * 0.9;
     for (const VanishingPoint &vp : m_vps) {
         p.setOpacity(vp.opacity);
-
-        // Off-canvas VP: a triangular indicator from the canvas edge toward
-        // the VP (apex at the VP, base across the canvas centre).
-        if (!canvasRect.contains(vp.pos)) {
-            const QPointF c = canvasRect.center();
-            QPointF toVp = vp.pos - c;
-            const qreal len = qSqrt(QPointF::dotProduct(toVp, toVp));
-            if (len > 1e-6) {
-                toVp /= len;
-                const QPointF perp(-toVp.y(), toVp.x());
-                QPainterPath tri;
-                tri.moveTo(vp.pos);
-                tri.lineTo(c + perp * 80.0);
-                tri.lineTo(c - perp * 80.0);
-                tri.closeSubpath();
-                p.setPen(Qt::NoPen);
-                p.fillPath(tri, vp.color);
-            }
-        }
 
         // Reach far enough that spokes cross the WHOLE canvas even from a
         // distant VP, then fade out past the far corners.
@@ -222,6 +202,50 @@ void PerspectiveTool::paintGuides(QPainter &p, const QRectF &canvasRect) const
         p.setPen(pen);
         p.drawLine(h.p1() - dir * reach, h.p1() + dir * reach);
     }
+    p.restore();
+}
+
+// Off-canvas VP beacon: a wedge whose base sits ON the canvas edge (where the
+// centre->VP ray leaves the rect) and whose apex is the VP itself — pointing
+// from the edge out to the VP. The caller clips strictly to the region
+// OUTSIDE the canvas, so the artwork is never painted over; the fill is the
+// VP's own guide colour at a subtle fixed ~15% opacity.
+void PerspectiveTool::paintEdgeIndicator(QPainter &p, const QRectF &canvasRect,
+                                         int index) const
+{
+    if (index < 0 || index >= m_vps.size())
+        return;
+    const VanishingPoint &vp = m_vps.at(index);
+    if (canvasRect.contains(vp.pos))
+        return; // on-canvas VPs need no beacon
+    const QPointF c = canvasRect.center();
+    QPointF d = vp.pos - c;
+    const qreal len = qSqrt(QPointF::dotProduct(d, d));
+    if (len < 1e-6)
+        return;
+    d /= len;
+    // Slab intersection: where the centre->VP ray crosses the canvas edge.
+    qreal tEdge = len;
+    if (qAbs(d.x()) > 1e-9)
+        tEdge = qMin(tEdge, ((d.x() > 0 ? canvasRect.right() : canvasRect.left())
+                             - c.x()) / d.x());
+    if (qAbs(d.y()) > 1e-9)
+        tEdge = qMin(tEdge, ((d.y() > 0 ? canvasRect.bottom() : canvasRect.top())
+                             - c.y()) / d.y());
+    const QPointF edge = c + d * tEdge;
+    const QPointF perp(-d.y(), d.x());
+
+    QPainterPath wedge;
+    wedge.moveTo(vp.pos);
+    wedge.lineTo(edge + perp * 60.0);
+    wedge.lineTo(edge - perp * 60.0);
+    wedge.closeSubpath();
+
+    p.save();
+    p.setRenderHint(QPainter::Antialiasing, true);
+    p.setOpacity(0.15); // subtle, non-distracting wash
+    p.setPen(Qt::NoPen);
+    p.fillPath(wedge, vp.color);
     p.restore();
 }
 
