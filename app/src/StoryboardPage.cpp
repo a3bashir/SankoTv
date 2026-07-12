@@ -493,6 +493,31 @@ protected:
     }
 };
 
+// Like SelModBar, but with a SOLID #212121 body — the Perspective Modifier
+// container (Figma 180:121) is full-opacity. Same radius-8, not movable.
+class PerspModBar : public FloatingToolWindow
+{
+public:
+    PerspModBar(QWidget *anchor, QWidget *parent)
+        : FloatingToolWindow(anchor, QString(), parent)
+    {
+        setWindowFlags(windowFlags() | Qt::NoDropShadowWindowHint);
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setCompositionMode(QPainter::CompositionMode_Source);
+        p.fillRect(rect(), Qt::transparent); // clear -> clean corners
+        p.setCompositionMode(QPainter::CompositionMode_SourceOver);
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor(0x21, 0x21, 0x21)); // 100% opacity
+        p.drawRoundedRect(QRectF(0, 0, width(), height()), 8, 8);
+    }
+};
+
 // Floating bar body: a FloatingToolWindow (top-level tool window — drag,
 // clamp, main-window follow, and persistence come from the base) painting its
 // #212121 body + 1px #1a1a1a border with antialiased 12px corners.
@@ -631,9 +656,9 @@ protected:
         f.setPixelSize(9);
         p.setFont(f);
         p.setPen(QColor(0xcc, 0xcc, 0xcc));
-        p.drawText(QRectF(0, 0, width(), 15), Qt::AlignLeft | Qt::AlignVCenter,
-                   m_label);
-        if (m_kind == Value) {
+        if (m_kind == Value) { // the Hue variant is track-only: no label/value
+            p.drawText(QRectF(0, 0, width(), 15),
+                       Qt::AlignLeft | Qt::AlignVCenter, m_label);
             f.setPixelSize(8);
             p.setFont(f);
             p.drawText(QRectF(width() - 22, 2, 22, 15),
@@ -641,7 +666,7 @@ protected:
                        QString::number(m_value));
         }
 
-        const QRectF track(0, 14, width(), 10);
+        const QRectF track(0, m_kind == Hue ? 1 : 14, width(), 10);
         QPainterPath tp;
         tp.addRoundedRect(track, 2, 2);
         p.setPen(Qt::NoPen);
@@ -668,7 +693,7 @@ protected:
                 p.fillPath(fp, sheen);
             }
         }
-        QRectF dragger(centerForValue() - 10.0, 14, 20, 10);
+        QRectF dragger(centerForValue() - 10.0, track.top(), 20, 10);
         dragger.moveLeft(qBound(0.0, dragger.left(), width() - 20.0));
         QPainterPath dp;
         dp.addRoundedRect(dragger, 1, 1);
@@ -2235,42 +2260,51 @@ QWidget *StoryboardPage::createBrushSettings()
 QWidget *StoryboardPage::createPerspectiveModifier()
 {
     PerspectiveTool *persp = m_canvas->perspective();
-    SelModBar *bar = new SelModBar(m_canvas, this);
+    PerspModBar *bar = new PerspModBar(m_canvas, this); // solid #212121 body
     m_perspModToolbar = bar;
     bar->setFixedSize(578, 92);
 
     PerspSlider *density = new PerspSlider(QStringLiteral("Density"), 2, 40,
                                            PerspSlider::Value, bar);
     density->setFixedSize(160, 25);
-    density->move(10, 25);
+    density->move(10, 29);
     PerspSlider *opacity = new PerspSlider(QStringLiteral("Opacity"), 5, 100,
                                            PerspSlider::Value, bar);
     opacity->setFixedSize(160, 25);
-    opacity->move(209, 25);
+    opacity->move(209, 29);
     PerspSlider *thickness = new PerspSlider(QStringLiteral("Thickness"), 1, 6,
                                              PerspSlider::Value, bar);
     thickness->setFixedSize(160, 25);
-    thickness->move(408, 25);
-    PerspSlider *hue = new PerspSlider(QStringLiteral("Hue Colors"), 0, 359,
+    thickness->move(408, 29);
+    PerspSlider *hue = new PerspSlider(QString(), 0, 359, // track-only
                                        PerspSlider::Hue, bar);
-    hue->setFixedSize(558, 25);
-    hue->move(10, 55);
+    hue->setFixedSize(558, 12);
+    hue->move(10, 67);
 
     for (int x : {189, 388}) {
         QFrame *divider = new QFrame(bar);
         divider->setStyleSheet(QStringLiteral("background:#4d4d4d;border:none;"));
         divider->setFixedSize(1, 23);
-        divider->move(x, 26);
+        divider->move(x, 30);
     }
 
+    QFont toggleFont(QStringLiteral("Inter"));
+    toggleFont.setPixelSize(8);
+    toggleFont.setWeight(QFont::DemiBold);
+    QLabel *guidesLabel = new QLabel(QStringLiteral("Show Guides"), bar);
+    guidesLabel->setFont(toggleFont);
+    guidesLabel->setStyleSheet(
+        QStringLiteral("color:#cccccc;background:transparent;"));
+    guidesLabel->setFixedSize(54, 11);
+    guidesLabel->move(332, 10);
+    PerspToggle *guides = new PerspToggle(bar);
+    guides->move(392, 11);
+
     QLabel *supportLabel = new QLabel(QStringLiteral("Support Drawing"), bar);
-    QFont supportFont(QStringLiteral("Inter"));
-    supportFont.setPixelSize(8);
-    supportFont.setWeight(QFont::DemiBold);
-    supportLabel->setFont(supportFont);
+    supportLabel->setFont(toggleFont);
     supportLabel->setStyleSheet(
         QStringLiteral("color:#cccccc;background:transparent;"));
-    supportLabel->setFixedSize(67, 15);
+    supportLabel->setFixedSize(67, 11);
     supportLabel->move(468, 10);
     PerspToggle *support = new PerspToggle(bar);
     support->move(540, 11);
@@ -2292,16 +2326,22 @@ QWidget *StoryboardPage::createPerspectiveModifier()
         m_canvas->update();
     };
     support->onToggled = [persp](bool on) { persp->setSnapEnabled(on); };
+    guides->onToggled = [this, persp](bool on) {
+        persp->setGuidesVisible(on);
+        m_canvas->update();
+    };
 
     // Toolbar <- model refresh: tool activation, VP create/select (canvas
     // signal), and project load all re-sync the sliders to the selected VP.
-    m_syncPerspective = [persp, density, opacity, thickness, hue, support] {
+    m_syncPerspective = [persp, density, opacity, thickness, hue, support,
+                         guides] {
         density->setValue(persp->density());
         opacity->setValue(qRound(persp->selectedOpacity() * 100.0));
         thickness->setValue(qRound(persp->thickness()));
         const int h = persp->selectedColor().hsvHue();
         hue->setValue(h < 0 ? 0 : h);
         support->setOn(persp->snapEnabled());
+        guides->setOn(persp->guidesVisible());
     };
     m_syncPerspective();
     connect(m_canvas, &DrawingCanvas::perspectiveEdited, this, [this] {
@@ -2317,6 +2357,7 @@ QWidget *StoryboardPage::createPerspectiveModifier()
         return QPoint(qMax(6, (m_canvas->width() - bar->width()) / 2),
                       qMax(6, statusTop - bar->height() - 10));
     });
+
 
     bar->setVisible(false); // shown while the Perspective tool is active
     return bar;

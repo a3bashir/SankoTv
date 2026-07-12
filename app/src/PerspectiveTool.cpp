@@ -3,6 +3,7 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QPainter>
+#include <QPainterPath>
 #include <QTransform>
 #include <QtMath>
 
@@ -17,9 +18,10 @@ void PerspectiveTool::reset()
     m_vps.clear();
     m_selected = -1;
     m_snap = false;
+    m_guidesVisible = true;
     m_density = 12;
     m_thickness = 1.0;
-    m_horizonColor = QColor(0xff, 0xd4, 0x00);
+    m_horizonColor = QColor(0x31, 0x1d, 0xe2);
     m_defaultColor = QColor(0x4d, 0x9f, 0xff);
     m_defaultOpacity = 0.45;
     m_dirLocked = false;
@@ -140,10 +142,15 @@ QLineF PerspectiveTool::horizonLine() const
     return QLineF(a, a + QPointF(1.0, 0.0));
 }
 
-// Guides: `density` full lines through each VP, fanned evenly, long enough to
-// cross any visible canvas ("infinite"); plus the derived horizon line. Each
-// VP paints with ITS OWN colour and opacity. Cosmetic pens keep the on-screen
-// thickness constant at any zoom/rotation.
+// Guides: `density` full lines through each VP fanned evenly — anchored to
+// the horizon angle, so tilting the horizon sweeps every fan with it, and the
+// spokes pivot around their VP like wheel hubs when it moves. Lines FADE with
+// distance from their VP (radial-gradient pens) instead of stopping abruptly,
+// while still reaching every canvas corner from any VP position. A filled
+// triangular beacon marks each VP that sits outside the canvas (the caller
+// clips to the canvas, leaving an edge wedge aimed at the VP) in the same
+// colour and opacity as that VP's guides; plus the derived horizon. Cosmetic
+// pens keep the on-screen thickness constant at any zoom/rotation.
 void PerspectiveTool::paintGuides(QPainter &p, const QRectF &canvasRect) const
 {
     if (m_vps.isEmpty())
@@ -152,25 +159,63 @@ void PerspectiveTool::paintGuides(QPainter &p, const QRectF &canvasRect) const
     p.setRenderHint(QPainter::Antialiasing, true);
     p.setBrush(Qt::NoBrush);
 
-    const qreal reach = qMax(canvasRect.width(), canvasRect.height()) * 16.0;
+    const QLineF h = horizonLine();
+    const qreal horizonAngle = qAtan2(h.dy(), h.dx());
+    const qreal fadeBase = qMax(canvasRect.width(), canvasRect.height()) * 0.9;
     for (const VanishingPoint &vp : m_vps) {
         p.setOpacity(vp.opacity);
-        QPen pen(vp.color, m_thickness);
+
+        // Off-canvas VP: a triangular indicator from the canvas edge toward
+        // the VP (apex at the VP, base across the canvas centre).
+        if (!canvasRect.contains(vp.pos)) {
+            const QPointF c = canvasRect.center();
+            QPointF toVp = vp.pos - c;
+            const qreal len = qSqrt(QPointF::dotProduct(toVp, toVp));
+            if (len > 1e-6) {
+                toVp /= len;
+                const QPointF perp(-toVp.y(), toVp.x());
+                QPainterPath tri;
+                tri.moveTo(vp.pos);
+                tri.lineTo(c + perp * 80.0);
+                tri.lineTo(c - perp * 80.0);
+                tri.closeSubpath();
+                p.setPen(Qt::NoPen);
+                p.fillPath(tri, vp.color);
+            }
+        }
+
+        // Reach far enough that spokes cross the WHOLE canvas even from a
+        // distant VP, then fade out past the far corners.
+        qreal farCorner = 0.0;
+        const QPointF corners[] = {canvasRect.topLeft(), canvasRect.topRight(),
+                                   canvasRect.bottomLeft(),
+                                   canvasRect.bottomRight()};
+        for (const QPointF &corner : corners)
+            farCorner = qMax(farCorner, QLineF(vp.pos, corner).length());
+        const qreal reach = qMax(fadeBase, farCorner * 1.15);
+
+        QRadialGradient fade(vp.pos, reach);
+        QColor clear = vp.color;
+        clear.setAlpha(0);
+        fade.setColorAt(0.0, vp.color);
+        fade.setColorAt(0.25, vp.color);
+        fade.setColorAt(1.0, clear);
+        QPen pen(QBrush(fade), m_thickness);
         pen.setCosmetic(true);
         p.setPen(pen);
         for (int i = 0; i < m_density; ++i) {
-            const qreal a = M_PI * i / m_density; // half-turn: distinct lines
+            const qreal a = horizonAngle + M_PI * i / m_density;
             const QPointF dir(qCos(a), qSin(a));
             p.drawLine(vp.pos - dir * reach, vp.pos + dir * reach);
         }
     }
 
-    // The horizon (through VP1/VP2) reads slightly stronger than the fans.
-    const QLineF h = horizonLine();
+    // The horizon (through VP1/VP2) reads solid and slightly stronger.
     QPointF dir(h.dx(), h.dy());
     const qreal len = qSqrt(QPointF::dotProduct(dir, dir));
     if (len > 1e-9) {
         dir /= len;
+        const qreal reach = qMax(canvasRect.width(), canvasRect.height()) * 16.0;
         p.setOpacity(1.0);
         QPen pen(m_horizonColor, m_thickness + 0.8);
         pen.setCosmetic(true);
@@ -289,6 +334,7 @@ QJsonObject PerspectiveTool::toJson() const
 {
     QJsonObject o;
     o[QStringLiteral("snap")] = m_snap;
+    o[QStringLiteral("showGuides")] = m_guidesVisible;
     o[QStringLiteral("density")] = m_density;
     o[QStringLiteral("thickness")] = m_thickness;
     o[QStringLiteral("horizonColor")] = m_horizonColor.name(QColor::HexArgb);
@@ -314,11 +360,15 @@ void PerspectiveTool::fromJson(const QJsonObject &o)
         return;
     reset();
     m_snap = o.value(QStringLiteral("snap")).toBool(false);
+    m_guidesVisible = o.value(QStringLiteral("showGuides")).toBool(true);
     setDensity(o.value(QStringLiteral("density")).toInt(m_density));
     setThickness(o.value(QStringLiteral("thickness")).toDouble(m_thickness));
+    // The pre-#311DE2 builds stored the old yellow default (never
+    // user-editable), so migrate it to the current default on load.
     const QColor hc(o.value(QStringLiteral("horizonColor")).toString());
     if (hc.isValid())
-        m_horizonColor = hc;
+        m_horizonColor = (hc == QColor(0xff, 0xd4, 0x00)) ? QColor(0x31, 0x1d, 0xe2)
+                                                          : hc;
     const QColor dc(o.value(QStringLiteral("defaultColor")).toString());
     if (dc.isValid())
         m_defaultColor = dc;

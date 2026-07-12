@@ -2897,7 +2897,7 @@ void DrawingCanvas::paintEvent(QPaintEvent *)
     // (display-only, Sanko dark chip in the Modifier-bar language).
     if (m_tool == Perspective && m_panel && m_perspective.count() == 0) {
         const QString msg = QStringLiteral(
-            "Tap on the canvas to create the first Vanishing Point.");
+            "Tap anywhere to create the first Vanishing Point.");
         QFont chipFont(QStringLiteral("Inter"));
         chipFont.setPixelSize(12);
         chipFont.setWeight(QFont::DemiBold);
@@ -3266,17 +3266,17 @@ void DrawingCanvas::mousePressEvent(QMouseEvent *event)
     }
 
     // Perspective tool: press on a VP handle grabs it (select + drag);
-    // pressing empty canvas TAP-CREATES the next VP (VP1 starts the horizon,
-    // VP2 tilts it, a tap clearly off the horizon adds VP3). Runs BEFORE the
-    // on-canvas and editable-layer gates — VP handles are draggable outside
-    // the canvas bounds and guide editing never touches pixels.
+    // pressing empty space TAP-CREATES the next VP anywhere in the workspace,
+    // inside OR outside the canvas (VP1 starts the horizon, VP2 tilts it, a
+    // tap clearly off the horizon adds VP3). Runs BEFORE the on-canvas and
+    // editable-layer gates — guide editing never touches pixels.
     if (m_tool == Perspective) {
         m_perspHandle = m_perspective.hitTest(event->position(), viewTransform());
         if (m_perspHandle >= 0) {
             m_perspective.setSelected(m_perspHandle);
             emit perspectiveEdited();
             update();
-        } else if (displayRect().contains(event->pos())) {
+        } else {
             m_perspHandle =
                 m_perspective.addVanishingPoint(toCanvasF(event->position()));
             if (m_perspHandle >= 0) { // keep dragging to fine-place the new VP

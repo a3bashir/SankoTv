@@ -20,8 +20,9 @@ class QTransform;
 // Drawing is on. The Perspective Modifier toolbar (StoryboardPage) and
 // project save/load (MainWindow) talk to the same instance.
 //
-// Workflow: the first canvas tap creates VP1 and the horizon line (yellow by
-// default); a second tap creates VP2; with two VPs a tap clearly off the
+// Workflow: the first tap creates VP1 and the horizon line (#311DE2 by
+// default) — anywhere in the workspace, inside or outside the canvas; a
+// second tap creates VP2; with two VPs a tap clearly off the
 // horizon creates VP3. Each VP moves independently — the horizon is DERIVED,
 // always passing through VP1 (and VP2 when it exists), so it tilts when the
 // VPs sit at different heights. Every VP carries its own guide color and
@@ -72,8 +73,11 @@ public:
     qreal selectedOpacity() const;
     void setSelectedOpacity(qreal opacity);
 
-    // Guides render whenever at least one VP exists.
-    bool isVisible() const { return !m_vps.isEmpty(); }
+    // Show/Hide Guides (the Modifier-bar toggle); guides render only while
+    // this is on AND at least one VP exists.
+    bool guidesVisible() const { return m_guidesVisible; }
+    void setGuidesVisible(bool on) { m_guidesVisible = on; }
+    bool isVisible() const { return m_guidesVisible && !m_vps.isEmpty(); }
     // The derived horizon: horizontal through VP1 alone, through VP1 and VP2
     // when both exist (so it tilts with them). Null when no VPs exist.
     QLineF horizonLine() const;
@@ -116,9 +120,10 @@ private:
     QVector<VanishingPoint> m_vps; // 0..3, in creation order
     int m_selected = -1;
     bool m_snap = false;
+    bool m_guidesVisible = true;
     int m_density = 12;
     qreal m_thickness = 1.0;
-    QColor m_horizonColor{0xff, 0xd4, 0x00}; // yellow by default
+    QColor m_horizonColor{0x31, 0x1d, 0xe2}; // #311DE2 by default
     QColor m_defaultColor{0x4d, 0x9f, 0xff}; // colour given to new VPs
     qreal m_defaultOpacity = 0.45;
 
