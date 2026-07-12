@@ -102,6 +102,7 @@ signals:
     void backRequested();
     void continueToAnimaticRequested(const QVector<Scene *> &scenes);
     void consistencyBoardRequested();
+    void settingsRequested(); // Layers toolbar Settings button -> Preferences
 
 protected:
     bool eventFilter(QObject *object, QEvent *event) override;
@@ -219,6 +220,8 @@ private:
     SankoSlider *m_brushHardnessSlider = nullptr;
     // Camera panel (visible only while the Camera tool is active).
     QWidget *m_cameraPanel = nullptr;
+    // Figma "Floating Toolbar Layers" (node 173-36): dock toggles + tools.
+    QWidget *m_layersToolbar = nullptr;
     // Perspective settings panel (visible only while Perspective is active).
     QWidget *m_perspectivePanel = nullptr;
     std::function<void()> m_syncPerspective; // panel controls <- canvas model

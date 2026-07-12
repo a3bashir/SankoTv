@@ -154,19 +154,6 @@ QPixmap toolIconPixmap(const char *kind, const QColor &color)
         p.drawLine(QPointF(7, 6.5), QPointF(8.2, 4));   // viewfinder bump
         p.drawLine(QPointF(8.2, 4), QPointF(11.8, 4));
         p.drawLine(QPointF(11.8, 4), QPointF(13, 6.5));
-    } else if (k == QLatin1String("perspective")) {
-        // Horizon with two vanishing points and converging rays.
-        p.drawLine(QPointF(2.2, 7.2), QPointF(17.8, 7.2)); // horizon
-        p.drawLine(QPointF(4.4, 7.2), QPointF(15.4, 2.6)); // left VP rays
-        p.drawLine(QPointF(4.4, 7.2), QPointF(15.4, 12.2));
-        p.drawLine(QPointF(15.6, 7.2), QPointF(4.6, 2.6)); // right VP rays
-        p.drawLine(QPointF(15.6, 7.2), QPointF(4.6, 12.2));
-        p.drawLine(QPointF(4.4, 7.2), QPointF(13.2, 17.2)); // floor rays
-        p.drawLine(QPointF(15.6, 7.2), QPointF(6.8, 17.2));
-        p.setPen(Qt::NoPen);
-        p.setBrush(color);
-        p.drawEllipse(QPointF(4.4, 7.2), 1.7, 1.7);  // VP dots
-        p.drawEllipse(QPointF(15.6, 7.2), 1.7, 1.7);
     } else if (k == QLatin1String("onion")) {
         p.drawEllipse(QPointF(7.6, 10), 4.6, 4.6);      // two ghost frames
         p.drawEllipse(QPointF(12.4, 10), 4.6, 4.6);
@@ -1767,21 +1754,8 @@ void StoryboardPage::createFloatingToolbar()
         if (m_cameraPanel)
             m_cameraPanel->setVisible(on);
     });
-    // Perspective guides tool: non-drawing like Camera — activating it shows
-    // the settings panel and lets VPs / the horizon be dragged on the canvas.
-    QPushButton *perspective = toolButton(toolIconPixmap("perspective", kIconColor),
-        QStringLiteral("<b>Perspective</b> | Perspective guides and snap."), true);
-    tools->addButton(perspective);
-    bindTool(perspective, DrawingCanvas::Perspective);
-    connect(perspective, &QPushButton::toggled, this, [this](bool on) {
-        if (m_perspectivePanel)
-            m_perspectivePanel->setVisible(on);
-        if (on && m_syncPerspective)
-            m_syncPerspective();
-    });
     extras->addWidget(shapes, 0, Qt::AlignHCenter);
     extras->addWidget(camera, 0, Qt::AlignHCenter);
-    extras->addWidget(perspective, 0, Qt::AlignHCenter);
 
     // Onion skin toggle (independent of the exclusive tool group).
     m_onionButton = toolButton(toolIconPixmap("onion", kIconColor),
@@ -1816,6 +1790,122 @@ void StoryboardPage::createFloatingToolbar()
         return QPoint(16, qMax(6, (m_canvas->height() - extrasBar->height()) / 2));
     });
     extrasBar->show(); // records intent; effective when the canvas shows
+
+    // ---- Floating Toolbar Layers (Figma node 173:36) ----------------------
+    // 381x46 bar: grab dots, Layers / Perspective / Scenes / Camera /
+    // Image Reference / Shot Info buttons (30x30, 15px gaps), a 1x20 #4d4d4d
+    // divider, then Settings. Exact Figma layout: margins 20/8/18/8, gap 15.
+    RoundedBar *layersBar =
+        new RoundedBar(m_canvas, QStringLiteral("storyboard/layersBarPos"), this);
+    m_layersToolbar = layersBar;
+    m_layersToolbar->setObjectName(QStringLiteral("layersToolbar"));
+    m_layersToolbar->setFixedHeight(46);
+
+    QHBoxLayout *lay = new QHBoxLayout(m_layersToolbar);
+    lay->setContentsMargins(20, 8, 18, 8);
+    lay->setSpacing(15);
+
+    // Grab dots (12x20, matching the Figma asset), the drag grip.
+    QLabel *layGrip = new QLabel;
+    layGrip->setPixmap(dragDotsPixmapV());
+    layGrip->setFixedSize(12, 20);
+    layGrip->setCursor(Qt::OpenHandCursor);
+    layGrip->setToolTip(QStringLiteral("Drag to move the toolbar"));
+    lay->addWidget(layGrip, 0, Qt::AlignVCenter);
+    layersBar->setGripWidget(layGrip);
+
+    // Dock toggles: checkable buttons mirroring the ADS dock visibility (the
+    // docks are wired after construction — see the singleShot below).
+    ToolButton *layersBtn = toolButton(
+        figIconPixmap(QStringLiteral(":/icons/fig_layers.svg"), QSizeF(26, 17)),
+        QStringLiteral("<b>Layers</b> | Show or hide the Layers panel."), true);
+    ToolButton *perspective = toolButton(
+        figIconPixmap(QStringLiteral(":/icons/fig_perspective.svg"), QSizeF(26, 17)),
+        QStringLiteral("<b>Perspective</b> | Perspective guides and snap."), true);
+    ToolButton *scenesBtn = toolButton(
+        figIconPixmap(QStringLiteral(":/icons/fig_scenes.svg"), QSizeF(24, 24)),
+        QStringLiteral("<b>Scenes</b> | Show or hide the Scenes panel."), true);
+    ToolButton *cameraBtn = toolButton(
+        figIconPixmap(QStringLiteral(":/icons/fig_camera.svg"), QSizeF(23, 20)),
+        QStringLiteral("<b>Camera</b> | Frame and safe-area guides."), true);
+    ToolButton *imageRefBtn = toolButton(
+        figIconPixmap(QStringLiteral(":/icons/fig_imageref.svg"), QSizeF(24, 15)),
+        QStringLiteral("<b>Image Reference</b> | Reference images (coming soon)."),
+        false);
+    ToolButton *shotInfoBtn = toolButton(
+        figIconPixmap(QStringLiteral(":/icons/fig_shotinfo.svg"), QSizeF(12, 20)),
+        QStringLiteral("<b>Shot Info</b> | Show or hide the Shot Info panel."), true);
+
+    lay->addWidget(layersBtn, 0, Qt::AlignVCenter);
+    lay->addWidget(perspective, 0, Qt::AlignVCenter);
+    lay->addWidget(scenesBtn, 0, Qt::AlignVCenter);
+    lay->addWidget(cameraBtn, 0, Qt::AlignVCenter);
+    lay->addWidget(imageRefBtn, 0, Qt::AlignVCenter);
+    lay->addWidget(shotInfoBtn, 0, Qt::AlignVCenter);
+
+    // Divider (1x20, #4d4d4d), then Settings.
+    QFrame *layDivider = new QFrame;
+    layDivider->setFixedSize(1, 20);
+    layDivider->setStyleSheet(QStringLiteral("background:#4d4d4d; border:none;"));
+    lay->addWidget(layDivider, 0, Qt::AlignVCenter);
+
+    ToolButton *settingBtn = toolButton(
+        figIconPixmap(QStringLiteral(":/icons/fig_setting.svg"), QSizeF(24, 24)),
+        QStringLiteral("<b>Settings</b> | Open Preferences."), false);
+    connect(settingBtn, &QPushButton::clicked, this,
+            [this] { emit settingsRequested(); });
+    lay->addWidget(settingBtn, 0, Qt::AlignVCenter);
+
+    // Perspective tool: exclusive with the other tools; shows its panel.
+    tools->addButton(perspective);
+    bindTool(perspective, DrawingCanvas::Perspective);
+    connect(perspective, &QPushButton::toggled, this, [this](bool on) {
+        if (m_perspectivePanel)
+            m_perspectivePanel->setVisible(on);
+        if (on && m_syncPerspective)
+            m_syncPerspective();
+    });
+
+    // Camera mirrors the extras-bar Camera button (one source of truth: the
+    // extras button owns the tool-group membership and the panel wiring).
+    connect(cameraBtn, &QPushButton::toggled, camera, &QPushButton::setChecked);
+    connect(camera, &QPushButton::toggled, cameraBtn, &QPushButton::setChecked);
+
+    // Dock toggles wire up once the ADS docks exist (they are created after
+    // the canvas column that hosts this bar).
+    connect(layersBtn, &QPushButton::toggled, this, [this](bool on) {
+        if (m_layersDock && m_layersDock->isClosed() == on)
+            m_layersDock->toggleView(on);
+    });
+    connect(scenesBtn, &QPushButton::toggled, this, [this](bool on) {
+        if (m_scenesDock && m_scenesDock->isClosed() == on)
+            m_scenesDock->toggleView(on);
+    });
+    connect(shotInfoBtn, &QPushButton::toggled, this, [this](bool on) {
+        if (m_shotInfoDock && m_shotInfoDock->isClosed() == on)
+            m_shotInfoDock->toggleView(on);
+    });
+    QTimer::singleShot(0, this, [this, layersBtn, scenesBtn, shotInfoBtn] {
+        struct Pair { ads::CDockWidget *dock; ToolButton *btn; };
+        const Pair pairs[] = {{m_layersDock, layersBtn},
+                              {m_scenesDock, scenesBtn},
+                              {m_shotInfoDock, shotInfoBtn}};
+        for (const Pair &pr : pairs) {
+            if (!pr.dock)
+                continue;
+            pr.btn->setChecked(!pr.dock->isClosed());
+            connect(pr.dock, &ads::CDockWidget::viewToggled,
+                    pr.btn, &QPushButton::setChecked);
+        }
+    });
+
+
+    m_layersToolbar->adjustSize();
+    // Default spot: top edge, horizontally centred over the canvas.
+    layersBar->setDefaultOffsetProvider([this, layersBar] {
+        return QPoint(qMax(6, (m_canvas->width() - layersBar->width()) / 2), 12);
+    });
+    layersBar->show(); // records intent; effective when the canvas shows
 }
 
 // Floating overlay panel over the canvas, styled after the dock headers:

@@ -26,5 +26,12 @@
         <file>icons/movemod_distort.svg</file>
         <file>icons/movemod_perspective.svg</file>
         <file>icons/movemod_warp.svg</file>
+        <file>icons/fig_layers.svg</file>
+        <file>icons/fig_perspective.svg</file>
+        <file>icons/fig_scenes.svg</file>
+        <file>icons/fig_camera.svg</file>
+        <file>icons/fig_imageref.svg</file>
+        <file>icons/fig_shotinfo.svg</file>
+        <file>icons/fig_setting.svg</file>
     </qresource>
 </RCC>

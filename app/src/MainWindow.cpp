@@ -126,6 +126,8 @@ MainWindow::MainWindow(QWidget *parent)
     });
 
     // Storyboard <-> Consistency Board.
+    connect(m_storyboard, &StoryboardPage::settingsRequested, this,
+            [this] { onPreferences(); });
     connect(m_storyboard, &StoryboardPage::consistencyBoardRequested, this, [this] {
         m_consistencyBoard->refresh();
         m_stack->setCurrentWidget(m_consistencyBoard);
