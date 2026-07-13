@@ -19,7 +19,7 @@ void PerspectiveTool::reset()
     m_selected = -1;
     m_snap = false;
     m_guidesVisible = true;
-    m_density = 12;
+    m_density = 40;
     m_thickness = 1.0;
     m_horizonColor = QColor(0x31, 0x1d, 0xe2);
     m_defaultColor = QColor(0x4d, 0x9f, 0xff);
@@ -190,14 +190,14 @@ void PerspectiveTool::paintGuides(QPainter &p, const QRectF &canvasRect) const
         }
     }
 
-    // The horizon (through VP1/VP2) reads solid and slightly stronger.
+    // The horizon (through VP1/VP2) reads solid at a fixed slim 1.5px.
     QPointF dir(h.dx(), h.dy());
     const qreal len = qSqrt(QPointF::dotProduct(dir, dir));
     if (len > 1e-9) {
         dir /= len;
         const qreal reach = qMax(canvasRect.width(), canvasRect.height()) * 16.0;
         p.setOpacity(1.0);
-        QPen pen(m_horizonColor, m_thickness + 0.8);
+        QPen pen(m_horizonColor, 1.5);
         pen.setCosmetic(true);
         p.setPen(pen);
         p.drawLine(h.p1() - dir * reach, h.p1() + dir * reach);
@@ -221,17 +221,25 @@ void PerspectiveTool::paintEdgeIndicator(QPainter &p, const QRectF &canvasRect,
     if (canvasRect.contains(vp.pos))
         return; // beacons exist only for off-canvas VPs
 
-    // Fixed anchors: the top and bottom corners of the canvas side nearest
-    // the VP (right side when the VP sits in the right half-plane).
-    const bool rightSide = vp.pos.x() >= canvasRect.center().x();
-    const QPointF top = rightSide ? canvasRect.topRight() : canvasRect.topLeft();
-    const QPointF bottom =
-        rightSide ? canvasRect.bottomRight() : canvasRect.bottomLeft();
+    // Fixed anchors. VP1/VP2 (the horizon VPs): the top and bottom corners
+    // of the canvas side nearest the VP. VP3 (index 2, the off-horizon VP):
+    // the LEFT and RIGHT corners of the nearest horizontal edge, so its
+    // triangle hangs off the top or bottom of the canvas instead.
+    QPointF anchorA, anchorB;
+    if (index == 2) {
+        const bool bottomSide = vp.pos.y() >= canvasRect.center().y();
+        anchorA = bottomSide ? canvasRect.bottomLeft() : canvasRect.topLeft();
+        anchorB = bottomSide ? canvasRect.bottomRight() : canvasRect.topRight();
+    } else {
+        const bool rightSide = vp.pos.x() >= canvasRect.center().x();
+        anchorA = rightSide ? canvasRect.topRight() : canvasRect.topLeft();
+        anchorB = rightSide ? canvasRect.bottomRight() : canvasRect.bottomLeft();
+    }
 
     QPainterPath tri;
     tri.moveTo(vp.pos);
-    tri.lineTo(top);
-    tri.lineTo(bottom);
+    tri.lineTo(anchorA);
+    tri.lineTo(anchorB);
     tri.closeSubpath();
 
     p.save();
@@ -244,23 +252,26 @@ void PerspectiveTool::paintEdgeIndicator(QPainter &p, const QRectF &canvasRect,
 
 // Editing handles (Perspective tool active): a ringed dot per VP in its own
 // colour, in WIDGET space so they stay grabbable at any zoom — and visible
-// even when a VP sits outside the canvas bounds. The selected VP (the one the
-// Opacity / Hue Colors sliders edit) carries an accent outer ring.
-void PerspectiveTool::paintHandles(QPainter &p, const QTransform &canvasToWidget) const
+// even when a VP sits outside the canvas bounds. The hovered handle grows
+// slightly for feedback; the selected VP (the one the Opacity / Hue Colors
+// sliders edit) carries an accent outer ring.
+void PerspectiveTool::paintHandles(QPainter &p, const QTransform &canvasToWidget,
+                                   int hoveredIndex) const
 {
     p.save();
     p.setRenderHint(QPainter::Antialiasing, true);
     for (int v = 0; v < m_vps.size(); ++v) {
         const QPointF w = canvasToWidget.map(m_vps.at(v).pos);
+        const qreal r = (v == hoveredIndex) ? 9.5 : 7.0;
         p.setPen(QPen(QColor(0, 0, 0, 150), 3.5));
         p.setBrush(m_vps.at(v).color);
-        p.drawEllipse(w, 7.0, 7.0);
+        p.drawEllipse(w, r, r);
         p.setPen(QPen(Qt::white, 1.8));
-        p.drawEllipse(w, 7.0, 7.0);
+        p.drawEllipse(w, r, r);
         if (v == m_selected) {
             p.setPen(QPen(QColor(0x7c, 0x6e, 0xf6), 2.0));
             p.setBrush(Qt::NoBrush);
-            p.drawEllipse(w, 11.0, 11.0);
+            p.drawEllipse(w, r + 4.0, r + 4.0);
         }
     }
     p.restore();

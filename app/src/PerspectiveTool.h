@@ -86,14 +86,18 @@ public:
 
     // --- rendering (painter already in CANVAS space) --------------------------
     void paintGuides(QPainter &p, const QRectF &canvasRect) const;
-    // Off-canvas beacon for ONE vp: a triangle anchored to the VP plus the
-    // top and bottom canvas corners of the side nearest it (the corners are
-    // FIXED — only the VP vertex moves), in that VP's guide colour at 40%.
-    // DrawingCanvas draws it ONLY while that VP is being dragged, clipped
-    // strictly OUTSIDE the canvas so the artwork is never painted over.
+    // Off-canvas beacon for ONE vp: a triangle anchored to the VP plus two
+    // FIXED canvas anchors — the top/bottom corners of the nearest side for
+    // VP1/VP2, the left/right corners of the nearest horizontal edge for VP3
+    // — in that VP's guide colour at 40%. Only the VP vertex moves, so the
+    // triangle stretches/rotates around the anchors. DrawingCanvas draws it
+    // for the whole editing session (VP selected, Perspective tool active),
+    // clipped strictly OUTSIDE the canvas so the artwork is never covered.
     void paintEdgeIndicator(QPainter &p, const QRectF &canvasRect, int index) const;
     // Editing handles, WIDGET space (constant screen size; may be off-canvas).
-    void paintHandles(QPainter &p, const QTransform &canvasToWidget) const;
+    // The hovered handle draws slightly larger for feedback.
+    void paintHandles(QPainter &p, const QTransform &canvasToWidget,
+                      int hoveredIndex = -1) const;
 
     // --- interaction -----------------------------------------------------------
     // VP handle under the cursor, or -1.
@@ -127,7 +131,7 @@ private:
     int m_selected = -1;
     bool m_snap = false;
     bool m_guidesVisible = true;
-    int m_density = 12;
+    int m_density = 40;
     qreal m_thickness = 1.0;
     QColor m_horizonColor{0x31, 0x1d, 0xe2}; // #311DE2 by default
     QColor m_defaultColor{0x4d, 0x9f, 0xff}; // colour given to new VPs

@@ -635,6 +635,8 @@ public:
     }
 
     std::function<void(int)> onChanged;
+    std::function<void()> onBegin; // gesture start (undo snapshot)
+    std::function<void()> onEnd;   // gesture end (undo push)
 
     int value() const { return m_value; }
     void setValue(int v)
@@ -699,11 +701,21 @@ protected:
         dp.addRoundedRect(dragger, 1, 1);
         p.fillPath(dp, QColor(0xb3, 0xb3, 0xb3));
     }
-    void mousePressEvent(QMouseEvent *e) override { setFromX(e->position().x()); }
+    void mousePressEvent(QMouseEvent *e) override
+    {
+        if (onBegin)
+            onBegin(); // snapshot BEFORE the first change of the gesture
+        setFromX(e->position().x());
+    }
     void mouseMoveEvent(QMouseEvent *e) override
     {
         if (e->buttons() & Qt::LeftButton)
             setFromX(e->position().x());
+    }
+    void mouseReleaseEvent(QMouseEvent *) override
+    {
+        if (onEnd)
+            onEnd();
     }
 
 private:
@@ -2309,6 +2321,17 @@ QWidget *StoryboardPage::createPerspectiveModifier()
     PerspToggle *support = new PerspToggle(bar);
     support->move(540, 11);
 
+    // Undo/redo: every slider drag or toggle click is ONE command on the
+    // shared app stack (snapshot at gesture start, push at gesture end).
+    auto wireUndo = [this](PerspSlider *slider, const QString &text) {
+        slider->onBegin = [this] { m_canvas->beginPerspectiveEdit(); };
+        slider->onEnd = [this, text] { m_canvas->endPerspectiveEdit(text); };
+    };
+    wireUndo(density, QStringLiteral("Guide Density"));
+    wireUndo(opacity, QStringLiteral("Guide Opacity"));
+    wireUndo(thickness, QStringLiteral("Guide Thickness"));
+    wireUndo(hue, QStringLiteral("Guide Color"));
+
     density->onChanged = [this, persp](int v) {
         persp->setDensity(v);
         m_canvas->update();
@@ -2325,9 +2348,15 @@ QWidget *StoryboardPage::createPerspectiveModifier()
         persp->setSelectedColor(QColor::fromHsv(v, 255, 255)); // per-VP
         m_canvas->update();
     };
-    support->onToggled = [persp](bool on) { persp->setSnapEnabled(on); };
+    support->onToggled = [this, persp](bool on) {
+        m_canvas->beginPerspectiveEdit();
+        persp->setSnapEnabled(on);
+        m_canvas->endPerspectiveEdit(QStringLiteral("Support Drawing"));
+    };
     guides->onToggled = [this, persp](bool on) {
+        m_canvas->beginPerspectiveEdit();
         persp->setGuidesVisible(on);
+        m_canvas->endPerspectiveEdit(QStringLiteral("Show Guides"));
         m_canvas->update();
     };
 
@@ -2357,6 +2386,7 @@ QWidget *StoryboardPage::createPerspectiveModifier()
         return QPoint(qMax(6, (m_canvas->width() - bar->width()) / 2),
                       qMax(6, statusTop - bar->height() - 10));
     });
+
 
 
     bar->setVisible(false); // shown while the Perspective tool is active

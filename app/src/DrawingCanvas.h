@@ -2,6 +2,8 @@
 
 #include "PerspectiveTool.h"
 
+#include <QJsonObject>
+
 #include <QColor>
 #include <QCursor>
 #include <QImage>
@@ -170,6 +172,13 @@ public slots:
     void applyLayerRegionForUndo(Panel *panel, const QString &layerId,
                                  const QRect &region, const QImage &pixels);
     void applySelectionPathForUndo(const QPainterPath &path);
+
+    // Perspective undo plumbing: every completed perspective gesture (VP
+    // create/move/delete, settings edit) pushes ONE command holding full
+    // before/after model snapshots. begin/end bracket toolbar slider drags.
+    void applyPerspectiveForUndo(const QJsonObject &state);
+    void beginPerspectiveEdit();
+    void endPerspectiveEdit(const QString &text);
 
 signals:
     void contentChanged();
@@ -480,6 +489,13 @@ private:
     // Perspective guides (display-only; geometry in canvas coords).
     PerspectiveTool m_perspective;
     int m_perspHandle = -1; // VP index being dragged (-1: none)
+    int m_perspHover = -1;  // VP handle under the idle cursor (grows on hover)
+    // One undo command per completed gesture: snapshot at press, push at
+    // release (or at begin/endPerspectiveEdit for toolbar edits).
+    QJsonObject m_perspBefore;
+    bool m_perspGesture = false;
+    QString m_perspGestureText;
+    void pushPerspectiveCommand(const QJsonObject &before, const QString &text);
 
     // Display-only overlays.
     bool m_grid = false;         // alignment grid, 40 canvas px (View > Grid)

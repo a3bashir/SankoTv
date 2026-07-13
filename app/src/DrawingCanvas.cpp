@@ -259,6 +259,35 @@ private:
     bool m_firstRedo = true;
 };
 
+// Perspective model change (VP create/move/delete, guide-settings edit) as
+// ONE chronological entry in the shared app stack: full before/after JSON
+// snapshots of the PerspectiveTool, applied via fromJson on undo/redo. The
+// live edit already happened, so the first redo() is skipped.
+class PerspectiveCommand : public QUndoCommand
+{
+public:
+    PerspectiveCommand(DrawingCanvas *canvas, const QJsonObject &before,
+                       const QJsonObject &after, const QString &text)
+        : QUndoCommand(text), m_canvas(canvas), m_before(before), m_after(after)
+    {
+    }
+    void undo() override { m_canvas->applyPerspectiveForUndo(m_before); }
+    void redo() override
+    {
+        if (m_firstRedo) {
+            m_firstRedo = false;
+            return;
+        }
+        m_canvas->applyPerspectiveForUndo(m_after);
+    }
+
+private:
+    DrawingCanvas *m_canvas;
+    QJsonObject m_before;
+    QJsonObject m_after;
+    bool m_firstRedo = true;
+};
+
 // Tight bounding rect of the pixels that differ between two same-sized
 // images (empty when identical).
 QRect diffRegion(const QImage &a, const QImage &b)
@@ -492,6 +521,13 @@ void DrawingCanvas::setTool(Tool tool)
         setMouseTracking(false);
     }
     m_tool = tool;
+    // Perspective hover feedback (handles grow under the cursor) needs
+    // buttonless move events; SelectPoly manages its own tracking below.
+    if (tool == Perspective)
+        setMouseTracking(true);
+    else if (tool != SelectPoly)
+        setMouseTracking(false);
+    m_perspHover = -1;
     cancelShape(); // an in-progress shape never survives a tool switch
     // Activating Move shows the transform box at once (like Photoshop).
     if (tool == Move)
@@ -928,6 +964,39 @@ void DrawingCanvas::applyLayerRegionForUndo(Panel *panel, const QString &layerId
 }
 
 // Command callback: restore a selection path (display state only).
+void DrawingCanvas::applyPerspectiveForUndo(const QJsonObject &state)
+{
+    m_perspective.fromJson(state);
+    emit perspectiveEdited(); // the Modifier bar re-syncs its sliders
+    update();
+}
+
+void DrawingCanvas::pushPerspectiveCommand(const QJsonObject &before,
+                                           const QString &text)
+{
+    if (!m_undoStack)
+        return;
+    const QJsonObject after = m_perspective.toJson();
+    if (after == before)
+        return; // no-op gesture (e.g. a rejected 4th tap): nothing to undo
+    m_undoStack->push(new PerspectiveCommand(this, before, after, text));
+}
+
+void DrawingCanvas::beginPerspectiveEdit()
+{
+    m_perspBefore = m_perspective.toJson();
+    m_perspGesture = true;
+    m_perspGestureText = QStringLiteral("Perspective Settings");
+}
+
+void DrawingCanvas::endPerspectiveEdit(const QString &text)
+{
+    if (!m_perspGesture)
+        return;
+    m_perspGesture = false;
+    pushPerspectiveCommand(m_perspBefore, text);
+}
+
 void DrawingCanvas::applySelectionPathForUndo(const QPainterPath &path)
 {
     m_selectionPath = path;
@@ -2857,10 +2926,12 @@ void DrawingCanvas::paintEvent(QPaintEvent *)
         painter.restore();
     }
 
-    // Off-canvas VP beacon: ONLY while that VP is actively being dragged, and
-    // clipped strictly OUTSIDE the canvas rect — the artwork is never painted
-    // over. Vanishes on mouse release (m_perspHandle resets to -1).
-    if (m_tool == Perspective && m_perspHandle >= 0) {
+    // Off-canvas VP beacon: visible for the WHOLE editing session — while the
+    // Perspective tool is active with a selected VP (creating, moving, or
+    // recolouring it from the Modifier bar) — and clipped strictly OUTSIDE
+    // the canvas rect, so the artwork is never painted over. Deselecting or
+    // leaving the tool hides it; on-canvas VPs draw nothing.
+    if (m_tool == Perspective && m_perspective.selected() >= 0) {
         painter.save();
         QPainterPath outside;
         outside.addPolygon(painter.worldTransform().inverted().map(
@@ -2869,7 +2940,8 @@ void DrawingCanvas::paintEvent(QPaintEvent *)
         QPainterPath canvasPath;
         canvasPath.addRect(canvasR);
         painter.setClipPath(outside.subtracted(canvasPath));
-        m_perspective.paintEdgeIndicator(painter, canvasR, m_perspHandle);
+        m_perspective.paintEdgeIndicator(painter, canvasR,
+                                         m_perspective.selected());
         painter.restore();
     }
 
@@ -2932,7 +3004,7 @@ void DrawingCanvas::paintEvent(QPaintEvent *)
     // Perspective editing handles (Perspective tool): WIDGET space and NOT
     // clipped to the canvas — vanishing points may sit outside its bounds.
     if (m_tool == Perspective && m_panel)
-        m_perspective.paintHandles(painter, T);
+        m_perspective.paintHandles(painter, T, m_perspHover);
 
     // Transform box outline + handles: WIDGET space (constant screen size),
     // corners mapped through T so the box tracks the rotated/flipped preview.
@@ -3287,8 +3359,13 @@ void DrawingCanvas::mousePressEvent(QMouseEvent *event)
     // tap clearly off the horizon adds VP3). Runs BEFORE the on-canvas and
     // editable-layer gates — guide editing never touches pixels.
     if (m_tool == Perspective) {
+        // Snapshot BEFORE the gesture mutates anything; the matching command
+        // is pushed on release (create+place or move = one undo entry).
+        m_perspBefore = m_perspective.toJson();
         m_perspHandle = m_perspective.hitTest(event->position(), viewTransform());
         if (m_perspHandle >= 0) {
+            m_perspGesture = true;
+            m_perspGestureText = QStringLiteral("Move Vanishing Point");
             m_perspective.setSelected(m_perspHandle);
             emit perspectiveEdited();
             update();
@@ -3296,6 +3373,8 @@ void DrawingCanvas::mousePressEvent(QMouseEvent *event)
             m_perspHandle =
                 m_perspective.addVanishingPoint(toCanvasF(event->position()));
             if (m_perspHandle >= 0) { // keep dragging to fine-place the new VP
+                m_perspGesture = true;
+                m_perspGestureText = QStringLiteral("Create Vanishing Point");
                 emit perspectiveEdited();
                 update();
             }
@@ -3420,6 +3499,14 @@ void DrawingCanvas::mouseMoveEvent(QMouseEvent *event)
             m_perspective.moveVanishingPoint(m_perspHandle,
                                              toCanvasF(event->position()));
             update();
+        } else if (!(event->buttons() & Qt::LeftButton)) {
+            // Idle hover: the handle under the cursor grows slightly.
+            const int hover =
+                m_perspective.hitTest(event->position(), viewTransform());
+            if (hover != m_perspHover) {
+                m_perspHover = hover;
+                update();
+            }
         }
         return;
     }
@@ -3507,6 +3594,10 @@ void DrawingCanvas::mouseReleaseEvent(QMouseEvent *event)
         return;
     }
     if (m_tool == Perspective && event->button() == Qt::LeftButton) {
+        if (m_perspGesture) {
+            m_perspGesture = false;
+            pushPerspectiveCommand(m_perspBefore, m_perspGestureText);
+        }
         m_perspHandle = -1;
         return;
     }
@@ -3606,10 +3697,13 @@ void DrawingCanvas::mouseDoubleClickEvent(QMouseEvent *event)
     if (m_tool == Perspective && event->button() == Qt::LeftButton) {
         const int hit = m_perspective.hitTest(event->position(), viewTransform());
         if (hit >= 0) {
+            const QJsonObject before = m_perspective.toJson();
             m_perspective.removeVanishingPoint(hit);
             m_perspHandle = -1;
+            m_perspHover = -1;
             emit perspectiveEdited();
             update();
+            pushPerspectiveCommand(before, QStringLiteral("Delete Vanishing Point"));
         }
         return;
     }
