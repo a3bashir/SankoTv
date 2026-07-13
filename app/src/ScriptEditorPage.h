@@ -6,14 +6,15 @@
 class CodeEditor;
 class QJsonObject;
 class QLabel;
-class QNetworkAccessManager;
-class QNetworkReply;
 class QPushButton;
 class QTimer;
 class QVBoxLayout;
 
-// Second screen in the pipeline: write a script on the left, parse it into a
-// scene breakdown on the right via the Claude API, then continue to storyboard.
+// Second screen in the pipeline: write a script on the left, break it into a
+// scene list on the right, then continue to the storyboard. Parsing is done
+// entirely LOCALLY (screenplay-heading / paragraph detection) — no network
+// request and no API key are ever used. "Skip" jumps straight to boarding with
+// a single blank scene.
 class ScriptEditorPage : public QWidget
 {
     Q_OBJECT
@@ -23,23 +24,22 @@ public:
 
 signals:
     void backRequested();
-    void scenesReady(const QJsonArray &scenes); // emitted after each successful parse
+    void scenesReady(const QJsonArray &scenes); // emitted after each parse / skip
     void continueRequested();                   // navigate to the Storyboard
 
 private slots:
-    void onParseClicked();
+    void onParseClicked(); // local parse only (no API)
+    void onSkipClicked();  // blank Scene 1, straight to the Storyboard (no parse)
 
 private:
     QWidget *createWritingPanel();
     QWidget *createBreakdownPanel();
     QWidget *createBottomBar();
 
-    void handleReply(QNetworkReply *reply, const QString &script);
     void clearScenes();
     void showBreakdownMessage(const QString &text, const QString &color);
-    void populateScenes(const QJsonArray &scenes, bool demoMode = false);
+    void populateScenes(const QJsonArray &scenes);
     QWidget *createSceneCard(const QJsonObject &scene);
-    void setParsing(bool parsing);
     void setContinueEnabled(bool enabled);
 
     CodeEditor *m_editor = nullptr;
@@ -50,9 +50,8 @@ private:
     QVBoxLayout *m_scenesLayout = nullptr; // holds scene cards / status messages
 
     QPushButton *m_parseButton = nullptr;
+    QPushButton *m_skipButton = nullptr;
     QPushButton *m_continueButton = nullptr;
 
-    QJsonArray m_scenes; // last parsed/mock scene breakdown, passed to Storyboard
-
-    QNetworkAccessManager *m_net = nullptr;
+    QJsonArray m_scenes; // last parsed scene breakdown, passed to the Storyboard
 };

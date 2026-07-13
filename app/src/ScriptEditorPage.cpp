@@ -2,37 +2,22 @@
 
 #include "CodeEditor.h"
 
-#include <QByteArray>
 #include <QFont>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QJsonArray>
-#include <QJsonDocument>
 #include <QJsonObject>
-#include <QJsonParseError>
 #include <QLabel>
-#include <QNetworkAccessManager>
-#include <QNetworkReply>
-#include <QNetworkRequest>
 #include <QPushButton>
 #include <QRegularExpression>
 #include <QScrollArea>
 #include <QStringList>
 #include <QTimer>
-#include <QUrl>
 #include <QVBoxLayout>
 #include <QVector>
 #include <Qt>
 
 namespace {
-
-const char *kSystemPrompt =
-    "You are a script parser for an animation director tool. Parse the provided "
-    "script into scenes. Return ONLY a JSON array with no markdown, no explanation. "
-    "Each scene object must have these exact fields: scene_number (integer), "
-    "location (string), time_of_day (string, use DAY/NIGHT/DAWN/DUSK/UNSPECIFIED), "
-    "action (string, max 100 chars summary of what happens). Support both formal "
-    "screenplay format and plain language descriptions.";
 
 const char *kPlaceholder =
     "Write your script here. Use screenplay format or plain language \xE2\x80\x94 both work.";
@@ -47,13 +32,10 @@ const char *kAmberButton =
     "QPushButton:pressed { background-color: #e0991c; }"
     "QPushButton:disabled { background-color: #5a4416; color: #997a3a; }";
 
-// Set to true to skip the live API entirely and always use mock scene data.
-// Useful for offline UI development and demos.
-constexpr bool kForceDemoMode = false;
-
-// --- Mock scene generation -------------------------------------------------
-// Produces realistic-looking fake scenes from the actual script text so the
-// full UI flow works without API credits.
+// --- Local scene parsing ---------------------------------------------------
+// Builds the scene breakdown directly from the script text — no API, no
+// network. Screenplay INT./EXT. headings become scenes; otherwise each
+// blank-line-separated paragraph becomes a scene.
 
 QString detectTimeOfDay(const QString &text)
 {
@@ -73,8 +55,8 @@ QString truncateAction(QString text)
     return text;
 }
 
-QJsonObject makeMockScene(int number, const QString &location,
-                          const QString &timeOfDay, const QString &action)
+QJsonObject makeScene(int number, const QString &location,
+                      const QString &timeOfDay, const QString &action)
 {
     QJsonObject scene;
     scene[QStringLiteral("scene_number")] = number;
@@ -94,7 +76,7 @@ QString deriveLocation(const QString &paragraph)
     return head.join(QLatin1Char(' ')).toUpper();
 }
 
-QJsonArray buildMockScenes(const QString &script)
+QJsonArray buildSceneBreakdown(const QString &script)
 {
     QJsonArray scenes;
 
@@ -143,9 +125,9 @@ QJsonArray buildMockScenes(const QString &script)
                     actionLines << t;
             }
 
-            scenes.append(makeMockScene(number++, location,
-                                        detectTimeOfDay(timeText),
-                                        truncateAction(actionLines.join(QLatin1Char(' ')))));
+            scenes.append(makeScene(number++, location,
+                                    detectTimeOfDay(timeText),
+                                    truncateAction(actionLines.join(QLatin1Char(' ')))));
         }
     } else {
         // Plain language: one scene per blank-line-separated paragraph.
@@ -156,33 +138,18 @@ QJsonArray buildMockScenes(const QString &script)
             const QString para = paragraph.simplified();
             if (para.isEmpty())
                 continue;
-            scenes.append(makeMockScene(number++, deriveLocation(para),
-                                        detectTimeOfDay(para), truncateAction(para)));
+            scenes.append(makeScene(number++, deriveLocation(para),
+                                    detectTimeOfDay(para), truncateAction(para)));
         }
         // Fallback: a single non-empty line with no blank separators.
         if (scenes.isEmpty() && !script.trimmed().isEmpty()) {
-            scenes.append(makeMockScene(1, deriveLocation(script),
-                                        detectTimeOfDay(script),
-                                        truncateAction(script)));
+            scenes.append(makeScene(1, deriveLocation(script),
+                                    detectTimeOfDay(script),
+                                    truncateAction(script)));
         }
     }
 
     return scenes;
-}
-
-// Strip a leading/trailing markdown code fence if the model added one despite
-// being told not to.
-QString stripCodeFences(QString text)
-{
-    text = text.trimmed();
-    if (text.startsWith(QLatin1String("```"))) {
-        const int firstNewline = text.indexOf(QLatin1Char('\n'));
-        if (firstNewline != -1)
-            text = text.mid(firstNewline + 1);
-        if (text.endsWith(QLatin1String("```")))
-            text.chop(3);
-    }
-    return text.trimmed();
 }
 
 } // namespace
@@ -190,8 +157,6 @@ QString stripCodeFences(QString text)
 ScriptEditorPage::ScriptEditorPage(QWidget *parent)
     : QWidget(parent)
 {
-    m_net = new QNetworkAccessManager(this);
-
     setAttribute(Qt::WA_StyledBackground, true);
     setStyleSheet(QStringLiteral("background-color: #0a0a0a;"));
 
@@ -208,6 +173,7 @@ ScriptEditorPage::ScriptEditorPage(QWidget *parent)
 
     root->addLayout(content, 1);
     root->addWidget(createBottomBar());
+
 }
 
 QWidget *ScriptEditorPage::createWritingPanel()
@@ -321,6 +287,7 @@ QWidget *ScriptEditorPage::createBottomBar()
 
     QHBoxLayout *layout = new QHBoxLayout(bar);
     layout->setContentsMargins(16, 0, 16, 0);
+    layout->setSpacing(10);
 
     // Back arrow (left).
     QPushButton *back = new QPushButton(QString::fromUtf8("\xE2\x86\x90  Dashboard"));
@@ -336,7 +303,7 @@ QWidget *ScriptEditorPage::createBottomBar()
 
     layout->addStretch(1);
 
-    // Parse Script (center) — calls Claude.
+    // Parse Script (center) — LOCAL parsing only, never the API.
     m_parseButton = new QPushButton(QStringLiteral("Parse Script"));
     m_parseButton->setCursor(Qt::PointingHandCursor);
     m_parseButton->setStyleSheet(QString::fromUtf8(kAmberButton));
@@ -344,6 +311,20 @@ QWidget *ScriptEditorPage::createBottomBar()
     layout->addWidget(m_parseButton);
 
     layout->addStretch(1);
+
+    // Skip (right group) — straight to the Storyboard with one blank scene;
+    // no parsing, no API. Secondary "ghost" style so Continue stays primary.
+    m_skipButton = new QPushButton(QStringLiteral("Skip"));
+    m_skipButton->setCursor(Qt::PointingHandCursor);
+    m_skipButton->setStyleSheet(QStringLiteral(
+        "QPushButton {"
+        "  background: transparent; color: #cccccc; border: 1px solid #2a2a2a;"
+        "  border-radius: 6px; padding: 9px 22px; font-size: 14px; font-weight: 600;"
+        "}"
+        "QPushButton:hover { color: #ffffff; border-color: #444444; }"
+        "QPushButton:pressed { background-color: #1a1a1a; }"));
+    connect(m_skipButton, &QPushButton::clicked, this, &ScriptEditorPage::onSkipClicked);
+    layout->addWidget(m_skipButton);
 
     // Continue to Storyboard (right) — disabled until at least one scene parsed.
     m_continueButton = new QPushButton(QStringLiteral("Continue to Storyboard"));
@@ -375,13 +356,6 @@ void ScriptEditorPage::setContinueEnabled(bool enabled)
     }
 }
 
-void ScriptEditorPage::setParsing(bool parsing)
-{
-    m_parseButton->setEnabled(!parsing);
-    m_parseButton->setText(parsing ? QString::fromUtf8("Parsing\xE2\x80\xA6")
-                                   : QStringLiteral("Parse Script"));
-}
-
 void ScriptEditorPage::onParseClicked()
 {
     const QString script = m_editor->toPlainText().trimmed();
@@ -391,101 +365,23 @@ void ScriptEditorPage::onParseClicked()
         return;
     }
 
-    // Forced demo mode bypasses the network entirely (no API key required).
-    if (kForceDemoMode) {
-        populateScenes(buildMockScenes(script), /*demoMode=*/true);
-        return;
-    }
-
-    const QByteArray apiKey = qgetenv("ANTHROPIC_API_KEY");
-    if (apiKey.isEmpty()) {
-        showBreakdownMessage(
-            QStringLiteral("ANTHROPIC_API_KEY is not set.\nSet it in the environment and restart."),
-            QStringLiteral("#e06c6c"));
-        return;
-    }
-
-    setParsing(true);
-    showBreakdownMessage(QString::fromUtf8("Parsing your script\xE2\x80\xA6"),
-                         QStringLiteral("#999999"));
-
-    QNetworkRequest request(QUrl(QStringLiteral("https://api.anthropic.com/v1/messages")));
-    request.setHeader(QNetworkRequest::ContentTypeHeader, QByteArrayLiteral("application/json"));
-    request.setRawHeader(QByteArrayLiteral("x-api-key"), apiKey);
-    request.setRawHeader(QByteArrayLiteral("anthropic-version"), QByteArrayLiteral("2023-06-01"));
-
-    QJsonObject userMessage;
-    userMessage[QStringLiteral("role")] = QStringLiteral("user");
-    userMessage[QStringLiteral("content")] = script;
-
-    QJsonObject body;
-    body[QStringLiteral("model")] = QStringLiteral("claude-sonnet-4-6");
-    body[QStringLiteral("max_tokens")] = 8192;
-    body[QStringLiteral("system")] = QString::fromUtf8(kSystemPrompt);
-    body[QStringLiteral("messages")] = QJsonArray{ userMessage };
-
-    QNetworkReply *reply = m_net->post(request, QJsonDocument(body).toJson(QJsonDocument::Compact));
-    connect(reply, &QNetworkReply::finished, this,
-            [this, reply, script] { handleReply(reply, script); });
+    // Parse entirely on-device — no network request, no API key.
+    populateScenes(buildSceneBreakdown(script));
 }
 
-void ScriptEditorPage::handleReply(QNetworkReply *reply, const QString &script)
+void ScriptEditorPage::onSkipClicked()
 {
-    reply->deleteLater();
-    setParsing(false);
+    // No parsing, no API: hand the Storyboard a single blank scene so the
+    // artist can start boarding immediately.
+    QJsonObject scene;
+    scene[QStringLiteral("scene_number")] = 1;
+    scene[QStringLiteral("location")] = QStringLiteral("UNTITLED");
+    scene[QStringLiteral("time_of_day")] = QStringLiteral("UNSPECIFIED");
+    scene[QStringLiteral("action")] = QString();
 
-    const QByteArray data = reply->readAll();
-
-    if (reply->error() != QNetworkReply::NoError) {
-        QString message = reply->errorString();
-        const QJsonDocument errDoc = QJsonDocument::fromJson(data);
-        if (errDoc.isObject()) {
-            const QJsonObject err = errDoc.object().value(QStringLiteral("error")).toObject();
-            const QString apiMessage = err.value(QStringLiteral("message")).toString();
-            if (!apiMessage.isEmpty())
-                message = apiMessage;
-        }
-
-        // Insufficient-credit / balance errors fall back to demo mode so the
-        // UI flow remains testable without live API access.
-        const QString lower = message.toLower();
-        if (lower.contains(QLatin1String("credit")) || lower.contains(QLatin1String("balance"))) {
-            populateScenes(buildMockScenes(script), /*demoMode=*/true);
-            return;
-        }
-
-        showBreakdownMessage(QStringLiteral("Request failed:\n") + message,
-                             QStringLiteral("#e06c6c"));
-        return;
-    }
-
-    QJsonParseError parseError;
-    const QJsonDocument doc = QJsonDocument::fromJson(data, &parseError);
-    if (parseError.error != QJsonParseError::NoError || !doc.isObject()) {
-        showBreakdownMessage(QStringLiteral("Could not read the API response."),
-                             QStringLiteral("#e06c6c"));
-        return;
-    }
-
-    // Concatenate all text blocks from the response content.
-    QString text;
-    const QJsonArray contentBlocks = doc.object().value(QStringLiteral("content")).toArray();
-    for (const QJsonValue &value : contentBlocks) {
-        const QJsonObject block = value.toObject();
-        if (block.value(QStringLiteral("type")).toString() == QLatin1String("text"))
-            text += block.value(QStringLiteral("text")).toString();
-    }
-
-    const QString json = stripCodeFences(text);
-    QJsonParseError sceneError;
-    const QJsonDocument sceneDoc = QJsonDocument::fromJson(json.toUtf8(), &sceneError);
-    if (sceneError.error != QJsonParseError::NoError || !sceneDoc.isArray()) {
-        showBreakdownMessage(QStringLiteral("Claude did not return valid scene JSON."),
-                             QStringLiteral("#e06c6c"));
-        return;
-    }
-
-    populateScenes(sceneDoc.array());
+    m_scenes = QJsonArray{ scene };
+    emit scenesReady(m_scenes); // MainWindow materializes Scene 1 (blank panel)
+    emit continueRequested();   // straight to the Storyboard, no breakdown
 }
 
 void ScriptEditorPage::clearScenes()
@@ -511,22 +407,12 @@ void ScriptEditorPage::showBreakdownMessage(const QString &text, const QString &
     m_scenesLayout->addStretch(1);
 }
 
-void ScriptEditorPage::populateScenes(const QJsonArray &scenes, bool demoMode)
+void ScriptEditorPage::populateScenes(const QJsonArray &scenes)
 {
     m_scenes = scenes; // remembered for the Continue-to-Storyboard handoff
     if (!scenes.isEmpty())
         emit scenesReady(scenes); // let MainWindow materialize Scene objects now
     clearScenes();
-
-    // Demo-mode notice at the top of the panel.
-    if (demoMode) {
-        QLabel *notice = new QLabel(
-            QStringLiteral("Demo mode \xE2\x80\x94 connect API credits to parse live"));
-        notice->setWordWrap(true);
-        notice->setStyleSheet(QStringLiteral(
-            "color: #888888; font-size: 12px; font-style: italic;"));
-        m_scenesLayout->addWidget(notice);
-    }
 
     if (scenes.isEmpty()) {
         QLabel *empty = new QLabel(QStringLiteral("No scenes were found in the script."));
