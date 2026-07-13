@@ -205,13 +205,13 @@ void PerspectiveTool::paintGuides(QPainter &p, const QRectF &canvasRect) const
     p.restore();
 }
 
-// Off-canvas VP beacon: a wedge whose base sits ON the canvas edge (where the
-// centre->VP ray leaves the rect) and whose apex is the VP itself — pointing
-// from the edge out to the VP. The caller clips strictly to the region
-// OUTSIDE the canvas, so the artwork is never painted over. The fill is a
-// soft directional GRADIENT in the VP's own guide colour — strongest near the
-// VP (~18% opacity) and fading to nothing at the canvas edge — so it reads as
-// a subtle pointer, not a solid shape.
+// Off-canvas VP beacon: a triangle with THREE anchor points — the VP itself
+// plus the TOP and BOTTOM canvas corners of the side nearest the VP. The two
+// corner anchors are FIXED; only the VP vertex moves, so dragging the VP
+// stretches/rotates/scales the triangle around them. Filled with the VP's own
+// guide colour at 40%. The caller clips strictly to the region OUTSIDE the
+// canvas, so no part of it ever covers the artwork; VPs inside the canvas
+// draw nothing.
 void PerspectiveTool::paintEdgeIndicator(QPainter &p, const QRectF &canvasRect,
                                          int index) const
 {
@@ -219,43 +219,26 @@ void PerspectiveTool::paintEdgeIndicator(QPainter &p, const QRectF &canvasRect,
         return;
     const VanishingPoint &vp = m_vps.at(index);
     if (canvasRect.contains(vp.pos))
-        return; // on-canvas VPs need no beacon
-    const QPointF c = canvasRect.center();
-    QPointF d = vp.pos - c;
-    const qreal len = qSqrt(QPointF::dotProduct(d, d));
-    if (len < 1e-6)
-        return;
-    d /= len;
-    // Slab intersection: where the centre->VP ray crosses the canvas edge.
-    qreal tEdge = len;
-    if (qAbs(d.x()) > 1e-9)
-        tEdge = qMin(tEdge, ((d.x() > 0 ? canvasRect.right() : canvasRect.left())
-                             - c.x()) / d.x());
-    if (qAbs(d.y()) > 1e-9)
-        tEdge = qMin(tEdge, ((d.y() > 0 ? canvasRect.bottom() : canvasRect.top())
-                             - c.y()) / d.y());
-    const QPointF edge = c + d * tEdge;
-    const QPointF perp(-d.y(), d.x());
+        return; // beacons exist only for off-canvas VPs
 
-    QPainterPath wedge;
-    wedge.moveTo(vp.pos);
-    wedge.lineTo(edge + perp * 60.0);
-    wedge.lineTo(edge - perp * 60.0);
-    wedge.closeSubpath();
+    // Fixed anchors: the top and bottom corners of the canvas side nearest
+    // the VP (right side when the VP sits in the right half-plane).
+    const bool rightSide = vp.pos.x() >= canvasRect.center().x();
+    const QPointF top = rightSide ? canvasRect.topRight() : canvasRect.topLeft();
+    const QPointF bottom =
+        rightSide ? canvasRect.bottomRight() : canvasRect.bottomLeft();
 
-    // Soft gradient along the wedge axis: transparent at the canvas edge,
-    // building to the VP colour at the apex; ~18% peak keeps it subtle.
-    QLinearGradient soft(edge, vp.pos);
-    QColor clear = vp.color;
-    clear.setAlpha(0);
-    soft.setColorAt(0.0, clear);
-    soft.setColorAt(1.0, vp.color);
+    QPainterPath tri;
+    tri.moveTo(vp.pos);
+    tri.lineTo(top);
+    tri.lineTo(bottom);
+    tri.closeSubpath();
 
     p.save();
     p.setRenderHint(QPainter::Antialiasing, true);
-    p.setOpacity(0.18);
+    p.setOpacity(0.40);
     p.setPen(Qt::NoPen);
-    p.fillPath(wedge, soft);
+    p.fillPath(tri, vp.color);
     p.restore();
 }
 

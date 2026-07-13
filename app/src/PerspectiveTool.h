@@ -86,10 +86,11 @@ public:
 
     // --- rendering (painter already in CANVAS space) --------------------------
     void paintGuides(QPainter &p, const QRectF &canvasRect) const;
-    // Off-canvas beacon for ONE vp: a subtle wedge from the canvas edge out to
-    // the VP in that VP's guide colour (~15% opacity). DrawingCanvas draws it
-    // ONLY while that VP is being dragged, clipped strictly OUTSIDE the canvas
-    // so the artwork is never painted over.
+    // Off-canvas beacon for ONE vp: a triangle anchored to the VP plus the
+    // top and bottom canvas corners of the side nearest it (the corners are
+    // FIXED — only the VP vertex moves), in that VP's guide colour at 40%.
+    // DrawingCanvas draws it ONLY while that VP is being dragged, clipped
+    // strictly OUTSIDE the canvas so the artwork is never painted over.
     void paintEdgeIndicator(QPainter &p, const QRectF &canvasRect, int index) const;
     // Editing handles, WIDGET space (constant screen size; may be off-canvas).
     void paintHandles(QPainter &p, const QTransform &canvasToWidget) const;
