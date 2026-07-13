@@ -72,6 +72,9 @@ public:
     void setSelectedColor(const QColor &color);
     qreal selectedOpacity() const;
     void setSelectedOpacity(qreal opacity);
+    // The Modifier-bar Opacity slider: shared across ALL VPs (like density
+    // and thickness); guide COLOUR stays independent per VP.
+    void setOpacityAll(qreal opacity);
 
     // Show/Hide Guides (the Modifier-bar toggle); guides render only while
     // this is on AND at least one VP exists.
@@ -87,12 +90,13 @@ public:
     // --- rendering (painter already in CANVAS space) --------------------------
     void paintGuides(QPainter &p, const QRectF &canvasRect) const;
     // Off-canvas beacon for ONE vp: a triangle anchored to the VP plus two
-    // FIXED canvas anchors — the top/bottom corners of the nearest side for
-    // VP1/VP2, the left/right corners of the nearest horizontal edge for VP3
-    // — in that VP's guide colour at 40%. Only the VP vertex moves, so the
-    // triangle stretches/rotates around the anchors. DrawingCanvas draws it
-    // for the whole editing session (VP selected, Perspective tool active),
-    // clipped strictly OUTSIDE the canvas so the artwork is never covered.
+    // FIXED canvas anchors chosen ADAPTIVELY from the VP's position — the
+    // top/bottom corners of the nearest side when it escapes left/right, the
+    // left/right corners of the nearest horizontal edge when it escapes
+    // above/below — so the triangle never breaks wherever the VP goes. Filled
+    // with the VP's guide colour at 40%. DrawingCanvas draws one for EVERY
+    // off-canvas VP whenever guides are visible, clipped strictly OUTSIDE the
+    // canvas so the artwork is never covered.
     void paintEdgeIndicator(QPainter &p, const QRectF &canvasRect, int index) const;
     // Editing handles, WIDGET space (constant screen size; may be off-canvas).
     // The hovered handle draws slightly larger for feedback.

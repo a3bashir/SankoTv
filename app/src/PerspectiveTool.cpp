@@ -127,6 +127,14 @@ void PerspectiveTool::setSelectedOpacity(qreal opacity)
         m_defaultOpacity = opacity;
 }
 
+void PerspectiveTool::setOpacityAll(qreal opacity)
+{
+    opacity = qBound(0.05, opacity, 1.0);
+    for (VanishingPoint &vp : m_vps)
+        vp.opacity = opacity;
+    m_defaultOpacity = opacity; // new VPs start at the shared value too
+}
+
 // Horizontal through VP1 alone; through VP1 and VP2 when both exist (tilting
 // with them). Degenerate (coincident VPs) falls back to horizontal.
 QLineF PerspectiveTool::horizonLine() const
@@ -142,14 +150,14 @@ QLineF PerspectiveTool::horizonLine() const
     return QLineF(a, a + QPointF(1.0, 0.0));
 }
 
-// Guides: `density` full lines through each VP fanned evenly — anchored to
-// the horizon angle, so tilting the horizon sweeps every fan with it, and the
-// spokes pivot around their VP like wheel hubs when it moves. Lines FADE with
-// distance from their VP (radial-gradient pens) instead of stopping abruptly,
-// while still reaching every canvas corner from any VP position; plus the
-// derived horizon. (Off-canvas VPs get their edge wedge from
-// paintEdgeIndicator(), drawn drag-only and clipped OUTSIDE the canvas.)
-// Cosmetic pens keep the on-screen thickness constant at any zoom/rotation.
+// Guides: full lines through each VP fanned evenly, anchored to the horizon
+// angle (tilting the horizon sweeps every fan; the spokes pivot around their
+// VP like wheel hubs). The horizon VPs (VP1/VP2) draw a DOUBLE-density fan so
+// the grid keeps reading all the way to the horizon, and their lines fade
+// with scene depth — strong near the viewer, dissolving as they recede toward
+// the horizon line. VP3's vertical-family guides never fade (always fully
+// visible). Plus the derived horizon at a fixed slim 1px. Cosmetic pens keep
+// the on-screen thickness constant at any zoom/rotation.
 void PerspectiveTool::paintGuides(QPainter &p, const QRectF &canvasRect) const
 {
     if (m_vps.isEmpty())
@@ -160,12 +168,24 @@ void PerspectiveTool::paintGuides(QPainter &p, const QRectF &canvasRect) const
 
     const QLineF h = horizonLine();
     const qreal horizonAngle = qAtan2(h.dy(), h.dx());
+    const QPointF hDir(qCos(horizonAngle), qSin(horizonAngle));
+    const QPointF hNormal(-hDir.y(), hDir.x());
+    // Depth-fade gradient across the canvas, perpendicular to the horizon:
+    // faint ON the horizon (far away), full strength a canvas-span toward the
+    // viewer on either side. Anchored at the horizon point nearest the
+    // canvas centre so the falloff tracks the visible area.
+    const QPointF c = canvasRect.center();
+    const QPointF hPt =
+        h.p1() + hDir * QPointF::dotProduct(c - h.p1(), hDir);
+    const qreal fadeSpan = qMax(canvasRect.width(), canvasRect.height()) * 0.5;
     const qreal fadeBase = qMax(canvasRect.width(), canvasRect.height()) * 0.9;
-    for (const VanishingPoint &vp : m_vps) {
+
+    for (int v = 0; v < m_vps.size(); ++v) {
+        const VanishingPoint &vp = m_vps.at(v);
         p.setOpacity(vp.opacity);
 
         // Reach far enough that spokes cross the WHOLE canvas even from a
-        // distant VP, then fade out past the far corners.
+        // distant VP.
         qreal farCorner = 0.0;
         const QPointF corners[] = {canvasRect.topLeft(), canvasRect.topRight(),
                                    canvasRect.bottomLeft(),
@@ -174,30 +194,41 @@ void PerspectiveTool::paintGuides(QPainter &p, const QRectF &canvasRect) const
             farCorner = qMax(farCorner, QLineF(vp.pos, corner).length());
         const qreal reach = qMax(fadeBase, farCorner * 1.15);
 
-        QRadialGradient fade(vp.pos, reach);
-        QColor clear = vp.color;
-        clear.setAlpha(0);
-        fade.setColorAt(0.0, vp.color);
-        fade.setColorAt(0.25, vp.color);
-        fade.setColorAt(1.0, clear);
-        QPen pen(QBrush(fade), m_thickness);
+        QPen pen;
+        if (v == 2) {
+            // VP3: always fully visible — no depth fade.
+            pen = QPen(vp.color, m_thickness);
+        } else {
+            QLinearGradient depth(hPt - hNormal * fadeSpan,
+                                  hPt + hNormal * fadeSpan);
+            QColor faint = vp.color;
+            faint.setAlpha(26); // ~10%: barely-there at the horizon itself
+            depth.setColorAt(0.0, vp.color);
+            depth.setColorAt(0.5, faint);
+            depth.setColorAt(1.0, vp.color);
+            pen = QPen(QBrush(depth), m_thickness);
+        }
         pen.setCosmetic(true);
         p.setPen(pen);
-        for (int i = 0; i < m_density; ++i) {
-            const qreal a = horizonAngle + M_PI * i / m_density;
+
+        // Double density for the horizon VPs: enough lines that the grid
+        // keeps reading right up to the horizon.
+        const int rays = (v == 2) ? m_density : m_density * 2;
+        for (int i = 0; i < rays; ++i) {
+            const qreal a = horizonAngle + M_PI * i / rays;
             const QPointF dir(qCos(a), qSin(a));
             p.drawLine(vp.pos - dir * reach, vp.pos + dir * reach);
         }
     }
 
-    // The horizon (through VP1/VP2) reads solid at a fixed slim 1.5px.
+    // The horizon (through VP1/VP2) reads solid at a fixed slim 1px.
     QPointF dir(h.dx(), h.dy());
     const qreal len = qSqrt(QPointF::dotProduct(dir, dir));
     if (len > 1e-9) {
         dir /= len;
         const qreal reach = qMax(canvasRect.width(), canvasRect.height()) * 16.0;
         p.setOpacity(1.0);
-        QPen pen(m_horizonColor, 1.5);
+        QPen pen(m_horizonColor, 1.0);
         pen.setCosmetic(true);
         p.setPen(pen);
         p.drawLine(h.p1() - dir * reach, h.p1() + dir * reach);
@@ -221,12 +252,17 @@ void PerspectiveTool::paintEdgeIndicator(QPainter &p, const QRectF &canvasRect,
     if (canvasRect.contains(vp.pos))
         return; // beacons exist only for off-canvas VPs
 
-    // Fixed anchors. VP1/VP2 (the horizon VPs): the top and bottom corners
-    // of the canvas side nearest the VP. VP3 (index 2, the off-horizon VP):
-    // the LEFT and RIGHT corners of the nearest horizontal edge, so its
-    // triangle hangs off the top or bottom of the canvas instead.
+    // Fixed anchors, chosen ADAPTIVELY from where the VP escaped: a VP off
+    // the left/right gets the top+bottom corners of that side; a VP off the
+    // top/bottom gets the left+right corners of that edge. The dominant
+    // escape distance decides, so the triangle never breaks (e.g. VP3
+    // dragged sideways switches to side anchors automatically).
+    const qreal excessX = qMax(0.0, qMax(canvasRect.left() - vp.pos.x(),
+                                         vp.pos.x() - canvasRect.right()));
+    const qreal excessY = qMax(0.0, qMax(canvasRect.top() - vp.pos.y(),
+                                         vp.pos.y() - canvasRect.bottom()));
     QPointF anchorA, anchorB;
-    if (index == 2) {
+    if (excessY > excessX) {
         const bool bottomSide = vp.pos.y() >= canvasRect.center().y();
         anchorA = bottomSide ? canvasRect.bottomLeft() : canvasRect.topLeft();
         anchorB = bottomSide ? canvasRect.bottomRight() : canvasRect.topRight();

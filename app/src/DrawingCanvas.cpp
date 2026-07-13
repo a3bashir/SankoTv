@@ -2926,12 +2926,11 @@ void DrawingCanvas::paintEvent(QPaintEvent *)
         painter.restore();
     }
 
-    // Off-canvas VP beacon: visible for the WHOLE editing session — while the
-    // Perspective tool is active with a selected VP (creating, moving, or
-    // recolouring it from the Modifier bar) — and clipped strictly OUTSIDE
-    // the canvas rect, so the artwork is never painted over. Deselecting or
-    // leaving the tool hides it; on-canvas VPs draw nothing.
-    if (m_tool == Perspective && m_perspective.selected() >= 0) {
+    // Off-canvas VP beacons: ALWAYS visible (whenever guides are shown) for
+    // EVERY VP outside the canvas, whichever tool is active — clipped
+    // strictly OUTSIDE the canvas rect, so the artwork is never painted
+    // over. On-canvas VPs draw nothing.
+    if (m_perspective.isVisible()) {
         painter.save();
         QPainterPath outside;
         outside.addPolygon(painter.worldTransform().inverted().map(
@@ -2940,8 +2939,8 @@ void DrawingCanvas::paintEvent(QPaintEvent *)
         QPainterPath canvasPath;
         canvasPath.addRect(canvasR);
         painter.setClipPath(outside.subtracted(canvasPath));
-        m_perspective.paintEdgeIndicator(painter, canvasR,
-                                         m_perspective.selected());
+        for (int v = 0; v < m_perspective.count(); ++v)
+            m_perspective.paintEdgeIndicator(painter, canvasR, v);
         painter.restore();
     }
 

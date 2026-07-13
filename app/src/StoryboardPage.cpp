@@ -632,6 +632,10 @@ public:
         : QWidget(parent), m_label(label), m_min(min), m_max(max), m_kind(kind)
     {
         setCursor(Qt::PointingHandCursor);
+        // Directly on the bar body: no implicit background panel (Figma shows
+        // only the track/fill/thumb/label/value on the #212121 toolbar).
+        setAttribute(Qt::WA_TranslucentBackground);
+        setAutoFillBackground(false);
     }
 
     std::function<void(int)> onChanged;
@@ -752,6 +756,8 @@ public:
     {
         setFixedSize(28, 10);
         setCursor(Qt::PointingHandCursor);
+        setAttribute(Qt::WA_TranslucentBackground); // no background panel
+        setAutoFillBackground(false);
     }
 
     std::function<void(bool)> onToggled;
@@ -2337,7 +2343,7 @@ QWidget *StoryboardPage::createPerspectiveModifier()
         m_canvas->update();
     };
     opacity->onChanged = [this, persp](int v) {
-        persp->setSelectedOpacity(v / 100.0); // per-VP
+        persp->setOpacityAll(v / 100.0); // shared across every VP
         m_canvas->update();
     };
     thickness->onChanged = [this, persp](int v) {
@@ -2386,6 +2392,7 @@ QWidget *StoryboardPage::createPerspectiveModifier()
         return QPoint(qMax(6, (m_canvas->width() - bar->width()) / 2),
                       qMax(6, statusTop - bar->height() - 10));
     });
+
 
 
 
