@@ -208,8 +208,10 @@ void PerspectiveTool::paintGuides(QPainter &p, const QRectF &canvasRect) const
 // Off-canvas VP beacon: a wedge whose base sits ON the canvas edge (where the
 // centre->VP ray leaves the rect) and whose apex is the VP itself — pointing
 // from the edge out to the VP. The caller clips strictly to the region
-// OUTSIDE the canvas, so the artwork is never painted over; the fill is the
-// VP's own guide colour at a subtle fixed ~15% opacity.
+// OUTSIDE the canvas, so the artwork is never painted over. The fill is a
+// soft directional GRADIENT in the VP's own guide colour — strongest near the
+// VP (~18% opacity) and fading to nothing at the canvas edge — so it reads as
+// a subtle pointer, not a solid shape.
 void PerspectiveTool::paintEdgeIndicator(QPainter &p, const QRectF &canvasRect,
                                          int index) const
 {
@@ -241,11 +243,19 @@ void PerspectiveTool::paintEdgeIndicator(QPainter &p, const QRectF &canvasRect,
     wedge.lineTo(edge - perp * 60.0);
     wedge.closeSubpath();
 
+    // Soft gradient along the wedge axis: transparent at the canvas edge,
+    // building to the VP colour at the apex; ~18% peak keeps it subtle.
+    QLinearGradient soft(edge, vp.pos);
+    QColor clear = vp.color;
+    clear.setAlpha(0);
+    soft.setColorAt(0.0, clear);
+    soft.setColorAt(1.0, vp.color);
+
     p.save();
     p.setRenderHint(QPainter::Antialiasing, true);
-    p.setOpacity(0.15); // subtle, non-distracting wash
+    p.setOpacity(0.18);
     p.setPen(Qt::NoPen);
-    p.fillPath(wedge, vp.color);
+    p.fillPath(wedge, soft);
     p.restore();
 }
 
