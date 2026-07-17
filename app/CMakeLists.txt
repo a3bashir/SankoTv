@@ -43,6 +43,12 @@ FetchContent_MakeAvailable(ads)
 # output DLL sidesteps the heuristic (windeployqt ignores non-qt DLLs).
 set_target_properties(qt6advanceddocking PROPERTIES OUTPUT_NAME "advanceddocking")
 
+# --- QuickShapeKit (hold-to-shape recognition for the drawing canvas) ------
+# Static recognition/session library; owns no canvas, brush engine, or undo
+# history. The canvas feeds it document-space samples and replays commits
+# through the existing brush engine.
+add_subdirectory(third_party/QuickShapeKit)
+
 # --- Executable -----------------------------------------------------------
 qt_standard_project_setup()
 
@@ -85,7 +91,7 @@ qt_add_executable(SankoTV
 )
 
 target_link_libraries(SankoTV PRIVATE Qt6::Widgets Qt6::Network Qt6::Multimedia Qt6::MultimediaWidgets
-    Qt6::Svg ads::qt6advanceddocking)
+    Qt6::Svg ads::qt6advanceddocking QuickShape::Kit)
 
 # Deploy the ADS DLL and its LGPL license text next to SankoTV.exe.
 add_custom_command(TARGET SankoTV POST_BUILD

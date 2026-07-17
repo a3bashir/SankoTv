@@ -396,6 +396,7 @@ void MainWindow::onSaveProjectAs()
 
 bool MainWindow::saveToPath(const QString &path)
 {
+    m_storyboard->commitQuickShape(); // temporary vectors are not serialized
     const QFileInfo info(path);
     const QString folder = info.absolutePath();
 
@@ -521,6 +522,7 @@ bool MainWindow::saveToPath(const QString &path)
 
 bool MainWindow::loadFromPath(const QString &path)
 {
+    m_storyboard->commitQuickShape(); // resolve before panels are replaced
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) {
         QMessageBox::warning(this, QStringLiteral("Open Project"),

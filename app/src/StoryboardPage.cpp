@@ -2396,6 +2396,7 @@ QWidget *StoryboardPage::createPerspectiveModifier()
 
 
 
+
     bar->setVisible(false); // shown while the Perspective tool is active
     return bar;
 }
@@ -3194,6 +3195,12 @@ void StoryboardPage::duplicatePanel()
 
 // --- Perspective persistence (project save/load) --------------------------------
 
+void StoryboardPage::commitQuickShape()
+{
+    if (m_canvas)
+        m_canvas->commitQuickShape();
+}
+
 QJsonObject StoryboardPage::perspectiveToJson() const
 {
     return m_canvas->perspective()->toJson();
@@ -3815,6 +3822,7 @@ void StoryboardPage::setActiveLayer(int index)
     Panel *panel = currentPanel();
     if (!panel || index < 0 || index >= panel->layers.size())
         return;
+    m_canvas->commitQuickShape(); // bake a pending shape into the OLD layer
     panel->activeLayerIndex = index;
     rebuildLayerPanel(); // amber highlight + slider follow the new active layer
 }

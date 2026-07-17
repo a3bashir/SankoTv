@@ -132,6 +132,27 @@ DrawingCanvas::DrawingCanvas(QWidget *parent)
     m_antsTimer = new QTimer(this);
     m_perspective.reset();
 
+    // --- QuickShape wiring ------------------------------------------------
+    // overlayPathChanged drives the display-only vector overlay; on
+    // recognition the rough freehand pixels are rolled back to the
+    // beginLayerEdit() snapshot (nothing reaches the undo stack yet); a
+    // commit replays the corrected path through the normal brush engine.
+    // freehandStrokeFinished needs no handler: the ordinary endBrushStroke
+    // release path already commits unrecognized strokes unchanged.
+    connect(&m_quickShape, &quickshape::QuickShapeSession::overlayPathChanged,
+            this, [this](const QPainterPath &path) {
+        m_quickShapeOverlay = path;
+        update();
+    });
+    connect(&m_quickShape, &quickshape::QuickShapeSession::shapeRecognized,
+            this, [this](const quickshape::QuickShapeResult &) {
+        discardRoughStroke();
+    });
+    connect(&m_quickShape, &quickshape::QuickShapeSession::commitRequested,
+            this, [this](const quickshape::QuickShapeCommit &commit) {
+        replayQuickShape(commit);
+    });
+
     m_antsTimer->setInterval(150);
     connect(m_antsTimer, &QTimer::timeout, this, [this] {
         m_antsPhase = (m_antsPhase + 1) % 8;
@@ -338,6 +359,7 @@ void DrawingCanvas::setActivePanel(Panel *panel)
     // default relift used to hollow the layer again right before the switch,
     // stranding the artwork in m_transformBuf (the panel's data model went
     // empty and undo appeared to skip back past committed transforms).
+    commitQuickShape(); // bake into the panel we are LEAVING
     commitFloating();
     if (m_xformActive)
         commitTransform(false);
@@ -513,6 +535,7 @@ static QRect opaquePixelBounds(const QImage &image)
 
 void DrawingCanvas::setTool(Tool tool)
 {
+    commitQuickShape(); // a pending QuickShape bakes before the tool changes
     commitFloating(); // an un-committed paste lands before the tool changes
     if (m_xformActive && tool != Move)
         commitTransform(false); // leaving Move finalises the box — no re-lift
@@ -2663,7 +2686,7 @@ void DrawingCanvas::moveBrushStroke(const QPointF &canvasPt, qreal pressure)
     update();
 }
 
-void DrawingCanvas::endBrushStroke()
+void DrawingCanvas::endBrushStroke(const QString &undoText)
 {
     m_brushStroke = false;
     if (m_strokeMask == StrokeMaskPaint) {
@@ -2681,8 +2704,93 @@ void DrawingCanvas::endBrushStroke()
         m_strokeMask = StrokeMaskNone;
         m_strokeBuf = QImage();
     }
-    finalizeLayerEdit(QStringLiteral("Brush Stroke"));
+    finalizeLayerEdit(undoText);
     update();
+}
+
+// ~8 screen pixels expressed in canvas units at the CURRENT view scale, so
+// the hold/dwell jitter tolerance feels identical at every zoom level. Set
+// once per stroke; recognition itself runs purely in canvas coordinates.
+qreal DrawingCanvas::quickShapeDwellRadius() const
+{
+    const QTransform T = viewTransform();
+    const qreal scale = std::hypot(T.m11(), T.m12()); // widget px per canvas px
+    return 8.0 / qMax(0.05, scale);
+}
+
+// A shape was recognized mid-stroke: the rough freehand pixels become a
+// corrected vector instead. Roll the active layer back to the pre-stroke
+// beginLayerEdit() snapshot (or drop the selection scratch, which never
+// touched the layer), and abandon the pending edit — nothing is pushed to
+// the undo stack until the corrected path is committed.
+void DrawingCanvas::discardRoughStroke()
+{
+    if (!m_brushStroke)
+        return;
+    m_brushStroke = false;
+    if (m_strokeMask == StrokeMaskPaint) {
+        m_strokeMask = StrokeMaskNone;
+        m_strokeBuf = QImage();
+    } else if (m_editPanel && !m_editBefore.isNull()) {
+        for (Layer &layer : m_editPanel->layers) {
+            if (layer.id != m_editLayerId)
+                continue;
+            QPainter p(&layer.image);
+            p.setCompositionMode(QPainter::CompositionMode_Source);
+            p.drawImage(0, 0, m_editBefore);
+            break;
+        }
+    }
+    m_editPanel = nullptr;
+    m_editBefore = QImage();
+    update();
+}
+
+// Bake the corrected vector by replaying it through the NORMAL brush engine:
+// the stamp loop applies the current brush's size, opacity, hardness,
+// spacing, pressure rules, and selection masking, and the whole replay is
+// bracketed by ONE beginLayerEdit/finalizeLayerEdit — exactly one undo entry.
+void DrawingCanvas::replayQuickShape(const quickshape::QuickShapeCommit &commit)
+{
+    m_quickShapeOverlay = QPainterPath(); // the vector is being baked
+    if (commit.points.size() < 2 || !m_panel || !editableActiveLayer()) {
+        update();
+        return;
+    }
+    beginLayerEdit();
+    m_brushStroke = true; // normal stroke path (selection scratch included)
+    beginBrushStroke(commit.points.first(), commit.pressures.value(0, 1.0));
+    for (qsizetype i = 1; i < commit.points.size(); ++i)
+        moveBrushStroke(commit.points.at(i), commit.pressures.value(int(i), 1.0));
+    if (commit.isClosed()) // close the loop so e.g. circles have no gap
+        moveBrushStroke(commit.points.first(), commit.pressures.value(0, 1.0));
+    endBrushStroke(QStringLiteral("QuickShape"));
+    emit contentChanged();
+}
+
+void DrawingCanvas::setQuickShapeEnabled(bool enabled)
+{
+    if (m_quickShapeEnabled == enabled)
+        return;
+    commitQuickShape(); // never strand a pending vector behind a toggle
+    m_quickShapeEnabled = enabled;
+}
+
+// Lifecycle resolution (tool/layer/panel change, save, load, focus loss):
+// bake a pending temporary shape through the brush engine; a stroke still
+// being collected just detaches from recognition and finishes as ordinary
+// freehand through the normal release path.
+void DrawingCanvas::commitQuickShape()
+{
+    if (m_quickShape.hasActiveShape())
+        m_quickShape.requestCommit(); // synchronously replays + clears
+    else
+        m_quickShape.reset(); // never leave a stuck pointer/collect state
+}
+
+void DrawingCanvas::cancelQuickShape()
+{
+    m_quickShape.cancelActiveShape();
 }
 
 void DrawingCanvas::undo()
@@ -2944,6 +3052,24 @@ void DrawingCanvas::paintEvent(QPaintEvent *)
         painter.restore();
     }
 
+    // QuickShape: the corrected vector as a DISPLAY-ONLY overlay above the
+    // layer pixels (canvas space through T) — sized and coloured like the
+    // current brush so the bake matches what the artist sees.
+    if (!m_quickShapeOverlay.isEmpty()) {
+        painter.save();
+        painter.setClipRect(canvasR);
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        QColor previewColor = m_color;
+        previewColor.setAlphaF(qBound(0.0, m_brushToolOpacity, 1.0));
+        QPen previewPen(previewColor, qMax<qreal>(1.0, m_brushToolSize));
+        previewPen.setCapStyle(Qt::RoundCap);
+        previewPen.setJoinStyle(Qt::RoundJoin);
+        painter.setPen(previewPen);
+        painter.setBrush(Qt::NoBrush);
+        painter.drawPath(m_quickShapeOverlay);
+        painter.restore();
+    }
+
     // In-progress shape preview (canvas coords, through T).
     if (m_shapeDrag || (m_tool == Shapes && !m_polygonPts.isEmpty()))
         paintShapeGeometry(painter, false);
@@ -3163,6 +3289,19 @@ void DrawingCanvas::wheelEvent(QWheelEvent *event)
 
 void DrawingCanvas::keyPressEvent(QKeyEvent *event)
 {
+    // A pending QuickShape: Escape discards the temporary vector, Enter
+    // bakes it through the brush engine.
+    if (m_quickShape.hasActiveShape()) {
+        if (event->key() == Qt::Key_Escape) {
+            m_quickShape.cancelActiveShape();
+            return;
+        }
+        if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) {
+            m_quickShape.requestCommit();
+            return;
+        }
+    }
+
     // Transform box: Enter commits (bakes once), Esc cancels (restores). In
     // both cases the box RESETS to a fresh default around the artwork while
     // the Move tool stays active (Photoshop behaviour). In Warp mode, Delete
@@ -3253,6 +3392,10 @@ void DrawingCanvas::keyReleaseEvent(QKeyEvent *event)
 
 void DrawingCanvas::focusOutEvent(QFocusEvent *event)
 {
+    // Focus moving elsewhere bakes a READY temporary shape (a stroke still
+    // being drawn is left to the normal release path).
+    if (m_quickShape.hasActiveShape())
+        m_quickShape.requestCommit();
     // Losing focus mid-hold would otherwise leave the pan modifier stuck on.
     m_spaceHeld = false;
     if (!m_panning)
@@ -3381,6 +3524,11 @@ void DrawingCanvas::mousePressEvent(QMouseEvent *event)
         return;
     }
 
+    // A click anywhere (canvas or letterbox) bakes a pending QuickShape
+    // before anything else happens — the classic tap-away commit.
+    if (m_quickShape.hasActiveShape() && event->button() == Qt::LeftButton)
+        m_quickShape.requestCommit();
+
     if (!displayRect().contains(event->pos()))
         return;
     if (!editableActiveLayer())
@@ -3417,7 +3565,12 @@ void DrawingCanvas::mousePressEvent(QMouseEvent *event)
         // Mouse strokes carry no pressure: fixed 1.0 (tablets use tabletEvent).
         beginLayerEdit();
         m_brushStroke = true;
-        beginBrushStroke(toCanvasF(event->position()), 1.0);
+        const QPointF pt = toCanvasF(event->position());
+        if (m_quickShapeEnabled) {
+            m_quickShape.setDwellRadius(quickShapeDwellRadius());
+            m_quickShape.pointerPress(pt, 1.0);
+        }
+        beginBrushStroke(pt, 1.0);
         break;
     }
     case Shapes:
@@ -3571,7 +3724,15 @@ void DrawingCanvas::mouseMoveEvent(QMouseEvent *event)
         update(); // live preview
         return;
     }
+    if (m_quickShape.hasActiveShape() && (event->buttons() & Qt::LeftButton)) {
+        // Recognized: the held pointer rotates/scales the corrected vector.
+        m_quickShape.pointerMove(toCanvasF(event->position()), 1.0);
+        return;
+    }
     if (m_brushStroke) {
+        if (m_quickShapeEnabled)
+            m_quickShape.pointerMove(
+                m_perspective.snapPoint(toCanvasF(event->position())), 1.0);
         moveBrushStroke(m_perspective.snapPoint(toCanvasF(event->position())),
                         1.0); // mouse: fixed pressure; snapped to a VP ray
         return;
@@ -3600,7 +3761,15 @@ void DrawingCanvas::mouseReleaseEvent(QMouseEvent *event)
         m_perspHandle = -1;
         return;
     }
+    if (m_quickShape.hasActiveShape() && event->button() == Qt::LeftButton
+        && !m_brushStroke) {
+        // The corrected vector stays as a temporary overlay after release.
+        m_quickShape.pointerRelease(toCanvasF(event->position()), 1.0);
+        return;
+    }
     if (m_brushStroke && event->button() == Qt::LeftButton) {
+        if (m_quickShapeEnabled)
+            m_quickShape.pointerRelease(toCanvasF(event->position()), 1.0);
         endBrushStroke();
         emit contentChanged();
         return;
@@ -3756,20 +3925,45 @@ void DrawingCanvas::tabletEvent(QTabletEvent *event)
 
     switch (event->type()) {
     case QEvent::TabletPress:
+        // A pen tap anywhere resolves a pending QuickShape (tap-away bake)
+        // BEFORE the new stroke snapshots the layer.
+        if (m_quickShape.hasActiveShape())
+            m_quickShape.requestCommit();
         if (m_panel && displayRect().contains(event->position().toPoint())
             && editableActiveLayer()) {
             beginLayerEdit();
             m_brushStroke = true;
-            beginBrushStroke(toCanvasF(event->position()), event->pressure());
+            const QPointF pt = toCanvasF(event->position());
+            if (m_quickShapeEnabled) {
+                m_quickShape.setDwellRadius(quickShapeDwellRadius());
+                m_quickShape.pointerPress(pt, event->pressure());
+            }
+            beginBrushStroke(pt, event->pressure());
         }
         break;
     case QEvent::TabletMove:
-        if (m_brushStroke)
-            moveBrushStroke(m_perspective.snapPoint(toCanvasF(event->position())),
-                            event->pressure());
+        if (m_quickShape.hasActiveShape()) {
+            // Recognized: the held pen rotates/scales the corrected vector.
+            m_quickShape.pointerMove(toCanvasF(event->position()),
+                                     event->pressure());
+        } else if (m_brushStroke) {
+            const QPointF pt =
+                m_perspective.snapPoint(toCanvasF(event->position()));
+            if (m_quickShapeEnabled)
+                m_quickShape.pointerMove(pt, event->pressure());
+            moveBrushStroke(pt, event->pressure());
+        }
         break;
     case QEvent::TabletRelease:
-        if (m_brushStroke) {
+        if (m_quickShape.hasActiveShape()) {
+            // Keep the corrected vector as a temporary overlay until a
+            // tap-away / lifecycle event bakes it.
+            m_quickShape.pointerRelease(toCanvasF(event->position()),
+                                        event->pressure());
+        } else if (m_brushStroke) {
+            if (m_quickShapeEnabled)
+                m_quickShape.pointerRelease(toCanvasF(event->position()),
+                                            event->pressure());
             endBrushStroke();
             emit contentChanged();
         }

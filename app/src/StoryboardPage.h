@@ -80,6 +80,10 @@ public:
     QJsonObject perspectiveToJson() const;
     void perspectiveFromJson(const QJsonObject &object);
 
+    // Bake any pending QuickShape vector (called before save/load, so the
+    // temporary overlay is never silently dropped or left un-serialized).
+    void commitQuickShape();
+
     // App-wide undo stack (owned by MainWindow); forwarded to the canvas.
     void setUndoStack(QUndoStack *stack);
     // Callbacks for the panel undo commands (see StoryboardPage.cpp): mutate

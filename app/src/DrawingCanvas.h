@@ -2,6 +2,8 @@
 
 #include "PerspectiveTool.h"
 
+#include <QuickShape/quickshape_session.h>
+
 #include <QJsonObject>
 
 #include <QColor>
@@ -119,6 +121,16 @@ public:
     // Perspective guides + snap (display-only overlay; the settings panel and
     // project save/load talk to the same instance). Call update() after edits.
     PerspectiveTool *perspective() { return &m_perspective; }
+
+    // QuickShape: hold-to-shape assist for the Brush tool. The session sees
+    // the same canvas-space samples the brush engine paints; a recognized
+    // shape becomes a temporary vector overlay that is only rasterized by
+    // replaying it through the normal brush engine (one undo entry).
+    void setQuickShapeEnabled(bool enabled);
+    bool quickShapeEnabled() const { return m_quickShapeEnabled; }
+    quickshape::QuickShapeSession *quickShape() { return &m_quickShape; }
+    void commitQuickShape(); // resolve any pending temporary shape (lifecycle)
+    void cancelQuickShape(); // explicit cancel: discard the temporary vector
 
 public slots:
     void setTool(Tool tool);
@@ -264,7 +276,7 @@ private:
     QPointF toCanvasF(const QPointF &widgetPoint) const; // float, unclamped
     void beginBrushStroke(const QPointF &canvasPt, qreal pressure);
     void moveBrushStroke(const QPointF &canvasPt, qreal pressure);
-    void endBrushStroke();
+    void endBrushStroke(const QString &undoText = QStringLiteral("Brush Stroke"));
     void stampDab(const QPointF &center, qreal pressure);
 
     Panel *m_panel = nullptr;
@@ -489,6 +501,16 @@ private:
     // Perspective guides (display-only; geometry in canvas coords).
     PerspectiveTool m_perspective;
     int m_perspHandle = -1; // VP index being dragged (-1: none)
+
+    // QuickShape session state (recognition math lives in the kit; the canvas
+    // owns input feeding, the rough-stroke rollback, overlay painting, and
+    // the brush-engine replay).
+    quickshape::QuickShapeSession m_quickShape;
+    QPainterPath m_quickShapeOverlay; // corrected vector, canvas coords
+    bool m_quickShapeEnabled = true;
+    qreal quickShapeDwellRadius() const;  // ~8 screen px in canvas units
+    void discardRoughStroke();            // roll the pending edit back
+    void replayQuickShape(const quickshape::QuickShapeCommit &commit);
     int m_perspHover = -1;  // VP handle under the idle cursor (grows on hover)
     // One undo command per completed gesture: snapshot at press, push at
     // release (or at begin/endPerspectiveEdit for toolbar edits).
