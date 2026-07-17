@@ -2,11 +2,26 @@
 
 #include "quickshape_recognizer.h"
 
+#include <QElapsedTimer>
 #include <QObject>
 #include <QTimer>
 #include <QVariantAnimation>
 
 namespace quickshape {
+
+// One clear configuration point for the hold-to-recognize behaviour. All
+// distance values are DOCUMENT units — the host converts its screen-space
+// tolerances (about 8 screen px, about 20 screen px/s) using the current
+// canvas scale at stroke start, so behaviour is zoom-independent.
+struct QuickShapeTiming
+{
+    int holdDurationMs = 550;         // stylus rest before recognition begins
+    int morphDurationMs = 220;        // rough -> corrected ease-in-out
+    qreal dwellRadius = 8.0;          // endpoint jitter tolerance
+    qreal maxDwellVelocity = 20.0;    // endpoint velocity ceiling, units/sec
+    int minimumSamples = 8;           // shorter strokes stay freehand
+    qreal minimumStrokeLength = 24.0; // shorter strokes stay freehand
+};
 
 class QuickShapeSession final : public QObject
 {
@@ -15,10 +30,14 @@ class QuickShapeSession final : public QObject
 public:
     explicit QuickShapeSession(QObject *parent = nullptr);
 
+    void setTiming(const QuickShapeTiming &timing);
+    QuickShapeTiming timing() const { return m_timing; }
+
+    // Legacy single-value accessors (kept for compatibility; they read and
+    // write the same QuickShapeTiming fields).
     void setHoldDelayMs(int milliseconds);
     void setMorphDurationMs(int milliseconds);
     void setDwellRadius(qreal documentUnits);
-
     int holdDelayMs() const;
     int morphDurationMs() const;
     qreal dwellRadius() const;
@@ -31,6 +50,12 @@ public:
     bool isCollectingStroke() const;
     QPainterPath overlayPath() const;
     QuickShapeCommit currentCommit() const;
+
+    // Host-side node editing: the current shape as an editable parametric
+    // structure, and its replacement after edits. setEditedGeometry keeps the
+    // original resampled pressure profile for the eventual commit.
+    QuickShapeGeometry currentGeometry() const;
+    void setEditedGeometry(const QuickShapeGeometry &geometry);
 
     // Call after host-side node editing to replace the temporary vector.
     void setEditedShape(const QString &shapeName, const QVector<QPointF> &points);
@@ -62,12 +87,16 @@ private:
     void updateOverlay(const QVector<QPointF> &points);
     void clearShapeState();
     QVector<qreal> resampledPressures(int count) const;
+    qreal strokeLength() const;
+    qreal recentEndpointVelocity() const; // document units per second
 
     State m_state = State::Idle;
     bool m_pointerDown = false;
     QTimer m_holdTimer;
     QVariantAnimation m_morphAnimation;
-    qreal m_dwellRadius = 8.0;
+    QuickShapeTiming m_timing;
+    QElapsedTimer m_strokeClock;      // per-stroke sample timestamps
+    QVector<qint64> m_sourceTimesMs;  // parallel to m_sourcePoints
     QPointF m_holdAnchor;
     QPointF m_lastPoint;
     QPointF m_transformAnchor;
@@ -83,4 +112,3 @@ private:
 };
 
 } // namespace quickshape
-

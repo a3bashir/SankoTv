@@ -21,6 +21,59 @@ QPointF rotatePoint(const QPointF &point, qreal radians)
             point.x() * sine + point.y() * cosine};
 }
 
+// Ramer-Douglas-Peucker on an open polyline: keeps only structural vertices.
+void rdpSimplify(const QVector<QPointF> &points, qsizetype first, qsizetype last,
+                 qreal epsilon, QVector<bool> &keep)
+{
+    if (last <= first + 1)
+        return;
+    const QPointF a = points[first];
+    const QPointF b = points[last];
+    const QPointF ab = b - a;
+    const qreal len2 = QPointF::dotProduct(ab, ab);
+    qreal worst = -1.0;
+    qsizetype worstIndex = -1;
+    for (qsizetype i = first + 1; i < last; ++i) {
+        qreal d;
+        if (len2 < 1e-9) {
+            d = pointDistance(points[i], a);
+        } else {
+            const qreal t = QPointF::dotProduct(points[i] - a, ab) / len2;
+            d = pointDistance(points[i], a + ab * qBound<qreal>(0.0, t, 1.0));
+        }
+        if (d > worst) {
+            worst = d;
+            worstIndex = i;
+        }
+    }
+    if (worst > epsilon && worstIndex > 0) {
+        keep[worstIndex] = true;
+        rdpSimplify(points, first, worstIndex, epsilon, keep);
+        rdpSimplify(points, worstIndex, last, epsilon, keep);
+    }
+}
+
+QVector<QPointF> structuralVerticesOf(const QVector<QPointF> &target, bool closed)
+{
+    if (target.size() < 3)
+        return target;
+    QVector<QPointF> pts = target;
+    if (closed)
+        pts.append(target.first()); // wrap so the seam vertex can be found
+    QVector<bool> keep(pts.size(), false);
+    keep.first() = true;
+    keep.last() = true;
+    rdpSimplify(pts, 0, pts.size() - 1, 2.0, keep);
+    QVector<QPointF> out;
+    for (qsizetype i = 0; i < pts.size(); ++i)
+        if (keep[i])
+            out.append(pts[i]);
+    if (closed && out.size() > 1
+        && pointDistance(out.first(), out.last()) < 1.0)
+        out.removeLast(); // the duplicated wrap vertex
+    return out;
+}
+
 QPainterPath pathFromPoints(const QVector<QPointF> &points, bool closed)
 {
     QPainterPath path;
@@ -43,11 +96,11 @@ QuickShapeSession::QuickShapeSession(QObject *parent)
     qRegisterMetaType<QuickShapeCommit>();
 
     m_holdTimer.setSingleShot(true);
-    m_holdTimer.setInterval(420);
+    m_holdTimer.setInterval(m_timing.holdDurationMs);
     connect(&m_holdTimer, &QTimer::timeout,
             this, &QuickShapeSession::recognizeHeldStroke);
 
-    m_morphAnimation.setDuration(220);
+    m_morphAnimation.setDuration(m_timing.morphDurationMs);
     m_morphAnimation.setStartValue(0.0);
     m_morphAnimation.setEndValue(1.0);
     m_morphAnimation.setEasingCurve(QEasingCurve::InOutCubic);
@@ -73,34 +126,49 @@ QuickShapeSession::QuickShapeSession(QObject *parent)
     });
 }
 
+void QuickShapeSession::setTiming(const QuickShapeTiming &timing)
+{
+    m_timing = timing;
+    m_timing.holdDurationMs = qMax(1, m_timing.holdDurationMs);
+    m_timing.morphDurationMs = qMax(0, m_timing.morphDurationMs);
+    m_timing.dwellRadius = qMax(0.1, m_timing.dwellRadius);
+    m_timing.maxDwellVelocity = qMax(0.1, m_timing.maxDwellVelocity);
+    m_timing.minimumSamples = qMax(2, m_timing.minimumSamples);
+    m_timing.minimumStrokeLength = qMax(0.0, m_timing.minimumStrokeLength);
+    m_holdTimer.setInterval(m_timing.holdDurationMs);
+    m_morphAnimation.setDuration(m_timing.morphDurationMs);
+}
+
 void QuickShapeSession::setHoldDelayMs(int milliseconds)
 {
-    m_holdTimer.setInterval(qMax(1, milliseconds));
+    m_timing.holdDurationMs = qMax(1, milliseconds);
+    m_holdTimer.setInterval(m_timing.holdDurationMs);
 }
 
 void QuickShapeSession::setMorphDurationMs(int milliseconds)
 {
-    m_morphAnimation.setDuration(qMax(0, milliseconds));
+    m_timing.morphDurationMs = qMax(0, milliseconds);
+    m_morphAnimation.setDuration(m_timing.morphDurationMs);
 }
 
 void QuickShapeSession::setDwellRadius(qreal documentUnits)
 {
-    m_dwellRadius = qMax(0.1, documentUnits);
+    m_timing.dwellRadius = qMax(0.1, documentUnits);
 }
 
 int QuickShapeSession::holdDelayMs() const
 {
-    return m_holdTimer.interval();
+    return m_timing.holdDurationMs;
 }
 
 int QuickShapeSession::morphDurationMs() const
 {
-    return m_morphAnimation.duration();
+    return m_timing.morphDurationMs;
 }
 
 qreal QuickShapeSession::dwellRadius() const
 {
-    return m_dwellRadius;
+    return m_timing.dwellRadius;
 }
 
 void QuickShapeSession::pointerPress(const QPointF &documentPoint, qreal pressure)
@@ -113,6 +181,8 @@ void QuickShapeSession::pointerPress(const QPointF &documentPoint, qreal pressur
     m_state = State::Collecting;
     m_sourcePoints = {documentPoint};
     m_sourcePressures = {qBound(0.0, pressure, 1.0)};
+    m_strokeClock.start();
+    m_sourceTimesMs = {0};
     m_holdAnchor = documentPoint;
     m_lastPoint = documentPoint;
     m_holdTimer.start();
@@ -136,8 +206,11 @@ void QuickShapeSession::pointerMove(const QPointF &documentPoint, qreal pressure
 
     m_sourcePoints.append(documentPoint);
     m_sourcePressures.append(qBound(0.0, pressure, 1.0));
+    m_sourceTimesMs.append(m_strokeClock.elapsed());
     m_lastPoint = documentPoint;
-    if (pointDistance(documentPoint, m_holdAnchor) > m_dwellRadius) {
+    if (pointDistance(documentPoint, m_holdAnchor) > m_timing.dwellRadius) {
+        // Drawing resumed beyond the dwell tolerance: restart the hold and
+        // keep the ordinary rough stroke going.
         m_holdAnchor = documentPoint;
         m_holdTimer.start();
     }
@@ -154,6 +227,7 @@ void QuickShapeSession::pointerRelease(const QPointF &documentPoint, qreal press
         if (pointDistance(documentPoint, m_lastPoint) >= 1.4) {
             m_sourcePoints.append(documentPoint);
             m_sourcePressures.append(qBound(0.0, pressure, 1.0));
+            m_sourceTimesMs.append(m_strokeClock.elapsed());
         }
         m_state = State::Idle;
         m_sourcePoints.clear();
@@ -191,6 +265,43 @@ QuickShapeCommit QuickShapeSession::currentCommit() const
     commit.points = m_targetPoints;
     commit.pressures = resampledPressures(m_targetPoints.size());
     return commit;
+}
+
+QuickShapeGeometry QuickShapeSession::currentGeometry() const
+{
+    if (!hasActiveShape() || m_targetPoints.size() < 2)
+        return {};
+    return QuickShapeGeometry::fromCorrected(m_shapeName, m_targetPoints,
+                                             m_shapeCenter);
+}
+
+void QuickShapeSession::setEditedGeometry(const QuickShapeGeometry &geometry)
+{
+    if (!geometry.isValid())
+        return;
+    const QVector<QPointF> points = geometry.sampled();
+    if (points.size() < 2)
+        return;
+    const bool previouslyActive = hasActiveShape();
+    m_holdTimer.stop();
+    m_morphAnimation.stop();
+    m_pointerDown = false;
+    m_shapeName = geometry.name;
+    m_targetPoints = points;
+    m_baseTargetPoints = points;
+    if (geometry.kind == QuickShapeGeometry::Ellipse) {
+        m_shapeCenter = geometry.center;
+    } else {
+        m_shapeCenter = {};
+        for (const QPointF &point : points)
+            m_shapeCenter += point;
+        m_shapeCenter /= points.size();
+    }
+    m_state = State::Ready;
+    updateOverlay(points);
+    if (!previouslyActive)
+        emit activeShapeChanged(true);
+    emit shapeReady(m_shapeName, m_confidence);
 }
 
 void QuickShapeSession::setEditedShape(const QString &shapeName,
@@ -240,13 +351,55 @@ void QuickShapeSession::reset()
     m_pointerDown = false;
     m_sourcePoints.clear();
     m_sourcePressures.clear();
+    m_sourceTimesMs.clear();
     clearShapeState();
+}
+
+qreal QuickShapeSession::strokeLength() const
+{
+    qreal length = 0.0;
+    for (qsizetype i = 1; i < m_sourcePoints.size(); ++i)
+        length += pointDistance(m_sourcePoints[i - 1], m_sourcePoints[i]);
+    return length;
+}
+
+// Movement of the stroke endpoint over the trailing ~160 ms window, in
+// document units per second. During a true hold no fresh samples arrive, so
+// the window is empty and the velocity is zero.
+qreal QuickShapeSession::recentEndpointVelocity() const
+{
+    if (m_sourcePoints.size() < 2
+        || m_sourceTimesMs.size() != m_sourcePoints.size())
+        return 0.0;
+    const qint64 now = m_strokeClock.elapsed();
+    const qint64 windowStart = now - 160;
+    qreal moved = 0.0;
+    qint64 earliest = now;
+    for (qsizetype i = m_sourcePoints.size() - 1; i >= 1; --i) {
+        if (m_sourceTimesMs[i] < windowStart)
+            break;
+        moved += pointDistance(m_sourcePoints[i - 1], m_sourcePoints[i]);
+        earliest = m_sourceTimesMs[i - 1] > windowStart ? m_sourceTimesMs[i - 1]
+                                                        : windowStart;
+    }
+    const qint64 dt = now - earliest;
+    return dt > 0 ? moved * 1000.0 / dt : 0.0;
 }
 
 void QuickShapeSession::recognizeHeldStroke()
 {
     if (!m_pointerDown || m_state != State::Collecting)
         return;
+    // Movement-stability gates: recognition needs a usable stroke AND a
+    // genuinely resting endpoint — not merely "no sample for a while". Slow
+    // curved drawing, careful corners, and retracing keep the endpoint
+    // moving, so they re-arm the timer instead of snapping prematurely.
+    if (m_sourcePoints.size() < m_timing.minimumSamples
+        || strokeLength() < m_timing.minimumStrokeLength
+        || recentEndpointVelocity() > m_timing.maxDwellVelocity) {
+        m_holdTimer.start();
+        return;
+    }
     const QuickShapeResult result = QuickShapeRecognizer::recognize(m_sourcePoints);
     if (!result.accepted) {
         emit recognitionRejected();
@@ -349,6 +502,117 @@ QVector<qreal> QuickShapeSession::resampledPressures(int count) const
                       + m_sourcePressures[segment] * mix);
     }
     return result;
+}
+
+// --- QuickShapeGeometry -----------------------------------------------------
+
+bool QuickShapeGeometry::isValid() const
+{
+    if (kind == Ellipse)
+        return radiusX > 0.4 && radiusY > 0.4 && qAbs(spanAngleRad) > 0.05;
+    return nodes.size() >= (kind == Polygon ? 3 : 2);
+}
+
+QPointF QuickShapeGeometry::ellipsePointAt(qreal t) const
+{
+    const qreal cosine = qCos(rotationRad);
+    const qreal sine = qSin(rotationRad);
+    const qreal x = radiusX * qCos(t);
+    const qreal y = radiusY * qSin(t);
+    return center + QPointF(x * cosine - y * sine, x * sine + y * cosine);
+}
+
+qreal QuickShapeGeometry::ellipseAngleOf(const QPointF &point) const
+{
+    const qreal cosine = qCos(rotationRad);
+    const qreal sine = qSin(rotationRad);
+    const QPointF d = point - center;
+    const qreal localX = d.x() * cosine + d.y() * sine;
+    const qreal localY = -d.x() * sine + d.y() * cosine;
+    return qAtan2(localY / qMax<qreal>(0.4, radiusY),
+                  localX / qMax<qreal>(0.4, radiusX));
+}
+
+QVector<QPointF> QuickShapeGeometry::sampled(int ellipseSamples) const
+{
+    if (kind != Ellipse)
+        return nodes;
+    QVector<QPointF> out;
+    const int count = qMax(16, ellipseSamples);
+    out.reserve(count);
+    const bool fullTurn = qAbs(spanAngleRad) >= 2.0 * M_PI - 0.02;
+    if (fullTurn) {
+        for (int i = 0; i < count; ++i) // path closes via the shape name
+            out.append(ellipsePointAt(startAngleRad + 2.0 * M_PI * i / count));
+    } else {
+        for (int i = 0; i < count; ++i) // inclusive endpoints keep the gap
+            out.append(ellipsePointAt(startAngleRad
+                                      + spanAngleRad * i / qreal(count - 1)));
+    }
+    return out;
+}
+
+QuickShapeGeometry QuickShapeGeometry::fromCorrected(
+    const QString &name, const QVector<QPointF> &target, const QPointF &center)
+{
+    QuickShapeGeometry geometry;
+    geometry.name = name;
+    const bool closed = isClosedShapeType(name);
+    const bool ellipseFamily = name == QLatin1String("Circle")
+        || name == QLatin1String("Ellipse") || name == QLatin1String("Arc")
+        || name == QLatin1String("Elliptical Arc");
+
+    if (ellipseFamily && target.size() >= 8) {
+        geometry.kind = Ellipse;
+        geometry.center = center;
+        // Orientation from the samples' second moments, radii from the
+        // extents in the rotated frame — exact for targets generated from
+        // the parametric form, and stable under the session's rotate/scale.
+        qreal sxx = 0.0, syy = 0.0, sxy = 0.0;
+        for (const QPointF &point : target) {
+            const QPointF d = point - center;
+            sxx += d.x() * d.x();
+            syy += d.y() * d.y();
+            sxy += d.x() * d.y();
+        }
+        geometry.rotationRad = 0.5 * qAtan2(2.0 * sxy, sxx - syy);
+        const qreal cosine = qCos(geometry.rotationRad);
+        const qreal sine = qSin(geometry.rotationRad);
+        qreal rx = 0.0, ry = 0.0;
+        for (const QPointF &point : target) {
+            const QPointF d = point - center;
+            rx = qMax(rx, qAbs(d.x() * cosine + d.y() * sine));
+            ry = qMax(ry, qAbs(-d.x() * sine + d.y() * cosine));
+        }
+        geometry.radiusX = qMax(0.5, rx);
+        geometry.radiusY = qMax(0.5, ry);
+        if (closed) {
+            geometry.startAngleRad = geometry.ellipseAngleOf(target.first());
+            geometry.spanAngleRad = 2.0 * M_PI;
+        } else {
+            // Unwrap the signed angular travel so the arc's deliberate gap
+            // (and winding direction) survives round-trips exactly.
+            qreal previous = geometry.ellipseAngleOf(target.first());
+            geometry.startAngleRad = previous;
+            qreal span = 0.0;
+            for (qsizetype i = 1; i < target.size(); ++i) {
+                qreal a = geometry.ellipseAngleOf(target[i]);
+                qreal delta = a - previous;
+                while (delta > M_PI)
+                    delta -= 2.0 * M_PI;
+                while (delta < -M_PI)
+                    delta += 2.0 * M_PI;
+                span += delta;
+                previous = a;
+            }
+            geometry.spanAngleRad = span;
+        }
+        return geometry;
+    }
+
+    geometry.kind = closed ? Polygon : Polyline;
+    geometry.nodes = structuralVerticesOf(target, closed);
+    return geometry;
 }
 
 } // namespace quickshape

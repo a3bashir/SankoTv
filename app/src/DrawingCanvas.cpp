@@ -152,6 +152,42 @@ DrawingCanvas::DrawingCanvas(QWidget *parent)
             this, [this](const quickshape::QuickShapeCommit &commit) {
         replayQuickShape(commit);
     });
+    connect(&m_quickShape, &quickshape::QuickShapeSession::activeShapeChanged,
+            this, [this](bool available) {
+        if (!available) {
+            m_qsEditing = false;
+            m_qsNode = -1;
+            m_qsHover = -1;
+        }
+        updateQuickShapeUi();
+        update();
+    });
+
+    // Edit Shape entry button + shape-type selector: canvas CHILDREN, so they
+    // receive their own mouse events and interacting with them can never draw.
+    // NoFocus keeps them from stealing canvas focus (focus loss bakes shapes).
+    m_qsTabletClock.start();
+    m_qsEditButton = new QPushButton(QStringLiteral("Edit Shape"), this);
+    m_qsEditButton->setFocusPolicy(Qt::NoFocus);
+    m_qsEditButton->setCursor(Qt::PointingHandCursor);
+    m_qsEditButton->setStyleSheet(QStringLiteral(
+        "QPushButton { background:#212121; color:#cccccc; border:1px solid #2a2a2a;"
+        " border-radius:6px; padding:6px 16px; font-size:12px; font-weight:600; }"
+        "QPushButton:hover { color:#ffffff; border-color:#7c6ef6; }"));
+    m_qsEditButton->hide();
+    connect(m_qsEditButton, &QPushButton::clicked,
+            this, [this] { enterQuickShapeEdit(); });
+
+    m_qsTypeBar = new QWidget(this);
+    m_qsTypeBar->setObjectName(QStringLiteral("qsTypeBar"));
+    m_qsTypeBar->setAttribute(Qt::WA_StyledBackground, true);
+    m_qsTypeBar->setStyleSheet(QStringLiteral(
+        "#qsTypeBar { background:#212121; border:1px solid #2a2a2a;"
+        " border-radius:6px; }"));
+    auto *qsTypeLayout = new QHBoxLayout(m_qsTypeBar);
+    qsTypeLayout->setContentsMargins(6, 4, 6, 4);
+    qsTypeLayout->setSpacing(4);
+    m_qsTypeBar->hide();
 
     m_antsTimer->setInterval(150);
     connect(m_antsTimer, &QTimer::timeout, this, [this] {
@@ -308,6 +344,37 @@ private:
     QJsonObject m_after;
     bool m_firstRedo = true;
 };
+
+// Single tuning point for the QuickShape hold behaviour. Values are
+// SCREEN-space; applyQuickShapeTiming() converts them into document units at
+// each stroke start so the feel is identical at every zoom level.
+struct QuickShapeTuning
+{
+    int holdDurationMs = 550;
+    int morphDurationMs = 220;
+    qreal dwellRadiusScreenPx = 8.0;
+    qreal maxDwellVelocityScreenPxPerSec = 20.0;
+};
+constexpr QuickShapeTuning kQuickShapeTuning{};
+
+// Circumcircle through three points; false when they are collinear.
+bool circumcircle(const QPointF &a, const QPointF &b, const QPointF &p,
+                  QPointF *center, qreal *radius)
+{
+    const qreal d = 2.0 * (a.x() * (b.y() - p.y()) + b.x() * (p.y() - a.y())
+                           + p.x() * (a.y() - b.y()));
+    if (qAbs(d) < 1e-6)
+        return false;
+    const qreal a2 = a.x() * a.x() + a.y() * a.y();
+    const qreal b2 = b.x() * b.x() + b.y() * b.y();
+    const qreal p2 = p.x() * p.x() + p.y() * p.y();
+    center->setX((a2 * (b.y() - p.y()) + b2 * (p.y() - a.y())
+                  + p2 * (a.y() - b.y())) / d);
+    center->setY((a2 * (p.x() - b.x()) + b2 * (a.x() - p.x())
+                  + p2 * (b.x() - a.x())) / d);
+    *radius = QLineF(*center, a).length();
+    return true;
+}
 
 // Tight bounding rect of the pixels that differ between two same-sized
 // images (empty when identical).
@@ -696,6 +763,7 @@ void DrawingCanvas::resizeEvent(QResizeEvent *event)
 {
     QWidget::resizeEvent(event);
     positionViewToolbar();
+    updateQuickShapeUi();
 }
 
 // --- Canvas View Controls (display-only view transforms) --------------------
@@ -2708,14 +2776,20 @@ void DrawingCanvas::endBrushStroke(const QString &undoText)
     update();
 }
 
-// ~8 screen pixels expressed in canvas units at the CURRENT view scale, so
-// the hold/dwell jitter tolerance feels identical at every zoom level. Set
-// once per stroke; recognition itself runs purely in canvas coordinates.
-qreal DrawingCanvas::quickShapeDwellRadius() const
+// Convert the screen-space QuickShape tuning into document units at the
+// CURRENT view scale and push it into the session — called once per stroke,
+// so hold feel, dwell tolerance, and the velocity gate are zoom-independent.
+void DrawingCanvas::applyQuickShapeTiming()
 {
     const QTransform T = viewTransform();
-    const qreal scale = std::hypot(T.m11(), T.m12()); // widget px per canvas px
-    return 8.0 / qMax(0.05, scale);
+    const qreal scale = qMax(0.05, std::hypot(T.m11(), T.m12()));
+    quickshape::QuickShapeTiming timing = m_quickShape.timing();
+    timing.holdDurationMs = kQuickShapeTuning.holdDurationMs;
+    timing.morphDurationMs = kQuickShapeTuning.morphDurationMs;
+    timing.dwellRadius = kQuickShapeTuning.dwellRadiusScreenPx / scale;
+    timing.maxDwellVelocity =
+        kQuickShapeTuning.maxDwellVelocityScreenPxPerSec / scale;
+    m_quickShape.setTiming(timing);
 }
 
 // A shape was recognized mid-stroke: the rough freehand pixels become a
@@ -2766,6 +2840,400 @@ void DrawingCanvas::replayQuickShape(const quickshape::QuickShapeCommit &commit)
         moveBrushStroke(commit.points.first(), commit.pressures.value(0, 1.0));
     endBrushStroke(QStringLiteral("QuickShape"));
     emit contentChanged();
+}
+
+// --- QuickShape Edit Shape mode ---------------------------------------------
+
+void DrawingCanvas::updateQuickShapeUi()
+{
+    const bool ready = m_quickShape.hasActiveShape() && !m_qsHeld;
+    if (m_qsEditButton) {
+        const bool showButton = ready && !m_qsEditing;
+        m_qsEditButton->setVisible(showButton);
+        if (showButton) {
+            m_qsEditButton->adjustSize();
+            m_qsEditButton->move((width() - m_qsEditButton->width()) / 2, 10);
+            m_qsEditButton->raise();
+        }
+    }
+    if (m_qsTypeBar) {
+        const bool showBar = ready && m_qsEditing;
+        m_qsTypeBar->setVisible(showBar);
+        if (showBar) {
+            m_qsTypeBar->adjustSize();
+            m_qsTypeBar->move((width() - m_qsTypeBar->width()) / 2, 10);
+            m_qsTypeBar->raise();
+        }
+    }
+}
+
+void DrawingCanvas::enterQuickShapeEdit()
+{
+    if (!m_quickShape.hasActiveShape())
+        return;
+    m_qsGeometry = m_quickShape.currentGeometry();
+    if (!m_qsGeometry.isValid())
+        return;
+    m_qsEditing = true;
+    m_qsNode = -1;
+    m_qsHover = -1;
+    rebuildQuickShapeTypeBar();
+    updateQuickShapeUi();
+    update();
+}
+
+void DrawingCanvas::applyQuickShapeGeometry()
+{
+    m_quickShape.setEditedGeometry(m_qsGeometry); // overlay refresh via signal
+}
+
+// The compact type selector offers only alternatives that keep the shape's
+// open/closed character; the active entry is highlighted.
+void DrawingCanvas::rebuildQuickShapeTypeBar()
+{
+    if (!m_qsTypeBar)
+        return;
+    QLayout *layout = m_qsTypeBar->layout();
+    while (QLayoutItem *item = layout->takeAt(0)) {
+        if (QWidget *w = item->widget())
+            w->deleteLater();
+        delete item;
+    }
+    const bool closed = m_qsGeometry.isClosed();
+    const QStringList names = closed
+        ? QStringList{QStringLiteral("Circle"), QStringLiteral("Ellipse"),
+                      QStringLiteral("Triangle"), QStringLiteral("Rectangle"),
+                      QStringLiteral("Polygon")}
+        : QStringList{QStringLiteral("Line"), QStringLiteral("Polyline"),
+                      QStringLiteral("Arc")};
+    const QString &current = m_qsGeometry.name;
+    for (const QString &name : names) {
+        const bool active = name == current
+            || (name == QLatin1String("Polygon")
+                && (current == QLatin1String("Quadrilateral")
+                    || current == QLatin1String("Pentagon")
+                    || current == QLatin1String("Hexagon")))
+            || (name == QLatin1String("Arc")
+                && current == QLatin1String("Elliptical Arc"))
+            || (name == QLatin1String("Polyline")
+                && (current == QLatin1String("Angled line")
+                    || current == QLatin1String("Zigzag")));
+        auto *button = new QPushButton(name, m_qsTypeBar);
+        button->setFocusPolicy(Qt::NoFocus);
+        button->setCursor(Qt::PointingHandCursor);
+        button->setStyleSheet(active
+            ? QStringLiteral(
+                  "QPushButton { background:#7c6ef6; color:#ffffff; border:none;"
+                  " border-radius:4px; padding:4px 10px; font-size:11px; }")
+            : QStringLiteral(
+                  "QPushButton { background:#161616; color:#aaaaaa; border:none;"
+                  " border-radius:4px; padding:4px 10px; font-size:11px; }"
+                  "QPushButton:hover { color:#ffffff; }"));
+        connect(button, &QPushButton::clicked,
+                this, [this, name] { convertQuickShapeTo(name); });
+        layout->addWidget(button);
+        button->show();
+    }
+    m_qsTypeBar->adjustSize();
+    updateQuickShapeUi();
+}
+
+// Convert the temporary vector to another type — overlay only, never
+// rasterized here. Conversions derive from the current geometry (endpoints,
+// vertices, or the overlay's bounding box), preserving open vs closed.
+void DrawingCanvas::convertQuickShapeTo(const QString &typeName)
+{
+    using G = quickshape::QuickShapeGeometry;
+    const G g = m_qsGeometry;
+    const QRectF box = m_quickShape.overlayPath().boundingRect();
+    auto endpoints = [&]() -> QPair<QPointF, QPointF> {
+        if (g.kind == G::Ellipse)
+            return {g.ellipsePointAt(g.startAngleRad),
+                    g.ellipsePointAt(g.startAngleRad + g.spanAngleRad)};
+        return {g.nodes.first(), g.nodes.last()};
+    };
+
+    G out;
+    out.name = typeName;
+    if (typeName == QLatin1String("Line")) {
+        const auto ends = endpoints();
+        out.kind = G::Polyline;
+        out.nodes = {ends.first, ends.second};
+    } else if (typeName == QLatin1String("Polyline")) {
+        out.kind = G::Polyline;
+        if (g.kind == G::Ellipse) {
+            for (int i = 0; i <= 6; ++i)
+                out.nodes.append(g.ellipsePointAt(
+                    g.startAngleRad + g.spanAngleRad * i / 6.0));
+        } else {
+            out.nodes = g.nodes;
+        }
+    } else if (typeName == QLatin1String("Arc")) {
+        out.kind = G::Ellipse;
+        if (g.kind == G::Ellipse) {
+            out = g;
+            out.name = typeName;
+        } else {
+            const auto ends = endpoints();
+            QPointF mid = g.nodes.size() >= 3 ? g.nodes.at(g.nodes.size() / 2)
+                                              : QPointF();
+            if (g.nodes.size() < 3) { // a straight line: bow it gently
+                const QPointF d = ends.second - ends.first;
+                mid = (ends.first + ends.second) / 2.0
+                      + QPointF(-d.y(), d.x()) * 0.25;
+            }
+            QPointF center;
+            qreal radius = 0.0;
+            if (!circumcircle(ends.first, mid, ends.second, &center, &radius)) {
+                center = box.center();
+                radius = qMax(8.0, (box.width() + box.height()) / 4.0);
+            }
+            out.center = center;
+            out.radiusX = out.radiusY = qMax(4.0, radius);
+            out.rotationRad = 0.0;
+            const qreal a0 = out.ellipseAngleOf(ends.first);
+            const qreal am = out.ellipseAngleOf(mid);
+            const qreal a1 = out.ellipseAngleOf(ends.second);
+            auto positive = [](qreal a) {
+                while (a < 0.0)
+                    a += 2.0 * M_PI;
+                return std::fmod(a, 2.0 * M_PI);
+            };
+            const qreal ccwSpan = positive(a1 - a0);
+            const bool midOnCcw = positive(am - a0) <= ccwSpan + 1e-6;
+            out.startAngleRad = a0;
+            out.spanAngleRad = midOnCcw ? ccwSpan : ccwSpan - 2.0 * M_PI;
+        }
+    } else if (typeName == QLatin1String("Circle")) {
+        out.kind = G::Ellipse;
+        out.center = box.center();
+        out.radiusX = out.radiusY =
+            qMax(4.0, (box.width() + box.height()) / 4.0);
+        out.startAngleRad = -M_PI / 2.0;
+    } else if (typeName == QLatin1String("Ellipse")) {
+        out.kind = G::Ellipse;
+        out.center = box.center();
+        out.radiusX = qMax(4.0, box.width() / 2.0);
+        out.radiusY = qMax(4.0, box.height() / 2.0);
+        out.startAngleRad = -M_PI / 2.0;
+    } else if (typeName == QLatin1String("Triangle")) {
+        out.kind = G::Polygon;
+        out.nodes = {QPointF(box.center().x(), box.top()), box.bottomRight(),
+                     box.bottomLeft()};
+    } else if (typeName == QLatin1String("Rectangle")) {
+        out.kind = G::Polygon;
+        out.nodes = {box.topLeft(), box.topRight(), box.bottomRight(),
+                     box.bottomLeft()};
+    } else if (typeName == QLatin1String("Polygon")) {
+        out.kind = G::Polygon;
+        if (g.kind != G::Ellipse && g.nodes.size() >= 3) {
+            out.nodes = g.nodes;
+        } else {
+            for (int i = 0; i < 6; ++i) { // inscribed hexagon
+                const qreal a = 2.0 * M_PI * i / 6.0 - M_PI / 2.0;
+                out.nodes.append(box.center()
+                                 + QPointF(qCos(a) * box.width() / 2.0,
+                                           qSin(a) * box.height() / 2.0));
+            }
+        }
+    } else {
+        return;
+    }
+    if (!out.isValid())
+        return;
+    m_qsGeometry = out;
+    applyQuickShapeGeometry();
+    rebuildQuickShapeTypeBar();
+    update();
+}
+
+// Editable nodes in CANVAS coordinates. Ellipse family: centre + the two
+// axis handles (+ arc endpoints when the shape is open, so the deliberate
+// gap stays directly editable). Vertex shapes: one node per vertex.
+QVector<QPointF> DrawingCanvas::quickShapeNodes() const
+{
+    using G = quickshape::QuickShapeGeometry;
+    if (m_qsGeometry.kind != G::Ellipse)
+        return m_qsGeometry.nodes;
+    QVector<QPointF> nodes;
+    const qreal rot = m_qsGeometry.rotationRad;
+    nodes << m_qsGeometry.center;
+    nodes << m_qsGeometry.center
+                 + QPointF(qCos(rot) * m_qsGeometry.radiusX,
+                           qSin(rot) * m_qsGeometry.radiusX);
+    nodes << m_qsGeometry.center
+                 + QPointF(-qSin(rot) * m_qsGeometry.radiusY,
+                           qCos(rot) * m_qsGeometry.radiusY);
+    if (qAbs(m_qsGeometry.spanAngleRad) < 2.0 * M_PI - 0.02) {
+        nodes << m_qsGeometry.ellipsePointAt(m_qsGeometry.startAngleRad);
+        nodes << m_qsGeometry.ellipsePointAt(m_qsGeometry.startAngleRad
+                                             + m_qsGeometry.spanAngleRad);
+    }
+    return nodes;
+}
+
+int DrawingCanvas::quickShapeNodeAt(const QPointF &widgetPos) const
+{
+    const QTransform T = viewTransform();
+    const QVector<QPointF> nodes = quickShapeNodes();
+    for (int i = 0; i < nodes.size(); ++i)
+        if (QLineF(T.map(nodes.at(i)), widgetPos).length() <= 12.0)
+            return i;
+    return -1;
+}
+
+bool DrawingCanvas::quickShapeEditPress(const QPointF &widgetPos)
+{
+    const int hit = quickShapeNodeAt(widgetPos);
+    if (hit >= 0) {
+        m_qsNode = hit;
+        update();
+        return true;
+    }
+    // Tapping clearly outside the shape commits it and leaves edit mode
+    // (activeShapeChanged(false) resets the editing state).
+    const QRectF bounds = m_quickShape.overlayPath().boundingRect().adjusted(
+        -m_brushToolSize - 24.0, -m_brushToolSize - 24.0,
+        m_brushToolSize + 24.0, m_brushToolSize + 24.0);
+    if (!bounds.contains(toCanvasF(widgetPos))) {
+        m_quickShape.requestCommit();
+        return true;
+    }
+    return true; // inside the shape but off-node: swallow, never draw
+}
+
+void DrawingCanvas::quickShapeEditMove(const QPointF &widgetPos)
+{
+    using G = quickshape::QuickShapeGeometry;
+    if (m_qsNode < 0) { // idle hover feedback
+        const int hover = quickShapeNodeAt(widgetPos);
+        if (hover != m_qsHover) {
+            m_qsHover = hover;
+            update();
+        }
+        return;
+    }
+    const QPointF p = toCanvasF(widgetPos);
+    auto wrapSpan = [](qreal span, qreal sign) {
+        const qreal twoPi = 2.0 * M_PI;
+        span = std::fmod(span, twoPi);
+        if (sign >= 0.0 && span <= 0.0)
+            span += twoPi;
+        if (sign < 0.0 && span >= 0.0)
+            span -= twoPi;
+        return span;
+    };
+    if (m_qsGeometry.kind == G::Ellipse) {
+        switch (m_qsNode) {
+        case 0:
+            m_qsGeometry.center = p;
+            break;
+        case 1: { // major-axis handle: radius + orientation
+            const QPointF d = p - m_qsGeometry.center;
+            m_qsGeometry.radiusX = qMax(2.0, QLineF(QPointF(), d).length());
+            m_qsGeometry.rotationRad = qAtan2(d.y(), d.x());
+            break;
+        }
+        case 2: { // minor-axis handle
+            const QPointF d = p - m_qsGeometry.center;
+            m_qsGeometry.radiusY = qMax(2.0, QLineF(QPointF(), d).length());
+            m_qsGeometry.rotationRad = qAtan2(d.y(), d.x()) - M_PI / 2.0;
+            break;
+        }
+        case 3: { // arc start: keep the far end fixed, gap follows
+            const qreal end =
+                m_qsGeometry.startAngleRad + m_qsGeometry.spanAngleRad;
+            const qreal ns = m_qsGeometry.ellipseAngleOf(p);
+            const qreal span = wrapSpan(end - ns, m_qsGeometry.spanAngleRad);
+            if (qAbs(span) > 0.1) {
+                m_qsGeometry.startAngleRad = ns;
+                m_qsGeometry.spanAngleRad = span;
+            }
+            break;
+        }
+        case 4: { // arc end
+            const qreal span =
+                wrapSpan(m_qsGeometry.ellipseAngleOf(p)
+                             - m_qsGeometry.startAngleRad,
+                         m_qsGeometry.spanAngleRad);
+            if (qAbs(span) > 0.1)
+                m_qsGeometry.spanAngleRad = span;
+            break;
+        }
+        default:
+            break;
+        }
+    } else if (m_qsNode < m_qsGeometry.nodes.size()) {
+        m_qsGeometry.nodes[m_qsNode] = p;
+    }
+    applyQuickShapeGeometry();
+}
+
+void DrawingCanvas::quickShapeEditRelease()
+{
+    m_qsNode = -1;
+    update();
+}
+
+// Double-click: on a node deletes it (respecting the minimum count); on a
+// segment inserts a node at the projection. Ellipse-family shapes have
+// parametric handles only. Always swallowed — never a brush stroke.
+bool DrawingCanvas::quickShapeEditDoubleClick(const QPointF &widgetPos)
+{
+    using G = quickshape::QuickShapeGeometry;
+    if (m_qsGeometry.kind == G::Ellipse)
+        return true;
+    const int minNodes = m_qsGeometry.kind == G::Polygon ? 3 : 2;
+    const int hit = quickShapeNodeAt(widgetPos);
+    if (hit >= 0) {
+        if (m_qsGeometry.nodes.size() > minNodes) {
+            m_qsGeometry.nodes.remove(hit);
+            m_qsGeometry.name = m_qsGeometry.kind == G::Polygon
+                ? QStringLiteral("Polygon")
+                : (m_qsGeometry.nodes.size() == 2 ? QStringLiteral("Line")
+                                                  : QStringLiteral("Polyline"));
+            m_qsNode = -1;
+            m_qsHover = -1;
+            applyQuickShapeGeometry();
+            rebuildQuickShapeTypeBar();
+            update();
+        }
+        return true;
+    }
+    // Insert on the nearest segment within reach.
+    const QPointF p = toCanvasF(widgetPos);
+    const int nodeCount = m_qsGeometry.nodes.size();
+    const int segments = m_qsGeometry.kind == G::Polygon ? nodeCount
+                                                          : nodeCount - 1;
+    int bestSegment = -1;
+    qreal bestDist = m_brushToolSize / 2.0 + 10.0;
+    QPointF bestPoint;
+    for (int i = 0; i < segments; ++i) {
+        const QPointF a = m_qsGeometry.nodes.at(i);
+        const QPointF b = m_qsGeometry.nodes.at((i + 1) % nodeCount);
+        const QPointF ab = b - a;
+        const qreal len2 = QPointF::dotProduct(ab, ab);
+        if (len2 < 1e-9)
+            continue;
+        const qreal t =
+            qBound(0.0, QPointF::dotProduct(p - a, ab) / len2, 1.0);
+        const QPointF proj = a + ab * t;
+        const qreal dist = QLineF(proj, p).length();
+        if (dist < bestDist) {
+            bestDist = dist;
+            bestSegment = i;
+            bestPoint = proj;
+        }
+    }
+    if (bestSegment >= 0) {
+        m_qsGeometry.nodes.insert(bestSegment + 1, bestPoint);
+        m_qsGeometry.name = m_qsGeometry.kind == G::Polygon
+            ? QStringLiteral("Polygon") : QStringLiteral("Polyline");
+        applyQuickShapeGeometry();
+        rebuildQuickShapeTypeBar();
+        update();
+    }
+    return true;
 }
 
 void DrawingCanvas::setQuickShapeEnabled(bool enabled)
@@ -3131,6 +3599,25 @@ void DrawingCanvas::paintEvent(QPaintEvent *)
     if (m_tool == Perspective && m_panel)
         m_perspective.paintHandles(painter, T, m_perspHover);
 
+    // QuickShape edit nodes: WIDGET space (constant screen size) so they stay
+    // grabbable at any zoom; the hovered/dragged node grows for feedback.
+    if (m_qsEditing && m_quickShape.hasActiveShape()) {
+        const QVector<QPointF> nodes = quickShapeNodes();
+        painter.save();
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        for (int i = 0; i < nodes.size(); ++i) {
+            const QPointF w = T.map(nodes.at(i));
+            const qreal r =
+                (i == m_qsHover || i == m_qsNode) ? 7.0 : 5.0;
+            painter.setPen(QPen(QColor(0, 0, 0, 150), 3.0));
+            painter.setBrush(QColor(0x7c, 0x6e, 0xf6));
+            painter.drawEllipse(w, r, r);
+            painter.setPen(QPen(Qt::white, 1.6));
+            painter.drawEllipse(w, r, r);
+        }
+        painter.restore();
+    }
+
     // Transform box outline + handles: WIDGET space (constant screen size),
     // corners mapped through T so the box tracks the rotated/flipped preview.
     // Photoshop-style: OUTLINE ONLY in the Sanko accent #7C6EF6, no fill.
@@ -3405,6 +3892,13 @@ void DrawingCanvas::focusOutEvent(QFocusEvent *event)
 
 void DrawingCanvas::mousePressEvent(QMouseEvent *event)
 {
+    // Edit Shape mode swallows every canvas press: nodes drag, taps outside
+    // commit — nothing here may start a brush stroke.
+    if (m_qsEditing && event->button() == Qt::LeftButton) {
+        quickShapeEditPress(event->position());
+        return;
+    }
+
     // Pan: middle-button drag, or spacebar held + left drag.
     if (event->button() == Qt::MiddleButton
         || (m_spaceHeld && event->button() == Qt::LeftButton)) {
@@ -3567,8 +4061,10 @@ void DrawingCanvas::mousePressEvent(QMouseEvent *event)
         m_brushStroke = true;
         const QPointF pt = toCanvasF(event->position());
         if (m_quickShapeEnabled) {
-            m_quickShape.setDwellRadius(quickShapeDwellRadius());
+            applyQuickShapeTiming();
             m_quickShape.pointerPress(pt, 1.0);
+            m_qsHeld = true;
+            updateQuickShapeUi();
         }
         beginBrushStroke(pt, 1.0);
         break;
@@ -3641,6 +4137,10 @@ void DrawingCanvas::mousePressEvent(QMouseEvent *event)
 
 void DrawingCanvas::mouseMoveEvent(QMouseEvent *event)
 {
+    if (m_qsEditing) {
+        quickShapeEditMove(event->position());
+        return;
+    }
     if (m_panning) {
         m_panOffset = m_panStartOffset + QPointF(event->pos() - m_panStartScreen);
         update();
@@ -3747,6 +4247,10 @@ void DrawingCanvas::mouseMoveEvent(QMouseEvent *event)
 
 void DrawingCanvas::mouseReleaseEvent(QMouseEvent *event)
 {
+    if (m_qsEditing && event->button() == Qt::LeftButton) {
+        quickShapeEditRelease();
+        return;
+    }
     if (m_panning
         && (event->button() == Qt::MiddleButton || event->button() == Qt::LeftButton)) {
         m_panning = false;
@@ -3765,13 +4269,17 @@ void DrawingCanvas::mouseReleaseEvent(QMouseEvent *event)
         && !m_brushStroke) {
         // The corrected vector stays as a temporary overlay after release.
         m_quickShape.pointerRelease(toCanvasF(event->position()), 1.0);
+        m_qsHeld = false;
+        updateQuickShapeUi();
         return;
     }
     if (m_brushStroke && event->button() == Qt::LeftButton) {
         if (m_quickShapeEnabled)
             m_quickShape.pointerRelease(toCanvasF(event->position()), 1.0);
+        m_qsHeld = false;
         endBrushStroke();
         emit contentChanged();
+        updateQuickShapeUi();
         return;
     }
     if (m_xformActive && m_tool == Move && event->button() == Qt::LeftButton) {
@@ -3860,6 +4368,11 @@ void DrawingCanvas::mouseReleaseEvent(QMouseEvent *event)
 
 void DrawingCanvas::mouseDoubleClickEvent(QMouseEvent *event)
 {
+    if (m_qsEditing && event->button() == Qt::LeftButton) {
+        quickShapeEditDoubleClick(event->position());
+        return; // an editing double-click never begins a brush stroke
+    }
+
     // Perspective: double-clicking a VP handle removes that vanishing point
     // (the horizon and guide fans re-derive from the survivors).
     if (m_tool == Perspective && event->button() == Qt::LeftButton) {
@@ -3923,6 +4436,37 @@ void DrawingCanvas::tabletEvent(QTabletEvent *event)
         return;
     }
 
+    // Edit Shape mode: the pen edits nodes — accept() consumes the event so
+    // Qt never synthesizes a duplicate mouse action, and nothing draws. A
+    // quick second pen-tap on the same node counts as the delete gesture.
+    if (m_qsEditing) {
+        switch (event->type()) {
+        case QEvent::TabletPress: {
+            const int node = quickShapeNodeAt(event->position());
+            const qint64 now = m_qsTabletClock.elapsed();
+            if (node >= 0 && node == m_qsLastTabletNode
+                && now - m_qsLastTabletPressMs < 350) {
+                quickShapeEditDoubleClick(event->position());
+            } else {
+                quickShapeEditPress(event->position());
+            }
+            m_qsLastTabletNode = node;
+            m_qsLastTabletPressMs = now;
+            break;
+        }
+        case QEvent::TabletMove:
+            quickShapeEditMove(event->position());
+            break;
+        case QEvent::TabletRelease:
+            quickShapeEditRelease();
+            break;
+        default:
+            break;
+        }
+        event->accept();
+        return;
+    }
+
     switch (event->type()) {
     case QEvent::TabletPress:
         // A pen tap anywhere resolves a pending QuickShape (tap-away bake)
@@ -3935,8 +4479,10 @@ void DrawingCanvas::tabletEvent(QTabletEvent *event)
             m_brushStroke = true;
             const QPointF pt = toCanvasF(event->position());
             if (m_quickShapeEnabled) {
-                m_quickShape.setDwellRadius(quickShapeDwellRadius());
+                applyQuickShapeTiming();
                 m_quickShape.pointerPress(pt, event->pressure());
+                m_qsHeld = true;
+                updateQuickShapeUi();
             }
             beginBrushStroke(pt, event->pressure());
         }
@@ -3967,6 +4513,8 @@ void DrawingCanvas::tabletEvent(QTabletEvent *event)
             endBrushStroke();
             emit contentChanged();
         }
+        m_qsHeld = false;
+        updateQuickShapeUi();
         break;
     default:
         break;

@@ -7,6 +7,7 @@
 #include <QJsonObject>
 
 #include <QColor>
+#include <QElapsedTimer>
 #include <QCursor>
 #include <QImage>
 #include <QPainterPath>
@@ -508,9 +509,35 @@ private:
     quickshape::QuickShapeSession m_quickShape;
     QPainterPath m_quickShapeOverlay; // corrected vector, canvas coords
     bool m_quickShapeEnabled = true;
-    qreal quickShapeDwellRadius() const;  // ~8 screen px in canvas units
-    void discardRoughStroke();            // roll the pending edit back
+    bool m_qsHeld = false;            // pointer currently feeding the session
+    void applyQuickShapeTiming();     // screen-px tuning -> document units
+    void discardRoughStroke();        // roll the pending edit back
     void replayQuickShape(const quickshape::QuickShapeCommit &commit);
+
+    // --- QuickShape Edit Shape mode -----------------------------------------
+    // A released temporary shape shows an "Edit Shape" button (top-centre);
+    // pressing it exposes draggable structural nodes and a compact shape-type
+    // selector. All edit-mode input is fully isolated from the brush.
+    bool m_qsEditing = false;
+    quickshape::QuickShapeGeometry m_qsGeometry;
+    int m_qsNode = -1;   // node being dragged (-1: none)
+    int m_qsHover = -1;  // node under the idle cursor
+    QPushButton *m_qsEditButton = nullptr;
+    QWidget *m_qsTypeBar = nullptr;
+    QElapsedTimer m_qsTabletClock;    // pen double-tap detection on nodes
+    qint64 m_qsLastTabletPressMs = -100000;
+    int m_qsLastTabletNode = -1;
+    void updateQuickShapeUi();
+    void enterQuickShapeEdit();
+    void rebuildQuickShapeTypeBar();
+    void convertQuickShapeTo(const QString &typeName);
+    void applyQuickShapeGeometry();
+    QVector<QPointF> quickShapeNodes() const;      // canvas coords
+    int quickShapeNodeAt(const QPointF &widgetPos) const;
+    bool quickShapeEditPress(const QPointF &widgetPos);
+    void quickShapeEditMove(const QPointF &widgetPos);
+    void quickShapeEditRelease();
+    bool quickShapeEditDoubleClick(const QPointF &widgetPos);
     int m_perspHover = -1;  // VP handle under the idle cursor (grows on hover)
     // One undo command per completed gesture: snapshot at press, push at
     // release (or at begin/endPerspectiveEdit for toolbar edits).
