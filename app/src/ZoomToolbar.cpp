@@ -35,7 +35,7 @@ constexpr int kDiv2X = 291;
 // Flip / Reset are 30x30 button boxes (radius 6, bg #212121 = toolbar body, so
 // effectively icon-only); the icon sits centred inside at its Figma size
 // (flip 21.6x17.55, reset 21x21).
-constexpr int kFlipX = 242, kFlipY = 8, kFlipS = 30;
+constexpr int kFitX = 242, kFitY = 8, kFitS = 30; // Fit Screen button box
 constexpr int kResetX = 490, kResetY = 8, kResetS = 30;
 
 // Vertical band that counts as a hit on a track (label row down through track).
@@ -62,7 +62,7 @@ ZoomToolbar::ZoomToolbar(QWidget *anchor, QWidget *parent)
     : FloatingToolWindow(anchor, QStringLiteral("storyboard/zoomBarPos"), parent)
 {
     setFixedSize(kW, kH);
-    setMouseTracking(true); // hover feedback on the Flip / Reset buttons
+    setMouseTracking(true); // hover feedback on the Fit / Reset buttons
     m_labelFont = QFont(QStringLiteral("Inter")); // falls back to the UI font
     m_labelFont.setPixelSize(9);
     m_labelFont.setWeight(QFont::DemiBold); // "Semi Bold"
@@ -104,14 +104,6 @@ void ZoomToolbar::setRotation(double degrees)
     if (qFuzzyCompare(degrees, m_rotation))
         return;
     m_rotation = degrees;
-    update();
-}
-
-void ZoomToolbar::setFlipH(bool on)
-{
-    if (on == m_flipH)
-        return;
-    m_flipH = on;
     update();
 }
 
@@ -221,13 +213,13 @@ void ZoomToolbar::paintEvent(QPaintEvent *)
         }
     };
 
-    const QRectF flipBox(kFlipX, kFlipY, kFlipS, kFlipS);
-    paintButtonBg(flipBox, BtnFlip, m_flipH);
-    QSvgRenderer flipSvg(QStringLiteral(":/icons/flip.svg"));
+    const QRectF fitBox(kFitX, kFitY, kFitS, kFitS);
+    paintButtonBg(fitBox, BtnFit, false); // plain action button, no state
+    QSvgRenderer fitSvg(QStringLiteral(":/icons/fig_fitscreen.svg"));
     {
-        const double fw = 21.6, fh = 17.55; // Figma flip icon size
-        flipSvg.render(&p, QRectF(kFlipX + (kFlipS - fw) / 2.0,
-                                  kFlipY + (kFlipS - fh) / 2.0, fw, fh));
+        const double fw = 19.2, fh = 19.2; // Figma Fit Screen icon size
+        fitSvg.render(&p, QRectF(kFitX + (kFitS - fw) / 2.0,
+                                 kFitY + (kFitS - fh) / 2.0, fw, fh));
     }
 
     const QRectF resetBox(kResetX, kResetY, kResetS, kResetS);
@@ -319,9 +311,8 @@ void ZoomToolbar::mouseReleaseEvent(QMouseEvent *event)
         const QPoint pos = event->position().toPoint();
         const Button released = buttonAt(pos);
         if (released == m_pressed) {
-            if (m_pressed == BtnFlip) {
-                m_flipH = !m_flipH;
-                emit flipToggled();
+            if (m_pressed == BtnFit) {
+                emit fitRequested();
             } else if (m_pressed == BtnReset) {
                 m_rotation = 0.0;
                 emit rotationChanged(0.0);
@@ -345,8 +336,8 @@ void ZoomToolbar::leaveEvent(QEvent *)
 
 ZoomToolbar::Button ZoomToolbar::buttonAt(const QPoint &pos) const
 {
-    if (QRect(kFlipX, kFlipY, kFlipS, kFlipS).contains(pos))
-        return BtnFlip;
+    if (QRect(kFitX, kFitY, kFitS, kFitS).contains(pos))
+        return BtnFit;
     if (QRect(kResetX, kResetY, kResetS, kResetS).contains(pos))
         return BtnReset;
     return BtnNone;

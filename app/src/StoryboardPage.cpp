@@ -1034,6 +1034,10 @@ private:
         settings.setValue(QStringLiteral("storyboard/sizeCtlSide"), m_side);
         settings.setValue(QStringLiteral("storyboard/sizeCtlY"), m_sideY);
         reposition(); // never user-placed: always lands on snappedOffset()
+        // The bar just jumped away from the cursor: the grab is hover-only,
+        // so hide it immediately (the platform Leave event can lag a
+        // programmatic move).
+        setGrabVisible(false);
     }
 
     int m_side = 0;   // 0 = left canvas edge, 1 = right
@@ -1344,11 +1348,12 @@ StoryboardPage::StoryboardPage(QWidget *parent)
     // stack, so hook the View menu once the event loop starts.
     QTimer::singleShot(0, this, [this] { installDockViewActions(); });
 
-    // 'O' toggles onion skin.
+    // 'O' toggles onion skin (the extras-bar button is gone; the shortcut
+    // drives the canvas state directly).
     QShortcut *onionShortcut = new QShortcut(QKeySequence(Qt::Key_O), this);
     connect(onionShortcut, &QShortcut::activated, this, [this] {
-        if (m_onionButton)
-            m_onionButton->toggle(); // emits toggled -> updates canvas + ghost
+        m_canvas->setOnionSkinEnabled(!m_canvas->isOnionSkinEnabled());
+        updateOnionGhost();
     });
 
     // Ctrl+Left / Ctrl+Right move the current panel within its scene.
@@ -1676,10 +1681,15 @@ QWidget *StoryboardPage::createCenterColumn()
     m_zoomToolbar = new ZoomToolbar(m_canvas, this);
     m_zoomToolbar->setZoom(m_canvas->viewZoom());
     m_zoomToolbar->setRotation(m_canvas->viewRotation());
-    m_zoomToolbar->setFlipH(m_canvas->viewFlipH());
     connect(m_zoomToolbar, &ZoomToolbar::zoomChanged, m_canvas, &DrawingCanvas::setViewZoom);
     connect(m_zoomToolbar, &ZoomToolbar::rotationChanged, m_canvas, &DrawingCanvas::setViewRotation);
-    connect(m_zoomToolbar, &ZoomToolbar::flipToggled, m_canvas, &DrawingCanvas::toggleFlipH);
+    // Fit Screen (swapped in from the Size CTL): zoom 1 = letterbox-fitted.
+    connect(m_zoomToolbar, &ZoomToolbar::fitRequested, this, [this] {
+        m_canvas->setViewZoom(1.0);
+        m_canvas->resetViewRotation();
+        m_zoomToolbar->setZoom(1.0);
+        m_zoomToolbar->setRotation(0.0);
+    });
     // Wheel/pan zoom on the canvas syncs the zoom dragger back.
     connect(m_canvas, &DrawingCanvas::viewZoomChanged, m_zoomToolbar, &ZoomToolbar::setZoom);
     m_zoomToolbar->show(); // records intent; effective when the canvas shows
@@ -1845,7 +1855,7 @@ void StoryboardPage::createFloatingToolbar()
             const QRect r(x, y, w, h);
             if (!win.contains(r))
                 return false;
-            const QWidget *floats[] = {m_extrasToolbar, m_zoomToolbar, m_brushPanel,
+            const QWidget *floats[] = {m_zoomToolbar, m_brushPanel,
                                        m_cameraPanel, m_shapesPanel};
             for (const QWidget *fl : floats)
                 if (fl && fl->isVisible() && r.intersects(fl->frameGeometry()))
@@ -2168,62 +2178,6 @@ void StoryboardPage::createFloatingToolbar()
     });
     brushBar->show(); // records intent; effective when the canvas shows
 
-    // ---- Vertical extras bar (Shapes / Camera / Onion + brush size) ------
-    // Relocated here so the Brush bar matches Figma 33:110 exactly while these
-    // controls stay reachable. FloatingToolWindow, same as the Brush bar.
-    RoundedBar *extrasBar =
-        new RoundedBar(m_canvas, QStringLiteral("storyboard/extrasBarPos"), this);
-    m_extrasToolbar = extrasBar;
-    m_extrasToolbar->setObjectName(QStringLiteral("extrasToolbar"));
-
-    QVBoxLayout *extras = new QVBoxLayout(m_extrasToolbar);
-    extras->setContentsMargins(8, 10, 8, 10);
-    extras->setSpacing(10);
-
-    // Grip (horizontal 3x2 dots), top; presses propagate to the bar.
-    QLabel *extrasGrip = new QLabel;
-    extrasGrip->setPixmap(dragDotsPixmap());
-    extrasGrip->setFixedHeight(14);
-    extrasGrip->setAlignment(Qt::AlignCenter);
-    extrasGrip->setCursor(Qt::OpenHandCursor);
-    extrasGrip->setToolTip(QStringLiteral("Drag to move"));
-    extras->addWidget(extrasGrip, 0, Qt::AlignHCenter);
-    extrasBar->setGripWidget(extrasGrip);
-
-    QPushButton *shapes = toolButton(toolIconPixmap("shapes", kIconColor),
-        QStringLiteral("<b>Shapes</b> | Draw rectangles, circles, lines."), true);
-    QPushButton *camera = toolButton(toolIconPixmap("camera", kIconColor),
-        QStringLiteral("<b>Camera</b> | Frame and safe-area guides."), true);
-    tools->addButton(shapes);
-    tools->addButton(camera);
-    bindTool(shapes, DrawingCanvas::Shapes);
-    bindTool(camera, DrawingCanvas::Camera);
-    connect(shapes, &QPushButton::toggled, this, [this](bool on) {
-        if (m_shapesPanel)
-            m_shapesPanel->setVisible(on);
-    });
-    connect(camera, &QPushButton::toggled, this, [this](bool on) {
-        if (m_cameraPanel)
-            m_cameraPanel->setVisible(on);
-    });
-    extras->addWidget(shapes, 0, Qt::AlignHCenter);
-    extras->addWidget(camera, 0, Qt::AlignHCenter);
-
-    // Onion skin toggle (independent of the exclusive tool group).
-    m_onionButton = toolButton(toolIconPixmap("onion", kIconColor),
-        QStringLiteral("<b>Onion Skin</b> | Ghost of the previous panel."), true);
-    connect(m_onionButton, &QPushButton::toggled, this, [this](bool on) {
-        m_canvas->setOnionSkinEnabled(on);
-        updateOnionGhost();
-    });
-    extras->addWidget(m_onionButton, 0, Qt::AlignHCenter);
-
-    m_extrasToolbar->adjustSize();
-    // Default spot: left edge, vertically centred over the canvas.
-    extrasBar->setDefaultOffsetProvider([this, extrasBar] {
-        return QPoint(16, qMax(6, (m_canvas->height() - extrasBar->height()) / 2));
-    });
-    extrasBar->show(); // records intent; effective when the canvas shows
 
     // ---- Floating Toolbar Layers (Figma node 173:36) ----------------------
     // 381x46 bar: grab dots, Layers / Perspective / Scenes / Camera /
@@ -2302,10 +2256,14 @@ void StoryboardPage::createFloatingToolbar()
             m_canvas->update(); // first-tap prompt appears/disappears
     });
 
-    // Camera mirrors the extras-bar Camera button (one source of truth: the
-    // extras button owns the tool-group membership and the panel wiring).
-    connect(cameraBtn, &QPushButton::toggled, camera, &QPushButton::setChecked);
-    connect(camera, &QPushButton::toggled, cameraBtn, &QPushButton::setChecked);
+    // Camera: this button OWNS the tool (the old extras bar is gone) —
+    // exclusive with the other tools and driving the Camera panel.
+    tools->addButton(cameraBtn);
+    bindTool(cameraBtn, DrawingCanvas::Camera);
+    connect(cameraBtn, &QPushButton::toggled, this, [this](bool on) {
+        if (m_cameraPanel)
+            m_cameraPanel->setVisible(on);
+    });
 
     // Dock toggles wire up once the ADS docks exist (they are created after
     // the canvas column that hosts this bar).
@@ -2352,26 +2310,29 @@ void StoryboardPage::createFloatingToolbar()
 
     auto *sizeSlider = new SizeCtlSlider(1, 200, 25, sizeBar);
     sizeSlider->setToolTip(QStringLiteral("Brush size"));
-    auto *fitButton = new QPushButton(sizeBar);
-    fitButton->setFocusPolicy(Qt::NoFocus);
-    fitButton->setCursor(Qt::PointingHandCursor);
-    fitButton->setFixedSize(20, 20);
-    fitButton->setIcon(QIcon(figIconPixmap(
-        QStringLiteral(":/icons/fig_fitscreen.svg"), QSizeF(19.2, 19.2))));
-    fitButton->setIconSize(QSize(19, 19));
-    fitButton->setToolTip(QStringLiteral("Fit Screen"));
-    fitButton->setStyleSheet(QStringLiteral(
-        "QPushButton { background:transparent; border:none; }"
-        "QPushButton:hover { background:#2e2e2e; border-radius:4px; }"));
+    auto *flipButton = new QPushButton(sizeBar);
+    flipButton->setFocusPolicy(Qt::NoFocus);
+    flipButton->setCursor(Qt::PointingHandCursor);
+    flipButton->setFixedSize(20, 20);
+    flipButton->setCheckable(true); // Flip is a toggle with an active state
+    flipButton->setChecked(m_canvas->viewFlipH());
+    flipButton->setIcon(QIcon(figIconPixmap(
+        QStringLiteral(":/icons/flip.svg"), QSizeF(19.2, 15.6))));
+    flipButton->setIconSize(QSize(19, 16));
+    flipButton->setToolTip(QStringLiteral("Flip"));
+    flipButton->setStyleSheet(QStringLiteral(
+        "QPushButton { background:transparent; border:none; border-radius:4px; }"
+        "QPushButton:hover { background:#2e2e2e; }"
+        "QPushButton:checked { background:#7c6ef6; }"));
     auto *opacitySlider = new SizeCtlSlider(5, 100, 100, sizeBar);
     opacitySlider->setToolTip(QStringLiteral("Brush opacity"));
 
     // Exact Figma column: py25, gap 31 (slider 220, icon ~19), shifted by the
     // bar's x when the grab sits on the left (right-edge layout).
-    auto placeSizeCtl = [sizeBar, sizeSlider, fitButton, opacitySlider] {
+    auto placeSizeCtl = [sizeBar, sizeSlider, flipButton, opacitySlider] {
         const int bx = sizeBar->barX();
         sizeSlider->move(bx + 10, 25);
-        fitButton->move(bx + 13, 276);
+        flipButton->move(bx + 13, 276);
         opacitySlider->move(bx + 10, 326);
     };
     placeSizeCtl();
@@ -2382,15 +2343,16 @@ void StoryboardPage::createFloatingToolbar()
         // The Eraser and Line widths follow too (clamped to 1-20 inside).
         m_canvas->setBrushSize(v);
     };
-    opacitySlider->onChanged = [this](int v) { m_canvas->setBrushOpacity(v); };
-    connect(fitButton, &QPushButton::clicked, this, [this] {
-        m_canvas->setViewZoom(1.0); // zoom 1 = letterbox-fitted canvas
-        m_canvas->resetViewRotation();
-        if (m_zoomToolbar) {
-            m_zoomToolbar->setZoom(1.0);
-            m_zoomToolbar->setRotation(0.0);
-        }
-    });
+    // Opacity drives the brush engine live, and keeps the Brush Options
+    // panel's Opacity slider in step (that slider writes the same canvas
+    // value back — idempotent, no loop).
+    opacitySlider->onChanged = [this](int v) {
+        m_canvas->setBrushOpacity(v);
+        if (m_brushOpacitySlider)
+            m_brushOpacitySlider->setValue(v);
+    };
+    connect(flipButton, &QPushButton::toggled, this,
+            [this] { m_canvas->toggleFlipH(); });
     m_setSizeCtl = [sizeSlider](int v) { sizeSlider->setValue(v); };
     m_setOpacityCtl = [opacitySlider](int v) { opacitySlider->setValue(v); };
     sizeBar->show(); // records intent; effective when the canvas shows
@@ -2491,7 +2453,11 @@ QWidget *StoryboardPage::createBrushSettings()
     addSlider(QStringLiteral("Opacity"), 0, 100, 100, m_brushOpacitySlider);
     addSlider(QStringLiteral("Hardness"), 0, 100, 80, m_brushHardnessSlider);
     connect(m_brushOpacitySlider, &SankoSlider::valueChanged, this,
-            [this](int v) { m_canvas->setBrushOpacity(v); });
+            [this](int v) {
+        m_canvas->setBrushOpacity(v);
+        if (m_setOpacityCtl)
+            m_setOpacityCtl(v); // silent sync: no signal loop
+    });
     connect(m_brushHardnessSlider, &SankoSlider::valueChanged, this,
             [this](int v) { m_canvas->setBrushHardness(v); });
 
@@ -2674,6 +2640,7 @@ QWidget *StoryboardPage::createPerspectiveModifier()
         return QPoint(qMax(6, (m_canvas->width() - bar->width()) / 2),
                       qMax(6, statusTop - bar->height() - 10));
     });
+
 
 
 
@@ -3084,7 +3051,7 @@ void StoryboardPage::updateOnionGhost()
     if (!m_canvas)
         return;
     Scene *scene = currentScene();
-    const bool show = m_onionButton && m_onionButton->isChecked() && scene
+    const bool show = m_canvas->isOnionSkinEnabled() && scene
         && m_currentPanel > 0 && m_currentPanel < scene->panels.size();
     if (show)
         m_canvas->setPreviousPixmap(scene->panels.at(m_currentPanel - 1)->flattenedPixmap());

@@ -215,7 +215,6 @@ private:
     DrawingCanvas *m_canvas = nullptr;
     ZoomToolbar *m_zoomToolbar = nullptr; // custom-painted view controls
     QScrollArea *m_panelScroll = nullptr;
-    QPushButton *m_onionButton = nullptr;
     QPushButton *m_importButton = nullptr;
     // Brush settings panel (visible only while the Brush tool is active).
     QWidget *m_brushPanel = nullptr;
@@ -244,7 +243,6 @@ private:
     // all live in that base class (and cover future panels automatically).
     QWidget *m_floatToolbar = nullptr;  // horizontal Brush/tools bar (Figma 33:110)
     SankoTipPopup *m_toolbarTip = nullptr; // ONE reused tooltip for the Brush bar
-    QWidget *m_extrasToolbar = nullptr; // vertical bar: Shapes/Camera/Onion + size
     QWidget *m_selModToolbar = nullptr;  // Selection Modifier bar (Figma 146:67)
     QWidget *m_moveModToolbar = nullptr; // Move Modifier bar (Figma 161:39)
     QWidget *m_bottomBar = nullptr;      // status bar; both mod bars sit 10px above

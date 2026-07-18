@@ -7,9 +7,9 @@
 
 // Custom-painted Canvas View Controls toolbar (fixed 528x46, Figma node
 // 86:32). Everything is drawn in paintEvent from exact Figma coordinates so it
-// matches pixel-for-pixel; hit-testing uses the same rects. The Flip and Reset
-// buttons have hover and pressed states. Emits value-change signals that the
-// Storyboard wires to the canvas view transforms (display only).
+// matches pixel-for-pixel; hit-testing uses the same rects. The Fit Screen
+// and Reset buttons have hover and pressed states. Emits value-change signals
+// that the Storyboard wires to the canvas view transforms (display only).
 //
 // Floats over the canvas as a FloatingToolWindow (top-level tool window):
 // grip drag, clamping, main-window follow, and position persistence all come
@@ -24,12 +24,11 @@ public:
     // Sync the toolbar to the canvas (updates the draggers; no signal).
     void setZoom(double zoom);        // 0.25 .. 4.0
     void setRotation(double degrees); // -180 .. 180
-    void setFlipH(bool on);
 
 signals:
     void zoomChanged(double zoom);        // dragged the zoom track
     void rotationChanged(double degrees); // dragged the rotate track / reset
-    void flipToggled();                   // clicked Flip
+    void fitRequested();                  // clicked Fit Screen
 
 protected:
     void paintEvent(QPaintEvent *event) override;
@@ -42,18 +41,17 @@ protected:
 
 private:
     enum Drag { DragNone, DragZoom, DragRotate };
-    enum Button { BtnNone, BtnFlip, BtnReset };
+    enum Button { BtnNone, BtnFit, BtnReset };
 
     double zoomT() const;   // current zoom -> 0..1 along the track (log map)
     double rotationT() const; // current rotation -> 0..1 along the track (linear)
-    Button buttonAt(const QPoint &pos) const; // Flip / Reset hit-test
+    Button buttonAt(const QPoint &pos) const; // Fit / Reset hit-test
 
     Drag m_drag = DragNone;
     Button m_hover = BtnNone;   // button under the cursor
     Button m_pressed = BtnNone; // button held down
     double m_zoom = 1.0;
     double m_rotation = 0.0;
-    bool m_flipH = false;
 
     QFont m_labelFont; // "Zoom" / "Rotate" (9px)
     QFont m_valueFont; // numeric readouts (8px)
