@@ -514,6 +514,29 @@ private:
     void discardRoughStroke();        // roll the pending edit back
     void replayQuickShape(const quickshape::QuickShapeCommit &commit);
 
+    // Brush state captured when the QuickShape stroke begins: the temporary
+    // preview and the final commit both render with THIS state, so the shape
+    // never changes appearance mid-edit or on Done.
+    struct QsBrushState {
+        QColor color;
+        int size = 8;
+        qreal opacity = 1.0;
+        qreal hardness = 1.0;
+        bool pressureToSize = false;
+        bool pressureToOpacity = false;
+    };
+    QsBrushState m_qsBrush;
+    void captureQuickShapeBrush();
+    // Real-brush preview of the corrected path: the SAME dab pipeline renders
+    // into a canvas-sized scratch (never the layer). Regeneration is
+    // coalesced to ~one update per display frame.
+    QImage m_qsPreview;
+    QImage *m_dabTarget = nullptr;    // stampDab redirection for the preview
+    QTimer *m_qsPreviewTimer = nullptr;
+    bool m_qsCommitting = false;      // Done reentry guard
+    void scheduleQuickShapePreview();
+    void renderQuickShapePreview();
+
     // --- QuickShape Edit Shape mode -----------------------------------------
     // A released temporary shape shows an "Edit Shape" button (top-centre);
     // pressing it exposes draggable structural nodes and a compact shape-type
@@ -523,6 +546,7 @@ private:
     int m_qsNode = -1;   // node being dragged (-1: none)
     int m_qsHover = -1;  // node under the idle cursor
     QPushButton *m_qsEditButton = nullptr;
+    QPushButton *m_qsDoneButton = nullptr;
     QWidget *m_qsTypeBar = nullptr;
     QElapsedTimer m_qsTabletClock;    // pen double-tap detection on nodes
     qint64 m_qsLastTabletPressMs = -100000;

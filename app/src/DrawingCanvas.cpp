@@ -139,9 +139,15 @@ DrawingCanvas::DrawingCanvas(QWidget *parent)
     // commit replays the corrected path through the normal brush engine.
     // freehandStrokeFinished needs no handler: the ordinary endBrushStroke
     // release path already commits unrecognized strokes unchanged.
+    m_qsPreviewTimer = new QTimer(this);
+    m_qsPreviewTimer->setSingleShot(true);
+    m_qsPreviewTimer->setInterval(16); // coalesce to ~one render per frame
+    connect(m_qsPreviewTimer, &QTimer::timeout,
+            this, &DrawingCanvas::renderQuickShapePreview);
     connect(&m_quickShape, &quickshape::QuickShapeSession::overlayPathChanged,
             this, [this](const QPainterPath &path) {
         m_quickShapeOverlay = path;
+        scheduleQuickShapePreview();
         update();
     });
     connect(&m_quickShape, &quickshape::QuickShapeSession::shapeRecognized,
@@ -158,6 +164,9 @@ DrawingCanvas::DrawingCanvas(QWidget *parent)
             m_qsEditing = false;
             m_qsNode = -1;
             m_qsHover = -1;
+            m_qsPreview = QImage(); // never leave a stale preview behind
+            if (m_qsPreviewTimer)
+                m_qsPreviewTimer->stop();
         }
         updateQuickShapeUi();
         update();
@@ -177,6 +186,27 @@ DrawingCanvas::DrawingCanvas(QWidget *parent)
     m_qsEditButton->hide();
     connect(m_qsEditButton, &QPushButton::clicked,
             this, [this] { enterQuickShapeEdit(); });
+
+    m_qsDoneButton = new QPushButton(QStringLiteral("Done"), this);
+    m_qsDoneButton->setFocusPolicy(Qt::NoFocus);
+    m_qsDoneButton->setCursor(Qt::PointingHandCursor);
+    m_qsDoneButton->setStyleSheet(QStringLiteral(
+        "QPushButton { background:#7c6ef6; color:#ffffff; border:none;"
+        " border-radius:6px; padding:6px 16px; font-size:12px; font-weight:600; }"
+        "QPushButton:hover { background:#8d80f8; }"
+        "QPushButton:disabled { background:#3d3766; color:#8a86a8; }"));
+    m_qsDoneButton->hide();
+    connect(m_qsDoneButton, &QPushButton::clicked, this, [this] {
+        // One press = exactly one commit; the guard blocks any duplicate
+        // activation while the (synchronous) commit runs.
+        if (m_qsCommitting || !m_quickShape.hasActiveShape())
+            return;
+        m_qsCommitting = true;
+        m_qsDoneButton->setEnabled(false);
+        m_quickShape.requestCommit();
+        m_qsDoneButton->setEnabled(true);
+        m_qsCommitting = false;
+    });
 
     m_qsTypeBar = new QWidget(this);
     m_qsTypeBar->setObjectName(QStringLiteral("qsTypeBar"));
@@ -2675,6 +2705,16 @@ void DrawingCanvas::stampDab(const QPointF &center, qreal pressure)
         gradient.setColorAt(coreStop, core); // solid core ends here
     gradient.setColorAt(1.0, edge);          // guaranteed feathered rim
 
+    if (m_dabTarget) {
+        // QuickShape preview render: the SAME dab, into the preview scratch —
+        // the layer is never touched by preview passes.
+        QPainter painter(m_dabTarget);
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(gradient);
+        painter.drawEllipse(center, radius, radius);
+        return;
+    }
     if (m_strokeMask == StrokeMaskPaint) {
         // Selection active: the dab lands in the stroke scratch, UNMASKED —
         // the cached mask multiplies the whole stroke once (see paintEvent
@@ -2820,17 +2860,42 @@ void DrawingCanvas::discardRoughStroke()
     update();
 }
 
-// Bake the corrected vector by replaying it through the NORMAL brush engine:
-// the stamp loop applies the current brush's size, opacity, hardness,
-// spacing, pressure rules, and selection masking, and the whole replay is
-// bracketed by ONE beginLayerEdit/finalizeLayerEdit — exactly one undo entry.
+void DrawingCanvas::captureQuickShapeBrush()
+{
+    m_qsBrush.color = m_color;
+    m_qsBrush.size = m_brushToolSize;
+    m_qsBrush.opacity = m_brushToolOpacity;
+    m_qsBrush.hardness = m_brushHardness;
+    m_qsBrush.pressureToSize = m_pressureToSize;
+    m_qsBrush.pressureToOpacity = m_pressureToOpacity;
+}
+
+// Bake the corrected vector by replaying it through the NORMAL brush engine
+// — under the brush state CAPTURED at stroke start, so the committed pixels
+// match the preview even if the palette changed mid-edit. The stamp loop
+// applies the brush's size, opacity, hardness, spacing, pressure rules, and
+// selection masking, and the whole replay is bracketed by ONE
+// beginLayerEdit/finalizeLayerEdit — exactly one undo entry.
 void DrawingCanvas::replayQuickShape(const quickshape::QuickShapeCommit &commit)
 {
     m_quickShapeOverlay = QPainterPath(); // the vector is being baked
+    m_qsPreview = QImage();
+    if (m_qsPreviewTimer)
+        m_qsPreviewTimer->stop();
     if (commit.points.size() < 2 || !m_panel || !editableActiveLayer()) {
         update();
         return;
     }
+    const QsBrushState live{m_color, m_brushToolSize, m_brushToolOpacity,
+                            m_brushHardness, m_pressureToSize,
+                            m_pressureToOpacity};
+    m_color = m_qsBrush.color;
+    m_brushToolSize = m_qsBrush.size;
+    m_brushToolOpacity = m_qsBrush.opacity;
+    m_brushHardness = m_qsBrush.hardness;
+    m_pressureToSize = m_qsBrush.pressureToSize;
+    m_pressureToOpacity = m_qsBrush.pressureToOpacity;
+
     beginLayerEdit();
     m_brushStroke = true; // normal stroke path (selection scratch included)
     beginBrushStroke(commit.points.first(), commit.pressures.value(0, 1.0));
@@ -2839,7 +2904,89 @@ void DrawingCanvas::replayQuickShape(const quickshape::QuickShapeCommit &commit)
     if (commit.isClosed()) // close the loop so e.g. circles have no gap
         moveBrushStroke(commit.points.first(), commit.pressures.value(0, 1.0));
     endBrushStroke(QStringLiteral("QuickShape"));
+
+    m_color = live.color;
+    m_brushToolSize = live.size;
+    m_brushToolOpacity = live.opacity;
+    m_brushHardness = live.hardness;
+    m_pressureToSize = live.pressureToSize;
+    m_pressureToOpacity = live.pressureToOpacity;
     emit contentChanged();
+}
+
+void DrawingCanvas::scheduleQuickShapePreview()
+{
+    if (!m_quickShape.hasActiveShape()) {
+        m_qsPreview = QImage();
+        return;
+    }
+    if (m_qsPreviewTimer && !m_qsPreviewTimer->isActive())
+        m_qsPreviewTimer->start(); // coalesces bursts of overlay changes
+}
+
+// Render the corrected path with the REAL brush engine (captured stroke
+// state, original resampled pressures, the engine's own dab spacing) into a
+// fresh scratch — regenerated whole, never stacked on the previous preview,
+// and never touching the layer. This is what the artist sees until Done.
+void DrawingCanvas::renderQuickShapePreview()
+{
+    if (!m_quickShape.hasActiveShape()) {
+        m_qsPreview = QImage();
+        update();
+        return;
+    }
+    const quickshape::QuickShapeCommit commit = m_quickShape.currentCommit();
+    if (commit.points.size() < 2) {
+        m_qsPreview = QImage();
+        update();
+        return;
+    }
+
+    QImage scratch(canvasSize(), QImage::Format_ARGB32_Premultiplied);
+    scratch.fill(Qt::transparent);
+
+    const QsBrushState live{m_color, m_brushToolSize, m_brushToolOpacity,
+                            m_brushHardness, m_pressureToSize,
+                            m_pressureToOpacity};
+    m_color = m_qsBrush.color;
+    m_brushToolSize = m_qsBrush.size;
+    m_brushToolOpacity = m_qsBrush.opacity;
+    m_brushHardness = m_qsBrush.hardness;
+    m_pressureToSize = m_qsBrush.pressureToSize;
+    m_pressureToOpacity = m_qsBrush.pressureToOpacity;
+    const QPointF savedPt = m_lastBrushPt;
+    const qreal savedPressure = m_lastBrushPressure;
+    const double savedResidual = m_stampResidual;
+
+    m_dabTarget = &scratch;
+    m_lastBrushPt = commit.points.first();
+    m_lastBrushPressure = commit.pressures.value(0, 1.0);
+    m_stampResidual = 0.0;
+    stampDab(commit.points.first(), m_lastBrushPressure);
+    for (qsizetype i = 1; i < commit.points.size(); ++i)
+        moveBrushStroke(commit.points.at(i), commit.pressures.value(int(i), 1.0));
+    if (commit.isClosed())
+        moveBrushStroke(commit.points.first(), commit.pressures.value(0, 1.0));
+    m_dabTarget = nullptr;
+
+    m_lastBrushPt = savedPt;
+    m_lastBrushPressure = savedPressure;
+    m_stampResidual = savedResidual;
+    m_color = live.color;
+    m_brushToolSize = live.size;
+    m_brushToolOpacity = live.opacity;
+    m_brushHardness = live.hardness;
+    m_pressureToSize = live.pressureToSize;
+    m_pressureToOpacity = live.pressureToOpacity;
+
+    // Selection parity: the bake will be masked, so the preview is too.
+    if (!m_selectionPath.isEmpty()) {
+        QPainter mp(&scratch);
+        mp.setCompositionMode(QPainter::CompositionMode_DestinationIn);
+        mp.drawImage(0, 0, cachedSelectionMask());
+    }
+    m_qsPreview = scratch;
+    update();
 }
 
 // --- QuickShape Edit Shape mode ---------------------------------------------
@@ -2847,13 +2994,14 @@ void DrawingCanvas::replayQuickShape(const quickshape::QuickShapeCommit &commit)
 void DrawingCanvas::updateQuickShapeUi()
 {
     const bool ready = m_quickShape.hasActiveShape() && !m_qsHeld;
+    const int gap = 8;
+    QWidget *left = nullptr; // Edit Shape (ready) or the type bar (editing)
     if (m_qsEditButton) {
         const bool showButton = ready && !m_qsEditing;
         m_qsEditButton->setVisible(showButton);
         if (showButton) {
             m_qsEditButton->adjustSize();
-            m_qsEditButton->move((width() - m_qsEditButton->width()) / 2, 10);
-            m_qsEditButton->raise();
+            left = m_qsEditButton;
         }
     }
     if (m_qsTypeBar) {
@@ -2861,9 +3009,25 @@ void DrawingCanvas::updateQuickShapeUi()
         m_qsTypeBar->setVisible(showBar);
         if (showBar) {
             m_qsTypeBar->adjustSize();
-            m_qsTypeBar->move((width() - m_qsTypeBar->width()) / 2, 10);
-            m_qsTypeBar->raise();
+            left = m_qsTypeBar;
         }
+    }
+    if (m_qsDoneButton) {
+        m_qsDoneButton->setVisible(ready);
+        if (ready)
+            m_qsDoneButton->adjustSize();
+    }
+    // Centre the [controls][Done] pair at the top of the canvas.
+    if (ready && left && m_qsDoneButton) {
+        const int total = left->width() + gap + m_qsDoneButton->width();
+        const int x = (width() - total) / 2;
+        left->move(x, 10);
+        left->raise();
+        m_qsDoneButton->move(x + left->width() + gap, 10);
+        m_qsDoneButton->raise();
+    } else if (ready && m_qsDoneButton) {
+        m_qsDoneButton->move((width() - m_qsDoneButton->width()) / 2, 10);
+        m_qsDoneButton->raise();
     }
 }
 
@@ -3520,19 +3684,25 @@ void DrawingCanvas::paintEvent(QPaintEvent *)
         painter.restore();
     }
 
-    // QuickShape: the corrected vector as a DISPLAY-ONLY overlay above the
-    // layer pixels (canvas space through T) — sized and coloured like the
-    // current brush so the bake matches what the artist sees.
-    if (!m_quickShapeOverlay.isEmpty()) {
+    // QuickShape: the corrected shape rendered by the REAL brush engine into
+    // a scratch image (captured brush state + original pressures) — the
+    // preview IS what Done will bake. In edit mode a thin cosmetic outline is
+    // drawn on top as a UI-only editing guide; it never represents brush
+    // thickness and is never committed.
+    if (!m_qsPreview.isNull() && m_quickShape.hasActiveShape()) {
+        painter.save();
+        painter.setClipRect(canvasR);
+        painter.drawImage(0, 0, m_qsPreview);
+        painter.restore();
+    }
+    if (m_qsEditing && !m_quickShapeOverlay.isEmpty()) {
         painter.save();
         painter.setClipRect(canvasR);
         painter.setRenderHint(QPainter::Antialiasing, true);
-        QColor previewColor = m_color;
-        previewColor.setAlphaF(qBound(0.0, m_brushToolOpacity, 1.0));
-        QPen previewPen(previewColor, qMax<qreal>(1.0, m_brushToolSize));
-        previewPen.setCapStyle(Qt::RoundCap);
-        previewPen.setJoinStyle(Qt::RoundJoin);
-        painter.setPen(previewPen);
+        QPen guidePen(QColor(0x7c, 0x6e, 0xf6, 190), 1.0);
+        guidePen.setCosmetic(true);
+        guidePen.setStyle(Qt::DashLine);
+        painter.setPen(guidePen);
         painter.setBrush(Qt::NoBrush);
         painter.drawPath(m_quickShapeOverlay);
         painter.restore();
@@ -4062,6 +4232,7 @@ void DrawingCanvas::mousePressEvent(QMouseEvent *event)
         const QPointF pt = toCanvasF(event->position());
         if (m_quickShapeEnabled) {
             applyQuickShapeTiming();
+            captureQuickShapeBrush();
             m_quickShape.pointerPress(pt, 1.0);
             m_qsHeld = true;
             updateQuickShapeUi();
@@ -4436,6 +4607,25 @@ void DrawingCanvas::tabletEvent(QTabletEvent *event)
         return;
     }
 
+    // ROOT-CAUSE FIX for pen-vs-UI: child controls (Edit Shape, Done, the
+    // type selector, the view toolbar) have no tabletEvent handler, so their
+    // pen events propagate here — and accept()ing them suppressed the
+    // synthesized mouse events buttons need. When the pen touches a child
+    // control and no canvas interaction is mid-flight, IGNORE the tablet
+    // event: Qt then synthesizes normal mouse events for the control, the
+    // control owns the interaction, and no stroke can start beneath it. An
+    // in-progress stroke / transform / node drag keeps canvas ownership, so
+    // dragging across a button mid-stroke does not tear the pointer away.
+    const bool midCanvasInteraction =
+        m_brushStroke || m_qsHeld || (m_qsEditing && m_qsNode >= 0);
+    if (!midCanvasInteraction) {
+        QWidget *child = childAt(event->position().toPoint());
+        if (child && child != this) {
+            event->ignore();
+            return;
+        }
+    }
+
     // Edit Shape mode: the pen edits nodes — accept() consumes the event so
     // Qt never synthesizes a duplicate mouse action, and nothing draws. A
     // quick second pen-tap on the same node counts as the delete gesture.
@@ -4480,6 +4670,7 @@ void DrawingCanvas::tabletEvent(QTabletEvent *event)
             const QPointF pt = toCanvasF(event->position());
             if (m_quickShapeEnabled) {
                 applyQuickShapeTiming();
+                captureQuickShapeBrush();
                 m_quickShape.pointerPress(pt, event->pressure());
                 m_qsHeld = true;
                 updateQuickShapeUi();
