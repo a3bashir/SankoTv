@@ -632,6 +632,7 @@ static QRect opaquePixelBounds(const QImage &image)
 
 void DrawingCanvas::setTool(Tool tool)
 {
+    const Tool previous = m_tool;
     commitQuickShape(); // a pending QuickShape bakes before the tool changes
     commitFloating(); // an un-committed paste lands before the tool changes
     if (m_xformActive && tool != Move)
@@ -653,6 +654,8 @@ void DrawingCanvas::setTool(Tool tool)
     if (tool == Move)
         liftDefaultTransformBox();
     update(); // the selection itself DOES survive (Select -> Move flow)
+    if (m_tool != previous)
+        emit toolChanged(m_tool); // per-tool Size CTL sliders re-sync
 }
 
 // Move tool activation / panel-switch persistence: show the transform box —
@@ -720,6 +723,16 @@ void DrawingCanvas::setBrushOpacity(int percent)
 void DrawingCanvas::setBrushHardness(int percent)
 {
     m_brushHardness = qBound(0, percent, 100) / 100.0;
+}
+
+void DrawingCanvas::setEraserSize(int px)
+{
+    m_eraserSize = qBound(1, px, 200);
+}
+
+void DrawingCanvas::setEraserOpacity(int percent)
+{
+    m_eraserOpacity = qBound(0, percent, 100) / 100.0;
 }
 
 void DrawingCanvas::setPressureToSize(bool on)
@@ -1013,6 +1026,11 @@ QPoint DrawingCanvas::toCanvas(const QPoint &widgetPoint) const
 
 int DrawingCanvas::penWidth() const
 {
+    // The Eraser carries its own full-range width in CANVAS pixels (same
+    // semantics as the brush-size slider, zoom-independent); other classic
+    // strokes keep the screen-mapped width.
+    if (m_tool == Eraser)
+        return qMax(1, m_eraserSize);
     return qMax(1, qRound(m_brushSize / scale()));
 }
 
@@ -1136,6 +1154,10 @@ void DrawingCanvas::drawSegment(const QPoint &from, const QPoint &to, const QCol
     pen.setWidth(penWidth());
     pen.setCapStyle(Qt::RoundCap);
     pen.setJoinStyle(Qt::RoundJoin);
+    // Qt skips zero-length lines entirely, so a click without motion would
+    // draw nothing: stamp an explicit round dot instead (tap-to-erase).
+    const bool dot = from == to;
+    const qreal dotR = penWidth() / 2.0;
     if (m_strokeMask == StrokeMaskErase) {
         // Selection active: the erase stroke accumulates UNMASKED coverage in
         // the scratch (white alpha); the cached mask caps it once — in the
@@ -1143,12 +1165,18 @@ void DrawingCanvas::drawSegment(const QPoint &from, const QPoint &to, const QCol
         // selection edges erase softly and can never saturate hard.
         QPainter sp(&m_strokeBuf);
         sp.setRenderHint(QPainter::Antialiasing, true);
-        QPen strokePen(Qt::white);
-        strokePen.setWidth(penWidth());
-        strokePen.setCapStyle(Qt::RoundCap);
-        strokePen.setJoinStyle(Qt::RoundJoin);
-        sp.setPen(strokePen);
-        sp.drawLine(from, to);
+        if (dot) {
+            sp.setPen(Qt::NoPen);
+            sp.setBrush(Qt::white);
+            sp.drawEllipse(QPointF(from), dotR, dotR);
+        } else {
+            QPen strokePen(Qt::white);
+            strokePen.setWidth(penWidth());
+            strokePen.setCapStyle(Qt::RoundCap);
+            strokePen.setJoinStyle(Qt::RoundJoin);
+            sp.setPen(strokePen);
+            sp.drawLine(from, to);
+        }
         sp.end();
         update();
         return;
@@ -1159,8 +1187,14 @@ void DrawingCanvas::drawSegment(const QPoint &from, const QPoint &to, const QCol
     // the white paper) — painting white would smear over lower layers.
     if (m_tool == Eraser)
         painter.setCompositionMode(QPainter::CompositionMode_Clear);
-    painter.setPen(pen);
-    painter.drawLine(from, to);
+    if (dot) {
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(color);
+        painter.drawEllipse(QPointF(from), dotR, dotR);
+    } else {
+        painter.setPen(pen);
+        painter.drawLine(from, to);
+    }
     painter.end();
     update();
 }
@@ -3567,13 +3601,19 @@ void DrawingCanvas::paintEvent(QPaintEvent *)
         const bool liveStroke = m_strokeMask != StrokeMaskNone
             && &layer == m_panel->activeLayer();
         if (liveStroke && m_strokeMask == StrokeMaskErase) {
-            // Live erase preview: the active layer minus the mask-capped
-            // stroke — exactly what the release will bake.
+            // Live erase preview: the active layer minus the capped stroke —
+            // exactly what the release will bake. The selection mask applies
+            // only when a selection exists; eraser opacity scales the whole
+            // stroke's coverage uniformly.
             QImage temp = layer.image;
             QImage cut = m_strokeBuf;
             QPainter cp(&cut);
             cp.setCompositionMode(QPainter::CompositionMode_DestinationIn);
-            cp.drawImage(0, 0, cachedSelectionMask());
+            if (!m_selectionPath.isEmpty())
+                cp.drawImage(0, 0, cachedSelectionMask());
+            if (m_eraserOpacity < 1.0)
+                cp.fillRect(cut.rect(),
+                            QColor(0, 0, 0, qRound(m_eraserOpacity * 255.0)));
             cp.end();
             QPainter tp(&temp);
             tp.setCompositionMode(QPainter::CompositionMode_DestinationOut);
@@ -4213,9 +4253,11 @@ void DrawingCanvas::mousePressEvent(QMouseEvent *event)
     case Eraser: {
         beginLayerEdit();
         m_drawing = true;
-        if (!m_selectionPath.isEmpty()) {
+        if (!m_selectionPath.isEmpty() || m_eraserOpacity < 1.0) {
             // Same stroke-level masking as the brush: erase coverage builds
-            // in the scratch and the mask caps it once (preview + bake).
+            // in the scratch and the mask/strength caps it ONCE (preview +
+            // bake) — partial opacity erases uniformly across the stroke,
+            // with no double-erase at segment joints.
             m_strokeMask = StrokeMaskErase;
             m_strokeBuf = QImage(canvasSize(), QImage::Format_ARGB32_Premultiplied);
             m_strokeBuf.fill(Qt::transparent);
@@ -4518,12 +4560,17 @@ void DrawingCanvas::mouseReleaseEvent(QMouseEvent *event)
     if (m_drawing) {
         m_drawing = false;
         if (m_strokeMask == StrokeMaskErase) {
-            // ONE mask application for the whole erase stroke.
+            // ONE mask/strength application for the whole erase stroke.
             if (Layer *layer = editableActiveLayer()) {
                 QImage cut = m_strokeBuf;
                 QPainter cp(&cut);
                 cp.setCompositionMode(QPainter::CompositionMode_DestinationIn);
-                cp.drawImage(0, 0, cachedSelectionMask());
+                if (!m_selectionPath.isEmpty())
+                    cp.drawImage(0, 0, cachedSelectionMask());
+                if (m_eraserOpacity < 1.0)
+                    cp.fillRect(cut.rect(),
+                                QColor(0, 0, 0,
+                                       qRound(m_eraserOpacity * 255.0)));
                 cp.end();
                 QPainter p(&layer->image);
                 p.setCompositionMode(QPainter::CompositionMode_DestinationOut);

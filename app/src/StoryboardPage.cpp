@@ -854,19 +854,21 @@ public:
             update();
     }
 
-    // y (top->bottom) of the track position representing value v.
+    // Top edge (y) of the 31px handle for value v. The handle travels the
+    // FULL track: at min it sits hard against the bottom end, at max against
+    // the top, proportional in between — the handle and the value can never
+    // desynchronise (no dead zone at either extreme).
     qreal yForValue(int v) const
     {
         const qreal frac = (v - m_min) / qreal(qMax(1, m_max - m_min));
-        return height() * (1.0 - frac);
+        return (1.0 - frac) * qMax(1, height() - 31);
     }
-    // Visual y of the preset marker for value v: the dragger's top edge sits
-    // at yForValue(v), so the marker is drawn 15.5px lower — the centre of
-    // the 31px handle. When the slider snaps onto v the marker therefore
-    // shows perfectly centred inside the handle.
+    // Visual y of the preset marker for value v: the centre of the handle
+    // when the slider sits exactly on v, so a snapped marker shows perfectly
+    // centred inside the handle. Always within the track (15.5..height-15.5).
     qreal markerY(int v) const
     {
-        return qBound<qreal>(2.5, yForValue(v) + 15.5, height() - 2.5);
+        return yForValue(v) + 15.5;
     }
 
 protected:
@@ -878,9 +880,11 @@ protected:
         track.addRoundedRect(rect(), 4, 4);
         p.fillPath(track, QColor(0x33, 0x33, 0x33));
 
-        const qreal frac = (m_value - m_min) / qreal(qMax(1, m_max - m_min));
-        const qreal fillH = qMax<qreal>(31.0, frac * height());
-        const QRectF fill(0, height() - fillH, width(), fillH);
+        // Fill from the handle's top edge down to the track bottom; the
+        // handle spans the full track (yForValue maps min -> bottom end,
+        // max -> top end), so fill height is at least the 31px handle.
+        const qreal top = yForValue(m_value);
+        const QRectF fill(0, top, width(), height() - top);
         QPainterPath fillPath;
         fillPath.addRoundedRect(fill, 4, 4);
         QLinearGradient g(fill.bottomLeft(), fill.topLeft());
@@ -941,7 +945,12 @@ private:
     }
     void setFromY(qreal y)
     {
-        const qreal frac = 1.0 - qBound(0.0, y / qMax(1, height()), 1.0);
+        // Handle-CENTRE mapping over the handle's travel range: the cursor
+        // drags the middle of the 31px handle, min lands the handle on the
+        // exact bottom end, max on the exact top — every track position maps
+        // to a value and vice versa, no dead zone.
+        const qreal travel = qMax(1, height() - 31);
+        const qreal frac = 1.0 - qBound(0.0, (y - 15.5) / travel, 1.0);
         const int raw = m_min + qRound(frac * (m_max - m_min));
         // Magnet: every saved preset is a snap point. When the handle centre
         // comes within kSnapPx of a marker the value snaps to that preset,
@@ -1235,6 +1244,23 @@ protected:
 private:
     QLabel *m_value = nullptr;
     QToolButton *m_button = nullptr;
+};
+
+// Per-tool (Brush / Eraser) Size CTL state: each tool keeps its own size,
+// opacity and saved preset ticks. The sliders show and edit whichever tool
+// is active; everything persists per tool in QSettings.
+struct SizeCtlTool
+{
+    int size = 25;      // 1..200 canvas px
+    int opacity = 100;  // 5..100 %
+    QVector<int> sizeTicks;
+    QVector<int> opacityTicks;
+};
+struct SizeCtlToolState
+{
+    SizeCtlTool brush, eraser;
+    bool eraserMode = false; // sliders currently showing the Eraser's state
+    SizeCtlTool &active() { return eraserMode ? eraser : brush; }
 };
 
 // --- App-wide undo commands for the panel list --------------------------------
@@ -2544,18 +2570,13 @@ void StoryboardPage::createFloatingToolbar()
     pillHide->setInterval(1000);
     connect(pillHide, &QTimer::timeout, pill, &QWidget::hide);
 
-    const QString sizeKey =
-        QStringLiteral("storyboard/sizeCtlPresets/size");
-    const QString opacityKey =
-        QStringLiteral("storyboard/sizeCtlPresets/opacity");
-    auto keyFor = [sizeSlider, sizeKey, opacityKey](SizeCtlSlider *s) {
-        return s == sizeSlider ? sizeKey : opacityKey;
-    };
-    auto loadPresets = [](SizeCtlSlider *s, const QString &key) {
-        const QSettings settings(QStringLiteral("SankoTV"),
-                                 QStringLiteral("SankoTV"));
+    // Per-tool state: Brush and Eraser each keep their own size, opacity and
+    // preset ticks — all persisted per tool and restored on launch. The
+    // sliders display/edit whichever of the two is active.
+    auto *tc = new SizeCtlToolState;
+    connect(pill, &QObject::destroyed, [tc] { delete tc; });
+    auto parseTicks = [](const QString &raw) {
         QVector<int> vals;
-        const QString raw = settings.value(key).toString();
         const QStringList parts =
             raw.split(QLatin1Char(','), Qt::SkipEmptyParts);
         for (const QString &part : parts) {
@@ -2564,18 +2585,54 @@ void StoryboardPage::createFloatingToolbar()
             if (ok)
                 vals.append(v);
         }
-        s->setPresets(vals);
+        return vals;
     };
-    auto savePresets = [keyFor](SizeCtlSlider *s) {
-        QStringList parts;
-        for (int v : s->presets())
-            parts << QString::number(v);
-        QSettings settings(QStringLiteral("SankoTV"),
+    {
+        const QSettings st(QStringLiteral("SankoTV"),
                            QStringLiteral("SankoTV"));
-        settings.setValue(keyFor(s), parts.join(QLatin1Char(',')));
+        auto load = [&](SizeCtlTool &t, const QString &base) {
+            t.size = qBound(1, st.value(base + QStringLiteral("size"),
+                                        t.size).toInt(), 200);
+            t.opacity = qBound(5, st.value(base + QStringLiteral("opacity"),
+                                           t.opacity).toInt(), 100);
+            t.sizeTicks = parseTicks(
+                st.value(base + QStringLiteral("sizeTicks")).toString());
+            t.opacityTicks = parseTicks(
+                st.value(base + QStringLiteral("opacityTicks")).toString());
+        };
+        load(tc->brush, QStringLiteral("storyboard/toolCtl/brush/"));
+        load(tc->eraser, QStringLiteral("storyboard/toolCtl/eraser/"));
+    }
+    auto saveToolCtl = [tc] {
+        QSettings st(QStringLiteral("SankoTV"), QStringLiteral("SankoTV"));
+        auto join = [](const QVector<int> &ticks) {
+            QStringList parts;
+            for (int v : ticks)
+                parts << QString::number(v);
+            return parts.join(QLatin1Char(','));
+        };
+        auto save = [&](const SizeCtlTool &t, const QString &base) {
+            st.setValue(base + QStringLiteral("size"), t.size);
+            st.setValue(base + QStringLiteral("opacity"), t.opacity);
+            st.setValue(base + QStringLiteral("sizeTicks"),
+                        join(t.sizeTicks));
+            st.setValue(base + QStringLiteral("opacityTicks"),
+                        join(t.opacityTicks));
+        };
+        save(tc->brush, QStringLiteral("storyboard/toolCtl/brush/"));
+        save(tc->eraser, QStringLiteral("storyboard/toolCtl/eraser/"));
     };
-    loadPresets(sizeSlider, sizeKey);
-    loadPresets(opacitySlider, opacityKey);
+    // Restore: canvas gets BOTH tools' stored values (its brush and eraser
+    // state are independent members); the sliders start on the Brush.
+    m_canvas->setBrushToolSize(tc->brush.size);
+    m_canvas->setBrushSize(tc->brush.size);
+    m_canvas->setBrushOpacity(tc->brush.opacity);
+    m_canvas->setEraserSize(tc->eraser.size);
+    m_canvas->setEraserOpacity(tc->eraser.opacity);
+    sizeSlider->setValue(tc->brush.size);
+    opacitySlider->setValue(tc->brush.opacity);
+    sizeSlider->setPresets(tc->brush.sizeTicks);
+    opacitySlider->setPresets(tc->brush.opacityTicks);
 
     // Park the pill on the canvas-facing side of the bar, centred on the
     // slider handle for the current value.
@@ -2609,32 +2666,52 @@ void StoryboardPage::createFloatingToolbar()
     sizeSlider->onAdjustBegin = [showPillFor, sizeSlider] {
         showPillFor(sizeSlider);
     };
-    sizeSlider->onAdjustEnd = [pillHide] { pillHide->start(); };
-    sizeSlider->onChanged = [this, refreshPill, sizeSlider](int v) {
-        m_canvas->setBrushToolSize(v);
-        // The Eraser and Line widths follow too (clamped to 1-20 inside).
-        m_canvas->setBrushSize(v);
+    // Persist on release (not per move: no per-drag settings churn).
+    sizeSlider->onAdjustEnd = [pillHide, saveToolCtl] {
+        pillHide->start();
+        saveToolCtl();
+    };
+    // Size drives whichever of Brush / Eraser is active, into that tool's
+    // own stored state.
+    sizeSlider->onChanged = [this, tc, refreshPill, sizeSlider](int v) {
+        if (tc->eraserMode) {
+            m_canvas->setEraserSize(v);
+        } else {
+            m_canvas->setBrushToolSize(v);
+            // The classic Line width follows too (clamped to 1-20 inside).
+            m_canvas->setBrushSize(v);
+        }
+        tc->active().size = v;
         refreshPill(sizeSlider, v);
     };
 
     opacitySlider->onAdjustBegin = [showPillFor, opacitySlider] {
         showPillFor(opacitySlider);
     };
-    opacitySlider->onAdjustEnd = [pillHide] { pillHide->start(); };
-    // Opacity drives the brush engine live, and keeps the Brush Options
-    // panel's Opacity slider in step (that slider writes the same canvas
-    // value back — idempotent, no loop).
+    opacitySlider->onAdjustEnd = [pillHide, saveToolCtl] {
+        pillHide->start();
+        saveToolCtl();
+    };
+    // Opacity drives the active tool's engine live; in Brush mode it also
+    // keeps the Brush Options panel's Opacity slider in step (that slider
+    // writes the same canvas value back — idempotent, no loop).
     opacitySlider->onChanged =
-        [this, refreshPill, opacitySlider](int v) {
-        m_canvas->setBrushOpacity(v);
-        if (m_brushOpacitySlider)
-            m_brushOpacitySlider->setValue(v);
+        [this, tc, refreshPill, opacitySlider](int v) {
+        if (tc->eraserMode) {
+            m_canvas->setEraserOpacity(v);
+        } else {
+            m_canvas->setBrushOpacity(v);
+            if (m_brushOpacitySlider)
+                m_brushOpacitySlider->setValue(v);
+        }
+        tc->active().opacity = v;
         refreshPill(opacitySlider, v);
     };
 
     // Preset button: "+" saves the current value as a tick, "-" removes the
-    // tick the current value sits on. Persisted per slider.
-    pill->onPresetToggle = [pill, pillHide, savePresets] {
+    // tick the current value sits on. Ticks belong to the ACTIVE tool and
+    // persist per tool per slider.
+    pill->onPresetToggle = [pill, pillHide, tc, sizeSlider, saveToolCtl] {
         SizeCtlSlider *s = pill->active;
         if (!s)
             return;
@@ -2644,7 +2721,9 @@ void StoryboardPage::createFloatingToolbar()
         else
             s->addPreset(v);
         pill->setHasPreset(s->hasPreset(v));
-        savePresets(s);
+        (s == sizeSlider ? tc->active().sizeTicks
+                         : tc->active().opacityTicks) = s->presets();
+        saveToolCtl();
         pillHide->start(); // linger briefly after the tap
     };
     // Hovering the pill keeps it open so the button is reachable.
@@ -2657,9 +2736,44 @@ void StoryboardPage::createFloatingToolbar()
 
     connect(flipButton, &QPushButton::toggled, this,
             [this] { m_canvas->toggleFlipH(); });
-    m_setSizeCtl = [sizeSlider](int v) { sizeSlider->setValue(v); };
-    m_setOpacityCtl = [opacitySlider](int v) { opacitySlider->setValue(v); };
+    // Brush-semantics external setters (brush presets / Brush Options panel):
+    // they always update the BRUSH state, and touch the sliders only while
+    // the sliders are showing the Brush.
+    m_setSizeCtl = [tc, sizeSlider, saveToolCtl](int v) {
+        tc->brush.size = qBound(1, v, 200);
+        if (!tc->eraserMode)
+            sizeSlider->setValue(tc->brush.size);
+        saveToolCtl();
+    };
+    m_setOpacityCtl = [tc, opacitySlider, saveToolCtl](int v) {
+        tc->brush.opacity = qBound(5, v, 100);
+        if (!tc->eraserMode)
+            opacitySlider->setValue(tc->brush.opacity);
+        saveToolCtl();
+    };
 
+    // Switching between Brush and Eraser swaps the sliders to that tool's
+    // stored size/opacity and preset ticks (the canvas keeps both tools'
+    // engine values in independent members — nothing to push back). Other
+    // tools leave the sliders idle on the last brush-like state.
+    connect(m_canvas, &DrawingCanvas::toolChanged, this,
+            [tc, sizeSlider, opacitySlider, pill, pillHide](int tool) {
+        if (tool != DrawingCanvas::Brush && tool != DrawingCanvas::Eraser)
+            return;
+        tc->eraserMode = tool == DrawingCanvas::Eraser;
+        const SizeCtlTool &t = tc->active();
+        sizeSlider->setValue(t.size);        // silent: no engine writeback
+        opacitySlider->setValue(t.opacity);
+        sizeSlider->setPresets(t.sizeTicks);
+        opacitySlider->setPresets(t.opacityTicks);
+        sizeSlider->setToolTip(tc->eraserMode
+            ? QStringLiteral("Eraser size") : QStringLiteral("Brush size"));
+        opacitySlider->setToolTip(tc->eraserMode
+            ? QStringLiteral("Eraser opacity")
+            : QStringLiteral("Brush opacity"));
+        pillHide->stop();
+        pill->hide(); // a stale pill must never show the old tool's value
+    });
 
 
     sizeBar->show(); // records intent; effective when the canvas shows

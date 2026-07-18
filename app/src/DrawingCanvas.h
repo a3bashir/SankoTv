@@ -133,6 +133,10 @@ public:
     void commitQuickShape(); // resolve any pending temporary shape (lifecycle)
     void cancelQuickShape(); // explicit cancel: discard the temporary vector
 
+    Tool tool() const { return m_tool; } // active tool (per-tool sliders)
+    int eraserSize() const { return m_eraserSize; }
+    int eraserOpacity() const { return qRound(m_eraserOpacity * 100.0); }
+
 public slots:
     void setTool(Tool tool);
     void setColor(const QColor &color);
@@ -145,6 +149,10 @@ public slots:
     void setBrushToolSize(int px);       // 1..200, canvas pixels
     void setBrushOpacity(int percent);   // 0..100
     void setBrushHardness(int percent);  // 0..100 (100 = sharp edge)
+
+    // Eraser settings — independent of the brush (per-tool Size CTL).
+    void setEraserSize(int px);          // 1..200, canvas pixels
+    void setEraserOpacity(int percent);  // 0..100 (erase strength)
     void setPressureToSize(bool on);
     void setPressureToOpacity(bool on);
 
@@ -203,6 +211,8 @@ signals:
     // An undo/redo command rewrote this panel's layer data; the page
     // regenerates that panel's thumbnail from the committed model.
     void panelEdited(Panel *panel);
+    // The active tool switched (the per-tool Size CTL sliders re-sync).
+    void toolChanged(int tool);
     // A perspective VP was created, selected, or removed: the Perspective
     // Modifier toolbar re-syncs its per-VP sliders.
     void perspectiveEdited();
@@ -454,6 +464,9 @@ private:
     // Brush engine state. Defaults mirror the initial settings-panel values.
     int m_brushToolSize = 25;        // dab diameter, canvas px
     double m_brushToolOpacity = 1.0; // 0..1
+    // Eraser state (independent of the brush; per-tool Size CTL sliders).
+    int m_eraserSize = 25;           // stroke width, canvas px
+    double m_eraserOpacity = 1.0;    // 0..1 erase strength
     double m_brushHardness = 0.8;    // 0..1
     bool m_pressureToSize = true;
     bool m_pressureToOpacity = false;
