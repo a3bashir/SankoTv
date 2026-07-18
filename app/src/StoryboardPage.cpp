@@ -2506,9 +2506,12 @@ void StoryboardPage::createFloatingToolbar()
     flipButton->setFixedSize(30, 30);
     flipButton->setCheckable(true); // Flip is a toggle with an active state
     flipButton->setChecked(m_canvas->viewFlipH());
+    // The icon fills the button with a 2px margin: 26px-wide art (aspect
+    // 21.6:17.55 kept -> 26x21.13) centred in figIconPixmap's 30x30 box,
+    // and the box drawn 1:1 (iconSize 30) so nothing rescales the glyph.
     flipButton->setIcon(QIcon(figIconPixmap(
-        QStringLiteral(":/icons/flip.svg"), QSizeF(21.6, 17.55))));
-    flipButton->setIconSize(QSize(22, 18));
+        QStringLiteral(":/icons/flip.svg"), QSizeF(26.0, 21.13))));
+    flipButton->setIconSize(QSize(30, 30));
     flipButton->setToolTip(QStringLiteral("Flip"));
     flipButton->setStyleSheet(QStringLiteral(
         "QPushButton { background:transparent; border:none; border-radius:6px; }"
@@ -2656,6 +2659,7 @@ void StoryboardPage::createFloatingToolbar()
             [this] { m_canvas->toggleFlipH(); });
     m_setSizeCtl = [sizeSlider](int v) { sizeSlider->setValue(v); };
     m_setOpacityCtl = [opacitySlider](int v) { opacitySlider->setValue(v); };
+
 
 
     sizeBar->show(); // records intent; effective when the canvas shows
