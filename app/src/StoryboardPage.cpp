@@ -810,8 +810,12 @@ public:
         setCursor(Qt::PointingHandCursor);
     }
 
-    std::function<void(int)> onChanged;
+    std::function<void(int)> onChanged;   // value changed by the user
+    std::function<void()> onAdjustBegin;  // press: user started adjusting
+    std::function<void()> onAdjustEnd;    // release: user stopped adjusting
 
+    int minimum() const { return m_min; }
+    int maximum() const { return m_max; }
     int value() const { return m_value; }
     void setValue(int v) // programmatic sync: no callback
     {
@@ -820,6 +824,41 @@ public:
             return;
         m_value = v;
         update();
+    }
+
+    // Saved preset ticks (Procreate-style). Kept sorted + unique.
+    const QVector<int> &presets() const { return m_presets; }
+    void setPresets(QVector<int> presets)
+    {
+        for (int &v : presets)
+            v = qBound(m_min, v, m_max);
+        std::sort(presets.begin(), presets.end());
+        presets.erase(std::unique(presets.begin(), presets.end()),
+                      presets.end());
+        m_presets = presets;
+        update();
+    }
+    bool hasPreset(int v) const { return m_presets.contains(v); }
+    void addPreset(int v)
+    {
+        v = qBound(m_min, v, m_max);
+        if (!m_presets.contains(v)) {
+            m_presets.append(v);
+            std::sort(m_presets.begin(), m_presets.end());
+            update();
+        }
+    }
+    void removePreset(int v)
+    {
+        if (m_presets.removeAll(v) > 0)
+            update();
+    }
+
+    // y (top->bottom) of the track position representing value v.
+    qreal yForValue(int v) const
+    {
+        const qreal frac = (v - m_min) / qreal(qMax(1, m_max - m_min));
+        return height() * (1.0 - frac);
     }
 
 protected:
@@ -845,22 +884,50 @@ protected:
         sheen.setColorAt(1.0, QColor(255, 255, 255, 0));
         p.fillPath(fillPath, sheen);
 
+        // Saved preset ticks: a short horizontal mark across the track. White
+        // over the gray track, darkened where it overlaps the light dragger.
+        QPainterPath clip;
+        clip.addRoundedRect(rect(), 4, 4);
+        p.setClipPath(clip);
+        for (int v : m_presets) {
+            const qreal ty = qBound<qreal>(1.5, yForValue(v), height() - 1.5);
+            const bool onDragger = ty >= fill.top() && ty <= fill.top() + 31;
+            p.fillRect(QRectF(3, ty - 1, width() - 6, 2),
+                       onDragger ? QColor(0x33, 0x33, 0x33, 200)
+                                 : QColor(255, 255, 255, 210));
+        }
+        p.setClipping(false);
+
         QPainterPath dragger;
         dragger.addRoundedRect(QRectF(0, fill.top(), width(), 31), 4, 4);
         p.fillPath(dragger, QColor(0x99, 0x99, 0x99));
     }
-    void mousePressEvent(QMouseEvent *e) override { setFromY(e->position().y()); }
+    void mousePressEvent(QMouseEvent *e) override
+    {
+        if (onAdjustBegin)
+            onAdjustBegin();
+        // Tapping on (or very near) a saved tick snaps to its exact value.
+        const int snapV = presetNearY(e->position().y());
+        if (snapV >= 0)
+            setToValue(snapV);
+        else
+            setFromY(e->position().y());
+    }
     void mouseMoveEvent(QMouseEvent *e) override
     {
         if (e->buttons() & Qt::LeftButton)
             setFromY(e->position().y());
     }
+    void mouseReleaseEvent(QMouseEvent *) override
+    {
+        if (onAdjustEnd)
+            onAdjustEnd();
+    }
 
 private:
-    void setFromY(qreal y)
+    void setToValue(int v)
     {
-        const qreal frac = 1.0 - qBound(0.0, y / qMax(1, height()), 1.0);
-        const int v = m_min + qRound(frac * (m_max - m_min));
+        v = qBound(m_min, v, m_max);
         if (v == m_value)
             return;
         m_value = v;
@@ -868,10 +935,30 @@ private:
         if (onChanged)
             onChanged(m_value);
     }
+    void setFromY(qreal y)
+    {
+        const qreal frac = 1.0 - qBound(0.0, y / qMax(1, height()), 1.0);
+        setToValue(m_min + qRound(frac * (m_max - m_min)));
+    }
+    // The saved preset whose tick is within 6px of y, or -1.
+    int presetNearY(qreal y) const
+    {
+        int best = -1;
+        qreal bestD = 6.0;
+        for (int v : m_presets) {
+            const qreal d = qAbs(yForValue(v) - y);
+            if (d <= bestD) {
+                bestD = d;
+                best = v;
+            }
+        }
+        return best;
+    }
 
     int m_min = 0;
     int m_max = 100;
     int m_value = 0;
+    QVector<int> m_presets;
 };
 
 // Floating Size CTL window (Figma 209:42 + grab 209:53): the 46x574 #212121
@@ -929,8 +1016,12 @@ protected:
         p.setPen(Qt::NoPen);
         p.setBrush(QColor(0x21, 0x21, 0x21));
         p.drawRoundedRect(QRectF(barX(), 0, kBarW, kBarH), 12, 12);
-        if (m_grabVisible)
+        // The grab shows only on hover; when it does it is armed to drag, so
+        // it wears the Sanko accent colour (Figma 209:53).
+        if (m_grabVisible) {
+            p.setBrush(QColor(0x7c, 0x6e, 0xf6));
             p.drawRoundedRect(QRectF(grabArea()), 4, 4);
+        }
     }
 
     void enterEvent(QEnterEvent *) override { setGrabVisible(true); }
@@ -1046,6 +1137,84 @@ private:
     bool m_dragActive = false;
     QPoint m_dragStartGlobal;
     QPoint m_dragStartPos;
+};
+
+// Numeric value + preset pill (Figma 213:94 / 213:99): a 64x27 translucent
+// #212121 @ 50% rounded pill that floats next to the slider being adjusted.
+// It shows the live value and a preset button that is "+" (save the current
+// value as a tick) or "-" (the current value already has a tick: remove it).
+// A top-level tool window so it is never clipped by the narrow Size CTL bar;
+// WA_ShowWithoutActivating keeps focus (and any active brush stroke) intact.
+class PresetPill : public QWidget
+{
+public:
+    explicit PresetPill(QWidget *parent)
+        : QWidget(parent, Qt::Tool | Qt::FramelessWindowHint
+                              | Qt::WindowStaysOnTopHint
+                              | Qt::WindowDoesNotAcceptFocus)
+    {
+        setAttribute(Qt::WA_TranslucentBackground);
+        setAttribute(Qt::WA_ShowWithoutActivating);
+        setFixedSize(64, 27);
+
+        m_value = new QLabel(this);
+        m_value->setGeometry(9, 0, 28, 27);
+        m_value->setAlignment(Qt::AlignVCenter | Qt::AlignLeft);
+        m_value->setStyleSheet(QStringLiteral(
+            "color:#ffffff; font-size:12px; font-weight:600;"
+            " background:transparent; border:none;"));
+
+        m_button = new QToolButton(this);
+        m_button->setGeometry(38, 3, 21, 21);
+        m_button->setCursor(Qt::PointingHandCursor);
+        m_button->setFocusPolicy(Qt::NoFocus);
+        m_button->setStyleSheet(QStringLiteral(
+            "QToolButton { color:#ffffff; font-size:15px; font-weight:600;"
+            " background:#3a3a3a; border:none; border-radius:5px;"
+            " padding-bottom:2px; }"
+            "QToolButton:hover { background:#7c6ef6; }"));
+        connect(m_button, &QToolButton::clicked, this, [this] {
+            if (onPresetToggle)
+                onPresetToggle();
+        });
+    }
+
+    std::function<void()> onPresetToggle;
+    std::function<void(bool)> onHoverChange;
+
+    SizeCtlSlider *active = nullptr; // the slider currently being adjusted
+
+    void setValue(int v) { m_value->setText(QString::number(v)); }
+    // "-" when the current value already sits on a saved tick, else "+".
+    void setHasPreset(bool has)
+    {
+        m_button->setText(has ? QString::fromUtf8("\xE2\x88\x92")   // U+2212
+                              : QStringLiteral("+"));
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor(0x21, 0x21, 0x21, 128)); // #212121 @ 50%
+        p.drawRoundedRect(rect(), 6, 6);
+    }
+    void enterEvent(QEnterEvent *) override
+    {
+        if (onHoverChange)
+            onHoverChange(true);
+    }
+    void leaveEvent(QEvent *) override
+    {
+        if (onHoverChange)
+            onHoverChange(false);
+    }
+
+private:
+    QLabel *m_value = nullptr;
+    QToolButton *m_button = nullptr;
 };
 
 // --- App-wide undo commands for the panel list --------------------------------
@@ -2338,23 +2507,133 @@ void StoryboardPage::createFloatingToolbar()
     placeSizeCtl();
     sizeBar->onSideChanged = placeSizeCtl;
 
-    sizeSlider->onChanged = [this](int v) {
+    // Numeric value + preset pill (Figma 213:94 / 213:99). One shared pill
+    // floats next to whichever Size CTL slider is being adjusted; it auto-
+    // hides 1s after the last change (kept alive while the cursor is over it
+    // so the +/- button stays clickable).
+    PresetPill *pill = new PresetPill(this);
+    pill->setObjectName(QStringLiteral("sizeCtlPresetPill"));
+    QTimer *pillHide = new QTimer(pill);
+    pillHide->setSingleShot(true);
+    pillHide->setInterval(1000);
+    connect(pillHide, &QTimer::timeout, pill, &QWidget::hide);
+
+    const QString sizeKey =
+        QStringLiteral("storyboard/sizeCtlPresets/size");
+    const QString opacityKey =
+        QStringLiteral("storyboard/sizeCtlPresets/opacity");
+    auto keyFor = [sizeSlider, sizeKey, opacityKey](SizeCtlSlider *s) {
+        return s == sizeSlider ? sizeKey : opacityKey;
+    };
+    auto loadPresets = [](SizeCtlSlider *s, const QString &key) {
+        const QSettings settings(QStringLiteral("SankoTV"),
+                                 QStringLiteral("SankoTV"));
+        QVector<int> vals;
+        const QString raw = settings.value(key).toString();
+        const QStringList parts =
+            raw.split(QLatin1Char(','), Qt::SkipEmptyParts);
+        for (const QString &part : parts) {
+            bool ok = false;
+            const int v = part.trimmed().toInt(&ok);
+            if (ok)
+                vals.append(v);
+        }
+        s->setPresets(vals);
+    };
+    auto savePresets = [keyFor](SizeCtlSlider *s) {
+        QStringList parts;
+        for (int v : s->presets())
+            parts << QString::number(v);
+        QSettings settings(QStringLiteral("SankoTV"),
+                           QStringLiteral("SankoTV"));
+        settings.setValue(keyFor(s), parts.join(QLatin1Char(',')));
+    };
+    loadPresets(sizeSlider, sizeKey);
+    loadPresets(opacitySlider, opacityKey);
+
+    // Park the pill on the canvas-facing side of the bar, centred on the
+    // slider handle for the current value.
+    auto positionPill = [sizeBar, pill](SizeCtlSlider *s) {
+        const int handleY = int(s->yForValue(s->value()));
+        const int gy = s->mapToGlobal(QPoint(0, handleY)).y();
+        const int barLeft = sizeBar->mapToGlobal(QPoint(0, 0)).x();
+        const int bx = sizeBar->barX();
+        const int px = sizeBar->side() == 0
+            ? barLeft + bx + SizeCtlBar::kBarW + 6      // left edge: pill right
+            : barLeft + bx - pill->width() - 6;         // right edge: pill left
+        pill->move(px, gy - pill->height() / 2);
+    };
+    auto showPillFor = [pill, pillHide, positionPill](SizeCtlSlider *s) {
+        pill->active = s;
+        pill->setValue(s->value());
+        pill->setHasPreset(s->hasPreset(s->value()));
+        positionPill(s);
+        pillHide->stop();
+        pill->show();
+        pill->raise();
+    };
+    auto refreshPill = [pill, positionPill](SizeCtlSlider *s, int v) {
+        if (pill->active != s || !pill->isVisible())
+            return;
+        pill->setValue(v);
+        pill->setHasPreset(s->hasPreset(v));
+        positionPill(s);
+    };
+
+    sizeSlider->onAdjustBegin = [showPillFor, sizeSlider] {
+        showPillFor(sizeSlider);
+    };
+    sizeSlider->onAdjustEnd = [pillHide] { pillHide->start(); };
+    sizeSlider->onChanged = [this, refreshPill, sizeSlider](int v) {
         m_canvas->setBrushToolSize(v);
         // The Eraser and Line widths follow too (clamped to 1-20 inside).
         m_canvas->setBrushSize(v);
+        refreshPill(sizeSlider, v);
     };
+
+    opacitySlider->onAdjustBegin = [showPillFor, opacitySlider] {
+        showPillFor(opacitySlider);
+    };
+    opacitySlider->onAdjustEnd = [pillHide] { pillHide->start(); };
     // Opacity drives the brush engine live, and keeps the Brush Options
     // panel's Opacity slider in step (that slider writes the same canvas
     // value back — idempotent, no loop).
-    opacitySlider->onChanged = [this](int v) {
+    opacitySlider->onChanged =
+        [this, refreshPill, opacitySlider](int v) {
         m_canvas->setBrushOpacity(v);
         if (m_brushOpacitySlider)
             m_brushOpacitySlider->setValue(v);
+        refreshPill(opacitySlider, v);
     };
+
+    // Preset button: "+" saves the current value as a tick, "-" removes the
+    // tick the current value sits on. Persisted per slider.
+    pill->onPresetToggle = [pill, pillHide, savePresets] {
+        SizeCtlSlider *s = pill->active;
+        if (!s)
+            return;
+        const int v = s->value();
+        if (s->hasPreset(v))
+            s->removePreset(v);
+        else
+            s->addPreset(v);
+        pill->setHasPreset(s->hasPreset(v));
+        savePresets(s);
+        pillHide->start(); // linger briefly after the tap
+    };
+    // Hovering the pill keeps it open so the button is reachable.
+    pill->onHoverChange = [pillHide](bool over) {
+        if (over)
+            pillHide->stop();
+        else
+            pillHide->start();
+    };
+
     connect(flipButton, &QPushButton::toggled, this,
             [this] { m_canvas->toggleFlipH(); });
     m_setSizeCtl = [sizeSlider](int v) { sizeSlider->setValue(v); };
     m_setOpacityCtl = [opacitySlider](int v) { opacitySlider->setValue(v); };
+
     sizeBar->show(); // records intent; effective when the canvas shows
 }
 
