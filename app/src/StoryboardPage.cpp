@@ -796,6 +796,254 @@ private:
     bool m_on = false;
 };
 
+// Vertical slider from the Floating Size CTL (Figma 209:42): a 25x220 #333
+// radius-4 track whose gradient fill (#4B4397 -> #7C6EF6 with a white sheen
+// across the width) grows from the BOTTOM, capped by the 31px #999 radius-4
+// dragger riding at the top of the fill.
+class SizeCtlSlider : public QWidget
+{
+public:
+    SizeCtlSlider(int min, int max, int value, QWidget *parent)
+        : QWidget(parent), m_min(min), m_max(max), m_value(value)
+    {
+        setFixedSize(25, 220);
+        setCursor(Qt::PointingHandCursor);
+    }
+
+    std::function<void(int)> onChanged;
+
+    int value() const { return m_value; }
+    void setValue(int v) // programmatic sync: no callback
+    {
+        v = qBound(m_min, v, m_max);
+        if (v == m_value)
+            return;
+        m_value = v;
+        update();
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        QPainterPath track;
+        track.addRoundedRect(rect(), 4, 4);
+        p.fillPath(track, QColor(0x33, 0x33, 0x33));
+
+        const qreal frac = (m_value - m_min) / qreal(qMax(1, m_max - m_min));
+        const qreal fillH = qMax<qreal>(31.0, frac * height());
+        const QRectF fill(0, height() - fillH, width(), fillH);
+        QPainterPath fillPath;
+        fillPath.addRoundedRect(fill, 4, 4);
+        QLinearGradient g(fill.bottomLeft(), fill.topLeft());
+        g.setColorAt(0.0, QColor(0x4b, 0x43, 0x97));
+        g.setColorAt(1.0, QColor(0x7c, 0x6e, 0xf6));
+        p.fillPath(fillPath, g);
+        QLinearGradient sheen(fill.topLeft(), fill.topRight());
+        sheen.setColorAt(0.0, QColor(255, 255, 255, 26));
+        sheen.setColorAt(1.0, QColor(255, 255, 255, 0));
+        p.fillPath(fillPath, sheen);
+
+        QPainterPath dragger;
+        dragger.addRoundedRect(QRectF(0, fill.top(), width(), 31), 4, 4);
+        p.fillPath(dragger, QColor(0x99, 0x99, 0x99));
+    }
+    void mousePressEvent(QMouseEvent *e) override { setFromY(e->position().y()); }
+    void mouseMoveEvent(QMouseEvent *e) override
+    {
+        if (e->buttons() & Qt::LeftButton)
+            setFromY(e->position().y());
+    }
+
+private:
+    void setFromY(qreal y)
+    {
+        const qreal frac = 1.0 - qBound(0.0, y / qMax(1, height()), 1.0);
+        const int v = m_min + qRound(frac * (m_max - m_min));
+        if (v == m_value)
+            return;
+        m_value = v;
+        update();
+        if (onChanged)
+            onChanged(m_value);
+    }
+
+    int m_min = 0;
+    int m_max = 100;
+    int m_value = 0;
+};
+
+// Floating Size CTL window (Figma 209:42 + grab 209:53): the 46x574 #212121
+// radius-12 bar plus the 8x50 grab pill, separated by a 4px transparent gap
+// inside one top-level FloatingToolWindow. The grab appears only while the
+// cursor hovers the toolbar and is the only drag region; on release the bar
+// snaps to the nearest canvas side (left-handed / right-handed layouts) and
+// the grab flips to the INNER side. Side + vertical position persist in
+// QSettings and are re-derived on every reposition, so the snap tracks
+// window resizes (the base's user-placed offset persistence is bypassed).
+class SizeCtlBar : public FloatingToolWindow
+{
+public:
+    static constexpr int kBarW = 46;
+    static constexpr int kBarH = 574;
+    static constexpr int kGrabW = 8;
+    static constexpr int kGrabH = 50;
+    static constexpr int kGap = 4;
+    static constexpr int kEdgeMargin = 10;
+
+    SizeCtlBar(QWidget *anchor, QWidget *parent)
+        : FloatingToolWindow(anchor, QString(), parent)
+    {
+        setFixedSize(kBarW + kGap + kGrabW, kBarH);
+        setMouseTracking(true); // hover shows the grab without a button held
+        const QSettings settings(QStringLiteral("SankoTV"),
+                                 QStringLiteral("SankoTV"));
+        m_side = settings.value(QStringLiteral("storyboard/sizeCtlSide"), 0)
+                         .toInt() == 1 ? 1 : 0;
+        m_sideY = settings.value(QStringLiteral("storyboard/sizeCtlY"), -1)
+                          .toInt();
+        setDefaultOffsetProvider([this] { return snappedOffset(); });
+    }
+
+    std::function<void()> onSideChanged; // relayout the child controls
+
+    int side() const { return m_side; }
+    int barX() const { return m_side == 0 ? 0 : kGrabW + kGap; }
+    bool grabVisible() const { return m_grabVisible; }
+
+protected:
+    // Draggable only while the grab is shown (hover).
+    QRect gripRect() const override
+    {
+        return m_grabVisible ? grabArea() : QRect();
+    }
+
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setCompositionMode(QPainter::CompositionMode_Source);
+        p.fillRect(rect(), Qt::transparent); // clean gap + corners
+        p.setCompositionMode(QPainter::CompositionMode_SourceOver);
+        p.setPen(Qt::NoPen);
+        p.setBrush(QColor(0x21, 0x21, 0x21));
+        p.drawRoundedRect(QRectF(barX(), 0, kBarW, kBarH), 12, 12);
+        if (m_grabVisible)
+            p.drawRoundedRect(QRectF(grabArea()), 4, 4);
+    }
+
+    void enterEvent(QEnterEvent *) override { setGrabVisible(true); }
+    void leaveEvent(QEvent *) override
+    {
+        // Moving onto a child keeps the cursor inside our rect; only a real
+        // exit hides the grab.
+        if (!rect().contains(mapFromGlobal(QCursor::pos())))
+            setGrabVisible(false);
+    }
+
+    void mousePressEvent(QMouseEvent *event) override
+    {
+        if (event->button() == Qt::LeftButton
+            && gripRect().contains(event->position().toPoint())) {
+            m_dragActive = true;
+            m_dragStartGlobal = event->globalPosition().toPoint();
+            m_dragStartPos = pos();
+            setCursor(Qt::ClosedHandCursor);
+            return;
+        }
+        QWidget::mousePressEvent(event);
+    }
+    void mouseMoveEvent(QMouseEvent *event) override
+    {
+        if (m_dragActive && (event->buttons() & Qt::LeftButton)) {
+            move(clampToAnchor(m_dragStartPos
+                               + (event->globalPosition().toPoint()
+                                  - m_dragStartGlobal)));
+            return;
+        }
+        setCursor(gripRect().contains(event->position().toPoint())
+                      ? Qt::OpenHandCursor : Qt::ArrowCursor);
+        QWidget::mouseMoveEvent(event);
+    }
+    void mouseReleaseEvent(QMouseEvent *event) override
+    {
+        if (m_dragActive) {
+            m_dragActive = false;
+            setCursor(Qt::OpenHandCursor);
+            snapToNearestSide();
+            return;
+        }
+        QWidget::mouseReleaseEvent(event);
+    }
+
+private:
+    QRect grabArea() const
+    {
+        const int gx = m_side == 0 ? kBarW + kGap : 0;
+        return QRect(gx, (kBarH - kGrabH) / 2, kGrabW, kGrabH);
+    }
+    void setGrabVisible(bool visible)
+    {
+        if (m_grabVisible == visible)
+            return;
+        m_grabVisible = visible;
+        update();
+    }
+    QPoint snappedOffset() const
+    {
+        QWidget *anchor = anchorWidget();
+        if (!anchor)
+            return {};
+        const int x = m_side == 0
+            ? kEdgeMargin
+            : qMax(0, anchor->width() - width() - kEdgeMargin);
+        int y = m_sideY >= 0 ? m_sideY
+                             : qMax(0, (anchor->height() - height()) / 2);
+        y = qBound(0, y, qMax(0, anchor->height() - height()));
+        return QPoint(x, y);
+    }
+    QPoint clampToAnchor(const QPoint &globalPos) const
+    {
+        QWidget *anchor = anchorWidget();
+        if (!anchor)
+            return globalPos;
+        const QPoint origin = anchor->mapToGlobal(QPoint(0, 0));
+        const int maxX = origin.x() + qMax(0, anchor->width() - width());
+        const int maxY = origin.y() + qMax(0, anchor->height() - height());
+        return QPoint(qBound(origin.x(), globalPos.x(), maxX),
+                      qBound(origin.y(), globalPos.y(), maxY));
+    }
+    void snapToNearestSide()
+    {
+        QWidget *anchor = anchorWidget();
+        if (!anchor)
+            return;
+        const QPoint rel = pos() - anchor->mapToGlobal(QPoint(0, 0));
+        const int newSide =
+            rel.x() + width() / 2 <= anchor->width() / 2 ? 0 : 1;
+        m_sideY = qBound(0, rel.y(), qMax(0, anchor->height() - height()));
+        if (newSide != m_side) {
+            m_side = newSide;
+            if (onSideChanged)
+                onSideChanged(); // the grab flips to the inner side
+            update();
+        }
+        QSettings settings(QStringLiteral("SankoTV"),
+                           QStringLiteral("SankoTV"));
+        settings.setValue(QStringLiteral("storyboard/sizeCtlSide"), m_side);
+        settings.setValue(QStringLiteral("storyboard/sizeCtlY"), m_sideY);
+        reposition(); // never user-placed: always lands on snappedOffset()
+    }
+
+    int m_side = 0;   // 0 = left canvas edge, 1 = right
+    int m_sideY = -1; // canvas-relative y (-1: centre until first drag)
+    bool m_grabVisible = false;
+    bool m_dragActive = false;
+    QPoint m_dragStartGlobal;
+    QPoint m_dragStartPos;
+};
+
 // --- App-wide undo commands for the panel list --------------------------------
 // Insert covers Add / Duplicate / Paste; ownership of the DETACHED Panel
 // follows the undo state, so a truncated history never leaks or double-frees.
@@ -1970,24 +2218,6 @@ void StoryboardPage::createFloatingToolbar()
     });
     extras->addWidget(m_onionButton, 0, Qt::AlignHCenter);
 
-    // Vertical brush-size slider (range 1-200), fixed run so the bar hugs a
-    // stable height.
-    m_brushSizeSlider = new SankoSlider;
-    m_brushSizeSlider->setToolTip(QStringLiteral("Brush size"));
-    m_brushSizeSlider->setOrientation(Qt::Vertical);
-    m_brushSizeSlider->setTrackHeight(25); // track WIDTH when vertical
-    m_brushSizeSlider->setHandleSize(27);
-    m_brushSizeSlider->setRange(1, 200);
-    m_brushSizeSlider->setValue(25);
-    m_brushSizeSlider->setMinimumHeight(140); // fixed run (set after the setters
-    m_brushSizeSlider->setMaximumHeight(140); // above: they reset the constraints)
-    connect(m_brushSizeSlider, &SankoSlider::valueChanged, this, [this](int v) {
-        m_canvas->setBrushToolSize(v);
-        // The Eraser and Line widths follow too (clamped to 1-20 inside).
-        m_canvas->setBrushSize(v);
-    });
-    extras->addWidget(m_brushSizeSlider, 0, Qt::AlignHCenter);
-
     m_extrasToolbar->adjustSize();
     // Default spot: left edge, vertically centred over the canvas.
     extrasBar->setDefaultOffsetProvider([this, extrasBar] {
@@ -2112,6 +2342,58 @@ void StoryboardPage::createFloatingToolbar()
         return QPoint(qMax(6, (m_canvas->width() - layersBar->width()) / 2), 12);
     });
     layersBar->show(); // records intent; effective when the canvas shows
+
+    // ---- Floating Size CTL (Figma 209:42 + grab 209:53) -------------------
+    // Replaces the old extras-bar brush-size slider: Brush Size, Fit Screen,
+    // and Brush Opacity in one edge-snapping floating toolbar.
+    SizeCtlBar *sizeBar = new SizeCtlBar(m_canvas, this);
+    m_sizeCtlBar = sizeBar;
+    m_sizeCtlBar->setObjectName(QStringLiteral("sizeCtlBar"));
+
+    auto *sizeSlider = new SizeCtlSlider(1, 200, 25, sizeBar);
+    sizeSlider->setToolTip(QStringLiteral("Brush size"));
+    auto *fitButton = new QPushButton(sizeBar);
+    fitButton->setFocusPolicy(Qt::NoFocus);
+    fitButton->setCursor(Qt::PointingHandCursor);
+    fitButton->setFixedSize(20, 20);
+    fitButton->setIcon(QIcon(figIconPixmap(
+        QStringLiteral(":/icons/fig_fitscreen.svg"), QSizeF(19.2, 19.2))));
+    fitButton->setIconSize(QSize(19, 19));
+    fitButton->setToolTip(QStringLiteral("Fit Screen"));
+    fitButton->setStyleSheet(QStringLiteral(
+        "QPushButton { background:transparent; border:none; }"
+        "QPushButton:hover { background:#2e2e2e; border-radius:4px; }"));
+    auto *opacitySlider = new SizeCtlSlider(5, 100, 100, sizeBar);
+    opacitySlider->setToolTip(QStringLiteral("Brush opacity"));
+
+    // Exact Figma column: py25, gap 31 (slider 220, icon ~19), shifted by the
+    // bar's x when the grab sits on the left (right-edge layout).
+    auto placeSizeCtl = [sizeBar, sizeSlider, fitButton, opacitySlider] {
+        const int bx = sizeBar->barX();
+        sizeSlider->move(bx + 10, 25);
+        fitButton->move(bx + 13, 276);
+        opacitySlider->move(bx + 10, 326);
+    };
+    placeSizeCtl();
+    sizeBar->onSideChanged = placeSizeCtl;
+
+    sizeSlider->onChanged = [this](int v) {
+        m_canvas->setBrushToolSize(v);
+        // The Eraser and Line widths follow too (clamped to 1-20 inside).
+        m_canvas->setBrushSize(v);
+    };
+    opacitySlider->onChanged = [this](int v) { m_canvas->setBrushOpacity(v); };
+    connect(fitButton, &QPushButton::clicked, this, [this] {
+        m_canvas->setViewZoom(1.0); // zoom 1 = letterbox-fitted canvas
+        m_canvas->resetViewRotation();
+        if (m_zoomToolbar) {
+            m_zoomToolbar->setZoom(1.0);
+            m_zoomToolbar->setRotation(0.0);
+        }
+    });
+    m_setSizeCtl = [sizeSlider](int v) { sizeSlider->setValue(v); };
+    m_setOpacityCtl = [opacitySlider](int v) { opacitySlider->setValue(v); };
+    sizeBar->show(); // records intent; effective when the canvas shows
 }
 
 // Floating overlay panel over the canvas, styled after the dock headers:
@@ -2397,6 +2679,7 @@ QWidget *StoryboardPage::createPerspectiveModifier()
 
 
 
+
     bar->setVisible(false); // shown while the Perspective tool is active
     return bar;
 }
@@ -2526,8 +2809,10 @@ void StoryboardPage::setTitleSafeMaskOpacity(int percent)
 void StoryboardPage::applyBrushPreset(int size, int opacityPct, int hardnessPct,
                                       bool pressureSize, bool pressureOpacity)
 {
-    if (m_brushSizeSlider)
-        m_brushSizeSlider->setValue(size);
+    if (m_setSizeCtl)
+        m_setSizeCtl(size);
+    if (m_setOpacityCtl)
+        m_setOpacityCtl(opacityPct);
     if (m_brushOpacitySlider)
         m_brushOpacitySlider->setValue(opacityPct);
     if (m_brushHardnessSlider)

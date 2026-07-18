@@ -219,7 +219,11 @@ private:
     QPushButton *m_importButton = nullptr;
     // Brush settings panel (visible only while the Brush tool is active).
     QWidget *m_brushPanel = nullptr;
-    SankoSlider *m_brushSizeSlider = nullptr; // vertical, tool column (1-200)
+    // Floating Size/Opacity toolbar (Figma 209:42): size + opacity sliders
+    // and Fit Screen, snapping to the left/right canvas edge.
+    QWidget *m_sizeCtlBar = nullptr;
+    std::function<void(int)> m_setSizeCtl;    // toolbar sliders <- presets
+    std::function<void(int)> m_setOpacityCtl;
     SankoSlider *m_brushOpacitySlider = nullptr;
     SankoSlider *m_brushHardnessSlider = nullptr;
     // Camera panel (visible only while the Camera tool is active).

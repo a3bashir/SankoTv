@@ -33,5 +33,6 @@
         <file>icons/fig_imageref.svg</file>
         <file>icons/fig_shotinfo.svg</file>
         <file>icons/fig_setting.svg</file>
+        <file>icons/fig_fitscreen.svg</file>
     </qresource>
 </RCC>
