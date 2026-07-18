@@ -860,6 +860,14 @@ public:
         const qreal frac = (v - m_min) / qreal(qMax(1, m_max - m_min));
         return height() * (1.0 - frac);
     }
+    // Visual y of the preset marker for value v: the dragger's top edge sits
+    // at yForValue(v), so the marker is drawn 15.5px lower — the centre of
+    // the 31px handle. When the slider snaps onto v the marker therefore
+    // shows perfectly centred inside the handle.
+    qreal markerY(int v) const
+    {
+        return qBound<qreal>(2.5, yForValue(v) + 15.5, height() - 2.5);
+    }
 
 protected:
     void paintEvent(QPaintEvent *) override
@@ -884,23 +892,19 @@ protected:
         sheen.setColorAt(1.0, QColor(255, 255, 255, 0));
         p.fillPath(fillPath, sheen);
 
-        // Saved preset ticks: a short horizontal mark across the track. White
-        // over the gray track, darkened where it overlaps the light dragger.
-        QPainterPath clip;
-        clip.addRoundedRect(rect(), 4, 4);
-        p.setClipPath(clip);
-        for (int v : m_presets) {
-            const qreal ty = qBound<qreal>(1.5, yForValue(v), height() - 1.5);
-            const bool onDragger = ty >= fill.top() && ty <= fill.top() + 31;
-            p.fillRect(QRectF(3, ty - 1, width() - 6, 2),
-                       onDragger ? QColor(0x33, 0x33, 0x33, 200)
-                                 : QColor(255, 255, 255, 210));
-        }
-        p.setClipping(false);
-
         QPainterPath dragger;
         dragger.addRoundedRect(QRectF(0, fill.top(), width(), 31), 4, 4);
         p.fillPath(dragger, QColor(0x99, 0x99, 0x99));
+
+        // Saved preset markers (snap points): horizontal bars centred on the
+        // track, Sanko accent with a 1px white outline so they read against
+        // the track, the gradient fill AND the light dragger. Drawn last so a
+        // snapped marker shows centred inside the handle.
+        p.setPen(QPen(Qt::white, 1));
+        p.setBrush(QColor(0x7c, 0x6e, 0xf6));
+        for (int v : m_presets)
+            p.drawRoundedRect(QRectF(4.5, markerY(v) - 2.0, width() - 9, 4),
+                              2, 2);
     }
     void mousePressEvent(QMouseEvent *e) override
     {
@@ -938,15 +942,29 @@ private:
     void setFromY(qreal y)
     {
         const qreal frac = 1.0 - qBound(0.0, y / qMax(1, height()), 1.0);
-        setToValue(m_min + qRound(frac * (m_max - m_min)));
+        const int raw = m_min + qRound(frac * (m_max - m_min));
+        // Magnet: every saved preset is a snap point. When the handle centre
+        // comes within kSnapPx of a marker the value snaps to that preset,
+        // landing the marker exactly centred inside the handle (both sit
+        // 15.5px below yForValue, so the comparison stays in track space).
+        int v = raw;
+        qreal bestD = kSnapPx;
+        for (int pv : m_presets) {
+            const qreal d = qAbs(yForValue(raw) - yForValue(pv));
+            if (d <= bestD) {
+                bestD = d;
+                v = pv;
+            }
+        }
+        setToValue(v);
     }
-    // The saved preset whose tick is within 6px of y, or -1.
+    // The saved preset whose visible marker is within 6px of y, or -1.
     int presetNearY(qreal y) const
     {
         int best = -1;
-        qreal bestD = 6.0;
+        qreal bestD = kSnapPx;
         for (int v : m_presets) {
-            const qreal d = qAbs(yForValue(v) - y);
+            const qreal d = qAbs(markerY(v) - y);
             if (d <= bestD) {
                 bestD = d;
                 best = v;
@@ -954,6 +972,8 @@ private:
         }
         return best;
     }
+
+    static constexpr qreal kSnapPx = 6.0; // magnet radius, in track pixels
 
     int m_min = 0;
     int m_max = 100;
@@ -2482,27 +2502,30 @@ void StoryboardPage::createFloatingToolbar()
     auto *flipButton = new QPushButton(sizeBar);
     flipButton->setFocusPolicy(Qt::NoFocus);
     flipButton->setCursor(Qt::PointingHandCursor);
-    flipButton->setFixedSize(20, 20);
+    // Exact Figma 209:42 / 213:75: 30x30 button, radius 6, 21.6x17.55 vector.
+    flipButton->setFixedSize(30, 30);
     flipButton->setCheckable(true); // Flip is a toggle with an active state
     flipButton->setChecked(m_canvas->viewFlipH());
     flipButton->setIcon(QIcon(figIconPixmap(
-        QStringLiteral(":/icons/flip.svg"), QSizeF(19.2, 15.6))));
-    flipButton->setIconSize(QSize(19, 16));
+        QStringLiteral(":/icons/flip.svg"), QSizeF(21.6, 17.55))));
+    flipButton->setIconSize(QSize(22, 18));
     flipButton->setToolTip(QStringLiteral("Flip"));
     flipButton->setStyleSheet(QStringLiteral(
-        "QPushButton { background:transparent; border:none; border-radius:4px; }"
+        "QPushButton { background:transparent; border:none; border-radius:6px; }"
         "QPushButton:hover { background:#2e2e2e; }"
         "QPushButton:checked { background:#7c6ef6; }"));
     auto *opacitySlider = new SizeCtlSlider(5, 100, 100, sizeBar);
     opacitySlider->setToolTip(QStringLiteral("Brush opacity"));
 
-    // Exact Figma column: py25, gap 31 (slider 220, icon ~19), shifted by the
-    // bar's x when the grab sits on the left (right-edge layout).
+    // Exact Figma column (209:42 metadata, rotated-frame origins decoded):
+    // size slider at (10.5, 25), Flip 30x30 at (8, 276), opacity slider at
+    // (10.5, 337); shifted by the bar's x when the grab sits on the left
+    // (right-edge layout).
     auto placeSizeCtl = [sizeBar, sizeSlider, flipButton, opacitySlider] {
         const int bx = sizeBar->barX();
         sizeSlider->move(bx + 10, 25);
-        flipButton->move(bx + 13, 276);
-        opacitySlider->move(bx + 10, 326);
+        flipButton->move(bx + 8, 276);
+        opacitySlider->move(bx + 10, 337);
     };
     placeSizeCtl();
     sizeBar->onSideChanged = placeSizeCtl;
@@ -2633,6 +2656,7 @@ void StoryboardPage::createFloatingToolbar()
             [this] { m_canvas->toggleFlipH(); });
     m_setSizeCtl = [sizeSlider](int v) { sizeSlider->setValue(v); };
     m_setOpacityCtl = [opacitySlider](int v) { opacitySlider->setValue(v); };
+
 
     sizeBar->show(); // records intent; effective when the canvas shows
 }
