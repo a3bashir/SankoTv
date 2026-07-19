@@ -302,7 +302,8 @@ private:
     // Layer panel.
     QVBoxLayout *m_layerListLayout = nullptr;
     QVector<QWidget *> m_layerRows;
-    SankoSlider *m_layerOpacity = nullptr; // custom glowing opacity slider
+    std::function<void(int)> m_syncLayerOpacity; // <0 disables; else sets %
+    SankoSlider *m_layerOpacity = nullptr; // (unused; kept for ABI stability)
                                            // (paints its own "NN%" label)
     QPushButton *m_layerDeleteButton = nullptr;
     QPushButton *m_layerMergeButton = nullptr;

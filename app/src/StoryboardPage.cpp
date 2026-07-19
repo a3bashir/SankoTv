@@ -1482,15 +1482,17 @@ public:
                     const QString &tip, QWidget *parent)
         : QPushButton(parent)
     {
-        setFixedSize(26, 21);
+        setFixedSize(22, 18); // Figma footer button frame
         setCursor(Qt::PointingHandCursor);
         setFocusPolicy(Qt::NoFocus);
         setToolTip(tip);
         setIcon(QIcon(layerIconPm(svgPath, iconSize)));
         setIconSize(iconSize.toSize());
+        // Figma shows only the default (flat) footer button; hover/pressed
+        // are not defined there, so a minimal rounded highlight is used.
         setStyleSheet(QStringLiteral(
             "QPushButton { background: transparent; border: none;"
-            " border-radius: 4px; }"
+            " border-radius: 4px; padding: 0; }"
             "QPushButton:hover { background: #262626; }"
             "QPushButton:pressed { background: #2e2e2e; }"
             "QPushButton:disabled { background: transparent; }"));
@@ -1516,6 +1518,86 @@ protected:
             onDropLayers();
         event->acceptProposedAction();
     }
+};
+
+// Figma 7:92 Opacity control: a 6px #333 track (radius 1) with a
+// left-anchored purple gradient fill (269.99deg #4B4397 -> #7C6EF6 plus a top
+// white sheen) and a flat 20x6 #B3B3B3 dragger (radius 1) at the fill's
+// leading edge. The "NN%" value is a SEPARATE row label (Figma 7:96), not
+// painted here. The track expands to fill the row width (Figma is a fixed
+// 166px inside the fixed 280px dock; the dock here is resizable).
+class LayerOpacitySlider : public QWidget
+{
+public:
+    explicit LayerOpacitySlider(QWidget *parent = nullptr) : QWidget(parent)
+    {
+        setFixedHeight(24); // Figma Opacity row height (also the hit area)
+        setMinimumWidth(60);
+        setCursor(Qt::PointingHandCursor);
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    }
+
+    std::function<void(int)> onChanged;
+    int value() const { return m_value; }
+    void setValueSilent(int v)
+    {
+        v = qBound(0, v, 100);
+        if (v != m_value) {
+            m_value = v;
+            update();
+        }
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        const qreal trackW = width();
+        const QRectF track(0, (height() - 6) / 2.0, trackW, 6);
+        QPainterPath tp;
+        tp.addRoundedRect(track, 1, 1);
+        p.fillPath(tp, QColor(0x33, 0x33, 0x33));
+
+        const qreal fillW = m_value / 100.0 * trackW;
+        if (fillW > 0.5) {
+            const QRectF fill(track.left(), track.top(), fillW, track.height());
+            QPainterPath fp;
+            fp.addRoundedRect(fill, 1, 1);
+            QLinearGradient g(fill.left(), 0, fill.right(), 0);
+            g.setColorAt(0.0, QColor(0x4b, 0x43, 0x97));
+            g.setColorAt(1.0, QColor(0x7c, 0x6e, 0xf6));
+            p.fillPath(fp, g);
+            QLinearGradient sheen(0, fill.top(), 0, fill.bottom());
+            sheen.setColorAt(0.0, QColor(255, 255, 255, 26)); // 0.1 alpha
+            sheen.setColorAt(1.0, QColor(255, 255, 255, 0));
+            p.fillPath(fp, sheen);
+        }
+        // 20x6 dragger at the fill's leading edge (Figma 16:112).
+        const qreal dragLeft = qBound(0.0, fillW - 18.0, trackW - 20.0);
+        QPainterPath dp;
+        dp.addRoundedRect(QRectF(dragLeft, track.top(), 20, 6), 1, 1);
+        p.fillPath(dp, QColor(0xb3, 0xb3, 0xb3));
+    }
+    void mousePressEvent(QMouseEvent *e) override { setFromX(e->position().x()); }
+    void mouseMoveEvent(QMouseEvent *e) override
+    {
+        if (e->buttons() & Qt::LeftButton)
+            setFromX(e->position().x());
+    }
+
+private:
+    void setFromX(qreal x)
+    {
+        const int v = qBound(0, qRound(x / qMax<qreal>(1, width()) * 100.0), 100);
+        if (v == m_value)
+            return;
+        m_value = v;
+        update();
+        if (onChanged)
+            onChanged(v);
+    }
+    int m_value = 100;
 };
 
 // --- App-wide undo commands for the panel list --------------------------------
@@ -1845,6 +1927,7 @@ StoryboardPage::StoryboardPage(QWidget *parent)
     // (Ctrl+Z / Ctrl+Y live on the Edit menu's Undo/Redo actions in MainWindow,
     // routed here via editUndo()/editRedo() — a page-level QShortcut would make
     // the sequence ambiguous and silently break both.)
+
 
 
 
@@ -4496,9 +4579,8 @@ QWidget *StoryboardPage::createLayerPanel()
 {
     QWidget *column = new QWidget;
     column->setAttribute(Qt::WA_StyledBackground, true);
-    column->setMinimumWidth(170); // dock-resizable
-    column->setStyleSheet(QStringLiteral(
-        "background-color: #111111; border-left: 1px solid #1f1f1f;"));
+    column->setMinimumWidth(170); // dock-resizable (Figma is a fixed 280)
+    column->setStyleSheet(QStringLiteral("background-color: #111111;"));
 
     // Figma 7-70: LayerList (opacity row + rows, p8 gap6) over the footer
     // toolbar strip. The dock's own title bar plays the Figma TitleBar.
@@ -4509,27 +4591,34 @@ QWidget *StoryboardPage::createLayerPanel()
     QWidget *body = new QWidget;
     body->setStyleSheet(QStringLiteral("background: transparent; border: none;"));
     QVBoxLayout *bodyLayout = new QVBoxLayout(body);
-    bodyLayout->setContentsMargins(8, 8, 8, 8);
-    bodyLayout->setSpacing(6);
+    bodyLayout->setContentsMargins(8, 8, 8, 8); // Figma LayerList padding 8
+    bodyLayout->setSpacing(6);                   // Figma LayerList gap 6
     layout->addWidget(body, 1);
 
-    // Opacity of the ACTIVE layer.
+    // Opacity row (Figma 7:92, 24px tall, gap 14): label | track | value.
     QHBoxLayout *opacityRow = new QHBoxLayout;
-    opacityRow->setSpacing(6);
+    opacityRow->setContentsMargins(0, 0, 0, 0);
+    opacityRow->setSpacing(0);
     QLabel *opacityLabel = new QLabel(QStringLiteral("Opacity"));
-    opacityLabel->setStyleSheet(QStringLiteral("color: #999999; font-size: 10px; border: none;"));
+    opacityLabel->setStyleSheet(QStringLiteral(
+        "color: #999999; font-family: 'Inter'; font-size: 10px; border: none;"
+        " background: transparent;"));
     opacityRow->addWidget(opacityLabel);
-    opacityRow->addStretch(1);
+    opacityRow->addSpacing(14); // Figma gap 14
+
+    LayerOpacitySlider *slider = new LayerOpacitySlider;
+    opacityRow->addWidget(slider, 1);
+    opacityRow->addSpacing(14); // Figma gap 14
+
+    QLabel *opacityValue = new QLabel(QStringLiteral("100%"));
+    opacityValue->setStyleSheet(QStringLiteral(
+        "color: #cccccc; font-family: 'Inter'; font-size: 10px; border: none;"
+        " background: transparent;"));
+    opacityRow->addWidget(opacityValue);
     bodyLayout->addLayout(opacityRow);
 
-    // Custom glowing slider, opacity preset (0-100, paints its own "NN%").
-    m_layerOpacity = new SankoSlider;
-    m_layerOpacity->setTrackHeight(10);
-    m_layerOpacity->setHandleSize(13);
-    m_layerOpacity->setRange(0, 100);
-    m_layerOpacity->setValueSuffix(QStringLiteral("%"));
-    m_layerOpacity->setValue(100);
-    connect(m_layerOpacity, &SankoSlider::valueChanged, this, [this](int v) {
+    slider->onChanged = [this, opacityValue](int v) {
+        opacityValue->setText(QString::number(v) + QLatin1Char('%'));
         if (m_updatingLayerUi)
             return;
         Panel *panel = currentPanel();
@@ -4538,8 +4627,17 @@ QWidget *StoryboardPage::createLayerPanel()
             return;
         layer->opacity = v / 100.0;
         refreshLayerCanvas(); // live: canvas composite + panel thumbnail
-    });
-    bodyLayout->addWidget(m_layerOpacity);
+    };
+    // rebuildLayerPanel() syncs the active layer's opacity through here
+    // (pct < 0 => no active layer => disabled).
+    m_syncLayerOpacity = [slider, opacityValue](int pct) {
+        const bool enabled = pct >= 0;
+        const int shown = enabled ? pct : 100;
+        slider->setEnabled(enabled);
+        opacityValue->setEnabled(enabled);
+        slider->setValueSilent(shown);
+        opacityValue->setText(QString::number(shown) + QLatin1Char('%'));
+    };
 
     // Layer rows (top = frontmost), scrollable; the host accepts row drags
     // and paints the accent insertion line at the drop gap.
@@ -4573,9 +4671,9 @@ QWidget *StoryboardPage::createLayerPanel()
     footer->setStyleSheet(QStringLiteral(
         "background-color: #161616; border: none; border-top: 1px solid #2a2a2a;"));
     QHBoxLayout *footerLayout = new QHBoxLayout(footer);
-    footerLayout->setContentsMargins(8, 2, 8, 2);
-    footerLayout->setSpacing(4);
-    footerLayout->addStretch(1);
+    footerLayout->setContentsMargins(12, 0, 12, 0); // Figma px 12
+    footerLayout->setSpacing(4);                     // Figma gap 4
+    footerLayout->addStretch(1);                     // Figma justify-end
 
     const QSizeF iconSize(22, 18);
     LayerToolButton *deleteButton = new LayerToolButton(
@@ -4687,10 +4785,8 @@ void StoryboardPage::rebuildLayerPanel()
     m_updatingLayerUi = true;
     const Layer *active = hasPanel ? panel->activeLayer() : nullptr;
     const int pct = active ? qRound(qBound(0.0, active->opacity, 1.0) * 100.0) : 100;
-    if (m_layerOpacity) {
-        m_layerOpacity->setEnabled(active != nullptr);
-        m_layerOpacity->setValue(pct); // slider paints its own "NN%" label
-    }
+    if (m_syncLayerOpacity)
+        m_syncLayerOpacity(active ? pct : -1); // <0 => disabled
     m_updatingLayerUi = false;
 
     const QVector<int> sel = selectedLayers();
@@ -4710,37 +4806,36 @@ void StoryboardPage::rebuildLayerPanel()
         const bool isActive = (i == panel->activeLayerIndex);
         const bool isSelected = m_layerSelection.contains(i);
 
+        Q_UNUSED(isActive);
         LayerRowFrame *row = new LayerRowFrame(i, nullptr);
         row->selected = isSelected;
-        QString style = isSelected
+        // Figma layerRow: default bg #161616 / border #232323; selected
+        // bg #1b1b1b / border #f5a623 (Figma 7:86). Radius 4.
+        row->setStyleSheet(isSelected
             ? QStringLiteral("QFrame#layerRow { background-color: #1b1b1b;"
                              " border: 1px solid #f5a623; border-radius: 4px; }")
             : QStringLiteral("QFrame#layerRow { background-color: #161616;"
-                             " border: 1px solid #232323; border-radius: 4px; }");
-        // Colour tag (or the active marker) as a thicker left edge stripe.
-        if (!layer.colorTag.isEmpty() || isActive)
-            style += QStringLiteral(
-                "QFrame#layerRow { border-left: 3px solid %1; }")
-                .arg(!layer.colorTag.isEmpty() ? layer.colorTag
-                                               : QStringLiteral("#f5a623"));
-        row->setStyleSheet(style);
+                             " border: 1px solid #232323; border-radius: 4px; }"));
 
         QHBoxLayout *rowLayout = new QHBoxLayout(row);
-        rowLayout->setContentsMargins(6, 2, 7, 2);
-        rowLayout->setSpacing(6);
+        // Figma pl 6 / pr 7, but the row's own 1px border sits inside the
+        // frame, so the layout margins are reduced by 1px each side to land
+        // the children at the exact Figma x-offsets (eye 6, thumb 25, ...).
+        rowLayout->setContentsMargins(5, 0, 6, 0);
+        rowLayout->setSpacing(6); // Figma gap 6
 
-        // Visibility (eye) toggle — Figma eye icon, faded when hidden.
+        // Visibility (eye) toggle — Figma eye 13x13 (7:74 eye), native #CCC.
         QPushButton *eye = new QPushButton;
         eye->setToolTip(QStringLiteral("Show / hide layer"));
         eye->setCursor(Qt::PointingHandCursor);
         eye->setFocusPolicy(Qt::NoFocus);
-        eye->setFixedSize(17, 17);
+        eye->setFixedSize(13, 13);
         eye->setIcon(QIcon(layerIconPm(QStringLiteral(":/icons/layer_eye.svg"),
-                                       QSizeF(13, 13), QColor(0xcc, 0xcc, 0xcc),
+                                       QSizeF(13, 13), QColor(),
                                        layer.visible ? 1.0 : 0.3)));
         eye->setIconSize(QSize(13, 13));
         eye->setStyleSheet(QStringLiteral(
-            "QPushButton { background: transparent; border: none; }"));
+            "QPushButton { background: transparent; border: none; padding: 0; }"));
         connect(eye, &QPushButton::clicked, this, [this, i] {
             Panel *p = currentPanel();
             if (!p || i < 0 || i >= p->layers.size())
@@ -4749,48 +4844,40 @@ void StoryboardPage::rebuildLayerPanel()
             refreshLayerCanvas();
             rebuildLayerPanel();
         });
-        rowLayout->addWidget(eye);
+        rowLayout->addWidget(eye, 0, Qt::AlignVCenter);
 
-        // Layer thumbnail (Figma th, 40x22).
+        // Layer thumbnail (Figma th 40x22, bg #1A1A1A / border #2A2A2A / r2).
         QLabel *thumb = new QLabel;
         thumb->setFixedSize(40, 22);
         thumb->setStyleSheet(QStringLiteral(
             "background-color: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 2px;"));
         thumb->setPixmap(layerThumb(layer));
-        rowLayout->addWidget(thumb);
+        rowLayout->addWidget(thumb, 0, Qt::AlignVCenter);
 
-        // Name (double-click the row to rename inline).
+        // Name (Figma 7:77, Inter Regular 11px #CCC). Double-click to rename.
         QLabel *name = new QLabel(layer.name);
         name->setObjectName(QStringLiteral("layerName"));
         name->setStyleSheet(QStringLiteral(
-            "color: %1; font-size: 11px; border: none; background: transparent;")
+            "color: %1; font-family: 'Inter'; font-size: 11px; border: none;"
+            " background: transparent;")
             .arg(layer.visible ? QStringLiteral("#cccccc") : QStringLiteral("#666666")));
-        rowLayout->addWidget(name, 1);
+        rowLayout->addWidget(name, 0, Qt::AlignVCenter);
+        rowLayout->addStretch(1); // Figma 'sp' spacer
 
-        // Shared-layer badge: this layer's pixels live in other panels too.
-        if (!layer.sharedId.isEmpty()) {
-            QLabel *shared = new QLabel;
-            shared->setToolTip(QStringLiteral("Shared layer — reused in other panels"));
-            shared->setPixmap(layerIconPm(QStringLiteral(":/icons/layer_link.svg"),
-                                          QSizeF(15, 12), QColor(0x7c, 0x6e, 0xf6)));
-            shared->setStyleSheet(QStringLiteral("border: none; background: transparent;"));
-            rowLayout->addWidget(shared);
-        }
-
-        // Lock toggle — Figma padlock, amber when locked.
+        // Lock toggle — Figma Lock Layer 7x8 (7:74 lock), native colour.
         QPushButton *lock = new QPushButton;
         lock->setToolTip(QStringLiteral("Lock / unlock layer"));
         lock->setCursor(Qt::PointingHandCursor);
         lock->setFocusPolicy(Qt::NoFocus);
-        lock->setFixedSize(15, 17);
+        lock->setFixedSize(7, 8);
         lock->setIcon(QIcon(layerIconPm(QStringLiteral(":/icons/layer_lock.svg"),
-                                        QSizeF(9, 10),
+                                        QSizeF(7, 8),
                                         layer.locked ? QColor(0xf5, 0xa6, 0x23)
-                                                     : QColor(0xcc, 0xcc, 0xcc),
-                                        layer.locked ? 1.0 : 0.3)));
-        lock->setIconSize(QSize(9, 10));
+                                                     : QColor(),
+                                        layer.locked ? 1.0 : 0.55)));
+        lock->setIconSize(QSize(7, 8));
         lock->setStyleSheet(QStringLiteral(
-            "QPushButton { background: transparent; border: none; }"));
+            "QPushButton { background: transparent; border: none; padding: 0; }"));
         connect(lock, &QPushButton::clicked, this, [this, i] {
             Panel *p = currentPanel();
             if (!p || i < 0 || i >= p->layers.size())
@@ -4798,7 +4885,7 @@ void StoryboardPage::rebuildLayerPanel()
             p->layers[i].locked = !p->layers[i].locked;
             rebuildLayerPanel();
         });
-        rowLayout->addWidget(lock);
+        rowLayout->addWidget(lock, 0, Qt::AlignVCenter);
 
         row->onPressed = [this](int idx, Qt::KeyboardModifiers mods) {
             layerRowClicked(idx, mods);
