@@ -9,6 +9,7 @@
 #include <QColor>
 #include <QElapsedTimer>
 #include <QCursor>
+#include <QHash>
 #include <QImage>
 #include <QPainterPath>
 #include <QPixmap>
@@ -288,7 +289,17 @@ private:
     void beginBrushStroke(const QPointF &canvasPt, qreal pressure);
     void moveBrushStroke(const QPointF &canvasPt, qreal pressure);
     void endBrushStroke(const QString &undoText = QStringLiteral("Brush Stroke"));
-    void stampDab(const QPointF &center, qreal pressure);
+    // Single dab (opens its own painter); returns the dab's canvas bounds.
+    QRectF stampDab(const QPointF &center, qreal pressure);
+    // Batch variant: many dabs through ONE painter per input event.
+    QRectF stampDabWith(QPainter &painter, const QPointF &center, qreal pressure);
+    // The premultiplied stamp image for the current brush parameters —
+    // rendered once per (radius, alpha, hardness, colour) and reused for
+    // every dab along the stroke (the large-brush hot path).
+    QImage cachedDab(qreal radius, qreal alpha);
+    QImage *dabDevice(); // preview scratch / stroke scratch / active layer
+    // Repaint only the widget region covering the given canvas-space bounds.
+    void updateBrushRegion(const QRectF &canvasBounds);
 
     Panel *m_panel = nullptr;
     Tool m_tool = Brush;
@@ -474,6 +485,7 @@ private:
     QPointF m_lastBrushPt;           // canvas coords, float
     qreal m_lastBrushPressure = 1.0;
     double m_stampResidual = 0.0;    // distance travelled since the last dab
+    QHash<quint64, QImage> m_dabCache; // brush stamp cache (see cachedDab)
 
     bool m_onionSkin = false;
     QPixmap m_ghost;         // precomputed blue-tinted ghost (display only)

@@ -276,6 +276,7 @@ DrawingCanvas::DrawingCanvas(QWidget *parent)
                 QCursor(pm.transformed(rot, Qt::SmoothTransformation), 13, 13);
         }
     }
+
 }
 
 namespace {
@@ -1158,6 +1159,11 @@ void DrawingCanvas::drawSegment(const QPoint &from, const QPoint &to, const QCol
     // draw nothing: stamp an explicit round dot instead (tap-to-erase).
     const bool dot = from == to;
     const qreal dotR = penWidth() / 2.0;
+    // Only the touched segment repaints (large erasers made full-widget
+    // repaints per event lag, same as the brush).
+    const qreal pad = dotR + 2.0;
+    const QRectF segBounds = QRectF(QPointF(from), QPointF(to)).normalized()
+                                 .adjusted(-pad, -pad, pad, pad);
     if (m_strokeMask == StrokeMaskErase) {
         // Selection active: the erase stroke accumulates UNMASKED coverage in
         // the scratch (white alpha); the cached mask caps it once — in the
@@ -1178,7 +1184,7 @@ void DrawingCanvas::drawSegment(const QPoint &from, const QPoint &to, const QCol
             sp.drawLine(from, to);
         }
         sp.end();
-        update();
+        updateBrushRegion(segBounds);
         return;
     }
     QPainter painter(&layer->image);
@@ -1196,7 +1202,7 @@ void DrawingCanvas::drawSegment(const QPoint &from, const QPoint &to, const QCol
         painter.drawLine(from, to);
     }
     painter.end();
-    update();
+    updateBrushRegion(segBounds);
 }
 
 // Draw the current in-progress shape in CANVAS coordinates. The preview
@@ -2697,14 +2703,82 @@ void DrawingCanvas::floodFill(const QPoint &seed)
 
 // --- Brush engine (stamp-based, pressure-aware) -----------------------------
 
-// One radial-gradient dab: solid colour core out to `hardness` of the radius,
-// then a falloff to fully transparent at the edge. Composited SourceOver.
-void DrawingCanvas::stampDab(const QPointF &center, qreal pressure)
+// The dab destination for the current pipeline stage: the QuickShape preview
+// scratch, the selection-clipped stroke scratch, or the active layer. Null
+// when the active layer is locked / hidden / missing (no dabs land anywhere).
+QImage *DrawingCanvas::dabDevice()
 {
     Layer *layer = editableActiveLayer();
     if (!layer)
-        return;
+        return nullptr;
+    if (m_dabTarget)
+        return m_dabTarget; // QuickShape preview: the layer is never touched
+    if (m_strokeMask == StrokeMaskPaint)
+        return &m_strokeBuf; // selection active: unmasked stroke scratch
+    return &layer->image;
+}
 
+// One radial-gradient dab image: solid colour core out to `hardness` of the
+// radius, then a falloff to fully transparent at the edge. Rendered ONCE per
+// (radius, alpha, hardness, colour) and cached — stamping then blits this
+// image instead of re-rasterizing the gradient for every dab, which is what
+// made large brushes lag. The radius is quantized to 1/4 px so smooth
+// pressure curves hit the cache instead of thrashing it (≤0.125px error,
+// far below visibility; hardness/falloff math is evaluated per bucket, so
+// the "outer ~1.5px feathered rim" rule holds at every dab size exactly as
+// before).
+QImage DrawingCanvas::cachedDab(qreal radius, qreal alpha)
+{
+    const int rQ = qMax(2, qRound(radius * 4.0)); // quarter-px buckets
+    const qreal r = rQ / 4.0;
+    const int aQ = qBound(0, qRound(alpha * 1023.0), 1023);
+
+    // Hardness remap (identical to the original per-dab math): the falloff
+    // always occupies at least the outer ~1.5px, so even the hardest brush
+    // keeps an anti-aliased rim and dense dabs fuse into one smooth edge.
+    const qreal maxCore = qMax<qreal>(0.0, (r - 1.5) / r);
+    const qreal coreStop = qBound<qreal>(0.0, m_brushHardness * maxCore, 0.995);
+    const int cQ = qRound(coreStop * 1000.0);
+
+    const quint64 key = (quint64(rQ) << 44) | (quint64(aQ) << 34)
+        | (quint64(cQ) << 24) | quint64(m_color.rgb() & 0xFFFFFF);
+    const auto it = m_dabCache.constFind(key);
+    if (it != m_dabCache.constEnd())
+        return it.value();
+    if (m_dabCache.size() > 128)
+        m_dabCache.clear(); // tiny cache; parameters rarely churn mid-stroke
+
+    QColor core = m_color;
+    core.setAlphaF(aQ / 1023.0);
+    QColor edge = m_color;
+    edge.setAlphaF(0.0);
+
+    const int side = int(std::ceil(r * 2.0)) + 2; // 1px AA margin each side
+    QImage dab(side, side, QImage::Format_ARGB32_Premultiplied);
+    dab.fill(Qt::transparent);
+    const QPointF c(side / 2.0, side / 2.0);
+    QRadialGradient gradient(c, r);
+    gradient.setColorAt(0.0, core);
+    if (coreStop > 0.0)
+        gradient.setColorAt(coreStop, core); // solid core ends here
+    gradient.setColorAt(1.0, edge);          // guaranteed feathered rim
+    QPainter p(&dab);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    p.setPen(Qt::NoPen);
+    p.setBrush(gradient);
+    p.drawEllipse(c, r, r);
+    p.end();
+
+    m_dabCache.insert(key, dab);
+    return dab;
+}
+
+// Composite one dab through an already-open painter (SourceOver blit of the
+// cached stamp; SmoothPixmapTransform gives sub-pixel placement). Returns the
+// dab's canvas-space bounds for dirty-region repaints.
+QRectF DrawingCanvas::stampDabWith(QPainter &painter, const QPointF &center,
+                                   qreal pressure)
+{
     pressure = qBound<qreal>(0.0, pressure, 1.0);
     const qreal alphaFactor = m_pressureToOpacity ? pressure : 1.0;
 
@@ -2718,54 +2792,37 @@ void DrawingCanvas::stampDab(const QPointF &center, qreal pressure)
         : qMax<qreal>(0.5, baseRadius);
     const qreal alpha = qBound(0.0, m_brushToolOpacity * alphaFactor, 1.0);
     if (alpha <= 0.0)
-        return;
+        return QRectF();
 
-    QColor core = m_color;
-    core.setAlphaF(alpha);
-    QColor edge = m_color;
-    edge.setAlphaF(0.0);
+    const QImage dab = cachedDab(radius, alpha);
+    const qreal half = dab.width() / 2.0;
+    const QPointF topLeft(center.x() - half, center.y() - half);
+    painter.drawImage(topLeft, dab);
+    return QRectF(topLeft, QSizeF(dab.width(), dab.height()));
+}
 
-    // Hardness is remapped so the transparent falloff always occupies at least
-    // the outer ~1.5px of the radius: hardness 1.0 starts the falloff at
-    // (radius - 1.5px), hardness 0.0 near the centre. Even the hardest brush
-    // keeps an anti-aliased rim, so densely spaced dabs fuse into one smooth
-    // edge instead of beading into visible stamp outlines.
-    const qreal maxCore = qMax<qreal>(0.0, (radius - 1.5) / radius);
-    const qreal coreStop = qBound<qreal>(0.0, m_brushHardness * maxCore, 0.995);
-
-    QRadialGradient gradient(center, radius);
-    gradient.setColorAt(0.0, core);
-    if (coreStop > 0.0)
-        gradient.setColorAt(coreStop, core); // solid core ends here
-    gradient.setColorAt(1.0, edge);          // guaranteed feathered rim
-
-    if (m_dabTarget) {
-        // QuickShape preview render: the SAME dab, into the preview scratch —
-        // the layer is never touched by preview passes.
-        QPainter painter(m_dabTarget);
-        painter.setRenderHint(QPainter::Antialiasing, true);
-        painter.setPen(Qt::NoPen);
-        painter.setBrush(gradient);
-        painter.drawEllipse(center, radius, radius);
-        return;
-    }
-    if (m_strokeMask == StrokeMaskPaint) {
-        // Selection active: the dab lands in the stroke scratch, UNMASKED —
-        // the cached mask multiplies the whole stroke once (see paintEvent
-        // for the live preview and endBrushStroke for the bake), so the soft
-        // boundary can never saturate from overlapping dabs.
-        QPainter painter(&m_strokeBuf);
-        painter.setRenderHint(QPainter::Antialiasing, true);
-        painter.setPen(Qt::NoPen);
-        painter.setBrush(gradient);
-        painter.drawEllipse(center, radius, radius);
-        return;
-    }
-    QPainter painter(&layer->image);
+// Single-dab convenience (press dot, QuickShape regeneration loops).
+QRectF DrawingCanvas::stampDab(const QPointF &center, qreal pressure)
+{
+    QImage *dev = dabDevice();
+    if (!dev)
+        return QRectF();
+    QPainter painter(dev);
     painter.setRenderHint(QPainter::Antialiasing, true);
-    painter.setPen(Qt::NoPen);
-    painter.setBrush(gradient);
-    painter.drawEllipse(center, radius, radius);
+    painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
+    return stampDabWith(painter, center, pressure);
+}
+
+// Repaint only the widget region the stroke actually touched (padded for AA
+// and sub-pixel filtering) instead of the whole widget — with a large brush
+// the full-widget repaint per input event was a major part of the lag.
+void DrawingCanvas::updateBrushRegion(const QRectF &canvasBounds)
+{
+    if (canvasBounds.isNull())
+        return;
+    const QRectF padded = canvasBounds.adjusted(-2, -2, 2, 2);
+    update(viewTransform().mapRect(padded).toAlignedRect()
+               .adjusted(-3, -3, 3, 3));
 }
 
 void DrawingCanvas::beginBrushStroke(const QPointF &canvasPt, qreal pressure)
@@ -2781,8 +2838,7 @@ void DrawingCanvas::beginBrushStroke(const QPointF &canvasPt, qreal pressure)
     m_lastBrushPt = canvasPt;
     m_lastBrushPressure = pressure;
     m_stampResidual = 0.0;
-    stampDab(canvasPt, pressure); // dab on the initial press
-    update();
+    updateBrushRegion(stampDab(canvasPt, pressure)); // dab on the initial press
 }
 
 void DrawingCanvas::moveBrushStroke(const QPointF &canvasPt, qreal pressure)
@@ -2812,20 +2868,34 @@ void DrawingCanvas::moveBrushStroke(const QPointF &canvasPt, qreal pressure)
     }
     const QPointF dir = delta / dist;
 
+    // All of this event's dabs composite through ONE painter (no per-dab
+    // QPainter begin/end), and only the region they touched repaints. When
+    // the event advances less than one stamp step, nothing composites and
+    // nothing repaints — the residual carries the distance forward, so dab
+    // positions/pressures are identical to before (no accuracy loss).
     double since = m_stampResidual; // distance travelled since the last dab
     double consumed = 0.0;
-    while (since + (dist - consumed) >= step) {
-        consumed += step - since;
-        since = 0.0;
-        const qreal t = consumed / dist;
-        const qreal p = m_lastBrushPressure + (pressure - m_lastBrushPressure) * t;
-        stampDab(m_lastBrushPt + dir * consumed, p);
+    QRectF dirty;
+    if (since + dist >= step) {
+        if (QImage *dev = dabDevice()) {
+            QPainter painter(dev);
+            painter.setRenderHint(QPainter::Antialiasing, true);
+            painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
+            while (since + (dist - consumed) >= step) {
+                consumed += step - since;
+                since = 0.0;
+                const qreal t = consumed / dist;
+                const qreal p =
+                    m_lastBrushPressure + (pressure - m_lastBrushPressure) * t;
+                dirty |= stampDabWith(painter, m_lastBrushPt + dir * consumed, p);
+            }
+        }
     }
     m_stampResidual = since + (dist - consumed);
 
     m_lastBrushPt = canvasPt;
     m_lastBrushPressure = pressure;
-    update();
+    updateBrushRegion(dirty);
 }
 
 void DrawingCanvas::endBrushStroke(const QString &undoText)
@@ -3547,7 +3617,7 @@ bool DrawingCanvas::eventFilter(QObject *object, QEvent *event)
     return QWidget::eventFilter(object, event);
 }
 
-void DrawingCanvas::paintEvent(QPaintEvent *)
+void DrawingCanvas::paintEvent(QPaintEvent *event)
 {
     QPainter painter(this);
     painter.fillRect(rect(), QColor("#0a0a0a"));
@@ -3563,6 +3633,16 @@ void DrawingCanvas::paintEvent(QPaintEvent *)
     const QRectF canvasR(0, 0, cs.width(), cs.height());
     const QRect canvasRi(0, 0, cs.width(), cs.height());
     const QTransform T = viewTransform(); // canvas -> widget (zoom+pan+rotate+flip)
+    // The update region in CANVAS space (from the paint event — the painter's
+    // clipBoundingRect() reports only user clips, so it is empty in normal
+    // backing-store paints as well as grab()/render() passes). The live
+    // stroke previews compose only this region; the dirty-region updates
+    // keep it a small rect per input event during large-brush strokes.
+    const QRect strokeClipC = T.inverted()
+                                  .mapRect(QRectF(event->rect()))
+                                  .toAlignedRect()
+                                  .adjusted(-2, -2, 2, 2)
+                                  .intersected(canvasRi);
     painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
     painter.setRenderHint(QPainter::Antialiasing, true);
 
@@ -3604,32 +3684,44 @@ void DrawingCanvas::paintEvent(QPaintEvent *)
             // Live erase preview: the active layer minus the capped stroke —
             // exactly what the release will bake. The selection mask applies
             // only when a selection exists; eraser opacity scales the whole
-            // stroke's coverage uniformly.
-            QImage temp = layer.image;
-            QImage cut = m_strokeBuf;
-            QPainter cp(&cut);
-            cp.setCompositionMode(QPainter::CompositionMode_DestinationIn);
-            if (!m_selectionPath.isEmpty())
-                cp.drawImage(0, 0, cachedSelectionMask());
-            if (m_eraserOpacity < 1.0)
-                cp.fillRect(cut.rect(),
-                            QColor(0, 0, 0, qRound(m_eraserOpacity * 255.0)));
-            cp.end();
-            QPainter tp(&temp);
-            tp.setCompositionMode(QPainter::CompositionMode_DestinationOut);
-            tp.drawImage(0, 0, cut);
-            tp.end();
-            painter.drawImage(0, 0, temp);
+            // stroke's coverage uniformly. Composed only over the UPDATE
+            // region (canvas space): the dirty-region updates repaint a
+            // small rect per input event, so the full-canvas copies that made
+            // large strokes lag shrink to the touched area.
+            const QRect region = strokeClipC;
+            if (!region.isEmpty()) {
+                QImage temp = layer.image.copy(region);
+                QImage cut = m_strokeBuf.copy(region);
+                QPainter cp(&cut);
+                cp.setCompositionMode(QPainter::CompositionMode_DestinationIn);
+                if (!m_selectionPath.isEmpty())
+                    cp.drawImage(QPoint(0, 0), cachedSelectionMask(), region);
+                if (m_eraserOpacity < 1.0)
+                    cp.fillRect(cut.rect(),
+                                QColor(0, 0, 0,
+                                       qRound(m_eraserOpacity * 255.0)));
+                cp.end();
+                QPainter tp(&temp);
+                tp.setCompositionMode(QPainter::CompositionMode_DestinationOut);
+                tp.drawImage(0, 0, cut);
+                tp.end();
+                painter.drawImage(region.topLeft(), temp);
+            }
         } else {
             painter.drawImage(0, 0, layer.image);
             if (liveStroke && m_strokeMask == StrokeMaskPaint) {
-                // Live paint preview: the mask-capped stroke over the layer.
-                QImage s = m_strokeBuf;
-                QPainter sp(&s);
-                sp.setCompositionMode(QPainter::CompositionMode_DestinationIn);
-                sp.drawImage(0, 0, cachedSelectionMask());
-                sp.end();
-                painter.drawImage(0, 0, s);
+                // Live paint preview: the mask-capped stroke over the layer,
+                // update-region-bounded like the erase preview above.
+                const QRect region = strokeClipC;
+                if (!region.isEmpty()) {
+                    QImage s = m_strokeBuf.copy(region);
+                    QPainter sp(&s);
+                    sp.setCompositionMode(
+                        QPainter::CompositionMode_DestinationIn);
+                    sp.drawImage(QPoint(0, 0), cachedSelectionMask(), region);
+                    sp.end();
+                    painter.drawImage(region.topLeft(), s);
+                }
             }
         }
     }
