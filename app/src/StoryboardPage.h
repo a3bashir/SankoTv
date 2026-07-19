@@ -134,16 +134,47 @@ private:
     bool restoreDockState();       // true if a saved layout was applied
     void saveDockState();
 
-    // Layer panel (docked, right of the canvas).
+    // Layer panel (docked, right of the canvas; Figma 7-70).
     void rebuildLayerPanel();     // rows from the current panel's layer stack
     void setActiveLayer(int index);
-    void renameLayer(int index);
+    // Photoshop-style selection: plain click = single, Shift = range from
+    // the anchor, Ctrl = toggle. Selection indices live in m_layerSelection;
+    // the ACTIVE layer (drawing target) is panel->activeLayerIndex.
+    void layerRowClicked(int index, Qt::KeyboardModifiers modifiers);
+    QVector<int> selectedLayers() const; // ascending, valid, non-background
     void layerAdd();              // blank raster layer above the active one
     void layerAddImage();         // file dialog -> new image-type layer
-    void layerDelete();           // blocked when only one layer remains
-    void layerMergeDown();        // flatten active into the layer below
-    void layerMove(int delta);    // +1 = toward front (up in the list)
+    void layerDeleteSelected();   // never deletes Background / the last layer
+    void layerDuplicateSelected();
+    void layerMergeSelected();    // multi: into one; single: merge down
+    void layerClearSelected();    // wipe pixels to transparent
+    void layerGroupSelected();    // flatten selection into one "Group" layer
+    void layerSetColorTag(int index);
+    void layerBeginRename(int index); // inline QLineEdit over the name label
+    // Drag-reorder: move the given ascending source indices so the block
+    // starts at insertAt (a gap index in the PRE-move list); relative order
+    // of the moved layers is preserved.
+    void layerMoveTo(const QVector<int> &sources, int insertAt);
     void refreshLayerCanvas();    // repaint canvas + panel thumbnail after a layer change
+
+    void layerContextMenu(int index, const QPoint &globalPos);
+    void startLayerDrag(int index); // QDrag carrying the selected indices
+    // Shared core of Merge and Group: flatten the given ascending indices
+    // into the lowest one (optionally renaming it).
+    void mergeLayerIndices(const QVector<int> &indices, const QString &newName);
+
+    // Reuse-across-panels (shared layers): reference the SAME layer data
+    // from another panel. Instances share pixels via sharedId; edits made
+    // anywhere propagate to every instance (syncSharedLayers), and the
+    // project file stores the image once.
+    void layerReuseInPanel(int index);
+    // Dialog-free core: marks the source shared and appends a referencing
+    // instance to `target`. False when the reference already exists there.
+    bool reuseLayerInPanelCore(int index, Panel *target);
+    void syncSharedLayers(Panel *source);
+    // Reference counting on delete/merge: when only ONE instance of a
+    // sharedId remains anywhere, it stops being shared.
+    void releaseSharedIfLastInstance(const QString &sharedId);
 
     void rebuildSceneList();
     void rebuildPanelStrip();
@@ -276,6 +307,13 @@ private:
     QPushButton *m_layerDeleteButton = nullptr;
     QPushButton *m_layerMergeButton = nullptr;
     bool m_updatingLayerUi = false; // guards the opacity slider feedback loop
+    // Photoshop-style selection state (indices into the current panel's
+    // layer vector) + the Shift-range anchor. Rebuilt rows render selected
+    // state; cleared on panel switches.
+    QSet<int> m_layerSelection;
+    int m_layerAnchor = -1;
+    Panel *m_layerSelPanel = nullptr;   // selection resets on panel switches
+    QWidget *m_layerListHost = nullptr; // drop target for row reordering
 
     // Right column.
     QComboBox *m_shotType = nullptr;

@@ -1,0 +1,6 @@
+<svg width="22" height="18" viewBox="0 0 22 18" fill="none" xmlns="http://www.w3.org/2000/svg">
+<g id="delete layer">
+<rect width="22" height="18" rx="4" fill="#161616"/>
+<path id="delete_icon" d="M5 5.11765H7.2819M7.2819 5.11765H14.7181M7.2819 5.11765C6.85544 5.11765 6.5148 5.45189 6.53255 5.85291L6.875 13.5883C6.875 14.3679 7.54657 15 8.375 15H13.625C14.4535 15 15.125 14.3679 15.125 13.5883L15.4675 5.85291C15.4852 5.45189 15.1446 5.11765 14.7181 5.11765M14.7181 5.11765H17M8.75 3H13.25M9.5 12.1765V7.9412M12.5 12.1765V7.9412" stroke="#CCCCCC" stroke-linecap="round" stroke-linejoin="round"/>
+</g>
+</svg>

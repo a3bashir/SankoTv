@@ -14,7 +14,13 @@
 #include <QMainWindow>
 
 #include <QAction>
+#include <QApplication>
 #include <QButtonGroup>
+#include <QColorDialog>
+#include <QContextMenuEvent>
+#include <QDrag>
+#include <QDropEvent>
+#include <QMimeData>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QCoreApplication>
@@ -1261,6 +1267,257 @@ struct SizeCtlToolState
     SizeCtlTool &active() { return eraserMode ? eraser : brush; }
 };
 
+
+// --- Layers panel widgets (Figma 7-70) ---------------------------------------
+
+// Mime type carried by layer-row drags: comma-separated ascending model
+// indices of the dragged (selected) layers.
+const char *kLayersMime = "application/x-sankotv-layers";
+
+// Renders one of the layer-panel SVG icons at its native proportions into a
+// pixmap of the given LOGICAL size (2x device pixels), optionally tinted
+// (SourceIn) and faded — the panel's states (hidden eye, unlocked padlock)
+// are all one icon at different tint/opacity.
+QPixmap layerIconPm(const QString &svgPath, QSizeF size,
+                    const QColor &tint = QColor(), qreal opacity = 1.0)
+{
+    constexpr qreal dpr = 2.0;
+    QPixmap pm(QSize(int(size.width() * dpr), int(size.height() * dpr)));
+    pm.setDevicePixelRatio(dpr);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    QSvgRenderer renderer(svgPath);
+    renderer.render(&p, QRectF(0, 0, size.width(), size.height()));
+    if (tint.isValid()) {
+        p.setCompositionMode(QPainter::CompositionMode_SourceIn);
+        p.fillRect(QRectF(0, 0, size.width(), size.height()), tint);
+    }
+    p.end();
+    if (opacity >= 1.0)
+        return pm;
+    QPixmap faded(pm.size());
+    faded.setDevicePixelRatio(dpr);
+    faded.fill(Qt::transparent);
+    QPainter fp(&faded);
+    fp.setOpacity(opacity);
+    fp.drawPixmap(0, 0, pm);
+    fp.end();
+    return faded;
+}
+
+// One layer row: Photoshop-style selection on PRESS (immediately for a fresh
+// row or with modifiers; deferred for a press inside the current selection,
+// so a drag keeps the multi-selection and a plain release collapses to the
+// single pressed row), drag-out past QApplication::startDragDistance(),
+// double-click = inline rename, right-click = context menu.
+class LayerRowFrame : public QFrame
+{
+public:
+    LayerRowFrame(int index, QWidget *parent) : QFrame(parent), m_index(index)
+    {
+        setObjectName(QStringLiteral("layerRow"));
+        setFixedHeight(32);
+        setCursor(Qt::PointingHandCursor);
+    }
+
+    std::function<void(int, Qt::KeyboardModifiers)> onPressed;
+    std::function<void(int)> onCollapseToSingle;
+    std::function<void(int)> onDoubleClicked;
+    std::function<void(int, const QPoint &)> onContext;
+    std::function<void(int)> onDragOut;
+    bool selected = false; // set at rebuild; press consults it
+
+protected:
+    void mousePressEvent(QMouseEvent *event) override
+    {
+        if (event->button() == Qt::LeftButton) {
+            m_press = event->globalPosition().toPoint();
+            m_pressActive = true;
+            m_deferCollapse = selected && event->modifiers() == Qt::NoModifier;
+            if (!m_deferCollapse && onPressed)
+                onPressed(m_index, event->modifiers());
+            event->accept();
+            return;
+        }
+        QFrame::mousePressEvent(event);
+    }
+    void mouseMoveEvent(QMouseEvent *event) override
+    {
+        if (m_pressActive && (event->buttons() & Qt::LeftButton)
+            && (event->globalPosition().toPoint() - m_press).manhattanLength()
+                   >= QApplication::startDragDistance()) {
+            m_pressActive = false;
+            if (onDragOut)
+                onDragOut(m_index); // blocking QDrag::exec inside
+            return;
+        }
+        QFrame::mouseMoveEvent(event);
+    }
+    void mouseReleaseEvent(QMouseEvent *event) override
+    {
+        if (event->button() == Qt::LeftButton && m_pressActive) {
+            m_pressActive = false;
+            if (m_deferCollapse && onCollapseToSingle)
+                onCollapseToSingle(m_index);
+        }
+        QFrame::mouseReleaseEvent(event);
+    }
+    void mouseDoubleClickEvent(QMouseEvent *event) override
+    {
+        if (event->button() == Qt::LeftButton && onDoubleClicked) {
+            m_pressActive = false;
+            onDoubleClicked(m_index);
+            event->accept();
+            return;
+        }
+        QFrame::mouseDoubleClickEvent(event);
+    }
+    void contextMenuEvent(QContextMenuEvent *event) override
+    {
+        if (onContext)
+            onContext(m_index, event->globalPos());
+        event->accept();
+    }
+
+private:
+    int m_index;
+    QPoint m_press;
+    bool m_pressActive = false;
+    bool m_deferCollapse = false;
+};
+
+// The layer-list container: accepts row drags and paints a thin accent
+// insertion line in the gap the drop would land in. Gaps are derived from
+// the child rows' live geometry (0 = above the top row).
+class LayerListHost : public QWidget
+{
+public:
+    explicit LayerListHost(QWidget *parent = nullptr) : QWidget(parent)
+    {
+        setAcceptDrops(true);
+    }
+    std::function<void(int)> onDropAtGap; // VISUAL gap index
+
+protected:
+    void dragEnterEvent(QDragEnterEvent *event) override
+    {
+        if (event->mimeData()->hasFormat(QString::fromLatin1(kLayersMime))) {
+            m_gap = gapAt(event->position().toPoint());
+            update();
+            event->acceptProposedAction();
+        }
+    }
+    void dragMoveEvent(QDragMoveEvent *event) override
+    {
+        m_gap = gapAt(event->position().toPoint());
+        update();
+        event->acceptProposedAction();
+    }
+    void dragLeaveEvent(QDragLeaveEvent *) override
+    {
+        m_gap = -1;
+        update();
+    }
+    void dropEvent(QDropEvent *event) override
+    {
+        const int gap = m_gap;
+        m_gap = -1;
+        update();
+        if (gap >= 0 && onDropAtGap)
+            onDropAtGap(gap);
+        event->acceptProposedAction();
+    }
+    void paintEvent(QPaintEvent *event) override
+    {
+        QWidget::paintEvent(event);
+        if (m_gap < 0)
+            return;
+        const QVector<QWidget *> r = rows();
+        if (r.isEmpty())
+            return;
+        int y = 0;
+        if (m_gap <= 0)
+            y = qMax(1, r.first()->y() - 2);
+        else if (m_gap >= r.size())
+            y = r.last()->geometry().bottom() + 3;
+        else
+            y = (r.at(m_gap - 1)->geometry().bottom() + r.at(m_gap)->y()) / 2;
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setPen(QPen(QColor(0x7c, 0x6e, 0xf6), 2, Qt::SolidLine, Qt::RoundCap));
+        p.drawLine(4, y, width() - 4, y);
+    }
+
+private:
+    QVector<QWidget *> rows() const
+    {
+        // Direct children in visual (top -> bottom) order.
+        QVector<QWidget *> out;
+        for (QObject *child : children())
+            if (auto *w = qobject_cast<QFrame *>(child))
+                if (w->objectName() == QLatin1String("layerRow") && w->isVisible())
+                    out.append(w);
+        std::sort(out.begin(), out.end(),
+                  [](QWidget *a, QWidget *b) { return a->y() < b->y(); });
+        return out;
+    }
+    int gapAt(const QPoint &pos) const
+    {
+        const QVector<QWidget *> r = rows();
+        for (int i = 0; i < r.size(); ++i)
+            if (pos.y() < r.at(i)->geometry().center().y())
+                return i;
+        return r.size();
+    }
+    int m_gap = -1;
+};
+
+// Footer icon button (Figma Layers Footer Toolbar). Delete and Duplicate
+// double as DROP TARGETS for layer-row drags.
+class LayerToolButton : public QPushButton
+{
+public:
+    LayerToolButton(const QString &svgPath, QSizeF iconSize,
+                    const QString &tip, QWidget *parent)
+        : QPushButton(parent)
+    {
+        setFixedSize(26, 21);
+        setCursor(Qt::PointingHandCursor);
+        setFocusPolicy(Qt::NoFocus);
+        setToolTip(tip);
+        setIcon(QIcon(layerIconPm(svgPath, iconSize)));
+        setIconSize(iconSize.toSize());
+        setStyleSheet(QStringLiteral(
+            "QPushButton { background: transparent; border: none;"
+            " border-radius: 4px; }"
+            "QPushButton:hover { background: #262626; }"
+            "QPushButton:pressed { background: #2e2e2e; }"
+            "QPushButton:disabled { background: transparent; }"));
+    }
+
+    std::function<void()> onDropLayers; // set -> becomes a drop target
+    void enableLayerDrops() { setAcceptDrops(true); }
+
+protected:
+    void dragEnterEvent(QDragEnterEvent *event) override
+    {
+        if (onDropLayers
+            && event->mimeData()->hasFormat(QString::fromLatin1(kLayersMime))) {
+            setDown(true);
+            event->acceptProposedAction();
+        }
+    }
+    void dragLeaveEvent(QDragLeaveEvent *) override { setDown(false); }
+    void dropEvent(QDropEvent *event) override
+    {
+        setDown(false);
+        if (onDropLayers)
+            onDropLayers();
+        event->acceptProposedAction();
+    }
+};
+
 // --- App-wide undo commands for the panel list --------------------------------
 // Insert covers Add / Duplicate / Paste; ownership of the DETACHED Panel
 // follows the undo state, so a truncated history never leaks or double-frees.
@@ -1590,6 +1847,7 @@ StoryboardPage::StoryboardPage(QWidget *parent)
     // the sequence ambiguous and silently break both.)
 
 
+
     updateDuplicateButton(); // panel-action buttons disabled until a panel is selected
 }
 
@@ -1832,9 +2090,13 @@ QWidget *StoryboardPage::createCenterColumn()
     drawLayout->setSpacing(0);
 
     m_canvas = new DrawingCanvas;
-    connect(m_canvas, &DrawingCanvas::contentChanged, this, &StoryboardPage::refreshCurrentThumb);
+    connect(m_canvas, &DrawingCanvas::contentChanged, this, [this] {
+        refreshCurrentThumb();
+        syncSharedLayers(currentPanel()); // shared layers mirror the edit
+    });
     // Undo/redo may rewrite a panel that is NOT current; refresh ITS thumb.
     connect(m_canvas, &DrawingCanvas::panelEdited, this, [this](Panel *panel) {
+        syncSharedLayers(panel);
         Scene *scene = currentScene();
         if (!scene)
             return;
@@ -3659,21 +3921,6 @@ bool StoryboardPage::eventFilter(QObject *object, QEvent *event)
             return false;
         }
     }
-    // Layer rows: click = make that layer active, double-click = rename.
-    const QVariant layerIdx = object->property("layerIndex");
-    if (layerIdx.isValid()) {
-        if (event->type() == QEvent::MouseButtonPress) {
-            auto *me = static_cast<QMouseEvent *>(event);
-            if (me->button() == Qt::LeftButton)
-                setActiveLayer(layerIdx.toInt());
-            return false;
-        }
-        if (event->type() == QEvent::MouseButtonDblClick) {
-            renameLayer(layerIdx.toInt());
-            return true;
-        }
-    }
-
     return QWidget::eventFilter(object, event);
 }
 
@@ -4249,15 +4496,22 @@ QWidget *StoryboardPage::createLayerPanel()
 {
     QWidget *column = new QWidget;
     column->setAttribute(Qt::WA_StyledBackground, true);
-    column->setMinimumWidth(170); // dock-resizable (was fixed 200)
+    column->setMinimumWidth(170); // dock-resizable
     column->setStyleSheet(QStringLiteral(
         "background-color: #111111; border-left: 1px solid #1f1f1f;"));
 
+    // Figma 7-70: LayerList (opacity row + rows, p8 gap6) over the footer
+    // toolbar strip. The dock's own title bar plays the Figma TitleBar.
     QVBoxLayout *layout = new QVBoxLayout(column);
-    layout->setContentsMargins(10, 12, 10, 12);
-    layout->setSpacing(8);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(0);
 
-    // (No inner heading: the ADS dock tab already names the panel.)
+    QWidget *body = new QWidget;
+    body->setStyleSheet(QStringLiteral("background: transparent; border: none;"));
+    QVBoxLayout *bodyLayout = new QVBoxLayout(body);
+    bodyLayout->setContentsMargins(8, 8, 8, 8);
+    bodyLayout->setSpacing(6);
+    layout->addWidget(body, 1);
 
     // Opacity of the ACTIVE layer.
     QHBoxLayout *opacityRow = new QHBoxLayout;
@@ -4266,12 +4520,9 @@ QWidget *StoryboardPage::createLayerPanel()
     opacityLabel->setStyleSheet(QStringLiteral("color: #999999; font-size: 10px; border: none;"));
     opacityRow->addWidget(opacityLabel);
     opacityRow->addStretch(1);
-    layout->addLayout(opacityRow);
+    bodyLayout->addLayout(opacityRow);
 
-    // Custom glowing slider, opacity preset (track 14 / handle 16, 0-100).
-    // Drop-in for the previous QSlider: same range/value/valueChanged
-    // surface, so the opacity wiring is unchanged. The live "NN%" label is
-    // painted inside the widget, right of the track.
+    // Custom glowing slider, opacity preset (0-100, paints its own "NN%").
     m_layerOpacity = new SankoSlider;
     m_layerOpacity->setTrackHeight(10);
     m_layerOpacity->setHandleSize(13);
@@ -4288,60 +4539,111 @@ QWidget *StoryboardPage::createLayerPanel()
         layer->opacity = v / 100.0;
         refreshLayerCanvas(); // live: canvas composite + panel thumbnail
     });
-    layout->addWidget(m_layerOpacity);
+    bodyLayout->addWidget(m_layerOpacity);
 
-    // Layer rows (top = frontmost), scrollable.
+    // Layer rows (top = frontmost), scrollable; the host accepts row drags
+    // and paints the accent insertion line at the drop gap.
     QScrollArea *scroll = new QScrollArea;
     scroll->setWidgetResizable(true);
     scroll->setFrameShape(QFrame::NoFrame);
     scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     scroll->setStyleSheet(QStringLiteral("QScrollArea { background: transparent; border: none; }"));
-    QWidget *listHost = new QWidget;
+    LayerListHost *listHost = new LayerListHost;
+    m_layerListHost = listHost;
     listHost->setStyleSheet(QStringLiteral("background: transparent; border: none;"));
     m_layerListLayout = new QVBoxLayout(listHost);
     m_layerListLayout->setContentsMargins(0, 0, 0, 0);
-    m_layerListLayout->setSpacing(4);
+    m_layerListLayout->setSpacing(6); // Figma LayerList gap
     m_layerListLayout->addStretch(1);
+    listHost->onDropAtGap = [this](int visualGap) {
+        Panel *panel = currentPanel();
+        if (!panel)
+            return;
+        // Visual gap 0 = above the top (frontmost) row -> model gap = size.
+        layerMoveTo(selectedLayers(), panel->layers.size() - visualGap);
+    };
     scroll->setWidget(listHost);
-    layout->addWidget(scroll, 1);
+    bodyLayout->addWidget(scroll, 1);
 
-    // Actions.
-    QHBoxLayout *row1 = new QHBoxLayout;
-    row1->setSpacing(6);
-    QPushButton *add = layerActionButton(QStringLiteral("+ Layer"),
-                                         QStringLiteral("Add a blank layer above the active one"));
-    QPushButton *addImage = layerActionButton(QStringLiteral("+ Image"),
-                                              QStringLiteral("Import an image as a new layer"));
-    connect(add, &QPushButton::clicked, this, [this] { layerAdd(); });
-    connect(addImage, &QPushButton::clicked, this, [this] { layerAddImage(); });
-    row1->addWidget(add);
-    row1->addWidget(addImage);
-    layout->addLayout(row1);
+    // Footer toolbar (Figma "Layers Footer Toolbar"), left to right: Delete,
+    // Link, Clear, Merge, Group, Duplicate, Import Image, New Layer.
+    QWidget *footer = new QWidget;
+    footer->setAttribute(Qt::WA_StyledBackground, true);
+    footer->setFixedHeight(27);
+    footer->setStyleSheet(QStringLiteral(
+        "background-color: #161616; border: none; border-top: 1px solid #2a2a2a;"));
+    QHBoxLayout *footerLayout = new QHBoxLayout(footer);
+    footerLayout->setContentsMargins(8, 2, 8, 2);
+    footerLayout->setSpacing(4);
+    footerLayout->addStretch(1);
 
-    QHBoxLayout *row2 = new QHBoxLayout;
-    row2->setSpacing(6);
-    m_layerMergeButton = layerActionButton(QStringLiteral("Merge Down"),
-                                           QStringLiteral("Flatten the active layer into the one below"));
-    m_layerDeleteButton = layerActionButton(QStringLiteral("Delete"),
-                                            QStringLiteral("Remove the active layer"));
-    connect(m_layerMergeButton, &QPushButton::clicked, this, [this] { layerMergeDown(); });
-    connect(m_layerDeleteButton, &QPushButton::clicked, this, [this] { layerDelete(); });
-    row2->addWidget(m_layerMergeButton);
-    row2->addWidget(m_layerDeleteButton);
-    layout->addLayout(row2);
+    const QSizeF iconSize(22, 18);
+    LayerToolButton *deleteButton = new LayerToolButton(
+        QStringLiteral(":/icons/layer_delete.svg"), iconSize,
+        QStringLiteral("Delete selected layer(s) — layers can also be dragged here"),
+        footer);
+    connect(deleteButton, &QPushButton::clicked, this,
+            [this] { layerDeleteSelected(); });
+    deleteButton->onDropLayers = [this] { layerDeleteSelected(); };
+    deleteButton->enableLayerDrops();
+    m_layerDeleteButton = deleteButton;
+    footerLayout->addWidget(deleteButton);
 
-    QHBoxLayout *row3 = new QHBoxLayout;
-    row3->setSpacing(6);
-    QPushButton *up = layerActionButton(QStringLiteral("▲"),
-                                        QStringLiteral("Move the active layer up (toward the front)"));
-    QPushButton *down = layerActionButton(QStringLiteral("▼"),
-                                          QStringLiteral("Move the active layer down (toward the back)"));
-    connect(up, &QPushButton::clicked, this, [this] { layerMove(+1); });   // front = higher index
-    connect(down, &QPushButton::clicked, this, [this] { layerMove(-1); });
-    row3->addWidget(up);
-    row3->addWidget(down);
-    layout->addLayout(row3);
+    LayerToolButton *linkButton = new LayerToolButton(
+        QStringLiteral(":/icons/layer_link.svg"), iconSize,
+        QStringLiteral("Reuse the active layer in another panel (shared layer)"),
+        footer);
+    connect(linkButton, &QPushButton::clicked, this,
+            [this] { layerReuseInPanel(-1); });
+    footerLayout->addWidget(linkButton);
 
+    LayerToolButton *clearButton = new LayerToolButton(
+        QStringLiteral(":/icons/layer_clear.svg"), iconSize,
+        QStringLiteral("Clear the selected layer(s)"), footer);
+    connect(clearButton, &QPushButton::clicked, this,
+            [this] { layerClearSelected(); });
+    footerLayout->addWidget(clearButton);
+
+    LayerToolButton *mergeButton = new LayerToolButton(
+        QStringLiteral(":/icons/layer_merge.svg"), iconSize,
+        QStringLiteral("Merge the selected layers (single layer: merge down)"),
+        footer);
+    connect(mergeButton, &QPushButton::clicked, this,
+            [this] { layerMergeSelected(); });
+    m_layerMergeButton = mergeButton;
+    footerLayout->addWidget(mergeButton);
+
+    LayerToolButton *groupButton = new LayerToolButton(
+        QStringLiteral(":/icons/layer_group.svg"), iconSize,
+        QStringLiteral("Group: flatten the selected layers into one"), footer);
+    connect(groupButton, &QPushButton::clicked, this,
+            [this] { layerGroupSelected(); });
+    footerLayout->addWidget(groupButton);
+
+    LayerToolButton *duplicateButton = new LayerToolButton(
+        QStringLiteral(":/icons/layer_duplicate.svg"), iconSize,
+        QStringLiteral("Duplicate selected layer(s) — layers can also be dragged here"),
+        footer);
+    connect(duplicateButton, &QPushButton::clicked, this,
+            [this] { layerDuplicateSelected(); });
+    duplicateButton->onDropLayers = [this] { layerDuplicateSelected(); };
+    duplicateButton->enableLayerDrops();
+    footerLayout->addWidget(duplicateButton);
+
+    LayerToolButton *importButton = new LayerToolButton(
+        QStringLiteral(":/icons/layer_import.svg"), QSizeF(16, 16),
+        QStringLiteral("Import an image as a new layer"), footer);
+    connect(importButton, &QPushButton::clicked, this,
+            [this] { layerAddImage(); });
+    footerLayout->addWidget(importButton);
+
+    LayerToolButton *newButton = new LayerToolButton(
+        QStringLiteral(":/icons/layer_newlayer.svg"), iconSize,
+        QStringLiteral("New layer above the active one"), footer);
+    connect(newButton, &QPushButton::clicked, this, [this] { layerAdd(); });
+    footerLayout->addWidget(newButton);
+
+    layout->addWidget(footer);
     return column;
 }
 
@@ -4360,6 +4662,27 @@ void StoryboardPage::rebuildLayerPanel()
     Panel *panel = currentPanel();
     const bool hasPanel = (panel != nullptr) && !panel->layers.isEmpty();
 
+    // Selection follows the panel: a different panel resets it to the active
+    // layer; indices left stale by stack changes are dropped.
+    if (panel != m_layerSelPanel) {
+        m_layerSelPanel = panel;
+        m_layerSelection.clear();
+        m_layerAnchor = hasPanel ? panel->activeLayerIndex : -1;
+    }
+    if (hasPanel) {
+        for (auto it = m_layerSelection.begin(); it != m_layerSelection.end();) {
+            if (*it < 0 || *it >= panel->layers.size())
+                it = m_layerSelection.erase(it);
+            else
+                ++it;
+        }
+        if (m_layerSelection.isEmpty())
+            m_layerSelection.insert(
+                qBound(0, panel->activeLayerIndex, panel->layers.size() - 1));
+    } else {
+        m_layerSelection.clear();
+    }
+
     // Sync the opacity slider to the active layer (guarded — no feedback loop).
     m_updatingLayerUi = true;
     const Layer *active = hasPanel ? panel->activeLayer() : nullptr;
@@ -4370,48 +4693,54 @@ void StoryboardPage::rebuildLayerPanel()
     }
     m_updatingLayerUi = false;
 
+    const QVector<int> sel = selectedLayers();
     if (m_layerDeleteButton)
-        m_layerDeleteButton->setEnabled(hasPanel && panel->layers.size() > 1);
+        m_layerDeleteButton->setEnabled(!sel.isEmpty());
     if (m_layerMergeButton)
-        m_layerMergeButton->setEnabled(hasPanel && panel->activeLayerIndex > 0);
+        m_layerMergeButton->setEnabled(!sel.isEmpty());
 
     if (!hasPanel) {
         m_layerListLayout->addStretch(1);
         return;
     }
 
-    // Top row = frontmost layer = highest vector index.
+    // Top row = frontmost layer = highest vector index (Figma layerRow).
     for (int i = panel->layers.size() - 1; i >= 0; --i) {
         const Layer &layer = panel->layers.at(i);
         const bool isActive = (i == panel->activeLayerIndex);
+        const bool isSelected = m_layerSelection.contains(i);
 
-        QFrame *row = new QFrame;
-        row->setObjectName(QStringLiteral("layerRow"));
-        row->setProperty("layerIndex", i);
-        row->setFixedHeight(32);
-        row->setCursor(Qt::PointingHandCursor);
-        row->installEventFilter(this); // click = activate, double-click = rename
-        row->setStyleSheet(
-            isActive
-                ? QStringLiteral("QFrame#layerRow { background-color: #1b1b1b;"
-                                 " border: 1px solid #2a2a2a; border-left: 3px solid #f5a623;"
-                                 " border-radius: 4px; }")
-                : QStringLiteral("QFrame#layerRow { background-color: #161616;"
-                                 " border: 1px solid #232323; border-radius: 4px; }"));
+        LayerRowFrame *row = new LayerRowFrame(i, nullptr);
+        row->selected = isSelected;
+        QString style = isSelected
+            ? QStringLiteral("QFrame#layerRow { background-color: #1b1b1b;"
+                             " border: 1px solid #f5a623; border-radius: 4px; }")
+            : QStringLiteral("QFrame#layerRow { background-color: #161616;"
+                             " border: 1px solid #232323; border-radius: 4px; }");
+        // Colour tag (or the active marker) as a thicker left edge stripe.
+        if (!layer.colorTag.isEmpty() || isActive)
+            style += QStringLiteral(
+                "QFrame#layerRow { border-left: 3px solid %1; }")
+                .arg(!layer.colorTag.isEmpty() ? layer.colorTag
+                                               : QStringLiteral("#f5a623"));
+        row->setStyleSheet(style);
 
         QHBoxLayout *rowLayout = new QHBoxLayout(row);
-        rowLayout->setContentsMargins(4, 2, 4, 2);
-        rowLayout->setSpacing(5);
+        rowLayout->setContentsMargins(6, 2, 7, 2);
+        rowLayout->setSpacing(6);
 
-        // Visibility (eye) toggle.
-        QPushButton *eye = new QPushButton(layer.visible ? QStringLiteral("\U0001F441")
-                                                         : QStringLiteral("–"));
+        // Visibility (eye) toggle — Figma eye icon, faded when hidden.
+        QPushButton *eye = new QPushButton;
         eye->setToolTip(QStringLiteral("Show / hide layer"));
         eye->setCursor(Qt::PointingHandCursor);
-        eye->setFixedSize(20, 20);
+        eye->setFocusPolicy(Qt::NoFocus);
+        eye->setFixedSize(17, 17);
+        eye->setIcon(QIcon(layerIconPm(QStringLiteral(":/icons/layer_eye.svg"),
+                                       QSizeF(13, 13), QColor(0xcc, 0xcc, 0xcc),
+                                       layer.visible ? 1.0 : 0.3)));
+        eye->setIconSize(QSize(13, 13));
         eye->setStyleSheet(QStringLiteral(
-            "QPushButton { background: transparent; border: none; color: %1; font-size: 11px; }")
-            .arg(layer.visible ? QStringLiteral("#cccccc") : QStringLiteral("#555555")));
+            "QPushButton { background: transparent; border: none; }"));
         connect(eye, &QPushButton::clicked, this, [this, i] {
             Panel *p = currentPanel();
             if (!p || i < 0 || i >= p->layers.size())
@@ -4422,29 +4751,46 @@ void StoryboardPage::rebuildLayerPanel()
         });
         rowLayout->addWidget(eye);
 
-        // Layer thumbnail.
+        // Layer thumbnail (Figma th, 40x22).
         QLabel *thumb = new QLabel;
         thumb->setFixedSize(40, 22);
-        thumb->setStyleSheet(QStringLiteral("border: 1px solid #2a2a2a; border-radius: 2px;"));
+        thumb->setStyleSheet(QStringLiteral(
+            "background-color: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 2px;"));
         thumb->setPixmap(layerThumb(layer));
         rowLayout->addWidget(thumb);
 
-        // Name (double-click the row to rename).
+        // Name (double-click the row to rename inline).
         QLabel *name = new QLabel(layer.name);
+        name->setObjectName(QStringLiteral("layerName"));
         name->setStyleSheet(QStringLiteral(
             "color: %1; font-size: 11px; border: none; background: transparent;")
             .arg(layer.visible ? QStringLiteral("#cccccc") : QStringLiteral("#666666")));
         rowLayout->addWidget(name, 1);
 
-        // Lock toggle (padlock).
-        QPushButton *lock = new QPushButton(layer.locked ? QStringLiteral("\U0001F512")
-                                                         : QStringLiteral("\U0001F513"));
+        // Shared-layer badge: this layer's pixels live in other panels too.
+        if (!layer.sharedId.isEmpty()) {
+            QLabel *shared = new QLabel;
+            shared->setToolTip(QStringLiteral("Shared layer — reused in other panels"));
+            shared->setPixmap(layerIconPm(QStringLiteral(":/icons/layer_link.svg"),
+                                          QSizeF(15, 12), QColor(0x7c, 0x6e, 0xf6)));
+            shared->setStyleSheet(QStringLiteral("border: none; background: transparent;"));
+            rowLayout->addWidget(shared);
+        }
+
+        // Lock toggle — Figma padlock, amber when locked.
+        QPushButton *lock = new QPushButton;
         lock->setToolTip(QStringLiteral("Lock / unlock layer"));
         lock->setCursor(Qt::PointingHandCursor);
-        lock->setFixedSize(20, 20);
+        lock->setFocusPolicy(Qt::NoFocus);
+        lock->setFixedSize(15, 17);
+        lock->setIcon(QIcon(layerIconPm(QStringLiteral(":/icons/layer_lock.svg"),
+                                        QSizeF(9, 10),
+                                        layer.locked ? QColor(0xf5, 0xa6, 0x23)
+                                                     : QColor(0xcc, 0xcc, 0xcc),
+                                        layer.locked ? 1.0 : 0.3)));
+        lock->setIconSize(QSize(9, 10));
         lock->setStyleSheet(QStringLiteral(
-            "QPushButton { background: transparent; border: none; color: %1; font-size: 10px; }")
-            .arg(layer.locked ? QStringLiteral("#f5a623") : QStringLiteral("#555555")));
+            "QPushButton { background: transparent; border: none; }"));
         connect(lock, &QPushButton::clicked, this, [this, i] {
             Panel *p = currentPanel();
             if (!p || i < 0 || i >= p->layers.size())
@@ -4453,6 +4799,18 @@ void StoryboardPage::rebuildLayerPanel()
             rebuildLayerPanel();
         });
         rowLayout->addWidget(lock);
+
+        row->onPressed = [this](int idx, Qt::KeyboardModifiers mods) {
+            layerRowClicked(idx, mods);
+        };
+        row->onCollapseToSingle = [this](int idx) {
+            layerRowClicked(idx, Qt::NoModifier);
+        };
+        row->onDoubleClicked = [this](int idx) { layerBeginRename(idx); };
+        row->onContext = [this](int idx, const QPoint &globalPos) {
+            layerContextMenu(idx, globalPos);
+        };
+        row->onDragOut = [this](int idx) { startLayerDrag(idx); };
 
         m_layerListLayout->addWidget(row);
         m_layerRows.append(row);
@@ -4467,21 +4825,178 @@ void StoryboardPage::setActiveLayer(int index)
         return;
     m_canvas->commitQuickShape(); // bake a pending shape into the OLD layer
     panel->activeLayerIndex = index;
-    rebuildLayerPanel(); // amber highlight + slider follow the new active layer
+    m_layerSelection.clear();
+    m_layerSelection.insert(index);
+    m_layerAnchor = index;
+    rebuildLayerPanel(); // highlight + slider follow the new active layer
 }
 
-void StoryboardPage::renameLayer(int index)
+// Photoshop selection rules: plain click = single select + activate, Shift =
+// contiguous range from the anchor, Ctrl = toggle in/out. The pressed row
+// always becomes the ACTIVE (drawing) layer.
+void StoryboardPage::layerRowClicked(int index, Qt::KeyboardModifiers mods)
 {
     Panel *panel = currentPanel();
     if (!panel || index < 0 || index >= panel->layers.size())
         return;
-    bool ok = false;
-    const QString name = QInputDialog::getText(
-        this, QStringLiteral("Rename Layer"), QStringLiteral("Layer name:"),
-        QLineEdit::Normal, panel->layers.at(index).name, &ok);
-    if (!ok || name.trimmed().isEmpty())
+    m_canvas->commitQuickShape();
+
+    if (mods & Qt::ControlModifier) {
+        if (m_layerSelection.contains(index)) {
+            if (m_layerSelection.size() > 1)
+                m_layerSelection.remove(index);
+        } else {
+            m_layerSelection.insert(index);
+        }
+        m_layerAnchor = index;
+    } else if ((mods & Qt::ShiftModifier) && m_layerAnchor >= 0
+               && m_layerAnchor < panel->layers.size()) {
+        m_layerSelection.clear();
+        const int lo = qMin(m_layerAnchor, index);
+        const int hi = qMax(m_layerAnchor, index);
+        for (int i = lo; i <= hi; ++i)
+            m_layerSelection.insert(i);
+    } else {
+        m_layerSelection.clear();
+        m_layerSelection.insert(index);
+        m_layerAnchor = index;
+    }
+
+    panel->activeLayerIndex = index;
+    rebuildLayerPanel();
+}
+
+// Ascending, in-range, non-Background selection — what every layer
+// operation acts on.
+QVector<int> StoryboardPage::selectedLayers() const
+{
+    const Panel *panel = currentPanel();
+    QVector<int> out;
+    if (!panel)
+        return out;
+    for (int i : m_layerSelection) {
+        if (i < 0 || i >= panel->layers.size())
+            continue;
+        if (panel->layers.at(i).type == QLatin1String("background"))
+            continue;
+        out.append(i);
+    }
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
+void StoryboardPage::layerBeginRename(int index)
+{
+    Panel *panel = currentPanel();
+    if (!panel || index < 0 || index >= panel->layers.size())
         return;
-    panel->layers[index].name = name.trimmed();
+    const int visual = panel->layers.size() - 1 - index;
+    QWidget *row = m_layerRows.value(visual);
+    if (!row)
+        return;
+    QLabel *name = row->findChild<QLabel *>(QStringLiteral("layerName"));
+    if (!name)
+        return;
+
+    // Inline editor over the name label (no dialog). Enter/focus-out
+    // commits, Escape cancels; the rebuild replaces the row afterwards.
+    QLineEdit *edit = new QLineEdit(panel->layers.at(index).name, row);
+    edit->setStyleSheet(QStringLiteral(
+        "QLineEdit { background: #0f0f0f; color: #ffffff; font-size: 11px;"
+        " border: 1px solid #7c6ef6; border-radius: 2px; padding: 0 2px; }"));
+    edit->setGeometry(name->geometry().adjusted(-2, -3, 40, 3));
+    edit->show();
+    edit->setFocus();
+    edit->selectAll();
+
+    auto cancelled = std::make_shared<bool>(false);
+    QShortcut *escape = new QShortcut(QKeySequence(Qt::Key_Escape), edit);
+    escape->setContext(Qt::WidgetShortcut);
+    connect(escape, &QShortcut::activated, edit, [edit, cancelled] {
+        *cancelled = true;
+        edit->clearFocus(); // editingFinished fires; commit is skipped
+    });
+    connect(edit, &QLineEdit::editingFinished, this, [this, edit, index, cancelled] {
+        const QString text = edit->text().trimmed();
+        edit->deleteLater();
+        Panel *p = currentPanel();
+        if (!*cancelled && p && index >= 0 && index < p->layers.size()
+            && !text.isEmpty())
+            p->layers[index].name = text;
+        rebuildLayerPanel();
+    });
+}
+
+void StoryboardPage::layerContextMenu(int index, const QPoint &globalPos)
+{
+    Panel *panel = currentPanel();
+    if (!panel || index < 0 || index >= panel->layers.size())
+        return;
+    // Right-clicking outside the selection re-targets it (Photoshop rule).
+    if (!m_layerSelection.contains(index))
+        layerRowClicked(index, Qt::NoModifier);
+
+    QMenu menu(this);
+    menu.setStyleSheet(QStringLiteral(
+        "QMenu { background: #161616; color: #cccccc; border: 1px solid #2a2a2a; }"
+        "QMenu::item { padding: 4px 18px; font-size: 11px; }"
+        "QMenu::item:selected { background: #262626; color: #ffffff; }"));
+
+    QAction *rename = menu.addAction(QStringLiteral("Rename Layer"));
+    connect(rename, &QAction::triggered, this,
+            [this, index] { layerBeginRename(index); });
+
+    QMenu *colorMenu = menu.addMenu(QStringLiteral("Change Layer Color"));
+    struct Tag { const char *name; const char *hex; };
+    const Tag tags[] = {{"None", ""},          {"Amber", "#f5a623"},
+                        {"Violet", "#7c6ef6"}, {"Red", "#e74c3c"},
+                        {"Green", "#2ecc71"},  {"Blue", "#3498db"}};
+    for (const Tag &tag : tags) {
+        QAction *action = colorMenu->addAction(QString::fromLatin1(tag.name));
+        const QString hex = QString::fromLatin1(tag.hex);
+        if (!hex.isEmpty()) {
+            QPixmap chip(12, 12);
+            chip.fill(QColor(hex));
+            action->setIcon(QIcon(chip));
+        }
+        connect(action, &QAction::triggered, this, [this, index, hex] {
+            Panel *p = currentPanel();
+            if (!p || index < 0 || index >= p->layers.size())
+                return;
+            p->layers[index].colorTag = hex;
+            rebuildLayerPanel();
+        });
+    }
+    QAction *custom = colorMenu->addAction(QStringLiteral("Custom..."));
+    connect(custom, &QAction::triggered, this,
+            [this, index] { layerSetColorTag(index); });
+
+    QAction *duplicate = menu.addAction(QStringLiteral("Duplicate Layer"));
+    connect(duplicate, &QAction::triggered, this,
+            [this] { layerDuplicateSelected(); });
+
+    QAction *reuse =
+        menu.addAction(QStringLiteral("Copy/Reuse Layer in Another Panel"));
+    reuse->setEnabled(panel->layers.at(index).type != QLatin1String("background"));
+    connect(reuse, &QAction::triggered, this,
+            [this, index] { layerReuseInPanel(index); });
+
+    menu.exec(globalPos);
+}
+
+void StoryboardPage::layerSetColorTag(int index)
+{
+    Panel *panel = currentPanel();
+    if (!panel || index < 0 || index >= panel->layers.size())
+        return;
+    const QColor start = panel->layers.at(index).colorTag.isEmpty()
+        ? QColor(0xf5, 0xa6, 0x23)
+        : QColor(panel->layers.at(index).colorTag);
+    const QColor color =
+        QColorDialog::getColor(start, this, QStringLiteral("Layer Color"));
+    if (!color.isValid())
+        return;
+    panel->layers[index].colorTag = color.name();
     rebuildLayerPanel();
 }
 
@@ -4490,10 +5005,14 @@ void StoryboardPage::layerAdd()
     Panel *panel = currentPanel();
     if (!panel)
         return;
+    m_canvas->commitQuickShape();
     Layer layer = makeRasterLayer(QStringLiteral("Layer %1").arg(panel->layers.size() + 1));
     const int insertAt = qBound(0, panel->activeLayerIndex + 1, panel->layers.size());
     panel->layers.insert(insertAt, layer);
     panel->activeLayerIndex = insertAt;
+    m_layerSelection.clear();
+    m_layerSelection.insert(insertAt);
+    m_layerAnchor = insertAt;
     refreshLayerCanvas();
     rebuildLayerPanel();
 }
@@ -4510,56 +5029,404 @@ void StoryboardPage::layerAddImage()
     m_canvas->importImage(path); // inserts the layer + emits layersChanged -> rebuild
 }
 
-void StoryboardPage::layerDelete()
+void StoryboardPage::layerDeleteSelected()
 {
     Panel *panel = currentPanel();
-    if (!panel || panel->layers.size() <= 1)
-        return; // the last remaining layer can never be deleted
-    if (panel->layers.at(panel->activeLayerIndex).type == QLatin1String("background"))
-        return; // the Background layer is permanent
-    panel->layers.removeAt(panel->activeLayerIndex);
-    panel->activeLayerIndex = qBound(0, panel->activeLayerIndex, panel->layers.size() - 1);
+    const QVector<int> sel = selectedLayers();
+    if (!panel || sel.isEmpty())
+        return;
+    m_canvas->commitQuickShape();
+
+    QStringList releasedShared;
+    int removedBelowActive = 0;
+    bool activeRemoved = false;
+    for (int k = sel.size() - 1; k >= 0; --k) {
+        const int idx = sel.at(k);
+        if (panel->layers.size() <= 1)
+            break; // never delete the last remaining layer
+        const Layer layer = panel->layers.at(idx);
+        panel->layers.removeAt(idx);
+        if (!layer.sharedId.isEmpty())
+            releasedShared.append(layer.sharedId);
+        if (idx < panel->activeLayerIndex)
+            ++removedBelowActive;
+        else if (idx == panel->activeLayerIndex)
+            activeRemoved = true;
+    }
+    panel->activeLayerIndex -= removedBelowActive;
+    panel->activeLayerIndex =
+        qBound(0, panel->activeLayerIndex, panel->layers.size() - 1);
+    if (activeRemoved && panel->activeLayerIndex == 0 && panel->layers.size() > 1
+        && panel->layers.first().type == QLatin1String("background"))
+        panel->activeLayerIndex = 1; // land on a drawing layer, not the paper
+
+    for (const QString &sharedId : releasedShared)
+        releaseSharedIfLastInstance(sharedId);
+
+    m_layerSelection.clear();
+    m_layerSelection.insert(panel->activeLayerIndex);
+    m_layerAnchor = panel->activeLayerIndex;
     refreshLayerCanvas();
     rebuildLayerPanel();
 }
 
-void StoryboardPage::layerMergeDown()
+void StoryboardPage::layerDuplicateSelected()
 {
     Panel *panel = currentPanel();
-    if (!panel || panel->activeLayerIndex <= 0
-        || panel->activeLayerIndex >= panel->layers.size())
+    const QVector<int> sel = selectedLayers();
+    if (!panel || sel.isEmpty())
+        return;
+    m_canvas->commitQuickShape();
+
+    // Copies (deep image copy, fresh id, NEVER shared) land as one block
+    // directly above the topmost selected layer, keeping relative order.
+    const int insertAt = sel.last() + 1;
+    QVector<Layer> copies;
+    copies.reserve(sel.size());
+    for (int idx : sel) {
+        Layer copy = panel->layers.at(idx);
+        copy.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        copy.sharedId.clear();
+        copy.image = copy.image.copy();
+        copy.name = copy.name + QStringLiteral(" copy");
+        copies.append(copy);
+    }
+    for (int k = 0; k < copies.size(); ++k)
+        panel->layers.insert(insertAt + k, copies.at(k));
+
+    m_layerSelection.clear();
+    for (int k = 0; k < copies.size(); ++k)
+        m_layerSelection.insert(insertAt + k);
+    panel->activeLayerIndex = insertAt + copies.size() - 1;
+    m_layerAnchor = panel->activeLayerIndex;
+    refreshLayerCanvas();
+    rebuildLayerPanel();
+}
+
+// Shared core of Merge and Group: flatten the given ascending indices into
+// the LOWEST one (respecting per-layer opacity), optionally renaming it.
+void StoryboardPage::mergeLayerIndices(const QVector<int> &indices,
+                                       const QString &newName)
+{
+    Panel *panel = currentPanel();
+    if (!panel || indices.size() < 2)
+        return;
+    m_canvas->commitQuickShape();
+
+    const int targetIdx = indices.first();
+    Layer &target = panel->layers[targetIdx];
+    target.image.detach(); // a shared target keeps sharing AFTER the bake
+    QPainter painter(&target.image);
+    QStringList releasedShared;
+    for (int k = 1; k < indices.size(); ++k) {
+        const Layer &top = panel->layers.at(indices.at(k));
+        painter.setOpacity(qBound(0.0, top.opacity, 1.0));
+        painter.drawImage(0, 0, top.image);
+    }
+    painter.end();
+    if (!newName.isEmpty())
+        target.name = newName;
+
+    for (int k = indices.size() - 1; k >= 1; --k) {
+        const Layer layer = panel->layers.at(indices.at(k));
+        panel->layers.removeAt(indices.at(k));
+        if (!layer.sharedId.isEmpty())
+            releasedShared.append(layer.sharedId);
+    }
+    for (const QString &sharedId : releasedShared)
+        releaseSharedIfLastInstance(sharedId);
+
+    panel->activeLayerIndex = targetIdx;
+    m_layerSelection.clear();
+    m_layerSelection.insert(targetIdx);
+    m_layerAnchor = targetIdx;
+    syncSharedLayers(panel); // a shared target propagates the merged pixels
+    refreshLayerCanvas();
+    rebuildLayerPanel();
+}
+
+void StoryboardPage::layerMergeSelected()
+{
+    Panel *panel = currentPanel();
+    const QVector<int> sel = selectedLayers();
+    if (!panel || sel.isEmpty())
         return;
 
-    const int idx = panel->activeLayerIndex;
-    if (panel->layers.at(idx - 1).type == QLatin1String("background"))
-        return; // don't bake art into the Background (keeps it a clean paper layer)
-    Layer &below = panel->layers[idx - 1];
-    const Layer &top = panel->layers.at(idx);
+    if (sel.size() >= 2) {
+        mergeLayerIndices(sel, QString());
+        return;
+    }
 
-    QPainter painter(&below.image); // bake the active layer (with its opacity) into the one below
-    painter.setOpacity(qBound(0.0, top.opacity, 1.0));
-    painter.drawImage(0, 0, top.image);
-    painter.end();
+    // Single selection: merge down into the layer directly beneath.
+    const int idx = sel.first();
+    if (idx <= 0
+        || panel->layers.at(idx - 1).type == QLatin1String("background"))
+        return; // nothing beneath / don't bake art into the paper
+    mergeLayerIndices(QVector<int>{idx - 1, idx}, QString());
+}
 
-    panel->layers.removeAt(idx);
-    panel->activeLayerIndex = idx - 1;
+void StoryboardPage::layerGroupSelected()
+{
+    const QVector<int> sel = selectedLayers();
+    if (sel.size() < 2)
+        return;
+    // The model has no nested groups: "Group" flattens the selection into
+    // one named layer (documented behaviour).
+    int groupNumber = 1;
+    if (Panel *panel = currentPanel())
+        for (const Layer &layer : panel->layers)
+            if (layer.name.startsWith(QStringLiteral("Group ")))
+                ++groupNumber;
+    mergeLayerIndices(sel, QStringLiteral("Group %1").arg(groupNumber));
+}
+
+void StoryboardPage::layerClearSelected()
+{
+    Panel *panel = currentPanel();
+    const QVector<int> sel = selectedLayers();
+    if (!panel || sel.isEmpty())
+        return;
+    m_canvas->commitQuickShape();
+    bool cleared = false;
+    for (int idx : sel) {
+        Layer &layer = panel->layers[idx];
+        if (layer.locked)
+            continue; // locked layers keep their pixels
+        layer.image = makeLayerImage(); // fresh transparent (detached) image
+        cleared = true;
+    }
+    if (!cleared)
+        return;
+    syncSharedLayers(panel); // cleared shared layers clear everywhere
     refreshLayerCanvas();
     rebuildLayerPanel();
 }
 
-void StoryboardPage::layerMove(int delta)
+// Drag-reorder: move the ascending source indices as ONE block whose first
+// layer lands at `insertAt` (a gap in the PRE-move list, ascending model
+// coordinates); relative order inside the block is preserved. The block can
+// never land beneath the Background layer.
+void StoryboardPage::layerMoveTo(const QVector<int> &sources, int insertAt)
+{
+    Panel *panel = currentPanel();
+    if (!panel || sources.isEmpty())
+        return;
+    m_canvas->commitQuickShape();
+
+    const QString activeId = panel->activeLayer() ? panel->activeLayer()->id
+                                                  : QString();
+    QVector<Layer> moved;
+    moved.reserve(sources.size());
+    int adjustedInsert = insertAt;
+    for (int k = sources.size() - 1; k >= 0; --k) {
+        const int src = sources.at(k);
+        if (src < 0 || src >= panel->layers.size())
+            continue;
+        moved.prepend(panel->layers.takeAt(src));
+        if (src < insertAt)
+            --adjustedInsert;
+    }
+    if (moved.isEmpty())
+        return;
+    const bool hasBackground = !panel->layers.isEmpty()
+        && panel->layers.first().type == QLatin1String("background");
+    adjustedInsert = qBound(hasBackground ? 1 : 0, adjustedInsert,
+                            panel->layers.size());
+    for (int k = 0; k < moved.size(); ++k)
+        panel->layers.insert(adjustedInsert + k, moved.at(k));
+
+    // Selection = the moved block; the active layer keeps its identity.
+    m_layerSelection.clear();
+    for (int k = 0; k < moved.size(); ++k)
+        m_layerSelection.insert(adjustedInsert + k);
+    for (int i = 0; i < panel->layers.size(); ++i)
+        if (panel->layers.at(i).id == activeId) {
+            panel->activeLayerIndex = i;
+            break;
+        }
+    panel->activeLayerIndex =
+        qBound(0, panel->activeLayerIndex, panel->layers.size() - 1);
+    m_layerAnchor = panel->activeLayerIndex;
+    refreshLayerCanvas();
+    rebuildLayerPanel();
+}
+
+void StoryboardPage::startLayerDrag(int index)
 {
     Panel *panel = currentPanel();
     if (!panel)
         return;
-    const int from = panel->activeLayerIndex;
-    const int to = from + delta;
-    if (from < 0 || from >= panel->layers.size() || to < 0 || to >= panel->layers.size())
+    if (!m_layerSelection.contains(index))
+        layerRowClicked(index, Qt::NoModifier);
+    const QVector<int> sel = selectedLayers();
+    if (sel.isEmpty())
         return;
-    panel->layers.swapItemsAt(from, to);
-    panel->activeLayerIndex = to;
-    refreshLayerCanvas();
-    rebuildLayerPanel();
+
+    QStringList parts;
+    for (int idx : sel)
+        parts << QString::number(idx);
+    QMimeData *mime = new QMimeData;
+    mime->setData(QString::fromLatin1(kLayersMime), parts.join(QLatin1Char(',')).toUtf8());
+
+    QDrag *drag = new QDrag(this);
+    drag->setMimeData(mime);
+    const int visual = panel->layers.size() - 1 - index;
+    if (QWidget *row = m_layerRows.value(visual)) {
+        drag->setPixmap(row->grab());
+        drag->setHotSpot(QPoint(row->width() / 2, row->height() / 2));
+    }
+    drag->exec(Qt::MoveAction); // drops: list gap / Delete / Duplicate
+}
+
+// --- Reuse-across-panels (shared layers) -------------------------------------
+
+void StoryboardPage::layerReuseInPanel(int index)
+{
+    Panel *panel = currentPanel();
+    if (!panel)
+        return;
+    if (index < 0)
+        index = panel->activeLayerIndex; // footer Link button: active layer
+    if (index < 0 || index >= panel->layers.size())
+        return;
+    if (panel->layers.at(index).type == QLatin1String("background"))
+        return; // the paper is never shared
+
+    // Every other panel, labelled "Scene N — Panel M".
+    QStringList labels;
+    QVector<Panel *> targets;
+    for (Scene *scene : m_scenes)
+        for (int p = 0; p < scene->panels.size(); ++p) {
+            Panel *target = scene->panels.at(p);
+            if (target == panel)
+                continue;
+            labels << QStringLiteral("Scene %1 — Panel %2")
+                          .arg(scene->number)
+                          .arg(p + 1);
+            targets.append(target);
+        }
+    if (targets.isEmpty()) {
+        QMessageBox::information(this, QStringLiteral("Reuse Layer"),
+                                 QStringLiteral("There is no other panel to reuse this layer in."));
+        return;
+    }
+    bool ok = false;
+    const QString choice = QInputDialog::getItem(
+        this, QStringLiteral("Reuse Layer in Another Panel"),
+        QStringLiteral("Reference \"%1\" from:").arg(panel->layers.at(index).name),
+        labels, 0, false, &ok);
+    if (!ok)
+        return;
+    Panel *target = targets.at(labels.indexOf(choice));
+    if (!reuseLayerInPanelCore(index, target))
+        QMessageBox::information(
+            this, QStringLiteral("Reuse Layer"),
+            QStringLiteral("That panel already references this layer."));
+}
+
+bool StoryboardPage::reuseLayerInPanelCore(int index, Panel *target)
+{
+    Panel *panel = currentPanel();
+    if (!panel || !target || target == panel || index < 0
+        || index >= panel->layers.size())
+        return false;
+    if (panel->layers.at(index).type == QLatin1String("background"))
+        return false; // the paper is never shared
+
+    // First share: the source becomes shared, keyed by its own id.
+    Layer &source = panel->layers[index];
+    if (source.sharedId.isEmpty())
+        source.sharedId = source.id;
+    for (const Layer &existing : target->layers)
+        if (existing.sharedId == source.sharedId)
+            return false; // already referenced there — never duplicate
+
+    Layer instance = source;         // same id + sharedId; image handle SHARED
+    target->layers.append(instance); // frontmost in the target panel
+    if (target->activeLayerIndex < 0
+        || target->activeLayerIndex >= target->layers.size())
+        target->activeLayerIndex = target->layers.size() - 1;
+
+    // The target's thumbnail changes if it is on screen.
+    if (Scene *scene = currentScene()) {
+        const int idx = scene->panels.indexOf(target);
+        if (idx >= 0 && idx < m_panelThumbImages.size())
+            m_panelThumbImages.at(idx)->setPixmap(
+                target->flattenedPixmap().scaled(kThumbW, kThumbH,
+                                                 Qt::IgnoreAspectRatio,
+                                                 Qt::SmoothTransformation));
+    }
+    rebuildLayerPanel(); // the source row gains its shared badge
+    return true;
+}
+
+// Mirror the pixels of every shared layer in `source` into all other
+// instances (implicit QImage sharing: assignment is O(1), no copies until a
+// later edit detaches). Called after any edit that can change layer pixels.
+void StoryboardPage::syncSharedLayers(Panel *source)
+{
+    if (!source)
+        return;
+    bool sourceHasShared = false;
+    for (const Layer &layer : source->layers)
+        if (!layer.sharedId.isEmpty()) {
+            sourceHasShared = true;
+            break;
+        }
+    if (!sourceHasShared)
+        return;
+
+    Scene *scene = currentScene();
+    for (Scene *sc : m_scenes)
+        for (Panel *panel : sc->panels) {
+            if (panel == source)
+                continue;
+            bool touched = false;
+            for (Layer &mirror : panel->layers) {
+                if (mirror.sharedId.isEmpty())
+                    continue;
+                for (const Layer &layer : source->layers)
+                    if (layer.sharedId == mirror.sharedId
+                        && mirror.image.cacheKey() != layer.image.cacheKey()) {
+                        mirror.image = layer.image;
+                        touched = true;
+                    }
+            }
+            if (!touched)
+                continue;
+            if (scene) {
+                const int idx = scene->panels.indexOf(panel);
+                if (idx >= 0 && idx < m_panelThumbImages.size())
+                    m_panelThumbImages.at(idx)->setPixmap(
+                        panel->flattenedPixmap().scaled(
+                            kThumbW, kThumbH, Qt::IgnoreAspectRatio,
+                            Qt::SmoothTransformation));
+            }
+            if (panel == currentPanel()) {
+                if (m_canvas)
+                    m_canvas->update();
+                rebuildLayerPanel();
+            }
+        }
+}
+
+// When only ONE instance of a sharedId remains anywhere, it stops being
+// shared (the underlying data simply lives on in that last instance).
+void StoryboardPage::releaseSharedIfLastInstance(const QString &sharedId)
+{
+    if (sharedId.isEmpty())
+        return;
+    Layer *last = nullptr;
+    int count = 0;
+    for (Scene *scene : m_scenes)
+        for (Panel *panel : scene->panels)
+            for (Layer &layer : panel->layers)
+                if (layer.sharedId == sharedId) {
+                    last = &layer;
+                    ++count;
+                }
+    if (count == 1 && last)
+        last->sharedId.clear();
 }
 
 void StoryboardPage::refreshLayerCanvas()

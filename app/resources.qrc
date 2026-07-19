@@ -7,6 +7,16 @@
         <file>icons/lighttable.svg</file>
         <file>icons/delete.svg</file>
         <file>icons/flip.svg</file>
+        <file>icons/layer_clear.svg</file>
+        <file>icons/layer_delete.svg</file>
+        <file>icons/layer_duplicate.svg</file>
+        <file>icons/layer_eye.svg</file>
+        <file>icons/layer_group.svg</file>
+        <file>icons/layer_import.svg</file>
+        <file>icons/layer_link.svg</file>
+        <file>icons/layer_lock.svg</file>
+        <file>icons/layer_merge.svg</file>
+        <file>icons/layer_newlayer.svg</file>
         <file>icons/resetrotation.svg</file>
         <file>icons/brush.svg</file>
         <file>icons/erase.svg</file>

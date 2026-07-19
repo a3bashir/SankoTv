@@ -401,6 +401,11 @@ bool MainWindow::saveToPath(const QString &path)
     const QString folder = info.absolutePath();
 
     QJsonArray scenesArray;
+    // Shared (reused-across-panels) layers are stored ONCE: the first
+    // instance encountered writes the PNG, later instances reference it by
+    // sharedId. Scenes/panels iterate in the same deterministic order on
+    // load, so the writer is always restored before any reference.
+    QSet<QString> savedSharedLayers;
     for (int i = 0; i < m_scenes.size(); ++i) {
         Scene *scene = m_scenes.at(i);
 
@@ -421,12 +426,11 @@ bool MainWindow::saveToPath(const QString &path)
             panel->flattenedPixmap().save(folder + QStringLiteral("/") + pngName, "PNG");
 
             // Layer stack: one PNG per layer + a JSON descriptor array.
+            // A shared layer's pixels are written only by its FIRST instance;
+            // later instances carry sharedId but no imageFile.
             QJsonArray layersArray;
             for (int k = 0; k < panel->layers.size(); ++k) {
                 const Layer &layer = panel->layers.at(k);
-                const QString layerPng =
-                    QStringLiteral("panel_s%1_p%2_layer%3.png").arg(i).arg(j).arg(k);
-                layer.image.save(folder + QStringLiteral("/") + layerPng, "PNG");
 
                 QJsonObject layerObj;
                 layerObj[QStringLiteral("id")] = layer.id;
@@ -435,7 +439,21 @@ bool MainWindow::saveToPath(const QString &path)
                 layerObj[QStringLiteral("visible")] = layer.visible;
                 layerObj[QStringLiteral("opacity")] = layer.opacity;
                 layerObj[QStringLiteral("locked")] = layer.locked;
-                layerObj[QStringLiteral("imageFile")] = layerPng;
+                if (!layer.colorTag.isEmpty())
+                    layerObj[QStringLiteral("colorTag")] = layer.colorTag;
+                if (!layer.sharedId.isEmpty())
+                    layerObj[QStringLiteral("sharedId")] = layer.sharedId;
+
+                const bool imageAlreadySaved = !layer.sharedId.isEmpty()
+                    && savedSharedLayers.contains(layer.sharedId);
+                if (!imageAlreadySaved) {
+                    const QString layerPng =
+                        QStringLiteral("panel_s%1_p%2_layer%3.png").arg(i).arg(j).arg(k);
+                    layer.image.save(folder + QStringLiteral("/") + layerPng, "PNG");
+                    layerObj[QStringLiteral("imageFile")] = layerPng;
+                    if (!layer.sharedId.isEmpty())
+                        savedSharedLayers.insert(layer.sharedId);
+                }
                 layersArray.append(layerObj);
             }
 
@@ -549,6 +567,10 @@ bool MainWindow::loadFromPath(const QString &path)
     if (m_projectName.isEmpty())
         m_projectName = QFileInfo(path).completeBaseName();
 
+    // Shared-layer registry: the first instance of each sharedId carries the
+    // PNG; later instances (no imageFile) resolve their pixels here, so the
+    // image is loaded once and every instance shares the same data.
+    QHash<QString, QImage> sharedLayerImages;
     const QJsonArray scenesArray = root.value(QStringLiteral("scenes")).toArray();
     for (const QJsonValue &sv : scenesArray) {
         const QJsonObject sceneObj = sv.toObject();
@@ -646,11 +668,27 @@ bool MainWindow::loadFromPath(const QString &path)
                     layer.visible = layerObj.value(QStringLiteral("visible")).toBool(true);
                     layer.opacity = layerObj.value(QStringLiteral("opacity")).toDouble(1.0);
                     layer.locked = layerObj.value(QStringLiteral("locked")).toBool(false);
+                    layer.colorTag = layerObj.value(QStringLiteral("colorTag")).toString();
+                    layer.sharedId = layerObj.value(QStringLiteral("sharedId")).toString();
 
                     QImage img;
                     const QString layerPng = layerObj.value(QStringLiteral("imageFile")).toString();
                     if (!layerPng.isEmpty())
                         img.load(folder + QStringLiteral("/") + layerPng);
+                    if (!layer.sharedId.isEmpty()) {
+                        if (!img.isNull()) {
+                            // First instance: register the pixels for later
+                            // references (first-writer wins).
+                            img = img.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+                            if (!sharedLayerImages.contains(layer.sharedId))
+                                sharedLayerImages.insert(layer.sharedId, img);
+                        } else {
+                            // Reference instance: share the registered image
+                            // (transparent fallback if the source is missing
+                            // or corrupt — never fail the whole load).
+                            img = sharedLayerImages.value(layer.sharedId);
+                        }
+                    }
                     layer.image = img.isNull()
                         ? makeLayerImage()
                         : img.convertToFormat(QImage::Format_ARGB32_Premultiplied);
