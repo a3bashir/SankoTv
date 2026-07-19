@@ -27,21 +27,9 @@ endif()
 # silently returns a null icon for SVG files).
 find_package(Qt6 REQUIRED COMPONENTS Widgets Network Multimedia MultimediaWidgets Svg)
 
-# --- Qt Advanced Docking System (LGPL v2.1) --------------------------------
-# LGPL compliance: MUST be linked as a shared DLL (BUILD_STATIC OFF), and its
-# license text is deployed next to the executable (post-build step below).
-include(FetchContent)
-set(BUILD_EXAMPLES OFF CACHE BOOL "" FORCE) # ADS demo apps not needed
-set(BUILD_STATIC OFF CACHE BOOL "" FORCE)   # shared library, per LGPL
-FetchContent_Declare(ads
-    GIT_REPOSITORY https://github.com/githubuser0xFFFF/Qt-Advanced-Docking-System.git
-    GIT_TAG 4.3.1
-)
-FetchContent_MakeAvailable(ads)
-# windeployqt assumes every dependency named qt6*.dll is a Qt module living in
-# Qt's bin directory and hard-fails on qt6advanceddocking.dll. Renaming the
-# output DLL sidesteps the heuristic (windeployqt ignores non-qt DLLs).
-set_target_properties(qt6advanceddocking PROPERTIES OUTPUT_NAME "advanceddocking")
+# (Qt Advanced Docking System was removed in the native-docking migration:
+# the reusable src/docking/ classes on stock QDockWidget replace it, so no
+# third-party docking library is fetched, linked, or deployed.)
 
 # --- QuickShapeKit (hold-to-shape recognition for the drawing canvas) ------
 # Static recognition/session library; owns no canvas, brush engine, or undo
@@ -77,8 +65,14 @@ qt_add_executable(SankoTV
     src/GenerationPage.h
     src/FloatingToolWindow.cpp
     src/FloatingToolWindow.h
-    src/SankoDockOverlay.cpp
-    src/SankoDockOverlay.h
+    # SankoDockOverlay.cpp/.h stay on disk but are ADS-specific and left out
+    # of the build since the native docking migration (src/docking/).
+    src/docking/DockController.cpp
+    src/docking/DockController.h
+    src/docking/DockOverlay.cpp
+    src/docking/DockOverlay.h
+    src/docking/DockTitleBar.cpp
+    src/docking/DockTitleBar.h
     src/SankoSlider.cpp
     src/SankoSlider.h
     src/ZoomToolbar.cpp
@@ -91,18 +85,7 @@ qt_add_executable(SankoTV
 )
 
 target_link_libraries(SankoTV PRIVATE Qt6::Widgets Qt6::Network Qt6::Multimedia Qt6::MultimediaWidgets
-    Qt6::Svg ads::qt6advanceddocking QuickShape::Kit)
-
-# Deploy the ADS DLL and its LGPL license text next to SankoTV.exe.
-add_custom_command(TARGET SankoTV POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        $<TARGET_FILE:qt6advanceddocking> $<TARGET_FILE_DIR:SankoTV>
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        ${ads_SOURCE_DIR}/LICENSE
-        $<TARGET_FILE_DIR:SankoTV>/LICENSE.Qt-Advanced-Docking-System.txt
-    COMMENT "Deploying Qt Advanced Docking System DLL + license"
-    VERBATIM
-)
+    Qt6::Svg QuickShape::Kit)
 
 # Build as a GUI app on Windows (no console window).
 set_target_properties(SankoTV PROPERTIES

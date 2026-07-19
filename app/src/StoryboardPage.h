@@ -26,10 +26,9 @@ class QVBoxLayout;
 class SankoSlider;
 class SankoTipPopup;
 
-namespace ads {
-class CDockManager;
-class CDockWidget;
-}
+class DockController;
+class QDockWidget;
+class QMainWindow;
 
 struct Panel;
 struct Scene;
@@ -196,13 +195,16 @@ private:
     enum class ClipSource { None, Canvas, PanelLevel };
     ClipSource m_lastClipSource = ClipSource::None;
 
-    // ADS dock manager: the canvas area is its central widget; Scenes,
-    // Layers, and Shot Info are native ADS dock widgets around it.
-    ads::CDockManager *m_dockManager = nullptr;
-    ads::CDockWidget *m_layersDock = nullptr;
-    ads::CDockWidget *m_scenesDock = nullptr;
-    ads::CDockWidget *m_shotInfoDock = nullptr;
-    QByteArray m_defaultDockState; // pristine layout, captured at construction
+    // Native docking: an embedded (child-widget) QMainWindow hosts the stock
+    // QDockWidget engine; the reusable DockController adds custom title
+    // bars, previews, tab/split drops, collapse and persistence. The canvas
+    // area is the host's central widget; Scenes, Layers, and Shot Info are
+    // QDockWidgets around it.
+    QMainWindow *m_dockHost = nullptr;
+    DockController *m_dockController = nullptr;
+    QDockWidget *m_layersDock = nullptr;
+    QDockWidget *m_scenesDock = nullptr;
+    QDockWidget *m_shotInfoDock = nullptr;
 
     // Left column.
     QVBoxLayout *m_sceneListLayout = nullptr;

@@ -4,14 +4,14 @@
 
 #include "DrawingCanvas.h"
 #include "FloatingToolWindow.h"
-#include "SankoDockOverlay.h"
 #include "SankoSlider.h"
 #include "ZoomToolbar.h"
 #include "StoryboardModel.h"
 
-#include "DockAreaWidget.h"
-#include "DockManager.h"
-#include "DockWidget.h"
+#include "docking/DockController.h"
+
+#include <QDockWidget>
+#include <QMainWindow>
 
 #include <QAction>
 #include <QButtonGroup>
@@ -63,27 +63,25 @@
 
 namespace {
 
-// Dock-layout schema version. Bumped to 3 for the ADS migration: layouts
-// saved by the previous QMainWindow-based builds fail to parse/match and the
-// default layout is applied instead.
-constexpr int kDockStateVersion = 3;
-
-// Dark theme for the ADS chrome (tabs, title bars, splitters) to match the
-// app. Setting a stylesheet on CDockManager replaces ADS's bundled light one.
-const char *kAdsDarkStyle =
-    "ads--CDockContainerWidget { background: #0a0a0a; }"
-    "ads--CDockAreaWidget { background: #111111; }"
-    "ads--CDockAreaTitleBar { background: #161616; border-bottom: 1px solid #2a2a2a;"
-    " padding: 0; }"
-    "ads--CDockWidgetTab { background: #161616; border: 1px solid #2a2a2a;"
-    " padding: 2px 6px; }"
-    "ads--CDockWidgetTab QLabel { color: #cccccc; font-size: 11px; }"
-    "ads--CDockWidgetTab[activeTab=\"true\"] { background: #1a1a1a; }"
-    "ads--CDockWidgetTab[activeTab=\"true\"] QLabel { color: #f5a623; }"
-    "ads--CDockWidget { background: #111111; border: none; }"
-    "ads--CDockSplitter::handle { background: #1f1f1f; }"
-    "QToolButton { background: transparent; color: #999999; border: none; }"
-    "QToolButton:hover { background: #262626; color: #f5a623; }";
+// Dark theme for the native docking chrome (custom title bars, tab bar,
+// splitters) to match the app. Applied on the embedded dock host; the
+// reusable docking classes carry no styling of their own beyond the accent.
+const char *kDockDarkStyle =
+    "QMainWindow#storyboardDockHost { background: #0a0a0a; }"
+    "QMainWindow#storyboardDockHost::separator { background: #1f1f1f;"
+    " width: 3px; height: 3px; }"
+    "QDockWidget { background: #111111; }"
+    "#dockTitleBar { background: #161616; border-bottom: 1px solid #2a2a2a; }"
+    "#dockTitleGrip { color: #9188f8; font-size: 10px; }"
+    "#dockTitleText { color: #cccccc; font-size: 11px; font-weight: 600; }"
+    "#dockTitleClose { background: transparent; color: #999999; border: none;"
+    " border-radius: 4px; font-size: 13px; }"
+    "#dockTitleClose:hover { background: #262626; color: #f5a623; }"
+    "QMainWindow#storyboardDockHost QTabBar::tab { background: #161616;"
+    " color: #cccccc; border: 1px solid #2a2a2a; padding: 3px 8px;"
+    " font-size: 11px; }"
+    "QMainWindow#storyboardDockHost QTabBar::tab:selected {"
+    " background: #1a1a1a; color: #f5a623; }";
 
 constexpr int kThumbW = 160;
 constexpr int kThumbH = 90; // 16:9
@@ -1485,77 +1483,66 @@ StoryboardPage::StoryboardPage(QWidget *parent)
     QWidget *bottomBar = createBottomBar();
     m_bottomBar = bottomBar; // the SelMod toolbar keeps a 10px gap above it
 
-    // ADS dock manager hosts everything: native tabbing, drag-to-float,
-    // re-docking, and auto-hide come with it — nothing hand-rolled.
-    ads::CDockManager::setConfigFlag(ads::CDockManager::OpaqueSplitterResize, true);
-    // Dock headers keep ONLY the Close button: no undock icon, no tabs-menu
-    // chevron. (Docks can still be dragged out by their tabs.)
-    ads::CDockManager::setConfigFlag(ads::CDockManager::DockAreaHasUndockButton, false);
-    ads::CDockManager::setConfigFlag(ads::CDockManager::DockAreaHasTabsMenuButton, false);
-    SankoDockManager *dockManager = new SankoDockManager(this);
-    m_dockManager = dockManager;
-    m_dockManager->setStyleSheet(QString::fromLatin1(kAdsDarkStyle));
-    root->addWidget(m_dockManager, 1);
-
-    // Photoshop-style drop hints: slim amber edge glow + tab-bar highlight
-    // replace ADS's centre arrows and filled preview rect (visuals only;
-    // parent-owned by the manager).
-    new SankoDockOverlay(dockManager);
+    // Native docking host (replaces the ADS manager): an embedded
+    // child-widget QMainWindow provides the stock QDockWidget engine; the
+    // reusable DockController layers on custom title bars, the animated
+    // accent drop preview, tab/split drops, collapse, and persistence. The
+    // host fills the page edge to edge (root margins are 0).
+    m_dockHost = new QMainWindow;
+    m_dockHost->setObjectName(QStringLiteral("storyboardDockHost"));
+    m_dockHost->setWindowFlags(Qt::Widget); // child widget, never a window
+    m_dockHost->setStyleSheet(QString::fromLatin1(kDockDarkStyle));
+    root->addWidget(m_dockHost, 1);
 
     // Central workspace: the canvas area exactly as before (tool column,
-    // brush settings, panel strip, canvas) plus the bottom toolbar. The ADS
-    // central widget is fixed: no tab, not closable/movable.
+    // brush settings, panel strip, canvas) plus the bottom toolbar — the
+    // host's central widget, never a dock, never closable.
     QWidget *central = new QWidget;
     QVBoxLayout *centralLayout = new QVBoxLayout(central);
     centralLayout->setContentsMargins(0, 0, 0, 0);
     centralLayout->setSpacing(0);
     centralLayout->addWidget(centerColumn, 1);
     centralLayout->addWidget(bottomBar);
+    m_dockHost->setCentralWidget(central);
 
-    ads::CDockWidget *centralDock = new ads::CDockWidget(QStringLiteral("Canvas"));
-    centralDock->setObjectName(QStringLiteral("dockCanvas"));
-    centralDock->setWidget(central, ads::CDockWidget::ForceNoScrollArea);
-    ads::CDockAreaWidget *centralArea =
-        m_dockManager->setCentralWidget(centralDock); // must precede other docks
+    // The controller persists under the app's own QSettings names in a NEW
+    // native-docking namespace. The old ADS blob (storyboard/dockState) is a
+    // different format and is deliberately never read or overwritten.
+    m_dockController = new DockController(
+        m_dockHost, QStringLiteral("SankoTV"), QStringLiteral("SankoTV"),
+        QStringLiteral("storyboard/nativeDock"), this);
 
-    // Dock widgets re-parent the EXISTING panel instances (never recreated,
-    // so all constructor-time connections keep firing). ADS keys saved
+    // Dock widgets wrap the EXISTING panel instances (never recreated, so
+    // all constructor-time connections keep firing). saveState() keys saved
     // layouts on the objectName, which must be unique and stable.
-    auto makeDock = [](const QString &title, const QString &objectName,
-                       QWidget *panel) {
-        ads::CDockWidget *dock = new ads::CDockWidget(title);
-        dock->setObjectName(objectName);
-        dock->setWidget(panel, ads::CDockWidget::ForceNoScrollArea);
-        return dock;
-    };
-    m_layersDock = makeDock(QStringLiteral("Layers"), QStringLiteral("dockLayers"),
-                            layersPanel);
-    m_scenesDock = makeDock(QStringLiteral("Scenes"), QStringLiteral("dockScenes"),
-                            scenesPanel);
-    m_shotInfoDock = makeDock(QStringLiteral("Shot Info"), QStringLiteral("dockShotInfo"),
-                              shotInfoPanel);
+    m_layersDock = m_dockController->addPanel(
+        layersPanel, QStringLiteral("Layers"), QStringLiteral("dockLayers"));
+    m_scenesDock = m_dockController->addPanel(
+        scenesPanel, QStringLiteral("Scenes"), QStringLiteral("dockScenes"));
+    m_shotInfoDock = m_dockController->addPanel(
+        shotInfoPanel, QStringLiteral("Shot Info"),
+        QStringLiteral("dockShotInfo"));
 
     // Default layout: Layers docked right; Scenes + Shot Info tabbed below
-    // it, Scenes tab in front.
-    ads::CDockAreaWidget *layersArea =
-        m_dockManager->addDockWidget(ads::RightDockWidgetArea, m_layersDock);
-    ads::CDockAreaWidget *pairArea =
-        m_dockManager->addDockWidget(ads::BottomDockWidgetArea, m_scenesDock, layersArea);
-    m_dockManager->addDockWidgetTabToArea(m_shotInfoDock, pairArea);
-    m_scenesDock->setAsCurrentTab();
-    // Root splitter (contains the central area): canvas | 260px panel column.
-    m_dockManager->setSplitterSizes(centralArea, {1030, 260});
-    // Right column's vertical splitter: Layers over the tabbed pair.
-    m_dockManager->setSplitterSizes(layersArea, {300, 380});
+    // it, Scenes tab in front. Registered with the controller so Reset
+    // Layout / failed restores reproduce it exactly.
+    m_dockController->setDefaultLayout([this] {
+        m_dockHost->addDockWidget(Qt::RightDockWidgetArea, m_layersDock);
+        m_dockHost->addDockWidget(Qt::RightDockWidgetArea, m_scenesDock);
+        m_dockHost->splitDockWidget(m_layersDock, m_scenesDock, Qt::Vertical);
+        m_dockHost->tabifyDockWidget(m_scenesDock, m_shotInfoDock);
+        m_scenesDock->raise();
+        // Layers over the tabbed pair; canvas keeps the remaining width.
+        m_dockHost->resizeDocks({m_layersDock, m_scenesDock}, {300, 380},
+                                Qt::Vertical);
+        m_dockHost->resizeDocks({m_layersDock}, {260}, Qt::Horizontal);
+    });
 
-    // Snapshot the pristine default so Reset Layout / failed restores can
-    // reproduce it exactly.
-    m_defaultDockState = m_dockManager->saveState(kDockStateVersion);
-
-    // Restore ONCE, now that every dock exists. A failed restore (no saved
-    // state, or a layout from the pre-ADS builds) keeps the default.
-    if (!restoreDockState())
-        applyDefaultDockLayout();
+    // Establish the default, then let a valid saved layout replace it. A
+    // failed restore (nothing saved yet, or a rejected/corrupt blob — the
+    // controller checks restoreState()'s return) keeps the default.
+    m_dockController->resetLayout();
+    m_dockController->restoreLayout();
     connect(QCoreApplication::instance(), &QCoreApplication::aboutToQuit,
             this, [this] { saveDockState(); });
 
@@ -1602,6 +1589,7 @@ StoryboardPage::StoryboardPage(QWidget *parent)
     // routed here via editUndo()/editRedo() — a page-level QShortcut would make
     // the sequence ambiguous and silently break both.)
 
+
     updateDuplicateButton(); // panel-action buttons disabled until a panel is selected
 }
 
@@ -1615,14 +1603,13 @@ StoryboardPage::~StoryboardPage()
 
 // --- Dock plumbing ----------------------------------------------------------
 
-// Reapplies the pristine layout captured at construction (Layers right,
-// Scenes + Shot Info tabbed below it). Used by View -> Reset Layout and as
-// the fallback when a saved state is rejected.
+// Reapplies the pristine default layout (Layers right, Scenes + Shot Info
+// tabbed below it). Used by View -> Reset Layout and as the fallback when a
+// saved state is rejected.
 void StoryboardPage::applyDefaultDockLayout()
 {
-    if (!m_dockManager || m_defaultDockState.isEmpty())
-        return;
-    m_dockManager->restoreState(m_defaultDockState, kDockStateVersion);
+    if (m_dockController)
+        m_dockController->resetLayout();
 }
 
 // Extend the application's View menu (on the top-level MainWindow) with the
@@ -1649,9 +1636,10 @@ void StoryboardPage::installDockViewActions()
         viewMenu = bar->addMenu(QStringLiteral("View"));
 
     viewMenu->addSeparator();
-    viewMenu->addAction(m_layersDock->toggleViewAction());
-    viewMenu->addAction(m_scenesDock->toggleViewAction());
-    viewMenu->addAction(m_shotInfoDock->toggleViewAction());
+    // Panels submenu: per-dock toggles (reopen closed panels) plus
+    // Show All / Hide All, provided by the docking controller.
+    QMenu *panelsMenu = viewMenu->addMenu(QStringLiteral("Panels"));
+    m_dockController->populatePanelsMenu(panelsMenu);
 
     // Canvas alignment grid (display-only overlay), default OFF.
     QAction *gridAction = viewMenu->addAction(QStringLiteral("Grid"));
@@ -1662,64 +1650,41 @@ void StoryboardPage::installDockViewActions()
             m_canvas->setGridEnabled(on);
     });
 
-    // Escape hatch: wipe the persisted layout and go back to the default.
+    // Layout commands: explicit save/restore plus the escape hatch that
+    // wipes the persisted layout and goes back to the default. (The layout
+    // also auto-saves on application close.)
     viewMenu->addSeparator();
+    QAction *saveLayout = viewMenu->addAction(QStringLiteral("Save Layout"));
+    connect(saveLayout, &QAction::triggered, this,
+            [this] { saveDockState(); });
+    QAction *restoreLayout =
+        viewMenu->addAction(QStringLiteral("Restore Layout"));
+    connect(restoreLayout, &QAction::triggered, this, [this] {
+        if (!restoreDockState())
+            applyDefaultDockLayout(); // nothing saved / rejected blob
+    });
     QAction *resetLayout = viewMenu->addAction(QStringLiteral("Reset Layout"));
     connect(resetLayout, &QAction::triggered, this, [this] {
-        QSettings settings(QStringLiteral("SankoTV"), QStringLiteral("SankoTV"));
-        settings.remove(QStringLiteral("storyboard/dockState"));
+        m_dockController->clearSavedLayout();
         applyDefaultDockLayout();
     });
-
-    // LGPL credit for the bundled docking library (license text ships next
-    // to the executable).
-    QMenu *helpMenu = nullptr;
-    const QList<QAction *> topMenus = bar->actions();
-    for (QAction *action : topMenus) {
-        QString title = action->text();
-        title.remove(QLatin1Char('&'));
-        if (action->menu() && title == QLatin1String("Help")) {
-            helpMenu = action->menu();
-            break;
-        }
-    }
-    if (!helpMenu)
-        helpMenu = bar->addMenu(QStringLiteral("Help"));
-    QAction *adsAbout =
-        helpMenu->addAction(QStringLiteral("About Qt Advanced Docking System"));
-    connect(adsAbout, &QAction::triggered, this, [this] {
-        QMessageBox::about(
-            this, QStringLiteral("Qt Advanced Docking System"),
-            QStringLiteral(
-                "SankoTV uses the Qt Advanced Docking System library\n"
-                "(c) Uwe Kindler and contributors, licensed under the\n"
-                "GNU LGPL v2.1 and linked as a shared library.\n\n"
-                "License text: LICENSE.Qt-Advanced-Docking-System.txt\n"
-                "(in the application folder)\n\n"
-                "https://github.com/githubuser0xFFFF/Qt-Advanced-Docking-System"));
-    });
+    // (The old Help > "About Qt Advanced Docking System" entry left with the
+    // ADS library: the docking layer is now first-party code.)
 }
 
+// Thin wrappers over the docking controller (kept so call sites and the
+// save-on-exit hooks read the same as before the ADS migration). The
+// controller version-checks restoreState() and reads/writes ONLY the new
+// storyboard/nativeDock/* keys — the old ADS blob is never touched.
 bool StoryboardPage::restoreDockState()
 {
-    QSettings settings(QStringLiteral("SankoTV"), QStringLiteral("SankoTV"));
-    const QByteArray state =
-        settings.value(QStringLiteral("storyboard/dockState")).toByteArray();
-    if (state.isEmpty())
-        return false;
-    // Versioned restore: layouts written by older builds (pre-ADS QMainWindow
-    // blobs, or a different schema version) are rejected here — the caller
-    // then re-applies the default layout.
-    return m_dockManager && m_dockManager->restoreState(state, kDockStateVersion);
+    return m_dockController && m_dockController->restoreLayout();
 }
 
 void StoryboardPage::saveDockState()
 {
-    if (!m_dockManager)
-        return;
-    QSettings settings(QStringLiteral("SankoTV"), QStringLiteral("SankoTV"));
-    settings.setValue(QStringLiteral("storyboard/dockState"),
-                      m_dockManager->saveState(kDockStateVersion));
+    if (m_dockController)
+        m_dockController->saveLayout();
 }
 
 // --- Left column ----------------------------------------------------------
@@ -2480,30 +2445,35 @@ void StoryboardPage::createFloatingToolbar()
             m_cameraPanel->setVisible(on);
     });
 
-    // Dock toggles wire up once the ADS docks exist (they are created after
-    // the canvas column that hosts this bar).
+    // Dock toggles wire up once the docks exist (they are created after the
+    // canvas column that hosts this bar). toggleViewAction() is the "is the
+    // panel open" truth: it stays checked while a dock is open even when it
+    // sits tabbed behind another panel, exactly like ADS's isClosed().
     connect(layersBtn, &QPushButton::toggled, this, [this](bool on) {
-        if (m_layersDock && m_layersDock->isClosed() == on)
-            m_layersDock->toggleView(on);
+        if (m_layersDock
+            && m_layersDock->toggleViewAction()->isChecked() != on)
+            m_layersDock->toggleViewAction()->trigger();
     });
     connect(scenesBtn, &QPushButton::toggled, this, [this](bool on) {
-        if (m_scenesDock && m_scenesDock->isClosed() == on)
-            m_scenesDock->toggleView(on);
+        if (m_scenesDock
+            && m_scenesDock->toggleViewAction()->isChecked() != on)
+            m_scenesDock->toggleViewAction()->trigger();
     });
     connect(shotInfoBtn, &QPushButton::toggled, this, [this](bool on) {
-        if (m_shotInfoDock && m_shotInfoDock->isClosed() == on)
-            m_shotInfoDock->toggleView(on);
+        if (m_shotInfoDock
+            && m_shotInfoDock->toggleViewAction()->isChecked() != on)
+            m_shotInfoDock->toggleViewAction()->trigger();
     });
     QTimer::singleShot(0, this, [this, layersBtn, scenesBtn, shotInfoBtn] {
-        struct Pair { ads::CDockWidget *dock; ToolButton *btn; };
+        struct Pair { QDockWidget *dock; ToolButton *btn; };
         const Pair pairs[] = {{m_layersDock, layersBtn},
                               {m_scenesDock, scenesBtn},
                               {m_shotInfoDock, shotInfoBtn}};
         for (const Pair &pr : pairs) {
             if (!pr.dock)
                 continue;
-            pr.btn->setChecked(!pr.dock->isClosed());
-            connect(pr.dock, &ads::CDockWidget::viewToggled,
+            pr.btn->setChecked(pr.dock->toggleViewAction()->isChecked());
+            connect(pr.dock->toggleViewAction(), &QAction::toggled,
                     pr.btn, &QPushButton::setChecked);
         }
     });
