@@ -4,6 +4,7 @@
 
 #include <QObject>
 #include <QPoint>
+#include <QSize>
 #include <QString>
 #include <QVector>
 
@@ -33,6 +34,13 @@ public:
     // The collapsed panel height == the title bar height (kept in sync with
     // DockTitleBar's fixed height).
     static constexpr int kTitleBarHeight = 30;
+    // Default size for a panel freshly dragged out of the dock (a panel keeps
+    // its manually chosen floating size once the user has resized it).
+    static constexpr QSize kDefaultFloatingSize = QSize(320, 360);
+    // Width a brand-new (previously empty) sidebar starts at; once the user
+    // resizes a sidebar, insertions preserve THAT width instead.
+    static constexpr int kDefaultSidebarWidth = 260;
+    static constexpr int kMinSidebarWidth = 120;
 
     // settingsOrg/App name the QSettings store (the application's own values,
     // never demo defaults); settingsGroup namespaces every key this
@@ -69,6 +77,10 @@ public:
     // --- drag support (called by DockTitleBar) -------------------------------
     void updateDockPreview(QDockWidget *dragged, const QPoint &globalPos);
     void finishDock(QDockWidget *dragged, const QPoint &globalPos);
+    // Docked -> floating transition for a title-bar drag: floats the dock
+    // and normalizes its size ONCE (default or the panel's remembered
+    // manual floating size; a collapsed panel keeps its title-bar height).
+    void floatDockForDrag(QDockWidget *dock);
     // Clamp a floating position so a usable strip of the panel stays on
     // whichever screen the cursor is on (multi-monitor safe).
     QPoint clampedFloatingPosition(QDockWidget *dock,
@@ -83,6 +95,34 @@ public:
     QMainWindow *host() const { return m_host; }
 
 private:
+    // --- floating-size normalization -----------------------------------------
+    void applyFloatingSize(QDockWidget *dock);
+    QSize normalizedFloatingSize(QDockWidget *dock) const;
+    // Records a floating panel's current size as the user's choice (called
+    // when the panel redocks and when the layout is saved).
+    void rememberFloatingSize(QDockWidget *dock);
+
+    // --- sidebar-width preservation ------------------------------------------
+    // Runs a layout-mutating drop operation and re-asserts the destination
+    // sidebar's width afterwards, so inserting a tab/split never resizes a
+    // manually sized sidebar (and never shrinks the central canvas).
+    void preserveSidebarWidth(Qt::DockWidgetArea area,
+                              const std::function<void()> &operation);
+    void applySidebarWidth(Qt::DockWidgetArea area, int width);
+    void releaseSidebarWidthHolds();
+    void releaseWidthHold(QDockWidget *dock);
+    // Qt pins a floating dock window's min/max to its content hints (a
+    // collapsed float pins to the bare title bar) and the pins survive
+    // redocking — cleared on every path that returns a dock to the layout.
+    void clearWidthConstraints(QDockWidget *dock);
+    // A dock that can represent the sidebar for resizeDocks(): docked in the
+    // area and open; the painted one when the area holds a tab group (Qt's
+    // documented "one representative per tab group").
+    QDockWidget *representativeDock(Qt::DockWidgetArea area) const;
+    int sidebarWidth(Qt::DockWidgetArea area) const; // -1: area empty
+    // Saved layouts that pre-date the left/right-only rule may place a dock
+    // top/bottom; move any such dock into the right sidebar.
+    void normalizeDockAreas();
     // A drop on a target's edge must create a REAL split even when the
     // target sits inside a tabbed group. Qt documents that splitDockWidget()
     // degrades to "add as another tab" for tabified docks, so this helper

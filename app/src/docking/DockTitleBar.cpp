@@ -76,13 +76,11 @@ void DockTitleBar::mouseMoveEvent(QMouseEvent *event)
         m_dragging = true;
         setCursor(Qt::ClosedHandCursor);
         if (!m_dock->isFloating()) {
-            // Float in place under the cursor. A collapsed panel keeps its
-            // pinned title-bar-only height — floating must NOT expand it.
-            const bool collapsed = m_controller->isDockCollapsed(m_dock);
-            m_dock->setFloating(true);
-            if (!collapsed)
-                m_dock->resize(qMax(260, m_dock->width()),
-                               qMax(240, m_dock->height()));
+            // Float under the cursor at the panel's normalized floating size
+            // (default or its remembered manual size — applied ONCE at the
+            // transition, never during the mouse moves that follow; a
+            // collapsed panel keeps its pinned title-bar-only height).
+            m_controller->floatDockForDrag(m_dock);
         }
         m_dragOffset = globalPos - m_dock->frameGeometry().topLeft();
         if (m_dragOffset.x() < 0 || m_dragOffset.x() > m_dock->width())
