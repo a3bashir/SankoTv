@@ -90,6 +90,11 @@ public:
     void applyPanelInsertForUndo(Scene *scene, int index, Panel *panel);
     Panel *applyPanelRemoveForUndo(Scene *scene, int index);
     void applyPanelMoveForUndo(Scene *scene, int from, int to);
+    // Layer-stack undo: restore a panel's whole layer vector + active index
+    // (QImage handles are implicitly shared, so snapshots are cheap), then
+    // refresh the canvas/panel/thumb UI.
+    void applyLayerStackForUndo(Panel *panel, const QVector<Layer> &layers,
+                                int activeIndex);
 
     // Panel-level clipboard. Copy stores an owned deep copy; paste inserts a
     // fresh clone (new layer UUIDs) each time. Cut is blocked on a scene's
@@ -159,9 +164,23 @@ private:
 
     void layerContextMenu(int index, const QPoint &globalPos);
     void startLayerDrag(int index); // QDrag carrying the selected indices
-    // Shared core of Merge and Group: flatten the given ascending indices
-    // into the lowest one (optionally renaming it).
+    // Merge core: flatten the given ascending indices into the lowest one
+    // (optionally renaming it).
     void mergeLayerIndices(const QVector<int> &indices, const QString &newName);
+    void layerDuplicateToPanel(int index); // real copy, never a shared ref
+    bool duplicateLayerToPanelCore(int index, Panel *target);
+    void layerUngroup(int groupIndex);     // dissolve a folder, keep members
+    // Selection expanded so any selected group row brings its whole member
+    // block along (delete/duplicate/move act on blocks).
+    QVector<int> expandGroupBlocks(const QVector<int> &indices) const;
+    // Every layer operation funnels its undo entry through here: snapshot
+    // taken BEFORE the mutation, current state captured as "after".
+    void pushLayerCommand(Panel *panel, const QVector<Layer> &before,
+                          int beforeActive, const QString &text);
+    // Delete confirmation (item: Delete/Cancel + "don't ask again" for
+    // EMPTY layers only). True = go ahead.
+    bool confirmLayerDelete(const QVector<int> &indices);
+    void updateActiveLayerThumb(); // live row-thumbnail refresh while drawing
 
     // Reuse-across-panels (shared layers): reference the SAME layer data
     // from another panel. Instances share pixels via sharedId; edits made

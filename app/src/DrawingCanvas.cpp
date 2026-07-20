@@ -563,7 +563,10 @@ Layer *DrawingCanvas::editableActiveLayer() const
     if (!m_panel)
         return nullptr;
     Layer *layer = m_panel->activeLayer();
-    if (!layer || layer->locked || !layer->visible)
+    // Group folders are organisation rows, never paint targets; a member of
+    // a hidden folder is as un-drawable as a hidden layer.
+    if (!layer || layer->locked || isGroupLayer(*layer)
+        || !m_panel->layerEffectivelyVisible(*layer))
         return nullptr;
     return layer;
 }
@@ -3662,9 +3665,15 @@ void DrawingCanvas::paintEvent(QPaintEvent *event)
             drawLightTable(painter, canvasRi);
             lightTableDrawn = true;
         }
-        if (!layer.visible || layer.image.isNull() || layer.opacity <= 0.0)
+        // Group folders paint nothing; members inherit folder visibility
+        // and multiply by folder opacity (matches flattenedPixmap exactly).
+        if (isGroupLayer(layer))
             continue;
-        painter.setOpacity(qBound(0.0, layer.opacity, 1.0));
+        const double effOpacity = m_panel->layerEffectiveOpacity(layer);
+        if (!m_panel->layerEffectivelyVisible(layer) || layer.image.isNull()
+            || effOpacity <= 0.0)
+            continue;
+        painter.setOpacity(effOpacity);
         if (m_xformActive && !m_transformBuf.isNull()
             && &layer == m_panel->activeLayer()) {
             // Live transform session: the MODEL keeps the committed pixels
@@ -3853,6 +3862,13 @@ void DrawingCanvas::paintEvent(QPaintEvent *event)
     // transform T.
     if (m_xformActive && !m_transformBuf.isNull()) {
         painter.save();
+        // The lifted pixels come from the ACTIVE layer: preview them at that
+        // layer's (group-aware) opacity, or a 50% layer would flash to 100%
+        // whenever the Move tool lifts it. The commit path is unaffected —
+        // it writes pixels back into the layer, whose opacity applies at
+        // composite time as always.
+        if (const Layer *active = m_panel->activeLayer())
+            painter.setOpacity(m_panel->layerEffectiveOpacity(*active));
         if (m_warpDirty) {
             paintWarpedBuffer(painter, 4.0); // same path+params as the commit
         } else {

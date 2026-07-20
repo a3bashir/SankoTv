@@ -140,6 +140,7 @@ MainWindow::MainWindow(QWidget *parent)
 
     updateSaveActions();
     updateTitle();
+
 }
 
 MainWindow::~MainWindow()
@@ -443,9 +444,16 @@ bool MainWindow::saveToPath(const QString &path)
                     layerObj[QStringLiteral("colorTag")] = layer.colorTag;
                 if (!layer.sharedId.isEmpty())
                     layerObj[QStringLiteral("sharedId")] = layer.sharedId;
+                // Layer groups (folders): membership + UI expand state.
+                if (!layer.groupId.isEmpty())
+                    layerObj[QStringLiteral("groupId")] = layer.groupId;
+                if (layer.type == QLatin1String("group"))
+                    layerObj[QStringLiteral("groupExpanded")] = layer.groupExpanded;
 
-                const bool imageAlreadySaved = !layer.sharedId.isEmpty()
-                    && savedSharedLayers.contains(layer.sharedId);
+                const bool imageAlreadySaved =
+                    layer.type == QLatin1String("group") // folders own no pixels
+                    || (!layer.sharedId.isEmpty()
+                        && savedSharedLayers.contains(layer.sharedId));
                 if (!imageAlreadySaved) {
                     const QString layerPng =
                         QStringLiteral("panel_s%1_p%2_layer%3.png").arg(i).arg(j).arg(k);
@@ -670,6 +678,9 @@ bool MainWindow::loadFromPath(const QString &path)
                     layer.locked = layerObj.value(QStringLiteral("locked")).toBool(false);
                     layer.colorTag = layerObj.value(QStringLiteral("colorTag")).toString();
                     layer.sharedId = layerObj.value(QStringLiteral("sharedId")).toString();
+                    layer.groupId = layerObj.value(QStringLiteral("groupId")).toString();
+                    layer.groupExpanded =
+                        layerObj.value(QStringLiteral("groupExpanded")).toBool(true);
 
                     QImage img;
                     const QString layerPng = layerObj.value(QStringLiteral("imageFile")).toString();
@@ -689,9 +700,12 @@ bool MainWindow::loadFromPath(const QString &path)
                             img = sharedLayerImages.value(layer.sharedId);
                         }
                     }
-                    layer.image = img.isNull()
-                        ? makeLayerImage()
-                        : img.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+                    layer.image = layer.type == QLatin1String("group")
+                        ? QImage() // folders own no pixels
+                        : (img.isNull()
+                               ? makeLayerImage()
+                               : img.convertToFormat(
+                                     QImage::Format_ARGB32_Premultiplied));
                     panel->layers.append(layer);
                 }
             } else {

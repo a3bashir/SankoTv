@@ -41,7 +41,21 @@ struct Layer
     // Optional organisational colour label (Photoshop-style layer colour),
     // shown as an edge stripe in the Layers panel. Empty = none.
     QString colorTag;       // "#RRGGBB"
+    // Layer groups (folders). A group is a Layer entry with type "group"
+    // (null image, never drawn on); its members carry groupId == the group
+    // entry's id and sit CONTIGUOUSLY directly beneath it in the vector, so
+    // the block moves/duplicates/deletes as one. One level deep (groups
+    // cannot nest). groupExpanded is UI state on the group entry only.
+    QString groupId;        // member -> owning group's id; empty = root
+    bool groupExpanded = true;
 };
+
+// True for a group (folder) entry — a UI/organisation row, never a paint
+// target.
+inline bool isGroupLayer(const Layer &layer)
+{
+    return layer.type == QLatin1String("group");
+}
 
 // A fresh, fully transparent canvas-sized layer image.
 inline QImage makeLayerImage()
@@ -100,9 +114,39 @@ struct Panel
         return &layers.at(activeLayerIndex);
     }
 
+    // The group entry owning `layer`, or null (root layer / group row).
+    const Layer *groupOf(const Layer &layer) const
+    {
+        if (layer.groupId.isEmpty())
+            return nullptr;
+        for (const Layer &candidate : layers)
+            if (candidate.id == layer.groupId
+                && candidate.type == QLatin1String("group"))
+                return &candidate;
+        return nullptr;
+    }
+
+    // Group-aware render state: a member inherits its folder's visibility
+    // (both eyes must be on) and multiplies by the folder's opacity.
+    bool layerEffectivelyVisible(const Layer &layer) const
+    {
+        if (!layer.visible)
+            return false;
+        const Layer *group = groupOf(layer);
+        return !group || group->visible;
+    }
+    double layerEffectiveOpacity(const Layer &layer) const
+    {
+        const double own = qBound(0.0, layer.opacity, 1.0);
+        const Layer *group = groupOf(layer);
+        return group ? own * qBound(0.0, group->opacity, 1.0) : own;
+    }
+
     // Composite all VISIBLE layers bottom-to-top with per-layer opacity onto
     // white paper. This is the single merged view — thumbnails, onion skin,
     // Animatic, Generation, and Export all read this instead of raw pixels.
+    // Group folders paint nothing themselves; members composite with the
+    // folder's visibility/opacity applied.
     QPixmap flattenedPixmap() const
     {
         QImage out(960, 540, QImage::Format_ARGB32_Premultiplied);
@@ -110,9 +154,14 @@ struct Panel
         QPainter painter(&out);
         painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
         for (const Layer &layer : layers) {
-            if (!layer.visible || layer.image.isNull() || layer.opacity <= 0.0)
+            if (layer.type == QLatin1String("group"))
                 continue;
-            painter.setOpacity(qBound(0.0, layer.opacity, 1.0));
+            if (!layerEffectivelyVisible(layer) || layer.image.isNull())
+                continue;
+            const double opacity = layerEffectiveOpacity(layer);
+            if (opacity <= 0.0)
+                continue;
+            painter.setOpacity(opacity);
             painter.drawImage(0, 0, layer.image);
         }
         painter.end();

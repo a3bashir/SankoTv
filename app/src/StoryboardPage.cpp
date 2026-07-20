@@ -21,6 +21,8 @@
 #include <QDrag>
 #include <QDropEvent>
 #include <QMimeData>
+
+#include <memory>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QCoreApplication>
@@ -1538,6 +1540,8 @@ public:
     }
 
     std::function<void(int)> onChanged;
+    std::function<void()> onDragStarted;  // undo snapshot boundary
+    std::function<void()> onDragFinished; // undo push boundary
     int value() const { return m_value; }
     void setValueSilent(int v)
     {
@@ -1579,11 +1583,22 @@ protected:
         dp.addRoundedRect(QRectF(dragLeft, track.top(), 20, 6), 1, 1);
         p.fillPath(dp, QColor(0xb3, 0xb3, 0xb3));
     }
-    void mousePressEvent(QMouseEvent *e) override { setFromX(e->position().x()); }
+    void mousePressEvent(QMouseEvent *e) override
+    {
+        if (onDragStarted)
+            onDragStarted();
+        setFromX(e->position().x());
+    }
     void mouseMoveEvent(QMouseEvent *e) override
     {
         if (e->buttons() & Qt::LeftButton)
             setFromX(e->position().x());
+    }
+    void mouseReleaseEvent(QMouseEvent *e) override
+    {
+        Q_UNUSED(e);
+        if (onDragFinished)
+            onDragFinished();
     }
 
 private:
@@ -1598,6 +1613,70 @@ private:
             onChanged(v);
     }
     int m_value = 100;
+};
+
+// True when the layer carries any artwork the user could lose: imported
+// images always count; raster layers count once any pixel has alpha. The
+// Background (paper) and group folders never block the empty-delete skip.
+bool layerHasContent(const Layer &layer)
+{
+    if (isGroupLayer(layer))
+        return false;
+    if (layer.type == QLatin1String("image"))
+        return true;
+    const QImage &img = layer.image;
+    if (img.isNull())
+        return false;
+    if (layer.type == QLatin1String("background"))
+        return false; // plain paper — deleting it is blocked elsewhere anyway
+    for (int y = 0; y < img.height(); ++y) {
+        const QRgb *line = reinterpret_cast<const QRgb *>(img.constScanLine(y));
+        for (int x = 0; x < img.width(); ++x)
+            if (qAlpha(line[x]) != 0)
+                return true;
+    }
+    return false;
+}
+
+// One layer-STACK edit (add / delete / duplicate / merge / group / reorder /
+// rename / colour / visibility / lock / opacity): before/after snapshots of
+// the whole vector + active index. QImage's implicit sharing makes the
+// snapshots cheap; pixel edits still go through DrawingCommand, so stroke
+// data is never forked. The first redo() is skipped because the edit has
+// already been applied interactively when the command is pushed.
+class LayerStackCommand : public QUndoCommand
+{
+public:
+    LayerStackCommand(StoryboardPage *page, Panel *panel,
+                      QVector<Layer> before, int beforeActive,
+                      QVector<Layer> after, int afterActive,
+                      const QString &text)
+        : QUndoCommand(text), m_page(page), m_panel(panel),
+          m_before(std::move(before)), m_beforeActive(beforeActive),
+          m_after(std::move(after)), m_afterActive(afterActive)
+    {
+    }
+    void redo() override
+    {
+        if (m_skipFirstRedo) {
+            m_skipFirstRedo = false;
+            return;
+        }
+        m_page->applyLayerStackForUndo(m_panel, m_after, m_afterActive);
+    }
+    void undo() override
+    {
+        m_page->applyLayerStackForUndo(m_panel, m_before, m_beforeActive);
+    }
+
+private:
+    StoryboardPage *m_page;
+    Panel *m_panel;
+    QVector<Layer> m_before;
+    int m_beforeActive;
+    QVector<Layer> m_after;
+    int m_afterActive;
+    bool m_skipFirstRedo = true;
 };
 
 // --- App-wide undo commands for the panel list --------------------------------
@@ -1931,6 +2010,7 @@ StoryboardPage::StoryboardPage(QWidget *parent)
 
 
 
+
     updateDuplicateButton(); // panel-action buttons disabled until a panel is selected
 }
 
@@ -2175,6 +2255,7 @@ QWidget *StoryboardPage::createCenterColumn()
     m_canvas = new DrawingCanvas;
     connect(m_canvas, &DrawingCanvas::contentChanged, this, [this] {
         refreshCurrentThumb();
+        updateActiveLayerThumb(); // the drawn layer's row preview, live
         syncSharedLayers(currentPanel()); // shared layers mirror the edit
     });
     // Undo/redo may rewrite a panel that is NOT current; refresh ITS thumb.
@@ -4628,6 +4709,29 @@ QWidget *StoryboardPage::createLayerPanel()
         layer->opacity = v / 100.0;
         refreshLayerCanvas(); // live: canvas composite + panel thumbnail
     };
+    // One undo entry per opacity DRAG (snapshot at press, push at release).
+    auto opacityBefore = std::make_shared<QVector<Layer>>();
+    auto opacityBeforeActive = std::make_shared<int>(0);
+    auto opacityStartValue = std::make_shared<int>(-1);
+    slider->onDragStarted = [this, opacityBefore, opacityBeforeActive,
+                             opacityStartValue, slider] {
+        if (Panel *p = currentPanel()) {
+            *opacityBefore = p->layers;
+            *opacityBeforeActive = p->activeLayerIndex;
+            *opacityStartValue = slider->value();
+        }
+    };
+    slider->onDragFinished = [this, opacityBefore, opacityBeforeActive,
+                              opacityStartValue, slider] {
+        Panel *p = currentPanel();
+        if (!p || *opacityStartValue < 0
+            || slider->value() == *opacityStartValue)
+            return;
+        pushLayerCommand(p, *opacityBefore, *opacityBeforeActive,
+                         QStringLiteral("Layer Opacity"));
+        *opacityStartValue = -1;
+    };
+
     // rebuildLayerPanel() syncs the active layer's opacity through here
     // (pct < 0 => no active layer => disabled).
     m_syncLayerOpacity = [slider, opacityValue](int pct) {
@@ -4800,22 +4904,36 @@ void StoryboardPage::rebuildLayerPanel()
         return;
     }
 
+    // Collapsed folders hide their member rows.
+    QSet<QString> collapsed;
+    for (const Layer &layer : panel->layers)
+        if (isGroupLayer(layer) && !layer.groupExpanded)
+            collapsed.insert(layer.id);
+
     // Top row = frontmost layer = highest vector index (Figma layerRow).
     for (int i = panel->layers.size() - 1; i >= 0; --i) {
         const Layer &layer = panel->layers.at(i);
-        const bool isActive = (i == panel->activeLayerIndex);
+        if (!layer.groupId.isEmpty() && collapsed.contains(layer.groupId))
+            continue; // inside a collapsed folder
+        const bool isGroup = isGroupLayer(layer);
         const bool isSelected = m_layerSelection.contains(i);
 
-        Q_UNUSED(isActive);
         LayerRowFrame *row = new LayerRowFrame(i, nullptr);
         row->selected = isSelected;
+        row->setProperty("layerIndex", i); // live-thumb + drag-ghost lookup
         // Figma layerRow: default bg #161616 / border #232323; selected
         // bg #1b1b1b / border #f5a623 (Figma 7:86). Radius 4.
-        row->setStyleSheet(isSelected
+        QString style = isSelected
             ? QStringLiteral("QFrame#layerRow { background-color: #1b1b1b;"
                              " border: 1px solid #f5a623; border-radius: 4px; }")
             : QStringLiteral("QFrame#layerRow { background-color: #161616;"
-                             " border: 1px solid #232323; border-radius: 4px; }"));
+                             " border: 1px solid #232323; border-radius: 4px; }");
+        // The layer's colour tag shows as a thicker left edge stripe.
+        if (!layer.colorTag.isEmpty())
+            style += QStringLiteral(
+                "QFrame#layerRow { border-left: 3px solid %1; }")
+                .arg(layer.colorTag);
+        row->setStyleSheet(style);
 
         QHBoxLayout *rowLayout = new QHBoxLayout(row);
         // Figma pl 6 / pr 7, but the row's own 1px border sits inside the
@@ -4823,6 +4941,33 @@ void StoryboardPage::rebuildLayerPanel()
         // the children at the exact Figma x-offsets (eye 6, thumb 25, ...).
         rowLayout->setContentsMargins(5, 0, 6, 0);
         rowLayout->setSpacing(6); // Figma gap 6
+
+        // Folder members indent beneath their folder row.
+        if (!layer.groupId.isEmpty())
+            rowLayout->addSpacing(14);
+
+        // Folder rows lead with an expand/collapse chevron.
+        if (isGroup) {
+            QPushButton *chevron =
+                new QPushButton(layer.groupExpanded
+                                    ? QString::fromUtf8("\xE2\x96\xBE")   // U+25BE
+                                    : QString::fromUtf8("\xE2\x96\xB8")); // U+25B8
+            chevron->setToolTip(QStringLiteral("Expand / collapse group"));
+            chevron->setCursor(Qt::PointingHandCursor);
+            chevron->setFocusPolicy(Qt::NoFocus);
+            chevron->setFixedSize(13, 13);
+            chevron->setStyleSheet(QStringLiteral(
+                "QPushButton { background: transparent; border: none;"
+                " color: #999999; font-size: 9px; padding: 0; }"));
+            connect(chevron, &QPushButton::clicked, this, [this, i] {
+                Panel *p = currentPanel();
+                if (!p || i < 0 || i >= p->layers.size())
+                    return;
+                p->layers[i].groupExpanded = !p->layers[i].groupExpanded;
+                rebuildLayerPanel(); // pure UI state: not an undo entry
+            });
+            rowLayout->addWidget(chevron, 0, Qt::AlignVCenter);
+        }
 
         // Visibility (eye) toggle — Figma eye 13x13 (7:74 eye), native #CCC.
         QPushButton *eye = new QPushButton;
@@ -4840,18 +4985,28 @@ void StoryboardPage::rebuildLayerPanel()
             Panel *p = currentPanel();
             if (!p || i < 0 || i >= p->layers.size())
                 return;
+            const QVector<Layer> before = p->layers;
+            const int beforeActive = p->activeLayerIndex;
             p->layers[i].visible = !p->layers[i].visible;
+            pushLayerCommand(p, before, beforeActive,
+                             QStringLiteral("Toggle Layer Visibility"));
             refreshLayerCanvas();
             rebuildLayerPanel();
         });
         rowLayout->addWidget(eye, 0, Qt::AlignVCenter);
 
-        // Layer thumbnail (Figma th 40x22, bg #1A1A1A / border #2A2A2A / r2).
+        // Layer thumbnail (Figma th 40x22, bg #1A1A1A / border #2A2A2A / r2);
+        // folder rows show the group glyph instead of pixels.
         QLabel *thumb = new QLabel;
+        thumb->setObjectName(QStringLiteral("layerThumb")); // live updates
         thumb->setFixedSize(40, 22);
+        thumb->setAlignment(Qt::AlignCenter);
         thumb->setStyleSheet(QStringLiteral(
             "background-color: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 2px;"));
-        thumb->setPixmap(layerThumb(layer));
+        thumb->setPixmap(isGroup
+            ? layerIconPm(QStringLiteral(":/icons/layer_group.svg"),
+                          QSizeF(16, 13))
+            : layerThumb(layer));
         rowLayout->addWidget(thumb, 0, Qt::AlignVCenter);
 
         // Name (Figma 7:77, Inter Regular 11px #CCC). Double-click to rename.
@@ -4882,7 +5037,11 @@ void StoryboardPage::rebuildLayerPanel()
             Panel *p = currentPanel();
             if (!p || i < 0 || i >= p->layers.size())
                 return;
+            const QVector<Layer> before = p->layers;
+            const int beforeActive = p->activeLayerIndex;
             p->layers[i].locked = !p->layers[i].locked;
+            pushLayerCommand(p, before, beforeActive,
+                             QStringLiteral("Toggle Layer Lock"));
             rebuildLayerPanel();
         });
         rowLayout->addWidget(lock, 0, Qt::AlignVCenter);
@@ -5008,8 +5167,13 @@ void StoryboardPage::layerBeginRename(int index)
         edit->deleteLater();
         Panel *p = currentPanel();
         if (!*cancelled && p && index >= 0 && index < p->layers.size()
-            && !text.isEmpty())
+            && !text.isEmpty() && p->layers.at(index).name != text) {
+            const QVector<Layer> before = p->layers;
+            const int beforeActive = p->activeLayerIndex;
             p->layers[index].name = text;
+            pushLayerCommand(p, before, beforeActive,
+                             QStringLiteral("Rename Layer"));
+        }
         rebuildLayerPanel();
     });
 }
@@ -5050,7 +5214,11 @@ void StoryboardPage::layerContextMenu(int index, const QPoint &globalPos)
             Panel *p = currentPanel();
             if (!p || index < 0 || index >= p->layers.size())
                 return;
+            const QVector<Layer> before = p->layers;
+            const int beforeActive = p->activeLayerIndex;
             p->layers[index].colorTag = hex;
+            pushLayerCommand(p, before, beforeActive,
+                             QStringLiteral("Change Layer Color"));
             rebuildLayerPanel();
         });
     }
@@ -5062,11 +5230,27 @@ void StoryboardPage::layerContextMenu(int index, const QPoint &globalPos)
     connect(duplicate, &QAction::triggered, this,
             [this] { layerDuplicateSelected(); });
 
+    const bool plainLayer =
+        panel->layers.at(index).type != QLatin1String("background")
+        && !isGroupLayer(panel->layers.at(index));
+    QAction *duplicateTo =
+        menu.addAction(QStringLiteral("Duplicate to Another Panel"));
+    duplicateTo->setEnabled(plainLayer);
+    connect(duplicateTo, &QAction::triggered, this,
+            [this, index] { layerDuplicateToPanel(index); });
+
     QAction *reuse =
         menu.addAction(QStringLiteral("Copy/Reuse Layer in Another Panel"));
-    reuse->setEnabled(panel->layers.at(index).type != QLatin1String("background"));
+    reuse->setEnabled(plainLayer);
     connect(reuse, &QAction::triggered, this,
             [this, index] { layerReuseInPanel(index); });
+
+    if (isGroupLayer(panel->layers.at(index))) {
+        menu.addSeparator();
+        QAction *ungroup = menu.addAction(QStringLiteral("Ungroup"));
+        connect(ungroup, &QAction::triggered, this,
+                [this, index] { layerUngroup(index); });
+    }
 
     menu.exec(globalPos);
 }
@@ -5083,7 +5267,11 @@ void StoryboardPage::layerSetColorTag(int index)
         QColorDialog::getColor(start, this, QStringLiteral("Layer Color"));
     if (!color.isValid())
         return;
+    const QVector<Layer> before = panel->layers;
+    const int beforeActive = panel->activeLayerIndex;
     panel->layers[index].colorTag = color.name();
+    pushLayerCommand(panel, before, beforeActive,
+                     QStringLiteral("Change Layer Color"));
     rebuildLayerPanel();
 }
 
@@ -5093,40 +5281,64 @@ void StoryboardPage::layerAdd()
     if (!panel)
         return;
     m_canvas->commitQuickShape();
+    const QVector<Layer> before = panel->layers;
+    const int beforeActive = panel->activeLayerIndex;
     Layer layer = makeRasterLayer(QStringLiteral("Layer %1").arg(panel->layers.size() + 1));
-    const int insertAt = qBound(0, panel->activeLayerIndex + 1, panel->layers.size());
+    int insertAt = qBound(0, panel->activeLayerIndex + 1, panel->layers.size());
+    // Inserting from inside a group joins that group (block stays whole).
+    if (panel->activeLayerIndex >= 0
+        && panel->activeLayerIndex < panel->layers.size()) {
+        const Layer &active = panel->layers.at(panel->activeLayerIndex);
+        if (!active.groupId.isEmpty())
+            layer.groupId = active.groupId;
+    }
     panel->layers.insert(insertAt, layer);
     panel->activeLayerIndex = insertAt;
     m_layerSelection.clear();
     m_layerSelection.insert(insertAt);
     m_layerAnchor = insertAt;
+    pushLayerCommand(panel, before, beforeActive, QStringLiteral("Add Layer"));
     refreshLayerCanvas();
     rebuildLayerPanel();
 }
 
 void StoryboardPage::layerAddImage()
 {
-    if (!currentPanel() || !m_canvas)
+    Panel *panel = currentPanel();
+    if (!panel || !m_canvas)
         return;
     const QString path = QFileDialog::getOpenFileName(
         this, QStringLiteral("Import Image Layer"), QString(),
         QStringLiteral("Images (*.png *.jpg *.jpeg *.webp)"));
     if (path.isEmpty())
         return;
-    m_canvas->importImage(path); // inserts the layer + emits layersChanged -> rebuild
+    const QVector<Layer> before = panel->layers;
+    const int beforeActive = panel->activeLayerIndex;
+    if (m_canvas->importImage(path)) // inserts + emits layersChanged -> rebuild
+        pushLayerCommand(panel, before, beforeActive,
+                         QStringLiteral("Import Image Layer"));
 }
 
 void StoryboardPage::layerDeleteSelected()
 {
     Panel *panel = currentPanel();
-    const QVector<int> sel = selectedLayers();
+    // A selected group row deletes its whole folder (members included);
+    // ONE coherent operation and ONE undo entry regardless of selection
+    // order or direction.
+    const QVector<int> sel = expandGroupBlocks(selectedLayers());
     if (!panel || sel.isEmpty())
         return;
+    if (!confirmLayerDelete(sel))
+        return;
     m_canvas->commitQuickShape();
+    const QVector<Layer> before = panel->layers;
+    const int beforeActive = panel->activeLayerIndex;
 
     QStringList releasedShared;
     int removedBelowActive = 0;
     bool activeRemoved = false;
+    // Descending removal keeps every remaining index in `sel` valid, so a
+    // bottom-up selection deletes exactly what was selected.
     for (int k = sel.size() - 1; k >= 0; --k) {
         const int idx = sel.at(k);
         if (panel->layers.size() <= 1)
@@ -5153,6 +5365,9 @@ void StoryboardPage::layerDeleteSelected()
     m_layerSelection.clear();
     m_layerSelection.insert(panel->activeLayerIndex);
     m_layerAnchor = panel->activeLayerIndex;
+    pushLayerCommand(panel, before, beforeActive,
+                     sel.size() == 1 ? QStringLiteral("Delete Layer")
+                                     : QStringLiteral("Delete Layers"));
     refreshLayerCanvas();
     rebuildLayerPanel();
 }
@@ -5160,23 +5375,49 @@ void StoryboardPage::layerDeleteSelected()
 void StoryboardPage::layerDuplicateSelected()
 {
     Panel *panel = currentPanel();
-    const QVector<int> sel = selectedLayers();
+    // Group rows duplicate their whole folder (fresh folder id, members
+    // remapped into it).
+    const QVector<int> sel = expandGroupBlocks(selectedLayers());
     if (!panel || sel.isEmpty())
         return;
     m_canvas->commitQuickShape();
+    const QVector<Layer> before = panel->layers;
+    const int beforeActive = panel->activeLayerIndex;
 
     // Copies (deep image copy, fresh id, NEVER shared) land as one block
-    // directly above the topmost selected layer, keeping relative order.
+    // directly above the topmost selected item, keeping relative order.
+    // Copies stay inside a parent group only when the whole selection lives
+    // in that one group (keeps member blocks contiguous under their folder).
+    QString commonGroup =
+        panel->layers.at(sel.first()).groupId; // may be empty
+    bool sameGroup = true;
+    for (int idx : sel) {
+        const Layer &src = panel->layers.at(idx);
+        if (isGroupLayer(src) || src.groupId != commonGroup) {
+            sameGroup = false;
+            break;
+        }
+    }
     const int insertAt = sel.last() + 1;
+    QHash<QString, QString> groupRemap; // old folder id -> new folder id
     QVector<Layer> copies;
     copies.reserve(sel.size());
     for (int idx : sel) {
         Layer copy = panel->layers.at(idx);
         copy.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
         copy.sharedId.clear();
-        copy.image = copy.image.copy();
+        if (!copy.image.isNull())
+            copy.image = copy.image.copy();
         copy.name = copy.name + QStringLiteral(" copy");
+        if (isGroupLayer(panel->layers.at(idx)))
+            groupRemap.insert(panel->layers.at(idx).id, copy.id);
         copies.append(copy);
+    }
+    for (Layer &copy : copies) {
+        if (groupRemap.contains(copy.groupId))
+            copy.groupId = groupRemap.value(copy.groupId); // copied folder
+        else if (!sameGroup)
+            copy.groupId.clear(); // mixed selection -> copies land at root
     }
     for (int k = 0; k < copies.size(); ++k)
         panel->layers.insert(insertAt + k, copies.at(k));
@@ -5186,19 +5427,98 @@ void StoryboardPage::layerDuplicateSelected()
         m_layerSelection.insert(insertAt + k);
     panel->activeLayerIndex = insertAt + copies.size() - 1;
     m_layerAnchor = panel->activeLayerIndex;
+    pushLayerCommand(panel, before, beforeActive,
+                     QStringLiteral("Duplicate Layer"));
     refreshLayerCanvas();
     rebuildLayerPanel();
 }
 
+// Real deep copy into another panel — never a shared reference.
+void StoryboardPage::layerDuplicateToPanel(int index)
+{
+    Panel *panel = currentPanel();
+    if (!panel || index < 0 || index >= panel->layers.size())
+        return;
+    const Layer &source = panel->layers.at(index);
+    if (source.type == QLatin1String("background") || isGroupLayer(source))
+        return;
+
+    QStringList labels;
+    QVector<Panel *> targets;
+    for (Scene *scene : m_scenes)
+        for (int p = 0; p < scene->panels.size(); ++p) {
+            Panel *target = scene->panels.at(p);
+            if (target == panel)
+                continue;
+            labels << QStringLiteral("Scene %1 — Panel %2")
+                          .arg(scene->number)
+                          .arg(p + 1);
+            targets.append(target);
+        }
+    if (targets.isEmpty()) {
+        QMessageBox::information(
+            this, QStringLiteral("Duplicate Layer"),
+            QStringLiteral("There is no other panel to duplicate this layer into."));
+        return;
+    }
+    bool ok = false;
+    const QString choice = QInputDialog::getItem(
+        this, QStringLiteral("Duplicate to Another Panel"),
+        QStringLiteral("Copy \"%1\" into:").arg(source.name), labels, 0,
+        false, &ok);
+    if (!ok)
+        return;
+    duplicateLayerToPanelCore(index, targets.at(labels.indexOf(choice)));
+}
+
+bool StoryboardPage::duplicateLayerToPanelCore(int index, Panel *target)
+{
+    Panel *panel = currentPanel();
+    if (!panel || !target || target == panel || index < 0
+        || index >= panel->layers.size())
+        return false;
+    const Layer &source = panel->layers.at(index);
+    if (source.type == QLatin1String("background") || isGroupLayer(source))
+        return false;
+
+    const QVector<Layer> before = target->layers;
+    const int beforeActive = target->activeLayerIndex;
+    Layer copy = source;
+    copy.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    copy.sharedId.clear();
+    copy.groupId.clear();
+    copy.image = copy.image.copy(); // REAL copy, independent pixels
+    target->layers.append(copy);    // frontmost in the target panel
+    pushLayerCommand(target, before, beforeActive,
+                     QStringLiteral("Duplicate Layer to Panel"));
+    if (Scene *scene = currentScene()) {
+        const int idx = scene->panels.indexOf(target);
+        if (idx >= 0 && idx < m_panelThumbImages.size())
+            m_panelThumbImages.at(idx)->setPixmap(
+                target->flattenedPixmap().scaled(kThumbW, kThumbH,
+                                                 Qt::IgnoreAspectRatio,
+                                                 Qt::SmoothTransformation));
+    }
+    return true;
+}
+
 // Shared core of Merge and Group: flatten the given ascending indices into
 // the LOWEST one (respecting per-layer opacity), optionally renaming it.
-void StoryboardPage::mergeLayerIndices(const QVector<int> &indices,
+void StoryboardPage::mergeLayerIndices(const QVector<int> &rawIndices,
                                        const QString &newName)
 {
     Panel *panel = currentPanel();
+    // Merging flattens PIXELS: group folder rows can never take part.
+    QVector<int> indices;
+    for (int idx : rawIndices)
+        if (idx >= 0 && idx < (panel ? panel->layers.size() : 0)
+            && !isGroupLayer(panel->layers.at(idx)))
+            indices.append(idx);
     if (!panel || indices.size() < 2)
         return;
     m_canvas->commitQuickShape();
+    const QVector<Layer> beforeStack = panel->layers;
+    const int beforeActive = panel->activeLayerIndex;
 
     const int targetIdx = indices.first();
     Layer &target = panel->layers[targetIdx];
@@ -5227,6 +5547,8 @@ void StoryboardPage::mergeLayerIndices(const QVector<int> &indices,
     m_layerSelection.clear();
     m_layerSelection.insert(targetIdx);
     m_layerAnchor = targetIdx;
+    pushLayerCommand(panel, beforeStack, beforeActive,
+                     QStringLiteral("Merge Layers"));
     syncSharedLayers(panel); // a shared target propagates the merged pixels
     refreshLayerCanvas();
     rebuildLayerPanel();
@@ -5252,19 +5574,87 @@ void StoryboardPage::layerMergeSelected()
     mergeLayerIndices(QVector<int>{idx - 1, idx}, QString());
 }
 
+// Group = FOLDER: the selected layers move into a new expandable group
+// entry, each keeping its own pixels/settings. One level deep (a folder
+// cannot hold another folder); layers already inside a folder move into the
+// new one.
 void StoryboardPage::layerGroupSelected()
 {
-    const QVector<int> sel = selectedLayers();
-    if (sel.size() < 2)
+    Panel *panel = currentPanel();
+    if (!panel)
         return;
-    // The model has no nested groups: "Group" flattens the selection into
-    // one named layer (documented behaviour).
+    QVector<int> sel;
+    for (int idx : selectedLayers())
+        if (!isGroupLayer(panel->layers.at(idx)))
+            sel.append(idx);
+    if (sel.isEmpty())
+        return;
+    m_canvas->commitQuickShape();
+    const QVector<Layer> before = panel->layers;
+    const int beforeActive = panel->activeLayerIndex;
+
+    // Pull the selected layers out (descending keeps indices valid),
+    // preserving their relative order.
+    QVector<Layer> members;
+    for (int k = sel.size() - 1; k >= 0; --k)
+        members.prepend(panel->layers.takeAt(sel.at(k)));
+
+    Layer group;
+    group.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    group.type = QStringLiteral("group");
+    group.image = QImage(); // folders own no pixels
     int groupNumber = 1;
-    if (Panel *panel = currentPanel())
-        for (const Layer &layer : panel->layers)
-            if (layer.name.startsWith(QStringLiteral("Group ")))
-                ++groupNumber;
-    mergeLayerIndices(sel, QStringLiteral("Group %1").arg(groupNumber));
+    for (const Layer &layer : panel->layers)
+        if (isGroupLayer(layer))
+            ++groupNumber;
+    group.name = QStringLiteral("Group %1").arg(groupNumber);
+    for (Layer &member : members)
+        member.groupId = group.id;
+
+    // The block reassembles where the topmost selected layer used to be,
+    // members first, folder row directly above them.
+    const int insertAt =
+        qBound(1, sel.last() - int(sel.size()) + 1, panel->layers.size());
+    for (int k = 0; k < members.size(); ++k)
+        panel->layers.insert(insertAt + k, members.at(k));
+    const int groupIdx = insertAt + members.size();
+    panel->layers.insert(groupIdx, group);
+
+    panel->activeLayerIndex = groupIdx;
+    m_layerSelection.clear();
+    m_layerSelection.insert(groupIdx);
+    m_layerAnchor = groupIdx;
+    pushLayerCommand(panel, before, beforeActive,
+                     QStringLiteral("Group Layers"));
+    refreshLayerCanvas();
+    rebuildLayerPanel();
+}
+
+// Dissolve a folder: members stay in place, back at root.
+void StoryboardPage::layerUngroup(int groupIndex)
+{
+    Panel *panel = currentPanel();
+    if (!panel || groupIndex < 0 || groupIndex >= panel->layers.size()
+        || !isGroupLayer(panel->layers.at(groupIndex)))
+        return;
+    m_canvas->commitQuickShape();
+    const QVector<Layer> before = panel->layers;
+    const int beforeActive = panel->activeLayerIndex;
+
+    const QString groupId = panel->layers.at(groupIndex).id;
+    panel->layers.removeAt(groupIndex);
+    for (Layer &layer : panel->layers)
+        if (layer.groupId == groupId)
+            layer.groupId.clear();
+
+    panel->activeLayerIndex =
+        qBound(0, panel->activeLayerIndex, panel->layers.size() - 1);
+    m_layerSelection.clear();
+    m_layerSelection.insert(panel->activeLayerIndex);
+    m_layerAnchor = panel->activeLayerIndex;
+    pushLayerCommand(panel, before, beforeActive, QStringLiteral("Ungroup"));
+    refreshLayerCanvas();
+    rebuildLayerPanel();
 }
 
 void StoryboardPage::layerClearSelected()
@@ -5274,16 +5664,20 @@ void StoryboardPage::layerClearSelected()
     if (!panel || sel.isEmpty())
         return;
     m_canvas->commitQuickShape();
+    const QVector<Layer> before = panel->layers;
+    const int beforeActive = panel->activeLayerIndex;
     bool cleared = false;
     for (int idx : sel) {
         Layer &layer = panel->layers[idx];
-        if (layer.locked)
-            continue; // locked layers keep their pixels
+        if (layer.locked || isGroupLayer(layer))
+            continue; // locked layers keep their pixels; folders have none
         layer.image = makeLayerImage(); // fresh transparent (detached) image
         cleared = true;
     }
     if (!cleared)
         return;
+    pushLayerCommand(panel, before, beforeActive,
+                     QStringLiteral("Clear Layer"));
     syncSharedLayers(panel); // cleared shared layers clear everywhere
     refreshLayerCanvas();
     rebuildLayerPanel();
@@ -5293,15 +5687,25 @@ void StoryboardPage::layerClearSelected()
 // layer lands at `insertAt` (a gap in the PRE-move list, ascending model
 // coordinates); relative order inside the block is preserved. The block can
 // never land beneath the Background layer.
-void StoryboardPage::layerMoveTo(const QVector<int> &sources, int insertAt)
+void StoryboardPage::layerMoveTo(const QVector<int> &rawSources, int insertAt)
 {
     Panel *panel = currentPanel();
+    // Dragging a folder row moves the whole block (members + folder).
+    const QVector<int> sources = expandGroupBlocks(rawSources);
     if (!panel || sources.isEmpty())
         return;
     m_canvas->commitQuickShape();
+    const QVector<Layer> before = panel->layers;
+    const int beforeActive = panel->activeLayerIndex;
 
     const QString activeId = panel->activeLayer() ? panel->activeLayer()->id
                                                   : QString();
+    bool movingGroupRow = false;
+    for (int src : sources)
+        if (src >= 0 && src < panel->layers.size()
+            && isGroupLayer(panel->layers.at(src)))
+            movingGroupRow = true;
+
     QVector<Layer> moved;
     moved.reserve(sources.size());
     int adjustedInsert = insertAt;
@@ -5319,6 +5723,39 @@ void StoryboardPage::layerMoveTo(const QVector<int> &sources, int insertAt)
         && panel->layers.first().type == QLatin1String("background");
     adjustedInsert = qBound(hasBackground ? 1 : 0, adjustedInsert,
                             panel->layers.size());
+
+    // Which folder does the landing gap belong to? A gap directly above a
+    // member (or between a folder's top member and its folder row) is inside
+    // that folder; anywhere else is root. Folders never nest, so a dragged
+    // folder row escapes to just above the target folder's row instead.
+    QString targetGroup;
+    if (adjustedInsert < panel->layers.size()) {
+        const Layer &above = panel->layers.at(adjustedInsert);
+        if (!above.groupId.isEmpty() && !isGroupLayer(above))
+            targetGroup = above.groupId;
+        else if (isGroupLayer(above) && adjustedInsert > 0
+                 && panel->layers.at(adjustedInsert - 1).groupId == above.id)
+            targetGroup = above.id;
+    }
+    if (movingGroupRow && !targetGroup.isEmpty()) {
+        for (int i = 0; i < panel->layers.size(); ++i)
+            if (panel->layers.at(i).id == targetGroup) {
+                adjustedInsert = i + 1;
+                break;
+            }
+        targetGroup.clear();
+    }
+    QSet<QString> movedFolderIds;
+    for (const Layer &layer : moved)
+        if (isGroupLayer(layer))
+            movedFolderIds.insert(layer.id);
+    for (Layer &layer : moved) {
+        if (isGroupLayer(layer))
+            continue; // folder rows always live at root
+        if (movedFolderIds.contains(layer.groupId))
+            continue; // whole folder moved together: membership unchanged
+        layer.groupId = targetGroup; // join/leave the landing folder
+    }
     for (int k = 0; k < moved.size(); ++k)
         panel->layers.insert(adjustedInsert + k, moved.at(k));
 
@@ -5334,6 +5771,8 @@ void StoryboardPage::layerMoveTo(const QVector<int> &sources, int insertAt)
     panel->activeLayerIndex =
         qBound(0, panel->activeLayerIndex, panel->layers.size() - 1);
     m_layerAnchor = panel->activeLayerIndex;
+    pushLayerCommand(panel, before, beforeActive,
+                     QStringLiteral("Reorder Layers"));
     refreshLayerCanvas();
     rebuildLayerPanel();
 }
@@ -5357,11 +5796,23 @@ void StoryboardPage::startLayerDrag(int index)
 
     QDrag *drag = new QDrag(this);
     drag->setMimeData(mime);
-    const int visual = panel->layers.size() - 1 - index;
-    if (QWidget *row = m_layerRows.value(visual)) {
-        drag->setPixmap(row->grab());
-        drag->setHotSpot(QPoint(row->width() / 2, row->height() / 2));
-    }
+    // Semi-transparent ghost so the list underneath stays readable while
+    // dragging (rows are looked up by their layerIndex property — collapsed
+    // folders make the visual order sparse).
+    for (QWidget *row : m_layerRows)
+        if (row->property("layerIndex").toInt() == index) {
+            const QPixmap grab = row->grab();
+            QPixmap ghost(grab.size());
+            ghost.setDevicePixelRatio(grab.devicePixelRatio());
+            ghost.fill(Qt::transparent);
+            QPainter ghostPainter(&ghost);
+            ghostPainter.setOpacity(0.55);
+            ghostPainter.drawPixmap(0, 0, grab);
+            ghostPainter.end();
+            drag->setPixmap(ghost);
+            drag->setHotSpot(QPoint(grab.width() / 2, grab.height() / 2));
+            break;
+        }
     drag->exec(Qt::MoveAction); // drops: list gap / Delete / Duplicate
 }
 
@@ -5521,4 +5972,139 @@ void StoryboardPage::refreshLayerCanvas()
     if (m_canvas)
         m_canvas->update();
     refreshCurrentThumb();
+}
+
+// Refresh only the ACTIVE layer's row thumbnail (called on every stroke
+// commit — no full list rebuild, so drawing stays fluid).
+void StoryboardPage::updateActiveLayerThumb()
+{
+    Panel *panel = currentPanel();
+    if (!panel)
+        return;
+    const int idx = panel->activeLayerIndex;
+    if (idx < 0 || idx >= panel->layers.size())
+        return;
+    for (QWidget *row : m_layerRows)
+        if (row->property("layerIndex").toInt() == idx) {
+            if (QLabel *thumb =
+                    row->findChild<QLabel *>(QStringLiteral("layerThumb")))
+                thumb->setPixmap(layerThumb(panel->layers.at(idx)));
+            return;
+        }
+}
+
+void StoryboardPage::applyLayerStackForUndo(Panel *panel,
+                                            const QVector<Layer> &layers,
+                                            int activeIndex)
+{
+    if (!panel)
+        return;
+    if (m_canvas)
+        m_canvas->commitQuickShape();
+    panel->layers = layers;
+    panel->activeLayerIndex =
+        qBound(0, activeIndex, qMax(0, panel->layers.size() - 1));
+    if (panel == currentPanel()) {
+        m_layerSelection.clear();
+        m_layerSelection.insert(panel->activeLayerIndex);
+        m_layerAnchor = panel->activeLayerIndex;
+    }
+    syncSharedLayers(panel);
+    if (panel == currentPanel()) {
+        refreshLayerCanvas();
+        rebuildLayerPanel();
+    } else if (Scene *scene = currentScene()) {
+        const int idx = scene->panels.indexOf(panel);
+        if (idx >= 0 && idx < m_panelThumbImages.size())
+            m_panelThumbImages.at(idx)->setPixmap(
+                panel->flattenedPixmap().scaled(kThumbW, kThumbH,
+                                                Qt::IgnoreAspectRatio,
+                                                Qt::SmoothTransformation));
+    }
+}
+
+void StoryboardPage::pushLayerCommand(Panel *panel,
+                                      const QVector<Layer> &before,
+                                      int beforeActive, const QString &text)
+{
+    if (!panel || !m_undoStack)
+        return;
+    m_undoStack->push(new LayerStackCommand(this, panel, before, beforeActive,
+                                            panel->layers,
+                                            panel->activeLayerIndex, text));
+}
+
+// Any selected group row pulls its whole member block into the operation
+// (delete / duplicate / move act on blocks). Ascending, deduplicated.
+QVector<int> StoryboardPage::expandGroupBlocks(const QVector<int> &indices) const
+{
+    const Panel *panel = currentPanel();
+    if (!panel)
+        return indices;
+    QSet<int> out;
+    for (int idx : indices) {
+        if (idx < 0 || idx >= panel->layers.size())
+            continue;
+        out.insert(idx);
+        const Layer &layer = panel->layers.at(idx);
+        if (isGroupLayer(layer))
+            for (int i = 0; i < panel->layers.size(); ++i)
+                if (panel->layers.at(i).groupId == layer.id)
+                    out.insert(i);
+    }
+    QVector<int> sorted(out.begin(), out.end());
+    std::sort(sorted.begin(), sorted.end());
+    return sorted;
+}
+
+// Delete / Cancel confirmation. EMPTY layers (no artwork anywhere in the
+// selection) offer a "don't ask again" checkbox persisted in QSettings; any
+// layer WITH content always asks.
+bool StoryboardPage::confirmLayerDelete(const QVector<int> &indices)
+{
+    Panel *panel = currentPanel();
+    if (!panel || indices.isEmpty())
+        return false;
+    bool allEmpty = true;
+    for (int idx : indices)
+        if (idx >= 0 && idx < panel->layers.size()
+            && layerHasContent(panel->layers.at(idx))) {
+            allEmpty = false;
+            break;
+        }
+
+    QSettings settings(QStringLiteral("SankoTV"), QStringLiteral("SankoTV"));
+    const bool skipEmpty =
+        settings.value(QStringLiteral("storyboard/skipEmptyLayerDeleteConfirm"),
+                       false).toBool();
+    if (allEmpty && skipEmpty)
+        return true;
+
+    QMessageBox box(this);
+    box.setIcon(QMessageBox::Question);
+    box.setWindowTitle(QStringLiteral("Delete Layer(s)"));
+    box.setText(indices.size() == 1
+                    ? QStringLiteral("Permanently delete the selected layer?")
+                    : QStringLiteral("Permanently delete the %1 selected layers?")
+                          .arg(indices.size()));
+    if (!allEmpty)
+        box.setInformativeText(
+            QStringLiteral("The selection contains artwork."));
+    QPushButton *deleteButton =
+        box.addButton(QStringLiteral("Delete"), QMessageBox::DestructiveRole);
+    box.addButton(QMessageBox::Cancel);
+    QCheckBox *dontAsk = nullptr;
+    if (allEmpty) {
+        // The skip only ever applies to EMPTY layers.
+        dontAsk = new QCheckBox(
+            QStringLiteral("Don't ask again for empty layers"), &box);
+        box.setCheckBox(dontAsk);
+    }
+    box.exec();
+    if (box.clickedButton() != deleteButton)
+        return false;
+    if (dontAsk && dontAsk->isChecked())
+        settings.setValue(
+            QStringLiteral("storyboard/skipEmptyLayerDeleteConfirm"), true);
+    return true;
 }
