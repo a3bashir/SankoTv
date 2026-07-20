@@ -845,6 +845,21 @@ void DrawingCanvas::resetView()
     update();
 }
 
+// Fit Screen: ALWAYS centre the canvas and fit it fully in the viewport,
+// regardless of the current zoom or pan. Zoom 1.0 is the letterbox fit
+// (displayRect() centres when the pan offset is zero); a small margin keeps
+// the canvas edges breathing. setViewZoom(1.0) could not do this — it
+// early-returns at zoom 1.0 and never clears the pan.
+void DrawingCanvas::fitToScreen()
+{
+    constexpr double kFitMargin = 0.96; // 4% breathing room around the canvas
+    m_zoom = kFitMargin;
+    m_panOffset = QPointF(0, 0);
+    syncViewToolbar();
+    emit viewZoomChanged(m_zoom);
+    update();
+}
+
 void DrawingCanvas::resizeEvent(QResizeEvent *event)
 {
     QWidget::resizeEvent(event);
@@ -3694,12 +3709,20 @@ void DrawingCanvas::undo()
     if (!m_undoStack)
         return;
     // Resolve any live interactive session first so history stays coherent:
-    // a floating paste lands (as its own command), a live transform box is
-    // discarded back to the pristine artwork.
+    // a floating paste lands (as its own command) and a live transform
+    // gesture COMMITS, becoming the top history entry — this undo then
+    // reverses exactly that gesture. (Cancelling here used to discard the
+    // gesture AND still rewind the PREVIOUS entry, silently un-toggling
+    // visibility or collapsing layer-stack state the user never asked to
+    // undo. An untouched box commits nothing, so plain undo is unaffected.)
     commitFloating();
     if (m_xformActive)
-        cancelTransform();
+        commitTransform(false);
     m_undoStack->undo();
+    // Move stays live: a fresh box around the RESTORED artwork, targeting
+    // the full current row selection (multi-layer lifts included) — never a
+    // stale or partial target.
+    resetTransformBox();
 }
 
 // Re-apply the exact command that the last undo reversed.
@@ -3709,8 +3732,9 @@ void DrawingCanvas::redo()
         return;
     commitFloating();
     if (m_xformActive)
-        cancelTransform();
+        commitTransform(false); // a live gesture clears the redo branch anyway
     m_undoStack->redo();
+    resetTransformBox(); // fresh box around the re-applied artwork
 }
 
 void DrawingCanvas::clearCanvas()

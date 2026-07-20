@@ -2307,11 +2307,12 @@ QWidget *StoryboardPage::createCenterColumn()
     m_zoomToolbar->setRotation(m_canvas->viewRotation());
     connect(m_zoomToolbar, &ZoomToolbar::zoomChanged, m_canvas, &DrawingCanvas::setViewZoom);
     connect(m_zoomToolbar, &ZoomToolbar::rotationChanged, m_canvas, &DrawingCanvas::setViewRotation);
-    // Fit Screen (swapped in from the Size CTL): zoom 1 = letterbox-fitted.
+    // Fit Screen: ALWAYS centre the canvas and fit it fully (small margin),
+    // clearing pan and rotation whatever the current view state is. The
+    // zoom dragger syncs through viewZoomChanged below.
     connect(m_zoomToolbar, &ZoomToolbar::fitRequested, this, [this] {
-        m_canvas->setViewZoom(1.0);
+        m_canvas->fitToScreen();
         m_canvas->resetViewRotation();
-        m_zoomToolbar->setZoom(1.0);
         m_zoomToolbar->setRotation(0.0);
     });
     // Wheel/pan zoom on the canvas syncs the zoom dragger back.

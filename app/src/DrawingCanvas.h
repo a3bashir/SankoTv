@@ -149,6 +149,9 @@ public:
     {
         m_selectedLayerIds = ids;
     }
+    // Fit Screen: centre the canvas in the viewport and fit it fully with a
+    // small margin, whatever the current zoom/pan (rotation/flip untouched).
+    void fitToScreen();
     int eraserSize() const { return m_eraserSize; }
     int eraserOpacity() const { return qRound(m_eraserOpacity * 100.0); }
 
