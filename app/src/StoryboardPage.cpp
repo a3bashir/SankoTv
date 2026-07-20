@@ -2277,6 +2277,19 @@ QWidget *StoryboardPage::createCenterColumn()
                                             Qt::SmoothTransformation));
     });
     connect(m_canvas, &DrawingCanvas::layersChanged, this, &StoryboardPage::rebuildLayerPanel);
+    // Ctrl+click canvas pick -> select/highlight that layer's row
+    // (Photoshop-style auto-select).
+    connect(m_canvas, &DrawingCanvas::layerPickRequested, this,
+            [this](const QString &layerId) {
+                Panel *panel = currentPanel();
+                if (!panel)
+                    return;
+                for (int i = 0; i < panel->layers.size(); ++i)
+                    if (panel->layers.at(i).id == layerId) {
+                        layerRowClicked(i, Qt::NoModifier);
+                        return;
+                    }
+            });
 
     drawLayout->addWidget(m_canvas, 1);
 
@@ -4896,6 +4909,15 @@ void StoryboardPage::rebuildLayerPanel()
     if (m_layerMergeButton)
         m_layerMergeButton->setEnabled(!sel.isEmpty());
 
+    // Mirror the row multi-selection into the canvas: with several rows
+    // selected the Move tool lifts them ALL behind one box.
+    if (m_canvas) {
+        QStringList selIds;
+        for (int i : sel)
+            selIds.append(panel->layers.at(i).id);
+        m_canvas->setSelectedLayerIds(selIds);
+    }
+
     if (!hasPanel) {
         m_layerListLayout->addStretch(1);
         return;
@@ -4967,6 +4989,9 @@ void StoryboardPage::rebuildLayerPanel()
                              QStringLiteral("Toggle Layer Visibility"));
             refreshLayerCanvas();
             rebuildLayerPanel();
+            // A Move box lifted over now-hidden layers (or a hidden group's
+            // members) is stale — drop and re-lift around what IS visible.
+            m_canvas->resetTransformBox();
         });
         rowLayout->addWidget(eye, 0, Qt::AlignVCenter);
 
@@ -5276,7 +5301,17 @@ void StoryboardPage::layerAdd()
     m_canvas->commitQuickShape();
     const QVector<Layer> before = panel->layers;
     const int beforeActive = panel->activeLayerIndex;
-    Layer layer = makeRasterLayer(QStringLiteral("Layer %1").arg(panel->layers.size() + 1));
+    // Next free "Layer N": one past the highest number in use — Background +
+    // "Layer 1" yields "Layer 2" (the plain size+1 skipped numbers).
+    int highest = 0;
+    for (const Layer &existing : panel->layers)
+        if (existing.name.startsWith(QLatin1String("Layer "))) {
+            bool numbered = false;
+            const int n = existing.name.mid(6).toInt(&numbered);
+            if (numbered)
+                highest = qMax(highest, n);
+        }
+    Layer layer = makeRasterLayer(QStringLiteral("Layer %1").arg(highest + 1));
     int insertAt = qBound(0, panel->activeLayerIndex + 1, panel->layers.size());
     // Inserting from inside a group joins that group (block stays whole).
     if (panel->activeLayerIndex >= 0
@@ -5356,6 +5391,10 @@ void StoryboardPage::layerDeleteSelected()
                                      : QStringLiteral("Delete Layers"));
     refreshLayerCanvas();
     rebuildLayerPanel();
+    // A Move session holding the deleted layer is stale: drop it (never
+    // commit it) and re-lift around the new active layer, so the deleted
+    // pixels vanish from the canvas at once.
+    m_canvas->resetTransformBox();
 }
 
 void StoryboardPage::layerDuplicateSelected()

@@ -142,6 +142,13 @@ public:
     // merged): the lifted buffers are stale, so drop them without committing
     // and lift a fresh box around the new active target.
     void resetTransformBox();
+    // The Layers panel mirrors its row multi-selection here: with several
+    // rows selected, the Move tool lifts them ALL behind one box and the
+    // same transform lands on each, in place.
+    void setSelectedLayerIds(const QStringList &ids)
+    {
+        m_selectedLayerIds = ids;
+    }
     int eraserSize() const { return m_eraserSize; }
     int eraserOpacity() const { return qRound(m_eraserOpacity * 100.0); }
 
@@ -212,6 +219,9 @@ public slots:
 signals:
     void contentChanged();
     void layersChanged(); // layer added/removed by the canvas (image import)
+    // Ctrl+Left click: the topmost visible layer with opaque pixels under
+    // the cursor — the Layers panel selects/highlights that row.
+    void layerPickRequested(const QString &layerId);
     void viewZoomChanged(double zoom); // wheel/pan zoom -> sync the zoom slider
     // Committing a Warp resets the box to the default move/scale/rotate mode;
     // the Move Modifier toolbar listens and unchecks its mode buttons.
@@ -396,6 +406,9 @@ private:
     // paste the result into the wrong layer.
     QStringList m_xformLayerIds;
     QVector<QImage> m_xformBufs;         // pristine lifted pixels (m_moveSrcRect-sized)
+    // Layers-panel row multi-selection (ids), mirrored via
+    // setSelectedLayerIds: >1 selected rows lift together under one box.
+    QStringList m_selectedLayerIds;
     QPolygonF m_quad;              // current box corners TL,TR,BR,BL, canvas coords
     QPointF m_pivot;               // rotate/scale origin (Pivot Point mode)
     bool m_pivotCustom = false;    // user moved the pivot off the box centre
@@ -446,8 +459,11 @@ private:
     void addWarpPointAt(const QPointF &widgetPos);   // Ctrl+click on the mesh
     void removeWarpPoint(int index);                 // Ctrl+click on a point
     // Piecewise render of the TPS at the given source-space cell size (finer
-    // for the commit than the interactive preview).
-    void paintWarpedBuffer(QPainter &p, qreal cellPx) const;
+    // for the commit than the interactive preview). overrideBuf: warp THAT
+    // pristine buffer instead of m_transformBuf (per-layer sessions render
+    // and commit each member's own pixels through the same mesh).
+    void paintWarpedBuffer(QPainter &p, qreal cellPx,
+                           const QImage &overrideBuf = QImage()) const;
     qreal luminanceBehind(const QPointF &canvasPt) const; // pivot contrast
 
     void liftDefaultTransformBox(); // Move tool: box around selection/artwork
@@ -456,6 +472,11 @@ private:
     // buffers behind ONE box: the whole group moves/scales/rotates as a
     // unit and commits back into each member's own image.
     void beginGroupTransform(Layer *group);
+    // Shared lift core (group members OR multi-selected rows): every
+    // candidate layer that is visible, unlocked and has artwork lifts into
+    // its own pristine buffer behind ONE box; stacking order is untouched —
+    // each buffer previews and commits at its layer's own z-position.
+    void beginLayersTransform(const QStringList &candidateIds);
     // Bake once (one undo). relift: Photoshop-style — while the Move tool
     // stays active the box does not disappear; it RESETS to a fresh default
     // axis-aligned box around the committed artwork. setTool passes false

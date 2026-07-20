@@ -347,7 +347,6 @@ void MainWindow::onNewProject()
     m_projectName = QStringLiteral("Untitled Project");
     updateSaveActions();
     updateTitle();
-
 }
 
 void MainWindow::onOpenProject()

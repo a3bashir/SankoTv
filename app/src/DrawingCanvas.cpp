@@ -700,6 +700,14 @@ void DrawingCanvas::liftDefaultTransformBox()
             beginGroupTransform(active);
             return;
         }
+        // MULTIPLE selected rows (no marquee): lift them ALL behind one box
+        // — the same transform lands on every one, in place, stacking order
+        // untouched. A marquee selection keeps the classic single-layer lift.
+        if (m_selectionPath.isEmpty() && m_selectedLayerIds.size() > 1) {
+            beginLayersTransform(m_selectedLayerIds);
+            if (m_xformActive)
+                return; // multi-lift succeeded
+        }
     }
     if (m_selectionPath.isEmpty()) {
         if (Layer *layer = editableActiveLayer()) {
@@ -1991,13 +1999,31 @@ void DrawingCanvas::beginGroupTransform(Layer *group)
 {
     if (m_xformActive || !m_panel || !group || !isGroupLayer(*group))
         return;
+    QStringList memberIds;
+    for (const Layer &member : m_panel->layers)
+        if (member.groupId == group->id)
+            memberIds.append(member.id);
+    beginLayersTransform(memberIds);
+}
 
-    // Collect the transformable members (visible + unlocked) and the union
-    // of their artwork bounds — the ONE box everyone shares.
+// Shared lift core: group members or multi-selected rows. Each candidate
+// that is visible, unlocked and has artwork lifts into its own pristine
+// buffer; ONE box drives them all, and both preview and commit keep every
+// layer at its own z-position.
+void DrawingCanvas::beginLayersTransform(const QStringList &candidateIds)
+{
+    if (m_xformActive || !m_panel || candidateIds.isEmpty())
+        return;
+
+    // Collect the transformable candidates and the union of their artwork
+    // bounds — the ONE box everyone shares.
     QRect r;
     QStringList ids;
     for (const Layer &member : m_panel->layers) {
-        if (member.groupId != group->id || member.locked || !member.visible)
+        if (!candidateIds.contains(member.id) || member.locked
+            || isGroupLayer(member)
+            || member.type == QLatin1String("background")
+            || !m_panel->layerEffectivelyVisible(member))
             continue;
         const QRect art = opaquePixelBounds(member.image);
         if (art.isEmpty())
@@ -2008,9 +2034,9 @@ void DrawingCanvas::beginGroupTransform(Layer *group)
     if (ids.isEmpty() || r.isEmpty())
         return;
 
-    // One pristine buffer per member (commit transforms each in place), plus
-    // a COMPOSITE preview at every member's OWN opacity — the paintEvent
-    // applies the folder's opacity on top, matching normal rendering.
+    // One pristine buffer per member (preview and commit both transform each
+    // in place, at its layer's z-position). The composite is kept only as
+    // the session's non-null sentinel.
     m_xformLayerIds = ids;
     m_xformBufs.clear();
     QImage composite(r.size(), QImage::Format_ARGB32_Premultiplied);
@@ -2076,11 +2102,14 @@ void DrawingCanvas::beginGroupTransform(Layer *group)
 //      no stair-stepping even under strong deformation.
 // The composed image is then drawn ONCE through the painter's transform
 // (view transform for the preview, identity for the commit).
-void DrawingCanvas::paintWarpedBuffer(QPainter &p, qreal cellPx) const
+void DrawingCanvas::paintWarpedBuffer(QPainter &p, qreal cellPx,
+                                      const QImage &overrideBuf) const
 {
+    const QImage &pristine =
+        overrideBuf.isNull() ? m_transformBuf : overrideBuf;
     const qreal srcW = m_moveSrcRect.width();
     const qreal srcH = m_moveSrcRect.height();
-    if (srcW <= 0.0 || srcH <= 0.0 || !m_tpsValid || m_transformBuf.isNull())
+    if (srcW <= 0.0 || srcH <= 0.0 || !m_tpsValid || pristine.isNull())
         return;
     // Supersample factor (both preview and commit). 3x, not 2x: where the
     // warp locally COMPRESSES the artwork, a hard source edge's bilinear ramp
@@ -2090,9 +2119,9 @@ void DrawingCanvas::paintWarpedBuffer(QPainter &p, qreal cellPx) const
     constexpr int kSS = 3;
 
     const QImage src =
-        m_transformBuf.format() == QImage::Format_ARGB32_Premultiplied
-            ? m_transformBuf
-            : m_transformBuf.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+        pristine.format() == QImage::Format_ARGB32_Premultiplied
+            ? pristine
+            : pristine.convertToFormat(QImage::Format_ARGB32_Premultiplied);
     const int sw = src.width(), sh = src.height();
 
     // 1. Forward-map the fine source grid through the spline. The domain
@@ -2657,12 +2686,9 @@ void DrawingCanvas::commitTransform(bool relift)
                 p.setRenderHint(QPainter::SmoothPixmapTransform, true);
                 p.setRenderHint(QPainter::Antialiasing, true);
                 if (m_warpDirty) {
-                    // paintWarpedBuffer reads m_transformBuf: swap in this
-                    // member's pristine buffer for its own warped commit.
-                    const QImage composite = m_transformBuf;
-                    m_transformBuf = m_xformBufs.at(k);
-                    paintWarpedBuffer(p, 4.0); // same path+params as preview
-                    m_transformBuf = composite;
+                    // This member's own pristine buffer through the mesh —
+                    // same path+params as the preview.
+                    paintWarpedBuffer(p, 4.0, m_xformBufs.at(k));
                 } else {
                     p.setTransform(boxTransform()); // buffer -> canvas
                     p.drawImage(0, 0, m_xformBufs.at(k));
@@ -3805,17 +3831,32 @@ void DrawingCanvas::paintEvent(QPaintEvent *event)
             || effOpacity <= 0.0)
             continue;
         painter.setOpacity(effOpacity);
-        if (m_xformActive && !m_transformBuf.isNull()
+        if (m_xformActive && !m_xformBufs.isEmpty()
             && m_xformLayerIds.contains(layer.id)) {
             // Live transform session: the MODEL keeps the committed pixels
             // (single source of truth); the view hides the lifted source
-            // region here — the transformed buffer is drawn separately below.
+            // region and draws THIS layer's transformed buffer right here,
+            // at the layer's real z-position — the Move tool never brings
+            // the edited layer to the front, not even temporarily. A layer
+            // hidden or deleted mid-session simply stops painting (the
+            // visibility/existence checks above already ran).
             QImage temp = layer.image;
             QPainter tp(&temp);
             tp.setCompositionMode(QPainter::CompositionMode_DestinationOut);
             tp.drawImage(m_moveSrcRect.topLeft(), m_moveMask);
             tp.end();
             painter.drawImage(0, 0, temp);
+            const int bi = m_xformLayerIds.indexOf(layer.id);
+            if (bi >= 0 && bi < m_xformBufs.size()) {
+                painter.save();
+                if (m_warpDirty) {
+                    paintWarpedBuffer(painter, 4.0, m_xformBufs.at(bi));
+                } else {
+                    painter.setWorldTransform(boxTransform(), true);
+                    painter.drawImage(0, 0, m_xformBufs.at(bi));
+                }
+                painter.restore();
+            }
             continue;
         }
         const bool liveStroke = m_strokeMask != StrokeMaskNone
@@ -3988,26 +4029,9 @@ void DrawingCanvas::paintEvent(QPaintEvent *event)
     if (m_floatActive && !m_floatImg.isNull())
         painter.drawImage(m_floatPos + m_floatDelta, m_floatImg);
 
-    // Non-destructive transform preview: the PRISTINE buffer through the box
-    // transform (or the piecewise warp mesh), still composed with the view
-    // transform T.
-    if (m_xformActive && !m_transformBuf.isNull()) {
-        painter.save();
-        // The lifted pixels come from the ACTIVE layer: preview them at that
-        // layer's (group-aware) opacity, or a 50% layer would flash to 100%
-        // whenever the Move tool lifts it. The commit path is unaffected —
-        // it writes pixels back into the layer, whose opacity applies at
-        // composite time as always.
-        if (const Layer *active = m_panel->activeLayer())
-            painter.setOpacity(m_panel->layerEffectiveOpacity(*active));
-        if (m_warpDirty) {
-            paintWarpedBuffer(painter, 4.0); // same path+params as the commit
-        } else {
-            painter.setWorldTransform(boxTransform(), true); // compose onto T
-            painter.drawImage(0, 0, m_transformBuf);
-        }
-        painter.restore();
-    }
+    // (The live transform preview is drawn INSIDE the layer loop above, at
+    // each lifted layer's own z-position and effective opacity — stacking
+    // order never changes during a Move session.)
 
     painter.restore(); // leave canvas space; overlays below are widget space
 
@@ -4360,6 +4384,30 @@ void DrawingCanvas::mousePressEvent(QMouseEvent *event)
 
     if (!m_panel || event->button() != Qt::LeftButton)
         return;
+
+    // Ctrl + Left click: Photoshop-style auto-select — pick the topmost
+    // VISIBLE layer with opaque pixels under the cursor, whatever layer it
+    // lives on; the Layers panel highlights that row. Warp mode keeps Ctrl
+    // for its mesh-topology editing.
+    if ((event->modifiers() & Qt::ControlModifier)
+        && !(m_xformActive && m_xformUiMode == XformWarp)) {
+        const QPoint cp = toCanvas(event->pos());
+        if (QRect(QPoint(0, 0), canvasSize()).contains(cp)) {
+            for (int i = m_panel->layers.size() - 1; i >= 0; --i) {
+                const Layer &layer = m_panel->layers.at(i);
+                if (isGroupLayer(layer)
+                    || layer.type == QLatin1String("background")
+                    || !m_panel->layerEffectivelyVisible(layer)
+                    || layer.image.isNull())
+                    continue;
+                if (qAlpha(layer.image.pixel(cp)) > 25) {
+                    emit layerPickRequested(layer.id);
+                    break;
+                }
+            }
+        }
+        return; // the pick click never draws and never starts a box drag
+    }
 
     // Transform box intercepts every left-click while Move is active, so its
     // handles/rotation zones work even where they fall outside the canvas
