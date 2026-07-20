@@ -4946,28 +4946,6 @@ void StoryboardPage::rebuildLayerPanel()
         if (!layer.groupId.isEmpty())
             rowLayout->addSpacing(14);
 
-        // Folder rows lead with an expand/collapse chevron.
-        if (isGroup) {
-            QPushButton *chevron =
-                new QPushButton(layer.groupExpanded
-                                    ? QString::fromUtf8("\xE2\x96\xBE")   // U+25BE
-                                    : QString::fromUtf8("\xE2\x96\xB8")); // U+25B8
-            chevron->setToolTip(QStringLiteral("Expand / collapse group"));
-            chevron->setCursor(Qt::PointingHandCursor);
-            chevron->setFocusPolicy(Qt::NoFocus);
-            chevron->setFixedSize(13, 13);
-            chevron->setStyleSheet(QStringLiteral(
-                "QPushButton { background: transparent; border: none;"
-                " color: #999999; font-size: 9px; padding: 0; }"));
-            connect(chevron, &QPushButton::clicked, this, [this, i] {
-                Panel *p = currentPanel();
-                if (!p || i < 0 || i >= p->layers.size())
-                    return;
-                p->layers[i].groupExpanded = !p->layers[i].groupExpanded;
-                rebuildLayerPanel(); // pure UI state: not an undo entry
-            });
-            rowLayout->addWidget(chevron, 0, Qt::AlignVCenter);
-        }
 
         // Visibility (eye) toggle — Figma eye 13x13 (7:74 eye), native #CCC.
         QPushButton *eye = new QPushButton;
@@ -4994,6 +4972,30 @@ void StoryboardPage::rebuildLayerPanel()
             rebuildLayerPanel();
         });
         rowLayout->addWidget(eye, 0, Qt::AlignVCenter);
+
+        // Folder rows: expand/collapse chevron AFTER the eye (eye first),
+        // ~10% larger for visibility.
+        if (isGroup) {
+            QPushButton *chevron =
+                new QPushButton(layer.groupExpanded
+                                    ? QString::fromUtf8("\xE2\x96\xBE")   // U+25BE
+                                    : QString::fromUtf8("\xE2\x96\xB8")); // U+25B8
+            chevron->setToolTip(QStringLiteral("Expand / collapse group"));
+            chevron->setCursor(Qt::PointingHandCursor);
+            chevron->setFocusPolicy(Qt::NoFocus);
+            chevron->setFixedSize(14, 14);
+            chevron->setStyleSheet(QStringLiteral(
+                "QPushButton { background: transparent; border: none;"
+                " color: #999999; font-size: 10px; padding: 0; }"));
+            connect(chevron, &QPushButton::clicked, this, [this, i] {
+                Panel *p = currentPanel();
+                if (!p || i < 0 || i >= p->layers.size())
+                    return;
+                p->layers[i].groupExpanded = !p->layers[i].groupExpanded;
+                rebuildLayerPanel(); // pure UI state: not an undo entry
+            });
+            rowLayout->addWidget(chevron, 0, Qt::AlignVCenter);
+        }
 
         // Layer thumbnail (Figma th 40x22, bg #1A1A1A / border #2A2A2A / r2);
         // folder rows show the group glyph instead of pixels.
@@ -5075,6 +5077,7 @@ void StoryboardPage::setActiveLayer(int index)
     m_layerSelection.insert(index);
     m_layerAnchor = index;
     rebuildLayerPanel(); // highlight + slider follow the new active layer
+    m_canvas->refreshTransformBox(); // Move box follows the new target
 }
 
 // Photoshop selection rules: plain click = single select + activate, Shift =
@@ -5110,6 +5113,7 @@ void StoryboardPage::layerRowClicked(int index, Qt::KeyboardModifiers mods)
 
     panel->activeLayerIndex = index;
     rebuildLayerPanel();
+    m_canvas->refreshTransformBox(); // Move box follows the new target
 }
 
 // Ascending, in-range, non-Background selection — what every layer

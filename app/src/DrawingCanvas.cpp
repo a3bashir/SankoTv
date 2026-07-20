@@ -662,6 +662,15 @@ void DrawingCanvas::setTool(Tool tool)
         emit toolChanged(m_tool); // per-tool Size CTL sliders re-sync
 }
 
+void DrawingCanvas::refreshTransformBox()
+{
+    if (m_tool != Move)
+        return;
+    commitTransform(false); // running session lands in ITS layers (by ID)
+    liftDefaultTransformBox(); // fresh box around the new target
+    update();
+}
+
 // Move tool activation / panel-switch persistence: show the transform box —
 // a live selection lifts the selected pixels; with NO selection the box wraps
 // the layer's whole artwork (synthesized rect selection, dropped on cancel).
@@ -670,6 +679,14 @@ void DrawingCanvas::liftDefaultTransformBox()
 {
     if (m_xformActive)
         return;
+    // A selected GROUP folder gets one box around all of its members.
+    if (m_panel) {
+        Layer *active = m_panel->activeLayer();
+        if (active && isGroupLayer(*active)) {
+            beginGroupTransform(active);
+            return;
+        }
+    }
     if (m_selectionPath.isEmpty()) {
         if (Layer *layer = editableActiveLayer()) {
             const QRect art = opaquePixelBounds(layer->image);
@@ -1920,6 +1937,8 @@ void DrawingCanvas::beginTransform()
         p.setCompositionMode(QPainter::CompositionMode_DestinationIn);
         p.drawImage(0, 0, m_moveMask);
     }
+    m_xformLayerIds = QStringList{layer->id}; // commit resolves by ID
+    m_xformBufs = QVector<QImage>{m_transformBuf};
     // SINGLE SOURCE OF TRUTH: the panel's layer image is NOT touched during
     // the session — thumbnails, saves, and panel switches always read the
     // committed state. The VIEW subtracts the lifted source region and shows
@@ -1951,6 +1970,79 @@ void DrawingCanvas::beginTransform()
     m_xformMode = XNone;
     setMouseTracking(true); // hover updates the scale/rotate cursor
     updateAntsTimer();
+    update();
+}
+
+void DrawingCanvas::beginGroupTransform(Layer *group)
+{
+    if (m_xformActive || !m_panel || !group || !isGroupLayer(*group))
+        return;
+
+    // Collect the transformable members (visible + unlocked) and the union
+    // of their artwork bounds — the ONE box everyone shares.
+    QRect r;
+    QStringList ids;
+    for (const Layer &member : m_panel->layers) {
+        if (member.groupId != group->id || member.locked || !member.visible)
+            continue;
+        const QRect art = opaquePixelBounds(member.image);
+        if (art.isEmpty())
+            continue;
+        r = r.isNull() ? art : r.united(art);
+        ids.append(member.id);
+    }
+    if (ids.isEmpty() || r.isEmpty())
+        return;
+
+    // One pristine buffer per member (commit transforms each in place), plus
+    // a COMPOSITE preview at every member's OWN opacity — the paintEvent
+    // applies the folder's opacity on top, matching normal rendering.
+    m_xformLayerIds = ids;
+    m_xformBufs.clear();
+    QImage composite(r.size(), QImage::Format_ARGB32_Premultiplied);
+    composite.fill(Qt::transparent);
+    {
+        QPainter p(&composite);
+        p.setRenderHint(QPainter::SmoothPixmapTransform, true);
+        for (const QString &id : ids)
+            for (const Layer &member : m_panel->layers)
+                if (member.id == id) {
+                    const QImage buf = member.image.copy(r);
+                    m_xformBufs.append(buf);
+                    p.setOpacity(qBound(0.0, member.opacity, 1.0));
+                    p.drawImage(0, 0, buf);
+                }
+    }
+    m_moveSrcRect = r;
+    m_moveMask = QImage(r.size(), QImage::Format_ARGB32_Premultiplied);
+    m_moveMask.fill(QColor(255, 255, 255, 255)); // full-rect lift per member
+    m_transformBuf = composite;
+    m_xformAutoSel = false; // no synthesized selection: the box IS the lift
+
+    // Seed the box/pivot/warp exactly like beginTransform().
+    const QRectF rf(r);
+    m_quad = QPolygonF({rf.topLeft(), rf.topRight(), rf.bottomRight(),
+                        rf.bottomLeft()});
+    m_pivot = rf.center();
+    m_pivotCustom = false;
+    m_warp.clear();
+    for (int j = 0; j < kWarpGrid; ++j)
+        for (int i = 0; i < kWarpGrid; ++i) {
+            const qreal fx = qreal(i) / (kWarpGrid - 1);
+            const qreal fy = qreal(j) / (kWarpGrid - 1);
+            m_warp.append({QPointF(rf.width() * fx, rf.height() * fy),
+                           QPointF(rf.left() + rf.width() * fx,
+                                   rf.top() + rf.height() * fy)});
+        }
+    solveWarpTps();
+    m_warpSel.clear();
+    m_warpDirty = false;
+    m_warpIdx = -1;
+    m_warpHoverIdx = -1;
+    m_warpMarquee = false;
+    m_xformActive = true;
+    m_xformMode = XNone;
+    setMouseTracking(true);
     update();
 }
 
@@ -2517,36 +2609,69 @@ void DrawingCanvas::commitTransform(bool relift)
     m_xformMode = XNone;
     setMouseTracking(false);
 
-    Layer *layer = editableActiveLayer();
-    if (layer && !m_transformBuf.isNull()) {
-        beginLayerEdit(); // the layer IS the intact pre-transform state
+    // Commit resolves each lifted layer BY ID (captured at lift time): a
+    // selection/stack change mid-session can never paste the result into a
+    // different layer — the classic "scale created a duplicate" bug. Group
+    // sessions transform every member buffer with the same box and write
+    // each back into its own layer; the whole commit is ONE undo entry
+    // (a macro when several members took part).
+    if (!m_xformLayerIds.isEmpty() && !m_transformBuf.isNull() && m_panel
+        && m_undoStack) {
+        const bool macro = m_xformLayerIds.size() > 1;
+        if (macro)
+            m_undoStack->beginMacro(QStringLiteral("Transform Group"));
+        bool changedAny = false;
+        for (int k = 0; k < m_xformLayerIds.size(); ++k) {
+            Layer *layer = nullptr;
+            for (Layer &candidate : m_panel->layers)
+                if (candidate.id == m_xformLayerIds.at(k)) {
+                    layer = &candidate;
+                    break;
+                }
+            if (!layer || layer->locked || k >= m_xformBufs.size())
+                continue; // deleted/locked mid-session: skip safely
 
-        QImage result = layer->image;
-        {
-            QPainter c(&result);
-            c.setCompositionMode(QPainter::CompositionMode_DestinationOut);
-            c.drawImage(m_moveSrcRect.topLeft(), m_moveMask); // clear source
-        }
-        {
-            QPainter p(&result); // paste the transformed buffer (canvas-bounded)
-            p.setRenderHint(QPainter::SmoothPixmapTransform, true);
-            p.setRenderHint(QPainter::Antialiasing, true);
-            if (m_warpDirty) {
-                paintWarpedBuffer(p, 4.0); // same path+params as the preview
-            } else {
-                p.setTransform(boxTransform()); // buffer -> canvas
-                p.drawImage(0, 0, m_transformBuf);
+            const QImage before = layer->image;
+            QImage result = layer->image;
+            {
+                QPainter c(&result);
+                c.setCompositionMode(QPainter::CompositionMode_DestinationOut);
+                c.drawImage(m_moveSrcRect.topLeft(), m_moveMask); // clear source
+            }
+            {
+                QPainter p(&result); // paste the transformed buffer
+                p.setRenderHint(QPainter::SmoothPixmapTransform, true);
+                p.setRenderHint(QPainter::Antialiasing, true);
+                if (m_warpDirty) {
+                    // paintWarpedBuffer reads m_transformBuf: swap in this
+                    // member's pristine buffer for its own warped commit.
+                    const QImage composite = m_transformBuf;
+                    m_transformBuf = m_xformBufs.at(k);
+                    paintWarpedBuffer(p, 4.0); // same path+params as preview
+                    m_transformBuf = composite;
+                } else {
+                    p.setTransform(boxTransform()); // buffer -> canvas
+                    p.drawImage(0, 0, m_xformBufs.at(k));
+                }
+            }
+            const QRect region = diffRegion(before, result);
+            layer->image = result; // IN PLACE: no new layer, nothing merges
+            if (!region.isEmpty()) {
+                m_undoStack->push(new DrawingCommand(
+                    this, m_panel, layer->id, region, before.copy(region),
+                    result.copy(region), QStringLiteral("Transform")));
+                changedAny = true;
             }
         }
-        // The committed transform becomes the panel MODEL's real state; the
-        // contentChanged emission below regenerates the thumbnail from it
-        // (flattenedPixmap) synchronously.
-        layer->image = result;
-        finalizeLayerEdit(QStringLiteral("Transform"));
-        emit contentChanged();
+        if (macro)
+            m_undoStack->endMacro();
+        if (changedAny)
+            emit contentChanged();
     }
 
     m_transformBuf = QImage();
+    m_xformLayerIds.clear();
+    m_xformBufs.clear();
     m_layerBackup = QImage();
     m_moveMask = QImage();
     m_warpDirty = false;
@@ -2567,20 +2692,10 @@ void DrawingCanvas::commitTransform(bool relift)
     }
 
     // Photoshop-style persistence: the box resets to a fresh axis-aligned
-    // default around the committed artwork and stays up while Move is active.
-    if (relift && m_tool == Move) {
-        if (Layer *l = editableActiveLayer()) {
-            const QRect art = opaquePixelBounds(l->image);
-            if (!art.isEmpty()) {
-                QPainterPath path;
-                path.addRect(QRectF(art));
-                m_selectionPath = path;
-                m_xformAutoSel = true;
-                beginTransform();
-            }
-        }
-    }
-    update();
+    // default around the committed artwork (or the whole group) and stays up
+    // while Move is active.
+    if (relift && m_tool == Move)
+        liftDefaultTransformBox();
 }
 
 void DrawingCanvas::cancelTransform(bool relift)
@@ -2594,6 +2709,8 @@ void DrawingCanvas::cancelTransform(bool relift)
     // The model was never altered during the session: cancelling only drops
     // the session buffers, and the intact committed layer shows again.
     m_transformBuf = QImage();
+    m_xformLayerIds.clear();
+    m_xformBufs.clear();
     m_moveMask = QImage();
     m_warpDirty = false;
     m_warpSel.clear();
@@ -3675,7 +3792,7 @@ void DrawingCanvas::paintEvent(QPaintEvent *event)
             continue;
         painter.setOpacity(effOpacity);
         if (m_xformActive && !m_transformBuf.isNull()
-            && &layer == m_panel->activeLayer()) {
+            && m_xformLayerIds.contains(layer.id)) {
             // Live transform session: the MODEL keeps the committed pixels
             // (single source of truth); the view hides the lifted source
             // region here — the transformed buffer is drawn separately below.

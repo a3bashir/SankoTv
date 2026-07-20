@@ -135,6 +135,9 @@ public:
     void cancelQuickShape(); // explicit cancel: discard the temporary vector
 
     Tool tool() const { return m_tool; } // active tool (per-tool sliders)
+    // Selection changed while Move is active: commit the running transform
+    // and re-lift around the NEW target (layer or group) — no tool toggle.
+    void refreshTransformBox();
     int eraserSize() const { return m_eraserSize; }
     int eraserOpacity() const { return qRound(m_eraserOpacity * 100.0); }
 
@@ -382,7 +385,13 @@ private:
     bool m_xformActive = false;
     bool m_xformAutoSel = false;   // box selection was synthesized from the
                                    // layer's artwork bounds (no user selection)
-    QImage m_transformBuf;         // pristine lifted pixels (m_moveSrcRect-sized)
+    QImage m_transformBuf;
+    // Transform-session identity: the lifted layers' IDs + one buffer each
+    // (single-layer sessions hold one entry; group sessions one per member).
+    // Commit resolves by ID, so reordering/grouping mid-session can never
+    // paste the result into the wrong layer.
+    QStringList m_xformLayerIds;
+    QVector<QImage> m_xformBufs;         // pristine lifted pixels (m_moveSrcRect-sized)
     QPolygonF m_quad;              // current box corners TL,TR,BR,BL, canvas coords
     QPointF m_pivot;               // rotate/scale origin (Pivot Point mode)
     bool m_pivotCustom = false;    // user moved the pivot off the box centre
@@ -439,6 +448,10 @@ private:
 
     void liftDefaultTransformBox(); // Move tool: box around selection/artwork
     void beginTransform();         // lift selection -> box (source cleared on lift)
+    // Lift EVERY visible, unlocked member of a group folder into per-layer
+    // buffers behind ONE box: the whole group moves/scales/rotates as a
+    // unit and commits back into each member's own image.
+    void beginGroupTransform(Layer *group);
     // Bake once (one undo). relift: Photoshop-style — while the Move tool
     // stays active the box does not disappear; it RESETS to a fresh default
     // axis-aligned box around the committed artwork. setTool passes false
