@@ -80,8 +80,9 @@ const char *kDockDarkStyle =
     " width: 3px; height: 3px; }"
     "QDockWidget { background: #111111; }"
     "#dockTitleBar { background: #161616; border-bottom: 1px solid #2a2a2a; }"
-    "#dockTitleGrip { color: #9188f8; font-size: 10px; }"
-    "#dockTitleText { color: #cccccc; font-size: 11px; font-weight: 600; }"
+    // Figma 7-70 TitleBar: plain text on the bar — no box behind the title.
+    "#dockTitleText { color: #cccccc; font-size: 11px; font-weight: 600;"
+    " background: transparent; border: none; }"
     "#dockTitleClose { background: transparent; color: #999999; border: none;"
     " border-radius: 4px; font-size: 13px; }"
     "#dockTitleClose:hover { background: #262626; color: #f5a623; }"
@@ -1488,7 +1489,13 @@ public:
         setCursor(Qt::PointingHandCursor);
         setFocusPolicy(Qt::NoFocus);
         setToolTip(tip);
-        setIcon(QIcon(layerIconPm(svgPath, iconSize)));
+        // Disabled state (e.g. Background layer selected): the glyph fades
+        // to gray — the flat button has no frame to gray. Fading (not a
+        // solid tint) keeps the glyph silhouette readable.
+        QIcon icon(layerIconPm(svgPath, iconSize));
+        icon.addPixmap(layerIconPm(svgPath, iconSize, QColor(), 0.35),
+                       QIcon::Disabled);
+        setIcon(icon);
         setIconSize(iconSize.toSize());
         // Figma shows only the default (flat) footer button; hover/pressed
         // are not defined there, so a minimal rounded highlight is used.
@@ -2256,11 +2263,9 @@ QWidget *StoryboardPage::createCenterColumn()
     connect(m_canvas, &DrawingCanvas::contentChanged, this, [this] {
         refreshCurrentThumb();
         updateActiveLayerThumb(); // the drawn layer's row preview, live
-        syncSharedLayers(currentPanel()); // shared layers mirror the edit
     });
     // Undo/redo may rewrite a panel that is NOT current; refresh ITS thumb.
     connect(m_canvas, &DrawingCanvas::panelEdited, this, [this](Panel *panel) {
-        syncSharedLayers(panel);
         Scene *scene = currentScene();
         if (!scene)
             return;
@@ -4768,7 +4773,7 @@ QWidget *StoryboardPage::createLayerPanel()
     bodyLayout->addWidget(scroll, 1);
 
     // Footer toolbar (Figma "Layers Footer Toolbar"), left to right: Delete,
-    // Link, Clear, Merge, Group, Duplicate, Import Image, New Layer.
+    // Clear, Merge, Group, Duplicate, Import Image, New Layer.
     QWidget *footer = new QWidget;
     footer->setAttribute(Qt::WA_StyledBackground, true);
     footer->setFixedHeight(27);
@@ -4790,14 +4795,6 @@ QWidget *StoryboardPage::createLayerPanel()
     deleteButton->enableLayerDrops();
     m_layerDeleteButton = deleteButton;
     footerLayout->addWidget(deleteButton);
-
-    LayerToolButton *linkButton = new LayerToolButton(
-        QStringLiteral(":/icons/layer_link.svg"), iconSize,
-        QStringLiteral("Reuse the active layer in another panel (shared layer)"),
-        footer);
-    connect(linkButton, &QPushButton::clicked, this,
-            [this] { layerReuseInPanel(-1); });
-    footerLayout->addWidget(linkButton);
 
     LayerToolButton *clearButton = new LayerToolButton(
         QStringLiteral(":/icons/layer_clear.svg"), iconSize,
@@ -4922,10 +4919,10 @@ void StoryboardPage::rebuildLayerPanel()
         row->selected = isSelected;
         row->setProperty("layerIndex", i); // live-thumb + drag-ghost lookup
         // Figma layerRow: default bg #161616 / border #232323; selected
-        // bg #1b1b1b / border #f5a623 (Figma 7:86). Radius 4.
+        // bg #1b1b1b / Sanko accent border #7C6EF6. Radius 4.
         QString style = isSelected
             ? QStringLiteral("QFrame#layerRow { background-color: #1b1b1b;"
-                             " border: 1px solid #f5a623; border-radius: 4px; }")
+                             " border: 1px solid #7c6ef6; border-radius: 4px; }")
             : QStringLiteral("QFrame#layerRow { background-color: #161616;"
                              " border: 1px solid #232323; border-radius: 4px; }");
         // The layer's colour tag shows as a thicker left edge stripe.
@@ -5234,20 +5231,12 @@ void StoryboardPage::layerContextMenu(int index, const QPoint &globalPos)
     connect(duplicate, &QAction::triggered, this,
             [this] { layerDuplicateSelected(); });
 
-    const bool plainLayer =
-        panel->layers.at(index).type != QLatin1String("background")
-        && !isGroupLayer(panel->layers.at(index));
     QAction *duplicateTo =
         menu.addAction(QStringLiteral("Duplicate to Another Panel"));
-    duplicateTo->setEnabled(plainLayer);
+    duplicateTo->setEnabled(
+        panel->layers.at(index).type != QLatin1String("background"));
     connect(duplicateTo, &QAction::triggered, this,
             [this, index] { layerDuplicateToPanel(index); });
-
-    QAction *reuse =
-        menu.addAction(QStringLiteral("Copy/Reuse Layer in Another Panel"));
-    reuse->setEnabled(plainLayer);
-    connect(reuse, &QAction::triggered, this,
-            [this, index] { layerReuseInPanel(index); });
 
     if (isGroupLayer(panel->layers.at(index))) {
         menu.addSeparator();
@@ -5338,7 +5327,6 @@ void StoryboardPage::layerDeleteSelected()
     const QVector<Layer> before = panel->layers;
     const int beforeActive = panel->activeLayerIndex;
 
-    QStringList releasedShared;
     int removedBelowActive = 0;
     bool activeRemoved = false;
     // Descending removal keeps every remaining index in `sel` valid, so a
@@ -5347,10 +5335,7 @@ void StoryboardPage::layerDeleteSelected()
         const int idx = sel.at(k);
         if (panel->layers.size() <= 1)
             break; // never delete the last remaining layer
-        const Layer layer = panel->layers.at(idx);
         panel->layers.removeAt(idx);
-        if (!layer.sharedId.isEmpty())
-            releasedShared.append(layer.sharedId);
         if (idx < panel->activeLayerIndex)
             ++removedBelowActive;
         else if (idx == panel->activeLayerIndex)
@@ -5362,9 +5347,6 @@ void StoryboardPage::layerDeleteSelected()
     if (activeRemoved && panel->activeLayerIndex == 0 && panel->layers.size() > 1
         && panel->layers.first().type == QLatin1String("background"))
         panel->activeLayerIndex = 1; // land on a drawing layer, not the paper
-
-    for (const QString &sharedId : releasedShared)
-        releaseSharedIfLastInstance(sharedId);
 
     m_layerSelection.clear();
     m_layerSelection.insert(panel->activeLayerIndex);
@@ -5388,7 +5370,7 @@ void StoryboardPage::layerDuplicateSelected()
     const QVector<Layer> before = panel->layers;
     const int beforeActive = panel->activeLayerIndex;
 
-    // Copies (deep image copy, fresh id, NEVER shared) land as one block
+    // Copies (deep image copy, fresh id) land as one block
     // directly above the topmost selected item, keeping relative order.
     // Copies stay inside a parent group only when the whole selection lives
     // in that one group (keeps member blocks contiguous under their folder).
@@ -5409,7 +5391,6 @@ void StoryboardPage::layerDuplicateSelected()
     for (int idx : sel) {
         Layer copy = panel->layers.at(idx);
         copy.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
-        copy.sharedId.clear();
         if (!copy.image.isNull())
             copy.image = copy.image.copy();
         copy.name = copy.name + QStringLiteral(" copy");
@@ -5437,14 +5418,15 @@ void StoryboardPage::layerDuplicateSelected()
     rebuildLayerPanel();
 }
 
-// Real deep copy into another panel — never a shared reference.
+// Real deep copy into another panel. A group row copies its whole folder —
+// members included — as independent layers.
 void StoryboardPage::layerDuplicateToPanel(int index)
 {
     Panel *panel = currentPanel();
     if (!panel || index < 0 || index >= panel->layers.size())
         return;
     const Layer &source = panel->layers.at(index);
-    if (source.type == QLatin1String("background") || isGroupLayer(source))
+    if (source.type == QLatin1String("background"))
         return;
 
     QStringList labels;
@@ -5482,19 +5464,38 @@ bool StoryboardPage::duplicateLayerToPanelCore(int index, Panel *target)
         || index >= panel->layers.size())
         return false;
     const Layer &source = panel->layers.at(index);
-    if (source.type == QLatin1String("background") || isGroupLayer(source))
+    if (source.type == QLatin1String("background"))
         return false;
 
     const QVector<Layer> before = target->layers;
     const int beforeActive = target->activeLayerIndex;
-    Layer copy = source;
-    copy.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
-    copy.sharedId.clear();
-    copy.groupId.clear();
-    copy.image = copy.image.copy(); // REAL copy, independent pixels
-    target->layers.append(copy);    // frontmost in the target panel
-    pushLayerCommand(target, before, beforeActive,
-                     QStringLiteral("Duplicate Layer to Panel"));
+    if (isGroupLayer(source)) {
+        // Whole folder: every member copied (fresh ids, independent pixels)
+        // in relative order, remapped under a fresh folder id; the folder row
+        // lands directly above its members, frontmost in the target panel.
+        Layer folder = source;
+        folder.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        for (const Layer &member : panel->layers) {
+            if (member.groupId != source.id)
+                continue;
+            Layer copy = member;
+            copy.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+            copy.groupId = folder.id;
+            copy.image = copy.image.copy(); // REAL copy, independent pixels
+            target->layers.append(copy);
+        }
+        target->layers.append(folder);
+        pushLayerCommand(target, before, beforeActive,
+                         QStringLiteral("Duplicate Group to Panel"));
+    } else {
+        Layer copy = source;
+        copy.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        copy.groupId.clear();
+        copy.image = copy.image.copy(); // REAL copy, independent pixels
+        target->layers.append(copy);    // frontmost in the target panel
+        pushLayerCommand(target, before, beforeActive,
+                         QStringLiteral("Duplicate Layer to Panel"));
+    }
     if (Scene *scene = currentScene()) {
         const int idx = scene->panels.indexOf(target);
         if (idx >= 0 && idx < m_panelThumbImages.size())
@@ -5521,14 +5522,16 @@ void StoryboardPage::mergeLayerIndices(const QVector<int> &rawIndices,
     if (!panel || indices.size() < 2)
         return;
     m_canvas->commitQuickShape();
+    // An in-flight Move drag lands in the pre-merge layers BEFORE the merge
+    // snapshot; the session left lifted here goes stale below and is dropped.
+    m_canvas->refreshTransformBox();
     const QVector<Layer> beforeStack = panel->layers;
     const int beforeActive = panel->activeLayerIndex;
 
     const int targetIdx = indices.first();
     Layer &target = panel->layers[targetIdx];
-    target.image.detach(); // a shared target keeps sharing AFTER the bake
+    target.image.detach(); // never bake into the undo snapshot's shared handle
     QPainter painter(&target.image);
-    QStringList releasedShared;
     for (int k = 1; k < indices.size(); ++k) {
         const Layer &top = panel->layers.at(indices.at(k));
         painter.setOpacity(qBound(0.0, top.opacity, 1.0));
@@ -5538,14 +5541,8 @@ void StoryboardPage::mergeLayerIndices(const QVector<int> &rawIndices,
     if (!newName.isEmpty())
         target.name = newName;
 
-    for (int k = indices.size() - 1; k >= 1; --k) {
-        const Layer layer = panel->layers.at(indices.at(k));
+    for (int k = indices.size() - 1; k >= 1; --k)
         panel->layers.removeAt(indices.at(k));
-        if (!layer.sharedId.isEmpty())
-            releasedShared.append(layer.sharedId);
-    }
-    for (const QString &sharedId : releasedShared)
-        releaseSharedIfLastInstance(sharedId);
 
     panel->activeLayerIndex = targetIdx;
     m_layerSelection.clear();
@@ -5553,9 +5550,9 @@ void StoryboardPage::mergeLayerIndices(const QVector<int> &rawIndices,
     m_layerAnchor = targetIdx;
     pushLayerCommand(panel, beforeStack, beforeActive,
                      QStringLiteral("Merge Layers"));
-    syncSharedLayers(panel); // a shared target propagates the merged pixels
     refreshLayerCanvas();
     rebuildLayerPanel();
+    m_canvas->resetTransformBox(); // the box re-wraps the merged layer
 }
 
 void StoryboardPage::layerMergeSelected()
@@ -5682,7 +5679,6 @@ void StoryboardPage::layerClearSelected()
         return;
     pushLayerCommand(panel, before, beforeActive,
                      QStringLiteral("Clear Layer"));
-    syncSharedLayers(panel); // cleared shared layers clear everywhere
     refreshLayerCanvas();
     rebuildLayerPanel();
 }
@@ -5820,157 +5816,6 @@ void StoryboardPage::startLayerDrag(int index)
     drag->exec(Qt::MoveAction); // drops: list gap / Delete / Duplicate
 }
 
-// --- Reuse-across-panels (shared layers) -------------------------------------
-
-void StoryboardPage::layerReuseInPanel(int index)
-{
-    Panel *panel = currentPanel();
-    if (!panel)
-        return;
-    if (index < 0)
-        index = panel->activeLayerIndex; // footer Link button: active layer
-    if (index < 0 || index >= panel->layers.size())
-        return;
-    if (panel->layers.at(index).type == QLatin1String("background"))
-        return; // the paper is never shared
-
-    // Every other panel, labelled "Scene N — Panel M".
-    QStringList labels;
-    QVector<Panel *> targets;
-    for (Scene *scene : m_scenes)
-        for (int p = 0; p < scene->panels.size(); ++p) {
-            Panel *target = scene->panels.at(p);
-            if (target == panel)
-                continue;
-            labels << QStringLiteral("Scene %1 — Panel %2")
-                          .arg(scene->number)
-                          .arg(p + 1);
-            targets.append(target);
-        }
-    if (targets.isEmpty()) {
-        QMessageBox::information(this, QStringLiteral("Reuse Layer"),
-                                 QStringLiteral("There is no other panel to reuse this layer in."));
-        return;
-    }
-    bool ok = false;
-    const QString choice = QInputDialog::getItem(
-        this, QStringLiteral("Reuse Layer in Another Panel"),
-        QStringLiteral("Reference \"%1\" from:").arg(panel->layers.at(index).name),
-        labels, 0, false, &ok);
-    if (!ok)
-        return;
-    Panel *target = targets.at(labels.indexOf(choice));
-    if (!reuseLayerInPanelCore(index, target))
-        QMessageBox::information(
-            this, QStringLiteral("Reuse Layer"),
-            QStringLiteral("That panel already references this layer."));
-}
-
-bool StoryboardPage::reuseLayerInPanelCore(int index, Panel *target)
-{
-    Panel *panel = currentPanel();
-    if (!panel || !target || target == panel || index < 0
-        || index >= panel->layers.size())
-        return false;
-    if (panel->layers.at(index).type == QLatin1String("background"))
-        return false; // the paper is never shared
-
-    // First share: the source becomes shared, keyed by its own id.
-    Layer &source = panel->layers[index];
-    if (source.sharedId.isEmpty())
-        source.sharedId = source.id;
-    for (const Layer &existing : target->layers)
-        if (existing.sharedId == source.sharedId)
-            return false; // already referenced there — never duplicate
-
-    Layer instance = source;         // same id + sharedId; image handle SHARED
-    target->layers.append(instance); // frontmost in the target panel
-    if (target->activeLayerIndex < 0
-        || target->activeLayerIndex >= target->layers.size())
-        target->activeLayerIndex = target->layers.size() - 1;
-
-    // The target's thumbnail changes if it is on screen.
-    if (Scene *scene = currentScene()) {
-        const int idx = scene->panels.indexOf(target);
-        if (idx >= 0 && idx < m_panelThumbImages.size())
-            m_panelThumbImages.at(idx)->setPixmap(
-                target->flattenedPixmap().scaled(kThumbW, kThumbH,
-                                                 Qt::IgnoreAspectRatio,
-                                                 Qt::SmoothTransformation));
-    }
-    rebuildLayerPanel(); // the source row gains its shared badge
-    return true;
-}
-
-// Mirror the pixels of every shared layer in `source` into all other
-// instances (implicit QImage sharing: assignment is O(1), no copies until a
-// later edit detaches). Called after any edit that can change layer pixels.
-void StoryboardPage::syncSharedLayers(Panel *source)
-{
-    if (!source)
-        return;
-    bool sourceHasShared = false;
-    for (const Layer &layer : source->layers)
-        if (!layer.sharedId.isEmpty()) {
-            sourceHasShared = true;
-            break;
-        }
-    if (!sourceHasShared)
-        return;
-
-    Scene *scene = currentScene();
-    for (Scene *sc : m_scenes)
-        for (Panel *panel : sc->panels) {
-            if (panel == source)
-                continue;
-            bool touched = false;
-            for (Layer &mirror : panel->layers) {
-                if (mirror.sharedId.isEmpty())
-                    continue;
-                for (const Layer &layer : source->layers)
-                    if (layer.sharedId == mirror.sharedId
-                        && mirror.image.cacheKey() != layer.image.cacheKey()) {
-                        mirror.image = layer.image;
-                        touched = true;
-                    }
-            }
-            if (!touched)
-                continue;
-            if (scene) {
-                const int idx = scene->panels.indexOf(panel);
-                if (idx >= 0 && idx < m_panelThumbImages.size())
-                    m_panelThumbImages.at(idx)->setPixmap(
-                        panel->flattenedPixmap().scaled(
-                            kThumbW, kThumbH, Qt::IgnoreAspectRatio,
-                            Qt::SmoothTransformation));
-            }
-            if (panel == currentPanel()) {
-                if (m_canvas)
-                    m_canvas->update();
-                rebuildLayerPanel();
-            }
-        }
-}
-
-// When only ONE instance of a sharedId remains anywhere, it stops being
-// shared (the underlying data simply lives on in that last instance).
-void StoryboardPage::releaseSharedIfLastInstance(const QString &sharedId)
-{
-    if (sharedId.isEmpty())
-        return;
-    Layer *last = nullptr;
-    int count = 0;
-    for (Scene *scene : m_scenes)
-        for (Panel *panel : scene->panels)
-            for (Layer &layer : panel->layers)
-                if (layer.sharedId == sharedId) {
-                    last = &layer;
-                    ++count;
-                }
-    if (count == 1 && last)
-        last->sharedId.clear();
-}
-
 void StoryboardPage::refreshLayerCanvas()
 {
     if (m_canvas)
@@ -6013,7 +5858,6 @@ void StoryboardPage::applyLayerStackForUndo(Panel *panel,
         m_layerSelection.insert(panel->activeLayerIndex);
         m_layerAnchor = panel->activeLayerIndex;
     }
-    syncSharedLayers(panel);
     if (panel == currentPanel()) {
         refreshLayerCanvas();
         rebuildLayerPanel();

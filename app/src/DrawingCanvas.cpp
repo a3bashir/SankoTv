@@ -657,6 +657,8 @@ void DrawingCanvas::setTool(Tool tool)
     // Activating Move shows the transform box at once (like Photoshop).
     if (tool == Move)
         liftDefaultTransformBox();
+    if (!m_panning)
+        setCursor(m_spaceHeld ? Qt::OpenHandCursor : defaultCursorShape());
     update(); // the selection itself DOES survive (Select -> Move flow)
     if (m_tool != previous)
         emit toolChanged(m_tool); // per-tool Size CTL sliders re-sync
@@ -668,6 +670,18 @@ void DrawingCanvas::refreshTransformBox()
         return;
     commitTransform(false); // running session lands in ITS layers (by ID)
     liftDefaultTransformBox(); // fresh box around the new target
+    update();
+}
+
+// After an outside model change (merge, etc.) the session's pristine buffers
+// no longer match the layers — committing them would paste PRE-change pixels
+// back. Drop the session instead, then lift fresh around the current target.
+void DrawingCanvas::resetTransformBox()
+{
+    if (m_tool != Move)
+        return;
+    cancelTransform(false);
+    liftDefaultTransformBox();
     update();
 }
 
@@ -2591,7 +2605,7 @@ void DrawingCanvas::updateXformCursor(XformMode mode)
         setCursor(m_xformUiMode == XformSkew ? Qt::SizeVerCursor
                                              : Qt::SizeHorCursor);
         break;
-    default:       setCursor(Qt::CrossCursor); break;
+    default:       setCursor(defaultCursorShape()); break;
     }
 }
 
@@ -2681,7 +2695,7 @@ void DrawingCanvas::commitTransform(bool relift)
     m_tpsValid = false;
     m_xformAutoSel = false;
     clearSelection(); // the committed pixels are no longer "selected"
-    setCursor(Qt::CrossCursor);
+    setCursor(defaultCursorShape());
 
     // Committing a Warp returns to the DEFAULT move/scale/rotate box (the
     // other modes already read as the default box after commit since they
@@ -2721,7 +2735,7 @@ void DrawingCanvas::cancelTransform(bool relift)
         m_xformAutoSel = false;
         m_selectionPath = QPainterPath();
     }
-    setCursor(Qt::CrossCursor);
+    setCursor(defaultCursorShape());
 
     // Esc while the Move tool stays active: the box resets to the default
     // around the restored artwork instead of disappearing.
@@ -4306,7 +4320,7 @@ void DrawingCanvas::keyReleaseEvent(QKeyEvent *event)
     if (event->key() == Qt::Key_Space && !event->isAutoRepeat()) {
         m_spaceHeld = false;
         if (!m_panning)
-            setCursor(Qt::CrossCursor);
+            setCursor(defaultCursorShape());
         return;
     }
     QWidget::keyReleaseEvent(event);
@@ -4321,7 +4335,7 @@ void DrawingCanvas::focusOutEvent(QFocusEvent *event)
     // Losing focus mid-hold would otherwise leave the pan modifier stuck on.
     m_spaceHeld = false;
     if (!m_panning)
-        setCursor(Qt::CrossCursor);
+        setCursor(defaultCursorShape());
     QWidget::focusOutEvent(event);
 }
 
@@ -4692,7 +4706,7 @@ void DrawingCanvas::mouseReleaseEvent(QMouseEvent *event)
     if (m_panning
         && (event->button() == Qt::MiddleButton || event->button() == Qt::LeftButton)) {
         m_panning = false;
-        setCursor(m_spaceHeld ? Qt::OpenHandCursor : Qt::CrossCursor);
+        setCursor(m_spaceHeld ? Qt::OpenHandCursor : defaultCursorShape());
         return;
     }
     if (m_tool == Perspective && event->button() == Qt::LeftButton) {

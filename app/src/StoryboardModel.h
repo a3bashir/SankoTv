@@ -32,12 +32,6 @@ struct Layer
     bool visible = true;
     double opacity = 1.0;   // 0.0 - 1.0
     bool locked = false;
-    // Reuse-across-panels: instances of the SAME layer in different panels
-    // carry the same non-empty sharedId; their pixel data is kept identical
-    // (edits propagate to every instance, the project stores the image once
-    // and references it by this id). Empty = a normal, panel-local layer.
-    // Visibility/opacity/lock stay PER INSTANCE.
-    QString sharedId;
     // Optional organisational colour label (Photoshop-style layer colour),
     // shown as an edge stripe in the Layers panel. Empty = none.
     QString colorTag;       // "#RRGGBB"

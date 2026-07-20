@@ -138,6 +138,10 @@ public:
     // Selection changed while Move is active: commit the running transform
     // and re-lift around the NEW target (layer or group) — no tool toggle.
     void refreshTransformBox();
+    // The layer model changed UNDERNEATH a Move session (e.g. layers were
+    // merged): the lifted buffers are stale, so drop them without committing
+    // and lift a fresh box around the new active target.
+    void resetTransformBox();
     int eraserSize() const { return m_eraserSize; }
     int eraserOpacity() const { return qRound(m_eraserOpacity * 100.0); }
 
@@ -465,6 +469,12 @@ private:
     XformMode hitTestBox(const QPointF &widgetPos) const;
     void applyXformDrag(const QPointF &canvasPos, bool proportional);
     void updateXformCursor(XformMode mode);
+    // Idle cursor for the active tool: four-way move arrows for Move
+    // (Photoshop's Move cursor), crosshair for everything else.
+    Qt::CursorShape defaultCursorShape() const
+    {
+        return m_tool == Move ? Qt::SizeAllCursor : Qt::CrossCursor;
+    }
 
     // Visual debug: dump the move-pipeline stages to C:\SankoTv\app\debug\.
     // Off in shipped builds; flip to true to re-inspect the move stages.

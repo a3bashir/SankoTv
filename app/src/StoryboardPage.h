@@ -167,7 +167,8 @@ private:
     // Merge core: flatten the given ascending indices into the lowest one
     // (optionally renaming it).
     void mergeLayerIndices(const QVector<int> &indices, const QString &newName);
-    void layerDuplicateToPanel(int index); // real copy, never a shared ref
+    // Real deep copy into another panel; a group row copies its whole folder.
+    void layerDuplicateToPanel(int index);
     bool duplicateLayerToPanelCore(int index, Panel *target);
     void layerUngroup(int groupIndex);     // dissolve a folder, keep members
     // Selection expanded so any selected group row brings its whole member
@@ -181,19 +182,6 @@ private:
     // EMPTY layers only). True = go ahead.
     bool confirmLayerDelete(const QVector<int> &indices);
     void updateActiveLayerThumb(); // live row-thumbnail refresh while drawing
-
-    // Reuse-across-panels (shared layers): reference the SAME layer data
-    // from another panel. Instances share pixels via sharedId; edits made
-    // anywhere propagate to every instance (syncSharedLayers), and the
-    // project file stores the image once.
-    void layerReuseInPanel(int index);
-    // Dialog-free core: marks the source shared and appends a referencing
-    // instance to `target`. False when the reference already exists there.
-    bool reuseLayerInPanelCore(int index, Panel *target);
-    void syncSharedLayers(Panel *source);
-    // Reference counting on delete/merge: when only ONE instance of a
-    // sharedId remains anywhere, it stops being shared.
-    void releaseSharedIfLastInstance(const QString &sharedId);
 
     void rebuildSceneList();
     void rebuildPanelStrip();

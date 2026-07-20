@@ -20,11 +20,6 @@ DockTitleBar::DockTitleBar(QDockWidget *dock, DockController *controller)
     layout->setContentsMargins(10, 0, 6, 0);
     layout->setSpacing(7);
 
-    // Grip glyph (braille dots) signals "draggable".
-    QLabel *grip = new QLabel(QString::fromUtf8("\xE2\xA0\xBF")); // U+283F
-    grip->setObjectName(QStringLiteral("dockTitleGrip"));
-    layout->addWidget(grip);
-
     QLabel *title = new QLabel(m_dock->windowTitle());
     title->setObjectName(QStringLiteral("dockTitleText"));
     layout->addWidget(title);
