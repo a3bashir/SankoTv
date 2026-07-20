@@ -2675,10 +2675,20 @@ void DrawingCanvas::commitTransform(bool relift)
     // (a macro when several members took part).
     if (!m_xformLayerIds.isEmpty() && !m_transformBuf.isNull() && m_panel
         && m_undoStack) {
-        const bool macro = m_xformLayerIds.size() > 1;
-        if (macro)
-            m_undoStack->beginMacro(QStringLiteral("Transform Group"));
-        bool changedAny = false;
+        // Bake every member FIRST, keeping only the layers whose pixels
+        // actually changed. The macro opens ONLY when something real gets
+        // pushed: an untouched session (e.g. the identity box a relift
+        // leaves up) must contribute ZERO history entries — an empty macro
+        // (or an AA-rounding micro-diff) on the stack made Ctrl+Z after an
+        // Enter commit "undo" nothing instead of the transform itself.
+        struct Baked
+        {
+            Layer *layer;
+            QImage before;
+            QImage result;
+            QRect region;
+        };
+        QVector<Baked> baked;
         for (int k = 0; k < m_xformLayerIds.size(); ++k) {
             Layer *layer = nullptr;
             for (Layer &candidate : m_panel->layers)
@@ -2710,17 +2720,27 @@ void DrawingCanvas::commitTransform(bool relift)
                 }
             }
             const QRect region = diffRegion(before, result);
-            layer->image = result; // IN PLACE: no new layer, nothing merges
-            if (!region.isEmpty()) {
-                m_undoStack->push(new DrawingCommand(
-                    this, m_panel, layer->id, region, before.copy(region),
-                    result.copy(region), QStringLiteral("Transform")));
-                changedAny = true;
-            }
+            if (region.isEmpty())
+                continue; // unchanged: keep the EXACT pixels, no command
+            baked.append({layer, before, result, region});
+        }
+        // One Enter commit = exactly ONE undo entry covering every affected
+        // layer: a single command alone, several under one macro. Only
+        // pixels are rewritten — visibility, opacity, lock, and stacking
+        // order are untouched by a transform, so undo restores each layer
+        // exactly as it was.
+        const bool macro = baked.size() > 1;
+        if (macro)
+            m_undoStack->beginMacro(QStringLiteral("Transform Group"));
+        for (const Baked &b : baked) {
+            b.layer->image = b.result; // IN PLACE: no new layer, no merging
+            m_undoStack->push(new DrawingCommand(
+                this, m_panel, b.layer->id, b.region, b.before.copy(b.region),
+                b.result.copy(b.region), QStringLiteral("Transform")));
         }
         if (macro)
             m_undoStack->endMacro();
-        if (changedAny)
+        if (!baked.isEmpty())
             emit contentChanged();
     }
 
