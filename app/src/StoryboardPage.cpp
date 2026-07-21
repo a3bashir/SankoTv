@@ -4706,16 +4706,22 @@ QString layerRowStyle(const Layer &layer, bool selected)
     return style;
 }
 
-// 40x22 layer thumbnail over a dark checker-free backdrop (transparent areas
-// read as the panel background, not white).
+// 40x22 layer thumbnail over a Photoshop-style transparency checkerboard:
+// transparent areas show the checker, painted pixels (pure black included)
+// draw clearly on top, an empty layer shows only the checker.
 QPixmap layerThumb(const Layer &layer)
 {
-    QImage out(40, 22, QImage::Format_ARGB32_Premultiplied);
-    out.fill(QColor(0x1b, 0x1b, 0x1b));
+    constexpr int kW = 40, kH = 22, kCell = 4; // subtle small squares
+    QImage out(kW, kH, QImage::Format_ARGB32_Premultiplied);
+    const QColor light(0x3a, 0x3a, 0x3a), dark(0x2a, 0x2a, 0x2a);
+    for (int y = 0; y < kH; ++y)
+        for (int x = 0; x < kW; ++x)
+            out.setPixelColor(x, y,
+                              ((x / kCell + y / kCell) & 1) ? dark : light);
     QPainter painter(&out);
     painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
     if (!layer.image.isNull())
-        painter.drawImage(QRect(0, 0, 40, 22), layer.image);
+        painter.drawImage(QRect(0, 0, kW, kH), layer.image);
     painter.end();
     return QPixmap::fromImage(out);
 }
@@ -5057,18 +5063,24 @@ void StoryboardPage::rebuildLayerPanel()
             rowLayout->addWidget(chevron, 0, Qt::AlignVCenter);
         }
 
-        // Layer thumbnail (Figma th 40x22, bg #1A1A1A / border #2A2A2A / r2);
-        // folder rows show the group glyph instead of pixels.
+        // Layer thumbnail (Figma th 40x22, bg #1A1A1A / border #2A2A2A / r2).
+        // Group rows drop the thumbnail box entirely and show ONLY the folder
+        // icon (no square behind it), sized up to Photoshop-folder proportions.
         QLabel *thumb = new QLabel;
         thumb->setObjectName(QStringLiteral("layerThumb")); // live updates
         thumb->setFixedSize(40, 22);
         thumb->setAlignment(Qt::AlignCenter);
-        thumb->setStyleSheet(QStringLiteral(
-            "background-color: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 2px;"));
-        thumb->setPixmap(isGroup
-            ? layerIconPm(QStringLiteral(":/icons/layer_group.svg"),
-                          QSizeF(16, 13))
-            : layerThumb(layer));
+        if (isGroup) {
+            thumb->setStyleSheet(
+                QStringLiteral("background: transparent; border: none;"));
+            thumb->setPixmap(layerIconPm(
+                QStringLiteral(":/icons/layer_group.svg"), QSizeF(22, 18)));
+        } else {
+            thumb->setStyleSheet(QStringLiteral(
+                "background-color: #1a1a1a; border: 1px solid #2a2a2a;"
+                " border-radius: 2px;"));
+            thumb->setPixmap(layerThumb(layer));
+        }
         rowLayout->addWidget(thumb, 0, Qt::AlignVCenter);
 
         // Name (Figma 7:77, Inter Regular 11px #CCC). Double-click to rename.
@@ -5969,6 +5981,8 @@ void StoryboardPage::updateActiveLayerThumb()
     const int idx = panel->activeLayerIndex;
     if (idx < 0 || idx >= panel->layers.size())
         return;
+    if (isGroupLayer(panel->layers.at(idx)))
+        return; // folder rows own no pixels — keep their folder icon
     for (QWidget *row : m_layerRows)
         if (row->property("layerIndex").toInt() == idx) {
             if (QLabel *thumb =
