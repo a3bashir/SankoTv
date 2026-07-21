@@ -1,6 +1,7 @@
 #pragma once
 
 #include "PerspectiveTool.h"
+#include "brush/BrushEngine.h"
 
 #include <QuickShape/quickshape_session.h>
 
@@ -152,6 +153,18 @@ public:
     // Fit Screen: centre the canvas in the viewport and fit it fully with a
     // small margin, whatever the current zoom/pan (rotation/flip untouched).
     void fitToScreen();
+
+    // --- Phase 1 CPU brush engine ----------------------------------------
+    // A self-contained brush engine (src/brush/) driven in CANVAS coordinates.
+    // Configure it via brushEngine().brush(); a stroke is begin -> extend* ->
+    // commit, and the commit bakes onto the active layer through the same
+    // one-entry undo path as every other edit (beginLayerEdit/finalizeLayerEdit).
+    // Phase 1 is engine + integration + tests; the live Brush tool is unchanged.
+    BrushEngine &brushEngine() { return m_brushEngine; }
+    void brushEngineStrokeBegin(const QPointF &canvasPt);
+    void brushEngineStrokeExtend(const QPointF &canvasPt);
+    void brushEngineStrokeCommit(
+        const QString &undoText = QStringLiteral("Brush Stroke"));
     // The layer stack changed outside the canvas (visibility, opacity,
     // reorder, undo, ...): drop the below/above composite caches so the next
     // paint recomposites. Cheap to call; the rebuild is lazy.
@@ -539,6 +552,10 @@ private:
     enum StrokeMaskMode { StrokeMaskNone, StrokeMaskPaint, StrokeMaskErase };
     StrokeMaskMode m_strokeMask = StrokeMaskNone;
     QImage m_strokeBuf; // canvas-sized scratch holding the live stroke
+
+    // Phase 1 CPU brush engine (src/brush/), driven via the public
+    // brushEngineStroke* API. Independent of the legacy m_brush* stamping.
+    BrushEngine m_brushEngine;
 
     // Brush engine state. Defaults mirror the initial settings-panel values.
     int m_brushToolSize = 25;        // dab diameter, canvas px

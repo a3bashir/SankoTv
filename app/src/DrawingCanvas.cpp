@@ -3144,6 +3144,44 @@ void DrawingCanvas::endBrushStroke(const QString &undoText)
     update();
 }
 
+// --- Phase 1 CPU brush engine integration -----------------------------------
+// The engine paints in CANVAS coordinates onto its own stroke buffer; the
+// commit bakes that buffer onto the active layer ONCE and pushes a single
+// region-diffed DrawingCommand through the shared undo path — identical
+// undo/redo semantics to every other layer edit.
+void DrawingCanvas::brushEngineStrokeBegin(const QPointF &canvasPt)
+{
+    m_brushEngine.setCanvasSize(canvasSize());
+    m_brushEngine.beginStroke(canvasPt);
+}
+
+void DrawingCanvas::brushEngineStrokeExtend(const QPointF &canvasPt)
+{
+    m_brushEngine.extendStroke(canvasPt);
+}
+
+void DrawingCanvas::brushEngineStrokeCommit(const QString &undoText)
+{
+    Layer *layer = editableActiveLayer();
+    if (!layer) {
+        // No paintable target: drop the buffered stroke without a history entry.
+        QImage scratch(canvasSize(), QImage::Format_ARGB32_Premultiplied);
+        m_brushEngine.compositeOnto(scratch);
+        return;
+    }
+    beginLayerEdit(); // snapshot the active layer before the bake
+    const QRect region = m_brushEngine.compositeOnto(layer->image);
+    if (region.isEmpty()) {
+        m_editPanel = nullptr; // nothing drawn: no undo entry
+        m_editBefore = QImage();
+        return;
+    }
+    finalizeLayerEdit(undoText); // one DrawingCommand for the whole stroke
+    invalidateComposite();
+    update();
+    emit contentChanged();
+}
+
 // Convert the screen-space QuickShape tuning into document units at the
 // CURRENT view scale and push it into the session — called once per stroke,
 // so hold feel, dwell tolerance, and the velocity gate are zoom-independent.

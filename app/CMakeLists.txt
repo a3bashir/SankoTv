@@ -81,6 +81,9 @@ qt_add_executable(SankoTV
     src/ColorPanel.h
     src/PerspectiveTool.cpp
     src/PerspectiveTool.h
+    src/brush/Brush.h
+    src/brush/BrushEngine.cpp
+    src/brush/BrushEngine.h
     resources.qrc
 )
 
