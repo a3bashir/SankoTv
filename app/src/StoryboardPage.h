@@ -21,6 +21,7 @@ class QPlainTextEdit;
 class QPushButton;
 class QScrollArea;
 class QSlider;
+class QTimer;
 class QUndoStack;
 class QVBoxLayout;
 class SankoSlider;
@@ -182,6 +183,16 @@ private:
     // EMPTY layers only). True = go ahead.
     bool confirmLayerDelete(const QVector<int> &indices);
     void updateActiveLayerThumb(); // live row-thumbnail refresh while drawing
+    // Selection-only refresh: restyle the EXISTING rows in place (slider,
+    // buttons, canvas mirror included) — no widget teardown, so clicking
+    // rows in a deep stack neither flickers nor re-scales every thumbnail.
+    void updateLayerSelectionUi();
+    // Panel-strip thumbnail: refreshCurrentThumb() debounces the expensive
+    // flatten+scale behind a short timer (thumbnails settle after changes);
+    // ...Now() does the actual work; flush runs a pending refresh early
+    // (before panel switches).
+    void refreshCurrentThumbNow();
+    void flushThumbRefresh();
 
     void rebuildSceneList();
     void rebuildPanelStrip();
@@ -309,6 +320,7 @@ private:
     // Layer panel.
     QVBoxLayout *m_layerListLayout = nullptr;
     QVector<QWidget *> m_layerRows;
+    QTimer *m_thumbTimer = nullptr; // debounces panel-thumbnail regeneration
     std::function<void(int)> m_syncLayerOpacity; // <0 disables; else sets %
     SankoSlider *m_layerOpacity = nullptr; // (unused; kept for ABI stability)
                                            // (paints its own "NN%" label)

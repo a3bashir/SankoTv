@@ -462,6 +462,7 @@ void DrawingCanvas::setActivePanel(Panel *panel)
     if (m_xformActive)
         commitTransform(false);
 
+    invalidateComposite(); // caches belong to the panel we are leaving
     m_panel = panel;
     m_drawing = false;
     m_brushStroke = false;
@@ -604,6 +605,7 @@ bool DrawingCanvas::importImage(const QString &filePath)
     m_panel->layers.insert(insertAt, layer);
     m_panel->activeLayerIndex = insertAt;
 
+    invalidateComposite();
     update();
     emit layersChanged();  // Layer panel rebuilds its rows
     emit contentChanged(); // refreshes the panel thumbnail
@@ -1155,6 +1157,7 @@ void DrawingCanvas::applyLayerRegionForUndo(Panel *panel, const QString &layerId
         p.end();
         break;
     }
+    invalidateComposite(); // undo/redo can rewrite a non-active layer
     update();
     emit contentChanged();
     emit panelEdited(panel); // the command's OWN panel refreshes its thumbnail
@@ -1976,6 +1979,15 @@ void DrawingCanvas::beginTransform()
     }
     m_xformLayerIds = QStringList{layer->id}; // commit resolves by ID
     m_xformBufs = QVector<QImage>{m_transformBuf};
+    // Source-subtracted view of the layer, built ONCE for the whole session
+    // (layer pixels never change mid-session) — not per repaint.
+    QImage hole = layer->image;
+    {
+        QPainter hp(&hole);
+        hp.setCompositionMode(QPainter::CompositionMode_DestinationOut);
+        hp.drawImage(r.topLeft(), m_moveMask);
+    }
+    m_xformHoles = QVector<QImage>{hole};
     // SINGLE SOURCE OF TRUTH: the panel's layer image is NOT touched during
     // the session — thumbnails, saves, and panel switches always read the
     // committed state. The VIEW subtracts the lifted source region and shows
@@ -2071,6 +2083,19 @@ void DrawingCanvas::beginLayersTransform(const QStringList &candidateIds)
     m_moveSrcRect = r;
     m_moveMask = QImage(r.size(), QImage::Format_ARGB32_Premultiplied);
     m_moveMask.fill(QColor(255, 255, 255, 255)); // full-rect lift per member
+    // Source-subtracted view of every member, built ONCE per session (see
+    // beginTransform) — parallel to m_xformBufs.
+    m_xformHoles.clear();
+    for (const QString &id : ids)
+        for (const Layer &member : m_panel->layers)
+            if (member.id == id) {
+                QImage hole = member.image;
+                QPainter hp(&hole);
+                hp.setCompositionMode(QPainter::CompositionMode_DestinationOut);
+                hp.drawImage(r.topLeft(), m_moveMask);
+                hp.end();
+                m_xformHoles.append(hole);
+            }
     m_transformBuf = composite;
     m_xformAutoSel = false; // no synthesized selection: the box IS the lift
 
@@ -2740,13 +2765,16 @@ void DrawingCanvas::commitTransform(bool relift)
         }
         if (macro)
             m_undoStack->endMacro();
-        if (!baked.isEmpty())
+        if (!baked.isEmpty()) {
+            invalidateComposite(); // non-active members may sit in the caches
             emit contentChanged();
+        }
     }
 
     m_transformBuf = QImage();
     m_xformLayerIds.clear();
     m_xformBufs.clear();
+    m_xformHoles.clear();
     m_layerBackup = QImage();
     m_moveMask = QImage();
     m_warpDirty = false;
@@ -2786,6 +2814,7 @@ void DrawingCanvas::cancelTransform(bool relift)
     m_transformBuf = QImage();
     m_xformLayerIds.clear();
     m_xformBufs.clear();
+    m_xformHoles.clear();
     m_moveMask = QImage();
     m_warpDirty = false;
     m_warpSel.clear();
@@ -3821,6 +3850,51 @@ bool DrawingCanvas::eventFilter(QObject *object, QEvent *event)
     return QWidget::eventFilter(object, event);
 }
 
+// Rebuild the below/above composite caches when the panel, active index, or
+// stack size changed, or after invalidateComposite(). Accumulation matches
+// the direct loop step for step (paper first, per-layer group-aware
+// effective opacity, SourceOver) so the cached and direct paths render the
+// same stack identically.
+void DrawingCanvas::ensureComposite()
+{
+    const int active = m_panel ? m_panel->activeLayerIndex : -1;
+    const int count = m_panel ? m_panel->layers.size() : 0;
+    if (m_compValid && m_compPanel == m_panel && m_compActive == active
+        && m_compCount == count)
+        return;
+    const QSize cs = canvasSize();
+    if (m_compBelow.size() != cs) { // allocate once, reuse across rebuilds
+        m_compBelow = QImage(cs, QImage::Format_ARGB32_Premultiplied);
+        m_compAbove = QImage(cs, QImage::Format_ARGB32_Premultiplied);
+    }
+    m_compBelow.fill(Qt::white); // the paper
+    m_compAbove.fill(Qt::transparent);
+    if (m_panel) {
+        QPainter below(&m_compBelow);
+        QPainter above(&m_compAbove);
+        below.setRenderHint(QPainter::SmoothPixmapTransform, true);
+        above.setRenderHint(QPainter::SmoothPixmapTransform, true);
+        for (int i = 0; i < m_panel->layers.size(); ++i) {
+            if (i == active)
+                continue; // the live layer is drawn between the caches
+            const Layer &layer = m_panel->layers.at(i);
+            if (isGroupLayer(layer))
+                continue;
+            const double effOpacity = m_panel->layerEffectiveOpacity(layer);
+            if (!m_panel->layerEffectivelyVisible(layer)
+                || layer.image.isNull() || effOpacity <= 0.0)
+                continue;
+            QPainter &p = i < active ? below : above;
+            p.setOpacity(effOpacity);
+            p.drawImage(0, 0, layer.image);
+        }
+    }
+    m_compValid = true;
+    m_compPanel = m_panel;
+    m_compActive = active;
+    m_compCount = count;
+}
+
 void DrawingCanvas::paintEvent(QPaintEvent *event)
 {
     QPainter painter(this);
@@ -3858,39 +3932,23 @@ void DrawingCanvas::paintEvent(QPaintEvent *event)
     // White paper, then every VISIBLE layer bottom-to-top with its opacity.
     // Light-table ghosts are drawn ONCE on the paper, just after the
     // background/paper layer and before the drawing layers.
-    painter.fillRect(canvasR, Qt::white);
-    bool lightTableDrawn = false;
-    for (const Layer &layer : m_panel->layers) {
-        if (m_lightTable && !lightTableDrawn
-            && layer.type != QLatin1String("background")) {
-            drawLightTable(painter, canvasRi);
-            lightTableDrawn = true;
-        }
-        // Group folders paint nothing; members inherit folder visibility
-        // and multiply by folder opacity (matches flattenedPixmap exactly).
-        if (isGroupLayer(layer))
-            continue;
-        const double effOpacity = m_panel->layerEffectiveOpacity(layer);
-        if (!m_panel->layerEffectivelyVisible(layer) || layer.image.isNull()
-            || effOpacity <= 0.0)
-            continue;
+    // ONE layer's pixels (transform session in-place preview, live stroke
+    // previews, or the plain image) — shared by the cached and direct paths
+    // below so both render identically.
+    auto paintLayerContent = [&](const Layer &layer, double effOpacity) {
         painter.setOpacity(effOpacity);
         if (m_xformActive && !m_xformBufs.isEmpty()
             && m_xformLayerIds.contains(layer.id)) {
             // Live transform session: the MODEL keeps the committed pixels
-            // (single source of truth); the view hides the lifted source
-            // region and draws THIS layer's transformed buffer right here,
-            // at the layer's real z-position — the Move tool never brings
-            // the edited layer to the front, not even temporarily. A layer
-            // hidden or deleted mid-session simply stops painting (the
-            // visibility/existence checks above already ran).
-            QImage temp = layer.image;
-            QPainter tp(&temp);
-            tp.setCompositionMode(QPainter::CompositionMode_DestinationOut);
-            tp.drawImage(m_moveSrcRect.topLeft(), m_moveMask);
-            tp.end();
-            painter.drawImage(0, 0, temp);
+            // (single source of truth); the view shows the precomputed
+            // source-subtracted layer (built once at lift, not per frame)
+            // and draws THIS layer's transformed buffer right here, at the
+            // layer's real z-position — the Move tool never brings the
+            // edited layer to the front, not even temporarily. A layer
+            // hidden or deleted mid-session simply stops painting.
             const int bi = m_xformLayerIds.indexOf(layer.id);
+            if (bi >= 0 && bi < m_xformHoles.size())
+                painter.drawImage(0, 0, m_xformHoles.at(bi));
             if (bi >= 0 && bi < m_xformBufs.size()) {
                 painter.save();
                 if (m_warpDirty) {
@@ -3901,7 +3959,7 @@ void DrawingCanvas::paintEvent(QPaintEvent *event)
                 }
                 painter.restore();
             }
-            continue;
+            return;
         }
         const bool liveStroke = m_strokeMask != StrokeMaskNone
             && &layer == m_panel->activeLayer();
@@ -3949,10 +4007,51 @@ void DrawingCanvas::paintEvent(QPaintEvent *event)
                 }
             }
         }
+    };
+
+    // FAST PATH (the common case): paper + everything below the active layer
+    // and everything above it come from the two composite caches, so a
+    // repaint touches at most three images however deep the stack is. Any
+    // state the caches cannot represent (transform session lifting arbitrary
+    // layers, light-table interleaving) falls back to the direct loop —
+    // identical output either way, since both call paintLayerContent().
+    const int activeIdx = m_panel->activeLayerIndex;
+    if (!m_xformActive && !m_lightTable && activeIdx >= 0
+        && activeIdx < m_panel->layers.size()) {
+        ensureComposite();
+        painter.drawImage(0, 0, m_compBelow); // white paper + layers below
+        const Layer &active = m_panel->layers.at(activeIdx);
+        const double effOpacity = m_panel->layerEffectiveOpacity(active);
+        if (!isGroupLayer(active) && m_panel->layerEffectivelyVisible(active)
+            && !active.image.isNull() && effOpacity > 0.0)
+            paintLayerContent(active, effOpacity);
+        painter.setOpacity(1.0);
+        painter.drawImage(0, 0, m_compAbove); // layers above
+    } else {
+        painter.fillRect(canvasR, Qt::white);
+        bool lightTableDrawn = false;
+        for (const Layer &layer : m_panel->layers) {
+            if (m_lightTable && !lightTableDrawn
+                && layer.type != QLatin1String("background")) {
+                drawLightTable(painter, canvasRi);
+                lightTableDrawn = true;
+            }
+            // Group folders paint nothing; members inherit folder visibility
+            // and multiply by folder opacity (matches flattenedPixmap).
+            if (isGroupLayer(layer))
+                continue;
+            const double effOpacity = m_panel->layerEffectiveOpacity(layer);
+            if (!m_panel->layerEffectivelyVisible(layer) || layer.image.isNull()
+                || effOpacity <= 0.0)
+                continue;
+            paintLayerContent(layer, effOpacity);
+        }
+        if (m_lightTable && !lightTableDrawn) { // only a background layer
+            painter.setOpacity(1.0);
+            drawLightTable(painter, canvasRi);
+        }
     }
     painter.setOpacity(1.0);
-    if (m_lightTable && !lightTableDrawn) // panel had only a background layer
-        drawLightTable(painter, canvasRi);
 
     // Onion skin: faint blue ghost of the previous panel (display only).
     if (m_onionSkin && !m_ghost.isNull()) {

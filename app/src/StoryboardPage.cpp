@@ -2261,8 +2261,7 @@ QWidget *StoryboardPage::createCenterColumn()
 
     m_canvas = new DrawingCanvas;
     connect(m_canvas, &DrawingCanvas::contentChanged, this, [this] {
-        refreshCurrentThumb();
-        updateActiveLayerThumb(); // the drawn layer's row preview, live
+        refreshCurrentThumb(); // debounced; also refreshes the row preview
     });
     // Undo/redo may rewrite a panel that is NOT current; refresh ITS thumb.
     connect(m_canvas, &DrawingCanvas::panelEdited, this, [this](Panel *panel) {
@@ -3872,6 +3871,7 @@ void StoryboardPage::selectPanel(int index)
     Scene *scene = currentScene();
     if (!scene || index < 0 || index >= scene->panels.size())
         return;
+    flushThumbRefresh(); // finalize the OLD panel's debounced thumbnail
     m_currentPanel = index;
     m_canvas->setActivePanel(scene->panels.at(index));
     updatePanelThumbStyles();
@@ -3995,7 +3995,35 @@ void StoryboardPage::saveShotInfo()
     panel->notes = m_notes->toPlainText();
 }
 
+// Debounced: every stroke commit / opacity tick used to re-flatten the WHOLE
+// stack and smooth-scale it — with many layers that alone made drawing lag.
+// The pixel-perfect refresh now runs once, shortly after changes settle.
 void StoryboardPage::refreshCurrentThumb()
+{
+    if (!m_thumbTimer) {
+        m_thumbTimer = new QTimer(this);
+        m_thumbTimer->setSingleShot(true);
+        m_thumbTimer->setInterval(120);
+        connect(m_thumbTimer, &QTimer::timeout, this, [this] {
+            refreshCurrentThumbNow();
+            updateActiveLayerThumb(); // the changed layer's row preview
+        });
+    }
+    m_thumbTimer->start(); // restarts while edits keep coming
+}
+
+// A pending debounced refresh must land on the panel it was queued for —
+// run it NOW before the current panel changes.
+void StoryboardPage::flushThumbRefresh()
+{
+    if (m_thumbTimer && m_thumbTimer->isActive()) {
+        m_thumbTimer->stop();
+        refreshCurrentThumbNow();
+        updateActiveLayerThumb();
+    }
+}
+
+void StoryboardPage::refreshCurrentThumbNow()
 {
     Panel *panel = currentPanel();
     if (!panel || m_currentPanel < 0 || m_currentPanel >= m_panelThumbImages.size())
@@ -4659,6 +4687,25 @@ QPushButton *layerActionButton(const QString &text, const QString &tip)
     return button;
 }
 
+// Row chrome for one layer entry — shared by the full rebuild and the
+// in-place selection restyle so both render identically.
+// Figma layerRow: default bg #161616 / border #232323; selected bg #1b1b1b /
+// Sanko accent border #7C6EF6. Radius 4. The layer's colour tag shows as a
+// thicker left edge stripe.
+QString layerRowStyle(const Layer &layer, bool selected)
+{
+    QString style = selected
+        ? QStringLiteral("QFrame#layerRow { background-color: #1b1b1b;"
+                         " border: 1px solid #7c6ef6; border-radius: 4px; }")
+        : QStringLiteral("QFrame#layerRow { background-color: #161616;"
+                         " border: 1px solid #232323; border-radius: 4px; }");
+    if (!layer.colorTag.isEmpty())
+        style += QStringLiteral(
+            "QFrame#layerRow { border-left: 3px solid %1; }")
+            .arg(layer.colorTag);
+    return style;
+}
+
 // 40x22 layer thumbnail over a dark checker-free backdrop (transparent areas
 // read as the panel background, not white).
 QPixmap layerThumb(const Layer &layer)
@@ -4864,6 +4911,8 @@ void StoryboardPage::rebuildLayerPanel()
 {
     if (!m_layerListLayout)
         return;
+    if (m_canvas)
+        m_canvas->invalidateComposite(); // stack structure/state changed
 
     m_layerRows.clear();
     while (QLayoutItem *item = m_layerListLayout->takeAt(0)) {
@@ -4941,19 +4990,7 @@ void StoryboardPage::rebuildLayerPanel()
         LayerRowFrame *row = new LayerRowFrame(i, nullptr);
         row->selected = isSelected;
         row->setProperty("layerIndex", i); // live-thumb + drag-ghost lookup
-        // Figma layerRow: default bg #161616 / border #232323; selected
-        // bg #1b1b1b / Sanko accent border #7C6EF6. Radius 4.
-        QString style = isSelected
-            ? QStringLiteral("QFrame#layerRow { background-color: #1b1b1b;"
-                             " border: 1px solid #7c6ef6; border-radius: 4px; }")
-            : QStringLiteral("QFrame#layerRow { background-color: #161616;"
-                             " border: 1px solid #232323; border-radius: 4px; }");
-        // The layer's colour tag shows as a thicker left edge stripe.
-        if (!layer.colorTag.isEmpty())
-            style += QStringLiteral(
-                "QFrame#layerRow { border-left: 3px solid %1; }")
-                .arg(layer.colorTag);
-        row->setStyleSheet(style);
+        row->setStyleSheet(layerRowStyle(layer, isSelected));
 
         QHBoxLayout *rowLayout = new QHBoxLayout(row);
         // Figma pl 6 / pr 7, but the row's own 1px border sits inside the
@@ -5089,6 +5126,63 @@ void StoryboardPage::rebuildLayerPanel()
     m_layerListLayout->addStretch(1);
 }
 
+// Selection-only refresh: the stack structure is unchanged, so restyle the
+// EXISTING rows and re-sync the slider/buttons/canvas mirror — with many
+// layers the old full rebuild (teardown + N re-scaled thumbnails) on every
+// click made the panel flicker and lag.
+void StoryboardPage::updateLayerSelectionUi()
+{
+    Panel *panel = currentPanel();
+    if (!panel || panel->layers.isEmpty() || panel != m_layerSelPanel
+        || m_layerRows.isEmpty()) {
+        rebuildLayerPanel(); // panel/structure changed: full rebuild
+        return;
+    }
+    for (auto it = m_layerSelection.begin(); it != m_layerSelection.end();) {
+        if (*it < 0 || *it >= panel->layers.size())
+            it = m_layerSelection.erase(it);
+        else
+            ++it;
+    }
+    if (m_layerSelection.isEmpty())
+        m_layerSelection.insert(
+            qBound(0, panel->activeLayerIndex, panel->layers.size() - 1));
+
+    // Same side-state as rebuildLayerPanel: opacity slider (guarded),
+    // footer button enables, and the canvas's multi-selection mirror.
+    m_updatingLayerUi = true;
+    const Layer *active = panel->activeLayer();
+    const int pct =
+        active ? qRound(qBound(0.0, active->opacity, 1.0) * 100.0) : 100;
+    if (m_syncLayerOpacity)
+        m_syncLayerOpacity(active ? pct : -1);
+    m_updatingLayerUi = false;
+
+    const QVector<int> sel = selectedLayers();
+    if (m_layerDeleteButton)
+        m_layerDeleteButton->setEnabled(!sel.isEmpty());
+    if (m_layerMergeButton)
+        m_layerMergeButton->setEnabled(!sel.isEmpty());
+    if (m_canvas) {
+        QStringList selIds;
+        for (int i : sel)
+            selIds.append(panel->layers.at(i).id);
+        m_canvas->setSelectedLayerIds(selIds);
+    }
+
+    for (QWidget *row : m_layerRows) {
+        const int i = row->property("layerIndex").toInt();
+        if (i < 0 || i >= panel->layers.size()) {
+            rebuildLayerPanel(); // stale rows: fall back to the full rebuild
+            return;
+        }
+        auto *frame = static_cast<LayerRowFrame *>(row);
+        frame->selected = m_layerSelection.contains(i);
+        row->setStyleSheet(layerRowStyle(panel->layers.at(i),
+                                         frame->selected));
+    }
+}
+
 void StoryboardPage::setActiveLayer(int index)
 {
     Panel *panel = currentPanel();
@@ -5099,7 +5193,7 @@ void StoryboardPage::setActiveLayer(int index)
     m_layerSelection.clear();
     m_layerSelection.insert(index);
     m_layerAnchor = index;
-    rebuildLayerPanel(); // highlight + slider follow the new active layer
+    updateLayerSelectionUi(); // highlight + slider follow the new active layer
     m_canvas->refreshTransformBox(); // Move box follows the new target
 }
 
@@ -5135,7 +5229,7 @@ void StoryboardPage::layerRowClicked(int index, Qt::KeyboardModifiers mods)
     }
 
     panel->activeLayerIndex = index;
-    rebuildLayerPanel();
+    updateLayerSelectionUi(); // in place: structure unchanged by a click
     m_canvas->refreshTransformBox(); // Move box follows the new target
 }
 
@@ -5858,8 +5952,10 @@ void StoryboardPage::startLayerDrag(int index)
 
 void StoryboardPage::refreshLayerCanvas()
 {
-    if (m_canvas)
+    if (m_canvas) {
+        m_canvas->invalidateComposite(); // layer state changed
         m_canvas->update();
+    }
     refreshCurrentThumb();
 }
 

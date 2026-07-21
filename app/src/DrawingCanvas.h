@@ -152,6 +152,10 @@ public:
     // Fit Screen: centre the canvas in the viewport and fit it fully with a
     // small margin, whatever the current zoom/pan (rotation/flip untouched).
     void fitToScreen();
+    // The layer stack changed outside the canvas (visibility, opacity,
+    // reorder, undo, ...): drop the below/above composite caches so the next
+    // paint recomposites. Cheap to call; the rebuild is lazy.
+    void invalidateComposite() { m_compValid = false; }
     int eraserSize() const { return m_eraserSize; }
     int eraserOpacity() const { return qRound(m_eraserOpacity * 100.0); }
 
@@ -409,6 +413,10 @@ private:
     // paste the result into the wrong layer.
     QStringList m_xformLayerIds;
     QVector<QImage> m_xformBufs;         // pristine lifted pixels (m_moveSrcRect-sized)
+    // Each lifted layer's image with the source region already subtracted,
+    // built ONCE at lift (the session never mutates layer pixels) — the
+    // paintEvent used to make this full-frame copy per layer per FRAME.
+    QVector<QImage> m_xformHoles;
     // Layers-panel row multi-selection (ids), mirrored via
     // setSelectedLayerIds: >1 selected rows lift together under one box.
     QStringList m_selectedLayerIds;
@@ -468,6 +476,19 @@ private:
     void paintWarpedBuffer(QPainter &p, qreal cellPx,
                            const QImage &overrideBuf = QImage()) const;
     qreal luminanceBehind(const QPointF &canvasPt) const; // pivot contrast
+
+    // Below/above composite caches: all layers UNDER the active one (over
+    // the white paper) and all layers ABOVE it, each flattened once. A
+    // normal repaint is then paper+below, the live active layer, above —
+    // instead of re-drawing the whole stack every frame. Rebuilt lazily when
+    // the keys change or after invalidateComposite().
+    void ensureComposite();
+    QImage m_compBelow;
+    QImage m_compAbove;
+    bool m_compValid = false;
+    Panel *m_compPanel = nullptr;
+    int m_compActive = -1;
+    int m_compCount = -1;
 
     void liftDefaultTransformBox(); // Move tool: box around selection/artwork
     void beginTransform();         // lift selection -> box (source cleared on lift)
