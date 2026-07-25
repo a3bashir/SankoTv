@@ -60,6 +60,9 @@
 #include <QStyle>
 #include <QTabletEvent>
 #include <QPropertyAnimation>
+#include <QAbstractButton>
+#include <QRubberBand>
+#include <QScrollBar>
 #include <QScreen>
 #include <QGuiApplication>
 #include <QWindow>
@@ -2248,6 +2251,7 @@ QWidget *StoryboardPage::createCenterColumn()
     stripBar->setMaximumHeight(320);
     stripBar->setStyleSheet(QStringLiteral("background-color: #1a1a1a;"));
     QHBoxLayout *stripBarLayout = new QHBoxLayout(stripBar);
+    m_stripBarLayout = stripBarLayout; // margins/spacing scale with the strip
     stripBarLayout->setContentsMargins(10, 12, 10, 12);
     stripBarLayout->setSpacing(10);
 
@@ -2261,6 +2265,7 @@ QWidget *StoryboardPage::createCenterColumn()
     strip->setStyleSheet(QStringLiteral("QScrollArea { background-color: #1a1a1a; border: none; }"));
 
     QWidget *stripContainer = new QWidget;
+    m_stripContainer = stripContainer; // background drag hit target
     stripContainer->setStyleSheet(QStringLiteral("background: transparent;"));
     m_panelStripLayout = new QHBoxLayout(stripContainer);
     m_panelStripLayout->setContentsMargins(0, 0, 0, 0);
@@ -3669,13 +3674,11 @@ void StoryboardPage::rebuildPanelStrip()
             thumb->setPixmap(stripThumbPixmap(panel)); // DPR-aware render
             thumb->installEventFilter(this);
 
-            // Panel number overlay, bottom-left (repositioned on resize).
+            // Panel number overlay, bottom-left — styled and positioned at
+            // the strip's current scale (tracks resizes).
             QLabel *num = new QLabel(QStringLiteral("P%1").arg(i + 1), thumb);
             num->setObjectName(QStringLiteral("panelNum"));
-            num->setStyleSheet(QStringLiteral(
-                "color: #f5a623; font-size: 11px; font-weight: 700;"
-                " background: rgba(0,0,0,140); padding: 1px 4px; border-radius: 3px;"));
-            num->move(5, m_thumbH - 20);
+            applyPanelNumStyle(num);
 
             m_panelStripLayout->addWidget(thumb, 0, Qt::AlignVCenter);
             m_panelThumbs.append(thumb);
@@ -3738,6 +3741,13 @@ void StoryboardPage::setupPanelStripDock()
                                   | QDockWidget::DockWidgetFloatable
                                   | QDockWidget::DockWidgetClosable);
     m_panelStripDock->setWidget(m_panelStripBar);
+    // NO title bar (empty title-bar widget): the strip shows only its own
+    // content docked AND floating. Qt then draws the floating dock as a
+    // frameless Qt-managed window (no OS title bar on Windows). This also
+    // removes the built-in drag handle and close button — a background
+    // press-drag on the strip replaces the drag (stripBackgroundEvent), and
+    // View > Panel Strip is the ONLY way to reopen a hidden strip.
+    m_panelStripDock->setTitleBarWidget(new QWidget(m_panelStripDock));
     m_dockHost->addDockWidget(Qt::TopDockWidgetArea, m_panelStripDock);
 
     // Belt-and-braces beside setAllowedAreas: even a programmatic add can
@@ -3761,31 +3771,273 @@ void StoryboardPage::setupPanelStripDock()
     m_stripRegenTimer->setInterval(150);
     connect(m_stripRegenTimer, &QTimer::timeout, this,
             [this] { regenerateStripThumbs(); });
-    m_panelStripBar->installEventFilter(this); // Resize + DPR-change events
+    // Resize + DPR-change events, plus background press-drag (the strip's
+    // whole background is now the drag handle). The container and the
+    // scroll viewport are the deepest widgets under background presses, so
+    // they are filtered too.
+    m_panelStripBar->installEventFilter(this);
+    if (m_stripContainer)
+        m_stripContainer->installEventFilter(this);
+    if (m_panelScroll && m_panelScroll->viewport())
+        m_panelScroll->viewport()->installEventFilter(this);
 }
 
-// Strip height -> thumbnail size. At the default 159px the thumbs are the
-// classic 160x90; extra height goes to the thumbnails, preserving 16:9.
+// Strip height -> ONE scale factor -> every metric. Base metrics are the
+// Figma 159px strip (thumb 160x90, buttons 44x30, spacing 10/6, margins
+// 10/12, number font 11px); the scale is height/159 clamped to [1.0, 2.0]
+// (min keeps buttons clickable and text legible, max stops a tall strip
+// producing absurd controls).
 void StoryboardPage::onPanelStripResized()
 {
     if (!m_panelStripBar)
         return;
-    const int newH = qBound(90, m_panelStripBar->height() - 69, 270);
-    const int newW = qRound(newH * 16.0 / 9.0);
-    if (newW == m_thumbW && newH == m_thumbH)
+    const double s = qBound(1.0, m_panelStripBar->height() / 159.0, 2.0);
+    const int newH = qRound(90 * s);
+    const int newW = qRound(160 * s);
+    if (newW == m_thumbW && newH == m_thumbH
+        && qAbs(s - m_stripScale) < 0.004)
         return;
+    m_stripScale = s;
     m_thumbW = newW;
     m_thumbH = newH;
+    applyStripScale(); // buttons/icons/fonts/spacing track the same factor
     // LIVE: resize the labels — setScaledContents stretches the existing
     // pixmaps immediately; the crisp re-render happens once, debounced.
     for (QWidget *thumb : m_panelThumbs) {
         thumb->setFixedSize(m_thumbW, m_thumbH);
         if (QLabel *num =
                 thumb->findChild<QLabel *>(QStringLiteral("panelNum")))
-            num->move(5, m_thumbH - 20);
+            applyPanelNumStyle(num);
     }
     if (m_stripRegenTimer)
         m_stripRegenTimer->start();
+}
+
+// Apply m_stripScale to every non-thumbnail element: control column width,
+// button+icon sizes (icons re-rendered from SVG, bucketed + cached), layout
+// spacing and margins. Cheap enough to run per resize event.
+void StoryboardPage::applyStripScale()
+{
+    const double s = m_stripScale;
+    if (m_stripBarLayout) {
+        m_stripBarLayout->setContentsMargins(qRound(10 * s), qRound(12 * s),
+                                             qRound(10 * s), qRound(12 * s));
+        m_stripBarLayout->setSpacing(qRound(10 * s));
+    }
+    if (m_panelStripLayout)
+        m_panelStripLayout->setSpacing(qRound(10 * s));
+    if (m_stripCtlColumn)
+        m_stripCtlColumn->setFixedWidth(qRound(44 * s));
+    if (m_stripCtlLayout)
+        m_stripCtlLayout->setSpacing(qRound(6 * s));
+    for (const StripCtl &ctl : m_stripCtls) {
+        if (!ctl.button)
+            continue;
+        ctl.button->setFixedSize(qRound(ctl.baseButton.width() * s),
+                                 qRound(ctl.baseButton.height() * s));
+        const QSize icon(qRound(ctl.baseIcon.width() * s),
+                         qRound(ctl.baseIcon.height() * s));
+        ctl.button->setIcon(QIcon(stripIconPixmap(ctl.svg, icon)));
+        ctl.button->setIconSize(icon);
+    }
+}
+
+// Panel-number chip styled at the current scale (font, padding, position).
+void StoryboardPage::applyPanelNumStyle(QLabel *num) const
+{
+    const double s = m_stripScale;
+    num->setStyleSheet(
+        QStringLiteral(
+            "color: #f5a623; font-size: %1px; font-weight: 700;"
+            " background: rgba(0,0,0,140); padding: %2px %3px;"
+            " border-radius: %4px;")
+            .arg(qRound(11 * s))
+            .arg(qMax(1, qRound(1 * s)))
+            .arg(qRound(4 * s))
+            .arg(qRound(3 * s)));
+    num->adjustSize();
+    num->move(qRound(5 * s), m_thumbH - qRound(20 * s));
+}
+
+// SVG -> pixmap at the requested LOGICAL size, rendered at the strip's
+// devicePixelRatio (crisp on any monitor). Sizes are bucketed to 2px steps
+// and cached, so a slow resize drag rasterizes a handful of sizes — never
+// one per pixel of movement.
+QPixmap StoryboardPage::stripIconPixmap(const QString &svg,
+                                        const QSize &logical,
+                                        qreal dprOverride)
+{
+    const int bw = qMax(2, (logical.width() / 2) * 2);
+    const int bh = qMax(2, (logical.height() / 2) * 2);
+    qreal dpr = dprOverride;
+    if (dpr <= 0.0)
+        dpr = m_panelStripBar ? m_panelStripBar->devicePixelRatioF() : 1.0;
+    const QString key = svg + QLatin1Char('|') + QString::number(bw)
+        + QLatin1Char('x') + QString::number(bh) + QLatin1Char('@')
+        + QString::number(dpr);
+    const auto it = m_stripIconCache.constFind(key);
+    if (it != m_stripIconCache.constEnd())
+        return *it;
+    ++m_iconRasterCount; // seam metric: one rasterization per new bucket
+    QPixmap pm(qRound(bw * dpr), qRound(bh * dpr));
+    pm.setDevicePixelRatio(dpr);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    QSvgRenderer renderer(svg);
+    renderer.render(&p, QRectF(0, 0, bw, bh));
+    p.end();
+    m_stripIconCache.insert(key, pm);
+    return pm;
+}
+
+// --- Title-bar-less strip drag ----------------------------------------------
+
+// True when the press landed on an interactive child (thumbnail, button,
+// scrollbar): those keep their own behaviour and never start a window drag.
+bool StoryboardPage::stripHitIsInteractive(const QPoint &globalPos) const
+{
+    QWidget *hit = m_panelStripBar;
+    QPoint p = m_panelStripBar->mapFromGlobal(globalPos);
+    while (QWidget *child = hit->childAt(p)) {
+        p = child->mapFromParent(p);
+        hit = child;
+    }
+    for (QWidget *k = hit; k; k = k->parentWidget()) {
+        if (k == m_panelStripBar)
+            break;
+        if (qobject_cast<QAbstractButton *>(k)
+            || qobject_cast<QScrollBar *>(k)
+            || k->property("panelIndex").isValid())
+            return true;
+    }
+    return false;
+}
+
+// The strip's whole background is the drag handle now that the title bar is
+// gone: press-drag past the threshold undocks and drags; near the host's
+// top/bottom edge previews docking there (left/right never); release docks
+// or leaves it floating; a sub-threshold press is a plain click; a
+// double-click toggles docked/floating.
+bool StoryboardPage::stripBackgroundEvent(QObject *object, QEvent *event)
+{
+    Q_UNUSED(object);
+    if (!m_panelStripDock || !m_panelStripBar)
+        return false;
+    auto *me = static_cast<QMouseEvent *>(event);
+    const QPoint global = me->globalPosition().toPoint();
+    switch (event->type()) {
+    case QEvent::MouseButtonPress:
+        if (me->button() != Qt::LeftButton || stripHitIsInteractive(global))
+            return false;
+        m_stripDragCandidate = true;
+        m_stripDragging = false;
+        m_stripPressGlobal = global;
+        return true; // background press is ours (click or drag)
+    case QEvent::MouseMove: {
+        if (!m_stripDragCandidate || !(me->buttons() & Qt::LeftButton))
+            return false;
+        if (!m_stripDragging) {
+            if ((global - m_stripPressGlobal).manhattanLength()
+                < QApplication::startDragDistance())
+                return true; // below the threshold: still just a click
+            beginStripWindowDrag(global);
+        }
+        updateStripWindowDrag(global);
+        return true;
+    }
+    case QEvent::MouseButtonRelease: {
+        if (me->button() != Qt::LeftButton)
+            return false;
+        const bool wasDragging = m_stripDragging;
+        const bool wasCandidate = m_stripDragCandidate;
+        m_stripDragCandidate = false;
+        m_stripDragging = false;
+        if (wasDragging) {
+            finishStripWindowDrag(global);
+            return true;
+        }
+        return wasCandidate; // plain background click: consumed, no detach
+    }
+    case QEvent::MouseButtonDblClick:
+        if (me->button() != Qt::LeftButton || stripHitIsInteractive(global))
+            return false;
+        m_stripDragCandidate = false;
+        m_stripDragging = false;
+        m_panelStripDock->setFloating(!m_panelStripDock->isFloating());
+        return true;
+    default:
+        return false;
+    }
+}
+
+void StoryboardPage::beginStripWindowDrag(const QPoint &globalPos)
+{
+    m_stripDragging = true;
+    if (!m_panelStripDock->isFloating()) {
+        const QSize keep = m_panelStripBar->size(); // pop out at same size
+        m_panelStripDock->setFloating(true);
+        m_panelStripDock->resize(keep);
+    }
+    m_stripDragOffset =
+        globalPos - m_panelStripDock->frameGeometry().topLeft();
+    if (m_stripDragOffset.x() < 0
+        || m_stripDragOffset.x() > m_panelStripDock->width()
+        || m_stripDragOffset.y() < 0
+        || m_stripDragOffset.y() > m_panelStripDock->height())
+        m_stripDragOffset = QPoint(m_panelStripDock->width() / 2, 20);
+}
+
+void StoryboardPage::updateStripWindowDrag(const QPoint &globalPos)
+{
+    m_panelStripDock->move(globalPos - m_stripDragOffset);
+    const Qt::DockWidgetArea zone = stripDropZone(globalPos);
+    if (zone == Qt::NoDockWidgetArea) {
+        if (m_stripPreview)
+            m_stripPreview->hide();
+        return;
+    }
+    if (!m_stripPreview)
+        m_stripPreview = new QRubberBand(QRubberBand::Rectangle, m_dockHost);
+    const QRect hostRect = m_dockHost->rect();
+    const int previewH =
+        qMin(m_panelStripBar->height() + 8, hostRect.height() / 3);
+    m_stripPreview->setGeometry(
+        zone == Qt::TopDockWidgetArea
+            ? QRect(0, 0, hostRect.width(), previewH)
+            : QRect(0, hostRect.height() - previewH, hostRect.width(),
+                    previewH));
+    m_stripPreview->show();
+    m_stripPreview->raise();
+}
+
+// Live dock-target zones: a band along the host's top or bottom edge (the
+// strip's only legal areas). Anywhere else — including the left and right
+// edges — the drop floats.
+Qt::DockWidgetArea StoryboardPage::stripDropZone(const QPoint &globalPos) const
+{
+    const QPoint host = m_dockHost->mapFromGlobal(globalPos);
+    constexpr int kZone = 72;   // reach of the top/bottom dock bands
+    constexpr int kSlack = 40;  // a little outside the host still counts
+    if (host.x() < -kSlack || host.x() > m_dockHost->width() + kSlack)
+        return Qt::NoDockWidgetArea;
+    if (host.y() >= -kSlack && host.y() < kZone)
+        return Qt::TopDockWidgetArea;
+    if (host.y() > m_dockHost->height() - kZone
+        && host.y() <= m_dockHost->height() + kSlack)
+        return Qt::BottomDockWidgetArea;
+    return Qt::NoDockWidgetArea;
+}
+
+void StoryboardPage::finishStripWindowDrag(const QPoint &globalPos)
+{
+    if (m_stripPreview)
+        m_stripPreview->hide();
+    const Qt::DockWidgetArea zone = stripDropZone(globalPos);
+    if (zone == Qt::TopDockWidgetArea || zone == Qt::BottomDockWidgetArea) {
+        m_panelStripDock->setFloating(false);
+        m_dockHost->addDockWidget(zone, m_panelStripDock);
+    } // anywhere else: the strip stays floating where it was dropped
 }
 
 void StoryboardPage::regenerateStripThumbs(qreal dprOverride)
@@ -4283,15 +4535,34 @@ bool StoryboardPage::eventFilter(QObject *object, QEvent *event)
         }
     }
 
-    // Panel Strip bar: live thumbnail rescale on height changes, and a
+    // Panel Strip: background press-drag (the strip IS the drag handle now
+    // that the title bar is gone), live rescale on height changes, and a
     // debounced crisp re-render when the strip lands on a screen with a
     // different devicePixelRatio (floating window moved between monitors).
-    if (object == m_panelStripBar) {
-        if (event->type() == QEvent::Resize)
-            onPanelStripResized();
-        else if (event->type() == QEvent::DevicePixelRatioChange
-                 && m_stripRegenTimer)
-            m_stripRegenTimer->start();
+    if (object == m_panelStripBar || object == m_stripContainer
+        || (m_panelScroll && object == m_panelScroll->viewport())) {
+        switch (event->type()) {
+        case QEvent::MouseButtonPress:
+        case QEvent::MouseMove:
+        case QEvent::MouseButtonRelease:
+        case QEvent::MouseButtonDblClick:
+            if (stripBackgroundEvent(object, event))
+                return true;
+            break;
+        case QEvent::Resize:
+            if (object == m_panelStripBar)
+                onPanelStripResized();
+            break;
+        case QEvent::DevicePixelRatioChange:
+            if (object == m_panelStripBar) {
+                applyStripScale(); // icons re-render crisply at the new DPR
+                if (m_stripRegenTimer)
+                    m_stripRegenTimer->start();
+            }
+            break;
+        default:
+            break;
+        }
         return false;
     }
 
@@ -4746,11 +5017,13 @@ QWidget *StoryboardPage::createPanelControls()
     // 44x30 buttons (radius 4, 1.5px #2a2a2a border), SVG icons from :/icons.
     // Order: Add, Duplicate, Light Table, Delete.
     QWidget *column = new QWidget;
+    m_stripCtlColumn = column; // width scales with the strip
     column->setAttribute(Qt::WA_StyledBackground, true);
     column->setFixedWidth(44);
     column->setStyleSheet(QStringLiteral("background: transparent;"));
 
     QVBoxLayout *layout = new QVBoxLayout(column);
+    m_stripCtlLayout = layout;
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(6);
 
@@ -4805,6 +5078,19 @@ QWidget *StoryboardPage::createPanelControls()
         QStringLiteral("QPushButton:hover { border-color: #3a3a3a; }"));
     connect(m_deletePanelButton, &QPushButton::clicked, this, [this] { deleteSelectedPanel(); });
     layout->addWidget(m_deletePanelButton);
+
+    // Register every control with its BASE metrics (the Figma 159px strip)
+    // so applyStripScale() can drive them all from one scale factor.
+    m_stripCtls = {
+        {m_addPanelButton, QSize(44, 30), QSize(13, 13),
+         QStringLiteral(":/icons/add.svg")},
+        {m_dupPanelButton, QSize(44, 30), QSize(17, 17),
+         QStringLiteral(":/icons/duplicate.svg")},
+        {m_lightTableButton, QSize(44, 30), QSize(14, 21),
+         QStringLiteral(":/icons/lighttable.svg")},
+        {m_deletePanelButton, QSize(44, 30), QSize(14, 15),
+         QStringLiteral(":/icons/delete.svg")},
+    };
 
     return column;
 }

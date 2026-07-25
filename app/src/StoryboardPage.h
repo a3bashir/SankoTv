@@ -19,6 +19,7 @@ class QLabel;
 class QLineEdit;
 class QPlainTextEdit;
 class QPushButton;
+class QRubberBand;
 class QScrollArea;
 class QSlider;
 class QTimer;
@@ -199,6 +200,23 @@ private:
     // --- Panel Strip dock (top/bottom, resizable, floatable) --------------
     void setupPanelStripDock();     // wrap the strip bar in its QDockWidget
     void onPanelStripResized();     // live label rescale + debounced regen
+    // Title-bar-less drag: a press on any BACKGROUND area of the strip
+    // undocks/drags/docks it (top/bottom preview) or floats it; presses on
+    // interactive children (thumbnails, buttons, scrollbars) pass through.
+    bool stripBackgroundEvent(QObject *object, QEvent *event);
+    bool stripHitIsInteractive(const QPoint &globalPos) const;
+    void beginStripWindowDrag(const QPoint &globalPos);
+    void updateStripWindowDrag(const QPoint &globalPos);
+    void finishStripWindowDrag(const QPoint &globalPos);
+    Qt::DockWidgetArea stripDropZone(const QPoint &globalPos) const;
+    // Proportional scaling: ONE factor (strip height / 159, clamped 1..2)
+    // drives buttons, icons, fonts, spacing, margins, and thumbnails.
+    void applyStripScale();
+    void applyPanelNumStyle(class QLabel *num) const;
+    // Bucketed, cached, DPR-aware SVG rasterization for the strip buttons
+    // (dprOverride > 0 forces a DPR — used by the HiDPI tests).
+    QPixmap stripIconPixmap(const QString &svg, const QSize &logical,
+                            qreal dprOverride = 0.0);
     // Re-render every strip thumbnail at the current thumb size and DPR
     // (dprOverride > 0 forces a specific DPR — used by the HiDPI tests).
     void regenerateStripThumbs(qreal dprOverride = 0.0);
@@ -283,6 +301,29 @@ private:
     int m_stripRegenCount = 0; // regen passes (verified: 1 per settled drag)
     int m_thumbW = 160;
     int m_thumbH = 90; // 16:9
+    // Title-bar-less window drag state (background press-drag on the strip).
+    QWidget *m_stripContainer = nullptr; // thumbnail row inside the scroll
+    QRubberBand *m_stripPreview = nullptr; // top/bottom dock-target preview
+    bool m_stripDragCandidate = false;
+    bool m_stripDragging = false;
+    QPoint m_stripPressGlobal;
+    QPoint m_stripDragOffset;
+    // Proportional scale (1.0 at the 159px base strip, clamped to 2.0) and
+    // the scaled controls: buttons registered with their base metrics.
+    double m_stripScale = 1.0;
+    struct StripCtl
+    {
+        QPushButton *button;
+        QSize baseButton;
+        QSize baseIcon;
+        QString svg;
+    };
+    QVector<StripCtl> m_stripCtls;
+    QWidget *m_stripCtlColumn = nullptr;
+    QVBoxLayout *m_stripCtlLayout = nullptr;
+    QHBoxLayout *m_stripBarLayout = nullptr;
+    QHash<QString, QPixmap> m_stripIconCache; // svg|WxH@dpr -> pixmap
+    int m_iconRasterCount = 0; // seam metric: bucketed rasterizations
     DrawingCanvas *m_canvas = nullptr;
     ZoomToolbar *m_zoomToolbar = nullptr; // custom-painted view controls
     QScrollArea *m_panelScroll = nullptr;
