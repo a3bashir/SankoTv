@@ -39,6 +39,7 @@
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
 {
+    setObjectName(QStringLiteral("SankoTVMainWindow")); // stable saveState key
     setMinimumSize(1280, 720);
 
     setupMenuBar();

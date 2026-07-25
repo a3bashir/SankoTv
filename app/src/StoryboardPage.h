@@ -196,6 +196,15 @@ private:
 
     void rebuildSceneList();
     void rebuildPanelStrip();
+    // --- Panel Strip dock (top/bottom, resizable, floatable) --------------
+    void setupPanelStripDock();     // wrap the strip bar in its QDockWidget
+    void onPanelStripResized();     // live label rescale + debounced regen
+    // Re-render every strip thumbnail at the current thumb size and DPR
+    // (dprOverride > 0 forces a specific DPR — used by the HiDPI tests).
+    void regenerateStripThumbs(qreal dprOverride = 0.0);
+    QPixmap stripThumbPixmap(Panel *panel, qreal dprOverride = 0.0) const;
+    void savePanelStripState();     // versioned QSettings keys (v1)
+    void restorePanelStripState();  // area/height/floating/geometry + clamp
     void updateSceneCardStyles();
     void updatePanelThumbStyles();
 
@@ -263,6 +272,17 @@ private:
     QHBoxLayout *m_panelStripLayout = nullptr;
     QVector<QWidget *> m_panelThumbs;
     QVector<QLabel *> m_panelThumbImages;
+    // Panel Strip dock: top/bottom only, height-resizable, floatable to any
+    // monitor. Thumbnails scale with the strip height (m_thumbW/H replace the
+    // old fixed 160x90); a resize drag rescales the existing pixmaps live and
+    // regenerates crisp ones ONCE through m_stripRegenTimer.
+    QDockWidget *m_panelStripDock = nullptr;
+    QWidget *m_panelStripBar = nullptr;
+    Qt::DockWidgetArea m_stripLastArea = Qt::TopDockWidgetArea;
+    QTimer *m_stripRegenTimer = nullptr;
+    int m_stripRegenCount = 0; // regen passes (verified: 1 per settled drag)
+    int m_thumbW = 160;
+    int m_thumbH = 90; // 16:9
     DrawingCanvas *m_canvas = nullptr;
     ZoomToolbar *m_zoomToolbar = nullptr; // custom-painted view controls
     QScrollArea *m_panelScroll = nullptr;

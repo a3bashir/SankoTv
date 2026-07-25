@@ -61,6 +61,8 @@
 #include <QTabletEvent>
 #include <QPropertyAnimation>
 #include <QScreen>
+#include <QGuiApplication>
+#include <QWindow>
 #include <QTimer>
 #include <QUndoCommand>
 #include <QUndoStack>
@@ -92,8 +94,8 @@ const char *kDockDarkStyle =
     "QMainWindow#storyboardDockHost QTabBar::tab:selected {"
     " background: #1a1a1a; color: #f5a623; }";
 
-constexpr int kThumbW = 160;
-constexpr int kThumbH = 90; // 16:9
+// (Strip thumbnails are now sized dynamically — see m_thumbW/m_thumbH, which
+// default to the classic 160x90 and scale with the Panel Strip's height.)
 
 Panel *makePanel()
 {
@@ -1963,11 +1965,17 @@ StoryboardPage::StoryboardPage(QWidget *parent)
         m_dockHost->resizeDocks({m_layersDock}, {260}, Qt::Horizontal);
     });
 
+    // Panel Strip dock exists BEFORE the layout restore so saveState blobs
+    // that include it restore naturally; restorePanelStripState() then
+    // re-applies the strip's own versioned keys as the authority.
+    setupPanelStripDock();
+
     // Establish the default, then let a valid saved layout replace it. A
     // failed restore (nothing saved yet, or a rejected/corrupt blob — the
     // controller checks restoreState()'s return) keeps the default.
     m_dockController->resetLayout();
     m_dockController->restoreLayout();
+    restorePanelStripState();
     connect(QCoreApplication::instance(), &QCoreApplication::aboutToQuit,
             this, [this] { saveDockState(); });
 
@@ -2064,6 +2072,13 @@ void StoryboardPage::installDockViewActions()
         viewMenu = bar->addMenu(QStringLiteral("View"));
 
     viewMenu->addSeparator();
+    // Panel Strip: the toggle both tracks and controls the dock's
+    // visibility, so a closed strip is always recoverable from here.
+    if (m_panelStripDock) {
+        QAction *stripToggle = m_panelStripDock->toggleViewAction();
+        stripToggle->setText(QStringLiteral("Panel Strip"));
+        viewMenu->addAction(stripToggle);
+    }
     // Panels submenu: per-dock toggles (reopen closed panels) plus
     // Show All / Hide All, provided by the docking controller.
     QMenu *panelsMenu = viewMenu->addMenu(QStringLiteral("Panels"));
@@ -2113,6 +2128,7 @@ void StoryboardPage::saveDockState()
 {
     if (m_dockController)
         m_dockController->saveLayout();
+    savePanelStripState();
 }
 
 // --- Left column ----------------------------------------------------------
@@ -2220,11 +2236,16 @@ QWidget *StoryboardPage::createCenterColumn()
     // Panel strip row: a FIXED control column (never scrolls), a thin divider,
     // then the horizontally-scrolling thumbnail area — the column sits OUTSIDE
     // the QScrollArea so it stays pinned at the left edge.
-    // Panel Strip (Figma tokens): height 159, #1a1a1a, horizontal, 10px gap,
-    // 12 top/bottom + 10 left/right padding, items vertically centered.
+    // Panel Strip (Figma tokens): default height 159, #1a1a1a, horizontal,
+    // 10px gap, 12 top/bottom + 10 left/right padding, items centered. The
+    // strip now lives in a top/bottom QDockWidget (setupPanelStripDock) and
+    // is HEIGHT-RESIZABLE: min 159 keeps thumbnails legible and the control
+    // column unclipped; max 320 stops it swallowing the canvas.
     QWidget *stripBar = new QWidget;
+    m_panelStripBar = stripBar;
     stripBar->setAttribute(Qt::WA_StyledBackground, true);
-    stripBar->setFixedHeight(159);
+    stripBar->setMinimumHeight(159);
+    stripBar->setMaximumHeight(320);
     stripBar->setStyleSheet(QStringLiteral("background-color: #1a1a1a;"));
     QHBoxLayout *stripBarLayout = new QHBoxLayout(stripBar);
     stripBarLayout->setContentsMargins(10, 12, 10, 12);
@@ -2250,7 +2271,8 @@ QWidget *StoryboardPage::createCenterColumn()
     m_panelScroll = strip; // kept so we can scroll a new panel into view
     stripBarLayout->addWidget(strip, 1); // only the thumbnails scroll
 
-    layout->addWidget(stripBar);
+    // (The strip bar is NOT added here: setupPanelStripDock() wraps it in a
+    // top/bottom QDockWidget on the storyboard dock host.)
 
     // Drawing area (settings panels + canvas; the tools live in a floating
     // pill toolbar layered over the canvas).
@@ -2271,9 +2293,7 @@ QWidget *StoryboardPage::createCenterColumn()
         const int idx = scene->panels.indexOf(panel);
         if (idx < 0 || idx >= m_panelThumbImages.size())
             return;
-        m_panelThumbImages.at(idx)->setPixmap(
-            panel->flattenedPixmap().scaled(kThumbW, kThumbH, Qt::IgnoreAspectRatio,
-                                            Qt::SmoothTransformation));
+        m_panelThumbImages.at(idx)->setPixmap(stripThumbPixmap(panel));
     });
     connect(m_canvas, &DrawingCanvas::layersChanged, this, &StoryboardPage::rebuildLayerPanel);
     // Ctrl+click canvas pick -> select/highlight that layer's row
@@ -3643,19 +3663,19 @@ void StoryboardPage::rebuildPanelStrip()
             QLabel *thumb = new QLabel;
             thumb->setObjectName(QStringLiteral("panelThumb"));
             thumb->setProperty("panelIndex", i);
-            thumb->setFixedSize(kThumbW, kThumbH);
+            thumb->setFixedSize(m_thumbW, m_thumbH); // scales with strip height
             thumb->setCursor(Qt::PointingHandCursor);
             thumb->setScaledContents(true);
-            thumb->setPixmap(panel->flattenedPixmap().scaled(kThumbW, kThumbH,
-                                                             Qt::IgnoreAspectRatio, Qt::SmoothTransformation));
+            thumb->setPixmap(stripThumbPixmap(panel)); // DPR-aware render
             thumb->installEventFilter(this);
 
-            // Panel number overlay, bottom-left.
+            // Panel number overlay, bottom-left (repositioned on resize).
             QLabel *num = new QLabel(QStringLiteral("P%1").arg(i + 1), thumb);
+            num->setObjectName(QStringLiteral("panelNum"));
             num->setStyleSheet(QStringLiteral(
                 "color: #f5a623; font-size: 11px; font-weight: 700;"
                 " background: rgba(0,0,0,140); padding: 1px 4px; border-radius: 3px;"));
-            num->move(5, kThumbH - 20);
+            num->move(5, m_thumbH - 20);
 
             m_panelStripLayout->addWidget(thumb, 0, Qt::AlignVCenter);
             m_panelThumbs.append(thumb);
@@ -3679,6 +3699,191 @@ void StoryboardPage::updatePanelThumbStyles()
                 : QStringLiteral("QLabel#panelThumb { border: 1px solid #2a2a2a; border-radius: 4px;"
                                  " background-color: #1a1a1a; }"));
     }
+}
+
+// --- Panel Strip dock --------------------------------------------------------
+
+namespace {
+// Versioned settings prefix: bump the version if the stored schema ever
+// changes, so an old blob can never restore a broken layout.
+const QString kStripSettings = QStringLiteral("storyboard/panelStrip/v1/");
+} // namespace
+
+// One strip thumbnail: the panel's flattened composite at the CURRENT thumb
+// size, rendered at the strip's devicePixelRatio so it stays crisp on any
+// monitor (dprOverride > 0 forces a DPR — the HiDPI tests use it).
+QPixmap StoryboardPage::stripThumbPixmap(Panel *panel, qreal dprOverride) const
+{
+    qreal dpr = dprOverride;
+    if (dpr <= 0.0)
+        dpr = m_panelStripBar ? m_panelStripBar->devicePixelRatioF() : 1.0;
+    QPixmap pm = panel->flattenedPixmap().scaled(
+        qRound(m_thumbW * dpr), qRound(m_thumbH * dpr), Qt::IgnoreAspectRatio,
+        Qt::SmoothTransformation);
+    pm.setDevicePixelRatio(dpr);
+    return pm;
+}
+
+// Wrap the strip bar in a QDockWidget on the storyboard's own dock host
+// (docks on the app-level MainWindow would span every page of its stacked
+// widget, so the host QMainWindow the storyboard already owns is the right
+// shell). TOP and BOTTOM only; the internal layout is identical in both.
+void StoryboardPage::setupPanelStripDock()
+{
+    m_panelStripDock = new QDockWidget(QStringLiteral("Panel Strip"), m_dockHost);
+    m_panelStripDock->setObjectName(QStringLiteral("dockPanelStrip")); // saveState key
+    m_panelStripDock->setAllowedAreas(Qt::TopDockWidgetArea
+                                      | Qt::BottomDockWidgetArea);
+    m_panelStripDock->setFeatures(QDockWidget::DockWidgetMovable
+                                  | QDockWidget::DockWidgetFloatable
+                                  | QDockWidget::DockWidgetClosable);
+    m_panelStripDock->setWidget(m_panelStripBar);
+    m_dockHost->addDockWidget(Qt::TopDockWidgetArea, m_panelStripDock);
+
+    // Belt-and-braces beside setAllowedAreas: even a programmatic add can
+    // never leave the strip in a side area (it has no vertical layout).
+    connect(m_panelStripDock, &QDockWidget::dockLocationChanged, this,
+            [this](Qt::DockWidgetArea area) {
+                if (area == Qt::LeftDockWidgetArea
+                    || area == Qt::RightDockWidgetArea)
+                    m_dockHost->addDockWidget(m_stripLastArea,
+                                              m_panelStripDock);
+                else if (area == Qt::TopDockWidgetArea
+                         || area == Qt::BottomDockWidgetArea)
+                    m_stripLastArea = area;
+            });
+
+    // ONE debounced regeneration pass per settled resize drag / DPR change —
+    // during the drag the labels rescale their existing pixmaps for free
+    // (setScaledContents), so nothing thrashes.
+    m_stripRegenTimer = new QTimer(this);
+    m_stripRegenTimer->setSingleShot(true);
+    m_stripRegenTimer->setInterval(150);
+    connect(m_stripRegenTimer, &QTimer::timeout, this,
+            [this] { regenerateStripThumbs(); });
+    m_panelStripBar->installEventFilter(this); // Resize + DPR-change events
+}
+
+// Strip height -> thumbnail size. At the default 159px the thumbs are the
+// classic 160x90; extra height goes to the thumbnails, preserving 16:9.
+void StoryboardPage::onPanelStripResized()
+{
+    if (!m_panelStripBar)
+        return;
+    const int newH = qBound(90, m_panelStripBar->height() - 69, 270);
+    const int newW = qRound(newH * 16.0 / 9.0);
+    if (newW == m_thumbW && newH == m_thumbH)
+        return;
+    m_thumbW = newW;
+    m_thumbH = newH;
+    // LIVE: resize the labels — setScaledContents stretches the existing
+    // pixmaps immediately; the crisp re-render happens once, debounced.
+    for (QWidget *thumb : m_panelThumbs) {
+        thumb->setFixedSize(m_thumbW, m_thumbH);
+        if (QLabel *num =
+                thumb->findChild<QLabel *>(QStringLiteral("panelNum")))
+            num->move(5, m_thumbH - 20);
+    }
+    if (m_stripRegenTimer)
+        m_stripRegenTimer->start();
+}
+
+void StoryboardPage::regenerateStripThumbs(qreal dprOverride)
+{
+    ++m_stripRegenCount; // 1 per settled drag (verified by the dock seam)
+    Scene *scene = currentScene();
+    if (!scene)
+        return;
+    const int n = qMin(m_panelThumbImages.size(), scene->panels.size());
+    for (int i = 0; i < n; ++i)
+        m_panelThumbImages.at(i)->setPixmap(
+            stripThumbPixmap(scene->panels.at(i), dprOverride));
+}
+
+void StoryboardPage::savePanelStripState()
+{
+    if (!m_panelStripDock || !m_panelStripBar)
+        return;
+    QSettings s(QStringLiteral("SankoTV"), QStringLiteral("SankoTV"));
+    s.setValue(kStripSettings + QStringLiteral("area"), int(m_stripLastArea));
+    s.setValue(kStripSettings + QStringLiteral("height"),
+               m_panelStripBar->height());
+    s.setValue(kStripSettings + QStringLiteral("floating"),
+               m_panelStripDock->isFloating());
+    s.setValue(kStripSettings + QStringLiteral("floatGeo"),
+               m_panelStripDock->geometry());
+    // toggleViewAction tracks LOGICAL visibility (a hidden stack page keeps
+    // an "open" strip checked), so a closed strip stays closed on restart.
+    s.setValue(kStripSettings + QStringLiteral("visible"),
+               m_panelStripDock->toggleViewAction()->isChecked());
+    if (m_panelStripDock->isFloating() && m_panelStripDock->windowHandle()
+        && m_panelStripDock->windowHandle()->screen())
+        s.setValue(kStripSettings + QStringLiteral("screen"),
+                   m_panelStripDock->windowHandle()->screen()->name());
+}
+
+void StoryboardPage::restorePanelStripState()
+{
+    if (!m_panelStripDock)
+        return;
+    QSettings s(QStringLiteral("SankoTV"), QStringLiteral("SankoTV"));
+    if (!s.contains(kStripSettings + QStringLiteral("area"))) {
+        // First run (no strip keys yet): QMainWindow::restoreState() from a
+        // layout blob that PRE-DATES this dock restores it as hidden — the
+        // strip must still show, docked TOP at its default height.
+        m_panelStripDock->setVisible(true);
+        return;
+    }
+
+    const int areaValue =
+        s.value(kStripSettings + QStringLiteral("area")).toInt();
+    const Qt::DockWidgetArea area = areaValue == int(Qt::BottomDockWidgetArea)
+        ? Qt::BottomDockWidgetArea
+        : Qt::TopDockWidgetArea; // anything else falls back to TOP
+    m_stripLastArea = area;
+    m_panelStripDock->setFloating(false);
+    m_dockHost->addDockWidget(area, m_panelStripDock);
+
+    const int height =
+        qBound(159, s.value(kStripSettings + QStringLiteral("height"), 159)
+                        .toInt(), 320);
+    const bool floating =
+        s.value(kStripSettings + QStringLiteral("floating"), false).toBool();
+    QRect geo = s.value(kStripSettings + QStringLiteral("floatGeo")).toRect();
+    const bool visible =
+        s.value(kStripSettings + QStringLiteral("visible"), true).toBool();
+
+    if (floating && geo.isValid()) {
+        m_panelStripDock->setFloating(true);
+        // Screen-no-longer-exists: a rect outside EVERY connected screen
+        // (monitor unplugged, resolution changed) is recentred on the
+        // primary screen — a strip restored off-screen is unrecoverable.
+        bool onScreen = false;
+        for (QScreen *screen : QGuiApplication::screens())
+            if (screen->availableGeometry().intersects(geo)) {
+                onScreen = true;
+                break;
+            }
+        if (!onScreen) {
+            const QRect avail =
+                QGuiApplication::primaryScreen()->availableGeometry();
+            geo.setSize(QSize(qMin(geo.width(), avail.width()),
+                              qMin(geo.height(), avail.height())));
+            geo.moveCenter(avail.center());
+        }
+        m_panelStripDock->setGeometry(geo);
+    }
+    m_panelStripDock->toggleViewAction()->setChecked(visible);
+    m_panelStripDock->setVisible(visible);
+
+    // Dock sizes only settle once the host has a real layout; re-assert the
+    // saved height after the first event-loop pass.
+    if (!floating)
+        QTimer::singleShot(0, this, [this, height] {
+            if (m_panelStripDock && !m_panelStripDock->isFloating())
+                m_dockHost->resizeDocks({m_panelStripDock}, {height},
+                                        Qt::Vertical);
+        });
 }
 
 // --- Right column ---------------------------------------------------------
@@ -4029,8 +4234,7 @@ void StoryboardPage::refreshCurrentThumbNow()
     if (!panel || m_currentPanel < 0 || m_currentPanel >= m_panelThumbImages.size())
         return;
     m_panelThumbImages.at(m_currentPanel)
-        ->setPixmap(panel->flattenedPixmap().scaled(kThumbW, kThumbH,
-                                                    Qt::IgnoreAspectRatio, Qt::SmoothTransformation));
+        ->setPixmap(stripThumbPixmap(panel));
 }
 
 // --- Helpers --------------------------------------------------------------
@@ -4077,6 +4281,18 @@ bool StoryboardPage::eventFilter(QObject *object, QEvent *event)
         default:
             break;
         }
+    }
+
+    // Panel Strip bar: live thumbnail rescale on height changes, and a
+    // debounced crisp re-render when the strip lands on a screen with a
+    // different devicePixelRatio (floating window moved between monitors).
+    if (object == m_panelStripBar) {
+        if (event->type() == QEvent::Resize)
+            onPanelStripResized();
+        else if (event->type() == QEvent::DevicePixelRatioChange
+                 && m_stripRegenTimer)
+            m_stripRegenTimer->start();
+        return false;
     }
 
     // Panel thumbnails: select on click, drag to reorder.
@@ -4151,7 +4367,7 @@ void StoryboardPage::beginPanelDrag()
     m_dragGhost->setAttribute(Qt::WA_TransparentForMouseEvents, true);
     m_dragGhost->setAttribute(Qt::WA_TranslucentBackground, true);
     m_dragGhost->setWindowOpacity(0.6);
-    m_dragGhost->setFixedSize(kThumbW, kThumbH);
+    m_dragGhost->setFixedSize(m_thumbW, m_thumbH);
     m_dragGhost->setScaledContents(true);
     m_dragGhost->setPixmap(m_panelThumbImages.at(m_dragSourceIndex)->pixmap());
     m_dragGhost->show();
@@ -4166,7 +4382,8 @@ void StoryboardPage::beginPanelDrag()
 void StoryboardPage::updatePanelDrag(const QPoint &globalPos)
 {
     if (m_dragGhost)
-        m_dragGhost->move(globalPos.x() - kThumbW / 2, globalPos.y() - kThumbH / 2);
+        m_dragGhost->move(globalPos.x() - m_thumbW / 2,
+                          globalPos.y() - m_thumbH / 2);
 
     m_dropTarget = dropTargetForX(globalPos);
 
@@ -5645,10 +5862,7 @@ bool StoryboardPage::duplicateLayerToPanelCore(int index, Panel *target)
     if (Scene *scene = currentScene()) {
         const int idx = scene->panels.indexOf(target);
         if (idx >= 0 && idx < m_panelThumbImages.size())
-            m_panelThumbImages.at(idx)->setPixmap(
-                target->flattenedPixmap().scaled(kThumbW, kThumbH,
-                                                 Qt::IgnoreAspectRatio,
-                                                 Qt::SmoothTransformation));
+            m_panelThumbImages.at(idx)->setPixmap(stripThumbPixmap(target));
     }
     return true;
 }
@@ -6014,10 +6228,7 @@ void StoryboardPage::applyLayerStackForUndo(Panel *panel,
     } else if (Scene *scene = currentScene()) {
         const int idx = scene->panels.indexOf(panel);
         if (idx >= 0 && idx < m_panelThumbImages.size())
-            m_panelThumbImages.at(idx)->setPixmap(
-                panel->flattenedPixmap().scaled(kThumbW, kThumbH,
-                                                Qt::IgnoreAspectRatio,
-                                                Qt::SmoothTransformation));
+            m_panelThumbImages.at(idx)->setPixmap(stripThumbPixmap(panel));
     }
 }
 
