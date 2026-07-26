@@ -547,11 +547,15 @@ protected:
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing, true);
         p.setRenderHint(QPainter::SmoothPixmapTransform, true);
+        // Managed bars reserve a transparent strip below the body for the
+        // grab pill; the rounded body covers only the content height.
+        const int bodyH = isManaged() ? contentHeight() : height();
         const qreal bw = 1.0; // 1px border
-        const QRectF r(bw / 2.0, bw / 2.0, width() - bw, height() - bw);
+        const QRectF r(bw / 2.0, bw / 2.0, width() - bw, bodyH - bw);
         p.setPen(QPen(QColor(0x1a, 0x1a, 0x1a), bw));
         p.setBrush(QColor(0x21, 0x21, 0x21));
         p.drawRoundedRect(r, 12, 12);
+        paintGrabPill(p);
     }
 };
 
@@ -594,40 +598,8 @@ private:
     QColor m_color{Qt::black};
 };
 
-// Six-dot drag grip: 3 columns x 2 rows of small grey dots (horizontal).
-QPixmap dragDotsPixmap()
-{
-    constexpr qreal dpr = 2.0;
-    QPixmap pm(QSize(40, 28));
-    pm.setDevicePixelRatio(dpr);
-    pm.fill(Qt::transparent);
-    QPainter p(&pm);
-    p.setRenderHint(QPainter::Antialiasing, true);
-    p.setPen(Qt::NoPen);
-    p.setBrush(QColor(0x6a, 0x6a, 0x6a));
-    for (int row = 0; row < 2; ++row)
-        for (int col = 0; col < 3; ++col)
-            p.drawEllipse(QPointF(5.0 + col * 5.0, 4.0 + row * 6.0), 1.6, 1.6);
-    return pm;
-}
-
-// Vertical grip: 2 columns x 3 rows of r=2 dots in a 12x20 box, matching the
-// Figma "Grab dots" (for the horizontal Brush toolbar).
-QPixmap dragDotsPixmapV()
-{
-    constexpr qreal dpr = 2.0;
-    QPixmap pm(QSize(24, 40)); // 12x20 logical @ 2x
-    pm.setDevicePixelRatio(dpr);
-    pm.fill(Qt::transparent);
-    QPainter p(&pm);
-    p.setRenderHint(QPainter::Antialiasing, true);
-    p.setPen(Qt::NoPen);
-    p.setBrush(QColor(0x6a, 0x6a, 0x6a));
-    for (int row = 0; row < 3; ++row)
-        for (int col = 0; col < 2; ++col)
-            p.drawEllipse(QPointF(2.0 + col * 8.0, 2.0 + row * 8.0), 2.0, 2.0);
-    return pm;
-}
+// (The six-dot drag grips are gone: the floating toolbars now use the shared
+// Figma grab_CTL pill from FloatingToolWindow's managed placement.)
 
 // Perspective Modifier slider (Figma 180:121): Inter Semi-Bold 9px label
 // top-left, 8px value top-right, a 10px-high #333 radius-2 track at y14 with
@@ -2075,6 +2047,13 @@ void StoryboardPage::installDockViewActions()
         viewMenu = bar->addMenu(QStringLiteral("View"));
 
     viewMenu->addSeparator();
+    // Floating toolbars: restore the Figma default corners (Brush top-right,
+    // Layers top-left, Zoom bottom-left) and clear their saved placement.
+    QAction *resetToolbars =
+        viewMenu->addAction(QStringLiteral("Reset Toolbar Positions"));
+    connect(resetToolbars, &QAction::triggered, this,
+            [] { FloatingToolWindow::resetAllManagedPlacements(); });
+
     // Panel Strip: the toggle both tracks and controls the dock's
     // visibility, so a closed strip is always recoverable from here.
     if (m_panelStripDock) {
@@ -2382,21 +2361,20 @@ void StoryboardPage::createFloatingToolbar()
         new RoundedBar(m_canvas, QStringLiteral("storyboard/brushBarPos"), this);
     m_floatToolbar = brushBar;
     m_floatToolbar->setObjectName(QStringLiteral("floatToolbar"));
-    m_floatToolbar->setFixedHeight(46);
+    // Content = the 46px Figma bar (33:110); the extra 20px strip below it
+    // hosts the hover-shown grab_CTL pill (Figma 213:79) — the old in-bar
+    // grab dots are gone (the Figma frame has none; content starts at x=30).
+    m_floatToolbar->setFixedHeight(46 + FloatingToolWindow::kPillGap
+                                   + FloatingToolWindow::kPillH);
+    brushBar->enableManagedPlacement(QStringLiteral("brush"),
+                                     FloatingToolWindow::DefaultCorner::TopRight,
+                                     46);
 
     QHBoxLayout *bar = new QHBoxLayout(m_floatToolbar);
-    bar->setContentsMargins(13, 8, 23, 8);
+    bar->setContentsMargins(30, 8, 23,
+                            8 + FloatingToolWindow::kPillGap
+                                + FloatingToolWindow::kPillH);
     bar->setSpacing(15);
-
-    // Grip (vertical 2x3 dots), left. The label ignores mouse events, so
-    // presses on it propagate to the bar, whose gripRect() covers it.
-    QLabel *grip = new QLabel;
-    grip->setPixmap(dragDotsPixmapV());
-    grip->setFixedSize(12, 20);
-    grip->setCursor(Qt::OpenHandCursor);
-    grip->setToolTip(QStringLiteral("Drag to move the toolbar"));
-    bar->addWidget(grip, 0, Qt::AlignVCenter);
-    brushBar->setGripWidget(grip);
 
     // Exact Figma icons (original SVGs) rendered at their Figma sizes; the
     // "select" glyph is the Figma dashed marquee + cursor arrow. Tooltips use
@@ -2836,20 +2814,20 @@ void StoryboardPage::createFloatingToolbar()
         new RoundedBar(m_canvas, QStringLiteral("storyboard/layersBarPos"), this);
     m_layersToolbar = layersBar;
     m_layersToolbar->setObjectName(QStringLiteral("layersToolbar"));
-    m_layersToolbar->setFixedHeight(46);
+    // Content = the 46px Figma bar (173:36) + the grab_CTL pill strip below
+    // (Figma 213:83); the in-bar grab dots are gone — per Figma the first
+    // icon sits at x=29 and the Settings ends 24px from the right edge.
+    m_layersToolbar->setFixedHeight(46 + FloatingToolWindow::kPillGap
+                                    + FloatingToolWindow::kPillH);
+    layersBar->enableManagedPlacement(
+        QStringLiteral("layers"), FloatingToolWindow::DefaultCorner::TopLeft,
+        46);
 
     QHBoxLayout *lay = new QHBoxLayout(m_layersToolbar);
-    lay->setContentsMargins(20, 8, 18, 8);
+    lay->setContentsMargins(29, 8, 24,
+                            8 + FloatingToolWindow::kPillGap
+                                + FloatingToolWindow::kPillH);
     lay->setSpacing(15);
-
-    // Grab dots (12x20, matching the Figma asset), the drag grip.
-    QLabel *layGrip = new QLabel;
-    layGrip->setPixmap(dragDotsPixmapV());
-    layGrip->setFixedSize(12, 20);
-    layGrip->setCursor(Qt::OpenHandCursor);
-    layGrip->setToolTip(QStringLiteral("Drag to move the toolbar"));
-    lay->addWidget(layGrip, 0, Qt::AlignVCenter);
-    layersBar->setGripWidget(layGrip);
 
     // Dock toggles: checkable buttons mirroring the ADS dock visibility (the
     // docks are wired after construction — see the singleShot below).
@@ -4361,6 +4339,18 @@ void StoryboardPage::setUndoStack(QUndoStack *stack)
         m_canvas->setUndoStack(stack);
 }
 
+void StoryboardPage::ensureBrushPixelsForSave()
+{
+    if (!m_canvas)
+        return;
+    m_canvas->flushPaintCommit();
+    for (Scene *scene : m_scenes)
+        if (scene)
+            for (Panel *panel : scene->panels)
+                m_canvas->ensurePanelCpuCoherent(panel,
+                                                 BrushCoherenceTrigger::Save);
+}
+
 // Command callbacks: mutate the scene's panel list and refresh, jumping to
 // the affected scene first so undo lands where the user can see it.
 void StoryboardPage::applyPanelInsertForUndo(Scene *scene, int index, Panel *panel)
@@ -4386,6 +4376,8 @@ Panel *StoryboardPage::applyPanelRemoveForUndo(Scene *scene, int index)
         return nullptr;
     if (sceneIdx != m_currentScene)
         selectScene(sceneIdx);
+    if (m_canvas)
+        m_canvas->flushPaintCommit();
     Panel *panel = scene->panels.takeAt(index);
     rebuildPanelStrip();
     if (!scene->panels.isEmpty())
@@ -4485,6 +4477,8 @@ void StoryboardPage::refreshCurrentThumbNow()
     Panel *panel = currentPanel();
     if (!panel || m_currentPanel < 0 || m_currentPanel >= m_panelThumbImages.size())
         return;
+    if (m_canvas)
+        m_canvas->ensurePanelCpuCoherent(panel, BrushCoherenceTrigger::Thumbnail);
     m_panelThumbImages.at(m_currentPanel)
         ->setPixmap(stripThumbPixmap(panel));
 }
@@ -6478,6 +6472,8 @@ void StoryboardPage::updateActiveLayerThumb()
     Panel *panel = currentPanel();
     if (!panel)
         return;
+    if (m_canvas)
+        m_canvas->ensurePanelCpuCoherent(panel, BrushCoherenceTrigger::Thumbnail);
     const int idx = panel->activeLayerIndex;
     if (idx < 0 || idx >= panel->layers.size())
         return;
@@ -6498,8 +6494,10 @@ void StoryboardPage::applyLayerStackForUndo(Panel *panel,
 {
     if (!panel)
         return;
-    if (m_canvas)
+    if (m_canvas) {
+        m_canvas->flushPaintCommit();
         m_canvas->commitQuickShape();
+    }
     panel->layers = layers;
     panel->activeLayerIndex =
         qBound(0, activeIndex, qMax(0, panel->layers.size() - 1));

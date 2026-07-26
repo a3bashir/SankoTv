@@ -84,6 +84,7 @@ public:
     // Bake any pending QuickShape vector (called before save/load, so the
     // temporary overlay is never silently dropped or left un-serialized).
     void commitQuickShape();
+    void ensureBrushPixelsForSave();
 
     // App-wide undo stack (owned by MainWindow); forwarded to the canvas.
     void setUndoStack(QUndoStack *stack);

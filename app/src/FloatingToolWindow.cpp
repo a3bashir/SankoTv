@@ -1,10 +1,15 @@
 #include "FloatingToolWindow.h"
 
+#include <QApplication>
+#include <QEnterEvent>
 #include <QEvent>
 #include <QMouseEvent>
+#include <QPainter>
 #include <QSet>
 #include <QSettings>
 #include <QVector>
+
+#include <algorithm>
 
 
 // ONE shared event filter for every FloatingToolWindow (present and future):
@@ -31,15 +36,29 @@ public:
 
     void unregisterWindow(FloatingToolWindow *w) { m_windows.removeAll(w); }
 
+    // Registered windows, in registration order (managed-placement priority).
+    const QVector<FloatingToolWindow *> &windows() const { return m_windows; }
+
     bool eventFilter(QObject *object, QEvent *event) override
     {
         switch (event->type()) {
         case QEvent::Move:
-        case QEvent::Resize:
+        case QEvent::Resize: {
+            // Unmanaged windows reposition independently; managed ones go
+            // through the group pass (fixed priority order, single pass) so
+            // collision avoidance stays deterministic.
+            QWidget *groupAnchor = nullptr;
             for (FloatingToolWindow *w : std::as_const(m_windows))
-                if (isHostOf(w, object))
-                    w->reposition();
+                if (isHostOf(w, object)) {
+                    if (w->m_managed)
+                        groupAnchor = w->m_anchor;
+                    else
+                        w->reposition();
+                }
+            if (groupAnchor)
+                FloatingToolWindow::repositionManagedGroup(groupAnchor);
             break;
+        }
         case QEvent::Show:
             // The anchor may only now sit inside its final top-level window
             // (it is constructed before the page joins the main window).
@@ -134,6 +153,10 @@ void FloatingToolWindow::reposition()
 {
     if (!m_anchor)
         return;
+    if (m_managed) {
+        repositionManaged(false);
+        return;
+    }
     if (!m_userPlaced)
         m_offset = defaultOffset(); // defaults track the anchor's size
     move(clampedPos(anchorOrigin() + m_offset));
@@ -170,6 +193,21 @@ QPoint FloatingToolWindow::defaultOffset() const
 
 bool FloatingToolWindow::handleGripPress(QMouseEvent *event)
 {
+    if (m_managed) {
+        // Only the grab pill (with a little slop for the 8px-thin capsule)
+        // may start a drag; every other press falls through to the children.
+        if (event->button() != Qt::LeftButton || !m_pillVisible
+            || !grabPillRect().adjusted(-6, -6, 6, 6)
+                    .contains(event->position().toPoint()))
+            return false;
+        m_pillCandidate = true;
+        m_pillDragging = false;
+        m_dragStartGlobal = event->globalPosition().toPoint();
+        m_dragStartPos = pos();
+        setCursor(Qt::ClosedHandCursor);
+        update();
+        return true;
+    }
     if (event->button() != Qt::LeftButton
         || !gripRect().contains(event->position().toPoint()))
         return false;
@@ -182,6 +220,28 @@ bool FloatingToolWindow::handleGripPress(QMouseEvent *event)
 
 bool FloatingToolWindow::handleGripMove(QMouseEvent *event)
 {
+    if (m_managed) {
+        if (!m_pillCandidate || !(event->buttons() & Qt::LeftButton))
+            return false;
+        const QPoint global = event->globalPosition().toPoint();
+        if (!m_pillDragging) {
+            // Click-vs-drag threshold: a micro-move is still just a click.
+            if ((global - m_dragStartGlobal).manhattanLength()
+                < QApplication::startDragDistance())
+                return true;
+            m_pillDragging = true;
+        }
+        // Free-follow inside the margin-deflated region while dragging;
+        // snapping and collision resolve on release.
+        const QRect region = placementRegion();
+        QPoint p = m_dragStartPos + (global - m_dragStartGlobal);
+        p.setX(qBound(region.left(), p.x(),
+                      qMax(region.left(), region.right() + 1 - width())));
+        p.setY(qBound(region.top(), p.y(),
+                      qMax(region.top(), region.bottom() + 1 - height())));
+        move(p);
+        return true;
+    }
     if (!m_dragging || !(event->buttons() & Qt::LeftButton))
         return false;
     move(clampedPos(m_dragStartPos
@@ -192,6 +252,18 @@ bool FloatingToolWindow::handleGripMove(QMouseEvent *event)
 bool FloatingToolWindow::handleGripRelease(QMouseEvent *event)
 {
     Q_UNUSED(event);
+    if (m_managed) {
+        if (!m_pillCandidate)
+            return false;
+        const bool moved = m_pillDragging;
+        m_pillCandidate = false;
+        m_pillDragging = false;
+        setCursor(Qt::ArrowCursor);
+        if (moved)
+            finishManagedDrag(); // snap detect + collision + persist
+        update();
+        return true; // a sub-threshold press stays a click: no move at all
+    }
     if (!m_dragging)
         return false;
     m_dragging = false;
@@ -226,4 +298,345 @@ void FloatingToolWindow::mouseReleaseEvent(QMouseEvent *event)
 {
     if (!handleGripRelease(event))
         QWidget::mouseReleaseEvent(event);
+}
+
+// The grab pill is hover-shown, exactly like the Brush Size bar's grab.
+void FloatingToolWindow::enterEvent(QEnterEvent *event)
+{
+    Q_UNUSED(event);
+    if (m_managed && !m_pillVisible) {
+        m_pillVisible = true;
+        update();
+    }
+}
+
+void FloatingToolWindow::leaveEvent(QEvent *event)
+{
+    Q_UNUSED(event);
+    // Moving onto a child keeps the cursor inside our rect; only a real
+    // exit hides the pill (never mid-drag).
+    if (m_managed && m_pillVisible && !m_pillDragging && !m_pillCandidate
+        && !rect().contains(mapFromGlobal(QCursor::pos()))) {
+        m_pillVisible = false;
+        update();
+    }
+}
+
+// --- Managed placement (Figma grab_CTL toolbars) -----------------------------
+
+void FloatingToolWindow::enableManagedPlacement(const QString &name,
+                                                DefaultCorner corner,
+                                                int contentHeight)
+{
+    static int nextOrder = 0;
+    m_managed = true;
+    m_name = name;
+    m_corner = corner;
+    m_contentH = contentHeight;
+    m_placeOrder = nextOrder++;
+    setMouseTracking(true); // hover shows the pill without a button held
+    loadManagedState();
+}
+
+QRect FloatingToolWindow::grabPillRect() const
+{
+    if (!m_managed)
+        return QRect();
+    return QRect((width() - kPillW) / 2, m_contentH + kPillGap, kPillW, kPillH);
+}
+
+// Figma grab_CTL (213:79/81/83): a #212121 capsule; the Sanko accent marks it
+// armed (hovered pill under the cursor, or an active drag) — the same accent
+// language as the Brush Size bar's grab.
+void FloatingToolWindow::paintGrabPill(QPainter &painter) const
+{
+    if (!m_managed || !m_pillVisible)
+        return;
+    const QRect pill = grabPillRect();
+    const bool armed = m_pillCandidate || m_pillDragging
+        || pill.adjusted(-6, -6, 6, 6).contains(mapFromGlobal(QCursor::pos()));
+    painter.save();
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(armed ? QColor(0x7c, 0x6e, 0xf6) : QColor(0x21, 0x21, 0x21));
+    painter.drawRoundedRect(QRectF(pill), kPillH / 2.0, kPillH / 2.0);
+    painter.restore();
+}
+
+QRect FloatingToolWindow::placementRegion() const
+{
+    if (!m_anchor)
+        return QRect();
+    // The anchor (canvas viewport) IS the application client area minus every
+    // docked panel, so constraining to it keeps bars off the docks; deflating
+    // by kMargin enforces the 4px edge margin. All logical px: DPR-safe.
+    return QRect(anchorOrigin(), m_anchor->size())
+        .adjusted(kMargin, kMargin, -kMargin, -kMargin);
+}
+
+QRect FloatingToolWindow::desiredManagedRect() const
+{
+    const QRect region = placementRegion();
+    QPoint p;
+    if (!m_hasPlacement) {
+        switch (m_corner) { // first run: the Figma default corners
+        case DefaultCorner::TopLeft:
+            p = region.topLeft();
+            break;
+        case DefaultCorner::TopRight:
+            p = QPoint(region.right() + 1 - width(), region.top());
+            break;
+        case DefaultCorner::BottomLeft:
+            p = QPoint(region.left(), region.bottom() + 1 - height());
+            break;
+        case DefaultCorner::BottomRight:
+            p = QPoint(region.right() + 1 - width(),
+                       region.bottom() + 1 - height());
+            break;
+        }
+    } else {
+        p = anchorOrigin() + m_freeOffset;
+        switch (m_snapEdge) { // a snapped bar sticks to its edge
+        case SnapEdge::Left:   p.setX(region.left()); break;
+        case SnapEdge::Right:  p.setX(region.right() + 1 - width()); break;
+        case SnapEdge::Top:    p.setY(region.top()); break;
+        case SnapEdge::Bottom: p.setY(region.bottom() + 1 - height()); break;
+        case SnapEdge::None:   break;
+        }
+    }
+    p.setX(qBound(region.left(), p.x(),
+                  qMax(region.left(), region.right() + 1 - width())));
+    p.setY(qBound(region.top(), p.y(),
+                  qMax(region.top(), region.bottom() + 1 - height())));
+    return QRect(p, size());
+}
+
+QVector<QRect> FloatingToolWindow::managedObstacles(bool yieldToAll) const
+{
+    // Other managed bars over the same anchor, inflated by kMargin so the
+    // 4px spacing between bars is part of the obstacle itself. A dropped bar
+    // yields to everyone; a group reposition lets later bars yield to
+    // earlier ones (fixed priority — no oscillation).
+    QVector<QRect> obstacles;
+    const auto &all = FloatingToolWindowManager::instance()->windows();
+    for (FloatingToolWindow *w : all) {
+        if (w == this || !w->m_managed || w->m_anchor != m_anchor
+            || !w->isVisible())
+            continue;
+        if (!yieldToAll && w->m_placeOrder > m_placeOrder)
+            continue;
+        obstacles.append(w->frameGeometry().adjusted(-kMargin, -kMargin,
+                                                     kMargin, kMargin));
+    }
+    return obstacles;
+}
+
+QRect FloatingToolWindow::placeRect(const QRect &desired,
+                                    const QVector<QRect> &obstacles,
+                                    bool preserveSnapAxis, bool *ok)
+{
+    const QRect region = placementRegion();
+    m_lastPlaceTests = 0;
+    *ok = false;
+    if (region.width() < desired.width() || region.height() < desired.height())
+        return desired; // cannot fit at all -> caller hides (fallback)
+
+    auto fits = [&](const QRect &r) {
+        ++m_lastPlaceTests;
+        if (!region.contains(r))
+            return false;
+        for (const QRect &o : obstacles)
+            if (r.intersects(o))
+                return false;
+        return true;
+    };
+    if (fits(desired)) {
+        *ok = true;
+        return desired;
+    }
+
+    // Finite candidate grid: the desired coordinates, the region bounds, and
+    // every obstacle edge (obstacles are pre-inflated, so touching = 4px
+    // apart). Nearest available = the fitting candidate with the smallest
+    // squared displacement from the desired top-left.
+    QVector<int> xs = {desired.x(), region.left(),
+                       region.right() + 1 - desired.width()};
+    QVector<int> ys = {desired.y(), region.top(),
+                       region.bottom() + 1 - desired.height()};
+    for (const QRect &o : obstacles) {
+        xs.append(o.left() - desired.width());
+        xs.append(o.right() + 1);
+        ys.append(o.top() - desired.height());
+        ys.append(o.bottom() + 1);
+    }
+    // A snapped bar first slides only along its edge (the snapped coordinate
+    // is fixed); the caller falls back to the free search if nothing fits.
+    if (preserveSnapAxis) {
+        if (m_snapEdge == SnapEdge::Left || m_snapEdge == SnapEdge::Right)
+            xs = {desired.x()};
+        else if (m_snapEdge == SnapEdge::Top || m_snapEdge == SnapEdge::Bottom)
+            ys = {desired.y()};
+    }
+
+    QRect best;
+    qint64 bestScore = -1;
+    for (int x : xs)
+        for (int y : ys) {
+            const QRect r(QPoint(x, y), desired.size());
+            if (!fits(r))
+                continue;
+            const qint64 dx = x - desired.x();
+            const qint64 dy = y - desired.y();
+            const qint64 score = dx * dx + dy * dy;
+            if (bestScore < 0 || score < bestScore
+                || (score == bestScore
+                    && (y < best.y() || (y == best.y() && x < best.x())))) {
+                bestScore = score;
+                best = r;
+            }
+        }
+    if (bestScore >= 0) {
+        *ok = true;
+        return best;
+    }
+    return desired;
+}
+
+void FloatingToolWindow::repositionManaged(bool yieldToAll)
+{
+    if (!m_anchor)
+        return;
+    const QRect desired = desiredManagedRect();
+    const QVector<QRect> obstacles = managedObstacles(yieldToAll);
+    bool ok = false;
+    QRect placed;
+    int tests = 0;
+    if (m_snapEdge != SnapEdge::None) {
+        placed = placeRect(desired, obstacles, true, &ok); // slide on edge
+        tests = m_lastPlaceTests;
+    }
+    if (!ok) {
+        placed = placeRect(desired, obstacles, false, &ok);
+        tests += m_lastPlaceTests;
+    }
+    m_lastPlaceTests = tests;
+    if (!ok) {
+        // Fallback (stated): no non-overlapping in-region position exists —
+        // the bar hides rather than overlap or leave the window, and every
+        // later reposition retries so it returns as soon as space frees up.
+        m_noSpaceHidden = true;
+        QWidget::setVisible(false);
+        return;
+    }
+    if (m_noSpaceHidden) {
+        m_noSpaceHidden = false;
+        if (m_wantVisible)
+            QWidget::setVisible(true);
+    }
+    move(placed.topLeft());
+}
+
+void FloatingToolWindow::finishManagedDrag()
+{
+    const QRect region = placementRegion();
+    const QRect r = frameGeometry();
+    // Edge snapping: released within kSnapThreshold (16 logical px) of a
+    // region edge snaps the bar to that edge (nearest edge wins).
+    struct EdgeDist { SnapEdge edge; int dist; };
+    const EdgeDist dists[4] = {
+        {SnapEdge::Left, r.left() - region.left()},
+        {SnapEdge::Right, region.right() - r.right()},
+        {SnapEdge::Top, r.top() - region.top()},
+        {SnapEdge::Bottom, region.bottom() - r.bottom()},
+    };
+    SnapEdge nearest = SnapEdge::None;
+    int nearestDist = kSnapThreshold + 1;
+    for (const EdgeDist &d : dists)
+        if (d.dist >= 0 && d.dist < nearestDist) {
+            nearestDist = d.dist;
+            nearest = d.edge;
+        }
+    m_snapEdge = nearest;
+    m_freeOffset = pos() - anchorOrigin();
+    m_hasPlacement = true;
+    repositionManaged(true); // dropped bar yields to every other bar
+    m_freeOffset = pos() - anchorOrigin(); // keep what collision decided
+    saveManagedState();
+}
+
+void FloatingToolWindow::saveManagedState() const
+{
+    if (m_name.isEmpty())
+        return;
+    QSettings settings(QStringLiteral("SankoTV"), QStringLiteral("SankoTV"));
+    const QString base =
+        QStringLiteral("storyboard/floatToolbars/v1/") + m_name + QLatin1Char('/');
+    settings.setValue(base + QStringLiteral("edge"), int(m_snapEdge));
+    settings.setValue(base + QStringLiteral("offset"), m_freeOffset);
+    settings.setValue(base + QStringLiteral("visible"), m_wantVisible);
+}
+
+void FloatingToolWindow::loadManagedState()
+{
+    if (m_name.isEmpty())
+        return;
+    QSettings settings(QStringLiteral("SankoTV"), QStringLiteral("SankoTV"));
+    const QString base =
+        QStringLiteral("storyboard/floatToolbars/v1/") + m_name + QLatin1Char('/');
+    if (!settings.contains(base + QStringLiteral("offset")))
+        return; // first run: the default corner applies
+    const int edge = settings.value(base + QStringLiteral("edge")).toInt();
+    m_snapEdge = (edge >= int(SnapEdge::None) && edge <= int(SnapEdge::Bottom))
+        ? SnapEdge(edge)
+        : SnapEdge::None;
+    m_freeOffset = settings.value(base + QStringLiteral("offset")).toPoint();
+    m_hasPlacement = true;
+    // A stale "hidden" is recoverable via the same toggle that hid it; the
+    // restored position is validated by the clamp+collision reposition path.
+    if (!settings.value(base + QStringLiteral("visible"), true).toBool())
+        m_wantVisible = false;
+}
+
+void FloatingToolWindow::repositionManagedGroup(QWidget *anchor)
+{
+    // Deterministic single pass in priority order: each bar avoids only the
+    // bars placed before it, so the pass can never oscillate.
+    QVector<FloatingToolWindow *> managed;
+    const auto &all = FloatingToolWindowManager::instance()->windows();
+    for (FloatingToolWindow *w : all)
+        if (w->m_managed && w->m_anchor == anchor)
+            managed.append(w);
+    std::sort(managed.begin(), managed.end(),
+              [](const FloatingToolWindow *a, const FloatingToolWindow *b) {
+                  return a->m_placeOrder < b->m_placeOrder;
+              });
+    for (FloatingToolWindow *w : managed)
+        w->repositionManaged(false);
+}
+
+void FloatingToolWindow::restoreManagedState()
+{
+    if (!m_managed)
+        return;
+    m_wantVisible = isVisible() || m_wantVisible;
+    loadManagedState();
+    repositionManaged(false);
+    applyEffectiveVisibility(); // a saved "hidden" restores hidden
+}
+
+void FloatingToolWindow::resetAllManagedPlacements()
+{
+    QSettings settings(QStringLiteral("SankoTV"), QStringLiteral("SankoTV"));
+    settings.remove(QStringLiteral("storyboard/floatToolbars"));
+    QWidget *anchor = nullptr;
+    const auto &all = FloatingToolWindowManager::instance()->windows();
+    for (FloatingToolWindow *w : all)
+        if (w->m_managed) {
+            w->m_snapEdge = SnapEdge::None;
+            w->m_hasPlacement = false;
+            w->m_freeOffset = QPoint();
+            anchor = w->m_anchor;
+        }
+    if (anchor)
+        repositionManagedGroup(anchor);
 }

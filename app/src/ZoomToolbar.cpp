@@ -9,11 +9,10 @@
 
 namespace {
 
-// Exact Figma geometry (origin = toolbar 0,0), node 86:32.
-constexpr int kW = 528, kH = 46, kRadius = 12;
-
-// Grip: dot matrix inside a 12x20 box at (12,13).
-constexpr int kGripX = 12, kGripY = 13, kGripW = 12, kGripH = 20;
+// Exact Figma geometry (origin = toolbar 0,0), node 86:32 — the frame has NO
+// grab dots: content starts with the Zoom group (outer pad 17 + inner 12 =
+// x29). The grab_CTL pill (213:79) lives in the strip below the 46px body.
+constexpr int kW = 531, kH = 46, kRadius = 12;
 
 // A control group ("zoom" / "rotate") is 160 wide; the label sits at its top,
 // the value readout at +138 (right-aligned to the track end), the track 14px
@@ -25,18 +24,17 @@ constexpr int kDraggerW = 20;
 constexpr int kValueDX = 138, kValueW = 22, kValueH = 15;
 constexpr double kValueTopY = 12.5;
 
-constexpr int kZoomGroupX = 43;
-constexpr int kRotGroupX = 311;
+constexpr int kZoomGroupX = 29;
+constexpr int kRotGroupX = 297;
 
 constexpr double kDivY = 11.5;
-constexpr int kDiv1X = 222, kDivH = 23;
-constexpr int kDiv2X = 291;
+constexpr int kDiv1X = 208, kDivH = 23;
+constexpr int kDiv2X = 277;
 
-// Flip / Reset are 30x30 button boxes (radius 6, bg #212121 = toolbar body, so
-// effectively icon-only); the icon sits centred inside at its Figma size
-// (flip 21.6x17.55, reset 21x21).
-constexpr int kFitX = 242, kFitY = 8, kFitS = 30; // Fit Screen button box
-constexpr int kResetX = 490, kResetY = 8, kResetS = 30;
+// Fit / Reset are 30x30 button boxes (radius 6, bg #212121 = toolbar body, so
+// effectively icon-only); the icon sits centred inside at its Figma size.
+constexpr int kFitX = 228, kFitY = 8, kFitS = 30; // Fit Screen button box
+constexpr int kResetX = 476, kResetY = 8, kResetS = 30;
 
 // Vertical band that counts as a hit on a track (label row down through track).
 constexpr int kTrackHitY0 = 10, kTrackHitY1 = 40;
@@ -61,19 +59,17 @@ double tToRot(double t) { return -180.0 + qBound(0.0, t, 1.0) * 360.0; }
 ZoomToolbar::ZoomToolbar(QWidget *anchor, QWidget *parent)
     : FloatingToolWindow(anchor, QStringLiteral("storyboard/zoomBarPos"), parent)
 {
-    setFixedSize(kW, kH);
+    // 46px Figma body + the grab_CTL pill strip below it; the pill (via the
+    // base's managed placement) replaces the old in-bar grab dots.
+    setFixedSize(kW, kH + kPillGap + kPillH);
+    enableManagedPlacement(QStringLiteral("zoom"), DefaultCorner::BottomLeft,
+                           kH);
     setMouseTracking(true); // hover feedback on the Fit / Reset buttons
     m_labelFont = QFont(QStringLiteral("Inter")); // falls back to the UI font
     m_labelFont.setPixelSize(9);
     m_labelFont.setWeight(QFont::DemiBold); // "Semi Bold"
     m_valueFont = m_labelFont;
     m_valueFont.setPixelSize(8);
-}
-
-// The grab-dots band on the left is the drag region.
-QRect ZoomToolbar::gripRect() const
-{
-    return QRect(kGripX - 2, 0, kGripW + 5, kH);
 }
 
 // Default spot: bottom-centre of the canvas, 12px up.
@@ -117,21 +113,6 @@ void ZoomToolbar::paintEvent(QPaintEvent *)
     p.setPen(QPen(QColor("#1a1a1a"), 1));
     p.setBrush(QColor("#212121"));
     p.drawRoundedRect(body, kRadius, kRadius);
-
-    // Grip: 6 dots (2 cols x 3 rows of r=2 circles, #6a6a6a), matching the
-    // Figma grab-dots SVG exactly (circles at relative 2/10 x 2/10/18 in the
-    // 12x20 box).
-    p.setPen(Qt::NoPen);
-    p.setBrush(QColor("#6a6a6a"));
-    {
-        const double gx = kGripX; // 12
-        const double gy = kGripY; // 13 (grab-dots frame y in toolbar)
-        const double cols[2] = {gx + 2.0, gx + 10.0};
-        const double rows[3] = {gy + 2.0, gy + 10.0, gy + 18.0};
-        for (double cx : cols)
-            for (double cy : rows)
-                p.drawEllipse(QPointF(cx, cy), 2.0, 2.0);
-    }
 
     // Labels.
     p.setFont(m_labelFont);
@@ -230,6 +211,8 @@ void ZoomToolbar::paintEvent(QPaintEvent *)
         resetSvg.render(&p, QRectF(kResetX + (kResetS - rw) / 2.0,
                                    kResetY + (kResetS - rh) / 2.0, rw, rh));
     }
+
+    paintGrabPill(p); // hover-shown grab_CTL below the body
 }
 
 void ZoomToolbar::mousePressEvent(QMouseEvent *event)
@@ -325,8 +308,9 @@ void ZoomToolbar::mouseReleaseEvent(QMouseEvent *event)
     }
 }
 
-void ZoomToolbar::leaveEvent(QEvent *)
+void ZoomToolbar::leaveEvent(QEvent *event)
 {
+    FloatingToolWindow::leaveEvent(event); // the grab pill hides with hover
     if (m_hover != BtnNone) {
         m_hover = BtnNone;
         setCursor(Qt::ArrowCursor);

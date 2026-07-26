@@ -36,8 +36,7 @@ protected:
     void mouseMoveEvent(QMouseEvent *event) override;
     void mouseReleaseEvent(QMouseEvent *event) override;
     void leaveEvent(QEvent *event) override;
-    QRect gripRect() const override;      // the grab-dots band
-    QPoint defaultOffset() const override; // bottom-centre of the canvas
+    QPoint defaultOffset() const override; // legacy (managed placement wins)
 
 private:
     enum Drag { DragNone, DragZoom, DragRotate };

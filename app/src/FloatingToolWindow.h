@@ -41,6 +41,50 @@ public:
                                 QWidget *parent = nullptr);
     ~FloatingToolWindow() override;
 
+    // --- Managed placement (Figma grab_CTL toolbars) ----------------------
+    // Opting in replaces the legacy grip-widget drag with the shared system:
+    //  * Grab Control: the Figma grab_CTL pill (50x8 #212121 capsule,
+    //    nodes 213:79/81/83) centred in a 12px-gap strip BELOW the content;
+    //    hover-shown (like the Brush Size bar's grab), the SOLE drag region,
+    //    with a click-vs-drag threshold of QApplication::startDragDistance().
+    //  * Defaults: a corner of the placement region on first run (no saved
+    //    state); a saved position always wins.
+    //  * Region: the anchor's client rect deflated by kMargin — the canvas
+    //    viewport, i.e. the application window's client area MINUS every
+    //    docked panel, so a placed bar can never overlap a dock.
+    //  * Edge snapping: released within kSnapThreshold of a region edge
+    //    snaps to it; a snapped bar keeps its edge across window resizes.
+    //  * Collision: bars never overlap each other (4px spacing); a blocked
+    //    bar moves to the candidate position with the smallest squared
+    //    displacement from the desired spot (finite candidate grid, single
+    //    pass — see placeRect()); with NO valid position the bar hides and
+    //    re-shows automatically once space frees up.
+    //  * Persistence: versioned keys storyboard/floatToolbars/v1/<name>/*
+    //    (edge, offset, visible), validated through the same clamp+collision
+    //    path on restore.
+    enum class SnapEdge { None, Left, Right, Top, Bottom };
+    enum class DefaultCorner { TopLeft, TopRight, BottomLeft, BottomRight };
+    static constexpr int kMargin = 4;         // to edges AND between bars
+    static constexpr int kSnapThreshold = 16; // px from a region edge
+    static constexpr int kPillW = 50;         // Figma grab_CTL
+    static constexpr int kPillH = 8;
+    static constexpr int kPillGap = 12;       // bar bottom -> pill top
+
+    void enableManagedPlacement(const QString &name, DefaultCorner corner,
+                                int contentHeight);
+    bool isManaged() const { return m_managed; }
+    int contentHeight() const { return m_contentH; }
+    SnapEdge snapEdge() const { return m_snapEdge; }
+    QRect grabPillRect() const; // own coords (empty when not managed)
+    bool grabPillVisible() const { return m_pillVisible; }
+    int lastPlacementTests() const { return m_lastPlaceTests; } // bounded
+    // View > Reset Toolbar Positions: clear saved state, back to defaults.
+    static void resetAllManagedPlacements();
+    // Re-read the persisted state and re-place (the startup restore path,
+    // callable explicitly): the saved position is validated through the same
+    // clamp+collision pipeline, never applied blindly.
+    void restoreManagedState();
+
     // Records the caller's intent (tool toggles call this / show() / hide());
     // the window is effectively visible only while the anchor and the main
     // window allow it (anchor shown, window shown and not minimized).
@@ -70,14 +114,22 @@ protected:
 
     // Grip drag in GLOBAL screen coords with the position-only clamp.
     // Subclasses that override the mouse events call these first and stop if
-    // the event was consumed (see ZoomToolbar).
+    // the event was consumed (see ZoomToolbar). In managed mode these SAME
+    // entry points implement the grab-pill drag (threshold, snap, collision),
+    // so subclasses need no changes when they opt in.
     bool handleGripPress(QMouseEvent *event);
     bool handleGripMove(QMouseEvent *event);
     bool handleGripRelease(QMouseEvent *event);
 
+    // Managed subclasses call this at the end of their paintEvent: draws the
+    // hover-shown grab pill (accent-tinted while armed/dragging).
+    void paintGrabPill(QPainter &painter) const;
+
     void mousePressEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
     void mouseReleaseEvent(QMouseEvent *event) override;
+    void enterEvent(QEnterEvent *event) override;
+    void leaveEvent(QEvent *event) override;
 
 private:
     friend class FloatingToolWindowManager;
@@ -86,6 +138,23 @@ private:
     QPoint clampedPos(const QPoint &pos) const; // POSITION-only clamp
     void applyEffectiveVisibility();            // intent && anchor/window state
     void persistOffset();
+
+    // --- managed placement internals --------------------------------------
+    QRect placementRegion() const; // anchor global rect deflated by kMargin
+    QRect desiredManagedRect() const;
+    // Nearest-available placement: desired first; otherwise every (x, y)
+    // from the finite candidate grid built from the region bounds and the
+    // obstacle edges, keeping the one with the smallest squared displacement
+    // (ties: smaller y, then smaller x). Single pass over a bounded set —
+    // it cannot loop or oscillate. ok=false when nothing fits.
+    QRect placeRect(const QRect &desired, const QVector<QRect> &obstacles,
+                    bool preserveSnapAxis, bool *ok);
+    QVector<QRect> managedObstacles(bool yieldToAll) const;
+    void repositionManaged(bool yieldToAll);
+    void finishManagedDrag();
+    void saveManagedState() const;
+    void loadManagedState();
+    static void repositionManagedGroup(QWidget *anchor);
 
     QPointer<QWidget> m_anchor;
     QString m_settingsKey;
@@ -97,4 +166,18 @@ private:
     QPoint m_dragStartPos;      // window pos at press
     QPointer<QWidget> m_gripWidget;
     std::function<QPoint()> m_defaultOffset;
+
+    bool m_managed = false;
+    QString m_name;                 // settings sub-key
+    DefaultCorner m_corner = DefaultCorner::TopLeft;
+    int m_contentH = 0;             // bar content height above the pill strip
+    int m_placeOrder = 0;           // priority: earlier bars win space
+    SnapEdge m_snapEdge = SnapEdge::None;
+    QPoint m_freeOffset;            // anchor-relative desired top-left
+    bool m_hasPlacement = false;    // false: use the default corner
+    bool m_pillVisible = false;     // hover-shown grab pill
+    bool m_pillCandidate = false;   // pressed on the pill (click until moved)
+    bool m_pillDragging = false;    // moved past the threshold
+    bool m_noSpaceHidden = false;   // fallback: hidden until space frees up
+    int m_lastPlaceTests = 0;
 };
