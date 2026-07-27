@@ -37,6 +37,8 @@ protected:
     void mouseReleaseEvent(QMouseEvent *event) override;
     void leaveEvent(QEvent *event) override;
     QPoint defaultOffset() const override; // legacy (managed placement wins)
+    // Custom-painted content follows the pill side via contentOffsetY().
+    void pillSideChanged() override { update(); }
 
 private:
     enum Drag { DragNone, DragZoom, DragRotate };

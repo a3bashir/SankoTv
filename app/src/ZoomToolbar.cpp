@@ -107,6 +107,11 @@ void ZoomToolbar::paintEvent(QPaintEvent *)
 {
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing, true);
+    // Content shifts down by the pill strip when the pill sits ABOVE the
+    // bar (bottom-positioned toolbar); the pill itself paints in window
+    // coordinates after the restore.
+    p.save();
+    p.translate(0, contentOffsetY());
 
     // Toolbar body: #212121 fill, 1px #1a1a1a border, radius 12.
     QRectF body(0.5, 0.5, kW - 1, kH - 1);
@@ -212,14 +217,16 @@ void ZoomToolbar::paintEvent(QPaintEvent *)
                                    kResetY + (kResetS - rh) / 2.0, rw, rh));
     }
 
-    paintGrabPill(p); // hover-shown grab_CTL below the body
+    p.restore();      // back to window coords
+    paintGrabPill(p); // hover-shown grab_CTL on the pill side
 }
 
 void ZoomToolbar::mousePressEvent(QMouseEvent *event)
 {
     if (event->button() != Qt::LeftButton)
         return;
-    const QPoint pos = event->pos();
+    // Content coordinates (the body shifts when the pill sits above it).
+    const QPoint pos = event->pos() - QPoint(0, contentOffsetY());
     const bool inTrackBand = pos.y() >= kTrackHitY0 && pos.y() <= kTrackHitY1;
 
     // Grip drag: FloatingToolWindow handles it (global coords, clamped).
@@ -272,7 +279,8 @@ void ZoomToolbar::mouseMoveEvent(QMouseEvent *event)
         // (skip while a button is held down so the pressed state stays put).
         if (m_pressed != BtnNone)
             break;
-        const Button h = buttonAt(event->pos());
+        const Button h =
+            buttonAt(event->pos() - QPoint(0, contentOffsetY()));
         if (h != m_hover) {
             m_hover = h;
             setCursor(h == BtnNone ? Qt::ArrowCursor : Qt::PointingHandCursor);
@@ -291,7 +299,8 @@ void ZoomToolbar::mouseReleaseEvent(QMouseEvent *event)
 
     // Fire the button action only if released over the same button.
     if (m_pressed != BtnNone) {
-        const QPoint pos = event->position().toPoint();
+        const QPoint pos =
+            event->position().toPoint() - QPoint(0, contentOffsetY());
         const Button released = buttonAt(pos);
         if (released == m_pressed) {
             if (m_pressed == BtnFit) {

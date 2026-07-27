@@ -141,12 +141,22 @@ void FloatingToolWindow::applyEffectiveVisibility()
     const bool hostAllows = m_anchor && m_anchor->isVisible() && win && win->isVisible()
         && !(win->windowState() & Qt::WindowMinimized);
     const bool effective = m_wantVisible && hostAllows;
+    bool changed = false;
     if (effective && !isVisible()) {
         reposition();
         QWidget::setVisible(true); // bypass our intent-recording override
+        changed = true;
     } else if (!effective && isVisible()) {
         QWidget::setVisible(false);
+        changed = true;
     }
+    // Occupancy changed (e.g. the Selection/Move Modifier bar appeared with
+    // a tool, or was dismissed): re-run managed placement so a bar it now
+    // overlaps moves aside — and a displaced bar RETURNS to its stored
+    // position once the obstacle is gone, because displacement never
+    // overwrites the user's saved offset (only a drag release does).
+    if (changed && m_anchor)
+        repositionManagedGroup(m_anchor);
 }
 
 void FloatingToolWindow::reposition()
@@ -221,8 +231,16 @@ bool FloatingToolWindow::handleGripPress(QMouseEvent *event)
 bool FloatingToolWindow::handleGripMove(QMouseEvent *event)
 {
     if (m_managed) {
-        if (!m_pillCandidate || !(event->buttons() & Qt::LeftButton))
+        if (!m_pillCandidate || !(event->buttons() & Qt::LeftButton)) {
+            // An active hover re-shows a pill that a finished drag hid: the
+            // pill hides the moment a drag ends and only real cursor motion
+            // over the toolbar brings it back.
+            if (!m_pillVisible && !(event->buttons() & Qt::LeftButton)) {
+                m_pillVisible = true;
+                update();
+            }
             return false;
+        }
         const QPoint global = event->globalPosition().toPoint();
         if (!m_pillDragging) {
             // Click-vs-drag threshold: a micro-move is still just a click.
@@ -259,8 +277,12 @@ bool FloatingToolWindow::handleGripRelease(QMouseEvent *event)
         m_pillCandidate = false;
         m_pillDragging = false;
         setCursor(Qt::ArrowCursor);
-        if (moved)
+        if (moved) {
             finishManagedDrag(); // snap detect + collision + persist
+            // The pill disappears IMMEDIATELY when the drag ends — it never
+            // lingers because the cursor happens to rest where it was.
+            m_pillVisible = false;
+        }
         update();
         return true; // a sub-threshold press stays a click: no move at all
     }
@@ -342,7 +364,9 @@ QRect FloatingToolWindow::grabPillRect() const
 {
     if (!m_managed)
         return QRect();
-    return QRect((width() - kPillW) / 2, m_contentH + kPillGap, kPillW, kPillH);
+    // Below: [content][4px gap][pill]. Above: [pill][4px gap][content].
+    const int y = m_pillSide == PillSide::Above ? 0 : m_contentH + kPillGap;
+    return QRect((width() - kPillW) / 2, y, kPillW, kPillH);
 }
 
 // Figma grab_CTL (213:79/81/83): a #212121 capsule; the Sanko accent marks it
@@ -358,7 +382,7 @@ void FloatingToolWindow::paintGrabPill(QPainter &painter) const
     painter.save();
     painter.setRenderHint(QPainter::Antialiasing, true);
     painter.setPen(Qt::NoPen);
-    painter.setBrush(armed ? QColor(0x7c, 0x6e, 0xf6) : QColor(0x21, 0x21, 0x21));
+    painter.setBrush(armed ? accentColor() : QColor(0x21, 0x21, 0x21));
     painter.drawRoundedRect(QRectF(pill), kPillH / 2.0, kPillH / 2.0);
     painter.restore();
 }
@@ -413,17 +437,21 @@ QRect FloatingToolWindow::desiredManagedRect() const
 
 QVector<QRect> FloatingToolWindow::managedObstacles(bool yieldToAll) const
 {
-    // Other managed bars over the same anchor, inflated by kMargin so the
-    // 4px spacing between bars is part of the obstacle itself. A dropped bar
-    // yields to everyone; a group reposition lets later bars yield to
-    // earlier ones (fixed priority — no oscillation).
+    // Every visible sibling FloatingToolWindow over the same anchor is an
+    // obstacle, inflated by kMargin so the 4px spacing is part of the
+    // obstacle itself. Frame rects include the whole layout rect — bar,
+    // 4px gap, and pill strip — so the gap counts as OCCUPIED. Unmanaged
+    // siblings (the Selection/Move Modifier bars, the Brush Size bar) are
+    // ALWAYS obstacles: they place themselves and never yield. Among
+    // managed bars, a dropped bar yields to everyone; a group reposition
+    // lets later bars yield to earlier ones (fixed priority — no
+    // oscillation).
     QVector<QRect> obstacles;
     const auto &all = FloatingToolWindowManager::instance()->windows();
     for (FloatingToolWindow *w : all) {
-        if (w == this || !w->m_managed || w->m_anchor != m_anchor
-            || !w->isVisible())
+        if (w == this || w->m_anchor != m_anchor || !w->isVisible())
             continue;
-        if (!yieldToAll && w->m_placeOrder > m_placeOrder)
+        if (w->m_managed && !yieldToAll && w->m_placeOrder > m_placeOrder)
             continue;
         obstacles.append(w->frameGeometry().adjusted(-kMargin, -kMargin,
                                                      kMargin, kMargin));
@@ -534,6 +562,30 @@ void FloatingToolWindow::repositionManaged(bool yieldToAll)
             QWidget::setVisible(true);
     }
     move(placed.topLeft());
+    updatePillSide(); // placement-time only — deterministic, no flicker
+}
+
+// Pill side rule: snapped Top => Below, snapped Bottom => Above; free bars
+// and Left/Right-snapped bars take the region half their centre occupies
+// (top half => Below). Evaluated ONLY here (placement), never per mouse
+// move, so the side cannot flicker while a bar is dragged across the
+// midline — it settles once on drop.
+void FloatingToolWindow::updatePillSide()
+{
+    PillSide side = PillSide::Below;
+    if (m_snapEdge == SnapEdge::Top)
+        side = PillSide::Below;
+    else if (m_snapEdge == SnapEdge::Bottom)
+        side = PillSide::Above;
+    else
+        side = frameGeometry().center().y() <= placementRegion().center().y()
+            ? PillSide::Below
+            : PillSide::Above;
+    if (side == m_pillSide)
+        return;
+    m_pillSide = side;
+    pillSideChanged(); // subclass relayouts content at contentOffsetY()
+    update();
 }
 
 void FloatingToolWindow::finishManagedDrag()

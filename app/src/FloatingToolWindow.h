@@ -64,17 +64,38 @@ public:
     //    path on restore.
     enum class SnapEdge { None, Left, Right, Top, Bottom };
     enum class DefaultCorner { TopLeft, TopRight, BottomLeft, BottomRight };
+    // Which side of the bar the grab pill sits on. Decided ONLY at placement
+    // time (drop, snap, reposition — never per mouse-move, so it cannot
+    // flicker mid-drag): snapped Top => Below, snapped Bottom => Above;
+    // free bars AND Left/Right-snapped bars use the region half their
+    // centre occupies (top half => Below, bottom half => Above).
+    enum class PillSide { Below, Above };
     static constexpr int kMargin = 4;         // to edges AND between bars
     static constexpr int kSnapThreshold = 16; // px from a region edge
     static constexpr int kPillW = 50;         // Figma grab_CTL
     static constexpr int kPillH = 8;
-    static constexpr int kPillGap = 12;       // bar bottom -> pill top
+    // Bar <-> pill gap: 4px, matching the Floating Brush Size bar's grab
+    // (SizeCtlBar::kGap). The pill strip (gap + pill) is reserved in the
+    // LAYOUT RECT permanently — margins, snapping, and collision all operate
+    // on the full window rect whether or not the pill is currently drawn.
+    static constexpr int kPillGap = 4;
+    static constexpr int kPillStrip = kPillGap + kPillH; // reserved footprint
+    // The Sanko accent from the existing design language (the same value the
+    // Brush Size bar's armed grab already uses) — never a new colour.
+    static QColor accentColor() { return QColor(0x7c, 0x6e, 0xf6); }
 
     void enableManagedPlacement(const QString &name, DefaultCorner corner,
                                 int contentHeight);
     bool isManaged() const { return m_managed; }
     int contentHeight() const { return m_contentH; }
     SnapEdge snapEdge() const { return m_snapEdge; }
+    PillSide pillSide() const { return m_pillSide; }
+    // Content y-offset inside the window: the pill strip sits above the bar
+    // when the pill side is Above (bottom-positioned toolbars).
+    int contentOffsetY() const
+    {
+        return m_pillSide == PillSide::Above ? kPillStrip : 0;
+    }
     QRect grabPillRect() const; // own coords (empty when not managed)
     bool grabPillVisible() const { return m_pillVisible; }
     int lastPlacementTests() const { return m_lastPlaceTests; } // bounded
@@ -124,6 +145,9 @@ protected:
     // Managed subclasses call this at the end of their paintEvent: draws the
     // hover-shown grab pill (accent-tinted while armed/dragging).
     void paintGrabPill(QPainter &painter) const;
+    // The pill flipped sides (placement moved the bar across the region's
+    // midline): subclasses relayout/repaint their content at contentOffsetY().
+    virtual void pillSideChanged() {}
 
     void mousePressEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
@@ -151,6 +175,7 @@ private:
                     bool preserveSnapAxis, bool *ok);
     QVector<QRect> managedObstacles(bool yieldToAll) const;
     void repositionManaged(bool yieldToAll);
+    void updatePillSide(); // placement-time only: deterministic, no flicker
     void finishManagedDrag();
     void saveManagedState() const;
     void loadManagedState();
@@ -173,6 +198,7 @@ private:
     int m_contentH = 0;             // bar content height above the pill strip
     int m_placeOrder = 0;           // priority: earlier bars win space
     SnapEdge m_snapEdge = SnapEdge::None;
+    PillSide m_pillSide = PillSide::Below;
     QPoint m_freeOffset;            // anchor-relative desired top-left
     bool m_hasPlacement = false;    // false: use the default corner
     bool m_pillVisible = false;     // hover-shown grab pill

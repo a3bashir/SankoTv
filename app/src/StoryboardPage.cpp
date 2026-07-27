@@ -547,15 +547,32 @@ protected:
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing, true);
         p.setRenderHint(QPainter::SmoothPixmapTransform, true);
-        // Managed bars reserve a transparent strip below the body for the
-        // grab pill; the rounded body covers only the content height.
+        // Managed bars reserve a transparent strip for the grab pill (below
+        // the body for top-positioned bars, above it for bottom-positioned
+        // ones); the rounded body covers only the content height.
         const int bodyH = isManaged() ? contentHeight() : height();
+        const int bodyY = isManaged() ? contentOffsetY() : 0;
         const qreal bw = 1.0; // 1px border
-        const QRectF r(bw / 2.0, bw / 2.0, width() - bw, bodyH - bw);
+        const QRectF r(bw / 2.0, bodyY + bw / 2.0, width() - bw, bodyH - bw);
         p.setPen(QPen(QColor(0x1a, 0x1a, 0x1a), bw));
         p.setBrush(QColor(0x21, 0x21, 0x21));
         p.drawRoundedRect(r, 12, 12);
         paintGrabPill(p);
+    }
+
+    // The pill flipped sides: swap the layout's vertical padding so the
+    // children follow the body (8px inside the body; the 12px pill strip
+    // on whichever side the pill occupies).
+    void pillSideChanged() override
+    {
+        if (auto *lay = qobject_cast<QHBoxLayout *>(layout())) {
+            const QMargins m = lay->contentsMargins();
+            const bool above = pillSide() == PillSide::Above;
+            lay->setContentsMargins(m.left(), 8 + (above ? kPillStrip : 0),
+                                    m.right(),
+                                    8 + (above ? 0 : kPillStrip));
+        }
+        update();
     }
 };
 
@@ -1996,10 +2013,6 @@ StoryboardPage::StoryboardPage(QWidget *parent)
     // (Ctrl+Z / Ctrl+Y live on the Edit menu's Undo/Redo actions in MainWindow,
     // routed here via editUndo()/editRedo() — a page-level QShortcut would make
     // the sequence ambiguous and silently break both.)
-
-
-
-
 
     updateDuplicateButton(); // panel-action buttons disabled until a panel is selected
 }
