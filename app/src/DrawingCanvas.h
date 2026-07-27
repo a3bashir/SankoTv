@@ -1,7 +1,7 @@
 #pragma once
 
 #include "PerspectiveTool.h"
-#include "brush/BrushEngine.h"
+#include "SankoPaintHostAdapter.h"
 
 #include <QuickShape/quickshape_session.h>
 
@@ -21,6 +21,7 @@
 #include <QPointF>
 #include <QVector>
 #include <QWidget>
+#include <memory>
 
 struct Layer;
 struct Panel;
@@ -30,6 +31,7 @@ class QDropEvent;
 class QPushButton;
 class QSlider;
 class QTimer;
+class QThreadPool;
 
 // Freehand drawing surface for a single storyboard panel. Composites the
 // panel's layer stack scaled-to-fit (letterboxed) and edits the ACTIVE layer's
@@ -39,6 +41,7 @@ class DrawingCanvas : public QWidget
     Q_OBJECT
 
 public:
+    ~DrawingCanvas() override;
     // Brush (the stamp-based pressure engine) is the single drawing tool;
     // pen-like behaviour is a brush preset. Eraser keeps the classic
     // QPainter stroke path. Shapes stamps geometric primitives (see
@@ -154,21 +157,31 @@ public:
     // small margin, whatever the current zoom/pan (rotation/flip untouched).
     void fitToScreen();
 
-    // --- Phase 1 CPU brush engine ----------------------------------------
-    // A self-contained brush engine (src/brush/) driven in CANVAS coordinates.
-    // Configure it via brushEngine().brush(); a stroke is begin -> extend* ->
-    // commit, and the commit bakes onto the active layer through the same
-    // one-entry undo path as every other edit (beginLayerEdit/finalizeLayerEdit).
-    // Phase 1 is engine + integration + tests; the live Brush tool is unchanged.
-    BrushEngine &brushEngine() { return m_brushEngine; }
-    void brushEngineStrokeBegin(const QPointF &canvasPt);
-    void brushEngineStrokeExtend(const QPointF &canvasPt);
-    void brushEngineStrokeCommit(
-        const QString &undoText = QStringLiteral("Brush Stroke"));
+    // Standalone Sanko Paint engine settings. The engine receives only
+    // canvas-space samples and one stable layer key; SankoTV retains all
+    // Scene/Panel/group semantics around this boundary.
+    ::Brush &paintBrush() { return m_paintEngine.brush(); }
+    const ::Brush &paintBrush() const { return m_paintEngine.brush(); }
     // The layer stack changed outside the canvas (visibility, opacity,
     // reorder, undo, ...): drop the below/above composite caches so the next
     // paint recomposites. Cheap to call; the rebuild is lazy.
-    void invalidateComposite() { m_compValid = false; }
+    void invalidateComposite()
+    {
+        m_compValid = false;
+        m_lastCompositeInvalidatedRect = QRect(QPoint(), canvasSize());
+    }
+    void invalidateCompositeRegion(const QRect &canvasRect)
+    {
+        // The caches deliberately exclude the active layer, so its pixel edit
+        // requires no cache rebuild. Record and repaint only the changed area.
+        m_lastCompositeInvalidatedRect = canvasRect.intersected(
+            QRect(QPoint(), canvasSize()));
+        updateBrushRegion(m_lastCompositeInvalidatedRect);
+    }
+    QRect lastCompositeInvalidatedRect() const
+    {
+        return m_lastCompositeInvalidatedRect;
+    }
     int eraserSize() const { return m_eraserSize; }
     int eraserOpacity() const { return qRound(m_eraserOpacity * 100.0); }
 
@@ -227,6 +240,10 @@ public slots:
     void setUndoStack(QUndoStack *stack) { m_undoStack = stack; }
     void applyLayerRegionForUndo(Panel *panel, const QString &layerId,
                                  const QRect &region, const QImage &pixels);
+    void applyBrushCommitForUndo(Panel *panel, const QString &layerId,
+                                 const BrushStrokeCommit &commit, bool after);
+    bool flushPaintCommit(int timeoutMs = 5000);
+    void ensurePanelCpuCoherent(Panel *panel, BrushCoherenceTrigger trigger);
     void applySelectionPathForUndo(const QPainterPath &path);
 
     // Perspective undo plumbing: every completed perspective gesture (VP
@@ -286,6 +303,15 @@ private:
     void finalizeLayerEdit(const QString &text,
                            const QImage &beforeOverride = QImage());
     void drawSegment(const QPoint &from, const QPoint &to, const QColor &color);
+    QString paintLayerKey(Panel *panel, const QString &layerId) const;
+    void syncPaintBrushSettings();
+    void pushPaintStroke(const SankoPaintHostAdapter::StrokeResult &result,
+                         Panel *panel, const QString &layerId,
+                         const QString &undoText);
+    void enforcePaintUndoPolicy();
+    void completePaintStroke(SankoPaintHostAdapter::StrokeResult result,
+                             Panel *panel, const QString &layerId,
+                             const QString &undoText);
     void floodFill(const QPoint &seed);
 
     // Shapes tool: preview geometry lives in canvas coords until committed.
@@ -323,8 +349,12 @@ private:
 
     // Stamp-based brush stroke pipeline (mouse pressure = 1.0; tablet = real).
     QPointF toCanvasF(const QPointF &widgetPoint) const; // float, unclamped
-    void beginBrushStroke(const QPointF &canvasPt, qreal pressure);
-    void moveBrushStroke(const QPointF &canvasPt, qreal pressure);
+    void beginBrushStroke(const QPointF &canvasPt, qreal pressure,
+                          qreal tiltX = 0.0, qreal tiltY = 0.0,
+                          qreal rotation = 0.0, quint64 timestamp = 0);
+    void moveBrushStroke(const QPointF &canvasPt, qreal pressure,
+                         qreal tiltX = 0.0, qreal tiltY = 0.0,
+                         qreal rotation = 0.0, quint64 timestamp = 0);
     void endBrushStroke(const QString &undoText = QStringLiteral("Brush Stroke"));
     // Single dab (opens its own painter); returns the dab's canvas bounds.
     QRectF stampDab(const QPointF &center, qreal pressure);
@@ -502,6 +532,7 @@ private:
     Panel *m_compPanel = nullptr;
     int m_compActive = -1;
     int m_compCount = -1;
+    QRect m_lastCompositeInvalidatedRect;
 
     void liftDefaultTransformBox(); // Move tool: box around selection/artwork
     void beginTransform();         // lift selection -> box (source cleared on lift)
@@ -553,9 +584,18 @@ private:
     StrokeMaskMode m_strokeMask = StrokeMaskNone;
     QImage m_strokeBuf; // canvas-sized scratch holding the live stroke
 
-    // Phase 1 CPU brush engine (src/brush/), driven via the public
-    // brushEngineStroke* API. Independent of the legacy m_brush* stamping.
-    BrushEngine m_brushEngine;
+    // Sanko Paint owns the lazily allocated 256x256 tiled backing for each
+    // paintable layer. Layer::image remains SankoTV's coherent CPU mirror for
+    // thumbnails, composites and save/load.
+    SankoPaintHostAdapter m_paintEngine;
+    std::unique_ptr<QThreadPool> m_paintGpuPool;
+    bool m_paintCommitPending = false;
+    GpuStampRenderer::Result m_lastPaintRenderer;
+    // Frozen copy of the live stroke preview, drawn from release until the
+    // async publish lands in layer.image — without it the stroke vanished
+    // for the render's flight time after every release.
+    QImage m_pendingPreview; // canvas-space region, premultiplied
+    QRect m_pendingPreviewRect;
 
     // Brush engine state. Defaults mirror the initial settings-panel values.
     int m_brushToolSize = 25;        // dab diameter, canvas px

@@ -25,7 +25,9 @@ endif()
 # Multimedia is needed for the Animatic scratch-audio track.
 # Svg is required for QIcon to render .svg icon resources (without it QIcon
 # silently returns a null icon for SVG files).
-find_package(Qt6 REQUIRED COMPONENTS Widgets Network Multimedia MultimediaWidgets Svg)
+find_package(Qt6 REQUIRED COMPONENTS
+    Core Concurrent Gui GuiPrivate Widgets Network Multimedia
+    MultimediaWidgets ShaderTools Svg)
 
 # (Qt Advanced Docking System was removed in the native-docking migration:
 # the reusable src/docking/ classes on stock QDockWidget replace it, so no
@@ -36,6 +38,7 @@ find_package(Qt6 REQUIRED COMPONENTS Widgets Network Multimedia MultimediaWidget
 # history. The canvas feeds it document-space samples and replays commits
 # through the existing brush engine.
 add_subdirectory(third_party/QuickShapeKit)
+add_subdirectory(third_party/SankoPaintEngine)
 
 # --- Executable -----------------------------------------------------------
 qt_standard_project_setup()
@@ -55,6 +58,8 @@ qt_add_executable(SankoTV
     src/StoryboardModel.h
     src/DrawingCanvas.cpp
     src/DrawingCanvas.h
+    src/SankoPaintHostAdapter.cpp
+    src/SankoPaintHostAdapter.h
     src/AnimaticPage.cpp
     src/AnimaticPage.h
     src/AnimaticTimeline.cpp
@@ -81,14 +86,11 @@ qt_add_executable(SankoTV
     src/ColorPanel.h
     src/PerspectiveTool.cpp
     src/PerspectiveTool.h
-    src/brush/Brush.h
-    src/brush/BrushEngine.cpp
-    src/brush/BrushEngine.h
     resources.qrc
 )
 
 target_link_libraries(SankoTV PRIVATE Qt6::Widgets Qt6::Network Qt6::Multimedia Qt6::MultimediaWidgets
-    Qt6::Svg QuickShape::Kit)
+    Qt6::Svg QuickShape::Kit SankoPaint::Engine)
 
 # Build as a GUI app on Windows (no console window).
 set_target_properties(SankoTV PROPERTIES

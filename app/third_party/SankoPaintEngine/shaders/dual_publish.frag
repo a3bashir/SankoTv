@@ -1,0 +1,66 @@
+#version 440
+
+layout(location = 0) out vec4 fragmentColor;
+
+layout(binding = 1) uniform sampler2D baseLayer;
+layout(binding = 2) uniform sampler2D primaryStroke;
+layout(binding = 3) uniform sampler2D secondaryStroke;
+layout(std140, binding = 0) uniform Globals {
+    mat4 clipMatrix;
+    vec4 dualParameters; // x=blend mode, y=master opacity
+};
+
+float byteRound(float value)
+{
+    return floor(clamp(value, 0.0, 1.0) * 255.0 + 0.5) / 255.0;
+}
+
+vec3 blendColor(vec3 a, vec3 b, int mode)
+{
+    if (mode == 1) return a * b;
+    if (mode == 3) return max(a - b, vec3(0.0));
+    if (mode == 4) return 1.0 - (1.0 - a) * (1.0 - b);
+    if (mode == 5) {
+        return mix(2.0 * a * b,
+                   1.0 - 2.0 * (1.0 - a) * (1.0 - b),
+                   step(vec3(0.5), a));
+    }
+    if (mode == 6) return max(a + b - 1.0, vec3(0.0));
+    return b;
+}
+
+vec4 combineStrokes(vec4 a, vec4 b, int mode)
+{
+    if (mode == 2)
+        return vec4(a.rgb, a.a * b.a);
+    if (mode == 0) {
+        float alpha = b.a + a.a * (1.0 - b.a);
+        vec3 color = alpha > 0.0
+            ? (b.rgb * b.a + a.rgb * a.a * (1.0 - b.a)) / alpha
+            : vec3(0.0);
+        return vec4(color, alpha);
+    }
+    float alpha = a.a + b.a - a.a * b.a;
+    vec3 overlap = blendColor(a.rgb, b.rgb, mode);
+    vec3 premult = a.rgb * a.a * (1.0 - b.a)
+        + b.rgb * b.a * (1.0 - a.a) + overlap * a.a * b.a;
+    return vec4(alpha > 0.0 ? premult / alpha : vec3(0.0), alpha);
+}
+
+void main()
+{
+    ivec2 framebufferPixel = ivec2(gl_FragCoord.xy);
+    ivec2 uploadedPixel = ivec2(framebufferPixel.x, 255 - framebufferPixel.y);
+    vec4 destination = texelFetch(baseLayer, uploadedPixel, 0);
+    vec4 a = texelFetch(primaryStroke, uploadedPixel, 0);
+    vec4 b = texelFetch(secondaryStroke, uploadedPixel, 0);
+    vec4 source = combineStrokes(a, b, int(dualParameters.x + 0.5));
+    source.a *= clamp(dualParameters.y, 0.0, 1.0);
+    float outputAlpha = source.a + destination.a * (1.0 - source.a);
+    vec3 outputColor = outputAlpha > 0.0
+        ? (source.rgb * source.a
+           + destination.rgb * destination.a * (1.0 - source.a)) / outputAlpha
+        : vec3(0.0);
+    fragmentColor = vec4(byteRound(outputColor.r), byteRound(outputColor.g),
+                         byteRound(outputColor.b), byteRound(outputAlpha));
+}

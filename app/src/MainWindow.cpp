@@ -399,6 +399,7 @@ void MainWindow::onSaveProjectAs()
 bool MainWindow::saveToPath(const QString &path)
 {
     m_storyboard->commitQuickShape(); // temporary vectors are not serialized
+    m_storyboard->ensureBrushPixelsForSave();
     const QFileInfo info(path);
     const QString folder = info.absolutePath();
 

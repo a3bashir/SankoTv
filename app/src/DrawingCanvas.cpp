@@ -3,10 +3,15 @@
 #include "StoryboardModel.h"
 
 #include <QDir>
+#include <QCryptographicHash>
+#include <QCoreApplication>
+#include <QDateTime>
 #include <QDragEnterEvent>
 #include <QDropEvent>
+#include <QEventLoop>
 #include <QFileInfo>
 #include <QFocusEvent>
+#include <QFutureWatcher>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QIcon>
@@ -29,6 +34,8 @@
 #include <QStack>
 #include <QTabletEvent>
 #include <QTimer>
+#include <QThreadPool>
+#include <QThread>
 #include <QToolButton>
 #include <QUrl>
 #include <QWheelEvent>
@@ -36,6 +43,7 @@
 #include <QUndoCommand>
 #include <QUndoStack>
 #include <QtMath>
+#include <QtConcurrentRun>
 
 #include <cmath>
 #include <utility>
@@ -115,6 +123,21 @@ DrawingCanvas::DrawingCanvas(QWidget *parent)
     setMinimumHeight(220);
     setAcceptDrops(true); // import images by dropping files onto the canvas
     setFocusPolicy(Qt::ClickFocus); // needed for the spacebar pan modifier
+
+    // One serial QRhi worker owns the D3D11 device. CPU tile work uses Qt's
+    // shared pool, so it cooperates with SankoTV instead of reserving sixteen
+    // app-exclusive threads. Pipeline creation is paid during the first idle
+    // turn rather than on the artist's first stroke.
+    m_paintGpuPool = std::make_unique<QThreadPool>();
+    m_paintGpuPool->setMaxThreadCount(1);
+    m_paintGpuPool->setExpiryTimeout(-1);
+    QTimer::singleShot(0, this, [this] {
+        if (!m_paintGpuPool)
+            return;
+        m_paintGpuPool->start([] {
+            SankoPaintHostAdapter::warmUpGpu();
+        });
+    });
 
     // Persisted safe-area guide opacities (Preferences > Camera).
     const QSettings settings(QStringLiteral("SankoTV"), QStringLiteral("SankoTV"));
@@ -279,6 +302,23 @@ DrawingCanvas::DrawingCanvas(QWidget *parent)
 
 }
 
+DrawingCanvas::~DrawingCanvas()
+{
+    if (!m_paintGpuPool)
+        return;
+    m_paintGpuPool->clear();
+    if (!m_paintGpuPool->waitForDone(1500)) {
+        (void)m_paintGpuPool.release();
+        return;
+    }
+    // Destroy D3D/QRhi objects on their owning worker before Qt and the
+    // worker thread itself are torn down.
+    m_paintGpuPool->start([] {
+        SankoPaintHostAdapter::shutdownGpuForCurrentThread();
+    });
+    m_paintGpuPool->waitForDone();
+}
+
 namespace {
 
 // One drawing edit in the app-wide chronological undo history: before/after
@@ -315,6 +355,85 @@ private:
     QRect m_region;
     QImage m_before;
     QImage m_after;
+    bool m_firstRedo = true;
+};
+
+// Brush-only command on SankoTV's shared chronological stack.  Its retention
+// policy may discard only its own after pixels; neighbouring panel/layer/
+// transform commands are never removed or rebuilt.
+class SankoPaintStrokeCommand final : public QUndoCommand
+{
+public:
+    SankoPaintStrokeCommand(DrawingCanvas *canvas, Panel *panel,
+                            const QString &layerId,
+                            const SankoPaintHostAdapter::StrokeResult &result)
+        : QUndoCommand(QStringLiteral("Brush Stroke")), m_canvas(canvas),
+          m_panel(panel), m_layerId(layerId), m_commit(result.commit),
+          m_replay(result.replay)
+    {
+        for (const BrushTilePatch &patch : m_commit.tilePatches) {
+            m_afterBytes += patch.after.sizeInBytes();
+        }
+        m_afterHashes = result.afterHashes;
+    }
+
+    void undo() override
+    {
+        if (m_canvas)
+            m_canvas->applyBrushCommitForUndo(m_panel, m_layerId, m_commit, false);
+    }
+
+    void redo() override
+    {
+        if (!m_canvas)
+            return;
+        if (m_firstRedo) {
+            m_firstRedo = false;
+            return; // pixels were published before QUndoStack::push()
+        }
+        if (m_hasAfterPixels) {
+            m_canvas->applyBrushCommitForUndo(m_panel, m_layerId, m_commit, true);
+            return;
+        }
+        // Old entries re-render from their immutable captured settings and
+        // resolved samples. Publish only after every tile passes SHA-256.
+        const auto regenerated = SankoPaintHostAdapter::render(m_replay);
+        if (!regenerated.succeeded
+            || regenerated.commit.tilePatches.size() != m_afterHashes.size())
+            return;
+        for (const BrushTilePatch &patch : regenerated.commit.tilePatches) {
+            const QByteArray digest = QCryptographicHash::hash(
+                QByteArrayView(reinterpret_cast<const char *>(patch.after.constBits()),
+                               patch.after.sizeInBytes()),
+                QCryptographicHash::Sha256);
+            if (m_afterHashes.value(patch.coordinate) != digest)
+                return;
+        }
+        m_canvas->applyBrushCommitForUndo(
+            m_panel, m_layerId, regenerated.commit, true);
+    }
+
+    qsizetype afterBytes() const { return m_afterBytes; }
+    bool hasAfterPixels() const { return m_hasAfterPixels; }
+    void dropAfterPixels()
+    {
+        if (!m_hasAfterPixels)
+            return;
+        for (BrushTilePatch &patch : m_commit.tilePatches)
+            patch.after = QImage();
+        m_afterBytes = 0;
+        m_hasAfterPixels = false;
+    }
+
+private:
+    DrawingCanvas *m_canvas = nullptr;
+    Panel *m_panel = nullptr;
+    QString m_layerId;
+    BrushStrokeCommit m_commit;
+    SankoPaintHostAdapter::StrokeWork m_replay;
+    QHash<QPoint, QByteArray> m_afterHashes;
+    qsizetype m_afterBytes = 0;
+    bool m_hasAfterPixels = true;
     bool m_firstRedo = true;
 };
 
@@ -451,6 +570,11 @@ QSize DrawingCanvas::canvasSize()
 
 void DrawingCanvas::setActivePanel(Panel *panel)
 {
+    // A GPU brush commit captures the current Panel pointer.  Finish that
+    // short publication before the host changes panel ownership so the
+    // completion callback can never observe a detached/deleted panel.
+    flushPaintCommit();
+
     // Leaving a panel (or re-clicking it) with live canvas-side state: bake
     // everything into the CURRENT panel's own layers FIRST. A floating paste
     // commits; a live transform session commits WITHOUT relifting — the
@@ -748,6 +872,7 @@ void DrawingCanvas::setShapeFill(bool on)
 void DrawingCanvas::setColor(const QColor &color)
 {
     m_color = color;
+    m_paintEngine.brush().setColor(color);
 }
 
 void DrawingCanvas::setBrushSize(int size)
@@ -758,16 +883,19 @@ void DrawingCanvas::setBrushSize(int size)
 void DrawingCanvas::setBrushToolSize(int px)
 {
     m_brushToolSize = qBound(1, px, 200);
+    m_paintEngine.brush().setSize(m_brushToolSize);
 }
 
 void DrawingCanvas::setBrushOpacity(int percent)
 {
     m_brushToolOpacity = qBound(0, percent, 100) / 100.0;
+    m_paintEngine.brush().setOpacity(m_brushToolOpacity);
 }
 
 void DrawingCanvas::setBrushHardness(int percent)
 {
     m_brushHardness = qBound(0, percent, 100) / 100.0;
+    m_paintEngine.brush().setHardness(m_brushHardness);
 }
 
 void DrawingCanvas::setEraserSize(int px)
@@ -783,11 +911,79 @@ void DrawingCanvas::setEraserOpacity(int percent)
 void DrawingCanvas::setPressureToSize(bool on)
 {
     m_pressureToSize = on;
+    syncPaintBrushSettings();
 }
 
 void DrawingCanvas::setPressureToOpacity(bool on)
 {
     m_pressureToOpacity = on;
+    syncPaintBrushSettings();
+}
+
+QString DrawingCanvas::paintLayerKey(Panel *panel, const QString &layerId) const
+{
+    return QString::number(quintptr(panel), 16) + QLatin1Char(':') + layerId;
+}
+
+void DrawingCanvas::syncPaintBrushSettings()
+{
+    ::Brush &brush = m_paintEngine.brush();
+    brush.setColor(m_color);
+    brush.setSize(m_brushToolSize);
+    brush.setSpacing(0.05);
+    brush.setOpacity(m_brushToolOpacity);
+    brush.setHardness(m_brushHardness);
+    brush.sizePressureCurve().setControlPoints(
+        m_pressureToSize ? QVector<QPointF>{{0.0, 0.0}, {1.0, 1.0}}
+                         : QVector<QPointF>{{0.0, 1.0}, {1.0, 1.0}});
+    brush.opacityPressureCurve().setControlPoints(
+        m_pressureToOpacity ? QVector<QPointF>{{0.0, 0.0}, {1.0, 1.0}}
+                            : QVector<QPointF>{{0.0, 1.0}, {1.0, 1.0}});
+    brush.hardnessPressureCurve().setControlPoints(
+        {{0.0, 1.0}, {1.0, 1.0}});
+}
+
+void DrawingCanvas::pushPaintStroke(
+    const SankoPaintHostAdapter::StrokeResult &result, Panel *panel,
+    const QString &layerId, const QString &undoText)
+{
+    if (!m_undoStack || !panel || !result.succeeded)
+        return;
+    auto *command = new SankoPaintStrokeCommand(this, panel, layerId, result);
+    command->setText(undoText);
+    m_undoStack->push(command);
+    enforcePaintUndoPolicy();
+}
+
+void DrawingCanvas::enforcePaintUndoPolicy()
+{
+    if (!m_undoStack)
+        return;
+    QVector<SankoPaintStrokeCommand *> strokes;
+    qsizetype retainedAfter = 0;
+    for (int index = 0; index < m_undoStack->count(); ++index) {
+        auto *command = const_cast<SankoPaintStrokeCommand *>(
+            dynamic_cast<const SankoPaintStrokeCommand *>(m_undoStack->command(index)));
+        if (!command)
+            continue; // host commands are deliberately invisible to this policy
+        strokes.append(command);
+        retainedAfter += command->afterBytes();
+    }
+    constexpr int keepAfterCount = 20;
+    constexpr qsizetype budget = qsizetype(256) * 1024 * 1024;
+    const int firstRetained = qMax(0, strokes.size() - keepAfterCount);
+    for (int i = 0; i < firstRetained; ++i) {
+        retainedAfter -= strokes.at(i)->afterBytes();
+        strokes.at(i)->dropAfterPixels();
+    }
+    for (SankoPaintStrokeCommand *command : strokes) {
+        if (retainedAfter <= budget)
+            break;
+        if (!command->hasAfterPixels())
+            continue;
+        retainedAfter -= command->afterBytes();
+        command->dropAfterPixels();
+    }
 }
 
 // The letterbox fit is the zoom=1.0 baseline; m_zoom scales it and m_panOffset
@@ -1161,6 +1357,65 @@ void DrawingCanvas::applyLayerRegionForUndo(Panel *panel, const QString &layerId
     update();
     emit contentChanged();
     emit panelEdited(panel); // the command's OWN panel refreshes its thumbnail
+}
+
+void DrawingCanvas::applyBrushCommitForUndo(Panel *panel, const QString &layerId,
+                                            const BrushStrokeCommit &commit,
+                                            bool after)
+{
+    if (!panel)
+        return;
+    for (Layer &layer : panel->layers) {
+        if (layer.id != layerId)
+            continue;
+        const QString key = QString::number(quintptr(panel), 16)
+            + QLatin1Char(':') + layerId;
+        if (!m_paintEngine.applyCommit(key, commit, after, layer.image,
+                                      BrushCoherenceTrigger::UndoRedo))
+            return;
+        break;
+    }
+    const Layer *active = panel == m_panel ? panel->activeLayer() : nullptr;
+    if (active && active->id == layerId)
+        invalidateCompositeRegion(commit.affectedRect);
+    else
+        invalidateComposite();
+    update();
+    emit contentChanged();
+    emit panelEdited(panel);
+}
+
+bool DrawingCanvas::flushPaintCommit(int timeoutMs)
+{
+    if (!m_paintCommitPending)
+        return true;
+    QElapsedTimer timer;
+    timer.start();
+    while (m_paintCommitPending && timer.elapsed() < timeoutMs) {
+        QCoreApplication::processEvents(QEventLoop::ExcludeUserInputEvents, 10);
+        QThread::msleep(1);
+    }
+    return !m_paintCommitPending;
+}
+
+void DrawingCanvas::ensurePanelCpuCoherent(Panel *panel,
+                                           BrushCoherenceTrigger trigger)
+{
+    if (!panel)
+        return;
+    if (trigger == BrushCoherenceTrigger::Save
+        || trigger == BrushCoherenceTrigger::Thumbnail
+        || trigger == BrushCoherenceTrigger::ExplicitDemand)
+        flushPaintCommit();
+    for (Layer &layer : panel->layers) {
+        if (isGroupLayer(layer) || layer.image.isNull())
+            continue;
+        // Authority-checked: a host image the classic tools edited since the
+        // last engine sync re-seeds the mirror instead of being overwritten,
+        // so Erase/Move/Fill/Shapes/paste/undo edits always survive.
+        m_paintEngine.refreshCoherentImage(paintLayerKey(panel, layer.id),
+                                           layer.image, trigger);
+    }
 }
 
 // Command callback: restore a selection path (display state only).
@@ -3049,24 +3304,56 @@ void DrawingCanvas::updateBrushRegion(const QRectF &canvasBounds)
                .adjusted(-3, -3, 3, 3));
 }
 
-void DrawingCanvas::beginBrushStroke(const QPointF &canvasPt, qreal pressure)
+void DrawingCanvas::beginBrushStroke(const QPointF &canvasPt, qreal pressure,
+                                     qreal tiltX, qreal tiltY, qreal rotation,
+                                     quint64 timestamp)
 {
     m_perspective.beginStroke(canvasPt); // snap assist anchors at stroke start
-    if (!m_selectionPath.isEmpty()) {
-        // The stroke accumulates unmasked here; the cached mask is applied
-        // once per repaint (preview) and once at the end (bake).
-        m_strokeMask = StrokeMaskPaint;
-        m_strokeBuf = QImage(canvasSize(), QImage::Format_ARGB32_Premultiplied);
-        m_strokeBuf.fill(Qt::transparent);
-    }
+    Layer *layer = editableActiveLayer();
+    if (!layer || !m_panel)
+        return;
+    syncPaintBrushSettings();
+    StrokePoint point;
+    point.position = canvasPt;
+    point.pressure = qBound<qreal>(0.0, pressure, 1.0);
+    point.tiltX = tiltX;
+    point.tiltY = tiltY;
+    point.rotation = rotation;
+    point.viewportRotation = m_viewRotation;
+    point.timestamp = timestamp ? timestamp
+                                : quint64(QDateTime::currentMSecsSinceEpoch());
+    m_paintEngine.beginStroke(paintLayerKey(m_panel, layer->id), layer->image,
+                              point);
     m_lastBrushPt = canvasPt;
     m_lastBrushPressure = pressure;
-    m_stampResidual = 0.0;
-    updateBrushRegion(stampDab(canvasPt, pressure)); // dab on the initial press
+    if (const TiledImage *preview = m_paintEngine.previewTiles();
+        preview && preview->allocatedTileCount() > 0) {
+        updateBrushRegion(QRectF(
+            canvasPt - QPointF(m_brushToolSize / 2.0, m_brushToolSize / 2.0),
+            QSizeF(m_brushToolSize, m_brushToolSize)));
+    }
 }
 
-void DrawingCanvas::moveBrushStroke(const QPointF &canvasPt, qreal pressure)
+void DrawingCanvas::moveBrushStroke(const QPointF &canvasPt, qreal pressure,
+                                    qreal tiltX, qreal tiltY, qreal rotation,
+                                    quint64 timestamp)
 {
+    if (!m_dabTarget && m_paintEngine.strokeActive()) {
+        StrokePoint point;
+        point.position = canvasPt;
+        point.pressure = qBound<qreal>(0.0, pressure, 1.0);
+        point.tiltX = tiltX;
+        point.tiltY = tiltY;
+        point.rotation = rotation;
+        point.viewportRotation = m_viewRotation;
+        point.timestamp = timestamp ? timestamp
+                                    : quint64(QDateTime::currentMSecsSinceEpoch());
+        const QRect dirty = m_paintEngine.appendPoint(point);
+        m_lastBrushPt = canvasPt;
+        m_lastBrushPressure = pressure;
+        updateBrushRegion(dirty);
+        return;
+    }
     const QPointF delta = canvasPt - m_lastBrushPt;
     const double dist = std::hypot(delta.x(), delta.y());
     if (dist <= 0.0)
@@ -3125,6 +3412,71 @@ void DrawingCanvas::moveBrushStroke(const QPointF &canvasPt, qreal pressure)
 void DrawingCanvas::endBrushStroke(const QString &undoText)
 {
     m_brushStroke = false;
+    if (m_paintEngine.strokeActive()) {
+        Panel *panel = m_panel;
+        Layer *layer = editableActiveLayer();
+        const QString layerId = layer ? layer->id : QString();
+        // Freeze the live preview into ONE canvas-space image before
+        // finishStrokeWork() drops the tiles: paintEvent keeps showing it
+        // until the async publish lands, so the stroke never vanishes for
+        // the render's flight time. The selection mask is applied now —
+        // the same mask the commit itself will apply.
+        m_pendingPreview = QImage();
+        m_pendingPreviewRect = QRect();
+        if (const TiledImage *preview = m_paintEngine.previewTiles();
+            preview && preview->allocatedTileCount() > 0) {
+            QRect bounds;
+            for (auto it = preview->allocatedTiles().cbegin();
+                 it != preview->allocatedTiles().cend(); ++it)
+                bounds = bounds.united(TiledImage::tileLayerRect(it.key()));
+            bounds = bounds.intersected(QRect(QPoint(), canvasSize()));
+            if (!bounds.isEmpty()) {
+                QImage frozen(bounds.size(),
+                              QImage::Format_ARGB32_Premultiplied);
+                frozen.fill(Qt::transparent);
+                QPainter fp(&frozen);
+                for (auto it = preview->allocatedTiles().cbegin();
+                     it != preview->allocatedTiles().cend(); ++it) {
+                    const QRect tileRect = TiledImage::tileLayerRect(it.key());
+                    const QRect isect = tileRect.intersected(bounds);
+                    if (isect.isEmpty())
+                        continue;
+                    fp.drawImage(isect.topLeft() - bounds.topLeft(),
+                                 it.value(),
+                                 isect.translated(-tileRect.topLeft()));
+                }
+                if (!m_selectionPath.isEmpty()) {
+                    fp.setCompositionMode(
+                        QPainter::CompositionMode_DestinationIn);
+                    fp.drawImage(QPoint(), cachedSelectionMask(), bounds);
+                }
+                fp.end();
+                m_pendingPreview = frozen;
+                m_pendingPreviewRect = bounds;
+            }
+        }
+        auto work = m_paintEngine.finishStrokeWork(true);
+        const QImage selectionMask = m_selectionPath.isEmpty()
+            ? QImage() : cachedSelectionMask();
+        work.selectionMask = selectionMask;
+        m_paintCommitPending = true;
+        auto *watcher = new QFutureWatcher<SankoPaintHostAdapter::StrokeResult>(this);
+        connect(watcher,
+                &QFutureWatcher<SankoPaintHostAdapter::StrokeResult>::finished,
+                this, [this, watcher, panel, layerId, undoText] {
+            auto result = watcher->result();
+            watcher->deleteLater();
+            completePaintStroke(std::move(result), panel, layerId, undoText);
+        });
+        watcher->setFuture(QtConcurrent::run(
+            m_paintGpuPool.get(), [work = std::move(work)] {
+                return SankoPaintHostAdapter::render(work);
+            }));
+        m_editPanel = nullptr; // the engine command owns this stroke's history
+        m_editBefore = QImage();
+        update();
+        return;
+    }
     if (m_strokeMask == StrokeMaskPaint) {
         // ONE mask application for the whole stroke: multiply the stroke's
         // alpha by the cached antialiased coverage and composite.
@@ -3144,44 +3496,46 @@ void DrawingCanvas::endBrushStroke(const QString &undoText)
     update();
 }
 
+void DrawingCanvas::completePaintStroke(
+    SankoPaintHostAdapter::StrokeResult result, Panel *panel,
+    const QString &layerId, const QString &undoText)
+{
+    m_paintCommitPending = false;
+    // The published pixels (or, on failure, the truth that nothing landed)
+    // take over from the frozen preview; repaint its area either way.
+    const QRect pendingRect = m_pendingPreviewRect;
+    m_pendingPreview = QImage();
+    m_pendingPreviewRect = QRect();
+    if (!pendingRect.isEmpty())
+        updateBrushRegion(pendingRect);
+    m_lastPaintRenderer = result.renderer;
+    bool published = false;
+    Layer *layer = nullptr;
+    if (panel) {
+        for (Layer &candidate : panel->layers)
+            if (candidate.id == layerId) {
+                layer = &candidate;
+                break;
+            }
+    }
+    if (result.succeeded && layer && panel) {
+            if (m_paintEngine.publish(result, layer->image)) {
+                published = true;
+                pushPaintStroke(result, panel, layerId, undoText);
+                invalidateCompositeRegion(result.affectedRect);
+                emit contentChanged();
+                emit panelEdited(panel);
+            }
+    }
+    if (!published)
+        update();
+}
+
 // --- Phase 1 CPU brush engine integration -----------------------------------
 // The engine paints in CANVAS coordinates onto its own stroke buffer; the
 // commit bakes that buffer onto the active layer ONCE and pushes a single
 // region-diffed DrawingCommand through the shared undo path — identical
 // undo/redo semantics to every other layer edit.
-void DrawingCanvas::brushEngineStrokeBegin(const QPointF &canvasPt)
-{
-    m_brushEngine.setCanvasSize(canvasSize());
-    m_brushEngine.beginStroke(canvasPt);
-}
-
-void DrawingCanvas::brushEngineStrokeExtend(const QPointF &canvasPt)
-{
-    m_brushEngine.extendStroke(canvasPt);
-}
-
-void DrawingCanvas::brushEngineStrokeCommit(const QString &undoText)
-{
-    Layer *layer = editableActiveLayer();
-    if (!layer) {
-        // No paintable target: drop the buffered stroke without a history entry.
-        QImage scratch(canvasSize(), QImage::Format_ARGB32_Premultiplied);
-        m_brushEngine.compositeOnto(scratch);
-        return;
-    }
-    beginLayerEdit(); // snapshot the active layer before the bake
-    const QRect region = m_brushEngine.compositeOnto(layer->image);
-    if (region.isEmpty()) {
-        m_editPanel = nullptr; // nothing drawn: no undo entry
-        m_editBefore = QImage();
-        return;
-    }
-    finalizeLayerEdit(undoText); // one DrawingCommand for the whole stroke
-    invalidateComposite();
-    update();
-    emit contentChanged();
-}
-
 // Convert the screen-space QuickShape tuning into document units at the
 // CURRENT view scale and push it into the session — called once per stroke,
 // so hold feel, dwell tolerance, and the velocity gate are zoom-independent.
@@ -3208,6 +3562,7 @@ void DrawingCanvas::discardRoughStroke()
     if (!m_brushStroke)
         return;
     m_brushStroke = false;
+    m_paintEngine.cancelStroke(); // rough engine preview was never published
     if (m_strokeMask == StrokeMaskPaint) {
         m_strokeMask = StrokeMaskNone;
         m_strokeBuf = QImage();
@@ -3900,6 +4255,7 @@ void DrawingCanvas::ensureComposite()
     if (m_compValid && m_compPanel == m_panel && m_compActive == active
         && m_compCount == count)
         return;
+    ensurePanelCpuCoherent(m_panel, BrushCoherenceTrigger::CompositeCache);
     const QSize cs = canvasSize();
     if (m_compBelow.size() != cs) { // allocate once, reuse across rebuilds
         m_compBelow = QImage(cs, QImage::Format_ARGB32_Premultiplied);
@@ -4030,6 +4386,59 @@ void DrawingCanvas::paintEvent(QPaintEvent *event)
             }
         } else {
             painter.drawImage(0, 0, layer.image);
+            if (&layer == m_panel->activeLayer()) {
+                // Live stroke preview: the tiles are composed into ONE
+                // region image and drawn with a single drawImage. Drawing
+                // each 256px tile as its own quad under the scaled/rotated
+                // view transform made every tile edge a filtering seam, and
+                // a tile skipped by one partial repaint but blended by the
+                // next made those seams clip-dependent — a flickering grid.
+                // One quad has no interior boundaries, and strokeClipC's 2px
+                // margin past the update rect keeps the composite's own edge
+                // fringe outside the repainted area.
+                const TiledImage *preview = m_paintEngine.previewTiles();
+                const bool livePreview =
+                    preview && preview->allocatedTileCount() > 0;
+                if (livePreview && !strokeClipC.isEmpty()) {
+                    QImage comp;
+                    for (auto it = preview->allocatedTiles().cbegin();
+                         it != preview->allocatedTiles().cend(); ++it) {
+                        const QRect tileRect =
+                            TiledImage::tileLayerRect(it.key());
+                        const QRect isect = tileRect.intersected(strokeClipC);
+                        if (isect.isEmpty())
+                            continue;
+                        if (comp.isNull()) {
+                            comp = QImage(strokeClipC.size(),
+                                          QImage::Format_ARGB32_Premultiplied);
+                            comp.fill(Qt::transparent);
+                        }
+                        QPainter cp(&comp);
+                        cp.drawImage(isect.topLeft() - strokeClipC.topLeft(),
+                                     it.value(),
+                                     isect.translated(-tileRect.topLeft()));
+                    }
+                    if (!comp.isNull()) {
+                        if (!m_selectionPath.isEmpty()) {
+                            QPainter maskPainter(&comp);
+                            maskPainter.setCompositionMode(
+                                QPainter::CompositionMode_DestinationIn);
+                            maskPainter.drawImage(QPoint(),
+                                                  cachedSelectionMask(),
+                                                  strokeClipC);
+                        }
+                        painter.drawImage(strokeClipC.topLeft(), comp);
+                    }
+                } else if (!livePreview && !m_pendingPreview.isNull()
+                           && m_pendingPreviewRect.intersects(strokeClipC)) {
+                    // Commit in flight: the frozen preview bridges the gap
+                    // between finishStrokeWork() dropping the live tiles
+                    // and the async publish landing in layer.image, so the
+                    // stroke never vanishes after release.
+                    painter.drawImage(m_pendingPreviewRect.topLeft(),
+                                      m_pendingPreview);
+                }
+            }
             if (liveStroke && m_strokeMask == StrokeMaskPaint) {
                 // Live paint preview: the mask-capped stroke over the layer,
                 // update-region-bounded like the erase preview above.
@@ -4736,6 +5145,8 @@ void DrawingCanvas::mousePressEvent(QMouseEvent *event)
         break;
     }
     case Brush: {
+        if (m_paintCommitPending)
+            break; // UI remains responsive while the previous stroke publishes
         // Mouse strokes carry no pressure: fixed 1.0 (tablets use tabletEvent).
         beginLayerEdit();
         m_brushStroke = true;
@@ -4959,7 +5370,6 @@ void DrawingCanvas::mouseReleaseEvent(QMouseEvent *event)
             m_quickShape.pointerRelease(toCanvasF(event->position()), 1.0);
         m_qsHeld = false;
         endBrushStroke();
-        emit contentChanged();
         updateQuickShapeUi();
         return;
     }
@@ -5179,7 +5589,7 @@ void DrawingCanvas::tabletEvent(QTabletEvent *event)
         if (m_quickShape.hasActiveShape())
             m_quickShape.requestCommit();
         if (m_panel && displayRect().contains(event->position().toPoint())
-            && editableActiveLayer()) {
+            && editableActiveLayer() && !m_paintCommitPending) {
             beginLayerEdit();
             m_brushStroke = true;
             const QPointF pt = toCanvasF(event->position());
@@ -5190,7 +5600,8 @@ void DrawingCanvas::tabletEvent(QTabletEvent *event)
                 m_qsHeld = true;
                 updateQuickShapeUi();
             }
-            beginBrushStroke(pt, event->pressure());
+            beginBrushStroke(pt, event->pressure(), event->xTilt(), event->yTilt(),
+                             event->rotation(), event->timestamp());
         }
         break;
     case QEvent::TabletMove:
@@ -5203,7 +5614,8 @@ void DrawingCanvas::tabletEvent(QTabletEvent *event)
                 m_perspective.snapPoint(toCanvasF(event->position()));
             if (m_quickShapeEnabled)
                 m_quickShape.pointerMove(pt, event->pressure());
-            moveBrushStroke(pt, event->pressure());
+            moveBrushStroke(pt, event->pressure(), event->xTilt(), event->yTilt(),
+                            event->rotation(), event->timestamp());
         }
         break;
     case QEvent::TabletRelease:
@@ -5215,9 +5627,8 @@ void DrawingCanvas::tabletEvent(QTabletEvent *event)
         } else if (m_brushStroke) {
             if (m_quickShapeEnabled)
                 m_quickShape.pointerRelease(toCanvasF(event->position()),
-                                            event->pressure());
+                                             event->pressure());
             endBrushStroke();
-            emit contentChanged();
         }
         m_qsHeld = false;
         updateQuickShapeUi();
