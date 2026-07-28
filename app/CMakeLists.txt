@@ -92,6 +92,19 @@ qt_add_executable(SankoTV
 target_link_libraries(SankoTV PRIVATE Qt6::Widgets Qt6::Network Qt6::Multimedia Qt6::MultimediaWidgets
     Qt6::Svg QuickShape::Kit SankoPaint::Engine)
 
+# Permanent brush pixel-lock test (tests/PixelLockTest.cpp): asserts the
+# committed R16 baseline hash, seeded CPU determinism, and the CPU/GPU
+# tolerances (R16 3/255, RGBA16 2/255, dual 3/255). The fixture is fully
+# pinned in the test file so the lock ships with the code.
+# Run: build/<config>/SankoPaintPixelLock.exe (exit code = failure count).
+qt_add_executable(SankoPaintPixelLock
+    tests/PixelLockTest.cpp
+    src/SankoPaintHostAdapter.cpp
+    src/SankoPaintHostAdapter.h
+)
+target_include_directories(SankoPaintPixelLock PRIVATE src)
+target_link_libraries(SankoPaintPixelLock PRIVATE SankoPaint::Engine)
+
 # Build as a GUI app on Windows (no console window).
 set_target_properties(SankoTV PROPERTIES
     WIN32_EXECUTABLE ON
