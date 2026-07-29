@@ -7,10 +7,10 @@
 #include <QPainter>
 #include <QSet>
 #include <QSettings>
+#include <QTimer>
 #include <QVector>
 
 #include <algorithm>
-
 
 // ONE shared event filter for every FloatingToolWindow (present and future):
 // watches each registered window's anchor and the anchor's top-level window,
@@ -204,18 +204,16 @@ QPoint FloatingToolWindow::defaultOffset() const
 bool FloatingToolWindow::handleGripPress(QMouseEvent *event)
 {
     if (m_managed) {
-        // Only the grab pill (with a little slop for the 8px-thin capsule)
-        // may start a drag; every other press falls through to the children.
-        if (event->button() != Qt::LeftButton || !m_pillVisible
-            || !grabPillRect().adjusted(-6, -6, 6, 6)
-                    .contains(event->position().toPoint()))
+        // Drag from anywhere on the BACKGROUND. Precedence: a press over
+        // ANY child widget (button, slider, input, scrollbar) reaches that
+        // child and never starts a drag; only leftover background drags.
+        const QPoint at = event->position().toPoint();
+        if (event->button() != Qt::LeftButton || !isDragBackgroundAt(at))
             return false;
-        m_pillCandidate = true;
-        m_pillDragging = false;
+        m_bgCandidate = true;
+        m_bgDragging = false;
         m_dragStartGlobal = event->globalPosition().toPoint();
         m_dragStartPos = pos();
-        setCursor(Qt::ClosedHandCursor);
-        update();
         return true;
     }
     if (event->button() != Qt::LeftButton
@@ -231,23 +229,20 @@ bool FloatingToolWindow::handleGripPress(QMouseEvent *event)
 bool FloatingToolWindow::handleGripMove(QMouseEvent *event)
 {
     if (m_managed) {
-        if (!m_pillCandidate || !(event->buttons() & Qt::LeftButton)) {
-            // An active hover re-shows a pill that a finished drag hid: the
-            // pill hides the moment a drag ends and only real cursor motion
-            // over the toolbar brings it back.
-            if (!m_pillVisible && !(event->buttons() & Qt::LeftButton)) {
-                m_pillVisible = true;
-                update();
-            }
+        if (!m_bgCandidate || !(event->buttons() & Qt::LeftButton)) {
+            // Live affordance, re-derived from the CURRENT hit test on
+            // every move: SizeAll over background, the child's own cursor
+            // over a child. No latched hover state exists to go stale.
+            updateDragCursor(event->position().toPoint());
             return false;
         }
         const QPoint global = event->globalPosition().toPoint();
-        if (!m_pillDragging) {
+        if (!m_bgDragging) {
             // Click-vs-drag threshold: a micro-move is still just a click.
             if ((global - m_dragStartGlobal).manhattanLength()
                 < QApplication::startDragDistance())
                 return true;
-            m_pillDragging = true;
+            m_bgDragging = true;
         }
         // Free-follow inside the margin-deflated region while dragging;
         // snapping and collision resolve on release.
@@ -271,20 +266,16 @@ bool FloatingToolWindow::handleGripRelease(QMouseEvent *event)
 {
     Q_UNUSED(event);
     if (m_managed) {
-        if (!m_pillCandidate)
+        if (!m_bgCandidate)
             return false;
-        const bool moved = m_pillDragging;
-        m_pillCandidate = false;
-        m_pillDragging = false;
-        setCursor(Qt::ArrowCursor);
-        if (moved) {
+        const bool moved = m_bgDragging;
+        m_bgCandidate = false;
+        m_bgDragging = false;
+        if (moved)
             finishManagedDrag(); // snap detect + collision + persist
-            // The pill disappears IMMEDIATELY when the drag ends — it never
-            // lingers because the cursor happens to rest where it was.
-            m_pillVisible = false;
-        }
-        update();
-        return true; // a sub-threshold press stays a click: no move at all
+        // Sub-threshold press = a click on background: nothing moves.
+        updateDragCursor(mapFromGlobal(QCursor::pos()));
+        return true;
     }
     if (!m_dragging)
         return false;
@@ -322,69 +313,63 @@ void FloatingToolWindow::mouseReleaseEvent(QMouseEvent *event)
         QWidget::mouseReleaseEvent(event);
 }
 
-// The grab pill is hover-shown, exactly like the Brush Size bar's grab.
-void FloatingToolWindow::enterEvent(QEnterEvent *event)
-{
-    Q_UNUSED(event);
-    if (m_managed && !m_pillVisible) {
-        m_pillVisible = true;
-        update();
-    }
-}
-
 void FloatingToolWindow::leaveEvent(QEvent *event)
 {
     Q_UNUSED(event);
-    // Moving onto a child keeps the cursor inside our rect; only a real
-    // exit hides the pill (never mid-drag).
-    if (m_managed && m_pillVisible && !m_pillDragging && !m_pillCandidate
-        && !rect().contains(mapFromGlobal(QCursor::pos()))) {
-        m_pillVisible = false;
-        update();
+    // Never leave a stale move cursor behind when the pointer exits.
+    if (m_managed && !m_bgCandidate && !m_bgDragging)
+        unsetCursor();
+}
+
+// Live affordance. SizeAll marks "this background drags the toolbar";
+// over a child we unset ours so the child's own cursor shows.
+void FloatingToolWindow::updateDragCursor(const QPoint &pos)
+{
+    if (!m_managed || m_bgCandidate || m_bgDragging)
+        return;
+    if (isDragBackgroundAt(pos))
+        setCursor(Qt::SizeAllCursor);
+    else
+        unsetCursor();
+}
+
+bool FloatingToolWindow::isDragBackgroundAt(const QPoint &pos) const
+{
+    return m_managed && rect().contains(pos) && !childAt(pos)
+        && !isInteractiveAt(pos);
+}
+
+// A drag interrupted by deactivation/focus loss (alt-tab, a dialog)
+// cannot rely on a release event: land the bar in a valid position and
+// leaves the bar in a valid position, exactly as a completed drag would.
+bool FloatingToolWindow::event(QEvent *event)
+{
+    if (m_managed
+        && (event->type() == QEvent::WindowDeactivate
+            || event->type() == QEvent::FocusOut)
+        && (m_bgCandidate || m_bgDragging)) {
+        const bool moved = m_bgDragging;
+        m_bgCandidate = false;
+        m_bgDragging = false;
+        unsetCursor();
+        if (moved)
+            finishManagedDrag();
     }
+    return QWidget::event(event);
 }
 
 // --- Managed placement (Figma grab_CTL toolbars) -----------------------------
 
 void FloatingToolWindow::enableManagedPlacement(const QString &name,
-                                                DefaultCorner corner,
-                                                int contentHeight)
+                                                DefaultCorner corner)
 {
     static int nextOrder = 0;
     m_managed = true;
     m_name = name;
     m_corner = corner;
-    m_contentH = contentHeight;
     m_placeOrder = nextOrder++;
-    setMouseTracking(true); // hover shows the pill without a button held
+    setMouseTracking(true); // live move-cursor without a button held
     loadManagedState();
-}
-
-QRect FloatingToolWindow::grabPillRect() const
-{
-    if (!m_managed)
-        return QRect();
-    // Below: [content][4px gap][pill]. Above: [pill][4px gap][content].
-    const int y = m_pillSide == PillSide::Above ? 0 : m_contentH + kPillGap;
-    return QRect((width() - kPillW) / 2, y, kPillW, kPillH);
-}
-
-// Figma grab_CTL (213:79/81/83): a #212121 capsule; the Sanko accent marks it
-// armed (hovered pill under the cursor, or an active drag) — the same accent
-// language as the Brush Size bar's grab.
-void FloatingToolWindow::paintGrabPill(QPainter &painter) const
-{
-    if (!m_managed || !m_pillVisible)
-        return;
-    const QRect pill = grabPillRect();
-    const bool armed = m_pillCandidate || m_pillDragging
-        || pill.adjusted(-6, -6, 6, 6).contains(mapFromGlobal(QCursor::pos()));
-    painter.save();
-    painter.setRenderHint(QPainter::Antialiasing, true);
-    painter.setPen(Qt::NoPen);
-    painter.setBrush(armed ? accentColor() : QColor(0x21, 0x21, 0x21));
-    painter.drawRoundedRect(QRectF(pill), kPillH / 2.0, kPillH / 2.0);
-    painter.restore();
 }
 
 QRect FloatingToolWindow::placementRegion() const
@@ -562,30 +547,9 @@ void FloatingToolWindow::repositionManaged(bool yieldToAll)
             QWidget::setVisible(true);
     }
     move(placed.topLeft());
-    updatePillSide(); // placement-time only — deterministic, no flicker
-}
-
-// Pill side rule: snapped Top => Below, snapped Bottom => Above; free bars
-// and Left/Right-snapped bars take the region half their centre occupies
-// (top half => Below). Evaluated ONLY here (placement), never per mouse
-// move, so the side cannot flicker while a bar is dragged across the
-// midline — it settles once on drop.
-void FloatingToolWindow::updatePillSide()
-{
-    PillSide side = PillSide::Below;
-    if (m_snapEdge == SnapEdge::Top)
-        side = PillSide::Below;
-    else if (m_snapEdge == SnapEdge::Bottom)
-        side = PillSide::Above;
-    else
-        side = frameGeometry().center().y() <= placementRegion().center().y()
-            ? PillSide::Below
-            : PillSide::Above;
-    if (side == m_pillSide)
-        return;
-    m_pillSide = side;
-    pillSideChanged(); // subclass relayouts content at contentOffsetY()
-    update();
+    // Placement may have moved the window under (or out from under) the
+    // cursor: re-derive the live affordance from the CURRENT hit test.
+    updateDragCursor(mapFromGlobal(QCursor::pos()));
 }
 
 void FloatingToolWindow::finishManagedDrag()
@@ -622,7 +586,7 @@ void FloatingToolWindow::saveManagedState() const
         return;
     QSettings settings(QStringLiteral("SankoTV"), QStringLiteral("SankoTV"));
     const QString base =
-        QStringLiteral("storyboard/floatToolbars/v1/") + m_name + QLatin1Char('/');
+        QStringLiteral("storyboard/floatToolbars/v2/") + m_name + QLatin1Char('/');
     settings.setValue(base + QStringLiteral("edge"), int(m_snapEdge));
     settings.setValue(base + QStringLiteral("offset"), m_freeOffset);
     settings.setValue(base + QStringLiteral("visible"), m_wantVisible);
@@ -634,7 +598,7 @@ void FloatingToolWindow::loadManagedState()
         return;
     QSettings settings(QStringLiteral("SankoTV"), QStringLiteral("SankoTV"));
     const QString base =
-        QStringLiteral("storyboard/floatToolbars/v1/") + m_name + QLatin1Char('/');
+        QStringLiteral("storyboard/floatToolbars/v2/") + m_name + QLatin1Char('/');
     if (!settings.contains(base + QStringLiteral("offset")))
         return; // first run: the default corner applies
     const int edge = settings.value(base + QStringLiteral("edge")).toInt();

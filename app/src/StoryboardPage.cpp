@@ -547,32 +547,13 @@ protected:
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing, true);
         p.setRenderHint(QPainter::SmoothPixmapTransform, true);
-        // Managed bars reserve a transparent strip for the grab pill (below
-        // the body for top-positioned bars, above it for bottom-positioned
-        // ones); the rounded body covers only the content height.
-        const int bodyH = isManaged() ? contentHeight() : height();
-        const int bodyY = isManaged() ? contentOffsetY() : 0;
+        // The rounded body fills the whole window: with the grab pill gone
+        // (2026-07), the layout rect and the visual rect are the SAME rect.
         const qreal bw = 1.0; // 1px border
-        const QRectF r(bw / 2.0, bodyY + bw / 2.0, width() - bw, bodyH - bw);
+        const QRectF r(bw / 2.0, bw / 2.0, width() - bw, height() - bw);
         p.setPen(QPen(QColor(0x1a, 0x1a, 0x1a), bw));
         p.setBrush(QColor(0x21, 0x21, 0x21));
         p.drawRoundedRect(r, 12, 12);
-        paintGrabPill(p);
-    }
-
-    // The pill flipped sides: swap the layout's vertical padding so the
-    // children follow the body (8px inside the body; the 12px pill strip
-    // on whichever side the pill occupies).
-    void pillSideChanged() override
-    {
-        if (auto *lay = qobject_cast<QHBoxLayout *>(layout())) {
-            const QMargins m = lay->contentsMargins();
-            const bool above = pillSide() == PillSide::Above;
-            lay->setContentsMargins(m.left(), 8 + (above ? kPillStrip : 0),
-                                    m.right(),
-                                    8 + (above ? 0 : kPillStrip));
-        }
-        update();
     }
 };
 
@@ -2374,19 +2355,15 @@ void StoryboardPage::createFloatingToolbar()
         new RoundedBar(m_canvas, QStringLiteral("storyboard/brushBarPos"), this);
     m_floatToolbar = brushBar;
     m_floatToolbar->setObjectName(QStringLiteral("floatToolbar"));
-    // Content = the 46px Figma bar (33:110); the extra 20px strip below it
-    // hosts the hover-shown grab_CTL pill (Figma 213:79) — the old in-bar
-    // grab dots are gone (the Figma frame has none; content starts at x=30).
-    m_floatToolbar->setFixedHeight(46 + FloatingToolWindow::kPillGap
-                                   + FloatingToolWindow::kPillH);
+    // Exactly the 46px Figma bar (33:110): the grab_CTL pill strip was
+    // removed (2026-07), so layout rect == visual rect.
+    m_floatToolbar->setFixedHeight(46);
     brushBar->enableManagedPlacement(QStringLiteral("brush"),
-                                     FloatingToolWindow::DefaultCorner::TopRight,
-                                     46);
+        FloatingToolWindow::DefaultCorner::TopRight);
 
     QHBoxLayout *bar = new QHBoxLayout(m_floatToolbar);
     bar->setContentsMargins(30, 8, 23,
-                            8 + FloatingToolWindow::kPillGap
-                                + FloatingToolWindow::kPillH);
+                            8);
     bar->setSpacing(15);
 
     // Exact Figma icons (original SVGs) rendered at their Figma sizes; the
@@ -2827,19 +2804,15 @@ void StoryboardPage::createFloatingToolbar()
         new RoundedBar(m_canvas, QStringLiteral("storyboard/layersBarPos"), this);
     m_layersToolbar = layersBar;
     m_layersToolbar->setObjectName(QStringLiteral("layersToolbar"));
-    // Content = the 46px Figma bar (173:36) + the grab_CTL pill strip below
-    // (Figma 213:83); the in-bar grab dots are gone — per Figma the first
-    // icon sits at x=29 and the Settings ends 24px from the right edge.
-    m_layersToolbar->setFixedHeight(46 + FloatingToolWindow::kPillGap
-                                    + FloatingToolWindow::kPillH);
-    layersBar->enableManagedPlacement(
-        QStringLiteral("layers"), FloatingToolWindow::DefaultCorner::TopLeft,
-        46);
+    // Exactly the 46px Figma bar (173:36): the grab_CTL pill strip was
+    // removed (2026-07), so layout rect == visual rect.
+    m_layersToolbar->setFixedHeight(46);
+    layersBar->enableManagedPlacement(QStringLiteral("layers"),
+        FloatingToolWindow::DefaultCorner::TopLeft);
 
     QHBoxLayout *lay = new QHBoxLayout(m_layersToolbar);
     lay->setContentsMargins(29, 8, 24,
-                            8 + FloatingToolWindow::kPillGap
-                                + FloatingToolWindow::kPillH);
+                            8);
     lay->setSpacing(15);
 
     // Dock toggles: checkable buttons mirroring the ADS dock visibility (the

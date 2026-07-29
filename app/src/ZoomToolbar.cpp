@@ -59,11 +59,10 @@ double tToRot(double t) { return -180.0 + qBound(0.0, t, 1.0) * 360.0; }
 ZoomToolbar::ZoomToolbar(QWidget *anchor, QWidget *parent)
     : FloatingToolWindow(anchor, QStringLiteral("storyboard/zoomBarPos"), parent)
 {
-    // 46px Figma body + the grab_CTL pill strip below it; the pill (via the
-    // base's managed placement) replaces the old in-bar grab dots.
-    setFixedSize(kW, kH + kPillGap + kPillH);
-    enableManagedPlacement(QStringLiteral("zoom"), DefaultCorner::BottomLeft,
-                           kH);
+    // Exactly the 46px Figma body: the grab_CTL pill strip was removed
+    // (2026-07), so the layout rect and the visual rect are the same rect.
+    setFixedSize(kW, kH);
+    enableManagedPlacement(QStringLiteral("zoom"), DefaultCorner::BottomLeft);
     setMouseTracking(true); // hover feedback on the Fit / Reset buttons
     m_labelFont = QFont(QStringLiteral("Inter")); // falls back to the UI font
     m_labelFont.setPixelSize(9);
@@ -111,7 +110,6 @@ void ZoomToolbar::paintEvent(QPaintEvent *)
     // bar (bottom-positioned toolbar); the pill itself paints in window
     // coordinates after the restore.
     p.save();
-    p.translate(0, contentOffsetY());
 
     // Toolbar body: #212121 fill, 1px #1a1a1a border, radius 12.
     QRectF body(0.5, 0.5, kW - 1, kH - 1);
@@ -218,7 +216,6 @@ void ZoomToolbar::paintEvent(QPaintEvent *)
     }
 
     p.restore();      // back to window coords
-    paintGrabPill(p); // hover-shown grab_CTL on the pill side
 }
 
 void ZoomToolbar::mousePressEvent(QMouseEvent *event)
@@ -226,7 +223,7 @@ void ZoomToolbar::mousePressEvent(QMouseEvent *event)
     if (event->button() != Qt::LeftButton)
         return;
     // Content coordinates (the body shifts when the pill sits above it).
-    const QPoint pos = event->pos() - QPoint(0, contentOffsetY());
+    const QPoint pos = event->pos();
     const bool inTrackBand = pos.y() >= kTrackHitY0 && pos.y() <= kTrackHitY1;
 
     // Grip drag: FloatingToolWindow handles it (global coords, clamped).
@@ -280,7 +277,7 @@ void ZoomToolbar::mouseMoveEvent(QMouseEvent *event)
         if (m_pressed != BtnNone)
             break;
         const Button h =
-            buttonAt(event->pos() - QPoint(0, contentOffsetY()));
+            buttonAt(event->pos());
         if (h != m_hover) {
             m_hover = h;
             setCursor(h == BtnNone ? Qt::ArrowCursor : Qt::PointingHandCursor);
@@ -300,7 +297,7 @@ void ZoomToolbar::mouseReleaseEvent(QMouseEvent *event)
     // Fire the button action only if released over the same button.
     if (m_pressed != BtnNone) {
         const QPoint pos =
-            event->position().toPoint() - QPoint(0, contentOffsetY());
+            event->position().toPoint();
         const Button released = buttonAt(pos);
         if (released == m_pressed) {
             if (m_pressed == BtnFit) {
@@ -325,6 +322,19 @@ void ZoomToolbar::leaveEvent(QEvent *event)
         setCursor(Qt::ArrowCursor);
         update();
     }
+}
+
+// Every painted control of this custom-drawn bar. Presses here operate the
+// control; the base class treats only the leftover background as draggable.
+bool ZoomToolbar::isInteractiveAt(const QPoint &pos) const
+{
+    if (buttonAt(pos) != BtnNone)
+        return true;
+    const bool inTrackBand = pos.y() >= kTrackHitY0 && pos.y() <= kTrackHitY1;
+    if (!inTrackBand)
+        return false;
+    return (pos.x() >= kZoomGroupX && pos.x() <= kZoomGroupX + kTrackW)
+        || (pos.x() >= kRotGroupX && pos.x() <= kRotGroupX + kTrackW);
 }
 
 ZoomToolbar::Button ZoomToolbar::buttonAt(const QPoint &pos) const

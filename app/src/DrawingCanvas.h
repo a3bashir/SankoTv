@@ -22,6 +22,9 @@
 #include <QVector>
 #include <QWidget>
 #include <memory>
+#ifdef SANKOTV_DEV_RECORDER
+#include <QVariantMap> // TEMP: dev-recorder camera probe
+#endif
 
 struct Layer;
 struct Panel;
@@ -244,6 +247,11 @@ public slots:
                                  const BrushStrokeCommit &commit, bool after);
     bool flushPaintCommit(int timeoutMs = 5000);
     void ensurePanelCpuCoherent(Panel *panel, BrushCoherenceTrigger trigger);
+#ifdef SANKOTV_DEV_RECORDER
+    // TEMP dev-recorder camera probe (read-only, no behaviour change;
+    // compiled out and removed together with the recorder).
+    QVariantMap devCameraState() const;
+#endif
     void applySelectionPathForUndo(const QPainterPath &path);
 
     // Perspective undo plumbing: every completed perspective gesture (VP

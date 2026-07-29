@@ -1,5 +1,13 @@
 #include "MainWindow.h"
 
+#ifdef SANKOTV_DEV_RECORDER
+#include "devrecorder/DevRecorder.h" // TEMP dev tool; see that header to remove
+#include "DrawingCanvas.h"
+#include "FloatingToolWindow.h"
+#include <QApplication>
+#include <QCoreApplication>
+#endif
+
 #include "AnimaticPage.h"
 #include "ConsistencyBoard.h"
 #include "DashboardPage.h"
@@ -142,6 +150,86 @@ MainWindow::MainWindow(QWidget *parent)
     updateSaveActions();
     updateTitle();
 
+
+#ifdef SANKOTV_DEV_RECORDER
+    // TEMP developer recorder — remove with app/src/devrecorder/ and the
+    // CMake block (option SANKOTV_DEV_RECORDER). Nothing else depends on it.
+    {
+        auto *rec = devrec::Recorder::instance();
+        rec->initialize(this,
+                        {QStringLiteral("SankoTV"),
+                         QCoreApplication::applicationVersion(),
+#ifdef QT_NO_DEBUG
+                         QStringLiteral("Release"),
+#else
+                         QStringLiteral("Debug"),
+#endif
+#ifdef SANKOTV_GIT_HEAD
+                         QStringLiteral(SANKOTV_GIT_HEAD)});
+#else
+                         QString()});
+#endif
+        rec->setStateProvider([this]() -> QVariantMap {
+            auto *canvas = m_storyboard
+                ? m_storyboard->findChild<DrawingCanvas *>() : nullptr;
+            if (!canvas)
+                return {};
+            const ::Brush &b = canvas->paintBrush();
+            QVariantMap m{{QStringLiteral("tool"), int(canvas->tool())},
+                          {QStringLiteral("brushSize"), b.size()},
+                          {QStringLiteral("brushOpacity"), b.opacity()},
+                          {QStringLiteral("brushHardness"), b.hardness()},
+                          {QStringLiteral("color"), b.color().name()},
+                          {QStringLiteral("zoom"), canvas->viewZoom()},
+                          {QStringLiteral("rotation"),
+                           canvas->viewRotation()}};
+            // Grab Control instrumentation: every floating toolbar's pill
+            // state lands in each snapshot, so a stuck pill is visible in
+            // the LOG even without pixels.
+            for (QWidget *tl : QApplication::topLevelWidgets())
+                if (auto *bar = qobject_cast<FloatingToolWindow *>(tl))
+                    m.insert(QStringLiteral("bar.")
+                                 + (bar->objectName().isEmpty()
+                                        ? QString::fromLatin1(
+                                              bar->metaObject()->className())
+                                        : bar->objectName()),
+                             QStringLiteral("%1,%2 vis=%3 pill=%4")
+                                 .arg(bar->x())
+                                 .arg(bar->y())
+                                 .arg(int(bar->isVisible()))
+                                 .arg(0));
+            return m;
+        });
+        rec->setCameraProvider([this]() -> QVariantMap {
+            auto *canvas = m_storyboard
+                ? m_storyboard->findChild<DrawingCanvas *>() : nullptr;
+            return canvas ? canvas->devCameraState() : QVariantMap();
+        });
+        rec->setPressClassifier(
+            [](QWidget *w, const QPoint &at) -> QVariantMap {
+                auto *bar = qobject_cast<FloatingToolWindow *>(w);
+                if (!bar || !bar->isManaged())
+                    return {};
+                QWidget *child = bar->childAt(at);
+                const bool background = bar->isDragBackgroundAt(at);
+                return {{QStringLiteral("grabAccepted"), background},
+                        {QStringLiteral("hitRegion"),
+                         background ? QStringLiteral("background")
+                                    : QStringLiteral("child")},
+                        {QStringLiteral("consumedBy"),
+                         child ? QString::fromLatin1(
+                                     child->metaObject()->className())
+                               : QStringLiteral("toolbar")},
+                        {QStringLiteral("dragThresholdPx"),
+                         QApplication::startDragDistance()}};
+            });
+        QMenu *dev = menuBar()->addMenu(QStringLiteral("Developer"));
+        dev->addAction(rec->toggleAction());
+        dev->addAction(rec->markAction());
+        menuBar()->setCornerWidget(rec->indicatorWidget(),
+                                   Qt::TopRightCorner);
+    }
+#endif
 }
 
 MainWindow::~MainWindow()

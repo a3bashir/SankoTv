@@ -37,8 +37,11 @@ protected:
     void mouseReleaseEvent(QMouseEvent *event) override;
     void leaveEvent(QEvent *event) override;
     QPoint defaultOffset() const override; // legacy (managed placement wins)
-    // Custom-painted content follows the pill side via contentOffsetY().
-    void pillSideChanged() override { update(); }
+    // This bar is entirely custom-painted (no child widgets), so it must
+    // declare its own controls: the Zoom and Rotate tracks and the Fit and
+    // Reset buttons. Presses there operate the control; only the leftover
+    // background drags the toolbar.
+    bool isInteractiveAt(const QPoint &pos) const override;
 
 private:
     enum Drag { DragNone, DragZoom, DragRotate };

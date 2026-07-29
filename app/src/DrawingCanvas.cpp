@@ -1418,6 +1418,41 @@ void DrawingCanvas::ensurePanelCpuCoherent(Panel *panel,
     }
 }
 
+#ifdef SANKOTV_DEV_RECORDER
+// TEMP dev-recorder camera probe: read-only snapshot of the live view
+// transform, so a recording can distinguish "paper moved off-screen" from
+// "paper not drawn". Removed with the recorder (option SANKOTV_DEV_RECORDER).
+QVariantMap DrawingCanvas::devCameraState() const
+{
+    const QTransform t = viewTransform();
+    const QRect vis =
+        t.inverted().mapRect(QRectF(rect())).toAlignedRect();
+    const QRect canvasR(QPoint(), canvasSize());
+    const QRect disp = displayRect();
+    QVariantMap m;
+    m.insert(QStringLiteral("zoom"), m_zoom);
+    m.insert(QStringLiteral("rotation"), m_viewRotation);
+    m.insert(QStringLiteral("flipH"), m_viewFlipH);
+    m.insert(QStringLiteral("panX"), m_panOffset.x());
+    m.insert(QStringLiteral("panY"), m_panOffset.y());
+    m.insert(QStringLiteral("scalePx"), scale());
+    m.insert(QStringLiteral("dispX"), disp.x());
+    m.insert(QStringLiteral("dispY"), disp.y());
+    m.insert(QStringLiteral("dispW"), disp.width());
+    m.insert(QStringLiteral("dispH"), disp.height());
+    m.insert(QStringLiteral("visX"), vis.x());
+    m.insert(QStringLiteral("visY"), vis.y());
+    m.insert(QStringLiteral("visW"), vis.width());
+    m.insert(QStringLiteral("visH"), vis.height());
+    m.insert(QStringLiteral("canvasW"), canvasR.width());
+    m.insert(QStringLiteral("canvasH"), canvasR.height());
+    m.insert(QStringLiteral("hasPanel"), m_panel != nullptr);
+    m.insert(QStringLiteral("paperOnScreen"),
+             disp.intersects(rect()) && m_panel != nullptr);
+    return m;
+}
+#endif
+
 // Command callback: restore a selection path (display state only).
 void DrawingCanvas::applyPerspectiveForUndo(const QJsonObject &state)
 {

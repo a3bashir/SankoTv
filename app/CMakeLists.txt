@@ -105,6 +105,29 @@ qt_add_executable(SankoPaintPixelLock
 target_include_directories(SankoPaintPixelLock PRIVATE src)
 target_link_libraries(SankoPaintPixelLock PRIVATE SankoPaint::Engine)
 
+# --- Developer recorder (TEMP) -----------------------------------------------
+# Temporary bug-capture tool; remove by deleting app/src/devrecorder/ and
+# THIS block (plus the one guarded block in MainWindow.cpp).
+option(SANKOTV_DEV_RECORDER "Build the temporary developer recorder" ON)
+if(SANKOTV_DEV_RECORDER)
+    execute_process(COMMAND git rev-parse --short HEAD
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        OUTPUT_VARIABLE SANKOTV_GIT_HEAD OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET)
+    target_sources(SankoTV PRIVATE
+        src/devrecorder/DevRecorder.cpp
+        src/devrecorder/DevRecorder.h)
+    target_compile_definitions(SankoTV PRIVATE SANKOTV_DEV_RECORDER
+        SANKOTV_GIT_HEAD="${SANKOTV_GIT_HEAD}")
+    qt_add_executable(SankoDevRecorderTest
+        tests/DevRecorderTest.cpp
+        src/devrecorder/DevRecorder.cpp
+        src/devrecorder/DevRecorder.h)
+    target_include_directories(SankoDevRecorderTest PRIVATE src)
+    target_link_libraries(SankoDevRecorderTest PRIVATE Qt6::Widgets)
+endif()
+# --- end Developer recorder (TEMP) -------------------------------------------
+
 # Build as a GUI app on Windows (no console window).
 set_target_properties(SankoTV PROPERTIES
     WIN32_EXECUTABLE ON

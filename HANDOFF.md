@@ -130,3 +130,37 @@ drawing canvas, animatic, AI generation).
   full verification torture run (Release). No true pre-integration baseline
   was obtainable from git (pre-integration commits either lack the app state
   or do not build standalone), so these are measured absolutes, not a delta.
+
+## Developer Recorder (TEMPORARY — remove before release)
+
+A self-contained bug-capture tool for intermittent UI issues (built for the
+Grab Control hang). CMake option: **`SANKOTV_DEV_RECORDER`** (default ON;
+OFF compiles zero recorder code). All code lives in `app/src/devrecorder/`
+plus one marked block in `app/CMakeLists.txt` and one `#ifdef`-guarded block
+in `MainWindow.cpp` — to remove it completely, delete the directory, the
+CMake block ("Developer recorder (TEMP)"), and the guarded MainWindow block,
+or just configure with `-DSANKOTV_DEV_RECORDER=OFF`. Usage: Developer menu
+or Ctrl+Shift+R to start/stop, **Ctrl+Shift+B = Issue Happened** marker
+(works mid-interaction), menubar-corner REC indicator. Sessions land in
+`Documents/SankoTV-DevRecordings/<timestamp>/` (override with
+`SANKOTV_DEVREC_DIR`): screenshots/ (app window only, active-window-gated
+for privacy), events.jsonl, system.txt, summary.txt (markers with the last
+events before each). Tests: `SankoDevRecorderTest.exe` (pixel-lock pattern,
+exit code = failures).
+
+## Floating toolbars: Grab Control REMOVED — deliberate Figma divergence
+
+2026-07-29: the grab_CTL pill (Figma nodes **213:79 / 213:81 / 213:83**) was
+REMOVED from the Floating Zoom, Layers, and Brush toolbars. They now **drag
+from anywhere on their background**; interactive children always win a press,
+the threshold is `QApplication::startDragDistance()`, and `Qt::SizeAllCursor`
+over background is the only affordance. This is an intentional PRODUCT
+decision, not an implementation shortcut: the 50x8 conditional target and its
+hover-visibility state machine caused three separate rounds of bugs
+(intermittent stuck pill, hit target too small, slow hover appearance).
+**Do not re-add the pill to match the Figma file.** Consequences: the 12px
+reserved strip is gone, so layout rect == visual rect, and the settings key
+was bumped `storyboard/floatToolbars/v1` -> `/v2` so strip-era saved
+positions are discarded and defaults reapply. Double-click on background does
+nothing (no special behaviour). SizeCtlBar (Floating Brush Size) is unmanaged
+and KEEPS its own grab, unchanged.
