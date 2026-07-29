@@ -208,10 +208,14 @@ MainWindow::MainWindow(QWidget *parent)
         rec->setPressClassifier(
             [](QWidget *w, const QPoint &at) -> QVariantMap {
                 auto *bar = qobject_cast<FloatingToolWindow *>(w);
-                if (!bar || !bar->isManaged())
+                if (!bar)
                     return {};
                 QWidget *child = bar->childAt(at);
-                const bool background = bar->isDragBackgroundAt(at);
+                // Managed bars use the base helper; the unmanaged Size CTL
+                // bar drags from background too, via the same rule.
+                const bool background = bar->isManaged()
+                    ? bar->isDragBackgroundAt(at)
+                    : (bar->rect().contains(at) && !child);
                 return {{QStringLiteral("grabAccepted"), background},
                         {QStringLiteral("hitRegion"),
                          background ? QStringLiteral("background")

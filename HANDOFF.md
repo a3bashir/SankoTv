@@ -164,3 +164,17 @@ was bumped `storyboard/floatToolbars/v1` -> `/v2` so strip-era saved
 positions are discarded and defaults reapply. Double-click on background does
 nothing (no special behaviour). SizeCtlBar (Floating Brush Size) is unmanaged
 and KEEPS its own grab, unchanged.
+
+### SizeCtlBar converted too (2026-07-29 follow-up)
+
+The Floating Brush Size toolbar was converted to the SAME drag-from-background
+model for CONSISTENCY - not because it was broken (it had been the reference
+implementation). Its pill grab, hover-visibility state, and the kGap/kGrabW
+strip are gone; it drags from background with Qt::SizeAllCursor and a
+startDragDistance threshold, keeps its own snap-to-nearest-side on release,
+and its width is now exactly kBarW (46, was 58). QSettings keys bumped to
+storyboard/sizeCtlSide/v2 and storyboard/sizeCtlY/v2 so strip-era values are
+discarded. It remains UNMANAGED: it takes no part in margins, snapping, or
+collision resolution for itself, and acts only as a collision OBSTACLE for
+the three managed bars. All four floating toolbars now share one interaction
+model, and the Figma grab_CTL divergence noted above applies to all four.

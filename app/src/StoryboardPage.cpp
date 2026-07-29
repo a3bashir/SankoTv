@@ -985,21 +985,20 @@ class SizeCtlBar : public FloatingToolWindow
 public:
     static constexpr int kBarW = 46;
     static constexpr int kBarH = 574;
-    static constexpr int kGrabW = 8;
-    static constexpr int kGrabH = 50;
-    static constexpr int kGap = 4;
     static constexpr int kEdgeMargin = 10;
 
     SizeCtlBar(QWidget *anchor, QWidget *parent)
         : FloatingToolWindow(anchor, QString(), parent)
     {
-        setFixedSize(kBarW + kGap + kGrabW, kBarH);
-        setMouseTracking(true); // hover shows the grab without a button held
+        // 2026-07: the pill grab was removed for consistency with the
+        // other floating toolbars - the bar is exactly its body width now.
+        setFixedSize(kBarW, kBarH);
+        setMouseTracking(true); // live move-cursor without a button held
         const QSettings settings(QStringLiteral("SankoTV"),
                                  QStringLiteral("SankoTV"));
-        m_side = settings.value(QStringLiteral("storyboard/sizeCtlSide"), 0)
+        m_side = settings.value(QStringLiteral("storyboard/sizeCtlSide/v2"), 0)
                          .toInt() == 1 ? 1 : 0;
-        m_sideY = settings.value(QStringLiteral("storyboard/sizeCtlY"), -1)
+        m_sideY = settings.value(QStringLiteral("storyboard/sizeCtlY/v2"), -1)
                           .toInt();
         setDefaultOffsetProvider([this] { return snappedOffset(); });
     }
@@ -1007,16 +1006,15 @@ public:
     std::function<void()> onSideChanged; // relayout the child controls
 
     int side() const { return m_side; }
-    int barX() const { return m_side == 0 ? 0 : kGrabW + kGap; }
-    bool grabVisible() const { return m_grabVisible; }
-
-protected:
-    // Draggable only while the grab is shown (hover).
-    QRect gripRect() const override
+    int barX() const { return 0; } // no grab strip: the body fills the window
+    // Draggable background = inside, and not over an interactive child.
+    // Children always win the press; live query, never a latched flag.
+    bool isBackgroundAt(const QPoint &p) const
     {
-        return m_grabVisible ? grabArea() : QRect();
+        return rect().contains(p) && !childAt(p);
     }
 
+protected:
     void paintEvent(QPaintEvent *) override
     {
         QPainter p(this);
@@ -1026,72 +1024,66 @@ protected:
         p.setCompositionMode(QPainter::CompositionMode_SourceOver);
         p.setPen(Qt::NoPen);
         p.setBrush(QColor(0x21, 0x21, 0x21));
-        p.drawRoundedRect(QRectF(barX(), 0, kBarW, kBarH), 12, 12);
-        // The grab shows only on hover; when it does it is armed to drag, so
-        // it wears the Sanko accent colour (Figma 209:53).
-        if (m_grabVisible) {
-            p.setBrush(QColor(0x7c, 0x6e, 0xf6));
-            p.drawRoundedRect(QRectF(grabArea()), 4, 4);
-        }
+        p.drawRoundedRect(QRectF(0, 0, kBarW, kBarH), 12, 12);
     }
 
-    void enterEvent(QEnterEvent *) override { setGrabVisible(true); }
     void leaveEvent(QEvent *) override
     {
-        // Moving onto a child keeps the cursor inside our rect; only a real
-        // exit hides the grab.
-        if (!rect().contains(mapFromGlobal(QCursor::pos())))
-            setGrabVisible(false);
+        if (!m_dragActive) // never leave a stale move cursor behind
+            unsetCursor();
     }
 
     void mousePressEvent(QMouseEvent *event) override
     {
         if (event->button() == Qt::LeftButton
-            && gripRect().contains(event->position().toPoint())) {
-            m_dragActive = true;
+            && isBackgroundAt(event->position().toPoint())) {
+            m_pressed = true;   // candidate: still a click until it moves
+            m_dragActive = false;
             m_dragStartGlobal = event->globalPosition().toPoint();
             m_dragStartPos = pos();
-            setCursor(Qt::ClosedHandCursor);
             return;
         }
         QWidget::mousePressEvent(event);
     }
     void mouseMoveEvent(QMouseEvent *event) override
     {
-        if (m_dragActive && (event->buttons() & Qt::LeftButton)) {
-            move(clampToAnchor(m_dragStartPos
-                               + (event->globalPosition().toPoint()
-                                  - m_dragStartGlobal)));
+        if (m_pressed && (event->buttons() & Qt::LeftButton)) {
+            const QPoint g = event->globalPosition().toPoint();
+            if (!m_dragActive) {
+                // Click-vs-drag threshold: a micro-move stays a click.
+                if ((g - m_dragStartGlobal).manhattanLength()
+                    < QApplication::startDragDistance())
+                    return;
+                m_dragActive = true;
+            }
+            move(clampToAnchor(m_dragStartPos + (g - m_dragStartGlobal)));
             return;
         }
-        setCursor(gripRect().contains(event->position().toPoint())
-                      ? Qt::OpenHandCursor : Qt::ArrowCursor);
+        // Live affordance, re-derived from the CURRENT hit test.
+        if (isBackgroundAt(event->position().toPoint()))
+            setCursor(Qt::SizeAllCursor);
+        else
+            unsetCursor();
         QWidget::mouseMoveEvent(event);
     }
     void mouseReleaseEvent(QMouseEvent *event) override
     {
-        if (m_dragActive) {
+        if (m_pressed) {
+            const bool moved = m_dragActive;
+            m_pressed = false;
             m_dragActive = false;
-            setCursor(Qt::OpenHandCursor);
-            snapToNearestSide();
+            if (moved)
+                snapToNearestSide(); // sub-threshold press = a click
+            if (isBackgroundAt(event->position().toPoint()))
+                setCursor(Qt::SizeAllCursor);
+            else
+                unsetCursor();
             return;
         }
         QWidget::mouseReleaseEvent(event);
     }
 
 private:
-    QRect grabArea() const
-    {
-        const int gx = m_side == 0 ? kBarW + kGap : 0;
-        return QRect(gx, (kBarH - kGrabH) / 2, kGrabW, kGrabH);
-    }
-    void setGrabVisible(bool visible)
-    {
-        if (m_grabVisible == visible)
-            return;
-        m_grabVisible = visible;
-        update();
-    }
     QPoint snappedOffset() const
     {
         QWidget *anchor = anchorWidget();
@@ -1133,19 +1125,19 @@ private:
         }
         QSettings settings(QStringLiteral("SankoTV"),
                            QStringLiteral("SankoTV"));
-        settings.setValue(QStringLiteral("storyboard/sizeCtlSide"), m_side);
-        settings.setValue(QStringLiteral("storyboard/sizeCtlY"), m_sideY);
+        settings.setValue(QStringLiteral("storyboard/sizeCtlSide/v2"), m_side);
+        settings.setValue(QStringLiteral("storyboard/sizeCtlY/v2"), m_sideY);
         reposition(); // never user-placed: always lands on snappedOffset()
-        // The bar just jumped away from the cursor: the grab is hover-only,
-        // so hide it immediately (the platform Leave event can lag a
-        // programmatic move).
-        setGrabVisible(false);
+        // The bar just jumped away from the cursor: re-derive the cursor
+        // from the LIVE position (a Leave can lag a programmatic move).
+        if (!isBackgroundAt(mapFromGlobal(QCursor::pos())))
+            unsetCursor();
     }
 
     int m_side = 0;   // 0 = left canvas edge, 1 = right
     int m_sideY = -1; // canvas-relative y (-1: centre until first drag)
-    bool m_grabVisible = false;
-    bool m_dragActive = false;
+    bool m_pressed = false;    // background press (click until it moves)
+    bool m_dragActive = false; // threshold crossed
     QPoint m_dragStartGlobal;
     QPoint m_dragStartPos;
 };
