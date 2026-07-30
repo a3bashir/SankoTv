@@ -195,3 +195,38 @@ a deliberate design decision (brighter border or larger margin), not a bug
 fix. Related divergence: the Brush Size bar's Figma node 209:42 specifies NO
 border; the code gives it the same 1px #1a1a1a as the other three bars for
 consistency (drawn inside its bounds — the 46x574 layout rect is unchanged).
+
+## Workspace grid in the gutter (2026-07-30)
+
+Screen-space grid drawn in the GUTTER only, behind the paper. Implementation
+facts a future change must not break:
+
+- Painted in DrawingCanvas::paintEvent BEFORE the world transform: gutter
+  colour fill, then a tiled kGridSpacing (25px) pattern anchored to the
+  widget origin. It never pans/zooms/rotates with the artwork, and the
+  constant screen-px spacing means no moire and no adaptive subdivision.
+- The paper hides it by DRAW ORDER alone: both composite caches and the
+  direct paint path start from an opaque white fill of the full canvas rect
+  (ensureComposite: m_compBelow.fill(Qt::white); direct: fillRect(canvasR,
+  white)), so the grid cannot show through, whatever layer visibility/alpha
+  does - verified with the Background layer hidden and with alpha content,
+  under 30 degree canvas rotation (transformed-quad footprint), leaks=0.
+  If that opaque paper fill is ever removed, the grid needs clipping.
+- Styles: Square (1px rules), Dashed (3-on/2-off, period 5 divides 25 so the
+  tile is seamless), Cross (7px plus at intersections), Dot (3px AA dot).
+- Pure view state: QSettings canvas/grid/v1/{visible,style,gridColor,
+  gutterColor}, APP-WIDE, not per-project; never in save files, layer bytes,
+  thumbnails, or undo. First-run defaults: hidden, Square, grid #2a2a2a,
+  gutter #0a0a0a.
+- Right-click on the canvas opens the grid menu (right-click had NO prior
+  binding there); suppressed during strokes/drags/transforms via
+  viewInteractionActive(). Show/hide shortcut: Ctrl+' (no collision).
+- NOTE for the open black-canvas anomaly (view/transform, t~29.5-30.0s in
+  the 2026-07-29 recording): this task touched paintEvent's first lines
+  (gutter fill + grid blit) but NOT viewTransform/displayRect or the paper
+  compositing. If the paper ever vanishes while gutter+grid render normally,
+  that isolates the fault to the transform/composite path, not the widget
+  paint plumbing - the grid is a useful witness, not a suspect.
+- Camera safe-area masks dim everything outside the safe frame (~x0.6); any
+  pixel-probing test of gutter content must match colours by hue, not
+  absolute value (this cost one seam iteration).

@@ -3,11 +3,15 @@
 #include "StoryboardModel.h"
 
 #include <QDir>
+#include <QActionGroup>
+#include <QColorDialog>
+#include <QContextMenuEvent>
 #include <QCryptographicHash>
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QDragEnterEvent>
 #include <QDropEvent>
+#include <QMenu>
 #include <QEventLoop>
 #include <QFileInfo>
 #include <QFocusEvent>
@@ -145,6 +149,20 @@ DrawingCanvas::DrawingCanvas(QWidget *parent)
         qBound(0, settings.value(QStringLiteral("camera/actionSafeOpacity"), 50).toInt(), 100);
     m_titleSafeMaskPct =
         qBound(0, settings.value(QStringLiteral("camera/titleSafeOpacity"), 50).toInt(), 100);
+
+    // Workspace grid: persisted view furniture + its show/hide shortcut.
+    // Ctrl+' (unused elsewhere; the Photoshop grid-toggle convention).
+    // WindowShortcut so it works without canvas focus; the handler ignores
+    // it while another page is frontmost.
+    loadGridSettings();
+    auto *gridToggleAct = new QAction(tr("Show Grid"), this);
+    gridToggleAct->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Apostrophe));
+    gridToggleAct->setShortcutContext(Qt::WindowShortcut);
+    connect(gridToggleAct, &QAction::triggered, this, [this] {
+        if (isVisible())
+            setGridVisible(!m_gridVisible);
+    });
+    addAction(gridToggleAct);
 
     // (The Canvas View Controls toolbar is the custom-painted ZoomToolbar,
     // created and wired by StoryboardPage. This canvas exposes the view
@@ -4324,10 +4342,247 @@ void DrawingCanvas::ensureComposite()
     m_compCount = count;
 }
 
+// --- Workspace grid (gutter-only, screen-space) ----------------------------
+// Pure view state: the setters repaint but touch no layer pixels, no undo,
+// no save/load, no thumbnails, and do NOT invalidate the composite caches
+// (m_compValid is deliberately left alone — the caches hold canvas-space
+// pixels the grid never enters).
+
+void DrawingCanvas::loadGridSettings()
+{
+    const QSettings s(QStringLiteral("SankoTV"), QStringLiteral("SankoTV"));
+    const QString k = QStringLiteral("canvas/grid/v1/");
+    m_gridVisible = s.value(k + QStringLiteral("visible"), false).toBool();
+    const int style = s.value(k + QStringLiteral("style"), 0).toInt();
+    m_gridStyle = (style >= 0 && style <= 3) ? GridStyle(style)
+                                             : GridStyle::Square;
+    QColor gc(s.value(k + QStringLiteral("gridColor"),
+                      QStringLiteral("#2a2a2a")).toString());
+    if (gc.isValid())
+        m_gridColor = gc;
+    QColor bg(s.value(k + QStringLiteral("gutterColor"),
+                      QStringLiteral("#0a0a0a")).toString());
+    if (bg.isValid())
+        m_gutterColor = bg;
+    m_gridTileDirty = true;
+}
+
+void DrawingCanvas::saveGridSettings() const
+{
+    QSettings s(QStringLiteral("SankoTV"), QStringLiteral("SankoTV"));
+    const QString k = QStringLiteral("canvas/grid/v1/");
+    s.setValue(k + QStringLiteral("visible"), m_gridVisible);
+    s.setValue(k + QStringLiteral("style"), int(m_gridStyle));
+    s.setValue(k + QStringLiteral("gridColor"), m_gridColor.name());
+    s.setValue(k + QStringLiteral("gutterColor"), m_gutterColor.name());
+}
+
+void DrawingCanvas::setGridVisible(bool on)
+{
+    if (m_gridVisible == on)
+        return;
+    m_gridVisible = on;
+    saveGridSettings();
+    update();
+}
+
+void DrawingCanvas::setGridStyle(GridStyle style)
+{
+    if (m_gridStyle == style)
+        return;
+    m_gridStyle = style;
+    m_gridTileDirty = true;
+    saveGridSettings();
+    update();
+}
+
+void DrawingCanvas::setGridColor(const QColor &color)
+{
+    if (!color.isValid() || m_gridColor == color)
+        return;
+    m_gridColor = color;
+    m_gridTileDirty = true;
+    saveGridSettings();
+    update();
+}
+
+void DrawingCanvas::setGutterColor(const QColor &color)
+{
+    if (!color.isValid() || m_gutterColor == color)
+        return;
+    m_gutterColor = color;
+    saveGridSettings();
+    update();
+}
+
+void DrawingCanvas::ensureGridTile()
+{
+    // One kGridSpacing^2 tile, rebuilt only when style or colour changes;
+    // paintEvent blits it with drawTiledPixmap over just the update region,
+    // so the per-repaint cost is a clipped pattern fill.
+    if (!m_gridTileDirty && !m_gridTile.isNull())
+        return;
+    m_gridTileDirty = false;
+    const int s = kGridSpacing;
+    m_gridTile = QPixmap(s, s);
+    m_gridTile.fill(Qt::transparent);
+    QPainter p(&m_gridTile);
+    const QVector<QPoint> corners{QPoint(0, 0), QPoint(s, 0), QPoint(0, s),
+                                  QPoint(s, s)};
+    switch (m_gridStyle) {
+    case GridStyle::Square:
+        // Full 1px lines along the tile's top and left edges; tiling
+        // completes them into continuous rules every 25px.
+        p.setPen(QPen(m_gridColor, 1));
+        p.drawLine(0, 0, s - 1, 0);
+        p.drawLine(0, 0, 0, s - 1);
+        break;
+    case GridStyle::Dashed: {
+        // Same rules, dashed. 3-on/2-off = period 5, which divides the 25px
+        // tile exactly, so the pattern tiles without a seam or phase jump.
+        QPen pen(m_gridColor, 1);
+        pen.setDashPattern({3.0, 2.0});
+        p.setPen(pen);
+        p.drawLine(0, 0, s - 1, 0);
+        p.drawLine(0, 0, 0, s - 1);
+        break;
+    }
+    case GridStyle::Cross:
+        // A 7px + at every intersection, nothing between them. Drawn at all
+        // four tile corners (clipped); tiling reassembles whole crosses.
+        p.setPen(QPen(m_gridColor, 1));
+        for (const QPoint &c : corners) {
+            p.drawLine(c.x() - 3, c.y(), c.x() + 3, c.y());
+            p.drawLine(c.x(), c.y() - 3, c.x(), c.y() + 3);
+        }
+        break;
+    case GridStyle::Dot:
+        // A 3px antialiased dot at every intersection.
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setPen(Qt::NoPen);
+        p.setBrush(m_gridColor);
+        for (const QPoint &c : corners)
+            p.drawEllipse(QPointF(c), 1.5, 1.5);
+        break;
+    }
+}
+
+bool DrawingCanvas::viewInteractionActive() const
+{
+    // Every pointer state machine that must not be interrupted by a popup:
+    // live strokes (engine brush and classic tools), panning, selection
+    // drags (marquee/lasso/polygon), any transform-box drag, and Edit Shape
+    // mode.
+    return m_brushStroke || m_drawing || m_strokeMask != StrokeMaskNone
+        || m_panning || m_selDrag || m_selOutlineDrag
+        || !m_polygonPts.isEmpty() || m_xformMode != XNone || m_qsEditing;
+}
+
+QMenu *DrawingCanvas::buildGridMenu()
+{
+    auto *menu = new QMenu(this);
+
+    QAction *show = menu->addAction(tr("Show Grid"));
+    show->setCheckable(true);
+    show->setChecked(m_gridVisible);
+    show->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Apostrophe));
+    connect(show, &QAction::toggled, this,
+            [this](bool on) { setGridVisible(on); });
+
+    menu->addSeparator();
+    auto *styleGroup = new QActionGroup(menu);
+    const struct { const char *name; GridStyle style; } styles[] = {
+        {"Square", GridStyle::Square},
+        {"Cross", GridStyle::Cross},
+        {"Dot", GridStyle::Dot},
+        {"Dashed", GridStyle::Dashed},
+    };
+    for (const auto &def : styles) {
+        QAction *a = menu->addAction(tr(def.name));
+        a->setCheckable(true);
+        a->setChecked(m_gridStyle == def.style);
+        a->setActionGroup(styleGroup);
+        const GridStyle st = def.style;
+        connect(a, &QAction::triggered, this, [this, st] {
+            setGridStyle(st);
+            setGridVisible(true); // picking a style implies wanting to see it
+        });
+    }
+
+    menu->addSeparator();
+    QMenu *colorMenu = menu->addMenu(tr("Grid Colour"));
+    const struct { const char *name; const char *hex; } gridColors[] = {
+        {"Dim Grey (default)", "#2a2a2a"}, {"Grey", "#4d4d4d"},
+        {"Light Grey", "#9a9a9a"},         {"White", "#ffffff"},
+        {"Sanko Accent", "#7c6ef6"},
+    };
+    for (const auto &def : gridColors) {
+        QAction *a = colorMenu->addAction(tr(def.name));
+        a->setCheckable(true);
+        a->setChecked(m_gridColor == QColor(def.hex));
+        const QColor c(def.hex);
+        connect(a, &QAction::triggered, this, [this, c] { setGridColor(c); });
+    }
+    QAction *custom = colorMenu->addAction(tr("Custom..."));
+    connect(custom, &QAction::triggered, this, [this] {
+        const QColor c =
+            QColorDialog::getColor(m_gridColor, this, tr("Grid Colour"));
+        if (c.isValid())
+            setGridColor(c);
+    });
+
+    QMenu *bgMenu = menu->addMenu(tr("Gutter Background"));
+    const struct { const char *name; const char *hex; } gutterColors[] = {
+        {"Dark (default)", "#0a0a0a"}, {"Charcoal", "#1f1f1f"},
+        {"Dark Grey", "#2b2b2b"},      {"Mid Grey", "#4d4d4d"},
+        {"Silver", "#b3b3b3"},         {"Light", "#e8e8e8"},
+    };
+    for (const auto &def : gutterColors) {
+        QAction *a = bgMenu->addAction(tr(def.name));
+        a->setCheckable(true);
+        a->setChecked(m_gutterColor == QColor(def.hex));
+        const QColor c(def.hex);
+        connect(a, &QAction::triggered, this, [this, c] { setGutterColor(c); });
+    }
+    return menu;
+}
+
+void DrawingCanvas::contextMenuEvent(QContextMenuEvent *event)
+{
+    // The grid menu opens anywhere over the canvas widget — gutter OR paper:
+    // at high zoom the paper can fill the viewport, and right-click has no
+    // other job here. Never mid-interaction: a popup would orphan the
+    // pointer state machine's release event.
+    if (viewInteractionActive()) {
+        event->ignore();
+        return;
+    }
+    QMenu *menu = buildGridMenu();
+    menu->setAttribute(Qt::WA_DeleteOnClose);
+    menu->popup(event->globalPos());
+    event->accept();
+}
+
 void DrawingCanvas::paintEvent(QPaintEvent *event)
 {
     QPainter painter(this);
-    painter.fillRect(rect(), QColor("#0a0a0a"));
+    // Gutter background + optional workspace grid, both SCREEN-SPACE: painted
+    // before the world transform so they are fixed to the viewport — they
+    // never pan, zoom, or rotate with the artwork, and the constant 25px
+    // spacing means there is no low-zoom moire to subdivide away. The paper
+    // is composited OPAQUE on top (both the composite caches and the direct
+    // path start from a solid white fill covering the full canvas rect), so
+    // the grid can never show through the document, whatever the layer
+    // stack's visibility or alpha — no clipping geometry needed.
+    painter.fillRect(rect(), m_gutterColor);
+    if (m_gridVisible) {
+        ensureGridTile();
+        const QRect er = event->rect(); // draw only the update region; the
+        // pattern phase keeps the tile anchored to the widget origin.
+        painter.drawTiledPixmap(er, m_gridTile,
+                                QPointF(er.x() % kGridSpacing,
+                                        er.y() % kGridSpacing));
+    }
 
     if (!m_panel) {
         painter.setPen(QColor("#555555"));

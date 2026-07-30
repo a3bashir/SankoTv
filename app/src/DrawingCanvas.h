@@ -28,7 +28,9 @@
 
 struct Layer;
 struct Panel;
+class QContextMenuEvent;
 class QDragEnterEvent;
+class QMenu;
 class QUndoStack;
 class QDropEvent;
 class QPushButton;
@@ -261,6 +263,24 @@ public slots:
     void beginPerspectiveEdit();
     void endPerspectiveEdit(const QString &text);
 
+    // --- Workspace grid (gutter-only, screen-space) -----------------------
+    // View furniture drawn behind the OPAQUE paper, anchored to the viewport:
+    // constant 25 screen-px spacing whatever the camera does. Pure view
+    // state: never touches layer pixels, undo, save/load, or thumbnails.
+    // (public:, not slots — the enum/constant may not live in a moc slots
+    // section, and everything here is connected through lambdas.)
+public:
+    enum class GridStyle { Square = 0, Cross = 1, Dot = 2, Dashed = 3 };
+    static constexpr int kGridSpacing = 25; // screen px, fixed
+    bool gridVisible() const { return m_gridVisible; }
+    GridStyle gridStyle() const { return m_gridStyle; }
+    QColor gridColor() const { return m_gridColor; }
+    QColor gutterColor() const { return m_gutterColor; }
+    void setGridVisible(bool on);
+    void setGridStyle(GridStyle style);
+    void setGridColor(const QColor &color);
+    void setGutterColor(const QColor &color);
+
 signals:
     void contentChanged();
     void layersChanged(); // layer added/removed by the canvas (image import)
@@ -295,8 +315,22 @@ protected:
     void focusOutEvent(QFocusEvent *event) override;
     void dragEnterEvent(QDragEnterEvent *event) override;
     void dropEvent(QDropEvent *event) override;
+    void contextMenuEvent(QContextMenuEvent *event) override; // grid menu
 
 private:
+    // --- Workspace grid internals -----------------------------------------
+    void loadGridSettings();            // ctor: versioned QSettings keys (v1)
+    void saveGridSettings() const;
+    void ensureGridTile();              // rebuild the tiled pattern on change
+    bool viewInteractionActive() const; // stroke/drag/transform in progress
+    QMenu *buildGridMenu();             // the right-click context menu
+    bool m_gridVisible = false;
+    GridStyle m_gridStyle = GridStyle::Square;
+    QColor m_gridColor{0x2a, 0x2a, 0x2a};
+    QColor m_gutterColor{0x0a, 0x0a, 0x0a};
+    QPixmap m_gridTile;                 // kGridSpacing^2 pattern, style+colour
+    bool m_gridTileDirty = true;
+
     QRect displayRect() const;          // axis-aligned zoom+pan rect (pre-rotation)
     double scale() const;               // display px per canvas px (includes zoom)
     QTransform viewTransform() const;   // canvas -> widget (zoom+pan+rotate+flip)
