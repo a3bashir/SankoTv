@@ -267,6 +267,7 @@ QVector<BrushPreset> builtinRoster()
         b.setSize(2); b.setHardness(0.88); b.setOpacity(0.8);
         b.setGrainDepth(0.15);
         b.sizePressureCurve().setControlPoints(curve2(1.0, 1.0)); // fixed width
+        b.setTiltAffectsShape(false); // the lead is clutched: no shoulder
     });
     r << make(kSketching, QStringLiteral("Blue Pencil"), [&](::Brush &b) {
         sketchBase(b);
@@ -372,6 +373,7 @@ QVector<BrushPreset> builtinRoster()
         inkBase(b);
         b.setSize(4);
         b.sizePressureCurve().setControlPoints(curve2(1.0, 1.0)); // uniform
+        b.setTiltAffectsShape(false); // a technical pen never elongates
     });
     r << make(kInking, QStringLiteral("Brush Pen"), [&](::Brush &b) {
         inkBase(b);
@@ -401,6 +403,7 @@ QVector<BrushPreset> builtinRoster()
         inkBase(b);
         b.setSize(2);
         b.sizePressureCurve().setControlPoints(curve2(1.0, 1.0));
+        b.setTiltAffectsShape(false); // felt tip: constant width by design
     });
     r << make(kInking, QStringLiteral("Ink Line & Splatter"),
               [&](::Brush &b) {
@@ -425,6 +428,9 @@ QVector<BrushPreset> builtinRoster()
         inkBase(b);
         b.setSize(18); b.setHardness(0.35); b.setOpacity(0.6);
         b.opacityPressureCurve().setControlPoints(curve2(1.0, 1.0));
+        // Our marker is the round-tip kind whose look IS the constant juicy
+        // line (a chisel marker would keep tilt, but that isn't this brush).
+        b.setTiltAffectsShape(false);
     });
 
     // ---- PAINTING: opaque wet media --------------------------------------
@@ -522,7 +528,8 @@ QVector<BrushPreset> builtinRoster()
         b.setSize(20); b.setHardness(0.9);
         b.setCustomShape(squareTip());
         b.setRotationAffectsShape(true);
-    });
+        b.setTiltAffectsShape(false); // tilt elongation would break the
+    });                               // geometric identity of the stamp
     r << make(kArtistic, QStringLiteral("Dynamic Stroke"), [&](::Brush &b) {
         artBase(b);
         b.setSize(16); b.setHardness(0.7);
