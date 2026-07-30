@@ -985,7 +985,9 @@ class SizeCtlBar : public FloatingToolWindow
 public:
     static constexpr int kBarW = 46;
     static constexpr int kBarH = 574;
-    static constexpr int kEdgeMargin = 10;
+    // The shared window margin, so this unmanaged bar keeps the same distance
+    // from the canvas edges as the managed toolbars.
+    static constexpr int kEdgeMargin = FloatingToolWindow::kMargin;
 
     SizeCtlBar(QWidget *anchor, QWidget *parent)
         : FloatingToolWindow(anchor, QString(), parent)
@@ -1091,22 +1093,21 @@ private:
             return {};
         const int x = m_side == 0
             ? kEdgeMargin
-            : qMax(0, anchor->width() - width() - kEdgeMargin);
-        int y = m_sideY >= 0 ? m_sideY
-                             : qMax(0, (anchor->height() - height()) / 2);
-        y = qBound(0, y, qMax(0, anchor->height() - height()));
+            : qMax(kEdgeMargin, anchor->width() - width() - kEdgeMargin);
+        int y = m_sideY >= 0
+            ? m_sideY
+            : qMax(kEdgeMargin, (anchor->height() - height()) / 2);
+        // The margin bounds the vertical side-run too: never flush top/bottom.
+        y = qBound(kEdgeMargin, y,
+                   qMax(kEdgeMargin,
+                        anchor->height() - height() - kEdgeMargin));
         return QPoint(x, y);
     }
+    // Live drag clamp: defers to the shared margined clamp so a bar being
+    // dragged obeys the same window margin as a snapped or default-placed one.
     QPoint clampToAnchor(const QPoint &globalPos) const
     {
-        QWidget *anchor = anchorWidget();
-        if (!anchor)
-            return globalPos;
-        const QPoint origin = anchor->mapToGlobal(QPoint(0, 0));
-        const int maxX = origin.x() + qMax(0, anchor->width() - width());
-        const int maxY = origin.y() + qMax(0, anchor->height() - height());
-        return QPoint(qBound(origin.x(), globalPos.x(), maxX),
-                      qBound(origin.y(), globalPos.y(), maxY));
+        return clampedPos(globalPos);
     }
     void snapToNearestSide()
     {
@@ -1116,7 +1117,9 @@ private:
         const QPoint rel = pos() - anchor->mapToGlobal(QPoint(0, 0));
         const int newSide =
             rel.x() + width() / 2 <= anchor->width() / 2 ? 0 : 1;
-        m_sideY = qBound(0, rel.y(), qMax(0, anchor->height() - height()));
+        m_sideY = qBound(kEdgeMargin, rel.y(),
+                         qMax(kEdgeMargin,
+                              anchor->height() - height() - kEdgeMargin));
         if (newSide != m_side) {
             m_side = newSide;
             if (onSideChanged)

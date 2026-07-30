@@ -177,16 +177,31 @@ QPoint FloatingToolWindow::anchorOrigin() const
     return m_anchor ? m_anchor->mapToGlobal(QPoint(0, 0)) : QPoint();
 }
 
+QRect FloatingToolWindow::marginRect() const
+{
+    // THE single place the kMargin window margin is applied, for managed and
+    // unmanaged bars alike. The anchor (canvas viewport) IS the application
+    // client area minus every docked panel, so deflating it by kMargin on all
+    // four edges is the whole margin rule. All logical px: DPR-safe.
+    if (!m_anchor)
+        return QRect();
+    return QRect(anchorOrigin(), m_anchor->size())
+        .adjusted(kMargin, kMargin, -kMargin, -kMargin);
+}
+
 QPoint FloatingToolWindow::clampedPos(const QPoint &pos) const
 {
     if (!m_anchor)
         return pos;
-    // POSITION-only: x/y are bounded to the anchor's on-screen rect; width and
+    // POSITION-only: x/y are bounded to the MARGINED anchor rect; width and
     // height are never touched — at an edge the window stops at full size.
-    const QPoint origin = anchorOrigin();
-    const int maxX = origin.x() + qMax(0, m_anchor->width() - width());
-    const int maxY = origin.y() + qMax(0, m_anchor->height() - height());
-    return QPoint(qBound(origin.x(), pos.x(), maxX), qBound(origin.y(), pos.y(), maxY));
+    // qMax keeps the bound non-inverted for a bar larger than the margined
+    // region: it rests at left/top instead of being pushed back outside.
+    const QRect r = marginRect();
+    const int maxX = qMax(r.left(), r.right() + 1 - width());
+    const int maxY = qMax(r.top(), r.bottom() + 1 - height());
+    return QPoint(qBound(r.left(), pos.x(), maxX),
+                  qBound(r.top(), pos.y(), maxY));
 }
 
 QRect FloatingToolWindow::gripRect() const
@@ -374,13 +389,10 @@ void FloatingToolWindow::enableManagedPlacement(const QString &name,
 
 QRect FloatingToolWindow::placementRegion() const
 {
-    if (!m_anchor)
-        return QRect();
-    // The anchor (canvas viewport) IS the application client area minus every
-    // docked panel, so constraining to it keeps bars off the docks; deflating
-    // by kMargin enforces the 4px edge margin. All logical px: DPR-safe.
-    return QRect(anchorOrigin(), m_anchor->size())
-        .adjusted(kMargin, kMargin, -kMargin, -kMargin);
+    // Managed placement constrains to exactly the same margined rect as the
+    // unmanaged clamp: the anchor keeps bars off the docks, and marginRect()
+    // supplies the edge margin.
+    return marginRect();
 }
 
 QRect FloatingToolWindow::desiredManagedRect() const

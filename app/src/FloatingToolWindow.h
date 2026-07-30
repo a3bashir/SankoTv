@@ -135,11 +135,18 @@ protected:
     void leaveEvent(QEvent *event) override; // clears the move cursor
     bool event(QEvent *event) override; // cancels a drag on deactivate
 
+    // THE single place the kMargin window margin is applied. Both the managed
+    // placement region and the unmanaged position clamp derive from
+    // marginRect(), so no future edge case can leave one edge flush while the
+    // others keep their margin. Subclasses that clamp their own drags call
+    // clampedPos() rather than re-deriving the bounds.
+    QRect marginRect() const;                   // anchor rect deflated by kMargin
+    QPoint clampedPos(const QPoint &pos) const; // POSITION-only clamp
+
 private:
     friend class FloatingToolWindowManager;
 
     QPoint anchorOrigin() const;                // anchor top-left, global coords
-    QPoint clampedPos(const QPoint &pos) const; // POSITION-only clamp
     void applyEffectiveVisibility();            // intent && anchor/window state
     void persistOffset();
 
