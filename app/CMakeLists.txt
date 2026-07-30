@@ -93,11 +93,16 @@ qt_add_executable(SankoTV
     src/brushlib/BuiltinRoster.h
     src/brushlib/BrushLibraryModel.cpp
     src/brushlib/BrushLibraryModel.h
+    src/brushlib/BrushPreviewRenderer.cpp
+    src/brushlib/BrushPreviewRenderer.h
     resources.qrc
 )
 
 target_link_libraries(SankoTV PRIVATE Qt6::Widgets Qt6::Network Qt6::Multimedia Qt6::MultimediaWidgets
     Qt6::Svg QuickShape::Kit SankoPaint::Engine)
+# src on the include path: subdirectory units (src/brushlib/) include
+# top-level headers like "SankoPaintHostAdapter.h" without ../ paths.
+target_include_directories(SankoTV PRIVATE src)
 
 # Permanent brush pixel-lock test (tests/PixelLockTest.cpp): asserts the
 # committed R16 baseline hash, seeded CPU determinism, and the CPU/GPU
@@ -112,11 +117,13 @@ qt_add_executable(SankoPaintPixelLock
 target_include_directories(SankoPaintPixelLock PRIVATE src)
 target_link_libraries(SankoPaintPixelLock PRIVATE SankoPaint::Engine)
 
-# --- Brush Library Phase 1 test (TEMP) ---------------------------------------
-# Temporary model-layer verification for the Brush Library work; removed at
-# Phase 5 when the in-app SANKOTV_TEST_BRUSH_LIBRARY seam supersedes it.
-qt_add_executable(SankoBrushLibraryPhase1
-    tests/BrushLibraryPhase1Test.cpp
+# Permanent brush-library test (tests/BrushLibraryTest.cpp): roster
+# integrity, codec round-trips through the seeded render path, the RGBA16
+# and tilt audits, and the preview renderer's determinism, caching,
+# cancellation and shutdown behaviour. Fixtures are pinned in the test file.
+# Run: build/<config>/SankoBrushLibraryTest.exe (exit code = failure count).
+qt_add_executable(SankoBrushLibraryTest
+    tests/BrushLibraryTest.cpp
     src/SankoPaintHostAdapter.cpp
     src/SankoPaintHostAdapter.h
     src/brushlib/BrushPresetCodec.cpp
@@ -125,10 +132,11 @@ qt_add_executable(SankoBrushLibraryPhase1
     src/brushlib/BuiltinRoster.h
     src/brushlib/BrushLibraryModel.cpp
     src/brushlib/BrushLibraryModel.h
+    src/brushlib/BrushPreviewRenderer.cpp
+    src/brushlib/BrushPreviewRenderer.h
 )
-target_include_directories(SankoBrushLibraryPhase1 PRIVATE src src/brushlib)
-target_link_libraries(SankoBrushLibraryPhase1 PRIVATE SankoPaint::Engine)
-# --- end Brush Library Phase 1 test (TEMP) -----------------------------------
+target_include_directories(SankoBrushLibraryTest PRIVATE src src/brushlib)
+target_link_libraries(SankoBrushLibraryTest PRIVATE SankoPaint::Engine)
 
 # --- Developer recorder (TEMP) -----------------------------------------------
 # Temporary bug-capture tool; remove by deleting app/src/devrecorder/ and
