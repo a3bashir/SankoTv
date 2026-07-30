@@ -86,6 +86,13 @@ qt_add_executable(SankoTV
     src/ColorPanel.h
     src/PerspectiveTool.cpp
     src/PerspectiveTool.h
+    src/brushlib/BrushPreset.h
+    src/brushlib/BrushPresetCodec.cpp
+    src/brushlib/BrushPresetCodec.h
+    src/brushlib/BuiltinRoster.cpp
+    src/brushlib/BuiltinRoster.h
+    src/brushlib/BrushLibraryModel.cpp
+    src/brushlib/BrushLibraryModel.h
     resources.qrc
 )
 
@@ -104,6 +111,24 @@ qt_add_executable(SankoPaintPixelLock
 )
 target_include_directories(SankoPaintPixelLock PRIVATE src)
 target_link_libraries(SankoPaintPixelLock PRIVATE SankoPaint::Engine)
+
+# --- Brush Library Phase 1 test (TEMP) ---------------------------------------
+# Temporary model-layer verification for the Brush Library work; removed at
+# Phase 5 when the in-app SANKOTV_TEST_BRUSH_LIBRARY seam supersedes it.
+qt_add_executable(SankoBrushLibraryPhase1
+    tests/BrushLibraryPhase1Test.cpp
+    src/SankoPaintHostAdapter.cpp
+    src/SankoPaintHostAdapter.h
+    src/brushlib/BrushPresetCodec.cpp
+    src/brushlib/BrushPresetCodec.h
+    src/brushlib/BuiltinRoster.cpp
+    src/brushlib/BuiltinRoster.h
+    src/brushlib/BrushLibraryModel.cpp
+    src/brushlib/BrushLibraryModel.h
+)
+target_include_directories(SankoBrushLibraryPhase1 PRIVATE src src/brushlib)
+target_link_libraries(SankoBrushLibraryPhase1 PRIVATE SankoPaint::Engine)
+# --- end Brush Library Phase 1 test (TEMP) -----------------------------------
 
 # --- Developer recorder (TEMP) -----------------------------------------------
 # Temporary bug-capture tool; remove by deleting app/src/devrecorder/ and
