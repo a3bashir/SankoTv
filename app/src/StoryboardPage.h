@@ -298,6 +298,13 @@ private:
     QDockWidget *m_panelStripDock = nullptr;
     QWidget *m_panelStripBar = nullptr;
     Qt::DockWidgetArea m_stripLastArea = Qt::TopDockWidgetArea;
+    // The strip's LOGICAL visibility — what the user last chose. Qt unchecks
+    // a dock's toggleViewAction on ANY hide event, including the ancestor
+    // hide when another stack page becomes current, so the action's checked
+    // state is NOT a record of user intent and must never be persisted.
+    // The View-menu toggle is the strip's only deliberate show/hide control
+    // (it has no close button), so only its triggered() updates this.
+    bool m_stripUserVisible = true;
     QTimer *m_stripRegenTimer = nullptr;
     int m_stripRegenCount = 0; // regen passes (verified: 1 per settled drag)
     int m_thumbW = 160;

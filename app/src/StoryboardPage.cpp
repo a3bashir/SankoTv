@@ -3715,6 +3715,13 @@ void StoryboardPage::setupPanelStripDock()
     m_panelStripDock->setTitleBarWidget(new QWidget(m_panelStripDock));
     m_dockHost->addDockWidget(Qt::TopDockWidgetArea, m_panelStripDock);
 
+    // Record USER intent only: triggered() fires for a real View-menu click,
+    // never for the programmatic setChecked()/ancestor-hide sync that made
+    // the persisted "visible" flag lie (quitting from another page saved the
+    // strip as hidden although the user never closed it).
+    connect(m_panelStripDock->toggleViewAction(), &QAction::triggered, this,
+            [this](bool checked) { m_stripUserVisible = checked; });
+
     // Belt-and-braces beside setAllowedAreas: even a programmatic add can
     // never leave the strip in a side area (it has no vertical layout).
     connect(m_panelStripDock, &QDockWidget::dockLocationChanged, this,
@@ -4029,10 +4036,13 @@ void StoryboardPage::savePanelStripState()
                m_panelStripDock->isFloating());
     s.setValue(kStripSettings + QStringLiteral("floatGeo"),
                m_panelStripDock->geometry());
-    // toggleViewAction tracks LOGICAL visibility (a hidden stack page keeps
-    // an "open" strip checked), so a closed strip stays closed on restart.
+    // Persist USER intent, never the action's live checked state: Qt syncs
+    // toggleViewAction to raw widget visibility, and an ancestor hide (the
+    // Storyboard page not being the current stack page at quit) unchecks it
+    // — saving that persisted "hidden" although the user never closed the
+    // strip. m_stripUserVisible changes only on a real View-menu toggle.
     s.setValue(kStripSettings + QStringLiteral("visible"),
-               m_panelStripDock->toggleViewAction()->isChecked());
+               m_stripUserVisible);
     if (m_panelStripDock->isFloating() && m_panelStripDock->windowHandle()
         && m_panelStripDock->windowHandle()->screen())
         s.setValue(kStripSettings + QStringLiteral("screen"),
@@ -4048,6 +4058,7 @@ void StoryboardPage::restorePanelStripState()
         // First run (no strip keys yet): QMainWindow::restoreState() from a
         // layout blob that PRE-DATES this dock restores it as hidden — the
         // strip must still show, docked TOP at its default height.
+        m_stripUserVisible = true;
         m_panelStripDock->setVisible(true);
         return;
     }
@@ -4090,6 +4101,7 @@ void StoryboardPage::restorePanelStripState()
         }
         m_panelStripDock->setGeometry(geo);
     }
+    m_stripUserVisible = visible;
     m_panelStripDock->toggleViewAction()->setChecked(visible);
     m_panelStripDock->setVisible(visible);
 
