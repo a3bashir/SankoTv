@@ -665,7 +665,15 @@ private:
     void drawLightTable(QPainter &painter, const QRect &d) const;
 
     // Viewport: zoom + pan.
-    double m_zoom = 1.0;         // 0.25 .. 4.0
+    // Startup zoom: 85% of the letterbox fit — THE one place the startup
+    // camera is set. m_zoom is FIT-RELATIVE (scale = fit * m_zoom via
+    // displayRect()), so this is geometry-independent: no layout pass,
+    // resize, or show can recompute it, and nothing programmatic writes the
+    // camera at startup (fitToScreen runs only from the user's Fit button).
+    // Zoom is NOT persisted — every launch starts here; the ZoomToolbar
+    // reads viewZoom() at construction so its readout shows 85%.
+    static constexpr double kStartupZoom = 0.85;
+    double m_zoom = kStartupZoom; // 0.25 .. 4.0
     QPointF m_panOffset;         // screen-px offset from the centred position
     bool m_spaceHeld = false;    // spacebar pan modifier
     bool m_panning = false;      // mid-drag (space+left or middle button)
