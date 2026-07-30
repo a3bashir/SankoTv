@@ -1024,9 +1024,15 @@ protected:
         p.setCompositionMode(QPainter::CompositionMode_Source);
         p.fillRect(rect(), Qt::transparent); // clean gap + corners
         p.setCompositionMode(QPainter::CompositionMode_SourceOver);
-        p.setPen(Qt::NoPen);
+        // 1px #1a1a1a border, matching the other three floating toolbars
+        // (their Figma nodes specify it; 209:42 does not — deliberate
+        // divergence for consistency, see HANDOFF.md). Inset by half the pen
+        // width so the stroke stays entirely inside the layout rect.
+        const qreal bw = 1.0;
+        p.setPen(QPen(QColor(0x1a, 0x1a, 0x1a), bw));
         p.setBrush(QColor(0x21, 0x21, 0x21));
-        p.drawRoundedRect(QRectF(0, 0, kBarW, kBarH), 12, 12);
+        p.drawRoundedRect(QRectF(bw / 2.0, bw / 2.0, kBarW - bw, kBarH - bw),
+                          12, 12);
     }
 
     void leaveEvent(QEvent *) override

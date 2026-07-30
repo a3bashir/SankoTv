@@ -178,3 +178,20 @@ discarded. It remains UNMANAGED: it takes no part in margins, snapping, or
 collision resolution for itself, and acts only as a collision OBSTACLE for
 the three managed bars. All four floating toolbars now share one interaction
 model, and the Figma grab_CTL divergence noted above applies to all four.
+
+## Floating toolbars: the 4px edge margin is CORRECT — do not "fix" it
+
+2026-07-30: the 4px window margin was reported as missing on left/right
+snapping. It is not missing: at a diagnostic kMargin=20, all 16 bar x edge
+combinations showed exactly 20px of painted gap at native resolution, so the
+clamp runs on the real drag path and the geometry is exact. The gap is
+IMPERCEPTIBLE at 4px because the palette gives it nothing to read against:
+bar #212121 vs canvas gutter #0a0a0a is ~1.2:1 contrast, and the bars'
+1px #1a1a1a border (specified in Figma on 33:110 / 173:36 / 86:32, and
+present in code) sits BETWEEN those two values (~1.1:1 against each). Do not
+widen the margin or remove the border to "fix" this — the margin is
+verified geometry and the border is the Figma spec. Any legibility change is
+a deliberate design decision (brighter border or larger margin), not a bug
+fix. Related divergence: the Brush Size bar's Figma node 209:42 specifies NO
+border; the code gives it the same 1px #1a1a1a as the other three bars for
+consistency (drawn inside its bounds — the 46x574 layout rect is unchanged).
