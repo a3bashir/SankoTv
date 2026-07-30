@@ -6,6 +6,7 @@
 #include "FloatingToolWindow.h"
 #include <QApplication>
 #include <QCoreApplication>
+#include <QTimer>
 #endif
 
 #include "AnimaticPage.h"
@@ -232,6 +233,22 @@ MainWindow::MainWindow(QWidget *parent)
         dev->addAction(rec->markAction());
         menuBar()->setCornerWidget(rec->indicatorWidget(),
                                    Qt::TopRightCorner);
+        // Autostart (env-guarded): record from process start — startup
+        // sequencing (camera writes, dock restores) happens before any
+        // hotkey can arm the recorder. SANKOTV_DEVREC_AUTOSTART=<ms>
+        // optionally stops and quits after that many milliseconds, so a
+        // scripted startup-trail capture ends with a clean session summary.
+        if (qEnvironmentVariableIsSet("SANKOTV_DEVREC_AUTOSTART")) {
+            rec->startRecording();
+            bool ok = false;
+            const int ms =
+                qEnvironmentVariable("SANKOTV_DEVREC_AUTOSTART").toInt(&ok);
+            if (ok && ms > 0)
+                QTimer::singleShot(ms, this, [rec] {
+                    rec->stopRecording();
+                    QCoreApplication::quit();
+                });
+        }
     }
 #endif
 }
