@@ -150,6 +150,26 @@ DrawingCanvas::DrawingCanvas(QWidget *parent)
     m_titleSafeMaskPct =
         qBound(0, settings.value(QStringLiteral("camera/titleSafeOpacity"), 50).toInt(), 100);
 
+    // Initial working brush: the exact state the old stroke-start rebuild
+    // used to produce from the default slider values. With the working-brush
+    // model this is assembled ONCE here; the sliders edit fields afterward.
+    // (Guarded byte-for-byte by SankoCanvasBrushLock.)
+    {
+        ::Brush &b = m_paintEngine.brush();
+        b.setColor(m_color);
+        b.setSize(m_brushToolSize);
+        b.setSpacing(0.05);
+        b.setOpacity(m_brushToolOpacity);
+        b.setHardness(m_brushHardness);
+        b.sizePressureCurve().setControlPoints(
+            m_pressureToSize ? QVector<QPointF>{{0.0, 0.0}, {1.0, 1.0}}
+                             : QVector<QPointF>{{0.0, 1.0}, {1.0, 1.0}});
+        b.opacityPressureCurve().setControlPoints(
+            m_pressureToOpacity ? QVector<QPointF>{{0.0, 0.0}, {1.0, 1.0}}
+                                : QVector<QPointF>{{0.0, 1.0}, {1.0, 1.0}});
+        b.hardnessPressureCurve().setControlPoints({{0.0, 1.0}, {1.0, 1.0}});
+    }
+
     // Workspace grid: persisted view furniture + its show/hide shortcut.
     // Ctrl+' (unused elsewhere; the Photoshop grid-toggle convention).
     // WindowShortcut so it works without canvas focus; the handler ignores
@@ -928,14 +948,21 @@ void DrawingCanvas::setEraserOpacity(int percent)
 
 void DrawingCanvas::setPressureToSize(bool on)
 {
+    // The toggle writes its curve straight into the working brush. This
+    // deliberately OVERRIDES a preset's richer multi-point curve — the user
+    // flipped an explicit switch; re-selecting the preset restores it.
     m_pressureToSize = on;
-    syncPaintBrushSettings();
+    m_paintEngine.brush().sizePressureCurve().setControlPoints(
+        on ? QVector<QPointF>{{0.0, 0.0}, {1.0, 1.0}}
+           : QVector<QPointF>{{0.0, 1.0}, {1.0, 1.0}});
 }
 
 void DrawingCanvas::setPressureToOpacity(bool on)
 {
     m_pressureToOpacity = on;
-    syncPaintBrushSettings();
+    m_paintEngine.brush().opacityPressureCurve().setControlPoints(
+        on ? QVector<QPointF>{{0.0, 0.0}, {1.0, 1.0}}
+           : QVector<QPointF>{{0.0, 1.0}, {1.0, 1.0}});
 }
 
 QString DrawingCanvas::paintLayerKey(Panel *panel, const QString &layerId) const
@@ -945,20 +972,40 @@ QString DrawingCanvas::paintLayerKey(Panel *panel, const QString &layerId) const
 
 void DrawingCanvas::syncPaintBrushSettings()
 {
-    ::Brush &brush = m_paintEngine.brush();
-    brush.setColor(m_color);
-    brush.setSize(m_brushToolSize);
-    brush.setSpacing(0.05);
-    brush.setOpacity(m_brushToolOpacity);
-    brush.setHardness(m_brushHardness);
-    brush.sizePressureCurve().setControlPoints(
-        m_pressureToSize ? QVector<QPointF>{{0.0, 0.0}, {1.0, 1.0}}
-                         : QVector<QPointF>{{0.0, 1.0}, {1.0, 1.0}});
-    brush.opacityPressureCurve().setControlPoints(
-        m_pressureToOpacity ? QVector<QPointF>{{0.0, 0.0}, {1.0, 1.0}}
-                            : QVector<QPointF>{{0.0, 1.0}, {1.0, 1.0}});
-    brush.hardnessPressureCurve().setControlPoints(
-        {{0.0, 1.0}, {1.0, 1.0}});
+    // WORKING-BRUSH MODEL (Brush Library phase 3): the engine brush IS the
+    // canvas's brush state. Selecting a library preset copies the preset in
+    // wholesale (setPaintBrush); the sliders and pressure toggles edit
+    // FIELDS of that working copy as they move. Nothing is rebuilt at
+    // stroke start any more — historically this function reassembled
+    // colour, size, spacing and all three curves from four slider values,
+    // which would have clobbered every other parameter a preset carries.
+    // Colour is the one live-bound property: it belongs to the app's colour
+    // panel, not to brush identity, so it is re-asserted here.
+    m_paintEngine.brush().setColor(m_color);
+}
+
+void DrawingCanvas::setPaintBrush(const ::Brush &brush)
+{
+    // Library selection: the preset's FULL parameter set becomes the working
+    // brush (a copy — edits never write back into the preset). The slider
+    // mirrors resync so the Brush Options panel reflects the selection, and
+    // the pressure toggles mirror whether the preset's curves respond to
+    // pressure at all.
+    m_paintEngine.setBrush(brush);
+    m_brushToolSize = brush.size();
+    m_brushToolOpacity = brush.opacity();
+    m_brushHardness = brush.hardness();
+    // A preset with an identity colour (Blue Pencil, Sanguine...) adopts it
+    // as the app colour; black-ink presets keep the user's current colour.
+    if (brush.color() != QColor(Qt::black))
+        m_color = brush.color();
+    m_paintEngine.brush().setColor(m_color);
+    const auto respondsToPressure = [](const PressureCurve &curve) {
+        return curve.valueAt(0.0) < 0.99; // flat-at-1 = no pressure response
+    };
+    m_pressureToSize = respondsToPressure(brush.sizePressureCurve());
+    m_pressureToOpacity = respondsToPressure(brush.opacityPressureCurve());
+    emit paintBrushChanged();
 }
 
 void DrawingCanvas::pushPaintStroke(

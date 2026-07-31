@@ -2,6 +2,14 @@
 <RCC version="1.0">
     <qresource prefix="/">
         <file>assets/logo.png</file>
+        <file>icons/brushlib/chevron-down.svg</file>
+        <file>icons/brushlib/hourglass.svg</file>
+        <file>icons/brushlib/cat-sketching.svg</file>
+        <file>icons/brushlib/cat-drawing.svg</file>
+        <file>icons/brushlib/cat-inking.svg</file>
+        <file>icons/brushlib/cat-painting.svg</file>
+        <file>icons/brushlib/cat-artistic.svg</file>
+        <file>icons/brushlib/droplet.svg</file>
         <file>icons/add.svg</file>
         <file>icons/duplicate.svg</file>
         <file>icons/lighttable.svg</file>

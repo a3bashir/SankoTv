@@ -53,6 +53,12 @@ public:
     QString libraryName() const;
     void setLibraryName(const QString &name);
 
+    // Whole-library export: every visible preset (built-in and user) into
+    // one .sankobrushset bundle. Import walks the BrushImporter registry;
+    // returns the number of presets added (as user presets).
+    bool exportLibrary(const QString &path) const;
+    int importFile(const QString &path);
+
     QString userPresetDir() const;
 
 signals:

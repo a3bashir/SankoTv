@@ -203,6 +203,12 @@ public slots:
     void setBrushOpacity(int percent);   // 0..100
     void setBrushHardness(int percent);  // 0..100 (100 = sharp edge)
 
+    // Brush Library: replace the working paint brush with a preset's FULL
+    // parameter set (a copy — canvas edits never write back into the
+    // preset). Slider mirrors and pressure toggles resync; emits
+    // paintBrushChanged() so the Brush Options panel can follow.
+    void setPaintBrush(const ::Brush &brush);
+
     // Eraser settings — independent of the brush (per-tool Size CTL).
     void setEraserSize(int px);          // 1..200, canvas pixels
     void setEraserOpacity(int percent);  // 0..100 (erase strength)
@@ -296,6 +302,8 @@ signals:
     void panelEdited(Panel *panel);
     // The active tool switched (the per-tool Size CTL sliders re-sync).
     void toolChanged(int tool);
+    // A library preset replaced the working brush (sliders re-sync).
+    void paintBrushChanged();
     // A perspective VP was created, selected, or removed: the Perspective
     // Modifier toolbar re-syncs its per-VP sliders.
     void perspectiveEdited();

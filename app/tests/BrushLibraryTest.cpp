@@ -36,6 +36,23 @@
 //
 // Run: build/<config>/SankoBrushLibraryTest.exe (exit code = failure count;
 // report written to brushlib_test.txt in the working directory).
+//
+// RE-BASELINING THE COMBINED PREVIEW SHA — read before "fixing" a failure.
+// The combined SHA printed by (p1) fingerprints all 62 preview renders. It
+// changes LEGITIMATELY only when one of these changes on purpose:
+//   * a roster recipe (BuiltinRoster.cpp) — e.g. the Phase 4 settings studio
+//     editing built-in defaults,
+//   * the preview fixture (BrushPreviewRenderer: sample path, seed, sizing,
+//     background — bump kSwatchRevision when you do this),
+//   * the engine's rendering itself (which SankoPaintPixelLock also catches).
+// The procedure: (1) make the intended change; (2) run this test in BOTH
+// Debug and Release; (3) confirm the two configs print the SAME new SHA —
+// if they differ, you broke cross-config determinism, stop; (4) record the
+// new SHA in the commit message of the change that moved it, with one line
+// on why. The response to an UNEXPLAINED SHA change is to find the cause;
+// deleting or loosening the determinism assertion is never the fix. (This
+// project lost the Phase 4a baseline exactly once by keeping it outside the
+// tree — that is why the SHA and this procedure live HERE.)
 
 #include "BrushLibraryModel.h"
 #include "BrushPresetCodec.h"

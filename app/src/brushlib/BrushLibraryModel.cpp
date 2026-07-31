@@ -1,7 +1,10 @@
 #include "BrushLibraryModel.h"
 
+#include "BrushImporter.h"
 #include "BrushPresetCodec.h"
 #include "BuiltinRoster.h"
+
+#include <QDataStream>
 
 #include <QDir>
 #include <QFile>
@@ -226,6 +229,119 @@ void BrushLibraryModel::setLibraryName(const QString &name)
     appSettings().setValue(kKeyPrefix + QStringLiteral("name"),
                            m_libraryName);
     emit changed();
+}
+
+namespace {
+constexpr quint32 kSetMagic = 0x534E4B53; // "SNKS" bundle
+constexpr quint16 kSetVersion = 1;
+
+// The native importer: single .sankobrush presets and .sankobrushset
+// bundles. Registered once, lazily, before the first import.
+class SankoNativeImporter : public BrushImporter
+{
+public:
+    QString name() const override { return QStringLiteral("SankoTV"); }
+    bool probe(const QByteArray &bytes) const override
+    {
+        QDataStream s(bytes);
+        quint32 magic = 0;
+        s >> magic;
+        return magic == kSetMagic || magic == 0x534E4B50; // SNKP preset
+    }
+    QVector<BrushPreset> import(const QByteArray &bytes) const override
+    {
+        QVector<BrushPreset> out;
+        QDataStream s(bytes);
+        s.setVersion(QDataStream::Qt_6_5);
+        quint32 magic = 0;
+        s >> magic;
+        if (magic == kSetMagic) {
+            quint16 version = 0;
+            qint32 count = 0;
+            s >> version >> count;
+            if (version != kSetVersion)
+                return out;
+            for (qint32 i = 0; i < count && s.status() == QDataStream::Ok;
+                 ++i) {
+                QByteArray blob;
+                s >> blob;
+                BrushPreset p;
+                if (BrushPresetCodec::loadPreset(blob, p))
+                    out.append(std::move(p));
+            }
+        } else {
+            BrushPreset p;
+            if (BrushPresetCodec::loadPreset(bytes, p))
+                out.append(std::move(p));
+        }
+        return out;
+    }
+};
+
+void ensureNativeImporter()
+{
+    for (BrushImporter *imp : BrushImporter::importers())
+        if (imp->name() == QStringLiteral("SankoTV"))
+            return;
+    BrushImporter::registerImporter(new SankoNativeImporter);
+}
+
+QVector<BrushImporter *> &importerRegistry()
+{
+    static QVector<BrushImporter *> registry;
+    return registry;
+}
+} // namespace
+
+void BrushImporter::registerImporter(BrushImporter *importer)
+{
+    importerRegistry().append(importer);
+}
+
+const QVector<BrushImporter *> &BrushImporter::importers()
+{
+    return importerRegistry();
+}
+
+bool BrushLibraryModel::exportLibrary(const QString &path) const
+{
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+        return false;
+    QVector<const BrushPreset *> visible;
+    for (const BrushPreset &p : m_presets)
+        if (!m_hidden.contains(p.id))
+            visible.append(&p);
+    QByteArray bytes;
+    QDataStream s(&bytes, QIODevice::WriteOnly);
+    s.setVersion(QDataStream::Qt_6_5);
+    s << kSetMagic << kSetVersion << qint32(visible.size());
+    for (const BrushPreset *p : visible)
+        s << BrushPresetCodec::savePreset(*p);
+    f.write(bytes);
+    return true;
+}
+
+int BrushLibraryModel::importFile(const QString &path)
+{
+    ensureNativeImporter();
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly))
+        return 0;
+    const QByteArray bytes = f.readAll();
+    for (const BrushImporter *imp : BrushImporter::importers()) {
+        if (!imp->probe(bytes))
+            continue;
+        int added = 0;
+        const QVector<BrushPreset> presets = imp->import(bytes);
+        for (const BrushPreset &p : presets) {
+            BrushPreset copy = p; // imported presets land as USER presets
+            if (!addUserPreset(std::move(copy)).isEmpty())
+                ++added;
+        }
+        return added;
+    }
+    return 0;
 }
 
 QString BrushLibraryModel::userPresetDir() const

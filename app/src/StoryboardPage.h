@@ -10,6 +10,10 @@
 #include <QWidget>
 
 class ZoomToolbar;
+namespace brushlib {
+class BrushLibraryModel;
+class BrushLibraryPanel;
+}
 class QCheckBox;
 class QComboBox;
 class QHBoxLayout;
@@ -334,6 +338,9 @@ private:
     int m_iconRasterCount = 0; // seam metric: bucketed rasterizations
     DrawingCanvas *m_canvas = nullptr;
     ZoomToolbar *m_zoomToolbar = nullptr; // custom-painted view controls
+    brushlib::BrushLibraryModel *m_brushLibModel = nullptr;
+    brushlib::BrushLibraryPanel *m_brushLibPanel = nullptr;
+    QAction *m_brushLibViewAction = nullptr; // View menu toggle
     QScrollArea *m_panelScroll = nullptr;
     QPushButton *m_importButton = nullptr;
     // Brush settings panel (visible only while the Brush tool is active).

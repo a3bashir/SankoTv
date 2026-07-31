@@ -6,6 +6,8 @@
 #include "FloatingToolWindow.h"
 #include "SankoSlider.h"
 #include "ZoomToolbar.h"
+#include "brushlib/BrushLibraryModel.h"
+#include "brushlib/BrushLibraryPanel.h"
 #include "StoryboardModel.h"
 
 #include "docking/DockController.h"
@@ -2056,6 +2058,19 @@ void StoryboardPage::installDockViewActions()
         stripToggle->setText(QStringLiteral("Panel Strip"));
         viewMenu->addAction(stripToggle);
     }
+    // Brush Library: always recoverable from here; checked state follows
+    // the panel's visibility (wired when the panel is created).
+    m_brushLibViewAction = viewMenu->addAction(QStringLiteral("Brush Library"));
+    m_brushLibViewAction->setCheckable(true);
+    connect(m_brushLibViewAction, &QAction::triggered, this, [this](bool on) {
+        if (!m_brushLibPanel)
+            return;
+        if (on)
+            m_brushLibPanel->openAtDefault();
+        else
+            m_brushLibPanel->setVisible(false);
+    });
+
     // Panels submenu: per-dock toggles (reopen closed panels) plus
     // Show All / Hide All, provided by the docking controller.
     QMenu *panelsMenu = viewMenu->addMenu(QStringLiteral("Panels"));
@@ -2317,6 +2332,56 @@ QWidget *StoryboardPage::createCenterColumn()
     connect(m_canvas, &DrawingCanvas::viewZoomChanged, m_zoomToolbar, &ZoomToolbar::setZoom);
     m_zoomToolbar->show(); // records intent; effective when the canvas shows
 
+    // ---- Brush Library (Figma 245:23) --------------------------------
+    // Unmanaged floating panel over the canvas; selecting a brush applies
+    // its FULL parameter set as the canvas's working brush (a copy — canvas
+    // edits never write back into the preset).
+    m_brushLibModel = new brushlib::BrushLibraryModel(this);
+    m_brushLibPanel =
+        new brushlib::BrushLibraryPanel(m_brushLibModel, m_canvas, this);
+    connect(m_brushLibPanel, &brushlib::BrushLibraryPanel::brushActivated,
+            this, [this](const QString &id) {
+                if (const brushlib::BrushPreset *p =
+                        m_brushLibModel->preset(id))
+                    m_canvas->setPaintBrush(p->brush);
+            });
+    if (m_brushLibViewAction) {
+        connect(m_brushLibPanel,
+                &brushlib::BrushLibraryPanel::visibilityChanged,
+                m_brushLibViewAction, &QAction::setChecked);
+    }
+    // The Brush Options panel mirrors the working brush after a selection.
+    // QSignalBlocker everywhere: the sync must not loop back as edits (a
+    // checkbox writeback would overwrite a preset's multi-point curve).
+    connect(m_canvas, &DrawingCanvas::paintBrushChanged, this, [this] {
+        const ::Brush &b = m_canvas->paintBrush();
+        if (m_brushOpacitySlider) {
+            QSignalBlocker block(m_brushOpacitySlider);
+            m_brushOpacitySlider->setValue(qRound(b.opacity() * 100.0));
+        }
+        if (m_brushHardnessSlider) {
+            QSignalBlocker block(m_brushHardnessSlider);
+            m_brushHardnessSlider->setValue(qRound(b.hardness() * 100.0));
+        }
+        if (m_pressureSizeCheck) {
+            QSignalBlocker block(m_pressureSizeCheck);
+            m_pressureSizeCheck->setChecked(
+                b.sizePressureCurve().valueAt(0.0) < 0.99);
+        }
+        if (m_pressureOpacityCheck) {
+            QSignalBlocker block(m_pressureOpacityCheck);
+            m_pressureOpacityCheck->setChecked(
+                b.opacityPressureCurve().valueAt(0.0) < 0.99);
+        }
+    });
+    // Restore last-session visibility (records intent; effective with the
+    // canvas, like every floating tool window).
+    if (QSettings(QStringLiteral("SankoTV"), QStringLiteral("SankoTV"))
+            .value(QStringLiteral("storyboard/brushLibrary/v1/visible"),
+                   false)
+            .toBool())
+        m_brushLibPanel->openAtDefault();
+
     layout->addWidget(drawRow, 1);
 
     return column;
@@ -2395,6 +2460,22 @@ void StoryboardPage::createFloatingToolbar()
 
 
     bindTool(brushTool, DrawingCanvas::Brush);
+    // Re-clicking the ACTIVE Brush tool button toggles the Brush Library
+    // (approved open mechanism). "Active before the click" is captured on
+    // pressed(): by clicked() the exclusive group has already re-checked it.
+    {
+        auto wasBrushActive = std::make_shared<bool>(false);
+        connect(brushTool, &QPushButton::pressed, this,
+                [this, wasBrushActive] {
+                    *wasBrushActive = m_canvas
+                        && m_canvas->tool() == DrawingCanvas::Brush;
+                });
+        connect(brushTool, &QPushButton::clicked, this,
+                [this, wasBrushActive] {
+                    if (*wasBrushActive && m_brushLibPanel)
+                        m_brushLibPanel->toggleOpen();
+                });
+    }
     bindTool(eraser, DrawingCanvas::Eraser);
     bindTool(fill, DrawingCanvas::Fill);
     bindTool(move, DrawingCanvas::Move);
@@ -3160,6 +3241,18 @@ void StoryboardPage::createFloatingToolbar()
     // stored size/opacity and preset ticks (the canvas keeps both tools'
     // engine values in independent members — nothing to push back). Other
     // tools leave the sliders idle on the last brush-like state.
+    // A library preset updates the Brush slot of the per-tool cache and the
+    // visible sliders (silently — no engine writeback loop).
+    connect(m_canvas, &DrawingCanvas::paintBrushChanged, this,
+            [this, tc, sizeSlider, opacitySlider] {
+        const ::Brush &b = m_canvas->paintBrush();
+        tc->brush.size = qBound(1, b.size(), 200);
+        tc->brush.opacity = qBound(0, qRound(b.opacity() * 100.0), 100);
+        if (!tc->eraserMode) {
+            sizeSlider->setValue(tc->brush.size);
+            opacitySlider->setValue(tc->brush.opacity);
+        }
+    });
     connect(m_canvas, &DrawingCanvas::toolChanged, this,
             [tc, sizeSlider, opacitySlider, pill, pillHide](int tool) {
         if (tool != DrawingCanvas::Brush && tool != DrawingCanvas::Eraser)
