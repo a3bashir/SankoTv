@@ -156,6 +156,18 @@ public:
             update();
         }
     }
+    // Phase 4 dirty-state affordance: the working brush has been edited away
+    // from this (selected) preset. White dot after the name — the row's own
+    // background IS the accent, so an accent dot would vanish — plus a
+    // "Reset" chip that restores the pristine preset (the discoverable form
+    // of the re-select gesture).
+    void setDirty(bool on)
+    {
+        if (m_dirty != on) {
+            m_dirty = on;
+            update();
+        }
+    }
     void setSwatch(const QImage &image)
     {
         m_swatch = QPixmap::fromImage(image);
@@ -163,6 +175,7 @@ public:
     }
     std::function<void()> onClicked;
     std::function<void()> onDoubleClicked;
+    std::function<void()> onResetClicked;
     std::function<void(const QPoint &)> onContextMenu;
 
 protected:
@@ -186,11 +199,32 @@ protected:
         p.setPen(Qt::white);
         const int favW = m_favourite ? 14 : 0;
         const int sizeW = 44;
-        p.drawText(QRect(16, 12, width() - 32 - sizeW - favW, 16),
-                   Qt::AlignVCenter | Qt::AlignLeft,
-                   QFontMetrics(f).elidedText(
-                       m_name, Qt::ElideRight,
-                       width() - 32 - sizeW - favW));
+        const int resetW = m_dirty ? kResetChipW + 8 : 0;
+        const int nameW = width() - 32 - sizeW - favW - resetW
+            - (m_dirty ? 10 : 0);
+        const QString elided =
+            QFontMetrics(f).elidedText(m_name, Qt::ElideRight, nameW);
+        p.drawText(QRect(16, 12, nameW, 16),
+                   Qt::AlignVCenter | Qt::AlignLeft, elided);
+        if (m_dirty) {
+            // White dot right after the name: "you are no longer on stock".
+            const int textW = QFontMetrics(f).horizontalAdvance(elided);
+            p.setPen(Qt::NoPen);
+            p.setBrush(QColor(Qt::white));
+            p.drawEllipse(QRectF(16 + textW + 6, 17, 6, 6));
+            // Reset chip.
+            const QRect chip = resetChipRect();
+            p.setBrush(QColor(255, 255, 255, m_selected ? 46 : 28));
+            p.drawRoundedRect(chip, chip.height() / 2.0,
+                              chip.height() / 2.0);
+            QFont cf = f;
+            cf.setPixelSize(10);
+            cf.setWeight(QFont::DemiBold);
+            p.setFont(cf);
+            p.setPen(Qt::white);
+            p.drawText(chip, Qt::AlignCenter, QStringLiteral("Reset"));
+            p.setFont(f);
+        }
         // Size label: previews render at a normalised size, so the row
         // carries the real one.
         QFont sf = f;
@@ -231,10 +265,17 @@ protected:
     }
     void mousePressEvent(QMouseEvent *e) override
     {
-        if (e->button() == Qt::LeftButton && onClicked)
-            onClicked();
-        else if (e->button() == Qt::RightButton && onContextMenu)
+        if (e->button() == Qt::LeftButton) {
+            if (m_dirty && resetChipRect().contains(e->position().toPoint())
+                && onResetClicked) {
+                onResetClicked();
+                return;
+            }
+            if (onClicked)
+                onClicked();
+        } else if (e->button() == Qt::RightButton && onContextMenu) {
             onContextMenu(e->globalPosition().toPoint());
+        }
     }
     void mouseDoubleClickEvent(QMouseEvent *e) override
     {
@@ -243,12 +284,21 @@ protected:
     }
 
 private:
+    static constexpr int kResetChipW = 42;
+    QRect resetChipRect() const
+    {
+        const int favW = m_favourite ? 14 : 0;
+        return QRect(width() - 16 - 44 - favW - kResetChipW - 8, 11,
+                     kResetChipW, 18);
+    }
+
     QString m_id;
     QString m_name;
     int m_sizePx;
     bool m_smudge;
     bool m_selected = false;
     bool m_favourite = false;
+    bool m_dirty = false;
     bool m_hover = false;
     QPixmap m_swatch;
 };
@@ -422,6 +472,11 @@ void BrushLibraryPanel::rebuildBrushList()
         row->onDoubleClicked = [this, row] {
             emit brushSettingsRequested(row->presetId()); // Phase 4 studio
         };
+        row->onResetClicked = [this, row] {
+            // Reset = the discoverable form of the re-select gesture: the
+            // pristine preset replaces the edited working brush.
+            emit brushActivated(row->presetId());
+        };
         row->onContextMenu = [this, row](const QPoint &globalPos) {
             showRowMenu(row, globalPos);
         };
@@ -435,8 +490,19 @@ void BrushLibraryPanel::rebuildBrushList()
         row->setPreset(preset);
         row->setSelected(preset->id == m_selectedId);
         row->setFavourite(m_model->isFavourite(preset->id));
+        row->setDirty(preset->id == m_dirtyId);
         m_previews.requestPreview(preset->id, preset->brush);
     }
+}
+
+void BrushLibraryPanel::setActiveDirty(const QString &presetId, bool dirty)
+{
+    const QString id = dirty ? presetId : QString();
+    if (id == m_dirtyId)
+        return;
+    m_dirtyId = id;
+    for (BrushRow *row : m_brushRows)
+        row->setDirty(row->presetId() == m_dirtyId);
 }
 
 void BrushLibraryPanel::showRowMenu(BrushRow *row, const QPoint &globalPos)

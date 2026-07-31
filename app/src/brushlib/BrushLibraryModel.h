@@ -40,7 +40,8 @@ public:
 
     bool isHidden(const QString &id) const;
     void setBuiltinHidden(const QString &id, bool hidden); // "delete"
-    void restoreDefaultBrushes(); // unhide all built-ins, drop renames
+    // Unhide all built-ins, drop renames AND brush overrides (stock roster).
+    void restoreDefaultBrushes();
 
     // User preset CRUD. addUserPreset assigns a fresh user id, writes the
     // .sankobrush file, and returns the id (empty on failure).
@@ -48,7 +49,12 @@ public:
     bool removeUserPreset(const QString &id); // deletes the file
     bool renamePreset(const QString &id, const QString &name);
     QString duplicatePreset(const QString &id); // -> user copy "<name> Copy"
-    bool updateBrush(const QString &id, const ::Brush &brush); // user only
+    // Studio "Done": replace a preset's brush. User presets rewrite their
+    // file; BUILT-INS are never destroyed — the edit lands as an OVERRIDE
+    // file (Overrides/ next to the user presets) applied over the in-code
+    // roster at load, so Restore Default Brushes always recovers stock.
+    bool updateBrush(const QString &id, const ::Brush &brush);
+    bool hasBuiltinOverride(const QString &id) const;
 
     QString libraryName() const;
     void setLibraryName(const QString &name);
@@ -67,9 +73,12 @@ signals:
 private:
     void loadUserPresets();
     void loadShelfState();
+    void loadBuiltinOverrides();
     void saveShelfList(const char *key, const QStringList &list) const;
     bool writeUserPresetFile(const BrushPreset &preset) const;
     QString presetFilePath(const QString &id) const;
+    QString overrideDir() const;
+    QString overrideFilePath(const QString &id) const;
 
     QVector<BrushPreset> m_presets; // built-ins then user presets
     QHash<QString, int> m_byId;
@@ -77,6 +86,7 @@ private:
     QStringList m_hidden;
     QStringList m_recent;
     QHash<QString, QString> m_builtinRenames;
+    QStringList m_overridden; // built-in ids with a brush override on disk
     QString m_libraryName;
 };
 

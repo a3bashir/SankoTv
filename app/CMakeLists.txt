@@ -98,6 +98,12 @@ qt_add_executable(SankoTV
     src/brushlib/BrushImporter.h
     src/brushlib/BrushLibraryPanel.cpp
     src/brushlib/BrushLibraryPanel.h
+    src/brushlib/StudioControls.cpp
+    src/brushlib/StudioControls.h
+    src/brushlib/ScratchCanvas.cpp
+    src/brushlib/ScratchCanvas.h
+    src/brushlib/BrushSettingsStudio.cpp
+    src/brushlib/BrushSettingsStudio.h
     resources.qrc
 )
 

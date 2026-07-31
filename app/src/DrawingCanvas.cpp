@@ -150,6 +150,14 @@ DrawingCanvas::DrawingCanvas(QWidget *parent)
     m_titleSafeMaskPct =
         qBound(0, settings.value(QStringLiteral("camera/titleSafeOpacity"), 50).toInt(), 100);
 
+    // App-level stroke stabilization (Brush Settings studio > Smoothing).
+    // 0 by default: the input path is byte-identical to the pre-studio app.
+    m_strokeStabilization = qBound(
+        0.0,
+        settings.value(QStringLiteral("paint/v1/stabilization"), 0.0)
+            .toDouble(),
+        1.0);
+
     // Initial working brush: the exact state the old stroke-start rebuild
     // used to produce from the default slider values. With the working-brush
     // model this is assembled ONCE here; the sliders edit fields afterward.
@@ -922,18 +930,21 @@ void DrawingCanvas::setBrushToolSize(int px)
 {
     m_brushToolSize = qBound(1, px, 200);
     m_paintEngine.brush().setSize(m_brushToolSize);
+    emit paintBrushEdited();
 }
 
 void DrawingCanvas::setBrushOpacity(int percent)
 {
     m_brushToolOpacity = qBound(0, percent, 100) / 100.0;
     m_paintEngine.brush().setOpacity(m_brushToolOpacity);
+    emit paintBrushEdited();
 }
 
 void DrawingCanvas::setBrushHardness(int percent)
 {
     m_brushHardness = qBound(0, percent, 100) / 100.0;
     m_paintEngine.brush().setHardness(m_brushHardness);
+    emit paintBrushEdited();
 }
 
 void DrawingCanvas::setEraserSize(int px)
@@ -955,6 +966,7 @@ void DrawingCanvas::setPressureToSize(bool on)
     m_paintEngine.brush().sizePressureCurve().setControlPoints(
         on ? QVector<QPointF>{{0.0, 0.0}, {1.0, 1.0}}
            : QVector<QPointF>{{0.0, 1.0}, {1.0, 1.0}});
+    emit paintBrushEdited();
 }
 
 void DrawingCanvas::setPressureToOpacity(bool on)
@@ -963,6 +975,7 @@ void DrawingCanvas::setPressureToOpacity(bool on)
     m_paintEngine.brush().opacityPressureCurve().setControlPoints(
         on ? QVector<QPointF>{{0.0, 0.0}, {1.0, 1.0}}
            : QVector<QPointF>{{0.0, 1.0}, {1.0, 1.0}});
+    emit paintBrushEdited();
 }
 
 QString DrawingCanvas::paintLayerKey(Panel *panel, const QString &layerId) const
@@ -982,6 +995,31 @@ void DrawingCanvas::syncPaintBrushSettings()
     // Colour is the one live-bound property: it belongs to the app's colour
     // panel, not to brush identity, so it is re-asserted here.
     m_paintEngine.brush().setColor(m_color);
+}
+
+void DrawingCanvas::setStrokeStabilization(double amount)
+{
+    m_strokeStabilization = qBound(0.0, amount, 1.0);
+}
+
+QPointF DrawingCanvas::stabilizeStrokePoint(const QPointF &raw,
+                                            bool strokeBegin)
+{
+    // OFF is a full bypass, not a zero-strength filter: with the studio's
+    // Smoothing slider at 0 the live input path is byte-identical to the
+    // pre-studio application.
+    if (m_strokeStabilization <= 0.0)
+        return raw;
+    if (strokeBegin) {
+        m_stabPoint = raw; // anchor: the stroke starts where the pen touched
+        return raw;
+    }
+    // Position EMA. Runs BEFORE QuickShape and the engine's own fixed
+    // smoothing see the point, so recognition, the rough stroke, and the
+    // stamps all agree on the same filtered path.
+    const qreal alpha = 1.0 - 0.92 * m_strokeStabilization;
+    m_stabPoint += (raw - m_stabPoint) * alpha;
+    return m_stabPoint;
 }
 
 void DrawingCanvas::setPaintBrush(const ::Brush &brush)
@@ -5487,7 +5525,8 @@ void DrawingCanvas::mousePressEvent(QMouseEvent *event)
         // Mouse strokes carry no pressure: fixed 1.0 (tablets use tabletEvent).
         beginLayerEdit();
         m_brushStroke = true;
-        const QPointF pt = toCanvasF(event->position());
+        const QPointF pt =
+            stabilizeStrokePoint(toCanvasF(event->position()), true);
         if (m_quickShapeEnabled) {
             applyQuickShapeTiming();
             captureQuickShapeBrush();
@@ -5659,11 +5698,14 @@ void DrawingCanvas::mouseMoveEvent(QMouseEvent *event)
         return;
     }
     if (m_brushStroke) {
+        // Stabilize BEFORE the perspective snap so a snapped stroke stays
+        // exactly on its ray; QuickShape and the engine receive the same
+        // filtered point (mouse: fixed pressure).
+        const QPointF pt = m_perspective.snapPoint(
+            stabilizeStrokePoint(toCanvasF(event->position()), false));
         if (m_quickShapeEnabled)
-            m_quickShape.pointerMove(
-                m_perspective.snapPoint(toCanvasF(event->position())), 1.0);
-        moveBrushStroke(m_perspective.snapPoint(toCanvasF(event->position())),
-                        1.0); // mouse: fixed pressure; snapped to a VP ray
+            m_quickShape.pointerMove(pt, 1.0);
+        moveBrushStroke(pt, 1.0);
         return;
     }
     if (m_drawing) {
@@ -5929,7 +5971,8 @@ void DrawingCanvas::tabletEvent(QTabletEvent *event)
             && editableActiveLayer() && !m_paintCommitPending) {
             beginLayerEdit();
             m_brushStroke = true;
-            const QPointF pt = toCanvasF(event->position());
+            const QPointF pt =
+                stabilizeStrokePoint(toCanvasF(event->position()), true);
             if (m_quickShapeEnabled) {
                 applyQuickShapeTiming();
                 captureQuickShapeBrush();
@@ -5947,8 +5990,9 @@ void DrawingCanvas::tabletEvent(QTabletEvent *event)
             m_quickShape.pointerMove(toCanvasF(event->position()),
                                      event->pressure());
         } else if (m_brushStroke) {
-            const QPointF pt =
-                m_perspective.snapPoint(toCanvasF(event->position()));
+            // Stabilize before the snap (same order as the mouse path).
+            const QPointF pt = m_perspective.snapPoint(stabilizeStrokePoint(
+                toCanvasF(event->position()), false));
             if (m_quickShapeEnabled)
                 m_quickShape.pointerMove(pt, event->pressure());
             moveBrushStroke(pt, event->pressure(), event->xTilt(), event->yTilt(),

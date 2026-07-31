@@ -13,6 +13,7 @@ class ZoomToolbar;
 namespace brushlib {
 class BrushLibraryModel;
 class BrushLibraryPanel;
+class BrushSettingsStudio;
 }
 class QCheckBox;
 class QComboBox;
@@ -340,7 +341,11 @@ private:
     ZoomToolbar *m_zoomToolbar = nullptr; // custom-painted view controls
     brushlib::BrushLibraryModel *m_brushLibModel = nullptr;
     brushlib::BrushLibraryPanel *m_brushLibPanel = nullptr;
+    brushlib::BrushSettingsStudio *m_brushStudio = nullptr; // Figma 274:23
+    QString m_activeBrushPresetId; // last library selection (dirty tracking)
     QAction *m_brushLibViewAction = nullptr; // View menu toggle
+    bool brushStudioUnderCursor() const; // Ctrl+Z routing (studio-local undo)
+    void refreshBrushDirtyState();       // white dot + Reset chip on the row
     QScrollArea *m_panelScroll = nullptr;
     QPushButton *m_importButton = nullptr;
     // Brush settings panel (visible only while the Brush tool is active).

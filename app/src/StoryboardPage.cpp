@@ -8,6 +8,8 @@
 #include "ZoomToolbar.h"
 #include "brushlib/BrushLibraryModel.h"
 #include "brushlib/BrushLibraryPanel.h"
+#include "brushlib/BrushPresetCodec.h"
+#include "brushlib/BrushSettingsStudio.h"
 #include "StoryboardModel.h"
 
 #include "docking/DockController.h"
@@ -2342,9 +2344,43 @@ QWidget *StoryboardPage::createCenterColumn()
     connect(m_brushLibPanel, &brushlib::BrushLibraryPanel::brushActivated,
             this, [this](const QString &id) {
                 if (const brushlib::BrushPreset *p =
-                        m_brushLibModel->preset(id))
+                        m_brushLibModel->preset(id)) {
+                    m_activeBrushPresetId = id;
                     m_canvas->setPaintBrush(p->brush);
+                    refreshBrushDirtyState();
+                }
             });
+
+    // ---- Brush Settings studio (Figma 274:23) ------------------------
+    // Double-clicking a library row opens the full-parameter editor.
+    m_brushStudio = new brushlib::BrushSettingsStudio(m_brushLibModel,
+                                                      m_canvas, this);
+    connect(m_brushLibPanel,
+            &brushlib::BrushLibraryPanel::brushSettingsRequested,
+            m_brushStudio, &brushlib::BrushSettingsStudio::openForPreset);
+    // Done on the preset the canvas is currently using: the canvas adopts
+    // the committed version (the working copy would otherwise show stale
+    // parameters under the preset's name).
+    connect(m_brushStudio, &brushlib::BrushSettingsStudio::presetCommitted,
+            this, [this](const QString &id) {
+                if (id != m_activeBrushPresetId)
+                    return;
+                if (const brushlib::BrushPreset *p =
+                        m_brushLibModel->preset(id)) {
+                    m_canvas->setPaintBrush(p->brush);
+                    refreshBrushDirtyState();
+                }
+            });
+    // App-level stabilization (Smoothing section) applies live; the canvas
+    // loads the persisted value itself at startup.
+    connect(m_brushStudio,
+            &brushlib::BrushSettingsStudio::stabilizationChanged, m_canvas,
+            &DrawingCanvas::setStrokeStabilization);
+    // Dirty-state affordance: slider/toggle edits to the working brush mark
+    // the active preset's row (white dot + Reset chip). Colour never
+    // counts — it is app-global, normalized out of the comparison.
+    connect(m_canvas, &DrawingCanvas::paintBrushEdited, this,
+            [this] { refreshBrushDirtyState(); });
     if (m_brushLibViewAction) {
         connect(m_brushLibPanel,
                 &brushlib::BrushLibraryPanel::visibilityChanged,
@@ -4894,14 +4930,57 @@ void StoryboardPage::perspectiveFromJson(const QJsonObject &object)
 // Undo/Redo drive the DRAWING history (same as the Brush-bar buttons);
 // Undo/Redo Selection drive the canvas's separate SELECTION history.
 
+// Studio undo routing: while the cursor is over the open Brush Settings
+// studio, Ctrl+Z/Ctrl+Y drive the STUDIO's local stack (per-field brush
+// edits) — undo where you point. Everywhere else the app-wide document
+// history behaves exactly as before; the two stacks never mix.
+bool StoryboardPage::brushStudioUnderCursor() const
+{
+    return m_brushStudio && m_brushStudio->isVisible()
+        && m_brushStudio->geometry().contains(QCursor::pos());
+}
+
+// Dirty = the canvas's working brush no longer matches the active preset,
+// COLOUR EXCLUDED: colour is app-global (Phase 3), so painting in a new
+// colour must never flag "no longer stock Studio Pen". Both brushes are
+// colour-normalized before the byte comparison.
+void StoryboardPage::refreshBrushDirtyState()
+{
+    if (!m_brushLibPanel || !m_canvas)
+        return;
+    const brushlib::BrushPreset *p =
+        m_activeBrushPresetId.isEmpty()
+        ? nullptr
+        : m_brushLibModel->preset(m_activeBrushPresetId);
+    if (!p) {
+        m_brushLibPanel->setActiveDirty(QString(), false);
+        return;
+    }
+    ::Brush working = m_canvas->paintBrush();
+    ::Brush stock = p->brush;
+    working.setColor(Qt::black);
+    stock.setColor(Qt::black);
+    const bool dirty = brushlib::BrushPresetCodec::saveBrush(working)
+        != brushlib::BrushPresetCodec::saveBrush(stock);
+    m_brushLibPanel->setActiveDirty(m_activeBrushPresetId, dirty);
+}
+
 void StoryboardPage::editUndo()
 {
+    if (brushStudioUnderCursor()) {
+        m_brushStudio->undoStack()->undo();
+        return;
+    }
     if (m_canvas)
         m_canvas->undo();
 }
 
 void StoryboardPage::editRedo()
 {
+    if (brushStudioUnderCursor()) {
+        m_brushStudio->undoStack()->redo();
+        return;
+    }
     if (m_canvas)
         m_canvas->redo();
 }

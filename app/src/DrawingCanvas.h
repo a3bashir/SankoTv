@@ -209,6 +209,14 @@ public slots:
     // paintBrushChanged() so the Brush Options panel can follow.
     void setPaintBrush(const ::Brush &brush);
 
+    // APP-LEVEL stroke stabilization (Brush Settings studio, Smoothing
+    // section — option (c)): an input-position EMA applied to LIVE brush
+    // strokes only, before QuickShape and the engine see the points. 0 (the
+    // default) bypasses the filter entirely — the legacy input path stays
+    // byte-identical. Never per-brush, never serialized into presets; the
+    // QuickShape replay and undo replay paths are untouched.
+    void setStrokeStabilization(double amount); // 0..1, QSettings-backed
+
     // Eraser settings — independent of the brush (per-tool Size CTL).
     void setEraserSize(int px);          // 1..200, canvas pixels
     void setEraserOpacity(int percent);  // 0..100 (erase strength)
@@ -304,6 +312,10 @@ signals:
     void toolChanged(int tool);
     // A library preset replaced the working brush (sliders re-sync).
     void paintBrushChanged();
+    // A slider/toggle field-edited the working brush (dirty-state tracking;
+    // colour is deliberately NOT included — it is app-global, not brush
+    // identity, and must never mark a preset dirty).
+    void paintBrushEdited();
     // A perspective VP was created, selected, or removed: the Perspective
     // Modifier toolbar re-syncs its per-VP sliders.
     void perspectiveEdited();
@@ -646,6 +658,11 @@ private:
     // for the render's flight time after every release.
     QImage m_pendingPreview; // canvas-space region, premultiplied
     QRect m_pendingPreviewRect;
+
+    // App-level input stabilization (see setStrokeStabilization).
+    QPointF stabilizeStrokePoint(const QPointF &raw, bool strokeBegin);
+    double m_strokeStabilization = 0.0; // 0 = filter fully bypassed
+    QPointF m_stabPoint;                // EMA state, reset at stroke begin
 
     // Brush engine state. Defaults mirror the initial settings-panel values.
     int m_brushToolSize = 25;        // dab diameter, canvas px

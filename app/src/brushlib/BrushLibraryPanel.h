@@ -38,6 +38,12 @@ public:
     void openAtDefault();
     void toggleOpen();
 
+    // Phase 4 dirty-state affordance: the page reports when the canvas's
+    // working brush has been edited away from the named preset (colour is
+    // app-global and never counts). The matching row shows a white dot and
+    // a "Reset" chip; Reset re-emits brushActivated — the pristine preset.
+    void setActiveDirty(const QString &presetId, bool dirty);
+
 signals:
     // A brush was selected: the canvas applies preset.brush wholesale.
     void brushActivated(const QString &presetId);
@@ -72,6 +78,7 @@ private:
     BrushPreviewRenderer m_previews;
     QString m_category = QStringLiteral("Recent");
     QString m_selectedId;
+    QString m_dirtyId; // preset whose row shows the dirty dot + Reset chip
 
     QLabel *m_titleLabel = nullptr;
     QWidget *m_headerWidget = nullptr;

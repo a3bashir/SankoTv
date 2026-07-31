@@ -41,6 +41,9 @@ BrushLibraryModel::BrushLibraryModel(QObject *parent)
          ++it)
         if (const int idx = m_byId.value(it.key(), -1); idx >= 0)
             m_presets[idx].name = it.value();
+    // Built-in BRUSH overrides (studio "Done" on a built-in) apply the same
+    // way: over the in-code roster, never into it.
+    loadBuiltinOverrides();
 }
 
 QStringList BrushLibraryModel::categories()
@@ -135,8 +138,13 @@ void BrushLibraryModel::restoreDefaultBrushes()
             for (const BrushPreset &stock : builtinRoster())
                 if (stock.id == p.id) {
                     p.name = stock.name;
+                    p.brush = stock.brush; // drop any studio override
                     break;
                 }
+    const QStringList overridden = m_overridden;
+    for (const QString &id : overridden)
+        QFile::remove(overrideFilePath(id));
+    m_overridden.clear();
     saveShelfList("hidden", m_hidden);
     appSettings().remove(kKeyPrefix + QStringLiteral("renames"));
     emit changed();
@@ -208,12 +216,33 @@ QString BrushLibraryModel::duplicatePreset(const QString &id)
 bool BrushLibraryModel::updateBrush(const QString &id, const ::Brush &brush)
 {
     const int idx = m_byId.value(id, -1);
-    if (idx < 0 || m_presets.at(idx).builtin)
+    if (idx < 0)
         return false;
-    m_presets[idx].brush = brush;
-    const bool ok = writeUserPresetFile(m_presets.at(idx));
+    BrushPreset &p = m_presets[idx];
+    p.brush = brush;
+    bool ok = false;
+    if (p.builtin) {
+        // Never destroy the stock recipe: the edit is an override FILE the
+        // constructor applies over the in-code roster. Restore Default
+        // Brushes deletes these files and the stock brush returns.
+        QDir().mkpath(overrideDir());
+        QFile f(overrideFilePath(id));
+        if (f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            f.write(BrushPresetCodec::savePreset(p));
+            ok = true;
+            if (!m_overridden.contains(id))
+                m_overridden.append(id);
+        }
+    } else {
+        ok = writeUserPresetFile(p);
+    }
     emit changed();
     return ok;
+}
+
+bool BrushLibraryModel::hasBuiltinOverride(const QString &id) const
+{
+    return m_overridden.contains(id);
 }
 
 QString BrushLibraryModel::libraryName() const
@@ -369,6 +398,28 @@ void BrushLibraryModel::loadUserPresets()
     }
 }
 
+void BrushLibraryModel::loadBuiltinOverrides()
+{
+    QDir dir(overrideDir());
+    if (!dir.exists())
+        return;
+    const QStringList files = dir.entryList(
+        {QStringLiteral("*.sankobrush")}, QDir::Files, QDir::Name);
+    for (const QString &file : files) {
+        QFile f(dir.filePath(file));
+        if (!f.open(QIODevice::ReadOnly))
+            continue;
+        BrushPreset loaded;
+        if (!BrushPresetCodec::loadPreset(f.readAll(), loaded))
+            continue;
+        const int idx = m_byId.value(loaded.id, -1);
+        if (idx < 0 || !m_presets.at(idx).builtin)
+            continue; // stale override for a roster entry that no longer exists
+        m_presets[idx].brush = loaded.brush;
+        m_overridden.append(loaded.id);
+    }
+}
+
 void BrushLibraryModel::loadShelfState()
 {
     QSettings s = appSettings();
@@ -409,6 +460,19 @@ QString BrushLibraryModel::presetFilePath(const QString &id) const
     QString name = id;
     name.replace(QLatin1Char('/'), QLatin1Char('_'));
     return userPresetDir() + QLatin1Char('/') + name
+        + QStringLiteral(".sankobrush");
+}
+
+QString BrushLibraryModel::overrideDir() const
+{
+    return userPresetDir() + QStringLiteral("/Overrides");
+}
+
+QString BrushLibraryModel::overrideFilePath(const QString &id) const
+{
+    QString name = id;
+    name.replace(QLatin1Char('/'), QLatin1Char('_'));
+    return overrideDir() + QLatin1Char('/') + name
         + QStringLiteral(".sankobrush");
 }
 
