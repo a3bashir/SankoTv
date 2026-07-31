@@ -138,6 +138,24 @@ qt_add_executable(SankoBrushLibraryTest
 target_include_directories(SankoBrushLibraryTest PRIVATE src src/brushlib)
 target_link_libraries(SankoBrushLibraryTest PRIVATE SankoPaint::Engine)
 
+# Permanent canvas brush-ASSEMBLY lock (tests/CanvasBrushLockTest.cpp): the
+# pixel lock guards the render path with its own Brush; this guards the
+# DrawingCanvas slider slots that assemble the working paint brush. Fixture
+# and baseline hash are pinned in the test file.
+# Run: build/<config>/SankoCanvasBrushLock.exe (exit code = failure count).
+qt_add_executable(SankoCanvasBrushLock
+    tests/CanvasBrushLockTest.cpp
+    src/DrawingCanvas.cpp
+    src/DrawingCanvas.h
+    src/PerspectiveTool.cpp
+    src/PerspectiveTool.h
+    src/SankoPaintHostAdapter.cpp
+    src/SankoPaintHostAdapter.h
+)
+target_include_directories(SankoCanvasBrushLock PRIVATE src)
+target_link_libraries(SankoCanvasBrushLock PRIVATE Qt6::Widgets Qt6::Svg
+    Qt6::Concurrent QuickShape::Kit SankoPaint::Engine)
+
 # --- Developer recorder (TEMP) -----------------------------------------------
 # Temporary bug-capture tool; remove by deleting app/src/devrecorder/ and
 # THIS block (plus the one guarded block in MainWindow.cpp).
