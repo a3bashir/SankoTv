@@ -48,6 +48,17 @@
 static const char kBaselineAssembly[] =
     "666f7b455228e18020ad6b4967740de762e559140e8e52c98ddb415a9f91547a";
 
+// SECOND FIXTURE (Phase 4): mid-range slider values — opacity 50 %,
+// hardness 40 %, size 7 px, pressure toggles OFF. The first fixture pins
+// opacity and hardness at their range ENDPOINTS, where almost any
+// slider->field mapping produces the same result (s/100 and (s/100)^2 agree
+// at 0 and 100). This fixture pins the interior of the mapping, so a
+// nonlinear regression that still passes the endpoint fixture fails here.
+// Captured from the Phase 3 working-brush pipeline; the same
+// change-deliberately-and-record rule applies.
+static const char kBaselineAssemblyMidRange[] =
+    "cafcec7f7288c2ac29fb09a7bbf83de6cbcbf20c5cb5a66fba478770b94767df";
+
 static QString shaHex(const QImage &img)
 {
     const QImage n = img.convertToFormat(QImage::Format_ARGB32);
@@ -127,6 +138,19 @@ int main(int argc, char **argv)
     canvas2->setPressureToOpacity(true);
     check("assembly is deterministic across canvas instances",
           renderWith(canvas2->paintBrush()) == h, h);
+
+    // Mid-range fixture: interior slider values through the same public
+    // slots (toggles last, OFF — the flat-curve branch of both toggles).
+    auto canvas3 = std::make_unique<DrawingCanvas>();
+    canvas3->setColor(QColor(0, 0, 0, 255));
+    canvas3->setBrushToolSize(7);
+    canvas3->setBrushOpacity(50);
+    canvas3->setBrushHardness(40);
+    canvas3->setPressureToSize(false);
+    canvas3->setPressureToOpacity(false);
+    const QString hm = renderWith(canvas3->paintBrush());
+    check("mid-range slider values render the pinned baseline",
+          hm == QLatin1String(kBaselineAssemblyMidRange), hm);
 
     return failures;
 }
