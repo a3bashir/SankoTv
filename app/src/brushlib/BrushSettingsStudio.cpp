@@ -1152,9 +1152,37 @@ void BrushSettingsStudio::doneClicked()
 {
     if (m_presetId.isEmpty())
         return;
-    m_model->updateBrush(m_presetId, m_session);
-    emit presetCommitted(m_presetId);
-    setVisible(false);
+    // FAILURE IS NOT SILENT (phase 5 defect D4): Done closes only on a
+    // confirmed write. On any failure the studio stays open with the
+    // session intact, and the message names what actually went wrong.
+    if (m_model->updateBrush(m_presetId, m_session)) {
+        emit presetCommitted(m_presetId);
+        setVisible(false);
+        return;
+    }
+    if (!m_model->preset(m_presetId)) {
+        // The preset was deleted from the library behind this session. The
+        // edits still exist HERE — Save Variation is the recovery path.
+        QMessageBox box(QMessageBox::Warning, tr("Brush Settings"),
+                        tr("\"%1\" no longer exists in the library — it was "
+                           "deleted while this editor was open.\n\nYour "
+                           "edits are still here. Save them as a new brush?")
+                            .arg(m_presetName),
+                        QMessageBox::NoButton, this);
+        QPushButton *saveBtn = box.addButton(tr("Save Variation"),
+                                             QMessageBox::AcceptRole);
+        box.addButton(tr("Keep Editing"), QMessageBox::RejectRole);
+        box.exec();
+        if (box.clickedButton() == saveBtn)
+            saveVariationClicked();
+        return;
+    }
+    QMessageBox::warning(
+        this, tr("Brush Settings"),
+        tr("Could not save \"%1\" — the preset file could not be written "
+           "(the folder may be read-only or the disk full).\n\nYour edits "
+           "are still here; nothing was saved.")
+            .arg(m_presetName));
 }
 
 void BrushSettingsStudio::saveVariationClicked()
@@ -1166,8 +1194,17 @@ void BrushSettingsStudio::saveVariationClicked()
     variation.category = m_presetCategory;
     variation.brush = m_session;
     const QString newId = m_model->addUserPreset(std::move(variation));
-    if (!newId.isEmpty())
-        emit variationSaved(newId);
+    if (newId.isEmpty()) {
+        // Same contract as Done (D4): a failed write never closes the
+        // studio and never pretends it saved.
+        QMessageBox::warning(
+            this, tr("Brush Settings"),
+            tr("Could not save the variation — the preset file could not "
+               "be written (the folder may be read-only or the disk "
+               "full).\n\nYour edits are still here; nothing was saved."));
+        return;
+    }
+    emit variationSaved(newId);
     setVisible(false);
 }
 

@@ -8,6 +8,7 @@
 
 #include <QDir>
 #include <QFile>
+#include <QSaveFile>
 #include <QSettings>
 #include <QStandardPaths>
 #include <QUuid>
@@ -25,10 +26,28 @@ QSettings appSettings()
     return QSettings(QStringLiteral("SankoTV"), QStringLiteral("SankoTV"));
 }
 
+// The single atomic file write (D3): QSaveFile writes an adjacent temp file
+// and commits by rename, so the target is either the old bytes or the new
+// bytes — never a truncation. Returns false without touching the target on
+// any failure (unwritable directory, read-only target, disk full).
+bool atomicWrite(const QString &path, const QByteArray &bytes)
+{
+    QSaveFile f(path);
+    if (!f.open(QIODevice::WriteOnly))
+        return false;
+    if (f.write(bytes) != bytes.size()) {
+        f.cancelWriting();
+        return false;
+    }
+    return f.commit();
+}
+
 } // namespace
 
-BrushLibraryModel::BrushLibraryModel(QObject *parent)
+BrushLibraryModel::BrushLibraryModel(QObject *parent,
+                                     const QString &rootOverride)
     : QObject(parent)
+    , m_rootOverride(rootOverride)
 {
     m_presets = builtinRoster();
     loadUserPresets();
@@ -133,18 +152,30 @@ void BrushLibraryModel::restoreDefaultBrushes()
 {
     m_hidden.clear();
     m_builtinRenames.clear();
+    // DISK FIRST (D3): a brush override is dropped from memory only when
+    // its file is actually gone — otherwise the file would resurrect the
+    // override at the next restart while the UI claimed stock. An override
+    // whose file cannot be removed stays applied, consistently, in both.
+    const QStringList overridden = m_overridden;
+    QStringList stillOverridden;
+    for (const QString &id : overridden) {
+        const QString path = overrideFilePath(id);
+        if (QFile::exists(path) && !QFile::remove(path)) {
+            stillOverridden.append(id);
+            continue;
+        }
+    }
+    m_overridden = stillOverridden;
+    const QVector<BrushPreset> roster = builtinRoster();
     for (BrushPreset &p : m_presets)
         if (p.builtin)
-            for (const BrushPreset &stock : builtinRoster())
+            for (const BrushPreset &stock : roster)
                 if (stock.id == p.id) {
                     p.name = stock.name;
-                    p.brush = stock.brush; // drop any studio override
+                    if (!m_overridden.contains(p.id))
+                        p.brush = stock.brush; // override gone: stock returns
                     break;
                 }
-    const QStringList overridden = m_overridden;
-    for (const QString &id : overridden)
-        QFile::remove(overrideFilePath(id));
-    m_overridden.clear();
     saveShelfList("hidden", m_hidden);
     appSettings().remove(kKeyPrefix + QStringLiteral("renames"));
     emit changed();
@@ -168,7 +199,11 @@ bool BrushLibraryModel::removeUserPreset(const QString &id)
     const int idx = m_byId.value(id, -1);
     if (idx < 0 || m_presets.at(idx).builtin)
         return false;
-    QFile::remove(presetFilePath(id));
+    // DISK FIRST (D3): if the file cannot be deleted, keep the preset —
+    // dropping it from memory only would resurrect it at the next restart.
+    const QString path = presetFilePath(id);
+    if (QFile::exists(path) && !QFile::remove(path))
+        return false;
     m_presets.removeAt(idx);
     m_byId.clear();
     for (int i = 0; i < m_presets.size(); ++i)
@@ -186,18 +221,25 @@ bool BrushLibraryModel::renamePreset(const QString &id, const QString &name)
     const int idx = m_byId.value(id, -1);
     if (idx < 0 || name.trimmed().isEmpty())
         return false;
-    BrushPreset &p = m_presets[idx];
-    p.name = name.trimmed();
-    if (p.builtin) {
+    const QString trimmed = name.trimmed();
+    if (m_presets.at(idx).builtin) {
         // Display-name override only; the roster in code stays pristine.
-        m_builtinRenames.insert(id, p.name);
+        // Registry-backed (no detectable failure path — see class comment).
+        m_presets[idx].name = trimmed;
+        m_builtinRenames.insert(id, trimmed);
         QSettings s = appSettings();
         s.beginGroup(kKeyPrefix + QStringLiteral("renames"));
         s.setValue(QString(id).replace(QLatin1Char('/'), QLatin1Char('|')),
-                   p.name);
+                   trimmed);
         s.endGroup();
     } else {
-        writeUserPresetFile(p);
+        // DISK FIRST (D3): write the renamed preset before renaming it in
+        // memory, so a failed write cannot leave a name a restart forgets.
+        BrushPreset candidate = m_presets.at(idx);
+        candidate.name = trimmed;
+        if (!writeUserPresetFile(candidate))
+            return false;
+        m_presets[idx].name = trimmed;
     }
     emit changed();
     return true;
@@ -218,26 +260,30 @@ bool BrushLibraryModel::updateBrush(const QString &id, const ::Brush &brush)
     const int idx = m_byId.value(id, -1);
     if (idx < 0)
         return false;
-    BrushPreset &p = m_presets[idx];
-    p.brush = brush;
-    bool ok = false;
-    if (p.builtin) {
+    // DISK FIRST (D3): serialise a candidate and write it atomically; only
+    // a successful write commits to memory. On failure the model still
+    // shows — and a restart still loads — the previous value.
+    BrushPreset candidate = m_presets.at(idx);
+    candidate.brush = brush;
+    if (candidate.builtin) {
         // Never destroy the stock recipe: the edit is an override FILE the
         // constructor applies over the in-code roster. Restore Default
         // Brushes deletes these files and the stock brush returns.
-        QDir().mkpath(overrideDir());
-        QFile f(overrideFilePath(id));
-        if (f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-            f.write(BrushPresetCodec::savePreset(p));
-            ok = true;
-            if (!m_overridden.contains(id))
-                m_overridden.append(id);
-        }
+        if (!QDir().mkpath(overrideDir()))
+            return false;
+        if (!atomicWrite(overrideFilePath(id),
+                         BrushPresetCodec::savePreset(candidate)))
+            return false;
+        m_presets[idx].brush = brush;
+        if (!m_overridden.contains(id))
+            m_overridden.append(id);
     } else {
-        ok = writeUserPresetFile(p);
+        if (!writeUserPresetFile(candidate))
+            return false;
+        m_presets[idx].brush = brush;
     }
     emit changed();
-    return ok;
+    return true;
 }
 
 bool BrushLibraryModel::hasBuiltinOverride(const QString &id) const
@@ -361,20 +407,77 @@ int BrushLibraryModel::importFile(const QString &path)
     for (const BrushImporter *imp : BrushImporter::importers()) {
         if (!imp->probe(bytes))
             continue;
-        int added = 0;
+        // IDENTITY-AWARE IMPORT (phase 5 defect J8). The old rule — every
+        // imported preset lands as a fresh user preset — meant re-importing
+        // the library's own export duplicated all 62 built-ins as user
+        // copies. Presets carry their identity in the file, so honour it:
+        //   built-in id known to the roster:
+        //     byte-identical to the current brush -> SKIP (nothing to do);
+        //     different -> apply as an OVERRIDE via updateBrush(), exactly
+        //     as if the studio's Done had made the edit here. This is what
+        //     carries a user's built-in edits to a new machine.
+        //   built-in id NOT in this app's roster (foreign set): fall through
+        //     as a user preset — the brush is real even if the id is not.
+        //   user preset id already present:
+        //     byte-identical brush -> SKIP (idempotent re-import; the local
+        //     NAME wins, so a local rename survives);
+        //     different -> SKIP too: the local version wins over a backup.
+        //     Silently replacing newer local work with older backup bytes
+        //     is the exact silent-data-loss class this fix pass removes.
+        //   user preset id unseen: import KEEPING the id, so the next
+        //     re-import of the same file recognises it. A fresh id here is
+        //     what made double-import double the library.
+        // Returns the number of presets actually APPLIED (new user presets
+        // + built-in overrides written); skips count as zero.
+        int applied = 0;
         const QVector<BrushPreset> presets = imp->import(bytes);
         for (const BrushPreset &p : presets) {
-            BrushPreset copy = p; // imported presets land as USER presets
-            if (!addUserPreset(std::move(copy)).isEmpty())
-                ++added;
+            const int existingIdx = m_byId.value(p.id, -1);
+            if (p.builtin && existingIdx >= 0
+                && m_presets.at(existingIdx).builtin) {
+                if (BrushPresetCodec::saveBrush(p.brush)
+                    == BrushPresetCodec::saveBrush(
+                        m_presets.at(existingIdx).brush))
+                    continue; // already in this state
+                if (updateBrush(p.id, p.brush)) // override, disk-first
+                    ++applied;
+                continue;
+            }
+            if (!p.builtin && existingIdx >= 0)
+                continue; // known user preset: local version wins
+            BrushPreset copy = p;
+            copy.builtin = false;
+            if (p.builtin || p.id.isEmpty()
+                || !p.id.startsWith(QStringLiteral("user/"))) {
+                // Foreign/malformed identity: a fresh user id.
+                if (!addUserPreset(std::move(copy)).isEmpty())
+                    ++applied;
+            } else if (insertUserPresetKeepingId(std::move(copy))) {
+                ++applied;
+            }
         }
-        return added;
+        return applied;
     }
     return 0;
 }
 
+// Import path: add a user preset PRESERVING its incoming id (disk-first,
+// like every other mutation). Only called when the id is absent.
+bool BrushLibraryModel::insertUserPresetKeepingId(BrushPreset preset)
+{
+    preset.builtin = false;
+    if (!writeUserPresetFile(preset))
+        return false;
+    m_byId.insert(preset.id, m_presets.size());
+    m_presets.append(std::move(preset));
+    emit changed();
+    return true;
+}
+
 QString BrushLibraryModel::userPresetDir() const
 {
+    if (!m_rootOverride.isEmpty())
+        return m_rootOverride;
     return QStandardPaths::writableLocation(
                QStandardPaths::AppDataLocation)
         + QStringLiteral("/BrushLibrary");
@@ -447,12 +550,10 @@ void BrushLibraryModel::saveShelfList(const char *key,
 
 bool BrushLibraryModel::writeUserPresetFile(const BrushPreset &preset) const
 {
-    QDir().mkpath(userPresetDir());
-    QFile f(presetFilePath(preset.id));
-    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+    if (!QDir().mkpath(userPresetDir()))
         return false;
-    f.write(BrushPresetCodec::savePreset(preset));
-    return true;
+    return atomicWrite(presetFilePath(preset.id),
+                       BrushPresetCodec::savePreset(preset));
 }
 
 QString BrushLibraryModel::presetFilePath(const QString &id) const

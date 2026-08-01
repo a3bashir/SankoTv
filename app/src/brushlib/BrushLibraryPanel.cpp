@@ -583,8 +583,12 @@ void BrushLibraryPanel::importBrushes()
         return;
     const int added = m_model->importFile(path);
     if (added == 0)
-        QMessageBox::warning(this, tr("Import Brushes"),
-                             tr("No brushes could be imported."));
+        // Identity-aware import (J8): zero can simply mean everything in
+        // the file is already in the library — say that, not "failure".
+        QMessageBox::information(
+            this, tr("Import Brushes"),
+            tr("Nothing new to import — every brush in this file is "
+               "already in the library."));
 }
 
 // --- Hosting: default size, persistence, move + subclass-only resize -------
@@ -614,12 +618,22 @@ void BrushLibraryPanel::toggleOpen()
         openAtDefault();
 }
 
+void BrushLibraryPanel::setVisible(bool visible)
+{
+    // Persist the INTENT here (D1) — never from hideEvent, where teardown
+    // has already made isVisible() false regardless of what the user wants.
+    QSettings(QStringLiteral("SankoTV"), QStringLiteral("SankoTV"))
+        .setValue(QStringLiteral("storyboard/brushLibrary/v1/visible"),
+                  visible);
+    FloatingToolWindow::setVisible(visible);
+}
+
 void BrushLibraryPanel::saveGeometry() const
 {
+    // Geometry only. The `visible` key is written exclusively by the
+    // intent-recording setVisible() override above (D1).
     QSettings s(QStringLiteral("SankoTV"), QStringLiteral("SankoTV"));
     s.setValue(QStringLiteral("storyboard/brushLibrary/v1/geo"), geometry());
-    s.setValue(QStringLiteral("storyboard/brushLibrary/v1/visible"),
-               isVisible());
 }
 
 bool BrushLibraryPanel::restoreGeometry()

@@ -38,6 +38,15 @@ public:
     void openAtDefault();
     void toggleOpen();
 
+    // Visibility persistence records INTENT, not window state (phase 5
+    // defect D1): teardown hides the window, hideEvent ran saveGeometry(),
+    // and isVisible() was already false — so quitting always recorded
+    // "hidden" and the restore was dead. This override sees exactly the
+    // intent paths (tool re-click, View menu, openAtDefault); the manager's
+    // effective-visibility machinery calls QWidget::setVisible directly and
+    // never lands here.
+    void setVisible(bool visible) override;
+
     // Phase 4 dirty-state affordance: the page reports when the canvas's
     // working brush has been edited away from the named preset (colour is
     // app-global and never counts). The matching row shows a white dot and

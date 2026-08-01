@@ -2381,6 +2381,13 @@ QWidget *StoryboardPage::createCenterColumn()
     // counts — it is app-global, normalized out of the comparison.
     connect(m_canvas, &DrawingCanvas::paintBrushEdited, this,
             [this] { refreshBrushDirtyState(); });
+    // …and the PRESET can change beneath the working copy too (phase 5
+    // defect D2): Restore Default Brushes, a studio Done, an override
+    // deletion, or deleting the preset all move the comparison's other
+    // side. Recompute on every model change; refreshBrushDirtyState()
+    // already clears the mark when the active preset no longer exists.
+    connect(m_brushLibModel, &brushlib::BrushLibraryModel::changed, this,
+            [this] { refreshBrushDirtyState(); });
     if (m_brushLibViewAction) {
         connect(m_brushLibPanel,
                 &brushlib::BrushLibraryPanel::visibilityChanged,

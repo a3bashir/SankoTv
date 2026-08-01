@@ -19,11 +19,26 @@ namespace brushlib {
 // (brushLibrary/v1/*). The built-ins themselves ship in code
 // (BuiltinRoster.cpp) — deleting a built-in HIDES it, restore brings the
 // stock roster back.
+// DISK-FIRST WRITE ORDERING (phase 5 defect D3): every operation that
+// persists to a preset file writes the file FIRST — atomically, via
+// QSaveFile (write-to-temp-then-rename, so a crash mid-write can never
+// leave a truncated preset) — and commits to memory only on success. On
+// failure, memory is untouched and the operation reports false, so what the
+// UI shows is always what a restart will reload. Shelf state (favourites,
+// hidden, MRU, renames of built-ins, library name) is registry-backed
+// QSettings, which has no detectable failure path; those keep their
+// original write ordering.
 class BrushLibraryModel : public QObject
 {
     Q_OBJECT
 public:
-    explicit BrushLibraryModel(QObject *parent = nullptr);
+    // rootOverride: tests point the preset store at a scratch directory
+    // (the same pattern as BrushPreviewRenderer's cacheRootOverride); empty
+    // uses the app-data BrushLibrary folder. The phase 5 seam destroyed two
+    // user presets because it had to share the REAL library directory —
+    // with an injectable root, a test never touches user files at all.
+    explicit BrushLibraryModel(QObject *parent = nullptr,
+                               const QString &rootOverride = QString());
 
     static QStringList categories(); // fixed order; excludes "Recent"
 
@@ -80,6 +95,9 @@ private:
     QString overrideDir() const;
     QString overrideFilePath(const QString &id) const;
 
+    bool insertUserPresetKeepingId(BrushPreset preset); // import path
+
+    QString m_rootOverride; // empty = the app-data BrushLibrary folder
     QVector<BrushPreset> m_presets; // built-ins then user presets
     QHash<QString, int> m_byId;
     QStringList m_favourites;
