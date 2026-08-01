@@ -41,3 +41,9 @@ ipch/
 
 # generated qm files
 /stuff/config/loc
+# SankoTV: editor-hook source snapshots and seam/verification artifacts.
+# These are working files, never part of the tree.
+_backups/
+PerspectiveLab/
+app/*_verification_*.txt
+app/brushlib_test.txt

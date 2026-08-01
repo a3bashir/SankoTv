@@ -230,3 +230,104 @@ facts a future change must not break:
 - Camera safe-area masks dim everything outside the safe frame (~x0.6); any
   pixel-probing test of gutter content must match colours by hue, not
   absolute value (this cost one seam iteration).
+
+## The three CAPTURE / RENDERING traps (2026-08-01) — read before writing any UI verification
+
+Three separate traps have now cost real time on this project. They are
+recorded together because they are the same class of problem: what you
+measure is not what the user sees.
+
+1. **QSS backgrounds CASCADE onto floating-window children.**
+   `StoryboardPage` sets `background-color: #0a0a0a` on itself, and Qt
+   cascades that to every DESCENDANT. A plain `QWidget` child of a floating
+   tool window therefore paints that inherited opaque fill OVER the window's
+   own `paintEvent` chrome — the chrome survives only in the layout margin,
+   which reads as "my painting is not running".
+   The Brush Library panel escaped this ONLY because its children are
+   custom-painted subclasses, which do not render QSS backgrounds. Any
+   future plain-QWidget child of a floating window will hit it.
+   Fix used by the Brush Settings studio: a window-scoped
+   `QWidget { background: transparent; }` reset (and style `QMenu`
+   explicitly, since it would otherwise inherit the transparency).
+
+2. **`QWidget::grab()` lies on translucent top-levels.**
+   On a `WA_TranslucentBackground` TOP-LEVEL, `grab()` substitutes a palette
+   fill for the real backing store, so a correctly-painted window looks
+   blank/opaque. Verify floating windows with `QScreen::grabWindow(0)`
+   cropped to `frameGeometry()` — a real screen capture — and never with
+   `grab()`. (Phase 3 chased this into a wrong "fix" before a red-fill probe
+   proved the paintEvent was composing correctly all along.)
+
+3. **The Developer Recorder downscales by 2.**
+   Anything measured off a recorder frame is at half resolution. Do not take
+   pixel geometry from recorder output.
+
+Corollary that applies to all three: a floating window is only visible when
+its ANCHOR is visible. The app boots to the Dashboard page, so a seam must
+front the Storyboard page before asserting anything about floating windows —
+eleven assertions failed as a group once for exactly this reason.
+
+## Deferred: stroke-shaping engine mini-phase (Fall off, Taper, per-brush stabilization)
+
+These three are DEFERRED BY DECISION, not oversights. Recorded so a future
+reader does not "fix" them by binding them to whatever is nearby.
+
+- **Fall off** is drawn in the Figma Stroke section (node 274:104). The
+  engine has NO stroke-length falloff of any kind — not for size, opacity or
+  flow. The row was DROPPED rather than silently bound to something else,
+  which is why the one fully-specified section in the design ships four of
+  its five rows.
+- **Taper** is the same feature: stroke-length falloff applied to size.
+  Taper exists today only IMPLICITLY, as whatever a size/opacity pressure
+  curve does when a tablet reports fading pressure at the stroke ends —
+  there is no length-based taper for mouse or steady-pressure input. The
+  sidebar item was removed with Fall off.
+- **Per-brush stabilization** was deferred with them. Phase 4 shipped
+  stabilization as an APP-LEVEL setting (`paint/v1/stabilization`) instead
+  of a per-brush parameter, specifically to avoid a codec wire bump to v2 in
+  the middle of a UI phase — a bump would have put the preview SHA and both
+  pixel locks at risk of moving for a reason unrelated to that work.
+
+All three belong to ONE deliberate engine mini-phase: length-based falloff
+applied to size/opacity/flow, plus a per-brush stabilization parameter, with
+a codec v2 bump that keeps a v1 reader (Phase 3+ user presets and exports
+must keep loading), and hand-verification with a real tablet.
+
+## BrushLibraryModel::presetsIn() returns pointers INTO the model's vector
+
+`presetsIn()` / `recentPresets()` hand out `const BrushPreset *` that point
+into `m_presets`. Any `addUserPreset` / `importFile` / `removeUserPreset`
+reallocates that vector and DANGLES every outstanding pointer.
+
+Production is safe today only by convention: every call site re-queries by
+id (`model->preset(id)`) rather than holding a pointer across a mutation.
+The phase 5 seam held them across an import of 143 presets and segfaulted.
+If you hold one of these pointers, hold the `id` instead.
+
+## Build command: kill the running app FIRST, and always verify the exe timestamp
+
+`--clean-first` Release builds have now hit `LNK1104: cannot open file
+...SankoTV.exe` in FOUR consecutive phases. The linker cannot overwrite an
+exe that a running instance holds. Use this as the standard build command:
+
+```bash
+powershell -NoProfile -Command "Get-Process SankoTV -ErrorAction SilentlyContinue | Stop-Process -Force"
+"/c/Qt/Tools/CMake_64/bin/cmake.exe" --build build --config Release
+ls -la --time-style=+%m-%d_%H:%M:%S build/Release/SankoTV.exe
+```
+
+Two warnings that cost real time, both learned the hard way:
+
+- **The kill is destructive.** It force-terminates the app with no save
+  prompt. In phase 5 it killed two instances that may have held unsaved
+  work. Prefer closing the app yourself; use the kill only when you know
+  what is running. The real fix is for the app to prompt on quit — that is
+  an open item, not something the build command can solve.
+- **ALWAYS check the exe timestamp after building, and run from
+  `C:\SankoTv\app`.** A `cmake --build build` issued from the wrong working
+  directory does NOT fail loudly — it prints a cache error that does not
+  match a `grep -E "error C|error LNK"` filter, so the build "succeeds"
+  while the exe on disk stays stale. Phase 5 lost a full Release
+  verification cycle to this: the seam appeared to hang for fifteen minutes
+  when in fact it was never in the binary being run. A timestamp check
+  catches it instantly.
