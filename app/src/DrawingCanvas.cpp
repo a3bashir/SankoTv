@@ -3943,8 +3943,146 @@ void DrawingCanvas::rebuildQuickShapeTypeBar()
         button->show();
     }
 
+    // Polygon vertex-count selector (repair stage 6): visible whenever the
+    // Polygon family is active, the CURRENT count highlighted — the explicit
+    // replacement for the old ambiguous Polygon tap (which kept vertices
+    // from one family and built a hexagon from the other with no indication
+    // of either). Counts rebuild from the shared frame, so centre, scale and
+    // rotation are preserved.
+    const bool polygonFamily = current == QLatin1String("Polygon")
+        || current == QLatin1String("Quadrilateral")
+        || current == QLatin1String("Pentagon")
+        || current == QLatin1String("Hexagon");
+    if (closed && polygonFamily) {
+        const int currentCount = int(m_qsGeometry.nodes.size());
+        for (int sides : {3, 4, 5, 6, 8}) {
+            auto *count = new QPushButton(QString::number(sides), m_qsTypeBar);
+            count->setFocusPolicy(Qt::NoFocus);
+            count->setCursor(Qt::PointingHandCursor);
+            const bool active = sides == currentCount;
+            count->setStyleSheet(active
+                ? QStringLiteral(
+                      "QPushButton { background:#7c6ef6; color:#ffffff;"
+                      " border:none; border-radius:4px; padding:4px 7px;"
+                      " font-size:11px; }")
+                : QStringLiteral(
+                      "QPushButton { background:#161616; color:#aaaaaa;"
+                      " border:none; border-radius:4px; padding:4px 7px;"
+                      " font-size:11px; }"
+                      "QPushButton:hover { color:#ffffff; }"));
+            connect(count, &QPushButton::clicked, this,
+                    [this, sides] { convertQuickShapeToPolygon(sides); });
+            layout->addWidget(count);
+            count->show();
+        }
+    }
     m_qsTypeBar->adjustSize();
     updateQuickShapeUi();
+}
+
+// Shared frame of the CURRENT closed geometry (repair stage 6): centre,
+// rotation, and half-extents measured IN the rotated frame. Every closed-
+// family conversion rebuilds its target from these few parameters instead
+// of transforming the previous type's points — orientation survives (a
+// rotated ellipse becomes a ROTATED rectangle) and repeated conversions
+// cannot accumulate error, because nothing is ever re-transformed. Vertex
+// shapes carry their orientation in QuickShapeGeometry::rotationRad (the
+// field is unused by the vertex sampler), written by every conversion below;
+// fresh recognizer output is axis-aligned, so its 0 is correct.
+namespace {
+struct QsFrame
+{
+    QPointF centre;
+    qreal rot = 0.0;
+    qreal rx = 8.0;
+    qreal ry = 8.0;
+};
+
+QsFrame qsFrameOf(const quickshape::QuickShapeGeometry &g)
+{
+    using G = quickshape::QuickShapeGeometry;
+    QsFrame f;
+    if (g.kind == G::Ellipse) {
+        f.centre = g.center;
+        f.rot = g.rotationRad;
+        f.rx = qMax(4.0, g.radiusX);
+        f.ry = qMax(4.0, g.radiusY);
+        return f;
+    }
+    // Vertex shapes CARRY their frame (centre/radiusX/radiusY written by
+    // every conversion below): an inscribed N-gon does not touch the frame
+    // corners, so re-deriving extents from its nodes would shrink the frame
+    // on every count change. A hand-edited shape clears the carried frame
+    // (see quickShapeEditMove) and falls back to node-derived extents.
+    if (g.radiusX > 0.0 && g.radiusY > 0.0) {
+        f.centre = g.center;
+        f.rot = g.rotationRad;
+        f.rx = qMax(4.0, g.radiusX);
+        f.ry = qMax(4.0, g.radiusY);
+        return f;
+    }
+    if (g.nodes.isEmpty())
+        return f;
+    QPointF c(0, 0);
+    for (const QPointF &pt : g.nodes)
+        c += pt;
+    c /= qreal(g.nodes.size());
+    f.centre = c;
+    f.rot = g.rotationRad;
+    const qreal cs = std::cos(f.rot), sn = std::sin(f.rot);
+    qreal rx = 4.0, ry = 4.0;
+    for (const QPointF &pt : g.nodes) {
+        const QPointF d = pt - c; // rotate by -rot into the local frame
+        rx = qMax(rx, qAbs(d.x() * cs + d.y() * sn));
+        ry = qMax(ry, qAbs(-d.x() * sn + d.y() * cs));
+    }
+    f.rx = rx;
+    f.ry = ry;
+    return f;
+}
+
+QPointF qsFramePoint(const QsFrame &f, qreal lx, qreal ly)
+{
+    const qreal cs = std::cos(f.rot), sn = std::sin(f.rot);
+    return f.centre + QPointF(lx * cs - ly * sn, lx * sn + ly * cs);
+}
+
+// Regular N-gon inscribed in the frame (elliptical when rx != ry), apex up
+// in the LOCAL frame — the world rotation comes from the frame itself.
+QVector<QPointF> qsFramePolygon(const QsFrame &f, int sides)
+{
+    QVector<QPointF> nodes;
+    nodes.reserve(sides);
+    for (int i = 0; i < sides; ++i) {
+        const qreal a = 2.0 * M_PI * i / sides - M_PI / 2.0;
+        nodes.append(qsFramePoint(f, std::cos(a) * f.rx, std::sin(a) * f.ry));
+    }
+    return nodes;
+}
+} // namespace
+
+// Explicit polygon vertex count (repair stage 6): the Polygon type's count
+// selector calls this directly; the geometry rebuilds from the shared frame,
+// so centre, scale, and rotation are preserved and repeated count changes
+// do not drift.
+void DrawingCanvas::convertQuickShapeToPolygon(int sides)
+{
+    using G = quickshape::QuickShapeGeometry;
+    const QsFrame f = qsFrameOf(m_qsGeometry);
+    G out;
+    out.name = QStringLiteral("Polygon");
+    out.kind = G::Polygon;
+    out.nodes = qsFramePolygon(f, qBound(3, sides, 12));
+    out.rotationRad = f.rot;
+    out.center = f.centre; // carried frame (see qsFrameOf)
+    out.radiusX = f.rx;
+    out.radiusY = f.ry;
+    if (!out.isValid())
+        return;
+    m_qsGeometry = out;
+    applyQuickShapeGeometry();
+    rebuildQuickShapeTypeBar();
+    update();
 }
 
 // Convert the temporary vector to another type — overlay only, never
@@ -4014,36 +4152,57 @@ void DrawingCanvas::convertQuickShapeTo(const QString &typeName)
             out.spanAngleRad = midOnCcw ? ccwSpan : ccwSpan - 2.0 * M_PI;
         }
     } else if (typeName == QLatin1String("Circle")) {
+        const QsFrame f = qsFrameOf(g);
         out.kind = G::Ellipse;
-        out.center = box.center();
-        out.radiusX = out.radiusY =
-            qMax(4.0, (box.width() + box.height()) / 4.0);
+        out.center = f.centre;
+        out.radiusX = out.radiusY = qMax(4.0, (f.rx + f.ry) / 2.0);
         out.startAngleRad = -M_PI / 2.0;
     } else if (typeName == QLatin1String("Ellipse")) {
+        const QsFrame f = qsFrameOf(g);
         out.kind = G::Ellipse;
-        out.center = box.center();
-        out.radiusX = qMax(4.0, box.width() / 2.0);
-        out.radiusY = qMax(4.0, box.height() / 2.0);
+        out.center = f.centre;
+        out.radiusX = f.rx;
+        out.radiusY = f.ry;
+        out.rotationRad = f.rot; // a rotated frame stays rotated
         out.startAngleRad = -M_PI / 2.0;
     } else if (typeName == QLatin1String("Triangle")) {
+        const QsFrame f = qsFrameOf(g);
         out.kind = G::Polygon;
-        out.nodes = {QPointF(box.center().x(), box.top()), box.bottomRight(),
-                     box.bottomLeft()};
+        out.nodes = {qsFramePoint(f, 0.0, -f.ry), qsFramePoint(f, f.rx, f.ry),
+                     qsFramePoint(f, -f.rx, f.ry)};
+        out.rotationRad = f.rot;
+        out.center = f.centre; // carried frame (see qsFrameOf)
+        out.radiusX = f.rx;
+        out.radiusY = f.ry;
     } else if (typeName == QLatin1String("Rectangle")) {
+        const QsFrame f = qsFrameOf(g);
         out.kind = G::Polygon;
-        out.nodes = {box.topLeft(), box.topRight(), box.bottomRight(),
-                     box.bottomLeft()};
+        out.nodes = {qsFramePoint(f, -f.rx, -f.ry),
+                     qsFramePoint(f, f.rx, -f.ry),
+                     qsFramePoint(f, f.rx, f.ry),
+                     qsFramePoint(f, -f.rx, f.ry)};
+        out.rotationRad = f.rot; // rotated ellipse -> ROTATED rectangle
+        out.center = f.centre;   // carried frame (see qsFrameOf)
+        out.radiusX = f.rx;
+        out.radiusY = f.ry;
     } else if (typeName == QLatin1String("Polygon")) {
         out.kind = G::Polygon;
         if (g.kind != G::Ellipse && g.nodes.size() >= 3) {
+            // Keep the fitted vertices (intentional irregularity survives);
+            // the count selector this activation reveals is the explicit way
+            // to a regular N-gon. Nothing is transformed, so nothing drifts.
             out.nodes = g.nodes;
+            out.rotationRad = g.rotationRad;
+            out.center = g.center; // keep whatever frame g carried
+            out.radiusX = g.radiusX;
+            out.radiusY = g.radiusY;
         } else {
-            for (int i = 0; i < 6; ++i) { // inscribed hexagon
-                const qreal a = 2.0 * M_PI * i / 6.0 - M_PI / 2.0;
-                out.nodes.append(box.center()
-                                 + QPointF(qCos(a) * box.width() / 2.0,
-                                           qSin(a) * box.height() / 2.0));
-            }
+            const QsFrame f = qsFrameOf(g);
+            out.nodes = qsFramePolygon(f, 6);
+            out.rotationRad = f.rot;
+            out.center = f.centre; // carried frame (see qsFrameOf)
+            out.radiusX = f.rx;
+            out.radiusY = f.ry;
         }
     } else {
         return;
@@ -4174,6 +4333,10 @@ void DrawingCanvas::quickShapeEditMove(const QPointF &widgetPos)
         }
     } else if (m_qsNode < m_qsGeometry.nodes.size()) {
         m_qsGeometry.nodes[m_qsNode] = p;
+        // Hand-edited: the carried frame no longer describes the nodes —
+        // clear it so conversions re-derive extents from the real shape.
+        m_qsGeometry.radiusX = 0.0;
+        m_qsGeometry.radiusY = 0.0;
     }
     applyQuickShapeGeometry();
 }

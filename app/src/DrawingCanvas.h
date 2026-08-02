@@ -821,6 +821,7 @@ private:
     void enterQuickShapeEdit();
     void rebuildQuickShapeTypeBar();
     void convertQuickShapeTo(const QString &typeName);
+    void convertQuickShapeToPolygon(int sides); // explicit count (3,4,5,6,8)
     void applyQuickShapeGeometry();
     QVector<QPointF> quickShapeNodes() const;      // canvas coords
     int quickShapeNodeAt(const QPointF &widgetPos) const;
