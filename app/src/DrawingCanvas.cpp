@@ -49,6 +49,7 @@
 #include <QtMath>
 #include <QtConcurrentRun>
 
+#include <algorithm>
 #include <cmath>
 #include <utility>
 
@@ -555,6 +556,32 @@ struct QuickShapeTuning
     qreal maxDwellVelocityScreenPxPerSec = 20.0;
 };
 constexpr QuickShapeTuning kQuickShapeTuning{};
+
+// Closed-shape pressure seam policy — THE single home for every seam tuning
+// constant (no magic values in replay code). A closed QuickShape replays the
+// ORIGINAL stroke's pressures resampled onto the ideal path, so the
+// touchdown and lift-off — the two lightest moments of a real pen stroke —
+// both land on the SAME visible edge, and a hexagon can read as a broken
+// pentagon (dev recording 20260802-144716). For CLOSED shapes only,
+// quickShapePointStream() blends the pressures across the closing seam and
+// applies a conservative local floor:
+//   * blendFraction: the fraction of the path, on EACH side of the seam,
+//     cross-faded (smoothstep) toward the join pressure — the average of
+//     the pressures just outside the two blend windows;
+//   * minSeamPressure: floor applied INSIDE the blend windows only, and
+//     never above the stroke's median pressure — a deliberately light
+//     stroke stays uniformly light instead of growing a heavy seam bump.
+// Pressure variation outside the windows is untouched, and because the
+// closing point repeats the (corrected) start pressure, the overlapping
+// stamps at the join match their neighbours — no double-stamp bump. Open
+// shapes (lines, arcs, polylines, open ellipses) are NEVER corrected: their
+// start/end taper is the artist's.
+struct QuickShapeSeamPolicy
+{
+    qreal blendFraction = 0.12;
+    qreal minSeamPressure = 0.35;
+};
+constexpr QuickShapeSeamPolicy kQuickShapeSeamPolicy{};
 
 // Circumcircle through three points; false when they are collinear.
 bool circumcircle(const QPointF &a, const QPointF &b, const QPointF &p,
@@ -3594,25 +3621,58 @@ void DrawingCanvas::captureQuickShapeBrush()
 QVector<StrokePoint> DrawingCanvas::quickShapePointStream(
     const quickshape::QuickShapeCommit &commit) const
 {
+    const int n = int(commit.points.size());
+    QVector<qreal> pressures;
+    pressures.reserve(n);
+    for (int i = 0; i < n; ++i)
+        pressures.append(
+            qBound<qreal>(0.0, commit.pressures.value(i, 1.0), 1.0));
+
+    // Closed-shape seam correction (policy + constants: kQuickShapeSeamPolicy
+    // above). Open shapes keep their natural start/end taper untouched.
+    if (commit.isClosed() && n >= 8) {
+        const auto &seam = kQuickShapeSeamPolicy;
+        const int w = qBound(2, int(std::lround(n * seam.blendFraction)),
+                             n / 3);
+        // Join target: the average of the pressures just OUTSIDE the two
+        // blend windows — the seam fades into what surrounds it.
+        const qreal joinTarget = (pressures.at(w) + pressures.at(n - 1 - w))
+                                 / 2.0;
+        // Conservative floor: never above the stroke's median, so a
+        // deliberately light stroke stays uniformly light.
+        QVector<qreal> sorted = pressures;
+        std::sort(sorted.begin(), sorted.end());
+        const qreal floorP =
+            qMin(seam.minSeamPressure, sorted.at(sorted.size() / 2));
+        for (int i = 0; i < w; ++i) {
+            const qreal t = qreal(i) / w;          // 0 at the seam
+            const qreal s = t * t * (3.0 - 2.0 * t); // smoothstep, C1 joins
+            auto correct = [&](qreal p) {
+                return qMax(joinTarget * (1.0 - s) + p * s, floorP);
+            };
+            pressures[i] = correct(pressures.at(i));
+            pressures[n - 1 - i] = correct(pressures.at(n - 1 - i));
+        }
+    }
+
     QVector<StrokePoint> stream;
-    stream.reserve(commit.points.size() + 1);
+    stream.reserve(n + 1);
     quint64 t = 0;
-    auto append = [&](qsizetype i) {
+    auto append = [&](int i) {
         StrokePoint point;
         point.position = commit.points.at(i);
-        point.pressure =
-            qBound<qreal>(0.0, commit.pressures.value(int(i), 1.0), 1.0);
-        point.tiltX = commit.tiltXs.value(int(i), 0.0);
-        point.tiltY = commit.tiltYs.value(int(i), 0.0);
-        point.rotation = commit.rotations.value(int(i), 0.0);
+        point.pressure = pressures.at(i);
+        point.tiltX = commit.tiltXs.value(i, 0.0);
+        point.tiltY = commit.tiltYs.value(i, 0.0);
+        point.rotation = commit.rotations.value(i, 0.0);
         point.viewportRotation = m_qsViewRotation;
         point.timestamp = ++t;
         stream.append(point);
     };
-    for (qsizetype i = 0; i < commit.points.size(); ++i)
+    for (int i = 0; i < n; ++i)
         append(i);
     if (commit.isClosed()) // close the loop so e.g. circles have no gap
-        append(0);
+        append(0);         // (repeats the CORRECTED start pressure — no bump)
     return stream;
 }
 
