@@ -128,7 +128,8 @@ bool SankoPaintHostAdapter::refreshCoherentImage(const QString &key,
 
 void SankoPaintHostAdapter::beginStroke(const QString &key,
                                         const QImage &hostPixels,
-                                        const StrokePoint &point, quint64 seed)
+                                        const StrokePoint &point, quint64 seed,
+                                        bool rasterizePreviewWanted)
 {
     synchronizeLayer(key, hostPixels);
     m_activeLayerKey = key;
@@ -140,7 +141,8 @@ void SankoPaintHostAdapter::beginStroke(const QString &key,
     // Very large CPU preview masks are the one operation that can still block
     // pointer delivery. The GPU commit remains identical; normal brushes keep
     // the immediate tiled preview, while >512 px strokes publish asynchronously.
-    const bool rasterizePreview = m_brush.size() <= 512;
+    const bool rasterizePreview = rasterizePreviewWanted
+                                  && m_brush.size() <= 512;
     m_primaryStroke = std::make_unique<StrokeBuilder>(
         hostPixels.size(), m_brush, rasterizePreview, seed, 0);
     m_primaryStroke->addRawPoint(point);

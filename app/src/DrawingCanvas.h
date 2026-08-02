@@ -428,15 +428,6 @@ private:
                          qreal tiltX = 0.0, qreal tiltY = 0.0,
                          qreal rotation = 0.0, quint64 timestamp = 0);
     void endBrushStroke(const QString &undoText = QStringLiteral("Brush Stroke"));
-    // Single dab (opens its own painter); returns the dab's canvas bounds.
-    QRectF stampDab(const QPointF &center, qreal pressure);
-    // Batch variant: many dabs through ONE painter per input event.
-    QRectF stampDabWith(QPainter &painter, const QPointF &center, qreal pressure);
-    // The premultiplied stamp image for the current brush parameters —
-    // rendered once per (radius, alpha, hardness, colour) and reused for
-    // every dab along the stroke (the large-brush hot path).
-    QImage cachedDab(qreal radius, qreal alpha);
-    QImage *dabDevice(); // preview scratch / stroke scratch / active layer
     // Repaint only the widget region covering the given canvas-space bounds.
     void updateBrushRegion(const QRectF &canvasBounds);
 
@@ -686,8 +677,6 @@ private:
     bool m_brushStroke = false;      // brush stroke in progress
     QPointF m_lastBrushPt;           // canvas coords, float
     qreal m_lastBrushPressure = 1.0;
-    double m_stampResidual = 0.0;    // distance travelled since the last dab
-    QHash<quint64, QImage> m_dabCache; // brush stamp cache (see cachedDab)
 
     bool m_onionSkin = false;
     QPixmap m_ghost;         // precomputed blue-tinted ghost (display only)
@@ -776,11 +765,19 @@ private:
     // captured viewport rotation, and stable synthetic timestamps (1..n).
     QVector<StrokePoint> quickShapePointStream(
         const quickshape::QuickShapeCommit &commit) const;
-    // Real-brush preview of the corrected path: the SAME dab pipeline renders
-    // into a canvas-sized scratch (never the layer). Regeneration is
-    // coalesced to ~one update per display frame.
+    // Real-brush preview of the corrected path: the corrected point stream
+    // runs through the SAME engine pipeline as the commit
+    // (beginStroke/appendPoint/finishStrokeWork/render) against a dedicated
+    // preview layer key and a transparent canvas-sized host — never the
+    // layer, never the layer's engine mirror. The GPU render runs async on
+    // the stroke pool; a generation counter drops stale results; every
+    // render REPLACES m_qsPreview whole (regenerated from scratch, never
+    // stacked). Regeneration is coalesced to ~one schedule per display frame.
     QImage m_qsPreview;
-    QImage *m_dabTarget = nullptr;    // stampDab redirection for the preview
+    QImage m_qsPreviewHost;           // publish target for the pending render
+    quint64 m_qsPreviewGen = 0;       // bumped to invalidate in-flight renders
+    bool m_qsPreviewInFlight = false;
+    bool m_qsPreviewDirty = false;    // shape changed while a render was out
     QTimer *m_qsPreviewTimer = nullptr;
     bool m_qsCommitting = false;      // Done reentry guard
     void scheduleQuickShapePreview();

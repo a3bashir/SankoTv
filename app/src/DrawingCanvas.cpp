@@ -31,7 +31,6 @@
 #include <QPainter>
 #include <QPaintEvent>
 #include <QPushButton>
-#include <QRadialGradient>
 #include <QResizeEvent>
 #include <QSettings>
 #include <QSlider>
@@ -235,6 +234,9 @@ DrawingCanvas::DrawingCanvas(QWidget *parent)
             m_qsNode = -1;
             m_qsHover = -1;
             m_qsPreview = QImage(); // never leave a stale preview behind
+            m_qsPreviewHost = QImage();
+            ++m_qsPreviewGen; // in-flight renders land in the void
+            m_qsPreviewDirty = false;
             if (m_qsPreviewTimer)
                 m_qsPreviewTimer->stop();
         }
@@ -3321,116 +3323,6 @@ void DrawingCanvas::floodFill(const QPoint &seed)
 
 // --- Brush engine (stamp-based, pressure-aware) -----------------------------
 
-// The dab destination for the current pipeline stage: the QuickShape preview
-// scratch, the selection-clipped stroke scratch, or the active layer. Null
-// when the active layer is locked / hidden / missing (no dabs land anywhere).
-QImage *DrawingCanvas::dabDevice()
-{
-    Layer *layer = editableActiveLayer();
-    if (!layer)
-        return nullptr;
-    if (m_dabTarget)
-        return m_dabTarget; // QuickShape preview: the layer is never touched
-    if (m_strokeMask == StrokeMaskPaint)
-        return &m_strokeBuf; // selection active: unmasked stroke scratch
-    return &layer->image;
-}
-
-// One radial-gradient dab image: solid colour core out to `hardness` of the
-// radius, then a falloff to fully transparent at the edge. Rendered ONCE per
-// (radius, alpha, hardness, colour) and cached — stamping then blits this
-// image instead of re-rasterizing the gradient for every dab, which is what
-// made large brushes lag. The radius is quantized to 1/4 px so smooth
-// pressure curves hit the cache instead of thrashing it (≤0.125px error,
-// far below visibility; hardness/falloff math is evaluated per bucket, so
-// the "outer ~1.5px feathered rim" rule holds at every dab size exactly as
-// before).
-QImage DrawingCanvas::cachedDab(qreal radius, qreal alpha)
-{
-    const int rQ = qMax(2, qRound(radius * 4.0)); // quarter-px buckets
-    const qreal r = rQ / 4.0;
-    const int aQ = qBound(0, qRound(alpha * 1023.0), 1023);
-
-    // Hardness remap (identical to the original per-dab math): the falloff
-    // always occupies at least the outer ~1.5px, so even the hardest brush
-    // keeps an anti-aliased rim and dense dabs fuse into one smooth edge.
-    const qreal maxCore = qMax<qreal>(0.0, (r - 1.5) / r);
-    const qreal coreStop = qBound<qreal>(0.0, m_brushHardness * maxCore, 0.995);
-    const int cQ = qRound(coreStop * 1000.0);
-
-    const quint64 key = (quint64(rQ) << 44) | (quint64(aQ) << 34)
-        | (quint64(cQ) << 24) | quint64(m_color.rgb() & 0xFFFFFF);
-    const auto it = m_dabCache.constFind(key);
-    if (it != m_dabCache.constEnd())
-        return it.value();
-    if (m_dabCache.size() > 128)
-        m_dabCache.clear(); // tiny cache; parameters rarely churn mid-stroke
-
-    QColor core = m_color;
-    core.setAlphaF(aQ / 1023.0);
-    QColor edge = m_color;
-    edge.setAlphaF(0.0);
-
-    const int side = int(std::ceil(r * 2.0)) + 2; // 1px AA margin each side
-    QImage dab(side, side, QImage::Format_ARGB32_Premultiplied);
-    dab.fill(Qt::transparent);
-    const QPointF c(side / 2.0, side / 2.0);
-    QRadialGradient gradient(c, r);
-    gradient.setColorAt(0.0, core);
-    if (coreStop > 0.0)
-        gradient.setColorAt(coreStop, core); // solid core ends here
-    gradient.setColorAt(1.0, edge);          // guaranteed feathered rim
-    QPainter p(&dab);
-    p.setRenderHint(QPainter::Antialiasing, true);
-    p.setPen(Qt::NoPen);
-    p.setBrush(gradient);
-    p.drawEllipse(c, r, r);
-    p.end();
-
-    m_dabCache.insert(key, dab);
-    return dab;
-}
-
-// Composite one dab through an already-open painter (SourceOver blit of the
-// cached stamp; SmoothPixmapTransform gives sub-pixel placement). Returns the
-// dab's canvas-space bounds for dirty-region repaints.
-QRectF DrawingCanvas::stampDabWith(QPainter &painter, const QPointF &center,
-                                   qreal pressure)
-{
-    pressure = qBound<qreal>(0.0, pressure, 1.0);
-    const qreal alphaFactor = m_pressureToOpacity ? pressure : 1.0;
-
-    // Pressure-scaled radius with a hard 1.0px floor: however light the
-    // stylus touch, a dab is never smaller than the constant stamp spacing
-    // allows, so consecutive dabs keep overlapping into a continuous line
-    // instead of separating into dots.
-    const qreal baseRadius = m_brushToolSize / 2.0;
-    const qreal radius = m_pressureToSize
-        ? qMax<qreal>(1.0, baseRadius * pressure)
-        : qMax<qreal>(0.5, baseRadius);
-    const qreal alpha = qBound(0.0, m_brushToolOpacity * alphaFactor, 1.0);
-    if (alpha <= 0.0)
-        return QRectF();
-
-    const QImage dab = cachedDab(radius, alpha);
-    const qreal half = dab.width() / 2.0;
-    const QPointF topLeft(center.x() - half, center.y() - half);
-    painter.drawImage(topLeft, dab);
-    return QRectF(topLeft, QSizeF(dab.width(), dab.height()));
-}
-
-// Single-dab convenience (press dot, QuickShape regeneration loops).
-QRectF DrawingCanvas::stampDab(const QPointF &center, qreal pressure)
-{
-    QImage *dev = dabDevice();
-    if (!dev)
-        return QRectF();
-    QPainter painter(dev);
-    painter.setRenderHint(QPainter::Antialiasing, true);
-    painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
-    return stampDabWith(painter, center, pressure);
-}
-
 // Repaint only the widget region the stroke actually touched (padded for AA
 // and sub-pixel filtering) instead of the whole widget — with a large brush
 // the full-widget repaint per input event was a major part of the lag.
@@ -3477,7 +3369,10 @@ void DrawingCanvas::moveBrushStroke(const QPointF &canvasPt, qreal pressure,
                                     qreal tiltX, qreal tiltY, qreal rotation,
                                     quint64 timestamp)
 {
-    if (!m_dabTarget && m_paintEngine.strokeActive()) {
+    // The engine is the only stroke rasterizer. (The legacy 5%-spacing dab
+    // stamper that used to live here served only the pre-engine QuickShape
+    // preview; the preview now runs through the engine too.)
+    if (m_paintEngine.strokeActive()) {
         StrokePoint point;
         point.position = canvasPt;
         point.pressure = qBound<qreal>(0.0, pressure, 1.0);
@@ -3488,64 +3383,12 @@ void DrawingCanvas::moveBrushStroke(const QPointF &canvasPt, qreal pressure,
         point.timestamp = timestamp ? timestamp
                                     : quint64(QDateTime::currentMSecsSinceEpoch());
         const QRect dirty = m_paintEngine.appendPoint(point);
-        m_lastBrushPt = canvasPt;
-        m_lastBrushPressure = pressure;
         updateBrushRegion(dirty);
-        return;
     }
-    const QPointF delta = canvasPt - m_lastBrushPt;
-    const double dist = std::hypot(delta.x(), delta.y());
-    if (dist <= 0.0)
-        return;
-
-    // Stamps spaced at 5% of the BASE brush size (the slider value, never the
-    // pressure-scaled size): dab density is constant at any pressure - light
-    // strokes place just as many dabs as heavy ones, only smaller/fainter.
-    // Pressure is interpolated per dab, and the residual-driven loop below
-    // fills arbitrarily large gaps between input points, so fast strokes stay
-    // just as continuous. (The 0.5px floor only stops tiny brushes from
-    // stamping several dabs per pixel.)
-    double step = qMax(0.5, m_brushToolSize * 0.05);
-
-    // At light pressure the dabs shrink; never let the spacing exceed the
-    // segment's smallest effective dab radius, so consecutive dabs always
-    // overlap (continuous thin line instead of separated dots).
-    if (m_pressureToSize) {
-        const qreal minPressure =
-            qBound<qreal>(0.0, qMin(m_lastBrushPressure, pressure), 1.0);
-        const double effRadius = qMax<qreal>(1.0, (m_brushToolSize / 2.0) * minPressure);
-        step = qMin(step, effRadius);
-    }
-    const QPointF dir = delta / dist;
-
-    // All of this event's dabs composite through ONE painter (no per-dab
-    // QPainter begin/end), and only the region they touched repaints. When
-    // the event advances less than one stamp step, nothing composites and
-    // nothing repaints — the residual carries the distance forward, so dab
-    // positions/pressures are identical to before (no accuracy loss).
-    double since = m_stampResidual; // distance travelled since the last dab
-    double consumed = 0.0;
-    QRectF dirty;
-    if (since + dist >= step) {
-        if (QImage *dev = dabDevice()) {
-            QPainter painter(dev);
-            painter.setRenderHint(QPainter::Antialiasing, true);
-            painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
-            while (since + (dist - consumed) >= step) {
-                consumed += step - since;
-                since = 0.0;
-                const qreal t = consumed / dist;
-                const qreal p =
-                    m_lastBrushPressure + (pressure - m_lastBrushPressure) * t;
-                dirty |= stampDabWith(painter, m_lastBrushPt + dir * consumed, p);
-            }
-        }
-    }
-    m_stampResidual = since + (dist - consumed);
-
+    // No engine stroke (e.g. the press landed on a locked/hidden layer):
+    // nothing rasterizes, only the pointer bookkeeping advances.
     m_lastBrushPt = canvasPt;
     m_lastBrushPressure = pressure;
-    updateBrushRegion(dirty);
 }
 
 void DrawingCanvas::endBrushStroke(const QString &undoText)
@@ -3784,6 +3627,7 @@ void DrawingCanvas::replayQuickShape(const quickshape::QuickShapeCommit &commit)
 {
     m_quickShapeOverlay = QPainterPath(); // the vector is being baked
     m_qsPreview = QImage();
+    ++m_qsPreviewGen; // any in-flight preview render is now stale
     if (m_qsPreviewTimer)
         m_qsPreviewTimer->stop();
     if (commit.points.size() < 2 || !m_panel || !editableActiveLayer()) {
@@ -3842,10 +3686,18 @@ void DrawingCanvas::scheduleQuickShapePreview()
         m_qsPreviewTimer->start(); // coalesces bursts of overlay changes
 }
 
-// Render the corrected path with the REAL brush engine (captured stroke
-// state, original resampled pressures, the engine's own dab spacing) into a
-// fresh scratch — regenerated whole, never stacked on the previous preview,
-// and never touching the layer. This is what the artist sees until Done.
+// Render the corrected path through the REAL brush engine — the SAME
+// beginStroke/appendPoint/finishStrokeWork/render pipeline the Done bake
+// uses, consuming the SAME Stage-2 capture (full brush, seed, viewport
+// rotation, pressure/tilt point stream) — against a dedicated preview layer
+// key and a transparent canvas-sized host. The layer, its engine mirror,
+// the composite caches and the undo stack are never touched; the GPU render
+// runs async on the stroke pool and a generation counter drops results that
+// arrive after the shape changed again. Every render REPLACES the previous
+// preview whole. What the artist sees IS what Done bakes (for brushes that
+// read the canvas beneath — dual-brush non-normal blends, wet mixing — the
+// preview composites over transparency instead of the artwork, the same
+// bounded approximation the live freehand stroke preview has always shown).
 void DrawingCanvas::renderQuickShapePreview()
 {
     if (!m_quickShape.hasActiveShape()) {
@@ -3853,6 +3705,16 @@ void DrawingCanvas::renderQuickShapePreview()
         update();
         return;
     }
+    if (m_qsPreviewInFlight) {
+        // The shape changed under an in-flight render: mark it stale (the
+        // callback drops it instead of showing an outdated shape) and
+        // re-render as soon as it lands.
+        ++m_qsPreviewGen;
+        m_qsPreviewDirty = true;
+        return;
+    }
+    if (m_paintEngine.strokeActive())
+        return; // never interleave with a live stroke's builder state
     const quickshape::QuickShapeCommit commit = m_quickShape.currentCommit();
     if (commit.points.size() < 2) {
         m_qsPreview = QImage();
@@ -3860,51 +3722,52 @@ void DrawingCanvas::renderQuickShapePreview()
         return;
     }
 
-    QImage scratch(canvasSize(), QImage::Format_ARGB32_Premultiplied);
-    scratch.fill(Qt::transparent);
+    static const QString kPreviewKey = QStringLiteral("quickshape:preview");
+    m_qsPreviewHost = QImage(canvasSize(), QImage::Format_ARGB32_Premultiplied);
+    m_qsPreviewHost.fill(Qt::transparent);
 
-    const QsBrushState live{m_color, m_brushToolSize, m_brushToolOpacity,
-                            m_brushHardness, m_pressureToSize,
-                            m_pressureToOpacity};
-    m_color = m_qsBrush.color;
-    m_brushToolSize = m_qsBrush.size;
-    m_brushToolOpacity = m_qsBrush.opacity;
-    m_brushHardness = m_qsBrush.hardness;
-    m_pressureToSize = m_qsBrush.pressureToSize;
-    m_pressureToOpacity = m_qsBrush.pressureToOpacity;
-    const QPointF savedPt = m_lastBrushPt;
-    const qreal savedPressure = m_lastBrushPressure;
-    const double savedResidual = m_stampResidual;
+    // Same brush/seed swap as the bake; the block is synchronous, so live
+    // state is restored before anything else can observe it.
+    const ::Brush liveBrush = m_paintEngine.brush();
+    m_paintEngine.setBrush(m_qsFullBrush);
+    const QVector<StrokePoint> stream = quickShapePointStream(commit);
+    m_paintEngine.beginStroke(kPreviewKey, m_qsPreviewHost, stream.first(),
+                              m_qsSeed, /*rasterizePreview=*/false);
+    for (qsizetype i = 1; i < stream.size(); ++i)
+        m_paintEngine.appendPoint(stream.at(i));
+    auto work = m_paintEngine.finishStrokeWork(true);
+    m_paintEngine.setBrush(liveBrush);
+    if (!m_selectionPath.isEmpty())
+        work.selectionMask = cachedSelectionMask(); // bake parity
 
-    m_dabTarget = &scratch;
-    m_lastBrushPt = commit.points.first();
-    m_lastBrushPressure = commit.pressures.value(0, 1.0);
-    m_stampResidual = 0.0;
-    stampDab(commit.points.first(), m_lastBrushPressure);
-    for (qsizetype i = 1; i < commit.points.size(); ++i)
-        moveBrushStroke(commit.points.at(i), commit.pressures.value(int(i), 1.0));
-    if (commit.isClosed())
-        moveBrushStroke(commit.points.first(), commit.pressures.value(0, 1.0));
-    m_dabTarget = nullptr;
-
-    m_lastBrushPt = savedPt;
-    m_lastBrushPressure = savedPressure;
-    m_stampResidual = savedResidual;
-    m_color = live.color;
-    m_brushToolSize = live.size;
-    m_brushToolOpacity = live.opacity;
-    m_brushHardness = live.hardness;
-    m_pressureToSize = live.pressureToSize;
-    m_pressureToOpacity = live.pressureToOpacity;
-
-    // Selection parity: the bake will be masked, so the preview is too.
-    if (!m_selectionPath.isEmpty()) {
-        QPainter mp(&scratch);
-        mp.setCompositionMode(QPainter::CompositionMode_DestinationIn);
-        mp.drawImage(0, 0, cachedSelectionMask());
-    }
-    m_qsPreview = scratch;
-    update();
+    m_qsPreviewInFlight = true;
+    const quint64 gen = ++m_qsPreviewGen;
+    auto *watcher = new QFutureWatcher<SankoPaintHostAdapter::StrokeResult>(this);
+    connect(watcher,
+            &QFutureWatcher<SankoPaintHostAdapter::StrokeResult>::finished,
+            this, [this, watcher, gen] {
+        auto result = watcher->result();
+        watcher->deleteLater();
+        m_qsPreviewInFlight = false;
+        m_paintEngine.forgetLayer(QStringLiteral("quickshape:preview"));
+        const bool stale = gen != m_qsPreviewGen
+                           || !m_quickShape.hasActiveShape();
+        if (!stale && result.succeeded
+            && m_paintEngine.publish(result, m_qsPreviewHost)) {
+            m_paintEngine.forgetLayer(QStringLiteral("quickshape:preview"));
+            m_qsPreview = m_qsPreviewHost;
+            m_qsPreviewHost = QImage();
+            update();
+        }
+        if (m_qsPreviewDirty) {
+            m_qsPreviewDirty = false;
+            scheduleQuickShapePreview();
+        }
+    });
+    watcher->setFuture(QtConcurrent::run(
+        m_paintGpuPool.get(), [work = std::move(work)] {
+            return SankoPaintHostAdapter::render(work);
+        }));
 }
 
 // --- QuickShape Edit Shape mode ---------------------------------------------
@@ -5021,11 +4884,11 @@ void DrawingCanvas::paintEvent(QPaintEvent *event)
         painter.restore();
     }
 
-    // QuickShape: the corrected shape rendered by the REAL brush engine into
-    // a scratch image (captured brush state + original pressures) — the
-    // preview IS what Done will bake. In edit mode a thin cosmetic outline is
-    // drawn on top as a UI-only editing guide; it never represents brush
-    // thickness and is never committed.
+    // QuickShape: the corrected shape rendered by the SAME engine pipeline
+    // the Done bake runs (captured full brush, seed, and point stream) into
+    // a scratch image — the preview IS what Done will bake. In edit mode a
+    // thin cosmetic outline is drawn on top as a UI-only editing guide; it
+    // never represents brush thickness and is never committed.
     if (!m_qsPreview.isNull() && m_quickShape.hasActiveShape()) {
         painter.save();
         painter.setClipRect(canvasR);

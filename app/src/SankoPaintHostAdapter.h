@@ -64,8 +64,13 @@ public:
     bool refreshCoherentImage(const QString &key, QImage &hostPixels,
                               BrushCoherenceTrigger trigger);
 
+    // rasterizePreview=false skips the live CPU preview tiles (they cost
+    // ~27ms of UI thread per stroke build): callers that only consume the
+    // final render() output — the QuickShape preview — opt out; live strokes
+    // keep them (they ARE the on-screen stroke until publish).
     void beginStroke(const QString &key, const QImage &hostPixels,
-                     const StrokePoint &point, quint64 seed = 0);
+                     const StrokePoint &point, quint64 seed = 0,
+                     bool rasterizePreview = true);
     QRect appendPoint(const StrokePoint &point);
     bool strokeActive() const { return bool(m_primaryStroke); }
     void cancelStroke();
