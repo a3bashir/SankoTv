@@ -430,7 +430,10 @@ int BrushLibraryModel::importFile(const QString &path)
         // Returns the number of presets actually APPLIED (new user presets
         // + built-in overrides written); skips count as zero.
         int applied = 0;
-        const QVector<BrushPreset> presets = imp->import(bytes);
+        QVector<BrushPreset> presets = imp->import(bytes);
+        for (BrushPreset &incoming : presets)
+            if (incoming.category == QLatin1String("Watercolor"))
+                incoming.category = QStringLiteral("Painting"); // retired cat
         for (const BrushPreset &p : presets) {
             const int existingIdx = m_byId.value(p.id, -1);
             if (p.builtin && existingIdx >= 0
@@ -496,8 +499,15 @@ void BrushLibraryModel::loadUserPresets()
             continue;
         BrushPreset p;
         if (BrushPresetCodec::loadPreset(f.readAll(), p) && !p.builtin
-            && !p.id.isEmpty() && !m_byId.contains(p.id))
+            && !p.id.isEmpty() && !m_byId.contains(p.id)) {
+            // The Watercolor category was retired (built-ins moved to
+            // Painting): user presets saved under it are remapped so they
+            // stay reachable. In-memory only — the file rewrites itself on
+            // the preset's next disk-first write; nothing is lost either way.
+            if (p.category == QLatin1String("Watercolor"))
+                p.category = QStringLiteral("Painting");
             m_presets.append(std::move(p));
+        }
     }
 }
 

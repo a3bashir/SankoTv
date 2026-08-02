@@ -13,7 +13,6 @@
 #include <QPushButton>
 #include <QScrollArea>
 #include <QSettings>
-#include <QSvgRenderer>
 #include <QVBoxLayout>
 
 namespace brushlib {
@@ -32,44 +31,23 @@ constexpr int kMinW = 360;
 constexpr int kMinH = 420;
 constexpr int kEdgeBand = 8; // resize hit band, subclass-only
 
-QPixmap svgPixmap(const QString &path, const QSizeF &size, qreal dpr)
-{
-    QSvgRenderer renderer(path);
-    QPixmap pm((size * dpr).toSize());
-    pm.fill(Qt::transparent);
-    QPainter p(&pm);
-    renderer.render(&p, QRectF(QPointF(), size * dpr));
-    p.end();
-    pm.setDevicePixelRatio(dpr);
-    return pm;
-}
-
 } // namespace
 
-// --- Category row (Figma rows 245:33..45: 38h r6 px12 py10 gap8) -----------
+// --- Category row (Figma rows 245:33..45 geometry: 38h r6 px12 py10) -------
+// Label-only since the icon removal: the text starts at x=12 where the icon
+// sat, matching the Studio sidebar's iconless rows — same visual language,
+// same height and radius.
 class CategoryRow : public QWidget
 {
 public:
-    CategoryRow(const QString &name, const QString &iconPath, QWidget *parent)
+    CategoryRow(const QString &name, QWidget *parent)
         : QWidget(parent)
         , m_name(name)
-        , m_iconPath(iconPath)
     {
         setFixedHeight(38);
         setCursor(Qt::PointingHandCursor);
     }
     QString name() const { return m_name; }
-    // The SVG is parsed ONCE and cached; re-parsing per paint event cost
-    // ~130ms on a full category-switch repaint batch in Debug.
-    const QPixmap &iconPixmap()
-    {
-        if (m_iconPm.isNull() || !qFuzzyCompare(m_iconDpr,
-                                                devicePixelRatioF())) {
-            m_iconDpr = devicePixelRatioF();
-            m_iconPm = svgPixmap(m_iconPath, QSizeF(14, 14), m_iconDpr);
-        }
-        return m_iconPm;
-    }
     void setActive(bool active)
     {
         if (m_active == active)
@@ -87,15 +65,13 @@ protected:
         p.setPen(Qt::NoPen);
         p.setBrush(m_active ? kAccent : kRowIdle);
         p.drawRoundedRect(rect(), 6, 6);
-        p.drawPixmap(QPointF(12, (height() - 14) / 2.0), iconPixmap());
         QFont f = font();
         f.setFamily(QStringLiteral("Inter"));
         f.setPixelSize(12);
         f.setWeight(m_active ? QFont::Bold : QFont::Medium);
         p.setFont(f);
         p.setPen(m_active ? Qt::white : kTextDim);
-        const QRect textRect(12 + 14 + 8, 0, width() - (12 + 14 + 8) - 12,
-                             height());
+        const QRect textRect(12, 0, width() - 24, height());
         p.drawText(textRect, Qt::AlignVCenter | Qt::AlignLeft,
                    QFontMetrics(f).elidedText(m_name, Qt::ElideRight,
                                               textRect.width()));
@@ -108,9 +84,6 @@ protected:
 
 private:
     QString m_name;
-    QString m_iconPath;
-    QPixmap m_iconPm;
-    qreal m_iconDpr = 0.0;
     bool m_active = false;
 };
 
@@ -398,22 +371,12 @@ void BrushLibraryPanel::buildUi()
     m_sidebarLayout = new QVBoxLayout(m_sidebarWidget);
     m_sidebarLayout->setContentsMargins(16, 16, 12, 16);
     m_sidebarLayout->setSpacing(6);
-    const struct { QString name; QString icon; } cats[] = {
-        {QStringLiteral("Recent"), icons + QStringLiteral("hourglass.svg")},
-        {QStringLiteral("Sketching"),
-         icons + QStringLiteral("cat-sketching.svg")},
-        {QStringLiteral("Drawing"),
-         icons + QStringLiteral("cat-drawing.svg")},
-        {QStringLiteral("Inking"), icons + QStringLiteral("cat-inking.svg")},
-        {QStringLiteral("Painting"),
-         icons + QStringLiteral("cat-painting.svg")},
-        {QStringLiteral("Artistic"),
-         icons + QStringLiteral("cat-artistic.svg")},
-        {QStringLiteral("Watercolor"),
-         icons + QStringLiteral("droplet.svg")},
-    };
-    for (const auto &cat : cats) {
-        auto *row = new CategoryRow(cat.name, cat.icon, m_sidebarWidget);
+    // Label-only rows; Recent + the model's five categories (Watercolor is
+    // gone — its brushes were redistributed into Painting, ids unchanged).
+    const QStringList cats = QStringList()
+        << QStringLiteral("Recent") << BrushLibraryModel::categories();
+    for (const QString &name : cats) {
+        auto *row = new CategoryRow(name, m_sidebarWidget);
         row->onClicked = [this, row] { selectCategory(row->name()); };
         m_sidebarLayout->addWidget(row);
         m_categoryRows.append(row);
@@ -595,27 +558,80 @@ void BrushLibraryPanel::importBrushes()
 
 void BrushLibraryPanel::openAtDefault()
 {
-    if (!m_restored && !restoreGeometry()) {
+    if (!m_restored) {
+        // SIZE persists; POSITION is derived from the Brush-button anchor
+        // every time, so a previously saved position is deliberately
+        // ignored (its size component is still honoured).
+        const QSettings s(QStringLiteral("SankoTV"),
+                          QStringLiteral("SankoTV"));
+        const QRect geo =
+            s.value(QStringLiteral("storyboard/brushLibrary/v1/geo"))
+                .toRect();
         const QRect margin = marginRect();
-        const int h = qMin(824, margin.height());
-        const int w = 440;
+        int w = 440, h = qMin(824, margin.height());
+        if (geo.isValid() && geo.width() >= kMinW && geo.height() >= kMinH) {
+            w = geo.width();
+            h = geo.height();
+        }
         resize(w, h);
-        move(clampedPos(QPoint(margin.right() + 1 - w,
-                               margin.top() + (margin.height() - h) / 2)));
-        m_anchorOffset =
-            pos() - anchorWidget()->mapToGlobal(QPoint(0, 0));
+        m_restored = true;
     }
-    m_restored = true;
+    reanchor();
     setVisible(true);
     raise();
 }
 
-void BrushLibraryPanel::toggleOpen()
+void BrushLibraryPanel::setAnchorProvider(
+    std::function<QPair<QRect, QRect>()> provider)
 {
-    if (isVisible())
-        setVisible(false);
-    else
-        openAtDefault();
+    m_anchorProvider = std::move(provider);
+}
+
+void BrushLibraryPanel::reanchor()
+{
+    const QRect margin = marginRect();
+    QRect buttonRect, toolbarRect;
+    if (m_anchorProvider) {
+        const auto rects = m_anchorProvider();
+        buttonRect = rects.first;
+        toolbarRect = rects.second;
+    }
+    if (!buttonRect.isValid() || !toolbarRect.isValid()) {
+        // No anchor available (toolbar hidden by collision fallback):
+        // the legacy right-centre placement.
+        move(clampedPos(QPoint(
+            margin.right() + 1 - width(),
+            margin.top() + (margin.height() - height()) / 2)));
+        m_anchorOffset = pos() - anchorWidget()->mapToGlobal(QPoint(0, 0));
+        return;
+    }
+    // Below the toolbar when it sits in the top half of the canvas, above
+    // it when in the bottom half — the same +1 that gives the Modifier
+    // toolbars their exact 4px visual gap.
+    const bool toolbarOnTop =
+        toolbarRect.center().y() < margin.center().y();
+    // The panel may never overlap the toolbar, so its height is capped to
+    // the space on the chosen side (floored at the resize minimum — below
+    // that the margined clamp takes over, as everywhere else).
+    const int available = toolbarOnTop
+        ? margin.bottom() - (toolbarRect.bottom() + 1 + kMargin) + 1
+        : (toolbarRect.top() - kMargin) - margin.top();
+    const int h = qMax(kMinH, qMin(height(), available));
+    if (h != height())
+        resize(width(), h);
+    const int y = toolbarOnTop ? toolbarRect.bottom() + 1 + kMargin
+                               : toolbarRect.top() - kMargin - height();
+    // Left edge on the BUTTON's left edge; the position-only clamp shifts
+    // it inward at the right margin instead of clipping.
+    move(clampedPos(QPoint(buttonRect.left(), y)));
+    m_anchorOffset = pos() - anchorWidget()->mapToGlobal(QPoint(0, 0));
+}
+
+void BrushLibraryPanel::autoHide()
+{
+    // Bypasses the intent-recording setVisible() override (D1): drawing
+    // dismissed the panel, the user did not choose "hidden".
+    FloatingToolWindow::setVisible(false);
 }
 
 void BrushLibraryPanel::setVisible(bool visible)
@@ -634,20 +650,6 @@ void BrushLibraryPanel::saveGeometry() const
     // intent-recording setVisible() override above (D1).
     QSettings s(QStringLiteral("SankoTV"), QStringLiteral("SankoTV"));
     s.setValue(QStringLiteral("storyboard/brushLibrary/v1/geo"), geometry());
-}
-
-bool BrushLibraryPanel::restoreGeometry()
-{
-    const QSettings s(QStringLiteral("SankoTV"), QStringLiteral("SankoTV"));
-    const QRect geo =
-        s.value(QStringLiteral("storyboard/brushLibrary/v1/geo")).toRect();
-    if (!geo.isValid() || geo.width() < kMinW || geo.height() < kMinH)
-        return false;
-    resize(geo.size());
-    move(clampedPos(geo.topLeft())); // saved position re-validated through
-    m_anchorOffset =                 // the margined clamp, never applied raw
-        pos() - anchorWidget()->mapToGlobal(QPoint(0, 0));
-    return true;
 }
 
 void BrushLibraryPanel::paintEvent(QPaintEvent *)

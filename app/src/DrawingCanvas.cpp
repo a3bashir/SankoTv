@@ -5525,6 +5525,7 @@ void DrawingCanvas::mousePressEvent(QMouseEvent *event)
         // Mouse strokes carry no pressure: fixed 1.0 (tablets use tabletEvent).
         beginLayerEdit();
         m_brushStroke = true;
+        emit liveBrushStrokeStarted(); // live input only (see the signal)
         const QPointF pt =
             stabilizeStrokePoint(toCanvasF(event->position()), true);
         if (m_quickShapeEnabled) {
@@ -5971,6 +5972,7 @@ void DrawingCanvas::tabletEvent(QTabletEvent *event)
             && editableActiveLayer() && !m_paintCommitPending) {
             beginLayerEdit();
             m_brushStroke = true;
+            emit liveBrushStrokeStarted(); // live input only (see the signal)
             const QPointF pt =
                 stabilizeStrokePoint(toCanvasF(event->position()), true);
             if (m_quickShapeEnabled) {

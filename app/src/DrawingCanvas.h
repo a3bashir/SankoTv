@@ -316,6 +316,12 @@ signals:
     // colour is deliberately NOT included — it is app-global, not brush
     // identity, and must never mark a preset dirty).
     void paintBrushEdited();
+    // A LIVE brush stroke began (pointer press with the Brush tool on the
+    // canvas — mouse or tablet). Emitted only from the live-input sites,
+    // never from the QuickShape replay, so panning, zooming, other tools
+    // and programmatic strokes can never trigger listeners. The Brush
+    // Library's draw-to-dismiss auto-hide hangs off this.
+    void liveBrushStrokeStarted();
     // A perspective VP was created, selected, or removed: the Perspective
     // Modifier toolbar re-syncs its per-VP sliders.
     void perspectiveEdited();

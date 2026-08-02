@@ -1240,8 +1240,15 @@ struct SizeCtlTool
 {
     int size = 25;      // 1..200 canvas px
     int opacity = 100;  // 5..100 %
+    // Hardness has NO bar slider (the three-slider layout was reverted to
+    // the Figma two-slider design); the field and its ticks stay so the
+    // per-tool hardness PERSISTS across launches (restored at startup,
+    // mirrored on every preset selection) and any future quick control can
+    // pick the state up under the same toolCtl/brush/hardness key.
+    int hardness = 80;  // 0..100 % (Brush only; the eraser has none)
     QVector<int> sizeTicks;
     QVector<int> opacityTicks;
+    QVector<int> hardnessTicks; // dormant until hardness has a home again
 };
 struct SizeCtlToolState
 {
@@ -2309,7 +2316,6 @@ QWidget *StoryboardPage::createCenterColumn()
     drawLayout->addWidget(m_canvas, 1);
 
     createFloatingToolbar(); // FloatingToolWindows anchored to the canvas
-    createBrushSettings();   // floating over the canvas, shown with the Brush tool
     createCameraPanel();     // floating over the canvas, shown with the Camera tool
     createPerspectiveModifier(); // shown with the Perspective tool
     createShapesPanel();     // floating over the canvas, shown with the Shapes tool
@@ -2388,35 +2394,35 @@ QWidget *StoryboardPage::createCenterColumn()
     // already clears the mark when the active preset no longer exists.
     connect(m_brushLibModel, &brushlib::BrushLibraryModel::changed, this,
             [this] { refreshBrushDirtyState(); });
+    // Anchor: the panel derives its position from the Brush BUTTON and the
+    // toolbar's rect (below a top-half toolbar, above a bottom-half one).
+    m_brushLibPanel->setAnchorProvider([this]() -> QPair<QRect, QRect> {
+        if (!m_brushToolButton || !m_floatToolbar
+            || !m_floatToolbar->isVisible())
+            return {QRect(), QRect()};
+        const QRect button(
+            m_brushToolButton->mapToGlobal(QPoint(0, 0)),
+            m_brushToolButton->size());
+        return {button, m_floatToolbar->frameGeometry()};
+    });
+    // Draw-to-dismiss: the first LIVE brush press on the canvas hides the
+    // panel — selection made (or the canvas chosen over the panel either
+    // way). autoHide() bypasses the D1 intent recording, so a panel that
+    // was auto-hidden still restores visible at the next launch. Panning,
+    // zooming, other tools, docked panels and the Library itself cannot
+    // fire this: the signal exists only at the two live brush-input sites.
+    connect(m_canvas, &DrawingCanvas::liveBrushStrokeStarted, this, [this] {
+        if (m_brushLibPanel && m_brushLibPanel->isVisible())
+            m_brushLibPanel->autoHide();
+    });
     if (m_brushLibViewAction) {
         connect(m_brushLibPanel,
                 &brushlib::BrushLibraryPanel::visibilityChanged,
                 m_brushLibViewAction, &QAction::setChecked);
     }
-    // The Brush Options panel mirrors the working brush after a selection.
-    // QSignalBlocker everywhere: the sync must not loop back as edits (a
-    // checkbox writeback would overwrite a preset's multi-point curve).
-    connect(m_canvas, &DrawingCanvas::paintBrushChanged, this, [this] {
-        const ::Brush &b = m_canvas->paintBrush();
-        if (m_brushOpacitySlider) {
-            QSignalBlocker block(m_brushOpacitySlider);
-            m_brushOpacitySlider->setValue(qRound(b.opacity() * 100.0));
-        }
-        if (m_brushHardnessSlider) {
-            QSignalBlocker block(m_brushHardnessSlider);
-            m_brushHardnessSlider->setValue(qRound(b.hardness() * 100.0));
-        }
-        if (m_pressureSizeCheck) {
-            QSignalBlocker block(m_pressureSizeCheck);
-            m_pressureSizeCheck->setChecked(
-                b.sizePressureCurve().valueAt(0.0) < 0.99);
-        }
-        if (m_pressureOpacityCheck) {
-            QSignalBlocker block(m_pressureOpacityCheck);
-            m_pressureOpacityCheck->setChecked(
-                b.opacityPressureCurve().valueAt(0.0) < 0.99);
-        }
-    });
+    // (The Brush Options panel is gone — its Opacity/Hardness quick controls
+    // live on the Size CTL bar, which paintBrushChanged already keeps in
+    // step; the pressure toggles were removed deliberately, see HANDOFF.md.)
     // Restore last-session visibility (records intent; effective with the
     // canvas, like every floating tool window).
     if (QSettings(QStringLiteral("SankoTV"), QStringLiteral("SankoTV"))
@@ -2503,9 +2509,15 @@ void StoryboardPage::createFloatingToolbar()
 
 
     bindTool(brushTool, DrawingCanvas::Brush);
-    // Re-clicking the ACTIVE Brush tool button toggles the Brush Library
-    // (approved open mechanism). "Active before the click" is captured on
-    // pressed(): by clicked() the exclusive group has already re-checked it.
+    m_brushToolButton = brushTool; // the Library anchors to THIS button
+    // EVERY click of the Brush button opens the Library anchored to it
+    // (previously only a re-click of the already-active button toggled it).
+    // The one exception: Brush already active AND the panel already open —
+    // then the click closes it, so the button reads as an open/close
+    // switch. A tool SWITCH onto Brush always opens (closing the panel the
+    // instant you pick the tool would be backwards). "Active before the
+    // click" is captured on pressed(): by clicked() the exclusive group has
+    // already re-checked the button.
     {
         auto wasBrushActive = std::make_shared<bool>(false);
         connect(brushTool, &QPushButton::pressed, this,
@@ -2515,10 +2527,17 @@ void StoryboardPage::createFloatingToolbar()
                 });
         connect(brushTool, &QPushButton::clicked, this,
                 [this, wasBrushActive] {
-                    if (*wasBrushActive && m_brushLibPanel)
-                        m_brushLibPanel->toggleOpen();
+                    if (!m_brushLibPanel)
+                        return;
+                    if (*wasBrushActive && m_brushLibPanel->isVisible())
+                        m_brushLibPanel->setVisible(false); // user intent
+                    else
+                        m_brushLibPanel->openAtDefault(); // open / re-anchor
                 });
     }
+    // The panel follows the toolbar: dragging the bar while the Library is
+    // open re-anchors it live (it reads as attached to the Brush button).
+    m_floatToolbar->installEventFilter(this);
     bindTool(eraser, DrawingCanvas::Eraser);
     bindTool(fill, DrawingCanvas::Fill);
     bindTool(move, DrawingCanvas::Move);
@@ -2597,7 +2616,7 @@ void StoryboardPage::createFloatingToolbar()
             const QRect r(x, y, w, h);
             if (!win.contains(r))
                 return false;
-            const QWidget *floats[] = {m_zoomToolbar, m_brushPanel,
+            const QWidget *floats[] = {m_zoomToolbar,
                                        m_cameraPanel, m_shapesPanel};
             for (const QWidget *fl : floats)
                 if (fl && fl->isVisible() && r.intersects(fl->frameGeometry()))
@@ -2847,12 +2866,6 @@ void StoryboardPage::createFloatingToolbar()
             m_moveModToolbar->setVisible(on);
     });
 
-    // Brush options panel visible only while Brush is the active tool.
-    connect(brushTool, &QPushButton::toggled, this, [this](bool on) {
-        if (m_brushPanel)
-            m_brushPanel->setVisible(on);
-    });
-
     bar->addWidget(brushTool, 0, Qt::AlignVCenter);
     bar->addWidget(eraser, 0, Qt::AlignVCenter);
     bar->addWidget(fill, 0, Qt::AlignVCenter);
@@ -3077,7 +3090,10 @@ void StoryboardPage::createFloatingToolbar()
     // Exact Figma column (209:42 metadata, rotated-frame origins decoded):
     // size slider at (10.5, 25), Flip 30x30 at (8, 276), opacity slider at
     // (10.5, 337); shifted by the bar's x when the grab sits on the left
-    // (right-edge layout).
+    // (right-edge layout). (A third Hardness slider briefly lived here with
+    // all three compressed to 150px; reverted — it read as two size sliders
+    // and broke the design. Hardness is edited in the Studio; its per-tool
+    // PERSISTENCE below is deliberately kept.)
     auto placeSizeCtl = [sizeBar, sizeSlider, flipButton, opacitySlider] {
         const int bx = sizeBar->barX();
         sizeSlider->move(bx + 10, 25);
@@ -3127,6 +3143,10 @@ void StoryboardPage::createFloatingToolbar()
                 st.value(base + QStringLiteral("sizeTicks")).toString());
             t.opacityTicks = parseTicks(
                 st.value(base + QStringLiteral("opacityTicks")).toString());
+            t.hardness = qBound(0, st.value(base + QStringLiteral("hardness"),
+                                            t.hardness).toInt(), 100);
+            t.hardnessTicks = parseTicks(
+                st.value(base + QStringLiteral("hardnessTicks")).toString());
         };
         load(tc->brush, QStringLiteral("storyboard/toolCtl/brush/"));
         load(tc->eraser, QStringLiteral("storyboard/toolCtl/eraser/"));
@@ -3146,6 +3166,9 @@ void StoryboardPage::createFloatingToolbar()
                         join(t.sizeTicks));
             st.setValue(base + QStringLiteral("opacityTicks"),
                         join(t.opacityTicks));
+            st.setValue(base + QStringLiteral("hardness"), t.hardness);
+            st.setValue(base + QStringLiteral("hardnessTicks"),
+                        join(t.hardnessTicks));
         };
         save(tc->brush, QStringLiteral("storyboard/toolCtl/brush/"));
         save(tc->eraser, QStringLiteral("storyboard/toolCtl/eraser/"));
@@ -3155,8 +3178,9 @@ void StoryboardPage::createFloatingToolbar()
     m_canvas->setBrushToolSize(tc->brush.size);
     m_canvas->setBrushSize(tc->brush.size);
     m_canvas->setBrushOpacity(tc->brush.opacity);
-    m_canvas->setEraserSize(tc->eraser.size);
-    m_canvas->setEraserOpacity(tc->eraser.opacity);
+    m_canvas->setBrushHardness(tc->brush.hardness); // persisted hardness
+    m_canvas->setEraserSize(tc->eraser.size);       // restores with no bar
+    m_canvas->setEraserOpacity(tc->eraser.opacity); // slider (Studio edits)
     sizeSlider->setValue(tc->brush.size);
     opacitySlider->setValue(tc->brush.opacity);
     sizeSlider->setPresets(tc->brush.sizeTicks);
@@ -3220,18 +3244,13 @@ void StoryboardPage::createFloatingToolbar()
         pillHide->start();
         saveToolCtl();
     };
-    // Opacity drives the active tool's engine live; in Brush mode it also
-    // keeps the Brush Options panel's Opacity slider in step (that slider
-    // writes the same canvas value back — idempotent, no loop).
+    // Opacity drives the active tool's engine live.
     opacitySlider->onChanged =
         [this, tc, refreshPill, opacitySlider](int v) {
-        if (tc->eraserMode) {
+        if (tc->eraserMode)
             m_canvas->setEraserOpacity(v);
-        } else {
+        else
             m_canvas->setBrushOpacity(v);
-            if (m_brushOpacitySlider)
-                m_brushOpacitySlider->setValue(v);
-        }
         tc->active().opacity = v;
         refreshPill(opacitySlider, v);
     };
@@ -3264,22 +3283,6 @@ void StoryboardPage::createFloatingToolbar()
 
     connect(flipButton, &QPushButton::toggled, this,
             [this] { m_canvas->toggleFlipH(); });
-    // Brush-semantics external setters (brush presets / Brush Options panel):
-    // they always update the BRUSH state, and touch the sliders only while
-    // the sliders are showing the Brush.
-    m_setSizeCtl = [tc, sizeSlider, saveToolCtl](int v) {
-        tc->brush.size = qBound(1, v, 200);
-        if (!tc->eraserMode)
-            sizeSlider->setValue(tc->brush.size);
-        saveToolCtl();
-    };
-    m_setOpacityCtl = [tc, opacitySlider, saveToolCtl](int v) {
-        tc->brush.opacity = qBound(5, v, 100);
-        if (!tc->eraserMode)
-            opacitySlider->setValue(tc->brush.opacity);
-        saveToolCtl();
-    };
-
     // Switching between Brush and Eraser swaps the sliders to that tool's
     // stored size/opacity and preset ticks (the canvas keeps both tools'
     // engine values in independent members — nothing to push back). Other
@@ -3291,6 +3294,9 @@ void StoryboardPage::createFloatingToolbar()
         const ::Brush &b = m_canvas->paintBrush();
         tc->brush.size = qBound(1, b.size(), 200);
         tc->brush.opacity = qBound(0, qRound(b.opacity() * 100.0), 100);
+        // Hardness has no bar slider (see placeSizeCtl); the mirror still
+        // updates so the persisted per-tool hardness follows selections.
+        tc->brush.hardness = qBound(0, qRound(b.hardness() * 100.0), 100);
         if (!tc->eraserMode) {
             sizeSlider->setValue(tc->brush.size);
             opacitySlider->setValue(tc->brush.opacity);
@@ -3378,103 +3384,6 @@ QWidget *StoryboardPage::createFloatingPanel(const QString &title, QWidget *body
 // Narrow settings column between the toolbar and the canvas; visible only
 // while the Brush tool is active. Initial values mirror DrawingCanvas's
 // brush defaults (size 25, opacity 100%, hardness 80%, P->size on).
-QWidget *StoryboardPage::createBrushSettings()
-{
-    QWidget *body = new QWidget;
-    body->setStyleSheet(QStringLiteral("background: transparent;"));
-
-    QVBoxLayout *layout = new QVBoxLayout(body);
-    layout->setContentsMargins(10, 8, 10, 10);
-    layout->setSpacing(6);
-
-    const QString captionStyle = QStringLiteral("color: #777777; font-size: 10px; border: none;");
-    const QString checkStyle = QStringLiteral(
-        "QCheckBox { color: #cccccc; font-size: 11px; border: none; }"
-        "QCheckBox::indicator { width: 12px; height: 12px; border: 1px solid #2a2a2a;"
-        " border-radius: 2px; background: #1c1c1c; }"
-        "QCheckBox::indicator:checked { background: #f5a623; border-color: #f5a623; }");
-
-    // SankoSliders (slim 10/13 size); each paints its own value label, so
-    // the caption is just the static name.
-    auto addSlider = [&](const QString &name, int min, int max, int value,
-                         SankoSlider *&outSlider) {
-        QLabel *caption = new QLabel(name);
-        caption->setStyleSheet(captionStyle);
-        layout->addWidget(caption);
-        outSlider = new SankoSlider;
-        outSlider->setTrackHeight(10);
-        outSlider->setHandleSize(13);
-        outSlider->setRange(min, max);
-        outSlider->setValue(value);
-        layout->addWidget(outSlider);
-    };
-
-    // (Brush size moved to the vertical SankoSlider in the tool column; the
-    // panel keeps Opacity, Hardness, pressure toggles, and the presets.)
-    addSlider(QStringLiteral("Opacity"), 0, 100, 100, m_brushOpacitySlider);
-    addSlider(QStringLiteral("Hardness"), 0, 100, 80, m_brushHardnessSlider);
-    connect(m_brushOpacitySlider, &SankoSlider::valueChanged, this,
-            [this](int v) {
-        m_canvas->setBrushOpacity(v);
-        if (m_setOpacityCtl)
-            m_setOpacityCtl(v); // silent sync: no signal loop
-    });
-    connect(m_brushHardnessSlider, &SankoSlider::valueChanged, this,
-            [this](int v) { m_canvas->setBrushHardness(v); });
-
-    m_pressureSizeCheck = new QCheckBox(QString::fromUtf8("Pressure \xE2\x86\x92 Size"));
-    m_pressureSizeCheck->setStyleSheet(checkStyle);
-    m_pressureSizeCheck->setChecked(true); // default ON (before connect: no null-canvas call)
-    connect(m_pressureSizeCheck, &QCheckBox::toggled, this,
-            [this](bool on) { m_canvas->setPressureToSize(on); });
-    layout->addWidget(m_pressureSizeCheck);
-
-    m_pressureOpacityCheck = new QCheckBox(QString::fromUtf8("Pressure \xE2\x86\x92 Opacity"));
-    m_pressureOpacityCheck->setStyleSheet(checkStyle);
-    m_pressureOpacityCheck->setChecked(false); // default OFF
-    connect(m_pressureOpacityCheck, &QCheckBox::toggled, this,
-            [this](bool on) { m_canvas->setPressureToOpacity(on); });
-    layout->addWidget(m_pressureOpacityCheck);
-
-    QLabel *presetHeader = new QLabel(QStringLiteral("PRESETS"));
-    presetHeader->setStyleSheet(QStringLiteral(
-        "color: #888888; font-size: 10px; font-weight: 600; letter-spacing: 1px;"
-        " border: none; margin-top: 6px;"));
-    layout->addWidget(presetHeader);
-
-    const QString presetStyle = QStringLiteral(
-        "QPushButton { background-color: #1c1c1c; color: #cccccc; border: 1px solid #2a2a2a;"
-        " border-radius: 4px; font-size: 11px; padding: 4px; }"
-        "QPushButton:hover { border-color: #f5a623; color: #f5a623; }");
-    struct Preset { const char *name; int size, opacity, hardness; bool pSize, pOpacity; };
-    const Preset presets[] = {
-        // "Pen" replaces the old Pen tool: fixed-width, hard-edged, opaque.
-        {"Pen", 4, 100, 100, false, false},
-        {"Hard Pencil", 3, 100, 95, true, false},
-        {"Soft Brush", 40, 80, 20, true, true},
-        {"Marker", 25, 60, 70, false, false},
-        {"Ink", 6, 100, 90, true, false},
-    };
-    for (const Preset &p : presets) {
-        QPushButton *button = new QPushButton(QString::fromLatin1(p.name));
-        button->setCursor(Qt::PointingHandCursor);
-        button->setStyleSheet(presetStyle);
-        const Preset preset = p;
-        connect(button, &QPushButton::clicked, this, [this, preset] {
-            applyBrushPreset(preset.size, preset.opacity, preset.hardness,
-                             preset.pSize, preset.pOpacity);
-        });
-        layout->addWidget(button);
-    }
-
-    m_brushPanel = createFloatingPanel(QStringLiteral("Brush Options"), body);
-    m_brushPanel->setFixedWidth(170);
-    m_brushPanel->adjustSize();
-    m_brushPanel->setVisible(true); // Brush is the default tool; the pill's
-                                    // toggled connection hides it otherwise
-    return m_brushPanel;
-}
-
 // Floating overlay shown only while the Camera tool is active. Hosts the
 // display-only viewport overlay toggles.
 // Perspective Modifier toolbar (Figma 180:121): a 578x92 rgba(33,33,33,0.65)
@@ -3730,25 +3639,6 @@ void StoryboardPage::setTitleSafeMaskOpacity(int percent)
 {
     if (m_canvas)
         m_canvas->setTitleSafeMaskOpacity(percent);
-}
-
-// Presets drive the UI controls; their change signals push into the canvas,
-// so the sliders, checkboxes, and brush engine always agree.
-void StoryboardPage::applyBrushPreset(int size, int opacityPct, int hardnessPct,
-                                      bool pressureSize, bool pressureOpacity)
-{
-    if (m_setSizeCtl)
-        m_setSizeCtl(size);
-    if (m_setOpacityCtl)
-        m_setOpacityCtl(opacityPct);
-    if (m_brushOpacitySlider)
-        m_brushOpacitySlider->setValue(opacityPct);
-    if (m_brushHardnessSlider)
-        m_brushHardnessSlider->setValue(hardnessPct);
-    if (m_pressureSizeCheck)
-        m_pressureSizeCheck->setChecked(pressureSize);
-    if (m_pressureOpacityCheck)
-        m_pressureOpacityCheck->setChecked(pressureOpacity);
 }
 
 void StoryboardPage::rebuildPanelStrip()
@@ -4640,6 +4530,16 @@ bool StoryboardPage::eventFilter(QObject *object, QEvent *event)
     // Floating toolbars/panels manage themselves now: FloatingToolWindow's
     // shared manager watches the canvas and the main window, handling drag,
     // clamping, follow, and show/hide for every registered instance.
+
+    // The Brush Library follows its anchor: when the brush toolbar moves or
+    // resizes while the panel is open, re-derive the anchored position so
+    // the panel keeps reading as attached to the Brush button.
+    if (object == m_floatToolbar
+        && (event->type() == QEvent::Move
+            || event->type() == QEvent::Resize)
+        && m_brushLibPanel && m_brushLibPanel->isVisible()) {
+        m_brushLibPanel->reanchor();
+    }
 
     // Floating Brush bar tooltips: one reused popup BELOW the bar (4px gap,
     // never covering a button), driven by Enter/Leave so chain-hovering

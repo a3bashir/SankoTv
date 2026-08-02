@@ -331,3 +331,47 @@ Two warnings that cost real time, both learned the hard way:
   verification cycle to this: the seam appeared to hang for fifteen minutes
   when in fact it was never in the binary being run. A timestamp check
   catches it instantly.
+
+## Pressure toggles REMOVED with the Brush Options panel (2026-08-01) — recorded tradeoff
+
+The Brush Options panel is gone: Opacity and Hardness moved to the floating
+Size CTL bar (three uniform 150px sliders — the slider LENGTH is the one
+approved divergence from Figma 209:42, made to fit the third slider inside
+the unchanged 46x574 bar), and the five phase-1-era preset buttons were
+superseded by the Brush Library.
+
+The "Pressure -> Size" / "Pressure -> Opacity" checkboxes were removed
+DELIBERATELY, not lost: each was a blunt override that replaced a preset's
+multi-point pressure curve with a hard-coded linear or flat one — exactly
+the curve-clobbering trap phase 3 documented. With per-preset Dynamics
+curves in the Studio, the curves are authoritative.
+
+THE COST, so it is not rediscovered as a missing feature: turning pressure
+response off for a brush now requires flattening its curve in the Studio's
+Dynamics section, where it used to be one checkbox. If quick toggles ever
+come back, they must write through the Studio's session model (one undo
+entry, preset-aware), not through the old canvas slots — the slots
+themselves (setPressureToSize/-Opacity) remain as API and are exercised by
+SankoCanvasBrushLock.
+
+## SizeCtlBar reverted to the Figma two-slider layout (2026-08-02)
+
+The three-slider SizeCtlBar (Size + Flip + Opacity + Hardness at a uniform
+150px) lasted one task. It read as TWO SIZE SLIDERS plus opacity — hardness
+has no label and visibly changes apparent stroke thickness — and the 150px
+compression broke the 209:42 design. The bar is back to Size (220px), Flip,
+Opacity (220px) in the exact Figma column: size at (10,25), Flip 30x30 at
+(8,276), opacity at (10,337), bar 46x574.
+
+HARDNESS IS CURRENTLY STUDIO-ONLY (double-click a brush -> Tip section).
+That is a decided tradeoff pending a better home, NOT an oversight; the
+quick-control decision was deliberately separated from the layout revert.
+What survives from the relocation, on purpose:
+- per-tool hardness PERSISTENCE under storyboard/toolCtl/brush/hardness
+  (+ dormant hardnessTicks): restored into the canvas at launch and
+  mirrored on every preset selection, so last-session hardness still
+  round-trips with no visible slider;
+- the canvas setBrushHardness slot, exercised by SankoCanvasBrushLock's
+  endpoint AND mid-range fixtures.
+Any future quick hardness control should read/write that same key and go
+through the existing slot — the state is already flowing.

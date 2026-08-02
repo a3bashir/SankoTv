@@ -195,9 +195,13 @@ BrushPreset make(const QString &category, const QString &name,
 
 QStringList builtinCategories()
 {
+    // Watercolor was removed as a CATEGORY (its 10 brushes now live under
+    // Painting — see the remap at the end of builtinRoster()). Painting
+    // therefore lists 22 brushes to every other category's 10; accepted as
+    // is, deliberately not rebalanced.
     return {QStringLiteral("Sketching"), QStringLiteral("Drawing"),
             QStringLiteral("Inking"),    QStringLiteral("Painting"),
-            QStringLiteral("Artistic"),  QStringLiteral("Watercolor")};
+            QStringLiteral("Artistic")};
 }
 
 QVector<BrushPreset> builtinRoster()
@@ -671,6 +675,19 @@ QVector<BrushPreset> builtinRoster()
         waterBase(b);
         b.setSize(6); b.setHardness(0.3); b.setOpacity(0.45);
     });
+
+    // The Watercolor CATEGORY is retired; its ten brushes live on under
+    // Painting. The entries above are still built with kWatercolor so their
+    // IDs keep the original "builtin/watercolor/<name>" slug — the id is
+    // opaque, and favourites / Recent / hidden / overrides all reference
+    // ids, so no user shelf state or override needs migrating. Only the
+    // display CATEGORY is remapped here. Entry ORDER is also unchanged,
+    // which is why the combined preview SHA in SankoBrushLibraryTest does
+    // not move (it hashes preview images in roster order, and previews
+    // depend only on the brush).
+    for (BrushPreset &p : r)
+        if (p.category == kWatercolor)
+            p.category = kPainting;
 
     return r;
 }

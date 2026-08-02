@@ -133,13 +133,10 @@ private:
     // Floating overlay panel: dock-style header (title + Close only),
     // draggable by the header, child of the canvas.
     QWidget *createFloatingPanel(const QString &title, QWidget *body);
-    QWidget *createBrushSettings(); // floating panel shown while Brush is active
     QWidget *createCameraPanel();   // floating panel shown while Camera is active
     QWidget *createPerspectiveModifier(); // shown while Perspective is active
     QWidget *createShapesPanel();   // floating panel shown while Shapes is active
     QWidget *createBottomBar();
-    void applyBrushPreset(int size, int opacityPct, int hardnessPct,
-                          bool pressureSize, bool pressureOpacity);
 
     // Dockable panel plumbing (Qt Advanced Docking System hosts the panels).
     void installDockViewActions(); // dock toggles + Reset Layout in the View menu
@@ -343,20 +340,18 @@ private:
     brushlib::BrushLibraryPanel *m_brushLibPanel = nullptr;
     brushlib::BrushSettingsStudio *m_brushStudio = nullptr; // Figma 274:23
     QString m_activeBrushPresetId; // last library selection (dirty tracking)
+    QPushButton *m_brushToolButton = nullptr; // Library anchor + open toggle
     QAction *m_brushLibViewAction = nullptr; // View menu toggle
     bool brushStudioUnderCursor() const; // Ctrl+Z routing (studio-local undo)
     void refreshBrushDirtyState();       // white dot + Reset chip on the row
     QScrollArea *m_panelScroll = nullptr;
     QPushButton *m_importButton = nullptr;
-    // Brush settings panel (visible only while the Brush tool is active).
-    QWidget *m_brushPanel = nullptr;
-    // Floating Size/Opacity toolbar (Figma 209:42): size + opacity sliders
-    // and Fit Screen, snapping to the left/right canvas edge.
+    // Floating Size CTL toolbar (Figma 209:42): size + opacity sliders and
+    // Flip, snapping to the left/right canvas edge. (Brush Options is gone;
+    // its pressure toggles were removed deliberately, and hardness is
+    // edited in the Studio — its per-tool persistence lives on under
+    // toolCtl/brush/hardness. See HANDOFF.md.)
     QWidget *m_sizeCtlBar = nullptr;
-    std::function<void(int)> m_setSizeCtl;    // toolbar sliders <- presets
-    std::function<void(int)> m_setOpacityCtl;
-    SankoSlider *m_brushOpacitySlider = nullptr;
-    SankoSlider *m_brushHardnessSlider = nullptr;
     // Camera panel (visible only while the Camera tool is active).
     QWidget *m_cameraPanel = nullptr;
     // Figma "Floating Toolbar Layers" (node 173-36): dock toggles + tools.
@@ -378,8 +373,6 @@ private:
     QWidget *m_selModToolbar = nullptr;  // Selection Modifier bar (Figma 146:67)
     QWidget *m_moveModToolbar = nullptr; // Move Modifier bar (Figma 161:39)
     QWidget *m_bottomBar = nullptr;      // status bar; both mod bars sit 10px above
-    QCheckBox *m_pressureSizeCheck = nullptr;
-    QCheckBox *m_pressureOpacityCheck = nullptr;
     // Fixed control column (left of the panel strip).
     QPushButton *m_addPanelButton = nullptr;
     QPushButton *m_dupPanelButton = nullptr;

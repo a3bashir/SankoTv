@@ -36,7 +36,24 @@ public:
     // the top/left on-canvas and the panel overflows bottom/right — it is
     // never hidden.
     void openAtDefault();
-    void toggleOpen();
+
+    // --- Brush-button anchoring -------------------------------------------
+    // The panel opens attached to the Brush BUTTON: directly below it when
+    // the brush toolbar sits in the top half of the canvas, directly above
+    // it when it sits in the bottom half, left edge aligned to the button's
+    // and shifted inward (never clipped) by the base's margined clamp. The
+    // provider returns (brush button global rect, toolbar global rect);
+    // invalid rects fall back to the legacy right-centre default. Position
+    // no longer persists — it is DERIVED — but the user's panel SIZE does.
+    void setAnchorProvider(
+        std::function<QPair<QRect, QRect>()> provider);
+    void reanchor(); // re-derive the anchored position (toolbar moved, open)
+
+    // Programmatic hide for the draw-to-dismiss behaviour: unlike
+    // setVisible(false), this does NOT record "hidden" as the user's intent
+    // (D1) — a panel auto-hidden by drawing still restores visible at the
+    // next launch.
+    void autoHide();
 
     // Visibility persistence records INTENT, not window state (phase 5
     // defect D1): teardown hides the window, hideEvent ran saveGeometry(),
@@ -81,7 +98,6 @@ private:
     void showChevronMenu(const QPoint &globalPos);
     void importBrushes();
     void saveGeometry() const;
-    bool restoreGeometry();
 
     BrushLibraryModel *m_model;
     BrushPreviewRenderer m_previews;
@@ -108,6 +124,7 @@ private:
     QSize m_dragStartSize;
     QPoint m_anchorOffset; // last placed offset; served as defaultOffset()
     bool m_restored = false;
+    std::function<QPair<QRect, QRect>()> m_anchorProvider;
 };
 
 } // namespace brushlib
