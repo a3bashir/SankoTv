@@ -228,6 +228,21 @@ DrawingCanvas::DrawingCanvas(QWidget *parent)
             this, [this](const quickshape::QuickShapeCommit &commit) {
         replayQuickShape(commit);
     });
+    // Hold feedback (repair stage 9): the previously unconsumed
+    // statusChanged signal now drives immediate repaints on state
+    // transitions, and a light tick repaints the hold-progress ring while
+    // the pen is down. Self-stopping: the tick dies with m_qsHeld.
+    connect(&m_quickShape, &quickshape::QuickShapeSession::statusChanged,
+            this, [this](const QString &, const QString &) { update(); });
+    m_qsHoldTick = new QTimer(this);
+    m_qsHoldTick->setInterval(33);
+    connect(m_qsHoldTick, &QTimer::timeout, this, [this] {
+        if (!m_qsHeld) {
+            m_qsHoldTick->stop();
+            return;
+        }
+        update();
+    });
     connect(&m_quickShape, &quickshape::QuickShapeSession::activeShapeChanged,
             this, [this](bool available) {
         if (!available) {
@@ -1218,6 +1233,11 @@ void DrawingCanvas::resizeEvent(QResizeEvent *event)
 void DrawingCanvas::setViewZoom(double zoom)
 {
     setZoom(zoom, QPointF(width() / 2.0, height() / 2.0)); // centred on the view
+    // Zoom changed while the pen is down (repair stage 9): re-derive the
+    // document-space dwell tolerances so the hold keeps its ~8 screen px
+    // feel at the new zoom instead of the stroke-start conversion.
+    if (m_quickShapeEnabled && m_qsHeld)
+        applyQuickShapeTiming();
 }
 
 void DrawingCanvas::setViewRotation(double degrees)
@@ -5158,6 +5178,45 @@ void DrawingCanvas::paintEvent(QPaintEvent *event)
         painter.drawImage(0, 0, m_qsPreview);
         painter.restore();
     }
+    // Hold feedback (repair stage 9), cosmetic overlay only — never part
+    // of any layer, flattenedPixmap, or export. The ring appears once the
+    // endpoint has been stable for a beat (progress > 0.12), resets when
+    // drawing resumes (the session restarts its hold timer), and vanishes
+    // on recognition, cancellation, or completion. After recognition, while
+    // the pen is still down, a small hint names the held-pen gesture.
+    if (m_qsHeld && m_quickShapeEnabled) {
+        const QPointF anchor =
+            viewTransform().map(m_lastBrushPt) + QPointF(22, -26);
+        painter.save();
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        const qreal progress = m_quickShape.holdProgress();
+        if (!m_quickShape.hasActiveShape() && progress > 0.12) {
+            QPen ringBg(QColor(0, 0, 0, 90), 3.0);
+            painter.setPen(ringBg);
+            painter.setBrush(Qt::NoBrush);
+            const QRectF ring(anchor.x() - 8, anchor.y() - 8, 16, 16);
+            painter.drawEllipse(ring);
+            QPen ringFg(QColor(0x7c, 0x6e, 0xf6, 220), 3.0);
+            ringFg.setCapStyle(Qt::RoundCap);
+            painter.setPen(ringFg);
+            painter.drawArc(ring, 90 * 16, int(-progress * 360.0 * 16));
+        } else if (m_quickShape.hasActiveShape()) {
+            const QString hint = QStringLiteral("drag: rotate · scale");
+            QFont f = painter.font();
+            f.setPixelSize(10);
+            painter.setFont(f);
+            const QRectF text =
+                QRectF(painter.fontMetrics().boundingRect(hint))
+                    .adjusted(-6, -3, 6, 3)
+                    .translated(anchor);
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(QColor(16, 16, 16, 200));
+            painter.drawRoundedRect(text, 4, 4);
+            painter.setPen(QColor(0xcc, 0xcc, 0xcc));
+            painter.drawText(text, Qt::AlignCenter, hint);
+        }
+        painter.restore();
+    }
     if (m_qsEditing && !m_quickShapeOverlay.isEmpty()) {
         painter.save();
         painter.setClipRect(canvasR);
@@ -5726,6 +5785,7 @@ void DrawingCanvas::mousePressEvent(QMouseEvent *event)
             captureQuickShapeBrush();
             m_quickShape.pointerPress(pt, 1.0);
             m_qsHeld = true;
+            m_qsHoldTick->start(); // hold-progress feedback (stage 9)
             updateQuickShapeUi();
         }
         beginBrushStroke(pt, 1.0);
@@ -6232,6 +6292,7 @@ void DrawingCanvas::tabletEvent(QTabletEvent *event)
                                           event->xTilt(), event->yTilt(),
                                           event->rotation());
                 m_qsHeld = true;
+                m_qsHoldTick->start(); // hold-progress feedback (stage 9)
                 updateQuickShapeUi();
             }
             beginBrushStroke(pt, event->pressure(), event->xTilt(), event->yTilt(),

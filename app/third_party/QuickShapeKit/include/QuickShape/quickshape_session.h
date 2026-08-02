@@ -57,6 +57,11 @@ public:
 
     bool hasActiveShape() const;
     bool isCollectingStroke() const;
+    // Hold-to-snap progress for host feedback: 0 when idle or the endpoint
+    // is still moving, rising to 1 as the stationary hold approaches
+    // recognition. Resets whenever movement beyond the dwell radius
+    // restarts the hold timer.
+    qreal holdProgress() const;
     QPainterPath overlayPath() const;
     QuickShapeCommit currentCommit() const;
 

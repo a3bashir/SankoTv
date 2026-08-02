@@ -268,6 +268,14 @@ bool QuickShapeSession::isCollectingStroke() const
     return m_state == State::Collecting;
 }
 
+qreal QuickShapeSession::holdProgress() const
+{
+    if (m_state != State::Collecting || !m_holdTimer.isActive())
+        return 0.0;
+    const int total = qMax(1, m_holdTimer.interval());
+    return qBound(0.0, 1.0 - m_holdTimer.remainingTime() / qreal(total), 1.0);
+}
+
 QPainterPath QuickShapeSession::overlayPath() const
 {
     return m_overlayPath;

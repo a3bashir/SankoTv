@@ -799,6 +799,7 @@ private:
     bool m_qsPreviewInFlight = false;
     bool m_qsPreviewDirty = false;    // shape changed while a render was out
     QTimer *m_qsPreviewTimer = nullptr;
+    QTimer *m_qsHoldTick = nullptr;   // repaints the hold ring while pen down
     bool m_qsCommitting = false;      // Done reentry guard
     void scheduleQuickShapePreview();
     void renderQuickShapePreview();
