@@ -249,6 +249,7 @@ DrawingCanvas::DrawingCanvas(QWidget *parent)
             m_qsEditing = false;
             m_qsNode = -1;
             m_qsHover = -1;
+            m_qsGeometry = {}; // canonical geometry dies with its shape
             m_qsPreview = QImage(); // never leave a stale preview behind
             clearPenUiLatch();      // the latched button may be going away
             m_qsPreviewHost = QImage();
@@ -3647,6 +3648,16 @@ void DrawingCanvas::captureQuickShapeBrush()
     m_qsViewRotation = m_viewRotation;
 }
 
+// PERMANENT test surface: the geometry-lock test intercepts the exact
+// replay stream instead of trusting raster equality (the stage-6 defect
+// proved pixels can agree while the geometry is wrong).
+QVector<StrokePoint> DrawingCanvas::quickShapeReplayStreamForTest() const
+{
+    if (!m_quickShape.hasActiveShape())
+        return {};
+    return quickShapePointStream(m_quickShape.currentCommit());
+}
+
 // One point stream, used verbatim by EVERY render of the commit. Timestamps
 // are synthetic (1..n) — the engine only uses them for dedup and
 // interpolation, and the corrected path has no meaningful wall-clock — and
@@ -3911,7 +3922,15 @@ void DrawingCanvas::enterQuickShapeEdit()
 {
     if (!m_quickShape.hasActiveShape())
         return;
-    m_qsGeometry = m_quickShape.currentGeometry();
+    // ONE canonical geometry (stage-6 geometry-lock fix): after an explicit
+    // conversion the canvas geometry is authoritative — re-deriving corner
+    // nodes from the dense session samples (structuralVerticesOf) miscounts
+    // regular polygons (pentagon -> 6, hexagon -> 8). Derive from the
+    // session only when the canvas holds nothing for this shape (fresh
+    // recognition); shape dismissal invalidates the held geometry below.
+    if (!m_qsGeometry.isValid()
+        || m_qsGeometry.name != m_quickShape.currentCommit().name)
+        m_qsGeometry = m_quickShape.currentGeometry();
     if (!m_qsGeometry.isValid())
         return;
     m_qsEditing = true;

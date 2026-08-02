@@ -577,8 +577,39 @@ qreal QuickShapeGeometry::ellipseAngleOf(const QPointF &point) const
 
 QVector<QPointF> QuickShapeGeometry::sampled(int ellipseSamples) const
 {
-    if (kind != Ellipse)
-        return nodes;
+    if (kind != Ellipse) {
+        // DENSE boundary sampling (stage-6 geometry-lock fix). Raw nodes are
+        // NOT a valid replay stream: the brush engine applies causal input
+        // smoothing (StrokeBuilder::addRawPoint's weighted moving average)
+        // to every sample, and with only 3-8 corner points that average
+        // blends ACROSS CORNERS — rectangles rendered irregular interior
+        // paths, triangles missed their own nodes. Sampling densely along
+        // consecutive node-to-node segments keeps the smoothing displacement
+        // sub-pixel: every edge exactly once, every corner reached exactly
+        // (each node starts its edge), interior samples spaced <= kMaxGap.
+        // Closed shapes do NOT repeat the first node — the host's replay
+        // stream appends the closing point, and the overlay path closes via
+        // the shape name — so there is no duplicated zero-length segment.
+        const int n = int(nodes.size());
+        if (n < 2)
+            return nodes;
+        const bool closed = isClosedShapeType(name);
+        const int edges = closed ? n : n - 1;
+        constexpr qreal kMaxGap = 3.0; // document px between samples
+        QVector<QPointF> out;
+        for (int e = 0; e < edges; ++e) {
+            const QPointF a = nodes.at(e);
+            const QPointF b = nodes.at((e + 1) % n);
+            out.append(a); // the corner itself, exactly
+            const qreal len = QLineF(a, b).length();
+            const int interior = int(len / kMaxGap);
+            for (int i = 1; i <= interior; ++i)
+                out.append(a + (b - a) * (i / qreal(interior + 1)));
+        }
+        if (!closed)
+            out.append(nodes.constLast());
+        return out;
+    }
     QVector<QPointF> out;
     const int count = qMax(16, ellipseSamples);
     out.reserve(count);

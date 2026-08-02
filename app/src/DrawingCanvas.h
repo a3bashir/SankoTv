@@ -144,6 +144,20 @@ public:
     quickshape::QuickShapeSession *quickShape() { return &m_quickShape; }
     void commitQuickShape(); // resolve any pending temporary shape (lifecycle)
     void cancelQuickShape(); // explicit cancel: discard the temporary vector
+    // PERMANENT test surface (SankoQuickShapeGeometryLock): the exact
+    // point stream the engine replay consumes for the current shape, and
+    // the settled preview raster. Read-only; no test-only behaviour.
+    QVector<StrokePoint> quickShapeReplayStreamForTest() const;
+    quickshape::QuickShapeGeometry quickShapeCanonicalGeometryForTest() const
+    {
+        return m_qsGeometry;
+    }
+    QImage quickShapePreviewForTest() const { return m_qsPreview; }
+    bool quickShapePreviewBusyForTest() const
+    {
+        return m_qsPreviewInFlight || m_qsPreviewDirty
+               || (m_qsPreviewTimer && m_qsPreviewTimer->isActive());
+    }
 
     Tool tool() const { return m_tool; } // active tool (per-tool sliders)
     // Selection changed while Move is active: commit the running transform

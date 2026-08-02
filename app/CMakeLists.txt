@@ -165,6 +165,26 @@ target_include_directories(SankoCanvasBrushLock PRIVATE src)
 target_link_libraries(SankoCanvasBrushLock PRIVATE Qt6::Widgets Qt6::Svg
     Qt6::Concurrent QuickShape::Kit SankoPaint::Engine)
 
+# Permanent QuickShape GEOMETRY lock (tests/QuickShapeGeometryLockTest.cpp):
+# raster preview-vs-commit equality once passed while Edit Shape conversions
+# were geometrically wrong (both consumed the same too-sparse stream). This
+# locks the deeper invariant: canonical geometry == displayed guide == the
+# exact engine replay stream, across every vertex type/count, conversion
+# chain, rotated frame, and the async stale-result race.
+# Run: build/<config>/SankoQuickShapeGeometryLock.exe (exit = failure count).
+qt_add_executable(SankoQuickShapeGeometryLock
+    tests/QuickShapeGeometryLockTest.cpp
+    src/DrawingCanvas.cpp
+    src/DrawingCanvas.h
+    src/PerspectiveTool.cpp
+    src/PerspectiveTool.h
+    src/SankoPaintHostAdapter.cpp
+    src/SankoPaintHostAdapter.h
+)
+target_include_directories(SankoQuickShapeGeometryLock PRIVATE src)
+target_link_libraries(SankoQuickShapeGeometryLock PRIVATE Qt6::Widgets
+    Qt6::Svg Qt6::Concurrent QuickShape::Kit SankoPaint::Engine)
+
 # --- Developer recorder (TEMP) -----------------------------------------------
 # Temporary bug-capture tool; remove by deleting app/src/devrecorder/ and
 # THIS block (plus the one guarded block in MainWindow.cpp).
