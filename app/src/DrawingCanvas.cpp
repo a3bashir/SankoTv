@@ -275,6 +275,18 @@ DrawingCanvas::DrawingCanvas(QWidget *parent)
         // activation while the (synchronous) commit runs.
         if (m_qsCommitting || !m_quickShape.hasActiveShape())
             return;
+        // Writability pre-flight (repair stage 8): requestCommit() clears
+        // the session whether or not the bake can land, so the check must
+        // run FIRST — the shape stays fully pending for a retry after the
+        // user unlocks/shows the layer (or Esc discards it).
+        if (!editableActiveLayer()) {
+            QMessageBox::warning(this, QStringLiteral("QuickShape"),
+                QStringLiteral("The target layer is locked or hidden, so the "
+                               "shape cannot be baked yet.\n\nUnlock or show "
+                               "the layer and press Done again — the shape is "
+                               "still editable. Press Esc to discard it."));
+            return;
+        }
         m_qsCommitting = true;
         m_qsDoneButton->setEnabled(false);
         m_quickShape.requestCommit();
@@ -4422,10 +4434,24 @@ void DrawingCanvas::setQuickShapeEnabled(bool enabled)
 // freehand through the normal release path.
 void DrawingCanvas::commitQuickShape()
 {
-    if (m_quickShape.hasActiveShape())
+    if (m_quickShape.hasActiveShape()) {
+        // Writability pre-flight (repair stage 8). Mid-lifecycle (panel,
+        // tool, or layer change already in motion) the shape cannot be kept
+        // pending — but it is never discarded SILENTLY: the user is told
+        // what was lost and why, per the no-silent-work-loss rule.
+        if (!editableActiveLayer()) {
+            m_quickShape.cancelActiveShape();
+            update();
+            QMessageBox::warning(this, QStringLiteral("QuickShape"),
+                QStringLiteral("A pending QuickShape was discarded: its "
+                               "target layer is locked or hidden, so it "
+                               "could not be baked before this change."));
+            return;
+        }
         m_quickShape.requestCommit(); // synchronously replays + clears
-    else
+    } else {
         m_quickShape.reset(); // never leave a stuck pointer/collect state
+    }
 }
 
 void DrawingCanvas::cancelQuickShape()
@@ -5477,11 +5503,17 @@ void DrawingCanvas::keyReleaseEvent(QKeyEvent *event)
 void DrawingCanvas::focusOutEvent(QFocusEvent *event)
 {
     clearPenUiLatch(); // never leave a control stuck pressed on focus loss
+    if (m_qsHeld) {    // pen focus torn away mid-hold: drop the held flag so
+        m_qsHeld = false; // the UI never sticks in the held state
+        updateQuickShapeUi();
+    }
 
     // Focus moving elsewhere bakes a READY temporary shape (a stroke still
-    // being drawn is left to the normal release path).
+    // being drawn is left to the normal release path) — through the stage-8
+    // pre-flight, so a locked/hidden layer makes this an ANNOUNCED discard,
+    // never a silent one.
     if (m_quickShape.hasActiveShape())
-        m_quickShape.requestCommit();
+        commitQuickShape();
     // Losing focus mid-hold would otherwise leave the pan modifier stuck on.
     m_spaceHeld = false;
     if (!m_panning)
