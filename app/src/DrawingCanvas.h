@@ -14,6 +14,7 @@
 #include <QImage>
 #include <QPainterPath>
 #include <QPixmap>
+#include <QPointer>
 #include <QPolygonF>
 #include <QSet>
 #include <QTransform>
@@ -33,6 +34,7 @@ class QDragEnterEvent;
 class QMenu;
 class QUndoStack;
 class QDropEvent;
+class QAbstractButton;
 class QPushButton;
 class QSlider;
 class QTimer;
@@ -774,6 +776,24 @@ private:
     // render REPLACES m_qsPreview whole (regenerated from scratch, never
     // stacked). Regeneration is coalesced to ~one schedule per display frame.
     QImage m_qsPreview;
+
+    // --- Tablet -> UI router (repair stage 5) ------------------------------
+    // A pen press over a visible canvas-child CONTROL latches that control
+    // and ACCEPTS the tablet events for the whole interaction, so Qt never
+    // synthesizes the fallback mouse sequence: the 9-widget propagation walk
+    // and the rapid-taps-become-mouseDblClick coalescing are gone, one tap
+    // is exactly one activation, and no stroke can ever begin beneath a
+    // control. Ownership order: (1) latched control, (2) QuickShape node /
+    // transform interaction, (3) the drawing pipeline. QPointer: rebuilding
+    // or tearing down the type bar can never leave the latch dangling. A
+    // DISABLED control is an accepted dead zone. Real mouse input is never
+    // touched — suppression covers only the tablet interaction the router
+    // owns.
+    QPointer<QAbstractButton> m_penUiTarget;
+    bool m_penUiDeadZone = false;
+    QAbstractButton *penUiButtonAt(const QPointF &widgetPos) const;
+    void clearPenUiLatch();
+
     QImage m_qsPreviewHost;           // publish target for the pending render
     quint64 m_qsPreviewGen = 0;       // bumped to invalidate in-flight renders
     bool m_qsPreviewInFlight = false;

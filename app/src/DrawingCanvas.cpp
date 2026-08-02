@@ -235,6 +235,7 @@ DrawingCanvas::DrawingCanvas(QWidget *parent)
             m_qsNode = -1;
             m_qsHover = -1;
             m_qsPreview = QImage(); // never leave a stale preview behind
+            clearPenUiLatch();      // the latched button may be going away
             m_qsPreviewHost = QImage();
             ++m_qsPreviewGen; // in-flight renders land in the void
             m_qsPreviewDirty = false;
@@ -838,6 +839,8 @@ static QRect opaquePixelBounds(const QImage &image)
 
 void DrawingCanvas::setTool(Tool tool)
 {
+    clearPenUiLatch(); // a latched pen tap does not survive a tool change
+
     const Tool previous = m_tool;
     commitQuickShape(); // a pending QuickShape bakes before the tool changes
     commitFloating(); // an un-committed paste lands before the tool changes
@@ -3939,6 +3942,7 @@ void DrawingCanvas::rebuildQuickShapeTypeBar()
         layout->addWidget(button);
         button->show();
     }
+
     m_qsTypeBar->adjustSize();
     updateQuickShapeUi();
 }
@@ -5299,6 +5303,8 @@ void DrawingCanvas::keyReleaseEvent(QKeyEvent *event)
 
 void DrawingCanvas::focusOutEvent(QFocusEvent *event)
 {
+    clearPenUiLatch(); // never leave a control stuck pressed on focus loss
+
     // Focus moving elsewhere bakes a READY temporary shape (a stroke still
     // being drawn is left to the normal release path).
     if (m_quickShape.hasActiveShape())
@@ -5887,6 +5893,32 @@ void DrawingCanvas::mouseDoubleClickEvent(QMouseEvent *event)
 // synthesizes ordinary mouse events for them (Shapes/Fill/Erase unchanged);
 // for Brush we accept() so the same stroke is NOT also delivered as a mouse
 // event (which would double-draw).
+// Recursive pen hit test: childAt() returns the DEEPEST descendant (which
+// can be a label or icon inside a button); walk up until the owning
+// QAbstractButton — or the canvas — is found.
+QAbstractButton *DrawingCanvas::penUiButtonAt(const QPointF &widgetPos) const
+{
+    QWidget *w = childAt(widgetPos.toPoint());
+    while (w && w != this) {
+        if (auto *button = qobject_cast<QAbstractButton *>(w))
+            return button;
+        w = w->parentWidget();
+    }
+    return nullptr;
+}
+
+// Every cancellation path funnels here: tablet release, focus loss,
+// QuickShape teardown, tool change. (Widget destruction needs nothing —
+// QPointer nulls itself.) After a clear, the next canvas stroke begins
+// normally.
+void DrawingCanvas::clearPenUiLatch()
+{
+    if (m_penUiTarget)
+        m_penUiTarget->setDown(false);
+    m_penUiTarget.clear();
+    m_penUiDeadZone = false;
+}
+
 void DrawingCanvas::tabletEvent(QTabletEvent *event)
 {
     if (m_tool != Brush) {
@@ -5894,17 +5926,48 @@ void DrawingCanvas::tabletEvent(QTabletEvent *event)
         return;
     }
 
-    // ROOT-CAUSE FIX for pen-vs-UI: child controls (Edit Shape, Done, the
-    // type selector, the view toolbar) have no tabletEvent handler, so their
-    // pen events propagate here — and accept()ing them suppressed the
-    // synthesized mouse events buttons need. When the pen touches a child
-    // control and no canvas interaction is mid-flight, IGNORE the tablet
-    // event: Qt then synthesizes normal mouse events for the control, the
-    // control owns the interaction, and no stroke can start beneath it. An
-    // in-progress stroke / transform / node drag keeps canvas ownership, so
+    // Tablet -> UI router (repair stage 5; ownership rule 1). A latched
+    // interaction consumes every tablet event until release: Move updates
+    // only the latched control's pressed look — activation NEVER transfers
+    // to a different button — and Release activates only if the pen is
+    // still over the same valid target. Accepting the events means Qt never
+    // synthesizes the fallback mouse sequence, so one tap is exactly one
+    // action and rapid taps can no longer coalesce into mouseDblClick.
+    if (m_penUiTarget || m_penUiDeadZone) {
+        if (event->type() == QEvent::TabletRelease) {
+            QAbstractButton *target = m_penUiTarget; // QPointer -> may be null
+            const bool activate = target
+                && penUiButtonAt(event->position()) == target
+                && target->isVisible() && target->isEnabled()
+                && isAncestorOf(target);
+            clearPenUiLatch();
+            if (activate)
+                target->click(); // full Qt press/release/clicked sequence, once
+        } else if (event->type() == QEvent::TabletMove && m_penUiTarget) {
+            m_penUiTarget->setDown(
+                penUiButtonAt(event->position()) == m_penUiTarget);
+        }
+        event->accept();
+        return;
+    }
+    // An in-progress stroke / hold / node drag keeps canvas ownership, so
     // dragging across a button mid-stroke does not tear the pointer away.
     const bool midCanvasInteraction =
         m_brushStroke || m_qsHeld || (m_qsEditing && m_qsNode >= 0);
+    if (!midCanvasInteraction && event->type() == QEvent::TabletPress) {
+        if (QAbstractButton *button = penUiButtonAt(event->position())) {
+            if (button->isEnabled()) {
+                m_penUiTarget = button;
+                button->setDown(true);
+            } else {
+                m_penUiDeadZone = true; // disabled control: accepted dead zone
+            }
+            event->accept();
+            return;
+        }
+    }
+    // Non-button child widgets (none today) keep the pre-router fallback:
+    // ignore, so Qt synthesizes mouse events for them and nothing draws.
     if (!midCanvasInteraction) {
         QWidget *child = childAt(event->position().toPoint());
         if (child && child != this) {
