@@ -42,9 +42,18 @@ public:
     int morphDurationMs() const;
     qreal dwellRadius() const;
 
-    void pointerPress(const QPointF &documentPoint, qreal pressure = 1.0);
-    void pointerMove(const QPointF &documentPoint, qreal pressure = 1.0);
-    void pointerRelease(const QPointF &documentPoint, qreal pressure = 1.0);
+    // Stylus channels default to 0 (mouse); hosts with tablet data pass the
+    // per-event tilt/rotation so the commit can replay them onto the
+    // corrected path alongside the pressures.
+    void pointerPress(const QPointF &documentPoint, qreal pressure = 1.0,
+                      qreal tiltX = 0.0, qreal tiltY = 0.0,
+                      qreal rotation = 0.0);
+    void pointerMove(const QPointF &documentPoint, qreal pressure = 1.0,
+                     qreal tiltX = 0.0, qreal tiltY = 0.0,
+                     qreal rotation = 0.0);
+    void pointerRelease(const QPointF &documentPoint, qreal pressure = 1.0,
+                        qreal tiltX = 0.0, qreal tiltY = 0.0,
+                        qreal rotation = 0.0);
 
     bool hasActiveShape() const;
     bool isCollectingStroke() const;
@@ -87,6 +96,10 @@ private:
     void updateOverlay(const QVector<QPointF> &points);
     void clearShapeState();
     QVector<qreal> resampledPressures(int count) const;
+    // Arc-length resampling of any per-sample stylus channel onto `count`
+    // points of the corrected path (the machinery behind resampledPressures).
+    QVector<qreal> resampledChannel(const QVector<qreal> &source,
+                                    int count) const;
     qreal strokeLength() const;
     qreal recentEndpointVelocity() const; // document units per second
 
@@ -103,6 +116,9 @@ private:
     QPointF m_shapeCenter;
     QVector<QPointF> m_sourcePoints;
     QVector<qreal> m_sourcePressures;
+    QVector<qreal> m_sourceTiltXs;    // parallel to m_sourcePoints
+    QVector<qreal> m_sourceTiltYs;
+    QVector<qreal> m_sourceRotations;
     QVector<QPointF> m_roughPoints;
     QVector<QPointF> m_targetPoints;
     QVector<QPointF> m_baseTargetPoints;

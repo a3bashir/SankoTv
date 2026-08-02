@@ -9,6 +9,7 @@
 #include <QCryptographicHash>
 #include <QCoreApplication>
 #include <QDateTime>
+#include <QRandomGenerator>
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QMenu>
@@ -3444,7 +3445,7 @@ void DrawingCanvas::updateBrushRegion(const QRectF &canvasBounds)
 
 void DrawingCanvas::beginBrushStroke(const QPointF &canvasPt, qreal pressure,
                                      qreal tiltX, qreal tiltY, qreal rotation,
-                                     quint64 timestamp)
+                                     quint64 timestamp, quint64 seed)
 {
     m_perspective.beginStroke(canvasPt); // snap assist anchors at stroke start
     Layer *layer = editableActiveLayer();
@@ -3461,7 +3462,7 @@ void DrawingCanvas::beginBrushStroke(const QPointF &canvasPt, qreal pressure,
     point.timestamp = timestamp ? timestamp
                                 : quint64(QDateTime::currentMSecsSinceEpoch());
     m_paintEngine.beginStroke(paintLayerKey(m_panel, layer->id), layer->image,
-                              point);
+                              point, seed);
     m_lastBrushPt = canvasPt;
     m_lastBrushPressure = pressure;
     if (const TiledImage *preview = m_paintEngine.previewTiles();
@@ -3727,14 +3728,58 @@ void DrawingCanvas::captureQuickShapeBrush()
     m_qsBrush.hardness = m_brushHardness;
     m_qsBrush.pressureToSize = m_pressureToSize;
     m_qsBrush.pressureToOpacity = m_pressureToOpacity;
+    // The FULL engine brush: the commit renders from this copy, so a
+    // preset/slider change while the shape is being edited can no longer
+    // change what Done produces (only colour ever reached the bake before —
+    // the engine brush is live canvas state).
+    m_qsFullBrush = m_paintEngine.brush();
+    m_qsFullBrush.setColor(m_color); // colour is app state, asserted per stroke
+    // One nonzero seed pins scatter/jitter/colour dynamics: every render of
+    // this shape replays the SAME randomness.
+    do
+        m_qsSeed = QRandomGenerator::global()->generate64();
+    while (!m_qsSeed);
+    m_qsViewRotation = m_viewRotation;
+}
+
+// One point stream, used verbatim by EVERY render of the commit. Timestamps
+// are synthetic (1..n) — the engine only uses them for dedup and
+// interpolation, and the corrected path has no meaningful wall-clock — and
+// the viewport rotation is the captured one, so renders see byte-identical
+// inputs regardless of when they run. Stylus tilt/rotation ride along when
+// the session recorded them (tablet); mouse strokes carry zeros.
+QVector<StrokePoint> DrawingCanvas::quickShapePointStream(
+    const quickshape::QuickShapeCommit &commit) const
+{
+    QVector<StrokePoint> stream;
+    stream.reserve(commit.points.size() + 1);
+    quint64 t = 0;
+    auto append = [&](qsizetype i) {
+        StrokePoint point;
+        point.position = commit.points.at(i);
+        point.pressure =
+            qBound<qreal>(0.0, commit.pressures.value(int(i), 1.0), 1.0);
+        point.tiltX = commit.tiltXs.value(int(i), 0.0);
+        point.tiltY = commit.tiltYs.value(int(i), 0.0);
+        point.rotation = commit.rotations.value(int(i), 0.0);
+        point.viewportRotation = m_qsViewRotation;
+        point.timestamp = ++t;
+        stream.append(point);
+    };
+    for (qsizetype i = 0; i < commit.points.size(); ++i)
+        append(i);
+    if (commit.isClosed()) // close the loop so e.g. circles have no gap
+        append(0);
+    return stream;
 }
 
 // Bake the corrected vector by replaying it through the NORMAL brush engine
-// — under the brush state CAPTURED at stroke start, so the committed pixels
-// match the preview even if the palette changed mid-edit. The stamp loop
-// applies the brush's size, opacity, hardness, spacing, pressure rules, and
-// selection masking, and the whole replay is bracketed by ONE
-// beginLayerEdit/finalizeLayerEdit — exactly one undo entry.
+// — under the COMPLETE state captured at stroke start (full engine brush,
+// colour, stroke seed, viewport rotation, and the shared pressure/tilt point
+// stream), so nothing that changes mid-edit — preset, sliders, palette,
+// camera — can alter the committed pixels. Selection masking follows the
+// standard stroke rules, and the whole replay is bracketed by ONE
+// beginLayerEdit/endBrushStroke — exactly one undo entry.
 void DrawingCanvas::replayQuickShape(const quickshape::QuickShapeCommit &commit)
 {
     m_quickShapeOverlay = QPainterPath(); // the vector is being baked
@@ -3745,25 +3790,39 @@ void DrawingCanvas::replayQuickShape(const quickshape::QuickShapeCommit &commit)
         update();
         return;
     }
+    // The bake renders from the CAPTURED state — full engine brush, stroke
+    // seed, viewport rotation, and the shared point stream — never from live
+    // canvas state (captured-state-wins; see captureQuickShapeBrush).
     const QsBrushState live{m_color, m_brushToolSize, m_brushToolOpacity,
                             m_brushHardness, m_pressureToSize,
                             m_pressureToOpacity};
+    const ::Brush liveBrush = m_paintEngine.brush();
+    const qreal liveRotation = m_viewRotation;
     m_color = m_qsBrush.color;
     m_brushToolSize = m_qsBrush.size;
     m_brushToolOpacity = m_qsBrush.opacity;
     m_brushHardness = m_qsBrush.hardness;
     m_pressureToSize = m_qsBrush.pressureToSize;
     m_pressureToOpacity = m_qsBrush.pressureToOpacity;
+    m_paintEngine.setBrush(m_qsFullBrush);
+    m_viewRotation = m_qsViewRotation; // pins StrokePoint.viewportRotation;
+                                       // restored before any repaint runs
 
+    const QVector<StrokePoint> stream = quickShapePointStream(commit);
     beginLayerEdit();
     m_brushStroke = true; // normal stroke path (selection scratch included)
-    beginBrushStroke(commit.points.first(), commit.pressures.value(0, 1.0));
-    for (qsizetype i = 1; i < commit.points.size(); ++i)
-        moveBrushStroke(commit.points.at(i), commit.pressures.value(int(i), 1.0));
-    if (commit.isClosed()) // close the loop so e.g. circles have no gap
-        moveBrushStroke(commit.points.first(), commit.pressures.value(0, 1.0));
+    beginBrushStroke(stream.first().position, stream.first().pressure,
+                     stream.first().tiltX, stream.first().tiltY,
+                     stream.first().rotation, stream.first().timestamp,
+                     m_qsSeed);
+    for (qsizetype i = 1; i < stream.size(); ++i)
+        moveBrushStroke(stream.at(i).position, stream.at(i).pressure,
+                        stream.at(i).tiltX, stream.at(i).tiltY,
+                        stream.at(i).rotation, stream.at(i).timestamp);
     endBrushStroke(QStringLiteral("QuickShape"));
 
+    m_viewRotation = liveRotation;
+    m_paintEngine.setBrush(liveBrush);
     m_color = live.color;
     m_brushToolSize = live.size;
     m_brushToolOpacity = live.opacity;
@@ -5978,7 +6037,9 @@ void DrawingCanvas::tabletEvent(QTabletEvent *event)
             if (m_quickShapeEnabled) {
                 applyQuickShapeTiming();
                 captureQuickShapeBrush();
-                m_quickShape.pointerPress(pt, event->pressure());
+                m_quickShape.pointerPress(pt, event->pressure(),
+                                          event->xTilt(), event->yTilt(),
+                                          event->rotation());
                 m_qsHeld = true;
                 updateQuickShapeUi();
             }
@@ -5996,7 +6057,9 @@ void DrawingCanvas::tabletEvent(QTabletEvent *event)
             const QPointF pt = m_perspective.snapPoint(stabilizeStrokePoint(
                 toCanvasF(event->position()), false));
             if (m_quickShapeEnabled)
-                m_quickShape.pointerMove(pt, event->pressure());
+                m_quickShape.pointerMove(pt, event->pressure(),
+                                         event->xTilt(), event->yTilt(),
+                                         event->rotation());
             moveBrushStroke(pt, event->pressure(), event->xTilt(), event->yTilt(),
                             event->rotation(), event->timestamp());
         }
@@ -6010,7 +6073,9 @@ void DrawingCanvas::tabletEvent(QTabletEvent *event)
         } else if (m_brushStroke) {
             if (m_quickShapeEnabled)
                 m_quickShape.pointerRelease(toCanvasF(event->position()),
-                                             event->pressure());
+                                            event->pressure(),
+                                            event->xTilt(), event->yTilt(),
+                                            event->rotation());
             endBrushStroke();
         }
         m_qsHeld = false;

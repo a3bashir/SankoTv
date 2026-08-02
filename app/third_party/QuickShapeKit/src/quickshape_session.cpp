@@ -171,7 +171,9 @@ qreal QuickShapeSession::dwellRadius() const
     return m_timing.dwellRadius;
 }
 
-void QuickShapeSession::pointerPress(const QPointF &documentPoint, qreal pressure)
+void QuickShapeSession::pointerPress(const QPointF &documentPoint,
+                                     qreal pressure, qreal tiltX, qreal tiltY,
+                                     qreal rotation)
 {
     if (hasActiveShape())
         requestCommit();
@@ -181,6 +183,9 @@ void QuickShapeSession::pointerPress(const QPointF &documentPoint, qreal pressur
     m_state = State::Collecting;
     m_sourcePoints = {documentPoint};
     m_sourcePressures = {qBound(0.0, pressure, 1.0)};
+    m_sourceTiltXs = {tiltX};
+    m_sourceTiltYs = {tiltY};
+    m_sourceRotations = {rotation};
     m_strokeClock.start();
     m_sourceTimesMs = {0};
     m_holdAnchor = documentPoint;
@@ -189,7 +194,9 @@ void QuickShapeSession::pointerPress(const QPointF &documentPoint, qreal pressur
     emit statusChanged("Drawing", "Hold the pen steady to invoke QuickShape");
 }
 
-void QuickShapeSession::pointerMove(const QPointF &documentPoint, qreal pressure)
+void QuickShapeSession::pointerMove(const QPointF &documentPoint,
+                                    qreal pressure, qreal tiltX, qreal tiltY,
+                                    qreal rotation)
 {
     if (!m_pointerDown)
         return;
@@ -206,6 +213,9 @@ void QuickShapeSession::pointerMove(const QPointF &documentPoint, qreal pressure
 
     m_sourcePoints.append(documentPoint);
     m_sourcePressures.append(qBound(0.0, pressure, 1.0));
+    m_sourceTiltXs.append(tiltX);
+    m_sourceTiltYs.append(tiltY);
+    m_sourceRotations.append(rotation);
     m_sourceTimesMs.append(m_strokeClock.elapsed());
     m_lastPoint = documentPoint;
     if (pointDistance(documentPoint, m_holdAnchor) > m_timing.dwellRadius) {
@@ -216,7 +226,9 @@ void QuickShapeSession::pointerMove(const QPointF &documentPoint, qreal pressure
     }
 }
 
-void QuickShapeSession::pointerRelease(const QPointF &documentPoint, qreal pressure)
+void QuickShapeSession::pointerRelease(const QPointF &documentPoint,
+                                       qreal pressure, qreal tiltX,
+                                       qreal tiltY, qreal rotation)
 {
     if (!m_pointerDown)
         return;
@@ -227,11 +239,17 @@ void QuickShapeSession::pointerRelease(const QPointF &documentPoint, qreal press
         if (pointDistance(documentPoint, m_lastPoint) >= 1.4) {
             m_sourcePoints.append(documentPoint);
             m_sourcePressures.append(qBound(0.0, pressure, 1.0));
+            m_sourceTiltXs.append(tiltX);
+            m_sourceTiltYs.append(tiltY);
+            m_sourceRotations.append(rotation);
             m_sourceTimesMs.append(m_strokeClock.elapsed());
         }
         m_state = State::Idle;
         m_sourcePoints.clear();
         m_sourcePressures.clear();
+        m_sourceTiltXs.clear();
+        m_sourceTiltYs.clear();
+        m_sourceRotations.clear();
         emit freehandStrokeFinished();
         emit statusChanged("Freehand", "Stroke finished without QuickShape");
     } else if (m_state == State::Transforming) {
@@ -264,6 +282,10 @@ QuickShapeCommit QuickShapeSession::currentCommit() const
     commit.confidence = m_confidence;
     commit.points = m_targetPoints;
     commit.pressures = resampledPressures(m_targetPoints.size());
+    commit.tiltXs = resampledChannel(m_sourceTiltXs, m_targetPoints.size());
+    commit.tiltYs = resampledChannel(m_sourceTiltYs, m_targetPoints.size());
+    commit.rotations =
+        resampledChannel(m_sourceRotations, m_targetPoints.size());
     return commit;
 }
 
@@ -351,6 +373,9 @@ void QuickShapeSession::reset()
     m_pointerDown = false;
     m_sourcePoints.clear();
     m_sourcePressures.clear();
+    m_sourceTiltXs.clear();
+    m_sourceTiltYs.clear();
+    m_sourceRotations.clear();
     m_sourceTimesMs.clear();
     clearShapeState();
 }
@@ -466,6 +491,9 @@ void QuickShapeSession::clearShapeState()
     m_overlayPath = {};
     m_sourcePoints.clear();
     m_sourcePressures.clear();
+    m_sourceTiltXs.clear();
+    m_sourceTiltYs.clear();
+    m_sourceRotations.clear();
     emit overlayPathChanged(m_overlayPath);
     if (wasActive)
         emit activeShapeChanged(false);
@@ -473,12 +501,18 @@ void QuickShapeSession::clearShapeState()
 
 QVector<qreal> QuickShapeSession::resampledPressures(int count) const
 {
+    return resampledChannel(m_sourcePressures, count);
+}
+
+QVector<qreal> QuickShapeSession::resampledChannel(const QVector<qreal> &source,
+                                                   int count) const
+{
     QVector<qreal> result;
     if (count <= 0 || m_sourcePoints.isEmpty()
-        || m_sourcePoints.size() != m_sourcePressures.size())
+        || m_sourcePoints.size() != source.size())
         return result;
     if (m_sourcePoints.size() == 1) {
-        result.fill(m_sourcePressures.first(), count);
+        result.fill(source.first(), count);
         return result;
     }
 
@@ -487,7 +521,7 @@ QVector<qreal> QuickShapeSession::resampledPressures(int count) const
         lengths[i] = lengths[i - 1] + pointDistance(m_sourcePoints[i - 1], m_sourcePoints[i]);
     const qreal totalLength = lengths.last();
     if (totalLength < 0.001) {
-        result.fill(m_sourcePressures.first(), count);
+        result.fill(source.first(), count);
         return result;
     }
 
@@ -498,8 +532,8 @@ QVector<qreal> QuickShapeSession::resampledPressures(int count) const
             ++segment;
         const qreal span = lengths[segment] - lengths[segment - 1];
         const qreal mix = span > 0.0 ? (wanted - lengths[segment - 1]) / span : 0.0;
-        result.append(m_sourcePressures[segment - 1] * (1.0 - mix)
-                      + m_sourcePressures[segment] * mix);
+        result.append(source[segment - 1] * (1.0 - mix)
+                      + source[segment] * mix);
     }
     return result;
 }

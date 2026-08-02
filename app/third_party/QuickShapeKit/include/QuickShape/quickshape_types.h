@@ -29,6 +29,11 @@ struct QuickShapeCommit
     qreal confidence = 0.0;
     QVector<QPointF> points;
     QVector<qreal> pressures;
+    // Stylus channels, resampled by arc length onto `points` exactly like
+    // `pressures` (empty when the host never supplied them — mouse input).
+    QVector<qreal> tiltXs;    // degrees
+    QVector<qreal> tiltYs;    // degrees
+    QVector<qreal> rotations; // barrel rotation, degrees
 
     bool isClosed() const;
     QPainterPath painterPath() const;

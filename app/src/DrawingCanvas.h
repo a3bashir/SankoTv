@@ -415,11 +415,15 @@ private:
     QRectF floatBounds() const; // floating image bounds in canvas coords
     void updateAntsTimer();     // marching ants animate only while needed
 
-    // Stamp-based brush stroke pipeline (mouse pressure = 1.0; tablet = real).
+    // Stamp-based brush stroke pipeline (mouse pressure = 1.0; tablet =
+    // real). `seed` pins the engine's per-stroke randomness (scatter,
+    // jitter, colour dynamics): 0 = random (live strokes), nonzero =
+    // deterministic — the QuickShape replay passes the captured seed.
     QPointF toCanvasF(const QPointF &widgetPoint) const; // float, unclamped
     void beginBrushStroke(const QPointF &canvasPt, qreal pressure,
                           qreal tiltX = 0.0, qreal tiltY = 0.0,
-                          qreal rotation = 0.0, quint64 timestamp = 0);
+                          qreal rotation = 0.0, quint64 timestamp = 0,
+                          quint64 seed = 0);
     void moveBrushStroke(const QPointF &canvasPt, qreal pressure,
                          qreal tiltX = 0.0, qreal tiltY = 0.0,
                          qreal rotation = 0.0, quint64 timestamp = 0);
@@ -745,9 +749,15 @@ private:
     void discardRoughStroke();        // roll the pending edit back
     void replayQuickShape(const quickshape::QuickShapeCommit &commit);
 
-    // Brush state captured when the QuickShape stroke begins: the temporary
-    // preview and the final commit both render with THIS state, so the shape
-    // never changes appearance mid-edit or on Done.
+    // Brush state captured when the QuickShape stroke begins. The capture is
+    // COMPLETE and deterministic: the full engine brush (every preset
+    // parameter), the app colour, one nonzero per-stroke randomness seed,
+    // and the viewport rotation — plus the session's own recorded pressure/
+    // tilt/rotation samples. The commit consumes exactly this capture, so a
+    // preset, slider, colour, or camera change while the shape is being
+    // edited can never silently alter what Done bakes (captured-state-wins
+    // policy; live controls affect the NEXT stroke). The QsBrushState mirror
+    // feeds the legacy preview stamper until it is retired.
     struct QsBrushState {
         QColor color;
         int size = 8;
@@ -757,7 +767,15 @@ private:
         bool pressureToOpacity = false;
     };
     QsBrushState m_qsBrush;
+    ::Brush m_qsFullBrush;        // complete engine brush copy at stroke start
+    quint64 m_qsSeed = 0;         // nonzero; commit randomness is pinned
+    qreal m_qsViewRotation = 0.0; // viewport rotation at stroke start
     void captureQuickShapeBrush();
+    // One replay point stream shared by every consumer of the commit:
+    // corrected points + resampled pressure/tilt/rotation channels, the
+    // captured viewport rotation, and stable synthetic timestamps (1..n).
+    QVector<StrokePoint> quickShapePointStream(
+        const quickshape::QuickShapeCommit &commit) const;
     // Real-brush preview of the corrected path: the SAME dab pipeline renders
     // into a canvas-sized scratch (never the layer). Regeneration is
     // coalesced to ~one update per display frame.
