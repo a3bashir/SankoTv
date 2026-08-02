@@ -4437,6 +4437,16 @@ void DrawingCanvas::undo()
 {
     if (!m_undoStack)
         return;
+    // A pending QuickShape is NOT yet document history (repair stage 7):
+    // the first Undo cancels the temporary vector — it neither commits it
+    // nor rewinds an older document command in the same action, and since
+    // the vector never reached the stack, Redo cannot resurrect it. The
+    // next Undo operates on real history normally. Both the toolbar button
+    // and Ctrl+Z route through here, so the policy is single-sourced.
+    if (m_quickShape.hasActiveShape()) {
+        cancelQuickShape();
+        return;
+    }
     // Resolve any live interactive session first so history stays coherent:
     // a floating paste lands (as its own command) and a live transform
     // gesture COMMITS, becoming the top history entry — this undo then
