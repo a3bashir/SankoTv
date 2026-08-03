@@ -5578,9 +5578,19 @@ void DrawingCanvas::keyReleaseEvent(QKeyEvent *event)
     QWidget::keyReleaseEvent(event);
 }
 
+// A broken mouse grab (another widget grabbing, popup, system steal) ends
+// the stroke exactly like focus loss: commit, never orphan.
+bool DrawingCanvas::event(QEvent *event)
+{
+    if (event->type() == QEvent::UngrabMouse)
+        finishInterruptedStroke();
+    return QWidget::event(event);
+}
+
 void DrawingCanvas::focusOutEvent(QFocusEvent *event)
 {
     clearPenUiLatch(); // never leave a control stuck pressed on focus loss
+    finishInterruptedStroke(); // a live stroke commits, never orphans
     if (m_qsHeld) {    // pen focus torn away mid-hold: drop the held flag so
         m_qsHeld = false; // the UI never sticks in the held state
         updateQuickShapeUi();
@@ -5756,7 +5766,13 @@ void DrawingCanvas::mousePressEvent(QMouseEvent *event)
     if (m_quickShape.hasActiveShape() && event->button() == Qt::LeftButton)
         m_quickShape.requestCommit();
 
-    if (!displayRect().contains(event->pos()))
+    // Widget-wide press acceptance for the PAINTING tools (canvas-edge fix):
+    // a Brush or Eraser stroke may begin in the gutter — out-of-paper points
+    // flow to the engine, which clips PIXELS to the document while keeping
+    // the path for smoothing/spacing/scatter. Document-anchored tools
+    // (shapes, selections, fill, move) keep the paper gate.
+    if (!displayRect().contains(event->pos())
+        && m_tool != Brush && m_tool != Eraser)
         return;
     if (!editableActiveLayer())
         return; // locked / hidden / missing layer: ignore strokes, no cursor change
@@ -5785,7 +5801,11 @@ void DrawingCanvas::mousePressEvent(QMouseEvent *event)
             m_strokeBuf = QImage(canvasSize(), QImage::Format_ARGB32_Premultiplied);
             m_strokeBuf.fill(Qt::transparent);
         }
-        m_lastCanvas = toCanvas(event->pos());
+        // UNCLAMPED anchor (canvas-edge fix): toCanvas() pinned the press to
+        // the document border, so an eraser stroke leaving the paper crawled
+        // along the edge. drawSegment endpoints may lie off-document —
+        // QPainter clips the pixels to the image.
+        m_lastCanvas = toCanvasF(event->position()).toPoint();
         m_perspective.beginStroke(toCanvasF(event->position())); // snap anchor
         drawSegment(m_lastCanvas, m_lastCanvas, m_color); // dot on click (eraser clears)
         break;
@@ -6087,31 +6107,57 @@ void DrawingCanvas::mouseReleaseEvent(QMouseEvent *event)
         commitDragShape();
         return;
     }
-    if (m_drawing) {
-        m_drawing = false;
-        if (m_strokeMask == StrokeMaskErase) {
-            // ONE mask/strength application for the whole erase stroke.
-            if (Layer *layer = editableActiveLayer()) {
-                QImage cut = m_strokeBuf;
-                QPainter cp(&cut);
-                cp.setCompositionMode(QPainter::CompositionMode_DestinationIn);
-                if (!m_selectionPath.isEmpty())
-                    cp.drawImage(0, 0, cachedSelectionMask());
-                if (m_eraserOpacity < 1.0)
-                    cp.fillRect(cut.rect(),
-                                QColor(0, 0, 0,
-                                       qRound(m_eraserOpacity * 255.0)));
-                cp.end();
-                QPainter p(&layer->image);
-                p.setCompositionMode(QPainter::CompositionMode_DestinationOut);
-                p.drawImage(0, 0, cut);
-            }
-            m_strokeMask = StrokeMaskNone;
-            m_strokeBuf = QImage();
+    if (m_drawing)
+        finishEraseStroke();
+}
+
+// The whole-stroke erase finalize — shared by the normal release and by
+// finishInterruptedStroke() (focus loss / broken grab), so an interrupted
+// erase commits exactly like a released one.
+void DrawingCanvas::finishEraseStroke()
+{
+    m_drawing = false;
+    if (m_strokeMask == StrokeMaskErase) {
+        // ONE mask/strength application for the whole erase stroke.
+        if (Layer *layer = editableActiveLayer()) {
+            QImage cut = m_strokeBuf;
+            QPainter cp(&cut);
+            cp.setCompositionMode(QPainter::CompositionMode_DestinationIn);
+            if (!m_selectionPath.isEmpty())
+                cp.drawImage(0, 0, cachedSelectionMask());
+            if (m_eraserOpacity < 1.0)
+                cp.fillRect(cut.rect(),
+                            QColor(0, 0, 0,
+                                   qRound(m_eraserOpacity * 255.0)));
+            cp.end();
+            QPainter p(&layer->image);
+            p.setCompositionMode(QPainter::CompositionMode_DestinationOut);
+            p.drawImage(0, 0, cut);
         }
-        finalizeLayerEdit(QStringLiteral("Erase"));
-        emit contentChanged();
+        m_strokeMask = StrokeMaskNone;
+        m_strokeBuf = QImage();
     }
+    finalizeLayerEdit(QStringLiteral("Erase"));
+    emit contentChanged();
+}
+
+// Delivery ended without a release — focus torn away or the mouse grab
+// broken mid-stroke. The partial stroke COMMITS (work is preserved, never
+// silently dropped — the QuickShape lifecycle policy, approved for strokes
+// too). A stroke that deposited nothing pushes no undo entry, so a
+// gutter-only interruption leaves history untouched. Nothing stays stuck:
+// no open engine stroke, no held flags, no erase scratch.
+void DrawingCanvas::finishInterruptedStroke()
+{
+    if (m_brushStroke) {
+        if (m_quickShapeEnabled)
+            m_quickShape.pointerRelease(m_lastBrushPt, 0.0);
+        m_qsHeld = false;
+        endBrushStroke();
+        updateQuickShapeUi();
+    }
+    if (m_drawing)
+        finishEraseStroke();
 }
 
 void DrawingCanvas::mouseDoubleClickEvent(QMouseEvent *event)
@@ -6297,8 +6343,11 @@ void DrawingCanvas::tabletEvent(QTabletEvent *event)
         // BEFORE the new stroke snapshots the layer.
         if (m_quickShape.hasActiveShape())
             m_quickShape.requestCommit();
-        if (m_panel && displayRect().contains(event->position().toPoint())
-            && editableActiveLayer() && !m_paintCommitPending) {
+        // Widget-wide press acceptance (canvas-edge fix): a pen stroke may
+        // begin in the gutter; the engine clips pixels, not the path. The
+        // stage-5 router and edit-mode handlers already ran above, so a
+        // press over a canvas-child control can never reach this branch.
+        if (m_panel && editableActiveLayer() && !m_paintCommitPending) {
             beginLayerEdit();
             m_brushStroke = true;
             emit liveBrushStrokeStarted(); // live input only (see the signal)

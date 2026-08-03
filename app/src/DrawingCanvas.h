@@ -354,6 +354,7 @@ protected:
     void keyPressEvent(QKeyEvent *event) override;
     void keyReleaseEvent(QKeyEvent *event) override;
     void resizeEvent(QResizeEvent *event) override;
+    bool event(QEvent *event) override; // UngrabMouse -> commit the stroke
     void focusOutEvent(QFocusEvent *event) override;
     void dragEnterEvent(QDragEnterEvent *event) override;
     void dropEvent(QDropEvent *event) override;
@@ -444,6 +445,10 @@ private:
                          qreal tiltX = 0.0, qreal tiltY = 0.0,
                          qreal rotation = 0.0, quint64 timestamp = 0);
     void endBrushStroke(const QString &undoText = QStringLiteral("Brush Stroke"));
+    // Canvas-edge fix: shared erase finalize + interruption commit (focus
+    // loss / broken grab end a stroke exactly like a release).
+    void finishEraseStroke();
+    void finishInterruptedStroke();
     // Repaint only the widget region covering the given canvas-space bounds.
     void updateBrushRegion(const QRectF &canvasBounds);
 
