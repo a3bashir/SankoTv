@@ -72,12 +72,28 @@ QString rgb(QRgb c)
     return QStringLiteral("%1,%2,%3").arg(qRed(c), 3).arg(qGreen(c), 3).arg(qBlue(c), 3);
 }
 
+// grabWindow can transiently return an EMPTY pixmap (compositor hiccup, the
+// window momentarily occluded or unmapped). That must never be treated as a
+// capture: g_grabDpr would become img.width()/top->width() == 0, silently
+// collapsing every sample coordinate to the origin and reporting the accurate
+// but deeply misleading "SAMPLE OUT OF CAPTURE px=(0,-1)". Retry, and on
+// persistent failure return a null image so the caller fails with a message
+// that names the real problem.
 QImage grabCanvas(QWidget *canvas)
 {
     QWidget *top = canvas->window();
-    const QPixmap shot = top->screen()->grabWindow(top->winId());
-    QImage img = shot.toImage();
-    g_grabDpr = top->width() > 0 ? img.width() / qreal(top->width()) : 1.0;
+    if (top->width() <= 0 || top->height() <= 0)
+        return QImage();
+    QImage img;
+    for (int attempt = 0; attempt < 6; ++attempt) {
+        img = top->screen()->grabWindow(top->winId()).toImage();
+        if (!img.isNull() && img.width() > 0 && img.height() > 0)
+            break;
+        pump(100);
+    }
+    if (img.isNull() || img.width() <= 0)
+        return QImage();
+    g_grabDpr = img.width() / qreal(top->width());
     const QPoint tl = canvas->mapTo(top, QPoint(0, 0));
     const QRect dev(QPoint(qRound(tl.x() * g_grabDpr), qRound(tl.y() * g_grabDpr)),
                     QSize(qRound(canvas->width() * g_grabDpr),
@@ -108,10 +124,18 @@ void checkBoundary(const QImage &shot, const QPointF &bw, const QPointF &inwardW
     const QPointF s0 = bDev + u * 0.5; // centre of the outermost artwork pixel
     const QPoint p0(int(std::floor(s0.x())), int(std::floor(s0.y())));
     ++g_checks;
+    if (shot.isNull()) {
+        ++g_failures;
+        out() << QStringLiteral("  **FAIL** %1 SCREEN CAPTURE FAILED (empty grab)")
+                     .arg(label) << Qt::endl;
+        return;
+    }
     if (!shot.rect().contains(p0)) {
         ++g_failures;
-        out() << QStringLiteral("  **FAIL** %1 SAMPLE OUT OF CAPTURE px=(%2,%3)")
-                     .arg(label).arg(p0.x()).arg(p0.y()) << Qt::endl;
+        out() << QStringLiteral("  **FAIL** %1 SAMPLE OUT OF CAPTURE px=(%2,%3) "
+                                "capture=%4x%5")
+                     .arg(label).arg(p0.x()).arg(p0.y())
+                     .arg(shot.width()).arg(shot.height()) << Qt::endl;
         return;
     }
     const QRgb got = shot.pixel(p0);
@@ -236,6 +260,14 @@ int main(int argc, char **argv)
         panel->layers[panel->activeLayerIndex].image.fill(Qt::transparent);
         canvas->update();
 
+        // A null capture here would crash: constScanLine() on a null image is
+        // undefined. Fail loudly instead.
+        if (blank.isNull() || filled.isNull()) {
+            ++g_checks; ++g_failures;
+            out() << QStringLiteral("  **FAIL** scale=%1 SCREEN CAPTURE FAILED")
+                         .arg(scale, 0, 'f', 4) << Qt::endl;
+            continue;
+        }
         const int midY = blank.height() / 2;
         int whiteLo = -1, whiteHi = -1, diffLo = -1, diffHi = -1;
         const QRgb *lb = reinterpret_cast<const QRgb *>(blank.constScanLine(midY));
