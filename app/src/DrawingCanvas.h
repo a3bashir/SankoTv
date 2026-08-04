@@ -305,6 +305,17 @@ public:
     bool gridVisible() const { return m_gridVisible; }
     GridStyle gridStyle() const { return m_gridStyle; }
     QColor gridColor() const { return m_gridColor; }
+
+    // PERMANENT test surface (SankoCanvasEdgeLock): exact view placement and
+    // workspace colours without persisting to QSettings. m_zoom is
+    // fit-relative and the pan interacts with rotation/flip, so tests cannot
+    // reach an exact on-screen scale through the public view setters alone.
+    // No test-only rendering behaviour — these only set existing view state.
+    void placeViewForTest(double onScreenScale, const QPointF &canvasPt,
+                          const QPointF &widgetPt);
+    QTransform viewTransformForTest() const { return viewTransform(); }
+    void setWorkspaceForTest(const QColor &gutter, bool gridVisible,
+                             GridStyle style, const QColor &gridColor);
     QColor gutterColor() const { return m_gutterColor; }
     void setGridVisible(bool on);
     void setGridStyle(GridStyle style);

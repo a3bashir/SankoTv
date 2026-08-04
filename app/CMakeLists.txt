@@ -185,6 +185,26 @@ target_include_directories(SankoQuickShapeGeometryLock PRIVATE src)
 target_link_libraries(SankoQuickShapeGeometryLock PRIVATE Qt6::Widgets
     Qt6::Svg Qt6::Concurrent QuickShape::Kit SankoPaint::Engine)
 
+# Permanent canvas-border lock (tests/CanvasEdgeLockTest.cpp): the layer
+# pixels reached the boundary while the SCREEN showed a one-pixel gap, twice
+# (frame pen centred on the boundary path; paper leaking between separately-
+# antialiased content quads on fractional device coordinates). This samples
+# real screen pixels with QScreen::grabWindow at fractional zooms, both
+# workspace colourings, rotation, and the corners. Requires a desktop session.
+# Run: build/<config>/SankoCanvasEdgeLock.exe (exit code = failure count).
+qt_add_executable(SankoCanvasEdgeLock
+    tests/CanvasEdgeLockTest.cpp
+    src/DrawingCanvas.cpp
+    src/DrawingCanvas.h
+    src/PerspectiveTool.cpp
+    src/PerspectiveTool.h
+    src/SankoPaintHostAdapter.cpp
+    src/SankoPaintHostAdapter.h
+)
+target_include_directories(SankoCanvasEdgeLock PRIVATE src)
+target_link_libraries(SankoCanvasEdgeLock PRIVATE Qt6::Widgets Qt6::Svg
+    Qt6::Concurrent QuickShape::Kit SankoPaint::Engine)
+
 # --- Developer recorder (TEMP) -----------------------------------------------
 # Temporary bug-capture tool; remove by deleting app/src/devrecorder/ and
 # THIS block (plus the one guarded block in MainWindow.cpp).

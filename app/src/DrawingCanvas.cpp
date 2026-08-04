@@ -1417,6 +1417,54 @@ double DrawingCanvas::scale() const
     return w > 0 ? w / double(canvasSize().width()) : 1.0;
 }
 
+// PERMANENT test surface (SankoCanvasEdgeLock). Places canvasPt at widgetPt at
+// an exact on-screen scale. The pan is solved through a MEASURED 2x2 Jacobian
+// of viewTransform() in m_panOffset rather than a hand-derived matrix: the
+// mapping is affine in the pan but composed with rotation/flip about the view
+// centre, and a hand-derived version once landed visibly wrong at DPR 2 while
+// still passing at DPR 1 — exactly the near-miss a boundary test cannot afford.
+void DrawingCanvas::placeViewForTest(double onScreenScale, const QPointF &canvasPt,
+                                     const QPointF &widgetPt)
+{
+    const QSize cs = canvasSize();
+    const double fit = qMin(width() / double(cs.width()),
+                            height() / double(cs.height()));
+    if (fit <= 0.0)
+        return;
+    m_zoom = onScreenScale / fit;
+    const double w = cs.width() * onScreenScale, h = cs.height() * onScreenScale;
+    m_panOffset = QPointF(widgetPt.x() - canvasPt.x() * onScreenScale - (width() - w) / 2.0,
+                          widgetPt.y() - canvasPt.y() * onScreenScale - (height() - h) / 2.0);
+    const QPointF base = m_panOffset;
+    const QPointF p0 = viewTransform().map(canvasPt);
+    m_panOffset = base + QPointF(1, 0);
+    const QPointF dx = viewTransform().map(canvasPt) - p0;
+    m_panOffset = base + QPointF(0, 1);
+    const QPointF dy = viewTransform().map(canvasPt) - p0;
+    m_panOffset = base;
+    const qreal det = dx.x() * dy.y() - dy.x() * dx.y();
+    if (!qFuzzyIsNull(det)) {
+        const QPointF err = widgetPt - p0;
+        m_panOffset += QPointF((err.x() * dy.y() - dy.x() * err.y()) / det,
+                               (dx.x() * err.y() - err.x() * dx.y()) / det);
+    }
+    update();
+}
+
+// PERMANENT test surface (SankoCanvasEdgeLock). Same members the grid menu
+// sets, WITHOUT saveGridSettings(): a test must never write the user's real
+// workspace preferences.
+void DrawingCanvas::setWorkspaceForTest(const QColor &gutter, bool gridVisible,
+                                        GridStyle style, const QColor &gridColor)
+{
+    m_gutterColor = gutter;
+    m_gridVisible = gridVisible;
+    m_gridStyle = style;
+    m_gridColor = gridColor;
+    m_gridTileDirty = true;
+    update();
+}
+
 // The full canvas->widget mapping: zoom+pan (displayRect) then rotation and
 // horizontal flip about the view centre. Every draw and every mouse mapping
 // goes through this (or its inverse), so strokes land under the cursor at any
@@ -4921,6 +4969,25 @@ void DrawingCanvas::paintEvent(QPaintEvent *event)
     // it zooms/rotates/flips together with the artwork.
     painter.save();
     painter.setWorldTransform(T);
+    // The document is ONE surface, but its stack is drawn as several
+    // full-canvas quads (paper/compBelow, the active layer, compAbove) sharing
+    // identical geometry. Antialiased, each quad carries its own partial edge
+    // coverage a, so the stack composites in SCREEN space and the paper leaks
+    // through the layers above it at weight a(1-a) — up to 25% white along the
+    // outermost row/column. That is the border gap: with a (20,20,20) stroke on
+    // a boundary landing at device y=349.69 the edge pixel measured 61,61,61,
+    // matching 255*a(1-a) exactly. It only appears when the boundary falls on a
+    // FRACTIONAL device coordinate, which is why integer 100%/400% tests missed
+    // it while the 0.85 startup zoom and any rotation show it.
+    //
+    // Aliasing the content quads makes every layer cover exactly the same
+    // device pixels, so the stack composites as the single surface it is and no
+    // leak is possible at any zoom, pan or angle. Interior quality is untouched
+    // — SmoothPixmapTransform still does the bilinear filtering; this hint only
+    // governs the quad's own outline. The tradeoff is that a ROTATED document
+    // edge is now hard rather than feathered; the antialiased frame outline
+    // drawn just outside it carries the smooth boundary instead.
+    painter.setRenderHint(QPainter::Antialiasing, false);
 
     // White paper, then every VISIBLE layer bottom-to-top with its opacity.
     // Light-table ghosts are drawn ONCE on the paper, just after the
@@ -5106,15 +5173,22 @@ void DrawingCanvas::paintEvent(QPaintEvent *event)
         painter.setOpacity(1.0);
     }
 
+    // Document content is done; overlays below are outlines and guides, which
+    // do want antialiasing.
+    painter.setRenderHint(QPainter::Antialiasing, true);
+
     // Cosmetic pens: 1px on screen regardless of zoom/rotation.
     auto cosmetic = [](const QColor &c, qreal w = 0.0) {
         QPen p(c, w);
         p.setCosmetic(true);
         return p;
     };
-    painter.setPen(cosmetic(QColor("#2a2a2a")));
-    painter.setBrush(Qt::NoBrush);
-    painter.drawRect(canvasR);
+    // The canvas draws NO permanent outline. A cosmetic frame here — even
+    // pushed geometrically outside canvasR — always composites a constant
+    // pale screen pixel between the artwork and the gutter (blatant at 400%),
+    // because a 1px antialiased line straddles device pixels at almost every
+    // zoom. The white paper edge itself is the document/workspace separator.
+    // Any boundary line must come from an optional overlay (camera frame).
 
     // Alignment grid (View > Grid): thin white lines every 40 canvas px.
     if (m_grid && 40.0 * scale() >= 4.0) {
@@ -5128,8 +5202,16 @@ void DrawingCanvas::paintEvent(QPaintEvent *event)
     // Camera-frame outline (the 16:9 shot). The dim OUTSIDE it is drawn in
     // widget space below, since it spans the rotated frame's complement.
     if (m_cameraFrame) {
+        // Outset half a screen pixel (canvas units) so the cosmetic outline
+        // sits wholly in the gutter and never blends into the outermost
+        // artwork row/column — the same defect the removed permanent frame
+        // had. This is an OPTIONAL overlay; the normal canvas has no border.
+        const qreal frameOutset = 0.5 / scale();
+        const QRectF frameR = canvasR.adjusted(-frameOutset, -frameOutset,
+                                               frameOutset, frameOutset);
         painter.setPen(cosmetic(QColor("#cccccc")));
-        painter.drawRect(canvasR);
+        painter.setBrush(Qt::NoBrush);
+        painter.drawRect(frameR);
     }
 
     // Action-safe: 5% inset, amber.
