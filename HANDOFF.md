@@ -375,3 +375,51 @@ What survives from the relocation, on purpose:
   endpoint AND mid-range fixtures.
 Any future quick hardness control should read/write that same key and go
 through the existing slot — the state is already flowing.
+
+## The canvas "1-pixel white border" was the Camera Frame overlay (2026-08-04)
+
+STOP AND READ THIS BEFORE INVESTIGATING ANY CANVAS-EDGE LINE. A pale 1px
+line hugging the artwork was chased across several investigation cycles as a
+rendering defect. It was the CAMERA FRAME OVERLAY, which shipped ON by
+default. It is now OFF by default (DrawingCanvas.h m_cameraFrame, and the
+matching toolbar button state in StoryboardPage.cpp) — the feature itself is
+unchanged and one click away.
+
+MEASURED SIGNATURE, so the same line is never chased again. The overlay dims
+everything outside the 16:9 shot with rgba(0,0,0,102) = x0.6, then draws a
+#cccccc (204) outline just outside the paper:
+- dimmed gutter  = gutter x 0.6   -> 77 (#4d4d4d) reads 46; 10 (#0a0a0a) reads 6
+- outline blend  = 122,122,122    (204 half-covering the dimmed gutter)
+- with it OFF    = gutter straight into artwork: 77 -> 0, or 10 -> 0
+If you see 122 at the boundary, it is the camera frame. If you see the
+gutter value x0.6 just outside it, that is the dim. Neither is paint.
+
+THE FILL PATH IS VERIFIED CORRECT — do not re-audit it. After a black fill,
+3000/3000 border pixels are fully opaque on ALL THREE fill routes: plain
+Fill tap with no selection, Select All -> Fill, and an edge-to-edge marquee
+drag -> Fill. Measured on the layer image, all four borders, alpha 255.
+
+TWO REAL display-side causes WERE found and fixed on the way, and they are
+genuine — keep them:
+1. the old permanent canvas frame's cosmetic pen, centred ON the boundary
+   path, blended half its width into the outermost row/column (a 230,60,60
+   stroke read 136,51,51). That frame has since been REMOVED entirely; the
+   white paper edge is the document/workspace separator.
+2. white paper leaking between the separately-antialiased stacked content
+   quads (paper/compBelow, active layer, compAbove) at alpha(1-alpha) weight
+   on FRACTIONAL device coordinates — up to 25% white. Fixed by aliasing the
+   content quads so every layer covers the same device pixels. Integer-only
+   zoom tests cannot see this: it needs a fractional boundary, which the
+   fit-relative 0.85 startup zoom produces every launch.
+Both are locked by SankoCanvasEdgeLock (tests/CanvasEdgeLockTest.cpp), the
+sixth permanent test family: 74 checks sampling REAL screen pixels via
+QScreen::grabWindow at fractional zooms, rotation, both workspace
+colourings, corners, plus a padded-reference engine comparison.
+
+STILL OPEN, deliberately not changed (needs a product decision):
+- the camera-frame outline hugs the artwork when the overlay IS on;
+- marching ants on a full-canvas selection sit exactly ON the boundary (a
+  white cosmetic pen centred on m_selectionPath — the same geometry as
+  cause 1 above), and a fill does NOT clear the selection.
+- the camera frame / safe area / title safe overlays do NOT persist across
+  restarts; only the grid and its colours do (canvas/grid/v1/).

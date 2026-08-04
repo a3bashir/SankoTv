@@ -870,7 +870,12 @@ private:
 
     // Display-only overlays.
     bool m_grid = false;         // alignment grid, 40 canvas px (View > Grid)
-    bool m_cameraFrame = true;   // 16:9 framing + dim outside (ON by default)
+    // 16:9 framing + dim outside. OFF by default: its #cccccc outline sits
+    // just outside the paper and, over the dimmed gutter, reads as a bright
+    // 1px ring hugging the artwork — it was mistaken for a canvas-edge
+    // rendering defect across several investigation cycles (see HANDOFF.md).
+    // The feature is unchanged and still one toolbar click away.
+    bool m_cameraFrame = false;
     bool m_safeArea = false;     // action safe, 5% inset
     bool m_titleSafe = false;    // title safe, 10% inset
     int m_actionSafeMaskPct = 50; // guide opacity, percent (persisted)

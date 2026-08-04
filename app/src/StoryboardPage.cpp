@@ -3533,7 +3533,10 @@ QWidget *StoryboardPage::createCameraPanel()
     // Overlay toggles (display-only; never saved into the artwork).
     QPushButton *cameraFrame = toolButton(QStringLiteral("Camera Frame"),
                                           QStringLiteral("Camera frame \xE2\x80\x94 16:9 framing, dims outside"));
-    cameraFrame->setChecked(true); // camera frame is ON by default
+    // OFF by default, matching DrawingCanvas::m_cameraFrame. The button is the
+    // only source of truth for the overlay's state (it is not persisted), so
+    // the two defaults must stay in step or the toggle starts out inverted.
+    cameraFrame->setChecked(false);
     connect(cameraFrame, &QPushButton::toggled, this,
             [this](bool on) { m_canvas->setCameraFrameEnabled(on); });
     layout->addWidget(cameraFrame);
