@@ -42,7 +42,9 @@ class BrushPreviewRenderer : public QObject
 public:
     static constexpr int kSwatchW = 222;
     static constexpr int kSwatchH = 26;
-    static constexpr quint32 kSwatchRevision = 1;
+    // r2: default-black presets render with white neutral ink (the r1 cache
+    // holds invisible black-on-transparent strokes for 58 of 62 built-ins).
+    static constexpr quint32 kSwatchRevision = 2;
 
     // cacheRootOverride: tests point this at a scratch directory; empty uses
     // QStandardPaths::CacheLocation.

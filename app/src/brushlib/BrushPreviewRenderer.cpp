@@ -85,6 +85,18 @@ QImage BrushPreviewRenderer::renderPreviewImage(const ::Brush &brush)
     // Neutral ink for legibility on the row background; colour-jitter
     // brushes still show their hue spread because jitter modulates this
     // base. (Blue Pencil etc. keep their identity colour.)
+    // The engine's Brush defaults to BLACK, and presets that never chose an
+    // identity colour carried that default straight into the preview — a
+    // black stroke on the dark rows, which is why previews were near
+    // invisible. The comment above stated this neutral-ink intent for two
+    // phases while no code implemented it. Default black = "no identity
+    // colour" -> white ink; explicit identity colours are untouched.
+    // (Fixture change: kSwatchRevision bumped so cached swatches re-key.)
+    if (b.color() == QColor(Qt::black))
+        b.setColor(Qt::white);
+    if (b.dualBrushEnabled()
+        && b.secondaryBrush().color() == QColor(Qt::black))
+        b.secondaryBrush().setColor(Qt::white);
 
     StrokeBuilder sb(canvas, b, false, kPreviewSeed, 0);
     std::unique_ptr<StrokeBuilder> sb2;

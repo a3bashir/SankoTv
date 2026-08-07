@@ -216,15 +216,18 @@ protected:
             p.setBrush(kFavourite);
             p.drawEllipse(QRectF(width() - 16 - 8, 15, 8, 8));
         }
-        // Swatch area (222x26 design; stretches with the row width).
-        const QRect swatchRect(16, 36, width() - 32, 26);
-        if (!m_swatch.isNull()) {
-            p.drawPixmap(swatchRect, m_swatch);
-        } else {
-            p.setPen(Qt::NoPen);
-            p.setBrush(m_selected ? QColor(255, 255, 255, 30) : kSidebarBg);
-            p.drawRoundedRect(swatchRect, 6, 6); // placeholder until the
-        }                                        // worker delivers
+        // Swatch area (222x26 design; stretches with the row width). The
+        // preview strokes are white ink on TRANSPARENT pixels, so the row
+        // gives every swatch the same dark bed — idle, hover AND selected —
+        // instead of letting the stroke sit directly on whatever the row
+        // painted (on the accent selection a white stroke lost most of its
+        // contrast). The pixmap composites over it; a null pixmap leaves the
+        // bed as the placeholder until the worker delivers.
+        p.setPen(Qt::NoPen);
+        p.setBrush(kSidebarBg);
+        p.drawRoundedRect(swatchRect(), 6, 6);
+        if (!m_swatch.isNull())
+            p.drawPixmap(swatchRect(), m_swatch);
     }
     void enterEvent(QEnterEvent *) override
     {
@@ -258,6 +261,7 @@ protected:
 
 private:
     static constexpr int kResetChipW = 42;
+    QRect swatchRect() const { return QRect(16, 36, width() - 32, 26); }
     QRect resetChipRect() const
     {
         const int favW = m_favourite ? 14 : 0;
