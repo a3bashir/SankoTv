@@ -12,6 +12,7 @@
 #include <QPainter>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QScrollBar>
 #include <QSettings>
 #include <QVBoxLayout>
 
@@ -23,6 +24,13 @@ const QColor kPanelBg(0x1e, 0x1e, 0x20);
 const QColor kPanelBorder(0x2d, 0x2d, 0x35);
 const QColor kSidebarBg(0x16, 0x16, 0x1a);
 const QColor kRowIdle(0x24, 0x24, 0x2b);
+// Brush rows carry an always-on card background ~10% lighter than kRowIdle
+// (0x24..2b x1.1) so neighbouring rows read as distinct cards against the
+// #1e1e20 panel; hover steps ~10% above that so the affordance survives.
+// DOCUMENTED FIGMA DIVERGENCE (approved, like the favourite dot and the
+// size label): the design draws idle rows with no background at all.
+const QColor kRowBg(0x28, 0x28, 0x2f);
+const QColor kRowHover(0x2e, 0x2e, 0x36);
 const QColor kAccent(0x7c, 0x6e, 0xf6);
 const QColor kTextDim(0xcc, 0xcc, 0xcc);
 const QColor kFavourite(0xE8, 0xA3, 0x3D); // approved favourite amber
@@ -157,13 +165,8 @@ protected:
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing, true);
         p.setPen(Qt::NoPen);
-        if (m_selected) {
-            p.setBrush(kAccent);
-            p.drawRoundedRect(rect(), 10, 10);
-        } else if (m_hover) {
-            p.setBrush(kRowIdle);
-            p.drawRoundedRect(rect(), 10, 10);
-        }
+        p.setBrush(m_selected ? kAccent : (m_hover ? kRowHover : kRowBg));
+        p.drawRoundedRect(rect(), 10, 10);
         QFont f = font();
         f.setFamily(QStringLiteral("Inter"));
         f.setPixelSize(13);
@@ -369,9 +372,17 @@ void BrushLibraryPanel::buildUi()
     m_sidebarWidget->setObjectName(QStringLiteral("brushLibSidebar"));
     m_sidebarWidget->setFixedWidth(kSidebarW);
     m_sidebarWidget->setAttribute(Qt::WA_StyledBackground, true);
+    // The bottom-left radius matters: the frame's rounded corner is painted
+    // by paintEvent, but this sidebar is a SQUARE child sitting on top of it
+    // all the way down to the panel's bottom edge — without its own radius,
+    // its QSS background overpaints the frame's arc and squares the panel's
+    // bottom-left corner (the header above is transparent, which is why the
+    // top-left never had the problem). 9px = the frame's 10px outer radius
+    // minus the 1px border the child sits inside.
     m_sidebarWidget->setStyleSheet(QStringLiteral(
         "QWidget#brushLibSidebar { background-color: #16161a;"
-        " border-right: 1px solid #2d2d35; }"));
+        " border-right: 1px solid #2d2d35;"
+        " border-bottom-left-radius: 9px; }"));
     m_sidebarLayout = new QVBoxLayout(m_sidebarWidget);
     m_sidebarLayout->setContentsMargins(16, 16, 12, 16);
     m_sidebarLayout->setSpacing(6);
@@ -393,6 +404,26 @@ void BrushLibraryPanel::buildUi()
     m_scroll->setWidgetResizable(true);
     m_scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     m_scroll->viewport()->setAutoFillBackground(false);
+    // The bottom-RIGHT counterpart of the sidebar fix above had a different
+    // mechanism: StoryboardPage's page/column stylesheets used BARE
+    // background-color declarations, which cascade into every descendant —
+    // this scroll area, the panel's one child with no styling of its own,
+    // inherited #0a0a0a and painted it over the panel chrome, squaring the
+    // frame's bottom-right corner (13 paper px in the corner probe vs 23 at
+    // the other three). Those page sheets are now SCOPED by objectName; the
+    // scrollbar keeps the house dark style the Animatic timeline
+    // established (slim #2f2f2f rounded handle, no arrow buttons) with a
+    // 12px bottom margin so its painted parts stay clear of the arc.
+    m_scroll->verticalScrollBar()->setStyleSheet(QStringLiteral(
+        "QScrollBar:vertical { background: transparent; width: 10px;"
+        " margin: 2px 2px 12px 2px; }"
+        "QScrollBar::handle:vertical { background: #2f2f2f;"
+        " border-radius: 3px; min-height: 24px; }"
+        "QScrollBar::handle:vertical:hover { background: #3d3d3d; }"
+        "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {"
+        " height: 0; }"
+        "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {"
+        " background: transparent; }"));
     m_listWidget = new QWidget;
     m_listWidget->setAutoFillBackground(false);
     m_listLayout = new QVBoxLayout(m_listWidget);

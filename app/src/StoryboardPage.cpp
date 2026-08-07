@@ -1880,7 +1880,15 @@ StoryboardPage::StoryboardPage(QWidget *parent)
     : QWidget(parent)
 {
     setAttribute(Qt::WA_StyledBackground, true);
-    setStyleSheet(QStringLiteral("background-color: #0a0a0a;"));
+    // SCOPED to this widget. A bare background-color declaration cascades
+    // into every descendant; the Brush Library's scroll area inherited it
+    // and painted #0a0a0a over the panel's own chrome — squaring the
+    // frame's bottom-right corner and darkening the list background. Any
+    // child with its OWN stylesheet or custom paint was immune, which is
+    // why the defect hid in exactly the one unstyled child.
+    setObjectName(QStringLiteral("storyboardPage"));
+    setStyleSheet(QStringLiteral(
+        "QWidget#storyboardPage { background-color: #0a0a0a; }"));
 
     QVBoxLayout *root = new QVBoxLayout(this);
     root->setContentsMargins(0, 0, 0, 0);
@@ -2228,7 +2236,10 @@ QWidget *StoryboardPage::createCenterColumn()
 {
     QWidget *column = new QWidget;
     column->setAttribute(Qt::WA_StyledBackground, true);
-    column->setStyleSheet(QStringLiteral("background-color: #0a0a0a;"));
+    // Scoped for the same reason as the page-level sheet above.
+    column->setObjectName(QStringLiteral("storyboardCenterColumn"));
+    column->setStyleSheet(QStringLiteral(
+        "QWidget#storyboardCenterColumn { background-color: #0a0a0a; }"));
 
     QVBoxLayout *layout = new QVBoxLayout(column);
     layout->setContentsMargins(0, 0, 0, 0);
@@ -3035,6 +3046,45 @@ void StoryboardPage::createFloatingToolbar()
             && m_shotInfoDock->toggleViewAction()->isChecked() != on)
             m_shotInfoDock->toggleViewAction()->trigger();
     });
+
+    // ---- Brush Library auto-close -----------------------------------------
+    // THE RULE: the Library closes the moment the user moves on —
+    //  (1) any TOOL activation other than Brush, from any origin (bar click,
+    //      the selection-shapes popup, a programmatic switch): the exclusive
+    //      group's buttonToggled covers them all; and
+    //  (2) any PRESS on any other button of the two floating toolbars
+    //      (Eraser/Fill/Select/Move, Color, Undo, Redo, Layers, Perspective,
+    //      Scenes, Camera, Image Reference, Shot Info, Settings) — wired
+    //      mechanically over findChildren so future bar buttons inherit it.
+    // EXEMPT, and why:
+    //  - the Brush button: it is the documented open/toggle switch — closing
+    //    on its press would close the panel the instant it opens;
+    //  - the Library itself and the Studio opened from it: the triggers
+    //    above are enumerated POSITIVELY (toolbar presses + tool switches),
+    //    never "focus loss" or "click elsewhere", so working in the panel
+    //    can never fire them;
+    //  - the Size CTL bar: size/opacity/flip edit the working brush — that
+    //    IS brush workflow, not moving on;
+    //  - the zoom toolbar: view-only; panning/zooming has never dismissed
+    //    the Library (draw-to-dismiss spec) and the user is still choosing
+    //    a brush, just from a different vantage.
+    // Always autoHide(), never setVisible(false): a tool switch is not the
+    // user choosing "hidden" and must not overwrite the D1 intent — the
+    // panel still restores visible at the next launch.
+    auto autoCloseBrushLib = [this] {
+        if (m_brushLibPanel && m_brushLibPanel->isVisible())
+            m_brushLibPanel->autoHide();
+    };
+    connect(tools, &QButtonGroup::buttonToggled, this,
+            [this, autoCloseBrushLib](QAbstractButton *b, bool checked) {
+                if (checked && b != m_brushToolButton)
+                    autoCloseBrushLib();
+            });
+    for (QWidget *barHost : {static_cast<QWidget *>(m_floatToolbar),
+                             static_cast<QWidget *>(m_layersToolbar)})
+        for (QAbstractButton *b : barHost->findChildren<QAbstractButton *>())
+            if (b != m_brushToolButton)
+                connect(b, &QAbstractButton::pressed, this, autoCloseBrushLib);
     QTimer::singleShot(0, this, [this, layersBtn, scenesBtn, shotInfoBtn] {
         struct Pair { QDockWidget *dock; ToolButton *btn; };
         const Pair pairs[] = {{m_layersDock, layersBtn},
