@@ -22,7 +22,6 @@ namespace {
 // Figma 245:23 tokens.
 const QColor kPanelBg(0x1e, 0x1e, 0x20);
 const QColor kPanelBorder(0x2d, 0x2d, 0x35);
-const QColor kSidebarBg(0x16, 0x16, 0x1a);
 const QColor kRowIdle(0x24, 0x24, 0x2b);
 // Brush rows carry an always-on card background ~10% lighter than kRowIdle
 // (0x24..2b x1.1) so neighbouring rows read as distinct cards against the
@@ -219,16 +218,21 @@ protected:
             p.setBrush(kFavourite);
             p.drawEllipse(QRectF(width() - 16 - 8, 15, 8, 8));
         }
-        // Swatch area (222x26 design; stretches with the row width). The
-        // preview strokes are white ink on TRANSPARENT pixels, so the row
-        // gives every swatch the same dark bed — idle, hover AND selected —
-        // instead of letting the stroke sit directly on whatever the row
-        // painted (on the accent selection a white stroke lost most of its
-        // contrast). The pixmap composites over it; a null pixmap leaves the
-        // bed as the placeholder until the worker delivers.
-        p.setPen(Qt::NoPen);
-        p.setBrush(kSidebarBg);
-        p.drawRoundedRect(swatchRect(), 6, 6);
+        // Swatch area (222x26 design; stretches with the row width). NO
+        // backing of any kind is drawn: the preview is white ink on
+        // TRANSPARENT pixels and composites straight onto the row's own card,
+        // so there is no box, border, shadow or dark area behind it.
+        // DOCUMENTED FIGMA DIVERGENCE, and a deliberate trade recorded with
+        // the others: a dark #16161a bed here did give the white stroke its
+        // best contrast — most of all on the SELECTED row, where white now
+        // sits on the #7C6EF6 accent instead. The clean look was chosen over
+        // that contrast; the numbers are in the task report. Any future
+        // attempt to "fix" faint selected-row previews must not reinstate a
+        // backing rect. A swatch whose worker render has not arrived yet now
+        // shows nothing rather than an empty bed — a sub-second transient.
+        // (The smudge brushes' colour-band background is NOT this container:
+        // it lives inside the rendered QImage, is required because a smudge
+        // over transparency is a no-op, and is untouched here.)
         if (!m_swatch.isNull())
             p.drawPixmap(swatchRect(), m_swatch);
     }
