@@ -97,6 +97,8 @@ private:
     void showRowMenu(BrushRow *row, const QPoint &globalPos);
     void showChevronMenu(const QPoint &globalPos);
     void importBrushes();
+    void showImportReport(const QString &report);
+    void updateImportedRow(); // sidebar row shown only once imports exist
     void saveGeometry() const;
 
     BrushLibraryModel *m_model;
@@ -113,6 +115,7 @@ private:
     QWidget *m_listWidget = nullptr;
     QVBoxLayout *m_listLayout = nullptr;
     QVector<CategoryRow *> m_categoryRows;
+    CategoryRow *m_importedRow = nullptr; // hidden until an import lands
     QVector<BrushRow *> m_brushRows;
 
     // Subclass-only move/resize state.

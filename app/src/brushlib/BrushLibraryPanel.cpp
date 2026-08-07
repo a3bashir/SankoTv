@@ -3,6 +3,7 @@
 #include "BrushPresetCodec.h"
 
 #include <QApplication>
+#include <QDialog>
 #include <QFileDialog>
 #include <QInputDialog>
 #include <QLabel>
@@ -10,6 +11,7 @@
 #include <QMessageBox>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QPlainTextEdit>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QScrollBar>
@@ -308,8 +310,11 @@ BrushLibraryPanel::BrushLibraryPanel(BrushLibraryModel *model,
                     if (row->presetId() == presetId)
                         row->setSwatch(image);
             });
-    connect(m_model, &BrushLibraryModel::changed, this,
-            [this] { rebuildBrushList(); });
+    connect(m_model, &BrushLibraryModel::changed, this, [this] {
+        updateImportedRow();
+        rebuildBrushList();
+    });
+    updateImportedRow();
     selectCategory(QStringLiteral("Recent")); // MRU is the default view
 }
 
@@ -391,14 +396,19 @@ void BrushLibraryPanel::buildUi()
     m_sidebarLayout->setContentsMargins(16, 16, 12, 16);
     m_sidebarLayout->setSpacing(6);
     // Label-only rows; Recent + the model's five categories (Watercolor is
-    // gone — its brushes were redistributed into Painting, ids unchanged).
+    // gone — its brushes were redistributed into Painting, ids unchanged),
+    // plus "Imported" — the home of foreign-format (.abr) imports — which
+    // stays hidden until at least one imported brush exists.
     const QStringList cats = QStringList()
-        << QStringLiteral("Recent") << BrushLibraryModel::categories();
+        << QStringLiteral("Recent") << BrushLibraryModel::categories()
+        << QStringLiteral("Imported");
     for (const QString &name : cats) {
         auto *row = new CategoryRow(name, m_sidebarWidget);
         row->onClicked = [this, row] { selectCategory(row->name()); };
         m_sidebarLayout->addWidget(row);
         m_categoryRows.append(row);
+        if (name == QStringLiteral("Imported"))
+            m_importedRow = row;
     }
     m_sidebarLayout->addStretch(1);
     columns->addWidget(m_sidebarWidget);
@@ -580,10 +590,24 @@ void BrushLibraryPanel::importBrushes()
 {
     const QString path = QFileDialog::getOpenFileName(
         this, tr("Import Brushes"), QString(),
-        tr("SankoTV Brushes (*.sankobrush *.sankobrushset)"));
+        tr("All Supported Brushes (*.sankobrush *.sankobrushset *.abr);;"
+           "SankoTV Brushes (*.sankobrush *.sankobrushset);;"
+           "Photoshop Brushes (*.abr)"));
     if (path.isEmpty())
         return;
-    const int added = m_model->importFile(path);
+    QString report;
+    const int added = m_model->importFile(path, &report);
+    if (!report.isEmpty()) {
+        // A lossy importer (.abr) accounts for every brush: mapped,
+        // approximated, dropped. A brush that silently looks wrong is
+        // worse than one that says why — always show the account.
+        if (added == 0)
+            report += tr("\nNo new brushes were added — either nothing "
+                         "was importable, or every brush in this file is "
+                         "already in the library.");
+        showImportReport(report);
+        return;
+    }
     if (added == 0)
         // Identity-aware import (J8): zero can simply mean everything in
         // the file is already in the library — say that, not "failure".
@@ -591,6 +615,45 @@ void BrushLibraryPanel::importBrushes()
             this, tr("Import Brushes"),
             tr("Nothing new to import — every brush in this file is "
                "already in the library."));
+}
+
+void BrushLibraryPanel::showImportReport(const QString &report)
+{
+    QDialog dialog(this);
+    dialog.setWindowTitle(tr("Import Report"));
+    dialog.setStyleSheet(QStringLiteral(
+        "QDialog { background-color: #1e1e20; }"
+        "QPlainTextEdit { background-color: #16161a; color: #cccccc;"
+        " border: 1px solid #2d2d35; border-radius: 6px; padding: 8px; }"
+        "QPushButton { background-color: #28282f; color: #e8e8ea;"
+        " border: 1px solid #2d2d35; border-radius: 6px;"
+        " padding: 6px 18px; }"
+        "QPushButton:hover { background-color: #2e2e36; }"));
+    auto *layout = new QVBoxLayout(&dialog);
+    auto *text = new QPlainTextEdit(&dialog);
+    text->setReadOnly(true);
+    text->setPlainText(report);
+    layout->addWidget(text, 1);
+    auto *close = new QPushButton(tr("Close"), &dialog);
+    close->setCursor(Qt::PointingHandCursor);
+    connect(close, &QPushButton::clicked, &dialog, &QDialog::accept);
+    layout->addWidget(close, 0, Qt::AlignRight);
+    dialog.resize(560, 480);
+    dialog.exec();
+}
+
+void BrushLibraryPanel::updateImportedRow()
+{
+    if (!m_importedRow)
+        return;
+    const bool hasImports =
+        !m_model->presetsIn(QStringLiteral("Imported")).isEmpty();
+    m_importedRow->setVisible(hasImports);
+    // If the category empties out from under the user (delete of the last
+    // imported brush), fall back to the default view instead of showing an
+    // empty list for a row that just vanished.
+    if (!hasImports && m_category == QStringLiteral("Imported"))
+        selectCategory(QStringLiteral("Recent"));
 }
 
 // --- Hosting: default size, persistence, move + subclass-only resize -------

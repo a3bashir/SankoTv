@@ -1,5 +1,6 @@
 #include "BrushLibraryModel.h"
 
+#include "AbrImporter.h"
 #include "BrushImporter.h"
 #include "BrushPresetCodec.h"
 #include "BuiltinRoster.h"
@@ -353,12 +354,15 @@ public:
     }
 };
 
-void ensureNativeImporter()
+void ensureImporters()
 {
     for (BrushImporter *imp : BrushImporter::importers())
         if (imp->name() == QStringLiteral("SankoTV"))
             return;
+    // Native first: its magic-number probe can never claim a foreign file,
+    // and no foreign probe can claim a native one.
     BrushImporter::registerImporter(new SankoNativeImporter);
+    BrushImporter::registerImporter(new AbrImporter);
 }
 
 QVector<BrushImporter *> &importerRegistry()
@@ -397,9 +401,11 @@ bool BrushLibraryModel::exportLibrary(const QString &path) const
     return true;
 }
 
-int BrushLibraryModel::importFile(const QString &path)
+int BrushLibraryModel::importFile(const QString &path, QString *report)
 {
-    ensureNativeImporter();
+    ensureImporters();
+    if (report)
+        report->clear();
     QFile f(path);
     if (!f.open(QIODevice::ReadOnly))
         return 0;
@@ -430,7 +436,7 @@ int BrushLibraryModel::importFile(const QString &path)
         // Returns the number of presets actually APPLIED (new user presets
         // + built-in overrides written); skips count as zero.
         int applied = 0;
-        QVector<BrushPreset> presets = imp->import(bytes);
+        QVector<BrushPreset> presets = imp->importWithReport(bytes, report);
         for (BrushPreset &incoming : presets)
             if (incoming.category == QLatin1String("Watercolor"))
                 incoming.category = QStringLiteral("Painting"); // retired cat

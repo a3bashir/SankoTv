@@ -76,9 +76,12 @@ public:
 
     // Whole-library export: every visible preset (built-in and user) into
     // one .sankobrushset bundle. Import walks the BrushImporter registry;
-    // returns the number of presets added (as user presets).
+    // returns the number of presets added (as user presets). A lossy
+    // importer (Photoshop .abr) fills *report with its per-brush
+    // mapped/approximated/dropped account; the native importer leaves it
+    // empty.
     bool exportLibrary(const QString &path) const;
-    int importFile(const QString &path);
+    int importFile(const QString &path, QString *report = nullptr);
 
     QString userPresetDir() const;
 
