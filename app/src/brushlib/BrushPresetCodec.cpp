@@ -21,7 +21,10 @@ constexpr quint32 kPresetMagic = 0x534E4B50; // "SNKP"
 //       source = Pressure and minimum = 0.0 everywhere — exactly its
 //       pre-v2 behaviour. A v2 file handed to a v1-era build is REFUSED
 //       cleanly (its version check is `!= 1`), never misparsed.
-constexpr quint16 kVersion = 2;
+//   v3  + the static tip transform (angle, roundness, flip X, flip Y).
+//       v1 and v2 files land on the defaults (0 deg, roundness 1.0, no
+//       flips) — again their exact prior behaviour.
+constexpr quint16 kVersion = 3;
 constexpr quint16 kMinReadVersion = 1;
 
 // A fixed QDataStream version pins the wire format independently of the Qt
@@ -221,6 +224,19 @@ void walkBrush(::Brush &b, V &v, quint16 wireVersion, int depth = 0)
             v.field([&] { return b.controlMinimum(property); },
                     [&](qreal x) { b.setControlMinimum(property, x); });
         }
+    }
+    // v3: the static tip transform. Before the dual-brush branch for the
+    // same reason as the v2 block: the secondary carries its own copy
+    // inside its own recursive walk.
+    if (wireVersion >= 3) {
+        v.field([&] { return b.tipAngle(); },
+                [&](qreal x) { b.setTipAngle(x); });
+        v.field([&] { return b.tipRoundness(); },
+                [&](qreal x) { b.setTipRoundness(x); });
+        v.field([&] { return b.tipFlipX(); },
+                [&](bool x) { b.setTipFlipX(x); });
+        v.field([&] { return b.tipFlipY(); },
+                [&](bool x) { b.setTipFlipY(x); });
     }
     // Secondary brush: one level deep, exactly like the engine renders it
     // (primary slot 0 + secondary slot 1). A disabled dual brush serialises

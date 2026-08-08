@@ -427,6 +427,19 @@ void StrokeBuilder::placeStamp(const StrokeStamp &stamp)
 
 QImage StrokeBuilder::shapedTipForStamp(const StrokeStamp &stamp) const
 {
+    // THE per-stamp affine — the one place tip shaping composes (the GPU
+    // instance build mirrors these exact terms). Composition order:
+    //   ellipticity = tilt anisotropy x STATIC ROUNDNESS x roundness jitter
+    //   rotation    = STATIC ANGLE + tilt azimuth + barrel rotation
+    //                 + angle jitter  (- viewport rotation when the
+    //                 orientation is physical; Phase 3 adds the
+    //                 direction-driven term HERE)
+    //   flips       = sign on the TIP-LOCAL sample axes, i.e. applied
+    //                 BEFORE rotation (forward order: flip the tip, THEN
+    //                 rotate it), matching Photoshop — for a non-zero
+    //                 angle this differs visibly from flipping after.
+    // Nothing bakes into the cached base tip: the cache stays keyed on
+    // bucketed (size, hardness) only.
     const QImage &baseTip = m_brush.shape(stamp.effectiveSize, stamp.effectiveHardness);
     const qreal tiltMagnitude = std::hypot(stamp.point.tiltX, stamp.point.tiltY);
     const bool applyTilt = m_brush.tiltAffectsShape() && tiltMagnitude > 0.01;
@@ -435,16 +448,20 @@ QImage StrokeBuilder::shapedTipForStamp(const StrokeStamp &stamp) const
     const qreal normalizedTilt = std::clamp(tiltMagnitude / 60.0, 0.0, 1.0);
     const qreal elongation = 1.0
         + (m_brush.maxTiltElongation() - 1.0) * normalizedTilt;
-    const qreal compression = (applyTilt ? 1.0 / elongation : 1.0) * stamp.roundness;
+    const qreal compression = (applyTilt ? 1.0 / elongation : 1.0)
+        * m_brush.tipRoundness() * stamp.roundness;
     const qreal azimuthDegrees = applyTilt
         ? qRadiansToDegrees(std::atan2(stamp.point.tiltY, stamp.point.tiltX)) : 0.0;
     const qreal barrelDegrees = applyRotation ? stamp.point.rotation : 0.0;
     const bool physicalOrientation = applyTilt || applyRotation;
     const qreal angle = qDegreesToRadians(
-        azimuthDegrees + barrelDegrees + stamp.angleJitterDegrees
+        m_brush.tipAngle()
+        + azimuthDegrees + barrelDegrees + stamp.angleJitterDegrees
         - (physicalOrientation ? stamp.point.viewportRotation : 0.0));
     const qreal cosine = std::cos(angle);
     const qreal sine = std::sin(angle);
+    const qreal flipSignX = m_brush.tipFlipX() ? -1.0 : 1.0;
+    const qreal flipSignY = m_brush.tipFlipY() ? -1.0 : 1.0;
     const int outputSize = std::clamp(qRound(stamp.effectiveSize), 1, 2048);
     QImage output(outputSize, outputSize, QImage::Format_Grayscale8);
     output.fill(0);
@@ -477,7 +494,12 @@ QImage StrokeBuilder::shapedTipForStamp(const StrokeStamp &stamp) const
             if (distance >= 1.0) continue;
             qreal coverage = 0.0;
             if (m_brush.hasCustomShape()) {
-                coverage = customSample(transformedX * .5 + .5, transformedY * .5 + .5);
+                // Flips negate the TIP-LOCAL axes (coordinates AFTER the
+                // inverse rotation above) — the backward-mapped form of
+                // "flip the tip, then rotate". Distance is sign-blind, so
+                // the procedural falloff below needs nothing.
+                coverage = customSample(flipSignX * transformedX * .5 + .5,
+                                        flipSignY * transformedY * .5 + .5);
             } else if (stamp.effectiveHardness >= .999 || distance <= stamp.effectiveHardness) {
                 coverage = 1.0;
             } else {

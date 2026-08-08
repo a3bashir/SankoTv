@@ -65,6 +65,17 @@ QImage tipTexture(const Brush &brush)
         : QImage(1, 1, QImage::Format_Grayscale8);
     QImage source = mask;
     if (!brush.hasCustomShape()) source.fill(255);
+    // Static tip flips ride on the uploaded texture: mirroring the texture
+    // is byte-for-byte equivalent to sign-flipping the sample coordinates
+    // (which is what the CPU reference does), and it happens in TIP-LOCAL
+    // space — before the shader's rotation — matching the documented
+    // flip-then-rotate order. The GPU texture cache key carries the flip
+    // state (see tipKey), so this never bakes into a reused texture. The
+    // procedural 1x1 tip is symmetric and skips it.
+    if (brush.hasCustomShape() && (brush.tipFlipX() || brush.tipFlipY()))
+        source = source.flipped(
+            (brush.tipFlipX() ? Qt::Horizontal : Qt::Orientations())
+            | (brush.tipFlipY() ? Qt::Vertical : Qt::Orientations()));
     QImage rgba(source.size(), QImage::Format_RGBA8888);
     for (int y = 0; y < source.height(); ++y) {
         const uchar *input = source.constScanLine(y);
@@ -589,7 +600,13 @@ GpuStampRenderer::Result GpuStampRenderer::renderStrokeInternal(
         const qreal normalizedTilt = brush.tiltAffectsShape()
             ? std::clamp(tiltMagnitude / 60.0, 0.0, 1.0) : 0.0;
         const qreal elongation = 1.0 + (brush.maxTiltElongation() - 1.0) * normalizedTilt;
-        const qreal compression = (1.0 / elongation) * stamp.roundness;
+        // Same composition as StrokeBuilder::shapedTipForStamp (the
+        // documented order lives there): ellipticity = tilt anisotropy x
+        // static roundness x roundness jitter; rotation = static angle +
+        // azimuth + barrel + angle jitter. Flips ride on the uploaded tip
+        // texture (see tipTexture()), which is the pre-rotation order.
+        const qreal compression = (1.0 / elongation)
+            * brush.tipRoundness() * stamp.roundness;
         const qreal azimuth = normalizedTilt > 0
             ? std::atan2(stamp.point.tiltY, stamp.point.tiltX) : 0.0;
         const qreal barrel = brush.rotationAffectsShape() ? qDegreesToRadians(stamp.point.rotation) : 0.0;
@@ -612,7 +629,8 @@ GpuStampRenderer::Result GpuStampRenderer::renderStrokeInternal(
             tileInstances[tile].append({float(rasterCenterX - origin.x()),
                                         float(rasterCenterY - origin.y()),
                                         float(rasterSize), float(stamp.effectiveOpacity),
-                                        float(azimuth + barrel
+                                        float(qDegreesToRadians(brush.tipAngle())
+                                              + azimuth + barrel
                                               + qDegreesToRadians(stamp.angleJitterDegrees)
                                               - viewportRotation),
                                         float(compression), float(stamp.effectiveHardness),
@@ -661,8 +679,13 @@ GpuStampRenderer::Result GpuStampRenderer::renderStrokeInternal(
         QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, 96));
     uniformBuffer->create();
 
+    // The flip state is part of the texture identity: a flipped upload must
+    // never be served for the unflipped brush (or vice versa).
     const quint64 tipKey = brush.hasCustomShape()
-        ? quint64(brush.customShape().cacheKey()) : 1;
+        ? (quint64(brush.customShape().cacheKey())
+           ^ (brush.tipFlipX() ? 0x8000000000000000ULL : 0)
+           ^ (brush.tipFlipY() ? 0x4000000000000000ULL : 0))
+        : 1;
     QRhiTexture *tipTextureGpu = m_tipTexturesGpu.value(tipKey, nullptr);
     const bool uploadTip = !tipTextureGpu;
     QImage tip;
@@ -1037,7 +1060,9 @@ GpuStampRenderer::Result GpuStampRenderer::renderColorStrokeInternal(
         const qreal normalizedTilt = brush.tiltAffectsShape()
             ? std::clamp(tiltMagnitude / 60.0, 0.0, 1.0) : 0.0;
         const qreal elongation = 1.0 + (brush.maxTiltElongation() - 1.0) * normalizedTilt;
-        const qreal compression = (1.0 / elongation) * stamp.roundness;
+        // Same composition as the R16 path above and the CPU reference.
+        const qreal compression = (1.0 / elongation)
+            * brush.tipRoundness() * stamp.roundness;
         const qreal azimuth = normalizedTilt > 0
             ? std::atan2(stamp.point.tiltY, stamp.point.tiltX) : 0.0;
         const qreal barrel = brush.rotationAffectsShape()
@@ -1060,7 +1085,8 @@ GpuStampRenderer::Result GpuStampRenderer::renderColorStrokeInternal(
             tileInstances[tile].append({float(centerX - origin.x()), float(centerY - origin.y()),
                                         float(rasterSize), float(brush.opacity() > 0.0
                                             ? stamp.effectiveOpacity / brush.opacity() : 0.0),
-                                        float(azimuth + barrel
+                                        float(qDegreesToRadians(brush.tipAngle())
+                                              + azimuth + barrel
                                               + qDegreesToRadians(stamp.angleJitterDegrees)
                                               - viewportRotation),
                                         float(compression), float(stamp.effectiveHardness),
@@ -1109,8 +1135,13 @@ GpuStampRenderer::Result GpuStampRenderer::renderColorStrokeInternal(
     std::unique_ptr<QRhiBuffer> uniformBuffer(m_rhi->newBuffer(
         QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, 80));
     uniformBuffer->create();
+    // The flip state is part of the texture identity: a flipped upload must
+    // never be served for the unflipped brush (or vice versa).
     const quint64 tipKey = brush.hasCustomShape()
-        ? quint64(brush.customShape().cacheKey()) : 1;
+        ? (quint64(brush.customShape().cacheKey())
+           ^ (brush.tipFlipX() ? 0x8000000000000000ULL : 0)
+           ^ (brush.tipFlipY() ? 0x4000000000000000ULL : 0))
+        : 1;
     QRhiTexture *tipTextureGpu = m_tipTexturesGpu.value(tipKey, nullptr);
     const bool uploadTip = !tipTextureGpu;
     QImage tip;

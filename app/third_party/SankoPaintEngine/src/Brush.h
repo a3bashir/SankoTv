@@ -131,6 +131,24 @@ public:
     qreal dualMasterOpacity() const { return m_dualMasterOpacity; }
     void setDualMasterOpacity(qreal opacity);
 
+    // --- Static tip transform ---------------------------------------------
+    // Photoshop-style STATIC tip controls: applied to every stamp
+    // regardless of input. They are NOT dynamics — no ControlSource, no
+    // minimum, deliberately absent from DynamicProperty — which is what
+    // lets a static angle and a dynamic angle jitter vary independently
+    // (jitter varies AROUND the static angle, not around zero). They fold
+    // into the ONE per-stamp affine; the composition order is documented
+    // at that affine (StrokeBuilder::shapedTipForStamp) and mirrored by
+    // the GPU instance build.
+    qreal tipAngle() const { return m_tipAngle; }         // degrees
+    void setTipAngle(qreal degrees);                      // wrapped (-180,180]
+    qreal tipRoundness() const { return m_tipRoundness; } // 1.0 = round
+    void setTipRoundness(qreal roundness);                // clamped 0.01..1
+    bool tipFlipX() const { return m_tipFlipX; }
+    void setTipFlipX(bool flip) { m_tipFlipX = flip; }
+    bool tipFlipY() const { return m_tipFlipY; }
+    void setTipFlipY(bool flip) { m_tipFlipY = flip; }
+
     // Empty custom shape selects the procedural round tip. Non-empty images
     // are converted to grayscale and scaled into the cached stamp on demand.
     void setCustomShape(const QImage &grayscaleMask);
@@ -240,6 +258,10 @@ private:
     qreal m_saturationJitter = 0.0;
     qreal m_brightnessJitter = 0.0;
     QImage m_customShape;
+    qreal m_tipAngle = 0.0;      // degrees; 0 = untransformed
+    qreal m_tipRoundness = 1.0;  // 1 = round, toward 0 = flattened
+    bool m_tipFlipX = false;
+    bool m_tipFlipY = false;
     std::array<ControlSource, kDynamicPropertyCount> m_controlSources;
     std::array<qreal, kDynamicPropertyCount> m_controlMinimums;
     PressureCurve m_sizePressureCurve;

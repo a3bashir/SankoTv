@@ -423,3 +423,43 @@ STILL OPEN, deliberately not changed (needs a product decision):
   cause 1 above), and a fill does NOT clear the selection.
 - the camera frame / safe area / title safe overlays do NOT persist across
   restarts; only the grid and its colours do (canvas/grid/v1/).
+
+The static tip transform landed in dynamics Phase 2 — TWO items for later
+phases (2026-08-08):
+
+1. PHASE 5 MUST STOP THE ABR IMPORTER BAKING STATIC TRANSFORMS. The
+   importer flattens Photoshop's static angle, roundness and flips into the
+   tip BITMAP because the engine had no static transform when it was
+   written. The exact path, in app/src/brushlib/AbrImporter.cpp:
+   - bakeTip() (~line 789) applies roundness (QTransform::scale), angle
+     (QTransform::rotate) and flips to the sampled mask;
+   - buildBrush() calls it for sampled tips (~line 994, passing the desc's
+     Angl/Rndn/flipX/flipY) and via synthesizeComputedTip() (~line 882);
+   the report lines say "baked into the tip image".
+   The engine now has Brush::setTipAngle / setTipRoundness / setTipFlipX /
+   setTipFlipY (wire v3), so Phase 5 must map the descriptor values to
+   those fields and import the UNTRANSFORMED mask. This matters before
+   Phase 3 ships: once direction drives the rotation term, a baked-in
+   rotation would be rotated AGAIN at runtime — a visible defect. Note the
+   remap changes imported brushes' content-derived ids (user/abr-<sha> over
+   the serialised brush), so previously imported brushes will re-import as
+   new presets rather than being recognised — decide whether Phase 5
+   should migrate or accept that.
+
+2. PRE-EXISTING CPU/GPU DIVERGENCE: ROTATED OR COMPRESSED CUSTOM TIPS. The
+   CPU reference samples the bucket-rescaled tip (Brush::shape's cached
+   size/hardness bucket, then bilinear), the GPU samples the ORIGINAL
+   customShape texture in one step. The two resampling chains agree at
+   identity (delta 1/255) but disagree along hard edges once the sample
+   grid rotates or compresses: measured max deltas on a hard-edged custom
+   tip, single 100 px stamp — angle 37 deg: 106/255; roundness 0.55:
+   57/255; ANGLE JITTER 0.5 with NO static fields: 81/255. The jitter
+   control proves the gap PRE-DATES Phase 2 — the statics only made it
+   deterministic and easy to hit. Procedural tips are unaffected (both
+   paths evaluate the same analytic falloff; <= 3/255 with full statics),
+   and flips are exact (texture mirror == coordinate mirror, 1/255). Fix
+   direction when it is taken up (engine-quality work, not Phase 3): make
+   the GPU sample the same bucket-rescaled tip the CPU uses (per-bucket
+   texture uploads), or make both sample the original. Soft tips hide it;
+   hard-edged imported ABR tips at fixed angles will show it as a subtle
+   GPU-vs-preview edge difference.

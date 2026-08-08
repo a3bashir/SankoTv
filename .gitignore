@@ -46,4 +46,6 @@ ipch/
 _backups/
 PerspectiveLab/
 app/*_verification_*.txt
-app/brushlib_test.txt
+# SankoBrushLibraryTest writes this relative to its WORKING DIRECTORY, so
+# it lands wherever the test was run from, not only under app/.
+brushlib_test.txt

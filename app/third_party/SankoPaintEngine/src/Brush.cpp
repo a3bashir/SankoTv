@@ -91,6 +91,10 @@ Brush &Brush::operator=(const Brush &other)
     m_saturationJitter = other.m_saturationJitter;
     m_brightnessJitter = other.m_brightnessJitter;
     m_customShape = other.m_customShape;
+    m_tipAngle = other.m_tipAngle;
+    m_tipRoundness = other.m_tipRoundness;
+    m_tipFlipX = other.m_tipFlipX;
+    m_tipFlipY = other.m_tipFlipY;
     m_controlSources = other.m_controlSources;
     m_controlMinimums = other.m_controlMinimums;
     m_sizePressureCurve = other.m_sizePressureCurve;
@@ -242,6 +246,19 @@ void Brush::setSmudgeStrength(qreal amount) { m_smudgeStrength = std::clamp(amou
 void Brush::setHueJitter(qreal amount) { m_hueJitter = std::clamp(amount, 0.0, 1.0); }
 void Brush::setSaturationJitter(qreal amount) { m_saturationJitter = std::clamp(amount, 0.0, 1.0); }
 void Brush::setBrightnessJitter(qreal amount) { m_brightnessJitter = std::clamp(amount, 0.0, 1.0); }
+
+void Brush::setTipAngle(qreal degrees)
+{
+    // Same wrap as grain rotation: any input lands in (-180, 180].
+    m_tipAngle = std::remainder(degrees, 360.0);
+}
+
+void Brush::setTipRoundness(qreal roundness)
+{
+    // Photoshop's own floor is 1% — and 0 would collapse the ellipse into
+    // a division by zero in the backward-mapped sampler.
+    m_tipRoundness = std::clamp(roundness, 0.01, 1.0);
+}
 
 void Brush::setControlSource(DynamicProperty property, ControlSource source)
 {
