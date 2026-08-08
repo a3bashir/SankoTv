@@ -81,10 +81,36 @@ public:
                                      const QPoint &regionCanvasOrigin);
 
 private:
+    // Per-stroke state for the dynamics SOURCES (Phase 3): accumulated arc
+    // length for Fade and the smoothed heading for Direction. Advanced once
+    // per stamp GROUP during the path walk — CPU-side, from the shared
+    // point stream, so both render paths resolve identically. The heading
+    // accumulator is distance-constant exponential smoothing of the
+    // heading VECTOR (tau = 8 canvas px of arc; see advanceWalk): it
+    // stays UNNORMALIZED so splitting a straight run into sub-steps
+    // composes exactly — the same path at any sample rate produces the
+    // same heading (the rate-independence the app-level stabilizer EMA
+    // lacks, recorded in HANDOFF).
+    struct DynamicWalkState
+    {
+        qreal arcLength = 0.0;           // canvas px along the walked path
+        QPointF lastPosition;
+        bool hasLast = false;
+        QPointF headingAccum{1.0, 0.0};  // reads as +X before any movement
+        bool headingSeeded = false;      // first real segment SNAPS, no blend
+    };
     static StrokePoint interpolate(const StrokePoint &a, const StrokePoint &b, qreal t);
+    static void advanceWalk(DynamicWalkState &walk, const QPointF &position,
+                            const QPointF &direction);
+    static Brush::DynamicSource sourceSample(const StrokePoint &point,
+                                             const Brush &brush,
+                                             const DynamicWalkState &walk,
+                                             qreal *headingDegrees);
     static StrokeStamp resolveStamp(const StrokePoint &point, const Brush &brush,
                                     quint64 seed, quint64 index, const QPointF &direction,
-                                    quint32 subBrushSlot);
+                                    quint32 subBrushSlot,
+                                    const Brush::DynamicSource &source,
+                                    qreal headingDegrees);
     static qreal localSpacing(const StrokeStamp &stamp, const Brush &brush);
     qreal appendStampGroup(const StrokePoint &point, const QPointF &direction);
     void appendSmoothedPoint(const StrokePoint &point);
@@ -101,6 +127,7 @@ private:
     TiledImage m_previewTiles{QImage::Format_ARGB32_Premultiplied};
     QRect m_affectedRect;
     qreal m_distanceToNextStamp = 0.0;
+    DynamicWalkState m_walk;
     quint64 m_seed = 0;
     quint64 m_nextStampIndex = 0;
     quint32 m_subBrushSlot = 0;

@@ -95,6 +95,7 @@ Brush &Brush::operator=(const Brush &other)
     m_tipRoundness = other.m_tipRoundness;
     m_tipFlipX = other.m_tipFlipX;
     m_tipFlipY = other.m_tipFlipY;
+    m_fadeDistance = other.m_fadeDistance;
     m_controlSources = other.m_controlSources;
     m_controlMinimums = other.m_controlMinimums;
     m_sizePressureCurve = other.m_sizePressureCurve;
@@ -301,20 +302,44 @@ const PressureCurve &Brush::dynamicCurve(DynamicProperty property) const
     return m_sizePressureCurve; // unreachable; keeps the compiler quiet
 }
 
-qreal Brush::resolveDynamic(DynamicProperty property, qreal pressure) const
+void Brush::setFadeDistance(qreal canvasPx)
+{
+    m_fadeDistance = std::clamp(canvasPx, 1.0, 8192.0);
+}
+
+qreal Brush::resolveDynamic(DynamicProperty property,
+                            const DynamicSource &s) const
 {
     const ControlSource source = m_controlSources[size_t(property)];
     // None: the property sits at its BASE value; curve and minimum are
     // ignored (the minimum only floors a DRIVEN property).
     if (source == ControlSource::None)
         return 1.0;
-    // Only Pressure is live in this phase. Fade, Tilt and Direction feed a
-    // constant 1.0 driving value — inert by definition, not undefined. The
-    // dynamics phase supplies the real stroke-length / tilt / direction
-    // values HERE, in this one selection, and nothing downstream changes.
     qreal driving = 1.0;
-    if (source == ControlSource::Pressure)
-        driving = pressure;
+    switch (source) {
+    case ControlSource::None: // handled above; keeps the switch exhaustive
+        return 1.0;
+    case ControlSource::Pressure:
+        driving = s.pressure;
+        break;
+    case ControlSource::Fade:
+        driving = s.fade;
+        break;
+    case ControlSource::Tilt:
+        driving = s.tilt;
+        break;
+    case ControlSource::Direction:
+        // For the ANGLE property, Direction is an ORIENTATION driver: the
+        // smoothed heading itself rotates the tip (injected into the
+        // stamp's rotation term by StrokeBuilder), so the jitter
+        // MULTIPLIER stays at full drive — scaling the jitter by the
+        // heading's arbitrary 0-1 encoding would make randomness vanish
+        // for westward strokes. Every other property treats the heading
+        // encoding as an ordinary 0-1 source.
+        driving = property == DynamicProperty::AngleJitter ? 1.0
+                                                           : s.direction;
+        break;
+    }
     const qreal remapped = dynamicCurve(property).valueAt(driving);
     // The minimum applies AFTER the curve remaps the driving value and
     // BEFORE the base value is scaled. With the defaults (Pressure, 0.0)

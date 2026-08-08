@@ -50,6 +50,7 @@ void StrokeBuilder::reset(const QSize &canvasSize, const Brush &brush,
     m_strokeMask.reset(canvasSize);
     m_previewTiles.reset(canvasSize);
     m_distanceToNextStamp = 0.0;
+    m_walk = DynamicWalkState();
     m_seed = seed;
     m_subBrushSlot = subBrushSlot;
     m_nextStampIndex = 0;
@@ -140,10 +141,73 @@ qreal indexedSigned(quint64 seed, quint64 index, quint64 property, quint32 subBr
 }
 }
 
+// Advance the per-stroke dynamics-source state by one stamp-group sample.
+// Distance-based on both axes: the fade arc accumulates the walked path,
+// and the heading smooths with a per-step weight of exp(-step / tau) so a
+// straight run split into ANY number of sub-steps composes to the same
+// accumulator — rate-independent by construction, unlike the app-level
+// stabilizer EMA recorded in HANDOFF.
+void StrokeBuilder::advanceWalk(DynamicWalkState &walk,
+                                const QPointF &position,
+                                const QPointF &direction)
+{
+    constexpr qreal kHeadingSmoothingPx = 8.0; // tau, canvas px of arc
+    qreal step = 0.0;
+    if (walk.hasLast)
+        step = QLineF(walk.lastPosition, position).length();
+    walk.lastPosition = position;
+    walk.hasLast = true;
+    walk.arcLength += step;
+    const qreal len = std::hypot(direction.x(), direction.y());
+    if (len <= 0.000001 || step <= 0.0)
+        return; // stationary: the heading holds its previous value
+    const QPointF d = direction / len;
+    if (!walk.headingSeeded) {
+        // The first REAL segment snaps the heading — no blend-in from the
+        // arbitrary +X the accumulator starts at.
+        walk.headingAccum = d;
+        walk.headingSeeded = true;
+        return;
+    }
+    const qreal keep = std::exp(-step / kHeadingSmoothingPx);
+    walk.headingAccum = walk.headingAccum * keep + d * (1.0 - keep);
+    // A sharp reversal can cancel the accumulator to ~zero; snapping to
+    // the new direction keeps the heading DEFINED (and convergence fast)
+    // instead of normalising noise.
+    if (std::hypot(walk.headingAccum.x(), walk.headingAccum.y()) < 1e-6)
+        walk.headingAccum = d;
+}
+
+Brush::DynamicSource StrokeBuilder::sourceSample(const StrokePoint &point,
+                                                 const Brush &brush,
+                                                 const DynamicWalkState &walk,
+                                                 qreal *headingDegrees)
+{
+    Brush::DynamicSource s;
+    s.pressure = point.pressure;
+    // Fade: linear 1 -> 0 across fadeDistance() canvas px of arc, held at
+    // 0 beyond (the property's curve remaps this ramp like any source).
+    s.fade = std::clamp(1.0 - walk.arcLength / brush.fadeDistance(),
+                        0.0, 1.0);
+    const qreal heading = qRadiansToDegrees(
+        std::atan2(walk.headingAccum.y(), walk.headingAccum.x()));
+    if (headingDegrees)
+        *headingDegrees = heading;
+    // Direction: heading (-180, 180] -> 0-1, so +X encodes as 0.5.
+    s.direction = (heading + 180.0) / 360.0;
+    // Tilt: magnitude with the same 60-degree normalisation the tilt TIP
+    // SHAPING uses — but a separate consumer; neither gates the other.
+    s.tilt = std::clamp(
+        std::hypot(point.tiltX, point.tiltY) / 60.0, 0.0, 1.0);
+    return s;
+}
+
 StrokeStamp StrokeBuilder::resolveStamp(const StrokePoint &point, const Brush &brush,
                                         quint64 seed, quint64 index,
                                         const QPointF &rawDirection,
-                                        quint32 subBrushSlot)
+                                        quint32 subBrushSlot,
+                                        const Brush::DynamicSource &src,
+                                        qreal headingDegrees)
 {
     StrokeStamp stamp;
     stamp.point = point;
@@ -152,29 +216,38 @@ StrokeStamp StrokeBuilder::resolveStamp(const StrokePoint &point, const Brush &b
     // control source, curve remap, then minimum floor, in that one place.
     using P = Brush::DynamicProperty;
     const qreal sizeJitterAmount = brush.sizeJitter()
-        * brush.resolveDynamic(P::SizeJitter, point.pressure);
+        * brush.resolveDynamic(P::SizeJitter, src);
     const qreal sizeMultiplier = std::max<qreal>(0.05,
         1.0 + indexedSigned(seed, index, 1, subBrushSlot) * sizeJitterAmount);
-    stamp.effectiveSize = brush.size() * brush.resolveDynamic(P::Size, point.pressure)
+    stamp.effectiveSize = brush.size() * brush.resolveDynamic(P::Size, src)
         * sizeMultiplier;
-    stamp.effectiveOpacity = brush.opacity() * brush.resolveDynamic(P::Opacity, point.pressure);
-    stamp.effectiveHardness = brush.hardness() * brush.resolveDynamic(P::Hardness, point.pressure);
+    stamp.effectiveOpacity = brush.opacity() * brush.resolveDynamic(P::Opacity, src);
+    stamp.effectiveHardness = brush.hardness() * brush.resolveDynamic(P::Hardness, src);
     stamp.effectiveFlow = brush.flow() >= 0.999999 ? 1.0
-        : brush.flow() * brush.resolveDynamic(P::Flow, point.pressure);
+        : brush.flow() * brush.resolveDynamic(P::Flow, src);
     stamp.angleJitterDegrees = indexedSigned(seed, index, 2, subBrushSlot) * 180.0
-        * brush.angleJitter() * brush.resolveDynamic(P::AngleJitter, point.pressure);
+        * brush.angleJitter() * brush.resolveDynamic(P::AngleJitter, src);
+    // DIRECTION -> ANGLE (the Phase 3 headline): when the angle property's
+    // control source is Direction, the smoothed heading joins the stamp's
+    // rotation term. Both renderers already add this field into the ONE
+    // per-stamp affine (rotation = static angle + tilt azimuth + barrel +
+    // THIS - viewport when physical), so the tip follows the stroke and
+    // the STATIC tipAngle acts as an OFFSET from the heading, exactly as
+    // Phase 2's affine comment reserved. No renderer changes.
+    if (brush.controlSource(P::AngleJitter) == Brush::ControlSource::Direction)
+        stamp.angleJitterDegrees += headingDegrees;
     stamp.roundness = std::max<qreal>(0.05, 1.0 - indexedUnit(seed, index, 3, subBrushSlot)
         * brush.roundnessJitter()
-        * brush.resolveDynamic(P::RoundnessJitter, point.pressure));
+        * brush.resolveDynamic(P::RoundnessJitter, src));
     stamp.spacingMultiplier = std::max<qreal>(0.05,
         1.0 + indexedSigned(seed, index, 4, subBrushSlot) * brush.spacingJitter()
-        * brush.resolveDynamic(P::SpacingJitter, point.pressure));
+        * brush.resolveDynamic(P::SpacingJitter, src));
 
     QPointF direction = rawDirection;
     const qreal length = std::hypot(direction.x(), direction.y());
     direction = length > 0.000001 ? direction / length : QPointF(1.0, 0.0);
     const QPointF normal(-direction.y(), direction.x());
-    const qreal scatterPressure = brush.resolveDynamic(P::Scatter, point.pressure);
+    const qreal scatterPressure = brush.resolveDynamic(P::Scatter, src);
     const qreal along = indexedSigned(seed, index, 5, subBrushSlot) * brush.scatterAlong()
         * scatterPressure * stamp.effectiveSize;
     const qreal perpendicular = indexedSigned(seed, index, 6, subBrushSlot) * brush.scatterPerpendicular()
@@ -182,15 +255,15 @@ StrokeStamp StrokeBuilder::resolveStamp(const StrokePoint &point, const Brush &b
     stamp.scatterOffset = direction * along + normal * perpendicular;
     stamp.point.position += stamp.scatterOffset;
     stamp.effectiveGrainDepth = brush.grainDepth()
-        * brush.resolveDynamic(P::GrainDepth, point.pressure);
+        * brush.resolveDynamic(P::GrainDepth, src);
     stamp.effectiveSmudge = (brush.smudgeActive() ? brush.smudgeStrength() : 0.0)
-        * brush.resolveDynamic(P::Smudge, point.pressure);
+        * brush.resolveDynamic(P::Smudge, src);
     stamp.effectiveHueJitter = brush.hueJitter()
-        * brush.resolveDynamic(P::HueJitter, point.pressure);
+        * brush.resolveDynamic(P::HueJitter, src);
     stamp.effectiveSaturationJitter = brush.saturationJitter()
-        * brush.resolveDynamic(P::SaturationJitter, point.pressure);
+        * brush.resolveDynamic(P::SaturationJitter, src);
     stamp.effectiveBrightnessJitter = brush.brightnessJitter()
-        * brush.resolveDynamic(P::BrightnessJitter, point.pressure);
+        * brush.resolveDynamic(P::BrightnessJitter, src);
     qreal hue = brush.color().hsvHueF();
     if (hue < 0.0) hue = 0.0;
     hue = std::fmod(hue + indexedSigned(seed, index, 101, subBrushSlot)
@@ -281,15 +354,23 @@ QVector<StrokeStamp> StrokeBuilder::resamplePath(const QVector<StrokePoint> &poi
     if (points.isEmpty())
         return result;
     quint64 index = 0;
+    DynamicWalkState walk;
     auto appendGroup = [&](const StrokePoint &point, const QPointF &direction) {
+        // One source sample per stamp GROUP: scatter copies share the same
+        // driving values; only their indexed RNG differs.
+        advanceWalk(walk, point.position, direction);
+        qreal headingDegrees = 0.0;
+        const Brush::DynamicSource src =
+            sourceSample(point, brush, walk, &headingDegrees);
         const bool scatterActive = (brush.scatterAlong() > 0.0
             || brush.scatterPerpendicular() > 0.0)
-            && brush.resolveDynamic(Brush::DynamicProperty::Scatter,
-                                    point.pressure) > 0.0;
+            && brush.resolveDynamic(Brush::DynamicProperty::Scatter, src)
+                > 0.0;
         const int count = scatterActive ? brush.scatterCount() : 1;
         const int first = result.size();
         for (int copy = 0; copy < count; ++copy)
-            result.append(resolveStamp(point, brush, seed, index++, direction, subBrushSlot));
+            result.append(resolveStamp(point, brush, seed, index++, direction,
+                                       subBrushSlot, src, headingDegrees));
         return result.at(first);
     };
     StrokeStamp spacingStamp = appendGroup(points.first(), QPointF(1.0, 0.0));
@@ -344,15 +425,20 @@ void StrokeBuilder::appendSegment(const StrokePoint &a, const StrokePoint &b)
 
 qreal StrokeBuilder::appendStampGroup(const StrokePoint &point, const QPointF &direction)
 {
+    // One source sample per stamp GROUP (see resamplePath's twin).
+    advanceWalk(m_walk, point.position, direction);
+    qreal headingDegrees = 0.0;
+    const Brush::DynamicSource src =
+        sourceSample(point, m_brush, m_walk, &headingDegrees);
     const bool scatterActive = (m_brush.scatterAlong() > 0.0
         || m_brush.scatterPerpendicular() > 0.0)
-        && m_brush.resolveDynamic(Brush::DynamicProperty::Scatter,
-                                  point.pressure) > 0.0;
+        && m_brush.resolveDynamic(Brush::DynamicProperty::Scatter, src)
+            > 0.0;
     const int count = scatterActive ? m_brush.scatterCount() : 1;
     StrokeStamp spacingStamp;
     for (int copy = 0; copy < count; ++copy) {
         StrokeStamp stamp = resolveStamp(point, m_brush, m_seed, m_nextStampIndex++, direction,
-                                         m_subBrushSlot);
+                                         m_subBrushSlot, src, headingDegrees);
         if (copy == 0)
             spacingStamp = stamp;
         m_stamps.append(stamp);

@@ -24,7 +24,11 @@ constexpr quint32 kPresetMagic = 0x534E4B50; // "SNKP"
 //   v3  + the static tip transform (angle, roundness, flip X, flip Y).
 //       v1 and v2 files land on the defaults (0 deg, roundness 1.0, no
 //       flips) — again their exact prior behaviour.
-constexpr quint16 kVersion = 3;
+//   v4  + fadeDistance (canvas px the Fade source decays over). Older
+//       files land on the default 256; the field is only read when a
+//       control source is Fade, which no pre-v4 file can have set to a
+//       distance other than the default anyway.
+constexpr quint16 kVersion = 4;
 constexpr quint16 kMinReadVersion = 1;
 
 // A fixed QDataStream version pins the wire format independently of the Qt
@@ -237,6 +241,12 @@ void walkBrush(::Brush &b, V &v, quint16 wireVersion, int depth = 0)
                 [&](bool x) { b.setTipFlipX(x); });
         v.field([&] { return b.tipFlipY(); },
                 [&](bool x) { b.setTipFlipY(x); });
+    }
+    // v4: the Fade source's decay span. Before the dual-brush branch, as
+    // with every versioned block, so the secondary carries its own copy.
+    if (wireVersion >= 4) {
+        v.field([&] { return b.fadeDistance(); },
+                [&](qreal x) { b.setFadeDistance(x); });
     }
     // Secondary brush: one level deep, exactly like the engine renders it
     // (primary slot 0 + secondary slot 1). A disabled dual brush serialises

@@ -33,6 +33,26 @@ public:
         GrainDepth, HueJitter, SaturationJitter, BrightnessJitter,
     };
     static constexpr int kDynamicPropertyCount = 14;
+
+    // One sample of every driving value a control source can select,
+    // computed CPU-side during the path walk from the shared point stream
+    // (so both render paths resolve identically). All 0-1:
+    //   pressure   the stylus pressure as captured.
+    //   fade       1 at the stroke start, decaying LINEARLY to 0 at
+    //              fadeDistance() canvas px of arc length, 0 beyond.
+    //   direction  the smoothed stroke heading, (degrees + 180) / 360 —
+    //              heading 0 (+X) encodes as 0.5.
+    //   tilt       clamp(hypot(tiltX, tiltY) / 60, 0, 1) — the same
+    //              normalisation the tilt TIP SHAPING uses, but a separate
+    //              consumer: a brush can drive a dynamic from tilt without
+    //              tilt shaping its tip, and vice versa.
+    struct DynamicSource
+    {
+        qreal pressure = 1.0;
+        qreal fade = 1.0;
+        qreal direction = 0.5;
+        qreal tilt = 0.0;
+    };
     enum class DualBlendMode {
         NormalOver,
         Multiply,
@@ -182,7 +202,14 @@ public:
     // Stamp resolution (StrokeBuilder) calls this for all fourteen slots;
     // stamps are resolved ONCE, before the CPU/GPU split, which is what
     // keeps the two render paths structurally identical here.
-    qreal resolveDynamic(DynamicProperty property, qreal pressure) const;
+    qreal resolveDynamic(DynamicProperty property,
+                         const DynamicSource &source) const;
+
+    // FADE source span: canvas px of arc length over which the fade source
+    // decays 1 -> 0 (linear, the Photoshop default; the property's curve
+    // then remaps that ramp like any other source).
+    qreal fadeDistance() const { return m_fadeDistance; }
+    void setFadeDistance(qreal canvasPx); // clamped 1..8192
 
     // Every dynamic property owns an independent pressure curve. Keeping the
     // slots in this plain model preserves serialization stability.
@@ -262,6 +289,7 @@ private:
     qreal m_tipRoundness = 1.0;  // 1 = round, toward 0 = flattened
     bool m_tipFlipX = false;
     bool m_tipFlipY = false;
+    qreal m_fadeDistance = 256.0; // canvas px; only read when a source is Fade
     std::array<ControlSource, kDynamicPropertyCount> m_controlSources;
     std::array<qreal, kDynamicPropertyCount> m_controlMinimums;
     PressureCurve m_sizePressureCurve;
