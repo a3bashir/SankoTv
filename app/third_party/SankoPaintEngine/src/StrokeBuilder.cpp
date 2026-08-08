@@ -148,30 +148,33 @@ StrokeStamp StrokeBuilder::resolveStamp(const StrokePoint &point, const Brush &b
     StrokeStamp stamp;
     stamp.point = point;
     stamp.index = index;
+    // Every dynamic multiplier resolves through Brush::resolveDynamic —
+    // control source, curve remap, then minimum floor, in that one place.
+    using P = Brush::DynamicProperty;
     const qreal sizeJitterAmount = brush.sizeJitter()
-        * brush.sizeJitterPressureCurve().valueAt(point.pressure);
+        * brush.resolveDynamic(P::SizeJitter, point.pressure);
     const qreal sizeMultiplier = std::max<qreal>(0.05,
         1.0 + indexedSigned(seed, index, 1, subBrushSlot) * sizeJitterAmount);
-    stamp.effectiveSize = brush.size() * brush.sizePressureCurve().valueAt(point.pressure)
+    stamp.effectiveSize = brush.size() * brush.resolveDynamic(P::Size, point.pressure)
         * sizeMultiplier;
-    stamp.effectiveOpacity = brush.opacity() * brush.opacityPressureCurve().valueAt(point.pressure);
-    stamp.effectiveHardness = brush.hardness() * brush.hardnessPressureCurve().valueAt(point.pressure);
+    stamp.effectiveOpacity = brush.opacity() * brush.resolveDynamic(P::Opacity, point.pressure);
+    stamp.effectiveHardness = brush.hardness() * brush.resolveDynamic(P::Hardness, point.pressure);
     stamp.effectiveFlow = brush.flow() >= 0.999999 ? 1.0
-        : brush.flow() * brush.flowPressureCurve().valueAt(point.pressure);
+        : brush.flow() * brush.resolveDynamic(P::Flow, point.pressure);
     stamp.angleJitterDegrees = indexedSigned(seed, index, 2, subBrushSlot) * 180.0
-        * brush.angleJitter() * brush.angleJitterPressureCurve().valueAt(point.pressure);
+        * brush.angleJitter() * brush.resolveDynamic(P::AngleJitter, point.pressure);
     stamp.roundness = std::max<qreal>(0.05, 1.0 - indexedUnit(seed, index, 3, subBrushSlot)
         * brush.roundnessJitter()
-        * brush.roundnessJitterPressureCurve().valueAt(point.pressure));
+        * brush.resolveDynamic(P::RoundnessJitter, point.pressure));
     stamp.spacingMultiplier = std::max<qreal>(0.05,
         1.0 + indexedSigned(seed, index, 4, subBrushSlot) * brush.spacingJitter()
-        * brush.spacingJitterPressureCurve().valueAt(point.pressure));
+        * brush.resolveDynamic(P::SpacingJitter, point.pressure));
 
     QPointF direction = rawDirection;
     const qreal length = std::hypot(direction.x(), direction.y());
     direction = length > 0.000001 ? direction / length : QPointF(1.0, 0.0);
     const QPointF normal(-direction.y(), direction.x());
-    const qreal scatterPressure = brush.scatterPressureCurve().valueAt(point.pressure);
+    const qreal scatterPressure = brush.resolveDynamic(P::Scatter, point.pressure);
     const qreal along = indexedSigned(seed, index, 5, subBrushSlot) * brush.scatterAlong()
         * scatterPressure * stamp.effectiveSize;
     const qreal perpendicular = indexedSigned(seed, index, 6, subBrushSlot) * brush.scatterPerpendicular()
@@ -179,15 +182,15 @@ StrokeStamp StrokeBuilder::resolveStamp(const StrokePoint &point, const Brush &b
     stamp.scatterOffset = direction * along + normal * perpendicular;
     stamp.point.position += stamp.scatterOffset;
     stamp.effectiveGrainDepth = brush.grainDepth()
-        * brush.grainDepthPressureCurve().valueAt(point.pressure);
+        * brush.resolveDynamic(P::GrainDepth, point.pressure);
     stamp.effectiveSmudge = (brush.smudgeActive() ? brush.smudgeStrength() : 0.0)
-        * brush.smudgePressureCurve().valueAt(point.pressure);
+        * brush.resolveDynamic(P::Smudge, point.pressure);
     stamp.effectiveHueJitter = brush.hueJitter()
-        * brush.hueJitterPressureCurve().valueAt(point.pressure);
+        * brush.resolveDynamic(P::HueJitter, point.pressure);
     stamp.effectiveSaturationJitter = brush.saturationJitter()
-        * brush.saturationJitterPressureCurve().valueAt(point.pressure);
+        * brush.resolveDynamic(P::SaturationJitter, point.pressure);
     stamp.effectiveBrightnessJitter = brush.brightnessJitter()
-        * brush.brightnessJitterPressureCurve().valueAt(point.pressure);
+        * brush.resolveDynamic(P::BrightnessJitter, point.pressure);
     qreal hue = brush.color().hsvHueF();
     if (hue < 0.0) hue = 0.0;
     hue = std::fmod(hue + indexedSigned(seed, index, 101, subBrushSlot)
@@ -281,7 +284,8 @@ QVector<StrokeStamp> StrokeBuilder::resamplePath(const QVector<StrokePoint> &poi
     auto appendGroup = [&](const StrokePoint &point, const QPointF &direction) {
         const bool scatterActive = (brush.scatterAlong() > 0.0
             || brush.scatterPerpendicular() > 0.0)
-            && brush.scatterPressureCurve().valueAt(point.pressure) > 0.0;
+            && brush.resolveDynamic(Brush::DynamicProperty::Scatter,
+                                    point.pressure) > 0.0;
         const int count = scatterActive ? brush.scatterCount() : 1;
         const int first = result.size();
         for (int copy = 0; copy < count; ++copy)
@@ -342,7 +346,8 @@ qreal StrokeBuilder::appendStampGroup(const StrokePoint &point, const QPointF &d
 {
     const bool scatterActive = (m_brush.scatterAlong() > 0.0
         || m_brush.scatterPerpendicular() > 0.0)
-        && m_brush.scatterPressureCurve().valueAt(point.pressure) > 0.0;
+        && m_brush.resolveDynamic(Brush::DynamicProperty::Scatter,
+                                  point.pressure) > 0.0;
     const int count = scatterActive ? m_brush.scatterCount() : 1;
     StrokeStamp spacingStamp;
     for (int copy = 0; copy < count; ++copy) {

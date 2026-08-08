@@ -12,7 +12,17 @@ namespace {
 
 constexpr quint32 kBrushMagic = 0x534E4B42;  // "SNKB"
 constexpr quint32 kPresetMagic = 0x534E4B50; // "SNKP"
-constexpr quint16 kVersion = 1;
+// Wire format history — writers always stamp the NEWEST version; readers
+// accept every version listed here, loading older files onto a fresh
+// (default) Brush so absent-by-design fields keep their defaults:
+//   v1  the original field list.
+//   v2  + per-dynamic-property control source and minimum (14 x 2 fields,
+//       inserted after the pressure curves). A v1 file loads with
+//       source = Pressure and minimum = 0.0 everywhere — exactly its
+//       pre-v2 behaviour. A v2 file handed to a v1-era build is REFUSED
+//       cleanly (its version check is `!= 1`), never misparsed.
+constexpr quint16 kVersion = 2;
+constexpr quint16 kMinReadVersion = 1;
 
 // A fixed QDataStream version pins the wire format independently of the Qt
 // the app is built with — presets written today load byte-identically later.
@@ -90,7 +100,12 @@ struct Reader
     }
 };
 
-template <typename V> void walkBrush(::Brush &b, V &v, int depth = 0)
+// wireVersion gates the versioned field blocks: the walker IS the format,
+// in both directions, so a version-1 walk reads/writes exactly the v1
+// layout and a version-2 walk adds the v2 block — no second field list to
+// drift from.
+template <typename V>
+void walkBrush(::Brush &b, V &v, quint16 wireVersion, int depth = 0)
 {
     using B = ::Brush;
     // Base settings.
@@ -190,6 +205,23 @@ template <typename V> void walkBrush(::Brush &b, V &v, int depth = 0)
     v.curve(b.hueJitterPressureCurve());
     v.curve(b.saturationJitterPressureCurve());
     v.curve(b.brightnessJitterPressureCurve());
+    // v2: control source + minimum per dynamic property, in the SAME order
+    // as the curves above. Sits before the dual-brush branch so the
+    // secondary brush carries its own block inside its own recursive walk.
+    // A v1 file simply has no block; the fresh Brush the reader loads into
+    // already defaults to Pressure / 0.0 — its exact pre-v2 behaviour.
+    if (wireVersion >= 2) {
+        for (int i = 0; i < B::kDynamicPropertyCount; ++i) {
+            const auto property = B::DynamicProperty(i);
+            v.field(
+                [&] { return qint32(b.controlSource(property)); },
+                [&](qint32 x) {
+                    b.setControlSource(property, B::ControlSource(x));
+                });
+            v.field([&] { return b.controlMinimum(property); },
+                    [&](qreal x) { b.setControlMinimum(property, x); });
+        }
+    }
     // Secondary brush: one level deep, exactly like the engine renders it
     // (primary slot 0 + secondary slot 1). A disabled dual brush serialises
     // no secondary payload — presets describe what the brush DOES.
@@ -197,7 +229,7 @@ template <typename V> void walkBrush(::Brush &b, V &v, int depth = 0)
         v.branch([&] { return depth == 0 && b.dualBrushEnabled(); });
     if (secondary && depth == 0) {
         b.setDualBrushEnabled(true);
-        walkBrush(b.secondaryBrush(), v, depth + 1);
+        walkBrush(b.secondaryBrush(), v, wireVersion, depth + 1);
     } else if (depth == 0) {
         b.setDualBrushEnabled(false);
     }
@@ -210,9 +242,10 @@ QByteArray BrushPresetCodec::saveBrush(const ::Brush &brush)
     QByteArray bytes;
     QDataStream s(&bytes, QIODevice::WriteOnly);
     s.setVersion(kStreamVersion);
-    s << kBrushMagic << kVersion;
+    s << kBrushMagic << kVersion; // writing always produces the newest
     Writer w{s};
-    walkBrush(const_cast<::Brush &>(brush), w); // Writer only calls getters
+    // Writer only calls getters, so the const_cast never mutates.
+    walkBrush(const_cast<::Brush &>(brush), w, kVersion);
     return bytes;
 }
 
@@ -223,11 +256,12 @@ bool BrushPresetCodec::loadBrush(const QByteArray &bytes, ::Brush &out)
     quint32 magic = 0;
     quint16 version = 0;
     s >> magic >> version;
-    if (magic != kBrushMagic || version != kVersion)
-        return false;
+    if (magic != kBrushMagic || version < kMinReadVersion
+        || version > kVersion)
+        return false; // unknown future format: refuse, never misparse
     ::Brush fresh; // load into defaults so absent-by-design state is clean
     Reader r{s};
-    walkBrush(fresh, r);
+    walkBrush(fresh, r, version);
     if (s.status() != QDataStream::Ok)
         return false;
     out = fresh;
@@ -257,7 +291,11 @@ bool BrushPresetCodec::loadPreset(const QByteArray &bytes, BrushPreset &out)
     quint32 magic = 0;
     quint16 version = 0;
     s >> magic >> version;
-    if (magic != kPresetMagic || version != kVersion)
+    // The preset wrapper's own fields are unchanged since v1; its version
+    // tracks kVersion so a v2 file meets a v1-era build's `!= 1` check and
+    // is refused at the WRAPPER, before any field is misread.
+    if (magic != kPresetMagic || version < kMinReadVersion
+        || version > kVersion)
         return false;
     BrushPreset p;
     QByteArray brushBytes;

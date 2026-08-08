@@ -6,6 +6,7 @@
 #include <QHash>
 #include <QImage>
 #include <QList>
+#include <array>
 #include <memory>
 
 // Phase-1 brush data. The value-style getters/setters deliberately keep this
@@ -16,6 +17,22 @@ public:
     enum class ToolMode { Paint, Smudge };
     enum class GrainMode { Rolling, StaticCanvas };
     enum class GrainPreset { Paper, Canvas, Chalk, Charcoal, Custom };
+    // What DRIVES a dynamic property (Photoshop's "Control" popup). The
+    // per-property curve stays: the source selects WHAT produces the 0-1
+    // driving value, the curve remaps it. Only Pressure is live today;
+    // Fade / Tilt / Direction are structural placeholders whose driving
+    // value is a constant 1.0 until the dynamics phase supplies real ones,
+    // so selecting them is inert, never undefined. None holds the property
+    // at its BASE value and ignores the curve entirely.
+    enum class ControlSource { None, Pressure, Fade, Tilt, Direction };
+    // The fourteen dynamic properties, one per pressure-curve slot, in the
+    // codec's wire order. Used to key the control source and minimum.
+    enum class DynamicProperty {
+        Size, Opacity, Hardness, Flow, Scatter, Smudge,
+        SizeJitter, AngleJitter, RoundnessJitter, SpacingJitter,
+        GrainDepth, HueJitter, SaturationJitter, BrightnessJitter,
+    };
+    static constexpr int kDynamicPropertyCount = 14;
     enum class DualBlendMode {
         NormalOver,
         Multiply,
@@ -121,6 +138,34 @@ public:
     bool hasCustomShape() const { return !m_customShape.isNull(); }
     const QImage &customShape() const { return m_customShape; }
 
+    // --- Control source + minimum per dynamic property --------------------
+    // source: what drives the property (default Pressure — existing brushes
+    //         keep today's behaviour exactly).
+    // minimum: floor of the resolved multiplier, 0..1 (default 0.0 — again
+    //          today's behaviour). Applied AFTER the curve remaps the
+    //          driving value and BEFORE the base value is scaled:
+    //              multiplier = minimum + (1 - minimum) * curve(source)
+    //          so the resolved value spans [base * minimum, base] as the
+    //          source goes 0 -> 1. resolveDynamic() below is the ONE
+    //          implementation of that order; every consumer must go through
+    //          it so the CPU and GPU paths can never disagree about it.
+    ControlSource controlSource(DynamicProperty property) const
+    {
+        return m_controlSources[size_t(property)];
+    }
+    void setControlSource(DynamicProperty property, ControlSource source);
+    qreal controlMinimum(DynamicProperty property) const
+    {
+        return m_controlMinimums[size_t(property)];
+    }
+    void setControlMinimum(DynamicProperty property, qreal minimum);
+    const PressureCurve &dynamicCurve(DynamicProperty property) const;
+    // The resolved 0-1 multiplier for one property at one input sample.
+    // Stamp resolution (StrokeBuilder) calls this for all fourteen slots;
+    // stamps are resolved ONCE, before the CPU/GPU split, which is what
+    // keeps the two render paths structurally identical here.
+    qreal resolveDynamic(DynamicProperty property, qreal pressure) const;
+
     // Every dynamic property owns an independent pressure curve. Keeping the
     // slots in this plain model preserves serialization stability.
     PressureCurve &sizePressureCurve() { return m_sizePressureCurve; }
@@ -195,6 +240,8 @@ private:
     qreal m_saturationJitter = 0.0;
     qreal m_brightnessJitter = 0.0;
     QImage m_customShape;
+    std::array<ControlSource, kDynamicPropertyCount> m_controlSources;
+    std::array<qreal, kDynamicPropertyCount> m_controlMinimums;
     PressureCurve m_sizePressureCurve;
     PressureCurve m_opacityPressureCurve;
     PressureCurve m_hardnessPressureCurve;

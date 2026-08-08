@@ -44,6 +44,11 @@ QImage proceduralGrain(Brush::GrainPreset preset)
 
 Brush::Brush()
 {
+    // Pressure with a zero minimum is exactly the pre-control-source
+    // behaviour, so a default-constructed (or v1-loaded) brush renders
+    // bit-identically to before the sources existed.
+    m_controlSources.fill(ControlSource::Pressure);
+    m_controlMinimums.fill(0.0);
     setGrainPreset(GrainPreset::Paper);
 }
 
@@ -86,6 +91,8 @@ Brush &Brush::operator=(const Brush &other)
     m_saturationJitter = other.m_saturationJitter;
     m_brightnessJitter = other.m_brightnessJitter;
     m_customShape = other.m_customShape;
+    m_controlSources = other.m_controlSources;
+    m_controlMinimums = other.m_controlMinimums;
     m_sizePressureCurve = other.m_sizePressureCurve;
     m_opacityPressureCurve = other.m_opacityPressureCurve;
     m_hardnessPressureCurve = other.m_hardnessPressureCurve;
@@ -235,6 +242,70 @@ void Brush::setSmudgeStrength(qreal amount) { m_smudgeStrength = std::clamp(amou
 void Brush::setHueJitter(qreal amount) { m_hueJitter = std::clamp(amount, 0.0, 1.0); }
 void Brush::setSaturationJitter(qreal amount) { m_saturationJitter = std::clamp(amount, 0.0, 1.0); }
 void Brush::setBrightnessJitter(qreal amount) { m_brightnessJitter = std::clamp(amount, 0.0, 1.0); }
+
+void Brush::setControlSource(DynamicProperty property, ControlSource source)
+{
+    // Serialised as an int: an out-of-range value (corrupt or future file)
+    // falls back to Pressure — the one source whose behaviour every brush
+    // already had — never to an unmapped enum.
+    if (int(source) < int(ControlSource::None)
+        || int(source) > int(ControlSource::Direction))
+        source = ControlSource::Pressure;
+    m_controlSources[size_t(property)] = source;
+}
+
+void Brush::setControlMinimum(DynamicProperty property, qreal minimum)
+{
+    m_controlMinimums[size_t(property)] = std::clamp(minimum, 0.0, 1.0);
+}
+
+const PressureCurve &Brush::dynamicCurve(DynamicProperty property) const
+{
+    switch (property) {
+    case DynamicProperty::Size: return m_sizePressureCurve;
+    case DynamicProperty::Opacity: return m_opacityPressureCurve;
+    case DynamicProperty::Hardness: return m_hardnessPressureCurve;
+    case DynamicProperty::Flow: return m_flowPressureCurve;
+    case DynamicProperty::Scatter: return m_scatterPressureCurve;
+    case DynamicProperty::Smudge: return m_smudgePressureCurve;
+    case DynamicProperty::SizeJitter: return m_sizeJitterPressureCurve;
+    case DynamicProperty::AngleJitter: return m_angleJitterPressureCurve;
+    case DynamicProperty::RoundnessJitter:
+        return m_roundnessJitterPressureCurve;
+    case DynamicProperty::SpacingJitter:
+        return m_spacingJitterPressureCurve;
+    case DynamicProperty::GrainDepth: return m_grainDepthPressureCurve;
+    case DynamicProperty::HueJitter: return m_hueJitterPressureCurve;
+    case DynamicProperty::SaturationJitter:
+        return m_saturationJitterPressureCurve;
+    case DynamicProperty::BrightnessJitter:
+        return m_brightnessJitterPressureCurve;
+    }
+    return m_sizePressureCurve; // unreachable; keeps the compiler quiet
+}
+
+qreal Brush::resolveDynamic(DynamicProperty property, qreal pressure) const
+{
+    const ControlSource source = m_controlSources[size_t(property)];
+    // None: the property sits at its BASE value; curve and minimum are
+    // ignored (the minimum only floors a DRIVEN property).
+    if (source == ControlSource::None)
+        return 1.0;
+    // Only Pressure is live in this phase. Fade, Tilt and Direction feed a
+    // constant 1.0 driving value — inert by definition, not undefined. The
+    // dynamics phase supplies the real stroke-length / tilt / direction
+    // values HERE, in this one selection, and nothing downstream changes.
+    qreal driving = 1.0;
+    if (source == ControlSource::Pressure)
+        driving = pressure;
+    const qreal remapped = dynamicCurve(property).valueAt(driving);
+    // The minimum applies AFTER the curve remaps the driving value and
+    // BEFORE the base value is scaled. With the defaults (Pressure, 0.0)
+    // this is 0.0 + 1.0 * remapped — bit-identical to the old
+    // curve.valueAt(pressure), which the pixel locks prove.
+    const qreal minimum = m_controlMinimums[size_t(property)];
+    return minimum + (1.0 - minimum) * remapped;
+}
 
 void Brush::setGrainPreset(GrainPreset preset)
 {
