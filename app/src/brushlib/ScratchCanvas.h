@@ -53,6 +53,13 @@ public:
     // costs a tip-cache regeneration — debounced longer.
     void setBrush(const ::Brush &brush, bool tipInvalidating);
     void clearStrokes();
+    // Commit the deterministic sample stroke: an S of two semicircles
+    // (about 2*pi*r of arc — past the default 256 px fade distance — and a
+    // full 360 degrees of turning, enough to show direction-driven tips
+    // ribboning). Same path every press; idempotent until the pad is
+    // cleared, so pressing before and after an edit compares like with
+    // like (every edit re-renders committed strokes anyway).
+    void laySampleStroke();
 
     int fullRendersPerformed() const { return m_fullRenders; } // seam (i)
     int strokeCount() const { return m_strokes.size(); }
@@ -114,6 +121,7 @@ private:
     QVector<QVector<StrokePoint>> m_strokes;
     QVector<StrokePoint> m_active;
     bool m_drawing = false;
+    bool m_sampleLaid = false; // laySampleStroke idempotence; clear resets
 
     QImage m_baseline; // background + committed strokes, current brush
     QImage m_display;  // what paintEvent blits

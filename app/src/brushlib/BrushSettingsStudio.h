@@ -118,13 +118,30 @@ private:
                             bool tipInvalidating, double step = 0.0,
                             double exponent = 1.0,
                             const CurveAccess &curve = nullptr,
-                            bool curveInvalidatesTip = false);
+                            bool curveInvalidatesTip = false,
+                            std::optional<::Brush::DynamicProperty> property =
+                                std::nullopt,
+                            std::function<bool()> extraEnable = nullptr);
     StudioCurveRow *addCurveRow(QVBoxLayout *layout, const QString &label,
                                 const CurveAccess &curve,
-                                bool tipInvalidating = false);
+                                bool tipInvalidating = false,
+                                std::optional<::Brush::DynamicProperty>
+                                    property = std::nullopt,
+                                std::function<bool()> extraEnable = nullptr);
     StudioCurveEditor *attachCurveEditor(QVBoxLayout *layout,
                                          const CurveAccess &curve,
                                          bool tipInvalidating);
+    // The response drawer (dynamics Phases 1-3): Source choice + Minimum
+    // slider + the curve editor, stacked in the chip's expansion. Returns
+    // the hidden container the owner row's chip toggles. extraEnable ANDs
+    // into the None-dimming (the Smudge row is also inert in Paint mode).
+    QWidget *attachResponseDrawer(QVBoxLayout *layout,
+                                  const CurveAccess &curve,
+                                  bool curveInvalidatesTip,
+                                  ::Brush::DynamicProperty property,
+                                  StudioSlider *ownerSlider,
+                                  StudioCurveRow *ownerRow,
+                                  std::function<bool()> extraEnable);
     StudioToggleRow *addToggle(QVBoxLayout *layout, const QString &label,
                                std::function<bool(const ::Brush &)> get,
                                std::function<void(::Brush &, bool)> set,

@@ -75,6 +75,7 @@ void ScratchCanvas::clearStrokes()
     m_strokes.clear();
     m_active.clear();
     m_drawing = false;
+    m_sampleLaid = false;
     ++m_epoch; // in-flight results for the old content must not surface
     m_baselineStrokes = -1;
     scheduleFullRender(0);
@@ -146,6 +147,39 @@ void ScratchCanvas::enqueue(Job job)
     }
     m_queue.enqueue(std::move(job));
     m_wake.wakeOne();
+}
+
+void ScratchCanvas::laySampleStroke()
+{
+    if (m_sampleLaid || m_drawing)
+        return; // idempotent until cleared; never interleave a live stroke
+    // An S of two semicircles, sized to the pad: about 2*pi*r of arc (past
+    // the 256 px default fade for any reasonable pad) and 360 degrees of
+    // turning. Fixed geometry relative to the pad — the same press always
+    // draws the same path, and the render seed is per-stroke-index, so
+    // before/after comparisons are like with like.
+    const qreal w = width(), h = height();
+    const qreal r = qMin(qMin(w, h) * 0.23, (h - 40.0) * 0.25);
+    if (r < 12.0)
+        return; // pad too small to say anything useful
+    const qreal cx = w * 0.5;
+    const qreal y0 = h * 0.5 - 2.0 * r;
+    auto arcPoint = [](const QPointF &c, qreal radius, qreal deg) {
+        const qreal rad = qDegreesToRadians(deg);
+        return QPointF(c.x() + radius * std::cos(rad),
+                       c.y() + radius * std::sin(rad));
+    };
+    QVector<QPointF> path;
+    const QPointF c1(cx, y0 + r), c2(cx, y0 + 3.0 * r);
+    for (int i = 0; i <= 60; ++i) // 270 -> 90 through the LEFT side
+        path.append(arcPoint(c1, r, 270.0 - i * 3.0));
+    for (int i = 1; i <= 60; ++i) // 270 -> 90 through the RIGHT side
+        path.append(arcPoint(c2, r, 270.0 + i * 3.0));
+    beginStroke(path.first(), 1.0, 0.0, 0.0, 0.0);
+    for (int i = 1; i < path.size(); ++i)
+        moveStroke(path.at(i), 1.0, 0.0, 0.0, 0.0);
+    endStroke();
+    m_sampleLaid = true;
 }
 
 void ScratchCanvas::beginStroke(const QPointF &pos, qreal pressure,

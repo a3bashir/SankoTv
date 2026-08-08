@@ -60,6 +60,7 @@ public:
 
     void setValue(double value); // silent (no signals); clamped to range
     double value() const { return m_value; }
+    QString label() const { return m_label; } // programmatic lookup (tests)
     void setStep(double step) { m_step = step; } // 0 = continuous
     // Track response: value = min + (max-min) * t^exponent. Wide ranges
     // (spacing 1%..1000%, size 1..2048) use >1 so the everyday span is not
@@ -71,10 +72,19 @@ public:
 
     // Optional pressure-curve chip between the label and the value capsule.
     // The chip is display + click-target only; the owning section places the
-    // expandable StudioCurveEditor underneath the row.
+    // expandable response drawer underneath the row.
     void enableCurveChip();
     void setChipCurve(const PressureCurve &curve);
     void setChipExpanded(bool expanded);
+    // Control-source capsule beside the chip — ALWAYS visible on dynamic
+    // rows ("Pressure" by default), so a row states its source instead of
+    // relying on an absent-capsule-means-Pressure convention. Documented
+    // divergence, drawn with the shared capsule painter.
+    void setSourceCapsule(const QString &text);
+    // Dim the chip + source capsule (source = None: curve and minimum are
+    // inert) without disabling the row — the chip stays clickable so the
+    // drawer remains reachable to change the source back.
+    void setChipDimmed(bool dimmed);
 
 signals:
     void valueChanged(double value);                 // live, during drag
@@ -104,6 +114,8 @@ private:
     double m_pressValue = 0.0;
     bool m_hasChip = false;
     bool m_chipExpanded = false;
+    bool m_chipDimmed = false;
+    QString m_sourceText;
     PressureCurve m_chipCurve;
 };
 
@@ -115,8 +127,12 @@ class StudioCurveRow : public QWidget
     Q_OBJECT
 public:
     explicit StudioCurveRow(const QString &label, QWidget *parent = nullptr);
+    QString label() const { return m_label; }
     void setCurve(const PressureCurve &curve);
     void setExpanded(bool expanded);
+    // Same always-visible source capsule + dim rules as StudioSlider's.
+    void setSourceCapsule(const QString &text);
+    void setChipDimmed(bool dimmed);
 
 signals:
     void clicked();
@@ -129,6 +145,8 @@ private:
     QString m_label;
     PressureCurve m_curve;
     bool m_expanded = false;
+    bool m_chipDimmed = false;
+    QString m_sourceText;
 };
 
 // The expandable pressure-curve editor. PressureCurve is piecewise-LINEAR
@@ -176,6 +194,7 @@ class StudioToggleRow : public QWidget
     Q_OBJECT
 public:
     explicit StudioToggleRow(const QString &label, QWidget *parent = nullptr);
+    QString label() const { return m_label; }
     void setChecked(bool on); // silent
     bool isChecked() const { return m_on; }
 
@@ -201,8 +220,12 @@ class StudioChoiceRow : public QWidget
 public:
     StudioChoiceRow(const QString &label, const QStringList &options,
                     QWidget *parent = nullptr);
+    QString label() const { return m_label; }
     void setCurrentIndex(int index); // silent
     int currentIndex() const { return m_index; }
+    // The programmatic counterpart of picking from the menu: sets the
+    // index AND emits chosen(), exactly like a user selection.
+    void choose(int index);
 
 signals:
     void chosen(int index); // user action only
@@ -227,8 +250,10 @@ class StudioSegmentedRow : public QWidget
 public:
     StudioSegmentedRow(const QString &label, const QStringList &options,
                        QWidget *parent = nullptr);
+    QString label() const { return m_label; }
     void setCurrentIndex(int index); // silent
     int currentIndex() const { return m_index; }
+    void choose(int index); // programmatic pick: sets index + emits chosen()
 
 signals:
     void chosen(int index); // user action only

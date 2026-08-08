@@ -50,6 +50,59 @@ QString fmtCount(double v)
     return QString::number(qRound(v));
 }
 
+// 40x26 thumbnail of the tip WITH the static transform applied — a
+// miniature of the engine's documented per-stamp affine (backward map:
+// rotate, compress tip-local X, flip the tip-local sample axes), so the
+// four static numbers have a picture. Approved divergence: previously the
+// thumbnail showed the untransformed custom shape.
+QImage tipTransformThumbnail(const ::Brush &b)
+{
+    constexpr int kW = 40, kH = 26;
+    QImage out(kW, kH, QImage::Format_ARGB32_Premultiplied);
+    out.fill(Qt::transparent);
+    const qreal angle = qDegreesToRadians(b.tipAngle());
+    const qreal cosine = std::cos(angle), sine = std::sin(angle);
+    const qreal compression = b.tipRoundness();
+    const qreal signX = b.tipFlipX() ? -1.0 : 1.0;
+    const qreal signY = b.tipFlipY() ? -1.0 : 1.0;
+    const QImage shape = b.customShape(); // null selects the procedural disc
+    const qreal half = kH * 0.5;
+    const QColor ink = kDragger; // #b3b3b3, the component ink
+    for (int y = 0; y < kH; ++y) {
+        QRgb *row = reinterpret_cast<QRgb *>(out.scanLine(y));
+        for (int x = 0; x < kW; ++x) {
+            const qreal lx = (x - kW * 0.5 + 0.5) / half;
+            const qreal ly = (y - kH * 0.5 + 0.5) / half;
+            qreal tx = cosine * lx + sine * ly;
+            const qreal ty = -sine * lx + cosine * ly;
+            tx /= qMax(compression, 0.01);
+            const qreal dist = std::hypot(tx, ty);
+            if (dist >= 1.0)
+                continue;
+            qreal coverage = 0.0;
+            if (!shape.isNull()) {
+                const qreal u = signX * tx * 0.5 + 0.5;
+                const qreal v = signY * ty * 0.5 + 0.5;
+                const int sx = qBound(0, int(u * shape.width()),
+                                      shape.width() - 1);
+                const int sy = qBound(0, int(v * shape.height()),
+                                      shape.height() - 1);
+                coverage = shape.constScanLine(sy)[sx] / 255.0;
+            } else if (b.hardness() >= 0.999 || dist <= b.hardness()) {
+                coverage = 1.0;
+            } else {
+                const qreal t = (dist - b.hardness())
+                    / qMax(1.0 - b.hardness(), 0.001);
+                coverage = std::exp(-3.0 * t * t) * (1.0 - t);
+            }
+            const int a = qRound(coverage * 255.0);
+            row[x] = qPremultiply(
+                qRgba(ink.red(), ink.green(), ink.blue(), a));
+        }
+    }
+    return out;
+}
+
 QImage loadImageFile(QWidget *parent, const QString &title)
 {
     const QString path = QFileDialog::getOpenFileName(
@@ -546,7 +599,9 @@ StudioSlider *BrushSettingsStudio::addSlider(
     std::function<double(const ::Brush &)> get,
     std::function<void(::Brush &, double)> set,
     std::function<QString(double)> fmt, bool tipInvalidating, double step,
-    double exponent, const CurveAccess &curve, bool curveInvalidatesTip)
+    double exponent, const CurveAccess &curve, bool curveInvalidatesTip,
+    std::optional<::Brush::DynamicProperty> property,
+    std::function<bool()> extraEnable)
 {
     auto *s = new StudioSlider(label, min, max);
     s->setFormatter(std::move(fmt));
@@ -565,7 +620,21 @@ StudioSlider *BrushSettingsStudio::addSlider(
             });
     connect(s, &StudioSlider::valueCommitted, this,
             [this](double, double) { commitGesture(); });
-    if (curve) {
+    if (curve && property) {
+        // A dynamic property: the chip opens the full response drawer.
+        s->enableCurveChip();
+        QWidget *drawer = attachResponseDrawer(
+            layout, curve, curveInvalidatesTip, *property, s, nullptr,
+            std::move(extraEnable));
+        connect(s, &StudioSlider::chipClicked, this, [s, drawer] {
+            const bool show = !drawer->isVisible();
+            drawer->setVisible(show);
+            s->setChipExpanded(show);
+        });
+        m_syncers.append([this, s, curve] {
+            s->setChipCurve(curve(const_cast<::Brush &>(scopeBrushConst())));
+        });
+    } else if (curve) {
         s->enableCurveChip();
         StudioCurveEditor *ed =
             attachCurveEditor(layout, curve, curveInvalidatesTip);
@@ -580,6 +649,104 @@ StudioSlider *BrushSettingsStudio::addSlider(
     }
     m_syncers.append([this, s, get] { s->setValue(get(scopeBrushConst())); });
     return s;
+}
+
+namespace {
+// Order matches Brush::ControlSource; index-mapped both ways.
+QStringList controlSourceNames()
+{
+    return {QStringLiteral("None"), QStringLiteral("Pressure"),
+            QStringLiteral("Fade"), QStringLiteral("Tilt"),
+            QStringLiteral("Direction")};
+}
+} // namespace
+
+QWidget *BrushSettingsStudio::attachResponseDrawer(
+    QVBoxLayout *layout, const CurveAccess &curve, bool curveInvalidatesTip,
+    ::Brush::DynamicProperty property, StudioSlider *ownerSlider,
+    StudioCurveRow *ownerRow, std::function<bool()> extraEnable)
+{
+    auto *drawer = new QWidget;
+    auto *dl = new QVBoxLayout(drawer);
+    dl->setContentsMargins(12, 4, 0, 4); // indented under the owner row
+    dl->setSpacing(10);
+    drawer->hide();
+    layout->addWidget(drawer);
+
+    auto *source = new StudioChoiceRow(QStringLiteral("Source"),
+                                       controlSourceNames());
+    dl->addWidget(source);
+    connect(source, &StudioChoiceRow::chosen, this,
+            [this, property](int index) {
+                if (m_syncing)
+                    return;
+                applyInstant(
+                    [property, index](::Brush &b) {
+                        b.setControlSource(property,
+                                           ::Brush::ControlSource(index));
+                    },
+                    false);
+            });
+
+    auto *minimum = new StudioSlider(QStringLiteral("Minimum"), 0.0, 1.0);
+    minimum->setFormatter(fmtPercent);
+    dl->addWidget(minimum);
+    connect(minimum, &StudioSlider::valueChanged, this,
+            [this, property](double v) {
+                if (m_syncing)
+                    return;
+                beginGesture();
+                scopeBrush().setControlMinimum(property, v);
+                pushToScratch(false);
+            });
+    connect(minimum, &StudioSlider::valueCommitted, this,
+            [this](double, double) { commitGesture(); });
+
+    auto *noneNote = makeCaption(QStringLiteral(
+        "Source None holds this property at its base value — minimum and "
+        "curve have no effect."));
+    dl->addWidget(noneNote);
+
+    auto *ed = new StudioCurveEditor;
+    dl->addWidget(ed);
+    connect(ed, &StudioCurveEditor::curveChanged, this,
+            [this, curve, curveInvalidatesTip](const PressureCurve &c) {
+                if (m_syncing)
+                    return;
+                beginGesture();
+                curve(scopeBrush()).setControlPoints(c.controlPoints());
+                pushToScratch(curveInvalidatesTip);
+            });
+    connect(ed, &StudioCurveEditor::curveCommitted, this,
+            [this] { commitGesture(); });
+    m_lastCurveEditor = ed;
+
+    m_syncers.append([this, property, source, minimum, noneNote, ed, curve,
+                      ownerSlider, ownerRow,
+                      extra = std::move(extraEnable)] {
+        const ::Brush &b = scopeBrushConst();
+        const auto src = b.controlSource(property);
+        const int index = int(src);
+        source->setCurrentIndex(index);
+        minimum->setValue(b.controlMinimum(property));
+        ed->setCurve(curve(const_cast<::Brush &>(b)));
+        const bool rowLive = !extra || extra();
+        const bool driven = src != ::Brush::ControlSource::None;
+        source->setEnabled(rowLive);
+        minimum->setEnabled(rowLive && driven);
+        ed->setEnabled(rowLive && driven);
+        noneNote->setVisible(!driven);
+        const QString name = controlSourceNames().at(index);
+        if (ownerSlider) {
+            ownerSlider->setSourceCapsule(name);
+            ownerSlider->setChipDimmed(!driven || !rowLive);
+        }
+        if (ownerRow) {
+            ownerRow->setSourceCapsule(name);
+            ownerRow->setChipDimmed(!driven || !rowLive);
+        }
+    });
+    return drawer;
 }
 
 StudioCurveEditor *BrushSettingsStudio::attachCurveEditor(
@@ -605,20 +772,31 @@ StudioCurveEditor *BrushSettingsStudio::attachCurveEditor(
     return ed;
 }
 
-StudioCurveRow *BrushSettingsStudio::addCurveRow(QVBoxLayout *layout,
-                                                 const QString &label,
-                                                 const CurveAccess &curve,
-                                                 bool tipInvalidating)
+StudioCurveRow *BrushSettingsStudio::addCurveRow(
+    QVBoxLayout *layout, const QString &label, const CurveAccess &curve,
+    bool tipInvalidating, std::optional<::Brush::DynamicProperty> property,
+    std::function<bool()> extraEnable)
 {
     auto *row = new StudioCurveRow(label);
     layout->addWidget(row);
-    StudioCurveEditor *ed =
-        attachCurveEditor(layout, curve, tipInvalidating);
-    connect(row, &StudioCurveRow::clicked, this, [row, ed] {
-        const bool show = !ed->isVisible();
-        ed->setVisible(show);
-        row->setExpanded(show);
-    });
+    if (property) {
+        QWidget *drawer = attachResponseDrawer(
+            layout, curve, tipInvalidating, *property, nullptr, row,
+            std::move(extraEnable));
+        connect(row, &StudioCurveRow::clicked, this, [row, drawer] {
+            const bool show = !drawer->isVisible();
+            drawer->setVisible(show);
+            row->setExpanded(show);
+        });
+    } else {
+        StudioCurveEditor *ed =
+            attachCurveEditor(layout, curve, tipInvalidating);
+        connect(row, &StudioCurveRow::clicked, this, [row, ed] {
+            const bool show = !ed->isVisible();
+            ed->setVisible(show);
+            row->setExpanded(show);
+        });
+    }
     m_syncers.append([this, row, curve] {
         row->setCurve(curve(const_cast<::Brush &>(scopeBrushConst())));
     });
@@ -662,7 +840,8 @@ QWidget *BrushSettingsStudio::buildStrokeSection()
               fmtPercent, false, 0.0, 1.0,
               [](::Brush &b) -> PressureCurve & {
                   return b.spacingJitterPressureCurve();
-              });
+              },
+              false, ::Brush::DynamicProperty::SpacingJitter);
     addSlider(l, QStringLiteral("Jitter Lateral"), 0.0, 10.0,
               [](const ::Brush &b) { return b.scatterPerpendicular(); },
               [](::Brush &b, double v) { b.setScatterPerpendicular(v); },
@@ -678,10 +857,11 @@ QWidget *BrushSettingsStudio::buildStrokeSection()
               [](const ::Brush &b) { return double(b.scatterCount()); },
               [](::Brush &b, double v) { b.setScatterCount(qRound(v)); },
               fmtCount, false, 1.0);
-    addCurveRow(l, QStringLiteral("Scatter Pressure"),
+    addCurveRow(l, QStringLiteral("Scatter Dynamics"),
                 [](::Brush &b) -> PressureCurve & {
                     return b.scatterPressureCurve();
-                });
+                },
+                false, ::Brush::DynamicProperty::Scatter);
     l->addStretch(1);
     return page;
 }
@@ -755,35 +935,59 @@ QWidget *BrushSettingsStudio::buildTipSection()
     });
     m_syncers.append([this, thumb, roundTip] {
         const ::Brush &b = scopeBrushConst();
-        if (b.hasCustomShape()) {
-            thumb->setPixmap(QPixmap::fromImage(b.customShape().scaled(
-                40, 26, Qt::KeepAspectRatio, Qt::SmoothTransformation)));
-            roundTip->setEnabled(true);
+        const bool transformed = b.tipAngle() != 0.0
+            || b.tipRoundness() != 1.0 || b.tipFlipX() || b.tipFlipY();
+        if (b.hasCustomShape() || transformed) {
+            thumb->setText(QString());
+            thumb->setPixmap(QPixmap::fromImage(tipTransformThumbnail(b)));
         } else {
             thumb->setPixmap(QPixmap());
             thumb->setText(QStringLiteral("Round"));
-            roundTip->setEnabled(false);
         }
+        roundTip->setEnabled(b.hasCustomShape());
     });
 
     addSlider(l, QStringLiteral("Hardness"), 0.0, 1.0,
               [](const ::Brush &b) { return b.hardness(); },
               [](::Brush &b, double v) { b.setHardness(v); }, fmtPercent,
               true);
+    // Static tip transform (dynamics Phase 2): applied to every stamp,
+    // regardless of input — no source, no minimum, no curve, which is the
+    // visible distinction from the jitters below that vary AROUND them.
+    addSlider(l, QStringLiteral("Tip Angle"), -180.0, 180.0,
+              [](const ::Brush &b) { return b.tipAngle(); },
+              [](::Brush &b, double v) { b.setTipAngle(v); }, fmtDegrees,
+              false, 1.0);
+    addSlider(l, QStringLiteral("Tip Roundness"), 0.01, 1.0,
+              [](const ::Brush &b) { return b.tipRoundness(); },
+              [](::Brush &b, double v) { b.setTipRoundness(v); },
+              fmtPercent, false);
+    addToggle(l, QStringLiteral("Flip Tip X"),
+              [](const ::Brush &b) { return b.tipFlipX(); },
+              [](::Brush &b, bool on) { b.setTipFlipX(on); }, false);
+    addToggle(l, QStringLiteral("Flip Tip Y"),
+              [](const ::Brush &b) { return b.tipFlipY(); },
+              [](::Brush &b, bool on) { b.setTipFlipY(on); }, false);
+    l->addWidget(makeCaption(
+        QStringLiteral("Angle Jitter and Roundness Jitter vary around "
+                       "Tip Angle and Tip Roundness.")));
+
     addSlider(l, QStringLiteral("Angle Jitter"), 0.0, 1.0,
               [](const ::Brush &b) { return b.angleJitter(); },
               [](::Brush &b, double v) { b.setAngleJitter(v); }, fmtPercent,
               false, 0.0, 1.0,
               [](::Brush &b) -> PressureCurve & {
                   return b.angleJitterPressureCurve();
-              });
+              },
+              false, ::Brush::DynamicProperty::AngleJitter);
     addSlider(l, QStringLiteral("Roundness Jitter"), 0.0, 1.0,
               [](const ::Brush &b) { return b.roundnessJitter(); },
               [](::Brush &b, double v) { b.setRoundnessJitter(v); },
               fmtPercent, false, 0.0, 1.0,
               [](::Brush &b) -> PressureCurve & {
                   return b.roundnessJitterPressureCurve();
-              });
+              },
+              false, ::Brush::DynamicProperty::RoundnessJitter);
     addToggle(l, QStringLiteral("Tilt Affects Shape"),
               [](const ::Brush &b) { return b.tiltAffectsShape(); },
               [](::Brush &b, bool on) { b.setTiltAffectsShape(on); }, false);
@@ -846,7 +1050,8 @@ QWidget *BrushSettingsStudio::buildTextureSection()
               false, 0.0, 1.0,
               [](::Brush &b) -> PressureCurve & {
                   return b.grainDepthPressureCurve();
-              });
+              },
+              false, ::Brush::DynamicProperty::GrainDepth);
     addSlider(l, QStringLiteral("Grain Contrast"), 0.0, 4.0,
               [](const ::Brush &b) { return b.grainContrast(); },
               [](::Brush &b, double v) { b.setGrainContrast(v); },
@@ -972,19 +1177,21 @@ QWidget *BrushSettingsStudio::buildMixingSection()
         false, 0.0, 1.0,
         [](::Brush &b) -> PressureCurve & {
             return b.smudgePressureCurve();
+        },
+        false, ::Brush::DynamicProperty::Smudge, [this] {
+            return scopeBrushConst().toolMode() == ::Brush::ToolMode::Smudge;
         });
-    StudioCurveEditor *strengthEditor = m_lastCurveEditor;
     // Phase 1 fact made visible instead of a live-looking dead control:
-    // smudgeStrength is INERT in Paint mode.
+    // smudgeStrength is INERT in Paint mode. The row's drawer (Source /
+    // Minimum / curve editor) dims itself through the extraEnable passed
+    // to addSlider above — only the row widget is handled here.
     auto *note = makeCaption(QStringLiteral(
         "Smudge Strength applies in Smudge mode only — in Paint mode "
         "the engine ignores it."));
     l->addWidget(note);
-    m_syncers.append([this, strength, strengthEditor] {
-        const bool smudge =
-            scopeBrushConst().toolMode() == ::Brush::ToolMode::Smudge;
-        strength->setEnabled(smudge);
-        strengthEditor->setEnabled(smudge);
+    m_syncers.append([this, strength] {
+        strength->setEnabled(scopeBrushConst().toolMode()
+                             == ::Brush::ToolMode::Smudge);
     });
     l->addStretch(1);
     return page;
@@ -1000,21 +1207,24 @@ QWidget *BrushSettingsStudio::buildColorSection()
               false, 0.0, 1.0,
               [](::Brush &b) -> PressureCurve & {
                   return b.hueJitterPressureCurve();
-              });
+              },
+              false, ::Brush::DynamicProperty::HueJitter);
     addSlider(l, QStringLiteral("Saturation Jitter"), 0.0, 1.0,
               [](const ::Brush &b) { return b.saturationJitter(); },
               [](::Brush &b, double v) { b.setSaturationJitter(v); },
               fmtPercent, false, 0.0, 1.0,
               [](::Brush &b) -> PressureCurve & {
                   return b.saturationJitterPressureCurve();
-              });
+              },
+              false, ::Brush::DynamicProperty::SaturationJitter);
     addSlider(l, QStringLiteral("Brightness Jitter"), 0.0, 1.0,
               [](const ::Brush &b) { return b.brightnessJitter(); },
               [](::Brush &b, double v) { b.setBrightnessJitter(v); },
               fmtPercent, false, 0.0, 1.0,
               [](::Brush &b) -> PressureCurve & {
                   return b.brightnessJitterPressureCurve();
-              });
+              },
+              false, ::Brush::DynamicProperty::BrightnessJitter);
     l->addStretch(1);
     return page;
 }
@@ -1026,24 +1236,45 @@ QWidget *BrushSettingsStudio::buildDynamicsSection()
     // The headline pressure responses whose base values live in General.
     // Size and hardness curves change the stamp shape per dab, so their
     // edits are tip-invalidating for the scratch debounce.
-    addCurveRow(l, QStringLiteral("Size Pressure"),
+    // Fade Distance: the Fade source's decay span (dynamics Phase 3).
+    // Exponent 3.0 — the established wide-range response (Size, Spacing).
+    StudioSlider *fadeRow = addSlider(
+        l, QStringLiteral("Fade Distance"), 1.0, 8192.0,
+        [](const ::Brush &b) { return b.fadeDistance(); },
+        [](::Brush &b, double v) { b.setFadeDistance(v); }, fmtPixels,
+        false, 1.0, 3.0);
+    l->addWidget(makeCaption(
+        QStringLiteral("Applies when a property's source is Fade.")));
+    m_syncers.append([this, fadeRow] {
+        const ::Brush &b = scopeBrushConst();
+        bool anyFade = false;
+        for (int i = 0; i < ::Brush::kDynamicPropertyCount; ++i)
+            anyFade = anyFade
+                || b.controlSource(::Brush::DynamicProperty(i))
+                    == ::Brush::ControlSource::Fade;
+        fadeRow->setEnabled(anyFade);
+    });
+
+    addCurveRow(l, QStringLiteral("Size Dynamics"),
                 [](::Brush &b) -> PressureCurve & {
                     return b.sizePressureCurve();
                 },
-                true);
-    addCurveRow(l, QStringLiteral("Opacity Pressure"),
+                true, ::Brush::DynamicProperty::Size);
+    addCurveRow(l, QStringLiteral("Opacity Dynamics"),
                 [](::Brush &b) -> PressureCurve & {
                     return b.opacityPressureCurve();
-                });
-    addCurveRow(l, QStringLiteral("Hardness Pressure"),
+                },
+                false, ::Brush::DynamicProperty::Opacity);
+    addCurveRow(l, QStringLiteral("Hardness Dynamics"),
                 [](::Brush &b) -> PressureCurve & {
                     return b.hardnessPressureCurve();
                 },
-                true);
-    addCurveRow(l, QStringLiteral("Flow Pressure"),
+                true, ::Brush::DynamicProperty::Hardness);
+    addCurveRow(l, QStringLiteral("Flow Dynamics"),
                 [](::Brush &b) -> PressureCurve & {
                     return b.flowPressureCurve();
-                });
+                },
+                false, ::Brush::DynamicProperty::Flow);
     addSlider(l, QStringLiteral("Size Jitter"), 0.0, 1.0,
               [](const ::Brush &b) { return b.sizeJitter(); },
               [](::Brush &b, double v) { b.setSizeJitter(v); }, fmtPercent,
@@ -1051,7 +1282,7 @@ QWidget *BrushSettingsStudio::buildDynamicsSection()
               [](::Brush &b) -> PressureCurve & {
                   return b.sizeJitterPressureCurve();
               },
-              true);
+              true, ::Brush::DynamicProperty::SizeJitter);
     l->addStretch(1);
     return page;
 }
@@ -1098,6 +1329,14 @@ QWidget *BrushSettingsStudio::buildPreviewSection()
 {
     QVBoxLayout *l = nullptr;
     QWidget *page = sectionPage(&l);
+    // Approved addition: a deterministic sample stroke (same path, same
+    // seed, every press) whose curved run exceeds the default fade
+    // distance and turns through 360 degrees — the path-dependent
+    // dynamics (Direction, Fade) are invisible on a short dab.
+    auto *sample = makeButton(QStringLiteral("Sample Stroke"), false);
+    l->addWidget(sample);
+    connect(sample, &QPushButton::clicked, this,
+            [this] { m_scratch->laySampleStroke(); });
     auto *clear = makeButton(QStringLiteral("Clear Drawing Pad"), false);
     l->addWidget(clear);
     connect(clear, &QPushButton::clicked, this,

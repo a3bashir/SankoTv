@@ -127,6 +127,22 @@ void StudioSlider::setChipExpanded(bool expanded)
     update();
 }
 
+void StudioSlider::setSourceCapsule(const QString &text)
+{
+    if (m_sourceText == text)
+        return;
+    m_sourceText = text;
+    update();
+}
+
+void StudioSlider::setChipDimmed(bool dimmed)
+{
+    if (m_chipDimmed == dimmed)
+        return;
+    m_chipDimmed = dimmed;
+    update();
+}
+
 QRect StudioSlider::trackRect() const
 {
     return QRect(0, kLabelRowH + kRowGap, width(), kTrackH);
@@ -181,8 +197,21 @@ void StudioSlider::paintEvent(QPaintEvent *)
     p.drawText(QRect(0, 0, width(), kLabelRowH),
                Qt::AlignLeft | Qt::AlignVCenter, m_label);
     paintCapsule(p, capsuleRect(), m_format(m_value));
-    if (m_hasChip)
+    if (m_hasChip) {
+        // Source = None makes the curve (and the drawer's minimum) inert:
+        // the chip cluster dims, but stays clickable so the drawer remains
+        // reachable to change the source back.
+        if (m_chipDimmed)
+            p.setOpacity(on ? 0.4 : 0.25);
         paintCurveChip(p, chipRect(), m_chipCurve, m_chipExpanded);
+        if (!m_sourceText.isEmpty()) {
+            const QFontMetrics fm(capsuleFont());
+            const int w = qMax(44, fm.horizontalAdvance(m_sourceText) + 16);
+            paintCapsule(p, QRect(chipRect().left() - 6 - w, 0, w, kChipH),
+                         m_sourceText);
+        }
+        p.setOpacity(on ? 1.0 : 0.4);
+    }
 
     // Track.
     const QRect t = trackRect();
@@ -269,6 +298,22 @@ void StudioCurveRow::setExpanded(bool expanded)
     update();
 }
 
+void StudioCurveRow::setSourceCapsule(const QString &text)
+{
+    if (m_sourceText == text)
+        return;
+    m_sourceText = text;
+    update();
+}
+
+void StudioCurveRow::setChipDimmed(bool dimmed)
+{
+    if (m_chipDimmed == dimmed)
+        return;
+    m_chipDimmed = dimmed;
+    update();
+}
+
 void StudioCurveRow::paintEvent(QPaintEvent *)
 {
     QPainter p(this);
@@ -276,8 +321,16 @@ void StudioCurveRow::paintEvent(QPaintEvent *)
     p.setPen(kTextDim);
     p.drawText(QRect(0, 0, width(), kChipH),
                Qt::AlignLeft | Qt::AlignVCenter, m_label);
+    if (m_chipDimmed)
+        p.setOpacity(0.4); // None: inert curve, still clickable (see slider)
     paintCurveChip(p, QRect(width() - kChipW, 0, kChipW, kChipH), m_curve,
                    m_expanded);
+    if (!m_sourceText.isEmpty()) {
+        const QFontMetrics fm(capsuleFont());
+        const int w = qMax(44, fm.horizontalAdvance(m_sourceText) + 16);
+        paintCapsule(p, QRect(width() - kChipW - 6 - w, 0, w, kChipH),
+                     m_sourceText);
+    }
 }
 
 void StudioCurveRow::mousePressEvent(QMouseEvent *event)
@@ -512,6 +565,15 @@ StudioChoiceRow::StudioChoiceRow(const QString &label,
     setCursor(Qt::PointingHandCursor);
 }
 
+void StudioChoiceRow::choose(int index)
+{
+    if (index < 0 || index >= m_options.size())
+        return;
+    m_index = index;
+    update();
+    emit chosen(index);
+}
+
 void StudioChoiceRow::setCurrentIndex(int index)
 {
     m_index = std::clamp(index, 0, int(m_options.size()) - 1);
@@ -587,6 +649,15 @@ StudioSegmentedRow::StudioSegmentedRow(const QString &label,
 {
     setFixedHeight(26);
     setCursor(Qt::PointingHandCursor);
+}
+
+void StudioSegmentedRow::choose(int index)
+{
+    if (index < 0 || index >= m_options.size())
+        return;
+    m_index = index;
+    update();
+    emit chosen(index);
 }
 
 void StudioSegmentedRow::setCurrentIndex(int index)
