@@ -4,8 +4,8 @@
 
 #include <QCryptographicHash>
 #include <QImage>
-#include <QPainter>
 #include <QStringDecoder>
+#include <QTextStream>
 #include <QTransform>
 #include <QVariant>
 #include <QVariantList>
@@ -56,17 +56,19 @@
 // and node count. A clear refusal is always acceptable; a crash never is.
 //
 // THE MAPPING TABLE (also emitted per brush in the import report):
-//   mapped        tip bitmap -> customShape (letterboxed into the square,
-//                 white-is-paint convention the roster's tips use; tips
-//                 larger than the engine's 2048 px ceiling are downscaled);
-//                 name; spacing; diameter; size/angle/roundness jitter;
-//                 scatter amount, axes and count; texture pattern -> custom
-//                 grain (+ scale, depth, inversion).
+//   mapped        tip bitmap -> customShape UNTRANSFORMED (letterboxed
+//                 into the square, white-is-paint convention the roster's
+//                 tips use; tips larger than the engine's 2048 px ceiling
+//                 are downscaled); the STATIC tip transform (angle,
+//                 roundness, flip X/Y) onto the engine's own tip
+//                 parameters; name; spacing; diameter; size/angle/roundness
+//                 jitter; scatter amount, axes and count; texture pattern
+//                 -> custom grain (+ scale, depth, inversion).
 //   approximated  Photoshop dynamics are a control SOURCE with a minimum —
 //                 a pressure-sourced dynamic becomes a two-point pressure
-//                 curve from minimum% to 100%; static tip angle/roundness/
-//                 flips are baked into the tip image; a computed (non-
-//                 sampled) v6 tip is synthesized as an ellipse mask.
+//                 curve from minimum% to 100%; a computed (non-sampled) v6
+//                 tip becomes the engine's PROCEDURAL tip carrying the
+//                 descriptor's hardness.
 //   dropped       wet edges; build-up/airbrush accumulation; dual brush
 //                 (Photoshop composites differently); colour dynamics;
 //                 noise; and any dynamic whose control source is fade/tilt/
@@ -783,103 +785,79 @@ QString controlName(int control)
 }
 
 // ---- Tip conversion --------------------------------------------------------
-// Coverage lives in alpha while transforming (QImage::transformed fills the
-// exposed area with transparent, never with a guessed gray), then lands in
-// the square Grayscale8 white-is-paint layout the roster's tips use.
-QImage bakeTip(const QImage &mask, double angleDeg, double roundnessPct,
-               bool flipX, bool flipY, QStringList *approximated)
+// The mask is imported UNTRANSFORMED. Photoshop's static angle, roundness
+// and flips map onto the engine's own static tip parameters (tipAngle /
+// tipRoundness / tipFlipX / tipFlipY, dynamics Phase 2) instead of being
+// flattened into the bitmap — a baked-in rotation would be rotated AGAIN
+// once direction-driven angle ships (dynamics Phase 3). This helper only
+// letterboxes into the square the engine's IgnoreAspectRatio scaling
+// expects, and downscales past the engine's 2048 px tip ceiling.
+QImage squareTip(const QImage &mask, QStringList *approximated)
 {
-    QImage argb(mask.width(), mask.height(), QImage::Format_ARGB32);
-    for (int y = 0; y < mask.height(); ++y) {
-        const uchar *src = mask.constScanLine(y);
-        QRgb *dst = reinterpret_cast<QRgb *>(argb.scanLine(y));
-        for (int x = 0; x < mask.width(); ++x)
-            dst[x] = qRgba(255, 255, 255, src[x]);
-    }
-    QTransform t;
-    if (flipX || flipY) {
-        t.scale(flipX ? -1 : 1, flipY ? -1 : 1);
-        approximated->append(QStringLiteral("tip flip baked into the image"));
-    }
-    if (roundnessPct > 0.5 && roundnessPct < 99.5) {
-        t.scale(1.0, roundnessPct / 100.0);
-        approximated->append(
-            QStringLiteral("roundness %1% baked into the tip image")
-                .arg(qRound(roundnessPct)));
-    }
-    if (std::abs(angleDeg) > 0.05) {
-        t.rotate(-angleDeg); // Photoshop angles are counter-clockwise
-        approximated->append(
-            QStringLiteral("angle %1° baked into the tip image")
-                .arg(angleDeg, 0, 'f', 1));
-    }
-    if (!t.isIdentity())
-        argb = argb.transformed(t, Qt::SmoothTransformation);
-
-    // Letterbox into the square the engine's IgnoreAspectRatio scaling
-    // expects; downscale only past the engine's own 2048 px tip ceiling.
-    int side = qMax(argb.width(), argb.height());
-    QImage square(side, side, QImage::Format_ARGB32);
-    square.fill(Qt::transparent);
-    {
-        QPainter p(&square);
-        p.drawImage((side - argb.width()) / 2, (side - argb.height()) / 2,
-                    argb);
-    }
+    int side = qMax(mask.width(), mask.height());
+    QImage square(side, side, QImage::Format_Grayscale8);
+    square.fill(0);
+    const int offsetX = (side - mask.width()) / 2;
+    const int offsetY = (side - mask.height()) / 2;
+    for (int y = 0; y < mask.height(); ++y)
+        std::memcpy(square.scanLine(y + offsetY) + offsetX,
+                    mask.constScanLine(y), size_t(mask.width()));
     if (side > kEngineTipMax) {
         approximated->append(
             QStringLiteral("tip downscaled %1 px -> %2 px (engine ceiling)")
                 .arg(side).arg(kEngineTipMax));
         square = square.scaled(kEngineTipMax, kEngineTipMax,
                                Qt::IgnoreAspectRatio,
-                               Qt::SmoothTransformation);
-        side = kEngineTipMax;
+                               Qt::SmoothTransformation)
+                     .convertToFormat(QImage::Format_Grayscale8);
     }
-    QImage out(side, side, QImage::Format_Grayscale8);
-    for (int y = 0; y < side; ++y) {
-        const QRgb *src = reinterpret_cast<const QRgb *>(
-            square.constScanLine(y));
-        uchar *dst = out.scanLine(y);
-        for (int x = 0; x < side; ++x)
-            dst[x] = uchar(qAlpha(src[x]));
-    }
-    return out;
+    return square;
 }
 
-// Computed (non-sampled) v6 tip: synthesized ellipse mask with the same
-// centre-hard/gaussian-edge falloff the engine's procedural tip uses.
-QImage synthesizeComputedTip(double hardnessPct, double roundnessPct,
-                             double angleDeg, QStringList *approximated)
+// ---- Static-transform convention conversion --------------------------------
+// Photoshop's roundness squashes the tip's LOCAL Y (a 50% round brush is a
+// wide, short ellipse); the engine's tipRoundness squashes tip-local X
+// (Phase 2's documented affine). The two are reconciled EXACTLY by a 90°
+// content pre-rotation — lossless for any image:
+//     ScaleY(r) = R(+90) * ScaleX(r) * R(-90)
+// Rotation signs: Photoshop angles are counter-clockwise positive; the
+// engine's tipAngle is clockwise positive in screen space; so without
+// roundness the mapping is simply tipAngle = -Angl. With roundness the
+// pre-rotation folds in:  tipAngle = 90 - Angl,  and the pre-rotation's
+// DIRECTION depends on flip parity, because a reflection conjugates
+// rotation (Flip * R(b) = R(-b) * Flip): one flip -> pre-rotate +90,
+// zero or two flips -> pre-rotate -90. Flips themselves map directly —
+// both Photoshop and the engine apply them to the tip BEFORE rotation.
+// Verified over every angle x roundness x flip combination against a
+// SEQUENTIALLY composed Photoshop-order reference (flip, then squash local
+// Y, then rotate — each its own resample, so no QTransform composition
+// order can be assumed). Deliberately NOT against the transform this
+// replaced: that one chained QTransform calls, which applies the rotation
+// FIRST and therefore squashed in CANVAS space, leaving angle+roundness
+// brushes about 20 degrees off Photoshop.
+struct TipMapping
 {
-    constexpr int kSide = 128; // the roster's own tip canvas size
-    QImage mask(kSide, kSide, QImage::Format_Grayscale8);
-    mask.fill(0);
-    const double hardness = std::clamp(hardnessPct / 100.0, 0.0, 1.0);
-    const double center = (kSide - 1) * 0.5;
-    const double radius = kSide * 0.5;
-    for (int y = 0; y < kSide; ++y) {
-        uchar *row = mask.scanLine(y);
-        for (int x = 0; x < kSide; ++x) {
-            const double dx = (x - center) / radius;
-            const double dy = (y - center) / radius;
-            const double dist = std::sqrt(dx * dx + dy * dy);
-            double alpha = 0.0;
-            if (dist < 1.0) {
-                if (hardness >= 0.999 || dist <= hardness)
-                    alpha = 1.0;
-                else {
-                    const double t =
-                        (dist - hardness) / (1.0 - hardness);
-                    alpha = std::exp(-3.0 * t * t) * (1.0 - t);
-                }
-            }
-            row[x] = uchar(qRound(std::clamp(alpha, 0.0, 1.0) * 255.0));
-        }
+    QImage mask;        // possibly pre-rotated by an exact 90°
+    double engineAngle; // degrees, engine (clockwise-positive) convention
+    double roundness;   // 0-1 for setTipRoundness
+};
+
+TipMapping mapStaticTransform(const QImage &mask, double angleDeg,
+                              double roundnessPct, bool flipX, bool flipY)
+{
+    TipMapping out;
+    out.mask = mask;
+    const bool squashed = roundnessPct > 0.5 && roundnessPct < 99.5;
+    out.roundness = squashed ? roundnessPct / 100.0 : 1.0;
+    if (!squashed) {
+        out.engineAngle = -angleDeg;
+        return out;
     }
-    approximated->append(QStringLiteral(
-        "computed tip synthesized (hardness %1%, engine falloff)")
-                             .arg(qRound(hardnessPct)));
-    return bakeTip(mask, angleDeg, roundnessPct, false, false, approximated);
+    const bool oddFlips = flipX != flipY;
+    out.mask = mask.transformed(
+        QTransform().rotate(oddFlips ? 90.0 : -90.0));
+    out.engineAngle = 90.0 - angleDeg;
+    return out;
 }
 
 // ---- Report assembly -------------------------------------------------------
@@ -987,21 +965,45 @@ MappedBrush buildBrush(const AbrSample *sample, const QVariantMap &desc,
         name = fallbackName;
     out.preset.name = name;
 
-    // --- Tip image ---
+    // --- Tip image + static transform ---
+    // The mask stays UNTRANSFORMED; angle, roundness and flips land on the
+    // engine's static tip parameters (see mapStaticTransform for the
+    // convention conversion). Baking is gone — dynamics Phase 3's
+    // direction-driven rotation would have rotated a baked tip twice.
     const QString tipClass =
         tip.value(QStringLiteral("_classID")).toString();
     if (sample && !sample->mask.isNull()) {
-        b.setCustomShape(bakeTip(sample->mask, angle, roundness, flipX,
-                                 flipY, &rep.approximated));
+        const TipMapping mapping = mapStaticTransform(
+            sample->mask, angle, roundness, flipX, flipY);
+        b.setCustomShape(squareTip(mapping.mask, &rep.approximated));
+        b.setTipAngle(mapping.engineAngle);
+        b.setTipRoundness(mapping.roundness);
+        b.setTipFlipX(flipX);
+        b.setTipFlipY(flipY);
         rep.mapped.append(
-            QStringLiteral("sampled tip %1x%2 (%3-bit) -> custom shape")
+            QStringLiteral("sampled tip %1x%2 (%3-bit) -> custom shape, "
+                           "untransformed")
                 .arg(sample->mask.width())
                 .arg(sample->mask.height())
                 .arg(sample->depth));
+        if (std::abs(angle) > 0.05)
+            rep.mapped.append(QStringLiteral("tip angle %1°")
+                                  .arg(angle, 0, 'f', 1));
+        if (mapping.roundness < 1.0)
+            rep.mapped.append(QStringLiteral("tip roundness %1%")
+                                  .arg(qRound(roundness)));
+        if (flipX || flipY)
+            rep.mapped.append(QStringLiteral("tip flip %1%2")
+                                  .arg(flipX ? QStringLiteral("X") : QString(),
+                                       flipY ? QStringLiteral("Y") : QString()));
     } else if (!desc.isEmpty() && !tip.isEmpty()) {
-        // Non-sampled tip flavours: computedBrush carries a hardness; the
+        // Non-sampled tip flavours use the engine's PROCEDURAL tip — its
+        // hardness falloff is the same formula the old synthesized image
+        // copied, now evaluated at stamp resolution instead of resampled
+        // from a 128 px bitmap. computedBrush carries a real hardness; the
         // bristle (dBrush) and erodible/airbrush (dTips) simulations have
-        // no engine counterpart — approximate as a simple tip and SAY SO.
+        // no engine counterpart — approximated as a simple round, and the
+        // report says so.
         if (tipClass == QLatin1String("dBrush"))
             rep.dropped.append(QStringLiteral(
                 "bristle simulation (density/length/stiffness) — tip "
@@ -1010,9 +1012,22 @@ MappedBrush buildBrush(const AbrSample *sample, const QVariantMap &desc,
             rep.dropped.append(QStringLiteral(
                 "erodible/airbrush tip simulation — tip approximated as a "
                 "simple round"));
-        b.setCustomShape(synthesizeComputedTip(
-            descNumber(tip, "Hrdn", 100.0), roundness, angle,
-            &rep.approximated));
+        const double hardnessPct = descNumber(tip, "Hrdn", 100.0);
+        b.setHardness(std::clamp(hardnessPct / 100.0, 0.0, 1.0));
+        // Procedural discs are isotropic, so the X/Y squash-axis
+        // difference vanishes: roundness and angle map directly.
+        b.setTipRoundness(roundness > 0.5 && roundness < 99.5
+                              ? roundness / 100.0 : 1.0);
+        b.setTipAngle(-angle);
+        rep.mapped.append(
+            QStringLiteral("computed tip -> procedural (hardness %1%)")
+                .arg(qRound(hardnessPct)));
+        if (roundness > 0.5 && roundness < 99.5)
+            rep.mapped.append(QStringLiteral("tip roundness %1%")
+                                  .arg(qRound(roundness)));
+        if (std::abs(angle) > 0.05)
+            rep.mapped.append(QStringLiteral("tip angle %1°")
+                                  .arg(angle, 0, 'f', 1));
     } else {
         rep.dropped.append(QStringLiteral("no tip data"));
         return out; // not importable
@@ -1226,20 +1241,71 @@ MappedBrush buildBrush(const AbrSample *sample, const QVariantMap &desc,
 
 // ---- File-level orchestration ----------------------------------------------
 
-// Deterministic identity: the id is derived from the mapped CONTENT, so
-// importing the same file twice produces the same ids and the library's
-// identity-aware import (J8) skips them instead of duplicating.
+// Deterministic identity: the id is derived from the mapped content via a
+// CANONICAL text serialisation plus the raw tip/grain pixels — deliberately
+// NOT from BrushPresetCodec::saveBrush. The codec's bytes change with every
+// wire-format bump (v1 -> v2 -> v3 already), and an id derived from them
+// silently broke re-import idempotence at each bump: the same ABR hashed to
+// a new id against the same stored brush. This fingerprint only moves when
+// the MAPPING itself changes; when it does (as in the unbake that
+// introduced it), BrushLibraryModel::importFile's upgrade path recognises
+// the same source by name and upgrades in place, keeping the stored id.
 void assignIdentity(BrushPreset &preset)
 {
+    preset.category = QStringLiteral("Imported");
+    preset.builtin = false;
+    preset.id = AbrImporter::contentId(preset);
+}
+
+} // namespace
+
+QString AbrImporter::contentId(const BrushPreset &preset)
+{
+    const ::Brush &b = preset.brush;
+    QString canon;
+    QTextStream ts(&canon);
+    ts.setRealNumberPrecision(9);
+    ts << b.size() << ';' << b.spacing() << ';' << b.opacity() << ';'
+       << b.flow() << ';' << b.hardness() << ';' << int(b.toolMode()) << ';'
+       << b.tipAngle() << ';' << b.tipRoundness() << ';' << b.tipFlipX()
+       << ';' << b.tipFlipY() << ';' << b.sizeJitter() << ';'
+       << b.angleJitter() << ';' << b.roundnessJitter() << ';'
+       << b.spacingJitter() << ';' << b.scatterAlong() << ';'
+       << b.scatterPerpendicular() << ';' << b.scatterCount() << ';'
+       << b.grainScale() << ';' << b.grainDepth() << ';'
+       << int(b.grainMode()) << ';' << int(b.grainPreset()) << ';';
+    for (int i = 0; i < ::Brush::kDynamicPropertyCount; ++i) {
+        const auto property = ::Brush::DynamicProperty(i);
+        ts << int(b.controlSource(property)) << ','
+           << b.controlMinimum(property) << ',';
+        for (const QPointF &pt :
+             b.dynamicCurve(property).controlPoints())
+            ts << pt.x() << ':' << pt.y() << ' ';
+        ts << ';';
+    }
     QCryptographicHash h(QCryptographicHash::Sha256);
     h.addData(preset.name.toUtf8());
     h.addData("\n", 1);
-    h.addData(BrushPresetCodec::saveBrush(preset.brush));
-    preset.id = QStringLiteral("user/abr-")
+    h.addData(canon.toUtf8());
+    auto addImage = [&h](const QImage &img) {
+        const QImage gray = img.convertToFormat(QImage::Format_Grayscale8);
+        h.addData(QByteArray::number(gray.width()));
+        h.addData("x", 1);
+        h.addData(QByteArray::number(gray.height()));
+        for (int y = 0; y < gray.height(); ++y)
+            h.addData(QByteArrayView(
+                reinterpret_cast<const char *>(gray.constScanLine(y)),
+                gray.width()));
+    };
+    if (b.hasCustomShape())
+        addImage(b.customShape());
+    if (b.grainPreset() == ::Brush::GrainPreset::Custom)
+        addImage(b.grainTexture());
+    return QStringLiteral("user/abr-")
         + QString::fromLatin1(h.result().toHex().left(32));
-    preset.category = QStringLiteral("Imported");
-    preset.builtin = false;
 }
+
+namespace {
 
 struct AbrParseResult
 {

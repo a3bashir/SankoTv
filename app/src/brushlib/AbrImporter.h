@@ -18,6 +18,14 @@ public:
     QVector<BrushPreset> import(const QByteArray &bytes) const override;
     QVector<BrushPreset> importWithReport(const QByteArray &bytes,
                                           QString *report) const override;
+
+    // The content-derived id ("user/abr-<sha>") an abr preset with this
+    // name and brush WOULD carry under the current mapping generation.
+    // A stored preset whose id matches its recomputation is CURRENT — the
+    // library's upgrade-on-reimport path must never claim it; a mismatch
+    // marks an older generation (or a rename), which is what the upgrade
+    // exists for.
+    static QString contentId(const BrushPreset &preset);
 };
 
 } // namespace brushlib

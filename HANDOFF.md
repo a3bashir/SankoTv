@@ -427,24 +427,26 @@ STILL OPEN, deliberately not changed (needs a product decision):
 The static tip transform landed in dynamics Phase 2 — TWO items for later
 phases (2026-08-08):
 
-1. PHASE 5 MUST STOP THE ABR IMPORTER BAKING STATIC TRANSFORMS. The
-   importer flattens Photoshop's static angle, roundness and flips into the
-   tip BITMAP because the engine had no static transform when it was
-   written. The exact path, in app/src/brushlib/AbrImporter.cpp:
-   - bakeTip() (~line 789) applies roundness (QTransform::scale), angle
-     (QTransform::rotate) and flips to the sampled mask;
-   - buildBrush() calls it for sampled tips (~line 994, passing the desc's
-     Angl/Rndn/flipX/flipY) and via synthesizeComputedTip() (~line 882);
-   the report lines say "baked into the tip image".
-   The engine now has Brush::setTipAngle / setTipRoundness / setTipFlipX /
-   setTipFlipY (wire v3), so Phase 5 must map the descriptor values to
-   those fields and import the UNTRANSFORMED mask. This matters before
-   Phase 3 ships: once direction drives the rotation term, a baked-in
-   rotation would be rotated AGAIN at runtime — a visible defect. Note the
-   remap changes imported brushes' content-derived ids (user/abr-<sha> over
-   the serialised brush), so previously imported brushes will re-import as
-   new presets rather than being recognised — decide whether Phase 5
-   should migrate or accept that.
+1. DISCHARGED (2026-08-08, the ABR unbake): the importer no longer bakes
+   static transforms. Angl/Rndn/flipX/flipY map onto tipAngle /
+   tipRoundness / tipFlipX / tipFlipY; the mask imports untransformed;
+   computed tips use the engine's procedural tip with the descriptor's
+   hardness. Two conversion facts worth keeping: the engine's tipRoundness
+   squashes tip-local X while Photoshop squashes Y, reconciled by an EXACT
+   90-degree content pre-rotation whose direction follows flip parity
+   (mapStaticTransform in AbrImporter.cpp documents the algebra); and the
+   OLD bake had an order defect — chained QTransform calls applied the
+   rotation FIRST, squashing in canvas space, so angle+roundness brushes
+   were ~20 degrees off Photoshop's squash-then-rotate order. The new
+   mapping is verified against a sequentially-composed Photoshop-order
+   reference (axis within 0.3 degrees, moment aspect within 8%).
+   Identity now fingerprints canonical content (name + params + raw tip
+   pixels), not codec bytes — codec-byte ids silently broke re-import
+   idempotence at every wire bump. Old-generation imported presets keep
+   their stored ids; re-importing the same ABR upgrades them IN PLACE by
+   name (disk-first), preserving favourites/Recent/hidden, and the
+   upgrade never claims a current-generation preset (its id recomputes to
+   itself), so same-named brushes from different packs stay distinct.
 
 2. PRE-EXISTING CPU/GPU DIVERGENCE: ROTATED OR COMPRESSED CUSTOM TIPS. The
    CPU reference samples the bucket-rescaled tip (Brush::shape's cached
@@ -463,3 +465,10 @@ phases (2026-08-08):
    texture uploads), or make both sample the original. Soft tips hide it;
    hard-edged imported ABR tips at fixed angles will show it as a subtle
    GPU-vs-preview edge difference.
+   MEASURED ON THE IMPORTED CORPUS after the unbake (2026-08-08): the 29
+   brushes whose mapping changed (static transforms now runtime, computed
+   tips now procedural) render 29-255/255 from their baked-era previews at
+   preview size — expected and explained per brush; the OTHER 129 corpus
+   presets render byte-identical. The divergence entry above still stands
+   as engine-quality work; imported brushes with static angle/roundness on
+   hard-edged tips are now the likeliest place a user meets it.

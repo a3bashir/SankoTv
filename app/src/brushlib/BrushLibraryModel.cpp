@@ -10,11 +10,13 @@
 #include <QDir>
 #include <QFile>
 #include <QSaveFile>
+#include <QSet>
 #include <QSettings>
 #include <QStandardPaths>
 #include <QUuid>
 
 #include <algorithm>
+#include <utility>
 
 namespace brushlib {
 namespace {
@@ -440,6 +442,21 @@ int BrushLibraryModel::importFile(const QString &path, QString *report)
         for (BrushPreset &incoming : presets)
             if (incoming.category == QLatin1String("Watercolor"))
                 incoming.category = QStringLiteral("Painting"); // retired cat
+        // ABR presets that existed BEFORE this import AND belong to an
+        // OLDER mapping generation — their stored id no longer matches the
+        // id their content would fingerprint to today (the baked era, or a
+        // future field addition). Only those are upgrade candidates; a
+        // CURRENT-generation preset whose id recomputes to itself is
+        // simply a different brush that may happen to share a name, and
+        // the upgrade path must never claim it (two packs both containing
+        // an "Imported Brush 1" stay two brushes). Each candidate can be
+        // claimed at most once, and never one added by this same call.
+        QSet<QString> upgradableAbr;
+        for (const BrushPreset &existing : m_presets)
+            if (!existing.builtin
+                && existing.id.startsWith(QStringLiteral("user/abr-"))
+                && AbrImporter::contentId(existing) != existing.id)
+                upgradableAbr.insert(existing.id);
         for (const BrushPreset &p : presets) {
             const int existingIdx = m_byId.value(p.id, -1);
             if (p.builtin && existingIdx >= 0
@@ -454,6 +471,64 @@ int BrushLibraryModel::importFile(const QString &path, QString *report)
             }
             if (!p.builtin && existingIdx >= 0)
                 continue; // known user preset: local version wins
+            // ABR IDENTITY ACROSS MAPPING GENERATIONS. An imported brush's
+            // id fingerprints its MAPPED content, so when the mapping
+            // itself improves (the unbake that moved static transforms
+            // into tip parameters; any future field addition) the same
+            // source ABR produces a new id. Recognise the same source
+            // instead of duplicating it:
+            //   byte-equal brush among existing abr presets -> SKIP
+            //     (already imported under the current mapping);
+            //   same NAME among abr presets that predate this call ->
+            //     UPGRADE IN PLACE via updateBrush (disk-first, D3),
+            //     KEEPING the stored id — favourites, Recent entries and
+            //     hidden flags keep pointing at the brush they always
+            //     pointed at.
+            // A rename breaks the name link (same as the old id scheme,
+            // where the name was hashed into the id): the re-import then
+            // lands as a new preset beside the renamed one.
+            if (p.id.startsWith(QStringLiteral("user/abr-"))) {
+                bool handled = false;
+                const QByteArray incomingBytes =
+                    BrushPresetCodec::saveBrush(p.brush);
+                for (const BrushPreset &existing : m_presets)
+                    if (!existing.builtin
+                        && existing.id.startsWith(
+                            QStringLiteral("user/abr-"))
+                        && existing.name == p.name // same-content brushes
+                        && BrushPresetCodec::saveBrush(existing.brush)
+                            == incomingBytes) { // under other names coexist
+                        handled = true; // identical content already here
+                        break;
+                    }
+                if (!handled) {
+                    // Pick the candidate BEFORE touching the set: the
+                    // upgrade both mutates upgradableAbr and (through
+                    // updateBrush) m_presets, neither of which may happen
+                    // while iterating them.
+                    QString claim;
+                    for (const QString &id :
+                         std::as_const(upgradableAbr)) {
+                        const BrushPreset *existing = preset(id);
+                        if (existing && existing->name == p.name) {
+                            claim = id;
+                            break;
+                        }
+                    }
+                    if (!claim.isEmpty()) {
+                        upgradableAbr.remove(claim); // claimed once
+                        // A FAILED upgrade still counts as handled: the
+                        // preset stays exactly as it was on disk and in
+                        // memory (D3), and must not also be added as a
+                        // duplicate.
+                        if (updateBrush(claim, p.brush))
+                            ++applied;
+                        handled = true;
+                    }
+                }
+                if (handled)
+                    continue;
+            }
             BrushPreset copy = p;
             copy.builtin = false;
             if (p.builtin || p.id.isEmpty()
