@@ -526,7 +526,27 @@ QImage StrokeBuilder::shapedTipForStamp(const StrokeStamp &stamp) const
     //                 angle this differs visibly from flipping after.
     // Nothing bakes into the cached base tip: the cache stays keyed on
     // bucketed (size, hardness) only.
-    const QImage &baseTip = m_brush.shape(stamp.effectiveSize, stamp.effectiveHardness);
+    //
+    // SAME-SOURCE SAMPLING (the custom-tip CPU/GPU divergence fix). A
+    // custom tip is sampled from the ORIGINAL mask — the very image the
+    // GPU uploads — not from shape()'s bucket-rescaled copy. The two
+    // chains used to be
+    //     CPU: original -> SmoothTransformation rescale -> bilinear
+    //     GPU: original -> bilinear (shader)
+    // which agree at identity but diverge along hard edges once rotated
+    // or compressed (corpus worst 171/255; 81/255 from angle jitter alone
+    // with no statics). Procedural tips never diverged because NEITHER
+    // path samples an image for them — both evaluate the same analytic
+    // falloff — and that is exactly the property this restores for custom
+    // tips: one source image, one filtering, on both paths. The sample
+    // coordinates below are normalised [0,1], so no affine change is
+    // needed for the missing rescale; resolution only enters at the texel
+    // lookup, which now matches the shader's texel-center convention on
+    // the same pixels. shape() and its bucket cache still serve the
+    // procedural branch's per-stamp call unchanged.
+    const QImage &baseTip = m_brush.hasCustomShape()
+        ? m_brush.customShape()
+        : m_brush.shape(stamp.effectiveSize, stamp.effectiveHardness);
     const qreal tiltMagnitude = std::hypot(stamp.point.tiltX, stamp.point.tiltY);
     const bool applyTilt = m_brush.tiltAffectsShape() && tiltMagnitude > 0.01;
     const bool applyRotation = m_brush.rotationAffectsShape()
