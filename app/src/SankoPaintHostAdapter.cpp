@@ -28,7 +28,7 @@ QImage cpuSource(const QRect &region, const Brush &brush,
     if (brush.usesColorStrokeBuffer()) {
         for (StrokeStamp &stamp : stamps)
             stamp.point.position -= region.topLeft();
-        return ColorStrokeBuffer::composite(transparent, brush, stamps);
+        return ColorStrokeBuffer::composite(transparent, brush, stamps, slot);
     }
     StrokeBuilder rebuilt(region.size(), brush, true, seed, slot);
     for (StrokePoint point : rawPoints) {

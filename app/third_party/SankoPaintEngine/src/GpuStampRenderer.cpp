@@ -944,6 +944,19 @@ GpuStampRenderer::Result GpuStampRenderer::renderStrokeInternal(
         color[2] = float(brushColor.blueF());
         color[3] = float(brushColor.alphaF());
         *reinterpret_cast<qint32 *>(publicationUniforms.data() + 80) = 0;
+        // Wet edges (Phase 6a): per-stroke transfer at this publication
+        // boundary, mirroring StrokeBuilder::publishMask8. The mask stores
+        // alpha scaled by opacity, so the ceiling is the base opacity.
+        // Suppressed while smudging and under the dual brush (the dual
+        // publication shader is untouched in 6a).
+        {
+            float *wet = reinterpret_cast<float *>(
+                publicationUniforms.data() + 84);
+            wet[0] = float((brush.smudgeActive() || brush.dualBrushEnabled())
+                               ? 0.0
+                               : brush.wetEdges());
+            wet[1] = float(brush.opacity());
+        }
         publicationUpdates->updateDynamicBuffer(
             publicationUniformBuffer.get(), 0, publicationUniforms.size(),
             publicationUniforms.constData());
@@ -1368,6 +1381,17 @@ GpuStampRenderer::Result GpuStampRenderer::renderColorStrokeInternal(
             ? 1.0 : brushColor.alphaF()));
         *reinterpret_cast<qint32 *>(publicationUniforms.data() + 80) =
             m_rhi->backend() == QRhi::D3D11 ? 1 : 2;
+        // Wet edges: the colour buffer stores NORMALISED coverage (opacity
+        // multiplies inside the shader), so the ceiling is 1 — mirroring
+        // ColorStrokeBuffer::composite.
+        {
+            float *wet = reinterpret_cast<float *>(
+                publicationUniforms.data() + 84);
+            wet[0] = float((brush.smudgeActive() || brush.dualBrushEnabled())
+                               ? 0.0
+                               : brush.wetEdges());
+            wet[1] = 1.0f;
+        }
         publicationUpdates->updateDynamicBuffer(
             publicationUniformBuffer.get(), 0, publicationUniforms.size(),
             publicationUniforms.constData());

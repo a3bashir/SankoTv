@@ -1,6 +1,7 @@
 #include "ColorStrokeBuffer.h"
 
 #include "GrainField.h"
+#include "WetEdges.h"
 #include "TiledImage.h"
 
 #include <QPainter>
@@ -13,7 +14,8 @@ int byteRound(qreal value) { return qBound(0, qRound(value * 255.0), 255); }
 }
 
 QImage ColorStrokeBuffer::composite(const QImage &input, const Brush &brush,
-                                    const QVector<StrokeStamp> &stamps)
+                                    const QVector<StrokeStamp> &stamps,
+                                    quint32 subBrushSlot)
 {
     QImage output = input.convertToFormat(QImage::Format_ARGB32);
     TiledImage accumulator(QImage::Format_RGBA64);
@@ -79,6 +81,18 @@ QImage ColorStrokeBuffer::composite(const QImage &input, const Brush &brush,
         }
     }
 
+    // Wet edges: per-STROKE transfer at this publication boundary, the
+    // colour-path twin of StrokeBuilder::publishMask8 and of the
+    // colorStrokeBuffer branch in publish.frag. The buffer stores coverage
+    // NORMALISED (opacity multiplies below), so the ceiling is 1. Inert
+    // while smudging; the dual path composites through its own untouched
+    // shader, so cpu dual sub-strokes never reach this function with wet
+    // applied (see SankoPaintHostAdapter::cpuSource routing).
+    const qreal wetPublish =
+        (brush.smudgeActive() || brush.dualBrushEnabled()
+         || subBrushSlot != 0)
+        ? 0.0
+        : brush.wetEdges();
     for (auto it = accumulator.allocatedTiles().cbegin();
          it != accumulator.allocatedTiles().cend(); ++it) {
         const QRect tileRect = TiledImage::tileLayerRect(it.key()).intersected(output.rect());
@@ -93,7 +107,13 @@ QImage ColorStrokeBuffer::composite(const QImage &input, const Brush &brush,
                 if (normalized <= 0.0) continue;
                 const qreal colorAlpha = brush.smudgeActive()
                     ? 1.0 : brush.color().alphaF();
-                const qreal sa = byteRound(normalized * brush.opacity() * colorAlpha) / 255.0;
+                // Colour recovery below divides by the ORIGINAL coverage
+                // (the stored colour is premultiplied by it); only the
+                // published ALPHA takes the wet transfer.
+                const qreal published = wetPublish > 0.0
+                    ? wetEdgesAlpha(normalized, 1.0, wetPublish)
+                    : normalized;
+                const qreal sa = byteRound(published * brush.opacity() * colorAlpha) / 255.0;
                 const QRgb old = destination[x];
                 const qreal da = qAlpha(old) / 255.0;
                 const qreal oa = sa + da * (1.0 - sa);

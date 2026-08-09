@@ -71,6 +71,9 @@ public:
     QImage previewImage() const { return m_previewTiles.toImage(); }
     const TiledImage &previewTiles() const { return m_previewTiles; }
     QImage compositeOnto(const QImage &destination) const;
+    // UNORM16 stroke mask -> published 8-bit tile, applying the wet-edges
+    // transfer at this single publication boundary (see WetEdges.h).
+    QImage publishMask8(const QImage &source) const;
     QImage shapedTipForStamp(const StrokeStamp &stamp) const;
 
     static QVector<StrokePoint> smoothPath(const QVector<StrokePoint> &points, int radius = 2);

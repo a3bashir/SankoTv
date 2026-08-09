@@ -2,6 +2,7 @@ qt_add_library(SankoPaintEngine STATIC
     src/Brush.cpp
     src/Brush.h
     src/GrainField.h
+    src/WetEdges.h
     src/BrushEngineIntegration.cpp
     src/BrushEngineIntegration.h
     src/ColorStrokeBuffer.cpp

@@ -1170,6 +1170,25 @@ QWidget *BrushSettingsStudio::buildMixingSection()
             scopeBrushConst().toolMode() == ::Brush::ToolMode::Paint ? 0
                                                                      : 1);
     });
+    // Wet Edges (Phase 6a): a bare row — no source, no minimum, no curve
+    // chip — the same treatment the static tip fields received, which is
+    // what visually signals "not a dynamic": it is a per-stroke transfer
+    // at the publication boundary, so there is no per-stamp value a
+    // control source could drive. Addendum entry to the approved mapping
+    // table; Mixing hosts it because wetness is paint-liquidity behaviour,
+    // beside the Paint/Smudge mode it is gated by.
+    StudioSlider *wetRow = addSlider(
+        l, QStringLiteral("Wet Edges"), 0.0, 1.0,
+        [](const ::Brush &b) { return b.wetEdges(); },
+        [](::Brush &b, double v) { b.setWetEdges(v); }, fmtPercent, false);
+    l->addWidget(makeCaption(QStringLiteral(
+        "Wet edges pools paint toward the stroke's rim, like watercolour. "
+        "It needs a soft tip to show a ring, and is inert while smudging.")));
+    m_syncers.append([this, wetRow] {
+        wetRow->setEnabled(scopeBrushConst().toolMode()
+                           == ::Brush::ToolMode::Paint);
+    });
+
     StudioSlider *strength = addSlider(
         l, QStringLiteral("Smudge Strength"), 0.0, 1.0,
         [](const ::Brush &b) { return b.smudgeStrength(); },

@@ -9,11 +9,23 @@ layout(std140, binding = 0) uniform Globals {
     mat4 clipMatrix;
     vec4 brushColor;
     int colorStrokeBuffer;
+    float wetEdges;   // 0 = off; per-stroke rim pooling at THIS boundary
+    float wetCeiling; // mask path: brush opacity; colour path: 1.0
 };
 
 float byteRound(float value)
 {
     return floor(clamp(value, 0.0, 1.0) * 255.0 + 0.5) / 255.0;
+}
+
+// The CPU implementation is wetEdgesAlpha in WetEdges.h — line for line.
+// Applied to the ACCUMULATED stroke coverage, once per stroke, before the
+// byte quantisation both paths share. out <= alpha always, so the flow
+// opacity ceiling cannot be exceeded.
+float wetEdgesAlpha(float alpha)
+{
+    float cRel = clamp(alpha / max(wetCeiling, 0.0001), 0.0, 1.0);
+    return alpha * (1.0 - wetEdges * cRel * cRel);
 }
 
 void main()
@@ -26,15 +38,24 @@ void main()
     vec3 sourceColor;
     if (colorStrokeBuffer != 0) {
         float normalizedCoverage = stroke.a;
-        sourceAlpha = byteRound(normalizedCoverage * brushColor.a);
+        // Colour recovery divides by the ORIGINAL coverage (the stored
+        // colour is premultiplied by it); only the published ALPHA takes
+        // the wet transfer — mirroring ColorStrokeBuffer::composite.
+        float published = wetEdges > 0.0
+            ? wetEdgesAlpha(normalizedCoverage) : normalizedCoverage;
+        sourceAlpha = byteRound(published * brushColor.a);
         // Shader sampling is logical RGBA on every QRhi backend. Native BGRA
         // ordering only applies to CPU staging readback, not this GPU pass.
         vec3 storedColor = stroke.rgb;
         sourceColor = normalizedCoverage > 0.0
             ? clamp(storedColor / normalizedCoverage, 0.0, 1.0) : vec3(0.0);
     } else {
-        // Match the CPU path's single UNORM16 -> byte publication boundary.
-        float maskByte = byteRound(stroke.r);
+        // Match the CPU path's single UNORM16 -> byte publication boundary
+        // (StrokeBuilder::publishMask8: transfer first, then the byte).
+        float s = stroke.r;
+        if (wetEdges > 0.0)
+            s = wetEdgesAlpha(s);
+        float maskByte = byteRound(s);
         sourceAlpha = maskByte * brushColor.a;
         sourceColor = brushColor.rgb;
     }

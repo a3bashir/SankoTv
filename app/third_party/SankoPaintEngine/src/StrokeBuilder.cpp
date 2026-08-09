@@ -1,5 +1,6 @@
 #include "StrokeBuilder.h"
 #include "PixelCompositor.h"
+#include "WetEdges.h"
 
 #include <QColor>
 #include <QLineF>
@@ -478,6 +479,15 @@ void StrokeBuilder::placeStamp(const StrokeStamp &stamp)
     // every byte exactly as before.
     const bool grainActive =
         stamp.effectiveGrainDepth > 0.0 && !m_grainField.isNull();
+    // The live CPU preview publishes per touched pixel; wet edges applies
+    // to it pointwise on the ACCUMULATED value (alpha only grows, so a
+    // pixel's preview is always recomputed from its current total) — same
+    // per-stroke rule as publishMask8, zero when suppressed there.
+    const qreal wetPublish = (m_brush.smudgeActive()
+                              || m_brush.dualBrushEnabled()
+                              || m_subBrushSlot != 0)
+        ? 0.0
+        : m_brush.wetEdges();
     // Rolling grain anchors to the stamp AS DRAWN: the raster centre after
     // the integer footprint quantisation above, which is byte-for-byte the
     // centre both GPU instance builders pass ("match the reference
@@ -529,7 +539,13 @@ void StrokeBuilder::placeStamp(const StrokeStamp &stamp)
                 if (combinedAlpha != destination[localX]) {
                     destination[localX] = combinedAlpha;
                     const QColor color = m_brush.color();
-                    const int previewAlpha = qRound(unorm16To8(combinedAlpha) * color.alphaF());
+                    int shownByte = unorm16To8(combinedAlpha);
+                    if (wetPublish > 0.0)
+                        shownByte = qBound(0, qRound(
+                            wetEdgesAlpha(combinedAlpha / 65535.0,
+                                          m_brush.opacity(), wetPublish)
+                            * 255.0), 255);
+                    const int previewAlpha = qRound(shownByte * color.alphaF());
                     preview[localX] = qPremultiply(qRgba(color.red(), color.green(), color.blue(), previewAlpha));
                 }
             }
@@ -656,7 +672,7 @@ QImage StrokeBuilder::compositeOnto(const QImage &destination) const
 
     for (auto tile = m_strokeMask.allocatedTiles().constBegin();
          tile != m_strokeMask.allocatedTiles().constEnd(); ++tile) {
-        const QImage publishedMask = grayscale16To8(tile.value());
+        const QImage publishedMask = publishMask8(tile.value());
         PixelCompositor::compositeGrayscaleTile(
             output, TiledImage::tileLayerRect(tile.key()).topLeft(), publishedMask,
             m_brush.color());
@@ -667,5 +683,37 @@ QImage StrokeBuilder::compositeOnto(const QImage &destination) const
 QImage StrokeBuilder::strokeMask() const
 {
     const QImage source = m_strokeMask.toImage();
-    return grayscale16To8(source);
+    return publishMask8(source);
+}
+
+QImage StrokeBuilder::publishMask8(const QImage &source) const
+{
+    // Wet edges is a per-STROKE transfer on the accumulated mask, applied
+    // exactly here — the same publication boundary publish.frag owns on
+    // the GPU. Inert while smudging (the mixer drags paint, it does not
+    // deposit a rim) and, in 6a, while the dual brush renders (the dual
+    // publication shader is untouched, so the CPU must not apply what the
+    // GPU will not — dual composition is 6b's scope). The mask stores
+    // alpha already scaled by opacity, so the coverage ceiling is the
+    // brush's base opacity — per-stamp effectiveOpacity never exceeds it.
+    const qreal wet = (m_brush.smudgeActive() || m_brush.dualBrushEnabled()
+                       || m_subBrushSlot != 0)
+        ? 0.0
+        : m_brush.wetEdges();
+    if (wet <= 0.0)
+        return grayscale16To8(source); // pre-6a path, bit-identical
+    const qreal ceiling = m_brush.opacity();
+    QImage output(source.size(), QImage::Format_Grayscale8);
+    output.fill(0);
+    for (int y = 0; y < source.height(); ++y) {
+        const quint16 *input =
+            reinterpret_cast<const quint16 *>(source.constScanLine(y));
+        uchar *destination = output.scanLine(y);
+        for (int x = 0; x < source.width(); ++x) {
+            const qreal v =
+                wetEdgesAlpha(input[x] / 65535.0, ceiling, wet);
+            destination[x] = uchar(qBound(0, qRound(v * 255.0), 255));
+        }
+    }
+    return output;
 }

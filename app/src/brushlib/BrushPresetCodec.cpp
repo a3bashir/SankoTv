@@ -28,7 +28,7 @@ constexpr quint32 kPresetMagic = 0x534E4B50; // "SNKP"
 //       files land on the default 256; the field is only read when a
 //       control source is Fade, which no pre-v4 file can have set to a
 //       distance other than the default anyway.
-constexpr quint16 kVersion = 4;
+constexpr quint16 kVersion = 5;
 constexpr quint16 kMinReadVersion = 1;
 
 // A fixed QDataStream version pins the wire format independently of the Qt
@@ -247,6 +247,14 @@ void walkBrush(::Brush &b, V &v, quint16 wireVersion, int depth = 0)
     if (wireVersion >= 4) {
         v.field([&] { return b.fadeDistance(); },
                 [&](qreal x) { b.setFadeDistance(x); });
+    }
+    // v5: wet edges (Phase 6a). Before the dual-brush branch, as with
+    // every versioned block, so the secondary carries its own copy. A v4
+    // or older file has no field; the fresh Brush defaults to 0.0 — off,
+    // its exact pre-6a behaviour.
+    if (wireVersion >= 5) {
+        v.field([&] { return b.wetEdges(); },
+                [&](qreal x) { b.setWetEdges(x); });
     }
     // Secondary brush: one level deep, exactly like the engine renders it
     // (primary slot 0 + secondary slot 1). A disabled dual brush serialises

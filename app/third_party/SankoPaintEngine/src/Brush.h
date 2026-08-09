@@ -124,6 +124,14 @@ public:
     void setGrainRotation(qreal degrees);
     GrainMode grainMode() const { return m_grainMode; }
     void setGrainMode(GrainMode mode) { m_grainMode = mode; }
+    // Wet edges (Phase 6a): pools paint toward the stroke's rim like
+    // watercolour. An AMOUNT, not Photoshop's checkbox: 0 = off (the
+    // default; bit-identical to the pre-6a engine), ~0.6 reads like the
+    // Photoshop toggle, 1 = pure ring. Applied ONCE per stroke at the
+    // publication boundary on the ACCUMULATED coverage — never per stamp —
+    // and inert while smudging and (in 6a) while the dual brush is on.
+    qreal wetEdges() const { return m_wetEdges; }
+    void setWetEdges(qreal amount);
     bool grainAffectsColor() const { return m_grainAffectsColor; }
     void setGrainAffectsColor(bool enabled) { m_grainAffectsColor = enabled; }
     GrainPreset grainPreset() const { return m_grainPreset; }
@@ -273,6 +281,7 @@ private:
     qreal m_roundnessJitter = 0.0;
     qreal m_spacingJitter = 0.0;
     qreal m_grainScale = 96.0;
+    qreal m_wetEdges = 0.0; // 0 = off; publication-boundary rim pooling
     qreal m_grainDepth = 0.0;
     qreal m_grainContrast = 1.0;
     qreal m_grainRotation = 0.0;
