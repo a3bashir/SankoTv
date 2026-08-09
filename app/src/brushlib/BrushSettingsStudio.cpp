@@ -857,6 +857,21 @@ QWidget *BrushSettingsStudio::buildStrokeSection()
               [](const ::Brush &b) { return double(b.scatterCount()); },
               [](::Brush &b, double v) { b.setScatterCount(qRound(v)); },
               fmtCount, false, 1.0);
+    // Build-up (Phase 6b): a bare row — not a dynamic. It is the TIME
+    // cadence of stamp emission (the wall-clock twin of Spacing, which is
+    // why it lives beside it in Stroke): the walk consumes it BETWEEN
+    // stamps, where no per-stamp resolved value exists for a control
+    // source to drive. The deposit of each emitted stamp already responds
+    // to pressure through the Flow and Opacity dynamics.
+    addSlider(l, QStringLiteral("Build-up"), 0.0, 1.0,
+              [](const ::Brush &b) { return b.buildUp(); },
+              [](::Brush &b, double v) { b.setBuildUp(v); }, fmtPercent,
+              false);
+    l->addWidget(makeCaption(QStringLiteral(
+        "Build-up keeps depositing while the pen is held still, like an "
+        "airbrush — at full amount, sixty stamps a second. Most visible "
+        "with Flow below 100%.")));
+
     addCurveRow(l, QStringLiteral("Scatter Dynamics"),
                 [](::Brush &b) -> PressureCurve & {
                     return b.scatterPressureCurve();

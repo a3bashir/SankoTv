@@ -117,6 +117,7 @@ private:
                                     qreal headingDegrees);
     static qreal localSpacing(const StrokeStamp &stamp, const Brush &brush);
     qreal appendStampGroup(const StrokePoint &point, const QPointF &direction);
+    void appendTimeStamps(const StrokePoint &a, const StrokePoint &b);
     void appendSmoothedPoint(const StrokePoint &point);
     void appendSegment(const StrokePoint &a, const StrokePoint &b);
     void placeStamp(const StrokeStamp &stamp);
@@ -132,6 +133,11 @@ private:
     TiledImage m_previewTiles{QImage::Format_ARGB32_Premultiplied};
     QRect m_affectedRect;
     qreal m_distanceToNextStamp = 0.0;
+    // Build-up: the timestamp (ms, qreal for sub-ms carry) of the most
+    // recent emitted stamp of ANY kind — the time-walk's twin of
+    // m_distanceToNextStamp. Time stamps fire at lastStamp + k*period, a
+    // sequence independent of how events subdivide the hold.
+    qreal m_lastStampTimeMs = -1.0;
     DynamicWalkState m_walk;
     quint64 m_seed = 0;
     quint64 m_nextStampIndex = 0;

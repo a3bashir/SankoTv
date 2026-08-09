@@ -52,6 +52,7 @@ void StrokeBuilder::reset(const QSize &canvasSize, const Brush &brush,
     m_strokeMask.reset(canvasSize);
     m_previewTiles.reset(canvasSize);
     m_distanceToNextStamp = 0.0;
+    m_lastStampTimeMs = -1.0;
     m_walk = DynamicWalkState();
     m_seed = seed;
     m_subBrushSlot = subBrushSlot;
@@ -375,6 +376,14 @@ QVector<StrokeStamp> StrokeBuilder::resamplePath(const QVector<StrokePoint> &poi
                                        subBrushSlot, src, headingDegrees));
         return result.at(first);
     };
+    // Build-up bookkeeping mirrors the incremental walk exactly (see
+    // appendTimeStamps): a unified emission clock reset by every stamp,
+    // emission times at lastStamp + k*period, the same one-second
+    // catch-up cap, and the same non-monotonic-timestamp behaviour.
+    qreal lastStampTimeMs = qreal(points.first().timestamp);
+    const bool buildUpActive = brush.buildUp() > 0.0;
+    const qreal periodMs = buildUpActive
+        ? 1000.0 / (60.0 * brush.buildUp()) : 0.0;
     StrokeStamp spacingStamp = appendGroup(points.first(), QPointF(1.0, 0.0));
     if (points.size() == 1)
         return result;
@@ -384,17 +393,38 @@ QVector<StrokeStamp> StrokeBuilder::resamplePath(const QVector<StrokePoint> &poi
         const StrokePoint &a = points.at(i - 1);
         const StrokePoint &b = points.at(i);
         const qreal segmentLength = QLineF(a.position, b.position).length();
-        if (segmentLength <= 0.000001)
-            continue;
-        qreal consumed = 0.0;
-        while (segmentLength - consumed + 1e-9 >= distanceToNext) {
-            consumed += distanceToNext;
-            const StrokePoint sample = interpolate(a, b, consumed / segmentLength);
-            const QPointF direction = b.position - a.position;
-            spacingStamp = appendGroup(sample, direction);
-            distanceToNext = localSpacing(spacingStamp, brush);
+        if (segmentLength > 0.000001) {
+            qreal consumed = 0.0;
+            while (segmentLength - consumed + 1e-9 >= distanceToNext) {
+                consumed += distanceToNext;
+                const StrokePoint sample = interpolate(a, b, consumed / segmentLength);
+                const QPointF direction = b.position - a.position;
+                spacingStamp = appendGroup(sample, direction);
+                lastStampTimeMs = qreal(sample.timestamp);
+                distanceToNext = localSpacing(spacingStamp, brush);
+            }
+            distanceToNext -= segmentLength - consumed;
         }
-        distanceToNext -= segmentLength - consumed;
+        if (buildUpActive) {
+            const qreal bTime = qreal(b.timestamp);
+            if (bTime - lastStampTimeMs > 1000.0 + periodMs)
+                lastStampTimeMs = bTime - 1000.0;
+            const qreal aTime = qreal(a.timestamp);
+            const qreal span = bTime - aTime;
+            while (bTime - lastStampTimeMs >= periodMs) {
+                const qreal emitTime = lastStampTimeMs + periodMs;
+                const qreal t = span > 0.000001
+                    ? std::clamp((emitTime - aTime) / span, 0.0, 1.0)
+                    : 1.0;
+                StrokePoint sample = interpolate(a, b, t);
+                sample.timestamp = quint64(qMax<qreal>(0.0, emitTime));
+                spacingStamp = appendGroup(
+                    sample, span > 0.000001 && b.position != a.position
+                                ? b.position - a.position
+                                : QPointF(0.0, 0.0));
+                lastStampTimeMs = emitTime;
+            }
+        }
     }
     return result;
 }
@@ -409,6 +439,55 @@ void StrokeBuilder::appendSmoothedPoint(const StrokePoint &point)
     const StrokePoint previous = m_smoothedPoints.constLast();
     m_smoothedPoints.append(point);
     appendSegment(previous, point);
+    appendTimeStamps(previous, point);
+}
+
+// BUILD-UP (Phase 6b): time-driven stamps, the wall-clock twin of the
+// distance walk — and deliberately NOT a fourth per-event smoother. The
+// walk consumes the RECORDED per-point timestamps (QInputEvent
+// timestamps, already in every StrokePoint and in the replay snapshot),
+// never the live clock, so undo/redo, QuickShape replay, previews and
+// both renderers reproduce a stroke exactly. Emission times form the
+// sequence lastStamp + k*period: a hold delivered as 200 events or as 60
+// composes to the SAME stamps, the algebraic property Phase 3's
+// distance-constant heading smoothing established for geometry.
+void StrokeBuilder::appendTimeStamps(const StrokePoint &a,
+                                     const StrokePoint &b)
+{
+    if (m_brush.buildUp() <= 0.0)
+        return; // build-up off: the walk is bit-identical to pre-6b
+    if (m_lastStampTimeMs < 0.0)
+        return;
+    // 60 stamps/second at full amount; slower proportionally below it.
+    const qreal periodMs = 1000.0 / (60.0 * m_brush.buildUp());
+    // Timestamps are not guaranteed monotonic across devices: a step
+    // backwards simply emits nothing. A huge forward gap (an app stall, a
+    // clock glitch) is capped at one second of catch-up so a stroke can
+    // never explode into thousands of stamps from one event.
+    const qreal bTime = qreal(b.timestamp);
+    if (bTime - m_lastStampTimeMs > 1000.0 + periodMs)
+        m_lastStampTimeMs = bTime - 1000.0;
+    const qreal aTime = qreal(a.timestamp);
+    const qreal span = bTime - aTime;
+    while (bTime - m_lastStampTimeMs >= periodMs) {
+        const qreal emitTime = m_lastStampTimeMs + periodMs;
+        // Position the stamp on the segment at its emission TIME — for a
+        // stationary hold that is simply the held position; for a slow
+        // drag the time stamps land between the distance stamps.
+        const qreal t = span > 0.000001
+            ? std::clamp((emitTime - aTime) / span, 0.0, 1.0)
+            : 1.0;
+        StrokePoint sample = interpolate(a, b, t);
+        sample.timestamp = quint64(qMax<qreal>(0.0, emitTime));
+        appendStampGroup(sample,
+                         span > 0.000001 && b.position != a.position
+                             ? b.position - a.position
+                             : QPointF(0.0, 0.0));
+        // appendStampGroup set m_lastStampTimeMs to the ROUNDED sample
+        // timestamp; restore the exact emission time so the cadence
+        // carries sub-millisecond phase without drift.
+        m_lastStampTimeMs = emitTime;
+    }
 }
 
 void StrokeBuilder::appendSegment(const StrokePoint &a, const StrokePoint &b)
@@ -427,6 +506,11 @@ void StrokeBuilder::appendSegment(const StrokePoint &a, const StrokePoint &b)
 
 qreal StrokeBuilder::appendStampGroup(const StrokePoint &point, const QPointF &direction)
 {
+    // Unified emission clock: EVERY stamp group — distance-driven or
+    // time-driven — timestamps the build-up walk, so the two cadences
+    // never double-deposit (a fast stroke's distance stamps keep the
+    // period topped up; time stamps only fill gaps longer than a period).
+    m_lastStampTimeMs = qreal(point.timestamp);
     // One source sample per stamp GROUP (see resamplePath's twin).
     advanceWalk(m_walk, point.position, direction);
     qreal headingDegrees = 0.0;

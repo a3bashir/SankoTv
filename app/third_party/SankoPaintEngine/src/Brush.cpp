@@ -86,6 +86,7 @@ Brush &Brush::operator=(const Brush &other)
     m_grainPreset = other.m_grainPreset;
     m_grainAffectsColor = other.m_grainAffectsColor;
     m_wetEdges = other.m_wetEdges;
+    m_buildUp = other.m_buildUp;
     m_grainTexture = other.m_grainTexture;
     m_smudgeStrength = other.m_smudgeStrength;
     m_hueJitter = other.m_hueJitter;
@@ -241,6 +242,11 @@ void Brush::setSpacingJitter(qreal amount)
 }
 
 void Brush::setGrainScale(qreal pixels) { m_grainScale = std::clamp(pixels, 1.0, 2048.0); }
+void Brush::setBuildUp(qreal amount)
+{
+    m_buildUp = std::clamp(amount, 0.0, 1.0);
+}
+
 void Brush::setWetEdges(qreal amount)
 {
     m_wetEdges = std::clamp(amount, 0.0, 1.0);

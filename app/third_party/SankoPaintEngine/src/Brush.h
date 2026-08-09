@@ -130,6 +130,14 @@ public:
     // Photoshop toggle, 1 = pure ring. Applied ONCE per stroke at the
     // publication boundary on the ACCUMULATED coverage — never per stamp —
     // and inert while smudging and (in 6a) while the dual brush is on.
+    // Build-up / airbrush (Phase 6b): while the pointer is held, stamps
+    // keep landing at a TIME-driven cadence even with no movement. An
+    // amount, 0 = off (the default; the walk is bit-identical to the
+    // pre-6b engine), 1 = 60 stamps/second. Driven by the recorded
+    // per-point timestamps — never by live wall clock — so replay,
+    // undo/redo and both renderers reproduce a stroke exactly.
+    qreal buildUp() const { return m_buildUp; }
+    void setBuildUp(qreal amount);
     qreal wetEdges() const { return m_wetEdges; }
     void setWetEdges(qreal amount);
     bool grainAffectsColor() const { return m_grainAffectsColor; }
@@ -282,6 +290,7 @@ private:
     qreal m_spacingJitter = 0.0;
     qreal m_grainScale = 96.0;
     qreal m_wetEdges = 0.0; // 0 = off; publication-boundary rim pooling
+    qreal m_buildUp = 0.0;  // 0 = off; time-driven stamp cadence
     qreal m_grainDepth = 0.0;
     qreal m_grainContrast = 1.0;
     qreal m_grainRotation = 0.0;
