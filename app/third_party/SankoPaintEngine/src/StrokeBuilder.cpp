@@ -42,6 +42,7 @@ void StrokeBuilder::reset(const QSize &canvasSize, const Brush &brush,
     m_canvasSize = canvasSize;
     m_brush = brush;
     m_brush.resetTipCacheStatistics();
+    m_grainField = GrainField(m_brush);
     m_rawPoints.clear();
     m_smoothedPoints.clear();
     m_stamps.clear();
@@ -466,6 +467,26 @@ void StrokeBuilder::placeStamp(const StrokeStamp &stamp)
     const QRect clipped = stampRect.intersected(m_strokeMask.rect());
     if (clipped.isEmpty())
         return;
+    // GRAIN ON THE COVERAGE PATH (the CPU grain gap). The stamp shader has
+    // always multiplied coverage by the grain modulation; this path never
+    // did — CPU grain lived only in ColorStrokeBuffer, so a brush whose
+    // grain does not affect colour rendered textureless on the CPU (27
+    // roster brushes, worst 230/255 against the GPU). GrainField is the
+    // shader's term, shared with ColorStrokeBuffer; effectiveGrainDepth
+    // was resolved once in resolveStamp through the single dynamic
+    // resolver. depth 0 (or no grain) takes the guarded path and leaves
+    // every byte exactly as before.
+    const bool grainActive =
+        stamp.effectiveGrainDepth > 0.0 && !m_grainField.isNull();
+    // Rolling grain anchors to the stamp AS DRAWN: the raster centre after
+    // the integer footprint quantisation above, which is byte-for-byte the
+    // centre both GPU instance builders pass ("match the reference
+    // renderer's integer raster footprint exactly"). Using the exact
+    // continuous position instead shifts the Rolling pattern by up to half
+    // a pixel against the GPU — measured 12/255 on a fine grain before
+    // this anchored centre. StaticCanvas ignores it entirely.
+    const QPointF rasterCentre(left + tip.width() * 0.5,
+                               top + tip.height() * 0.5);
 
     for (const QPoint &coordinate : TiledImage::tilesForRect(clipped)) {
         const QRect tileRect = TiledImage::tileLayerRect(coordinate);
@@ -479,12 +500,20 @@ void StrokeBuilder::placeStamp(const StrokeStamp &stamp)
             const uchar *source = tip.constScanLine(y - top);
             for (int x = intersection.left(); x <= intersection.right(); ++x) {
                 const int localX = x - tileRect.left();
-                const qreal coverage = source[x - left] / 255.0;
+                // The shader's order: coverage is grain-modulated BEFORE
+                // either deposit rule sees it.
+                const qreal grain = grainActive
+                    ? m_grainField.modulation(x, y, rasterCentre,
+                                              stamp.effectiveGrainDepth)
+                    : 1.0;
+                const qreal coverage = grain * (source[x - left] / 255.0);
                 quint16 combinedAlpha = 0;
                 if (stamp.effectiveFlow >= 0.999999) {
                     // Preserve the Phase 1-3 8-bit rounding exactly, then map
-                    // that byte losslessly into UNORM16.
-                    const int strokeAlpha = qRound(source[x - left] * stamp.effectiveOpacity);
+                    // that byte losslessly into UNORM16. (grain 1.0 keeps the
+                    // arithmetic bit-identical to the pre-grain expression.)
+                    const int strokeAlpha =
+                        qRound(grain * source[x - left] * stamp.effectiveOpacity);
                     combinedAlpha = std::max<quint16>(destination[localX],
                         static_cast<quint16>(strokeAlpha * 257));
                 } else {

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Brush.h"
+#include "GrainField.h"
 #include "TiledImage.h"
 
 #include <QImage>
@@ -119,6 +120,7 @@ private:
 
     QSize m_canvasSize;
     Brush m_brush;
+    GrainField m_grainField; // the shader's grain term, CPU side
     QVector<StrokePoint> m_rawPoints;
     QVector<StrokePoint> m_smoothedPoints;
     QVector<StrokeStamp> m_stamps;

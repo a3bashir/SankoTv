@@ -1,5 +1,6 @@
 #include "ColorStrokeBuffer.h"
 
+#include "GrainField.h"
 #include "TiledImage.h"
 
 #include <QPainter>
@@ -8,21 +9,6 @@
 #include <cmath>
 
 namespace {
-qreal wrappedGrain(const QImage &grain, qreal u, qreal v)
-{
-    if (grain.isNull()) return 1.0;
-    u -= std::floor(u); v -= std::floor(v);
-    const qreal x = u * grain.width() - .5;
-    const qreal y = v * grain.height() - .5;
-    const int x0 = (int(std::floor(x)) % grain.width() + grain.width()) % grain.width();
-    const int y0 = (int(std::floor(y)) % grain.height() + grain.height()) % grain.height();
-    const int x1 = (x0 + 1) % grain.width(), y1 = (y0 + 1) % grain.height();
-    const qreal fx = x - std::floor(x), fy = y - std::floor(y);
-    const auto value = [&](int px, int py) { return grain.constScanLine(py)[px] / 255.0; };
-    return (value(x0, y0) * (1.0 - fx) + value(x1, y0) * fx) * (1.0 - fy)
-        + (value(x0, y1) * (1.0 - fx) + value(x1, y1) * fx) * fy;
-}
-
 int byteRound(qreal value) { return qBound(0, qRound(value * 255.0), 255); }
 }
 
@@ -33,7 +19,9 @@ QImage ColorStrokeBuffer::composite(const QImage &input, const Brush &brush,
     TiledImage accumulator(QImage::Format_RGBA64);
     accumulator.reset(output.size());
     StrokeBuilder shaper(output.size(), brush, false);
-    const QImage grain = brush.grainTexture().convertToFormat(QImage::Format_Grayscale8);
+    // Grain sampling is GrainField — the one CPU implementation of the
+    // shader's grain term, shared with StrokeBuilder's coverage path.
+    const GrainField grainField(brush);
 
     for (const StrokeStamp &stamp : stamps) {
         if (stamp.effectiveSize < .5 || stamp.effectiveOpacity <= 0.0) continue;
@@ -41,8 +29,6 @@ QImage ColorStrokeBuffer::composite(const QImage &input, const Brush &brush,
         const int left = qRound(stamp.point.position.x() - tip.width() * .5);
         const int top = qRound(stamp.point.position.y() - tip.height() * .5);
         const QRect clipped = QRect(left, top, tip.width(), tip.height()).intersected(output.rect());
-        const qreal gc = std::cos(qDegreesToRadians(brush.grainRotation()));
-        const qreal gs = std::sin(qDegreesToRadians(brush.grainRotation()));
         for (const QPoint &coordinate : TiledImage::tilesForRect(clipped)) {
             const QRect tileRect = TiledImage::tileLayerRect(coordinate);
             const QRect intersection = clipped.intersected(tileRect);
@@ -52,19 +38,20 @@ QImage ColorStrokeBuffer::composite(const QImage &input, const Brush &brush,
                 const uchar *tipRow = tip.constScanLine(y - top);
                 for (int x = intersection.left(); x <= intersection.right(); ++x) {
                     qreal coverage = tipRow[x - left] / 255.0;
-                    qreal grainValue = 1.0;
-                    if (stamp.effectiveGrainDepth > 0.0 && !grain.isNull()) {
-                        const qreal px = brush.grainMode() == Brush::GrainMode::StaticCanvas
-                            ? x + .5 : x + .5 - stamp.point.position.x();
-                        const qreal py = brush.grainMode() == Brush::GrainMode::StaticCanvas
-                            ? y + .5 : y + .5 - stamp.point.position.y();
-                        const qreal u = (gc * px + gs * py) / brush.grainScale();
-                        const qreal v = (-gs * px + gc * py) / brush.grainScale();
-                        grainValue = wrappedGrain(grain, u, v);
-                        grainValue = std::clamp((grainValue - .5) * brush.grainContrast() + .5,
-                                               0.0, 1.0);
-                        coverage *= 1.0 - stamp.effectiveGrainDepth
-                            + grainValue * stamp.effectiveGrainDepth;
+                    // 1.0 unless grain is live; used for BOTH the coverage
+                    // and (below) the colour modulation, exactly as before.
+                    qreal grainModulation = 1.0;
+                    if (stamp.effectiveGrainDepth > 0.0
+                        && !grainField.isNull()) {
+                        // Rolling anchors to the raster centre the tip is
+                        // DRAWN at — the same quantised centre both GPU
+                        // instance builders pass (see StrokeBuilder).
+                        grainModulation = grainField.modulation(
+                            x, y,
+                            QPointF(left + tip.width() * .5,
+                                    top + tip.height() * .5),
+                            stamp.effectiveGrainDepth);
+                        coverage *= grainModulation;
                     }
                     const qreal opacityMultiplier = brush.opacity() > 0.0
                         ? stamp.effectiveOpacity / brush.opacity() : 0.0;
@@ -76,9 +63,9 @@ QImage ColorStrokeBuffer::composite(const QImage &input, const Brush &brush,
                     qreal green = stamp.resolvedColor.greenF();
                     qreal blue = stamp.resolvedColor.blueF();
                     if (brush.grainAffectsColor()) {
-                        const qreal modulation = 1.0 - stamp.effectiveGrainDepth
-                            + grainValue * stamp.effectiveGrainDepth;
-                        red *= modulation; green *= modulation; blue *= modulation;
+                        red *= grainModulation;
+                        green *= grainModulation;
+                        blue *= grainModulation;
                     }
                     const qreal nextA = deposit + oldA * (1.0 - deposit);
                     const qreal nextR = red * deposit + old.red() / 65535.0 * (1.0 - deposit);
