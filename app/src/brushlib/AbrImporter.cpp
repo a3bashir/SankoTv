@@ -64,21 +64,28 @@
 //                 parameters; name; spacing; diameter; size/angle/roundness
 //                 jitter; scatter amount, axes and count; texture pattern
 //                 -> custom grain (+ scale, depth, inversion).
-//   approximated  Photoshop dynamics are a control SOURCE with a minimum —
-//                 a pressure-sourced dynamic becomes a two-point pressure
-//                 curve from minimum% to 100%; a computed (non-sampled) v6
-//                 tip becomes the engine's PROCEDURAL tip carrying the
-//                 descriptor's hardness.
+//                 Photoshop's control SOURCE per dynamic onto the engine's
+//                 ControlSource (off -> None, fade -> Fade, pen pressure ->
+//                 Pressure, pen tilt -> Tilt, direction -> Direction), its
+//                 minimum percentage onto the engine's per-property
+//                 minimum, and the fade STEP count onto the brush's
+//                 fadeDistance in canvas pixels.
+//   approximated  a computed (non-sampled) v6 tip becomes the engine's
+//                 PROCEDURAL tip carrying the descriptor's hardness;
+//                 "initial direction" becomes the continuously-tracked
+//                 Direction; several fade lengths on one brush collapse to
+//                 the longest (the engine has one fade distance per brush).
 //   dropped       wet edges; build-up/airbrush accumulation; dual brush
 //                 (Photoshop composites differently); colour dynamics;
-//                 noise; and any dynamic whose control source is fade/tilt/
-//                 stylus-wheel/direction (recorded, and the curve left FLAT
-//                 — never silently flattened into something that looks
-//                 intentional).
+//                 noise; bristle and erodible tip simulation; and any
+//                 control source with no engine equivalent — stylus wheel
+//                 and the two rotation sources (recorded, the property left
+//                 at its base value, never silently substituted).
 //
-// Brushes with no pressure-mapped dynamic get explicitly FLAT pressure
-// curves: the engine's default curve is linear (full pressure response),
-// which a dynamics-free Photoshop brush never had.
+// A dynamic Photoshop does not drive is imported as source None, not as a
+// flat curve on the default Pressure source: both render identically (the
+// resolver returns 1.0 either way), but only None states honestly in the
+// studio that the brush has no such response.
 // ============================================================================
 
 namespace brushlib {
@@ -745,12 +752,16 @@ double descNumber(const QVariantMap &map, const char *key, double fallback)
 }
 
 // A Photoshop dynamics block: control source + minimum + random jitter.
+// Key names verified against ag-psd's abr.ts parseDynamics(): 'bVTy' the
+// control enum, 'fStp' the fade step count, 'jitter' and 'Mnm ' percent
+// unit-floats.
 struct Dynamics
 {
     bool present = false;
     int control = 0;    // 'bVTy': 0 off, 1 fade, 2 pressure, 3 tilt, ...
     double jitterPct = 0.0;
     double minimumPct = 0.0;
+    double fadeSteps = 0.0; // 'fStp': stamps, not pixels — see fadePixels()
 };
 
 Dynamics readDynamics(const QVariantMap &brush, const char *key)
@@ -764,6 +775,7 @@ Dynamics readDynamics(const QVariantMap &brush, const char *key)
     d.control = int(descNumber(m, "bVTy", 0));
     d.jitterPct = descNumber(m, "jitter", 0.0);
     d.minimumPct = descNumber(m, "Mnm ", 0.0);
+    d.fadeSteps = descNumber(m, "fStp", 0.0);
     return d;
 }
 
@@ -882,34 +894,173 @@ struct BrushReport
     }
 };
 
-// Two-point pressure curve from a Photoshop minimum% — the spec'd
-// approximation of a pressure-sourced dynamic.
-QVector<QPointF> pressureCurve(double minimumPct)
-{
-    return {QPointF(0.0, std::clamp(minimumPct / 100.0, 0.0, 1.0)),
-            QPointF(1.0, 1.0)};
-}
 const QVector<QPointF> kFlatCurve = {QPointF(0.0, 1.0), QPointF(1.0, 1.0)};
+// The LINEAR identity response. Photoshop has no per-dynamic response
+// curve: a controlled dynamic simply interpolates from the minimum at zero
+// drive to the full value at full drive. That is exactly the engine's
+//     multiplier = minimum + (1 - minimum) x curve(source)
+// with an identity curve — so the minimum belongs in the MINIMUM, and the
+// curve stays the honest straight line Photoshop implies. (The old
+// two-point curve from min% to 100% with minimum 0 evaluates to the same
+// numbers, since both encode the same affine map; what it lost was the
+// SLOT: the studio's Minimum control read 0, an edit to the curve silently
+// destroyed the floor, and the report had to describe a curve where
+// Photoshop had a percentage.)
+const QVector<QPointF> kLinearCurve = {QPointF(0.0, 0.0), QPointF(1.0, 1.0)};
 
-// Route one dynamics block into a pressure curve slot. Returns the curve to
-// set and appends the appropriate report lines.
-QVector<QPointF> mapDynamicsCurve(const Dynamics &d, const QString &what,
-                                  BrushReport *rep)
+// Brush::dynamicCurve() is const-only; the mutable curves are reached
+// through their named accessors. This is the importer's own property ->
+// curve map so the mapping code below can stay table-driven without
+// touching the engine.
+PressureCurve &curveFor(::Brush &b, ::Brush::DynamicProperty property)
 {
-    if (!d.present || d.control == 0)
-        return kFlatCurve;
-    if (d.control == 2) {
-        rep->approximated.append(
-            QStringLiteral("%1 pressure dynamic (min %2%) -> two-point "
-                           "pressure curve")
-                .arg(what)
-                .arg(qRound(d.minimumPct)));
-        return pressureCurve(d.minimumPct);
+    using P = ::Brush::DynamicProperty;
+    switch (property) {
+    case P::Size: return b.sizePressureCurve();
+    case P::Opacity: return b.opacityPressureCurve();
+    case P::Hardness: return b.hardnessPressureCurve();
+    case P::Flow: return b.flowPressureCurve();
+    case P::Scatter: return b.scatterPressureCurve();
+    case P::Smudge: return b.smudgePressureCurve();
+    case P::SizeJitter: return b.sizeJitterPressureCurve();
+    case P::AngleJitter: return b.angleJitterPressureCurve();
+    case P::RoundnessJitter: return b.roundnessJitterPressureCurve();
+    case P::SpacingJitter: return b.spacingJitterPressureCurve();
+    case P::GrainDepth: return b.grainDepthPressureCurve();
+    case P::HueJitter: return b.hueJitterPressureCurve();
+    case P::SaturationJitter: return b.saturationJitterPressureCurve();
+    case P::BrightnessJitter: return b.brightnessJitterPressureCurve();
     }
-    rep->dropped.append(
-        QStringLiteral("%1 dynamic (%2 source — no counterpart)")
-            .arg(what, controlName(d.control)));
-    return kFlatCurve;
+    return b.sizePressureCurve(); // unreachable; keeps every path returning
+}
+
+// ---- Photoshop control source -> engine ControlSource ----------------------
+// The 'bVTy' enum order is ag-psd's dynamicsControl table (abr.ts):
+//   0 off  1 fade  2 pen pressure  3 pen tilt  4 stylus wheel
+//   5 initial direction  6 direction  7 initial rotation  8 rotation
+struct SourceMapping
+{
+    ::Brush::ControlSource source = ::Brush::ControlSource::None;
+    bool supported = false;
+    bool approximate = false; // supported, but not the same thing
+    QString note;             // why it is approximate
+};
+
+SourceMapping mapControlSource(int control)
+{
+    using CS = ::Brush::ControlSource;
+    SourceMapping m;
+    switch (control) {
+    case 0: // off — the property sits at its base value
+        m.source = CS::None;
+        m.supported = true;
+        return m;
+    case 1:
+        m.source = CS::Fade;
+        m.supported = true;
+        return m;
+    case 2:
+        m.source = CS::Pressure;
+        m.supported = true;
+        return m;
+    case 3:
+        m.source = CS::Tilt;
+        m.supported = true;
+        return m;
+    case 6:
+        m.source = CS::Direction;
+        m.supported = true;
+        return m;
+    case 5:
+        // Initial Direction locks the heading sampled at the FIRST dab for
+        // the whole stroke; the engine's Direction source tracks the
+        // heading continuously. Same driver, different hold: a straight
+        // stroke is identical, a curved one diverges progressively. Mapped
+        // to Direction (the closest live behaviour) and reported.
+        m.source = CS::Direction;
+        m.supported = true;
+        m.approximate = true;
+        m.note = QStringLiteral(
+            "initial direction -> direction (the engine tracks the heading "
+            "continuously; identical on straight strokes, diverging as the "
+            "stroke curves)");
+        return m;
+    default: // 4 stylus wheel, 7/8 rotation, anything unknown
+        return m; // unsupported: reported dropped, never substituted
+    }
+}
+
+// Photoshop counts fade in STEPS — brush stamps — while the engine's
+// fadeDistance is canvas pixels of arc length. One step advances by the
+// stamp spacing, and spacing is a fraction of the tip diameter:
+//     pixels = steps x spacing x diameter
+// (25 steps at 25% spacing on a 40 px tip = 250 px.) The engine clamps to
+// [1, 8192]; the caller reports the conversion with both numbers.
+double fadePixels(double steps, double spacingFraction, double sizePx)
+{
+    return std::clamp(steps * spacingFraction * sizePx, 1.0, 8192.0);
+}
+
+// Everything a dynamics block needs to land on an engine property.
+struct DynamicTarget
+{
+    ::Brush *brush = nullptr;
+    ::Brush::DynamicProperty property{};
+    QString what;        // report noun ("size", "angle", ...)
+    double extraMinPct = -1.0; // Photoshop's separate minimum field, if any
+};
+
+// Route one Photoshop dynamics block onto one engine property: source,
+// minimum, and response curve, with the report line that matches what was
+// actually done. Returns the fade step count when the block is fade-driven
+// (the caller owns the brush-wide fadeDistance), else 0.
+double applyDynamic(const Dynamics &d, const DynamicTarget &t,
+                    BrushReport *rep)
+{
+    ::Brush &b = *t.brush;
+    // Photoshop stores a separate "Minimum Diameter" / "Minimum Roundness"
+    // / "Minimum Depth" beside some dynamics blocks; honour whichever
+    // floor is higher, as the UI does.
+    double minimumPct = d.present ? d.minimumPct : 0.0;
+    if (t.extraMinPct >= 0.0)
+        minimumPct = qMax(minimumPct, t.extraMinPct);
+    minimumPct = std::clamp(minimumPct, 0.0, 100.0);
+
+    if (!d.present || d.control == 0) {
+        // No dynamic: the property sits at its base value. Source None
+        // says exactly that — a flat curve on a Pressure source would
+        // render the same but claim a pressure response the brush never
+        // had.
+        b.setControlSource(t.property, ::Brush::ControlSource::None);
+        b.setControlMinimum(t.property, 0.0);
+        curveFor(b, t.property).setControlPoints(kFlatCurve);
+        return 0.0;
+    }
+
+    const SourceMapping m = mapControlSource(d.control);
+    if (!m.supported) {
+        b.setControlSource(t.property, ::Brush::ControlSource::None);
+        b.setControlMinimum(t.property, 0.0);
+        curveFor(b, t.property).setControlPoints(kFlatCurve);
+        rep->dropped.append(
+            QStringLiteral("%1 dynamic (%2 source — no engine equivalent)")
+                .arg(t.what, controlName(d.control)));
+        return 0.0;
+    }
+
+    b.setControlSource(t.property, m.source);
+    b.setControlMinimum(t.property, minimumPct / 100.0);
+    curveFor(b, t.property).setControlPoints(kLinearCurve);
+
+    QString line = QStringLiteral("%1 %2-controlled").arg(
+        t.what, controlName(d.control));
+    if (minimumPct > 0.05)
+        line += QStringLiteral(" (minimum %1%)").arg(qRound(minimumPct));
+    rep->mapped.append(line);
+    if (m.approximate)
+        rep->approximated.append(
+            QStringLiteral("%1 dynamic: %2").arg(t.what, m.note));
+    return m.source == ::Brush::ControlSource::Fade ? d.fadeSteps : 0.0;
 }
 
 // ---- Per-brush assembly ----------------------------------------------------
@@ -920,10 +1071,21 @@ struct MappedBrush
     bool valid = false;
 };
 
-// All pressure curves start FLAT: the engine default (linear) would give
-// every imported brush a full pressure-size response Photoshop never had.
-void flattenAllCurves(::Brush &b)
+// Every dynamic starts SILENT: source None with a flat curve. The engine's
+// defaults are Pressure + linear, which would give every imported brush a
+// full pressure response Photoshop never had; before this phase the curves
+// were flattened but the SOURCE was left at Pressure, so the studio showed
+// a pressure-driven row for a brush with no dynamics at all. Renders
+// identically either way (a flat curve and a None source both resolve to
+// 1.0) — this states it truthfully. Each Photoshop dynamic that IS present
+// overwrites its own property below.
+void silenceAllDynamics(::Brush &b)
 {
+    for (int i = 0; i < ::Brush::kDynamicPropertyCount; ++i) {
+        const auto property = ::Brush::DynamicProperty(i);
+        b.setControlSource(property, ::Brush::ControlSource::None);
+        b.setControlMinimum(property, 0.0);
+    }
     b.sizePressureCurve().setControlPoints(kFlatCurve);
     b.opacityPressureCurve().setControlPoints(kFlatCurve);
     b.hardnessPressureCurve().setControlPoints(kFlatCurve);
@@ -947,7 +1109,7 @@ MappedBrush buildBrush(const AbrSample *sample, const QVariantMap &desc,
     MappedBrush out;
     BrushReport &rep = out.report;
     ::Brush &b = out.preset.brush;
-    flattenAllCurves(b);
+    silenceAllDynamics(b);
 
     // --- Tip descriptor (nested 'Brsh' object inside the brush entry) ---
     const QVariantMap tip = descGet(desc, "Brsh").toMap();
@@ -1075,6 +1237,15 @@ MappedBrush buildBrush(const AbrSample *sample, const QVariantMap &desc,
         return out;
     }
 
+    // Fade is a BRUSH-wide distance in the engine but a PER-DYNAMIC step
+    // count in Photoshop. Collect every fade-driven block's step count and
+    // reconcile once, after the dynamics are read.
+    QVector<QPair<QString, double>> fadeSteps;
+    auto noteFade = [&fadeSteps](const QString &what, double steps) {
+        if (steps > 0.0)
+            fadeSteps.append({what, steps});
+    };
+
     // --- Tip dynamics (gated on useTipDynamics, as Photoshop stores it) ---
     if (descGet(desc, "useTipDynamics").toBool()) {
         const Dynamics szVr = readDynamics(desc, "szVr");
@@ -1083,24 +1254,30 @@ MappedBrush buildBrush(const AbrSample *sample, const QVariantMap &desc,
             rep.mapped.append(QStringLiteral("size jitter %1%")
                                   .arg(qRound(szVr.jitterPct)));
         }
-        // Photoshop's UI "Minimum Diameter" lives beside the dynamics
-        // block; honour whichever minimum is larger.
-        Dynamics szEff = szVr;
-        szEff.minimumPct = qMax(
-            szVr.minimumPct, descNumber(desc, "minimumDiameter", 0.0));
-        b.sizePressureCurve().setControlPoints(
-            mapDynamicsCurve(szEff, QStringLiteral("size"), &rep));
+        noteFade(QStringLiteral("size"),
+                 applyDynamic(szVr,
+                              {&b, ::Brush::DynamicProperty::Size,
+                               QStringLiteral("size"),
+                               descNumber(desc, "minimumDiameter", -1.0)},
+                              &rep));
 
+        // ANGLE: the mapping this overhaul exists for. Photoshop's "Angle
+        // Jitter -> Control: Direction" is what makes calligraphic and
+        // ribbon brushes work; the engine's Direction source on the angle
+        // property injects the smoothed heading into the stamp rotation,
+        // where the static tipAngle mapped above acts as an OFFSET from
+        // it — the same composition Photoshop uses.
         const Dynamics angDyn = readDynamics(desc, "angleDynamics");
         if (angDyn.present && angDyn.jitterPct > 0.0) {
             b.setAngleJitter(angDyn.jitterPct / 100.0);
             rep.mapped.append(QStringLiteral("angle jitter %1%")
                                   .arg(qRound(angDyn.jitterPct)));
         }
-        if (angDyn.present && angDyn.control != 0 && angDyn.control != 2)
-            rep.dropped.append(
-                QStringLiteral("angle dynamic (%1 source — no counterpart)")
-                    .arg(controlName(angDyn.control)));
+        noteFade(QStringLiteral("angle"),
+                 applyDynamic(angDyn,
+                              {&b, ::Brush::DynamicProperty::AngleJitter,
+                               QStringLiteral("angle")},
+                              &rep));
 
         const Dynamics rndDyn = readDynamics(desc, "roundnessDynamics");
         if (rndDyn.present && rndDyn.jitterPct > 0.0) {
@@ -1108,11 +1285,12 @@ MappedBrush buildBrush(const AbrSample *sample, const QVariantMap &desc,
             rep.mapped.append(QStringLiteral("roundness jitter %1%")
                                   .arg(qRound(rndDyn.jitterPct)));
         }
-        if (rndDyn.present && rndDyn.control != 0 && rndDyn.control != 2)
-            rep.dropped.append(
-                QStringLiteral(
-                    "roundness dynamic (%1 source — no counterpart)")
-                    .arg(controlName(rndDyn.control)));
+        noteFade(QStringLiteral("roundness"),
+                 applyDynamic(rndDyn,
+                              {&b, ::Brush::DynamicProperty::RoundnessJitter,
+                               QStringLiteral("roundness"),
+                               descNumber(desc, "minimumRoundness", -1.0)},
+                              &rep));
 
         // Random flip jitters (brush-level flipX/flipY) have no slot.
         if (descGet(desc, "flipX").toBool()
@@ -1137,16 +1315,11 @@ MappedBrush buildBrush(const AbrSample *sample, const QVariantMap &desc,
                 .arg(bothAxes ? QStringLiteral("both axes")
                               : QStringLiteral("one axis"))
                 .arg(b.scatterCount()));
-        if (sctr.control == 2) {
-            b.scatterPressureCurve().setControlPoints(
-                {QPointF(0.0, 0.0), QPointF(1.0, 1.0)});
-            rep.approximated.append(QStringLiteral(
-                "scatter pressure dynamic -> linear pressure curve"));
-        } else if (sctr.control != 0) {
-            rep.dropped.append(
-                QStringLiteral("scatter dynamic (%1 source)")
-                    .arg(controlName(sctr.control)));
-        }
+        noteFade(QStringLiteral("scatter"),
+                 applyDynamic(sctr,
+                              {&b, ::Brush::DynamicProperty::Scatter,
+                               QStringLiteral("scatter")},
+                              &rep));
         const Dynamics cntDyn = readDynamics(desc, "countDynamics");
         if (cntDyn.present
             && (cntDyn.jitterPct > 0.0 || cntDyn.control != 0))
@@ -1175,6 +1348,16 @@ MappedBrush buildBrush(const AbrSample *sample, const QVariantMap &desc,
             const double depthPct = descNumber(desc, "textureDepth", 100.0);
             b.setGrainDepth(std::clamp(depthPct / 100.0, 0.0, 1.0));
             b.setGrainMode(::Brush::GrainMode::StaticCanvas);
+            // Texture depth carries its own dynamics block ('textureDepth
+            // Dynamics' + 'minimumDepth', ag-psd's texture.depthDynamics /
+            // depthMinimum). Before this phase it was read by nothing at
+            // all — neither mapped nor reported.
+            noteFade(QStringLiteral("grain depth"),
+                     applyDynamic(readDynamics(desc, "textureDepthDynamics"),
+                                  {&b, ::Brush::DynamicProperty::GrainDepth,
+                                   QStringLiteral("grain depth"),
+                                   descNumber(desc, "minimumDepth", -1.0)},
+                                  &rep));
             rep.mapped.append(
                 QStringLiteral("texture '%1' %2x%3 -> custom grain "
                                "(scale %4%, depth %5%)")
@@ -1202,20 +1385,65 @@ MappedBrush buildBrush(const AbrSample *sample, const QVariantMap &desc,
     // --- Transfer: 'opVr' is opacity, 'prVr' is FLOW (ag-psd's mapping) ---
     if (descGet(desc, "usePaintDynamics").toBool()) {
         const Dynamics opVr = readDynamics(desc, "opVr");
-        b.opacityPressureCurve().setControlPoints(
-            mapDynamicsCurve(opVr, QStringLiteral("opacity"), &rep));
+        noteFade(QStringLiteral("opacity"),
+                 applyDynamic(opVr,
+                              {&b, ::Brush::DynamicProperty::Opacity,
+                               QStringLiteral("opacity")},
+                              &rep));
         if (opVr.present && opVr.jitterPct > 0.0)
             rep.dropped.append(QStringLiteral(
                 "opacity jitter (engine has no random opacity)"));
         const Dynamics prVr = readDynamics(desc, "prVr");
-        b.flowPressureCurve().setControlPoints(
-            mapDynamicsCurve(prVr, QStringLiteral("flow"), &rep));
+        noteFade(QStringLiteral("flow"),
+                 applyDynamic(prVr,
+                              {&b, ::Brush::DynamicProperty::Flow,
+                               QStringLiteral("flow")},
+                              &rep));
         const Dynamics wtVr = readDynamics(desc, "wtVr");
         const Dynamics mxVr = readDynamics(desc, "mxVr");
         if ((wtVr.present && wtVr.control != 0)
             || (mxVr.present && mxVr.control != 0))
             rep.dropped.append(QStringLiteral(
                 "wetness/mix dynamics (mixer brush — no counterpart)"));
+    }
+
+    // --- Fade distance: per-dynamic STEPS -> one brush-wide distance -----
+    // Photoshop gives every fade-driven dynamic its own step count; the
+    // engine has a single fadeDistance shared by all of them. One fading
+    // dynamic converts exactly; several with different counts cannot, so
+    // the LONGEST wins (the shorter dynamics would otherwise be cut off
+    // mid-fade, which reads as a bug rather than a brush) and the report
+    // names every count that was reconciled.
+    if (!fadeSteps.isEmpty()) {
+        auto longest = fadeSteps.first();
+        bool conflict = false;
+        for (const auto &entry : fadeSteps) {
+            if (entry.second > longest.second)
+                longest = entry;
+            if (qAbs(entry.second - fadeSteps.first().second) > 0.5)
+                conflict = true;
+        }
+        const double px = fadePixels(longest.second, b.spacing(), b.size());
+        b.setFadeDistance(px);
+        rep.mapped.append(
+            QStringLiteral("fade distance %1 steps x %2% spacing x %3 px "
+                           "tip -> %4 px")
+                .arg(qRound(longest.second))
+                .arg(qRound(b.spacing() * 100.0))
+                .arg(b.size())
+                .arg(qRound(px)));
+        if (conflict) {
+            QStringList all;
+            for (const auto &entry : fadeSteps)
+                all.append(QStringLiteral("%1 %2")
+                               .arg(entry.first)
+                               .arg(qRound(entry.second)));
+            rep.approximated.append(
+                QStringLiteral("per-dynamic fade lengths differ (%1 steps) "
+                               "— the engine has one fade distance per "
+                               "brush; the longest was used")
+                    .arg(all.join(QStringLiteral(", "))));
+        }
     }
 
     // --- Out-of-scope features: report, never approximate silently ---
@@ -1274,6 +1502,7 @@ QString AbrImporter::contentId(const BrushPreset &preset)
        << b.scatterPerpendicular() << ';' << b.scatterCount() << ';'
        << b.grainScale() << ';' << b.grainDepth() << ';'
        << int(b.grainMode()) << ';' << int(b.grainPreset()) << ';';
+    bool fades = false;
     for (int i = 0; i < ::Brush::kDynamicPropertyCount; ++i) {
         const auto property = ::Brush::DynamicProperty(i);
         ts << int(b.controlSource(property)) << ','
@@ -1282,8 +1511,31 @@ QString AbrImporter::contentId(const BrushPreset &preset)
              b.dynamicCurve(property).controlPoints())
             ts << pt.x() << ':' << pt.y() << ' ';
         ts << ';';
+        fades = fades
+            || b.controlSource(property) == ::Brush::ControlSource::Fade;
     }
+    // fadeDistance joins the fingerprint ONLY for a brush that actually
+    // fades. It is a mapped parameter now, so two brushes differing only
+    // in fade length must not collide into one id (the second would be
+    // silently skipped as a duplicate on import) — but appending it
+    // unconditionally would move the id of every non-fading brush for a
+    // value none of them read.
+    if (fades)
+        ts << "fade=" << b.fadeDistance() << ';';
     QCryptographicHash h(QCryptographicHash::Sha256);
+    // MAPPING GENERATION. The library's upgrade-on-reimport path finds
+    // old-generation presets by asking whether a stored preset's content
+    // still fingerprints to its stored id. That test only fires when the
+    // fingerprint FUNCTION changes — which is why it worked for the unbake
+    // (it replaced codec-byte ids with this content hash) and why, without
+    // this tag, it would silently fail for a MAPPING change: a preset
+    // written by the previous importer is perfectly self-consistent, so it
+    // would not be recognised, and re-importing the same ABR would add a
+    // duplicate beside every brush instead of upgrading it. Measured: 1
+    // stored preset became 13 on re-import before this tag existed.
+    // Bump this string whenever the mapping changes what a given ABR
+    // produces; nothing else needs to know.
+    h.addData("abr-mapping-generation/2\n");
     h.addData(preset.name.toUtf8());
     h.addData("\n", 1);
     h.addData(canon.toUtf8());
