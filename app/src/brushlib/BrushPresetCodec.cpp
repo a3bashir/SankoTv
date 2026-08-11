@@ -28,7 +28,7 @@ constexpr quint32 kPresetMagic = 0x534E4B50; // "SNKP"
 //       files land on the default 256; the field is only read when a
 //       control source is Fade, which no pre-v4 file can have set to a
 //       distance other than the default anyway.
-constexpr quint16 kVersion = 6;
+constexpr quint16 kVersion = 7;
 constexpr quint16 kMinReadVersion = 1;
 
 // A fixed QDataStream version pins the wire format independently of the Qt
@@ -218,7 +218,12 @@ void walkBrush(::Brush &b, V &v, quint16 wireVersion, int depth = 0)
     // A v1 file simply has no block; the fresh Brush the reader loads into
     // already defaults to Pressure / 0.0 — its exact pre-v2 behaviour.
     if (wireVersion >= 2) {
-        for (int i = 0; i < B::kDynamicPropertyCount; ++i) {
+        // FROZEN at the original 14 properties. kDynamicPropertyCount grew
+        // to 15 in Phase 6c (ForegroundBackground), but this block's wire
+        // layout was defined when there were 14 and every v2..v6 file
+        // carries exactly 14 entries. The 15th property's source, minimum
+        // and curve live in the v7 block below.
+        for (int i = 0; i < 14; ++i) {
             const auto property = B::DynamicProperty(i);
             v.field(
                 [&] { return qint32(b.controlSource(property)); },
@@ -262,6 +267,39 @@ void walkBrush(::Brush &b, V &v, quint16 wireVersion, int depth = 0)
     if (wireVersion >= 6) {
         v.field([&] { return b.buildUp(); },
                 [&](qreal x) { b.setBuildUp(x); });
+    }
+    // v7: colour dynamics (Phase 6c). Before the dual-brush branch, as
+    // with every versioned block. A v6 or older file has no fields; the
+    // fresh Brush defaults (jitter 0, white background, purity 0, per-tip
+    // true, Pressure source, minimum 0, linear curve) render identically.
+    if (wireVersion >= 7) {
+        v.field([&] { return b.fgBgJitter(); },
+                [&](qreal x) { b.setFgBgJitter(x); });
+        v.field([&] { return b.backgroundColor(); },
+                [&](const QColor &x) { b.setBackgroundColor(x); });
+        v.field([&] { return b.purity(); },
+                [&](qreal x) { b.setPurity(x); });
+        v.field([&] { return b.colorDynamicsPerTip(); },
+                [&](bool x) { b.setColorDynamicsPerTip(x); });
+        v.field(
+            [&] {
+                return qint32(b.controlSource(
+                    B::DynamicProperty::ForegroundBackground));
+            },
+            [&](qint32 x) {
+                b.setControlSource(B::DynamicProperty::ForegroundBackground,
+                                   B::ControlSource(x));
+            });
+        v.field(
+            [&] {
+                return b.controlMinimum(
+                    B::DynamicProperty::ForegroundBackground);
+            },
+            [&](qreal x) {
+                b.setControlMinimum(B::DynamicProperty::ForegroundBackground,
+                                    x);
+            });
+        v.curve(b.fgBgJitterPressureCurve());
     }
     // Secondary brush: one level deep, exactly like the engine renders it
     // (primary slot 0 + secondary slot 1). A disabled dual brush serialises

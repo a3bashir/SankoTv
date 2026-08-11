@@ -1503,7 +1503,15 @@ QString AbrImporter::contentId(const BrushPreset &preset)
        << b.grainScale() << ';' << b.grainDepth() << ';'
        << int(b.grainMode()) << ';' << int(b.grainPreset()) << ';';
     bool fades = false;
-    for (int i = 0; i < ::Brush::kDynamicPropertyCount; ++i) {
+    // PINNED at the original 14: the fingerprint covers what the importer
+    // MAPS, and colour dynamics (ForegroundBackground, the 15th property
+    // since Phase 6c) is still on the dropped list. Widening this loop
+    // before the importer maps it would move every imported id for a
+    // value no import can set — the duplicate-beside-every-brush failure
+    // the mapping-generation tag exists to prevent. When colour dynamics
+    // IS mapped, extend this to kDynamicPropertyCount AND bump the
+    // generation string above.
+    for (int i = 0; i < 14; ++i) {
         const auto property = ::Brush::DynamicProperty(i);
         ts << int(b.controlSource(property)) << ','
            << b.controlMinimum(property) << ',';

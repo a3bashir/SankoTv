@@ -178,11 +178,15 @@ private:
 class StudioColorRow : public QWidget
 {
 public:
+    // appColourWhenBlack: the identity-colour row renders black as the
+    // "App colour" pill (Phase 3 semantics); rows whose colour is always
+    // literal (the 6c background colour) pass false.
     StudioColorRow(const QString &label, std::function<void()> onClick,
-                   QWidget *parent = nullptr)
+                   QWidget *parent = nullptr, bool appColourWhenBlack = true)
         : QWidget(parent)
         , m_label(label)
         , m_onClick(std::move(onClick))
+        , m_appColourWhenBlack(appColourWhenBlack)
     {
         setFixedHeight(23);
         setCursor(Qt::PointingHandCursor);
@@ -201,7 +205,7 @@ protected:
         p.setPen(kTextDim);
         p.drawText(rect(), Qt::AlignLeft | Qt::AlignVCenter, m_label);
         p.setRenderHint(QPainter::Antialiasing, true);
-        if (m_color == QColor(Qt::black)) {
+        if (m_appColourWhenBlack && m_color == QColor(Qt::black)) {
             paintCapsule(p, QRect(width() - 82, 0, 82, 23),
                          QStringLiteral("App colour"));
         } else {
@@ -220,6 +224,7 @@ protected:
 private:
     QString m_label;
     std::function<void()> m_onClick;
+    bool m_appColourWhenBlack = true;
     QColor m_color = Qt::black;
 };
 
@@ -1259,6 +1264,53 @@ QWidget *BrushSettingsStudio::buildColorSection()
                   return b.brightnessJitterPressureCurve();
               },
               false, ::Brush::DynamicProperty::BrightnessJitter);
+
+    // Colour dynamics (Phase 6c) — addendum to the approved mapping table.
+    // Color Shift is a DYNAMIC (per-stamp, drivable: it joins the response
+    // -drawer convention); Background Colour, Purity and Apply Per Tip are
+    // static and take the bare treatment.
+    addSlider(l, QStringLiteral("Color Shift"), 0.0, 1.0,
+              [](const ::Brush &b) { return b.fgBgJitter(); },
+              [](::Brush &b, double v) { b.setFgBgJitter(v); }, fmtPercent,
+              false, 0.0, 1.0,
+              [](::Brush &b) -> PressureCurve & {
+                  return b.fgBgJitterPressureCurve();
+              },
+              false, ::Brush::DynamicProperty::ForegroundBackground);
+    auto *bgRow = new StudioColorRow(
+        QStringLiteral("Background Colour"),
+        [this] {
+            const QColor current = scopeBrushConst().backgroundColor();
+            const QColor picked = QColorDialog::getColor(
+                current, this, tr("Background Colour"));
+            if (!picked.isValid())
+                return;
+            applyInstant(
+                [picked](::Brush &b) { b.setBackgroundColor(picked); },
+                false);
+        },
+        nullptr, /*appColourWhenBlack=*/false);
+    l->addWidget(bgRow);
+    m_syncers.append([this, bgRow] {
+        bgRow->setColor(scopeBrushConst().backgroundColor());
+    });
+    l->addWidget(makeCaption(QStringLiteral(
+        "Color Shift blends each stamp from the brush colour toward the "
+        "background colour. Unlike the identity colour, the background is "
+        "always the preset's own — it is never adopted from or into the "
+        "app colour.")));
+    addSlider(l, QStringLiteral("Purity"), -1.0, 1.0,
+              [](const ::Brush &b) { return b.purity(); },
+              [](::Brush &b, double v) { b.setPurity(v); }, fmtPercent,
+              false);
+    addToggle(l, QStringLiteral("Apply Per Tip"),
+              [](const ::Brush &b) { return b.colorDynamicsPerTip(); },
+              [](::Brush &b, bool on) { b.setColorDynamicsPerTip(on); },
+              false);
+    l->addWidget(makeCaption(QStringLiteral(
+        "Purity pulls saturation toward grey or full chroma after the "
+        "jitters. With Apply Per Tip off, one colour is chosen for the "
+        "whole stroke.")));
     l->addStretch(1);
     return page;
 }

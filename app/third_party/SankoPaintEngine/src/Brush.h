@@ -31,8 +31,16 @@ public:
         Size, Opacity, Hardness, Flow, Scatter, Smudge,
         SizeJitter, AngleJitter, RoundnessJitter, SpacingJitter,
         GrainDepth, HueJitter, SaturationJitter, BrightnessJitter,
+        // Phase 6c: interpolates each stamp's colour toward the background
+        // colour. Wire note: the v2 dynamics block is FROZEN at the
+        // original 14 — this property's source/minimum/curve serialise in
+        // the v7 block (BrushPresetCodec), and AbrImporter::contentId
+        // deliberately fingerprints only the first 14 until the importer
+        // maps colour dynamics (which will need a mapping-generation
+        // bump).
+        ForegroundBackground,
     };
-    static constexpr int kDynamicPropertyCount = 14;
+    static constexpr int kDynamicPropertyCount = 15;
 
     // One sample of every driving value a control source can select,
     // computed CPU-side during the path walk from the shared point stream
@@ -136,6 +144,27 @@ public:
     // pre-6b engine), 1 = 60 stamps/second. Driven by the recorded
     // per-point timestamps — never by live wall clock — so replay,
     // undo/redo and both renderers reproduce a stroke exactly.
+    // Colour dynamics (Phase 6c). foregroundBackground jitter interpolates
+    // each stamp's colour from the brush colour toward backgroundColor —
+    // Photoshop's FG/BG Jitter, the piece imported ABR brushes lose today.
+    // It is DynamicProperty::ForegroundBackground (per-stamp, drivable).
+    // purity shifts saturation toward grey (-1) or full chroma (+1) after
+    // the jitters — deterministic and directional, distinct from the
+    // random symmetric saturation jitter. colorDynamicsPerTip false
+    // evaluates the colour RNG once per stroke instead of per stamp
+    // (Photoshop's "Apply Per Tip" unchecked); default true is the
+    // engine's existing per-stamp behaviour.
+    qreal fgBgJitter() const { return m_fgBgJitter; }
+    void setFgBgJitter(qreal amount);
+    const QColor &backgroundColor() const { return m_backgroundColor; }
+    void setBackgroundColor(const QColor &color);
+    qreal purity() const { return m_purity; }
+    void setPurity(qreal amount);
+    bool colorDynamicsPerTip() const { return m_colorDynamicsPerTip; }
+    void setColorDynamicsPerTip(bool perTip) { m_colorDynamicsPerTip = perTip; }
+    PressureCurve &fgBgJitterPressureCurve() { return m_fgBgJitterPressureCurve; }
+    const PressureCurve &fgBgJitterPressureCurve() const { return m_fgBgJitterPressureCurve; }
+
     qreal buildUp() const { return m_buildUp; }
     void setBuildUp(qreal amount);
     qreal wetEdges() const { return m_wetEdges; }
@@ -291,6 +320,11 @@ private:
     qreal m_grainScale = 96.0;
     qreal m_wetEdges = 0.0; // 0 = off; publication-boundary rim pooling
     qreal m_buildUp = 0.0;  // 0 = off; time-driven stamp cadence
+    qreal m_fgBgJitter = 0.0;          // 0 = off; toward backgroundColor
+    QColor m_backgroundColor = QColor(Qt::white);
+    qreal m_purity = 0.0;              // -1 grey .. +1 full chroma
+    bool m_colorDynamicsPerTip = true; // false = one colour per stroke
+    PressureCurve m_fgBgJitterPressureCurve;
     qreal m_grainDepth = 0.0;
     qreal m_grainContrast = 1.0;
     qreal m_grainRotation = 0.0;

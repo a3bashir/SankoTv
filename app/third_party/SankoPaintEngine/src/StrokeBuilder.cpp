@@ -267,14 +267,50 @@ StrokeStamp StrokeBuilder::resolveStamp(const StrokePoint &point, const Brush &b
         * brush.resolveDynamic(P::SaturationJitter, src);
     stamp.effectiveBrightnessJitter = brush.brightnessJitter()
         * brush.resolveDynamic(P::BrightnessJitter, src);
-    qreal hue = brush.color().hsvHueF();
+    // COLOUR DYNAMICS (Phase 6c on the Phase-1 base). All per-stamp colour
+    // values resolve HERE, CPU-side, with the indexed RNG — never in the
+    // shader — which is what keeps the renderers byte-agreed. RNG property
+    // ids: 101 hue, 102 saturation, 103 brightness (pre-existing),
+    // 104 foreground/background (new; a fresh id so it never correlates
+    // with the others). colorDynamicsPerTip false pins the colour RNG to
+    // stamp index 0 — one colour for the whole stroke, Photoshop's "Apply
+    // Per Tip" unchecked; the default (true, per-stamp) is bit-identical
+    // to the pre-6c engine because colorIndex == index.
+    const quint64 colorIndex =
+        brush.colorDynamicsPerTip() ? index : quint64(0);
+    // Foreground/background FIRST (it picks each stamp's base colour),
+    // then the HSV jitters around that base, then purity — Photoshop's
+    // composition order. The mix is a plain RGB lerp toward the
+    // background colour by a uniform random fraction of the resolved
+    // amount.
+    QColor base = brush.color();
+    const qreal fgBg = brush.fgBgJitter()
+        * brush.resolveDynamic(P::ForegroundBackground, src);
+    if (fgBg > 0.0) {
+        const qreal t =
+            indexedUnit(seed, colorIndex, 104, subBrushSlot) * fgBg;
+        const QColor &bg = brush.backgroundColor();
+        base = QColor::fromRgbF(
+            base.redF() + (bg.redF() - base.redF()) * t,
+            base.greenF() + (bg.greenF() - base.greenF()) * t,
+            base.blueF() + (bg.blueF() - base.blueF()) * t,
+            base.alphaF());
+    }
+    qreal hue = base.hsvHueF();
     if (hue < 0.0) hue = 0.0;
-    hue = std::fmod(hue + indexedSigned(seed, index, 101, subBrushSlot)
+    hue = std::fmod(hue + indexedSigned(seed, colorIndex, 101, subBrushSlot)
                     * stamp.effectiveHueJitter + 1.0, 1.0);
-    const qreal saturation = qBound(0.0, brush.color().hsvSaturationF()
-        + indexedSigned(seed, index, 102, subBrushSlot) * stamp.effectiveSaturationJitter, 1.0);
-    const qreal brightness = qBound(0.0, brush.color().valueF()
-        + indexedSigned(seed, index, 103, subBrushSlot) * stamp.effectiveBrightnessJitter, 1.0);
+    qreal saturation = qBound(0.0, base.hsvSaturationF()
+        + indexedSigned(seed, colorIndex, 102, subBrushSlot) * stamp.effectiveSaturationJitter, 1.0);
+    const qreal brightness = qBound(0.0, base.valueF()
+        + indexedSigned(seed, colorIndex, 103, subBrushSlot) * stamp.effectiveBrightnessJitter, 1.0);
+    // Purity: deterministic, directional — toward full chroma (+) or grey
+    // (-), applied after the random jitters. Guarded so 0 leaves the
+    // saturation arithmetic untouched byte-for-byte.
+    if (brush.purity() != 0.0)
+        saturation = brush.purity() > 0.0
+            ? saturation + (1.0 - saturation) * brush.purity()
+            : saturation * (1.0 + brush.purity());
     stamp.resolvedColor = QColor::fromHsvF(
         hue, saturation, brightness, brush.color().alphaF());
     return stamp;

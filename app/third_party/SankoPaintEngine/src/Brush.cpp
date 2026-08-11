@@ -87,6 +87,11 @@ Brush &Brush::operator=(const Brush &other)
     m_grainAffectsColor = other.m_grainAffectsColor;
     m_wetEdges = other.m_wetEdges;
     m_buildUp = other.m_buildUp;
+    m_fgBgJitter = other.m_fgBgJitter;
+    m_backgroundColor = other.m_backgroundColor;
+    m_purity = other.m_purity;
+    m_colorDynamicsPerTip = other.m_colorDynamicsPerTip;
+    m_fgBgJitterPressureCurve = other.m_fgBgJitterPressureCurve;
     m_grainTexture = other.m_grainTexture;
     m_smudgeStrength = other.m_smudgeStrength;
     m_hueJitter = other.m_hueJitter;
@@ -242,6 +247,22 @@ void Brush::setSpacingJitter(qreal amount)
 }
 
 void Brush::setGrainScale(qreal pixels) { m_grainScale = std::clamp(pixels, 1.0, 2048.0); }
+void Brush::setFgBgJitter(qreal amount)
+{
+    m_fgBgJitter = std::clamp(amount, 0.0, 1.0);
+}
+
+void Brush::setBackgroundColor(const QColor &color)
+{
+    if (color.isValid())
+        m_backgroundColor = color;
+}
+
+void Brush::setPurity(qreal amount)
+{
+    m_purity = std::clamp(amount, -1.0, 1.0);
+}
+
 void Brush::setBuildUp(qreal amount)
 {
     m_buildUp = std::clamp(amount, 0.0, 1.0);
@@ -310,6 +331,8 @@ const PressureCurve &Brush::dynamicCurve(DynamicProperty property) const
         return m_saturationJitterPressureCurve;
     case DynamicProperty::BrightnessJitter:
         return m_brightnessJitterPressureCurve;
+    case DynamicProperty::ForegroundBackground:
+        return m_fgBgJitterPressureCurve;
     }
     return m_sizePressureCurve; // unreachable; keeps the compiler quiet
 }
@@ -379,7 +402,8 @@ void Brush::setCustomGrain(const QImage &texture)
 bool Brush::usesColorStrokeBuffer() const
 {
     return m_hueJitter > 0.0 || m_saturationJitter > 0.0
-        || m_brightnessJitter > 0.0 || smudgeActive()
+        || m_brightnessJitter > 0.0 || m_fgBgJitter > 0.0
+        || m_purity != 0.0 || smudgeActive()
         || (m_grainAffectsColor && hasGrain());
 }
 
