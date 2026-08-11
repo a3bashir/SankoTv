@@ -1126,6 +1126,24 @@ QWidget *BrushSettingsStudio::buildDualBrushSection()
         },
         false);
     Q_UNUSED(enable);
+    // Combination semantics (Phase 6d). Combine keeps the engine's
+    // original behaviour: B is a full second stroke, blended with A at
+    // publication. Modulate is Photoshop's: B is a coverage pattern that
+    // carves A's alpha and contributes no colour of its own.
+    auto *mode = new StudioSegmentedRow(
+        QStringLiteral("Mode"),
+        {QStringLiteral("Combine"), QStringLiteral("Modulate")});
+    l->addWidget(mode);
+    connect(mode, &StudioSegmentedRow::chosen, this, [this](int idx) {
+        if (m_syncing)
+            return;
+        applyInstant(
+            [idx](::Brush &b) {
+                b.setDualMode(idx == 1 ? ::Brush::DualMode::Modulate
+                                       : ::Brush::DualMode::Composite);
+            },
+            false);
+    });
     auto *blend = new StudioChoiceRow(
         QStringLiteral("Blend Mode"),
         {QStringLiteral("Normal Over"), QStringLiteral("Multiply"),
@@ -1133,6 +1151,11 @@ QWidget *BrushSettingsStudio::buildDualBrushSection()
          QStringLiteral("Screen"), QStringLiteral("Overlay"),
          QStringLiteral("Linear Burn")});
     l->addWidget(blend);
+    auto *modulateNote = makeCaption(QStringLiteral(
+        "In Modulate, brush B only shapes brush A's coverage — it adds no "
+        "colour and never marks outside A. Normal Over and Screen have no "
+        "coverage meaning there and act as Multiply."));
+    l->addWidget(modulateNote);
     connect(blend, &StudioChoiceRow::chosen, this, [this](int idx) {
         if (m_syncing)
             return;
@@ -1155,13 +1178,19 @@ QWidget *BrushSettingsStudio::buildDualBrushSection()
         "Brush B is a complete brush of its own — tip, texture, "
         "dynamics and pressure curves. Use the A | B switch above the "
         "properties list to come back.")));
-    m_syncers.append([this, blend, master, editB] {
+    m_syncers.append([this, mode, blend, modulateNote, master, editB] {
         const bool on = m_session.dualBrushEnabled();
+        mode->setEnabled(on);
         blend->setEnabled(on);
         master->setEnabled(on);
         editB->setEnabled(on);
-        if (on)
+        const bool modulate =
+            m_session.dualMode() == ::Brush::DualMode::Modulate;
+        modulateNote->setVisible(on && modulate);
+        if (on) {
+            mode->setCurrentIndex(modulate ? 1 : 0);
             blend->setCurrentIndex(int(m_session.dualBlendMode()));
+        }
     });
     l->addStretch(1);
     return page;

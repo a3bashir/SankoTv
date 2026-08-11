@@ -61,6 +61,14 @@ public:
         qreal direction = 0.5;
         qreal tilt = 0.0;
     };
+    // How the dual brush COMBINES (Phase 6d). Composite is the engine's
+    // original semantics: A and B are two full strokes, blended at
+    // publication. Modulate is Photoshop's: B is a coverage PATTERN that
+    // modulates A's alpha through the blend mode — it contributes no
+    // colour and never paints outside A's marks (the ag-psd dualBrush
+    // block carries only tip/spacing/scatter/count/blend, so Photoshop's
+    // format cannot express an independent second brush).
+    enum class DualMode { Composite, Modulate };
     enum class DualBlendMode {
         NormalOver,
         Multiply,
@@ -189,6 +197,15 @@ public:
 
     bool dualBrushEnabled() const { return m_dualBrushEnabled && bool(m_secondaryBrush); }
     void setDualBrushEnabled(bool enabled);
+    DualMode dualMode() const { return m_dualMode; }
+    void setDualMode(DualMode mode)
+    {
+        // Serialised as an int: an out-of-range value (corrupt or future
+        // file) falls back to Composite — the engine's original dual
+        // semantics — never to an unmapped enum.
+        m_dualMode = (mode == DualMode::Modulate) ? DualMode::Modulate
+                                                  : DualMode::Composite;
+    }
     Brush &secondaryBrush();
     const Brush &secondaryBrush() const;
     DualBlendMode dualBlendMode() const { return m_dualBlendMode; }
@@ -363,6 +380,7 @@ private:
     mutable qsizetype m_tipCacheBytes = 0;
     mutable int m_tipCacheRegenerationCount = 0;
     bool m_dualBrushEnabled = false;
+    DualMode m_dualMode = DualMode::Composite;
     DualBlendMode m_dualBlendMode = DualBlendMode::NormalOver;
     qreal m_dualMasterOpacity = 1.0;
     std::unique_ptr<Brush> m_secondaryBrush;

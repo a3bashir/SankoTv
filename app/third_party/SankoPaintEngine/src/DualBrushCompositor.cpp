@@ -1,6 +1,7 @@
 #include "DualBrushCompositor.h"
 
 #include "PixelCompositor.h"
+#include "WetEdges.h"
 #include "TiledImage.h"
 
 #include <QPainter>
@@ -30,6 +31,38 @@ qreal blendChannel(qreal a, qreal b, Brush::DualBlendMode mode)
         return a <= 0.5 ? 2.0 * a * b : 1.0 - 2.0 * (1.0 - a) * (1.0 - b);
     case Brush::DualBlendMode::LinearBurn: return std::max<qreal>(0.0, a + b - 1.0);
     default: return b;
+    }
+}
+
+// Modulate (Photoshop) coverage functions: out.a = f(A.a, B.a), colour is
+// A's. Every f is confined — f(0, b) == 0 — so B can never paint outside
+// the primary's marks:
+//   Multiply / Mask       A * B      (the Photoshop default feel)
+//   Subtract              A * (1-B)  (B eats holes in A)
+//   Linear Burn           max(0, A + B - 1)   (hard intersection)
+//   Overlay               2AB below A=0.5, 1-2(1-A)(1-B) above (boosts
+//                         within the footprint, still 0 where A is 0)
+//   NormalOver, Screen    fall back to Multiply. "B over A" and
+//                         "screen" both add coverage OUTSIDE A, which
+//                         contradicts modulation; rather than invent a
+//                         confined meaning they take the default. The
+//                         studio caption states it.
+qreal modulateAlpha(qreal a, qreal b, Brush::DualBlendMode mode)
+{
+    switch (mode) {
+    case Brush::DualBlendMode::Subtract:
+        return a * (1.0 - b);
+    case Brush::DualBlendMode::LinearBurn:
+        return std::max<qreal>(0.0, a + b - 1.0);
+    case Brush::DualBlendMode::Overlay:
+        return a <= 0.5 ? 2.0 * a * b
+                        : 1.0 - 2.0 * (1.0 - a) * (1.0 - b);
+    case Brush::DualBlendMode::NormalOver:
+    case Brush::DualBlendMode::Screen:
+    case Brush::DualBlendMode::Multiply:
+    case Brush::DualBlendMode::Mask:
+    default:
+        return a * b;
     }
 }
 
@@ -64,7 +97,9 @@ int byte(qreal value)
 
 QImage DualBrushCompositor::composite(const QImage &baseImage, const QImage &aImage,
                                       const QImage &bImage, Brush::DualBlendMode mode,
-                                      qreal masterOpacity)
+                                      qreal masterOpacity,
+                                      Brush::DualMode dualMode,
+                                      qreal wetEdges, qreal wetCeiling)
 {
     QImage base = baseImage.convertToFormat(QImage::Format_ARGB32);
     const QImage a = aImage.convertToFormat(QImage::Format_ARGB32);
@@ -77,7 +112,21 @@ QImage DualBrushCompositor::composite(const QImage &baseImage, const QImage &aIm
         const QRgb *rowA = reinterpret_cast<const QRgb *>(a.constScanLine(y));
         const QRgb *rowB = reinterpret_cast<const QRgb *>(b.constScanLine(y));
         for (int x = 0; x < width; ++x) {
-            PixelF source = combine(readPixel(rowA[x]), readPixel(rowB[x]), mode);
+            const PixelF pa = readPixel(rowA[x]);
+            const PixelF pb = readPixel(rowB[x]);
+            PixelF source;
+            if (dualMode == Brush::DualMode::Modulate) {
+                source = pa;
+                source.a = std::clamp(modulateAlpha(pa.a, pb.a, mode),
+                                      0.0, 1.0);
+            } else {
+                source = combine(pa, pb, mode);
+            }
+            // Wet edges on the COMBINED coverage — the dual publication
+            // boundary, mirroring the single-brush publish. Only removes
+            // paint, so no ceiling can be exceeded.
+            if (wetEdges > 0.0)
+                source.a = wetEdgesAlpha(source.a, wetCeiling, wetEdges);
             source.a *= masterOpacity;
             if (source.a <= 0.0)
                 continue;

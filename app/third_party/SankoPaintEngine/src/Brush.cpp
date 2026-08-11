@@ -124,6 +124,7 @@ Brush &Brush::operator=(const Brush &other)
     m_tipCacheBytes = other.m_tipCacheBytes;
     m_tipCacheRegenerationCount = other.m_tipCacheRegenerationCount;
     m_dualBrushEnabled = other.m_dualBrushEnabled;
+    m_dualMode = other.m_dualMode;
     m_dualBlendMode = other.m_dualBlendMode;
     m_dualMasterOpacity = other.m_dualMasterOpacity;
     m_secondaryBrush = other.m_secondaryBrush

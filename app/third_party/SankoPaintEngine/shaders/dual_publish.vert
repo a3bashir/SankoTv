@@ -5,6 +5,7 @@ layout(location = 0) in vec2 vertexPosition;
 layout(std140, binding = 0) uniform Globals {
     mat4 clipMatrix;
     vec4 dualParameters;
+    vec4 wetParameters;
 };
 
 void main()

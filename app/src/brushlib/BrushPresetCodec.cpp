@@ -28,7 +28,7 @@ constexpr quint32 kPresetMagic = 0x534E4B50; // "SNKP"
 //       files land on the default 256; the field is only read when a
 //       control source is Fade, which no pre-v4 file can have set to a
 //       distance other than the default anyway.
-constexpr quint16 kVersion = 7;
+constexpr quint16 kVersion = 8;
 constexpr quint16 kMinReadVersion = 1;
 
 // A fixed QDataStream version pins the wire format independently of the Qt
@@ -300,6 +300,14 @@ void walkBrush(::Brush &b, V &v, quint16 wireVersion, int depth = 0)
                                     x);
             });
         v.curve(b.fgBgJitterPressureCurve());
+    }
+    // v8: dual-brush combination semantics (Phase 6d). Before the dual
+    // branch, as with every versioned block. A v7 or older file has no
+    // field; the fresh Brush defaults to Composite — the engine's
+    // original dual semantics, its exact pre-6d behaviour.
+    if (wireVersion >= 8) {
+        v.field([&] { return qint32(b.dualMode()); },
+                [&](qint32 x) { b.setDualMode(B::DualMode(x)); });
     }
     // Secondary brush: one level deep, exactly like the engine renders it
     // (primary slot 0 + secondary slot 1). A disabled dual brush serialises

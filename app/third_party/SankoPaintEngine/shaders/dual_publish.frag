@@ -7,12 +7,35 @@ layout(binding = 2) uniform sampler2D primaryStroke;
 layout(binding = 3) uniform sampler2D secondaryStroke;
 layout(std140, binding = 0) uniform Globals {
     mat4 clipMatrix;
-    vec4 dualParameters; // x=blend mode, y=master opacity
+    vec4 dualParameters; // x=blend mode, y=master opacity, z=dual mode, w=wet edges
+    vec4 wetParameters;  // x=wet ceiling
 };
 
 float byteRound(float value)
 {
     return floor(clamp(value, 0.0, 1.0) * 255.0 + 0.5) / 255.0;
+}
+
+// Mirrors WetEdges.h line for line — the ONE implementation discipline.
+float wetEdgesAlpha(float alpha, float ceiling, float amount)
+{
+    float cRel = clamp(ceiling > 0.0001 ? alpha / ceiling : 0.0, 0.0, 1.0);
+    return alpha * (1.0 - amount * cRel * cRel);
+}
+
+// Mirrors DualBrushCompositor's modulateAlpha: out = f(A.a, B.a), colour is
+// A's. Every f is confined (f(0, b) == 0). NormalOver (0) and Screen (4)
+// fall back to Multiply — both add coverage outside A, contradicting
+// modulation.
+float modulateAlpha(float a, float b, int mode)
+{
+    if (mode == 3) return a * (1.0 - b);
+    if (mode == 6) return max(a + b - 1.0, 0.0);
+    if (mode == 5) {
+        return a <= 0.5 ? 2.0 * a * b
+                        : 1.0 - 2.0 * (1.0 - a) * (1.0 - b);
+    }
+    return a * b;
 }
 
 vec3 blendColor(vec3 a, vec3 b, int mode)
@@ -54,7 +77,17 @@ void main()
     vec4 destination = texelFetch(baseLayer, uploadedPixel, 0);
     vec4 a = texelFetch(primaryStroke, uploadedPixel, 0);
     vec4 b = texelFetch(secondaryStroke, uploadedPixel, 0);
-    vec4 source = combineStrokes(a, b, int(dualParameters.x + 0.5));
+    int mode = int(dualParameters.x + 0.5);
+    vec4 source;
+    if (int(dualParameters.z + 0.5) == 1) {
+        source = vec4(a.rgb, clamp(modulateAlpha(a.a, b.a, mode), 0.0, 1.0));
+    } else {
+        source = combineStrokes(a, b, mode);
+    }
+    // Wet edges on the COMBINED coverage — the dual publication boundary,
+    // mirroring the single-brush publish. Only removes paint.
+    if (dualParameters.w > 0.0)
+        source.a = wetEdgesAlpha(source.a, wetParameters.x, dualParameters.w);
     source.a *= clamp(dualParameters.y, 0.0, 1.0);
     float outputAlpha = source.a + destination.a * (1.0 - source.a);
     vec3 outputColor = outputAlpha > 0.0

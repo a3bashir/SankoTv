@@ -166,11 +166,17 @@ QImage colorReadbackToRgba(const QByteArray &data, const QSize &size, bool mirro
             qreal red, green, blue, alpha;
             const qfloat16 *source = reinterpret_cast<const qfloat16 *>(data.constData())
                 + (sourceY * size.width() + x) * 4;
-            // D3D11's RGBA16F staging readback is exposed in native BGRA
-            // channel order by this QRhi path.
-            red = float(source[2]);
+            // QRhi returns logical RGBA channel order for RGBA16F readbacks,
+            // exactly as rgbaReadbackToArgb documents for RGBA8. The BGRA
+            // swizzle that used to sit here was wrong; it was never caught
+            // because this converter only feeds the DUAL publication path
+            // (single-brush colour strokes read back the published RGBA8
+            // texture instead) and no roster dual brush promotes a sub-brush
+            // to the colour buffer. Phase 6d's CPU/GPU seam measured the
+            // swap: brush (200,60,30) came back blue-dominant on GPU.
+            red = float(source[0]);
             green = float(source[1]);
-            blue = float(source[0]);
+            blue = float(source[2]);
             alpha = float(source[3]);
             if (alpha > 0.0) {
                 red /= alpha;
@@ -304,7 +310,17 @@ GpuStampRenderer::Result GpuStampRenderer::renderDualStrokeForCommit(
     if (!primary.succeeded)
         return primary;
     const Brush &secondaryBrush = brush.secondaryBrush();
-    Result secondary = renderStroke(layerSize, secondaryBrush, secondaryStamps);
+    // In Modulate mode only B's COVERAGE reaches the publication shader —
+    // its colour is discarded — so B always renders through the R16 mask
+    // path, even when its preset carries colour-dynamics parameters that
+    // would promote it to RGBA16 (halves B's stroke-buffer footprint).
+    const bool secondaryUsesColor = brush.dualMode() != Brush::DualMode::Modulate
+        && secondaryBrush.usesColorStrokeBuffer();
+    Result secondary = secondaryUsesColor
+        ? renderColorStrokeInternal(layerSize, secondaryBrush, secondaryStamps,
+                                    nullptr, {}, false)
+        : renderStrokeInternal(layerSize, secondaryBrush, secondaryStamps,
+                               nullptr, {}, false);
     if (!secondary.succeeded)
         return secondary;
 
@@ -353,7 +369,7 @@ GpuStampRenderer::Result GpuStampRenderer::renderDualStrokeForCommit(
     const QHash<QPoint, QImage> primaryTiles = brush.usesColorStrokeBuffer()
         ? primary.masks
         : DualBrushCompositor::colorizeCoverageTiles(primary.masks, brush.color());
-    const QHash<QPoint, QImage> secondaryTiles = secondaryBrush.usesColorStrokeBuffer()
+    const QHash<QPoint, QImage> secondaryTiles = secondaryUsesColor
         ? secondary.masks
         : DualBrushCompositor::colorizeCoverageTiles(secondary.masks, secondaryBrush.color());
     Result publication = publishDualTiles(
@@ -416,7 +432,7 @@ GpuStampRenderer::Result GpuStampRenderer::publishDualTiles(
         QRhiBuffer::Immutable, QRhiBuffer::VertexBuffer, sizeof(quad)));
     vertexBuffer->create();
     std::unique_ptr<QRhiBuffer> uniformBuffer(m_rhi->newBuffer(
-        QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, 80));
+        QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, 96));
     uniformBuffer->create();
     QRhiSampler *sampler = nearestClampSampler();
 
@@ -506,11 +522,17 @@ GpuStampRenderer::Result GpuStampRenderer::publishDualTiles(
 
     phase.restart();
     QMatrix4x4 clip = m_rhi->clipSpaceCorrMatrix();
-    QByteArray uniforms(80, 0);
+    QByteArray uniforms(96, 0);
     memcpy(uniforms.data(), clip.constData(), 64);
     float *parameters = reinterpret_cast<float *>(uniforms.data() + 64);
     parameters[0] = float(int(brush.dualBlendMode()));
     parameters[1] = float(brush.dualMasterOpacity());
+    parameters[2] = float(int(brush.dualMode()));
+    // Wet edges on the COMBINED coverage — the dual publication boundary
+    // (per-sub-stroke wet stays suppressed). Ceiling matches the CPU
+    // compositor: the primary's opacity ceiling.
+    parameters[3] = float(brush.smudgeActive() ? 0.0 : brush.wetEdges());
+    parameters[4] = float(brush.opacity());
     QRhiResourceUpdateBatch *uploads = m_rhi->nextResourceUpdateBatch();
     uploads->uploadStaticBuffer(vertexBuffer.get(), quad);
     uploads->updateDynamicBuffer(uniformBuffer.get(), 0, uniforms.size(), uniforms.constData());

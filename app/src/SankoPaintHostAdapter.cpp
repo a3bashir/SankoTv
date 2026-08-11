@@ -21,11 +21,12 @@ GpuStampRenderer &workerRenderer()
 
 QImage cpuSource(const QRect &region, const Brush &brush,
                  const QVector<StrokePoint> &rawPoints,
-                 QVector<StrokeStamp> stamps, quint64 seed, quint32 slot)
+                 QVector<StrokeStamp> stamps, quint64 seed, quint32 slot,
+                 bool forceMaskPath = false)
 {
     QImage transparent(region.size(), QImage::Format_ARGB32);
     transparent.fill(Qt::transparent);
-    if (brush.usesColorStrokeBuffer()) {
+    if (brush.usesColorStrokeBuffer() && !forceMaskPath) {
         for (StrokeStamp &stamp : stamps)
             stamp.point.position -= region.topLeft();
         return ColorStrokeBuffer::composite(transparent, brush, stamps, slot);
@@ -43,11 +44,17 @@ QImage cpuComposite(const SankoPaintHostAdapter::StrokeWork &work)
     if (work.brush.dualBrushEnabled()) {
         const QImage a = cpuSource(work.affectedRect, work.brush, work.rawPoints,
                                    work.primaryStamps, work.seed, 0);
+        // In Modulate mode only B's coverage is consumed, so B renders via
+        // the mask path even when its preset would promote it to the
+        // colour buffer — mirroring the GPU's forced-R16 secondary.
         const QImage b = cpuSource(work.affectedRect, work.brush.secondaryBrush(),
-                                   work.rawPoints, work.secondaryStamps, work.seed, 1);
+                                   work.rawPoints, work.secondaryStamps, work.seed, 1,
+                                   work.brush.dualMode() == Brush::DualMode::Modulate);
         return DualBrushCompositor::composite(
             work.beforeRegion, a, b, work.brush.dualBlendMode(),
-            work.brush.dualMasterOpacity());
+            work.brush.dualMasterOpacity(), work.brush.dualMode(),
+            work.brush.smudgeActive() ? 0.0 : work.brush.wetEdges(),
+            work.brush.opacity());
     }
     if (work.brush.usesColorStrokeBuffer()) {
         QVector<StrokeStamp> stamps = work.primaryStamps;
