@@ -1,4 +1,5 @@
 #include "StrokeBuilder.h"
+#include "NoiseField.h"
 #include "PixelCompositor.h"
 #include "WetEdges.h"
 
@@ -267,6 +268,11 @@ StrokeStamp StrokeBuilder::resolveStamp(const StrokePoint &point, const Brush &b
         * brush.resolveDynamic(P::SaturationJitter, src);
     stamp.effectiveBrightnessJitter = brush.brightnessJitter()
         * brush.resolveDynamic(P::BrightnessJitter, src);
+    // Noise (Phase 6e): the per-stamp base of the per-pixel hash. Property
+    // id 105 — a fresh id so it never correlates with any other jitter.
+    // Resolved unconditionally (costs one hash, changes nothing at amount
+    // 0) so both renderers always agree on the value.
+    stamp.noiseSeed = quint32(indexedHash(seed, index, 105, subBrushSlot));
     // COLOUR DYNAMICS (Phase 6c on the Phase-1 base). All per-stamp colour
     // values resolve HERE, CPU-side, with the indexed RNG — never in the
     // shader — which is what keeps the renderers byte-agreed. RNG property
@@ -599,6 +605,12 @@ void StrokeBuilder::placeStamp(const StrokeStamp &stamp)
     // every byte exactly as before.
     const bool grainActive =
         stamp.effectiveGrainDepth > 0.0 && !m_grainField.isNull();
+    // Noise (Phase 6e) perturbs the TIP's coverage BEFORE grain multiplies
+    // it — noise is a property of the tip's falloff, grain a paper texture
+    // laid over the result — matching both stamp shaders' order. Amount 0
+    // takes the guarded path and leaves every byte exactly as before.
+    const qreal noiseAmount = m_brush.noise();
+    const bool noiseActive = noiseAmount > 0.0;
     // The live CPU preview publishes per touched pixel; wet edges applies
     // to it pointwise on the ACCUMULATED value (alpha only grows, so a
     // pixel's preview is always recomputed from its current total) — same
@@ -636,14 +648,26 @@ void StrokeBuilder::placeStamp(const StrokeStamp &stamp)
                     ? m_grainField.modulation(x, y, rasterCentre,
                                               stamp.effectiveGrainDepth)
                     : 1.0;
-                const qreal coverage = grain * (source[x - left] / 255.0);
+                // The stamp-local integer pixel keys the noise hash: the
+                // offset from the quantised raster centre, floored with the
+                // 0.25 bias (see NoiseField.h). Off keeps the EXACT byte so
+                // the expressions below stay bit-identical to pre-6e.
+                const qreal tipByte = noiseActive
+                    ? 255.0 * noisyCoverage(
+                          source[x - left] / 255.0, noiseAmount,
+                          stamp.noiseSeed,
+                          qFloor(x + 0.5 - rasterCentre.x() + 0.25),
+                          qFloor(y + 0.5 - rasterCentre.y() + 0.25))
+                    : qreal(source[x - left]);
+                const qreal coverage = grain * (tipByte / 255.0);
                 quint16 combinedAlpha = 0;
                 if (stamp.effectiveFlow >= 0.999999) {
                     // Preserve the Phase 1-3 8-bit rounding exactly, then map
-                    // that byte losslessly into UNORM16. (grain 1.0 keeps the
-                    // arithmetic bit-identical to the pre-grain expression.)
+                    // that byte losslessly into UNORM16. (grain 1.0 and the
+                    // exact tip byte keep the arithmetic bit-identical to the
+                    // pre-grain, pre-noise expression.)
                     const int strokeAlpha =
-                        qRound(grain * source[x - left] * stamp.effectiveOpacity);
+                        qRound(grain * tipByte * stamp.effectiveOpacity);
                     combinedAlpha = std::max<quint16>(destination[localX],
                         static_cast<quint16>(strokeAlpha * 257));
                 } else {

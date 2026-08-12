@@ -41,6 +41,11 @@ struct StrokeStamp
     qreal effectiveSaturationJitter = 0.0;
     qreal effectiveBrightnessJitter = 0.0;
     QColor resolvedColor = Qt::black; // Straight-alpha HSV result; premultiplied in the shader.
+    // Per-stamp noise base seed (Phase 6e): indexedHash(strokeSeed, index,
+    // property 105, slot), resolved once in resolveStamp so the GPU path —
+    // which never sees the stroke seed — hashes the identical value. The
+    // per-pixel key extends it inside NoiseField.
+    quint32 noiseSeed = 0;
 };
 
 class StrokeBuilder

@@ -177,6 +177,11 @@ public:
     void setBuildUp(qreal amount);
     qreal wetEdges() const { return m_wetEdges; }
     void setWetEdges(qreal amount);
+    // Noise (Phase 6e): per-pixel roughening of the tip's alpha falloff —
+    // a STATIC 0-1 amount, like wetEdges, not a dynamic (see NoiseField.h
+    // for the model and the rationale).
+    qreal noise() const { return m_noise; }
+    void setNoise(qreal amount);
     bool grainAffectsColor() const { return m_grainAffectsColor; }
     void setGrainAffectsColor(bool enabled) { m_grainAffectsColor = enabled; }
     GrainPreset grainPreset() const { return m_grainPreset; }
@@ -337,6 +342,7 @@ private:
     qreal m_grainScale = 96.0;
     qreal m_wetEdges = 0.0; // 0 = off; publication-boundary rim pooling
     qreal m_buildUp = 0.0;  // 0 = off; time-driven stamp cadence
+    qreal m_noise = 0.0;    // 0 = off; per-pixel falloff roughening
     qreal m_fgBgJitter = 0.0;          // 0 = off; toward backgroundColor
     QColor m_backgroundColor = QColor(Qt::white);
     qreal m_purity = 0.0;              // -1 grey .. +1 full chroma

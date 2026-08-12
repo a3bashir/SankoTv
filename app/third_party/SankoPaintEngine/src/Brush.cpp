@@ -87,6 +87,7 @@ Brush &Brush::operator=(const Brush &other)
     m_grainAffectsColor = other.m_grainAffectsColor;
     m_wetEdges = other.m_wetEdges;
     m_buildUp = other.m_buildUp;
+    m_noise = other.m_noise;
     m_fgBgJitter = other.m_fgBgJitter;
     m_backgroundColor = other.m_backgroundColor;
     m_purity = other.m_purity;
@@ -272,6 +273,11 @@ void Brush::setBuildUp(qreal amount)
 void Brush::setWetEdges(qreal amount)
 {
     m_wetEdges = std::clamp(amount, 0.0, 1.0);
+}
+
+void Brush::setNoise(qreal amount)
+{
+    m_noise = std::clamp(amount, 0.0, 1.0);
 }
 
 void Brush::setGrainDepth(qreal amount) { m_grainDepth = std::clamp(amount, 0.0, 1.0); }

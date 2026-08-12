@@ -7,6 +7,7 @@ layout(location = 3) in vec3 varyingColor;
 layout(location = 4) in vec2 canvasPosition;
 layout(location = 5) in vec4 grainParameters;
 layout(location = 6) in vec2 grainFlags;
+layout(location = 7) in vec4 noiseData; // xy=seed halves, z=amount, w=half size
 layout(location = 0) out vec4 fragmentColor;
 layout(binding = 1) uniform sampler2D customTip;
 layout(binding = 2) uniform sampler2D grainTexture;
@@ -15,6 +16,31 @@ layout(std140, binding = 0) uniform Globals {
     mat4 clipMatrix;
     int useCustomTip;
 };
+
+// Mirrors NoiseField.h line for line — the ONE implementation discipline
+// (and stamp.frag, verbatim).
+uint noiseHash(uint seed, int ix, int iy)
+{
+    uint v = seed ^ (uint(ix) * 0x85ebca6bu) ^ (uint(iy) * 0xc2b2ae35u);
+    v ^= v >> 16;
+    v *= 0x7feb352du;
+    v ^= v >> 15;
+    v *= 0x846ca68bu;
+    v ^= v >> 16;
+    return v;
+}
+
+float noisyCoverage(float coverage)
+{
+    float w = 2.0 * min(coverage, 1.0 - coverage);
+    if (w <= 0.0)
+        return coverage;
+    ivec2 p = ivec2(floor(localPosition * noiseData.w + 0.25));
+    uint seed = uint(noiseData.x) | (uint(noiseData.y) << 16);
+    float n = float(noiseHash(seed, p.x, p.y) >> 8)
+        * (1.0 / 16777216.0) * 2.0 - 1.0;
+    return clamp(coverage + noiseData.z * n * w, 0.0, 1.0);
+}
 
 void main()
 {
@@ -35,6 +61,9 @@ void main()
         float t = (distanceFromCenter - hardness) / max(1.0 - hardness, 0.001);
         coverage = exp(-3.0 * t * t) * (1.0 - t);
     }
+    // Noise perturbs the TIP's coverage BEFORE grain — see stamp.frag.
+    if (noiseData.z > 0.0)
+        coverage = noisyCoverage(coverage);
     float grainValue = 1.0;
     float grainDepth = grainParameters.x;
     if (grainDepth > 0.0) {

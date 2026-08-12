@@ -28,8 +28,13 @@ target_include_directories(SankoPaintEngine PUBLIC
 target_link_libraries(SankoPaintEngine
     PUBLIC Qt6::Core Qt6::Concurrent Qt6::Gui Qt6::GuiPrivate)
 
+# GLSL 150 floor (like the publication batch below): the Phase 6e noise
+# hash is 32-bit uint arithmetic, which the default 100es/120 fallback
+# targets cannot express — qsb refuses their >INT_MAX uint literals. Every
+# backend this engine runs on (D3D11 primary) satisfies 150.
 qt_add_shaders(SankoPaintEngine sankotv_brush_shaders
     PREFIX "/shaders"
+    GLSL "150"
     FILES
         shaders/stamp.vert
         shaders/stamp.frag

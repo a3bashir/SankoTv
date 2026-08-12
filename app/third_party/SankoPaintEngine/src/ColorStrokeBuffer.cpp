@@ -1,6 +1,7 @@
 #include "ColorStrokeBuffer.h"
 
 #include "GrainField.h"
+#include "NoiseField.h"
 #include "WetEdges.h"
 #include "TiledImage.h"
 
@@ -31,6 +32,13 @@ QImage ColorStrokeBuffer::composite(const QImage &input, const Brush &brush,
         const int left = qRound(stamp.point.position.x() - tip.width() * .5);
         const int top = qRound(stamp.point.position.y() - tip.height() * .5);
         const QRect clipped = QRect(left, top, tip.width(), tip.height()).intersected(output.rect());
+        // Noise (Phase 6e) perturbs the tip's coverage BEFORE grain — the
+        // same order as StrokeBuilder::placeStamp and both stamp shaders.
+        // The stamp-local key floors the offset from the raster centre
+        // with the 0.25 bias (see NoiseField.h).
+        const qreal noiseAmount = brush.noise();
+        const QPointF rasterCentre(left + tip.width() * .5,
+                                   top + tip.height() * .5);
         for (const QPoint &coordinate : TiledImage::tilesForRect(clipped)) {
             const QRect tileRect = TiledImage::tileLayerRect(coordinate);
             const QRect intersection = clipped.intersected(tileRect);
@@ -40,6 +48,11 @@ QImage ColorStrokeBuffer::composite(const QImage &input, const Brush &brush,
                 const uchar *tipRow = tip.constScanLine(y - top);
                 for (int x = intersection.left(); x <= intersection.right(); ++x) {
                     qreal coverage = tipRow[x - left] / 255.0;
+                    if (noiseAmount > 0.0)
+                        coverage = noisyCoverage(
+                            coverage, noiseAmount, stamp.noiseSeed,
+                            qFloor(x + 0.5 - rasterCentre.x() + 0.25),
+                            qFloor(y + 0.5 - rasterCentre.y() + 0.25));
                     // 1.0 unless grain is live; used for BOTH the coverage
                     // and (below) the colour modulation, exactly as before.
                     qreal grainModulation = 1.0;

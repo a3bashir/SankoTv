@@ -48,6 +48,10 @@ struct InstanceData {
     float angleRadians, compression, hardness, flow;
     float canvasCenterX, canvasCenterY, grainDepth, grainScale;
     float grainRotation, grainContrast, grainMode, grainColor;
+    // Noise (Phase 6e): the stamp's 32-bit hash base split into two 16-bit
+    // halves (each exact in float32), plus the static amount. The fragment
+    // reassembles the uint and extends it with the stamp-local pixel.
+    float noiseSeedLo, noiseSeedHi, noiseAmount, noisePad;
 };
 
 struct ColorInstanceData {
@@ -56,6 +60,7 @@ struct ColorInstanceData {
     float red, green, blue, unused;
     float canvasCenterX, canvasCenterY, grainDepth, grainScale;
     float grainRotation, grainContrast, grainMode, grainColor;
+    float noiseSeedLo, noiseSeedHi, noiseAmount, noisePad; // see InstanceData
 };
 
 QImage tipTexture(const Brush &brush)
@@ -663,7 +668,10 @@ GpuStampRenderer::Result GpuStampRenderer::renderStrokeInternal(
                                         float(qDegreesToRadians(brush.grainRotation())),
                                         float(brush.grainContrast()),
                                         brush.grainMode() == Brush::GrainMode::StaticCanvas ? 1.0f : 0.0f,
-                                        brush.grainAffectsColor() ? 1.0f : 0.0f});
+                                        brush.grainAffectsColor() ? 1.0f : 0.0f,
+                                        float(stamp.noiseSeed & 0xffffu),
+                                        float(stamp.noiseSeed >> 16),
+                                        float(brush.noise()), 0.0f});
         }
     }
     instanceBuildUploadNs += phase.nsecsElapsed();
@@ -817,7 +825,8 @@ GpuStampRenderer::Result GpuStampRenderer::renderStrokeInternal(
                                {1, 1, QRhiVertexInputAttribute::Float4, 0},
                                {1, 2, QRhiVertexInputAttribute::Float4, 4 * sizeof(float)},
                                {1, 3, QRhiVertexInputAttribute::Float4, 8 * sizeof(float)},
-                               {1, 4, QRhiVertexInputAttribute::Float4, 12 * sizeof(float)}});
+                               {1, 4, QRhiVertexInputAttribute::Float4, 12 * sizeof(float)},
+                               {1, 5, QRhiVertexInputAttribute::Float4, 16 * sizeof(float)}});
     pipeline->setVertexInputLayout(inputLayout);
     pipeline->setShaderResourceBindings(bindings.get());
     QRhiGraphicsPipeline::TargetBlend blend;
@@ -1132,7 +1141,10 @@ GpuStampRenderer::Result GpuStampRenderer::renderColorStrokeInternal(
                                         float(qDegreesToRadians(brush.grainRotation())),
                                         float(brush.grainContrast()),
                                         brush.grainMode() == Brush::GrainMode::StaticCanvas ? 1.0f : 0.0f,
-                                        brush.grainAffectsColor() ? 1.0f : 0.0f});
+                                        brush.grainAffectsColor() ? 1.0f : 0.0f,
+                                        float(stamp.noiseSeed & 0xffffu),
+                                        float(stamp.noiseSeed >> 16),
+                                        float(brush.noise()), 0.0f});
         }
     }
     instanceNs += phase.nsecsElapsed();
@@ -1266,7 +1278,8 @@ GpuStampRenderer::Result GpuStampRenderer::renderColorStrokeInternal(
                           {1, 2, QRhiVertexInputAttribute::Float4, 4 * sizeof(float)},
                           {1, 3, QRhiVertexInputAttribute::Float4, 8 * sizeof(float)},
                           {1, 4, QRhiVertexInputAttribute::Float4, 12 * sizeof(float)},
-                          {1, 5, QRhiVertexInputAttribute::Float4, 16 * sizeof(float)}});
+                          {1, 5, QRhiVertexInputAttribute::Float4, 16 * sizeof(float)},
+                          {1, 6, QRhiVertexInputAttribute::Float4, 20 * sizeof(float)}});
     pipeline->setVertexInputLayout(layout);
     pipeline->setShaderResourceBindings(bindings.get());
     QRhiGraphicsPipeline::TargetBlend blend;

@@ -1106,6 +1106,20 @@ QWidget *BrushSettingsStudio::buildTextureSection()
               [](const ::Brush &b) { return b.grainAffectsColor(); },
               [](::Brush &b, bool on) { b.setGrainAffectsColor(on); },
               false);
+
+    // Noise (Phase 6e): a bare STATIC row — no source, no minimum, no
+    // curve chip, the wet-edges treatment — because the amount is a fixed
+    // per-pixel property of the tip's falloff, not a per-stamp dynamic.
+    // Texture hosts it: noise is per-pixel coverage modulation, grain's
+    // nearest kin in the approved mapping table.
+    addSlider(l, QStringLiteral("Noise"), 0.0, 1.0,
+              [](const ::Brush &b) { return b.noise(); },
+              [](::Brush &b, double v) { b.setNoise(v); }, fmtPercent,
+              false);
+    l->addWidget(makeCaption(QStringLiteral(
+        "Noise roughens the soft edge of the tip into a grainy, dispersed "
+        "border. It needs a soft tip to show — a hard tip has no falloff "
+        "to roughen.")));
     l->addStretch(1);
     return page;
 }
