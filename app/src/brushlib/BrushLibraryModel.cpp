@@ -28,6 +28,21 @@ QSettings appSettings()
 {
     return QSettings(QStringLiteral("SankoTV"), QStringLiteral("SankoTV"));
 }
+} // namespace (reopened below)
+
+// Scratch-rooted models keep shelf state beside the presets they scratch
+// (see the header comment): the QSettings(org, app) constructor is
+// NativeFormat on Windows — the registry — and cannot be redirected from
+// outside, so hermetic tests need the override HERE.
+QSettings BrushLibraryModel::shelfSettings() const
+{
+    if (!m_rootOverride.isEmpty())
+        return QSettings(m_rootOverride + QStringLiteral("/shelf.ini"),
+                         QSettings::IniFormat);
+    return appSettings();
+}
+
+namespace {
 
 // The single atomic file write (D3): QSaveFile writes an adjacent temp file
 // and commits by rename, so the target is either the old bytes or the new
@@ -180,7 +195,7 @@ void BrushLibraryModel::restoreDefaultBrushes()
                     break;
                 }
     saveShelfList("hidden", m_hidden);
-    appSettings().remove(kKeyPrefix + QStringLiteral("renames"));
+    shelfSettings().remove(kKeyPrefix + QStringLiteral("renames"));
     emit changed();
 }
 
@@ -230,7 +245,7 @@ bool BrushLibraryModel::renamePreset(const QString &id, const QString &name)
         // Registry-backed (no detectable failure path — see class comment).
         m_presets[idx].name = trimmed;
         m_builtinRenames.insert(id, trimmed);
-        QSettings s = appSettings();
+        QSettings s = shelfSettings();
         s.beginGroup(kKeyPrefix + QStringLiteral("renames"));
         s.setValue(QString(id).replace(QLatin1Char('/'), QLatin1Char('|')),
                    trimmed);
@@ -304,7 +319,7 @@ void BrushLibraryModel::setLibraryName(const QString &name)
     if (name.trimmed().isEmpty() || name == m_libraryName)
         return;
     m_libraryName = name.trimmed();
-    appSettings().setValue(kKeyPrefix + QStringLiteral("name"),
+    shelfSettings().setValue(kKeyPrefix + QStringLiteral("name"),
                            m_libraryName);
     emit changed();
 }
@@ -403,11 +418,14 @@ bool BrushLibraryModel::exportLibrary(const QString &path) const
     return true;
 }
 
-int BrushLibraryModel::importFile(const QString &path, QString *report)
+int BrushLibraryModel::importFile(const QString &path, QString *report,
+                                  ImportSummary *summary)
 {
     ensureImporters();
     if (report)
         report->clear();
+    if (summary)
+        *summary = ImportSummary();
     QFile f(path);
     if (!f.open(QIODevice::ReadOnly))
         return 0;
@@ -415,6 +433,8 @@ int BrushLibraryModel::importFile(const QString &path, QString *report)
     for (const BrushImporter *imp : BrushImporter::importers()) {
         if (!imp->probe(bytes))
             continue;
+        if (summary)
+            summary->claimed = true;
         // IDENTITY-AWARE IMPORT (phase 5 defect J8). The old rule — every
         // imported preset lands as a fresh user preset — meant re-importing
         // the library's own export duplicated all 62 built-ins as user
@@ -438,7 +458,41 @@ int BrushLibraryModel::importFile(const QString &path, QString *report)
         // Returns the number of presets actually APPLIED (new user presets
         // + built-in overrides written); skips count as zero.
         int applied = 0;
+        // Per-preset APPLICATION outcome — the second stage, distinct from
+        // the importer's PARSE report above it. One line per parsed preset,
+        // and the summary counts below are tallied from the same switch
+        // that writes the lines, so they cannot disagree.
+        ImportSummary tally;
+        tally.claimed = true;
+        QStringList outcomeLines;
+        const auto recordAdded = [&](const BrushPreset &p) {
+            ++tally.added;
+            outcomeLines << QStringLiteral(
+                                 "\"%1\" — added (new brush in the "
+                                 "\"%2\" category)")
+                                .arg(p.name, p.category);
+        };
+        const auto recordAlreadyPresent = [&](const BrushPreset &p,
+                                              const QString &detail) {
+            ++tally.alreadyPresent;
+            outcomeLines << QStringLiteral("\"%1\" — already in the "
+                                           "library%2")
+                                .arg(p.name, detail);
+        };
+        const auto recordUpgraded = [&](const BrushPreset &p,
+                                        const QString &detail) {
+            ++tally.upgraded;
+            outcomeLines << QStringLiteral("\"%1\" — %2").arg(p.name, detail);
+        };
+        const auto recordFailed = [&](const BrushPreset &p) {
+            ++tally.failed;
+            outcomeLines << QStringLiteral(
+                                 "\"%1\" — FAILED: could not be written to "
+                                 "the library (this brush is unchanged)")
+                                .arg(p.name);
+        };
         QVector<BrushPreset> presets = imp->importWithReport(bytes, report);
+        tally.parsed = presets.size();
         for (BrushPreset &incoming : presets)
             if (incoming.category == QLatin1String("Watercolor"))
                 incoming.category = QStringLiteral("Painting"); // retired cat
@@ -463,14 +517,26 @@ int BrushLibraryModel::importFile(const QString &path, QString *report)
                 && m_presets.at(existingIdx).builtin) {
                 if (BrushPresetCodec::saveBrush(p.brush)
                     == BrushPresetCodec::saveBrush(
-                        m_presets.at(existingIdx).brush))
+                        m_presets.at(existingIdx).brush)) {
+                    recordAlreadyPresent(
+                        p, QStringLiteral(" (built-in, already in this "
+                                          "state)"));
                     continue; // already in this state
-                if (updateBrush(p.id, p.brush)) // override, disk-first
+                }
+                if (updateBrush(p.id, p.brush)) { // override, disk-first
                     ++applied;
+                    recordUpgraded(p, QStringLiteral(
+                        "built-in brush updated with this file's version"));
+                } else {
+                    recordFailed(p);
+                }
                 continue;
             }
-            if (!p.builtin && existingIdx >= 0)
+            if (!p.builtin && existingIdx >= 0) {
+                recordAlreadyPresent(
+                    p, QStringLiteral(" (your local version is kept)"));
                 continue; // known user preset: local version wins
+            }
             // ABR IDENTITY ACROSS MAPPING GENERATIONS. An imported brush's
             // id fingerprints its MAPPED content, so when the mapping
             // itself improves (the unbake that moved static transforms
@@ -499,6 +565,9 @@ int BrushLibraryModel::importFile(const QString &path, QString *report)
                         && BrushPresetCodec::saveBrush(existing.brush)
                             == incomingBytes) { // under other names coexist
                         handled = true; // identical content already here
+                        recordAlreadyPresent(
+                            p, QStringLiteral(" (identical content; "
+                                              "re-import is a no-op)"));
                         break;
                     }
                 if (!handled) {
@@ -520,9 +589,17 @@ int BrushLibraryModel::importFile(const QString &path, QString *report)
                         // A FAILED upgrade still counts as handled: the
                         // preset stays exactly as it was on disk and in
                         // memory (D3), and must not also be added as a
-                        // duplicate.
-                        if (updateBrush(claim, p.brush))
+                        // duplicate — but it is REPORTED as a failure, not
+                        // silently folded into "already present".
+                        if (updateBrush(claim, p.brush)) {
                             ++applied;
+                            recordUpgraded(p, QStringLiteral(
+                                "upgraded in place — kept its id, "
+                                "favourites, Recent position, and hidden "
+                                "flag"));
+                        } else {
+                            recordFailed(p);
+                        }
                         handled = true;
                     }
                 }
@@ -534,12 +611,56 @@ int BrushLibraryModel::importFile(const QString &path, QString *report)
             if (p.builtin || p.id.isEmpty()
                 || !p.id.startsWith(QStringLiteral("user/"))) {
                 // Foreign/malformed identity: a fresh user id.
-                if (!addUserPreset(std::move(copy)).isEmpty())
+                if (!addUserPreset(std::move(copy)).isEmpty()) {
                     ++applied;
+                    recordAdded(p);
+                } else {
+                    recordFailed(p);
+                }
             } else if (insertUserPresetKeepingId(std::move(copy))) {
                 ++applied;
+                recordAdded(p);
+            } else {
+                recordFailed(p);
             }
         }
+        // The application block joins a report the importer wrote (the
+        // lossy .abr path); the native importer leaves the report empty
+        // and the caller words its own dialog from the summary counts.
+        if (report && !report->isEmpty()) {
+            *report += QStringLiteral("\nApplied to the library:\n");
+            if (outcomeLines.isEmpty())
+                *report += QStringLiteral("  (nothing — no brush in this "
+                                          "file could be parsed)\n");
+            for (const QString &line : std::as_const(outcomeLines))
+                *report += QStringLiteral("  - ") + line + QLatin1Char('\n');
+            if (tally.parsed == 0) {
+                *report += QStringLiteral(
+                    "\nNothing in this file could be imported — see the "
+                    "per-brush notes above for why.");
+            } else if (tally.added + tally.upgraded + tally.failed == 0) {
+                *report += QStringLiteral(
+                    "\nEvery brush in this file is already in the library — "
+                    "nothing needed to change. Re-importing the same file "
+                    "is a no-op by design.");
+            } else {
+                *report += QStringLiteral("\nSummary: %1 added, %2 upgraded "
+                                          "in place, %3 already present, "
+                                          "%4 failed.")
+                               .arg(tally.added)
+                               .arg(tally.upgraded)
+                               .arg(tally.alreadyPresent)
+                               .arg(tally.failed);
+            }
+            if (tally.failed > 0)
+                *report += QStringLiteral(
+                    "\nWARNING: %1 brush(es) could not be written to the "
+                    "library. Check disk space and permissions; the "
+                    "library itself is unchanged for those brushes.")
+                               .arg(tally.failed);
+        }
+        if (summary)
+            *summary = tally;
         return applied;
     }
     return 0;
@@ -616,7 +737,7 @@ void BrushLibraryModel::loadBuiltinOverrides()
 
 void BrushLibraryModel::loadShelfState()
 {
-    QSettings s = appSettings();
+    QSettings s = shelfSettings();
     m_favourites =
         s.value(kKeyPrefix + QStringLiteral("favourites")).toStringList();
     m_hidden = s.value(kKeyPrefix + QStringLiteral("hidden")).toStringList();
@@ -636,7 +757,7 @@ void BrushLibraryModel::loadShelfState()
 void BrushLibraryModel::saveShelfList(const char *key,
                                       const QStringList &list) const
 {
-    appSettings().setValue(kKeyPrefix + QLatin1String(key), list);
+    shelfSettings().setValue(kKeyPrefix + QLatin1String(key), list);
 }
 
 bool BrushLibraryModel::writeUserPresetFile(const BrushPreset &preset) const

@@ -596,25 +596,38 @@ void BrushLibraryPanel::importBrushes()
     if (path.isEmpty())
         return;
     QString report;
-    const int added = m_model->importFile(path, &report);
+    BrushLibraryModel::ImportSummary summary;
+    m_model->importFile(path, &report, &summary);
     if (!report.isEmpty()) {
         // A lossy importer (.abr) accounts for every brush: mapped,
-        // approximated, dropped. A brush that silently looks wrong is
-        // worse than one that says why — always show the account.
-        if (added == 0)
-            report += tr("\nNo new brushes were added — either nothing "
-                         "was importable, or every brush in this file is "
-                         "already in the library.");
+        // approximated, dropped — and importFile has already appended the
+        // per-brush APPLICATION outcomes and a summary tallied from the
+        // same records, so this dialog never contradicts itself. Nothing
+        // to add here.
         showImportReport(report);
         return;
     }
-    if (added == 0)
-        // Identity-aware import (J8): zero can simply mean everything in
-        // the file is already in the library — say that, not "failure".
+    // Native imports write no report; word the outcome from the summary
+    // counts. "Nothing was importable" and "everything was already
+    // present" are opposite outcomes — never conflate them.
+    if (!summary.claimed || summary.parsed == 0) {
+        QMessageBox::warning(
+            this, tr("Import Brushes"),
+            tr("Nothing could be imported from this file — it was not "
+               "recognised as a brush file, or it contains no readable "
+               "brushes."));
+    } else if (summary.failed > 0) {
+        QMessageBox::warning(
+            this, tr("Import Brushes"),
+            tr("%1 brush(es) could not be written to the library. Check "
+               "disk space and permissions.").arg(summary.failed));
+    } else if (summary.added + summary.upgraded == 0) {
+        // Identity-aware import (J8) working as designed: a SUCCESS.
         QMessageBox::information(
             this, tr("Import Brushes"),
-            tr("Nothing new to import — every brush in this file is "
-               "already in the library."));
+            tr("Every brush in this file is already in the library — "
+               "nothing needed to change."));
+    }
 }
 
 void BrushLibraryPanel::showImportReport(const QString &report)

@@ -4,6 +4,7 @@
 
 #include <QHash>
 #include <QObject>
+#include <QSettings>
 #include <QStringList>
 #include <QVector>
 
@@ -76,12 +77,30 @@ public:
 
     // Whole-library export: every visible preset (built-in and user) into
     // one .sankobrushset bundle. Import walks the BrushImporter registry;
-    // returns the number of presets added (as user presets). A lossy
-    // importer (Photoshop .abr) fills *report with its per-brush
+    // returns the number of presets APPLIED (added + upgraded/overridden).
+    // A lossy importer (Photoshop .abr) fills *report with its per-brush
     // mapped/approximated/dropped account; the native importer leaves it
     // empty.
+    //
+    // Parsing and application are two different stages with two different
+    // counts, and describing them as one produced a self-contradicting
+    // report ("1 of 1 imported" + "no new brushes were added"). The
+    // summary keeps them apart: per parsed preset the APPLICATION outcome
+    // is exactly one of added / alreadyPresent / upgraded / failed, and
+    // when the importer wrote a report, importFile appends the outcome
+    // lines and a matching summary to it — the two can never disagree
+    // because both are generated from the same records.
+    struct ImportSummary {
+        bool claimed = false;    // some importer recognised the file
+        int parsed = 0;          // valid presets the importer produced
+        int added = 0;           // new presets in the library
+        int alreadyPresent = 0;  // identical content already there (J8)
+        int upgraded = 0;        // upgraded in place / built-in override
+        int failed = 0;          // could not be written; library unchanged
+    };
     bool exportLibrary(const QString &path) const;
-    int importFile(const QString &path, QString *report = nullptr);
+    int importFile(const QString &path, QString *report = nullptr,
+                   ImportSummary *summary = nullptr);
 
     QString userPresetDir() const;
 
@@ -92,6 +111,14 @@ private:
     void loadUserPresets();
     void loadShelfState();
     void loadBuiltinOverrides();
+    // Shelf state (favourites, hidden, MRU, renames, library name). The
+    // production model uses the registry-backed app settings; a model
+    // built on a rootOverride keeps them in <root>/shelf.ini instead, so
+    // a test with a scratch library really touches NOTHING of the user's —
+    // the rootOverride comment always promised that, but shelf state
+    // leaked to the real registry until the import-report seam refused to
+    // run against it.
+    QSettings shelfSettings() const;
     void saveShelfList(const char *key, const QStringList &list) const;
     bool writeUserPresetFile(const BrushPreset &preset) const;
     QString presetFilePath(const QString &id) const;

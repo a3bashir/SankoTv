@@ -1708,7 +1708,7 @@ AbrParseResult parseAbr(const QByteArray &bytes)
             }
             if (sample && !sample->error.isEmpty()) {
                 MappedBrush bad;
-                bad.report.title = QStringLiteral("\"%1\" — NOT imported: %2")
+                bad.report.title = QStringLiteral("\"%1\" — could not be parsed: %2")
                                        .arg(descGet(entry, "Nm  ")
                                                 .toString()
                                                 .trimmed(),
@@ -1726,7 +1726,7 @@ AbrParseResult parseAbr(const QByteArray &bytes)
             if (!samples[i].error.isEmpty()) {
                 MappedBrush bad;
                 bad.report.title = QStringLiteral(
-                    "unnamed brush — NOT imported: %1").arg(samples[i].error);
+                    "unnamed brush — could not be parsed: %1").arg(samples[i].error);
                 mapped.append(bad);
                 continue;
             }
@@ -1738,8 +1738,8 @@ AbrParseResult parseAbr(const QByteArray &bytes)
             if (!s.error.isEmpty()) {
                 MappedBrush bad;
                 bad.report.title = s.legacyName.isEmpty()
-                    ? QStringLiteral("brush — NOT imported: %1").arg(s.error)
-                    : QStringLiteral("\"%1\" — NOT imported: %2")
+                    ? QStringLiteral("brush — could not be parsed: %1").arg(s.error)
+                    : QStringLiteral("\"%1\" — could not be parsed: %2")
                           .arg(s.legacyName, s.error);
                 mapped.append(bad);
                 continue;
@@ -1759,8 +1759,13 @@ AbrParseResult parseAbr(const QByteArray &bytes)
         result.presets.append(m.preset);
         ++imported;
     }
-    report += QStringLiteral("%1 of %2 brushes imported into the "
-                             "\"Imported\" category.\n\n")
+    // PARSE-stage count only. Whether a parsed brush is then ADDED, found
+    // ALREADY PRESENT, or UPGRADED in place is the library's decision —
+    // BrushLibraryModel::importFile appends that application account below
+    // this report. The old wording ("imported into the Imported category")
+    // claimed an application outcome this stage cannot know, which is how
+    // one report came to say both "1 of 1 imported" and "no new brushes".
+    report += QStringLiteral("%1 of %2 brushes parsed from this file.\n\n")
                   .arg(imported).arg(mapped.size());
     for (const MappedBrush &m : mapped)
         m.report.write(&report);
