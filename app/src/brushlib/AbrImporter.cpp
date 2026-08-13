@@ -1104,7 +1104,8 @@ void silenceAllDynamics(::Brush &b)
 
 MappedBrush buildBrush(const AbrSample *sample, const QVariantMap &desc,
                        const QVector<AbrPattern> &patterns,
-                       const QString &fallbackName)
+                       const QString &fallbackName,
+                       const AbrSample *dualSample = nullptr)
 {
     MappedBrush out;
     BrushReport &rep = out.report;
@@ -1407,6 +1408,53 @@ MappedBrush buildBrush(const AbrSample *sample, const QVariantMap &desc,
                 "wetness/mix dynamics (mixer brush — no counterpart)"));
     }
 
+    // --- Colour dynamics -> the 6c parameters -----------------------------
+    // clVr is a full BrushDynamics block driving the FOREGROUND/BACKGROUND
+    // interpolation (the 15th dynamic); 'H   '/Strt/Brgh/purity are plain
+    // percent amounts (no per-amount dynamics in Photoshop). Semantics
+    // match what 6c verified: HSV space, hue wraps +/- jitter (100% = the
+    // whole wheel), saturation/brightness are absolute offsets from base,
+    // purity is a -100..100 push toward grey or full chroma. The engine's
+    // per-brush backgroundColor stays at its default (white): Photoshop
+    // interpolates toward the APP-LEVEL background colour at paint time
+    // and the ABR file carries no colour to adopt — inventing one here
+    // would bake today's palette into the preset. (6c's identity-colour
+    // rule is untouched: backgroundColor is never adopted from or into
+    // the app colour on selection.)
+    if (descGet(desc, "useColorDynamics").toBool()) {
+        const Dynamics clvr = readDynamics(desc, "clVr");
+        b.setFgBgJitter(std::clamp(clvr.jitterPct / 100.0, 0.0, 1.0));
+        noteFade(QStringLiteral("foreground/background"),
+                 applyDynamic(clvr,
+                              {&b,
+                               ::Brush::DynamicProperty::ForegroundBackground,
+                               QStringLiteral("foreground/background")},
+                              &rep));
+        const double huePct = descNumber(desc, "H   ", 0.0);
+        const double satPct = descNumber(desc, "Strt", 0.0);
+        const double brgPct = descNumber(desc, "Brgh", 0.0);
+        const double purityPct = descNumber(desc, "purity", 0.0);
+        b.setHueJitter(std::clamp(huePct / 100.0, 0.0, 1.0));
+        b.setSaturationJitter(std::clamp(satPct / 100.0, 0.0, 1.0));
+        b.setBrightnessJitter(std::clamp(brgPct / 100.0, 0.0, 1.0));
+        b.setPurity(std::clamp(purityPct / 100.0, -1.0, 1.0));
+        b.setColorDynamicsPerTip(
+            descGet(desc, "colorDynamicsPerTip").toBool());
+        rep.mapped.append(
+            QStringLiteral("colour dynamics: fg/bg %1%, hue %2%, "
+                           "saturation %3%, brightness %4%, purity %5%%6 "
+                           "(background colour stays the engine default — "
+                           "the file carries none)")
+                .arg(qRound(clvr.jitterPct))
+                .arg(qRound(huePct))
+                .arg(qRound(satPct))
+                .arg(qRound(brgPct))
+                .arg(qRound(purityPct))
+                .arg(b.colorDynamicsPerTip()
+                         ? QStringLiteral(", per tip")
+                         : QString()));
+    }
+
     // --- Fade distance: per-dynamic STEPS -> one brush-wide distance -----
     // Photoshop gives every fade-driven dynamic its own step count; the
     // engine has a single fadeDistance shared by all of them. One fading
@@ -1446,22 +1494,151 @@ MappedBrush buildBrush(const AbrSample *sample, const QVariantMap &desc,
         }
     }
 
+    // --- Dual brush -> the engine's Modulate mode -------------------------
+    // Photoshop's dual block carries EXACTLY: Flip, the tip shape, BlnM,
+    // Spcn, useScatter/scatterDynamics/bothAxes, and Cnt/countDynamics —
+    // no colour, opacity, flow, paint dynamics or texture (validated
+    // against ag-psd's abr.ts), so there is nothing else to map. B is a
+    // coverage PATTERN in Modulate (6d forces it to the mask buffer), and
+    // the importer sets no colour parameters on it.
+    const QVariantMap dual = descGet(desc, "dualBrush").toMap();
+    if (descGet(dual, "useDualBrush").toBool()) {
+        b.setDualBrushEnabled(true);
+        b.setDualMode(::Brush::DualMode::Modulate);
+        ::Brush &sec = b.secondaryBrush();
+        // setDualBrushEnabled clones the mid-build primary; B starts from
+        // a clean default instead, then takes only what the block carries.
+        sec = ::Brush();
+        silenceAllDynamics(sec);
+        const QVariantMap btip = descGet(dual, "Brsh").toMap();
+        const double bDiameter = descNumber(btip, "Dmtr", 0.0);
+        const double bAngle = descNumber(btip, "Angl", 0.0);
+        const double bRoundness = descNumber(btip, "Rndn", 100.0);
+        QString bTipNote;
+        if (dualSample && !dualSample->mask.isNull()) {
+            const TipMapping mapping = mapStaticTransform(
+                dualSample->mask, bAngle, bRoundness, false, false);
+            sec.setCustomShape(squareTip(mapping.mask, &rep.approximated));
+            sec.setTipAngle(mapping.engineAngle);
+            sec.setTipRoundness(mapping.roundness);
+            bTipNote = QStringLiteral("sampled %1x%2 donor tip")
+                           .arg(dualSample->mask.width())
+                           .arg(dualSample->mask.height());
+        } else {
+            const double bHardness = descNumber(btip, "Hrdn", 100.0);
+            sec.setHardness(std::clamp(bHardness / 100.0, 0.0, 1.0));
+            sec.setTipRoundness(bRoundness > 0.5 && bRoundness < 99.5
+                                    ? bRoundness / 100.0 : 1.0);
+            sec.setTipAngle(-bAngle);
+            bTipNote = QStringLiteral("computed tip (hardness %1%)")
+                           .arg(qRound(bHardness));
+        }
+        double bSize = bDiameter;
+        if (bSize < 1.0 && dualSample)
+            bSize = qMax(dualSample->mask.width(),
+                         dualSample->mask.height());
+        if (bSize < 1.0)
+            bSize = b.size();
+        sec.setSize(qMax(1, qRound(qMin(bSize, double(kEngineTipMax)))));
+        const double bSpacingPct = descNumber(dual, "Spcn", 25.0);
+        sec.setSpacing(std::clamp(bSpacingPct / 100.0, 0.01, 10.0));
+        if (descGet(dual, "useScatter").toBool()) {
+            const Dynamics sctr = readDynamics(dual, "scatterDynamics");
+            const double amount =
+                std::clamp(sctr.jitterPct / 100.0, 0.0, 10.0);
+            sec.setScatterPerpendicular(amount);
+            if (descGet(dual, "bothAxes").toBool())
+                sec.setScatterAlong(amount);
+            if (sctr.present && sctr.control != 0)
+                rep.approximated.append(QStringLiteral(
+                    "dual scatter control (%1) -> static scatter")
+                                            .arg(controlName(sctr.control)));
+        }
+        sec.setScatterCount(
+            std::clamp(int(descNumber(dual, "Cnt ", 1)), 1, 16));
+        const Dynamics cntDyn = readDynamics(dual, "countDynamics");
+        if (cntDyn.present && (cntDyn.jitterPct > 0.0 || cntDyn.control != 0))
+            rep.dropped.append(QStringLiteral(
+                "dual scatter-count dynamic (no counterpart)"));
+        if (descGet(dual, "Flip").toBool())
+            rep.dropped.append(QStringLiteral(
+                "dual tip random flip (flip jitter — no counterpart)"));
+        // BlnM -> the Modulate coverage functions 6d defined. Multiply and
+        // Mask are a*b; Subtract a*(1-b); Linear Burn max(0, a+b-1);
+        // Overlay the two-branch curve. NormalOver and Screen have no
+        // confining coverage meaning and fall back to Multiply (the 6d
+        // rule); Darken (min) falls to Multiply, Color Burn and Hard Mix
+        // to Linear Burn, Color Dodge to Overlay — nearest confined
+        // shapes, reported as approximations.
+        const QString blnm = descGet(dual, "BlnM").toString();
+        ::Brush::DualBlendMode mode = ::Brush::DualBlendMode::Multiply;
+        QString blendNote;
+        if (blnm == QLatin1String("Mltp")) {
+            mode = ::Brush::DualBlendMode::Multiply;
+        } else if (blnm == QLatin1String("Sbtr")) {
+            mode = ::Brush::DualBlendMode::Subtract;
+        } else if (blnm == QLatin1String("Ovrl")) {
+            mode = ::Brush::DualBlendMode::Overlay;
+        } else if (blnm == QLatin1String("linearBurn")) {
+            mode = ::Brush::DualBlendMode::LinearBurn;
+        } else if (blnm == QLatin1String("Nrml")
+                   || blnm == QLatin1String("Scrn")) {
+            mode = ::Brush::DualBlendMode::Multiply;
+            blendNote = QStringLiteral(
+                "dual blend '%1' has no confining coverage meaning -> "
+                "Multiply (the 6d fallback)").arg(blnm);
+        } else if (blnm == QLatin1String("Drkn")) {
+            mode = ::Brush::DualBlendMode::Multiply;
+            blendNote = QStringLiteral(
+                "dual blend Darken (min) -> Multiply (nearest confined)");
+        } else if (blnm == QLatin1String("CBrn")
+                   || blnm == QLatin1String("HrdM")) {
+            mode = ::Brush::DualBlendMode::LinearBurn;
+            blendNote = QStringLiteral(
+                "dual blend '%1' -> Linear Burn (nearest confined)")
+                            .arg(blnm);
+        } else if (blnm == QLatin1String("CDdg")) {
+            mode = ::Brush::DualBlendMode::Overlay;
+            blendNote = QStringLiteral(
+                "dual blend Color Dodge -> Overlay (nearest confined "
+                "brightening)");
+        } else if (!blnm.isEmpty()) {
+            blendNote = QStringLiteral(
+                "dual blend '%1' has no mapping -> Multiply used")
+                            .arg(blnm);
+        }
+        b.setDualBlendMode(mode);
+        if (!blendNote.isEmpty())
+            rep.approximated.append(blendNote);
+        rep.mapped.append(
+            QStringLiteral("dual brush -> Modulate: %1, %2 px, spacing "
+                           "%3%, scatter %4%%5, count %6, blend %7")
+                .arg(bTipNote)
+                .arg(sec.size())
+                .arg(qRound(bSpacingPct))
+                .arg(qRound(sec.scatterPerpendicular() * 100.0))
+                .arg(sec.scatterAlong() > 0.0
+                         ? QStringLiteral(" both axes") : QString())
+                .arg(sec.scatterCount())
+                .arg(blnm));
+    }
+
+    // --- Noise -> the 6e amount -------------------------------------------
+    // Photoshop's Noise is a checkbox with no strength; 1.0 is the full
+    // effect, the value the checkbox means (6e's mapping note).
+    if (descGet(desc, "Nose").toBool()) {
+        b.setNoise(1.0);
+        rep.mapped.append(QStringLiteral("noise -> amount 100%"));
+    }
+
     // --- Out-of-scope features: report, never approximate silently ---
     if (descGet(desc, "Wtdg").toBool())
         rep.dropped.append(QStringLiteral(
             "wet edges (engine composites differently)"));
-    if (descGet(desc, "Nose").toBool())
-        rep.dropped.append(QStringLiteral("noise"));
     if (descGet(desc, "Rpt ").toBool())
         rep.dropped.append(QStringLiteral(
-            "build-up / airbrush accumulation"));
-    const QVariantMap dual = descGet(desc, "dualBrush").toMap();
-    if (descGet(dual, "useDualBrush").toBool())
-        rep.dropped.append(QStringLiteral(
-            "dual brush (Photoshop composites dual tips differently)"));
-    if (descGet(desc, "useColorDynamics").toBool())
-        rep.dropped.append(QStringLiteral(
-            "colour dynamics (foreground/background interpolation)"));
+            "build-up / airbrush accumulation ('Rpt ' is a boolean toggle; "
+            "6b's buildUp is an amount — mapping deferred)"));
 
     out.valid = true;
     return out;
@@ -1502,16 +1679,33 @@ QString AbrImporter::contentId(const BrushPreset &preset)
        << b.scatterPerpendicular() << ';' << b.scatterCount() << ';'
        << b.grainScale() << ';' << b.grainDepth() << ';'
        << int(b.grainMode()) << ';' << int(b.grainPreset()) << ';';
+    // The colour, noise and dual parameters joined the mapping in
+    // generation 3 — they are fingerprint material for the same reason
+    // everything above is: two brushes differing only here must not
+    // collide into one id (the second would be silently skipped as a
+    // duplicate on import).
+    ts << b.hueJitter() << ';' << b.saturationJitter() << ';'
+       << b.brightnessJitter() << ';' << b.fgBgJitter() << ';'
+       << b.purity() << ';' << b.colorDynamicsPerTip() << ';'
+       << b.noise() << ';' << b.dualBrushEnabled() << ';';
+    if (b.dualBrushEnabled()) {
+        const ::Brush &sec =
+            const_cast<::Brush &>(b).secondaryBrush();
+        ts << int(b.dualMode()) << ',' << int(b.dualBlendMode()) << ','
+           << sec.size() << ',' << sec.spacing() << ',' << sec.hardness()
+           << ',' << sec.tipAngle() << ',' << sec.tipRoundness() << ','
+           << sec.scatterAlong() << ',' << sec.scatterPerpendicular()
+           << ',' << sec.scatterCount() << ';';
+    }
     bool fades = false;
-    // PINNED at the original 14: the fingerprint covers what the importer
-    // MAPS, and colour dynamics (ForegroundBackground, the 15th property
-    // since Phase 6c) is still on the dropped list. Widening this loop
-    // before the importer maps it would move every imported id for a
-    // value no import can set — the duplicate-beside-every-brush failure
-    // the mapping-generation tag exists to prevent. When colour dynamics
-    // IS mapped, extend this to kDynamicPropertyCount AND bump the
-    // generation string above.
-    for (int i = 0; i < 14; ++i) {
+    // WIDENED to 15 with the generation/3 bump IN THE SAME COMMIT — the
+    // importer now maps colour dynamics, so ForegroundBackground (the
+    // 15th property) participates in identity. The codec's v2 dynamics
+    // block is a different surface and STAYS PINNED at 14: every v2-v6
+    // file on disk carries exactly 14 entries. Widening here without the
+    // generation bump (or bumping without widening) produces the
+    // duplicate-beside-every-brush failure the tag exists to prevent.
+    for (int i = 0; i < 15; ++i) {
         const auto property = ::Brush::DynamicProperty(i);
         ts << int(b.controlSource(property)) << ','
            << b.controlMinimum(property) << ',';
@@ -1542,8 +1736,10 @@ QString AbrImporter::contentId(const BrushPreset &preset)
     // duplicate beside every brush instead of upgrading it. Measured: 1
     // stored preset became 13 on re-import before this tag existed.
     // Bump this string whenever the mapping changes what a given ABR
-    // produces; nothing else needs to know.
-    h.addData("abr-mapping-generation/2\n");
+    // produces; nothing else needs to know. Generation 3: colour dynamics
+    // (clVr/H/Strt/Brgh/purity/perTip), dual brush -> Modulate, and noise
+    // joined the mapping.
+    h.addData("abr-mapping-generation/3\n");
     h.addData(preset.name.toUtf8());
     h.addData("\n", 1);
     h.addData(canon.toUtf8());
@@ -1561,6 +1757,13 @@ QString AbrImporter::contentId(const BrushPreset &preset)
         addImage(b.customShape());
     if (b.grainPreset() == ::Brush::GrainPreset::Custom)
         addImage(b.grainTexture());
+    // A sampled dual DONOR tip is mapped content too (generation 3): two
+    // duals differing only in B's bitmap must not collide.
+    if (b.dualBrushEnabled()) {
+        const ::Brush &sec = const_cast<::Brush &>(b).secondaryBrush();
+        if (sec.hasCustomShape())
+            addImage(sec.customShape());
+    }
     return QStringLiteral("user/abr-")
         + QString::fromLatin1(h.result().toHex().left(32));
 }
@@ -1669,7 +1872,10 @@ AbrParseResult parseAbr(const QByteArray &bytes)
         };
         // Dual-brush DONOR tips also live in 'samp'. Dual brush is dropped
         // by design, so claim those records up front: a donor must never
-        // leak into the library as a standalone "Imported Brush N".
+        // leak into the library as a standalone "Imported Brush N". Since
+        // the dual mapping (6d Modulate) the claimed record is KEPT — it
+        // becomes B's tip via donorByUuid rather than being discarded.
+        QHash<QString, int> donorByUuid;
         for (const QVariant &entryVar : descBrushes) {
             const QVariantMap dual =
                 descGet(entryVar.toMap(), "dualBrush").toMap();
@@ -1681,8 +1887,10 @@ AbrParseResult parseAbr(const QByteArray &bytes)
             if (dualUuid.isEmpty())
                 continue;
             for (int i = 0; i < samples.size(); ++i)
-                if (!claimed[i] && samples[i].uuid == dualUuid)
+                if (!claimed[i] && samples[i].uuid == dualUuid) {
                     claimed[i] = true;
+                    donorByUuid.insert(dualUuid, i);
+                }
         }
         for (const QVariant &entryVar : descBrushes) {
             const QVariantMap entry = entryVar.toMap();
@@ -1716,8 +1924,21 @@ AbrParseResult parseAbr(const QByteArray &bytes)
                 mapped.append(bad);
                 continue;
             }
+            const AbrSample *dualSample = nullptr;
+            {
+                const QVariantMap dual =
+                    descGet(entry, "dualBrush").toMap();
+                if (descGet(dual, "useDualBrush").toBool()) {
+                    const QString dualUuid =
+                        descGet(descGet(dual, "Brsh").toMap(),
+                                "sampledData").toString();
+                    const int di = donorByUuid.value(dualUuid, -1);
+                    if (di >= 0 && samples[di].error.isEmpty())
+                        dualSample = &samples[di];
+                }
+            }
             mapped.append(buildBrush(sample, entry, patterns,
-                                     fallbackName()));
+                                     fallbackName(), dualSample));
         }
         // samp records the descriptor never claimed still hold real tips.
         for (int i = 0; i < samples.size(); ++i) {

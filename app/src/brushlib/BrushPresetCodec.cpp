@@ -187,11 +187,16 @@ void walkBrush(::Brush &b, V &v, quint16 wireVersion, int depth = 0)
     v.field([&] { return b.brightnessJitter(); },
             [&](qreal x) { b.setBrightnessJitter(x); });
     // Custom tip (null slot = keep the procedural round tip).
+    // ALWAYS applied — setCustomShape(null) clears. The old non-null guard
+    // left a phantom tip on the SECONDARY of a dual brush whose B is
+    // procedural: setDualBrushEnabled(true) during the read clones the
+    // partially-loaded primary (including its custom shape) into the
+    // secondary, and skipping the empty image left that clone in place —
+    // B reloaded with A's tip and the preset re-saved differently.
+    // (Grain has no such hole: reading the grainPreset field regenerates
+    // the procedural texture for every non-Custom preset.)
     v.image([&] { return b.customShape(); },
-            [&](const QImage &img) {
-                if (!img.isNull())
-                    b.setCustomShape(img);
-            });
+            [&](const QImage &img) { b.setCustomShape(img); });
     // Dual-brush configuration (blend + master always; payload below).
     v.field([&] { return qint32(b.dualBlendMode()); },
             [&](qint32 x) { b.setDualBlendMode(B::DualBlendMode(x)); });
