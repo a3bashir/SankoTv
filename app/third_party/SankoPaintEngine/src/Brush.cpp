@@ -83,6 +83,7 @@ Brush &Brush::operator=(const Brush &other)
     m_grainContrast = other.m_grainContrast;
     m_grainRotation = other.m_grainRotation;
     m_grainMode = other.m_grainMode;
+    m_textureBlendMode = other.m_textureBlendMode;
     m_grainPreset = other.m_grainPreset;
     m_grainAffectsColor = other.m_grainAffectsColor;
     m_wetEdges = other.m_wetEdges;

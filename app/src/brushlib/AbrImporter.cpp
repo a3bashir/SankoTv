@@ -1370,11 +1370,61 @@ MappedBrush buildBrush(const AbrSample *sample, const QVariantMap &desc,
             if (descGet(desc, "InvT").toBool())
                 rep.dropped.append(
                     QStringLiteral("texture inversion (no counterpart)"));
-            const QVariant blend = descGet(desc, "textureBlendMode");
-            if (blend.isValid())
+            // Texture blend mode -> the native TextureBlendMode enum.
+            // Files carry either the 4cc or the long enum key (this
+            // machine's Sinbad file writes the long form "height"), so
+            // both spellings are accepted per mode. The mapping is exact
+            // at this layer — the old "approximated" line is gone; the
+            // formula-vs-Photoshop confidence grading is an ENGINE
+            // property and lives in TextureBlend.h, not in the import
+            // report, because mapped/approximated/dropped describes what
+            // the importer did with the file, and the importer now lands
+            // every mode on its own enum value. An unknown string is the
+            // one remaining approximation and is reported by name.
+            const QString blend =
+                descGet(desc, "textureBlendMode").toString();
+            using TB = ::Brush::TextureBlendMode;
+            TB texMode = TB::Multiply;
+            bool known = true;
+            if (blend.isEmpty() || blend == QLatin1String("Mltp")
+                || blend == QLatin1String("multiply")) {
+                texMode = TB::Multiply;
+            } else if (blend == QLatin1String("Sbtr")
+                       || blend == QLatin1String("blendSubtraction")
+                       || blend == QLatin1String("subtraction")
+                       || blend == QLatin1String("subtract")) {
+                texMode = TB::Subtract;
+            } else if (blend == QLatin1String("Drkn")
+                       || blend == QLatin1String("darken")) {
+                texMode = TB::Darken;
+            } else if (blend == QLatin1String("Ovrl")
+                       || blend == QLatin1String("overlay")) {
+                texMode = TB::Overlay;
+            } else if (blend == QLatin1String("CBrn")
+                       || blend == QLatin1String("colorBurn")) {
+                texMode = TB::ColorBurn;
+            } else if (blend == QLatin1String("linearBurn")) {
+                texMode = TB::LinearBurn;
+            } else if (blend == QLatin1String("hardMix")) {
+                texMode = TB::HardMix;
+            } else if (blend == QLatin1String("Hght")
+                       || blend == QLatin1String("height")) {
+                texMode = TB::Height;
+            } else if (blend == QLatin1String("linearHeight")) {
+                texMode = TB::LinearHeight;
+            } else {
+                known = false;
+            }
+            b.setTextureBlendMode(texMode);
+            if (known) {
+                if (texMode != TB::Multiply)
+                    rep.mapped.append(QStringLiteral(
+                        "texture blend mode '%1' -> native").arg(blend));
+            } else {
                 rep.approximated.append(QStringLiteral(
-                    "texture blend mode '%1' -> engine grain blending")
-                                            .arg(blend.toString()));
+                    "texture blend mode '%1' unrecognised -> Multiply "
+                    "used").arg(blend));
+            }
         } else {
             rep.dropped.append(
                 QStringLiteral("texture '%1' (pattern data missing or "
@@ -1678,7 +1728,10 @@ QString AbrImporter::contentId(const BrushPreset &preset)
        << b.spacingJitter() << ';' << b.scatterAlong() << ';'
        << b.scatterPerpendicular() << ';' << b.scatterCount() << ';'
        << b.grainScale() << ';' << b.grainDepth() << ';'
-       << int(b.grainMode()) << ';' << int(b.grainPreset()) << ';';
+       << int(b.grainMode()) << ';' << int(b.grainPreset()) << ';'
+       // Generation 4: the texture blend mode is mapped content (two
+       // brushes differing only here must not collide into one id).
+       << int(b.textureBlendMode()) << ';';
     // The colour, noise and dual parameters joined the mapping in
     // generation 3 — they are fingerprint material for the same reason
     // everything above is: two brushes differing only here must not
@@ -1738,8 +1791,10 @@ QString AbrImporter::contentId(const BrushPreset &preset)
     // Bump this string whenever the mapping changes what a given ABR
     // produces; nothing else needs to know. Generation 3: colour dynamics
     // (clVr/H/Strt/Brgh/purity/perTip), dual brush -> Modulate, and noise
-    // joined the mapping.
-    h.addData("abr-mapping-generation/3\n");
+    // joined the mapping. Generation 4: texture blend modes map natively
+    // (previously every mode collapsed onto Multiply), and the mode joined
+    // the fingerprint above IN THE SAME COMMIT.
+    h.addData("abr-mapping-generation/4\n");
     h.addData(preset.name.toUtf8());
     h.addData("\n", 1);
     h.addData(canon.toUtf8());

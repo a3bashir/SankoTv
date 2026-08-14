@@ -1102,6 +1102,31 @@ QWidget *BrushSettingsStudio::buildTextureSection()
                                                                          : 1);
     });
 
+    // Texture blend mode: nine options, so the dual-brush precedent (a
+    // StudioChoiceRow list) fits where Grain Motion's two-way segmented
+    // row cannot. Order matches Brush::TextureBlendMode exactly.
+    auto *blendRow = new StudioChoiceRow(
+        QStringLiteral("Texture Blend"),
+        {QStringLiteral("Multiply"), QStringLiteral("Subtract"),
+         QStringLiteral("Darken"), QStringLiteral("Overlay"),
+         QStringLiteral("Colour Burn"), QStringLiteral("Linear Burn"),
+         QStringLiteral("Hard Mix"), QStringLiteral("Height"),
+         QStringLiteral("Linear Height")});
+    l->addWidget(blendRow);
+    connect(blendRow, &StudioChoiceRow::chosen, this, [this](int idx) {
+        if (m_syncing)
+            return;
+        applyInstant(
+            [idx](::Brush &b) {
+                b.setTextureBlendMode(::Brush::TextureBlendMode(idx));
+            },
+            false);
+    });
+    m_syncers.append([this, blendRow] {
+        blendRow->setCurrentIndex(
+            int(scopeBrushConst().textureBlendMode()));
+    });
+
     addToggle(l, QStringLiteral("Grain Affects Colour"),
               [](const ::Brush &b) { return b.grainAffectsColor(); },
               [](::Brush &b, bool on) { b.setGrainAffectsColor(on); },

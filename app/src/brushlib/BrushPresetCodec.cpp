@@ -28,7 +28,7 @@ constexpr quint32 kPresetMagic = 0x534E4B50; // "SNKP"
 //       files land on the default 256; the field is only read when a
 //       control source is Fade, which no pre-v4 file can have set to a
 //       distance other than the default anyway.
-constexpr quint16 kVersion = 9;
+constexpr quint16 kVersion = 10;
 constexpr quint16 kMinReadVersion = 1;
 
 // A fixed QDataStream version pins the wire format independently of the Qt
@@ -321,6 +321,17 @@ void walkBrush(::Brush &b, V &v, quint16 wireVersion, int depth = 0)
     if (wireVersion >= 9) {
         v.field([&] { return b.noise(); },
                 [&](qreal x) { b.setNoise(x); });
+    }
+    // v10: texture blend mode. Before the dual branch, as with every
+    // versioned block. A v9 or older file has no field; the fresh Brush
+    // defaults to Multiply — the engine's original texture behaviour, its
+    // exact prior rendering. The setter clamps out-of-range values back
+    // to Multiply, never to an unmapped enum.
+    if (wireVersion >= 10) {
+        v.field([&] { return qint32(b.textureBlendMode()); },
+                [&](qint32 x) {
+                    b.setTextureBlendMode(B::TextureBlendMode(x));
+                });
     }
     // Secondary brush: one level deep, exactly like the engine renders it
     // (primary slot 0 + secondary slot 1). A disabled dual brush serialises

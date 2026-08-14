@@ -1,6 +1,7 @@
 #include "StrokeBuilder.h"
 #include "NoiseField.h"
 #include "PixelCompositor.h"
+#include "TextureBlend.h"
 #include "WetEdges.h"
 
 #include <QColor>
@@ -605,6 +606,13 @@ void StrokeBuilder::placeStamp(const StrokeStamp &stamp)
     // every byte exactly as before.
     const bool grainActive =
         stamp.effectiveGrainDepth > 0.0 && !m_grainField.isNull();
+    // Texture blend mode: Multiply takes the pre-existing expression
+    // VERBATIM below (the 62 built-ins render through it bit-identically);
+    // every other mode routes tip-after-noise coverage and the shaped
+    // texture sample through TextureBlend.h — the same pipeline slot, the
+    // same anchoring, a different combine.
+    const bool texBlendActive = grainActive
+        && m_brush.textureBlendMode() != ::Brush::TextureBlendMode::Multiply;
     // Noise (Phase 6e) perturbs the TIP's coverage BEFORE grain multiplies
     // it — noise is a property of the tip's falloff, grain a paper texture
     // laid over the result — matching both stamp shaders' order. Amount 0
@@ -644,7 +652,7 @@ void StrokeBuilder::placeStamp(const StrokeStamp &stamp)
                 const int localX = x - tileRect.left();
                 // The shader's order: coverage is grain-modulated BEFORE
                 // either deposit rule sees it.
-                const qreal grain = grainActive
+                const qreal grain = grainActive && !texBlendActive
                     ? m_grainField.modulation(x, y, rasterCentre,
                                               stamp.effectiveGrainDepth)
                     : 1.0;
@@ -659,7 +667,17 @@ void StrokeBuilder::placeStamp(const StrokeStamp &stamp)
                           qFloor(x + 0.5 - rasterCentre.x() + 0.25),
                           qFloor(y + 0.5 - rasterCentre.y() + 0.25))
                     : qreal(source[x - left]);
-                const qreal coverage = grain * (tipByte / 255.0);
+                // Non-Multiply texture blends replace the multiply factor
+                // with TextureBlend.h's combine of (tip-after-noise,
+                // shaped texture, resolved depth). Order unchanged:
+                // tip -> noise -> texture blend.
+                const qreal blendedByte = texBlendActive
+                    ? 255.0 * textureBlendCoverage(
+                          m_brush.textureBlendMode(), tipByte / 255.0,
+                          m_grainField.shapedSample(x, y, rasterCentre),
+                          stamp.effectiveGrainDepth)
+                    : tipByte;
+                const qreal coverage = grain * (blendedByte / 255.0);
                 quint16 combinedAlpha = 0;
                 if (stamp.effectiveFlow >= 0.999999) {
                     // Preserve the Phase 1-3 8-bit rounding exactly, then map
@@ -667,7 +685,7 @@ void StrokeBuilder::placeStamp(const StrokeStamp &stamp)
                     // exact tip byte keep the arithmetic bit-identical to the
                     // pre-grain, pre-noise expression.)
                     const int strokeAlpha =
-                        qRound(grain * tipByte * stamp.effectiveOpacity);
+                        qRound(grain * blendedByte * stamp.effectiveOpacity);
                     combinedAlpha = std::max<quint16>(destination[localX],
                         static_cast<quint16>(strokeAlpha * 257));
                 } else {

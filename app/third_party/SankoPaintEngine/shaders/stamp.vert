@@ -19,6 +19,7 @@ layout(std140, binding = 0) uniform Globals {
     mat4 clipMatrix;
     int useCustomTip;
     int accumulateFlow;
+    int textureBlendMode;
 };
 
 void main()

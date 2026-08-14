@@ -2,6 +2,7 @@
 
 #include "GrainField.h"
 #include "NoiseField.h"
+#include "TextureBlend.h"
 #include "WetEdges.h"
 #include "TiledImage.h"
 
@@ -55,6 +56,13 @@ QImage ColorStrokeBuffer::composite(const QImage &input, const Brush &brush,
                             qFloor(y + 0.5 - rasterCentre.y() + 0.25));
                     // 1.0 unless grain is live; used for BOTH the coverage
                     // and (below) the colour modulation, exactly as before.
+                    // Multiply keeps this expression VERBATIM; the other
+                    // texture blend modes combine through TextureBlend.h
+                    // instead — the same slot, the same anchoring. The
+                    // COLOUR modulation (grainAffectsColor) keeps the
+                    // multiply-shaped factor under every mode: it is a
+                    // tint, not coverage arithmetic, and the roster's
+                    // grain-affects-colour brushes are all Multiply.
                     qreal grainModulation = 1.0;
                     if (stamp.effectiveGrainDepth > 0.0
                         && !grainField.isNull()) {
@@ -66,7 +74,18 @@ QImage ColorStrokeBuffer::composite(const QImage &input, const Brush &brush,
                             QPointF(left + tip.width() * .5,
                                     top + tip.height() * .5),
                             stamp.effectiveGrainDepth);
-                        coverage *= grainModulation;
+                        if (brush.textureBlendMode()
+                            == ::Brush::TextureBlendMode::Multiply) {
+                            coverage *= grainModulation;
+                        } else {
+                            coverage = textureBlendCoverage(
+                                brush.textureBlendMode(), coverage,
+                                grainField.shapedSample(
+                                    x, y,
+                                    QPointF(left + tip.width() * .5,
+                                            top + tip.height() * .5)),
+                                stamp.effectiveGrainDepth);
+                        }
                     }
                     const qreal opacityMultiplier = brush.opacity() > 0.0
                         ? stamp.effectiveOpacity / brush.opacity() : 0.0;

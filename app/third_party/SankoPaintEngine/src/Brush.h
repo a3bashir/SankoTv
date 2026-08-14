@@ -17,6 +17,22 @@ public:
     enum class ToolMode { Paint, Smudge };
     enum class GrainMode { Rolling, StaticCanvas };
     enum class GrainPreset { Paper, Canvas, Chalk, Charcoal, Custom };
+    // HOW the grain texture combines with tip coverage (Photoshop's
+    // texture blend mode popup). Multiply is the engine's original — and
+    // only, until this enum — behaviour, and stays the default so every
+    // existing preset renders exactly as before. Formulas and per-mode
+    // confidence grading live in TextureBlend.h.
+    enum class TextureBlendMode {
+        Multiply,
+        Subtract,
+        Darken,
+        Overlay,
+        ColorBurn,
+        LinearBurn,
+        HardMix,
+        Height,
+        LinearHeight
+    };
     // What DRIVES a dynamic property (Photoshop's "Control" popup). The
     // per-property curve stays: the source selects WHAT produces the 0-1
     // driving value, the curve remaps it. Only Pressure is live today;
@@ -140,6 +156,18 @@ public:
     void setGrainRotation(qreal degrees);
     GrainMode grainMode() const { return m_grainMode; }
     void setGrainMode(GrainMode mode) { m_grainMode = mode; }
+    TextureBlendMode textureBlendMode() const { return m_textureBlendMode; }
+    void setTextureBlendMode(TextureBlendMode mode)
+    {
+        // Serialised as an int: an out-of-range value (corrupt or future
+        // file) falls back to Multiply — the behaviour every brush already
+        // had — never to an unmapped enum.
+        m_textureBlendMode =
+            (int(mode) >= int(TextureBlendMode::Multiply)
+             && int(mode) <= int(TextureBlendMode::LinearHeight))
+                ? mode
+                : TextureBlendMode::Multiply;
+    }
     // Wet edges (Phase 6a): pools paint toward the stroke's rim like
     // watercolour. An AMOUNT, not Photoshop's checkbox: 0 = off (the
     // default; bit-identical to the pre-6a engine), ~0.6 reads like the
@@ -352,6 +380,7 @@ private:
     qreal m_grainContrast = 1.0;
     qreal m_grainRotation = 0.0;
     GrainMode m_grainMode = GrainMode::StaticCanvas;
+    TextureBlendMode m_textureBlendMode = TextureBlendMode::Multiply;
     GrainPreset m_grainPreset = GrainPreset::Paper;
     bool m_grainAffectsColor = false;
     QImage m_grainTexture;

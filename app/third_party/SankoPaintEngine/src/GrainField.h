@@ -57,7 +57,8 @@ public:
 
     // Grain modulation at canvas pixel (x, y): 1 at depth 0, the
     // contrast-shaped grain value at depth 1. stampCentre feeds Rolling
-    // mode only.
+    // mode only. This is the MULTIPLY texture blend, kept verbatim — the
+    // 62 built-ins render through this exact expression.
     qreal modulation(int x, int y, const QPointF &stampCentre,
                      qreal depth) const
     {
@@ -68,6 +69,23 @@ public:
         const qreal g = std::clamp(
             (wrapped(u, v) - .5) * m_contrast + .5, 0.0, 1.0);
         return 1.0 - depth + g * depth;
+    }
+
+    // The contrast-shaped texture value t itself — the same UVs, the same
+    // anchoring, the same shaping as modulation(), WITHOUT the multiply
+    // mix. The non-Multiply texture blend modes (TextureBlend.h) consume
+    // this; sharing the sampling path is what keeps every mode on the
+    // anchoring discipline the grain fix established (Rolling anchored to
+    // the quantised raster centre, StaticCanvas to absolute canvas
+    // coordinates — camera-invariant and tile-seam-free by construction).
+    qreal shapedSample(int x, int y, const QPointF &stampCentre) const
+    {
+        const qreal px = m_staticCanvas ? x + .5 : x + .5 - stampCentre.x();
+        const qreal py = m_staticCanvas ? y + .5 : y + .5 - stampCentre.y();
+        const qreal u = (m_cos * px + m_sin * py) / m_scale;
+        const qreal v = (-m_sin * px + m_cos * py) / m_scale;
+        return std::clamp(
+            (wrapped(u, v) - .5) * m_contrast + .5, 0.0, 1.0);
     }
 
 private:

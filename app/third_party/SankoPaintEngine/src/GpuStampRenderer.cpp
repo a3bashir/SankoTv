@@ -860,6 +860,8 @@ GpuStampRenderer::Result GpuStampRenderer::renderStrokeInternal(
     memcpy(uniforms.data(), clip.constData(), 64);
     *reinterpret_cast<qint32 *>(uniforms.data() + 64) = brush.hasCustomShape() ? 1 : 0;
     *reinterpret_cast<qint32 *>(uniforms.data() + 68) = accumulateFlow ? 1 : 0;
+    *reinterpret_cast<qint32 *>(uniforms.data() + 72) =
+        qint32(brush.textureBlendMode());
     QRhiResourceUpdateBatch *initialUpdates = m_rhi->nextResourceUpdateBatch();
     initialUpdates->uploadStaticBuffer(vertexBuffer.get(), quad);
     initialUpdates->uploadStaticBuffer(instanceBuffer.get(), flattenedInstances.constData());
@@ -1304,6 +1306,8 @@ GpuStampRenderer::Result GpuStampRenderer::renderColorStrokeInternal(
     QByteArray uniforms(80, 0);
     memcpy(uniforms.data(), clip.constData(), 64);
     *reinterpret_cast<qint32 *>(uniforms.data() + 64) = brush.hasCustomShape() ? 1 : 0;
+    *reinterpret_cast<qint32 *>(uniforms.data() + 68) =
+        qint32(brush.textureBlendMode());
     QRhiResourceUpdateBatch *updates = m_rhi->nextResourceUpdateBatch();
     updates->uploadStaticBuffer(vertexBuffer.get(), quad);
     updates->uploadStaticBuffer(instanceBuffer.get(), flattened.constData());

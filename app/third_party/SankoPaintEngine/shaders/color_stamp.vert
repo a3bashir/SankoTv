@@ -20,6 +20,7 @@ layout(location = 7) out vec4 noiseData; // xy=seed halves, z=amount, w=half siz
 layout(std140, binding = 0) uniform Globals {
     mat4 clipMatrix;
     int useCustomTip;
+    int textureBlendMode;
 };
 
 void main()

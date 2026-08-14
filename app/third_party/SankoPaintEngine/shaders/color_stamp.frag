@@ -15,7 +15,67 @@ layout(binding = 2) uniform sampler2D grainTexture;
 layout(std140, binding = 0) uniform Globals {
     mat4 clipMatrix;
     int useCustomTip;
+    int textureBlendMode;
 };
+
+// Exact-sampling helpers — see stamp.frag; mirrored verbatim.
+float round8(float v)
+{
+    return floor(clamp(v, 0.0, 1.0) * 255.0 + 0.5) / 255.0;
+}
+
+float bilinearClampR(sampler2D tex, vec2 uv)
+{
+    ivec2 sz = textureSize(tex, 0);
+    vec2 xy = uv * vec2(sz) - 0.5;
+    ivec2 i0 = ivec2(floor(xy));
+    vec2 w = xy - vec2(i0);
+    ivec2 i1 = clamp(i0 + 1, ivec2(0), sz - 1);
+    i0 = clamp(i0, ivec2(0), sz - 1);
+    float v00 = texelFetch(tex, ivec2(i0.x, i0.y), 0).r;
+    float v10 = texelFetch(tex, ivec2(i1.x, i0.y), 0).r;
+    float v01 = texelFetch(tex, ivec2(i0.x, i1.y), 0).r;
+    float v11 = texelFetch(tex, ivec2(i1.x, i1.y), 0).r;
+    return mix(mix(v00, v10, w.x), mix(v01, v11, w.x), w.y);
+}
+
+float bilinearRepeatR(sampler2D tex, vec2 uv)
+{
+    ivec2 sz = textureSize(tex, 0);
+    vec2 f = uv - floor(uv);
+    vec2 xy = f * vec2(sz) - 0.5;
+    ivec2 i0 = ivec2(floor(xy));
+    vec2 w = xy - vec2(i0);
+    ivec2 i1 = i0 + 1;
+    i0 = (i0 % sz + sz) % sz;
+    i1 = (i1 % sz + sz) % sz;
+    float v00 = texelFetch(tex, ivec2(i0.x, i0.y), 0).r;
+    float v10 = texelFetch(tex, ivec2(i1.x, i0.y), 0).r;
+    float v01 = texelFetch(tex, ivec2(i0.x, i1.y), 0).r;
+    float v11 = texelFetch(tex, ivec2(i1.x, i1.y), 0).r;
+    return mix(mix(v00, v10, w.x), mix(v01, v11, w.x), w.y);
+}
+
+// Mirrors TextureBlend.h line for line (and stamp.frag, verbatim) — see
+// there for the enum order and per-mode confidence grading.
+float textureBlendCoverage(int mode, float c, float t, float d)
+{
+    if (mode == 7)
+        return clamp(c * (1.0 + 9.0 * d) - d * t, 0.0, 1.0);
+    if (mode == 8) {
+        float m = c * (1.0 + 9.0 * d);
+        return clamp(max(m * (1.0 - d * t), m - d * t), 0.0, 1.0);
+    }
+    float f = c;
+    if (mode == 1) f = max(0.0, c - (1.0 - t));
+    else if (mode == 2) f = min(c, t);
+    else if (mode == 3) f = c <= 0.5 ? 2.0 * c * t
+                                     : 1.0 - 2.0 * (1.0 - c) * (1.0 - t);
+    else if (mode == 4) f = t > 0.0 ? 1.0 - min(1.0, (1.0 - c) / t) : 0.0;
+    else if (mode == 5) f = max(0.0, c + t - 1.0);
+    else if (mode == 6) f = c + t >= 1.0 ? 1.0 : 0.0;
+    return clamp(c * (1.0 - d) + f * d, 0.0, 1.0);
+}
 
 // Mirrors NoiseField.h line for line — the ONE implementation discipline
 // (and stamp.frag, verbatim).
@@ -61,6 +121,7 @@ void main()
         float t = (distanceFromCenter - hardness) / max(1.0 - hardness, 0.001);
         coverage = exp(-3.0 * t * t) * (1.0 - t);
     }
+    float rawTip = coverage; // pre-noise, for the exact-sampling branch
     // Noise perturbs the TIP's coverage BEFORE grain — see stamp.frag.
     if (noiseData.z > 0.0)
         coverage = noisyCoverage(coverage);
@@ -73,7 +134,22 @@ void main()
                            -gs * canvasPosition.x + gc * canvasPosition.y) / grainScale;
         grainValue = texture(grainTexture, grainUv).r;
         grainValue = clamp((grainValue - 0.5) * grainParameters.w + 0.5, 0.0, 1.0);
-        coverage *= mix(1.0, grainValue, grainDepth);
+        if (textureBlendMode == 0) {
+            coverage *= mix(1.0, grainValue, grainDepth); // Multiply, verbatim
+        } else {
+            // Exact-sampling chain — see stamp.frag.
+            float cb = useCustomTip != 0
+                ? round8(bilinearClampR(customTip, rotated * 0.5 + 0.5))
+                : round8(rawTip);
+            if (noiseData.z > 0.0)
+                cb = noisyCoverage(cb);
+            float t = bilinearRepeatR(grainTexture, grainUv);
+            t = clamp((t - 0.5) * grainParameters.w + 0.5, 0.0, 1.0);
+            coverage = textureBlendCoverage(textureBlendMode, cb, t,
+                                            grainDepth);
+        }
+        // grainAffectsColor below keeps the multiply-shaped factor under
+        // every mode — a tint, not coverage arithmetic (TextureBlend.h).
     }
     float alpha = coverage * stampFlow * opacity;
     vec3 resolvedColor = grainFlags.y > 0.5
