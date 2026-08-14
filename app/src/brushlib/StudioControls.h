@@ -269,4 +269,81 @@ private:
     int m_index = 0;
 };
 
+// Direct-manipulation editor for the STATIC tip transform (Figma 341:30,
+// "shape control", 91x91): drag the ring to set tipAngle, drag any of the
+// four handles to set tipRoundness, click the centre pivot to reset both.
+// A second editor for two existing fields — the Tip Angle / Tip Roundness
+// sliders remain the precise numeric entry, and both stay synced through
+// the studio's syncer pass. The control is also its own preview: the
+// handle constellation rotates with the current angle and the squash-axis
+// pair pulls inward with the current roundness (the same forward affine
+// the tip thumbnail's backward map inverts).
+//
+// Appearance is the Figma node verbatim — ring stroke #7C6EF6 (kAccent)
+// width 8 at r 40.5, four #D9D9D9 r 5 handles, hollow #CCCCCC r 4 pivot at
+// stroke 2 — with three DOCUMENTED DIVERGENCES: (1) the design's ring
+// centre sits at x 46 while every other element is at 45.5; drawn from the
+// true centre (45.5, 45.5) instead. (2) The design carries no hover or
+// active states; hovered/dragged elements brighten in the component
+// palette's language. (3) Hit targets exceed drawn geometry (5 px handles
+// grab at 12 px, the 8 px ring stroke at +/-10 px of its radius, the 4 px
+// pivot at 10 px) — the floating-toolbar rule that interactive area
+// exceeds drawn area.
+class StudioTipRing : public QWidget
+{
+    Q_OBJECT
+public:
+    explicit StudioTipRing(QWidget *parent = nullptr);
+
+    // Silent (no signals) — the syncer path, mirroring StudioSlider.
+    void setTipValues(double angleDegrees, double roundness);
+    double tipAngle() const { return m_angle; }
+    double tipRoundness() const { return m_roundness; }
+
+    // Geometry the seam asserts against; also used by the hit tests.
+    QPointF ringCentre() const;                 // true centre, 45.5, 45.5
+    QPointF handleCentre(int index) const;      // 0 E, 1 N, 2 W, 3 S
+    static constexpr double kRingRadius = 40.5;
+    static constexpr double kHandleRadius = 5.0;
+    static constexpr double kPivotRadius = 4.0;
+    static constexpr double kHandleGrabRadius = 12.0;
+    static constexpr double kRingGrabTolerance = 10.0;
+    static constexpr double kPivotGrabRadius = 10.0;
+    static constexpr double kAngleSnapDegrees = 15.0;  // Shift on the ring
+    static constexpr double kRoundnessSnapStep = 0.10; // Shift on a handle
+    static constexpr double kRoundnessFloor = 0.01;
+
+    enum class Region { None, Ring, Handle, Pivot };
+    Region hitTest(const QPointF &pos) const; // exposed for the seam
+
+signals:
+    void angleEdited(double degrees);     // live, during a ring drag
+    void roundnessEdited(double value);   // live, during a handle drag
+    void editCommitted();                 // on release, one per gesture
+    void resetRequested();                // pivot click (no drag)
+
+protected:
+    void paintEvent(QPaintEvent *event) override;
+    void mousePressEvent(QMouseEvent *event) override;
+    void mouseMoveEvent(QMouseEvent *event) override;
+    void mouseReleaseEvent(QMouseEvent *event) override;
+    void leaveEvent(QEvent *event) override;
+    void hideEvent(QHideEvent *event) override;
+
+private:
+    static double wrapAngle(double degrees); // to (-180, 180]
+    double pointerAngle(const QPointF &pos) const;
+    void applyRingDrag(const QPointF &pos, Qt::KeyboardModifiers modifiers);
+    void applyHandleDrag(const QPointF &pos,
+                         Qt::KeyboardModifiers modifiers);
+    void updateCursorFor(Region region);
+
+    double m_angle = 0.0;      // degrees, (-180, 180]
+    double m_roundness = 1.0;  // 0.01 - 1.0
+    Region m_drag = Region::None;
+    Region m_hover = Region::None;
+    double m_grabOffset = 0.0; // ring drag: angle - pointerAngle at press
+    bool m_moved = false;      // distinguishes pivot click from drag
+};
+
 } // namespace brushlib

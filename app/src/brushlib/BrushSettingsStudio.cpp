@@ -974,6 +974,60 @@ QWidget *BrushSettingsStudio::buildTipSection()
     // Static tip transform (dynamics Phase 2): applied to every stamp,
     // regardless of input — no source, no minimum, no curve, which is the
     // visible distinction from the jitters below that vary AROUND them.
+    //
+    // The shape-control ring (Figma 341:30) is DIRECT MANIPULATION for the
+    // same two fields the sliders below edit numerically: ring drag ->
+    // tipAngle, handle drag -> tipRoundness, pivot click -> reset both
+    // (flips deliberately excluded: the ring does not display them, and a
+    // control should not reset state it cannot show — they keep their
+    // toggle rows). Sits ABOVE its two sliders as an addendum to the
+    // approved mapping table. Edits run the slider gesture pattern —
+    // beginGesture / per-move scratch push at the 40 ms non-tip tier /
+    // one undo commit on release — and the syncer pass keeps ring and
+    // sliders agreeing in both directions (silent setter, m_syncing
+    // guard, QSignalBlocker belt-and-braces).
+    auto *ringRow = new QWidget;
+    auto *rr = new QHBoxLayout(ringRow);
+    rr->setContentsMargins(0, 6, 0, 6);
+    auto *tipRing = new StudioTipRing;
+    rr->addStretch(1);
+    rr->addWidget(tipRing);
+    rr->addStretch(1);
+    l->addWidget(ringRow);
+    connect(tipRing, &StudioTipRing::angleEdited, this,
+            [this](double degrees) {
+                if (m_syncing)
+                    return;
+                beginGesture();
+                scopeBrush().setTipAngle(degrees);
+                pushToScratch(false);
+            });
+    connect(tipRing, &StudioTipRing::roundnessEdited, this,
+            [this](double value) {
+                if (m_syncing)
+                    return;
+                beginGesture();
+                scopeBrush().setTipRoundness(value);
+                pushToScratch(false);
+            });
+    connect(tipRing, &StudioTipRing::editCommitted, this,
+            [this] { commitGesture(); });
+    connect(tipRing, &StudioTipRing::resetRequested, this, [this] {
+        if (m_syncing)
+            return;
+        applyInstant(
+            [](::Brush &b) {
+                b.setTipAngle(0.0);
+                b.setTipRoundness(1.0);
+            },
+            false);
+    });
+    m_syncers.append([this, tipRing] {
+        const QSignalBlocker block(tipRing);
+        tipRing->setTipValues(scopeBrushConst().tipAngle(),
+                              scopeBrushConst().tipRoundness());
+    });
+
     addSlider(l, QStringLiteral("Tip Angle"), -180.0, 180.0,
               [](const ::Brush &b) { return b.tipAngle(); },
               [](::Brush &b, double v) { b.setTipAngle(v); }, fmtDegrees,

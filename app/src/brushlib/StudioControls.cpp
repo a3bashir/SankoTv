@@ -1,6 +1,8 @@
 #include "StudioControls.h"
 
 #include <QFontMetrics>
+#include <QHideEvent>
+#include <QLineF>
 #include <QLinearGradient>
 #include <QMenu>
 #include <QMouseEvent>
@@ -729,6 +731,256 @@ void StudioSegmentedRow::mousePressEvent(QMouseEvent *event)
         }
         x += w;
     }
+}
+
+// ------------------------------------------------------- StudioTipRing ---
+
+namespace {
+// Figma 341:30 tokens, verbatim (kAccent IS the ring's #7C6EF6).
+const QColor kRingHandle(0xd9, 0xd9, 0xd9);
+const QColor kRingPivot(0xcc, 0xcc, 0xcc);
+// Added hover/active states (documented divergence): the palette's
+// brighten language.
+const QColor kRingHover(0x8f, 0x83, 0xf8);
+const QColor kRingElementHover(0xff, 0xff, 0xff);
+constexpr double kRingStrokeWidth = 8.0;
+constexpr double kPivotStrokeWidth = 2.0;
+} // namespace
+
+StudioTipRing::StudioTipRing(QWidget *parent)
+    : QWidget(parent)
+{
+    // The Figma frame, exactly; the layout centres the widget in its row.
+    setFixedSize(91, 91);
+    setMouseTracking(true); // hover states + cursor feedback
+}
+
+QPointF StudioTipRing::ringCentre() const
+{
+    // TRUE centre. Documented divergence: the design's ring ellipse sits
+    // at x 46 while the handles and pivot sit at 45.5 — a half-pixel
+    // authoring drift, normalised here so handles land ON the stroke.
+    return QPointF(45.5, 45.5);
+}
+
+QPointF StudioTipRing::handleCentre(int index) const
+{
+    // The tip's forward affine, matching the thumbnail's backward map
+    // inverted: tip-local +X (the axis roundness squashes) maps to the
+    // screen direction (cos a, sin a) with y down, scaled by roundness;
+    // tip-local +Y is unsquashed. Index 0 E, 1 N, 2 W, 3 S of the
+    // UNROTATED design; the whole constellation rotates with the angle.
+    const double a = qDegreesToRadians(m_angle);
+    const QPointF squash(std::cos(a), std::sin(a));
+    const QPointF keep(-std::sin(a), std::cos(a));
+    const double squashDistance =
+        kRingRadius * std::max(m_roundness, kRoundnessFloor);
+    switch (index & 3) {
+    case 0: return ringCentre() + squash * squashDistance;
+    case 1: return ringCentre() - keep * kRingRadius;
+    case 2: return ringCentre() - squash * squashDistance;
+    default: return ringCentre() + keep * kRingRadius;
+    }
+}
+
+void StudioTipRing::setTipValues(double angleDegrees, double roundness)
+{
+    const double a = wrapAngle(angleDegrees);
+    const double r = std::clamp(roundness, kRoundnessFloor, 1.0);
+    if (a == m_angle && r == m_roundness)
+        return;
+    m_angle = a;
+    m_roundness = r;
+    update();
+}
+
+double StudioTipRing::wrapAngle(double degrees)
+{
+    double a = std::fmod(degrees + 180.0, 360.0);
+    if (a <= 0.0)
+        a += 360.0;
+    return a - 180.0; // (-180, 180]
+}
+
+double StudioTipRing::pointerAngle(const QPointF &pos) const
+{
+    const QPointF d = pos - ringCentre();
+    return qRadiansToDegrees(std::atan2(d.y(), d.x())); // y down
+}
+
+StudioTipRing::Region StudioTipRing::hitTest(const QPointF &pos) const
+{
+    // Priority: pivot, then handles, then ring — the handles sit on the
+    // stroke, so they must win where the regions overlap.
+    const double fromCentre = QLineF(ringCentre(), pos).length();
+    if (fromCentre <= kPivotGrabRadius)
+        return Region::Pivot;
+    for (int i = 0; i < 4; ++i)
+        if (QLineF(handleCentre(i), pos).length() <= kHandleGrabRadius)
+            return Region::Handle;
+    if (std::abs(fromCentre - kRingRadius) <= kRingGrabTolerance)
+        return Region::Ring;
+    return Region::None;
+}
+
+void StudioTipRing::updateCursorFor(Region region)
+{
+    switch (region) {
+    case Region::Ring:
+        setCursor(m_drag == Region::Ring ? Qt::ClosedHandCursor
+                                         : Qt::OpenHandCursor);
+        break;
+    case Region::Handle:
+    case Region::Pivot:
+        setCursor(Qt::PointingHandCursor);
+        break;
+    case Region::None:
+        unsetCursor();
+        break;
+    }
+}
+
+void StudioTipRing::applyRingDrag(const QPointF &pos,
+                                  Qt::KeyboardModifiers modifiers)
+{
+    double a = wrapAngle(pointerAngle(pos) + m_grabOffset);
+    if (modifiers & Qt::ShiftModifier)
+        a = wrapAngle(std::round(a / kAngleSnapDegrees) * kAngleSnapDegrees);
+    if (a != m_angle) {
+        m_angle = a;
+        update();
+        emit angleEdited(m_angle);
+    }
+}
+
+void StudioTipRing::applyHandleDrag(const QPointF &pos,
+                                    Qt::KeyboardModifiers modifiers)
+{
+    // All four handles drive the ONE roundness: the value is the pointer's
+    // distance from the centre as a fraction of the ring radius. Photoshop
+    // floor 1% — 0 divides by zero in the backward-mapped sampler.
+    double r = QLineF(ringCentre(), pos).length() / kRingRadius;
+    if (modifiers & Qt::ShiftModifier)
+        r = std::round(r / kRoundnessSnapStep) * kRoundnessSnapStep;
+    r = std::clamp(r, kRoundnessFloor, 1.0);
+    if (r != m_roundness) {
+        m_roundness = r;
+        update();
+        emit roundnessEdited(m_roundness);
+    }
+}
+
+void StudioTipRing::mousePressEvent(QMouseEvent *event)
+{
+    if (event->button() != Qt::LeftButton) {
+        QWidget::mousePressEvent(event);
+        return;
+    }
+    m_drag = hitTest(event->position());
+    m_moved = false;
+    if (m_drag == Region::Ring)
+        m_grabOffset = m_angle - pointerAngle(event->position());
+    updateCursorFor(m_drag);
+    update();
+    event->accept();
+}
+
+void StudioTipRing::mouseMoveEvent(QMouseEvent *event)
+{
+    if (m_drag == Region::None) {
+        const Region hover = hitTest(event->position());
+        if (hover != m_hover) {
+            m_hover = hover;
+            updateCursorFor(hover);
+            update();
+        }
+        return;
+    }
+    // Qt's implicit mouse grab keeps delivering moves after the pointer
+    // leaves the widget; no clamping — the angle is a direction and the
+    // roundness projection clamps itself.
+    m_moved = true;
+    if (m_drag == Region::Ring)
+        applyRingDrag(event->position(), event->modifiers());
+    else if (m_drag == Region::Handle)
+        applyHandleDrag(event->position(), event->modifiers());
+    event->accept();
+}
+
+void StudioTipRing::mouseReleaseEvent(QMouseEvent *event)
+{
+    if (event->button() != Qt::LeftButton || m_drag == Region::None) {
+        QWidget::mouseReleaseEvent(event);
+        return;
+    }
+    const Region was = m_drag;
+    m_drag = Region::None;
+    if (was == Region::Pivot && !m_moved
+        && hitTest(event->position()) == Region::Pivot) {
+        emit resetRequested();
+    } else if (was != Region::Pivot) {
+        // A click without drag emitted nothing (the grab offset preserves
+        // the value), so this commit closes an empty gesture harmlessly.
+        emit editCommitted();
+    }
+    m_hover = hitTest(event->position());
+    updateCursorFor(m_hover);
+    update();
+    event->accept();
+}
+
+void StudioTipRing::leaveEvent(QEvent *event)
+{
+    if (m_drag == Region::None && m_hover != Region::None) {
+        m_hover = Region::None;
+        unsetCursor();
+        update();
+    }
+    QWidget::leaveEvent(event);
+}
+
+void StudioTipRing::hideEvent(QHideEvent *event)
+{
+    // Safety: a hide mid-drag (section switch, window close) must not
+    // leave a stuck grab state.
+    if (m_drag != Region::None) {
+        m_drag = Region::None;
+        emit editCommitted();
+    }
+    m_hover = Region::None;
+    QWidget::hideEvent(event);
+}
+
+void StudioTipRing::paintEvent(QPaintEvent *)
+{
+    QPainter p(this);
+    p.setRenderHint(QPainter::Antialiasing);
+    const bool ringLive =
+        m_drag == Region::Ring
+        || (m_drag == Region::None && m_hover == Region::Ring);
+    const bool handleLive =
+        m_drag == Region::Handle
+        || (m_drag == Region::None && m_hover == Region::Handle);
+    const bool pivotLive =
+        m_drag == Region::Pivot
+        || (m_drag == Region::None && m_hover == Region::Pivot);
+
+    // Ring: Figma stroke, r 40.5 at width 8.
+    p.setPen(QPen(ringLive ? kRingHover : kAccent, kRingStrokeWidth));
+    p.setBrush(Qt::NoBrush);
+    p.drawEllipse(ringCentre(), kRingRadius, kRingRadius);
+
+    // Handles: r 5 fills, positioned by the current angle and roundness.
+    p.setPen(Qt::NoPen);
+    p.setBrush(handleLive ? kRingElementHover : kRingHandle);
+    for (int i = 0; i < 4; ++i)
+        p.drawEllipse(handleCentre(i), kHandleRadius, kHandleRadius);
+
+    // Pivot: hollow r 4 stroke 2.
+    p.setPen(QPen(pivotLive ? kRingElementHover : kRingPivot,
+                  kPivotStrokeWidth));
+    p.setBrush(Qt::NoBrush);
+    p.drawEllipse(ringCentre(), kPivotRadius, kPivotRadius);
 }
 
 } // namespace brushlib
