@@ -578,12 +578,30 @@ private:
 // each stroke start so the feel is identical at every zoom level.
 struct QuickShapeTuning
 {
-    int holdDurationMs = 550;
+    // 900 ms, raised from 550 after measuring the Dev Recorder sessions:
+    // natural mid-stroke pauses reach 170 ms with a pen (24 canvas strokes,
+    // 20260802-144716) and 335 ms with a mouse, while the one deliberate
+    // pre-snap hold in the data measured 1039 ms. 900 clears the worst
+    // natural pause by 2.7x and still sits under the observed intentional
+    // hold, so a thinking pause no longer snaps a stroke the user meant to
+    // keep freehand.
+    int holdDurationMs = 900;
     int morphDurationMs = 220;
     qreal dwellRadiusScreenPx = 8.0;
     qreal maxDwellVelocityScreenPxPerSec = 20.0;
 };
 constexpr QuickShapeTuning kQuickShapeTuning{};
+
+// Whole-stroke dwell indicator geometry (screen px). The ring sits BELOW
+// the slot where Edit Shape | Done appear after recognition (top-centre,
+// y = kQsChromeY in updateQuickShapeUi), so the user is already looking
+// there when the buttons arrive and the buttons never move into space the
+// ring occupied. Ring and buttons also never coexist: the buttons need
+// hasActiveShape && !m_qsHeld, the ring needs m_qsHeld && !hasActiveShape.
+constexpr int kQsChromeY = 10;       // the buttons' y in updateQuickShapeUi
+constexpr int kQsRingGap = 8;        // below the buttons' slot
+constexpr qreal kQsRingR = 8.0;      // the progress arc's radius
+constexpr qreal kQsRingBackR = 14.0; // the opaque backing disc's radius
 
 // Closed-shape pressure seam policy — THE single home for every seam tuning
 // constant (no magic values in replay code). A closed QuickShape replays the
@@ -5277,28 +5295,57 @@ void DrawingCanvas::paintEvent(QPaintEvent *event)
         painter.restore();
     }
     // Hold feedback (repair stage 9), cosmetic overlay only — never part
-    // of any layer, flattenedPixmap, or export. The ring appears once the
-    // endpoint has been stable for a beat (progress > 0.12), resets when
-    // drawing resumes (the session restarts its hold timer), and vanishes
-    // on recognition, cancellation, or completion. After recognition, while
-    // the pen is still down, a small hint names the held-pen gesture.
+    // of any layer, flattenedPixmap, or export. The ring shows for the
+    // WHOLE stroke of a QuickShape-capable tool (empty at rest, filling as
+    // the dwell progresses), resets when drawing resumes (the session
+    // restarts its hold timer), and vanishes on recognition, cancellation,
+    // or completion. After recognition, while the pen is still down, a
+    // small hint names the held-pen gesture.
     if (m_qsHeld && m_quickShapeEnabled) {
-        const QPointF anchor =
-            viewTransform().map(m_lastBrushPt) + QPointF(22, -26);
         painter.save();
+        // WIDGET space, explicitly: when the canvas is zoomed, the painter
+        // reaches this block still carrying the view transform, which threw
+        // the old pen-anchored ring (and the post-recognition hint) clean
+        // off-widget at any zoom != 1. Chrome never lives in document space.
+        painter.resetTransform();
         painter.setRenderHint(QPainter::Antialiasing, true);
-        const qreal progress = m_quickShape.holdProgress();
-        if (!m_quickShape.hasActiveShape() && progress > 0.12) {
-            QPen ringBg(QColor(0, 0, 0, 90), 3.0);
-            painter.setPen(ringBg);
+        if (!m_quickShape.hasActiveShape()) {
+            // WHOLE-STROKE dwell indicator, pen-down to lift: an EMPTY
+            // ring that fills as the endpoint dwell progresses, so the
+            // ring always means the same one thing — "hold still this
+            // long and the stroke snaps". It used to appear only past 12%
+            // of the hold, which made the first warning arrive most of
+            // the way to a snap the user did not ask for.
+            //
+            // OPAQUE backing disc, deliberately: this is chrome over the
+            // user's ARTWORK, which can be white paper or solid ink, so a
+            // contrast ratio against any assumed background is fiction
+            // (the panel-number lesson). Every legibility-bearing pixel —
+            // track and arc — sits on the disc, never on the drawing.
+            const int chromeBottom = kQsChromeY
+                + (m_qsDoneButton ? m_qsDoneButton->sizeHint().height()
+                                  : 30);
+            const QPointF c(width() / 2.0,
+                            chromeBottom + kQsRingGap + kQsRingBackR);
+            painter.setPen(QPen(QColor(0x2a, 0x2a, 0x2a), 1.0));
+            painter.setBrush(QColor(0x16, 0x16, 0x16)); // OPAQUE
+            painter.drawEllipse(c, kQsRingBackR, kQsRingBackR);
+            const QRectF ring(c.x() - kQsRingR, c.y() - kQsRingR,
+                              kQsRingR * 2.0, kQsRingR * 2.0);
             painter.setBrush(Qt::NoBrush);
-            const QRectF ring(anchor.x() - 8, anchor.y() - 8, 16, 16);
+            painter.setPen(QPen(QColor(0x6e, 0x6e, 0x6e), 3.0)); // track
             painter.drawEllipse(ring);
-            QPen ringFg(QColor(0x7c, 0x6e, 0xf6, 220), 3.0);
-            ringFg.setCapStyle(Qt::RoundCap);
-            painter.setPen(ringFg);
-            painter.drawArc(ring, 90 * 16, int(-progress * 360.0 * 16));
-        } else if (m_quickShape.hasActiveShape()) {
+            const qreal progress = m_quickShape.holdProgress();
+            if (progress > 0.0) {
+                QPen arc(SankoTheme::kAccentLight, 3.0);
+                arc.setCapStyle(Qt::RoundCap);
+                painter.setPen(arc);
+                painter.drawArc(ring, 90 * 16,
+                                int(-progress * 360.0 * 16));
+            }
+        } else {
+            const QPointF anchor =
+                viewTransform().map(m_lastBrushPt) + QPointF(22, -26);
             const QString hint = QStringLiteral("drag: rotate · scale");
             QFont f = painter.font();
             f.setPixelSize(10);
