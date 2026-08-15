@@ -808,19 +808,118 @@ double StudioTipRing::pointerAngle(const QPointF &pos) const
     return qRadiansToDegrees(std::atan2(d.y(), d.x())); // y down
 }
 
+double StudioTipRing::squashGrabRadius() const
+{
+    // The squash handles shrink into a tighter and tighter neighbourhood
+    // as roundness falls, so their grab radius grows to compensate: 12 px
+    // while they sit on the rim, ramping to 20 px by the time they reach
+    // the band's inner edge (roundness ~0.753). Below that the interior
+    // rule covers the whole disc anyway. The ramp stops short of the
+    // pivot by construction — at the inner edge the reach is 30.5 - 20 =
+    // 10.5 px, still outside the 10 px pivot — so the two never contend.
+    const double distance =
+        kRingRadius * std::max(m_roundness, kRoundnessFloor);
+    const double t = std::clamp(
+        (kRingRadius - distance) / (kRingRadius - kRingInner), 0.0, 1.0);
+    return kHandleGrabRadius
+        + t * (kHandleGrabRadiusMax - kHandleGrabRadius);
+}
+
+QPointF StudioTipRing::ringSemiAxes() const
+{
+    return QPointF(kRingRadius * std::max(m_roundness, kRoundnessFloor),
+                   kRingRadius);
+}
+
+QPointF StudioTipRing::tipSpace(const QPointF &pos) const
+{
+    // StrokeBuilder::shapedTipForStamp / stamp.frag, verbatim: rotate the
+    // point into tip-local space, then divide the SQUASHED axis. Scaled to
+    // pixels, so the tip's edge sits at hypot() == kRingRadius.
+    const double a = qDegreesToRadians(m_angle);
+    const QPointF v = pos - ringCentre();
+    const double squash = std::max(m_roundness, kRoundnessFloor);
+    return QPointF(
+        (std::cos(a) * v.x() + std::sin(a) * v.y()) / squash,
+        -std::sin(a) * v.x() + std::cos(a) * v.y());
+}
+
+double StudioTipRing::signedRingDistance(const QPointF &pos) const
+{
+    // Implicit form f = |tipSpace| - kRingRadius, converted from tip units
+    // to PIXELS by dividing through the gradient magnitude. Exact on both
+    // axes (the only places the ellipse's curvature vanishes) and a close
+    // approximation between them — which is all a 10 px grab band needs.
+    // Without this the band would be measured in squashed units and would
+    // collapse to nothing along the narrow axis.
+    const QPointF t = tipSpace(pos);
+    const double m = std::hypot(t.x(), t.y());
+    if (m <= 1e-9)
+        return -kRingRadius; // the centre is inside by the full radius
+    const double squash = std::max(m_roundness, kRoundnessFloor);
+    const double gradient = std::hypot(t.x() / squash, t.y()) / m;
+    if (gradient <= 1e-9)
+        return -kRingRadius;
+    return (m - kRingRadius) / gradient;
+}
+
 StudioTipRing::Region StudioTipRing::hitTest(const QPointF &pos) const
 {
-    // Priority: pivot, then handles, then ring — the handles sit on the
-    // stroke, so they must win where the regions overlap.
+    // The partition documented in the header, in priority order. Each test
+    // claims its points outright and the last one catches everything still
+    // inside the control, so no press falls through and none is claimed
+    // twice — at any roundness, including a fully collapsed ring.
     const double fromCentre = QLineF(ringCentre(), pos).length();
     if (fromCentre <= kPivotGrabRadius)
         return Region::Pivot;
-    for (int i = 0; i < 4; ++i)
-        if (QLineF(handleCentre(i), pos).length() <= kHandleGrabRadius)
+    for (int i = 0; i < 4; ++i) {
+        const double grab =
+            (i % 2 == 0) ? squashGrabRadius() : kHandleGrabRadius;
+        if (QLineF(handleCentre(i), pos).length() <= grab)
             return Region::Handle;
-    if (std::abs(fromCentre - kRingRadius) <= kRingGrabTolerance)
+    }
+    if (std::abs(signedRingDistance(pos)) <= kRingGrabTolerance)
         return Region::Ring;
+    if (fromCentre <= kRingRadius + kRingGrabTolerance)
+        return Region::Handle; // the interior: nearer squash handle
     return Region::None;
+}
+
+int StudioTipRing::handleForPress(const QPointF &pos) const
+{
+    if (hitTest(pos) != Region::Handle)
+        return -1;
+    // A press inside a handle's own grab radius takes that handle; the
+    // nearest wins where two overlap, which they do once roundness has
+    // pulled the squash pair close together.
+    {
+        int best = -1;
+        double bestDistance = 0.0;
+        for (int i = 0; i < 4; ++i) {
+            const double grab =
+                (i % 2 == 0) ? squashGrabRadius() : kHandleGrabRadius;
+            const double distance = QLineF(handleCentre(i), pos).length();
+            if (distance <= grab && (best < 0 || distance < bestDistance)) {
+                best = i;
+                bestDistance = distance;
+            }
+        }
+        if (best >= 0)
+            return best;
+    }
+    {
+        // Interior: the NEARER squash handle, decided by which side of the
+        // unsquashed axis the press falls on. On the axis itself the two
+        // are exactly equidistant; that tie goes to index 0 (+squash),
+        // which keeps the choice deterministic and stateless. Either way
+        // both handles drive the same roundness, so the tie-break decides
+        // presentation, never the value.
+        const double a = qDegreesToRadians(m_angle);
+        const QPointF squash(std::cos(a), std::sin(a));
+        const QPointF v = pos - ringCentre();
+        const double projection = v.x() * squash.x() + v.y() * squash.y();
+        return projection >= 0.0 ? 0 : 2;
+    }
 }
 
 void StudioTipRing::updateCursorFor(Region region)
@@ -965,10 +1064,23 @@ void StudioTipRing::paintEvent(QPaintEvent *)
         m_drag == Region::Pivot
         || (m_drag == Region::None && m_hover == Region::Pivot);
 
-    // Ring: Figma stroke, r 40.5 at width 8.
+    // Ring: the Figma stroke on the TIP's own ellipse. QTransform::rotate
+    // maps local +X to (cos a, sin a) and local +Y to (-sin a, cos a) —
+    // the engine's squash and unsquashed directions exactly — so drawing
+    // an axis-aligned ellipse in the rotated frame reproduces the affine
+    // without duplicating it. The geometry is NOT clamped to a legible
+    // minimum: at roundness 0.01 the ellipse is 0.8 px across and the
+    // control says so. The 8 px stroke closes over itself below roundness
+    // 8/(2*40.5) = 0.099, where the ring reads as a solid bar — which is
+    // what a tip squashed that far actually is.
+    p.save();
+    p.translate(ringCentre());
+    p.rotate(m_angle);
     p.setPen(QPen(ringLive ? kRingHover : kAccent, kRingStrokeWidth));
     p.setBrush(Qt::NoBrush);
-    p.drawEllipse(ringCentre(), kRingRadius, kRingRadius);
+    const QPointF semi = ringSemiAxes();
+    p.drawEllipse(QPointF(0.0, 0.0), semi.x(), semi.y());
+    p.restore();
 
     // Handles: r 5 fills, positioned by the current angle and roundness.
     p.setPen(Qt::NoPen);

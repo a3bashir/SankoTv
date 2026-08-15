@@ -302,19 +302,101 @@ public:
 
     // Geometry the seam asserts against; also used by the hit tests.
     QPointF ringCentre() const;                 // true centre, 45.5, 45.5
-    QPointF handleCentre(int index) const;      // 0 E, 1 N, 2 W, 3 S
+    // Handle index parity is load-bearing: EVEN indices (0, 2) are the
+    // SQUASH pair — the ones roundness pulls inward along tip-local X —
+    // and odd indices (1, 3) are the unsquashed pair, always on the rim.
+    QPointF handleCentre(int index) const;      // 0 +squash, 1 -keep,
+                                                // 2 -squash, 3 +keep
     static constexpr double kRingRadius = 40.5;
     static constexpr double kHandleRadius = 5.0;
     static constexpr double kPivotRadius = 4.0;
-    static constexpr double kHandleGrabRadius = 12.0;
+    static constexpr double kHandleGrabRadius = 12.0;    // at the rim
+    static constexpr double kHandleGrabRadiusMax = 20.0; // at the inner edge
     static constexpr double kRingGrabTolerance = 10.0;
     static constexpr double kPivotGrabRadius = 10.0;
     static constexpr double kAngleSnapDegrees = 15.0;  // Shift on the ring
     static constexpr double kRoundnessSnapStep = 0.10; // Shift on a handle
     static constexpr double kRoundnessFloor = 0.01;
+    // The ring band's edges; the interior is (kPivotGrabRadius, inner).
+    static constexpr double kRingInner = kRingRadius - kRingGrabTolerance;
+    static constexpr double kRingOuter = kRingRadius + kRingGrabTolerance;
 
+    // THE RING IS THE TIP. It is drawn as the ellipse the engine's own
+    // affine produces — semi-axis kRingRadius * roundness along the SQUASH
+    // direction (cos angle, sin angle) and kRingRadius along the
+    // unsquashed direction (-sin angle, cos angle), y down. That is the
+    // boundary of StrokeBuilder::shapedTipForStamp's keep test (and
+    // stamp.frag's, which is identical in form):
+    //
+    //     tx = ( cos a * lx + sin a * ly) / roundness
+    //     ty = (-sin a * lx + cos a * ly)
+    //     the tip keeps hypot(tx, ty) < 1
+    //
+    // so inverting the boundary gives exactly the ellipse above. tipSpace()
+    // below IS that transform, which is what lets the seam assert the drawn
+    // geometry against the renderer's formula rather than against a
+    // picture. A circular ring was a lie about a squashed tip.
+    //
+    // THE HIT-TEST PARTITION — evaluated in this order, exhaustive and
+    // mutually exclusive (every press resolves to exactly one region at
+    // every roundness and angle; the seam proves it over a sampled grid):
+    //
+    //   1 PIVOT   distance from centre <= 10 px
+    //   2 HANDLE  within a handle's own grab radius (scaled for the
+    //             squash pair, fixed for the unsquashed pair)
+    //   3 RING    within 10 px of the ELLIPSE, measured as a true pixel
+    //             distance (signedRingDistance) rather than a distance
+    //             from the centre — the old |d - 40.5| <= 10 band assumed
+    //             a circle and is meaningless once the ring deforms
+    //   4 HANDLE  anything else still inside the control's reach
+    //             (<= kRingRadius + 10 from the centre): the interior
+    //             rule, which grabs the nearer SQUASH handle
+    //   5 NONE    beyond that
+    //
+    // At roundness 1.0 the ellipse is the old circle and rules 1-5 reduce
+    // to the previous distance bands exactly, so nothing about the
+    // unsquashed control changed.
+    //
+    // The interior rule (4) closes the dead annulus a dev recording found:
+    // a press between the pivot and the band used to resolve to NONE and
+    // do nothing at all. It also carries the whole control at heavy
+    // squash: once the ellipse collapses toward a sliver the band is a
+    // thin capsule and almost the entire disc becomes interior, so
+    // roundness stays editable from anywhere while the sliver itself
+    // stays available for rotation.
+    //
+    // The pivot owns the innermost disc outright. Below roundness
+    // 10/40.5 = 0.247 the squash handles pass UNDER it, so a press at a
+    // squash handle's own centre resets instead of grabbing — deliberate,
+    // because the reset must stay reachable. The threshold is unchanged by
+    // the ellipse: the handles always sat at kRingRadius * roundness along
+    // the squash axis, which is where the ellipse's cardinal point is;
+    // only the ring's path changed, not the handles'.
     enum class Region { None, Ring, Handle, Pivot };
     Region hitTest(const QPointF &pos) const; // exposed for the seam
+    // Which handle a press would grab, or -1 when the press is not a
+    // handle grab. In the interior the nearer SQUASH handle wins, with
+    // ties — a press exactly on the unsquashed axis, equidistant from
+    // both — going to index 0 deterministically.
+    int handleForPress(const QPointF &pos) const;
+    // The squash pair's grab radius, which GROWS as roundness pulls the
+    // handles inward: kHandleGrabRadius at the rim up to
+    // kHandleGrabRadiusMax once the handle reaches the band's inner edge.
+    // The unsquashed pair never moves, so it keeps the fixed radius.
+    double squashGrabRadius() const;
+    // The engine's tip transform applied to a widget point, in pixels:
+    // the ellipse's edge is where hypot() equals kRingRadius. Exposed so
+    // the seam can check the drawn geometry against the renderer's own
+    // formula.
+    QPointF tipSpace(const QPointF &pos) const;
+    // Signed PIXEL distance from a widget point to the ring's ellipse,
+    // negative inside. Uses the implicit-form gradient, which is exact on
+    // both axes and close elsewhere; a plain distance-from-centre test
+    // cannot describe a deformed ring.
+    double signedRingDistance(const QPointF &pos) const;
+    // The ellipse's semi-axes in pixels: x along the squash direction,
+    // y along the unsquashed one.
+    QPointF ringSemiAxes() const;
 
 signals:
     void angleEdited(double degrees);     // live, during a ring drag
