@@ -66,7 +66,6 @@
 #include <QTabletEvent>
 #include <QPropertyAnimation>
 #include <QAbstractButton>
-#include <QRubberBand>
 #include <QScrollBar>
 #include <QScreen>
 #include <QGuiApplication>
@@ -3927,10 +3926,21 @@ void StoryboardPage::applyStripScale()
 // Panel-number chip styled at the current scale (font, padding, position).
 void StoryboardPage::applyPanelNumStyle(QLabel *num) const
 {
+    // The chip is OPAQUE, and that is the load-bearing part. It used to be
+    // rgba(0,0,0,140) over the panel's own artwork — which is mostly white
+    // paper — so the number's real background was about rgb(115,115,115),
+    // not black. Amber survived that at 2.34:1 because it is a light
+    // colour; the accent switch dropped it to 1.22:1 and the numbers
+    // vanished. A colour change alone could not fix it (the tint reaches
+    // only 1.82:1 over white paper): the background has to stop depending
+    // on the drawing. With a solid #111111 chip and the legibility tint the
+    // number reads at 7.23:1 over ANY artwork, in every state — the
+    // selection border, hover and drag do not touch the chip.
     const double s = m_stripScale;
     num->setStyleSheet(
-        SankoTheme::themed("color: %ACCENT%; font-size: %1px; font-weight: 700;"
-            " background: rgba(0,0,0,140); padding: %2px %3px;"
+        SankoTheme::themed("color: %ACCENT_LIGHT%; font-size: %1px;"
+            " font-weight: 700;"
+            " background: #111111; padding: %2px %3px;"
             " border-radius: %4px;")
             .arg(qRound(11 * s))
             .arg(qMax(1, qRound(1 * s)))
@@ -4078,8 +4088,22 @@ void StoryboardPage::updateStripWindowDrag(const QPoint &globalPos)
             m_stripPreview->hide();
         return;
     }
-    if (!m_stripPreview)
-        m_stripPreview = new QRubberBand(QRubberBand::Rectangle, m_dockHost);
+    if (!m_stripPreview) {
+        // NOT a QRubberBand. QRubberBand is a stock widget that paints
+        // itself through QStyle from the SYSTEM palette's Highlight brush,
+        // so on Windows it wore the user's OS accent colour — red/orange on
+        // this machine — and no amount of theming in our sources could
+        // reach it. That is also why the hex-literal audit never saw it:
+        // there was no colour literal to find. A plain styled widget puts
+        // the drop preview back under SankoTheme, matching the DockOverlay
+        // drop target it appears alongside.
+        m_stripPreview = new QWidget(m_dockHost);
+        m_stripPreview->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+        m_stripPreview->setAttribute(Qt::WA_StyledBackground, true);
+        m_stripPreview->setStyleSheet(SankoTheme::themed(
+            "background-color: rgba(%ACCENT_RGB%, 60);"
+            " border: 2px solid %ACCENT%; border-radius: 4px;"));
+    }
     const QRect hostRect = m_dockHost->rect();
     const int previewH =
         qMin(m_panelStripBar->height() + 8, hostRect.height() / 3);

@@ -24,7 +24,6 @@ class QLabel;
 class QLineEdit;
 class QPlainTextEdit;
 class QPushButton;
-class QRubberBand;
 class QScrollArea;
 class QSlider;
 class QTimer;
@@ -313,7 +312,9 @@ private:
     int m_thumbH = 90; // 16:9
     // Title-bar-less window drag state (background press-drag on the strip).
     QWidget *m_stripContainer = nullptr; // thumbnail row inside the scroll
-    QRubberBand *m_stripPreview = nullptr; // top/bottom dock-target preview
+    // Dock-target preview. A plain themed QWidget, NOT a QRubberBand:
+    // the stock band paints from the system palette (the OS accent).
+    QWidget *m_stripPreview = nullptr; // top/bottom dock-target preview
     bool m_stripDragCandidate = false;
     bool m_stripDragging = false;
     QPoint m_stripPressGlobal;
