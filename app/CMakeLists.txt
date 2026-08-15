@@ -70,6 +70,7 @@ qt_add_executable(SankoTV
     src/GenerationPage.h
     src/FloatingToolWindow.cpp
     src/FloatingToolWindow.h
+    src/SankoScrollBarStyle.h
     # SankoDockOverlay.cpp/.h stay on disk but are ADS-specific and left out
     # of the build since the native docking migration (src/docking/).
     src/docking/DockController.cpp

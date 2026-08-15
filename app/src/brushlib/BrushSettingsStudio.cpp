@@ -430,7 +430,9 @@ void BrushSettingsStudio::buildUi()
     m_propsWidget = new QWidget;
     m_propsWidget->setFixedWidth(kPropsW);
     auto *pr = new QVBoxLayout(m_propsWidget);
-    pr->setContentsMargins(32, 28, 32, 28);
+    // Right margin 22 + the permanently reserved 10 px scrollbar gutter =
+    // the same 32 px visual margin as the left. See the scroll area below.
+    pr->setContentsMargins(32, 28, 22, 28);
     pr->setSpacing(36);
     auto *propsHeader = new QHBoxLayout;
     propsHeader->setContentsMargins(0, 0, 0, 0);
@@ -455,6 +457,16 @@ void BrushSettingsStudio::buildUi()
     m_propsScroll->setFrameShape(QFrame::NoFrame);
     m_propsScroll->setWidgetResizable(true);
     m_propsScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    // The gutter is RESERVED permanently. With AsNeeded, the bar appearing
+    // stole its width from a viewport whose content cannot shrink below
+    // 320 (the Shape Control panel is fixed 320 wide), so the last stock-
+    // scrollbar-width of every row clipped under the bar — and sections
+    // short enough not to scroll laid out wider than ones that did, so
+    // content shifted horizontally between sections. AlwaysOn + the shared
+    // 10 px style keeps the viewport at exactly 320 in every section; the
+    // app-wide style paints a disabled bar's handle transparent, so on a
+    // short section the gutter reads as plain margin.
+    m_propsScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOn);
     m_propsScroll->setStyleSheet(QStringLiteral(
         "QScrollArea { background: transparent; }"
         "QScrollArea > QWidget > QWidget { background: transparent; }"));

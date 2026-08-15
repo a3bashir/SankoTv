@@ -128,12 +128,11 @@ AnimaticTimeline::AnimaticTimeline(QWidget *parent)
     root->addWidget(m_canvas);
 
     m_hScroll = new QScrollBar(Qt::Horizontal);
-    m_hScroll->setFixedHeight(12);
-    m_hScroll->setStyleSheet(QStringLiteral(
-        "QScrollBar:horizontal { background: #0d0d0d; height: 12px; margin: 0; }"
-        "QScrollBar::handle:horizontal { background: #2f2f2f; border-radius: 4px; min-width: 24px; }"
-        "QScrollBar::handle:horizontal:hover { background: #3d3d3d; }"
-        "QScrollBar::add-line, QScrollBar::sub-line { width: 0; }"));
+    // Styled by the app-wide sheet (SankoScrollBarStyle.h) — this bar's
+    // private copy of the style was the second of the two hand-styled
+    // scrollbars and is retired with it. The track is transparent now
+    // (was #0d0d0d) over the timeline's own dark fill, and the bar is the
+    // shared 10 px instead of 12.
     root->addWidget(m_hScroll);
 
     styleToolbarButtons();

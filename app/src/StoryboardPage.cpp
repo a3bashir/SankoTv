@@ -2375,15 +2375,18 @@ QWidget *StoryboardPage::createCenterColumn()
     connect(m_brushLibPanel,
             &brushlib::BrushLibraryPanel::brushSettingsRequested,
             m_brushStudio, &brushlib::BrushSettingsStudio::openForPreset);
-    // Modal-style surface: while the studio is open every floating toolbar
-    // hides and comes back on close — EXCEPT the Brush Library, which stays
-    // open underneath (the user returns to it), and the studio itself.
-    // Keyed off visibilityChanged so every close path — Done, Cancel, Save
-    // Variation, and anything future that hides the window — restores
-    // through the one funnel; the hides are captured as in-memory intent
-    // only (suppressFloatingBars), so they can never be recorded as the
-    // user choosing "hidden" (D1). A page switch or minimize hides the
-    // studio too and transiently restores the bars' intents; when the
+    // Modal-style surface: while the studio is open every floating window
+    // hides — the Brush Library INCLUDED — and comes back on close; only
+    // the studio itself is excluded. Keyed off visibilityChanged so every
+    // close path — Done, Cancel, Save Variation, and anything future that
+    // hides the window — restores through the one funnel; the hides are
+    // captured as in-memory intent only (suppressFloatingBars), so they
+    // can never be recorded as the user choosing "hidden" (D1). That
+    // matters most for the Library, the one class whose own setVisible()
+    // PERSISTS intent: suppression's base-qualified setVisible bypasses
+    // that override in both directions, so the studio hiding the Library
+    // is invisible to the next launch. A page switch or minimize hides
+    // the studio too and transiently restores the bars' intents; when the
     // studio re-shows, suppression re-captures those same intents — the
     // capture reads intent, not effective visibility, so the round trip
     // cannot drift.
@@ -2391,8 +2394,7 @@ QWidget *StoryboardPage::createCenterColumn()
             this, [this](bool visible) {
                 if (visible) {
                     FloatingToolWindow::suppressFloatingBars(
-                        m_canvas,
-                        {m_brushLibPanel, m_brushStudio});
+                        m_canvas, {m_brushStudio});
                     m_brushStudio->raise();
                 } else {
                     FloatingToolWindow::restoreFloatingBars(m_canvas);

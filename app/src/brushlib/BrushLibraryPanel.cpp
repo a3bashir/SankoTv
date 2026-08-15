@@ -1,6 +1,7 @@
 #include "BrushLibraryPanel.h"
 
 #include "BrushPresetCodec.h"
+#include "SankoScrollBarStyle.h"
 
 #include <QApplication>
 #include <QDialog>
@@ -425,19 +426,12 @@ void BrushLibraryPanel::buildUi()
     // inherited #0a0a0a and painted it over the panel chrome, squaring the
     // frame's bottom-right corner (13 paper px in the corner probe vs 23 at
     // the other three). Those page sheets are now SCOPED by objectName; the
-    // scrollbar keeps the house dark style the Animatic timeline
-    // established (slim #2f2f2f rounded handle, no arrow buttons) with a
-    // 12px bottom margin so its painted parts stay clear of the arc.
-    m_scroll->verticalScrollBar()->setStyleSheet(QStringLiteral(
-        "QScrollBar:vertical { background: transparent; width: 10px;"
-        " margin: 2px 2px 12px 2px; }"
-        "QScrollBar::handle:vertical { background: #2f2f2f;"
-        " border-radius: 3px; min-height: 24px; }"
-        "QScrollBar::handle:vertical:hover { background: #3d3d3d; }"
-        "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {"
-        " height: 0; }"
-        "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {"
-        " background: transparent; }"));
+    // scrollbar was ALSO the reference design the app-wide style in
+    // SankoScrollBarStyle.h was lifted from. It keeps one site-specific
+    // parameter — the 12px bottom margin that clears the panel's rounded
+    // arc — through the same shared builder, so a future style change
+    // still lands in one place.
+    m_scroll->verticalScrollBar()->setStyleSheet(sankoScrollBarStyle(12));
     m_listWidget = new QWidget;
     m_listWidget->setAutoFillBackground(false);
     m_listLayout = new QVBoxLayout(m_listWidget);
