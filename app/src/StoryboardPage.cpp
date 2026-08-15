@@ -95,12 +95,12 @@ const char *kDockDarkStyle =
     " background: transparent; border: none; }"
     "#dockTitleClose { background: transparent; color: #999999; border: none;"
     " border-radius: 4px; font-size: 13px; }"
-    "#dockTitleClose:hover { background: #262626; color: %ACCENT%; }"
+    "#dockTitleClose:hover { background: #262626; color: %ACCENT_LIGHT%; }"
     "QMainWindow#storyboardDockHost QTabBar::tab { background: #161616;"
     " color: #cccccc; border: 1px solid #2a2a2a; padding: 3px 8px;"
     " font-size: 11px; }"
     "QMainWindow#storyboardDockHost QTabBar::tab:selected {"
-    " background: #1a1a1a; color: %ACCENT%; }";
+    " background: #1a1a1a; color: %ACCENT_LIGHT%; }";
 
 // (Strip thumbnails are now sized dynamically — see m_thumbW/m_thumbH, which
 // default to the classic 160x90 and scale with the Panel Strip's height.)

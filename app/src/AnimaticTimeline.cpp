@@ -537,14 +537,14 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
             const bool current = (b.flatIndex == m_current);
             const bool hovered = (b.flatIndex == m_hoverIndex);
 
-            // Amber bloom around the selected clip: explicit filled rounded rects
+            // Accent bloom around the selected clip: explicit filled rounded rects
             // stepping outward, opacity rising toward the clip body, drawn under
             // the clip fill so a visible halo punches through the dark background.
             if (current) {
                 struct Glow { qreal off; int alpha; };
                 const Glow glows[3] = {{6.0, 40}, {4.0, 60}, {2.0, 90}};
                 for (const Glow &gl : glows) {
-                    QColor c("f5a623");
+                    QColor c = SankoTheme::kAccent;
                     c.setAlpha(gl.alpha);
                     p.setPen(Qt::NoPen);
                     p.setBrush(c);
@@ -566,16 +566,16 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
             p.setBrush(grad);
             p.drawRoundedRect(rf, kClipR, kClipR);
 
-            // Border (selected: 2px amber; else 1px purple, amber-50% on hover).
+            // Border (selected: 2.5px accent; else 1px #3d3894, accent-50% on hover).
             p.setBrush(Qt::NoBrush);
             if (current) {
-                QColor amber("f5a623");
-                amber.setAlpha(255);
-                p.setPen(QPen(amber, 2.5));
+                QColor sel = SankoTheme::kAccentLight;
+                sel.setAlpha(255);
+                p.setPen(QPen(sel, 2.5));
                 p.drawRoundedRect(rf.adjusted(1, 1, -1, -1), kClipR, kClipR);
             } else {
                 QColor bord("#3d3894");
-                if (hovered) { bord = SankoTheme::kAccent; bord.setAlphaF(0.50); }
+                if (hovered) { bord = SankoTheme::kAccentLight; bord.setAlphaF(0.50); }
                 p.setPen(QPen(bord, 1));
                 p.drawRoundedRect(rf.adjusted(0.5, 0.5, -0.5, -0.5), kClipR, kClipR);
             }
@@ -629,7 +629,7 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
             if (textRect.width() > 8) {
                 QFont bold = small; bold.setBold(true);
                 p.setFont(bold);
-                p.setPen(SankoTheme::kAccent);
+                p.setPen(SankoTheme::kAccentLight);
                 p.drawText(textRect, Qt::AlignTop | Qt::AlignLeft,
                            QString::number(b.flatIndex + 1));
                 p.setFont(small);
@@ -659,9 +659,9 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
             // Trim handles on the selected clip.
             if (current) {
                 p.fillRect(QRect(r.left(), r.top(), kHandleW, r.height()),
-                           SankoTheme::kAccent);
+                           SankoTheme::kAccentLight);
                 p.fillRect(QRect(r.right() - kHandleW + 1, r.top(), kHandleW, r.height()),
-                           SankoTheme::kAccent);
+                           SankoTheme::kAccentLight);
             }
         }
         p.setRenderHint(QPainter::Antialiasing, false);
