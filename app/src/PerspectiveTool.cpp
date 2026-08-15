@@ -1,3 +1,4 @@
+#include "SankoTheme.h"
 #include "PerspectiveTool.h"
 
 #include <QJsonArray>
@@ -305,7 +306,7 @@ void PerspectiveTool::paintHandles(QPainter &p, const QTransform &canvasToWidget
         p.setPen(QPen(Qt::white, 1.8));
         p.drawEllipse(w, r, r);
         if (v == m_selected) {
-            p.setPen(QPen(QColor(0x7c, 0x6e, 0xf6), 2.0));
+            p.setPen(QPen(SankoTheme::kPurple, 2.0));
             p.setBrush(Qt::NoBrush);
             p.drawEllipse(w, r + 4.0, r + 4.0);
         }

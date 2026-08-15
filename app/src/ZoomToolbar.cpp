@@ -1,4 +1,5 @@
 #include "ZoomToolbar.h"
+#include "SankoTheme.h"
 
 #include <QMouseEvent>
 #include <QPainter>
@@ -152,7 +153,7 @@ void ZoomToolbar::paintEvent(QPaintEvent *)
             const QRectF fillR(trackX, kTrackY, fillW, kTrackH);
             QLinearGradient purple(fillR.left(), 0, fillR.right(), 0); // 270deg: dark left -> light right
             purple.setColorAt(0.0, QColor(75, 67, 151));   // #4b4397
-            purple.setColorAt(1.0, QColor(124, 110, 246)); // #7c6ef6
+            purple.setColorAt(1.0, SankoTheme::kPurple); // the Sanko tone
             p.setPen(Qt::NoPen);
             p.setBrush(purple);
             p.drawRoundedRect(fillR, 1, 1);
@@ -192,7 +193,8 @@ void ZoomToolbar::paintEvent(QPaintEvent *)
             p.drawRoundedRect(box, 6, 6);
         }
         if (active) { // Flip toggled on: purple accent over any hover/press bg
-            p.setBrush(QColor(124, 110, 246, 60)); // #7c6ef6 @ ~24%
+            p.setBrush(QColor(SankoTheme::kPurple.red(), SankoTheme::kPurple.green(),
+                  SankoTheme::kPurple.blue(), 60)); // accent @ ~24%
             p.drawRoundedRect(box, 6, 6);
         }
     };

@@ -1,4 +1,5 @@
 #include "AnimaticTimeline.h"
+#include "SankoTheme.h"
 
 #include "AnimaticPage.h"
 #include "StoryboardModel.h"
@@ -171,12 +172,10 @@ void AnimaticTimeline::setHost(AnimaticPage *host)
 
 void AnimaticTimeline::styleToolbarButtons()
 {
-    const QString plain = QStringLiteral(
-        "QPushButton { background: #1a1a1a; color: #cccccc; border: 1px solid #2a2a2a;"
+    const QString plain = SankoTheme::themed("QPushButton { background: #1a1a1a; color: #cccccc; border: 1px solid #2a2a2a;"
         " border-radius: 4px; padding: 3px 9px; font-size: 11px; }"
-        "QPushButton:hover { border-color: #f5a623; color: #f5a623; }");
-    const QString active = QStringLiteral(
-        "QPushButton { background: #f5a623; color: #0a0a0a; border: 1px solid #f5a623;"
+        "QPushButton:hover { border-color: %ACCENT%; color: %ACCENT%; }");
+    const QString active = SankoTheme::themed("QPushButton { background: %ACCENT%; color: #0a0a0a; border: 1px solid %ACCENT%;"
         " border-radius: 4px; padding: 3px 9px; font-size: 11px; font-weight: 600; }");
 
     m_fitButton->setStyleSheet(plain);
@@ -576,7 +575,7 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
                 p.drawRoundedRect(rf.adjusted(1, 1, -1, -1), kClipR, kClipR);
             } else {
                 QColor bord("#3d3894");
-                if (hovered) { bord = QColor("#f5a623"); bord.setAlphaF(0.50); }
+                if (hovered) { bord = SankoTheme::kAccent; bord.setAlphaF(0.50); }
                 p.setPen(QPen(bord, 1));
                 p.drawRoundedRect(rf.adjusted(0.5, 0.5, -0.5, -0.5), kClipR, kClipR);
             }
@@ -630,7 +629,7 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
             if (textRect.width() > 8) {
                 QFont bold = small; bold.setBold(true);
                 p.setFont(bold);
-                p.setPen(QColor("#f5a623"));
+                p.setPen(SankoTheme::kAccent);
                 p.drawText(textRect, Qt::AlignTop | Qt::AlignLeft,
                            QString::number(b.flatIndex + 1));
                 p.setFont(small);
@@ -660,9 +659,9 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
             // Trim handles on the selected clip.
             if (current) {
                 p.fillRect(QRect(r.left(), r.top(), kHandleW, r.height()),
-                           QColor("#f5a623"));
+                           SankoTheme::kAccent);
                 p.fillRect(QRect(r.right() - kHandleW + 1, r.top(), kHandleW, r.height()),
-                           QColor("#f5a623"));
+                           SankoTheme::kAccent);
             }
         }
         p.setRenderHint(QPainter::Antialiasing, false);
@@ -715,13 +714,13 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
     {
         const int px = contentXToScreen(playheadContentX());
         if (px >= kLabelCol && px <= W) {
-            p.setPen(QPen(QColor("#f5a623"), 1.5));
+            p.setPen(QPen(SankoTheme::kAccent, 1.5));
             p.drawLine(px, 0, px, kCanvasH);
             // Triangle handle in the ruler.
             p.setRenderHint(QPainter::Antialiasing, true);
             QPolygon tri;
             tri << QPoint(px - 5, 0) << QPoint(px + 5, 0) << QPoint(px, 8);
-            p.setBrush(QColor("#f5a623"));
+            p.setBrush(SankoTheme::kAccent);
             p.setPen(Qt::NoPen);
             p.drawPolygon(tri);
             p.setRenderHint(QPainter::Antialiasing, false);

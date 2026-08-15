@@ -1,4 +1,5 @@
 #include "GenerationPage.h"
+#include "SankoTheme.h"
 
 #include "StoryboardModel.h"
 
@@ -195,8 +196,7 @@ QWidget *GenerationPage::createTopBar()
 
     QPushButton *genAll = new QPushButton(QStringLiteral("Generate All Queued"));
     genAll->setCursor(Qt::PointingHandCursor);
-    genAll->setStyleSheet(QStringLiteral(
-        "QPushButton { background-color: #7c6ef6; color: #ffffff; border: none;"
+    genAll->setStyleSheet(SankoTheme::themed("QPushButton { background-color: %PURPLE%; color: #ffffff; border: none;"
         " border-radius: 6px; padding: 8px 16px; font-size: 13px; font-weight: 600; }"
         "QPushButton:hover { background-color: #8f82ff; }"));
     connect(genAll, &QPushButton::clicked, this, &GenerationPage::generateAllQueued);
@@ -334,7 +334,7 @@ QWidget *GenerationPage::buildRow(int index)
 
     // Auto-retry suffix, shown beside the spinner during a retry.
     row.retryLabel = new QLabel;
-    row.retryLabel->setStyleSheet(QStringLiteral("color: #f5a623; font-size: 10px; border:none;"));
+    row.retryLabel->setStyleSheet(SankoTheme::themed("color: %ACCENT%; font-size: 10px; border:none;"));
     row.retryLabel->setVisible(false);
     hl->addWidget(row.retryLabel);
 
@@ -375,8 +375,7 @@ QWidget *GenerationPage::buildRow(int index)
     // Per-row Generate button.
     row.generateBtn = new QPushButton(QStringLiteral("Generate"));
     row.generateBtn->setCursor(Qt::PointingHandCursor);
-    row.generateBtn->setStyleSheet(QStringLiteral(
-        "QPushButton { background-color: #7c6ef6; color: #ffffff; border: none;"
+    row.generateBtn->setStyleSheet(SankoTheme::themed("QPushButton { background-color: %PURPLE%; color: #ffffff; border: none;"
         " border-radius: 4px; padding: 5px 14px; font-size: 12px; font-weight: 600; }"
         "QPushButton:hover { background-color: #8f82ff; }"));
     connect(row.generateBtn, &QPushButton::clicked, this, [this, index] { queueRow(index); });
@@ -491,7 +490,7 @@ void GenerationPage::rebuildTakesStrip(int index)
         chip->setAttribute(Qt::WA_StyledBackground, true);
         chip->setStyleSheet(QStringLiteral(
             "background-color: #161616; border: 1px solid %1; border-radius: 3px;")
-            .arg(selected ? QStringLiteral("#f5a623") : QStringLiteral("#2a2a2a")));
+            .arg(selected ? SankoTheme::kAccentHex : QStringLiteral("#2a2a2a")));
         QHBoxLayout *cl = new QHBoxLayout(chip);
         cl->setContentsMargins(6, 2, 6, 2);
         cl->setSpacing(4);

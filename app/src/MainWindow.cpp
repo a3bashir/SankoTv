@@ -1,4 +1,5 @@
 #include "MainWindow.h"
+#include "SankoTheme.h"
 
 #ifdef SANKOTV_DEV_RECORDER
 #include "devrecorder/DevRecorder.h" // TEMP dev tool; see that header to remove
@@ -334,13 +335,12 @@ void MainWindow::onPreferences()
     QDialog dialog(this);
     dialog.setWindowTitle(QStringLiteral("Preferences"));
     dialog.setFixedSize(520, 300);
-    dialog.setStyleSheet(QStringLiteral(
-        "QDialog { background-color: #161616; }"
+    dialog.setStyleSheet(SankoTheme::themed("QDialog { background-color: #161616; }"
         "QLabel { color: #cccccc; font-size: 11px; }"
         "QListWidget { background-color: #111111; color: #cccccc; font-size: 12px;"
         " border: none; border-right: 1px solid #1f1f1f; outline: none; }"
         "QListWidget::item { padding: 8px 12px; }"
-        "QListWidget::item:selected { background-color: #262626; color: #f5a623; }"
+        "QListWidget::item:selected { background-color: #262626; color: %ACCENT%; }"
         "QPushButton { background-color: #1c1c1c; color: #cccccc; border: 1px solid #2a2a2a;"
         " border-radius: 4px; font-size: 11px; padding: 6px 16px; }"
         "QPushButton:hover { background-color: #262626; }"));

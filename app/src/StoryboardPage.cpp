@@ -1,4 +1,5 @@
 #include "StoryboardPage.h"
+#include "SankoTheme.h"
 
 #include "ColorPanel.h"
 
@@ -94,12 +95,12 @@ const char *kDockDarkStyle =
     " background: transparent; border: none; }"
     "#dockTitleClose { background: transparent; color: #999999; border: none;"
     " border-radius: 4px; font-size: 13px; }"
-    "#dockTitleClose:hover { background: #262626; color: #f5a623; }"
+    "#dockTitleClose:hover { background: #262626; color: %ACCENT%; }"
     "QMainWindow#storyboardDockHost QTabBar::tab { background: #161616;"
     " color: #cccccc; border: 1px solid #2a2a2a; padding: 3px 8px;"
     " font-size: 11px; }"
     "QMainWindow#storyboardDockHost QTabBar::tab:selected {"
-    " background: #1a1a1a; color: #f5a623; }";
+    " background: #1a1a1a; color: %ACCENT%; }";
 
 // (Strip thumbnails are now sized dynamically — see m_thumbW/m_thumbH, which
 // default to the classic 160x90 and scale with the Panel Strip's height.)
@@ -116,13 +117,12 @@ QPushButton *toolButton(const QString &text, const QString &tip)
     button->setCheckable(true);
     button->setCursor(Qt::PointingHandCursor);
     button->setFixedHeight(30); // compact: leaves room for the size slider
-    button->setStyleSheet(QStringLiteral(
-        "QPushButton {"
+    button->setStyleSheet(SankoTheme::themed("QPushButton {"
         "  background-color: #1c1c1c; color: #cccccc; border: 1px solid #2a2a2a;"
         "  border-radius: 4px; font-size: 11px;"
         "}"
         "QPushButton:hover { background-color: #262626; }"
-        "QPushButton:checked { background-color: #f5a623; color: #0a0a0a; border: none; font-weight: 600; }"));
+        "QPushButton:checked { background-color: %ACCENT%; color: #0a0a0a; border: none; font-weight: 600; }"));
     return button;
 }
 
@@ -428,7 +428,7 @@ protected:
         if (isDown())
             bg = m_pressedBg; // Pressed
         else if (isChecked())
-            bg = QColor(0x7c, 0x6e, 0xf6); // Active tool
+            bg = SankoTheme::kPurple; // Active tool
         else if (isEnabled() && underMouse())
             bg = m_hoverBg; // Hover
         p.setPen(Qt::NoPen);
@@ -677,7 +677,7 @@ protected:
                 fp.addRoundedRect(fill, 1, 1);
                 QLinearGradient g(fill.topLeft(), fill.topRight());
                 g.setColorAt(0.0, QColor(0x4b, 0x43, 0x97));
-                g.setColorAt(1.0, QColor(0x7c, 0x6e, 0xf6));
+                g.setColorAt(1.0, SankoTheme::kPurple);
                 p.fillPath(fp, g);
                 QLinearGradient sheen(fill.topLeft(), fill.bottomLeft());
                 sheen.setColorAt(0.0, QColor(255, 255, 255, 26));
@@ -765,7 +765,7 @@ protected:
         p.setPen(Qt::NoPen);
         QPainterPath pill;
         pill.addRoundedRect(QRectF(0, 0, 28, 10), 5, 5);
-        p.fillPath(pill, m_on ? QColor(0x7c, 0x6e, 0xf6) : QColor(0x4d, 0x4d, 0x4d));
+        p.fillPath(pill, m_on ? SankoTheme::kPurple : QColor(0x4d, 0x4d, 0x4d));
         QPainterPath knob;
         knob.addRoundedRect(QRectF(m_on ? 14.0 : 0.0, 0, 14, 10), 5, 5);
         p.fillPath(knob, QColor(0xb3, 0xb3, 0xb3));
@@ -875,7 +875,7 @@ protected:
         fillPath.addRoundedRect(fill, 4, 4);
         QLinearGradient g(fill.bottomLeft(), fill.topLeft());
         g.setColorAt(0.0, QColor(0x4b, 0x43, 0x97));
-        g.setColorAt(1.0, QColor(0x7c, 0x6e, 0xf6));
+        g.setColorAt(1.0, SankoTheme::kPurple);
         p.fillPath(fillPath, g);
         QLinearGradient sheen(fill.topLeft(), fill.topRight());
         sheen.setColorAt(0.0, QColor(255, 255, 255, 26));
@@ -891,7 +891,7 @@ protected:
         // the track, the gradient fill AND the light dragger. Drawn last so a
         // snapped marker shows centred inside the handle.
         p.setPen(QPen(Qt::white, 1));
-        p.setBrush(QColor(0x7c, 0x6e, 0xf6));
+        p.setBrush(SankoTheme::kPurple);
         for (int v : m_presets)
             p.drawRoundedRect(QRectF(4.5, markerY(v) - 2.0, width() - 9, 4),
                               2, 2);
@@ -1184,11 +1184,10 @@ public:
         m_button->setGeometry(38, 3, 21, 21);
         m_button->setCursor(Qt::PointingHandCursor);
         m_button->setFocusPolicy(Qt::NoFocus);
-        m_button->setStyleSheet(QStringLiteral(
-            "QToolButton { color:#ffffff; font-size:15px; font-weight:600;"
+        m_button->setStyleSheet(SankoTheme::themed("QToolButton { color:#ffffff; font-size:15px; font-weight:600;"
             " background:#3a3a3a; border:none; border-radius:5px;"
             " padding-bottom:2px; }"
-            "QToolButton:hover { background:#7c6ef6; }"));
+            "QToolButton:hover { background:%PURPLE%; }"));
         connect(m_button, &QToolButton::clicked, this, [this] {
             if (onPresetToggle)
                 onPresetToggle();
@@ -1435,7 +1434,7 @@ protected:
             y = (r.at(m_gap - 1)->geometry().bottom() + r.at(m_gap)->y()) / 2;
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing, true);
-        p.setPen(QPen(QColor(0x7c, 0x6e, 0xf6), 2, Qt::SolidLine, Qt::RoundCap));
+        p.setPen(QPen(SankoTheme::kPurple, 2, Qt::SolidLine, Qt::RoundCap));
         p.drawLine(4, y, width() - 4, y);
     }
 
@@ -1564,7 +1563,7 @@ protected:
             fp.addRoundedRect(fill, 1, 1);
             QLinearGradient g(fill.left(), 0, fill.right(), 0);
             g.setColorAt(0.0, QColor(0x4b, 0x43, 0x97));
-            g.setColorAt(1.0, QColor(0x7c, 0x6e, 0xf6));
+            g.setColorAt(1.0, SankoTheme::kPurple);
             p.fillPath(fp, g);
             QLinearGradient sheen(0, fill.top(), 0, fill.bottom());
             sheen.setColorAt(0.0, QColor(255, 255, 255, 26)); // 0.1 alpha
@@ -1911,7 +1910,7 @@ StoryboardPage::StoryboardPage(QWidget *parent)
     m_dockHost = new QMainWindow;
     m_dockHost->setObjectName(QStringLiteral("storyboardDockHost"));
     m_dockHost->setWindowFlags(Qt::Widget); // child widget, never a window
-    m_dockHost->setStyleSheet(QString::fromLatin1(kDockDarkStyle));
+    m_dockHost->setStyleSheet(SankoTheme::themed(kDockDarkStyle));
     root->addWidget(m_dockHost, 1);
 
     // Central workspace: the canvas area exactly as before (tool column,
@@ -2197,8 +2196,7 @@ void StoryboardPage::rebuildSceneList()
         cardLayout->setSpacing(6);
 
         QLabel *number = new QLabel(QStringLiteral("SCENE %1").arg(scene->number));
-        number->setStyleSheet(QStringLiteral(
-            "color: #f5a623; font-size: 11px; font-weight: 700; border: none; background: transparent;"));
+        number->setStyleSheet(SankoTheme::themed("color: %ACCENT%; font-size: 11px; font-weight: 700; border: none; background: transparent;"));
         cardLayout->addWidget(number);
 
         QLabel *location = new QLabel(scene->location);
@@ -2222,8 +2220,8 @@ void StoryboardPage::updateSceneCardStyles()
         const bool selected = (i == m_currentScene);
         m_sceneCards.at(i)->setStyleSheet(
             selected
-                ? QStringLiteral("QFrame#sceneCard { background-color: #1b1b1b;"
-                                 " border: 1px solid #2a2a2a; border-left: 3px solid #f5a623;"
+                ? SankoTheme::themed("QFrame#sceneCard { background-color: #1b1b1b;"
+                                 " border: 1px solid #2a2a2a; border-left: 3px solid %ACCENT%;"
                                  " border-radius: 6px; }")
                 : QStringLiteral("QFrame#sceneCard { background-color: #161616;"
                                  " border: 1px solid #2a2a2a; border-radius: 6px; }"));
@@ -3166,10 +3164,9 @@ void StoryboardPage::createFloatingToolbar()
         QStringLiteral(":/icons/flip.svg"), QSizeF(26.0, 21.13))));
     flipButton->setIconSize(QSize(30, 30));
     flipButton->setToolTip(QStringLiteral("Flip"));
-    flipButton->setStyleSheet(QStringLiteral(
-        "QPushButton { background:transparent; border:none; border-radius:6px; }"
+    flipButton->setStyleSheet(SankoTheme::themed("QPushButton { background:transparent; border:none; border-radius:6px; }"
         "QPushButton:hover { background:#2e2e2e; }"
-        "QPushButton:checked { background:#7c6ef6; }"));
+        "QPushButton:checked { background:%PURPLE%; }"));
     auto *opacitySlider = new SizeCtlSlider(5, 100, 100, sizeBar);
     opacitySlider->setToolTip(QStringLiteral("Brush opacity"));
 
@@ -3449,10 +3446,9 @@ QWidget *StoryboardPage::createFloatingPanel(const QString &title, QWidget *body
     closeButton->setText(QString::fromUtf8("\xE2\x9C\x95")); // ✕
     closeButton->setCursor(Qt::PointingHandCursor);
     closeButton->setToolTip(QStringLiteral("Close"));
-    closeButton->setStyleSheet(QStringLiteral(
-        "QToolButton { background: transparent; color: #999999; border: none;"
+    closeButton->setStyleSheet(SankoTheme::themed("QToolButton { background: transparent; color: #999999; border: none;"
         " font-size: 11px; padding: 2px 6px; }"
-        "QToolButton:hover { background: #262626; color: #f5a623; }"));
+        "QToolButton:hover { background: #262626; color: %ACCENT%; }"));
     connect(closeButton, &QToolButton::clicked, panel, &QWidget::hide);
     headerLayout->addWidget(closeButton);
 
@@ -3699,11 +3695,10 @@ QWidget *StoryboardPage::createShapesPanel()
     layout->addWidget(stroke);
 
     QCheckBox *fillCheck = new QCheckBox(QStringLiteral("Fill"));
-    fillCheck->setStyleSheet(QStringLiteral(
-        "QCheckBox { color: #cccccc; font-size: 11px; border: none; }"
+    fillCheck->setStyleSheet(SankoTheme::themed("QCheckBox { color: #cccccc; font-size: 11px; border: none; }"
         "QCheckBox::indicator { width: 12px; height: 12px; border: 1px solid #2a2a2a;"
         " border-radius: 2px; background: #1c1c1c; }"
-        "QCheckBox::indicator:checked { background: #f5a623; border-color: #f5a623; }"));
+        "QCheckBox::indicator:checked { background: %ACCENT%; border-color: %ACCENT%; }"));
     fillCheck->setChecked(false); // default OFF = outline only
     connect(fillCheck, &QCheckBox::toggled, this, [this](bool on) {
         if (m_canvas)
@@ -3777,7 +3772,7 @@ void StoryboardPage::updatePanelThumbStyles()
         const bool selected = (i == m_currentPanel);
         m_panelThumbs.at(i)->setStyleSheet(
             selected
-                ? QStringLiteral("QLabel#panelThumb { border: 3px solid #f5a623; border-radius: 4px;"
+                ? SankoTheme::themed("QLabel#panelThumb { border: 3px solid %ACCENT%; border-radius: 4px;"
                                  " background-color: #1a1a1a; }")
                 : QStringLiteral("QLabel#panelThumb { border: 1px solid #2a2a2a; border-radius: 4px;"
                                  " background-color: #1a1a1a; }"));
@@ -3934,8 +3929,7 @@ void StoryboardPage::applyPanelNumStyle(QLabel *num) const
 {
     const double s = m_stripScale;
     num->setStyleSheet(
-        QStringLiteral(
-            "color: #f5a623; font-size: %1px; font-weight: 700;"
+        SankoTheme::themed("color: %ACCENT%; font-size: %1px; font-weight: 700;"
             " background: rgba(0,0,0,140); padding: %2px %3px;"
             " border-radius: %4px;")
             .arg(qRound(11 * s))
@@ -4246,14 +4240,13 @@ QWidget *StoryboardPage::createRightColumn()
     // (No inner heading: the ADS dock tab already names the panel.)
 
     const QString labelStyle = QStringLiteral("color: #888888; font-size: 11px;");
-    const QString fieldStyle = QStringLiteral(
-        "QComboBox, QLineEdit, QPlainTextEdit {"
+    const QString fieldStyle = SankoTheme::themed("QComboBox, QLineEdit, QPlainTextEdit {"
         "  background-color: #1a1a1a; color: #ffffff; border: 1px solid #2a2a2a;"
         "  border-radius: 4px; padding: 5px; font-size: 12px;"
         "}"
         "QComboBox::drop-down { border: none; }"
         "QComboBox QAbstractItemView { background-color: #1a1a1a; color: #ffffff;"
-        "  selection-background-color: #f5a623; selection-color: #0a0a0a; }");
+        "  selection-background-color: %ACCENT%; selection-color: #0a0a0a; }");
 
     auto addLabel = [&](const QString &text) {
         QLabel *l = new QLabel(text);
@@ -4343,10 +4336,9 @@ QWidget *StoryboardPage::createBottomBar()
 
     QPushButton *consistency = new QPushButton(QStringLiteral("Consistency Board"));
     consistency->setCursor(Qt::PointingHandCursor);
-    consistency->setStyleSheet(QStringLiteral(
-        "QPushButton { background: transparent; color: #cccccc; border: 1px solid #2a2a2a;"
+    consistency->setStyleSheet(SankoTheme::themed("QPushButton { background: transparent; color: #cccccc; border: 1px solid #2a2a2a;"
         " border-radius: 6px; padding: 7px 14px; font-size: 13px; }"
-        "QPushButton:hover { color: #f5a623; border-color: #f5a623; }"));
+        "QPushButton:hover { color: %ACCENT%; border-color: %ACCENT%; }"));
     connect(consistency, &QPushButton::clicked, this, &StoryboardPage::consistencyBoardRequested);
     layout->addWidget(consistency);
 
@@ -4355,10 +4347,9 @@ QWidget *StoryboardPage::createBottomBar()
     m_importButton = new QPushButton(QStringLiteral("Import Image"));
     m_importButton->setCursor(Qt::PointingHandCursor);
     m_importButton->setToolTip(QStringLiteral("Import a reference image onto this panel (Ctrl+I)"));
-    m_importButton->setStyleSheet(QStringLiteral(
-        "QPushButton { background: transparent; color: #cccccc; border: 1px solid #2a2a2a;"
+    m_importButton->setStyleSheet(SankoTheme::themed("QPushButton { background: transparent; color: #cccccc; border: 1px solid #2a2a2a;"
         " border-radius: 6px; padding: 7px 14px; font-size: 13px; }"
-        "QPushButton:hover { color: #f5a623; border-color: #f5a623; }"
+        "QPushButton:hover { color: %ACCENT%; border-color: %ACCENT%; }"
         "QPushButton:disabled { color: #555555; border-color: #1f1f1f; }"));
     connect(m_importButton, &QPushButton::clicked, this, &StoryboardPage::importImageToPanel);
     layout->addWidget(m_importButton);
@@ -4764,7 +4755,7 @@ void StoryboardPage::beginPanelDrag()
     // Amber drop-position indicator, drawn inside the strip container.
     QWidget *container = m_panelStripLayout->parentWidget();
     m_dropIndicator = new QWidget(container);
-    m_dropIndicator->setStyleSheet(QStringLiteral("background-color: #f5a623;"));
+    m_dropIndicator->setStyleSheet(SankoTheme::themed("background-color: %ACCENT%;"));
     m_dropIndicator->hide();
 }
 
@@ -5205,7 +5196,7 @@ QWidget *StoryboardPage::createPanelControls()
     };
 
     m_addPanelButton = ctrlButton(
-        QStringLiteral(":/icons/add.svg"), QSize(13, 13), QStringLiteral("#7c6ef6"),
+        QStringLiteral(":/icons/add.svg"), QSize(13, 13), SankoTheme::kPurpleHex,
         QStringLiteral("<b>Add Panel</b> | Creates a new storyboard panel."),
         QStringLiteral("QPushButton:hover { background-color: #8f82f8; }"));
     connect(m_addPanelButton, &QPushButton::clicked, this, [this] { addPanelAfterSelected(); });
@@ -5223,8 +5214,8 @@ QWidget *StoryboardPage::createPanelControls()
         QStringLiteral(":/icons/lighttable.svg"), QSize(14, 21), QStringLiteral("#111111"),
         QStringLiteral("<b>Light Table</b> | Ghost neighbouring panels behind the current "
                        "one (previous red, next green)."),
-        QStringLiteral("QPushButton:hover { border-color: #3a3a3a; }"
-                       "QPushButton:checked { border: 1.5px solid #f5a623; }"));
+        SankoTheme::themed("QPushButton:hover { border-color: #3a3a3a; }"
+                       "QPushButton:checked { border: 1.5px solid %ACCENT%; }"));
     m_lightTableButton->setCheckable(true);
     connect(m_lightTableButton, &QPushButton::toggled, this, [this](bool on) {
         if (m_canvas)
@@ -5359,8 +5350,8 @@ QPushButton *layerActionButton(const QString &text, const QString &tip)
 QString layerRowStyle(const Layer &layer, bool selected)
 {
     QString style = selected
-        ? QStringLiteral("QFrame#layerRow { background-color: #1b1b1b;"
-                         " border: 1px solid #7c6ef6; border-radius: 4px; }")
+        ? SankoTheme::themed("QFrame#layerRow { background-color: #1b1b1b;"
+                         " border: 1px solid %PURPLE%; border-radius: 4px; }")
         : QStringLiteral("QFrame#layerRow { background-color: #161616;"
                          " border: 1px solid #232323; border-radius: 4px; }");
     if (!layer.colorTag.isEmpty())
@@ -5765,7 +5756,7 @@ void StoryboardPage::rebuildLayerPanel()
         lock->setFixedSize(7, 8);
         lock->setIcon(QIcon(layerIconPm(QStringLiteral(":/icons/layer_lock.svg"),
                                         QSizeF(7, 8),
-                                        layer.locked ? QColor(0xf5, 0xa6, 0x23)
+                                        layer.locked ? SankoTheme::kAccent
                                                      : QColor(),
                                         layer.locked ? 1.0 : 0.55)));
         lock->setIconSize(QSize(7, 8));
@@ -5944,9 +5935,8 @@ void StoryboardPage::layerBeginRename(int index)
     // Inline editor over the name label (no dialog). Enter/focus-out
     // commits, Escape cancels; the rebuild replaces the row afterwards.
     QLineEdit *edit = new QLineEdit(panel->layers.at(index).name, row);
-    edit->setStyleSheet(QStringLiteral(
-        "QLineEdit { background: #0f0f0f; color: #ffffff; font-size: 11px;"
-        " border: 1px solid #7c6ef6; border-radius: 2px; padding: 0 2px; }"));
+    edit->setStyleSheet(SankoTheme::themed("QLineEdit { background: #0f0f0f; color: #ffffff; font-size: 11px;"
+        " border: 1px solid %PURPLE%; border-radius: 2px; padding: 0 2px; }"));
     edit->setGeometry(name->geometry().adjusted(-2, -3, 40, 3));
     edit->show();
     edit->setFocus();

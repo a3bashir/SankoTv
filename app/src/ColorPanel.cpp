@@ -1,4 +1,5 @@
 #include "ColorPanel.h"
+#include "SankoTheme.h"
 
 #include <QConicalGradient>
 #include <QHBoxLayout>
@@ -27,7 +28,7 @@ const QColor kInset(0x16, 0x16, 0x16);       // recessed track/segment bg
 const QColor kLine(0x2a, 0x2a, 0x2a);        // hairlines
 const QColor kText(0xcc, 0xcc, 0xcc);
 const QColor kTextDim(0x80, 0x80, 0x80);
-const QColor kAccent(0x7c, 0x6e, 0xf6);      // Sanko accent
+const QColor kAccent = SankoTheme::kPurple;  // Sanko accent
 
 QColor hsv(qreal h, qreal s, qreal v)
 {

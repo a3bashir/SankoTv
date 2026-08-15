@@ -1,3 +1,4 @@
+#include "SankoTheme.h"
 #include "StudioControls.h"
 
 #include <QFontMetrics>

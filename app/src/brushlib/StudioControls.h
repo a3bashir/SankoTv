@@ -1,6 +1,7 @@
 #pragma once
 
 #include "PressureCurve.h"
+#include "SankoTheme.h"
 
 #include <QColor>
 #include <QString>
@@ -22,7 +23,7 @@ inline const QColor kWindowBg(0x1e, 0x1e, 0x20);
 inline const QColor kSidebarBg(0x25, 0x25, 0x28);
 inline const QColor kCanvasBg(0x16, 0x16, 0x17);
 inline const QColor kBorder(0x2d, 0x2d, 0x31);
-inline const QColor kAccent(0x7c, 0x6e, 0xf6);
+inline const QColor kAccent = SankoTheme::kPurple;
 inline const QColor kAccentDark(0x4b, 0x43, 0x97);
 inline const QColor kTrack(0x33, 0x33, 0x33);
 inline const QColor kDragger(0xb3, 0xb3, 0xb3);

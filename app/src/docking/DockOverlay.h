@@ -1,3 +1,4 @@
+#include "SankoTheme.h"
 #pragma once
 
 #include <QColor>
@@ -38,7 +39,7 @@ class DockOverlay : public QWidget
 
 public:
     explicit DockOverlay(QWidget *host,
-                         const QColor &accent = QColor(0x7c, 0x6e, 0xf6));
+                         const QColor &accent = SankoTheme::kPurple);
 
     void showPreview(const QRect &previewRect, DockZone zone,
                      QDockWidget *target);

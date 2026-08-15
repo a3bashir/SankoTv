@@ -1,4 +1,5 @@
 #include "SankoSlider.h"
+#include "SankoTheme.h"
 
 #include <QFontMetrics>
 #include <QKeyEvent>
@@ -13,7 +14,7 @@ constexpr int kMinRunH = 90;   // minimum run, horizontal
 constexpr int kMinRunV = 60;   // minimum run, vertical (tight tool column;
                                // the layout stretch grows it with the window)
 
-const QColor kPurple(0x7c, 0x6e, 0xf6);
+const QColor kPurple = SankoTheme::kPurple;
 
 QFont labelFont()
 {

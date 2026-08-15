@@ -1,4 +1,5 @@
 #include "ScriptEditorPage.h"
+#include "SankoTheme.h"
 
 #include "CodeEditor.h"
 
@@ -23,9 +24,9 @@ const char *kPlaceholder =
     "Write your script here. Use screenplay format or plain language \xE2\x80\x94 both work.";
 
 // Button stylesheets shared between states.
-const char *kAmberButton =
+const char *kAccentButton =
     "QPushButton {"
-    "  background-color: #f5a623; color: #0a0a0a; border: none; border-radius: 6px;"
+    "  background-color: %ACCENT%; color: #0a0a0a; border: none; border-radius: 6px;"
     "  padding: 9px 22px; font-size: 14px; font-weight: 600;"
     "}"
     "QPushButton:hover { background-color: #ffb733; }"
@@ -213,10 +214,9 @@ QWidget *ScriptEditorPage::createWritingPanel()
     mono.setPixelSize(14);
     m_editor->setFont(mono);
 
-    m_editor->setStyleSheet(QStringLiteral(
-        "QPlainTextEdit {"
+    m_editor->setStyleSheet(SankoTheme::themed("QPlainTextEdit {"
         "  background-color: #0a0a0a; color: #ffffff; border: none;"
-        "  selection-background-color: #f5a623; selection-color: #0a0a0a;"
+        "  selection-background-color: %ACCENT%; selection-color: #0a0a0a;"
         "}"));
     layout->addWidget(m_editor, 1);
 
@@ -230,7 +230,7 @@ QWidget *ScriptEditorPage::createWritingPanel()
         m_savedText->setStyleSheet(QStringLiteral("color: #666666; font-size: 12px;"));
     });
     connect(m_editor, &CodeEditor::textChanged, this, [this] {
-        m_savedDot->setStyleSheet(QStringLiteral("background-color: #f5a623; border-radius: 4px;"));
+        m_savedDot->setStyleSheet(SankoTheme::themed("background-color: %ACCENT%; border-radius: 4px;"));
         m_savedText->setText(QStringLiteral("Saving\xE2\x80\xA6"));
         m_savedText->setStyleSheet(QStringLiteral("color: #999999; font-size: 12px;"));
         m_savedTimer->start();
@@ -306,7 +306,7 @@ QWidget *ScriptEditorPage::createBottomBar()
     // Parse Script (center) — LOCAL parsing only, never the API.
     m_parseButton = new QPushButton(QStringLiteral("Parse Script"));
     m_parseButton->setCursor(Qt::PointingHandCursor);
-    m_parseButton->setStyleSheet(QString::fromUtf8(kAmberButton));
+    m_parseButton->setStyleSheet(SankoTheme::themed(kAccentButton));
     connect(m_parseButton, &QPushButton::clicked, this, &ScriptEditorPage::onParseClicked);
     layout->addWidget(m_parseButton);
 
@@ -454,8 +454,7 @@ QWidget *ScriptEditorPage::createSceneCard(const QJsonObject &scene)
     topRow->setSpacing(8);
 
     QLabel *sceneNo = new QLabel(QStringLiteral("SCENE %1").arg(number));
-    sceneNo->setStyleSheet(QStringLiteral(
-        "color: #f5a623; font-size: 12px; font-weight: 700; border: none;"));
+    sceneNo->setStyleSheet(SankoTheme::themed("color: %ACCENT%; font-size: 12px; font-weight: 700; border: none;"));
     topRow->addWidget(sceneNo);
 
     QLabel *loc = new QLabel(location);

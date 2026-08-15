@@ -1,3 +1,4 @@
+#include "SankoTheme.h"
 #include "BrushSettingsStudio.h"
 
 #include "BrushPresetCodec.h"
@@ -278,12 +279,11 @@ BrushSettingsStudio::BrushSettingsStudio(BrushLibraryModel *model,
     // widgets with their own stylesheets (buttons, pills, captions) still
     // win over this rule. QMenu would inherit the transparency, so it gets
     // its styling here, in the file's visual language.
-    setStyleSheet(QStringLiteral(
-        "QWidget { background: transparent; }"
+    setStyleSheet(SankoTheme::themed("QWidget { background: transparent; }"
         "QMenu { background: #252528; color: #e6e6e6;"
         " border: 1px solid #2d2d31; }"
         "QMenu::item { padding: 4px 18px; }"
-        "QMenu::item:selected { background: #7c6ef6; color: white; }"));
+        "QMenu::item:selected { background: %PURPLE%; color: white; }"));
     buildUi();
 }
 
@@ -302,8 +302,7 @@ QPushButton *BrushSettingsStudio::makeButton(const QString &text,
     auto *b = new QPushButton(text);
     b->setCursor(Qt::PointingHandCursor);
     if (accent)
-        b->setStyleSheet(QStringLiteral(
-            "QPushButton { background: #7c6ef6; border: none;"
+        b->setStyleSheet(SankoTheme::themed("QPushButton { background: %PURPLE%; border: none;"
             " border-radius: 6px; color: white;"
             " font: 400 14px 'Inter'; padding: 0 16px; min-height: 32px; }"
             "QPushButton:hover { background: #8d80f7; }"));

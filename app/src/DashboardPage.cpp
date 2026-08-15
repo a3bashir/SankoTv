@@ -1,4 +1,5 @@
 #include "DashboardPage.h"
+#include "SankoTheme.h"
 
 #include <QFrame>
 #include <QHBoxLayout>
@@ -62,9 +63,8 @@ QWidget *DashboardPage::createHeaderBar()
     // --- New Project button (right) --------------------------------------
     QPushButton *newProject = new QPushButton(QStringLiteral("New Project"));
     newProject->setCursor(Qt::PointingHandCursor);
-    newProject->setStyleSheet(QStringLiteral(
-        "QPushButton {"
-        "  background-color: #f5a623;"
+    newProject->setStyleSheet(SankoTheme::themed("QPushButton {"
+        "  background-color: %ACCENT%;"
         "  color: #0a0a0a;"
         "  border: none;"
         "  border-radius: 6px;"

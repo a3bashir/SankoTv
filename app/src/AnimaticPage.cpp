@@ -1,4 +1,5 @@
 #include "AnimaticPage.h"
+#include "SankoTheme.h"
 
 #include "AnimaticTimeline.h"
 #include "StoryboardModel.h"
@@ -161,10 +162,9 @@ QWidget *AnimaticPage::createTopBar()
 
     layout->addStretch(1);
 
-    const QString outlined = QStringLiteral(
-        "QPushButton { background: transparent; color: #cccccc; border: 1px solid #2a2a2a;"
+    const QString outlined = SankoTheme::themed("QPushButton { background: transparent; color: #cccccc; border: 1px solid #2a2a2a;"
         " border-radius: 6px; padding: 8px 14px; font-size: 13px; }"
-        "QPushButton:hover { color: #f5a623; border-color: #f5a623; }");
+        "QPushButton:hover { color: %ACCENT%; border-color: %ACCENT%; }");
 
     QPushButton *importAudio = new QPushButton(QStringLiteral("Import Audio"));
     importAudio->setCursor(Qt::PointingHandCursor);
@@ -200,8 +200,7 @@ QWidget *AnimaticPage::createTopBar()
     m_exportButton = new QPushButton(QStringLiteral("Export MP4"));
     m_exportButton->setCursor(Qt::PointingHandCursor);
     m_exportButton->setEnabled(false); // enabled once panels are loaded
-    m_exportButton->setStyleSheet(QStringLiteral(
-        "QPushButton { background-color: #f5a623; color: #0a0a0a; border: none;"
+    m_exportButton->setStyleSheet(SankoTheme::themed("QPushButton { background-color: %ACCENT%; color: #0a0a0a; border: none;"
         " border-radius: 6px; padding: 8px 16px; font-size: 13px; font-weight: 600; }"
         "QPushButton:hover { background-color: #ffb733; }"
         "QPushButton:disabled { background-color: #1c1c1c; color: #555555;"
@@ -212,8 +211,7 @@ QWidget *AnimaticPage::createTopBar()
     m_generationButton = new QPushButton(QStringLiteral("Continue to Generation"));
     m_generationButton->setCursor(Qt::PointingHandCursor);
     m_generationButton->setEnabled(false); // enabled once panels are loaded
-    m_generationButton->setStyleSheet(QStringLiteral(
-        "QPushButton { background-color: #7c6ef6; color: #ffffff; border: none;"
+    m_generationButton->setStyleSheet(SankoTheme::themed("QPushButton { background-color: %PURPLE%; color: #ffffff; border: none;"
         " border-radius: 6px; padding: 8px 16px; font-size: 13px; font-weight: 600; }"
         "QPushButton:hover { background-color: #8f82ff; }"
         "QPushButton:disabled { background-color: #1c1c1c; color: #555555;"
@@ -391,7 +389,7 @@ QWidget *AnimaticPage::createControls()
     loopLayout->addWidget(m_clearLoopButton);
 
     m_loopWarningLabel = new QLabel(QStringLiteral("Set both loop points to activate"));
-    m_loopWarningLabel->setStyleSheet(QStringLiteral("color: #f5a623; font-size: 11px;"));
+    m_loopWarningLabel->setStyleSheet(SankoTheme::themed("color: %ACCENT%; font-size: 11px;"));
     m_loopWarningLabel->setVisible(false);
     loopLayout->addWidget(m_loopWarningLabel);
 
@@ -457,8 +455,7 @@ QWidget *AnimaticPage::createControls()
     updateSpeedButtons(); // 1x active by default
 
     m_timecodeLabel = new QLabel(QStringLiteral("00:00:00:00"));
-    m_timecodeLabel->setStyleSheet(QStringLiteral(
-        "color: #f5a623; font-family: 'Courier New'; font-size: 13px;"));
+    m_timecodeLabel->setStyleSheet(SankoTheme::themed("color: %ACCENT%; font-family: 'Courier New'; font-size: 13px;"));
     layout->addWidget(m_timecodeLabel);
 
     m_totalLabel = new QLabel(QStringLiteral("Total: 0:00"));
@@ -649,12 +646,10 @@ void AnimaticPage::setPlaybackSpeed(float speed)
 
 void AnimaticPage::updateSpeedButtons()
 {
-    const QString outlined = QStringLiteral(
-        "QPushButton { background: transparent; color: #cccccc; border: 1px solid #2a2a2a;"
+    const QString outlined = SankoTheme::themed("QPushButton { background: transparent; color: #cccccc; border: 1px solid #2a2a2a;"
         " border-radius: 4px; padding: 5px 11px; font-size: 12px; }"
-        "QPushButton:hover { color: #f5a623; border-color: #f5a623; }");
-    const QString active = QStringLiteral(
-        "QPushButton { background-color: #f5a623; color: #0a0a0a; border: 1px solid #f5a623;"
+        "QPushButton:hover { color: %ACCENT%; border-color: %ACCENT%; }");
+    const QString active = SankoTheme::themed("QPushButton { background-color: %ACCENT%; color: #0a0a0a; border: 1px solid %ACCENT%;"
         " border-radius: 4px; padding: 5px 11px; font-size: 12px; font-weight: 600; }");
 
     if (m_speedHalfButton)

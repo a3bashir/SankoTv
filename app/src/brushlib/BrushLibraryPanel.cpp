@@ -1,4 +1,5 @@
 #include "BrushLibraryPanel.h"
+#include "SankoTheme.h"
 
 #include "BrushPresetCodec.h"
 #include "SankoScrollBarStyle.h"
@@ -365,8 +366,7 @@ void BrushLibraryPanel::buildUi()
     importFont.setPixelSize(14);
     importFont.setWeight(QFont::DemiBold);
     importBtn->setFont(importFont);
-    importBtn->setStyleSheet(QStringLiteral(
-        "QPushButton { background: #7c6ef6; color: #ccc; border: none; "
+    importBtn->setStyleSheet(SankoTheme::themed("QPushButton { background: %PURPLE%; color: #ccc; border: none; "
         "border-radius: 6px; padding: 8px 16px; }"
         "QPushButton:hover { background: #8b7ef8; }"));
     connect(importBtn, &QPushButton::clicked, this,

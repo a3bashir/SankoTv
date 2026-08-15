@@ -1,4 +1,5 @@
 #include "ConsistencyBoard.h"
+#include "SankoTheme.h"
 
 #include "StoryboardModel.h"
 
@@ -177,8 +178,7 @@ QWidget *ConsistencyBoard::createTopBar()
 
     QPushButton *addChar = new QPushButton(QStringLiteral("+ Add Character"));
     addChar->setCursor(Qt::PointingHandCursor);
-    addChar->setStyleSheet(QStringLiteral(
-        "QPushButton { background-color: #f5a623; color: #0a0a0a; border: none;"
+    addChar->setStyleSheet(SankoTheme::themed("QPushButton { background-color: %ACCENT%; color: #0a0a0a; border: none;"
         " border-radius: 6px; padding: 8px 14px; font-size: 13px; font-weight: 600; }"
         "QPushButton:hover { background-color: #ffb733; }"));
     connect(addChar, &QPushButton::clicked, this, [this] { addEntry(QStringLiteral("Character")); });
@@ -280,8 +280,8 @@ void ConsistencyBoard::rebuildList()
             const bool selected = (i == m_selected);
             card->setStyleSheet(
                 selected
-                    ? QStringLiteral("QFrame#entryCard { background-color: #1b1b1b;"
-                                     " border: 1px solid #2a2a2a; border-left: 3px solid #f5a623;"
+                    ? SankoTheme::themed("QFrame#entryCard { background-color: #1b1b1b;"
+                                     " border: 1px solid #2a2a2a; border-left: 3px solid %ACCENT%;"
                                      " border-radius: 6px; }")
                     : QStringLiteral("QFrame#entryCard { background-color: #161616;"
                                      " border: 1px solid #2a2a2a; border-radius: 6px; }"));
@@ -442,8 +442,7 @@ void ConsistencyBoard::rebuildDetail()
         } else {
             for (const QString &tag : entry.tags) {
                 QLabel *pill = new QLabel(tag);
-                pill->setStyleSheet(QStringLiteral(
-                    "background-color: rgba(245,166,35,40); color: #f5a623; border-radius: 9px;"
+                pill->setStyleSheet(SankoTheme::themed("background-color: rgba(%ACCENT_RGB%,40); color: %ACCENT%; border-radius: 9px;"
                     " padding: 2px 10px; font-size: 11px;"));
                 tagsRow->addWidget(pill);
             }
@@ -514,8 +513,7 @@ void ConsistencyBoard::rebuildDetail()
 
     QPushButton *save = new QPushButton(QStringLiteral("Save"));
     save->setCursor(Qt::PointingHandCursor);
-    save->setStyleSheet(QStringLiteral(
-        "QPushButton { background-color: #f5a623; color: #0a0a0a; border: none;"
+    save->setStyleSheet(SankoTheme::themed("QPushButton { background-color: %ACCENT%; color: #0a0a0a; border: none;"
         " border-radius: 6px; padding: 8px 18px; font-size: 13px; font-weight: 600; }"
         "QPushButton:hover { background-color: #ffb733; }"));
     connect(save, &QPushButton::clicked, this, &ConsistencyBoard::saveEdit);

@@ -1,3 +1,4 @@
+#include "SankoTheme.h"
 #include "DrawingCanvas.h"
 
 #include "StoryboardModel.h"
@@ -269,10 +270,9 @@ DrawingCanvas::DrawingCanvas(QWidget *parent)
     m_qsEditButton = new QPushButton(QStringLiteral("Edit Shape"), this);
     m_qsEditButton->setFocusPolicy(Qt::NoFocus);
     m_qsEditButton->setCursor(Qt::PointingHandCursor);
-    m_qsEditButton->setStyleSheet(QStringLiteral(
-        "QPushButton { background:#212121; color:#cccccc; border:1px solid #2a2a2a;"
+    m_qsEditButton->setStyleSheet(SankoTheme::themed("QPushButton { background:#212121; color:#cccccc; border:1px solid #2a2a2a;"
         " border-radius:6px; padding:6px 16px; font-size:12px; font-weight:600; }"
-        "QPushButton:hover { color:#ffffff; border-color:#7c6ef6; }"));
+        "QPushButton:hover { color:#ffffff; border-color:%PURPLE%; }"));
     m_qsEditButton->hide();
     connect(m_qsEditButton, &QPushButton::clicked,
             this, [this] { enterQuickShapeEdit(); });
@@ -280,8 +280,7 @@ DrawingCanvas::DrawingCanvas(QWidget *parent)
     m_qsDoneButton = new QPushButton(QStringLiteral("Done"), this);
     m_qsDoneButton->setFocusPolicy(Qt::NoFocus);
     m_qsDoneButton->setCursor(Qt::PointingHandCursor);
-    m_qsDoneButton->setStyleSheet(QStringLiteral(
-        "QPushButton { background:#7c6ef6; color:#ffffff; border:none;"
+    m_qsDoneButton->setStyleSheet(SankoTheme::themed("QPushButton { background:%PURPLE%; color:#ffffff; border:none;"
         " border-radius:6px; padding:6px 16px; font-size:12px; font-weight:600; }"
         "QPushButton:hover { background:#8d80f8; }"
         "QPushButton:disabled { background:#3d3766; color:#8a86a8; }"));
@@ -4029,8 +4028,7 @@ void DrawingCanvas::rebuildQuickShapeTypeBar()
         button->setFocusPolicy(Qt::NoFocus);
         button->setCursor(Qt::PointingHandCursor);
         button->setStyleSheet(active
-            ? QStringLiteral(
-                  "QPushButton { background:#7c6ef6; color:#ffffff; border:none;"
+            ? SankoTheme::themed("QPushButton { background:%PURPLE%; color:#ffffff; border:none;"
                   " border-radius:4px; padding:4px 10px; font-size:11px; }")
             : QStringLiteral(
                   "QPushButton { background:#161616; color:#aaaaaa; border:none;"
@@ -4060,8 +4058,7 @@ void DrawingCanvas::rebuildQuickShapeTypeBar()
             count->setCursor(Qt::PointingHandCursor);
             const bool active = sides == currentCount;
             count->setStyleSheet(active
-                ? QStringLiteral(
-                      "QPushButton { background:#7c6ef6; color:#ffffff;"
+                ? SankoTheme::themed("QPushButton { background:%PURPLE%; color:#ffffff;"
                       " border:none; border-radius:4px; padding:4px 7px;"
                       " font-size:11px; }")
                 : QStringLiteral(
@@ -5393,7 +5390,7 @@ void DrawingCanvas::paintEvent(QPaintEvent *event)
             const qreal r =
                 (i == m_qsHover || i == m_qsNode) ? 7.0 : 5.0;
             painter.setPen(QPen(QColor(0, 0, 0, 150), 3.0));
-            painter.setBrush(QColor(0x7c, 0x6e, 0xf6));
+            painter.setBrush(SankoTheme::kPurple);
             painter.drawEllipse(w, r, r);
             painter.setPen(QPen(Qt::white, 1.6));
             painter.drawEllipse(w, r, r);
