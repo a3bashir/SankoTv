@@ -2375,6 +2375,29 @@ QWidget *StoryboardPage::createCenterColumn()
     connect(m_brushLibPanel,
             &brushlib::BrushLibraryPanel::brushSettingsRequested,
             m_brushStudio, &brushlib::BrushSettingsStudio::openForPreset);
+    // Modal-style surface: while the studio is open every floating toolbar
+    // hides and comes back on close — EXCEPT the Brush Library, which stays
+    // open underneath (the user returns to it), and the studio itself.
+    // Keyed off visibilityChanged so every close path — Done, Cancel, Save
+    // Variation, and anything future that hides the window — restores
+    // through the one funnel; the hides are captured as in-memory intent
+    // only (suppressFloatingBars), so they can never be recorded as the
+    // user choosing "hidden" (D1). A page switch or minimize hides the
+    // studio too and transiently restores the bars' intents; when the
+    // studio re-shows, suppression re-captures those same intents — the
+    // capture reads intent, not effective visibility, so the round trip
+    // cannot drift.
+    connect(m_brushStudio, &brushlib::BrushSettingsStudio::visibilityChanged,
+            this, [this](bool visible) {
+                if (visible) {
+                    FloatingToolWindow::suppressFloatingBars(
+                        m_canvas,
+                        {m_brushLibPanel, m_brushStudio});
+                    m_brushStudio->raise();
+                } else {
+                    FloatingToolWindow::restoreFloatingBars(m_canvas);
+                }
+            });
     // Done on the preset the canvas is currently using: the canvas adopts
     // the committed version (the working copy would otherwise show stale
     // parameters under the preset's name).
@@ -2423,6 +2446,12 @@ QWidget *StoryboardPage::createCenterColumn()
     // zooming, other tools, docked panels and the Library itself cannot
     // fire this: the signal exists only at the two live brush-input sites.
     connect(m_canvas, &DrawingCanvas::liveBrushStrokeStarted, this, [this] {
+        // Suppressed while the studio is open: the Library must stay put
+        // underneath it, and a stray stroke on the main canvas (the only
+        // live-input source — the studio's scratch canvas and Sample
+        // Stroke never emit this signal) is not the user dismissing it.
+        if (m_brushStudio && m_brushStudio->isVisible())
+            return;
         if (m_brushLibPanel && m_brushLibPanel->isVisible())
             m_brushLibPanel->autoHide();
     });
@@ -3072,6 +3101,11 @@ void StoryboardPage::createFloatingToolbar()
     // user choosing "hidden" and must not overwrite the D1 intent — the
     // panel still restores visible at the next launch.
     auto autoCloseBrushLib = [this] {
+        // Suppressed while the studio is open (the toolbars are hidden
+        // then, so their buttons cannot be pressed — this guards the
+        // programmatic setChecked paths, which fire buttonToggled too).
+        if (m_brushStudio && m_brushStudio->isVisible())
+            return;
         if (m_brushLibPanel && m_brushLibPanel->isVisible())
             m_brushLibPanel->autoHide();
     };

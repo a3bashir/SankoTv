@@ -1697,18 +1697,36 @@ void BrushSettingsStudio::paintEvent(QPaintEvent *)
 
 void BrushSettingsStudio::openAtDefault()
 {
-    if (!m_restored && !restoreGeometryState()) {
-        const QRect margin = marginRect();
-        const int w = qMin(1376, margin.width());
-        const int h = qMin(1032, margin.height());
-        resize(qMax(w, kMinW), qMax(h, kMinH));
-        move(clampedPos(margin.center()
-                        - QPoint(width() / 2, height() / 2)));
-        m_anchorOffset = pos() - anchorWidget()->mapToGlobal(QPoint(0, 0));
-    }
+    // Modal-style surface: centred in the application WINDOW's client area
+    // on EVERY open, not just the first. The persisted geometry contributes
+    // its SIZE only — a user resize is honoured for the session and across
+    // sessions, a user move lasts until the next open, when the studio
+    // re-centres. The bound is the window's client rect (not the canvas
+    // marginRect): at small windows the studio is larger than the canvas
+    // viewport, and the client area is the honest bound — the same 4 px
+    // kMargin applies to it, so the studio never touches a window edge.
+    // When even the client area cannot hold the kMinW x kMinH floor, the
+    // top-left stays inside the margin and the excess runs off right and
+    // bottom — the resizable edges, so the studio remains recoverable.
+    QWidget *host = anchorWidget() ? anchorWidget()->window() : nullptr;
+    const QRect client = host
+        ? QRect(host->mapToGlobal(QPoint(0, 0)), host->size())
+              .adjusted(kMargin, kMargin, -kMargin, -kMargin)
+        : marginRect();
+    QSize size = savedSize();
+    if (!size.isValid())
+        size = QSize(1376, 1032);
+    size = QSize(qMax(qMin(size.width(), client.width()), kMinW),
+                 qMax(qMin(size.height(), client.height()), kMinH));
+    resize(size);
+    QPoint at = client.center() - QPoint(width() / 2, height() / 2);
+    at.setX(qMax(at.x(), client.left()));
+    at.setY(qMax(at.y(), client.top()));
+    move(at);
+    m_anchorOffset = pos() - anchorWidget()->mapToGlobal(QPoint(0, 0));
     m_restored = true;
     setVisible(true);
-    raise();
+    raise(); // above the Brush Library, which stays open underneath
 }
 
 void BrushSettingsStudio::saveGeometryState() const
@@ -1717,16 +1735,40 @@ void BrushSettingsStudio::saveGeometryState() const
         .setValue(kGeoKey, geometry());
 }
 
-bool BrushSettingsStudio::restoreGeometryState()
+void BrushSettingsStudio::reposition()
 {
+    // The base clamp confines to the CANVAS marginRect. The studio is a
+    // centred modal-style surface that may legitimately exceed the canvas
+    // viewport at small windows, so it keeps its window-relative spot
+    // (anchor origin + m_anchorOffset — the anchor moves with the window)
+    // and clamps against the WINDOW's client area with the same 4 px
+    // margin. Left/top win when the window is smaller than the studio, so
+    // the resizable right/bottom edges are what run off.
+    QWidget *host = anchorWidget() ? anchorWidget()->window() : nullptr;
+    if (!host) {
+        FloatingToolWindow::reposition();
+        return;
+    }
+    const QRect client = QRect(host->mapToGlobal(QPoint(0, 0)), host->size())
+                             .adjusted(kMargin, kMargin, -kMargin, -kMargin);
+    QPoint at = anchorWidget()->mapToGlobal(QPoint(0, 0)) + m_anchorOffset;
+    at.setX(qMin(at.x(), client.right() - width() + 1));
+    at.setY(qMin(at.y(), client.bottom() - height() + 1));
+    at.setX(qMax(at.x(), client.left()));
+    at.setY(qMax(at.y(), client.top()));
+    move(at);
+}
+
+QSize BrushSettingsStudio::savedSize() const
+{
+    // The persisted geometry's SIZE, validated against the minimums; the
+    // stored position is deliberately ignored — every open re-centres
+    // (openAtDefault). Invalid or absent state returns an invalid QSize.
     const QSettings s(QStringLiteral("SankoTV"), QStringLiteral("SankoTV"));
     const QRect geo = s.value(kGeoKey).toRect();
     if (!geo.isValid() || geo.width() < kMinW || geo.height() < kMinH)
-        return false;
-    resize(geo.size());
-    move(clampedPos(geo.topLeft())); // re-validated, never applied raw
-    m_anchorOffset = pos() - anchorWidget()->mapToGlobal(QPoint(0, 0));
-    return true;
+        return QSize();
+    return geo.size();
 }
 
 BrushSettingsStudio::Edge BrushSettingsStudio::edgeAt(const QPoint &pos) const

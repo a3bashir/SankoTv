@@ -3,6 +3,7 @@
 #include <QApplication>
 #include <QEnterEvent>
 #include <QEvent>
+#include <QHash>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QSet>
@@ -133,6 +134,56 @@ void FloatingToolWindow::setVisible(bool visible)
 {
     m_wantVisible = visible;
     applyEffectiveVisibility();
+}
+
+namespace {
+// Per-anchor suppression capture: (window, its intent at suppress time).
+// In MEMORY only — the whole point is that a modal-surface hide is never
+// persisted anywhere a user choice is (see the header).
+struct SuppressedBar
+{
+    QPointer<FloatingToolWindow> window;
+    bool intent = false;
+};
+QHash<QWidget *, QVector<SuppressedBar>> &suppressedBars()
+{
+    static QHash<QWidget *, QVector<SuppressedBar>> store;
+    return store;
+}
+} // namespace
+
+void FloatingToolWindow::suppressFloatingBars(
+    QWidget *anchor, const QVector<FloatingToolWindow *> &except)
+{
+    if (!anchor || suppressedBars().contains(anchor))
+        return; // nested suppress keeps the FIRST capture
+    QVector<SuppressedBar> captured;
+    // The manager's registry, not a widget-tree walk: it covers every
+    // floating window over this anchor by construction, including any
+    // future bar that inherits this class.
+    const QVector<FloatingToolWindow *> all =
+        FloatingToolWindowManager::instance()->windows();
+    for (FloatingToolWindow *w : all) {
+        if (w->m_anchor != anchor || except.contains(w))
+            continue;
+        captured.append({w, w->m_wantVisible});
+        // Base-class hide: intent bookkeeping happens HERE, in memory.
+        // Subclass setVisible overrides that persist intent (the library)
+        // are excluded by the caller, and none of the bars persist theirs
+        // outside a drag release, so nothing is written anywhere.
+        w->FloatingToolWindow::setVisible(false);
+    }
+    suppressedBars().insert(anchor, captured);
+}
+
+void FloatingToolWindow::restoreFloatingBars(QWidget *anchor)
+{
+    if (!anchor)
+        return;
+    const QVector<SuppressedBar> captured = suppressedBars().take(anchor);
+    for (const SuppressedBar &bar : captured)
+        if (bar.window)
+            bar.window->FloatingToolWindow::setVisible(bar.intent);
 }
 
 void FloatingToolWindow::applyEffectiveVisibility()

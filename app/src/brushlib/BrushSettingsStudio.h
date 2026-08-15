@@ -76,6 +76,7 @@ protected:
     void mouseMoveEvent(QMouseEvent *event) override;
     void mouseReleaseEvent(QMouseEvent *event) override;
     void leaveEvent(QEvent *event) override;
+    void reposition() override; // window-client clamp, not the canvas clamp
     void showEvent(QShowEvent *event) override;
     void hideEvent(QHideEvent *event) override;
     void moveEvent(QMoveEvent *event) override;
@@ -165,7 +166,7 @@ private:
     void loadSession(const BrushPreset &preset);
     void openAtDefault();
     void saveGeometryState() const;
-    bool restoreGeometryState();
+    QSize savedSize() const;
     void doneClicked();
     void saveVariationClicked();
 

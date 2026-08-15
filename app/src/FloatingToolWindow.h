@@ -97,9 +97,33 @@ public:
     // the window is effectively visible only while the anchor and the main
     // window allow it (anchor shown, window shown and not minimized).
     void setVisible(bool visible) override;
+    // The caller's intent, independent of whether the host currently allows
+    // showing. This is what suppression captures and restores: reading
+    // isVisible() instead would mis-capture during a minimize or page switch.
+    bool visibleIntent() const { return m_wantVisible; }
+
+    // --- Modal-surface suppression (the Brush Settings studio) ------------
+    // Hide every registered floating window over `anchor` except the ones in
+    // `except`, remembering each window's visibility INTENT in memory only —
+    // nothing is persisted, so this can never be recorded as the user
+    // choosing "hidden" (the D1 rule; the BrushLibraryPanel's autoHide() is
+    // the same idea for one window, this is the same idea for all of them).
+    // restore puts every captured window back to its captured intent — a bar
+    // the user had already hidden stays hidden. Calls nest safely: a second
+    // suppress for the same anchor keeps the FIRST capture (the transient
+    // hide/show a page switch or minimize produces must not re-capture the
+    // suppressed state as if the user had chosen it), and restore with no
+    // capture is a no-op.
+    static void suppressFloatingBars(QWidget *anchor,
+                                     const QVector<FloatingToolWindow *> &except);
+    static void restoreFloatingBars(QWidget *anchor);
 
     // Place at anchor origin + (persisted or default) offset, clamped.
-    void reposition();
+    // Virtual: the Brush Settings studio clamps against the WINDOW's client
+    // area instead of the canvas marginRect — as a centred modal-style
+    // surface it is legitimately larger than the canvas viewport at small
+    // windows, and the canvas clamp would drag it out of centre.
+    virtual void reposition();
 
     QWidget *anchorWidget() const { return m_anchor; }
 
