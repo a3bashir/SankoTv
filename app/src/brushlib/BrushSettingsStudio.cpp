@@ -975,9 +975,11 @@ QWidget *BrushSettingsStudio::buildTipSection()
     // regardless of input — no source, no minimum, no curve, which is the
     // visible distinction from the jitters below that vary AROUND them.
     //
-    // The shape-control ring (Figma 341:30) is DIRECT MANIPULATION for the
-    // same two fields the sliders below edit numerically: ring drag ->
-    // tipAngle, handle drag -> tipRoundness, pivot click -> reset both
+    // The Shape Control panel (Figma 345:99, wrapping the revised ring
+    // node 341:30) is DIRECT MANIPULATION for the same two fields the
+    // sliders below edit numerically: ring drag -> tipAngle, handle drag
+    // -> tipRoundness, pivot click -> reset both. Its capsule is a
+    // display-only readout — chrome, never a hit region.
     // (flips deliberately excluded: the ring does not display them, and a
     // control should not reset state it cannot show — they keep their
     // toggle rows). Sits ABOVE its two sliders as an addendum to the

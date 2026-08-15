@@ -269,26 +269,53 @@ private:
     int m_index = 0;
 };
 
-// Direct-manipulation editor for the STATIC tip transform (Figma 341:30,
-// "shape control", 91x91): drag the ring to set tipAngle, drag any of the
-// four handles to set tipRoundness, click the centre pivot to reset both.
-// A second editor for two existing fields — the Tip Angle / Tip Roundness
-// sliders remain the precise numeric entry, and both stay synced through
-// the studio's syncer pass. The control is also its own preview: the
-// handle constellation rotates with the current angle and the squash-axis
-// pair pulls inward with the current roundness (the same forward affine
-// the tip thumbnail's backward map inverts).
+// The Shape Control panel (Figma 345:99): direct-manipulation editor for
+// the STATIC tip transform — drag the ring to set tipAngle, drag any of
+// the four handles to set tipRoundness, click the centre pivot to reset
+// both. A second editor for two existing fields — the Tip Angle / Tip
+// Roundness sliders remain the precise numeric entry, and both stay synced
+// through the studio's syncer pass. The control is also its own preview:
+// the ring IS the tip's ellipse (see below), the handle constellation
+// rotates with the angle, and the squash pair pulls inward with roundness.
 //
-// Appearance is the Figma node verbatim — ring stroke #7C6EF6 (kAccent)
-// width 8 at r 40.5, four #D9D9D9 r 5 handles, hollow #CCCCCC r 4 pivot at
-// stroke 2 — with three DOCUMENTED DIVERGENCES: (1) the design's ring
-// centre sits at x 46 while every other element is at 45.5; drawn from the
-// true centre (45.5, 45.5) instead. (2) The design carries no hover or
-// active states; hovered/dragged elements brighten in the component
-// palette's language. (3) Hit targets exceed drawn geometry (5 px handles
-// grab at 12 px, the 8 px ring stroke at +/-10 px of its radius, the 4 px
-// pivot at 10 px) — the floating-toolbar rule that interactive area
-// exceeds drawn area.
+// The panel wraps the revised ring node (341:30) in chrome: a #3C3C42
+// rounded panel with a #595964 inset outline, a static #555560 guide
+// circle at r 58 marking the unsquashed rim, #595964 crosshair guide
+// lines from the outline to the guide circle, and a DISPLAY-ONLY value
+// capsule (top-left, the studio's shared paintCapsule). The capsule shows
+// the live angle ("34°") during a ring drag, the live roundness ("62%")
+// during a handle drag, "None" at rest while both values are default, and
+// a compact combination at rest otherwise — only the non-default value
+// when just one differs, "34° · 62%" when both do. It is not a hit
+// region: like all panel chrome it resolves to None, so a press on it can
+// never start a drag. The sliders keep numeric entry; the tip thumbnail
+// stays the only surface showing flips and the actual mask.
+//
+// Ring tokens per the revised node: stroke #7C6EF6 (kAccent) width 2 at
+// r 44.5; four two-tone handles (r 4 #D9D9D9 disc, r 2 #7C6EF6 dot); the
+// pivot is an r 2.5 #CCCCCC circle plus four 4 px crosshair ticks.
+//
+// DOCUMENTED DIVERGENCES from the design:
+// (1) WIDTH. The frame is 356 wide but the props column offers
+//     384 - 2*32 = 320 of content width, so the panel adapts to 320 x 210
+//     with every internal token verbatim: the ring, guide circle, capsule
+//     and vertical guides are untouched and centred; only the horizontal
+//     guide lines — which self-define as outline-to-circle — shorten.
+// (2) CENTRES. The design drifts by half-pixels (ring centre 178.5 vs
+//     panel centre 178, crosshair at x 179 / y 105 vs ring centre 104.5).
+//     Everything is drawn from the panel's true centre instead.
+// (3) NAMING ONLY. The design labels the top/bottom handles
+//     "shape_control" and left/right "rotation_control", implying a
+//     vertical squash pair at rest. The engine's squash axis is tip-local
+//     X — HORIZONTAL at angle 0 — and the ring must not lie about the
+//     affine, so behaviour stays engine-true: all four handles drive the
+//     one roundness, the ring band rotates. All four handles are visually
+//     identical in the design, so nothing on screen diverges.
+// (4) The design carries no hover or active states; hovered/dragged
+//     elements brighten in the component palette's language.
+// (5) Hit targets exceed drawn geometry (4 px handles grab at 12 px, the
+//     2 px ring stroke at +/-10 px of its ellipse, the pivot at 10 px) —
+//     the floating-toolbar rule that interactive area exceeds drawn area.
 class StudioTipRing : public QWidget
 {
     Q_OBJECT
@@ -301,15 +328,26 @@ public:
     double tipRoundness() const { return m_roundness; }
 
     // Geometry the seam asserts against; also used by the hit tests.
-    QPointF ringCentre() const;                 // true centre, 45.5, 45.5
+    QPointF ringCentre() const;                 // panel's true centre
     // Handle index parity is load-bearing: EVEN indices (0, 2) are the
     // SQUASH pair — the ones roundness pulls inward along tip-local X —
     // and odd indices (1, 3) are the unsquashed pair, always on the rim.
     QPointF handleCentre(int index) const;      // 0 +squash, 1 -keep,
                                                 // 2 -squash, 3 +keep
-    static constexpr double kRingRadius = 40.5;
-    static constexpr double kHandleRadius = 5.0;
-    static constexpr double kPivotRadius = 4.0;
+    // What the display-only capsule currently reads; the rect it paints
+    // in. Exposed for the seam (text scheme + press-on-capsule-is-None).
+    QString capsuleText() const;
+    QRect capsuleRect() const;
+    static constexpr int kPanelWidth = 320;  // design 356; divergence (1)
+    static constexpr int kPanelHeight = 210;
+    static constexpr double kRingRadius = 44.5;
+    static constexpr double kGuideRadius = 58.0; // static unsquashed rim
+    static constexpr double kHandleRadius = 4.0;
+    static constexpr double kHandleDotRadius = 2.0;
+    static constexpr double kPivotRadius = 2.5;
+    // The pivot's crosshair ticks: 4 px long, from 2.5 to 6.5 px out.
+    static constexpr double kPivotTickInner = 2.5;
+    static constexpr double kPivotTickOuter = 6.5;
     static constexpr double kHandleGrabRadius = 12.0;    // at the rim
     static constexpr double kHandleGrabRadiusMax = 20.0; // at the inner edge
     static constexpr double kRingGrabTolerance = 10.0;
@@ -366,12 +404,17 @@ public:
     // stays available for rotation.
     //
     // The pivot owns the innermost disc outright. Below roundness
-    // 10/40.5 = 0.247 the squash handles pass UNDER it, so a press at a
+    // 10/44.5 = 0.225 the squash handles pass UNDER it, so a press at a
     // squash handle's own centre resets instead of grabbing — deliberate,
-    // because the reset must stay reachable. The threshold is unchanged by
-    // the ellipse: the handles always sat at kRingRadius * roundness along
-    // the squash axis, which is where the ellipse's cardinal point is;
-    // only the ring's path changed, not the handles'.
+    // because the reset must stay reachable. The threshold is
+    // kPivotGrabRadius / kRingRadius: the handles sit at
+    // kRingRadius * roundness along the squash axis, which is the
+    // ellipse's cardinal point (it moved from 0.247 when the revised
+    // design grew the ring from r 40.5 to 44.5).
+    //
+    // The panel chrome — background, outline, guide circle and lines, and
+    // the capsule — is all rule 5: NONE. Nothing outside the ring's reach
+    // is interactive, so the capsule can never start a drag.
     enum class Region { None, Ring, Handle, Pivot };
     Region hitTest(const QPointF &pos) const; // exposed for the seam
     // Which handle a press would grab, or -1 when the press is not a

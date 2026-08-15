@@ -736,31 +736,73 @@ void StudioSegmentedRow::mousePressEvent(QMouseEvent *event)
 // ------------------------------------------------------- StudioTipRing ---
 
 namespace {
-// Figma 341:30 tokens, verbatim (kAccent IS the ring's #7C6EF6).
+// Figma 345:99 / revised 341:30 tokens, verbatim (kAccent IS the ring's
+// #7C6EF6, kCapsuleBg/kTextDim/capsuleFont ARE the capsule's).
 const QColor kRingHandle(0xd9, 0xd9, 0xd9);
 const QColor kRingPivot(0xcc, 0xcc, 0xcc);
+const QColor kPanelBg(0x3c, 0x3c, 0x42);
+const QColor kPanelOutline(0x59, 0x59, 0x64);  // inset rect + guide lines
+const QColor kGuideCircle(0x55, 0x55, 0x60);
 // Added hover/active states (documented divergence): the palette's
 // brighten language.
 const QColor kRingHover(0x8f, 0x83, 0xf8);
 const QColor kRingElementHover(0xff, 0xff, 0xff);
-constexpr double kRingStrokeWidth = 8.0;
-constexpr double kPivotStrokeWidth = 2.0;
+constexpr double kRingStrokeWidth = 2.0;
+constexpr double kPivotStrokeWidth = 1.0;
+constexpr double kPanelRadius = 8.0;
+constexpr int kPanelInset = 8;        // outline rect offset each side
+constexpr int kCapsuleX = 16;         // capsule top-left in the panel
+constexpr int kCapsuleY = 17;
+constexpr int kCapsuleH = 23;
+constexpr int kCapsulePadding = 12;   // horizontal, each side
 } // namespace
 
 StudioTipRing::StudioTipRing(QWidget *parent)
     : QWidget(parent)
 {
-    // The Figma frame, exactly; the layout centres the widget in its row.
-    setFixedSize(91, 91);
+    // The Figma panel at the props column's content width (divergence (1)
+    // in the header: 320 for the design's 356, internal tokens verbatim).
+    setFixedSize(kPanelWidth, kPanelHeight);
     setMouseTracking(true); // hover states + cursor feedback
 }
 
 QPointF StudioTipRing::ringCentre() const
 {
-    // TRUE centre. Documented divergence: the design's ring ellipse sits
-    // at x 46 while the handles and pivot sit at 45.5 — a half-pixel
-    // authoring drift, normalised here so handles land ON the stroke.
-    return QPointF(45.5, 45.5);
+    // The panel's TRUE centre — divergence (2): the design drifts by
+    // half-pixels (ring at 178.5 in a 356 frame, crosshair at 179/105,
+    // guide circle at 104.5); every concentric element draws from here.
+    return QPointF(kPanelWidth / 2.0, kPanelHeight / 2.0);
+}
+
+QString StudioTipRing::capsuleText() const
+{
+    // The approved scheme: the live value during a gesture; at rest,
+    // "None" while both values are default, otherwise only what differs.
+    const QString angle = QStringLiteral("%1°").arg(qRound(m_angle));
+    const QString round =
+        QStringLiteral("%1%").arg(qRound(m_roundness * 100.0));
+    if (m_drag == Region::Ring)
+        return angle;
+    if (m_drag == Region::Handle)
+        return round;
+    const bool angleDefault = m_angle == 0.0;
+    const bool roundDefault = m_roundness == 1.0;
+    if (angleDefault && roundDefault)
+        return QStringLiteral("None");
+    if (roundDefault)
+        return angle;
+    if (angleDefault)
+        return round;
+    return angle + QStringLiteral(" · ") + round;
+}
+
+QRect StudioTipRing::capsuleRect() const
+{
+    // Fixed position, width from the text — the design's 55 x 23 "None"
+    // pill is exactly this formula (31 px of Inter Medium 12 + 2 * 12).
+    const int w = QFontMetrics(capsuleFont()).horizontalAdvance(capsuleText())
+        + 2 * kCapsulePadding;
+    return QRect(kCapsuleX, kCapsuleY, w, kCapsuleH);
 }
 
 QPointF StudioTipRing::handleCentre(int index) const
@@ -813,10 +855,11 @@ double StudioTipRing::squashGrabRadius() const
     // The squash handles shrink into a tighter and tighter neighbourhood
     // as roundness falls, so their grab radius grows to compensate: 12 px
     // while they sit on the rim, ramping to 20 px by the time they reach
-    // the band's inner edge (roundness ~0.753). Below that the interior
-    // rule covers the whole disc anyway. The ramp stops short of the
-    // pivot by construction — at the inner edge the reach is 30.5 - 20 =
-    // 10.5 px, still outside the 10 px pivot — so the two never contend.
+    // the band's inner edge (roundness 34.5/44.5 ~ 0.775). Below that the
+    // interior rule covers the whole disc anyway. The ramp stops short of
+    // the pivot by construction — at the inner edge the reach is
+    // 34.5 - 20 = 14.5 px, well outside the 10 px pivot — so the two
+    // never contend.
     const double distance =
         kRingRadius * std::max(m_roundness, kRoundnessFloor);
     const double t = std::clamp(
@@ -1064,17 +1107,58 @@ void StudioTipRing::paintEvent(QPaintEvent *)
         m_drag == Region::Pivot
         || (m_drag == Region::None && m_hover == Region::Pivot);
 
+    const QPointF c = ringCentre();
+
+    // --- Panel chrome (all Region::None) --------------------------------
+    // Background and inset outline; the 1 px outline pen is centred half a
+    // pixel inside its box so the stroke stays inside like the design's.
+    p.setPen(Qt::NoPen);
+    p.setBrush(kPanelBg);
+    p.drawRoundedRect(QRectF(0, 0, kPanelWidth, kPanelHeight),
+                      kPanelRadius, kPanelRadius);
+    p.setPen(QPen(kPanelOutline, 1.0));
+    p.setBrush(Qt::NoBrush);
+    p.drawRoundedRect(QRectF(kPanelInset + 0.5, kPanelInset + 0.5,
+                             kPanelWidth - 2 * kPanelInset - 1,
+                             kPanelHeight - 2 * kPanelInset - 1),
+                      kPanelRadius - 0.5, kPanelRadius - 0.5);
+
+    // Static guide circle: the unsquashed rim the tip returns to at full
+    // roundness — chrome, not the tip; the purple ellipse is the tip.
+    p.setPen(QPen(kGuideCircle, 1.0));
+    p.drawEllipse(c, kGuideRadius, kGuideRadius);
+
+    // Crosshair guide lines, outline box edge to guide circle edge. Drawn
+    // half a pixel off the true centre so the 1 px stroke fills one crisp
+    // pixel row/column instead of AA-blurring across two — the same side
+    // the design's own inside-stroke rounding lands on (divergence (2)).
+    p.setPen(QPen(kPanelOutline, 1.0));
+    const double gy = c.y() + 0.5, gx = c.x() + 0.5;
+    p.drawLine(QPointF(kPanelInset, gy),
+               QPointF(c.x() - kGuideRadius, gy));
+    p.drawLine(QPointF(c.x() + kGuideRadius, gy),
+               QPointF(kPanelWidth - kPanelInset, gy));
+    p.drawLine(QPointF(gx, kPanelInset),
+               QPointF(gx, c.y() - kGuideRadius));
+    p.drawLine(QPointF(gx, c.y() + kGuideRadius),
+               QPointF(gx, kPanelHeight - kPanelInset));
+
+    // The display-only value capsule — the studio's shared painting.
+    paintCapsule(p, capsuleRect(), capsuleText());
+
+    // --- The control itself ---------------------------------------------
     // Ring: the Figma stroke on the TIP's own ellipse. QTransform::rotate
     // maps local +X to (cos a, sin a) and local +Y to (-sin a, cos a) —
     // the engine's squash and unsquashed directions exactly — so drawing
     // an axis-aligned ellipse in the rotated frame reproduces the affine
     // without duplicating it. The geometry is NOT clamped to a legible
-    // minimum: at roundness 0.01 the ellipse is 0.8 px across and the
-    // control says so. The 8 px stroke closes over itself below roundness
-    // 8/(2*40.5) = 0.099, where the ring reads as a solid bar — which is
-    // what a tip squashed that far actually is.
+    // minimum: at roundness 0.01 the ellipse is 0.9 px across and the
+    // control says so. The revised design's 2 px stroke only closes over
+    // itself below roundness 2/(2*44.5) = 0.022, so the ellipse stays a
+    // legible outline nearly to the floor — do not "fix" the stroke
+    // weight; the token is 2 px and the legibility comes with it.
     p.save();
-    p.translate(ringCentre());
+    p.translate(c);
     p.rotate(m_angle);
     p.setPen(QPen(ringLive ? kRingHover : kAccent, kRingStrokeWidth));
     p.setBrush(Qt::NoBrush);
@@ -1082,17 +1166,25 @@ void StudioTipRing::paintEvent(QPaintEvent *)
     p.drawEllipse(QPointF(0.0, 0.0), semi.x(), semi.y());
     p.restore();
 
-    // Handles: r 5 fills, positioned by the current angle and roundness.
-    p.setPen(Qt::NoPen);
-    p.setBrush(handleLive ? kRingElementHover : kRingHandle);
-    for (int i = 0; i < 4; ++i)
+    // Handles: two-tone — r 4 disc with an r 2 accent dot — positioned by
+    // the current angle and roundness. The disc brightens on hover/drag;
+    // the dot stays accent (it reads as the ring showing through).
+    for (int i = 0; i < 4; ++i) {
+        p.setPen(Qt::NoPen);
+        p.setBrush(handleLive ? kRingElementHover : kRingHandle);
         p.drawEllipse(handleCentre(i), kHandleRadius, kHandleRadius);
+        p.setBrush(kAccent);
+        p.drawEllipse(handleCentre(i), kHandleDotRadius, kHandleDotRadius);
+    }
 
-    // Pivot: hollow r 4 stroke 2.
-    p.setPen(QPen(pivotLive ? kRingElementHover : kRingPivot,
-                  kPivotStrokeWidth));
+    // Pivot: r 2.5 circle plus the four 4 px crosshair ticks, 1 px.
+    const QColor pivotColor = pivotLive ? kRingElementHover : kRingPivot;
+    p.setPen(QPen(pivotColor, kPivotStrokeWidth));
     p.setBrush(Qt::NoBrush);
-    p.drawEllipse(ringCentre(), kPivotRadius, kPivotRadius);
+    p.drawEllipse(c, kPivotRadius, kPivotRadius);
+    for (const QPointF &d : {QPointF(1, 0), QPointF(-1, 0),
+                             QPointF(0, 1), QPointF(0, -1)})
+        p.drawLine(c + d * kPivotTickInner, c + d * kPivotTickOuter);
 }
 
 } // namespace brushlib
