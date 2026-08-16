@@ -141,6 +141,20 @@ public:
     // replaying it through the normal brush engine (one undo entry).
     void setQuickShapeEnabled(bool enabled);
     bool quickShapeEnabled() const { return m_quickShapeEnabled; }
+    // THE dwell-chrome state. The progress ring and the post-recognition
+    // hint are VALUES OF ONE ENUM, not two visibility flags: "never both
+    // at once" is then a property of the type rather than a timing
+    // coincidence two independent bools happen to honour. paintEvent
+    // switches on this once, so drawing both is unrepresentable.
+    // Both occupy quickShapeOverlayCentre(), so the hint lands exactly
+    // where the ring was — the handover is a value change, not a move.
+    enum class QsOverlay { None, Dwell, Hint };
+    QsOverlay quickShapeOverlay() const;
+    QPointF quickShapeOverlayCentre() const;
+    // 0..1 across the VISIBLE window only (the final 1 - ringRevealFraction
+    // of the hold, remapped to a full sweep). Meaningless unless the state
+    // is Dwell.
+    double quickShapeDwellSweep() const;
     quickshape::QuickShapeSession *quickShape() { return &m_quickShape; }
     void commitQuickShape(); // resolve any pending temporary shape (lifecycle)
     void cancelQuickShape(); // explicit cancel: discard the temporary vector

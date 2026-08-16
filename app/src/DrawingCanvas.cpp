@@ -586,6 +586,13 @@ struct QuickShapeTuning
     // hold, so a thinking pause no longer snaps a stroke the user meant to
     // keep freehand.
     int holdDurationMs = 900;
+    // The dwell runs SILENTLY until this fraction of it has elapsed; the
+    // ring then appears and sweeps the remaining quarter. Both numbers
+    // live here so the reveal point and the hold length are read and
+    // tuned together — a reveal fraction means nothing without the
+    // duration it is a fraction OF. At 900 ms x 0.75 the ring is hidden
+    // for 675 ms and visible for the final 225 ms.
+    qreal ringRevealFraction = 0.75;
     int morphDurationMs = 220;
     qreal dwellRadiusScreenPx = 8.0;
     qreal maxDwellVelocityScreenPxPerSec = 20.0;
@@ -3649,6 +3656,47 @@ void DrawingCanvas::completePaintStroke(
 // Convert the screen-space QuickShape tuning into document units at the
 // CURRENT view scale and push it into the session — called once per stroke,
 // so hold feel, dwell tolerance, and the velocity gate are zoom-independent.
+// --- Dwell chrome: ONE state, ONE position ----------------------------------
+
+DrawingCanvas::QsOverlay DrawingCanvas::quickShapeOverlay() const
+{
+    if (!m_qsHeld || !m_quickShapeEnabled)
+        return QsOverlay::None;
+    if (m_quickShape.hasActiveShape())
+        return QsOverlay::Hint; // recognised: the ring is gone by definition
+    // Still collecting: the ring is SILENT until the reveal point, so an
+    // ordinary pause shows nothing at all and there is no flicker to
+    // reset. holdProgress() is 0 whenever the hold timer is not running
+    // (between strokes, mid-morph), which keeps this None on those paths.
+    return m_quickShape.holdProgress() >= kQuickShapeTuning.ringRevealFraction
+        ? QsOverlay::Dwell
+        : QsOverlay::None;
+}
+
+QPointF DrawingCanvas::quickShapeOverlayCentre() const
+{
+    // Below the slot where Edit Shape | Done appear (fixed top-centre at
+    // kQsChromeY), so neither element can collide with them. Widget space.
+    const int chromeBottom = kQsChromeY
+        + (m_qsDoneButton ? m_qsDoneButton->sizeHint().height() : 30);
+    return QPointF(width() / 2.0,
+                   chromeBottom + kQsRingGap + kQsRingBackR);
+}
+
+double DrawingCanvas::quickShapeDwellSweep() const
+{
+    // The visible window REMAPPED to a full 0..1 sweep, not the absolute
+    // 75-100% slice. A quarter-arc creeping through a quarter-turn in
+    // ~225 ms reads as "stuck"; a ring that starts empty and closes
+    // completely reads as "filling up, about to fire" — and it means the
+    // same thing every time it is seen, because the visible window always
+    // spans exactly empty-to-full.
+    const double reveal =
+        qBound(0.0, double(kQuickShapeTuning.ringRevealFraction), 0.99);
+    const double p = m_quickShape.holdProgress();
+    return qBound(0.0, (p - reveal) / (1.0 - reveal), 1.0);
+}
+
 void DrawingCanvas::applyQuickShapeTiming()
 {
     const QTransform T = viewTransform();
@@ -5295,13 +5343,24 @@ void DrawingCanvas::paintEvent(QPaintEvent *event)
         painter.restore();
     }
     // Hold feedback (repair stage 9), cosmetic overlay only — never part
-    // of any layer, flattenedPixmap, or export. The ring shows for the
-    // WHOLE stroke of a QuickShape-capable tool (empty at rest, filling as
-    // the dwell progresses), resets when drawing resumes (the session
-    // restarts its hold timer), and vanishes on recognition, cancellation,
-    // or completion. After recognition, while the pen is still down, a
-    // small hint names the held-pen gesture.
-    if (m_qsHeld && m_quickShapeEnabled) {
+    // of any layer, flattenedPixmap, or export.
+    //
+    // ONE state, drawn by ONE switch: the dwell ring and the
+    // post-recognition hint are values of QsOverlay, so they cannot both
+    // appear. They also share quickShapeOverlayCentre(), so recognition
+    // is a straight swap in place — ring out, hint in, same pixel, no gap
+    // and no crossfade (a fade would leave a dissolving ring on screen
+    // after the thing it measured has already happened).
+    //
+    // The ring stays hidden for the first ringRevealFraction of the hold
+    // and sweeps the remainder. Resets are therefore invisible before the
+    // reveal — nothing was drawn — and INSTANT after it: the state simply
+    // reads None again on the next paint, which is what "reset" should
+    // look like. Any interruption (focus loss, tool/layer change, hide)
+    // clears m_qsHeld or the session's hold timer, so both values fall
+    // back to None without a separate teardown path.
+    const QsOverlay overlay = quickShapeOverlay();
+    if (overlay != QsOverlay::None) {
         painter.save();
         // WIDGET space, explicitly: when the canvas is zoomed, the painter
         // reaches this block still carrying the view transform, which threw
@@ -5309,24 +5368,15 @@ void DrawingCanvas::paintEvent(QPaintEvent *event)
         // off-widget at any zoom != 1. Chrome never lives in document space.
         painter.resetTransform();
         painter.setRenderHint(QPainter::Antialiasing, true);
-        if (!m_quickShape.hasActiveShape()) {
-            // WHOLE-STROKE dwell indicator, pen-down to lift: an EMPTY
-            // ring that fills as the endpoint dwell progresses, so the
-            // ring always means the same one thing — "hold still this
-            // long and the stroke snaps". It used to appear only past 12%
-            // of the hold, which made the first warning arrive most of
-            // the way to a snap the user did not ask for.
-            //
-            // OPAQUE backing disc, deliberately: this is chrome over the
-            // user's ARTWORK, which can be white paper or solid ink, so a
-            // contrast ratio against any assumed background is fiction
-            // (the panel-number lesson). Every legibility-bearing pixel —
-            // track and arc — sits on the disc, never on the drawing.
-            const int chromeBottom = kQsChromeY
-                + (m_qsDoneButton ? m_qsDoneButton->sizeHint().height()
-                                  : 30);
-            const QPointF c(width() / 2.0,
-                            chromeBottom + kQsRingGap + kQsRingBackR);
+        // OPAQUE backings on BOTH, deliberately: this is chrome over the
+        // user's ARTWORK, which can be white paper or solid ink, so a
+        // contrast ratio against any assumed background is fiction (the
+        // panel-number lesson — that defect was a semi-transparent chip,
+        // and the hint below carried the same alpha-200 bug until now).
+        // Every legibility-bearing pixel sits on its backing.
+        const QPointF c = quickShapeOverlayCentre();
+        switch (overlay) {
+        case QsOverlay::Dwell: {
             painter.setPen(QPen(QColor(0x2a, 0x2a, 0x2a), 1.0));
             painter.setBrush(QColor(0x16, 0x16, 0x16)); // OPAQUE
             painter.drawEllipse(c, kQsRingBackR, kQsRingBackR);
@@ -5335,30 +5385,32 @@ void DrawingCanvas::paintEvent(QPaintEvent *event)
             painter.setBrush(Qt::NoBrush);
             painter.setPen(QPen(QColor(0x6e, 0x6e, 0x6e), 3.0)); // track
             painter.drawEllipse(ring);
-            const qreal progress = m_quickShape.holdProgress();
-            if (progress > 0.0) {
-                QPen arc(SankoTheme::kAccentLight, 3.0);
-                arc.setCapStyle(Qt::RoundCap);
-                painter.setPen(arc);
-                painter.drawArc(ring, 90 * 16,
-                                int(-progress * 360.0 * 16));
-            }
-        } else {
-            const QPointF anchor =
-                viewTransform().map(m_lastBrushPt) + QPointF(22, -26);
-            const QString hint = QStringLiteral("drag: rotate · scale");
+            QPen arc(SankoTheme::kAccentLight, 3.0);
+            arc.setCapStyle(Qt::RoundCap);
+            painter.setPen(arc);
+            painter.drawArc(ring, 90 * 16,
+                            int(-quickShapeDwellSweep() * 360.0 * 16));
+            break;
+        }
+        case QsOverlay::Hint: {
+            const QString hint = QStringLiteral("Drag: Rotate | Scale");
             QFont f = painter.font();
             f.setPixelSize(10);
             painter.setFont(f);
-            const QRectF text =
-                QRectF(painter.fontMetrics().boundingRect(hint))
-                    .adjusted(-6, -3, 6, 3)
-                    .translated(anchor);
+            // Centred on the same point the ring used, so the swap happens
+            // where the eye already is.
+            QRectF text(QRectF(painter.fontMetrics().boundingRect(hint))
+                            .adjusted(-6, -3, 6, 3));
+            text.moveCenter(c);
             painter.setPen(Qt::NoPen);
-            painter.setBrush(QColor(16, 16, 16, 200));
+            painter.setBrush(QColor(0x16, 0x16, 0x16)); // OPAQUE
             painter.drawRoundedRect(text, 4, 4);
             painter.setPen(QColor(0xcc, 0xcc, 0xcc));
             painter.drawText(text, Qt::AlignCenter, hint);
+            break;
+        }
+        case QsOverlay::None:
+            break; // unreachable: guarded above
         }
         painter.restore();
     }
