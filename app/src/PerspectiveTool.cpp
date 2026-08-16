@@ -12,6 +12,19 @@ namespace {
 // A tap this close to the existing horizon (canvas px) cannot create VP3 —
 // the third point must sit clearly above or below the line.
 constexpr qreal kVp3MinHorizonDist = 20.0;
+
+// How far (canvas px) a stroke must travel from its anchor before the snap
+// direction locks. The old value, 6, could not express intent: Dev Recorder
+// sessions (20260816-205419/-210133, 20260802-144716) show the chord bearing
+// at 6 px is off by up to 166 deg on pen contact (tip skid) and 32 deg on
+// mouse, while straight-intent strokes reach 5-deg stability at a median of
+// ~9 px and a worst case of 36 px. At 32 px, a 3 px skid contributes only
+// atan(3/32) ~ 5.4 deg — below any useful candidate separation — so the
+// recorded failure (a vertical stroke near VP1 locking onto the VP ray)
+// cannot recur from start noise. Before the lock the point stays at the
+// anchor, so raising this also lengthens the stationary lead-in; 32 clears
+// every recorded straight stroke's hook without stretching that further.
+constexpr qreal kSnapLockDistance = 32.0;
 }
 
 void PerspectiveTool::reset()
@@ -338,7 +351,7 @@ QPointF PerspectiveTool::snapPoint(const QPointF &canvasPos)
     if (!m_dirLocked) {
         // Lock the direction once the stroke has one (Procreate-style drawing
         // assist): before that, stay put at the anchor.
-        if (QLineF(m_strokeAnchor, canvasPos).length() < 6.0)
+        if (QLineF(m_strokeAnchor, canvasPos).length() < kSnapLockDistance)
             return m_strokeAnchor;
         if (!bestDirection(m_strokeAnchor, canvasPos, &m_lockedDir))
             return canvasPos;
@@ -358,9 +371,21 @@ QPointF PerspectiveTool::snapToRay(const QPointF &anchorCanvas,
     return projectOntoDir(anchorCanvas, dir, canvasPos);
 }
 
-// Candidates: the ray from `anchor` to every VP, plus PURE VERTICAL — so the
-// artist can always drop a perfectly upright line even in 1- and 2-point
-// setups. Picks the candidate whose line passes closest to `pos`.
+// Candidates: the ray from `anchor` to every VP, plus ALONG THE HORIZON,
+// plus TRUE SCREEN-HORIZONTAL, plus PURE VERTICAL. The two horizontals are
+// deliberately separate: they coincide only while the horizon is level and
+// diverge exactly when VP2 tilts it — which is when each is wanted for a
+// different reason (horizon-aligned for objects sitting in the scene,
+// screen-horizontal for framing and panel edges). Horizontal was previously
+// MISSING ENTIRELY — with snap on, no stroke could produce a horizontal
+// line (Dev Recorder session 20260816-205419).
+//
+// Picks the candidate whose line passes closest to `pos`. Ties break
+// DETERMINISTICALLY to the earliest candidate considered (strict <), so at
+// a level horizon, where the two horizontals are the same unit vector, the
+// horizon entry wins — and since identical directions project identically,
+// the duplicate is unobservable in output. Order: VP rays, horizon,
+// screen-horizontal, vertical.
 bool PerspectiveTool::bestDirection(const QPointF &anchor, const QPointF &pos,
                                     QPointF *dir) const
 {
@@ -384,6 +409,13 @@ bool PerspectiveTool::bestDirection(const QPointF &anchor, const QPointF &pos,
             continue; // anchor on the VP: the ray is undefined
         consider(vp.pos - anchor);
     }
+    const QLineF horizon = horizonLine();
+    if (horizon.length() > 1e-6)
+        consider(horizon.p2() - horizon.p1()); // along the (possibly tilted)
+                                               // horizon; sign is irrelevant
+                                               // because projection is onto
+                                               // the infinite line
+    consider(QPointF(1.0, 0.0)); // true screen-horizontal
     consider(QPointF(0.0, 1.0)); // perfectly vertical stays available
     return found;
 }

@@ -239,6 +239,14 @@ DrawingCanvas::DrawingCanvas(QWidget *parent)
     m_qsHoldTick->setInterval(33);
     connect(m_qsHoldTick, &QTimer::timeout, this, [this] {
         if (!m_qsHeld) {
+            // FINAL frame before stopping: the tick used to stop silently
+            // here, and nothing else invalidated the overlay region — the
+            // session only emits statusChanged on the freehand branch — so
+            // the last painted frame, hint included, survived on screen
+            // after release (Dev Recorder session 20260816-210133). Paint
+            // once with the flag down so the overlay's disappearance never
+            // depends on the session choosing to emit anything.
+            update();
             m_qsHoldTick->stop();
             return;
         }
@@ -3993,6 +4001,15 @@ void DrawingCanvas::renderQuickShapePreview()
 
 void DrawingCanvas::updateQuickShapeUi()
 {
+    // Repaint the overlay whenever the dwell-chrome state may have moved:
+    // every site that clears m_qsHeld calls this immediately after, so this
+    // is the single choke point that guarantees a Dwell/Hint overlay never
+    // outlives its state as stale pixels (the recorded defect: the hint
+    // survived release because nothing invalidated its region). The hold
+    // tick's final frame covers the same ground — deliberate redundancy,
+    // since the stale hint shipped precisely because the disappearance
+    // depended on one incidental signal.
+    update();
     const bool ready = m_quickShape.hasActiveShape() && !m_qsHeld;
     const int gap = 8;
     QWidget *left = nullptr; // Edit Shape (ready) or the type bar (editing)
