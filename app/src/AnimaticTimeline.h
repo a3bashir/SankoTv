@@ -27,6 +27,11 @@ public:
     // when rendering the playhead (see updatePlayhead()).
     void setHost(AnimaticPage *host);
 
+    // Project frame rate (24 unless the project says otherwise). Set before
+    // loadScenes/setBlocks — per-block frame counts derive from it.
+    void setFps(int fps);
+    int fps() const { return m_fps; }
+
 public slots:
     void setScenes(const QVector<Scene *> &scenes);
     void setCurrentPanel(int flatIndex);
@@ -90,6 +95,7 @@ private:
     // Data + state.
     QVector<Scene *> m_scenes;
     QVector<Block> m_blocks;
+    int m_fps = 24; // project frame rate; every frame count derives from it
     int m_current = -1;
     bool m_playing = false;
     int m_loopStart = -1;

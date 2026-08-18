@@ -55,6 +55,12 @@ private:
     QVector<ConsistencyEntry> m_consistencyEntries;
     QString m_currentProjectPath;
     QString m_projectName = QStringLiteral("Untitled Project");
+    // Project properties from the New Project dialog. fps is APPLIED (the
+    // animatic timeline); canvasWidth/Height are stored forward-compatible
+    // metadata — the canvas renders 960x540 in this build (HANDOFF.md).
+    int m_projectFps = 24;
+    int m_canvasWidth = 960;
+    int m_canvasHeight = 540;
 
     QAction *m_saveAct = nullptr;
     QAction *m_saveAsAct = nullptr;

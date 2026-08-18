@@ -13,6 +13,7 @@
 #include "AnimaticPage.h"
 #include "ConsistencyBoard.h"
 #include "DashboardPage.h"
+#include "NewProjectDialog.h"
 #include "GenerationPage.h"
 #include "ScriptEditorPage.h"
 #include "StoryboardModel.h"
@@ -87,9 +88,27 @@ MainWindow::MainWindow(QWidget *parent)
     m_stack->addWidget(m_consistencyBoard); // index 4
     m_stack->addWidget(m_generation);       // index 5
 
-    // Dashboard -> Script Editor (fresh project).
+    // Dashboard -> New Project window (Figma 350:24) -> Script Editor.
+    // Create writes <Location>/<Name>/<Name>.sankotv IMMEDIATELY and lands
+    // in recents; Open routes into the existing loadFromPath. File > Save /
+    // Save As / Open are untouched.
     connect(m_dashboard, &DashboardPage::newProjectRequested, this, [this] {
+        NewProjectDialog dialog(this);
+        if (dialog.exec() != QDialog::Accepted)
+            return;
+        if (dialog.mode() == NewProjectDialog::Mode::OpenExisting) {
+            loadFromPath(dialog.openPath());
+            return;
+        }
         onNewProject();
+        m_projectName = dialog.projectName();
+        m_currentProjectPath = dialog.projectFilePath();
+        m_projectFps = dialog.fps();
+        m_canvasWidth = dialog.canvasWidth();   // stored metadata: the
+        m_canvasHeight = dialog.canvasHeight(); // canvas renders 960x540
+        m_animatic->setFps(m_projectFps);
+        updateSaveActions();
+        updateTitle();
         m_stack->setCurrentWidget(m_scriptEditor);
     });
 
@@ -624,6 +643,12 @@ bool MainWindow::saveToPath(const QString &path)
     QJsonObject root;
     root[QStringLiteral("version")] = 1;
     root[QStringLiteral("projectName")] = m_projectName;
+    // Optional keys (absent in older projects — the reader defaults them):
+    // fps drives the animatic; canvasWidth/Height are forward-compatible
+    // metadata, the canvas renders 960x540 in this build.
+    root[QStringLiteral("fps")] = m_projectFps;
+    root[QStringLiteral("canvasWidth")] = m_canvasWidth;
+    root[QStringLiteral("canvasHeight")] = m_canvasHeight;
     root[QStringLiteral("scenes")] = scenesArray;
     root[QStringLiteral("consistencyBoard")] = consistencyArray;
     root[QStringLiteral("audioPath")] = m_animatic->audioPath(); // scratch track (path only)
@@ -639,6 +664,7 @@ bool MainWindow::saveToPath(const QString &path)
     file.close();
 
     m_currentProjectPath = path;
+    NewProjectDialog::recordRecentProject(path);
     return true;
 }
 
@@ -670,6 +696,13 @@ bool MainWindow::loadFromPath(const QString &path)
     m_projectName = root.value(QStringLiteral("projectName")).toString();
     if (m_projectName.isEmpty())
         m_projectName = QFileInfo(path).completeBaseName();
+
+    // Optional keys (new-project dialog); older projects default: fps 24,
+    // dims resolved AFTER the scenes are built from the first layer's
+    // actual image — the truth on disk, not an assumption.
+    m_projectFps = root.value(QStringLiteral("fps")).toInt(24);
+    m_canvasWidth = root.value(QStringLiteral("canvasWidth")).toInt(0);
+    m_canvasHeight = root.value(QStringLiteral("canvasHeight")).toInt(0);
 
     // LEGACY shared layers ("Copy/Reuse Layer in Another Panel", removed):
     // old files store the PNG only on the FIRST instance of a sharedId;
@@ -879,6 +912,26 @@ bool MainWindow::loadFromPath(const QString &path)
     m_currentProjectPath = path;
     updateSaveActions();
     updateTitle();
+
+    // Older projects carry no canvas keys: resolve dims from the first
+    // layer's actual image. fps feeds the animatic timeline.
+    if (m_canvasWidth <= 0 || m_canvasHeight <= 0) {
+        m_canvasWidth = 960;
+        m_canvasHeight = 540;
+        for (Scene *scene : m_scenes) {
+            if (scene->panels.isEmpty()
+                || scene->panels.first()->layers.isEmpty())
+                continue;
+            const QImage &img = scene->panels.first()->layers.first().image;
+            if (!img.isNull()) {
+                m_canvasWidth = img.width();
+                m_canvasHeight = img.height();
+            }
+            break;
+        }
+    }
+    m_animatic->setFps(m_projectFps);
+    NewProjectDialog::recordRecentProject(path);
 
     // Skip the Script Editor: go straight to the Storyboard.
     m_storyboard->loadScenes(m_scenes);

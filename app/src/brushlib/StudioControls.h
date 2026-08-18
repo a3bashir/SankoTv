@@ -12,6 +12,10 @@
 
 class QPaintEvent;
 class QMouseEvent;
+class QKeyEvent;
+class QLineEdit;
+class QResizeEvent;
+class QEnterEvent;
 
 namespace brushlib {
 
@@ -41,6 +45,18 @@ void paintCapsule(QPainter &p, const QRect &r, const QString &text);
 // file's visual language).
 void paintCurveChip(QPainter &p, const QRect &r, const PressureCurve &curve,
                     bool expanded);
+
+// Field tokens (New Project dialog, Figma 350:24) — the input-box language
+// shared by StudioTextField and StudioDropdown: #1c1c1c wells with #333
+// borders, #ccc values, #999 labels. Hover lightens the border; focus uses
+// the accent. Any dialog reusing these components inherits the states.
+inline const QColor kFieldBg(0x1c, 0x1c, 0x1c);
+inline const QColor kFieldBorder(0x33, 0x33, 0x33);
+inline const QColor kFieldBorderHover(0x4a, 0x4a, 0x4a);
+inline const QColor kFieldText(0xcc, 0xcc, 0xcc);
+inline const QColor kFieldLabel(0x99, 0x99, 0x99);
+QFont fieldFont();      // Inter Regular 11 (input values)
+QFont fieldLabelFont(); // Inter Medium 10 (field labels)
 } // namespace studio
 
 // The custom slider row (Figma 273:30 inside 274:72..104): label + value
@@ -470,6 +486,79 @@ private:
     Region m_hover = Region::None;
     double m_grabOffset = 0.0; // ring drag: angle - pointerAngle at press
     bool m_moved = false;      // distinguishes pivot click from drag
+};
+
+// Shared single-line text input (first needed by the New Project dialog;
+// built as a library component because other dialogs will want it). A
+// custom-painted well in the field language hosting an embedded FRAMELESS
+// QLineEdit — caret, selection, IME and clipboard come from Qt, every
+// painted pixel is ours. Re-implementing text editing loses IME silently.
+// numericMode() restricts input to digits and reports intValue().
+class StudioTextField : public QWidget
+{
+    Q_OBJECT
+public:
+    explicit StudioTextField(QWidget *parent = nullptr);
+    QString text() const;
+    void setText(const QString &text);
+    void setPlaceholder(const QString &text);
+    // Digits only (an int validator makes non-numeric input unenterable).
+    void setNumericMode(int minValue, int maxValue);
+    int intValue() const;
+    // Disabled-but-legible: dimmed value, no focus ring, input refused —
+    // used by Width/Height while a non-Custom preset is active, so blocked
+    // editing is VISIBLE, never silently ignored.
+    void setFieldEnabled(bool enabled);
+    bool fieldEnabled() const { return m_fieldEnabled; }
+    QLineEdit *edit() const { return m_edit; } // for tab order / tests
+
+signals:
+    void textEdited(const QString &text);
+    void submitted(); // Enter pressed inside the field
+
+protected:
+    void paintEvent(QPaintEvent *event) override;
+    void resizeEvent(QResizeEvent *event) override;
+    void mousePressEvent(QMouseEvent *event) override;
+    void enterEvent(QEnterEvent *event) override;
+    void leaveEvent(QEvent *event) override;
+    bool eventFilter(QObject *watched, QEvent *event) override;
+
+private:
+    QLineEdit *m_edit = nullptr;
+    bool m_hover = false;
+    bool m_fieldEnabled = true;
+};
+
+// Shared dropdown (New Project dialog): a painted field-language box with a
+// chevron; clicking opens a styled popup list (Qt::Popup widget, hover
+// highlight, click selects). Deliberately NOT a QComboBox and NOT the
+// studio's cycle-style StudioChoiceRow — the design shows a popup menu.
+class StudioDropdown : public QWidget
+{
+    Q_OBJECT
+public:
+    StudioDropdown(const QStringList &options, QWidget *parent = nullptr);
+    int currentIndex() const { return m_index; }
+    QString currentText() const;
+    void setCurrentIndex(int index); // silent
+    void choose(int index);          // sets AND emits, like a user pick
+
+signals:
+    void chosen(int index); // user action (or choose())
+
+protected:
+    void paintEvent(QPaintEvent *event) override;
+    void mousePressEvent(QMouseEvent *event) override;
+    void keyPressEvent(QKeyEvent *event) override;
+    void enterEvent(QEnterEvent *event) override;
+    void leaveEvent(QEvent *event) override;
+
+private:
+    void openPopup();
+    QStringList m_options;
+    int m_index = 0;
+    bool m_hover = false;
 };
 
 } // namespace brushlib

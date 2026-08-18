@@ -472,3 +472,23 @@ phases (2026-08-08):
    presets render byte-identical. The divergence entry above still stands
    as engine-quality work; imported brushes with static angle/roundness on
    hard-edged tips are now the likeliest place a user meets it.
+
+## New Project dialog (Figma 350:24) — deferred items
+
+- **canvasWidth/canvasHeight are stored, not applied.** The project file
+  carries them (optional keys, version stays 1) and the dialog states the
+  limitation in-UI ("Canvas renders at 960 × 540 in this build; the size
+  chosen here is saved with the project"). Applying them means making
+  `makeLayerImage()` project-driven plus auditing every 960×540 assumption
+  (DrawingCanvas, composite caches, edge lock, both pixel locks, the
+  generation pipeline) — its own multi-session epic. fps IS applied
+  (AnimaticTimeline::setFps; per-block frame counts derive from it).
+- **Save As still scatters sibling PNGs** next to wherever it is pointed,
+  while Create now writes `<Location>/<Name>/<Name>.sankotv` (folder per
+  project). Save As should probably adopt the same folder-per-project
+  shape; decide separately — changing it silently would surprise existing
+  muscle memory.
+- **Six one-off QLineEdits** are candidates to migrate to the shared
+  StudioTextField: ConsistencyBoard.cpp ×4 (entry name/tags, edit + create
+  forms), StoryboardPage.cpp ×2 (panel mood field, layer rename). Not
+  migrated with the dialog commit, by instruction.

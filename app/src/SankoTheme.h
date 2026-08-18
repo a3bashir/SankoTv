@@ -47,6 +47,13 @@ inline const QString kAccentRgb = QStringLiteral("124,110,246");
 // kAccent — the tint is a legibility tool, not a second brand colour.
 inline const QColor kAccentLight(0x9e, 0x94, 0xf8);
 inline const QString kAccentLightHex = QStringLiteral("#9e94f8");
+// USAGE RULE + recorded exemption: kAccent for fills, kAccentLight for
+// accent-coloured TEXT on dark surfaces (>= 4.5:1) and accent state
+// borders (>= 3:1). FILLED-BUTTON LABELS ARE EXEMPT from the 4.5:1 text
+// gate: white 11px on kAccent measures 3.87:1 and is the app's
+// established idiom (the studio's Done button, Create Project). Accent
+// text on dark stays held to 4.5:1 — the exemption covers labels ON
+// accent fills only.
 
 // Stylesheet templates carry %ACCENT% / %ACCENT_RGB% / %ACCENT_LIGHT% /
 // %PURPLE% and are resolved here, so a stylesheet never embeds an accent

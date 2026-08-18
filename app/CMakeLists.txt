@@ -48,6 +48,8 @@ qt_add_executable(SankoTV
     src/MainWindow.cpp
     src/MainWindow.h
     src/DashboardPage.cpp
+    src/NewProjectDialog.cpp
+    src/NewProjectDialog.h
     src/DashboardPage.h
     src/ScriptEditorPage.cpp
     src/ScriptEditorPage.h

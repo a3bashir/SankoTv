@@ -32,6 +32,10 @@ public:
     QString audioPath() const;
     void setAudioPath(const QString &path); // loads silently if the file exists
 
+    // Project frame rate (New Project dialog / project file): forwarded to
+    // the timeline, which derives every frame count from it.
+    void setFps(int fps);
+
     // Read by AnimaticTimeline when rendering the real-time playhead.
     int currentFlatIndex() const { return m_current; }
     int elapsedMsInCurrentPanel() const { return m_elapsedMsInCurrentPanel; }

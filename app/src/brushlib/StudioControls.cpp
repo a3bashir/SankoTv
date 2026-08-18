@@ -3,6 +3,9 @@
 
 #include <QFontMetrics>
 #include <QHideEvent>
+#include <QIntValidator>
+#include <QKeyEvent>
+#include <QLineEdit>
 #include <QLineF>
 #include <QLinearGradient>
 #include <QMenu>
@@ -1186,6 +1189,309 @@ void StudioTipRing::paintEvent(QPaintEvent *)
     for (const QPointF &d : {QPointF(1, 0), QPointF(-1, 0),
                              QPointF(0, 1), QPointF(0, -1)})
         p.drawLine(c + d * kPivotTickInner, c + d * kPivotTickOuter);
+}
+
+// ---------------------------------------------------------------------------
+// StudioTextField
+// ---------------------------------------------------------------------------
+
+namespace studio {
+QFont fieldFont()
+{
+    QFont f(QStringLiteral("Inter"));
+    f.setPixelSize(11);
+    return f;
+}
+QFont fieldLabelFont()
+{
+    QFont f(QStringLiteral("Inter"));
+    f.setPixelSize(10);
+    f.setWeight(QFont::Medium);
+    return f;
+}
+} // namespace studio
+
+StudioTextField::StudioTextField(QWidget *parent)
+    : QWidget(parent)
+{
+    setFixedHeight(25);
+    setCursor(Qt::IBeamCursor);
+    setAttribute(Qt::WA_Hover);
+    m_edit = new QLineEdit(this);
+    m_edit->setFrame(false);
+    m_edit->setFont(studio::fieldFont());
+    // The embedded editor paints NOTHING but text + caret: transparent
+    // background, our field colours. The well, border, hover and focus
+    // states are painted by this widget.
+    QPalette pal = m_edit->palette();
+    pal.setColor(QPalette::Base, Qt::transparent);
+    pal.setColor(QPalette::Text, studio::kFieldText);
+    pal.setColor(QPalette::PlaceholderText, QColor(0x66, 0x66, 0x66));
+    pal.setColor(QPalette::Highlight, studio::kAccent);
+    pal.setColor(QPalette::HighlightedText, Qt::white);
+    m_edit->setPalette(pal);
+    m_edit->setStyleSheet(QStringLiteral(
+        "QLineEdit { background: transparent; border: none; padding: 0; }"));
+    connect(m_edit, &QLineEdit::textEdited, this,
+            &StudioTextField::textEdited);
+    connect(m_edit, &QLineEdit::returnPressed, this,
+            &StudioTextField::submitted);
+    // Repaint on focus transitions so the accent focus ring tracks the
+    // editor's real focus, which is the only focus that exists here.
+    m_edit->installEventFilter(this);
+    setFocusProxy(m_edit);
+}
+
+bool StudioTextField::eventFilter(QObject *watched, QEvent *event)
+{
+    if (watched == m_edit
+        && (event->type() == QEvent::FocusIn
+            || event->type() == QEvent::FocusOut))
+        update(); // the accent focus ring follows the editor's focus
+    return QWidget::eventFilter(watched, event);
+}
+
+QString StudioTextField::text() const { return m_edit->text(); }
+void StudioTextField::setText(const QString &text) { m_edit->setText(text); }
+void StudioTextField::setPlaceholder(const QString &text)
+{
+    m_edit->setPlaceholderText(text);
+}
+
+void StudioTextField::setNumericMode(int minValue, int maxValue)
+{
+    // QIntValidator alone still allows out-of-range intermediates (typing
+    // "9" toward "96"), which is correct for editing; range enforcement is
+    // the caller's validation step via intValue().
+    m_edit->setValidator(new QIntValidator(minValue, maxValue, m_edit));
+}
+
+int StudioTextField::intValue() const { return m_edit->text().toInt(); }
+
+void StudioTextField::setFieldEnabled(bool enabled)
+{
+    if (m_fieldEnabled == enabled)
+        return;
+    m_fieldEnabled = enabled;
+    // Read-only rather than disabled: the value stays selectable/copyable,
+    // input is refused, and the DIMMED rendering below makes the refusal
+    // visible — never a live-looking field that ignores keystrokes.
+    m_edit->setReadOnly(!enabled);
+    QPalette pal = m_edit->palette();
+    pal.setColor(QPalette::Text, enabled ? studio::kFieldText
+                                         : QColor(0x77, 0x77, 0x77));
+    m_edit->setPalette(pal);
+    setCursor(enabled ? Qt::IBeamCursor : Qt::ArrowCursor);
+    update();
+}
+
+void StudioTextField::resizeEvent(QResizeEvent *)
+{
+    m_edit->setGeometry(8, 0, width() - 16, height());
+}
+
+void StudioTextField::mousePressEvent(QMouseEvent *)
+{
+    if (m_fieldEnabled)
+        m_edit->setFocus(Qt::MouseFocusReason);
+}
+
+void StudioTextField::enterEvent(QEnterEvent *)
+{
+    m_hover = true;
+    update();
+}
+void StudioTextField::leaveEvent(QEvent *)
+{
+    m_hover = false;
+    update();
+}
+
+void StudioTextField::paintEvent(QPaintEvent *)
+{
+    QPainter p(this);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    const QRectF r = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
+    QColor border = studio::kFieldBorder;
+    if (m_fieldEnabled) {
+        if (m_edit->hasFocus())
+            border = studio::kAccent; // focus ring
+        else if (m_hover)
+            border = studio::kFieldBorderHover;
+    }
+    p.setPen(QPen(border, 1.0));
+    p.setBrush(studio::kFieldBg);
+    p.drawRoundedRect(r, 3, 3);
+}
+
+// ---------------------------------------------------------------------------
+// StudioDropdown
+// ---------------------------------------------------------------------------
+
+namespace {
+// The popup list: a frameless Qt::Popup child-less widget painting option
+// rows in the field language. Closes on pick or outside click (Qt::Popup
+// semantics). Kept file-local — the dropdown is its only client.
+class DropdownPopup : public QWidget
+{
+public:
+    static constexpr int kRowH = 24;
+    DropdownPopup(StudioDropdown *owner, const QStringList &options,
+                  int current)
+        : QWidget(nullptr, Qt::Popup | Qt::FramelessWindowHint),
+          m_owner(owner), m_options(options), m_hover(current)
+    {
+        setAttribute(Qt::WA_DeleteOnClose);
+        setMouseTracking(true);
+    }
+    QSize sizeHint() const override
+    {
+        return QSize(m_owner->width(), int(m_options.size()) * kRowH + 8);
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        const QRectF r = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
+        p.setPen(QPen(studio::kFieldBorder, 1.0));
+        p.setBrush(studio::kFieldBg);
+        p.drawRoundedRect(r, 3, 3);
+        p.setFont(studio::fieldFont());
+        for (int i = 0; i < m_options.size(); ++i) {
+            const QRect row(1, 4 + i * kRowH, width() - 2, kRowH);
+            if (i == m_hover) {
+                p.setPen(Qt::NoPen);
+                p.setBrush(studio::kAccent);
+                p.drawRect(row);
+            }
+            p.setPen(i == m_hover ? QColor(Qt::white) : studio::kFieldText);
+            p.drawText(row.adjusted(8, 0, -8, 0),
+                       Qt::AlignVCenter | Qt::AlignLeft, m_options.at(i));
+        }
+    }
+    void mouseMoveEvent(QMouseEvent *event) override
+    {
+        const int i = (int(event->position().y()) - 4) / kRowH;
+        if (i >= 0 && i < m_options.size() && i != m_hover) {
+            m_hover = i;
+            update();
+        }
+    }
+    void mousePressEvent(QMouseEvent *event) override
+    {
+        const int i = (int(event->position().y()) - 4) / kRowH;
+        if (i >= 0 && i < m_options.size())
+            m_owner->choose(i);
+        close();
+    }
+    void keyPressEvent(QKeyEvent *event) override
+    {
+        if (event->key() == Qt::Key_Escape)
+            close();
+        else if (event->key() == Qt::Key_Return
+                 || event->key() == Qt::Key_Enter) {
+            if (m_hover >= 0)
+                m_owner->choose(m_hover);
+            close();
+        } else if (event->key() == Qt::Key_Down
+                   || event->key() == Qt::Key_Up) {
+            const int step = event->key() == Qt::Key_Down ? 1 : -1;
+            m_hover = qBound(0, m_hover + step,
+                             int(m_options.size()) - 1);
+            update();
+        }
+    }
+
+private:
+    StudioDropdown *m_owner;
+    QStringList m_options;
+    int m_hover;
+};
+} // namespace
+
+StudioDropdown::StudioDropdown(const QStringList &options, QWidget *parent)
+    : QWidget(parent), m_options(options)
+{
+    setFixedHeight(25);
+    setCursor(Qt::PointingHandCursor);
+    setFocusPolicy(Qt::StrongFocus); // tab stop; Space/Enter opens
+}
+
+QString StudioDropdown::currentText() const
+{
+    return m_options.value(m_index);
+}
+
+void StudioDropdown::setCurrentIndex(int index)
+{
+    m_index = qBound(0, index, int(m_options.size()) - 1);
+    update();
+}
+
+void StudioDropdown::choose(int index)
+{
+    setCurrentIndex(index);
+    emit chosen(m_index);
+}
+
+void StudioDropdown::openPopup()
+{
+    auto *popup = new DropdownPopup(this, m_options, m_index);
+    popup->resize(popup->sizeHint());
+    popup->move(mapToGlobal(QPoint(0, height() + 2)));
+    popup->show();
+    popup->setFocus();
+}
+
+void StudioDropdown::mousePressEvent(QMouseEvent *)
+{
+    openPopup();
+}
+
+void StudioDropdown::keyPressEvent(QKeyEvent *event)
+{
+    if (event->key() == Qt::Key_Space || event->key() == Qt::Key_Return
+        || event->key() == Qt::Key_Enter)
+        openPopup();
+    else
+        QWidget::keyPressEvent(event);
+}
+
+void StudioDropdown::enterEvent(QEnterEvent *)
+{
+    m_hover = true;
+    update();
+}
+void StudioDropdown::leaveEvent(QEvent *)
+{
+    m_hover = false;
+    update();
+}
+
+void StudioDropdown::paintEvent(QPaintEvent *)
+{
+    QPainter p(this);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    const QRectF r = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
+    QColor border = studio::kFieldBorder;
+    if (hasFocus())
+        border = studio::kAccent;
+    else if (m_hover)
+        border = studio::kFieldBorderHover;
+    p.setPen(QPen(border, 1.0));
+    p.setBrush(studio::kFieldBg);
+    p.drawRoundedRect(r, 3, 3);
+    p.setFont(studio::fieldFont());
+    p.setPen(studio::kFieldText);
+    p.drawText(rect().adjusted(8, 0, -24, 0),
+               Qt::AlignVCenter | Qt::AlignLeft, currentText());
+    // 10px chevron, right-aligned (design 350:103): two 1px strokes.
+    const QPointF c(width() - 16.0, height() / 2.0);
+    p.setPen(QPen(studio::kFieldLabel, 1.2));
+    p.drawLine(c + QPointF(-3.5, -1.5), c + QPointF(0, 2));
+    p.drawLine(c + QPointF(0, 2), c + QPointF(3.5, -1.5));
 }
 
 } // namespace brushlib

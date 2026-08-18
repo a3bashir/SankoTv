@@ -1002,3 +1002,9 @@ void AnimaticPage::onExportMp4()
                 .arg(QString::fromLocal8Bit(stderrOut)));
     }
 }
+
+void AnimaticPage::setFps(int fps)
+{
+    if (m_timeline)
+        m_timeline->setFps(fps);
+}

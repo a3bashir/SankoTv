@@ -22,8 +22,6 @@
 #include <cmath>
 
 namespace {
-constexpr int kFps = 24;
-constexpr double kMsPerFrame = 1000.0 / kFps;
 
 constexpr int kLabelCol = 90; // left track-name column width
 
@@ -264,7 +262,7 @@ void AnimaticTimeline::rebuildBlocks()
                 ? QStringLiteral("Scene %1").arg(scene->number)
                 : scene->location;
             b.duration = qBound(kMinDur, panel->duration, kMaxDur);
-            b.frames = dur * kFps;
+            b.frames = dur * m_fps;
             b.startFrame = frameCursor;
             b.sceneStart = (pi == 0);
             m_blocks.append(b);
@@ -280,7 +278,7 @@ int AnimaticTimeline::totalFrames() const
     int f = 0;
     for (const Block &b : m_blocks)
         f += b.frames;
-    return qMax(f, kFps); // never zero
+    return qMax(f, m_fps); // never zero
 }
 
 int AnimaticTimeline::totalSeconds() const
@@ -292,7 +290,7 @@ int AnimaticTimeline::totalSeconds() const
 }
 
 double AnimaticTimeline::pxPerFrame() const { return m_zoom / 100.0; }
-double AnimaticTimeline::pxPerSecond() const { return pxPerFrame() * kFps; }
+double AnimaticTimeline::pxPerSecond() const { return pxPerFrame() * m_fps; }
 double AnimaticTimeline::contentWidthPx() const { return totalFrames() * pxPerFrame(); }
 
 int AnimaticTimeline::visibleWidth() const
@@ -343,7 +341,7 @@ int AnimaticTimeline::playheadFrame() const
         return 0;
     const Block &b = m_blocks.at(m_current);
     const int elapsedMs = m_host ? m_host->elapsedMsInCurrentPanel() : 0;
-    int elapsedFrames = static_cast<int>(elapsedMs / kMsPerFrame);
+    int elapsedFrames = static_cast<int>(elapsedMs / (1000.0 / m_fps));
     elapsedFrames = qBound(0, elapsedFrames, b.frames);
     return b.startFrame + elapsedFrames;
 }
@@ -397,8 +395,8 @@ int AnimaticTimeline::snapFrame(int frame) const
 
 QString AnimaticTimeline::timecode(int frame) const
 {
-    const int totalSec = frame / kFps;
-    const int ff = frame % kFps;
+    const int totalSec = frame / m_fps;
+    const int ff = frame % m_fps;
     const int ss = totalSec % 60;
     const int mm = (totalSec / 60) % 60;
     const int hh = totalSec / 3600;
@@ -460,7 +458,7 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
         if (halfTicks) {
             for (int s2 = 0; s2 <= tSecs * 2; ++s2) {
                 if (s2 % 2 == 0) continue; // skip whole seconds (drawn below)
-                const int x = contentXToScreen((s2 * kFps / 2) * ppf);
+                const int x = contentXToScreen((s2 * m_fps / 2) * ppf);
                 if (x < kLabelCol - 2 || x > contentRight) continue;
                 p.setPen(QColor("#444444"));
                 p.drawLine(x, kRulerY + kRulerH - 7, x, kRulerY + kRulerH);
@@ -474,8 +472,8 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
             if (s % labelSecs == 0) {
                 p.setPen(QColor("#666666"));
                 const QString lbl = m_framesMode
-                    ? QString::number(s * kFps)
-                    : timecode(s * kFps);
+                    ? QString::number(s * m_fps)
+                    : timecode(s * m_fps);
                 p.drawText(QRect(x + 2, kRulerY, 80, kRulerH),
                            Qt::AlignVCenter | Qt::AlignLeft, lbl);
             }
@@ -685,7 +683,7 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
     // ----- Audio track -----
     {
         if (m_audioLoaded && m_audioDurationMs > 0) {
-            const double audioFrames = (m_audioDurationMs / 1000.0) * kFps;
+            const double audioFrames = (m_audioDurationMs / 1000.0) * m_fps;
             const double audioWidthPx = audioFrames * ppf;
             const int x0 = contentXToScreen(0);
             const int x1 = contentXToScreen(audioWidthPx);
@@ -953,4 +951,14 @@ void AnimaticTimeline::canvasLeave()
     }
     if (m_canvas)
         m_canvas->setCursor(Qt::ArrowCursor);
+}
+
+void AnimaticTimeline::setFps(int fps)
+{
+    fps = qBound(1, fps, 120);
+    if (fps == m_fps)
+        return;
+    m_fps = fps;
+    rebuildBlocks(); // per-block frame counts derive from the rate
+    update();
 }
