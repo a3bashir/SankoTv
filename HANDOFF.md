@@ -759,3 +759,28 @@ m_qsSeed); undo/redo byte-exact including redo-after-after-pixels-drop
 BOTH paths; the no-preview path driven deterministically (commit in the
 same event-loop iteration recognition flips). 30 checks x 10 runs
 across both configs; seven families green at the pinned hashes.
+
+## Post-bake 50-65 ms class (2026-08-21) — recorded at campaign close
+
+The final 4K recording (session 20260821-185856, both stroke-path fixes
+in the binary: seven full QuickShape cycles, brush 149) shows nothing
+above 65 ms anywhere. What remains is a 50-65 ms GUI slice in the second
+AFTER a bake tap — not on the tap itself (the bake's synchronous slice
+is 22-25 ms and no longer registers among the top gaps).
+
+ATTRIBUTION IS INFERRED FROM TIMING CORRELATION, NOT STAGE-MEASURED.
+Two candidate contributors, in likely order:
+1. The composite-cache rebuild over a 4K layer when the async publish
+   lands (invalidation -> next paint rebuilds m_compBelow/m_compAbove:
+   roughly two full-canvas composites plus a repaint — fits the size).
+2. The bake placeholder's repaint rect: completePaintStroke repaints
+   m_pendingPreviewRect, which the cheaper-replay fix sets to the FULL
+   canvas. It could be cropped to the stroke's affected rect, which the
+   publish watcher already knows — a one-line candidate, unmeasured.
+
+NOISE FLOOR, read this before chasing it: DevRecorder's own overhead
+measured up to ~19 ms of UI-thread gap under load, so recording-derived
+numbers at this scale are blurred by the instrument itself. Any pursuit
+needs bench stage-measurement (the archived probes in tests/_backups are
+the pattern), not another recording. At 50-65 ms once per bake, this was
+deliberately left as the stopping point of the stroke-path campaign.
