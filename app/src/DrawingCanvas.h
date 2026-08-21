@@ -174,6 +174,10 @@ public:
         return m_qsGeometry;
     }
     QImage quickShapePreviewForTest() const { return m_qsPreview; }
+    quint64 quickShapePreviewShownGenForTest() const
+    {
+        return m_qsPreviewShownGen;
+    }
     bool quickShapePreviewBusyForTest() const
     {
         return m_qsPreviewInFlight || m_qsPreviewDirty
@@ -852,6 +856,16 @@ private:
     void clearPenUiLatch();
 
     quint64 m_qsPreviewGen = 0;       // bumped to invalidate in-flight renders
+    // MONOTONIC DISPLAY GUARD (drag-blanking fix): the generation of the
+    // preview currently on screen. A landed render displays only if its
+    // generation is NEWER — so during a continuous manipulation every
+    // landed frame shows progressively (the old exact-match check dropped
+    // them all: at 4K every ~105 ms flight overlapped another change and
+    // the drag went blank), while an older result can never appear after a
+    // newer one. Every deliberate clear of m_qsPreview advances this to
+    // the current generation, so an in-flight result can never resurrect
+    // a cleared display (shape death, bake, degenerate commit).
+    quint64 m_qsPreviewShownGen = 0;
     bool m_qsPreviewInFlight = false;
     bool m_qsPreviewDirty = false;    // shape changed while a render was out
     QTimer *m_qsPreviewTimer = nullptr;

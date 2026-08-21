@@ -262,6 +262,7 @@ DrawingCanvas::DrawingCanvas(QWidget *parent)
             m_qsPreview = QImage(); // never leave a stale preview behind
             clearPenUiLatch();      // the latched button may be going away
             ++m_qsPreviewGen; // in-flight renders land in the void
+            m_qsPreviewShownGen = m_qsPreviewGen; // and can never resurrect
             m_qsPreviewDirty = false;
             if (m_qsPreviewTimer)
                 m_qsPreviewTimer->stop();
@@ -3920,6 +3921,7 @@ void DrawingCanvas::replayQuickShape(const quickshape::QuickShapeCommit &commit)
     const QImage bakePlaceholder = m_qsPreview;
     m_qsPreview = QImage();
     ++m_qsPreviewGen; // any in-flight preview render is now stale
+    m_qsPreviewShownGen = m_qsPreviewGen; // and can never resurrect
     if (m_qsPreviewTimer)
         m_qsPreviewTimer->stop();
     if (commit.points.size() < 2 || !m_panel || !editableActiveLayer()) {
@@ -4007,6 +4009,7 @@ void DrawingCanvas::renderQuickShapePreview()
 {
     if (!m_quickShape.hasActiveShape()) {
         m_qsPreview = QImage();
+        m_qsPreviewShownGen = m_qsPreviewGen; // a clear is never resurrected
         update();
         return;
     }
@@ -4023,6 +4026,7 @@ void DrawingCanvas::renderQuickShapePreview()
     const quickshape::QuickShapeCommit commit = m_quickShape.currentCommit();
     if (commit.points.size() < 2) {
         m_qsPreview = QImage();
+        m_qsPreviewShownGen = m_qsPreviewGen; // a clear is never resurrected
         update();
         return;
     }
@@ -4060,9 +4064,22 @@ void DrawingCanvas::renderQuickShapePreview()
         const QImage rendered = watcher->result();
         watcher->deleteLater();
         m_qsPreviewInFlight = false;
-        const bool stale = gen != m_qsPreviewGen
-                           || !m_quickShape.hasActiveShape();
-        if (!stale && !rendered.isNull()) {
+        // MONOTONIC PROGRESSIVE DISPLAY (drag-blanking fix). The old rule
+        // displayed a result only if NO further change had happened while
+        // it rendered — under a continuous rotate/scale drag at 4K every
+        // ~105 ms flight overlapped another change, so every frame was
+        // dropped and the shape vanished for the whole drag (the
+        // synchronous pre-fix build had merely masked this latent race by
+        // starving the event queue). New rule: display any landed frame
+        // NEWER than the one on screen while the shape is alive. Landings
+        // are serialized by the in-flight guard, so what the artist sees
+        // only ever moves forward — an older result can never replace a
+        // newer one — and the dirty chain below still guarantees the final
+        // settled frame is the LATEST geometry (the stale-race lock pins
+        // exactly that).
+        if (m_quickShape.hasActiveShape() && !rendered.isNull()
+            && gen > m_qsPreviewShownGen) {
+            m_qsPreviewShownGen = gen;
             m_qsPreview = rendered;
             update();
         }

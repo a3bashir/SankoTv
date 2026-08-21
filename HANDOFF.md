@@ -784,3 +784,41 @@ numbers at this scale are blurred by the instrument itself. Any pursuit
 needs bench stage-measurement (the archived probes in tests/_backups are
 the pattern), not another recording. At 50-65 ms once per bake, this was
 deliberately left as the stopping point of the stroke-path campaign.
+
+## QS drag blanking: monotonic progressive display (2026-08-21)
+
+REGRESSION after the preview-replay fix: on a 4K canvas the rotate/scale
+drag showed NOTHING for its entire duration (probe: 23/23 samples blank,
+preview null throughout; screenshot confirms a bare canvas with only the
+hint chip). Root cause is a LATENT PROPERTY OF THE PREVIEW PROTOCOL, not
+of the fix: the landing rule displayed a result only if NO further change
+happened during its flight. Under continuous manipulation, any canvas
+large enough that the render flight outruns the event cadence (16 ms
+coalesce + ~8 ms moves vs ~105 ms flights at 4K) drops EVERY frame,
+forever — including the first, so the display never fills. The
+synchronous pre-fix build had masked the race by blocking the event queue
+each cycle, chopping the drag stream into bursts that let some renders
+land clean. The async fix uncovered a latent starvation race rather than
+introducing one; the same race exists at ANY size where flights outrun
+input — 960x540 measured 0/23 blank only because ~25 ms flights win it.
+
+Fix (display-lifecycle only): MONOTONIC PROGRESSIVE DISPLAY. A landed
+frame shows if it is NEWER than the frame on screen and the shape is
+alive (m_qsPreviewShownGen); every deliberate preview clear advances the
+shown generation so an in-flight result can never resurrect a cleared
+display. Landings are serialized by the in-flight guard, so display only
+moves forward; the dirty re-render chain still guarantees the settled
+frame is the LATEST geometry — exactly what the QS geometry lock's
+stale-race section pins, and it stays green. Result: 19 distinct frames
+across a 1.6 s 4K drag (~12 fps progressive), 23/23 at 960x540,
+cancel-mid-flight forced deterministically at both sizes and never
+resurrects. Seam archived: tests/_backups/seam_qsdrag_fix_20260821.
+
+VACUOUS-TEST CATALOGUE, seventh entry: the first repro probe sampled the
+WHOLE WIDGET for ink and the dark gutter kept the count high while the
+canvas paper was completely blank — "blank=0" over a fully blank canvas.
+A sampler measuring the wrong REGION would have shipped a no-bug-found
+conclusion; the mid-drag screenshot caught it. Corollary to the standing
+rule: a visibility sampler needs a positive control proving it goes DARK
+when the thing it measures is absent — restricting to the paper rect and
+re-checking flipped blank=0 into blank=23/23.
