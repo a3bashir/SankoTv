@@ -6,6 +6,8 @@
 #include <QDir>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QHash>
+#include <QImageReader>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -94,14 +96,9 @@ void paintFilmIcon(QPainter &p, const QRectF &r, const QColor &color)
     p.restore();
 }
 
-// The first panel's flattened PNG, saved beside every project by
-// saveToPath as panel_s0_p0.png — the natural thumbnail source.
-QPixmap projectThumbnail(const QString &projectPath)
-{
-    const QString png = QFileInfo(projectPath).absolutePath()
-        + QStringLiteral("/panel_s0_p0.png");
-    return QFileInfo::exists(png) ? QPixmap(png) : QPixmap();
-}
+// (The full-res projectThumbnail helper that lived here moved into
+// RecentList::rowThumb as a cached, scaled decode — the performance pass
+// removed the last full-resolution decode from the paint path.)
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -218,7 +215,9 @@ protected:
             p.setPen(QPen(studio::kFieldBorder, 1.0));
             p.setBrush(studio::kFieldBg);
             p.drawRoundedRect(thumb.adjusted(0.5, 0.5, -0.5, -0.5), 2, 2);
-            const QPixmap px = missing ? QPixmap() : projectThumbnail(e.path);
+            // Cached scaled decode (see rowThumb) — never a full-res decode
+            // inside a paintEvent.
+            const QPixmap px = missing ? QPixmap() : rowThumb(e.path);
             if (!px.isNull()) {
                 p.save();
                 QPainterPath clip;
@@ -311,6 +310,41 @@ private:
             ? i
             : -1;
     }
+
+    // Row thumbnail, decoded ONCE per entry at (cover-46x30) target size and
+    // re-decoded only when the PNG changes on disk (mtime key). The old path
+    // decoded the FULL-RES panel_s0_p0.png per row per paintEvent: at
+    // 960x540 Qt's global QPixmapCache masked the cost (a ~2 MB pixmap
+    // fits), but a 4K pixmap (~33 MB) never enters the ~10 MB cache, so
+    // every hover-move repaint re-decoded every row from disk — measured
+    // 64 ms/row, 638 ms per repaint at the 10-row cap.
+    // QImageReader::setScaledSize decodes at the target size instead of
+    // decoding 33 MB to throw it away.
+    QPixmap rowThumb(const QString &projectPath)
+    {
+        const QString png = QFileInfo(projectPath).absolutePath()
+            + QStringLiteral("/panel_s0_p0.png");
+        const QDateTime mtime = QFileInfo(png).lastModified();
+        auto it = m_thumbCache.constFind(png);
+        if (it != m_thumbCache.constEnd() && it->mtime == mtime)
+            return it->px;
+        QPixmap px;
+        QImageReader reader(png);
+        const QSize full = reader.size(); // header only, no pixel decode
+        if (full.isValid() && !full.isEmpty()) {
+            reader.setScaledSize(full.scaled(
+                46, 30, Qt::KeepAspectRatioByExpanding));
+            px = QPixmap::fromImage(reader.read());
+        }
+        m_thumbCache.insert(png, {px, mtime});
+        return px;
+    }
+    struct CachedThumb {
+        QPixmap px;
+        QDateTime mtime;
+    };
+    QHash<QString, CachedThumb> m_thumbCache;
+
     NewProjectDialog *m_owner;
     QVector<RecentEntry> m_entries;
     int m_selected = -1;

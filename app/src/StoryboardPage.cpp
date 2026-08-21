@@ -3803,7 +3803,11 @@ QPixmap StoryboardPage::stripThumbPixmap(Panel *panel, qreal dprOverride) const
     const QSize well(qRound(m_thumbW * dpr), qRound(m_thumbH * dpr));
     QPixmap out(well);
     out.fill(QColor(0x1a, 0x1a, 0x1a)); // strip background = letterbox bars
-    const QPixmap art = panel->flattenedPixmap();
+    // The cached 512px mip: a 50-panel rebuild paid 50 full flattens on the
+    // GUI thread (834 ms of an 849 ms freeze at 4K, measured). The mip's
+    // 512px long edge covers the well's ~480 device px at DPR 2 without
+    // upscaling, and it self-validates against layer edits.
+    const QPixmap art = panel->flattenedThumb();
     if (!art.isNull()) {
         const QPixmap fit = art.scaled(well, Qt::KeepAspectRatio,
                                        Qt::SmoothTransformation);

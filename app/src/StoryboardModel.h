@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QColor>
+#include <QHash>
 #include <QImage>
 #include <QPainter>
 #include <QPixmap>
@@ -8,6 +9,8 @@
 #include <QStringList>
 #include <QUuid>
 #include <QVector>
+
+#include <cstring> // memcpy in Panel::flattenFingerprint
 
 // One AI-generated "take" of a panel: a single Seedance render attempt. A panel
 // can accumulate many takes; the director selects the best one.
@@ -181,6 +184,63 @@ struct Panel
         painter.end();
         return QPixmap::fromImage(out);
     }
+
+    // --- Flattened-THUMBNAIL cache (performance pass 3b) --------------------
+    // The hot consumers of the flatten (timeline clip thumbs, panel-strip
+    // thumbs, generation row thumbs) all want SMALL images, yet each call
+    // paid a full-resolution composite: 16 ms per panel at 3840x2160, per
+    // clip, per timeline repaint. This caches one ~512 px long-edge mip per
+    // panel (~0.6 MB at 4K) and VALIDATES it on every read instead of
+    // relying on invalidation calls: a fingerprint of everything that shapes
+    // the flatten — layer order/count, each layer's QImage::cacheKey(), and
+    // the visibility/opacity/type/group fields — is recomputed per read
+    // (measured 0.11 us/panel) and the mip is rebuilt only when it differs.
+    // cacheKey() changes on every detach, and every mutation path in the app
+    // (engine publish, undo/redo restore, clear, merge, transform commit,
+    // import, load) either assigns a new QImage or paints through
+    // QPainter/bits(), both of which detach — so NO call site is trusted to
+    // remember to invalidate; the cache proves its own freshness. The only
+    // way to go stale is mutating pixels behind a const_cast of constBits(),
+    // which nothing does. Full-resolution consumers (save, export, payloads,
+    // onion skin, light table, playback display) keep calling
+    // flattenedPixmap(), which stays uncached: one 4K flatten is 33 MB, and
+    // caching it per panel would cost gigabytes per scene.
+    QVector<quint64> flattenFingerprint() const
+    {
+        QVector<quint64> fp;
+        fp.reserve(layers.size() * 3);
+        for (const Layer &layer : layers) {
+            fp.append(quint64(layer.image.cacheKey()));
+            quint64 opacityBits = 0;
+            static_assert(sizeof(opacityBits) == sizeof(layer.opacity),
+                          "opacity bits must fit the fingerprint word");
+            memcpy(&opacityBits, &layer.opacity, sizeof(opacityBits));
+            fp.append(opacityBits);
+            fp.append(quint64(layer.visible)
+                      | (quint64(isGroupLayer(layer)) << 1)
+                      | (quint64(qHash(layer.groupId)) << 2));
+        }
+        return fp;
+    }
+    QPixmap flattenedThumb() const
+    {
+        constexpr int kThumbLongEdge = 512; // strip wells reach ~480 device px
+        QVector<quint64> fp = flattenFingerprint();
+        if (m_thumbCache.isNull() || fp != m_thumbKey) {
+            const QPixmap full = flattenedPixmap();
+            m_thumbCache = (full.width() > kThumbLongEdge
+                            || full.height() > kThumbLongEdge)
+                ? full.scaled(kThumbLongEdge, kThumbLongEdge,
+                              Qt::KeepAspectRatio, Qt::SmoothTransformation)
+                : full; // small canvases are already thumb-sized: never upscale
+            m_thumbKey = fp;
+        }
+        return m_thumbCache;
+    }
+
+private:
+    mutable QPixmap m_thumbCache;
+    mutable QVector<quint64> m_thumbKey;
 };
 
 // A scene carried over from the Script Editor, owning its panels.

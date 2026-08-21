@@ -5,6 +5,7 @@
 #include <QWidget>
 
 class QHBoxLayout;
+class QJsonObject;
 class QLabel;
 class QNetworkAccessManager;
 class QNetworkReply;
@@ -125,6 +126,9 @@ private:
     // Helpers.
     bool ensureFalKey(); // QMessageBox + false if FAL_API_KEY is missing
     QString buildClaudeRequestBody(int index) const;
+    // Request construction separated from transport (callFal) so the body —
+    // including the 720p image downscale — is testable without a network.
+    QJsonObject buildFalBody(int index, QString *endpoint) const;
     QVector<const ConsistencyEntry *> matchedEntries(int index) const;
     static bool isBlankPixmap(const QPixmap &pixmap);
     void openPreview(int index); // previews the selected take of a row

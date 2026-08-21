@@ -290,8 +290,9 @@ QWidget *GenerationPage::buildRow(int index)
     thumb->setStyleSheet(QStringLiteral("border: 1px solid #2a2a2a; border-radius: 3px;"));
     thumb->setScaledContents(false);
     thumb->setAlignment(Qt::AlignCenter);
-    QPixmap pm = row.panel->flattenedPixmap().scaled(120, 68, Qt::KeepAspectRatio,
-                                                     Qt::SmoothTransformation);
+    // Cached 512px mip — a 120x68 thumb never needs the full-res flatten.
+    QPixmap pm = row.panel->flattenedThumb().scaled(120, 68, Qt::KeepAspectRatio,
+                                                    Qt::SmoothTransformation);
     thumb->setPixmap(pm);
     hl->addWidget(thumb);
 
@@ -648,8 +649,11 @@ QString GenerationPage::buildClaudeRequestBody(int index) const
     const Scene *scene = row.scene;
 
     // The storyboard drawing is attached to the request (and described as the
-    // action source) only when the panel actually has artwork.
-    const bool attachImage = !isBlankPixmap(panel->flattenedPixmap());
+    // action source) only when the panel actually has artwork. ONE flatten
+    // serves both the blank check and the attachment below — this function
+    // used to composite the panel twice per submission (16 ms each at 4K).
+    const QPixmap flat = panel->flattenedPixmap();
+    const bool attachImage = !isBlankPixmap(flat);
 
     QString userContent = QStringLiteral(
         "Write a single optimized text-to-video generation prompt for an AI video "
@@ -733,10 +737,21 @@ QString GenerationPage::buildClaudeRequestBody(int index) const
     QJsonObject userMessage;
     userMessage[QStringLiteral("role")] = QStringLiteral("user");
     if (attachImage) {
+        // Vision models downscale internally past ~1568 px on the long edge,
+        // so anything larger only inflates the payload (a 4K flatten
+        // measured 2.48 MB of PNG against the 5 MB request limit — dense
+        // painterly content can exceed it). Downscale-only: small canvases
+        // are sent as they are.
+        constexpr int kVisionLongEdge = 1568;
+        const QPixmap send =
+            (flat.width() > kVisionLongEdge || flat.height() > kVisionLongEdge)
+            ? flat.scaled(kVisionLongEdge, kVisionLongEdge,
+                          Qt::KeepAspectRatio, Qt::SmoothTransformation)
+            : flat;
         QByteArray png;
         QBuffer buffer(&png);
         buffer.open(QIODevice::WriteOnly);
-        panel->flattenedPixmap().save(&buffer, "PNG");
+        send.save(&buffer, "PNG");
         buffer.close();
 
         QJsonObject source;
@@ -845,6 +860,47 @@ bool GenerationPage::isBlankPixmap(const QPixmap &pixmap)
     return nonWhite < 6; // essentially an untouched white canvas
 }
 
+// Request construction, separated from transport so it is testable without
+// a network. Everything the wire body carries is decided here.
+QJsonObject GenerationPage::buildFalBody(int index, QString *endpoint) const
+{
+    const Row &row = m_rows.at(index);
+    const int clampedDuration = (qBound(1, row.panel->duration, 30) <= 7) ? 5 : 10;
+    // ONE flatten serves the blank check and the upload below (this used to
+    // composite the panel twice per submission).
+    const QPixmap flat = row.panel->flattenedPixmap();
+    const bool useImage = !isBlankPixmap(flat);
+
+    QJsonObject body;
+    body[QStringLiteral("prompt")] = row.prompt;
+    body[QStringLiteral("duration")] = QString::number(clampedDuration); // string per fal.ai
+    body[QStringLiteral("resolution")] = QStringLiteral("720p");
+    body[QStringLiteral("aspect_ratio")] = QStringLiteral("16:9");
+
+    *endpoint = kFalTextToVideo;
+    if (useImage) {
+        // fal.ai accepts a data URI for image inputs; inline the panel
+        // artwork — downscaled to the 720p the request itself asks for
+        // (resolution above). Uploading a 4K flatten to request a 720p
+        // render was pure payload waste (measured 2.48 MB PNG -> a 6.6 MB
+        // UTF-16 QString in the request body). Downscale-only.
+        const QPixmap send =
+            (flat.width() > 1280 || flat.height() > 720)
+            ? flat.scaled(1280, 720, Qt::KeepAspectRatio,
+                          Qt::SmoothTransformation)
+            : flat;
+        QByteArray png;
+        QBuffer buffer(&png);
+        buffer.open(QIODevice::WriteOnly);
+        send.save(&buffer, "PNG");
+        buffer.close();
+        body[QStringLiteral("image_url")] =
+            QStringLiteral("data:image/png;base64,") + QString::fromLatin1(png.toBase64());
+        *endpoint = kFalImageToVideo;
+    }
+    return body;
+}
+
 void GenerationPage::callFal(int index)
 {
     const QByteArray falKey = qgetenv("FAL_API_KEY");
@@ -853,28 +909,8 @@ void GenerationPage::callFal(int index)
         return;
     }
 
-    Row &row = m_rows[index];
-    const int clampedDuration = (qBound(1, row.panel->duration, 30) <= 7) ? 5 : 10;
-    const bool useImage = !isBlankPixmap(row.panel->flattenedPixmap());
-
-    QJsonObject body;
-    body[QStringLiteral("prompt")] = row.prompt;
-    body[QStringLiteral("duration")] = QString::number(clampedDuration); // string per fal.ai
-    body[QStringLiteral("resolution")] = QStringLiteral("720p");
-    body[QStringLiteral("aspect_ratio")] = QStringLiteral("16:9");
-
-    QString endpoint = kFalTextToVideo;
-    if (useImage) {
-        // fal.ai accepts a data URI for image inputs; inline the panel artwork.
-        QByteArray png;
-        QBuffer buffer(&png);
-        buffer.open(QIODevice::WriteOnly);
-        row.panel->flattenedPixmap().save(&buffer, "PNG");
-        buffer.close();
-        body[QStringLiteral("image_url")] =
-            QStringLiteral("data:image/png;base64,") + QString::fromLatin1(png.toBase64());
-        endpoint = kFalImageToVideo;
-    }
+    QString endpoint;
+    const QJsonObject body = buildFalBody(index, &endpoint);
 
     QNetworkRequest request{ QUrl(endpoint) };
     request.setHeader(QNetworkRequest::ContentTypeHeader, QByteArrayLiteral("application/json"));

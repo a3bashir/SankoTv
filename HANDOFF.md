@@ -560,3 +560,47 @@ Deliberately NOT in Pass 3a (known, unchanged, scale with canvas size):
   only caller (the New Project dialog handler) assigns both from the
   dialog immediately after. If a second caller ever appears it must set
   the size or the previous project's size leaks through.
+
+## Performance pass 3b (2026-08-21) — measured, fixed, re-measured
+
+Requirement 0 measured before anything was built (probe archived as
+tests/_backups/perf_probe_3b_req0_20260821.cpp), and the measurements
+corrected the 3b brief twice: the 4K generation payload is 2.48 MB, UNDER
+the 5 MB Anthropic limit (not an automatic 400 — dense content can still
+exceed it), and the transient per-request memory is ~16 MB, not ~100 MB.
+
+Three fixes landed (verification seam archived as
+tests/_backups/seam_perf_3b_20260821.cpp, 63 checks x 10 green runs):
+
+1. Panel::flattenedThumb() — a ~512 px long-edge mip of the flatten,
+   cached per panel and VALIDATED per read (fingerprint of layer order,
+   each QImage::cacheKey(), visibility/opacity/type/group fields; 0.11 us
+   per panel). No call site invalidates anything; the cache proves its
+   own freshness. Consumers: timeline clip thumbs, strip thumbs,
+   generation row thumbs. Full-res flattenedPixmap() stays UNCACHED on
+   purpose (33 MB per 4K panel; caching it is gigabytes per scene).
+   Timeline repaint 50 clips: 20.4 -> 2.7 ms at 960x540 (a defect at the
+   legacy size — scrub was capped under 50 Hz), 284.7 -> 2.9 ms at 4K.
+   loadScenes 50 panels warm: 853 -> 19 ms at 4K. COLD load still pays
+   the first mip build per panel (~810 ms at 4K, once per session) — an
+   async prewarm is possible future work.
+2. New Project recents: per-row mtime-keyed cache with
+   QImageReader::setScaledSize decode (RecentList::rowThumb). The old
+   full-res decode per row per paintEvent was masked at 960x540 by
+   QPixmapCache but re-decoded EVERY hover repaint at 4K (64 ms/row,
+   638 ms/repaint at the 10-row cap).
+3. Generation: one flatten per submission (was three: two blank checks +
+   encode); payloads downscale before encode — 1568 long edge for
+   Anthropic vision, 1280x720 for fal (the request asks for a 720p
+   render); downscale-only, never upscale. buildFalBody() extracted from
+   callFal so request construction is testable without a network.
+
+Findings for later:
+- A 50-panel 4K scene with 3-image panels holds ~5 GB of layer images
+  (33 MB per 4K ARGB32 image). The probe OOM-crashed at that load. Big
+  4K projects will need layer-memory work (tiling/compression/eviction)
+  eventually — nothing in 3b addresses footprint, only redundant work.
+- Animatic playback DISPLAY (AnimaticPage:513) still flattens full-res
+  per panel ADVANCE (~17 ms at 4K) — per advance, not per repaint, so it
+  was left alone deliberately.
+- MP4 export unchanged (1920x1080 delivery constant, full-res flattens).
