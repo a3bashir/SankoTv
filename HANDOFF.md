@@ -716,3 +716,46 @@ settle spike class is structurally removed: the synchronous replay stage
 no longer exists on the GUI thread). Done bake intentionally unchanged
 (57.8 -> 59.1 ms at 4K; declined proposal above). Seven families green
 in both configs at the pinned SHA/hashes.
+
+## Bake follow-up: cheaper replay landed; pixel reuse REJECTED (2026-08-21)
+
+FINDING ABOUT A PERMANENT FAMILY — do not build on this later as if it
+were general: the QS geometry lock's preview == commit byte-equality is
+FIXTURE-CONDITIONAL. render() composites the stroke over the layer
+pixels captured at stroke begin, so commit pixels are
+stroke-blended-onto-artwork for EVERY brush; the preview renders over a
+transparent host. They are byte-equal only because the lock's fixture
+bakes onto an EMPTY layer. On any artwork they legitimately differ —
+plus: the selection-mask path lerps toward beforeRegion (transparent vs
+artwork), replayQuickShape invalidates the preview generation at entry
+BY DESIGN, and publish's mid-flight authority rebase re-renders over
+current pixels. This is why preview-PIXEL reuse for the bake was
+rejected: the correctness argument cannot be made. Undo also needs what
+the preview lacks: tile patches captured against the real layer,
+afterHashes, and the retained replay work for redo-after-drop.
+
+What landed instead (the measured 97%): the bake's replay was spending
+372 of 388 ms at 4K (80 of 82 ms at 960x540 — a LEGACY-SIZE defect at
+real brush sizes) rasterizing per-move engine preview tiles whose only
+consumer was the flight placeholder. The bake now passes
+rasterizePreview=false when the already-rendered QS preview exists to
+serve as the placeholder (installed through the existing
+pending-preview mechanism after the watcher is armed; display-only).
+No-preview paths are FIRST-CLASS: Done inside the 16 ms coalesce or the
+render's flight, a failed preview render, and lifecycle commits that
+raced the first render all keep the OLD rasterizing path so the shape
+never vanishes during the flight. A STALE placeholder (shape edited
+within the last render's flight) shows the previous geometry for the
+~70 ms flight, then the correct published pixels replace it.
+Done click measured: 81 -> 1.6-2.3 ms at 960x540; 388-392 -> 22.4-25.7
+ms at 4K (15 samples, no tail); fallback path measured at old cost
+(385 ms at 4K) proving old behaviour is preserved where it must be.
+Verified (seam archived: tests/_backups/seam_bake_fix_20260821): baked
+pixels onto NON-EMPTY layers byte-identical to the pre-fix build
+(goldens proven byte-stable across pre-fix runs first — also proving
+the default brush renders seed-independently despite the random
+m_qsSeed); undo/redo byte-exact including redo-after-after-pixels-drop
+(bake + 21 strokes, 22 undos + 22 redos); flight continuity asserted on
+BOTH paths; the no-preview path driven deterministically (commit in the
+same event-loop iteration recognition flips). 30 checks x 10 runs
+across both configs; seven families green at the pinned hashes.

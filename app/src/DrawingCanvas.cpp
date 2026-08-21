@@ -3531,7 +3531,8 @@ void DrawingCanvas::updateBrushRegion(const QRectF &canvasBounds)
 
 void DrawingCanvas::beginBrushStroke(const QPointF &canvasPt, qreal pressure,
                                      qreal tiltX, qreal tiltY, qreal rotation,
-                                     quint64 timestamp, quint64 seed)
+                                     quint64 timestamp, quint64 seed,
+                                     bool rasterizePreview)
 {
     m_perspective.beginStroke(canvasPt); // snap assist anchors at stroke start
     Layer *layer = editableActiveLayer();
@@ -3548,7 +3549,7 @@ void DrawingCanvas::beginBrushStroke(const QPointF &canvasPt, qreal pressure,
     point.timestamp = timestamp ? timestamp
                                 : quint64(QDateTime::currentMSecsSinceEpoch());
     m_paintEngine.beginStroke(paintLayerKey(m_panel, layer->id), layer->image,
-                              point, seed);
+                              point, seed, rasterizePreview);
     m_lastBrushPt = canvasPt;
     m_lastBrushPressure = pressure;
     if (const TiledImage *preview = m_paintEngine.previewTiles();
@@ -3904,6 +3905,19 @@ QVector<StrokePoint> DrawingCanvas::quickShapePointStream(
 void DrawingCanvas::replayQuickShape(const quickshape::QuickShapeCommit &commit)
 {
     m_quickShapeOverlay = QPainterPath(); // the vector is being baked
+    // PERFORMANCE (bake follow-up): the already-rendered QS preview becomes
+    // the flight placeholder, letting the replay below skip the engine's
+    // per-move preview tiles — measured as 97% of the bake's synchronous
+    // cost at 4K (372 of 388 ms at brush 149 on a ~2960 px shape) for
+    // pixels that were shown only until the async publish landed. The
+    // placeholder is display-only and is replaced by the published layer
+    // pixels; the work object, render, publish, undo patches, and hashes
+    // are the identical pipeline either way. When NO preview exists (Done
+    // inside the 16 ms coalesce window or the render's flight, a failed
+    // render, lifecycle commits that raced the first render), the replay
+    // keeps the OLD rasterizing behaviour so the shape never vanishes —
+    // a brief visual gap would be worse than the speed is good.
+    const QImage bakePlaceholder = m_qsPreview;
     m_qsPreview = QImage();
     ++m_qsPreviewGen; // any in-flight preview render is now stale
     if (m_qsPreviewTimer)
@@ -3936,12 +3950,25 @@ void DrawingCanvas::replayQuickShape(const quickshape::QuickShapeCommit &commit)
     beginBrushStroke(stream.first().position, stream.first().pressure,
                      stream.first().tiltX, stream.first().tiltY,
                      stream.first().rotation, stream.first().timestamp,
-                     m_qsSeed);
+                     m_qsSeed, /*rasterizePreview=*/bakePlaceholder.isNull());
     for (qsizetype i = 1; i < stream.size(); ++i)
         moveBrushStroke(stream.at(i).position, stream.at(i).pressure,
                         stream.at(i).tiltX, stream.at(i).tiltY,
                         stream.at(i).rotation, stream.at(i).timestamp);
     endBrushStroke(QStringLiteral("QuickShape"));
+    // Fast path only: with no engine preview tiles, endBrushStroke had no
+    // frozen preview to install, so hand it the QS preview instead. The
+    // pending-preview mechanism (paint + clear in completePaintStroke) is
+    // unchanged; installing after the watcher is armed keeps this a pure
+    // display decision. A stale placeholder (the shape edited within the
+    // last render's flight) shows the previous geometry for the ~70 ms
+    // flight and is then replaced by the CORRECT published pixels.
+    if (!bakePlaceholder.isNull() && m_paintCommitPending
+        && m_pendingPreview.isNull()) {
+        m_pendingPreview = bakePlaceholder;
+        m_pendingPreviewRect = QRect(QPoint(), canvasSize());
+        update();
+    }
 
     m_viewRotation = liveRotation;
     m_paintEngine.setBrush(liveBrush);

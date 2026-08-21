@@ -469,10 +469,16 @@ private:
     // jitter, colour dynamics): 0 = random (live strokes), nonzero =
     // deterministic — the QuickShape replay passes the captured seed.
     QPointF toCanvasF(const QPointF &widgetPoint) const; // float, unclamped
+    // rasterizePreview: live strokes keep the engine's per-move preview
+    // tiles (they ARE the on-screen stroke until publish); the QuickShape
+    // bake opts out when the already-rendered QS preview can stand in as
+    // the flight placeholder instead — the tiles were 97% of the bake's
+    // synchronous cost at 4K (372 of 388 ms, measured) for pixels shown
+    // only milliseconds.
     void beginBrushStroke(const QPointF &canvasPt, qreal pressure,
                           qreal tiltX = 0.0, qreal tiltY = 0.0,
                           qreal rotation = 0.0, quint64 timestamp = 0,
-                          quint64 seed = 0);
+                          quint64 seed = 0, bool rasterizePreview = true);
     void moveBrushStroke(const QPointF &canvasPt, qreal pressure,
                          qreal tiltX = 0.0, qreal tiltY = 0.0,
                          qreal rotation = 0.0, quint64 timestamp = 0);
