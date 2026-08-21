@@ -21,6 +21,11 @@
 // the reporter's machine), so NO frame value is allowed here — the only
 // permitted colours at the boundary are ink, gutter, and grid. A sample that
 // falls outside the capture FAILS; skipping once hid a third of a run.
+// Because the samples are real screen pixels, a capture that shows something
+// other than this window (a previous GUI test still closing over it) is
+// detected and retried rather than scored — see grabCanvas below. That is a
+// capture-validity gate, not a tolerance: what a valid capture must show is
+// unchanged.
 //
 // Run: build/<config>/SankoCanvasEdgeLock.exe (exit code = failure count).
 // Requires a desktop session (it measures real screen pixels).
@@ -40,6 +45,7 @@
 #include <QUndoStack>
 #include <QVBoxLayout>
 #include <QWidget>
+#include <QWindow>
 
 namespace {
 
@@ -79,28 +85,133 @@ QString rgb(QRgb c)
 // but deeply misleading "SAMPLE OUT OF CAPTURE px=(0,-1)". Retry, and on
 // persistent failure return a null image so the caller fails with a message
 // that names the real problem.
+//
+// An empty pixmap is not the only bad capture, and it was the only one being
+// retried. grabWindow copies the SCREEN REGION the window occupies, so a
+// window from a previous GUI test that is still closing, a compositor
+// animation, or any foreign window on top puts pixels that are NOT ours into
+// the sample — and those were scored as boundary failures: one run reported 31
+// of 74 checks failed immediately after another GUI test exited, while the
+// same binary gave 0/5 failures in Debug and 0/5 in Release when the runs were
+// spaced 2 s apart. Such a capture is DISTURBED, not a defect, so it is
+// detected and retried:
+//
+//   * the window must be mapped, not minimized, and exposed;
+//   * it is raised and re-activated until it is frontmost (the fix for the
+//     ordinary case), though a machine that never grants focus is not by
+//     itself failed — the stability test below is what guards the pixels;
+//   * the grab's geometry must agree with the window's, in BOTH axes, so a
+//     capture taken while the geometry is in flux is rejected;
+//   * two consecutive grabs of the sampled region must AGREE. Anything moving
+//     over the window — a fading close animation above all — cannot hold still
+//     across two reads, and the canvas itself is static wherever this is
+//     called (the callers pump the stroke or fill to completion first).
+//
+// The agreement test is deliberately tolerant of a handful of stray pixels
+// rather than exact: it must never turn a quiet, correct machine into a
+// "capture failed" run, and a genuine disturbance differs over large areas.
+constexpr int kGrabAttempts = 10;   // ~2 s of retrying at the pumps below
+constexpr int kGrabSettleMs = 60;   // between the two agreement reads
+constexpr int kStableChannelTol = 8;      // per-channel noise allowance
+constexpr qreal kStableFraction = 0.001;  // >0.1% moved => disturbed
+
+bool windowPresentable(QWidget *top)
+{
+    if (!top->isVisible() || top->isMinimized())
+        return false;
+    const QWindow *handle = top->windowHandle();
+    return handle && handle->isExposed();
+}
+
+// One raw capture of the canvas region, plus the dpr it implies. Returns a
+// null image if the grab is empty or its geometry disagrees with the window.
+QImage grabOnce(QWidget *canvas, QWidget *top, qreal *dprOut)
+{
+    const QImage full = top->screen()->grabWindow(top->winId()).toImage();
+    if (full.isNull() || full.width() <= 0 || full.height() <= 0)
+        return QImage();
+    const qreal dpr = full.width() / qreal(top->width());
+    const qreal dprY = full.height() / qreal(top->height());
+    if (dpr <= 0.0 || qAbs(dprY - dpr) > 0.02)
+        return QImage(); // geometry in flux: this is not a clean read
+    const QPoint tl = canvas->mapTo(top, QPoint(0, 0));
+    const QRect dev(QPoint(qRound(tl.x() * dpr), qRound(tl.y() * dpr)),
+                    QSize(qRound(canvas->width() * dpr),
+                          qRound(canvas->height() * dpr)));
+    QImage img = full.copy(dev.intersected(full.rect()));
+    if (img.isNull() || img.width() <= 0 || img.height() <= 0)
+        return QImage();
+    img.setDevicePixelRatio(1.0);
+    *dprOut = dpr;
+    return img;
+}
+
+// True when two captures of the same region show the same picture.
+bool capturesAgree(const QImage &a, const QImage &b)
+{
+    if (a.size() != b.size())
+        return false;
+    const QImage x = a.convertToFormat(QImage::Format_ARGB32);
+    const QImage y = b.convertToFormat(QImage::Format_ARGB32);
+    const qint64 total = qint64(x.width()) * x.height();
+    const qint64 allowed = qint64(total * kStableFraction);
+    qint64 moved = 0;
+    for (int row = 0; row < x.height(); ++row) {
+        const QRgb *px = reinterpret_cast<const QRgb *>(x.constScanLine(row));
+        const QRgb *py = reinterpret_cast<const QRgb *>(y.constScanLine(row));
+        for (int col = 0; col < x.width(); ++col) {
+            if (qAbs(qRed(px[col]) - qRed(py[col])) > kStableChannelTol
+                || qAbs(qGreen(px[col]) - qGreen(py[col])) > kStableChannelTol
+                || qAbs(qBlue(px[col]) - qBlue(py[col])) > kStableChannelTol) {
+                if (++moved > allowed)
+                    return false;
+            }
+        }
+    }
+    return true;
+}
+
 QImage grabCanvas(QWidget *canvas)
 {
     QWidget *top = canvas->window();
     if (top->width() <= 0 || top->height() <= 0)
         return QImage();
-    QImage img;
-    for (int attempt = 0; attempt < 6; ++attempt) {
-        img = top->screen()->grabWindow(top->winId()).toImage();
-        if (!img.isNull() && img.width() > 0 && img.height() > 0)
-            break;
-        pump(100);
+    for (int attempt = 0; attempt < kGrabAttempts; ++attempt) {
+        if (!windowPresentable(top)) {
+            top->raise();
+            top->activateWindow();
+            pump(100);
+            continue;
+        }
+        // Insist on being frontmost while attempts remain; near the end,
+        // accept a stable capture even if focus was never granted, so an
+        // unattended machine is not failed for that alone.
+        if (!top->isActiveWindow() && attempt < kGrabAttempts - 3) {
+            top->raise();
+            top->activateWindow();
+            pump(120);
+            continue;
+        }
+        qreal dprA = 0.0, dprB = 0.0;
+        const QImage first = grabOnce(canvas, top, &dprA);
+        if (first.isNull()) {
+            pump(100);
+            continue;
+        }
+        pump(kGrabSettleMs);
+        const QImage second = grabOnce(canvas, top, &dprB);
+        if (second.isNull() || !qFuzzyCompare(dprA + 1.0, dprB + 1.0)) {
+            pump(100);
+            continue;
+        }
+        if (!capturesAgree(first, second)) {
+            pump(180); // something is still moving over the window
+            continue;
+        }
+        g_grabDpr = dprB;
+        return second;
     }
-    if (img.isNull() || img.width() <= 0)
-        return QImage();
-    g_grabDpr = img.width() / qreal(top->width());
-    const QPoint tl = canvas->mapTo(top, QPoint(0, 0));
-    const QRect dev(QPoint(qRound(tl.x() * g_grabDpr), qRound(tl.y() * g_grabDpr)),
-                    QSize(qRound(canvas->width() * g_grabDpr),
-                          qRound(canvas->height() * g_grabDpr)));
-    img = img.copy(dev.intersected(img.rect()));
-    img.setDevicePixelRatio(1.0);
-    return img;
+    return QImage();
 }
 
 struct Edge {
@@ -126,8 +237,9 @@ void checkBoundary(const QImage &shot, const QPointF &bw, const QPointF &inwardW
     ++g_checks;
     if (shot.isNull()) {
         ++g_failures;
-        out() << QStringLiteral("  **FAIL** %1 SCREEN CAPTURE FAILED (empty grab)")
-                     .arg(label) << Qt::endl;
+        out() << QStringLiteral("  **FAIL** %1 SCREEN CAPTURE FAILED (no "
+                                "undisturbed capture in %2 attempts)")
+                     .arg(label).arg(kGrabAttempts) << Qt::endl;
         return;
     }
     if (!shot.rect().contains(p0)) {
@@ -190,7 +302,7 @@ int main(int argc, char **argv)
     lay->addWidget(canvas);
 
     QUndoStack stack;
-    Panel *panel = makeBlankPanel();
+    Panel *panel = makeBlankPanel(QSize(960, 540));
     canvas->setUndoStack(&stack);
     canvas->setActivePanel(panel);
     canvas->setTool(DrawingCanvas::Brush);
@@ -202,6 +314,17 @@ int main(int argc, char **argv)
     window.raise();
     window.activateWindow();
     pump(400);
+    // A previous GUI test's window can still be closing over this one when
+    // runs are launched back-to-back. Wait, bounded, for ours to be exposed
+    // and frontmost before any screen pixel is read; the cost is paid only
+    // when it is actually disturbed.
+    for (int tries = 0; tries < 40; ++tries) {
+        if (windowPresentable(&window) && window.isActiveWindow())
+            break;
+        window.raise();
+        window.activateWindow();
+        pump(100);
+    }
     // Wait for the geometry to stop changing, then for the first composited
     // frame to actually reach the screen (the first grabs after show() can
     // return an all-white surface, which would read as white-gap failures).
@@ -219,7 +342,7 @@ int main(int argc, char **argv)
         pump(150);
     }
 
-    const QSize doc = DrawingCanvas::canvasSize();
+    const QSize doc = canvas->canvasSize();
     const double fit = qMin(canvas->width() / double(doc.width()),
                             canvas->height() / double(doc.height()));
     const double startupScale = fit * 0.85;
@@ -264,8 +387,9 @@ int main(int argc, char **argv)
         // undefined. Fail loudly instead.
         if (blank.isNull() || filled.isNull()) {
             ++g_checks; ++g_failures;
-            out() << QStringLiteral("  **FAIL** scale=%1 SCREEN CAPTURE FAILED")
-                         .arg(scale, 0, 'f', 4) << Qt::endl;
+            out() << QStringLiteral("  **FAIL** scale=%1 SCREEN CAPTURE FAILED "
+                                    "(no undisturbed capture in %2 attempts)")
+                         .arg(scale, 0, 'f', 4).arg(kGrabAttempts) << Qt::endl;
             continue;
         }
         const int midY = blank.height() / 2;

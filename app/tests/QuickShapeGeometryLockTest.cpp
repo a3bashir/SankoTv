@@ -63,14 +63,31 @@ void pump(int ms)
         QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
 }
 
+// A WALL-CLOCK budget is meaningless on a starved event loop: what is being
+// waited for here is asynchronous (a concurrent preview render, a UI rebuild),
+// so when the machine gives this process a fraction of a core the budget can
+// expire before the work has been SCHEDULED, let alone finished — which is how
+// a loaded, correct machine reported "preview settles" as a failure. The
+// budget is therefore spent in RESPONSIVE time: a turn of the loop that costs
+// far more than it asked for bought no progress, so that time is not charged
+// against the deadline. A quiet machine is unaffected; a loaded one waits
+// longer for the same amount of real progress, bounded by a hard ceiling so a
+// genuinely hung condition still fails instead of hanging.
 bool waitFor(const std::function<bool()> &cond, int timeoutMs)
 {
+    constexpr qint64 kTurnBudgetMs = 25; // a turn asks for 10 ms; allow slack
+    const qint64 hardCapMs = qint64(timeoutMs) * 10 + 5000;
     QElapsedTimer t;
     t.start();
-    while (t.elapsed() < timeoutMs) {
+    qint64 stalled = 0;
+    while (t.elapsed() - stalled < timeoutMs && t.elapsed() < hardCapMs) {
         if (cond())
             return true;
+        const qint64 before = t.elapsed();
         QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+        const qint64 turn = t.elapsed() - before;
+        if (turn > kTurnBudgetMs)
+            stalled += turn - kTurnBudgetMs;
     }
     return cond();
 }
@@ -96,7 +113,42 @@ void sendTablet(QWidget *w, QEvent::Type type, const QPointF &local,
     QCoreApplication::sendEvent(w, &ev);
 }
 
-bool driveCircle(DrawingCanvas *canvas)
+// Hold-to-shape is a WALL-CLOCK product behaviour, driven here through a
+// SYNTHETIC event stream — and that combination, not the product, is what made
+// "circle recognized" flake when runs were launched back-to-back on a loaded
+// machine (measured 5/10 failures back-to-back, 0/16 spaced 2 s apart):
+//
+//   * one starved pump between two circle samples can outlast the production
+//     hold, so the hold timer fires in the MIDDLE of the circle. The velocity
+//     gate reads zero precisely BECAUSE starvation delivered no sample for
+//     >160 ms, so recognition then runs on a partial ARC, not the circle;
+//   * the wait for the final hold was a flat 3 s of WALL clock, which a
+//     starved event loop can burn through before the hold timer is serviced.
+//
+// What the test asserts is unchanged and in fact tightened. The hold that
+// produces the shape is still the one DrawingCanvas installs at press — it is
+// captured, not hardcoded, so the product owns the timing under test. Only the
+// SYNTHETIC gesture adapts: while the circle is being fed the hold interval is
+// raised out of reach, so starvation cannot mis-time it; the instant the last
+// point is delivered the production timing is restored, which restarts the
+// hold timer (Qt restarts an active timer when its interval changes) and
+// begins a genuine rest of the product's own duration, with the pen stationary
+// and the whole circle collected. The wait for that rest is sized from the
+// latency actually OBSERVED while feeding, not a constant. A disturbed attempt
+// is retried rather than scored, and the recognized shape is now NAMED, so a
+// premature arc can no longer pass as "circle recognized".
+constexpr int kDrawGuardHoldMs = 60000; // no starved pump reaches this
+constexpr int kCircleAttempts = 4;
+
+// The recognizer names a closed round shape "Circle" (aspect < 1.25) or
+// "Ellipse"; a partial sweep is "Arc" / "Elliptical Arc". Only the former is
+// the gesture this test drives.
+bool isClosedRoundShape(const QString &name)
+{
+    return name == QLatin1String("Circle") || name == QLatin1String("Ellipse");
+}
+
+bool driveCircleOnce(DrawingCanvas *canvas, QString *why)
 {
     // WIDGET coordinates: the canvas converts to document space internally,
     // so the permanent test needs no private transform access.
@@ -107,20 +159,100 @@ bool driveCircle(DrawingCanvas *canvas)
         const qreal a = -M_PI / 2.0 + 2.0 * M_PI * i / 56;
         path.append(centre + QPointF(std::cos(a) * r, std::sin(a) * r));
     }
+
+    QString recognized;
+    QObject probe;
+    QObject::connect(canvas->quickShape(),
+                     &quickshape::QuickShapeSession::shapeRecognized, &probe,
+                     [&recognized](const quickshape::QuickShapeResult &result) {
+                         recognized = result.name;
+                     });
+
     sendTablet(canvas, QEvent::TabletPress, path.first(), 1.0);
+    // The canvas installs the product timing on press (applyQuickShapeTiming);
+    // capture it so the hold under test stays the product's own.
+    const quickshape::QuickShapeTiming production =
+        canvas->quickShape()->timing();
+    quickshape::QuickShapeTiming guard = production;
+    guard.holdDurationMs = kDrawGuardHoldMs;
+    canvas->quickShape()->setTiming(guard);
+
+    QElapsedTimer feed;
+    feed.start();
+    qint64 prev = 0, worstGap = 0;
+    bool activeDuringFeed = false;
     for (const QPointF &pt : path) {
         sendTablet(canvas, QEvent::TabletMove, pt, 1.0);
         pump(4);
+        const qint64 now = feed.elapsed();
+        worstGap = qMax(worstGap, now - prev);
+        prev = now;
+        if (canvas->quickShape()->hasActiveShape())
+            activeDuringFeed = true;
     }
-    QElapsedTimer hold;
-    hold.start();
-    while (!canvas->quickShape()->hasActiveShape() && hold.elapsed() < 3000) {
-        sendTablet(canvas, QEvent::TabletMove, path.last(), 1.0);
-        pump(16);
-    }
+
+    // Restoring the production timing restarts the hold timer: the rest begins
+    // HERE, once, with the whole circle collected and the pen stationary.
+    canvas->quickShape()->setTiming(production);
+    const qint64 budget =
+        production.holdDurationMs * 3 + worstGap * 10 + 2000;
+    QElapsedTimer since;
+    since.start();
+    waitFor([&] {
+        if (canvas->quickShape()->hasActiveShape())
+            return true;
+        if (since.elapsed() >= 16) { // a resting pen keeps reporting, at a
+            since.restart();         // device-like cadence, not every turn
+            sendTablet(canvas, QEvent::TabletMove, path.last(), 1.0);
+        }
+        return canvas->quickShape()->hasActiveShape();
+    }, int(budget));
     sendTablet(canvas, QEvent::TabletRelease, path.last(), 0.0);
     pump(30);
-    return canvas->quickShape()->hasActiveShape();
+
+    if (activeDuringFeed) {
+        *why = QStringLiteral("recognition fired while the circle was still "
+                              "being fed (worst feed gap %1 ms)").arg(worstGap);
+        return false;
+    }
+    if (!canvas->quickShape()->hasActiveShape()) {
+        *why = QStringLiteral("no recognition within %1 ms (hold %2 ms, worst "
+                              "feed gap %3 ms)")
+                   .arg(budget).arg(production.holdDurationMs).arg(worstGap);
+        return false;
+    }
+    if (!isClosedRoundShape(recognized)) {
+        *why = QStringLiteral("recognized '%1', not a closed round shape")
+                   .arg(recognized);
+        return false;
+    }
+    return true;
+}
+
+bool driveCircle(DrawingCanvas *canvas, Panel *panel)
+{
+    QString why;
+    for (int attempt = 1; attempt <= kCircleAttempts; ++attempt) {
+        if (driveCircleOnce(canvas, &why))
+            return true;
+        std::printf("     circle attempt %d disturbed: %s\n", attempt,
+                    why.toUtf8().constData());
+        std::fflush(stdout);
+        // Discard the disturbed attempt COMPLETELY: any half-built shape, the
+        // session's pointer/collect state, and the freehand pixels the aborted
+        // stroke baked into the layer on release. The next attempt then starts
+        // from the same blank page the first one did.
+        canvas->cancelQuickShape();
+        canvas->quickShape()->reset();
+        pump(120);
+        panel->layers[panel->activeLayerIndex].image.fill(Qt::transparent);
+        canvas->update();
+        pump(250);
+    }
+    std::printf("     circle NOT recognized in %d attempts: %s\n",
+                kCircleAttempts, why.toUtf8().constData());
+    std::fflush(stdout);
+    return false;
 }
 
 QPushButton *canvasButton(DrawingCanvas *canvas, const QString &text)
@@ -133,9 +265,16 @@ QPushButton *canvasButton(DrawingCanvas *canvas, const QString &text)
     return found;
 }
 
+// The shape type bar is rebuilt asynchronously after a recognition or a
+// conversion, so "the button is not there yet" and "the button is missing" are
+// different things — and on a loaded machine a flat settle turned the first
+// into the second, scoring every remaining conversion as a geometry failure.
+// Wait (in responsive time) for the control to exist before clicking it; what
+// happens once it is clicked is unchanged.
 bool clickCanvasButton(DrawingCanvas *canvas, const QString &text)
 {
-    QPushButton *b = canvasButton(canvas, text);
+    QPushButton *b = nullptr;
+    waitFor([&] { return (b = canvasButton(canvas, text)) != nullptr; }, 4000);
     if (!b)
         return false;
     b->click();
@@ -300,13 +439,13 @@ int main(int argc, char **argv)
     auto *canvas = new DrawingCanvas;
     canvas->resize(1390, 782);
     canvas->show();
-    Panel *panel = makeBlankPanel();
+    Panel *panel = makeBlankPanel(QSize(960, 540));
     canvas->setActivePanel(panel);
     pump(200);
     canvas->paintBrush().setSize(24);
 
     // ---- recognize a circle, enter Edit Shape ------------------------------
-    check(driveCircle(canvas), "circle recognized");
+    check(driveCircle(canvas, panel), "circle recognized");
     if (!canvas->quickShape()->hasActiveShape())
         return g_fail + 1;
     clickCanvasButton(canvas, QStringLiteral("Edit Shape"));
@@ -366,6 +505,34 @@ int main(int argc, char **argv)
 
     // ---- async staleness: only the LAST conversion becomes visible ---------
     {
+        // Calibrate the budget for the race below on THIS machine. What the
+        // race waits for is a CONCURRENT preview render, and that render
+        // competes for CPU with everything else running; a constant wall-clock
+        // budget is therefore a statement about the machine, not about the
+        // product, and on a loaded one it expired while a correct render was
+        // still queued. (Responsive-time accounting does not help here: the
+        // main loop stays responsive while the WORKER thread is the one being
+        // starved.) So time one settle first and scale the race's budget from
+        // it — a quiet machine keeps the original 8 s.
+        // How slowly is this machine running the loop right now? Cheap, and it
+        // still says something useful when the settle probe below cannot.
+        QElapsedTimer probe;
+        probe.start();
+        pump(50);
+        const qreal stretch = qMax(1.0, probe.elapsed() / 50.0);
+
+        QElapsedTimer calibration;
+        calibration.start();
+        const bool calibrated = waitFor([canvas] {
+            return !canvas->quickShapePreviewBusyForTest()
+                   && !canvas->quickShapePreviewForTest().isNull();
+        }, 5000); // calibration only: never sit here long enough to matter
+        const qint64 oneSettleMs =
+            calibrated ? qMax<qint64>(1, calibration.elapsed()) : 0;
+        const int raceBudgetMs = int(qBound(
+            qint64(8000), qMax(oneSettleMs * 12, qint64(8000 * stretch)),
+            qint64(60000)));
+
         clickCanvasButton(canvas, QStringLiteral("Triangle"));
         // no settle waits: fire the next conversions immediately
         if (QPushButton *b = canvasButton(canvas, QStringLiteral("Rectangle")))
@@ -377,7 +544,13 @@ int main(int argc, char **argv)
         const bool settled = waitFor([canvas] {
             return !canvas->quickShapePreviewBusyForTest()
                    && !canvas->quickShapePreviewForTest().isNull();
-        }, 8000);
+        }, raceBudgetMs);
+        if (!settled)
+            std::printf("     preview never settled in %d ms (one settle "
+                        "measured %lld ms): busy=%d previewNull=%d\n",
+                        raceBudgetMs, oneSettleMs,
+                        int(canvas->quickShapePreviewBusyForTest()),
+                        int(canvas->quickShapePreviewForTest().isNull()));
         check(settled, "stale-race: preview settles");
         check(canvas->quickShapeCanonicalGeometryForTest().nodes.size() == 6,
               "stale-race: final geometry is Polygon 6");
