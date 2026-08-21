@@ -845,7 +845,6 @@ private:
     QAbstractButton *penUiButtonAt(const QPointF &widgetPos) const;
     void clearPenUiLatch();
 
-    QImage m_qsPreviewHost;           // publish target for the pending render
     quint64 m_qsPreviewGen = 0;       // bumped to invalidate in-flight renders
     bool m_qsPreviewInFlight = false;
     bool m_qsPreviewDirty = false;    // shape changed while a render was out

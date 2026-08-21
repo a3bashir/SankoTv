@@ -625,3 +625,94 @@ stayed in). Needs a GUI session but samples NO screen pixels — none of
 EdgeLock's capture sensitivity. Remaining known gap, deliberate:
 screen-pixel rendering at variable sizes (EdgeLock is 960x540-only);
 extending EdgeLock is its own decision.
+
+## Stroke-path pass, requirement 0 (2026-08-21) — measured attribution
+
+Probe archived as tests/_backups (stroke_perf_probe). All three stall
+classes from Dev Recorder session 20260821-153353 were re-attributed or
+refuted by measurement — recording evidence is a symptom, not a
+measurement:
+
+- The 148 ms IDLE stall: INVESTIGATED AND NOT REPRODUCED — do not chase
+  it again from that recording. Seven 8-second idle watches after heavy
+  4K activity (25 strokes, undo policy engaged): worst GUI slice 6.7 ms,
+  no working-set drop events, and NO eviction step at stroke 21+ (the
+  paint-undo dropAfterPixels path costs 2-4 ms flat at 4K tile-patch
+  sizes). Remaining suspects are recorder-side (500 ms screenshot
+  grab/JPEG) or allocator decommit — neither is the app.
+- The briefed "33 MB DrawingCommand copies" driver: REFUTED. A
+  full-canvas 4K QImage::copy measures 5.3 ms, and the undo command
+  stores per-tile patches, not full-canvas copies.
+- DROPPED CONCURRENT PRESS (existing entry above) now has a number: the
+  publish pending window measured 13-14 ms at 960x540 vs 63-71 ms at 4K
+  — the discard window is ~5x wider at 4K. The GUI stays responsive
+  (worst slice ~10 ms) while pending; queuing the press remains the
+  candidate fix and remains a stroke-semantics change, out of scope for
+  the performance pass.
+- The stall STAGE, named by temporary instrumentation (removed): the
+  synchronous engine replay of the QuickShape stream on the GUI thread,
+  in both its appearances — the Done bake (bakeReplayLoop, up to 76 ms
+  measured at 4K) and every preview rebuild (previewSyncBuild, up to
+  37 ms, runs on each shape manipulation under a 16 ms coalescing
+  timer). Preview PUBLISH and the shape-bar rebuild measured zero events
+  over 8 ms — eliminated as suspects. 4K paintEvent runs up to ~28 ms;
+  the intermittent 88-152 ms slices are a replay landing in the same
+  GUI slice as one or more 4K repaints. The QS preview replay at legacy
+  size (12-24 ms) makes this a DEFECT AT 960x540 TODAY, not a 4K
+  regression — the recorded 87.9 ms spike was at legacy size.
+
+## Done-bake async proposal — DECLINED 2026-08-21 (recorded so the
+## reasoning is not reconstructed if it comes back)
+
+Candidate: run the QuickShape Done bake's engine replay (measured up to
+76 ms at 4K, ~9 ms at 960x540) off the GUI thread the way the brush
+publish path already works. Declined by decision: not worth trading
+protocol surface for ~50 ms once per bake. The four invariants any future
+attempt must hold:
+1. UNDO ORDERING: the stroke command must be pushed on the GUI thread
+   when the async result lands, in request order — reuse the existing
+   m_paintCommitPending -> watcher -> publish -> push protocol, never a
+   new one.
+2. CAPTURED-STATE-WINS MUST SURVIVE THE FLIGHT: the bake replays with
+   captured brush/seed/viewport-rotation. Synchronous code guarantees
+   this by swap-restore of live members; an async bake must carry the
+   captured state IN THE WORK OBJECT and never touch live members from
+   the pool, or it races the artist's next stroke.
+3. THE COMMIT BARRIER (the decider): a press arriving while the bake is
+   in flight must either wait — widening the dropped-press window this
+   work exists to shrink — or be ordered against the bake. Either answer
+   is a sequencing DESIGN, not a performance fix. This is why it was
+   declined.
+4. The preview replay is the cheaper, lower-risk target and fires on
+   every manipulation; the bake fires once per shape. Fix the preview
+   first (done in the stroke-path pass); revisit the bake only if ~50 ms
+   per bake at 4K still matters afterwards.
+
+## Preview replay fix (stroke-path pass, 2026-08-21)
+
+renderQuickShapePreview no longer runs the engine replay on the GUI
+thread. The whole build — 33 MB host alloc + beginStroke/appendPoint loop
++ finishStrokeWork — moved inside the pooled job on a PRIVATE
+SankoPaintHostAdapter; the GUI-side cost is capturing the inputs by value
+(stream, brush, seed, size, selection mask). The shared m_paintEngine is
+no longer involved at all (no brush swap, no preview key, no forgetLayer);
+the strokeActive() guard stays for behavioural parity; the
+generation/in-flight/dirty staleness protocol is unchanged (the stale-race
+lock pins it). Off-thread engine building has precedent in
+BrushPreviewRenderer. m_qsPreviewHost member removed (dead).
+
+Verified (seam archived: tests/_backups/stroke_perf_seam_qsfix_20260821):
+golden previews of the full lifecycle (circle, Triangle conversion,
+Rectangle conversion, vertex drag, at 960x540 AND 3840x2160) captured
+pre-fix — byte-stable across two capture runs, so the comparison is
+valid — and byte-IDENTICAL post-fix, 40/40 across 5 Release runs and
+40/40 across 5 Debug runs (Debug compared against Release-captured
+goldens: cross-config engine parity, consistent with the pinned locks).
+Distribution, not average: the recognition+settle windows' GUI slices —
+PRE 4K: 5 of 24 windows had a slice over 30 ms (max 42.7; the recorded
+spikes reached 151.6) — POST 4K: 0 of 60 windows over 30 ms (max 24.5,
+bounded by repaint alone). 960x540 max 13.8 ms post (the 87.9 ms legacy
+settle spike class is structurally removed: the synchronous replay stage
+no longer exists on the GUI thread). Done bake intentionally unchanged
+(57.8 -> 59.1 ms at 4K; declined proposal above). Seven families green
+in both configs at the pinned SHA/hashes.

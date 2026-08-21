@@ -261,7 +261,6 @@ DrawingCanvas::DrawingCanvas(QWidget *parent)
             m_qsGeometry = {}; // canonical geometry dies with its shape
             m_qsPreview = QImage(); // never leave a stale preview behind
             clearPenUiLatch();      // the latched button may be going away
-            m_qsPreviewHost = QImage();
             ++m_qsPreviewGen; // in-flight renders land in the void
             m_qsPreviewDirty = false;
             if (m_qsPreviewTimer)
@@ -4001,41 +4000,43 @@ void DrawingCanvas::renderQuickShapePreview()
         return;
     }
 
-    static const QString kPreviewKey = QStringLiteral("quickshape:preview");
-    m_qsPreviewHost = QImage(canvasSize(), QImage::Format_ARGB32_Premultiplied);
-    m_qsPreviewHost.fill(Qt::transparent);
-
-    // Same brush/seed swap as the bake; the block is synchronous, so live
-    // state is restored before anything else can observe it.
-    const ::Brush liveBrush = m_paintEngine.brush();
-    m_paintEngine.setBrush(m_qsFullBrush);
+    // PERFORMANCE (stroke-path pass): the engine replay used to run HERE,
+    // synchronously — 33 MB host alloc + the appendPoint loop measured up
+    // to 37 ms at 4K and 12-24 ms at 960x540, landing a GUI stall on EVERY
+    // shape manipulation (recognition, rotate/scale, conversion, vertex
+    // drag). The whole build now runs inside the pooled job on a PRIVATE
+    // adapter, so the GUI-side cost is only capturing the inputs.
+    // Captured-state-wins survives the flight the same way the bake keeps
+    // it synchronously: everything the replay needs travels BY VALUE in
+    // the job — stream, brush, seed, canvas size, selection mask — and the
+    // job never touches live members. The shared m_paintEngine is no
+    // longer involved at all (no brush swap, no preview layer key, no
+    // forgetLayer bookkeeping), so a live stroke can no longer share any
+    // builder state with a preview render; the strokeActive() guard above
+    // is kept anyway for behavioural parity — previews still never start
+    // mid-stroke. The generation/in-flight/dirty protocol is byte-for-byte
+    // the one the stale-race lock already pins, so staleness behaviour is
+    // unchanged. Off-thread engine building has precedent: the brush
+    // library renders whole preview categories off the UI thread.
     const QVector<StrokePoint> stream = quickShapePointStream(commit);
-    m_paintEngine.beginStroke(kPreviewKey, m_qsPreviewHost, stream.first(),
-                              m_qsSeed, /*rasterizePreview=*/false);
-    for (qsizetype i = 1; i < stream.size(); ++i)
-        m_paintEngine.appendPoint(stream.at(i));
-    auto work = m_paintEngine.finishStrokeWork(true);
-    m_paintEngine.setBrush(liveBrush);
-    if (!m_selectionPath.isEmpty())
-        work.selectionMask = cachedSelectionMask(); // bake parity
+    const QImage selectionMask = m_selectionPath.isEmpty()
+        ? QImage() : cachedSelectionMask(); // bake parity, captured on GUI side
+    const ::Brush brush = m_qsFullBrush;
+    const quint64 seed = m_qsSeed;
+    const QSize size = canvasSize();
 
     m_qsPreviewInFlight = true;
     const quint64 gen = ++m_qsPreviewGen;
-    auto *watcher = new QFutureWatcher<SankoPaintHostAdapter::StrokeResult>(this);
-    connect(watcher,
-            &QFutureWatcher<SankoPaintHostAdapter::StrokeResult>::finished,
-            this, [this, watcher, gen] {
-        auto result = watcher->result();
+    auto *watcher = new QFutureWatcher<QImage>(this);
+    connect(watcher, &QFutureWatcher<QImage>::finished, this,
+            [this, watcher, gen] {
+        const QImage rendered = watcher->result();
         watcher->deleteLater();
         m_qsPreviewInFlight = false;
-        m_paintEngine.forgetLayer(QStringLiteral("quickshape:preview"));
         const bool stale = gen != m_qsPreviewGen
                            || !m_quickShape.hasActiveShape();
-        if (!stale && result.succeeded
-            && m_paintEngine.publish(result, m_qsPreviewHost)) {
-            m_paintEngine.forgetLayer(QStringLiteral("quickshape:preview"));
-            m_qsPreview = m_qsPreviewHost;
-            m_qsPreviewHost = QImage();
+        if (!stale && !rendered.isNull()) {
+            m_qsPreview = rendered;
             update();
         }
         if (m_qsPreviewDirty) {
@@ -4044,8 +4045,23 @@ void DrawingCanvas::renderQuickShapePreview()
         }
     });
     watcher->setFuture(QtConcurrent::run(
-        m_paintGpuPool.get(), [work = std::move(work)] {
-            return SankoPaintHostAdapter::render(work);
+        m_paintGpuPool.get(),
+        [stream, brush, seed, size, selectionMask]() -> QImage {
+            QImage host(size, QImage::Format_ARGB32_Premultiplied);
+            host.fill(Qt::transparent);
+            SankoPaintHostAdapter adapter; // private: shares nothing live
+            adapter.setBrush(brush);
+            adapter.beginStroke(QStringLiteral("quickshape:preview"), host,
+                                stream.first(), seed,
+                                /*rasterizePreview=*/false);
+            for (qsizetype i = 1; i < stream.size(); ++i)
+                adapter.appendPoint(stream.at(i));
+            auto work = adapter.finishStrokeWork(true);
+            work.selectionMask = selectionMask;
+            auto result = SankoPaintHostAdapter::render(work);
+            if (!result.succeeded || !adapter.publish(result, host))
+                return QImage();
+            return host;
         }));
 }
 
