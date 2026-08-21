@@ -53,6 +53,12 @@ public:
     // Display the given scenes. Ownership stays with the caller (MainWindow);
     // this page only holds non-owning pointers.
     void loadScenes(const QVector<Scene *> &scenes);
+    // The PROJECT's canvas size — the authority every new panel is created
+    // at. Set by MainWindow at project create/load, before any panel can be
+    // added. Existing panels carry their own size (pixels are the truth);
+    // this member only shapes panels that do not exist yet.
+    void setProjectCanvasSize(const QSize &size) { m_projectCanvasSize = size; }
+    QSize projectCanvasSize() const { return m_projectCanvasSize; }
 
     // Read-only reference to the project's consistency entries (for future
     // prompt injection). Not displayed yet.
@@ -92,6 +98,7 @@ public:
 
     // App-wide undo stack (owned by MainWindow); forwarded to the canvas.
     void setUndoStack(QUndoStack *stack);
+    Panel *makeProjectPanel() const; // blank panel at the project size
     // Callbacks for the panel undo commands (see StoryboardPage.cpp): mutate
     // the scene's panel list and refresh the strip/selection.
     void applyPanelInsertForUndo(Scene *scene, int index, Panel *panel);
@@ -308,6 +315,9 @@ private:
     bool m_stripUserVisible = true;
     QTimer *m_stripRegenTimer = nullptr;
     int m_stripRegenCount = 0; // regen passes (verified: 1 per settled drag)
+    // Invalid until MainWindow supplies it; makeProjectPanel() refuses to
+    // create a panel without it — never a 960x540 stand-in.
+    QSize m_projectCanvasSize;
     int m_thumbW = 160;
     int m_thumbH = 90; // 16:9
     // Title-bar-less window drag state (background press-drag on the strip).

@@ -51,22 +51,25 @@ inline bool isGroupLayer(const Layer &layer)
     return layer.type == QLatin1String("group");
 }
 
-// A fresh, fully transparent canvas-sized layer image.
-inline QImage makeLayerImage()
+// A fresh, fully transparent layer image at the PROJECT'S canvas size.
+// There is no default size: the caller must know what document it is
+// creating pixels for — a silent 960x540 here is exactly the class of
+// defect the resolution epic removed.
+inline QImage makeLayerImage(const QSize &size)
 {
-    QImage img(960, 540, QImage::Format_ARGB32_Premultiplied); // 16:9 canvas
+    QImage img(size, QImage::Format_ARGB32_Premultiplied);
     img.fill(Qt::transparent);
     return img;
 }
 
 // A new raster layer with a fresh UUID and a transparent image.
-inline Layer makeRasterLayer(const QString &name)
+inline Layer makeRasterLayer(const QString &name, const QSize &size)
 {
     Layer layer;
     layer.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
     layer.name = name;
     layer.type = QStringLiteral("raster");
-    layer.image = makeLayerImage();
+    layer.image = makeLayerImage(size);
     return layer;
 }
 
@@ -136,14 +139,31 @@ struct Panel
         return group ? own * qBound(0.0, group->opacity, 1.0) : own;
     }
 
+    // The panel's canvas size — THE runtime size authority. Pixels are the
+    // truth: the size is whatever the layers actually are (the manifest
+    // shaped them at load/create). Derived from the first layer owning an
+    // image, because group folders deliberately own none. Invalid when the
+    // panel has no image layers, which no creation or load path produces.
+    QSize canvasSize() const
+    {
+        for (const Layer &layer : layers)
+            if (!layer.image.isNull())
+                return layer.image.size();
+        return QSize();
+    }
+
     // Composite all VISIBLE layers bottom-to-top with per-layer opacity onto
     // white paper. This is the single merged view — thumbnails, onion skin,
     // Animatic, Generation, and Export all read this instead of raw pixels.
     // Group folders paint nothing themselves; members composite with the
-    // folder's visibility/opacity applied.
+    // folder's visibility/opacity applied. Sized from the panel's OWN
+    // layers, so it can never crop a document to some other size.
     QPixmap flattenedPixmap() const
     {
-        QImage out(960, 540, QImage::Format_ARGB32_Premultiplied);
+        const QSize size = canvasSize();
+        if (!size.isValid())
+            return QPixmap();
+        QImage out(size, QImage::Format_ARGB32_Premultiplied);
         out.fill(Qt::white); // paper — keeps blank checks / ghosts / export identical
         QPainter painter(&out);
         painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
@@ -183,13 +203,13 @@ struct Scene
 // Drawing layers stay transparent, so moving/selecting art never carries an
 // opaque white fill — the paper comes from this layer instead. Marked type
 // "background" (persisted) so migration is idempotent.
-inline Layer makeBackgroundLayer()
+inline Layer makeBackgroundLayer(const QSize &size)
 {
     Layer layer;
     layer.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
     layer.name = QStringLiteral("Background");
     layer.type = QStringLiteral("background");
-    QImage img(960, 540, QImage::Format_ARGB32_Premultiplied);
+    QImage img(size, QImage::Format_ARGB32_Premultiplied);
     img.fill(Qt::white);
     layer.image = img;
     layer.locked = true; // not drawn on during normal work
@@ -249,19 +269,44 @@ inline void migratePanelToBackground(Panel *panel)
             keyWhiteToTransparent(layer.image);
     }
 
-    panel->layers.prepend(makeBackgroundLayer());
+    // The inserted paper matches the panel's OWN pixels (pixels are the
+    // authority) — never a fixed size into a stack of another size.
+    const QSize size = panel->canvasSize();
+    if (!size.isValid())
+        return; // no image layers: nothing to put paper behind
+    panel->layers.prepend(makeBackgroundLayer(size));
     panel->activeLayerIndex += 1; // everything shifted up by one
     if (panel->activeLayerIndex <= 0 && panel->layers.size() > 1)
         panel->activeLayerIndex = 1; // never leave the Background active
 }
 
+// The user-facing text shown when a project's manifest disagrees with its
+// artwork's real pixel size (written by the stored-not-applied era). ONE
+// place, so the load path and the verification seam assert the same string.
+// Policy: pixels win, artwork is never rescaled/cropped, the manifest is
+// corrected on the next save — and the user is always told.
+inline QString canvasMismatchDialogText(const QSize &manifest,
+                                        const QSize &pixels)
+{
+    return QStringLiteral(
+               "This project's file says %1 \xC3\x97 %2, but its artwork is "
+               "%3 \xC3\x97 %4.\n\nOpening at %3 \xC3\x97 %4. Your artwork "
+               "is not modified; the file will be corrected on the next "
+               "save.")
+        .arg(manifest.width())
+        .arg(manifest.height())
+        .arg(pixels.width())
+        .arg(pixels.height());
+}
+
 // A fresh panel: a locked white Background plus one transparent drawing layer
 // ("Layer 1"), which is the active layer.
-inline Panel *makeBlankPanel()
+inline Panel *makeBlankPanel(const QSize &size)
 {
     Panel *panel = new Panel;
-    panel->layers.append(makeBackgroundLayer());                      // index 0 (locked white)
-    panel->layers.append(makeRasterLayer(QStringLiteral("Layer 1"))); // index 1 (transparent)
+    panel->layers.append(makeBackgroundLayer(size));                  // index 0 (locked white)
+    panel->layers.append(
+        makeRasterLayer(QStringLiteral("Layer 1"), size));            // index 1 (transparent)
     panel->activeLayerIndex = 1;                                      // draw on the transparent layer
     return panel;
 }

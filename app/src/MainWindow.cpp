@@ -14,6 +14,7 @@
 #include "ConsistencyBoard.h"
 #include "DashboardPage.h"
 #include "NewProjectDialog.h"
+#include "ProjectIO.h"
 #include "GenerationPage.h"
 #include "ScriptEditorPage.h"
 #include "StoryboardModel.h"
@@ -104,8 +105,10 @@ MainWindow::MainWindow(QWidget *parent)
         m_projectName = dialog.projectName();
         m_currentProjectPath = dialog.projectFilePath();
         m_projectFps = dialog.fps();
-        m_canvasWidth = dialog.canvasWidth();   // stored metadata: the
-        m_canvasHeight = dialog.canvasHeight(); // canvas renders 960x540
+        m_canvasWidth = dialog.canvasWidth();   // APPLIED: the project's
+        m_canvasHeight = dialog.canvasHeight(); // real canvas resolution
+        m_storyboard->setProjectCanvasSize(
+            QSize(m_canvasWidth, m_canvasHeight));
         m_animatic->setFps(m_projectFps);
         updateSaveActions();
         updateTitle();
@@ -457,7 +460,10 @@ void MainWindow::buildScenesFromJson(const QJsonArray &scenes)
         scene->location = obj.value(QStringLiteral("location")).toString();
         scene->timeOfDay = obj.value(QStringLiteral("time_of_day")).toString();
         scene->action = obj.value(QStringLiteral("action")).toString();
-        scene->panels.append(makeBlankPanel()); // one blank panel per scene
+        // One blank panel per scene, at the PROJECT's canvas size (set by
+        // the New Project dialog before the Script Editor can run).
+        scene->panels.append(
+            makeBlankPanel(QSize(m_canvasWidth, m_canvasHeight)));
         m_scenes.append(scene);
     }
 }
@@ -528,131 +534,20 @@ bool MainWindow::saveToPath(const QString &path)
 {
     m_storyboard->commitQuickShape(); // temporary vectors are not serialized
     m_storyboard->ensureBrushPixelsForSave();
-    const QFileInfo info(path);
-    const QString folder = info.absolutePath();
 
-    QJsonArray scenesArray;
-    for (int i = 0; i < m_scenes.size(); ++i) {
-        Scene *scene = m_scenes.at(i);
-
-        QJsonObject sceneObj;
-        sceneObj[QStringLiteral("name")] = QStringLiteral("Scene %1").arg(scene->number);
-        sceneObj[QStringLiteral("number")] = scene->number;     // preserved (not lost)
-        sceneObj[QStringLiteral("location")] = scene->location;
-        sceneObj[QStringLiteral("timeOfDay")] = scene->timeOfDay; // preserved
-        sceneObj[QStringLiteral("action")] = scene->action;
-
-        QJsonArray panelsArray;
-        for (int j = 0; j < scene->panels.size(); ++j) {
-            Panel *panel = scene->panels.at(j);
-
-            // Flattened composite — kept for forward-compat (older builds and any
-            // external tool reading pixmapFile still see the merged drawing).
-            const QString pngName = QStringLiteral("panel_s%1_p%2.png").arg(i).arg(j);
-            panel->flattenedPixmap().save(folder + QStringLiteral("/") + pngName, "PNG");
-
-            // Layer stack: one PNG per layer + a JSON descriptor array.
-            QJsonArray layersArray;
-            for (int k = 0; k < panel->layers.size(); ++k) {
-                const Layer &layer = panel->layers.at(k);
-
-                QJsonObject layerObj;
-                layerObj[QStringLiteral("id")] = layer.id;
-                layerObj[QStringLiteral("name")] = layer.name;
-                layerObj[QStringLiteral("type")] = layer.type;
-                layerObj[QStringLiteral("visible")] = layer.visible;
-                layerObj[QStringLiteral("opacity")] = layer.opacity;
-                layerObj[QStringLiteral("locked")] = layer.locked;
-                if (!layer.colorTag.isEmpty())
-                    layerObj[QStringLiteral("colorTag")] = layer.colorTag;
-                // Layer groups (folders): membership + UI expand state.
-                if (!layer.groupId.isEmpty())
-                    layerObj[QStringLiteral("groupId")] = layer.groupId;
-                if (layer.type == QLatin1String("group"))
-                    layerObj[QStringLiteral("groupExpanded")] = layer.groupExpanded;
-
-                if (layer.type != QLatin1String("group")) { // folders own no pixels
-                    const QString layerPng =
-                        QStringLiteral("panel_s%1_p%2_layer%3.png").arg(i).arg(j).arg(k);
-                    layer.image.save(folder + QStringLiteral("/") + layerPng, "PNG");
-                    layerObj[QStringLiteral("imageFile")] = layerPng;
-                }
-                layersArray.append(layerObj);
-            }
-
-            QJsonObject panelObj;
-            panelObj[QStringLiteral("duration")] = panel->duration;
-            panelObj[QStringLiteral("shotType")] = panel->shotType;
-            panelObj[QStringLiteral("camera")] = panel->cameraAngle;
-            panelObj[QStringLiteral("lens")] = panel->lens;
-            panelObj[QStringLiteral("mood")] = panel->mood;
-            panelObj[QStringLiteral("notes")] = panel->notes;
-            panelObj[QStringLiteral("pixmapFile")] = pngName;
-            panelObj[QStringLiteral("layers")] = layersArray;
-            panelObj[QStringLiteral("activeLayerIndex")] = panel->activeLayerIndex;
-            panelObj[QStringLiteral("generationStatus")] = panel->generationStatus;
-            panelObj[QStringLiteral("generatedVideoPath")] = panel->generatedVideoPath;
-            panelObj[QStringLiteral("falRequestId")] = panel->falRequestId;
-
-            // Version tree: all generated takes + which one is selected.
-            QJsonArray takesArray;
-            for (const GeneratedTake &take : panel->takes) {
-                QJsonObject takeObj;
-                takeObj[QStringLiteral("id")] = take.id;
-                takeObj[QStringLiteral("videoPath")] = take.videoPath; // relative filename
-                takeObj[QStringLiteral("promptUsed")] = take.promptUsed;
-                takeObj[QStringLiteral("timestamp")] = take.timestamp;
-                takeObj[QStringLiteral("status")] = take.status;
-                takeObj[QStringLiteral("costEstimate")] = take.costEstimate;
-                takesArray.append(takeObj);
-            }
-            panelObj[QStringLiteral("takes")] = takesArray;
-            panelObj[QStringLiteral("selectedTakeId")] = panel->selectedTakeId;
-            panelsArray.append(panelObj);
-        }
-        sceneObj[QStringLiteral("panels")] = panelsArray;
-        scenesArray.append(sceneObj);
-    }
-
-    // Consistency board entries + their thumbnail PNGs.
-    QJsonArray consistencyArray;
-    for (const ConsistencyEntry &entry : m_consistencyEntries) {
-        QJsonObject entryObj;
-        entryObj[QStringLiteral("id")] = entry.id;
-        entryObj[QStringLiteral("name")] = entry.name;
-        entryObj[QStringLiteral("type")] = entry.type;
-        entryObj[QStringLiteral("description")] = entry.description;
-
-        QJsonArray tagsArray;
-        for (const QString &tag : entry.tags)
-            tagsArray.append(tag);
-        entryObj[QStringLiteral("tags")] = tagsArray;
-
-        QString thumbFile;
-        if (!entry.thumbnail.isNull()) {
-            QString safeName = entry.name;
-            safeName.replace(QRegularExpression(QStringLiteral("[^A-Za-z0-9]+")),
-                             QStringLiteral("_"));
-            thumbFile = QStringLiteral("consistency_%1_%2.png").arg(safeName, entry.id);
-            entry.thumbnail.save(folder + QStringLiteral("/") + thumbFile, "PNG");
-        }
-        entryObj[QStringLiteral("thumbnailFile")] = thumbFile;
-        consistencyArray.append(entryObj);
-    }
-
-    QJsonObject root;
-    root[QStringLiteral("version")] = 1;
-    root[QStringLiteral("projectName")] = m_projectName;
-    // Optional keys (absent in older projects — the reader defaults them):
-    // fps drives the animatic; canvasWidth/Height are forward-compatible
-    // metadata, the canvas renders 960x540 in this build.
-    root[QStringLiteral("fps")] = m_projectFps;
-    root[QStringLiteral("canvasWidth")] = m_canvasWidth;
-    root[QStringLiteral("canvasHeight")] = m_canvasHeight;
-    root[QStringLiteral("scenes")] = scenesArray;
-    root[QStringLiteral("consistencyBoard")] = consistencyArray;
-    root[QStringLiteral("audioPath")] = m_animatic->audioPath(); // scratch track (path only)
-    root[QStringLiteral("perspective")] = m_storyboard->perspectiveToJson();
+    // The serialization core lives in ProjectIO (extracted with the
+    // resolution epic so the seam can drive it without this window); this
+    // shell owns the page prep above, the dialogs, and the recents.
+    ProjectIO::SaveData data;
+    data.projectName = m_projectName;
+    data.fps = m_projectFps;
+    data.canvasSize = QSize(m_canvasWidth, m_canvasHeight);
+    data.scenes = m_scenes;
+    data.consistency = m_consistencyEntries;
+    data.audioPath = m_animatic->audioPath(); // scratch track (path only)
+    data.perspective = m_storyboard->perspectiveToJson();
+    const QJsonObject root =
+        ProjectIO::projectToJson(data, QFileInfo(path).absolutePath());
 
     QFile file(path);
     if (!file.open(QIODevice::WriteOnly)) {
@@ -693,250 +588,43 @@ bool MainWindow::loadFromPath(const QString &path)
 
     freeScenes();
 
-    m_projectName = root.value(QStringLiteral("projectName")).toString();
+    // The model rebuild + every migration + the pixels-win reconciliation
+    // live in ProjectIO (extracted with the resolution epic); this shell
+    // owns dialogs, member assignment, and page updates.
+    ProjectIO::LoadedProject loaded = ProjectIO::projectFromJson(root, folder);
+
+    m_projectName = loaded.projectName;
     if (m_projectName.isEmpty())
         m_projectName = QFileInfo(path).completeBaseName();
-
-    // Optional keys (new-project dialog); older projects default: fps 24,
-    // dims resolved AFTER the scenes are built from the first layer's
-    // actual image — the truth on disk, not an assumption.
-    m_projectFps = root.value(QStringLiteral("fps")).toInt(24);
-    m_canvasWidth = root.value(QStringLiteral("canvasWidth")).toInt(0);
-    m_canvasHeight = root.value(QStringLiteral("canvasHeight")).toInt(0);
-
-    // LEGACY shared layers ("Copy/Reuse Layer in Another Panel", removed):
-    // old files store the PNG only on the FIRST instance of a sharedId;
-    // later instances carry sharedId with no imageFile. MIGRATION: each such
-    // reference becomes an INDEPENDENT real copy (own pixels, fresh id), so
-    // old projects load with nothing missing. New saves drop sharedId.
-    QHash<QString, QImage> legacySharedImages;
-    const QJsonArray scenesArray = root.value(QStringLiteral("scenes")).toArray();
-    for (const QJsonValue &sv : scenesArray) {
-        const QJsonObject sceneObj = sv.toObject();
-        Scene *scene = new Scene;
-        scene->number = sceneObj.value(QStringLiteral("number")).toInt();
-        scene->location = sceneObj.value(QStringLiteral("location")).toString();
-        scene->timeOfDay = sceneObj.value(QStringLiteral("timeOfDay")).toString();
-        if (scene->timeOfDay.isEmpty())
-            scene->timeOfDay = QStringLiteral("UNSPECIFIED");
-        scene->action = sceneObj.value(QStringLiteral("action")).toString();
-
-        const QJsonArray panelsArray = sceneObj.value(QStringLiteral("panels")).toArray();
-        for (const QJsonValue &pv : panelsArray) {
-            const QJsonObject panelObj = pv.toObject();
-            Panel *panel = new Panel;
-            panel->duration = panelObj.value(QStringLiteral("duration")).toInt(3);
-            if (panel->duration < 1)
-                panel->duration = 3;
-            // Only override defaults when a non-empty value is stored.
-            const QString shotType = panelObj.value(QStringLiteral("shotType")).toString();
-            if (!shotType.isEmpty())
-                panel->shotType = shotType;
-            const QString camera = panelObj.value(QStringLiteral("camera")).toString();
-            if (!camera.isEmpty())
-                panel->cameraAngle = camera;
-            const QString lens = panelObj.value(QStringLiteral("lens")).toString();
-            if (!lens.isEmpty())
-                panel->lens = lens;
-            panel->mood = panelObj.value(QStringLiteral("mood")).toString();
-            panel->notes = panelObj.value(QStringLiteral("notes")).toString();
-
-            const QString genStatus = panelObj.value(QStringLiteral("generationStatus")).toString();
-            if (!genStatus.isEmpty())
-                panel->generationStatus = genStatus;
-            panel->generatedVideoPath = panelObj.value(QStringLiteral("generatedVideoPath")).toString();
-            panel->falRequestId = panelObj.value(QStringLiteral("falRequestId")).toString();
-
-            // Version tree: reconstruct takes; a take whose file is missing is Failed.
-            panel->takes.clear();
-            const QJsonArray takesArray = panelObj.value(QStringLiteral("takes")).toArray();
-            for (const QJsonValue &tv : takesArray) {
-                const QJsonObject takeObj = tv.toObject();
-                GeneratedTake take;
-                take.id = takeObj.value(QStringLiteral("id")).toString();
-                take.videoPath = takeObj.value(QStringLiteral("videoPath")).toString();
-                take.promptUsed = takeObj.value(QStringLiteral("promptUsed")).toString();
-                take.timestamp = takeObj.value(QStringLiteral("timestamp")).toString();
-                take.status = takeObj.value(QStringLiteral("status")).toString();
-                take.costEstimate = takeObj.value(QStringLiteral("costEstimate")).toDouble();
-                if (take.videoPath.isEmpty()
-                    || !QFileInfo::exists(folder + QStringLiteral("/") + take.videoPath))
-                    take.status = QStringLiteral("Failed");
-                panel->takes.append(take);
-            }
-            panel->selectedTakeId = panelObj.value(QStringLiteral("selectedTakeId")).toString();
-
-            // Migrate pre-takes projects: fold a lone generatedVideoPath into one take.
-            if (panel->takes.isEmpty() && !panel->generatedVideoPath.isEmpty()
-                && panel->generationStatus == QLatin1String("Complete")) {
-                GeneratedTake take;
-                take.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
-                take.videoPath = panel->generatedVideoPath;
-                take.status =
-                    QFileInfo::exists(folder + QStringLiteral("/") + take.videoPath)
-                        ? QStringLiteral("Complete")
-                        : QStringLiteral("Failed");
-                panel->takes.append(take);
-                panel->selectedTakeId = take.id;
-            }
-
-            // Keep the generatedVideoPath mirror aligned with the selected take.
-            for (const GeneratedTake &take : panel->takes) {
-                if (take.id == panel->selectedTakeId)
-                    panel->generatedVideoPath = take.videoPath;
-            }
-
-            // Layer stack. New files carry a "layers" array; legacy files (one
-            // PNG per panel) are migrated into a single "Layer 1" raster layer
-            // so old projects open with their drawing intact.
-            panel->layers.clear();
-            const QJsonArray layersArray = panelObj.value(QStringLiteral("layers")).toArray();
-            if (!layersArray.isEmpty()) {
-                for (const QJsonValue &lv : layersArray) {
-                    const QJsonObject layerObj = lv.toObject();
-                    Layer layer;
-                    layer.id = layerObj.value(QStringLiteral("id")).toString();
-                    if (layer.id.isEmpty())
-                        layer.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
-                    layer.name = layerObj.value(QStringLiteral("name")).toString();
-                    if (layer.name.isEmpty())
-                        layer.name = QStringLiteral("Layer %1").arg(panel->layers.size() + 1);
-                    layer.type = layerObj.value(QStringLiteral("type")).toString();
-                    if (layer.type.isEmpty())
-                        layer.type = QStringLiteral("raster");
-                    layer.visible = layerObj.value(QStringLiteral("visible")).toBool(true);
-                    layer.opacity = layerObj.value(QStringLiteral("opacity")).toDouble(1.0);
-                    layer.locked = layerObj.value(QStringLiteral("locked")).toBool(false);
-                    layer.colorTag = layerObj.value(QStringLiteral("colorTag")).toString();
-                    const QString legacySharedId =
-                        layerObj.value(QStringLiteral("sharedId")).toString();
-                    layer.groupId = layerObj.value(QStringLiteral("groupId")).toString();
-                    layer.groupExpanded =
-                        layerObj.value(QStringLiteral("groupExpanded")).toBool(true);
-
-                    QImage img;
-                    const QString layerPng = layerObj.value(QStringLiteral("imageFile")).toString();
-                    if (!layerPng.isEmpty())
-                        img.load(folder + QStringLiteral("/") + layerPng);
-                    if (!legacySharedId.isEmpty()) {
-                        if (!img.isNull()) {
-                            // First instance: keeps its pixels/identity and
-                            // registers them for the references that follow.
-                            img = img.convertToFormat(QImage::Format_ARGB32_Premultiplied);
-                            if (!legacySharedImages.contains(legacySharedId))
-                                legacySharedImages.insert(legacySharedId, img);
-                        } else {
-                            // Reference instance -> independent real copy
-                            // with its own identity (a missing/corrupt source
-                            // falls through to the transparent default below
-                            // — never fail the whole load).
-                            img = legacySharedImages.value(legacySharedId).copy();
-                            layer.id = QUuid::createUuid().toString(
-                                QUuid::WithoutBraces);
-                        }
-                    }
-                    layer.image = layer.type == QLatin1String("group")
-                        ? QImage() // folders own no pixels
-                        : (img.isNull()
-                               ? makeLayerImage()
-                               : img.convertToFormat(
-                                     QImage::Format_ARGB32_Premultiplied));
-                    panel->layers.append(layer);
-                }
-            } else {
-                // BACKWARD COMPAT: old single-PNG project -> one raster layer.
-                const QString pngName = panelObj.value(QStringLiteral("pixmapFile")).toString();
-                QImage img;
-                if (!pngName.isEmpty())
-                    img.load(folder + QStringLiteral("/") + pngName);
-                Layer layer = makeRasterLayer(QStringLiteral("Layer 1"));
-                if (!img.isNull())
-                    layer.image = img.convertToFormat(QImage::Format_ARGB32_Premultiplied);
-                panel->layers.append(layer);
-            }
-            if (panel->layers.isEmpty())
-                panel->layers.append(makeRasterLayer(QStringLiteral("Layer 1")));
-            panel->activeLayerIndex =
-                qBound(0, panelObj.value(QStringLiteral("activeLayerIndex")).toInt(0),
-                       panel->layers.size() - 1);
-            // Ensure a locked white Background beneath transparent art layers.
-            // Idempotent: files already saved in the new format are untouched;
-            // legacy opaque-white canvases are migrated without losing art.
-            migratePanelToBackground(panel);
-
-            scene->panels.append(panel);
-        }
-        m_scenes.append(scene);
-    }
-
-    // Backfill scene numbers if the file didn't carry them.
-    for (int i = 0; i < m_scenes.size(); ++i) {
-        if (m_scenes.at(i)->number == 0)
-            m_scenes[i]->number = i + 1;
-    }
-
-    // Consistency board entries.
-    m_consistencyEntries.clear();
-    const QJsonArray consistencyArray =
-        root.value(QStringLiteral("consistencyBoard")).toArray();
-    for (const QJsonValue &cv : consistencyArray) {
-        const QJsonObject entryObj = cv.toObject();
-        ConsistencyEntry entry;
-        entry.id = entryObj.value(QStringLiteral("id")).toString();
-        if (entry.id.isEmpty())
-            entry.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
-        entry.name = entryObj.value(QStringLiteral("name")).toString();
-        entry.type = entryObj.value(QStringLiteral("type")).toString();
-        if (entry.type.isEmpty())
-            entry.type = QStringLiteral("Character");
-        entry.description = entryObj.value(QStringLiteral("description")).toString();
-
-        const QJsonArray tagsArray = entryObj.value(QStringLiteral("tags")).toArray();
-        for (const QJsonValue &tv : tagsArray)
-            entry.tags << tv.toString();
-
-        const QString thumbFile = entryObj.value(QStringLiteral("thumbnailFile")).toString();
-        if (!thumbFile.isEmpty()) {
-            QPixmap pm;
-            if (pm.load(folder + QStringLiteral("/") + thumbFile))
-                entry.thumbnail = pm;
-        }
-        m_consistencyEntries.append(entry);
-    }
+    m_projectFps = loaded.fps;
+    m_scenes = loaded.scenes; // ownership transfers to MainWindow
+    m_consistencyEntries = loaded.consistency;
     if (m_consistencyBoard)
         m_consistencyBoard->refresh();
 
     // Scratch audio track (loaded only if the file still exists at that path).
-    m_animatic->setAudioPath(root.value(QStringLiteral("audioPath")).toString());
+    m_animatic->setAudioPath(loaded.audioPath);
 
     m_currentProjectPath = path;
     updateSaveActions();
     updateTitle();
 
-    // Older projects carry no canvas keys: resolve dims from the first
-    // layer's actual image. fps feeds the animatic timeline.
-    if (m_canvasWidth <= 0 || m_canvasHeight <= 0) {
-        m_canvasWidth = 960;
-        m_canvasHeight = 540;
-        for (Scene *scene : m_scenes) {
-            if (scene->panels.isEmpty()
-                || scene->panels.first()->layers.isEmpty())
-                continue;
-            const QImage &img = scene->panels.first()->layers.first().image;
-            if (!img.isNull()) {
-                m_canvasWidth = img.width();
-                m_canvasHeight = img.height();
-            }
-            break;
-        }
-    }
+    // PIXELS WIN (reconciled inside ProjectIO): the project opens at the
+    // artwork's real size; a lying manifest is reported here — never
+    // silently — and corrected by the next save. Artwork is untouched.
+    if (loaded.mismatch)
+        QMessageBox::information(
+            this, QStringLiteral("Project Size"),
+            canvasMismatchDialogText(loaded.manifestSize, loaded.pixelSize));
+    m_canvasWidth = loaded.pixelSize.width();
+    m_canvasHeight = loaded.pixelSize.height();
+    m_storyboard->setProjectCanvasSize(QSize(m_canvasWidth, m_canvasHeight));
     m_animatic->setFps(m_projectFps);
     NewProjectDialog::recordRecentProject(path);
 
     // Skip the Script Editor: go straight to the Storyboard.
     m_storyboard->loadScenes(m_scenes);
-    m_storyboard->perspectiveFromJson(
-        root.value(QStringLiteral("perspective")).toObject());
+    m_storyboard->perspectiveFromJson(loaded.perspective);
     m_stack->setCurrentWidget(m_storyboard);
     return true;
 }

@@ -32,6 +32,19 @@ drawing canvas, animatic, AI generation).
   - Seam scripts are Python (index/marker-based text edits) in the scratchpad.
     The Bash tool is Git Bash (POSIX sh) — do NOT use PowerShell here-string
     syntax there.
+- **How existing source files are REWRITTEN (not just written).** Six
+  mechanical file-writing failures so far: five shell-heredoc manglings of
+  C++ (backslash/quote corruption) and one Python text-mode rewrite that
+  silently converted three files from CRLF to LF (2026-08-19, resolution
+  epic unseam — Python's universal-newline read + `newline=''` write). The
+  rule: **any modification to an existing source file goes through the Edit
+  tool**, which preserves encoding and line endings exactly. No shell
+  heredocs for C++ content, and no Python rewrite-in-place of existing
+  source — not for deletions, not for "just removing a block". Python in
+  the scratchpad is for generating NEW scratch files and for analysis only.
+  If a whole-file operation is truly unavoidable, operate in BINARY mode
+  ('rb'/'wb', splitting on b'\r\n') and verify byte-identical endings
+  afterwards with `file`/`git diff --stat`.
 - Before builds, kill the running exe to avoid LNK1168 exe-locked errors:
   `while taskkill //F //IM SankoTV.exe >/dev/null 2>&1; do sleep 1; done`
 - No-regression rule: keep undo, save/load, groups, thumbnails intact; report the
@@ -475,14 +488,10 @@ phases (2026-08-08):
 
 ## New Project dialog (Figma 350:24) — deferred items
 
-- **canvasWidth/canvasHeight are stored, not applied.** The project file
-  carries them (optional keys, version stays 1) and the dialog states the
-  limitation in-UI ("Canvas renders at 960 × 540 in this build; the size
-  chosen here is saved with the project"). Applying them means making
-  `makeLayerImage()` project-driven plus auditing every 960×540 assumption
-  (DrawingCanvas, composite caches, edge lock, both pixel locks, the
-  generation pipeline) — its own multi-session epic. fps IS applied
-  (AnimaticTimeline::setFps; per-block frame counts derive from it).
+- **DISCHARGED (2026-08-19, resolution epic Pass 3a):**
+  canvasWidth/canvasHeight are now APPLIED, not merely stored. See the
+  "Canvas resolution epic — Pass 3a" section below for what changed and
+  what deliberately did not.
 - **Save As still scatters sibling PNGs** next to wherever it is pointed,
   while Create now writes `<Location>/<Name>/<Name>.sankotv` (folder per
   project). Save As should probably adopt the same folder-per-project
@@ -492,3 +501,62 @@ phases (2026-08-08):
   StudioTextField: ConsistencyBoard.cpp ×4 (entry name/tags, edit + create
   forms), StoryboardPage.cpp ×2 (panel mood field, layer rename). Not
   migrated with the dialog commit, by instruction.
+
+## Canvas resolution epic — Pass 3a (2026-08-19)
+
+canvasWidth/canvasHeight became the single source of truth. Two-level
+authority: at LOAD the artwork's real pixel size wins over the manifest
+(ProjectIO::projectFromJson reconciles; a mismatch shows one plain dialog
+— canvasMismatchDialogText in StoryboardModel.h, ONE definition so the
+load path and any test assert the same string — and the next save writes
+the honest numbers; artwork is never rescaled, cropped, or discarded). At
+RUNTIME `Panel::canvasSize()` (first layer's image size) is the truth;
+`DrawingCanvas::canvasSize()` is now an INSTANCE method forwarding to the
+active panel. All layer factories (makeLayerImage / makeRasterLayer /
+makeBackgroundLayer / makeBlankPanel) take a required QSize — no default,
+so the compiler flags any new silent-960×540 site. Save version stays 1
+(the size keys were already optional). File-level serialization moved to
+src/ProjectIO.{h,cpp} so correctness logic is testable without
+MainWindow (whose page teardown writes dock state to the real registry).
+
+Release-build guard: SANKO_REQUIRE_PANEL(ret) in DrawingCanvas.cpp —
+Q_ASSERT_X in debug; in release, qCritical once then `return ret;`. When
+it fires the operation is REFUSED: nothing is computed on an invalid
+QSize, no 960×540 stand-in, the (empty) workspace stays consistent.
+Used by toCanvas(), ensureComposite(), placeViewForTest().
+
+PRE-EXISTING fixes folded in (these crashes/asserts predate this pass —
+they were reachable whenever no panel was active and are simply exposed
+more by dynamic sizing): wheelEvent (now ignores the event),
+selectAll and invertSelection (now early-return). Marked PRE-EXISTING at
+each site in DrawingCanvas.cpp.
+
+Perspective legacy migration: pre-epic perspective JSON stored absolute
+pixel positions authored against 960×540. fromJson now takes the canvas
+size and derives the legacy defaults as fractions (0.4h horizon, 0.15w /
+0.85w / 0.5w vanishing points, 1.6h distance) — approved fractions, but
+NOT yet validated on unusual aspect ratios (e.g. tall 777×1013); a
+portrait project migrating old perspective data may want a design pass.
+
+Deliberately NOT in Pass 3a (known, unchanged, scale with canvas size):
+- AnimaticPage flattens panels per repaint — at 4K this is a real
+  per-frame cost; needs caching before large-canvas animatics feel good.
+- AnimaticPage MP4 export renders at a FIXED 1920×1080 delivery format —
+  now the named constant kExportFrameSize with a comment; a 4K project
+  exports downscaled. Product decision to revisit.
+- NewProjectDialog recents decode full-resolution flatten PNGs just to
+  paint thumbnails; slow with many 4K projects on disk.
+- GenerationPage base64/vision payloads grow with canvas area; 4K
+  panels make large API requests.
+- Undo keeps full before-pixels per drawing command (undo limit 60);
+  at 3840×2160 that is ~33 MB/command worst case. Fine at 960×540,
+  worth a budget at 4K.
+- Resize-after-creation is NOT implemented and has no UI; a project's
+  size is fixed at creation (or by its artwork on load).
+- Dead src/brush/BrushEngine.{h,cpp} (in no build target) still carries
+  a QSize(960,540) default argument — left per instruction; delete the
+  files when convenient.
+- onNewProject() does not reset m_canvasWidth/Height: safe today, its
+  only caller (the New Project dialog handler) assigns both from the
+  dialog immediately after. If a second caller ever appears it must set
+  the size or the previous project's size leaks through.

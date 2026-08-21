@@ -121,7 +121,16 @@ public:
 
     // --- persistence -------------------------------------------------------------
     QJsonObject toJson() const;
-    void fromJson(const QJsonObject &object); // accepts the legacy fixed-mode schema
+    // Accepts the legacy fixed-mode schema. canvasSize sizes the legacy
+    // branch's DEFAULT guide positions as fractions of the document
+    // (0.4h horizon, 0.15w/0.85w VPs, 0.5w/1.6h zenith — the exact
+    // 216/144/816/480/864 of every 960x540-era file); an invalid size
+    // keeps those historical absolutes. NOTE: proportional placement on
+    // unusual aspect ratios has not been visually validated — the tool's
+    // behaviour for non-16:9 canvases is untuned, deliberately unchanged
+    // in the resolution pass (see HANDOFF.md).
+    void fromJson(const QJsonObject &object,
+                  const QSize &canvasSize = QSize());
 
 private:
     // Best guide direction through `anchor` for a stroke heading toward

@@ -700,9 +700,35 @@ QRect diffRegion(const QImage &a, const QImage &b)
 
 } // namespace
 
-QSize DrawingCanvas::canvasSize()
+// THE canvas-size authority guard — one shape, used at every document-space
+// entry point that could otherwise run with no active panel. Reaching such
+// a path panel-less is a CODING DEFECT (every UI route is gated), never a
+// state the user can create. Debug builds stop at the fault. Release
+// builds refuse the operation, log the site once, and leave the document
+// untouched — the user keeps a correct canvas (the no-document workspace),
+// never a silently wrong one. No computation ever proceeds on QSize(-1,-1)
+// and no 960x540 stand-in exists anywhere.
+#define SANKO_REQUIRE_PANEL(returnValue) \
+    do { \
+        if (Q_UNLIKELY(!m_panel)) { \
+            Q_ASSERT_X(m_panel, __func__, \
+                       "no active panel: canvas size unavailable"); \
+            static bool sankoWarnedOnce = false; \
+            if (!sankoWarnedOnce) { \
+                sankoWarnedOnce = true; \
+                qCritical("SankoTV: %s reached with no active panel; " \
+                          "operation refused", __func__); \
+            } \
+            return returnValue; \
+        } \
+    } while (false)
+
+QSize DrawingCanvas::canvasSize() const
 {
-    return QSize(960, 540); // 16:9
+    // Pixels are the truth: the active panel's layers carry the size the
+    // project's manifest shaped at create/load. No panel -> INVALID size,
+    // never a default.
+    return m_panel ? m_panel->canvasSize() : QSize();
 }
 
 void DrawingCanvas::setActivePanel(Panel *panel)
@@ -847,7 +873,9 @@ bool DrawingCanvas::importImage(const QString &filePath)
 
     // The import becomes a NEW image-type layer above the active one — the
     // existing drawing is never overwritten (delete the layer to discard it).
-    QImage content = makeLayerImage(); // transparent padding around the fit
+    // Both the padding buffer AND the fit target come from the panel's own
+    // size (they used to come from two different oracles).
+    QImage content = makeLayerImage(canvasSize());
     {
         QPainter painter(&content);
         painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
@@ -858,7 +886,8 @@ bool DrawingCanvas::importImage(const QString &filePath)
         painter.drawImage(r, loaded);
     }
 
-    Layer layer = makeRasterLayer(QFileInfo(filePath).completeBaseName());
+    Layer layer =
+        makeRasterLayer(QFileInfo(filePath).completeBaseName(), canvasSize());
     layer.type = QStringLiteral("image");
     layer.image = content;
 
@@ -1188,6 +1217,8 @@ void DrawingCanvas::enforcePaintUndoPolicy()
 // zoom+pan mapping, so strokes land under the cursor at any zoom level.
 QRect DrawingCanvas::displayRect() const
 {
+    if (!m_panel)
+        return QRect(); // no document: nothing to letterbox
     const QSize cs = canvasSize();
     const double fit = qMin(width() / double(cs.width()), height() / double(cs.height()));
     const double s = fit * m_zoom;
@@ -1200,6 +1231,11 @@ QRect DrawingCanvas::displayRect() const
 void DrawingCanvas::setZoom(double zoom, const QPointF &anchorScreen)
 {
     zoom = qBound(0.25, zoom, 4.0);
+    if (!m_panel) { // no document: remember the zoom, skip the anchor math
+        m_zoom = zoom;
+        syncViewToolbar();
+        return;
+    }
     if (qFuzzyCompare(zoom, m_zoom)) {
         syncViewToolbar();
         return;
@@ -1458,6 +1494,7 @@ double DrawingCanvas::scale() const
 void DrawingCanvas::placeViewForTest(double onScreenScale, const QPointF &canvasPt,
                                      const QPointF &widgetPt)
 {
+    SANKO_REQUIRE_PANEL();
     const QSize cs = canvasSize();
     const double fit = qMin(width() / double(cs.width()),
                             height() / double(cs.height()));
@@ -1523,6 +1560,7 @@ QTransform DrawingCanvas::viewTransform() const
 
 QPoint DrawingCanvas::toCanvas(const QPoint &widgetPoint) const
 {
+    SANKO_REQUIRE_PANEL(QPoint());
     const QSize cs = canvasSize();
     const QPointF p = viewTransform().inverted().map(QPointF(widgetPoint));
     return QPoint(qBound(0, int(p.x()), cs.width() - 1),
@@ -1676,7 +1714,9 @@ QVariantMap DrawingCanvas::devCameraState() const
     const QTransform t = viewTransform();
     const QRect vis =
         t.inverted().mapRect(QRectF(rect())).toAlignedRect();
-    const QRect canvasR(QPoint(), canvasSize());
+    // No document: honest zeros in the recorder stream (hasPanel already
+    // says so), never an invalid -1x-1 rect's numbers.
+    const QRect canvasR(QPoint(), m_panel ? canvasSize() : QSize(0, 0));
     const QRect disp = displayRect();
     QVariantMap m;
     m.insert(QStringLiteral("zoom"), m_zoom);
@@ -2009,6 +2049,11 @@ void DrawingCanvas::setSelectionOutlineMove(bool on)
 // Select the whole active layer (the canvas rect).
 void DrawingCanvas::selectAll()
 {
+    // PRE-EXISTING defect fixed with the resolution epic: no panel gate —
+    // selecting all of a document that does not exist created a phantom
+    // fixed-size selection.
+    if (!m_panel)
+        return;
     const QPainterPath before = m_selectionPath;
     QPainterPath path;
     path.addRect(QRectF(QPointF(0, 0), QSizeF(canvasSize())));
@@ -2024,6 +2069,8 @@ void DrawingCanvas::selectAll()
 // inverts to the whole canvas).
 void DrawingCanvas::invertSelection()
 {
+    if (!m_panel) // PRE-EXISTING gate gap, same as selectAll()
+        return;
     const QPainterPath before = m_selectionPath;
     QPainterPath full;
     full.addRect(QRectF(QPointF(0, 0), QSizeF(canvasSize())));
@@ -2078,7 +2125,12 @@ QPointF DrawingCanvas::clampFloatDelta(const QPointF &delta) const
 // partitions the pixels with no off-by-one and no double coverage.
 const QImage &DrawingCanvas::cachedSelectionMask() const
 {
-    if (m_selMaskCache.isNull() || m_selMaskPath != m_selectionPath) {
+    // Size check added with the resolution epic: a path-only test left a
+    // wrong-sized mask alive across any event that changed the canvas size
+    // without changing the selection path (the one genuinely stale-able
+    // cache in the survey).
+    if (m_selMaskCache.isNull() || m_selMaskPath != m_selectionPath
+        || m_selMaskCache.size() != canvasSize()) {
         m_selMaskCache = QImage(canvasSize(), QImage::Format_ARGB32_Premultiplied);
         m_selMaskCache.fill(Qt::transparent);
         QPainter painter(&m_selMaskCache);
@@ -4740,6 +4792,7 @@ bool DrawingCanvas::eventFilter(QObject *object, QEvent *event)
 // same stack identically.
 void DrawingCanvas::ensureComposite()
 {
+    SANKO_REQUIRE_PANEL(); // only paintEvent calls this, after its own gate
     const int active = m_panel ? m_panel->activeLayerIndex : -1;
     const int count = m_panel ? m_panel->layers.size() : 0;
     if (m_compValid && m_compPanel == m_panel && m_compActive == active
@@ -5660,6 +5713,13 @@ void DrawingCanvas::paintEvent(QPaintEvent *event)
 
 void DrawingCanvas::wheelEvent(QWheelEvent *event)
 {
+    // PRE-EXISTING defect fixed with the resolution epic: this handler had
+    // no panel gate, so Ctrl+wheel over the empty workspace ran the
+    // anchor-preserving zoom math against a document that did not exist.
+    if (!m_panel) {
+        event->ignore();
+        return;
+    }
     // Ctrl + wheel zooms, centred on the cursor position.
     if (event->modifiers() & Qt::ControlModifier) {
         const double steps = event->angleDelta().y() / 120.0;

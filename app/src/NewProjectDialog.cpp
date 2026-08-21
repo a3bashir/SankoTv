@@ -665,18 +665,8 @@ void NewProjectDialog::paintEvent(QPaintEvent *)
     p.drawText(QRect(kLeftX + 100, kFormY + 3 * kFieldPitch + 16, 29, kBoxH),
                Qt::AlignCenter, QStringLiteral("\xC3\x97"));
 
-    // Decision 1(a): dimensions are stored-not-applied in this build, and
-    // the dialog says so instead of presenting a live-looking field that
-    // silently does nothing.
-    QFont note(QStringLiteral("Inter"));
-    note.setPixelSize(9);
-    p.setFont(note);
-    p.setPen(kNoteText);
-    p.drawText(QRect(kLeftX, kFormY + 5 * kFieldPitch + 4, kLeftW, 26),
-               Qt::AlignLeft | Qt::TextWordWrap,
-               QStringLiteral("Canvas renders at 960 \xC3\x97 540 in this "
-                              "build; the size chosen here is saved with "
-                              "the project."));
+    // (The stored-not-applied note is gone: since the resolution epic the
+    // chosen dimensions ARE the project's real canvas size.)
 
     // The one-line validation reason, above the Create button.
     if (!m_reason.isEmpty()) {

@@ -104,10 +104,10 @@ const char *kDockDarkStyle =
 // (Strip thumbnails are now sized dynamically — see m_thumbW/m_thumbH, which
 // default to the classic 160x90 and scale with the Panel Strip's height.)
 
-Panel *makePanel()
-{
-    return makeBlankPanel(); // one blank raster layer ("Layer 1"), 960x540
-}
+// (makePanel() grew a size parameter with the resolution epic: new panels
+// are created at the PROJECT's canvas size, supplied by MainWindow through
+// setProjectCanvasSize(). The page-level helper lives on StoryboardPage so
+// it can reach that member — see StoryboardPage::makeProjectPanel().)
 
 QPushButton *toolButton(const QString &text, const QString &tip)
 {
@@ -3794,11 +3794,25 @@ QPixmap StoryboardPage::stripThumbPixmap(Panel *panel, qreal dprOverride) const
     qreal dpr = dprOverride;
     if (dpr <= 0.0)
         dpr = m_panelStripBar ? m_panelStripBar->devicePixelRatioF() : 1.0;
-    QPixmap pm = panel->flattenedPixmap().scaled(
-        qRound(m_thumbW * dpr), qRound(m_thumbH * dpr), Qt::IgnoreAspectRatio,
-        Qt::SmoothTransformation);
-    pm.setDevicePixelRatio(dpr);
-    return pm;
+    // KeepAspectRatio, letterboxed into the fixed thumb well (the well is
+    // the strip's 16:9 grid; the ARTWORK inside it must never stretch).
+    // IgnoreAspectRatio was a correctness bug the moment projects stopped
+    // being uniformly 16:9 — a 777x1013 panel rendered visibly squashed.
+    // The label uses setScaledContents, so the letterboxing must be baked
+    // into the pixmap itself or the label would re-stretch the fit.
+    const QSize well(qRound(m_thumbW * dpr), qRound(m_thumbH * dpr));
+    QPixmap out(well);
+    out.fill(QColor(0x1a, 0x1a, 0x1a)); // strip background = letterbox bars
+    const QPixmap art = panel->flattenedPixmap();
+    if (!art.isNull()) {
+        const QPixmap fit = art.scaled(well, Qt::KeepAspectRatio,
+                                       Qt::SmoothTransformation);
+        QPainter p(&out); // DEVICE pixels: the DPR tag comes after painting
+        p.drawPixmap((well.width() - fit.width()) / 2,
+                     (well.height() - fit.height()) / 2, fit);
+    }
+    out.setDevicePixelRatio(dpr);
+    return out;
 }
 
 // Wrap the strip bar in a QDockWidget on the storyboard's own dock host
@@ -4538,9 +4552,28 @@ void StoryboardPage::addPanelToScene(int sceneIndex)
     Scene *scene = m_scenes.at(sceneIndex);
     if (!m_undoStack)
         return;
+    Panel *panel = makeProjectPanel();
+    if (!panel)
+        return;
     m_undoStack->push(new InsertPanelCommand(this, scene, scene->panels.size(),
-                                             makePanel(),
+                                             panel,
                                              QStringLiteral("Add Panel")));
+}
+
+// New panels are created at the PROJECT's canvas size. No size, no panel:
+// a missing authority is a wiring defect (MainWindow sets the size at every
+// create/load before this page can add panels), and refusing beats creating
+// pixels at a size the document is not.
+Panel *StoryboardPage::makeProjectPanel() const
+{
+    if (!m_projectCanvasSize.isValid()) {
+        Q_ASSERT_X(false, "makeProjectPanel",
+                   "project canvas size not set: cannot create a panel");
+        qCritical("SankoTV: makeProjectPanel with no project canvas size; "
+                  "panel creation refused");
+        return nullptr;
+    }
+    return makeBlankPanel(m_projectCanvasSize);
 }
 
 // --- Shot info ------------------------------------------------------------
@@ -4930,7 +4963,9 @@ QJsonObject StoryboardPage::perspectiveToJson() const
 
 void StoryboardPage::perspectiveFromJson(const QJsonObject &object)
 {
-    m_canvas->perspective()->fromJson(object);
+    // The canvas size feeds the legacy branch's proportional defaults; the
+    // active panel is set before perspectiveFromJson runs on every load.
+    m_canvas->perspective()->fromJson(object, m_canvas->canvasSize());
     if (m_syncPerspective)
         m_syncPerspective();
     m_canvas->update();
@@ -5301,7 +5336,10 @@ void StoryboardPage::addPanelAfterSelected()
         : scene->panels.size();
     if (!m_undoStack)
         return;
-    m_undoStack->push(new InsertPanelCommand(this, scene, insertAt, makePanel(),
+    Panel *panel = makeProjectPanel();
+    if (!panel)
+        return;
+    m_undoStack->push(new InsertPanelCommand(this, scene, insertAt, panel,
                                              QStringLiteral("Add Panel")));
 }
 
@@ -6096,7 +6134,8 @@ void StoryboardPage::layerAdd()
             if (numbered)
                 highest = qMax(highest, n);
         }
-    Layer layer = makeRasterLayer(QStringLiteral("Layer %1").arg(highest + 1));
+    Layer layer = makeRasterLayer(QStringLiteral("Layer %1").arg(highest + 1),
+                                  panel->canvasSize());
     int insertAt = qBound(0, panel->activeLayerIndex + 1, panel->layers.size());
     // Inserting from inside a group joins that group (block stays whole).
     if (panel->activeLayerIndex >= 0
@@ -6493,7 +6532,11 @@ void StoryboardPage::layerClearSelected()
         Layer &layer = panel->layers[idx];
         if (layer.locked || isGroupLayer(layer))
             continue; // locked layers keep their pixels; folders have none
-        layer.image = makeLayerImage(); // fresh transparent (detached) image
+        // Fresh transparent buffer AT THE PANEL'S SIZE. This used to be the
+        // hard-960x540 replacement invisible to a grep for the literal: a
+        // Clear in any other-sized project would have swapped the layer for
+        // a wrong-sized one.
+        layer.image = makeLayerImage(panel->canvasSize());
         cleared = true;
     }
     if (!cleared)
@@ -6782,3 +6825,4 @@ bool StoryboardPage::confirmLayerDelete(const QVector<int> &indices)
             QStringLiteral("storyboard/skipEmptyLayerDeleteConfirm"), true);
     return true;
 }
+

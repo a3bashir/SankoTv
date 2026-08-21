@@ -55,9 +55,14 @@ private:
     QVector<ConsistencyEntry> m_consistencyEntries;
     QString m_currentProjectPath;
     QString m_projectName = QStringLiteral("Untitled Project");
-    // Project properties from the New Project dialog. fps is APPLIED (the
-    // animatic timeline); canvasWidth/Height are stored forward-compatible
-    // metadata — the canvas renders 960x540 in this build (HANDOFF.md).
+    // Project properties. fps drives the animatic timeline; canvasWidth/
+    // Height are the project's REAL canvas resolution — the single source
+    // of truth that shapes every layer at create/load. At runtime the
+    // panels' own pixels are the authority (Panel::canvasSize()); on load
+    // these are RECONCILED to the pixels (pixels win, the user is told of
+    // any disagreement, the manifest is corrected on save). The 960x540
+    // initialisers are only the pre-project idle values; every create/load
+    // path overwrites them before a panel can exist.
     int m_projectFps = 24;
     int m_canvasWidth = 960;
     int m_canvasHeight = 540;

@@ -81,7 +81,14 @@ public:
     explicit DrawingCanvas(QWidget *parent = nullptr);
 
     // Fixed 16:9 working resolution for every panel layer.
-    static QSize canvasSize();
+    // The document's canvas size — derived from the ACTIVE PANEL's layers
+    // (pixels are the runtime authority; the manifest shaped them at
+    // create/load). INVALID QSize() when no panel is set: there is no
+    // fallback size, deliberately — a 960x540 stand-in here is the defect
+    // class the resolution epic removed. Document-space operations guard
+    // with SANKO_REQUIRE_PANEL and refuse to run rather than compute
+    // against an invalid size.
+    QSize canvasSize() const;
 
     void setActivePanel(Panel *panel);
 

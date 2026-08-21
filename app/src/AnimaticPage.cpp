@@ -832,19 +832,28 @@ void AnimaticPage::setAudioPath(const QString &path)
 
 namespace {
 
-// Render a panel into a 1920x1080 frame: scaled to fit (KeepAspectRatio),
+// The MP4 export's DELIVERY FORMAT — deliberately fixed at 1080p, a product
+// decision, NOT a canvas size. Panels of any project resolution are fitted
+// (KeepAspectRatio) and letterboxed into this frame; changing the project's
+// canvas must never change this constant. (The 960,540 below is this
+// frame's centre — 1920/2, 1080/2 — not the old canvas size, despite the
+// coincidental digits.)
+constexpr QSize kExportFrameSize(1920, 1080);
+
+// Render a panel into the export frame: scaled to fit (KeepAspectRatio),
 // centered, black padding around it (matches PanelDisplay behavior).
 QImage renderExportFrame(const QPixmap &pixmap)
 {
-    QImage frame(1920, 1080, QImage::Format_RGB32);
+    QImage frame(kExportFrameSize, QImage::Format_RGB32);
     frame.fill(Qt::black);
     if (!pixmap.isNull()) {
         QPainter painter(&frame);
         painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
         QSize target = pixmap.size();
-        target.scale(1920, 1080, Qt::KeepAspectRatio);
+        target.scale(kExportFrameSize, Qt::KeepAspectRatio);
         QRect r(QPoint(0, 0), target);
-        r.moveCenter(QPoint(960, 540));
+        r.moveCenter(QPoint(kExportFrameSize.width() / 2,
+                            kExportFrameSize.height() / 2));
         painter.drawPixmap(r, pixmap);
     }
     return frame;

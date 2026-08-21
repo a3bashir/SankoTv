@@ -451,7 +451,7 @@ QJsonObject PerspectiveTool::toJson() const
     return o;
 }
 
-void PerspectiveTool::fromJson(const QJsonObject &o)
+void PerspectiveTool::fromJson(const QJsonObject &o, const QSize &canvasSize)
 {
     if (o.isEmpty())
         return;
@@ -490,15 +490,22 @@ void PerspectiveTool::fromJson(const QJsonObject &o)
     } else if (o.contains(QStringLiteral("mode"))) {
         // Legacy fixed-mode schema (mode/horizonY/vp0x/vp1x/zenith*): rebuild
         // the equivalent VPs so old projects keep their guides.
+        // Legacy DEFAULTS (used only when a key is absent) as fractions of
+        // the document, reproducing the historical absolutes exactly at
+        // 960x540: horizonY 0.4h=216, vp0x 0.15w=144, vp1x 0.85w=816,
+        // zenith 0.5w=480 / 1.6h=864. An invalid size keeps the absolutes.
+        const qreal w = canvasSize.isValid() ? canvasSize.width() : 960.0;
+        const qreal h = canvasSize.isValid() ? canvasSize.height() : 540.0;
         const int mode = qBound(1, o.value(QStringLiteral("mode")).toInt(2), 3);
-        const qreal horizonY = o.value(QStringLiteral("horizonY")).toDouble(216.0);
+        const qreal horizonY =
+            o.value(QStringLiteral("horizonY")).toDouble(0.4 * h);
         const QColor c(o.value(QStringLiteral("color")).toString());
         if (c.isValid())
             m_defaultColor = c;
         m_defaultOpacity = qBound(
             0.05, o.value(QStringLiteral("opacity")).toDouble(m_defaultOpacity), 1.0);
-        const qreal xs[2] = {o.value(QStringLiteral("vp0x")).toDouble(144.0),
-                             o.value(QStringLiteral("vp1x")).toDouble(816.0)};
+        const qreal xs[2] = {o.value(QStringLiteral("vp0x")).toDouble(0.15 * w),
+                             o.value(QStringLiteral("vp1x")).toDouble(0.85 * w)};
         for (int i = 0; i < qMin(mode, 2); ++i) {
             VanishingPoint vp;
             vp.pos = QPointF(xs[i], horizonY);
@@ -508,8 +515,9 @@ void PerspectiveTool::fromJson(const QJsonObject &o)
         }
         if (mode == 3) {
             VanishingPoint vp;
-            vp.pos = QPointF(o.value(QStringLiteral("zenithX")).toDouble(480.0),
-                             o.value(QStringLiteral("zenithY")).toDouble(864.0));
+            vp.pos = QPointF(
+                o.value(QStringLiteral("zenithX")).toDouble(0.5 * w),
+                o.value(QStringLiteral("zenithY")).toDouble(1.6 * h));
             vp.color = m_defaultColor;
             vp.opacity = m_defaultOpacity;
             m_vps.append(vp);
