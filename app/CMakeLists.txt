@@ -215,6 +215,30 @@ target_include_directories(SankoCanvasEdgeLock PRIVATE src)
 target_link_libraries(SankoCanvasEdgeLock PRIVATE Qt6::Widgets Qt6::Svg
     Qt6::Concurrent QuickShape::Kit SankoPaint::Engine)
 
+# Permanent variable-resolution lock (tests/CanvasSizeLockTest.cpp): the
+# other six families pin 960x540 fixtures, so they gate the legacy size
+# only. This family draws REAL pixels at the far edge of five canvas sizes
+# (960x540, 1920x1080, 2048x1080, 3840x2160, 777x1013) through the
+# synthetic-event path, and locks persistence round-trips, the
+# migration/mismatch behaviour, cross-size staleness, and the
+# flatten-thumb cache at a non-legacy size. Needs a GUI session but never
+# samples screen pixels (no grabWindow).
+# Run: build/<config>/SankoCanvasSizeLock.exe (exit code = failure count).
+qt_add_executable(SankoCanvasSizeLock
+    tests/CanvasSizeLockTest.cpp
+    src/ProjectIO.cpp
+    src/ProjectIO.h
+    src/DrawingCanvas.cpp
+    src/DrawingCanvas.h
+    src/PerspectiveTool.cpp
+    src/PerspectiveTool.h
+    src/SankoPaintHostAdapter.cpp
+    src/SankoPaintHostAdapter.h
+)
+target_include_directories(SankoCanvasSizeLock PRIVATE src)
+target_link_libraries(SankoCanvasSizeLock PRIVATE Qt6::Widgets Qt6::Svg
+    Qt6::Concurrent QuickShape::Kit SankoPaint::Engine)
+
 # --- Developer recorder (TEMP) -----------------------------------------------
 # Temporary bug-capture tool; remove by deleting app/src/devrecorder/ and
 # THIS block (plus the one guarded block in MainWindow.cpp).

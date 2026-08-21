@@ -604,3 +604,24 @@ Findings for later:
   per panel ADVANCE (~17 ms at 4K) — per advance, not per repaint, so it
   was left alone deliberately.
 - MP4 export unchanged (1920x1080 delivery constant, full-res flattens).
+
+## Seventh permanent family: SankoCanvasSizeLock (2026-08-21)
+
+The gate is now SEVEN families. The first six pin 960x540 fixtures;
+SankoCanvasSizeLock (tests/CanvasSizeLockTest.cpp) is the
+variable-resolution lock, promoted from the archived 3a/3b seam evidence
+into CI. Anti-vacuous by construction: every size it pins is a size it
+DRAWS at through the synthetic-event path — a corner-entry stroke must
+paint (W-1, H-1) after the same sampler proved it empty. 79 checks:
+authority/strokes/undo at 960x540, 1920x1080, 2048x1080 (right edge ON a
+tile boundary), 3840x2160, 777x1013; persistence byte-identity +
+second-save fixed point + a comparator-must-fail control at three sizes
+(presence bugs, not magnitude bugs); the migration/mismatch locks
+including the dialog's exact string against an independent literal;
+cross-size staleness; and the flatten-thumb cache at 777x1013 (its only
+non-legacy CI coverage). Runtime measured: ~18 s Release, ~21-25 s Debug
+(pump-dominated; the 4K increment is small, which is why 4K strokes
+stayed in). Needs a GUI session but samples NO screen pixels — none of
+EdgeLock's capture sensitivity. Remaining known gap, deliberate:
+screen-pixel rendering at variable sizes (EdgeLock is 960x540-only);
+extending EdgeLock is its own decision.

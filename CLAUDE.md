@@ -79,16 +79,20 @@ Learned from real defects. Follow them exactly.
    hit region, stale archived artifact, transparent corner pixels instead
    of glyphs, an assertion validating itself, antialiasing sampled instead
    of flat fill.
-4. **Six-family gate.** Keep these green in both configs, runs spaced
+4. **Seven-family gate.** Keep these green in both configs, runs spaced
    apart: SankoBrushLibraryTest, SankoPaintPixelLock, SankoCanvasBrushLock,
-   SankoQuickShapeGeometryLock, SankoDevRecorderTest, SankoCanvasEdgeLock.
-   Preview SHA must stay
+   SankoQuickShapeGeometryLock, SankoDevRecorderTest, SankoCanvasEdgeLock,
+   SankoCanvasSizeLock. Preview SHA must stay
    `193847fa5bc317832ad3843ebaa91b74bd4296baa870ea4b324e331ca285210f`;
-   both pixel locks byte-identical (`666f7b45…`, `cafcec7f…`). All six
-   families use 960×540 fixtures: they are a regression gate at the legacy
-   size only. Variable-resolution evidence comes from the archived
-   resolution seam in `app/tests/_backups/` — do not claim the families
-   prove variable-size behaviour.
+   both pixel locks byte-identical (`666f7b45…`, `cafcec7f…`). The first
+   six use 960×540 fixtures; SankoCanvasSizeLock is the variable-resolution
+   lock — it draws real pixels at the far edge of five canvas sizes
+   (960×540, 1920×1080, 2048×1080, 3840×2160, 777×1013) and locks
+   persistence round-trips, migration/mismatch behaviour, cross-size
+   staleness, and the flatten-thumb cache at a non-legacy size. What
+   remains legacy-size only is SCREEN-PIXEL rendering: EdgeLock samples
+   real screen pixels at 960×540 fixtures only — do not claim the gate
+   proves variable-size display output.
 5. **Build hygiene.** Kill any running `SankoTV.exe` before building.
    Verify the exe timestamp and the real exit code; grep build output for
    `error C|error MSB|error LNK|Shader baking`. Stale exes have produced
