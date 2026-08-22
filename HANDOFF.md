@@ -886,3 +886,44 @@ TWO DEFECTS/HOLES RECORDED NOW, BEFORE ANY RESIZE WORK:
    at the first panel's size with the others still at theirs — no dialog,
    no refusal. Closing this (a load-time uniformity check with a plain
    report) is a PREREQUISITE for resize, not part of it.
+
+## Dev Recorder: MODAL BLIND SPOT (tooling gap, recorded 2026-08-22 — not a bug, not asked to be fixed)
+
+Screenshot capture STOPS for the entire duration of every modal exec():
+session 20260822-133926 (five opens of Project Settings) has zero frames
+of the dialog — captures exist only in the windows when it was closed.
+statePoll carries no project name or fps fields. So a recording can show
+that a dialog interaction RAN (menu, show, presses on named widgets,
+dropdown popup show/hide, close) but NOT what values it produced. This
+affects all four frameless dialogs (New Project, Project Settings, and
+the two studio surfaces) and any future modal. The two changes that would
+close it: (1) keep the screenshot timer capturing while a modal event loop
+runs (grab the active modal window, not only the main window); (2) add
+projectName / fps to the state poll. Until then: that session confirmed
+dialog MECHANICS only — the applied fps value was never visible to the
+recorder, and the (archived) Part 1 seam plus SankoCanvasSizeLock section
+(g) remain the only evidence for VALUES. Recorder noise to ignore when
+reading such sessions: 88 windowActivate/windowDeactivate records per
+dialog show/hide (one per child widget).
+
+## Drag-by-header on the frameless dialogs (2026-08-22)
+
+Recording 20260822-133926 showed three presses on the Project Settings
+dialog's top edge in its first 1.5 s — someone trying to move a window
+that could not move, and a dialog that cannot move can cover what the
+artist is looking at. Both frameless dialogs (New Project, Project
+Settings) now drag by their HEADER BAND only, via the shared
+src/FramelessDialogDrag.h (HeaderDrag): the band is QRect(0,0,width,
+kFormY) — the strip above the first field holding the painted section
+headers and their rules; the first control sits at kFormY+16, so the band
+never overlaps a control and presses on controls or on the body never
+start a drag (a drag-from-anywhere dialog turns every mis-click into a
+window move). The frame is clamped to the available geometry of the
+screen it is on, so dragging toward an edge stops at the edge. Behaviour
+only — no title bar, resize grip, or chrome the design does not show.
+Seam (archived: tests/_backups/seam_dialog_drag_20260822.cpp): header
+drag moves by exactly the delta (positive control first), body drag and
+control drag do not move, edge drags stay fully on screen — 13 checks x
+10 runs across both configs. Seam-driver lesson: synthetic drag events
+must carry ABSOLUTE global positions from a fixed start; deriving globals
+from the moving dialog re-adds each step and the drag runs away.

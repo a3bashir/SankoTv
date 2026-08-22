@@ -1,5 +1,7 @@
 #pragma once
 
+#include "FramelessDialogDrag.h"
+
 #include <QDateTime>
 #include <QDialog>
 #include <QVector>
@@ -66,6 +68,9 @@ public:
     brushlib::StudioTextField *heightField() const { return m_height; }
     brushlib::StudioDropdown *presetDropdown() const { return m_preset; }
     brushlib::StudioDropdown *fpsDropdown() const { return m_fps; }
+    // Drag-by-header (behaviour only): the band above the first field,
+    // spanning both columns' painted headers. Exposed for tests.
+    QRect dragHeaderBand() const;
     QPushButton *createButton() const { return m_create; }
     QPushButton *openButton() const { return m_open; }
     QString validationReason() const { return m_reason; }
@@ -73,6 +78,9 @@ public:
 
 protected:
     void paintEvent(QPaintEvent *event) override;
+    void mousePressEvent(QMouseEvent *event) override;
+    void mouseMoveEvent(QMouseEvent *event) override;
+    void mouseReleaseEvent(QMouseEvent *event) override;
     void showEvent(QShowEvent *event) override;
     void keyPressEvent(QKeyEvent *event) override;
 
@@ -100,4 +108,5 @@ private:
     QString m_createdFile;
     QString m_openPath;
     QString m_reason;
+    HeaderDrag m_drag;
 };

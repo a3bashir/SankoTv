@@ -647,6 +647,41 @@ void NewProjectDialog::keyPressEvent(QKeyEvent *event)
     QDialog::keyPressEvent(event);
 }
 
+QRect NewProjectDialog::dragHeaderBand() const
+{
+    // Above the first field: the "Create New Project" / "Recent Projects"
+    // headers and their rules. The first control sits at kFormY + 16, so
+    // the band never overlaps a control.
+    return QRect(0, 0, width(), kFormY);
+}
+
+void NewProjectDialog::mousePressEvent(QMouseEvent *event)
+{
+    if (m_drag.press(this, event, dragHeaderBand())) {
+        event->accept();
+        return;
+    }
+    QDialog::mousePressEvent(event);
+}
+
+void NewProjectDialog::mouseMoveEvent(QMouseEvent *event)
+{
+    if (m_drag.move(this, event)) {
+        event->accept();
+        return;
+    }
+    QDialog::mouseMoveEvent(event);
+}
+
+void NewProjectDialog::mouseReleaseEvent(QMouseEvent *event)
+{
+    if (m_drag.release()) {
+        event->accept();
+        return;
+    }
+    QDialog::mouseReleaseEvent(event);
+}
+
 void NewProjectDialog::paintEvent(QPaintEvent *)
 {
     QPainter p(this);

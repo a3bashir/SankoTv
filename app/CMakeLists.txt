@@ -54,6 +54,7 @@ qt_add_executable(SankoTV
     src/NewProjectDialog.h
     src/ProjectSettingsDialog.cpp
     src/ProjectSettingsDialog.h
+    src/FramelessDialogDrag.h
     src/DashboardPage.h
     src/ScriptEditorPage.cpp
     src/ScriptEditorPage.h

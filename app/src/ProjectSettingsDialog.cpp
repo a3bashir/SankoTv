@@ -3,6 +3,7 @@
 #include "brushlib/StudioControls.h"
 
 #include <QKeyEvent>
+#include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPushButton>
@@ -198,6 +199,41 @@ bool ProjectSettingsDialog::applyPending()
         return false;
     emit applied(projectName(), fps());
     return true;
+}
+
+QRect ProjectSettingsDialog::dragHeaderBand() const
+{
+    // Everything above the first field: the "General" header and its rule.
+    // The first control starts at kFormY + 16, so this band never overlaps
+    // a control — presses there go to the control, never to a drag.
+    return QRect(0, 0, width(), kFormY);
+}
+
+void ProjectSettingsDialog::mousePressEvent(QMouseEvent *event)
+{
+    if (m_drag.press(this, event, dragHeaderBand())) {
+        event->accept();
+        return;
+    }
+    QDialog::mousePressEvent(event);
+}
+
+void ProjectSettingsDialog::mouseMoveEvent(QMouseEvent *event)
+{
+    if (m_drag.move(this, event)) {
+        event->accept();
+        return;
+    }
+    QDialog::mouseMoveEvent(event);
+}
+
+void ProjectSettingsDialog::mouseReleaseEvent(QMouseEvent *event)
+{
+    if (m_drag.release()) {
+        event->accept();
+        return;
+    }
+    QDialog::mouseReleaseEvent(event);
 }
 
 void ProjectSettingsDialog::keyPressEvent(QKeyEvent *event)

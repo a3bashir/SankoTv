@@ -1,5 +1,7 @@
 #pragma once
 
+#include "FramelessDialogDrag.h"
+
 #include <QDialog>
 #include <QSize>
 #include <QString>
@@ -51,6 +53,11 @@ public:
     QPushButton *okButton() const { return m_ok; }
     QPushButton *resizeButton() const { return m_resize; }
 
+    // Drag-by-header (behaviour only, no chrome): the band above the first
+    // field — the painted "General" header and its rule. Exposed so a test
+    // can press exactly inside / outside it.
+    QRect dragHeaderBand() const;
+
 signals:
     // Emitted by Apply and by OK (once each), never by Cancel and never by
     // editing a field.
@@ -59,12 +66,16 @@ signals:
 protected:
     void paintEvent(QPaintEvent *event) override;
     void keyPressEvent(QKeyEvent *event) override;
+    void mousePressEvent(QMouseEvent *event) override;
+    void mouseMoveEvent(QMouseEvent *event) override;
+    void mouseReleaseEvent(QMouseEvent *event) override;
 
 private:
     QString validate() const;
     void revalidate();
     bool applyPending(); // false if invalid (nothing emitted)
 
+    HeaderDrag m_drag;
     QSize m_canvasSize;
     QVector<int> m_fpsValues; // dropdown index -> fps value
     brushlib::StudioTextField *m_name = nullptr;
