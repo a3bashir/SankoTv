@@ -5,6 +5,7 @@
 #include <QDialog>
 #include <QSize>
 #include <QString>
+#include <QVariantMap>
 
 class QPushButton;
 namespace brushlib {
@@ -57,6 +58,14 @@ public:
     // field — the painted "General" header and its rule. Exposed so a test
     // can press exactly inside / outside it.
     QRect dragHeaderBand() const;
+
+    // Dev Recorder opt-in (see devrecorder/DevRecorder.h): what this dialog
+    // was SEEDED with and what it would PAINT, so a recording of a "the
+    // values look wrong/blank" report carries the answer instead of only
+    // showing that the dialog opened. Invoked by name, so the recorder
+    // needs no knowledge of this type and this class needs no dependency
+    // on the recorder.
+    Q_INVOKABLE QVariantMap devrecState() const;
 
 signals:
     // Emitted by Apply and by OK (once each), never by Cancel and never by

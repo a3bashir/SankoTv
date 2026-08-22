@@ -1054,3 +1054,96 @@ desktop and crop in the GRAB's pixel space, not logical coordinates);
 (2) add the dialog's seeded values (project name, fps, canvas size) to the
 state poll; (3) log top-level geometry + z-order when a modal opens, which
 would have named an obscuring floating panel immediately.
+
+## Dev Recorder: modal blind spot CLOSED (2026-08-22)
+
+ROOT CAUSE, in code, not inferred: the screenshot timer's privacy guard
+read `!d->window->isActiveWindow()` and returned. A modal dialog TAKES
+activation from the main window, so that one line skipped the screenshot
+AND the state poll for a modal's entire lifetime. It was by design (keep
+foreign windows out of captures), not an effect of the nested exec()
+loop — timers keep firing in a nested loop. Confirmed against the
+20260822-133926 session arithmetic: 37.7 s at 500 ms would be ~75 polls;
+dialogs were open ~22.8 s, leaving ~15 s ~= 30 — the summary recorded 29.
+
+FOUR CHANGES:
+1. CAPTURE DURING MODALS. The guard now passes when the main window is
+   active OR one of OUR modals is active. A foreign app with focus still
+   suppresses capture (then neither is active) — asserted in the seam.
+2. CAPTURE REGION. Still the app window's frame, which already CONTAINS a
+   centred dialog, so the privacy bound is unchanged in the common case.
+   Only when a dialog has been dragged clear of the window (possible since
+   drag-by-header, including onto the other monitor) is the region united
+   with the modal's frame, clamped to the screen, and a
+   "captureRegionExtended" record notes it (with modalClipped when the
+   dialog is on another screen).
+3. MODAL STATE. statePoll now carries modal.class/name/title/geom/
+   appModal/insideApp, plus whatever the dialog chooses to publish through
+   an OPTIONAL invokable — Q_INVOKABLE QVariantMap devrecState() const —
+   invoked BY NAME, so the recorder keeps its host-agnostic promise and any
+   dialog opts in with a few lines. ProjectSettingsDialog publishes
+   projectName, fps, canvasW/H, resolutionText, aspectRatioText,
+   validationReason and the button enable states; NewProjectDialog
+   publishes its form values. Those two *Text fields are exactly what
+   round 1 of the blank-values investigation could not confirm.
+4. GEOMETRY + Z-ORDER. A modalOpen record (from QEvent::WindowBlocked,
+   the generic signal) enumerates every visible top-level with geometry,
+   whether it overlaps the modal, and a z-index from a Win32 GetTopWindow/
+   GW_HWNDNEXT walk (guarded by Q_OS_WIN, consistent with the existing
+   working-set code); windowHandle() is used rather than winId() so the
+   audit cannot force a native window into existence and change what it
+   measures. Move/Resize/Show records now carry the FULL frame rect: they
+   previously carried position OR size only, so a panel that moved during a
+   modal could not be reconstructed. A capture + state poll also fire
+   immediately at modal open rather than up to an interval later.
+
+CAPTURE METHOD, for whoever revisits it: the recorder already grabs the
+composited SCREEN REGION (grabWindow(0, x, y, w, h)), which is the only
+approach that can see a window drawn OVER a dialog — the defect class this
+exists to catch. grabWindow(winId) returns BLACK for the translucent
+frameless dialogs and cannot see overlapping windows; QWidget::grab()/
+render() renders the widget's own painting and is likewise blind to
+overlap (fine for "did we paint it" unit checks, useless here); a
+full-desktop grab would see everything but breaks the privacy bound.
+
+OVERHEAD, measured rather than assumed. The capture primitive costs
+~16.6 ms and is INDEPENDENT of region size (1600x900, 380x352 and
+1700x950 all ~16.6 ms), so extending the region is free. Using the
+recorder's own 10 ms probe: Release baseline worst gap 12-23 ms vs modal
+STEADY STATE 20-35 ms across five runs — at parity within noise. Debug
+showed 37-45 ms against a 16-19 ms baseline on 2 of 5 runs.
+
+THE DEBUG NUMBERS ARE ACCEPTED, WITH REASON — do NOT re-open them as a
+defect. Recording is done in Release (the recorder's own summary tells
+you to read timings against the build profile); the capture primitive
+costs the same in both configs (~16.6 ms, measured, size-independent);
+and Debug's baseline is doing more work per frame regardless, so a wider
+worst-gap there says something about Debug, not about modal capture. The
+500 ms interval was kept deliberately and was NOT lengthened for modals.
+
+Seam archived: tests/_backups/seam_devrec_modal_20260822.cpp — 16 checks,
+each colour signature with a positive control (no accent pixels before the
+dialog exists; no obscuring colour before the obscurer is shown), proving
+the capture contains the dialog AND shows a window drawn over it.
+
+## First Project Settings open costs ~344-414 ms of UI thread (2026-08-22)
+
+Surfaced while measuring recorder overhead, and recorded here so it does
+not stay buried in that report: constructing and first-showing
+ProjectSettingsDialog costs 344-414 ms on the UI thread the FIRST time in
+a process (five measurements, Release). Measured with the DEV RECORDER
+OFF, so it is the app's own construction cost, not instrumentation: font
+resolution, the shared StudioControls (StudioTextField's embedded editor,
+StudioDropdown), and the first paint of a translucent frameless window.
+Subsequent opens do not pay it — a later open in the same process
+measured 17-39 ms.
+
+Not urgent and not a correctness problem; the dialog is modal and opens
+on a deliberate menu action. Worth a look if dialog-open latency ever
+matters, and the same one-time cost very likely applies to the other
+frameless dialogs (New Project pays it at the same place). Candidate
+directions if it is ever taken up: warm the shared studio controls once
+at startup, or construct the dialog lazily off the first paint. MEASURE
+FIRST — this number came from a bare open with nothing else running, and
+the previous performance passes both found that briefed numbers did not
+survive contact.

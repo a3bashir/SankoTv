@@ -46,7 +46,9 @@
 // are tiny, continue) and the summary says so.
 
 #include <QAction>
+#include <QJsonArray>
 #include <QJsonObject>
+#include <QRect>
 #include <QObject>
 #include <QString>
 #include <QVariantMap>
@@ -144,6 +146,8 @@ private:
 
     void captureNow();
     void logState(const QString &type);
+    // Visible top-levels with geometry, modal overlap and z-order.
+    QJsonArray topLevelAudit(const QRect &modalRect) const;
     void checkCamera();
     void enqueue(const QString &type, const QJsonObject &data);
     void writeSystemInfo();

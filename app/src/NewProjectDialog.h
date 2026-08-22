@@ -3,6 +3,7 @@
 #include "FramelessDialogDrag.h"
 
 #include <QDateTime>
+#include <QVariantMap>
 #include <QDialog>
 #include <QVector>
 
@@ -71,6 +72,11 @@ public:
     // Drag-by-header (behaviour only): the band above the first field,
     // spanning both columns' painted headers. Exposed for tests.
     QRect dragHeaderBand() const;
+
+    // Dev Recorder opt-in (see devrecorder/DevRecorder.h): the form's
+    // current values, so a recording carries what the dialog held rather
+    // than only that it was open. Invoked by name — no dependency either way.
+    Q_INVOKABLE QVariantMap devrecState() const;
     QPushButton *createButton() const { return m_create; }
     QPushButton *openButton() const { return m_open; }
     QString validationReason() const { return m_reason; }

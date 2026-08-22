@@ -9,7 +9,9 @@
 #include <QEnterEvent>
 #include <QFile>
 #include <QGuiApplication>
+#include <QJsonArray>
 #include <QJsonDocument>
+#include <QWindow>
 #include <QLabel>
 #include <QMouseEvent>
 #include <QMutex>
@@ -72,6 +74,11 @@ QString eventName(QEvent::Type t)
     case QEvent::Hide: return QStringLiteral("hide");
     case QEvent::Move: return QStringLiteral("move");
     case QEvent::Resize: return QStringLiteral("resize");
+    // A modal dialog blocking/unblocking a top-level: the generic signal
+    // for "a modal opened/closed", covering message boxes and dialogs that
+    // do not exist yet.
+    case QEvent::WindowBlocked: return QStringLiteral("modalOpen");
+    case QEvent::WindowUnblocked: return QStringLiteral("modalClose");
     case QEvent::Shortcut: return QStringLiteral("shortcut");
     case QEvent::Wheel: return QStringLiteral("wheel");
     default: return QString();
@@ -481,9 +488,20 @@ Recorder::Recorder(QObject *parent) : QObject(parent), d(new RecorderPrivate)
 
     d->shotTimer.setInterval(d->intervalMs);
     connect(&d->shotTimer, &QTimer::timeout, this, [this] {
-        // Privacy guard: only grab while we are the active window, so an
-        // overlapping foreign window can never be captured.
-        if (!d->window || !d->window->isActiveWindow())
+        // Privacy guard: only grab while WE have focus, so an overlapping
+        // foreign window can never be captured. A modal dialog of OURS
+        // takes activation away from the main window, which is why this
+        // used to skip capture AND the state poll for a modal's entire
+        // lifetime — the recorder went blind exactly when a dialog bug was
+        // on screen. Our own active modal counts as us; a foreign app with
+        // focus still suppresses capture, because then neither the main
+        // window nor our modal is the active window.
+        if (!d->window)
+            return;
+        QWidget *modal = QApplication::activeModalWidget();
+        const bool weHaveFocus = d->window->isActiveWindow()
+            || (modal && modal->isActiveWindow());
+        if (!weHaveFocus)
             return;
         captureNow();
         logState(QStringLiteral("statePoll"));
@@ -741,11 +759,41 @@ void Recorder::captureNow()
     // desktop or other screens; the active-window gate above keeps foreign
     // windows out of the region in practice (an always-on-top foreign
     // window overlapping the app is the one residual caveat).
-    const QRect fg = d->window->frameGeometry();
+    QRect fg = d->window->frameGeometry();
+    // A modal dialog is normally centred ON the app window, so the app
+    // frame already contains it and the captured region — and therefore the
+    // privacy bound — is unchanged. Only when a dialog has been dragged
+    // clear of the window (now possible: the frameless dialogs drag by
+    // their header, and can cross monitors) is the region extended to
+    // include it, because a capture that cannot see the dialog is useless
+    // for the dialog bugs this exists to catch. Extending costs nothing:
+    // the grab is a fixed ~16.6 ms regardless of region size (measured).
+    // A modal on ANOTHER screen is captured only as far as this screen
+    // reaches — noted in the record via "modalClipped".
+    bool modalOutside = false, modalClipped = false;
+    if (QWidget *modal = QApplication::activeModalWidget()) {
+        const QRect mf = modal->frameGeometry();
+        if (!fg.contains(mf)) {
+            modalOutside = true;
+            fg = fg.united(mf);
+            modalClipped = modal->screen() != screen;
+        }
+    }
     const QRect sg = screen->geometry();
+    fg = fg.intersected(sg); // never grab beyond this screen
+    if (fg.isEmpty())
+        return;
     const QPixmap shot =
         screen->grabWindow(0, fg.x() - sg.x(), fg.y() - sg.y(), fg.width(),
                            fg.height());
+    if (modalOutside) {
+        QJsonObject o;
+        o.insert(QLatin1String("region"),
+                 QStringLiteral("%1,%2 %3x%4").arg(fg.x()).arg(fg.y())
+                     .arg(fg.width()).arg(fg.height()));
+        o.insert(QLatin1String("modalClipped"), modalClipped);
+        enqueue(QStringLiteral("captureRegionExtended"), o);
+    }
     if (shot.isNull())
         return;
     const double t = double(d->clock.nsecsElapsed()) / 1e6;
@@ -759,11 +807,77 @@ void Recorder::captureNow()
 
 void Recorder::logState(const QString &type)
 {
-    if (!d->stateProvider)
-        return;
-    const QVariantMap state = d->stateProvider();
-    QJsonObject o = QJsonObject::fromVariantMap(state);
+    QJsonObject o;
+    if (d->stateProvider)
+        o = QJsonObject::fromVariantMap(d->stateProvider());
+    // MODAL CONTEXT. A recording could show that a dialog interaction ran
+    // but never what it was SEEDED with or what it would paint, which is
+    // exactly what a "the values look blank" report needs. The identity and
+    // geometry below need no host knowledge; the values come from an
+    // OPTIONAL invokable the dialog may implement
+    // (Q_INVOKABLE QVariantMap devrecState() const), so the recorder stays
+    // host-agnostic and any dialog opts in with a few lines.
+    if (QWidget *modal = QApplication::activeModalWidget()) {
+        const QRect mf = modal->frameGeometry();
+        o.insert(QLatin1String("modal.class"),
+                 QString::fromLatin1(modal->metaObject()->className()));
+        o.insert(QLatin1String("modal.name"), modal->objectName());
+        o.insert(QLatin1String("modal.title"), modal->windowTitle());
+        o.insert(QLatin1String("modal.geom"),
+                 QStringLiteral("%1,%2 %3x%4").arg(mf.x()).arg(mf.y())
+                     .arg(mf.width()).arg(mf.height()));
+        o.insert(QLatin1String("modal.appModal"),
+                 modal->windowModality() == Qt::ApplicationModal);
+        if (d->window)
+            o.insert(QLatin1String("modal.insideApp"),
+                     d->window->frameGeometry().contains(mf));
+        QVariantMap hostState;
+        if (QMetaObject::invokeMethod(modal, "devrecState",
+                                      Qt::DirectConnection,
+                                      Q_RETURN_ARG(QVariantMap, hostState))) {
+            for (auto it = hostState.cbegin(); it != hostState.cend(); ++it)
+                o.insert(QLatin1String("modal.") + it.key(),
+                         QJsonValue::fromVariant(it.value()));
+        }
+    } else if (!d->stateProvider) {
+        return; // nothing to say
+    }
     enqueue(type, o);
+}
+
+// Every visible top-level of OURS, with geometry, whether it overlaps the
+// modal, and its z-order — the record that would have named an obscuring
+// floating panel instead of costing an investigation. Overlap alone only
+// proves adjacency; the z-index says which one is actually in front.
+QJsonArray Recorder::topLevelAudit(const QRect &modalRect) const
+{
+    QHash<WId, int> zIndex; // lower = closer to the front
+#ifdef Q_OS_WIN
+    int idx = 0;
+    for (HWND h = GetTopWindow(nullptr); h; h = GetWindow(h, GW_HWNDNEXT))
+        zIndex.insert(reinterpret_cast<WId>(h), idx++);
+#endif
+    QJsonArray arr;
+    for (QWidget *w : QApplication::topLevelWidgets()) {
+        if (!w->isVisible())
+            continue;
+        const QRect g = w->frameGeometry();
+        QJsonObject o;
+        o.insert(QLatin1String("w"), widgetLabel(w));
+        o.insert(QLatin1String("geom"),
+                 QStringLiteral("%1,%2 %3x%4").arg(g.x()).arg(g.y())
+                     .arg(g.width()).arg(g.height()));
+        o.insert(QLatin1String("overlapsModal"),
+                 !modalRect.isNull() && g.intersects(modalRect));
+        // windowHandle() rather than winId(): asking a non-native widget
+        // for winId() would CREATE a native window — the recorder must not
+        // change what it measures. A shown top-level already has one.
+        const int z = w->windowHandle()
+            ? zIndex.value(w->windowHandle()->winId(), -1) : -1;
+        o.insert(QLatin1String("z"), z);
+        arr.append(o);
+    }
+    return arr;
 }
 
 void Recorder::enqueue(const QString &type, const QJsonObject &data)
@@ -864,14 +978,41 @@ bool Recorder::eventFilter(QObject *object, QEvent *event)
         o.insert(QLatin1String("btns"), int(e->buttons()));
         break;
     }
+    // Move/Resize/Show carry the FULL frame rect, not just the half each
+    // event happens to be about: a panel that moves while a modal is open
+    // is otherwise untraceable after the fact — you can see THAT it moved
+    // but never to where, so overlap can never be reconstructed. Show is
+    // included so a window that never moves still has a geometry on record.
     case QEvent::Move:
+    case QEvent::Resize:
+    case QEvent::Show: {
+        const QRect g = w->frameGeometry();
         o.insert(QLatin1String("x"), w->x());
         o.insert(QLatin1String("y"), w->y());
-        break;
-    case QEvent::Resize:
         o.insert(QLatin1String("wd"), w->width());
         o.insert(QLatin1String("ht"), w->height());
+        o.insert(QLatin1String("geom"),
+                 QStringLiteral("%1,%2 %3x%4").arg(g.x()).arg(g.y())
+                     .arg(g.width()).arg(g.height()));
         break;
+    }
+    case QEvent::WindowBlocked: {
+        // A modal just blocked this window: enumerate every visible
+        // top-level with geometry, modal overlap and z-order, and snapshot
+        // the modal's own state in the same breath.
+        QRect modalRect;
+        if (QWidget *modal = QApplication::activeModalWidget()) {
+            modalRect = modal->frameGeometry();
+            o.insert(QLatin1String("modal"),
+                     QString::fromLatin1(modal->metaObject()->className()));
+            o.insert(QLatin1String("modalGeom"),
+                     QStringLiteral("%1,%2 %3x%4").arg(modalRect.x())
+                         .arg(modalRect.y()).arg(modalRect.width())
+                         .arg(modalRect.height()));
+        }
+        o.insert(QLatin1String("topLevels"), topLevelAudit(modalRect));
+        break;
+    }
     default:
         break;
     }
@@ -886,6 +1027,13 @@ bool Recorder::eventFilter(QObject *object, QEvent *event)
         d->lastInput = li;
     }
     enqueue(name, o);
+    // A modal just opened: capture and poll state IMMEDIATELY rather than
+    // waiting up to a full interval — the dialog's opening appearance and
+    // its seeded values are the evidence a dialog report needs.
+    if (t == QEvent::WindowBlocked && w == d->window) {
+        captureNow();
+        logState(QStringLiteral("statePoll"));
+    }
     if (t == QEvent::Wheel || t == QEvent::MouseButtonRelease
         || t == QEvent::MouseButtonPress || t == QEvent::Shortcut)
         checkCamera();

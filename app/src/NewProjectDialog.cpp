@@ -647,6 +647,20 @@ void NewProjectDialog::keyPressEvent(QKeyEvent *event)
     QDialog::keyPressEvent(event);
 }
 
+QVariantMap NewProjectDialog::devrecState() const
+{
+    QVariantMap s;
+    s.insert(QStringLiteral("projectName"), projectName());
+    s.insert(QStringLiteral("location"), m_location->text());
+    s.insert(QStringLiteral("preset"), m_preset->currentText());
+    s.insert(QStringLiteral("canvasW"), canvasWidth());
+    s.insert(QStringLiteral("canvasH"), canvasHeight());
+    s.insert(QStringLiteral("fps"), fps());
+    s.insert(QStringLiteral("validationReason"), m_reason);
+    s.insert(QStringLiteral("createEnabled"), m_create && m_create->isEnabled());
+    return s;
+}
+
 QRect NewProjectDialog::dragHeaderBand() const
 {
     // Above the first field: the "Create New Project" / "Recent Projects"

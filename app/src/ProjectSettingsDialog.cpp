@@ -201,6 +201,26 @@ bool ProjectSettingsDialog::applyPending()
     return true;
 }
 
+QVariantMap ProjectSettingsDialog::devrecState() const
+{
+    QVariantMap s;
+    s.insert(QStringLiteral("projectName"), projectName());
+    s.insert(QStringLiteral("fps"), fps());
+    s.insert(QStringLiteral("canvasW"), m_canvasSize.width());
+    s.insert(QStringLiteral("canvasH"), m_canvasSize.height());
+    // The exact strings the Canvas section paints — the fields a "values
+    // look blank" report needs, and which no earlier recording could show.
+    s.insert(QStringLiteral("resolutionText"), resolutionText(m_canvasSize));
+    s.insert(QStringLiteral("aspectRatioText"), aspectRatioText(m_canvasSize));
+    s.insert(QStringLiteral("validationReason"), m_reason);
+    s.insert(QStringLiteral("applyEnabled"),
+             m_apply && m_apply->isEnabled());
+    s.insert(QStringLiteral("okEnabled"), m_ok && m_ok->isEnabled());
+    s.insert(QStringLiteral("resizeEnabled"),
+             m_resize && m_resize->isEnabled());
+    return s;
+}
+
 QRect ProjectSettingsDialog::dragHeaderBand() const
 {
     // Everything above the first field: the "General" header and its rule.
