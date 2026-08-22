@@ -1974,6 +1974,16 @@ StoryboardPage::StoryboardPage(QWidget *parent)
     // stack, so hook the View menu once the event loop starts.
     QTimer::singleShot(0, this, [this] { installDockViewActions(); });
 
+    // Watch the TOP-LEVEL window for modal blocking (see eventFilter). It is
+    // only reachable once this page has been parented into the window, so
+    // the install is deferred exactly like the dock actions above.
+    QTimer::singleShot(0, this, [this] {
+        if (QWidget *top = window()) {
+            m_modalWatchWindow = top;
+            top->installEventFilter(this);
+        }
+    });
+
     // 'O' toggles onion skin (the extras-bar button is gone; the shortcut
     // drives the canvas state directly).
     QShortcut *onionShortcut = new QShortcut(QKeySequence(Qt::Key_O), this);
@@ -4668,6 +4678,23 @@ Panel *StoryboardPage::currentPanel() const
 
 bool StoryboardPage::eventFilter(QObject *object, QEvent *event)
 {
+    // A MODAL DIALOG is open over this window: hide the floating tool
+    // windows for its lifetime. They are Qt::Tool top-levels owned by the
+    // main window, so nothing keeps them behind a modal surface — captured
+    // proof: the brush bar and the Brush Library painted straight ACROSS
+    // the Project Settings dialog, leaving parts of it unreadable while the
+    // rest showed normally. Qt::WindowBlocked/Unblocked is the generic
+    // signal (every modal, including ones that do not exist yet, and
+    // message boxes), and it is delivered to the top-level window, which is
+    // why the filter is installed there. This reuses the SAME suppression
+    // the Brush Settings studio uses — captures are intent-only and nest,
+    // so a modal over the studio unwinds correctly.
+    if (object == m_modalWatchWindow && m_canvas) {
+        if (event->type() == QEvent::WindowBlocked)
+            FloatingToolWindow::suppressFloatingBars(m_canvas);
+        else if (event->type() == QEvent::WindowUnblocked)
+            FloatingToolWindow::restoreFloatingBars(m_canvas);
+    }
     // Floating toolbars/panels manage themselves now: FloatingToolWindow's
     // shared manager watches the canvas and the main window, handling drag,
     // clamping, follow, and show/hide for every registered instance.

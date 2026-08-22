@@ -109,13 +109,16 @@ public:
     // choosing "hidden" (the D1 rule; the BrushLibraryPanel's autoHide() is
     // the same idea for one window, this is the same idea for all of them).
     // restore puts every captured window back to its captured intent — a bar
-    // the user had already hidden stays hidden. Calls nest safely: a second
-    // suppress for the same anchor keeps the FIRST capture (the transient
-    // hide/show a page switch or minimize produces must not re-capture the
-    // suppressed state as if the user had chosen it), and restore with no
-    // capture is a no-op.
+    // the user had already hidden stays hidden. Calls NEST: captures form a
+    // per-anchor stack and each restore pops its own, so holders unwind in
+    // reverse order (a modal dialog opening over the Brush Settings studio
+    // hides what the studio left visible, and closing it hands the studio
+    // back exactly what it had). A capture records INTENT, never effective
+    // visibility, so the transient hide/show a page switch or minimize
+    // produces can never be re-captured as if the user had chosen it, and
+    // restore with no capture is a no-op.
     static void suppressFloatingBars(QWidget *anchor,
-                                     const QVector<FloatingToolWindow *> &except);
+                                     const QVector<FloatingToolWindow *> &except = {});
     static void restoreFloatingBars(QWidget *anchor);
 
     // Place at anchor origin + (persisted or default) offset, clamped.

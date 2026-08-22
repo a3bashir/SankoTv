@@ -980,3 +980,77 @@ a matching arrangement before the drag is called verified there:
   4. MIXED DPR per monitor: expect logical coordinates to stay consistent
      across the boundary and the fixed-size dialog to re-render at the new
      DPR without misplacement; frameGeometry().size() is re-read per move.
+
+## Modal dialogs vs the floating tool windows (2026-08-22)
+
+REPORTED: in the real app, the Project Settings dialog's Canvas VALUES
+(resolution, aspect ratio) looked blank while the labels and layout showed
+normally. Investigation could not reproduce blank values in ANY data path
+— bare dialog, app stylesheet, real MainWindow parent, five real projects
+(legacy 960x540, legacy no-keys, 4K, zero-scene), 777x1013, 150% display
+scaling, after a window move, and finally through the REAL slot
+(MainWindow::onProjectSettings on a really-opened project, captured from a
+timer while exec() blocked). In every case the values are computed AND
+painted.
+
+What WAS found and proved with captures: the storyboard's floating bars
+are Qt::Tool top-levels owned by the main window, and NOTHING kept them
+behind a modal dialog. A capture shows the brush toolbar and the Brush
+Library painted straight ACROSS the Project Settings dialog; an overlap
+audit logged BrushLibraryPanel at 638,291 360x420 intersecting the dialog
+rect in a real session. That produces exactly the reported symptom SHAPE —
+part of a dialog unreadable while the rest shows — without any state
+corruption. It is NOT confirmed as the specific sighting (in the layout
+captured at 16:03 the library sat over the dialog's LEFT half, which would
+hide labels rather than values), so the door is left open.
+
+FIX: StoryboardPage watches its TOP-LEVEL window for
+QEvent::WindowBlocked/WindowUnblocked — the generic signal for any modal,
+including message boxes and dialogs that do not exist yet — and
+suppresses/restores the floating bars through the SAME mechanism the Brush
+Settings studio already used. Enumeration is the manager's REGISTRY
+(FloatingToolWindowManager::windows()), not a hardcoded list, so a bar
+added later is covered by construction. Suppression captures INTENT, so a
+bar the user had closed stays closed, and nothing is persisted.
+suppressFloatingBars/restoreFloatingBars became a per-anchor STACK (was
+first-capture-wins): holders nest, so a modal opening over the Brush
+Settings studio hides what the studio left visible and closing it hands
+the studio back exactly what it had. Both walks now batch placement and
+re-pack ONCE at the end instead of per bar.
+
+VERIFIED (seam archived: tests/_backups/seam_modal_bars_20260822.cpp):
+bars visible before (positive control), ALL hidden during the modal,
+restored exactly after OK / Cancel / Escape, a deliberately closed bar
+still closed afterwards (with a control proving the checker can tell
+closed from open), three sequential modals, and nested modals where
+closing the inner one must NOT restore while the outer is still open.
+
+KNOWN RESIDUAL — placement, not state: after RAPID repeated modal cycles
+the managed group sometimes settles 13 px to the right with the brush bar
+one slot (48 px) lower. Measured, not guessed: the delta is identical
+every time, an idle-cycles control with NO modal never drifts, and an
+anchor audit proves the CANVAS DID NOT MOVE — so the bars are not
+following their anchor; managed placement simply packs a hide-all ->
+show-all cycle into a different arrangement. Visibility, sizes and stored
+user offsets are always exact; only the auto-placed position moves.
+Batching the re-pack reduced it (2/10 -> ~1/6 of runs) but did not remove
+it. This is in the managed-placement system, not the suppression
+protocol, and is left as a separate item. NOTE for whoever picks it up:
+the earlier "5/5 clean" readings were an artifact of snapshotting before
+the group settled — always let placement settle before comparing.
+
+## Dev Recorder modal capture — HIGHEST-VALUE TOOLING FIX (2026-08-22)
+
+Raised from "gap" to "highest value" by the investigation above: the
+recorder stops screenshot capture for the whole of every modal exec(), so
+a dialog defect the user can SEE cannot be photographed. This entire
+investigation — a full day of harnesses, layered reproductions and
+captures — would have been ONE SCREENSHOT if the recorder had captured
+the active modal window. Do this before the next dialog bug: (1) keep the
+screenshot timer capturing during modal event loops, grabbing
+QApplication::activeModalWidget() when one exists (note grabWindow(winId)
+returns BLACK for the translucent frameless dialogs — grab the composited
+desktop and crop in the GRAB's pixel space, not logical coordinates);
+(2) add the dialog's seeded values (project name, fps, canvas size) to the
+state poll; (3) log top-level geometry + z-order when a modal opens, which
+would have named an obscuring floating panel immediately.

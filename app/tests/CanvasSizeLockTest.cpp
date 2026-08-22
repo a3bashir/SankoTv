@@ -582,6 +582,70 @@ void runProjectSettingsPass()
     }
     delete sc;
 
+    // RENDERED canvas facts. The Part 1 seam asserted the STATIC string
+    // formatters and the widgets' existence — it never rendered the dialog,
+    // so "computes the right string but never shows it" was invisible to it
+    // (a real report of blank values is what exposed the gap). This renders
+    // the dialog and samples the pixel bands where the labels and the values
+    // are painted. QWidget::render() is used rather than a screen grab: it
+    // measures THIS widget's own painting, deterministically, with no
+    // compositor or foreign window in the way. What it cannot see —
+    // another window drawn OVER the dialog — is a separate concern.
+    {
+        auto renderDialog = [](const QSize &canvas) {
+            ProjectSettingsDialog d(QStringLiteral("Alpha"), 24, canvas);
+            d.show();
+            pump(150);
+            QImage img(d.size(), QImage::Format_ARGB32_Premultiplied);
+            img.fill(QColor(0x11, 0x11, 0x11)); // the dialog's own background
+            d.render(&img);
+            d.close();
+            pump(30);
+            return img;
+        };
+        // Ink = pixels clearly lighter than the #111111 background.
+        auto ink = [](const QImage &img, const QRect &band) {
+            const QRect r = band.intersected(img.rect());
+            const QImage rgb = img.convertToFormat(QImage::Format_ARGB32);
+            int n = 0;
+            for (int y = r.top(); y <= r.bottom(); ++y) {
+                const QRgb *row =
+                    reinterpret_cast<const QRgb *>(rgb.constScanLine(y));
+                for (int x = r.left(); x <= r.right(); ++x)
+                    if (qRed(row[x]) > 0x55 || qGreen(row[x]) > 0x55
+                        || qBlue(row[x]) > 0x55)
+                        ++n;
+            }
+            return n;
+        };
+        // Bands from the dialog's layout: labels x18..138, values x146..362,
+        // the two Canvas rows at y200 and y220.
+        const QRect labelBand(18, 196, 120, 44);
+        const QRect valueBand(146, 196, 216, 44);
+        const QRect emptyBand(146, 150, 216, 30); // between the fps row and Canvas
+        const QImage hd = renderDialog(QSize(1920, 1080));
+        const QImage uhd = renderDialog(QSize(3840, 2160));
+        // Control 1: the sampler sees known-present text (the labels).
+        check(QStringLiteral("(g) render control: LABEL band has ink"),
+              ink(hd, labelBand) > 20,
+              QStringLiteral("ink=%1").arg(ink(hd, labelBand)));
+        // Control 2: the sampler reports ABSENCE where nothing is painted —
+        // without this, "value band has ink" could pass on any background.
+        check(QStringLiteral("(g) render control: empty band reads as empty"),
+              ink(hd, emptyBand) < 5,
+              QStringLiteral("ink=%1").arg(ink(hd, emptyBand)));
+        // The values are actually painted where the user reads them.
+        check(QStringLiteral("(g) resolution + aspect are PAINTED in the "
+                             "Canvas value band"),
+              ink(hd, valueBand) > 20,
+              QStringLiteral("ink=%1").arg(ink(hd, valueBand)));
+        // ...and the band really carries the SIZE-DEPENDENT text, so the
+        // check cannot pass on some unrelated decoration.
+        check(QStringLiteral("(g) the value band differs between 1920x1080 "
+                             "and 3840x2160"),
+              hd.copy(valueBand) != uhd.copy(valueBand));
+    }
+
     // The dialog's pending contract.
     auto fpsIndexOf = [](ProjectSettingsDialog &d, int fps) {
         for (int i = 0; i < 8; ++i) {

@@ -5,6 +5,7 @@
 #include <QHash>
 #include <functional>
 #include <QPoint>
+#include <QPointer>
 #include <QSet>
 #include <QVector>
 #include <QWidget>
@@ -346,6 +347,10 @@ private:
     QHash<QString, QPixmap> m_stripIconCache; // svg|WxH@dpr -> pixmap
     int m_iconRasterCount = 0; // seam metric: bucketed rasterizations
     DrawingCanvas *m_canvas = nullptr;
+    // The top-level window, watched for WindowBlocked/WindowUnblocked so the
+    // floating tool windows hide while any modal dialog is open (they are
+    // Qt::Tool windows owned by it and would otherwise paint over the modal).
+    QPointer<QWidget> m_modalWatchWindow;
     ZoomToolbar *m_zoomToolbar = nullptr; // custom-painted view controls
     brushlib::BrushLibraryModel *m_brushLibModel = nullptr;
     brushlib::BrushLibraryPanel *m_brushLibPanel = nullptr;

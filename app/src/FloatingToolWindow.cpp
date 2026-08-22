@@ -140,14 +140,31 @@ namespace {
 // Per-anchor suppression capture: (window, its intent at suppress time).
 // In MEMORY only — the whole point is that a modal-surface hide is never
 // persisted anywhere a user choice is (see the header).
+// While a suppress/restore is walking the group, individual visibility
+// changes must NOT each re-pack managed placement: packing depends on which
+// bars are currently visible, so re-packing mid-walk lets the group settle
+// against a half-restored obstacle set and land somewhere else (measured:
+// after rapid modal cycles the group came back a fixed 13 px right, the
+// brush bar 48 px lower — deterministic, not jitter). The walk sets every
+// intent first and re-packs ONCE at the end, which makes restoration
+// positionally exact.
+bool g_batchingPlacement = false;
+
 struct SuppressedBar
 {
     QPointer<FloatingToolWindow> window;
     bool intent = false;
 };
-QHash<QWidget *, QVector<SuppressedBar>> &suppressedBars()
+// A STACK of captures per anchor, not a single one: suppression holders can
+// legitimately nest (the Brush Settings studio is open, and a modal dialog
+// opens on top of it). Each suppress pushes what it hid; each restore pops
+// its own capture, so the state unwinds exactly in reverse order. Because a
+// capture reads INTENT (m_wantVisible) and the base-qualified hide records
+// intent too, an inner capture records the outer's suppressed state and
+// restoring it hands control back to the outer holder unchanged.
+QHash<QWidget *, QVector<QVector<SuppressedBar>>> &suppressedBars()
 {
-    static QHash<QWidget *, QVector<SuppressedBar>> store;
+    static QHash<QWidget *, QVector<QVector<SuppressedBar>>> store;
     return store;
 }
 } // namespace
@@ -155,14 +172,15 @@ QHash<QWidget *, QVector<SuppressedBar>> &suppressedBars()
 void FloatingToolWindow::suppressFloatingBars(
     QWidget *anchor, const QVector<FloatingToolWindow *> &except)
 {
-    if (!anchor || suppressedBars().contains(anchor))
-        return; // nested suppress keeps the FIRST capture
+    if (!anchor)
+        return;
     QVector<SuppressedBar> captured;
     // The manager's registry, not a widget-tree walk: it covers every
     // floating window over this anchor by construction, including any
     // future bar that inherits this class.
     const QVector<FloatingToolWindow *> all =
         FloatingToolWindowManager::instance()->windows();
+    g_batchingPlacement = true; // one re-pack at the end, not one per bar
     for (FloatingToolWindow *w : all) {
         if (w->m_anchor != anchor || except.contains(w))
             continue;
@@ -173,17 +191,27 @@ void FloatingToolWindow::suppressFloatingBars(
         // outside a drag release, so nothing is written anywhere.
         w->FloatingToolWindow::setVisible(false);
     }
-    suppressedBars().insert(anchor, captured);
+    g_batchingPlacement = false;
+    repositionManagedGroup(anchor);
+    suppressedBars()[anchor].append(captured); // push this holder's capture
 }
 
 void FloatingToolWindow::restoreFloatingBars(QWidget *anchor)
 {
     if (!anchor)
         return;
-    const QVector<SuppressedBar> captured = suppressedBars().take(anchor);
+    auto it = suppressedBars().find(anchor);
+    if (it == suppressedBars().end() || it->isEmpty())
+        return; // restore without a capture stays a no-op
+    const QVector<SuppressedBar> captured = it->takeLast(); // pop THIS holder
+    if (it->isEmpty())
+        suppressedBars().erase(it);
+    g_batchingPlacement = true; // restore every intent, then re-pack once
     for (const SuppressedBar &bar : captured)
         if (bar.window)
             bar.window->FloatingToolWindow::setVisible(bar.intent);
+    g_batchingPlacement = false;
+    repositionManagedGroup(anchor);
 }
 
 void FloatingToolWindow::applyEffectiveVisibility()
@@ -206,7 +234,7 @@ void FloatingToolWindow::applyEffectiveVisibility()
     // overlaps moves aside — and a displaced bar RETURNS to its stored
     // position once the obstacle is gone, because displacement never
     // overwrites the user's saved offset (only a drag release does).
-    if (changed && m_anchor)
+    if (changed && m_anchor && !g_batchingPlacement)
         repositionManagedGroup(m_anchor);
 }
 
