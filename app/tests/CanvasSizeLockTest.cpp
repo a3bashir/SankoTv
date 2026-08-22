@@ -38,6 +38,14 @@
 //       nothing across setActivePanel) + the flatten-thumb cache at
 //       777x1013 (byte-identical to an uncached recompute; one edit
 //       invalidates)
+//   (g) project settings (promoted from the Part 1 seam, the two checks
+//       that catch a real regression): the frame rate RE-DERIVES the
+//       animatic's per-block frame counts (24/30/60 fps -> 240/300/600
+//       frames for 10 s of panels — reading the stored rate back would be
+//       vacuous), and the Project Settings dialog keeps edits PENDING
+//       (editing emits nothing, Cancel emits nothing, Apply emits once and
+//       stays open, OK emits once and closes) — a future convenience that
+//       applies on edit or on Cancel would silently mutate the project.
 //
 // Scope note, stated rather than implied: this family drives DrawingCanvas
 // and ProjectIO directly; it does NOT construct StoryboardPage, so the
@@ -53,11 +61,15 @@
 // Needs a GUI session (widgets + synthetic events) but never samples
 // screen pixels — no grabWindow, none of EdgeLock's capture sensitivity.
 
+#include "AnimaticTimeline.h"
 #include "DrawingCanvas.h"
 #include "ProjectIO.h"
+#include "ProjectSettingsDialog.h"
 #include "StoryboardModel.h"
+#include "brushlib/StudioControls.h"
 
 #include <QApplication>
+#include <QPushButton>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
@@ -540,6 +552,94 @@ void runStalenessPass(DrawingCanvas *canvas, QUndoStack *stack)
     delete detail;
 }
 
+// ---- (g): project settings — fps re-derives timing; dialog edits pend ----
+void runProjectSettingsPass()
+{
+    out() << "--- (g) project settings: fps timing + pending dialog ---" << Qt::endl;
+    // FPS -> DERIVED frame counts (10 s of panels: 2 + 3 + 5).
+    Scene *sc = new Scene;
+    sc->number = 1;
+    for (int dur : {2, 3, 5}) {
+        Panel *p = makeBlankPanel(QSize(960, 540));
+        p->duration = dur;
+        sc->panels.append(p);
+    }
+    {
+        AnimaticTimeline tl;
+        tl.setFps(24);
+        tl.setScenes({sc});
+        check(QStringLiteral("(g) 24 fps -> 240 derived frames"),
+              tl.totalFramesForTest() == 240,
+              QStringLiteral("%1").arg(tl.totalFramesForTest()));
+        tl.setFps(30);
+        check(QStringLiteral("(g) 30 fps -> 300 (re-derived, not stored)"),
+              tl.totalFramesForTest() == 300,
+              QStringLiteral("%1").arg(tl.totalFramesForTest()));
+        tl.setFps(60);
+        check(QStringLiteral("(g) 60 fps -> 600 (re-derived)"),
+              tl.totalFramesForTest() == 600,
+              QStringLiteral("%1").arg(tl.totalFramesForTest()));
+    }
+    delete sc;
+
+    // The dialog's pending contract.
+    auto fpsIndexOf = [](ProjectSettingsDialog &d, int fps) {
+        for (int i = 0; i < 8; ++i) {
+            d.fpsDropdown()->setCurrentIndex(i);
+            if (d.fps() == fps)
+                return i;
+        }
+        return -1;
+    };
+    {
+        ProjectSettingsDialog d(QStringLiteral("Alpha"), 24, QSize(1920, 1080));
+        int applies = 0;
+        QObject::connect(&d, &ProjectSettingsDialog::applied, &d,
+                         [&](const QString &, int) { ++applies; });
+        d.show();
+        pump(80);
+        d.nameField()->setText(QStringLiteral("Beta"));
+        emit d.nameField()->textEdited(QStringLiteral("Beta"));
+        d.fpsDropdown()->choose(fpsIndexOf(d, 30));
+        pump(30);
+        check(QStringLiteral("(g) editing the dialog applies nothing (pending)"),
+              applies == 0 && d.projectName() == QStringLiteral("Beta")
+                  && d.fps() == 30);
+        d.cancelButton()->click();
+        pump(30);
+        check(QStringLiteral("(g) Cancel applies nothing and closes"),
+              applies == 0 && d.result() == QDialog::Rejected && !d.isVisible());
+    }
+    {
+        ProjectSettingsDialog d(QStringLiteral("Alpha"), 24, QSize(1920, 1080));
+        int applies = 0;
+        QString lastName;
+        int lastFps = 0;
+        QObject::connect(&d, &ProjectSettingsDialog::applied, &d,
+                         [&](const QString &n, int f) {
+                             ++applies;
+                             lastName = n;
+                             lastFps = f;
+                         });
+        d.show();
+        pump(80);
+        d.nameField()->setText(QStringLiteral("Gamma"));
+        emit d.nameField()->textEdited(QStringLiteral("Gamma"));
+        d.fpsDropdown()->choose(fpsIndexOf(d, 60));
+        d.applyButton()->click();
+        pump(30);
+        check(QStringLiteral("(g) Apply applies once and stays open"),
+              applies == 1 && lastName == QStringLiteral("Gamma") && lastFps == 60
+                  && d.isVisible() && d.result() != QDialog::Accepted);
+        d.fpsDropdown()->choose(fpsIndexOf(d, 25));
+        d.okButton()->click();
+        pump(30);
+        check(QStringLiteral("(g) OK applies the newer value once and closes"),
+              applies == 2 && lastFps == 25 && d.result() == QDialog::Accepted
+                  && !d.isVisible());
+    }
+}
+
 } // namespace
 
 int main(int argc, char **argv)
@@ -594,6 +694,7 @@ int main(int argc, char **argv)
         window.close();
         pump(100);
     }
+    runProjectSettingsPass();
 
     const bool removed = QDir(scratch).removeRecursively();
     check(QStringLiteral("scratch root removed cleanly"),

@@ -14,6 +14,7 @@
 #include "ConsistencyBoard.h"
 #include "DashboardPage.h"
 #include "NewProjectDialog.h"
+#include "ProjectSettingsDialog.h"
 #include "ProjectIO.h"
 #include "GenerationPage.h"
 #include "ScriptEditorPage.h"
@@ -301,6 +302,13 @@ void MainWindow::setupMenuBar()
     m_saveAsAct->setShortcut(QKeySequence::SaveAs);
     connect(m_saveAsAct, &QAction::triggered, this, &MainWindow::onSaveProjectAs);
 
+    fileMenu->addSeparator();
+    // Project Settings lives under File, NOT under Edit > Preferences:
+    // Preferences are application-wide; these belong to the open project.
+    m_projectSettingsAct = fileMenu->addAction(QStringLiteral("Project Settings..."));
+    connect(m_projectSettingsAct, &QAction::triggered, this,
+            &MainWindow::onProjectSettings);
+
     QMenu *editMenu = menuBar()->addMenu(QStringLiteral("Edit"));
 
     // Clipboard actions (Storyboard page only). They act on the CANVAS
@@ -434,6 +442,47 @@ void MainWindow::updateSaveActions()
         m_saveAct->setEnabled(hasScenes);
     if (m_saveAsAct)
         m_saveAsAct->setEnabled(hasScenes);
+    // A project is "open" once it has a file (New Project creates one
+    // immediately) or scenes; Project Settings has nothing to edit before.
+    if (m_projectSettingsAct)
+        m_projectSettingsAct->setEnabled(hasScenes
+                                         || !m_currentProjectPath.isEmpty());
+}
+
+// --- Project Settings -----------------------------------------------------
+
+void MainWindow::onProjectSettings()
+{
+    // Canvas facts come from the RUNTIME authority when a panel exists
+    // (Panel::canvasSize() — pixels are the truth since the resolution
+    // epic), else from the project's stored size.
+    QSize canvas(m_canvasWidth, m_canvasHeight);
+    for (Scene *scene : m_scenes) {
+        if (!scene->panels.isEmpty() && scene->panels.first()->canvasSize().isValid()) {
+            canvas = scene->panels.first()->canvasSize();
+            break;
+        }
+    }
+    ProjectSettingsDialog dialog(m_projectName, m_projectFps, canvas, this);
+    // Apply and OK both route here; Cancel emits nothing, so the project is
+    // untouched until the artist commits — the dialog holds the pending
+    // values, the window holds the truth.
+    connect(&dialog, &ProjectSettingsDialog::applied, this,
+            &MainWindow::applyProjectSettings);
+    dialog.exec();
+}
+
+void MainWindow::applyProjectSettings(const QString &projectName, int fps)
+{
+    m_projectName = projectName;
+    m_projectFps = fps;
+    // FPS drives TIMING only: the animatic's per-block frame counts
+    // re-derive from it (AnimaticTimeline::setFps -> rebuildBlocks). No
+    // layer pixel is touched — the frame rate is metadata about playback,
+    // not about the artwork.
+    if (m_animatic)
+        m_animatic->setFps(m_projectFps);
+    updateTitle();
 }
 
 void MainWindow::updateTitle()

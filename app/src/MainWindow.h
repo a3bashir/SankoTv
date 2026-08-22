@@ -38,6 +38,10 @@ private:
     void onSaveProject();
     void onSaveProjectAs();
     void onPreferences(); // Edit > Preferences... (category list + settings pane)
+    // File > Project Settings... — settings of the CURRENTLY OPEN project
+    // (name, frame rate; canvas facts read-only). Pending until Apply/OK.
+    void onProjectSettings();
+    void applyProjectSettings(const QString &projectName, int fps);
     bool saveToPath(const QString &path);
     bool loadFromPath(const QString &path);
 
@@ -69,6 +73,7 @@ private:
 
     QAction *m_saveAct = nullptr;
     QAction *m_saveAsAct = nullptr;
+    QAction *m_projectSettingsAct = nullptr;
     // Edit-menu panel clipboard actions (enabled once a panel is copied).
     QAction *m_pastePanelAct = nullptr;
     QAction *m_pastePanelInPlaceAct = nullptr;

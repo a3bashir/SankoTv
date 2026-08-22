@@ -52,6 +52,8 @@ qt_add_executable(SankoTV
     src/ProjectIO.cpp
     src/ProjectIO.h
     src/NewProjectDialog.h
+    src/ProjectSettingsDialog.cpp
+    src/ProjectSettingsDialog.h
     src/DashboardPage.h
     src/ScriptEditorPage.cpp
     src/ScriptEditorPage.h
@@ -224,6 +226,10 @@ target_link_libraries(SankoCanvasEdgeLock PRIVATE Qt6::Widgets Qt6::Svg
 # flatten-thumb cache at a non-legacy size. Needs a GUI session but never
 # samples screen pixels (no grabWindow).
 # Run: build/<config>/SankoCanvasSizeLock.exe (exit code = failure count).
+# Section (g) — project settings — brings the Project Settings dialog, the
+# shared studio controls, and the animatic timeline (whose .cpp calls into
+# AnimaticPage, hence the Multimedia link) into this family: FPS must
+# re-derive frame counts, and the dialog must keep edits pending.
 qt_add_executable(SankoCanvasSizeLock
     tests/CanvasSizeLockTest.cpp
     src/ProjectIO.cpp
@@ -234,10 +240,19 @@ qt_add_executable(SankoCanvasSizeLock
     src/PerspectiveTool.h
     src/SankoPaintHostAdapter.cpp
     src/SankoPaintHostAdapter.h
+    src/ProjectSettingsDialog.cpp
+    src/ProjectSettingsDialog.h
+    src/AnimaticTimeline.cpp
+    src/AnimaticTimeline.h
+    src/AnimaticPage.cpp
+    src/AnimaticPage.h
+    src/brushlib/StudioControls.cpp
+    src/brushlib/StudioControls.h
 )
 target_include_directories(SankoCanvasSizeLock PRIVATE src)
 target_link_libraries(SankoCanvasSizeLock PRIVATE Qt6::Widgets Qt6::Svg
-    Qt6::Concurrent QuickShape::Kit SankoPaint::Engine)
+    Qt6::Concurrent Qt6::Multimedia Qt6::MultimediaWidgets
+    QuickShape::Kit SankoPaint::Engine)
 
 # --- Developer recorder (TEMP) -----------------------------------------------
 # Temporary bug-capture tool; remove by deleting app/src/devrecorder/ and

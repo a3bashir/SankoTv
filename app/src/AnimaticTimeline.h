@@ -31,6 +31,10 @@ public:
     // loadScenes/setBlocks — per-block frame counts derive from it.
     void setFps(int fps);
     int fps() const { return m_fps; }
+    // Test hook: the DERIVED total (sum of per-block duration*fps), so a
+    // test can prove frame counts re-derive after setFps rather than just
+    // reading the stored rate back.
+    int totalFramesForTest() const { return totalFrames(); }
 
 public slots:
     void setScenes(const QVector<Scene *> &scenes);

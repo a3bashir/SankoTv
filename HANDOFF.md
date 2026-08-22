@@ -822,3 +822,67 @@ conclusion; the mid-drag screenshot caught it. Corollary to the standing
 rule: a visibility sampler needs a positive control proving it goes DARK
 when the thing it measures is absent — restricting to the paper rect and
 re-checking flipped blank=0 into blank=23/23.
+
+## Project Settings — Part 1 landed; Part 2 (resize) REPORTED, UNIMPLEMENTED (2026-08-22)
+
+File > Project Settings... (NOT under Edit > Preferences — those are
+application-wide; these belong to the open project). ProjectSettingsDialog:
+General = Project Name (StudioTextField) + Frame Rate (StudioDropdown,
+24/25/30/60 plus the project's own rate so opening never silently changes
+it); Canvas = read-only resolution + aspect ratio and a DISABLED "Resize
+Project..." with tooltip "Project resizing is not yet available." Edits
+are PENDING: Cancel discards, Apply commits and stays open, OK commits and
+closes; the dialog owns no project state — it emits applied(name, fps) and
+MainWindow::applyProjectSettings sets the members, calls
+AnimaticPage::setFps (AnimaticTimeline re-derives per-block frames), and
+updates the title. No pixel is touched by an FPS change. Two checks were
+promoted into SankoCanvasSizeLock section (g): FPS re-derives frame counts
+(24/30/60 -> 240/300/600 for 10 s of panels, read from the DERIVED total
+via totalFramesForTest) and the dialog's pending contract. The remaining
+Part 1 seam checks were judged not to earn permanent slots (the pixel check
+is near-tautological; UI-shape checks are redesign-fragile) — seam archived
+as tests/_backups/seam_project_settings_part1_20260822.cpp.
+
+DECISIONS RECORDED for Part 2 (canvas resize), none implemented:
+- V1 = Resize Canvas Only (expand/crop, artwork scale preserved), anchor
+  CENTRE. Scale Artwork is V2, after the staging + uniformity machinery is
+  proven.
+- FPS is NOT undoable (Ctrl+Z silently changing playback timing mid-drawing
+  is worse than re-opening a dialog). Resize is NOT undoable by design: it
+  clears the undo stack (every canvas-space command — drawing regions,
+  stroke tile patches + replay, selection paths, perspective VP JSON — is
+  invalid after a size change) and runs behind an explicit confirm with a
+  save prompt first. A pixel-snapshot resize command cannot fit the 256 MiB
+  after-byte budget (one 3-layer 4K panel is ~100 MB; a 50-panel scene
+  ~5 GB each way).
+- Atomicity = TWO-PHASE: build every new layer image into staging while
+  touching no panel; only after all succeed, swap into every panel in one
+  synchronous pass, update m_canvasWidth/Height + setProjectCanvasSize,
+  clear undo, invalidate caches (strip labels, onion/light-table pixmaps
+  need explicit passes; flattenedThumb, adapter mirror, composite and
+  selection-mask caches self-heal on size). Panel::canvasSize() and the
+  reconcile stay as they are; the swap cannot fail. Peak memory at 4K is
+  old + new (~10 GB for the 50-panel scene in the footprint finding).
+- Future Resize UI: Width/Height StudioTextFields, Lock Aspect toggle,
+  preset dropdown (1280x720, 1920x1080, 2560x1440, 3840x2160, Custom), mode
+  control (Canvas Only in V1), a painted warning stating exactly what will
+  happen, Cancel + filled Resize Project.
+
+TWO DEFECTS/HOLES RECORDED NOW, BEFORE ANY RESIZE WORK:
+1. THE CLIPBOARD DOOR — a defect TODAY, independent of resize: Storyboard
+   panel Copy/Paste goes through StoryboardPage::clonePanel, a deep copy
+   that keeps the source panel's layer sizes. Since 3a the runtime truth is
+   Panel::canvasSize() per panel and nothing in the model enforces one size
+   per project, so pasting a panel copied at another size (pre-resize in
+   future; across projects of different sizes today, via the session-held
+   clipboard) re-creates a MIXED-SIZE project through a door nothing guards.
+   No family in the seven-family gate catches it. Fix direction: paste must
+   conform (refuse, or re-canvas the clone to the project size) — decide
+   with Part 2.
+2. THE RECONCILE'S SILENT MIXED-SIZE HOLE — ProjectIO::projectFromJson
+   takes pixelSize from the FIRST valid panel and checks it only against
+   the manifest; it never verifies that ALL panels share one size. A
+   partially resized (or clipboard-mixed) project therefore LOADS SILENTLY
+   at the first panel's size with the others still at theirs — no dialog,
+   no refusal. Closing this (a load-time uniformity check with a plain
+   report) is a PREREQUISITE for resize, not part of it.
