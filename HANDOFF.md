@@ -927,3 +927,56 @@ control drag do not move, edge drags stay fully on screen — 13 checks x
 10 runs across both configs. Seam-driver lesson: synthetic drag events
 must carry ABSOLUTE global positions from a fixed start; deriving globals
 from the moving dialog re-adds each step and the drag runs away.
+
+## Multi-monitor drag: coverage rule + pointer-screen fallback (2026-08-22)
+
+DEFECT (from the drag-by-header work, same day): the clamp used
+dialog->screen()->availableGeometry() — the screen the dialog was ON — so
+every shared edge was a wall; reproduced on this two-screen machine
+(Cintiq 0,0 primary; Dell -1920,0; same height; both DPR 1): a header drag
+of -1449 px toward the Dell stopped at x=0.
+
+RULE NOW (FramelessDialogDrag.h, behaviour only): "fully visible" across
+screens is PIXEL-WISE COVERAGE — every pixel of the frame lies on some
+screen's available area (QRegion(frame) - union(availableGeometry) is
+empty). If the unclamped target is covered it is accepted (straddling a
+full-height shared edge is free — no jump); if not, clamp into the screen
+the POINTER is on (QGuiApplication::screenAt), else the dialog's current
+screen, else the primary — never a null screen. Consequences per case:
+same-height edge: seamless crossing; mismatched heights: stops at the edge
+while the pointer is still on the tall screen, then ONE bounded snap to a
+fully-visible position once the pointer is on the short screen (the
+geometry forces it; accepted as least surprising); L-shape / dead space:
+never reachable (uncovered); pointer off the desktop / in the taskbar
+strip: fallback clamp into a real screen.
+
+VERIFIED on this hardware (seam archived:
+tests/_backups/seam_multimon_20260822.cpp; 27 checks x 10 runs, both
+configs, both dialogs): the drag CROSSES the shared edge and lands on the
+other screen; the frame is fully covered at EVERY step; it straddles the
+edge mid-way (free crossing); the reverse crossing; outer-edge clamps at
+the desktop's left/right/top/bottom extremes; the NULL-SCREEN fallback
+really executed (pointer at y=-500 — QGuiApplication::screenAt == nullptr
+asserted first — no crash, frame covered, clamped to the current screen's
+top); the dead-space-inside-a-screen fallback really executed (pointer in
+the taskbar strip — inside geometry, outside available — asserted first;
+frame covered, bottom clamped). Seam-driver lesson: synthetic pointer
+paths must be REALISTIC — a real pointer cannot leave the screens, so
+edge-clamp drags slide along the desktop edge; a pointer sent to y=-3000
+correctly hits the null-screen fallback and never crosses, which the
+first version mis-read as a clamp failure.
+
+UNVERIFIED — NO SUCH HARDWARE HERE, and a synthetic layout would prove
+nothing about Qt's real screen handling. Each must be checked by hand on
+a matching arrangement before the drag is called verified there:
+  1. MISMATCHED HEIGHTS (partial shared edge): expect stop-at-edge until the
+     pointer crosses, then one bounded snap; never into the dead strip.
+  2. L-SHAPED / NON-RECTANGULAR arrangement with dead space: expect the
+     notch to be unreachable.
+  3. MONITOR DISCONNECTED while a dialog sits on it: expect the OS to
+     relocate the window, dialog->screen() possibly null for a moment, the
+     helper falling back to primary, the next drag clamping into a live
+     screen.
+  4. MIXED DPR per monitor: expect logical coordinates to stay consistent
+     across the boundary and the fixed-size dialog to re-render at the new
+     DPR without misplacement; frameGeometry().size() is re-read per move.
