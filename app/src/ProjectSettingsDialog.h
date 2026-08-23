@@ -71,6 +71,9 @@ signals:
     // Emitted by Apply and by OK (once each), never by Cancel and never by
     // editing a field.
     void applied(const QString &projectName, int fps);
+    // "Resize Project..." was pressed. The window owns the workflow: the
+    // size prompt, the memory precheck, the save prompt and the confirm.
+    void resizeRequested();
 
 protected:
     void paintEvent(QPaintEvent *event) override;

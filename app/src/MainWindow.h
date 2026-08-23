@@ -41,6 +41,10 @@ private:
     // File > Project Settings... — settings of the CURRENTLY OPEN project
     // (name, frame rate; canvas facts read-only). Pending until Apply/OK.
     void onProjectSettings();
+    // Resize Project...: the whole confirmed, non-undoable canvas-only
+    // resize workflow — in-flight refusal, size prompt, memory precheck,
+    // save prompt, confirm, per-panel swap, state reset.
+    void onResizeProject(const QSize &currentSize);
     void applyProjectSettings(const QString &projectName, int fps);
     bool saveToPath(const QString &path);
     bool loadFromPath(const QString &path);

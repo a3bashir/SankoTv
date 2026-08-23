@@ -5164,6 +5164,51 @@ bool StoryboardPage::pasteWouldMixSizes() const
     return ::pasteWouldMixSizes(m_panelClipboard, m_projectCanvasSize);
 }
 
+bool StoryboardPage::hasActiveEdit(QString *what) const
+{
+    return m_canvas && m_canvas->hasActiveEdit(what);
+}
+
+// Canvas-space state after a resize. Split by whether it can heal itself:
+// the composite caches, flattened thumbnails (fingerprint-validated) and
+// the engine mirror all key off size or panel identity and rebuild on next
+// use, but they are invalidated explicitly anyway rather than trusted. The
+// rest cannot heal, because it holds OLD-canvas coordinates or pixels.
+void StoryboardPage::applyProjectResize(const QSize &newSize,
+                                        const QPoint &offset)
+{
+    m_projectCanvasSize = newSize;
+
+    // The panel clipboard holds panels at the OLD size. Left alone, the
+    // paste guard would refuse them — telling the user their own project's
+    // panel cannot be pasted into it. Drop it instead.
+    if (m_panelClipboard) {
+        delete m_panelClipboard;
+        m_panelClipboard = nullptr;
+        m_clipboardSceneIndex = -1;
+        m_clipboardPanelIndex = -1;
+        emit panelClipboardChanged(false);
+    }
+
+    if (m_canvas) {
+        // Canvas-space geometry: a selection path drawn around the old
+        // canvas means nothing now.
+        m_canvas->clearSelection();
+        // Vanishing points DO survive: canvas coordinates shifted by the
+        // exact centre offset. Translating keeps the user's construction
+        // where they drew it relative to the artwork.
+        m_canvas->perspective()->translateAll(QPointF(offset));
+        m_canvas->invalidateComposite();
+        m_canvas->resetViewAfterResize(); // re-fit and re-centre
+        m_canvas->update();
+    }
+
+    // Strip labels and panel thumbnails are rebuilt explicitly: they are
+    // rendered at panel size and nothing else would trigger them.
+    rebuildPanelStrip();
+    refreshCurrentThumbNow();
+}
+
 bool StoryboardPage::refuseMismatchedPaste()
 {
     if (!m_panelClipboard)

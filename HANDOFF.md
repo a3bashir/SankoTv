@@ -1209,3 +1209,88 @@ COVERAGE CAVEAT, stated plainly: the refusal's dialog and its wiring into
 the two paste slots are one call each and are covered by reading, not by
 the gate — linking the whole StoryboardPage widget stack into this family
 would cost more than it proves.
+
+## Canvas resize V1 (Canvas Only, centre anchor) — IMPLEMENTED (2026-08-22)
+
+Both prerequisites having landed, Part 2 is built. Canvas-only: every
+panel's layers are rebuilt at the new size with the artwork re-anchored at
+the CENTRE, 1:1, no scaling or resampling — expanding adds margin,
+contracting crops symmetrically, surviving pixels byte-identical.
+
+STAGING IS PER PANEL, NOT PER PROJECT — a correction to the recorded
+design, made before building rather than after. The recorded plan staged
+the whole project then swapped, peaking at old+new (~10 GB for the
+50-panel 4K scene); the same HANDOFF records that the probe OOM-CRASHED at
+~5 GB, so that plan doubled a footprint the app already cannot hold. Each
+panel now stages its own layers and swaps only when all of them allocated,
+releasing the old images as it goes: peak is the larger of the two full
+sets plus ONE panel (~100 MB at 4K), a 1.02x peak instead of 2x.
+
+Per-panel staging cannot make the project-wide operation infallible by
+itself, so atomicity is bought two other ways: a PRECHECK before anything
+is touched (a refusal at that point is perfectly atomic), and the save
+prompt in front of the confirm, whose file is the rollback. A partial
+resize is never silent — the panel census added with the mixed-size fix
+reports it and names the panels.
+
+PRECHECK. Needs = max(0, newTotal - currentTotal) + largest single panel
+at the new size. Safety factor: the requirement is DOUBLED and a 512 MB
+reserve held back, checked against GlobalMemoryStatusEx ullAvailPhys
+(physical only — winning the check by counting pagefile would trade a
+crash for thrashing). The x2 covers what the resize TRIGGERS but does not
+itself allocate (composite caches, a flatten and thumbnail per panel the
+strip rebuilds, engine surfaces) plus allocator fragmentation at 33 MB
+blocks; the reserve keeps the machine alive and absorbs whatever another
+process takes between check and work. BOTH NUMBERS ARE CHOSEN, NOT
+MEASURED, and deliberately conservative because the failure they prevent
+is a crash mid-resize. The refusal states what is needed AND what is
+available, and that nothing was changed. Where memory cannot be measured
+(non-Windows) the precheck does NOT guess: it allows only up to 512 MB.
+
+STATE. Cleared: selection path, panel clipboard (it holds old-size panels;
+left alone the new paste guard would refuse the user their own project's
+panel), undo stack (every canvas-space command is invalid). TRANSLATED,
+not cleared: perspective vanishing points — canvas-space geometry under an
+exactly known offset, and user work. Explicitly refreshed: strip labels
+and panel thumbnails. Self-healing but invalidated anyway: composite
+caches, flattened thumbs, the engine mirror; the view re-fits because
+m_zoom is fit-relative, with the pan offset reset.
+
+IN-FLIGHT: REFUSED, never committed — committing an unfinished stroke or a
+half-placed transform writes pixels the user never chose to keep, into an
+undo stack the resize then clears, so it could not be taken back. The
+message names what is active. Note for maintainers: the brush's in-flight
+flag is m_brushStroke, the ERASER's is m_drawing, and Quick Shape rides on
+a brush press — checking only m_drawing (the first attempt) missed brush
+strokes entirely, which the gate caught.
+
+ORDER, and why: refuse in-flight -> size prompt -> precheck -> save prompt
+-> confirm -> per-panel swap -> members updated -> page state -> undo
+clear. The members MUST be updated before anything can save, or a save
+would write the old manifest against new pixels — a mismatch of our own
+making.
+
+GATE: SankoCanvasSizeLock section (i), 36 checks (family now 136), at
+960x540 -> 1920x1080, 3840x2160 -> 1920x1080 (the cropping direction) and
+1920x1080 -> 1080x1350 (non-16:9, both axes moving different ways):
+surviving artwork BYTE-IDENTICAL at the centre offset WITH a positive
+control proving the comparison detects a one-pixel change; groups keep
+null images, background margin white, others transparent (the three that
+are invisible in the flatten); layer ids survive; the census finds one
+distinct size and the reload is neither mixed nor mismatched; VPs land at
+exactly the translated positions; the precheck passes an ordinary resize
+and measures real memory; and the in-flight refusal fires for a brush
+stroke, a Quick Shape and a transform, behind an idle control.
+Storyboard-side state (clipboard dropped, selection cleared, VPs
+translated, size updated, undo emptied) is proven by an archived seam,
+tests/_backups/seam_resize_state_20260822.cpp, 14 checks x 10 runs — each
+with a control proving the state existed BEFORE the resize.
+
+UI: ResizeProjectDialog (presets 1280x720 / 1920x1080 / 2560x1440 /
+3840x2160 / Custom, width + height fields, lock-aspect on the CURRENT
+project's ratio, live effect text) in the painted studio idiom, opened
+from the now-enabled "Resize Project..." in Project Settings. The crop
+warning appears ONLY when something is actually cropped — a warning shown
+for a harmless expansion teaches people to ignore warnings.
+
+STILL V1: Scale Artwork remains V2. Nothing here scales or resamples.

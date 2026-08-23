@@ -285,6 +285,39 @@ public slots:
     // Selection + canvas clipboard (ACTIVE layer only). Copy reads even a
     // locked layer (not an edit); cut/paste/move require an editable one.
     bool hasSelection() const { return !m_selectionPath.isEmpty(); }
+    // An edit the user is in the middle of. A project resize REFUSES while
+    // one is running rather than committing it: committing an in-flight
+    // stroke or a half-placed transform writes pixels the user never
+    // decided to keep, into an undo stack the resize is about to clear, so
+    // it could not be taken back. Names what is active for the message.
+    // The canvas changed size under the view: re-fit and re-centre, so the
+    // artist lands on the whole new canvas instead of an old pan offset.
+    void resetViewAfterResize() { resetView(); }
+    bool hasActiveEdit(QString *what = nullptr) const
+    {
+        // Quick Shape is checked FIRST because it rides on a brush press:
+        // both flags are set during a held recognition, and "a Quick Shape"
+        // is the one that tells the artist what they are actually holding.
+        if (m_qsHeld || quickShapePreviewBusyForTest()) {
+            if (what)
+                *what = QStringLiteral("a Quick Shape");
+            return true;
+        }
+        // m_brushStroke is the BRUSH's in-flight flag; m_drawing is the
+        // ERASER's. Both are strokes to the user, and checking only one
+        // would let the other slip through mid-stroke.
+        if (m_brushStroke || m_drawing || m_shapeDrag) {
+            if (what)
+                *what = QStringLiteral("a brush stroke");
+            return true;
+        }
+        if (m_moveActive || !m_transformBuf.isNull()) {
+            if (what)
+                *what = QStringLiteral("a transform");
+            return true;
+        }
+        return false;
+    }
     bool hasCanvasClipboard() const { return !m_clipImg.isNull(); }
     void copySelection();                 // selected pixels -> internal clipboard
     void cutSelection();                  // copy, then clear to transparent (undoable)

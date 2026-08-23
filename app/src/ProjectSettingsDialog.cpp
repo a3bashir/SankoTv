@@ -92,8 +92,14 @@ ProjectSettingsDialog::ProjectSettingsDialog(const QString &projectName,
     m_resize = new QPushButton(QStringLiteral("Resize Project..."), this);
     m_resize->setGeometry(kX, kResizeY, 150, kBoxH);
     m_resize->setStyleSheet(QLatin1String(kSecondaryButtonQss));
-    m_resize->setEnabled(false);
-    m_resize->setToolTip(QStringLiteral("Project resizing is not yet available."));
+    m_resize->setToolTip(
+        QStringLiteral("Change the canvas size. Artwork is not scaled."));
+    // Unlike name and frame rate, a resize is NOT pending: it is its own
+    // confirmed, non-undoable operation, so the request leaves through its
+    // own signal and this dialog closes out of the way of the confirm.
+    connect(m_resize, &QPushButton::clicked, this, [this] {
+        emit resizeRequested();
+    });
 
     // Footer: Cancel | Apply | OK, right-aligned; OK is the filled accent
     // button under the recorded filled-button label exemption (SankoTheme.h).

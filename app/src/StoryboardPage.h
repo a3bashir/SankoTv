@@ -124,6 +124,14 @@ public:
     // exposed so the gate can assert it directly.
     bool pasteWouldMixSizes() const;
 
+    // Is the user mid-edit? A project resize refuses rather than committing
+    // it; `what` names the edit for the message.
+    bool hasActiveEdit(QString *what = nullptr) const;
+    // Everything on the storyboard side that a completed canvas resize must
+    // update or clear. Called AFTER the panels have been swapped, with the
+    // centre offset that was applied.
+    void applyProjectResize(const QSize &newSize, const QPoint &offset);
+
 signals:
     void panelClipboardChanged(bool available); // enables the paste actions
     void backRequested();

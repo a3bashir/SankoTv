@@ -54,6 +54,10 @@ qt_add_executable(SankoTV
     src/NewProjectDialog.h
     src/ProjectSettingsDialog.cpp
     src/ProjectSettingsDialog.h
+    src/ResizeProjectDialog.cpp
+    src/ResizeProjectDialog.h
+    src/ProjectResize.cpp
+    src/ProjectResize.h
     src/FramelessDialogDrag.h
     src/DashboardPage.h
     src/ScriptEditorPage.cpp
@@ -235,6 +239,8 @@ qt_add_executable(SankoCanvasSizeLock
     tests/CanvasSizeLockTest.cpp
     src/ProjectIO.cpp
     src/ProjectIO.h
+    src/ProjectResize.cpp
+    src/ProjectResize.h
     src/DrawingCanvas.cpp
     src/DrawingCanvas.h
     src/PerspectiveTool.cpp

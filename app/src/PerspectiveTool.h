@@ -61,6 +61,15 @@ public:
     int addVanishingPoint(const QPointF &canvasPos);
     void removeVanishingPoint(int index);
     void moveVanishingPoint(int index, const QPointF &canvasPos);
+    // Canvas resize: geometry lives in CANVAS coordinates, so a centre-
+    // anchored resize moves every VP by exactly the same known offset. They
+    // are translated rather than cleared — the offset is exact and a VP is
+    // user work; VPs legitimately sit outside the canvas, so no clamping.
+    void translateAll(const QPointF &delta)
+    {
+        for (VanishingPoint &vp : m_vps)
+            vp.pos += delta;
+    }
 
     // Selected VP: the one the Opacity and Hue Colors sliders edit.
     QColor vpColor(int index) const;

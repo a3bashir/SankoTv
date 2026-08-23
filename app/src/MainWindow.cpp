@@ -14,7 +14,9 @@
 #include "ConsistencyBoard.h"
 #include "DashboardPage.h"
 #include "NewProjectDialog.h"
+#include "ProjectResize.h"
 #include "ProjectSettingsDialog.h"
+#include "ResizeProjectDialog.h"
 #include "ProjectIO.h"
 #include "GenerationPage.h"
 #include "ScriptEditorPage.h"
@@ -469,7 +471,143 @@ void MainWindow::onProjectSettings()
     // values, the window holds the truth.
     connect(&dialog, &ProjectSettingsDialog::applied, this,
             &MainWindow::applyProjectSettings);
+    // Resize is its own confirmed, non-undoable workflow rather than a
+    // pending edit: close the settings window first so the size prompt and
+    // the confirm are not stacked three dialogs deep.
+    bool resizeAsked = false;
+    connect(&dialog, &ProjectSettingsDialog::resizeRequested, this,
+            [&dialog, &resizeAsked] {
+                resizeAsked = true;
+                dialog.reject();
+            });
     dialog.exec();
+    if (resizeAsked)
+        onResizeProject(canvas);
+}
+
+// Canvas-only resize. The order here is the whole safety argument: refuse
+// while an edit is in flight, ask for the size, PRECHECK the memory before
+// anything is touched, offer to save (that file is the rollback if a panel
+// still fails), confirm the irreversible part in the user's terms, and only
+// then swap panel by panel.
+void MainWindow::onResizeProject(const QSize &currentSize)
+{
+    // 1. In-flight work: refuse rather than commit it. Committing an
+    // unfinished stroke or a half-placed transform writes pixels the user
+    // never chose to keep, into an undo stack this operation then clears.
+    QString active;
+    if (m_storyboard && m_storyboard->hasActiveEdit(&active)) {
+        QMessageBox::information(
+            this, QStringLiteral("Resize Project"),
+            QStringLiteral("Finish %1 before resizing the project.\n\nNothing "
+                           "has been changed.")
+                .arg(active));
+        return;
+    }
+
+    ResizeProjectDialog sizeDialog(currentSize, this);
+    if (sizeDialog.exec() != QDialog::Accepted)
+        return;
+    const QSize newSize = sizeDialog.chosenSize();
+
+    // 2. PRECHECK, before a single pixel moves. A refusal at this point is
+    // perfectly atomic: nothing has been touched.
+    const ProjectResize::Plan plan =
+        ProjectResize::plan(m_scenes, currentSize, newSize);
+    if (!plan.fits) {
+        QMessageBox::warning(this, QStringLiteral("Resize Project"),
+                             plan.refusal);
+        return;
+    }
+
+    // 3. Offer to save FIRST. This file is the rollback: if a panel fails
+    // to allocate despite the precheck, reopening it restores the project
+    // exactly as it was.
+    if (!m_currentProjectPath.isEmpty() || !m_scenes.isEmpty()) {
+        const QMessageBox::StandardButton save = QMessageBox::question(
+            this, QStringLiteral("Resize Project"),
+            QStringLiteral("Save the project before resizing?\n\nResizing "
+                           "cannot be undone. A saved copy is the only way "
+                           "back to the current canvas."),
+            QMessageBox::Save | QMessageBox::No | QMessageBox::Cancel,
+            QMessageBox::Save);
+        if (save == QMessageBox::Cancel)
+            return;
+        if (save == QMessageBox::Save) {
+            onSaveProject();
+            if (m_currentProjectPath.isEmpty())
+                return; // the save was cancelled: treat it as cancelling
+        }
+    }
+
+    // 4. Confirm the irreversible part, in the user's terms. The crop
+    // sentence appears ONLY when something is actually cropped.
+    const bool grows = !plan.crops;
+    QString body =
+        QStringLiteral("The canvas changes from %1 \xC3\x97 %2 to %3 \xC3\x97 %4.\n\n")
+            .arg(currentSize.width())
+            .arg(currentSize.height())
+            .arg(newSize.width())
+            .arg(newSize.height());
+    body += grows
+        ? QStringLiteral("Artwork keeps its current size and position, "
+                         "centred on the new canvas. Nothing is scaled.\n\n")
+        : QStringLiteral("Artwork keeps its current size and is centred on "
+                         "the new canvas; nothing is scaled. Artwork outside "
+                         "the new canvas will be cropped and cannot be "
+                         "recovered.\n\n");
+    body += QStringLiteral("This cannot be undone. Your undo history will be "
+                           "cleared.");
+    QMessageBox confirm(QMessageBox::Question,
+                        QStringLiteral("Resize project to %1 \xC3\x97 %2?")
+                            .arg(newSize.width())
+                            .arg(newSize.height()),
+                        body, QMessageBox::NoButton, this);
+    QPushButton *go =
+        confirm.addButton(QStringLiteral("Resize Project"),
+                          QMessageBox::AcceptRole);
+    confirm.addButton(QMessageBox::Cancel);
+    confirm.setDefaultButton(QMessageBox::Cancel);
+    confirm.exec();
+    if (confirm.clickedButton() != go)
+        return;
+
+    // 5. Swap, panel by panel. Each panel stages its own layers and is only
+    // touched once all of them allocated.
+    const QPoint offset = ProjectResize::centreOffset(currentSize, newSize);
+    const ProjectResize::Outcome outcome =
+        ProjectResize::apply(m_scenes, newSize, offset);
+
+    // 6. Project-level state. Order matters: the members must be updated
+    // before anything can save, or a save would write the old manifest
+    // against new pixels — a mismatch of our own making.
+    m_canvasWidth = newSize.width();
+    m_canvasHeight = newSize.height();
+    if (m_storyboard)
+        m_storyboard->applyProjectResize(newSize, offset);
+    if (m_undoStack)
+        m_undoStack->clear(); // every canvas-space command is now invalid
+    updateSaveActions();
+    updateTitle();
+
+    if (!outcome.ok) {
+        // Should be unreachable after the precheck. Never leave this
+        // quiet: a partially resized project is exactly what the loader's
+        // panel census now reports, and the saved file is the way back.
+        QMessageBox::critical(
+            this, QStringLiteral("Resize Project"),
+            QStringLiteral(
+                "The resize ran out of memory at scene %1, panel %2, after "
+                "%3 panel%4.\n\nThe project now holds panels of two sizes. "
+                "Close it WITHOUT saving and reopen the version you saved a "
+                "moment ago to get back to %5 \xC3\x97 %6.")
+                .arg(outcome.failedSceneNumber)
+                .arg(outcome.failedPanelIndex)
+                .arg(outcome.panelsResized)
+                .arg(outcome.panelsResized == 1 ? "" : "s")
+                .arg(currentSize.width())
+                .arg(currentSize.height()));
+    }
 }
 
 void MainWindow::applyProjectSettings(const QString &projectName, int fps)

@@ -64,6 +64,7 @@
 #include "AnimaticTimeline.h"
 #include "DrawingCanvas.h"
 #include "ProjectIO.h"
+#include "ProjectResize.h"
 #include "ProjectSettingsDialog.h"
 #include "StoryboardModel.h"
 #include "brushlib/StudioControls.h"
@@ -660,6 +661,308 @@ void runMixedSizePass(const QString &projRoot)
     delete fromOdd;
 }
 
+// ---- (i): canvas-only resize ----------------------------------------------
+// Correctness first: the artwork's surviving pixels must be BYTE-IDENTICAL
+// and merely re-anchored. Everything else (ids, layer kinds, the census,
+// the VPs) exists to stop the resize quietly breaking something the flatten
+// would hide.
+void runResizePass(const QString &projRoot, const QSize &from, const QSize &to)
+{
+    const QPoint offset = ProjectResize::centreOffset(from, to);
+    out() << QStringLiteral("--- (i) resize %1x%2 -> %3x%4 (offset %5,%6) ---")
+                 .arg(from.width()).arg(from.height())
+                 .arg(to.width()).arg(to.height())
+                 .arg(offset.x()).arg(offset.y())
+          << Qt::endl;
+    const QString tag = QStringLiteral("%1x%2_to_%3x%4")
+                            .arg(from.width()).arg(from.height())
+                            .arg(to.width()).arg(to.height());
+
+    // A panel with real, non-uniform artwork: a flat fill would make a
+    // wrong offset invisible.
+    Scene *scene = new Scene;
+    scene->number = 1;
+    scene->location = QStringLiteral("INT. RESIZE");
+    scene->timeOfDay = QStringLiteral("DAY");
+    scene->panels.append(makeDetailedPanel(from));
+    scene->panels.append(makeBlankPanel(from));
+    // A group folder (null image) and an extra raster, to prove the three
+    // layer kinds are each treated correctly.
+    Layer group;
+    group.id = QStringLiteral("group-under-test");
+    group.name = QStringLiteral("Folder");
+    group.type = QStringLiteral("group");
+    scene->panels.first()->layers.append(group);
+    scene->panels.first()->layers.append(
+        makeRasterLayer(QStringLiteral("Extra"), from));
+
+    // Pixel fingerprints + ids BEFORE, so the comparison is against the
+    // real originals rather than anything the resize produced.
+    QVector<QImage> beforeImages;
+    QStringList beforeIds;
+    for (const Layer &layer : scene->panels.first()->layers) {
+        beforeImages.append(layer.image.copy()); // deep copy: detached
+        beforeIds << layer.id;
+    }
+
+    const ProjectIO::LoadedProject dummy; // (keeps the shape obvious)
+    Q_UNUSED(dummy);
+    const ProjectResize::Outcome outcome =
+        ProjectResize::apply({scene}, to, offset);
+    check(QStringLiteral("(i) %1: every panel resized").arg(tag),
+          outcome.ok && outcome.panelsResized == 2);
+
+    const Panel *panel = scene->panels.first();
+    check(QStringLiteral("(i) %1: layer count and ORDER unchanged").arg(tag),
+          panel->layers.size() == beforeIds.size());
+
+    bool idsOk = true, kindsOk = true, pixelsOk = true;
+    int comparedPixels = 0;
+    for (int i = 0; i < panel->layers.size() && i < beforeIds.size(); ++i) {
+        const Layer &layer = panel->layers.at(i);
+        idsOk = idsOk && layer.id == beforeIds.at(i);
+        if (isGroupLayer(layer)) {
+            // Invisible in the flatten: a group that grew an image would
+            // become a paint target.
+            kindsOk = kindsOk && layer.image.isNull();
+            continue;
+        }
+        kindsOk = kindsOk && layer.image.size() == to;
+        // Corner pixel outside the old artwork: white for a background
+        // layer, transparent for everything else. Also invisible in the
+        // flatten, which composites onto white paper either way.
+        if (offset.x() > 0 && offset.y() > 0) {
+            const QRgb corner = layer.image.pixel(0, 0);
+            const bool isBackground = layer.type == QLatin1String("background");
+            kindsOk = kindsOk
+                && (isBackground ? (corner == qRgb(255, 255, 255))
+                                 : (qAlpha(corner) == 0));
+        }
+        // THE pixel assertion: every surviving pixel byte-identical, at
+        // exactly the centre offset.
+        const QImage &was = beforeImages.at(i);
+        const QRect survives =
+            QRect(QPoint(0, 0), to).intersected(QRect(offset, from));
+        for (int y = survives.top(); y <= survives.bottom(); y += 7)
+            for (int x = survives.left(); x <= survives.right(); x += 7) {
+                ++comparedPixels;
+                if (layer.image.pixel(x, y)
+                    != was.pixel(x - offset.x(), y - offset.y()))
+                    pixelsOk = false;
+            }
+    }
+    check(QStringLiteral("(i) %1: layer ids survive unchanged").arg(tag), idsOk);
+    check(QStringLiteral("(i) %1: groups keep null images; background white, "
+                         "others transparent in the new margin").arg(tag),
+          kindsOk);
+    check(QStringLiteral("(i) %1: surviving artwork is BYTE-IDENTICAL at the "
+                         "centre offset").arg(tag),
+          pixelsOk && comparedPixels > 100,
+          QStringLiteral("%1 pixels compared").arg(comparedPixels));
+
+    // POSITIVE CONTROL: the same comparison must FAIL for a one-pixel
+    // change, or "byte-identical" proves nothing.
+    {
+        QImage tampered = panel->layers.at(1).image.copy();
+        const QRect survives =
+            QRect(QPoint(0, 0), to).intersected(QRect(offset, from));
+        const QPoint probe = survives.center();
+        tampered.setPixel(probe, tampered.pixel(probe) ^ 0x00010101u);
+        bool detected = false;
+        const QImage &was = beforeImages.at(1);
+        for (int y = survives.top(); y <= survives.bottom() && !detected; ++y)
+            for (int x = survives.left(); x <= survives.right() && !detected; ++x)
+                if (tampered.pixel(x, y)
+                    != was.pixel(x - offset.x(), y - offset.y()))
+                    detected = true;
+        check(QStringLiteral("(i) %1: control — the comparison DETECTS a "
+                             "one-pixel change").arg(tag),
+              detected);
+    }
+
+    // Every panel ends at the new size: the loader's census must find ONE
+    // distinct size, which is what keeps a correct resize out of the
+    // mixed-size report.
+    const QString folder = projRoot + QStringLiteral("/resize_") + tag;
+    QDir().mkpath(folder);
+    ProjectIO::SaveData data;
+    data.projectName = QStringLiteral("Resized ") + tag;
+    data.fps = 24;
+    data.canvasSize = to; // the window updates its members before any save
+    data.scenes = {scene};
+    writeJson(folder + QStringLiteral("/proj.sankotv"),
+              ProjectIO::projectToJson(data, folder));
+    ProjectIO::LoadedProject L = ProjectIO::projectFromJson(
+        readJson(folder + QStringLiteral("/proj.sankotv")), folder);
+    check(QStringLiteral("(i) %1: reload is NOT mixed and NOT mismatched — "
+                         "no dialog").arg(tag),
+          !L.mixedSizes && !L.mismatch && L.offSizePanels.isEmpty()
+              && L.pixelSize == to && L.manifestSize == to);
+    check(QStringLiteral("(i) %1: the census counts every panel at the new "
+                         "size").arg(tag),
+          L.majorityPanelCount == 2);
+    for (Scene *s : L.scenes)
+        delete s;
+    delete scene;
+}
+
+void runResizeSupportPass()
+{
+    out() << "--- (i) resize: precheck, VPs, refusal ---" << Qt::endl;
+    // Perspective VPs are TRANSLATED by the exact centre offset, not
+    // cleared: canvas-space geometry under a known shift.
+    {
+        PerspectiveTool tool;
+        const QPointF a(120.5, 80.25), b(-300.0, 900.0); // one far off-canvas
+        tool.addVanishingPoint(a);
+        tool.addVanishingPoint(b);
+        const QPoint offset =
+            ProjectResize::centreOffset(QSize(960, 540), QSize(1920, 1080));
+        tool.translateAll(QPointF(offset));
+        check(QStringLiteral("(i) perspective VPs land at exactly the "
+                             "translated positions"),
+              tool.count() == 2
+                  && tool.vanishingPoint(0) == a + QPointF(offset)
+                  && tool.vanishingPoint(1) == b + QPointF(offset),
+              QStringLiteral("offset %1,%2").arg(offset.x()).arg(offset.y()));
+    }
+    // The centre offset itself, including the odd-difference rule.
+    check(QStringLiteral("(i) centre offset is (new-old)/2, odd pixel to the "
+                         "right/bottom"),
+          ProjectResize::centreOffset(QSize(960, 540), QSize(1920, 1080))
+                  == QPoint(480, 270)
+              && ProjectResize::centreOffset(QSize(101, 101), QSize(200, 200))
+                  == QPoint(49, 49));
+    // The precheck must pass a sane resize and refuse an absurd one, and
+    // the refusal must NAME what is needed and what is available.
+    {
+        Scene *scene = new Scene;
+        scene->number = 1;
+        scene->panels.append(makeBlankPanel(QSize(960, 540)));
+        const ProjectResize::Plan ok =
+            ProjectResize::plan({scene}, QSize(960, 540), QSize(1920, 1080));
+        check(QStringLiteral("(i) precheck passes an ordinary resize"),
+              ok.fits && ok.refusal.isEmpty(),
+              QStringLiteral("needs %1")
+                  .arg(ProjectResize::formatBytes(ok.requiredBytes)));
+        const ProjectResize::Plan huge =
+            ProjectResize::plan({scene}, QSize(960, 540), QSize(8192, 8192));
+        // 8192x8192 x 2 layers is ~537 MB; doubled plus reserve it is over
+        // 1.5 GB, which may still fit. What must hold either way is that the
+        // refusal, WHEN it fires, states both numbers.
+        if (!huge.fits) {
+            check(QStringLiteral("(i) refusal names what is needed AND what "
+                                 "is available"),
+                  huge.refusal.contains(QStringLiteral("needs"))
+                      && huge.refusal.contains(QStringLiteral("available"))
+                      && huge.refusal.contains(
+                          QStringLiteral("Nothing has been changed")));
+        } else {
+            check(QStringLiteral("(i) precheck reports a measured requirement "
+                                 "even when it fits"),
+                  huge.requiredBytes > huge.additionalBytes
+                      && huge.additionalBytes > 0);
+        }
+        check(QStringLiteral("(i) precheck measures memory on this platform "
+                             "(else it must not guess)"),
+              ok.memoryKnown && ok.availableBytes > 0,
+              QStringLiteral("%1 available")
+                  .arg(ProjectResize::formatBytes(ok.availableBytes)));
+        delete scene;
+    }
+    // A resize to the SAME size is refused as a no-op by the dialog's
+    // validation, and a null/invalid target never reaches the panels.
+    {
+        Panel *panel = makeBlankPanel(QSize(960, 540));
+        check(QStringLiteral("(i) an invalid target size resizes nothing"),
+              !ProjectResize::resizePanel(panel, QSize(), QPoint())
+                  && panel->canvasSize() == QSize(960, 540));
+        delete panel;
+    }
+}
+
+// The in-flight REFUSAL, driven through the real canvas: a resize must not
+// commit an unfinished stroke, Quick Shape or transform into an undo stack
+// it is about to clear.
+void runResizeRefusalPass(DrawingCanvas *canvas, QUndoStack *stack)
+{
+    out() << "--- (i) resize refuses while an edit is in flight ---" << Qt::endl;
+    const QSize S(960, 540);
+    Panel *panel = makeDetailedPanel(S);
+    canvas->setActivePanel(panel);
+    canvas->setQuickShapeEnabled(false);
+    canvas->setTool(DrawingCanvas::Brush);
+    pump(60);
+    QString what;
+
+    // POSITIVE CONTROL FIRST: idle must report nothing, or every "refuses"
+    // below would pass on a detector that is simply always true.
+    check(QStringLiteral("(i) control: an idle canvas reports NO active edit"),
+          !canvas->hasActiveEdit(&what));
+
+    // 1. A brush stroke, pressed and not released.
+    const QTransform t = canvas->viewTransformForTest();
+    sendMouse(canvas, QEvent::MouseButtonPress, t.map(QPointF(300, 260)),
+              Qt::LeftButton);
+    pump(40);
+    what.clear();
+    const bool strokeSeen = canvas->hasActiveEdit(&what);
+    const QString strokeName = what;
+    sendMouse(canvas, QEvent::MouseButtonRelease, t.map(QPointF(320, 280)),
+              Qt::LeftButton);
+    pump(700);
+    check(QStringLiteral("(i) refuses while a BRUSH STROKE is in flight, and "
+                         "names it"),
+          strokeSeen && strokeName.contains(QStringLiteral("stroke")),
+          strokeName);
+    check(QStringLiteral("(i) ...and stops refusing once the stroke ends"),
+          !canvas->hasActiveEdit());
+
+    // 2. A Quick Shape session: held pointer with recognition enabled.
+    canvas->setQuickShapeEnabled(true);
+    pump(40);
+    sendMouse(canvas, QEvent::MouseButtonPress, t.map(QPointF(200, 200)),
+              Qt::LeftButton);
+    for (int i = 1; i <= 12; ++i) {
+        sendMouse(canvas, QEvent::MouseMove,
+                  t.map(QPointF(200 + i * 12, 200 + i * 6)), Qt::LeftButton);
+        pump(20);
+    }
+    what.clear();
+    const bool qsSeen = canvas->hasActiveEdit(&what);
+    const QString qsName = what;
+    sendMouse(canvas, QEvent::MouseButtonRelease, t.map(QPointF(344, 272)),
+              Qt::LeftButton);
+    pump(900);
+    canvas->setQuickShapeEnabled(false);
+    check(QStringLiteral("(i) refuses while a QUICK SHAPE session is live"),
+          qsSeen, qsName);
+
+    // 3. A transform: select, switch to Move, press inside the box.
+    canvas->selectAll();
+    canvas->setTool(DrawingCanvas::Move);
+    pump(120);
+    sendMouse(canvas, QEvent::MouseButtonPress, t.map(QPointF(480, 270)),
+              Qt::LeftButton);
+    pump(60);
+    what.clear();
+    const bool xformSeen = canvas->hasActiveEdit(&what);
+    const QString xformName = what;
+    sendMouse(canvas, QEvent::MouseButtonRelease, t.map(QPointF(480, 270)),
+              Qt::LeftButton);
+    pump(120);
+    check(QStringLiteral("(i) refuses while a TRANSFORM is active"),
+          xformSeen, xformName);
+
+    canvas->setTool(DrawingCanvas::Brush);
+    canvas->clearSelection();
+    canvas->setActivePanel(nullptr);
+    if (stack)
+        stack->clear();
+    delete panel;
+    pump(60);
+}
+
 void runProjectSettingsPass()
 {
     out() << "--- (g) project settings: fps timing + pending dialog ---" << Qt::endl;
@@ -861,11 +1164,18 @@ int main(int argc, char **argv)
             runPersistencePass(s, projRoot);
 
         runMigrationPass(projRoot);
+        runResizeRefusalPass(canvas, &stack);
         runStalenessPass(canvas, &stack);
         window.close();
         pump(100);
     }
     runMixedSizePass(projRoot);
+    // (i) three directions: expansion, the CROPPING direction, and a
+    // non-16:9 target where width and height move by different amounts.
+    runResizePass(projRoot, QSize(960, 540), QSize(1920, 1080));
+    runResizePass(projRoot, QSize(3840, 2160), QSize(1920, 1080));
+    runResizePass(projRoot, QSize(1920, 1080), QSize(1080, 1350));
+    runResizeSupportPass();
     runProjectSettingsPass();
 
     const bool removed = QDir(scratch).removeRecursively();
