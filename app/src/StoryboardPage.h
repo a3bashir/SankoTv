@@ -119,6 +119,10 @@ public:
     void pastePanelAfterSelected(); // after the selected panel
     void pastePanelInPlace();       // at the copied-from position
     bool hasPanelClipboard() const { return m_panelClipboard != nullptr; }
+    // Would pasting the clipboard panel leave this project holding panels
+    // of two different sizes? The refusal's decision, without its dialog —
+    // exposed so the gate can assert it directly.
+    bool pasteWouldMixSizes() const;
 
 signals:
     void panelClipboardChanged(bool available); // enables the paste actions
@@ -259,6 +263,10 @@ private:
 
     void duplicatePanel();                 // copy current panel, insert after it
     static Panel *clonePanel(const Panel *source); // deep copy, fresh layer UUIDs
+    // true = the paste was refused (and the user told why) because the
+    // clipboard panel's size differs from this project's. Paste paths only:
+    // duplicate deliberately does not consult it.
+    bool refuseMismatchedPaste();
     void insertPanelClone(const Panel *panel, int insertAt,
                           const QString &text); // into the current scene (undoable)
     void importImageToPanel();             // file dialog -> canvas->importImage

@@ -1147,3 +1147,65 @@ at startup, or construct the dialog lazily off the first paint. MEASURE
 FIRST — this number came from a bare open with nothing else running, and
 the previous performance passes both found that briefed numbers did not
 survive contact.
+
+## Mixed-size projects: the hole and the door, both closed (2026-08-22)
+
+Both were LIVE defects in shipping code, not resize prerequisites in
+waiting — and they were connected: the clipboard door manufactured the
+files the reconcile hole then swallowed.
+
+THE DOOR (reachable today, no resize needed): the panel clipboard
+survives a project switch — m_panelClipboard is cleared only in the
+destructor and on the next copy, never on load. Copy a panel in a
+960x540 project, open a 1920x1080 project in the same session, paste, and
+the project now holds two sizes. Verified by reading every panel-creating
+path: blank panels use the project size (MainWindow / StoryboardPage) and
+Import Image builds its layer at the panel's own canvasSize() and fits
+the artwork into it, so the clipboard was the ONLY door.
+
+THE HOLE: projectFromJson took the first valid panel's size and broke out
+of both loops, never looking at the rest; `mismatch` compared manifest vs
+that size only. Two outcomes, one worse than reported: with the odd panel
+NOT first, total silence; with it FIRST, the project's whole nominal size
+silently became the odd panel's on reload AND the mismatch dialog fired
+with a false claim ("its artwork is 960 x 540" when one panel was) plus a
+promise to "correct" the file by writing an accident of ordering.
+
+FIXES. The load now takes a census of EVERY panel and picks the MAJORITY
+size, ties to the first seen: "first" was an accident of ordering that
+would otherwise become the project size and spread to every new panel,
+while for a uniform project the majority IS the first, so the ordinary
+path cannot move. Disagreement is reported, never repaired —
+mixedSizes/majorityPanelCount/offSizePanels carry the counts and the
+locations, and mixedCanvasSizesDialogText names the majority, lists the
+dissenters as "Scene N, panel M", states that no artwork is modified, and
+says exactly what the next save writes. A mixed project takes precedence
+over the plain mismatch message, which must never be shown for one.
+THIS SITS BESIDE PIXELS-WIN AND DOES NOT CHANGE IT: pixels-win governs
+manifest vs artwork; this governs artwork vs artwork. Artwork is still
+never rescaled, cropped, or discarded.
+
+The paste is REFUSED when the clipboard panel's size differs from the
+project's, naming both sizes and saying nothing was changed. Refusal, not
+adaptation: scaling and resampling change the pixels, and centring crops
+whenever the target is smaller, so refusing beats quietly altering
+someone's drawing. The clipboard is deliberately NOT cleared on load —
+the same-size cross-project paste is legitimate and clearing it would
+hide the reason. The check lives in the two paste slots, NOT in
+insertPanelClone, because duplicating an already-odd panel inside an
+existing mixed project introduces no new size.
+
+GATE — there was none before; SankoCanvasSizeLock section (h), 11 checks
+(family now 101): detection fires on a mixed project and stays quiet on a
+uniform one; majority beats first when they disagree; the dissenter is
+located; the message is true of a mixed project; a uniform load is
+unchanged in size, manifest and mismatch verdict (the check that proves
+the normal path did not move); and the paste refusal fires on a mismatch
+in both directions with a POSITIVE CONTROL first proving the matching
+case is not refused. The decision itself lives as a free function,
+pasteWouldMixSizes(panel, size) in StoryboardModel.h, so the gate asserts
+the REAL function on REAL panels rather than a restatement.
+COVERAGE CAVEAT, stated plainly: the refusal's dialog and its wiring into
+the two paste slots are one call each and are covered by reading, not by
+the gate — linking the whole StoryboardPage widget stack into this family
+would cost more than it proves.

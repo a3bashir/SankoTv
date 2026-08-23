@@ -5,6 +5,8 @@
 #include <QJsonValue>
 #include <QRegularExpression>
 
+#include <algorithm>
+
 namespace ProjectIO {
 
 QJsonObject projectToJson(const SaveData &data, const QString &folder)
@@ -394,14 +396,46 @@ LoadedProject projectFromJson(const QJsonObject &root, const QString &folder)
     // never rescaled, cropped, or discarded. A disagreeing manifest
     // (written by the stored-not-applied era) sets `mismatch`; the caller
     // shows canvasMismatchDialogText and the next save corrects the file.
+    // Census of EVERY panel, not just the first: the scan used to stop at
+    // the first valid panel, so a project whose panels disagreed opened
+    // silently at whichever size happened to come first and the rest were
+    // never looked at. Order is preserved so ties resolve to the first
+    // size encountered.
+    QVector<QPair<QSize, int>> census; // size -> count, in first-seen order
     for (Scene *scene : out.scenes) {
-        for (Panel *panel : scene->panels)
-            if (panel->canvasSize().isValid()) {
-                out.pixelSize = panel->canvasSize();
-                break;
+        for (Panel *panel : scene->panels) {
+            const QSize size = panel->canvasSize();
+            if (!size.isValid())
+                continue;
+            auto it = std::find_if(census.begin(), census.end(),
+                                   [&size](const QPair<QSize, int> &e) {
+                                       return e.first == size;
+                                   });
+            if (it == census.end())
+                census.append({size, 1});
+            else
+                ++it->second;
+        }
+    }
+    // MAJORITY wins, ties to the first seen. For a uniform project the
+    // majority IS the first, so this is identical to the old behaviour;
+    // only a mixed project resolves differently, and there "first" was an
+    // accident of ordering that would spread to every new panel.
+    for (const QPair<QSize, int> &entry : census)
+        if (entry.second > out.majorityPanelCount) {
+            out.majorityPanelCount = entry.second;
+            out.pixelSize = entry.first;
+        }
+    out.mixedSizes = census.size() > 1;
+    if (out.mixedSizes) {
+        // Locate the dissenters so the report can name them.
+        for (Scene *scene : out.scenes) {
+            for (int i = 0; i < scene->panels.size(); ++i) {
+                const QSize size = scene->panels.at(i)->canvasSize();
+                if (size.isValid() && size != out.pixelSize)
+                    out.offSizePanels.append({scene->number, i + 1, size});
             }
-        if (out.pixelSize.isValid())
-            break;
+        }
     }
     // Same MIGRATION FACT as the deferred-fill block above — do not delete
     // as a leftover. Reaching this line requires a project with no valid

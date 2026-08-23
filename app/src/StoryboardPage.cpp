@@ -5147,10 +5147,52 @@ void StoryboardPage::cutSelectedPanel()
                                              QStringLiteral("Cut Panel")));
 }
 
+// A panel copied from a project of a DIFFERENT size would leave this one
+// holding panels of two sizes — the state that used to load silently at
+// whichever size came first. Refuse it and say why. Every alternative
+// alters the drawing: scaling and resampling change the pixels, and
+// centring crops whenever the target is smaller, so refusing is better
+// than quietly changing someone's artwork. Same-size pastes from another
+// project remain legitimate, which is exactly why the clipboard is NOT
+// cleared when a project loads. Deliberately NOT in insertPanelClone:
+// duplicating an already-odd panel inside an existing mixed project
+// introduces no new size and should not be punished.
+// The DECISION, with no UI attached, so it can be asserted in a test
+// without a modal dialog blocking the run.
+bool StoryboardPage::pasteWouldMixSizes() const
+{
+    return ::pasteWouldMixSizes(m_panelClipboard, m_projectCanvasSize);
+}
+
+bool StoryboardPage::refuseMismatchedPaste()
+{
+    if (!m_panelClipboard)
+        return true;
+    if (!pasteWouldMixSizes())
+        return false;
+    const QSize source = m_panelClipboard->canvasSize();
+    const QSize project = m_projectCanvasSize;
+    QMessageBox::information(
+        this, QStringLiteral("Paste Panel"),
+        QStringLiteral(
+            "This panel was copied from a %1 \xC3\x97 %2 project. This "
+            "project is %3 \xC3\x97 %4.\n\nPasting it would leave the "
+            "project with panels of two different sizes, so it was not "
+            "pasted and nothing was changed.\n\nThe panel is still on the "
+            "clipboard and can be pasted into a %1 \xC3\x97 %2 project.")
+            .arg(source.width())
+            .arg(source.height())
+            .arg(project.width())
+            .arg(project.height()));
+    return true;
+}
+
 void StoryboardPage::pastePanelAfterSelected()
 {
     Scene *scene = currentScene();
     if (!scene || !m_panelClipboard)
+        return;
+    if (refuseMismatchedPaste())
         return;
     const int insertAt = (m_currentPanel >= 0 && m_currentPanel < scene->panels.size())
         ? m_currentPanel + 1
@@ -5161,6 +5203,8 @@ void StoryboardPage::pastePanelAfterSelected()
 void StoryboardPage::pastePanelInPlace()
 {
     if (!m_panelClipboard)
+        return;
+    if (refuseMismatchedPaste())
         return;
     // Back into the scene/position the copy was taken from (clamped if the
     // scene shrank); no repositioning afterwards. No-op if that scene is gone.

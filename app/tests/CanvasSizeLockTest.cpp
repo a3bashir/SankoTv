@@ -553,6 +553,113 @@ void runStalenessPass(DrawingCanvas *canvas, QUndoStack *stack)
 }
 
 // ---- (g): project settings — fps re-derives timing; dialog edits pend ----
+// ---- (h): mixed-size projects and the paste that used to create them -------
+// Two defects that were live in shipping code, independent of resize: load
+// took the FIRST valid panel's size and never checked the rest agreed, and
+// the panel clipboard survived a project switch so a panel copied from a
+// differently-sized project could be pasted straight in. Nothing in the
+// gate covered either.
+void runMixedSizePass(const QString &projRoot)
+{
+    out() << "--- (h) mixed sizes: detection, majority, paste refusal ---"
+          << Qt::endl;
+    const QSize kMajor(1920, 1080), kOdd(960, 540);
+
+    // Build a project whose FIRST panel is the odd one out, so "first" and
+    // "majority" disagree — the case that used to open at the odd size and
+    // then create every new panel at it.
+    auto buildProject = [&](const QString &tag, const QVector<QSize> &sizes,
+                            const QSize &manifest) {
+        const QString folder = projRoot + QStringLiteral("/mixed_") + tag;
+        QDir().mkpath(folder);
+        Scene *scene = new Scene;
+        scene->number = 1;
+        scene->location = QStringLiteral("INT. MIXED");
+        scene->timeOfDay = QStringLiteral("DAY");
+        for (const QSize &s : sizes)
+            scene->panels.append(makeDetailedPanel(s));
+        ProjectIO::SaveData d;
+        d.projectName = QStringLiteral("Mixed ") + tag;
+        d.fps = 24;
+        d.canvasSize = manifest;
+        d.scenes = {scene};
+        const QJsonObject root = ProjectIO::projectToJson(d, folder);
+        writeJson(folder + QStringLiteral("/proj.sankotv"), root);
+        delete scene; // ~Scene owns and deletes its panels
+        return ProjectIO::projectFromJson(
+            readJson(folder + QStringLiteral("/proj.sankotv")), folder);
+    };
+
+    // MIXED: odd panel first, then three at the majority size.
+    ProjectIO::LoadedProject M =
+        buildProject(QStringLiteral("odd_first"),
+                     {kOdd, kMajor, kMajor, kMajor}, kMajor);
+    check(QStringLiteral("(h) mixed project is DETECTED"), M.mixedSizes);
+    check(QStringLiteral("(h) MAJORITY wins, not the first panel"),
+          M.pixelSize == kMajor,
+          QStringLiteral("%1x%2").arg(M.pixelSize.width())
+              .arg(M.pixelSize.height()));
+    check(QStringLiteral("(h) the majority is counted"),
+          M.majorityPanelCount == 3,
+          QStringLiteral("%1").arg(M.majorityPanelCount));
+    check(QStringLiteral("(h) the dissenter is located, with its size"),
+          M.offSizePanels.size() == 1
+              && M.offSizePanels.first().sceneNumber == 1
+              && M.offSizePanels.first().panelIndex == 1
+              && M.offSizePanels.first().size == kOdd);
+    // The message shown must be TRUE of a mixed project: it must not claim
+    // the artwork is one size, and it must name the dissenter.
+    const QString text = ProjectIO::mixedCanvasSizesDialogText(
+        M.manifestSize, M.pixelSize, M.majorityPanelCount, M.offSizePanels);
+    check(QStringLiteral("(h) the mixed message names both sizes and the "
+                         "panel, and promises no modification"),
+          text.contains(QStringLiteral("not all the same size"))
+              && text.contains(QStringLiteral("Scene 1, panel 1"))
+              && text.contains(QStringLiteral("960"))
+              && text.contains(QStringLiteral("1920"))
+              && text.contains(QStringLiteral("No artwork is modified")));
+    for (Scene *s : M.scenes)
+        delete s;
+
+    // CONTROL: a uniform project must stay silent, and must load exactly as
+    // it did before this pass existed — same size, same mismatch verdict,
+    // no mixed flags. This is the check that proves the normal path did not
+    // move; without it, "detection fires" could pass while every ordinary
+    // project also tripped it.
+    ProjectIO::LoadedProject U =
+        buildProject(QStringLiteral("uniform"), {kMajor, kMajor, kMajor}, kMajor);
+    check(QStringLiteral("(h) control: a UNIFORM project is not flagged"),
+          !U.mixedSizes && U.offSizePanels.isEmpty());
+    check(QStringLiteral("(h) control: uniform load is unchanged — pixel "
+                         "size, manifest and mismatch verdict all as before"),
+          U.pixelSize == kMajor && U.manifestSize == kMajor && !U.mismatch
+              && U.majorityPanelCount == 3);
+    for (Scene *s : U.scenes)
+        delete s;
+
+    // The PASTE REFUSAL's decision, on real panels. (The refusal's dialog
+    // and its wiring into the two paste slots are one call each in
+    // StoryboardPage; linking that whole widget stack into this family to
+    // assert them would cost more than it proves.)
+    Panel *fromMajor = makeDetailedPanel(kMajor);
+    Panel *fromOdd = makeDetailedPanel(kOdd);
+    // POSITIVE CONTROL FIRST: the detector must see the matching case as
+    // safe, or "refuses the mismatch" proves nothing.
+    check(QStringLiteral("(h) control: pasting a %1x%2 panel into a %1x%2 "
+                         "project is NOT refused")
+              .arg(kMajor.width()).arg(kMajor.height()),
+          !pasteWouldMixSizes(fromMajor, kMajor));
+    check(QStringLiteral("(h) pasting a 960x540 panel into a 1920x1080 "
+                         "project IS refused"),
+          pasteWouldMixSizes(fromOdd, kMajor));
+    check(QStringLiteral("(h) and the reverse direction too"),
+          pasteWouldMixSizes(fromMajor, kOdd));
+    check(QStringLiteral("(h) a null clipboard refuses nothing"),
+          !pasteWouldMixSizes(nullptr, kMajor));
+    delete fromMajor;
+    delete fromOdd;
+}
+
 void runProjectSettingsPass()
 {
     out() << "--- (g) project settings: fps timing + pending dialog ---" << Qt::endl;
@@ -758,6 +865,7 @@ int main(int argc, char **argv)
         window.close();
         pump(100);
     }
+    runMixedSizePass(projRoot);
     runProjectSettingsPass();
 
     const bool removed = QDir(scratch).removeRecursively();

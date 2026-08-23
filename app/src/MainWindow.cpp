@@ -661,7 +661,16 @@ bool MainWindow::loadFromPath(const QString &path)
     // PIXELS WIN (reconciled inside ProjectIO): the project opens at the
     // artwork's real size; a lying manifest is reported here — never
     // silently — and corrected by the next save. Artwork is untouched.
-    if (loaded.mismatch)
+    // A MIXED project takes precedence and gets its own message: the plain
+    // mismatch text would claim the artwork is one size when only some of
+    // it is. Neither case alters a pixel.
+    if (loaded.mixedSizes)
+        QMessageBox::information(
+            this, QStringLiteral("Project Size"),
+            ProjectIO::mixedCanvasSizesDialogText(
+                loaded.manifestSize, loaded.pixelSize,
+                loaded.majorityPanelCount, loaded.offSizePanels));
+    else if (loaded.mismatch)
         QMessageBox::information(
             this, QStringLiteral("Project Size"),
             canvasMismatchDialogText(loaded.manifestSize, loaded.pixelSize));

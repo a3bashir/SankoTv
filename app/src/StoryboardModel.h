@@ -359,6 +359,20 @@ inline QString canvasMismatchDialogText(const QSize &manifest,
         .arg(pixels.height());
 }
 
+// Would pasting `clipboard` into a project of `projectSize` leave that
+// project holding panels of two different sizes? THE decision behind the
+// paste refusal, kept here — free of any widget — so the gate can assert
+// the real function on real panels instead of a restatement of it.
+// False for a null clipboard and for anything whose size cannot be read:
+// a refusal must be certain, never a guess.
+inline bool pasteWouldMixSizes(const Panel *clipboard, const QSize &projectSize)
+{
+    if (!clipboard)
+        return false;
+    const QSize source = clipboard->canvasSize();
+    return source.isValid() && projectSize.isValid() && source != projectSize;
+}
+
 // A fresh panel: a locked white Background plus one transparent drawing layer
 // ("Layer 1"), which is the active layer.
 inline Panel *makeBlankPanel(const QSize &size)
