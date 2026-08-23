@@ -128,6 +128,11 @@ target_link_libraries(SankoTV PRIVATE Qt6::Widgets Qt6::Network Qt6::Multimedia 
 # top-level headers like "SankoPaintHostAdapter.h" without ../ paths.
 target_include_directories(SankoTV PRIVATE src)
 
+# The lifecycle family builds the whole application (it constructs
+# MainWindow); reuse the executable's own source list minus its main().
+get_target_property(_sankotv_lifecycle_srcs SankoTV SOURCES)
+list(REMOVE_ITEM _sankotv_lifecycle_srcs "src/main.cpp")
+
 # Permanent brush pixel-lock test (tests/PixelLockTest.cpp): asserts the
 # committed R16 baseline hash, seeded CPU determinism, and the CPU/GPU
 # tolerances (R16 3/255, RGBA16 2/255, dual 3/255). The fixture is fully
@@ -260,6 +265,24 @@ target_include_directories(SankoCanvasSizeLock PRIVATE src)
 target_link_libraries(SankoCanvasSizeLock PRIVATE Qt6::Widgets Qt6::Svg
     Qt6::Concurrent Qt6::Multimedia Qt6::MultimediaWidgets
     QuickShape::Kit SankoPaint::Engine)
+
+# Permanent project-LIFECYCLE lock (tests/ProjectLifecycleTest.cpp): the one
+# family that constructs MainWindow, because opening a project runs behind a
+# native file dialog and nothing else in the suite covered the lifecycle at
+# all. It performs REAL loads through loadFromPath so the real teardown
+# deletes the real panels - the free-then-load sequence where two
+# use-after-frees hid (the canvas's active panel, and the animatic timeline's
+# scene list rebuilt by a frame-rate change). A check that keeps both panels
+# alive cannot catch these; this one lets them die.
+# Run: build/<config>/SankoProjectLifecycle.exe (exit code = failure count).
+qt_add_executable(SankoProjectLifecycle
+    tests/ProjectLifecycleTest.cpp
+    ${_sankotv_lifecycle_srcs}
+)
+target_include_directories(SankoProjectLifecycle PRIVATE src)
+target_link_libraries(SankoProjectLifecycle PRIVATE Qt6::Widgets Qt6::Network
+    Qt6::Multimedia Qt6::MultimediaWidgets Qt6::Svg Qt6::Concurrent
+    QuickShape::Kit SankoPaint::Engine dbghelp)
 
 # --- Developer recorder (TEMP) -----------------------------------------------
 # Temporary bug-capture tool; remove by deleting app/src/devrecorder/ and

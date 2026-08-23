@@ -4423,6 +4423,30 @@ QWidget *StoryboardPage::createBottomBar()
 
 // --- Data / selection -----------------------------------------------------
 
+// The owner is about to DESTROY the scenes and their panels: drop every
+// non-owning pointer into them first.
+//
+// loadScenes({}) is NOT a detach and must not be used as one. With an empty
+// list it stops at rebuildPanelStrip() and never reaches setActivePanel, so
+// the canvas keeps pointing at a panel that is about to be deleted — which
+// is exactly how File > New after opening a project left a dangling
+// m_panel behind. Detaching through setActivePanel(nullptr) also runs the
+// canvas's own leave-handling (commit an in-flight quick shape, floating
+// paste or transform) while the outgoing panel is still ALIVE, which is the
+// only moment that work can safely happen.
+void StoryboardPage::detachScenes()
+{
+    if (m_canvas)
+        m_canvas->setActivePanel(nullptr);
+    m_layerSelPanel = nullptr; // compared by pointer; a recycled address
+                               // would otherwise read as "same panel"
+    m_scenes.clear();
+    m_currentScene = -1;
+    m_currentPanel = -1;
+    rebuildSceneList();
+    rebuildPanelStrip();
+}
+
 void StoryboardPage::loadScenes(const QVector<Scene *> &scenes)
 {
     if (m_undoStack)

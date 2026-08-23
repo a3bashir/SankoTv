@@ -1294,3 +1294,91 @@ warning appears ONLY when something is actually cropped — a warning shown
 for a harmless expansion teaches people to ignore warnings.
 
 STILL V1: Scale Artwork remains V2. Nothing here scales or resamples.
+
+## The File > Open crash: three dangling-pointer defects, and the blind spot that hid them (2026-08-22)
+
+REPORTED as "with a project already open, File > Open closes the app",
+suspected to be the resize work. IT WAS NOT. Bisect, with a symbolised
+stack from a real MainWindow driven through the REAL loadFromPath:
+identical crash at 9f7de82c6 (resize), at 73c1ce6e3 (before resize) and at
+9dfef7557 (before the whole day's work). The faulting line arrived on
+2026-07-27 in 80018f681. Nothing in the four commits of that day touched
+setActivePanel, freeScenes or the load ordering.
+
+ROOT CAUSE, one shape three times: MainWindow::freeScenes() deleted every
+Scene (and its Panels) while other objects still held NON-OWNING pointers
+into them.
+  1. DrawingCanvas::m_panel — the reported crash. The canvas kept pointing
+     at a deleted panel for the whole of the following load, and
+     setActivePanel then READ it: invalidateComposite() -> canvasSize() ->
+     m_panel->canvasSize(). The `m_panel ?` guard does not help; the
+     pointer is not null, it is dead. It faulted only when the freed memory
+     had actually been reused, which is why it looked intermittent.
+  2. AnimaticTimeline::m_scenes — loadFromPath calls m_animatic->setFps()
+     AFTER freeScenes(), and setFps rebuilds the timeline by walking the
+     scene list. The animatic otherwise reloads only when the user
+     navigates to it, so the stale list survives until then. It fires only
+     when the new project's rate DIFFERS (setFps early-returns otherwise),
+     which is why opening same-rate projects looked safe.
+  3. The canvas AGAIN, via File > New: found by the new family, not by a
+     user. freeScenes' first fix called m_storyboard->loadScenes({}), but
+     with an EMPTY list that stops at rebuildPanelStrip() and NEVER reaches
+     setActivePanel, so the canvas kept the dying panel. loadScenes({}) IS
+     NOT A DETACH - do not use it as one.
+
+FULL AUDIT of every Panel*/Layer*/Scene* holder, since the ask was to
+enumerate rather than fix a list nobody had seen:
+  DEREFERENCED (fixed): DrawingCanvas::m_panel; AnimaticTimeline::m_scenes;
+    AnimaticPage::m_scenes + its m_items rows; GenerationPage::m_scenes +
+    rows; StoryboardPage::m_scenes; DrawingCanvas::m_editPanel (read at
+    DrawingCanvas.cpp:3789).
+  COMPARED ONLY, never dereferenced, but still hazardous because a NEW
+  panel allocated at a recycled address reads as "the same panel" and a
+  stale cache or selection is kept: DrawingCanvas::m_compPanel;
+  StoryboardPage::m_layerSelPanel. Both are now nulled.
+  SAFE, confirmed: StoryboardPage::m_panelClipboard is an OWNED deep copy,
+  independent of any scene.
+
+FIXES. (1) Root, inside freeScenes() rather than at its four call sites
+(loadFromPath, onNewProject, buildScenesFromJson, ~MainWindow) because a
+fifth caller would have to remember: detach every page BEFORE deleting.
+StoryboardPage::detachScenes() drops the canvas's panel through
+setActivePanel(nullptr) — which also runs the canvas's leave-handling
+(commit an in-flight quick shape, floating paste or transform) while the
+outgoing panel is still ALIVE, the only moment that is safe — and clears
+m_layerSelPanel. (2) Defence in depth in setActivePanel: it no longer
+dereferences the outgoing panel at all; the cache flags are cleared
+directly and the invalidated rect describes the panel being switched TO.
+
+WHY NOTHING CAUGHT IT. Two independent gaps. SankoCanvasSizeLock's
+cross-size switch calls setActivePanel(small) then setActivePanel(tall)
+with BOTH panels alive and owned by the test — it exercises the switch and
+never the use-after-free, so it passed truthfully while the app died. And
+nothing in the suite had ever constructed MainWindow, so loadFromPath, the
+free-then-load sequence, and onNewProject had ZERO coverage — the same gap
+that made the Project Settings investigation expensive, where
+onProjectSettings had never executed under test either.
+
+NEW EIGHTH FAMILY: SankoProjectLifecycle (tests/ProjectLifecycleTest.cpp),
+13 checks: open, open again at a different size AND rate, a third open,
+re-open the same project, load then File > New then load again, and six
+consecutive opens alternating both (a use-after-free faults only when the
+freed memory is reused, so one switch can pass over a broken build).
+PROVEN NON-VACUOUS: with the detach disabled it CRASHES rather than
+passing. Its failure mode IS a crash, so it installs an
+unhandled-exception filter that prints a symbolised stack, and it flushes
+after every check — a gate failure names a faulting line instead of dying
+silently.
+
+COSTS, measured, since this is the first family to link the whole
+application: build 55 s Release (it compiles the app's ~120 sources a
+second time; the exe is 2.5 MB), run 9.0 s Release / 13.4 s Debug — well
+under SankoCanvasEdgeLock's 41-43 s. It needs a GUI session, like
+EdgeLock and SizeLock already do. It does NOT touch real state: QSettings
+is redirected to INI under a scratch root, QStandardPaths is in test mode,
+and NewProjectDialog::setSettingsOverride points the recents store into
+scratch too (loadFromPath records a recent project on EVERY successful
+open, so without that override a test run would edit the user's list).
+Verified: no scratch left behind, no real registry key written.
+
+THE GATE IS NOW EIGHT FAMILIES, not seven.

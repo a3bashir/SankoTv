@@ -749,8 +749,18 @@ void DrawingCanvas::setActivePanel(Panel *panel)
     if (m_xformActive)
         commitTransform(false);
 
-    invalidateComposite(); // caches belong to the panel we are leaving
+    // DEFENCE IN DEPTH: nothing below may DEREFERENCE the panel we are
+    // leaving. freeScenes() now detaches before it destroys, so this should
+    // never see a dead panel — but this function used to invalidate the
+    // caches through canvasSize(), which read the outgoing panel, and a
+    // project load had already deleted it. Dropping the caches needs no
+    // panel at all: clear the flags directly, and let the invalidated rect
+    // describe the panel being switched TO, which is what the next repaint
+    // covers anyway.
+    m_compValid = false;
+    m_compPanel = nullptr; // never compare against a pointer that may be dead
     m_panel = panel;
+    invalidateComposite();
     m_drawing = false;
     m_brushStroke = false;
     m_strokeMask = StrokeMaskNone;

@@ -630,8 +630,39 @@ void MainWindow::updateTitle()
 
 // --- Scene ownership ------------------------------------------------------
 
+QSize MainWindow::activePanelSizeForTest() const
+{
+    auto *canvas =
+        m_storyboard ? m_storyboard->findChild<DrawingCanvas *>() : nullptr;
+    return canvas ? canvas->canvasSize() : QSize();
+}
+
 void MainWindow::freeScenes()
 {
+    // DETACH BEFORE DESTROYING. Several pages hold NON-OWNING Scene*/Panel*
+    // into m_scenes, and deleting the scenes underneath them leaves those
+    // members dangling — not harmlessly, but until something dereferences
+    // them:
+    //   * DrawingCanvas::m_panel — the crash a user reported as "File >
+    //     Open closes the app": the canvas kept pointing at a deleted panel
+    //     for the whole of the following load, and setActivePanel then read
+    //     it through invalidateComposite().
+    //   * AnimaticTimeline::m_scenes — loadFromPath calls setFps() AFTER
+    //     this, and a CHANGED rate rebuilds the timeline by walking the
+    //     scene list. The animatic otherwise only reloads when the user
+    //     navigates to it, so the stale list survives until then.
+    //   * GenerationPage::m_scenes and its per-row Panel* — same lazy
+    //     refresh, same exposure.
+    // The detach lives HERE rather than at the four call sites (this one,
+    // the destructor, buildScenesFromJson and onNewProject) because a fifth
+    // caller added later would have to remember, and this is the last
+    // moment where every holder is still consistent.
+    if (m_storyboard)
+        m_storyboard->detachScenes(); // NOT loadScenes({}): see detachScenes
+    if (m_animatic)
+        m_animatic->loadScenes({}); // clears its rows AND its timeline's list
+    if (m_generation)
+        m_generation->loadScenes({});
     for (Scene *scene : m_scenes)
         delete scene; // Scene destructor deletes its panels
     m_scenes.clear();

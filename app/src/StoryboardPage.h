@@ -54,6 +54,10 @@ public:
     // Display the given scenes. Ownership stays with the caller (MainWindow);
     // this page only holds non-owning pointers.
     void loadScenes(const QVector<Scene *> &scenes);
+    // Drop every non-owning pointer into the current scenes because they are
+    // about to be destroyed. NOT the same as loadScenes({}), which leaves the
+    // canvas holding its panel — see the implementation.
+    void detachScenes();
     // The PROJECT's canvas size — the authority every new panel is created
     // at. Set by MainWindow at project create/load, before any panel can be
     // added. Existing panels carry their own size (pixels are the truth);

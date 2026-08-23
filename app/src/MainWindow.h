@@ -26,6 +26,18 @@ public:
     explicit MainWindow(QWidget *parent = nullptr);
     ~MainWindow() override;
 
+    // PERMANENT test hooks for SankoProjectLifecycle. The project lifecycle
+    // had no gate coverage at all because opening a project runs behind a
+    // native file dialog and nothing in the suite constructed this window;
+    // two use-after-frees hid in that gap. These expose the REAL paths —
+    // not copies of them — so the family exercises what the menu does.
+    bool loadProjectForTest(const QString &path) { return loadFromPath(path); }
+    void newProjectForTest() { onNewProject(); }
+    // The size of the panel the canvas is currently showing; invalid when it
+    // holds none. Reading it after a load is what proves the canvas followed
+    // the project, and reading it after a teardown is what proves it let go.
+    QSize activePanelSizeForTest() const;
+
 private:
     void setupMenuBar();
     void updateSaveActions();
