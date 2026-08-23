@@ -629,6 +629,7 @@ void AnimaticPage::onDurationChanged(int sceneIndex, int panelIndex, int newDura
     if (panelIndex < 0 || panelIndex >= scene->panels.size())
         return;
     scene->panels.at(panelIndex)->duration = qBound(1, newDuration, 30);
+    emit documentChanged(); // durations are saved; the drag is not undoable
 
     if (m_timeline)
         m_timeline->setScenes(m_scenes); // reflow block widths from the new value
@@ -773,6 +774,7 @@ void AnimaticPage::onImportAudio()
     if (path.isEmpty())
         return;
     loadAudioFile(path); // does not auto-play
+    emit documentChanged(); // the USER chose a track; load does not come here
 }
 
 void AnimaticPage::loadAudioFile(const QString &path)
@@ -790,6 +792,7 @@ void AnimaticPage::onRemoveAudio()
         m_player->setSource(QUrl());
     }
     updateAudioUi();
+    emit documentChanged(); // removing the track is as much an edit as adding
 }
 
 void AnimaticPage::updateAudioUi()

@@ -535,6 +535,16 @@ public:
           m_before(before), m_after(after)
     {
     }
+    // Changing what is SELECTED does not change the document. The window's
+    // unsaved-changes flag watches the undo stack so that every undoable
+    // change marks the project dirty by construction — including command
+    // types added later — and this id is how that watcher tells the one
+    // command apart that must NOT. Without it, dragging a marquee would
+    // claim there is work to save and prompt on close for nothing, which is
+    // how people learn to dismiss save prompts.
+    static constexpr int kNotADocumentChange = 0x5E1EC7;
+    int id() const override { return kNotADocumentChange; }
+
     void undo() override { m_canvas->applySelectionPathForUndo(m_before); }
     void redo() override
     {

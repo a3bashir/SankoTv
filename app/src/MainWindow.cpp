@@ -73,11 +73,53 @@ MainWindow::MainWindow(QWidget *parent)
     m_undoStack->setUndoLimit(60);
     m_storyboard->setUndoStack(m_undoStack);
 
+    // UNSAVED-CHANGES BACKSTOP. Every undoable change marks the project
+    // dirty BY CONSTRUCTION rather than by someone remembering to wire it:
+    // strokes, fills, erases, pastes, transforms, layer stack edits, panel
+    // add/remove/move and perspective edits are all undo commands, and so
+    // is any command type added in future. Enumerating them by hand would
+    // age badly; the risk being guarded against is a change type nobody
+    // wired.
+    //
+    // One command is excluded. Changing what is SELECTED does not change
+    // the document, so a marquee drag must not claim there is work to save.
+    // The command identifies itself (SelectionCommand::id()) rather than
+    // being matched by its text.
+    connect(m_undoStack, &QUndoStack::indexChanged, this, [this](int index) {
+        if (index <= 0)
+            return; // undone back to the start: nothing was just done
+        const QUndoCommand *command = m_undoStack->command(index - 1);
+        if (command && command->id() == 0x5E1EC7)
+            return; // selection: not a document change
+        markDirty();
+    });
+
     m_storyboard->setConsistencyEntries(&m_consistencyEntries); // read-only
     m_consistencyBoard->setEntries(&m_consistencyEntries);      // read-write
     m_generation->setConsistencyEntries(&m_consistencyEntries); // read-only
 
     // Paste / Paste in Place enable once a panel lands on the clipboard.
+    // The changes the undo stack cannot see, because they are not undoable:
+    // Shot Info fields, panel durations and the scratch audio track, and the
+    // consistency entries. Each page says so itself rather than the window
+    // guessing from repaints.
+    connect(m_storyboard, &StoryboardPage::documentChanged, this,
+            &MainWindow::markDirty);
+    connect(m_animatic, &AnimaticPage::documentChanged, this,
+            &MainWindow::markDirty);
+    if (m_consistencyBoard)
+        connect(m_consistencyBoard, &ConsistencyBoard::documentChanged, this,
+                &MainWindow::markDirty);
+    // Pixel edits also arrive here directly. Redundant with the undo-stack
+    // backstop (they are undoable), and kept for exactly that reason: a
+    // pixel change that somehow never reached the stack still counts.
+    if (auto *canvas = m_storyboard->findChild<DrawingCanvas *>()) {
+        connect(canvas, &DrawingCanvas::contentChanged, this,
+                &MainWindow::markDirty);
+        connect(canvas, &DrawingCanvas::layersChanged, this,
+                &MainWindow::markDirty);
+    }
+
     connect(m_storyboard, &StoryboardPage::panelClipboardChanged, this, [this](bool available) {
         if (m_pastePanelAct)
             m_pastePanelAct->setEnabled(available);
@@ -572,23 +614,8 @@ void MainWindow::onResizeProject(const QSize &currentSize)
     if (confirm.clickedButton() != go)
         return;
 
-    // 5. Swap, panel by panel. Each panel stages its own layers and is only
-    // touched once all of them allocated.
-    const QPoint offset = ProjectResize::centreOffset(currentSize, newSize);
-    const ProjectResize::Outcome outcome =
-        ProjectResize::apply(m_scenes, newSize, offset);
-
-    // 6. Project-level state. Order matters: the members must be updated
-    // before anything can save, or a save would write the old manifest
-    // against new pixels — a mismatch of our own making.
-    m_canvasWidth = newSize.width();
-    m_canvasHeight = newSize.height();
-    if (m_storyboard)
-        m_storyboard->applyProjectResize(newSize, offset);
-    if (m_undoStack)
-        m_undoStack->clear(); // every canvas-space command is now invalid
-    updateSaveActions();
-    updateTitle();
+    // 5-6. Swap and settle. One definition, shared with the test hook.
+    const ProjectResize::Outcome outcome = applyCanvasResizeInternal(newSize);
 
     if (!outcome.ok) {
         // Should be unreachable after the precheck. Never leave this
@@ -610,6 +637,37 @@ void MainWindow::onResizeProject(const QSize &currentSize)
     }
 }
 
+// The resize proper: swap every panel, then put the project's state right.
+// No dialogs, so this is also what the gate drives.
+ProjectResize::Outcome MainWindow::applyCanvasResizeInternal(const QSize &newSize)
+{
+    const QSize currentSize(m_canvasWidth, m_canvasHeight);
+    const QPoint offset = ProjectResize::centreOffset(currentSize, newSize);
+    const ProjectResize::Outcome outcome =
+        ProjectResize::apply(m_scenes, newSize, offset);
+
+    // ORDER MATTERS: the members must be updated before anything can save,
+    // or a save would write the old manifest against new pixels — a
+    // mismatch of our own making.
+    m_canvasWidth = newSize.width();
+    m_canvasHeight = newSize.height();
+    if (m_storyboard)
+        m_storyboard->applyProjectResize(newSize, offset);
+    if (m_undoStack)
+        m_undoStack->clear(); // every canvas-space command is now invalid
+    // A resize changes every panel AND clears the history that could undo
+    // it, so the unsaved-changes flag cannot come from the undo stack here.
+    markDirty();
+    updateSaveActions();
+    updateTitle();
+    return outcome;
+}
+
+void MainWindow::applyCanvasResize(const QSize &newSize)
+{
+    applyCanvasResizeInternal(newSize);
+}
+
 void MainWindow::applyProjectSettings(const QString &projectName, int fps)
 {
     m_projectName = projectName;
@@ -620,12 +678,31 @@ void MainWindow::applyProjectSettings(const QString &projectName, int fps)
     // not about the artwork.
     if (m_animatic)
         m_animatic->setFps(m_projectFps);
+    markDirty(); // name and frame rate are saved, and neither is undoable
     updateTitle();
 }
 
 void MainWindow::updateTitle()
 {
-    setWindowTitle(QString::fromUtf8("SANKO TV \xE2\x80\x94 %1").arg(m_projectName));
+    // [*] is Qt's modified marker: it renders as an asterisk while
+    // windowModified is true and disappears when it is not.
+    setWindowTitle(
+        QString::fromUtf8("SANKO TV \xE2\x80\x94 %1[*]").arg(m_projectName));
+    setWindowModified(m_dirty);
+}
+
+void MainWindow::markDirty()
+{
+    if (m_dirty)
+        return; // idempotent: this is called from very many places
+    m_dirty = true;
+    setWindowModified(true);
+}
+
+void MainWindow::setClean()
+{
+    m_dirty = false;
+    setWindowModified(false);
 }
 
 // --- Scene ownership ------------------------------------------------------
@@ -670,6 +747,9 @@ void MainWindow::freeScenes()
 
 void MainWindow::buildScenesFromJson(const QJsonArray &scenes)
 {
+    // A Script Editor re-parse REPLACES every scene in the project. That is
+    // as large a change as there is, and none of it is undoable.
+    markDirty();
     freeScenes();
     for (const QJsonValue &value : scenes) {
         const QJsonObject obj = value.toObject();
@@ -700,6 +780,8 @@ void MainWindow::onNewProject()
     m_projectName = QStringLiteral("Untitled Project");
     updateSaveActions();
     updateTitle();
+    setClean(); // last, for the same reason as loadFromPath: tearing the old
+                // project down marks dirty on the way through
 }
 
 void MainWindow::onOpenProject()
@@ -778,6 +860,7 @@ bool MainWindow::saveToPath(const QString &path)
 
     m_currentProjectPath = path;
     NewProjectDialog::recordRecentProject(path);
+    setClean(); // what is on disk now matches what is in memory
     return true;
 }
 
@@ -853,5 +936,11 @@ bool MainWindow::loadFromPath(const QString &path)
     m_storyboard->loadScenes(m_scenes);
     m_storyboard->perspectiveFromJson(loaded.perspective);
     m_stack->setCurrentWidget(m_storyboard);
+    // LAST, and it must stay last. Opening a project fires the very signals
+    // that mark it dirty — panels are selected, the canvas repaints and
+    // publishes, pages rebuild — so a freshly opened project would otherwise
+    // be born modified and prompt to save work nobody did. Anything added
+    // below this line that touches the model must clear the flag again.
+    setClean();
     return true;
 }

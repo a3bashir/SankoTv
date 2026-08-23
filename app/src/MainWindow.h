@@ -1,6 +1,9 @@
 #pragma once
 
+#include "ProjectResize.h" // Outcome, returned by the resize helper
+
 #include <QMainWindow>
+#include <QSize>
 #include <QString>
 #include <QVector>
 
@@ -26,6 +29,14 @@ public:
     explicit MainWindow(QWidget *parent = nullptr);
     ~MainWindow() override;
 
+    // UNSAVED CHANGES. True from the first change until the next save,
+    // load, new or close. A pure query with no side effects, so the save
+    // prompts can be tested as a DECISION rather than by driving a modal.
+    bool isDirty() const { return m_dirty; }
+    // Test hook: put the project back to clean so a check can prove ONE
+    // change type marks it, rather than inheriting dirt from an earlier one.
+    void markCleanForTest() { setClean(); }
+
     // PERMANENT test hooks for SankoProjectLifecycle. The project lifecycle
     // had no gate coverage at all because opening a project runs behind a
     // native file dialog and nothing in the suite constructed this window;
@@ -33,6 +44,16 @@ public:
     // not copies of them — so the family exercises what the menu does.
     bool loadProjectForTest(const QString &path) { return loadFromPath(path); }
     void newProjectForTest() { onNewProject(); }
+    bool saveProjectForTest(const QString &path) { return saveToPath(path); }
+    // The real slot the Project Settings dialog's applied() signal reaches.
+    void applyProjectSettingsForTest(const QString &name, int fps)
+    {
+        applyProjectSettings(name, fps);
+    }
+    // Everything the resize workflow does AFTER its dialogs have been
+    // answered — the part with no modal in it.
+    void resizeProjectForTest(const QSize &newSize) { applyCanvasResize(newSize); }
+    QUndoStack *undoStackForTest() const { return m_undoStack; }
     // The size of the panel the canvas is currently showing; invalid when it
     // holds none. Reading it after a load is what proves the canvas followed
     // the project, and reading it after a teardown is what proves it let go.
@@ -52,11 +73,23 @@ private:
     void onPreferences(); // Edit > Preferences... (category list + settings pane)
     // File > Project Settings... — settings of the CURRENTLY OPEN project
     // (name, frame rate; canvas facts read-only). Pending until Apply/OK.
+    // Unsaved-changes bookkeeping. markDirty() is deliberately cheap and
+    // idempotent: it is called from a great many places.
+    void markDirty();
+    void setClean();
+
     void onProjectSettings();
     // Resize Project...: the whole confirmed, non-undoable canvas-only
     // resize workflow — in-flight refusal, size prompt, memory precheck,
     // save prompt, confirm, per-panel swap, state reset.
     void onResizeProject(const QSize &currentSize);
+    // The resize itself, once every dialog has been answered: swap the
+    // panels and put the project's state right. Split out of
+    // onResizeProject so the operation can be exercised without driving
+    // four modal dialogs, and so there is ONE definition of what a resize
+    // does rather than a test-shaped copy of it.
+    void applyCanvasResize(const QSize &newSize);
+    ProjectResize::Outcome applyCanvasResizeInternal(const QSize &newSize);
     void applyProjectSettings(const QString &projectName, int fps);
     bool saveToPath(const QString &path);
     bool loadFromPath(const QString &path);
@@ -86,6 +119,14 @@ private:
     int m_projectFps = 24;
     int m_canvasWidth = 960;
     int m_canvasHeight = 540;
+    // Unsaved changes. Set by every document mutation, cleared only by
+    // save/load/new/close. Not derived from the undo stack's clean state:
+    // that stack has a 60-command limit (so its clean index can fall off
+    // the bottom and never return), it carries selection changes that are
+    // not document changes, and several real edits — shot info, panel
+    // durations, frame rate, project name, canvas resize — never reach it
+    // at all.
+    bool m_dirty = false;
 
     QAction *m_saveAct = nullptr;
     QAction *m_saveAsAct = nullptr;

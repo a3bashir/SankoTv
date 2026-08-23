@@ -49,6 +49,16 @@ public:
 
 signals:
     void backRequested();
+    // This board edits the OWNER's entry vector in place (it holds a pointer
+    // to it), and those entries are serialized with the project — but none
+    // of it is undoable, so the window's undo-stack watcher cannot see it.
+    // Adding, deleting or editing an entry says so here.
+    void documentChanged();
+
+public:
+    // Test hook: the REAL deletion path (adding one opens a modal dialog,
+    // so deletion is the mutation a gate can drive end to end).
+    void deleteEntryForTest(int index) { deleteEntry(index); }
 
 private:
     QWidget *createTopBar();

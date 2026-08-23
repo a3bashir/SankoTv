@@ -540,6 +540,7 @@ void ConsistencyBoard::deleteEntry(int index)
     if (!m_entries || index < 0 || index >= m_entries->size())
         return;
     m_entries->removeAt(index);
+    emit documentChanged();
     if (m_selected == index)
         m_selected = -1;
     else if (m_selected > index)
@@ -624,6 +625,7 @@ void ConsistencyBoard::addEntry(const QString &type)
     entry.tags = splitTags(tagsEdit->text());
     entry.thumbnail = chosen; // null if none uploaded
     m_entries->append(entry);
+    emit documentChanged();
 
     m_selected = m_entries->size() - 1;
     m_editing = false;
@@ -673,6 +675,7 @@ void ConsistencyBoard::saveEdit()
         entry.tags = splitTags(m_editTags->text());
     if (m_editThumbChanged)
         entry.thumbnail = m_editThumb;
+    emit documentChanged();
 
     m_editing = false;
     rebuildList();

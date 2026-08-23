@@ -4642,6 +4642,10 @@ void StoryboardPage::saveShotInfo()
     panel->lens = m_lens->currentText();
     panel->mood = m_mood->text();
     panel->notes = m_notes->toPlainText();
+    // Not undoable, so the window's undo-stack watcher cannot see it: say so
+    // explicitly. (The m_loadingShotInfo guard above means populating the
+    // fields from a panel does not count as an edit.)
+    emit documentChanged();
 }
 
 // Debounced: every stroke commit / opacity tick used to re-flatten the WHOLE

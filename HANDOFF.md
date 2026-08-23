@@ -1382,3 +1382,80 @@ open, so without that override a test run would edit the user's list).
 Verified: no scratch left behind, no real registry key written.
 
 THE GATE IS NOW EIGHT FAMILIES, not seven.
+
+## Unsaved-changes tracking (2026-08-22)
+
+Groundwork for the save prompts on New/Open/Close/Exit, shipped ALONE and
+FIRST: a prompt that misses a change type tells the artist their work is
+safe and then discards it, so the flag had to be trustworthy before
+anything asked it a question.
+
+NO DIRTY FLAG EXISTED. And the undo stack could not stand in for one: it
+carries SelectionCommand (selecting is not a document change), it has a
+60-command limit so its clean index can fall off the bottom and never
+return, and several real edits never reach it at all — Shot Info fields
+and panel durations are written straight to the model, and frame rate,
+project name and canvas resize are the window's own.
+
+MECHANISM, two halves.
+  1. UNDO-STACK BACKSTOP. MainWindow watches QUndoStack::indexChanged, so
+     every undoable change marks the project dirty BY CONSTRUCTION —
+     strokes, fills, erases, pastes, transforms, layer stack edits, panel
+     add/remove/move, perspective — INCLUDING command types added later.
+     Enumerating them by hand would have aged badly; the risk being guarded
+     against is a change type nobody wired. One exclusion:
+     SelectionCommand::id() returns a sentinel the watcher skips, because a
+     marquee drag must not claim there is work to save. It is identified by
+     id, not by matching its text.
+  2. THREE NEW SIGNALS for what the stack cannot see, one per page that
+     mutates silently: StoryboardPage::documentChanged (Shot Info, 1 emit
+     site), AnimaticPage::documentChanged (duration drag + audio track
+     chosen + audio removed, 3 sites — one MORE than the 2 estimated when
+     planning, because REMOVING the track is as much an edit as adding it),
+     ConsistencyBoard::documentChanged (add, delete, edit — 3 sites, as
+     estimated). AnimaticPage::setAudioPath deliberately stays SILENT: it
+     is how a project LOAD installs its track, and adopting a saved path is
+     not an edit.
+  Plus three direct markDirty() calls the window owns: applyProjectSettings
+  (name + fps), the resize, and a Script Editor re-parse.
+
+THE ORDERING TRAP, which would have silently ruined the feature: opening a
+project fires the very signals that mark it dirty (panels selected, canvas
+publishing, pages rebuilding). setClean() is therefore the LAST thing
+loadFromPath and onNewProject do, and the gate asserts a freshly loaded
+project is clean rather than checking the flag at some arbitrary later
+moment. Anything added below those lines that touches the model must clear
+the flag again.
+
+isDirty() is public and pure, so the prompts can be tested as a DECISION
+rather than by driving a modal (the pasteWouldMixSizes pattern). The title
+carries [*] via setWindowModified.
+
+REFACTOR that rode along: the resize's post-dialog work moved out of
+onResizeProject into applyCanvasResizeInternal, so there is ONE definition
+of what a resize does and the gate can drive it without answering four
+modal dialogs.
+
+GATE: SankoProjectLifecycle section (d), 16 checks (family now 29, 15.9 s
+Release / 21.6 s Debug). Every change type proven INDIVIDUALLY — each
+starts from clean, makes exactly one change, and asserts dirty — because
+a check that marks dirty via one path and declares the flag working is the
+vacuous shape here. Types: canvas stroke, the undo backstop, Shot Info,
+panel duration, frame rate, project name, resize, consistency entry. Then
+save clears it, New clears it, and two controls: doing nothing leaves it
+clean, and A SELECTION CHANGE DOES NOT MARK DIRTY. That last one is
+load-bearing and was PROVEN so, not assumed: with the id exclusion removed
+it is the only check that fails.
+
+One thing the gate taught while being written: the animatic holds NO
+scenes until the user navigates to it, so a duration change on a
+just-loaded project is a no-op. The check now clicks the real "Continue to
+Animatic" button first, or it would have passed vacuously.
+
+NEXT PASS (not built): File menu reorganisation — New / Open / Open Recent
+/ Close Project / Save / Save As / Project Settings / Exit, with the
+unsaved prompts on New, Open, Close and Exit, closeEvent as the SINGLE
+prompt implementation (a prompt from the menu and silent loss from the X
+button is worse than no prompt), Open Recent reusing the Open path rather
+than duplicating load logic, and lifecycle sections (e) close-state and
+(f) close-then-open/new.

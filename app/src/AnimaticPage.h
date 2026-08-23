@@ -43,6 +43,19 @@ public:
 signals:
     void backRequested();
     void generationRequested();
+    // A change to the PROJECT's contents made here and NOT through the undo
+    // stack: a panel's duration (dragged on the timeline) and the scratch
+    // audio track, both of which are serialized with the project.
+    // Deliberately NOT emitted by setAudioPath(), which is how a project
+    // LOAD installs its track — adopting a saved path is not an edit.
+    void documentChanged();
+
+public:
+    // Test hook: the REAL duration change the timeline drag performs.
+    void setPanelDurationForTest(int sceneIndex, int panelIndex, int duration)
+    {
+        onDurationChanged(sceneIndex, panelIndex, duration);
+    }
 
 private:
     struct Item

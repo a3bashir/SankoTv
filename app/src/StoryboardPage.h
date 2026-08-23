@@ -138,6 +138,12 @@ public:
 
 signals:
     void panelClipboardChanged(bool available); // enables the paste actions
+    // A change to the PROJECT's contents that does NOT go through the undo
+    // stack (the window watches that stack separately for everything that
+    // does). Today: the Shot Info fields, which are written straight to the
+    // panel. Anything added here that mutates the model silently must emit
+    // this, or the project can be closed with the change unsaved.
+    void documentChanged();
     void backRequested();
     void continueToAnimaticRequested(const QVector<Scene *> &scenes);
     void consistencyBoardRequested();

@@ -36,7 +36,11 @@
 // Run: build/<config>/SankoProjectLifecycle.exe (exit code = failure count).
 // Needs a GUI session; never samples screen pixels.
 
+#include "AnimaticPage.h"
+#include "ConsistencyBoard.h"
+#include "DrawingCanvas.h"
 #include "MainWindow.h"
+#include "StoryboardPage.h"
 #include "NewProjectDialog.h"
 #include "ProjectIO.h"
 #include "StoryboardModel.h"
@@ -50,7 +54,13 @@
 #include <QPainter>
 #include <QSettings>
 #include <QStandardPaths>
+#include <QMouseEvent>
+#include <QPlainTextEdit>
+#include <QPushButton>
 #include <QTextStream>
+#include <QUndoStack>
+#include <QtGui/QTransform>
+#include <functional>
 
 #ifdef Q_OS_WIN
 #ifndef NOMINMAX
@@ -139,6 +149,16 @@ void pump(int ms)
         QCoreApplication::processEvents(QEventLoop::AllEvents, 5);
 }
 
+
+void sendMouse(QWidget *w, QEvent::Type type, const QPointF &local,
+               Qt::MouseButton b)
+{
+    QMouseEvent ev(type, local, w->mapToGlobal(local.toPoint()), b,
+                   type == QEvent::MouseButtonRelease ? Qt::NoButton : b,
+                   Qt::NoModifier);
+    QCoreApplication::sendEvent(w, &ev);
+}
+
 quint32 g_seed = 0x1234567u;
 int randIn(int lo, int hi)
 {
@@ -176,6 +196,14 @@ QString writeProject(const QString &root, const QString &name, const QSize &size
         scenes.append(scene);
     }
     ProjectIO::SaveData data;
+    // One consistency entry, so the deletion path has something real
+    // to delete.
+    ConsistencyEntry entry;
+    entry.id = QStringLiteral("fixture-entry");
+    entry.name = QStringLiteral("Fixture Character");
+    entry.type = QStringLiteral("Character");
+    entry.description = QStringLiteral("For the dirty-flag check.");
+    data.consistency = {entry};
     data.projectName = name;
     data.fps = fps;
     data.canvasSize = size;
@@ -193,6 +221,163 @@ QString writeProject(const QString &root, const QString &name, const QSize &size
 }
 
 } // namespace
+
+
+// ---- (d) unsaved-changes tracking -----------------------------------------
+// The risk this guards is a change type NOBODY WIRED: a flag that works for
+// strokes and silently misses shot info would tell an artist their work is
+// safe and then discard it. So every type is proven INDIVIDUALLY, each from
+// a clean start, and the two negative controls are load-bearing:
+//   * a selection change must NOT mark dirty (it is not a document change,
+//     and the undo-stack backstop excludes it by command id). If that
+//     exclusion is removed this check fails - it is the only thing standing
+//     between "dirty means unsaved work" and "dirty means you touched the
+//     canvas".
+//   * doing nothing must leave it clean, or every check above passes over a
+//     flag that is simply always true.
+void runDirtyTrackingPass(const QString &projectPath, const QString &scratch)
+{
+    out() << "--- (d) unsaved changes: every type, individually ---" << Qt::endl;
+    MainWindow window;
+    window.resize(1400, 880);
+    window.show();
+    pump(900);
+    if (!window.loadProjectForTest(projectPath)) {
+        check(QStringLiteral("(d) fixture project opens"), false);
+        return;
+    }
+    pump(600);
+
+    // THE ORDERING TRAP, asserted directly rather than at some later moment:
+    // opening a project fires the very signals that mark it dirty (panels
+    // selected, canvas repainting and publishing, pages rebuilding). If
+    // setClean() were not the last thing loadFromPath does, a freshly opened
+    // project would be born modified and prompt to save work nobody did.
+    check(QStringLiteral("(d) a freshly LOADED project is clean, despite the "
+                         "load's own internal traffic"),
+          !window.isDirty());
+
+    auto *storyboard = window.findChild<StoryboardPage *>();
+    auto *animatic = window.findChild<AnimaticPage *>();
+    auto *board = window.findChild<ConsistencyBoard *>();
+    auto *canvas = window.findChild<DrawingCanvas *>();
+    check(QStringLiteral("(d) found the pages to drive"),
+          storyboard && animatic && board && canvas);
+    if (!storyboard || !animatic || !board || !canvas)
+        return;
+
+    // Each type: prove CLEAN first, make exactly ONE change, prove DIRTY.
+    auto marksDirty = [&window](const QString &what,
+                                const std::function<void()> &change) {
+        window.markCleanForTest();
+        pump(60);
+        const bool cleanFirst = !window.isDirty();
+        change();
+        pump(250);
+        check(QStringLiteral("(d) %1 marks the project dirty").arg(what),
+              cleanFirst && window.isDirty(),
+              cleanFirst ? QString() : QStringLiteral("was already dirty"));
+    };
+
+    marksDirty(QStringLiteral("a canvas stroke"), [canvas] {
+        const QTransform t = canvas->viewTransformForTest();
+        sendMouse(canvas, QEvent::MouseButtonPress, t.map(QPointF(200, 200)),
+                  Qt::LeftButton);
+        for (int i = 1; i <= 8; ++i)
+            sendMouse(canvas, QEvent::MouseMove,
+                      t.map(QPointF(200 + i * 10, 200 + i * 5)), Qt::LeftButton);
+        sendMouse(canvas, QEvent::MouseButtonRelease, t.map(QPointF(280, 240)),
+                  Qt::LeftButton);
+        pump(600);
+    });
+
+    // The undo-stack BACKSTOP, which is what covers panel add/remove/move,
+    // layer stack edits, and any command type added in future. Driving it
+    // with a plain command tests the RULE rather than one command's wiring.
+    marksDirty(QStringLiteral("any undoable command (the backstop)"), [&window] {
+        window.undoStackForTest()->push(
+            new QUndoCommand(QStringLiteral("test document change")));
+    });
+
+    marksDirty(QStringLiteral("a Shot Info edit"), [storyboard] {
+        // The real widget the artist types into; its textChanged runs
+        // saveShotInfo(), which writes the panel and emits documentChanged.
+        if (auto *notes = storyboard->findChild<QPlainTextEdit *>())
+            notes->setPlainText(QStringLiteral("A note about this shot."));
+    });
+
+    // The animatic only receives the scenes when the user NAVIGATES to it
+    // (loadFromPath does not populate it - the same lazy refresh that let a
+    // stale scene list survive a project switch). So drive the real
+    // navigation first, exactly as the artist does, or the duration change
+    // is a no-op on an empty list and the check would pass vacuously.
+    for (QPushButton *b : storyboard->findChildren<QPushButton *>())
+        if (b->text() == QStringLiteral("Continue to Animatic")) {
+            b->click();
+            break;
+        }
+    pump(400);
+    marksDirty(QStringLiteral("a panel duration change"), [animatic] {
+        animatic->setPanelDurationForTest(0, 0, 7);
+    });
+
+    marksDirty(QStringLiteral("a frame rate change"), [&window] {
+        window.applyProjectSettingsForTest(QStringLiteral("Alpha"), 30);
+    });
+
+    marksDirty(QStringLiteral("a project name change"), [&window] {
+        window.applyProjectSettingsForTest(QStringLiteral("Renamed"), 30);
+    });
+
+    marksDirty(QStringLiteral("a canvas resize"), [&window] {
+        window.resizeProjectForTest(QSize(1280, 720));
+    });
+
+    marksDirty(QStringLiteral("a consistency entry change"), [board, &window] {
+        Q_UNUSED(window);
+        board->deleteEntryForTest(0); // fixture ships one entry
+    });
+
+    // ---- the two controls --------------------------------------------
+    window.markCleanForTest();
+    pump(60);
+    check(QStringLiteral("(d) CONTROL: doing nothing leaves it clean"),
+          !window.isDirty());
+
+    // LOAD-BEARING: selection is not a document change. This is the check
+    // that fails if SelectionCommand's id-based exclusion is removed.
+    window.markCleanForTest();
+    canvas->selectAll();
+    pump(300);
+    check(QStringLiteral("(d) CONTROL: a SELECTION change does NOT mark dirty"),
+          !window.isDirty(),
+          QStringLiteral("the SelectionCommand exclusion is what makes this "
+                         "pass"));
+    canvas->clearSelection();
+    pump(150);
+
+    // ---- clearing ----------------------------------------------------
+    window.applyProjectSettingsForTest(QStringLiteral("Renamed"), 24);
+    pump(150);
+    check(QStringLiteral("(d) dirty before saving (control for the next)"),
+          window.isDirty());
+    const QString savePath = scratch
+        + QStringLiteral("/projects/Alpha/Alpha.sankotv");
+    check(QStringLiteral("(d) SAVE clears the flag"),
+          window.saveProjectForTest(savePath) && !window.isDirty());
+
+    window.applyProjectSettingsForTest(QStringLiteral("Dirtied"), 60);
+    pump(150);
+    check(QStringLiteral("(d) dirty again (control for New)"), window.isDirty());
+    window.newProjectForTest();
+    pump(300);
+    check(QStringLiteral("(d) NEW PROJECT clears the flag, despite tearing "
+                         "the old project down"),
+          !window.isDirty());
+
+    window.close();
+    pump(300);
+}
 
 int main(int argc, char **argv)
 {
@@ -321,6 +506,8 @@ int main(int argc, char **argv)
         window.close();
         pump(300);
     }
+
+    runDirtyTrackingPass(a, scratch);
 
     // Nothing may have escaped the scratch root.
     const bool removed = QDir(scratch).removeRecursively();
