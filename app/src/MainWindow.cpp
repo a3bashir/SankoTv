@@ -234,10 +234,18 @@ MainWindow::MainWindow(QWidget *parent)
                          QStringLiteral("Debug"),
 #endif
 #ifdef SANKOTV_GIT_HEAD
-                         QStringLiteral(SANKOTV_GIT_HEAD)});
+                         // Captured at BUILD time, and marked "+dirty" when
+                         // built from uncommitted work — a build from a
+                         // dirty tree is not any commit, and a bare hash
+                         // cannot say so.
+                         QStringLiteral(SANKOTV_GIT_HEAD),
 #else
-                         QString()});
+                         QString(),
 #endif
+                         // When the binary was built, which is what tells
+                         // you whether it predates the work you are looking
+                         // at. The hash alone never can.
+                         QStringLiteral(__DATE__ " " __TIME__)});
         rec->setStateProvider([this]() -> QVariantMap {
             auto *canvas = m_storyboard
                 ? m_storyboard->findChild<DrawingCanvas *>() : nullptr;

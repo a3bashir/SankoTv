@@ -62,6 +62,26 @@ constexpr int kDimMin = 64, kDimMax = 8192;
 
 QString g_settingsOverride; // seam: scratch ini path
 
+// The folder the dialog offers by default: our own directory under
+// Documents. It is CREATED here rather than merely proposed, because Browse
+// opens at whatever this says and a file dialog rooted at a path that does
+// not exist is its own small mess. If it cannot be created, fall back to
+// Documents itself (which exists by definition — it is writableLocation),
+// and to home if even that is unavailable.
+QString defaultSaveLocation()
+{
+    const QString documents =
+        QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+    if (!documents.isEmpty()) {
+        const QString ours = documents + QStringLiteral("/SankoTV");
+        if (QDir(ours).exists() || QDir().mkpath(ours))
+            return ours;
+        if (QDir(documents).exists())
+            return documents;
+    }
+    return QDir::homePath();
+}
+
 QSettings recentSettings()
 {
     if (!g_settingsOverride.isEmpty())
@@ -370,9 +390,7 @@ NewProjectDialog::NewProjectDialog(QWidget *parent)
 
     m_location = new StudioTextField(this);
     m_location->setGeometry(kLeftX, fieldY(1), 158, kBoxH);
-    m_location->setText(QDir::toNativeSeparators(
-        QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation)
-        + QStringLiteral("/SankoTV")));
+    m_location->setText(QDir::toNativeSeparators(defaultSaveLocation()));
 
     m_browse = new QPushButton(QStringLiteral("Browse..."), this);
     m_browse->setGeometry(kLeftX + 164, fieldY(1), 65, kBoxH);
@@ -517,10 +535,22 @@ QString NewProjectDialog::validate() const
     const QString loc = m_location->text().trimmed();
     if (loc.isEmpty())
         return QStringLiteral("Choose a save location.");
-    if (!QDir(loc).exists())
-        return QStringLiteral("The save location does not exist.");
-    if (!probeWritable(loc))
-        return QStringLiteral("The save location is not writable.");
+    // A location that does not exist yet is NOT an error: Create already
+    // calls mkpath, which builds the whole chain including this folder. The
+    // dialog used to refuse here and so blocked itself on work it was about
+    // to do anyway — with the default location missing, Create stayed
+    // disabled for the dialog's entire life and nothing the artist typed
+    // could help. Writability is probed on the nearest ancestor that DOES
+    // exist, because probing a folder that is not there can only fail.
+    QDir probe(loc);
+    while (!probe.exists() && !probe.isRoot() && probe.cdUp()) {
+    }
+    if (!probe.exists())
+        return QStringLiteral("That drive or folder is not available. Use "
+                              "Browse to choose one.");
+    if (!probeWritable(probe.absolutePath()))
+        return QStringLiteral("This location is not writable: %1")
+            .arg(QDir::toNativeSeparators(probe.absolutePath()));
     if (QFileInfo::exists(QDir(loc).filePath(name)))
         return QStringLiteral("A project with this name already exists "
                               "there.");

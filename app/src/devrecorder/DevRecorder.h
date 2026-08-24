@@ -65,7 +65,12 @@ struct HostInfo
     QString appName;
     QString appVersion;
     QString buildConfig; // "Debug" / "Release"
-    QString gitHead;     // optional
+    QString gitHead;     // optional; captured at BUILD time, and suffixed
+                         // "+dirty" when built from uncommitted work
+    // When the BINARY was built. A build from a dirty tree is not any
+    // commit, so the hash alone cannot tell you whether a recording
+    // predates the work being investigated; this can.
+    QString buildStamp;
 };
 
 class RecorderPrivate;

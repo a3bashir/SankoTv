@@ -6,6 +6,10 @@
 #include "devrecorder/DevRecorder.h"
 
 #include <QApplication>
+#include <QTimer>
+#include <QVBoxLayout>
+#include <QPushButton>
+#include <QDialog>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
@@ -301,6 +305,73 @@ int main(int argc, char **argv)
           "summary.txt states build config");
     rec->setCameraProvider({});
     rec->setPressClassifier({});
+
+    // --- 5. a modal produces ONE modalOpen, not one per widget -----------
+    // Qt delivers WindowBlocked/WindowUnblocked (and WindowActivate/
+    // Deactivate) to EVERY widget in the application, not just top-levels.
+    // Unfiltered, a single dialog produced 388 modalOpen records in a real
+    // session - one per button, label and scrollbar - and each ran a full
+    // desktop z-order walk. The count is the regression check: it is not a
+    // number that happens to match today, it is "one modal, one record".
+    {
+        const QString root5 = root + QStringLiteral("/modal");
+        rec->setOutputRoot(root5);
+        rec->startRecording();
+        const QString dir5 = rec->sessionDir();
+        settle(200);
+        // The children must be on the BLOCKED window, not on the dialog:
+        // WindowBlocked is delivered to the widgets being blocked, and the
+        // modal's own hierarchy is not among them. A bare window with no
+        // children yields exactly one record whether the filter is there or
+        // not - which is how the first version of this check passed while
+        // the filter was disabled, i.e. proved nothing.
+        QVector<QPushButton *> kids;
+        for (int i = 0; i < 8; ++i) {
+            auto *b = new QPushButton(QStringLiteral("kid %1").arg(i), &window);
+            b->setGeometry(4, 4 + i * 20, 90, 18);
+            b->show();
+            kids.append(b);
+        }
+        settle(150);
+        {
+            QDialog dialog(&window);
+            dialog.setModal(true);
+            dialog.resize(220, 120);
+            QTimer::singleShot(250, &dialog, [&dialog] { dialog.accept(); });
+            dialog.exec();
+        }
+        settle(300);
+        rec->stopRecording();
+
+        int opens = 0, closes = 0, nonWindow = 0;
+        QFile f5(dir5 + QStringLiteral("/events.jsonl"));
+        if (f5.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            while (!f5.atEnd()) {
+                const QJsonObject o =
+                    QJsonDocument::fromJson(f5.readLine()).object();
+                const QString type = o.value(QLatin1String("type")).toString();
+                if (type == QLatin1String("modalOpen")) {
+                    ++opens;
+                    if (o.value(QLatin1String("w")).toString().contains(
+                            QLatin1String("QPushButton")))
+                        ++nonWindow;
+                } else if (type == QLatin1String("modalClose")) {
+                    ++closes;
+                }
+            }
+        }
+        // The window under test is the only top-level that gets blocked, so
+        // exactly one of each. Anything more means the filter is gone.
+        check(opens == 1, "one modalOpen per modal (not one per widget)",
+              QStringLiteral("got %1").arg(opens));
+        check(closes == 1, "one modalClose per modal",
+              QStringLiteral("got %1").arg(closes));
+        check(nonWindow == 0,
+              "no modalOpen from a non-window child widget",
+              QStringLiteral("got %1").arg(nonWindow));
+        rec->setOutputRoot(root);
+        qDeleteAll(kids);
+    }
 
     // --- perturbation: UI event-loop gap, recording OFF vs ON -------------
     auto measureGap = [&](int ms) {

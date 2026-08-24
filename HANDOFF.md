@@ -902,9 +902,22 @@ runs (grab the active modal window, not only the main window); (2) add
 projectName / fps to the state poll. Until then: that session confirmed
 dialog MECHANICS only — the applied fps value was never visible to the
 recorder, and the (archived) Part 1 seam plus SankoCanvasSizeLock section
-(g) remain the only evidence for VALUES. Recorder noise to ignore when
-reading such sessions: 88 windowActivate/windowDeactivate records per
-dialog show/hide (one per child widget).
+(g) remain the only evidence for VALUES.
+
+CORRECTION (2026-08-24): this entry originally ended "Recorder noise to
+ignore when reading such sessions: 88 windowActivate/windowDeactivate
+records per dialog show/hide (one per child widget)." THAT WAS NOT NOISE,
+IT WAS A DEFECT, and calling it noise is why it sat unfixed for two days.
+Qt delivers the WINDOW-SCOPED events — WindowActivate, WindowDeactivate,
+WindowBlocked, WindowUnblocked — to EVERY widget inside the window, and
+the recorder's event filter only excluded non-windows for Move, Resize,
+Show and Hide. The same missing filter later produced 388 modalOpen
+records for a single dialog, each running a full Win32 desktop z-order
+walk. Fixed by extending that one condition to all four window-scoped
+types; SankoDevRecorderTest now asserts one modalOpen per modal and fails
+(9 records, 8 of them from child buttons) if the filter is removed. If a
+future session shows a burst of per-widget records for a window-scoped
+event, read it as this defect returning, not as noise.
 
 ## Drag-by-header on the frameless dialogs (2026-08-22)
 
@@ -1531,3 +1544,50 @@ standalone (variance is real project I/O: PNG encode/decode per fixture
 and per load), ~32 s Debug, and 215 s was observed once when run
 immediately after the other seven on a loaded machine. It was 9 s when it
 held only the open/reopen checks.
+
+## Three fixes the 20260824-200632 recording proved (2026-08-24)
+
+The first session recorded with modal capture working, and it earned its
+keep immediately: 11 screenshots and 11 state polls DURING a New Project
+dialog, where before there would have been none.
+
+1. NEW PROJECT WAS UNUSABLE, and the recording is the proof: every poll of
+   the dialog's 5.1 s life carried createEnabled=false and
+   validationReason="The save location does not exist." The default
+   location (Documents/SankoTV) did not exist on that machine, so Create
+   was disabled from open to close and nothing the artist typed could
+   help. The diagnosis is an INCONSISTENCY, not a missing capability:
+   attemptCreate already calls mkpath, which builds the whole chain
+   including that folder — validate() simply refused to let it try, so the
+   dialog blocked itself on work it was about to do anyway. Fixed by
+   removing the "does not exist" rejection and probing WRITABILITY on the
+   nearest ancestor that does exist (probing a folder that is not there
+   can only fail), plus creating the default folder when the dialog opens
+   so Browse does not start at a path that is not there. If creation
+   fails: fall back to Documents, then to home. Open and Save As were
+   checked and do NOT share the bug — both default to QDir::homePath(),
+   which always exists; deliberately left alone rather than riding a UX
+   change along in a bug-fix pass.
+
+2. THE WINDOW-SCOPED EVENT STORM — see the CORRECTION added to the
+   2026-08-22 modal blind spot entry above. One line, four event types.
+
+3. THE GIT HASH LIED. system.txt named 9f7de82c6 while the binary was four
+   commits later, because the hash was captured with execute_process at
+   CONFIGURE time and only changed when CMake happened to rerun. Now
+   captured at BUILD time by cmake/WriteGitHead.cmake into a generated
+   header, rewritten only when the value changes so an unchanged HEAD
+   recompiles nothing. It also appends "+dirty" when the tree has
+   uncommitted work, and system.txt gained a "built:" timestamp — because
+   a build from a dirty tree is not any commit, and a bare hash can never
+   say so.
+
+STALLS: seven gaps >=150 ms (worst 243 ms) against 55/45 ms in the two
+previous sessions. NOT investigated and NOT attributed, deliberately. The
+comparison is not like-for-like: those sessions were 26 s of dialog
+clicking, this was 96 s of drawing on a 2048x1080 canvas ROTATED ~140 deg
+at 50% zoom with a 152 px brush, and the user was actively drawing through
+every stall (29-66 mouse moves in each stall second). Nothing in the
+recent work touches the paint path. When these are measured it should be a
+proper pass at those canvas settings, not an inference from a session that
+was not designed for it.

@@ -12,6 +12,10 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QWindow>
+
+#ifdef SANKOTV_GIT_HEAD_GENERATED
+#include "SankoGitHead.h" // GENERATED at build time; see cmake/WriteGitHead.cmake
+#endif
 #include <QLabel>
 #include <QMouseEvent>
 #include <QMutex>
@@ -909,10 +913,18 @@ bool Recorder::eventFilter(QObject *object, QEvent *event)
     if (name.isEmpty())
         return false;
     auto *w = static_cast<QWidget *>(object);
-    // Geometry / visibility churn is only interesting for top-level windows
-    // (main window, floating tool windows, docks when floating).
+    // WINDOW-SCOPED events belong to the WINDOW, but Qt delivers them to
+    // every widget inside it — so without this filter one modal dialog
+    // opening produced 388 "modalOpen" records (one per button, label and
+    // scrollbar), each running a full desktop z-order walk, and one window
+    // activation produced a comparable burst. Geometry and visibility churn
+    // were already filtered here; blocking and activation were not, and the
+    // activation noise sat in HANDOFF for two days being read as noise
+    // rather than as this same defect.
     if ((t == QEvent::Move || t == QEvent::Resize || t == QEvent::Show
-         || t == QEvent::Hide)
+         || t == QEvent::Hide || t == QEvent::WindowBlocked
+         || t == QEvent::WindowUnblocked || t == QEvent::WindowActivate
+         || t == QEvent::WindowDeactivate)
         && !w->isWindow())
         return false;
 
@@ -1049,6 +1061,7 @@ void Recorder::writeSystemInfo()
     ts << "app: " << d->info.appName << " " << d->info.appVersion << "\n";
     ts << "build: " << d->info.buildConfig << "\n";
     ts << "git: " << d->info.gitHead << "\n";
+    ts << "built: " << d->info.buildStamp << "\n";
     ts << "os: " << QSysInfo::prettyProductName() << " ("
        << QSysInfo::kernelVersion() << ")\n";
     ts << "qt: " << QLatin1String(qVersion()) << "\n";

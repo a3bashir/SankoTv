@@ -289,15 +289,25 @@ target_link_libraries(SankoProjectLifecycle PRIVATE Qt6::Widgets Qt6::Network
 # THIS block (plus the one guarded block in MainWindow.cpp).
 option(SANKOTV_DEV_RECORDER "Build the temporary developer recorder" ON)
 if(SANKOTV_DEV_RECORDER)
-    execute_process(COMMAND git rev-parse --short HEAD
-        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-        OUTPUT_VARIABLE SANKOTV_GIT_HEAD OUTPUT_STRIP_TRAILING_WHITESPACE
-        ERROR_QUIET)
+    # The git hash is captured at BUILD time, not configure time: a
+    # recorded session proved that a configure-time hash names whatever
+    # commit was current when CMake last ran, which had drifted four
+    # commits behind the binary. See cmake/WriteGitHead.cmake.
+    set(SANKOTV_GIT_HEADER ${CMAKE_CURRENT_BINARY_DIR}/SankoGitHead.h)
+    add_custom_target(SankoGitHead ALL
+        COMMAND ${CMAKE_COMMAND}
+            -DOUT=${SANKOTV_GIT_HEADER}
+            -DSRC=${CMAKE_CURRENT_SOURCE_DIR}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/WriteGitHead.cmake
+        BYPRODUCTS ${SANKOTV_GIT_HEADER}
+        COMMENT "Capturing git HEAD for the dev recorder")
+    add_dependencies(SankoTV SankoGitHead)
+    target_include_directories(SankoTV PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
     target_sources(SankoTV PRIVATE
         src/devrecorder/DevRecorder.cpp
         src/devrecorder/DevRecorder.h)
     target_compile_definitions(SankoTV PRIVATE SANKOTV_DEV_RECORDER
-        SANKOTV_GIT_HEAD="${SANKOTV_GIT_HEAD}")
+        SANKOTV_GIT_HEAD_GENERATED)
     qt_add_executable(SankoDevRecorderTest
         tests/DevRecorderTest.cpp
         src/devrecorder/DevRecorder.cpp
