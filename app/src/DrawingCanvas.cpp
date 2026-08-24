@@ -1284,6 +1284,21 @@ void DrawingCanvas::setZoom(double zoom, const QPointF &anchorScreen)
     update();
 }
 
+void DrawingCanvas::resetViewForNewProject()
+{
+    m_zoom = kStartupZoom; // exactly what a freshly launched app shows
+    m_panOffset = QPointF(0, 0);
+    m_viewRotation = 0.0;
+    m_viewFlipH = false;
+    // Per-drawing aids: carrying these into a different project is the same
+    // surprise as carrying the zoom.
+    m_onionSkin = false;
+    m_lightTable = false;
+    syncViewToolbar();
+    emit viewZoomChanged(m_zoom);
+    update();
+}
+
 void DrawingCanvas::resetView()
 {
     m_zoom = 1.0;

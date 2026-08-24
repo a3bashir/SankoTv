@@ -54,8 +54,10 @@
 #include <QJsonObject>
 #include <QPainter>
 #include <QSettings>
+#include <QTimer>
 #include <QStandardPaths>
 #include <QMouseEvent>
+#include <QWheelEvent>
 #include <QPlainTextEdit>
 #include <QFileInfo>
 #include <QPushButton>
@@ -505,7 +507,21 @@ void runClosePass(const QString &projectA, const QString &projectB,
     const QString folder = QFileInfo(window.projectPathForTest()).absolutePath();
     QDir(folder).removeRecursively();
     pump(150);
+    // A save that FAILS legitimately warns the artist, and that warning is
+    // a modal this run cannot click. Dismiss whatever modal appears while
+    // the save is attempted: the assertion is about the TRANSITION being
+    // refused, and blocking forever on the dialog proves nothing. (Without
+    // this the family hung here - the check passed previously only because
+    // the deletion happened to leave the save succeeding some runs.)
+    QTimer dismisser;
+    dismisser.setInterval(120);
+    QObject::connect(&dismisser, &QTimer::timeout, [] {
+        if (QWidget *modal = QApplication::activeModalWidget())
+            modal->close();
+    });
+    dismisser.start();
     const bool allowed = window.mayDiscardForTest(MainWindow::DiscardAnswer::Save);
+    dismisser.stop();
     check(QStringLiteral("(e) a SAVE THAT DID NOT HAPPEN must NOT allow the "
                          "transition"),
           !allowed, allowed ? QStringLiteral("it proceeded - work would be "
@@ -519,6 +535,134 @@ void runClosePass(const QString &projectA, const QString &projectB,
     // cannot answer. Clean it first: the prompt itself is out of scope
     // (its decision is asserted above), and hanging the gate on a
     // dialog nobody can click proves nothing.
+    window.markCleanForTest();
+    window.close();
+    pump(300);
+}
+
+
+// ---- (g) the view resets on every project transition ----------------------
+// One long-lived DrawingCanvas serves every project, so view state that is
+// never reset simply carries over. That looked like zoom and rotation being
+// saved into a project and leaking between projects, when NEITHER WAS EVER
+// WRITTEN TO DISK - there is no view state in the save format at all.
+//
+// The whole risk here is ONE of these being left out of the reset, so each
+// is asserted individually, for each of the three transitions, behind a
+// control proving it was non-default first. And grid and safe-area are
+// asserted NOT to reset, so nobody later "fixes" them into the same path:
+// they are app-wide preferences in QSettings, not project view state.
+void runViewResetPass(const QString &projectA, const QString &projectB)
+{
+    out() << "--- (g) view state resets on Open / New / Close ---" << Qt::endl;
+    MainWindow window;
+    window.resize(1400, 880);
+    window.show();
+    pump(900);
+    check(QStringLiteral("(g) project opens"), window.loadProjectForTest(projectA));
+    pump(600);
+    auto *canvas = window.findChild<DrawingCanvas *>();
+    if (!canvas) {
+        check(QStringLiteral("(g) found the canvas"), false);
+        return;
+    }
+
+    // Drive the view far from default through the REAL setters.
+    auto disturb = [canvas] {
+        // CTRL+wheel at an OFF-CENTRE point: the real zoom path (plain
+        // wheel is ignored by the canvas), and unlike
+        // setViewZoom (which centres) it moves the pan offset too, so the
+        // pan reset is not asserted against a value that was never
+        // disturbed.
+        // ONE step is enough to make zoom and pan non-default, and it
+        // keeps the cost down: with onion skin, light table, rotation
+        // and a big zoom all live, every repaint in this section is
+        // expensive, and four steps made the family four times slower.
+        for (int i = 0; i < 1; ++i) {
+            QWheelEvent wheel(QPointF(200, 150),
+                              canvas->mapToGlobal(QPoint(200, 150)), QPoint(),
+                              QPoint(0, 120), Qt::NoButton, Qt::ControlModifier,
+                              Qt::NoScrollPhase, false);
+            QCoreApplication::sendEvent(canvas, &wheel);
+        }
+        canvas->setViewRotation(45.0);
+        canvas->toggleFlipH();
+        canvas->setOnionSkinEnabled(true);
+        canvas->setLightTableEnabled(true);
+        canvas->setGridVisible(true); // a PREFERENCE: must survive
+        pump(120);
+    };
+    auto isDisturbed = [canvas] {
+        return !qFuzzyCompare(canvas->viewZoom(), 0.85)
+            && !qFuzzyIsNull(canvas->viewRotation()) && canvas->viewFlipH()
+            && canvas->isOnionSkinEnabled() && canvas->isLightTableEnabled()
+            && !canvas->viewPanOffset().isNull();
+    };
+    // Each item, named, so a reset that forgets one says WHICH one.
+    auto checkDefaults = [canvas](const QString &transition) {
+        check(QStringLiteral("(g) %1: zoom back to the startup 0.85")
+                  .arg(transition),
+              qFuzzyCompare(canvas->viewZoom(), 0.85),
+              QStringLiteral("%1").arg(canvas->viewZoom()));
+        check(QStringLiteral("(g) %1: pan offset cleared").arg(transition),
+              canvas->viewPanOffset().isNull(),
+              QStringLiteral("%1,%2").arg(canvas->viewPanOffset().x())
+                  .arg(canvas->viewPanOffset().y()));
+        check(QStringLiteral("(g) %1: rotation back to 0").arg(transition),
+              qFuzzyIsNull(canvas->viewRotation()),
+              QStringLiteral("%1").arg(canvas->viewRotation()));
+        check(QStringLiteral("(g) %1: horizontal flip cleared").arg(transition),
+              !canvas->viewFlipH());
+        check(QStringLiteral("(g) %1: onion skin off").arg(transition),
+              !canvas->isOnionSkinEnabled());
+        check(QStringLiteral("(g) %1: light table off").arg(transition),
+              !canvas->isLightTableEnabled());
+        // The preference must NOT be swept up in the reset.
+        check(QStringLiteral("(g) %1: grid (an app-wide PREFERENCE) is NOT "
+                             "reset").arg(transition),
+              canvas->gridVisible());
+    };
+
+    // --- transition 1: OPEN another project ---------------------------
+    disturb();
+    check(QStringLiteral("(g) control: the view is non-default before OPEN"),
+          isDisturbed());
+    check(QStringLiteral("(g) opening another project"),
+          window.loadProjectForTest(projectB));
+    pump(500);
+    checkDefaults(QStringLiteral("open"));
+
+    // --- transition 2: NEW project ------------------------------------
+    disturb();
+    check(QStringLiteral("(g) control: the view is non-default before NEW"),
+          isDisturbed());
+    window.newProjectForTest();
+    pump(400);
+    checkDefaults(QStringLiteral("new"));
+
+    // --- transition 3: CLOSE ------------------------------------------
+    check(QStringLiteral("(g) reopening for the close check"),
+          window.loadProjectForTest(projectA));
+    pump(500);
+    disturb();
+    check(QStringLiteral("(g) control: the view is non-default before CLOSE"),
+          isDisturbed());
+    window.markCleanForTest(); // the close prompt is asserted elsewhere
+    window.closeProjectForTest();
+    pump(400);
+    checkDefaults(QStringLiteral("close"));
+
+    // Reopening the FIRST project must show the default view, which is the
+    // symptom that was reported as state leaking between projects.
+    check(QStringLiteral("(g) reopening the first project"),
+          window.loadProjectForTest(projectA));
+    pump(500);
+    check(QStringLiteral("(g) the reopened project shows the DEFAULT view "
+                         "(the reported leak)"),
+          qFuzzyCompare(canvas->viewZoom(), 0.85)
+              && qFuzzyIsNull(canvas->viewRotation()));
+
+    canvas->setGridVisible(false); // leave the preference as we found it
     window.markCleanForTest();
     window.close();
     pump(300);
@@ -654,6 +798,10 @@ int main(int argc, char **argv)
 
     runDirtyTrackingPass(a, scratch);
     runClosePass(b, c, scratch);
+    // NOT project b: runClosePass deliberately deletes its folder to make a
+    // save fail, so opening it again here would fail for a reason that has
+    // nothing to do with the view.
+    runViewResetPass(a, c);
 
     // Nothing may have escaped the scratch root.
     const bool removed = QDir(scratch).removeRecursively();

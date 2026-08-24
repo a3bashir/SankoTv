@@ -782,6 +782,16 @@ void MainWindow::freeScenes()
     // the destructor, buildScenesFromJson and onNewProject) because a fifth
     // caller added later would have to remember, and this is the last
     // moment where every holder is still consistent.
+    // The camera and the per-drawing view aids belong to the project being
+    // left, not the one arriving: one canvas serves them all, so without
+    // this the zoom, rotation, pan, flip, onion skin and light table simply
+    // carry over. It lives HERE rather than in resetProjectState because
+    // this is the teardown all three transitions actually share — Open goes
+    // through loadFromPath, which calls freeScenes() directly and never
+    // touches resetProjectState.
+    if (auto *canvas =
+            m_storyboard ? m_storyboard->findChild<DrawingCanvas *>() : nullptr)
+        canvas->resetViewForNewProject();
     if (m_storyboard)
         m_storyboard->detachScenes(); // NOT loadScenes({}): see detachScenes
     if (m_animatic)

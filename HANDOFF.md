@@ -1591,3 +1591,58 @@ every stall (29-66 mouse moves in each stall second). Nothing in the
 recent work touches the paint path. When these are measured it should be a
 proper pass at those canvas settings, not an inference from a session that
 was not designed for it.
+
+## View state resets on every project transition (2026-08-24)
+
+REPORTED as two defects: zoom and rotation surviving a project reopen, and
+"leaking between projects" (change the view in SB_002 and SB_001 is
+affected). Suspected to be global storage in QSettings.
+
+NOTHING ON DISK WAS EVER WRONG. Zoom and rotation are not in the save
+format — ProjectIO has no view fields at all — and not in QSettings; the
+canvas's QSettings use is safe-area opacities and GRID settings only. The
+single cause of BOTH symptoms: ONE long-lived DrawingCanvas serves every
+project, and nothing reset its view when a project arrived. The "leak" was
+that one canvas still showing a stale view, not a file being modified.
+Nobody should go looking for a corrupted-file bug: there is none, and the
+fix required no save-format change.
+
+FIXED with a dedicated DrawingCanvas::resetViewForNewProject(): zoom back
+to kStartupZoom (0.85), pan, rotation and horizontal flip cleared, plus
+the per-drawing aids ONION SKIN and LIGHT TABLE, which carried across
+projects the same way. Grid and safe-area guides are deliberately NOT
+touched — they are app-wide preferences in QSettings, not project view
+state, and the gate asserts they survive so nobody later folds them in.
+
+NOT resetView(): that lands at zoom 1.0 (exact fit) and is the Reset
+button's existing contract. Opening a project should look exactly like
+launching the app, which is 0.85, so this is its own small function rather
+than a reuse that would change a different feature's behaviour.
+
+PLACEMENT CORRECTION, found by the gate: the reset went first into
+resetProjectState, on the understanding that New, Open and Close all share
+it. THEY DO NOT. Open goes through loadFromPath, which calls freeScenes()
+DIRECTLY and never touches resetProjectState — so New and Close reset
+while Open did not, and the gate caught it as "open: rotation back to 0
+[45]". The reset now lives in freeScenes(), which is the teardown all
+three genuinely share (the same reason the dangling-pointer detach lives
+there). If anything else must happen on every project transition, that is
+where it goes.
+
+GATE: SankoCanvasSizeLock is untouched; SankoProjectLifecycle section (g),
+29 checks (family now 83, 26.7 s Release / 34.8 s Debug). Every item is
+asserted INDIVIDUALLY for EACH of the three transitions, because the whole
+risk is one being left out, and each transition is preceded by a control
+proving the view was non-default first. Two notes for whoever edits it:
+zoom is driven by CTRL+wheel (the canvas ignores a plain wheel), and the
+disturbance is kept minimal because onion skin + light table + rotation +
+zoom together make every repaint expensive.
+
+A PRE-EXISTING FLAKE was found and fixed while running this: section (e)'s
+"a save that did not happen must not allow the transition" deletes the
+project folder so the write fails — and a failed save legitimately shows a
+QMessageBox warning, which blocks a headless run forever. It had passed
+before only because the deletion sometimes left the save succeeding. The
+check now dismisses whatever modal appears while the save is attempted, so
+it exercises the real failure path (warning included) instead of hanging
+on it.

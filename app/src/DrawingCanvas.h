@@ -133,6 +133,23 @@ public:
     double viewZoom() const { return m_zoom; }
     double viewRotation() const { return m_viewRotation; }
     bool viewFlipH() const { return m_viewFlipH; }
+    QPointF viewPanOffset() const { return m_panOffset; }
+
+    // A NEW PROJECT is arriving (open, new, or close): put the camera and
+    // the per-drawing view aids back to what a freshly launched app shows.
+    //
+    // One long-lived canvas serves every project, so without this the view
+    // simply carries over — which looked like zoom and rotation being
+    // "saved" into a project and "leaking" between projects, when in truth
+    // neither was ever written to disk at all.
+    //
+    // NOT resetView(): that is the Reset button's contract and lands at
+    // zoom 1.0 (exact fit), whereas a launched app starts at kStartupZoom.
+    // Opening a project should look exactly like starting the program.
+    //
+    // Grid and safe-area guides are deliberately NOT touched: they are
+    // app-wide preferences persisted in QSettings, not project view state.
+    void resetViewForNewProject();
 
     // Light alignment grid (View > Grid), display-only like the overlays.
     void setGridEnabled(bool enabled);
