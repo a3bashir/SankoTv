@@ -319,6 +319,11 @@ public slots:
         return false;
     }
     bool hasCanvasClipboard() const { return !m_clipImg.isNull(); }
+    // Closing a project drops the copied pixels with it: they belong to the
+    // project that was closed, and would otherwise be pasteable into the
+    // next one. (Pasting is already impossible with no panel, so this is
+    // about not carrying one project's artwork into another, not a crash.)
+    void clearCanvasClipboard() { m_clipImg = QImage(); }
     void copySelection();                 // selected pixels -> internal clipboard
     void cutSelection();                  // copy, then clear to transparent (undoable)
     void pasteClipboard(bool atOriginalPos); // floating paste; commit on click-away/Enter

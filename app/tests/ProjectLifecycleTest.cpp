@@ -39,6 +39,7 @@
 #include "AnimaticPage.h"
 #include "ConsistencyBoard.h"
 #include "DrawingCanvas.h"
+#include "PerspectiveTool.h"
 #include "MainWindow.h"
 #include "StoryboardPage.h"
 #include "NewProjectDialog.h"
@@ -56,6 +57,7 @@
 #include <QStandardPaths>
 #include <QMouseEvent>
 #include <QPlainTextEdit>
+#include <QFileInfo>
 #include <QPushButton>
 #include <QTextStream>
 #include <QUndoStack>
@@ -379,6 +381,149 @@ void runDirtyTrackingPass(const QString &projectPath, const QString &scratch)
     pump(300);
 }
 
+
+// ---- (e) Close Project, and (f) the recovery paths ------------------------
+// Close is a state the app had never deliberately entered: it has always
+// STARTED with no project, but never returned there from a loaded one. Every
+// item below came out of the audit that preceded it.
+void runClosePass(const QString &projectA, const QString &projectB,
+                  const QString &scratch)
+{
+    out() << "--- (e) Close Project: what it leaves behind ---" << Qt::endl;
+    MainWindow window;
+    window.resize(1400, 880);
+    window.show();
+    pump(900);
+    check(QStringLiteral("(e) project opens"), window.loadProjectForTest(projectA));
+    pump(600);
+
+    auto *storyboard = window.findChild<StoryboardPage *>();
+    auto *canvas = window.findChild<DrawingCanvas *>();
+    if (!storyboard || !canvas) {
+        check(QStringLiteral("(e) found the page and canvas"), false);
+        return;
+    }
+
+    // Build up exactly the state Close has to clear, and PROVE it is there:
+    // clearing something that was never present proves nothing.
+    storyboard->copySelectedPanel();
+    canvas->selectAll();
+    canvas->copySelection();
+    canvas->perspective()->addVanishingPoint(QPointF(120, 80));
+    pump(300);
+    check(QStringLiteral("(e) control: clipboard, canvas clipboard and a "
+                         "vanishing point all exist before the close"),
+          storyboard->hasPanelClipboard() && canvas->hasCanvasClipboard()
+              && canvas->perspective()->count() == 1);
+    window.undoStackForTest()->push(
+        new QUndoCommand(QStringLiteral("something to undo")));
+    check(QStringLiteral("(e) control: the undo stack is not empty, and the "
+                         "project is dirty"),
+          window.undoStackForTest()->count() > 0 && window.isDirty());
+
+    // Close now PROMPTS when there is unsaved work - which the control
+    // above just proved there is - and this gate cannot answer a modal.
+    // Clearing the flag makes the prompt a no-op so the REAL close path
+    // still runs end to end; the prompt's own decision is asserted
+    // separately below, as a query. Everything else built up above
+    // (clipboards, vanishing points, undo stack) is untouched by this.
+    window.markCleanForTest();
+    window.closeProjectForTest();
+    pump(500);
+
+    check(QStringLiteral("(e) the Dashboard is showing"),
+          window.onDashboardForTest());
+    check(QStringLiteral("(e) no scenes and no active panel"),
+          !window.activePanelSizeForTest().isValid());
+    check(QStringLiteral("(e) the project path and name are cleared"),
+          window.projectPathForTest().isEmpty()
+              && window.projectNameForTest() == QStringLiteral("Untitled Project"));
+    check(QStringLiteral("(e) frame rate and canvas size are back to their "
+                         "idle values"),
+          window.projectFpsForTest() == 24
+              && storyboard->projectCanvasSize() == QSize(960, 540));
+    check(QStringLiteral("(e) the undo stack is empty"),
+          window.undoStackForTest()->count() == 0);
+    check(QStringLiteral("(e) the panel clipboard is cleared"),
+          !storyboard->hasPanelClipboard());
+    check(QStringLiteral("(e) the CANVAS clipboard is cleared"),
+          !canvas->hasCanvasClipboard());
+    check(QStringLiteral("(e) the perspective vanishing points are cleared"),
+          canvas->perspective()->count() == 0);
+    check(QStringLiteral("(e) the project is clean (nothing left to prompt "
+                         "about)"),
+          !window.isDirty());
+
+    out() << "--- (f) close -> open, and close -> new ---" << Qt::endl;
+    check(QStringLiteral("(f) opening a project after a close works"),
+          window.loadProjectForTest(projectB));
+    pump(500);
+    check(QStringLiteral("(f) the canvas shows the reopened project"),
+          window.activePanelSizeForTest().isValid());
+    check(QStringLiteral("(f) it opens clean"), !window.isDirty());
+
+    window.closeProjectForTest();
+    pump(400);
+    window.newProjectForTest();
+    pump(400);
+    check(QStringLiteral("(f) New Project after a close leaves no panel and "
+                         "no dirt"),
+          !window.activePanelSizeForTest().isValid() && !window.isDirty());
+    check(QStringLiteral("(f) closing twice in a row is harmless"),
+          (window.closeProjectForTest(), pump(200),
+           window.onDashboardForTest() && !window.isDirty()));
+
+    // ---- the prompt DECISION, as a query rather than a modal -----------
+    out() << "--- (e) the unsaved-changes decision ---" << Qt::endl;
+    check(QStringLiteral("(e) a clean project needs no prompt"),
+          !window.shouldPromptToSave());
+    check(QStringLiteral("(e) reopening for the prompt checks"),
+          window.loadProjectForTest(projectA));
+    pump(400);
+    window.applyProjectSettingsForTest(QStringLiteral("Edited"), 30);
+    pump(200);
+    check(QStringLiteral("(e) a dirty project DOES need a prompt"),
+          window.shouldPromptToSave());
+
+    // Answer -> consequence, including the one that matters most.
+    check(QStringLiteral("(e) answering Cancel does NOT allow the transition"),
+          !window.mayDiscardForTest(MainWindow::DiscardAnswer::Cancel));
+    check(QStringLiteral("(e) answering Discard DOES allow it"),
+          window.mayDiscardForTest(MainWindow::DiscardAnswer::Discard));
+    check(QStringLiteral("(e) answering Save allows it when the save "
+                         "SUCCEEDS"),
+          window.mayDiscardForTest(MainWindow::DiscardAnswer::Save)
+              && !window.isDirty());
+
+    // THE failure the prompt exists to prevent, and which would arrive
+    // THROUGH the prompt: the artist chooses Save, the save does not happen,
+    // and the transition proceeds anyway - discarding the work they just
+    // asked to keep. Driven without a modal by making the write fail: the
+    // project's folder is removed, so saving to its path cannot succeed.
+    window.applyProjectSettingsForTest(QStringLiteral("EditedAgain"), 60);
+    pump(200);
+    const QString folder = QFileInfo(window.projectPathForTest()).absolutePath();
+    QDir(folder).removeRecursively();
+    pump(150);
+    const bool allowed = window.mayDiscardForTest(MainWindow::DiscardAnswer::Save);
+    check(QStringLiteral("(e) a SAVE THAT DID NOT HAPPEN must NOT allow the "
+                         "transition"),
+          !allowed, allowed ? QStringLiteral("it proceeded - work would be "
+                                             "lost") : QString());
+    check(QStringLiteral("(e) ...and the project is still dirty afterwards"),
+          window.isDirty());
+
+    Q_UNUSED(scratch);
+    // The window is deliberately DIRTY here, and closing it now goes
+    // through the real closeEvent, which prompts - a modal this gate
+    // cannot answer. Clean it first: the prompt itself is out of scope
+    // (its decision is asserted above), and hanging the gate on a
+    // dialog nobody can click proves nothing.
+    window.markCleanForTest();
+    window.close();
+    pump(300);
+}
+
 int main(int argc, char **argv)
 {
 #ifdef Q_OS_WIN
@@ -508,6 +653,7 @@ int main(int argc, char **argv)
     }
 
     runDirtyTrackingPass(a, scratch);
+    runClosePass(b, c, scratch);
 
     // Nothing may have escaped the scratch root.
     const bool removed = QDir(scratch).removeRecursively();

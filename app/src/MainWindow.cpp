@@ -332,9 +332,31 @@ void MainWindow::setupMenuBar()
 {
     QMenu *fileMenu = menuBar()->addMenu(QStringLiteral("File"));
 
+    // New Project reaches the same dialog the Dashboard offers, so there is
+    // one way to create a project rather than two that must agree.
+    QAction *newAct = fileMenu->addAction(QStringLiteral("New Project..."));
+    newAct->setShortcut(QKeySequence::New);
+    connect(newAct, &QAction::triggered, this, [this] {
+        if (!confirmDiscardChanges(QStringLiteral("starting a new project")))
+            return;
+        emit m_dashboard->newProjectRequested();
+    });
+
     QAction *openAct = fileMenu->addAction(QStringLiteral("Open Project..."));
     openAct->setShortcut(QKeySequence::Open);
     connect(openAct, &QAction::triggered, this, &MainWindow::onOpenProject);
+
+    m_recentMenu = fileMenu->addMenu(QStringLiteral("Open Recent"));
+    // Rebuilt each time it opens: the list changes as projects are opened
+    // and saved, including from the New Project window.
+    connect(m_recentMenu, &QMenu::aboutToShow, this,
+            &MainWindow::rebuildRecentMenu);
+    rebuildRecentMenu();
+
+    m_closeProjectAct = fileMenu->addAction(QStringLiteral("Close Project"));
+    m_closeProjectAct->setShortcut(QKeySequence::Close); // Ctrl+W
+    connect(m_closeProjectAct, &QAction::triggered, this,
+            &MainWindow::onCloseProject);
 
     fileMenu->addSeparator();
 
@@ -352,6 +374,20 @@ void MainWindow::setupMenuBar()
     m_projectSettingsAct = fileMenu->addAction(QStringLiteral("Project Settings..."));
     connect(m_projectSettingsAct, &QAction::triggered, this,
             &MainWindow::onProjectSettings);
+
+    fileMenu->addSeparator();
+
+    // Exit does NOTHING but close the window, so the unsaved-changes prompt
+    // has exactly one implementation (closeEvent) and the menu cannot drift
+    // from what the X button does.
+    //
+    // Alt+F4 is shown as TEXT and deliberately not bound: Windows already
+    // delivers it as a close request, and binding it would put a second
+    // close path in front of the one that must stay correct.
+    QAction *exitAct = fileMenu->addAction(QStringLiteral("Exit"));
+    exitAct->setShortcutVisibleInContextMenu(false);
+    exitAct->setText(QStringLiteral("Exit\tAlt+F4"));
+    connect(exitAct, &QAction::triggered, this, [this] { close(); });
 
     QMenu *editMenu = menuBar()->addMenu(QStringLiteral("Edit"));
 
@@ -491,6 +527,10 @@ void MainWindow::updateSaveActions()
     if (m_projectSettingsAct)
         m_projectSettingsAct->setEnabled(hasScenes
                                          || !m_currentProjectPath.isEmpty());
+    // Close Project follows the same definition of "a project is open".
+    if (m_closeProjectAct)
+        m_closeProjectAct->setEnabled(hasScenes
+                                      || !m_currentProjectPath.isEmpty());
 }
 
 // --- Project Settings -----------------------------------------------------
@@ -768,20 +808,142 @@ void MainWindow::buildScenesFromJson(const QJsonArray &scenes)
 
 // --- Project lifecycle ----------------------------------------------------
 
-void MainWindow::onNewProject()
+// THE teardown, shared by New, Open and Close. They differ only in what they
+// do AFTERWARDS — New applies the dialog's values and goes to the Script
+// Editor, Open applies the file's and goes to the Storyboard, Close applies
+// nothing and goes to the Dashboard — so there is no second reset to keep
+// correct.
+//
+// This deliberately clears more than the old onNewProject did. That function
+// left the previous project's undo history, panel clipboard and perspective
+// vanishing points in place, so starting a new project inherited the last
+// one's construction lines and an undo stack describing panels that no
+// longer existed. Open happened to escape it (perspectiveFromJson overwrites
+// the VPs, loadScenes clears the stack), which is why only New showed it.
+void MainWindow::resetProjectState(ClipboardPolicy clipboards)
 {
-    freeScenes();
+    freeScenes(); // detaches every page BEFORE deleting the scenes
+
+    m_currentProjectPath.clear();
+    m_projectName = QStringLiteral("Untitled Project");
+    m_projectFps = 24;
+    // The 960x540 members are the documented PRE-PROJECT IDLE values, not a
+    // guess: going back to them beats an invalid size that any panel-making
+    // path would build garbage from.
+    m_canvasWidth = 960;
+    m_canvasHeight = 540;
+    if (m_storyboard)
+        m_storyboard->setProjectCanvasSize(QSize(m_canvasWidth, m_canvasHeight));
+
     m_consistencyEntries.clear();
     if (m_consistencyBoard)
         m_consistencyBoard->refresh();
-    if (m_animatic)
-        m_animatic->setAudioPath(QString()); // clear any scratch audio
-    m_currentProjectPath.clear();
-    m_projectName = QStringLiteral("Untitled Project");
+    if (m_animatic) {
+        m_animatic->setAudioPath(QString()); // stops the player too
+        m_animatic->setFps(m_projectFps);
+    }
+    if (m_undoStack)
+        m_undoStack->clear(); // its commands describe panels that are gone
+
+    if (auto *canvas =
+            m_storyboard ? m_storyboard->findChild<DrawingCanvas *>() : nullptr) {
+        // Vanishing points are per project: reset() removes every VP and
+        // keeps the density/thickness/snap defaults.
+        canvas->perspective()->reset();
+        if (clipboards == ClipboardPolicy::Clear)
+            canvas->clearCanvasClipboard();
+        canvas->update();
+    }
+    if (clipboards == ClipboardPolicy::Clear && m_storyboard)
+        m_storyboard->clearPanelClipboard();
+
     updateSaveActions();
     updateTitle();
-    setClean(); // last, for the same reason as loadFromPath: tearing the old
-                // project down marks dirty on the way through
+    setClean(); // LAST: tearing the old project down marks dirty on the way
+}
+
+void MainWindow::onNewProject()
+{
+    // New and Open keep the clipboards: pasting a panel into the next
+    // project is a real workflow, and the paste guard refuses a mismatched
+    // size. Close does not, because there is nothing to paste into.
+    resetProjectState(ClipboardPolicy::Keep);
+}
+
+void MainWindow::onCloseProject()
+{
+    if (!confirmDiscardChanges(QStringLiteral("closing the project")))
+        return;
+    resetProjectState(ClipboardPolicy::Clear);
+    if (m_stack && m_dashboard)
+        m_stack->setCurrentWidget(m_dashboard);
+}
+
+bool MainWindow::onDashboardForTest() const
+{
+    return m_stack && m_dashboard && m_stack->currentWidget() == m_dashboard;
+}
+
+// Save, reporting whether it ACTUALLY HAPPENED. onSaveProject returns void:
+// a Save As that the artist cancels, or a write that fails, is
+// indistinguishable from success to its caller. That is exactly the hole
+// this closes, because the prompt's whole purpose is to not lose work.
+bool MainWindow::saveForPrompt()
+{
+    if (m_currentProjectPath.isEmpty()) {
+        onSaveProjectAs(); // modal; may be cancelled, leaving no path
+        return !m_currentProjectPath.isEmpty() && !isDirty();
+    }
+    return saveToPath(m_currentProjectPath) && !isDirty();
+}
+
+bool MainWindow::mayDiscardAfterAnswer(DiscardAnswer answer)
+{
+    switch (answer) {
+    case DiscardAnswer::Save:
+        // NOT an unconditional yes. If the save did not happen, the
+        // transition must not proceed: otherwise the prompt that exists to
+        // prevent data loss becomes the thing that causes it.
+        return saveForPrompt();
+    case DiscardAnswer::Discard:
+        return true;
+    case DiscardAnswer::Cancel:
+        return false;
+    }
+    return false;
+}
+
+bool MainWindow::confirmDiscardChanges(const QString &actionDescription)
+{
+    if (!shouldPromptToSave())
+        return true; // nothing to lose
+    QMessageBox box(this);
+    box.setIcon(QMessageBox::Warning);
+    box.setWindowTitle(QStringLiteral("Unsaved Changes"));
+    box.setText(QStringLiteral("Save changes to “%1” before %2?")
+                    .arg(m_projectName, actionDescription));
+    box.setInformativeText(
+        QStringLiteral("Your changes will be lost if you don't save them."));
+    box.setStandardButtons(QMessageBox::Save | QMessageBox::Discard
+                           | QMessageBox::Cancel);
+    box.setDefaultButton(QMessageBox::Save);
+    switch (box.exec()) {
+    case QMessageBox::Save:
+        return mayDiscardAfterAnswer(DiscardAnswer::Save);
+    case QMessageBox::Discard:
+        return mayDiscardAfterAnswer(DiscardAnswer::Discard);
+    default:
+        return mayDiscardAfterAnswer(DiscardAnswer::Cancel);
+    }
+}
+
+void MainWindow::closeEvent(QCloseEvent *event)
+{
+    if (!confirmDiscardChanges(QStringLiteral("exiting"))) {
+        event->ignore(); // Cancel must actually cancel, X included
+        return;
+    }
+    event->accept();
 }
 
 void MainWindow::onOpenProject()
@@ -791,7 +953,55 @@ void MainWindow::onOpenProject()
         QStringLiteral("SankoTV Project (*.sankotv)"));
     if (path.isEmpty())
         return;
+    openProject(path);
+}
+
+// THE open path. File > Open reaches it after its file dialog, Open Recent
+// reaches it directly — so the unsaved-changes prompt, the teardown and the
+// load exist once rather than once per entry point.
+void MainWindow::openProject(const QString &path)
+{
+    if (!confirmDiscardChanges(QStringLiteral("opening another project")))
+        return;
+    if (!QFileInfo::exists(path)) {
+        // A recent entry whose file has been moved or deleted: say so and
+        // forget it, rather than failing to load something invisible.
+        NewProjectDialog::removeRecentProject(path);
+        rebuildRecentMenu();
+        QMessageBox::warning(
+            this, QStringLiteral("Open Project"),
+            QStringLiteral("This project could not be found:\n\n%1\n\nIt has "
+                           "been removed from the recent list.")
+                .arg(path));
+        return;
+    }
     loadFromPath(path);
+    rebuildRecentMenu(); // the just-opened project moves to the top
+}
+
+// Rebuilt from the shared recents store. Every entry routes through
+// openProject(), so nothing about loading is duplicated here.
+void MainWindow::rebuildRecentMenu()
+{
+    if (!m_recentMenu)
+        return;
+    m_recentMenu->clear();
+    const QVector<NewProjectDialog::RecentEntry> recents =
+        NewProjectDialog::recentProjects();
+    if (recents.isEmpty()) {
+        QAction *empty =
+            m_recentMenu->addAction(QStringLiteral("No Recent Projects"));
+        empty->setEnabled(false);
+        return;
+    }
+    for (const NewProjectDialog::RecentEntry &entry : recents) {
+        const QString name = QFileInfo(entry.path).completeBaseName();
+        QAction *action = m_recentMenu->addAction(name);
+        action->setToolTip(entry.path);
+        const QString path = entry.path;
+        connect(action, &QAction::triggered, this,
+                [this, path] { openProject(path); });
+    }
 }
 
 void MainWindow::onSaveProject()

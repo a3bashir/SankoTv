@@ -58,6 +58,10 @@ public:
     // about to be destroyed. NOT the same as loadScenes({}), which leaves the
     // canvas holding its panel — see the implementation.
     void detachScenes();
+    // Drop the copied panel. Closing a project does this; opening another
+    // deliberately does NOT, because pasting a panel across projects is a
+    // real workflow and the size guard refuses the mismatched case.
+    void clearPanelClipboard();
     // The PROJECT's canvas size — the authority every new panel is created
     // at. Set by MainWindow at project create/load, before any panel can be
     // added. Existing panels carry their own size (pixels are the truth);

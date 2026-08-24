@@ -16,6 +16,8 @@ class ConsistencyBoard;
 class GenerationPage;
 class QStackedWidget;
 class QAction;
+class QCloseEvent;
+class QMenu;
 class QJsonArray;
 
 struct Scene;
@@ -33,6 +35,19 @@ public:
     // load, new or close. A pure query with no side effects, so the save
     // prompts can be tested as a DECISION rather than by driving a modal.
     bool isDirty() const { return m_dirty; }
+    // Would a destructive transition (New / Open / Close / Exit) have to ask
+    // about unsaved work first? Pure, so the prompt's DECISION is testable
+    // without driving a modal.
+    bool shouldPromptToSave() const { return isDirty(); }
+
+    // How the artist answered the unsaved-changes prompt. Exposed so the
+    // consequence of each answer can be asserted directly.
+    enum class DiscardAnswer { Save, Discard, Cancel };
+    // May the transition proceed, given that answer? Save consults whether
+    // the save ACTUALLY HAPPENED: a save that failed or was cancelled must
+    // cancel the transition, or the prompt that exists to prevent data loss
+    // becomes the thing that causes it.
+    bool mayDiscardAfterAnswer(DiscardAnswer answer);
     // Test hook: put the project back to clean so a check can prove ONE
     // change type marks it, rather than inheriting dirt from an earlier one.
     void markCleanForTest() { setClean(); }
@@ -54,10 +69,28 @@ public:
     // answered — the part with no modal in it.
     void resizeProjectForTest(const QSize &newSize) { applyCanvasResize(newSize); }
     QUndoStack *undoStackForTest() const { return m_undoStack; }
+    void closeProjectForTest() { onCloseProject(); }
+    // The real answer-to-consequence mapping, without the modal in front.
+    bool mayDiscardForTest(DiscardAnswer answer)
+    {
+        return mayDiscardAfterAnswer(answer);
+    }
+    QString projectPathForTest() const { return m_currentProjectPath; }
+    QString projectNameForTest() const { return m_projectName; }
+    int projectFpsForTest() const { return m_projectFps; }
+    bool onDashboardForTest() const;
     // The size of the panel the canvas is currently showing; invalid when it
     // holds none. Reading it after a load is what proves the canvas followed
     // the project, and reading it after a teardown is what proves it let go.
     QSize activePanelSizeForTest() const;
+
+protected:
+    // THE single unsaved-changes gate. Every way of closing this window —
+    // the X button, Alt+F4, the taskbar, a Windows shutdown, and File > Exit
+    // (which does nothing but call close()) — arrives here. A prompt on the
+    // menu with silent data loss from the X button would be worse than no
+    // prompt at all.
+    void closeEvent(QCloseEvent *event) override;
 
 private:
     void setupMenuBar();
@@ -77,6 +110,28 @@ private:
     // idempotent: it is called from a great many places.
     void markDirty();
     void setClean();
+
+    // THE teardown. New, Open and Close all use it; they differ only in what
+    // they do afterwards, never in what they take down.
+    enum class ClipboardPolicy {
+        Keep,  // New / Open: pasting a panel into the next project is a real
+               // workflow, and the paste guard refuses mismatched sizes
+        Clear  // Close: there is no project to paste into, and the clipboard
+               // would hold artwork from a project deliberately closed
+    };
+    void resetProjectState(ClipboardPolicy clipboards);
+
+    // Shows the unsaved-changes prompt when there is something to lose.
+    // Returns false ONLY when the transition must not proceed.
+    bool confirmDiscardChanges(const QString &actionDescription);
+    // Save, reporting whether it actually happened (Save As can be
+    // cancelled, and a write can fail). onSaveProject returns void, which is
+    // exactly the hole this closes.
+    bool saveForPrompt();
+
+    void onCloseProject();
+    void openProject(const QString &path); // File > Open AND Open Recent
+    void rebuildRecentMenu();
 
     void onProjectSettings();
     // Resize Project...: the whole confirmed, non-undoable canvas-only
@@ -131,6 +186,8 @@ private:
     QAction *m_saveAct = nullptr;
     QAction *m_saveAsAct = nullptr;
     QAction *m_projectSettingsAct = nullptr;
+    QAction *m_closeProjectAct = nullptr;
+    QMenu *m_recentMenu = nullptr;
     // Edit-menu panel clipboard actions (enabled once a panel is copied).
     QAction *m_pastePanelAct = nullptr;
     QAction *m_pastePanelInPlaceAct = nullptr;

@@ -1459,3 +1459,75 @@ prompt implementation (a prompt from the menu and silent loss from the X
 button is worse than no prompt), Open Recent reusing the Open path rather
 than duplicating load logic, and lifecycle sections (e) close-state and
 (f) close-then-open/new.
+
+## File menu reorganisation: New / Open / Open Recent / Close / Exit (2026-08-22)
+
+Menu is now New Project (Ctrl+N) / Open Project (Ctrl+O) / Open Recent >
+/ Close Project (Ctrl+W) / --- / Save (Ctrl+S) / Save As (Ctrl+Shift+S) /
+--- / Project Settings / --- / Exit.
+
+ONE TEARDOWN. resetProjectState(ClipboardPolicy) serves New, Open and
+Close; they differ only in what they do AFTERWARDS (New applies the
+dialog's values and goes to the Script Editor, Open the file's and goes to
+the Storyboard, Close nothing and goes to the Dashboard). No parallel
+reset logic exists.
+
+PRE-EXISTING DEFECT FIXED IN PASSING: the old onNewProject UNDER-CLEARED.
+It never cleared the undo stack, the panel clipboard or the perspective
+vanishing points, so starting a new project inherited the previous one's
+construction lines and an undo history describing panels that no longer
+existed. This predates the pass. Open escaped it by accident
+(perspectiveFromJson overwrites the VPs, loadScenes clears the stack),
+which is why only New showed it.
+
+THE CLIPBOARD ASYMMETRY IS DELIBERATE. Close clears the panel clipboard
+and the canvas clipboard; New and Open keep them. Pasting a panel into the
+next project is a real workflow and the size guard already refuses a
+mismatch, but after Close there is no project to paste into and the
+clipboard would hold artwork from one the artist explicitly closed. That
+is why ClipboardPolicy is a parameter rather than a fixed behaviour.
+
+THREE THINGS NEEDED MORE THAN CLEARING, per the audit: the canvas
+clipboard had NO clear API at all (added DrawingCanvas::
+clearCanvasClipboard); the vanishing points needed a call, not a field
+(PerspectiveTool::reset already existed and does exactly the right thing);
+and the project canvas size resets to the documented 960x540 PRE-PROJECT
+IDLE values rather than an invalid QSize, which any panel-making path
+would build garbage from. One audit item turned out to need NOTHING: the
+Dashboard's project cards are hardcoded placeholders, not a live recents
+list, so nothing there goes stale on close.
+
+ONE CLOSE PATH. closeEvent holds the only unsaved-changes prompt; X,
+Alt+F4, the taskbar and a Windows shutdown all arrive there, and File >
+Exit does nothing but call close(). Cancel calls event->ignore(). Alt+F4
+is shown as TEXT and deliberately NOT bound — Windows already delivers it
+as a close request, and binding it (or adding Ctrl+Q) would put a second
+close path in front of the one that has to stay correct.
+
+THE SAVE-THAT-DID-NOT-HAPPEN HOLE, closed: onSaveProject returns void, so
+a Save As the artist cancels, or a write that fails, was
+indistinguishable from success. saveForPrompt() returns whether the save
+ACTUALLY happened, and mayDiscardAfterAnswer(Save) returns it — so a
+failed save cancels the transition instead of proceeding to discard the
+work the artist just asked to keep. That failure would have arrived
+THROUGH the prompt that exists to prevent it.
+
+DECISION vs MODAL: shouldPromptToSave() is pure and public, and
+mayDiscardAfterAnswer maps answer -> consequence with no dialog in front,
+so the gate asserts the decision instead of driving a QMessageBox.
+
+GATE: sections (e) and (f), family now 54 checks. Close-state asserts
+every audited item with a control proving the state EXISTED first
+(clipboards, a vanishing point, a non-empty undo stack, a dirty flag);
+close->open and close->new; and the decision table including the
+save-that-failed case, driven WITHOUT a modal by removing the project's
+folder so the write genuinely fails. Note for whoever runs it: the close
+state checks clear the dirty flag immediately before closing, because
+Close now correctly PROMPTS and a gate cannot answer a modal — the real
+close path still runs, the prompt is simply a no-op.
+
+COST: the family is now the slowest alongside EdgeLock — 25-45 s Release
+standalone (variance is real project I/O: PNG encode/decode per fixture
+and per load), ~32 s Debug, and 215 s was observed once when run
+immediately after the other seven on a loaded machine. It was 9 s when it
+held only the open/reopen checks.

@@ -4434,6 +4434,17 @@ QWidget *StoryboardPage::createBottomBar()
 // canvas's own leave-handling (commit an in-flight quick shape, floating
 // paste or transform) while the outgoing panel is still ALIVE, which is the
 // only moment that work can safely happen.
+void StoryboardPage::clearPanelClipboard()
+{
+    if (!m_panelClipboard)
+        return;
+    delete m_panelClipboard;
+    m_panelClipboard = nullptr;
+    m_clipboardSceneIndex = -1;
+    m_clipboardPanelIndex = -1;
+    emit panelClipboardChanged(false); // the Paste actions disable with it
+}
+
 void StoryboardPage::detachScenes()
 {
     if (m_canvas)
