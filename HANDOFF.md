@@ -1725,3 +1725,62 @@ RULE, generally: when a task says the operator will run the destructive
 step, no amount of confidence that the step is correct transfers that
 permission. Rehearse on data the tool CANNOT confuse for the real thing, or
 do not rehearse.
+
+## Assets subfolder — the real fix for the Save As data loss (2026-08-27)
+
+THE ROOT CAUSE was positional image names in a shared folder. The fix
+removes the sharing rather than the positional names: every project writes
+its pixels into `<basename>_assets/` beside its own .sankotv, and the
+manifest stores that relative path. Two projects in one folder now write to
+two different directories, so neither can reach the other's files at all.
+
+FOUR DECISIONS, each load-bearing:
+
+1. NAMED FROM THE FILE, NOT THE PROJECT NAME. `assetSubdirFor()` uses
+   `QFileInfo(path).completeBaseName()`. projectName is NOT unique and is
+   not even tied to the file: `Test_SB_006.sankotv` on this machine carries
+   projectName `Test_SB_007`. Naming the folder from data would have
+   reproduced the collision with extra steps.
+
+2. ENFORCED BY THE SIGNATURE. `projectToJson` now takes the project FILE
+   PATH, not its folder (MainWindow passes `path`, not
+   `QFileInfo(path).absolutePath()`). A folder parameter would leave the
+   subfolder to the caller, and a caller that forgot — or that used
+   projectName — puts two projects' pixels back in one place. The compiler
+   now refuses the old call.
+
+3. SAVE AS DOES NOT MOVE THE FILE THE USER CHOSE. Only the images go into
+   a subfolder; the chosen .sankotv path is exactly the chosen path.
+   Create keeps its folder-per-project as well, so there is ONE rule.
+
+4. NOTHING IS DELETED, AND OLD PROJECTS ARE UNCHANGED ON LOAD. Names are
+   stored relative to the manifest, so a project naming flat files still
+   finds them exactly where it did. On its first save under this build it
+   writes `_assets/` and LEAVES THE FLAT PNGS ALONE — another manifest in
+   that folder may still reference them. Orphaned flat files are the
+   user's to remove, never the app's.
+
+GATE (SankoProjectLifecycle section (h), 14 checks, part of the permanent
+97): Save As into the SAME folder, then edit the copy — the original must
+be byte-identical; and THE REVERSE, edit the original — the copy must be
+byte-identical. Both directions, because the bug was symmetric: whichever
+project saved last clobbered the other, so a fix that isolated one side
+would still lose work, and a one-direction check would have passed over it.
+A POSITIVE CONTROL runs the same SHA-256 comparison across a real painted
+stroke and asserts it DETECTS the change — otherwise "byte-identical" only
+proves the comparison is blind. Then the migration path every existing
+project takes: an old flat-named project loads, opens at the right size,
+and its first save creates `_assets/` while its flat PNGs keep their
+hashes.
+
+SankoCanvasSizeLock section (d) needed updating for the new layout — its
+on-disk checks globbed `*.png` beside the manifest and found zero files.
+Worth noting that it FAILED rather than passing vacuously: the check
+carried the file count in its own message ("0 files") and asserted the list
+was non-empty, so the layout change surfaced as six failures instead of six
+silent successes over an empty set.
+
+FULL GATE, both configs, all eight families: PaintPixelLock, BrushLibrary
+(preview SHA 193847fa... unchanged), CanvasBrushLock (666f7b45... /
+cafcec7f...), QuickShapeGeometryLock, CanvasEdgeLock 74, CanvasSizeLock
+136, DevRecorderTest, ProjectLifecycle 97 — zero failures.

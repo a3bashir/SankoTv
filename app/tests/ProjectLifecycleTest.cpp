@@ -47,6 +47,7 @@
 #include "StoryboardModel.h"
 
 #include <QApplication>
+#include <QCryptographicHash>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
@@ -212,9 +213,12 @@ QString writeProject(const QString &root, const QString &name, const QSize &size
     data.fps = fps;
     data.canvasSize = size;
     data.scenes = scenes;
-    const QJsonObject root_ = ProjectIO::projectToJson(data, folder);
     const QString path = folder + QStringLiteral("/") + name
         + QStringLiteral(".sankotv");
+    // The PROJECT FILE PATH, not its folder: projectToJson derives the
+    // "<basename>_assets" subfolder from it, which is what keeps two
+    // projects in one directory from writing the same image files.
+    const QJsonObject root_ = ProjectIO::projectToJson(data, path);
     QFile f(path);
     if (f.open(QIODevice::WriteOnly))
         f.write(QJsonDocument(root_).toJson(QJsonDocument::Indented));
@@ -504,8 +508,14 @@ void runClosePass(const QString &projectA, const QString &projectB,
     // project's folder is removed, so saving to its path cannot succeed.
     window.applyProjectSettingsForTest(QStringLiteral("EditedAgain"), 60);
     pump(200);
-    const QString folder = QFileInfo(window.projectPathForTest()).absolutePath();
-    QDir(folder).removeRecursively();
+    // Force the WRITE to fail in a way that does not depend on the
+    // folder existing: saving now mkpaths its assets subfolder, which
+    // recreates a deleted directory, so removing the folder no longer
+    // makes a save fail. Putting a DIRECTORY where the .sankotv should
+    // go makes QFile::open refuse, whatever else exists.
+    const QString blocked = window.projectPathForTest();
+    QFile::remove(blocked);
+    QDir().mkpath(blocked);
     pump(150);
     // A save that FAILS legitimately warns the artist, and that warning is
     // a modal this run cannot click. Dismiss whatever modal appears while
@@ -668,6 +678,173 @@ void runViewResetPass(const QString &projectA, const QString &projectB)
     pump(300);
 }
 
+
+// ---- (h) Save As produces an INDEPENDENT project --------------------------
+// The bug this guards: panels and layers were written as image files named
+// by POSITION, carrying nothing that identifies the project, into whatever
+// folder held the .sankotv. Two projects in one folder wrote THE SAME
+// FILES, so whichever saved last overwrote the other's artwork - silently,
+// because at the moment of the Save As both held identical pixels.
+//
+// The bug was SYMMETRIC: either project could destroy the other. So this
+// checks BOTH directions. A check that only edited the copy would pass over
+// a fix that isolated one side and not the other.
+void runSaveAsIndependencePass(const QString &scratch)
+{
+    out() << "--- (h) Save As independence, both directions ---" << Qt::endl;
+    const QString shared = scratch + QStringLiteral("/saveas_shared");
+    QDir(shared).removeRecursively();
+    QDir().mkpath(shared);
+
+    MainWindow window;
+    window.resize(1300, 850);
+    window.show();
+    pump(800);
+
+    const QString a = shared + QStringLiteral("/SB_001.sankotv");
+    const QString b = shared + QStringLiteral("/SB_002.sankotv");
+    const QString fixture = writeProject(scratch + QStringLiteral("/saveas_src"),
+                                         QStringLiteral("Source"),
+                                         QSize(960, 540), 24, 1, 2);
+    check(QStringLiteral("(h) fixture opens"), window.loadProjectForTest(fixture));
+    pump(500);
+    check(QStringLiteral("(h) save as SB_001"), window.saveProjectForTest(a));
+    pump(300);
+    check(QStringLiteral("(h) save as SB_002, SAME folder"),
+          window.saveProjectForTest(b));
+    pump(300);
+
+    // Each must own a subfolder named from its FILE, not its project name:
+    // both of these carry projectName "Source".
+    check(QStringLiteral("(h) each project has its own assets folder"),
+          QDir(shared + QStringLiteral("/SB_001_assets")).exists()
+              && QDir(shared + QStringLiteral("/SB_002_assets")).exists());
+    check(QStringLiteral("(h) no loose image files beside the manifests"),
+          QDir(shared).entryList({QStringLiteral("*.png")}, QDir::Files).isEmpty());
+
+    auto snapshot = [](const QString &dir) {
+        QMap<QString, QByteArray> result;
+        for (const QFileInfo &fi : QDir(dir).entryInfoList(
+                 {QStringLiteral("*.png")}, QDir::Files, QDir::Name)) {
+            QFile f(fi.absoluteFilePath());
+            if (f.open(QIODevice::ReadOnly))
+                result.insert(fi.fileName(),
+                              QCryptographicHash::hash(
+                                  f.readAll(), QCryptographicHash::Sha256));
+        }
+        return result;
+    };
+    auto paintAndSave = [&window](const QString &path) {
+        auto *canvas = window.findChild<DrawingCanvas *>();
+        if (canvas) {
+            const QTransform t = canvas->viewTransformForTest();
+            sendMouse(canvas, QEvent::MouseButtonPress, t.map(QPointF(120, 100)),
+                      Qt::LeftButton);
+            for (int i = 1; i <= 8; ++i)
+                sendMouse(canvas, QEvent::MouseMove,
+                          t.map(QPointF(120 + i * 25, 100 + i * 18)),
+                          Qt::LeftButton);
+            sendMouse(canvas, QEvent::MouseButtonRelease,
+                      t.map(QPointF(320, 244)), Qt::LeftButton);
+            pump(700);
+        }
+        window.saveProjectForTest(path);
+        pump(300);
+    };
+
+    // --- direction 1: edit the COPY, the ORIGINAL must not move ---------
+    const QMap<QString, QByteArray> beforeA =
+        snapshot(shared + QStringLiteral("/SB_001_assets"));
+    check(QStringLiteral("(h) control: SB_001 has images to compare"),
+          beforeA.size() >= 2, QStringLiteral("%1 file(s)").arg(beforeA.size()));
+    window.loadProjectForTest(b);
+    pump(400);
+    paintAndSave(b);
+    check(QStringLiteral("(h) editing the COPY leaves the ORIGINAL "
+                         "byte-identical"),
+          snapshot(shared + QStringLiteral("/SB_001_assets")) == beforeA);
+
+    // POSITIVE CONTROL: the comparison must SEE a real pixel change, or
+    // "byte-identical" above only means the comparison is blind.
+    const QMap<QString, QByteArray> b1 =
+        snapshot(shared + QStringLiteral("/SB_002_assets"));
+    paintAndSave(b);
+    check(QStringLiteral("(h) CONTROL: the same comparison DETECTS a real "
+                         "pixel change"),
+          snapshot(shared + QStringLiteral("/SB_002_assets")) != b1);
+
+    // --- direction 2: edit the ORIGINAL, the COPY must not move ---------
+    // The bug was symmetric - whichever saved last clobbered the other - so
+    // isolating one side only would still lose work.
+    const QMap<QString, QByteArray> beforeB =
+        snapshot(shared + QStringLiteral("/SB_002_assets"));
+    window.loadProjectForTest(a);
+    pump(400);
+    paintAndSave(a);
+    check(QStringLiteral("(h) editing the ORIGINAL leaves the COPY "
+                         "byte-identical"),
+          snapshot(shared + QStringLiteral("/SB_002_assets")) == beforeB);
+
+    // --- the migration path every existing project takes ----------------
+    // An OLD project names flat files beside its manifest. It must still
+    // load, and its first save under this build must write _assets/ while
+    // leaving those flat files alone: another manifest in that folder may
+    // still need them.
+    out() << "--- (h) migration: an old flat-named project ---" << Qt::endl;
+    const QString oldDir = scratch + QStringLiteral("/legacy_flat");
+    QDir(oldDir).removeRecursively();
+    QDir().mkpath(oldDir);
+    const QString oldPath = oldDir + QStringLiteral("/Legacy.sankotv");
+    window.loadProjectForTest(fixture);
+    pump(400);
+    window.saveProjectForTest(oldPath);
+    pump(300);
+    {
+        // Rewrite it into the OLD flat layout: strip the subfolder from the
+        // stored names and put the images beside the manifest.
+        QFile f(oldPath);
+        f.open(QIODevice::ReadOnly);
+        QString text = QString::fromUtf8(f.readAll());
+        f.close();
+        text.remove(QStringLiteral("Legacy_assets/"));
+        QFile w(oldPath);
+        w.open(QIODevice::WriteOnly);
+        w.write(text.toUtf8());
+        w.close();
+        for (const QFileInfo &fi :
+             QDir(oldDir + QStringLiteral("/Legacy_assets"))
+                 .entryInfoList({QStringLiteral("*.png")}, QDir::Files))
+            QFile::copy(fi.absoluteFilePath(),
+                        oldDir + QStringLiteral("/") + fi.fileName());
+        QDir(oldDir + QStringLiteral("/Legacy_assets")).removeRecursively();
+    }
+    const QStringList flatBefore =
+        QDir(oldDir).entryList({QStringLiteral("*.png")}, QDir::Files, QDir::Name);
+    check(QStringLiteral("(h) control: the legacy project really is flat"),
+          !flatBefore.isEmpty()
+              && !QDir(oldDir + QStringLiteral("/Legacy_assets")).exists(),
+          QStringLiteral("%1 flat png").arg(flatBefore.size()));
+    const QMap<QString, QByteArray> flatHashes = snapshot(oldDir);
+
+    check(QStringLiteral("(h) an OLD flat-named project still loads"),
+          window.loadProjectForTest(oldPath));
+    pump(500);
+    check(QStringLiteral("(h) ...with its artwork found at the old flat names"),
+          window.activePanelSizeForTest() == QSize(960, 540));
+
+    window.saveProjectForTest(oldPath); // its FIRST save under this build
+    pump(400);
+    check(QStringLiteral("(h) its first save writes an _assets folder"),
+          QDir(oldDir + QStringLiteral("/Legacy_assets")).exists());
+    check(QStringLiteral("(h) ...and leaves the old flat images UNTOUCHED"),
+          snapshot(oldDir) == flatHashes,
+          QStringLiteral("%1 flat file(s) before").arg(flatHashes.size()));
+
+    window.markCleanForTest();
+    window.close();
+    pump(300);
+}
+
 int main(int argc, char **argv)
 {
 #ifdef Q_OS_WIN
@@ -802,6 +979,7 @@ int main(int argc, char **argv)
     // save fail, so opening it again here would fail for a reason that has
     // nothing to do with the view.
     runViewResetPass(a, c);
+    runSaveAsIndependencePass(scratch);
 
     // Nothing may have escaped the scratch root.
     const bool removed = QDir(scratch).removeRecursively();

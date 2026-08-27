@@ -1129,7 +1129,7 @@ bool MainWindow::saveToPath(const QString &path)
     data.audioPath = m_animatic->audioPath(); // scratch track (path only)
     data.perspective = m_storyboard->perspectiveToJson();
     const QJsonObject root =
-        ProjectIO::projectToJson(data, QFileInfo(path).absolutePath());
+        ProjectIO::projectToJson(data, path);
 
     QFile file(path);
     if (!file.open(QIODevice::WriteOnly)) {

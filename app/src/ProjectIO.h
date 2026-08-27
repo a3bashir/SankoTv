@@ -29,11 +29,26 @@ struct SaveData
     QJsonObject perspective;
 };
 
-// Build the project's JSON root AND write the sibling PNGs (panel flattens
-// + per-layer images + consistency thumbnails) into `folder`. The flatten
-// PNGs follow flattenedPixmap(), which is panel-sized — so what lands on
-// disk always matches the manifest beside it.
-QJsonObject projectToJson(const SaveData &data, const QString &folder);
+// Build the project's JSON root AND write its images (panel flattens +
+// per-layer images + consistency thumbnails). The flatten PNGs follow
+// flattenedPixmap(), which is panel-sized — so what lands on disk always
+// matches the manifest beside it.
+//
+// Takes the PROJECT FILE PATH, not its folder, and that is deliberate: the
+// images go into "<basename>_assets/" beside the .sankotv, and the basename
+// is the only thing guaranteed unique within a directory. Passing a folder
+// would leave the subfolder name to the caller, and a caller that forgot —
+// or that used data.projectName, which is NOT unique — would put two
+// projects' pixels back in one place. Two projects saved into one folder
+// used to write the SAME positionally-named files and silently overwrite
+// each other's artwork; this signature is what makes that unrepeatable.
+//
+// Loading is unaffected: names are stored RELATIVE to the manifest, so an
+// old project naming flat files still finds them exactly where it did.
+QJsonObject projectToJson(const SaveData &data, const QString &projectFilePath);
+
+// The images subfolder a given project file uses ("<basename>_assets").
+QString assetSubdirFor(const QString &projectFilePath);
 
 // One panel that does not match the project's chosen size, located for the
 // user: "Scene 2, panel 7" rather than a bare count.

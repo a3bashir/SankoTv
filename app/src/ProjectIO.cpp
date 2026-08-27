@@ -1,5 +1,6 @@
 #include "ProjectIO.h"
 
+#include <QDir>
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonValue>
@@ -9,8 +10,34 @@
 
 namespace ProjectIO {
 
-QJsonObject projectToJson(const SaveData &data, const QString &folder)
+QString assetSubdirFor(const QString &projectFilePath)
 {
+    // Named from the FILE, never from data.projectName. A filename is
+    // unique within its folder by construction; a project NAME is not —
+    // Test_SB_006.sankotv carries projectName "Test_SB_007", and keying off
+    // the name would put two projects' pixels back in one directory, which
+    // is precisely the bug this exists to end.
+    return QFileInfo(projectFilePath).completeBaseName()
+        + QStringLiteral("_assets");
+}
+
+QJsonObject projectToJson(const SaveData &data, const QString &projectFilePath)
+{
+    // Pixels live in a subfolder of their own, so two projects saved into
+    // one directory can never write the same files. Panels and layers are
+    // named by POSITION (panel_s0_p0_layer0.png), carrying nothing that
+    // identifies the project, so the directory was the only thing keeping
+    // them apart — and Save As happily put two in one.
+    //
+    // The manifest stores each name RELATIVE to itself, so loading is
+    // unchanged: an old project names flat files and finds them exactly
+    // where it always did.
+    const QString folder = QFileInfo(projectFilePath).absolutePath();
+    const QString assets = assetSubdirFor(projectFilePath);
+    QDir().mkpath(folder + QStringLiteral("/") + assets);
+    // Every stored name gets this prefix; every write goes through it.
+    const QString rel = assets + QStringLiteral("/");
+
     QJsonArray scenesArray;
     for (int i = 0; i < data.scenes.size(); ++i) {
         Scene *scene = data.scenes.at(i);
@@ -29,7 +56,8 @@ QJsonObject projectToJson(const SaveData &data, const QString &folder)
             // Flattened composite — kept for forward-compat (older builds and any
             // external tool reading pixmapFile still see the merged drawing).
             // flattenedPixmap() is panel-sized, so this PNG matches the layers.
-            const QString pngName = QStringLiteral("panel_s%1_p%2.png").arg(i).arg(j);
+            const QString pngName =
+                rel + QStringLiteral("panel_s%1_p%2.png").arg(i).arg(j);
             panel->flattenedPixmap().save(folder + QStringLiteral("/") + pngName, "PNG");
 
             // Layer stack: one PNG per layer + a JSON descriptor array.
@@ -54,7 +82,8 @@ QJsonObject projectToJson(const SaveData &data, const QString &folder)
 
                 if (layer.type != QLatin1String("group")) { // folders own no pixels
                     const QString layerPng =
-                        QStringLiteral("panel_s%1_p%2_layer%3.png").arg(i).arg(j).arg(k);
+                        rel + QStringLiteral("panel_s%1_p%2_layer%3.png")
+                                  .arg(i).arg(j).arg(k);
                     layer.image.save(folder + QStringLiteral("/") + layerPng, "PNG");
                     layerObj[QStringLiteral("imageFile")] = layerPng;
                 }
@@ -114,7 +143,8 @@ QJsonObject projectToJson(const SaveData &data, const QString &folder)
             QString safeName = entry.name;
             safeName.replace(QRegularExpression(QStringLiteral("[^A-Za-z0-9]+")),
                              QStringLiteral("_"));
-            thumbFile = QStringLiteral("consistency_%1_%2.png").arg(safeName, entry.id);
+            thumbFile = rel + QStringLiteral("consistency_%1_%2.png")
+                                  .arg(safeName, entry.id);
             entry.thumbnail.save(folder + QStringLiteral("/") + thumbFile, "PNG");
         }
         entryObj[QStringLiteral("thumbnailFile")] = thumbFile;

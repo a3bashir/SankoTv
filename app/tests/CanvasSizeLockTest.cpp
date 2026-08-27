@@ -297,7 +297,8 @@ void runPersistencePass(const QSize &S, const QString &projRoot)
     d1.fps = 24;
     d1.canvasSize = S;
     d1.scenes = {scene};
-    const QJsonObject root1 = ProjectIO::projectToJson(d1, folder1);
+    const QJsonObject root1 = ProjectIO::projectToJson(
+        d1, folder1 + QStringLiteral("/proj.sankotv"));
     writeJson(folder1 + QStringLiteral("/proj.sankotv"), root1);
 
     ProjectIO::LoadedProject L = ProjectIO::projectFromJson(
@@ -329,8 +330,8 @@ void runPersistencePass(const QSize &S, const QString &projRoot)
     }
 
     check(QStringLiteral("(d) flatten PNGs on disk are %1x%2").arg(W).arg(H),
-          QImage(folder1 + QStringLiteral("/panel_s0_p0.png")).size() == S
-              && QImage(folder1 + QStringLiteral("/panel_s0_p1.png")).size() == S);
+          QImage(folder1 + QStringLiteral("/proj_assets/panel_s0_p0.png")).size() == S
+              && QImage(folder1 + QStringLiteral("/proj_assets/panel_s0_p1.png")).size() == S);
 
     ProjectIO::SaveData d2;
     d2.projectName = L.projectName;
@@ -340,16 +341,21 @@ void runPersistencePass(const QSize &S, const QString &projRoot)
     d2.consistency = L.consistency;
     d2.audioPath = L.audioPath;
     d2.perspective = L.perspective;
-    const QJsonObject root2 = ProjectIO::projectToJson(d2, folder2);
+    const QJsonObject root2 = ProjectIO::projectToJson(
+        d2, folder2 + QStringLiteral("/proj.sankotv"));
     check(QStringLiteral("(d) second save: identical JSON"),
           QJsonDocument(root1).toJson() == QJsonDocument(root2).toJson());
     bool pngsEqual = true;
-    const QStringList pngs =
-        QDir(folder1).entryList({QStringLiteral("*.png")}, QDir::Files);
+    // Images live in "<basename>_assets/" beside the manifest now: two
+    // projects saved into one folder used to write the SAME
+    // positionally-named files and silently overwrite each other.
+    const QString assets = QStringLiteral("/proj_assets/");
+    const QStringList pngs = QDir(folder1 + assets)
+                                 .entryList({QStringLiteral("*.png")}, QDir::Files);
     for (const QString &name : pngs)
         pngsEqual = pngsEqual
-            && fileBytes(folder1 + QStringLiteral("/") + name)
-                == fileBytes(folder2 + QStringLiteral("/") + name);
+            && fileBytes(folder1 + assets + name)
+                == fileBytes(folder2 + assets + name);
     check(QStringLiteral("(d) second save: identical PNG bytes (%1 files)")
               .arg(pngs.size()),
           pngsEqual && !pngs.isEmpty());
@@ -379,7 +385,8 @@ void runMigrationPass(const QString &projRoot)
     d.fps = 24;
     d.canvasSize = QSize(960, 540);
     d.scenes = {scene};
-    QJsonObject root = ProjectIO::projectToJson(d, folder);
+    QJsonObject root = ProjectIO::projectToJson(
+        d, folder + QStringLiteral("/proj.sankotv"));
 
     // Keyless legacy: silent, 960x540, artwork untouched.
     QJsonObject legacyRoot = root;
@@ -444,7 +451,8 @@ void runMigrationPass(const QString &projRoot)
     dFix.fps = Ll.fps;
     dFix.canvasSize = Ll.pixelSize;
     dFix.scenes = Ll.scenes;
-    const QJsonObject rootFix = ProjectIO::projectToJson(dFix, folderFix);
+    const QJsonObject rootFix = ProjectIO::projectToJson(
+        dFix, folderFix + QStringLiteral("/proj.sankotv"));
     ProjectIO::LoadedProject Lf = ProjectIO::projectFromJson(rootFix, folderFix);
     check(QStringLiteral("(e) next save writes the honest manifest"),
           rootFix.value(QStringLiteral("canvasWidth")).toInt() == 960
@@ -466,7 +474,8 @@ void runMigrationPass(const QString &projRoot)
     dt.fps = 24;
     dt.canvasSize = QSize(777, 1013);
     dt.scenes = {tallScene};
-    const QJsonObject tallRoot = ProjectIO::projectToJson(dt, folderTall);
+    const QJsonObject tallRoot = ProjectIO::projectToJson(
+        dt, folderTall + QStringLiteral("/proj.sankotv"));
     {
         ProjectIO::LoadedProject pre = ProjectIO::projectFromJson(tallRoot, folderTall);
         const QImage &before = pre.scenes.at(0)->panels.at(0)->layers.at(1).image;
@@ -584,7 +593,8 @@ void runMixedSizePass(const QString &projRoot)
         d.fps = 24;
         d.canvasSize = manifest;
         d.scenes = {scene};
-        const QJsonObject root = ProjectIO::projectToJson(d, folder);
+        const QJsonObject root = ProjectIO::projectToJson(
+            d, folder + QStringLiteral("/proj.sankotv"));
         writeJson(folder + QStringLiteral("/proj.sankotv"), root);
         delete scene; // ~Scene owns and deletes its panels
         return ProjectIO::projectFromJson(
@@ -791,7 +801,8 @@ void runResizePass(const QString &projRoot, const QSize &from, const QSize &to)
     data.canvasSize = to; // the window updates its members before any save
     data.scenes = {scene};
     writeJson(folder + QStringLiteral("/proj.sankotv"),
-              ProjectIO::projectToJson(data, folder));
+              ProjectIO::projectToJson(
+                  data, folder + QStringLiteral("/proj.sankotv")));
     ProjectIO::LoadedProject L = ProjectIO::projectFromJson(
         readJson(folder + QStringLiteral("/proj.sankotv")), folder);
     check(QStringLiteral("(i) %1: reload is NOT mixed and NOT mismatched — "
