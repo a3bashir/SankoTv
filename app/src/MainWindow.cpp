@@ -1034,6 +1034,50 @@ void MainWindow::onSaveProject()
         updateTitle();
 }
 
+// True when it is safe to go ahead: either nothing else lives in that
+// folder, or the artist has been told what will happen and insisted.
+bool MainWindow::confirmSaveAsLocation(const QString &path)
+{
+    const QFileInfo target(path);
+    QStringList others;
+    for (const QFileInfo &fi : target.absoluteDir().entryInfoList(
+             {QStringLiteral("*.sankotv")}, QDir::Files, QDir::Name)) {
+        if (fi.absoluteFilePath() != target.absoluteFilePath())
+            others << fi.fileName();
+    }
+    if (others.isEmpty())
+        return true;
+
+    QMessageBox box(this);
+    box.setIcon(QMessageBox::Warning);
+    box.setWindowTitle(QStringLiteral("Save Project As"));
+    box.setText(QStringLiteral("This folder already contains another "
+                               "project.\n\nSaving here will make the two "
+                               "share their artwork files."));
+    box.setInformativeText(
+        QStringLiteral(
+            "Already here: %1\n\n"
+            "SankoTV stores every panel and layer as image files named by "
+            "position (panel_s0_p0_layer0.png and so on), and those names do "
+            "not identify the project. Two projects in one folder write the "
+            "SAME image files, so the next time either one is saved it "
+            "OVERWRITES THE OTHER'S ARTWORK. That loss is permanent and "
+            "there is no undo for it.\n\n"
+            "To keep this copy independent, save it into a folder of its "
+            "own.")
+            .arg(others.join(QStringLiteral(", "))));
+    QPushButton *anyway =
+        box.addButton(QStringLiteral("Save Here Anyway"),
+                      QMessageBox::DestructiveRole);
+    QPushButton *choose =
+        box.addButton(QStringLiteral("Choose Another Folder"),
+                      QMessageBox::RejectRole);
+    box.setDefaultButton(choose); // never proceed on a reflexive Enter
+    box.exec();
+    Q_UNUSED(choose);
+    return box.clickedButton() == anyway;
+}
+
 void MainWindow::onSaveProjectAs()
 {
     if (m_scenes.isEmpty())
@@ -1050,6 +1094,16 @@ void MainWindow::onSaveProjectAs()
         return;
     if (!path.endsWith(QStringLiteral(".sankotv"), Qt::CaseInsensitive))
         path += QStringLiteral(".sankotv");
+
+    // GUARD: a project's panels and layers are written as image files named
+    // by POSITION (panel_s0_p0_layer0.png and so on), with nothing in the
+    // name identifying the project. Two projects in one folder therefore
+    // write the SAME image files, and whichever is saved next overwrites the
+    // other's artwork permanently. The Save As itself is harmless — both
+    // hold identical pixels at that instant — which is exactly why this is
+    // worth saying out loud before it happens rather than after.
+    if (!confirmSaveAsLocation(path))
+        return;
 
     m_projectName = QFileInfo(path).completeBaseName();
     if (saveToPath(path))
