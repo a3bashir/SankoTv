@@ -1676,8 +1676,13 @@ Any tool that walks project references must handle BOTH spellings; one that
 does not will silently under-report, or "repair" a project into having no
 pixels.
 
+SUPERSEDED — see "Assets subfolder" (2026-08-27) below for the real fix,
+and "The Save As guard removed" (2026-08-27) for why the warning described
+here no longer exists. What follows is the state as of 2026-08-24.
+
 SHIPPED SO FAR: a Save As guard warning when the target folder already
-holds another project (commit "Warn before Save As..."), and
+holds another project (commit "Warn before Save As...", REMOVED 2026-08-27
+once the fix made its text false), and
 tools/repair_shared_projects.py, which gives each project its own folder —
 COPYING referenced images (never moving: several manifests name the same
 file and the attribution question has no answer), verifying each copy by
@@ -1784,3 +1789,47 @@ FULL GATE, both configs, all eight families: PaintPixelLock, BrushLibrary
 (preview SHA 193847fa... unchanged), CanvasBrushLock (666f7b45... /
 cafcec7f...), QuickShapeGeometryLock, CanvasEdgeLock 74, CanvasSizeLock
 136, DevRecorderTest, ProjectLifecycle 97 — zero failures.
+
+## The Save As guard removed — a warning outlives its bug (2026-08-27)
+
+confirmSaveAsLocation warned that saving into a folder holding another
+project would make the two share their artwork files, in words chosen to
+make the consequence unmistakable: "OVERWRITES THE OTHER'S ARTWORK",
+"permanent", a "Save Here Anyway" button with DestructiveRole. Every word
+was true when written. Two commits later the assets-subfolder fix made all
+of it false, and the guard was left describing a bug that no longer exists.
+
+REMOVED rather than softened. A warning that cries wolf is worse than no
+warning, because the next real one gets dismissed by reflex — and there
+was nothing true AND important left to say at that moment: two projects in
+one folder is now a filing preference, not a hazard.
+
+THE DECIDING CASE, and it inverts the guard's advice. A legacy project
+that shares a folder and has not been re-saved still names flat files. Its
+FIRST SAVE under this build is the thing that RESCUES it: the save writes
+its pixels into <basename>_assets/ and leaves the flat files for whatever
+else still references them. A dialog discouraging that save would now be
+actively harmful. The guard did not just go stale — it inverted.
+
+AND IT HAD NO TEST. Nothing in the eight families referenced
+confirmSaveAsLocation or its buttons; it shipped as a dialog nothing
+verified, which is also why nothing broke when it went. Worth remembering
+next time a guard ships "just as a warning": an unverified dialog is not
+a cheap safety net, it is untested code with a user-visible voice.
+
+TEXT AUDIT DONE AT THE SAME TIME, because the ground moved under prose
+written two commits earlier. Corrected: the dialog text, its call-site
+comment, its declaration comment in MainWindow.h, the WHY THIS EXISTS
+block in tools/repair_shared_projects.py (now past tense, and it says
+plainly that migration happens by itself on the next save, so someone
+finding that script in six months does not conclude their projects are in
+danger), and the 2026-08-24 entry above, which read as current state.
+LEFT ALONE deliberately: the comments in ProjectIO.cpp/.h and both test
+families, which are already past tense ("used to write the SAME...") and
+whose observation that the names are STILL positional is true and
+load-bearing — the folder is what keeps them apart.
+
+RULE: a fix that removes a hazard has a second half. Every warning,
+comment, tool rationale and doc line that described the hazard is now
+wrong, and prose does not fail a gate. Grep for the old description as
+part of the fix, not as a later tidy-up.

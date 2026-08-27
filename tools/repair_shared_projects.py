@@ -1,12 +1,29 @@
 #!/usr/bin/env python3
 """Make projects that share a folder independent of each other.
 
-WHY THIS EXISTS
-    SankoTV wrote every panel and layer as an image file named by POSITION
-    (panel_s0_p0_layer0.png, and pixmapFile panel_s0_p0.png in legacy
-    projects). Nothing in those names identifies the project, so two
-    projects saved into one folder reference THE SAME FILES, and whichever
-    is saved next overwrites the other's artwork permanently.
+THE UNDERLYING BUG IS FIXED. READ THIS BEFORE CONCLUDING ANYTHING IS WRONG.
+    Builds up to 2026-08-27 wrote every panel and layer as an image file
+    named by POSITION (panel_s0_p0_layer0.png, and pixmapFile
+    panel_s0_p0.png in legacy projects). Nothing in those names identified
+    the project, so two projects saved into one folder referenced THE SAME
+    FILES, and whichever was saved next overwrote the other's artwork.
+
+    That is HISTORY. Since 2026-08-27 every project writes its images into
+    its own "<basename>_assets/" folder beside its .sankotv, so two
+    projects in one directory cannot reach each other's files at all.
+
+    NOTHING IS AT RISK TODAY, AND MIGRATION NEEDS NO TOOL. Simply opening
+    a project made by an older build and saving it moves its pixels into
+    "<basename>_assets/" and leaves the old flat files where they are. For
+    a project sharing a folder that first save is a RESCUE: it lifts the
+    project out of the shared pool without touching what the other one
+    still references.
+
+WHAT THIS IS STILL FOR
+    Tidying an EXISTING shared folder in one pass, without opening each
+    project by hand — and giving a verified, per-file record of the move.
+    It is a convenience now, not a repair. If you found this script and
+    are wondering whether your projects are in danger: they are not.
 
 WHAT THIS DOES
     For each project in a shared folder: creates <folder>/<basename>/,
@@ -22,7 +39,8 @@ WHAT IT DELIBERATELY DOES NOT DO
     * It deletes NOTHING. The original folder keeps every image it had.
     * It cannot UNDO damage. Where a file was already overwritten, every
       project sharing it now holds the same (latest) pixels; copying
-      preserves that. Repair stops further loss; it does not restore.
+      preserves that. It separates what is there; it does not restore what
+      an older build already lost.
 
 USAGE
     python repair_shared_projects.py                  # DRY RUN (default)

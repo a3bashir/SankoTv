@@ -128,11 +128,6 @@ private:
     // cancelled, and a write can fail). onSaveProject returns void, which is
     // exactly the hole this closes.
     bool saveForPrompt();
-    // Save As guard: warns when the chosen folder already holds another
-    // project, because both would then write the same positionally-named
-    // image files and overwrite each other's artwork. Returns false when
-    // the artist chose to pick a different folder.
-    bool confirmSaveAsLocation(const QString &path);
 
     void onCloseProject();
     void openProject(const QString &path); // File > Open AND Open Recent
