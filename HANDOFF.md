@@ -1833,3 +1833,101 @@ RULE: a fix that removes a hazard has a second half. Every warning,
 comment, tool rationale and doc line that described the hazard is now
 wrong, and prose does not fail a gate. Grep for the old description as
 part of the fix, not as a later tidy-up.
+
+## The save could fail silently and clear the dirty flag (2026-08-27)
+
+EVERY WRITE IN THE SAVE WAS UNCHECKED: QDir::mkpath, all three
+QImage::save sites, and QFile::write's returned byte count. saveToPath
+then returned true UNCONDITIONALLY and called setClean(). And the manifest
+was written with a plain QFile opened WriteOnly, which TRUNCATES ON OPEN —
+QSaveFile was already used for the brush library and the recents file, but
+not for the one file that holds the artist's work.
+
+WHAT THAT LEFT ON DISK, and why nobody would notice:
+ * mkpath blocked (a FILE where <basename>_assets must go, a read-only
+   parent, a path too long) but the folder itself writable: a complete,
+   well-formed manifest naming forty PNGs THAT WERE NEVER WRITTEN.
+ * one image unwritable (disk full at file 17, antivirus or Explorer
+   holding one file open): that layer named but absent.
+ * the disk filling during the manifest write: a TRUNCATED, unparseable
+   project file where a good one had been, the previous version already
+   destroyed by the truncating open.
+In all three the save reported success, cleared the dirty flag, and the
+title's [*] disappeared — so the artist could close the app with no prompt
+on work that never reached disk.
+
+THE LOADER MADE IT INVISIBLE, CORRECTLY. projectFromJson deliberately
+fills a missing image at the PANEL's size (a genuinely damaged old project
+must still open), so the result came back at the right dimensions with
+blank layers and no complaint. Right behaviour there, worst possible
+failure signature here. NOT CHANGED — see the open question at the end.
+
+THE FIX. projectToJson returns a [[nodiscard]] WriteResult {root, ok,
+failedFile, reason, imagesWritten} instead of a bare QJsonObject, checks
+mkpath first and every image write through one ImageWriter, and STOPS AT
+THE FIRST FAILURE without building a manifest. saveToPath writes images
+first, refuses to touch the project file unless ok, then commits the
+manifest through QSaveFile with the byte count checked and cancelWriting()
+on a short write. Changing the RETURN TYPE (rather than adding an
+out-parameter) is what makes the failure impossible to ignore: there is no
+QJsonObject to write until the result says ok.
+
+setClean() MADE STRUCTURALLY UNREACHABLE FROM A PARTIAL SAVE. The dirty
+flag is the thing that stands between the artist and closing on lost work,
+so this is not a rule review has to catch. m_currentProjectPath, the
+recents entry and setClean() moved into markSavedTo(path, SaveCompleted),
+where SaveCompleted is a token whose constructor is private and whose only
+friend is saveToPath. The single place that can construct one is the tail
+of saveToPath, after every check. Elsewhere it does not compile.
+
+AND THE FIRST VERSION OF THAT TOKEN WAS DECORATIVE. Written as
+`SaveCompleted() = default;` it compiled a deliberate forgery in
+onSaveProject without complaint: under C++17 a class whose only
+constructor is defaulted-in-class is still an AGGREGATE, so
+`SaveCompleted{}` was aggregate initialisation, which does not check
+constructor access. A negative compile test caught it — the guarantee was
+asserted, then TESTED BY TRYING TO BREAK IT, and it failed. Writing the
+body (`SaveCompleted() {}`) makes the constructor user-provided, the class
+a non-aggregate, and the access check real (error C2248). Catalogue this
+with the vacuous tests: a compile-time guarantee nobody tried to violate
+is a comment.
+
+CALLER AUDIT, since fixing a return value without its consumers is a half
+fix. Three call sites: saveForPrompt already handled false AND belt-and-
+braced it with `&& !isDirty()` (this is the one the exit prompt depends
+on); onSaveProject and onSaveProjectAs both guard updateTitle() on it.
+None ignored a false. One real defect found anyway: onSaveProjectAs
+assigns m_projectName BEFORE the save (it has to — the name is what gets
+written) and never restored it, so a FAILED Save As left the open project
+renamed after the file it had not managed to create. Now reverted on
+failure.
+
+GATE, section (i), 25 checks: mkpath blocked by a same-named file, one
+image blocked by a directory in its place, and an unwritable manifest —
+each asserting the save reports failure, the manifest on disk is
+unchanged, and THE PROJECT IS STILL DIRTY; plus QSaveFile leaving no temp
+file behind, a failed save not moving the project path, and a normal save
+still working afterwards (without which the section could pass on a save
+broken for every input).
+
+THE CONTROL CAUGHT A VACUOUS CHECK IN THIS VERY SECTION. The first
+version painted a stroke, saved, and asserted the manifest hash changed —
+IT DOES NOT. Artwork lives in the PNGs; the JSON beside them is
+byte-identical before and after a stroke. So "the manifest is unchanged"
+would have passed on a BROKEN build too, for a reason having nothing to do
+with the fix. The failing saves now change the FRAME RATE, which the
+manifest does record, and each case additionally asserts the file still
+carries the LAST SAVED rate rather than the unsaved one. Proven by
+defeating the mkpath check (`if (false && ...)`): all four (i.1) checks
+fail, with the detail line reading "clean - the artist could close on
+unsaved work".
+
+OPEN QUESTION, REPORTED NOT IMPLEMENTED: a load cannot currently tell "this
+project never had that file" from "this file should exist and does not" —
+both arrive as a null QImage and are filled silently. The manifest NAMES
+every file it expects, so the information is there: a load could count
+named-but-missing images and say so once. Deliberately not done in this
+pass.
+
+FULL GATE, both configs, eight families plus the SankoTV target: zero
+failures. ProjectLifecycle is now 122 checks. Pinned hashes unchanged.

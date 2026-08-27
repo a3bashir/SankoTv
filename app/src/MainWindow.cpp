@@ -28,6 +28,7 @@
 #include <QDialog>
 #include <QDir>
 #include <QFile>
+#include <QSaveFile>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QHBoxLayout>
@@ -1061,9 +1062,15 @@ void MainWindow::onSaveProjectAs()
     // operation to report a filing preference — and worse, would discourage
     // the first save of a legacy project sharing a folder, which is now the
     // very thing that RESCUES it out of the shared pool.
+    // The name has to be set BEFORE the save, because it is what gets
+    // written — but a Save As that FAILS must not leave the open project
+    // renamed after the file it did not manage to create.
+    const QString previousName = m_projectName;
     m_projectName = QFileInfo(path).completeBaseName();
     if (saveToPath(path))
         updateTitle();
+    else
+        m_projectName = previousName;
 }
 
 // --- Save / Load ----------------------------------------------------------
@@ -1084,22 +1091,75 @@ bool MainWindow::saveToPath(const QString &path)
     data.consistency = m_consistencyEntries;
     data.audioPath = m_animatic->audioPath(); // scratch track (path only)
     data.perspective = m_storyboard->perspectiveToJson();
-    const QJsonObject root =
-        ProjectIO::projectToJson(data, path);
+    // STEP 1 — the images, every write checked. This stops at the first
+    // failure and, crucially, happens BEFORE the manifest is touched: if a
+    // single PNG cannot be written, the project file on disk must stay
+    // exactly as it was rather than become a manifest naming pixels that
+    // are not there.
+    const ProjectIO::WriteResult written = ProjectIO::projectToJson(data, path);
+    if (!written.ok) {
+        QMessageBox::warning(
+            this, QStringLiteral("Save Project"),
+            QStringLiteral("This project was NOT saved.\n\n%1\n\n%2\n\n"
+                           "Your work is still open and still unsaved. The "
+                           "previous version of the project file has not "
+                           "been changed. Try saving again, or use Save As "
+                           "to write it somewhere else.")
+                .arg(written.failedFile, written.reason));
+        return false; // no token is made: the dirty flag stays set
+    }
 
-    QFile file(path);
+    // STEP 2 — the manifest, ATOMICALLY. QSaveFile writes an adjacent temp
+    // file and renames it into place on commit(), so a failure part-way
+    // through leaves the previous project file untouched instead of a
+    // truncated one. A plain QFile opened WriteOnly truncates the moment it
+    // opens: a disk that fills during the write used to leave an
+    // unparseable manifest where a good one had been, and say nothing.
+    const QByteArray json = QJsonDocument(written.root).toJson(QJsonDocument::Indented);
+    QSaveFile file(path);
     if (!file.open(QIODevice::WriteOnly)) {
         QMessageBox::warning(this, QStringLiteral("Save Project"),
-                             QStringLiteral("Could not write to:\n%1").arg(path));
+                             QStringLiteral("This project was NOT saved.\n\n"
+                                            "Could not write to:\n%1\n\n"
+                                            "Your work is still open and "
+                                            "still unsaved.").arg(path));
         return false;
     }
-    file.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
-    file.close();
+    // A SHORT WRITE IS A FAILED WRITE. write() returning fewer bytes than it
+    // was given was previously discarded, and the save reported success.
+    if (file.write(json) != json.size()) {
+        file.cancelWriting(); // the previous file survives untouched
+        QMessageBox::warning(this, QStringLiteral("Save Project"),
+                             QStringLiteral("This project was NOT saved.\n\n"
+                                            "Only part of the project file "
+                                            "could be written to:\n%1\n\n"
+                                            "The disk may be full. The "
+                                            "previous version has not been "
+                                            "changed.").arg(path));
+        return false;
+    }
+    if (!file.commit()) {
+        QMessageBox::warning(this, QStringLiteral("Save Project"),
+                             QStringLiteral("This project was NOT saved.\n\n"
+                                            "The project file could not be "
+                                            "completed at:\n%1\n\n%2")
+                                 .arg(path, file.errorString()));
+        return false;
+    }
 
+    // Reached only when every image and the manifest are on disk. This is
+    // the one place a SaveCompleted can be made.
+    markSavedTo(path, SaveCompleted{});
+    return true;
+}
+
+// Adopt what was just written. Unreachable without a SaveCompleted, which
+// only the tail of saveToPath can construct — see the declaration.
+void MainWindow::markSavedTo(const QString &path, SaveCompleted)
+{
     m_currentProjectPath = path;
     NewProjectDialog::recordRecentProject(path);
     setClean(); // what is on disk now matches what is in memory
-    return true;
 }
 
 bool MainWindow::loadFromPath(const QString &path)

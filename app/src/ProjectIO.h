@@ -29,10 +29,36 @@ struct SaveData
     QJsonObject perspective;
 };
 
+// The outcome of a save's IMAGE pass.
+//
+// Every write used to be unchecked — QDir::mkpath and every QImage::save
+// had its result discarded — so a save that could not write its pixels
+// still produced a complete, well-formed manifest NAMING those files. The
+// project then reopened with blank layers AT THE RIGHT SIZE, because the
+// loader deliberately fills a missing image at the panel's size so that a
+// genuinely damaged old project still opens (see projectFromJson). Correct
+// there; catastrophic here, because it made a failed save look exactly
+// like a successful one.
+//
+// Returning the failure rather than a bare QJsonObject is what makes
+// ignoring it impossible: there is no manifest to write until this says ok.
+struct [[nodiscard]] WriteResult
+{
+    QJsonObject root;       // meaningful ONLY when ok is true
+    bool ok = false;
+    QString failedFile;     // the first file that could not be written
+    QString reason;         // why, in words an artist can act on
+    int imagesWritten = 0;  // before the failure, if any
+};
+
 // Build the project's JSON root AND write its images (panel flattens +
 // per-layer images + consistency thumbnails). The flatten PNGs follow
 // flattenedPixmap(), which is panel-sized — so what lands on disk always
 // matches the manifest beside it.
+//
+// STOPS AT THE FIRST FAILURE and reports it. Writing the rest would only
+// spread a half-save further, and the manifest is not written either way:
+// the caller must leave the previous project file exactly as it was.
 //
 // Takes the PROJECT FILE PATH, not its folder, and that is deliberate: the
 // images go into "<basename>_assets/" beside the .sankotv, and the basename
@@ -45,7 +71,7 @@ struct SaveData
 //
 // Loading is unaffected: names are stored RELATIVE to the manifest, so an
 // old project naming flat files still finds them exactly where it did.
-QJsonObject projectToJson(const SaveData &data, const QString &projectFilePath);
+WriteResult projectToJson(const SaveData &data, const QString &projectFilePath);
 
 // The images subfolder a given project file uses ("<basename>_assets").
 QString assetSubdirFor(const QString &projectFilePath);

@@ -21,8 +21,41 @@ QString assetSubdirFor(const QString &projectFilePath)
         + QStringLiteral("_assets");
 }
 
-QJsonObject projectToJson(const SaveData &data, const QString &projectFilePath)
+namespace {
+
+// One place where an image reaches the disk, so one place that can fail.
+// Records the FIRST failure and refuses to keep going: a save that cannot
+// write every pixel it is about to name must not become a project file.
+struct ImageWriter
 {
+    QString folder;
+    WriteResult *res = nullptr;
+
+    bool write(const QImage &img, const QString &relName)
+    {
+        if (!res->ok)
+            return false; // already failed; do not pile more writes on
+        const QString full = folder + QStringLiteral("/") + relName;
+        if (!img.save(full, "PNG")) {
+            res->ok = false;
+            res->failedFile = full;
+            res->reason = QStringLiteral(
+                "The image could not be written. The disk may be full, the "
+                "file may be open in another program, or the folder may be "
+                "read-only.");
+            return false;
+        }
+        ++res->imagesWritten;
+        return true;
+    }
+};
+
+} // namespace
+
+WriteResult projectToJson(const SaveData &data, const QString &projectFilePath)
+{
+    WriteResult res;
+    res.ok = true; // cleared by the first failure below
     // Pixels live in a subfolder of their own, so two projects saved into
     // one directory can never write the same files. Panels and layers are
     // named by POSITION (panel_s0_p0_layer0.png), carrying nothing that
@@ -34,12 +67,28 @@ QJsonObject projectToJson(const SaveData &data, const QString &projectFilePath)
     // where it always did.
     const QString folder = QFileInfo(projectFilePath).absolutePath();
     const QString assets = assetSubdirFor(projectFilePath);
-    QDir().mkpath(folder + QStringLiteral("/") + assets);
+    const QString assetsPath = folder + QStringLiteral("/") + assets;
+    // CHECKED, and first: if the folder cannot be created then every image
+    // below fails too, and an unchecked mkpath followed by forty unchecked
+    // saves is exactly how a manifest comes to name files that were never
+    // written. mkpath succeeds when the directory already exists; it fails
+    // when a FILE of that name is in the way, when the parent is read-only,
+    // or when the path is too long for the filesystem.
+    if (!QDir().mkpath(assetsPath)) {
+        res.ok = false;
+        res.failedFile = assetsPath;
+        res.reason = QStringLiteral(
+            "The folder for this project's images could not be created. A "
+            "file of the same name may be in the way, the location may be "
+            "read-only, or the path may be too long.");
+        return res;
+    }
     // Every stored name gets this prefix; every write goes through it.
     const QString rel = assets + QStringLiteral("/");
+    ImageWriter writer{folder, &res};
 
     QJsonArray scenesArray;
-    for (int i = 0; i < data.scenes.size(); ++i) {
+    for (int i = 0; i < data.scenes.size() && res.ok; ++i) {
         Scene *scene = data.scenes.at(i);
 
         QJsonObject sceneObj;
@@ -50,7 +99,7 @@ QJsonObject projectToJson(const SaveData &data, const QString &projectFilePath)
         sceneObj[QStringLiteral("action")] = scene->action;
 
         QJsonArray panelsArray;
-        for (int j = 0; j < scene->panels.size(); ++j) {
+        for (int j = 0; j < scene->panels.size() && res.ok; ++j) {
             Panel *panel = scene->panels.at(j);
 
             // Flattened composite — kept for forward-compat (older builds and any
@@ -58,11 +107,12 @@ QJsonObject projectToJson(const SaveData &data, const QString &projectFilePath)
             // flattenedPixmap() is panel-sized, so this PNG matches the layers.
             const QString pngName =
                 rel + QStringLiteral("panel_s%1_p%2.png").arg(i).arg(j);
-            panel->flattenedPixmap().save(folder + QStringLiteral("/") + pngName, "PNG");
+            if (!writer.write(panel->flattenedPixmap().toImage(), pngName))
+                break;
 
             // Layer stack: one PNG per layer + a JSON descriptor array.
             QJsonArray layersArray;
-            for (int k = 0; k < panel->layers.size(); ++k) {
+            for (int k = 0; k < panel->layers.size() && res.ok; ++k) {
                 const Layer &layer = panel->layers.at(k);
 
                 QJsonObject layerObj;
@@ -84,7 +134,8 @@ QJsonObject projectToJson(const SaveData &data, const QString &projectFilePath)
                     const QString layerPng =
                         rel + QStringLiteral("panel_s%1_p%2_layer%3.png")
                                   .arg(i).arg(j).arg(k);
-                    layer.image.save(folder + QStringLiteral("/") + layerPng, "PNG");
+                    if (!writer.write(layer.image, layerPng))
+                        break;
                     layerObj[QStringLiteral("imageFile")] = layerPng;
                 }
                 layersArray.append(layerObj);
@@ -124,6 +175,9 @@ QJsonObject projectToJson(const SaveData &data, const QString &projectFilePath)
         scenesArray.append(sceneObj);
     }
 
+    if (!res.ok)
+        return res; // no manifest is built from a half-written image set
+
     // Consistency board entries + their thumbnail PNGs.
     QJsonArray consistencyArray;
     for (const ConsistencyEntry &entry : data.consistency) {
@@ -145,7 +199,8 @@ QJsonObject projectToJson(const SaveData &data, const QString &projectFilePath)
                              QStringLiteral("_"));
             thumbFile = rel + QStringLiteral("consistency_%1_%2.png")
                                   .arg(safeName, entry.id);
-            entry.thumbnail.save(folder + QStringLiteral("/") + thumbFile, "PNG");
+            if (!writer.write(entry.thumbnail.toImage(), thumbFile))
+                return res;
         }
         entryObj[QStringLiteral("thumbnailFile")] = thumbFile;
         consistencyArray.append(entryObj);
@@ -164,7 +219,11 @@ QJsonObject projectToJson(const SaveData &data, const QString &projectFilePath)
     root[QStringLiteral("consistencyBoard")] = consistencyArray;
     root[QStringLiteral("audioPath")] = data.audioPath;
     root[QStringLiteral("perspective")] = data.perspective;
-    return root;
+
+    // Reached only with every image on disk: res.ok is still true, so the
+    // caller is clear to write the manifest.
+    res.root = root;
+    return res;
 }
 
 LoadedProject projectFromJson(const QJsonObject &root, const QString &folder)

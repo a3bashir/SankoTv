@@ -218,7 +218,10 @@ QString writeProject(const QString &root, const QString &name, const QSize &size
     // The PROJECT FILE PATH, not its folder: projectToJson derives the
     // "<basename>_assets" subfolder from it, which is what keeps two
     // projects in one directory from writing the same image files.
-    const QJsonObject root_ = ProjectIO::projectToJson(data, path);
+    const ProjectIO::WriteResult w_ = ProjectIO::projectToJson(data, path);
+    if (!w_.ok)
+        check(QStringLiteral("fixture images written"), false, w_.reason);
+    const QJsonObject root_ = w_.root;
     QFile f(path);
     if (f.open(QIODevice::WriteOnly))
         f.write(QJsonDocument(root_).toJson(QJsonDocument::Indented));
@@ -845,6 +848,247 @@ void runSaveAsIndependencePass(const QString &scratch)
     pump(300);
 }
 
+
+// ---- (i) a save that CANNOT fully happen must not look like one ----------
+// Every write in the save used to be unchecked: QDir::mkpath, every
+// QImage::save, and QFile::write's byte count. A save that could not write
+// its pixels still produced a complete manifest NAMING them, returned true,
+// and called setClean() - so the title's [*] cleared and the artist could
+// close the app on work that never reached disk. The loader's deliberate
+// null-fill (a missing image becomes a transparent layer at the PANEL's
+// size, so a genuinely damaged old project still opens) then made the
+// result look entirely healthy: right dimensions, blank art, no complaint.
+//
+// Two of the three assertions below are ABSENCE assertions - "the manifest
+// did not change" - and an absence assertion is worthless without a control
+// proving the same comparison can see a change. That control runs first.
+void runSaveFailurePass(const QString &scratch)
+{
+    out() << "--- (i) a save that cannot finish must fail loudly ---" << Qt::endl;
+    const QString dir = scratch + QStringLiteral("/savefail");
+    QDir(dir).removeRecursively();
+    QDir().mkpath(dir);
+
+    MainWindow window;
+    window.resize(1300, 850);
+    window.show();
+    pump(800);
+
+    // A save that FAILS warns, and that warning is a modal this run cannot
+    // click. Every failing save below is wrapped in this dismisser.
+    QTimer dismisser;
+    dismisser.setInterval(120);
+    QObject::connect(&dismisser, &QTimer::timeout, [] {
+        if (QWidget *modal = QApplication::activeModalWidget())
+            modal->close();
+    });
+
+    const QString fixture = writeProject(scratch + QStringLiteral("/savefail_src"),
+                                         QStringLiteral("Source"),
+                                         QSize(960, 540), 24, 1, 2);
+    const QString proj = dir + QStringLiteral("/Work.sankotv");
+    check(QStringLiteral("(i) fixture opens"), window.loadProjectForTest(fixture));
+    pump(400);
+    check(QStringLiteral("(i) first save succeeds"),
+          window.saveProjectForTest(proj));
+    pump(300);
+
+    auto manifest = [&proj] {
+        QFile f(proj);
+        if (!f.open(QIODevice::ReadOnly))
+            return QByteArray();
+        return QCryptographicHash::hash(f.readAll(), QCryptographicHash::Sha256);
+    };
+    // The frame rate is stored IN the manifest, which the pixels are not.
+    // That matters more than it looks - see editVisibly below.
+    auto manifestFps = [&proj]() -> int {
+        QFile f(proj);
+        if (!f.open(QIODevice::ReadOnly))
+            return -1;
+        return QJsonDocument::fromJson(f.readAll())
+            .object()
+            .value(QStringLiteral("fps"))
+            .toInt(-1);
+    };
+    auto paint = [&window] {
+        auto *canvas = window.findChild<DrawingCanvas *>();
+        if (!canvas)
+            return;
+        const QTransform t = canvas->viewTransformForTest();
+        sendMouse(canvas, QEvent::MouseButtonPress, t.map(QPointF(140, 120)),
+                  Qt::LeftButton);
+        for (int i = 1; i <= 8; ++i)
+            sendMouse(canvas, QEvent::MouseMove,
+                      t.map(QPointF(140 + i * 22, 120 + i * 16)), Qt::LeftButton);
+        sendMouse(canvas, QEvent::MouseButtonRelease, t.map(QPointF(316, 248)),
+                  Qt::LeftButton);
+        pump(700);
+    };
+
+    // An edit the MANIFEST would record, not just the pixels.
+    //
+    // This distinction is the whole reason the control below exists. The
+    // first version of this section painted a stroke and asserted the
+    // manifest hash changed - and it does NOT: artwork lives in the PNGs,
+    // and the JSON beside them is byte-identical before and after a stroke.
+    // Which means "the manifest is unchanged" would have passed on a
+    // BROKEN build too, for a reason that has nothing to do with the fix.
+    // Changing the frame rate puts a difference where the comparison can
+    // actually see one, so "unchanged" becomes a real assertion.
+    auto editVisibly = [&window, &paint](int fps) {
+        window.applyProjectSettingsForTest(window.projectNameForTest(), fps);
+        paint(); // and real pixels at stake as well
+    };
+
+    // POSITIVE CONTROL, FIRST. Every "manifest unchanged" check below is an
+    // absence assertion; if this same comparison cannot detect a real edit
+    // then they prove nothing at all.
+    const QByteArray beforeControl = manifest();
+    check(QStringLiteral("(i) control: the fixture really has a manifest"),
+          !beforeControl.isEmpty());
+    editVisibly(30);
+    const bool controlSaved = window.saveProjectForTest(proj);
+    pump(200);
+    check(QStringLiteral("(i) CONTROL: a real edit + save DOES change the "
+                         "manifest hash"),
+          controlSaved && manifest() != beforeControl && manifestFps() == 30,
+          QStringLiteral("fps on disk = %1").arg(manifestFps()));
+
+    // --- (i.1) mkpath blocked: a FILE sits where _assets must go ---------
+    // The folder is perfectly writable, so the manifest write would happily
+    // succeed - this is the case where an unchecked mkpath produced a
+    // manifest naming forty PNGs that were never written.
+    const QString assetsDir = dir + QStringLiteral("/Work_assets");
+    QDir(assetsDir).removeRecursively();
+    {
+        QFile blocker(assetsDir); // a FILE named exactly like the folder
+        blocker.open(QIODevice::WriteOnly);
+        blocker.write("not a folder");
+        blocker.close();
+    }
+    check(QStringLiteral("(i) control: the assets path is now a FILE, not a "
+                         "folder"),
+          QFileInfo(assetsDir).isFile() && !QFileInfo(assetsDir).isDir());
+
+    editVisibly(60); // work to lose, AND a change the manifest would record
+    check(QStringLiteral("(i) control: the project is dirty before the failing "
+                         "save"),
+          window.isDirty());
+    const QByteArray beforeBlocked = manifest();
+
+    dismisser.start();
+    const bool okBlocked = window.saveProjectForTest(proj);
+    dismisser.stop();
+    pump(200);
+
+    check(QStringLiteral("(i.1) mkpath blocked: the save REPORTS failure"),
+          !okBlocked);
+    check(QStringLiteral("(i.1) ...the manifest on disk is UNCHANGED"),
+          manifest() == beforeBlocked);
+    check(QStringLiteral("(i.1) ...still recording the LAST SAVED frame rate, "
+                         "not the unsaved one"),
+          manifestFps() == 30,
+          QStringLiteral("fps on disk = %1, in memory = 60").arg(manifestFps()));
+    check(QStringLiteral("(i.1) ...and the project is STILL DIRTY"),
+          window.isDirty(),
+          window.isDirty() ? QString()
+                           : QStringLiteral("clean - the artist could close "
+                                            "on unsaved work"));
+
+    QFile::remove(assetsDir); // let the next case have its folder back
+
+    // --- (i.2) one image of many cannot be written -----------------------
+    // A directory standing where a PNG must go: QImage::save cannot write
+    // it, whatever else on the disk is fine. This is disk-full-at-file-17
+    // and antivirus-holds-one-file, without needing either.
+    check(QStringLiteral("(i) a good save in between restores the baseline"),
+          window.saveProjectForTest(proj));
+    pump(300);
+    const QString onePng = assetsDir + QStringLiteral("/panel_s0_p0_layer1.png");
+    QFile::remove(onePng);
+    QDir().mkpath(onePng); // a DIRECTORY where the image belongs
+    check(QStringLiteral("(i) control: one image path is now a directory"),
+          QFileInfo(onePng).isDir());
+
+    editVisibly(48);
+    check(QStringLiteral("(i) control: dirty again before the failing save"),
+          window.isDirty());
+    const QByteArray beforeOne = manifest();
+    const int fpsOnDiskBeforeOne = manifestFps();
+
+    dismisser.start();
+    const bool okOne = window.saveProjectForTest(proj);
+    dismisser.stop();
+    pump(200);
+
+    check(QStringLiteral("(i.2) one unwritable image: the save REPORTS "
+                         "failure"),
+          !okOne);
+    check(QStringLiteral("(i.2) ...the manifest on disk is UNCHANGED"),
+          manifest() == beforeOne);
+    check(QStringLiteral("(i.2) ...still recording the LAST SAVED frame rate, "
+                         "not the unsaved one"),
+          manifestFps() == fpsOnDiskBeforeOne && manifestFps() != 48,
+          QStringLiteral("fps on disk = %1, in memory = 48").arg(manifestFps()));
+    check(QStringLiteral("(i.2) ...and the project is STILL DIRTY"),
+          window.isDirty(),
+          window.isDirty() ? QString()
+                           : QStringLiteral("clean - the artist could close "
+                                            "on unsaved work"));
+
+    // --- (i.3) the manifest itself cannot be written ---------------------
+    // A directory where the .sankotv goes. The images all write fine, so
+    // this is specifically the manifest leg: it must not clear the flag
+    // either, and QSaveFile must leave nothing half-written behind.
+    QDir(onePng).removeRecursively();
+    check(QStringLiteral("(i) a good save in between restores the baseline"),
+          window.saveProjectForTest(proj));
+    pump(300);
+
+    const QString blockedProj = dir + QStringLiteral("/Blocked.sankotv");
+    QDir().mkpath(blockedProj);
+    paint();
+    dismisser.start();
+    const bool okManifest = window.saveProjectForTest(blockedProj);
+    dismisser.stop();
+    pump(200);
+
+    check(QStringLiteral("(i.3) unwritable manifest: the save REPORTS "
+                         "failure"),
+          !okManifest);
+    check(QStringLiteral("(i.3) ...and the project is STILL DIRTY"),
+          window.isDirty());
+    check(QStringLiteral("(i.3) ...and QSaveFile left no temp file behind"),
+          QDir(dir).entryList({QStringLiteral("*.sankotv.*")},
+                              QDir::Files).isEmpty(),
+          QDir(dir).entryList({QStringLiteral("*.sankotv.*")},
+                              QDir::Files).join(QStringLiteral(", ")));
+
+    // --- (i.4) a failed Save As must not rename the open project ---------
+    const QString nameBefore = window.projectNameForTest();
+    const QString pathBefore = window.projectPathForTest();
+    check(QStringLiteral("(i) control: the project has a name and a path"),
+          !nameBefore.isEmpty() && !pathBefore.isEmpty());
+    dismisser.start();
+    window.saveProjectForTest(blockedProj); // still a directory
+    dismisser.stop();
+    pump(200);
+    check(QStringLiteral("(i.4) a failed save leaves the project PATH alone"),
+          window.projectPathForTest() == pathBefore);
+
+    // --- (i.5) and after all that, a good save still works ---------------
+    // Without this the whole section could pass on a save that is simply
+    // broken for every input.
+    check(QStringLiteral("(i.5) a normal save still succeeds afterwards"),
+          window.saveProjectForTest(proj));
+    check(QStringLiteral("(i.5) ...and THAT one does clear the dirty flag"),
+          !window.isDirty());
+
+    window.markCleanForTest();
+    window.close();
+    pump(300);
+}
+
 int main(int argc, char **argv)
 {
 #ifdef Q_OS_WIN
@@ -980,6 +1224,7 @@ int main(int argc, char **argv)
     // nothing to do with the view.
     runViewResetPass(a, c);
     runSaveAsIndependencePass(scratch);
+    runSaveFailurePass(scratch);
 
     // Nothing may have escaped the scratch root.
     const bool removed = QDir(scratch).removeRecursively();

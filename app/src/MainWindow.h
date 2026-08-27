@@ -147,6 +147,36 @@ private:
     ProjectResize::Outcome applyCanvasResizeInternal(const QSize &newSize);
     void applyProjectSettings(const QString &projectName, int fps);
     bool saveToPath(const QString &path);
+
+    // THE DIRTY FLAG IS WHAT STANDS BETWEEN THE ARTIST AND CLOSING THE APP
+    // ON WORK THAT NEVER REACHED DISK, so "never clear it for a save that
+    // did not fully happen" must not be a rule a future edit can forget.
+    //
+    // SaveCompleted is a token with a PRIVATE constructor whose only friend
+    // is saveToPath. markSavedTo() — which adopts the path, records the
+    // recent entry and calls setClean() — cannot be called without one, and
+    // the single place that can make one is the tail of saveToPath, after
+    // every image write and the manifest commit have been checked. Anywhere
+    // else in this class, clearing the dirty flag after a partial save is
+    // not a mistake to be caught in review: there is nothing to pass, and
+    // the code does not compile.
+    class SaveCompleted
+    {
+        // USER-PROVIDED on purpose, not "= default". Under C++17 a class
+        // whose only constructor is defaulted-in-class is still an
+        // AGGREGATE, and SaveCompleted{} would then be aggregate
+        // initialisation — which does not check constructor access, so the
+        // token could be forged anywhere and the guarantee would be
+        // decorative. A negative compile test caught exactly that: the
+        // first version of this class compiled a deliberate forgery in
+        // onSaveProject without complaint. Writing the body makes the
+        // constructor user-provided, the class a non-aggregate, and the
+        // access check real.
+        SaveCompleted() {}
+        friend bool MainWindow::saveToPath(const QString &path);
+    };
+    void markSavedTo(const QString &path, SaveCompleted);
+
     bool loadFromPath(const QString &path);
 
     QStackedWidget *m_stack = nullptr;
