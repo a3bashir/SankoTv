@@ -1646,3 +1646,82 @@ before only because the deletion sometimes left the save succeeding. The
 check now dismisses whatever modal appears while the save is attempted, so
 it exercises the real failure path (warning included) instead of hanging
 on it.
+
+## Save As shared one folder's pixels between projects (2026-08-24)
+
+REPORTED as artwork appearing in the wrong project: open SB_001, Save As to
+SB_002, paint in SB_002, and SB_001 shows the new paint. Real pixels, not a
+stale view.
+
+CAUSE, confirmed: panels and layers are written as image files named by
+POSITION — panel_s0_p0_layer0.png, and pixmapFile panel_s0_p0.png in legacy
+projects — with nothing in the name identifying the project, into whatever
+folder holds the .sankotv. Two projects in one folder therefore write the
+SAME FILES. Save As itself destroys nothing (both hold identical pixels at
+that instant, which is why it hid); the next save of EITHER overwrites the
+other's artwork permanently. Different folders are wholly independent —
+proven by a probe that measured 0 of 15 files touched across folders and 2
+of 15 rewritten within one.
+
+MEASURED DAMAGE on this machine: 16 projects in 4 shared folders, of which
+only 4 were intact — Test_SB_006, Test_SB_011, manion, project_006. The
+pattern is exact: in each shared folder only the LAST-SAVED project
+survived, because the last writer's pixels are the ones on disk.
+
+A COUNTING MISTAKE WORTH REMEMBERING: the first damage count said nine
+intact. It was wrong because it looked only at layers[].imageFile and
+missed the LEGACY panel.pixmapFile spelling, so five legacy projects that
+reference their art that way were scored as referencing nothing at all.
+Any tool that walks project references must handle BOTH spellings; one that
+does not will silently under-report, or "repair" a project into having no
+pixels.
+
+SHIPPED SO FAR: a Save As guard warning when the target folder already
+holds another project (commit "Warn before Save As..."), and
+tools/repair_shared_projects.py, which gives each project its own folder —
+COPYING referenced images (never moving: several manifests name the same
+file and the attribution question has no answer), verifying each copy by
+SHA-256, moving the .sankotv only after every copy verifies, and deleting
+nothing. All 16 are now in folders of their own, every referenced file
+resolves, zero verification failures. The 12 damaged ones are FROZEN, not
+restored; that art was gone before the repair.
+
+## Tooling: the --root trap (2026-08-24)
+
+Added to the vacuous-test/tooling catalogue because it is the same class as
+the seam-driver bugs: THE TOOL DID SOMETHING OTHER THAN WHAT ITS OPERATOR
+INTENDED, AND WAS BELIEVED BECAUSE THE OUTPUT LOOKED RIGHT.
+
+repair_shared_projects.py took --root as an ADDITIONAL search root. Passing
+--root <scratch replica> --apply to rehearse on a throwaway copy therefore
+swept the REAL project folders as well, and performed the repair the user
+had explicitly reserved for themselves ("I will run --apply myself"). The
+outcome happened to match the reviewed plan and every copy verified, but
+consent was not given, and a correct operation performed without it is
+still a boundary crossed.
+
+Three fixes, all in the tool: --root now REPLACES the defaults (the only
+reading that cannot surprise); --apply additionally requires --yes, so a
+stray argument cannot move files; and the summary counter, which reported
+"0 projects moved" while manifests plainly moved, is fixed — a summary that
+cannot be trusted is worse than none, because it is read instead of the
+detail.
+
+AND THE LOG OF THAT PASS WAS THEN DESTROYED. The log is written to the
+run's WORKING DIRECTORY by default; that run's cwd was the scratch replica
+folder, and clearing away the replicas afterwards deleted the only record
+of what the real pass did to real files. So the per-file SHA-256 record of
+the one repair that mattered no longer exists. The end state was
+independently re-verified afterwards — 22 projects, every referenced file
+resolving, no folder holding more than one project — but that is a
+statement about NOW, not a record of what moved where.
+
+Two lessons, both cheap: default the log somewhere that is not the cwd (or
+refuse to write it into a directory the same command is about to remove),
+and never let cleanup run over a directory whose contents have not been
+accounted for.
+
+RULE, generally: when a task says the operator will run the destructive
+step, no amount of confidence that the step is correct transfers that
+permission. Rehearse on data the tool CANNOT confuse for the real thing, or
+do not rehearse.
