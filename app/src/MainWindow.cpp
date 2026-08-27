@@ -3,6 +3,24 @@
 
 #ifdef SANKOTV_DEV_RECORDER
 #include "devrecorder/DevRecorder.h" // TEMP dev tool; see that header to remove
+// THE GENERATED GIT-HEAD HEADER MUST BE INCLUDED IN THIS FILE. The
+// SANKOTV_GIT_HEAD macro is consumed by an #ifdef in THIS translation
+// unit (the HostInfo built in the constructor below); for months it was
+// included only in DevRecorder.cpp — where nothing uses it — so the
+// #ifdef here silently compiled the empty-string branch and every
+// recording's system.txt carried "git:" with no value. That replaced the
+// configure-time hash that LIED (c7b1b37c5's motivation) with a hash
+// that WASN'T THERE, and the old lie is exactly why nobody noticed. The
+// #error below turns the third silent failure into a build failure
+// (proven: removing the include fails the build with C1189).
+#ifdef SANKOTV_GIT_HEAD_GENERATED
+#include "SankoGitHead.h"
+#endif
+#ifndef SANKOTV_GIT_HEAD
+#error "SankoGitHead.h did not reach MainWindow.cpp - system.txt would \
+silently lose its git provenance again. Fix the include, do not delete \
+this fence."
+#endif
 #include "DrawingCanvas.h"
 #include "FloatingToolWindow.h"
 #include <QApplication>

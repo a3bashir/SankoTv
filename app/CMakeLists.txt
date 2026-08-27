@@ -314,6 +314,21 @@ if(SANKOTV_DEV_RECORDER)
         src/devrecorder/DevRecorder.h)
     target_include_directories(SankoDevRecorderTest PRIVATE src)
     target_link_libraries(SankoDevRecorderTest PRIVATE Qt6::Widgets)
+
+    # The lifecycle family gets the recorder too, so its section (k) can
+    # assert PROVENANCE through the REAL wiring: MainWindow's HostInfo ->
+    # Recorder -> system.txt, with a non-empty git hash. The hash has gone
+    # silently wrong twice (configure-time staleness, then a generated
+    # header included where nothing used it); the gate check plus the
+    # #error fence in MainWindow.cpp make a third silence impossible.
+    add_dependencies(SankoProjectLifecycle SankoGitHead)
+    target_include_directories(SankoProjectLifecycle PRIVATE
+        ${CMAKE_CURRENT_BINARY_DIR})
+    target_sources(SankoProjectLifecycle PRIVATE
+        src/devrecorder/DevRecorder.cpp
+        src/devrecorder/DevRecorder.h)
+    target_compile_definitions(SankoProjectLifecycle PRIVATE
+        SANKOTV_DEV_RECORDER SANKOTV_GIT_HEAD_GENERATED)
 endif()
 # --- end Developer recorder (TEMP) -------------------------------------------
 

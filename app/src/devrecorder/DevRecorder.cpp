@@ -429,7 +429,14 @@ public:
 
     QAction *toggle = nullptr;
     QAction *mark = nullptr;
-    RecIndicator *indicator = nullptr;
+    // QPointer, NOT a raw pointer: QMenuBar::setCornerWidget takes
+    // OWNERSHIP, so the indicator dies with the menu bar that holds it. In
+    // the app there is one MainWindow per process and this never mattered;
+    // the lifecycle gate constructs MainWindow repeatedly, and the second
+    // window's setCornerWidget(indicatorWidget()) handed the menu bar a
+    // DANGLING widget (crash in QMenuBar::setCornerWidget). The QPointer
+    // nulls on deletion and indicatorWidget() recreates.
+    QPointer<RecIndicator> indicator;
 
     int intervalMs = 500;
     QString format = QStringLiteral("jpg");

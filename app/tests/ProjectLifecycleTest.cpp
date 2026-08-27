@@ -45,6 +45,7 @@
 #include "NewProjectDialog.h"
 #include "ProjectIO.h"
 #include "StoryboardModel.h"
+#include "devrecorder/DevRecorder.h"
 
 #include <QApplication>
 #include <QCryptographicHash>
@@ -849,6 +850,73 @@ void runSaveAsIndependencePass(const QString &scratch)
 }
 
 
+// ---- (k) a recording carries its provenance -------------------------------
+// The git hash in system.txt has gone wrong SILENTLY twice: first it was
+// captured at configure time and named a commit four builds behind the
+// binary (a hash that LIED), then the fix generated it at build time but
+// included the header in DevRecorder.cpp — where nothing uses it — while
+// the #ifdef consuming it sits in MainWindow.cpp, which never saw the
+// macro and compiled the empty branch (a hash that WASN'T THERE). The old
+// lie is why the new silence went unnoticed. This drives the REAL wiring:
+// MainWindow's HostInfo -> Recorder -> system.txt, and fails loudly.
+void runProvenancePass(const QString &scratch)
+{
+    out() << "--- (k) system.txt carries a real git hash ---" << Qt::endl;
+    MainWindow window; // constructs + initializes the recorder singleton
+    window.resize(1100, 700);
+    window.show();
+    pump(600);
+    auto *rec = devrec::Recorder::instance();
+    rec->startRecording();
+    pump(700); // one perf tick; system.txt is written at session start
+    rec->stopRecording();
+    pump(300);
+
+    // SANKOTV_DEVREC_DIR (set in main BEFORE the first MainWindow, because
+    // the singleton reads it once in its constructor) points the output at
+    // the scratch root - the settings-based redirect is NOT trusted here,
+    // because the recorder reads QSettings("SankoTV","SankoTV"), the
+    // two-argument form that bypasses the test redirection entirely (the
+    // very trap that let a measurement probe write into the user's real
+    // recordings folder on 2026-08-27).
+    const QString root = scratch + QStringLiteral("/devrec");
+    const QStringList sessions = QDir(root).entryList(
+        QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name);
+    check(QStringLiteral("(k) the recording landed under the SCRATCH root, "
+                         "not Documents"),
+          !sessions.isEmpty(),
+          QStringLiteral("%1 session(s) under %2").arg(sessions.size())
+              .arg(root));
+    QString gitLine, osLine;
+    if (!sessions.isEmpty()) {
+        QFile f(root + QStringLiteral("/") + sessions.last()
+                + QStringLiteral("/system.txt"));
+        check(QStringLiteral("(k) system.txt exists"),
+              f.open(QIODevice::ReadOnly));
+        while (!f.atEnd()) {
+            const QString line = QString::fromUtf8(f.readLine()).trimmed();
+            if (line.startsWith(QStringLiteral("git: ")))
+                gitLine = line.mid(5).trimmed();
+            if (line.startsWith(QStringLiteral("os: ")))
+                osLine = line.mid(4).trimmed();
+        }
+    }
+    // CONTROL: the parser sees THIS file's values (an empty git line must
+    // mean the hash is missing, not that the read went wrong).
+    check(QStringLiteral("(k) control: the parser reads this system.txt "
+                         "(os line non-empty)"),
+          !osLine.isEmpty(), osLine);
+    check(QStringLiteral("(k) the git hash is PRESENT - not empty, not "
+                         "\"unknown\""),
+          !gitLine.isEmpty() && gitLine != QStringLiteral("unknown"),
+          gitLine.isEmpty() ? QStringLiteral("EMPTY - provenance lost again")
+                            : gitLine);
+
+    window.markCleanForTest();
+    window.close();
+    pump(300);
+}
+
 // ---- (j) the Size CTL bar shows what the engine holds ---------------------
 // PRE-EXISTING display lie, fixed with the 5000 cap: the bar's mirror
 // clamped to 200 while the studio's slider could already set 2048, so the
@@ -1188,6 +1256,12 @@ int main(int argc, char **argv)
 
     const QString scratch =
         QDir::tempPath() + QStringLiteral("/sanko_lifecycle_lock");
+    // BEFORE the first MainWindow: the Recorder singleton reads its output
+    // root ONCE in its constructor, and its settings-based override uses
+    // the two-argument QSettings form that ignores the scratch redirect.
+    // The env var is the only redirect it honours unconditionally.
+    qputenv("SANKOTV_DEVREC_DIR",
+            (scratch + QStringLiteral("/devrec")).toUtf8());
     QDir(scratch).removeRecursively();
     QDir().mkpath(scratch + QStringLiteral("/settings"));
     QSettings::setDefaultFormat(QSettings::IniFormat);
@@ -1312,6 +1386,7 @@ int main(int argc, char **argv)
     runSaveAsIndependencePass(scratch);
     runSaveFailurePass(scratch);
     runSizeCtlAgreementPass(scratch);
+    runProvenancePass(scratch);
 
     // Nothing may have escaped the scratch root.
     const bool removed = QDir(scratch).removeRecursively();

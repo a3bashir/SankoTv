@@ -2075,3 +2075,99 @@ The preview SHA did not move (swatches clamp preview brushes to 3..16 px
 — structurally immune to the cap), and the paint locks did not move (the
 preview change cannot reach published pixels; the cap change alters no
 existing preset). Both verified by the full gate, not assumed.
+
+## Field validation of the 5000 pass, and what analysing it turned up
+## (2026-08-27, recording 20260827-205606)
+
+THE PASS HELD IN THE FIELD: 81 s of real tablet work on a 4K project,
+135 strokes at ~178 pen events/s, brush sizes swept 18..3566 on the log
+slider, 32 strokes above 2000 px. Worst GUI gap during ANY stroke
+second: 54 ms (500-2000 px), 40 ms above 2000 px, medians 33-35 ms. The
+above-2000 range was BLIND on the previous build. Zero QPainter
+warnings, zero drops, memory flat. The two worst whole-session gaps
+(~105 ms) were Color Panel interaction while hovering, not painting —
+on the shelf, not investigated.
+
+THE PROBE CONTAMINATED THE USER'S RECORDINGS FOLDER (self-report).
+The 2026-08-27 measurement probe redirected the Dev Recorder's output
+via QSettings — and the redirect SILENTLY FAILED, because the probe
+wrote the key under the app-level org name ("Sanko") while the recorder
+reads QSettings("SankoTV","SankoTV"). Two sessions of synthetic probe
+strokes landed in the user's real Documents/SankoTV-DevRecordings
+(20260827-185513 and -190131) and were nearly analysed as user
+sessions: their QPainter warnings cost a full attribution round before
+the stroke shape (200,150 step 8,5 — the probe's own driveCanvas) gave
+them away. The user deletes the two folders themselves. Rules already
+on the books that this reaffirms: verify a redirect TOOK EFFECT before
+trusting it, and check provenance of a recording before analysing it.
+
+THE UNDERLYING TRAP IS BIGGER THAN THE INCIDENT — the two-argument
+QSettings("SankoTV","SankoTV") form ignores BOTH setDefaultFormat and
+the application org name, so it bypasses every test family's scratch
+redirection (setDefaultFormat(IniFormat) + setPath only govern the
+DEFAULT-constructed QSettings). Census (2026-08-27): 30 sites across 10
+files — ColorPanel 2, DrawingCanvas 3, FloatingToolWindow 5,
+MainWindow 2, NewProjectDialog 1 (has its own override seam),
+StoryboardPage 8, BrushLibraryModel 1, BrushLibraryPanel 3,
+BrushSettingsStudio 4, DevRecorder 1 (has an env-var override) — 11 of
+them WRITERS. No test currently writes through them (writes hang off
+slider adjust-end and teardown paths tests do not drive), so nothing
+has leaked YET — but the scratch rule is supposed to hold without
+anyone checking. Scoped, not fixed; see the pending decision.
+
+ALSO FOUND: the app is already split-brained across org names —
+QSettings lives under org "SankoTV" (registry Software\SankoTV\SankoTV)
+while QStandardPaths data (the brush library shelf, the preview cache)
+lives under org "Sanko" (AppData/Roaming/Sanko/...). Any fix that
+renames the app org would MOVE the brush shelf and require migrating
+the user's custom brushes; the recommended fix (a single overridable
+sankoSettings() helper) avoids that entirely. Registry note: the real
+store contains a leftover "seamProbe" value from an old seam.
+
+## system.txt's git hash: empty since c7b1b37c5 — fixed, fenced, gated
+## (2026-08-27)
+
+THE HASH HAS GONE WRONG SILENTLY TWICE. First it was captured at
+CONFIGURE time and named a commit four builds behind the binary — a
+hash that LIED (found by recording 20260824-200632, fixed in
+c7b1b37c5). The fix generated the header at BUILD time but included it
+in DevRecorder.cpp, where NOTHING uses it, while the #ifdef
+SANKOTV_GIT_HEAD that feeds HostInfo sits in MainWindow.cpp — which
+never saw the macro and silently compiled the empty-string branch. So
+the fix replaced a hash that lied with a hash that WASN'T THERE, and
+every recording since c7b1b37c5 — including the one that validated the
+5000 pass — has "git:" with no value. The old lie is exactly why the
+new silence went unnoticed: nobody re-checked a fixed thing.
+
+THREE LAYERS NOW, so a third silence is impossible:
+1. The include moved into MainWindow.cpp (the consuming TU).
+2. An #error fence right after it: if the generated header ever stops
+   reaching MainWindow.cpp, the BUILD fails (proven by negative compile
+   test — removing the include fails with C1189).
+3. Lifecycle section (k): drives the REAL wiring (MainWindow HostInfo ->
+   Recorder -> system.txt) with output redirected via SANKOTV_DEVREC_DIR
+   — the env var, NOT the settings key, precisely because of the
+   org-name trap above — and asserts the recording landed under scratch
+   and the git line is non-empty and not "unknown", with a parser
+   control on the same file. The lifecycle target now compiles the
+   recorder (SANKOTV_DEV_RECORDER + the generated header).
+
+FOUND BY THE GATE WHILE BUILDING IT: the Recorder singleton's indicator
+widget was a RAW pointer, and QMenuBar::setCornerWidget takes
+ownership — so the second MainWindow a process constructs handed its
+menu bar a widget the first window's death had deleted (crash in
+QMenuBar::setCornerWidget, immediately caught by the lifecycle family
+the moment the recorder was compiled into it). One MainWindow per
+process in the app, so production never saw it. Now a QPointer;
+indicatorWidget() recreates after deletion.
+
+AND A PROCESS NOTE, recorded because it is the second time this shape
+appeared: the negative compile test for the #error fence was restored
+with `git checkout -- MainWindow.cpp`, which also reverted the
+UNCOMMITTED fix itself. Caught immediately and re-applied. Temporary
+edits stacked on uncommitted work must be undone by reversing the edit,
+never by checkout.
+
+PENDING DECISION (user): whether to fix the two-argument QSettings form
+app-wide (the scoped recommendation: one sankoSettings() choke point
+with a test override, zero data migration) or leave it recorded.
