@@ -181,7 +181,7 @@ void Brush::setDualMasterOpacity(qreal opacity)
 
 void Brush::setSize(int pixels)
 {
-    pixels = std::clamp(pixels, 1, 2048);
+    pixels = std::clamp(pixels, 1, 5000);
     // Size is part of the cache key. Retain existing buckets so moving the
     // UI slider never frees up to 64 MiB of QImages on the UI thread.
     m_size = pixels;
@@ -448,12 +448,12 @@ void Brush::invalidateShape()
 
 const QImage &Brush::shape(qreal effectiveSize, qreal effectiveHardness) const
 {
-    const int requestedSize = std::clamp(qRound(effectiveSize), 1, 2048);
+    const int requestedSize = std::clamp(qRound(effectiveSize), 1, 5000);
     // Sub-pixel differences are invisible on large tips but extremely costly.
     // Preserve 1 px buckets through 256 px, then gradually widen them.
     const int sizeStep = requestedSize <= 256 ? 1 : requestedSize <= 1024 ? 4 : 8;
     const int sizeBucket = std::clamp(qRound(qreal(requestedSize) / sizeStep) * sizeStep,
-                                      1, 2048);
+                                      1, 5000);
     // Five-percent hardness buckets cap procedural variants at 21 per size.
     const int hardnessBucket = m_customShape.isNull()
         ? std::clamp(qRound(std::clamp(effectiveHardness, 0.0, 1.0) * 20.0), 0, 20)

@@ -1070,7 +1070,7 @@ void DrawingCanvas::setBrushSize(int size)
 
 void DrawingCanvas::setBrushToolSize(int px)
 {
-    m_brushToolSize = qBound(1, px, 200);
+    m_brushToolSize = qBound(1, px, 5000);
     m_paintEngine.brush().setSize(m_brushToolSize);
     emit paintBrushEdited();
 }
@@ -3638,25 +3638,50 @@ void DrawingCanvas::endBrushStroke(const QString &undoText)
         m_pendingPreviewRect = QRect();
         if (const TiledImage *preview = m_paintEngine.previewTiles();
             preview && preview->allocatedTileCount() > 0) {
-            QRect bounds;
+            // A decimated preview (k > 1) holds tiles in PREVIEW space;
+            // the frozen bridge image must be canvas-space like everything
+            // paintEvent draws, so compose small, then upscale.
+            const int k = m_paintEngine.previewScale();
+            QRect boundsP;
             for (auto it = preview->allocatedTiles().cbegin();
                  it != preview->allocatedTiles().cend(); ++it)
-                bounds = bounds.united(TiledImage::tileLayerRect(it.key()));
+                boundsP = boundsP.united(TiledImage::tileLayerRect(it.key()));
+            QRect bounds = k == 1
+                ? boundsP
+                : QRect(boundsP.x() * k, boundsP.y() * k,
+                        boundsP.width() * k, boundsP.height() * k);
             bounds = bounds.intersected(QRect(QPoint(), canvasSize()));
             if (!bounds.isEmpty()) {
+                QImage small(boundsP.size(),
+                             QImage::Format_ARGB32_Premultiplied);
+                small.fill(Qt::transparent);
+                {
+                    QPainter fp(&small);
+                    for (auto it = preview->allocatedTiles().cbegin();
+                         it != preview->allocatedTiles().cend(); ++it) {
+                        const QRect tileRect =
+                            TiledImage::tileLayerRect(it.key());
+                        const QRect isect = tileRect.intersected(boundsP);
+                        if (isect.isEmpty())
+                            continue;
+                        fp.drawImage(isect.topLeft() - boundsP.topLeft(),
+                                     it.value(),
+                                     isect.translated(-tileRect.topLeft()));
+                    }
+                }
                 QImage frozen(bounds.size(),
                               QImage::Format_ARGB32_Premultiplied);
                 frozen.fill(Qt::transparent);
                 QPainter fp(&frozen);
-                for (auto it = preview->allocatedTiles().cbegin();
-                     it != preview->allocatedTiles().cend(); ++it) {
-                    const QRect tileRect = TiledImage::tileLayerRect(it.key());
-                    const QRect isect = tileRect.intersected(bounds);
-                    if (isect.isEmpty())
-                        continue;
-                    fp.drawImage(isect.topLeft() - bounds.topLeft(),
-                                 it.value(),
-                                 isect.translated(-tileRect.topLeft()));
+                if (k == 1) {
+                    fp.drawImage(QPoint(), small,
+                                 bounds.translated(-boundsP.topLeft()));
+                } else {
+                    fp.setRenderHint(QPainter::SmoothPixmapTransform, true);
+                    fp.drawImage(QRectF(QPointF(boundsP.topLeft()) * k
+                                            - QPointF(bounds.topLeft()),
+                                        QSizeF(boundsP.size()) * k),
+                                 small);
                 }
                 if (!m_selectionPath.isEmpty()) {
                     fp.setCompositionMode(
@@ -5294,23 +5319,52 @@ void DrawingCanvas::paintEvent(QPaintEvent *event)
                 const bool livePreview =
                     preview && preview->allocatedTileCount() > 0;
                 if (livePreview && !strokeClipC.isEmpty()) {
+                    // Brushes over 256 px rasterize their preview at 1/k
+                    // scale (see SankoPaintHostAdapter::beginStroke): the
+                    // tiles are then in PREVIEW space and are scaled back
+                    // up here. k == 1 is the exact previous path.
+                    const int k = m_paintEngine.previewScale();
+                    const QRect clipP = k == 1
+                        ? strokeClipC
+                        : QRect(strokeClipC.x() / k - 1,
+                                strokeClipC.y() / k - 1,
+                                strokeClipC.width() / k + 3,
+                                strokeClipC.height() / k + 3);
                     QImage comp;
                     for (auto it = preview->allocatedTiles().cbegin();
                          it != preview->allocatedTiles().cend(); ++it) {
                         const QRect tileRect =
                             TiledImage::tileLayerRect(it.key());
-                        const QRect isect = tileRect.intersected(strokeClipC);
+                        const QRect isect = tileRect.intersected(clipP);
                         if (isect.isEmpty())
                             continue;
                         if (comp.isNull()) {
-                            comp = QImage(strokeClipC.size(),
+                            comp = QImage(clipP.size(),
                                           QImage::Format_ARGB32_Premultiplied);
                             comp.fill(Qt::transparent);
                         }
                         QPainter cp(&comp);
-                        cp.drawImage(isect.topLeft() - strokeClipC.topLeft(),
+                        cp.drawImage(isect.topLeft() - clipP.topLeft(),
                                      it.value(),
                                      isect.translated(-tileRect.topLeft()));
+                    }
+                    if (!comp.isNull() && k > 1) {
+                        // Bilinear upscale to canvas space, then cut to the
+                        // clip so the mask and draw below see exactly what
+                        // the k == 1 path would hand them.
+                        QImage up(strokeClipC.size(),
+                                  QImage::Format_ARGB32_Premultiplied);
+                        up.fill(Qt::transparent);
+                        QPainter upPainter(&up);
+                        upPainter.setRenderHint(
+                            QPainter::SmoothPixmapTransform, true);
+                        upPainter.drawImage(
+                            QRectF(QPointF(clipP.topLeft()) * k
+                                       - QPointF(strokeClipC.topLeft()),
+                                   QSizeF(clipP.size()) * k),
+                            comp);
+                        upPainter.end();
+                        comp = up;
                     }
                     if (!comp.isNull()) {
                         if (!m_selectionPath.isEmpty()) {

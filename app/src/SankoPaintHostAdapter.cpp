@@ -145,19 +145,60 @@ void SankoPaintHostAdapter::beginStroke(const QString &key,
     m_strokeHostCacheKey = hostPixels.cacheKey();
     if (!seed)
         seed = QRandomGenerator::global()->generate64();
-    // Very large CPU preview masks are the one operation that can still block
-    // pointer delivery. The GPU commit remains identical; normal brushes keep
-    // the immediate tiled preview, while >512 px strokes publish asynchronously.
-    const bool rasterizePreview = rasterizePreviewWanted
-                                  && m_brush.size() <= 512;
+    // DECIMATED LIVE PREVIEW. The per-stamp CPU preview raster costs
+    // ~size^2 on the GUI thread (measured ~10 ms per pointer move at size
+    // 500 on a 4K canvas), and the old fix was a gate: brushes over 512 px
+    // simply had NO preview — the artist drew blind until the async publish
+    // landed. Both problems are the same problem, and one mechanism ends
+    // both: brushes over kPreviewFullResLimit rasterize their preview in a
+    // SEPARATE builder at 1/k scale (k = ceil(size/256)), and the canvas
+    // scales it back up when compositing. Cost per move is capped at a
+    // ~256 px brush's (~2.6 ms at 4K); the edge blur of the upscale is
+    // ~one preview texel = ~0.4% of the brush diameter at every size.
+    //
+    // THE PREVIEW BUILDER'S OUTPUT CANNOT REACH PUBLISHED PIXELS, and that
+    // is the entire safety case: finishStrokeWork() reads stamps, points,
+    // seed and affectedRect from m_primaryStroke ONLY — which stays at
+    // full resolution, bounds-only — and render() re-rasterizes from
+    // those. m_previewStroke is reachable solely through previewTiles(),
+    // which only the canvas paint path consumes. Its stamps are never
+    // read. (Pinned by the preview-invariance checks in the gate: same
+    // stroke with preview on and off publishes byte-identical tiles.)
+    const int kPreviewFullResLimit = 256;
+    m_previewScale = rasterizePreviewWanted
+        ? qMax(1, (m_brush.size() + kPreviewFullResLimit - 1)
+                      / kPreviewFullResLimit)
+        : 1;
+    const bool fullResPreview = rasterizePreviewWanted && m_previewScale == 1;
     m_primaryStroke = std::make_unique<StrokeBuilder>(
-        hostPixels.size(), m_brush, rasterizePreview, seed, 0);
+        hostPixels.size(), m_brush, fullResPreview, seed, 0);
     m_primaryStroke->addRawPoint(point);
+    if (rasterizePreviewWanted && m_previewScale > 1) {
+        const int k = m_previewScale;
+        ::Brush previewBrush = m_brush;
+        previewBrush.setSize(qMax(1, m_brush.size() / k));
+        // Grain pattern scale follows the decimation so textured presets
+        // preview at roughly the right grain frequency. The NOISE field has
+        // no such knob: noise-textured presets preview with noise at the
+        // wrong spatial scale and settle at publish (recorded in HANDOFF as
+        // a known in-flight divergence).
+        previewBrush.setGrainScale(qMax<qreal>(1.0, m_brush.grainScale() / k));
+        const QSize scaled((hostPixels.width() + k - 1) / k,
+                           (hostPixels.height() + k - 1) / k);
+        m_previewStroke = std::make_unique<StrokeBuilder>(
+            scaled, previewBrush, true, seed, 0);
+        StrokePoint scaledPoint = point;
+        scaledPoint.position = point.position / qreal(k);
+        m_previewStroke->addRawPoint(scaledPoint);
+    } else {
+        m_previewStroke.reset();
+    }
     if (m_brush.dualBrushEnabled()) {
+        // The secondary builder's raster is never displayed (previewTiles()
+        // returns the primary's or the decimated builder's tiles), so it
+        // runs bounds-only: it exists for its stamp list and affectedRect.
         m_secondaryStroke = std::make_unique<StrokeBuilder>(
-            hostPixels.size(), m_brush.secondaryBrush(),
-            rasterizePreview && m_brush.secondaryBrush().size() <= 512,
-            seed, 1);
+            hostPixels.size(), m_brush.secondaryBrush(), false, seed, 1);
         m_secondaryStroke->addRawPoint(point);
     } else {
         m_secondaryStroke.reset();
@@ -172,9 +213,19 @@ QRect SankoPaintHostAdapter::appendPoint(const StrokePoint &point)
     m_primaryStroke->addRawPoint(point);
     if (m_secondaryStroke)
         m_secondaryStroke->addRawPoint(point);
-    if (m_primaryStroke->previewTiles().allocatedTileCount() == 0
-        && (!m_secondaryStroke
-            || m_secondaryStroke->previewTiles().allocatedTileCount() == 0))
+    if (m_previewStroke) {
+        StrokePoint scaledPoint = point;
+        scaledPoint.position = point.position / qreal(m_previewScale);
+        m_previewStroke->addRawPoint(scaledPoint);
+    }
+    // The dirty rect is in CANVAS coordinates from the full-res builder,
+    // whichever builder rasterized the pixels.
+    const bool hasPreview = m_previewStroke
+        ? m_previewStroke->previewTiles().allocatedTileCount() > 0
+        : (m_primaryStroke->previewTiles().allocatedTileCount() > 0
+           || (m_secondaryStroke
+               && m_secondaryStroke->previewTiles().allocatedTileCount() > 0));
+    if (!hasPreview)
         return {};
     QRect after = m_primaryStroke->affectedRect();
     if (m_secondaryStroke)
@@ -184,6 +235,8 @@ QRect SankoPaintHostAdapter::appendPoint(const StrokePoint &point)
 
 const TiledImage *SankoPaintHostAdapter::previewTiles() const
 {
+    if (m_previewStroke)
+        return &m_previewStroke->previewTiles();
     return m_primaryStroke ? &m_primaryStroke->previewTiles() : nullptr;
 }
 
@@ -191,6 +244,8 @@ void SankoPaintHostAdapter::cancelStroke()
 {
     m_primaryStroke.reset();
     m_secondaryStroke.reset();
+    m_previewStroke.reset();
+    m_previewScale = 1;
     m_activeLayerKey.clear();
 }
 
@@ -227,6 +282,8 @@ SankoPaintHostAdapter::finishStrokeWork(bool preferGpu)
                                             work.affectedRect.topLeft());
     m_primaryStroke.reset();
     m_secondaryStroke.reset();
+    m_previewStroke.reset();
+    m_previewScale = 1;
     return work;
 }
 

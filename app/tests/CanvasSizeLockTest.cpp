@@ -69,6 +69,8 @@
 #include "StoryboardModel.h"
 #include "brushlib/StudioControls.h"
 
+#include <cmath>
+
 #include <QApplication>
 #include <QPushButton>
 #include <QDir>
@@ -209,6 +211,81 @@ void freeScenes(QVector<Scene *> &scenes)
 }
 
 // ---- (a)(b)(c): authority + far-edge pixels + undo, one size ---------------
+// ---- (j) the brush size RANGE, including 5000, actually paints ------------
+// The cap moved from 200 (Size CTL) / 2048 (engine) to 5000 everywhere.
+// Presence bugs, not magnitude bugs: a clamp silently reintroduced at any
+// of the eleven sites shrinks the painted footprint, so the footprint IS
+// the assertion — a 5000 px brush must reach every corner of BOTH
+// canvases from the centre (radius 2500 >= both half-diagonals), and the
+// same sampler first proves the corner empty AND that a 152 px brush does
+// NOT reach it (reach must depend on size, or the check is decorative).
+void runBrushRangePass(const QSize &S, DrawingCanvas *canvas,
+                       QUndoStack *stack)
+{
+    const int W = S.width(), H = S.height();
+    out() << QStringLiteral("--- (j) brush range at %1x%2 ---").arg(W).arg(H)
+          << Qt::endl;
+    const QPointF wc(canvas->width() / 2.0, canvas->height() / 2.0);
+    const QPointF centre(W / 2.0, H / 2.0);
+
+    stack->clear();
+    Panel *panel = makeBlankPanel(S);
+    canvas->setActivePanel(panel);
+    canvas->setTool(DrawingCanvas::Brush);
+    canvas->setColor(QColor(20, 20, 20));
+    canvas->setBrushHardness(100);
+    canvas->setBrushOpacity(100);
+    canvas->placeViewForTest(0.15, centre, wc);
+    pump(120);
+
+    const QImage &li = panel->layers.at(panel->activeLayerIndex).image;
+    auto cornersInked = [&li, W, H] {
+        int inked = 0;
+        for (const QPoint &c : {QPoint(0, 0), QPoint(W - 1, 0),
+                                QPoint(0, H - 1), QPoint(W - 1, H - 1)})
+            inked += qAlpha(li.pixel(c)) > 0 ? 1 : 0;
+        return inked;
+    };
+
+    check(QStringLiteral("(j) control: corners empty before any stroke"),
+          cornersInked() == 0);
+    canvas->setBrushToolSize(152);
+    check(QStringLiteral("(j) engine holds 152"),
+          canvas->paintBrush().size() == 152);
+    strokeAlong(canvas, centre, centre + QPointF(8, 6));
+    check(QStringLiteral("(j) CONTROL: a 152 px brush does NOT reach the "
+                         "corners"),
+          cornersInked() == 0
+              && qAlpha(li.pixel(W / 2, H / 2)) > 0,
+          QStringLiteral("%1 corner(s) inked").arg(cornersInked()));
+
+    for (const int size : {500, 2048, 5000}) {
+        panel->layers[panel->activeLayerIndex].image.fill(Qt::transparent);
+        canvas->setActivePanel(panel); // full resync after the direct fill
+        stack->clear();
+        pump(80);
+        canvas->setBrushToolSize(size);
+        check(QStringLiteral("(j) engine holds %1 (no clamp at any site)")
+                  .arg(size),
+              canvas->paintBrush().size() == size,
+              QStringLiteral("engine=%1").arg(canvas->paintBrush().size()));
+        strokeAlong(canvas, centre, centre + QPointF(8, 6));
+        const int expected =
+            size / 2.0 >= std::hypot(W / 2.0, H / 2.0) ? 4 : cornersInked();
+        check(QStringLiteral("(j) %1 px stroke footprint matches the size "
+                             "(corners inked: %2)")
+                  .arg(size).arg(cornersInked()),
+              qAlpha(li.pixel(W / 2, H / 2)) > 0
+                  && cornersInked() == expected
+                  && (size != 5000 || cornersInked() == 4),
+              QStringLiteral("%1 corner(s)").arg(cornersInked()));
+    }
+
+    canvas->setBrushToolSize(25); // leave the shared canvas as found
+    canvas->setActivePanel(nullptr);
+    delete panel;
+}
+
 void runSizePass(const QSize &S, DrawingCanvas *canvas, QUndoStack *stack)
 {
     const int W = S.width(), H = S.height();
@@ -1173,6 +1250,9 @@ int main(int argc, char **argv)
         for (const QSize &s :
              {QSize(960, 540), QSize(1920, 1080), QSize(777, 1013)})
             runPersistencePass(s, projRoot);
+
+        for (const QSize &s : {QSize(960, 540), QSize(3840, 2160)})
+            runBrushRangePass(s, canvas, &stack);
 
         runMigrationPass(projRoot);
         runResizeRefusalPass(canvas, &stack);

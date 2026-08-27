@@ -582,7 +582,7 @@ void StrokeBuilder::placeStamp(const StrokeStamp &stamp)
     if (stamp.effectiveSize < 0.5 || stamp.effectiveOpacity <= 0.0)
         return;
     if (!m_rasterizePreview) {
-        const int size = std::clamp(qRound(stamp.effectiveSize), 1, 2048);
+        const int size = std::clamp(qRound(stamp.effectiveSize), 1, 5000);
         const QRect bounds(qRound(stamp.point.position.x() - size * .5),
                            qRound(stamp.point.position.y() - size * .5), size, size);
         m_affectedRect = m_affectedRect.united(bounds.intersected(m_strokeMask.rect()));
@@ -775,7 +775,7 @@ QImage StrokeBuilder::shapedTipForStamp(const StrokeStamp &stamp) const
     const qreal sine = std::sin(angle);
     const qreal flipSignX = m_brush.tipFlipX() ? -1.0 : 1.0;
     const qreal flipSignY = m_brush.tipFlipY() ? -1.0 : 1.0;
-    const int outputSize = std::clamp(qRound(stamp.effectiveSize), 1, 2048);
+    const int outputSize = std::clamp(qRound(stamp.effectiveSize), 1, 5000);
     QImage output(outputSize, outputSize, QImage::Format_Grayscale8);
     output.fill(0);
 

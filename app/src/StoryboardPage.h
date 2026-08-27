@@ -51,6 +51,17 @@ public:
     explicit StoryboardPage(QWidget *parent = nullptr);
     ~StoryboardPage() override; // persists the dock layout
 
+    // What the Size CTL bar's size slider is DISPLAYING (-1 before the bar
+    // exists). Test seam for the bar<->engine agreement: the bar once
+    // clamped its mirror to 200 while the studio could set 2048, so it
+    // showed 200 whenever a large library brush was active — a display lie
+    // nothing could observe from outside. The slider class is file-local,
+    // so this is the narrowest honest window into it.
+    int sizeCtlDisplayedSizeForTest() const
+    {
+        return m_sizeCtlSizeForTest ? m_sizeCtlSizeForTest() : -1;
+    }
+
     // Display the given scenes. Ownership stays with the caller (MainWindow);
     // this page only holds non-owning pointers.
     void loadScenes(const QVector<Scene *> &scenes);
@@ -405,6 +416,7 @@ private:
     // Perspective Modifier toolbar (visible only while Perspective is active).
     QWidget *m_perspModToolbar = nullptr;
     std::function<void()> m_syncPerspective; // toolbar controls <- canvas model
+    std::function<int()> m_sizeCtlSizeForTest; // reads the (file-local) slider
     // Shapes panel (visible only while the Shapes tool is active).
     QWidget *m_shapesPanel = nullptr;
     // Last-chosen selection mode: a plain click on the combined Selection

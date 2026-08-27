@@ -325,6 +325,130 @@ int main(int argc, char **argv)
         check(QStringLiteral("(b3) full preset file round-trips"), presetOk,
               firstBad);
     }
+    // ---- (b5) the 5000 px cap survives the wire format -------------------
+    // The engine clamp was 2048 (and the Size CTL bar's 200 was a fiction
+    // on top of it); a .sankobrush carrying 5000 used to come back as 2048
+    // through Brush::setSize. Both directions asserted, plus a control
+    // proving the comparison sees a wrong size.
+    {
+        ::Brush big;
+        big.setSize(5000);
+        check(QStringLiteral("(b5) the ENGINE accepts size 5000"),
+              big.size() == 5000,
+              QStringLiteral("engine holds %1").arg(big.size()));
+        ::Brush loaded;
+        const bool decoded =
+            BrushPresetCodec::loadBrush(BrushPresetCodec::saveBrush(big),
+                                        loaded);
+        check(QStringLiteral("(b5) size 5000 round-trips through "
+                             ".sankobrush"),
+              decoded && loaded.size() == 5000,
+              QStringLiteral("came back %1").arg(loaded.size()));
+        // Control: the comparison is not blind to size.
+        loaded.setSize(4999);
+        check(QStringLiteral("(b5) CONTROL: a wrong size IS detected"),
+              loaded.size() != big.size());
+    }
+    // ---- (b6) decimated live preview: exists, and cannot touch publishes -
+    // Brushes over 256 px rasterize their in-flight preview in a SEPARATE
+    // 1/k-scale builder (they previously drew BLIND over 512 - no preview
+    // at all until the async publish). The safety case for that builder is
+    // that nothing it rasterizes can reach published pixels; the closest
+    // real check is INVARIANCE: the same stroke, preview on vs off, must
+    // publish byte-identical output. A leak of preview state into the
+    // stamp list, the affected rect or the composite breaks it.
+    {
+        struct StrokeOut {
+            QByteArray afterSha;
+            QRect affected;
+            int previewScale = 0;
+            int previewTilesAllocated = -1;
+            bool succeeded = false;
+        };
+        auto runStroke = [](int size, bool preview, bool gpu) {
+            SankoPaintHostAdapter adapter;
+            adapter.brush() = ::Brush();
+            adapter.brush().setSize(size);
+            adapter.brush().setHardness(0.75);
+            adapter.brush().setColor(QColor(200, 60, 30));
+            QImage host(QSize(960, 540), QImage::Format_ARGB32);
+            host.fill(Qt::transparent);
+            const QString key = QStringLiteral("b6");
+            adapter.synchronizeLayer(key, host);
+            StrokePoint sp;
+            sp.position = QPointF(96, 54);
+            sp.pressure = 1.0;
+            adapter.beginStroke(key, host, sp, 777, preview);
+            for (int i = 1; i <= 24; ++i) {
+                StrokePoint q;
+                q.position = QPointF(96 + i * 20, 54 + i * 12);
+                q.pressure = 1.0;
+                q.timestamp = quint64(i * 8);
+                adapter.appendPoint(q);
+            }
+            StrokeOut o;
+            o.previewScale = adapter.previewScale();
+            o.previewTilesAllocated = adapter.previewTiles()
+                ? adapter.previewTiles()->allocatedTileCount() : -1;
+            const auto work = adapter.finishStrokeWork(gpu);
+            const auto res = SankoPaintHostAdapter::render(work);
+            o.succeeded = res.succeeded;
+            o.affected = res.affectedRect;
+            o.afterSha = QCryptographicHash::hash(
+                QByteArrayView(
+                    reinterpret_cast<const char *>(
+                        res.afterRegion.constBits()),
+                    res.afterRegion.sizeInBytes()),
+                QCryptographicHash::Sha256);
+            return o;
+        };
+        const StrokeOut big = runStroke(2048, true, true);
+        check(QStringLiteral("(b6) a 2048 px brush HAS a live preview "
+                             "(the blind range is closed)"),
+              big.succeeded && big.previewTilesAllocated > 0,
+              QStringLiteral("%1 preview tiles")
+                  .arg(big.previewTilesAllocated));
+        check(QStringLiteral("(b6) ...decimated at 1/8 scale"),
+              big.previewScale == 8,
+              QStringLiteral("k=%1").arg(big.previewScale));
+        const StrokeOut bigOff = runStroke(2048, false, true);
+        check(QStringLiteral("(b6) CONTROL: preview off allocates no "
+                             "preview tiles"),
+              bigOff.succeeded && bigOff.previewTilesAllocated == 0,
+              QStringLiteral("%1 tiles").arg(bigOff.previewTilesAllocated));
+        // ("tiny", because <rpcndr.h> #defines "small" to char.)
+        const StrokeOut tiny = runStroke(152, true, true);
+        check(QStringLiteral("(b6) a 152 px brush keeps the full-res "
+                             "preview path (k=1, tiles exist)"),
+              tiny.succeeded && tiny.previewScale == 1
+                  && tiny.previewTilesAllocated > 0);
+        // THE INVARIANCE PIN, both regimes and both render paths.
+        for (const int size : {152, 500, 2048}) {
+            const StrokeOut on = runStroke(size, true, true);
+            const StrokeOut off = runStroke(size, false, true);
+            check(QStringLiteral("(b6) size %1: published bytes IDENTICAL "
+                                 "with preview on vs off (GPU)")
+                      .arg(size),
+                  on.succeeded && off.succeeded
+                      && on.afterSha == off.afterSha
+                      && on.affected == off.affected);
+        }
+        {
+            const StrokeOut on = runStroke(2048, true, false);
+            const StrokeOut off = runStroke(2048, false, false);
+            check(QStringLiteral("(b6) size 2048: published bytes IDENTICAL "
+                                 "with preview on vs off (CPU path)"),
+                  on.succeeded && off.succeeded
+                      && on.afterSha == off.afterSha
+                      && on.affected == off.affected);
+        }
+        // CONTROL: the byte comparison is not blind - different sizes
+        // publish different bytes.
+        check(QStringLiteral("(b6) CONTROL: 152 and 500 publish DIFFERENT "
+                             "bytes"),
+              runStroke(152, true, true).afterSha
+                  != runStroke(500, true, true).afterSha);
+    }
     {
         const BrushPreset &p = roster.first();
         const QByteArray h0 = BrushPresetCodec::settingsHash(p.brush);

@@ -1931,3 +1931,147 @@ pass.
 
 FULL GATE, both configs, eight families plus the SankoTV target: zero
 failures. ProjectLifecycle is now 122 checks. Pinned hashes unchanged.
+
+## The 20260824-200632 stalls: CLOSED — investigated, not reproduced,
+## and NOT in the paint path (2026-08-27)
+
+Seven event-loop gaps >= 150 ms (worst 243) were recorded while the user
+worked at brush 152 on a 2048x1080 canvas (NOT 2048x2160 — cameraInitial
+says canvasW 2048, canvasH 1080) rotated ~137-160 deg at zoom 0.509. They
+were provisionally framed as drawing stalls. THE EVENT DATA SAYS OTHERWISE
+— read this table before reopening them from that recording:
+
+    t     gap    moves  button-down  mouse was over
+    7 s   197 ms   48        0       DrawingCanvas
+    28 s  243 ms   33        0*      QMenu / QMenuBar
+    67 s  204 ms   66        0       QMenuBar
+    70 s  197 ms   65        2       QPushButton / QMenu
+    82 s  201 ms   29        0       DrawingCanvas
+    86 s  200 ms   51        0       panelThumb / QMenuBar
+    92 s  200 ms    2        0       DrawingCanvas
+    (* one 120 ms stroke early in that second, ended before the gap)
+
+NO STROKE WAS IN FLIGHT during any of the seven. The earlier "actively
+drawing through every stall" claim counted mouse MOVES; the button state
+shows hovering, and four of seven were over menus, not the canvas. The
+gaps cluster at ~197-204 ms — a near-constant cost, not the signature of
+anything brush- or canvas-size-dependent.
+
+REPRODUCTION ATTEMPT (Release, maximized, the exact recorded camera,
+brush 152, recorder OFF then ON with its real 500 ms capture cadence,
+20 s of hover+strokes each plus 30 menu open/closes): ZERO gaps >= 50 ms.
+Candidates measured in isolation on this machine: grabWindow of the app
+region 19-25 ms; QPixmap::toImage ~0; forced canvas repaint at that
+camera 2-5 ms; menu popup 2-4 ms. Documents is NOT OneDrive-redirected,
+so screenshot-write sync interference is excluded too.
+
+VERDICT: does not reproduce; was not the paint path, the recorder's
+capture, repaints, or menus. A constant ~200 ms hitting hover and menu
+seconds alike points at something environmental in that session (other
+machine load, a driver). If ~200 ms gaps appear again, capture a NEW
+recording and check the button state FIRST; do not re-derive "drawing
+stalls" from 20260824-200632 — that conclusion is refuted above.
+(Probe archived: tests/_backups/brush_size_probe_req0_20260827.cpp.)
+
+## Brush size to 5000 + the decimated live preview (2026-08-27)
+
+THE MEASUREMENT CAME FIRST (Requirement 0, probe archived as above), and
+it inverted the obvious worry. GPU stroke cost is CANVAS-BOUNDED, not
+brush-bounded: instance quads clip to 256 px tiles, so once a stroke
+touches every tile the cost plateaus — at 960x540 a true-5000 brush costs
+the same ~20 ms render as a 1000; at 4K, 5000 vs 2048 is +25% render
+(230->287 ms) and +12% readback. No GPU limit is approached on either
+backend (all render targets are 256 px tiles; tip textures are the custom
+mask's NATIVE size, independent of brush size). The real cost was on the
+GUI THREAD, at SMALL-to-mid sizes: see the preview cliff below.
+
+THE CAP, 5000 ABSOLUTE, at every site (the old "200" was already a
+fiction — the studio slider went to 2048): Brush::setSize,
+Brush::shape() x2 (request + bucket), StrokeBuilder::placeStamp bounds,
+StrokeBuilder::shapedTipForStamp, GpuStampRenderer rasterSize x2,
+DrawingCanvas::setBrushToolSize, StoryboardPage restore clamp + mirror
+clamp + SizeCtlSlider range, BrushSettingsStudio Size slider,
+AbrImporter kEngineTipMax. ABSOLUTE, not canvas-relative, by decision:
+cost is canvas-bounded so relative caps buy no performance, and a preset
+meaning different things in different projects is what the mixed-size
+work spent effort preventing. The ERASER keeps 1..200 (eraser library
+untouched, its own pass).
+
+THE SIZE CTL SLIDER IS LOGARITHMIC for the Brush (linear for the
+Eraser): every track pixel is the same RELATIVE step (~+3.9%/px), so
+1..20 keeps >= 1 px of track per integer while 5000 stays reachable.
+Chosen over piecewise-linear (kinks, arbitrary knees to defend) and
+power curves (REJECTED BY ARITHMETIC: no reasonable exponent keeps
+1 px/integer at v=20). The mapping lives in ONE pair of helpers
+(fracForValue/valueForFrac) used by the handle, fill, preset ticks and
+drag alike. Tool switching swaps range+mapping BEFORE the value — the
+other order squashes a 5000 brush to 200 through the eraser's clamp on a
+round-trip (asserted in the gate).
+
+PRE-EXISTING DISPLAY LIE, fixed here: the bar's engine mirror clamped to
+200 while the studio could set 2048, so the bar showed 200 whenever a
+large library brush was active. The bar now spans the engine's range,
+and grew sizeCtlDisplayedSizeForTest() — the slider class is file-local
+and nothing could observe the lie from outside, which is WHY it lived.
+
+THE DECIMATED LIVE PREVIEW (the 512 cliff and the blind range, both
+closed by one mechanism). The per-stamp CPU preview cost ~size^2 on the
+GUI thread — measured ~10 ms PER POINTER MOVE at size 500 on 4K — and
+the old mitigation was a gate: brushes over 512 had NO preview at all
+(the artist drew BLIND until the async publish landed; DrawingCanvas
+paints nothing when preview tiles are empty). Now: brushes over 256
+rasterize their preview in a SEPARATE StrokeBuilder at 1/k scale
+(k = ceil(size/256)) and the canvas upscales at composite time. Ceiling
+~2.6 ms/move at 4K at EVERY size; brushes <= 256 keep the byte-identical
+full-res path. The edge blur is ~one preview texel = ~0.4% of the brush
+diameter at every size — constant RELATIVE softness, sharpening at
+publish.
+
+THE SAFETY CASE, stated and pinned: the preview builder's output cannot
+reach published pixels, because finishStrokeWork() reads stamps, points,
+seed and affectedRect from the FULL-RES primary builder only, and
+render() re-rasterizes from those; the preview builder is reachable
+solely through previewTiles(), which only the canvas paint path reads.
+The gate pins it as INVARIANCE (the closest real check to a universal —
+"never" cannot be asserted, equality can): the same stroke with preview
+ON vs OFF publishes byte-identical afterRegion at 152/500/2048 on the
+GPU path and 2048 on the CPU path, with controls (ON has preview tiles,
+OFF has none; different sizes publish different bytes).
+
+KNOWN IN-FLIGHT DIVERGENCE, textured presets: grain pattern scale is
+compensated on the preview brush copy (grainScale/k), but the NOISE
+field has no such knob — a noise-textured preset previews its texture at
+the wrong spatial scale and settles at publish. Shape and coverage do
+not jump; sharpening + texture settle is the whole release transition.
+An artist reporting "the texture shifts when I lift the pen" on a big
+textured brush is seeing this, not a bug in their file.
+
+TIP CACHE at 5000: 24.4 MB per bucket, 119 ms cold build — but only on
+the RENDER WORKER (CPU fallback). The GUI-side preview builds tips
+<= 256 px, and the GPU path evaluates procedural tips in the shader
+without building one. No GUI-thread tip cost was added.
+
+ONE ENGINE QUIRK found by the probe, recorded not fixed: a stroke that
+changes ZERO pixels (e.g. repainting identical pixels over itself)
+reports succeeded=false with an EMPTY error string — the empty commit
+fails isValid() because QRect().contains(QRect()) is false. Harmless in
+the app (a no-op stroke pushes no undo entry), but it cost the probe a
+debugging round, and an empty error on a "failure" is a trap.
+
+GATE ADDITIONS: SizeLock (j) — footprint sweep at 960x540 AND 3840x2160
+for 152/500/2048/5000: a 5000 stroke from the centre must ink all four
+corners of both canvases (radius 2500 >= both half-diagonals), 2048 inks
+4 at 960x540 but 0 at 4K, 152 inks none — reach depends on size, so a
+clamp reintroduced at ANY site fails the footprint, with the empty-corner
+control first. BrushLibrary (b5) 5000 through the engine and round-trip
+through .sankobrush with a wrong-size control; (b6) the preview checks
+above plus "a 2048 brush HAS a live preview" (the blind-range regression
+gate). Lifecycle (j) bar<->engine agreement: a 5000 preset lands in the
+engine AND on the bar (both would have failed before), the 152 control,
+and the eraser round-trip. Totals: SizeLock 154, Lifecycle 129,
+BrushLibrary +15.
+
+The preview SHA did not move (swatches clamp preview brushes to 3..16 px
+— structurally immune to the cap), and the paint locks did not move (the
+preview change cannot reach published pixels; the cap change alters no
+existing preset). Both verified by the full gate, not assumed.

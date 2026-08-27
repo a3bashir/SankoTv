@@ -257,7 +257,7 @@ public slots:
     void clearCanvas();
 
     // Brush engine settings (the stamp-based Brush tool only).
-    void setBrushToolSize(int px);       // 1..200, canvas pixels
+    void setBrushToolSize(int px);       // 1..5000, canvas pixels
     void setBrushOpacity(int percent);   // 0..100
     void setBrushHardness(int percent);  // 0..100 (100 = sharp edge)
 

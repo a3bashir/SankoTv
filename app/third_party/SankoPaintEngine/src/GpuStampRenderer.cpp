@@ -645,7 +645,7 @@ GpuStampRenderer::Result GpuStampRenderer::renderStrokeInternal(
         // Match the reference renderer's integer raster footprint exactly.
         // Pressure spacing remains continuous, but both renderers evaluate a
         // stamp on the same pixel-center grid.
-        const int rasterSize = std::clamp(qRound(stamp.effectiveSize), 1, 2048);
+        const int rasterSize = std::clamp(qRound(stamp.effectiveSize), 1, 5000);
         const int left = qRound(stamp.point.position.x() - rasterSize * .5);
         const int top = qRound(stamp.point.position.y() - rasterSize * .5);
         const qreal rasterCenterX = left + rasterSize * .5;
@@ -1118,7 +1118,7 @@ GpuStampRenderer::Result GpuStampRenderer::renderColorStrokeInternal(
                 && qAbs(std::remainder(stamp.point.rotation, 360.0)) > 0.01);
         const qreal viewportRotation = physicalOrientation
             ? qDegreesToRadians(stamp.point.viewportRotation) : 0.0;
-        const int rasterSize = std::clamp(qRound(stamp.effectiveSize), 1, 2048);
+        const int rasterSize = std::clamp(qRound(stamp.effectiveSize), 1, 5000);
         const int left = qRound(stamp.point.position.x() - rasterSize * .5);
         const int top = qRound(stamp.point.position.y() - rasterSize * .5);
         const qreal centerX = left + rasterSize * .5;

@@ -849,6 +849,92 @@ void runSaveAsIndependencePass(const QString &scratch)
 }
 
 
+// ---- (j) the Size CTL bar shows what the engine holds ---------------------
+// PRE-EXISTING display lie, fixed with the 5000 cap: the bar's mirror
+// clamped to 200 while the studio's slider could already set 2048, so the
+// bar displayed 200 whenever a large library brush was active. Nothing
+// could observe it from outside — the slider class is file-local — which
+// is why the bar grew sizeCtlDisplayedSizeForTest() alongside the fix.
+void runSizeCtlAgreementPass(const QString &scratch)
+{
+    out() << "--- (j) Size CTL bar <-> engine agreement ---" << Qt::endl;
+    MainWindow window;
+    window.resize(1300, 850);
+    window.show();
+    pump(800);
+    const QString fixture = writeProject(scratch + QStringLiteral("/ctl_src"),
+                                         QStringLiteral("Ctl"),
+                                         QSize(960, 540), 24, 1, 1);
+    check(QStringLiteral("(j) fixture opens"),
+          window.loadProjectForTest(fixture));
+    pump(500);
+    auto *canvas = window.findChild<DrawingCanvas *>();
+    auto *page = window.findChild<StoryboardPage *>();
+    if (!canvas || !page) {
+        check(QStringLiteral("(j) found canvas and storyboard page"), false);
+        window.markCleanForTest();
+        window.close();
+        return;
+    }
+    canvas->setTool(DrawingCanvas::Brush);
+    pump(200);
+
+    // CONTROL first: a small value flows preset -> engine -> bar, so the
+    // 5000 assertions below cannot pass on a bar that just shows anything.
+    ::Brush smallPreset;
+    smallPreset.setSize(152);
+    canvas->setPaintBrush(smallPreset);
+    pump(200);
+    check(QStringLiteral("(j) control: a 152 preset reaches the engine and "
+                         "the bar"),
+          canvas->paintBrush().size() == 152
+              && page->sizeCtlDisplayedSizeForTest() == 152,
+          QStringLiteral("engine=%1 bar=%2")
+              .arg(canvas->paintBrush().size())
+              .arg(page->sizeCtlDisplayedSizeForTest()));
+
+    // The library/studio path: a 5000 preset must land in the engine AND
+    // on the bar. Before this pass the engine clamped it to 2048 and the
+    // bar displayed 200.
+    ::Brush preset;
+    preset.setSize(5000);
+    canvas->setPaintBrush(preset);
+    pump(200);
+    check(QStringLiteral("(j) a 5000 preset lands in the ENGINE"),
+          canvas->paintBrush().size() == 5000,
+          QStringLiteral("engine=%1").arg(canvas->paintBrush().size()));
+    check(QStringLiteral("(j) ...and the BAR displays 5000, not a clamp"),
+          page->sizeCtlDisplayedSizeForTest() == 5000,
+          QStringLiteral("bar=%1").arg(page->sizeCtlDisplayedSizeForTest()));
+
+    // The Size CTL path itself: the bar's own setter spans the range.
+    canvas->setBrushToolSize(5000);
+    check(QStringLiteral("(j) setBrushToolSize(5000) holds in the engine"),
+          canvas->paintBrush().size() == 5000);
+
+    // The ERASER keeps its 1..200 world, and coming back from it must not
+    // squash the brush's 5000 through the eraser's clamp.
+    canvas->setTool(DrawingCanvas::Eraser);
+    pump(200);
+    const int eraserShown = page->sizeCtlDisplayedSizeForTest();
+    check(QStringLiteral("(j) eraser mode shows an eraser-range value"),
+          eraserShown >= 1 && eraserShown <= 200,
+          QStringLiteral("bar=%1").arg(eraserShown));
+    canvas->setTool(DrawingCanvas::Brush);
+    pump(200);
+    check(QStringLiteral("(j) back to Brush: 5000 SURVIVED the eraser "
+                         "round-trip"),
+          page->sizeCtlDisplayedSizeForTest() == 5000
+              && canvas->paintBrush().size() == 5000,
+          QStringLiteral("bar=%1 engine=%2")
+              .arg(page->sizeCtlDisplayedSizeForTest())
+              .arg(canvas->paintBrush().size()));
+
+    window.markCleanForTest();
+    window.close();
+    pump(300);
+}
+
 // ---- (i) a save that CANNOT fully happen must not look like one ----------
 // Every write in the save used to be unchecked: QDir::mkpath, every
 // QImage::save, and QFile::write's byte count. A save that could not write
@@ -1225,6 +1311,7 @@ int main(int argc, char **argv)
     runViewResetPass(a, c);
     runSaveAsIndependencePass(scratch);
     runSaveFailurePass(scratch);
+    runSizeCtlAgreementPass(scratch);
 
     // Nothing may have escaped the scratch root.
     const bool removed = QDir(scratch).removeRecursively();

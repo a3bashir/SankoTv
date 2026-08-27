@@ -75,6 +75,12 @@ public:
     bool strokeActive() const { return bool(m_primaryStroke); }
     void cancelStroke();
     const TiledImage *previewTiles() const;
+    // 1 for a full-resolution live preview; k > 1 when the in-flight preview
+    // is rasterized at 1/k scale (brushes over 256 px) and must be scaled
+    // back up by the consumer. The DECIMATED builder is display-only: the
+    // stamps, points and affectedRect that publish renders from always come
+    // from the full-resolution primary builder — see beginStroke.
+    int previewScale() const { return m_previewScale; }
     StrokeWork finishStrokeWork(bool preferGpu = true);
 
     static StrokeResult render(const StrokeWork &work);
@@ -111,5 +117,9 @@ private:
     quint64 m_strokeHostCacheKey = 0; // host identity at beginStroke
     std::unique_ptr<StrokeBuilder> m_primaryStroke;
     std::unique_ptr<StrokeBuilder> m_secondaryStroke;
+    // Display-only decimated preview rasterizer (see beginStroke). Never
+    // read by finishStrokeWork; nothing it holds can reach a publish.
+    std::unique_ptr<StrokeBuilder> m_previewStroke;
+    int m_previewScale = 1;
     ReadbackStats m_readbackStats;
 };

@@ -93,7 +93,7 @@ namespace {
 
 // ---- Hostile-input limits --------------------------------------------------
 constexpr int kMaxTipDim = 5000;          // Photoshop's own tip ceiling
-constexpr int kEngineTipMax = 2048;       // Brush::setSize clamp
+constexpr int kEngineTipMax = 5000;       // Brush::setSize clamp
 constexpr int kMaxBrushesPerFile = 4096;
 constexpr int kMaxPatterns = 512;
 constexpr int kDescMaxDepth = 32;

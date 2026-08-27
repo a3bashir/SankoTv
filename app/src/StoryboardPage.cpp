@@ -27,6 +27,7 @@
 #include <QDropEvent>
 #include <QMimeData>
 
+#include <cmath>
 #include <memory>
 #include <QCheckBox>
 #include <QComboBox>
@@ -810,6 +811,27 @@ public:
         m_value = v;
         update();
     }
+    // Per-tool range: the Brush runs 1..5000, the Eraser keeps 1..200.
+    // Clamps the current value and repaints; presets are per-tool and are
+    // re-set by the tool switch right after, so they are not touched here.
+    void setRange(int min, int max)
+    {
+        m_min = min;
+        m_max = qMax(min + 1, max);
+        m_value = qBound(m_min, m_value, m_max);
+        update();
+    }
+    // Logarithmic track mapping (Brush size): every track pixel is the
+    // same RELATIVE step (~+3.9%/px at 1..5000 over 189px of travel), so
+    // 1..20 keeps single-integer precision while 5000 stays reachable.
+    // Chosen over piecewise-linear (kinks, arbitrary knees) and power
+    // curves (fail 1px-per-integer at v=20 for any reasonable exponent).
+    // Requires m_min >= 1; the Eraser stays linear.
+    void setLogarithmic(bool log)
+    {
+        m_log = log && m_min >= 1;
+        update();
+    }
 
     // Saved preset ticks (Procreate-style). Kept sorted + unique.
     const QVector<int> &presets() const { return m_presets; }
@@ -843,10 +865,28 @@ public:
     // FULL track: at min it sits hard against the bottom end, at max against
     // the top, proportional in between — the handle and the value can never
     // desynchronise (no dead zone at either extreme).
+    // value <-> track fraction: THE mapping, used by the handle, the fill,
+    // the preset markers and the drag alike, so log and linear tracks stay
+    // internally consistent everywhere.
+    qreal fracForValue(int v) const
+    {
+        if (m_log)
+            return std::log(v / qreal(m_min))
+                / std::log(m_max / qreal(m_min));
+        return (v - m_min) / qreal(qMax(1, m_max - m_min));
+    }
+    int valueForFrac(qreal frac) const
+    {
+        frac = qBound(0.0, frac, 1.0);
+        if (m_log)
+            return qBound(m_min,
+                          qRound(m_min * std::pow(m_max / qreal(m_min), frac)),
+                          m_max);
+        return m_min + qRound(frac * (m_max - m_min));
+    }
     qreal yForValue(int v) const
     {
-        const qreal frac = (v - m_min) / qreal(qMax(1, m_max - m_min));
-        return (1.0 - frac) * qMax(1, height() - 31);
+        return (1.0 - fracForValue(v)) * qMax(1, height() - 31);
     }
     // Visual y of the preset marker for value v: the centre of the handle
     // when the slider sits exactly on v, so a snapped marker shows perfectly
@@ -936,7 +976,7 @@ private:
         // to a value and vice versa, no dead zone.
         const qreal travel = qMax(1, height() - 31);
         const qreal frac = 1.0 - qBound(0.0, (y - 15.5) / travel, 1.0);
-        const int raw = m_min + qRound(frac * (m_max - m_min));
+        const int raw = valueForFrac(frac);
         // Magnet: every saved preset is a snap point. When the handle centre
         // comes within kSnapPx of a marker the value snaps to that preset,
         // landing the marker exactly centred inside the handle (both sit
@@ -972,6 +1012,7 @@ private:
     int m_min = 0;
     int m_max = 100;
     int m_value = 0;
+    bool m_log = false;
     QVector<int> m_presets;
 };
 
@@ -3157,8 +3198,13 @@ void StoryboardPage::createFloatingToolbar()
     m_sizeCtlBar = sizeBar;
     m_sizeCtlBar->setObjectName(QStringLiteral("sizeCtlBar"));
 
-    auto *sizeSlider = new SizeCtlSlider(1, 200, 25, sizeBar);
+    // Brush range 1..5000 on a LOG track (constant relative precision:
+    // 1..20 keeps >=1px per integer, the top end moves ~3.9%/px). The
+    // Eraser stays 1..200 linear - the tool switch below swaps both.
+    auto *sizeSlider = new SizeCtlSlider(1, 5000, 25, sizeBar);
+    sizeSlider->setLogarithmic(true);
     sizeSlider->setToolTip(QStringLiteral("Brush size"));
+    m_sizeCtlSizeForTest = [sizeSlider] { return sizeSlider->value(); };
     auto *flipButton = new QPushButton(sizeBar);
     flipButton->setFocusPolicy(Qt::NoFocus);
     flipButton->setCursor(Qt::PointingHandCursor);
@@ -3226,9 +3272,9 @@ void StoryboardPage::createFloatingToolbar()
     {
         const QSettings st(QStringLiteral("SankoTV"),
                            QStringLiteral("SankoTV"));
-        auto load = [&](SizeCtlTool &t, const QString &base) {
+        auto load = [&](SizeCtlTool &t, const QString &base, int maxSize) {
             t.size = qBound(1, st.value(base + QStringLiteral("size"),
-                                        t.size).toInt(), 200);
+                                        t.size).toInt(), maxSize);
             t.opacity = qBound(5, st.value(base + QStringLiteral("opacity"),
                                            t.opacity).toInt(), 100);
             t.sizeTicks = parseTicks(
@@ -3240,8 +3286,8 @@ void StoryboardPage::createFloatingToolbar()
             t.hardnessTicks = parseTicks(
                 st.value(base + QStringLiteral("hardnessTicks")).toString());
         };
-        load(tc->brush, QStringLiteral("storyboard/toolCtl/brush/"));
-        load(tc->eraser, QStringLiteral("storyboard/toolCtl/eraser/"));
+        load(tc->brush, QStringLiteral("storyboard/toolCtl/brush/"), 5000);
+        load(tc->eraser, QStringLiteral("storyboard/toolCtl/eraser/"), 200);
     }
     auto saveToolCtl = [tc] {
         QSettings st(QStringLiteral("SankoTV"), QStringLiteral("SankoTV"));
@@ -3384,7 +3430,11 @@ void StoryboardPage::createFloatingToolbar()
     connect(m_canvas, &DrawingCanvas::paintBrushChanged, this,
             [this, tc, sizeSlider, opacitySlider] {
         const ::Brush &b = m_canvas->paintBrush();
-        tc->brush.size = qBound(1, b.size(), 200);
+        // PRE-EXISTING display lie, fixed with the 5000 cap: this clamp was
+        // 200 while the studio could already set 2048, so the bar showed
+        // 200 whenever a large library brush was active. The mirror now
+        // spans the engine's whole range.
+        tc->brush.size = qBound(1, b.size(), 5000);
         tc->brush.opacity = qBound(0, qRound(b.opacity() * 100.0), 100);
         // Hardness has no bar slider (see placeSizeCtl); the mirror still
         // updates so the persisted per-tool hardness follows selections.
@@ -3400,6 +3450,16 @@ void StoryboardPage::createFloatingToolbar()
             return;
         tc->eraserMode = tool == DrawingCanvas::Eraser;
         const SizeCtlTool &t = tc->active();
+        // Range and mapping swap BEFORE the value: setValue clamps to the
+        // CURRENT range, so the other order would squash a 5000 brush to
+        // 200 on the way through an eraser round-trip.
+        if (tc->eraserMode) {
+            sizeSlider->setRange(1, 200);
+            sizeSlider->setLogarithmic(false);
+        } else {
+            sizeSlider->setRange(1, 5000);
+            sizeSlider->setLogarithmic(true);
+        }
         sizeSlider->setValue(t.size);        // silent: no engine writeback
         opacitySlider->setValue(t.opacity);
         sizeSlider->setPresets(t.sizeTicks);

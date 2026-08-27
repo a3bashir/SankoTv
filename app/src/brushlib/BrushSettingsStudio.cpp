@@ -1512,7 +1512,7 @@ QWidget *BrushSettingsStudio::buildGeneralSection()
 {
     QVBoxLayout *l = nullptr;
     QWidget *page = sectionPage(&l);
-    addSlider(l, QStringLiteral("Size"), 1.0, 2048.0,
+    addSlider(l, QStringLiteral("Size"), 1.0, 5000.0,
               [](const ::Brush &b) { return double(b.size()); },
               [](::Brush &b, double v) { b.setSize(qRound(v)); }, fmtPixels,
               true, 1.0, 3.0);
