@@ -350,6 +350,115 @@ int main(int argc, char **argv)
         check(QStringLiteral("(b5) CONTROL: a wrong size IS detected"),
               loaded.size() != big.size());
     }
+    // ---- (b7) erase semantics through the adapter: selection cap-once,
+    // no double-erase at joints, preview invariance -----------------------
+    // The classic eraser's carefully-built semantics - coverage accumulates
+    // UNMASKED, the selection mask and opacity cap it ONCE, overlapping
+    // segments never double-erase - are the engine's semantics by
+    // construction (single UNORM16 accumulation + one masked lerp in
+    // render()). Pinned here rather than trusted.
+    {
+        auto runErase = [](bool preview, qreal opacity,
+                           const QImage &selectionMask, bool doubleBack) {
+            SankoPaintHostAdapter adapter;
+            adapter.brush() = ::Brush();
+            adapter.brush().setEraseMode(true);
+            adapter.brush().setSize(80);
+            adapter.brush().setHardness(1.0);
+            adapter.brush().setOpacity(opacity);
+            QImage host(QSize(960, 540), QImage::Format_ARGB32);
+            host.fill(QColor(60, 120, 180, 255)); // opaque: something to erase
+            const QString key = QStringLiteral("b7");
+            adapter.synchronizeLayer(key, host);
+            StrokePoint sp;
+            sp.position = QPointF(100, 270);
+            sp.pressure = 1.0;
+            adapter.beginStroke(key, host, sp, 4242, preview);
+            auto feed = [&adapter](qreal fromX, qreal toX) {
+                for (int i = 1; i <= 24; ++i) {
+                    StrokePoint q;
+                    q.position =
+                        QPointF(fromX + (toX - fromX) * i / 24.0, 270);
+                    q.pressure = 1.0;
+                    q.timestamp = quint64(i * 8);
+                    adapter.appendPoint(q);
+                }
+            };
+            feed(100, 700);
+            if (doubleBack)
+                feed(700, 100); // the SAME pixels again, same stroke
+            auto work = adapter.finishStrokeWork(false);
+            work.selectionMask = selectionMask;
+            return SankoPaintHostAdapter::render(work);
+        };
+        const auto alphaAt = [](const SankoPaintHostAdapter::StrokeResult &r,
+                                int x, int y) {
+            const QImage a =
+                r.afterRegion.convertToFormat(QImage::Format_ARGB32);
+            const QPoint local(x - r.affectedRect.x(),
+                               y - r.affectedRect.y());
+            return a.rect().contains(local) ? qAlpha(a.pixel(local)) : -1;
+        };
+
+        // Selection: left half masked OUT (0), right half IN (255), a soft
+        // 50% band in the middle - the classic mask-caps-once shape.
+        // The mask convention is LUMINANCE (render() converts to
+        // Grayscale8): black = masked out, white = selected, gray = soft.
+        QImage mask(QSize(960, 540), QImage::Format_ARGB32);
+        mask.fill(Qt::black);
+        {
+            QPainter mp(&mask);
+            mp.fillRect(400, 0, 80, 540, QColor(128, 128, 128));
+            mp.fillRect(480, 0, 480, 540, QColor(255, 255, 255));
+        }
+        const auto masked = runErase(false, 1.0, mask, false);
+        check(QStringLiteral("(b7) selection: fully-masked-out pixels are "
+                             "UNTOUCHED (opaque)"),
+              masked.succeeded && alphaAt(masked, 300, 270) == 255,
+              QStringLiteral("alpha=%1").arg(alphaAt(masked, 300, 270)));
+        check(QStringLiteral("(b7) selection: fully-selected pixels erase "
+                             "to 0"),
+              alphaAt(masked, 600, 270) == 0,
+              QStringLiteral("alpha=%1").arg(alphaAt(masked, 600, 270)));
+        const int soft = alphaAt(masked, 440, 270);
+        check(QStringLiteral("(b7) selection: the soft 50% band erases "
+                             "HALFWAY, capped once"),
+              soft > 108 && soft < 148,
+              QStringLiteral("alpha=%1 (expect ~128)").arg(soft));
+
+        // No double-erase: the stroke crosses its own pixels twice at 50%
+        // opacity; the coverage ceiling caps the whole stroke ONCE.
+        const auto once = runErase(false, 0.5, QImage(), false);
+        const auto twice = runErase(false, 0.5, QImage(), true);
+        check(QStringLiteral("(b7) control: a 50% erase leaves ~50% alpha"),
+              alphaAt(once, 400, 270) > 108 && alphaAt(once, 400, 270) < 148,
+              QStringLiteral("alpha=%1").arg(alphaAt(once, 400, 270)));
+        check(QStringLiteral("(b7) crossing the SAME pixels twice in one "
+                             "stroke does NOT double-erase"),
+              alphaAt(twice, 400, 270) == alphaAt(once, 400, 270),
+              QStringLiteral("once=%1 twice=%2")
+                  .arg(alphaAt(once, 400, 270))
+                  .arg(alphaAt(twice, 400, 270)));
+
+        // Preview invariance for ERASE strokes (extends b6 to the erase
+        // composite): preview on vs off publishes identical bytes.
+        const auto onE = runErase(true, 1.0, QImage(), false);
+        const auto offE = runErase(false, 1.0, QImage(), false);
+        const auto sha = [](const SankoPaintHostAdapter::StrokeResult &r) {
+            const QImage n =
+                r.afterRegion.convertToFormat(QImage::Format_ARGB32);
+            return QCryptographicHash::hash(
+                QByteArrayView(
+                    reinterpret_cast<const char *>(n.constBits()),
+                    n.sizeInBytes()),
+                QCryptographicHash::Sha256);
+        };
+        check(QStringLiteral("(b7) ERASE published bytes IDENTICAL with "
+                             "preview on vs off"),
+              onE.succeeded && offE.succeeded && sha(onE) == sha(offE)
+                  && onE.affectedRect == offE.affectedRect);
+    }
+
     // ---- (b6) decimated live preview: exists, and cannot touch publishes -
     // Brushes over 256 px rasterize their in-flight preview in a SEPARATE
     // 1/k-scale builder (they previously drew BLIND over 512 - no preview

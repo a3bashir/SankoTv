@@ -990,6 +990,11 @@ GpuStampRenderer::Result GpuStampRenderer::renderStrokeInternal(
                                : brush.wetEdges());
             wet[1] = float(brush.opacity());
         }
+        // Erase mode rides the spare uniform slot at offset 92 (the 96-byte
+        // block always carried it). Mask path only: the colour-stroke path
+        // is unreachable for erase brushes (usesColorStrokeBuffer guards).
+        *reinterpret_cast<qint32 *>(publicationUniforms.data() + 92) =
+            brush.eraseMode() ? 1 : 0;
         publicationUpdates->updateDynamicBuffer(
             publicationUniformBuffer.get(), 0, publicationUniforms.size(),
             publicationUniforms.constData());

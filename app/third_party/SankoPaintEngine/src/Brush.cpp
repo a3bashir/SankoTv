@@ -68,6 +68,7 @@ Brush &Brush::operator=(const Brush &other)
     m_hardness = other.m_hardness;
     m_color = other.m_color;
     m_toolMode = other.m_toolMode;
+    m_eraseMode = other.m_eraseMode;
     m_tiltAffectsShape = other.m_tiltAffectsShape;
     m_rotationAffectsShape = other.m_rotationAffectsShape;
     m_maxTiltElongation = other.m_maxTiltElongation;
@@ -409,6 +410,8 @@ void Brush::setCustomGrain(const QImage &texture)
 
 bool Brush::usesColorStrokeBuffer() const
 {
+    if (m_eraseMode)
+        return false; // erase publishes through the MASK path only
     return m_hueJitter > 0.0 || m_saturationJitter > 0.0
         || m_brightnessJitter > 0.0 || m_fgBgJitter > 0.0
         || m_purity != 0.0 || smudgeActive()

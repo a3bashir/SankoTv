@@ -29,6 +29,28 @@ inline void sourceOver(QRgb &destination, int maskAlpha, const QColor &color)
                         qRound(outputAlpha * 255.0));
 }
 
+// The erase composite: the SAME published coverage that sourceOver would
+// deposit instead REMOVES alpha - dst.a *= (1 - sourceAlpha) - and colour
+// channels stay untouched (straight-alpha ARGB32: an invisible pixel's RGB
+// is inert). Mirrors publish.frag's eraseMode branch line for line, and
+// shares its arithmetic shape with sourceOver above so the two blends
+// quantize identically.
+inline void eraseOut(QRgb &destination, int maskAlpha, qreal strength)
+{
+    const qreal sourceAlpha = (maskAlpha / 255.0) * strength;
+    if (sourceAlpha <= 0.0) return;
+    const QRgb old = destination;
+    const int outputAlpha =
+        qRound((qAlpha(old) / 255.0) * (1.0 - sourceAlpha) * 255.0);
+    // Fully erased pixels canonicalise to ALL-ZERO bytes: the GPU's
+    // premultiplied render-target roundtrip zeroes RGB wherever alpha is
+    // zero, and the commit stores exact bytes - without this, invisible
+    // pixels would differ across the two paths and across undo replays.
+    destination = outputAlpha == 0
+        ? qRgba(0, 0, 0, 0)
+        : qRgba(qRed(old), qGreen(old), qBlue(old), outputAlpha);
+}
+
 bool useSimd(PixelCompositor::Path path)
 {
     return path != PixelCompositor::Path::Scalar && PixelCompositor::simdAvailable();
@@ -76,6 +98,18 @@ void PixelCompositor::compositeGrayscaleTile(QImage &destination, const QPoint &
 #endif
         for (; x <= clipped.right(); ++x)
             sourceOver(output[x], input[x - origin.x()], color);
+    }
+}
+
+void PixelCompositor::eraseGrayscaleTile(QImage &destination, const QPoint &origin,
+                                         const QImage &mask, qreal strength)
+{
+    const QRect clipped(QRect(origin, mask.size()).intersected(destination.rect()));
+    for (int y = clipped.top(); y <= clipped.bottom(); ++y) {
+        QRgb *output = reinterpret_cast<QRgb *>(destination.scanLine(y));
+        const uchar *input = mask.constScanLine(y - origin.y());
+        for (int x = clipped.left(); x <= clipped.right(); ++x)
+            eraseOut(output[x], input[x - origin.x()], strength);
     }
 }
 

@@ -835,9 +835,14 @@ QImage StrokeBuilder::compositeOnto(const QImage &destination) const
     for (auto tile = m_strokeMask.allocatedTiles().constBegin();
          tile != m_strokeMask.allocatedTiles().constEnd(); ++tile) {
         const QImage publishedMask = publishMask8(tile.value());
-        PixelCompositor::compositeGrayscaleTile(
-            output, TiledImage::tileLayerRect(tile.key()).topLeft(), publishedMask,
-            m_brush.color());
+        if (m_brush.eraseMode())
+            PixelCompositor::eraseGrayscaleTile(
+                output, TiledImage::tileLayerRect(tile.key()).topLeft(),
+                publishedMask, m_brush.color().alphaF());
+        else
+            PixelCompositor::compositeGrayscaleTile(
+                output, TiledImage::tileLayerRect(tile.key()).topLeft(),
+                publishedMask, m_brush.color());
     }
     return output;
 }

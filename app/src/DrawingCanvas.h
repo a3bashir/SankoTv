@@ -50,8 +50,9 @@ class DrawingCanvas : public QWidget
 public:
     ~DrawingCanvas() override;
     // Brush (the stamp-based pressure engine) is the single drawing tool;
-    // pen-like behaviour is a brush preset. Eraser keeps the classic
-    // QPainter stroke path. Shapes stamps geometric primitives (see
+    // pen-like behaviour is a brush preset. Eraser is the SAME engine with
+    // the erase composite (pressure, tips, decimated preview, commit undo);
+    // QuickShape stays Brush-only. Shapes stamps geometric primitives (see
     // ShapeKind). SelectRect/SelectEllipse/Lasso/SelectPoly define a mask on
     // the ACTIVE layer (marching ants); Move drags the selected pixels within
     // that layer. Camera is a non-drawing tool: selecting it only opens the
@@ -276,7 +277,7 @@ public slots:
     void setStrokeStabilization(double amount); // 0..1, QSettings-backed
 
     // Eraser settings — independent of the brush (per-tool Size CTL).
-    void setEraserSize(int px);          // 1..200, canvas pixels
+    void setEraserSize(int px);          // 1..5000, canvas pixels
     void setEraserOpacity(int percent);  // 0..100 (erase strength)
     void setPressureToSize(bool on);
     void setPressureToOpacity(bool on);
@@ -320,10 +321,9 @@ public slots:
                 *what = QStringLiteral("a Quick Shape");
             return true;
         }
-        // m_brushStroke is the BRUSH's in-flight flag; m_drawing is the
-        // ERASER's. Both are strokes to the user, and checking only one
-        // would let the other slip through mid-stroke.
-        if (m_brushStroke || m_drawing || m_shapeDrag) {
+        // m_brushStroke covers BOTH the Brush and the (engine) Eraser -
+        // one in-flight flag since the erase composite pass.
+        if (m_brushStroke || m_shapeDrag) {
             if (what)
                 *what = QStringLiteral("a brush stroke");
             return true;
@@ -542,9 +542,9 @@ private:
                          qreal tiltX = 0.0, qreal tiltY = 0.0,
                          qreal rotation = 0.0, quint64 timestamp = 0);
     void endBrushStroke(const QString &undoText = QStringLiteral("Brush Stroke"));
+    void restorePaintBrushAfterStroke();
     // Canvas-edge fix: shared erase finalize + interruption commit (focus
     // loss / broken grab end a stroke exactly like a release).
-    void finishEraseStroke();
     void finishInterruptedStroke();
     // Repaint only the widget region covering the given canvas-space bounds.
     void updateBrushRegion(const QRectF &canvasBounds);
@@ -554,8 +554,6 @@ private:
     QColor m_color = Qt::black;
     int m_brushSize = 4;
 
-    bool m_drawing = false;
-    QPoint m_lastCanvas;     // last freehand point, canvas coords
 
     // Shapes tool state. Preview-only until committed to the active layer.
     ShapeKind m_shapeKind = ShapeRectangle;
@@ -789,6 +787,15 @@ private:
     // Eraser state (independent of the brush; per-tool Size CTL sliders).
     int m_eraserSize = 25;           // stroke width, canvas px
     double m_eraserOpacity = 1.0;    // 0..1 erase strength
+    // The Eraser IS an engine brush now (the erase composite pass): a
+    // hard-round eraseMode Brush whose size/opacity the Size CTL drives.
+    // During an eraser stroke it is swapped into the adapter and the
+    // brush-tool Brush is saved and restored - the engine has ONE brush
+    // slot and the studio/library own its usual occupant.
+    ::Brush m_eraserBrush;
+    ::Brush m_savedPaintBrush;       // brush-tool brush across the swap
+    bool m_eraserStrokeSwap = false; // a swap is outstanding
+    bool m_pendingPreviewErase = false; // frozen bridge shows REMOVAL
     double m_brushHardness = 0.8;    // 0..1
     bool m_pressureToSize = true;
     bool m_pressureToOpacity = false;

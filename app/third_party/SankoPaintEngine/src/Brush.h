@@ -120,7 +120,18 @@ public:
 
     ToolMode toolMode() const { return m_toolMode; }
     void setToolMode(ToolMode mode) { m_toolMode = mode; }
-    bool smudgeActive() const { return m_toolMode == ToolMode::Smudge
+    // ERASE MODE: the stroke's accumulated coverage REMOVES alpha from the
+    // layer instead of depositing colour. Everything upstream of the
+    // publication boundary (stamps, tips, hardness, pressure curves, flow,
+    // wet edges, the opacity ceiling) is blend-agnostic and behaves
+    // identically; only the final composite differs, on both render paths.
+    // Erase wins over smudge (smudgeActive() below) and forces the MASK
+    // path (usesColorStrokeBuffer() returns false): a smudge, dual or
+    // colour-jitter eraser is a contradiction, not a combination.
+    bool eraseMode() const { return m_eraseMode; }
+    void setEraseMode(bool erase) { m_eraseMode = erase; }
+    bool smudgeActive() const { return !m_eraseMode
+                                      && m_toolMode == ToolMode::Smudge
                                       && m_smudgeStrength > 0.0; }
 
     bool tiltAffectsShape() const { return m_tiltAffectsShape; }
@@ -357,6 +368,7 @@ private:
     qreal m_hardness = 0.75;
     QColor m_color = Qt::black;
     ToolMode m_toolMode = ToolMode::Paint;
+    bool m_eraseMode = false;
     bool m_tiltAffectsShape = true;
     bool m_rotationAffectsShape = true;
     qreal m_maxTiltElongation = 4.0;

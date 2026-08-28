@@ -3285,7 +3285,19 @@ void StoryboardPage::createFloatingToolbar()
                 st.value(base + QStringLiteral("hardnessTicks")).toString());
         };
         load(tc->brush, QStringLiteral("storyboard/toolCtl/brush/"), 5000);
-        load(tc->eraser, QStringLiteral("storyboard/toolCtl/eraser/"), 200);
+        load(tc->eraser, QStringLiteral("storyboard/toolCtl/eraser/"), 5000);
+        // RETIRED, not migrated: the eraser's per-tool hardness persisted
+        // for months and was applied by NOTHING (the classic eraser had no
+        // hardness). Now that the engine eraser HAS hardness (from its
+        // preset, default 1.0), honouring the stale stored knob would
+        // soften erasing based on a value the user never saw act. The keys
+        // are actively removed so no future reader resurrects them.
+        {
+            QSettings st = sankoSettings();
+            st.remove(QStringLiteral("storyboard/toolCtl/eraser/hardness"));
+            st.remove(
+                QStringLiteral("storyboard/toolCtl/eraser/hardnessTicks"));
+        }
     }
     auto saveToolCtl = [tc] {
         QSettings st = sankoSettings();
@@ -3448,16 +3460,11 @@ void StoryboardPage::createFloatingToolbar()
             return;
         tc->eraserMode = tool == DrawingCanvas::Eraser;
         const SizeCtlTool &t = tc->active();
-        // Range and mapping swap BEFORE the value: setValue clamps to the
-        // CURRENT range, so the other order would squash a 5000 brush to
-        // 200 on the way through an eraser round-trip.
-        if (tc->eraserMode) {
-            sizeSlider->setRange(1, 200);
-            sizeSlider->setLogarithmic(false);
-        } else {
-            sizeSlider->setRange(1, 5000);
-            sizeSlider->setLogarithmic(true);
-        }
+        // Both tools run 1..5000 on the log track since the erase
+        // composite pass made the Eraser an engine brush - erasing across
+        // a 4K canvas at 200 px was the same misery painting at 200 was.
+        sizeSlider->setRange(1, 5000);
+        sizeSlider->setLogarithmic(true);
         sizeSlider->setValue(t.size);        // silent: no engine writeback
         opacitySlider->setValue(t.opacity);
         sizeSlider->setPresets(t.sizeTicks);

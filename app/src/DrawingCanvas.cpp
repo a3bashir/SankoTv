@@ -146,6 +146,17 @@ DrawingCanvas::DrawingCanvas(QWidget *parent)
         });
     });
 
+    // The default eraser: hard-round (hardness 1.0 - the classic pen's
+    // edge), erase composite on, the same pressure response as the default
+    // brush (engine defaults). The dead per-tool eraser hardness that
+    // persisted-but-never-applied is deliberately NOT read here: honouring
+    // it now would soften the eraser based on a knob the user never saw
+    // act. Size/opacity follow the Size CTL via setEraserSize/Opacity.
+    m_eraserBrush.setEraseMode(true);
+    m_eraserBrush.setHardness(1.0);
+    m_eraserBrush.setSize(m_eraserSize);
+    m_eraserBrush.setOpacity(m_eraserOpacity);
+
     // Persisted safe-area guide opacities (Preferences > Camera).
     const QSettings settings = sankoSettings();
     m_actionSafeMaskPct =
@@ -772,7 +783,6 @@ void DrawingCanvas::setActivePanel(Panel *panel)
     m_compPanel = nullptr; // never compare against a pointer that may be dead
     m_panel = panel;
     invalidateComposite();
-    m_drawing = false;
     m_brushStroke = false;
     m_strokeMask = StrokeMaskNone;
     m_strokeBuf = QImage();
@@ -1092,12 +1102,14 @@ void DrawingCanvas::setBrushHardness(int percent)
 
 void DrawingCanvas::setEraserSize(int px)
 {
-    m_eraserSize = qBound(1, px, 200);
+    m_eraserSize = qBound(1, px, 5000);
+    m_eraserBrush.setSize(m_eraserSize);
 }
 
 void DrawingCanvas::setEraserOpacity(int percent)
 {
     m_eraserOpacity = qBound(0, percent, 100) / 100.0;
+    m_eraserBrush.setOpacity(m_eraserOpacity);
 }
 
 void DrawingCanvas::setPressureToSize(bool on)
@@ -1839,35 +1851,8 @@ void DrawingCanvas::drawSegment(const QPoint &from, const QPoint &to, const QCol
     const qreal pad = dotR + 2.0;
     const QRectF segBounds = QRectF(QPointF(from), QPointF(to)).normalized()
                                  .adjusted(-pad, -pad, pad, pad);
-    if (m_strokeMask == StrokeMaskErase) {
-        // Selection active: the erase stroke accumulates UNMASKED coverage in
-        // the scratch (white alpha); the cached mask caps it once — in the
-        // paintEvent preview live, and on release when it is baked. Soft
-        // selection edges erase softly and can never saturate hard.
-        QPainter sp(&m_strokeBuf);
-        sp.setRenderHint(QPainter::Antialiasing, true);
-        if (dot) {
-            sp.setPen(Qt::NoPen);
-            sp.setBrush(Qt::white);
-            sp.drawEllipse(QPointF(from), dotR, dotR);
-        } else {
-            QPen strokePen(Qt::white);
-            strokePen.setWidth(penWidth());
-            strokePen.setCapStyle(Qt::RoundCap);
-            strokePen.setJoinStyle(Qt::RoundJoin);
-            sp.setPen(strokePen);
-            sp.drawLine(from, to);
-        }
-        sp.end();
-        updateBrushRegion(segBounds);
-        return;
-    }
     QPainter painter(&layer->image);
     painter.setRenderHint(QPainter::Antialiasing, true);
-    // Eraser carves the layer back to TRANSPARENT (revealing layers below /
-    // the white paper) — painting white would smear over lower layers.
-    if (m_tool == Eraser)
-        painter.setCompositionMode(QPainter::CompositionMode_Clear);
     if (dot) {
         painter.setPen(Qt::NoPen);
         painter.setBrush(color);
@@ -3575,7 +3560,20 @@ void DrawingCanvas::beginBrushStroke(const QPointF &canvasPt, qreal pressure,
     Layer *layer = editableActiveLayer();
     if (!layer || !m_panel)
         return;
-    syncPaintBrushSettings();
+    if (m_tool == Eraser) {
+        // Swap-restore, the captured-state-wins pattern: the engine has ONE
+        // brush slot and the studio/library own its usual occupant. The
+        // eraser Brush goes in for exactly this stroke;
+        // restorePaintBrushAfterStroke() puts the brush-tool Brush back the
+        // moment the stroke's inputs are captured. (A studio edit landing
+        // mid-eraser-stroke is overwritten by the restore - same class as
+        // the QS bake's swap, accepted and documented there.)
+        m_savedPaintBrush = m_paintEngine.brush();
+        m_eraserStrokeSwap = true;
+        m_paintEngine.setBrush(m_eraserBrush);
+    } else {
+        syncPaintBrushSettings();
+    }
     StrokePoint point;
     point.position = canvasPt;
     point.pressure = qBound<qreal>(0.0, pressure, 1.0);
@@ -3623,6 +3621,17 @@ void DrawingCanvas::moveBrushStroke(const QPointF &canvasPt, qreal pressure,
     m_lastBrushPressure = pressure;
 }
 
+// Undo the eraser-stroke brush swap the moment the stroke's inputs are
+// captured (finishStrokeWork) or discarded (cancelStroke). No-op when no
+// swap is outstanding.
+void DrawingCanvas::restorePaintBrushAfterStroke()
+{
+    if (!m_eraserStrokeSwap)
+        return;
+    m_eraserStrokeSwap = false;
+    m_paintEngine.setBrush(m_savedPaintBrush);
+}
+
 void DrawingCanvas::endBrushStroke(const QString &undoText)
 {
     m_brushStroke = false;
@@ -3637,6 +3646,11 @@ void DrawingCanvas::endBrushStroke(const QString &undoText)
         // the same mask the commit itself will apply.
         m_pendingPreview = QImage();
         m_pendingPreviewRect = QRect();
+        // Captured BEFORE finishStrokeWork resets the builders, while the
+        // eraser Brush is still swapped in: the frozen image for an erase
+        // stroke is COVERAGE, and paintEvent carves with it instead of
+        // drawing it over.
+        m_pendingPreviewErase = m_paintEngine.brush().eraseMode();
         if (const TiledImage *preview = m_paintEngine.previewTiles();
             preview && preview->allocatedTileCount() > 0) {
             // A decimated preview (k > 1) holds tiles in PREVIEW space;
@@ -3695,6 +3709,7 @@ void DrawingCanvas::endBrushStroke(const QString &undoText)
             }
         }
         auto work = m_paintEngine.finishStrokeWork(true);
+        restorePaintBrushAfterStroke();
         const QImage selectionMask = m_selectionPath.isEmpty()
             ? QImage() : cachedSelectionMask();
         work.selectionMask = selectionMask;
@@ -3745,6 +3760,7 @@ void DrawingCanvas::completePaintStroke(
     const QRect pendingRect = m_pendingPreviewRect;
     m_pendingPreview = QImage();
     m_pendingPreviewRect = QRect();
+    m_pendingPreviewErase = false;
     if (!pendingRect.isEmpty())
         updateBrushRegion(pendingRect);
     m_lastPaintRenderer = result.renderer;
@@ -3843,6 +3859,7 @@ void DrawingCanvas::discardRoughStroke()
         return;
     m_brushStroke = false;
     m_paintEngine.cancelStroke(); // rough engine preview was never published
+    restorePaintBrushAfterStroke();
     if (m_strokeMask == StrokeMaskPaint) {
         m_strokeMask = StrokeMaskNone;
         m_strokeBuf = QImage();
@@ -5084,7 +5101,7 @@ bool DrawingCanvas::viewInteractionActive() const
     // live strokes (engine brush and classic tools), panning, selection
     // drags (marquee/lasso/polygon), any transform-box drag, and Edit Shape
     // mode.
-    return m_brushStroke || m_drawing || m_strokeMask != StrokeMaskNone
+    return m_brushStroke || m_strokeMask != StrokeMaskNone
         || m_panning || m_selDrag || m_selOutlineDrag
         || !m_polygonPts.isEmpty() || m_xformMode != XNone || m_qsEditing;
 }
@@ -5277,36 +5294,40 @@ void DrawingCanvas::paintEvent(QPaintEvent *event)
         }
         const bool liveStroke = m_strokeMask != StrokeMaskNone
             && &layer == m_panel->activeLayer();
-        if (liveStroke && m_strokeMask == StrokeMaskErase) {
-            // Live erase preview: the active layer minus the capped stroke —
-            // exactly what the release will bake. The selection mask applies
-            // only when a selection exists; eraser opacity scales the whole
-            // stroke's coverage uniformly. Composed only over the UPDATE
-            // region (canvas space): the dirty-region updates repaint a
-            // small rect per input event, so the full-canvas copies that made
-            // large strokes lag shrink to the touched area.
-            const QRect region = strokeClipC;
-            if (!region.isEmpty()) {
-                QImage temp = layer.image.copy(region);
-                QImage cut = m_strokeBuf.copy(region);
-                QPainter cp(&cut);
-                cp.setCompositionMode(QPainter::CompositionMode_DestinationIn);
-                if (!m_selectionPath.isEmpty())
-                    cp.drawImage(QPoint(0, 0), cachedSelectionMask(), region);
-                if (m_eraserOpacity < 1.0)
-                    cp.fillRect(cut.rect(),
-                                QColor(0, 0, 0,
-                                       qRound(m_eraserOpacity * 255.0)));
-                cp.end();
-                QPainter tp(&temp);
-                tp.setCompositionMode(QPainter::CompositionMode_DestinationOut);
-                tp.drawImage(0, 0, cut);
-                tp.end();
-                painter.drawImage(region.topLeft(), temp);
+        {
+            // ERASE-AWARE layer draw. An in-flight (or pending-publish)
+            // ERASE stroke must show REMOVAL: the layer's contribution is
+            // the carved image, so the carve region is clipped OUT of the
+            // plain draw here and the carved pixels are drawn in the
+            // preview blocks below. Paint strokes and idle frames take the
+            // exact previous path. (This was the quiet hazard of the
+            // eraser-to-engine move: the engine preview holds the stroke
+            // as pixels drawn OVER, the opposite of what erasing shows.)
+            const bool activeHere = &layer == m_panel->activeLayer();
+            const TiledImage *preview =
+                activeHere ? m_paintEngine.previewTiles() : nullptr;
+            const bool livePreview =
+                preview && preview->allocatedTileCount() > 0;
+            const bool eraseLive = livePreview
+                && m_paintEngine.brush().eraseMode() && !strokeClipC.isEmpty();
+            const bool erasePending = activeHere && !livePreview
+                && m_pendingPreviewErase && !m_pendingPreview.isNull()
+                && m_pendingPreviewRect.intersects(strokeClipC);
+            const QRect carveRect = eraseLive
+                ? strokeClipC
+                : (erasePending ? m_pendingPreviewRect : QRect());
+            if (carveRect.isEmpty()) {
+                painter.drawImage(0, 0, layer.image);
+            } else {
+                painter.save();
+                painter.setClipRegion(
+                    QRegion(0, 0, layer.image.width(), layer.image.height())
+                        - QRegion(carveRect),
+                    Qt::IntersectClip);
+                painter.drawImage(0, 0, layer.image);
+                painter.restore();
             }
-        } else {
-            painter.drawImage(0, 0, layer.image);
-            if (&layer == m_panel->activeLayer()) {
+            if (activeHere) {
                 // Live stroke preview: the tiles are composed into ONE
                 // region image and drawn with a single drawImage. Drawing
                 // each 256px tile as its own quad under the scaled/rotated
@@ -5316,9 +5337,6 @@ void DrawingCanvas::paintEvent(QPaintEvent *event)
                 // One quad has no interior boundaries, and strokeClipC's 2px
                 // margin past the update rect keeps the composite's own edge
                 // fringe outside the repainted area.
-                const TiledImage *preview = m_paintEngine.previewTiles();
-                const bool livePreview =
-                    preview && preview->allocatedTileCount() > 0;
                 if (livePreview && !strokeClipC.isEmpty()) {
                     // Brushes over 256 px rasterize their preview at 1/k
                     // scale (see SankoPaintHostAdapter::beginStroke): the
@@ -5376,16 +5394,43 @@ void DrawingCanvas::paintEvent(QPaintEvent *event)
                                                   cachedSelectionMask(),
                                                   strokeClipC);
                         }
-                        painter.drawImage(strokeClipC.topLeft(), comp);
+                        if (eraseLive) {
+                            // The carved region: layer pixels minus the
+                            // stroke's coverage (comp's alpha), the same
+                            // "layer minus capped stroke" the classic
+                            // eraser previewed and the publish will bake.
+                            QImage temp = layer.image.copy(strokeClipC);
+                            QPainter tp(&temp);
+                            tp.setCompositionMode(
+                                QPainter::CompositionMode_DestinationOut);
+                            tp.drawImage(0, 0, comp);
+                            tp.end();
+                            painter.drawImage(strokeClipC.topLeft(), temp);
+                        } else {
+                            painter.drawImage(strokeClipC.topLeft(), comp);
+                        }
                     }
                 } else if (!livePreview && !m_pendingPreview.isNull()
                            && m_pendingPreviewRect.intersects(strokeClipC)) {
                     // Commit in flight: the frozen preview bridges the gap
                     // between finishStrokeWork() dropping the live tiles
                     // and the async publish landing in layer.image, so the
-                    // stroke never vanishes after release.
-                    painter.drawImage(m_pendingPreviewRect.topLeft(),
-                                      m_pendingPreview);
+                    // stroke never vanishes after release. For an ERASE
+                    // stroke the frozen image is the COVERAGE, and the
+                    // bridge shows the carved layer, never the coverage.
+                    if (m_pendingPreviewErase) {
+                        QImage temp = layer.image.copy(m_pendingPreviewRect);
+                        QPainter tp(&temp);
+                        tp.setCompositionMode(
+                            QPainter::CompositionMode_DestinationOut);
+                        tp.drawImage(0, 0, m_pendingPreview);
+                        tp.end();
+                        painter.drawImage(m_pendingPreviewRect.topLeft(),
+                                          temp);
+                    } else {
+                        painter.drawImage(m_pendingPreviewRect.topLeft(),
+                                          m_pendingPreview);
+                    }
                 }
             }
             if (liveStroke && m_strokeMask == StrokeMaskPaint) {
@@ -6195,24 +6240,19 @@ void DrawingCanvas::mousePressEvent(QMouseEvent *event)
 
     switch (m_tool) {
     case Eraser: {
+        // The Eraser is an engine brush (the erase composite pass): same
+        // stroke pipeline as the Brush - stamps, pressure, the decimated
+        // preview, the commit-based undo - with the eraseMode Brush swapped
+        // in for the stroke. The old QPainter round-pen path (hard-edged,
+        // pressure-blind, snapshot undo) is retired. No QuickShape for the
+        // eraser: hold-to-shape stays a Brush gesture.
+        if (m_paintCommitPending)
+            break; // UI remains responsive while the previous stroke publishes
         beginLayerEdit();
-        m_drawing = true;
-        if (!m_selectionPath.isEmpty() || m_eraserOpacity < 1.0) {
-            // Same stroke-level masking as the brush: erase coverage builds
-            // in the scratch and the mask/strength caps it ONCE (preview +
-            // bake) — partial opacity erases uniformly across the stroke,
-            // with no double-erase at segment joints.
-            m_strokeMask = StrokeMaskErase;
-            m_strokeBuf = QImage(canvasSize(), QImage::Format_ARGB32_Premultiplied);
-            m_strokeBuf.fill(Qt::transparent);
-        }
-        // UNCLAMPED anchor (canvas-edge fix): toCanvas() pinned the press to
-        // the document border, so an eraser stroke leaving the paper crawled
-        // along the edge. drawSegment endpoints may lie off-document —
-        // QPainter clips the pixels to the image.
-        m_lastCanvas = toCanvasF(event->position()).toPoint();
-        m_perspective.beginStroke(toCanvasF(event->position())); // snap anchor
-        drawSegment(m_lastCanvas, m_lastCanvas, m_color); // dot on click (eraser clears)
+        m_brushStroke = true;
+        emit liveBrushStrokeStarted(); // live input only (see the signal)
+        beginBrushStroke(
+            stabilizeStrokePoint(toCanvasF(event->position()), true), 1.0);
         break;
     }
     case Brush: {
@@ -6401,16 +6441,10 @@ void DrawingCanvas::mouseMoveEvent(QMouseEvent *event)
         // filtered point (mouse: fixed pressure).
         const QPointF pt = m_perspective.snapPoint(
             stabilizeStrokePoint(toCanvasF(event->position()), false));
-        if (m_quickShapeEnabled)
+        if (m_quickShapeEnabled && m_tool == Brush)
             m_quickShape.pointerMove(pt, 1.0);
         moveBrushStroke(pt, 1.0);
         return;
-    }
-    if (m_drawing) {
-        const QPoint p =
-            m_perspective.snapPoint(toCanvasF(event->position())).toPoint();
-        drawSegment(m_lastCanvas, p, m_color);
-        m_lastCanvas = p;
     }
 }
 
@@ -6443,10 +6477,11 @@ void DrawingCanvas::mouseReleaseEvent(QMouseEvent *event)
         return;
     }
     if (m_brushStroke && event->button() == Qt::LeftButton) {
-        if (m_quickShapeEnabled)
+        if (m_quickShapeEnabled && m_tool == Brush)
             m_quickShape.pointerRelease(toCanvasF(event->position()), 1.0);
         m_qsHeld = false;
-        endBrushStroke();
+        endBrushStroke(m_tool == Eraser ? QStringLiteral("Eraser Stroke")
+                                        : QStringLiteral("Brush Stroke"));
         updateQuickShapeUi();
         return;
     }
@@ -6512,38 +6547,6 @@ void DrawingCanvas::mouseReleaseEvent(QMouseEvent *event)
         commitDragShape();
         return;
     }
-    if (m_drawing)
-        finishEraseStroke();
-}
-
-// The whole-stroke erase finalize — shared by the normal release and by
-// finishInterruptedStroke() (focus loss / broken grab), so an interrupted
-// erase commits exactly like a released one.
-void DrawingCanvas::finishEraseStroke()
-{
-    m_drawing = false;
-    if (m_strokeMask == StrokeMaskErase) {
-        // ONE mask/strength application for the whole erase stroke.
-        if (Layer *layer = editableActiveLayer()) {
-            QImage cut = m_strokeBuf;
-            QPainter cp(&cut);
-            cp.setCompositionMode(QPainter::CompositionMode_DestinationIn);
-            if (!m_selectionPath.isEmpty())
-                cp.drawImage(0, 0, cachedSelectionMask());
-            if (m_eraserOpacity < 1.0)
-                cp.fillRect(cut.rect(),
-                            QColor(0, 0, 0,
-                                   qRound(m_eraserOpacity * 255.0)));
-            cp.end();
-            QPainter p(&layer->image);
-            p.setCompositionMode(QPainter::CompositionMode_DestinationOut);
-            p.drawImage(0, 0, cut);
-        }
-        m_strokeMask = StrokeMaskNone;
-        m_strokeBuf = QImage();
-    }
-    finalizeLayerEdit(QStringLiteral("Erase"));
-    emit contentChanged();
 }
 
 // Delivery ended without a release — focus torn away or the mouse grab
@@ -6558,11 +6561,10 @@ void DrawingCanvas::finishInterruptedStroke()
         if (m_quickShapeEnabled)
             m_quickShape.pointerRelease(m_lastBrushPt, 0.0);
         m_qsHeld = false;
-        endBrushStroke();
+        endBrushStroke(m_tool == Eraser ? QStringLiteral("Eraser Stroke")
+                                        : QStringLiteral("Brush Stroke"));
         updateQuickShapeUi();
     }
-    if (m_drawing)
-        finishEraseStroke();
 }
 
 void DrawingCanvas::mouseDoubleClickEvent(QMouseEvent *event)
@@ -6656,7 +6658,10 @@ void DrawingCanvas::clearPenUiLatch()
 
 void DrawingCanvas::tabletEvent(QTabletEvent *event)
 {
-    if (m_tool != Brush) {
+    if (m_tool != Brush && m_tool != Eraser) {
+        // The Eraser passes: it is an engine brush now, and the pressure
+        // curves it gained are exactly why (a pressure-blind eraser on a
+        // pen display was a defect lived with unknowingly for months).
         event->ignore();
         return;
     }
@@ -6758,7 +6763,7 @@ void DrawingCanvas::tabletEvent(QTabletEvent *event)
             emit liveBrushStrokeStarted(); // live input only (see the signal)
             const QPointF pt =
                 stabilizeStrokePoint(toCanvasF(event->position()), true);
-            if (m_quickShapeEnabled) {
+            if (m_quickShapeEnabled && m_tool == Brush) {
                 applyQuickShapeTiming();
                 captureQuickShapeBrush();
                 m_quickShape.pointerPress(pt, event->pressure(),
@@ -6781,7 +6786,7 @@ void DrawingCanvas::tabletEvent(QTabletEvent *event)
             // Stabilize before the snap (same order as the mouse path).
             const QPointF pt = m_perspective.snapPoint(stabilizeStrokePoint(
                 toCanvasF(event->position()), false));
-            if (m_quickShapeEnabled)
+            if (m_quickShapeEnabled && m_tool == Brush)
                 m_quickShape.pointerMove(pt, event->pressure(),
                                          event->xTilt(), event->yTilt(),
                                          event->rotation());
@@ -6796,12 +6801,14 @@ void DrawingCanvas::tabletEvent(QTabletEvent *event)
             m_quickShape.pointerRelease(toCanvasF(event->position()),
                                         event->pressure());
         } else if (m_brushStroke) {
-            if (m_quickShapeEnabled)
+            if (m_quickShapeEnabled && m_tool == Brush)
                 m_quickShape.pointerRelease(toCanvasF(event->position()),
                                             event->pressure(),
                                             event->xTilt(), event->yTilt(),
                                             event->rotation());
-            endBrushStroke();
+            endBrushStroke(m_tool == Eraser
+                               ? QStringLiteral("Eraser Stroke")
+                               : QStringLiteral("Brush Stroke"));
         }
         m_qsHeld = false;
         updateQuickShapeUi();

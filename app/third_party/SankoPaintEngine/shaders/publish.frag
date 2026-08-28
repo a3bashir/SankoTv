@@ -11,6 +11,7 @@ layout(std140, binding = 0) uniform Globals {
     int colorStrokeBuffer;
     float wetEdges;   // 0 = off; per-stroke rim pooling at THIS boundary
     float wetCeiling; // mask path: brush opacity; colour path: 1.0
+    int eraseMode;    // 1: coverage REMOVES alpha (mirrors eraseOut on CPU)
 };
 
 float byteRound(float value)
@@ -61,6 +62,15 @@ void main()
     }
     if (sourceAlpha <= 0.0) {
         fragmentColor = destination;
+        return;
+    }
+    if (eraseMode != 0) {
+        // The erase composite - the CPU implementation is eraseOut in
+        // PixelCompositor.cpp, line for line: the same published coverage
+        // that would deposit colour removes alpha instead, colour channels
+        // untouched, sharing the byteRound quantisation boundary.
+        fragmentColor = vec4(destination.rgb,
+                             byteRound(destination.a * (1.0 - sourceAlpha)));
         return;
     }
     float outputAlpha = sourceAlpha + destination.a * (1.0 - sourceAlpha);

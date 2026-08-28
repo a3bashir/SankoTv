@@ -2217,3 +2217,108 @@ check instead of a user.
 RULE the helper encodes: the scratch guarantee must hold WITHOUT anyone
 checking. Settings access added in future goes through sankoSettings()
 — a new two-argument QSettings site is a review reject.
+
+## The engine erase composite: the Eraser is a brush now (2026-08-28)
+
+THE ERASER WAS NEVER A BRUSH. It was the classic QPainter path whole and
+entire — a round-cap drawLine with CompositionMode_Clear, two parameters
+(size 1..200, opacity), hard-edged always, snapshot undo, and PRESSURE-
+BLIND: tabletEvent opened with `if (m_tool != Brush) ignore()`, so pen
+erasing fell back to synthesized mouse events at fixed width. On a
+Cintiq that was a defect lived with unknowingly for months, and it is
+what decided this design (Requirement 0, two passes back).
+
+THE COMPOSITE. Both render paths already converge on ONE publication
+boundary (accumulated UNORM16 coverage -> wet transfer -> byte
+quantisation -> sourceAlpha -> source-over). Erase replaces only the
+final blend, symmetrically: CPU eraseOut in PixelCompositor
+(dst.a *= 1 - sourceAlpha, colour untouched), GPU an eraseMode branch in
+publish.frag riding the spare uniform slot at offset 92. Everything
+upstream — stamps, tips, hardness, pressure curves, flow, wet edges, the
+opacity ceiling, the decimated preview — is blend-agnostic and unchanged.
+Brush::eraseMode wins over smudge and forces the mask path
+(usesColorStrokeBuffer returns false): smudge/dual/colour-jitter erasers
+are a contradiction, excluded at the Brush level. Codec: v11 block
+(eraseMode bool); old builds refuse v11 files cleanly at the wrapper,
+existing files load unchanged (fresh Brush defaults to false).
+
+ZERO-ALPHA CANONICALISATION, found by the gate: CPU kept a fully-erased
+pixel's RGB bytes (straight alpha, inert) while the GPU's premultiplied
+render-target roundtrip zeroes them — invisible pixels, 229/255 apart.
+eraseOut now writes ALL-ZERO bytes when alpha reaches 0, and the two
+paths are BYTE-IDENTICAL for erase (maxDelta 0, better than the 3/255
+brush bound). New pin: kBaselineErase 0bc243812b43... (PixelLock check
+6), same hash both configs. Partial pixels keep their colour channels —
+proven with a half-strength fixture, because the hardness-1.0 fixture
+produces only 0/255 coverage and the first "partial pixels" check found
+NOTHING to check (a vacuous check caught before it shipped).
+
+THE QUIET HAZARD, confirmed and closed: the engine preview holds the
+stroke as pixels drawn OVER the layer — the OPPOSITE of what erasing
+shows. The canvas now carves instead: during an erase stroke (live or
+pending-publish) the carve region is clipped OUT of the active layer's
+plain draw and the carved copy (layer minus the preview's coverage,
+selection-masked) is drawn in its place — the same "layer minus capped
+stroke" the classic eraser previewed. Works at k=1 and through the
+decimated (k>1) preview unchanged; the frozen release-bridge stores
+COVERAGE for erase strokes (m_pendingPreviewErase) and carves too.
+
+SELECTION + PARTIAL OPACITY (the piece expected to break quietly)
+survive BY CONSTRUCTION and are pinned: coverage accumulates UNMASKED
+in UNORM16 with the opacity ceiling applied once at publication, and
+render() applies the selection mask as a single lerp — the classic
+cap-once semantics exactly. BrushLibrary (b7): masked-out pixels
+untouched, selected pixels to 0, a soft 50% band erases HALFWAY (127),
+50% opacity leaves 127, and crossing the same pixels twice in ONE
+stroke does not double-erase (127 == 127). Mask convention note: the
+selection mask is LUMINANCE (render() converts Grayscale8; the canvas
+mask is white-on-transparent premultiplied = luminance-consistent) —
+the first version of the b7 fixture encoded softness in ALPHA and
+erased to 0, a wrong-convention trap worth remembering.
+
+CANVAS REWIRING: the Eraser presses/moves/releases through the SAME
+engine path as the Brush (m_brushStroke covers both; m_drawing,
+finishEraseStroke, the StrokeMaskErase preview branch and drawSegment's
+erase branches are RETIRED). The eraser Brush (hard-round, hardness 1.0,
+eraseMode, engine-default pressure response) is swap-restored around the
+stroke — the engine has one brush slot and the studio/library own its
+usual occupant; restorePaintBrushAfterStroke() runs at finishStrokeWork
+and cancelStroke. QuickShape stays Brush-only. Undo entries read
+"Eraser Stroke". The eraser joins the 1..5000 log slider (per-tool
+restore max raised; erasing a 4K canvas at 200 px was the old misery).
+
+THE DEAD HARDNESS RETIRED, NOT MIGRATED: the per-tool eraser hardness
+persisted for months and was applied by NOTHING (confirmed: only
+tc->brush.hardness is ever applied; the mirror writes only the brush
+struct). Honouring the stale knob now that hardness WORKS would soften
+erasing based on a value the user never saw act. The keys
+(toolCtl/eraser/hardness + hardnessTicks) are actively REMOVED at load
+so no future reader resurrects them.
+
+TWO TIMING BEHAVIOURS ARRIVE FROM THE BRUSH PATH — flagged for hand
+checking, they are new to erasing and will be FELT before any test
+fails: (1) the erase bakes ASYNCHRONOUSLY (frozen-bridge preview until
+the publish lands; the classic eraser baked synchronously at release);
+(2) the DROPPED-PRESS window now applies — an eraser press during a
+pending publish is refused, and the eraser's usage pattern (short rapid
+scrubs) hits that window MORE often than brush strokes do. Measured
+windows: ~13-14 ms per stroke at 960x540, 63-71 ms at 4K. Queuing the
+press remains the known deferred fix (recorded at the stroke-path pass);
+if scrubbing feels like it drops strokes at 4K, that fix moves up.
+
+GATE: PixelLock check 6 (erase trio: pinned CPU hash, determinism,
+GPU byte-identity, alpha-exactly-0, untouched corner, colour channels —
+controls throughout); BrushLibrary (b7) as above; SizeLock (k) — the
+engine eraser through REAL synthetic events: erases, MID-STROKE preview
+shows REMOVAL at k=1 AND k>1 (QWidget::render sampling, pre-stroke
+controls), undo/redo byte-exact titled "Eraser Stroke", tablet erasing
+works (alpha 26 at pressure 0.9 — pressure genuinely modulates);
+Lifecycle (j) eraser range updated to 1..5000. Totals: SizeLock 165,
+Lifecycle 138. Pinned hashes 193847fa / 666f7b45 / cafcec7f unchanged —
+verified by the full gate, both configs, plus the SankoTV target.
+
+NEXT (its own pass): the library UI — builtinEraserRoster() with its
+OWN pinned SHA (never added to builtinRoster(), which is what keeps
+193847fa fixed), category tag "Eraser" in the panel, preview swatches
+rendered over a colour band showing the carved hole (the smudge
+pattern), preset save/load through the existing codec.

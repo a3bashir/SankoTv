@@ -28,7 +28,8 @@ constexpr quint32 kPresetMagic = 0x534E4B50; // "SNKP"
 //       files land on the default 256; the field is only read when a
 //       control source is Fade, which no pre-v4 file can have set to a
 //       distance other than the default anyway.
-constexpr quint16 kVersion = 10;
+//   v11: eraseMode (the Eraser Library engine pass).
+constexpr quint16 kVersion = 11;
 constexpr quint16 kMinReadVersion = 1;
 
 // A fixed QDataStream version pins the wire format independently of the Qt
@@ -332,6 +333,14 @@ void walkBrush(::Brush &b, V &v, quint16 wireVersion, int depth = 0)
                 [&](qint32 x) {
                     b.setTextureBlendMode(B::TextureBlendMode(x));
                 });
+    }
+    // v11: erase mode (the Eraser Library). A v10 or older file has no
+    // field; the fresh Brush defaults to false - every existing preset
+    // paints exactly as before. Old builds refuse v11 files cleanly at the
+    // wrapper version check, never misparse them.
+    if (wireVersion >= 11) {
+        v.field([&] { return b.eraseMode(); },
+                [&](bool x) { b.setEraseMode(x); });
     }
     // Secondary brush: one level deep, exactly like the engine renders it
     // (primary slot 0 + secondary slot 1). A disabled dual brush serialises

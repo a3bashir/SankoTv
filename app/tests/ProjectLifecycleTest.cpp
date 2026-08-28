@@ -982,14 +982,18 @@ void runSizeCtlAgreementPass(const QString &scratch)
     check(QStringLiteral("(j) setBrushToolSize(5000) holds in the engine"),
           canvas->paintBrush().size() == 5000);
 
-    // The ERASER keeps its 1..200 world, and coming back from it must not
-    // squash the brush's 5000 through the eraser's clamp.
+    // The ERASER shares the 1..5000 log track since the erase composite
+    // pass; the round-trip must still not disturb the brush's value.
     canvas->setTool(DrawingCanvas::Eraser);
     pump(200);
     const int eraserShown = page->sizeCtlDisplayedSizeForTest();
     check(QStringLiteral("(j) eraser mode shows an eraser-range value"),
-          eraserShown >= 1 && eraserShown <= 200,
+          eraserShown >= 1 && eraserShown <= 5000,
           QStringLiteral("bar=%1").arg(eraserShown));
+    canvas->setEraserSize(5000);
+    check(QStringLiteral("(j) the eraser itself accepts 5000"),
+          canvas->eraserSize() == 5000,
+          QStringLiteral("eraser=%1").arg(canvas->eraserSize()));
     canvas->setTool(DrawingCanvas::Brush);
     pump(200);
     check(QStringLiteral("(j) back to Brush: 5000 SURVIVED the eraser "

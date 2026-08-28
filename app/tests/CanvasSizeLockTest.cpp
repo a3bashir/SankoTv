@@ -83,6 +83,8 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QMouseEvent>
+#include <QTabletEvent>
+#include <QPointingDevice>
 #include <QPainter>
 #include <QSettings>
 #include <QStandardPaths>
@@ -283,6 +285,153 @@ void runBrushRangePass(const QSize &S, DrawingCanvas *canvas,
     }
 
     canvas->setBrushToolSize(25); // leave the shared canvas as found
+    canvas->setActivePanel(nullptr);
+    delete panel;
+}
+
+// ---- (k) the ENGINE ERASER: erases, previews removal, undoes ------------
+// The erase composite pass replaced the classic QPainter eraser with the
+// stamp engine (pressure, tips, decimated preview, commit undo). The QUIET
+// HAZARD it guards: the engine's live preview holds the stroke as pixels
+// drawn OVER the layer - the exact opposite of what erasing must show - so
+// the canvas carves with the preview's coverage instead. Asserted MID-
+// STROKE via QWidget::render() (no screen sampling), at k=1 and at k>1
+// (decimated), each with the pre-stroke control on the same sampler.
+void runEraserPass(DrawingCanvas *canvas, QUndoStack *stack)
+{
+    const QSize S(960, 540);
+    out() << "--- (k) engine eraser at 960x540 ---" << Qt::endl;
+    const QPointF wc(canvas->width() / 2.0, canvas->height() / 2.0);
+    stack->clear();
+    Panel *panel = makeBlankPanel(S);
+    panel->layers[1].image.fill(QColor(200, 30, 30)); // opaque red to erase
+    canvas->setActivePanel(panel);
+    canvas->setTool(DrawingCanvas::Eraser);
+    canvas->setEraserSize(60);
+    canvas->setEraserOpacity(100);
+    canvas->placeViewForTest(0.6, QPointF(480, 270), wc);
+    pump(150);
+    const QImage &li = panel->layers.at(1).image;
+
+    auto renderSample = [&](const QPointF &canvasPt) {
+        QImage shot(canvas->size(), QImage::Format_ARGB32);
+        shot.fill(Qt::black);
+        canvas->render(&shot);
+        const QPoint w = canvas->viewTransformForTest().map(canvasPt).toPoint();
+        return shot.valid(w) ? shot.pixel(w) : qRgba(0, 0, 0, 0);
+    };
+
+    // (k1) controls: layer opaque, render shows the red layer.
+    check(QStringLiteral("(k) control: layer opaque red at the probe"),
+          qAlpha(li.pixel(300, 270)) == 255 && qRed(li.pixel(300, 270)) == 200);
+    check(QStringLiteral("(k) control: the render sampler sees the red layer"),
+          qRed(renderSample(QPointF(300, 270))) > 150
+              && qGreen(renderSample(QPointF(300, 270))) < 120);
+
+    // (k2) live preview shows REMOVAL at k=1 - sampled MID-STROKE.
+    {
+        const QTransform t = canvas->viewTransformForTest();
+        sendMouse(canvas, QEvent::MouseButtonPress, t.map(QPointF(200, 270)),
+                  Qt::LeftButton);
+        for (int i = 1; i <= 12; ++i)
+            sendMouse(canvas, QEvent::MouseMove,
+                      t.map(QPointF(200 + i * 20, 270)), Qt::LeftButton);
+        pump(250); // preview rasterizes per move; publish has NOT run
+        const QRgb mid = renderSample(QPointF(300, 270));
+        check(QStringLiteral("(k) MID-STROKE preview shows REMOVAL at k=1 "
+                             "(paper, not the red layer, not the stroke)"),
+              qRed(mid) > 180 && qGreen(mid) > 180 && qBlue(mid) > 180,
+              QStringLiteral("rgb=%1,%2,%3")
+                  .arg(qRed(mid)).arg(qGreen(mid)).arg(qBlue(mid)));
+        check(QStringLiteral("(k) ...and the LAYER is still untouched "
+                             "mid-stroke (publish not landed)"),
+              qAlpha(li.pixel(300, 270)) == 255);
+        sendMouse(canvas, QEvent::MouseButtonRelease,
+                  t.map(QPointF(440, 270)), Qt::LeftButton);
+        pump(900);
+    }
+
+    // (k3) the publish erased the layer; undo/redo byte-exact; entry text.
+    check(QStringLiteral("(k) the eraser ERASES (alpha 0 on the spine)"),
+          qAlpha(li.pixel(300, 270)) == 0,
+          QStringLiteral("alpha=%1").arg(qAlpha(li.pixel(300, 270))));
+    check(QStringLiteral("(k) one undo entry, titled Eraser Stroke"),
+          stack->count() == 1
+              && stack->text(0) == QStringLiteral("Eraser Stroke"),
+          stack->count() ? stack->text(0) : QStringLiteral("no entry"));
+    const QImage afterErase = li.copy();
+    canvas->undo();
+    pump(300);
+    check(QStringLiteral("(k) undo restores the red layer byte-exactly"),
+          qAlpha(li.pixel(300, 270)) == 255
+              && qRed(li.pixel(300, 270)) == 200);
+    canvas->redo();
+    pump(300);
+    check(QStringLiteral("(k) redo restores the erase byte-exactly"),
+          li == afterErase);
+
+    // (k4) decimated preview (eraser 600 px -> k=3): same removal check.
+    panel->layers[1].image.fill(QColor(200, 30, 30));
+    canvas->setActivePanel(panel);
+    stack->clear();
+    canvas->setEraserSize(600);
+    pump(100);
+    {
+        const QTransform t = canvas->viewTransformForTest();
+        sendMouse(canvas, QEvent::MouseButtonPress, t.map(QPointF(480, 270)),
+                  Qt::LeftButton);
+        for (int i = 1; i <= 6; ++i)
+            sendMouse(canvas, QEvent::MouseMove,
+                      t.map(QPointF(480 + i * 10, 270)), Qt::LeftButton);
+        pump(250);
+        const QRgb mid = renderSample(QPointF(480, 270));
+        check(QStringLiteral("(k) MID-STROKE preview shows REMOVAL at k>1 "
+                             "(600 px eraser, decimated preview)"),
+              qRed(mid) > 180 && qGreen(mid) > 180 && qBlue(mid) > 180,
+              QStringLiteral("rgb=%1,%2,%3")
+                  .arg(qRed(mid)).arg(qGreen(mid)).arg(qBlue(mid)));
+        sendMouse(canvas, QEvent::MouseButtonRelease,
+                  t.map(QPointF(540, 270)), Qt::LeftButton);
+        pump(900);
+    }
+    check(QStringLiteral("(k) the 600 px erase landed (alpha 0 at centre)"),
+          qAlpha(li.pixel(480, 270)) == 0);
+
+    // (k5) TABLET events reach the eraser (they were IGNORED before this
+    // pass: tabletEvent gated on m_tool == Brush, so pen erasing fell back
+    // to synthesized mouse - pressure-blind - the defect that decided the
+    // design).
+    panel->layers[1].image.fill(QColor(200, 30, 30));
+    canvas->setActivePanel(panel);
+    stack->clear();
+    canvas->setEraserSize(60);
+    pump(100);
+    {
+        const QTransform t = canvas->viewTransformForTest();
+        auto sendTablet = [&](QEvent::Type type, const QPointF &canvasPt,
+                              qreal pressure) {
+            const QPointF w = t.map(canvasPt);
+            QTabletEvent ev(type, QPointingDevice::primaryPointingDevice(),
+                            w, canvas->mapToGlobal(w.toPoint()), pressure,
+                            0.0f, 0.0f, 0.0f, 0.0, 0.0f, Qt::NoModifier,
+                            Qt::LeftButton,
+                            type == QEvent::TabletRelease
+                                ? Qt::NoButton : Qt::LeftButton);
+            QCoreApplication::sendEvent(canvas, &ev);
+        };
+        sendTablet(QEvent::TabletPress, QPointF(200, 200), 0.9);
+        for (int i = 1; i <= 10; ++i)
+            sendTablet(QEvent::TabletMove, QPointF(200 + i * 15, 200), 0.9);
+        sendTablet(QEvent::TabletRelease, QPointF(350, 200), 0.0);
+        pump(900);
+        check(QStringLiteral("(k) TABLET erasing works (the pen no longer "
+                             "falls back to mouse)"),
+              qAlpha(li.pixel(275, 200)) < 255,
+              QStringLiteral("alpha=%1").arg(qAlpha(li.pixel(275, 200))));
+    }
+
+    canvas->setTool(DrawingCanvas::Brush); // leave the canvas as found
+    canvas->setEraserSize(25);
     canvas->setActivePanel(nullptr);
     delete panel;
 }
@@ -1259,6 +1408,8 @@ int main(int argc, char **argv)
 
         for (const QSize &s : {QSize(960, 540), QSize(3840, 2160)})
             runBrushRangePass(s, canvas, &stack);
+
+        runEraserPass(canvas, &stack);
 
         runMigrationPass(projRoot);
         runResizeRefusalPass(canvas, &stack);
