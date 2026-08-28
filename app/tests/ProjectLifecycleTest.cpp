@@ -43,6 +43,7 @@
 #include "PerspectiveTool.h"
 #include "MainWindow.h"
 #include "StoryboardPage.h"
+#include "brushlib/BrushLibraryPanel.h"
 #include "NewProjectDialog.h"
 #include "ProjectIO.h"
 #include "StoryboardModel.h"
@@ -851,6 +852,90 @@ void runSaveAsIndependencePass(const QString &scratch)
 }
 
 
+// ---- (m) Eraser Library activation, end to end ----------------------------
+// Through the REAL panel signal (activatePresetForTest emits the same
+// brushActivated a row click does), so the page's routing lambda is what
+// is under test: an eraser preset lands in the ERASER brush and switches
+// the tool to Eraser; the paint brush and the brush selection are
+// untouched; both selections survive a tool round-trip. The tool switch
+// on activation is a DELIBERATE v1 UX decision (Procreate precedent) -
+// recorded in HANDOFF so reversing it later starts from the reasoning,
+// not from reconstruction.
+void runEraserLibraryPass(const QString &scratch)
+{
+    out() << "--- (m) eraser library activation, end to end ---" << Qt::endl;
+    MainWindow window;
+    window.resize(1300, 850);
+    window.show();
+    pump(800);
+    const QString fixture = writeProject(scratch + QStringLiteral("/elib"),
+                                         QStringLiteral("ELib"),
+                                         QSize(960, 540), 24, 1, 1);
+    check(QStringLiteral("(m) fixture opens"),
+          window.loadProjectForTest(fixture));
+    pump(500);
+    auto *canvas = window.findChild<DrawingCanvas *>();
+    auto *page = window.findChild<StoryboardPage *>();
+    auto *panel = window.findChild<brushlib::BrushLibraryPanel *>();
+    if (!canvas || !page || !panel) {
+        check(QStringLiteral("(m) found canvas, page and library panel"),
+              false);
+        window.markCleanForTest();
+        window.close();
+        return;
+    }
+    canvas->setTool(DrawingCanvas::Brush);
+    pump(200);
+
+    // Controls: capture the paint brush before any eraser activation.
+    ::Brush paintBefore = canvas->paintBrush();
+    const int eraserSizeBefore = canvas->eraserBrush().size();
+
+    // Activate the Chalk Eraser through the real signal.
+    panel->activatePresetForTest(QStringLiteral("eraser/chalk-eraser"));
+    pump(300);
+    check(QStringLiteral("(m) the eraser preset LANDED in the eraser brush"),
+          canvas->eraserBrush().eraseMode()
+              && canvas->eraserBrush().grainDepth() > 0.5
+              && canvas->eraserBrush().size() != eraserSizeBefore,
+          QStringLiteral("size=%1 grain=%2")
+              .arg(canvas->eraserBrush().size())
+              .arg(canvas->eraserBrush().grainDepth()));
+    check(QStringLiteral("(m) ...and the tool switched to Eraser "
+                         "(v1 decision, Procreate precedent)"),
+          canvas->tool() == DrawingCanvas::Eraser);
+    check(QStringLiteral("(m) ...and the PAINT brush is untouched"),
+          canvas->paintBrush().size() == paintBefore.size()
+              && !canvas->paintBrush().eraseMode());
+    check(QStringLiteral("(m) ...and the bar mirrors the eraser preset"),
+          page->sizeCtlDisplayedSizeForTest()
+              == canvas->eraserBrush().size(),
+          QStringLiteral("bar=%1 eraser=%2")
+              .arg(page->sizeCtlDisplayedSizeForTest())
+              .arg(canvas->eraserBrush().size()));
+
+    // A brush preset activation switches back to the Brush.
+    panel->activatePresetForTest(QStringLiteral("builtin/sketching/hb-pencil"));
+    pump(300);
+    check(QStringLiteral("(m) a BRUSH preset switches the tool to Brush"),
+          canvas->tool() == DrawingCanvas::Brush
+              && !canvas->paintBrush().eraseMode());
+
+    // Both selections survive the round-trip: the eraser still holds the
+    // chalk preset.
+    canvas->setTool(DrawingCanvas::Eraser);
+    pump(200);
+    check(QStringLiteral("(m) the eraser SELECTION survived the round-trip"),
+          canvas->eraserBrush().grainDepth() > 0.5
+              && canvas->eraserBrush().eraseMode());
+    canvas->setTool(DrawingCanvas::Brush);
+    pump(200);
+
+    window.markCleanForTest();
+    window.close();
+    pump(300);
+}
+
 // ---- (k) a recording carries its provenance -------------------------------
 // The git hash in system.txt has gone wrong SILENTLY twice: first it was
 // captured at configure time and named a commit four builds behind the
@@ -1408,6 +1493,7 @@ int main(int argc, char **argv)
     runSaveAsIndependencePass(scratch);
     runSaveFailurePass(scratch);
     runSizeCtlAgreementPass(scratch);
+    runEraserLibraryPass(scratch);
     runProvenancePass(scratch);
 
     // ---- (l) sankoSettings: scratch lands, the real store does not ----

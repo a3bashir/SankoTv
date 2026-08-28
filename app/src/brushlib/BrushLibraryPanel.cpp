@@ -401,9 +401,13 @@ void BrushLibraryPanel::buildUi()
     // gone — its brushes were redistributed into Painting, ids unchanged),
     // plus "Imported" — the home of foreign-format (.abr) imports — which
     // stays hidden until at least one imported brush exists.
+    // "Eraser" is a PANEL-side row: BrushLibraryModel::categories() (=
+    // builtinCategories()) is a pinned baseline the brush checks iterate,
+    // and the eraser presets live in their own roster. The row goes here,
+    // between the brush categories and "Imported".
     const QStringList cats = QStringList()
         << QStringLiteral("Recent") << BrushLibraryModel::categories()
-        << QStringLiteral("Imported");
+        << QStringLiteral("Eraser") << QStringLiteral("Imported");
     for (const QString &name : cats) {
         auto *row = new CategoryRow(name, m_sidebarWidget);
         row->onClicked = [this, row] { selectCategory(row->name()); };

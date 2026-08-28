@@ -81,6 +81,9 @@
 #endif
 
 using brushlib::BrushPreset;
+
+static const char kEraserSwatchSha[] =
+    "96baaccf7c4eac88613a19b51a47f1d178e59c85ec78ab521d8bf604b474c5e9";
 using brushlib::BrushPresetCodec;
 using brushlib::BrushPreviewRenderer;
 
@@ -457,6 +460,117 @@ int main(int argc, char **argv)
                              "preview on vs off"),
               onE.succeeded && offE.succeeded && sha(onE) == sha(offE)
                   && onE.affectedRect == offE.affectedRect);
+    }
+
+    // ---- (b8) the ERASER roster: its own pin, its own discipline ---------
+    // DELIBERATELY separate from builtinRoster(): the combined preview SHA
+    // (193847fa...) and the >=10-per-category checks are pinned baselines
+    // over the BRUSH roster, and erasers appearing there would move them
+    // for a reason unrelated to brush rendering. Eight erasers (ten was the
+    // brush categories' bar, not a design number), each mechanically
+    // distinct, pinned by their own combined swatch SHA below.
+    {
+        const QVector<BrushPreset> erasers = brushlib::builtinEraserRoster();
+        check(QStringLiteral("(b8) exactly 8 eraser presets"),
+              erasers.size() == 8,
+              QStringLiteral("count=%1").arg(erasers.size()));
+        QSet<QString> ids;
+        bool idsOk = true, catOk = true, modeOk = true, cleanOk = true;
+        for (const BrushPreset &p : erasers) {
+            idsOk = idsOk && !ids.contains(p.id)
+                && p.id.startsWith(QStringLiteral("eraser/"));
+            ids.insert(p.id);
+            catOk = catOk && p.category == QStringLiteral("Eraser");
+            modeOk = modeOk && p.brush.eraseMode();
+            cleanOk = cleanOk && !p.brush.smudgeActive()
+                && !p.brush.dualBrushEnabled()
+                && !p.brush.usesColorStrokeBuffer();
+        }
+        check(QStringLiteral("(b8) ids unique, eraser/ prefixed"), idsOk);
+        check(QStringLiteral("(b8) every entry is category Eraser"), catOk);
+        check(QStringLiteral("(b8) every entry is eraseMode"), modeOk);
+        check(QStringLiteral("(b8) none smudges, duals, or colour-buffers"),
+              cleanOk);
+
+        // THE CONTRADICTION CHECK, at the Brush level: the roster checks
+        // prove today's eight are clean; this proves the NINTH cannot be
+        // dirty. Setting eraseMode on a smudge / dual / colour-jitter brush
+        // FORCES the mask path - that is what the engine does (refusal was
+        // the alternative; forcing keeps setters order-independent).
+        {
+            ::Brush smudgy;
+            smudgy.setToolMode(::Brush::ToolMode::Smudge);
+            smudgy.setSmudgeStrength(0.8);
+            check(QStringLiteral("(b8) control: the smudge brush smudges "
+                                 "before eraseMode"),
+                  smudgy.smudgeActive());
+            smudgy.setEraseMode(true);
+            check(QStringLiteral("(b8) eraseMode FORCES smudge off"),
+                  !smudgy.smudgeActive() && !smudgy.usesColorStrokeBuffer());
+
+            ::Brush dual;
+            dual.setDualBrushEnabled(true);
+            check(QStringLiteral("(b8) control: the dual brush is dual "
+                                 "before eraseMode"),
+                  dual.dualBrushEnabled());
+            dual.setEraseMode(true);
+            check(QStringLiteral("(b8) eraseMode FORCES the dual brush off "
+                                 "(the dual publication shader has no erase "
+                                 "branch)"),
+                  !dual.dualBrushEnabled());
+
+            ::Brush jitter;
+            jitter.setHueJitter(0.4);
+            check(QStringLiteral("(b8) control: hue jitter trips the colour "
+                                 "buffer before eraseMode"),
+                  jitter.usesColorStrokeBuffer());
+            jitter.setEraseMode(true);
+            check(QStringLiteral("(b8) eraseMode FORCES the mask path over "
+                                 "the colour buffer"),
+                  !jitter.usesColorStrokeBuffer());
+        }
+
+        // The eraser swatches: rendered over the neutral band, carved
+        // through it - and pinned by their OWN combined SHA, deterministic
+        // across configs like the brush SHA. Re-baselining follows the
+        // same procedure as the brush SHA (see the header comment).
+        QCryptographicHash eraserCombined(QCryptographicHash::Sha256);
+        bool renderOk = true, carvedOk = true, determOk = true;
+        for (const BrushPreset &p : erasers) {
+            const QImage a = BrushPreviewRenderer::renderPreviewImage(p.brush);
+            const QImage b = BrushPreviewRenderer::renderPreviewImage(p.brush);
+            renderOk = renderOk && !a.isNull();
+            determOk = determOk && imageBytes(a) == imageBytes(b);
+            eraserCombined.addData(imageBytes(a));
+            // The swatch must show the band with a hole: at least one pixel
+            // fully opaque band-grey AND at least one pixel of reduced
+            // alpha inside the swatch (the carve).
+            bool sawBand = false, sawCarve = false;
+            for (int y = 0; y < a.height(); ++y)
+                for (int x = 0; x < a.width(); ++x) {
+                    const QRgb px = a.pixel(x, y);
+                    if (qAlpha(px) == 255 && qRed(px) > 0x80
+                        && qRed(px) < 0x95)
+                        sawBand = true;
+                    if (qAlpha(px) < 200)
+                        sawCarve = true;
+                }
+            carvedOk = carvedOk && sawBand && sawCarve;
+        }
+        check(QStringLiteral("(b8) all 8 eraser swatches render"), renderOk);
+        check(QStringLiteral("(b8) swatches deterministic (two renders "
+                             "byte-identical)"),
+              determOk);
+        check(QStringLiteral("(b8) every swatch shows the band AND a carved "
+                             "hole (the structural inverse of a brush "
+                             "swatch)"),
+              carvedOk);
+        const QString eraserSha =
+            QString::fromLatin1(eraserCombined.result().toHex());
+        ts << "COMBINED ERASER SWATCH SHA (compare across configs): "
+           << eraserSha << nl;
+        check(QStringLiteral("(b8) eraser swatch SHA matches the pin"),
+              eraserSha == QLatin1String(kEraserSwatchSha), eraserSha);
     }
 
     // ---- (b6) decimated live preview: exists, and cannot touch publishes -

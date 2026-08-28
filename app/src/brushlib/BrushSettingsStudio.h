@@ -189,6 +189,9 @@ private:
     // UI.
     QVector<StudioSectionRow *> m_sectionRows;
     QVector<QWidget *> m_sectionPages;
+    int m_mixingSectionIndex = -1; // hidden for eraser presets
+    int m_colorSectionIndex = -1;  // hidden for eraser presets
+    StudioToggleRow *m_grainColourToggle = nullptr; // hidden for erasers
     QStringList m_sectionNames;
     int m_dualSectionIndex = -1;
     int m_currentSection = 0;

@@ -2322,3 +2322,85 @@ OWN pinned SHA (never added to builtinRoster(), which is what keeps
 193847fa fixed), category tag "Eraser" in the panel, preview swatches
 rendered over a colour band showing the carved hole (the smudge
 pattern), preset save/load through the existing codec.
+[DONE 2026-08-28 — the entry below.]
+
+## The Eraser Library UI (2026-08-28)
+
+EIGHT BUILT-IN ERASERS, NOT TEN — ten was the brush categories' bar,
+inherited from a check written for brushes, not a design number. Each
+has a distinct mechanical identity on the mask path: Hard Round (the
+default; the classic edge), Soft Round, Pressure Eraser (steep
+size+opacity curves), Airbrush Eraser (low flow, builds up), Pencil
+Eraser (small, light grain), Chalk Eraser (deep grain-on-coverage),
+Chisel Eraser (compressed roundness + angle), Scatter Eraser
+(scatter+jitter). builtinEraserRoster() is a SEPARATE function with its
+own pinned combined swatch SHA
+(96baaccf7c4eac88613a19b51a47f1d178e59c85ec78ab521d8bf604b474c5e9, same
+in both configs); the model concatenates at ITS call sites and
+builtinRoster()/builtinCategories() were never touched — which is what
+kept 193847fa... fixed, verified by the gate.
+
+THE CONTRADICTION MADE UNCONSTRUCTIBLE (gate demand: "the roster check
+proves today's eight are clean; that check proves the ninth cannot be
+dirty"). Found while building it: dualBrushEnabled() ignored eraseMode,
+and the DUAL publication shader has no erase branch — an erase+dual
+brush would have DEPOSITED COLOUR. The accessor now forces the mask
+path (!m_eraseMode && ...), same shape as the smudgeActive guard, which
+also keeps the codec from serialising a secondary payload for erasers.
+BrushLibrary (b8) pins all three at the Brush level with before/after
+controls: eraseMode forces smudge off, forces dual off, forces the mask
+path over the colour buffer. FORCING, not refusal — setters stay
+order-independent.
+
+THE SWATCH is the structural INVERSE of a brush swatch: a solid neutral
+band (0x8a8a92) with the S-wave carved through it (Source-composited so
+the reduced-alpha carve replaces the band; the UI checkerboard shows in
+the hole) versus a coloured mark on transparency. Gate asserts every
+swatch shows band AND carve. The studio's ScratchCanvas test-draws
+erase presets over the same band. No kSwatchRevision bump: the eraser
+rendering is a new code path and existing brush swatch bytes are
+untouched.
+
+PANEL: "Eraser" is a PANEL-side sidebar row (between the brush
+categories and "Imported") — BrushLibraryModel::categories() is a
+pinned baseline and was not touched.
+
+TWO V1 UX DECISIONS, recorded so reversing starts from reasoning, not
+reconstruction:
+1. PRESET ACTIVATION SWITCHES THE TOOL (Procreate precedent): picking
+   an eraser preset states intent — it lands in the ERASER brush and
+   the tool switches to Eraser; a brush preset switches to Brush. Each
+   tool keeps its own selection (m_activeBrushPresetId /
+   m_activeEraserPresetId); switching TOOLS changes neither. If this
+   fights the user's actual workflow, the reversal is: drop the two
+   setTool calls in the brushActivated lambda (StoryboardPage) and the
+   Lifecycle (m) tool-switch assertions — everything else stands.
+2. "RECENT" STAYS BRUSH-ONLY: eraser activations would churn the brush
+   Recent list for no benefit (the eraser roster is eight rows away,
+   not thirty). Enforced in BrushLibraryModel::recordUsage. This is a
+   DELIBERATE exclusion, not an oversight — revisit if it feels wrong.
+
+STUDIO: opens for eraser presets; Mixing, Dual Brush and Color sections
+disappear (plus the grain-affects-colour toggle) — everything left
+genuinely drives erasing. eraseMode is the preset's identity, no toggle
+anywhere; Save Variation of an eraser stays an eraser (the codec
+carries the flag). If the studio is open on a hidden section when an
+eraser loads, it falls back to Stroke.
+
+WIRING: DrawingCanvas::setEraserPreset (forces eraseMode, mirrors
+size/opacity, emits eraserBrushChanged) + eraserBrush() accessor; the
+Size CTL mirrors the eraser preset via m_syncEraserCtl the way
+paintBrushChanged mirrors the brush. The panel gained
+activatePresetForTest() — emits the REAL brushActivated signal so the
+gate drives the page's routing lambda end to end.
+
+GATE: BrushLibrary (b8) — roster discipline (exactly 8, ids unique and
+eraser/-prefixed, all eraseMode, none smudge/dual/colour-buffer), the
+three contradiction pins, swatch render/determinism/band+carve, and the
+eraser SHA pin. Lifecycle (m) — activation through the real panel
+signal: preset lands in the eraser brush, tool switches, paint brush
+untouched, bar mirrors it, both selections survive a tool round-trip.
+Totals: Lifecycle 145. All pins intact: 193847fa (brush swatches),
+666f7b45/cafcec7f (canvas locks), 0bc24381 (erase render), plus the new
+96baaccf (eraser swatches). Full gate green, both configs, both SankoTV
+builds.

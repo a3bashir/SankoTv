@@ -2409,11 +2409,30 @@ QWidget *StoryboardPage::createCenterColumn()
             this, [this](const QString &id) {
                 if (const brushlib::BrushPreset *p =
                         m_brushLibModel->preset(id)) {
-                    m_activeBrushPresetId = id;
-                    m_canvas->setPaintBrush(p->brush);
-                    refreshBrushDirtyState();
+                    if (p->brush.eraseMode()) {
+                        // V1 UX DECISION (recorded in HANDOFF, Procreate
+                        // precedent): picking an eraser preset states
+                        // intent - it lands in the ERASER brush and
+                        // switches the tool to Eraser. The paint brush and
+                        // the brush selection are untouched.
+                        m_activeEraserPresetId = id;
+                        m_canvas->setEraserPreset(p->brush);
+                        m_canvas->setTool(DrawingCanvas::Eraser);
+                    } else {
+                        m_activeBrushPresetId = id;
+                        m_canvas->setPaintBrush(p->brush);
+                        m_canvas->setTool(DrawingCanvas::Brush);
+                        refreshBrushDirtyState();
+                    }
                 }
             });
+    // The eraser preset drives the Size CTL the way paintBrushChanged
+    // drives it for the brush: mirror size/opacity into the eraser's
+    // per-tool state and, when the eraser is the active tool, the sliders.
+    connect(m_canvas, &DrawingCanvas::eraserBrushChanged, this, [this] {
+        if (m_syncEraserCtl)
+            m_syncEraserCtl();
+    });
 
     // ---- Brush Settings studio (Figma 274:23) ------------------------
     // Double-clicking a library row opens the full-parameter editor.
@@ -3478,6 +3497,19 @@ void StoryboardPage::createFloatingToolbar()
         pill->hide(); // a stale pill must never show the old tool's value
     });
 
+
+    // Size CTL <- ERASER preset mirror: the library's eraser selection
+    // lands in the per-tool state and, when the Eraser is active, on the
+    // sliders - the same shape as the paintBrushChanged mirror above.
+    m_syncEraserCtl = [this, tc, sizeSlider, opacitySlider] {
+        const ::Brush &e = m_canvas->eraserBrush();
+        tc->eraser.size = qBound(1, e.size(), 5000);
+        tc->eraser.opacity = qBound(0, qRound(e.opacity() * 100.0), 100);
+        if (tc->eraserMode) {
+            sizeSlider->setValue(tc->eraser.size);
+            opacitySlider->setValue(tc->eraser.opacity);
+        }
+    };
 
     sizeBar->show(); // records intent; effective when the canvas shows
 }

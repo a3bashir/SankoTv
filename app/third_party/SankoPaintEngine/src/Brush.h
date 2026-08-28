@@ -239,7 +239,14 @@ public:
     void setBrightnessJitter(qreal amount);
     bool usesColorStrokeBuffer() const;
 
-    bool dualBrushEnabled() const { return m_dualBrushEnabled && bool(m_secondaryBrush); }
+    // eraseMode forces the MASK path here too: the dual publication shader
+    // has no erase branch, so an erase+dual brush would deposit colour -
+    // the exact contradiction the guard exists to make unconstructible.
+    // (Also keeps the codec from serialising a secondary payload for
+    // erasers: walkBrush branches on THIS accessor.)
+    bool dualBrushEnabled() const { return !m_eraseMode
+                                          && m_dualBrushEnabled
+                                          && bool(m_secondaryBrush); }
     void setDualBrushEnabled(bool enabled);
     DualMode dualMode() const { return m_dualMode; }
     void setDualMode(DualMode mode)

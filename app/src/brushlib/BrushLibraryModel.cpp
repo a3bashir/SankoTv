@@ -69,7 +69,10 @@ BrushLibraryModel::BrushLibraryModel(QObject *parent,
     : QObject(parent)
     , m_rootOverride(rootOverride)
 {
-    m_presets = builtinRoster();
+    // Concat at the CALL SITE, never inside builtinRoster(): that
+    // function's output is a pinned baseline (the combined preview SHA and
+    // the per-category counts), and the eraser roster is pinned separately.
+    m_presets = builtinRoster() + builtinEraserRoster();
     loadUserPresets();
     for (int i = 0; i < m_presets.size(); ++i)
         m_byId.insert(m_presets.at(i).id, i);
@@ -123,7 +126,14 @@ const BrushPreset *BrushLibraryModel::preset(const QString &id) const
 
 void BrushLibraryModel::recordUsage(const QString &id)
 {
-    if (!preset(id))
+    const BrushPreset *p = preset(id);
+    if (!p)
+        return;
+    // V1 DECISION, recorded in HANDOFF: "Recent" stays BRUSH-only. Eraser
+    // activations would churn the brush Recent list for no benefit (the
+    // eraser roster is eight rows away, not thirty). Deliberate exclusion,
+    // not an oversight; revisit if it feels wrong in use.
+    if (p->brush.eraseMode())
         return;
     m_recent.removeAll(id);
     m_recent.prepend(id);
@@ -186,7 +196,8 @@ void BrushLibraryModel::restoreDefaultBrushes()
         }
     }
     m_overridden = stillOverridden;
-    const QVector<BrushPreset> roster = builtinRoster();
+    const QVector<BrushPreset> roster =
+        builtinRoster() + builtinEraserRoster();
     for (BrushPreset &p : m_presets)
         if (p.builtin)
             for (const BrushPreset &stock : roster)

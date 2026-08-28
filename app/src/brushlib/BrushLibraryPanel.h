@@ -73,6 +73,18 @@ public:
 signals:
     // A brush was selected: the canvas applies preset.brush wholesale.
     void brushActivated(const QString &presetId);
+
+public:
+    // Test seam: activate a preset through the SAME signal a row click
+    // emits, so the gate can drive the page's activation lambda (tool
+    // switch, eraser-vs-brush routing) end-to-end without synthesizing
+    // clicks on a floating window.
+    void activatePresetForTest(const QString &presetId)
+    {
+        emit brushActivated(presetId);
+    }
+
+signals:
     // Double-click: the Phase 4 Brush Settings studio (unwired until then).
     void brushSettingsRequested(const QString &presetId);
     void visibilityChanged(bool visible); // View-menu checkbox sync

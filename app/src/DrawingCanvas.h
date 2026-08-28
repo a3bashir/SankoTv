@@ -268,6 +268,13 @@ public slots:
     // paintBrushChanged() so the Brush Options panel can follow.
     void setPaintBrush(const ::Brush &brush);
 
+    // Eraser Library: the preset's full parameter set becomes the working
+    // ERASER brush (a copy; eraseMode is forced true - it is the preset's
+    // identity, not an editable knob). Size CTL mirrors resync via
+    // eraserBrushChanged. The paint brush is untouched.
+    void setEraserPreset(const ::Brush &brush);
+    const ::Brush &eraserBrush() const { return m_eraserBrush; }
+
     // APP-LEVEL stroke stabilization (Brush Settings studio, Smoothing
     // section — option (c)): an input-position EMA applied to LIVE brush
     // strokes only, before QuickShape and the engine see the points. 0 (the
@@ -403,6 +410,9 @@ public:
     void setGutterColor(const QColor &color);
 
 signals:
+    // The eraser preset changed (library selection): the Size CTL bar
+    // mirrors size/opacity the way paintBrushChanged mirrors the brush.
+    void eraserBrushChanged();
     void contentChanged();
     void layersChanged(); // layer added/removed by the canvas (image import)
     // Ctrl+Left click: the topmost visible layer with opaque pixels under

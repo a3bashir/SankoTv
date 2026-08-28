@@ -487,7 +487,9 @@ void BrushSettingsStudio::buildUi()
     addSection(QStringLiteral("Texture"), buildTextureSection());
     m_dualSectionIndex = m_sectionPages.size();
     addSection(QStringLiteral("Dual Brush"), buildDualBrushSection());
+    m_mixingSectionIndex = m_sectionPages.size();
     addSection(QStringLiteral("Mixing"), buildMixingSection());
+    m_colorSectionIndex = m_sectionPages.size();
     addSection(QStringLiteral("Color"), buildColorSection());
     addSection(QStringLiteral("Dynamics"), buildDynamicsSection());
     addSection(QStringLiteral("General"), buildGeneralSection());
@@ -591,6 +593,23 @@ void BrushSettingsStudio::syncAll()
     m_syncing = true;
     for (const auto &sync : m_syncers)
         sync();
+    // ERASER presets: the sections that are a contradiction for the erase
+    // composite disappear entirely - Mixing (smudge), Dual Brush (no erase
+    // branch in the dual publication shader; the Brush guard forces the
+    // mask path anyway) and Color (an eraser deposits nothing). Everything
+    // left genuinely drives erasing. eraseMode itself is the preset's
+    // identity, not a knob, so no toggle appears anywhere.
+    const bool eraser = m_session.eraseMode();
+    if (m_grainColourToggle) // colour is meaningless for an eraser
+        m_grainColourToggle->setVisible(!eraser);
+    for (int idx : {m_dualSectionIndex, m_mixingSectionIndex,
+                    m_colorSectionIndex})
+        if (idx >= 0) {
+            m_sectionRows.at(idx)->setVisible(!eraser);
+            if (eraser && m_currentSection == idx)
+                selectSection(0);
+        }
+
     // Scope switch: only meaningful with a dual brush.
     const bool dual = m_session.dualBrushEnabled();
     m_scopeSwitch->setVisible(dual);
@@ -1194,7 +1213,8 @@ QWidget *BrushSettingsStudio::buildTextureSection()
             int(scopeBrushConst().textureBlendMode()));
     });
 
-    addToggle(l, QStringLiteral("Grain Affects Colour"),
+    m_grainColourToggle =
+        addToggle(l, QStringLiteral("Grain Affects Colour"),
               [](const ::Brush &b) { return b.grainAffectsColor(); },
               [](::Brush &b, bool on) { b.setGrainAffectsColor(on); },
               false);

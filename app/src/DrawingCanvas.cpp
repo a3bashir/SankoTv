@@ -1177,6 +1177,15 @@ QPointF DrawingCanvas::stabilizeStrokePoint(const QPointF &raw,
     return m_stabPoint;
 }
 
+void DrawingCanvas::setEraserPreset(const ::Brush &brush)
+{
+    m_eraserBrush = brush;
+    m_eraserBrush.setEraseMode(true); // identity, not a knob
+    m_eraserSize = qBound(1, m_eraserBrush.size(), 5000);
+    m_eraserOpacity = qBound(0.0, m_eraserBrush.opacity(), 1.0);
+    emit eraserBrushChanged();
+}
+
 void DrawingCanvas::setPaintBrush(const ::Brush &brush)
 {
     // Library selection: the preset's FULL parameter set becomes the working

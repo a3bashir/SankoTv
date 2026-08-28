@@ -100,6 +100,14 @@ QImage ScratchCanvas::backgroundImage(const QSize &size) const
 {
     if (m_brush.toolMode() == ::Brush::ToolMode::Smudge)
         return smudgeBands(size);
+    if (m_brush.eraseMode()) {
+        // Erasing transparency is a no-op: erase presets test-draw over a
+        // solid neutral band and the stroke is the carved hole (the same
+        // band the library swatch uses).
+        QImage bg(size, QImage::Format_ARGB32);
+        bg.fill(QColor(0x8a, 0x8a, 0x92));
+        return bg;
+    }
     QImage bg(size, QImage::Format_ARGB32);
     bg.fill(Qt::transparent);
     return bg;

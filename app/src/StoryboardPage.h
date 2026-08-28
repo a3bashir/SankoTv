@@ -397,6 +397,10 @@ private:
     brushlib::BrushLibraryPanel *m_brushLibPanel = nullptr;
     brushlib::BrushSettingsStudio *m_brushStudio = nullptr; // Figma 274:23
     QString m_activeBrushPresetId; // last library selection (dirty tracking)
+    QString m_activeEraserPresetId; // the ERASER's own selection (v1: each
+                                    // tool remembers its preset; switching
+                                    // tools changes neither)
+    std::function<void()> m_syncEraserCtl; // Size CTL <- eraser preset
     QPushButton *m_brushToolButton = nullptr; // Library anchor + open toggle
     QAction *m_brushLibViewAction = nullptr; // View menu toggle
     bool brushStudioUnderCursor() const; // Ctrl+Z routing (studio-local undo)
