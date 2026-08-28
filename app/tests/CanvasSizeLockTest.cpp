@@ -62,6 +62,7 @@
 // screen pixels — no grabWindow, none of EdgeLock's capture sensitivity.
 
 #include "AnimaticTimeline.h"
+#include "SankoSettings.h"
 #include "DrawingCanvas.h"
 #include "ProjectIO.h"
 #include "ProjectResize.h"
@@ -1215,6 +1216,11 @@ int main(int argc, char **argv)
 
     const QString scratch =
         QDir::tempPath() + QStringLiteral("/sanko_canvas_size_lock");
+    // Every settings read/write in app code goes through sankoSettings();
+    // point the store at scratch so the family can NEVER touch the
+    // user's real settings, driven or not.
+    sankoSettingsSetOverrideForTest(scratch
+                                    + QStringLiteral("/sanko_settings.ini"));
     QDir(scratch).removeRecursively();
     QDir().mkpath(scratch + QStringLiteral("/settings"));
     QSettings::setDefaultFormat(QSettings::IniFormat);

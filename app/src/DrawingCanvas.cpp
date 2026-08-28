@@ -1,4 +1,5 @@
 #include "SankoTheme.h"
+#include "SankoSettings.h"
 #include "DrawingCanvas.h"
 
 #include "StoryboardModel.h"
@@ -146,7 +147,7 @@ DrawingCanvas::DrawingCanvas(QWidget *parent)
     });
 
     // Persisted safe-area guide opacities (Preferences > Camera).
-    const QSettings settings(QStringLiteral("SankoTV"), QStringLiteral("SankoTV"));
+    const QSettings settings = sankoSettings();
     m_actionSafeMaskPct =
         qBound(0, settings.value(QStringLiteral("camera/actionSafeOpacity"), 50).toInt(), 100);
     m_titleSafeMaskPct =
@@ -4960,7 +4961,7 @@ void DrawingCanvas::ensureComposite()
 
 void DrawingCanvas::loadGridSettings()
 {
-    const QSettings s(QStringLiteral("SankoTV"), QStringLiteral("SankoTV"));
+    const QSettings s = sankoSettings();
     const QString k = QStringLiteral("canvas/grid/v1/");
     m_gridVisible = s.value(k + QStringLiteral("visible"), false).toBool();
     const int style = s.value(k + QStringLiteral("style"), 0).toInt();
@@ -4979,7 +4980,7 @@ void DrawingCanvas::loadGridSettings()
 
 void DrawingCanvas::saveGridSettings() const
 {
-    QSettings s(QStringLiteral("SankoTV"), QStringLiteral("SankoTV"));
+    QSettings s = sankoSettings();
     const QString k = QStringLiteral("canvas/grid/v1/");
     s.setValue(k + QStringLiteral("visible"), m_gridVisible);
     s.setValue(k + QStringLiteral("style"), int(m_gridStyle));

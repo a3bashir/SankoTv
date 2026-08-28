@@ -31,9 +31,11 @@
 // Run: build/<config>/SankoQuickShapeGeometryLock.exe (exit = failures).
 
 #include "DrawingCanvas.h"
+#include "SankoSettings.h"
 #include "StoryboardModel.h"
 
 #include <QApplication>
+#include <QDir>
 #include <QElapsedTimer>
 #include <QLineF>
 #include <QPointingDevice>
@@ -435,6 +437,11 @@ bool convertAndVerify(DrawingCanvas *canvas, const QString &button,
 int main(int argc, char **argv)
 {
     QApplication app(argc, argv);
+    // Every settings read/write in app code goes through sankoSettings();
+    // this override points the store at scratch so the family can NEVER
+    // touch the user's real settings, driven or not.
+    sankoSettingsSetOverrideForTest(QDir::tempPath()
+                                    + QStringLiteral("/sanko_qslock_settings.ini"));
 
     auto *canvas = new DrawingCanvas;
     canvas->resize(1390, 782);

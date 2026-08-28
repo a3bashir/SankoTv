@@ -55,6 +55,7 @@
 // tree — that is why the SHA and this procedure live HERE.)
 
 #include "BrushLibraryModel.h"
+#include "SankoSettings.h"
 #include "BrushPresetCodec.h"
 #include "BrushPreviewRenderer.h"
 #include "BuiltinRoster.h"
@@ -598,6 +599,11 @@ int main(int argc, char **argv)
     // Worker-thread behaviour, cache, cancellation, shutdown, latency.
     const QString scratch =
         QDir::tempPath() + QStringLiteral("/sankotv_brushlib_test_cache");
+    // Every settings read/write in app code goes through sankoSettings();
+    // point the store at scratch so the family can NEVER touch the
+    // user's real settings, driven or not.
+    sankoSettingsSetOverrideForTest(scratch
+                                    + QStringLiteral("/sanko_settings.ini"));
     QDir(scratch).removeRecursively();
     QVector<const BrushPreset *> inking;
     for (const BrushPreset &p : roster)

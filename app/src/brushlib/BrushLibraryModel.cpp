@@ -1,4 +1,5 @@
 #include "BrushLibraryModel.h"
+#include "SankoSettings.h"
 
 #include "AbrImporter.h"
 #include "BrushImporter.h"
@@ -26,14 +27,15 @@ constexpr int kRecentCap = 30;
 
 QSettings appSettings()
 {
-    return QSettings(QStringLiteral("SankoTV"), QStringLiteral("SankoTV"));
+    return sankoSettings();
 }
 } // namespace (reopened below)
 
 // Scratch-rooted models keep shelf state beside the presets they scratch
-// (see the header comment): the QSettings(org, app) constructor is
-// NativeFormat on Windows — the registry — and cannot be redirected from
-// outside, so hermetic tests need the override HERE.
+// (see the header comment). The store itself now comes from
+// sankoSettings() — the app-wide choke point with its own test override —
+// and this per-model override layers on top so a scratch-rooted model's
+// shelf lives beside its presets rather than in the shared test INI.
 QSettings BrushLibraryModel::shelfSettings() const
 {
     if (!m_rootOverride.isEmpty())

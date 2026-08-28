@@ -26,7 +26,7 @@ class StudioTextField;
 // images, consistency thumbnails) and containing them is the point. This
 // diverges from File > Save As, which still writes wherever it is pointed.
 //
-// Recent projects: QSettings("SankoTV","SankoTV") key "recentProjects",
+// Recent projects: sankoSettings() key "recentProjects",
 // entries {path, lastOpenedIso}, capped at kRecentCap, recorded by
 // MainWindow on every successful load/save. setSettingsOverride() points
 // the storage at a scratch ini for verification.

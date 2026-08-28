@@ -37,6 +37,7 @@
 // Needs a GUI session; never samples screen pixels.
 
 #include "AnimaticPage.h"
+#include "SankoSettings.h"
 #include "ConsistencyBoard.h"
 #include "DrawingCanvas.h"
 #include "PerspectiveTool.h"
@@ -874,11 +875,12 @@ void runProvenancePass(const QString &scratch)
 
     // SANKOTV_DEVREC_DIR (set in main BEFORE the first MainWindow, because
     // the singleton reads it once in its constructor) points the output at
-    // the scratch root - the settings-based redirect is NOT trusted here,
-    // because the recorder reads QSettings("SankoTV","SankoTV"), the
-    // two-argument form that bypasses the test redirection entirely (the
-    // very trap that let a measurement probe write into the user's real
-    // recordings folder on 2026-08-27).
+    // the scratch root. The recorder's settings read now goes through
+    // sankoSettings() - the choke point that ended the two-argument
+    // QSettings bypass which let a measurement probe write into the user's
+    // real recordings folder on 2026-08-27 - but the env var stays the
+    // redirect HERE: it is read before any test override could matter and
+    // is the recorder's own documented escape hatch.
     const QString root = scratch + QStringLiteral("/devrec");
     const QStringList sessions = QDir(root).entryList(
         QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name);
@@ -1256,12 +1258,28 @@ int main(int argc, char **argv)
 
     const QString scratch =
         QDir::tempPath() + QStringLiteral("/sanko_lifecycle_lock");
+    // Every settings read/write in app code goes through sankoSettings();
+    // point the store at scratch so the family can NEVER touch the
+    // user's real settings, driven or not.
+    sankoSettingsSetOverrideForTest(scratch
+                                    + QStringLiteral("/sanko_settings.ini"));
     // BEFORE the first MainWindow: the Recorder singleton reads its output
     // root ONCE in its constructor, and its settings-based override uses
     // the two-argument QSettings form that ignores the scratch redirect.
     // The env var is the only redirect it honours unconditionally.
     qputenv("SANKOTV_DEVREC_DIR",
             (scratch + QStringLiteral("/devrec")).toUtf8());
+    // Snapshot the REAL settings store (org SankoTV) before anything runs.
+    // Constructing the two-argument form here is DELIBERATE - it is the
+    // verification instrument for the store the app must never touch while
+    // sankoSettings() is overridden. Read-only.
+    QMap<QString, QVariant> realStoreBefore;
+    {
+        const QSettings real(QStringLiteral("SankoTV"),
+                             QStringLiteral("SankoTV"));
+        for (const QString &k : real.allKeys())
+            realStoreBefore.insert(k, real.value(k));
+    }
     QDir(scratch).removeRecursively();
     QDir().mkpath(scratch + QStringLiteral("/settings"));
     QSettings::setDefaultFormat(QSettings::IniFormat);
@@ -1387,6 +1405,40 @@ int main(int argc, char **argv)
     runSaveFailurePass(scratch);
     runSizeCtlAgreementPass(scratch);
     runProvenancePass(scratch);
+
+    // ---- (l) sankoSettings: scratch lands, the real store does not ----
+    // Both halves asserted: landing in scratch is only half the guarantee,
+    // and the real-store half is the one that would have caught the probe
+    // contamination (a redirect that silently failed while everything
+    // appeared to work).
+    out() << "--- (l) sankoSettings honours the scratch override ---"
+          << Qt::endl;
+    sankoSettings().setValue(QStringLiteral("scratchProbe/sentinel"), 0x5EA1);
+    {
+        QSettings ini(scratch + QStringLiteral("/sanko_settings.ini"),
+                      QSettings::IniFormat);
+        check(QStringLiteral("(l) a helper write LANDS in the scratch ini"),
+              ini.value(QStringLiteral("scratchProbe/sentinel")).toInt()
+                  == 0x5EA1);
+    }
+    {
+        const QSettings real(QStringLiteral("SankoTV"),
+                             QStringLiteral("SankoTV"));
+        check(QStringLiteral("(l) ...and NOT in the real store"),
+              !real.contains(QStringLiteral("scratchProbe/sentinel")));
+        check(QStringLiteral("(l) control: the real store is readable and "
+                             "non-empty (the comparison can see keys)"),
+              !realStoreBefore.isEmpty(),
+              QStringLiteral("%1 key(s)").arg(realStoreBefore.size()));
+        QMap<QString, QVariant> realStoreAfter;
+        for (const QString &k : real.allKeys())
+            realStoreAfter.insert(k, real.value(k));
+        check(QStringLiteral("(l) the ENTIRE family changed NOTHING in the "
+                             "real store (keys and values identical)"),
+              realStoreAfter == realStoreBefore,
+              QStringLiteral("%1 -> %2 key(s)")
+                  .arg(realStoreBefore.size()).arg(realStoreAfter.size()));
+    }
 
     // Nothing may have escaped the scratch root.
     const bool removed = QDir(scratch).removeRecursively();

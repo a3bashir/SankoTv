@@ -1,4 +1,5 @@
 #include "FloatingToolWindow.h"
+#include "SankoSettings.h"
 
 #include <QApplication>
 #include <QEnterEvent>
@@ -116,7 +117,7 @@ FloatingToolWindow::FloatingToolWindow(QWidget *anchor, const QString &settingsK
     setFocusPolicy(Qt::NoFocus); // never steals canvas focus
 
     if (!m_settingsKey.isEmpty()) {
-        const QSettings settings(QStringLiteral("SankoTV"), QStringLiteral("SankoTV"));
+        const QSettings settings = sankoSettings();
         if (settings.contains(m_settingsKey)) {
             m_offset = settings.value(m_settingsKey).toPoint();
             m_userPlaced = true;
@@ -385,7 +386,7 @@ bool FloatingToolWindow::handleGripRelease(QMouseEvent *event)
 void FloatingToolWindow::persistOffset()
 {
     if (!m_settingsKey.isEmpty())
-        QSettings(QStringLiteral("SankoTV"), QStringLiteral("SankoTV"))
+        sankoSettings()
             .setValue(m_settingsKey, m_offset);
 }
 
@@ -675,7 +676,7 @@ void FloatingToolWindow::saveManagedState() const
 {
     if (m_name.isEmpty())
         return;
-    QSettings settings(QStringLiteral("SankoTV"), QStringLiteral("SankoTV"));
+    QSettings settings = sankoSettings();
     const QString base =
         QStringLiteral("storyboard/floatToolbars/v2/") + m_name + QLatin1Char('/');
     settings.setValue(base + QStringLiteral("edge"), int(m_snapEdge));
@@ -687,7 +688,7 @@ void FloatingToolWindow::loadManagedState()
 {
     if (m_name.isEmpty())
         return;
-    QSettings settings(QStringLiteral("SankoTV"), QStringLiteral("SankoTV"));
+    QSettings settings = sankoSettings();
     const QString base =
         QStringLiteral("storyboard/floatToolbars/v2/") + m_name + QLatin1Char('/');
     if (!settings.contains(base + QStringLiteral("offset")))
@@ -733,7 +734,7 @@ void FloatingToolWindow::restoreManagedState()
 
 void FloatingToolWindow::resetAllManagedPlacements()
 {
-    QSettings settings(QStringLiteral("SankoTV"), QStringLiteral("SankoTV"));
+    QSettings settings = sankoSettings();
     settings.remove(QStringLiteral("storyboard/floatToolbars"));
     QWidget *anchor = nullptr;
     const auto &all = FloatingToolWindowManager::instance()->windows();

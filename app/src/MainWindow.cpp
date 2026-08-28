@@ -1,4 +1,5 @@
 #include "MainWindow.h"
+#include "SankoSettings.h"
 #include "SankoTheme.h"
 
 #ifdef SANKOTV_DEV_RECORDER
@@ -502,7 +503,7 @@ void MainWindow::onPreferences()
     cameraLayout->setContentsMargins(16, 16, 16, 12);
     cameraLayout->setSpacing(6);
 
-    QSettings settings(QStringLiteral("SankoTV"), QStringLiteral("SankoTV"));
+    QSettings settings = sankoSettings();
 
     // Each row: caption + SankoSlider (0-100, "%"), seeded from QSettings.
     // Changes persist immediately and update the canvas overlays live.
@@ -515,7 +516,7 @@ void MainWindow::onPreferences()
         slider->setValueSuffix(QStringLiteral("%"));
         slider->setValue(qBound(0, settings.value(key, 50).toInt(), 100));
         connect(slider, &SankoSlider::valueChanged, this, [this, key, apply](int v) {
-            QSettings(QStringLiteral("SankoTV"), QStringLiteral("SankoTV")).setValue(key, v);
+            sankoSettings().setValue(key, v);
             if (m_storyboard)
                 (m_storyboard->*apply)(v);
         });

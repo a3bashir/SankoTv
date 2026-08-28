@@ -4,6 +4,7 @@
 // Run: build/<config>/SankoDevRecorderTest.exe
 
 #include "devrecorder/DevRecorder.h"
+#include "SankoSettings.h"
 
 #include <QApplication>
 #include <QTimer>
@@ -50,6 +51,11 @@ int main(int argc, char **argv)
 
     const QString root =
         QDir::tempPath() + QStringLiteral("/sankotv_devrec_test");
+    // Every settings read/write in app code goes through sankoSettings();
+    // point the store at scratch so the family can NEVER touch the
+    // user's real settings, driven or not.
+    sankoSettingsSetOverrideForTest(root
+                                    + QStringLiteral("/sanko_settings.ini"));
     QDir(root).removeRecursively();
 
     auto *rec = devrec::Recorder::instance();

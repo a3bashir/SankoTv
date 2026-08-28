@@ -2171,3 +2171,49 @@ never by checkout.
 PENDING DECISION (user): whether to fix the two-argument QSettings form
 app-wide (the scoped recommendation: one sankoSettings() choke point
 with a test override, zero data migration) or leave it recorded.
+[DECIDED AND DONE 2026-08-27 — see the sankoSettings() entry below.]
+
+## sankoSettings(): the settings choke point (2026-08-27)
+
+DECIDED: fix app-wide, before the eraser library, so new features are
+written against the choke point instead of adding sites to the pattern
+being replaced.
+
+src/SankoSettings.h — sankoSettings() returns EXACTLY what the
+two-argument form opened (org "SankoTV", app "SankoTV", native format),
+so every existing setting stays where it is: ZERO migration. Tests call
+sankoSettingsSetOverrideForTest(<scratch>.ini) first and every read and
+write thereafter goes to that INI. Org names deliberately unchanged —
+the split-brain (settings under org "SankoTV", brush shelf under org
+"Sanko") stays as recorded, its own decision.
+
+ALL 30 SITES WENT THROUGH. No exceptions needed. The three sites with
+existing override machinery LAYER on top rather than being replaced:
+NewProjectDialog's recents override and BrushLibraryModel's shelf
+override keep their own seams (their fallbacks now route through the
+helper), and the Dev Recorder keeps SANKOTV_DEVREC_DIR with priority
+over settings (it is read in the singleton's constructor, before any
+override could be set, and it is the recorder's documented escape
+hatch). The only raw two-argument constructions left in the tree are
+the helper's own fallback and TWO DELIBERATE ones in the lifecycle
+test, which exist to READ the real store as the verification
+instrument — they must stay raw or the check verifies nothing.
+
+EVERY family sets the override in main() now, including the four that
+had no scratch root at all (PixelLock, CanvasBrushLock, EdgeLock,
+QuickShape — their canvases DO construct settings-reading widgets, so
+they were reading the real store on every run and nobody knew).
+
+GATE, lifecycle section (l), both halves as demanded: a helper write
+LANDS in the scratch ini, AND is absent from the real store — plus the
+stronger form: the real store's ENTIRE key/value map (82 keys),
+snapshotted before the family runs, is IDENTICAL after it — MainWindow
+teardowns, StoryboardPage per-tool persistence, floating toolbars,
+recorder and all. The non-empty-store control proves the comparison
+can see keys. The real-store half is the one that would have caught
+the probe contamination: a redirect that silently fails now fails a
+check instead of a user.
+
+RULE the helper encodes: the scratch guarantee must hold WITHOUT anyone
+checking. Settings access added in future goes through sankoSettings()
+— a new two-argument QSettings site is a review reject.

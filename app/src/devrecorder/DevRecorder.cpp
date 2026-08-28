@@ -1,6 +1,7 @@
 // TEMPORARY DEVELOPER RECORDER — see DevRecorder.h for the removal recipe.
 
 #include "DevRecorder.h"
+#include "SankoSettings.h"
 
 #include <QApplication>
 #include <QDateTime>
@@ -461,7 +462,7 @@ static void messageHandler(QtMsgType type, const QMessageLogContext &ctx,
 
 Recorder::Recorder(QObject *parent) : QObject(parent), d(new RecorderPrivate)
 {
-    const QSettings s(QStringLiteral("SankoTV"), QStringLiteral("SankoTV"));
+    const QSettings s = sankoSettings();
     d->outputRoot = qEnvironmentVariable(
         "SANKOTV_DEVREC_DIR",
         s.value(QStringLiteral("devrecorder/outputDir"),

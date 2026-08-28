@@ -1,4 +1,5 @@
 #include "ColorPanel.h"
+#include "SankoSettings.h"
 #include "SankoTheme.h"
 
 #include <QConicalGradient>
@@ -774,7 +775,7 @@ void ColorPanel::syncControls()
 
 void ColorPanel::loadPalette()
 {
-    const QSettings settings(QStringLiteral("SankoTV"), QStringLiteral("SankoTV"));
+    const QSettings settings = sankoSettings();
     const QStringList names =
         settings.value(QStringLiteral("colorPanel/palette")).toStringList();
     m_palette.clear();
@@ -792,6 +793,6 @@ void ColorPanel::savePalette()
     names.reserve(m_palette.size());
     for (const QColor &c : std::as_const(m_palette))
         names.append(c.name(QColor::HexArgb));
-    QSettings settings(QStringLiteral("SankoTV"), QStringLiteral("SankoTV"));
+    QSettings settings = sankoSettings();
     settings.setValue(QStringLiteral("colorPanel/palette"), names);
 }

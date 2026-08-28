@@ -31,10 +31,12 @@
 // Requires a desktop session (it measures real screen pixels).
 
 #include "DrawingCanvas.h"
+#include "SankoSettings.h"
 #include "SankoPaintHostAdapter.h"
 #include "StoryboardModel.h"
 
 #include <QApplication>
+#include <QDir>
 #include <QElapsedTimer>
 #include <QImage>
 #include <QMouseEvent>
@@ -287,6 +289,11 @@ void strokeAlong(DrawingCanvas *canvas, Panel *panel, const QPointF &from,
 int main(int argc, char **argv)
 {
     QApplication app(argc, argv);
+    // Every settings read/write in app code goes through sankoSettings();
+    // this override points the store at scratch so the family can NEVER
+    // touch the user's real settings, driven or not.
+    sankoSettingsSetOverrideForTest(QDir::tempPath()
+                                    + QStringLiteral("/sanko_edgelock_settings.ini"));
 
     QWidget window;
     // grabWindow captures the screen region of the window, including anything

@@ -1,4 +1,5 @@
 #include "SankoTheme.h"
+#include "SankoSettings.h"
 #include "BrushSettingsStudio.h"
 
 #include "BrushPresetCodec.h"
@@ -289,7 +290,7 @@ BrushSettingsStudio::BrushSettingsStudio(BrushLibraryModel *model,
 
 double BrushSettingsStudio::storedStabilization()
 {
-    return QSettings(QStringLiteral("SankoTV"), QStringLiteral("SankoTV"))
+    return sankoSettings()
         .value(kStabKey, 0.0)
         .toDouble();
 }
@@ -913,8 +914,7 @@ QWidget *BrushSettingsStudio::buildSmoothingSection()
             [this](double v) { emit stabilizationChanged(v); });
     connect(s, &StudioSlider::valueCommitted, this,
             [this](double, double after) {
-                QSettings(QStringLiteral("SankoTV"),
-                          QStringLiteral("SankoTV"))
+                sankoSettings()
                     .setValue(kStabKey, after);
                 emit stabilizationChanged(after);
             });
@@ -1742,7 +1742,7 @@ void BrushSettingsStudio::openAtDefault()
 
 void BrushSettingsStudio::saveGeometryState() const
 {
-    QSettings(QStringLiteral("SankoTV"), QStringLiteral("SankoTV"))
+    sankoSettings()
         .setValue(kGeoKey, geometry());
 }
 
@@ -1775,7 +1775,7 @@ QSize BrushSettingsStudio::savedSize() const
     // The persisted geometry's SIZE, validated against the minimums; the
     // stored position is deliberately ignored — every open re-centres
     // (openAtDefault). Invalid or absent state returns an invalid QSize.
-    const QSettings s(QStringLiteral("SankoTV"), QStringLiteral("SankoTV"));
+    const QSettings s = sankoSettings();
     const QRect geo = s.value(kGeoKey).toRect();
     if (!geo.isValid() || geo.width() < kMinW || geo.height() < kMinH)
         return QSize();

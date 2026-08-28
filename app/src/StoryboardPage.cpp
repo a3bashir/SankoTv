@@ -1,4 +1,5 @@
 #include "StoryboardPage.h"
+#include "SankoSettings.h"
 #include "SankoTheme.h"
 
 #include "ColorPanel.h"
@@ -1040,8 +1041,7 @@ public:
         // other floating toolbars - the bar is exactly its body width now.
         setFixedSize(kBarW, kBarH);
         setMouseTracking(true); // live move-cursor without a button held
-        const QSettings settings(QStringLiteral("SankoTV"),
-                                 QStringLiteral("SankoTV"));
+        const QSettings settings = sankoSettings();
         m_side = settings.value(QStringLiteral("storyboard/sizeCtlSide/v2"), 0)
                          .toInt() == 1 ? 1 : 0;
         m_sideY = settings.value(QStringLiteral("storyboard/sizeCtlY/v2"), -1)
@@ -1176,8 +1176,7 @@ private:
                 onSideChanged(); // the grab flips to the inner side
             update();
         }
-        QSettings settings(QStringLiteral("SankoTV"),
-                           QStringLiteral("SankoTV"));
+        QSettings settings = sankoSettings();
         settings.setValue(QStringLiteral("storyboard/sizeCtlSide/v2"), m_side);
         settings.setValue(QStringLiteral("storyboard/sizeCtlY/v2"), m_sideY);
         reposition(); // never user-placed: always lands on snappedOffset()
@@ -2515,7 +2514,7 @@ QWidget *StoryboardPage::createCenterColumn()
     // step; the pressure toggles were removed deliberately, see HANDOFF.md.)
     // Restore last-session visibility (records intent; effective with the
     // canvas, like every floating tool window).
-    if (QSettings(QStringLiteral("SankoTV"), QStringLiteral("SankoTV"))
+    if (sankoSettings()
             .value(QStringLiteral("storyboard/brushLibrary/v1/visible"),
                    false)
             .toBool())
@@ -3270,8 +3269,7 @@ void StoryboardPage::createFloatingToolbar()
         return vals;
     };
     {
-        const QSettings st(QStringLiteral("SankoTV"),
-                           QStringLiteral("SankoTV"));
+        const QSettings st = sankoSettings();
         auto load = [&](SizeCtlTool &t, const QString &base, int maxSize) {
             t.size = qBound(1, st.value(base + QStringLiteral("size"),
                                         t.size).toInt(), maxSize);
@@ -3290,7 +3288,7 @@ void StoryboardPage::createFloatingToolbar()
         load(tc->eraser, QStringLiteral("storyboard/toolCtl/eraser/"), 200);
     }
     auto saveToolCtl = [tc] {
-        QSettings st(QStringLiteral("SankoTV"), QStringLiteral("SankoTV"));
+        QSettings st = sankoSettings();
         auto join = [](const QVector<int> &ticks) {
             QStringList parts;
             for (int v : ticks)
@@ -4249,7 +4247,7 @@ void StoryboardPage::savePanelStripState()
 {
     if (!m_panelStripDock || !m_panelStripBar)
         return;
-    QSettings s(QStringLiteral("SankoTV"), QStringLiteral("SankoTV"));
+    QSettings s = sankoSettings();
     s.setValue(kStripSettings + QStringLiteral("area"), int(m_stripLastArea));
     s.setValue(kStripSettings + QStringLiteral("height"),
                m_panelStripBar->height());
@@ -4274,7 +4272,7 @@ void StoryboardPage::restorePanelStripState()
 {
     if (!m_panelStripDock)
         return;
-    QSettings s(QStringLiteral("SankoTV"), QStringLiteral("SankoTV"));
+    QSettings s = sankoSettings();
     if (!s.contains(kStripSettings + QStringLiteral("area"))) {
         // First run (no strip keys yet): QMainWindow::restoreState() from a
         // layout blob that PRE-DATES this dock restores it as hidden — the
@@ -7009,7 +7007,7 @@ bool StoryboardPage::confirmLayerDelete(const QVector<int> &indices)
             break;
         }
 
-    QSettings settings(QStringLiteral("SankoTV"), QStringLiteral("SankoTV"));
+    QSettings settings = sankoSettings();
     const bool skipEmpty =
         settings.value(QStringLiteral("storyboard/skipEmptyLayerDeleteConfirm"),
                        false).toBool();

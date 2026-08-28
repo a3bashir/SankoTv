@@ -38,9 +38,11 @@
 // and say so — the hash lock itself is CPU-only and always authoritative.)
 
 #include "SankoPaintHostAdapter.h"
+#include "SankoSettings.h"
 
 #include <QCryptographicHash>
 #include <QGuiApplication>
+#include <QDir>
 
 #include <cstdio>
 #include <memory>
@@ -138,6 +140,11 @@ static int maxDelta(const QImage &x, const QImage &y)
 int main(int argc, char **argv)
 {
     QGuiApplication app(argc, argv); // QRhi needs a Gui application
+    // Every settings read/write in app code goes through sankoSettings();
+    // this override points the store at scratch so the family can NEVER
+    // touch the user's real settings, driven or not.
+    sankoSettingsSetOverrideForTest(QDir::tempPath()
+                                    + QStringLiteral("/sanko_pixellock_settings.ini"));
     int failures = 0;
     auto check = [&failures](bool ok, const char *name, const QString &info) {
         std::printf("%s %s%s%s\n", ok ? "PASS" : "FAIL", name,

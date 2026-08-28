@@ -1,4 +1,5 @@
 #include "NewProjectDialog.h"
+#include "SankoSettings.h"
 #include "SankoScrollBarStyle.h"
 #include "SankoTheme.h"
 #include "brushlib/StudioControls.h"
@@ -86,7 +87,7 @@ QSettings recentSettings()
 {
     if (!g_settingsOverride.isEmpty())
         return QSettings(g_settingsOverride, QSettings::IniFormat);
-    return QSettings(QStringLiteral("SankoTV"), QStringLiteral("SankoTV"));
+    return sankoSettings();
 }
 
 QFont headerFont()

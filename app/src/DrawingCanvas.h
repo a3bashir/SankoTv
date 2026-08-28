@@ -121,7 +121,7 @@ public:
     bool isTitleSafeEnabled() const { return m_titleSafe; }
 
     // Safe-area guide opacities in percent (Preferences > Camera). Defaults
-    // are loaded from QSettings("SankoTV","SankoTV") in the constructor.
+    // are loaded from sankoSettings() in the constructor.
     void setActionSafeMaskOpacity(int percent); // action-safe amber
     void setTitleSafeMaskOpacity(int percent);  // title-safe blue
 

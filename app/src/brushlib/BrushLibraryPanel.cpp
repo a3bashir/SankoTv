@@ -1,4 +1,5 @@
 #include "BrushLibraryPanel.h"
+#include "SankoSettings.h"
 #include "SankoTheme.h"
 
 #include "BrushPresetCodec.h"
@@ -671,8 +672,7 @@ void BrushLibraryPanel::openAtDefault()
         // SIZE persists; POSITION is derived from the Brush-button anchor
         // every time, so a previously saved position is deliberately
         // ignored (its size component is still honoured).
-        const QSettings s(QStringLiteral("SankoTV"),
-                          QStringLiteral("SankoTV"));
+        const QSettings s = sankoSettings();
         const QRect geo =
             s.value(QStringLiteral("storyboard/brushLibrary/v1/geo"))
                 .toRect();
@@ -747,7 +747,7 @@ void BrushLibraryPanel::setVisible(bool visible)
 {
     // Persist the INTENT here (D1) — never from hideEvent, where teardown
     // has already made isVisible() false regardless of what the user wants.
-    QSettings(QStringLiteral("SankoTV"), QStringLiteral("SankoTV"))
+    sankoSettings()
         .setValue(QStringLiteral("storyboard/brushLibrary/v1/visible"),
                   visible);
     FloatingToolWindow::setVisible(visible);
@@ -757,7 +757,7 @@ void BrushLibraryPanel::saveGeometry() const
 {
     // Geometry only. The `visible` key is written exclusively by the
     // intent-recording setVisible() override above (D1).
-    QSettings s(QStringLiteral("SankoTV"), QStringLiteral("SankoTV"));
+    QSettings s = sankoSettings();
     s.setValue(QStringLiteral("storyboard/brushLibrary/v1/geo"), geometry());
 }
 

@@ -30,9 +30,11 @@
 // Run: build/<config>/SankoCanvasBrushLock.exe (exit code = failure count).
 
 #include "DrawingCanvas.h"
+#include "SankoSettings.h"
 #include "SankoPaintHostAdapter.h"
 
 #include <QApplication>
+#include <QDir>
 #include <QCryptographicHash>
 
 #include <cstdio>
@@ -103,6 +105,11 @@ static QString renderWith(const ::Brush &brush)
 int main(int argc, char **argv)
 {
     QApplication app(argc, argv); // DrawingCanvas is a QWidget
+    // Every settings read/write in app code goes through sankoSettings();
+    // this override points the store at scratch so the family can NEVER
+    // touch the user's real settings, driven or not.
+    sankoSettingsSetOverrideForTest(QDir::tempPath()
+                                    + QStringLiteral("/sanko_canvasbrushlock_settings.ini"));
 
     int failures = 0;
     auto check = [&](const char *label, bool ok, const QString &d) {
