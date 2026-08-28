@@ -2325,6 +2325,8 @@ pattern), preset save/load through the existing codec.
 [DONE 2026-08-28 — the entry below.]
 
 ## The Eraser Library UI (2026-08-28)
+[SUPERSEDED same day by the MIRROR - dedicated presets retired; see
+"The mirrored Eraser Library" below.]
 
 EIGHT BUILT-IN ERASERS, NOT TEN — ten was the brush categories' bar,
 inherited from a check written for brushes, not a design number. Each
@@ -2463,4 +2465,91 @@ ALL FIVE PINS UNTOUCHED, as a UI reorganisation must leave them -
 193847fa (brush swatches), 666f7b45 / cafcec7f (canvas locks), 0bc24381
 (erase render), 96baaccf (eraser swatches) - verified by the full gate,
 both configs, both SankoTV builds.
+
+## The mirrored Eraser Library: one definition, referenced twice
+## (2026-08-28)
+
+THE USER'S CORRECTION, second and final shape: the Eraser Library
+MIRRORS the Brush Library. Every mirrorable brush is available as an
+eraser with identical character - same tip, texture, spacing, dynamics,
+jitter, pressure, opacity - differing only in knocking pixels out.
+Gouache erases like Gouache. The eight dedicated eraser presets are
+RETIRED (every one had a mirror equivalent; they were exactly the
+second-copy class the correction forbids). The out-of-box default
+eraser is unchanged - the canvas constructor's hard-round-1.0 brush is
+code, not a preset.
+
+MECHANICS - a scope-keyed view, no second data structure: both scopes
+share the category rows; the eraser scope filters the LIST
+(presetFitsScope), requests ERASE-VARIANT swatches (preset id +
+"#erase", a copy with eraseMode forced - settingsHash covers the v11
+flag so the two variants can never collide in the cache), and routes
+activation through the eraser door (setEraserPreset, which applies
+eraseMode to ITS COPY - the stored preset is never mutated). The
+"Eraser" sidebar row survives only as the home of LEGACY user eraser
+presets and hides when none exist (the Imported pattern). Recent is now
+ONE list shared by both scopes - the same ids flow through either door.
+Shared category selection SURVIVES scope flips (the old stranding
+applied to disjoint sidebars; only legacy-Eraser/Imported can strand
+now).
+
+THE EXCLUSIONS - 6 of 62, split by observability: the 3 smudge
+(Blender, Smudge Soft, Wet-on-Wet) and 3 dual (Ink Line & Splatter,
+Bristle, Glitch) presets do NOT mirror - eraseMode forces the mask path
+and their names would lie about the character. The 6 colour-buffer
+presets (Confetti, Chromatic, Sparkle, Granulating Wash, Bleed Edge,
+Salt Texture) DO mirror: colour is unobservable in erase mode, so
+nothing VISIBLE is lost - and they are deliberately NOT badged (noise
+explaining an invisible difference).
+
+SHARED EDITING, by decision: the studio edits THE DEFINITION - editing
+Gouache from the eraser scope changes Gouache everywhere, because there
+is only one Gouache. Save Variation is the fork mechanism and needed
+nothing new. The studio's eraser section-hiding keys off
+session.eraseMode() and therefore applies only to LEGACY eraser
+presets; mirrored presets show every section (Colour edits the painting
+side of the same definition; erase ignores colour by construction).
+
+>>> THE COUPLED PINS - READ THIS BEFORE TOUCHING EITHER SHA <<<
+The eraser swatch SHA (kEraserSwatchSha in BrushLibraryTest, currently
+124f9ba0b843...) pins renders DERIVED FROM builtinRoster(), so it is
+COUPLED to the brush preview SHA (193847fa...). The asymmetry is the
+part that will not be obvious later:
+  * 193847fa MOVED (legitimate roster/fixture change): the eraser pin
+    moves WITH it - re-baseline BOTH in the SAME commit, one reason,
+    stated once. A commit that re-baselines only one of them is
+    incomplete.
+  * THE ERASER PIN MOVED ALONE (193847fa intact): that is a DEFECT in
+    the erase composite, the mirror plumbing, or the banded fixture -
+    NEVER a re-baseline. Find the cause. The brush SHA is the source;
+    the eraser SHA is derived; a derivative cannot legitimately move
+    while its source stands still.
+The same note lives in the test next to the pin, so whoever hits a
+failure sees it at the failure site.
+
+RETIRED WITH THE EIGHT: builtinEraserRoster(), its 96baaccf... pin
+(superseded BY DESIGN with the user's explicit approval - the fixture
+was removed, not the failure worked around), and the b8
+roster-discipline checks - replaced by the mirror census (56 of 62
+mirror; exactly 6 excluded, each smudge or dual), the ONE-DEFINITION
+IDENTITY (toggling eraseMode on and off leaves every mirrorable preset
+byte-identical through the codec), the three Brush-level contradiction
+guards (unchanged), and the roster-sized swatch pin. One check
+calibrated during the pass: Soft Wash erases at very low strength and
+its faint carve missed an alpha<200 detector - the carve claim is now
+"the erase render did something to the band" (alpha<255), because a
+faint eraser making a faint carve is CORRECT mirroring.
+
+Lifecycle (m) rewritten a second time: the mirror census through the
+REAL panel (every mirrorable preset appears under the eraser scope, no
+excluded preset leaks), the both-doors identity (eraser-Gouache with
+the flag cleared is BYTE-IDENTICAL to Gouache through the codec),
+scope-follows-tool with the shared category SURVIVING the flip,
+activation never touching the tool, bar mirror, both selections
+surviving. Lifecycle is now 152 checks.
+
+Pins after this pass: 193847fa (brush swatches), 666f7b45 / cafcec7f
+(canvas locks), 0bc24381 (erase render) - all four UNTOUCHED, verified
+by the gate - plus 124f9ba0 (the mirrored eraser swatches, coupled per
+the note above).
 

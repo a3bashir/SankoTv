@@ -82,8 +82,11 @@
 
 using brushlib::BrushPreset;
 
+// COUPLED to the brush preview SHA - see the (b8) procedure note. A
+// legitimate roster change moves BOTH in the same commit; this one
+// moving ALONE is a defect, never a re-baseline.
 static const char kEraserSwatchSha[] =
-    "96baaccf7c4eac88613a19b51a47f1d178e59c85ec78ab521d8bf604b474c5e9";
+    "124f9ba0b843cdd40ba1f73c050a69a6e8220e4c253d4b2d637bc7e170cecace";
 using brushlib::BrushPresetCodec;
 using brushlib::BrushPreviewRenderer;
 
@@ -462,41 +465,64 @@ int main(int argc, char **argv)
                   && onE.affectedRect == offE.affectedRect);
     }
 
-    // ---- (b8) the ERASER roster: its own pin, its own discipline ---------
-    // DELIBERATELY separate from builtinRoster(): the combined preview SHA
-    // (193847fa...) and the >=10-per-category checks are pinned baselines
-    // over the BRUSH roster, and erasers appearing there would move them
-    // for a reason unrelated to brush rendering. Eight erasers (ten was the
-    // brush categories' bar, not a design number), each mechanically
-    // distinct, pinned by their own combined swatch SHA below.
+    // ---- (b8) the ERASER MIRROR: one definition, referenced twice --------
+    // The dedicated eraser roster is GONE (2026-08-28): every mirrorable
+    // brush preset IS the eraser preset, eraseMode applied at activation on
+    // a copy. Pinned here: the census (56 of 62 mirror; the 6 smudge/dual
+    // presets are excluded because eraseMode forces the mask path and their
+    // names would lie - the 6 colour-buffer presets DO mirror, colour being
+    // unobservable in erase mode), the Brush-level guards that make a dirty
+    // eraser unconstructible, the one-definition codec identity, and the
+    // ROSTER-SIZED eraser swatch SHA.
+    //
+    // >>> COUPLED-PIN PROCEDURE - READ BEFORE TOUCHING EITHER SHA <<<
+    // kEraserSwatchSha pins renders DERIVED from builtinRoster(), so it is
+    // COUPLED to the brush preview SHA (193847fa...):
+    //   * a legitimate roster/fixture change moves BOTH - re-baseline BOTH
+    //     in the SAME commit, one reason, stated once;
+    //   * kEraserSwatchSha moving ALONE (193847fa... intact) is a DEFECT in
+    //     the erase render or the mirror plumbing, never a re-baseline.
+    // The asymmetry is the point: the brush SHA is the source, this one is
+    // derived. When in doubt, find the cause; loosening a pin is never it.
     {
-        const QVector<BrushPreset> erasers = brushlib::builtinEraserRoster();
-        check(QStringLiteral("(b8) exactly 8 eraser presets"),
-              erasers.size() == 8,
-              QStringLiteral("count=%1").arg(erasers.size()));
-        QSet<QString> ids;
-        bool idsOk = true, catOk = true, modeOk = true, cleanOk = true;
-        for (const BrushPreset &p : erasers) {
-            idsOk = idsOk && !ids.contains(p.id)
-                && p.id.startsWith(QStringLiteral("eraser/"));
-            ids.insert(p.id);
-            catOk = catOk && p.category == QStringLiteral("Eraser");
-            modeOk = modeOk && p.brush.eraseMode();
-            cleanOk = cleanOk && !p.brush.smudgeActive()
-                && !p.brush.dualBrushEnabled()
-                && !p.brush.usesColorStrokeBuffer();
-        }
-        check(QStringLiteral("(b8) ids unique, eraser/ prefixed"), idsOk);
-        check(QStringLiteral("(b8) every entry is category Eraser"), catOk);
-        check(QStringLiteral("(b8) every entry is eraseMode"), modeOk);
-        check(QStringLiteral("(b8) none smudges, duals, or colour-buffers"),
-              cleanOk);
+        const QVector<BrushPreset> roster2 = brushlib::builtinRoster();
+        QVector<const BrushPreset *> mirrorable, excluded;
+        for (const BrushPreset &p : roster2)
+            (p.brush.smudgeActive() || p.brush.dualBrushEnabled()
+                 ? excluded : mirrorable) << &p;
+        check(QStringLiteral("(b8) 56 of 62 presets mirror as erasers"),
+              mirrorable.size() == 56 && roster2.size() == 62,
+              QStringLiteral("%1 of %2").arg(mirrorable.size())
+                  .arg(roster2.size()));
+        bool exclOk = excluded.size() == 6;
+        for (const BrushPreset *p : excluded)
+            exclOk = exclOk
+                && (p->brush.smudgeActive() || p->brush.dualBrushEnabled());
+        check(QStringLiteral("(b8) exactly 6 excluded, each smudge or dual"),
+              exclOk, QStringLiteral("%1 excluded").arg(excluded.size()));
 
-        // THE CONTRADICTION CHECK, at the Brush level: the roster checks
-        // prove today's eight are clean; this proves the NINTH cannot be
-        // dirty. Setting eraseMode on a smudge / dual / colour-jitter brush
-        // FORCES the mask path - that is what the engine does (refusal was
-        // the alternative; forcing keeps setters order-independent).
+        // THE ONE-DEFINITION IDENTITY: toggling eraseMode on and back off
+        // leaves the serialised brush BYTE-IDENTICAL for every mirrorable
+        // preset - the flag is the ONLY thing the mirror ever changes.
+        bool identityOk = true;
+        QString firstBad2;
+        for (const BrushPreset *p : mirrorable) {
+            ::Brush copy = p->brush;
+            copy.setEraseMode(true);
+            copy.setEraseMode(false);
+            if (BrushPresetCodec::saveBrush(copy)
+                != BrushPresetCodec::saveBrush(p->brush)) {
+                identityOk = false;
+                firstBad2 = p->name;
+                break;
+            }
+        }
+        check(QStringLiteral("(b8) eraseMode round-trip leaves every "
+                             "mirrorable preset byte-identical"),
+              identityOk, firstBad2);
+
+        // The Brush-level guards (unchanged from the dedicated-roster era;
+        // they are what make a contradictory eraser unconstructible).
         {
             ::Brush smudgy;
             smudgy.setToolMode(::Brush::ToolMode::Smudge);
@@ -514,9 +540,7 @@ int main(int argc, char **argv)
                                  "before eraseMode"),
                   dual.dualBrushEnabled());
             dual.setEraseMode(true);
-            check(QStringLiteral("(b8) eraseMode FORCES the dual brush off "
-                                 "(the dual publication shader has no erase "
-                                 "branch)"),
+            check(QStringLiteral("(b8) eraseMode FORCES the dual brush off"),
                   !dual.dualBrushEnabled());
 
             ::Brush jitter;
@@ -530,21 +554,20 @@ int main(int argc, char **argv)
                   !jitter.usesColorStrokeBuffer());
         }
 
-        // The eraser swatches: rendered over the neutral band, carved
-        // through it - and pinned by their OWN combined SHA, deterministic
-        // across configs like the brush SHA. Re-baselining follows the
-        // same procedure as the brush SHA (see the header comment).
+        // The MIRRORED swatches: every mirrorable preset's erase character,
+        // rendered over the band with the carve, deterministic, combined
+        // into the roster-sized pin.
         QCryptographicHash eraserCombined(QCryptographicHash::Sha256);
         bool renderOk = true, carvedOk = true, determOk = true;
-        for (const BrushPreset &p : erasers) {
-            const QImage a = BrushPreviewRenderer::renderPreviewImage(p.brush);
-            const QImage b = BrushPreviewRenderer::renderPreviewImage(p.brush);
-            renderOk = renderOk && !a.isNull();
+        QString firstBad3;
+        for (const BrushPreset *p : mirrorable) {
+            ::Brush eraseCopy = p->brush;
+            eraseCopy.setEraseMode(true);
+            const QImage a = BrushPreviewRenderer::renderPreviewImage(eraseCopy);
+            const QImage b = BrushPreviewRenderer::renderPreviewImage(eraseCopy);
+            if (a.isNull()) { renderOk = false; firstBad3 = p->name; break; }
             determOk = determOk && imageBytes(a) == imageBytes(b);
             eraserCombined.addData(imageBytes(a));
-            // The swatch must show the band with a hole: at least one pixel
-            // fully opaque band-grey AND at least one pixel of reduced
-            // alpha inside the swatch (the carve).
             bool sawBand = false, sawCarve = false;
             for (int y = 0; y < a.height(); ++y)
                 for (int x = 0; x < a.width(); ++x) {
@@ -552,19 +575,27 @@ int main(int argc, char **argv)
                     if (qAlpha(px) == 255 && qRed(px) > 0x80
                         && qRed(px) < 0x95)
                         sawBand = true;
-                    if (qAlpha(px) < 200)
+                    // ANY carved pixel counts: the faintest wash
+                    // presets (Soft Wash) erase at very low strength, and
+                    // a faint eraser making a faint carve is CORRECT
+                    // mirroring - the claim here is only that the erase
+                    // render did something to the band.
+                    if (qAlpha(px) < 255)
                         sawCarve = true;
                 }
-            carvedOk = carvedOk && sawBand && sawCarve;
+            if (!(sawBand && sawCarve)) {
+                carvedOk = false;
+                if (firstBad3.isEmpty())
+                    firstBad3 = p->name;
+            }
         }
-        check(QStringLiteral("(b8) all 8 eraser swatches render"), renderOk);
-        check(QStringLiteral("(b8) swatches deterministic (two renders "
-                             "byte-identical)"),
+        check(QStringLiteral("(b8) all 56 mirrored swatches render"),
+              renderOk, firstBad3);
+        check(QStringLiteral("(b8) mirrored swatches deterministic"),
               determOk);
-        check(QStringLiteral("(b8) every swatch shows the band AND a carved "
-                             "hole (the structural inverse of a brush "
-                             "swatch)"),
-              carvedOk);
+        check(QStringLiteral("(b8) every mirrored swatch shows the band AND "
+                             "a carved hole"),
+              carvedOk, firstBad3);
         const QString eraserSha =
             QString::fromLatin1(eraserCombined.result().toHex());
         ts << "COMBINED ERASER SWATCH SHA (compare across configs): "

@@ -309,8 +309,18 @@ BrushLibraryPanel::BrushLibraryPanel(BrushLibraryModel *model,
     buildUi();
     connect(&m_previews, &BrushPreviewRenderer::previewReady, this,
             [this](const QString &presetId, const QImage &image) {
+                // "#erase"-suffixed results are the eraser-scope variant;
+                // a late arrival from the OTHER scope must not overwrite
+                // the current scope's swatch.
+                const bool eraseVariant =
+                    presetId.endsWith(QStringLiteral("#erase"));
+                if (eraseVariant != (m_scope == ToolScope::Eraser))
+                    return;
+                QString id = presetId;
+                if (eraseVariant)
+                    id.chop(6);
                 for (BrushRow *row : m_brushRows)
-                    if (row->presetId() == presetId)
+                    if (row->presetId() == id)
                         row->setSwatch(image);
             });
     connect(m_model, &BrushLibraryModel::changed, this, [this] {
@@ -318,13 +328,7 @@ BrushLibraryPanel::BrushLibraryPanel(BrushLibraryModel *model,
         rebuildBrushList();
     });
     updateImportedRow();
-    // Apply the DEFAULT scope's row visibility: rows are built visible and
-    // setToolScope early-returns on a no-op change, so without this the
-    // Eraser row showed in the brush sidebar until the first tool switch -
-    // caught by lifecycle (m) the first time it ran.
-    for (CategoryRow *row : m_categoryRows)
-        if (row->name() == QStringLiteral("Eraser"))
-            row->setVisible(false);
+    updateEraserRow();
     selectCategory(QStringLiteral("Recent")); // MRU is the default view
 }
 
@@ -408,10 +412,10 @@ void BrushLibraryPanel::buildUi()
     // gone — its brushes were redistributed into Painting, ids unchanged),
     // plus "Imported" — the home of foreign-format (.abr) imports — which
     // stays hidden until at least one imported brush exists.
-    // "Eraser" is a PANEL-side row: BrushLibraryModel::categories() (=
-    // builtinCategories()) is a pinned baseline the brush checks iterate,
-    // and the eraser presets live in their own roster. The row goes here,
-    // between the brush categories and "Imported".
+    // The Eraser Library MIRRORS the brush categories (one definition,
+    // referenced twice); the "Eraser" row survives only as the home of
+    // LEGACY user eraser presets (saved while a dedicated roster existed)
+    // and hides when none exist - the Imported pattern.
     const QStringList cats = QStringList()
         << QStringLiteral("Recent") << BrushLibraryModel::categories()
         << QStringLiteral("Eraser") << QStringLiteral("Imported");
@@ -466,10 +470,14 @@ void BrushLibraryPanel::selectCategory(const QString &category)
 
 void BrushLibraryPanel::rebuildBrushList()
 {
-    const QVector<const BrushPreset *> presets =
+    QVector<const BrushPreset *> presets =
         m_category == QStringLiteral("Recent")
         ? m_model->recentPresets()
         : m_model->presetsIn(m_category);
+    // The scope's door filter (see presetFitsScope).
+    for (int i = presets.size() - 1; i >= 0; --i)
+        if (!presetFitsScope(*presets.at(i)))
+            presets.removeAt(i);
     // Row POOL: rows are reused in place; only the count difference is
     // created or destroyed. Rebuilding 30 rows per category switch cost
     // ~20ms per row of UI-thread widget churn.
@@ -509,8 +517,29 @@ void BrushLibraryPanel::rebuildBrushList()
         row->setSelected(preset->id == m_selectedId);
         row->setFavourite(m_model->isFavourite(preset->id));
         row->setDirty(preset->id == m_dirtyId);
-        m_previews.requestPreview(preset->id, preset->brush);
+        // The ERASER scope shows the preset's ERASE character: the swatch
+        // renders a copy with eraseMode forced (the banded carve), cached
+        // separately by construction - settingsHash covers the v11
+        // eraseMode field, so the two variants can never collide. The
+        // "#erase" suffix keys the request/routing; the stored preset is
+        // never touched.
+        if (m_scope == ToolScope::Eraser) {
+            ::Brush eraseCopy = preset->brush;
+            eraseCopy.setEraseMode(true);
+            m_previews.requestPreview(
+                preset->id + QStringLiteral("#erase"), eraseCopy);
+        } else {
+            m_previews.requestPreview(preset->id, preset->brush);
+        }
     }
+}
+
+QStringList BrushLibraryPanel::visiblePresetIdsForTest() const
+{
+    QStringList ids;
+    for (BrushRow *row : m_brushRows)
+        ids << row->presetId();
+    return ids;
 }
 
 void BrushLibraryPanel::setActiveDirty(const QString &presetId, bool dirty)
@@ -683,31 +712,58 @@ void BrushLibraryPanel::setToolScope(ToolScope scope)
         return;
     m_scope = scope;
     const bool eraser = scope == ToolScope::Eraser;
-    // Row visibility IS the scope: the Eraser row alone under the Eraser,
-    // everything else under the Brush ("Imported" additionally needs
-    // imports to exist — updateImportedRow owns that rule).
-    for (CategoryRow *row : m_categoryRows) {
-        const bool isEraserRow = row->name() == QStringLiteral("Eraser");
-        if (row == m_importedRow)
-            continue; // updateImportedRow() below applies the joint rule
-        row->setVisible(eraser ? isEraserRow : !isEraserRow);
-    }
+    // THE MIRROR (2026-08-28): both scopes share the category rows - the
+    // same presets seen through two doors. What differs per scope: the
+    // LIST filter (smudge and dual presets cannot mirror as erasers; a
+    // legacy eraseMode preset is not a paint brush), the swatch variant,
+    // the title, and the anchor button. The legacy "Eraser" row and
+    // "Imported" have scope-conditional visibility of their own.
     updateImportedRow();
-    // The panel is titled for what it IS right now. The brush library
-    // carries the user's (renameable) library name; the eraser side is
-    // fixed.
+    updateEraserRow();
     if (m_titleLabel)
         m_titleLabel->setText(eraser ? QStringLiteral("Eraser Library")
                                      : m_model->libraryName());
-    // FALLBACK: a category stranded outside the new scope never stays on
-    // screen — the panel lands on the scope's default view.
-    const bool stranded = eraser
-        ? m_category != QStringLiteral("Eraser")
-        : m_category == QStringLiteral("Eraser");
+    // FALLBACK: a category whose row left the sidebar (legacy Eraser under
+    // the Brush, Imported under the Eraser) never stays on screen.
+    const bool stranded =
+        (m_category == QStringLiteral("Eraser") && !eraser)
+        || (m_category == QStringLiteral("Imported") && eraser);
     if (stranded)
-        selectCategory(eraser ? QStringLiteral("Eraser")
-                              : QStringLiteral("Recent"));
+        selectCategory(QStringLiteral("Recent"));
+    else
+        rebuildBrushList(); // same category, the OTHER door's filter/swatch
     reanchor(); // the panel hangs off the scope's own tool button
+}
+
+// The legacy-eraser row: home of user presets saved under the dedicated
+// eraser roster (retired 2026-08-28). Visible only in the eraser scope and
+// only while such presets exist - the Imported pattern.
+void BrushLibraryPanel::updateEraserRow()
+{
+    CategoryRow *eraserRow = nullptr;
+    for (CategoryRow *row : m_categoryRows)
+        if (row->name() == QStringLiteral("Eraser"))
+            eraserRow = row;
+    if (!eraserRow)
+        return;
+    const bool show = m_scope == ToolScope::Eraser
+        && !m_model->presetsIn(QStringLiteral("Eraser")).isEmpty();
+    eraserRow->setVisible(show);
+    if (!show && m_category == QStringLiteral("Eraser"))
+        selectCategory(QStringLiteral("Recent"));
+}
+
+// Can this preset be offered through the current door? Brush scope: not a
+// legacy eraseMode preset (it cannot paint). Eraser scope: not smudge and
+// not dual - eraseMode forces the mask path, so mirroring those would keep
+// the name and lose the character (the 6 colour-buffer presets DO mirror:
+// colour is unobservable in erase mode, so nothing visible is lost).
+bool BrushLibraryPanel::presetFitsScope(const BrushPreset &preset) const
+{
+    if (m_scope == ToolScope::Eraser)
+        return !preset.brush.smudgeActive()
+            && !preset.brush.dualBrushEnabled();
+    return !preset.brush.eraseMode();
 }
 
 QStringList BrushLibraryPanel::visibleCategoriesForTest() const

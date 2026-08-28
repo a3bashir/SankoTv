@@ -51,6 +51,7 @@ public:
     // through these — what the sidebar SHOWS and what the list is on.
     QString currentCategoryForTest() const { return m_category; }
     QStringList visibleCategoriesForTest() const;
+    QStringList visiblePresetIdsForTest() const; // the LIST, post-filter
     void selectCategoryForTest(const QString &category)
     {
         selectCategory(category);
@@ -124,6 +125,8 @@ private:
     Edge edgeAt(const QPoint &pos) const;
     void buildUi();
     void selectCategory(const QString &category);
+    void updateEraserRow(); // legacy-eraser row visibility (mirror pass)
+    bool presetFitsScope(const BrushPreset &preset) const;
     void rebuildBrushList();
     void showRowMenu(BrushRow *row, const QPoint &globalPos);
     void showChevronMenu(const QPoint &globalPos);

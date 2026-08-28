@@ -44,6 +44,9 @@
 #include "MainWindow.h"
 #include "StoryboardPage.h"
 #include "brushlib/BrushLibraryPanel.h"
+#include "brushlib/BrushLibraryModel.h"
+#include "brushlib/BrushPresetCodec.h"
+#include "brushlib/BuiltinRoster.h"
 #include "NewProjectDialog.h"
 #include "ProjectIO.h"
 #include "StoryboardModel.h"
@@ -852,18 +855,19 @@ void runSaveAsIndependencePass(const QString &scratch)
 }
 
 
-// ---- (m) the TOOL-SCOPED library, end to end ------------------------------
-// REWRITTEN 2026-08-28: the first (m) pinned the v1 model (activation
-// switches the tool) - the model was inverted by decision, so the pins
-// inverted with it. Now the panel BELONGS to the tool: Brush -> Brush
-// Library, Eraser -> Eraser Library, never both; scope follows the tool
-// both directions with the panel open; activation NEVER touches the tool;
-// and a selected category stranded outside the new scope falls back to
-// the scope's default view - asserted by what the panel SHOWS, not by
-// absence of a crash.
+// ---- (m) the MIRRORED tool-scoped library, end to end ---------------------
+// REWRITTEN AGAIN 2026-08-28 (mirror pass): the eraser scope now MIRRORS
+// the brush categories - one definition, referenced twice - so the old
+// assertions (eraser sidebar = {Eraser}, category stranding on scope flip)
+// inverted. Pinned now: the mirror census through the REAL panel (every
+// mirrorable preset appears under the eraser scope, every excluded one
+// does not), the both-doors identity (the same preset activated through
+// either door produces the same brush except eraseMode), scope following
+// the tool with the CATEGORY SURVIVING the flip, activation never touching
+// the tool, and the bar mirror.
 void runEraserLibraryPass(const QString &scratch)
 {
-    out() << "--- (m) tool-scoped library, end to end ---" << Qt::endl;
+    out() << "--- (m) mirrored library, end to end ---" << Qt::endl;
     MainWindow window;
     window.resize(1300, 850);
     window.show();
@@ -877,8 +881,9 @@ void runEraserLibraryPass(const QString &scratch)
     auto *canvas = window.findChild<DrawingCanvas *>();
     auto *page = window.findChild<StoryboardPage *>();
     auto *panel = window.findChild<brushlib::BrushLibraryPanel *>();
-    if (!canvas || !page || !panel) {
-        check(QStringLiteral("(m) found canvas, page and library panel"),
+    auto *model = window.findChild<brushlib::BrushLibraryModel *>();
+    if (!canvas || !page || !panel || !model) {
+        check(QStringLiteral("(m) found canvas, page, panel and model"),
               false);
         window.markCleanForTest();
         window.close();
@@ -886,89 +891,107 @@ void runEraserLibraryPass(const QString &scratch)
     }
     using Scope = brushlib::BrushLibraryPanel::ToolScope;
 
-    // --- scope follows the tool, both directions -------------------------
+    // --- the sidebar mirrors: same categories under both scopes ----------
     canvas->setTool(DrawingCanvas::Brush);
     pump(200);
-    check(QStringLiteral("(m) Brush tool -> Brush scope"),
-          panel->toolScope() == Scope::Brush);
     const QStringList brushCats = panel->visibleCategoriesForTest();
-    check(QStringLiteral("(m) brush sidebar shows Recent + brush "
-                         "categories, NOT Eraser"),
-          brushCats.contains(QStringLiteral("Recent"))
-              && brushCats.contains(QStringLiteral("Sketching"))
-              && !brushCats.contains(QStringLiteral("Eraser")),
-          brushCats.join(QStringLiteral(", ")));
-
-    // --- THE STRANDING FALLBACK (the check most likely to be subtly
-    // wrong): select a brush category, then switch tools out from under
-    // it. Assert what the panel SHOWS afterwards.
-    panel->selectCategoryForTest(QStringLiteral("Sketching"));
-    check(QStringLiteral("(m) control: a brush category is selected"),
-          panel->currentCategoryForTest() == QStringLiteral("Sketching"));
     canvas->setTool(DrawingCanvas::Eraser);
     pump(200);
     check(QStringLiteral("(m) Eraser tool -> Eraser scope"),
           panel->toolScope() == Scope::Eraser);
-    check(QStringLiteral("(m) the STRANDED brush category fell back to the "
-                         "Eraser view"),
-          panel->currentCategoryForTest() == QStringLiteral("Eraser"),
-          panel->currentCategoryForTest());
     const QStringList eraserCats = panel->visibleCategoriesForTest();
-    check(QStringLiteral("(m) eraser sidebar shows the Eraser row ALONE"),
-          eraserCats == QStringList{QStringLiteral("Eraser")},
+    check(QStringLiteral("(m) the eraser sidebar MIRRORS the brush "
+                         "categories"),
+          eraserCats.contains(QStringLiteral("Sketching"))
+              && eraserCats.contains(QStringLiteral("Painting"))
+              && eraserCats.contains(QStringLiteral("Recent")),
           eraserCats.join(QStringLiteral(", ")));
 
-    // --- activation under the Eraser scope: applies, NEVER switches ------
-    ::Brush paintBefore = canvas->paintBrush();
-    panel->activatePresetForTest(QStringLiteral("eraser/chalk-eraser"));
+    // --- THE MIRROR CENSUS through the real panel: every mirrorable
+    // preset appears, every excluded one does not, per category.
+    {
+        bool allPresent = true, noneLeaked = true;
+        int shown = 0, expected = 0;
+        for (const QString &cat : brushlib::builtinCategories()) {
+            panel->selectCategoryForTest(cat);
+            const QStringList ids = panel->visiblePresetIdsForTest();
+            shown += ids.size();
+            for (const brushlib::BrushPreset *p : model->presetsIn(cat)) {
+                const bool mirrorable = !p->brush.smudgeActive()
+                    && !p->brush.dualBrushEnabled();
+                if (mirrorable) {
+                    ++expected;
+                    allPresent = allPresent && ids.contains(p->id);
+                } else {
+                    noneLeaked = noneLeaked && !ids.contains(p->id);
+                }
+            }
+        }
+        check(QStringLiteral("(m) every MIRRORABLE preset appears in the "
+                             "eraser scope (56 across the categories)"),
+              allPresent && shown == expected && expected == 56,
+              QStringLiteral("shown=%1 expected=%2").arg(shown)
+                  .arg(expected));
+        check(QStringLiteral("(m) no EXCLUDED preset leaks through the "
+                             "eraser door"),
+              noneLeaked);
+    }
+
+    // --- both doors, one definition: same preset, same brush, except
+    // eraseMode. (The eraser door copies the preset raw; the paint door's
+    // documented colour-adoption rule makes byte-equality apply on the
+    // ERASER side, which is the side the mirror added.)
+    panel->selectCategoryForTest(QStringLiteral("Painting"));
+    const brushlib::BrushPreset *gouache =
+        model->preset(QStringLiteral("builtin/painting/gouache"));
+    check(QStringLiteral("(m) control: Gouache exists"),
+          gouache != nullptr);
+    panel->activatePresetForTest(QStringLiteral("builtin/painting/gouache"));
     pump(300);
-    check(QStringLiteral("(m) the eraser preset LANDED in the eraser "
-                         "brush"),
-          canvas->eraserBrush().eraseMode()
-              && canvas->eraserBrush().grainDepth() > 0.5,
-          QStringLiteral("size=%1 grain=%2")
-              .arg(canvas->eraserBrush().size())
-              .arg(canvas->eraserBrush().grainDepth()));
+    check(QStringLiteral("(m) eraser-Gouache IS Gouache: byte-identical "
+                         "except eraseMode"),
+          [&] {
+              if (!gouache)
+                  return false;
+              ::Brush cleared = canvas->eraserBrush();
+              if (!cleared.eraseMode())
+                  return false;
+              cleared.setEraseMode(false);
+              return brushlib::BrushPresetCodec::saveBrush(cleared)
+                  == brushlib::BrushPresetCodec::saveBrush(gouache->brush);
+          }());
     check(QStringLiteral("(m) activation did NOT touch the tool"),
           canvas->tool() == DrawingCanvas::Eraser);
-    check(QStringLiteral("(m) the PAINT brush is untouched"),
-          canvas->paintBrush().size() == paintBefore.size()
-              && !canvas->paintBrush().eraseMode());
-    check(QStringLiteral("(m) the bar mirrors the eraser preset"),
+    check(QStringLiteral("(m) the bar mirrors eraser-Gouache"),
           page->sizeCtlDisplayedSizeForTest()
-              == canvas->eraserBrush().size(),
-          QStringLiteral("bar=%1 eraser=%2")
-              .arg(page->sizeCtlDisplayedSizeForTest())
-              .arg(canvas->eraserBrush().size()));
+              == canvas->eraserBrush().size());
 
-    // --- back the other way: the Eraser category strands in turn ---------
+    // --- the category SURVIVES the scope flip now (shared sidebar) -------
+    check(QStringLiteral("(m) control: Painting is selected"),
+          panel->currentCategoryForTest() == QStringLiteral("Painting"));
     canvas->setTool(DrawingCanvas::Brush);
     pump(200);
     check(QStringLiteral("(m) back to Brush: scope follows"),
           panel->toolScope() == Scope::Brush);
-    check(QStringLiteral("(m) the stranded Eraser view fell back to "
-                         "Recent"),
-          panel->currentCategoryForTest() == QStringLiteral("Recent"),
+    check(QStringLiteral("(m) the shared category SURVIVES the flip "
+                         "(no stranding between mirrored scopes)"),
+          panel->currentCategoryForTest() == QStringLiteral("Painting"),
           panel->currentCategoryForTest());
-    check(QStringLiteral("(m) brush sidebar restored (Eraser row gone "
-                         "again)"),
-          !panel->visibleCategoriesForTest()
-               .contains(QStringLiteral("Eraser")));
 
-    // --- activation under the Brush scope: same contract -----------------
-    panel->activatePresetForTest(
-        QStringLiteral("builtin/sketching/hb-pencil"));
+    // --- the same preset through the BRUSH door ---------------------------
+    panel->activatePresetForTest(QStringLiteral("builtin/painting/gouache"));
     pump(300);
-    check(QStringLiteral("(m) a brush preset applies without touching the "
-                         "tool"),
+    check(QStringLiteral("(m) the brush door paints (eraseMode false, tool "
+                         "untouched)"),
           canvas->tool() == DrawingCanvas::Brush
-              && !canvas->paintBrush().eraseMode());
+              && !canvas->paintBrush().eraseMode()
+              && canvas->paintBrush().size() == gouache->brush.size());
 
-    // --- both selections survived all of it ------------------------------
-    check(QStringLiteral("(m) the eraser SELECTION survived (chalk still "
-                         "loaded)"),
-          canvas->eraserBrush().grainDepth() > 0.5
-              && canvas->eraserBrush().eraseMode());
+    // --- both selections survived --------------------------------------
+    check(QStringLiteral("(m) the eraser selection survived (still "
+                         "eraser-Gouache)"),
+          canvas->eraserBrush().eraseMode()
+              && canvas->eraserBrush().size() == gouache->brush.size());
 
     window.markCleanForTest();
     window.close();

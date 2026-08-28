@@ -69,10 +69,7 @@ BrushLibraryModel::BrushLibraryModel(QObject *parent,
     : QObject(parent)
     , m_rootOverride(rootOverride)
 {
-    // Concat at the CALL SITE, never inside builtinRoster(): that
-    // function's output is a pinned baseline (the combined preview SHA and
-    // the per-category counts), and the eraser roster is pinned separately.
-    m_presets = builtinRoster() + builtinEraserRoster();
+    m_presets = builtinRoster();
     loadUserPresets();
     for (int i = 0; i < m_presets.size(); ++i)
         m_byId.insert(m_presets.at(i).id, i);
@@ -126,14 +123,11 @@ const BrushPreset *BrushLibraryModel::preset(const QString &id) const
 
 void BrushLibraryModel::recordUsage(const QString &id)
 {
-    const BrushPreset *p = preset(id);
-    if (!p)
-        return;
-    // V1 DECISION, recorded in HANDOFF: "Recent" stays BRUSH-only. Eraser
-    // activations would churn the brush Recent list for no benefit (the
-    // eraser roster is eight rows away, not thirty). Deliberate exclusion,
-    // not an oversight; revisit if it feels wrong in use.
-    if (p->brush.eraseMode())
+    // ONE Recent for both scopes since the mirror (2026-08-28): the same
+    // preset ids flow through either door, so a single MRU list is the
+    // honest record. (The old brush-only drop guarded a dedicated eraser
+    // roster that no longer exists.)
+    if (!preset(id))
         return;
     m_recent.removeAll(id);
     m_recent.prepend(id);
@@ -196,8 +190,7 @@ void BrushLibraryModel::restoreDefaultBrushes()
         }
     }
     m_overridden = stillOverridden;
-    const QVector<BrushPreset> roster =
-        builtinRoster() + builtinEraserRoster();
+    const QVector<BrushPreset> roster = builtinRoster();
     for (BrushPreset &p : m_presets)
         if (p.builtin)
             for (const BrushPreset &stock : roster)

@@ -2410,12 +2410,19 @@ QWidget *StoryboardPage::createCenterColumn()
             this, [this](const QString &id) {
                 if (const brushlib::BrushPreset *p =
                         m_brushLibModel->preset(id)) {
-                    if (p->brush.eraseMode()) {
-                        // The panel is SCOPED to the tool (the v1
-                        // switch-on-activation model is superseded - see
-                        // HANDOFF 2026-08-28): under the Eraser scope the
-                        // Eraser already is the active tool, so activation
-                        // only applies the preset. Never touches the tool.
+                    // THE MIRROR: one definition, two doors. The SCOPE
+                    // chooses the door (a legacy eraseMode preset forces
+                    // the eraser door regardless - it cannot paint);
+                    // setEraserPreset applies eraseMode to ITS COPY, so
+                    // the stored preset is never mutated. Never touches
+                    // the tool.
+                    const bool eraseDoor =
+                        (m_brushLibPanel
+                         && m_brushLibPanel->toolScope()
+                             == brushlib::BrushLibraryPanel::ToolScope::
+                                 Eraser)
+                        || p->brush.eraseMode();
+                    if (eraseDoor) {
                         m_activeEraserPresetId = id;
                         m_canvas->setEraserPreset(p->brush);
                     } else {
