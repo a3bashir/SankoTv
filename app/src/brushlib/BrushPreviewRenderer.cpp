@@ -72,23 +72,36 @@ QImage smudgeBackground(const QSize &size)
     return bg;
 }
 
-QImage eraserBackground(const QSize &size)
-{
-    // One solid neutral band: the eraser swatch is the structural INVERSE
-    // of a brush swatch - a filled band with a transparent mark carved
-    // through it (the UI checkerboard shows in the hole) versus a coloured
-    // mark on transparency. Distinguishable at a glance, by construction.
-    QImage bg(size, QImage::Format_ARGB32);
-    bg.fill(QColor(0x8a, 0x8a, 0x92));
-    return bg;
-}
-
 } // namespace
 
 QImage BrushPreviewRenderer::renderPreviewImage(const ::Brush &brush)
 {
     const QSize canvas(kSwatchW * kSuper, kSwatchH * kSuper);
     ::Brush b = brush;
+    // ERASE SWATCH = THE COVERAGE, rendered as white ink on transparency
+    // (2026-08-28, replacing the banded carve): the white mark IS the
+    // removal footprint - pixel for pixel what this eraser will take out -
+    // so tip, grain, scatter and taper read exactly like the brush swatch.
+    // The mirror's claim made visible: same character, no colour. eraseMode
+    // is cleared on THIS RENDER COPY only, and the ink forced white before
+    // the neutral-ink rule below (an eraser has no colour to show). The
+    // banded depiction survives where it belongs: the studio ScratchCanvas,
+    // which is INTERACTIVE erasing and needs something to erase.
+    const bool erase = b.eraseMode();
+    if (erase) {
+        b.setEraseMode(false);
+        b.setColor(Qt::white);
+        // Real erasing forces the MASK path, so the faithful render copy
+        // neutralises the colour dynamics too - with eraseMode cleared for
+        // the render, Confetti's hue jitter would otherwise recolour a
+        // swatch whose subject has no colour at all.
+        b.setHueJitter(0.0);
+        b.setSaturationJitter(0.0);
+        b.setBrightnessJitter(0.0);
+        b.setFgBgJitter(0.0);
+        b.setPurity(0.0);
+        b.setGrainAffectsColor(false);
+    }
     b.setSize(previewBrushSize(brush.size()) * kSuper);
     if (b.dualBrushEnabled())
         b.secondaryBrush().setSize(
@@ -138,15 +151,10 @@ QImage BrushPreviewRenderer::renderPreviewImage(const ::Brush &brush)
     if (w.affectedRect.isEmpty())
         return QImage();
     const bool smudge = b.smudgeActive();
-    const bool erase = b.eraseMode(); // erasing transparency is a no-op:
-                                      // the band IS what the stroke shows
     QImage before(w.affectedRect.size(), QImage::Format_ARGB32);
     before.fill(Qt::transparent);
     if (smudge) {
         const QImage full = smudgeBackground(canvas);
-        before = full.copy(w.affectedRect);
-    } else if (erase) {
-        const QImage full = eraserBackground(canvas);
         before = full.copy(w.affectedRect);
     }
     w.beforeRegion = before;
@@ -171,10 +179,6 @@ QImage BrushPreviewRenderer::renderPreviewImage(const ::Brush &brush)
     QPainter p(&full);
     if (smudge)
         p.drawImage(0, 0, smudgeBackground(canvas));
-    else if (erase)
-        p.drawImage(0, 0, eraserBackground(canvas));
-    if (erase)
-        p.setCompositionMode(QPainter::CompositionMode_Source);
     p.drawImage(w.affectedRect.topLeft(), result.afterRegion);
     p.end();
     return full.scaled(kSwatchW, kSwatchH, Qt::IgnoreAspectRatio,

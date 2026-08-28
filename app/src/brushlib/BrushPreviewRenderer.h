@@ -44,7 +44,12 @@ public:
     static constexpr int kSwatchH = 26;
     // r2: default-black presets render with white neutral ink (the r1 cache
     // holds invisible black-on-transparent strokes for 58 of 62 built-ins).
-    static constexpr quint32 kSwatchRevision = 2;
+    // r3: erase swatches depict the COVERAGE as white ink on transparency
+    // (the banded carve is gone); without the bump the disk cache would
+    // serve stale banded images for erase-variant keys. Brush swatch BYTES
+    // are unchanged - the bump re-keys the cache, and the gate proves
+    // 193847fa... byte-identical through the re-render.
+    static constexpr quint32 kSwatchRevision = 3;
 
     // cacheRootOverride: tests point this at a scratch directory; empty uses
     // QStandardPaths::CacheLocation.

@@ -86,7 +86,7 @@ using brushlib::BrushPreset;
 // legitimate roster change moves BOTH in the same commit; this one
 // moving ALONE is a defect, never a re-baseline.
 static const char kEraserSwatchSha[] =
-    "124f9ba0b843cdd40ba1f73c050a69a6e8220e4c253d4b2d637bc7e170cecace";
+    "32f0dfff496d4e0e1584c47962cd7f5809ad0be70adeb4596e147144e6a147b7";
 using brushlib::BrushPresetCodec;
 using brushlib::BrushPreviewRenderer;
 
@@ -557,8 +557,15 @@ int main(int argc, char **argv)
         // The MIRRORED swatches: every mirrorable preset's erase character,
         // rendered over the band with the carve, deterministic, combined
         // into the roster-sized pin.
+        // The erase swatch depicts the COVERAGE: white ink on transparency
+        // (2026-08-28, replacing the banded carve - a deliberate change of
+        // depiction, re-baselining kEraserSwatchSha with approval). Checks:
+        // transparent background at the corners, at least one white-ish
+        // stroke pixel, no coloured pixels (an eraser has no colour), and
+        // determinism - with the brush-swatch SHA proving elsewhere in this
+        // run that ONLY the erase depiction changed.
         QCryptographicHash eraserCombined(QCryptographicHash::Sha256);
-        bool renderOk = true, carvedOk = true, determOk = true;
+        bool renderOk = true, lookOk = true, determOk = true;
         QString firstBad3;
         for (const BrushPreset *p : mirrorable) {
             ::Brush eraseCopy = p->brush;
@@ -568,23 +575,28 @@ int main(int argc, char **argv)
             if (a.isNull()) { renderOk = false; firstBad3 = p->name; break; }
             determOk = determOk && imageBytes(a) == imageBytes(b);
             eraserCombined.addData(imageBytes(a));
-            bool sawBand = false, sawCarve = false;
+            bool sawStroke = false, sawColour = false;
             for (int y = 0; y < a.height(); ++y)
                 for (int x = 0; x < a.width(); ++x) {
                     const QRgb px = a.pixel(x, y);
-                    if (qAlpha(px) == 255 && qRed(px) > 0x80
-                        && qRed(px) < 0x95)
-                        sawBand = true;
-                    // ANY carved pixel counts: the faintest wash
-                    // presets (Soft Wash) erase at very low strength, and
-                    // a faint eraser making a faint carve is CORRECT
-                    // mirroring - the claim here is only that the erase
-                    // render did something to the band.
-                    if (qAlpha(px) < 255)
-                        sawCarve = true;
+                    if (qAlpha(px) > 0) {
+                        // White-ish: the removal footprint carries shape
+                        // and texture in ALPHA; the ink itself is white.
+                        if (qAbs(qRed(px) - qGreen(px)) > 12
+                            || qAbs(qGreen(px) - qBlue(px)) > 12)
+                            sawColour = true;
+                        if (qRed(px) > 200 && qGreen(px) > 200
+                            && qBlue(px) > 200)
+                            sawStroke = true;
+                    }
                 }
-            if (!(sawBand && sawCarve)) {
-                carvedOk = false;
+            const bool cornersClear =
+                qAlpha(a.pixel(0, 0)) == 0
+                && qAlpha(a.pixel(a.width() - 1, 0)) == 0
+                && qAlpha(a.pixel(0, a.height() - 1)) == 0
+                && qAlpha(a.pixel(a.width() - 1, a.height() - 1)) == 0;
+            if (!(sawStroke && !sawColour && cornersClear)) {
+                lookOk = false;
                 if (firstBad3.isEmpty())
                     firstBad3 = p->name;
             }
@@ -593,9 +605,9 @@ int main(int argc, char **argv)
               renderOk, firstBad3);
         check(QStringLiteral("(b8) mirrored swatches deterministic"),
               determOk);
-        check(QStringLiteral("(b8) every mirrored swatch shows the band AND "
-                             "a carved hole"),
-              carvedOk, firstBad3);
+        check(QStringLiteral("(b8) every mirrored swatch is a WHITE mark on "
+                             "transparency (no band, no colour)"),
+              lookOk, firstBad3);
         const QString eraserSha =
             QString::fromLatin1(eraserCombined.result().toHex());
         ts << "COMBINED ERASER SWATCH SHA (compare across configs): "

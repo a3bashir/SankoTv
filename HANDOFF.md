@@ -2553,3 +2553,47 @@ Pins after this pass: 193847fa (brush swatches), 666f7b45 / cafcec7f
 by the gate - plus 124f9ba0 (the mirrored eraser swatches, coupled per
 the note above).
 
+## Erase swatches: the coverage as white ink (2026-08-28)
+
+THE BANDED CARVE IS GONE from the library previews. Under the mirror the
+grey plate with dark holes read as broken next to white-on-transparency
+brush swatches (the "holes" showed the dark panel row through the carve).
+The erase swatch now depicts THE COVERAGE - the preset's stroke rendered
+as white ink on transparency, pixel for pixel the removal footprint.
+Same fixture, same tip/grain/scatter/taper as the brush swatch; the
+mirror's claim made visible: same character, no colour. Mechanically:
+the RENDER COPY clears eraseMode, forces white ink, and neutralises the
+colour dynamics (real erasing forces the mask path, so a faithful
+depiction must too - Confetti's hue jitter recoloured the first attempt
+and the gate caught it). The stored preset is untouched, as always.
+
+THE DISTINGUISHABILITY TRADE, weighed with eyes open - NOT an oversight,
+and not a regression from the banded design: the inverted-swatch
+argument was built for the pre-mirror world where eraser rows sat INSIDE
+the brush panel as a sibling category and needed per-row distinction.
+Under the tool-scoped mirror the two libraries are never on screen at
+once - title, sidebar and anchor button all say which one is open - so
+the per-row signal was redundant three times over. WHAT WAS GIVEN UP: a
+swatch seen out of context (a cropped screenshot, a glimpse mid-scroll
+during a scope flip) no longer self-identifies as an eraser, and the
+one-frame moment during a live scope switch before swatches re-render is
+visually silent. Edge-glances, accepted as the price.
+
+kSwatchRevision bumped r2->r3 (the disk cache would otherwise serve
+stale banded images for erase-variant keys). The bump re-keys ALL
+swatches; brush swatch BYTES are unchanged and the gate PROVED it:
+193847fa... came through byte-identical in both configs after the
+re-render - the check that shows the bump changed cache validity only.
+kEraserSwatchSha re-baselined WITH APPROVAL as a deliberate change of
+depiction: 124f9ba0 -> 32f0dfff (identical across configs before
+pinning). The coupled-pin asymmetry note stands unchanged - the new pin
+is still derived from builtinRoster(), and it moving alone is still a
+defect. The studio ScratchCanvas KEEPS its band: interactive erasing
+needs something to erase - different surface, different job.
+
+b8 rewritten to the new depiction with controls: every mirrored swatch
+is a white mark on transparency - corners alpha 0, at least one
+white-ish stroke pixel, NO coloured pixels (an eraser has no colour) -
+deterministic, combined into the new pin. Four pins untouched:
+193847fa, 666f7b45, cafcec7f, 0bc24381.
+
