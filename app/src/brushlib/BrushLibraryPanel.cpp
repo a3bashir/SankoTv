@@ -158,6 +158,39 @@ public:
         m_swatch = QPixmap::fromImage(image);
         update();
     }
+    // Persistent override mark (distinct from the TRANSIENT dirty dot):
+    // 0 none, 1 modified (teal dot), 2 stock-changed (orange TRIANGLE -
+    // shape AND hue differ so the hazard is spottable while scanning),
+    // 3 unknown (grey "?" - an honest question mark, never a reassuring
+    // answer the app cannot support).
+    void setOverrideMark(int mark)
+    {
+        if (m_overrideMark != mark) {
+            m_overrideMark = mark;
+            switch (mark) {
+            case 1:
+                setToolTip(QStringLiteral(
+                    "Modified: this built-in is overridden by your "
+                    "tuning. Right-click for Reset to Stock."));
+                break;
+            case 2:
+                setToolTip(QStringLiteral(
+                    "The built-in recipe CHANGED since your override was "
+                    "saved - your tuning is shadowing the newer stock "
+                    "brush. Right-click for Reset to Stock."));
+                break;
+            case 3:
+                setToolTip(QStringLiteral(
+                    "Overridden, but saved before fingerprinting: whether "
+                    "stock has changed underneath cannot be determined."));
+                break;
+            default:
+                setToolTip(QString());
+            }
+            update();
+        }
+    }
+    int overrideMark() const { return m_overrideMark; }
     std::function<void()> onClicked;
     std::function<void()> onDoubleClicked;
     std::function<void()> onResetClicked;
@@ -180,11 +213,36 @@ protected:
         const int favW = m_favourite ? 14 : 0;
         const int sizeW = 44;
         const int resetW = m_dirty ? kResetChipW + 8 : 0;
-        const int nameW = width() - 32 - sizeW - favW - resetW
+        const int markW = m_overrideMark ? 14 : 0;
+        const int nameW = width() - 32 - sizeW - favW - resetW - markW
             - (m_dirty ? 10 : 0);
+        if (m_overrideMark == 1) {
+            // Modified: teal dot (distinct hue from the amber favourite,
+            // the white dirty dot, and the accent selection).
+            p.setPen(Qt::NoPen);
+            p.setBrush(QColor(0x2e, 0xc8, 0xa6));
+            p.drawEllipse(QRectF(14, 16, 8, 8));
+        } else if (m_overrideMark == 2) {
+            // STOCK CHANGED: orange warning TRIANGLE - different SHAPE,
+            // not a different shade, so it reads while scanning.
+            p.setPen(Qt::NoPen);
+            p.setBrush(QColor(0xff, 0x8c, 0x3c));
+            QPolygonF tri;
+            tri << QPointF(13, 24) << QPointF(23, 24) << QPointF(18, 14);
+            p.drawPolygon(tri);
+        } else if (m_overrideMark == 3) {
+            QFont qf = f;
+            qf.setPixelSize(12);
+            p.setFont(qf);
+            p.setPen(QColor(0x9a, 0x9a, 0xa2));
+            p.drawText(QRect(12, 12, 12, 16), Qt::AlignCenter,
+                       QStringLiteral("?"));
+            p.setFont(f);
+            p.setPen(Qt::white);
+        }
         const QString elided =
             QFontMetrics(f).elidedText(m_name, Qt::ElideRight, nameW);
-        p.drawText(QRect(16, 12, nameW, 16),
+        p.drawText(QRect(16 + markW, 12, nameW, 16),
                    Qt::AlignVCenter | Qt::AlignLeft, elided);
         if (m_dirty) {
             // White dot right after the name: "you are no longer on stock".
@@ -288,6 +346,7 @@ private:
     bool m_selected = false;
     bool m_favourite = false;
     bool m_dirty = false;
+    int m_overrideMark = 0;
     bool m_hover = false;
     QPixmap m_swatch;
 };
@@ -517,6 +576,10 @@ void BrushLibraryPanel::rebuildBrushList()
         row->setSelected(preset->id == m_selectedId);
         row->setFavourite(m_model->isFavourite(preset->id));
         row->setDirty(preset->id == m_dirtyId);
+        row->setOverrideMark(
+            preset->builtin
+                ? int(m_model->overrideState(preset->id))
+                : 0);
         // The ERASER scope shows the preset's ERASE character: the swatch
         // renders a copy with eraseMode forced (the banded carve), cached
         // separately by construction - settingsHash covers the v11
@@ -532,6 +595,14 @@ void BrushLibraryPanel::rebuildBrushList()
             m_previews.requestPreview(preset->id, preset->brush);
         }
     }
+}
+
+int BrushLibraryPanel::overrideMarkForTest(const QString &presetId) const
+{
+    for (BrushRow *row : m_brushRows)
+        if (row->presetId() == presetId)
+            return row->overrideMark();
+    return -1;
 }
 
 QStringList BrushLibraryPanel::visiblePresetIdsForTest() const
@@ -570,6 +641,25 @@ void BrushLibraryPanel::showRowMenu(BrushRow *row, const QPoint &globalPos)
     });
     menu.addAction(tr("Duplicate Brush"),
                    [this, id] { m_model->duplicatePreset(id); });
+    if (m_model->hasBuiltinOverride(id)) {
+        menu.addAction(tr("Reset to Stock"), [this, id] {
+            // Destroys the override file (unlike built-in delete, which
+            // hides), so it confirms.
+            const auto answer = QMessageBox::question(
+                this, tr("Reset to Stock"),
+                tr("Discard your tuning of \"%1\" and return to the "
+                   "built-in recipe? The override file is deleted.")
+                    .arg(m_model->preset(id) ? m_model->preset(id)->name
+                                             : id),
+                QMessageBox::Discard | QMessageBox::Cancel,
+                QMessageBox::Cancel);
+            if (answer != QMessageBox::Discard)
+                return;
+            if (m_model->resetBuiltinToStock(id) && id == m_selectedId)
+                emit brushActivated(id); // re-apply stock, the Reset-chip
+                                         // pattern, through the scope door
+        });
+    }
     QAction *fav = menu.addAction(m_model->isFavourite(id)
                                       ? tr("Unfavorite Brush")
                                       : tr("Favorite Brush"));

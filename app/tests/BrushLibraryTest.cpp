@@ -68,6 +68,7 @@
 #include <QFile>
 #include <QGuiApplication>
 #include <QPainter>
+#include <QSettings>
 #include <QTextStream>
 
 #include <algorithm>
@@ -463,6 +464,129 @@ int main(int argc, char **argv)
                              "preview on vs off"),
               onE.succeeded && offE.succeeded && sha(onE) == sha(offE)
                   && onE.affectedRect == offE.affectedRect);
+    }
+
+    // ---- (b9) override state: discoverability + the stale hazard ---------
+    // A scratch-rooted model exercises the four states end to end. The
+    // hazard machinery: updateBrush on a built-in records the STOCK
+    // recipe's settingsHash at save time; overrideState() compares it
+    // against the CURRENT stock to tell "modified" from "the recipe moved
+    // underneath" - and an override with NO fingerprint reads UNKNOWN,
+    // never a reassuring state the app cannot support.
+    {
+        using Model = brushlib::BrushLibraryModel;
+        using State = Model::OverrideState;
+        const QString root = QDir::tempPath()
+            + QStringLiteral("/sankotv_override_state_test");
+        QDir(root).removeRecursively();
+        QDir().mkpath(root);
+        const QString gouache = QStringLiteral("builtin/painting/gouache");
+        const QString pencil = QStringLiteral("builtin/sketching/hb-pencil");
+        {
+            Model model(nullptr, root);
+            check(QStringLiteral("(b9) control: no override, state None"),
+                  model.overrideState(gouache) == State::None);
+
+            // Modified: a real divergence, fingerprint recorded.
+            ::Brush tuned = model.preset(gouache)->brush;
+            tuned.setSpacing(0.02);
+            check(QStringLiteral("(b9) updateBrush writes the override"),
+                  model.updateBrush(gouache, tuned)
+                      && QFile::exists(
+                          root
+                          + QStringLiteral("/Overrides/"
+                                           "builtin_painting_gouache"
+                                           ".sankobrush")));
+            check(QStringLiteral("(b9) a diverging override reads "
+                                 "MODIFIED (fingerprint matches stock)"),
+                  model.overrideState(gouache) == State::Modified);
+
+            // Harmless: an override byte-equal to stock carries NO mark.
+            const ::Brush stockPencil = brushlib::builtinRoster()
+                .at([&] {
+                    const auto r = brushlib::builtinRoster();
+                    for (int i = 0; i < r.size(); ++i)
+                        if (r.at(i).id == pencil)
+                            return i;
+                    return 0;
+                }()).brush;
+            check(QStringLiteral("(b9) an override byte-equal to stock "
+                                 "reads None (harmless residue)"),
+                  model.updateBrush(pencil, stockPencil)
+                      && model.overrideState(pencil) == State::None);
+
+            // Give the pencil a REAL divergence for the reset control.
+            ::Brush tunedPencil = stockPencil;
+            tunedPencil.setSpacing(0.02);
+            model.updateBrush(pencil, tunedPencil);
+        }
+        // StockChanged: the stored fingerprint no longer matches current
+        // stock - simulated by corrupting the stored hash, which is
+        // EXACTLY what a recipe edit does to it.
+        {
+            QSettings shelf(root + QStringLiteral("/shelf.ini"),
+                            QSettings::IniFormat);
+            shelf.setValue(QStringLiteral(
+                               "brushLibrary/v1/overrideStock/"
+                               "builtin|painting|gouache"),
+                           QStringLiteral("not-the-stock-hash-any-more"));
+        }
+        {
+            Model model(nullptr, root);
+            check(QStringLiteral("(b9) a moved recipe reads STOCK-CHANGED "
+                                 "(the hazard state)"),
+                  model.overrideState(gouache) == State::StockChanged);
+        }
+        // Unknown: NO fingerprint at all (a pre-fingerprint override).
+        {
+            QSettings shelf(root + QStringLiteral("/shelf.ini"),
+                            QSettings::IniFormat);
+            shelf.remove(QStringLiteral("brushLibrary/v1/overrideStock/"
+                                        "builtin|painting|gouache"));
+        }
+        {
+            Model model(nullptr, root);
+            check(QStringLiteral("(b9) no fingerprint reads UNKNOWN - "
+                                 "never a reassuring default"),
+                  model.overrideState(gouache) == State::Unknown);
+
+            // Reset to stock: exactly ONE file, byte-exact restoration.
+            check(QStringLiteral("(b9) control: both overrides exist "
+                                 "before the reset"),
+                  model.hasBuiltinOverride(gouache)
+                      && model.hasBuiltinOverride(pencil));
+            check(QStringLiteral("(b9) resetBuiltinToStock succeeds"),
+                  model.resetBuiltinToStock(gouache));
+            check(QStringLiteral("(b9) ...the override file is GONE"),
+                  !QFile::exists(
+                      root
+                      + QStringLiteral("/Overrides/"
+                                       "builtin_painting_gouache"
+                                       ".sankobrush")));
+            check(QStringLiteral("(b9) ...the SIBLING override is "
+                                 "untouched (only that one, ever)"),
+                  model.hasBuiltinOverride(pencil)
+                      && QFile::exists(
+                          root
+                          + QStringLiteral("/Overrides/"
+                                           "builtin_sketching_hb-pencil"
+                                           ".sankobrush")));
+            const ::Brush *stock = nullptr;
+            const auto roster3 = brushlib::builtinRoster();
+            for (const BrushPreset &pr : roster3)
+                if (pr.id == gouache)
+                    stock = &pr.brush;
+            check(QStringLiteral("(b9) ...the model holds STOCK again, "
+                                 "byte-exact through the codec"),
+                  stock
+                      && BrushPresetCodec::saveBrush(
+                             model.preset(gouache)->brush)
+                          == BrushPresetCodec::saveBrush(*stock));
+            check(QStringLiteral("(b9) reset on a non-overridden preset "
+                                 "refuses"),
+                  !model.resetBuiltinToStock(gouache));
+        }
+        QDir(root).removeRecursively();
     }
 
     // ---- (b8) the ERASER MIRROR: one definition, referenced twice --------

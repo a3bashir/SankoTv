@@ -52,6 +52,7 @@ public:
     QString currentCategoryForTest() const { return m_category; }
     QStringList visibleCategoriesForTest() const;
     QStringList visiblePresetIdsForTest() const; // the LIST, post-filter
+    int overrideMarkForTest(const QString &presetId) const; // row's mark
     void selectCategoryForTest(const QString &category)
     {
         selectCategory(category);

@@ -59,6 +59,22 @@ public:
     // Unhide all built-ins, drop renames AND brush overrides (stock roster).
     void restoreDefaultBrushes();
 
+    // --- Override state (discoverability + the stale hazard) --------------
+    // None: no override, OR an override byte-equal to current stock
+    //       (harmless residue - no mark).
+    // Modified: override diverges from stock, and stock has NOT moved since
+    //       the override was saved (the stored stock fingerprint matches).
+    // StockChanged: THE HAZARD - the override shadows a recipe that has
+    //       moved underneath it; the user cannot see the improvement.
+    // Unknown: an override with NO stored fingerprint (saved before this
+    //       machinery existed). Deliberately NOT defaulted to a reassuring
+    //       state: the app cannot actually support that answer.
+    enum class OverrideState { None, Modified, StockChanged, Unknown };
+    OverrideState overrideState(const QString &id) const;
+    // Reset ONE built-in to stock: deletes exactly that override file,
+    // restores the stock recipe in the model, drops the fingerprint.
+    bool resetBuiltinToStock(const QString &id);
+
     // User preset CRUD. addUserPreset assigns a fresh user id, writes the
     // .sankobrush file, and returns the id (empty on failure).
     QString addUserPreset(BrushPreset preset);

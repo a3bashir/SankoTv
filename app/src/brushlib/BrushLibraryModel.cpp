@@ -279,6 +279,28 @@ QString BrushLibraryModel::duplicatePreset(const QString &id)
     return addUserPreset(std::move(copy));
 }
 
+namespace {
+QString fingerprintKey(const QString &id)
+{
+    QString escaped = id;
+    escaped.replace(QLatin1Char('/'), QLatin1Char('|'));
+    return kKeyPrefix + QStringLiteral("overrideStock/") + escaped;
+}
+} // namespace
+
+// The STOCK recipe for a built-in id - from the roster, never from
+// m_presets (which holds the override once one is applied).
+static const ::Brush *stockBrushFor(const QString &id,
+                                    QVector<BrushPreset> &cache)
+{
+    if (cache.isEmpty())
+        cache = builtinRoster();
+    for (const BrushPreset &p : cache)
+        if (p.id == id)
+            return &p.brush;
+    return nullptr;
+}
+
 bool BrushLibraryModel::updateBrush(const QString &id, const ::Brush &brush)
 {
     const int idx = m_byId.value(id, -1);
@@ -301,6 +323,18 @@ bool BrushLibraryModel::updateBrush(const QString &id, const ::Brush &brush)
         m_presets[idx].brush = brush;
         if (!m_overridden.contains(id))
             m_overridden.append(id);
+        // THE STOCK FINGERPRINT, recorded at save time: overrideState()
+        // compares it against the CURRENT stock recipe to tell "modified"
+        // from "the recipe moved underneath this override" - the silent
+        // hazard that let a tuned Gouache shadow its recipe for a month.
+        {
+            QVector<BrushPreset> cache;
+            if (const ::Brush *stock = stockBrushFor(id, cache))
+                shelfSettings().setValue(
+                    fingerprintKey(id),
+                    QString::fromLatin1(
+                        BrushPresetCodec::settingsHash(*stock).toHex()));
+        }
     } else {
         if (!writeUserPresetFile(candidate))
             return false;
@@ -313,6 +347,54 @@ bool BrushLibraryModel::updateBrush(const QString &id, const ::Brush &brush)
 bool BrushLibraryModel::hasBuiltinOverride(const QString &id) const
 {
     return m_overridden.contains(id);
+}
+
+BrushLibraryModel::OverrideState
+BrushLibraryModel::overrideState(const QString &id) const
+{
+    if (!m_overridden.contains(id))
+        return OverrideState::None;
+    const int idx = m_byId.value(id, -1);
+    if (idx < 0)
+        return OverrideState::None;
+    QVector<BrushPreset> cache;
+    const ::Brush *stock = stockBrushFor(id, cache);
+    if (!stock)
+        return OverrideState::Unknown; // no roster entry to compare against
+    const QByteArray stockHash = BrushPresetCodec::settingsHash(*stock);
+    // Byte-equal to current stock: harmless residue, no mark.
+    if (BrushPresetCodec::settingsHash(m_presets.at(idx).brush) == stockHash)
+        return OverrideState::None;
+    const QString stored =
+        shelfSettings().value(fingerprintKey(id)).toString();
+    if (stored.isEmpty())
+        return OverrideState::Unknown; // pre-fingerprint override: honest
+                                       // question mark, never a reassuring
+                                       // answer the app cannot support
+    return stored == QString::fromLatin1(stockHash.toHex())
+        ? OverrideState::Modified
+        : OverrideState::StockChanged;
+}
+
+bool BrushLibraryModel::resetBuiltinToStock(const QString &id)
+{
+    const int idx = m_byId.value(id, -1);
+    if (idx < 0 || !m_overridden.contains(id))
+        return false;
+    QVector<BrushPreset> cache;
+    const ::Brush *stock = stockBrushFor(id, cache);
+    if (!stock)
+        return false;
+    // EXACTLY one file: this override's. Nothing else in the folder is
+    // touched - the promotion pass's deletion rule, encoded.
+    if (QFile::exists(overrideFilePath(id))
+        && !QFile::remove(overrideFilePath(id)))
+        return false;
+    m_presets[idx].brush = *stock;
+    m_overridden.removeAll(id);
+    shelfSettings().remove(fingerprintKey(id));
+    emit changed();
+    return true;
 }
 
 QString BrushLibraryModel::libraryName() const

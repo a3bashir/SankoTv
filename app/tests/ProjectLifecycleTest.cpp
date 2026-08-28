@@ -855,6 +855,69 @@ void runSaveAsIndependencePass(const QString &scratch)
 }
 
 
+// ---- (n) override marks in the panel + reset restores stock ---------------
+// The user-visible half of (b9): tuning a built-in marks its row
+// (Modified, the teal dot state), reset clears the mark, and activating
+// the preset afterwards applies STOCK values to the canvas.
+void runOverrideMarkPass(const QString &scratch)
+{
+    out() << "--- (n) override marks + reset to stock ---" << Qt::endl;
+    MainWindow window;
+    window.resize(1300, 850);
+    window.show();
+    pump(800);
+    const QString fixture = writeProject(scratch + QStringLiteral("/omark"),
+                                         QStringLiteral("OMark"),
+                                         QSize(960, 540), 24, 1, 1);
+    check(QStringLiteral("(n) fixture opens"),
+          window.loadProjectForTest(fixture));
+    pump(500);
+    auto *canvas = window.findChild<DrawingCanvas *>();
+    auto *panel = window.findChild<brushlib::BrushLibraryPanel *>();
+    auto *model = window.findChild<brushlib::BrushLibraryModel *>();
+    if (!canvas || !panel || !model) {
+        check(QStringLiteral("(n) found canvas, panel and model"), false);
+        window.markCleanForTest();
+        window.close();
+        return;
+    }
+    canvas->setTool(DrawingCanvas::Brush);
+    pump(200);
+    const QString id = QStringLiteral("builtin/painting/gouache");
+    panel->selectCategoryForTest(QStringLiteral("Painting"));
+    pump(200);
+    check(QStringLiteral("(n) control: no mark before any override"),
+          panel->overrideMarkForTest(id) == 0,
+          QStringLiteral("mark=%1").arg(panel->overrideMarkForTest(id)));
+
+    ::Brush tuned = model->preset(id)->brush;
+    tuned.setSpacing(0.02);
+    check(QStringLiteral("(n) tuning the built-in succeeds"),
+          model->updateBrush(id, tuned));
+    pump(300); // model 'changed' -> rebuild -> row mark refresh
+    check(QStringLiteral("(n) the row shows the MODIFIED mark"),
+          panel->overrideMarkForTest(id) == 1,
+          QStringLiteral("mark=%1").arg(panel->overrideMarkForTest(id)));
+
+    check(QStringLiteral("(n) reset to stock succeeds"),
+          model->resetBuiltinToStock(id));
+    pump(300);
+    check(QStringLiteral("(n) ...and the mark clears"),
+          panel->overrideMarkForTest(id) == 0,
+          QStringLiteral("mark=%1").arg(panel->overrideMarkForTest(id)));
+
+    panel->activatePresetForTest(id);
+    pump(300);
+    check(QStringLiteral("(n) activating afterwards applies STOCK (the "
+                         "tuned spacing is gone)"),
+          qAbs(canvas->paintBrush().spacing() - 0.02) > 0.001,
+          QStringLiteral("spacing=%1").arg(canvas->paintBrush().spacing()));
+
+    window.markCleanForTest();
+    window.close();
+    pump(300);
+}
+
 // ---- (m) the MIRRORED tool-scoped library, end to end ---------------------
 // REWRITTEN AGAIN 2026-08-28 (mirror pass): the eraser scope now MIRRORS
 // the brush categories - one definition, referenced twice - so the old
@@ -1556,6 +1619,7 @@ int main(int argc, char **argv)
     runSaveFailurePass(scratch);
     runSizeCtlAgreementPass(scratch);
     runEraserLibraryPass(scratch);
+    runOverrideMarkPass(scratch);
     runProvenancePass(scratch);
 
     // ---- (l) sankoSettings: scratch lands, the real store does not ----

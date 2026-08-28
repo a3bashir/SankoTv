@@ -2650,3 +2650,56 @@ is the hazard) - the model could store the stock settingsHash at
 override save and compare at load; and the census surfaced in-app
 rather than by inspection.
 
+## Override marks + the stale-hazard detector (2026-08-28)
+
+THE ONE PROBLEM, both halves fixed: nothing showed a built-in was
+shadowed (the user ran a tuned Gouache for a month unknowingly), and an
+override silently beat any future recipe improvement.
+
+FOUR STATES, computed by BrushLibraryModel::overrideState():
+  None         no override, OR one byte-equal to current stock
+               (harmless residue - no mark, and NOT auto-deleted:
+               user files are never destroyed uninvited).
+  Modified     diverges from stock; stock unchanged since the save
+               (the stored fingerprint matches). Teal DOT on the row.
+  StockChanged THE HAZARD - the recipe moved underneath the override.
+               Orange TRIANGLE: different SHAPE and hue, spottable
+               while scanning, per the user's explicit demand that the
+               two marks not be two shades of one thing.
+  Unknown      an override with NO stored fingerprint (pre-dating this
+               machinery). Grey "?" - an honest question mark, NEVER
+               defaulted to a reassuring state the app cannot support
+               (the user's explicit demand). Empty on their machine
+               today; the code outlives that.
+
+THE FINGERPRINT: updateBrush's override branch records
+settingsHash(stock recipe AT SAVE TIME) in the shelf settings (through
+sankoSettings - scratch-safe by construction); overrideState compares
+it against the CURRENT stock recipe's hash. A recipe edit in a normal
+commit therefore flips the mark to the triangle at next load - the
+silence is gone.
+
+RESET TO STOCK: per-preset, in the row's context menu, only when an
+override exists, with a confirm (it DESTROYS the override file - unlike
+built-in delete, which hides). Deletes EXACTLY that file (the promotion
+pass's only-that-one rule, now encoded in resetBuiltinToStock and
+pinned by the sibling-untouched check), restores the stock brush
+byte-exact, drops the fingerprint, and - via the panel - re-applies
+stock through the scope door when the reset preset is the current
+selection. "Restore Default Brushes" remains the nuclear option.
+
+RESOLUTION PATHS for the triangle: Reset to Stock (take the new
+recipe), or promotion via Claude (keep the tuning and make it official
+- which ends the staleness by construction).
+
+GATE: BrushLibrary (b9), 12 checks - all four states constructed and
+asserted on a scratch-rooted model, including the two user-demanded
+pins (StockChanged via a moved fingerprint, exactly what a recipe edit
+does to it; Unknown for a missing fingerprint, never a reassuring
+default), and reset restoring stock byte-exact through the codec while
+the SIBLING override stays untouched. Lifecycle (n), 7 checks - the
+user-visible loop through the real panel: tune -> teal mark appears ->
+reset -> mark clears -> activation applies stock. Totals: Lifecycle
+159. All five pins byte-identical: 7cd8d084 / e7ce9d6b (coupled) /
+666f7b45 / cafcec7f / 0bc24381.
+
