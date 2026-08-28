@@ -318,6 +318,13 @@ BrushLibraryPanel::BrushLibraryPanel(BrushLibraryModel *model,
         rebuildBrushList();
     });
     updateImportedRow();
+    // Apply the DEFAULT scope's row visibility: rows are built visible and
+    // setToolScope early-returns on a no-op change, so without this the
+    // Eraser row showed in the brush sidebar until the first tool switch -
+    // caught by lifecycle (m) the first time it ran.
+    for (CategoryRow *row : m_categoryRows)
+        if (row->name() == QStringLiteral("Eraser"))
+            row->setVisible(false);
     selectCategory(QStringLiteral("Recent")); // MRU is the default view
 }
 
@@ -658,14 +665,60 @@ void BrushLibraryPanel::updateImportedRow()
 {
     if (!m_importedRow)
         return;
-    const bool hasImports =
-        !m_model->presetsIn(QStringLiteral("Imported")).isEmpty();
+    const bool hasImports = m_scope == ToolScope::Brush
+        && !m_model->presetsIn(QStringLiteral("Imported")).isEmpty();
     m_importedRow->setVisible(hasImports);
     // If the category empties out from under the user (delete of the last
     // imported brush), fall back to the default view instead of showing an
     // empty list for a row that just vanished.
     if (!hasImports && m_category == QStringLiteral("Imported"))
-        selectCategory(QStringLiteral("Recent"));
+        selectCategory(m_scope == ToolScope::Eraser
+                           ? QStringLiteral("Eraser")
+                           : QStringLiteral("Recent"));
+}
+
+void BrushLibraryPanel::setToolScope(ToolScope scope)
+{
+    if (m_scope == scope)
+        return;
+    m_scope = scope;
+    const bool eraser = scope == ToolScope::Eraser;
+    // Row visibility IS the scope: the Eraser row alone under the Eraser,
+    // everything else under the Brush ("Imported" additionally needs
+    // imports to exist — updateImportedRow owns that rule).
+    for (CategoryRow *row : m_categoryRows) {
+        const bool isEraserRow = row->name() == QStringLiteral("Eraser");
+        if (row == m_importedRow)
+            continue; // updateImportedRow() below applies the joint rule
+        row->setVisible(eraser ? isEraserRow : !isEraserRow);
+    }
+    updateImportedRow();
+    // The panel is titled for what it IS right now. The brush library
+    // carries the user's (renameable) library name; the eraser side is
+    // fixed.
+    if (m_titleLabel)
+        m_titleLabel->setText(eraser ? QStringLiteral("Eraser Library")
+                                     : m_model->libraryName());
+    // FALLBACK: a category stranded outside the new scope never stays on
+    // screen — the panel lands on the scope's default view.
+    const bool stranded = eraser
+        ? m_category != QStringLiteral("Eraser")
+        : m_category == QStringLiteral("Eraser");
+    if (stranded)
+        selectCategory(eraser ? QStringLiteral("Eraser")
+                              : QStringLiteral("Recent"));
+    reanchor(); // the panel hangs off the scope's own tool button
+}
+
+QStringList BrushLibraryPanel::visibleCategoriesForTest() const
+{
+    QStringList names;
+    // isHidden(), not isVisible(): the row's OWN visibility flag, readable
+    // while the panel itself is closed.
+    for (CategoryRow *row : m_categoryRows)
+        if (!row->isHidden())
+            names << row->name();
+    return names;
 }
 
 // --- Hosting: default size, persistence, move + subclass-only resize -------

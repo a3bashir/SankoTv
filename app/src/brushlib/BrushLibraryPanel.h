@@ -37,6 +37,25 @@ public:
     // never hidden.
     void openAtDefault();
 
+    // --- Tool scope -------------------------------------------------------
+    // ONE panel, scoped to the active tool: under the Brush it is the Brush
+    // Library (Recent + the brush categories + Imported), under the Eraser
+    // it is the Eraser Library (the Eraser category), never both at once.
+    // The sidebar rows are toggled by visibility — the m_importedRow
+    // pattern, generalised — and when the selected category leaves scope
+    // the panel falls back to the scope's default view (Recent / Eraser).
+    enum class ToolScope { Brush, Eraser };
+    void setToolScope(ToolScope scope);
+    ToolScope toolScope() const { return m_scope; }
+    // Test seams: the row widgets are file-local, so the gate asserts scope
+    // through these — what the sidebar SHOWS and what the list is on.
+    QString currentCategoryForTest() const { return m_category; }
+    QStringList visibleCategoriesForTest() const;
+    void selectCategoryForTest(const QString &category)
+    {
+        selectCategory(category);
+    }
+
     // --- Brush-button anchoring -------------------------------------------
     // The panel opens attached to the Brush BUTTON: directly below it when
     // the brush toolbar sits in the top half of the canvas, directly above
@@ -116,6 +135,7 @@ private:
     BrushLibraryModel *m_model;
     BrushPreviewRenderer m_previews;
     QString m_category = QStringLiteral("Recent");
+    ToolScope m_scope = ToolScope::Brush;
     QString m_selectedId;
     QString m_dirtyId; // preset whose row shows the dirty dot + Reset chip
 

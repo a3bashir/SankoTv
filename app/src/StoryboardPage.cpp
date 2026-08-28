@@ -2123,9 +2123,10 @@ void StoryboardPage::installDockViewActions()
         stripToggle->setText(QStringLiteral("Panel Strip"));
         viewMenu->addAction(stripToggle);
     }
-    // Brush Library: always recoverable from here; checked state follows
-    // the panel's visibility (wired when the panel is created).
-    m_brushLibViewAction = viewMenu->addAction(QStringLiteral("Brush Library"));
+    // Library: ONE entry for the one panel; it opens at the active tool's
+    // scope (the toolChanged wiring keeps the scope current anyway).
+    // Checked state follows the panel's visibility (wired at creation).
+    m_brushLibViewAction = viewMenu->addAction(QStringLiteral("Library"));
     m_brushLibViewAction->setCheckable(true);
     connect(m_brushLibViewAction, &QAction::triggered, this, [this](bool on) {
         if (!m_brushLibPanel)
@@ -2410,18 +2411,16 @@ QWidget *StoryboardPage::createCenterColumn()
                 if (const brushlib::BrushPreset *p =
                         m_brushLibModel->preset(id)) {
                     if (p->brush.eraseMode()) {
-                        // V1 UX DECISION (recorded in HANDOFF, Procreate
-                        // precedent): picking an eraser preset states
-                        // intent - it lands in the ERASER brush and
-                        // switches the tool to Eraser. The paint brush and
-                        // the brush selection are untouched.
+                        // The panel is SCOPED to the tool (the v1
+                        // switch-on-activation model is superseded - see
+                        // HANDOFF 2026-08-28): under the Eraser scope the
+                        // Eraser already is the active tool, so activation
+                        // only applies the preset. Never touches the tool.
                         m_activeEraserPresetId = id;
                         m_canvas->setEraserPreset(p->brush);
-                        m_canvas->setTool(DrawingCanvas::Eraser);
                     } else {
                         m_activeBrushPresetId = id;
                         m_canvas->setPaintBrush(p->brush);
-                        m_canvas->setTool(DrawingCanvas::Brush);
                         refreshBrushDirtyState();
                     }
                 }
@@ -2432,6 +2431,19 @@ QWidget *StoryboardPage::createCenterColumn()
     connect(m_canvas, &DrawingCanvas::eraserBrushChanged, this, [this] {
         if (m_syncEraserCtl)
             m_syncEraserCtl();
+    });
+    // ONE panel, scoped to the active tool: Brush -> the Brush Library,
+    // Eraser -> the Eraser Library, live while the panel is open. Other
+    // tools leave the scope where it was.
+    connect(m_canvas, &DrawingCanvas::toolChanged, this, [this](int tool) {
+        if (!m_brushLibPanel)
+            return;
+        if (tool == DrawingCanvas::Brush)
+            m_brushLibPanel->setToolScope(
+                brushlib::BrushLibraryPanel::ToolScope::Brush);
+        else if (tool == DrawingCanvas::Eraser)
+            m_brushLibPanel->setToolScope(
+                brushlib::BrushLibraryPanel::ToolScope::Eraser);
     });
 
     // ---- Brush Settings studio (Figma 274:23) ------------------------
@@ -2499,12 +2511,17 @@ QWidget *StoryboardPage::createCenterColumn()
     // Anchor: the panel derives its position from the Brush BUTTON and the
     // toolbar's rect (below a top-half toolbar, above a bottom-half one).
     m_brushLibPanel->setAnchorProvider([this]() -> QPair<QRect, QRect> {
-        if (!m_brushToolButton || !m_floatToolbar
+        // The panel hangs off the button of the tool it is scoped to.
+        QPushButton *anchorButton =
+            m_brushLibPanel->toolScope()
+                    == brushlib::BrushLibraryPanel::ToolScope::Eraser
+                ? m_eraserToolButton
+                : m_brushToolButton;
+        if (!anchorButton || !m_floatToolbar
             || !m_floatToolbar->isVisible())
             return {QRect(), QRect()};
-        const QRect button(
-            m_brushToolButton->mapToGlobal(QPoint(0, 0)),
-            m_brushToolButton->size());
+        const QRect button(anchorButton->mapToGlobal(QPoint(0, 0)),
+                           anchorButton->size());
         return {button, m_floatToolbar->frameGeometry()};
     });
     // Draw-to-dismiss: the first LIVE brush press on the canvas hides the
@@ -2647,6 +2664,27 @@ void StoryboardPage::createFloatingToolbar()
     // open re-anchors it live (it reads as attached to the Brush button).
     m_floatToolbar->installEventFilter(this);
     bindTool(eraser, DrawingCanvas::Eraser);
+    m_eraserToolButton = eraser; // the Eraser Library anchors to THIS button
+    {
+        // Same press-to-toggle the Brush button has: pressing the Eraser
+        // button while the Eraser is already active toggles the (eraser-
+        // scoped) library; the scope itself follows toolChanged.
+        auto wasEraserActive = std::make_shared<bool>(false);
+        connect(eraser, &QPushButton::pressed, this,
+                [this, wasEraserActive] {
+                    *wasEraserActive = m_canvas
+                        && m_canvas->tool() == DrawingCanvas::Eraser;
+                });
+        connect(eraser, &QPushButton::clicked, this,
+                [this, wasEraserActive] {
+                    if (!m_brushLibPanel)
+                        return;
+                    if (*wasEraserActive && m_brushLibPanel->isVisible())
+                        m_brushLibPanel->setVisible(false); // user intent
+                    else
+                        m_brushLibPanel->openAtDefault(); // open / re-anchor
+                });
+    }
     bindTool(fill, DrawingCanvas::Fill);
     bindTool(move, DrawingCanvas::Move);
 

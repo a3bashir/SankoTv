@@ -2365,8 +2365,9 @@ PANEL: "Eraser" is a PANEL-side sidebar row (between the brush
 categories and "Imported") — BrushLibraryModel::categories() is a
 pinned baseline and was not touched.
 
-TWO V1 UX DECISIONS, recorded so reversing starts from reasoning, not
-reconstruction:
+TWO V1 UX DECISIONS [BOTH SUPERSEDED 2026-08-28 - the tool-scoped
+library entry below. Recorded here exactly so the reversal could start
+from the reasoning; it did.]:
 1. PRESET ACTIVATION SWITCHES THE TOOL (Procreate precedent): picking
    an eraser preset states intent — it lands in the ERASER brush and
    the tool switches to Eraser; a brush preset switches to Brush. Each
@@ -2404,3 +2405,62 @@ Totals: Lifecycle 145. All pins intact: 193847fa (brush swatches),
 666f7b45/cafcec7f (canvas locks), 0bc24381 (erase render), plus the new
 96baaccf (eraser swatches). Full gate green, both configs, both SankoTV
 builds.
+
+## The tool-scoped library: the v1 model inverted back (2026-08-28)
+
+THE USER'S CORRECTION: the Eraser Library belongs to the Eraser tool the
+way the Brush Library belongs to the Brush tool - open the library under
+the Eraser and see erasers, under the Brush and see brushes, never both.
+The shipped v1 (erasers as a sidebar category inside the brush panel,
+activation switching the tool) was the inversion of that.
+
+ONE PANEL WITH A SCOPE, not a second instance - the m_importedRow
+precedent decided it: sidebar rows were already toggled by visibility
+with a fallback when the current category vanishes, so
+setToolScope(Brush|Eraser) is that pattern generalised. A second panel
+would have duplicated the FloatingToolWindow persistence identity, the
+anchor machinery, the studio suppression wiring - all cost, no gain.
+
+WHAT SHIPPED: scope follows toolChanged in both directions, live while
+the panel is open; the sidebar shows Recent + brush categories +
+Imported under the Brush, the Eraser row alone under the Eraser
+("Imported" stays brush-only - ABR imports are paint brushes; an
+eraser-Recent is DEFERRED ON SIZING, not excluded by rule: eight presets
+fit one screen, revisit when saved variations lengthen the list); the
+panel title flips (user-renameable library name / fixed "Eraser
+Library"); the panel anchors to the SCOPE's own tool button, and the
+Eraser button gained the Brush button's press-to-toggle wiring; the View
+menu has ONE "Library" entry. Activation NEVER touches the tool - the
+eraser-vs-brush routing by preset kind stays, minus the two setTool
+calls, exactly the reversal recipe the v1 entry wrote down.
+
+BOTH V1 DECISIONS DISSOLVED rather than reversed piecemeal: with the
+panel scoped to the tool, switch-on-activation has nothing to switch and
+Recent-brush-only stops being an exclusion. THE VINDICATION worth
+recording: the reversal was executed FROM the written reasoning and its
+recorded recipe - nothing had to be reconstructed or re-litigated. That
+is the return on writing decisions down with their reversal recipes, and
+it is why the practice continues.
+
+CAUGHT BY THE REWRITTEN GATE ON ITS FIRST RUN: the sidebar rows are
+built VISIBLE and setToolScope early-returns on a no-op change, so the
+Eraser row showed inside the brush sidebar until the first tool switch -
+the constructor now applies the default scope's visibility explicitly.
+(The stranding fallback the user flagged as most likely to be subtly
+wrong passed as designed, in both directions, asserted by what the panel
+SHOWS: strand "Sketching" under the Eraser -> the view lands on
+"Eraser"; strand "Eraser" under the Brush -> it lands on "Recent".)
+
+LIFECYCLE (m) REWRITTEN, not extended (it pinned the v1 tool switch by
+name): now pins scope-follows-tool both directions with the panel open,
+activation-never-touches-the-tool under both scopes, the stranding
+fallback by displayed category and visible rows, the bar mirror, and
+both selections surviving. Panel seams added: toolScope(),
+currentCategoryForTest(), visibleCategoriesForTest(),
+selectCategoryForTest(). Lifecycle is now 154 checks.
+
+ALL FIVE PINS UNTOUCHED, as a UI reorganisation must leave them - 
+193847fa (brush swatches), 666f7b45 / cafcec7f (canvas locks), 0bc24381
+(erase render), 96baaccf (eraser swatches) - verified by the full gate,
+both configs, both SankoTV builds.
+

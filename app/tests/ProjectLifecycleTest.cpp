@@ -852,18 +852,18 @@ void runSaveAsIndependencePass(const QString &scratch)
 }
 
 
-// ---- (m) Eraser Library activation, end to end ----------------------------
-// Through the REAL panel signal (activatePresetForTest emits the same
-// brushActivated a row click does), so the page's routing lambda is what
-// is under test: an eraser preset lands in the ERASER brush and switches
-// the tool to Eraser; the paint brush and the brush selection are
-// untouched; both selections survive a tool round-trip. The tool switch
-// on activation is a DELIBERATE v1 UX decision (Procreate precedent) -
-// recorded in HANDOFF so reversing it later starts from the reasoning,
-// not from reconstruction.
+// ---- (m) the TOOL-SCOPED library, end to end ------------------------------
+// REWRITTEN 2026-08-28: the first (m) pinned the v1 model (activation
+// switches the tool) - the model was inverted by decision, so the pins
+// inverted with it. Now the panel BELONGS to the tool: Brush -> Brush
+// Library, Eraser -> Eraser Library, never both; scope follows the tool
+// both directions with the panel open; activation NEVER touches the tool;
+// and a selected category stranded outside the new scope falls back to
+// the scope's default view - asserted by what the panel SHOWS, not by
+// absence of a crash.
 void runEraserLibraryPass(const QString &scratch)
 {
-    out() << "--- (m) eraser library activation, end to end ---" << Qt::endl;
+    out() << "--- (m) tool-scoped library, end to end ---" << Qt::endl;
     MainWindow window;
     window.resize(1300, 850);
     window.show();
@@ -884,52 +884,91 @@ void runEraserLibraryPass(const QString &scratch)
         window.close();
         return;
     }
+    using Scope = brushlib::BrushLibraryPanel::ToolScope;
+
+    // --- scope follows the tool, both directions -------------------------
     canvas->setTool(DrawingCanvas::Brush);
     pump(200);
+    check(QStringLiteral("(m) Brush tool -> Brush scope"),
+          panel->toolScope() == Scope::Brush);
+    const QStringList brushCats = panel->visibleCategoriesForTest();
+    check(QStringLiteral("(m) brush sidebar shows Recent + brush "
+                         "categories, NOT Eraser"),
+          brushCats.contains(QStringLiteral("Recent"))
+              && brushCats.contains(QStringLiteral("Sketching"))
+              && !brushCats.contains(QStringLiteral("Eraser")),
+          brushCats.join(QStringLiteral(", ")));
 
-    // Controls: capture the paint brush before any eraser activation.
+    // --- THE STRANDING FALLBACK (the check most likely to be subtly
+    // wrong): select a brush category, then switch tools out from under
+    // it. Assert what the panel SHOWS afterwards.
+    panel->selectCategoryForTest(QStringLiteral("Sketching"));
+    check(QStringLiteral("(m) control: a brush category is selected"),
+          panel->currentCategoryForTest() == QStringLiteral("Sketching"));
+    canvas->setTool(DrawingCanvas::Eraser);
+    pump(200);
+    check(QStringLiteral("(m) Eraser tool -> Eraser scope"),
+          panel->toolScope() == Scope::Eraser);
+    check(QStringLiteral("(m) the STRANDED brush category fell back to the "
+                         "Eraser view"),
+          panel->currentCategoryForTest() == QStringLiteral("Eraser"),
+          panel->currentCategoryForTest());
+    const QStringList eraserCats = panel->visibleCategoriesForTest();
+    check(QStringLiteral("(m) eraser sidebar shows the Eraser row ALONE"),
+          eraserCats == QStringList{QStringLiteral("Eraser")},
+          eraserCats.join(QStringLiteral(", ")));
+
+    // --- activation under the Eraser scope: applies, NEVER switches ------
     ::Brush paintBefore = canvas->paintBrush();
-    const int eraserSizeBefore = canvas->eraserBrush().size();
-
-    // Activate the Chalk Eraser through the real signal.
     panel->activatePresetForTest(QStringLiteral("eraser/chalk-eraser"));
     pump(300);
-    check(QStringLiteral("(m) the eraser preset LANDED in the eraser brush"),
+    check(QStringLiteral("(m) the eraser preset LANDED in the eraser "
+                         "brush"),
           canvas->eraserBrush().eraseMode()
-              && canvas->eraserBrush().grainDepth() > 0.5
-              && canvas->eraserBrush().size() != eraserSizeBefore,
+              && canvas->eraserBrush().grainDepth() > 0.5,
           QStringLiteral("size=%1 grain=%2")
               .arg(canvas->eraserBrush().size())
               .arg(canvas->eraserBrush().grainDepth()));
-    check(QStringLiteral("(m) ...and the tool switched to Eraser "
-                         "(v1 decision, Procreate precedent)"),
+    check(QStringLiteral("(m) activation did NOT touch the tool"),
           canvas->tool() == DrawingCanvas::Eraser);
-    check(QStringLiteral("(m) ...and the PAINT brush is untouched"),
+    check(QStringLiteral("(m) the PAINT brush is untouched"),
           canvas->paintBrush().size() == paintBefore.size()
               && !canvas->paintBrush().eraseMode());
-    check(QStringLiteral("(m) ...and the bar mirrors the eraser preset"),
+    check(QStringLiteral("(m) the bar mirrors the eraser preset"),
           page->sizeCtlDisplayedSizeForTest()
               == canvas->eraserBrush().size(),
           QStringLiteral("bar=%1 eraser=%2")
               .arg(page->sizeCtlDisplayedSizeForTest())
               .arg(canvas->eraserBrush().size()));
 
-    // A brush preset activation switches back to the Brush.
-    panel->activatePresetForTest(QStringLiteral("builtin/sketching/hb-pencil"));
+    // --- back the other way: the Eraser category strands in turn ---------
+    canvas->setTool(DrawingCanvas::Brush);
+    pump(200);
+    check(QStringLiteral("(m) back to Brush: scope follows"),
+          panel->toolScope() == Scope::Brush);
+    check(QStringLiteral("(m) the stranded Eraser view fell back to "
+                         "Recent"),
+          panel->currentCategoryForTest() == QStringLiteral("Recent"),
+          panel->currentCategoryForTest());
+    check(QStringLiteral("(m) brush sidebar restored (Eraser row gone "
+                         "again)"),
+          !panel->visibleCategoriesForTest()
+               .contains(QStringLiteral("Eraser")));
+
+    // --- activation under the Brush scope: same contract -----------------
+    panel->activatePresetForTest(
+        QStringLiteral("builtin/sketching/hb-pencil"));
     pump(300);
-    check(QStringLiteral("(m) a BRUSH preset switches the tool to Brush"),
+    check(QStringLiteral("(m) a brush preset applies without touching the "
+                         "tool"),
           canvas->tool() == DrawingCanvas::Brush
               && !canvas->paintBrush().eraseMode());
 
-    // Both selections survive the round-trip: the eraser still holds the
-    // chalk preset.
-    canvas->setTool(DrawingCanvas::Eraser);
-    pump(200);
-    check(QStringLiteral("(m) the eraser SELECTION survived the round-trip"),
+    // --- both selections survived all of it ------------------------------
+    check(QStringLiteral("(m) the eraser SELECTION survived (chalk still "
+                         "loaded)"),
           canvas->eraserBrush().grainDepth() > 0.5
               && canvas->eraserBrush().eraseMode());
-    canvas->setTool(DrawingCanvas::Brush);
-    pump(200);
 
     window.markCleanForTest();
     window.close();

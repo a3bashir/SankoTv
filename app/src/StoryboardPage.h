@@ -402,6 +402,7 @@ private:
                                     // tools changes neither)
     std::function<void()> m_syncEraserCtl; // Size CTL <- eraser preset
     QPushButton *m_brushToolButton = nullptr; // Library anchor + open toggle
+    QPushButton *m_eraserToolButton = nullptr; // eraser-scope anchor
     QAction *m_brushLibViewAction = nullptr; // View menu toggle
     bool brushStudioUnderCursor() const; // Ctrl+Z routing (studio-local undo)
     void refreshBrushDirtyState();       // white dot + Reset chip on the row
