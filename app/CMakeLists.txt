@@ -284,6 +284,21 @@ target_link_libraries(SankoProjectLifecycle PRIVATE Qt6::Widgets Qt6::Network
     Qt6::Multimedia Qt6::MultimediaWidgets Qt6::Svg Qt6::Concurrent
     QuickShape::Kit SankoPaint::Engine dbghelp)
 
+# --- Preset promotion instrument (permanent tool) ---------------------------
+# SankoPresetDiff <override.sankobrush>: prints the field-by-field diff of a
+# built-in override against its stock recipe, in recipe vocabulary, and
+# PROVES the diff complete by reconstructing the override from it (byte
+# equality through the codec). The promotion workflow's first step - see
+# HANDOFF "Promotion".
+qt_add_executable(SankoPresetDiff
+    tools/PresetDiff.cpp
+    src/brushlib/BuiltinRoster.cpp
+    src/brushlib/BrushPresetCodec.cpp
+)
+target_include_directories(SankoPresetDiff PRIVATE src)
+target_link_libraries(SankoPresetDiff PRIVATE Qt6::Gui SankoPaint::Engine)
+# --- end promotion instrument ------------------------------------------------
+
 # --- Developer recorder (TEMP) -----------------------------------------------
 # Temporary bug-capture tool; remove by deleting app/src/devrecorder/ and
 # THIS block (plus the one guarded block in MainWindow.cpp).

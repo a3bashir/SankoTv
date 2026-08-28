@@ -79,12 +79,15 @@ Learned from real defects. Follow them exactly.
    hit region, stale archived artifact, transparent corner pixels instead
    of glyphs, an assertion validating itself, antialiasing sampled instead
    of flat fill.
-4. **Seven-family gate.** Keep these green in both configs, runs spaced
+4. **Eight-family gate.** Keep these green in both configs, runs spaced
    apart: SankoBrushLibraryTest, SankoPaintPixelLock, SankoCanvasBrushLock,
    SankoQuickShapeGeometryLock, SankoDevRecorderTest, SankoCanvasEdgeLock,
-   SankoCanvasSizeLock. Preview SHA must stay
-   `193847fa5bc317832ad3843ebaa91b74bd4296baa870ea4b324e331ca285210f`;
-   both pixel locks byte-identical (`666f7b45…`, `cafcec7f…`). The first
+   SankoCanvasSizeLock, SankoProjectLifecycle. Preview SHA must stay
+   `7cd8d084dfaf27f69a18b4a146ff99e31db7a0b0255d7cef91b87fb478808d9d`
+   (re-baselined 2026-08-28: Gouache promotion — deeper pressure taper;
+   the eraser swatch SHA `e7ce9d6b…` moves WITH it, same commit, per the
+   coupled-pin note in BrushLibraryTest); both pixel locks byte-identical
+   (`666f7b45…`, `cafcec7f…`), erase baseline `0bc24381…`. The first
    six use 960×540 fixtures; SankoCanvasSizeLock is the variable-resolution
    lock — it draws real pixels at the far edge of five canvas sizes
    (960×540, 1920×1080, 2048×1080, 3840×2160, 777×1013) and locks

@@ -482,6 +482,11 @@ QVector<BrushPreset> builtinRoster()
         paintBase(b);
         b.setSize(18); b.setHardness(0.4); b.setOpacity(0.95);
         b.setGrainPreset(B::GrainPreset::Canvas); b.setGrainDepth(0.3);
+        // PROMOTED from the user's override (tuned 2026-08-01, promoted
+        // 2026-08-28): a light pen paints at ~10% size instead of
+        // paintBase's 60% - a much deeper pressure taper. Rounded from the
+        // override's slider value 0.104167 by decision at promotion.
+        b.sizePressureCurve().setControlPoints(curve2(0.1, 1.0));
     });
     r << make(kPainting, QStringLiteral("Acrylic"), [&](::Brush &b) {
         paintBase(b);

@@ -2597,3 +2597,56 @@ white-ish stroke pixel, NO coloured pixels (an eraser has no colour) -
 deterministic, combined into the new pin. Four pins untouched:
 193847fa, 666f7b45, cafcec7f, 0bc24381.
 
+## Promotion: overrides fold into recipes as reviewable diffs (2026-08-28)
+
+BUILT-INS STAY AS CODE - the decision that carries everything: the wire
+format is binary, so a committed .sankobrush is an unreviewable blob,
+while a recipe edit reads "curve2(0.6) -> curve2(0.1)" in a diff. The
+studio's OVERRIDE mechanism is the no-rebuild tuning workflow (it
+already existed; the user had been running a tuned Gouache for four
+weeks without knowing), and PROMOTION folds an override into the recipe
+as a commit.
+
+THE INSTRUMENT: SankoPresetDiff (permanent tool, tools/PresetDiff.cpp).
+Given an override file it prints every differing field against the
+stock recipe in recipe vocabulary - and PROVES the diff complete by
+reconstruction: its entire field vocabulary applied to a stock copy
+must reproduce the override byte-for-byte through the codec, else it
+exits STOP. Image-bearing fields (custom tip/grain) and dual-brush
+secondaries are declared unpromotable up front. "If a tuned field
+cannot be expressed in the recipe's vocabulary, stop" is therefore
+mechanical, not a promise.
+
+THE WORKFLOW: user says "promote my <preset> override" -> run
+SankoPresetDiff -> report the field diff for confirmation BEFORE any
+edit (the user may not want every value they touched) -> recipe edit ->
+full gate -> BOTH swatch SHAs re-baselined in the same commit with the
+tuning as the stated reason (the coupled-pin procedure's legitimate
+case) -> report -> commit on approval -> delete THAT override only,
+after the user approves the committed result. CLAUDE.md's gate section
+carries the current preview SHA and moves in the same commit.
+
+FIRST PROMOTION, Gouache (this commit): the four-week-old override held
+exactly ONE change - sizePressureCurve floor 0.6 -> 0.104167 (a light
+pen paints at ~10% size instead of 60%; a much deeper pressure taper).
+Promoted rounded to 0.1 by the user's decision. SHAs: preview 193847fa
+-> 7cd8d084, eraser swatches 32f0dfff -> e7ce9d6b, both configs
+identical, moved together per the coupled-pin note. Canvas/engine pins
+untouched (666f7b45, cafcec7f, 0bc24381).
+
+OVERRIDE FOLDER CENSUS at promotion time: Gouache was the ONLY
+override. Answered before it could matter, per the user's ask.
+
+QUEUED, its own pass with Requirement 0 first: override DISCOVERABILITY
++ the STALE-OVERRIDE HAZARD, treated as one problem - nothing in the UI
+shows a built-in is shadowed (hasBuiltinOverride has no UI caller; the
+user found their Gouache only because Claude looked), and
+loadBuiltinOverrides replaces the recipe brush unconditionally, so an
+override silently beats any future recipe improvement. Scope to cover:
+the row's modified mark + reset-to-stock; whether the app should detect
+that a recipe CHANGED UNDERNEATH an override (an override matching
+current stock is harmless; one diverging from a recipe that has moved
+is the hazard) - the model could store the stock settingsHash at
+override save and compare at load; and the census surfaced in-app
+rather than by inspection.
+
