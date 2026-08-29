@@ -1,0 +1,13 @@
+<RCC>
+    <!-- Versioned brush assets: images a built-in recipe cannot express as
+         code (HANDOFF "code plus versioned assets", 2026-08-29). This qrc
+         must compile into EVERY target that builds BuiltinRoster.cpp
+         (SankoTV, SankoBrushLibraryTest, SankoPresetDiff; the lifecycle
+         family inherits the app's source list) - a target without it
+         builds a roster whose image-bearing brushes load null tips and
+         renders DIFFERENT presets than the app. (b11) trips if that
+         happens to HB Pencil. -->
+    <qresource prefix="/brushes">
+        <file alias="hb_pencil_tip.png">assets/brushes/hb_pencil_tip.png</file>
+    </qresource>
+</RCC>

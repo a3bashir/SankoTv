@@ -120,6 +120,7 @@ qt_add_executable(SankoTV
     src/brushlib/BrushSettingsStudio.cpp
     src/brushlib/BrushSettingsStudio.h
     resources.qrc
+    brush_assets.qrc
 )
 
 target_link_libraries(SankoTV PRIVATE Qt6::Widgets Qt6::Network Qt6::Multimedia Qt6::MultimediaWidgets
@@ -165,6 +166,8 @@ qt_add_executable(SankoBrushLibraryTest
     src/brushlib/AbrImporter.h
     src/brushlib/BrushPreviewRenderer.cpp
     src/brushlib/BrushPreviewRenderer.h
+    brush_assets.qrc
+    tests/test_fixtures.qrc
 )
 target_include_directories(SankoBrushLibraryTest PRIVATE src src/brushlib)
 target_link_libraries(SankoBrushLibraryTest PRIVATE SankoPaint::Engine)
@@ -294,6 +297,7 @@ qt_add_executable(SankoPresetDiff
     tools/PresetDiff.cpp
     src/brushlib/BuiltinRoster.cpp
     src/brushlib/BrushPresetCodec.cpp
+    brush_assets.qrc
 )
 target_include_directories(SankoPresetDiff PRIVATE src)
 target_link_libraries(SankoPresetDiff PRIVATE Qt6::Gui SankoPaint::Engine)

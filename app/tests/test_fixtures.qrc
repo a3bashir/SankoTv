@@ -1,0 +1,11 @@
+<RCC>
+    <!-- Test-only fixtures (compiled into SankoBrushLibraryTest only).
+         hb_variation.sankobrush is the user's "HB Pencil Variation" preset
+         file, byte-for-byte as promoted on 2026-08-29 (sha256 d1884843...)
+         - the source of truth (b11) compares the built-in HB Pencil recipe
+         against. It freezes THE PROMOTION, deliberately: later edits to
+         the user's live variation must not move this gate. -->
+    <qresource prefix="/fixtures">
+        <file alias="hb_variation.sankobrush">fixtures/hb_variation.sankobrush</file>
+    </qresource>
+</RCC>

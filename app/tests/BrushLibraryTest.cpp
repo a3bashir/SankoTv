@@ -88,7 +88,7 @@ using brushlib::BrushPreset;
 // legitimate roster change moves BOTH in the same commit; this one
 // moving ALONE is a defect, never a re-baseline.
 static const char kEraserSwatchSha[] =
-    "e7ce9d6b07af1b72142ef3b49bd219c5d651fc4b161ccf28eec0239ee69b4453";
+    "b602355ffdc549deb59eb0b3e846e33b5c21a081af6177b4a8d1e6ead6383f06";
 using brushlib::BrushPresetCodec;
 using brushlib::BrushPreviewRenderer;
 
@@ -588,6 +588,187 @@ int main(int argc, char **argv)
                   !model.resetBuiltinToStock(gouache));
         }
         QDir(root).removeRecursively();
+    }
+
+    // ---- (b11) HB Pencil IS the promoted variation, byte for byte --------
+    // The first user-preset promotion (2026-08-29): the built-in HB Pencil
+    // recipe was rewritten from the user's "HB Pencil Variation". The
+    // user's demanded form of the check, verbatim: construct BOTH brushes,
+    // apply the approved delta (size 4 -> 36; opacity 0.55 was confirmed
+    // kept), and compare saveBrush() output byte for byte - and if
+    // anything else differs, NAME THE FIELD, because an unnamed
+    // difference is a promotion error. The fixture is the promoted file
+    // frozen at promotion time; later edits to the live variation must
+    // not move this gate.
+    {
+        const auto firstBrushDiff = [](const ::Brush &x, const ::Brush &y) {
+            using DP = ::Brush::DynamicProperty;
+            QString d;
+            const auto num = [&](const char *n, qreal a, qreal b) {
+                if (d.isEmpty() && a != b)
+                    d = QStringLiteral("%1: %2 vs %3")
+                            .arg(QLatin1String(n)).arg(a).arg(b);
+            };
+            num("size", x.size(), y.size());
+            num("spacing", x.spacing(), y.spacing());
+            num("opacity", x.opacity(), y.opacity());
+            num("flow", x.flow(), y.flow());
+            num("hardness", x.hardness(), y.hardness());
+            if (d.isEmpty() && x.color() != y.color()) d = "color";
+            num("toolMode", int(x.toolMode()), int(y.toolMode()));
+            num("smudgeStrength", x.smudgeStrength(), y.smudgeStrength());
+            num("tiltAffectsShape", x.tiltAffectsShape(), y.tiltAffectsShape());
+            num("rotationAffectsShape", x.rotationAffectsShape(),
+                y.rotationAffectsShape());
+            num("maxTiltElongation", x.maxTiltElongation(),
+                y.maxTiltElongation());
+            num("scatterAlong", x.scatterAlong(), y.scatterAlong());
+            num("scatterPerpendicular", x.scatterPerpendicular(),
+                y.scatterPerpendicular());
+            num("scatterCount", x.scatterCount(), y.scatterCount());
+            num("sizeJitter", x.sizeJitter(), y.sizeJitter());
+            num("angleJitter", x.angleJitter(), y.angleJitter());
+            num("roundnessJitter", x.roundnessJitter(), y.roundnessJitter());
+            num("spacingJitter", x.spacingJitter(), y.spacingJitter());
+            num("grainScale", x.grainScale(), y.grainScale());
+            num("grainDepth", x.grainDepth(), y.grainDepth());
+            num("grainContrast", x.grainContrast(), y.grainContrast());
+            num("grainRotation", x.grainRotation(), y.grainRotation());
+            num("grainMode", int(x.grainMode()), int(y.grainMode()));
+            num("grainAffectsColor", x.grainAffectsColor(),
+                y.grainAffectsColor());
+            num("grainPreset", int(x.grainPreset()), int(y.grainPreset()));
+            if (d.isEmpty() && x.grainTexture() != y.grainTexture())
+                d = QStringLiteral("grainTexture (image bytes)");
+            num("hueJitter", x.hueJitter(), y.hueJitter());
+            num("saturationJitter", x.saturationJitter(),
+                y.saturationJitter());
+            num("brightnessJitter", x.brightnessJitter(),
+                y.brightnessJitter());
+            if (d.isEmpty() && x.customShape() != y.customShape())
+                d = QStringLiteral("customShape (tip image bytes)");
+            num("dualBlendMode", int(x.dualBlendMode()),
+                int(y.dualBlendMode()));
+            num("dualMasterOpacity", x.dualMasterOpacity(),
+                y.dualMasterOpacity());
+            num("dualBrushEnabled", x.dualBrushEnabled(),
+                y.dualBrushEnabled());
+            num("tipAngle", x.tipAngle(), y.tipAngle());
+            num("tipRoundness", x.tipRoundness(), y.tipRoundness());
+            num("tipFlipX", x.tipFlipX(), y.tipFlipX());
+            num("tipFlipY", x.tipFlipY(), y.tipFlipY());
+            num("fadeDistance", x.fadeDistance(), y.fadeDistance());
+            num("wetEdges", x.wetEdges(), y.wetEdges());
+            num("buildUp", x.buildUp(), y.buildUp());
+            num("fgBgJitter", x.fgBgJitter(), y.fgBgJitter());
+            if (d.isEmpty() && x.backgroundColor() != y.backgroundColor())
+                d = QStringLiteral("backgroundColor");
+            num("purity", x.purity(), y.purity());
+            num("colorDynamicsPerTip", x.colorDynamicsPerTip(),
+                y.colorDynamicsPerTip());
+            num("dualMode", int(x.dualMode()), int(y.dualMode()));
+            num("noise", x.noise(), y.noise());
+            num("textureBlendMode", int(x.textureBlendMode()),
+                int(y.textureBlendMode()));
+            num("eraseMode", x.eraseMode(), y.eraseMode());
+            static const char *kProps[] = {
+                "Size", "Opacity", "Hardness", "Flow", "Scatter", "Smudge",
+                "SizeJitter", "AngleJitter", "RoundnessJitter",
+                "SpacingJitter", "GrainDepth", "HueJitter",
+                "SaturationJitter", "BrightnessJitter",
+                "ForegroundBackground"};
+            for (int i = 0; i < 15 && d.isEmpty(); ++i) {
+                const auto p = DP(i);
+                if (int(x.controlSource(p)) != int(y.controlSource(p)))
+                    d = QStringLiteral("controlSource(%1)")
+                            .arg(QLatin1String(kProps[i]));
+                else if (x.controlMinimum(p) != y.controlMinimum(p))
+                    d = QStringLiteral("controlMinimum(%1)")
+                            .arg(QLatin1String(kProps[i]));
+            }
+            const auto curve = [&](const char *n, const PressureCurve &a,
+                                   const PressureCurve &b) {
+                if (d.isEmpty() && a.controlPoints() != b.controlPoints())
+                    d = QStringLiteral("%1 curve").arg(QLatin1String(n));
+            };
+            ::Brush &mx = const_cast<::Brush &>(x);
+            ::Brush &my = const_cast<::Brush &>(y);
+            curve("sizePressure", mx.sizePressureCurve(),
+                  my.sizePressureCurve());
+            curve("opacityPressure", mx.opacityPressureCurve(),
+                  my.opacityPressureCurve());
+            curve("hardnessPressure", mx.hardnessPressureCurve(),
+                  my.hardnessPressureCurve());
+            curve("flowPressure", mx.flowPressureCurve(),
+                  my.flowPressureCurve());
+            curve("scatterPressure", mx.scatterPressureCurve(),
+                  my.scatterPressureCurve());
+            curve("smudgePressure", mx.smudgePressureCurve(),
+                  my.smudgePressureCurve());
+            curve("sizeJitterPressure", mx.sizeJitterPressureCurve(),
+                  my.sizeJitterPressureCurve());
+            curve("angleJitterPressure", mx.angleJitterPressureCurve(),
+                  my.angleJitterPressureCurve());
+            curve("roundnessJitterPressure",
+                  mx.roundnessJitterPressureCurve(),
+                  my.roundnessJitterPressureCurve());
+            curve("spacingJitterPressure", mx.spacingJitterPressureCurve(),
+                  my.spacingJitterPressureCurve());
+            curve("grainDepthPressure", mx.grainDepthPressureCurve(),
+                  my.grainDepthPressureCurve());
+            curve("hueJitterPressure", mx.hueJitterPressureCurve(),
+                  my.hueJitterPressureCurve());
+            curve("saturationJitterPressure",
+                  mx.saturationJitterPressureCurve(),
+                  my.saturationJitterPressureCurve());
+            curve("brightnessJitterPressure",
+                  mx.brightnessJitterPressureCurve(),
+                  my.brightnessJitterPressureCurve());
+            curve("fgBgJitterPressure", mx.fgBgJitterPressureCurve(),
+                  my.fgBgJitterPressureCurve());
+            return d.isEmpty()
+                ? QStringLiteral("difference outside the field list")
+                : d;
+        };
+
+        QFile fixtureFile(
+            QStringLiteral(":/fixtures/hb_variation.sankobrush"));
+        check(QStringLiteral("(b11) the promotion fixture is compiled in"),
+              fixtureFile.open(QIODevice::ReadOnly));
+        BrushPreset variation;
+        check(QStringLiteral("(b11) the fixture loads and is the "
+                             "variation"),
+              BrushPresetCodec::loadPreset(fixtureFile.readAll(), variation)
+                  && variation.name
+                      == QStringLiteral("HB Pencil Variation"));
+        const BrushPreset *hb = nullptr;
+        for (const BrushPreset &p : roster)
+            if (p.id == QStringLiteral("builtin/sketching/hb-pencil"))
+                hb = &p;
+        check(QStringLiteral("(b11) the built-in HB Pencil exists with the "
+                             "ASSET tip loaded (1177x1102 - a null here "
+                             "means brush_assets.qrc is missing from this "
+                             "target)"),
+              hb && hb->brush.hasCustomShape()
+                  && hb->brush.customShape().size() == QSize(1177, 1102));
+        if (hb) {
+            ::Brush want = variation.brush;
+            want.setSize(36); // THE single approved delta
+            const QByteArray fromVariation =
+                BrushPresetCodec::saveBrush(want);
+            const QByteArray fromRecipe =
+                BrushPresetCodec::saveBrush(hb->brush);
+            check(QStringLiteral("(b11) built-in == variation, byte for "
+                                 "byte, with ONLY size differing"),
+                  fromVariation == fromRecipe,
+                  fromVariation == fromRecipe
+                      ? QString()
+                      : firstBrushDiff(want, hb->brush));
+            check(QStringLiteral("(b11) control: opacity is the KEPT 0.55 "
+                                 "ceiling on both sides"),
+                  hb->brush.opacity() == 0.55
+                      && variation.brush.opacity() == 0.55);
+        }
     }
 
     // ---- (b10) the custom-image cap + the encoded-image memo -------------

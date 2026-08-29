@@ -225,9 +225,37 @@ QVector<BrushPreset> builtinRoster()
         b.opacityPressureCurve().setControlPoints(curve2(0.25, 1.0));
     };
     r << make(kSketching, QStringLiteral("HB Pencil"), [&](::Brush &b) {
-        sketchBase(b);
-        b.setSize(4); b.setHardness(0.62); b.setOpacity(0.75);
-        b.setGrainDepth(0.35);
+        // PROMOTED WHOLESALE from the user's "HB Pencil Variation"
+        // (2026-08-29) - the first user-preset promotion, replacing the
+        // stock recipe entirely. Every value below was READ from the
+        // saved .sankobrush, never retyped from memory, and (b11) PINS
+        // the claim: the committed fixture of that file, with ONLY size
+        // changed, must saveBrush() byte-identically to this recipe. The
+        // custom tip ships as a versioned asset (brush_assets.qrc)
+        // because images cannot be expressed in recipe vocabulary - the
+        // "code plus versioned assets" rule, HANDOFF 2026-08-29.
+        // Deliberately NOT built on sketchBase: the field list is the
+        // promotion record.
+        b.setSize(36);   // the single approved delta (variation drew at 4)
+        b.setSpacing(0.08);
+        b.setOpacity(0.55); // the HB ceiling - confirmed kept: strokes
+                            // top out at mid-grey, the paper shows through
+        b.setFlow(0.2);     // gradual buildup toward that ceiling
+        b.setHardness(0.62);
+        b.setSpacingJitter(0.078125);
+        b.setCustomShape(
+            QImage(QStringLiteral(":/brushes/hb_pencil_tip.png")));
+        b.setGrainPreset(B::GrainPreset::Paper);
+        b.setGrainScale(40.0);
+        b.setGrainDepth(0.55);
+        b.setGrainMode(B::GrainMode::StaticCanvas);
+        // Depth minimum 1.0: tooth stays fully present at LIGHT pressure
+        // (the default pressure response would fade grain exactly where a
+        // real pencil shows it most).
+        b.setControlMinimum(B::DynamicProperty::GrainDepth, 1.0);
+        b.setNoise(0.15);
+        b.sizePressureCurve().setControlPoints(curve2(0.35, 1.0));
+        b.opacityPressureCurve().setControlPoints(curve2(0.25, 1.0));
     });
     r << make(kSketching, QStringLiteral("H Pencil"), [&](::Brush &b) {
         sketchBase(b);

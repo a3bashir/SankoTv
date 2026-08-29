@@ -83,9 +83,10 @@ Learned from real defects. Follow them exactly.
    apart: SankoBrushLibraryTest, SankoPaintPixelLock, SankoCanvasBrushLock,
    SankoQuickShapeGeometryLock, SankoDevRecorderTest, SankoCanvasEdgeLock,
    SankoCanvasSizeLock, SankoProjectLifecycle. Preview SHA must stay
-   `7cd8d084dfaf27f69a18b4a146ff99e31db7a0b0255d7cef91b87fb478808d9d`
-   (re-baselined 2026-08-28: Gouache promotion — deeper pressure taper;
-   the eraser swatch SHA `e7ce9d6b…` moves WITH it, same commit, per the
+   `c1fbee31c3c13547658d2fd65678a566d79985196bd8bc478e3da1120318727d`
+   (re-baselined 2026-08-29: HB Pencil recipe replaced wholesale by the
+   user's promoted variation — custom tip asset, Paper grain, HB ceiling;
+   the eraser swatch SHA `b602355f…` moves WITH it, same commit, per the
    coupled-pin note in BrushLibraryTest); both pixel locks byte-identical
    (`666f7b45…`, `cafcec7f…`), erase baseline `0bc24381…`. The first
    six use 960×540 fixtures; SankoCanvasSizeLock is the variable-resolution

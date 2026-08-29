@@ -2617,6 +2617,15 @@ secondaries are declared unpromotable up front. "If a tuned field
 cannot be expressed in the recipe's vocabulary, stop" is therefore
 mechanical, not a promise.
 
+[AMENDED 2026-08-29, user-approved - see "code plus versioned assets"
+below. Images remain inexpressible AS CODE, and SankoPresetDiff's STOP
+on image diffs stands; but an image can now ship as a VERSIONED ASSET
+(brush_assets.qrc) that the recipe loads, which is how the HB Pencil
+promotion carried its custom tip. The two rules do not conflict: the
+diff tool stops because it cannot make an image reviewable as
+parameters; the asset route makes it reviewable as a committed file
+instead. Both routes end in a commit or not at all.]
+
 THE WORKFLOW: user says "promote my <preset> override" -> run
 SankoPresetDiff -> report the field diff for confirmation BEFORE any
 edit (the user may not want every value they touched) -> recipe edit ->
@@ -3005,3 +3014,52 @@ build-hygiene note: the Debug tree produced a corrupt SankoTV.exe
 same session - both cured by deleting intermediates and relinking;
 the sources were proven innocent by Release passing throughout.)
 
+
+## HB Pencil: the first user-preset promotion, and "code plus versioned assets" (2026-08-29)
+
+WHAT: the built-in HB Pencil recipe (BuiltinRoster.cpp) is replaced
+WHOLESALE by the user's "HB Pencil Variation" - the tuned pencil from
+the image-cap pass (spacing 0.08, flow 0.2, opacity 0.55, Paper grain
+scale 40 / depth 0.55 / depth-minimum 1.0 / Static, noise 0.15,
+custom 1177x1102 tip, stock size/opacity pressure curves) - with
+exactly ONE approved delta: size 4 -> 36. Opacity was the user's
+explicit deliberate choice: 0.55 KEPT (the HB ceiling - strokes top
+out at mid-grey and the paper shows through; 1.0 was offered and
+declined). There was never a rename: the built-in was always named
+"HB Pencil"; "4px" was its size. The user's variation file is LEFT
+ALONE (their call: they delete it in-app once satisfied).
+
+THE RULE CHANGE, user-approved: "built-ins are code" becomes "CODE
+PLUS VERSIONED ASSETS". Reason: the variation carries a custom tip
+image, and images cannot be expressed in recipe vocabulary (the
+promotion pass declared them unpromotable AS PARAMETERS - that entry
+is amended above so the two rules read together, not against each
+other). The tip's exact PNG bytes were EXTRACTED from the saved
+.sankobrush (never re-encoded) into assets/brushes/hb_pencil_tip.png,
+served via brush_assets.qrc. THE CONSTRAINT THAT MUST HOLD: the qrc
+must compile into EVERY target that builds BuiltinRoster.cpp (SankoTV,
+SankoBrushLibraryTest, SankoPresetDiff; lifecycle inherits the app
+list) - a target without it loads a null tip and renders a DIFFERENT
+roster than the app. (b11)'s asset-loaded check trips if a new roster
+target forgets it.
+
+SOURCE-OF-TRUTH DISCIPLINE: the file was hashed at approval
+(d1884843...) and re-verified unchanged at build end - the promotion
+is provably of the version the user has, not one they have not seen.
+The values in the recipe were read from the file, never retyped;
+(b11) makes that claim mechanical (below).
+
+GATE: BrushLibrary (b11), 5 checks, the user's demanded form verbatim:
+the variation file is COMMITTED as a test fixture
+(tests/test_fixtures.qrc, frozen at promotion - later edits to the
+live variation must not move the gate); the check constructs BOTH
+brushes, applies the single size delta, and compares saveBrush()
+byte-for-byte - and on inequality a full-vocabulary comparator NAMES
+THE FIELD (every scalar, enum, colour, both images, all 15 curves and
+source/minimum pairs). Passed on the first run: the comparator never
+fired. Plus the asset-loaded check and the opacity-ceiling control.
+BOTH swatch SHAs re-baselined in the same commit per the coupled-pin
+procedure, cross-config identical: preview 7cd8d084 -> c1fbee31,
+eraser e7ce9d6b -> b602355f. CLAUDE.md updated with the reason. Canvas
+locks and the erase baseline unmoved. Totals: BrushLibrary 79 checks,
+Lifecycle 206.
