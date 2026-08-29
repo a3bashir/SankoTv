@@ -1963,12 +1963,15 @@ StoryboardPage::StoryboardPage(QWidget *parent)
     centralLayout->addWidget(bottomBar);
     m_dockHost->setCentralWidget(central);
 
-    // The controller persists under the app's own QSettings names in a NEW
-    // native-docking namespace. The old ADS blob (storyboard/dockState) is a
-    // different format and is deliberately never read or overwritten.
+    // The controller persists through sankoSettings() — same store, same
+    // keys as before for the user (org SankoTV), but the scratch redirect
+    // now governs it: the old explicit ("SankoTV","SankoTV") arguments
+    // reconstructed the raw two-argument QSettings form and every gate run
+    // wrote dock layout into the REAL store (caught 2026-08-29). The old
+    // ADS blob (storyboard/dockState) is a different format and is
+    // deliberately never read or overwritten.
     m_dockController = new DockController(
-        m_dockHost, QStringLiteral("SankoTV"), QStringLiteral("SankoTV"),
-        QStringLiteral("storyboard/nativeDock"), this);
+        m_dockHost, QStringLiteral("storyboard/nativeDock"), this);
 
     // Dock widgets wrap the EXISTING panel instances (never recreated, so
     // all constructor-time connections keep firing). saveState() keys saved
@@ -2461,29 +2464,22 @@ QWidget *StoryboardPage::createCenterColumn()
             &brushlib::BrushLibraryPanel::brushSettingsRequested,
             m_brushStudio, &brushlib::BrushSettingsStudio::openForPreset);
     // Modal-style surface: while the studio is open every floating window
-    // hides — the Brush Library INCLUDED — and comes back on close; only
-    // the studio itself is excluded. Keyed off visibilityChanged so every
-    // close path — Done, Cancel, Save Variation, and anything future that
-    // hides the window — restores through the one funnel; the hides are
-    // captured as in-memory intent only (suppressFloatingBars), so they
-    // can never be recorded as the user choosing "hidden" (D1). That
-    // matters most for the Library, the one class whose own setVisible()
-    // PERSISTS intent: suppression's base-qualified setVisible bypasses
-    // that override in both directions, so the studio hiding the Library
-    // is invisible to the next launch. A page switch or minimize hides
-    // the studio too and transiently restores the bars' intents; when the
-    // studio re-shows, suppression re-captures those same intents — the
-    // capture reads intent, not effective visibility, so the round trip
-    // cannot drift.
+    // hides — the Brush Library INCLUDED — and comes back on close. The
+    // suppress/restore wiring that used to live here moved INTO
+    // FloatingToolWindow (the modal-surface role, declared in the studio's
+    // constructor): driving it from visibilityChanged re-entered the
+    // capture stack when the generic modal filter hid the studio itself —
+    // the 2026-08-29 lost-bars regression. The machinery keys holder
+    // actions on the transition's CAUSE, which this signal cannot know.
+    // Everything the old comment promised still holds — in-memory intent
+    // only (D1), the Library's persisting setVisible bypassed in both
+    // directions, and the page-switch/minimize transient restore-and-
+    // recapture round trip (pinned by Lifecycle (q)). Only the raise
+    // stays here: stacking is page furniture, not suppression.
     connect(m_brushStudio, &brushlib::BrushSettingsStudio::visibilityChanged,
             this, [this](bool visible) {
-                if (visible) {
-                    FloatingToolWindow::suppressFloatingBars(
-                        m_canvas, {m_brushStudio});
+                if (visible)
                     m_brushStudio->raise();
-                } else {
-                    FloatingToolWindow::restoreFloatingBars(m_canvas);
-                }
             });
     // Done on the preset the canvas is currently using: the canvas adopts
     // the committed version (the working copy would otherwise show stale

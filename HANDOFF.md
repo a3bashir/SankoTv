@@ -2847,3 +2847,78 @@ atomically), size-5000 invariance, session never touches the model.
 Totals: Lifecycle 185. All five pins byte-identical both configs:
 7cd8d084 / e7ce9d6b (coupled) / 666f7b45 / cafcec7f / 0bc24381.
 
+## The suppression fix: holder-ship becomes machinery-owned (2026-08-29)
+
+THE REGRESSION (user-reported, hand-hit): open Brush Settings, use any
+modal inside it (Load..., the Done-failure warning), close the studio
+- the floating bars stay gone with no UI path back; only an app
+restart recovers (suppression is memory-only, startup show()s are
+unconditional). Reproduced deterministically by probe, both configs.
+
+ROOT CAUSE - a TEMPORAL imbalance, not a missing restore: the studio
+was both a suppression HOLDER (visibilityChanged -> suppress/restore
+in StoryboardPage) and a suppression TARGET (the generic modal filter
+suppresses everything over the canvas, no except; the studio's anchor
+is the canvas). The modal walk hid the studio; its hideEvent fired the
+holder restore REENTRANTLY, mid-walk, BEFORE the walk pushed its own
+capture - popping the one capture that held the true intents. Every
+capture from then on recorded already-suppressed bars. Three
+suppresses, three restores, state destroyed at capture time.
+
+Candidate (A) (push before the walk) was traced and REJECTED before
+coding: it only changes which capture the reentrant restore eats, then
+strands the true capture under a duplicate. (C) (except the studio
+from the modal suppress) resurrects the painted-across-the-dialog bug
+for the largest window in the app.
+
+THE STRUCTURAL FIX: FloatingToolWindow::setModalSurface(true) - the
+studio declares the role in its constructor; holder logic runs in
+applyEffectiveVisibility, keyed on the transition's CAUSE
+(g_suppressionWalking: transitions the walk itself produces never
+trigger holder actions), with m_holdingSuppression making push/pop
+strictly alternate per holder. StoryboardPage's manual wiring is
+deleted (only raise() remains on visibilityChanged). Do NOT wire
+show/hide signals to suppress/restore again - the header says why.
+Page-switch/minimize transparency preserved EXACTLY: host-driven
+transitions still fire the holder, so the transient
+restore-and-recapture round trip (captures re-read LIVE intent, the
+drift-proofing) is unchanged and now PINNED.
+
+TWO MORE DEFECTS FOUND BY THE PERMANENT GATE ITSELF:
+- FloatingToolWindowManager::watch() never pruned destroyed objects
+  from m_watched; a later anchor allocated at a recycled address read
+  as "already watched" and got NO event filter. Unhittable with the
+  app's single MainWindow; the gate's seventeen windows per process
+  hit it deterministically. Fixed: prune on QObject::destroyed.
+- DockController took settingsOrg/settingsApp and constructed the raw
+  two-argument QSettings form - a sankoSettings() CHOKE-POINT BYPASS
+  that wrote dock layout into the USER'S REAL STORE on every gate run
+  that closed a MainWindow (it made Lifecycle (l) flap: consecutive
+  identical runs converged and passed, interleaved different-window
+  runs failed). Fixed: the org/app parameters are DELETED so the
+  bypass cannot be reconstructed; the three sites go through
+  sankoSettings(). Same store and keys for the user; scratch under
+  tests. NOTE: gate runs before this fix DID write test-window dock
+  layouts into the real store - the user's next launch may restore an
+  odd dock layout once; View > Reset Layout recovers the default.
+
+RECOVERY (its own pass, queued): even fixed, vanished tools deserve an
+escape hatch. Survey result: the bars have NO user-facing close, and
+placements are clamp-validated, so the only independent no-way-back
+class WAS this bug; the derivative shape is chain dependency (Colors
+panel and Brush Library reopen through buttons hosted on the brush
+bar). A "Show All Tool Bars" action - the placement reset's sibling -
+covers both. UX placement is the user's call.
+
+GATE - PERMANENT, at the user's direction (second defect to hide in a
+path only temporary seams covered: the studio seam never drove a
+modal, the modal seam never opened the studio): Lifecycle (q), 14
+checks - plain open/close, the full holder x target composition via
+synthetic WindowBlocked/Unblocked (studio hides as target, bars STAY
+hidden mid-modal, capture survives, close restores, stack balanced),
+and the TRANSPARENCY PIN driving the anchor's hide/show (the
+page-switch path, window-manager-independent) with the protected
+semantics stated inside the check itself. Totals: Lifecycle 199. All
+five pins byte-identical both configs: 7cd8d084 / e7ce9d6b (coupled) /
+666f7b45 / cafcec7f / 0bc24381.
+

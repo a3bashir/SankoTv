@@ -87,6 +87,16 @@ private:
             return;
         m_watched.insert(object);
         object->installEventFilter(this);
+        // Prune on destruction, or the guard above turns into a landmine:
+        // this manager is a process singleton, m_watched held DEAD
+        // pointers, and a later anchor allocated at a recycled address
+        // read as "already watched" — no filter installed, no visibility
+        // events, and the modal-surface holder never saw its anchor hide.
+        // Impossible to hit with the app's single MainWindow; found by
+        // the permanent suppression gate (Lifecycle (q)), whose process
+        // constructs seventeen windows before the pin runs.
+        connect(object, &QObject::destroyed, this,
+                [this](QObject *dead) { m_watched.remove(dead); });
     }
 
     void watchTopLevelOf(QWidget *anchor)
@@ -168,6 +178,23 @@ QHash<QWidget *, QVector<QVector<SuppressedBar>>> &suppressedBars()
     static QHash<QWidget *, QVector<QVector<SuppressedBar>>> store;
     return store;
 }
+
+// True while a suppress/restore walk is mutating window visibility. THE
+// STRUCTURAL INVARIANT (2026-08-29): a visibility transition produced by
+// the suppression machinery itself must never trigger a holder's own
+// suppress/restore. Without this, a window that is both a suppression
+// TARGET and a HOLDER (the Brush Settings studio: a FloatingToolWindow
+// over the canvas that also suppresses the bars while open) re-enters the
+// stack mid-walk - the generic modal suppress hid the studio, the
+// studio's hide fired its holder restore BEFORE the walk pushed its own
+// capture, and the pop consumed the only capture holding the true
+// intents. Three suppresses, three restores, state destroyed anyway: the
+// imbalance was temporal, not numerical. Holder actions now live in
+// applyEffectiveVisibility, keyed on this flag, so the invariant is
+// enforced in the one place that knows WHY a transition happened - any
+// future modal-surface window inherits it by setting the role, and
+// cannot re-wire itself into the defect.
+bool g_suppressionWalking = false;
 } // namespace
 
 void FloatingToolWindow::suppressFloatingBars(
@@ -181,7 +208,8 @@ void FloatingToolWindow::suppressFloatingBars(
     // future bar that inherits this class.
     const QVector<FloatingToolWindow *> all =
         FloatingToolWindowManager::instance()->windows();
-    g_batchingPlacement = true; // one re-pack at the end, not one per bar
+    g_suppressionWalking = true; // holder actions are inert for the walk
+    g_batchingPlacement = true;  // one re-pack at the end, not one per bar
     for (FloatingToolWindow *w : all) {
         if (w->m_anchor != anchor || except.contains(w))
             continue;
@@ -195,6 +223,7 @@ void FloatingToolWindow::suppressFloatingBars(
     g_batchingPlacement = false;
     repositionManagedGroup(anchor);
     suppressedBars()[anchor].append(captured); // push this holder's capture
+    g_suppressionWalking = false;
 }
 
 void FloatingToolWindow::restoreFloatingBars(QWidget *anchor)
@@ -207,12 +236,14 @@ void FloatingToolWindow::restoreFloatingBars(QWidget *anchor)
     const QVector<SuppressedBar> captured = it->takeLast(); // pop THIS holder
     if (it->isEmpty())
         suppressedBars().erase(it);
-    g_batchingPlacement = true; // restore every intent, then re-pack once
+    g_suppressionWalking = true; // holder actions are inert for the walk
+    g_batchingPlacement = true;  // restore every intent, then re-pack once
     for (const SuppressedBar &bar : captured)
         if (bar.window)
             bar.window->FloatingToolWindow::setVisible(bar.intent);
     g_batchingPlacement = false;
     repositionManagedGroup(anchor);
+    g_suppressionWalking = false;
 }
 
 void FloatingToolWindow::applyEffectiveVisibility()
@@ -237,6 +268,29 @@ void FloatingToolWindow::applyEffectiveVisibility()
     // overwrites the user's saved offset (only a drag release does).
     if (changed && m_anchor && !g_batchingPlacement)
         repositionManagedGroup(m_anchor);
+
+    // --- The modal-surface HOLDER, machinery-owned (2026-08-29) ----------
+    // A window with the modal-surface role suppresses every other floating
+    // bar over its anchor while it is effectively visible. The logic lives
+    // HERE, keyed on the transition's cause, because of the invariant at
+    // g_suppressionWalking: a transition the suppression walk itself
+    // produced never re-enters the stack. Every OTHER cause keeps firing —
+    // deliberately: a page switch or minimize transiently restores the
+    // bars' captured intents and a re-show re-captures them, which is the
+    // drift-proofing round trip the original wiring established (captures
+    // re-read live intent, so nothing can be re-captured as a stale user
+    // choice). m_holdingSuppression makes push/pop strictly alternate per
+    // holder, so a duplicate capture — the stranding half of the defect —
+    // is impossible even if a show is delivered twice.
+    if (changed && m_modalSurface && m_anchor && !g_suppressionWalking) {
+        if (effective && !m_holdingSuppression) {
+            m_holdingSuppression = true;
+            suppressFloatingBars(m_anchor, {this});
+        } else if (!effective && m_holdingSuppression) {
+            m_holdingSuppression = false;
+            restoreFloatingBars(m_anchor);
+        }
+    }
 }
 
 void FloatingToolWindow::reposition()

@@ -225,6 +225,13 @@ BrushSettingsStudio::BrushSettingsStudio(BrushLibraryModel *model,
     , m_model(model)
 {
     setMouseTracking(true);
+    // The studio is the modal-surface: while it is effectively visible the
+    // machinery suppresses every other floating bar over the canvas. The
+    // role declaration IS the wiring — holder logic is machinery-owned and
+    // cause-aware (see FloatingToolWindow.h), which is what makes the
+    // studio safe to be a suppression target at the same time (the generic
+    // modal filter hides it during dialogs it opens, Load… included).
+    setModalSurface(true);
     // Manager cooperation (the Phase 3 lesson): serve our last placed offset
     // as defaultOffset() so window moves/resizes re-clamp instead of
     // teleporting the studio to the anchor origin.

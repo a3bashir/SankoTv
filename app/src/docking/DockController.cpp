@@ -12,6 +12,8 @@
 #include <QPointer>
 #include <QPropertyAnimation>
 #include <QScreen>
+#include "SankoSettings.h"
+
 #include <QSettings>
 #include <QTimer>
 
@@ -35,11 +37,9 @@ Qt::DockWidgetArea areaForZone(DockZone zone)
 
 } // namespace
 
-DockController::DockController(QMainWindow *host, const QString &settingsOrg,
-                               const QString &settingsApp,
+DockController::DockController(QMainWindow *host,
                                const QString &settingsGroup, QObject *parent)
     : QObject(parent ? parent : host), m_host(host),
-      m_settingsOrg(settingsOrg), m_settingsApp(settingsApp),
       m_settingsGroup(settingsGroup)
 {
     m_overlay = new DockOverlay(host);
@@ -96,7 +96,7 @@ void DockController::setDefaultLayout(std::function<void()> defaultLayout)
 
 void DockController::saveLayout()
 {
-    QSettings settings(m_settingsOrg, m_settingsApp);
+    QSettings settings = sankoSettings();
     settings.setValue(m_settingsGroup + QStringLiteral("/state"),
                       m_host->saveState(kDockStateVersion));
     for (QDockWidget *dock : m_panels) {
@@ -132,7 +132,7 @@ void DockController::saveLayout()
 
 bool DockController::restoreLayout()
 {
-    QSettings settings(m_settingsOrg, m_settingsApp);
+    QSettings settings = sankoSettings();
     const QByteArray state =
         settings.value(m_settingsGroup + QStringLiteral("/state"))
             .toByteArray();
@@ -224,7 +224,7 @@ void DockController::resetLayout()
 
 void DockController::clearSavedLayout()
 {
-    QSettings settings(m_settingsOrg, m_settingsApp);
+    QSettings settings = sankoSettings();
     settings.remove(m_settingsGroup);
 }
 

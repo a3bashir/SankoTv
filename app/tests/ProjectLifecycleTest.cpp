@@ -40,6 +40,7 @@
 #include "SankoSettings.h"
 #include "ConsistencyBoard.h"
 #include "DrawingCanvas.h"
+#include "FloatingToolWindow.h"
 #include "PerspectiveTool.h"
 #include "MainWindow.h"
 #include "StoryboardPage.h"
@@ -1251,6 +1252,162 @@ void runGrainPreviewPass(const QString &scratch)
     pump(300);
 }
 
+// ---- (q) floating-bar suppression: PERMANENT lock ---------------------------
+// Made permanent at the user's direction after the 2026-08-29 lost-bars
+// regression: twice now a defect hid in a path only TEMPORARY seams ever
+// covered (the studio seam never drove a modal, the modal seam never opened
+// the studio), and twice it reached the user by hand. This section drives
+// the COMPOSITION: the studio as suppression holder, the generic modal
+// filter as a second holder, and the studio as that second holder's TARGET
+// — the exact interleaving that ate the capture stack. Synthetic
+// WindowBlocked/Unblocked events stand in for the real dialogs (Load…, the
+// Done-failure warning): the filter keys on the event type alone, so the
+// probe exercises the same code path with nothing to dismiss.
+namespace {
+QVector<FloatingToolWindow *> floatingBarsOf(MainWindow &window)
+{
+    QVector<FloatingToolWindow *> bars;
+    const auto all = window.findChildren<FloatingToolWindow *>();
+    for (FloatingToolWindow *w : all)
+        if (!qobject_cast<brushlib::BrushSettingsStudio *>(w))
+            bars.append(w);
+    return bars;
+}
+int visibleIntentCount(const QVector<FloatingToolWindow *> &bars)
+{
+    int n = 0;
+    for (FloatingToolWindow *w : bars)
+        if (w->visibleIntent())
+            ++n;
+    return n;
+}
+} // namespace
+
+void runSuppressionPass(const QString &scratch)
+{
+    out() << "--- (q) suppression lock: holder x target composition ---"
+          << Qt::endl;
+    MainWindow window;
+    window.resize(1300, 850);
+    window.show();
+    pump(800);
+    const QString fixture = writeProject(scratch + QStringLiteral("/suppr"),
+                                         QStringLiteral("Suppr"),
+                                         QSize(960, 540), 24, 1, 1);
+    check(QStringLiteral("(q) fixture opens"),
+          window.loadProjectForTest(fixture));
+    pump(500);
+    auto *studio = window.findChild<brushlib::BrushSettingsStudio *>();
+    const QVector<FloatingToolWindow *> bars = floatingBarsOf(window);
+    check(QStringLiteral("(q) found the studio and the bars"),
+          studio && !bars.isEmpty(),
+          QStringLiteral("bars=%1").arg(bars.size()));
+    if (!studio || bars.isEmpty()) {
+        window.markCleanForTest();
+        window.close();
+        return;
+    }
+    const int baseline = visibleIntentCount(bars);
+    check(QStringLiteral("(q) control: bars visible before anything"),
+          baseline > 0, QStringLiteral("baseline=%1").arg(baseline));
+
+    // Plain open/close — the path that always worked stays working.
+    studio->openForPreset(QStringLiteral("builtin/painting/gouache"));
+    pump(400);
+    check(QStringLiteral("(q) opening the studio suppresses the bars"),
+          visibleIntentCount(bars) == 0 && studio->isVisible());
+    studio->hide();
+    pump(400);
+    check(QStringLiteral("(q) closing the studio restores them"),
+          visibleIntentCount(bars) == baseline,
+          QStringLiteral("intents=%1").arg(visibleIntentCount(bars)));
+
+    // THE COMPOSITION: a modal fires while the studio is open. Before the
+    // structural fix, the walk's hide of the studio fired its holder
+    // restore mid-suppress and the true intents were consumed; the four
+    // checks below each pin one leg of the corrected unwind.
+    studio->openForPreset(QStringLiteral("builtin/painting/gouache"));
+    pump(400);
+    {
+        QEvent blocked(QEvent::WindowBlocked);
+        QCoreApplication::sendEvent(&window, &blocked);
+    }
+    pump(200);
+    check(QStringLiteral("(q) during the modal the studio hides (it is a "
+                         "TARGET of the generic suppress)"),
+          !studio->isVisible());
+    check(QStringLiteral("(q) ...and the bars STAY hidden (the mid-walk "
+                         "reentrant restore is dead)"),
+          visibleIntentCount(bars) == 0,
+          QStringLiteral("intents=%1").arg(visibleIntentCount(bars)));
+    {
+        QEvent unblocked(QEvent::WindowUnblocked);
+        QCoreApplication::sendEvent(&window, &unblocked);
+    }
+    pump(200);
+    check(QStringLiteral("(q) after the modal the studio is back and the "
+                         "bars are STILL suppressed (its capture "
+                         "survived the modal)"),
+          studio->isVisible() && visibleIntentCount(bars) == 0);
+    studio->hide();
+    pump(400);
+    check(QStringLiteral("(q) THE REGRESSION: closing the studio after a "
+                         "modal restores the bars"),
+          visibleIntentCount(bars) == baseline,
+          QStringLiteral("intents=%1").arg(visibleIntentCount(bars)));
+    FloatingToolWindow::restoreFloatingBars(studio->anchorWidget());
+    pump(200);
+    check(QStringLiteral("(q) the stack is balanced: a further restore is "
+                         "a no-op, not a recovery it should not need"),
+          visibleIntentCount(bars) == baseline);
+
+    // TRANSPARENCY PIN. What this protects, stated for whoever trips it:
+    // the holder deliberately KEEPS firing on host-driven transitions —
+    // a page switch reaches the machinery as a Hide event on the ANCHOR
+    // (the stacked widget hides the storyboard page and the canvas with
+    // it), the studio's effective hide transiently restores the bars'
+    // captured intents, and its re-show re-captures them LIVE. That round
+    // trip is the drift-proofing the original wiring established
+    // (captures re-read intent, so a transient hide can never be
+    // re-captured as a stale user choice). The structural fix silenced
+    // holder actions ONLY for transitions the suppression walk itself
+    // causes. If this check fails, someone has "simplified" the holder
+    // into ignoring all non-user transitions — which trades away the
+    // drift-proofing semantics, not just an implementation detail. Do not
+    // re-baseline this; restore the cause-keyed behaviour. (The pin
+    // drives the anchor's hide/show directly: the same code path a page
+    // switch takes, without depending on the window manager the way a
+    // minimize does.)
+    studio->openForPreset(QStringLiteral("builtin/painting/gouache"));
+    pump(400);
+    check(QStringLiteral("(q) pin setup: studio open, bars suppressed"),
+          visibleIntentCount(bars) == 0 && studio->isVisible());
+    QWidget *anchor = studio->anchorWidget();
+    anchor->hide(); // the page-switch transition, driven at the anchor
+    pump(300);
+    check(QStringLiteral("(q) TRANSPARENCY PIN: hiding the anchor (page "
+                         "switch) transiently restores the bars' INTENTS "
+                         "(see comment - the drift-proofing round trip "
+                         "must survive)"),
+          visibleIntentCount(bars) == baseline && studio->visibleIntent()
+              && !studio->isVisible(),
+          QStringLiteral("intents=%1").arg(visibleIntentCount(bars)));
+    anchor->show();
+    pump(300);
+    check(QStringLiteral("(q) ...anchor return re-captures LIVE intents "
+                         "and re-suppresses (the studio re-holds)"),
+          visibleIntentCount(bars) == 0 && studio->isVisible());
+    studio->hide();
+    pump(400);
+    check(QStringLiteral("(q) ...and the round trip ends with the bars "
+                         "restored exactly"),
+          visibleIntentCount(bars) == baseline);
+
+    window.markCleanForTest();
+    window.close();
+    pump(300);
+}
+
 // ---- (m) the MIRRORED tool-scoped library, end to end ---------------------
 // REWRITTEN AGAIN 2026-08-28 (mirror pass): the eraser scope now MIRRORS
 // the brush categories - one definition, referenced twice - so the old
@@ -1955,6 +2112,7 @@ int main(int argc, char **argv)
     runOverrideMarkPass(scratch);
     runTipShapePreviewPass(scratch);
     runGrainPreviewPass(scratch);
+    runSuppressionPass(scratch);
     runProvenancePass(scratch);
 
     // ---- (l) sankoSettings: scratch lands, the real store does not ----

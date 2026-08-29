@@ -42,11 +42,17 @@ public:
     static constexpr int kDefaultSidebarWidth = 260;
     static constexpr int kMinSidebarWidth = 120;
 
-    // settingsOrg/App name the QSettings store (the application's own values,
-    // never demo defaults); settingsGroup namespaces every key this
-    // controller writes (e.g. "storyboard/nativeDock").
-    DockController(QMainWindow *host, const QString &settingsOrg,
-                   const QString &settingsApp, const QString &settingsGroup,
+    // Persistence goes through sankoSettings() — the ONE settings access
+    // path — so the test families' scratch redirect governs this
+    // controller like everything else. The old settingsOrg/settingsApp
+    // parameters were a choke-point bypass: they reconstructed the raw
+    // two-argument QSettings form, and every gate run that closed a
+    // MainWindow silently wrote dock layout into the USER'S real store
+    // (found 2026-08-29 when Lifecycle (l)'s real-store comparison
+    // started flapping against the suppression gate's runs). settingsGroup
+    // namespaces every key this controller writes
+    // (e.g. "storyboard/nativeDock").
+    DockController(QMainWindow *host, const QString &settingsGroup,
                    QObject *parent = nullptr);
 
     // Wraps an EXISTING content widget in a QDockWidget with a DockTitleBar.
@@ -141,7 +147,5 @@ private:
     DockOverlay *m_overlay = nullptr;
     QVector<QDockWidget *> m_panels;
     std::function<void()> m_defaultLayout;
-    QString m_settingsOrg;
-    QString m_settingsApp;
     QString m_settingsGroup;
 };

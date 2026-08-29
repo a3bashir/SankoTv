@@ -121,6 +121,22 @@ public:
                                      const QVector<FloatingToolWindow *> &except = {});
     static void restoreFloatingBars(QWidget *anchor);
 
+    // The MODAL-SURFACE role: a floating window that suppresses every
+    // other floating bar over its anchor while it is effectively visible
+    // (the Brush Settings studio). Holder logic is MACHINERY-OWNED — it
+    // runs in applyEffectiveVisibility, keyed on the transition's cause —
+    // because a window with this role is simultaneously a suppression
+    // TARGET (the generic modal filter suppresses everything over the
+    // anchor), and holder actions driven by raw visibility events re-enter
+    // the capture stack mid-walk (the 2026-08-29 lost-bars regression: the
+    // walk's hide fired the studio's restore before the walk pushed,
+    // eating the one capture that held the true intents). Declaring the
+    // role here is the whole wiring; do NOT additionally connect
+    // show/hide signals to suppress/restore — that reintroduces the
+    // defect the role exists to make impossible.
+    void setModalSurface(bool on) { m_modalSurface = on; }
+    bool isModalSurface() const { return m_modalSurface; }
+
     // Place at anchor origin + (persisted or default) offset, clamped.
     // Virtual: the Brush Settings studio clamps against the WINDOW's client
     // area instead of the canvas marginRect — as a centred modal-style
@@ -202,6 +218,8 @@ private:
     QPoint m_offset;            // canvas-relative
     bool m_userPlaced = false;  // false: keep following defaultOffset()
     bool m_wantVisible = false; // the caller's intent (tool toggles etc.)
+    bool m_modalSurface = false;       // the modal-surface role (above)
+    bool m_holdingSuppression = false; // this holder's push/pop parity
     bool m_dragging = false;
     QPoint m_dragStartGlobal;   // cursor at press
     QPoint m_dragStartPos;      // window pos at press
