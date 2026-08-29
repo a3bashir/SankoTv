@@ -261,9 +261,10 @@ private:
     int m_index = 0;
 };
 
-// Label + segmented pill (2-3 options; Paint|Smudge, Rolling|Static). The
-// active segment uses the sidebar's active style (#7c6ef6 pill, white
-// text); idle segments the dim text on the capsule background.
+// Label + segmented pill (2-4 options; Paint|Smudge, Rolling|Static, the
+// grain preset row). The active segment uses the sidebar's active style
+// (#7c6ef6 pill, white text); idle segments the dim text on the capsule
+// background.
 class StudioSegmentedRow : public QWidget
 {
     Q_OBJECT
@@ -271,7 +272,10 @@ public:
     StudioSegmentedRow(const QString &label, const QStringList &options,
                        QWidget *parent = nullptr);
     QString label() const { return m_label; }
-    void setCurrentIndex(int index); // silent
+    // Silent. -1 clears the selection (no lit segment) — the grain preset
+    // row's Custom state, which is entered by Load…, never by clicking a
+    // segment. Non-negative values clamp as before.
+    void setCurrentIndex(int index);
     int currentIndex() const { return m_index; }
     void choose(int index); // programmatic pick: sets index + emits chosen()
 
@@ -537,6 +541,58 @@ protected:
 private:
     QImage m_tip;      // engine Grayscale8, kTipPx x devicePixelRatio
     QPixmap m_display; // ink-colorized copy of m_tip, DPR-tagged
+};
+
+// The Grain Preview (Figma 359:47, the Tip Shape panel's sibling — same
+// chrome, one column up): the Texture section's live look at what grain
+// DOES, not what the texture looks like. setBrush() renders a neutral
+// patch — a SOFT hardness-0.6 disc, because at full coverage most blend
+// modes collapse to the same value — through the REAL stamp path
+// (StrokeBuilder::addRawPoint -> placeStamp -> strokeMask), with every
+// TIP-side field neutralized on the render copy and every GRAIN field
+// kept, so the well shows the engine's own coverage modulation: Scale at
+// true 1:1 canvas pixels, Rotation, Contrast, Depth, Motion anchoring,
+// and all nine texture blend modes through the engine's own
+// textureBlendCoverage. The raw texture would be blind to most of the
+// section; the engine's carve is the honest preview. No grain maths lives
+// here — the studio never had a duplicate grain sampler (verified at the
+// tip-drift retirement) and this panel keeps it that way.
+//
+// The patch is a FIXED 176 px canvas window regardless of brush size:
+// grain is a wrapped texture sampled per pixel — there is no full-size
+// grain field anywhere to rebuild, so every control is a per-sample
+// parameter and a refresh costs one sub-ms stamp. Rendered at logical
+// resolution deliberately (no DPR upscale of the canvas window): a
+// hi-dpi render would widen the window and show MORE pattern, changing
+// what is depicted rather than how sharply.
+class StudioGrainPreview : public QWidget
+{
+    Q_OBJECT
+public:
+    explicit StudioGrainPreview(QWidget *parent = nullptr);
+
+    // Re-render from the given brush (the studio's SCOPE brush). Skips
+    // the repaint when the engine returns byte-identical pixels.
+    void setBrush(const ::Brush &brush);
+
+    // The engine Grayscale8 patch exactly as last rendered (pre-ink). The
+    // gate compares this byte-for-byte against its OWN engine render of
+    // the same neutral patch — the "one definition" claim, pinned.
+    QImage grainImageForTest() const { return m_patch; }
+
+    static constexpr int kPanelWidth = 320;  // design 356; the TipRing's
+                                             // documented width divergence
+    static constexpr int kPanelHeight = 210;
+    static constexpr int kWellInset = 8;     // well 359:49 sits 8 px in
+    static constexpr int kCornerRadius = 8;
+    static constexpr int kPatchPx = 176;     // fixed canvas window — above
+
+protected:
+    void paintEvent(QPaintEvent *event) override;
+
+private:
+    QImage m_patch;    // engine Grayscale8 published mask, kPatchPx square
+    QPixmap m_display; // ink-colorized copy of m_patch
 };
 
 // Shared single-line text input (first needed by the New Project dialog;

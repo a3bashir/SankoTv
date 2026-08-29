@@ -530,16 +530,26 @@ void BrushSettingsStudio::applyInstant(
 void BrushSettingsStudio::pushToScratch(bool tipInvalidating)
 {
     m_scratch->setBrush(m_session, tipInvalidating);
-    // The Tip Shape preview rides the same funnel, so it is live during
-    // slider drags (which push per move without running the syncers). It
-    // shows the SCOPE brush — the one the sections are editing.
+    // The Tip Shape and Grain previews ride the same funnel, so they are
+    // live during slider drags (which push per move without running the
+    // syncers). Both show the SCOPE brush — the one the sections are
+    // editing — and both skip their repaint on byte-identical renders, so
+    // an edit to neither panel's parameters costs two sub-ms renders and
+    // no paint.
     if (m_tipPreview)
         m_tipPreview->setBrush(scopeBrushConst());
+    if (m_grainPreview)
+        m_grainPreview->setBrush(scopeBrushConst());
 }
 
 QImage BrushSettingsStudio::tipPreviewImageForTest() const
 {
     return m_tipPreview ? m_tipPreview->tipImageForTest() : QImage();
+}
+
+QImage BrushSettingsStudio::grainPreviewImageForTest() const
+{
+    return m_grainPreview ? m_grainPreview->grainImageForTest() : QImage();
 }
 
 void BrushSettingsStudio::editSessionForTest(
@@ -1096,31 +1106,66 @@ QWidget *BrushSettingsStudio::buildTextureSection()
     QWidget *page = sectionPage(&l);
     using GP = ::Brush::GrainPreset;
 
-    auto *preset = new StudioChoiceRow(
+    // The Grain Preview (Figma 359:47) at the top, centred like the Tip
+    // Shape panel — the design replaces the old Grain popup with this
+    // well, so the popup's job splits: the four procedural presets move
+    // to the segmented row below, and Custom stops being a menu item and
+    // becomes the STATE the Load… button puts you in (shown as no lit
+    // segment — the engine agrees: setGrainPreset(Custom) is a no-op by
+    // design, so Custom was never really a choice, only a consequence).
+    // Refreshed from pushToScratch plus a scope syncer, exactly like the
+    // tip preview.
+    auto *previewRow = new QWidget;
+    auto *pv = new QHBoxLayout(previewRow);
+    pv->setContentsMargins(0, 0, 0, 0);
+    m_grainPreview = new StudioGrainPreview;
+    pv->addStretch(1);
+    pv->addWidget(m_grainPreview);
+    pv->addStretch(1);
+    l->addWidget(previewRow);
+    m_syncers.append([this] {
+        if (m_grainPreview)
+            m_grainPreview->setBrush(scopeBrushConst());
+    });
+
+    auto *preset = new StudioSegmentedRow(
         QStringLiteral("Grain"),
         {QStringLiteral("Paper"), QStringLiteral("Canvas"),
-         QStringLiteral("Chalk"), QStringLiteral("Charcoal"),
-         QStringLiteral("Custom")});
+         QStringLiteral("Chalk"), QStringLiteral("Charcoal")});
     l->addWidget(preset);
-    connect(preset, &StudioChoiceRow::chosen, this, [this](int idx) {
+    connect(preset, &StudioSegmentedRow::chosen, this, [this](int idx) {
         if (m_syncing)
             return;
-        if (idx == int(GP::Custom)) {
-            const QImage img =
-                loadImageFile(this, tr("Load Grain Image"));
-            if (img.isNull()) {
-                syncAll(); // dialog cancelled: snap the row back
-                return;
-            }
-            applyInstant([&img](::Brush &b) { b.setCustomGrain(img); },
-                         false);
-        } else {
-            applyInstant(
-                [idx](::Brush &b) { b.setGrainPreset(GP(idx)); }, false);
-        }
+        applyInstant([idx](::Brush &b) { b.setGrainPreset(GP(idx)); },
+                     false);
     });
     m_syncers.append([this, preset] {
-        preset->setCurrentIndex(int(scopeBrushConst().grainPreset()));
+        const GP p = scopeBrushConst().grainPreset();
+        preset->setCurrentIndex(p == GP::Custom ? -1 : int(p));
+    });
+
+    // Load…: imports an image as the ACTIVE grain immediately (the codec
+    // embeds the bytes in the preset, so the source file on disk is never
+    // referenced again). Picking any preset segment above returns to the
+    // procedural texture.
+    auto *loadRow = new QWidget;
+    auto *lr = new QHBoxLayout(loadRow);
+    lr->setContentsMargins(0, 0, 0, 0);
+    lr->setSpacing(8);
+    auto *loadLabel = new QLabel(QStringLiteral("Grain Image"));
+    loadLabel->setStyleSheet(
+        QStringLiteral("color: #96969b; font: 500 14px 'Inter';"));
+    auto *loadGrain = makeButton(QStringLiteral("Load…"), false);
+    lr->addWidget(loadLabel);
+    lr->addStretch(1);
+    lr->addWidget(loadGrain);
+    l->addWidget(loadRow);
+    connect(loadGrain, &QPushButton::clicked, this, [this] {
+        const QImage img = loadImageFile(this, tr("Load Grain Image"));
+        if (img.isNull())
+            return;
+        applyInstant([&img](::Brush &b) { b.setCustomGrain(img); },
+                     false);
     });
 
     addSlider(l, QStringLiteral("Grain Scale"), 1.0, 2048.0,

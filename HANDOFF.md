@@ -2771,3 +2771,79 @@ byte-identical both configs: 7cd8d084 / e7ce9d6b (coupled) / 666f7b45 /
 cafcec7f / 0bc24381 - a studio-UI-only pass, confirmed rather than
 assumed.
 
+TWO FAILURE MODES FROM ONE ABSENCE (recorded at the user's direction,
+grain-pass survey 2026-08-29): with no true preview in the studio, the
+tip and grain took different wrong turns. The TIP got a hand-rolled
+depiction - tipTransformThumbnail - which DUPLICATED the engine maths
+and silently DRIFTED (132/255 on custom-tip edges, above). GRAIN got
+nothing: the Texture section showed no grain pixels at all - verified
+by grepping app/src for every grain-sampling identifier (grainTexture,
+proceduralGrain, GrainField, wrapped, modulation, shapedSample; the
+same patterns find the real engine implementations, the positive
+control) - so it never lied, and it never informed either. Duplicated-
+and-drifted versus silent-and-blind: both are what "no engine-rendered
+preview" costs, and both end the same way - a preview the ENGINE
+renders. That is the standing rule for any future studio preview: no
+depiction code, only engine calls.
+
+## The Grain Preview: the engine's carve, live (2026-08-29)
+
+WHAT: the Texture section's Grain popup (Paper/Canvas/Chalk/Charcoal/
+Custom StudioChoiceRow) is replaced by the Grain Preview panel (Figma
+359:47, the Tip Shape panel's design sibling - same chrome, one column
+up; StudioGrainPreview in StudioControls, 320x210, the documented width
+divergence). The popup's job SPLIT: the four procedural presets moved
+to a segmented row under the well; Custom stopped being a menu item and
+became the STATE the new Load... button puts you in, shown as NO lit
+segment (StudioSegmentedRow::setCurrentIndex(-1), a small extension) -
+the engine agrees, setGrainPreset(Custom) was always a no-op, so Custom
+was never a choice, only a consequence of loading. Load... imports an
+image as the active grain immediately; the codec embeds the bytes in
+the preset (unconditional image slot), so the source file on disk is
+never referenced again - no missing-file failure mode exists.
+
+THE DEPICTION (approved): a neutral SOFT disc (hardness 0.6) rendered
+through the REAL stamp path - StrokeBuilder::addRawPoint -> placeStamp
+-> strokeMask() on a render copy with the tip half neutralized (the
+erase-swatch pattern) and every grain field kept - so the well shows
+the engine's own coverage modulation: Scale at true 1:1 canvas pixels,
+Rotation, Contrast, Depth, Motion anchoring, and all nine blend modes
+through the engine's textureBlendCoverage. The raw texture was
+rejected: it is blind to Depth, Contrast, Blend and Motion, most of
+the section. The two preview panels are deliberately orthogonal: every
+Texture control moves exactly the grain well, every Tip control exactly
+the tip well.
+
+TWO TRAPS THE GATE CAUGHT ON FIRST RUN (why the gate exists):
+- rasterizePreview=false makes placeStamp record only the affected
+  rect and rasterize NOTHING - it is BrushPreviewRenderer's mode, which
+  rasterizes from the stamp list via the host adapter. The preview's
+  StrokeBuilder must pass TRUE or strokeMask() is empty. The flatness
+  control caught the all-zero mask immediately.
+- At FULL coverage most texture blend modes collapse to the same value
+  (Multiply, Subtract and Darken are identical at tip=1), so the
+  original hardness-1 patch was blend-mode-BLIND. The soft disc's
+  falloff band gives the nine modes coverage values they differ over.
+  "Texture Blend mode reaches the preview" failed until it did.
+
+COST: there is NO grain analog of the tip cache - grain is a wrapped
+128x128 (or custom) texture sampled per pixel with scale/rotation/
+contrast/depth as per-sample parameters, so no control rebuilds
+anything full-size, ever. A refresh is one GrainField construction
+(COW) + one 176px stamp - sub-ms. The patch is a fixed canvas window
+independent of brush size, rendered at logical resolution deliberately
+(a DPR upscale would widen the window and change WHAT is shown, not
+how sharply). Refresh path: pushToScratch (live during drags) + a
+scope syncer, byte-identical renders skip the repaint - identical to
+the tip preview.
+
+GATE: Lifecycle (p), 14 checks - engine-format render, coverage
+positive control, the ONE-DEFINITION identity (preview == the test's
+own transcribed engine render) asserted at THREE states (stock, depth
+0, custom grain), depth-0 difference proving the delta WAS grain,
+preset/scale/rotation/blend edits through the real edit path, loaded
+grain active immediately (setCustomGrain flips preset to Custom
+atomically), size-5000 invariance, session never touches the model.
+Totals: Lifecycle 185. All five pins byte-identical both configs:
+7cd8d084 / e7ce9d6b (coupled) / 666f7b45 / cafcec7f / 0bc24381.
+

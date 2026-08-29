@@ -74,6 +74,10 @@ public:
     QImage tipPreviewImageForTest() const;
     void editSessionForTest(const std::function<void(::Brush &)> &fn,
                             bool tipInvalidating);
+    // The Grain Preview's engine patch (Figma 359:47) — same contract as
+    // the tip seam: the Grayscale8 bytes the panel last rendered, for the
+    // gate's one-definition comparison.
+    QImage grainPreviewImageForTest() const;
 
 signals:
     void visibilityChanged(bool visible);
@@ -206,7 +210,8 @@ private:
     QStringList m_sectionNames;
     int m_dualSectionIndex = -1;
     int m_currentSection = 0;
-    StudioTipShapePreview *m_tipPreview = nullptr; // Figma 358:22
+    StudioTipShapePreview *m_tipPreview = nullptr;  // Figma 358:22
+    StudioGrainPreview *m_grainPreview = nullptr;   // Figma 359:47
     QLabel *m_brushNameLabel = nullptr;
     QLabel *m_propsTitle = nullptr;
     StudioSegmentedRow *m_scopeSwitch = nullptr;

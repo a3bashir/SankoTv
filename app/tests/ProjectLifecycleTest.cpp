@@ -1065,6 +1065,192 @@ void runTipShapePreviewPass(const QString &scratch)
     pump(300);
 }
 
+// ---- (p) the Grain Preview IS the engine's carve ---------------------------
+// The Texture section's Grain Preview (Figma 359:47) claims the same "one
+// definition" the Tip Shape panel does: its image is the engine's own
+// coverage modulation — a neutral hardness-1 patch through the REAL stamp
+// path with the grain fields kept — not a picture of the grain texture.
+// This pass pins that byte-for-byte, proves grain (not the tip) is what
+// the well measures via a depth-0 flatness control, drives every grain
+// control through the real edit path, and proves the Load… workflow makes
+// the imported image the active grain immediately.
+void runGrainPreviewPass(const QString &scratch)
+{
+    out() << "--- (p) Grain Preview = engine carve ---" << Qt::endl;
+    MainWindow window;
+    window.resize(1300, 850);
+    window.show();
+    pump(800);
+    const QString fixture = writeProject(scratch + QStringLiteral("/grainprev"),
+                                         QStringLiteral("GrainPrev"),
+                                         QSize(960, 540), 24, 1, 1);
+    check(QStringLiteral("(p) fixture opens"),
+          window.loadProjectForTest(fixture));
+    pump(500);
+    auto *studio = window.findChild<brushlib::BrushSettingsStudio *>();
+    auto *model = window.findChild<brushlib::BrushLibraryModel *>();
+    if (!studio || !model) {
+        check(QStringLiteral("(p) found studio and model"), false);
+        window.markCleanForTest();
+        window.close();
+        return;
+    }
+    const QString id = QStringLiteral("builtin/painting/gouache");
+    studio->openForPreset(id);
+    pump(400);
+
+    // The test's OWN engine render: the widget's neutralization recipe
+    // transcribed, so a drift in EITHER side breaks the identity.
+    static constexpr int kPx = brushlib::StudioGrainPreview::kPatchPx;
+    const auto enginePatch = [](const ::Brush &brush) {
+        ::Brush copy = brush;
+        copy.clearCustomShape();
+        copy.setHardness(0.6); // SOFT, mirroring the widget: blend modes
+                               // collapse to one value at full coverage
+        copy.setSize(kPx);
+        copy.setTipAngle(0.0);
+        copy.setTipRoundness(1.0);
+        copy.setTipFlipX(false);
+        copy.setTipFlipY(false);
+        copy.setSizeJitter(0.0);
+        copy.setAngleJitter(0.0);
+        copy.setRoundnessJitter(0.0);
+        copy.setSpacingJitter(0.0);
+        copy.setScatterAlong(0.0);
+        copy.setScatterPerpendicular(0.0);
+        copy.setScatterCount(1);
+        copy.setNoise(0.0);
+        copy.setWetEdges(0.0);
+        copy.setOpacity(1.0);
+        copy.setFlow(1.0);
+        copy.setDualBrushEnabled(false);
+        StrokeBuilder sb(QSize(kPx, kPx), copy,
+                         /*rasterizePreview=*/true);
+        sb.addRawPoint(QPointF(kPx * 0.5, kPx * 0.5));
+        return sb.strokeMask();
+    };
+    const auto countBetween = [](const QImage &img, int lo, int hi) {
+        int n = 0;
+        for (int y = 0; y < img.height(); ++y) {
+            const uchar *row = img.constScanLine(y);
+            for (int x = 0; x < img.width(); ++x)
+                if (row[x] >= lo && row[x] <= hi)
+                    ++n;
+        }
+        return n;
+    };
+
+    const QImage shown = studio->grainPreviewImageForTest();
+    check(QStringLiteral("(p) preview holds an engine-format render"),
+          !shown.isNull() && shown.format() == QImage::Format_Grayscale8
+              && shown.width() == kPx && shown.height() == kPx);
+    check(QStringLiteral("(p) positive control: the patch is actually "
+                         "there"),
+          countBetween(shown, 1, 255) > 1000,
+          QStringLiteral("covered=%1").arg(countBetween(shown, 1, 255)));
+    check(QStringLiteral("(p) ONE DEFINITION: preview == the test's own "
+                         "engine render, byte for byte"),
+          !shown.isNull()
+              && shown == enginePatch(model->preset(id)->brush));
+
+    // Depth 0 through the REAL edit path: grain leaves, the falloff
+    // stays, and the identity holds at the new state — so the difference
+    // between the two images was grain and NOTHING else.
+    studio->editSessionForTest([](::Brush &b) { b.setGrainDepth(0.0); },
+                               false);
+    pump(100);
+    const QImage flat = studio->grainPreviewImageForTest();
+    check(QStringLiteral("(p) Grain Depth reaches the preview"),
+          !flat.isNull() && flat != shown);
+    {
+        ::Brush zeroBrush = model->preset(id)->brush;
+        zeroBrush.setGrainDepth(0.0);
+        check(QStringLiteral("(p) ...identity holds at depth 0 (the "
+                             "difference WAS grain)"),
+              flat == enginePatch(zeroBrush));
+    }
+
+    // Each grain control reaches the preview through the real edit path.
+    studio->editSessionForTest(
+        [](::Brush &b) {
+            b.setGrainDepth(0.5);
+            b.setGrainPreset(::Brush::GrainPreset::Paper);
+        },
+        false);
+    pump(100);
+    const QImage paper = studio->grainPreviewImageForTest();
+    check(QStringLiteral("(p) preset switch reaches the preview"),
+          !paper.isNull() && paper != flat);
+    studio->editSessionForTest([](::Brush &b) { b.setGrainScale(23.0); },
+                               false);
+    pump(100);
+    const QImage scaled = studio->grainPreviewImageForTest();
+    check(QStringLiteral("(p) Grain Scale reaches the preview"),
+          !scaled.isNull() && scaled != paper);
+    studio->editSessionForTest(
+        [](::Brush &b) { b.setGrainRotation(37.0); }, false);
+    pump(100);
+    const QImage rotated = studio->grainPreviewImageForTest();
+    check(QStringLiteral("(p) Grain Rotation reaches the preview"),
+          !rotated.isNull() && rotated != scaled);
+    studio->editSessionForTest(
+        [](::Brush &b) {
+            b.setTextureBlendMode(::Brush::TextureBlendMode::Subtract);
+        },
+        false);
+    pump(100);
+    const QImage blended = studio->grainPreviewImageForTest();
+    check(QStringLiteral("(p) Texture Blend mode reaches the preview"),
+          !blended.isNull() && blended != rotated);
+
+    // Load… workflow: an imported image is the ACTIVE grain immediately
+    // (requirement 6) and the preview shows it.
+    QImage customGrain(16, 16, QImage::Format_Grayscale8);
+    for (int y = 0; y < 16; ++y) {
+        uchar *row = customGrain.scanLine(y);
+        for (int x = 0; x < 16; ++x)
+            row[x] = uchar(x * 16 + y);
+    }
+    studio->editSessionForTest(
+        [&customGrain](::Brush &b) { b.setCustomGrain(customGrain); },
+        false);
+    pump(100);
+    const QImage custom = studio->grainPreviewImageForTest();
+    check(QStringLiteral("(p) a loaded grain reaches the preview"),
+          !custom.isNull() && custom != blended);
+    {
+        ::Brush expect = model->preset(id)->brush;
+        expect.setGrainDepth(0.5);
+        expect.setGrainScale(23.0);
+        expect.setGrainRotation(37.0);
+        expect.setTextureBlendMode(::Brush::TextureBlendMode::Subtract);
+        expect.setCustomGrain(customGrain);
+        // setCustomGrain flips the preset to Custom atomically (the
+        // engine's own semantics), so the identity holding here proves
+        // BOTH requirement 6 halves: the imported image is the active
+        // grain, immediately, and the preview depicts exactly that.
+        check(QStringLiteral("(p) ...ACTIVE immediately: identity holds "
+                             "with the custom grain (preset == Custom)"),
+              expect.grainPreset() == ::Brush::GrainPreset::Custom
+                  && custom == enginePatch(expect));
+    }
+
+    // Brush size is not a patch input: the well is a fixed canvas window.
+    studio->editSessionForTest([](::Brush &b) { b.setSize(5000); }, true);
+    pump(100);
+    check(QStringLiteral("(p) size 5000 changes NOTHING in the preview "
+                         "(fixed canvas window)"),
+          studio->grainPreviewImageForTest() == custom);
+
+    check(QStringLiteral("(p) the session never touched the model"),
+          model->overrideState(id)
+              == brushlib::BrushLibraryModel::OverrideState::None);
+
+    window.markCleanForTest();
+    window.close();
+    pump(300);
+}
+
 // ---- (m) the MIRRORED tool-scoped library, end to end ---------------------
 // REWRITTEN AGAIN 2026-08-28 (mirror pass): the eraser scope now MIRRORS
 // the brush categories - one definition, referenced twice - so the old
@@ -1768,6 +1954,7 @@ int main(int argc, char **argv)
     runEraserLibraryPass(scratch);
     runOverrideMarkPass(scratch);
     runTipShapePreviewPass(scratch);
+    runGrainPreviewPass(scratch);
     runProvenancePass(scratch);
 
     // ---- (l) sankoSettings: scratch lands, the real store does not ----

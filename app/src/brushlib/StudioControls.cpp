@@ -670,7 +670,10 @@ void StudioSegmentedRow::choose(int index)
 
 void StudioSegmentedRow::setCurrentIndex(int index)
 {
-    m_index = std::clamp(index, 0, int(m_options.size()) - 1);
+    // -1 = no selection (the grain preset row's Custom state); the paint
+    // loop's equality test simply never lights a segment for it.
+    m_index = index < 0 ? -1
+                        : std::clamp(index, 0, int(m_options.size()) - 1);
     update();
 }
 
@@ -1263,6 +1266,108 @@ void StudioTipShapePreview::paintEvent(QPaintEvent *)
     if (!m_display.isNull()) {
         const QSizeF s =
             QSizeF(m_display.size()) / m_display.devicePixelRatio();
+        p.drawPixmap(QPointF((kPanelWidth - s.width()) / 2.0,
+                             (kPanelHeight - s.height()) / 2.0),
+                     m_display);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// StudioGrainPreview
+// ---------------------------------------------------------------------------
+
+StudioGrainPreview::StudioGrainPreview(QWidget *parent)
+    : QWidget(parent)
+{
+    setFixedSize(kPanelWidth, kPanelHeight);
+}
+
+void StudioGrainPreview::setBrush(const ::Brush &brush)
+{
+    // ONE neutral stamp through the real stroke path. The render copy
+    // keeps every GRAIN field verbatim (preset or custom texture, scale,
+    // depth, contrast, rotation, motion mode, blend mode) and neutralizes
+    // the TIP half — the erase-swatch pattern: the panels stay
+    // orthogonal, so each Texture control visibly moves exactly this well
+    // and each Tip control exactly the one below. Noise and wet edges are
+    // zeroed too: noise is the Tip's falloff roughening and wet edges
+    // would rim the patch with something that is not grain.
+    //
+    // The disc is SOFT (hardness 0.6), not hard, and that is load-bearing:
+    // at full coverage most texture blend modes collapse to the same
+    // value (Multiply, Subtract and Darken are identical at tip = 1), so
+    // a hardness-1 patch is blend-mode-BLIND — the (p) gate proved it on
+    // first run. The soft falloff band gives the nine modes coverage
+    // values they actually differ over, while the solid core still shows
+    // depth and contrast plainly.
+    ::Brush copy = brush;
+    copy.clearCustomShape();
+    copy.setHardness(0.6);
+    copy.setSize(kPatchPx);
+    copy.setTipAngle(0.0);
+    copy.setTipRoundness(1.0);
+    copy.setTipFlipX(false);
+    copy.setTipFlipY(false);
+    copy.setSizeJitter(0.0);
+    copy.setAngleJitter(0.0);
+    copy.setRoundnessJitter(0.0);
+    copy.setSpacingJitter(0.0);
+    copy.setScatterAlong(0.0);
+    copy.setScatterPerpendicular(0.0);
+    copy.setScatterCount(1);
+    copy.setNoise(0.0);
+    copy.setWetEdges(0.0);
+    copy.setOpacity(1.0);
+    copy.setFlow(1.0);
+    copy.setDualBrushEnabled(false);
+
+    // rasterizePreview must be TRUE: false makes placeStamp record only
+    // the affected rect and rasterize nothing (BrushPreviewRenderer's
+    // mode — it rasterizes from the stamp list via the host adapter),
+    // which leaves strokeMask() empty. Caught by the (p) gate's flatness
+    // control on first run.
+    StrokeBuilder sb(QSize(kPatchPx, kPatchPx), copy,
+                     /*rasterizePreview=*/true);
+    // A full-pressure press stamps immediately (appendSmoothedPoint's
+    // first-point branch), so one point is one stamp — no overlap, no
+    // Rolling-anchor smear between stamps.
+    sb.addRawPoint(QPointF(kPatchPx * 0.5, kPatchPx * 0.5));
+    QImage patch = sb.strokeMask();
+    if (patch == m_patch)
+        return; // byte-identical render: the edit was not a grain parameter
+    m_patch = patch;
+
+    QImage inked(m_patch.size(), QImage::Format_ARGB32_Premultiplied);
+    const QColor ink = kDragger;
+    for (int y = 0; y < m_patch.height(); ++y) {
+        const uchar *src = m_patch.constScanLine(y);
+        QRgb *dst = reinterpret_cast<QRgb *>(inked.scanLine(y));
+        for (int x = 0; x < m_patch.width(); ++x)
+            dst[x] = qPremultiply(
+                qRgba(ink.red(), ink.green(), ink.blue(), src[x]));
+    }
+    m_display = QPixmap::fromImage(inked);
+    update();
+}
+
+void StudioGrainPreview::paintEvent(QPaintEvent *)
+{
+    QPainter p(this);
+    p.setRenderHint(QPainter::Antialiasing);
+    // Panel chrome (359:48 background, 359:49 inset outline well) — the
+    // Tip Shape panel's exact tokens; the two are siblings in the design.
+    p.setPen(Qt::NoPen);
+    p.setBrush(kPanelBg);
+    p.drawRoundedRect(QRectF(0, 0, kPanelWidth, kPanelHeight),
+                      kCornerRadius, kCornerRadius);
+    p.setPen(QPen(kPanelOutline, 1.0));
+    p.setBrush(Qt::NoBrush);
+    p.drawRoundedRect(QRectF(kWellInset + 0.5, kWellInset + 0.5,
+                             kPanelWidth - 2 * kWellInset - 1,
+                             kPanelHeight - 2 * kWellInset - 1),
+                      kCornerRadius - 0.5, kCornerRadius - 0.5);
+    if (!m_display.isNull()) {
+        const QSizeF s = QSizeF(m_display.size());
         p.drawPixmap(QPointF((kPanelWidth - s.width()) / 2.0,
                              (kPanelHeight - s.height()) / 2.0),
                      m_display);
