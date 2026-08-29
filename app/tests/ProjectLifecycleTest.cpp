@@ -46,7 +46,9 @@
 #include "brushlib/BrushLibraryPanel.h"
 #include "brushlib/BrushLibraryModel.h"
 #include "brushlib/BrushPresetCodec.h"
+#include "brushlib/BrushSettingsStudio.h"
 #include "brushlib/BuiltinRoster.h"
+#include "StrokeBuilder.h"
 #include "NewProjectDialog.h"
 #include "ProjectIO.h"
 #include "StoryboardModel.h"
@@ -918,6 +920,151 @@ void runOverrideMarkPass(const QString &scratch)
     pump(300);
 }
 
+// ---- (o) the Tip Shape preview IS the engine's tip -------------------------
+// The studio's Tip Shape panel (Figma 358:22) claims one definition: the
+// image it shows is StrokeBuilder::shapedTipForStamp's output, not a
+// description of it. This pass pins that claim byte-for-byte, proves the
+// preview refreshes through the REAL edit path, and proves the render is
+// FIXED-RESOLUTION — brush size cannot touch it (the retired thumbnail's
+// replacement must never buy legibility with a full-size tip build).
+void runTipShapePreviewPass(const QString &scratch)
+{
+    out() << "--- (o) Tip Shape preview = engine tip ---" << Qt::endl;
+    MainWindow window;
+    window.resize(1300, 850);
+    window.show();
+    pump(800);
+    const QString fixture = writeProject(scratch + QStringLiteral("/tipprev"),
+                                         QStringLiteral("TipPrev"),
+                                         QSize(960, 540), 24, 1, 1);
+    check(QStringLiteral("(o) fixture opens"),
+          window.loadProjectForTest(fixture));
+    pump(500);
+    auto *studio = window.findChild<brushlib::BrushSettingsStudio *>();
+    auto *model = window.findChild<brushlib::BrushLibraryModel *>();
+    if (!studio || !model) {
+        check(QStringLiteral("(o) found studio and model"), false);
+        window.markCleanForTest();
+        window.close();
+        return;
+    }
+    const QString id = QStringLiteral("builtin/painting/gouache");
+    studio->openForPreset(id);
+    pump(400);
+
+    // The test's OWN engine render, from the same preset the session
+    // copied at open. The preview's pixel size is read back rather than
+    // assumed so the check holds at any devicePixelRatio.
+    const auto engineTip = [](const ::Brush &brush, int px) {
+        ::Brush copy = brush;
+        StrokeBuilder shaper(QSize(px, px), copy,
+                             /*rasterizePreview=*/false);
+        StrokeStamp stamp;
+        stamp.effectiveSize = px;
+        stamp.effectiveHardness = copy.hardness();
+        stamp.roundness = 1.0;
+        return shaper.shapedTipForStamp(stamp);
+    };
+
+    const QImage shown = studio->tipPreviewImageForTest();
+    check(QStringLiteral("(o) preview holds an engine-format render"),
+          !shown.isNull() && shown.format() == QImage::Format_Grayscale8
+              && shown.width() == shown.height());
+    int covered = 0;
+    for (int y = 0; y < shown.height(); ++y) {
+        const uchar *row = shown.constScanLine(y);
+        for (int x = 0; x < shown.width(); ++x)
+            if (row[x] > 0)
+                ++covered;
+    }
+    check(QStringLiteral("(o) positive control: the tip is actually there"),
+          covered > 1000, QStringLiteral("covered=%1").arg(covered));
+    check(QStringLiteral("(o) ONE DEFINITION: preview == the test's own "
+                         "shapedTipForStamp, byte for byte"),
+          !shown.isNull()
+              && shown == engineTip(model->preset(id)->brush, shown.width()));
+
+    // Real time through the REAL edit path: a hardness edit lands in the
+    // preview, and the identity holds at the new state too.
+    studio->editSessionForTest([](::Brush &b) { b.setHardness(0.05); },
+                               true);
+    pump(100);
+    const QImage soft = studio->tipPreviewImageForTest();
+    check(QStringLiteral("(o) a hardness edit re-renders the preview"),
+          !soft.isNull() && soft != shown);
+    ::Brush softBrush = model->preset(id)->brush;
+    softBrush.setHardness(0.05);
+    check(QStringLiteral("(o) ...and the identity holds at the new state"),
+          soft == engineTip(softBrush, soft.width()));
+
+    // FIXED RESOLUTION: brush size is not a tip-render input. If this
+    // fails, someone has coupled the preview to brush size and a 5000
+    // brush is paying for a full-size tip build per slider tick.
+    studio->editSessionForTest([](::Brush &b) { b.setSize(5000); }, true);
+    pump(100);
+    check(QStringLiteral("(o) size 5000 changes NOTHING in the preview "
+                         "(fixed render resolution)"),
+          studio->tipPreviewImageForTest() == soft);
+
+    // The static transform reaches the preview (roundness squashes the
+    // disc; angle alone would be invisible on a disc, so it rides along
+    // with roundness where it has something to rotate).
+    studio->editSessionForTest(
+        [](::Brush &b) {
+            b.setTipRoundness(0.4);
+            b.setTipAngle(30.0);
+        },
+        false);
+    pump(100);
+    const QImage squashed = studio->tipPreviewImageForTest();
+    check(QStringLiteral("(o) tip roundness+angle reach the preview"),
+          !squashed.isNull() && squashed != soft);
+
+    // A custom tip reaches the preview, and the flips act on it. The
+    // flip-back involution is the control that keeps both comparisons
+    // honest: different after one flip, byte-identical after two.
+    QImage mask(32, 32, QImage::Format_Grayscale8);
+    mask.fill(0);
+    {
+        QPainter mp(&mask);
+        mp.fillRect(2, 2, 12, 12, Qt::white); // one corner: asymmetric
+        mp.fillRect(4, 18, 24, 8, QColor(128, 128, 128));
+    }
+    studio->editSessionForTest(
+        [&mask](::Brush &b) {
+            b.setCustomShape(mask);
+            b.setTipAngle(0.0);
+            b.setTipRoundness(1.0);
+        },
+        true);
+    pump(100);
+    const QImage custom = studio->tipPreviewImageForTest();
+    check(QStringLiteral("(o) a loaded custom tip reaches the preview"),
+          !custom.isNull() && custom != squashed);
+    studio->editSessionForTest([](::Brush &b) { b.setTipFlipX(true); },
+                               false);
+    pump(100);
+    const QImage flipped = studio->tipPreviewImageForTest();
+    check(QStringLiteral("(o) Flip Tip X changes an asymmetric tip"),
+          !flipped.isNull() && flipped != custom);
+    studio->editSessionForTest([](::Brush &b) { b.setTipFlipX(false); },
+                               false);
+    pump(100);
+    check(QStringLiteral("(o) ...and flipping back restores it byte-exact "
+                         "(involution control)"),
+          studio->tipPreviewImageForTest() == custom);
+
+    // Session edits only — nothing was committed, so the model must still
+    // hold stock Gouache (the pass may not leave an override behind).
+    check(QStringLiteral("(o) the session never touched the model"),
+          model->overrideState(id)
+              == brushlib::BrushLibraryModel::OverrideState::None);
+
+    window.markCleanForTest();
+    window.close();
+    pump(300);
+}
+
 // ---- (m) the MIRRORED tool-scoped library, end to end ---------------------
 // REWRITTEN AGAIN 2026-08-28 (mirror pass): the eraser scope now MIRRORS
 // the brush categories - one definition, referenced twice - so the old
@@ -1620,6 +1767,7 @@ int main(int argc, char **argv)
     runSizeCtlAgreementPass(scratch);
     runEraserLibraryPass(scratch);
     runOverrideMarkPass(scratch);
+    runTipShapePreviewPass(scratch);
     runProvenancePass(scratch);
 
     // ---- (l) sankoSettings: scratch lands, the real store does not ----

@@ -1,6 +1,8 @@
 #include "SankoTheme.h"
 #include "StudioControls.h"
 
+#include "StrokeBuilder.h" // StudioTipShapePreview renders THROUGH the engine
+
 #include <QFontMetrics>
 #include <QHideEvent>
 #include <QIntValidator>
@@ -1189,6 +1191,82 @@ void StudioTipRing::paintEvent(QPaintEvent *)
     for (const QPointF &d : {QPointF(1, 0), QPointF(-1, 0),
                              QPointF(0, 1), QPointF(0, -1)})
         p.drawLine(c + d * kPivotTickInner, c + d * kPivotTickOuter);
+}
+
+// ---------------------------------------------------------------------------
+// StudioTipShapePreview
+// ---------------------------------------------------------------------------
+
+StudioTipShapePreview::StudioTipShapePreview(QWidget *parent)
+    : QWidget(parent)
+{
+    setFixedSize(kPanelWidth, kPanelHeight);
+}
+
+void StudioTipShapePreview::setBrush(const ::Brush &brush)
+{
+    // ONE neutral stamp through the engine's own per-stamp tip function.
+    // The StrokeBuilder copies the brush, so the render can never touch the
+    // session brush's tip cache, let alone the canvas brush's. Everything
+    // the stamp leaves at defaults — tilt, barrel rotation, viewport
+    // rotation, angle jitter — is a per-input dynamic; everything the tip
+    // ACTUALLY IS (hardness falloff, custom image, static angle/roundness/
+    // flips) is read from the brush inside shapedTipForStamp itself.
+    const qreal dpr = devicePixelRatioF();
+    const int px = qMax(1, qRound(kTipPx * dpr));
+    ::Brush copy = brush;
+    StrokeBuilder shaper(QSize(px, px), copy, /*rasterizePreview=*/false);
+    StrokeStamp stamp;
+    stamp.effectiveSize = px; // fixed preview resolution, NOT brush size
+    stamp.effectiveHardness = copy.hardness();
+    stamp.roundness = 1.0;    // jitter-neutral; the static roundness is
+                              // the brush's and composes inside the engine
+    QImage tip = shaper.shapedTipForStamp(stamp);
+    if (tip == m_tip)
+        return; // byte-identical render: the edit was not a tip parameter
+    m_tip = tip;
+
+    // Colorize coverage as the component ink — depiction only; the engine
+    // bytes above are what the seam reads.
+    QImage inked(m_tip.size(), QImage::Format_ARGB32_Premultiplied);
+    const QColor ink = kDragger;
+    for (int y = 0; y < m_tip.height(); ++y) {
+        const uchar *src = m_tip.constScanLine(y);
+        QRgb *dst = reinterpret_cast<QRgb *>(inked.scanLine(y));
+        for (int x = 0; x < m_tip.width(); ++x)
+            dst[x] = qPremultiply(
+                qRgba(ink.red(), ink.green(), ink.blue(), src[x]));
+    }
+    inked.setDevicePixelRatio(dpr);
+    m_display = QPixmap::fromImage(inked);
+    update();
+}
+
+void StudioTipShapePreview::paintEvent(QPaintEvent *)
+{
+    QPainter p(this);
+    p.setRenderHint(QPainter::Antialiasing);
+    // Panel chrome (358:23 background, 358:24 inset outline well) — the
+    // TipRing's exact tokens; the two panels are siblings in the design.
+    p.setPen(Qt::NoPen);
+    p.setBrush(kPanelBg);
+    p.drawRoundedRect(QRectF(0, 0, kPanelWidth, kPanelHeight),
+                      kCornerRadius, kCornerRadius);
+    p.setPen(QPen(kPanelOutline, 1.0));
+    p.setBrush(Qt::NoBrush);
+    p.drawRoundedRect(QRectF(kWellInset + 0.5, kWellInset + 0.5,
+                             kPanelWidth - 2 * kWellInset - 1,
+                             kPanelHeight - 2 * kWellInset - 1),
+                      kCornerRadius - 0.5, kCornerRadius - 0.5);
+    // The tip, centered (requirement 2). The render is square with the
+    // affine baked in, so drawing it 1:1 preserves the real aspect ratio.
+    if (!m_display.isNull()) {
+        const QSizeF s =
+            QSizeF(m_display.size()) / m_display.devicePixelRatio();
+        p.drawPixmap(QPointF((kPanelWidth - s.width()) / 2.0,
+                             (kPanelHeight - s.height()) / 2.0),
+                     m_display);
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -52,58 +52,15 @@ QString fmtCount(double v)
     return QString::number(qRound(v));
 }
 
-// 40x26 thumbnail of the tip WITH the static transform applied — a
-// miniature of the engine's documented per-stamp affine (backward map:
-// rotate, compress tip-local X, flip the tip-local sample axes), so the
-// four static numbers have a picture. Approved divergence: previously the
-// thumbnail showed the untransformed custom shape.
-QImage tipTransformThumbnail(const ::Brush &b)
-{
-    constexpr int kW = 40, kH = 26;
-    QImage out(kW, kH, QImage::Format_ARGB32_Premultiplied);
-    out.fill(Qt::transparent);
-    const qreal angle = qDegreesToRadians(b.tipAngle());
-    const qreal cosine = std::cos(angle), sine = std::sin(angle);
-    const qreal compression = b.tipRoundness();
-    const qreal signX = b.tipFlipX() ? -1.0 : 1.0;
-    const qreal signY = b.tipFlipY() ? -1.0 : 1.0;
-    const QImage shape = b.customShape(); // null selects the procedural disc
-    const qreal half = kH * 0.5;
-    const QColor ink = kDragger; // #b3b3b3, the component ink
-    for (int y = 0; y < kH; ++y) {
-        QRgb *row = reinterpret_cast<QRgb *>(out.scanLine(y));
-        for (int x = 0; x < kW; ++x) {
-            const qreal lx = (x - kW * 0.5 + 0.5) / half;
-            const qreal ly = (y - kH * 0.5 + 0.5) / half;
-            qreal tx = cosine * lx + sine * ly;
-            const qreal ty = -sine * lx + cosine * ly;
-            tx /= qMax(compression, 0.01);
-            const qreal dist = std::hypot(tx, ty);
-            if (dist >= 1.0)
-                continue;
-            qreal coverage = 0.0;
-            if (!shape.isNull()) {
-                const qreal u = signX * tx * 0.5 + 0.5;
-                const qreal v = signY * ty * 0.5 + 0.5;
-                const int sx = qBound(0, int(u * shape.width()),
-                                      shape.width() - 1);
-                const int sy = qBound(0, int(v * shape.height()),
-                                      shape.height() - 1);
-                coverage = shape.constScanLine(sy)[sx] / 255.0;
-            } else if (b.hardness() >= 0.999 || dist <= b.hardness()) {
-                coverage = 1.0;
-            } else {
-                const qreal t = (dist - b.hardness())
-                    / qMax(1.0 - b.hardness(), 0.001);
-                coverage = std::exp(-3.0 * t * t) * (1.0 - t);
-            }
-            const int a = qRound(coverage * 255.0);
-            row[x] = qPremultiply(
-                qRgba(ink.red(), ink.green(), ink.blue(), a));
-        }
-    }
-    return out;
-}
+// The 40x26 tip thumbnail that used to sit here (tipTransformThumbnail)
+// was a SECOND IMPLEMENTATION of the tip maths, and it had already
+// drifted: its custom-tip sampling was nearest-neighbour with no
+// texel-centre against the engine's texel-centred bilinear — up to
+// 132/255 per pixel along a hard edge, measured by operation-for-
+// operation comparison at retirement (the procedural falloff still
+// agreed exactly). Retired 2026-08-29 for the Tip Shape preview
+// (StudioTipShapePreview, Figma 358:22), which renders THROUGH
+// StrokeBuilder::shapedTipForStamp instead of describing it.
 
 QImage loadImageFile(QWidget *parent, const QString &title)
 {
@@ -573,6 +530,22 @@ void BrushSettingsStudio::applyInstant(
 void BrushSettingsStudio::pushToScratch(bool tipInvalidating)
 {
     m_scratch->setBrush(m_session, tipInvalidating);
+    // The Tip Shape preview rides the same funnel, so it is live during
+    // slider drags (which push per move without running the syncers). It
+    // shows the SCOPE brush — the one the sections are editing.
+    if (m_tipPreview)
+        m_tipPreview->setBrush(scopeBrushConst());
+}
+
+QImage BrushSettingsStudio::tipPreviewImageForTest() const
+{
+    return m_tipPreview ? m_tipPreview->tipImageForTest() : QImage();
+}
+
+void BrushSettingsStudio::editSessionForTest(
+    const std::function<void(::Brush &)> &fn, bool tipInvalidating)
+{
+    applyInstant(fn, tipInvalidating);
 }
 
 void BrushSettingsStudio::restoreSessionBytes(const QByteArray &bytes)
@@ -950,8 +923,29 @@ QWidget *BrushSettingsStudio::buildTipSection()
     QVBoxLayout *l = nullptr;
     QWidget *page = sectionPage(&l);
 
+    // The Tip Shape preview (Figma 358:22), centred like the ring below.
+    // Refreshed from pushToScratch — the one funnel every edit path runs
+    // (slider moves, instants, ring drags, undo restores, session loads) —
+    // plus a syncer for the A/B scope switch, which re-syncs without
+    // pushing. The refresh is idempotent and skips byte-identical renders,
+    // so the double coverage costs nothing.
+    auto *previewRow = new QWidget;
+    auto *pv = new QHBoxLayout(previewRow);
+    pv->setContentsMargins(0, 0, 0, 0);
+    m_tipPreview = new StudioTipShapePreview;
+    pv->addStretch(1);
+    pv->addWidget(m_tipPreview);
+    pv->addStretch(1);
+    l->addWidget(previewRow);
+    m_syncers.append([this] {
+        if (m_tipPreview)
+            m_tipPreview->setBrush(scopeBrushConst());
+    });
+
     // Tip shape: procedural round vs a custom grayscale image. Reuses the
-    // codec's PNG-embedded image slot — no second image path.
+    // codec's PNG-embedded image slot — no second image path. (The 44x30
+    // thumbnail that sat in this row is retired; the preview above IS the
+    // picture, rendered by the engine instead of alongside it.)
     auto *shapeRow = new QWidget;
     auto *sr = new QHBoxLayout(shapeRow);
     sr->setContentsMargins(0, 0, 0, 0);
@@ -959,17 +953,10 @@ QWidget *BrushSettingsStudio::buildTipSection()
     auto *shapeLabel = new QLabel(QStringLiteral("Tip Shape"));
     shapeLabel->setStyleSheet(
         QStringLiteral("color: #96969b; font: 500 14px 'Inter';"));
-    auto *thumb = new QLabel;
-    thumb->setFixedSize(44, 30);
-    thumb->setAlignment(Qt::AlignCenter);
-    thumb->setStyleSheet(QStringLiteral(
-        "background: #111112; border-radius: 6px; color: #96969b;"
-        " font: 500 11px 'Inter';"));
     auto *loadTip = makeButton(QStringLiteral("Load…"), false);
     auto *roundTip = makeButton(QStringLiteral("Round"), false);
     sr->addWidget(shapeLabel);
     sr->addStretch(1);
-    sr->addWidget(thumb);
     sr->addWidget(loadTip);
     sr->addWidget(roundTip);
     l->addWidget(shapeRow);
@@ -983,18 +970,8 @@ QWidget *BrushSettingsStudio::buildTipSection()
     connect(roundTip, &QPushButton::clicked, this, [this] {
         applyInstant([](::Brush &b) { b.clearCustomShape(); }, true);
     });
-    m_syncers.append([this, thumb, roundTip] {
-        const ::Brush &b = scopeBrushConst();
-        const bool transformed = b.tipAngle() != 0.0
-            || b.tipRoundness() != 1.0 || b.tipFlipX() || b.tipFlipY();
-        if (b.hasCustomShape() || transformed) {
-            thumb->setText(QString());
-            thumb->setPixmap(QPixmap::fromImage(tipTransformThumbnail(b)));
-        } else {
-            thumb->setPixmap(QPixmap());
-            thumb->setText(QStringLiteral("Round"));
-        }
-        roundTip->setEnabled(b.hasCustomShape());
+    m_syncers.append([this, roundTip] {
+        roundTip->setEnabled(scopeBrushConst().hasCustomShape());
     });
 
     addSlider(l, QStringLiteral("Hardness"), 0.0, 1.0,

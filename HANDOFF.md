@@ -2703,3 +2703,71 @@ reset -> mark clears -> activation applies stock. Totals: Lifecycle
 159. All five pins byte-identical: 7cd8d084 / e7ce9d6b (coupled) /
 666f7b45 / cafcec7f / 0bc24381.
 
+## The Tip Shape preview: the engine's own tip, live (2026-08-29)
+
+WHAT: the studio Tip section's 44x26-ish thumbnail is replaced by the
+Tip Shape preview panel (Figma 358:22; StudioTipShapePreview in
+StudioControls, 320x210 - the TipRing's documented width divergence,
+same #3c3c42/#595964/radius-8 chrome tokens). The tip is displayed
+centred in the well, rendered at a FIXED 160 px (x devicePixelRatio),
+as kDragger ink over the panel.
+
+THE ONE-DEFINITION RULE, AGAIN: the image is produced by
+StrokeBuilder::shapedTipForStamp - the engine's own per-stamp tip
+function (the CPU stamp path's, mirrored term for term by the GPU
+instance build) - called on a working copy with a neutral stamp (no
+tilt, no rotation, no jitters; effectiveSize = 160, effectiveHardness =
+base hardness, stamp.roundness = 1). Hardness falloff, custom tip
+image, static angle/roundness/flips all compose INSIDE the engine call.
+No tip maths exists in the studio. NO ENGINE CODE CHANGED - the
+function was already public.
+
+THE RETIRED DUPLICATE HAD ALREADY DRIFTED: tipTransformThumbnail
+reimplemented the falloff and affine inline. Measured at retirement by
+operation-for-operation transcription (scratchpad drift_check.py,
+recorded here because the script is ephemeral): the procedural
+falloff+affine agreed EXACTLY (max |diff| = 0.0 over 2.95M samples),
+but the custom-tip sampling had diverged - nearest-neighbour with no
+texel-centre against the engine's texel-centred bilinear
+(the same-source fix's convention) - up to 132/255 per pixel along a
+hard edge, mean 1.17/255 over a 64x64 hard-edge mask. The thumbnail
+misdrew custom-tip edges for as long as both implementations existed.
+That is the drift class a second implementation invites, and why the
+preview renders THROUGH the engine rather than describing it.
+
+COST DISCIPLINE (the 19-119 ms tip-cache trap): the render is fixed at
+160 px regardless of brush size - the procedural falloff is
+radius-normalized and custom tips sample [0,1] UVs, so the depiction is
+size-invariant BY THE ENGINE'S OWN MATHS, and a full-size tip build
+(119 ms at 5000, measured) can never be triggered by the preview.
+Per-refresh cost is sub-ms (one 160^2 stamp loop; the engine's
+incidental shape(160, h) cache build lands in the StrokeBuilder's own
+brush copy and dies with it - it cannot evict the canvas brush's
+full-size tips, which live in a different Brush instance's cache).
+
+REFRESH PATH: pushToScratch - the single funnel every edit runs
+(slider per-move, applyInstant, ring drags, undo restores, session
+loads) - plus a syncer for the A/B scope switch, which syncs without
+pushing. The preview shows the SCOPE brush. setBrush skips the repaint
+when the engine returns byte-identical pixels, so edits to non-tip
+parameters cost one 160 px render and no paint.
+
+SURVEYED, LEFT ALONE: StudioTipRing::tipSpace mirrors the affine for
+POINTER hit-testing (geometry in, no pixels out) - it cannot call an
+image-producing engine function and its 2x2 transform is asserted
+against the renderer's formula by its own seam. The Shape Control panel
+(345:99) is that ring, already built in the statics pass - NOT part of
+this pass, untouched.
+
+GATE: Lifecycle (o), 12 checks - engine-format render, coverage
+positive control, the ONE-DEFINITION identity (preview bytes == the
+test's own shapedTipForStamp call, asserted at TWO session states),
+hardness edit re-renders through the REAL edit path, size 5000 changes
+NOTHING (the fixed-resolution claim, pinned), roundness+angle reach the
+preview, custom tip reaches it, Flip X changes an asymmetric tip and
+flipping back restores byte-exact (involution control), and the session
+never touches the model. Totals: Lifecycle 171. All five pins
+byte-identical both configs: 7cd8d084 / e7ce9d6b (coupled) / 666f7b45 /
+cafcec7f / 0bc24381 - a studio-UI-only pass, confirmed rather than
+assumed.
+

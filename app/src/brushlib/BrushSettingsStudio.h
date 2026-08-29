@@ -64,6 +64,17 @@ public:
     // QSettings-backed, applies to every brush, never part of a preset.
     static double storedStabilization();
 
+    // Gate seams for the Tip Shape preview (Figma 358:22). The image is
+    // the engine Grayscale8 tip the panel last rendered — byte-comparable
+    // against the test's own shapedTipForStamp call, which is the "one
+    // definition" claim pinned rather than argued. editSessionForTest
+    // drives the REAL edit path (applyInstant: undo entry, scratch push,
+    // preview refresh, syncers) so what the test exercises is what a
+    // slider or toggle exercises.
+    QImage tipPreviewImageForTest() const;
+    void editSessionForTest(const std::function<void(::Brush &)> &fn,
+                            bool tipInvalidating);
+
 signals:
     void visibilityChanged(bool visible);
     void presetCommitted(const QString &presetId);  // Done
@@ -195,6 +206,7 @@ private:
     QStringList m_sectionNames;
     int m_dualSectionIndex = -1;
     int m_currentSection = 0;
+    StudioTipShapePreview *m_tipPreview = nullptr; // Figma 358:22
     QLabel *m_brushNameLabel = nullptr;
     QLabel *m_propsTitle = nullptr;
     StudioSegmentedRow *m_scopeSwitch = nullptr;

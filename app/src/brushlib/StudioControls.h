@@ -4,12 +4,15 @@
 #include "SankoTheme.h"
 
 #include <QColor>
+#include <QImage>
+#include <QPixmap>
 #include <QString>
 #include <QStringList>
 #include <QWidget>
 
 #include <functional>
 
+class Brush; // engine type; StudioTipShapePreview renders through it
 class QPaintEvent;
 class QMouseEvent;
 class QKeyEvent;
@@ -486,6 +489,54 @@ private:
     Region m_hover = Region::None;
     double m_grabOffset = 0.0; // ring drag: angle - pointerAngle at press
     bool m_moved = false;      // distinguishes pivot click from drag
+};
+
+// The Tip Shape preview (Figma 358:22): the studio's live, legible look at
+// the tip. THE IMAGE IS AN ENGINE RENDER — setBrush() calls
+// StrokeBuilder::shapedTipForStamp (the one place tip shaping composes;
+// the CPU stamp path's own function, mirrored term for term by the GPU
+// instance build) on a neutral stamp, so hardness, the static transform
+// (angle, roundness, flips) and a custom tip image are all depicted by the
+// code that will stamp them. No tip maths lives here: the duplicated
+// falloff this panel replaced (tipTransformThumbnail) had already diverged
+// from the engine on custom tips — nearest-neighbour sampling against the
+// engine's texel-centred bilinear, up to 132/255 per pixel at a hard edge —
+// which is exactly the drift class a second implementation invites.
+//
+// The stamp is rendered at kTipPx regardless of brush size: the procedural
+// falloff is radius-normalized and a custom tip is sampled in [0,1] UVs,
+// so the depiction is the same picture at every size and the render can
+// never touch a full-size tip build (119 ms at 5000, measured) — sub-ms
+// per refresh, cached nowhere, rebuilt nowhere else.
+class StudioTipShapePreview : public QWidget
+{
+    Q_OBJECT
+public:
+    explicit StudioTipShapePreview(QWidget *parent = nullptr);
+
+    // Re-render from the given brush (the studio's SCOPE brush). Skips the
+    // repaint when the engine returns byte-identical pixels — edits to
+    // parameters the tip render never reads land here and change nothing.
+    void setBrush(const ::Brush &brush);
+
+    // The engine Grayscale8 tip exactly as last rendered (pre-ink). The
+    // gate compares this byte-for-byte against its OWN shapedTipForStamp
+    // call — the "one definition" claim, pinned rather than argued.
+    QImage tipImageForTest() const { return m_tip; }
+
+    static constexpr int kPanelWidth = 320;  // design 356; the TipRing's
+                                             // documented width divergence
+    static constexpr int kPanelHeight = 210;
+    static constexpr int kWellInset = 8;     // well 358:24 sits 8 px in
+    static constexpr int kCornerRadius = 8;
+    static constexpr int kTipPx = 160;       // fixed render size — see above
+
+protected:
+    void paintEvent(QPaintEvent *event) override;
+
+private:
+    QImage m_tip;      // engine Grayscale8, kTipPx x devicePixelRatio
+    QPixmap m_display; // ink-colorized copy of m_tip, DPR-tagged
 };
 
 // Shared single-line text input (first needed by the New Project dialog;
