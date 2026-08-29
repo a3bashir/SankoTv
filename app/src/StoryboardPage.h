@@ -57,6 +57,10 @@ public:
     // showed 200 whenever a large library brush was active — a display lie
     // nothing could observe from outside. The slider class is file-local,
     // so this is the narrowest honest window into it.
+    int sizeCtlDisplayedOpacityForTest() const
+    {
+        return m_sizeCtlOpacityForTest ? m_sizeCtlOpacityForTest() : -1;
+    }
     int sizeCtlDisplayedSizeForTest() const
     {
         return m_sizeCtlSizeForTest ? m_sizeCtlSizeForTest() : -1;
@@ -422,6 +426,7 @@ private:
     QWidget *m_perspModToolbar = nullptr;
     std::function<void()> m_syncPerspective; // toolbar controls <- canvas model
     std::function<int()> m_sizeCtlSizeForTest; // reads the (file-local) slider
+    std::function<int()> m_sizeCtlOpacityForTest; // the bar MULTIPLIER, %
     // Shapes panel (visible only while the Shapes tool is active).
     QWidget *m_shapesPanel = nullptr;
     // Last-chosen selection mode: a plain click on the combined Selection

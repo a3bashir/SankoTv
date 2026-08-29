@@ -1277,7 +1277,8 @@ private:
 struct SizeCtlTool
 {
     int size = 25;      // 1..200 canvas px
-    int opacity = 100;  // 5..100 %
+    int opacity = 100;  // 5..100 % MULTIPLIER on the preset's own opacity
+                        // (2026-08-29 semantics; persisted as opacityMult)
     // Hardness has NO bar slider (the three-slider layout was reverted to
     // the Figma two-slider design); the field and its ticks stay so the
     // per-tool hardness PERSISTS across launches (restored at startup,
@@ -3283,6 +3284,9 @@ void StoryboardPage::createFloatingToolbar()
         "QPushButton:checked { background:%PURPLE%; }"));
     auto *opacitySlider = new SizeCtlSlider(5, 100, 100, sizeBar);
     opacitySlider->setToolTip(QStringLiteral("Brush opacity"));
+    m_sizeCtlOpacityForTest = [opacitySlider] {
+        return opacitySlider->value();
+    };
 
     // Exact Figma column (209:42 metadata, rotated-frame origins decoded):
     // size slider at (10.5, 25), Flip 30x30 at (8, 276), opacity slider at
@@ -3333,8 +3337,19 @@ void StoryboardPage::createFloatingToolbar()
         auto load = [&](SizeCtlTool &t, const QString &base, int maxSize) {
             t.size = qBound(1, st.value(base + QStringLiteral("size"),
                                         t.size).toInt(), maxSize);
-            t.opacity = qBound(5, st.value(base + QStringLiteral("opacity"),
-                                           t.opacity).toInt(), 100);
+            // MULTIPLIER migration (2026-08-29): the old "opacity" key
+            // stored an ABSOLUTE percent that overwrote the preset; the
+            // bar now stores a multiplier under a NEW key, defaulting to
+            // 100 ("full preset strength"). Old absolute values cannot be
+            // faithfully converted (they never recorded which preset they
+            // overwrote), so they are reset - the only honest reading of
+            // the old intent under the new meaning. Low-risk BY
+            // CONSTRUCTION: at 100 the product is the preset byte for
+            // byte. The stale key is removed below, next to the retired
+            // eraser hardness, so no future reader resurrects it.
+            t.opacity = qBound(
+                5, st.value(base + QStringLiteral("opacityMult"), 100)
+                       .toInt(), 100);
             t.sizeTicks = parseTicks(
                 st.value(base + QStringLiteral("sizeTicks")).toString());
             t.opacityTicks = parseTicks(
@@ -3357,6 +3372,10 @@ void StoryboardPage::createFloatingToolbar()
             st.remove(QStringLiteral("storyboard/toolCtl/eraser/hardness"));
             st.remove(
                 QStringLiteral("storyboard/toolCtl/eraser/hardnessTicks"));
+            // The pre-multiplier ABSOLUTE opacity keys (see the migration
+            // note in load above).
+            st.remove(QStringLiteral("storyboard/toolCtl/brush/opacity"));
+            st.remove(QStringLiteral("storyboard/toolCtl/eraser/opacity"));
         }
     }
     auto saveToolCtl = [tc] {
@@ -3369,7 +3388,7 @@ void StoryboardPage::createFloatingToolbar()
         };
         auto save = [&](const SizeCtlTool &t, const QString &base) {
             st.setValue(base + QStringLiteral("size"), t.size);
-            st.setValue(base + QStringLiteral("opacity"), t.opacity);
+            st.setValue(base + QStringLiteral("opacityMult"), t.opacity);
             st.setValue(base + QStringLiteral("sizeTicks"),
                         join(t.sizeTicks));
             st.setValue(base + QStringLiteral("opacityTicks"),
@@ -3495,8 +3514,9 @@ void StoryboardPage::createFloatingToolbar()
     // stored size/opacity and preset ticks (the canvas keeps both tools'
     // engine values in independent members — nothing to push back). Other
     // tools leave the sliders idle on the last brush-like state.
-    // A library preset updates the Brush slot of the per-tool cache and the
-    // visible sliders (silently — no engine writeback loop).
+    // A library preset updates the Brush slot's SIZE and hardness in the
+    // per-tool cache and the visible size slider (silently — no engine
+    // writeback loop). Opacity stays put: the bar is a multiplier now.
     connect(m_canvas, &DrawingCanvas::paintBrushChanged, this,
             [this, tc, sizeSlider, opacitySlider] {
         const ::Brush &b = m_canvas->paintBrush();
@@ -3505,14 +3525,17 @@ void StoryboardPage::createFloatingToolbar()
         // 200 whenever a large library brush was active. The mirror now
         // spans the engine's whole range.
         tc->brush.size = qBound(1, b.size(), 5000);
-        tc->brush.opacity = qBound(0, qRound(b.opacity() * 100.0), 100);
+        // MULTIPLIER semantics (2026-08-29): the bar's opacity is "how
+        // much of the preset's own ceiling", so a preset selection does
+        // NOT rewrite it - the user's multiplier survives and the canvas
+        // applies base x multiplier. Selecting HB Pencil (base 0.55)
+        // reads 100% here while the engine holds 0.55; dragging to 50%
+        // paints at 0.275 - deliberately COMPOUNDING, see HANDOFF.
         // Hardness has no bar slider (see placeSizeCtl); the mirror still
         // updates so the persisted per-tool hardness follows selections.
         tc->brush.hardness = qBound(0, qRound(b.hardness() * 100.0), 100);
-        if (!tc->eraserMode) {
+        if (!tc->eraserMode)
             sizeSlider->setValue(tc->brush.size);
-            opacitySlider->setValue(tc->brush.opacity);
-        }
     });
     connect(m_canvas, &DrawingCanvas::toolChanged, this,
             [tc, sizeSlider, opacitySlider, pill, pillHide](int tool) {
@@ -3542,14 +3565,15 @@ void StoryboardPage::createFloatingToolbar()
     // Size CTL <- ERASER preset mirror: the library's eraser selection
     // lands in the per-tool state and, when the Eraser is active, on the
     // sliders - the same shape as the paintBrushChanged mirror above.
-    m_syncEraserCtl = [this, tc, sizeSlider, opacitySlider] {
+    m_syncEraserCtl = [this, tc, sizeSlider] {
         const ::Brush &e = m_canvas->eraserBrush();
         tc->eraser.size = qBound(1, e.size(), 5000);
-        tc->eraser.opacity = qBound(0, qRound(e.opacity() * 100.0), 100);
-        if (tc->eraserMode) {
+        // Opacity deliberately NOT mirrored: the bar holds the user's
+        // multiplier under the 2026-08-29 semantics (see the brush mirror
+        // above); the eraser preset's opacity is the BASE the canvas
+        // multiplies underneath.
+        if (tc->eraserMode)
             sizeSlider->setValue(tc->eraser.size);
-            opacitySlider->setValue(tc->eraser.opacity);
-        }
     };
 
     sizeBar->show(); // records intent; effective when the canvas shows

@@ -793,10 +793,21 @@ private:
 
     // Brush engine state. Defaults mirror the initial settings-panel values.
     int m_brushToolSize = 25;        // dab diameter, canvas px
-    double m_brushToolOpacity = 1.0; // 0..1
+    // MULTIPLIER semantics (2026-08-29, user-approved): the Size CTL bar's
+    // opacity is "how much of the preset's own ceiling", not an absolute.
+    // engine opacity = base x multiplier; at multiplier 1.0 the product IS
+    // the preset, byte for byte - which is what makes the migration safe
+    // and every byte-identity gate check hold. The base is captured at
+    // preset activation (setPaintBrush / setEraserPreset) and NOWHERE
+    // else; the only writers of engine opacity are those two sites plus
+    // setBrushOpacity/setEraserOpacity, all of which recompute the
+    // product, so the pair cannot drift apart.
+    double m_brushToolOpacity = 1.0;  // 0..1 bar multiplier
+    double m_brushBaseOpacity = 1.0;  // the active preset's opacity
     // Eraser state (independent of the brush; per-tool Size CTL sliders).
     int m_eraserSize = 25;           // stroke width, canvas px
-    double m_eraserOpacity = 1.0;    // 0..1 erase strength
+    double m_eraserOpacity = 1.0;     // 0..1 bar multiplier (see above)
+    double m_eraserBaseOpacity = 1.0; // the active eraser preset's opacity
     // The Eraser IS an engine brush now (the erase composite pass): a
     // hard-round eraseMode Brush whose size/opacity the Size CTL drives.
     // During an eraser stroke it is swapped into the adapter and the

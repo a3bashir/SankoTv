@@ -155,7 +155,7 @@ DrawingCanvas::DrawingCanvas(QWidget *parent)
     m_eraserBrush.setEraseMode(true);
     m_eraserBrush.setHardness(1.0);
     m_eraserBrush.setSize(m_eraserSize);
-    m_eraserBrush.setOpacity(m_eraserOpacity);
+    m_eraserBrush.setOpacity(m_eraserBaseOpacity * m_eraserOpacity);
 
     // Persisted safe-area guide opacities (Preferences > Camera).
     const QSettings settings = sankoSettings();
@@ -181,7 +181,7 @@ DrawingCanvas::DrawingCanvas(QWidget *parent)
         b.setColor(m_color);
         b.setSize(m_brushToolSize);
         b.setSpacing(0.05);
-        b.setOpacity(m_brushToolOpacity);
+        b.setOpacity(m_brushBaseOpacity * m_brushToolOpacity);
         b.setHardness(m_brushHardness);
         b.sizePressureCurve().setControlPoints(
             m_pressureToSize ? QVector<QPointF>{{0.0, 0.0}, {1.0, 1.0}}
@@ -1089,7 +1089,8 @@ void DrawingCanvas::setBrushToolSize(int px)
 void DrawingCanvas::setBrushOpacity(int percent)
 {
     m_brushToolOpacity = qBound(0, percent, 100) / 100.0;
-    m_paintEngine.brush().setOpacity(m_brushToolOpacity);
+    m_paintEngine.brush().setOpacity(m_brushBaseOpacity
+                                     * m_brushToolOpacity);
     emit paintBrushEdited();
 }
 
@@ -1109,7 +1110,7 @@ void DrawingCanvas::setEraserSize(int px)
 void DrawingCanvas::setEraserOpacity(int percent)
 {
     m_eraserOpacity = qBound(0, percent, 100) / 100.0;
-    m_eraserBrush.setOpacity(m_eraserOpacity);
+    m_eraserBrush.setOpacity(m_eraserBaseOpacity * m_eraserOpacity);
 }
 
 void DrawingCanvas::setPressureToSize(bool on)
@@ -1182,7 +1183,10 @@ void DrawingCanvas::setEraserPreset(const ::Brush &brush)
     m_eraserBrush = brush;
     m_eraserBrush.setEraseMode(true); // identity, not a knob
     m_eraserSize = qBound(1, m_eraserBrush.size(), 5000);
-    m_eraserOpacity = qBound(0.0, m_eraserBrush.opacity(), 1.0);
+    // MULTIPLIER semantics: the preset's opacity is the BASE; the
+    // user's bar multiplier survives the selection and scales it.
+    m_eraserBaseOpacity = qBound(0.0, m_eraserBrush.opacity(), 1.0);
+    m_eraserBrush.setOpacity(m_eraserBaseOpacity * m_eraserOpacity);
     emit eraserBrushChanged();
 }
 
@@ -1195,7 +1199,12 @@ void DrawingCanvas::setPaintBrush(const ::Brush &brush)
     // pressure at all.
     m_paintEngine.setBrush(brush);
     m_brushToolSize = brush.size();
-    m_brushToolOpacity = brush.opacity();
+    // MULTIPLIER semantics: capture the preset's opacity as the BASE
+    // and apply the user's surviving bar multiplier on top. At
+    // multiplier 1.0 the product is the preset, byte for byte.
+    m_brushBaseOpacity = qBound(0.0, brush.opacity(), 1.0);
+    m_paintEngine.brush().setOpacity(m_brushBaseOpacity
+                                     * m_brushToolOpacity);
     m_brushHardness = brush.hardness();
     // A preset with an identity colour (Blue Pencil, Sanguine...) adopts it
     // as the app colour; black-ink presets keep the user's current colour.

@@ -3063,3 +3063,64 @@ procedure, cross-config identical: preview 7cd8d084 -> c1fbee31,
 eraser e7ce9d6b -> b602355f. CLAUDE.md updated with the reason. Canvas
 locks and the erase baseline unmoved. Totals: BrushLibrary 79 checks,
 Lifecycle 206.
+
+## The Size CTL opacity becomes a MULTIPLIER (2026-08-29)
+
+THE SEMANTICS CHANGE, user-approved: the bar's opacity now means "how
+much of the preset's own ceiling", not an absolute that overwrites the
+preset. engine opacity = preset base x bar multiplier, both tools
+(setBrushOpacity / setEraserOpacity), general across every preset - no
+special case for HB Pencil, which merely exposed the old mirror by
+being the first built-in whose base is not ~1.0. Selecting HB Pencil
+now reads Size 36 / Opacity 100 on the bar while the engine holds the
+promoted 0.55.
+
+WHY THE MIGRATION IS LOW-RISK - the property the whole change rests
+on: AT MULTIPLIER 100 THE PRODUCT IS THE PRESET, BYTE FOR BYTE. Every
+byte-identity check in the gate runs at 100 and held unchanged; the
+stored bar values reset to 100 under a NEW key (opacityMult; the old
+absolute-percent keys are actively removed beside the retired eraser
+hardness), because an old absolute value cannot be faithfully
+converted - it never recorded which preset it was overwriting - and
+"full preset strength" is the only honest reading of the old intent
+under the new meaning.
+
+THE COMPOUNDING CONSEQUENCE, recorded at the user's direction so it is
+never rediscovered as a bug: 50 percent on HB Pencil now paints at
+0.55 x 0.5 = 0.275 - MUCH fainter than 50 percent meant before, and
+correct. If a brush feels unexpectedly faint at a low bar setting,
+this is why, by design. Lifecycle (j) pins the exact number.
+
+THE REMEMBERED BASE - new state, audited for staleness up front:
+m_brushBaseOpacity / m_eraserBaseOpacity live on DrawingCanvas,
+in-memory only, captured EXCLUSIVELY at setPaintBrush /
+setEraserPreset. The only writers of engine opacity are those two
+sites plus the two bar slots, and all four recompute the product, so
+base and engine cannot drift apart. Survey of the other paths:
+QuickShape captures/restores the FULL product-carrying brush plus the
+scalar multiplier and never recomputes one from the other - a preset
+change mid-shape updates base for the live brush while the bake uses
+its captured copy, both correct. The studio never writes the canvas
+brush directly (Done -> presetCommitted -> setPaintBrush recaptures).
+Stroke undo never touches the brush. Project load leaves the brush
+alone. App restart: base starts at 1.0 until the first selection,
+multiplier restores from settings - the pre-first-selection brush is
+the default (base 1.0), where multiplier IS the absolute, same as
+before. Unlike the override fingerprint there is no persisted copy to
+go stale: base is rederived at every activation.
+
+SEQUENCING, per the user's directive: CanvasBrushLock ran FIRST, both
+configs, immediately after the canvas change and before any page
+wiring - its setBrushOpacity(100)/(50) calls act on the default brush
+(base 1.0), where product == old absolute, and both pins held
+byte-identical (666f7b45 / cafcec7f). Measured, not reasoned, before
+the rest was built.
+
+GATE: Lifecycle (j) extended (not rewritten - its size assertions
+stand): bar reads multiplier default 100; selecting HB Pencil leaves
+the bar at 100 while the engine holds 0.55; the compounding rule at
+the exact number 0.275; at 100 the product equals the preset byte for
+byte through the codec (colour neutralized - selection adopts identity
+colours by design); eraser symmetric against Gouache base 0.95.
+Totals: Lifecycle 213. All five pins byte-identical both configs:
+c1fbee31 / b602355f (coupled) / 666f7b45 / cafcec7f / 0bc24381.

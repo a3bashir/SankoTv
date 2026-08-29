@@ -1796,6 +1796,72 @@ void runSizeCtlAgreementPass(const QString &scratch)
               .arg(page->sizeCtlDisplayedSizeForTest())
               .arg(canvas->paintBrush().size()));
 
+    // ---- MULTIPLIER semantics (2026-08-29, user-approved) --------------
+    // The bar's opacity means "how much of the preset's own ceiling",
+    // never an absolute the selection rewrites. Pinned here: selection
+    // preserves the multiplier, the engine holds base x multiplier, the
+    // COMPOUNDING rule (50% of a 0.55 preset = 0.275 - deliberately much
+    // fainter than the old absolute 50%), and the safety property the
+    // whole migration rests on: at 100 the product IS the preset, byte
+    // for byte.
+    canvas->setTool(DrawingCanvas::Brush);
+    pump(200);
+    check(QStringLiteral("(j) control: the opacity bar reads the "
+                         "multiplier, at its default 100"),
+          page->sizeCtlDisplayedOpacityForTest() == 100,
+          QStringLiteral("bar=%1")
+              .arg(page->sizeCtlDisplayedOpacityForTest()));
+    const ::Brush *hbStock = nullptr;
+    const auto rosterJ = brushlib::builtinRoster();
+    for (const brushlib::BrushPreset &p : rosterJ)
+        if (p.id == QStringLiteral("builtin/sketching/hb-pencil"))
+            hbStock = &p.brush;
+    check(QStringLiteral("(j) control: HB Pencil exists with base 0.55"),
+          hbStock && hbStock->opacity() == 0.55);
+    if (hbStock) {
+        canvas->setPaintBrush(*hbStock);
+        pump(200);
+        check(QStringLiteral("(j) selecting HB Pencil leaves the bar at "
+                             "100 while the ENGINE holds the 0.55 base"),
+              page->sizeCtlDisplayedOpacityForTest() == 100
+                  && canvas->paintBrush().opacity() == 0.55,
+              QStringLiteral("bar=%1 engine=%2")
+                  .arg(page->sizeCtlDisplayedOpacityForTest())
+                  .arg(canvas->paintBrush().opacity()));
+        canvas->setBrushOpacity(50);
+        check(QStringLiteral("(j) THE COMPOUNDING RULE: 50 percent of the "
+                             "0.55 preset paints at 0.275"),
+              qAbs(canvas->paintBrush().opacity() - 0.275) < 1e-9,
+              QStringLiteral("engine=%1")
+                  .arg(canvas->paintBrush().opacity()));
+        canvas->setBrushOpacity(100);
+        ::Brush colourNeutral = canvas->paintBrush();
+        colourNeutral.setColor(hbStock->color());
+        check(QStringLiteral("(j) at 100 the product IS the preset, byte "
+                             "for byte (the migration's safety property)"),
+              brushlib::BrushPresetCodec::saveBrush(colourNeutral)
+                  == brushlib::BrushPresetCodec::saveBrush(*hbStock));
+    }
+    // Eraser symmetric: preset opacity is the base, the bar multiplies.
+    const ::Brush *gouacheJ = nullptr;
+    for (const brushlib::BrushPreset &p : rosterJ)
+        if (p.id == QStringLiteral("builtin/painting/gouache"))
+            gouacheJ = &p.brush;
+    if (gouacheJ) {
+        canvas->setEraserPreset(*gouacheJ); // base 0.95
+        check(QStringLiteral("(j) eraser preset base survives at "
+                             "multiplier 100"),
+              canvas->eraserBrush().opacity() == gouacheJ->opacity());
+        canvas->setEraserOpacity(50);
+        check(QStringLiteral("(j) ...and the eraser bar compounds the "
+                             "same way"),
+              qAbs(canvas->eraserBrush().opacity()
+                   - gouacheJ->opacity() * 0.5) < 1e-9,
+              QStringLiteral("engine=%1")
+                  .arg(canvas->eraserBrush().opacity()));
+        canvas->setEraserOpacity(100);
+    }
+
     window.markCleanForTest();
     window.close();
     pump(300);
