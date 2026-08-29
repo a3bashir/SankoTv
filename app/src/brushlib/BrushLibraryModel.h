@@ -86,6 +86,11 @@ public:
     // file (Overrides/ next to the user presets) applied over the in-code
     // roster at load, so Restore Default Brushes always recovers stock.
     bool updateBrush(const QString &id, const ::Brush &brush);
+    // Gate seam: marks a stored preset as pre-cap (its FILE carries an
+    // oversized image) so the Done-notice flow can be driven without
+    // crafting a spliced legacy file inside the lifecycle harness. The
+    // codec-level flag propagation is pinned separately (BrushLibrary b10).
+    void setImagesCappedOnLoadForTest(const QString &id);
     bool hasBuiltinOverride(const QString &id) const;
 
     QString libraryName() const;

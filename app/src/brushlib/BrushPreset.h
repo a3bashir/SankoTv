@@ -18,6 +18,11 @@ struct BrushPreset
                       // | "Artistic" | "Watercolor"  (never "Recent")
     bool builtin = false;
     ::Brush brush;
+    // TRANSIENT (never serialised): the preset FILE carries an image larger
+    // than Brush::kMaxCustomImageDim, capped in memory at load. The studio
+    // tells the user before Done rewrites the file in capped form; the
+    // model clears this after that write. Pre-cap files only.
+    bool imagesCappedOnLoad = false;
 };
 
 } // namespace brushlib

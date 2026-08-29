@@ -23,9 +23,19 @@ class BrushPresetCodec
 {
 public:
     // Brush payload only (no name/id/category) — the unit the preview cache
-    // keys on: renames must not invalidate previews.
+    // keys on: renames must not invalidate previews. imagesCappedOnLoad
+    // (optional) reports that the file carried an image larger than
+    // Brush::kMaxCustomImageDim, which the setter capped in memory — the
+    // caller's cue to tell the user before the file is ever rewritten in
+    // capped form.
     static QByteArray saveBrush(const ::Brush &brush);
-    static bool loadBrush(const QByteArray &bytes, ::Brush &out);
+    static bool loadBrush(const QByteArray &bytes, ::Brush &out,
+                          bool *imagesCappedOnLoad = nullptr);
+
+    // Test seam: number of REAL PNG encodes performed (the encoded-image
+    // memo makes repeated saves of an unchanged image cost zero encodes —
+    // the per-gesture serialization fix, pinned by the gate).
+    static int imageEncodeCountForTest();
 
     // SHA-256 of saveBrush() — the preview-cache key.
     static QByteArray settingsHash(const ::Brush &brush);

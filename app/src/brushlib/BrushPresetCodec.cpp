@@ -4,6 +4,8 @@
 #include <QCryptographicHash>
 #include <QDataStream>
 #include <QIODevice>
+#include <QMutex>
+#include <QMutexLocker>
 
 #include <type_traits>
 
@@ -36,14 +38,50 @@ constexpr quint16 kMinReadVersion = 1;
 // the app is built with — presets written today load byte-identically later.
 constexpr QDataStream::Version kStreamVersion = QDataStream::Qt_6_5;
 
+// Encoded-image memo (2026-08-29). The studio serialises the whole session
+// brush for undo bookkeeping on EVERY gesture, and PNG-encoding an embedded
+// image costs up to hundreds of ms - a 14 MB photo-preset re-encoded per
+// slider move froze the studio (measured: 428 ms per encode at 18 MP,
+// 69 ms at the 2048 cap). Images are immutable between gestures, so the
+// bytes are memoised on QImage::cacheKey().
+//
+// WHY cacheKey IS SAFE AS THE KEY (the stale-memo hazard, considered):
+// Qt documents cacheKey as "a number that identifies the contents of this
+// QImage object", where "distinct QImage objects can only have the same
+// key if they refer to the same contents" - the key is minted per data
+// allocation and re-minted on detach, so REPLACING an image with a
+// different one of identical dimensions yields a different key, and
+// modifying an image in place detaches and re-mints. Both properties are
+// PINNED by the gate (b10), not assumed: two same-dimension images must
+// key differently, and swapping a brush's grain for a same-size image
+// must serialise the NEW bytes.
+//
+// Determinism: the memo stores exactly the bytes it produced, so repeated
+// saves are byte-identical by construction (the codec idempotence checks
+// b1/b2 stand guard). Bounded at 16 entries - presets carry at most a few
+// images; on overflow the memo clears rather than evicts (simplicity over
+// an LRU nothing needs).
+QMutex g_encodeMemoMutex;
+QHash<qint64, QByteArray> g_encodeMemo;
+int g_imageEncodeCount = 0; // test seam: how many REAL encodes ran
+
 QByteArray encodePng(const QImage &image)
 {
+    if (image.isNull())
+        return QByteArray();
+    QMutexLocker lock(&g_encodeMemoMutex);
+    const qint64 key = image.cacheKey();
+    const auto it = g_encodeMemo.constFind(key);
+    if (it != g_encodeMemo.constEnd())
+        return it.value();
     QByteArray png;
-    if (!image.isNull()) {
-        QBuffer buffer(&png);
-        buffer.open(QIODevice::WriteOnly);
-        image.save(&buffer, "PNG");
-    }
+    QBuffer buffer(&png);
+    buffer.open(QIODevice::WriteOnly);
+    image.save(&buffer, "PNG");
+    ++g_imageEncodeCount;
+    if (g_encodeMemo.size() >= 16)
+        g_encodeMemo.clear();
+    g_encodeMemo.insert(key, png);
     return png;
 }
 
@@ -98,7 +136,16 @@ struct Reader
     {
         QByteArray png;
         s >> png;
-        set(decodePng(png));
+        const QImage img = decodePng(png);
+        // A pre-cap file can carry an oversized image; the Brush setter
+        // caps it in memory, and this flag lets the caller tell the user
+        // BEFORE the file is ever rewritten in capped form (the "flag the
+        // re-save, never silently rewrite" rule). Accumulates across the
+        // dual-brush nested walk.
+        if (img.width() > ::Brush::kMaxCustomImageDim
+            || img.height() > ::Brush::kMaxCustomImageDim)
+            cappedOnLoad = true;
+        set(img);
     }
     template <typename Get> bool branch(Get)
     {
@@ -106,6 +153,7 @@ struct Reader
         s >> value;
         return value;
     }
+    bool cappedOnLoad = false;
 };
 
 // wireVersion gates the versioned field blocks: the walker IS the format,
@@ -369,7 +417,8 @@ QByteArray BrushPresetCodec::saveBrush(const ::Brush &brush)
     return bytes;
 }
 
-bool BrushPresetCodec::loadBrush(const QByteArray &bytes, ::Brush &out)
+bool BrushPresetCodec::loadBrush(const QByteArray &bytes, ::Brush &out,
+                                 bool *imagesCappedOnLoad)
 {
     QDataStream s(bytes);
     s.setVersion(kStreamVersion);
@@ -385,6 +434,8 @@ bool BrushPresetCodec::loadBrush(const QByteArray &bytes, ::Brush &out)
     if (s.status() != QDataStream::Ok)
         return false;
     out = fresh;
+    if (imagesCappedOnLoad)
+        *imagesCappedOnLoad = r.cappedOnLoad;
     return true;
 }
 
@@ -420,10 +471,19 @@ bool BrushPresetCodec::loadPreset(const QByteArray &bytes, BrushPreset &out)
     BrushPreset p;
     QByteArray brushBytes;
     s >> p.id >> p.name >> p.category >> p.builtin >> brushBytes;
-    if (s.status() != QDataStream::Ok || !loadBrush(brushBytes, p.brush))
+    bool capped = false;
+    if (s.status() != QDataStream::Ok
+        || !loadBrush(brushBytes, p.brush, &capped))
         return false;
+    p.imagesCappedOnLoad = capped;
     out = p;
     return true;
+}
+
+int BrushPresetCodec::imageEncodeCountForTest()
+{
+    QMutexLocker lock(&g_encodeMemoMutex);
+    return g_imageEncodeCount;
 }
 
 } // namespace brushlib

@@ -1408,6 +1408,98 @@ void runSuppressionPass(const QString &scratch)
     pump(300);
 }
 
+// ---- (r) the image-cap notices: told, never silent -------------------------
+// The cap itself is engine behaviour (BrushLibrary b10); this drives the
+// two moments the USER is told. (1) Import: loading an image the cap
+// reduces shows a modal with the numbers - "your original file is
+// unchanged" - and loading an under-cap image shows nothing. (2) The
+// pre-cap re-save: pressing Done on a preset whose FILE still carries
+// oversized images flags the rewrite instead of letting it be silent (the
+// HB Pencil Variation rescue decision). Modals are dismissed by the
+// harness's activeModalWidget timer, per the existing pattern.
+void runImageCapNoticePass(const QString &scratch)
+{
+    out() << "--- (r) image-cap notices ---" << Qt::endl;
+    MainWindow window;
+    window.resize(1300, 850);
+    window.show();
+    pump(800);
+    const QString fixture = writeProject(scratch + QStringLiteral("/capnote"),
+                                         QStringLiteral("CapNote"),
+                                         QSize(960, 540), 24, 1, 1);
+    check(QStringLiteral("(r) fixture opens"),
+          window.loadProjectForTest(fixture));
+    pump(500);
+    auto *studio = window.findChild<brushlib::BrushSettingsStudio *>();
+    auto *model = window.findChild<brushlib::BrushLibraryModel *>();
+    if (!studio || !model) {
+        check(QStringLiteral("(r) found studio and model"), false);
+        window.markCleanForTest();
+        window.close();
+        return;
+    }
+    const QString id = QStringLiteral("builtin/painting/gouache");
+    studio->openForPreset(id);
+    pump(400);
+
+    const auto dismissSoon = [] {
+        QTimer::singleShot(600, [] {
+            if (QWidget *m = QApplication::activeModalWidget())
+                m->close();
+        });
+    };
+
+    // (1) an oversized import notices, with the numbers.
+    QImage big(2500, 300, QImage::Format_Grayscale8);
+    big.fill(120);
+    dismissSoon();
+    studio->applyLoadedGrainImage(big);
+    pump(900);
+    const QString notice = studio->lastImportNoticeForTest();
+    check(QStringLiteral("(r) an oversized import shows the numbers and "
+                         "the original-file reassurance"),
+          notice.contains(QStringLiteral("2500"))
+              && notice.contains(QStringLiteral("2048"))
+              && notice.contains(QStringLiteral("original file is "
+                                                "unchanged")),
+          notice);
+
+    // Control: an under-cap import is silent. (Named to dodge windows.h's
+    // `small` macro.)
+    QImage underCap(500, 400, QImage::Format_Grayscale8);
+    underCap.fill(60);
+    studio->applyLoadedGrainImage(underCap);
+    pump(200);
+    check(QStringLiteral("(r) control: an under-cap import shows NO "
+                         "notice"),
+          studio->lastImportNoticeForTest().isEmpty());
+
+    // (2) the pre-cap re-save is flagged at Done, and the flag clears
+    // after the write (the file now holds the capped form).
+    model->setImagesCappedOnLoadForTest(id);
+    check(QStringLiteral("(r) seam control: the stored preset reads as "
+                         "pre-cap"),
+          model->preset(id)->imagesCappedOnLoad);
+    dismissSoon();
+    studio->doneForTest(); // writes a gouache override in SCRATCH
+    pump(900);
+    check(QStringLiteral("(r) Done on a pre-cap preset says the rewrite "
+                         "out loud"),
+          studio->lastImportNoticeForTest().contains(
+              QStringLiteral("reduced size")));
+    check(QStringLiteral("(r) ...and the flag clears once the file holds "
+                         "the capped form"),
+          !model->preset(id)->imagesCappedOnLoad);
+    // Leave the model as found: drop the override this Done created.
+    check(QStringLiteral("(r) cleanup: the test's override resets to "
+                         "stock"),
+          model->resetBuiltinToStock(id));
+
+    window.markCleanForTest();
+    window.close();
+    pump(300);
+}
+
 // ---- (m) the MIRRORED tool-scoped library, end to end ---------------------
 // REWRITTEN AGAIN 2026-08-28 (mirror pass): the eraser scope now MIRRORS
 // the brush categories - one definition, referenced twice - so the old
@@ -2113,6 +2205,7 @@ int main(int argc, char **argv)
     runTipShapePreviewPass(scratch);
     runGrainPreviewPass(scratch);
     runSuppressionPass(scratch);
+    runImageCapNoticePass(scratch);
     runProvenancePass(scratch);
 
     // ---- (l) sankoSettings: scratch lands, the real store does not ----

@@ -282,6 +282,22 @@ public:
     bool tipFlipY() const { return m_tipFlipY; }
     void setTipFlipY(bool flip) { m_tipFlipY = flip; }
 
+    // Custom image size cap (2026-08-29), applied by setCustomShape and
+    // setCustomGrain: anything larger is SmoothTransformation-downsampled,
+    // aspect preserved. The number is chosen from measurement, not taste:
+    // sampling cost is FLAT across source sizes (grain ~7.6 ms and tip
+    // ~4.6 ms per 615px stamp whether the source is 128px or 18 MP), so
+    // the cap governs only what is STORED - preset file size, undo
+    // snapshot size, and codec encode time (428 ms for an 18 MP photo,
+    // 69 ms at 2048). Visually 2048 is free: grain stays >= 1 texel per
+    // canvas px at every reachable Grain Scale (slider max 2048), and a
+    // tip source beyond the stamped size ALIASES under the sampler's
+    // plain bilinear - a filtered downsample is sharper, not softer,
+    // for stamps at or below this size (soft only above it, 2.4x at the
+    // 5000 brush cap). An 18-megapixel camera photo loaded as grain froze
+    // the studio for seconds per gesture before this existed.
+    static constexpr int kMaxCustomImageDim = 2048;
+
     // Empty custom shape selects the procedural round tip. Non-empty images
     // are converted to grayscale and scaled into the cached stamp on demand.
     void setCustomShape(const QImage &grayscaleMask);

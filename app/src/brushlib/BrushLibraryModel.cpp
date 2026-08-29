@@ -340,8 +340,19 @@ bool BrushLibraryModel::updateBrush(const QString &id, const ::Brush &brush)
             return false;
         m_presets[idx].brush = brush;
     }
+    // The write above serialised the CAPPED in-memory images, so any
+    // pre-cap oversize in the old file is gone - the flag's moment has
+    // passed (the studio showed its notice before calling here).
+    m_presets[idx].imagesCappedOnLoad = false;
     emit changed();
     return true;
+}
+
+void BrushLibraryModel::setImagesCappedOnLoadForTest(const QString &id)
+{
+    const int idx = m_byId.value(id, -1);
+    if (idx >= 0)
+        m_presets[idx].imagesCappedOnLoad = true;
 }
 
 bool BrushLibraryModel::hasBuiltinOverride(const QString &id) const

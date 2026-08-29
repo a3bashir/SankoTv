@@ -982,7 +982,7 @@ QWidget *BrushSettingsStudio::buildTipSection()
             loadImageFile(this, tr("Load Tip Image"));
         if (img.isNull())
             return;
-        applyInstant([&img](::Brush &b) { b.setCustomShape(img); }, true);
+        applyLoadedTipImage(img);
     });
     connect(roundTip, &QPushButton::clicked, this, [this] {
         applyInstant([](::Brush &b) { b.clearCustomShape(); }, true);
@@ -1171,8 +1171,7 @@ QWidget *BrushSettingsStudio::buildTextureSection()
         const QImage img = loadImageFile(this, tr("Load Grain Image"));
         if (img.isNull())
             return;
-        applyInstant([&img](::Brush &b) { b.setCustomGrain(img); },
-                     false);
+        applyLoadedGrainImage(img);
     });
 
     addSlider(l, QStringLiteral("Grain Scale"), 1.0, 2048.0,
@@ -1657,10 +1656,61 @@ void BrushSettingsStudio::openForPreset(const QString &presetId)
     openAtDefault();
 }
 
+// Loaded-image application, shared by the Load… buttons and the gate. The
+// engine caps oversized images at set time (Brush::kMaxCustomImageDim);
+// this is where the user is TOLD — a modal at the moment of import, only
+// when a downsample actually happened, with the numbers. Import is a
+// deliberate, rare act; a passive caption would be missed by exactly the
+// person who loads an 18-megapixel photo as grain (which is the recorded
+// incident this exists for).
+void BrushSettingsStudio::noteDownsample(const QSize &loaded,
+                                         const QSize &stored)
+{
+    if (stored.width() >= loaded.width()
+        && stored.height() >= loaded.height()) {
+        m_lastImportNoticeForTest.clear(); // no downsample: no notice
+        return;
+    }
+    const QString message =
+        tr("Image is %1 x %2; stored as %3 x %4 for painting "
+           "performance. Your original file is unchanged.")
+            .arg(loaded.width())
+            .arg(loaded.height())
+            .arg(stored.width())
+            .arg(stored.height());
+    m_lastImportNoticeForTest = message;
+    QMessageBox::information(this, tr("Image Resized"), message);
+}
+
+void BrushSettingsStudio::applyLoadedTipImage(const QImage &image)
+{
+    applyInstant([&image](::Brush &b) { b.setCustomShape(image); }, true);
+    noteDownsample(image.size(), scopeBrushConst().customShape().size());
+}
+
+void BrushSettingsStudio::applyLoadedGrainImage(const QImage &image)
+{
+    applyInstant([&image](::Brush &b) { b.setCustomGrain(image); }, false);
+    noteDownsample(image.size(), scopeBrushConst().grainTexture().size());
+}
+
 void BrushSettingsStudio::doneClicked()
 {
     if (m_presetId.isEmpty())
         return;
+    // A pre-cap preset FILE still carries its oversized images even though
+    // the session brush was capped at load. Done is the moment the file is
+    // rewritten in capped form — flagged, never silent, per the rescue
+    // decision for the first preset this ever happened to.
+    if (const BrushPreset *stored = m_model->preset(m_presetId);
+        stored && stored->imagesCappedOnLoad) {
+        const QString message = tr(
+            "This preset's images were stored at reduced size for painting "
+            "performance. Saving now writes the preset in that reduced "
+            "form; your original image files are unchanged.");
+        m_lastImportNoticeForTest = message;
+        QMessageBox::information(this, tr("Preset Images Resized"), message);
+    }
     // FAILURE IS NOT SILENT (phase 5 defect D4): Done closes only on a
     // confirmed write. On any failure the studio stays open with the
     // session intact, and the message names what actually went wrong.

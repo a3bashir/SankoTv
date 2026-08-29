@@ -401,10 +401,25 @@ void Brush::setGrainPreset(GrainPreset preset)
     m_grainTexture = proceduralGrain(preset);
 }
 
+namespace {
+// The kMaxCustomImageDim cap (see Brush.h): oversized sources are
+// downsampled ONCE at set time, aspect preserved, with proper filtering.
+// Under-cap images pass through byte-untouched.
+QImage cappedCustomImage(const QImage &image)
+{
+    if (image.width() <= Brush::kMaxCustomImageDim
+        && image.height() <= Brush::kMaxCustomImageDim)
+        return image;
+    return image.scaled(Brush::kMaxCustomImageDim, Brush::kMaxCustomImageDim,
+                        Qt::KeepAspectRatio, Qt::SmoothTransformation);
+}
+} // namespace
+
 void Brush::setCustomGrain(const QImage &texture)
 {
     if (texture.isNull()) return;
-    m_grainTexture = texture.convertToFormat(QImage::Format_Grayscale8);
+    m_grainTexture =
+        cappedCustomImage(texture).convertToFormat(QImage::Format_Grayscale8);
     m_grainPreset = GrainPreset::Custom;
 }
 
@@ -424,7 +439,8 @@ void Brush::setCustomShape(const QImage &mask)
         clearCustomShape();
         return;
     }
-    m_customShape = mask.convertToFormat(QImage::Format_Grayscale8);
+    m_customShape =
+        cappedCustomImage(mask).convertToFormat(QImage::Format_Grayscale8);
     invalidateShape();
 }
 

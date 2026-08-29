@@ -61,6 +61,7 @@
 #include "BuiltinRoster.h"
 #include "SankoPaintHostAdapter.h"
 
+#include <QBuffer>
 #include <QCryptographicHash>
 #include <QDir>
 #include <QElapsedTimer>
@@ -587,6 +588,149 @@ int main(int argc, char **argv)
                   !model.resetBuiltinToStock(gouache));
         }
         QDir(root).removeRecursively();
+    }
+
+    // ---- (b10) the custom-image cap + the encoded-image memo -------------
+    // The cap (Brush::kMaxCustomImageDim): an 18-megapixel photo loaded as
+    // grain made a 14 MB preset that froze the studio per gesture. The
+    // memo: the studio serialises the session brush on every gesture, so
+    // encodePng memoises on QImage::cacheKey - and the stale-memo hazard
+    // (a replaced same-dimension image serialising the OLD bytes) is
+    // pinned here from behaviour, not from the docs alone.
+    {
+        // Cap, aspect preserved, both setters; under-cap passes untouched.
+        QImage big(3000, 2000, QImage::Format_Grayscale8);
+        big.fill(180);
+        ::Brush capped;
+        capped.setCustomGrain(big);
+        check(QStringLiteral("(b10) an oversized grain caps to 2048, "
+                             "aspect preserved, Grayscale8"),
+              capped.grainTexture().size() == QSize(2048, 1365)
+                  && capped.grainTexture().format()
+                      == QImage::Format_Grayscale8,
+              QStringLiteral("%1x%2").arg(capped.grainTexture().width())
+                  .arg(capped.grainTexture().height()));
+        QImage wide(4000, 1000, QImage::Format_Grayscale8);
+        wide.fill(90);
+        capped.setCustomShape(wide);
+        check(QStringLiteral("(b10) an oversized tip caps to 2048, aspect "
+                             "preserved"),
+              capped.customShape().size() == QSize(2048, 512));
+        QImage under(1177, 1102, QImage::Format_Grayscale8);
+        for (int y = 0; y < under.height(); ++y) {
+            uchar *row = under.scanLine(y);
+            for (int x = 0; x < under.width(); ++x)
+                row[x] = uchar((x * 7 + y * 13) & 255);
+        }
+        ::Brush untouched;
+        untouched.setCustomGrain(under);
+        check(QStringLiteral("(b10) control: an under-cap image passes "
+                             "byte-untouched (the user's 1177x1102 tip "
+                             "case)"),
+              untouched.grainTexture() == under);
+
+        // cacheKey distinctness - the memo's key contract, AS A TEST:
+        // two distinct images of identical dimensions must never share a
+        // key (Qt: "distinct QImage objects can only have the same key if
+        // they refer to the same contents").
+        QImage sameDimsA(64, 64, QImage::Format_Grayscale8);
+        sameDimsA.fill(10);
+        QImage sameDimsB(64, 64, QImage::Format_Grayscale8);
+        sameDimsB.fill(200);
+        check(QStringLiteral("(b10) cacheKey: distinct same-dimension "
+                             "images key differently"),
+              sameDimsA.cacheKey() != sameDimsB.cacheKey());
+
+        // The memo: a second save of an unchanged brush encodes ZERO
+        // images and returns byte-identical output.
+        ::Brush memoBrush;
+        memoBrush.setCustomGrain(under);
+        const int before = BrushPresetCodec::imageEncodeCountForTest();
+        const QByteArray save1 = BrushPresetCodec::saveBrush(memoBrush);
+        const int afterFirst = BrushPresetCodec::imageEncodeCountForTest();
+        const QByteArray save2 = BrushPresetCodec::saveBrush(memoBrush);
+        const int afterSecond = BrushPresetCodec::imageEncodeCountForTest();
+        check(QStringLiteral("(b10) memo: repeated saves are "
+                             "byte-identical and the second encodes ZERO "
+                             "images"),
+              save1 == save2 && afterFirst > before
+                  && afterSecond == afterFirst,
+              QStringLiteral("encodes %1 -> %2 -> %3")
+                  .arg(before).arg(afterFirst).arg(afterSecond));
+
+        // THE STALE-MEMO HAZARD, pinned: replace the grain with a
+        // DIFFERENT image of IDENTICAL dimensions; the save must carry
+        // the NEW bytes (a stale memo would silently serialise the old
+        // image into the preset).
+        QImage replaced(under.size(), QImage::Format_Grayscale8);
+        for (int y = 0; y < replaced.height(); ++y) {
+            uchar *row = replaced.scanLine(y);
+            for (int x = 0; x < replaced.width(); ++x)
+                row[x] = uchar((x * 3 + y * 31 + 97) & 255);
+        }
+        memoBrush.setCustomGrain(replaced);
+        const QByteArray save3 = BrushPresetCodec::saveBrush(memoBrush);
+        ::Brush reloaded;
+        check(QStringLiteral("(b10) replacing an image with a same-size "
+                             "one serialises the NEW bytes (stale-memo "
+                             "hazard)"),
+              save3 != save1
+                  && BrushPresetCodec::loadBrush(save3, reloaded)
+                  && reloaded.grainTexture() == memoBrush.grainTexture());
+
+        // LEGACY: a pre-cap file with an oversized embedded image, built
+        // by splicing a big PNG into a real save's length-prefixed image
+        // slot (the wire format: QByteArray = quint32 BE length + bytes).
+        // Loading must cap in memory AND raise the capped-on-load flag;
+        // the unspliced control must not.
+        const auto pngBytes = [](const QImage &img) {
+            QByteArray png;
+            QBuffer buf(&png);
+            buf.open(QIODevice::WriteOnly);
+            img.save(&buf, "PNG");
+            return png;
+        };
+        const auto beU32 = [](quint32 v) {
+            QByteArray b(4, 0);
+            b[0] = char(v >> 24); b[1] = char(v >> 16);
+            b[2] = char(v >> 8);  b[3] = char(v);
+            return b;
+        };
+        ::Brush smallGrain;
+        QImage marker(32, 32, QImage::Format_Grayscale8);
+        for (int y = 0; y < 32; ++y)
+            for (int x = 0; x < 32; ++x)
+                marker.scanLine(y)[x] = uchar(x * 8 ^ y * 5);
+        smallGrain.setCustomGrain(marker); // the ONLY image in the brush
+        const QByteArray cleanBytes = BrushPresetCodec::saveBrush(smallGrain);
+        const QByteArray smallPng = pngBytes(smallGrain.grainTexture());
+        const int slot = cleanBytes.indexOf(smallPng);
+        check(QStringLiteral("(b10) splice setup: the image slot is "
+                             "locatable in the wire bytes"),
+              slot > 4
+                  && cleanBytes.mid(slot - 4, 4)
+                      == beU32(quint32(smallPng.size())));
+        QImage oversized(2500, 300, QImage::Format_Grayscale8);
+        oversized.fill(66);
+        const QByteArray bigPng = pngBytes(oversized);
+        QByteArray spliced = cleanBytes;
+        spliced.replace(slot - 4, 4 + smallPng.size(),
+                        beU32(quint32(bigPng.size())) + bigPng);
+        ::Brush legacy;
+        bool cappedFlag = false;
+        check(QStringLiteral("(b10) a pre-cap file loads with the image "
+                             "CAPPED in memory and the flag raised"),
+              BrushPresetCodec::loadBrush(spliced, legacy, &cappedFlag)
+                  && cappedFlag
+                  && legacy.grainTexture().width() == 2048,
+              QStringLiteral("w=%1 flag=%2")
+                  .arg(legacy.grainTexture().width()).arg(cappedFlag));
+        bool cleanFlag = true;
+        ::Brush cleanLoad;
+        check(QStringLiteral("(b10) control: the unspliced file loads "
+                             "with the flag DOWN"),
+              BrushPresetCodec::loadBrush(cleanBytes, cleanLoad, &cleanFlag)
+                  && !cleanFlag);
     }
 
     // ---- (b8) the ERASER MIRROR: one definition, referenced twice --------

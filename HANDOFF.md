@@ -2922,3 +2922,86 @@ semantics stated inside the check itself. Totals: Lifecycle 199. All
 five pins byte-identical both configs: 7cd8d084 / e7ce9d6b (coupled) /
 666f7b45 / cafcec7f / 0bc24381.
 
+## The custom-image cap + the encoded-image memo (2026-08-29)
+
+THE INCIDENT: the user loaded an 18-megapixel camera photo (5184x3456)
+as custom grain and a 1.3 MP image as custom tip - a 14 MB preset. The
+studio froze for seconds per gesture and the recording showed two
+40-55 s input-queue grinds while drawing.
+
+A DIAGNOSIS THAT DIED ON MEASUREMENT (recorded at the user's
+direction, because this is the project's recurring pattern): the
+recording review blamed per-pixel grain sampling over the 18 MB
+texture - a cache-miss theory, plausible enough to survive its own
+review. The Requirement-0 benchmark killed it: sampling cost is FLAT
+across source sizes (grain ~7.6 ms, tip ~4.6 ms per 615 px stamp,
+whether 128 px or 18 MP - the access pattern is sequential enough that
+the prefetcher wins), and an end-to-end stroke through the user's
+actual preset changed by <1% with the images capped and got SLOWER
+with them removed. The DRAWING lag was the variation's spacing 0.015
+(8x denser than default) - a fact that would have been missed entirely,
+and the cap shipped as a phantom stroke fix, had the cap been built on
+the reviewed diagnosis. Measure before building; the tip-drift pass
+learned the same lesson from the other direction.
+
+WHAT THE IMAGES DID CAUSE (all confirmed): 428 ms PNG encode per
+serialization at 18 MP, x2 per studio gesture (applyInstant snapshots
+before+after), 15 MB undo snapshots (the recording's ~900 MB working
+set), a 14 MB preset file. The pass fixes exactly this class.
+
+THE CAP: Brush::kMaxCustomImageDim = 2048, applied in setCustomShape /
+setCustomGrain (SmoothTransformation, aspect preserved; under-cap
+images pass byte-untouched). 2048 is visually free by measurement:
+grain keeps >= 1 texel per canvas px at every reachable Grain Scale
+(slider max 2048), and a tip source beyond the stamped size ALIASES
+under plain bilinear - filtered downsampling is sharper for stamps at
+or below 2048 (soft only above, 2.4x at the 5000 brush cap). Setter
+placement means every path inherits it: studio Load..., ABR import,
+and pre-cap files at load. 2048 was approved CONDITIONAL on the memo
+below shipping in the same pass - without it the 69 ms encode would
+still run per gesture and 1024 would have been the right number.
+
+THE MEMO: BrushPresetCodec's encodePng memoises encoded bytes on
+QImage::cacheKey (mutex-guarded; BrushPreviewRenderer's worker calls
+saveBrush off-thread). A gesture's serialization now encodes ZERO
+images. The stale-memo hazard - a replaced same-dimension image
+serialising the OLD bytes - is pinned from BEHAVIOUR, not assumed from
+the docs: (b10) proves distinct same-dimension images key differently
+and that a swapped grain serialises the new bytes. Determinism: the
+memo returns exactly the bytes it produced (b1/b2 idempotence stand
+guard). NOTE the memo saves TIME, not undo MEMORY - QDataStream copies
+the bytes into each snapshot; at the 2048 cap a snapshot is ~2.5 MB,
+acceptable where 15 MB was not.
+
+TOLD, NEVER SILENT: importing an image the cap reduces shows a modal
+AT THE IMPORT with the numbers and "your original file is unchanged"
+(a deliberate, rare moment - a passive caption would be missed by
+exactly the person who needs it). A PRE-CAP FILE (made before this
+pass) loads capped in memory, flagged transient on the BrushPreset
+(imagesCappedOnLoad, codec-detected, never serialised); Done on such a
+preset says the rewrite out loud before the file is rewritten in
+capped form, and the model clears the flag after the write. The user's
+own HB Pencil Variation is the one such file in existence: their
+decision was (a) leave the file alone and flag the re-save - it is NOT
+rewritten by this pass.
+
+QUEUED, NOT BUILT: a spacing x size performance guard (refuse, clamp,
+or warn is undecided - the user wants that design discussion before
+anyone builds one; their variation is the only case that has ever hit
+it). The user raises their own spacing by hand.
+
+GATE: BrushLibrary (b10), 9 checks - both caps with aspect, the
+under-cap byte-untouched control, cacheKey distinctness AS A TEST,
+memo identity + zero-encode + the stale-memo replacement hazard, and a
+spliced pre-cap file (a big PNG spliced into a real save's
+length-prefixed image slot) loading capped with the flag raised, plus
+the unspliced flag-down control. Lifecycle (r), 7 checks - the import
+notice with numbers, the under-cap silence control, and the flagged
+Done-rewrite flow end to end with the flag clearing after the write.
+Totals: Lifecycle 206. All five pins byte-identical both configs:
+7cd8d084 / e7ce9d6b (coupled) / 666f7b45 / cafcec7f / 0bc24381. (One
+build-hygiene note: the Debug tree produced a corrupt SankoTV.exe
+(LNK1136) and a zero-output segfaulting SankoCanvasSizeLock in the
+same session - both cured by deleting intermediates and relinking;
+the sources were proven innocent by Release passing throughout.)
+

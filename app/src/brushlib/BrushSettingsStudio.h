@@ -79,6 +79,19 @@ public:
     // gate's one-definition comparison.
     QImage grainPreviewImageForTest() const;
 
+    // The Load… application path (image already picked), public so the
+    // gate can drive imports without a file dialog. Shows the downsample
+    // notice when the engine's cap reduced the image; the text lands in
+    // the seam below either way a notice fires (Done's pre-cap re-save
+    // notice included).
+    void applyLoadedTipImage(const QImage &image);
+    void applyLoadedGrainImage(const QImage &image);
+    QString lastImportNoticeForTest() const
+    {
+        return m_lastImportNoticeForTest;
+    }
+    void doneForTest() { doneClicked(); }
+
 signals:
     void visibilityChanged(bool visible);
     void presetCommitted(const QString &presetId);  // Done
@@ -184,6 +197,7 @@ private:
     QSize savedSize() const;
     void doneClicked();
     void saveVariationClicked();
+    void noteDownsample(const QSize &loaded, const QSize &stored);
 
     friend class BrushEditCommand;
 
@@ -224,6 +238,7 @@ private:
     QWidget *m_propsWidget = nullptr;
     QVector<std::function<void()>> m_syncers;
     bool m_syncing = false; // silences control callbacks during syncAll
+    QString m_lastImportNoticeForTest; // last cap/re-save notice shown
 
     // Move/resize state (the library panel's subclass-only pattern).
     bool m_pressed = false;
