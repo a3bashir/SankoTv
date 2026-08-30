@@ -259,14 +259,48 @@ QVector<BrushPreset> builtinRoster()
     });
     r << make(kSketching, QStringLiteral("H Pencil"), [&](::Brush &b) {
         sketchBase(b);
-        b.setSize(3); b.setHardness(0.70); b.setOpacity(0.55);
-        b.setGrainDepth(0.30);
+        // STAMP TIP, batch two (2026-08-30): tuned from the batch-one
+        // hand-test - "the hard end was under-textured" (4H's verdict
+        // applied family-wide: deeper AND finer tooth than the v1 table).
+        b.setCustomShape(
+            QImage(QStringLiteral(":/brushes/pencil_h_tip.png")));
+        b.setSize(3);
+        b.setHardness(0.70); // INERT with a custom tip (see 4H)
+        b.setOpacity(0.48);
+        // v3 treatment scaled from the 4H diagnosis (Paper cannot tooth;
+        // see 4H): Charcoal-preset texture, deep valleys, de-saturated
+        // overlap. Softer scaling than 4H per grade order.
+        b.setFlow(0.30);
+        b.setSpacing(0.11);
+        b.setGrainPreset(B::GrainPreset::Charcoal);
+        b.setGrainDepth(0.80);
+        b.setGrainScale(32.0);
+        b.setGrainContrast(2.2);
+        b.setGrainMode(B::GrainMode::StaticCanvas);
+        b.setControlMinimum(B::DynamicProperty::GrainDepth, 1.0);
+        b.setNoise(0.12);
         b.opacityPressureCurve().setControlPoints(curve2(0.35, 0.9));
     });
     r << make(kSketching, QStringLiteral("2H Pencil"), [&](::Brush &b) {
         sketchBase(b);
-        b.setSize(3); b.setHardness(0.78); b.setOpacity(0.40);
-        b.setGrainDepth(0.25);
+        // STAMP TIP, batch two (2026-08-30): hard-end texture raised per
+        // the batch-one verdict, sitting between 4H and H.
+        b.setCustomShape(
+            QImage(QStringLiteral(":/brushes/pencil_2h_tip.png")));
+        b.setSize(3);
+        b.setHardness(0.78); // INERT with a custom tip (see 4H)
+        b.setOpacity(0.38);
+        // v3 treatment scaled from the 4H diagnosis (Paper cannot tooth;
+        // see 4H): between H and 4H on the grade ladder.
+        b.setFlow(0.28);
+        b.setSpacing(0.12);
+        b.setGrainPreset(B::GrainPreset::Charcoal);
+        b.setGrainDepth(0.85);
+        b.setGrainScale(30.0);
+        b.setGrainContrast(2.5);
+        b.setGrainMode(B::GrainMode::StaticCanvas);
+        b.setControlMinimum(B::DynamicProperty::GrainDepth, 1.0);
+        b.setNoise(0.10);
         b.sizePressureCurve().setControlPoints(curve2(0.7, 1.0));
     });
     r << make(kSketching, QStringLiteral("4H Pencil"), [&](::Brush &b) {
@@ -276,19 +310,33 @@ QVector<BrushPreset> builtinRoster()
         // assets rule. Tuning v1 - iteration with the user expected.
         b.setCustomShape(
             QImage(QStringLiteral(":/brushes/pencil_4h_tip.png")));
-        b.setSize(2);
+        b.setSize(25); // v2: the user's chosen default across the family
         b.setHardness(0.85); // INERT with a custom tip: the falloff only
                              // shapes PROCEDURAL tips. Kept as the grade
                              // ladder's record; edge character now comes
                              // from the stamp and Noise.
         b.setOpacity(0.30);  // faint ceiling: a 4H tops out light
-        b.setFlow(0.40);     // reaches that low ceiling quickly - hard
-                             // pencils do not "build", they stay faint
-        b.setGrainDepth(0.25);
-        b.setGrainScale(40.0);
+        // v3 (MEASURED, 2026-08-30, after v2 "still smooth"): the Paper
+        // preset texture CANNOT produce visible tooth - its values
+        // cluster ~0.8, raising contrast clamps it flatter, max spread 5
+        // at any depth (probe-measured; see HANDOFF). Charcoal preset at
+        // fine scale has real dark texels; depth 0.9 makes valleys reach
+        // near paper-white (depth is the valley FLOOR: modulation lives
+        // in [1-depth, 1]). Flow down + spacing up de-saturate the
+        // overlap so the modulation survives into the stroke. Probe:
+        // spread 3 (v2) -> 27 (this recipe), valleys p5=4/255.
+        b.setFlow(0.25);
+        b.setSpacing(0.12);
+        b.setGrainPreset(B::GrainPreset::Charcoal); // texture SOURCE, not
+                                                    // identity: at scale
+                                                    // 30 it reads as fine
+                                                    // paper tooth
+        b.setGrainDepth(0.90);
+        b.setGrainScale(30.0);
+        b.setGrainContrast(3.0);
         b.setGrainMode(B::GrainMode::StaticCanvas); // tooth on the paper
         b.setControlMinimum(B::DynamicProperty::GrainDepth, 1.0);
-        b.setNoise(0.06);    // barely-there dry edge
+        b.setNoise(0.08);    // dry edge, nudged with the tooth
         b.sizePressureCurve().setControlPoints(curve2(0.85, 1.0));
     });
     r << make(kSketching, QStringLiteral("2B Pencil"), [&](::Brush &b) {
@@ -297,7 +345,9 @@ QVector<BrushPreset> builtinRoster()
         // the user's scanned 2B stamp. Tuning v1 - iteration expected.
         b.setCustomShape(
             QImage(QStringLiteral(":/brushes/pencil_2b_tip.png")));
-        b.setSize(5);
+        b.setSize(25); // v2: size only - the feel passed hand-testing
+                       // as-is ("feels good") and is the soft-end
+                       // calibration reference the others move around
         b.setHardness(0.52); // INERT with a custom tip (see 4H)
         b.setOpacity(0.70);  // mid-dark ceiling: darker than HB's 0.55,
                              // well short of 6B
@@ -312,9 +362,24 @@ QVector<BrushPreset> builtinRoster()
     });
     r << make(kSketching, QStringLiteral("4B Pencil"), [&](::Brush &b) {
         sketchBase(b);
-        b.setSize(6); b.setHardness(0.42); b.setOpacity(0.92);
-        b.setGrainDepth(0.55);
+        // STAMP TIP, batch two (2026-08-30): the soft-end spread widened
+        // per the batch-one verdict - 4B sits deliberately BETWEEN the
+        // 2B reference and the darker v2 6B: scale progression 40/48/56,
+        // opacity-floor progression 0.25/0.32/0.40 across 2B/4B/6B.
+        b.setCustomShape(
+            QImage(QStringLiteral(":/brushes/pencil_4b_tip.png")));
+        b.setSize(6);
+        b.setHardness(0.42); // INERT with a custom tip (see 4H)
+        b.setOpacity(0.85);
+        b.setFlow(0.20);
+        b.setGrainDepth(0.60);
+        b.setGrainScale(48.0);
+        b.setGrainMode(B::GrainMode::StaticCanvas);
+        b.setControlMinimum(B::DynamicProperty::GrainDepth, 1.0);
+        b.setNoise(0.20);
+        b.setAngleJitter(0.08);
         b.setTiltAffectsShape(true); b.setMaxTiltElongation(2.2);
+        b.opacityPressureCurve().setControlPoints(curve2(0.32, 1.0));
     });
     r << make(kSketching, QStringLiteral("6B Pencil"), [&](::Brush &b) {
         sketchBase(b);
@@ -324,44 +389,103 @@ QVector<BrushPreset> builtinRoster()
         // SIGNIFICANTLY softer and darker than 2B.
         b.setCustomShape(
             QImage(QStringLiteral(":/brushes/pencil_6b_tip.png")));
-        b.setSize(8);
+        b.setSize(25); // v2: the user's chosen default across the family
         b.setHardness(0.34); // INERT with a custom tip (see 4H)
-        b.setOpacity(0.92);  // near-black ceiling
-        b.setFlow(0.18);     // slowest deposit of the ladder: darkness is
-                             // EARNED over passes, the soft-graphite feel
+        // v2 (hand-tested 2026-08-30, "too similar to 2B - a bit
+        // darker"): the naive lever was flow, and it was DECLINED - a
+        // faster deposit makes 6B build like 2B and collapses the
+        // instrument distinction. Instead: the opacity CURVE FLOOR rises
+        // 0.25 -> 0.4, so soft graphite BITES DARK at first touch (the
+        // felt "darker", and physically true of a 6B), the ceiling rises
+        // to 0.97 for deeper blacks, and the texture gap to 2B widens in
+        // the same move (coarser scale 48 -> 56, noise 0.22 -> 0.26).
+        // v3 (MEASURED, 2026-08-30): v2's flow-0.18 theory was WRONG in
+        // the direction that mattered - the probe showed 2B out-darkens
+        // 6B at EVERY pressure and pass (up to 63/255), because the 6B
+        // STAMP is far sparser than the 2B stamp (per-dab coverage the
+        // settings never show; see HANDOFF "stamp sparsity"). The
+        // ceilings never matter: nothing approaches them in real
+        // drawing. Flow 0.45 compensates for the sparse stamp - probe
+        // ratios 6B/2B = 1.86 / 1.58 / 1.21 across pressures.
+        b.setOpacity(0.97);
+        b.setFlow(0.45);
         b.setGrainDepth(0.70);
-        b.setGrainScale(48.0); // coarser tooth than the hard grades
+        b.setGrainScale(56.0); // coarsest graphite tooth of the ladder
         b.setGrainMode(B::GrainMode::StaticCanvas);
         b.setControlMinimum(B::DynamicProperty::GrainDepth, 1.0);
-        b.setNoise(0.22);      // crumbly dry edges
+        b.setNoise(0.26);      // crumbly dry edges
         b.setAngleJitter(0.10);
         b.setSpacing(0.06);
         b.setTiltAffectsShape(true); b.setMaxTiltElongation(3.0);
         // Deeper size swell than sketchBase: light touch is a whisper,
         // pressure blooms the stroke.
         b.sizePressureCurve().setControlPoints(curve2(0.2, 1.0));
+        b.opacityPressureCurve().setControlPoints(curve2(0.4, 1.0));
     });
     r << make(kSketching, QStringLiteral("Mechanical Pencil"),
               [&](::Brush &b) {
         sketchBase(b);
-        b.setSize(2); b.setHardness(0.88); b.setOpacity(0.8);
-        b.setGrainDepth(0.15);
+        // STAMP TIP, batch two (2026-08-30): consistency over character -
+        // the batch-one feedback does not reach this one (unchanged from
+        // the v1 table). Highest flow of the set: no build-y behaviour,
+        // just a dependable line.
+        b.setCustomShape(
+            QImage(QStringLiteral(":/brushes/pencil_mech_tip.png")));
+        b.setSize(2);
+        b.setHardness(0.88); // INERT with a custom tip (see 4H)
+        b.setOpacity(0.65);
+        b.setFlow(0.50);
+        b.setGrainDepth(0.12);
+        b.setGrainScale(40.0);
+        b.setGrainMode(B::GrainMode::StaticCanvas);
+        b.setControlMinimum(B::DynamicProperty::GrainDepth, 1.0);
+        b.setNoise(0.04);
+        b.setSpacing(0.06); // the smoothest line of the family
         b.sizePressureCurve().setControlPoints(curve2(1.0, 1.0)); // fixed width
         b.setTiltAffectsShape(false); // the lead is clutched: no shoulder
     });
     r << make(kSketching, QStringLiteral("Blue Pencil"), [&](::Brush &b) {
         sketchBase(b);
-        b.setSize(4); b.setHardness(0.60); b.setOpacity(0.5);
-        b.setGrainDepth(0.30);
+        // STAMP TIP, batch two (2026-08-30): animation blue-pencil -
+        // light ceiling, deeper-than-graphite grain for the visible
+        // texture the intent asks for. Unchanged from the v1 table.
+        b.setCustomShape(
+            QImage(QStringLiteral(":/brushes/pencil_blue_tip.png")));
+        b.setSize(4);
+        b.setHardness(0.60); // INERT with a custom tip (see 4H)
+        b.setOpacity(0.45);
+        b.setFlow(0.30);
+        b.setGrainDepth(0.40);
+        b.setGrainScale(40.0);
+        b.setGrainMode(B::GrainMode::StaticCanvas);
+        b.setControlMinimum(B::DynamicProperty::GrainDepth, 1.0);
+        b.setNoise(0.12);
+        b.setAngleJitter(0.05);
         b.setColor(QColor(0x4a, 0x90, 0xd9)); // non-photo blue
     });
     r << make(kSketching, QStringLiteral("Charcoal Pencil"),
               [&](::Brush &b) {
         sketchBase(b);
-        b.setSize(6); b.setHardness(0.45); b.setOpacity(0.9);
+        // STAMP TIP, batch two (2026-08-30): the 6B v2 direction taken
+        // further - the roughest of the family. Heavy Noise is the
+        // breakup lever now that hardness is inert; the opacity floor
+        // matches v2 6B (charcoal bites dark immediately).
+        b.setCustomShape(
+            QImage(QStringLiteral(":/brushes/pencil_charcoal_tip.png")));
+        b.setSize(6);
+        b.setHardness(0.45); // INERT with a custom tip (see 4H)
+        b.setOpacity(0.92);
+        b.setFlow(0.25);
         b.setGrainPreset(B::GrainPreset::Charcoal);
         b.setGrainMode(B::GrainMode::StaticCanvas);
-        b.setGrainDepth(0.7); b.setRoundnessJitter(0.15);
+        b.setGrainDepth(0.75);
+        b.setGrainScale(64.0);
+        b.setControlMinimum(B::DynamicProperty::GrainDepth, 1.0);
+        b.setNoise(0.30);
+        b.setAngleJitter(0.15);
+        b.setRoundnessJitter(0.15);
+        b.setSpacing(0.09); // chunkier dab rhythm
+        b.opacityPressureCurve().setControlPoints(curve2(0.4, 1.0));
     });
 
     // ---- DRAWING: committed, opaque, chunky media; Static grain ---------

@@ -83,11 +83,13 @@ Learned from real defects. Follow them exactly.
    apart: SankoBrushLibraryTest, SankoPaintPixelLock, SankoCanvasBrushLock,
    SankoQuickShapeGeometryLock, SankoDevRecorderTest, SankoCanvasEdgeLock,
    SankoCanvasSizeLock, SankoProjectLifecycle. Preview SHA must stay
-   `10c3106c14411589403b50e4216fa110d7953bec93fc87704a41df2ae13bbc54`
-   (re-baselined 2026-08-30: pencil stamp promotion, first batch — 4H/2B/6B
-   gain the user's scanned stamp tips + per-grade tuning v1; the eraser
-   swatch SHA `c9f2ff70…` moves WITH it, same commit, per the coupled-pin
-   note in BrushLibraryTest); both pixel locks byte-identical
+   `159eeaa5b5b1b36beedcaef0c71ff967af3f2d41084d76f7d6ca96a7bfe1d03a`
+   (re-baselined 2026-08-30: pencil stamp promotion complete — v3 for the
+   graphite ladder, PROBE-MEASURED (Charcoal-preset tooth for 4H/2H/H,
+   6B flow 0.45 for the stamp-sparsity finding) plus batch two
+   (4B/Mechanical/Blue/Charcoal); the eraser swatch SHA
+   `159b1786…` moves WITH it, same commit, per the coupled-pin note in
+   BrushLibraryTest); both pixel locks byte-identical
    (`666f7b45…`, `cafcec7f…`), erase baseline `0bc24381…`. The first
    six use 960×540 fixtures; SankoCanvasSizeLock is the variable-resolution
    lock — it draws real pixels at the far edge of five canvas sizes

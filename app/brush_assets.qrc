@@ -12,5 +12,11 @@
         <file alias="pencil_4h_tip.png">assets/brushes/pencil_4h_tip.png</file>
         <file alias="pencil_2b_tip.png">assets/brushes/pencil_2b_tip.png</file>
         <file alias="pencil_6b_tip.png">assets/brushes/pencil_6b_tip.png</file>
+        <file alias="pencil_h_tip.png">assets/brushes/pencil_h_tip.png</file>
+        <file alias="pencil_2h_tip.png">assets/brushes/pencil_2h_tip.png</file>
+        <file alias="pencil_4b_tip.png">assets/brushes/pencil_4b_tip.png</file>
+        <file alias="pencil_mech_tip.png">assets/brushes/pencil_mech_tip.png</file>
+        <file alias="pencil_blue_tip.png">assets/brushes/pencil_blue_tip.png</file>
+        <file alias="pencil_charcoal_tip.png">assets/brushes/pencil_charcoal_tip.png</file>
     </qresource>
 </RCC>

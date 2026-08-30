@@ -3172,3 +3172,107 @@ re-baselined together, cross-config identical: preview c1fbee31 ->
 10c3106c, eraser b602355f -> c9f2ff70. Second batch will move both
 again - expected, one reason, one commit. All other pins unmoved.
 Totals: BrushLibrary 84, Lifecycle 213.
+
+## Pencil promotion complete: v2 from the hand-test + batch two (2026-08-30)
+
+THE FEEDBACK LOOP CLOSED: the user drew with the calibration three.
+Verdicts: 2B right as-is (it becomes the soft-end reference); 4H right
+in character but "texture too soft"; 6B "too similar to 2B - a bit
+darker". All three default to size 25 (the ~1254px stamps at 25px
+undersample-alias at stamp time - reads as pencil sparkle in practice,
+per the HB precedent at 36; no performance cost, measured flat).
+
+v2 MOVES, with the reasoning that survived:
+- 4H: tooth deepened AND refined - depth 0.25 -> 0.40, scale 40 -> 30,
+  noise 0.06 -> 0.08. Finer scale keeps the added texture reading as
+  hard-pencil precision; the machined feel lives in the untouched line
+  geometry.
+- 6B: the naive lever (flow) was DECLINED - faster deposit makes 6B
+  build like 2B and collapses the instrument distinction. Instead the
+  opacity CURVE FLOOR rose 0.25 -> 0.4 (soft graphite bites dark at
+  first touch - the felt "darker"), ceiling 0.92 -> 0.97, and the
+  texture gap widened in the same move (scale 48 -> 56, noise -> 0.26).
+  Flow stays 0.18: darkness is still earned over passes.
+
+BATCH TWO shipped with feedback-shifted tunings: the hard end was
+under-textured family-wide (H depth 0.45/scale 32, 2H 0.40/30), the
+soft-end spread widened into ladders (scale 40/48/56 and opacity-floor
+0.25/0.32/0.40 across 2B/4B/6B), Charcoal takes the 6B direction
+further (scale 64, noise 0.30, floor 0.4), Mechanical and Blue
+unchanged from the v1 table (the feedback does not reach them). Every
+recipe carries the INERT hardness comment. All nine stamps verified
+under-cap and white-on-black before use.
+
+ASSETS: nine tips, 7.82 MB total (batch two adds 5.29 MB). Repo was
+~127 MB packed - a one-time ~6%. The additive-history caveat is on
+record: replacing an asset keeps the old blob forever; wholesale
+re-scanning as a habit would be the point to consider LFS.
+
+BUILD-TREE WARNING, third corruption event in app/build Debug in two
+days (corrupt SankoTV.exe LNK1136, a zero-output SizeLock segfault,
+now a SizeLock wrong-render - each cured by deleting intermediates
+and rebuilding; sources proven innocent by Release passing and by
+clean rebuilds going green). This pass finished on a FULLY WIPED and
+rebuilt Debug config. If a fourth event lands, suspect the disk or
+the toolchain, not the code - and check this list before debugging a
+Debug-only failure as real.
+
+GATE: (b12) census now covers all ten asset-bearing built-ins (nine
+pencils + HB) at source dimensions. Coupled pins re-baselined together
+(fourth legitimate movement), cross-config identical: preview 10c3106c
+-> 6aee3d7f, eraser c9f2ff70 -> d7264fcb. All other pins unmoved.
+Totals: BrushLibrary 90, Lifecycle 213.
+
+## Pencil v3: measured, not guessed (2026-08-30)
+
+Two v2 rounds under-delivered by hand-test; the user ordered
+measurement over adjustment. A probe rendered real strokes with the
+roster brushes (archived: seam_pencilprobe_20260830_2.cpp). Both v2
+theories died on the numbers, and two ENGINE FACTS came out, recorded
+here at the user's direction:
+
+FINDING 1 - STAMP SPARSITY SILENTLY GOVERNS DEPOSIT RATE. A custom
+stamp's coverage density is a per-dab deposit multiplier that shows up
+in NO setting. The 6B scan is far sparser than the 2B scan, so v2's 6B
+was LIGHTER than 2B at every pressure and pass despite ceiling 0.97 vs
+0.70 and a higher opacity floor - measured: 2B darker by 38/255 at
+full-pressure pass 1, 63/255 at pass 3. Ceilings never mattered:
+nothing approaches them in real drawing (2B pass-3 full pressure hits
+178/255 = exactly its 0.70 ceiling only in the extreme row). Whoever
+tunes the next custom-tip brush: compare STAMP MEAN COVERAGE first,
+and compensate with flow. v3 6B: flow 0.18 -> 0.45; measured shipped
+ratios 6B/2B = 1.86 / 1.58 / 1.21 (pass 1) and 1.83 / 1.43 / 1.06
+(pass 3) across pressures 0.15 / 0.5 / 1.0.
+
+FINDING 2 - THE PAPER PRESET CANNOT PRODUCE VISIBLE TOOTH. Its texels
+cluster ~0.8: contrast CLAMPS it flatter (values sit far above the 0.5
+midpoint), and grain depth cannot help because depth is the valley
+FLOOR (modulation lives in [1-depth, 1]) - a texture with no dark
+texels never lets paper show through. Measured maximum tooth spread
+with Paper: 5/255 at ANY depth/contrast/spacing/flow combination.
+Anyone reaching for Grain Depth on a light brush must know the PRESET
+is the ceiling, not the setting. Visible tooth needs a texture with
+real dark texels + high depth: Charcoal preset at fine scale 30,
+depth 0.90, contrast 3.0 measured spread 27/255 with valleys at 4/255
+(near paper-white) - shipped for 4H, scaled for 2H (0.85/2.5) and H
+(0.80/2.2, scale 32). Third contributor: overlap saturation (size 25 x
+spacing 0.08 = a stamp every 2 px) flattens whatever survives; v3
+de-saturates with flow 0.25-0.30 and spacing 0.11-0.12. Caveat on
+H/2H: at size 3 the probe's core-band metric mixes line-edge falloff
+with tooth, so their numbers are not comparable to 4H's - the
+treatment is applied on the shared diagnosis and the user's hand
+judges it.
+
+WALL TEXTURE, MEASURED AND NOT SHIPPED (the user's one-change-at-a-
+time rule): the 5184x3456 paper photo as custom grain at the v3 4H
+settings measured spread 18 max at a much dimmer mean (6.8 vs the
+shipped preset's 21.6 at spread 27) - NOT materially better than the
+Charcoal preset. Recommendation stands: keep the preset.
+
+SHIPPED == MEASURED: the probe's (e) section re-rendered the ROSTER
+brushes after the edit and matched the candidate numbers exactly (4H
+21.6/27/p5=4; 6B ratios above). Coupled pins re-baselined together,
+cross-config identical: preview 6aee3d7f -> 159eeaa5, eraser d7264fcb
+-> 159b1786. v2 was never committed, so the calibration commit
+carries v3 - the known-wrong intermediate exists only in HANDOFF and
+the report record.
