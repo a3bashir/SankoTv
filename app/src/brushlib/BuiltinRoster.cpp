@@ -526,24 +526,36 @@ QVector<BrushPreset> builtinRoster()
     r << make(kDrawing, QStringLiteral("Soft Pastel"), [&](::Brush &b) {
         drawBase(b);
         // STAMP TIP, Drawing calibration batch (2026-08-30, with
-        // Compressed Charcoal and Grease Pencil). MEASURED at the
-        // approved size 35: mean 42.4 at half pressure, buildup x2.54
-        // over three passes, tooth spread 25 - the gentle powdery
-        // profile (flow swept 0.10..0.32; 0.14 landed the targets; the
-        // dense 102/255-coverage stamp deposits hard, hence the low
-        // flow). Ships EXACTLY the measured candidate - the old
-        // roundnessJitter 0.2 is deliberately dropped rather than added
-        // unmeasured.
+        // Compressed Charcoal and Grease Pencil); edge/tooth pass from
+        // the hand-test verdict "soft-density mark with a hard
+        // silhouette". The stamp's own rim IS hard (radial census:
+        // 145->32->1 across 0.83R..0.98R, ~1-2 px at stroke scale), so
+        // the fray comes from the ENGINE: pressure-INVERTED perpendicular
+        // scatter (full fray at light pressure, dense tight spine at
+        // full - a light pastel pass ends in sputter, a hard press lays
+        // a solid mark) with scatterCount 2 refilling the thinned spine
+        // and flow dropped 0.14 -> 0.10 to compensate the doubled dabs.
+        // Tooth: Charcoal preset at depth 1.0 - the only preset that
+        // opens real valleys (Chalk ceilings at spread ~35 even at
+        // depth 1.0). MEASURED at size 35: first-touch 36.5 / build
+        // x2.53 / full-pressure 108.9 (the confirmed-good build
+        // character, preserved) with interior spread 25 -> 57 and the
+        // cross-section cliff at 12 px replaced by a graded sputter
+        // tail (occupancy 55/36/13/1% over dy 12-18, zero at 20). The
+        // old roundnessJitter 0.2 stays dropped (unmeasured).
         b.setCustomShape(
             QImage(QStringLiteral(":/brushes/draw_softpastel_tip.png")));
         b.setSize(35);
         b.setHardness(0.3); // INERT with a custom tip (see 4H Pencil)
         b.setOpacity(0.85);
-        b.setFlow(0.14);
-        b.setGrainPreset(B::GrainPreset::Chalk);
-        b.setGrainDepth(0.7);
-        b.setGrainScale(56.0);
-        b.setGrainContrast(2.0);
+        b.setFlow(0.10);
+        b.setScatterPerpendicular(0.75);
+        b.setScatterCount(2);
+        b.scatterPressureCurve().setControlPoints(curve2(1.0, 0.15));
+        b.setGrainPreset(B::GrainPreset::Charcoal);
+        b.setGrainDepth(1.0);
+        b.setGrainScale(48.0);
+        b.setGrainContrast(3.0);
         b.setControlMinimum(B::DynamicProperty::GrainDepth, 1.0);
         b.setNoise(0.12);
         b.setAngleJitter(0.12);

@@ -83,12 +83,13 @@ Learned from real defects. Follow them exactly.
    apart: SankoBrushLibraryTest, SankoPaintPixelLock, SankoCanvasBrushLock,
    SankoQuickShapeGeometryLock, SankoDevRecorderTest, SankoCanvasEdgeLock,
    SankoCanvasSizeLock, SankoProjectLifecycle. Preview SHA must stay
-   `0bc662dc9fb970d163616ede72f8ac3c13dc734766ff0bcd4842dde3c207cb58`
-   (re-baselined 2026-08-30: Drawing-list stamp promotion, calibration
-   batch — Soft Pastel / Compressed Charcoal / Grease Pencil gain their
-   scanned stamps with probe-measured tunings at the approved sizes;
-   the eraser SHA
-   `1bf25d5b…` moves WITH it, same commit, per the coupled-pin note in
+   `5304f43bd5145de1c28261234f5432a34637be9743ec696141ebeee85f73282a`
+   (re-baselined 2026-08-30: Soft Pastel edge/tooth pass from the
+   hand-test — pressure-inverted scatter frays the stamp's hard
+   silhouette into a graded sputter tail, Charcoal grain at depth 1.0
+   opens the interior tooth; measured cross-section, shipped ==
+   measured; the eraser SHA
+   `48dc5641…` moves WITH it, same commit, per the coupled-pin note in
    BrushLibraryTest); both pixel locks byte-identical
    (`666f7b45…`, `cafcec7f…`), erase baseline `0bc24381…`. The first
    six use 960×540 fixtures; SankoCanvasSizeLock is the variable-resolution

@@ -3418,3 +3418,50 @@ deliberately dropped (unmeasured under the new stamp).
 Coupled pins re-baselined together, cross-config identical: preview
 d55d579f -> 0bc662dc, eraser 83db7f66 -> 1bf25d5b. Lifecycle 223,
 BrushLibrary 93.
+
+## Soft Pastel edge/tooth: pressure-inverted scatter (2026-08-30)
+
+Hand-test verdicts on the Drawing calibration three, and what followed:
+
+- **Grease Pencil: STAMP IS THE CEILING, confirmed by the user.** No
+  further tuning. A wax-reading replacement stamp needs: one connected
+  blob, interior mean >= 110/255, interior variation (p95-p5, central
+  60%) <= ~25, no interior hole > ~2% of width, edge falling solid to
+  nothing over 3-6% of diameter, grayscale white-on-black ~1254px.
+  User is re-scanning (flat single press, smooth hot-press paper).
+  Census any candidate before wiring it.
+- **Compressed vs Stick: measured, deferred to batch two by the user.**
+  Stick reads darker because it still runs the procedural drawBase
+  recipe (flow 1.0, opacity 1.0, full-coverage disc): grain-off
+  first-touch 128 vs the stamp's 87. Compressed already wins at full
+  pressure (171 vs 150). Flow ~0.85 would close the first-touch gap,
+  but Stick is scheduled for its own scan at size 35 in batch two -
+  the pair calibrates JOINTLY then (polarity: Compressed denser/darker
+  at first-touch AND full pressure). No interim bump.
+- **Soft Pastel: "soft-density mark with a hard silhouette" - fixed,
+  measured.** The stamp's own rim is hard (radial census: 145->32->1
+  across 0.83R..0.98R, ~1-2px at stroke scale), so the cliff at dy12
+  was the stamp outline. Engine findings that generalize:
+  - **scatterPerpendicular is the "runs out" lever**: at 0.75-1.0 it
+    produces a genuinely granular tail (occupancy grading ~50/30/15/5%,
+    not a veil) but thins the full-pressure spine badly (p1.0 108->60
+    at 0.75).
+  - **scatterPressureCurve() can INVERT that cost**: curve2(1.0, 0.15)
+    = full fray at light pressure, dense tight spine at full pressure.
+    Control sources default to Pressure; no setControlSource needed.
+  - **scatterCount N multiplies deposit ~N x** - pair it with a flow
+    cut (0.14 -> 0.10 compensated count 2 exactly).
+  - **Grain preset tooth ceiling at depth 1.0**: Chalk spread ~35,
+    custom coarse tile ~38, Charcoal ~53 with real bare valleys (only
+    preset that opens holes). Charcoal at depth 1.0 is the deepest
+    available tooth.
+  Shipped: scatterPerp 0.75, count 2, inverted curve, flow 0.10,
+  Charcoal grain d1.0 c3.0 s48. Measured: first-touch 36.5 / build
+  x2.53 / p1.0 108.9 (build character preserved vs 42.4/x2.54/108.2),
+  interior spread 25 -> 57, cross-section cliff replaced by graded
+  sputter (18.2/13.8/8.7/4.9 mean over dy 12-18, zero at 20). At p1.0
+  the edge stays tight (37.9 -> 12.6 -> 0.5 over dy 16-20).
+
+Coupled pins re-baselined together, cross-config identical: preview
+0bc662dc -> 5304f43b, eraser 1bf25d5b -> 48dc5641. Lifecycle 223.
+Probe archived as seam_drawingprobe_20260830_{2,3}.cpp.
