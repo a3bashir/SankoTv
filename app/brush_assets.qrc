@@ -18,5 +18,8 @@
         <file alias="pencil_mech_tip.png">assets/brushes/pencil_mech_tip.png</file>
         <file alias="pencil_blue_tip.png">assets/brushes/pencil_blue_tip.png</file>
         <file alias="pencil_charcoal_tip.png">assets/brushes/pencil_charcoal_tip.png</file>
+        <file alias="draw_softpastel_tip.png">assets/brushes/draw_softpastel_tip.png</file>
+        <file alias="draw_compcharcoal_tip.png">assets/brushes/draw_compcharcoal_tip.png</file>
+        <file alias="draw_grease_tip.png">assets/brushes/draw_grease_tip.png</file>
     </qresource>
 </RCC>

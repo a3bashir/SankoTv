@@ -88,7 +88,7 @@ using brushlib::BrushPreset;
 // legitimate roster change moves BOTH in the same commit; this one
 // moving ALONE is a defect, never a re-baseline.
 static const char kEraserSwatchSha[] =
-    "83db7f665e21cd9e3377431248c2e9cbcdabc75c0ca7692c2009efd36108fb6b";
+    "1bf25d5bae04d10503f567646ec57d6102302c8b0db14498316363a5423f69d7";
 using brushlib::BrushPresetCodec;
 using brushlib::BrushPreviewRenderer;
 
@@ -790,6 +790,9 @@ int main(int argc, char **argv)
             {"builtin/sketching/mechanical-pencil", 1254, 1254},
             {"builtin/sketching/blue-pencil", 1254, 1254},
             {"builtin/sketching/charcoal-pencil", 1254, 1254},
+            {"builtin/drawing/soft-pastel", 1254, 1254},
+            {"builtin/drawing/compressed-charcoal", 1254, 1254},
+            {"builtin/drawing/grease-pencil", 1254, 1254},
         };
         for (const StampSpec &s : specs) {
             const BrushPreset *p = nullptr;

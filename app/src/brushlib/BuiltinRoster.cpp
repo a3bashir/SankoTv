@@ -525,9 +525,30 @@ QVector<BrushPreset> builtinRoster()
     });
     r << make(kDrawing, QStringLiteral("Soft Pastel"), [&](::Brush &b) {
         drawBase(b);
-        b.setSize(18); b.setHardness(0.3); b.setFlow(0.8);
-        b.setGrainPreset(B::GrainPreset::Chalk); b.setGrainDepth(0.75);
-        b.setRoundnessJitter(0.2);
+        // STAMP TIP, Drawing calibration batch (2026-08-30, with
+        // Compressed Charcoal and Grease Pencil). MEASURED at the
+        // approved size 35: mean 42.4 at half pressure, buildup x2.54
+        // over three passes, tooth spread 25 - the gentle powdery
+        // profile (flow swept 0.10..0.32; 0.14 landed the targets; the
+        // dense 102/255-coverage stamp deposits hard, hence the low
+        // flow). Ships EXACTLY the measured candidate - the old
+        // roundnessJitter 0.2 is deliberately dropped rather than added
+        // unmeasured.
+        b.setCustomShape(
+            QImage(QStringLiteral(":/brushes/draw_softpastel_tip.png")));
+        b.setSize(35);
+        b.setHardness(0.3); // INERT with a custom tip (see 4H Pencil)
+        b.setOpacity(0.85);
+        b.setFlow(0.14);
+        b.setGrainPreset(B::GrainPreset::Chalk);
+        b.setGrainDepth(0.7);
+        b.setGrainScale(56.0);
+        b.setGrainContrast(2.0);
+        b.setControlMinimum(B::DynamicProperty::GrainDepth, 1.0);
+        b.setNoise(0.12);
+        b.setAngleJitter(0.12);
+        b.sizePressureCurve().setControlPoints(curve2(0.4, 1.0));
+        b.opacityPressureCurve().setControlPoints(curve2(0.35, 1.0));
     });
     r << make(kDrawing, QStringLiteral("Hard Pastel"), [&](::Brush &b) {
         drawBase(b);
@@ -543,8 +564,29 @@ QVector<BrushPreset> builtinRoster()
     r << make(kDrawing, QStringLiteral("Compressed Charcoal"),
               [&](::Brush &b) {
         drawBase(b);
-        b.setSize(20); b.setHardness(0.25);
-        b.setGrainPreset(B::GrainPreset::Charcoal); b.setGrainDepth(0.95);
+        // STAMP TIP, Drawing calibration batch (2026-08-30). MEASURED at
+        // the approved size 30: mean 72.3 at half pressure, 171.3 at
+        // full - the dense/dark half of the charcoal pair (flow swept
+        // 0.45..0.70; 0.55 met both targets). Grain depth deliberately
+        // DOWN from the old 0.95: compressed charcoal fills the tooth
+        // where the stick rides it - the pair's distinction lives in
+        // deposit rate and breakup, not darkness alone.
+        b.setCustomShape(QImage(
+            QStringLiteral(":/brushes/draw_compcharcoal_tip.png")));
+        b.setSize(30);
+        b.setHardness(0.25); // INERT with a custom tip (see 4H Pencil)
+        b.setOpacity(0.97);
+        b.setFlow(0.55);
+        b.setSpacing(0.08);
+        b.setGrainPreset(B::GrainPreset::Charcoal);
+        b.setGrainDepth(0.6);
+        b.setGrainScale(48.0);
+        b.setGrainContrast(2.0);
+        b.setControlMinimum(B::DynamicProperty::GrainDepth, 1.0);
+        b.setNoise(0.12);
+        b.setAngleJitter(0.08);
+        b.sizePressureCurve().setControlPoints(curve2(0.35, 1.0));
+        b.opacityPressureCurve().setControlPoints(curve2(0.35, 1.0));
     });
     r << make(kDrawing, QStringLiteral("Chalk"), [&](::Brush &b) {
         drawBase(b);
@@ -561,9 +603,30 @@ QVector<BrushPreset> builtinRoster()
     });
     r << make(kDrawing, QStringLiteral("Grease Pencil"), [&](::Brush &b) {
         drawBase(b);
-        b.setSize(8); b.setHardness(0.45);
-        b.setGrainPreset(B::GrainPreset::Paper); b.setGrainDepth(0.2);
-        b.setFlow(0.95);
+        // STAMP TIP, Drawing calibration batch (2026-08-30). MEASURED at
+        // the approved size 25: mean 165.5 at half pressure, fast waxy
+        // laydown (buildup x1.46), full-pressure 228 - the sparse
+        // 20/255-coverage stamp (the census outlier) compensated with
+        // flow 0.85 and the family's tightest spacing. A MEASURED STAMP
+        // LIMITATION is on record (item-10 clause, HANDOFF): "solid,
+        // consistent" asked for tooth spread <= 8, but the scan's own
+        // crumbly texture floors at ~71 with grain fully OFF - spacing
+        // 0.03 averages it down to ~77 and no setting can go lower. If
+        // the hand-test wants it smoother, the fix is a denser re-scan,
+        // not another tuning round.
+        b.setCustomShape(
+            QImage(QStringLiteral(":/brushes/draw_grease_tip.png")));
+        b.setSize(25);
+        b.setHardness(0.45); // INERT with a custom tip (see 4H Pencil)
+        b.setOpacity(0.95);
+        b.setFlow(0.85);
+        b.setSpacing(0.03);
+        b.setGrainPreset(B::GrainPreset::Paper);
+        b.setGrainDepth(0.15);
+        b.setControlMinimum(B::DynamicProperty::GrainDepth, 1.0);
+        b.setNoise(0.03);
+        b.sizePressureCurve().setControlPoints(curve2(0.7, 1.0));
+        b.opacityPressureCurve().setControlPoints(curve2(0.5, 1.0));
         b.flowPressureCurve().setControlPoints(curve2(1.0, 1.0)); // waxy
     });
     r << make(kDrawing, QStringLiteral("Sanguine"), [&](::Brush &b) {

@@ -3366,3 +3366,55 @@ unchanged (their sizes did not move).
 
 Coupled pins re-baselined together, cross-config identical: preview
 0a5fc34d -> d55d579f, eraser 3cd942ee -> 83db7f66. Lifecycle 223.
+
+## Drawing-list stamps, calibration batch: Soft Pastel / Compressed Charcoal / Grease Pencil (2026-08-30)
+
+The Drawing category's ten-brush stamp promotion, run measured-first
+(census -> targets -> probe sweep at the APPROVED shipped sizes -> ship
+the winning row -> re-verify the ROSTER). Three brushes implemented per
+the approved calibration order; the other seven are proposed on paper
+and wait for the user's hand-test of these three.
+
+**Stamp census** (mean coverage of the Grayscale8 tip, 0-255; all ten
+scans are 1254x1254, white-on-black polarity confirmed, under the 2048
+cap). Coverage governs deposit rate - this table is why the three
+brushes needed different flows:
+
+| Stamp | mean | | Stamp | mean |
+|---|---|---|---|---|
+| Soft Pastel | 102.2 | | Chalk | 46.7 |
+| Hard Pastel | 62.7 | | Sepia | 43.5 |
+| Graphite Block | 58.7 | | Compressed Ch. | 42.3 |
+| Charcoal Stick | 51.1 | | Conte Crayon | 37.6 |
+| Sanguine | 50.2 | | Grease Pencil | 20.4 |
+
+**Shipped tunings** (probe: 160-pt stroke, 1000x240, core band +/-4 px,
+x in [200,800); p0.5x1 mean / build x3-over-x1 / p1.0 mean / spread
+p95-p5):
+
+- Soft Pastel (size 35, flow 0.14, Chalk depth 0.7 scale 56 con 2.0):
+  42.4 / x2.54 / 108.2 / spread 25 - powdery, wide, builds up.
+- Compressed Charcoal (size 30, flow 0.55, Charcoal depth 0.6): 72.3 /
+  x2.16 / 171.3 / spread 87 - dense and dark from the first pass;
+  grain depth LOWERED vs the Stick because compressed charcoal fills
+  the tooth. Distinctness vs Charcoal Stick preserved by that pairing.
+- Grease Pencil (size 25, flow 0.85, spacing 0.03, Paper depth 0.15):
+  165.0 / x1.47 / 228.3 / spread 78 - waxy, heavy, low build-up
+  (flat flow curve).
+
+**Grease stamp limitation (measured cause, item-10 rule).** The brief
+wants waxy-smooth (spread <= 8). With grain OFF entirely the spread is
+still ~71: the variance IS the stamp's own internal texture, not any
+tuning. Tightest useful spacing (0.03) only averages it to ~78. Fix,
+if the hand-test wants it smoother: a denser/smoother re-scan of the
+grease tip, NOT another tuning round.
+
+Mechanics: three assets added to `brush_assets.qrc` (2.88 MB total);
+(b12) census extended to pin all three tip dimensions; probe seams
+archived (`seam_drawingprobe_20260830.cpp`,
+`seam_stampconvert_20260830.cpp`). Old Soft Pastel roundnessJitter 0.2
+deliberately dropped (unmeasured under the new stamp).
+
+Coupled pins re-baselined together, cross-config identical: preview
+d55d579f -> 0bc662dc, eraser 83db7f66 -> 1bf25d5b. Lifecycle 223,
+BrushLibrary 93.

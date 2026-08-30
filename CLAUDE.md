@@ -83,12 +83,12 @@ Learned from real defects. Follow them exactly.
    apart: SankoBrushLibraryTest, SankoPaintPixelLock, SankoCanvasBrushLock,
    SankoQuickShapeGeometryLock, SankoDevRecorderTest, SankoCanvasEdgeLock,
    SankoCanvasSizeLock, SankoProjectLifecycle. Preview SHA must stay
-   `d55d579f262b54cd797ebbe43f9811bae25a3b96e46bc1fd6d3887c1c50a7cdd`
-   (re-baselined 2026-08-30: family default size 25 for all nine pencils
-   + Charcoal recalibrated AT that size (flow 0.50, floors 0.22/0.28 —
-   probe-measured; stamp downsampling changes effective per-dab
-   coverage, so size changes re-open deposit ratios); the eraser SHA
-   `83db7f66…` moves WITH it, same commit, per the coupled-pin note in
+   `0bc662dc9fb970d163616ede72f8ac3c13dc734766ff0bcd4842dde3c207cb58`
+   (re-baselined 2026-08-30: Drawing-list stamp promotion, calibration
+   batch — Soft Pastel / Compressed Charcoal / Grease Pencil gain their
+   scanned stamps with probe-measured tunings at the approved sizes;
+   the eraser SHA
+   `1bf25d5b…` moves WITH it, same commit, per the coupled-pin note in
    BrushLibraryTest); both pixel locks byte-identical
    (`666f7b45…`, `cafcec7f…`), erase baseline `0bc24381…`. The first
    six use 960×540 fixtures; SankoCanvasSizeLock is the variable-resolution
