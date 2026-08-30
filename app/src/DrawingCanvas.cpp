@@ -1071,6 +1071,10 @@ void DrawingCanvas::setShapeFill(bool on)
 void DrawingCanvas::setColor(const QColor &color)
 {
     m_color = color;
+    // Explicit pick WINS AND PERSISTS (identity-colour design (b)): if an
+    // identity preset had adopted, the user's deliberate choice replaces
+    // both the adopted colour and the remembered pre-adoption one.
+    m_identityColorActive = false;
     m_paintEngine.brush().setColor(color);
 }
 
@@ -1206,10 +1210,27 @@ void DrawingCanvas::setPaintBrush(const ::Brush &brush)
     m_paintEngine.brush().setOpacity(m_brushBaseOpacity
                                      * m_brushToolOpacity);
     m_brushHardness = brush.hardness();
-    // A preset with an identity colour (Blue Pencil, Sanguine...) adopts it
-    // as the app colour; black-ink presets keep the user's current colour.
-    if (brush.color() != QColor(Qt::black))
+    // IDENTITY COLOUR, design (b) (2026-08-30): a preset with a non-black
+    // stored colour (Blue Pencil, Chalk, Sanguine, Sepia, and any
+    // coloured user/ABR preset) applies its colour WHILE ACTIVE;
+    // switching to a black-ink preset RESTORES the pre-adoption colour.
+    // The old behaviour adopted permanently into the shared app colour,
+    // so every pencil after Blue Pencil painted blue (the reported bug -
+    // general to all four identity presets, Chalk being the sneakiest:
+    // near-white ink without noticing). The capture happens only on the
+    // user -> identity transition, so Blue -> Sepia -> 2B restores the
+    // ORIGINAL user colour; an explicit setColor() while adopted clears
+    // the restore state (deliberate intent persists).
+    if (brush.color() != QColor(Qt::black)) {
+        if (!m_identityColorActive) {
+            m_colorBeforeIdentity = m_color;
+            m_identityColorActive = true;
+        }
         m_color = brush.color();
+    } else if (m_identityColorActive) {
+        m_color = m_colorBeforeIdentity;
+        m_identityColorActive = false;
+    }
     m_paintEngine.brush().setColor(m_color);
     const auto respondsToPressure = [](const PressureCurve &curve) {
         return curve.valueAt(0.0) < 0.99; // flat-at-1 = no pressure response

@@ -252,6 +252,9 @@ public:
 public slots:
     void setTool(Tool tool);
     void setColor(const QColor &color);
+    // Gate seam: the shared app colour (identity-colour adoption and
+    // restore are asserted against this, not against the engine brush).
+    QColor currentColorForTest() const { return m_color; }
     void setBrushSize(int size);
     void undo();   // app-wide history (Ctrl+Z / toolbar Undo)
     void redo();   // app-wide history (Ctrl+Y / toolbar Redo)
@@ -793,6 +796,18 @@ private:
 
     // Brush engine state. Defaults mirror the initial settings-panel values.
     int m_brushToolSize = 25;        // dab diameter, canvas px
+    // IDENTITY COLOUR, design (b) (2026-08-30, user-approved): a preset
+    // with a non-black stored colour applies it WHILE ACTIVE; switching
+    // to a black-ink preset restores the colour the user had before the
+    // adoption; an explicit setColor() while adopted WINS AND PERSISTS
+    // (the restore state drops there). Captured only on the
+    // user->identity transition, so identity->identity switches keep the
+    // ORIGINAL user colour. Never persisted; untouched by project load,
+    // tool switches, undo, and the QuickShape bake swap (which
+    // round-trips m_colour exactly) - the staleness audit is in HANDOFF.
+    QColor m_colorBeforeIdentity;
+    bool m_identityColorActive = false;
+
     // MULTIPLIER semantics (2026-08-29, user-approved): the Size CTL bar's
     // opacity is "how much of the preset's own ceiling", not an absolute.
     // engine opacity = base x multiplier; at multiplier 1.0 the product IS

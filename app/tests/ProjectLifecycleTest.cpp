@@ -1500,6 +1500,105 @@ void runImageCapNoticePass(const QString &scratch)
     pump(300);
 }
 
+// ---- (s) identity colour: applies while active, restores after -------------
+// Design (b), 2026-08-30: a preset with a non-black stored colour (Blue
+// Pencil, Chalk, Sanguine, Sepia) applies it while active; a black-ink
+// preset restores the pre-adoption colour; an explicit pick while adopted
+// wins and persists. The old behaviour adopted permanently - every pencil
+// after Blue Pencil painted blue.
+void runIdentityColorPass(const QString &scratch)
+{
+    out() << "--- (s) identity colour adopt/restore ---" << Qt::endl;
+    MainWindow window;
+    window.resize(1300, 850);
+    window.show();
+    pump(800);
+    const QString fixture = writeProject(scratch + QStringLiteral("/idcol"),
+                                         QStringLiteral("IdCol"),
+                                         QSize(960, 540), 24, 1, 1);
+    check(QStringLiteral("(s) fixture opens"),
+          window.loadProjectForTest(fixture));
+    pump(500);
+    auto *canvas = window.findChild<DrawingCanvas *>();
+    if (!canvas) {
+        check(QStringLiteral("(s) found canvas"), false);
+        window.markCleanForTest();
+        window.close();
+        return;
+    }
+    const ::Brush *blue = nullptr, *sepia = nullptr, *pencil2b = nullptr;
+    const auto rosterS = brushlib::builtinRoster();
+    for (const brushlib::BrushPreset &p : rosterS) {
+        if (p.id == QStringLiteral("builtin/sketching/blue-pencil"))
+            blue = &p.brush;
+        if (p.id == QStringLiteral("builtin/drawing/sepia"))
+            sepia = &p.brush;
+        if (p.id == QStringLiteral("builtin/sketching/2b-pencil"))
+            pencil2b = &p.brush;
+    }
+    check(QStringLiteral("(s) roster carries Blue, Sepia and 2B"),
+          blue && sepia && pencil2b);
+    if (!blue || !sepia || !pencil2b) {
+        window.markCleanForTest();
+        window.close();
+        return;
+    }
+    const QColor red(200, 30, 30);
+    canvas->setTool(DrawingCanvas::Brush);
+    canvas->setColor(red);
+    check(QStringLiteral("(s) control: the user's colour is set"),
+          canvas->currentColorForTest() == red);
+
+    canvas->setPaintBrush(*blue);
+    check(QStringLiteral("(s) Blue Pencil applies its identity colour "
+                         "while active"),
+          canvas->currentColorForTest() == blue->color()
+              && canvas->paintBrush().color() == blue->color());
+    canvas->setPaintBrush(*pencil2b);
+    check(QStringLiteral("(s) THE BUG: a black-ink preset RESTORES the "
+                         "user's colour (every pencil after Blue used to "
+                         "stay blue)"),
+          canvas->currentColorForTest() == red
+              && canvas->paintBrush().color() == red);
+
+    // Identity -> identity -> black: the ORIGINAL user colour returns,
+    // not the first identity colour.
+    canvas->setPaintBrush(*blue);
+    canvas->setPaintBrush(*sepia);
+    check(QStringLiteral("(s) identity->identity shows the second "
+                         "identity colour"),
+          canvas->currentColorForTest() == sepia->color());
+    canvas->setPaintBrush(*pencil2b);
+    check(QStringLiteral("(s) ...and restoring skips the intermediate: "
+                         "the ORIGINAL colour returns"),
+          canvas->currentColorForTest() == red);
+
+    // The override rule: an explicit pick while adopted wins and persists.
+    const QColor green(30, 160, 60);
+    canvas->setPaintBrush(*blue);
+    canvas->setColor(green);
+    canvas->setPaintBrush(*pencil2b);
+    check(QStringLiteral("(s) an explicit pick while adopted WINS and "
+                         "persists past the switch"),
+          canvas->currentColorForTest() == green);
+
+    // Eraser round trip while adopted: adoption survives, restore still
+    // works afterwards.
+    canvas->setPaintBrush(*blue);
+    canvas->setTool(DrawingCanvas::Eraser);
+    canvas->setTool(DrawingCanvas::Brush);
+    check(QStringLiteral("(s) an eraser round-trip leaves the adopted "
+                         "colour in place"),
+          canvas->currentColorForTest() == blue->color());
+    canvas->setPaintBrush(*pencil2b);
+    check(QStringLiteral("(s) ...and the restore still lands after it"),
+          canvas->currentColorForTest() == green);
+
+    window.markCleanForTest();
+    window.close();
+    pump(300);
+}
+
 // ---- (m) the MIRRORED tool-scoped library, end to end ---------------------
 // REWRITTEN AGAIN 2026-08-28 (mirror pass): the eraser scope now MIRRORS
 // the brush categories - one definition, referenced twice - so the old
@@ -2272,6 +2371,7 @@ int main(int argc, char **argv)
     runGrainPreviewPass(scratch);
     runSuppressionPass(scratch);
     runImageCapNoticePass(scratch);
+    runIdentityColorPass(scratch);
     runProvenancePass(scratch);
 
     // ---- (l) sankoSettings: scratch lands, the real store does not ----

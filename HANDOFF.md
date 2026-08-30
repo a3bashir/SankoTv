@@ -3276,3 +3276,63 @@ cross-config identical: preview 6aee3d7f -> 159eeaa5, eraser d7264fcb
 -> 159b1786. v2 was never committed, so the calibration commit
 carries v3 - the known-wrong intermediate exists only in HANDOFF and
 the report record.
+
+## Identity colour design (b) + Charcoal v2, both measured (2026-08-30)
+
+THE COLOUR BUG (general, not Blue-specific): activating a preset with a
+non-black stored colour wrote it into the SHARED app colour and nothing
+ever restored it - every pencil after Blue Pencil painted blue. Four
+roster presets carry identity colours (Blue Pencil #4a90d9, Chalk
+#f2f2f2, Sanguine #c05a3a, Sepia #70421e - Chalk the sneakiest:
+near-white ink without noticing), plus any coloured user/ABR preset.
+Colour IS codec-serialised preset data; the defect was the UI-state
+handling (adopt-without-restore, deliberate at the time).
+
+DESIGN (b), user-approved: identity colour applies WHILE ACTIVE; a
+black-ink preset restores the pre-adoption colour; an explicit
+setColor() while adopted WINS AND PERSISTS (restore state drops).
+Captured only on the user->identity transition, so identity->identity
+switches restore the ORIGINAL colour. Rejected: (a) permanent adoption
+(the bug as felt) and (c) preset-colour-without-touching-app-colour
+(the colour panel would show black while the pen paints blue - a worse
+surprise). STALENESS AUDIT (the fingerprint/suppression lesson, done
+up front): m_colorBeforeIdentity is in-memory only, never persisted
+(colour resets at launch - no restart leak), untouched by project
+load, eraser round-trips (setEraserPreset never writes m_color), undo
+(stroke undo is pixel-level), and the QuickShape bake swap (which
+round-trips m_color exactly). The only writers of m_color are
+setColor, the adopt/restore block, and the QS transient pair.
+Gate: Lifecycle (s), 10 checks - adopt, THE restore, identity->
+identity->black restoring the original, the explicit-pick override,
+and the eraser round-trip pair.
+
+THE STAMP-COVERAGE CENSUS - check this FIRST when a custom-tip brush
+feels wrong; two brushes (6B, then Charcoal) were misdiagnosed for
+the same invisible reason and this table catches both in one look.
+Mean coverage of each shipped stamp (probe-measured; deposit per dab
+is proportional to it, and NO setting shows it):
+
+  4H          157.5 / 255
+  2H          119.8
+  H           108.1
+  HB           97.3
+  Blue         70.2
+  Mechanical   64.9
+  2B           46.6
+  4B           33.2
+  Charcoal     29.2
+  6B           18.5
+
+The scans encode grade darkness IN the stamps: the ladder is real and
+deliberate, and flow must compensate wherever a sparse stamp should
+still deposit hard.
+
+CHARCOAL v2, from the census: sparse stamp (29/255) at HALF 6B's flow
+with the heaviest grain eating each deposit measured 36/255 at full
+pressure vs 6B's 104. Fix mirrors 6B's: flow 0.25 -> 0.85, spacing
+0.09 -> 0.07; measured shipped ratios Charcoal/6B = 0.38 / 0.86 /
+1.12 across pressures. The light end deliberately stays lighter -
+charcoal skates on the tooth until leaned on (the user's own words) -
+and every roughness lever is untouched. Coupled pins re-baselined
+together, cross-config identical: preview 159eeaa5 -> 0a5fc34d,
+eraser 159b1786 -> 3cd942ee. Totals: Lifecycle 223.
