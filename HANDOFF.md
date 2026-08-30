@@ -3336,3 +3336,33 @@ charcoal skates on the tooth until leaned on (the user's own words) -
 and every roughness lever is untouched. Coupled pins re-baselined
 together, cross-config identical: preview 159eeaa5 -> 0a5fc34d,
 eraser 159b1786 -> 3cd942ee. Totals: Lifecycle 223.
+
+## Family default size 25 - and size re-opens deposit ratios (2026-08-30)
+
+Six pencils moved to the size-25 family default (H, 2H, 4B, Mechanical,
+Blue, Charcoal; 4H/2B/6B already there). Mechanical and Blue were
+checked for character damage before shipping: the fixed-width curve and
+near-zero grain ARE the mechanical identity and hold at any size; both
+ship at 25 without behavioural change beyond width.
+
+THE FINDING the user's pre-build check caught - SIZE RE-OPENS MEASURED
+DEPOSIT RATIOS. The naive invariance argument (overlap count = 1/spacing
+regardless of size) is wrong for custom tips: STAMP DOWNSAMPLING is part
+of the sparsity mechanism. Rendering the sparse charcoal scan at 6 px
+under-resolves its coverage; at 25 px it deposits far more per dab. The
+size-6-calibrated Charcoal (flow 0.85) measured Ch/6B = 2.18 at LIGHT
+pressure at size 25 - out-darking 6B where charcoal must skate.
+RECALIBRATED AT THE SHIPPED SIZE: flow 0.50, size-curve floor 0.22,
+opacity-curve floor 0.28, spacing 0.07 - measured shipped ratios
+Ch/6B = 0.89 / 0.94 / 1.06 (skates light, parity mid, darker leaned
+on). RULE FOR NEXT TIME: a default-size change on a custom-tip brush
+re-opens its measured ratios; re-measure at the shipped size, always.
+
+BONUS from the same size change: H and 2H tooth metrics became valid
+(the size-3 edge confound is gone) and land right beside 4H - spread
+25 / 28 / 27 for H / 2H / 4H at means 36.6 / 26.7 / 21.6. The hard-end
+tooth ladder is now measured, not scaled-by-analogy. 6B/2B ratios
+unchanged (their sizes did not move).
+
+Coupled pins re-baselined together, cross-config identical: preview
+0a5fc34d -> d55d579f, eraser 3cd942ee -> 83db7f66. Lifecycle 223.

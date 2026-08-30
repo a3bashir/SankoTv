@@ -264,7 +264,7 @@ QVector<BrushPreset> builtinRoster()
         // applied family-wide: deeper AND finer tooth than the v1 table).
         b.setCustomShape(
             QImage(QStringLiteral(":/brushes/pencil_h_tip.png")));
-        b.setSize(3);
+        b.setSize(25); // family default (2026-08-30)
         b.setHardness(0.70); // INERT with a custom tip (see 4H)
         b.setOpacity(0.48);
         // v3 treatment scaled from the 4H diagnosis (Paper cannot tooth;
@@ -287,7 +287,7 @@ QVector<BrushPreset> builtinRoster()
         // the batch-one verdict, sitting between 4H and H.
         b.setCustomShape(
             QImage(QStringLiteral(":/brushes/pencil_2h_tip.png")));
-        b.setSize(3);
+        b.setSize(25); // family default (2026-08-30)
         b.setHardness(0.78); // INERT with a custom tip (see 4H)
         b.setOpacity(0.38);
         // v3 treatment scaled from the 4H diagnosis (Paper cannot tooth;
@@ -368,7 +368,7 @@ QVector<BrushPreset> builtinRoster()
         // opacity-floor progression 0.25/0.32/0.40 across 2B/4B/6B.
         b.setCustomShape(
             QImage(QStringLiteral(":/brushes/pencil_4b_tip.png")));
-        b.setSize(6);
+        b.setSize(25); // family default (2026-08-30)
         b.setHardness(0.42); // INERT with a custom tip (see 4H)
         b.setOpacity(0.85);
         b.setFlow(0.20);
@@ -431,7 +431,9 @@ QVector<BrushPreset> builtinRoster()
         // just a dependable line.
         b.setCustomShape(
             QImage(QStringLiteral(":/brushes/pencil_mech_tip.png")));
-        b.setSize(2);
+        b.setSize(25); // family default (2026-08-30); the fixed-width
+                       // curve and near-zero grain ARE the mechanical
+                       // identity - they hold at any size
         b.setHardness(0.88); // INERT with a custom tip (see 4H)
         b.setOpacity(0.65);
         b.setFlow(0.50);
@@ -451,7 +453,7 @@ QVector<BrushPreset> builtinRoster()
         // texture the intent asks for. Unchanged from the v1 table.
         b.setCustomShape(
             QImage(QStringLiteral(":/brushes/pencil_blue_tip.png")));
-        b.setSize(4);
+        b.setSize(25); // family default (2026-08-30)
         b.setHardness(0.60); // INERT with a custom tip (see 4H)
         b.setOpacity(0.45);
         b.setFlow(0.30);
@@ -472,10 +474,25 @@ QVector<BrushPreset> builtinRoster()
         // matches v2 6B (charcoal bites dark immediately).
         b.setCustomShape(
             QImage(QStringLiteral(":/brushes/pencil_charcoal_tip.png")));
-        b.setSize(6);
+        b.setSize(25); // family default (2026-08-30); Ch/6B deposit
+                       // ratios re-measured at this size - see HANDOFF
         b.setHardness(0.45); // INERT with a custom tip (see 4H)
         b.setOpacity(0.92);
-        b.setFlow(0.25);
+        // v2 (MEASURED, 2026-08-30, "should be darker"): the stamp
+        // census generalised the 6B sparsity finding - the charcoal scan
+        // deposits 29/255 mean coverage per dab (vs 2B's 47) AND the
+        // heaviest grain (depth 0.75) eats each deposit; at the old flow
+        // 0.25 the full-pressure stroke measured 36/255 against 6B's 104.
+        // RE-MEASURED AT SIZE 25 (the family default changed effective
+        // per-dab coverage - stamp downsampling is part of the sparsity
+        // mechanism, see HANDOFF): the size-6-calibrated flow 0.85
+        // over-shot to Ch/6B 2.18 at LIGHT pressure, violating the
+        // approved skate-on-the-tooth character. This recipe restores the
+        // approved shape at size 25: Ch/6B = 0.90 / 0.94 / 1.06 across
+        // pressures - skates light, parity mid, out-darks 6B leaned on.
+        // The roughness levers (grain, noise, jitters, the crumbly stamp)
+        // remain the identity, untouched.
+        b.setFlow(0.50);
         b.setGrainPreset(B::GrainPreset::Charcoal);
         b.setGrainMode(B::GrainMode::StaticCanvas);
         b.setGrainDepth(0.75);
@@ -484,8 +501,12 @@ QVector<BrushPreset> builtinRoster()
         b.setNoise(0.30);
         b.setAngleJitter(0.15);
         b.setRoundnessJitter(0.15);
-        b.setSpacing(0.09); // chunkier dab rhythm
-        b.opacityPressureCurve().setControlPoints(curve2(0.4, 1.0));
+        b.setSpacing(0.07);
+        // Size-25 shape levers (measured with the flow above): the size
+        // floor thins light strokes, the opacity floor lightens them -
+        // together they put the light end BELOW 6B where charcoal skates.
+        b.sizePressureCurve().setControlPoints(curve2(0.22, 1.0));
+        b.opacityPressureCurve().setControlPoints(curve2(0.28, 1.0));
     });
 
     // ---- DRAWING: committed, opaque, chunky media; Static grain ---------

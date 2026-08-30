@@ -88,7 +88,7 @@ using brushlib::BrushPreset;
 // legitimate roster change moves BOTH in the same commit; this one
 // moving ALONE is a defect, never a re-baseline.
 static const char kEraserSwatchSha[] =
-    "159b178613696cd0a75fb3b9a97221eea2668f15189e761595a498284ebc26fb";
+    "83db7f665e21cd9e3377431248c2e9cbcdabc75c0ca7692c2009efd36108fb6b";
 using brushlib::BrushPresetCodec;
 using brushlib::BrushPreviewRenderer;
 
