@@ -3124,3 +3124,51 @@ byte through the codec (colour neutralized - selection adopts identity
 colours by design); eraser symmetric against Gouache base 0.95.
 Totals: Lifecycle 213. All five pins byte-identical both configs:
 c1fbee31 / b602355f (coupled) / 666f7b45 / cafcec7f / 0bc24381.
+
+## Pencil stamp promotion, batch one: 4H / 2B / 6B (2026-08-30)
+
+WHAT: the user's scanned pencil stamps (G:\Brush_SankoTV_DEF) become
+the tip shapes of the Sketching pencils, with per-grade tuning. NINE
+brushes are in scope (H exists in the roster, so the H stamp is the
+ninth); THIS batch ships the calibration three - 6B, 4H, 2B - per the
+agreed iteration: the user draws with these before the remaining six
+(H, 2H, 4B, Mechanical, Blue, Charcoal) are tuned, so their feedback
+calibrates the rest. The proposed v1 tunings for all nine are in the
+2026-08-30 report; expect them to move.
+
+TWO FINDINGS RECORDED AT THE USER'S DIRECTION:
+- POLARITY: tip masks are WHITE-ON-BLACK (coverage = brightness). The
+  scans were probed pixel-level before use: corners 0, marks bright -
+  correct convention, nothing inverted. A dark-on-white scan loaded as
+  a tip renders INVERTED; check polarity before blaming the engine.
+- HARDNESS IS INERT WITH A CUSTOM TIP: the procedural falloff is the
+  ONLY consumer of hardness/effectiveHardness in tip rendering, so
+  every custom-tip brush's hardness value does nothing at render time.
+  The pencil recipes KEEP their hardness ladder values with an INERT
+  comment at each site (the user's rule: never leave a number that
+  reads as meaningful when it is not). Edge character for stamp tips
+  comes from the stamp itself plus Noise.
+
+ASSETS: pencil_4h_tip.png (822 KB), pencil_2b_tip.png (915 KB),
+pencil_6b_tip.png (799 KB) - 2.5 MB this batch, projecting ~7.5 MB for
+all nine. Converted RGB -> Grayscale8 with QT'S OWN conversion (a temp
+tool, archived), so shipping the pre-converted asset is byte-identical
+to converting at load, minus the repo weight. No downsampling: every
+stamp is under the 2048 cap. All under-cap, all untouched.
+
+TUNING v1 SHAPE (details in the recipes): all three move to Static
+grain, grain-depth minimum 1.0, and low flow, aligned with the
+promoted HB reference. The ladder: 4H = faint ceiling 0.30 reached
+QUICKLY (flow 0.4 - hard pencils do not build), light tooth, zero
+jitter. 2B = ceiling 0.70, flow 0.22, deeper tooth, slight angle
+jitter. 6B = ceiling 0.92, slowest flow 0.18 (darkness earned over
+passes), coarser tooth (scale 48), noise 0.22, deep size swell
+(curve floor 0.2), tilt elongation kept.
+
+GATE: (b12) stamp-tip census - every asset-bearing built-in (HB + the
+three) must hold its tip at source dimensions, which also catches a
+roster-building target missing brush_assets.qrc. Coupled pins
+re-baselined together, cross-config identical: preview c1fbee31 ->
+10c3106c, eraser b602355f -> c9f2ff70. Second batch will move both
+again - expected, one reason, one commit. All other pins unmoved.
+Totals: BrushLibrary 84, Lifecycle 213.

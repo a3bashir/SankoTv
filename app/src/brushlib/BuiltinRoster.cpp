@@ -271,14 +271,43 @@ QVector<BrushPreset> builtinRoster()
     });
     r << make(kSketching, QStringLiteral("4H Pencil"), [&](::Brush &b) {
         sketchBase(b);
-        b.setSize(2); b.setHardness(0.85); b.setOpacity(0.28);
-        b.setGrainDepth(0.18);
+        // STAMP TIP (2026-08-30, first calibration batch with 2B/6B):
+        // the user's scanned 4H stamp, asset per the code-plus-versioned-
+        // assets rule. Tuning v1 - iteration with the user expected.
+        b.setCustomShape(
+            QImage(QStringLiteral(":/brushes/pencil_4h_tip.png")));
+        b.setSize(2);
+        b.setHardness(0.85); // INERT with a custom tip: the falloff only
+                             // shapes PROCEDURAL tips. Kept as the grade
+                             // ladder's record; edge character now comes
+                             // from the stamp and Noise.
+        b.setOpacity(0.30);  // faint ceiling: a 4H tops out light
+        b.setFlow(0.40);     // reaches that low ceiling quickly - hard
+                             // pencils do not "build", they stay faint
+        b.setGrainDepth(0.25);
+        b.setGrainScale(40.0);
+        b.setGrainMode(B::GrainMode::StaticCanvas); // tooth on the paper
+        b.setControlMinimum(B::DynamicProperty::GrainDepth, 1.0);
+        b.setNoise(0.06);    // barely-there dry edge
         b.sizePressureCurve().setControlPoints(curve2(0.85, 1.0));
     });
     r << make(kSketching, QStringLiteral("2B Pencil"), [&](::Brush &b) {
         sketchBase(b);
-        b.setSize(5); b.setHardness(0.52); b.setOpacity(0.85);
-        b.setGrainDepth(0.45);
+        // STAMP TIP (2026-08-30, first calibration batch with 4H/6B):
+        // the user's scanned 2B stamp. Tuning v1 - iteration expected.
+        b.setCustomShape(
+            QImage(QStringLiteral(":/brushes/pencil_2b_tip.png")));
+        b.setSize(5);
+        b.setHardness(0.52); // INERT with a custom tip (see 4H)
+        b.setOpacity(0.70);  // mid-dark ceiling: darker than HB's 0.55,
+                             // well short of 6B
+        b.setFlow(0.22);     // rich buildup - passes darken gradually
+        b.setGrainDepth(0.50);
+        b.setGrainScale(40.0);
+        b.setGrainMode(B::GrainMode::StaticCanvas);
+        b.setControlMinimum(B::DynamicProperty::GrainDepth, 1.0);
+        b.setNoise(0.15);
+        b.setAngleJitter(0.05); // slight per-dab rotation: organic, not loose
         b.sizePressureCurve().setControlPoints(curve2(0.25, 1.0));
     });
     r << make(kSketching, QStringLiteral("4B Pencil"), [&](::Brush &b) {
@@ -289,9 +318,28 @@ QVector<BrushPreset> builtinRoster()
     });
     r << make(kSketching, QStringLiteral("6B Pencil"), [&](::Brush &b) {
         sketchBase(b);
-        b.setSize(8); b.setHardness(0.34); b.setOpacity(0.97);
-        b.setGrainDepth(0.65); b.setSpacing(0.06);
+        // STAMP TIP (2026-08-30, first calibration batch with 4H/2B):
+        // the user's scanned 6B stamp. Tuning v1 - iteration expected.
+        // The soft extreme of the graphite ladder: it must feel
+        // SIGNIFICANTLY softer and darker than 2B.
+        b.setCustomShape(
+            QImage(QStringLiteral(":/brushes/pencil_6b_tip.png")));
+        b.setSize(8);
+        b.setHardness(0.34); // INERT with a custom tip (see 4H)
+        b.setOpacity(0.92);  // near-black ceiling
+        b.setFlow(0.18);     // slowest deposit of the ladder: darkness is
+                             // EARNED over passes, the soft-graphite feel
+        b.setGrainDepth(0.70);
+        b.setGrainScale(48.0); // coarser tooth than the hard grades
+        b.setGrainMode(B::GrainMode::StaticCanvas);
+        b.setControlMinimum(B::DynamicProperty::GrainDepth, 1.0);
+        b.setNoise(0.22);      // crumbly dry edges
+        b.setAngleJitter(0.10);
+        b.setSpacing(0.06);
         b.setTiltAffectsShape(true); b.setMaxTiltElongation(3.0);
+        // Deeper size swell than sketchBase: light touch is a whisper,
+        // pressure blooms the stroke.
+        b.sizePressureCurve().setControlPoints(curve2(0.2, 1.0));
     });
     r << make(kSketching, QStringLiteral("Mechanical Pencil"),
               [&](::Brush &b) {

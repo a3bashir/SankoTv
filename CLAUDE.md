@@ -83,11 +83,11 @@ Learned from real defects. Follow them exactly.
    apart: SankoBrushLibraryTest, SankoPaintPixelLock, SankoCanvasBrushLock,
    SankoQuickShapeGeometryLock, SankoDevRecorderTest, SankoCanvasEdgeLock,
    SankoCanvasSizeLock, SankoProjectLifecycle. Preview SHA must stay
-   `c1fbee31c3c13547658d2fd65678a566d79985196bd8bc478e3da1120318727d`
-   (re-baselined 2026-08-29: HB Pencil recipe replaced wholesale by the
-   user's promoted variation — custom tip asset, Paper grain, HB ceiling;
-   the eraser swatch SHA `b602355f…` moves WITH it, same commit, per the
-   coupled-pin note in BrushLibraryTest); both pixel locks byte-identical
+   `10c3106c14411589403b50e4216fa110d7953bec93fc87704a41df2ae13bbc54`
+   (re-baselined 2026-08-30: pencil stamp promotion, first batch — 4H/2B/6B
+   gain the user's scanned stamp tips + per-grade tuning v1; the eraser
+   swatch SHA `c9f2ff70…` moves WITH it, same commit, per the coupled-pin
+   note in BrushLibraryTest); both pixel locks byte-identical
    (`666f7b45…`, `cafcec7f…`), erase baseline `0bc24381…`. The first
    six use 960×540 fixtures; SankoCanvasSizeLock is the variable-resolution
    lock — it draws real pixels at the far edge of five canvas sizes

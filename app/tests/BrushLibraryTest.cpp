@@ -88,7 +88,7 @@ using brushlib::BrushPreset;
 // legitimate roster change moves BOTH in the same commit; this one
 // moving ALONE is a defect, never a re-baseline.
 static const char kEraserSwatchSha[] =
-    "b602355ffdc549deb59eb0b3e846e33b5c21a081af6177b4a8d1e6ead6383f06";
+    "c9f2ff70c3dfa0fd7e5ccfc42e4f5ce145a8f3eea6c63bed1463692b5f6e0ac7";
 using brushlib::BrushPresetCodec;
 using brushlib::BrushPreviewRenderer;
 
@@ -768,6 +768,37 @@ int main(int argc, char **argv)
                                  "ceiling on both sides"),
                   hb->brush.opacity() == 0.55
                       && variation.brush.opacity() == 0.55);
+        }
+    }
+
+    // ---- (b12) stamp-tip census: every asset-bearing built-in loaded -----
+    // The pencil stamp promotion (2026-08-30, first batch 4H/2B/6B beside
+    // HB). Each image-bearing built-in must hold its asset at the source
+    // dimensions - a null or wrong-size tip here means brush_assets.qrc is
+    // missing from a roster-building target, or an asset was replaced
+    // without its recipe.
+    {
+        struct StampSpec { const char *id; int w; int h; };
+        const StampSpec specs[] = {
+            {"builtin/sketching/hb-pencil", 1177, 1102},
+            {"builtin/sketching/4h-pencil", 1254, 1254},
+            {"builtin/sketching/2b-pencil", 1254, 1254},
+            {"builtin/sketching/6b-pencil", 1254, 1254},
+        };
+        for (const StampSpec &s : specs) {
+            const BrushPreset *p = nullptr;
+            for (const BrushPreset &candidate : roster)
+                if (candidate.id == QLatin1String(s.id))
+                    p = &candidate;
+            check(QStringLiteral("(b12) %1 carries its stamp tip at "
+                                 "%2x%3")
+                      .arg(QLatin1String(s.id)).arg(s.w).arg(s.h),
+                  p && p->brush.hasCustomShape()
+                      && p->brush.customShape().size() == QSize(s.w, s.h),
+                  p ? QStringLiteral("%1x%2")
+                          .arg(p->brush.customShape().width())
+                          .arg(p->brush.customShape().height())
+                    : QStringLiteral("preset missing"));
         }
     }
 

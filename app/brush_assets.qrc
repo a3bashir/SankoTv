@@ -9,5 +9,8 @@
          happens to HB Pencil. -->
     <qresource prefix="/brushes">
         <file alias="hb_pencil_tip.png">assets/brushes/hb_pencil_tip.png</file>
+        <file alias="pencil_4h_tip.png">assets/brushes/pencil_4h_tip.png</file>
+        <file alias="pencil_2b_tip.png">assets/brushes/pencil_2b_tip.png</file>
+        <file alias="pencil_6b_tip.png">assets/brushes/pencil_6b_tip.png</file>
     </qresource>
 </RCC>
