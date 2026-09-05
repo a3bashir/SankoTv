@@ -30,5 +30,9 @@
         <file alias="draw_sepia_tip.png">assets/brushes/draw_sepia_tip.png</file>
         <file alias="ink_dryink_tip.png">assets/brushes/ink_dryink_tip.png</file>
         <file alias="ink_brushpen_tip.png">assets/brushes/ink_brushpen_tip.png</file>
+        <file alias="ink_inksplatter_tip.png">assets/brushes/ink_inksplatter_tip.png</file>
+        <file alias="ink_splatter_tip.png">assets/brushes/ink_splatter_tip.png</file>
+        <file alias="ink_marker_tip.png">assets/brushes/ink_marker_tip.png</file>
+        <file alias="ink_richink_tip.png">assets/brushes/ink_richink_tip.png</file>
     </qresource>
 </RCC>

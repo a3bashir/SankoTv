@@ -83,11 +83,12 @@ Learned from real defects. Follow them exactly.
    apart: SankoBrushLibraryTest, SankoPaintPixelLock, SankoCanvasBrushLock,
    SankoQuickShapeGeometryLock, SankoDevRecorderTest, SankoCanvasEdgeLock,
    SankoCanvasSizeLock, SankoProjectLifecycle. Preview SHA must stay
-   `e7d418223357bcdfde0b64ecb254a624bc4ebf8fabc3812ff7f46e523088fe1b`
-   (re-baselined 2026-09-05: Inking Part B, first two — Dry Ink and
-   Brush Pen gain their scanned stamps with measured per-brush taper
-   floors; shipped == measured; the eraser SHA
-   `a42203dc…` moves WITH it, same commit, per the coupled-pin note in
+   `39f656b0547266abf5c04994d6e6762eebb100bf9a98d7080c3e78775216ad62`
+   (re-baselined 2026-09-05: Inking Part B, the four — Ink Line &
+   Splatter (primary only), Splatter, Marker (constant width) and Rich
+   Ink gain their scanned stamps; Calligraphy held; shipped ==
+   measured; the eraser SHA
+   `a80dd7e0…` moves WITH it, same commit, per the coupled-pin note in
    BrushLibraryTest); both pixel locks byte-identical
    (`666f7b45…`, `cafcec7f…`), erase baseline `0bc24381…`. The first
    six use 960×540 fixtures; SankoCanvasSizeLock is the variable-resolution

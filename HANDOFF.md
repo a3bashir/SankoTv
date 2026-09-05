@@ -3701,6 +3701,146 @@ Coupled pins re-baselined together, cross-config identical: preview
 b7f4179f -> e7d41822, eraser a06a968b -> a42203dc. (b12) +2 content
 pins. Probe archived as seam_inkprobe_20260905{,_2}.cpp.
 
+## SCAN SESSION BRIEF: three stamp-blocked brushes (2026-09-05)
+
+Three brushes are held on their SCANS, not their tunings - each one
+was measured to the cause, and the cause is structure the scan lacks.
+Work from this at the scanner. Common to all three: grayscale, white
+mark on black (the engine reads brightness as coverage; a dark-on-white
+scan renders inverted), ~1254 px on the long side, mark centred in the
+frame, no paper texture in the black (smooth hot-press paper, levels
+pushed so the paper is 0). Non-square is fine since 2026-09-04 (true
+aspect). Hand a candidate over and it gets a census before wiring;
+the acceptance numbers below are what that census checks.
+
+**1. Grease Pencil - a solid wax dab.** Press a grease/china marker
+FLAT, once, on smooth paper: a single filled blob, not a stroke. Wax
+fills the tooth, so the interior must be continuous.
+- interior mean >= 110/255 (current scan: 20 - speckle);
+- interior variation (p95-p5 over the central 60%) <= 25;
+- no interior hole wider than ~2% of the blob;
+- edge: solid -> nothing over 3-6% of the diameter (40-75 px at
+  1254) - soft but short; no long fringe;
+- one connected blob, round or oval.
+
+**2. Rough Calligraphy - a nib mark, centred and solid at the centre.**
+Press a broad/rough nib once, or a very short (< 1 nib width) drag.
+The current scan's CENTRE is empty, so dabs under 3 px deposit nothing
+and every stroke starts ~28 px late and ends early.
+- the centre pixel and the central 6% of the frame >= 200/255 (current:
+  0 and 98) - THE criterion; the taper lives or dies here;
+- 1-2 px dabs must deposit: the census renders the tip at 1, 2, 3, 4 px
+  and wants > 128 at every size;
+- edge crisp (midtones < 10%), rough outline welcome - roughness is
+  added by scatter (measured: 0.25 -> 1.18 px raggedness, 0.0 px
+  per-column blur), it does not need to be in the scan;
+- portrait or landscape both fine; the mark should fill >= 70% of the
+  frame's long axis.
+
+**3. Dry Ink - BRISTLE BANDS, not a blot.** Drag a dry brush 1-2 cm on
+smooth paper; scan; crop a square where the streaks run LEFT-TO-RIGHT.
+The engine rotates the tip with the stroke heading, so horizontal
+bands in the scan become path-following streaks in any direction.
+The current scan is an isotropic blot (dark-run ratio 0.85) and unions
+to solid at any spacing; no setting turns a blot into bristles.
+- 6-10 distinct bands across the crop (across = the vertical axis of
+  the crop), each band >= 1/12 of the crop width so it survives
+  size 12 (>= 1 px on canvas);
+- 30-40% of the width un-inked (dark bands between bristles);
+- bands span the FULL width of the crop left-to-right - a band that
+  stops halfway becomes a gap that closes;
+- dark-run ratio (mean dark run along x / along y in the central 60%)
+  >= 4 - the census number that says "stripes", not "blot" (the
+  synthetic proof tip measured 11.3);
+- crisp band edges (midtones < 10%).
+
+**4. Calligraphy - a FLAT NIB bar. HELD by decision (2026-09-05), not
+overlooked.** The Calligraphy scan is not a flat nib: ink bounding box
+947x1058 (aspect 0.90, 36% fill). Thick/thin - THE calligraphic
+property - at size 16, horizontal vs vertical stroke width: stock
+flatTip(0.22) 4 vs 16 px (4:1); the scan at angle 0 gives 12 vs 11
+(none), at angle 45 8 vs 16 (2:1). Shipping the scan would DOWNGRADE
+the brush; the procedural flat tip is currently the better
+calligraphy pen and stays until a flat-nib scan exists. Do not promote
+the existing Calligraphy.png later on the assumption it was missed.
+Re-scan: press a flat nib straight down once (or a < 1 nib-width drag)
+so the mark is a thin bar, aspect >= 4:1, fill >= 80% of its bounding
+box, crisp. Census check: bbox aspect and the H/V width ratio at 16.
+
+**Reading the inking brief on taper (decision 2026-09-05):** "all
+Inking brushes taper" means the PEN-LIKE ones. Marker, Technical Pen
+and Fine Liner are constant-width by identity (uniform size curve)
+and stay so; do not read the brief literally and taper them later.
+
+## Inking Part B, the four: Ink Line & Splatter, Splatter, Marker, Rich Ink (2026-09-05)
+
+Requirement-0 structural screen of the five remaining scans found ONE
+stamp-limited brush (Calligraphy, held - see the scan brief) and four
+sound ones, shipped == measured from the roster:
+- Ink Line & Splatter @8: scan on the PRIMARY only; the procedural
+  dot-splatter secondary is the brush's identity and stays. Primary:
+  core 252 / occupancy 100% / edge 1 px; taper 1/1/1/1, no blob. The
+  scan is a sparse blot (17% fill) that unions to a clean line at 8
+  and breaks up above 12 - do not enlarge it.
+- Splatter @10: recipe unchanged + scan + angleJitter 1.0. The
+  procedural disc measured as ONE merged 13,416 px blob over 600 px of
+  stroke (scattered solid discs overlap); the scan gives 669 droplets,
+  median 1 px, largest 464, spread 32 rows - real spatter.
+- Marker @18: CONSTANT WIDTH by decision (uniform size curve), opacity
+  0.6: core 151, occupancy 100%, edge 1 px.
+- Rich Ink @10: core 254 / 100% / 1 px, taper 1/1/1/1; the old opacity
+  ramp (0.4 -> 0.9 -> 1.0) IS the "rich"; hardness 0.55 was the
+  "bleed" and is inert.
+
+**The dual secondary, MEASURED through the real adapter** (the one
+place a primary-tip swap could have an effect nobody looked for):
+shipped vs a stock-equivalent (same preset, primary tip cleared, 0.2
+floor restored). Secondary stamp lists byte-identical (738 stamps,
+identical position and size sums). Controlled pixel comparison over
+the region outside BOTH primary-only lines (512,372 px): 1,171
+secondary-inked pixels in each, 0 differing, max alpha delta 0 -
+positive control satisfied. Two probe gotchas recorded: a "residual"
+defined against the primary alone changes when the primary's WIDTH
+changes (112 -> 158 droplets - the same droplets, no longer covered),
+and SankoPaintHostAdapter::render returns early on EMPTY primary
+stamps, so "render the secondary alone" is vacuous - the positive
+control caught it (0 inked px).
+
+Six ink assets in brush_assets.qrc (3.0 MB); (b12) +4 content pins
+(20 -> 26 asset-bearing built-ins). Coupled pins re-baselined together,
+cross-config identical: preview e7d41822 -> 39f656b0, eraser a42203dc
+-> a80dd7e0. Probe archived as seam_inkprobe_20260905_5_four.cpp.
+
+## ENGINE FACT: streaks need tip-internal structure + heading-following rotation (2026-09-05)
+
+Path-following breakup (dry brush, bristle streaks) cannot come from
+grain or from any dab-to-dab lever. Measured on the shipped Dry Ink
+scan, core band of a 601 px stroke, threshold 128:
+- Static grain d1.0 c3.0 s30 (shipped): 441 gaps, median 2 px, max 8,
+  run-length along/across 1.11 - isotropic pepper = "digital noise".
+- Rolling grain: 100% solid (per-dab re-sampling averages the holes
+  away). Stamp alone: 100% at any spacing. sizeJitter .5, scatter .3,
+  angleJitter .5, noise .6: 100% or pinholes. spacing .15 + spacing
+  jitter .8: 86% as 1 px holes; wider spacing = a DASHED line
+  (full-width breaks), never bristles. Flow fade: saturates at inking
+  spacing (flow accumulates across overlapping dabs).
+- The engine has no per-dab opacity/flow jitter, and it would not help:
+  a dab is a disc, and varying discs make dashes or pinholes.
+- THE MECHANISM: a tip with stripes along its local x, plus
+  `setControlSource(DynamicProperty::AngleJitter, ControlSource::
+  Direction)` (the engine's orientation driver: the smoothed heading
+  rotates the tip). Striped-tip CONTROL: static angle gives 60%
+  occupancy as one 601 px x 2 px streak-gap on a horizontal stroke and
+  100% solid on a vertical one (stripes cross the path and union-fill);
+  with the heading driver, horizontal 60% and vertical 40%, gaps
+  601 px long by 1.5-2 px - streaks that follow the path. Holds at
+  size 18. Caveat to measure on a real scan: the heading is smoothed,
+  so the first dabs orient to the initial estimate.
+- Dry Ink stays SHIPPED as is (crisp, tapered, peppery): stamp-blocked,
+  not tuning-blocked - the user chose crisp-and-peppery over a round
+  that could only make it worse. Probe archived as
+  seam_inkprobe_20260905_3_gapstructure.cpp.
+
 **Follow-up (recorded, not done): StudioTipRing.** The angle/roundness
 ring draws a circle/ellipse regardless of image aspect. Now that tips
 can be rectangular, a ring that always shows an ellipse misrepresents
@@ -3718,4 +3858,8 @@ FAILED - no undisturbed capture in 10 attempts"), QuickShape 5-14
 0") - every one passed run ALONE with no rebuild. That is the
 "runs spaced apart" rule in rule 4, not the Debug-tree corruption
 class (which needs a rebuild to clear); count it as a reminder, not
-as the 4th corruption event.
+as the 4th corruption event. Recurred identically on 2026-09-05 (both
+inking gates): EdgeLock 49-51 "no undisturbed capture", Debug SizeLock
+(j) once - every time green alone, no rebuild. (j) is now a repeat
+offender specifically when SizeLock runs right after the other GUI
+families in Debug; run it alone if it trips.

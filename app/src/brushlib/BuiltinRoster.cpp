@@ -933,7 +933,18 @@ QVector<BrushPreset> builtinRoster()
     r << make(kInking, QStringLiteral("Rich Ink"),
               QStringLiteral("builtin/inking/ink-bleed"), [&](::Brush &b) {
         inkBase(b);
-        b.setSize(10); b.setHardness(0.55);
+        // Inking Part B (2026-09-05): dense and juicy with pressure. The
+        // opacity ramp is the "rich" - light strokes lighter, full
+        // pressure solid. The old hardness 0.55 was the "bleed"; it is
+        // INERT with a custom tip and crisp is what inking asks for.
+        // MEASURED @10: full-pressure core 254 / occupancy 100% / edge
+        // 1 px (per-column 0.0); taper 1/1/1/1 from pen-down, no blob,
+        // slow and fast. Scan 1230x1278 (true aspect).
+        b.setCustomShape(
+            QImage(QStringLiteral(":/brushes/ink_richink_tip.png")));
+        b.setSize(10);
+        b.setHardness(0.55); // INERT with a custom tip (see 4H Pencil)
+        b.sizePressureCurve().setControlPoints(curve2(0.02, 1.0));
         b.opacityPressureCurve().setControlPoints(
             {{0.0, 0.4}, {0.5, 0.9}, {1.0, 1.0}});
     });
@@ -946,7 +957,18 @@ QVector<BrushPreset> builtinRoster()
     r << make(kInking, QStringLiteral("Ink Line & Splatter"),
               [&](::Brush &b) {
         inkBase(b);
+        // Inking Part B (2026-09-05): the scan replaces the PRIMARY tip
+        // only - the procedural dot-splatter secondary below is the
+        // brush's identity and stays. The scan is a sparse blot (17%
+        // fill) that unions to a clean line at 8 and breaks up above 12,
+        // hence the size. MEASURED @8: core 252 / occupancy 100% / edge
+        // 1 px; taper 1/1/1/1, no blob. The secondary was measured
+        // through the real dual adapter before and after the swap (see
+        // HANDOFF): its droplets are unchanged.
+        b.setCustomShape(
+            QImage(QStringLiteral(":/brushes/ink_inksplatter_tip.png")));
         b.setSize(8);
+        b.sizePressureCurve().setControlPoints(curve2(0.02, 1.0));
         b.setDualBrushEnabled(true);
         ::Brush &s = b.secondaryBrush();
         s.setSize(6); s.setHardness(1.0); s.setSpacing(0.5);
@@ -958,17 +980,38 @@ QVector<BrushPreset> builtinRoster()
     });
     r << make(kInking, QStringLiteral("Splatter"), [&](::Brush &b) {
         inkBase(b);
+        // Inking Part B (2026-09-05): the scatter recipe is unchanged; the
+        // scan (a spatter blot with satellites) is what makes it spatter.
+        // MEASURED over 600 px of stroke: the procedural disc gave ONE
+        // merged blob of 13,416 px (scattered solid discs overlap); the
+        // scan gives ~670-760 droplets, median 1 px, largest ~465, spread
+        // 30-32 rows. angleJitter 1.0 so the blot's orientation varies
+        // droplet to droplet (669 droplets measured with it).
+        b.setCustomShape(
+            QImage(QStringLiteral(":/brushes/ink_splatter_tip.png")));
         b.setSize(10); b.setSpacing(0.5);
         b.setScatterAlong(0.8); b.setScatterPerpendicular(0.6);
         b.setScatterCount(4); b.setSizeJitter(0.6);
+        b.setAngleJitter(1.0);
+        b.sizePressureCurve().setControlPoints(curve2(0.02, 1.0));
     });
     r << make(kInking, QStringLiteral("Marker"), [&](::Brush &b) {
         inkBase(b);
-        b.setSize(18); b.setHardness(0.35); b.setOpacity(0.6);
+        // Inking Part B (2026-09-05): CONSTANT WIDTH by decision - a
+        // marker's identity is the constant line, like Technical Pen and
+        // Fine Liner; the brief's "all Inking brushes taper" meant the
+        // pen-like ones (HANDOFF). MEASURED @18 opacity 0.6: core 151
+        // (0.6 x 255), occupancy 100%, edge 1 px (per-column 0.0).
+        b.setCustomShape(
+            QImage(QStringLiteral(":/brushes/ink_marker_tip.png")));
+        b.setSize(18);
+        b.setHardness(0.35); // INERT with a custom tip (see 4H Pencil)
+        b.setOpacity(0.6);
+        b.sizePressureCurve().setControlPoints(curve2(1.0, 1.0)); // uniform
         b.opacityPressureCurve().setControlPoints(curve2(1.0, 1.0));
         // Our marker is the round-tip kind whose look IS the constant juicy
         // line (a chisel marker would keep tilt, but that isn't this brush).
-        b.setTiltAffectsShape(false);
+        b.setTiltAffectsShape(false); // INERT with a custom tip anyway
     });
 
     // ---- PAINTING: opaque wet media --------------------------------------
