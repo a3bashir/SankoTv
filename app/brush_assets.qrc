@@ -21,5 +21,12 @@
         <file alias="draw_softpastel_tip.png">assets/brushes/draw_softpastel_tip.png</file>
         <file alias="draw_compcharcoal_tip.png">assets/brushes/draw_compcharcoal_tip.png</file>
         <file alias="draw_grease_tip.png">assets/brushes/draw_grease_tip.png</file>
+        <file alias="draw_hardpastel_tip.png">assets/brushes/draw_hardpastel_tip.png</file>
+        <file alias="draw_charstick_tip.png">assets/brushes/draw_charstick_tip.png</file>
+        <file alias="draw_chalk_tip.png">assets/brushes/draw_chalk_tip.png</file>
+        <file alias="draw_graphiteblock_tip.png">assets/brushes/draw_graphiteblock_tip.png</file>
+        <file alias="draw_conte_tip.png">assets/brushes/draw_conte_tip.png</file>
+        <file alias="draw_sanguine_tip.png">assets/brushes/draw_sanguine_tip.png</file>
+        <file alias="draw_sepia_tip.png">assets/brushes/draw_sepia_tip.png</file>
     </qresource>
 </RCC>

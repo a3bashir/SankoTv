@@ -304,6 +304,24 @@ public:
     void clearCustomShape();
     bool hasCustomShape() const { return !m_customShape.isNull(); }
     const QImage &customShape() const { return m_customShape; }
+    // Custom-tip extent in tip-local units (2026-09-04): the LONGER axis
+    // fills the stamp diameter and the shorter is scaled by the image's
+    // aspect, so a 1536x1024 scan renders 1.0 x 0.667 instead of being
+    // stretched square. (1,1) for square and procedural tips - the divide
+    // by 1.0 is exact on both the CPU sampler and the shaders, so square
+    // tips render byte-identical to the pre-extent engine (pinned by the
+    // confinement seam). Consumed by StrokeBuilder::shapedTipForStamp and
+    // uploaded to stamp.frag / color_stamp.frag as tipExtent. Not a
+    // preset field: derived from the image, never serialised.
+    QSizeF customTipExtent() const
+    {
+        if (m_customShape.isNull() || m_customShape.width() <= 0
+            || m_customShape.height() <= 0)
+            return QSizeF(1.0, 1.0);
+        const qreal w = m_customShape.width();
+        const qreal h = m_customShape.height();
+        return w >= h ? QSizeF(1.0, h / w) : QSizeF(w / h, 1.0);
+    }
 
     // --- Control source + minimum per dynamic property --------------------
     // source: what drives the property (default Pressure — existing brushes

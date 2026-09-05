@@ -517,11 +517,46 @@ QVector<BrushPreset> builtinRoster()
         b.sizePressureCurve().setControlPoints(curve2(0.5, 1.0));
         b.opacityPressureCurve().setControlPoints(curve2(0.7, 1.0));
     };
+    // Drawing batch two (2026-09-04): the seven remaining stamps, each
+    // MEASURED at its approved size (probe: 160-pt stroke, 1000x240,
+    // core band +/-4 px; figures are light-pressure first-touch /
+    // full-pressure / interior spread p95-p5 / where the light stroke
+    // ends in px from the spine). Census: every stamp has a HARD rim
+    // (50%->10% within 0.025R) and a granular interior (pixel std ~=
+    // mean), so a frayed edge can only come from the Soft Pastel
+    // technique - pressure-INVERTED perpendicular scatter - and the
+    // interior spread floors near ~60 whatever the grain depth. All
+    // seven use the Charcoal grain preset (Chalk/Paper ceiling at
+    // spread ~35). "Build-up" is compositing arithmetic on first-touch
+    // density (HANDOFF), so it is reported, never targeted.
     r << make(kDrawing, QStringLiteral("Conte Crayon"), [&](::Brush &b) {
         drawBase(b);
-        b.setSize(12); b.setHardness(0.5);
-        b.setGrainPreset(B::GrainPreset::Chalk); b.setGrainDepth(0.6);
-        b.setTiltAffectsShape(true); b.setMaxTiltElongation(2.5);
+        // The firm one of the conte trio: densest first touch, crispest
+        // edge (ends at 11 px, one past the disc itself - scatter 0.20
+        // is a hint of dryness, not a fray). MEASURED @25: 59.7 / 163.8
+        // / spread 86 / ends 11.
+        // RE-SCANNED 2026-09-04 (user's new 1536x1024 scan, rendered at
+        // true aspect - the engine's tip-extent change): tuning UNCHANGED
+        // by instruction; re-measured 71.5 / 153.5 / spread 77 / ends 8.
+        // Deltas reported, not compensated - the hand decides.
+        b.setCustomShape(
+            QImage(QStringLiteral(":/brushes/draw_conte_tip.png")));
+        b.setSize(25);
+        b.setHardness(0.5); // INERT with a custom tip (see 4H Pencil)
+        b.setTiltAffectsShape(true); // INERT with a custom tip: tilt
+        b.setMaxTiltElongation(2.5); // elongation measured 39/39/38 px
+        b.setOpacity(0.85);
+        b.setFlow(0.65);
+        b.setScatterPerpendicular(0.20);
+        b.setScatterCount(1);
+        b.scatterPressureCurve().setControlPoints(curve2(1.0, 0.15));
+        b.setGrainPreset(B::GrainPreset::Charcoal);
+        b.setGrainDepth(0.5);
+        b.setGrainContrast(2.5);
+        b.setGrainScale(40.0);
+        b.setControlMinimum(B::DynamicProperty::GrainDepth, 1.0);
+        b.sizePressureCurve().setControlPoints(curve2(0.5, 1.0));
+        b.opacityPressureCurve().setControlPoints(curve2(0.5, 1.0));
     });
     r << make(kDrawing, QStringLiteral("Soft Pastel"), [&](::Brush &b) {
         drawBase(b);
@@ -564,31 +599,84 @@ QVector<BrushPreset> builtinRoster()
     });
     r << make(kDrawing, QStringLiteral("Hard Pastel"), [&](::Brush &b) {
         drawBase(b);
-        b.setSize(14); b.setHardness(0.6);
-        b.setGrainPreset(B::GrainPreset::Chalk); b.setGrainDepth(0.5);
+        // Firmer than Soft Pastel on every axis the hand can read: 55%
+        // denser first touch, near-full occupancy (99% vs 84%), a
+        // shorter run-out (scatter 0.35 vs 0.75: ends 16 vs 19). Spread
+        // 62 is the stamp's own interior (depth 0.45 only reached 58).
+        // MEASURED @35: 56.6 / 125.1 / spread 62 / ends 16.
+        b.setCustomShape(
+            QImage(QStringLiteral(":/brushes/draw_hardpastel_tip.png")));
+        b.setSize(35);
+        b.setHardness(0.6); // INERT with a custom tip (see 4H Pencil)
+        b.setOpacity(0.90);
+        b.setFlow(0.28);
+        b.setScatterPerpendicular(0.35);
+        b.setScatterCount(1);
+        b.scatterPressureCurve().setControlPoints(curve2(1.0, 0.15));
+        b.setGrainPreset(B::GrainPreset::Charcoal);
+        b.setGrainDepth(0.6);
+        b.setGrainContrast(3.0);
+        b.setGrainScale(48.0);
+        b.setControlMinimum(B::DynamicProperty::GrainDepth, 1.0);
+        b.sizePressureCurve().setControlPoints(curve2(0.5, 1.0));
+        b.opacityPressureCurve().setControlPoints(curve2(0.5, 1.0));
     });
     r << make(kDrawing, QStringLiteral("Charcoal Stick"), [&](::Brush &b) {
         drawBase(b);
-        b.setSize(16); b.setHardness(0.35);
-        b.setGrainPreset(B::GrainPreset::Charcoal); b.setGrainDepth(0.8);
-        b.setRotationAffectsShape(true);
+        // The airy half of the charcoal pair: rides the tooth (depth
+        // 1.0, 85% occupancy, spread 92) and frays (scatter 0.50, ends
+        // 17). Calibrated JOINTLY with Compressed Charcoal after the
+        // hand-test read the old procedural Stick as darker: Compressed
+        // now sits 1.76x above this at first touch and 1.64x at full
+        // pressure. The old rotationAffectsShape is dropped, unmeasured.
+        // MEASURED @35: 49.0 / 117.8 / spread 92 / ends 17.
+        // RE-SCANNED 2026-09-04 (user's new 992x1585 scan, true aspect):
+        // tuning UNCHANGED by instruction; re-measured 27.9 / 74.7 /
+        // spread 65 / ends 17 - the tall narrow scan deposits far less
+        // per dab. Pair polarity vs Compressed now 2.5x at first touch.
+        // Deltas reported, not compensated - the hand decides.
+        b.setCustomShape(
+            QImage(QStringLiteral(":/brushes/draw_charstick_tip.png")));
+        b.setSize(35);
+        b.setHardness(0.35); // INERT with a custom tip (see 4H Pencil)
+        b.setOpacity(0.95);
+        b.setFlow(0.40);
+        b.setScatterPerpendicular(0.50);
+        b.setScatterCount(1);
+        b.scatterPressureCurve().setControlPoints(curve2(1.0, 0.15));
+        b.setGrainPreset(B::GrainPreset::Charcoal);
+        b.setGrainDepth(1.0);
+        b.setGrainContrast(3.0);
+        b.setGrainScale(48.0);
+        b.setControlMinimum(B::DynamicProperty::GrainDepth, 1.0);
+        b.sizePressureCurve().setControlPoints(curve2(0.4, 1.0));
+        b.opacityPressureCurve().setControlPoints(curve2(0.4, 1.0));
     });
     r << make(kDrawing, QStringLiteral("Compressed Charcoal"),
               [&](::Brush &b) {
         drawBase(b);
-        // STAMP TIP, Drawing calibration batch (2026-08-30). MEASURED at
-        // the approved size 30: mean 72.3 at half pressure, 171.3 at
-        // full - the dense/dark half of the charcoal pair (flow swept
-        // 0.45..0.70; 0.55 met both targets). Grain depth deliberately
+        // STAMP TIP, Drawing calibration batch (2026-08-30). The
+        // dense/dark half of the charcoal pair. Grain depth deliberately
         // DOWN from the old 0.95: compressed charcoal fills the tooth
         // where the stick rides it - the pair's distinction lives in
-        // deposit rate and breakup, not darkness alone.
+        // deposit rate and breakup, not darkness alone. Flow RAISED
+        // 0.55 -> 0.70 in batch two (2026-09-04), calibrated jointly
+        // against the NEW stamped Charcoal Stick: the hand-test had
+        // read the old procedural Stick as darker, and a technically
+        // correct 1.48x margin was judged not enough - 0.70 puts this
+        // 1.76x above the Stick at first touch (86.0 vs 49.0) and
+        // 1.64x at full pressure (192.8 vs 117.8), with a hard filled
+        // edge (99% occupancy, ends 10) against the Stick's fray.
+        // MEASURED @30: 86.0 / 192.8 / spread 96 / ends 10.
+        // RE-SCANNED 2026-09-04 (user's new 1024x1536 scan, true aspect):
+        // tuning UNCHANGED by instruction; re-measured 70.2 / 169.6 /
+        // spread 89 / ends 11. Deltas reported, not compensated.
         b.setCustomShape(QImage(
             QStringLiteral(":/brushes/draw_compcharcoal_tip.png")));
         b.setSize(30);
         b.setHardness(0.25); // INERT with a custom tip (see 4H Pencil)
         b.setOpacity(0.97);
-        b.setFlow(0.55);
+        b.setFlow(0.70);
         b.setSpacing(0.08);
         b.setGrainPreset(B::GrainPreset::Charcoal);
         b.setGrainDepth(0.6);
@@ -602,16 +690,68 @@ QVector<BrushPreset> builtinRoster()
     });
     r << make(kDrawing, QStringLiteral("Chalk"), [&](::Brush &b) {
         drawBase(b);
-        b.setSize(14); b.setHardness(0.4);
-        b.setGrainPreset(B::GrainPreset::Chalk); b.setGrainDepth(0.65);
-        b.setColor(QColor(0xf2, 0xf2, 0xf2));
+        // Inherits the FULL Soft Pastel technique (scatter 0.75, count
+        // 2, depth 1.0): dry powder that runs out. Distinct from Soft
+        // Pastel by a brighter first touch (45 vs 36.5) and a more
+        // broken tooth (spread 79 vs 57).
+        // NO IDENTITY COLOUR (2026-09-05): the #f2f2f2 white it used to
+        // carry was adopted while active and drew near-white on white
+        // paper - invisible (max contrast 13/255 even at full alpha; at
+        // the measured light-pressure alpha of 58/255, 3/255). Chalk is
+        // defined by being DRY, not by being white: it now inherits the
+        // user's colour like the other dry media, and white chalk is a
+        // colour the user picks. Sanguine and Sepia keep theirs - the
+        // colour IS the medium there.
+        // MEASURED @30: 45.2 / 129.9 / spread 79 / ends 18.
+        // RE-SCANNED 2026-09-04 (user's new 1254x1254 scan): tuning
+        // UNCHANGED by instruction; re-measured 58.1 / 145.2 / spread 95
+        // / ends 18. Deltas reported, not compensated.
+        b.setCustomShape(
+            QImage(QStringLiteral(":/brushes/draw_chalk_tip.png")));
+        b.setSize(30);
+        b.setHardness(0.4); // INERT with a custom tip (see 4H Pencil)
+        b.setOpacity(0.90);
+        b.setFlow(0.28);
+        b.setScatterPerpendicular(0.75);
+        b.setScatterCount(2);
+        b.scatterPressureCurve().setControlPoints(curve2(1.0, 0.15));
+        b.setGrainPreset(B::GrainPreset::Charcoal);
+        b.setGrainDepth(1.0);
+        b.setGrainContrast(3.0);
+        b.setGrainScale(48.0);
+        b.setControlMinimum(B::DynamicProperty::GrainDepth, 1.0);
+        b.sizePressureCurve().setControlPoints(curve2(0.4, 1.0));
+        b.opacityPressureCurve().setControlPoints(curve2(0.35, 1.0));
     });
     r << make(kDrawing, QStringLiteral("Graphite Block"), [&](::Brush &b) {
         drawBase(b);
-        b.setSize(24); b.setHardness(0.55);
-        b.setGrainPreset(B::GrainPreset::Paper); b.setGrainDepth(0.5);
-        b.setCustomShape(flatTip(0.28));
-        b.setTiltAffectsShape(true); b.setMaxTiltElongation(4.0);
+        // A broad even band, no scatter: distinct from the graphite
+        // pencils by width (40 vs 25), evenness (98% occupancy vs 6B's
+        // 86%) and a darker laydown at both pressures. MEASURED STAMP
+        // LIMITATION (item-10 clause, milder than Grease): the "even
+        // sheen" target of spread 20-35 is unreachable - it floors at
+        // ~57-60 with grain nearly off and spacing halved, because it
+        // is the scan's own interior texture. User chose to draw it
+        // rather than re-scan on a prediction. The old flatTip and the
+        // tilt widening are gone with the stamp: tilt elongation is
+        // INERT with a custom tip (measured 39/39/38 px), like
+        // hardness. MEASURED @40: 51.3 / 139.4 / spread 60 / ends 17.
+        b.setCustomShape(QImage(
+            QStringLiteral(":/brushes/draw_graphiteblock_tip.png")));
+        b.setSize(40);
+        b.setHardness(0.55); // INERT with a custom tip (see 4H Pencil)
+        b.setTiltAffectsShape(true); // INERT with a custom tip (see
+        b.setMaxTiltElongation(4.0); // above); kept as the recipe intent
+        b.setOpacity(0.85);
+        b.setFlow(0.30);
+        b.setSpacing(0.08);
+        b.setGrainPreset(B::GrainPreset::Charcoal);
+        b.setGrainDepth(0.3);
+        b.setGrainContrast(2.0);
+        b.setGrainScale(30.0);
+        b.setControlMinimum(B::DynamicProperty::GrainDepth, 1.0);
+        b.sizePressureCurve().setControlPoints(curve2(0.7, 1.0));
+        b.opacityPressureCurve().setControlPoints(curve2(0.4, 1.0));
     });
     r << make(kDrawing, QStringLiteral("Grease Pencil"), [&](::Brush &b) {
         drawBase(b);
@@ -641,16 +781,56 @@ QVector<BrushPreset> builtinRoster()
         b.opacityPressureCurve().setControlPoints(curve2(0.5, 1.0));
         b.flowPressureCurve().setControlPoints(curve2(1.0, 1.0)); // waxy
     });
+    // Sanguine and Sepia are the softer two of the conte trio (scatter
+    // 0.35, ends 12, ~52 first touch vs Conte's 59.7). Their flows
+    // DIFFER (0.40 vs 0.48) only to cancel the stamps' coverage
+    // difference (50.2 vs 43.5): they are meant to land at the same
+    // density, and colour is their distinction (identity colours ride
+    // the shipped design-(b) behaviour).
     r << make(kDrawing, QStringLiteral("Sanguine"), [&](::Brush &b) {
         drawBase(b);
-        b.setSize(12); b.setHardness(0.5);
-        b.setGrainPreset(B::GrainPreset::Chalk); b.setGrainDepth(0.55);
+        // MEASURED @25: 51.6 / 125.5 / spread 67 / ends 12.
+        b.setCustomShape(
+            QImage(QStringLiteral(":/brushes/draw_sanguine_tip.png")));
+        b.setSize(25);
+        b.setHardness(0.5); // INERT with a custom tip (see 4H Pencil)
+        b.setOpacity(0.90);
+        b.setFlow(0.40);
+        b.setScatterPerpendicular(0.35);
+        b.setScatterCount(1);
+        b.scatterPressureCurve().setControlPoints(curve2(1.0, 0.15));
+        b.setGrainPreset(B::GrainPreset::Charcoal);
+        b.setGrainDepth(0.6);
+        b.setGrainContrast(2.5);
+        b.setGrainScale(40.0);
+        b.setControlMinimum(B::DynamicProperty::GrainDepth, 1.0);
+        b.sizePressureCurve().setControlPoints(curve2(0.5, 1.0));
+        b.opacityPressureCurve().setControlPoints(curve2(0.5, 1.0));
         b.setColor(QColor(0xc0, 0x5a, 0x3a));
     });
     r << make(kDrawing, QStringLiteral("Sepia"), [&](::Brush &b) {
         drawBase(b);
-        b.setSize(12); b.setHardness(0.5);
-        b.setGrainPreset(B::GrainPreset::Chalk); b.setGrainDepth(0.55);
+        // MEASURED @25: 52.1 / 135.5 / spread 69 / ends 12.
+        // RE-SCANNED 2026-09-04 (user's new 1774x887 scan, true aspect -
+        // the widest of the set, half as tall as it is wide): tuning
+        // UNCHANGED by instruction; re-measured 56.2 / 158.8 / spread 90
+        // / ends 8. Deltas reported, not compensated.
+        b.setCustomShape(
+            QImage(QStringLiteral(":/brushes/draw_sepia_tip.png")));
+        b.setSize(25);
+        b.setHardness(0.5); // INERT with a custom tip (see 4H Pencil)
+        b.setOpacity(0.90);
+        b.setFlow(0.48);
+        b.setScatterPerpendicular(0.35);
+        b.setScatterCount(1);
+        b.scatterPressureCurve().setControlPoints(curve2(1.0, 0.15));
+        b.setGrainPreset(B::GrainPreset::Charcoal);
+        b.setGrainDepth(0.6);
+        b.setGrainContrast(2.5);
+        b.setGrainScale(40.0);
+        b.setControlMinimum(B::DynamicProperty::GrainDepth, 1.0);
+        b.sizePressureCurve().setControlPoints(curve2(0.5, 1.0));
+        b.opacityPressureCurve().setControlPoints(curve2(0.5, 1.0));
         b.setColor(QColor(0x70, 0x42, 0x1e));
     });
 

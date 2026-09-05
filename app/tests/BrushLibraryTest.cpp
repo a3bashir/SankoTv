@@ -88,7 +88,7 @@ using brushlib::BrushPreset;
 // legitimate roster change moves BOTH in the same commit; this one
 // moving ALONE is a defect, never a re-baseline.
 static const char kEraserSwatchSha[] =
-    "48dc5641ad26356a72c976e487d3e90ab44ef47cf2c631a5956a4ac8673e875a";
+    "a06a968b38a9cb737e892aeaedf7825674d154f54773bcbc7abe496138f9d7ca";
 using brushlib::BrushPresetCodec;
 using brushlib::BrushPreviewRenderer;
 
@@ -777,38 +777,122 @@ int main(int argc, char **argv)
     // dimensions - a null or wrong-size tip here means brush_assets.qrc is
     // missing from a roster-building target, or an asset was replaced
     // without its recipe.
+    //
+    // CONTENT PIN (2026-09-04). Dimensions alone let ten copies of one
+    // 1254x1254 file pass - which a "the Drawing tips all look the same"
+    // report exposed (the assets turned out distinct; the check could not
+    // have said so). Each entry now also pins the Grayscale8 bits the
+    // roster HOLDS: sha256 (first 12 hex) plus the mean coverage the
+    // calibration census measured. What this catches: a duplicated,
+    // swapped, stale, or re-scanned asset, a qrc alias on the wrong file,
+    // a conversion change. What it still cannot: two DIFFERENT scans
+    // that merely look alike (the actual situation), the source folder
+    // on G: changing under the repo, a correct asset with wrong tuning,
+    // or anything the preview does. A legitimate re-scan moves its pin
+    // in the same commit as the recipe/measurement, with the reason.
     {
-        struct StampSpec { const char *id; int w; int h; };
-        const StampSpec specs[] = {
-            {"builtin/sketching/hb-pencil", 1177, 1102},
-            {"builtin/sketching/4h-pencil", 1254, 1254},
-            {"builtin/sketching/2b-pencil", 1254, 1254},
-            {"builtin/sketching/6b-pencil", 1254, 1254},
-            {"builtin/sketching/h-pencil", 1296, 1214},
-            {"builtin/sketching/2h-pencil", 1295, 1215},
-            {"builtin/sketching/4b-pencil", 1254, 1254},
-            {"builtin/sketching/mechanical-pencil", 1254, 1254},
-            {"builtin/sketching/blue-pencil", 1254, 1254},
-            {"builtin/sketching/charcoal-pencil", 1254, 1254},
-            {"builtin/drawing/soft-pastel", 1254, 1254},
-            {"builtin/drawing/compressed-charcoal", 1254, 1254},
-            {"builtin/drawing/grease-pencil", 1254, 1254},
+        struct StampSpec {
+            const char *id;
+            int w, h;
+            const char *sha12; // of the Grayscale8 scanlines
+            double mean;       // census mean coverage, 0-255
         };
+        const StampSpec specs[] = {
+            {"builtin/sketching/hb-pencil", 1177, 1102, "055d0199ddf3",
+             97.3},
+            {"builtin/sketching/4h-pencil", 1254, 1254, "5fa1bbd78c21",
+             157.5},
+            {"builtin/sketching/2b-pencil", 1254, 1254, "3bc423e621ea",
+             46.6},
+            {"builtin/sketching/6b-pencil", 1254, 1254, "a0a250063248",
+             18.5},
+            {"builtin/sketching/h-pencil", 1296, 1214, "0447254aa303",
+             108.1},
+            {"builtin/sketching/2h-pencil", 1295, 1215, "5ac7739f77d1",
+             119.8},
+            {"builtin/sketching/4b-pencil", 1254, 1254, "e577884a70e3",
+             33.2},
+            {"builtin/sketching/mechanical-pencil", 1254, 1254,
+             "3b2ebd0a9610", 64.9},
+            {"builtin/sketching/blue-pencil", 1254, 1254, "d3e96e2db75a",
+             70.2},
+            {"builtin/sketching/charcoal-pencil", 1254, 1254,
+             "ee136b1042d6", 29.2},
+            {"builtin/drawing/soft-pastel", 1254, 1254, "b9812cff03f1",
+             102.2},
+            // Re-scanned 2026-09-04 (user's new scans, rendered at true
+            // aspect since the tip-extent change): four are non-square.
+            {"builtin/drawing/compressed-charcoal", 1024, 1536,
+             "5a3bb6a84b08", 59.6},
+            {"builtin/drawing/grease-pencil", 1254, 1254, "e45b22c767e3",
+             20.4},
+            {"builtin/drawing/hard-pastel", 1254, 1254, "b1b5e35d6cef",
+             62.7},
+            {"builtin/drawing/charcoal-stick", 992, 1585, "87267b2823e6",
+             46.1},
+            {"builtin/drawing/chalk", 1254, 1254, "6c01912ca278", 66.0},
+            {"builtin/drawing/graphite-block", 1254, 1254, "766e3bc0e6ef",
+             58.7},
+            {"builtin/drawing/conte-crayon", 1536, 1024, "2168af68a840",
+             44.3},
+            {"builtin/drawing/sanguine", 1254, 1254, "e440508213cd", 50.2},
+            {"builtin/drawing/sepia", 1774, 887, "486578cd5cfb", 60.2},
+        };
+        QStringList seenShas;
         for (const StampSpec &s : specs) {
             const BrushPreset *p = nullptr;
             for (const BrushPreset &candidate : roster)
                 if (candidate.id == QLatin1String(s.id))
                     p = &candidate;
+            const bool loaded = p && p->brush.hasCustomShape();
+            QString sha12;
+            double mean = 0.0;
+            if (loaded) {
+                const QImage &tip = p->brush.customShape();
+                QCryptographicHash h(QCryptographicHash::Sha256);
+                double sum = 0.0;
+                for (int y = 0; y < tip.height(); ++y) {
+                    const uchar *row = tip.constScanLine(y);
+                    h.addData(QByteArrayView(
+                        reinterpret_cast<const char *>(row), tip.width()));
+                    for (int x = 0; x < tip.width(); ++x)
+                        sum += row[x];
+                }
+                sha12 = QString::fromLatin1(h.result().toHex().left(12));
+                mean = sum / (double(tip.width()) * tip.height());
+                seenShas << sha12;
+            }
+            const QString actual = loaded
+                ? QStringLiteral("%1x%2 sha %3 mean %4")
+                      .arg(p->brush.customShape().width())
+                      .arg(p->brush.customShape().height())
+                      .arg(sha12)
+                      .arg(mean, 0, 'f', 1)
+                : QStringLiteral("preset missing or no tip");
             check(QStringLiteral("(b12) %1 carries its stamp tip at "
                                  "%2x%3")
                       .arg(QLatin1String(s.id)).arg(s.w).arg(s.h),
-                  p && p->brush.hasCustomShape()
-                      && p->brush.customShape().size() == QSize(s.w, s.h),
-                  p ? QStringLiteral("%1x%2")
-                          .arg(p->brush.customShape().width())
-                          .arg(p->brush.customShape().height())
-                    : QStringLiteral("preset missing"));
+                  loaded && p->brush.customShape().size() == QSize(s.w, s.h),
+                  actual);
+            check(QStringLiteral("(b12) %1 holds the PINNED stamp bytes "
+                                 "(sha %2, mean %3)")
+                      .arg(QLatin1String(s.id), QLatin1String(s.sha12))
+                      .arg(s.mean, 0, 'f', 1),
+                  loaded && sha12 == QLatin1String(s.sha12)
+                      && qAbs(mean - s.mean) < 0.05,
+                  actual);
         }
+        // The property the dimensions check lacked: every asset-bearing
+        // built-in holds DIFFERENT bytes from every other.
+        QStringList uniqueShas = seenShas;
+        uniqueShas.removeDuplicates();
+        check(QStringLiteral("(b12) all %1 stamp tips are distinct files "
+                             "(no duplicated or swapped asset)")
+                  .arg(seenShas.size()),
+              !seenShas.isEmpty() && uniqueShas.size() == seenShas.size(),
+              QStringLiteral("%1 distinct of %2")
+                  .arg(uniqueShas.size())
+                  .arg(seenShas.size()));
     }
 
     // ---- (b10) the custom-image cap + the encoded-image memo -------------

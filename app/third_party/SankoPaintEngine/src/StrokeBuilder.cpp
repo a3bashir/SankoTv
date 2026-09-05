@@ -754,6 +754,14 @@ QImage StrokeBuilder::shapedTipForStamp(const StrokeStamp &stamp) const
     const QImage &baseTip = m_brush.hasCustomShape()
         ? m_brush.customShape()
         : m_brush.shape(stamp.effectiveSize, stamp.effectiveHardness);
+    // ASPECT (2026-09-04): a custom image occupies the tip-local rectangle
+    // |local| <= extent (Brush::customTipExtent - longer axis = 1), not
+    // the whole unit square, so non-square scans are no longer stretched
+    // square. The disc clip below still applies (a square's corners were
+    // always cut). The shaders carry the same extent as a uniform.
+    const QSizeF tipExtent = m_brush.customTipExtent();
+    const qreal extentX = tipExtent.width();
+    const qreal extentY = tipExtent.height();
     const qreal tiltMagnitude = std::hypot(stamp.point.tiltX, stamp.point.tiltY);
     const bool applyTilt = m_brush.tiltAffectsShape() && tiltMagnitude > 0.01;
     const bool applyRotation = m_brush.rotationAffectsShape()
@@ -807,12 +815,20 @@ QImage StrokeBuilder::shapedTipForStamp(const StrokeStamp &stamp) const
             if (distance >= 1.0) continue;
             qreal coverage = 0.0;
             if (m_brush.hasCustomShape()) {
+                // Outside the image's rectangle the tip is empty. For a
+                // square image the extent is (1,1): inside the disc this
+                // can never fire and the divide is exact, so square tips
+                // render byte-identical to the pre-extent engine.
+                if (std::abs(transformedX) > extentX
+                    || std::abs(transformedY) > extentY)
+                    continue;
                 // Flips negate the TIP-LOCAL axes (coordinates AFTER the
                 // inverse rotation above) — the backward-mapped form of
                 // "flip the tip, then rotate". Distance is sign-blind, so
                 // the procedural falloff below needs nothing.
-                coverage = customSample(flipSignX * transformedX * .5 + .5,
-                                        flipSignY * transformedY * .5 + .5);
+                coverage = customSample(
+                    flipSignX * transformedX / extentX * .5 + .5,
+                    flipSignY * transformedY / extentY * .5 + .5);
             } else if (stamp.effectiveHardness >= .999 || distance <= stamp.effectiveHardness) {
                 coverage = 1.0;
             } else {

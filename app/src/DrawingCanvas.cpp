@@ -1211,13 +1211,15 @@ void DrawingCanvas::setPaintBrush(const ::Brush &brush)
                                      * m_brushToolOpacity);
     m_brushHardness = brush.hardness();
     // IDENTITY COLOUR, design (b) (2026-08-30): a preset with a non-black
-    // stored colour (Blue Pencil, Chalk, Sanguine, Sepia, and any
-    // coloured user/ABR preset) applies its colour WHILE ACTIVE;
-    // switching to a black-ink preset RESTORES the pre-adoption colour.
-    // The old behaviour adopted permanently into the shared app colour,
-    // so every pencil after Blue Pencil painted blue (the reported bug -
-    // general to all four identity presets, Chalk being the sneakiest:
-    // near-white ink without noticing). The capture happens only on the
+    // stored colour (Blue Pencil, Sanguine, Sepia, and any coloured
+    // user/ABR preset) applies its colour WHILE ACTIVE; switching to a
+    // black-ink preset RESTORES the pre-adoption colour. The old
+    // behaviour adopted permanently into the shared app colour, so every
+    // pencil after Blue Pencil painted blue (the reported bug - general
+    // to every identity preset; Chalk was the sneakiest, near-white ink
+    // without noticing, until its white was removed on 2026-09-05: it
+    // drew invisibly on white paper, and it is now an ordinary
+    // black-ink preset on the RESTORE side). The capture happens only on the
     // user -> identity transition, so Blue -> Sepia -> 2B restores the
     // ORIGINAL user colour; an explicit setColor() while adopted clears
     // the restore state (deliberate intent persists).

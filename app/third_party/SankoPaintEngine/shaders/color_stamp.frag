@@ -16,6 +16,9 @@ layout(std140, binding = 0) uniform Globals {
     mat4 clipMatrix;
     int useCustomTip;
     int textureBlendMode;
+    // Custom-tip extent (Brush::customTipExtent), std140 offset 72 here
+    // (two ints precede it) - see stamp.frag for the contract.
+    vec2 tipExtent;
 };
 
 // Exact-sampling helpers — see stamp.frag; mirrored verbatim.
@@ -115,8 +118,12 @@ void main()
     float distanceFromCenter = length(rotated);
     if (distanceFromCenter >= 1.0)
         discard;
+    // Rectangle clip + extent divide, mirrored from stamp.frag.
+    if (useCustomTip != 0
+        && (abs(rotated.x) > tipExtent.x || abs(rotated.y) > tipExtent.y))
+        discard;
     float coverage = useCustomTip != 0
-        ? texture(customTip, rotated * 0.5 + 0.5).r : 1.0;
+        ? texture(customTip, rotated / tipExtent * 0.5 + 0.5).r : 1.0;
     if (useCustomTip == 0 && hardness < 0.999 && distanceFromCenter > hardness) {
         float t = (distanceFromCenter - hardness) / max(1.0 - hardness, 0.001);
         coverage = exp(-3.0 * t * t) * (1.0 - t);
@@ -139,7 +146,8 @@ void main()
         } else {
             // Exact-sampling chain — see stamp.frag.
             float cb = useCustomTip != 0
-                ? round8(bilinearClampR(customTip, rotated * 0.5 + 0.5))
+                ? round8(bilinearClampR(customTip,
+                                        rotated / tipExtent * 0.5 + 0.5))
                 : round8(rawTip);
             if (noiseData.z > 0.0)
                 cb = noisyCoverage(cb);

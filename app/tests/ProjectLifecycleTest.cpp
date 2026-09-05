@@ -1502,10 +1502,12 @@ void runImageCapNoticePass(const QString &scratch)
 
 // ---- (s) identity colour: applies while active, restores after -------------
 // Design (b), 2026-08-30: a preset with a non-black stored colour (Blue
-// Pencil, Chalk, Sanguine, Sepia) applies it while active; a black-ink
-// preset restores the pre-adoption colour; an explicit pick while adopted
-// wins and persists. The old behaviour adopted permanently - every pencil
-// after Blue Pencil painted blue.
+// Pencil, Sanguine, Sepia; Chalk until 2026-09-05, when its white was
+// removed for drawing invisibly on white paper) applies it while active;
+// a black-ink preset restores the pre-adoption colour; an explicit pick
+// while adopted wins and persists. The old behaviour adopted permanently
+// - every pencil after Blue Pencil painted blue. The pass drives Blue
+// Pencil and Sepia (two identity presets remain beyond them: Sanguine).
 void runIdentityColorPass(const QString &scratch)
 {
     out() << "--- (s) identity colour adopt/restore ---" << Qt::endl;

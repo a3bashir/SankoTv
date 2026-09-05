@@ -3148,6 +3148,17 @@ TWO FINDINGS RECORDED AT THE USER'S DIRECTION:
   comment at each site (the user's rule: never leave a number that
   reads as meaningful when it is not). Edge character for stamp tips
   comes from the stamp itself plus Noise.
+- TILT ELONGATION IS INERT WITH A CUSTOM TIP TOO (2026-09-04, Drawing
+  batch two): Graphite Block stroke width measured 39 / 39 / 38 px with
+  tilt off / on-flat / on-tilted 0.8. Two instances is a pattern -
+  **levers that go dead with a custom tip: hardness, tilt elongation**
+  (both consumed only by the procedural tip path). Kept at the site
+  with INERT comments like hardness. Levers that stay LIVE with a
+  custom tip, measured: flow, opacity, spacing, size curve, scatter
+  (perpendicular/along/count + its pressure curve), size/angle/
+  roundness jitter, grain (preset/depth/contrast/scale), noise.
+  Whoever adds the next custom-tip brush: check this list before
+  tuning a dead lever.
 
 ASSETS: pencil_4h_tip.png (822 KB), pencil_2b_tip.png (915 KB),
 pencil_6b_tip.png (799 KB) - 2.5 MB this batch, projecting ~7.5 MB for
@@ -3465,3 +3476,165 @@ Hand-test verdicts on the Drawing calibration three, and what followed:
 Coupled pins re-baselined together, cross-config identical: preview
 0bc662dc -> 5304f43b, eraser 1bf25d5b -> 48dc5641. Lifecycle 223.
 Probe archived as seam_drawingprobe_20260830_{2,3}.cpp.
+
+## Drawing batch two: the remaining seven + the joint charcoal pair (2026-09-04)
+
+Hard Pastel, Charcoal Stick, Chalk, Graphite Block, Conte Crayon,
+Sanguine, Sepia promoted to their scans; Compressed Charcoal re-flowed
+against the new Stick. Requirement-0 pass first (census + sweeps into
+the scratchpad, report, approval), then implemented; shipped ==
+measured for all eight, roster-verified.
+
+**Census findings that generalize:**
+- Every one of the seven stamps has a HARD rim (50% -> 10% of interior
+  within 0.025R) and a granular interior (pixel std ~= mean). So: no
+  Drawing stamp can fray its own edge (scatter is the only route), and
+  interior spread floors near ~57-60 regardless of grain depth (Hard
+  Pastel depth 0.8 -> 0.45 moved spread only 70 -> 58).
+- **"Build-up" is NOT a tuning lever.** The x3-over-x1 ratio is
+  compositing arithmetic on first-touch density: with a = first-touch
+  / 255, build = 3 - 3a + a^2 (Soft Pastel a=0.143 -> 2.59 predicted /
+  2.53 measured; Compressed a=0.284 -> 2.23 / 2.16). A target like
+  "first-touch 55-70 AND build 1.7-2.0" is self-contradictory (build
+  2.0 needs first-touch ~97). Retired family-wide: build is REPORTED,
+  never targeted. (Brush::setBuildUp is a separate, unmeasured lever.)
+- Tilt elongation inert with custom tips - see the hardness entry.
+
+**Shipped** (size; first-touch / full / spread / light-stroke end):
+Hard Pastel 35: 56.6/125.1/62/16 (scatter .35, Charcoal d.6, flow .28).
+Charcoal Stick 35: 49.0/117.8/92/17 (scatter .50, d1.0, flow .40; old
+rotationAffectsShape dropped unmeasured). Compressed 30: flow .55 ->
+.70 = 86.0/192.8/96/10 - 1.76x the Stick at first touch, 1.64x at full
+pressure; the user rejected a technically-correct 1.48x as "not
+unmistakable" after the hand had read the pair inverted once. Chalk
+30: 45.2/129.9/79/18 (full Soft Pastel technique: scatter .75 count 2
+d1.0, flow .28, #f2f2f2 kept). Graphite Block 40: 51.3/139.4/60/17
+(no scatter, Charcoal d.3 scale 30, flow .30, spacing .08; flatTip
+and tilt widening gone). Conte 25: 59.7/163.8/86/11 (scatter .20,
+d.5, flow .65, opacity .85). Sanguine 25: 51.6/125.5/67/12 and Sepia
+25: 52.1/135.5/69/12 (scatter .35, d.6; flows .40/.48 differ only to
+cancel coverage 50.2/43.5 - same density by design, colour is the
+distinction).
+
+**Scatter inheritance:** full - Chalk; moderated - Stick .50, Hard
+Pastel .35, Sanguine/Sepia .35, Conte .20; none - Compressed (its
+filled hard edge IS the pair polarity), Graphite Block (a film, not a
+powder), Grease (untouched, awaiting re-scan).
+
+**Measured stamp limitation (item-10), Graphite Block:** the "even
+sheen" target (spread 20-35) is unreachable - floors at ~57-60 with
+grain nearly off and spacing halved; it is the scan's interior
+texture. Milder than Grease; the user chose to draw it and will
+re-scan alongside Grease if the interior bothers the hand.
+
+Seven assets (~7.2 MB) in brush_assets.qrc; (b12) census now pins 20
+asset-bearing built-ins. Coupled pins re-baselined together,
+cross-config identical: preview 5304f43b -> 3fb8f4d8, eraser 48dc5641
+-> 1a68e706. Lifecycle 223. Probes archived as
+seam_drawingprobe_20260904.cpp (sweeps) and _20260904_2.cpp (verify).
+
+## Custom tips render at TRUE ASPECT + five re-scans + (b12) content pin (2026-09-04)
+
+**Trigger.** "The Drawing tips all look the same in the Tip preview."
+Diagnosed before touching anything: all ten assets were distinct
+(ten SHAs, ten means matching the census), the qrc/roster paths were
+one-to-one, and the preview renders each tip faithfully (ten distinct
+renders, mean alpha tracking the census). The scans are simply the
+same KIND of object - hard-rimmed discs of binary speckle differing
+only in speckle density, which the eye cannot read off a 160 px
+point-sampled disc. Meanwhile the user had re-scanned six sources on
+G: AFTER the batch-two conversion (Conte and Grease became the same
+file - Grease held), four of them non-square.
+
+**The engine change.** The custom-tip path used to map the whole
+image into the unit disc, stretching non-square scans square (and
+had been doing so to HB 1177x1102, H 1296x1214, 2H 1295x1215 all
+along, ~7% vertical stretch). Now `Brush::customTipExtent()` (longer
+axis = 1, shorter = aspect; (1,1) for square/procedural; derived, not
+serialised) bounds the image to |local| <= extent in tip-local space
+and divides the sample coordinates by it. Sites: the CPU sampler in
+`StrokeBuilder::shapedTipForStamp` (rectangle clip + divide),
+`stamp.frag` and `color_stamp.frag` (same two lines each, including
+the exact-sampling branch), and the two Globals uniform writers
+(`vec2 tipExtent` at std140 offset 80 in the mono block, 72 in the
+colour block - both fit the existing buffers). Angle, roundness,
+tilt and flips compose BEFORE the extent, so the rectangle rotates
+rigidly, squashes along local-x and mirrors within itself; the disc
+clip still cuts the rectangle's corners as it cut a square's.
+
+**Confinement proof (seam_tipaspect_20260904.cpp).** 30 built-ins
+with custom tips rendered through shapedTipForStamp across 10 configs
+(3 sizes x angle x roundness x flips x tilt), hashed BEFORE the change
+and diffed AFTER: 22 square stamps byte-identical in every config;
+exactly HB/H/2H (and, after promotion, the five re-scans) differ.
+Extent maths direct: 384x192 tip at size 100 -> 100x50 footprint,
+50x100 rotated 90 deg (100x100 before - the positive control). CPU vs
+GPU on a non-square tip through SankoPaintHostAdapter::render: <= 1/255
+plain, rotated, squashed+flipped, tilted - the rectangle clip now
+exercised on both paths (today's square roster never could).
+
+**Pre-existing finding, NOT this change:** a HARD-EDGED custom tip
+(1 px texel edges) diverges CPU/GPU by up to ~180-250/255 on a tiny
+pixel fraction (0.07% at 30 deg) at angles where an edge lands on a
+sampler rounding boundary - deterministic, angle-dependent, identical
+on square tips, present on the untouched engine. It is the class the
+stamp.frag comments already name (fixed-point sampler weights vs
+double bilinear); smooth tips (every shipped scan) agree at 1/255.
+Recorded, not fixed; the seam asserts < 0.5% bad pixels for the hard
+case so the class stays visible.
+
+**Deltas, measured, NOT compensated (user draws and decides):**
+| Brush | before (p0.5 / p1.0 / spread / ends) | after |
+|---|---|---|
+| HB Pencil (aspect only) | 43.0 / 107.2 / 14 / 10 | 43.4 / 106.2 / 14 / 10 |
+| H Pencil (aspect only) | 34.7 / 79.2 / 27 / 8 | 35.0 / 79.5 / 27 / 7 |
+| 2H Pencil (aspect only) | 25.0 / 65.3 / 27 / 9 | 24.9 / 64.2 / 27 / 9 |
+| Chalk (re-scan, 1254 sq) | 45.2 / 129.9 / 79 / 18 | 58.1 / 145.2 / 95 / 18 |
+| Charcoal Stick (992x1585) | 49.0 / 117.8 / 92 / 17 | 27.9 / 74.7 / 65 / 17 |
+| Compressed (1024x1536) | 86.0 / 192.8 / 96 / 10 | 70.2 / 169.6 / 89 / 11 |
+| Conte (1536x1024) | 59.7 / 163.8 / 86 / 11 | 71.5 / 153.5 / 77 / 8 |
+| Sepia (1774x887) | 52.1 / 135.5 / 69 / 12 | 56.2 / 158.8 / 90 / 8 |
+The three pencils moved within noise. Stick/Compressed polarity holds
+(now 2.5x at first touch, 2.3x at full). Sepia no longer matches
+Sanguine (56.2 vs 51.6, spread 90 vs 67) - the coverage-matched pair
+is broken by the re-scan; flagged, not re-tuned.
+
+**(b12) content pin.** Each asset-bearing built-in now pins dims +
+sha256(Grayscale8 scanlines, 12 hex) + census mean (+-0.05), plus one
+check that all 20 hashes are distinct. It caught all five re-scans
+(Chalk by content alone - same dims). It cannot catch look-alike
+scans, the G: folder changing under the repo, wrong tuning on a right
+asset, or anything the preview does.
+
+**Chalk loses its identity colour (2026-09-05).** Hand-test: "Chalk is
+invisible". Diagnosed before changing: mask coverage normal (58.1 light
+/ 145.2 full, in line with the visible Sanguine), so not opacity/flow;
+the adopted #f2f2f2 over white paper caps contrast at 13/255 at full
+alpha and gives 3/255 at the measured light-pressure alpha (black ink:
+58/255). The white was removed - chalk is defined by being dry, not by
+being white; white chalk is now a colour the user picks. Sanguine and
+Sepia KEEP theirs (the colour is the medium). Mechanism untouched: the
+rule is per-preset `color != black`, so Chalk simply moves from the
+adopt side to the restore side (selecting it after Blue/Sanguine/Sepia
+restores the user's colour, like 2B). Lifecycle (s) drives Blue Pencil
+and Sepia - still two identity presets, no third case needed; three
+identity built-ins remain (Blue, Sanguine, Sepia). Tuning untouched.
+
+**Follow-up (recorded, not done): StudioTipRing.** The angle/roundness
+ring draws a circle/ellipse regardless of image aspect. Now that tips
+can be rectangular, a ring that always shows an ellipse misrepresents
+the tip - the thumbnail-drift class. The ring should carry the extent.
+
+Coupled pins re-baselined together, cross-config identical: preview
+3fb8f4d8 -> cd6fa6cb, eraser 1a68e706 -> a06a968b. Canvas locks and
+erase baseline unmoved (procedural fixtures). Lifecycle 223. The
+seam's before-file was written by the Release binary and matched by
+the Debug binary: tip renders are cross-config identical too.
+
+Gate note: run back-to-back, EdgeLock failed 52/51 ("SCREEN CAPTURE
+FAILED - no undisturbed capture in 10 attempts"), QuickShape 5-14
+("button 'N' missing") and Debug SizeLock (j) once ("corners inked:
+0") - every one passed run ALONE with no rebuild. That is the
+"runs spaced apart" rule in rule 4, not the Debug-tree corruption
+class (which needs a rebuild to clear); count it as a reminder, not
+as the 4th corruption event.

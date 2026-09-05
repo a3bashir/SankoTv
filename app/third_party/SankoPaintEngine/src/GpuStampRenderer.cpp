@@ -862,6 +862,13 @@ GpuStampRenderer::Result GpuStampRenderer::renderStrokeInternal(
     *reinterpret_cast<qint32 *>(uniforms.data() + 68) = accumulateFlow ? 1 : 0;
     *reinterpret_cast<qint32 *>(uniforms.data() + 72) =
         qint32(brush.textureBlendMode());
+    {
+        // vec2 tipExtent at std140 offset 80 (see stamp.frag Globals).
+        const QSizeF extent = brush.customTipExtent();
+        float *tipExtent = reinterpret_cast<float *>(uniforms.data() + 80);
+        tipExtent[0] = float(extent.width());
+        tipExtent[1] = float(extent.height());
+    }
     QRhiResourceUpdateBatch *initialUpdates = m_rhi->nextResourceUpdateBatch();
     initialUpdates->uploadStaticBuffer(vertexBuffer.get(), quad);
     initialUpdates->uploadStaticBuffer(instanceBuffer.get(), flattenedInstances.constData());
@@ -1313,6 +1320,13 @@ GpuStampRenderer::Result GpuStampRenderer::renderColorStrokeInternal(
     *reinterpret_cast<qint32 *>(uniforms.data() + 64) = brush.hasCustomShape() ? 1 : 0;
     *reinterpret_cast<qint32 *>(uniforms.data() + 68) =
         qint32(brush.textureBlendMode());
+    {
+        // vec2 tipExtent at std140 offset 72 (see color_stamp.frag).
+        const QSizeF extent = brush.customTipExtent();
+        float *tipExtent = reinterpret_cast<float *>(uniforms.data() + 72);
+        tipExtent[0] = float(extent.width());
+        tipExtent[1] = float(extent.height());
+    }
     QRhiResourceUpdateBatch *updates = m_rhi->nextResourceUpdateBatch();
     updates->uploadStaticBuffer(vertexBuffer.get(), quad);
     updates->uploadStaticBuffer(instanceBuffer.get(), flattened.constData());

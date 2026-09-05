@@ -16,6 +16,10 @@ layout(std140, binding = 0) uniform Globals {
     int useCustomTip;
     int accumulateFlow;
     int textureBlendMode;
+    // Custom-tip extent (Brush::customTipExtent), offset 80: the image
+    // occupies |rotated| <= tipExtent, longer axis = 1. (1,1) for square
+    // tips, where the divide is exact and the clip can never fire.
+    vec2 tipExtent;
 };
 
 // Mirrors TextureBlend.h line for line — the ONE implementation
@@ -131,7 +135,11 @@ void main()
     float coverage;
     float rawTip; // pre-noise tip coverage, for the exact-sampling branch
     if (useCustomTip != 0) {
-        coverage = texture(customTip, rotated * 0.5 + 0.5).r;
+        // Mirrors StrokeBuilder::shapedTipForStamp's rectangle clip and
+        // extent divide, same expression order.
+        if (abs(rotated.x) > tipExtent.x || abs(rotated.y) > tipExtent.y)
+            discard;
+        coverage = texture(customTip, rotated / tipExtent * 0.5 + 0.5).r;
         rawTip = coverage;
     } else if (hardness >= 0.999 || distanceFromCenter <= hardness) {
         coverage = 1.0;
@@ -162,7 +170,8 @@ void main()
             // GrainField::wrapped's arithmetic. This is what holds the
             // gain-amplified modes inside the CPU/GPU tolerance.
             float cb = useCustomTip != 0
-                ? round8(bilinearClampR(customTip, rotated * 0.5 + 0.5))
+                ? round8(bilinearClampR(customTip,
+                                        rotated / tipExtent * 0.5 + 0.5))
                 : round8(rawTip);
             if (noiseData.z > 0.0)
                 cb = noisyCoverage(cb);
