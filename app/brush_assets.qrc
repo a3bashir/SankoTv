@@ -28,5 +28,7 @@
         <file alias="draw_conte_tip.png">assets/brushes/draw_conte_tip.png</file>
         <file alias="draw_sanguine_tip.png">assets/brushes/draw_sanguine_tip.png</file>
         <file alias="draw_sepia_tip.png">assets/brushes/draw_sepia_tip.png</file>
+        <file alias="ink_dryink_tip.png">assets/brushes/ink_dryink_tip.png</file>
+        <file alias="ink_brushpen_tip.png">assets/brushes/ink_brushpen_tip.png</file>
     </qresource>
 </RCC>

@@ -3640,6 +3640,67 @@ field (scatterPerpendicular 0.254 vs 0, identical tip). Not renamed:
 Part B creates builtin/inking/rough-calligraphy fresh with its stamp
 and a measured roughness mechanism; the user deletes the copy.
 
+## Inking Part B, first two: Dry Ink + Brush Pen; Rough Calligraphy HELD (2026-09-05)
+
+Requirement-0 census of the eight ink scans (G:\Brush_SankoTV_DEF\Ink
+Brushes): all 1254x1254 except Rough Calligraphy 1024x1536 and Rich Ink
+1230x1278; seven are near-binary (0-6% midtones) - genuinely hard-
+edged; Brush Pen is the exception (23% midtones, soft rim). Measured
+engine limits, all favourable: every stamp gives a 1 px stroke edge at
+its proposed size (the procedural hardness-1.0 reference is 1 px) -
+undersampling a hard scan keeps it hard; Brush Pen and Rich Ink soften
+above ~1.5x size (their rims). None trips the hard-edge CPU/GPU fault
+(<= 1/255, 0.000% at angles 0/20/30/45).
+
+**Taper lever = the size-pressure FLOOR.** inkBase's 0.2 is what blunts
+pen-down (3-5 px); 0.02 gives 1-2 px starts and lifts on every stamp,
+slow (2 px point gaps) and fast (25 px) alike - the resampler
+interpolates pressure. inkBase is left at 0.2; floors are set PER
+BRUSH so nothing outside the stamped brushes changes (Studio Pen,
+Technical Pen, Fine Liner untouched). Blob metric now measured from
+the TRUE pen-down column: "visible from +N px" separates a late start
+from a blob.
+
+**Shipped (== measured from the roster):**
+- Brush Pen @14: core 253 / occupancy 100% / edge 1 px (per-column
+  0.0); taper 1/1/1/2 px at +2/+4/+8/+16 from pen-down, no blob, slow
+  and fast. Floor 0.02 (0.05 and 0.08 gave 2 px blobs), spacing 0.03.
+- Dry Ink @12: the scan alone is NOT broken at full pressure -
+  overlapping dabs union to occupancy 100% at any spacing, and sparse
+  spacing (0.15-0.25) makes a dab-string. Breakup comes from Charcoal
+  grain depth 1.0 contrast 3.0 scale 30 in STATIC mode (fixed paper
+  holes; Rolling averages across dabs into a soft 1.0 px transition).
+  Core 155 / occupancy 65% / per-column edge 0.3 px; half pressure
+  occupancy 27%; taper 1/1/1/1, no blob.
+
+**Rough Calligraphy HELD - stamp limitation of the Grease class.** The
+scan's CENTRE is empty (centre pixel 0, central 6% mean 98; 1-2 px
+dabs deposit nothing), so a ramped stroke deposits nothing for the
+first ~27-29 px and then appears at 2-4 px wide - a late start, with
+the mirror at pen-up. No tuning fixes a hollow centre; it needs a
+re-scan with the nib centred and solid at the centre. Its roughness
+mechanism is measured and ready for when the scan arrives: scatter
+0.25 gives 1.18 px edge raggedness at full pressure with a 0.0 px
+per-column transition (ragged, not blurred); sizeJitter 0.3 alone
+0.69 px. Asset not added; builtin/inking/rough-calligraphy not created.
+
+**Default pressure curves are the IDENTITY** (PressureCurve() ->
+{0,0}->{1,1}): every dynamic scales with pressure unless a recipe says
+otherwise, so scatter already vanishes on a hairline. An "ascending"
+scatter curve is therefore a no-op (measured); the Soft Pastel
+INVERTED curve (1 -> 0.15) is real and re-verified: 108.9 at full
+pressure vs 61.4 with the curve flat (1,1).
+
+**Proposed, not implemented (await the hand-test):** Calligraphy 16
+(stamp, rotation-following, floor 0.02), Ink Line & Splatter 8 (stamp
+on the PRIMARY only; procedural dot secondary kept), Splatter 10,
+Marker 18, Rich Ink 10 (crisp at 10, softens above 15). Assets for the
+five stay in the scratchpad until their batch.
+
+Coupled pins re-baselined together, cross-config identical: preview
+b7f4179f -> e7d41822, eraser a06a968b -> a42203dc. (b12) +2 content
+pins. Probe archived as seam_inkprobe_20260905{,_2}.cpp.
+
 **Follow-up (recorded, not done): StudioTipRing.** The angle/roundness
 ring draws a circle/ellipse regardless of image aspect. Now that tips
 can be rectangular, a ring that always shows an ellipse misrepresents

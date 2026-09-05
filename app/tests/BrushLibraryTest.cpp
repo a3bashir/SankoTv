@@ -88,7 +88,7 @@ using brushlib::BrushPreset;
 // legitimate roster change moves BOTH in the same commit; this one
 // moving ALONE is a defect, never a re-baseline.
 static const char kEraserSwatchSha[] =
-    "a06a968b38a9cb737e892aeaedf7825674d154f54773bcbc7abe496138f9d7ca";
+    "a42203dc21ffaaf43af85c9eb2ac39b1c59b6f49fc0a5f1d7de627def4d2adf8";
 using brushlib::BrushPresetCodec;
 using brushlib::BrushPreviewRenderer;
 
@@ -837,6 +837,9 @@ int main(int argc, char **argv)
              44.3},
             {"builtin/drawing/sanguine", 1254, 1254, "e440508213cd", 50.2},
             {"builtin/drawing/sepia", 1774, 887, "486578cd5cfb", 60.2},
+            // Inking Part B (2026-09-05), the first two implemented.
+            {"builtin/inking/dry-ink", 1254, 1254, "e5e8958a353e", 42.4},
+            {"builtin/inking/brush-pen", 1254, 1254, "6822f4a216f7", 117.5},
         };
         QStringList seenShas;
         for (const StampSpec &s : specs) {

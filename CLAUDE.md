@@ -83,17 +83,11 @@ Learned from real defects. Follow them exactly.
    apart: SankoBrushLibraryTest, SankoPaintPixelLock, SankoCanvasBrushLock,
    SankoQuickShapeGeometryLock, SankoDevRecorderTest, SankoCanvasEdgeLock,
    SankoCanvasSizeLock, SankoProjectLifecycle. Preview SHA must stay
-   `b7f4179fe716480fcf87eb47771dcf4968fdcd0167ed8ae313cac66a553f863b`
-   (re-baselined 2026-09-05: custom tips render at TRUE ASPECT — the
-   engine's tip-extent change moves the three non-square pencils
-   HB/H/2H, the five re-scanned Drawing stamps (Chalk, Charcoal
-   Stick, Compressed, Conte, Sepia) are promoted, tunings untouched,
-   every square stamp proved byte-identical — and Chalk loses its
-   #f2f2f2 identity colour, which moves the preview swatches ALONE:
-   preview swatches render in the preset colour, erase swatches are
-   colour-blind, so a colour-only roster change is the one case where
-   the pair legitimately decouples; the eraser SHA
-   `a06a968b…` moved with the aspect/stamp part, same commit, per the coupled-pin note in
+   `e7d418223357bcdfde0b64ecb254a624bc4ebf8fabc3812ff7f46e523088fe1b`
+   (re-baselined 2026-09-05: Inking Part B, first two — Dry Ink and
+   Brush Pen gain their scanned stamps with measured per-brush taper
+   floors; shipped == measured; the eraser SHA
+   `a42203dc…` moves WITH it, same commit, per the coupled-pin note in
    BrushLibraryTest); both pixel locks byte-identical
    (`666f7b45…`, `cafcec7f…`), erase baseline `0bc24381…`. The first
    six use 960×540 fixtures; SankoCanvasSizeLock is the variable-resolution

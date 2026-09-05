@@ -873,10 +873,30 @@ QVector<BrushPreset> builtinRoster()
         b.sizePressureCurve().setControlPoints(curve2(1.0, 1.0)); // uniform
         b.setTiltAffectsShape(false); // a technical pen never elongates
     });
+    // Inking Part B (2026-09-05): scanned stamps, measured per brush at
+    // the approved sizes (probe: 160-pt line, 1000x240, core rows +/-2;
+    // "edge" = column-averaged 90->10 width / per-column transition
+    // width; taper = ramped-pressure stroke, slow AND fast). Census:
+    // seven of the eight scans are near-binary (0-6% midtones) and every
+    // one measures a 1 px edge at its size - crisp is stamp-supplied, not
+    // tuned. None trips the hard-edge CPU/GPU fault (<= 1/255, 0.000%).
+    // The taper lever is the size-pressure FLOOR, set PER BRUSH here -
+    // inkBase keeps its 0.2 so nothing outside the stamped brushes
+    // changes. Tapers were verified fast (25 px point gaps) as well as
+    // slow: the resampler interpolates pressure, so the two agree.
     r << make(kInking, QStringLiteral("Brush Pen"), [&](::Brush &b) {
         inkBase(b);
-        b.setSize(14); b.setSpacing(0.03);
-        b.sizePressureCurve().setControlPoints(curve2(0.08, 1.0));
+        // Clean and solid, the taper is the whole point. MEASURED @14:
+        // full-pressure core 253 / occupancy 100% / edge 1 px (per-column
+        // 0.0); ramped stroke starts and ends at 1 px, no pen-down or
+        // lift blob, slow and fast alike (floor 0.05 and 0.08 gave 2 px
+        // blobs; the old 0.08 floor is what blunted the start). Spacing
+        // 0.03 kept.
+        b.setCustomShape(
+            QImage(QStringLiteral(":/brushes/ink_brushpen_tip.png")));
+        b.setSize(14);
+        b.setSpacing(0.03);
+        b.sizePressureCurve().setControlPoints(curve2(0.02, 1.0));
     });
     r << make(kInking, QStringLiteral("Calligraphy"), [&](::Brush &b) {
         inkBase(b);
@@ -886,10 +906,27 @@ QVector<BrushPreset> builtinRoster()
     });
     r << make(kInking, QStringLiteral("Dry Ink"), [&](::Brush &b) {
         inkBase(b);
+        // Rough and broken but CRISP. The scan alone is not broken at
+        // full pressure - overlapping dabs at any spacing union into a
+        // solid line (occupancy 100%) - and sparse spacing only makes a
+        // dab-string. The breakup comes from Charcoal grain at depth 1.0
+        // in STATIC canvas mode: fixed paper holes punched through every
+        // dab (Rolling grain averages across dabs into a soft 1 px
+        // transition; Static stays binary). MEASURED @12: full-pressure
+        // core 155 / occupancy 65% / per-column edge 0.3 px (the 4 px
+        // column-averaged width is the skips, not blur); half pressure
+        // occupancy 27% - a dry brush skating; taper from the true start
+        // 1/1/1/1 px, no blob, slow and fast.
+        b.setCustomShape(
+            QImage(QStringLiteral(":/brushes/ink_dryink_tip.png")));
         b.setSize(12);
         b.setGrainPreset(B::GrainPreset::Charcoal);
-        b.setGrainMode(B::GrainMode::Rolling);
-        b.setGrainDepth(0.5);
+        b.setGrainMode(B::GrainMode::StaticCanvas);
+        b.setGrainDepth(1.0);
+        b.setGrainContrast(3.0);
+        b.setGrainScale(30.0);
+        b.setControlMinimum(B::DynamicProperty::GrainDepth, 1.0);
+        b.sizePressureCurve().setControlPoints(curve2(0.02, 1.0));
     });
     // Renamed from "Ink Bleed" (2026-09-05), id kept - see the keptId
     // make() overload above.
