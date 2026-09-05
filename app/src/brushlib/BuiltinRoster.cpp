@@ -191,6 +191,24 @@ BrushPreset make(const QString &category, const QString &name,
     return p;
 }
 
+// Display-name rename with the id KEPT (2026-09-05). The id is normally
+// the slug of the name, and everything the shelf keys by id - Recent,
+// hidden, favourites, UI renames, and the Overrides folder (a built-in
+// override whose id no longer exists is silently dropped as stale) -
+// would detach if a rename moved it. So a renamed built-in keeps its
+// original id as a fossil of the old name: "Rich Ink" is still
+// builtin/inking/ink-bleed. Stability is what "do not change preset ids"
+// asks for; an id migration would touch five keyed stores for nothing
+// the user can see.
+BrushPreset make(const QString &category, const QString &name,
+                 const QString &keptId,
+                 const std::function<void(::Brush &)> &recipe)
+{
+    BrushPreset p = make(category, name, recipe);
+    p.id = keptId;
+    return p;
+}
+
 } // namespace
 
 QStringList builtinCategories()
@@ -873,7 +891,10 @@ QVector<BrushPreset> builtinRoster()
         b.setGrainMode(B::GrainMode::Rolling);
         b.setGrainDepth(0.5);
     });
-    r << make(kInking, QStringLiteral("Ink Bleed"), [&](::Brush &b) {
+    // Renamed from "Ink Bleed" (2026-09-05), id kept - see the keptId
+    // make() overload above.
+    r << make(kInking, QStringLiteral("Rich Ink"),
+              QStringLiteral("builtin/inking/ink-bleed"), [&](::Brush &b) {
         inkBase(b);
         b.setSize(10); b.setHardness(0.55);
         b.opacityPressureCurve().setControlPoints(

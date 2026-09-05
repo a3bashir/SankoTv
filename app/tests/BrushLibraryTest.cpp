@@ -895,6 +895,41 @@ int main(int argc, char **argv)
                   .arg(seenShas.size()));
     }
 
+    // ---- (b13) renamed built-ins keep their FOSSIL ids -------------------
+    // "Rich Ink" was "Ink Bleed" (2026-09-05). The id is normally
+    // slug(name); the keptId make() overload pins the old one so Recent,
+    // hidden, favourites, UI renames and the Overrides folder - all keyed
+    // by id - keep resolving. If someone "tidies" the recipe back to the
+    // plain make(), the id silently becomes builtin/inking/rich-ink and
+    // every keyed store detaches; this is the check that notices.
+    {
+        struct Fossil { const char *name; const char *id; };
+        const Fossil fossils[] = {
+            {"Rich Ink", "builtin/inking/ink-bleed"},
+        };
+        for (const Fossil &f : fossils) {
+            const BrushPreset *p = nullptr;
+            for (const BrushPreset &candidate : roster)
+                if (candidate.name == QLatin1String(f.name))
+                    p = &candidate;
+            check(QStringLiteral("(b13) \"%1\" keeps its fossil id %2")
+                      .arg(QLatin1String(f.name), QLatin1String(f.id)),
+                  p && p->id == QLatin1String(f.id),
+                  p ? p->id : QStringLiteral("name not in roster"));
+            // Control: the fossil id must not ALSO exist under the new
+            // slug (a duplicate would mean the rename created a second
+            // brush instead of renaming one).
+            int underNewSlug = 0;
+            for (const BrushPreset &candidate : roster)
+                if (candidate.id == QStringLiteral("builtin/inking/rich-ink"))
+                    ++underNewSlug;
+            check(QStringLiteral("(b13) control: no duplicate under the "
+                                 "new slug for \"%1\"")
+                      .arg(QLatin1String(f.name)),
+                  underNewSlug == 0);
+        }
+    }
+
     // ---- (b10) the custom-image cap + the encoded-image memo -------------
     // The cap (Brush::kMaxCustomImageDim): an 18-megapixel photo loaded as
     // grain made a 14 MB preset that froze the studio per gesture. The

@@ -3620,6 +3620,26 @@ restores the user's colour, like 2B). Lifecycle (s) drives Blue Pencil
 and Sepia - still two identity presets, no third case needed; three
 identity built-ins remain (Blue, Sanguine, Sepia). Tuning untouched.
 
+## Inking Part A: "Ink Bleed" -> "Rich Ink", id kept as a fossil (2026-09-05)
+
+Built-in ids are slug(name), so a code rename silently moves the id -
+and the shelf keys FIVE stores by id: Recent (the user's list holds
+builtin/inking/ink-bleed today), hidden, favourites, UI renames, and
+the Overrides folder (an override whose id vanished is dropped as
+stale). Saved projects hold no brush ids (ProjectIO) and user
+duplicates are self-contained user/<uuid> files, so those two are safe
+either way. Decision: a `make(category, name, keptId, recipe)`
+overload keeps the original id - "Rich Ink" IS builtin/inking/ink-bleed
+- rather than migrating five stores for nothing visible. The proof that
+the rename changed nothing: the preview and eraser swatch SHAs do NOT
+move on this commit.
+
+"Calligraphy Copy" is NOT a built-in: it is the user's own duplicate
+(user/a0f8bf34..., Inking) differing from Calligraphy in exactly one
+field (scatterPerpendicular 0.254 vs 0, identical tip). Not renamed:
+Part B creates builtin/inking/rough-calligraphy fresh with its stamp
+and a measured roughness mechanism; the user deletes the copy.
+
 **Follow-up (recorded, not done): StudioTipRing.** The angle/roundness
 ring draws a circle/ellipse regardless of image aspect. Now that tips
 can be rectangular, a ring that always shows an ellipse misrepresents
