@@ -949,7 +949,38 @@ void runTipShapePreviewPass(const QString &scratch)
         window.close();
         return;
     }
-    const QString id = QStringLiteral("builtin/painting/gouache");
+    // The hardness step below needs a PROCEDURAL tip: hardness is INERT
+    // with a custom tip (HANDOFF, dead-lever list), so since Gouache
+    // gained its scan (2026-09-23) the fixture is Round Brush - still
+    // procedural, hardness 0.45 live. Gouache stays in the pass as the
+    // control that pins the inert rule at the preview: a hardness edit
+    // on a stamped built-in changes NOTHING, while a roundness edit on
+    // the same session does (the positive control).
+    {
+        const QString stamped = QStringLiteral("builtin/painting/gouache");
+        studio->openForPreset(stamped);
+        pump(400);
+        const QImage before = studio->tipPreviewImageForTest();
+        studio->editSessionForTest([](::Brush &b) { b.setHardness(0.05); },
+                                   true);
+        pump(100);
+        check(QStringLiteral("(o) INERT: a hardness edit on a STAMPED "
+                             "built-in leaves the preview byte-identical"),
+              !before.isNull() && studio->tipPreviewImageForTest() == before);
+        studio->editSessionForTest(
+            [](::Brush &b) { b.setTipRoundness(0.4); }, false);
+        pump(100);
+        check(QStringLiteral("(o) ...control: a roundness edit on the same "
+                             "session DOES re-render it"),
+              studio->tipPreviewImageForTest() != before);
+        // openForPreset on a DIFFERENT preset while visible with a dirty
+        // session asks "Discard unsaved changes?" - a modal that answers
+        // Cancel headlessly and leaves the old session in place. Hiding
+        // first is the prompt-free path (pass (q) does the same).
+        studio->hide();
+        pump(300);
+    }
+    const QString id = QStringLiteral("builtin/painting/round-brush");
     studio->openForPreset(id);
     pump(400);
 
@@ -1056,10 +1087,12 @@ void runTipShapePreviewPass(const QString &scratch)
           studio->tipPreviewImageForTest() == custom);
 
     // Session edits only — nothing was committed, so the model must still
-    // hold stock Gouache (the pass may not leave an override behind).
+    // hold the stock recipes (the pass may not leave an override behind).
     check(QStringLiteral("(o) the session never touched the model"),
           model->overrideState(id)
-              == brushlib::BrushLibraryModel::OverrideState::None);
+                  == brushlib::BrushLibraryModel::OverrideState::None
+              && model->overrideState(QStringLiteral("builtin/painting/gouache"))
+                  == brushlib::BrushLibraryModel::OverrideState::None);
 
     window.markCleanForTest();
     window.close();

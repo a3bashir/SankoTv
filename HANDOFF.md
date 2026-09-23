@@ -3767,6 +3767,40 @@ Re-scan: press a flat nib straight down once (or a < 1 nib-width drag)
 so the mark is a thin bar, aspect >= 4:1, fill >= 80% of its bounding
 box, crisp. Census check: bbox aspect and the H/V width ratio at 16.
 
+**5. Round Brush (Painting) - a SOFT round dab with a real gradient rim
+(2026-09-23).** The current scan is a binary hard disc (0% midtones,
+rim 0.025R, no dark pixels in its inner half). GENERAL RULE, not
+obvious from the hardness-inert entry alone: hardness DIES with a
+custom tip, so a soft-edged medium must carry its softness IN THE
+SCAN - the engine cannot add a falloff to a stamped tip. Photograph a
+loaded soft round brush pressed once, or paint a disc with a wide
+gradient rim.
+- midtones (32..223) >= 25% of the frame;
+- rim: 50% -> 10% of the interior over >= 0.15R (the census rim width;
+  the hard disc measures 0.025R);
+- stroke edge at size 20 >= 3 px column-averaged (the stock procedural
+  hardness 0.45 measures 3 px; the hard scan 1 px).
+
+**6. Flat Brush (Painting) - a flat bar, 3:1 or better.** Press a flat
+brush straight down once: a wide thin rectangle. The current scan's
+ink is 1.36:1 and gives 16 vs 20 px horizontal vs vertical at size 24
+where the stock flat tip gives 8 vs 24 (3:1).
+- ink bounding-box aspect >= 3:1, fill >= 70% of the box;
+- H/V width ratio at size 24 >= 3.
+
+**7. Palette Knife (Painting) - a THIN blade, 6:1 or better.** Press or
+drag the knife edge once: a thin bar. Current scan 1.54:1 (12 vs 19
+px); the stock knife is 4 vs 26 (6.5:1).
+- ink bounding-box aspect >= 6:1;
+- H/V width ratio at size 26 >= 6;
+- crisp (midtones < 10%).
+
+**8. Dry Brush (Painting) - bristle bands, SAME SPEC AS DRY INK (3).**
+The current scan is an isotropic blot (dark-run ratio 1.61; 98-100%
+solid in both directions with the heading driver). Band constraints:
+6-10 bands, each >= 1/12 of the crop width, 30-40% un-inked, bands
+spanning the full width, streaks left-to-right, dark-run ratio >= 4.
+
 **Reading the inking brief on taper (decision 2026-09-05):** "all
 Inking brushes taper" means the PEN-LIKE ones. Marker, Technical Pen
 and Fine Liner are constant-width by identity (uniform size curve)
@@ -3810,6 +3844,65 @@ Six ink assets in brush_assets.qrc (3.0 MB); (b12) +4 content pins
 (20 -> 26 asset-bearing built-ins). Coupled pins re-baselined together,
 cross-config identical: preview e7d41822 -> 39f656b0, eraser a42203dc
 -> a80dd7e0. Probe archived as seam_inkprobe_20260905_5_four.cpp.
+
+## Painting batch one: Gouache, Acrylic, Oil Paint on their scans (2026-09-23)
+
+Census of the nine Painting scans (G:\Brush_SankoTV_DEF\Painting_
+brushes; Blender, Smudge Soft and Large Airbrush have no scan and stay
+procedural - not invented). Structural screen BEFORE numbers, and it
+blocked four: Dry Brush (isotropic blot, 98-100% solid under the
+heading driver - the Dry Ink class), Round Brush (a binary hard disc,
+0% midtones - see the soft-rim rule in the scan brief), Palette Knife
+(1.58:1 thick/thin vs the stock blade's 6.5:1) and Flat Brush (1.25:1
+vs 3:1). Bristle's streaks live in its dual SECONDARY (streakTip), so
+a primary swap keeps them; Bristle and Filbert wait for the verdict on
+these three. Specs for the four blocked scans are in the brief (5-8).
+
+**Shipped, == measured from the roster, at the approved sizes:**
+- Gouache @18: half 121 / full 242 (opacity .95) / occupancy 100% /
+  spread 0 / edge 1 px; stroke width 13 px.
+- Acrylic @20: half 86 / full 225 / occupancy 89% / spread 233 / edge
+  1 px; the bristle void runs 601 px along the stroke on BOTH horizontal
+  and vertical strokes (streak ratio 601) - the first shipped use of
+  the heading-driven angle from the engine-fact entry below; width 9.
+- Oil Paint @22: half 120 / full 254 / occupancy 100% / spread 6 /
+  edge 2 px (per-column 0.2 - the soft one; the scan has 34% midtones);
+  no void; width 11.
+All three: `setControlSource(AngleJitter, Direction)` so the dab's long
+axis (its drag direction) follows the path - width H/V equal (9/9)
+where the static tip gave 9 vs 17. Flow / flow-floor / grain-depth
+sweeps moved the numbers by <= 5 at paint densities - the scans carry
+the character; recipes keep their stock values. Hardness INERT on all
+three (was live: .4/.55/.5).
+
+**Consequence to know:** with the long axis along the path, the stroke
+WIDTH is the mark's SHORT axis - the size slider is the long axis. If
+the hand wants Acrylic wider than 9 px at "20", the answer is a larger
+default size (measured again there), not a recipe change.
+
+**Acrylic vs Oil, the pair (what the hand should feel):** Acrylic is
+STREAKY-LOADED - a 1 px void runs the length of every stroke (89%
+coverage), crisp edge (0.0 per-column), the canvas showing as a line
+through the paint; Oil is SOFT-LOADED - continuous coverage, the
+softest edge in the set, tone varying inside the stroke (spread 6)
+rather than a gap. If both read as "flat paint", the void is what to
+look for; if Oil reads hard-edged, the scan's midtones are not
+surviving the size.
+
+**Lifecycle (o) fixture moved.** (o) used Gouache for "a hardness edit
+re-renders the preview"; with the scan, hardness is inert and the
+preview is correctly byte-identical - the check failed for the right
+reason. The fixture is now Round Brush (still procedural), and Gouache
+stays in (o) as the pinned control: hardness edit on a stamped built-in
+changes nothing, roundness edit on the same session does. Lifecycle
+223 -> 225. Anyone stamping Round Brush later moves (o) again - pick
+whatever Painting brush is still procedural (Blender, Smudge Soft,
+Large Airbrush have no scans).
+
+Three assets (2.08 MB); (b12) +3 (29 asset-bearing built-ins). Coupled
+pins re-baselined together: preview 39f656b0 -> b7363161, eraser
+a80dd7e0 -> d398d76e. Probes archived as seam_paintprobe_20260923.cpp
+(census) and _2.cpp (calibration).
 
 ## ENGINE FACT: streaks need tip-internal structure + heading-following rotation (2026-09-05)
 
@@ -3863,3 +3956,16 @@ inking gates): EdgeLock 49-51 "no undisturbed capture", Debug SizeLock
 (j) once - every time green alone, no rebuild. (j) is now a repeat
 offender specifically when SizeLock runs right after the other GUI
 families in Debug; run it alone if it trips.
+
+**2026-09-23: THE 4TH DEBUG-TREE CORRUPTION EVENT.** Debug SizeLock (j)
+"5000 px corners inked: 0" failed back-to-back AND alone (twice), and
+was cleared ONLY by deleting build/SankoCanvasSizeLock.dir/Debug plus
+the exe and rebuilding - the corruption signature, not the spaced-runs
+class. Release SizeLock passed throughout on the same source and
+roster, and (j) draws with the canvas's default engine brush (no
+preset is ever selected in SizeLock; DrawingCanvas only takes a roster
+brush through setPaintBrush from the panel), so the Painting batch is
+not involved. Per the standing note, four events means:
+suspect the disk or the toolchain's Debug incremental link, not the
+code. Recommended next time it trips: wipe the whole Debug tree
+before trusting any Debug result, and consider a disk check.

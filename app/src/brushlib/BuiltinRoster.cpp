@@ -1055,10 +1055,33 @@ QVector<BrushPreset> builtinRoster()
         b.setGrainMode(B::GrainMode::Rolling);
         b.setGrainDepth(0.65);
     });
+    // Painting batch one (2026-09-23): scanned stamps for Gouache, Acrylic
+    // and Oil Paint, measured at the approved sizes (probe: 160-pt line,
+    // 1000x240, core band +/-20% of size). Every scan is a single dab
+    // whose LONG axis is the drag direction, so all three drive the tip
+    // angle from the stroke heading (ControlSource::Direction on the
+    // angle property - the engine's orientation driver): the mark rotates
+    // with the path and the stroke width is the same in every direction
+    // (measured H/V equal; without the driver the wide scans give 9 vs 17
+    // px). Consequence to know: the stroke width is the mark's SHORT axis
+    // (Gouache 13 px at size 18, Acrylic 9 at 20, Oil 11 at 22) - the
+    // size slider is the long axis. Flow/depth sweeps moved the numbers
+    // by <= 5 at paint densities: the scans carry the character, the
+    // recipes keep their stock values. Hardness is INERT with a custom
+    // tip on all three (see 4H Pencil).
     r << make(kPainting, QStringLiteral("Gouache"), [&](::Brush &b) {
         paintBase(b);
-        b.setSize(18); b.setHardness(0.4); b.setOpacity(0.95);
+        // Opaque, flat, matte: the scan is a dense solid blob (interior
+        // 230, std 31). MEASURED @18: half-pressure 121 / full 242 (=
+        // opacity 0.95 x 255) / occupancy 100% / spread 0 / edge 1 px.
+        b.setCustomShape(
+            QImage(QStringLiteral(":/brushes/paint_gouache_tip.png")));
+        b.setSize(18);
+        b.setHardness(0.4); // INERT with a custom tip
+        b.setOpacity(0.95);
         b.setGrainPreset(B::GrainPreset::Canvas); b.setGrainDepth(0.3);
+        b.setControlSource(B::DynamicProperty::AngleJitter,
+                           B::ControlSource::Direction);
         // PROMOTED from the user's override (tuned 2026-08-01, promoted
         // 2026-08-28): a light pen paints at ~10% size instead of
         // paintBase's 60% - a much deeper pressure taper. Rounded from the
@@ -1067,16 +1090,41 @@ QVector<BrushPreset> builtinRoster()
     });
     r << make(kPainting, QStringLiteral("Acrylic"), [&](::Brush &b) {
         paintBase(b);
-        b.setSize(20); b.setHardness(0.55); b.setFlow(0.9);
+        // STREAKY-LOADED: the only Painting scan with tip-internal
+        // structure - a bristle void that, with the heading driver,
+        // becomes a full-length gap running ALONG the stroke in every
+        // direction (601 px gap runs on horizontal and vertical strokes,
+        // occupancy 89%). MEASURED @20: half-pressure 86 / full 225 /
+        // occupancy 89% / spread 233 (the void) / edge 1 px. Oil Paint is
+        // its pair: soft-loaded, no void.
+        b.setCustomShape(
+            QImage(QStringLiteral(":/brushes/paint_acrylic_tip.png")));
+        b.setSize(20);
+        b.setHardness(0.55); // INERT with a custom tip
+        b.setFlow(0.9);
         b.setGrainPreset(B::GrainPreset::Canvas); b.setGrainDepth(0.45);
+        b.setControlSource(B::DynamicProperty::AngleJitter,
+                           B::ControlSource::Direction);
     });
     r << make(kPainting, QStringLiteral("Oil Paint"), [&](::Brush &b) {
         paintBase(b);
+        // SOFT-LOADED: the scan carries 34% midtones (impasto tone), so
+        // the stroke edge is the soft one of the set (per-column 0.2 px
+        // vs 0.0 for Acrylic and Gouache) and the interior is continuous
+        // - no void, no streak (100% occupancy both directions).
         // Paint-mode: smudgeStrength is inert outside Smudge tool mode, so
-        // the wet-oil character comes from heavy canvas grain + full flow.
-        b.setSize(22); b.setHardness(0.5); b.setFlow(0.95);
+        // the wet-oil character comes from the scan + canvas grain + full
+        // flow. MEASURED @22: half-pressure 118 / full 254 / occupancy
+        // 100% / spread 6 / edge 2 px.
+        b.setCustomShape(
+            QImage(QStringLiteral(":/brushes/paint_oil_tip.png")));
+        b.setSize(22);
+        b.setHardness(0.5); // INERT with a custom tip
+        b.setFlow(0.95);
         b.setGrainPreset(B::GrainPreset::Canvas); b.setGrainDepth(0.55);
         b.setGrainMode(B::GrainMode::Rolling);
+        b.setControlSource(B::DynamicProperty::AngleJitter,
+                           B::ControlSource::Direction);
     });
     r << make(kPainting, QStringLiteral("Blender"), [&](::Brush &b) {
         paintBase(b);
