@@ -3701,11 +3701,30 @@ Coupled pins re-baselined together, cross-config identical: preview
 b7f4179f -> e7d41822, eraser a06a968b -> a42203dc. (b12) +2 content
 pins. Probe archived as seam_inkprobe_20260905{,_2}.cpp.
 
-## SCAN SESSION BRIEF: three stamp-blocked brushes (2026-09-05)
+## SCAN SESSION BRIEF: ten stamp-blocked brushes (running list; started 2026-09-05)
 
-Three brushes are held on their SCANS, not their tunings - each one
-was measured to the cause, and the cause is structure the scan lacks.
-Work from this at the scanner. Common to all three: grayscale, white
+Ten brushes are held on their SCANS, not their tunings - each one was
+measured to the cause, and the cause is structure the scan lacks (or,
+for 9 and 10, structure the scan has and should not). Work from this
+at the scanner. Waiting: Grease Pencil, Rough Calligraphy, Dry Ink,
+Calligraphy, Round Brush, Flat Brush, Palette Knife, Dry Brush,
+Acrylic, Oil Paint. (Gouache was re-measured on 2026-09-25 and stays:
+its scan carries the same weave, but at 2% contrast on a dense mark it
+does not show in strokes - spread 5 at half pressure, 0 at full.)
+
+### RULE FOR EVERY SCAN: SMOOTH PAPER ONLY (2026-09-25)
+
+Scan on smooth hot-press paper, or on anything whose texture cannot
+reach the scan. Paper texture in a scan is stamped IN REGISTER every
+dab - the tip is sampled identically each time and, on a straight
+stroke, at the same angle - so a paper weave becomes a regular mesh
+across the whole mark at large sizes (period across = the scan's weave
+scaled by size, period along = the dab spacing), and decimates to a
+plain solid line at small sizes. This invalidates a scan on textured
+stock REGARDLESS of what else is right about it: Acrylic and Oil Paint
+(below) were made on canvas paper, passed the census, and drew as an
+even cross-hatch at 286 px. Texture belongs in a scan only when it IS
+the intended structure (bristle bands), never as the ground. Common to all three: grayscale, white
 mark on black (the engine reads brightness as coverage; a dark-on-white
 scan renders inverted), ~1254 px on the long side, mark centred in the
 frame, no paper texture in the black (smooth hot-press paper, levels
@@ -3801,6 +3820,24 @@ solid in both directions with the heading driver). Band constraints:
 6-10 bands, each >= 1/12 of the crop width, 30-40% un-inked, bands
 spanning the full width, streaks left-to-right, dark-run ratio >= 4.
 
+**9. Acrylic (Painting) - a STREAKY-LOADED flat brush drag, on smooth
+paper (2026-09-25).** The current scan is a paint dab on canvas paper:
+its interior is the paper's weave (period 12 x 34 scan px), which draws
+as an even mesh at 60-286 px and as nothing at 20-30. It has NO
+bristle void - the "601 px gap" the census found at size 20 was one
+sampled row landing on a weave band (see the method entry). Spec: the
+Dry Ink bands - a loaded flat brush dragged 1-2 cm on smooth paper,
+6-10 distinct bands along the drag, 30-40% un-inked, bands >= 1/12 of
+the crop width, dark-run ratio >= 4, no paper texture between bands.
+
+**10. Oil Paint (Painting) - a SOFT-LOADED impasto press, on smooth
+paper (2026-09-25).** Same canvas-paper weave (period 9 x 25 scan px),
+same mesh in strokes (9 dark rows at 286 vs Acrylic's 20 - the "same
+mechanism at two densities" the hand-test named). Spec: one press of a
+loaded brush on smooth paper; continuous interior (midtones >= 25%,
+scan texture period 0 - the census autocorrelation must find no
+repeat), soft rim >= 0.15R, mark filling >= 70% of the long axis.
+
 **Reading the inking brief on taper (decision 2026-09-05):** "all
 Inking brushes taper" means the PEN-LIKE ones. Marker, Technical Pen
 and Fine Liner are constant-width by identity (uniform size curve)
@@ -3858,36 +3895,38 @@ vs 3:1). Bristle's streaks live in its dual SECONDARY (streakTip), so
 a primary swap keeps them; Bristle and Filbert wait for the verdict on
 these three. Specs for the four blocked scans are in the brief (5-8).
 
-**Shipped, == measured from the roster, at the approved sizes:**
+**Shipped, == measured from the roster, at the approved sizes -
+CORRECTED 2026-09-25 after the hand-test (the original entry claimed
+an Acrylic bristle void and a streaky-vs-soft pair; both were wrong,
+see the method entry below):**
 - Gouache @18: half 121 / full 242 (opacity .95) / occupancy 100% /
-  spread 0 / edge 1 px; stroke width 13 px.
+  spread 0 / edge 1 px; stroke width 13 px. Its scan carries the same
+  canvas-paper weave as the other two (period 29 x 15 scan px) but at
+  ~2% contrast on a dense mark: spread 5 at half pressure across
+  60-286 px, 0 at full. It does not show in strokes; Gouache stays.
 - Acrylic @20: half 86 / full 225 / occupancy 89% / spread 233 / edge
-  1 px; the bristle void runs 601 px along the stroke on BOTH horizontal
-  and vertical strokes (streak ratio 601) - the first shipped use of
-  the heading-driven angle from the engine-fact entry below; width 9.
+  1 px; width 9. There is NO bristle void. The scan is a dab on canvas
+  paper; its interior is the paper weave (12 x 34 scan px). In strokes
+  at half pressure that weave is 3 full-length dark rows at 20-30 px,
+  6 at 60, 9 at 120, 20 at 286 (period across = weave x size/1536,
+  period along = the dab spacing - stamped in register). At 20 px the
+  weave decimates to a plain line; at drawing sizes it is an even
+  mesh. STAMP-LIMITED; held as shipped (crisp-and-mesh is honest paint
+  until the scan exists, the Dry Ink rule).
 - Oil Paint @22: half 120 / full 254 / occupancy 100% / spread 6 /
-  edge 2 px (per-column 0.2 - the soft one; the scan has 34% midtones);
-  no void; width 11.
+  edge 2 px (per-column 0.2); width 11. Same weave (9 x 25 scan px),
+  same mesh, lighter (9 dark rows at 286 vs Acrylic's 20): the same
+  mechanism at two densities. STAMP-LIMITED; held as shipped.
 All three: `setControlSource(AngleJitter, Direction)` so the dab's long
-axis (its drag direction) follows the path - width H/V equal (9/9)
-where the static tip gave 9 vs 17. Flow / flow-floor / grain-depth
-sweeps moved the numbers by <= 5 at paint densities - the scans carry
-the character; recipes keep their stock values. Hardness INERT on all
-three (was live: .4/.55/.5).
+axis (its drag direction) follows the path - width H/V equal (9/9 at
+20; 120/120 and 145/145 at 286) where the static tip gave 9 vs 17;
+verified orienting correctly at 286. The Canvas grain preset is NOT
+the mesh: grain off leaves every number unchanged. Flow / flow-floor /
+grain-depth sweeps moved the numbers by <= 5 at paint densities.
+Hardness INERT on all three (was live: .4/.55/.5).
 
 **Consequence to know:** with the long axis along the path, the stroke
-WIDTH is the mark's SHORT axis - the size slider is the long axis. If
-the hand wants Acrylic wider than 9 px at "20", the answer is a larger
-default size (measured again there), not a recipe change.
-
-**Acrylic vs Oil, the pair (what the hand should feel):** Acrylic is
-STREAKY-LOADED - a 1 px void runs the length of every stroke (89%
-coverage), crisp edge (0.0 per-column), the canvas showing as a line
-through the paint; Oil is SOFT-LOADED - continuous coverage, the
-softest edge in the set, tone varying inside the stroke (spread 6)
-rather than a gap. If both read as "flat paint", the void is what to
-look for; if Oil reads hard-edged, the scan's midtones are not
-surviving the size.
+WIDTH is the mark's SHORT axis - the size slider is the long axis.
 
 **Lifecycle (o) fixture moved.** (o) used Gouache for "a hardness edit
 re-renders the preview"; with the scan, hardness is inert and the
@@ -3903,6 +3942,28 @@ Three assets (2.08 MB); (b12) +3 (29 asset-bearing built-ins). Coupled
 pins re-baselined together: preview 39f656b0 -> b7363161, eraser
 a80dd7e0 -> d398d76e. Probes archived as seam_paintprobe_20260923.cpp
 (census) and _2.cpp (calibration).
+
+## METHOD: measure interior structure ACROSS THE SIZE RANGE before calling it character (2026-09-25)
+
+The Painting census measured Acrylic at size 20 only and found "one
+full-length 1 px gap at 89% occupancy" - reported and shipped as a
+bristle void, the brush's whole character. It was a DECIMATION
+ARTIFACT: at 20 px a 1536 px scan is point-sampled at ~77 px steps
+(the tip sampler is bilinear with no area averaging), and one sampled
+row landed on a dark band of the scan's canvas weave. At 30 px the
+"void" was gone (spread 233 -> 187 -> 33 by 60); at 60-286 the same
+weave was an even mesh; at 286 the hand saw cross-hatch and no gap.
+A structure reading that appears at one size and vanishes at another
+is a FALSE reading. The guard, now standing: before naming a tip's
+interior structure as character, measure it at the shipped size AND
+across the range the user draws at (at least 20 / 60 / 120 / 286),
+at half pressure as well as full (full pressure saturates a dense
+mark and hides everything), and compare the pattern's period against
+(a) the dab spacing (per-dab repetition) and (b) the scan's own
+texture period scaled by size/scan-width (paper or scan texture).
+Real structure keeps its identity across sizes; artifacts move or
+vanish. This check would have caught the Acrylic claim before it
+shipped; the probe is seam_paintprobe_20260925_weave{,_2}.cpp.
 
 ## ENGINE FACT: streaks need tip-internal structure + heading-following rotation (2026-09-05)
 
