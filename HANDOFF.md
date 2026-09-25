@@ -3701,16 +3701,18 @@ Coupled pins re-baselined together, cross-config identical: preview
 b7f4179f -> e7d41822, eraser a06a968b -> a42203dc. (b12) +2 content
 pins. Probe archived as seam_inkprobe_20260905{,_2}.cpp.
 
-## SCAN SESSION BRIEF: ten stamp-blocked brushes (running list; started 2026-09-05)
+## SCAN SESSION BRIEF: eleven stamp-blocked brushes (running list; started 2026-09-05)
 
-Ten brushes are held on their SCANS, not their tunings - each one was
-measured to the cause, and the cause is structure the scan lacks (or,
-for 9 and 10, structure the scan has and should not). Work from this
+Eleven brushes are held on their SCANS, not their tunings - each one
+was measured to the cause, and the cause is structure the scan lacks
+(or, for 9-11, structure the scan has and should not). Work from this
 at the scanner. Waiting: Grease Pencil, Rough Calligraphy, Dry Ink,
 Calligraphy, Round Brush, Flat Brush, Palette Knife, Dry Brush,
-Acrylic, Oil Paint. (Gouache was re-measured on 2026-09-25 and stays:
-its scan carries the same weave, but at 2% contrast on a dense mark it
-does not show in strokes - spread 5 at half pressure, 0 at full.)
+Acrylic, Oil Paint, Filbert. (Gouache was re-measured on 2026-09-25
+and stays: its scan carries the same weave, but at 2% contrast on a
+dense mark it does not show in strokes - spread 5 at half pressure, 0
+at full. Bristle is deliberately NOT listed - see its entry: the
+primary swap is not worth making.) Painting is DONE until these exist.
 
 ### RULE FOR EVERY SCAN: SMOOTH PAPER ONLY (2026-09-25)
 
@@ -3837,6 +3839,30 @@ mechanism at two densities" the hand-test named). Spec: one press of a
 loaded brush on smooth paper; continuous interior (midtones >= 25%,
 scan texture period 0 - the census autocorrelation must find no
 repeat), soft rim >= 0.15R, mark filling >= 70% of the long axis.
+
+**11. Filbert (Painting) - a clean OVAL, ~1.6:1, on smooth paper
+(2026-09-25).** The current scan carries fine paper texture (period
+22 x 101 scan px, 51/64 rows periodic). It is the INVERSE of the
+Acrylic case: at 20-30 px that texture point-samples into high-contrast
+speckle (spread 124 at half pressure, 1 dark row), fading to 66 at 60,
+17 at 120, 8 at 286 - structure that changes with size is artifact,
+per the method entry. At drawing sizes the mark is a plain solid oval
+no better than the procedural ovalTip(0.55) (H/V 12/18 vs 12/20), at
+small sizes it is worse. Not promoted. Spec: press a filbert once on
+smooth paper - a solid rounded-flat oval, bbox aspect 1.5-1.8, fill >=
+80%, midtones >= 15% for a soft rim, scan texture period 0.
+
+**Bristle (Painting) - NO SWAP, NOT ON THE LIST (2026-09-25).** The
+scan carries a coarse paper texture (period 102 x 75 scan px) at such
+low contrast that it never reaches a stroke: spread 3-11 at half
+pressure and 0-4 at full across 20-286 px, no dark rows, no streaks
+(census ratio 1.50, 100% solid under the heading driver). It is a
+featureless solid dab. Bristle's character lives in its dual SECONDARY
+(the generated streakTip), and a primary swap would gain nothing
+measurable while killing live hardness (0.5). Bristle stays fully
+procedural. If scan-based bristle streaks are ever wanted, that is the
+Dry Ink band spec on the PRIMARY with the streakTip secondary retired -
+a design decision, not a scan gap.
 
 **Reading the inking brief on taper (decision 2026-09-05):** "all
 Inking brushes taper" means the PEN-LIKE ones. Marker, Technical Pen
