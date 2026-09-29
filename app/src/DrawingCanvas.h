@@ -796,6 +796,16 @@ private:
 
     // Brush engine state. Defaults mirror the initial settings-panel values.
     int m_brushToolSize = 25;        // dab diameter, canvas px
+    // E6 (2026-09-28, user-approved): the Size CTL scales a DUAL preset's
+    // secondary WITH the primary, at the preset's own ratio. Captured at
+    // setPaintBrush; at the preset's own size the secondary is exactly the
+    // preset's (integer arithmetic), so every dual preset stays byte-
+    // identical until the slider actually moves. 0 = the active preset is
+    // not dual. Before this the slider moved the primary only, so Dry
+    // Brush's 20 px mask carved an 11% band under a 286 px primary (the
+    // preview had scaled both all along: BrushPreviewRenderer).
+    int m_dualPresetPrimarySize = 0;
+    int m_dualPresetSecondarySize = 0;
     // IDENTITY COLOUR, design (b) (2026-08-30, user-approved): a preset
     // with a non-black stored colour applies it WHILE ACTIVE; switching
     // to a black-ink preset restores the colour the user had before the

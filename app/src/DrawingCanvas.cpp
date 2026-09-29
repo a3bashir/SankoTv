@@ -1086,7 +1086,16 @@ void DrawingCanvas::setBrushSize(int size)
 void DrawingCanvas::setBrushToolSize(int px)
 {
     m_brushToolSize = qBound(1, px, 5000);
-    m_paintEngine.brush().setSize(m_brushToolSize);
+    ::Brush &b = m_paintEngine.brush();
+    b.setSize(m_brushToolSize);
+    // E6: the secondary follows at the preset's ratio (see the header).
+    if (b.dualBrushEnabled() && m_dualPresetPrimarySize > 0
+        && m_dualPresetSecondarySize > 0)
+        b.secondaryBrush().setSize(qBound(
+            1,
+            qRound(double(m_dualPresetSecondarySize) * m_brushToolSize
+                   / m_dualPresetPrimarySize),
+            5000));
     emit paintBrushEdited();
 }
 
@@ -1203,6 +1212,10 @@ void DrawingCanvas::setPaintBrush(const ::Brush &brush)
     // pressure at all.
     m_paintEngine.setBrush(brush);
     m_brushToolSize = brush.size();
+    // E6: remember the preset's primary:secondary size ratio for the slider.
+    m_dualPresetPrimarySize = brush.size();
+    m_dualPresetSecondarySize =
+        brush.dualBrushEnabled() ? brush.secondaryBrush().size() : 0;
     // MULTIPLIER semantics: capture the preset's opacity as the BASE
     // and apply the user's surviving bar multiplier on top. At
     // multiplier 1.0 the product is the preset, byte for byte.
