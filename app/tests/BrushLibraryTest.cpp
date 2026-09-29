@@ -88,7 +88,7 @@ using brushlib::BrushPreset;
 // legitimate roster change moves BOTH in the same commit; this one
 // moving ALONE is a defect, never a re-baseline.
 static const char kEraserSwatchSha[] =
-    "d398d76e5f7806238328b4b77e81ce09e43f8f1a295fd01e99cc6fe2609c62d2";
+    "18d1a2034be55fa2c5f1f4c71b57fb3ae6f7536ef59ce97ce214787984e8106b";
 using brushlib::BrushPresetCodec;
 using brushlib::BrushPreviewRenderer;
 
@@ -847,9 +847,17 @@ int main(int argc, char **argv)
             {"builtin/inking/marker", 1254, 1254, "ccd2fbd414c4", 127.4},
             {"builtin/inking/ink-bleed", 1230, 1278, "51d437402635", 48.5},
             // Painting batch one (2026-09-23).
+            // The Painting stamp pass (2026-09-26): all nine of the user's
+            // scans, on the E1/E2/E3 engine.
             {"builtin/painting/gouache", 1295, 1215, "b9e1cdb937e4", 130.3},
+            {"builtin/painting/round-brush", 1254, 1254, "de7f2cbd4e06", 67.9},
+            {"builtin/painting/flat-brush", 1295, 1214, "9c059e6e2f38", 79.9},
+            {"builtin/painting/filbert", 1295, 1214, "b411ac965ec7", 56.5},
+            {"builtin/painting/bristle", 1295, 1215, "2e9e9f147cc5", 65.5},
+            {"builtin/painting/dry-brush", 1295, 1215, "1c5fe338ded1", 57.5},
             {"builtin/painting/acrylic", 1536, 1024, "08a11e6318a0", 72.5},
             {"builtin/painting/oil-paint", 1536, 1024, "ee902a63fb4d", 56.2},
+            {"builtin/painting/palette-knife", 1295, 1215, "1331e9e009ea", 27.9},
         };
         QStringList seenShas;
         for (const StampSpec &s : specs) {
@@ -1111,15 +1119,18 @@ int main(int argc, char **argv)
         for (const BrushPreset &p : roster2)
             (p.brush.smudgeActive() || p.brush.dualBrushEnabled()
                  ? excluded : mirrorable) << &p;
-        check(QStringLiteral("(b8) 56 of 62 presets mirror as erasers"),
-              mirrorable.size() == 56 && roster2.size() == 62,
+        // 55 of 62 since 2026-09-26: Dry Brush became a dual brush (its
+        // path-following streaks come from a Mask secondary), so it joins
+        // the seven excluded.
+        check(QStringLiteral("(b8) 55 of 62 presets mirror as erasers"),
+              mirrorable.size() == 55 && roster2.size() == 62,
               QStringLiteral("%1 of %2").arg(mirrorable.size())
                   .arg(roster2.size()));
-        bool exclOk = excluded.size() == 6;
+        bool exclOk = excluded.size() == 7;
         for (const BrushPreset *p : excluded)
             exclOk = exclOk
                 && (p->brush.smudgeActive() || p->brush.dualBrushEnabled());
-        check(QStringLiteral("(b8) exactly 6 excluded, each smudge or dual"),
+        check(QStringLiteral("(b8) exactly 7 excluded, each smudge or dual"),
               exclOk, QStringLiteral("%1 excluded").arg(excluded.size()));
 
         // THE ONE-DEFINITION IDENTITY: toggling eraseMode on and back off

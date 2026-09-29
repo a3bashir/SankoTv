@@ -83,11 +83,14 @@ Learned from real defects. Follow them exactly.
    apart: SankoBrushLibraryTest, SankoPaintPixelLock, SankoCanvasBrushLock,
    SankoQuickShapeGeometryLock, SankoDevRecorderTest, SankoCanvasEdgeLock,
    SankoCanvasSizeLock, SankoProjectLifecycle. Preview SHA must stay
-   `b73631612606b33bbea812424b7ee252c4b92f2c0a823c8bf9fe17a1222e3fa0`
-   (re-baselined 2026-09-23: Painting batch one — Gouache, Acrylic and
-   Oil Paint gain their scanned stamps with heading-driven tip angle;
-   shipped == measured; the eraser SHA
-   `d398d76e…` moves WITH it, same commit, per the coupled-pin note in
+   `548449317c6c2ef137b8d787499998f5f7243276a1a398cdbabf4294f7839f0e`
+   (re-baselined 2026-09-29: the Painting STAMP pass — all nine of the
+   user's scans restored as Tip Shapes on the E1/E2/E3 engine (per-brush
+   Area tip sampling from a CPU-built mip chain, seeded texture jitter,
+   hardness live on custom tips with every other stamped built-in swept
+   to 1.0 = identity, proved byte-identical by the 47-line render dump);
+   codec v12; the eraser SHA
+   `18d1a203…` moves WITH it, same commit, per the coupled-pin note in
    BrushLibraryTest); both pixel locks byte-identical
    (`666f7b45…`, `cafcec7f…`), erase baseline `0bc24381…`. The first
    six use 960×540 fixtures; SankoCanvasSizeLock is the variable-resolution

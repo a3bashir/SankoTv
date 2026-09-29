@@ -3727,12 +3727,19 @@ Eleven brushes are held on their SCANS, not their tunings - each one
 was measured to the cause, and the cause is structure the scan lacks
 (or, for 9-11, structure the scan has and should not). Work from this
 at the scanner. Waiting: Grease Pencil, Rough Calligraphy, Dry Ink,
-Calligraphy, Round Brush, Flat Brush, Palette Knife, Dry Brush,
-Acrylic, Oil Paint, Filbert. (Gouache was re-measured on 2026-09-25
-and stays: its scan carries the same weave, but at 2% contrast on a
-dense mark it does not show in strokes - spread 5 at half pressure, 0
-at full. Bristle is deliberately NOT listed - see its entry: the
-primary swap is not worth making.) Painting is DONE until these exist.
+Calligraphy. **The seven Painting entries (Round Brush, Flat Brush,
+Palette Knife, Dry Brush, Acrylic, Oil Paint, Filbert) were LIFTED on
+2026-09-26 by the stamp pass (below): the engine now uses the existing
+scans (Area sampling, texture jitter, live hardness, roundness, the
+banded secondary) instead of waiting on re-scans.** Their specs stay
+here as the record of what each scan lacks; a re-scan on smooth paper
+would still improve Acrylic and Oil Paint (the weave is averaged and
+de-registered now, not gone) and Round Brush (the disc fills 58% of its
+frame). (Gouache was re-measured on 2026-09-25 and stays: its scan
+carries the same weave, but at 2% contrast on a dense mark it does not
+show in strokes - spread 5 at half pressure, 0 at full. Bristle is
+deliberately NOT listed - see its entry: the primary swap is not worth
+making.)
 
 ### RULE FOR EVERY SCAN: SMOOTH PAPER ONLY (2026-09-25)
 
@@ -3989,6 +3996,254 @@ pins re-baselined together: preview 39f656b0 -> b7363161, eraser
 a80dd7e0 -> d398d76e. Probes archived as seam_paintprobe_20260923.cpp
 (census) and _2.cpp (calibration).
 
+## THE PAINTING STAMP PASS: the user's nine scans as Tip Shapes, on five engine changes (2026-09-26 .. 09-28)
+
+The user's rule for this pass: **the stamps are the required Tip
+Shapes** - use them, do not replace or bypass them, and where a stamp
+caps the character say so per brush. The 2026-09-25 procedural pass
+(which reverted Acrylic and Oil and generated Round/Flat/Filbert/Dry
+Brush/Knife) is superseded; its measurements stand as the record of
+what procedural tips could do. Every one of the twelve was re-measured
+at 20/30/60/120/286 px, half and full pressure (probe archived as
+seam_paintprobe_20260928_stamps.cpp; the across-sizes structure check
+from the method entry ran on every one).
+
+**The five engine changes (each decided by the user before building):**
+- **E1 per-brush tip sampling** `Brush::TipSampling {Point, Area}`,
+  default Point. `setCustomShape` builds a mip chain by integer 2x2 box
+  average (`(a+b+c+d+2)/4`); `customTipLevelFor(outputPx)` picks the
+  highest level whose size is still >= 2x the output (integer, mirrored
+  by the shader's `tipMipLevel`), so an Area brush samples ONE level at
+  exactly the decimation factor - the user's ruling: sample-time
+  averaging at the decimation factor is not a modification of the
+  stamp, and there is no bias toward blurrier levels. GPU: textures
+  created MipMapped, the CPU-built levels uploaded per
+  `QRhiTextureUploadEntry`, `tipSampler()` = linear/linear/NEAREST-mip
+  clamp, shaders `textureLod(customTip, uv, float(lod))`; the exact
+  branch keeps `bilinearClampR(tex, uv, lod)`. CPU/GPU on the hard-
+  edged 30-degree non-square tip: max 1/255, 0.000% bad (the recorded
+  divergence was 182/255 before the aspect change's exact branch).
+  Painting opts in; every other stamped brush stays Point and is
+  byte-identical (the pencil/drawing/inking tunings were hand-verified
+  under point sampling).
+- **E2 texture jitter** `textureJitter` (0..0.5 of the tip): a per-stamp
+  uv offset `amount * noiseSigned(seed, 7, 11) / (13, 17)`, identical
+  in the shaders from the same seed. De-registers a stamp's interior
+  texture dab to dab. Needed the colour path's tip binding moved from
+  the grain REPEAT sampler to the clamp `tipSampler()`.
+- **E3 hardness LIVE on custom tips** (see the dead-lever list above):
+  gated on the STATIC hardness < 0.999, falloff `exp(-3t^2)(1-t)` on
+  the extent-normalised radius, driven per stamp by effectiveHardness
+  (hardness x pressure curve - hence every E3 recipe pins its hardness
+  pressure curve flat; the default pressure-driven curve halved the
+  effective hardness at half pressure and ate the light strokes). All
+  inert built-in values swept to 1.0 in the same commit; codec v12
+  migrates pre-v12 custom-tip presets to 1.0 on load (primary and
+  secondary). ABR imports / variations in the user's library that
+  carry a custom tip AND hardness < 1: HB Pencil Variation 0.62 (identity
+  curve), soft / soft Copy 0.75 (flat curve), CaptainSinbad_Line x3 0.75
+  (flat), Calligraphy Copy 1.0, Swoosh procedural - the migration keeps
+  every one byte-identical; whether any should ADOPT a live rim is the
+  user's call, per preset.
+- **E4 roundness / angle act on custom tips**: Flat Brush is the 1.36:1
+  blob scan squashed to a bar (roundness 0.4); Palette Knife the knife
+  scan at 0.10 (first 0.16). Roundness compresses tip-LOCAL x, so the
+  bar's long axis is local y: Flat uses tipAngle 0 + heading (90 gave a
+  6 px line), Knife a FIXED tipAngle (first 90 - 0 inverted its
+  thin/thick by direction - then 65, which aligns the scan's diagonal
+  slab with the squash; see its entry below).
+- **E5 Dry Brush banded secondary**: the scan (an isotropic blot - the
+  Dry Ink class, it cannot streak on its own) as the PRIMARY, with the
+  generated `bristleBandTip()` as a MASK secondary following the heading
+  (Multiply left alpha solid: occupancy 100%). The secondary is created
+  as a COPY of the primary, so Area sampling and the grain were
+  inherited until set explicitly (Point, grainDepth 0) - the Bristle
+  secondary moved in the confinement diff for the same reason.
+
+**The proof that mattered:** the 47-line render dump across every
+custom-tip built-in (10 configs each, both sampling modes where
+relevant): 38 byte-identical, exactly the 9 Painting ids differ, and
+Gouache (Point, hardness 1.0, untouched) is byte-identical too. Canvas
+locks 666f7b45 / cafcec7f and the erase baseline 0bc24381 did not move.
+Uniform blocks grew (mono Globals 112 bytes, colour 96); (b8) mirror
+counts 55 of 62 / 7 excluded (Dry Brush is dual now); (b12) pins the
+nine Painting stamps by content (35 entries); Lifecycle (o) uses Round
+Brush with a Gouache E3 control (a hardness edit re-renders; back to
+1.0 restores byte-identical).
+
+**Per brush (what the stamp gives, what it caps):**
+- Round Brush (scan, Area, hardness 0.15 - the hard binary disc has no
+  rim; E3 supplies it). CAP: the disc fills only 58% of its frame, so
+  the stroke is 0.58 x size (12 px at "20", 168 at 286) and the E3 rim
+  must start well inside the disc to reach it. Edge 3/6/9/21 px at
+  20/60/120/286, H/V 1.00. A dab-lattice ripple of <= 0.6/255 remains in
+  the rim (dab-spacing period; grain off leaves it, spacing 0.04 halves
+  it) - at the quantisation floor, left as is.
+- Flat Brush (scan, Area, hardness 0.7, roundness 0.4, heading, jitter
+  0.03, spacing 0.04). The scan's interior features re-registered every
+  dab as rows of bumps along the stroke (period 15.7 = the 17.2 px dab
+  at 286; grain off left it, halving spacing removed it); jitter 0.03
+  de-registers (period 21, off the dab) and spacing 0.04 keeps the body
+  from breaking up (core ripple 4.9 -> 2.2; ragged bristle edge, rim
+  ripple 25). Edge 2/5/7/14, H/V 1.00, width 0.68 x size. 1.5x the
+  dabs of paintBase.
+- Filbert (scan, Area, hardness 0.5, across the path, jitter 0.03,
+  spacing 0.04). The scan's fibrous rim re-registered into a comb (rim
+  period 14.9 = the dab); jitter turns it into a random feathered rim
+  (period 26.5) and spacing 0.04 keeps the body solid (core ripple 0.3).
+  Edge 3/8/13/29, H/V 1.00, width 0.85 x size, the softest of the three.
+- Bristle (scan primary, Area, hardness 0.6) + the streakTip secondary
+  kept (Point, hardness 1.0, heading-driven). Solid body; TONAL streaks
+  (grey on white through the adapter) ratio 420-601 at every size, both
+  directions; Round Brush 0. **PRE-EXISTING DEFECT recorded:** the
+  secondary's streaks were tied to barrel rotation, which the pen never
+  reports, so the bars sat at a fixed angle and crossed the stroke on
+  vertical passes; heading-driven now.
+- Dry Brush (E5). Occupancy 67-78% at 20-30, ratio 601; at 60 52% /
+  351; 120 27% / 117; **286 11% / 41 - CAP, and it is the APP, not the
+  stamp:** `DrawingCanvas::setBrushToolSize` scales the PRIMARY only, so
+  the size-20 mask secondary stays 20 px under a 286 px primary and
+  carves an 11% band. The preview already scales both
+  (BrushPreviewRenderer.cpp:107). Measured with the secondary scaled to
+  the slider at the preset ratio: occupancy 67-73% and ratio 601/226-258/
+  129-139/44-50 at 20/60/120/286 - the character holds at every size.
+  Every dual preset had this gap (Bristle's tonal streaks survived it
+  because its bars are dense). **E6, BUILT 2026-09-28 (user-approved as a
+  pre-existing defect):** `DrawingCanvas::setPaintBrush` captures the
+  preset's primary and secondary sizes and `setBrushToolSize` sets the
+  secondary to `round(presetSecondary * px / presetPrimary)` - integer
+  arithmetic, so at the preset's own size the secondary IS the preset's.
+  Proof (seam_dualsize_20260928_E6.cpp, before/after through the REAL
+  canvas slots, both configs): the four dual built-ins - Ink Line &
+  Splatter (8 / secondary 6), Bristle (22 / 22), Dry Brush (20 / 20),
+  Glitch (20 / 20, Artistic, never reviewed by the user) - plus HB
+  Pencil and Round Brush as non-dual controls: every render at the preset
+  size byte-identical before/after (6 of 6), the working brush serialises
+  byte-identical to the preset, both controls unchanged at 2x, all four
+  duals changed at 2x with the secondary at exactly 2x (6->12, 22->44,
+  20->40, 20->40) and equal to a render with the secondary scaled by
+  hand. The user's library holds 0 dual presets of 9 (read-only listing),
+  so no user file is affected. Grain: Charcoal STATIC depth 0.6 scale 60
+  (1.0/30 swamped the bands at 286).
+- Gouache: unchanged (scan, Point, hardness 1.0): 242 full / 121 half,
+  spread 0 at full, edge 1-4 px.
+- Acrylic (scan, Area, jitter 0.06, hardness 0.8, heading, Charcoal
+  STATIC depth 1.0 c2 s64). The canvas-paper weave that drew as a mesh
+  under point sampling is averaged at the decimation factor and
+  de-registered; what survives reads as grain (period 12.7 at 286 = the
+  grain tile, not the 17.2 px dab; with grain off 28-40). Core 224-241,
+  occupancy 90-98%, spread 80-192 at full; half pressure shows 3-17
+  void rows (the E3 rim). CAP: the scan is a dab on textured stock;
+  a smooth-paper re-scan would give cleaner texture control.
+- Oil Paint (scan, Area, jitter 0.06, hardness 0.3, wet edges 0.4,
+  Rolling canvas 0.5, flow 0.95). Soft and wet: core 133-142 at full
+  (occupancy 74-82%), 66-73 at half; edge 3-16; streaky-soft rim. Same
+  weave CAP as Acrylic.
+- Palette Knife (scan, Area, hardness 1.0, **roundness 0.10, fixed
+  angle 65** - APPLIED 2026-09-29 by the user's decision from the
+  measurements below; spacing LEFT at 0.02, the skips to be judged by
+  eye before paying twice the dabs; NOT added to the scan brief yet).
+  First tuning was roundness 0.16 / angle 90: H/V 2/11 at 20, 35/120 at
+  286, no dab steps. CORRECTION (2026-09-28): the "occupancy
+  22-31%" first reported was a metric artefact - the probe's +-0.2*size
+  band sampled mostly EMPTY rows around the thin H stroke. Measured
+  inside the slab (the V stroke's inked columns): 77-83% above 128 at
+  full pressure, core 180-200/255, at every size. The user's two
+  questions, answered by measurement (seam_knifeprobe_20260928.cpp,
+  both configs identical), NOT applied:
+  * Thick/thin does not weaken with size - it is 3.4-3.6 across all 8
+    headings at 60 and 286 (thin 35 / thick 126 at 286, the extremes at
+    0 and 112.5 deg), and reads 5.5 at 20 only because the thin side
+    hits the 2 px pixel floor (0.12 x 20 = 2.5 -> 2). The frame extents
+    promise 6.3 (0.83 / 0.16x0.82) but the scan's SLAB IS DIAGONAL in its
+    frame (~25 deg, ~0.42 of the frame thick across itself), and
+    roundness squashes a frame axis, not the slab's own thin axis.
+    Reachable while keeping the stamp: roundness 0.10 gives 5.5 at 286 /
+    6.2 at 60 (thin 21 px at 286, in-slab coverage 80%); roundness 0.10
+    + tipAngle 65 (the slab aligned to the squash) gives 6.3 at 286 /
+    6.8 at 60 (thin 20 px at 286, 4 at 60, 2 at 20). Roundness 0.25:
+    3.1. Texture jitter does not help the ratio (3.1-4.6) and ragged the
+    edge.
+  * Coverage IS capped by the scan: the ~20% un-inked is the slab's own
+    interior holes (the black blots in the scan) repeated in register
+    along the path (fixed angle, no jitter) - the "skips". Spacing 0.01
+    accumulates them partly closed: 82-88%, core 202-219 (2x the dabs
+    of 0.02, which is already 3x paintBase). Flow 1.0: 84% (no gain);
+    jitter 0.06/0.10: 73-76% (de-registers the holes into a ragged
+    edge, coverage falls). Ceiling with this stamp ~88%; a full flat
+    slab needs a scan without interior holes (add to the scan brief if
+    wanted).
+- Blender / Smudge Soft / Large Airbrush: as measured on 2026-09-25
+  (Blender transition 8/20/40 half, 12/28/57 full, carry <= 9 px; Smudge
+  Soft 19/48/95 / 60/151/338, carry 11-215 px; Airbrush edge 5 -> 74,
+  0.8 ceiling) - unchanged by this pass.
+
+**Facts recorded along the way.** The Cintiq 22HD Grip Pen does not
+report barrel rotation (104,455 of 104,784 recorded tablet events carry
+rotation 0), so `rotationAffectsShape` is a fixed angle in practice and
+shaped tips follow the HEADING driver instead. **The Dry Ink option, on
+the table and NOT taken:** the E5 mechanism (banded secondary + heading)
+would give Dry Ink streaks today while keeping its scan as the primary
+- Inking is not this pass; the user decides. The Bristle secondary
+question (does it need to scale) is answered by E6 above: it scales now.
+
+Coupled pins re-baselined together: preview b7363161 -> 54844931,
+eraser d398d76e -> 18d1a203 (the committed values; in between, the
+never-committed procedural pass sat at ffa26f99 / 97dcc511, and the
+stamp pass moved the pair three times - the stamps, the Flat/Filbert
+de-registering, the knife's roundness/angle - every time together,
+cross-config identical). The ENGINE commit and the E6 commit move
+neither pin: at those two commits every built-in renders byte-identical
+to 31f11548f (the gate passes on the old pins).
+Assets: nine paint_*_tip.png, 4.9 MB total. Review by the user in four
+groups before commit: Acrylic/Oil/Gouache; Bristle/Dry Brush/Round;
+Round/Filbert/Flat/Knife; Blender/Smudge Soft/Airbrush.
+
+## OPEN: stamped brushes draw NARROWER than their size number (recorded 2026-09-28, decision after Painting)
+
+The size number is the FRAME's longer axis (tip extent, 2026-09-04:
+the longer axis fills the diameter), so a stamp with an empty border
+draws at (ink extent / frame) x size. Measured stroke widths at full
+pressure (rows > 8/255, straight stroke, probe of the stamp pass):
+Round Brush 0.58x (12 px at "20", 168 at 286), Acrylic 0.48x (10 at 20,
+137 at 286), Oil Paint 0.48x, Flat Brush 0.68x, Bristle 0.73x, Dry
+Brush 0.77x, Gouache 0.78x, Filbert 0.85x; procedural soft brushes
+also fall short at that threshold by their rims alone (Airbrush 0.83x,
+Smudge Soft 0.91x, Blender 0.94x). The cause per asset, measured
+read-only on every stamp file (ink bounding box at > 8/255 over the
+frame's longer axis, x by y): paint_round 0.58 x 0.58 (the disc in a
+square frame); paint_acrylic 0.93 x 0.45 and paint_oil 0.93 x 0.53
+(dabs whose SHORT axis lies across the path under the heading driver);
+paint_filbert 0.89 x 0.56, paint_flat 0.90 x 0.66, paint_bristle 0.97 x
+0.78, paint_drybrush 0.92 x 0.78, paint_gouache 0.94 x 0.79, paint_knife
+0.82 x 0.83; ink_dryink 0.69 x 1.00, ink_richink 0.74 x 0.94, hb_pencil
+0.77 x 0.76, pencil_h 0.80 x 0.79; the rest 0.87-1.00 (pencils 2B/4B/
+6B/4H/blue/charcoal/mech, the Drawing set, brush pen, marker, splatters
+- Conte 0.97 x 0.63 and Sepia 0.97 x 0.43 are deliberately non-square
+crops whose long axis is the size). So "20" means 20 px only for the
+tight crops; a user switching Round Brush -> Gouache at the same slider
+gets 12 px then 16 px.
+
+Options, for the user's decision once Painting is done (NOT taken now):
+1. Tighter crops of the scans: re-save each asset cropped to its ink
+   bounding box (+ a few px). Changes the asset bytes (b12 content pins
+   move), the tip extent aspect, and therefore EVERY calibrated width and
+   rim of that brush (a pencil at "25" would draw ~25 instead of ~19) -
+   each affected brush needs its size re-approved. Zero engine change;
+   the preview and the canvas agree automatically.
+2. Normalise size by the INK extent in the engine: on setCustomShape,
+   measure the ink bounding box once and let the size number map to the
+   ink's longer axis instead of the frame's (a per-tip scale factor in
+   the tip extent, CPU and both shaders). Assets untouched, applies to
+   ABR imports and user stamps too, and every stamped brush's width
+   changes at once - the same re-approval, across the whole roster and
+   the user's library, unless gated per brush (a codec field, default
+   off, Painting opts in - the E1 pattern). Also changes the meaning of
+   the Tip Shape preview's fit.
+Either way the pins move and the seam is the before/after width table
+at 20/60/120/286 for every stamped brush. Until then: the per-brush
+ratios above are the record; recipes were tuned at their drawn width.
+
 ## METHOD: measure interior structure ACROSS THE SIZE RANGE before calling it character (2026-09-25)
 
 The Painting census measured Acrylic at size 20 only and found "one
@@ -4076,3 +4331,24 @@ not involved. Per the standing note, four events means:
 suspect the disk or the toolchain's Debug incremental link, not the
 code. Recommended next time it trips: wipe the whole Debug tree
 before trusting any Debug result, and consider a disk check.
+
+**2026-09-29: A 5TH EVENT, AND THE FIRST WITH A MEASURED CAUSE - a
+STALE OBJECT after a header change.** In a scratch worktree built for
+the commit split, E6 was applied by `git apply` on top of a finished
+build (it adds two members to DrawingCanvas.h) and the incremental
+build recompiled DrawingCanvas.obj and the moc unit but NOT
+CanvasBrushLockTest.obj, PerspectiveTool.obj or SankoPaintHostAdapter
+.obj (object timestamps 15:02 against a header written at 15:38), in
+BOTH configs. The test's old object allocated the old class size; the
+new constructor wrote past it: Release exited 0xC0000374 (heap
+corruption) with no output - Git Bash shows that as exit 127, which
+reads like a missing DLL and is not - and Debug hung on the debug-heap
+dialog until killed. The same source passes in the main tree and
+passes in the worktree after a clean rebuild. So at least part of this
+class is MSBuild's dependency tracking missing a header edit, not the
+disk: it would explain "Debug-only, cured by deleting intermediates"
+whenever a class layout changed. RULE FROM NOW ON: after any change to
+a header that a test target compiles (DrawingCanvas.h above all), or
+after applying a patch to a built tree, build with `--clean-first`
+before trusting the gate; and read a bare exit 127 through PowerShell
+for the real 32-bit code before debugging it as a loader problem.

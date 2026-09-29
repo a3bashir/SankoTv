@@ -54,6 +54,81 @@ QImage ovalTip(qreal roundness) // filbert
     return img;
 }
 
+// Soft-rim generated tips (2026-09-25, Painting pass). Hardness is INERT
+// with a custom tip, so a generated tip that needs a soft edge must carry
+// the falloff in its pixels; these use the engine's own procedural
+// falloff shape (exp(-3t^2)(1-t)) over a rim that is a fraction of the
+// half-height. 256 px so a 286 px stamp barely upsamples.
+QImage softEllipseTip(qreal roundness, qreal rim)
+{
+    const int N = 256;
+    QImage img(N, N, QImage::Format_Grayscale8);
+    const qreal a = N * 0.47, b = a * roundness, c = (N - 1) * 0.5;
+    for (int y = 0; y < N; ++y) {
+        uchar *row = img.scanLine(y);
+        for (int x = 0; x < N; ++x) {
+            const qreal r = std::hypot((x - c) / a, (y - c) / b);
+            qreal alpha = 0.0;
+            if (r < 1.0) {
+                if (r <= 1.0 - rim) {
+                    alpha = 1.0;
+                } else {
+                    const qreal t = (r - (1.0 - rim)) / rim;
+                    alpha = std::exp(-3.0 * t * t) * (1.0 - t);
+                }
+            }
+            row[x] = uchar(qRound(std::clamp(alpha, 0.0, 1.0) * 255.0));
+        }
+    }
+    return img;
+}
+
+QImage softFlatTip(qreal widthRatio, qreal rim) // bar with a gradient rim
+{
+    const int N = 256;
+    QImage img(N, N, QImage::Format_Grayscale8);
+    const qreal c = (N - 1) * 0.5, halfW = N * 0.47, halfH = halfW * widthRatio;
+    const qreal rimPx = std::max(1.0, rim * halfH);
+    for (int y = 0; y < N; ++y) {
+        uchar *row = img.scanLine(y);
+        for (int x = 0; x < N; ++x) {
+            const qreal dx = std::max(0.0, std::abs(x - c) - (halfW - rimPx));
+            const qreal dy = std::max(0.0, std::abs(y - c) - (halfH - rimPx));
+            const qreal t = std::hypot(dx, dy) / rimPx;
+            const qreal alpha = t >= 1.0 ? 0.0 : std::exp(-3.0 * t * t) * (1.0 - t);
+            row[x] = uchar(qRound(std::clamp(alpha, 0.0, 1.0) * 255.0));
+        }
+    }
+    return img;
+}
+
+// Banded bristle tip for a DRY brush primary: bands along local x that
+// the heading driver turns into path-following streaks (HANDOFF engine
+// fact). Bands >= 1/12 of the width so they survive size 20; ~35% of
+// the height un-inked; two bands deliberately faint (dry bristles).
+QImage bristleBandTip()
+{
+    const int N = 256;
+    QImage img(N, N, QImage::Format_Grayscale8);
+    img.fill(0);
+    const int y0[] = {14, 52, 86, 120, 156, 196, 228};
+    const int h[] = {24, 22, 26, 22, 28, 20, 18};
+    const int alpha[] = {255, 235, 150, 255, 245, 130, 255};
+    const qreal c = (N - 1) * 0.5, R = N * 0.47;
+    for (int i = 0; i < 7; ++i) {
+        for (int y = y0[i]; y < y0[i] + h[i] && y < N; ++y) {
+            uchar *row = img.scanLine(y);
+            for (int x = 0; x < N; ++x) {
+                // Keep each band inside the disc so the rectangle clip
+                // never cuts it flat.
+                if (std::hypot(x - c, y - c) < R)
+                    row[x] = uchar(alpha[i]);
+            }
+        }
+    }
+    return img;
+}
+
 QImage starTip()
 {
     QImage img = tipCanvas();
@@ -1021,55 +1096,179 @@ QVector<BrushPreset> builtinRoster()
         b.sizePressureCurve().setControlPoints(curve2(0.6, 1.0));
         b.flowPressureCurve().setControlPoints(curve2(0.4, 1.0));
     };
+    // Painting pass (2026-09-25): every one of the twelve tuned and
+    // measured across sizes 20/60/120/286 at half and full pressure
+    // (HANDOFF). Barrel rotation is UNREPORTED by the user's Cintiq 22HD
+    // Grip Pen (104,455 of 104,784 recorded tablet events: rotation 0), so
+    // rotationAffectsShape is a fixed angle in practice; the shaped tips
+    // that should follow the stroke use the heading driver instead
+    // (ControlSource::Direction on the angle property) with tipAngle 90 so
+    // the mark's long axis lies ACROSS the path - the broad stroke a flat
+    // or filbert makes in any direction. Palette Knife keeps the fixed
+    // angle deliberately (a knife is held, and its thin/thick by direction
+    // is the point).
     r << make(kPainting, QStringLiteral("Round Brush"), [&](::Brush &b) {
         paintBase(b);
-        b.setSize(20); b.setHardness(0.45);
+        // The user's scan - a hard binary disc (0% midtones) - with the
+        // rim the scan lacks supplied by E3: hardness is LIVE on custom
+        // tips and this is the brush that needed it. Area sampling (E1).
+        b.setCustomShape(
+            QImage(QStringLiteral(":/brushes/paint_round_tip.png")));
+        b.setTipSampling(B::TipSampling::Area);
+        // The scan's disc fills only 58% of its frame, so the E3 rim
+        // (measured on the frame radius) must start well inside the disc
+        // to reach it: hardness 0.15. The hardness curve is pinned flat
+        // on every E3 brush - the default pressure-driven curve halved the
+        // effective hardness at half pressure and ate the light strokes.
+        b.setSize(20); b.setHardness(0.15);
+        b.hardnessPressureCurve().setControlPoints(curve2(1.0, 1.0));
+        b.setGrainPreset(B::GrainPreset::Canvas); b.setGrainDepth(0.15);
+        b.setGrainMode(B::GrainMode::StaticCanvas);
+        b.setControlMinimum(B::DynamicProperty::GrainDepth, 1.0);
     });
     r << make(kPainting, QStringLiteral("Flat Brush"), [&](::Brush &b) {
         paintBase(b);
-        b.setSize(24); b.setHardness(1.0); // 1.0 = identity (E3); was an inert 0.6
-        b.setCustomShape(flatTip(0.35));
-        b.setRotationAffectsShape(true);
+        // The user's scan (a 1.36:1 blob) made into a bar by E4 - the
+        // explicit roundness setting squashes it to 0.4 - across the path
+        // via tipAngle 90 + heading: a broad stroke in every direction.
+        // The old rotationAffectsShape never turned (no barrel rotation
+        // reported). Rim from E3 hardness; Area sampling (E1).
+        b.setSize(24);
+        b.setHardness(0.7);
+        b.hardnessPressureCurve().setControlPoints(curve2(1.0, 1.0));
+        b.setCustomShape(
+            QImage(QStringLiteral(":/brushes/paint_flat_tip.png")));
+        b.setTipSampling(B::TipSampling::Area);
+        // Roundness compresses tip-local x, so the bar's LONG axis is
+        // local y; with tipAngle 0 + heading that long axis lies ACROSS
+        // the path (the broad stroke). (90 put it along the path: a thin
+        // line - measured 6 px at size 20.)
+        b.setTipRoundness(0.4);
+        b.setTipAngle(0.0);
+        b.setControlSource(B::DynamicProperty::AngleJitter,
+                           B::ControlSource::Direction);
+        // REPEATING TEXTURE, measured (2026-09-28): at paintBase spacing
+        // the scan's interior features re-registered every dab (period
+        // 15.7 px = the 17.2 px dab at 286; grain off left it, halving
+        // spacing removed it) as rows of bumps along the stroke. Texture
+        // jitter 0.03 (E2) de-registers them (period 21, no longer the
+        // dab) and spacing 0.04 keeps the body from breaking up under the
+        // jitter (core ripple 4.9 -> 2.2; the bristle edge stays ragged,
+        // rim ripple 25). 1.5x the dabs of paintBase.
+        b.setTextureJitter(0.03);
+        b.setSpacing(0.04);
+        b.setGrainPreset(B::GrainPreset::Canvas); b.setGrainDepth(0.3);
+        b.setGrainMode(B::GrainMode::StaticCanvas);
+        b.setControlMinimum(B::DynamicProperty::GrainDepth, 1.0);
     });
     r << make(kPainting, QStringLiteral("Filbert"), [&](::Brush &b) {
         paintBase(b);
-        b.setSize(22); b.setHardness(1.0); // 1.0 = identity (E3); was an inert 0.5
-        b.setCustomShape(ovalTip(0.55));
-        b.setRotationAffectsShape(true);
+        // The user's scan (a 1.5:1 oval), across the path, with the
+        // widest rim of the three shapes from E3 hardness; Area sampling
+        // (E1) removes the small-size speckle its fine texture gave.
+        b.setSize(22);
+        b.setHardness(0.5);
+        b.hardnessPressureCurve().setControlPoints(curve2(1.0, 1.0));
+        b.setCustomShape(
+            QImage(QStringLiteral(":/brushes/paint_filbert_tip.png")));
+        b.setTipSampling(B::TipSampling::Area);
+        b.setTipAngle(90.0);
+        b.setControlSource(B::DynamicProperty::AngleJitter,
+                           B::ControlSource::Direction);
+        // REPEATING TEXTURE, measured (2026-09-28): the scan's fibrous rim
+        // re-registered every dab into a comb (rim period 14.9 px = the
+        // 17.2 px dab at 286; grain off left it). Texture jitter 0.03 (E2)
+        // turns the comb into a random feathered rim (period 26.5, not the
+        // dab) and spacing 0.04 keeps the body solid (core ripple 0.3).
+        b.setTextureJitter(0.03);
+        b.setSpacing(0.04);
+        b.setGrainPreset(B::GrainPreset::Canvas); b.setGrainDepth(0.2);
+        b.setGrainMode(B::GrainMode::StaticCanvas);
+        b.setControlMinimum(B::DynamicProperty::GrainDepth, 1.0);
     });
     r << make(kPainting, QStringLiteral("Bristle"), [&](::Brush &b) {
         paintBase(b);
-        b.setSize(22); b.setHardness(0.5);
+        // Loaded bristle brush: the user's scan as the PRIMARY (a solid
+        // body; Area sampling, E3 rim) + the streakTip secondary, kept.
+        // PRE-EXISTING DEFECT fixed here: the secondary's streaks were
+        // tied to barrel rotation, which the pen never reports, so they
+        // never rotated with the path - the bars sat at a fixed angle and
+        // crossed the stroke on vertical passes. The secondary now
+        // follows the heading (bars along local x = along the path).
+        b.setSize(22); b.setHardness(0.6);
+        b.hardnessPressureCurve().setControlPoints(curve2(1.0, 1.0));
+        b.setCustomShape(
+            QImage(QStringLiteral(":/brushes/paint_bristle_tip.png")));
+        b.setTipSampling(B::TipSampling::Area);
         b.setDualBrushEnabled(true);
         ::Brush &s = b.secondaryBrush();
         s.setSize(22); s.setSpacing(0.08);
-        s.setHardness(1.0); // 1.0 = identity (E3); the secondary copied the primary's 0.5, inert before
+        s.setHardness(1.0); // identity (E3); the secondary defaulted to 0.75, inert before
+        // The secondary is initialised as a COPY of the primary, so it
+        // inherited the primary's Area sampling - and moved in the
+        // confinement diff until this was made explicit. Point keeps the
+        // generated bars byte-identical to every pre-E1 render.
+        s.setTipSampling(B::TipSampling::Point);
         s.setCustomShape(streakTip());
-        s.setRotationAffectsShape(true);
+        s.setControlSource(B::DynamicProperty::AngleJitter,
+                           B::ControlSource::Direction);
         b.setDualBlendMode(B::DualBlendMode::LinearBurn);
         b.setDualMasterOpacity(0.9);
     });
     r << make(kPainting, QStringLiteral("Dry Brush"), [&](::Brush &b) {
         paintBase(b);
-        b.setSize(20); b.setHardness(0.55); b.setFlow(0.5);
-        b.setGrainPreset(B::GrainPreset::Canvas);
-        b.setGrainMode(B::GrainMode::Rolling);
-        b.setGrainDepth(0.65);
+        // The user's scan as the PRIMARY (an isotropic blot: it cannot
+        // streak on its own - the Dry Ink class) with the path-following
+        // streaks supplied by E5: the generated banded bristle tip as a
+        // MULTIPLY secondary, angle from the heading (the HANDOFF engine
+        // fact: streaks need tip-internal banding + heading rotation), so
+        // the bands carve gaps through the scan along the stroke. Static
+        // Charcoal grain for dryness; Area sampling on the primary.
+        b.setSize(20);
+        b.setHardness(1.0); // identity (E3): a dry brush has no soft rim
+        b.setFlow(0.6);
+        b.setCustomShape(
+            QImage(QStringLiteral(":/brushes/paint_drybrush_tip.png")));
+        b.setTipSampling(B::TipSampling::Area);
+        b.setControlSource(B::DynamicProperty::AngleJitter,
+                           B::ControlSource::Direction);
+        b.setDualBrushEnabled(true);
+        {
+            ::Brush &s = b.secondaryBrush();
+            s.setSize(20); s.setSpacing(0.06);
+            s.setHardness(1.0);
+            // The secondary starts as a copy of the primary: no scan-era
+            // grain and Point sampling (crisp bands) on the mask.
+            s.setTipSampling(B::TipSampling::Point);
+            s.setGrainDepth(0.0);
+            s.setCustomShape(bristleBandTip());
+            s.setControlSource(B::DynamicProperty::AngleJitter,
+                               B::ControlSource::Direction);
+        }
+        // Mask, not Multiply: Multiply darkens colour and leaves alpha
+        // solid (measured occupancy 100%, no gaps); Mask carves the
+        // primary's alpha by the secondary's bands.
+        b.setDualBlendMode(B::DualBlendMode::Mask);
+        b.setDualMasterOpacity(1.0);
+        // Grain depth 0.6 at scale 60, not 1.0/30: at depth 1.0 the static
+        // holes swamp the bands at large sizes (streak ratio 1.3 at 286);
+        // at 0.6/60 the bands stay dominant (601 / 139 / 9 at 20/120/286).
+        b.setGrainPreset(B::GrainPreset::Charcoal);
+        b.setGrainMode(B::GrainMode::StaticCanvas);
+        b.setGrainDepth(0.6);
+        b.setGrainContrast(3.0);
+        b.setGrainScale(60.0);
+        b.setControlMinimum(B::DynamicProperty::GrainDepth, 1.0);
     });
-    // Painting batch one (2026-09-23): scanned stamps for Gouache, Acrylic
-    // and Oil Paint, measured at the approved sizes (probe: 160-pt line,
-    // 1000x240, core band +/-20% of size). Every scan is a single dab
-    // whose LONG axis is the drag direction, so all three drive the tip
-    // angle from the stroke heading (ControlSource::Direction on the
-    // angle property - the engine's orientation driver): the mark rotates
-    // with the path and the stroke width is the same in every direction
-    // (measured H/V equal; without the driver the wide scans give 9 vs 17
-    // px). Consequence to know: the stroke width is the mark's SHORT axis
-    // (Gouache 13 px at size 18, Acrylic 9 at 20, Oil 11 at 22) - the
-    // size slider is the long axis. Flow/depth sweeps moved the numbers
-    // by <= 5 at paint densities: the scans carry the character, the
-    // recipes keep their stock values. Hardness was inert with a custom
-    // tip on all three and is 1.0 = identity since E3 made it live.
+    // Gouache: the first Painting scan to ship (2026-09-23) and the one
+    // untouched by the stamp pass (Point sampling, hardness 1.0 =
+    // identity: byte-identical in the confinement dump). The scan is a
+    // single dab whose LONG axis is the drag direction, so the tip angle
+    // follows the stroke heading (ControlSource::Direction): the mark
+    // rotates with the path and the stroke width is the mark's SHORT
+    // axis (13 px at size 18). Its own faint weave sits at ~2% contrast
+    // on a dense mark and does not reach the stroke (spread 5 at half
+    // pressure, 0 at full, across 20-286).
     r << make(kPainting, QStringLiteral("Gouache"), [&](::Brush &b) {
         paintBase(b);
         // Opaque, flat, matte: the scan is a dense solid blob (interior
@@ -1091,54 +1290,77 @@ QVector<BrushPreset> builtinRoster()
     });
     r << make(kPainting, QStringLiteral("Acrylic"), [&](::Brush &b) {
         paintBase(b);
-        // STREAKY-LOADED: the only Painting scan with tip-internal
-        // structure - a bristle void that, with the heading driver,
-        // becomes a full-length gap running ALONG the stroke in every
-        // direction (601 px gap runs on horizontal and vertical strokes,
-        // occupancy 89%). MEASURED @20: half-pressure 86 / full 225 /
-        // occupancy 89% / spread 233 (the void) / edge 1 px. Oil Paint is
-        // its pair: soft-loaded, no void.
+        // The user's scan (a dab on canvas paper whose weave drew as a
+        // regular mesh under point sampling - HANDOFF) made usable by the
+        // engine: Area sampling (E1) averages the weave at the decimation
+        // factor, texture jitter (E2) de-registers what survives so it
+        // reads as grain rather than a grid, a short rim from E3. Long
+        // axis along the path (the dab's drag direction). Loaded,
+        // textured, semi-crisp; not streaky.
+        b.setSize(20);
+        b.setHardness(0.8);
+        b.hardnessPressureCurve().setControlPoints(curve2(1.0, 1.0));
+        b.setFlow(0.9);
         b.setCustomShape(
             QImage(QStringLiteral(":/brushes/paint_acrylic_tip.png")));
-        b.setSize(20);
-        b.setHardness(1.0); // 1.0 = identity (E3); was an inert 0.55
-        b.setFlow(0.9);
-        b.setGrainPreset(B::GrainPreset::Canvas); b.setGrainDepth(0.45);
+        b.setTipSampling(B::TipSampling::Area);
+        b.setTextureJitter(0.06);
         b.setControlSource(B::DynamicProperty::AngleJitter,
                            B::ControlSource::Direction);
+        // Charcoal preset, STATIC, depth 1.0: the Canvas preset showed no
+        // texture at all here (spread 0-3) because a half-pressure paint
+        // stroke saturates to its opacity ceiling and only texels that
+        // reach zero survive saturation. Measured spread 27-30 at half
+        // pressure and 24-27 at full, at every size 20-286; the period it
+        // shows is the grain tile (canvas-anchored, size- and dab-
+        // independent), not a per-dab mesh.
+        b.setGrainPreset(B::GrainPreset::Charcoal);
+        b.setGrainMode(B::GrainMode::StaticCanvas);
+        b.setGrainDepth(1.0);
+        b.setGrainContrast(2.0);
+        b.setGrainScale(64.0);
+        b.setControlMinimum(B::DynamicProperty::GrainDepth, 1.0);
     });
     r << make(kPainting, QStringLiteral("Oil Paint"), [&](::Brush &b) {
         paintBase(b);
-        // SOFT-LOADED: the scan carries 34% midtones (impasto tone), so
-        // the stroke edge is the soft one of the set (per-column 0.2 px
-        // vs 0.0 for Acrylic and Gouache) and the interior is continuous
-        // - no void, no streak (100% occupancy both directions).
-        // Paint-mode: smudgeStrength is inert outside Smudge tool mode, so
-        // the wet-oil character comes from the scan + canvas grain + full
-        // flow. MEASURED @22: half-pressure 118 / full 254 / occupancy
-        // 100% / spread 6 / edge 2 px.
+        // The user's scan (same canvas-paper weave as Acrylic; 34%
+        // midtones) with Area sampling + texture jitter (E1/E2) and the
+        // soft rim from E3 hardness 0.3. Soft-loaded, wet: Rolling canvas
+        // grain, full flow, wet edges 0.4 (interior settles below the rim
+        // where Round fills flat). Long axis along the path.
+        b.setSize(22); b.setHardness(0.3); b.setFlow(0.95);
+        b.hardnessPressureCurve().setControlPoints(curve2(1.0, 1.0));
         b.setCustomShape(
             QImage(QStringLiteral(":/brushes/paint_oil_tip.png")));
-        b.setSize(22);
-        b.setHardness(1.0); // 1.0 = identity (E3); was an inert 0.5
-        b.setFlow(0.95);
-        b.setGrainPreset(B::GrainPreset::Canvas); b.setGrainDepth(0.55);
-        b.setGrainMode(B::GrainMode::Rolling);
+        b.setTipSampling(B::TipSampling::Area);
+        b.setTextureJitter(0.06);
         b.setControlSource(B::DynamicProperty::AngleJitter,
                            B::ControlSource::Direction);
+        b.setWetEdges(0.4);
+        b.setGrainPreset(B::GrainPreset::Canvas); b.setGrainDepth(0.5);
+        b.setGrainMode(B::GrainMode::Rolling);
     });
+    // Blender vs Smudge Soft, MEASURED through the adapter for the first
+    // time (2026-09-25, two-tone base, one stroke across the edge): as
+    // shipped they were near-identical at half pressure (transition 8 vs
+    // 7 px at 24, 40 vs 35 at 120) and 3x apart only at full (98 vs 341
+    // px at 120). The split now holds at every pressure: Blender is the
+    // firm, gentle, controlled blend (strength floor 0.5, harder edge);
+    // Smudge Soft the aggressive soft smear (strength 0.95 with a 0.5
+    // floor, softest edge in the set).
     r << make(kPainting, QStringLiteral("Blender"), [&](::Brush &b) {
         paintBase(b);
-        b.setSize(24); b.setHardness(0.35);
+        b.setSize(24); b.setHardness(0.5);
         b.setToolMode(B::ToolMode::Smudge); // pure blender -> RGBA16
-        b.setSmudgeStrength(0.85);
-        b.smudgePressureCurve().setControlPoints(curve2(0.4, 1.0));
+        b.setSmudgeStrength(0.75);
+        b.smudgePressureCurve().setControlPoints(curve2(0.5, 1.0));
     });
     r << make(kPainting, QStringLiteral("Smudge Soft"), [&](::Brush &b) {
         paintBase(b);
-        b.setSize(28); b.setHardness(0.2);
+        b.setSize(28); b.setHardness(0.15);
         b.setToolMode(B::ToolMode::Smudge); // -> RGBA16
         b.setSmudgeStrength(0.95);
+        b.smudgePressureCurve().setControlPoints(curve2(0.85, 1.0));
     });
     r << make(kPainting, QStringLiteral("Large Airbrush"), [&](::Brush &b) {
         paintBase(b);
@@ -1148,8 +1370,29 @@ QVector<BrushPreset> builtinRoster()
     });
     r << make(kPainting, QStringLiteral("Palette Knife"), [&](::Brush &b) {
         paintBase(b);
-        b.setSize(26); b.setHardness(1.0); b.setSpacing(0.12); // 1.0 = identity (E3); was an inert 0.9
-        b.setCustomShape(flatTip(0.16));
+        // The user's scan made into a blade by E4 - the explicit roundness
+        // setting squashes it - at a FIXED angle, deliberately: thin
+        // edge-on, broad side-on by stroke direction. Spacing 0.02 (the
+        // old 0.12 left visible dab steps at 286; 0.01 would close more of
+        // the scan's skips - 82-88% vs 77-83% in-slab coverage - at twice
+        // the dabs: left at 0.02 by the user's decision, to be judged by
+        // eye). rotationAffectsShape kept for pens that DO report barrel
+        // rotation (Art Pen); the Grip Pen never does. Area sampling.
+        b.setSize(26); b.setSpacing(0.02);
+        b.setHardness(1.0); // identity (E3): a knife has no soft rim
+        b.setCustomShape(
+            QImage(QStringLiteral(":/brushes/paint_knife_tip.png")));
+        b.setTipSampling(B::TipSampling::Area);
+        // THICK/THIN, measured over 8 headings (2026-09-28): the scan's
+        // slab lies DIAGONAL in its frame (~25 deg), so roundness - which
+        // squashes a frame axis - at 0.16 / angle 90 gave only 3.5:1
+        // (thin 35, thick 126 at 286), reading 5.5 at 20 because the thin
+        // side hit the 2 px floor. Angle 65 aligns the slab with the
+        // squash and roundness 0.10 thins the edge: 6.8:1 at 60, 6.3:1 at
+        // 286 (thin 20, thick 126) - the stock knife's ratio, on the
+        // user's stamp. In-slab coverage ~80% at full pressure.
+        b.setTipRoundness(0.10);
+        b.setTipAngle(65.0);
         b.setRotationAffectsShape(true);
     });
 

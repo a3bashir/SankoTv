@@ -35,7 +35,13 @@
         <file alias="ink_marker_tip.png">assets/brushes/ink_marker_tip.png</file>
         <file alias="ink_richink_tip.png">assets/brushes/ink_richink_tip.png</file>
         <file alias="paint_gouache_tip.png">assets/brushes/paint_gouache_tip.png</file>
+        <file alias="paint_round_tip.png">assets/brushes/paint_round_tip.png</file>
+        <file alias="paint_flat_tip.png">assets/brushes/paint_flat_tip.png</file>
+        <file alias="paint_filbert_tip.png">assets/brushes/paint_filbert_tip.png</file>
+        <file alias="paint_bristle_tip.png">assets/brushes/paint_bristle_tip.png</file>
+        <file alias="paint_drybrush_tip.png">assets/brushes/paint_drybrush_tip.png</file>
         <file alias="paint_acrylic_tip.png">assets/brushes/paint_acrylic_tip.png</file>
         <file alias="paint_oil_tip.png">assets/brushes/paint_oil_tip.png</file>
+        <file alias="paint_knife_tip.png">assets/brushes/paint_knife_tip.png</file>
     </qresource>
 </RCC>

@@ -1710,9 +1710,12 @@ void runEraserLibraryPass(const QString &scratch)
                 }
             }
         }
+        // 56 -> 55 on 2026-09-28: Dry Brush became DUAL in the Painting
+        // stamp pass (E5, the banded mask secondary), so it left the
+        // mirror; (b8) in BrushLibraryTest carries the same 55 / 7 split.
         check(QStringLiteral("(m) every MIRRORABLE preset appears in the "
-                             "eraser scope (56 across the categories)"),
-              allPresent && shown == expected && expected == 56,
+                             "eraser scope (55 across the categories)"),
+              allPresent && shown == expected && expected == 55,
               QStringLiteral("shown=%1 expected=%2").arg(shown)
                   .arg(expected));
         check(QStringLiteral("(m) no EXCLUDED preset leaks through the "
