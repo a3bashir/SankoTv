@@ -259,7 +259,7 @@ QVector<BrushPreset> builtinRoster()
         b.setOpacity(0.55); // the HB ceiling - confirmed kept: strokes
                             // top out at mid-grey, the paper shows through
         b.setFlow(0.2);     // gradual buildup toward that ceiling
-        b.setHardness(0.62);
+        b.setHardness(1.0); // was the variation's 0.62, inert then; 1.0 = identity now that hardness is LIVE on custom tips (E3, 2026-09-26) - the variation file migrates to 1.0 on load
         b.setSpacingJitter(0.078125);
         b.setCustomShape(
             QImage(QStringLiteral(":/brushes/hb_pencil_tip.png")));
@@ -283,7 +283,7 @@ QVector<BrushPreset> builtinRoster()
         b.setCustomShape(
             QImage(QStringLiteral(":/brushes/pencil_h_tip.png")));
         b.setSize(25); // family default (2026-08-30)
-        b.setHardness(0.70); // INERT with a custom tip (see 4H)
+        b.setHardness(1.0); // 1.0 = identity; hardness is LIVE on custom tips since E3 (2026-09-26)
         b.setOpacity(0.48);
         // v3 treatment scaled from the 4H diagnosis (Paper cannot tooth;
         // see 4H): Charcoal-preset texture, deep valleys, de-saturated
@@ -306,7 +306,7 @@ QVector<BrushPreset> builtinRoster()
         b.setCustomShape(
             QImage(QStringLiteral(":/brushes/pencil_2h_tip.png")));
         b.setSize(25); // family default (2026-08-30)
-        b.setHardness(0.78); // INERT with a custom tip (see 4H)
+        b.setHardness(1.0); // 1.0 = identity; hardness is LIVE on custom tips since E3 (2026-09-26)
         b.setOpacity(0.38);
         // v3 treatment scaled from the 4H diagnosis (Paper cannot tooth;
         // see 4H): between H and 4H on the grade ladder.
@@ -329,7 +329,7 @@ QVector<BrushPreset> builtinRoster()
         b.setCustomShape(
             QImage(QStringLiteral(":/brushes/pencil_4h_tip.png")));
         b.setSize(25); // v2: the user's chosen default across the family
-        b.setHardness(0.85); // INERT with a custom tip: the falloff only
+        b.setHardness(1.0); // 1.0 = identity (E3: hardness LIVE on custom tips since 2026-09-26); the falloff only
                              // shapes PROCEDURAL tips. Kept as the grade
                              // ladder's record; edge character now comes
                              // from the stamp and Noise.
@@ -366,7 +366,7 @@ QVector<BrushPreset> builtinRoster()
         b.setSize(25); // v2: size only - the feel passed hand-testing
                        // as-is ("feels good") and is the soft-end
                        // calibration reference the others move around
-        b.setHardness(0.52); // INERT with a custom tip (see 4H)
+        b.setHardness(1.0); // 1.0 = identity; hardness is LIVE on custom tips since E3 (2026-09-26)
         b.setOpacity(0.70);  // mid-dark ceiling: darker than HB's 0.55,
                              // well short of 6B
         b.setFlow(0.22);     // rich buildup - passes darken gradually
@@ -387,7 +387,7 @@ QVector<BrushPreset> builtinRoster()
         b.setCustomShape(
             QImage(QStringLiteral(":/brushes/pencil_4b_tip.png")));
         b.setSize(25); // family default (2026-08-30)
-        b.setHardness(0.42); // INERT with a custom tip (see 4H)
+        b.setHardness(1.0); // 1.0 = identity; hardness is LIVE on custom tips since E3 (2026-09-26)
         b.setOpacity(0.85);
         b.setFlow(0.20);
         b.setGrainDepth(0.60);
@@ -408,7 +408,7 @@ QVector<BrushPreset> builtinRoster()
         b.setCustomShape(
             QImage(QStringLiteral(":/brushes/pencil_6b_tip.png")));
         b.setSize(25); // v2: the user's chosen default across the family
-        b.setHardness(0.34); // INERT with a custom tip (see 4H)
+        b.setHardness(1.0); // 1.0 = identity; hardness is LIVE on custom tips since E3 (2026-09-26)
         // v2 (hand-tested 2026-08-30, "too similar to 2B - a bit
         // darker"): the naive lever was flow, and it was DECLINED - a
         // faster deposit makes 6B build like 2B and collapses the
@@ -452,7 +452,7 @@ QVector<BrushPreset> builtinRoster()
         b.setSize(25); // family default (2026-08-30); the fixed-width
                        // curve and near-zero grain ARE the mechanical
                        // identity - they hold at any size
-        b.setHardness(0.88); // INERT with a custom tip (see 4H)
+        b.setHardness(1.0); // 1.0 = identity; hardness is LIVE on custom tips since E3 (2026-09-26)
         b.setOpacity(0.65);
         b.setFlow(0.50);
         b.setGrainDepth(0.12);
@@ -472,7 +472,7 @@ QVector<BrushPreset> builtinRoster()
         b.setCustomShape(
             QImage(QStringLiteral(":/brushes/pencil_blue_tip.png")));
         b.setSize(25); // family default (2026-08-30)
-        b.setHardness(0.60); // INERT with a custom tip (see 4H)
+        b.setHardness(1.0); // 1.0 = identity; hardness is LIVE on custom tips since E3 (2026-09-26)
         b.setOpacity(0.45);
         b.setFlow(0.30);
         b.setGrainDepth(0.40);
@@ -494,7 +494,7 @@ QVector<BrushPreset> builtinRoster()
             QImage(QStringLiteral(":/brushes/pencil_charcoal_tip.png")));
         b.setSize(25); // family default (2026-08-30); Ch/6B deposit
                        // ratios re-measured at this size - see HANDOFF
-        b.setHardness(0.45); // INERT with a custom tip (see 4H)
+        b.setHardness(1.0); // 1.0 = identity; hardness is LIVE on custom tips since E3 (2026-09-26)
         b.setOpacity(0.92);
         // v2 (MEASURED, 2026-08-30, "should be darker"): the stamp
         // census generalised the 6B sparsity finding - the charcoal scan
@@ -560,7 +560,7 @@ QVector<BrushPreset> builtinRoster()
         b.setCustomShape(
             QImage(QStringLiteral(":/brushes/draw_conte_tip.png")));
         b.setSize(25);
-        b.setHardness(0.5); // INERT with a custom tip (see 4H Pencil)
+        b.setHardness(1.0); // 1.0 = identity; hardness is LIVE on custom tips since E3 (2026-09-26)
         b.setTiltAffectsShape(true); // INERT with a custom tip: tilt
         b.setMaxTiltElongation(2.5); // elongation measured 39/39/38 px
         b.setOpacity(0.85);
@@ -599,7 +599,7 @@ QVector<BrushPreset> builtinRoster()
         b.setCustomShape(
             QImage(QStringLiteral(":/brushes/draw_softpastel_tip.png")));
         b.setSize(35);
-        b.setHardness(0.3); // INERT with a custom tip (see 4H Pencil)
+        b.setHardness(1.0); // 1.0 = identity; hardness is LIVE on custom tips since E3 (2026-09-26)
         b.setOpacity(0.85);
         b.setFlow(0.10);
         b.setScatterPerpendicular(0.75);
@@ -625,7 +625,7 @@ QVector<BrushPreset> builtinRoster()
         b.setCustomShape(
             QImage(QStringLiteral(":/brushes/draw_hardpastel_tip.png")));
         b.setSize(35);
-        b.setHardness(0.6); // INERT with a custom tip (see 4H Pencil)
+        b.setHardness(1.0); // 1.0 = identity; hardness is LIVE on custom tips since E3 (2026-09-26)
         b.setOpacity(0.90);
         b.setFlow(0.28);
         b.setScatterPerpendicular(0.35);
@@ -656,7 +656,7 @@ QVector<BrushPreset> builtinRoster()
         b.setCustomShape(
             QImage(QStringLiteral(":/brushes/draw_charstick_tip.png")));
         b.setSize(35);
-        b.setHardness(0.35); // INERT with a custom tip (see 4H Pencil)
+        b.setHardness(1.0); // 1.0 = identity; hardness is LIVE on custom tips since E3 (2026-09-26)
         b.setOpacity(0.95);
         b.setFlow(0.40);
         b.setScatterPerpendicular(0.50);
@@ -692,7 +692,7 @@ QVector<BrushPreset> builtinRoster()
         b.setCustomShape(QImage(
             QStringLiteral(":/brushes/draw_compcharcoal_tip.png")));
         b.setSize(30);
-        b.setHardness(0.25); // INERT with a custom tip (see 4H Pencil)
+        b.setHardness(1.0); // 1.0 = identity; hardness is LIVE on custom tips since E3 (2026-09-26)
         b.setOpacity(0.97);
         b.setFlow(0.70);
         b.setSpacing(0.08);
@@ -727,7 +727,7 @@ QVector<BrushPreset> builtinRoster()
         b.setCustomShape(
             QImage(QStringLiteral(":/brushes/draw_chalk_tip.png")));
         b.setSize(30);
-        b.setHardness(0.4); // INERT with a custom tip (see 4H Pencil)
+        b.setHardness(1.0); // 1.0 = identity; hardness is LIVE on custom tips since E3 (2026-09-26)
         b.setOpacity(0.90);
         b.setFlow(0.28);
         b.setScatterPerpendicular(0.75);
@@ -757,7 +757,7 @@ QVector<BrushPreset> builtinRoster()
         b.setCustomShape(QImage(
             QStringLiteral(":/brushes/draw_graphiteblock_tip.png")));
         b.setSize(40);
-        b.setHardness(0.55); // INERT with a custom tip (see 4H Pencil)
+        b.setHardness(1.0); // 1.0 = identity; hardness is LIVE on custom tips since E3 (2026-09-26)
         b.setTiltAffectsShape(true); // INERT with a custom tip (see
         b.setMaxTiltElongation(4.0); // above); kept as the recipe intent
         b.setOpacity(0.85);
@@ -787,7 +787,7 @@ QVector<BrushPreset> builtinRoster()
         b.setCustomShape(
             QImage(QStringLiteral(":/brushes/draw_grease_tip.png")));
         b.setSize(25);
-        b.setHardness(0.45); // INERT with a custom tip (see 4H Pencil)
+        b.setHardness(1.0); // 1.0 = identity; hardness is LIVE on custom tips since E3 (2026-09-26)
         b.setOpacity(0.95);
         b.setFlow(0.85);
         b.setSpacing(0.03);
@@ -811,7 +811,7 @@ QVector<BrushPreset> builtinRoster()
         b.setCustomShape(
             QImage(QStringLiteral(":/brushes/draw_sanguine_tip.png")));
         b.setSize(25);
-        b.setHardness(0.5); // INERT with a custom tip (see 4H Pencil)
+        b.setHardness(1.0); // 1.0 = identity; hardness is LIVE on custom tips since E3 (2026-09-26)
         b.setOpacity(0.90);
         b.setFlow(0.40);
         b.setScatterPerpendicular(0.35);
@@ -836,7 +836,7 @@ QVector<BrushPreset> builtinRoster()
         b.setCustomShape(
             QImage(QStringLiteral(":/brushes/draw_sepia_tip.png")));
         b.setSize(25);
-        b.setHardness(0.5); // INERT with a custom tip (see 4H Pencil)
+        b.setHardness(1.0); // 1.0 = identity; hardness is LIVE on custom tips since E3 (2026-09-26)
         b.setOpacity(0.90);
         b.setFlow(0.48);
         b.setScatterPerpendicular(0.35);
@@ -943,7 +943,7 @@ QVector<BrushPreset> builtinRoster()
         b.setCustomShape(
             QImage(QStringLiteral(":/brushes/ink_richink_tip.png")));
         b.setSize(10);
-        b.setHardness(0.55); // INERT with a custom tip (see 4H Pencil)
+        b.setHardness(1.0); // 1.0 = identity; hardness is LIVE on custom tips since E3 (2026-09-26)
         b.sizePressureCurve().setControlPoints(curve2(0.02, 1.0));
         b.opacityPressureCurve().setControlPoints(
             {{0.0, 0.4}, {0.5, 0.9}, {1.0, 1.0}});
@@ -1005,7 +1005,7 @@ QVector<BrushPreset> builtinRoster()
         b.setCustomShape(
             QImage(QStringLiteral(":/brushes/ink_marker_tip.png")));
         b.setSize(18);
-        b.setHardness(0.35); // INERT with a custom tip (see 4H Pencil)
+        b.setHardness(1.0); // 1.0 = identity; hardness is LIVE on custom tips since E3 (2026-09-26)
         b.setOpacity(0.6);
         b.sizePressureCurve().setControlPoints(curve2(1.0, 1.0)); // uniform
         b.opacityPressureCurve().setControlPoints(curve2(1.0, 1.0));
@@ -1027,13 +1027,13 @@ QVector<BrushPreset> builtinRoster()
     });
     r << make(kPainting, QStringLiteral("Flat Brush"), [&](::Brush &b) {
         paintBase(b);
-        b.setSize(24); b.setHardness(0.6);
+        b.setSize(24); b.setHardness(1.0); // 1.0 = identity (E3); was an inert 0.6
         b.setCustomShape(flatTip(0.35));
         b.setRotationAffectsShape(true);
     });
     r << make(kPainting, QStringLiteral("Filbert"), [&](::Brush &b) {
         paintBase(b);
-        b.setSize(22); b.setHardness(0.5);
+        b.setSize(22); b.setHardness(1.0); // 1.0 = identity (E3); was an inert 0.5
         b.setCustomShape(ovalTip(0.55));
         b.setRotationAffectsShape(true);
     });
@@ -1043,6 +1043,7 @@ QVector<BrushPreset> builtinRoster()
         b.setDualBrushEnabled(true);
         ::Brush &s = b.secondaryBrush();
         s.setSize(22); s.setSpacing(0.08);
+        s.setHardness(1.0); // 1.0 = identity (E3); the secondary copied the primary's 0.5, inert before
         s.setCustomShape(streakTip());
         s.setRotationAffectsShape(true);
         b.setDualBlendMode(B::DualBlendMode::LinearBurn);
@@ -1067,8 +1068,8 @@ QVector<BrushPreset> builtinRoster()
     // (Gouache 13 px at size 18, Acrylic 9 at 20, Oil 11 at 22) - the
     // size slider is the long axis. Flow/depth sweeps moved the numbers
     // by <= 5 at paint densities: the scans carry the character, the
-    // recipes keep their stock values. Hardness is INERT with a custom
-    // tip on all three (see 4H Pencil).
+    // recipes keep their stock values. Hardness was inert with a custom
+    // tip on all three and is 1.0 = identity since E3 made it live.
     r << make(kPainting, QStringLiteral("Gouache"), [&](::Brush &b) {
         paintBase(b);
         // Opaque, flat, matte: the scan is a dense solid blob (interior
@@ -1077,7 +1078,7 @@ QVector<BrushPreset> builtinRoster()
         b.setCustomShape(
             QImage(QStringLiteral(":/brushes/paint_gouache_tip.png")));
         b.setSize(18);
-        b.setHardness(0.4); // INERT with a custom tip
+        b.setHardness(1.0); // 1.0 = identity; hardness is LIVE on custom tips since E3 (2026-09-26)
         b.setOpacity(0.95);
         b.setGrainPreset(B::GrainPreset::Canvas); b.setGrainDepth(0.3);
         b.setControlSource(B::DynamicProperty::AngleJitter,
@@ -1100,7 +1101,7 @@ QVector<BrushPreset> builtinRoster()
         b.setCustomShape(
             QImage(QStringLiteral(":/brushes/paint_acrylic_tip.png")));
         b.setSize(20);
-        b.setHardness(0.55); // INERT with a custom tip
+        b.setHardness(1.0); // 1.0 = identity (E3); was an inert 0.55
         b.setFlow(0.9);
         b.setGrainPreset(B::GrainPreset::Canvas); b.setGrainDepth(0.45);
         b.setControlSource(B::DynamicProperty::AngleJitter,
@@ -1119,7 +1120,7 @@ QVector<BrushPreset> builtinRoster()
         b.setCustomShape(
             QImage(QStringLiteral(":/brushes/paint_oil_tip.png")));
         b.setSize(22);
-        b.setHardness(0.5); // INERT with a custom tip
+        b.setHardness(1.0); // 1.0 = identity (E3); was an inert 0.5
         b.setFlow(0.95);
         b.setGrainPreset(B::GrainPreset::Canvas); b.setGrainDepth(0.55);
         b.setGrainMode(B::GrainMode::Rolling);
@@ -1147,7 +1148,7 @@ QVector<BrushPreset> builtinRoster()
     });
     r << make(kPainting, QStringLiteral("Palette Knife"), [&](::Brush &b) {
         paintBase(b);
-        b.setSize(26); b.setHardness(0.9); b.setSpacing(0.12);
+        b.setSize(26); b.setHardness(1.0); b.setSpacing(0.12); // 1.0 = identity (E3); was an inert 0.9
         b.setCustomShape(flatTip(0.16));
         b.setRotationAffectsShape(true);
     });
@@ -1159,7 +1160,7 @@ QVector<BrushPreset> builtinRoster()
     };
     r << make(kArtistic, QStringLiteral("Rounded Square"), [&](::Brush &b) {
         artBase(b);
-        b.setSize(20); b.setHardness(0.9);
+        b.setSize(20); b.setHardness(1.0); // 1.0 = identity (E3)
         b.setCustomShape(squareTip());
         b.setRotationAffectsShape(true);
         b.setTiltAffectsShape(false); // tilt elongation would break the
@@ -1178,7 +1179,7 @@ QVector<BrushPreset> builtinRoster()
     });
     r << make(kArtistic, QStringLiteral("Hatching"), [&](::Brush &b) {
         artBase(b);
-        b.setSize(24); b.setHardness(0.8);
+        b.setSize(24); b.setHardness(1.0); // 1.0 = identity (E3)
         b.setCustomShape(hatchTip());
     });
     r << make(kArtistic, QStringLiteral("Confetti"), [&](::Brush &b) {
@@ -1200,6 +1201,7 @@ QVector<BrushPreset> builtinRoster()
         b.setDualBrushEnabled(true);
         ::Brush &s = b.secondaryBrush();
         s.setSize(20); s.setSpacing(0.15);
+        s.setHardness(1.0); // 1.0 = identity (E3; the secondary defaulted to 0.75, inert)
         s.setCustomShape(barTip());
         s.setAngleJitter(0.2);
         b.setDualBlendMode(B::DualBlendMode::Subtract);
@@ -1214,7 +1216,7 @@ QVector<BrushPreset> builtinRoster()
     });
     r << make(kArtistic, QStringLiteral("Sparkle"), [&](::Brush &b) {
         artBase(b);
-        b.setSize(14); b.setHardness(0.9); b.setSpacing(0.5);
+        b.setSize(14); b.setHardness(1.0); b.setSpacing(0.5); // 1.0 = identity (E3)
         b.setCustomShape(starTip());
         b.setScatterAlong(0.6); b.setScatterPerpendicular(0.7);
         b.setScatterCount(3);
@@ -1223,7 +1225,7 @@ QVector<BrushPreset> builtinRoster()
     });
     r << make(kArtistic, QStringLiteral("Ribbon"), [&](::Brush &b) {
         artBase(b);
-        b.setSize(22); b.setHardness(0.85); b.setSpacing(0.05);
+        b.setSize(22); b.setHardness(1.0); b.setSpacing(0.05); // 1.0 = identity (E3)
         b.setCustomShape(flatTip(0.2));
         b.setRotationAffectsShape(true);
         b.setRoundnessJitter(0.25);
@@ -1244,7 +1246,7 @@ QVector<BrushPreset> builtinRoster()
     });
     r << make(kWatercolor, QStringLiteral("Wet Flat"), [&](::Brush &b) {
         waterBase(b);
-        b.setSize(26); b.setHardness(0.2); b.setOpacity(0.35);
+        b.setSize(26); b.setHardness(1.0); b.setOpacity(0.35); // 1.0 = identity (E3)
         b.setCustomShape(flatTip(0.4));
         b.setRotationAffectsShape(true);
     });

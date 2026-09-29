@@ -19,6 +19,11 @@ layout(std140, binding = 0) uniform Globals {
     // Custom-tip extent (Brush::customTipExtent), std140 offset 72 here
     // (two ints precede it) - see stamp.frag for the contract.
     vec2 tipExtent;
+    // E1/E2/E3, offsets 80..92 - see stamp.frag.
+    float textureJitter;
+    int tipHardnessLive;
+    int tipArea;
+    int tipLevels;
 };
 
 // Exact-sampling helpers — see stamp.frag; mirrored verbatim.
@@ -27,19 +32,39 @@ float round8(float v)
     return floor(clamp(v, 0.0, 1.0) * 255.0 + 0.5) / 255.0;
 }
 
-float bilinearClampR(sampler2D tex, vec2 uv)
+float bilinearClampR(sampler2D tex, vec2 uv, int lod)
 {
-    ivec2 sz = textureSize(tex, 0);
+    ivec2 sz = textureSize(tex, lod);
     vec2 xy = uv * vec2(sz) - 0.5;
     ivec2 i0 = ivec2(floor(xy));
     vec2 w = xy - vec2(i0);
     ivec2 i1 = clamp(i0 + 1, ivec2(0), sz - 1);
     i0 = clamp(i0, ivec2(0), sz - 1);
-    float v00 = texelFetch(tex, ivec2(i0.x, i0.y), 0).r;
-    float v10 = texelFetch(tex, ivec2(i1.x, i0.y), 0).r;
-    float v01 = texelFetch(tex, ivec2(i0.x, i1.y), 0).r;
-    float v11 = texelFetch(tex, ivec2(i1.x, i1.y), 0).r;
+    float v00 = texelFetch(tex, ivec2(i0.x, i0.y), lod).r;
+    float v10 = texelFetch(tex, ivec2(i1.x, i0.y), lod).r;
+    float v01 = texelFetch(tex, ivec2(i0.x, i1.y), lod).r;
+    float v11 = texelFetch(tex, ivec2(i1.x, i1.y), lod).r;
     return mix(mix(v00, v10, w.x), mix(v01, v11, w.x), w.y);
+}
+
+// E1 / E3 helpers, mirrored from stamp.frag.
+int tipMipLevel(int rasterSize)
+{
+    ivec2 sz = textureSize(customTip, 0);
+    int maxDim = max(sz.x, sz.y);
+    int lod = 0;
+    while (lod + 1 < tipLevels && lod < 24 && maxDim >= (rasterSize << (lod + 1)))
+        lod++;
+    return lod;
+}
+
+float customFalloff(vec2 rotated, float hardness)
+{
+    float rd = length(rotated / tipExtent);
+    if (rd <= hardness)
+        return 1.0;
+    float t = (rd - hardness) / max(1.0 - hardness, 0.001);
+    return t >= 1.0 ? 0.0 : exp(-3.0 * t * t) * (1.0 - t);
 }
 
 float bilinearRepeatR(sampler2D tex, vec2 uv)
@@ -118,12 +143,28 @@ void main()
     float distanceFromCenter = length(rotated);
     if (distanceFromCenter >= 1.0)
         discard;
-    // Rectangle clip + extent divide, mirrored from stamp.frag.
+    // Rectangle clip + extent divide, mirrored from stamp.frag; then E1
+    // level, E2 jitter, E3 falloff in the CPU's order.
     if (useCustomTip != 0
         && (abs(rotated.x) > tipExtent.x || abs(rotated.y) > tipExtent.y))
         discard;
+    int tipLod = 0;
+    vec2 tipUv = rotated / tipExtent * 0.5 + 0.5;
+    float tipFalloff = 1.0;
+    if (useCustomTip != 0) {
+        if (tipArea != 0)
+            tipLod = tipMipLevel(int(noiseData.w * 2.0 + 0.5));
+        if (textureJitter > 0.0) {
+            uint jseed = uint(noiseData.x) | (uint(noiseData.y) << 16);
+            tipUv += textureJitter
+                * vec2(float(noiseHash(jseed, 7, 11) >> 8) * (1.0 / 16777216.0) * 2.0 - 1.0,
+                       float(noiseHash(jseed, 13, 17) >> 8) * (1.0 / 16777216.0) * 2.0 - 1.0);
+        }
+        if (tipHardnessLive != 0 && hardness < 0.999)
+            tipFalloff = customFalloff(rotated, hardness);
+    }
     float coverage = useCustomTip != 0
-        ? texture(customTip, rotated / tipExtent * 0.5 + 0.5).r : 1.0;
+        ? textureLod(customTip, tipUv, float(tipLod)).r * tipFalloff : 1.0;
     if (useCustomTip == 0 && hardness < 0.999 && distanceFromCenter > hardness) {
         float t = (distanceFromCenter - hardness) / max(1.0 - hardness, 0.001);
         coverage = exp(-3.0 * t * t) * (1.0 - t);
@@ -146,8 +187,7 @@ void main()
         } else {
             // Exact-sampling chain — see stamp.frag.
             float cb = useCustomTip != 0
-                ? round8(bilinearClampR(customTip,
-                                        rotated / tipExtent * 0.5 + 0.5))
+                ? round8(bilinearClampR(customTip, tipUv, tipLod) * tipFalloff)
                 : round8(rawTip);
             if (noiseData.z > 0.0)
                 cb = noisyCoverage(cb);

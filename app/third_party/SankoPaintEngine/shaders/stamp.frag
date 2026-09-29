@@ -20,7 +20,37 @@ layout(std140, binding = 0) uniform Globals {
     // occupies |rotated| <= tipExtent, longer axis = 1. (1,1) for square
     // tips, where the divide is exact and the clip can never fire.
     vec2 tipExtent;
+    // E1/E2/E3 (2026-09-26), offsets 88..100: texture jitter amount (0 =
+    // off), hardness-live flag (static brush hardness < 1), area-sampling
+    // flag, and the tip's mip level count (uploaded by the CPU, level by
+    // level, from Brush's own 2x2 box chain).
+    float textureJitter;
+    int tipHardnessLive;
+    int tipArea;
+    int tipLevels;
 };
+
+// E1: the mip level at or above the output resolution - the same integer
+// rule as Brush::customTipLevelFor, so both renderers read one level.
+int tipMipLevel(int rasterSize)
+{
+    ivec2 sz = textureSize(customTip, 0);
+    int maxDim = max(sz.x, sz.y);
+    int lod = 0;
+    while (lod + 1 < tipLevels && lod < 24 && maxDim >= (rasterSize << (lod + 1)))
+        lod++;
+    return lod;
+}
+
+// E3: the procedural falloff on the extent-normalised radius.
+float customFalloff(vec2 rotated, float hardness)
+{
+    float rd = length(rotated / tipExtent);
+    if (rd <= hardness)
+        return 1.0;
+    float t = (rd - hardness) / max(1.0 - hardness, 0.001);
+    return t >= 1.0 ? 0.0 : exp(-3.0 * t * t) * (1.0 - t);
+}
 
 // Mirrors TextureBlend.h line for line — the ONE implementation
 // discipline. Enum order: 0 Multiply (never routed here — the grain block
@@ -41,18 +71,32 @@ float round8(float v)
     return floor(clamp(v, 0.0, 1.0) * 255.0 + 0.5) / 255.0;
 }
 
-float bilinearClampR(sampler2D tex, vec2 uv)
+// Mirrors NoiseField.h line for line — the ONE implementation discipline.
+// 32-bit unsigned wrap arithmetic, identical in GLSL uint and C++ quint32;
+// the unit keeps 24 bits so float32 computes the exact CPU value.
+uint noiseHash(uint seed, int ix, int iy)
 {
-    ivec2 sz = textureSize(tex, 0);
+    uint v = seed ^ (uint(ix) * 0x85ebca6bu) ^ (uint(iy) * 0xc2b2ae35u);
+    v ^= v >> 16;
+    v *= 0x7feb352du;
+    v ^= v >> 15;
+    v *= 0x846ca68bu;
+    v ^= v >> 16;
+    return v;
+}
+
+float bilinearClampR(sampler2D tex, vec2 uv, int lod)
+{
+    ivec2 sz = textureSize(tex, lod);
     vec2 xy = uv * vec2(sz) - 0.5;
     ivec2 i0 = ivec2(floor(xy));
     vec2 w = xy - vec2(i0);
     ivec2 i1 = clamp(i0 + 1, ivec2(0), sz - 1);
     i0 = clamp(i0, ivec2(0), sz - 1);
-    float v00 = texelFetch(tex, ivec2(i0.x, i0.y), 0).r;
-    float v10 = texelFetch(tex, ivec2(i1.x, i0.y), 0).r;
-    float v01 = texelFetch(tex, ivec2(i0.x, i1.y), 0).r;
-    float v11 = texelFetch(tex, ivec2(i1.x, i1.y), 0).r;
+    float v00 = texelFetch(tex, ivec2(i0.x, i0.y), lod).r;
+    float v10 = texelFetch(tex, ivec2(i1.x, i0.y), lod).r;
+    float v01 = texelFetch(tex, ivec2(i0.x, i1.y), lod).r;
+    float v11 = texelFetch(tex, ivec2(i1.x, i1.y), lod).r;
     return mix(mix(v00, v10, w.x), mix(v01, v11, w.x), w.y);
 }
 
@@ -93,19 +137,7 @@ float textureBlendCoverage(int mode, float c, float t, float d)
     return clamp(c * (1.0 - d) + f * d, 0.0, 1.0);
 }
 
-// Mirrors NoiseField.h line for line — the ONE implementation discipline.
-// 32-bit unsigned wrap arithmetic, identical in GLSL uint and C++ quint32;
-// the unit keeps 24 bits so float32 computes the exact CPU value.
-uint noiseHash(uint seed, int ix, int iy)
-{
-    uint v = seed ^ (uint(ix) * 0x85ebca6bu) ^ (uint(iy) * 0xc2b2ae35u);
-    v ^= v >> 16;
-    v *= 0x7feb352du;
-    v ^= v >> 15;
-    v *= 0x846ca68bu;
-    v ^= v >> 16;
-    return v;
-}
+// (noiseHash is declared above the tip helpers so E2 can use it.)
 
 float noisyCoverage(float coverage)
 {
@@ -134,12 +166,27 @@ void main()
         discard;
     float coverage;
     float rawTip; // pre-noise tip coverage, for the exact-sampling branch
+    int tipLod = 0;
+    vec2 tipUv = vec2(0.0);
+    float tipFalloff = 1.0;
     if (useCustomTip != 0) {
         // Mirrors StrokeBuilder::shapedTipForStamp's rectangle clip and
-        // extent divide, same expression order.
+        // extent divide, same expression order; then E1 level, E2 jitter,
+        // E3 falloff in the CPU's order.
         if (abs(rotated.x) > tipExtent.x || abs(rotated.y) > tipExtent.y)
             discard;
-        coverage = texture(customTip, rotated / tipExtent * 0.5 + 0.5).r;
+        if (tipArea != 0)
+            tipLod = tipMipLevel(int(noiseData.w * 2.0 + 0.5));
+        tipUv = rotated / tipExtent * 0.5 + 0.5;
+        if (textureJitter > 0.0) {
+            uint jseed = uint(noiseData.x) | (uint(noiseData.y) << 16);
+            tipUv += textureJitter
+                * vec2(float(noiseHash(jseed, 7, 11) >> 8) * (1.0 / 16777216.0) * 2.0 - 1.0,
+                       float(noiseHash(jseed, 13, 17) >> 8) * (1.0 / 16777216.0) * 2.0 - 1.0);
+        }
+        if (tipHardnessLive != 0 && hardness < 0.999)
+            tipFalloff = customFalloff(rotated, hardness);
+        coverage = textureLod(customTip, tipUv, float(tipLod)).r * tipFalloff;
         rawTip = coverage;
     } else if (hardness >= 0.999 || distanceFromCenter <= hardness) {
         coverage = 1.0;
@@ -170,8 +217,7 @@ void main()
             // GrainField::wrapped's arithmetic. This is what holds the
             // gain-amplified modes inside the CPU/GPU tolerance.
             float cb = useCustomTip != 0
-                ? round8(bilinearClampR(customTip,
-                                        rotated / tipExtent * 0.5 + 0.5))
+                ? round8(bilinearClampR(customTip, tipUv, tipLod) * tipFalloff)
                 : round8(rawTip);
             if (noiseData.z > 0.0)
                 cb = noisyCoverage(cb);

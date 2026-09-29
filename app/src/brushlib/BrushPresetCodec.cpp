@@ -31,7 +31,9 @@ constexpr quint32 kPresetMagic = 0x534E4B50; // "SNKP"
 //       control source is Fade, which no pre-v4 file can have set to a
 //       distance other than the default anyway.
 //   v11: eraseMode (the Eraser Library engine pass).
-constexpr quint16 kVersion = 11;
+//   v12: tipSampling + textureJitter (the Painting stamp pass); pre-v12
+//        custom-tip presets migrate hardness to 1.0 on load (E3).
+constexpr quint16 kVersion = 12;
 constexpr quint16 kMinReadVersion = 1;
 
 // A fixed QDataStream version pins the wire format independently of the Qt
@@ -390,6 +392,21 @@ void walkBrush(::Brush &b, V &v, quint16 wireVersion, int depth = 0)
         v.field([&] { return b.eraseMode(); },
                 [&](bool x) { b.setEraseMode(x); });
     }
+    // v12: tip sampling (Point/Area) and texture jitter - the Painting
+    // stamp pass (2026-09-26, E1/E2). A v11 or older file has neither
+    // field; the fresh Brush defaults to Point and 0.0, its exact prior
+    // read of the tip image. (E3 - hardness live on custom tips - is not
+    // a field: loadBrush migrates pre-v12 custom-tip presets to hardness
+    // 1.0, which is what the inert value rendered as.)
+    if (wireVersion >= 12) {
+        v.field([&] { return qint32(b.tipSampling()); },
+                [&](qint32 x) {
+                    b.setTipSampling(x == 1 ? B::TipSampling::Area
+                                            : B::TipSampling::Point);
+                });
+        v.field([&] { return b.textureJitter(); },
+                [&](qreal x) { b.setTextureJitter(x); });
+    }
     // Secondary brush: one level deep, exactly like the engine renders it
     // (primary slot 0 + secondary slot 1). A disabled dual brush serialises
     // no secondary payload — presets describe what the brush DOES.
@@ -433,6 +450,19 @@ bool BrushPresetCodec::loadBrush(const QByteArray &bytes, ::Brush &out,
     walkBrush(fresh, r, version);
     if (s.status() != QDataStream::Ok)
         return false;
+    // E3 MIGRATION (2026-09-26): before v12, hardness did nothing on a
+    // custom tip (only the procedural falloff consumed it), so a pre-v12
+    // preset with a custom tip rendered exactly as hardness 1.0. Now that
+    // hardness is live on custom tips, the stored value would silently
+    // change the look; setting it to 1.0 keeps the render byte-identical.
+    // The user opts a preset into a soft rim by editing hardness in the
+    // studio, which re-saves as v12. Secondary brushes likewise.
+    if (version < 12) {
+        if (fresh.hasCustomShape())
+            fresh.setHardness(1.0);
+        if (fresh.dualBrushEnabled() && fresh.secondaryBrush().hasCustomShape())
+            fresh.secondaryBrush().setHardness(1.0);
+    }
     out = fresh;
     if (imagesCappedOnLoad)
         *imagesCappedOnLoad = r.cappedOnLoad;

@@ -108,6 +108,7 @@ private:
                             const QImage &baseRegion,
                             const QPoint &regionCanvasOrigin);
     QRhiSampler *linearClampSampler();
+    QRhiSampler *tipSampler(); // linear in-level, NEAREST between levels (E1)
     QRhiSampler *linearRepeatSampler();
     QRhiSampler *nearestClampSampler();
 
@@ -121,4 +122,5 @@ private:
     QRhiSampler *m_linearClampSampler = nullptr;
     QRhiSampler *m_linearRepeatSampler = nullptr;
     QRhiSampler *m_nearestClampSampler = nullptr;
+    QRhiSampler *m_tipSampler = nullptr;
 };

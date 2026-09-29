@@ -322,6 +322,41 @@ public:
         const qreal h = m_customShape.height();
         return w >= h ? QSizeF(1.0, h / w) : QSizeF(w / h, 1.0);
     }
+    // TIP SAMPLING (2026-09-26, "E1"). Point = the original bilinear read of
+    // the full-resolution image: byte-identical to every pre-E1 render,
+    // the default, and what every hand-verified pencil / drawing / inking
+    // tuning was measured under. Area = the sampler reads the mip level
+    // whose decimation is at most the stamp's own (levels built at
+    // setCustomShape by 2x2 box average; the STORED image is untouched),
+    // so an output pixel gets the average of the texels it covers instead
+    // of one of them - no decimation artifacts at small sizes, no
+    // unaveraged paper weave at large ones. Never biased toward a
+    // blurrier level than the decimation factor. A preset field (codec
+    // v12). Both renderers pick the level with the same integer rule
+    // (customTipLevelFor / the shaders' tipMipLevel).
+    enum class TipSampling { Point, Area };
+    TipSampling tipSampling() const { return m_tipSampling; }
+    void setTipSampling(TipSampling s) { m_tipSampling = s; }
+    int customTipLevelCount() const { return m_customMips.size(); }
+    const QImage &customTipLevel(int level) const;
+    int customTipLevelFor(int outputPx) const;
+    // TEXTURE JITTER ("E2"): a per-stamp offset of where the tip image is
+    // read, as a fraction of the image (0 = off = byte-identical), seeded
+    // from the stamp's noise seed so both renderers agree by construction.
+    // De-registers a texture that would otherwise repeat every dab.
+    qreal textureJitter() const { return m_textureJitter; }
+    void setTextureJitter(qreal amount);
+    // HARDNESS ON CUSTOM TIPS ("E3"): live when the brush hardness is below
+    // 1.0 - the procedural falloff multiplies the sampled coverage on the
+    // extent-normalised radius, both renderers. At 1.0 (every pre-E3
+    // stamped built-in, swept in the same commit; pre-v12 presets with a
+    // custom tip migrate to 1.0 on load) the render is byte-identical to
+    // before. Gated on the STATIC hardness, not the pressure-driven
+    // effective value, so a 1.0 brush stays identity at every pressure.
+    bool customTipHardnessLive() const
+    {
+        return hasCustomShape() && m_hardness < 0.999;
+    }
 
     // --- Control source + minimum per dynamic property --------------------
     // source: what drives the property (default Pressure — existing brushes
@@ -442,6 +477,9 @@ private:
     qreal m_saturationJitter = 0.0;
     qreal m_brightnessJitter = 0.0;
     QImage m_customShape;
+    QVector<QImage> m_customMips;    // level 0 = m_customShape; derived
+    TipSampling m_tipSampling = TipSampling::Point;
+    qreal m_textureJitter = 0.0;     // 0 = off
     qreal m_tipAngle = 0.0;      // degrees; 0 = untransformed
     qreal m_tipRoundness = 1.0;  // 1 = round, toward 0 = flattened
     bool m_tipFlipX = false;

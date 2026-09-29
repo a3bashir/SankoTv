@@ -964,15 +964,19 @@ void runTipShapePreviewPass(const QString &scratch)
         studio->editSessionForTest([](::Brush &b) { b.setHardness(0.05); },
                                    true);
         pump(100);
-        check(QStringLiteral("(o) INERT: a hardness edit on a STAMPED "
-                             "built-in leaves the preview byte-identical"),
-              !before.isNull() && studio->tipPreviewImageForTest() == before);
-        studio->editSessionForTest(
-            [](::Brush &b) { b.setTipRoundness(0.4); }, false);
+        // E3 (2026-09-26): hardness is LIVE on custom tips. A stamped
+        // built-in ships at 1.0 (identity); editing it re-renders, and
+        // setting it back to 1.0 restores the preview byte-exact.
+        check(QStringLiteral("(o) E3: a hardness edit on a STAMPED built-in "
+                             "re-renders the preview (hardness is live on "
+                             "custom tips)"),
+              !before.isNull() && studio->tipPreviewImageForTest() != before);
+        studio->editSessionForTest([](::Brush &b) { b.setHardness(1.0); },
+                                   true);
         pump(100);
-        check(QStringLiteral("(o) ...control: a roundness edit on the same "
-                             "session DOES re-render it"),
-              studio->tipPreviewImageForTest() != before);
+        check(QStringLiteral("(o) ...control: hardness back to 1.0 restores "
+                             "it byte-identical (1.0 = identity)"),
+              studio->tipPreviewImageForTest() == before);
         // openForPreset on a DIFFERENT preset while visible with a dirty
         // session asks "Discard unsaved changes?" - a modal that answers
         // Cancel headlessly and leaves the old session in place. Hiding

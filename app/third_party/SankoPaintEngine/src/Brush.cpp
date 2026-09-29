@@ -101,6 +101,9 @@ Brush &Brush::operator=(const Brush &other)
     m_saturationJitter = other.m_saturationJitter;
     m_brightnessJitter = other.m_brightnessJitter;
     m_customShape = other.m_customShape;
+    m_customMips = other.m_customMips;
+    m_tipSampling = other.m_tipSampling;
+    m_textureJitter = other.m_textureJitter;
     m_tipAngle = other.m_tipAngle;
     m_tipRoundness = other.m_tipRoundness;
     m_tipFlipX = other.m_tipFlipX;
@@ -441,6 +444,26 @@ void Brush::setCustomShape(const QImage &mask)
     }
     m_customShape =
         cappedCustomImage(mask).convertToFormat(QImage::Format_Grayscale8);
+    // The mip chain (E1): 2x2 box averages, integer (a+b+c+d+2)/4, down to
+    // a 1-px side. The GPU uploads THESE images level by level (never the
+    // driver's own mip generation), so both renderers read identical
+    // texels at every level.
+    m_customMips.clear();
+    m_customMips.append(m_customShape);
+    while (m_customMips.last().width() > 1 && m_customMips.last().height() > 1) {
+        const QImage &src = m_customMips.last();
+        const int w = src.width() / 2, h = src.height() / 2;
+        QImage dst(w, h, QImage::Format_Grayscale8);
+        for (int y = 0; y < h; ++y) {
+            const uchar *r0 = src.constScanLine(2 * y);
+            const uchar *r1 = src.constScanLine(2 * y + 1);
+            uchar *out = dst.scanLine(y);
+            for (int x = 0; x < w; ++x)
+                out[x] = uchar((r0[2 * x] + r0[2 * x + 1] + r1[2 * x]
+                                + r1[2 * x + 1] + 2) / 4);
+        }
+        m_customMips.append(dst);
+    }
     invalidateShape();
 }
 
@@ -448,8 +471,36 @@ void Brush::clearCustomShape()
 {
     if (!m_customShape.isNull()) {
         m_customShape = QImage();
+        m_customMips.clear();
         invalidateShape();
     }
+}
+
+const QImage &Brush::customTipLevel(int level) const
+{
+    if (m_customMips.isEmpty())
+        return m_customShape;
+    return m_customMips.at(std::clamp(level, 0, int(m_customMips.size()) - 1));
+}
+
+int Brush::customTipLevelFor(int outputPx) const
+{
+    // The highest level whose decimation does not exceed the stamp's:
+    // maxDim >= outputPx << (lod + 1) keeps the chosen level at or above
+    // the output resolution. Integer arithmetic, mirrored by the shaders.
+    if (m_customMips.size() <= 1 || outputPx < 1)
+        return 0;
+    const int maxDim = std::max(m_customShape.width(), m_customShape.height());
+    int lod = 0;
+    while (lod + 1 < m_customMips.size() && lod < 24
+           && maxDim >= (outputPx << (lod + 1)))
+        ++lod;
+    return lod;
+}
+
+void Brush::setTextureJitter(qreal amount)
+{
+    m_textureJitter = std::clamp(amount, 0.0, 0.5);
 }
 
 const QImage &Brush::shape() const

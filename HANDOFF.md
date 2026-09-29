@@ -485,6 +485,15 @@ phases (2026-08-08):
    presets render byte-identical. The divergence entry above still stands
    as engine-quality work; imported brushes with static angle/roundness on
    hard-edged tips are now the likeliest place a user meets it.
+   THE FIX EXISTS (2026-09-26, E1 of the Painting stamp pass): with
+   per-brush AREA tip sampling (`Brush::setTipSampling(Area)` - a CPU-
+   built mip chain sampled at exactly the decimation factor on both
+   paths) the hard-edged 30-degree non-square case drops from 182/255 to
+   1/255, 0.000% bad pixels. NOT extended beyond the Painting brushes by
+   the user's decision: switching an approved brush to Area re-opens its
+   calibration (the pencil / Drawing / Inking tunings were hand-verified
+   under point sampling). If the divergence ever matters for a specific
+   brush, Area sampling on that brush is the available fix.
 
 ## New Project dialog (Figma 350:24) — deferred items
 
@@ -3141,24 +3150,33 @@ TWO FINDINGS RECORDED AT THE USER'S DIRECTION:
   scans were probed pixel-level before use: corners 0, marks bright -
   correct convention, nothing inverted. A dark-on-white scan loaded as
   a tip renders INVERTED; check polarity before blaming the engine.
-- HARDNESS IS INERT WITH A CUSTOM TIP: the procedural falloff is the
-  ONLY consumer of hardness/effectiveHardness in tip rendering, so
-  every custom-tip brush's hardness value does nothing at render time.
-  The pencil recipes KEEP their hardness ladder values with an INERT
-  comment at each site (the user's rule: never leave a number that
-  reads as meaningful when it is not). Edge character for stamp tips
-  comes from the stamp itself plus Noise.
+- HARDNESS WAS INERT WITH A CUSTOM TIP until E3 (2026-09-26, the
+  Painting stamp pass): the procedural falloff was the only consumer of
+  hardness in tip rendering. **Hardness is LIVE on custom tips now** -
+  a static hardness below 0.999 multiplies the sampled tip by the
+  procedural falloff on the extent-normalised radius; 1.0 is the
+  identity. Every stamped built-in that carried an inert value was
+  swept to 1.0 in the same commit (pencils, Drawing, Inking, Artistic,
+  Wet Flat, the Bristle secondary) and proved byte-identical by the
+  47-line render dump; the codec migrates pre-v12 custom-tip presets
+  to 1.0 on load, so user files and ABR imports do not change either.
+  Edge character for a stamp still comes first from the stamp; E3 is
+  the rim a hard-edged scan lacks (Round Brush is the case).
 - TILT ELONGATION IS INERT WITH A CUSTOM TIP TOO (2026-09-04, Drawing
   batch two): Graphite Block stroke width measured 39 / 39 / 38 px with
   tilt off / on-flat / on-tilted 0.8. Two instances is a pattern -
   **levers that go dead with a custom tip: hardness, tilt elongation**
   (both consumed only by the procedural tip path). Kept at the site
-  with INERT comments like hardness. Levers that stay LIVE with a
-  custom tip, measured: flow, opacity, spacing, size curve, scatter
-  (perpendicular/along/count + its pressure curve), size/angle/
-  roundness jitter, grain (preset/depth/contrast/scale), noise.
-  Whoever adds the next custom-tip brush: check this list before
-  tuning a dead lever.
+  with INERT comments. Since E3/E4 (2026-09-26) the dead list is
+  **tilt elongation only**: hardness is live (above), and the explicit
+  tip roundness/angle settings act on custom tips (E4: Flat Brush and
+  Palette Knife are bars made from blob scans by roundness 0.4 / 0.10).
+  Levers that stay LIVE with a custom tip, measured: flow, opacity,
+  spacing, size curve, scatter (perpendicular/along/count + its
+  pressure curve), size/angle/roundness jitter, grain (preset/depth/
+  contrast/scale), noise, hardness (E3), roundness/angle (E4), texture
+  jitter (E2), tip sampling (E1). Whoever adds the next custom-tip
+  brush: check this list before tuning a dead lever.
 
 ASSETS: pencil_4h_tip.png (822 KB), pencil_2b_tip.png (915 KB),
 pencil_6b_tip.png (799 KB) - 2.5 MB this batch, projecting ~7.5 MB for
@@ -3581,7 +3599,9 @@ on square tips, present on the untouched engine. It is the class the
 stamp.frag comments already name (fixed-point sampler weights vs
 double bilinear); smooth tips (every shipped scan) agree at 1/255.
 Recorded, not fixed; the seam asserts < 0.5% bad pixels for the hard
-case so the class stays visible.
+case so the class stays visible. (Fixed for Area-sampled brushes by E1
+on 2026-09-26: 182/255 -> 1/255 on the same case; kept Point elsewhere
+by decision - see the divergence entry in the open items.)
 
 **Deltas, measured, NOT compensated (user draws and decides):**
 | Brush | before (p0.5 / p1.0 / spread / ends) | after |

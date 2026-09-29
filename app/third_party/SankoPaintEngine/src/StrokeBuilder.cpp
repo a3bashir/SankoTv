@@ -751,9 +751,28 @@ QImage StrokeBuilder::shapedTipForStamp(const StrokeStamp &stamp) const
     // lookup, which now matches the shader's texel-center convention on
     // the same pixels. shape() and its bucket cache still serve the
     // procedural branch's per-stamp call unchanged.
+    const int outputSize = std::clamp(qRound(stamp.effectiveSize), 1, 5000);
+    // E1: Area sampling reads the mip level at or above the output
+    // resolution; Point reads the full image (byte-identical to pre-E1).
+    const bool areaSampling = m_brush.hasCustomShape()
+        && m_brush.tipSampling() == Brush::TipSampling::Area;
     const QImage &baseTip = m_brush.hasCustomShape()
-        ? m_brush.customShape()
+        ? (areaSampling
+               ? m_brush.customTipLevel(m_brush.customTipLevelFor(outputSize))
+               : m_brush.customShape())
         : m_brush.shape(stamp.effectiveSize, stamp.effectiveHardness);
+    // E2: per-stamp read offset, seeded from the stamp's noise seed (the
+    // shaders derive the identical value from the same hash). 0 -> +0.0,
+    // exact, so a jitter-free brush renders byte-identical.
+    const qreal jitterAmount = m_brush.textureJitter();
+    const qreal jitterU = jitterAmount > 0.0
+        ? jitterAmount * noiseSigned(stamp.noiseSeed, 7, 11) : 0.0;
+    const qreal jitterV = jitterAmount > 0.0
+        ? jitterAmount * noiseSigned(stamp.noiseSeed, 13, 17) : 0.0;
+    // E3: the procedural falloff on a custom tip, on the extent-normalised
+    // radius; gated on the STATIC brush hardness (1.0 = identity at every
+    // pressure), then driven by the per-stamp effective hardness.
+    const bool hardnessLive = m_brush.customTipHardnessLive();
     // ASPECT (2026-09-04): a custom image occupies the tip-local rectangle
     // |local| <= extent (Brush::customTipExtent - longer axis = 1), not
     // the whole unit square, so non-square scans are no longer stretched
@@ -783,7 +802,6 @@ QImage StrokeBuilder::shapedTipForStamp(const StrokeStamp &stamp) const
     const qreal sine = std::sin(angle);
     const qreal flipSignX = m_brush.tipFlipX() ? -1.0 : 1.0;
     const qreal flipSignY = m_brush.tipFlipY() ? -1.0 : 1.0;
-    const int outputSize = std::clamp(qRound(stamp.effectiveSize), 1, 5000);
     QImage output(outputSize, outputSize, QImage::Format_Grayscale8);
     output.fill(0);
 
@@ -827,8 +845,18 @@ QImage StrokeBuilder::shapedTipForStamp(const StrokeStamp &stamp) const
                 // "flip the tip, then rotate". Distance is sign-blind, so
                 // the procedural falloff below needs nothing.
                 coverage = customSample(
-                    flipSignX * transformedX / extentX * .5 + .5,
-                    flipSignY * transformedY / extentY * .5 + .5);
+                    flipSignX * transformedX / extentX * .5 + .5 + jitterU,
+                    flipSignY * transformedY / extentY * .5 + .5 + jitterV);
+                if (hardnessLive && stamp.effectiveHardness < .999) {
+                    const qreal rim = std::hypot(transformedX / extentX,
+                                                 transformedY / extentY);
+                    if (rim > stamp.effectiveHardness) {
+                        const qreal t = (rim - stamp.effectiveHardness)
+                            / qMax(1.0 - stamp.effectiveHardness, .001);
+                        coverage *= t >= 1.0
+                            ? 0.0 : std::exp(-3.0 * t * t) * (1.0 - t);
+                    }
+                }
             } else if (stamp.effectiveHardness >= .999 || distance <= stamp.effectiveHardness) {
                 coverage = 1.0;
             } else {

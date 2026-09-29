@@ -63,10 +63,13 @@ struct ColorInstanceData {
     float noiseSeedLo, noiseSeedHi, noiseAmount, noisePad; // see InstanceData
 };
 
-QImage tipTexture(const Brush &brush)
+QImage tipTexture(const Brush &brush, int level = 0)
 {
+    // level > 0 selects Brush's own 2x2 box mip (E1); the GPU never
+    // generates its own mips for tips, so both renderers read the same
+    // texels at every level.
     const QImage mask = brush.hasCustomShape()
-        ? brush.customShape().convertToFormat(QImage::Format_Grayscale8)
+        ? brush.customTipLevel(level).convertToFormat(QImage::Format_Grayscale8)
         : QImage(1, 1, QImage::Format_Grayscale8);
     QImage source = mask;
     if (!brush.hasCustomShape()) source.fill(255);
@@ -89,6 +92,33 @@ QImage tipTexture(const Brush &brush)
             output[x] = qRgba(input[x], input[x], input[x], 255);
     }
     return rgba;
+}
+
+// All tip levels, for one upload description (E1).
+QRhiTextureUploadDescription tipUploadDescription(const Brush &brush)
+{
+    QVarLengthArray<QRhiTextureUploadEntry, 16> entries;
+    const int levels = brush.hasCustomShape()
+        ? std::max(1, brush.customTipLevelCount()) : 1;
+    for (int level = 0; level < levels; ++level)
+        entries.append(QRhiTextureUploadEntry(
+            0, level, QRhiTextureSubresourceUploadDescription(tipTexture(brush, level))));
+    QRhiTextureUploadDescription description;
+    description.setEntries(entries.begin(), entries.end());
+    return description;
+}
+
+// The E1/E2/E3 uniform tail shared by both stamp pipelines: texture
+// jitter, hardness-live flag, area flag, level count.
+void writeTipUniformTail(QByteArray &uniforms, int offset, const Brush &brush)
+{
+    *reinterpret_cast<float *>(uniforms.data() + offset) = float(brush.textureJitter());
+    *reinterpret_cast<qint32 *>(uniforms.data() + offset + 4) =
+        brush.customTipHardnessLive() ? 1 : 0;
+    *reinterpret_cast<qint32 *>(uniforms.data() + offset + 8) =
+        (brush.hasCustomShape() && brush.tipSampling() == Brush::TipSampling::Area) ? 1 : 0;
+    *reinterpret_cast<qint32 *>(uniforms.data() + offset + 12) =
+        brush.hasCustomShape() ? std::max(1, brush.customTipLevelCount()) : 1;
 }
 
 QImage grainTexture(const Brush &brush)
@@ -212,6 +242,7 @@ GpuStampRenderer::~GpuStampRenderer()
     delete m_linearClampSampler;
     delete m_linearRepeatSampler;
     delete m_nearestClampSampler;
+    delete m_tipSampler;
 }
 
 QRhiSampler *GpuStampRenderer::linearClampSampler()
@@ -223,6 +254,21 @@ QRhiSampler *GpuStampRenderer::linearClampSampler()
         m_linearClampSampler->create();
     }
     return m_linearClampSampler;
+}
+
+// The tip sampler (E1, 2026-09-26): linear within a level, NEAREST between
+// levels, so textureLod(..., float(lod)) reads exactly the integer level
+// the CPU chose - never a blend toward a blurrier one. At lod 0 this is
+// the pre-E1 linear clamp read, texel for texel.
+QRhiSampler *GpuStampRenderer::tipSampler()
+{
+    if (!m_tipSampler) {
+        m_tipSampler = m_rhi->newSampler(
+            QRhiSampler::Linear, QRhiSampler::Linear, QRhiSampler::Nearest,
+            QRhiSampler::ClampToEdge, QRhiSampler::ClampToEdge);
+        m_tipSampler->create();
+    }
+    return m_tipSampler;
 }
 
 QRhiSampler *GpuStampRenderer::linearRepeatSampler()
@@ -706,7 +752,7 @@ GpuStampRenderer::Result GpuStampRenderer::renderStrokeInternal(
     instanceBuffer->create();
     result.instanceBufferBytes = totalInstances * int(sizeof(InstanceData));
     std::unique_ptr<QRhiBuffer> uniformBuffer(m_rhi->newBuffer(
-        QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, 96));
+        QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, 112));
     uniformBuffer->create();
 
     // The flip state is part of the texture identity: a flipped upload must
@@ -721,7 +767,9 @@ GpuStampRenderer::Result GpuStampRenderer::renderStrokeInternal(
     QImage tip;
     if (uploadTip) {
         tip = tipTexture(brush);
-        tipTextureGpu = m_rhi->newTexture(QRhiTexture::RGBA8, tip.size());
+        // MipMapped: the levels are Brush's own (E1), uploaded below.
+        tipTextureGpu = m_rhi->newTexture(QRhiTexture::RGBA8, tip.size(), 1,
+                                          QRhiTexture::MipMapped);
         if (!tipTextureGpu->create()) {
             delete tipTextureGpu;
             m_rhi->endOffscreenFrame();
@@ -730,7 +778,7 @@ GpuStampRenderer::Result GpuStampRenderer::renderStrokeInternal(
         }
         m_tipTexturesGpu.insert(tipKey, tipTextureGpu);
     }
-    QRhiSampler *sampler = linearClampSampler();
+    QRhiSampler *sampler = tipSampler();
     QRhiSampler *grainSampler = linearRepeatSampler();
     const QImage grain = grainTexture(brush);
     const quint64 grainKey = !brush.hasGrain()
@@ -856,7 +904,7 @@ GpuStampRenderer::Result GpuStampRenderer::renderStrokeInternal(
 
     phase.restart();
     QMatrix4x4 clip = m_rhi->clipSpaceCorrMatrix();
-    QByteArray uniforms(96, 0);
+    QByteArray uniforms(112, 0);
     memcpy(uniforms.data(), clip.constData(), 64);
     *reinterpret_cast<qint32 *>(uniforms.data() + 64) = brush.hasCustomShape() ? 1 : 0;
     *reinterpret_cast<qint32 *>(uniforms.data() + 68) = accumulateFlow ? 1 : 0;
@@ -869,11 +917,12 @@ GpuStampRenderer::Result GpuStampRenderer::renderStrokeInternal(
         tipExtent[0] = float(extent.width());
         tipExtent[1] = float(extent.height());
     }
+    writeTipUniformTail(uniforms, 88, brush); // E1/E2/E3, offsets 88..100
     QRhiResourceUpdateBatch *initialUpdates = m_rhi->nextResourceUpdateBatch();
     initialUpdates->uploadStaticBuffer(vertexBuffer.get(), quad);
     initialUpdates->uploadStaticBuffer(instanceBuffer.get(), flattenedInstances.constData());
     if (uploadTip)
-        initialUpdates->uploadTexture(tipTextureGpu, tip);
+        initialUpdates->uploadTexture(tipTextureGpu, tipUploadDescription(brush));
     if (uploadGrain)
         initialUpdates->uploadTexture(grainTextureGpu, grain);
     initialUpdates->updateDynamicBuffer(uniformBuffer.get(), 0, uniforms.size(), uniforms.constData());
@@ -1194,7 +1243,7 @@ GpuStampRenderer::Result GpuStampRenderer::renderColorStrokeInternal(
         qMax(1, result.stampInstances) * int(sizeof(ColorInstanceData))));
     instanceBuffer->create();
     std::unique_ptr<QRhiBuffer> uniformBuffer(m_rhi->newBuffer(
-        QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, 80));
+        QRhiBuffer::Dynamic, QRhiBuffer::UniformBuffer, 96));
     uniformBuffer->create();
     // The flip state is part of the texture identity: a flipped upload must
     // never be served for the unflipped brush (or vice versa).
@@ -1208,7 +1257,8 @@ GpuStampRenderer::Result GpuStampRenderer::renderColorStrokeInternal(
     QImage tip;
     if (uploadTip) {
         tip = tipTexture(brush);
-        tipTextureGpu = m_rhi->newTexture(QRhiTexture::RGBA8, tip.size());
+        tipTextureGpu = m_rhi->newTexture(QRhiTexture::RGBA8, tip.size(), 1,
+                                          QRhiTexture::MipMapped);
         if (!tipTextureGpu->create()) {
             delete tipTextureGpu;
             m_rhi->endOffscreenFrame();
@@ -1235,9 +1285,12 @@ GpuStampRenderer::Result GpuStampRenderer::renderColorStrokeInternal(
         QRhiShaderResourceBinding::uniformBuffer(
             0, QRhiShaderResourceBinding::VertexStage | QRhiShaderResourceBinding::FragmentStage,
             uniformBuffer.get()),
+        // The tip binds the clamp+mip tip sampler (E1); it used to share the
+        // grain's REPEAT sampler, harmless while uv stayed inside [0,1] but
+        // wrong once E2 jitter can push a read past the edge (the CPU clamps).
         QRhiShaderResourceBinding::sampledTexture(
             1, QRhiShaderResourceBinding::FragmentStage,
-            tipTextureGpu, dynamicsSampler),
+            tipTextureGpu, tipSampler()),
         QRhiShaderResourceBinding::sampledTexture(
             2, QRhiShaderResourceBinding::FragmentStage,
             grainTextureGpu, dynamicsSampler)});
@@ -1315,7 +1368,7 @@ GpuStampRenderer::Result GpuStampRenderer::renderColorStrokeInternal(
 
     phase.restart();
     QMatrix4x4 clip = m_rhi->clipSpaceCorrMatrix();
-    QByteArray uniforms(80, 0);
+    QByteArray uniforms(96, 0);
     memcpy(uniforms.data(), clip.constData(), 64);
     *reinterpret_cast<qint32 *>(uniforms.data() + 64) = brush.hasCustomShape() ? 1 : 0;
     *reinterpret_cast<qint32 *>(uniforms.data() + 68) =
@@ -1327,11 +1380,12 @@ GpuStampRenderer::Result GpuStampRenderer::renderColorStrokeInternal(
         tipExtent[0] = float(extent.width());
         tipExtent[1] = float(extent.height());
     }
+    writeTipUniformTail(uniforms, 80, brush); // E1/E2/E3, offsets 80..92
     QRhiResourceUpdateBatch *updates = m_rhi->nextResourceUpdateBatch();
     updates->uploadStaticBuffer(vertexBuffer.get(), quad);
     updates->uploadStaticBuffer(instanceBuffer.get(), flattened.constData());
     if (uploadTip)
-        updates->uploadTexture(tipTextureGpu, tip);
+        updates->uploadTexture(tipTextureGpu, tipUploadDescription(brush));
     if (uploadGrain)
         updates->uploadTexture(grainTextureGpu, grain);
     updates->updateDynamicBuffer(uniformBuffer.get(), 0, uniforms.size(), uniforms.constData());
