@@ -4456,6 +4456,29 @@ THE PENCILS WERE MEASURED FOR "25".**
   Pinned in Lifecycle (o): right after a retune the row is pending, the
   answer lands, the measuring thread is not the UI thread, and the
   number moved with the engine size untouched.
+- THE PENCILS, APPLIED (2026-09-30, the user's choices): H 25 -> 31 and
+  2H 25 -> 29 (option A: draw 25, read 24), 4H 25 -> 27 (draws 26, reads
+  26 - no integer size draws 25), 2B 25 -> 27, 4B 25 -> 26, Blue 25 -> 27,
+  Charcoal 25 -> 26 (each draws 25, reads 25), 6B and Mechanical stay at
+  25 (already 25/25). HB STAYS AT 36 by the user's ruling: it was never
+  part of the 25 px family - 36 was set when the variation was promoted
+  and the 25 px pass left it alone; it reads "27", which is honest.
+  MEASURED AGAINST THE APPROVED CHARACTER (seam_pencilcharacter_20260930
+  .cpp: the archived pencil-probe metrics at old vs new size, plus each
+  grade's deposit ratio to 6B at 0.3 / 0.5 / 1.0 pressure; Debug ==
+  Release): everything within 5% EXCEPT the MID-pressure deposit of the
+  two soft grades - size re-opened it, as the 2026-08-30 rule says:
+    2B  13.3 / 26.9 / 84.8 -> 14.2 / 31.2 / 84.3 (+16% at half pressure;
+        ratio to 6B 0.66 -> 0.77), build x2.70 -> x2.64, spread 28 -> 33
+    4B  10.5 / 20.9 / 64.9 -> 10.1 / 23.6 / 64.8 (+13% at half pressure;
+        ratio to 6B 0.52 -> 0.58), spread 32 -> 34
+  Light and full pressure are within 7% / 1% on both, so the ladder's
+  ends hold; the middle of the soft end darkened a step. H light +6%,
+  Charcoal light -5%, everything else within 3%. Reported, NOT re-tuned:
+  the user decides whether 2B's half-pressure deposit is to be brought
+  back (flow 0.22 is its build lever). Pins did not move: the preview
+  and eraser swatches render at min(size, 16), and every pencil is
+  above 16 before and after.
 - TWO CATCHES ON THE WAY, both by the gate, both fixed:
   1. Lifecycle (m) showed the library row a pixel below the bar: the row
      computed "size x ratio" on its own and dropped the new offset. Now

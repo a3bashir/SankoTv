@@ -357,7 +357,12 @@ QVector<BrushPreset> builtinRoster()
         // applied family-wide: deeper AND finer tooth than the v1 table).
         b.setCustomShape(
             QImage(QStringLiteral(":/brushes/pencil_h_tip.png")));
-        b.setSize(25); // family default (2026-08-30)
+        // 25 -> 31 (2026-09-30, user-approved): the engine size that DRAWS
+        // 25 px (the scan's border made 25 draw 21). Reads "24" on the
+        // bar - 32 would read 25 but draw 26; the user chose the drawn
+        // width. Deposit at 0.3/0.5/1.0 pressure moved 18.1/35.0/79.5 ->
+        // 19.2/34.7/80.5 (light +6%, the rest within 1%).
+        b.setSize(31);
         b.setHardness(1.0); // 1.0 = identity; hardness is LIVE on custom tips since E3 (2026-09-26)
         b.setOpacity(0.48);
         // v3 treatment scaled from the 4H diagnosis (Paper cannot tooth;
@@ -380,7 +385,10 @@ QVector<BrushPreset> builtinRoster()
         // the batch-one verdict, sitting between 4H and H.
         b.setCustomShape(
             QImage(QStringLiteral(":/brushes/pencil_2h_tip.png")));
-        b.setSize(25); // family default (2026-08-30)
+        // 25 -> 29 (2026-09-30, user-approved): draws 25 px, reads "24"
+        // (30 would read 25 but draw 26). Deposit 12.6/24.9/64.2 ->
+        // 12.3/25.7/64.2: within 3%.
+        b.setSize(29);
         b.setHardness(1.0); // 1.0 = identity; hardness is LIVE on custom tips since E3 (2026-09-26)
         b.setOpacity(0.38);
         // v3 treatment scaled from the 4H diagnosis (Paper cannot tooth;
@@ -403,7 +411,10 @@ QVector<BrushPreset> builtinRoster()
         // assets rule. Tuning v1 - iteration with the user expected.
         b.setCustomShape(
             QImage(QStringLiteral(":/brushes/pencil_4h_tip.png")));
-        b.setSize(25); // v2: the user's chosen default across the family
+        // 25 -> 27 (2026-09-30, user-approved): no integer size draws 25
+        // here (26 draws 24, 27 draws 26); 27 is the honest one (draws 26,
+        // reads 26). Deposit 10.5/20.8/51.0 -> 10.6/20.8/51.2: unchanged.
+        b.setSize(27);
         b.setHardness(1.0); // 1.0 = identity (E3: hardness LIVE on custom tips since 2026-09-26); the falloff only
                              // shapes PROCEDURAL tips. Kept as the grade
                              // ladder's record; edge character now comes
@@ -438,9 +449,14 @@ QVector<BrushPreset> builtinRoster()
         // the user's scanned 2B stamp. Tuning v1 - iteration expected.
         b.setCustomShape(
             QImage(QStringLiteral(":/brushes/pencil_2b_tip.png")));
-        b.setSize(25); // v2: size only - the feel passed hand-testing
-                       // as-is ("feels good") and is the soft-end
-                       // calibration reference the others move around
+        // 25 -> 27 (2026-09-30, user-approved): draws 25 px, reads 25.
+        // v2 had size 25 only - the feel passed hand-testing as-is
+        // ("feels good") and is the soft-end calibration reference the
+        // others move around. NOTE the size re-opened its MID-pressure
+        // deposit: 0.3/0.5/1.0 = 13.3/26.9/84.8 -> 14.2/31.2/84.3, i.e.
+        // +16% at half pressure (ratio to 6B 0.66 -> 0.77); light and
+        // full within 7% / 1%. Reported to the user, not re-tuned.
+        b.setSize(27);
         b.setHardness(1.0); // 1.0 = identity; hardness is LIVE on custom tips since E3 (2026-09-26)
         b.setOpacity(0.70);  // mid-dark ceiling: darker than HB's 0.55,
                              // well short of 6B
@@ -461,7 +477,11 @@ QVector<BrushPreset> builtinRoster()
         // opacity-floor progression 0.25/0.32/0.40 across 2B/4B/6B.
         b.setCustomShape(
             QImage(QStringLiteral(":/brushes/pencil_4b_tip.png")));
-        b.setSize(25); // family default (2026-08-30)
+        // 25 -> 26 (2026-09-30, user-approved): draws 25 px, reads 25.
+        // Mid-pressure deposit moved with the size: 10.5/20.9/64.9 ->
+        // 10.1/23.6/64.8 (+13% at half pressure, ratio to 6B 0.52 ->
+        // 0.58); light and full within 4% / 1%. Reported, not re-tuned.
+        b.setSize(26);
         b.setHardness(1.0); // 1.0 = identity; hardness is LIVE on custom tips since E3 (2026-09-26)
         b.setOpacity(0.85);
         b.setFlow(0.20);
@@ -546,7 +566,9 @@ QVector<BrushPreset> builtinRoster()
         // texture the intent asks for. Unchanged from the v1 table.
         b.setCustomShape(
             QImage(QStringLiteral(":/brushes/pencil_blue_tip.png")));
-        b.setSize(25); // family default (2026-08-30)
+        // 25 -> 27 (2026-09-30, user-approved): draws 25 px, reads 25.
+        // Deposit 18.2/35.1/87.8 -> 18.2/35.1/88.9: unchanged.
+        b.setSize(27);
         b.setHardness(1.0); // 1.0 = identity; hardness is LIVE on custom tips since E3 (2026-09-26)
         b.setOpacity(0.45);
         b.setFlow(0.30);
@@ -567,8 +589,12 @@ QVector<BrushPreset> builtinRoster()
         // matches v2 6B (charcoal bites dark immediately).
         b.setCustomShape(
             QImage(QStringLiteral(":/brushes/pencil_charcoal_tip.png")));
-        b.setSize(25); // family default (2026-08-30); Ch/6B deposit
-                       // ratios re-measured at this size - see HANDOFF
+        // 25 -> 26 (2026-09-30, user-approved): draws 25 px, reads 25.
+        // The Ch/6B deposit ratios were re-measured at 25 on 2026-08-30
+        // (HANDOFF); at 26: 0.3/0.5/1.0 = 19.7/39.9/109.2 -> 18.7/39.2/
+        // 109.5 (light -5%, ratio to 6B 0.73 -> 0.70; mid and full
+        // within 2%).
+        b.setSize(26);
         b.setHardness(1.0); // 1.0 = identity; hardness is LIVE on custom tips since E3 (2026-09-26)
         b.setOpacity(0.92);
         // v2 (MEASURED, 2026-08-30, "should be darker"): the stamp
