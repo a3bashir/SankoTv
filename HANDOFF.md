@@ -4243,6 +4243,230 @@ Options, for the user's decision once Painting is done (NOT taken now):
 Either way the pins move and the seam is the before/after width table
 at 20/60/120/286 for every stamped brush. Until then: the per-brush
 ratios above are the record; recipes were tuned at their drawn width.
+**SUPERSEDED 2026-09-29: neither option was taken - see the next entry.**
+
+## THE SIZE NUMBER: investigation, decisions, and the DISPLAY-SIZE LAYER (2026-09-29)
+
+The user's requirement: the displayed brush size corresponds as closely
+as practical to the VISIBLE stroke width, across all categories. The
+investigation measured first and changed nothing (probe and both tables
+archived: seam_sizeprobe_20260929.cpp, _builtins.txt, _library.txt;
+Debug == Release exactly).
+
+**DEFINITION (approved).** Visible width = the width ACROSS THE PATH of
+a straight, FULL-PRESSURE stroke, at the tip's BROAD heading, where the
+stroke's average coverage is at least 10% OF THAT STROKE'S OWN PEAK.
+- 10% of own peak, not an absolute alpha: an absolute threshold shrinks
+  low-opacity brushes (Soft Wash peaks at 46/255 and measured NARROWER
+  at a fixed 8/255 than at 10% of peak). 50% halves soft brushes (Large
+  Airbrush 0.50 at 50%, 0.77 at 10%). Hard brushes agree at every
+  threshold.
+- Broad side: how physical tools are named. Heading-driven tips have one
+  width in every direction; the question only exists for fixed angles.
+- Full pressure: the only pressure-independent anchor. Deeply tapered
+  brushes usually draw about half (Brush Pen 7 of 14, Gouache 8 of 14,
+  Dry Ink 3 of 11 at half pressure).
+
+**THREE CAUSES, measured on all 62 built-ins (ratio = width / number):**
+1. the scan's empty border (pencils 0.75-0.96, most of Painting);
+2. soft falloff - every soft PROCEDURAL brush sits near 0.85 (the
+   watercolours 0.80-0.88, Large Airbrush 0.77, Smudge Soft 0.86), so it
+   was never a stamp-only problem;
+3. a heading-driven tip whose SHORT axis lies across the path (Acrylic
+   and Oil Paint 0.47-0.50) and the knife's squash (0.38-0.42).
+Per brush the ratio holds to ~0.03 across size above ~20 px. The worst
+cases: Round Brush 0.59-0.65, Flat 0.68-0.71, Gouache 0.78, HB 0.73-0.75,
+H 0.78-0.80. Scatter brushes are 1.9-3.5 (the envelope, not the mark).
+
+**DECISIONS (the user's, 2026-09-29):**
+1. The definition above.
+2. SCATTER BRUSHES ARE EXCLUDED - their number means droplet size:
+   Splatter, Stipple, Confetti, Sparkle, Spatter Wash, and the user's
+   Calligraphy Copy. Rule as built: a brush WITH scatter whose measured
+   ratio exceeds 1.25 (the Drawing brushes carry scatter too and sit at
+   0.92-1.13, so "has scatter" alone would be the wrong test; Dynamic
+   Stroke's 1.25 is size jitter, not scatter, and stays in).
+3. THE DISPLAY LAYER. Engine, shaders and assets untouched. Cropping the
+   scans was ruled out as modifying the user's stamp files (bytes,
+   dimensions, content pins, and the mark's position under the pen all
+   change); engine normalisation by ink extent was ruled out because it
+   fixes only cause 1, cannot be made exact under an integer size, and
+   touches the CPU sampler, both shaders and both previews.
+4. TICKS BECOME DISPLAY NUMBERS: a tick labelled 120 draws 120 px on
+   every brush. The user has two (brush 120, eraser 40); the one-time
+   change in what they draw on a stamped brush is accepted.
+5. PENCILS - the choice arrived UNFILLED. Built under the non-destructive
+   reading: the pencils KEEP their approved widths and get honest, uneven
+   labels (the "family default 25" was never uniform: they draw 20-24).
+   Resizing so they all draw 25 is a recipe change to approved brushes
+   and is the user's to order.
+
+**STALENESS - the design, because remembered state has gone stale in
+this project three times.** NOTHING IS REMEMBERED. The ratio is not a
+preset field and is not stored in any preset file: it is a pure function
+of the brush, `BrushWidthRatio::ratioFor(brush)`, and every cache is
+CONTENT-ADDRESSED:
+- KEY = SHA-256 over the codec's own serialisation of the brush
+  (`BrushPresetCodec::settingsHash`) after normalising only what the
+  number must not depend on: size -> the reference, colour -> black. The
+  codec's visitor walks every field, the tip and grain image bytes
+  included, so ANY retune, promotion, override, re-scan or import change
+  produces a different key, and a codec version bump re-keys everything.
+  The measurement's own revision is part of the cache path.
+- INVALIDATION = there is none to perform. A changed brush is a different
+  key; the old entry is simply never asked for again (pruned by age).
+  There is no "ratio of preset X" anywhere to go stale - only "ratio of
+  these bytes".
+- Two tiers: a process-wide memory map, and a disk tier inside the
+  preview renderer's cache root (so tests inherit its scratch override
+  and the real cache is never written by a test).
+The permanent test pins both directions: the key MUST move on a
+render-affecting edit (with a positive control that the ratio really
+changes) and must NOT move on size or colour.
+
+**WHERE THE RATIO IS WRONG, and what the label does there.** One ratio
+per brush, measured at a reference size, is applied at every size; it
+cannot follow the two small-size effects:
+- under ~8 px one pixel of antialiasing dominates (Fine Liner at "2"
+  draws 3, Technical Pen at "4" draws 5);
+- a sparse stamp breaks up when small (Ink Line & Splatter 0.63 at 8
+  against 0.91 at 120).
+The labels at those sizes are recorded with the build below. They are
+ACCEPTED as they stand, not special-cased: a second, size-dependent
+correction would make the slider non-linear and would be one more
+remembered table to go stale, to fix an error of 1-2 px.
+
+**THE BUILD (2026-09-29, uncommitted until the user says so).**
+- `src/brushlib/BrushWidthRatio.{h,cpp}` (new): `key`, `measure`,
+  `ratioFor` (memory -> disk -> measure), `cached`, `displaySize`,
+  `engineSize`. Measurement (as first built; see the 2026-09-30 entry
+  for the affine model that replaced the single proportion): a 280 px
+  full-pressure stroke with the central 120 px sampled, ONE heading when
+  the width cannot depend on it (heading-driven angle, or a round
+  procedural tip) and EIGHT otherwise, broad side wins. At one reference
+  size (64) Release measured mean 54 ms per brush, worst 252 (Grease
+  Pencil); Debug 188 / 835; two sizes (24 + 88) cost ~1.75x that.
+- The preview worker measures the ratio with the swatch and reports it
+  first (`widthRatioReady`); its disk tier is `widths-r1/` under the
+  renderer's own cache root. Only the MEASUREMENT is stored on disk; the
+  exclusion is recomputed from the brush every time, so a rule change
+  cannot be outvoted by an old file.
+- Size CTL bar (StoryboardPage): the slider value, the pill and the
+  ticks are DISPLAY numbers. The per-tool `size` that is persisted stays
+  the ENGINE size under the same settings key, so what the user had set
+  draws exactly as before (their stored brush 101 and eraser 40 are
+  engine sizes and stay so; only the number shown for them changed). The
+  bar's opacity multiplier is divided back out before the ratio is asked
+  for, so moving opacity never moves the size label and never causes a
+  measurement.
+- DEFAULT EXACTLY REACHABLE: asking for a preset's own label gives the
+  engine exactly the preset's size (5 of 62 defaults would otherwise miss
+  by a pixel of engine size through rounding).
+- Library rows print the visible width; a row whose ratio is not known
+  yet stays BLANK rather than showing the engine size.
+- Studio, General > Size: shows and accepts the visible width of the
+  session brush; the preset stores the engine size. Scope B (the dual
+  secondary) stays in engine px - its size is a ratio to the primary.
+- NOT touched: the engine, both shaders, every asset, the codec (no new
+  field, no version bump), DrawingCanvas (its slots stay engine-valued,
+  so SankoCanvasBrushLock guards exactly what it did).
+
+**LABELS, measured (62 built-ins; engine -> label / drawn; the FINAL
+affine model of 2026-09-30):** every label is within 1 px of the drawn
+width at the default except Studio Pen (8 -> "8", draws 10) and Ink
+Bleed (10 -> "9", draws 11); at engine 120 every label is within 5 px.
+HB Pencil 36 -> 27; H 25 -> 20; 2H 21; 2B / Blue 23; 4H / 4B / Charcoal
+24; 6B / Mechanical 25; Round Brush 20 -> 13; Flat 24 -> 16; Filbert /
+Bristle 22 -> 18; Dry Brush 20 -> 16; Gouache 18 -> 14; Acrylic 20 -> 10;
+Oil Paint 22 -> 10; Chalk 30 -> 34; Charcoal Stick 35 -> 37; Marker 18 ->
+18; Ink Line & Splatter 8 -> 6 (draws 6 - the offset fixed the earlier
+"7").
+THE SMALL-SIZE CASES the user asked about: **Fine Liner at 2 is labelled
+2 and draws 3**; Technical Pen 4 -> "4", draws 5; Studio Pen 8 -> "8",
+draws 10 (the antialiased fringe of a hairline is a whole pixel the
+model's ~1 px offset cannot fully carry at 2-8 px); **Ink Line & Splatter
+at 8 is labelled 6 and draws 6**. Accepted as they stand.
+The user's nine saved presets (read-only listing; their files are
+untouched and draw as before): HB Pencil Variation 4 -> 3 (0.750), soft
+and soft Copy 261 -> 228 (0.875), CaptainSinbad_Line and its Copy Copy
+65 -> 63 (0.969), CaptainSinbad_Line Copy 65 -> 65, Swoosh 40 -> 40,
+Swoosh Copy 23 -> 23, Calligraphy Copy EXCLUDED (measured 1.328).
+A tick of 120 now asks the engine for 120 / ratio: 160 on HB Pencil
+Variation, 137 on soft, 202 on Round Brush.
+
+**GATE.** No render pin moved: preview 54844931, eraser 18d1a203, canvas
+locks 666f7b45 / cafcec7f, erase baseline 0bc24381, (b12) untouched.
+Permanent checks added: BrushLibraryTest (w1)-(w6) - label vs an
+INDEPENDENT measurement at the actual size for every built-in, with the
+controls that the comparison can fail (the OLD engine-size label fails
+it on Round Brush, Acrylic and HB Pencil) and that the measurement sees
+a known width; the exclusion set and its controls; the key in both
+directions incl. one changed tip pixel; the default round trip; the disk
+tier incl. garbage; the worker's signal. ProjectLifecycle: (j) drives
+the real bar for every non-dual, non-smudge built-in (engine untouched
+on selection, bar == label, tick 120 -> engine 120/ratio, own label ->
+exact default, opacity multiplier causes no measurement), (m) the
+library row's label and an excluded row, (o) the studio's Size row incl.
+the staleness case (a retuned rim moves the number with the engine size
+untouched). Totals: BrushLibrary 172, Lifecycle 243 (after the
+2026-09-30 additions below). Seam archived as
+seam_sizelabel_20260929.cpp (+ _labels.txt, _library.txt), both configs
+identical. BrushLibraryTest now takes ~85 s in Release and ~4 min in
+Debug: (w1) draws 912 long strokes.
+
+**KNOWN LIMITS, accepted or open:**
+- A preset click whose row the worker has not measured yet measures on
+  the UI thread once (mean ~90 ms Release, worst ~450; the studio no
+  longer does - see below).
+- The slope is exact to 1/64 (widths are whole pixels, 64 px apart).
+
+**2026-09-30: THE MODEL BECAME AFFINE, THE STUDIO WENT OFF-THREAD, AND
+THE PENCILS WERE MEASURED FOR "25".**
+- WHY AFFINE. The user ordered the pencils resized so each "genuinely
+  draws 25 px wide and its label reads 25". Under one proportion
+  measured at 64 the two could not both hold: a stroke carries a
+  constant antialiased fringe (~1 px), so r x S read a pixel LOW at
+  25 while being right at 120 (9 of 10 pencils: draws 25 -> label 24).
+  Now display = ratio x engine + offset, from two count-based widths at
+  24 and 88 px (the slope from 64 px apart, the intercept is the
+  fringe). Tried and rejected on the way: fractional boundary pixels
+  (a fringe pixel counted 0.3 where the eye and the definition count it
+  whole - every label a pixel or two low), and references 32/96 (three
+  pencils still a pixel off). With 24/88, seven of ten pencils hit both
+  conditions exactly; H, 2H and 4H cannot, because engine sizes are
+  integers: H 31 draws 25 / reads 24, 32 draws 26 / reads 25; 2H 29
+  draws 25 / 24, 30 draws 26 / 25; 4H 26 draws 24 / reads 25, 27 draws
+  26 / 26. Reported to the user, NOT applied: the choice is theirs.
+  The other seven: HB 36 -> 33, 2B 25 -> 27, 4B 25 -> 26, 6B stays 25,
+  Mechanical stays 25, Blue 25 -> 27, Charcoal 25 -> 26 (each draws 25,
+  reads 25). Every non-pencil label moved by at most 1 px under the new
+  model; (w1) holds with the same tolerance (worst: Dynamic Stroke at
+  120, label 152, draws 147).
+- THE STUDIO NO LONGER MEASURES ON THE UI THREAD. `BrushWidthMeasurer`
+  (in BrushWidthRatio.{h,cpp}): a low-priority worker with a one-deep
+  queue - request() replaces any older queued state (its answer would be
+  stale on arrival), the one in flight completes and reports through
+  `ready(key, ratio)` on the studio's thread. The studio keeps the LAST
+  ratio for the session (m_sizeRatio / m_sizeRatioKey); `sizeRatioNow()`
+  is its only reader: same key -> use it; a key the memory tier knows
+  (the library worker measured it) -> take it, no hop; otherwise ask the
+  measurer, show "… px" on the Size row, keep converting with the last
+  ratio so the slider still works, and let `onWidthRatioReady` restore
+  the number - only if the answer is for the brush AS IT NOW STANDS.
+  Pinned in Lifecycle (o): right after a retune the row is pending, the
+  answer lands, the measuring thread is not the UI thread, and the
+  number moved with the engine size untouched.
+- TWO CATCHES ON THE WAY, both by the gate, both fixed:
+  1. Lifecycle (m) showed the library row a pixel below the bar: the row
+     computed "size x ratio" on its own and dropped the new offset. Now
+     there is ONE conversion path (`displaySizeWith`) and the worker's
+     signal carries the whole WidthRatio.
+  2. The disk tier under widths-r2 still held entries from the two
+     intermediate models tried under the same revision - the exact
+     staleness this design exists to prevent, caused by moving the model
+     without bumping. Fixed twice over: revision 3, AND every entry now
+     names the reference sizes it measured ("24 88 w24 w88") and is
+     refused when they differ from the model's; (w5) pins the refusal.
 
 ## METHOD: measure interior structure ACROSS THE SIZE RANGE before calling it character (2026-09-25)
 

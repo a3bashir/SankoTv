@@ -58,6 +58,7 @@
 #include "SankoSettings.h"
 #include "BrushPresetCodec.h"
 #include "BrushPreviewRenderer.h"
+#include "BrushWidthRatio.h"
 #include "BuiltinRoster.h"
 #include "SankoPaintHostAdapter.h"
 
@@ -73,8 +74,10 @@
 #include <QTextStream>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <memory>
+#include <vector>
 
 #ifdef Q_OS_WIN
 #define PSAPI_VERSION 2
@@ -204,6 +207,69 @@ quint64 peakWorkingSetMb()
         return pmc.PeakWorkingSetSize / (1024 * 1024);
 #endif
     return 0;
+}
+
+// (w) THE DISPLAY-SIZE LAYER: the visible width of a full-pressure stroke
+// at the ACTUAL size, measured HERE, independently of BrushWidthRatio (own
+// stroke, own profile, eight headings, 600 px sampled): the width across
+// the path, broad heading, at 10% of the stroke's own peak - the approved
+// definition. The label under test comes from ONE ratio measured at the
+// reference size; this is what it has to agree with.
+double independentVisibleWidth(const ::Brush &brush, int size)
+{
+    ::Brush b = brush;
+    b.setSize(size);
+    b.setEraseMode(false);
+    // qMax, not std::max: <windows.h> above defines max as a macro.
+    const int span = qMax(24, int(size * 1.6));
+    const int side = 1200 + 2 * span + 40;
+    const QPointF centre(side / 2.0, side / 2.0);
+    double broad = 0.0;
+    for (int k = 0; k < 8; ++k) {
+        const double theta = k * 3.14159265358979323846 / 8.0;
+        const QPointF along(std::cos(theta), std::sin(theta));
+        const QPointF across(-std::sin(theta), std::cos(theta));
+        ::Brush copy = b;
+        StrokeBuilder sb(QSize(side, side), copy, true);
+        for (int i = 0; i <= 240; ++i) {
+            StrokePoint p;
+            p.position = centre + along * (-600.0 + i * 5.0);
+            p.pressure = 1.0;
+            p.timestamp = quint64(i * 5);
+            sb.addRawPoint(p);
+        }
+        const QImage mask = sb.strokeMask();
+        std::vector<double> profile(2 * span + 1, 0.0);
+        int samples = 0;
+        for (int s = -300; s <= 300; s += 2) {
+            ++samples;
+            for (int t = -span; t <= span; ++t) {
+                const QPointF p =
+                    centre + along * double(s) + across * double(t);
+                const int x = qRound(p.x());
+                const int y = qRound(p.y());
+                if (x >= 0 && y >= 0 && x < side && y < side)
+                    profile[t + span] += mask.constScanLine(y)[x];
+            }
+        }
+        double peak = 0.0;
+        for (double &v : profile) {
+            v /= samples;
+            peak = qMax(peak, v);
+        }
+        int first = -1;
+        int last = -1;
+        for (int i = 0; i <= 2 * span; ++i) {
+            if (peak > 0.0 && profile[i] >= 0.1 * peak) {
+                if (first < 0)
+                    first = i;
+                last = i;
+            }
+        }
+        if (first >= 0)
+            broad = qMax(broad, double(last - first + 1));
+    }
+    return broad;
 }
 
 quint64 workingSetMb()
@@ -1631,6 +1697,368 @@ int main(int argc, char **argv)
         check(QStringLiteral(
                   "(p7) shutdown mid-generation: no hang, no crash"),
               true);
+    }
+
+    // ---- (w) THE DISPLAY-SIZE LAYER --------------------------------------
+    // The bar, the library rows and the studio show the VISIBLE WIDTH
+    // (display = engine x ratio); the engine keeps its own size. These
+    // checks are what keeps the number honest when a recipe is retuned:
+    // (w1) fails the day a label stops matching what the brush draws, and
+    // (w3) fails the day a changed brush could be answered from an old
+    // measurement. HANDOFF "THE SIZE NUMBER".
+    {
+        using brushlib::BrushWidthRatio;
+        using brushlib::WidthRatio;
+        BrushWidthRatio::clearMemoryCacheForTest();
+        const QVector<BrushPreset> all = brushlib::builtinRoster();
+        auto byName = [&](const char *name) {
+            for (const BrushPreset &p : all)
+                if (p.name == QLatin1String(name))
+                    return p.brush;
+            return ::Brush();
+        };
+
+        // (w1) label vs drawn width, every built-in, default and 120.
+        // Tolerance max(2 px, 8%): ONE ratio serves every size, so under
+        // ~8 px (one pixel of antialiasing) and on a sparse stamp drawn
+        // small the label can be 1-2 px off - accepted, see HANDOFF.
+        bool honest = true;
+        bool defaultsReachable = true;
+        QString firstDishonest;
+        QString firstUnreachable;
+        QStringList excluded;
+        double worstPx = 0.0;
+        QString worstName;
+        ts << nl << "== (w) DISPLAY SIZE: engine -> label / drawn ==" << nl;
+        for (const BrushPreset &p : all) {
+            const WidthRatio r = BrushWidthRatio::ratioFor(p.brush);
+            const int engine = p.brush.size();
+            const int label = BrushWidthRatio::displaySize(p.brush, engine);
+            if (BrushWidthRatio::engineSize(p.brush, label, engine)
+                != engine) {
+                defaultsReachable = false;
+                if (firstUnreachable.isEmpty())
+                    firstUnreachable = p.id;
+            }
+            if (r.excluded) {
+                excluded << p.name;
+                ts << p.id << "  engine " << engine << "  EXCLUDED (measured "
+                   << r.measured << "): the number is the droplet size"
+                   << nl;
+                if (label != engine) {
+                    honest = false;
+                    if (firstDishonest.isEmpty())
+                        firstDishonest = p.id + QStringLiteral(" (excluded, "
+                                                               "but relabelled)");
+                }
+                continue;
+            }
+            for (int size : {engine, 120}) {
+                const int shown = BrushWidthRatio::displaySize(p.brush, size);
+                const double drawn = independentVisibleWidth(p.brush, size);
+                const double off = std::abs(shown - drawn);
+                ts << p.id << "  engine " << size << "  label " << shown
+                   << "  draws " << drawn << "  ratio " << r.ratio << nl;
+                if (off > worstPx) {
+                    worstPx = off;
+                    worstName = QStringLiteral("%1 @%2: label %3 draws %4")
+                                    .arg(p.id).arg(size).arg(shown).arg(drawn);
+                }
+                if (off > qMax(2.0, 0.08 * drawn)) {
+                    honest = false;
+                    if (firstDishonest.isEmpty())
+                        firstDishonest =
+                            QStringLiteral("%1 @%2: label %3 draws %4")
+                                .arg(p.id).arg(size).arg(shown).arg(drawn);
+                }
+            }
+        }
+        check(QStringLiteral("(w1) every built-in's size LABEL matches the "
+                             "width it draws, at its default and at 120 "
+                             "(max(2 px, 8%))"),
+              honest,
+              honest ? QStringLiteral("worst: %1").arg(worstName)
+                     : firstDishonest);
+        check(QStringLiteral("(w1) control: the independent measurement sees "
+                             "a KNOWN width (a hard round 100 draws 100-101)"),
+              [&] {
+                  ::Brush hard;
+                  hard.setHardness(1.0);
+                  hard.setSpacing(0.05);
+                  const double w = independentVisibleWidth(hard, 100);
+                  return w >= 100.0 && w <= 101.0;
+              }());
+        check(QStringLiteral("(w1) control: a brush that draws narrower than "
+                             "its engine size IS relabelled (Round Brush "
+                             "ratio < 0.75)"),
+              BrushWidthRatio::ratioFor(byName("Round Brush")).ratio < 0.75);
+        {
+            // The comparison above CAN fail: the OLD label - the engine
+            // size itself - fails it on the brushes that started this.
+            bool oldLabelFails = true;
+            for (const char *name : {"Round Brush", "Acrylic", "HB Pencil"}) {
+                const ::Brush b = byName(name);
+                const double drawn = independentVisibleWidth(b, b.size());
+                oldLabelFails = oldLabelFails
+                    && std::abs(b.size() - drawn) > qMax(2.0, 0.08 * drawn);
+            }
+            check(QStringLiteral("(w1) control: the OLD label (the engine "
+                                 "size) FAILS this same comparison for "
+                                 "Round Brush, Acrylic and HB Pencil"),
+                  oldLabelFails);
+        }
+
+        // (w2) the exclusion: scatter-envelope brushes keep the droplet
+        // size as their number.
+        check(QStringLiteral("(w2) excluded built-ins are exactly Splatter, "
+                             "Stipple, Confetti, Sparkle, Spatter Wash"),
+              excluded == QStringList({QStringLiteral("Splatter"),
+                                       QStringLiteral("Stipple"),
+                                       QStringLiteral("Confetti"),
+                                       QStringLiteral("Sparkle"),
+                                       QStringLiteral("Spatter Wash")}),
+              excluded.join(QStringLiteral(", ")));
+        {
+            bool controls = true;
+            for (const char *name :
+                 {"Chalk", "Soft Pastel", "Charcoal Stick", "Sepia"}) {
+                const ::Brush b = byName(name);
+                controls = controls
+                    && (b.scatterPerpendicular() > 0.0
+                        || b.scatterAlong() > 0.0)
+                    && !BrushWidthRatio::ratioFor(b).excluded;
+            }
+            check(QStringLiteral("(w2) control: the Drawing brushes that "
+                                 "scatter are NOT excluded (has-scatter "
+                                 "alone is the wrong test)"),
+                  controls);
+        }
+
+        // (w3) STALENESS: nothing is remembered but content-addressed
+        // entries. The key must move on any edit that can change the mark
+        // and must not move on what the number is independent of.
+        {
+            const ::Brush base = byName("HB Pencil");
+            const QByteArray k0 = BrushWidthRatio::key(base);
+            bool unmoved = true;
+            { ::Brush b = base; b.setSize(137);
+              unmoved = unmoved && BrushWidthRatio::key(b) == k0; }
+            { ::Brush b = base; b.setColor(QColor(200, 30, 30));
+              unmoved = unmoved && BrushWidthRatio::key(b) == k0; }
+            { ::Brush b = base; b.setEraseMode(true);
+              unmoved = unmoved && BrushWidthRatio::key(b) == k0; }
+            check(QStringLiteral("(w3) the key does NOT move with size, "
+                                 "colour or eraseMode"),
+                  unmoved);
+            QStringList stuck;
+            auto moved = [&](const char *what, const ::Brush &b) {
+                if (BrushWidthRatio::key(b) == k0)
+                    stuck << QLatin1String(what);
+            };
+            { ::Brush b = base; b.setHardness(0.5); moved("hardness", b); }
+            { ::Brush b = base; b.setSpacing(base.spacing() * 1.5);
+              moved("spacing", b); }
+            { ::Brush b = base; b.setTipRoundness(0.5);
+              moved("roundness", b); }
+            { ::Brush b = base; b.setTipAngle(base.tipAngle() + 30.0);
+              moved("tip angle", b); }
+            { ::Brush b = base; b.setOpacity(base.opacity() * 0.5);
+              moved("opacity", b); }
+            { ::Brush b = base; b.setFlow(base.flow() * 0.5);
+              moved("flow", b); }
+            { ::Brush b = base; b.setScatterPerpendicular(0.4);
+              moved("scatter", b); }
+            { ::Brush b = base; b.setTextureJitter(0.05);
+              moved("texture jitter", b); }
+            { ::Brush b = base;
+              b.setTipSampling(::Brush::TipSampling::Area);
+              moved("tip sampling", b); }
+            { ::Brush b = base;
+              b.sizePressureCurve().setControlPoints(
+                  {QPointF(0.0, 0.3), QPointF(1.0, 0.8)});
+              moved("size pressure curve", b); }
+            { ::Brush b = base;
+              b.setCustomShape(byName("4H Pencil").customShape());
+              moved("a different tip image", b); }
+            {
+                ::Brush b = base;
+                QImage tip = base.customShape()
+                                 .convertToFormat(QImage::Format_Grayscale8)
+                                 .copy();
+                const int px = tip.width() / 2;
+                const int py = tip.height() / 2;
+                const uchar before = tip.constScanLine(py)[px];
+                tip.scanLine(py)[px] = uchar(before ^ 0x80);
+                b.setCustomShape(tip);
+                const uchar after =
+                    b.customShape()
+                        .convertToFormat(QImage::Format_Grayscale8)
+                        .constScanLine(py)[px];
+                check(QStringLiteral("(w3) control: the one-pixel tip edit "
+                                     "really landed in the brush"),
+                      after != before);
+                moved("ONE changed pixel of the tip image", b);
+            }
+            check(QStringLiteral("(w3) the key MOVES on every "
+                                 "render-affecting edit (a retuned, "
+                                 "promoted or re-scanned brush can never "
+                                 "be answered from an old measurement)"),
+                  stuck.isEmpty(),
+                  stuck.join(QStringLiteral(", ")));
+            ::Brush soft = byName("Large Airbrush");
+            ::Brush hard = soft;
+            hard.setHardness(1.0);
+            const double softRatio = BrushWidthRatio::measure(soft).measured;
+            const double hardRatio = BrushWidthRatio::measure(hard).measured;
+            check(QStringLiteral("(w3) control: the measurement FOLLOWS the "
+                                 "brush (hardening Large Airbrush widens "
+                                 "its ratio)"),
+                  hardRatio > softRatio + 0.1,
+                  QStringLiteral("%1 -> %2").arg(softRatio).arg(hardRatio));
+        }
+
+        // (w4) an approved default is always reachable from its own label.
+        check(QStringLiteral("(w4) every built-in's own label gives the "
+                             "engine EXACTLY its default size back"),
+              defaultsReachable, firstUnreachable);
+        {
+            // and away from the default the conversion is the plain one
+            const ::Brush round = byName("Round Brush");
+            const WidthRatio r = BrushWidthRatio::ratioFor(round);
+            const int engine =
+                BrushWidthRatio::engineSize(round, 120, round.size());
+            check(QStringLiteral("(w4) a tick of 120 on Round Brush asks "
+                                 "the engine for (120 - offset) / ratio, "
+                                 "and that draws 120 (max(2 px, 8%))"),
+                  engine == BrushWidthRatio::engineSizeWith(r, 120)
+                      && engine > 120
+                      && std::abs(independentVisibleWidth(round, engine)
+                                  - 120.0) <= 9.6,
+                  QStringLiteral("engine %1 draws %2")
+                      .arg(engine)
+                      .arg(independentVisibleWidth(round, engine)));
+        }
+
+        // (w5) the disk tier: in the renderer's cache root (scratch here),
+        // named by the key, never trusted over the brush.
+        {
+            const QString root = scratch + QStringLiteral("_width");
+            QDir(root).removeRecursively();
+            QDir().mkpath(root);
+            const ::Brush b = byName("Gouache");
+            BrushWidthRatio::clearMemoryCacheForTest();
+            const int m0 = BrushWidthRatio::measureCountForTest();
+            const WidthRatio first = BrushWidthRatio::ratioFor(b, root);
+            const QString dir = root + QStringLiteral("/widths-r%1")
+                                           .arg(BrushWidthRatio::kRevision);
+            const QStringList written =
+                QDir(dir).entryList({QStringLiteral("*.txt")}, QDir::Files);
+            check(QStringLiteral("(w5) first ask measures and writes ONE "
+                                 "entry, named by the key"),
+                  BrushWidthRatio::measureCountForTest() == m0 + 1
+                      && written.size() == 1
+                      && written.first()
+                             == QString::fromLatin1(
+                                    BrushWidthRatio::key(b).toHex())
+                                    + QStringLiteral(".txt"));
+            BrushWidthRatio::clearMemoryCacheForTest();
+            check(QStringLiteral("(w5) memory cleared: the DISK tier "
+                                 "answers without measuring, same value"),
+                  BrushWidthRatio::ratioFor(b, root).measured
+                          == first.measured
+                      && BrushWidthRatio::measureCountForTest() == m0 + 1);
+            ::Brush retuned = b;
+            retuned.setHardness(0.4);
+            BrushWidthRatio::clearMemoryCacheForTest();
+            BrushWidthRatio::ratioFor(retuned, root);
+            check(QStringLiteral("(w5) a RETUNED brush measures afresh and "
+                                 "gets its own entry (the old one is never "
+                                 "consulted)"),
+                  BrushWidthRatio::measureCountForTest() == m0 + 2
+                      && QDir(dir).entryList({QStringLiteral("*.txt")},
+                                             QDir::Files).size() == 2);
+            if (!written.isEmpty()) {
+                QFile f(dir + QLatin1Char('/') + written.first());
+                if (f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+                    f.write("not a number");
+            }
+            BrushWidthRatio::clearMemoryCacheForTest();
+            check(QStringLiteral("(w5) GARBAGE on disk is ignored and "
+                                 "re-measured to the same value"),
+                  BrushWidthRatio::ratioFor(b, root).measured
+                          == first.measured
+                      && BrushWidthRatio::measureCountForTest() == m0 + 3);
+            // An entry measured under OTHER reference sizes - the case that
+            // put stale labels on the library rows when the model moved
+            // without a revision bump - is refused by its own header.
+            if (!written.isEmpty()) {
+                QFile f(dir + QLatin1Char('/') + written.first());
+                if (f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+                    f.write("32 96 30.5 92.5");
+            }
+            BrushWidthRatio::clearMemoryCacheForTest();
+            check(QStringLiteral("(w5) an entry that names OTHER reference "
+                                 "sizes is refused and re-measured"),
+                  BrushWidthRatio::ratioFor(b, root).measured
+                          == first.measured
+                      && BrushWidthRatio::measureCountForTest() == m0 + 4);
+            check(QStringLiteral("(w5) cleanup: the scratch width cache is "
+                                 "gone"),
+                  QDir(root).removeRecursively() && !QDir(root).exists());
+        }
+
+        // (w6) the renderer reports the ratio with the swatch, from its
+        // own (scratch) cache root.
+        {
+            const QString root = scratch + QStringLiteral("_widthsig");
+            QDir(root).removeRecursively();
+            BrushWidthRatio::clearMemoryCacheForTest();
+            double reported = -1.0;
+            double reportedOffset = -99.0;
+            bool reportedExcluded = false;
+            bool swatchAfterRatio = false;
+            {
+                BrushPreviewRenderer renderer(root);
+                QObject::connect(
+                    &renderer, &BrushPreviewRenderer::widthRatioReady, &app,
+                    [&](const QString &, const WidthRatio &r) {
+                        reported = r.ratio;
+                        reportedOffset = r.offset;
+                        reportedExcluded = r.excluded;
+                    });
+                QObject::connect(&renderer,
+                                 &BrushPreviewRenderer::previewReady, &app,
+                                 [&](const QString &, const QImage &) {
+                                     swatchAfterRatio = reported > 0.0;
+                                 });
+                renderer.requestPreview(QStringLiteral("w6"),
+                                        byName("Round Brush"));
+                QElapsedTimer guard;
+                guard.start();
+                while (!swatchAfterRatio && guard.elapsed() < 8000)
+                    QCoreApplication::processEvents(QEventLoop::AllEvents,
+                                                    5);
+            }
+            check(QStringLiteral("(w6) the preview worker reports the width "
+                                 "ratio BEFORE the swatch, equal to the "
+                                 "function's own answer"),
+                  swatchAfterRatio && !reportedExcluded
+                      && reported
+                             == BrushWidthRatio::ratioFor(
+                                    byName("Round Brush")).ratio
+                      && reportedOffset
+                             == BrushWidthRatio::ratioFor(
+                                    byName("Round Brush")).offset,
+                  QStringLiteral("reported %1 + %2").arg(reported)
+                      .arg(reportedOffset));
+            check(QStringLiteral("(w6) ...and its disk entry lives under "
+                                 "the renderer's own root"),
+                  QDir(root + QStringLiteral("/widths-r%1")
+                                  .arg(BrushWidthRatio::kRevision))
+                          .entryList({QStringLiteral("*.txt")}, QDir::Files)
+                          .size() == 1);
+            QDir(root).removeRecursively();
+        }
     }
 
     // ---- numbers ---------------------------------------------------------

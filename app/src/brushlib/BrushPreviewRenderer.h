@@ -1,6 +1,7 @@
 #pragma once
 
 #include "BrushPreset.h"
+#include "BrushWidthRatio.h"
 
 #include <QImage>
 #include <QMutex>
@@ -77,8 +78,19 @@ public:
     // Test hook: the thread the last render actually ran on.
     QThread *lastRenderThread() const { return m_lastRenderThread; }
 
+    // The root the disk tiers live under (previews in r<N>/, the width
+    // ratios in widths-r<N>/): the SAME scratch override serves both.
+    QString cacheRoot() const { return m_cacheRoot; }
+
 signals:
     void previewReady(const QString &presetId, const QImage &image);
+    // DISPLAY-SIZE LAYER (2026-09-29): the row's size label is the visible
+    // width, so the worker measures the brush's width ratio alongside the
+    // swatch (BrushWidthRatio - content-addressed, nothing remembered) and
+    // reports it first. excluded = a scatter-envelope brush, whose number
+    // is the droplet size.
+    void widthRatioReady(const QString &presetId,
+                         const brushlib::WidthRatio &ratio);
 
 private:
     struct Job

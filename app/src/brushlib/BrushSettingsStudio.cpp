@@ -3,6 +3,7 @@
 #include "BrushSettingsStudio.h"
 
 #include "BrushPresetCodec.h"
+#include "BrushWidthRatio.h"
 #include "ScratchCanvas.h"
 
 #include <QApplication>
@@ -224,6 +225,7 @@ BrushSettingsStudio::BrushSettingsStudio(BrushLibraryModel *model,
     : FloatingToolWindow(anchor, QString(), parent)
     , m_model(model)
 {
+    qRegisterMetaType<brushlib::WidthRatio>("brushlib::WidthRatio");
     setMouseTracking(true);
     // The studio is the modal-surface: while it is effectively visible the
     // machinery suppresses every other floating bar over the canvas. The
@@ -563,6 +565,78 @@ void BrushSettingsStudio::editSessionForTest(
     const std::function<void(::Brush &)> &fn, bool tipInvalidating)
 {
     applyInstant(fn, tipInvalidating);
+}
+
+double BrushSettingsStudio::sizeRowValueForTest() const
+{
+    return m_sizeRow ? m_sizeRow->value() : -1.0;
+}
+
+const WidthRatio &BrushSettingsStudio::sizeRatioNow()
+{
+    const QByteArray key = BrushWidthRatio::key(m_session);
+    if (key == m_sizeRatioKey && !m_sizeRowPending)
+        return m_sizeRatio;
+    WidthRatio known;
+    if (BrushWidthRatio::cached(m_session, &known)) {
+        // The library worker (or an earlier edit) already measured this
+        // exact brush: no thread hop needed.
+        m_sizeRatio = known;
+        m_sizeRatioKey = key;
+        if (m_sizeRowPending) {
+            m_sizeRowPending = false;
+            if (m_sizeRow)
+                m_sizeRow->setFormatter(fmtPixels);
+        }
+        return m_sizeRatio;
+    }
+    if (key != m_sizeRatioKey || !m_sizeRowPending) {
+        // A brush state nobody has measured: ask, show "… px" meanwhile,
+        // and keep converting with the last ratio so the slider still
+        // works. The number comes back through onWidthRatioReady.
+        if (!m_widthMeasurer) {
+            m_widthMeasurer = new BrushWidthMeasurer(this);
+            connect(m_widthMeasurer, &BrushWidthMeasurer::ready, this,
+                    &BrushSettingsStudio::onWidthRatioReady);
+        }
+        m_sizeRatioKey = key;
+        m_sizeRowPending = true;
+        if (m_sizeRow)
+            m_sizeRow->setFormatter(
+                [](double) { return QStringLiteral("… px"); });
+        m_widthMeasurer->request(m_session);
+    }
+    return m_sizeRatio;
+}
+
+void BrushSettingsStudio::onWidthRatioReady(const QByteArray &key,
+                                            const WidthRatio &ratio)
+{
+    // Only the answer for the brush AS IT NOW STANDS lands; an answer for
+    // an older state is dropped (its brush has a newer request in flight,
+    // or is already answered from the cache).
+    if (key != BrushWidthRatio::key(m_session))
+        return;
+    m_sizeRatio = ratio;
+    m_sizeRatioKey = key;
+    m_sizeRowPending = false;
+    if (m_sizeRow)
+        m_sizeRow->setFormatter(fmtPixels);
+    if (m_syncSizeRow) {
+        m_syncing = true;
+        m_syncSizeRow();
+        m_syncing = false;
+    }
+}
+
+void BrushSettingsStudio::sizeRowUserSetForTest(double displayValue)
+{
+    if (!m_sizeRow)
+        return;
+    const double before = m_sizeRow->value();
+    m_sizeRow->setValue(displayValue);
+    emit m_sizeRow->valueChanged(displayValue);           // the drag
+    emit m_sizeRow->valueCommitted(before, displayValue); // the release
 }
 
 void BrushSettingsStudio::restoreSessionBytes(const QByteArray &bytes)
@@ -1560,10 +1634,28 @@ QWidget *BrushSettingsStudio::buildGeneralSection()
 {
     QVBoxLayout *l = nullptr;
     QWidget *page = sectionPage(&l);
-    addSlider(l, QStringLiteral("Size"), 1.0, 5000.0,
-              [](const ::Brush &b) { return double(b.size()); },
-              [](::Brush &b, double v) { b.setSize(qRound(v)); }, fmtPixels,
-              true, 1.0, 3.0);
+    // DISPLAY-SIZE LAYER (2026-09-29): the row shows and accepts the
+    // VISIBLE width of the session brush; the preset stores the engine
+    // size, unchanged. The ratio is measured from the session itself
+    // (BrushWidthRatio - content-addressed), so the number follows every
+    // edit that changes the mark: commitGesture() ends in syncAll(), which
+    // re-reads this getter. Scope B edits the SECONDARY, whose size is a
+    // ratio to the primary and has no stroke width of its own: engine px.
+    m_sizeRow = addSlider(l, QStringLiteral("Size"), 1.0, 5000.0,
+              [this](const ::Brush &b) {
+                  return m_scopeB
+                      ? double(b.size())
+                      : double(BrushWidthRatio::displaySizeWith(
+                            sizeRatioNow(), b.size()));
+              },
+              [this](::Brush &b, double v) {
+                  b.setSize(m_scopeB
+                                ? qRound(v)
+                                : BrushWidthRatio::engineSizeWith(
+                                      sizeRatioNow(), qRound(v)));
+              },
+              fmtPixels, true, 1.0, 3.0);
+    m_syncSizeRow = m_syncers.last();
     addSlider(l, QStringLiteral("Opacity"), 0.0, 1.0,
               [](const ::Brush &b) { return b.opacity(); },
               [](::Brush &b, double v) { b.setOpacity(v); }, fmtPercent,

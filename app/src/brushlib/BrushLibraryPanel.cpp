@@ -3,6 +3,7 @@
 #include "SankoTheme.h"
 
 #include "BrushPresetCodec.h"
+#include "BrushWidthRatio.h"
 #include "SankoScrollBarStyle.h"
 
 #include <QApplication>
@@ -116,6 +117,10 @@ public:
         setFixedHeight(74);
         setCursor(Qt::PointingHandCursor);
         setMouseTracking(true);
+        WidthRatio known;
+        m_labelKnown = BrushWidthRatio::cached(preset->brush, &known);
+        m_labelPx = m_labelKnown
+            ? BrushWidthRatio::displaySizeWith(known, m_sizePx) : 0;
     }
     QString presetId() const { return m_id; }
     void setPreset(const BrushPreset *preset)
@@ -125,8 +130,27 @@ public:
         m_sizePx = preset->brush.size();
         m_smudge = preset->brush.smudgeActive();
         m_swatch = QPixmap();
+        // DISPLAY-SIZE LAYER: the label is the VISIBLE width, which needs
+        // the brush's width ratio. If this process already knows it, the
+        // label is right immediately; otherwise it stays BLANK until the
+        // worker reports (setWidthRatio) - never the engine size in the
+        // meantime, which is the number that was lying.
+        WidthRatio known;
+        m_labelKnown = BrushWidthRatio::cached(preset->brush, &known);
+        m_labelPx = m_labelKnown
+            ? BrushWidthRatio::displaySizeWith(known, m_sizePx) : 0;
         update();
     }
+    // ONE conversion path (displaySizeWith): the row must never compute
+    // its own "size x ratio" - it did once, dropped the fringe offset, and
+    // the gate caught a row a pixel below the bar.
+    void setWidthRatio(const WidthRatio &ratio)
+    {
+        m_labelKnown = true;
+        m_labelPx = BrushWidthRatio::displaySizeWith(ratio, m_sizePx);
+        update();
+    }
+    int labelPxForTest() const { return m_labelKnown ? m_labelPx : -1; }
     void setSelected(bool on)
     {
         if (m_selected != on) {
@@ -271,9 +295,10 @@ protected:
         p.setFont(sf);
         p.setPen(m_selected ? QColor(255, 255, 255, 200)
                             : QColor(0x99, 0x99, 0x99));
-        p.drawText(QRect(width() - 16 - sizeW - favW, 12, sizeW, 16),
-                   Qt::AlignVCenter | Qt::AlignRight,
-                   QStringLiteral("%1 px").arg(m_sizePx));
+        if (m_labelKnown)
+            p.drawText(QRect(width() - 16 - sizeW - favW, 12, sizeW, 16),
+                       Qt::AlignVCenter | Qt::AlignRight,
+                       QStringLiteral("%1 px").arg(m_labelPx));
         // Favourite dot: amber reads against BOTH the idle row and the
         // accent selection (distinct hues, verified in the seam).
         if (m_favourite) {
@@ -341,7 +366,9 @@ private:
 
     QString m_id;
     QString m_name;
-    int m_sizePx;
+    int m_sizePx;          // the preset's ENGINE size
+    int m_labelPx = 0;     // the VISIBLE width shown on the row
+    bool m_labelKnown = false;
     bool m_smudge;
     bool m_selected = false;
     bool m_favourite = false;
@@ -381,6 +408,20 @@ BrushLibraryPanel::BrushLibraryPanel(BrushLibraryModel *model,
                 for (BrushRow *row : m_brushRows)
                     if (row->presetId() == id)
                         row->setSwatch(image);
+            });
+    connect(&m_previews, &BrushPreviewRenderer::widthRatioReady, this,
+            [this](const QString &presetId, const WidthRatio &ratio) {
+                // Same scope routing as the swatch above.
+                const bool eraseVariant =
+                    presetId.endsWith(QStringLiteral("#erase"));
+                if (eraseVariant != (m_scope == ToolScope::Eraser))
+                    return;
+                QString id = presetId;
+                if (eraseVariant)
+                    id.chop(6);
+                for (BrushRow *row : m_brushRows)
+                    if (row->presetId() == id)
+                        row->setWidthRatio(ratio);
             });
     connect(m_model, &BrushLibraryModel::changed, this, [this] {
         updateImportedRow();
@@ -603,6 +644,14 @@ int BrushLibraryPanel::overrideMarkForTest(const QString &presetId) const
         if (row->presetId() == presetId)
             return row->overrideMark();
     return -1;
+}
+
+int BrushLibraryPanel::rowSizeLabelForTest(const QString &presetId) const
+{
+    for (BrushRow *row : m_brushRows)
+        if (row->presetId() == presetId)
+            return row->labelPxForTest();
+    return -2; // no such row
 }
 
 QStringList BrushLibraryPanel::visiblePresetIdsForTest() const

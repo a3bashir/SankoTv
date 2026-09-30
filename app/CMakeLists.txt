@@ -108,6 +108,8 @@ qt_add_executable(SankoTV
     src/brushlib/BrushLibraryModel.h
     src/brushlib/BrushPreviewRenderer.cpp
     src/brushlib/BrushPreviewRenderer.h
+    src/brushlib/BrushWidthRatio.cpp
+    src/brushlib/BrushWidthRatio.h
     src/brushlib/BrushImporter.h
     src/brushlib/AbrImporter.cpp
     src/brushlib/AbrImporter.h
@@ -166,6 +168,8 @@ qt_add_executable(SankoBrushLibraryTest
     src/brushlib/AbrImporter.h
     src/brushlib/BrushPreviewRenderer.cpp
     src/brushlib/BrushPreviewRenderer.h
+    src/brushlib/BrushWidthRatio.cpp
+    src/brushlib/BrushWidthRatio.h
     brush_assets.qrc
     tests/test_fixtures.qrc
 )

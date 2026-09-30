@@ -1,6 +1,7 @@
 #include "BrushPreviewRenderer.h"
 
 #include "BrushPresetCodec.h"
+#include "BrushWidthRatio.h"
 #include "SankoPaintHostAdapter.h"
 
 #include <QDateTime>
@@ -190,6 +191,7 @@ BrushPreviewRenderer::BrushPreviewRenderer(const QString &cacheRootOverride,
                                            QObject *parent)
     : QObject(parent)
 {
+    qRegisterMetaType<brushlib::WidthRatio>("brushlib::WidthRatio");
     m_cacheRoot = cacheRootOverride.isEmpty()
         ? QStandardPaths::writableLocation(QStandardPaths::CacheLocation)
             + QStringLiteral("/brushPreviews")
@@ -263,6 +265,8 @@ void BrushPreviewRenderer::workerLoop()
                 return;
             job = m_queue.dequeue();
         }
+        const WidthRatio width =
+            BrushWidthRatio::ratioFor(job.brush, m_cacheRoot);
         const QImage image = loadOrRender(job.brush);
         {
             QMutexLocker lock(&m_mutex);
@@ -275,6 +279,7 @@ void BrushPreviewRenderer::workerLoop()
                 continue;
         }
         m_lastRenderThread = QThread::currentThread();
+        emit widthRatioReady(job.presetId, width);
         emit previewReady(job.presetId, image);
     }
 }

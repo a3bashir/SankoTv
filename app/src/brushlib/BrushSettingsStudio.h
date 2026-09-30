@@ -3,6 +3,7 @@
 #include "FloatingToolWindow.h"
 
 #include "BrushLibraryModel.h"
+#include "BrushWidthRatio.h"
 #include "StudioControls.h"
 
 #include <QUndoStack>
@@ -91,6 +92,14 @@ public:
         return m_lastImportNoticeForTest;
     }
     void doneForTest() { doneClicked(); }
+    // DISPLAY-SIZE LAYER seams: what the Size row SHOWS (the visible
+    // width), the session's ENGINE size underneath it, and a user-style
+    // set that runs the row's own signals (so the conversion is the real
+    // one).
+    double sizeRowValueForTest() const;
+    int sessionEngineSizeForTest() const { return m_session.size(); }
+    void sizeRowUserSetForTest(double displayValue);
+    bool sizeRowPendingForTest() const { return m_sizeRowPending; }
 
 signals:
     void visibilityChanged(bool visible);
@@ -237,6 +246,19 @@ private:
     QWidget *m_canvasWidget = nullptr;
     QWidget *m_propsWidget = nullptr;
     QVector<std::function<void()>> m_syncers;
+    StudioSlider *m_sizeRow = nullptr; // General > Size (display numbers)
+    // DISPLAY-SIZE LAYER, OFF THE UI THREAD: the Size row converts with the
+    // ratio LAST REPORTED for the session (m_sizeRatio, valid for
+    // m_sizeRatioKey). When the session's key differs and no cache has it,
+    // the measurer is asked and the row shows "… px" until `ready` lands;
+    // the UI thread never measures. sizeRatioNow() is the only reader.
+    const WidthRatio &sizeRatioNow();
+    void onWidthRatioReady(const QByteArray &key, const WidthRatio &ratio);
+    BrushWidthMeasurer *m_widthMeasurer = nullptr; // created on first need
+    WidthRatio m_sizeRatio;
+    QByteArray m_sizeRatioKey;
+    bool m_sizeRowPending = false;
+    std::function<void()> m_syncSizeRow; // re-reads the row's value
     bool m_syncing = false; // silences control callbacks during syncAll
     QString m_lastImportNoticeForTest; // last cap/re-save notice shown
 

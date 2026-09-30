@@ -65,6 +65,20 @@ public:
     {
         return m_sizeCtlSizeForTest ? m_sizeCtlSizeForTest() : -1;
     }
+    // DISPLAY-SIZE LAYER: moves the bar the way the user does - the value
+    // is the DISPLAY number (visible width / a tick), and it runs the
+    // slider's own onChanged, so the engine conversion is the real one.
+    void sizeCtlUserSetSizeForTest(int displayValue)
+    {
+        if (m_sizeCtlUserSetSizeForTest)
+            m_sizeCtlUserSetSizeForTest(displayValue);
+    }
+    // Same, for the opacity MULTIPLIER slider (percent).
+    void sizeCtlUserSetOpacityForTest(int percent)
+    {
+        if (m_sizeCtlUserSetOpacityForTest)
+            m_sizeCtlUserSetOpacityForTest(percent);
+    }
 
     // Display the given scenes. Ownership stays with the caller (MainWindow);
     // this page only holds non-owning pointers.
@@ -426,6 +440,8 @@ private:
     QWidget *m_perspModToolbar = nullptr;
     std::function<void()> m_syncPerspective; // toolbar controls <- canvas model
     std::function<int()> m_sizeCtlSizeForTest; // reads the (file-local) slider
+    std::function<void(int)> m_sizeCtlUserSetSizeForTest; // user-style set
+    std::function<void(int)> m_sizeCtlUserSetOpacityForTest;
     std::function<int()> m_sizeCtlOpacityForTest; // the bar MULTIPLIER, %
     // Shapes panel (visible only while the Shapes tool is active).
     QWidget *m_shapesPanel = nullptr;

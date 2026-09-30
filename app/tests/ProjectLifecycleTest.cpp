@@ -48,6 +48,7 @@
 #include "brushlib/BrushLibraryModel.h"
 #include "brushlib/BrushPresetCodec.h"
 #include "brushlib/BrushSettingsStudio.h"
+#include "brushlib/BrushWidthRatio.h"
 #include "brushlib/BuiltinRoster.h"
 #include "StrokeBuilder.h"
 #include "NewProjectDialog.h"
@@ -58,6 +59,7 @@
 #include <QApplication>
 #include <QCryptographicHash>
 #include <QDir>
+#include <QThread>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QJsonDocument>
@@ -1020,6 +1022,78 @@ void runTipShapePreviewPass(const QString &scratch)
           !shown.isNull()
               && shown == engineTip(model->preset(id)->brush, shown.width()));
 
+    // DISPLAY-SIZE LAYER in the studio: the Size row shows the session
+    // brush's VISIBLE width; the preset keeps its engine size; the number
+    // FOLLOWS an edit that changes the mark (nothing remembered).
+    {
+        const ::Brush stock = model->preset(id)->brush;
+        const int label =
+            brushlib::BrushWidthRatio::displaySize(stock, stock.size());
+        check(QStringLiteral("(o) the studio's Size row shows Round Brush's "
+                             "visible width over its untouched engine size"),
+              qRound(studio->sizeRowValueForTest()) == label
+                  && label < stock.size()
+                  && studio->sessionEngineSizeForTest() == stock.size(),
+              QStringLiteral("row=%1 label=%2 engine=%3")
+                  .arg(studio->sizeRowValueForTest()).arg(label)
+                  .arg(studio->sessionEngineSizeForTest()));
+        studio->sizeRowUserSetForTest(60.0);
+        pump(50);
+        check(QStringLiteral("(o) setting the row to 60 stores the engine "
+                             "size that DRAWS 60 (60 / ratio)"),
+              studio->sessionEngineSizeForTest()
+                      == brushlib::BrushWidthRatio::engineSize(stock, 60)
+                  && studio->sessionEngineSizeForTest() > 60
+                  && qRound(studio->sizeRowValueForTest()) == 60,
+              QStringLiteral("engine=%1 row=%2")
+                  .arg(studio->sessionEngineSizeForTest())
+                  .arg(studio->sizeRowValueForTest()));
+        const int engineAt60 = studio->sessionEngineSizeForTest();
+        // Retune the rim: the engine size stays, the mark widens, and the
+        // row must say so without anyone telling it to - and WITHOUT the
+        // UI thread measuring: the row goes pending, the measurer answers
+        // from its own thread, the row updates when the answer lands.
+        brushlib::BrushWidthRatio::clearMemoryCacheForTest(); // force it
+        studio->editSessionForTest([](::Brush &b) { b.setHardness(1.0); },
+                                   true);
+        check(QStringLiteral("(o) OFF THE UI THREAD: right after the edit "
+                             "the row is PENDING (nothing measured here)"),
+              studio->sizeRowPendingForTest(),
+              QStringLiteral("pending=%1").arg(studio->sizeRowPendingForTest()));
+        QElapsedTimer settle;
+        settle.start();
+        while (studio->sizeRowPendingForTest() && settle.elapsed() < 15000)
+            pump(20);
+        check(QStringLiteral("(o) ...the answer lands and the row is no "
+                             "longer pending"),
+              !studio->sizeRowPendingForTest());
+        check(QStringLiteral("(o) ...measured on a thread that is NOT the "
+                             "UI thread"),
+              brushlib::BrushWidthRatio::lastMeasureThreadForTest()
+                      != nullptr
+                  && brushlib::BrushWidthRatio::lastMeasureThreadForTest()
+                      != QThread::currentThread());
+        check(QStringLiteral("(o) STALENESS: a retuned rim changes the "
+                             "row's number with the engine size untouched"),
+              studio->sessionEngineSizeForTest() == engineAt60
+                  && qRound(studio->sizeRowValueForTest()) != 60,
+              QStringLiteral("engine=%1 row=%2")
+                  .arg(studio->sessionEngineSizeForTest())
+                  .arg(studio->sizeRowValueForTest()));
+        // Put the session back exactly as the following checks expect it.
+        studio->editSessionForTest(
+            [stock](::Brush &b) {
+                b.setHardness(stock.hardness());
+                b.setSize(stock.size());
+            },
+            true);
+        pump(100);
+        check(QStringLiteral("(o) control: the session is the stock preset "
+                             "again, byte for byte"),
+              studio->sessionEngineSizeForTest() == stock.size()
+                  && studio->tipPreviewImageForTest() == shown);
+    }
+
     // Real time through the REAL edit path: a hardness edit lands in the
     // preview, and the identity holds at the new state too.
     studio->editSessionForTest([](::Brush &b) { b.setHardness(0.05); },
@@ -1748,9 +1822,16 @@ void runEraserLibraryPass(const QString &scratch)
           }());
     check(QStringLiteral("(m) activation did NOT touch the tool"),
           canvas->tool() == DrawingCanvas::Eraser);
-    check(QStringLiteral("(m) the bar mirrors eraser-Gouache"),
+    // DISPLAY-SIZE LAYER: the bar shows the eraser preset's VISIBLE width
+    // (the erase variant has the brush's footprint, so the same ratio).
+    check(QStringLiteral("(m) the bar mirrors eraser-Gouache (its visible "
+                         "width)"),
           page->sizeCtlDisplayedSizeForTest()
-              == canvas->eraserBrush().size());
+              == brushlib::BrushWidthRatio::displaySize(
+                     canvas->eraserBrush(), canvas->eraserBrush().size()),
+          QStringLiteral("bar=%1 engine=%2")
+              .arg(page->sizeCtlDisplayedSizeForTest())
+              .arg(canvas->eraserBrush().size()));
 
     // --- the category SURVIVES the scope flip now (shared sidebar) -------
     check(QStringLiteral("(m) control: Painting is selected"),
@@ -1778,6 +1859,52 @@ void runEraserLibraryPass(const QString &scratch)
                          "eraser-Gouache)"),
           canvas->eraserBrush().eraseMode()
               && canvas->eraserBrush().size() == gouache->brush.size());
+
+    // --- DISPLAY-SIZE LAYER: the library ROW's size label ----------------
+    // The row prints the VISIBLE width (the worker measures the ratio with
+    // the swatch); it used to print the engine size. Painting is showing.
+    {
+        QElapsedTimer wait;
+        wait.start();
+        const QString roundId = QStringLiteral("builtin/painting/round-brush");
+        while (panel->rowSizeLabelForTest(roundId) < 0
+               && wait.elapsed() < 15000)
+            pump(50);
+        const brushlib::BrushPreset *round = model->preset(roundId);
+        check(QStringLiteral("(m) control: the Round Brush row exists and "
+                             "has a label"),
+              round && panel->rowSizeLabelForTest(roundId) > 0,
+              QStringLiteral("label=%1")
+                  .arg(panel->rowSizeLabelForTest(roundId)));
+        if (round) {
+            check(QStringLiteral("(m) the library row shows Round Brush's "
+                                 "VISIBLE width, not its engine size"),
+                  panel->rowSizeLabelForTest(roundId)
+                          == brushlib::BrushWidthRatio::displaySize(
+                                 round->brush, round->brush.size())
+                      && panel->rowSizeLabelForTest(roundId)
+                             < round->brush.size(),
+                  QStringLiteral("row=%1 engine=%2")
+                      .arg(panel->rowSizeLabelForTest(roundId))
+                      .arg(round->brush.size()));
+        }
+        panel->selectCategoryForTest(QStringLiteral("Inking"));
+        const QString splatterId = QStringLiteral("builtin/inking/splatter");
+        wait.restart();
+        while (panel->rowSizeLabelForTest(splatterId) < 0
+               && wait.elapsed() < 15000)
+            pump(50);
+        const brushlib::BrushPreset *splatter = model->preset(splatterId);
+        check(QStringLiteral("(m) an EXCLUDED scatter brush keeps its "
+                             "droplet size as the row's number (Splatter)"),
+              splatter
+                  && panel->rowSizeLabelForTest(splatterId)
+                         == splatter->brush.size(),
+              QStringLiteral("row=%1").arg(
+                  panel->rowSizeLabelForTest(splatterId)));
+        panel->selectCategoryForTest(QStringLiteral("Painting"));
+        pump(100);
+    }
 
     window.markCleanForTest();
     window.close();
@@ -1888,13 +2015,27 @@ void runSizeCtlAgreementPass(const QString &scratch)
     smallPreset.setSize(152);
     canvas->setPaintBrush(smallPreset);
     pump(200);
-    check(QStringLiteral("(j) control: a 152 preset reaches the engine and "
-                         "the bar"),
+    // DISPLAY-SIZE LAYER (2026-09-29): the ENGINE holds the preset's size;
+    // the BAR shows that size's visible width (engine x the brush's width
+    // ratio). A default-constructed Brush is a SOFT round (hardness 0.75),
+    // so its label is below its engine size - which also makes this a
+    // control that the bar is not simply echoing the engine.
+    auto labelFor = [&](int engine) {
+        return brushlib::BrushWidthRatio::displaySize(canvas->paintBrush(),
+                                                      engine);
+    };
+    check(QStringLiteral("(j) control: a 152 preset reaches the engine, and "
+                         "the bar shows its visible width"),
           canvas->paintBrush().size() == 152
-              && page->sizeCtlDisplayedSizeForTest() == 152,
-          QStringLiteral("engine=%1 bar=%2")
+              && page->sizeCtlDisplayedSizeForTest() == labelFor(152),
+          QStringLiteral("engine=%1 bar=%2 label=%3")
               .arg(canvas->paintBrush().size())
-              .arg(page->sizeCtlDisplayedSizeForTest()));
+              .arg(page->sizeCtlDisplayedSizeForTest())
+              .arg(labelFor(152)));
+    check(QStringLiteral("(j) control: that soft brush's label is NOT its "
+                         "engine size (the bar is not echoing the engine)"),
+          labelFor(152) < 152 && labelFor(152) > 100,
+          QStringLiteral("label=%1").arg(labelFor(152)));
 
     // The library/studio path: a 5000 preset must land in the engine AND
     // on the bar. Before this pass the engine clamped it to 2048 and the
@@ -1906,9 +2047,13 @@ void runSizeCtlAgreementPass(const QString &scratch)
     check(QStringLiteral("(j) a 5000 preset lands in the ENGINE"),
           canvas->paintBrush().size() == 5000,
           QStringLiteral("engine=%1").arg(canvas->paintBrush().size()));
-    check(QStringLiteral("(j) ...and the BAR displays 5000, not a clamp"),
-          page->sizeCtlDisplayedSizeForTest() == 5000,
-          QStringLiteral("bar=%1").arg(page->sizeCtlDisplayedSizeForTest()));
+    check(QStringLiteral("(j) ...and the BAR displays its visible width, "
+                         "not a clamp (the old lie was 200)"),
+          page->sizeCtlDisplayedSizeForTest() == labelFor(5000)
+              && labelFor(5000) > 3000,
+          QStringLiteral("bar=%1 label=%2")
+              .arg(page->sizeCtlDisplayedSizeForTest())
+              .arg(labelFor(5000)));
 
     // The Size CTL path itself: the bar's own setter spans the range.
     canvas->setBrushToolSize(5000);
@@ -1931,11 +2076,117 @@ void runSizeCtlAgreementPass(const QString &scratch)
     pump(200);
     check(QStringLiteral("(j) back to Brush: 5000 SURVIVED the eraser "
                          "round-trip"),
-          page->sizeCtlDisplayedSizeForTest() == 5000
+          page->sizeCtlDisplayedSizeForTest() == labelFor(5000)
               && canvas->paintBrush().size() == 5000,
           QStringLiteral("bar=%1 engine=%2")
               .arg(page->sizeCtlDisplayedSizeForTest())
               .arg(canvas->paintBrush().size()));
+
+    // ---- THE DISPLAY-SIZE LAYER through the real bar ------------------
+    // Every built-in that is relabelled: selecting it leaves the ENGINE at
+    // the preset's own size (nothing the user approved draws differently)
+    // while the bar shows the visible width; moving the bar the way the
+    // user does sends the engine display / ratio; and the preset's own
+    // label gives the engine exactly the preset's size back.
+    {
+        const auto rosterW = brushlib::builtinRoster();
+        bool engineUntouched = true, barIsLabel = true, tickHonest = true,
+             defaultBack = true;
+        QString firstBad;
+        int relabelled = 0;
+        for (const brushlib::BrushPreset &p : rosterW) {
+            if (p.brush.dualBrushEnabled() || p.brush.smudgeActive())
+                continue; // own passes; the bar logic is identical
+            const brushlib::WidthRatio r =
+                brushlib::BrushWidthRatio::ratioFor(p.brush);
+            canvas->setPaintBrush(p.brush);
+            pump(20);
+            const int engine0 = p.brush.size();
+            const int label0 =
+                brushlib::BrushWidthRatio::displaySize(p.brush, engine0);
+            if (label0 != engine0)
+                ++relabelled;
+            if (canvas->paintBrush().size() != engine0) {
+                engineUntouched = false;
+                if (firstBad.isEmpty()) firstBad = p.id + QStringLiteral(" engine");
+            }
+            if (page->sizeCtlDisplayedSizeForTest() != label0) {
+                barIsLabel = false;
+                if (firstBad.isEmpty())
+                    firstBad = QStringLiteral("%1 bar=%2 label=%3").arg(p.id)
+                        .arg(page->sizeCtlDisplayedSizeForTest()).arg(label0);
+            }
+            page->sizeCtlUserSetSizeForTest(120); // a tick labelled 120
+            const int want = brushlib::BrushWidthRatio::engineSizeWith(r, 120);
+            if (canvas->paintBrush().size() != want
+                || page->sizeCtlDisplayedSizeForTest() != 120) {
+                tickHonest = false;
+                if (firstBad.isEmpty())
+                    firstBad = QStringLiteral("%1 tick120 engine=%2 want=%3")
+                        .arg(p.id).arg(canvas->paintBrush().size()).arg(want);
+            }
+            page->sizeCtlUserSetSizeForTest(label0); // back to its label
+            if (canvas->paintBrush().size() != engine0) {
+                defaultBack = false;
+                if (firstBad.isEmpty())
+                    firstBad = QStringLiteral("%1 label %2 gave engine %3, "
+                                              "default %4").arg(p.id)
+                        .arg(label0).arg(canvas->paintBrush().size())
+                        .arg(engine0);
+            }
+        }
+        check(QStringLiteral("(j) DISPLAY LAYER: selecting a preset leaves "
+                             "the ENGINE at the preset's own size"),
+              engineUntouched, firstBad);
+        check(QStringLiteral("(j) DISPLAY LAYER: the bar shows the visible "
+                             "width of every preset selected"),
+              barIsLabel, firstBad);
+        check(QStringLiteral("(j) DISPLAY LAYER: control - presets really "
+                             "are relabelled (not a roster of ratio 1.0)"),
+              relabelled >= 30, QStringLiteral("relabelled=%1").arg(relabelled));
+        check(QStringLiteral("(j) DISPLAY LAYER: a tick of 120 sends the "
+                             "engine 120 / ratio and the bar reads 120"),
+              tickHonest, firstBad);
+        check(QStringLiteral("(j) DISPLAY LAYER: a preset's own label gives "
+                             "the engine EXACTLY its default back"),
+              defaultBack, firstBad);
+
+        // The opacity multiplier must not move the size label.
+        const ::Brush *round = nullptr;
+        for (const brushlib::BrushPreset &p : rosterW)
+            if (p.id == QStringLiteral("builtin/painting/round-brush"))
+                round = &p.brush;
+        if (round) {
+            canvas->setPaintBrush(*round);
+            pump(20);
+            const int before = page->sizeCtlDisplayedSizeForTest();
+            const int measuredBefore =
+                brushlib::BrushWidthRatio::measureCountForTest();
+            page->sizeCtlUserSetOpacityForTest(40); // the bar, as the user
+            page->sizeCtlUserSetSizeForTest(120);
+            page->sizeCtlUserSetSizeForTest(before);
+            check(QStringLiteral("(j) DISPLAY LAYER: at opacity multiplier "
+                                 "40 the preset's label still returns its "
+                                 "default engine size"),
+                  canvas->paintBrush().size() == round->size(),
+                  QStringLiteral("engine=%1").arg(canvas->paintBrush().size()));
+            check(QStringLiteral("(j) DISPLAY LAYER: ...and moving the "
+                                 "opacity bar caused NO new measurement "
+                                 "(the multiplier is divided back out, to "
+                                 "the preset's exact key)"),
+                  brushlib::BrushWidthRatio::measureCountForTest()
+                      == measuredBefore,
+                  QStringLiteral("measured %1 more").arg(
+                      brushlib::BrushWidthRatio::measureCountForTest()
+                          - measuredBefore));
+            page->sizeCtlUserSetOpacityForTest(100);
+        }
+        // The stored size is the ENGINE size: what was set draws as before.
+        ::Brush five;
+        five.setSize(5000);
+        canvas->setPaintBrush(five);
+        pump(20);
+    }
 
     // ---- MULTIPLIER semantics (2026-08-29, user-approved) --------------
     // The bar's opacity means "how much of the preset's own ceiling",

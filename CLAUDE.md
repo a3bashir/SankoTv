@@ -38,6 +38,12 @@ on a timeline with audio; Generation sends panels to fal.ai for AI video.
   and imported tips, pressure/tilt dynamics, dual brush, wet edges,
   build-up, colour dynamics, noise, texture. Presets are `.sankobrush`;
   Photoshop `.abr` import is supported.
+- **Brush size shown in the UI is the VISIBLE WIDTH, not the engine size**
+  (display layer, `src/brushlib/BrushWidthRatio`): display = engine ×
+  ratio, where the ratio is MEASURED from the brush and cached by content
+  hash — never stored in a preset. The engine, `DrawingCanvas` slots,
+  preset files and persisted sizes all stay engine-valued. Convert only
+  at the UI boundary (Size CTL bar, library rows, studio Size row).
 - **QuickShape** (`third_party/QuickShapeKit`): hold the pen still after a
   stroke and it snaps to a recognised, editable vector shape.
 - **Perspective tool:** tap-created vanishing points, derived horizon,

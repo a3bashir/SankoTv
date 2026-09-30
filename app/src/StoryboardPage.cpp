@@ -12,6 +12,7 @@
 #include "brushlib/BrushLibraryPanel.h"
 #include "brushlib/BrushPresetCodec.h"
 #include "brushlib/BrushSettingsStudio.h"
+#include "brushlib/BrushWidthRatio.h"
 #include "StoryboardModel.h"
 
 #include "docking/DockController.h"
@@ -1276,7 +1277,15 @@ private:
 // is active; everything persists per tool in QSettings.
 struct SizeCtlTool
 {
-    int size = 25;      // 1..200 canvas px
+    // DISPLAY-SIZE LAYER (2026-09-29): `size` is the ENGINE size - it is
+    // what is persisted and what the canvas is given, so nothing the user
+    // had stored draws differently. The bar SHOWS the visible width
+    // (BrushWidthRatio::displaySize) and the ticks are display numbers.
+    int size = 25;      // 1..5000 ENGINE px (the tip frame's diameter)
+    // The active preset's own engine size, captured when it is selected:
+    // asking the bar for that preset's label gives the engine exactly this
+    // back, so an approved brush's default is always reachable.
+    int presetEngineSize = 0;
     int opacity = 100;  // 5..100 % MULTIPLIER on the preset's own opacity
                         // (2026-08-29 semantics; persisted as opacityMult)
     // Hardness has NO bar slider (the three-slider layout was reverted to
@@ -3265,6 +3274,11 @@ void StoryboardPage::createFloatingToolbar()
     sizeSlider->setLogarithmic(true);
     sizeSlider->setToolTip(QStringLiteral("Brush size"));
     m_sizeCtlSizeForTest = [sizeSlider] { return sizeSlider->value(); };
+    m_sizeCtlUserSetSizeForTest = [sizeSlider](int v) {
+        sizeSlider->setValue(v);
+        if (sizeSlider->onChanged)
+            sizeSlider->onChanged(v);
+    };
     auto *flipButton = new QPushButton(sizeBar);
     flipButton->setFocusPolicy(Qt::NoFocus);
     flipButton->setCursor(Qt::PointingHandCursor);
@@ -3286,6 +3300,11 @@ void StoryboardPage::createFloatingToolbar()
     opacitySlider->setToolTip(QStringLiteral("Brush opacity"));
     m_sizeCtlOpacityForTest = [opacitySlider] {
         return opacitySlider->value();
+    };
+    m_sizeCtlUserSetOpacityForTest = [opacitySlider](int v) {
+        opacitySlider->setValue(v);
+        if (opacitySlider->onChanged)
+            opacitySlider->onChanged(v);
     };
 
     // Exact Figma column (209:42 metadata, rotated-frame origins decoded):
@@ -3400,15 +3419,45 @@ void StoryboardPage::createFloatingToolbar()
         save(tc->brush, QStringLiteral("storyboard/toolCtl/brush/"));
         save(tc->eraser, QStringLiteral("storyboard/toolCtl/eraser/"));
     };
+    // DISPLAY-SIZE LAYER: the brush whose width ratio labels a tool. It is
+    // the tool's working brush with the bar's opacity MULTIPLIER divided
+    // back out, so the label does not move when the opacity slider does
+    // (the ratio is measured at the preset's own opacity).
+    auto ratioBrush = [this, tc](bool eraser) {
+        ::Brush b = eraser ? m_canvas->eraserBrush() : m_canvas->paintBrush();
+        const int mult = eraser ? tc->eraser.opacity : tc->brush.opacity;
+        // The division leaves float noise, which would be a DIFFERENT key
+        // from the one the library row's worker already measured (a second
+        // measurement, on this thread). Rounding to 1e-9 returns the short
+        // decimal a recipe was written with; and when the result is the
+        // active preset's own opacity, that value is used exactly.
+        if (mult > 0 && mult < 100)
+            b.setOpacity(qBound(
+                0.0, qRound64(b.opacity() * 100.0 / mult * 1e9) / 1e9, 1.0));
+        if (m_brushLibModel) {
+            if (const brushlib::BrushPreset *p = m_brushLibModel->preset(
+                    eraser ? m_activeEraserPresetId : m_activeBrushPresetId))
+                if (qAbs(p->brush.opacity() - b.opacity()) < 1e-6)
+                    b.setOpacity(p->brush.opacity());
+        }
+        return b;
+    };
+    auto displayedSize = [tc, ratioBrush](bool eraser) {
+        return brushlib::BrushWidthRatio::displaySize(
+            ratioBrush(eraser), eraser ? tc->eraser.size : tc->brush.size);
+    };
     // Restore: canvas gets BOTH tools' stored values (its brush and eraser
     // state are independent members); the sliders start on the Brush.
+    // The stored sizes are ENGINE sizes (unchanged key, unchanged meaning):
+    // what the user had set draws exactly as before; only the number shown
+    // for it is now the visible width.
     m_canvas->setBrushToolSize(tc->brush.size);
     m_canvas->setBrushSize(tc->brush.size);
     m_canvas->setBrushOpacity(tc->brush.opacity);
     m_canvas->setBrushHardness(tc->brush.hardness); // persisted hardness
     m_canvas->setEraserSize(tc->eraser.size);       // restores with no bar
     m_canvas->setEraserOpacity(tc->eraser.opacity); // slider (Studio edits)
-    sizeSlider->setValue(tc->brush.size);
+    sizeSlider->setValue(displayedSize(false));
     opacitySlider->setValue(tc->brush.opacity);
     sizeSlider->setPresets(tc->brush.sizeTicks);
     opacitySlider->setPresets(tc->brush.opacityTicks);
@@ -3452,15 +3501,21 @@ void StoryboardPage::createFloatingToolbar()
     };
     // Size drives whichever of Brush / Eraser is active, into that tool's
     // own stored state.
-    sizeSlider->onChanged = [this, tc, refreshPill, sizeSlider](int v) {
+    // `v` is the DISPLAY number (the visible width, and what a tick
+    // stores); the engine gets v / ratio. The pill shows v.
+    sizeSlider->onChanged =
+        [this, tc, refreshPill, sizeSlider, ratioBrush](int v) {
+        const int engine = brushlib::BrushWidthRatio::engineSize(
+            ratioBrush(tc->eraserMode), v, tc->active().presetEngineSize);
         if (tc->eraserMode) {
-            m_canvas->setEraserSize(v);
+            m_canvas->setEraserSize(engine);
         } else {
-            m_canvas->setBrushToolSize(v);
-            // The classic Line width follows too (clamped to 1-20 inside).
+            m_canvas->setBrushToolSize(engine);
+            // The classic Line width follows too (clamped to 1-20 inside);
+            // a line has no tip, so its width IS the number shown.
             m_canvas->setBrushSize(v);
         }
-        tc->active().size = v;
+        tc->active().size = engine;
         refreshPill(sizeSlider, v);
     };
 
@@ -3518,13 +3573,14 @@ void StoryboardPage::createFloatingToolbar()
     // per-tool cache and the visible size slider (silently — no engine
     // writeback loop). Opacity stays put: the bar is a multiplier now.
     connect(m_canvas, &DrawingCanvas::paintBrushChanged, this,
-            [this, tc, sizeSlider, opacitySlider] {
+            [this, tc, sizeSlider, opacitySlider, displayedSize] {
         const ::Brush &b = m_canvas->paintBrush();
         // PRE-EXISTING display lie, fixed with the 5000 cap: this clamp was
         // 200 while the studio could already set 2048, so the bar showed
         // 200 whenever a large library brush was active. The mirror now
         // spans the engine's whole range.
         tc->brush.size = qBound(1, b.size(), 5000);
+        tc->brush.presetEngineSize = tc->brush.size;
         // MULTIPLIER semantics (2026-08-29): the bar's opacity is "how
         // much of the preset's own ceiling", so a preset selection does
         // NOT rewrite it - the user's multiplier survives and the canvas
@@ -3534,11 +3590,14 @@ void StoryboardPage::createFloatingToolbar()
         // Hardness has no bar slider (see placeSizeCtl); the mirror still
         // updates so the persisted per-tool hardness follows selections.
         tc->brush.hardness = qBound(0, qRound(b.hardness() * 100.0), 100);
+        // The ENGINE keeps the preset's own size (silent mirror, as ever);
+        // the bar shows that size's visible width.
         if (!tc->eraserMode)
-            sizeSlider->setValue(tc->brush.size);
+            sizeSlider->setValue(displayedSize(false));
     });
     connect(m_canvas, &DrawingCanvas::toolChanged, this,
-            [tc, sizeSlider, opacitySlider, pill, pillHide](int tool) {
+            [tc, sizeSlider, opacitySlider, pill, pillHide,
+             displayedSize](int tool) {
         if (tool != DrawingCanvas::Brush && tool != DrawingCanvas::Eraser)
             return;
         tc->eraserMode = tool == DrawingCanvas::Eraser;
@@ -3548,7 +3607,8 @@ void StoryboardPage::createFloatingToolbar()
         // a 4K canvas at 200 px was the same misery painting at 200 was.
         sizeSlider->setRange(1, 5000);
         sizeSlider->setLogarithmic(true);
-        sizeSlider->setValue(t.size);        // silent: no engine writeback
+        // silent: no engine writeback
+        sizeSlider->setValue(displayedSize(tc->eraserMode));
         opacitySlider->setValue(t.opacity);
         sizeSlider->setPresets(t.sizeTicks);
         opacitySlider->setPresets(t.opacityTicks);
@@ -3565,15 +3625,16 @@ void StoryboardPage::createFloatingToolbar()
     // Size CTL <- ERASER preset mirror: the library's eraser selection
     // lands in the per-tool state and, when the Eraser is active, on the
     // sliders - the same shape as the paintBrushChanged mirror above.
-    m_syncEraserCtl = [this, tc, sizeSlider] {
+    m_syncEraserCtl = [this, tc, sizeSlider, displayedSize] {
         const ::Brush &e = m_canvas->eraserBrush();
         tc->eraser.size = qBound(1, e.size(), 5000);
+        tc->eraser.presetEngineSize = tc->eraser.size;
         // Opacity deliberately NOT mirrored: the bar holds the user's
         // multiplier under the 2026-08-29 semantics (see the brush mirror
         // above); the eraser preset's opacity is the BASE the canvas
         // multiplies underneath.
         if (tc->eraserMode)
-            sizeSlider->setValue(tc->eraser.size);
+            sizeSlider->setValue(displayedSize(true));
     };
 
     sizeBar->show(); // records intent; effective when the canvas shows

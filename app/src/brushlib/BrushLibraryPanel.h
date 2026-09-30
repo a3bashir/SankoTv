@@ -53,6 +53,9 @@ public:
     QStringList visibleCategoriesForTest() const;
     QStringList visiblePresetIdsForTest() const; // the LIST, post-filter
     int overrideMarkForTest(const QString &presetId) const; // row's mark
+    // The size LABEL the row is showing (the visible width), or -1 while
+    // the row is still blank because its ratio has not been measured.
+    int rowSizeLabelForTest(const QString &presetId) const;
     void selectCategoryForTest(const QString &category)
     {
         selectCategory(category);
