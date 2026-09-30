@@ -4479,6 +4479,56 @@ THE PENCILS WERE MEASURED FOR "25".**
   back (flow 0.22 is its build lever). Pins did not move: the preview
   and eraser swatches render at min(size, 16), and every pencil is
   above 16 before and after.
+- THE SOFT-END LADDER (2026-09-30, one commit, user-approved): 2B flow
+  0.22 -> 0.19, 4B flow 0.20 -> 0.30 and opacity-curve floor 0.32 ->
+  0.36, 6B unchanged.
+  * 2B: the resize had put its half-pressure deposit too close to 6B
+    (31.2, ratio 0.77). Flow 0.19 returns it to 27.5 (pre-resize 26.9,
+    ratio 0.68). Flow scales every pressure, so light is 12.4 (-7% vs
+    pre-resize) and full 75.5 (-11%); the user chose the half-pressure
+    match over 0.20's compromise (28.7 / 78.5).
+  * **PRE-EXISTING DEFECT FROM THE PENCIL ARC, recorded and fixed: 4B
+    drew LIGHTER than 2B at every pressure.** As shipped since
+    2026-08-30 the soft-end ladder ran 4B, 2B, 6B (4B / 2B at 25 px:
+    0.79 / 0.78 / 0.77 at light / half / full). The recipe placed 4B
+    "between" on scale (40/48/56) and opacity floor (0.25/0.32/0.40),
+    but its deposit was never measured against 2B's; the census had
+    already recorded the reason without anyone acting on it: the 4B scan
+    is sparser than the 2B scan (mean coverage 33.2 vs 46.6), the same
+    invisible mechanism that made 6B lighter than 2B until its flow went
+    to 0.45 - and 4B never received that compensation (flow 0.20 against
+    2B's 0.22).
+    THE STAMP-SWAP PROOF (seam_pencilcharacter_20260930.cpp "ladder";
+    recipe held, only the tip image exchanged; Debug == Release):
+      2B recipe (flow .19) + 2B stamp @27   12.4 / 27.5 / 75.5
+      2B recipe (flow .19) + 4B STAMP @27    9.2 / 15.1 / 53.9
+      4B recipe + 4B stamp @26              10.1 / 23.6 / 64.8
+      4B recipe + 2B STAMP @26              15.0 / 33.5 / 92.7
+      4B recipe + 6B STAMP @26               6.7 / 12.8 / 38.5
+    Exchanging nothing but the stamp inverts the order at every pressure:
+    coverage governs deposit, and no setting shows it. This is the
+    cleanest demonstration of the "stamp sparsity" finding on record;
+    check it before tuning any deposit ratio between stamped brushes.
+  * Targets and levers: 4B between 2B (flow 0.19) and 6B at light, half
+    AND full (midpoints 19.6 / 34.0 / 90.8). Flow first, as with 6B: 0.30
+    puts half and full at the midpoint (34.0 / 89.9); light lags (14.9)
+    because 6B's first touch is lifted by its 0.06 spacing and 0.40
+    floor, and flow cannot reach it without pushing half and full past
+    6B (0.40: 19.5 / 43.6 / 111.1). The floor moves light only a little
+    (0.40 -> 16.5). Spacing was NOT used, by decision: it would change
+    4B's texture; the light-pressure limit is accepted and the user will
+    say if it shows when drawing.
+  * MEASURED, the three together from the shipped roster (deposit at
+    0.3 / 0.5 / 1.0 pressure; build; spread):
+      2B @27  12.4 / 27.5 /  75.5   x2.69   30
+      4B @26  15.7 / 35.0 /  89.9   x2.57   49
+      6B @25  26.9 / 40.5 / 106.1   x2.47   67
+    In order at every pressure, 4B at the midpoint at half and full, a
+    quarter of the way at light; spread in order too.
+  * Coupled pins re-baselined together (the swatches render at 16 px
+    WITH the brush's flow and curves, unlike the size-only change before
+    it): preview 54844931 -> 608366fc, eraser 18d1a203 -> d312bc9b,
+    cross-config identical. Canvas locks and the erase baseline unmoved.
 - TWO CATCHES ON THE WAY, both by the gate, both fixed:
   1. Lifecycle (m) showed the library row a pixel below the bar: the row
      computed "size x ratio" on its own and dropped the new offset. Now

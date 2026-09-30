@@ -89,14 +89,17 @@ Learned from real defects. Follow them exactly.
    apart: SankoBrushLibraryTest, SankoPaintPixelLock, SankoCanvasBrushLock,
    SankoQuickShapeGeometryLock, SankoDevRecorderTest, SankoCanvasEdgeLock,
    SankoCanvasSizeLock, SankoProjectLifecycle. Preview SHA must stay
-   `548449317c6c2ef137b8d787499998f5f7243276a1a398cdbabf4294f7839f0e`
-   (re-baselined 2026-09-29: the Painting STAMP pass — all nine of the
+   `608366fcb169e5f9cf29a97858db6b2b6fdafe0d0b63e10c3dd1a9d0aadecf46`
+   (re-baselined 2026-09-30: the soft-end pencil ladder — 2B flow 0.19,
+   4B flow 0.30 / floor 0.36 — moved the swatches, which render at 16 px
+   with the brush's flow and curves; before that, 2026-09-29: the
+   Painting STAMP pass — all nine of the
    user's scans restored as Tip Shapes on the E1/E2/E3 engine (per-brush
    Area tip sampling from a CPU-built mip chain, seeded texture jitter,
    hardness live on custom tips with every other stamped built-in swept
    to 1.0 = identity, proved byte-identical by the 47-line render dump);
    codec v12; the eraser SHA
-   `18d1a203…` moves WITH it, same commit, per the coupled-pin note in
+   `d312bc9b…` moves WITH it, same commit, per the coupled-pin note in
    BrushLibraryTest); both pixel locks byte-identical
    (`666f7b45…`, `cafcec7f…`), erase baseline `0bc24381…`. The first
    six use 960×540 fixtures; SankoCanvasSizeLock is the variable-resolution

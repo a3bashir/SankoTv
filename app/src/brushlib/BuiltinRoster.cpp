@@ -452,15 +452,21 @@ QVector<BrushPreset> builtinRoster()
         // 25 -> 27 (2026-09-30, user-approved): draws 25 px, reads 25.
         // v2 had size 25 only - the feel passed hand-testing as-is
         // ("feels good") and is the soft-end calibration reference the
-        // others move around. NOTE the size re-opened its MID-pressure
-        // deposit: 0.3/0.5/1.0 = 13.3/26.9/84.8 -> 14.2/31.2/84.3, i.e.
-        // +16% at half pressure (ratio to 6B 0.66 -> 0.77); light and
-        // full within 7% / 1%. Reported to the user, not re-tuned.
+        // others move around. The size re-opened its MID-pressure
+        // deposit: 0.3/0.5/1.0 = 13.3/26.9/84.8 -> 14.2/31.2/84.3 (+16%
+        // at half pressure, ratio to 6B 0.66 -> 0.77) - too close to 6B.
         b.setSize(27);
         b.setHardness(1.0); // 1.0 = identity; hardness is LIVE on custom tips since E3 (2026-09-26)
         b.setOpacity(0.70);  // mid-dark ceiling: darker than HB's 0.55,
                              // well short of 6B
-        b.setFlow(0.22);     // rich buildup - passes darken gradually
+        // Flow 0.22 -> 0.19 (2026-09-30, user-approved, the soft-end
+        // ladder commit): brings the half-pressure deposit back to 27.5
+        // (pre-resize 26.9; ratio to 6B 0.68 vs 0.66). Flow scales every
+        // pressure, so light is 12.4 (-7%) and full 75.5 (-11%) against
+        // pre-resize; the user chose the half-pressure match. Measured
+        // ladder at shipped sizes: 2B 12.4/27.5/75.5, 4B 15.7/35.0/89.9,
+        // 6B 26.9/40.5/106.1.
+        b.setFlow(0.19);     // rich buildup - passes darken gradually
         b.setGrainDepth(0.50);
         b.setGrainScale(40.0);
         b.setGrainMode(B::GrainMode::StaticCanvas);
@@ -480,11 +486,27 @@ QVector<BrushPreset> builtinRoster()
         // 25 -> 26 (2026-09-30, user-approved): draws 25 px, reads 25.
         // Mid-pressure deposit moved with the size: 10.5/20.9/64.9 ->
         // 10.1/23.6/64.8 (+13% at half pressure, ratio to 6B 0.52 ->
-        // 0.58); light and full within 4% / 1%. Reported, not re-tuned.
+        // 0.58); light and full within 4% / 1%.
         b.setSize(26);
         b.setHardness(1.0); // 1.0 = identity; hardness is LIVE on custom tips since E3 (2026-09-26)
         b.setOpacity(0.85);
-        b.setFlow(0.20);
+        // PRE-EXISTING DEFECT, fixed 2026-09-30 (user-approved): 4B drew
+        // LIGHTER than 2B at every pressure - the soft-end ladder ran
+        // 4B, 2B, 6B. Cause PROVED by swapping stamps with the recipe
+        // held: 4B's recipe with 2B's stamp drew 15.0/33.5/92.7 (darker
+        // than 2B everywhere), 2B's recipe with 4B's stamp 9.2/15.1/53.9.
+        // The 4B scan is sparser (mean coverage 33.2 vs 2B's 46.6, the
+        // census) - the same invisible mechanism that made 6B lighter
+        // than 2B until its flow went to 0.45 - and 4B never got that
+        // compensation. Flow 0.20 -> 0.30 puts half and full pressure at
+        // the midpoint between 2B (flow 0.19) and 6B; the opacity floor
+        // 0.32 -> 0.36 lifts the first touch a little. Light pressure
+        // stays nearer 2B (15.7 between 12.4 and 26.9): 6B's first touch
+        // is lifted by its 0.06 spacing, and the user chose to keep 4B's
+        // texture rather than reach for spacing. Ladder at shipped sizes:
+        // 2B 12.4/27.5/75.5, 4B 15.7/35.0/89.9, 6B 26.9/40.5/106.1;
+        // spread 30 / 49 / 67. HANDOFF has the swap table.
+        b.setFlow(0.30);
         b.setGrainDepth(0.60);
         b.setGrainScale(48.0);
         b.setGrainMode(B::GrainMode::StaticCanvas);
@@ -492,7 +514,9 @@ QVector<BrushPreset> builtinRoster()
         b.setNoise(0.20);
         b.setAngleJitter(0.08);
         b.setTiltAffectsShape(true); b.setMaxTiltElongation(2.2);
-        b.opacityPressureCurve().setControlPoints(curve2(0.32, 1.0));
+        // Floor 0.32 -> 0.36 with the flow change above (the designed
+        // progression was 0.25 / 0.32 / 0.40 across 2B / 4B / 6B).
+        b.opacityPressureCurve().setControlPoints(curve2(0.36, 1.0));
     });
     r << make(kSketching, QStringLiteral("6B Pencil"), [&](::Brush &b) {
         sketchBase(b);
