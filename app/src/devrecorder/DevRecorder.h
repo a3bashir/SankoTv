@@ -124,6 +124,13 @@ public:
     QAction *toggleAction();
     QAction *markAction();
     QWidget *indicatorWidget();
+    // Make the indicator a CONTROL as well as a readout: it shows itself
+    // while idle and a click starts or stops the recording. For a host
+    // screen with no menu to start one from. Off by default, and off is
+    // exactly the passive indicator - it paints nothing when idle and
+    // ignores clicks.
+    void setIndicatorInteractive(bool on);
+    bool indicatorInteractive() const;
 
     // Configuration (persisted in QSettings under devrecorder/*; the
     // output directory can also be forced with SANKOTV_DEVREC_DIR).

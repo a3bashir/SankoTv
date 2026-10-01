@@ -1,14 +1,12 @@
 #include "NewProjectDialog.h"
 #include "RecentProjects.h"
-#include "SankoScrollBarStyle.h"
 #include "SankoTheme.h"
 #include "brushlib/StudioControls.h"
 
 #include <QDir>
 #include <QFileDialog>
 #include <QFileInfo>
-#include <QHash>
-#include <QImageReader>
+#include <QFontMetrics>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -21,8 +19,6 @@
 #include <QPainterPath>
 #include <QPushButton>
 #include <QSaveFile>
-#include <QScrollArea>
-#include <QSettings>
 #include <QShowEvent>
 #include <QStandardPaths>
 #include <QTemporaryFile>
@@ -32,24 +28,30 @@ using brushlib::StudioTextField;
 namespace studio = brushlib::studio;
 
 namespace {
-// Geometry from Figma 350:24 (680x460): left form column, 1px divider,
-// darker right column whose 224px content strip is right-anchored.
-constexpr int kDialogW = 680;
-constexpr int kDialogH = 460;
-constexpr int kDividerX = 342;
-constexpr int kLeftX = 18;         // left content x
-constexpr int kLeftW = 229;        // left content width
-constexpr int kRightX = 438;       // right content x (420 + 18 pad)
-constexpr int kRightW = 224;       // right content width
-constexpr int kHeaderY = 18;       // section headers
+// One column. The vertical rhythm is Figma 350:24's form column unchanged
+// (header at 18, first field at 53, 51 px pitch, 25 px boxes); the width is
+// what that column becomes when it is the whole window: 18 px of padding
+// either side of a 304 px content strip.
+constexpr int kDialogW = NewProjectDialog::kWidth;   // 340
+constexpr int kDialogH = NewProjectDialog::kHeight;  // 385
+constexpr int kLeftX = 18;         // content x
+constexpr int kLeftW = kDialogW - 2 * kLeftX; // content width (304)
+constexpr int kHeaderY = 18;       // section header
 constexpr int kFormY = 53;         // first field top
 constexpr int kFieldPitch = 51;    // 41-tall field + 10 gap
 constexpr int kBoxH = 25;
-constexpr int kFooterY = 409;      // Create / Open buttons top
+constexpr int kBrowseW = 65;       // the design's Browse button
+constexpr int kBrowseGap = 6;
+constexpr int kDimGap = 32;        // between Width and Height (holds the x)
+constexpr int kDimW = (kLeftW - kDimGap) / 2; // 136
+// The last field ends at 298; the validation line sits under it and the
+// buttons under that, leaving the same 18 px at the bottom as at the sides.
 constexpr int kFooterH = 33;
+constexpr int kFooterY = kDialogH - kLeftX - kFooterH; // 334
+constexpr int kCancelW = 96;
+constexpr int kFooterGap = 8;
 
 const QColor kDialogBg(0x11, 0x11, 0x11);
-const QColor kRightBg(0x0a, 0x0a, 0x0a);
 const QColor kHeaderText(0xcc, 0xcc, 0xcc);
 const QColor kNoteText(0x66, 0x66, 0x66);
 
@@ -91,218 +93,10 @@ QFont headerFont()
     return f;
 }
 
-// The 16px film-strip glyph in a recent entry's thumbnail well (design
-// 350:109) — painted, no asset: frame outline + sprocket holes.
-void paintFilmIcon(QPainter &p, const QRectF &r, const QColor &color)
-{
-    p.save();
-    p.setRenderHint(QPainter::Antialiasing, true);
-    p.setPen(QPen(color, 1.2));
-    p.setBrush(Qt::NoBrush);
-    p.drawRoundedRect(r.adjusted(0.6, 0.6, -0.6, -0.6), 2, 2);
-    p.setPen(Qt::NoPen);
-    p.setBrush(color);
-    for (int i = 0; i < 3; ++i) {
-        const qreal y = r.top() + 3.2 + i * (r.height() - 6.4) / 2.0;
-        p.drawRect(QRectF(r.left() + 2.2, y - 0.9, 1.8, 1.8));
-        p.drawRect(QRectF(r.right() - 4.0, y - 0.9, 1.8, 1.8));
-    }
-    p.restore();
-}
-
-// (The full-res projectThumbnail helper that lived here moved into
-// RecentList::rowThumb as a cached, scaled decode — the performance pass
-// removed the last full-resolution decode from the paint path.)
+// (The Recent Projects list that was painted here - its rows, its film
+// glyph, its thumbnail cache - is RecentProjectsView and RecentThumbnails
+// now, on the start window.)
 } // namespace
-
-// ---------------------------------------------------------------------------
-// RecentList — the right column's entry list (custom painted rows)
-// ---------------------------------------------------------------------------
-
-class NewProjectDialog::RecentList : public QWidget
-{
-public:
-    static constexpr int kRowH = 44;
-    static constexpr int kRowPitch = 50;
-
-    RecentList(NewProjectDialog *owner) : m_owner(owner)
-    {
-        reload();
-        setMouseTracking(true);
-    }
-    void reload()
-    {
-        m_entries = RecentProjects::entries();
-        m_selected = -1;
-        setFixedSize(kRightW,
-                     qMax(1, int(m_entries.size()) * kRowPitch - 6));
-        update();
-    }
-    bool empty() const { return m_entries.isEmpty(); }
-    QString selectedPath() const
-    {
-        return m_selected >= 0 ? m_entries.at(m_selected).path : QString();
-    }
-
-protected:
-    void paintEvent(QPaintEvent *) override
-    {
-        QPainter p(this);
-        p.setRenderHint(QPainter::Antialiasing, true);
-        for (int i = 0; i < m_entries.size(); ++i) {
-            const RecentProjects::Entry &e = m_entries.at(i);
-            const QRect row(0, i * kRowPitch, width(), kRowH);
-            const bool missing = !QFileInfo::exists(e.path);
-            if (i == m_selected) {
-                p.setPen(QPen(studio::kAccent, 1.0));
-                p.setBrush(studio::kFieldBg);
-                p.drawRoundedRect(QRectF(row).adjusted(0.5, 0.5, -0.5, -0.5),
-                                  4, 4);
-            } else if (i == m_hover) {
-                p.setPen(Qt::NoPen);
-                p.setBrush(QColor(255, 255, 255, 10));
-                p.drawRoundedRect(row, 4, 4);
-            }
-            // A missing project stays listed but visibly dimmed at 50%.
-            p.setOpacity(missing ? 0.5 : 1.0);
-            const QRectF thumb(row.left() + 6, row.top() + 6, 48, 32);
-            p.setPen(QPen(studio::kFieldBorder, 1.0));
-            p.setBrush(studio::kFieldBg);
-            p.drawRoundedRect(thumb.adjusted(0.5, 0.5, -0.5, -0.5), 2, 2);
-            // Cached scaled decode (see rowThumb) — never a full-res decode
-            // inside a paintEvent.
-            const QPixmap px = missing ? QPixmap() : rowThumb(e.path);
-            if (!px.isNull()) {
-                p.save();
-                QPainterPath clip;
-                clip.addRoundedRect(thumb.adjusted(1, 1, -1, -1), 2, 2);
-                p.setClipPath(clip);
-                p.drawPixmap(thumb.adjusted(1, 1, -1, -1).toRect(),
-                             px.scaled(46, 30, Qt::KeepAspectRatioByExpanding,
-                                       Qt::SmoothTransformation));
-                p.restore();
-            } else {
-                paintFilmIcon(p, QRectF(thumb.center().x() - 8,
-                                        thumb.center().y() - 8, 16, 16),
-                              studio::kFieldLabel);
-            }
-            // Title: MIDDLE-elided so version-suffixed families keep their
-            // distinguishing tail (Cyberpunk_Alley_v1/v2/v3).
-            QFont title(QStringLiteral("Inter"));
-            title.setPixelSize(11);
-            title.setWeight(QFont::Medium);
-            p.setFont(title);
-            p.setPen(studio::kFieldText);
-            const QString name = QFileInfo(e.path).completeBaseName();
-            const QRect titleR(row.left() + 64, row.top() + 8, 154, 14);
-            p.drawText(titleR, Qt::AlignVCenter | Qt::AlignLeft,
-                       QFontMetrics(title).elidedText(name, Qt::ElideMiddle,
-                                                      titleR.width()));
-            QFont date(QStringLiteral("Inter"));
-            date.setPixelSize(10);
-            p.setFont(date);
-            p.setPen(studio::kFieldLabel);
-            p.drawText(QRect(row.left() + 64, row.top() + 23, 154, 13),
-                       Qt::AlignVCenter | Qt::AlignLeft,
-                       QStringLiteral("Last opened: ")
-                           + e.lastOpened.toString(
-                               QStringLiteral("MMM d, yyyy")));
-            p.setOpacity(1.0);
-        }
-    }
-    void mouseMoveEvent(QMouseEvent *event) override
-    {
-        const int i = rowAt(event->position().toPoint());
-        if (i != m_hover) {
-            m_hover = i;
-            update();
-        }
-    }
-    void leaveEvent(QEvent *) override
-    {
-        m_hover = -1;
-        update();
-    }
-    void mousePressEvent(QMouseEvent *event) override
-    {
-        const int i = rowAt(event->position().toPoint());
-        if (i < 0)
-            return;
-        const RecentProjects::Entry e = m_entries.at(i);
-        if (!QFileInfo::exists(e.path)) {
-            // Never a silent failure: offer to drop the dead entry.
-            const auto pick = QMessageBox::question(
-                m_owner, QStringLiteral("Project Not Found"),
-                QStringLiteral("The project file was not found:\n%1\n\n"
-                               "Remove it from Recent Projects?")
-                    .arg(e.path),
-                QMessageBox::Yes | QMessageBox::No);
-            if (pick == QMessageBox::Yes) {
-                RecentProjects::remove(e.path);
-                reload();
-            }
-            return;
-        }
-        m_selected = i;
-        update();
-    }
-    void mouseDoubleClickEvent(QMouseEvent *event) override
-    {
-        const int i = rowAt(event->position().toPoint());
-        if (i >= 0 && QFileInfo::exists(m_entries.at(i).path)) {
-            m_selected = i;
-            m_owner->openSelectedOrDialog();
-        }
-    }
-
-private:
-    int rowAt(const QPoint &pos) const
-    {
-        const int i = pos.y() / kRowPitch;
-        return (i >= 0 && i < m_entries.size()
-                && pos.y() % kRowPitch < kRowH)
-            ? i
-            : -1;
-    }
-
-    // Row thumbnail, decoded ONCE per entry at (cover-46x30) target size and
-    // re-decoded only when the PNG changes on disk (mtime key). The old path
-    // decoded the FULL-RES panel_s0_p0.png per row per paintEvent: at
-    // 960x540 Qt's global QPixmapCache masked the cost (a ~2 MB pixmap
-    // fits), but a 4K pixmap (~33 MB) never enters the ~10 MB cache, so
-    // every hover-move repaint re-decoded every row from disk — measured
-    // 64 ms/row, 638 ms per repaint at the 10-row cap.
-    // QImageReader::setScaledSize decodes at the target size instead of
-    // decoding 33 MB to throw it away.
-    QPixmap rowThumb(const QString &projectPath)
-    {
-        const QString png = RecentProjects::thumbnailSource(projectPath);
-        const QDateTime mtime = QFileInfo(png).lastModified();
-        auto it = m_thumbCache.constFind(png);
-        if (it != m_thumbCache.constEnd() && it->mtime == mtime)
-            return it->px;
-        QPixmap px;
-        QImageReader reader(png);
-        const QSize full = reader.size(); // header only, no pixel decode
-        if (full.isValid() && !full.isEmpty()) {
-            reader.setScaledSize(full.scaled(
-                46, 30, Qt::KeepAspectRatioByExpanding));
-            px = QPixmap::fromImage(reader.read());
-        }
-        m_thumbCache.insert(png, {px, mtime});
-        return px;
-    }
-    struct CachedThumb {
-        QPixmap px;
-        QDateTime mtime;
-    };
-    QHash<QString, CachedThumb> m_thumbCache;
-
-    NewProjectDialog *m_owner;
-    QVector<RecentProjects::Entry> m_entries;
-    int m_selected = -1;
-    int m_hover = -1;
-};
 
 // ---------------------------------------------------------------------------
 // NewProjectDialog
@@ -322,11 +116,13 @@ NewProjectDialog::NewProjectDialog(QWidget *parent)
     m_name->setText(QStringLiteral("Untitled_Storyboard"));
 
     m_location = new StudioTextField(this);
-    m_location->setGeometry(kLeftX, fieldY(1), 158, kBoxH);
+    m_location->setGeometry(kLeftX, fieldY(1),
+                            kLeftW - kBrowseW - kBrowseGap, kBoxH);
     m_location->setText(QDir::toNativeSeparators(defaultSaveLocation()));
 
     m_browse = new QPushButton(QStringLiteral("Browse..."), this);
-    m_browse->setGeometry(kLeftX + 164, fieldY(1), 65, kBoxH);
+    m_browse->setGeometry(kLeftX + kLeftW - kBrowseW, fieldY(1), kBrowseW,
+                          kBoxH);
     m_browse->setCursor(Qt::PointingHandCursor);
     m_browse->setStyleSheet(QStringLiteral(
         "QPushButton { background:#1c1c1c; color:#999999; border:1px solid "
@@ -343,10 +139,10 @@ NewProjectDialog::NewProjectDialog(QWidget *parent)
             &NewProjectDialog::applyPreset);
 
     m_width = new StudioTextField(this);
-    m_width->setGeometry(kLeftX, fieldY(3), 98, kBoxH);
+    m_width->setGeometry(kLeftX, fieldY(3), kDimW, kBoxH);
     m_width->setNumericMode(1, 99999); // range enforced by validate()
     m_height = new StudioTextField(this);
-    m_height->setGeometry(kLeftX + 131, fieldY(3), 98, kBoxH);
+    m_height->setGeometry(kLeftX + kDimW + kDimGap, fieldY(3), kDimW, kBoxH);
     m_height->setNumericMode(1, 99999);
 
     m_fps = new StudioDropdown({QStringLiteral("24 fps"),
@@ -356,8 +152,11 @@ NewProjectDialog::NewProjectDialog(QWidget *parent)
                                this);
     m_fps->setGeometry(kLeftX, fieldY(4), kLeftW, kBoxH);
 
+    // Footer: Cancel | Create Project. Create is the filled accent button
+    // and takes the width Cancel leaves.
     m_create = new QPushButton(QStringLiteral("Create Project"), this);
-    m_create->setGeometry(kLeftX, kFooterY, kLeftW, kFooterH);
+    m_create->setGeometry(kLeftX + kCancelW + kFooterGap, kFooterY,
+                          kLeftW - kCancelW - kFooterGap, kFooterH);
     m_create->setCursor(Qt::PointingHandCursor);
     // White label on the kAccent fill (3.87:1): the recorded filled-button
     // exemption — matches the studio's Done button (see SankoTheme.h).
@@ -372,27 +171,18 @@ NewProjectDialog::NewProjectDialog(QWidget *parent)
     connect(m_create, &QPushButton::clicked, this,
             &NewProjectDialog::attemptCreate);
 
-    m_recent = new RecentList(this);
-    m_recentScroll = new QScrollArea(this);
-    m_recentScroll->setGeometry(kRightX, kFormY, kRightW, 342);
-    m_recentScroll->setWidget(m_recent);
-    m_recentScroll->setFrameShape(QFrame::NoFrame);
-    m_recentScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    m_recentScroll->setStyleSheet(
-        QStringLiteral("QScrollArea, QScrollArea > QWidget > QWidget "
-                       "{ background: transparent; }")
-        + sankoScrollBarStyle());
-
-    m_open = new QPushButton(QStringLiteral("Open Project..."), this);
-    m_open->setGeometry(kRightX, kFooterY, kRightW, kFooterH);
-    m_open->setCursor(Qt::PointingHandCursor);
-    m_open->setStyleSheet(QStringLiteral(
+    // Cancel: the secondary button, in the style Open Project had here.
+    // Until it existed the only way out of this window was Escape, which a
+    // frameless dialog gives no hint of.
+    m_cancel = new QPushButton(QStringLiteral("Cancel"), this);
+    m_cancel->setGeometry(kLeftX, kFooterY, kCancelW, kFooterH);
+    m_cancel->setCursor(Qt::PointingHandCursor);
+    m_cancel->setStyleSheet(QStringLiteral(
         "QPushButton { background:#1c1c1c; color:#cccccc; border:1px solid "
         "#333333; border-radius:3px; font-family:Inter; font-size:11px; "
         "font-weight:500; }"
         "QPushButton:hover { border-color:#4a4a4a; color:#ffffff; }"));
-    connect(m_open, &QPushButton::clicked, this,
-            &NewProjectDialog::openSelectedOrDialog);
+    connect(m_cancel, &QPushButton::clicked, this, &QDialog::reject);
 
     // Live validation + Enter-submits from any field.
     for (StudioTextField *f : {m_name, m_location, m_width, m_height}) {
@@ -412,7 +202,7 @@ NewProjectDialog::NewProjectDialog(QWidget *parent)
     setTabOrder(m_width, m_height);
     setTabOrder(m_height, m_fps);
     setTabOrder(m_fps, m_create);
-    setTabOrder(m_create, m_open);
+    setTabOrder(m_create, m_cancel);
 
     applyPreset(0); // HDTV 1080p default: 1920x1080, dims locked
     revalidate();
@@ -583,21 +373,6 @@ void NewProjectDialog::browse()
     revalidate();
 }
 
-void NewProjectDialog::openSelectedOrDialog()
-{
-    QString path = m_recent->selectedPath();
-    if (path.isEmpty()) {
-        path = QFileDialog::getOpenFileName(
-            this, QStringLiteral("Open Project"), QDir::homePath(),
-            QStringLiteral("SankoTV Project (*.sankotv)"));
-        if (path.isEmpty())
-            return;
-    }
-    m_openPath = path;
-    m_mode = Mode::OpenExisting;
-    accept();
-}
-
 void NewProjectDialog::showEvent(QShowEvent *event)
 {
     QDialog::showEvent(event);
@@ -632,9 +407,9 @@ QVariantMap NewProjectDialog::devrecState() const
 
 QRect NewProjectDialog::dragHeaderBand() const
 {
-    // Above the first field: the "Create New Project" / "Recent Projects"
-    // headers and their rules. The first control sits at kFormY + 16, so
-    // the band never overlaps a control.
+    // Above the first field: the "Create New Project" header and its rule.
+    // The first control sits at kFormY + 16, so the band never overlaps a
+    // control.
     return QRect(0, 0, width(), kFormY);
 }
 
@@ -670,33 +445,22 @@ void NewProjectDialog::paintEvent(QPaintEvent *)
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing, true);
 
-    // Chrome: #111 rounded surface, #333 border; the right column sits on
-    // the darker #0a0a0a, clipped to the same rounded silhouette.
+    // Chrome: #111 rounded surface, #333 border.
     const QRectF r = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
     QPainterPath silhouette;
     silhouette.addRoundedRect(r, 4, 4);
     p.fillPath(silhouette, kDialogBg);
-    p.save();
-    p.setClipPath(silhouette);
-    p.fillRect(QRectF(kDividerX + 1, 0, width() - kDividerX - 1, height()),
-               kRightBg);
-    p.setPen(QPen(studio::kFieldBorder, 1.0));
-    p.drawLine(QPointF(kDividerX + 0.5, 0), QPointF(kDividerX + 0.5, height()));
-    p.restore();
     p.setPen(QPen(studio::kFieldBorder, 1.0));
     p.setBrush(Qt::NoBrush);
     p.drawRoundedRect(r, 4, 4);
 
-    // Section headers with their underline rules.
+    // The header with its underline rule.
     p.setFont(headerFont());
     p.setPen(kHeaderText);
     p.drawText(QRect(kLeftX, kHeaderY, kLeftW, 14), Qt::AlignLeft,
                QStringLiteral("Create New Project"));
-    p.drawText(QRect(kRightX, kHeaderY, kRightW, 14), Qt::AlignLeft,
-               QStringLiteral("Recent Projects"));
     p.setPen(QPen(studio::kFieldBorder, 1.0));
     p.drawLine(kLeftX, kHeaderY + 20, kLeftX + kLeftW, kHeaderY + 20);
-    p.drawLine(kRightX, kHeaderY + 20, kRightX + kRightW, kHeaderY + 20);
 
     // Field labels.
     p.setFont(studio::fieldLabelFont());
@@ -707,32 +471,29 @@ void NewProjectDialog::paintEvent(QPaintEvent *)
         if (labels[i])
             p.drawText(QRect(kLeftX, kFormY + i * kFieldPitch, kLeftW, 12),
                        Qt::AlignLeft, QLatin1String(labels[i]));
-    p.drawText(QRect(kLeftX, kFormY + 3 * kFieldPitch, 98, 12), Qt::AlignLeft,
-               QStringLiteral("Width"));
-    p.drawText(QRect(kLeftX + 131, kFormY + 3 * kFieldPitch, 98, 12),
+    p.drawText(QRect(kLeftX, kFormY + 3 * kFieldPitch, kDimW, 12),
+               Qt::AlignLeft, QStringLiteral("Width"));
+    p.drawText(QRect(kLeftX + kDimW + kDimGap, kFormY + 3 * kFieldPitch,
+                     kDimW, 12),
                Qt::AlignLeft, QStringLiteral("Height"));
     // The x between the dimension fields (design 350:51, #666).
     p.setFont(studio::fieldFont());
     p.setPen(kNoteText);
-    p.drawText(QRect(kLeftX + 100, kFormY + 3 * kFieldPitch + 16, 29, kBoxH),
+    p.drawText(QRect(kLeftX + kDimW, kFormY + 3 * kFieldPitch + 16, kDimGap,
+                     kBoxH),
                Qt::AlignCenter, QStringLiteral("\xC3\x97"));
 
     // (The stored-not-applied note is gone: since the resolution epic the
     // chosen dimensions ARE the project's real canvas size.)
 
-    // The one-line validation reason, above the Create button.
+    // The one-line validation reason, above the buttons. Elided at the
+    // content width: the longer reasons name a path, and an unclipped one
+    // ran past the window's edge.
     if (!m_reason.isEmpty()) {
         p.setFont(studio::fieldLabelFont());
         p.setPen(studio::kFieldLabel);
-        p.drawText(QRect(kLeftX, kFooterY - 16, kLeftW, 12),
-                   Qt::AlignLeft, m_reason);
-    }
-
-    // Empty first-run state: a single dimmed centred line.
-    if (m_recent->empty()) {
-        p.setFont(studio::fieldFont());
-        p.setPen(studio::kFieldLabel);
-        p.drawText(QRect(kRightX, kFormY, kRightW, 342), Qt::AlignCenter,
-                   QStringLiteral("No recent projects"));
+        p.drawText(QRect(kLeftX, kFooterY - 16, kLeftW, 12), Qt::AlignLeft,
+                   QFontMetrics(studio::fieldLabelFont())
+                       .elidedText(m_reason, Qt::ElideMiddle, kLeftW));
     }
 }

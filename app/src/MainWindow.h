@@ -95,6 +95,9 @@ public:
     // holds none. Reading it after a load is what proves the canvas followed
     // the project, and reading it after a teardown is what proves it let go.
     QSize activePanelSizeForTest() const;
+    // Where the Open Project file picker would start (the picker itself is
+    // native and cannot be driven).
+    QString openDialogStartDirForTest() const { return openDialogStartDir(); }
 
 protected:
     // THE single unsaved-changes gate. Every way of closing this window —
@@ -106,6 +109,13 @@ protected:
 
 private:
     void setupMenuBar();
+    // Attach every shortcut-bearing menu action to the window as well, so
+    // the shortcuts outlive a hidden menu bar. See the definition.
+    void keepMenuShortcutsAlive();
+    // Show or hide what surrounds the current page: no menu bar on the
+    // start window, and the recorder's indicator moved to where it can
+    // still be seen.
+    void updateChromeForPage();
     void updateSaveActions();
     void updateTitle();
     void freeScenes();
@@ -148,7 +158,9 @@ private:
     bool saveForPrompt();
 
     void onCloseProject();
-    void openProject(const QString &path); // File > Open AND Open Recent
+    QString openDialogStartDir() const;
+    // File > Open, Open Recent, AND the start window's cards and rows.
+    void openProject(const QString &path);
     void rebuildRecentMenu();
 
     void onProjectSettings();

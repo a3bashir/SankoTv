@@ -1,26 +1,25 @@
 #include "DashboardPage.h"
+#include "RecentProjectsView.h"
+#include "RecentThumbnails.h"
 #include "SankoTheme.h"
+#include "brushlib/StudioControls.h"
 
-#include <QFrame>
 #include <QHBoxLayout>
 #include <QLabel>
-#include <QPixmap>
 #include <QPushButton>
+#include <QShowEvent>
 #include <QVBoxLayout>
 #include <Qt>
 
-namespace {
-
-// Card geometry. Thumbnail keeps a 16:9 ratio.
-constexpr int kCardWidth = 320;
-constexpr int kThumbWidth = kCardWidth - 32;             // minus card padding
-constexpr int kThumbHeight = kThumbWidth * 9 / 16;       // 16:9
-
-} // namespace
+namespace studio = brushlib::studio;
 
 DashboardPage::DashboardPage(QWidget *parent)
     : QWidget(parent)
 {
+    // One cache for the life of the page: thumbnails decoded for one visit
+    // are still there on the next.
+    m_thumbnails = new RecentThumbnails(this);
+
     setAttribute(Qt::WA_StyledBackground, true);
     setStyleSheet(QStringLiteral("background-color: #0a0a0a;"));
 
@@ -41,24 +40,35 @@ QWidget *DashboardPage::createHeaderBar()
 
     QHBoxLayout *layout = new QHBoxLayout(header);
     layout->setContentsMargins(20, 0, 20, 0);
+    layout->setSpacing(10);
+    m_headerLayout = layout;
 
-    // --- Logo (left) ------------------------------------------------------
-    QLabel *logo = new QLabel;
-    logo->setFixedSize(220, 44);
-    logo->setAttribute(Qt::WA_TranslucentBackground, true);
-    logo->setStyleSheet(QStringLiteral("background: transparent;"));
-    QPixmap pm(QStringLiteral(":/assets/logo.png"));
-    if (!pm.isNull()) {
-        logo->setPixmap(pm.scaled(220, 44, Qt::KeepAspectRatio, Qt::SmoothTransformation));
-        logo->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-    } else {
-        logo->setText(QStringLiteral("SANKO TV"));
-        logo->setStyleSheet(QStringLiteral(
-            "background: transparent; color: #ffffff; font-size: 20px; font-weight: 700;"));
-    }
-    layout->addWidget(logo);
-
+    // (The logo that stood at the left is gone by design. What may appear
+    // there instead is the host's header accessory - setHeaderAccessory.)
     layout->addStretch(1);
+
+    // --- Open Project button: the secondary action, left of the primary ---
+    // Opens the file picker. The recents below cover the projects worked
+    // on lately; this is the way to everything else.
+    QPushButton *openProject = new QPushButton(QStringLiteral("Open Project"));
+    openProject->setCursor(Qt::PointingHandCursor);
+    openProject->setStyleSheet(
+        QStringLiteral("QPushButton {"
+                       "  background-color: %1;"
+                       "  color: %2;"
+                       "  border: 1px solid %3;"
+                       "  border-radius: 6px;"
+                       "  padding: 7px 18px;"
+                       "  font-size: 14px;"
+                       "  font-weight: 500;"
+                       "}"
+                       "QPushButton:hover { border-color: %4; color: %5; }")
+            .arg(studio::kFieldBg.name(), studio::kFieldText.name(),
+                 studio::kFieldBorder.name(), studio::kFieldBorderHover.name(),
+                 QColor(Qt::white).name()));
+    connect(openProject, &QPushButton::clicked, this,
+            &DashboardPage::openProjectRequested);
+    layout->addWidget(openProject);
 
     // --- New Project button (right) --------------------------------------
     QPushButton *newProject = new QPushButton(QStringLiteral("New Project"));
@@ -90,64 +100,78 @@ QWidget *DashboardPage::createContentArea()
     layout->setContentsMargins(40, 40, 40, 40);
     layout->setSpacing(28);
 
-    // --- Cards row (centered) --------------------------------------------
-    QHBoxLayout *cards = new QHBoxLayout;
-    cards->setSpacing(24);
-    cards->addStretch(1);
-    cards->addWidget(createProjectCard(
-        QStringLiteral("Untitled Project 01"), QStringLiteral("Modified 2 hours ago")));
-    cards->addWidget(createProjectCard(
-        QStringLiteral("Untitled Project 02"), QStringLiteral("Modified yesterday")));
-    cards->addWidget(createProjectCard(
-        QStringLiteral("Untitled Project 03"), QStringLiteral("Modified 3 days ago")));
-    cards->addStretch(1);
+    // --- Recent projects: one centred column, as wide as the three cards --
+    // The title and the view share the column so the title's left edge is
+    // the first card's left edge.
+    QWidget *column = new QWidget;
+    column->setFixedWidth(RecentProjectsView::kViewW);
+    QVBoxLayout *columnLayout = new QVBoxLayout(column);
+    columnLayout->setContentsMargins(0, 0, 0, 0);
+    columnLayout->setSpacing(14);
 
-    layout->addLayout(cards);
+    m_recentsTitle = new QLabel(QStringLiteral("Recent Projects"));
+    m_recentsTitle->setStyleSheet(
+        QStringLiteral("color: %1; font-size: 13px; font-weight: 600;")
+            .arg(studio::kFieldText.name()));
+    columnLayout->addWidget(m_recentsTitle);
 
-    // --- Empty state ------------------------------------------------------
-    QLabel *empty = new QLabel(QStringLiteral("Create a new project to get started"));
-    empty->setAlignment(Qt::AlignCenter);
-    empty->setStyleSheet(QStringLiteral("color: #666666; font-size: 13px;"));
-    layout->addWidget(empty);
+    m_recents = new RecentProjectsView(m_thumbnails);
+    connect(m_recents, &RecentProjectsView::openRequested, this,
+            &DashboardPage::openRecentRequested);
+    columnLayout->addWidget(m_recents);
+
+    QHBoxLayout *centred = new QHBoxLayout;
+    centred->addStretch(1);
+    centred->addWidget(column);
+    centred->addStretch(1);
+    layout->addLayout(centred);
+
+    // --- Empty state: no recents at all (first run) -----------------------
+    // No card is drawn for a project that does not exist: a placeholder box
+    // that looks like a project is exactly what this page used to show.
+    m_emptyHint = new QLabel(QStringLiteral("Create a new project to get started"));
+    m_emptyHint->setAlignment(Qt::AlignCenter);
+    m_emptyHint->setStyleSheet(
+        QStringLiteral("color: %1; font-size: 13px;")
+            .arg(studio::kFieldLabel.name()));
+    layout->addWidget(m_emptyHint);
 
     layout->addStretch(1);
+
+    // The view says when it has re-read the list - including after it
+    // removed a missing project itself - and the page follows.
+    connect(m_recents, &RecentProjectsView::reloaded, this, [this, column] {
+        const bool any = !m_recents->isEmpty();
+        column->setVisible(any);
+        m_emptyHint->setVisible(!any);
+    });
+    reloadRecents();
 
     return content;
 }
 
-QWidget *DashboardPage::createProjectCard(const QString &name, const QString &modified)
+void DashboardPage::reloadRecents()
 {
-    QFrame *card = new QFrame;
-    card->setAttribute(Qt::WA_StyledBackground, true);
-    card->setFixedWidth(kCardWidth);
-    card->setStyleSheet(QStringLiteral(
-        "QFrame {"
-        "  background-color: #161616;"
-        "  border: 1px solid #2a2a2a;"
-        "  border-radius: 10px;"
-        "}"));
+    if (m_recents)
+        m_recents->reload();
+}
 
-    QVBoxLayout *layout = new QVBoxLayout(card);
-    layout->setContentsMargins(16, 16, 16, 16);
-    layout->setSpacing(12);
+void DashboardPage::showEvent(QShowEvent *event)
+{
+    QWidget::showEvent(event);
+    reloadRecents();
+}
 
-    // Thumbnail placeholder (16:9 grey rectangle).
-    QLabel *thumb = new QLabel;
-    thumb->setFixedSize(kThumbWidth, kThumbHeight);
-    thumb->setStyleSheet(QStringLiteral(
-        "background-color: #333333; border: none; border-radius: 6px;"));
-    layout->addWidget(thumb);
-
-    // Project name.
-    QLabel *title = new QLabel(name);
-    title->setStyleSheet(QStringLiteral(
-        "color: #ffffff; font-size: 15px; font-weight: 600; border: none;"));
-    layout->addWidget(title);
-
-    // Last modified date.
-    QLabel *date = new QLabel(modified);
-    date->setStyleSheet(QStringLiteral("color: #666666; font-size: 12px; border: none;"));
-    layout->addWidget(date);
-
-    return card;
+void DashboardPage::setHeaderAccessory(QWidget *accessory)
+{
+    if (m_accessory.data() == accessory)
+        return;
+    // Only if it is still ours: the host may already have taken it back.
+    if (m_accessory && m_headerLayout->indexOf(m_accessory.data()) >= 0)
+        m_headerLayout->removeWidget(m_accessory.data());
+    m_accessory = accessory;
+    if (accessory) {
+        m_headerLayout->insertWidget(0, accessory); // reparents it here
+        accessory->show();
+    }
 }

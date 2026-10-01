@@ -151,14 +151,44 @@ public:
             update();
         });
     }
+    // INTERACTIVE: where the host has no menu on screen to start a
+    // recording from, the indicator is the mouse's way in. It then shows
+    // itself while idle (an idle indicator normally paints nothing) and a
+    // click toggles the recording. Off, it is exactly the passive readout
+    // it always was - a click does nothing, so nothing invisible in a menu
+    // bar's corner can start a recording by accident.
+    void setInteractive(bool on, std::function<void()> onClick)
+    {
+        m_interactive = on;
+        m_onClick = std::move(onClick);
+        setCursor(on ? Qt::PointingHandCursor : Qt::ArrowCursor);
+        update();
+    }
+    bool interactive() const { return m_interactive; }
 
 protected:
+    void mousePressEvent(QMouseEvent *event) override
+    {
+        if (m_interactive && m_onClick && event->button() == Qt::LeftButton)
+            m_onClick();
+    }
     void paintEvent(QPaintEvent *) override
     {
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing, true);
-        if (!m_active)
+        if (!m_active) {
+            if (!m_interactive)
+                return;
+            // Idle and clickable: a hollow dot and what a click will do.
+            p.setPen(QPen(QColor(0xe0, 0x40, 0x40), 1.5));
+            p.setBrush(Qt::NoBrush);
+            p.drawEllipse(QRectF(4.75, 5.75, 8.5, 8.5));
+            p.setPen(QColor(0x99, 0x99, 0x99));
+            p.drawText(rect().adjusted(20, 0, 0, 0),
+                       Qt::AlignVCenter | Qt::AlignLeft,
+                       QStringLiteral("Record  (Ctrl+Shift+R)"));
             return;
+        }
         p.setPen(Qt::NoPen);
         p.setBrush(m_flash ? QColor(0xff, 0xa0, 0x20)
                            : (m_blink ? QColor(0xe0, 0x40, 0x40)
@@ -174,6 +204,9 @@ protected:
     }
 
 private:
+    bool m_interactive = false;
+    std::function<void()> m_onClick;
+
     bool m_active = false;
     bool m_blink = true;
     bool m_flash = false;
@@ -479,6 +512,7 @@ public:
     // DANGLING widget (crash in QMenuBar::setCornerWidget). The QPointer
     // nulls on deletion and indicatorWidget() recreates.
     QPointer<RecIndicator> indicator;
+    bool indicatorInteractive = false; // outlives any one indicator widget
 
     int intervalMs = 500;
     QString format = QStringLiteral("jpg");
@@ -668,10 +702,26 @@ QAction *Recorder::markAction() { return d->mark; }
 
 QWidget *Recorder::indicatorWidget()
 {
-    if (!d->indicator)
+    if (!d->indicator) {
         d->indicator = new RecIndicator;
+        // A RECREATED indicator (the previous one died with the window that
+        // held it) must come up in the state the recorder is in, not blank.
+        d->indicator->setInteractive(d->indicatorInteractive,
+                                     [this] { toggleRecording(); });
+        if (d->recording)
+            d->indicator->setActive(true);
+    }
     return d->indicator;
 }
+
+void Recorder::setIndicatorInteractive(bool on)
+{
+    d->indicatorInteractive = on;
+    if (d->indicator)
+        d->indicator->setInteractive(on, [this] { toggleRecording(); });
+}
+
+bool Recorder::indicatorInteractive() const { return d->indicatorInteractive; }
 
 void Recorder::setOutputRoot(const QString &dir) { d->outputRoot = dir; }
 void Recorder::setCaptureIntervalMs(int ms)

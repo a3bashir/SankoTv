@@ -4677,6 +4677,115 @@ THE PENCILS WERE MEASURED FOR "25".**
      names the reference sizes it measured ("24 88 w24 w88") and is
      refused when they differ from the model's; (w5) pins the refusal.
 
+## THE START WINDOW: recents move out of the dialog, three defects found on the way (2026-10-01)
+
+WHAT CHANGED, in the user's terms:
+- The start window (DashboardPage) shows the REAL recent projects. The
+  three boxes were hardcoded placeholders ("Untitled Project 01 / Modified
+  2 hours ago"); they are now the three most recent projects as cards, and
+  entries 4-10 sit beneath as compact rows in three columns aligned to the
+  cards (RecentProjectsView). One click opens. No logo. Open Project and
+  New Project buttons in the header.
+- The New Project dialog only creates. 680x460 two-column (Figma 350:24)
+  became 340x385 one-column: the form column's controls, fonts, 51 px
+  pitch and header unchanged; fields 229 -> 304 px wide (Save Location 158
+  -> 233, it clipped the default path); a Cancel button where Open Project
+  was (the window could previously be dismissed only with Escape). No
+  Figma node was needed; if a design for the start window arrives later,
+  RecentProjectsView is the one widget to restyle.
+- The menu bar (File / Edit / View / Developer) is hidden on the start
+  window and back on every other page: MainWindow::updateChromeForPage,
+  driven by the page stack's currentChanged - one place.
+
+DECISIONS (all the user's, 2026-10-01): compact rows under the cards
+rather than an Open Recent button; single click opens (not select-then-
+Open); 340x385 with Cancel; recorder keys fixed under modals and a
+clickable indicator on the start window; thumbnails decoded after the
+window appears, not on the first paint.
+
+WHERE THINGS LIVE NOW:
+- RecentProjects.{h,cpp}: THE store (entries / record / remove) and
+  thumbnailSource(). Out of NewProjectDialog, where it was static members.
+  STORAGE UNCHANGED - sankoSettings() array "recentProjects", {path,
+  lastOpened ISO}, cap 10 - so nothing migrates. Lifecycle (t) pins the
+  stored shape AND reads a list written raw in the old format.
+- RecentThumbnails: the 3b decode-once cache, moved out of the dialog's
+  list. Two changes: it lives as long as the page (the dialog's died with
+  each dialog, so every opening re-decoded every row), and decoding is
+  DEFERRED - request() queues, one decode per turn of the event loop,
+  ready() repaints. A 4K first panel is ~64 ms to decode (3b's number;
+  PNG has no cheap scaled read) and the start window is what the app
+  opens to. A stale picture stays up until its replacement is ready, and
+  a well whose picture is still queued is drawn EMPTY: the film glyph
+  means "no picture" and is drawn only once that is known, so nothing
+  flashes the glyph on the way to its thumbnail.
+- RecentProjectsView: one painted widget for cards + rows. Carried over
+  from the dialog's list, each pinned in Lifecycle (y): first-panel
+  thumbnail, "Last opened: MMM d, yyyy", MIDDLE-elided names, the missing
+  project dimmed 50% with the same "Remove it from Recent Projects?"
+  prompt. Cards keep the placeholder cards' type (app font 15/12 px);
+  rows keep the dialog's (Inter 11/10). Keyboard: arrows / Home / End
+  move a cursor, Enter opens; the cursor resets on every re-read because
+  opening a project re-orders the list.
+- A card or row click goes through MainWindow::openProject - THE open
+  path (unsaved-changes prompt, missing-file handling). The dialog's old
+  Open route called loadFromPath directly and skipped both.
+- Open Project's file picker starts beside the most recent project that
+  still exists, then Documents/SankoTV if it exists, then Documents, then
+  home. It used to start at home, two levels above where projects live.
+  Nothing on that path CREATES a folder.
+
+A HIDDEN MENU BAR TAKES ITS SHORTCUTS WITH IT. Measured before building
+(tests/_backups/seam_shortcutprobe_20261001.cpp, Debug == Release):
+  bar visible                          Ctrl+N fires   Ctrl+Shift+B fires
+  bar hidden                           dead           dead (ApplicationShortcut
+                                                      does not save it)
+  bar kept, menu ENTRIES hidden        dead           dead
+  bar hidden + action added to window  fires once     fires once
+  bar visible + action added to window fires once     fires once (not twice)
+Qt resolves a shortcut through the widgets its action is attached to. So
+MainWindow::keepMenuShortcutsAlive attaches every shortcut-bearing menu
+action to the window as well. Lifecycle (z) holds it, with the control
+that detaching the action kills the key again.
+
+THE DEV RECORDER ON THE START WINDOW:
+- Ctrl+Shift+R is start/stop; Ctrl+Shift+B is the Issue marker. Both
+  stay live with the bar hidden, by the attachment above.
+- The indicator lived in the menu bar's corner and would have vanished
+  with the bar. On the start window it moves into the page header
+  (DashboardPage::setHeaderAccessory) and becomes INTERACTIVE: it shows a
+  hollow dot + "Record (Ctrl+Shift+R)" while idle and a click toggles
+  recording. In the menu bar it is the passive indicator it always was -
+  invisible when idle, deaf to clicks - so nothing unseen in a corner can
+  start a recording.
+
+LANDED AROUND IT, each its own commit with its own note in this file:
+the recents store moved out of the dialog and proved lossless on the
+live list ("Claude's tools do not see the real registry"); thumbnails
+from the manifest (under Performance pass 3b); the New Project button
+through the unsaved-changes prompt (under the Close Project notes);
+filled-button states into the theme ("Filled accent buttons"); the
+recorder's keys under a modal ("Dev Recorder: its keys work inside a
+modal").
+
+GATE: Lifecycle 243 -> 350 across the whole pass (sections t, u, v, w,
+x, y, z; this redesign is y and z, 63 checks). DevRecorder +6. The other
+six families unchanged; no pin moved. Pixel-level seam archived as
+tests/_backups/seam_startwindow_20261001.cpp with both configs' results
+and its screenshots.
+
+LIMITS, accepted or open:
+- The seam and Lifecycle run at device pixel ratio 1 on this machine;
+  nothing here was SEEN at 150% or 200%. The view requests thumbnails at
+  the widget's ratio and re-reads on a ratio change, but that path is
+  unexercised.
+- Thumbnails COVER their well (crop), as they did in the dialog. A
+  portrait project's card shows the middle band of its first panel.
+- The start window is not scrollable: ten recents fit at the 1280x720
+  minimum; raising the cap means revisiting that.
+- Native file pickers (Open Project, Browse) cannot take the recorder's
+  keys: they are not Qt windows.
+
 ## METHOD: measure interior structure ACROSS THE SIZE RANGE before calling it character (2026-09-25)
 
 The Painting census measured Acrylic at size 20 only and found "one

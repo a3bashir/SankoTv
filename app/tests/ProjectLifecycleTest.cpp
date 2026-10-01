@@ -45,6 +45,8 @@
 #include "PerspectiveTool.h"
 #include "MainWindow.h"
 #include "StoryboardPage.h"
+#include "RecentProjectsView.h"
+#include "RecentThumbnails.h"
 #include "brushlib/BrushLibraryPanel.h"
 #include "brushlib/BrushLibraryModel.h"
 #include "brushlib/BrushPresetCodec.h"
@@ -79,6 +81,10 @@
 #include <QFileInfo>
 #include <QPushButton>
 #include <QTextStream>
+#include <QLabel>
+#include <QMenuBar>
+#include <QMessageBox>
+#include <QScrollArea>
 #include <QUndoStack>
 #include <QtGui/QTransform>
 #include <functional>
@@ -2013,6 +2019,875 @@ void runGrainPreviewPass(const QString &scratch)
     pump(300);
 }
 
+// ---- (y) the start window shows the recent projects -----------------------
+// The three boxes on the start window were hardcoded placeholders, and the
+// real list lived in the New Project dialog, checked once by a seam and
+// never by the gate. Both halves are pinned here: what the page shows for
+// 0, 1, 2, 3 and a full list, and that EVERYTHING the dialog's list did
+// arrived with it - the first-panel thumbnail, the date, the middle-elided
+// name, the dimmed missing project with its remove prompt, and a thumbnail
+// cache that decodes once and never on a paint.
+//
+// Every "what is shown" below is read through the view's *At accessors,
+// which return what paintEvent draws, computed by the same code.
+namespace startWindow {
+
+// A project saved through the REAL save path: one panel, one solid colour,
+// so "whose picture is this" has a one-pixel answer.
+QString saveSolid(const QString &folder, const QString &name,
+                  const QColor &color, const QSize &size = QSize(960, 540))
+{
+    QDir().mkpath(folder);
+    const QString path =
+        folder + QLatin1Char('/') + name + QStringLiteral(".sankotv");
+    Scene *scene = new Scene;
+    scene->number = 1;
+    Panel *panel = makeBlankPanel(size);
+    panel->layers[1].image.fill(color);
+    scene->panels.append(panel);
+    ProjectIO::SaveData data;
+    data.projectName = name;
+    data.fps = 24;
+    data.canvasSize = size;
+    data.scenes = {scene};
+    const ProjectIO::WriteResult w = ProjectIO::projectToJson(data, path);
+    QFile f(path);
+    if (w.ok && f.open(QIODevice::WriteOnly))
+        f.write(QJsonDocument(w.root).toJson(QJsonDocument::Indented));
+    f.close();
+    delete scene;
+    return w.ok ? path : QString();
+}
+
+struct Recent
+{
+    QString path;
+    QString stamp; // ISO, as the store keeps it
+};
+
+// The store written RAW, in the order given (most recent first), with the
+// dates given - so order and dates are the test's, not "now".
+void setRecents(const QString &ini, const QVector<Recent> &list)
+{
+    QFile::remove(ini);
+    QSettings s(ini, QSettings::IniFormat);
+    s.beginWriteArray(QStringLiteral("recentProjects"), int(list.size()));
+    for (int i = 0; i < list.size(); ++i) {
+        s.setArrayIndex(i);
+        s.setValue(QStringLiteral("path"), list.at(i).path);
+        s.setValue(QStringLiteral("lastOpened"), list.at(i).stamp);
+    }
+    s.endArray();
+    s.sync();
+}
+
+// Let every queued thumbnail decode (one per turn of the event loop).
+void settle(RecentThumbnails *thumbnails)
+{
+    for (int guard = 0; thumbnails->busy() && guard < 600; ++guard)
+        pump(10);
+    pump(40);
+}
+
+QPixmap thumbOf(DashboardPage *page, int index)
+{
+    RecentProjectsView *view = page->recentsView();
+    return page->thumbnails()->pixmap(
+        view->pathAt(index), view->thumbPixelSize(view->kindAt(index)));
+}
+
+QColor thumbCentre(DashboardPage *page, int index)
+{
+    const QImage img = thumbOf(page, index).toImage();
+    return img.isNull() ? QColor()
+                        : img.pixelColor(img.width() / 2, img.height() / 2);
+}
+
+bool closeTo(const QColor &a, const QColor &b, int tolerance = 3)
+{
+    return a.isValid() && b.isValid()
+        && qAbs(a.red() - b.red()) <= tolerance
+        && qAbs(a.green() - b.green()) <= tolerance
+        && qAbs(a.blue() - b.blue()) <= tolerance;
+}
+
+void click(QWidget *w, const QPoint &pressAt, const QPoint &releaseAt)
+{
+    sendMouse(w, QEvent::MouseButtonPress, pressAt, Qt::LeftButton);
+    sendMouse(w, QEvent::MouseButtonRelease, releaseAt, Qt::LeftButton);
+}
+
+void key(QWidget *w, int k)
+{
+    QKeyEvent press(QEvent::KeyPress, k, Qt::NoModifier);
+    QCoreApplication::sendEvent(w, &press);
+}
+
+} // namespace startWindow
+
+void runStartWindowRecentsPass(const QString &scratch)
+{
+    using namespace startWindow;
+    out() << "--- (y) the start window shows the recent projects ---"
+          << Qt::endl;
+    const QString root = scratch + QStringLiteral("/start_window");
+    QDir(root).removeRecursively();
+    QDir().mkpath(root);
+    const QString ini = root + QStringLiteral("/recents.ini");
+    RecentProjects::setSettingsOverride(ini);
+
+    // ---- fixtures ---------------------------------------------------------
+    const QColor cBig(200, 40, 40), cV1(40, 170, 60), cV2(60, 80, 210);
+    const QColor cBoard(210, 180, 40), cBoardA(160, 60, 200);
+    const QColor cStale(20, 20, 20), cRepaint(30, 200, 200);
+    QVector<QColor> plainColours;
+    QVector<QString> plain; // P1..P8, 960x540
+    for (int i = 1; i <= 8; ++i) {
+        plainColours.append(QColor::fromHsv((i * 41) % 360, 190, 215));
+        plain.append(saveSolid(root + QStringLiteral("/P%1").arg(i),
+                               QStringLiteral("P%1").arg(i),
+                               plainColours.last()));
+    }
+    const QString big = saveSolid(root + QStringLiteral("/Big"),
+                                  QStringLiteral("Big"), cBig,
+                                  QSize(1920, 1080));
+    const QString longStem = QStringLiteral(
+        "Cyberpunk_Alley_Night_Chase_Sequence_Final_Storyboard_Director_Cut_");
+    const QString v1 = saveSolid(root + QStringLiteral("/V1"),
+                                 longStem + QStringLiteral("v1"), cV1);
+    const QString v2 = saveSolid(root + QStringLiteral("/V2"),
+                                 longStem + QStringLiteral("v2"), cV2);
+    // Two projects in ONE folder beside a stale flat file from an older
+    // save: the arrangement in which the old list showed the wrong picture.
+    const QString sharedDir = root + QStringLiteral("/Shared");
+    const QString board = saveSolid(sharedDir, QStringLiteral("Board"), cBoard);
+    const QString boardA =
+        saveSolid(sharedDir, QStringLiteral("Board_A"), cBoardA);
+    {
+        QImage stale(960, 540, QImage::Format_ARGB32_Premultiplied);
+        stale.fill(cStale);
+        stale.save(sharedDir + QStringLiteral("/panel_s0_p0.png"), "PNG");
+    }
+    // Created but never drawn in: a manifest with no scenes.
+    const QString empty = root + QStringLiteral("/Empty/Empty.sankotv");
+    QDir().mkpath(QFileInfo(empty).absolutePath());
+    {
+        QJsonObject manifest{{QStringLiteral("version"), 1},
+                             {QStringLiteral("scenes"), QJsonArray()}};
+        QFile f(empty);
+        if (f.open(QIODevice::WriteOnly))
+            f.write(QJsonDocument(manifest).toJson());
+    }
+    const QString gone = root + QStringLiteral("/Gone/Gone.sankotv");
+    bool fixturesOk = !big.isEmpty() && !v1.isEmpty() && !v2.isEmpty()
+        && !board.isEmpty() && !boardA.isEmpty() && QFileInfo::exists(empty)
+        && !QFileInfo::exists(gone);
+    for (const QString &p : plain)
+        fixturesOk = fixturesOk && !p.isEmpty();
+    check(QStringLiteral("(y) fixtures: thirteen projects through the real "
+                         "save path, one never drawn in, one whose file is "
+                         "gone"),
+          fixturesOk);
+    const QString older = QStringLiteral("2026-08-28T18:16:17");
+
+    // ---- 0, 1, 2, 3 recents -------------------------------------------------
+    setRecents(ini, {});
+    MainWindow window;
+    window.resize(1400, 880);
+    window.show();
+    pump(800);
+    auto *page = window.findChild<DashboardPage *>();
+    RecentProjectsView *view = page ? page->recentsView() : nullptr;
+    check(QStringLiteral("(y) found the start window and its recents view"),
+          page && view && window.onDashboardForTest());
+    if (!page || !view)
+        return;
+    RecentThumbnails *thumbnails = page->thumbnails();
+
+    check(QStringLiteral("(y) FIRST RUN, no recents: no cards at all, and "
+                         "the hint says how to begin"),
+          view->count() == 0 && !view->isVisible()
+              && page->emptyHint()->isVisible()
+              && page->emptyHint()->text()
+                     == QStringLiteral("Create a new project to get started"));
+
+    setRecents(ini, {{plain.at(5), older}});
+    page->reloadRecents();
+    pump(60);
+    check(QStringLiteral("(y) ONE recent: one card, in the first slot; the "
+                         "hint is gone (control: the view CAN be visible)"),
+          view->count() == 1 && view->isVisible()
+              && !page->emptyHint()->isVisible()
+              && view->kindAt(0) == RecentProjectsView::Kind::Card
+              && view->rectAt(0).topLeft() == QPoint(0, 0));
+
+    setRecents(ini, {{plain.at(5), older}, {plain.at(6), older}});
+    page->reloadRecents();
+    pump(60);
+    check(QStringLiteral("(y) TWO recents: two cards filling from the left, "
+                         "the third slot empty"),
+          view->count() == 2
+              && view->rectAt(1).left()
+                     == RecentProjectsView::kCardW
+                            + RecentProjectsView::kCardGap
+              && view->rectAt(2).isNull()
+              && view->width() == RecentProjectsView::kViewW);
+
+    setRecents(ini, {{plain.at(5), older},
+                     {plain.at(6), older},
+                     {plain.at(7), older}});
+    page->reloadRecents();
+    pump(60);
+    check(QStringLiteral("(y) THREE recents: three cards and nothing beneath"),
+          view->count() == 3 && view->height() == RecentProjectsView::kCardH
+              && view->kindAt(2) == RecentProjectsView::Kind::Card);
+    settle(thumbnails);
+
+    // ---- a full list --------------------------------------------------------
+    // Twelve written; the store's cap is ten. Laid out so every behaviour
+    // has an entry: 0 Big (1920x1080), 1 long-name v1, 2 Board_A (shared
+    // folder), then rows: 3 Board, 4 long-name v2, 5 Gone, 6 Empty, 7-9
+    // plain. None of these was listed above, so nothing is decoded yet.
+    const QVector<Recent> full = {
+        {big, QStringLiteral("2026-09-30T19:10:29")},
+        {v1, QStringLiteral("2026-09-28T19:29:51")},
+        {boardA, older},
+        {board, older},
+        {v2, older},
+        {gone, older},
+        {empty, older},
+        {plain.at(0), older},
+        {plain.at(1), older},
+        {plain.at(2), older},
+        {plain.at(3), older},  // beyond the cap
+        {plain.at(4), older}}; // beyond the cap
+    setRecents(ini, full);
+    const int decodesBeforeLoad = thumbnails->decodeCountForTest();
+    page->reloadRecents(); // deliberately NOT pumped yet
+    view->repaint();       // a paint, with nothing decoded
+
+    int withPicture = 0;
+    for (int i = 0; i < view->count(); ++i)
+        withPicture += view->hasThumbnailAt(i) ? 1 : 0;
+    check(QStringLiteral("(y) loading the list and painting it decodes "
+                         "NOTHING: thumbnails are deferred, not done on the "
+                         "paint"),
+          thumbnails->decodeCountForTest() == decodesBeforeLoad
+              && withPicture == 0 && thumbnails->busy(),
+          QStringLiteral("%1 decoded, %2 shown")
+              .arg(thumbnails->decodeCountForTest() - decodesBeforeLoad)
+              .arg(withPicture));
+    // The film glyph MEANS "no picture". A project whose picture is merely
+    // on its way must not wear it for a frame and then lose it.
+    int glyphsWhileWaiting = 0;
+    for (int i = 0; i < view->count(); ++i)
+        glyphsWhileWaiting += view->showsGlyphAt(i) ? 1 : 0;
+    check(QStringLiteral("(y) while pictures are still queued, only the "
+                         "MISSING project wears the no-picture glyph; the "
+                         "wells that are waiting stay empty"),
+          glyphsWhileWaiting == 1 && view->showsGlyphAt(5),
+          QStringLiteral("%1 glyph(s)").arg(glyphsWhileWaiting));
+
+    using Kind = RecentProjectsView::Kind;
+    bool kindsOk = view->count() == RecentProjects::kCap;
+    for (int i = 0; kindsOk && i < view->count(); ++i)
+        kindsOk = view->kindAt(i) == (i < 3 ? Kind::Card : Kind::Row);
+    check(QStringLiteral("(y) a FULL list: ten shown (the store's cap), the "
+                         "first three as cards and the other seven as rows"),
+          kindsOk, QStringLiteral("%1 shown").arg(view->count()));
+    bool orderOk = true;
+    for (int i = 0; i < view->count(); ++i)
+        orderOk = orderOk && view->pathAt(i) == full.at(i).path;
+    check(QStringLiteral("(y) ...in the store's order, most recent first"),
+          orderOk);
+
+    const int pitchX =
+        RecentProjectsView::kCardW + RecentProjectsView::kCardGap;
+    const int rowsTop =
+        RecentProjectsView::kCardH + RecentProjectsView::kSectionGap;
+    check(QStringLiteral("(y) the rows sit under the cards in the cards' "
+                         "three columns, reading across then down"),
+          view->rectAt(3).topLeft() == QPoint(0, rowsTop)
+              && view->rectAt(4).topLeft() == QPoint(pitchX, rowsTop)
+              && view->rectAt(5).topLeft() == QPoint(2 * pitchX, rowsTop)
+              && view->rectAt(6).topLeft()
+                     == QPoint(0, rowsTop + RecentProjectsView::kRowPitch)
+              && view->rectAt(9).topLeft()
+                     == QPoint(0, rowsTop + 2 * RecentProjectsView::kRowPitch));
+    bool inside = true, apart = true;
+    for (int i = 0; i < view->count(); ++i) {
+        inside = inside && view->rect().contains(view->rectAt(i));
+        for (int j = i + 1; j < view->count(); ++j)
+            apart = apart && !view->rectAt(i).intersects(view->rectAt(j));
+    }
+    check(QStringLiteral("(y) every item is inside the view and no two "
+                         "overlap"),
+          inside && apart);
+
+    // Names and dates.
+    const QChar ellipsis(0x2026);
+    const QString shownV1 = view->shownNameAt(1), shownV2 = view->shownNameAt(4);
+    check(QStringLiteral("(y) a long name is elided in the MIDDLE on a card "
+                         "and on a row, so v1 and v2 stay distinguishable"),
+          shownV1.contains(ellipsis) && shownV2.contains(ellipsis)
+              && shownV1.endsWith(QStringLiteral("v1"))
+              && shownV2.endsWith(QStringLiteral("v2"))
+              && shownV1.startsWith(QStringLiteral("Cyber"))
+              && shownV2.startsWith(QStringLiteral("Cyber")),
+          shownV1 + QStringLiteral(" | ") + shownV2);
+    check(QStringLiteral("(y) control: a short name is shown whole"),
+          view->shownNameAt(0) == QStringLiteral("Big")
+              && view->shownNameAt(7) == QStringLiteral("P1"));
+    check(QStringLiteral("(y) each shows when it was last opened"),
+          view->shownDateAt(0) == QStringLiteral("Last opened: Sep 30, 2026")
+              && view->shownDateAt(1)
+                     == QStringLiteral("Last opened: Sep 28, 2026")
+              && view->shownDateAt(9)
+                     == QStringLiteral("Last opened: Aug 28, 2026"),
+          view->shownDateAt(0));
+
+    // The missing project.
+    int missing = 0;
+    for (int i = 0; i < view->count(); ++i)
+        missing += view->missingAt(i) ? 1 : 0;
+    check(QStringLiteral("(y) the project whose file is gone is still "
+                         "listed, flagged to be drawn dimmed - and it is the "
+                         "only one"),
+          view->missingAt(5) && missing == 1 && view->pathAt(5) == gone);
+
+    // ---- thumbnails ---------------------------------------------------------
+    settle(thumbnails);
+    const int decoded = thumbnails->decodeCountForTest() - decodesBeforeLoad;
+    bool pictured = true;
+    for (int i = 0; i < view->count(); ++i)
+        pictured = pictured && view->hasThumbnailAt(i) == (i != 5 && i != 6);
+    check(QStringLiteral("(y) once the loop has turned, every project with "
+                         "artwork has its picture - decoded exactly once "
+                         "each - and the missing and the never-drawn do not"),
+          decoded == 8 && pictured && !thumbnails->busy(),
+          QStringLiteral("%1 decodes").arg(decoded));
+    int glyphsAfter = 0;
+    for (int i = 0; i < view->count(); ++i)
+        glyphsAfter += view->showsGlyphAt(i) ? 1 : 0;
+    check(QStringLiteral("(y) ...and the glyph now marks exactly the two "
+                         "with no picture: the missing project and the one "
+                         "never drawn in (control: the count moved from 1)"),
+          glyphsAfter == 2 && view->showsGlyphAt(5) && view->showsGlyphAt(6),
+          QStringLiteral("%1 glyph(s)").arg(glyphsAfter));
+
+    const QSize cardPx = view->thumbPixelSize(Kind::Card);
+    const QSize rowPx = view->thumbPixelSize(Kind::Row);
+    const QSize bigOnDisk =
+        QImage(RecentProjects::thumbnailSource(big)).size();
+    const QSize bigThumb = thumbOf(page, 0).size();
+    const QSize rowThumb = thumbOf(page, 7).size();
+    check(QStringLiteral("(y) a card's picture is decoded AT the size it is "
+                         "drawn, not at the panel's (control: the panel on "
+                         "disk is 1920x1080)"),
+          bigOnDisk == QSize(1920, 1080) && bigThumb == cardPx,
+          QStringLiteral("thumb %1x%2, card well %3x%4")
+              .arg(bigThumb.width()).arg(bigThumb.height())
+              .arg(cardPx.width()).arg(cardPx.height()));
+    check(QStringLiteral("(y) a row's picture covers its small well and is "
+                         "no bigger than that needs"),
+          rowThumb.height() == rowPx.height()
+              && rowThumb.width() >= rowPx.width()
+              && rowThumb.width() <= rowPx.width() * 2,
+          QStringLiteral("thumb %1x%2, row well %3x%4")
+              .arg(rowThumb.width()).arg(rowThumb.height())
+              .arg(rowPx.width()).arg(rowPx.height()));
+
+    check(QStringLiteral("(y) each picture is that project's OWN first "
+                         "panel"),
+          closeTo(thumbCentre(page, 0), cBig) && closeTo(thumbCentre(page, 1), cV1)
+              && closeTo(thumbCentre(page, 4), cV2)
+              && closeTo(thumbCentre(page, 7), plainColours.at(0))
+              && closeTo(thumbCentre(page, 9), plainColours.at(2)));
+    check(QStringLiteral("(y) two projects sharing a folder show two "
+                         "different pictures, and neither is the stale flat "
+                         "file beside them (control: it is there)"),
+          closeTo(thumbCentre(page, 2), cBoardA) && closeTo(thumbCentre(page, 3), cBoard)
+              && !closeTo(thumbCentre(page, 2), cStale)
+              && !closeTo(thumbCentre(page, 3), cStale)
+              && QFileInfo::exists(sharedDir
+                                   + QStringLiteral("/panel_s0_p0.png")));
+
+    // A repaint storm - what hovering across the list is.
+    const int beforeStorm = thumbnails->decodeCountForTest();
+    for (int i = 0; i < 60; ++i) {
+        sendMouse(view, QEvent::MouseMove,
+                  view->rectAt(i % view->count()).center(), Qt::NoButton);
+        view->repaint();
+    }
+    check(QStringLiteral("(y) sixty hover repaints decode ZERO more times"),
+          thumbnails->decodeCountForTest() == beforeStorm);
+    page->reloadRecents();
+    settle(thumbnails);
+    page->reloadRecents();
+    settle(thumbnails);
+    check(QStringLiteral("(y) re-reading an unchanged list decodes nothing "
+                         "either"),
+          thumbnails->decodeCountForTest() == beforeStorm);
+
+    // ...and the control that a decode DOES happen when it should: save one
+    // project again with a different first panel.
+    saveSolid(root + QStringLiteral("/P1"), QStringLiteral("P1"), cRepaint);
+    {
+        QFile png(RecentProjects::thumbnailSource(plain.at(0)));
+        if (png.open(QIODevice::ReadWrite)) {
+            png.setFileTime(QDateTime::currentDateTime().addSecs(5),
+                            QFileDevice::FileModificationTime);
+            png.close();
+        }
+    }
+    page->reloadRecents();
+    const bool staleShownMeanwhile =
+        closeTo(thumbCentre(page, 7), plainColours.at(0));
+    settle(thumbnails);
+    check(QStringLiteral("(y) a project saved again is decoded again, ONCE, "
+                         "and shows its new first panel - the old one staying "
+                         "up until the new one is ready"),
+          thumbnails->decodeCountForTest() == beforeStorm + 1
+              && closeTo(thumbCentre(page, 7), cRepaint) && staleShownMeanwhile,
+          QStringLiteral("%1 extra decode(s)")
+              .arg(thumbnails->decodeCountForTest() - beforeStorm));
+
+    // ---- the missing project's remove prompt ------------------------------
+    int asked = 0, opened = 0;
+    QString askedAbout;
+    bool answer = false;
+    view->setRemovePrompt([&](const QString &path) {
+        ++asked;
+        askedAbout = path;
+        return answer;
+    });
+    QObject::connect(view, &RecentProjectsView::openRequested, &window,
+                     [&opened] { ++opened; });
+    view->activate(5);
+    pump(60);
+    check(QStringLiteral("(y) clicking the missing project ASKS whether to "
+                         "remove it, and No keeps it listed"),
+          asked == 1 && askedAbout == gone && opened == 0
+              && view->count() == 10 && view->missingAt(5));
+    answer = true;
+    view->activate(5);
+    pump(60);
+    bool stillStored = false;
+    for (const RecentProjects::Entry &e : RecentProjects::entries())
+        stillStored = stillStored || e.path == gone;
+    check(QStringLiteral("(y) Yes removes it: from the page AND from the "
+                         "store, and nothing was opened"),
+          asked == 2 && opened == 0 && view->count() == 9 && !stillStored
+              && view->pathAt(5) == empty);
+
+    // ---- a click opens ------------------------------------------------------
+    // (the list is now 0 Big, 1 v1, 2 Board_A | 3 Board, 4 v2, 5 Empty,
+    //  6 P1, 7 P2, 8 P3)
+    click(view, view->rectAt(0).center(), view->rectAt(1).center());
+    pump(200);
+    check(QStringLiteral("(y) control: pressing one card and letting go on "
+                         "another opens NOTHING"),
+          opened == 0 && window.onDashboardForTest()
+              && window.projectPathForTest().isEmpty());
+    click(view, view->rectAt(2).center(), view->rectAt(2).center());
+    pump(500);
+    check(QStringLiteral("(y) a single click on a CARD opens that project, "
+                         "through the real open path, without asking "
+                         "anything"),
+          opened == 1 && asked == 2 && !window.onDashboardForTest()
+              && window.projectPathForTest() == boardA,
+          window.projectPathForTest());
+    window.markCleanForTest();
+    window.closeProjectForTest();
+    pump(400);
+    check(QStringLiteral("(y) back on the start window the list has been "
+                         "re-read: the project just opened is now first"),
+          window.onDashboardForTest() && view->pathAt(0) == boardA
+              && view->count() == 9);
+    int p2 = -1;
+    for (int i = 0; i < view->count(); ++i)
+        if (view->pathAt(i) == plain.at(1))
+            p2 = i;
+    check(QStringLiteral("(y) setup: P2 is one of the rows"),
+          p2 >= 3 && view->kindAt(p2) == Kind::Row);
+    click(view, view->rectAt(p2).center(), view->rectAt(p2).center());
+    pump(500);
+    check(QStringLiteral("(y) a single click on a ROW opens that project "
+                         "too"),
+          !window.onDashboardForTest()
+              && window.projectPathForTest() == plain.at(1));
+
+    // The card route is THE open path: with unsaved work it must ask before
+    // replacing the project. The prompt is a modal; something has to see it
+    // and dismiss it (dismissing is Cancel).
+    window.applyProjectSettingsForTest(QStringLiteral("EditedOnTheWay"), 30);
+    pump(150);
+    QString promptSeen;
+    QTimer watcher;
+    watcher.setInterval(60);
+    QObject::connect(&watcher, &QTimer::timeout, [&promptSeen] {
+        if (auto *box = qobject_cast<QMessageBox *>(
+                QApplication::activeModalWidget())) {
+            promptSeen = box->windowTitle();
+            box->close();
+        }
+    });
+    watcher.start();
+    view->activate(0);
+    watcher.stop();
+    pump(150);
+    check(QStringLiteral("(y) opening a recent over UNSAVED work asks first, "
+                         "and Cancel leaves the open project alone"),
+          promptSeen == QStringLiteral("Unsaved Changes")
+              && window.projectPathForTest() == plain.at(1) && window.isDirty(),
+          promptSeen);
+    window.markCleanForTest();
+    window.closeProjectForTest();
+    pump(400);
+
+    // ---- the keyboard -------------------------------------------------------
+    // Home, then one step right, then down a line: the second card, then
+    // the row beneath it. Enter opens what the cursor is on.
+    key(view, Qt::Key_Home);
+    key(view, Qt::Key_Right);
+    key(view, Qt::Key_Down);
+    const QString underCursor = view->pathAt(4);
+    key(view, Qt::Key_Return);
+    pump(500);
+    check(QStringLiteral("(y) Home and the arrow keys move a cursor through "
+                         "the list and Enter opens the project under it"),
+          !underCursor.isEmpty()
+              && window.projectPathForTest() == underCursor,
+          window.projectPathForTest());
+    window.markCleanForTest();
+    window.closeProjectForTest();
+    pump(300);
+
+    // ---- Open Project -------------------------------------------------------
+    // The picker is native and cannot be driven, so: the button exists and
+    // raises its signal (on a page of its own, where nothing answers by
+    // opening a file dialog), and the folder the picker would start in.
+    {
+        DashboardPage standalone;
+        int openClicks = 0, newClicks = 0;
+        QObject::connect(&standalone, &DashboardPage::openProjectRequested,
+                         [&openClicks] { ++openClicks; });
+        QObject::connect(&standalone, &DashboardPage::newProjectRequested,
+                         [&newClicks] { ++newClicks; });
+        QStringList buttons;
+        for (QPushButton *b : standalone.findChildren<QPushButton *>()) {
+            buttons << b->text();
+            b->click();
+        }
+        check(QStringLiteral("(y) the start window offers exactly two "
+                             "buttons, Open Project and New Project, each "
+                             "raising its own request"),
+              buttons == QStringList{QStringLiteral("Open Project"),
+                                     QStringLiteral("New Project")}
+                  && openClicks == 1 && newClicks == 1,
+              buttons.join(QStringLiteral(", ")));
+        bool logo = false;
+        for (QLabel *label : standalone.findChildren<QLabel *>())
+            logo = logo || !label->pixmap().isNull()
+                || label->text().contains(QStringLiteral("SANKO"),
+                                          Qt::CaseInsensitive);
+        check(QStringLiteral("(y) and no logo: no label on the page carries "
+                             "an image or the product name"),
+              !logo);
+    }
+    setRecents(ini, {{gone, older}, {board, older}, {big, older}});
+    check(QStringLiteral("(y) Open Project starts beside the most recent "
+                         "project that still EXISTS (the missing first entry "
+                         "is skipped)"),
+          QDir(window.openDialogStartDirForTest()) == QDir(sharedDir),
+          window.openDialogStartDirForTest());
+    setRecents(ini, {});
+    const QString documentsSanko =
+        QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation)
+        + QStringLiteral("/SankoTV");
+    const bool existedBefore = QDir(documentsSanko).exists();
+    const QString fallback = window.openDialogStartDirForTest();
+    check(QStringLiteral("(y) with no recents it starts in a folder that "
+                         "exists, and asking CREATED nothing"),
+          QDir(fallback).exists()
+              && QDir(documentsSanko).exists() == existedBefore,
+          fallback);
+
+    view->setRemovePrompt({});
+    window.markCleanForTest();
+    window.close();
+    pump(300);
+    RecentProjects::setSettingsOverride(scratch
+                                        + QStringLiteral("/recents.ini"));
+}
+
+// ---- (z) the start window's chrome: no menu bar, live keys -----------------
+// The menu bar is hidden on the start window and back on every other page.
+// A hidden menu bar takes its shortcuts with it (measured before this was
+// built: Ctrl+N and the recorder's Ctrl+Shift+B both fired 0 times), so
+// every shortcut-bearing action is attached to the window as well - and
+// this is where that stays true. Keys are delivered the way a real key
+// press is resolved (QtGui's shortcut entry point, as QTest uses it).
+Q_GUI_EXPORT bool qt_sendShortcutOverrideEvent(QObject *o, ulong timestamp,
+                                               int k, Qt::KeyboardModifiers mods,
+                                               const QString &text, bool autorep,
+                                               ushort count);
+namespace startWindowKeys {
+bool press(QWidget *target, int key, Qt::KeyboardModifiers mods)
+{
+    target->activateWindow();
+    target->raise();
+    pump(100);
+    if (QApplication::activeWindow() != target) {
+        QT_WARNING_PUSH
+        QT_WARNING_DISABLE_DEPRECATED
+        QApplication::setActiveWindow(target);
+        QT_WARNING_POP
+        pump(50);
+    }
+    return qt_sendShortcutOverrideEvent(target, 0, key, mods, QString(),
+                                        false, 1);
+}
+
+int markersIn(const QString &sessionDir)
+{
+    int markers = 0;
+    QFile f(sessionDir + QStringLiteral("/events.jsonl"));
+    if (f.open(QIODevice::ReadOnly | QIODevice::Text))
+        while (!f.atEnd())
+            if (QJsonDocument::fromJson(f.readLine())
+                    .object()
+                    .value(QLatin1String("type"))
+                    .toString()
+                == QLatin1String("marker"))
+                ++markers;
+    return markers;
+}
+} // namespace startWindowKeys
+
+void runStartWindowChromePass(const QString &scratch, const QString &project)
+{
+    using startWindowKeys::press;
+    const Qt::KeyboardModifiers ctrl = Qt::ControlModifier;
+    const Qt::KeyboardModifiers ctrlShift =
+        Qt::ControlModifier | Qt::ShiftModifier;
+    out() << "--- (z) the start window: no menu bar, live keys ---" << Qt::endl;
+    MainWindow window;
+    window.resize(1300, 850);
+    window.show();
+    pump(800);
+    auto *page = window.findChild<DashboardPage *>();
+    auto *rec = devrec::Recorder::instance();
+    QAction *newAction = nullptr, *openAction = nullptr;
+    for (QAction *a : window.findChildren<QAction *>()) {
+        if (a->text() == QStringLiteral("New Project..."))
+            newAction = a;
+        if (a->text() == QStringLiteral("Open Project..."))
+            openAction = a;
+    }
+    check(QStringLiteral("(z) found the page and the File menu's New and "
+                         "Open actions"),
+          page && newAction && openAction);
+    if (!page || !newAction || !openAction)
+        return;
+
+    // ---- the menu bar -------------------------------------------------------
+    const bool hiddenAtStart = !window.menuBar()->isVisible()
+        && page->mapTo(&window, QPoint(0, 0)).y() == 0;
+    check(QStringLiteral("(z) on the start window there is NO menu bar: the "
+                         "page begins at the very top of the window"),
+          hiddenAtStart,
+          QStringLiteral("page top at y=%1")
+              .arg(page->mapTo(&window, QPoint(0, 0)).y()));
+
+    // ---- keys with the bar hidden -------------------------------------------
+    // New and Open end in a modal and a native picker, so their signals are
+    // blocked: the key is still RESOLVED - claimed or not - and that is
+    // the thing in question.
+    newAction->blockSignals(true);
+    openAction->blockSignals(true);
+    check(QStringLiteral("(z) Ctrl+N is live with the menu bar hidden"),
+          press(&window, Qt::Key_N, ctrl));
+    check(QStringLiteral("(z) Ctrl+O is live with the menu bar hidden"),
+          press(&window, Qt::Key_O, ctrl));
+    // THE CONTROL: detach the action from the window and the same key is
+    // dead - which is the hidden-menu defect itself, and proves that what
+    // keeps the key alive is the attachment, not something incidental.
+    window.removeAction(newAction);
+    check(QStringLiteral("(z) control: detached from the window, Ctrl+N is "
+                         "claimed by NOTHING while the bar is hidden"),
+          !press(&window, Qt::Key_N, ctrl));
+    window.addAction(newAction);
+    check(QStringLiteral("(z) ...and re-attached, it is live again"),
+          press(&window, Qt::Key_N, ctrl));
+
+    // The recorder's two keys, for real (its output is under scratch).
+    const bool started = press(&window, Qt::Key_R, ctrlShift)
+        && rec->isRecording();
+    pump(150);
+    const QString sessionA = rec->sessionDir();
+    const bool marked = press(&window, Qt::Key_B, ctrlShift);
+    pump(150);
+    const bool stopped = press(&window, Qt::Key_R, ctrlShift)
+        && !rec->isRecording();
+    pump(200);
+    check(QStringLiteral("(z) Ctrl+Shift+R starts and stops a recording "
+                         "from the start window"),
+          started && stopped);
+    check(QStringLiteral("(z) Ctrl+Shift+B marks an issue from the start "
+                         "window: one press, one marker"),
+          marked && startWindowKeys::markersIn(sessionA) == 1,
+          QStringLiteral("%1 marker(s)")
+              .arg(startWindowKeys::markersIn(sessionA)));
+
+    // ---- the recorder's indicator -------------------------------------------
+    QWidget *indicator = rec->indicatorWidget();
+    check(QStringLiteral("(z) the recorder's indicator is in the start "
+                         "window's header (it would have vanished with the "
+                         "menu bar), visible and clickable"),
+          page->headerAccessory() == indicator && indicator->isVisible()
+              && indicator->window() == &window && rec->indicatorInteractive()
+              && window.menuBar()->cornerWidget(Qt::TopRightCorner)
+                     != indicator);
+    sendMouse(indicator, QEvent::MouseButtonPress, indicator->rect().center(),
+              Qt::LeftButton);
+    pump(200);
+    const bool clickStarted = rec->isRecording();
+    sendMouse(indicator, QEvent::MouseButtonPress, indicator->rect().center(),
+              Qt::LeftButton);
+    pump(250);
+    check(QStringLiteral("(z) a click on it starts a recording and a second "
+                         "click stops it"),
+          clickStarted && !rec->isRecording());
+
+    // ---- every other page gets the bar back ---------------------------------
+    check(QStringLiteral("(z) project opens"), window.loadProjectForTest(project));
+    pump(500);
+    check(QStringLiteral("(z) with a project open the menu bar is BACK "
+                         "(control: the same reading that said hidden)"),
+          window.menuBar()->isVisible() && window.menuBar()->height() > 0);
+    indicator = rec->indicatorWidget();
+    check(QStringLiteral("(z) the indicator is back in the menu bar's "
+                         "corner, visible, and passive again"),
+          window.menuBar()->cornerWidget(Qt::TopRightCorner) == indicator
+              && indicator->isVisible() && !rec->indicatorInteractive()
+              && page->headerAccessory() == nullptr);
+    sendMouse(indicator, QEvent::MouseButtonPress, indicator->rect().center(),
+              Qt::LeftButton);
+    pump(150);
+    check(QStringLiteral("(z) control: in the menu bar a click on it does "
+                         "nothing"),
+          !rec->isRecording());
+
+    // Attached to the menu AND the window, a key must still fire ONCE.
+    check(QStringLiteral("(z) Ctrl+N is still live with the bar shown"),
+          press(&window, Qt::Key_N, ctrl));
+    rec->startRecording();
+    pump(150);
+    const QString sessionB = rec->sessionDir();
+    const bool markedShown = press(&window, Qt::Key_B, ctrlShift);
+    pump(150);
+    rec->stopRecording();
+    pump(200);
+    check(QStringLiteral("(z) with the bar shown one Ctrl+Shift+B is ONE "
+                         "marker, not two (two attachments, one shortcut)"),
+          markedShown && startWindowKeys::markersIn(sessionB) == 1,
+          QStringLiteral("%1 marker(s)")
+              .arg(startWindowKeys::markersIn(sessionB)));
+    newAction->blockSignals(false);
+    openAction->blockSignals(false);
+
+    window.markCleanForTest();
+    window.closeProjectForTest();
+    pump(400);
+    check(QStringLiteral("(z) closing the project returns to the start "
+                         "window and hides the bar again, indicator and all"),
+          window.onDashboardForTest() && !window.menuBar()->isVisible()
+              && page->headerAccessory() == rec->indicatorWidget()
+              && rec->indicatorInteractive());
+
+    // ---- the New Project dialog ---------------------------------------------
+    out() << "--- (z) the New Project dialog only creates ---" << Qt::endl;
+    {
+        NewProjectDialog dialog(&window);
+        check(QStringLiteral("(z) the dialog is one column, 340 x 385"),
+              dialog.size() == QSize(340, 385)
+                  && dialog.size() == QSize(NewProjectDialog::kWidth,
+                                            NewProjectDialog::kHeight));
+        QStringList buttons;
+        for (QPushButton *b : dialog.findChildren<QPushButton *>())
+            buttons << b->text();
+        buttons.sort();
+        check(QStringLiteral("(z) its buttons are Browse, Cancel and Create "
+                             "- there is no Open Project and no list of "
+                             "recents in it"),
+              buttons == QStringList{QStringLiteral("Browse..."),
+                                     QStringLiteral("Cancel"),
+                                     QStringLiteral("Create Project")}
+                  && dialog.findChildren<QScrollArea *>().isEmpty(),
+              buttons.join(QStringLiteral(", ")));
+        // Everything sits inside the 18 px padding, nothing overlaps.
+        const QRect content(18, 0, 304, 385);
+        bool insideContent = true, noOverlap = true;
+        const QList<QWidget *> kids =
+            dialog.findChildren<QWidget *>(Qt::FindDirectChildrenOnly);
+        for (int i = 0; i < kids.size(); ++i) {
+            insideContent =
+                insideContent && content.contains(kids.at(i)->geometry());
+            for (int j = i + 1; j < kids.size(); ++j)
+                noOverlap = noOverlap
+                    && !kids.at(i)->geometry().intersects(
+                           kids.at(j)->geometry());
+        }
+        check(QStringLiteral("(z) control: the layout walk sees the form's "
+                             "controls"),
+              kids.size() >= 9, QStringLiteral("%1 controls").arg(kids.size()));
+        check(QStringLiteral("(z) every control is inside the padded column "
+                             "and none overlaps another"),
+              insideContent && noOverlap);
+        check(QStringLiteral("(z) the footer is Cancel then Create, edge to "
+                             "edge of the column"),
+              dialog.cancelButton()->geometry().left() == 18
+                  && dialog.createButton()->geometry().right() == 321
+                  && dialog.cancelButton()->geometry().right()
+                         < dialog.createButton()->geometry().left());
+        check(QStringLiteral("(z) Save Location has the room the old column "
+                             "did not (233 px, was 158)"),
+              dialog.locationField()->width() == 233
+                  && dialog.nameField()->width() == 304);
+
+        dialog.show();
+        pump(150);
+        dialog.cancelButton()->click();
+        pump(100);
+        check(QStringLiteral("(z) Cancel closes it, having created nothing"),
+              !dialog.isVisible() && dialog.result() == QDialog::Rejected
+                  && dialog.mode() == NewProjectDialog::Mode::Cancelled);
+    }
+    {
+        const QString where = scratch + QStringLiteral("/start_created");
+        QDir(where).removeRecursively();
+        QDir().mkpath(where);
+        NewProjectDialog dialog(&window);
+        dialog.nameField()->setText(QStringLiteral("MadeFromTheStartWindow"));
+        dialog.locationField()->setText(QDir::toNativeSeparators(where));
+        dialog.attemptCreate();
+        const QString made = where + QStringLiteral(
+            "/MadeFromTheStartWindow/MadeFromTheStartWindow.sankotv");
+        const QVector<RecentProjects::Entry> recents = RecentProjects::entries();
+        check(QStringLiteral("(z) Create still creates: the project file is "
+                             "written and it is the newest recent"),
+              dialog.mode() == NewProjectDialog::Mode::Created
+                  && QFileInfo::exists(made) && !recents.isEmpty()
+                  && QFileInfo(recents.first().path) == QFileInfo(made),
+              dialog.validationReason());
+    }
+
+    window.markCleanForTest();
+    window.close();
+    pump(300);
+}
+
 // ---- (q) floating-bar suppression: PERMANENT lock ---------------------------
 // Made permanent at the user's direction after the 2026-08-29 lost-bars
 // regression: twice now a defect hid in a path only TEMPORARY seams ever
@@ -3323,7 +4198,9 @@ int main(int argc, char **argv)
     runOverrideMarkPass(scratch);
     runRecorderUnderModalPass();
     runTipShapePreviewPass(scratch);
+    runStartWindowRecentsPass(scratch);
     runGrainPreviewPass(scratch);
+    runStartWindowChromePass(scratch, c);
     runSuppressionPass(scratch);
     runImageCapNoticePass(scratch);
     runIdentityColorPass(scratch);

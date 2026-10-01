@@ -67,6 +67,7 @@ this fence."
 #include <QRegularExpression>
 #include <QSettings>
 #include <QStackedWidget>
+#include <QStandardPaths>
 #include <QUndoStack>
 #include <QUuid>
 #include <QVBoxLayout>
@@ -216,6 +217,18 @@ MainWindow::MainWindow(QWidget *parent)
 
     setCentralWidget(m_stack);
 
+    // The start window's own two ways into a project. Both reach the paths
+    // the menu uses - the file picker, and THE open path with its
+    // unsaved-changes prompt and its missing-file handling - so a card
+    // click cannot do anything File > Open Recent would not.
+    connect(m_dashboard, &DashboardPage::openProjectRequested, this,
+            &MainWindow::onOpenProject);
+    connect(m_dashboard, &DashboardPage::openRecentRequested, this,
+            &MainWindow::openProject);
+    // What surrounds the page depends on which page it is.
+    connect(m_stack, &QStackedWidget::currentChanged, this,
+            [this] { updateChromeForPage(); });
+
     updateSaveActions();
     updateTitle();
 
@@ -326,6 +339,71 @@ MainWindow::MainWindow(QWidget *parent)
                 });
         }
     }
+#endif
+
+    // LAST: every menu exists by now, the recorder's included.
+    keepMenuShortcutsAlive();
+    updateChromeForPage(); // the stack already shows the start window
+}
+
+// THE MENU BAR IS HIDDEN ON THE START WINDOW, and a hidden menu bar takes
+// its shortcuts with it. Qt resolves a shortcut through the widgets its
+// action is attached to; an action that lives only in a menu is attached to
+// nothing visible once the bar is hidden. Measured before this was built
+// (tests/_backups/seam_shortcutprobe_20261001.cpp): with the bar hidden,
+// Ctrl+N fired 0 times, and so did the recorder's Ctrl+Shift+B even though
+// it is an ApplicationShortcut; hiding the menus' entries instead of the
+// bar killed them just the same.
+//
+// So every action that carries a shortcut is ALSO attached to the window
+// itself. Measured: it then fires once with the bar hidden, and still once
+// - not twice, not "ambiguous" - with the bar shown. Nothing about what the
+// actions do changes; they were already window-wide while the bar showed,
+// and each still guards itself (Save is disabled with no project, the Edit
+// actions act only on the Storyboard).
+void MainWindow::keepMenuShortcutsAlive()
+{
+    std::function<void(QMenu *)> adopt = [this, &adopt](QMenu *menu) {
+        for (QAction *action : menu->actions()) {
+            if (action->menu())
+                adopt(action->menu());
+            else if (!action->shortcut().isEmpty())
+                addAction(action);
+        }
+    };
+    for (QAction *top : menuBar()->actions())
+        if (top->menu())
+            adopt(top->menu());
+}
+
+// What surrounds the page. On the start window there is no menu bar: the
+// page carries its own Open and New, and File / Edit / View / Developer
+// have nothing to act on. Every other page gets the bar back.
+//
+// The developer recorder's indicator lives in the bar's corner, so it would
+// vanish with the bar. It moves into the start window's header instead, and
+// becomes clickable there - with the Developer menu out of sight, a click on
+// it is the only way to start a recording with the mouse.
+void MainWindow::updateChromeForPage()
+{
+    const bool start = m_stack && m_stack->currentWidget() == m_dashboard;
+    menuBar()->setVisible(!start);
+#ifdef SANKOTV_DEV_RECORDER
+    auto *rec = devrec::Recorder::instance();
+    QWidget *indicator = rec->indicatorWidget();
+    if (start) {
+        // Released from the bar FIRST: the bar keeps a pointer to its corner
+        // widget and an event filter on it, and reparenting behind its back
+        // leaves both dangling.
+        if (menuBar()->cornerWidget(Qt::TopRightCorner) == indicator)
+            menuBar()->setCornerWidget(nullptr, Qt::TopRightCorner);
+        m_dashboard->setHeaderAccessory(indicator);
+    } else {
+        m_dashboard->setHeaderAccessory(nullptr);
+        menuBar()->setCornerWidget(indicator, Qt::TopRightCorner);
+        indicator->show(); // reparenting hides a widget
+    }
+    rec->setIndicatorInteractive(start);
 #endif
 }
 
@@ -900,18 +978,16 @@ void MainWindow::requestNewProject()
 }
 
 // The New Project window (Figma 350:24) and what follows from it. Create
-// writes <Location>/<Name>/<Name>.sankotv IMMEDIATELY and lands in recents;
-// Open routes into the existing loadFromPath. File > Save / Save As / Open
-// are untouched.
+// writes <Location>/<Name>/<Name>.sankotv IMMEDIATELY and lands in recents.
+// The window only creates: opening an existing project is the start
+// window's business now (its recents and its Open Project button), so there
+// is no second way to open one hiding inside a dialog about making one.
 void MainWindow::runNewProjectDialog()
 {
     NewProjectDialog dialog(this);
-    if (dialog.exec() != QDialog::Accepted)
+    if (dialog.exec() != QDialog::Accepted
+        || dialog.mode() != NewProjectDialog::Mode::Created)
         return;
-    if (dialog.mode() == NewProjectDialog::Mode::OpenExisting) {
-        loadFromPath(dialog.openPath());
-        return;
-    }
     onNewProject();
     m_projectName = dialog.projectName();
     m_currentProjectPath = dialog.projectFilePath();
@@ -1008,10 +1084,34 @@ void MainWindow::closeEvent(QCloseEvent *event)
     event->accept();
 }
 
+// Where the Open Project picker starts. It used to start in the home
+// folder, two levels above where projects live (New Project puts each in
+// its own folder under Documents/SankoTV), which mattered less while the
+// recents list sat one click away in the same dialog. Now: beside the most
+// recent project that still exists; failing that, the folder New Project
+// saves into, if it has been made; failing that, Documents; then home.
+// Nothing here CREATES a folder - looking for a project must not leave an
+// empty directory behind.
+QString MainWindow::openDialogStartDir() const
+{
+    for (const RecentProjects::Entry &entry : RecentProjects::entries())
+        if (QFileInfo::exists(entry.path))
+            return QFileInfo(entry.path).absolutePath();
+    const QString documents =
+        QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+    if (!documents.isEmpty()) {
+        if (QDir(documents + QStringLiteral("/SankoTV")).exists())
+            return documents + QStringLiteral("/SankoTV");
+        if (QDir(documents).exists())
+            return documents;
+    }
+    return QDir::homePath();
+}
+
 void MainWindow::onOpenProject()
 {
     const QString path = QFileDialog::getOpenFileName(
-        this, QStringLiteral("Open Project"), QDir::homePath(),
+        this, QStringLiteral("Open Project"), openDialogStartDir(),
         QStringLiteral("SankoTV Project (*.sankotv)"));
     if (path.isEmpty())
         return;
@@ -1030,6 +1130,8 @@ void MainWindow::openProject(const QString &path)
         // forget it, rather than failing to load something invisible.
         RecentProjects::remove(path);
         rebuildRecentMenu();
+        if (m_dashboard)
+            m_dashboard->reloadRecents(); // it may be the page on screen
         QMessageBox::warning(
             this, QStringLiteral("Open Project"),
             QStringLiteral("This project could not be found:\n\n%1\n\nIt has "

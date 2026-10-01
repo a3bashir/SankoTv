@@ -8,34 +8,46 @@
 #include <QVector>
 
 class QPushButton;
-class QScrollArea;
 namespace brushlib {
 class StudioDropdown;
 class StudioTextField;
 }
 
-// The New Project window (Figma 350:24 "new-project-dialog", 680x460).
-// Frameless application-modal QDialog with painted chrome: left column the
-// creation form, right column Recent Projects, per the design. Hosted
-// modally (exec) so Enter/Escape and focus recovery come from Qt — unlike
-// the Brush Settings studio's unmanaged FloatingToolWindow, which exists
-// for canvas-level reasons (toolbar suppression) this window does not have.
+// The New Project window: a form for creating and configuring a project,
+// and nothing else. 340x385, one column.
+//
+// It was built to Figma 350:24 ("new-project-dialog", 680x460) as two
+// columns - this form on the left, a Recent Projects list with an Open
+// Project button on the right. The right column moved to the start window
+// (RecentProjectsView), where recent projects are what the page is FOR, and
+// the form kept the design's controls, fonts, row pitch and header. What
+// changed with the width: the fields grew from 229 to 304 px (Save Location
+// from 158 to 233 - it clipped the default path), the height dropped by the
+// band that only existed to match the list, and a Cancel button took the
+// footer space Open Project left - the window could previously be dismissed
+// only with Escape.
+//
+// Frameless application-modal QDialog with painted chrome. Hosted modally
+// (exec) so Enter/Escape and focus recovery come from Qt — unlike the Brush
+// Settings studio's unmanaged FloatingToolWindow, which exists for
+// canvas-level reasons (toolbar suppression) this window does not have.
 //
 // Create writes <SaveLocation>/<Name>/<Name>.sankotv IMMEDIATELY — a folder
 // per project, because saving scatters sibling PNGs (panel flattens, layer
 // images, consistency thumbnails) and containing them is the point. This
 // diverges from File > Save As, which still writes wherever it is pointed.
-//
-// Recent projects are read from and recorded into the shared store in
-// RecentProjects.h; this window only lists them.
+// The created project is recorded in the shared store (RecentProjects.h).
 class NewProjectDialog : public QDialog
 {
     Q_OBJECT
 public:
+    static constexpr int kWidth = 340;
+    static constexpr int kHeight = 385;
+
     explicit NewProjectDialog(QWidget *parent = nullptr);
 
-    // How the dialog was closed (valid after exec() == Accepted).
-    enum class Mode { Cancelled, Created, OpenExisting };
+    // How the dialog was closed (Created only after exec() == Accepted).
+    enum class Mode { Cancelled, Created };
     Mode mode() const { return m_mode; }
 
     // Created-project results.
@@ -45,9 +57,6 @@ public:
     int canvasWidth() const;
     int canvasHeight() const;
 
-    // OpenExisting result: the chosen .sankotv path.
-    QString openPath() const { return m_openPath; }
-
     // Exposed for the verification seam.
     brushlib::StudioTextField *nameField() const { return m_name; }
     brushlib::StudioTextField *locationField() const { return m_location; }
@@ -56,7 +65,7 @@ public:
     brushlib::StudioDropdown *presetDropdown() const { return m_preset; }
     brushlib::StudioDropdown *fpsDropdown() const { return m_fps; }
     // Drag-by-header (behaviour only): the band above the first field,
-    // spanning both columns' painted headers. Exposed for tests.
+    // across the painted header. Exposed for tests.
     QRect dragHeaderBand() const;
 
     // Dev Recorder opt-in (see devrecorder/DevRecorder.h): the form's
@@ -64,7 +73,7 @@ public:
     // than only that it was open. Invoked by name — no dependency either way.
     Q_INVOKABLE QVariantMap devrecState() const;
     QPushButton *createButton() const { return m_create; }
-    QPushButton *openButton() const { return m_open; }
+    QPushButton *cancelButton() const { return m_cancel; }
     QString validationReason() const { return m_reason; }
     void attemptCreate(); // the Create click path (re-validates, writes)
 
@@ -84,12 +93,10 @@ protected:
     void keyPressEvent(QKeyEvent *event) override;
 
 private:
-    class RecentList;
     void applyPreset(int index);
     void revalidate();       // live: sets m_reason + Create enabled state
     QString validate() const; // empty = valid
     void browse();
-    void openSelectedOrDialog();
 
     brushlib::StudioTextField *m_name = nullptr;
     brushlib::StudioTextField *m_location = nullptr;
@@ -99,13 +106,10 @@ private:
     brushlib::StudioDropdown *m_fps = nullptr;
     QPushButton *m_browse = nullptr;
     QPushButton *m_create = nullptr;
-    QPushButton *m_open = nullptr;
-    QScrollArea *m_recentScroll = nullptr;
-    RecentList *m_recent = nullptr;
+    QPushButton *m_cancel = nullptr;
 
     Mode m_mode = Mode::Cancelled;
     QString m_createdFile;
-    QString m_openPath;
     QString m_reason;
     HeaderDrag m_drag;
 };

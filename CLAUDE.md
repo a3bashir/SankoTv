@@ -34,6 +34,15 @@ on a timeline with audio; Generation sends panels to fal.ai for AI video.
   `src/ProjectIO.{h,cpp}` (version stays 1). Two deliberate 960×540
   literals in ProjectIO are migration facts for pre-versioned files —
   do not remove them (each site's comment explains what breaks).
+- **The start window** (`DashboardPage`) is where recent projects live:
+  three cards plus compact rows (`RecentProjectsView`), thumbnails decoded
+  off the paint path (`RecentThumbnails`), store and thumbnail source in
+  `RecentProjects` (the thumbnail is the first panel AS THE MANIFEST NAMES
+  IT — never a guessed filename). The New Project dialog only creates.
+  The menu bar is HIDDEN on the start window; a hidden menu bar kills its
+  actions' shortcuts, so `MainWindow::keepMenuShortcutsAlive` attaches
+  every shortcut-bearing menu action to the window as well — an action
+  added to a menu later needs the same, or its key dies on that page.
 - **Drawing:** custom engine (`third_party/SankoPaintEngine`) — procedural
   and imported tips, pressure/tilt dynamics, dual brush, wet edges,
   build-up, colour dynamics, noise, texture. Presets are `.sankobrush`;
