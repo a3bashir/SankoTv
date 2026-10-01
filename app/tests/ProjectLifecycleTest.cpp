@@ -47,6 +47,7 @@
 #include "StoryboardPage.h"
 #include "RecentProjectsView.h"
 #include "RecentThumbnails.h"
+#include "RealStoreView.h"
 #include "brushlib/BrushLibraryPanel.h"
 #include "brushlib/BrushLibraryModel.h"
 #include "brushlib/BrushPresetCodec.h"
@@ -4048,10 +4049,12 @@ int main(int argc, char **argv)
     // The env var is the only redirect it honours unconditionally.
     qputenv("SANKOTV_DEVREC_DIR",
             (scratch + QStringLiteral("/devrec")).toUtf8());
-    // Snapshot the REAL settings store (org SankoTV) before anything runs.
-    // Constructing the two-argument form here is DELIBERATE - it is the
-    // verification instrument for the store the app must never touch while
-    // sankoSettings() is overridden. Read-only.
+    // Snapshot the settings store (org SankoTV) AS THIS PROCESS SEES IT,
+    // before anything runs. Constructing the two-argument form here is
+    // DELIBERATE - it is the verification instrument for the store the app
+    // must never touch while sankoSettings() is overridden. Read-only.
+    // Whether that is the user's real store or a packaged app's private
+    // copy of it is settled in section (l), which says so.
     QMap<QString, QVariant> realStoreBefore;
     {
         const QSettings real(QStringLiteral("SankoTV"),
@@ -4213,6 +4216,44 @@ int main(int argc, char **argv)
     // appeared to work).
     out() << "--- (l) sankoSettings honours the scratch override ---"
           << Qt::endl;
+
+    // WHICH STORE IS THIS RUN GUARDING? The labels below used to say "the
+    // real store" unconditionally, and for a month that was not true of the
+    // runs that mattered most: a process started from a packaged app (the
+    // Claude desktop app is MSIX) sees a PRIVATE copy of the registry, so
+    // the before/after snapshot compared that copy with itself. Nothing in
+    // the process reveals this - see RealStoreView.h for what was tried -
+    // so the user's real store is read through the operating system's own
+    // registry provider and compared with what this process sees.
+    //
+    // Either way the snapshot comparison keeps its power as a statement
+    // about the CODE: a stray write lands in whichever store this process
+    // can reach and shows up in the "after" (it caught the DockController
+    // bypass on 2026-08-29 from inside the package). What changes is what
+    // may be claimed about the user's real store, and that is now said.
+    const realstore::Verdict store = realstore::available()
+        ? realstore::inspect(QStringLiteral("Software\\SankoTV\\SankoTV"))
+        : realstore::Verdict();
+    if (realstore::available()) {
+        check(QStringLiteral("(l) control: the store this run guards was "
+                             "IDENTIFIED - the user's real store was read "
+                             "through the OS registry provider and compared "
+                             "with what this process sees"),
+              store.determined,
+              store.determined
+                  ? QStringLiteral("this process sees %1 value(s), the real "
+                                   "store holds %2; %3 differ, %4 only in "
+                                   "the real store, %5 only here")
+                        .arg(store.directValues).arg(store.realValues)
+                        .arg(store.differing).arg(store.onlyReal)
+                        .arg(store.onlyDirect)
+                  : store.error);
+        out() << "  GUARDING: " << store.guarded() << Qt::endl;
+    }
+    const QString guarded = realstore::available()
+        ? store.guarded()
+        : QStringLiteral("the settings store");
+
     sankoSettings().setValue(QStringLiteral("scratchProbe/sentinel"), 0x5EA1);
     {
         QSettings ini(scratch + QStringLiteral("/sanko_settings.ini"),
@@ -4224,20 +4265,35 @@ int main(int argc, char **argv)
     {
         const QSettings real(QStringLiteral("SankoTV"),
                              QStringLiteral("SankoTV"));
-        check(QStringLiteral("(l) ...and NOT in the real store"),
+        check(QStringLiteral("(l) ...and NOT in the settings store this "
+                             "process can reach"),
               !real.contains(QStringLiteral("scratchProbe/sentinel")));
-        check(QStringLiteral("(l) control: the real store is readable and "
+        check(QStringLiteral("(l) control: that store is readable and "
                              "non-empty (the comparison can see keys)"),
               !realStoreBefore.isEmpty(),
               QStringLiteral("%1 key(s)").arg(realStoreBefore.size()));
         QMap<QString, QVariant> realStoreAfter;
         for (const QString &k : real.allKeys())
             realStoreAfter.insert(k, real.value(k));
-        check(QStringLiteral("(l) the ENTIRE family changed NOTHING in the "
-                             "real store (keys and values identical)"),
+        check(QStringLiteral("(l) the ENTIRE family wrote NOTHING to the "
+                             "settings store (keys and values identical "
+                             "before and after) - guarding %1").arg(guarded),
               realStoreAfter == realStoreBefore,
               QStringLiteral("%1 -> %2 key(s)")
                   .arg(realStoreBefore.size()).arg(realStoreAfter.size()));
+    }
+    if (realstore::available() && store.determined) {
+        // Said in so many words, because a PASS above reads the same in
+        // both cases and means different things.
+        out() << (store.privateCopy
+                      ? "  NOTE (l): this run proves the CODE writes nothing "
+                        "to the settings store. It says nothing about the "
+                        "user's real store, which this process cannot "
+                        "reach; run the gate outside the packaged app for "
+                        "that."
+                      : "  NOTE (l): this run compared the user's REAL "
+                        "settings store before and after the family.")
+              << Qt::endl;
     }
 
     // Nothing may have escaped the scratch root.

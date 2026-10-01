@@ -78,11 +78,16 @@ on a timeline with audio; Generation sends panels to fal.ai for AI video.
 - The Bash tool needs `export PATH="/usr/bin:/bin:$PATH"`.
 - GitHub: https://github.com/a3bashir/SankoTv
 - Claude's tool processes run inside the desktop app's MSIX package, so
-  the registry and AppData they see are a PRIVATE overlay: writes never
-  reach the user's real settings, and values once written from here read
-  back stale forever. Do not trust `HKCU\Software\SankoTV` as read from a
-  tool; HANDOFF ("Claude's tools do not see the real registry") has the
-  read-only way to see the live store.
+  the registry and AppData they see are a PRIVATE overlay: registry
+  writes never reach the user's real settings, and values once written
+  from here read back stale forever. Do not trust `HKCU\Software\SankoTV`
+  or the user's brush library as read from a tool. Files differ in one
+  way that matters: creating or modifying a file under AppData stays
+  private, but DELETING a real file there really deletes it. HANDOFF
+  ("Claude's tools do not see the real registry") has the measurements
+  and the read-only way to see the live store; `tests/RealStoreView.h`
+  is that way in code, and Lifecycle (l) uses it to say which store a
+  gate run is guarding.
 
 ## Hard rules
 
@@ -155,6 +160,30 @@ Learned from real defects. Follow them exactly.
     files CRLF→LF. New files get CRLF endings to match the tree. If a
     whole-file operation is unavoidable, work in binary mode and verify
     endings afterwards with `file` and `git diff --stat`.
+12. **A promotion reads the user's REAL file, and says that it did.**
+    Anything taken from the user's library to become part of the product
+    — an override, a saved variation, an imported brush — must be read
+    from their real folder through the outside-the-package path, never
+    from that path as a tool sees it. A tool sees its own private copy
+    wherever one exists (see Environment), and it looks exactly like the
+    user's file: HB Pencil was promoted from a copy the user never had,
+    hashed and "verified" the whole way. The procedure:
+    - List the library folder from OUTSIDE the package (a process created
+      with WMI `Win32_Process Create`, writing names, sizes, dates and
+      SHA-256 to a path outside AppData) and from inside. Compare. A file
+      that differs, or exists on one side only, is a private twin — name
+      it in the report.
+    - Have the outside process COPY the real file to a path outside
+      AppData, check the copy's hash against the outside listing, and
+      promote from that copy. Re-check the real file's hash the same way
+      at build end; stop if it moved.
+    - Report the real path, size, date and hash, that it was read
+      outside the package, and whether the tool's view differed.
+    - Never tell the user what is or is not on their disk from a tool's
+      own view of AppData or the registry.
+    - Remember that DELETING is real: removing the promoted file
+      afterwards removes the user's file, so it still waits for their
+      word.
 
 ## Finding bugs
 

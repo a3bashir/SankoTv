@@ -2251,32 +2251,79 @@ with a test override, zero data migration) or leave it recorded.
 Found while moving the recents store: the key
 HKCU\Software\SankoTV\SankoTV\recentProjects read as a list frozen at 24
 August, full of "sanko_saveas_probe" temp paths, while the app plainly
-showed a current list. The key's last-write TIMES were current (and
-matched the user's actions to the second); the VALUES were a month old.
+showed a current list.
 
 CAUSE: the Claude desktop app is an MSIX package
 (Claude_pzs8sxrjxfjjc), and every tool process is its child. Registry
 WRITES from such a process land in a package-private hive
 (%LOCALAPPDATA%\Packages\Claude_...\SystemAppData\Helium\User.dat), and
 a READ of any value once written from here returns that private copy
-forever, shadowing the live one. AppData is redirected the same way.
-Running a tool "unsandboxed" does not change it.
+forever, shadowing the live one. Running a tool "unsandboxed" does not
+change it.
+
+MEASURED 2026-10-01, the same read-only dump run inside and outside the
+package (tests/_backups/seam_storeview_20261001*):
+- HKCU\Software\SankoTV from a tool: 43 keys, 82 values. The real
+  store: 51 keys, 109 values. Of the 78 values in both, 50 DIFFER; 31
+  real values are invisible from a tool (whole keys - camera,
+  storyboard\panelPos, older floatToolbars versions - simply do not
+  list); 4 values exist only in the private copy.
+- A sentinel written to a scratch key from a tool was present inside
+  and ABSENT outside.
+- DO NOT TRUST KEY TIMESTAMPS EITHER (corrected: this section first
+  said last-write times "come through live"). That held for the
+  recentProjects keys, which is how the staleness showed. It did NOT
+  hold for the storyboard keys, whose times read from a tool are the
+  private copy's (2026-08-08, 2026-08-29) while the real keys were
+  written weeks later.
+- THE PROCESS CANNOT TELL. GetCurrentPackageFullName and
+  GetPackageFamilyName report "not packaged" for a tool process;
+  NtQueryKey names the same \REGISTRY\USER\<sid>\... key in both
+  places; and looking for a WindowsApps ancestor is wrong the other way
+  (Windows Terminal is packaged, and a shell started from it sees the
+  real registry). What works: WMI's StdRegProv runs in a service
+  outside every package and returns the REAL store even when called
+  from a tool. tests/RealStoreView.h reads the store both ways and
+  compares - that is how Lifecycle (l) now knows which store it has.
+
+FILES ARE NOT THE SAME AS THE REGISTRY. AppData is overlaid too, but:
+- a NEW file, or a MODIFICATION of an existing real file, goes to the
+  private layer (...\Packages\Claude_...\LocalCache\Roaming\...) and
+  the real file is left as it was. Two such files exist today: the HB
+  Pencil Variation as Claude's tuning tool rewrote it on 2026-08-29,
+  and that tool's .pre-hb-tune.bak. The real folder has neither.
+- a DELETE of a real file GOES THROUGH. Measured after the fact: the
+  Gouache override was deleted from a tool on 2026-08-28 at 20:10:11,
+  and the user's real Overrides folder was last written at 20:10:13.
+  So "Claude cannot touch the user's real AppData" is FALSE for
+  deletion. Treat rm on anything under AppData as real.
+- a real file with no private twin reads through unchanged - eight of
+  the user's nine preset files are byte-identical in both views.
+- Documents is not redirected at all. A probe that writes there writes
+  for real - the 27 August recordings-folder incident was real.
 
 WHAT FOLLOWS:
-- The gate, the seams and every probe run from Claude have never been
-  able to touch the user's real SankoTV settings or AppData. The 24
-  August "sanko_saveas_probe" entries are in the private hive only.
-- For the same reason the real store is UNREADABLE from here by ordinary
-  means, and what IS read looks authoritative. Lifecycle (l)'s "the real
-  store is unchanged" still catches a stray write when Claude runs it
-  (the write shows up in the private view), but the store it is watching
-  there is the private one; it guards the user's real settings only when
-  the user runs the gate.
-- To read the live store (read-only): create the process outside the
-  package with WMI (Win32_Process Create) and have it write its output
-  to a path outside AppData.
-- Documents is NOT redirected. A probe that writes there writes for
-  real - the 27 August recordings-folder incident was real.
+- Registry writes by the gate, the seams and every probe run from
+  Claude never reached the user's real SankoTV settings. The 24 August
+  "sanko_saveas_probe" entries, and the test-window dock layouts of
+  late August, are in the private hive only.
+- The real store is unreadable from a tool by ordinary means, and what
+  IS read looks authoritative. Anything reported as "your settings" or
+  "your library" from a tool before this date was read through that
+  view; where a private twin existed, it was the twin that was read.
+- LIFECYCLE (l) SAYS WHICH STORE IT IS GUARDING. Its before/after
+  snapshot has always been of the store the process can reach. From
+  Claude that is the private copy; the comparison still catches a
+  stray write (it lands in that copy - this is how it caught the
+  DockController bypass), so it proves THE CODE WRITES NOTHING to the
+  settings store. It cannot prove the user's real store is unchanged,
+  and no longer claims to: the section identifies the store through
+  RealStoreView, prints "GUARDING: ...", carries it in the check's
+  label, and fails if the store cannot be identified. It guards the
+  user's real settings when the user runs the gate outside Claude.
+- To read the live store from a tool, read-only: StdRegProv (above),
+  or a process created outside the package with WMI (Win32_Process
+  Create) writing its output to a path outside AppData.
 
 THE RECENTS MOVE, PROVED ON THE LIVE LIST. The store's functions moved
 from NewProjectDialog to RecentProjects.{h,cpp}; key, fields and cap are
@@ -2771,6 +2818,19 @@ diff tool stops because it cannot make an image reviewable as
 parameters; the asset route makes it reviewable as a committed file
 instead. Both routes end in a commit or not at all.]
 
+STEP ZERO, added 2026-10-01 (CLAUDE.md hard rule 12): FETCH THE USER'S
+REAL FILE. Everything below reads a file from the user's library, and
+from a Claude tool that path shows Claude's own copy wherever one
+exists - which is how HB Pencil came to be promoted from a file the
+user never had (see the correction in the HB Pencil section). So first:
+list the library folder from OUTSIDE the package and from inside, with
+hashes; have the outside process copy the file to a path outside
+AppData; run everything below on THAT copy; and report the real path,
+size, date and hash, and whether Claude's view differed. Gouache, the
+first promotion, happened to be sound - it was read through to the
+user's real file, because no private twin of it existed - but nothing
+at the time knew that.
+
 THE WORKFLOW: user says "promote my <preset> override" -> run
 SankoPresetDiff -> report the field diff for confirmation BEFORE any
 edit (the user may not want every value they touched) -> recipe edit ->
@@ -3052,9 +3112,28 @@ TWO MORE DEFECTS FOUND BY THE PERMANENT GATE ITSELF:
   runs failed). Fixed: the org/app parameters are DELETED so the
   bypass cannot be reconstructed; the three sites go through
   sankoSettings(). Same store and keys for the user; scratch under
-  tests. NOTE: gate runs before this fix DID write test-window dock
-  layouts into the real store - the user's next launch may restore an
-  odd dock layout once; View > Reset Layout recovers the default.
+  tests.
+  CORRECTED 2026-10-01 - THE WARNING THAT STOOD HERE WAS WRONG. It said
+  gate runs before this fix "DID write test-window dock layouts into the
+  real store" and that the user's next launch might restore an odd
+  layout. They did not reach the real store. Those gate runs were
+  started from Claude, whose processes get a private copy of the
+  registry (see "Claude's tools do not see the real registry"), and
+  that is where the layouts went. Measured, read-only, both sides:
+    Claude's private copy   storyboard\nativeDock last written
+                            2026-08-29 13:52:15 (the last contaminating
+                            run), float geometries off-screen
+                            (@Rect(-660 -602 160 102)), float sizes
+                            (-1 -1) - windows that were never shown
+    the user's real store   last written 2026-08-28 and 2026-09-19, by
+                            their own sessions; a real layout
+                            (@Rect(1660 162 260 814), floating panels at
+                            320x360 and 320x480); no write at the
+                            contaminating time
+  The BYPASS was real and the fix was right - run by the user outside
+  Claude, the old code would have written their store. What was wrong
+  was the claim about where the writes had landed, made without a way
+  to see the real store.
 
 RECOVERY (its own pass, queued): even fixed, vanished tools deserve an
 escape hatch. Survey result: the bars have NO user-facing close, and
@@ -3173,6 +3252,8 @@ out at mid-grey and the paper shows through; 1.0 was offered and
 declined). There was never a rename: the built-in was always named
 "HB Pencil"; "4px" was its size. The user's variation file is LEFT
 ALONE (their call: they delete it in-app once satisfied).
+(READ THE CORRECTION BELOW before relying on "the user's variation"
+anywhere in this section: the file promoted was Claude's private copy.)
 
 THE RULE CHANGE, user-approved: "built-ins are code" becomes "CODE
 PLUS VERSIONED ASSETS". Reason: the variation carries a custom tip
@@ -3189,10 +3270,51 @@ roster than the app. (b11)'s asset-loaded check trips if a new roster
 target forgets it.
 
 SOURCE-OF-TRUTH DISCIPLINE: the file was hashed at approval
-(d1884843...) and re-verified unchanged at build end - the promotion
-is provably of the version the user has, not one they have not seen.
-The values in the recipe were read from the file, never retyped;
-(b11) makes that claim mechanical (below).
+(d1884843...) and re-verified unchanged at build end. The values in the
+recipe were read from the file, never retyped; (b11) makes that claim
+mechanical (below).
+
+CORRECTED 2026-10-01 - THE FILE THAT WAS HASHED WAS NOT THE USER'S.
+This section said the promotion was "provably of the version the user
+has, not one they have not seen". That was false, and the hashing is
+exactly what made it look proven: the discipline was applied, carefully,
+to the wrong file. What happened on 2026-08-29 (the user's local time):
+  17:38  Claude applied the user's settings table to "HB Pencil
+         Variation" with a one-shot tool. Claude's processes run inside
+         the desktop app's package, where a MODIFIED file under AppData
+         goes to a private copy (see "Claude's tools do not see the real
+         registry"). The user's real file was NOT changed. Claude
+         reported it tuned, and reported a .pre-hb-tune.bak beside it;
+         both exist only in Claude's copy.
+  18:05  The user wrote that they had edited the brush themselves and
+         used Save Variation. That was their REAL save. Claude's private
+         17:38 copy shadowed it, so Claude could not see it - and told
+         the user that no file in the library was newer than 17:38 and
+         that any further edits "aren't on disk". Wrong: they were on
+         the user's disk and not on Claude's.
+  then   The promotion read Claude's 17:38 copy and called it the
+         user's. The committed fixture (tests/fixtures/
+         hb_variation.sankobrush, sha256 d1884843...) is byte-identical
+         to that private file - re-checked 2026-10-01 - and to nothing
+         the user ever had.
+  30 Aug 18:15  The user's real BrushLibrary folder was last changed:
+         their variation was deleted (in-app, as they said they would).
+         It can no longer be compared with anything.
+WHAT THE BUILT-IN THEREFORE IS: the user's settings TABLE, as Claude's
+tool applied it to the pre-tune file, plus size 36. If the user's own
+18:05 edit followed that table exactly, the result is the same; anything
+they set differently by hand was never promoted, and there is no way
+left to tell which.
+WHERE IT STANDS, by the user's decision (2026-10-01): HB Pencil is LEFT
+AS SHIPPED. It has been validated by the user DRAWING with the built-in
+for a month, not against their file. If they want it re-tuned they will
+save a new variation and ask for a proper promotion - under the rule
+this produced (CLAUDE.md hard rule 12: a promotion reads the user's REAL
+file through the outside-the-package path, and says that it did).
+STILL WORDED AS BEFORE, knowingly: (b11) and the comment in
+tests/test_fixtures.qrc call the fixture "the user's variation". Read
+them as "the file the promotion was made from". The check itself is
+unaffected - it proves the recipe equals that file, which is true.
 
 GATE: BrushLibrary (b11), 5 checks, the user's demanded form verbatim:
 the variation file is COMMITTED as a test fixture
