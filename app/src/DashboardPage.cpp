@@ -72,8 +72,8 @@ QWidget *DashboardPage::createHeaderBar()
         "  font-size: 14px;"
         "  font-weight: 600;"
         "}"
-        "QPushButton:hover { background-color: #ffb733; }"
-        "QPushButton:pressed { background-color: #e0991c; }"));
+        "QPushButton:hover { background-color: %ACCENT_HOVER%; }"
+        "QPushButton:pressed { background-color: %ACCENT_PRESSED%; }"));
     connect(newProject, &QPushButton::clicked, this, &DashboardPage::newProjectRequested);
     layout->addWidget(newProject);
 

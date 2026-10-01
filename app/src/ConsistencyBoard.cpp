@@ -180,7 +180,7 @@ QWidget *ConsistencyBoard::createTopBar()
     addChar->setCursor(Qt::PointingHandCursor);
     addChar->setStyleSheet(SankoTheme::themed("QPushButton { background-color: %ACCENT%; color: #0a0a0a; border: none;"
         " border-radius: 6px; padding: 8px 14px; font-size: 13px; font-weight: 600; }"
-        "QPushButton:hover { background-color: #ffb733; }"));
+        "QPushButton:hover { background-color: %ACCENT_HOVER%; }"));
     connect(addChar, &QPushButton::clicked, this, [this] { addEntry(QStringLiteral("Character")); });
     layout->addWidget(addChar);
 
@@ -515,7 +515,7 @@ void ConsistencyBoard::rebuildDetail()
     save->setCursor(Qt::PointingHandCursor);
     save->setStyleSheet(SankoTheme::themed("QPushButton { background-color: %ACCENT%; color: #0a0a0a; border: none;"
         " border-radius: 6px; padding: 8px 18px; font-size: 13px; font-weight: 600; }"
-        "QPushButton:hover { background-color: #ffb733; }"));
+        "QPushButton:hover { background-color: %ACCENT_HOVER%; }"));
     connect(save, &QPushButton::clicked, this, &ConsistencyBoard::saveEdit);
     buttons->addWidget(save);
 

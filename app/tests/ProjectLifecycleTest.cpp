@@ -55,6 +55,7 @@
 #include "NewProjectDialog.h"
 #include "ProjectIO.h"
 #include "RecentProjects.h"
+#include "SankoTheme.h"
 #include "StoryboardModel.h"
 #include "devrecorder/DevRecorder.h"
 
@@ -1354,6 +1355,90 @@ void runOverrideMarkPass(const QString &scratch)
           QStringLiteral("spacing=%1").arg(canvas->paintBrush().spacing()));
 
     window.markCleanForTest();
+    window.close();
+    pump(300);
+}
+
+// ---- (w) a filled accent button's states come from the theme --------------
+// The defect: when amber was retired the FILLS turned purple through
+// %ACCENT%, but each button's hover/pressed/disabled colours were literals
+// beside it and stayed amber - so purple buttons flashed orange under the
+// pointer on five pages. Read from the live widgets, so it is the
+// stylesheet the app actually applies that is being checked.
+void runAccentStatesPass()
+{
+    out() << "--- (w) accent button states come from the theme ---" << Qt::endl;
+    MainWindow window;
+    window.resize(1300, 850);
+    window.show();
+    pump(700);
+
+    const QStringList amber = {QStringLiteral("#ffb733"),
+                               QStringLiteral("#e0991c"),
+                               QStringLiteral("#5a4416"),
+                               QStringLiteral("#997a3a")};
+    int styled = 0, withThemeHover = 0;
+    QStringList offenders;
+    QString newProjectSheet;
+    for (QWidget *w : window.findChildren<QWidget *>()) {
+        const QString sheet = w->styleSheet();
+        if (sheet.isEmpty())
+            continue;
+        ++styled;
+        if (sheet.contains(SankoTheme::kAccentHoverHex, Qt::CaseInsensitive))
+            ++withThemeHover;
+        for (const QString &literal : amber)
+            if (sheet.contains(literal, Qt::CaseInsensitive))
+                offenders << QStringLiteral("%1 \"%2\" has %3")
+                                 .arg(QString::fromLatin1(
+                                          w->metaObject()->className()),
+                                      w->property("text").toString(), literal);
+        if (auto *button = qobject_cast<QPushButton *>(w))
+            if (button->text() == QStringLiteral("New Project"))
+                newProjectSheet = sheet;
+    }
+    // The control: the walk reaches styled widgets at all, and reaches the
+    // filled buttons specifically - an empty walk would "find no amber" too.
+    check(QStringLiteral("(w) control: the walk sees the app's stylesheets, "
+                         "including several filled accent buttons"),
+          styled > 20 && withThemeHover >= 3,
+          QStringLiteral("%1 styled widgets, %2 with the theme hover")
+              .arg(styled).arg(withThemeHover));
+    check(QStringLiteral("(w) no widget carries a retired amber state colour"),
+          offenders.isEmpty(), offenders.join(QStringLiteral("; ")));
+    check(QStringLiteral("(w) the start page's New Project button hovers and "
+                         "presses in the theme's colours"),
+          newProjectSheet.contains(SankoTheme::kAccentHoverHex)
+              && newProjectSheet.contains(SankoTheme::kAccentPressedHex),
+          newProjectSheet.right(120));
+    check(QStringLiteral("(w) no stylesheet is left with an unresolved "
+                         "%TOKEN%"),
+          !SankoTheme::themed("%ACCENT_HOVER% %ACCENT_PRESSED% "
+                              "%ACCENT_DISABLED% %ACCENT_DISABLED_TEXT% "
+                              "%ACCENT_LIGHT% %ACCENT_RGB% %ACCENT% %PURPLE%")
+               .contains(QLatin1Char('%')));
+
+    // The states are still the ACCENT: same hue family, hover lighter and
+    // pressed darker than the fill. (Amber sits ~210 degrees away.)
+    auto hueGap = [](const QColor &a, const QColor &b) {
+        const int d = qAbs(a.hslHue() - b.hslHue());
+        return qMin(d, 360 - d);
+    };
+    check(QStringLiteral("(w) hover and pressed are the accent's own hue, "
+                         "lighter and darker than the fill"),
+          hueGap(SankoTheme::kAccentHover, SankoTheme::kAccent) < 12
+              && hueGap(SankoTheme::kAccentPressed, SankoTheme::kAccent) < 12
+              && SankoTheme::kAccentHover.lightness()
+                     > SankoTheme::kAccent.lightness()
+              && SankoTheme::kAccentPressed.lightness()
+                     < SankoTheme::kAccent.lightness(),
+          QStringLiteral("hover %1, fill %2, pressed %3")
+              .arg(SankoTheme::kAccentHoverHex, SankoTheme::kAccentHex,
+                   SankoTheme::kAccentPressedHex));
+    check(QStringLiteral("(w) control: the same measure calls amber a "
+                         "different colour"),
+          hueGap(QColor(0xff, 0xb7, 0x33), SankoTheme::kAccent) > 90);
+
     window.close();
     pump(300);
 }
@@ -3104,6 +3189,7 @@ int main(int argc, char **argv)
     runSizeCtlAgreementPass(scratch);
     runNewProjectPromptPass(a);
     runEraserLibraryPass(scratch);
+    runAccentStatesPass();
     runOverrideMarkPass(scratch);
     runTipShapePreviewPass(scratch);
     runGrainPreviewPass(scratch);

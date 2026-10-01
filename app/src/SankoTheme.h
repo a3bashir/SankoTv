@@ -55,13 +55,37 @@ inline const QString kAccentLightHex = QStringLiteral("#9e94f8");
 // text on dark stays held to 4.5:1 — the exemption covers labels ON
 // accent fills only.
 
+// THE STATES OF A FILLED ACCENT BUTTON. A button filled with kAccent needs a
+// hover, a pressed and a disabled colour, and for a long time each button
+// spelled its own. That is how the amber retirement above missed them: the
+// FILL went through %ACCENT% and turned purple, while the hover and pressed
+// literals beside it stayed amber (#ffb733 / #e0991c, and an amber-brown
+// disabled pair), so five purple buttons flashed orange under the pointer.
+// Tokens here, so the next re-accent carries every state with it.
+//   hover     the value the studio's filled buttons already used
+//   pressed   DERIVED from kAccent, so it cannot drift from the fill
+//   disabled  fill + label, as the studio's filled buttons already used
+inline const QColor kAccentHover(0x8d, 0x80, 0xf8);
+inline const QString kAccentHoverHex = QStringLiteral("#8d80f8");
+inline const QColor kAccentPressed = kAccent.darker(112);
+inline const QString kAccentPressedHex = kAccentPressed.name();
+inline const QColor kAccentDisabled(0x3d, 0x37, 0x66);
+inline const QString kAccentDisabledHex = QStringLiteral("#3d3766");
+inline const QColor kAccentDisabledText(0x8a, 0x86, 0xa8);
+inline const QString kAccentDisabledTextHex = QStringLiteral("#8a86a8");
+
 // Stylesheet templates carry %ACCENT% / %ACCENT_RGB% / %ACCENT_LIGHT% /
-// %PURPLE% and are resolved here, so a stylesheet never embeds an accent
-// literal. Longest placeholders are replaced first so none can shadow
-// another by prefix.
+// %ACCENT_HOVER% / %ACCENT_PRESSED% / %ACCENT_DISABLED% /
+// %ACCENT_DISABLED_TEXT% / %PURPLE% and are resolved here, so a stylesheet
+// never embeds an accent literal. Longest placeholders are replaced first so
+// none can shadow another by prefix.
 inline QString themed(const char *qss)
 {
     QString s = QString::fromLatin1(qss);
+    s.replace(QLatin1String("%ACCENT_DISABLED_TEXT%"), kAccentDisabledTextHex);
+    s.replace(QLatin1String("%ACCENT_DISABLED%"), kAccentDisabledHex);
+    s.replace(QLatin1String("%ACCENT_PRESSED%"), kAccentPressedHex);
+    s.replace(QLatin1String("%ACCENT_HOVER%"), kAccentHoverHex);
     s.replace(QLatin1String("%ACCENT_LIGHT%"), kAccentLightHex);
     s.replace(QLatin1String("%ACCENT_RGB%"), kAccentRgb);
     s.replace(QLatin1String("%ACCENT%"), kAccentHex);

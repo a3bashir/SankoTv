@@ -2303,6 +2303,37 @@ RULE the helper encodes: the scratch guarantee must hold WITHOUT anyone
 checking. Settings access added in future goes through sankoSettings()
 — a new two-argument QSettings site is a review reject.
 
+## Filled accent buttons: hover, pressed and disabled come from the theme (2026-10-01)
+
+PURPLE BUTTONS HOVERED ORANGE. When amber was retired the FILLS turned
+purple through %ACCENT%, but each filled button's hover, pressed and
+disabled colours were literals written beside it, and they stayed amber:
+#ffb733 hover, #e0991c pressed, #5a4416 / #997a3a disabled. Found on the
+start window's New Project button; the same literals were on FIVE pages
+- Dashboard, Script Editor (Parse), Animatic (Export MP4), Consistency
+Board (+ Add Character, and Save in its edit form).
+
+FIX: the states are tokens in SankoTheme.h, resolved by themed():
+  %ACCENT_HOVER%          #8d80f8 - the value the studio's filled buttons
+                          (Create Project, Project Settings' OK) already
+                          used as a literal; they now use the token too
+  %ACCENT_PRESSED%        kAccent.darker(112) - DERIVED, so it cannot
+                          drift from the fill
+  %ACCENT_DISABLED%       #3d3766 } likewise already in use on the
+  %ACCENT_DISABLED_TEXT%  #8a86a8 } studio's filled buttons
+No colour was invented: two values moved from literals into the theme,
+one is computed.
+
+LEFT ALONE ON PURPOSE: the QuickShape Done button on the canvas. It is
+filled with %PURPLE% ("the Sanko colour"), not %ACCENT% ("what chrome
+highlights with"), and must not follow a re-accent; its hover and
+disabled literals stay with it. The label colour on the five buttons
+(#0a0a0a, chosen for amber) is also unchanged - a separate question.
+
+GATE: Lifecycle (w) walks every live widget's stylesheet for the retired
+values, with the control that the walk reaches the filled buttons at all
+(an empty walk finds no amber either).
+
 ## The engine erase composite: the Eraser is a brush now (2026-08-28)
 
 THE ERASER WAS NEVER A BRUSH. It was the classic QPainter path whole and

@@ -365,8 +365,9 @@ NewProjectDialog::NewProjectDialog(QWidget *parent)
         "QPushButton { background:%ACCENT%; color:#ffffff; border:none; "
         "border-radius:3px; font-family:Inter; font-size:11px; "
         "font-weight:600; }"
-        "QPushButton:hover { background:#8d80f8; }"
-        "QPushButton:disabled { background:#3d3766; color:#8a86a8; }")
+        "QPushButton:hover { background:%ACCENT_HOVER%; }"
+        "QPushButton:disabled { background:%ACCENT_DISABLED%; "
+        "color:%ACCENT_DISABLED_TEXT%; }")
         .toUtf8().constData()));
     connect(m_create, &QPushButton::clicked, this,
             &NewProjectDialog::attemptCreate);

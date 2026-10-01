@@ -56,7 +56,10 @@ on a timeline with audio; Generation sends panels to fal.ai for AI video.
   QComboBox, no unstyled QLineEdit, no default button styling.
 - **Theme:** `SankoTheme.h` is the single source of colour truth. Accent
   `#7C6EF6` (`kAccent`); `kAccentLight` `#9E94F8` for accent text on dark.
-  Do not add new colour literals.
+  A button FILLED with the accent takes its hover / pressed / disabled
+  colours from the theme too (`%ACCENT_HOVER%`, `%ACCENT_PRESSED%`,
+  `%ACCENT_DISABLED%`, `%ACCENT_DISABLED_TEXT%`) — never a literal beside
+  the fill. Do not add new colour literals.
 
 ## Environment
 

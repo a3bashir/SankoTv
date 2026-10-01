@@ -202,7 +202,7 @@ QWidget *AnimaticPage::createTopBar()
     m_exportButton->setEnabled(false); // enabled once panels are loaded
     m_exportButton->setStyleSheet(SankoTheme::themed("QPushButton { background-color: %ACCENT%; color: #0a0a0a; border: none;"
         " border-radius: 6px; padding: 8px 16px; font-size: 13px; font-weight: 600; }"
-        "QPushButton:hover { background-color: #ffb733; }"
+        "QPushButton:hover { background-color: %ACCENT_HOVER%; }"
         "QPushButton:disabled { background-color: #1c1c1c; color: #555555;"
         " border: 1px solid #2a2a2a; }"));
     connect(m_exportButton, &QPushButton::clicked, this, &AnimaticPage::onExportMp4);

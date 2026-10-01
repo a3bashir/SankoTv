@@ -29,9 +29,10 @@ const char *kAccentButton =
     "  background-color: %ACCENT%; color: #0a0a0a; border: none; border-radius: 6px;"
     "  padding: 9px 22px; font-size: 14px; font-weight: 600;"
     "}"
-    "QPushButton:hover { background-color: #ffb733; }"
-    "QPushButton:pressed { background-color: #e0991c; }"
-    "QPushButton:disabled { background-color: #5a4416; color: #997a3a; }";
+    "QPushButton:hover { background-color: %ACCENT_HOVER%; }"
+    "QPushButton:pressed { background-color: %ACCENT_PRESSED%; }"
+    "QPushButton:disabled { background-color: %ACCENT_DISABLED%;"
+    " color: %ACCENT_DISABLED_TEXT%; }";
 
 // --- Local scene parsing ---------------------------------------------------
 // Builds the scene breakdown directly from the script text — no API, no
