@@ -155,9 +155,10 @@ MainWindow::MainWindow(QWidget *parent)
     m_stack->addWidget(m_consistencyBoard); // index 4
     m_stack->addWidget(m_generation);       // index 5
 
-    // Dashboard -> New Project window -> Script Editor.
+    // Dashboard -> New Project window -> Script Editor. Through the same
+    // guarded request File > New Project uses: see requestNewProject().
     connect(m_dashboard, &DashboardPage::newProjectRequested, this,
-            &MainWindow::runNewProjectDialog);
+            &MainWindow::requestNewProject);
 
     // Script Editor: parse materializes scenes; Continue navigates.
     connect(m_scriptEditor, &ScriptEditorPage::backRequested, this, [this] {
@@ -343,11 +344,7 @@ void MainWindow::setupMenuBar()
     // one way to create a project rather than two that must agree.
     QAction *newAct = fileMenu->addAction(QStringLiteral("New Project..."));
     newAct->setShortcut(QKeySequence::New);
-    connect(newAct, &QAction::triggered, this, [this] {
-        if (!confirmDiscardChanges(QStringLiteral("starting a new project")))
-            return;
-        emit m_dashboard->newProjectRequested();
-    });
+    connect(newAct, &QAction::triggered, this, &MainWindow::requestNewProject);
 
     QAction *openAct = fileMenu->addAction(QStringLiteral("Open Project..."));
     openAct->setShortcut(QKeySequence::Open);
@@ -887,6 +884,21 @@ void MainWindow::onNewProject()
     resetProjectState(ClipboardPolicy::Keep);
 }
 
+// EVERY way of asking for a new project arrives here, and so every one of
+// them asks about unsaved work FIRST. There used to be two entrances: File >
+// New Project prompted and then raised the Dashboard's signal, while the
+// Dashboard's own button was wired straight to the dialog. So the button -
+// reachable with a project open, by going Back from the Script Editor -
+// replaced the open project with no prompt at all, and so did the dialog's
+// Open Project on that route. One entrance means the prompt has one answer
+// that covers whatever the dialog then does, and it is asked exactly once.
+void MainWindow::requestNewProject()
+{
+    if (!confirmDiscardChanges(QStringLiteral("starting a new project")))
+        return;
+    runNewProjectDialog();
+}
+
 // The New Project window (Figma 350:24) and what follows from it. Create
 // writes <Location>/<Name>/<Name>.sankotv IMMEDIATELY and lands in recents;
 // Open routes into the existing loadFromPath. File > Save / Save As / Open
@@ -960,6 +972,13 @@ bool MainWindow::confirmDiscardChanges(const QString &actionDescription)
 {
     if (!shouldPromptToSave())
         return true; // nothing to lose
+    if (m_discardPromptForTest) {
+        // The gate cannot click a modal. It supplies the ANSWER; whether
+        // the question was asked at all, and what the answer then does, are
+        // still this function's and mayDiscardAfterAnswer's to decide.
+        ++m_discardPromptCount;
+        return mayDiscardAfterAnswer(m_discardPromptForTest());
+    }
     QMessageBox box(this);
     box.setIcon(QMessageBox::Warning);
     box.setWindowTitle(QStringLiteral("Unsaved Changes"));

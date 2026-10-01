@@ -1172,6 +1172,129 @@ void runSaveAsIndependencePass(const QString &scratch)
 }
 
 
+// ---- (v) EVERY way to a new project asks about unsaved work, once ---------
+// The defect: File > New Project asked, then raised the Dashboard's signal;
+// the Dashboard's own New Project button was wired straight to the dialog.
+// The button is reachable with a project open (Back from the Script Editor),
+// so it replaced an unsaved project without a word.
+//
+// The modal itself cannot be clicked here, so the ANSWER is supplied through
+// setDiscardPromptForTest - but whether the question is ASKED, and how many
+// times, is the real code, and that is what is counted. "Exactly once"
+// matters as much as "at all": the obvious repair (guard both entrances
+// where they stand) asks twice on the menu route.
+void runNewProjectPromptPass(const QString &project)
+{
+    out() << "--- (v) a new project always asks about unsaved work ---"
+          << Qt::endl;
+    MainWindow window;
+    window.resize(1300, 850);
+    window.show();
+    pump(800);
+    check(QStringLiteral("(v) project opens"), window.loadProjectForTest(project));
+    pump(400);
+    const QString openPath = window.projectPathForTest();
+
+    QPushButton *newButton = nullptr;
+    if (auto *dashboard = window.findChild<DashboardPage *>())
+        for (QPushButton *b : dashboard->findChildren<QPushButton *>())
+            if (b->text() == QStringLiteral("New Project"))
+                newButton = b;
+    QAction *newAction = nullptr;
+    for (QAction *a : window.findChildren<QAction *>())
+        if (a->text() == QStringLiteral("New Project..."))
+            newAction = a;
+    check(QStringLiteral("(v) found the Dashboard's New Project button and "
+                         "the File > New Project action"),
+          newButton && newAction);
+    if (!newButton || !newAction)
+        return;
+
+    // The dialog is modal: something has to notice it and close it, or a
+    // dialog that opens when it should (or should not) hangs the gate.
+    int dialogsSeen = 0;
+    QTimer watcher;
+    watcher.setInterval(60);
+    QObject::connect(&watcher, &QTimer::timeout, [&dialogsSeen] {
+        if (auto *dialog = qobject_cast<NewProjectDialog *>(
+                QApplication::activeModalWidget())) {
+            ++dialogsSeen;
+            dialog->reject();
+        }
+    });
+    watcher.start();
+
+    // Positive control FIRST: with nothing to lose, the button reaches the
+    // dialog and nothing is asked. This is what proves the watcher can see
+    // a dialog, so that "no dialog appeared" below means something.
+    window.markCleanForTest();
+    window.setDiscardPromptForTest(
+        [] { return MainWindow::DiscardAnswer::Cancel; });
+    newButton->click();
+    pump(200);
+    check(QStringLiteral("(v) control: a CLEAN project goes straight to the "
+                         "dialog, unasked"),
+          dialogsSeen == 1 && window.discardPromptCountForTest() == 0,
+          QStringLiteral("dialogs %1, prompts %2").arg(dialogsSeen)
+              .arg(window.discardPromptCountForTest()));
+
+    // Now make it dirty, by a change the undo stack never sees.
+    window.applyProjectSettingsForTest(QStringLiteral("EditedForPrompt"), 30);
+    pump(150);
+    check(QStringLiteral("(v) control: the project is dirty"), window.isDirty());
+
+    // The Dashboard button, answered Cancel: asked once, and NOTHING else.
+    dialogsSeen = 0;
+    window.setDiscardPromptForTest(
+        [] { return MainWindow::DiscardAnswer::Cancel; });
+    newButton->click();
+    pump(200);
+    check(QStringLiteral("(v) the Dashboard button ASKS when there is "
+                         "unsaved work"),
+          window.discardPromptCountForTest() == 1,
+          QStringLiteral("asked %1 time(s)")
+              .arg(window.discardPromptCountForTest()));
+    check(QStringLiteral("(v) ...and Cancel stops there: no dialog, the "
+                         "project still open and still dirty"),
+          dialogsSeen == 0 && window.projectPathForTest() == openPath
+              && window.isDirty(),
+          QStringLiteral("dialogs %1").arg(dialogsSeen));
+
+    // The Dashboard button, answered Discard: asked once, then the dialog.
+    dialogsSeen = 0;
+    window.setDiscardPromptForTest(
+        [] { return MainWindow::DiscardAnswer::Discard; });
+    newButton->click();
+    pump(200);
+    check(QStringLiteral("(v) answered Discard, the button asks ONCE and "
+                         "then shows the dialog"),
+          window.discardPromptCountForTest() == 1 && dialogsSeen == 1,
+          QStringLiteral("asked %1, dialogs %2")
+              .arg(window.discardPromptCountForTest()).arg(dialogsSeen));
+
+    // File > New Project: the same single question, not two.
+    dialogsSeen = 0;
+    window.setDiscardPromptForTest(
+        [] { return MainWindow::DiscardAnswer::Discard; });
+    newAction->trigger();
+    pump(200);
+    check(QStringLiteral("(v) File > New Project asks exactly ONCE too (it "
+                         "does not ask, then ask again at the dialog)"),
+          window.discardPromptCountForTest() == 1 && dialogsSeen == 1,
+          QStringLiteral("asked %1, dialogs %2")
+              .arg(window.discardPromptCountForTest()).arg(dialogsSeen));
+    check(QStringLiteral("(v) a dialog that was cancelled changed nothing: "
+                         "same project, still dirty"),
+          window.projectPathForTest() == openPath && window.isDirty());
+
+    watcher.stop();
+    window.setDiscardPromptForTest({});
+    window.markCleanForTest();
+    window.close();
+    pump(300);
+}
+
+
 // ---- (n) override marks in the panel + reset restores stock ---------------
 // The user-visible half of (b9): tuning a built-in marks its row
 // (Modified, the teal dot state), reset clears the mark, and activating
@@ -2857,6 +2980,13 @@ int main(int argc, char **argv)
     RecentProjects::setSettingsOverride(scratch
                                         + QStringLiteral("/recents.ini"));
 
+    // Constructing the New Project dialog creates its default Save Location
+    // and probes it for writability - in the user's Documents, unless it is
+    // told otherwise.
+    QDir().mkpath(scratch + QStringLiteral("/new_project_default"));
+    NewProjectDialog::setDefaultLocationForTest(
+        scratch + QStringLiteral("/new_project_default"));
+
     const QString projects = scratch + QStringLiteral("/projects");
     QDir().mkpath(projects);
     // Deliberately DIFFERENT frame rates: the animatic's rebuild-on-fps-change
@@ -2972,6 +3102,7 @@ int main(int argc, char **argv)
     runSaveFailurePass(scratch);
     runRecentThumbnailSourcePass(scratch);
     runSizeCtlAgreementPass(scratch);
+    runNewProjectPromptPass(a);
     runEraserLibraryPass(scratch);
     runOverrideMarkPass(scratch);
     runTipShapePreviewPass(scratch);

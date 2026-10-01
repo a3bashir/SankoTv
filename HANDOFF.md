@@ -1556,6 +1556,23 @@ DECISION vs MODAL: shouldPromptToSave() is pure and public, and
 mayDiscardAfterAnswer maps answer -> consequence with no dialog in front,
 so the gate asserts the decision instead of driving a QMessageBox.
 
+ONE ENTRANCE THAT WAS MISSED, closed 2026-10-01: THE DASHBOARD'S NEW
+PROJECT BUTTON SKIPPED THE PROMPT. File > New Project asked and then
+raised the Dashboard's signal; the Dashboard's own button was wired
+straight to the dialog. The button is reachable with a project open
+(Back from the Script Editor), so it replaced an unsaved project without
+a word - and so did the dialog's Open Project on that route. Fix:
+MainWindow::requestNewProject is THE entrance for both, asking exactly
+once. (Guarding each entrance where it stood would have asked twice on
+the menu route: the menu asked, raised the signal, and the signal's
+handler would ask again.) Lifecycle (v) COUNTS the asks rather than
+checking that one happened, through setDiscardPromptForTest - which
+supplies the modal's answer and nothing else. Also from that section:
+QStandardPaths test mode does not move Documents, and merely
+constructing NewProjectDialog creates and probes Documents/SankoTV, so
+NewProjectDialog::setDefaultLocationForTest exists and the family sets
+it before the first dialog.
+
 GATE: sections (e) and (f), family now 54 checks. Close-state asserts
 every audited item with a control proving the state EXISTED first
 (clipboards, a vanishing point, a non-empty undo stack, a dirty flag);

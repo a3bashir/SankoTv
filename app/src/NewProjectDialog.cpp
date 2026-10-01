@@ -65,8 +65,12 @@ constexpr int kDimMin = 64, kDimMax = 8192;
 // not exist is its own small mess. If it cannot be created, fall back to
 // Documents itself (which exists by definition — it is writableLocation),
 // and to home if even that is unavailable.
+QString g_defaultLocationForTest; // verification: see the header
+
 QString defaultSaveLocation()
 {
+    if (!g_defaultLocationForTest.isEmpty())
+        return g_defaultLocationForTest;
     const QString documents =
         QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
     if (!documents.isEmpty()) {
@@ -411,6 +415,11 @@ NewProjectDialog::NewProjectDialog(QWidget *parent)
 
     applyPreset(0); // HDTV 1080p default: 1920x1080, dims locked
     revalidate();
+}
+
+void NewProjectDialog::setDefaultLocationForTest(const QString &dir)
+{
+    g_defaultLocationForTest = dir;
 }
 
 QString NewProjectDialog::projectName() const

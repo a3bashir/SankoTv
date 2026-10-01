@@ -68,6 +68,13 @@ public:
     QString validationReason() const { return m_reason; }
     void attemptCreate(); // the Create click path (re-validates, writes)
 
+    // Verification only: the folder a new dialog offers as its Save
+    // Location (empty = the real one, "SankoTV" under Documents). Merely
+    // CONSTRUCTING this dialog creates that folder and probes it for
+    // writability, so a gate that opens the dialog must point it at scratch
+    // first or it writes into the user's Documents.
+    static void setDefaultLocationForTest(const QString &dir);
+
 protected:
     void paintEvent(QPaintEvent *event) override;
     void mousePressEvent(QMouseEvent *event) override;

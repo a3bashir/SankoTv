@@ -7,6 +7,8 @@
 #include <QString>
 #include <QVector>
 
+#include <functional>
+
 class DashboardPage;
 class QUndoStack;
 class ScriptEditorPage;
@@ -75,6 +77,16 @@ public:
     {
         return mayDiscardAfterAnswer(answer);
     }
+    // Answer the unsaved-changes prompt WITHOUT its modal, and count how
+    // often it was asked. With this set the prompt's box is never shown;
+    // everything around it - whether to ask, and what each answer then
+    // allows - is the real code. An empty function restores the modal.
+    void setDiscardPromptForTest(std::function<DiscardAnswer()> answer)
+    {
+        m_discardPromptForTest = std::move(answer);
+        m_discardPromptCount = 0;
+    }
+    int discardPromptCountForTest() const { return m_discardPromptCount; }
     QString projectPathForTest() const { return m_currentProjectPath; }
     QString projectNameForTest() const { return m_projectName; }
     int projectFpsForTest() const { return m_projectFps; }
@@ -100,6 +112,10 @@ private:
     void buildScenesFromJson(const QJsonArray &scenes);
 
     void onNewProject();
+    // THE entrance to a new project: asks about unsaved work, then shows
+    // the New Project window. The Dashboard's button and File > New Project
+    // both come through here, so neither can skip the question.
+    void requestNewProject();
     // Shows the New Project window and applies whatever it returns.
     void runNewProjectDialog();
     void onOpenProject();
@@ -214,6 +230,8 @@ private:
     // durations, frame rate, project name, canvas resize — never reach it
     // at all.
     bool m_dirty = false;
+    std::function<DiscardAnswer()> m_discardPromptForTest;
+    int m_discardPromptCount = 0;
 
     QAction *m_saveAct = nullptr;
     QAction *m_saveAsAct = nullptr;
