@@ -598,6 +598,24 @@ tests/_backups/seam_perf_3b_20260821.cpp, 63 checks x 10 green runs):
    full-res decode per row per paintEvent was masked at 960x540 by
    QPixmapCache but re-decoded EVERY hover repaint at 4K (64 ms/row,
    638 ms/repaint at the 10-row cap).
+   CORRECTED 2026-10-01 - THE CACHE WAS FAST AT READING THE WRONG FILE.
+   It looked for "panel_s0_p0.png" beside the project file. Days after
+   this pass, saves moved every image into "<basename>_assets/" (the
+   Save As independence fix), and nothing told the recents list. For a
+   month every project saved since showed NO thumbnail - or, where an
+   older flat file lingered in the folder, showed THAT: one stale picture
+   for every project sharing the folder. Seen in the user's own list:
+   Test_SB_006_A displayed Test_SB_006's 23 August first panel (the two
+   files' hashes differ, 30f61109 vs 2915c0f6). Fix:
+   RecentProjects::thumbnailSource() ASKS THE MANIFEST - the first
+   panel's pixmapFile, relative to the manifest - which is the only
+   statement of where the image is that holds for both layouts. Memoised
+   on the manifest's mtime, so the per-hover cost this pass removed does
+   not come back as a JSON parse. WHY IT SURVIVED: no gate ever asked
+   which file the list read; the dialog's recents were checked once, by
+   seam_newproject_20260818, and never by the gate. Lifecycle (u) now
+   does, through the real save path, including the shared-folder case
+   with a stale flat file present as its control.
 3. Generation: one flatten per submission (was three: two blank checks +
    encode); payloads downscale before encode — 1568 long edge for
    Anthropic vision, 1280x720 for fal (the request asks for a 720p

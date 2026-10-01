@@ -64,6 +64,8 @@
 #include <QThread>
 #include <QElapsedTimer>
 #include <QFile>
+#include <QImage>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QPainter>
@@ -824,6 +826,182 @@ void runViewResetPass(const QString &projectA, const QString &projectB)
     window.markCleanForTest();
     window.close();
     pump(300);
+}
+
+
+// ---- (u) a recent project's thumbnail comes from ITS OWN manifest ---------
+// The defect: the recents list looked for "panel_s0_p0.png" beside the
+// project file, which is where a first panel's flatten lived until saves
+// moved images into "<basename>_assets/". From then on a freshly saved
+// project showed no thumbnail, and a project sharing a folder with an older
+// flat save showed THAT file - the same picture for every project in the
+// folder, and belonging to none of them. It survived a month because no
+// gate ever asked which file the list was reading.
+//
+// Every project here is written through the real ProjectIO save, so the
+// layout under test is the one the app produces, not one this file assumes.
+void runRecentThumbnailSourcePass(const QString &scratch)
+{
+    out() << "--- (u) the recents thumbnail is the manifest's first panel ---"
+          << Qt::endl;
+    const QString root = scratch + QStringLiteral("/thumb_source");
+    QDir(root).removeRecursively();
+    QDir().mkpath(root);
+
+    // One solid-colour panel per project, so "whose picture is this" has a
+    // one-pixel answer.
+    auto saveSolid = [](const QString &projectPath, const QColor &color) {
+        Scene *scene = new Scene;
+        scene->number = 1;
+        Panel *panel = makeBlankPanel(QSize(960, 540));
+        panel->layers[1].image.fill(color);
+        scene->panels.append(panel);
+        ProjectIO::SaveData data;
+        data.projectName = QFileInfo(projectPath).completeBaseName();
+        data.fps = 24;
+        data.canvasSize = QSize(960, 540);
+        data.scenes = {scene};
+        const ProjectIO::WriteResult w = ProjectIO::projectToJson(data, projectPath);
+        QFile f(projectPath);
+        if (w.ok && f.open(QIODevice::WriteOnly))
+            f.write(QJsonDocument(w.root).toJson(QJsonDocument::Indented));
+        f.close();
+        delete scene;
+        return w.ok;
+    };
+    auto centre = [](const QString &png) {
+        const QImage img(png);
+        return img.isNull() ? QColor() : img.pixelColor(img.width() / 2,
+                                                         img.height() / 2);
+    };
+
+    // 1. A project saved today.
+    const QString fresh = root + QStringLiteral("/Fresh/Fresh.sankotv");
+    QDir().mkpath(QFileInfo(fresh).absolutePath());
+    check(QStringLiteral("(u) fixture: a project saved through the real "
+                         "save path"),
+          saveSolid(fresh, QColor(200, 30, 30)));
+    const QString freshThumb = RecentProjects::thumbnailSource(fresh);
+    check(QStringLiteral("(u) control: the OLD location is empty for it - "
+                         "the reason new projects showed no thumbnail"),
+          !QFileInfo::exists(QFileInfo(fresh).absolutePath()
+                             + QStringLiteral("/panel_s0_p0.png")));
+    check(QStringLiteral("(u) the thumbnail is the file its manifest names, "
+                         "inside its own assets folder"),
+          freshThumb.endsWith(QStringLiteral("/Fresh_assets/panel_s0_p0.png"))
+              && QFileInfo::exists(freshThumb),
+          freshThumb);
+    check(QStringLiteral("(u) ...and it is that project's picture"),
+          centre(freshThumb) == QColor(200, 30, 30));
+
+    // 2. Two projects in ONE folder, beside a stale flat file from an older
+    //    save: the arrangement in which the list showed the wrong picture.
+    const QString sharedDir = root + QStringLiteral("/Shared");
+    QDir().mkpath(sharedDir);
+    const QString stale = sharedDir + QStringLiteral("/panel_s0_p0.png");
+    {
+        QImage old(960, 540, QImage::Format_ARGB32_Premultiplied);
+        old.fill(QColor(20, 20, 20));
+        old.save(stale, "PNG");
+    }
+    const QString first = sharedDir + QStringLiteral("/Board.sankotv");
+    const QString copy = sharedDir + QStringLiteral("/Board_A.sankotv");
+    const bool sharedSaved = saveSolid(first, QColor(30, 160, 60))
+        && saveSolid(copy, QColor(40, 60, 210));
+    check(QStringLiteral("(u) control: the stale flat file is there, and is "
+                         "NEITHER project's picture"),
+          sharedSaved && QFileInfo::exists(stale)
+              && centre(stale) == QColor(20, 20, 20));
+    const QString firstThumb = RecentProjects::thumbnailSource(first);
+    const QString copyThumb = RecentProjects::thumbnailSource(copy);
+    check(QStringLiteral("(u) neither project in a shared folder resolves to "
+                         "the stale flat file"),
+          QFileInfo(firstThumb) != QFileInfo(stale)
+              && QFileInfo(copyThumb) != QFileInfo(stale),
+          firstThumb + QStringLiteral(" | ") + copyThumb);
+    check(QStringLiteral("(u) each resolves to ITS OWN first panel"),
+          firstThumb != copyThumb && centre(firstThumb) == QColor(30, 160, 60)
+              && centre(copyThumb) == QColor(40, 60, 210));
+
+    // 3. A project from before the assets folder: its manifest names the
+    //    flat file, and that must still be found where it always was.
+    const QString legacyDir = root + QStringLiteral("/Legacy");
+    QDir().mkpath(legacyDir);
+    const QString legacy = legacyDir + QStringLiteral("/Old.sankotv");
+    {
+        QImage flat(960, 540, QImage::Format_ARGB32_Premultiplied);
+        flat.fill(QColor(210, 180, 40));
+        flat.save(legacyDir + QStringLiteral("/panel_s0_p0.png"), "PNG");
+        QJsonObject panel{{QStringLiteral("pixmapFile"),
+                           QStringLiteral("panel_s0_p0.png")}};
+        QJsonObject scene{{QStringLiteral("panels"), QJsonArray{panel}}};
+        QJsonObject manifest{{QStringLiteral("version"), 1},
+                             {QStringLiteral("scenes"), QJsonArray{scene}}};
+        QFile f(legacy);
+        if (f.open(QIODevice::WriteOnly))
+            f.write(QJsonDocument(manifest).toJson());
+    }
+    const QString legacyThumb = RecentProjects::thumbnailSource(legacy);
+    check(QStringLiteral("(u) a pre-assets project still finds its flat "
+                         "file, because its manifest says so"),
+          QFileInfo(legacyThumb)
+                  == QFileInfo(legacyDir + QStringLiteral("/panel_s0_p0.png"))
+              && centre(legacyThumb) == QColor(210, 180, 40),
+          legacyThumb);
+
+    // 4. No panel yet, and no file at all.
+    const QString empty = root + QStringLiteral("/Empty.sankotv");
+    {
+        QJsonObject manifest{{QStringLiteral("version"), 1},
+                             {QStringLiteral("scenes"), QJsonArray()}};
+        QFile f(empty);
+        if (f.open(QIODevice::WriteOnly))
+            f.write(QJsonDocument(manifest).toJson());
+    }
+    check(QStringLiteral("(u) a project with no panel yet has no thumbnail "
+                         "(not a guessed one)"),
+          RecentProjects::thumbnailSource(empty).isEmpty());
+    check(QStringLiteral("(u) a project whose file is gone has none either"),
+          RecentProjects::thumbnailSource(root + QStringLiteral("/Gone.sankotv"))
+              .isEmpty());
+
+    // 5. The answer is remembered until the project file changes: a list
+    //    repaints on every hover and must not parse a manifest each time.
+    const int readsBefore = RecentProjects::manifestReadsForTest();
+    for (int i = 0; i < 200; ++i)
+        RecentProjects::thumbnailSource(fresh);
+    check(QStringLiteral("(u) 200 repeat lookups open the manifest ZERO more "
+                         "times"),
+          RecentProjects::manifestReadsForTest() == readsBefore,
+          QStringLiteral("%1 extra read(s)")
+              .arg(RecentProjects::manifestReadsForTest() - readsBefore));
+    // ...and the control that the counter can move: change the file.
+    {
+        QJsonObject panel{{QStringLiteral("pixmapFile"),
+                           QStringLiteral("Fresh_assets/panel_s0_p0.png")}};
+        QJsonObject other{{QStringLiteral("pixmapFile"),
+                           QStringLiteral("elsewhere/first.png")}};
+        QJsonObject scene{{QStringLiteral("panels"), QJsonArray{other, panel}}};
+        QJsonObject manifest{{QStringLiteral("version"), 1},
+                             {QStringLiteral("scenes"), QJsonArray{scene}}};
+        QFile f(fresh);
+        if (f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+            f.write(QJsonDocument(manifest).toJson());
+        f.close();
+        // An explicit, different timestamp: two writes inside one clock
+        // tick must not be what decides this check.
+        if (f.open(QIODevice::ReadWrite)) {
+            f.setFileTime(QDateTime::currentDateTime().addSecs(5),
+                          QFileDevice::FileModificationTime);
+            f.close();
+        }
+    }
+    const QString moved = RecentProjects::thumbnailSource(fresh);
+    check(QStringLiteral("(u) a CHANGED project file is read again, once, "
+                         "and the new first panel is the answer"),
+          RecentProjects::manifestReadsForTest() == readsBefore + 1
+              && moved.endsWith(QStringLiteral("/elsewhere/first.png")),
+          moved);
 }
 
 
@@ -2792,6 +2970,7 @@ int main(int argc, char **argv)
     runSaveAsIndependencePass(scratch);
     runRecentsStorePass(scratch);
     runSaveFailurePass(scratch);
+    runRecentThumbnailSourcePass(scratch);
     runSizeCtlAgreementPass(scratch);
     runEraserLibraryPass(scratch);
     runOverrideMarkPass(scratch);

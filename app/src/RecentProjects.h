@@ -47,9 +47,13 @@ void remove(const QString &path);
 void setSettingsOverride(const QString &iniPath);
 
 // The image file that stands for a project in a recents list: the flatten
-// of its first panel. Empty when the project has none. The path is not
-// checked for existence - a caller decoding it must cope with a file that
-// is not there, exactly as it must cope with one that will not decode.
+// of its first panel, AS THE PROJECT'S OWN MANIFEST NAMES IT. Empty when
+// the project has no panel yet, or cannot be read. The path is not checked
+// for existence - a caller decoding it must cope with a file that is not
+// there, exactly as it must cope with one that will not decode.
 QString thumbnailSource(const QString &projectPath);
+// How many times a manifest has actually been opened to answer that (the
+// answer is memoised per project file until the file changes).
+int manifestReadsForTest();
 
 } // namespace RecentProjects
