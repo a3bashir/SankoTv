@@ -181,6 +181,47 @@ private:
     QElapsedTimer m_started;
 };
 
+// THE RECORDER'S KEYS MUST WORK INSIDE A DIALOG, because dialog bugs are
+// among the things this tool exists to catch - and they did not. Marking
+// both actions ApplicationShortcut is not enough: Qt resolves a shortcut
+// through the widgets its action is ATTACHED to, and an action attached
+// only to the main window's menu is refused while a modal dialog blocks
+// that window (measured: Ctrl+Shift+B fired 0 times with a modal open, and
+// once the action was also attached to the dialog it fired).
+//
+// So every modal window of ours gets the two actions attached as it is
+// shown. This filter is installed for the life of the application - it has
+// to be, since a recording is STARTED with one of these keys - and it does
+// one comparison per event, bailing on everything that is not a Show.
+//
+// It cannot reach a NATIVE dialog (the Windows file pickers): those are not
+// Qt windows and their key presses never arrive here.
+class ModalShortcutBridge : public QObject
+{
+public:
+    ModalShortcutBridge(QAction *toggle, QAction *mark, QObject *parent)
+        : QObject(parent), m_toggle(toggle), m_mark(mark)
+    {
+    }
+
+protected:
+    bool eventFilter(QObject *object, QEvent *event) override
+    {
+        if (event->type() != QEvent::Show || !object->isWidgetType())
+            return false;
+        auto *w = static_cast<QWidget *>(object);
+        if (w->isWindow() && w->isModal() && !w->actions().contains(m_mark)) {
+            w->addAction(m_toggle);
+            w->addAction(m_mark);
+        }
+        return false;
+    }
+
+private:
+    QAction *m_toggle;
+    QAction *m_mark;
+};
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -497,6 +538,7 @@ Recorder::Recorder(QObject *parent) : QObject(parent), d(new RecorderPrivate)
     d->mark->setShortcutContext(Qt::ApplicationShortcut);
     d->mark->setEnabled(false);
     connect(d->mark, &QAction::triggered, this, [this] { markIssue(); });
+    qApp->installEventFilter(new ModalShortcutBridge(d->toggle, d->mark, this));
 
     d->shotTimer.setInterval(d->intervalMs);
     connect(&d->shotTimer, &QTimer::timeout, this, [this] {

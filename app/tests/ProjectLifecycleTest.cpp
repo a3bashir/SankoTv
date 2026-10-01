@@ -1697,6 +1697,136 @@ void runTipShapePreviewPass(const QString &scratch)
     pump(300);
 }
 
+// ---- (x) the recorder's keys reach a REAL dialog --------------------------
+// SankoDevRecorderTest proves the mechanism on a bare QDialog. This proves
+// the wiring: the app's own New Project window, opened by the app's own
+// button, with the recorder as MainWindow set it up. A dialog bug cannot be
+// marked if the marker key dies the moment the dialog opens - which it did.
+//
+// QtGui's "does a shortcut claim this key?" entry point, as QTest uses it.
+// Declared without defaults so a second section may declare it again.
+Q_GUI_EXPORT bool qt_sendShortcutOverrideEvent(QObject *o, ulong timestamp,
+                                               int k, Qt::KeyboardModifiers mods,
+                                               const QString &text, bool autorep,
+                                               ushort count);
+namespace recorderKeys {
+// Shortcuts resolve against the ACTIVE window, and Windows may refuse focus
+// to a test started from another program; what is under test is which
+// widgets the shortcut is attached to, not the desktop's focus policy.
+bool press(QWidget *target, int key)
+{
+    target->activateWindow();
+    target->raise();
+    pump(100);
+    if (QApplication::activeWindow() != target) {
+        QT_WARNING_PUSH
+        QT_WARNING_DISABLE_DEPRECATED
+        QApplication::setActiveWindow(target);
+        QT_WARNING_POP
+        pump(50);
+    }
+    return qt_sendShortcutOverrideEvent(
+        target, 0, key, Qt::ControlModifier | Qt::ShiftModifier, QString(),
+        false, 1);
+}
+
+int markersIn(const QString &sessionDir)
+{
+    int markers = 0;
+    QFile f(sessionDir + QStringLiteral("/events.jsonl"));
+    if (f.open(QIODevice::ReadOnly | QIODevice::Text))
+        while (!f.atEnd())
+            if (QJsonDocument::fromJson(f.readLine())
+                    .object()
+                    .value(QLatin1String("type"))
+                    .toString()
+                == QLatin1String("marker"))
+                ++markers;
+    return markers;
+}
+} // namespace recorderKeys
+
+void runRecorderUnderModalPass()
+{
+    out() << "--- (x) the recorder's keys work inside the New Project "
+             "dialog ---" << Qt::endl;
+    MainWindow window;
+    window.resize(1300, 850);
+    window.show();
+    pump(700);
+    auto *rec = devrec::Recorder::instance();
+
+    QPushButton *newButton = nullptr;
+    if (auto *dashboard = window.findChild<DashboardPage *>())
+        for (QPushButton *b : dashboard->findChildren<QPushButton *>())
+            if (b->text() == QStringLiteral("New Project"))
+                newButton = b;
+    check(QStringLiteral("(x) found the New Project button"), newButton);
+    if (!newButton)
+        return;
+
+    // Everything below happens INSIDE the dialog's own event loop.
+    bool sawDialog = false, startedInside = false, markedInside = false;
+    bool refusedWithout = true, stoppedInside = false;
+    QString session;
+    // Polls until the dialog is up, then runs ONCE: a single shot that fired
+    // a moment early would leave the dialog open with nothing to close it.
+    QTimer driver;
+    driver.setInterval(80);
+    QObject::connect(&driver, &QTimer::timeout, [&] {
+        auto *dialog = qobject_cast<NewProjectDialog *>(
+            QApplication::activeModalWidget());
+        if (!dialog || sawDialog)
+            return;
+        sawDialog = true;
+        startedInside = recorderKeys::press(dialog, Qt::Key_R)
+            && rec->isRecording();
+        pump(150);
+        session = rec->sessionDir();
+        markedInside = recorderKeys::press(dialog, Qt::Key_B);
+        pump(150);
+        // The control: detach the marker from the dialog and the same key,
+        // sent the same way, must be claimed by nothing - the main window
+        // is blocked, exactly as it was before the bridge existed.
+        dialog->removeAction(rec->markAction());
+        refusedWithout = !recorderKeys::press(dialog, Qt::Key_B);
+        dialog->addAction(rec->markAction());
+        pump(100);
+        stoppedInside = recorderKeys::press(dialog, Qt::Key_R)
+            && !rec->isRecording();
+        dialog->reject();
+    });
+    driver.start();
+    newButton->click(); // blocks until the driver rejects the dialog
+    driver.stop();
+    pump(300);
+    if (rec->isRecording())
+        rec->stopRecording(); // never leave a session open behind a failure
+
+    check(QStringLiteral("(x) control: the New Project dialog opened"),
+          sawDialog);
+    check(QStringLiteral("(x) Ctrl+Shift+R STARTS a recording with the "
+                         "dialog open"),
+          startedInside);
+    check(QStringLiteral("(x) Ctrl+Shift+B marks an issue with the dialog "
+                         "open"),
+          markedInside);
+    check(QStringLiteral("(x) control: detached from the dialog, the same "
+                         "key is claimed by nothing (the defect)"),
+          refusedWithout);
+    check(QStringLiteral("(x) Ctrl+Shift+R stops it again from inside"),
+          stoppedInside);
+    check(QStringLiteral("(x) the session holds exactly ONE marker - the "
+                         "claimed press, not the refused one"),
+          recorderKeys::markersIn(session) == 1,
+          QStringLiteral("%1 marker(s) in %2")
+              .arg(recorderKeys::markersIn(session)).arg(session));
+
+    window.markCleanForTest();
+    window.close();
+    pump(300);
+}
+
 // ---- (p) the Grain Preview IS the engine's carve ---------------------------
 // The Texture section's Grain Preview (Figma 359:47) claims the same "one
 // definition" the Tip Shape panel does: its image is the engine's own
@@ -3191,6 +3321,7 @@ int main(int argc, char **argv)
     runEraserLibraryPass(scratch);
     runAccentStatesPass();
     runOverrideMarkPass(scratch);
+    runRecorderUnderModalPass();
     runTipShapePreviewPass(scratch);
     runGrainPreviewPass(scratch);
     runSuppressionPass(scratch);

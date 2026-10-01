@@ -1166,6 +1166,35 @@ each colour signature with a positive control (no accent pixels before the
 dialog exists; no obscuring colour before the obscurer is shown), proving
 the capture contains the dialog AND shows a window drawn over it.
 
+## Dev Recorder: its keys work inside a modal (2026-10-01)
+
+The 22 August work made the recorder SEE dialogs. It still could not be
+DRIVEN from one: with any modal open, Ctrl+Shift+B (Issue Happened) and
+Ctrl+Shift+R (start/stop) did nothing, so the one moment a dialog bug is
+on screen was the one moment it could not be marked.
+
+CAUSE, measured (tests/_backups/seam_shortcutprobe_20261001.cpp): Qt
+resolves a shortcut through the widgets its action is ATTACHED to. Both
+actions were attached only to the main window's Developer menu, and a
+modal blocks that window - ApplicationShortcut does not exempt it. Fired
+0 times with a modal open; attached to the dialog as well, fired once.
+
+FIX: ModalShortcutBridge in DevRecorder.cpp - an application event
+filter, installed for the recorder's whole life (a recording is STARTED
+with one of these keys, so it cannot wait for one), that attaches both
+actions to every modal window of ours as it is shown. One comparison per
+event; everything that is not a Show returns at once.
+
+OUT OF REACH: native dialogs (the Windows file pickers behind Open
+Project, Save As, Browse, import). They are not Qt windows and their key
+presses never arrive. Mark just before or just after.
+
+GATE: SankoDevRecorderTest section 6 (a bare modal), and Lifecycle (x)
+(the real New Project dialog opened by the real button). Each carries
+the control that matters: detach the action from the dialog and the same
+key, sent the same way, is claimed by nothing - the defect reproduced -
+and the session ends with exactly one marker, the claimed press.
+
 ## First Project Settings open costs ~344-414 ms of UI thread (2026-08-22)
 
 Surfaced while measuring recorder overhead, and recorded here so it does

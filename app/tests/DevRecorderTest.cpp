@@ -39,6 +39,32 @@ static void settle(int ms)
         QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
 }
 
+// QtGui's own "a key arrived - does a shortcut claim it?" entry point: the
+// function QTest::keyClick calls before it delivers the key. Declared here
+// (as QtTest's header does) instead of linking QtTest for one function.
+Q_GUI_EXPORT bool qt_sendShortcutOverrideEvent(
+    QObject *o, ulong timestamp, int k, Qt::KeyboardModifiers mods,
+    const QString &text = QString(), bool autorep = false, ushort count = 1);
+
+// Shortcuts resolve against the ACTIVE window. Windows may refuse to hand
+// focus to a test that was started from another program, so when asking
+// nicely does not work the application is told directly - what is under
+// test is which widgets a shortcut is attached to, not the focus policy of
+// the desktop.
+static void activate(QWidget *w)
+{
+    w->activateWindow();
+    w->raise();
+    settle(120);
+    if (QApplication::activeWindow() != w) {
+        QT_WARNING_PUSH
+        QT_WARNING_DISABLE_DEPRECATED
+        QApplication::setActiveWindow(w);
+        QT_WARNING_POP
+        settle(60);
+    }
+}
+
 int main(int argc, char **argv)
 {
     QApplication app(argc, argv);
@@ -377,6 +403,81 @@ int main(int argc, char **argv)
               QStringLiteral("got %1").arg(nonWindow));
         rec->setOutputRoot(root);
         qDeleteAll(kids);
+    }
+
+    // --- 6. the recorder's keys work INSIDE a modal dialog ----------------
+    // They did not: both actions hung off the host's menu, and Qt refuses a
+    // shortcut whose only widget is blocked by a modal - so the one moment
+    // a dialog bug is on screen was the one moment it could not be marked.
+    // The recorder now attaches its actions to each modal window as it is
+    // shown. Keys are delivered the way a real key press is resolved
+    // (qt_sendShortcutOverrideEvent: true when a shortcut claimed the key).
+    {
+        const QString root6 = root + QStringLiteral("/modalkeys");
+        rec->setOutputRoot(root6);
+        // What the host does: the actions live on its window.
+        window.addAction(rec->toggleAction());
+        window.addAction(rec->markAction());
+        activate(&window);
+        const bool startsFromWindow = qt_sendShortcutOverrideEvent(
+            &window, 0, Qt::Key_R, Qt::ControlModifier | Qt::ShiftModifier);
+        settle(200);
+        check(startsFromWindow && rec->isRecording(),
+              "control: Ctrl+Shift+R starts a recording from the host window");
+        const QString dir6 = rec->sessionDir();
+
+        QDialog dialog(&window);
+        dialog.setModal(true);
+        dialog.resize(220, 120);
+        dialog.show();
+        activate(&dialog);
+        check(dialog.actions().contains(rec->markAction())
+                  && dialog.actions().contains(rec->toggleAction()),
+              "a modal dialog is given both recorder actions as it is shown");
+        const bool marked = qt_sendShortcutOverrideEvent(
+            &dialog, 0, Qt::Key_B, Qt::ControlModifier | Qt::ShiftModifier);
+        settle(150);
+        check(marked, "Ctrl+Shift+B is claimed with a modal dialog open");
+
+        // THE CONTROL: take the actions back off the dialog and the same
+        // key press, sent the same way, is claimed by nothing. Without this
+        // the check above could not tell the bridge from an accident.
+        dialog.removeAction(rec->markAction());
+        dialog.removeAction(rec->toggleAction());
+        const bool markedWithout = qt_sendShortcutOverrideEvent(
+            &dialog, 0, Qt::Key_B, Qt::ControlModifier | Qt::ShiftModifier);
+        settle(150);
+        check(!markedWithout,
+              "control: without the bridge's attachment the key is NOT "
+              "claimed under a modal (the defect, reproduced)");
+        dialog.addAction(rec->toggleAction());
+        dialog.addAction(rec->markAction());
+
+        const bool stopped = qt_sendShortcutOverrideEvent(
+            &dialog, 0, Qt::Key_R, Qt::ControlModifier | Qt::ShiftModifier);
+        settle(200);
+        check(stopped && !rec->isRecording(),
+              "Ctrl+Shift+R stops the recording from inside the modal");
+        dialog.close();
+        settle(150);
+
+        int markers6 = 0;
+        QFile f6(dir6 + QStringLiteral("/events.jsonl"));
+        if (f6.open(QIODevice::ReadOnly | QIODevice::Text))
+            while (!f6.atEnd())
+                if (QJsonDocument::fromJson(f6.readLine())
+                        .object()
+                        .value(QLatin1String("type"))
+                        .toString()
+                    == QLatin1String("marker"))
+                    ++markers6;
+        check(markers6 == 1,
+              "exactly ONE marker landed in the session: the press under the "
+              "modal, and not the refused one",
+              QStringLiteral("got %1").arg(markers6));
+        window.removeAction(rec->toggleAction());
+        window.removeAction(rec->markAction());
+        rec->setOutputRoot(root);
     }
 
     // --- perturbation: UI event-loop gap, recording OFF vs ON -------------

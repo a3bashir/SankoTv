@@ -116,6 +116,11 @@ public:
     // mid-interaction without stealing focus), and a small menubar-corner
     // indicator (never a floating window, so it cannot interfere with the
     // floating toolbars under test).
+    //
+    // Both keys also work while one of the app's own MODAL dialogs is open:
+    // the recorder attaches the two actions to each modal window as it is
+    // shown (see ModalShortcutBridge). Native dialogs - the Windows file
+    // pickers - are out of reach; mark just before or just after those.
     QAction *toggleAction();
     QAction *markAction();
     QWidget *indicatorWidget();
