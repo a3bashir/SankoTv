@@ -2182,6 +2182,47 @@ app-wide (the scoped recommendation: one sankoSettings() choke point
 with a test override, zero data migration) or leave it recorded.
 [DECIDED AND DONE 2026-08-27 — see the sankoSettings() entry below.]
 
+## Claude's tools do not see the real registry - and cannot write it (found 2026-10-01)
+
+Found while moving the recents store: the key
+HKCU\Software\SankoTV\SankoTV\recentProjects read as a list frozen at 24
+August, full of "sanko_saveas_probe" temp paths, while the app plainly
+showed a current list. The key's last-write TIMES were current (and
+matched the user's actions to the second); the VALUES were a month old.
+
+CAUSE: the Claude desktop app is an MSIX package
+(Claude_pzs8sxrjxfjjc), and every tool process is its child. Registry
+WRITES from such a process land in a package-private hive
+(%LOCALAPPDATA%\Packages\Claude_...\SystemAppData\Helium\User.dat), and
+a READ of any value once written from here returns that private copy
+forever, shadowing the live one. AppData is redirected the same way.
+Running a tool "unsandboxed" does not change it.
+
+WHAT FOLLOWS:
+- The gate, the seams and every probe run from Claude have never been
+  able to touch the user's real SankoTV settings or AppData. The 24
+  August "sanko_saveas_probe" entries are in the private hive only.
+- For the same reason the real store is UNREADABLE from here by ordinary
+  means, and what IS read looks authoritative. Lifecycle (l)'s "the real
+  store is unchanged" still catches a stray write when Claude runs it
+  (the write shows up in the private view), but the store it is watching
+  there is the private one; it guards the user's real settings only when
+  the user runs the gate.
+- To read the live store (read-only): create the process outside the
+  package with WMI (Win32_Process Create) and have it write its output
+  to a path outside AppData.
+- Documents is NOT redirected. A probe that writes there writes for
+  real - the 27 August recordings-folder incident was real.
+
+THE RECENTS MOVE, PROVED ON THE LIVE LIST. The store's functions moved
+from NewProjectDialog to RecentProjects.{h,cpp}; key, fields and cap are
+unchanged, so nothing migrates. A read-only probe built over the app's
+own SankoSettings.h read the user's live list outside the package twice:
+before the move with the old read loop, after it through
+RecentProjects::entries(). Identical - all ten entries, their order and
+their dates (tests/_backups/seam_recentsmove_20261001*). Lifecycle (t)
+pins the stored shape and reads a list written raw in the old format.
+
 ## sankoSettings(): the settings choke point (2026-08-27)
 
 DECIDED: fix app-wide, before the eraser library, so new features are

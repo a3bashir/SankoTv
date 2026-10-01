@@ -1,5 +1,5 @@
 #include "NewProjectDialog.h"
-#include "SankoSettings.h"
+#include "RecentProjects.h"
 #include "SankoScrollBarStyle.h"
 #include "SankoTheme.h"
 #include "brushlib/StudioControls.h"
@@ -53,15 +53,11 @@ const QColor kRightBg(0x0a, 0x0a, 0x0a);
 const QColor kHeaderText(0xcc, 0xcc, 0xcc);
 const QColor kNoteText(0x66, 0x66, 0x66);
 
-constexpr int kRecentCap = 10;
-
 const char *kPresetNames[] = {"HDTV 1080p", "2K", "4K", "Custom"};
 constexpr int kPresetDims[][2] = {{1920, 1080}, {2048, 1080}, {3840, 2160}};
 constexpr int kCustomPreset = 3;
 constexpr int kFpsValues[] = {24, 25, 30, 60};
 constexpr int kDimMin = 64, kDimMax = 8192;
-
-QString g_settingsOverride; // seam: scratch ini path
 
 // The folder the dialog offers by default: our own directory under
 // Documents. It is CREATED here rather than merely proposed, because Browse
@@ -81,13 +77,6 @@ QString defaultSaveLocation()
             return documents;
     }
     return QDir::homePath();
-}
-
-QSettings recentSettings()
-{
-    if (!g_settingsOverride.isEmpty())
-        return QSettings(g_settingsOverride, QSettings::IniFormat);
-    return sankoSettings();
 }
 
 QFont headerFont()
@@ -123,66 +112,6 @@ void paintFilmIcon(QPainter &p, const QRectF &r, const QColor &color)
 } // namespace
 
 // ---------------------------------------------------------------------------
-// Recent-projects persistence
-// ---------------------------------------------------------------------------
-
-void NewProjectDialog::setSettingsOverride(const QString &iniPath)
-{
-    g_settingsOverride = iniPath;
-}
-
-QVector<NewProjectDialog::RecentEntry> NewProjectDialog::recentProjects()
-{
-    QSettings s = recentSettings();
-    QVector<RecentEntry> out;
-    const int n = s.beginReadArray(QStringLiteral("recentProjects"));
-    for (int i = 0; i < n && i < kRecentCap; ++i) {
-        s.setArrayIndex(i);
-        RecentEntry e;
-        e.path = s.value(QStringLiteral("path")).toString();
-        e.lastOpened = QDateTime::fromString(
-            s.value(QStringLiteral("lastOpened")).toString(), Qt::ISODate);
-        if (!e.path.isEmpty())
-            out.append(e);
-    }
-    s.endArray();
-    return out;
-}
-
-static void writeRecents(const QVector<NewProjectDialog::RecentEntry> &list)
-{
-    QSettings s = recentSettings();
-    s.beginWriteArray(QStringLiteral("recentProjects"),
-                      int(qMin(list.size(), qsizetype(kRecentCap))));
-    for (int i = 0; i < list.size() && i < kRecentCap; ++i) {
-        s.setArrayIndex(i);
-        s.setValue(QStringLiteral("path"), list.at(i).path);
-        s.setValue(QStringLiteral("lastOpened"),
-                   list.at(i).lastOpened.toString(Qt::ISODate));
-    }
-    s.endArray();
-}
-
-void NewProjectDialog::recordRecentProject(const QString &path)
-{
-    QVector<RecentEntry> list = recentProjects();
-    for (int i = list.size() - 1; i >= 0; --i)
-        if (list.at(i).path.compare(path, Qt::CaseInsensitive) == 0)
-            list.removeAt(i);
-    list.prepend({path, QDateTime::currentDateTime()});
-    writeRecents(list);
-}
-
-void NewProjectDialog::removeRecentProject(const QString &path)
-{
-    QVector<RecentEntry> list = recentProjects();
-    for (int i = list.size() - 1; i >= 0; --i)
-        if (list.at(i).path.compare(path, Qt::CaseInsensitive) == 0)
-            list.removeAt(i);
-    writeRecents(list);
-}
-
-// ---------------------------------------------------------------------------
 // RecentList — the right column's entry list (custom painted rows)
 // ---------------------------------------------------------------------------
 
@@ -199,7 +128,7 @@ public:
     }
     void reload()
     {
-        m_entries = recentProjects();
+        m_entries = RecentProjects::entries();
         m_selected = -1;
         setFixedSize(kRightW,
                      qMax(1, int(m_entries.size()) * kRowPitch - 6));
@@ -217,7 +146,7 @@ protected:
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing, true);
         for (int i = 0; i < m_entries.size(); ++i) {
-            const RecentEntry &e = m_entries.at(i);
+            const RecentProjects::Entry &e = m_entries.at(i);
             const QRect row(0, i * kRowPitch, width(), kRowH);
             const bool missing = !QFileInfo::exists(e.path);
             if (i == m_selected) {
@@ -295,7 +224,7 @@ protected:
         const int i = rowAt(event->position().toPoint());
         if (i < 0)
             return;
-        const RecentEntry e = m_entries.at(i);
+        const RecentProjects::Entry e = m_entries.at(i);
         if (!QFileInfo::exists(e.path)) {
             // Never a silent failure: offer to drop the dead entry.
             const auto pick = QMessageBox::question(
@@ -305,7 +234,7 @@ protected:
                     .arg(e.path),
                 QMessageBox::Yes | QMessageBox::No);
             if (pick == QMessageBox::Yes) {
-                removeRecentProject(e.path);
+                RecentProjects::remove(e.path);
                 reload();
             }
             return;
@@ -343,8 +272,7 @@ private:
     // decoding 33 MB to throw it away.
     QPixmap rowThumb(const QString &projectPath)
     {
-        const QString png = QFileInfo(projectPath).absolutePath()
-            + QStringLiteral("/panel_s0_p0.png");
+        const QString png = RecentProjects::thumbnailSource(projectPath);
         const QDateTime mtime = QFileInfo(png).lastModified();
         auto it = m_thumbCache.constFind(png);
         if (it != m_thumbCache.constEnd() && it->mtime == mtime)
@@ -367,7 +295,7 @@ private:
     QHash<QString, CachedThumb> m_thumbCache;
 
     NewProjectDialog *m_owner;
-    QVector<RecentEntry> m_entries;
+    QVector<RecentProjects::Entry> m_entries;
     int m_selected = -1;
     int m_hover = -1;
 };
@@ -628,7 +556,7 @@ void NewProjectDialog::attemptCreate()
         return;
     }
 
-    recordRecentProject(file);
+    RecentProjects::record(file);
     m_createdFile = file;
     m_mode = Mode::Created;
     accept();

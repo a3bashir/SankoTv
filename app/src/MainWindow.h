@@ -100,6 +100,8 @@ private:
     void buildScenesFromJson(const QJsonArray &scenes);
 
     void onNewProject();
+    // Shows the New Project window and applies whatever it returns.
+    void runNewProjectDialog();
     void onOpenProject();
     void onSaveProject();
     void onSaveProjectAs();

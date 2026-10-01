@@ -52,6 +52,8 @@ qt_add_executable(SankoTV
     src/ProjectIO.cpp
     src/ProjectIO.h
     src/NewProjectDialog.h
+    src/RecentProjects.cpp
+    src/RecentProjects.h
     src/ProjectSettingsDialog.cpp
     src/ProjectSettingsDialog.h
     src/ResizeProjectDialog.cpp

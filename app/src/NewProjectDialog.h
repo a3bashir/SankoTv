@@ -26,10 +26,8 @@ class StudioTextField;
 // images, consistency thumbnails) and containing them is the point. This
 // diverges from File > Save As, which still writes wherever it is pointed.
 //
-// Recent projects: sankoSettings() key "recentProjects",
-// entries {path, lastOpenedIso}, capped at kRecentCap, recorded by
-// MainWindow on every successful load/save. setSettingsOverride() points
-// the storage at a scratch ini for verification.
+// Recent projects are read from and recorded into the shared store in
+// RecentProjects.h; this window only lists them.
 class NewProjectDialog : public QDialog
 {
     Q_OBJECT
@@ -49,18 +47,6 @@ public:
 
     // OpenExisting result: the chosen .sankotv path.
     QString openPath() const { return m_openPath; }
-
-    // --- recent-projects persistence (shared with MainWindow) ------------
-    struct RecentEntry
-    {
-        QString path;         // absolute .sankotv path
-        QDateTime lastOpened;
-    };
-    static QVector<RecentEntry> recentProjects();
-    static void recordRecentProject(const QString &path);
-    static void removeRecentProject(const QString &path);
-    // Verification only: route storage to a scratch ini (empty = real).
-    static void setSettingsOverride(const QString &iniPath);
 
     // Exposed for the verification seam.
     brushlib::StudioTextField *nameField() const { return m_name; }

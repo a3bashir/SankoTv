@@ -37,6 +37,7 @@ this fence."
 #include "ProjectSettingsDialog.h"
 #include "ResizeProjectDialog.h"
 #include "ProjectIO.h"
+#include "RecentProjects.h"
 #include "GenerationPage.h"
 #include "ScriptEditorPage.h"
 #include "StoryboardModel.h"
@@ -154,31 +155,9 @@ MainWindow::MainWindow(QWidget *parent)
     m_stack->addWidget(m_consistencyBoard); // index 4
     m_stack->addWidget(m_generation);       // index 5
 
-    // Dashboard -> New Project window (Figma 350:24) -> Script Editor.
-    // Create writes <Location>/<Name>/<Name>.sankotv IMMEDIATELY and lands
-    // in recents; Open routes into the existing loadFromPath. File > Save /
-    // Save As / Open are untouched.
-    connect(m_dashboard, &DashboardPage::newProjectRequested, this, [this] {
-        NewProjectDialog dialog(this);
-        if (dialog.exec() != QDialog::Accepted)
-            return;
-        if (dialog.mode() == NewProjectDialog::Mode::OpenExisting) {
-            loadFromPath(dialog.openPath());
-            return;
-        }
-        onNewProject();
-        m_projectName = dialog.projectName();
-        m_currentProjectPath = dialog.projectFilePath();
-        m_projectFps = dialog.fps();
-        m_canvasWidth = dialog.canvasWidth();   // APPLIED: the project's
-        m_canvasHeight = dialog.canvasHeight(); // real canvas resolution
-        m_storyboard->setProjectCanvasSize(
-            QSize(m_canvasWidth, m_canvasHeight));
-        m_animatic->setFps(m_projectFps);
-        updateSaveActions();
-        updateTitle();
-        m_stack->setCurrentWidget(m_scriptEditor);
-    });
+    // Dashboard -> New Project window -> Script Editor.
+    connect(m_dashboard, &DashboardPage::newProjectRequested, this,
+            &MainWindow::runNewProjectDialog);
 
     // Script Editor: parse materializes scenes; Continue navigates.
     connect(m_scriptEditor, &ScriptEditorPage::backRequested, this, [this] {
@@ -908,6 +887,32 @@ void MainWindow::onNewProject()
     resetProjectState(ClipboardPolicy::Keep);
 }
 
+// The New Project window (Figma 350:24) and what follows from it. Create
+// writes <Location>/<Name>/<Name>.sankotv IMMEDIATELY and lands in recents;
+// Open routes into the existing loadFromPath. File > Save / Save As / Open
+// are untouched.
+void MainWindow::runNewProjectDialog()
+{
+    NewProjectDialog dialog(this);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+    if (dialog.mode() == NewProjectDialog::Mode::OpenExisting) {
+        loadFromPath(dialog.openPath());
+        return;
+    }
+    onNewProject();
+    m_projectName = dialog.projectName();
+    m_currentProjectPath = dialog.projectFilePath();
+    m_projectFps = dialog.fps();
+    m_canvasWidth = dialog.canvasWidth();   // APPLIED: the project's
+    m_canvasHeight = dialog.canvasHeight(); // real canvas resolution
+    m_storyboard->setProjectCanvasSize(QSize(m_canvasWidth, m_canvasHeight));
+    m_animatic->setFps(m_projectFps);
+    updateSaveActions();
+    updateTitle();
+    m_stack->setCurrentWidget(m_scriptEditor);
+}
+
 void MainWindow::onCloseProject()
 {
     if (!confirmDiscardChanges(QStringLiteral("closing the project")))
@@ -1004,7 +1009,7 @@ void MainWindow::openProject(const QString &path)
     if (!QFileInfo::exists(path)) {
         // A recent entry whose file has been moved or deleted: say so and
         // forget it, rather than failing to load something invisible.
-        NewProjectDialog::removeRecentProject(path);
+        RecentProjects::remove(path);
         rebuildRecentMenu();
         QMessageBox::warning(
             this, QStringLiteral("Open Project"),
@@ -1024,15 +1029,14 @@ void MainWindow::rebuildRecentMenu()
     if (!m_recentMenu)
         return;
     m_recentMenu->clear();
-    const QVector<NewProjectDialog::RecentEntry> recents =
-        NewProjectDialog::recentProjects();
+    const QVector<RecentProjects::Entry> recents = RecentProjects::entries();
     if (recents.isEmpty()) {
         QAction *empty =
             m_recentMenu->addAction(QStringLiteral("No Recent Projects"));
         empty->setEnabled(false);
         return;
     }
-    for (const NewProjectDialog::RecentEntry &entry : recents) {
+    for (const RecentProjects::Entry &entry : recents) {
         const QString name = QFileInfo(entry.path).completeBaseName();
         QAction *action = m_recentMenu->addAction(name);
         action->setToolTip(entry.path);
@@ -1177,7 +1181,7 @@ bool MainWindow::saveToPath(const QString &path)
 void MainWindow::markSavedTo(const QString &path, SaveCompleted)
 {
     m_currentProjectPath = path;
-    NewProjectDialog::recordRecentProject(path);
+    RecentProjects::record(path);
     setClean(); // what is on disk now matches what is in memory
 }
 
@@ -1247,7 +1251,7 @@ bool MainWindow::loadFromPath(const QString &path)
     m_canvasHeight = loaded.pixelSize.height();
     m_storyboard->setProjectCanvasSize(QSize(m_canvasWidth, m_canvasHeight));
     m_animatic->setFps(m_projectFps);
-    NewProjectDialog::recordRecentProject(path);
+    RecentProjects::record(path);
 
     // Skip the Script Editor: go straight to the Storyboard.
     m_storyboard->loadScenes(m_scenes);

@@ -65,6 +65,12 @@ on a timeline with audio; Generation sends panels to fal.ai for AI video.
 - CMake is not on PATH: use `C:\Qt\Tools\CMake_64\bin\cmake.exe`.
 - The Bash tool needs `export PATH="/usr/bin:/bin:$PATH"`.
 - GitHub: https://github.com/a3bashir/SankoTv
+- Claude's tool processes run inside the desktop app's MSIX package, so
+  the registry and AppData they see are a PRIVATE overlay: writes never
+  reach the user's real settings, and values once written from here read
+  back stale forever. Do not trust `HKCU\Software\SankoTV` as read from a
+  tool; HANDOFF ("Claude's tools do not see the real registry") has the
+  read-only way to see the live store.
 
 ## Hard rules
 

@@ -39,6 +39,7 @@
 #include "AnimaticPage.h"
 #include "SankoSettings.h"
 #include "ConsistencyBoard.h"
+#include "DashboardPage.h"
 #include "DrawingCanvas.h"
 #include "FloatingToolWindow.h"
 #include "PerspectiveTool.h"
@@ -53,6 +54,7 @@
 #include "StrokeBuilder.h"
 #include "NewProjectDialog.h"
 #include "ProjectIO.h"
+#include "RecentProjects.h"
 #include "StoryboardModel.h"
 #include "devrecorder/DevRecorder.h"
 
@@ -562,6 +564,138 @@ void runClosePass(const QString &projectA, const QString &projectB,
     window.markCleanForTest();
     window.close();
     pump(300);
+}
+
+
+// ---- (t) the recent-projects store ----------------------------------------
+// The list a returning artist sees first. Its behaviour was checked once, by
+// a seam, when the New Project dialog was built, and never by the gate - so
+// this pins both WHAT it does and the SHAPE it stores, because the shape is
+// what an existing user's list depends on: a change to the key or the field
+// names would orphan every list already on disk and nothing else would say.
+void runRecentsStorePass(const QString &scratch)
+{
+    out() << "--- (t) the recent-projects store ---" << Qt::endl;
+    const QString ini = scratch + QStringLiteral("/recents_store.ini");
+    QFile::remove(ini);
+    RecentProjects::setSettingsOverride(ini);
+
+    check(QStringLiteral("(t) control: a fresh store reads as empty"),
+          RecentProjects::entries().isEmpty());
+
+    const QString a = QStringLiteral("C:/Scratch/Alpha/Alpha.sankotv");
+    const QString b = QStringLiteral("C:/Scratch/Beta/Beta.sankotv");
+    RecentProjects::record(a);
+    RecentProjects::record(b);
+    QVector<RecentProjects::Entry> list = RecentProjects::entries();
+    check(QStringLiteral("(t) the most recently recorded project is FIRST"),
+          list.size() == 2 && list.at(0).path == b && list.at(1).path == a);
+    check(QStringLiteral("(t) each entry is stamped with when it was recorded"),
+          list.size() == 2
+              && qAbs(list.at(0).lastOpened.secsTo(
+                     QDateTime::currentDateTime())) < 30);
+
+    // The same file reached by a different spelling is ONE project.
+    RecentProjects::record(a.toUpper());
+    list = RecentProjects::entries();
+    check(QStringLiteral("(t) re-recording moves a project to the top "
+                         "without duplicating it (case-insensitive)"),
+          list.size() == 2 && list.at(0).path == a.toUpper()
+              && list.at(1).path == b,
+          QStringLiteral("%1 entr%2").arg(list.size())
+              .arg(list.size() == 1 ? "y" : "ies"));
+
+    for (int i = 0; i < 12; ++i)
+        RecentProjects::record(
+            QStringLiteral("C:/Scratch/P%1/P%1.sankotv").arg(i));
+    list = RecentProjects::entries();
+    check(QStringLiteral("(t) the list is capped at %1, newest kept")
+              .arg(RecentProjects::kCap),
+          list.size() == RecentProjects::kCap
+              && list.first().path.endsWith(QStringLiteral("P11.sankotv"))
+              && list.last().path.endsWith(QStringLiteral("P2.sankotv")),
+          QStringLiteral("%1 entries, first %2, last %3")
+              .arg(list.size())
+              .arg(list.isEmpty() ? QString() : list.first().path,
+                   list.isEmpty() ? QString() : list.last().path));
+
+    RecentProjects::remove(QStringLiteral("c:/scratch/p7/P7.SANKOTV"));
+    list = RecentProjects::entries();
+    bool hasP7 = false, orderKept = true;
+    for (int i = 0; i < list.size(); ++i) {
+        hasP7 = hasP7 || list.at(i).path.contains(QStringLiteral("/P7/"));
+        if (i > 0)
+            orderKept = orderKept
+                && list.at(i - 1).lastOpened >= list.at(i).lastOpened;
+    }
+    check(QStringLiteral("(t) remove drops exactly that project "
+                         "(case-insensitive) and keeps the rest in order"),
+          list.size() == RecentProjects::kCap - 1 && !hasP7 && orderKept);
+    RecentProjects::remove(QStringLiteral("C:/Scratch/Nowhere/None.sankotv"));
+    check(QStringLiteral("(t) removing a project that is not listed changes "
+                         "nothing"),
+          RecentProjects::entries().size() == RecentProjects::kCap - 1);
+
+    // THE STORED SHAPE. Read back raw, not through the store, so this
+    // fails if the store and its reader ever change together.
+    {
+        QSettings raw(ini, QSettings::IniFormat);
+        const int n = raw.beginReadArray(QStringLiteral("recentProjects"));
+        raw.setArrayIndex(0);
+        const QStringList keys = raw.childKeys();
+        const QString firstPath = raw.value(QStringLiteral("path")).toString();
+        const QDateTime firstStamp = QDateTime::fromString(
+            raw.value(QStringLiteral("lastOpened")).toString(), Qt::ISODate);
+        raw.endArray();
+        check(QStringLiteral("(t) on disk: array \"recentProjects\", each "
+                             "entry exactly {path, lastOpened as an ISO date}"),
+              n == RecentProjects::kCap - 1 && keys.size() == 2
+                  && keys.contains(QStringLiteral("path"))
+                  && keys.contains(QStringLiteral("lastOpened"))
+                  && firstPath == list.first().path && firstStamp.isValid(),
+              QStringLiteral("%1 entries, keys: %2").arg(n)
+                  .arg(keys.join(QLatin1Char(','))));
+    }
+
+    // AN EXISTING USER'S LIST. Written here the way every build before the
+    // store moved out of the dialog wrote it - raw, with no help from the
+    // code under test - and it must read back entry for entry.
+    {
+        const QString legacy = scratch + QStringLiteral("/recents_legacy.ini");
+        QFile::remove(legacy);
+        const QStringList paths = {
+            QStringLiteral("C:/Users/Artist/Documents/SankoTV/One/One.sankotv"),
+            QStringLiteral("D:/Work/Two With Spaces/Two.sankotv"),
+            QStringLiteral("C:/Gone/Three.sankotv")};
+        const QStringList stamps = {QStringLiteral("2026-09-30T19:10:29"),
+                                    QStringLiteral("2026-08-28T18:16:17"),
+                                    QStringLiteral("2026-08-24T22:02:34")};
+        {
+            QSettings s(legacy, QSettings::IniFormat);
+            s.beginWriteArray(QStringLiteral("recentProjects"), 3);
+            for (int i = 0; i < 3; ++i) {
+                s.setArrayIndex(i);
+                s.setValue(QStringLiteral("path"), paths.at(i));
+                s.setValue(QStringLiteral("lastOpened"), stamps.at(i));
+            }
+            s.endArray();
+        }
+        RecentProjects::setSettingsOverride(legacy);
+        const QVector<RecentProjects::Entry> read = RecentProjects::entries();
+        bool same = read.size() == 3;
+        for (int i = 0; same && i < 3; ++i)
+            same = read.at(i).path == paths.at(i)
+                && read.at(i).lastOpened.toString(Qt::ISODate) == stamps.at(i);
+        check(QStringLiteral("(t) a list written by an OLDER build reads back "
+                             "entry for entry: paths, order and dates"),
+              same, QStringLiteral("%1 of 3 read").arg(read.size()));
+        check(QStringLiteral("(t) ...including an entry whose file is gone "
+                             "(it is listed, not dropped)"),
+              read.size() == 3 && read.at(2).path == paths.at(2));
+    }
+
+    RecentProjects::setSettingsOverride(scratch
+                                        + QStringLiteral("/recents.ini"));
 }
 
 
@@ -2542,8 +2676,8 @@ int main(int argc, char **argv)
     QStandardPaths::setTestModeEnabled(true);
     // loadFromPath records a recent project on every successful open: point
     // that at the scratch root too, or a test run edits the user's list.
-    NewProjectDialog::setSettingsOverride(scratch
-                                          + QStringLiteral("/recents.ini"));
+    RecentProjects::setSettingsOverride(scratch
+                                        + QStringLiteral("/recents.ini"));
 
     const QString projects = scratch + QStringLiteral("/projects");
     QDir().mkpath(projects);
@@ -2656,6 +2790,7 @@ int main(int argc, char **argv)
     // nothing to do with the view.
     runViewResetPass(a, c);
     runSaveAsIndependencePass(scratch);
+    runRecentsStorePass(scratch);
     runSaveFailurePass(scratch);
     runSizeCtlAgreementPass(scratch);
     runEraserLibraryPass(scratch);
