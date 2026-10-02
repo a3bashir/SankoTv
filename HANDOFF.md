@@ -2321,6 +2321,14 @@ WHAT FOLLOWS:
   RealStoreView, prints "GUARDING: ...", carries it in the check's
   label, and fails if the store cannot be identified. It guards the
   user's real settings when the user runs the gate outside Claude.
+  FIRST RUN THAT DID, 2026-10-02: the user ran tools/run-gate.ps1 from
+  their own PowerShell (Release, all eight families exit 0) and (l)
+  printed "GUARDING: the user's REAL settings store". That is the first
+  time this check has compared the real store before and after a family
+  - every run before it, back to August, was looking at Claude's copy -
+  and it passed. The user then reported that the Debug half passed
+  outside Claude as well, so both configs have now run against the real
+  store.
 - To read the live store from a tool, read-only: StdRegProv (above),
   or a process created outside the package with WMI (Win32_Process
   Create) writing its output to a path outside AppData.
@@ -4941,12 +4949,22 @@ whose sources are never staged. A NEW FAMILY MUST BE ADDED TO THAT LIST.
    visible, so the move is never seen - keeping its offset within the
    screen. A window already on the target is not touched. Dialogs and
    tool windows follow their parent.
-   CAN A PROCESS FIND ITS LAUNCHER? From Claude: yes, measured (no
-   console window; the parent walk reaches the Claude window). From a
-   Start-menu PowerShell: by design, NOT measured from here - a classic
-   console is found directly; under Windows Terminal the console window
-   is a hidden stand-in and the parent walk should find the terminal.
-   The user will report what the printed line says on their next run.
+   CAN A PROCESS FIND ITS LAUNCHER? Three cases, two now measured:
+   - From Claude: MEASURED. No console window; the parent walk reaches
+     the Claude window.
+   - From a classic Windows PowerShell console, outside Claude: MEASURED
+     BY THE USER, 2026-10-02. run-gate.ps1 from a fresh Start-menu
+     Windows PowerShell with no setup, Release, all eight families exit
+     0, and the line read
+       TESTSCREEN: test windows open on "Cintiq 22HD" (this process's
+       console window)
+     - the first branch of the rule, as designed. The Debug half of the
+     gate passed from that console too (reported by the user the same
+     day).
+   - From Windows Terminal: STILL UNMEASURED. There the console window
+     is a hidden stand-in, so the first branch is skipped and the parent
+     walk should find the terminal's own window. Nobody has run it that
+     way yet; do not describe it as working until someone has.
    NOT DONE, BY THE USER'S DECISION: Qt's offscreen platform. Measured
    (Release, tests/_backups/seam_screenprobe_20261002_offscreen.txt): six
    families pass under it, but Lifecycle passes with a different font
