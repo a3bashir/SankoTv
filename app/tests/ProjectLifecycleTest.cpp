@@ -62,7 +62,10 @@
 #include "StoryboardModel.h"
 #include "devrecorder/DevRecorder.h"
 
+#include <QAction>
 #include <QApplication>
+#include <QDockWidget>
+#include <QMainWindow>
 #include <QCryptographicHash>
 #include <QDir>
 #include <QThread>
@@ -4026,6 +4029,138 @@ void runSaveFailurePass(const QString &scratch)
     pump(300);
 }
 
+// ---- (ab) Reset Layout resets the Panel Strip too --------------------------
+// View > Reset Layout cleared the dock controller's layout and re-applied its
+// default, and never touched the strip: the strip is not a controller panel
+// and keeps its own keys. A strip moved to the bottom, floated, stretched or
+// hidden stayed there after "Reset Layout" and came back there on relaunch.
+// Every reading below is taken first in the DEFAULT state, so "it is back"
+// is compared with what the same reading said before anything was moved.
+void runResetLayoutStripPass(const QString &project)
+{
+    out() << "--- (ab) Reset Layout resets the Panel Strip too ---" << Qt::endl;
+    const QString keys = QStringLiteral("storyboard/panelStrip/v1/");
+    {
+        QSettings s = sankoSettings();
+        s.remove(QStringLiteral("storyboard/panelStrip/v1")); // a first run
+    }
+    int defaultHeight = 0;
+    {
+        MainWindow window;
+        window.resize(1400, 880);
+        window.show();
+        pump(800);
+        check(QStringLiteral("(ab) project opens"),
+              window.loadProjectForTest(project));
+        pump(600);
+        auto *storyboard = window.findChild<StoryboardPage *>();
+        auto *host = storyboard
+            ? storyboard->findChild<QMainWindow *>(
+                  QStringLiteral("storyboardDockHost"))
+            : nullptr;
+        auto *strip = host
+            ? host->findChild<QDockWidget *>(QStringLiteral("dockPanelStrip"))
+            : nullptr;
+        QAction *reset = nullptr, *save = nullptr;
+        for (QAction *a : window.findChildren<QAction *>()) {
+            if (a->text() == QStringLiteral("Reset Layout"))
+                reset = a;
+            if (a->text() == QStringLiteral("Save Layout"))
+                save = a;
+        }
+        check(QStringLiteral("(ab) found the strip dock and the View menu's "
+                             "Reset Layout and Save Layout"),
+              host && strip && reset && save);
+        if (!host || !strip || !reset || !save)
+            return;
+
+        auto isDefault = [&](QString *why) {
+            const bool ok = host->dockWidgetArea(strip) == Qt::TopDockWidgetArea
+                && !strip->isFloating() && strip->isVisible()
+                && strip->toggleViewAction()->isChecked()
+                && strip->widget()->height() == defaultHeight;
+            *why = QStringLiteral("area %1, floating %2, visible %3, height %4")
+                       .arg(int(host->dockWidgetArea(strip)))
+                       .arg(strip->isFloating()).arg(strip->isVisible())
+                       .arg(strip->widget()->height());
+            return ok;
+        };
+        defaultHeight = strip->widget()->height();
+        QString why;
+        check(QStringLiteral("(ab) control: on a first run the strip is docked "
+                             "at the TOP, visible, at its base height"),
+              isDefault(&why) && defaultHeight == 159, why);
+
+        // Move it to the bottom, stretch it, save, then hide it.
+        host->addDockWidget(Qt::BottomDockWidgetArea, strip);
+        pump(200);
+        host->resizeDocks({strip}, {240}, Qt::Vertical);
+        pump(300);
+        save->trigger();
+        const bool savedBottom =
+            sankoSettings().value(keys + QStringLiteral("area")).toInt()
+            == int(Qt::BottomDockWidgetArea);
+        strip->toggleViewAction()->trigger(); // the user's own way to hide it
+        pump(300);
+        check(QStringLiteral("(ab) control: the strip really was moved to the "
+                             "bottom, stretched, saved there, and hidden"),
+              savedBottom && !isDefault(&why) && !strip->isVisible()
+                  && host->dockWidgetArea(strip) == Qt::BottomDockWidgetArea,
+              why);
+
+        reset->trigger();
+        pump(500);
+        check(QStringLiteral("(ab) Reset Layout puts the strip back: top, "
+                             "visible, base height"),
+              isDefault(&why), why);
+        check(QStringLiteral("(ab) ...and forgets where it had been saved"),
+              !sankoSettings().contains(keys + QStringLiteral("area")));
+
+        // Floating is the state a reset matters most for: a strip left on a
+        // monitor that is no longer there.
+        strip->setFloating(true);
+        pump(300);
+        const bool floated = strip->isFloating();
+        reset->trigger();
+        pump(500);
+        check(QStringLiteral("(ab) a FLOATING strip is re-docked at the top "
+                             "by Reset Layout (control: it was floating)"),
+              floated && isDefault(&why), why);
+
+        window.markCleanForTest();
+        window.close();
+        pump(300);
+    }
+    // What a relaunch restores is what Reset Layout left, not what had been
+    // saved before it.
+    {
+        MainWindow window;
+        window.resize(1400, 880);
+        window.show();
+        pump(800);
+        window.loadProjectForTest(project);
+        pump(600);
+        auto *host = window.findChild<QMainWindow *>(
+            QStringLiteral("storyboardDockHost"));
+        auto *strip = host
+            ? host->findChild<QDockWidget *>(QStringLiteral("dockPanelStrip"))
+            : nullptr;
+        check(QStringLiteral("(ab) after a relaunch the strip is still at the "
+                             "top, visible, at its base height"),
+              host && strip
+                  && host->dockWidgetArea(strip) == Qt::TopDockWidgetArea
+                  && !strip->isFloating() && strip->isVisible()
+                  && strip->widget()->height() == defaultHeight,
+              strip ? QStringLiteral("area %1, height %2")
+                          .arg(int(host->dockWidgetArea(strip)))
+                          .arg(strip->widget()->height())
+                    : QStringLiteral("no strip"));
+        window.markCleanForTest();
+        window.close();
+        pump(300);
+    }
+}
+
 int main(int argc, char **argv)
 {
 #ifdef Q_OS_WIN
@@ -4209,6 +4344,7 @@ int main(int argc, char **argv)
     runImageCapNoticePass(scratch);
     runIdentityColorPass(scratch);
     runProvenancePass(scratch);
+    runResetLayoutStripPass(a);
 
     // ---- (aa) a test that cannot start says why and exits ----------------
     // An unattended gate must FAIL, not wait. Measured 2026-10-02: with its

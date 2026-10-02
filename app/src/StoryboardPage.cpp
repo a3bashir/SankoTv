@@ -2181,6 +2181,9 @@ void StoryboardPage::installDockViewActions()
     connect(resetLayout, &QAction::triggered, this, [this] {
         m_dockController->clearSavedLayout();
         applyDefaultDockLayout();
+        // The Panel Strip keeps its own keys and is not one of the
+        // controller's panels, so the two lines above never reached it.
+        resetPanelStripToDefault();
     });
     // (The old Help > "About Qt Advanced Docking System" entry left with the
     // ADS library: the docking layer is now first-party code.)
@@ -4497,6 +4500,37 @@ void StoryboardPage::restorePanelStripState()
                 m_dockHost->resizeDocks({m_panelStripDock}, {height},
                                         Qt::Vertical);
         });
+}
+
+// RESET LAYOUT USED TO SKIP THE STRIP. The menu entry cleared the dock
+// controller's saved layout and re-applied its default - but the strip is
+// not a controller panel (it docks top/bottom, which the controller's panels
+// may not) and persists under its own keys, so a strip that had been moved
+// to the bottom, floated onto another monitor, stretched or hidden stayed
+// exactly there after "Reset Layout", and came back there on the next
+// launch. The default is the one restorePanelStripState() falls back to on a
+// first run: docked at the top, visible, at the 159 px base height.
+void StoryboardPage::resetPanelStripToDefault()
+{
+    if (!m_panelStripDock || !m_dockHost)
+        return;
+    {
+        QSettings s = sankoSettings();
+        s.remove(kStripSettings.chopped(1)); // the whole v1 group
+    }
+    m_panelStripDock->setFloating(false);
+    m_stripLastArea = Qt::TopDockWidgetArea;
+    m_dockHost->addDockWidget(Qt::TopDockWidgetArea, m_panelStripDock);
+    m_stripUserVisible = true;
+    m_panelStripDock->toggleViewAction()->setChecked(true);
+    m_panelStripDock->setVisible(true);
+    m_dockHost->resizeDocks({m_panelStripDock}, {159}, Qt::Vertical);
+    // Dock sizes settle in a deferred layout pass after a re-dock (the same
+    // reason restorePanelStripState re-asserts its height one turn later).
+    QTimer::singleShot(0, this, [this] {
+        if (m_panelStripDock && !m_panelStripDock->isFloating())
+            m_dockHost->resizeDocks({m_panelStripDock}, {159}, Qt::Vertical);
+    });
 }
 
 // --- Right column ---------------------------------------------------------

@@ -288,6 +288,7 @@ private:
     QPixmap stripThumbPixmap(Panel *panel, qreal dprOverride = 0.0) const;
     void savePanelStripState();     // versioned QSettings keys (v1)
     void restorePanelStripState();  // area/height/floating/geometry + clamp
+    void resetPanelStripToDefault(); // Reset Layout: top, visible, 159 px
     void updateSceneCardStyles();
     void updatePanelThumbStyles();
 
