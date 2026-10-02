@@ -4161,6 +4161,146 @@ void runResetLayoutStripPass(const QString &project)
     }
 }
 
+// ---- (ac) the Size bar fits the canvas -------------------------------------
+// The floating Size bar was a fixed 46x574 and, unlike the managed toolbars,
+// neither moved nor hid when the canvas was shorter than that: it hung out
+// below the canvas, over whatever sat underneath (measured 2026-10-02: ~108
+// px at the 1280x720 minimum window; 81 px on a maximised 1080p screen once
+// a timeline sits under the canvas). It now shortens to fit, and is the
+// Figma column exactly whenever that fits.
+void runSizeBarFitPass(const QString &project)
+{
+    out() << "--- (ac) the Size bar fits the canvas ---" << Qt::endl;
+    MainWindow window;
+    window.resize(1400, 900);
+    window.show();
+    pump(800);
+    check(QStringLiteral("(ac) project opens"),
+          window.loadProjectForTest(project));
+    pump(700);
+    auto *storyboard = window.findChild<StoryboardPage *>();
+    auto *canvas = window.findChild<DrawingCanvas *>();
+    QWidget *bar = storyboard
+        ? storyboard->findChild<QWidget *>(QStringLiteral("sizeCtlBar"))
+        : nullptr;
+    check(QStringLiteral("(ac) found the canvas and the Size bar, and the bar "
+                         "is showing"),
+          canvas && bar && bar->isVisible());
+    if (!canvas || !bar)
+        return;
+
+    struct Reading
+    {
+        QSize bar;
+        QVector<QRect> sliders; // top to bottom
+        QRect flip;
+        int above = 0, below = 0; // bar edge to canvas edge, px (negative = outside)
+        QString text;
+    };
+    auto read = [&] {
+        Reading r;
+        r.bar = bar->size();
+        for (QWidget *w :
+             bar->findChildren<QWidget *>(QString(), Qt::FindDirectChildrenOnly)) {
+            if (qobject_cast<QPushButton *>(w))
+                r.flip = w->geometry();
+            else if (w->width() == 25)
+                r.sliders.append(w->geometry());
+        }
+        std::sort(r.sliders.begin(), r.sliders.end(),
+                  [](const QRect &x, const QRect &y) { return x.top() < y.top(); });
+        const int canvasTop = canvas->mapToGlobal(QPoint(0, 0)).y();
+        r.above = bar->frameGeometry().top() - canvasTop;
+        r.below = canvasTop + canvas->height()
+            - (bar->frameGeometry().top() + bar->height());
+        r.text = QStringLiteral("canvas %1 px tall, bar %2x%3, %4 px inside "
+                                "the top, %5 inside the bottom")
+                     .arg(canvas->height()).arg(r.bar.width())
+                     .arg(r.bar.height()).arg(r.above).arg(r.below);
+        if (r.sliders.size() == 2)
+            r.text += QStringLiteral("; sliders y %1 h %2 / y %3 h %4, Flip y %5")
+                          .arg(r.sliders.at(0).top()).arg(r.sliders.at(0).height())
+                          .arg(r.sliders.at(1).top()).arg(r.sliders.at(1).height())
+                          .arg(r.flip.top());
+        return r;
+    };
+    auto isFigma = [](const Reading &r) {
+        return r.bar == QSize(46, 574) && r.sliders.size() == 2
+            && r.sliders.at(0) == QRect(10, 25, 25, 220)
+            && r.flip == QRect(8, 276, 30, 30)
+            && r.sliders.at(1) == QRect(10, 337, 25, 220);
+    };
+
+    const Reading tall = read();
+    check(QStringLiteral("(ac) with room for it the bar is the Figma column "
+                         "EXACTLY: 46x574, sliders at 25 and 337, Flip at 276"),
+          canvas->height() >= 574 + 8 && isFigma(tall), tall.text);
+    check(QStringLiteral("(ac) ...and inside the canvas with its margin"),
+          tall.above >= 4 && tall.below >= 4, tall.text);
+
+    window.resize(1280, 720); // the smallest window the app allows
+    pump(900);
+    // (Not named `small`: windows.h defines that as a macro.)
+    const Reading tight = read();
+    check(QStringLiteral("(ac) control: at the minimum window the canvas "
+                         "CANNOT hold a 574 px bar"),
+          canvas->height() < 574 + 8, tight.text);
+    check(QStringLiteral("(ac) at the minimum window the bar is INSIDE the "
+                         "canvas, margin and all - it no longer hangs below"),
+          tight.above >= 4 && tight.below >= 4
+              && tight.bar.height() == canvas->height() - 8,
+          tight.text);
+    const bool ordered = tight.sliders.size() == 2
+        && tight.sliders.at(0).top() > 0
+        && tight.sliders.at(0).bottom() < tight.flip.top()
+        && tight.flip.bottom() < tight.sliders.at(1).top()
+        && tight.sliders.at(1).bottom() < tight.bar.height()
+        && tight.sliders.at(0).height() == tight.sliders.at(1).height()
+        && tight.sliders.at(0).height() >= 60 && tight.flip.size() == QSize(30, 30);
+    check(QStringLiteral("(ac) ...with both sliders the same height, Flip "
+                         "between them, nothing overlapping or cut off"),
+          ordered, tight.text);
+
+    // A shorter slider is still a whole slider: its two ends are its range.
+    QWidget *sizeSlider = nullptr;
+    for (QWidget *w :
+         bar->findChildren<QWidget *>(QString(), Qt::FindDirectChildrenOnly))
+        if (w->width() == 25 && (!sizeSlider || w->y() < sizeSlider->y()))
+            sizeSlider = w;
+    const int before = storyboard->sizeCtlDisplayedSizeForTest();
+    if (sizeSlider) {
+        sendMouse(sizeSlider, QEvent::MouseButtonPress,
+                  QPointF(12, sizeSlider->height() - 1), Qt::LeftButton);
+        sendMouse(sizeSlider, QEvent::MouseButtonRelease,
+                  QPointF(12, sizeSlider->height() - 1), Qt::LeftButton);
+        pump(150);
+        const int atBottom = storyboard->sizeCtlDisplayedSizeForTest();
+        sendMouse(sizeSlider, QEvent::MouseButtonPress, QPointF(12, 1),
+                  Qt::LeftButton);
+        sendMouse(sizeSlider, QEvent::MouseButtonRelease, QPointF(12, 1),
+                  Qt::LeftButton);
+        pump(150);
+        const int atTop = storyboard->sizeCtlDisplayedSizeForTest();
+        check(QStringLiteral("(ac) the shortened size slider still reaches "
+                             "both ends of its range"),
+              atBottom >= 1 && atTop > atBottom * 100,
+              QStringLiteral("bottom %1, top %2").arg(atBottom).arg(atTop));
+        storyboard->sizeCtlUserSetSizeForTest(before); // leave it as found
+        pump(150);
+    }
+
+    window.resize(1400, 900);
+    pump(900);
+    const Reading again = read();
+    check(QStringLiteral("(ac) given the room back, it is the Figma column "
+                         "again"),
+          isFigma(again) && again.above >= 4 && again.below >= 4, again.text);
+
+    window.markCleanForTest();
+    window.close();
+    pump(300);
+}
+
 int main(int argc, char **argv)
 {
 #ifdef Q_OS_WIN
@@ -4345,6 +4485,7 @@ int main(int argc, char **argv)
     runIdentityColorPass(scratch);
     runProvenancePass(scratch);
     runResetLayoutStripPass(a);
+    runSizeBarFitPass(a);
 
     // ---- (aa) a test that cannot start says why and exits ----------------
     // An unattended gate must FAIL, not wait. Measured 2026-10-02: with its

@@ -1030,10 +1030,67 @@ class SizeCtlBar : public FloatingToolWindow
 {
 public:
     static constexpr int kBarW = 46;
-    static constexpr int kBarH = 574;
+    static constexpr int kBarH = 574; // the Figma height: used whenever it fits
     // The shared window margin, so this unmanaged bar keeps the same distance
     // from the canvas edges as the managed toolbars.
     static constexpr int kEdgeMargin = FloatingToolWindow::kMargin;
+
+    // THE BAR FITS THE CANVAS. It was a fixed 574 px, and unlike the managed
+    // toolbars it neither moved nor hid when the canvas was shorter than
+    // that: it simply hung out below it, over whatever sat underneath. At the
+    // 1280x720 minimum window that was already ~108 px over the bottom bar;
+    // with a timeline under the canvas it would be the normal case on a
+    // 1080p screen. The Figma column - 25 px, slider 220, 31, Flip 30, 31,
+    // slider 220, 17 - is kept exactly whenever the canvas can hold it.
+    // Shorter than that, the two sliders give up height equally (down to
+    // kMinSliderH); shorter still, the four gaps close up (down to kMinGap
+    // each). Below kMinBarH nothing more can give and the bar overhangs
+    // again, which no window the app allows reaches with the timeline
+    // collapsed.
+    struct Column
+    {
+        int barH = kBarH;
+        int sliderH = 220;
+        int sizeY = 25;
+        int flipY = 276;
+        int opacityY = 337;
+    };
+    static constexpr int kFlipH = 30;
+    static constexpr int kMinSliderH = 60;
+    static constexpr int kMinGap = 6;
+    static constexpr int kMinBarH = kFlipH + 2 * kMinSliderH + 4 * kMinGap;
+
+    static Column columnFor(int available)
+    {
+        Column c; // the Figma column
+        if (available >= kBarH)
+            return c;
+        c.barH = qMax(available, kMinBarH);
+        const int gaps[4] = {25, 31, 31, 17}; // top, above Flip, below, bottom
+        int g[4] = {gaps[0], gaps[1], gaps[2], gaps[3]};
+        const int figmaGaps = gaps[0] + gaps[1] + gaps[2] + gaps[3];
+        c.sliderH = (c.barH - kFlipH - figmaGaps) / 2;
+        if (c.sliderH < kMinSliderH) {
+            // The sliders are at their floor: the gaps share what is left,
+            // in the Figma proportions, the remainder going to the top.
+            c.sliderH = kMinSliderH;
+            const int room = c.barH - kFlipH - 2 * kMinSliderH;
+            int used = 0;
+            for (int i = 0; i < 4; ++i) {
+                g[i] = qMax(kMinGap, room * gaps[i] / figmaGaps);
+                used += g[i];
+            }
+            g[0] = qMax(kMinGap, g[0] + (room - used));
+        } else {
+            // An odd pixel goes to the bottom gap.
+            g[3] += c.barH - kFlipH - figmaGaps - 2 * c.sliderH;
+        }
+        c.sizeY = g[0];
+        c.flipY = c.sizeY + c.sliderH + g[1];
+        c.opacityY = c.flipY + kFlipH + g[2];
+        return c;
+    }
+    const Column &column() const { return m_column; }
 
     SizeCtlBar(QWidget *anchor, QWidget *parent)
         : FloatingToolWindow(anchor, QString(), parent)
@@ -1047,10 +1104,18 @@ public:
                          .toInt() == 1 ? 1 : 0;
         m_sideY = settings.value(QStringLiteral("storyboard/sizeCtlY/v2"), -1)
                           .toInt();
-        setDefaultOffsetProvider([this] { return snappedOffset(); });
+        // Every reposition (the anchor moved or changed size) re-fits the
+        // bar FIRST, so the offset below is derived from the height the bar
+        // is about to have, not the one it had.
+        setDefaultOffsetProvider([this] {
+            fitToAnchor();
+            return snappedOffset();
+        });
     }
 
-    std::function<void()> onSideChanged; // relayout the child controls
+    // Relayout the child controls: the side flipped, or the bar's height
+    // changed (read the new column from column()).
+    std::function<void()> onSideChanged;
 
     int side() const { return m_side; }
     int barX() const { return 0; } // no grab strip: the body fills the window
@@ -1076,7 +1141,7 @@ protected:
         const qreal bw = 1.0;
         p.setPen(QPen(QColor(0x1a, 0x1a, 0x1a), bw));
         p.setBrush(QColor(0x21, 0x21, 0x21));
-        p.drawRoundedRect(QRectF(bw / 2.0, bw / 2.0, kBarW - bw, kBarH - bw),
+        p.drawRoundedRect(QRectF(bw / 2.0, bw / 2.0, kBarW - bw, height() - bw),
                           12, 12);
     }
 
@@ -1137,6 +1202,21 @@ protected:
     }
 
 private:
+    void fitToAnchor()
+    {
+        QWidget *anchor = anchorWidget();
+        if (!anchor)
+            return;
+        const Column c = columnFor(anchor->height() - 2 * kEdgeMargin);
+        if (c.barH == m_column.barH && c.sliderH == m_column.sliderH
+            && c.sizeY == m_column.sizeY)
+            return;
+        m_column = c;
+        setFixedSize(kBarW, c.barH);
+        if (onSideChanged)
+            onSideChanged(); // the sliders take their new height and place
+        update();
+    }
     QPoint snappedOffset() const
     {
         QWidget *anchor = anchorWidget();
@@ -1187,6 +1267,7 @@ private:
             unsetCursor();
     }
 
+    Column m_column;  // the layout the bar currently has (Figma by default)
     int m_side = 0;   // 0 = left canvas edge, 1 = right
     int m_sideY = -1; // canvas-relative y (-1: centre until first drag)
     bool m_pressed = false;    // background press (click until it moves)
@@ -3317,11 +3398,17 @@ void StoryboardPage::createFloatingToolbar()
     // all three compressed to 150px; reverted — it read as two size sliders
     // and broke the design. Hardness is edited in the Studio; its per-tool
     // PERSISTENCE below is deliberately kept.)
+    // The y positions and the slider height come from the bar's CURRENT
+    // column: the Figma numbers above whenever the canvas can hold the full
+    // 574 px, a shortened column when it cannot (SizeCtlBar::columnFor).
     auto placeSizeCtl = [sizeBar, sizeSlider, flipButton, opacitySlider] {
         const int bx = sizeBar->barX();
-        sizeSlider->move(bx + 10, 25);
-        flipButton->move(bx + 8, 276);
-        opacitySlider->move(bx + 10, 337);
+        const SizeCtlBar::Column &c = sizeBar->column();
+        sizeSlider->setFixedSize(25, c.sliderH);
+        opacitySlider->setFixedSize(25, c.sliderH);
+        sizeSlider->move(bx + 10, c.sizeY);
+        flipButton->move(bx + 8, c.flipY);
+        opacitySlider->move(bx + 10, c.opacityY);
     };
     placeSizeCtl();
     sizeBar->onSideChanged = placeSizeCtl;
