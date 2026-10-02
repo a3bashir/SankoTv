@@ -361,6 +361,25 @@ if(SANKOTV_DEV_RECORDER)
 endif()
 # --- end Developer recorder (TEMP) -------------------------------------------
 
+# --- The gate harness: linked into every family, referred to by none --------
+# tests/TestHarness.cpp installs itself (before main, and again when the
+# application object is created), so no family's source names it - which is
+# also why it can serve the two families whose sources are not to be edited.
+# It does two things for an UNATTENDED gate on a machine someone is using:
+# a test that cannot start prints why and exits instead of raising a dialog
+# that waits for a click, and every test window opens on one chosen screen
+# (SANKO_TEST_SCREEN, else the launcher's, else the primary) instead of on
+# whichever monitor the mouse happens to be over. A NEW family must be added
+# to this list, or it runs without either.
+foreach(_gate_family
+        SankoBrushLibraryTest SankoPaintPixelLock SankoCanvasBrushLock
+        SankoQuickShapeGeometryLock SankoDevRecorderTest SankoCanvasEdgeLock
+        SankoCanvasSizeLock SankoProjectLifecycle)
+    if(TARGET ${_gate_family})
+        target_sources(${_gate_family} PRIVATE tests/TestHarness.cpp)
+    endif()
+endforeach()
+
 # Build as a GUI app on Windows (no console window).
 set_target_properties(SankoTV PROPERTIES
     WIN32_EXECUTABLE ON

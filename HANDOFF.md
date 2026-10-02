@@ -4908,6 +4908,122 @@ LIMITS, accepted or open:
 - Native file pickers (Open Project, Browse) cannot take the recorder's
   keys: they are not Qt windows.
 
+## THE GATE ON A MACHINE SOMEONE IS USING: one screen, and no dialog at startup (2026-10-02)
+
+Two complaints from the user, both about a gate that runs unattended
+while they work, both fixed in ONE file that no test source refers to:
+tests/TestHarness.cpp, added to all eight families by a foreach in
+CMakeLists.txt. It installs itself - part before main(), part through
+Q_COREAPP_STARTUP_FUNCTION - which is also why it serves the two families
+whose sources are never staged. A NEW FAMILY MUST BE ADDED TO THAT LIST.
+
+1. TEST WINDOWS JUMPED BETWEEN THE TWO MONITORS.
+   CAUSE: Qt places an unpositioned top-level window on the screen that
+   holds the mouse cursor (QPlatformWindow::initialGeometry in qtbase -
+   cited from memory, Qt's sources are not installed here; the BEHAVIOUR
+   was measured: created on the Cintiq with the cursor there, on the Dell
+   with it there). No family positions its root windows.
+   WHO SHOWS WINDOWS: Lifecycle 22 roots, SizeLock 5, EdgeLock,
+   DevRecorder and QuickShape 1 each. BrushLibrary, PixelLock and
+   CanvasBrushLock show none.
+   THE RULE, in order: SANKO_TEST_SCREEN (a screen name or part of one, a
+   1-based index, "primary", or "cursor" = the old behaviour); else the
+   LAUNCHER's screen - this process's console window if it has a visible
+   one, else the nearest parent process owning a visible window,
+   preferring the foreground window when it is that process's; else the
+   primary screen. One stderr line says which and why
+   ("TESTSCREEN: test windows open on ..."), and one at exit counts the
+   root windows: moved / already there / ended up elsewhere / never
+   painted - confirmed at each window's first PAINT, from where it is,
+   not from where it was sent.
+   HOW IT MOVES A WINDOW: only a ROOT (no parent) that nobody positioned,
+   once, in the Show event - which arrives BEFORE the native window is
+   visible, so the move is never seen - keeping its offset within the
+   screen. A window already on the target is not touched. Dialogs and
+   tool windows follow their parent.
+   CAN A PROCESS FIND ITS LAUNCHER? From Claude: yes, measured (no
+   console window; the parent walk reaches the Claude window). From a
+   Start-menu PowerShell: by design, NOT measured from here - a classic
+   console is found directly; under Windows Terminal the console window
+   is a hidden stand-in and the parent walk should find the terminal.
+   The user will report what the printed line says on their next run.
+   NOT DONE, BY THE USER'S DECISION: Qt's offscreen platform. Measured
+   (Release, tests/_backups/seam_screenprobe_20261002_offscreen.txt): six
+   families pass under it, but Lifecycle passes with a different font
+   engine (an elided name came out as "Cyberpunk...or_Cut_v1" instead of
+   "Cyberpunk_Alley_Ni...rd_Director_Cut_v1"), a simulated 800x800
+   screen and Qt's stand-in for the window system; SizeLock fails one
+   check on that font change; EdgeLock fails two and measures a
+   different window. "A weaker run that I might start trusting out of
+   convenience is worse than a few seconds of windows." QuickShape would
+   run identically offscreen and stays real anyway: one window for three
+   seconds is not worth one family running differently from the rest.
+   The offscreen plugin is not deployed beside the test exes in any case.
+
+   PROOF THAT PINNING CHANGES NOTHING MEASURED: the full gate three ways
+   - unpinned (SANKO_TEST_SCREEN=cursor), pinned to the Dell, pinned to
+   the Cintiq - in Debug and Release after clean builds. All six runs
+   green, and every family's output is LINE-FOR-LINE IDENTICAL between
+   the unpinned run and each pinned run, in both configs (timings,
+   session stamps, the free-memory figure and the TESTSCREEN lines set
+   aside). The comparison is not blind: the same diff found 4, 10 and 26
+   differing lines for Lifecycle, SizeLock and EdgeLock under the
+   offscreen platform. Pinned to the Dell, 30 of 30 root windows per
+   config were confirmed there at first paint; none elsewhere, none
+   unpainted.
+   WHY IT COULD NOT HAVE CHANGED ANYTHING HERE: the two screens are the
+   same - 1920x1080, 100%, 1920x1032 usable. IF THEY EVER DIFFER: EdgeLock
+   sizes its window from the PRIMARY screen wherever it is shown, and a
+   scaled screen would exercise paths nothing has yet run on. That would
+   be the gate measuring something new; re-run this three-way proof.
+   Seam: tests/_backups/seam_screenpin_20261002* (15 checks, six runs:
+   each target and the unpinned control, both configs, with the cursor
+   put on each screen in turn).
+
+2. A TEST THAT COULD NOT START WAITED FOR A CLICK.
+   Measured: with its platform plugin missing, a Release family blocks on
+   Qt's own Windows message box with NOTHING on stderr. Qt raises that
+   box only when the process has no console window - which is every
+   launch from Claude - so an unattended gate did not fail, it hung,
+   eight times in a row (the user clicked each one away).
+   THE FIX: a watchdog thread, started before main() and stopped when the
+   application object exists. A dialog owned by this process in that
+   window of time is a startup failure by definition; its text is printed
+   as "STARTUP FAILED ...: [caption] text" and the process exits with
+   code 3. Measured after: 80-130 ms, no dialog left. After startup the
+   watchdog is gone - a running test's dialogs are the test's business.
+   DEBUG BUILDS take a different road to the same place: Qt's debug build
+   raises no box, prints its fatal message and aborts; the C runtime's
+   abort / assert / debug-heap dialogs are sent to stderr by the
+   documented switches (_set_abort_behavior, _CrtSetReportMode) and the
+   crash box is off (SetErrorMode). Exit code there is abort's
+   (0xC0000409), not 3. This also covers the debug-heap dialog that hung
+   a Debug run in September.
+   NOT REACHABLE FROM INSIDE THE TEST: a missing DLL. Windows reports it
+   before a line of the executable runs, so only the LAUNCHER can prevent
+   the dialog, through the error mode children inherit. Claude's shells
+   already have it set (measured 0x1). For the user's own runs
+   tools/run-gate.ps1 sets it - and is now THE way to run the gate by
+   hand: it runs the eight families per config, prints each exit code
+   with the reason for any failure, and shows the TESTSCREEN and
+   GUARDING lines. (.\tools\run-gate.ps1 [-Config Release] [-Build]
+   [-Screen DELL])
+   IT NEEDS NO SETUP, which the user asked to have confirmed: it puts
+   Qt's bin folder on PATH itself, for that run only, and calls CMake by
+   its full path. Run from a PATH holding nothing but the Windows
+   folders, under the user's real execution policy (CurrentUser
+   RemoteSigned, read through the registry provider - a script in the
+   checkout is local and runs), it passed all eight families in Release.
+   (As it happens every family also starts with no Qt on PATH at all,
+   from the DLLs windeployqt puts beside the exes; the script does not
+   lean on that.) A failure it cannot put a name to - a Debug build
+   reports a failed start in Qt's own words - is shown as the last lines
+   of that family's log.
+   GATE: Lifecycle (aa), 4 checks - the family starts a second copy of
+   itself with a platform that does not exist and requires it to come
+   back on its own, with a failing code, the reason on its output, and
+   not one check of its own run. Lifecycle 351 -> 355.
+
 ## METHOD: measure interior structure ACROSS THE SIZE RANGE before calling it character (2026-09-25)
 
 The Painting census measured Acrylic at size 20 only and found "one

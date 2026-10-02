@@ -85,6 +85,7 @@
 #include <QLabel>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QProcess>
 #include <QScrollArea>
 #include <QUndoStack>
 #include <QtGui/QTransform>
@@ -4208,6 +4209,59 @@ int main(int argc, char **argv)
     runImageCapNoticePass(scratch);
     runIdentityColorPass(scratch);
     runProvenancePass(scratch);
+
+    // ---- (aa) a test that cannot start says why and exits ----------------
+    // An unattended gate must FAIL, not wait. Measured 2026-10-02: with its
+    // platform plugin missing, a Release family blocked on Qt's own message
+    // box with nothing on stderr - Qt raises that box whenever the process
+    // has no console window, which is every launch that is not typed into a
+    // terminal. tests/TestHarness.cpp (linked into every family) turns a
+    // dialog raised before the application object exists into a printed
+    // reason and exit code 3. This starts a second copy of THIS family
+    // with a platform that does not exist - the same failure, on purpose -
+    // and requires it to come back by itself.
+    out() << "--- (aa) a family that cannot start exits with the reason ---"
+          << Qt::endl;
+    {
+        QProcess child;
+        QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+        env.insert(QStringLiteral("QT_QPA_PLATFORM"),
+                   QStringLiteral("sanko_no_such_platform"));
+        child.setProcessEnvironment(env);
+        QElapsedTimer startup;
+        startup.start();
+        child.start(QCoreApplication::applicationFilePath(), QStringList());
+        const bool returned = child.waitForFinished(20000);
+        const qint64 took = startup.elapsed();
+        if (!returned) {
+            child.kill(); // it is sitting on a dialog: do not leave it there
+            child.waitForFinished(5000);
+        }
+        const QString said =
+            QString::fromLocal8Bit(child.readAllStandardError())
+            + QString::fromLocal8Bit(child.readAllStandardOutput());
+        check(QStringLiteral("(aa) it RETURNS on its own instead of waiting "
+                             "on a dialog"),
+              returned,
+              returned ? QStringLiteral("%1 ms").arg(took)
+                       : QStringLiteral("still running after 20 s - killed"));
+        check(QStringLiteral("(aa) ...with a failing exit code"),
+              returned && child.exitStatus() == QProcess::NormalExit
+                  ? child.exitCode() != 0
+                  : returned, // a crash-style exit is a failure code too
+              QStringLiteral("exit %1").arg(child.exitCode()));
+        check(QStringLiteral("(aa) ...and the reason on its output, naming "
+                             "the platform plugin"),
+              said.contains(QStringLiteral("no Qt platform plugin"),
+                            Qt::CaseInsensitive),
+              said.simplified().left(170));
+        // The control that this exercised the failure and nothing else: the
+        // copy never got as far as a single check of its own.
+        check(QStringLiteral("(aa) control: the copy failed AT STARTUP (it "
+                             "ran none of this family's checks)"),
+              !said.contains(QStringLiteral("PASS ("))
+                  && !said.contains(QStringLiteral("RESULT ")));
+    }
 
     // ---- (l) sankoSettings: scratch lands, the real store does not ----
     // Both halves asserted: landing in scratch is only half the guarantee,

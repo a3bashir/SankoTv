@@ -133,6 +133,17 @@ Learned from real defects. Follow them exactly.
    remains legacy-size only is SCREEN-PIXEL rendering: EdgeLock samples
    real screen pixels at 960×540 fixtures only — do not claim the gate
    proves variable-size display output.
+   **Running it:** `app/tools/run-gate.ps1` runs the eight families and
+   prints each exit code with the reason for any failure. Every family
+   links `tests/TestHarness.cpp` (through the list in CMakeLists.txt — a
+   new family must be added to it), which does two things for a gate
+   running unattended on a machine in use: test windows open on ONE
+   screen (`SANKO_TEST_SCREEN`, else the launcher's, else the primary;
+   each run prints which), and a test that cannot start prints
+   `STARTUP FAILED …` and exits instead of waiting on a dialog. The gate
+   runs on the REAL platform only — Qt's offscreen platform passes most
+   families while measuring a different font engine and a simulated
+   screen, and is not to be used for it.
 5. **Build hygiene.** Kill any running `SankoTV.exe` before building.
    Verify the exe timestamp and the real exit code; grep build output for
    `error C|error MSB|error LNK|Shader baking`. Stale exes have produced
