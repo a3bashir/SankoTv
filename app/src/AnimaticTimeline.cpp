@@ -4,6 +4,7 @@
 #include "AnimaticPage.h"
 #include "StoryboardModel.h"
 
+#include <QContextMenuEvent>
 #include <QFontMetrics>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -25,18 +26,23 @@ namespace {
 
 constexpr int kLabelCol = 90; // left track-name column width
 
-// Track geometry (top to bottom), all within the canvas.
+// Track geometry (top to bottom), all within the canvas. The timeline sits
+// under the drawing canvas now and its height is the user's to drag, so the
+// SHOTS track is not a constant any more: the ruler, the scene track and the
+// audio track keep their heights and the shots track takes whatever is left
+// (panelTrackH), never less than kPanelMinH. The two reserved tracks that
+// used to follow - Camera and Markers, 24 px each, both "coming soon" - are
+// gone: 48 px of the workspace for two labels.
 constexpr int kRulerY = 0,   kRulerH = 24;
 constexpr int kSceneY = 24,  kSceneH = 24;
-constexpr int kPanelY = 48,  kPanelH = 80;
-constexpr int kAudioY = 128, kAudioH = 36;
-constexpr int kCamY   = 164, kCamH   = 24;
-constexpr int kMarkY  = 188, kMarkH  = 24;
-constexpr int kCanvasH = 212; // sum of the tracks above
+constexpr int kPanelY = 48;
+constexpr int kPanelMinH = 48, kPanelDefaultH = 80;
+constexpr int kAudioH = 36;
 
 constexpr int kHandleW = 6;   // trim handle width
 constexpr int kGrab = 5;      // px grab tolerance
 constexpr int kMinDur = 1, kMaxDur = 30;
+constexpr int kReorderThreshold = 8; // px before a clip press becomes a drag
 
 constexpr int kToolbarH = 32;
 } // namespace
@@ -50,9 +56,14 @@ public:
     explicit TimelineCanvas(AnimaticTimeline *owner)
         : QWidget(owner), m_owner(owner)
     {
-        setFixedHeight(kCanvasH);
+        setMinimumHeight(kPanelY + kPanelMinH + kAudioH);
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
         setMouseTracking(true);
         setAttribute(Qt::WA_StyledBackground, true);
+    }
+    QSize sizeHint() const override
+    {
+        return QSize(400, kPanelY + kPanelDefaultH + kAudioH);
     }
 
 protected:
@@ -66,6 +77,10 @@ protected:
     void mouseReleaseEvent(QMouseEvent *e) override { m_owner->canvasMouseRelease(e); }
     void leaveEvent(QEvent *) override { m_owner->canvasLeave(); }
     void resizeEvent(QResizeEvent *) override { m_owner->canvasResized(); }
+    void contextMenuEvent(QContextMenuEvent *e) override
+    {
+        m_owner->canvasContextMenu(e);
+    }
 
 private:
     AnimaticTimeline *m_owner;
@@ -124,7 +139,7 @@ AnimaticTimeline::AnimaticTimeline(QWidget *parent)
 
     // --- Canvas + horizontal scrollbar -----------------------------------
     m_canvas = new TimelineCanvas(this);
-    root->addWidget(m_canvas);
+    root->addWidget(m_canvas, 1); // the shots track takes the spare height
 
     m_hScroll = new QScrollBar(Qt::Horizontal);
     // Styled by the app-wide sheet (SankoScrollBarStyle.h) — this bar's
@@ -168,6 +183,39 @@ void AnimaticTimeline::setHost(AnimaticPage *host)
     m_host = host;
 }
 
+// --- Track geometry -------------------------------------------------------
+
+int AnimaticTimeline::tracksH() const
+{
+    return qMax(kPanelY + kPanelMinH + kAudioH,
+                m_canvas ? m_canvas->height() : 0);
+}
+
+int AnimaticTimeline::panelTrackH() const
+{
+    return tracksH() - kPanelY - kAudioH;
+}
+
+int AnimaticTimeline::audioTrackY() const
+{
+    return kPanelY + panelTrackH();
+}
+
+QRect AnimaticTimeline::clipRect(int flatIndex) const
+{
+    if (flatIndex < 0 || flatIndex >= m_blocks.size())
+        return QRect();
+    const Block &b = m_blocks.at(flatIndex);
+    const int x0 = contentXToScreen(b.startFrame * pxPerFrame());
+    const int x1 = contentXToScreen((b.startFrame + b.frames) * pxPerFrame());
+    return QRect(x0, kPanelY + 2, x1 - x0, panelTrackH() - 4);
+}
+
+QWidget *AnimaticTimeline::surfaceForTest() const
+{
+    return m_canvas;
+}
+
 void AnimaticTimeline::styleToolbarButtons()
 {
     const QString plain = SankoTheme::themed("QPushButton { background: #1a1a1a; color: #cccccc; border: 1px solid #2a2a2a;"
@@ -194,6 +242,15 @@ void AnimaticTimeline::setScenes(const QVector<Scene *> &scenes)
         count += s->panels.size();
     if (m_current >= count)
         m_current = count - 1;
+    if (m_selected >= count)
+        m_selected = count - 1;
+    // A reorder drag armed against the old block list means nothing now.
+    if (m_drag == Drag::Move) {
+        m_drag = Drag::None;
+        m_moveActive = false;
+        m_moveFrom = -1;
+        m_moveGap = -1;
+    }
     rebuildBlocks();
     updateScrollRange();
     if (m_canvas)
@@ -207,6 +264,26 @@ void AnimaticTimeline::setCurrentPanel(int flatIndex)
     m_current = flatIndex;
     if (m_canvas)
         m_canvas->update();
+}
+
+// STATE IN, NOTHING OUT. The workspace owns which panel is selected and
+// pushes it here; this slot repaints and emits nothing, which is what keeps
+// "select in the strip -> highlight in the timeline" from bouncing back as
+// "select in the timeline -> select in the strip". The only signals this
+// class emits come from the user's own mouse (see the canvas handlers).
+void AnimaticTimeline::setSelectedPanel(int flatIndex)
+{
+    if (m_selected == flatIndex)
+        return;
+    m_selected = flatIndex;
+    if (m_canvas)
+        m_canvas->update();
+}
+
+void AnimaticTimeline::refreshThumbnails()
+{
+    if (m_canvas)
+        m_canvas->update(); // clip thumbs re-read the panels' shared mip
 }
 
 void AnimaticTimeline::setPlaying(bool playing)
@@ -418,15 +495,13 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
     // Backgrounds per track (full width first).
     p.fillRect(QRect(0, kRulerY, W, kRulerH), QColor("#0d0d0d"));
     p.fillRect(QRect(0, kSceneY, W, kSceneH), QColor("#181818"));
-    p.fillRect(QRect(0, kPanelY, W, kPanelH), QColor("#141414"));
-    p.fillRect(QRect(0, kAudioY, W, kAudioH),
+    p.fillRect(QRect(0, kPanelY, W, panelTrackH()), QColor("#141414"));
+    p.fillRect(QRect(0, audioTrackY(), W, kAudioH),
                QColor(m_audioLoaded ? "#0d1a26" : "#111111"));
-    p.fillRect(QRect(0, kCamY, W, kCamH), QColor("#0d0d0d"));
-    p.fillRect(QRect(0, kMarkY, W, kMarkH), QColor("#0d0d0d"));
 
     // Clip all time-based content to the area right of the label column.
     p.save();
-    p.setClipRect(QRect(kLabelCol, 0, W - kLabelCol, kCanvasH));
+    p.setClipRect(QRect(kLabelCol, 0, W - kLabelCol, tracksH()));
 
     const double ppf = pxPerFrame();
     const double pps = pxPerSecond();
@@ -529,10 +604,13 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
             const int x0 = contentXToScreen(b.startFrame * ppf);
             const int x1 = contentXToScreen((b.startFrame + b.frames) * ppf);
             if (x1 < kLabelCol || x0 > contentRight) continue;
-            QRect r(x0, kPanelY + 2, x1 - x0, kPanelH - 4);
+            QRect r(x0, kPanelY + 2, x1 - x0, panelTrackH() - 4);
             const QRectF rf(r);
 
-            const bool current = (b.flatIndex == m_current);
+            // "current" is the SELECTED panel - the one on the drawing
+            // canvas - not the one under the playhead: playback moves the
+            // playhead through the clips and leaves the selection alone.
+            const bool current = (b.flatIndex == m_selected);
             const bool hovered = (b.flatIndex == m_hoverIndex);
 
             // Accent bloom around the selected clip: explicit filled rounded rects
@@ -582,8 +660,11 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
             int thumbW = 0;
             const bool showThumb = (r.width() >= 50);
             if (showThumb) {
-                thumbW = qMin(static_cast<int>(r.width() * 0.35), 60);
+                // A taller shots track gets a wider thumbnail (16:9 of its
+                // height) rather than a taller crop of a 60 px sliver.
                 const int thumbH = r.height() - 8;
+                thumbW = qMin(static_cast<int>(r.width() * 0.35),
+                              qMax(60, thumbH * 16 / 9));
                 const QRect thumbRect(r.left() + 4, r.top() + 4, thumbW, thumbH);
 
                 QPixmap pix;
@@ -681,10 +762,21 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
         const int x1 = contentXToScreen((z.startFrame + z.frames) * ppf);
         QColor green(0x4d, 0xff, 0x91);
         green.setAlphaF(0.12);
-        p.fillRect(QRect(x0, kPanelY, x1 - x0, kPanelH), green);
+        p.fillRect(QRect(x0, kPanelY, x1 - x0, panelTrackH()), green);
         p.setPen(QPen(QColor(0x4d, 0xff, 0x91), 2));
-        p.drawLine(x0 + 1, kPanelY, x0 + 1, kPanelY + kPanelH);
-        p.drawLine(x1 - 1, kPanelY, x1 - 1, kPanelY + kPanelH);
+        p.drawLine(x0 + 1, kPanelY, x0 + 1, kPanelY + panelTrackH());
+        p.drawLine(x1 - 1, kPanelY, x1 - 1, kPanelY + panelTrackH());
+    }
+
+    // ----- Reorder drop indicator (a clip is being dragged) -----
+    if (m_drag == Drag::Move && m_moveActive && m_moveGap >= 0
+        && !m_blocks.isEmpty()) {
+        const int frame = m_moveGap < m_blocks.size()
+            ? m_blocks.at(m_moveGap).startFrame
+            : m_blocks.last().startFrame + m_blocks.last().frames;
+        const int x = contentXToScreen(frame * ppf);
+        p.setPen(QPen(SankoTheme::kAccentLight, 3));
+        p.drawLine(x, kPanelY + 1, x, kPanelY + panelTrackH() - 1);
     }
 
     // ----- Audio track -----
@@ -694,7 +786,7 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
             const double audioWidthPx = audioFrames * ppf;
             const int x0 = contentXToScreen(0);
             const int x1 = contentXToScreen(audioWidthPx);
-            const double midY = kAudioY + kAudioH / 2.0;
+            const double midY = audioTrackY() + kAudioH / 2.0;
             const double amp = kAudioH * 0.40;
             QColor blue(0x4d, 0x9f, 0xff);
             blue.setAlphaF(0.60);
@@ -720,7 +812,7 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
         const int px = contentXToScreen(playheadContentX());
         if (px >= kLabelCol && px <= W) {
             p.setPen(QPen(SankoTheme::kAccent, 1.5));
-            p.drawLine(px, 0, px, kCanvasH);
+            p.drawLine(px, 0, px, tracksH());
             // Triangle handle in the ruler.
             p.setRenderHint(QPainter::Antialiasing, true);
             QPolygon tri;
@@ -734,9 +826,9 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
 
     // ----- Left label column (painted on top, fixed) -----
     {
-        p.fillRect(QRect(0, 0, kLabelCol, kCanvasH), QColor("#0d0d0d"));
+        p.fillRect(QRect(0, 0, kLabelCol, tracksH()), QColor("#0d0d0d"));
         p.setPen(QColor("#2a2a2a"));
-        p.drawLine(kLabelCol - 1, 0, kLabelCol - 1, kCanvasH);
+        p.drawLine(kLabelCol - 1, 0, kLabelCol - 1, tracksH());
 
         QFont f = font();
         f.setPointSize(7);
@@ -745,8 +837,7 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
         struct TL { const char *name; int y, h; };
         const TL labels[] = {
             {"TIMECODE", kRulerY, kRulerH}, {"SCENES", kSceneY, kSceneH},
-            {"SHOTS", kPanelY, kPanelH},    {"AUDIO", kAudioY, kAudioH},
-            {"CAMERA", kCamY, kCamH},       {"MARKERS", kMarkY, kMarkH},
+            {"SHOTS", kPanelY, panelTrackH()},    {"AUDIO", audioTrackY(), kAudioH},
         };
         for (const TL &t : labels)
             p.drawText(QRect(0, t.y, kLabelCol - 8, t.h),
@@ -760,23 +851,10 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
                 QString name = path.section('/', -1).section('\\', -1);
                 if (name.size() > 20) name = name.left(19) + QChar(0x2026);
                 p.setPen(QColor("#88a6c4"));
-                p.drawText(QRect(kLabelCol + 4, kAudioY, 160, kAudioH),
+                p.drawText(QRect(kLabelCol + 4, audioTrackY(), 160, kAudioH),
                            Qt::AlignVCenter | Qt::AlignLeft, name);
             }
         }
-    }
-
-    // ----- Reserved-track "coming soon" labels -----
-    {
-        QFont f = font();
-        f.setPointSize(7);
-        f.setItalic(true);
-        p.setFont(f);
-        p.setPen(QColor("#3a3a3a"));
-        p.drawText(QRect(kLabelCol, kCamY, W - kLabelCol, kCamH),
-                   Qt::AlignCenter, QStringLiteral("Camera moves — coming soon"));
-        p.drawText(QRect(kLabelCol, kMarkY, W - kLabelCol, kMarkH),
-                   Qt::AlignCenter, QStringLiteral("Markers — coming soon"));
     }
 
     // Empty-audio hint.
@@ -785,7 +863,7 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
         f.setPointSizeF(7.5);
         p.setFont(f);
         p.setPen(QColor("#555555"));
-        p.drawText(QRect(kLabelCol, kAudioY, W - kLabelCol, kAudioH),
+        p.drawText(QRect(kLabelCol, audioTrackY(), W - kLabelCol, kAudioH),
                    Qt::AlignCenter,
                    QStringLiteral("Drop audio file here or use Import Audio"));
     }
@@ -816,18 +894,23 @@ void AnimaticTimeline::canvasMousePress(QMouseEvent *e)
         QToolTip::showText(e->globalPosition().toPoint(),
                            timecode(m_dragPlayheadFrame), m_canvas);
         m_canvas->update();
+        // Scrubbing LOOKS without selecting: the host previews the panel
+        // under the playhead and the drawing canvas stays where it is.
+        m_scrubIndex = blockAtFrame(m_dragPlayheadFrame);
+        if (m_scrubIndex >= 0)
+            emit playheadScrubbed(m_scrubIndex);
         return;
     }
 
     // Trim handles on the selected clip (panel track only).
-    if (m_current >= 0 && m_current < m_blocks.size()
-        && pos.y() >= kPanelY && pos.y() < kPanelY + kPanelH) {
-        const Block &b = m_blocks.at(m_current);
+    if (m_selected >= 0 && m_selected < m_blocks.size()
+        && pos.y() >= kPanelY && pos.y() < kPanelY + panelTrackH()) {
+        const Block &b = m_blocks.at(m_selected);
         const int x0 = contentXToScreen(b.startFrame * pxPerFrame());
         const int x1 = contentXToScreen((b.startFrame + b.frames) * pxPerFrame());
         if (qAbs(pos.x() - x1) <= kHandleW) {
             m_drag = Drag::ResizeRight;
-            m_resizeIndex = m_current;
+            m_resizeIndex = m_selected;
             m_dragDuration = b.duration;
             m_canvas->setCursor(Qt::SizeHorCursor);
             QToolTip::showText(e->globalPosition().toPoint(),
@@ -836,22 +919,71 @@ void AnimaticTimeline::canvasMousePress(QMouseEvent *e)
         }
         if (qAbs(pos.x() - x0) <= kHandleW) {
             m_drag = Drag::ResizeLeft; // visual only for now
-            m_resizeIndex = m_current;
+            m_resizeIndex = m_selected;
             m_dragLeftFrames = 0;
             m_canvas->setCursor(Qt::SizeHorCursor);
             return;
         }
     }
 
-    // Otherwise: click a clip to select + seek.
-    if (pos.y() >= kPanelY && pos.y() < kPanelY + kPanelH) {
+    // Otherwise: a press on a clip SELECTS that panel (the workspace does
+    // the selecting and pushes the highlight back through setSelectedPanel),
+    // and may turn into a reorder drag once it has moved far enough.
+    if (pos.y() >= kPanelY && pos.y() < kPanelY + panelTrackH()) {
         const int frame = frameAtScreenX(pos.x());
         const int idx = blockAtFrame(frame);
         if (idx >= 0) {
-            setCurrentPanel(idx);
             emit panelSeekRequested(idx);
+            // The request may have rebuilt the blocks (it never does today,
+            // but nothing here should assume it): re-check before arming.
+            if (idx < m_blocks.size()) {
+                m_drag = Drag::Move;
+                m_moveFrom = idx;
+                m_moveGap = -1;
+                m_moveActive = false;
+                m_movePress = pos;
+            }
         }
     }
+}
+
+// Right-click: on a clip, select it first (the menu acts on the selection,
+// so a menu opened over an unselected clip would otherwise act on another
+// one) and hand the menu to the workspace, which owns the panel operations.
+void AnimaticTimeline::canvasContextMenu(QContextMenuEvent *e)
+{
+    const QPoint pos = e->pos();
+    if (pos.x() < kLabelCol || m_drag != Drag::None)
+        return;
+    if (pos.y() >= kPanelY && pos.y() < kPanelY + panelTrackH()) {
+        const int idx = blockAtFrame(frameAtScreenX(pos.x()));
+        if (idx >= 0) {
+            emit panelSeekRequested(idx);
+            emit clipContextMenuRequested(idx, e->globalPos());
+            e->accept();
+        }
+    }
+}
+
+// The gap a dragged clip would drop into, as a FLAT index: the block it
+// would land in front of, or one past the scene's last block. Confined to
+// the dragged clip's own scene - panels do not move between scenes.
+int AnimaticTimeline::moveGapAt(int screenX) const
+{
+    if (m_moveFrom < 0 || m_moveFrom >= m_blocks.size())
+        return -1;
+    const int scene = m_blocks.at(m_moveFrom).sceneIndex;
+    int last = -1;
+    for (const Block &b : m_blocks) {
+        if (b.sceneIndex != scene)
+            continue;
+        last = b.flatIndex;
+        const int x0 = contentXToScreen(b.startFrame * pxPerFrame());
+        const int x1 = contentXToScreen((b.startFrame + b.frames) * pxPerFrame());
+        if (screenX < (x0 + x1) / 2)
+            return b.flatIndex;
+    }
+    return last + 1;
 }
 
 void AnimaticTimeline::canvasMouseMove(QMouseEvent *e)
@@ -863,6 +995,33 @@ void AnimaticTimeline::canvasMouseMove(QMouseEvent *e)
         QToolTip::showText(e->globalPosition().toPoint(),
                            timecode(m_dragPlayheadFrame), m_canvas);
         m_canvas->update();
+        const int idx = blockAtFrame(m_dragPlayheadFrame);
+        if (idx >= 0 && idx != m_scrubIndex) {
+            m_scrubIndex = idx; // one preview per panel crossed, not per pixel
+            emit playheadScrubbed(idx);
+        }
+        return;
+    }
+
+    if (m_drag == Drag::Move) {
+        if (!(e->buttons() & Qt::LeftButton)) {
+            m_drag = Drag::None; // the release went elsewhere
+            m_moveActive = false;
+            m_canvas->update();
+            return;
+        }
+        if (!m_moveActive
+            && (pos - m_movePress).manhattanLength() >= kReorderThreshold) {
+            m_moveActive = true;
+            m_canvas->setCursor(Qt::ClosedHandCursor);
+        }
+        if (m_moveActive) {
+            const int gap = moveGapAt(pos.x());
+            if (gap != m_moveGap) {
+                m_moveGap = gap;
+                m_canvas->update();
+            }
+        }
         return;
     }
 
@@ -892,13 +1051,13 @@ void AnimaticTimeline::canvasMouseMove(QMouseEvent *e)
     // Idle hover: cursor + highlight.
     Qt::CursorShape cursor = Qt::ArrowCursor;
     int hover = -1;
-    if (pos.x() >= kLabelCol && pos.y() >= kPanelY && pos.y() < kPanelY + kPanelH) {
+    if (pos.x() >= kLabelCol && pos.y() >= kPanelY && pos.y() < kPanelY + panelTrackH()) {
         const int frame = frameAtScreenX(pos.x());
         hover = blockAtFrame(frame);
         cursor = (hover >= 0) ? Qt::PointingHandCursor : Qt::ArrowCursor;
         // Resize-handle cursor on the selected clip edges.
-        if (m_current >= 0 && m_current < m_blocks.size()) {
-            const Block &b = m_blocks.at(m_current);
+        if (m_selected >= 0 && m_selected < m_blocks.size()) {
+            const Block &b = m_blocks.at(m_selected);
             const int x0 = contentXToScreen(b.startFrame * pxPerFrame());
             const int x1 = contentXToScreen((b.startFrame + b.frames) * pxPerFrame());
             if (qAbs(pos.x() - x0) <= kHandleW || qAbs(pos.x() - x1) <= kHandleW)
@@ -939,11 +1098,29 @@ void AnimaticTimeline::canvasMouseRelease(QMouseEvent *e)
         const int idx = blockAtFrame(m_dragPlayheadFrame);
         m_drag = Drag::None;
         m_dragPlayheadFrame = -1;
-        if (idx >= 0) {
-            setCurrentPanel(idx);
-            emit panelSeekRequested(idx);
-        }
+        // The playhead comes to rest at the start of the panel it was
+        // dropped in, as it always did - but that panel is PREVIEWED, not
+        // selected (this used to emit panelSeekRequested).
+        if (idx >= 0 && idx != m_scrubIndex)
+            emit playheadScrubbed(idx);
+        m_scrubIndex = -1;
         m_canvas->update();
+        QToolTip::hideText();
+        return;
+    }
+    if (m_drag == Drag::Move) {
+        const bool moved = m_moveActive && m_moveGap >= 0;
+        const int from = m_moveFrom;
+        const int gap = m_moveGap;
+        m_drag = Drag::None;
+        m_moveActive = false;
+        m_moveFrom = -1;
+        m_moveGap = -1;
+        m_canvas->setCursor(Qt::ArrowCursor);
+        m_canvas->update();
+        // Dropping a clip right before or right after itself moves nothing.
+        if (moved && gap != from && gap != from + 1)
+            emit panelMoveRequested(from, gap);
         return;
     }
     m_drag = Drag::None;

@@ -4,8 +4,14 @@
 #include "AnimaticTimeline.h"
 #include "StoryboardModel.h"
 
+#include <QAbstractButton>
+#include <QAbstractSlider>
 #include <QAudioOutput>
 #include <QCoreApplication>
+#include <QFontMetrics>
+#include <QTabletEvent>
+#include <QWheelEvent>
+#include <functional>
 #include <QDir>
 #include <QEvent>
 #include <QFile>
@@ -32,45 +38,127 @@
 #include <QVBoxLayout>
 #include <Qt>
 
-// Letterboxed display of a single panel pixmap (16:9, black bars).
+// THE PREVIEW SURFACE: a letterboxed display of one panel, laid over the
+// drawing canvas while the animatic plays or is scrubbed.
+//
+// Why playback does not simply use the drawing canvas (measured before this
+// was built, HANDOFF "Combined workspace"): it could afford to - switching
+// the canvas costs 14 ms per cut at 4K - but every switch COMMITS a floating
+// paste, a live transform and a pending QuickShape, clears the selection,
+// and would play back through the artist's own zoom, rotation, flip, guides
+// and onion skin. This widget touches none of that: it is a child of the
+// canvas that covers it, so the canvas underneath keeps its panel, its
+// selection and its in-flight edit, takes no pointer input while covered,
+// and is exactly as it was the moment the preview goes away.
+//
+// It paints the same Panel::flattenedPixmap() every other consumer reads.
+// A cheaper composite straight to preview size was measured (1.7 ms against
+// 16 ms at 4K) and NOT used: it would be a second implementation of the
+// flatten, which is the kind of duplicate that has drifted here before.
 class PanelDisplay : public QWidget
 {
 public:
     explicit PanelDisplay(QWidget *parent = nullptr)
         : QWidget(parent)
     {
-        setMinimumHeight(220);
+        setCursor(Qt::PointingHandCursor);
+        setAttribute(Qt::WA_OpaquePaintEvent, true);
     }
 
-    void setPixmap(const QPixmap &pixmap)
+    std::function<void()> onDismissed; // a click anywhere on the preview
+
+    void setPixmap(const QPixmap &pixmap, const QString &caption)
     {
         m_pixmap = pixmap; // implicitly shared — no deep copy
+        m_caption = caption;
         update();
     }
 
     void clear()
     {
         m_pixmap = QPixmap();
+        m_caption.clear();
         update();
     }
+
+    QString captionForTest() const { return m_caption; }
+    bool hasPixmapForTest() const { return !m_pixmap.isNull(); }
 
 protected:
     void paintEvent(QPaintEvent *) override
     {
         QPainter painter(this);
         painter.fillRect(rect(), Qt::black);
-        if (m_pixmap.isNull())
-            return;
-        painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
-        QSize target = m_pixmap.size();
-        target.scale(size(), Qt::KeepAspectRatio);
-        QRect r(QPoint(0, 0), target);
-        r.moveCenter(rect().center());
-        painter.drawPixmap(r, m_pixmap);
+        if (!m_pixmap.isNull()) {
+            painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
+            QSize target = m_pixmap.size();
+            target.scale(size(), Qt::KeepAspectRatio);
+            QRect r(QPoint(0, 0), target);
+            r.moveCenter(rect().center());
+            painter.drawPixmap(r, m_pixmap);
+        }
+        // Says what this is and how to leave it. An OPAQUE chip: it sits
+        // over artwork of any colour and cannot borrow contrast from it.
+        const QString text = m_caption.isEmpty()
+            ? QStringLiteral("PREVIEW")
+            : QStringLiteral("PREVIEW  \xC2\xB7  %1  \xC2\xB7  click to return to "
+                             "drawing").arg(m_caption);
+        QFont f = font();
+        f.setPixelSize(11);
+        painter.setFont(f);
+        const QFontMetrics fm(f);
+        // Bottom-right: the corner the floating toolbars leave free by
+        // default (Layers top-left, Brush top-right, Zoom bottom-left). At
+        // top-left it sat underneath the Layers toolbar, unreadable.
+        const int chipW = fm.horizontalAdvance(text) + 20;
+        const QRect chip(qMax(12, width() - chipW - 12), qMax(12, height() - 36),
+                         chipW, 24);
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        painter.setPen(QPen(QColor(0x2a, 0x2a, 0x2a), 1));
+        painter.setBrush(QColor(0x16, 0x16, 0x16));
+        painter.drawRoundedRect(chip, 6, 6);
+        painter.setPen(QColor(0xdd, 0xdd, 0xdd));
+        painter.drawText(chip, Qt::AlignCenter, text);
+    }
+    // Every pointer event is ACCEPTED so none of it reaches the canvas
+    // underneath - an ignored tablet event in particular propagates to the
+    // parent, and the parent is a drawing canvas. The preview goes away on
+    // the RELEASE, so the whole press-move-release is consumed here and the
+    // canvas never sees the tail of a gesture it did not see the start of.
+    void mousePressEvent(QMouseEvent *event) override
+    {
+        event->accept();
+        m_pressed = event->button() == Qt::LeftButton;
+    }
+    void mouseMoveEvent(QMouseEvent *event) override { event->accept(); }
+    void mouseReleaseEvent(QMouseEvent *event) override
+    {
+        event->accept();
+        finishPress();
+    }
+    void wheelEvent(QWheelEvent *event) override { event->accept(); }
+    void tabletEvent(QTabletEvent *event) override
+    {
+        event->accept();
+        if (event->type() == QEvent::TabletPress)
+            m_pressed = true;
+        else if (event->type() == QEvent::TabletRelease)
+            finishPress();
     }
 
 private:
+    void finishPress()
+    {
+        if (!m_pressed)
+            return;
+        m_pressed = false;
+        if (onDismissed)
+            onDismissed();
+    }
+
     QPixmap m_pixmap;
+    QString m_caption;
+    bool m_pressed = false;
 };
 
 namespace {
@@ -80,11 +168,11 @@ QPushButton *transportButton(const QString &glyph, const QString &tip)
     QPushButton *button = new QPushButton(glyph);
     button->setToolTip(tip);
     button->setCursor(Qt::PointingHandCursor);
-    button->setFixedSize(44, 36);
+    button->setFixedSize(36, 28); // sized for the 40 px header row
     button->setStyleSheet(QStringLiteral(
         "QPushButton {"
         "  background-color: #1c1c1c; color: #ffffff; border: 1px solid #2a2a2a;"
-        "  border-radius: 5px; font-size: 16px;"
+        "  border-radius: 5px; font-size: 13px;"
         "}"
         "QPushButton:hover { background-color: #262626; }"
         "QPushButton:pressed { background-color: #303030; }"));
@@ -124,46 +212,68 @@ AnimaticPage::AnimaticPage(QWidget *parent)
     root->setContentsMargins(0, 0, 0, 0);
     root->setSpacing(0);
 
-    root->addWidget(createTopBar());
-    root->addWidget(createDisplay(), 1);
-    root->addWidget(createTimingStrip());
-    root->addWidget(createControls());
+    // One header row that stays when the section is collapsed, then the
+    // timeline. There is no display here any more: the preview is laid over
+    // the drawing canvas (attachPreview), and the buttons that have not yet
+    // moved to the menus are handed to the workspace (legacyActions).
+    m_display = new PanelDisplay;
+    m_display->hide();
+    m_display->onDismissed = [this] { leavePreview(); };
+    m_legacyActions = createLegacyActions();
+    // Both are re-parented out of this widget (the preview onto the canvas,
+    // the buttons into the workspace's bottom bar), so either may be
+    // destroyed before this object is: never keep a pointer to a dead one.
+    connect(m_display, &QObject::destroyed, this, [this] { m_display = nullptr; });
+    connect(m_legacyActions, &QObject::destroyed, this, [this] {
+        m_legacyActions = nullptr;
+        m_removeAudioButton = nullptr; // its children go with it
+        m_exportButton = nullptr;
+        m_generationButton = nullptr;
+    });
+    root->addWidget(createHeader());
+    root->addWidget(createTimingStrip(), 1);
+
+    // NOTHING HERE TAKES KEYBOARD FOCUS. The drawing canvas needs it (the
+    // spacebar pan modifier is a key event on the canvas), and a button
+    // that took focus on a click would both steal it and start answering
+    // Space itself. Which keys the timeline gets is decided by where the
+    // POINTER is, in the workspace - never by focus.
+    const QList<QWidget *> ours = findChildren<QWidget *>()
+        + m_legacyActions->findChildren<QWidget *>();
+    for (QWidget *w : ours)
+        if (qobject_cast<QAbstractButton *>(w)
+            || qobject_cast<QAbstractSlider *>(w))
+            w->setFocusPolicy(Qt::NoFocus);
 }
 
-// --- Top bar --------------------------------------------------------------
+AnimaticPage::~AnimaticPage()
+{
+    // Neither is necessarily in a layout of ours: the preview belongs to the
+    // canvas once attached, the legacy bar to the workspace once placed.
+    if (m_display && !m_display->parent())
+        delete m_display;
+    if (m_legacyActions && !m_legacyActions->parent())
+        delete m_legacyActions;
+}
 
-QWidget *AnimaticPage::createTopBar()
+// --- Not yet moved to the menus --------------------------------------------
+
+// TEMPORARY, and shrinking by design: Import / Remove Audio, Export MP4 and
+// Continue to Generation lived on the Animatic screen's top bar. The screen
+// is gone; their new homes arrive in later passes (the Edit menu and the
+// audio track, File > Export, and - for Generation - nowhere). Until each
+// one moves it stays reachable from the workspace's bottom bar, so no pass
+// leaves a feature without a way in. Each later pass deletes its button
+// here; the last one deletes this function.
+QWidget *AnimaticPage::createLegacyActions()
 {
     QWidget *bar = new QWidget;
-    bar->setAttribute(Qt::WA_StyledBackground, true);
-    bar->setFixedHeight(60);
-    bar->setStyleSheet(QStringLiteral("background-color: #111111;"));
-
     QHBoxLayout *layout = new QHBoxLayout(bar);
-    layout->setContentsMargins(16, 0, 16, 0);
-
-    QPushButton *back = new QPushButton(QString::fromUtf8("\xE2\x86\x90"));
-    back->setCursor(Qt::PointingHandCursor);
-    back->setToolTip(QStringLiteral("Back to Storyboard"));
-    back->setStyleSheet(QStringLiteral(
-        "QPushButton { background: transparent; color: #cccccc; border: none; font-size: 20px;"
-        " padding: 4px 8px; } QPushButton:hover { color: #ffffff; }"));
-    connect(back, &QPushButton::clicked, this, [this] {
-        pause();
-        emit backRequested();
-    });
-    layout->addWidget(back);
-
-    layout->addStretch(1);
-
-    QLabel *title = new QLabel(QStringLiteral("Animatic"));
-    title->setStyleSheet(QStringLiteral("color: #ffffff; font-size: 15px; font-weight: 600;"));
-    layout->addWidget(title);
-
-    layout->addStretch(1);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(8);
 
     const QString outlined = SankoTheme::themed("QPushButton { background: transparent; color: #cccccc; border: 1px solid #2a2a2a;"
-        " border-radius: 6px; padding: 8px 14px; font-size: 13px; }"
+        " border-radius: 6px; padding: 7px 14px; font-size: 13px; }"
         "QPushButton:hover { color: %ACCENT%; border-color: %ACCENT%; }");
 
     QPushButton *importAudio = new QPushButton(QStringLiteral("Import Audio"));
@@ -179,23 +289,6 @@ QWidget *AnimaticPage::createTopBar()
     m_removeAudioButton->setVisible(false);
     connect(m_removeAudioButton, &QPushButton::clicked, this, &AnimaticPage::onRemoveAudio);
     layout->addWidget(m_removeAudioButton);
-
-    m_audioLabel = new QLabel;
-    m_audioLabel->setStyleSheet(QStringLiteral("color: #888888; font-size: 12px;"));
-    m_audioLabel->setVisible(false);
-    layout->addWidget(m_audioLabel);
-
-    m_volumeSlider = new QSlider(Qt::Horizontal);
-    m_volumeSlider->setRange(0, 100);
-    m_volumeSlider->setValue(80);
-    m_volumeSlider->setFixedWidth(60);
-    m_volumeSlider->setToolTip(QStringLiteral("Audio volume"));
-    m_volumeSlider->setVisible(false);
-    connect(m_volumeSlider, &QSlider::valueChanged, this, [this](int v) {
-        if (m_audioOutput)
-            m_audioOutput->setVolume(v / 100.0);
-    });
-    layout->addWidget(m_volumeSlider);
 
     m_exportButton = new QPushButton(QStringLiteral("Export MP4"));
     m_exportButton->setCursor(Qt::PointingHandCursor);
@@ -216,31 +309,138 @@ QWidget *AnimaticPage::createTopBar()
         "QPushButton:hover { background-color: #8f82ff; }"
         "QPushButton:disabled { background-color: #1c1c1c; color: #555555;"
         " border: 1px solid #2a2a2a; }"));
-    connect(m_generationButton, &QPushButton::clicked, this,
-            [this] { emit generationRequested(); });
+    connect(m_generationButton, &QPushButton::clicked, this, [this] {
+        leavePreview(); // stops playback too: the workspace is being left
+        emit generationRequested();
+    });
     layout->addWidget(m_generationButton);
 
     return bar;
 }
 
-// --- Main display ---------------------------------------------------------
+// --- The preview, over the canvas -------------------------------------------
 
-QWidget *AnimaticPage::createDisplay()
+void AnimaticPage::attachPreview(QWidget *canvasArea)
 {
-    QWidget *area = new QWidget;
-    QVBoxLayout *layout = new QVBoxLayout(area);
-    layout->setContentsMargins(24, 18, 24, 12);
-    layout->setSpacing(10);
+    if (!m_display || !canvasArea)
+        return;
+    m_previewHost = canvasArea;
+    m_display->setParent(canvasArea);
+    m_display->setGeometry(canvasArea->rect());
+    m_display->hide();
+    canvasArea->installEventFilter(this); // follow its size
+}
 
-    m_display = new PanelDisplay;
-    layout->addWidget(m_display, 1);
+// The workspace is no longer on screen (another page of the window is, or
+// the window is minimised): stop. The old Animatic screen paused in its Back
+// button; there is no such button now, and a film left playing behind the
+// Consistency Board would keep its audio running with nothing to stop it.
+void AnimaticPage::hideEvent(QHideEvent *event)
+{
+    leavePreview();
+    QWidget::hideEvent(event);
+}
 
-    m_caption = new QLabel;
-    m_caption->setAlignment(Qt::AlignCenter);
-    m_caption->setStyleSheet(QStringLiteral("color: #888888; font-size: 13px;"));
-    layout->addWidget(m_caption);
+bool AnimaticPage::eventFilter(QObject *object, QEvent *event)
+{
+    if (object == m_previewHost && event->type() == QEvent::Resize && m_display
+        && m_previewHost)
+        m_display->setGeometry(m_previewHost->rect());
+    return QWidget::eventFilter(object, event);
+}
 
-    return area;
+bool AnimaticPage::previewVisible() const
+{
+    return m_previewShown;
+}
+
+void AnimaticPage::enterPreview()
+{
+    if (!m_display || !m_previewHost || m_items.isEmpty())
+        return;
+    if (!m_previewShown) {
+        m_previewShown = true;
+        m_display->setGeometry(m_previewHost->rect());
+        m_display->show();
+        m_display->raise(); // above the canvas's own child controls
+    }
+    showPreviewFrame();
+}
+
+// Back to drawing. Playback stops, the picture is dropped (a 4K flatten is
+// 33 MB - it is not kept behind a hidden widget), and the playhead goes home
+// to the SELECTED panel, so the next Play starts from what is on the canvas.
+void AnimaticPage::leavePreview()
+{
+    if (m_playing)
+        pause();
+    if (!m_previewShown)
+        return;
+    m_previewShown = false;
+    if (m_display) {
+        m_display->hide();
+        m_display->clear();
+    }
+    if (m_selected >= 0 && m_selected < m_items.size() && m_selected != m_current)
+        seekTo(m_selected);
+}
+
+void AnimaticPage::showPreviewFrame()
+{
+    if (!m_previewShown || !m_display || m_current < 0
+        || m_current >= m_items.size())
+        return;
+    const Item &it = m_items.at(m_current);
+    m_display->setPixmap(it.panel->flattenedPixmap(),
+                         QString::fromUtf8("Scene %1 \xE2\x80\x94 Panel %2")
+                             .arg(it.sceneNumber)
+                             .arg(it.panelInScene));
+}
+
+QString AnimaticPage::previewCaptionForTest() const
+{
+    return m_display ? m_display->captionForTest() : QString();
+}
+
+bool AnimaticPage::previewHasPictureForTest() const
+{
+    return m_display && m_display->hasPixmapForTest();
+}
+
+QWidget *AnimaticPage::previewSurface() const
+{
+    return m_display;
+}
+
+// --- Collapse ---------------------------------------------------------------
+
+void AnimaticPage::setCollapsed(bool collapsed)
+{
+    if (m_collapsed == collapsed)
+        return;
+    m_collapsed = collapsed;
+    if (m_body)
+        m_body->setVisible(!collapsed);
+    if (m_collapseButton) {
+        // Down-pointing while open (click to fold away), up while collapsed.
+        m_collapseButton->setText(QString::fromUtf8(
+            collapsed ? "\xE2\x96\xB4" : "\xE2\x96\xBE"));
+        m_collapseButton->setToolTip(collapsed
+                                         ? QStringLiteral("Show the timeline")
+                                         : QStringLiteral("Hide the timeline"));
+    }
+    emit collapsedChanged(collapsed);
+}
+
+int AnimaticPage::minimumExpandedHeight() const
+{
+    return kHeaderHeight
+        + (m_timeline ? m_timeline->minimumSizeHint().height() : 0);
+}
+
+int AnimaticPage::defaultExpandedHeight() const
+{
+    return kHeaderHeight + (m_timeline ? m_timeline->sizeHint().height() : 0);
 }
 
 // --- Timing strip ---------------------------------------------------------
@@ -248,6 +448,7 @@ QWidget *AnimaticPage::createDisplay()
 QWidget *AnimaticPage::createTimingStrip()
 {
     QWidget *wrap = new QWidget;
+    m_body = wrap;
     wrap->setAttribute(Qt::WA_StyledBackground, true);
     wrap->setStyleSheet(QStringLiteral(
         "background-color: #0d0d0d; border-top: 1px solid #1f1f1f;"));
@@ -255,15 +456,25 @@ QWidget *AnimaticPage::createTimingStrip()
     wrapLayout->setContentsMargins(0, 0, 0, 0);
     wrapLayout->setSpacing(0);
 
-    // Professional NLE timeline (zoom toolbar + multi-track canvas). Loop
-    // controls now live in the bottom playback bar (see createControls()).
+    // Professional NLE timeline (zoom toolbar + multi-track canvas). The
+    // transport, loop and speed controls live in the header row above it
+    // (createHeader), which stays when this body is collapsed away.
     m_timeline = new AnimaticTimeline;
     m_timeline->setHost(this);
+    // The timeline REQUESTS; the workspace decides and pushes state back
+    // (setSelectedPanel / refreshStructure / refreshTiming). Nothing below
+    // changes a panel, a selection or an order by itself.
     connect(m_timeline, &AnimaticTimeline::panelSeekRequested,
-            this, &AnimaticPage::jumpTo);
+            this, &AnimaticPage::panelSelectRequested);
+    connect(m_timeline, &AnimaticTimeline::playheadScrubbed,
+            this, &AnimaticPage::onScrubbed);
     connect(m_timeline, &AnimaticTimeline::durationChanged,
             this, &AnimaticPage::onDurationChanged);
-    wrapLayout->addWidget(m_timeline);
+    connect(m_timeline, &AnimaticTimeline::panelMoveRequested,
+            this, &AnimaticPage::panelMoveRequested);
+    connect(m_timeline, &AnimaticTimeline::clipContextMenuRequested,
+            this, &AnimaticPage::clipContextMenuRequested);
+    wrapLayout->addWidget(m_timeline, 1);
 
     return wrap;
 }
@@ -339,20 +550,78 @@ void AnimaticPage::updateLoopUi()
     }
 }
 
-// --- Controls -------------------------------------------------------------
+// --- Header row -------------------------------------------------------------
 
-QWidget *AnimaticPage::createControls()
+// ONE row, and the only part of the section that survives a collapse: the
+// fold button, the transport, the timecode and total, then loop, speed and
+// volume. Collapsed, the workspace keeps exactly this - so playback is one
+// click away with the timeline folded and the canvas at its tallest.
+QWidget *AnimaticPage::createHeader()
 {
     QWidget *bar = new QWidget;
+    bar->setObjectName(QStringLiteral("animaticHeader"));
     bar->setAttribute(Qt::WA_StyledBackground, true);
-    bar->setFixedHeight(56);
-    bar->setStyleSheet(QStringLiteral("background-color: #0d0d0d; border-top: 1px solid #1f1f1f;"));
+    bar->setFixedHeight(kHeaderHeight);
+    bar->setStyleSheet(QStringLiteral(
+        "QWidget#animaticHeader { background-color: #0d0d0d;"
+        " border-top: 1px solid #1f1f1f; }"));
 
     QHBoxLayout *layout = new QHBoxLayout(bar);
-    layout->setContentsMargins(16, 0, 16, 0);
-    layout->setSpacing(10);
+    layout->setContentsMargins(8, 0, 12, 0);
+    layout->setSpacing(8);
 
-    // --- LEFT GROUP: loop controls (compact) -----------------------------
+    m_collapseButton = new QPushButton(QString::fromUtf8("\xE2\x96\xBE"));
+    m_collapseButton->setObjectName(QStringLiteral("animaticCollapse"));
+    m_collapseButton->setCursor(Qt::PointingHandCursor);
+    m_collapseButton->setFocusPolicy(Qt::NoFocus);
+    m_collapseButton->setFixedSize(26, 26);
+    m_collapseButton->setToolTip(QStringLiteral("Hide the timeline"));
+    m_collapseButton->setStyleSheet(SankoTheme::themed(
+        "QPushButton { background: transparent; color: #cccccc; border: 1px solid #2a2a2a;"
+        " border-radius: 4px; font-size: 13px; }"
+        "QPushButton:hover { color: %ACCENT%; border-color: %ACCENT%; }"));
+    connect(m_collapseButton, &QPushButton::clicked, this,
+            [this] { setCollapsed(!m_collapsed); });
+    layout->addWidget(m_collapseButton);
+
+    // --- Transport (icons only) ------------------------------------------
+    QPushButton *first = transportButton(QString::fromUtf8("|\xE2\x97\x80"),
+                                         QStringLiteral("First panel"));
+    connect(first, &QPushButton::clicked, this, &AnimaticPage::goFirst);
+    layout->addWidget(first);
+
+    QPushButton *prev = transportButton(QString::fromUtf8("\xE2\x97\x80"),
+                                        QStringLiteral("Previous panel"));
+    connect(prev, &QPushButton::clicked, this, &AnimaticPage::goPrev);
+    layout->addWidget(prev);
+
+    m_playButton = transportButton(QString::fromUtf8("\xE2\x96\xB6"),
+                                   QStringLiteral("Play / Pause"));
+    m_playButton->setObjectName(QStringLiteral("animaticPlay"));
+    connect(m_playButton, &QPushButton::clicked, this, &AnimaticPage::togglePlay);
+    layout->addWidget(m_playButton);
+
+    QPushButton *next = transportButton(QString::fromUtf8("\xE2\x96\xB6"),
+                                        QStringLiteral("Next panel"));
+    connect(next, &QPushButton::clicked, this, &AnimaticPage::goNext);
+    layout->addWidget(next);
+
+    QPushButton *last = transportButton(QString::fromUtf8("\xE2\x96\xB6|"),
+                                        QStringLiteral("Last panel"));
+    connect(last, &QPushButton::clicked, this, &AnimaticPage::goLast);
+    layout->addWidget(last);
+
+    m_timecodeLabel = new QLabel(QStringLiteral("00:00:00:00"));
+    m_timecodeLabel->setStyleSheet(SankoTheme::themed("color: %ACCENT%; font-family: 'Courier New'; font-size: 13px;"));
+    layout->addWidget(m_timecodeLabel);
+
+    m_totalLabel = new QLabel(QStringLiteral("Total: 0:00"));
+    m_totalLabel->setStyleSheet(QStringLiteral("color: #aaaaaa; font-size: 13px;"));
+    layout->addWidget(m_totalLabel);
+
+    layout->addStretch(1);
+
+    // --- Loop controls (compact) -----------------------------------------
     const QString loopBtn = QStringLiteral(
         "QPushButton { background: transparent; color: #cccccc; border: 1px solid #2a2a2a;"
         " border-radius: 4px; padding: 4px 8px; font-size: 11px; }"
@@ -394,37 +663,8 @@ QWidget *AnimaticPage::createControls()
     loopLayout->addWidget(m_loopWarningLabel);
 
     layout->addWidget(loopGroup);
-    layout->addStretch(1);
 
-    // --- CENTRE GROUP: transport (icons only) ----------------------------
-    QPushButton *first = transportButton(QString::fromUtf8("|\xE2\x97\x80"),
-                                         QStringLiteral("First panel"));
-    connect(first, &QPushButton::clicked, this, &AnimaticPage::goFirst);
-    layout->addWidget(first);
-
-    QPushButton *prev = transportButton(QString::fromUtf8("\xE2\x97\x80"),
-                                        QStringLiteral("Previous panel"));
-    connect(prev, &QPushButton::clicked, this, &AnimaticPage::goPrev);
-    layout->addWidget(prev);
-
-    m_playButton = transportButton(QString::fromUtf8("\xE2\x96\xB6"),
-                                   QStringLiteral("Play / Pause"));
-    connect(m_playButton, &QPushButton::clicked, this, &AnimaticPage::togglePlay);
-    layout->addWidget(m_playButton);
-
-    QPushButton *next = transportButton(QString::fromUtf8("\xE2\x96\xB6"),
-                                        QStringLiteral("Next panel"));
-    connect(next, &QPushButton::clicked, this, &AnimaticPage::goNext);
-    layout->addWidget(next);
-
-    QPushButton *last = transportButton(QString::fromUtf8("\xE2\x96\xB6|"),
-                                        QStringLiteral("Last panel"));
-    connect(last, &QPushButton::clicked, this, &AnimaticPage::goLast);
-    layout->addWidget(last);
-
-    layout->addStretch(1);
-
-    // --- RIGHT GROUP: speed, timecode, total -----------------------------
+    // --- Speed -------------------------------------------------------------
     QWidget *speedGroup = new QWidget;
     QHBoxLayout *speedLayout = new QHBoxLayout(speedGroup);
     speedLayout->setContentsMargins(0, 0, 0, 0);
@@ -454,69 +694,182 @@ QWidget *AnimaticPage::createControls()
     layout->addWidget(speedGroup);
     updateSpeedButtons(); // 1x active by default
 
-    m_timecodeLabel = new QLabel(QStringLiteral("00:00:00:00"));
-    m_timecodeLabel->setStyleSheet(SankoTheme::themed("color: %ACCENT%; font-family: 'Courier New'; font-size: 13px;"));
-    layout->addWidget(m_timecodeLabel);
+    // --- Audio: the track's name and its volume (shown once one is loaded)
+    m_audioLabel = new QLabel;
+    m_audioLabel->setStyleSheet(QStringLiteral("color: #888888; font-size: 12px;"));
+    m_audioLabel->setVisible(false);
+    layout->addWidget(m_audioLabel);
 
-    m_totalLabel = new QLabel(QStringLiteral("Total: 0:00"));
-    m_totalLabel->setStyleSheet(QStringLiteral("color: #aaaaaa; font-size: 13px;"));
-    layout->addWidget(m_totalLabel);
+    m_volumeSlider = new QSlider(Qt::Horizontal);
+    m_volumeSlider->setRange(0, 100);
+    m_volumeSlider->setValue(80);
+    m_volumeSlider->setFixedWidth(60);
+    m_volumeSlider->setToolTip(QStringLiteral("Audio volume"));
+    m_volumeSlider->setVisible(false);
+    connect(m_volumeSlider, &QSlider::valueChanged, this, [this](int v) {
+        if (m_audioOutput)
+            m_audioOutput->setVolume(v / 100.0);
+    });
+    layout->addWidget(m_volumeSlider);
 
     return bar;
 }
 
 // --- Data / display -------------------------------------------------------
 
+// m_items is a DERIVED index - one row per panel, in play order - over the
+// workspace's own scenes. It holds Panel pointers, so it must be rebuilt
+// whenever the panel lists change (refreshStructure) and emptied before the
+// scenes are destroyed (loadScenes({})): a row left pointing at a panel
+// whose undo command has since been dropped is a use-after-free the moment
+// playback, the preview or an export reads it. When this was a separate
+// screen the list was rebuilt on every visit and that could not happen.
+void AnimaticPage::rebuildItems()
+{
+    m_items.clear();
+    for (Scene *scene : std::as_const(m_scenes)) {
+        for (int pi = 0; pi < scene->panels.size(); ++pi)
+            m_items.append({scene, scene->panels.at(pi), scene->number, pi + 1});
+    }
+}
+
 void AnimaticPage::loadScenes(const QVector<Scene *> &scenes)
 {
-    pause();
-    m_items.clear();
+    leavePreview(); // stops playback; drops the picture of a panel that may be going
     m_scenes = scenes;
+    rebuildItems();
 
     // Loop is a session-only tool; reset it whenever the scene set changes.
     m_loopStartIndex = -1;
     m_loopEndIndex = -1;
     updateLoopUi();
 
-    for (Scene *scene : scenes) {
-        for (int pi = 0; pi < scene->panels.size(); ++pi)
-            m_items.append({scene, scene->panels.at(pi), scene->number, pi + 1});
-    }
-
+    m_current = -1;
+    m_selected = -1;
+    m_elapsedMsInCurrentPanel = 0;
     if (m_timeline) {
         m_timeline->setScenes(m_scenes);
         m_timeline->setLoopRegion(m_loopStartIndex, m_loopEndIndex);
         m_timeline->setAudioLoaded(hasAudio(), m_player ? m_player->duration() : 0);
+        m_timeline->setCurrentPanel(-1);
+        m_timeline->setSelectedPanel(-1);
     }
-    m_current = -1;
+    // The workspace selects a panel right after loading scenes into its
+    // strip, and that selection arrives here through setSelectedPanel.
+    if (m_exportButton)
+        m_exportButton->setEnabled(!m_items.isEmpty());
+    if (m_generationButton)
+        m_generationButton->setEnabled(!m_items.isEmpty());
+    updateTotalLabel();
+    updateTimecodeLabel();
+}
 
-    if (!m_items.isEmpty()) {
-        showPanel(0);
-    } else {
-        m_display->clear();
-        m_caption->clear();
+// The same scenes, a different set or order of panels: a panel was added,
+// removed, duplicated, pasted or moved in the workspace.
+void AnimaticPage::refreshStructure()
+{
+    leavePreview();
+    rebuildItems();
+    // Loop points are flat indices; after an insert or a removal they would
+    // name different panels than the ones the user marked.
+    m_loopStartIndex = -1;
+    m_loopEndIndex = -1;
+    updateLoopUi();
+    const int last = int(m_items.size()) - 1;
+    m_current = qMin(m_current, last);
+    m_selected = qMin(m_selected, last);
+    m_elapsedMsInCurrentPanel = 0;
+    if (m_timeline) {
+        m_timeline->setScenes(m_scenes);
+        m_timeline->setLoopRegion(m_loopStartIndex, m_loopEndIndex);
+        m_timeline->setCurrentPanel(m_current);
+        m_timeline->setSelectedPanel(m_selected);
     }
     if (m_exportButton)
         m_exportButton->setEnabled(!m_items.isEmpty());
     if (m_generationButton)
         m_generationButton->setEnabled(!m_items.isEmpty());
     updateTotalLabel();
+    updateTimecodeLabel();
 }
 
-void AnimaticPage::showPanel(int index)
+// A panel's duration changed (the workspace applied it, or undid it).
+void AnimaticPage::refreshTiming()
+{
+    // The running tick was armed with the old duration; rather than guess
+    // what "mid-panel" should mean after it changes, playback stops.
+    if (m_playing)
+        pause();
+    if (m_timeline)
+        m_timeline->setScenes(m_scenes); // reflow block widths from the new value
+    updateTotalLabel();
+    updateTimecodeLabel();
+}
+
+void AnimaticPage::refreshThumbnails()
+{
+    if (m_timeline)
+        m_timeline->refreshThumbnails();
+}
+
+// THE WORKSPACE SELECTED A PANEL (in the strip, by a timeline click it
+// granted, by a transport button, by an undo landing somewhere). State in,
+// nothing out: this never emits a selection request, which is what keeps the
+// two views from answering each other. Selecting moves the playhead to that
+// panel - Play starts from what is on the canvas - and, unless something is
+// playing, puts the drawing back in front.
+void AnimaticPage::setSelectedPanel(int flatIndex)
+{
+    if (flatIndex < 0 || flatIndex >= m_items.size())
+        flatIndex = -1;
+    m_selected = flatIndex;
+    if (m_timeline)
+        m_timeline->setSelectedPanel(flatIndex);
+    if (flatIndex < 0)
+        return;
+    seekTo(flatIndex);
+    if (!m_playing)
+        leavePreview();
+}
+
+// The playhead, and whatever shows it: the timeline, the timecode, and the
+// preview if it is up. (This was showPanel(), which also pushed a full
+// flatten into the old screen's display on every call.)
+void AnimaticPage::movePlayheadTo(int index)
 {
     if (index < 0 || index >= m_items.size())
         return;
     m_current = index;
     m_elapsedMsInCurrentPanel = 0; // playhead restarts at the new panel's left edge
-    const Item &it = m_items.at(index);
-    m_display->setPixmap(it.panel->flattenedPixmap());
-    m_caption->setText(QString::fromUtf8("Scene %1 \xE2\x80\x94 Panel %2")
-                           .arg(it.sceneNumber)
-                           .arg(it.panelInScene));
     if (m_timeline)
         m_timeline->setCurrentPanel(index);
     updateTimecodeLabel();
+    showPreviewFrame(); // no-op unless the preview is showing
+}
+
+// movePlayheadTo + what a jump needs: the running tick re-armed for the new
+// panel and the audio moved to match (seek only, no auto-play).
+void AnimaticPage::seekTo(int index)
+{
+    if (index < 0 || index >= m_items.size())
+        return;
+    movePlayheadTo(index);
+    if (m_playing)
+        scheduleTick();
+    if (hasAudio())
+        m_player->setPosition(offsetForPanel(index));
+}
+
+// The playhead is being dragged along the ruler: LOOK at that panel. The
+// drawing canvas, the selection and the strip are not touched.
+void AnimaticPage::onScrubbed(int index)
+{
+    if (index < 0 || index >= m_items.size())
+        return;
+    if (m_playing)
+        pause();
+    seekTo(index);
+    enterPreview();
 }
 
 void AnimaticPage::updateTimecodeLabel()
@@ -570,13 +923,14 @@ void AnimaticPage::play()
     if (m_items.isEmpty())
         return;
     if (loopActive()) {
-        showPanel(m_loopStartIndex); // loop playback always starts at the loop start
+        movePlayheadTo(m_loopStartIndex); // loop playback always starts at the loop start
         if (hasAudio())
             m_player->setPosition(offsetForPanel(m_loopStartIndex));
     } else if (m_current < 0) {
-        showPanel(0);
+        movePlayheadTo(0);
     }
     m_playing = true;
+    enterPreview(); // playback is watched over the canvas, not on it
     m_elapsedMsInCurrentPanel = 0; // fresh dwell for the current panel
     m_playButton->setText(QString::fromUtf8("\xE2\x8F\xB8")); // pause glyph
     scheduleTick();
@@ -628,12 +982,21 @@ void AnimaticPage::onDurationChanged(int sceneIndex, int panelIndex, int newDura
     Scene *scene = m_scenes.at(sceneIndex);
     if (panelIndex < 0 || panelIndex >= scene->panels.size())
         return;
-    scene->panels.at(panelIndex)->duration = qBound(1, newDuration, 30);
-    emit documentChanged(); // durations are saved; the drag is not undoable
-
-    if (m_timeline)
-        m_timeline->setScenes(m_scenes); // reflow block widths from the new value
-    updateTotalLabel();
+    const int bounded = qBound(1, newDuration, 30);
+    if (scene->panels.at(panelIndex)->duration == bounded) {
+        // A drag that ended where it began: nothing to change, nothing to
+        // undo - but the clip is still drawn at its dragged width.
+        if (m_timeline)
+            m_timeline->setScenes(m_scenes);
+        return;
+    }
+    // NOT applied here. A duration used to be written straight to the panel
+    // with a documentChanged, which made it the one timeline edit Ctrl+Z
+    // could not take back - and, with drawing on the same screen, made
+    // Ctrl+Z after a timing drag undo the artist's last STROKE instead. The
+    // workspace owns the undo history, so it applies this as a command and
+    // calls refreshTiming() when the value lands (and again on undo/redo).
+    emit durationChangeRequested(sceneIndex, panelIndex, bounded);
 }
 
 void AnimaticPage::setPlaybackSpeed(float speed)
@@ -679,14 +1042,14 @@ void AnimaticPage::advance()
     // Loop region: cycle within [start, end] indefinitely.
     if (loopActive()) {
         if (m_current >= m_loopEndIndex) {
-            showPanel(m_loopStartIndex);
+            movePlayheadTo(m_loopStartIndex);
             if (hasAudio()) {
                 m_player->setPosition(offsetForPanel(m_loopStartIndex));
                 if (m_playing)
                     m_player->play(); // restart audio if it had reached its end
             }
         } else {
-            showPanel(m_current + 1);
+            movePlayheadTo(m_current + 1);
         }
         if (m_playing)
             scheduleTick();
@@ -694,61 +1057,55 @@ void AnimaticPage::advance()
     }
 
     if (m_current >= m_items.size() - 1) {
-        // Last panel finished: stop and return to the first.
-        pause();
-        showPanel(0);
+        // Last panel finished: stop, and go back to drawing. leavePreview
+        // returns the playhead to the selected panel (it used to return to
+        // the first panel of the film, when there was no selection to go
+        // back to); the audio is stopped and parked there with it.
+        const int home =
+            (m_selected >= 0 && m_selected < m_items.size()) ? m_selected : 0;
+        leavePreview();
+        movePlayheadTo(home);
         if (hasAudio()) {
             m_player->stop();
-            m_player->setPosition(0);
+            m_player->setPosition(offsetForPanel(home));
         }
         return;
     }
-    showPanel(m_current + 1);
+    movePlayheadTo(m_current + 1);
     if (m_playing)
         scheduleTick();
 }
 
+// First / previous / next / last are NAVIGATION: they ask the workspace to
+// select that panel, exactly as a click on its clip does, and the selection
+// comes back through setSelectedPanel (which moves the playhead). Stepping
+// is relative to the playhead, so during playback it steps from what is
+// being watched.
 void AnimaticPage::goFirst()
 {
-    showPanel(0);
-    if (m_playing)
-        scheduleTick();
-    if (hasAudio())
-        m_player->setPosition(0);
+    if (!m_items.isEmpty())
+        emit panelSelectRequested(0);
 }
 
 void AnimaticPage::goLast()
 {
-    showPanel(m_items.size() - 1);
-    if (m_playing)
-        scheduleTick();
-    if (hasAudio())
-        m_player->setPosition(offsetForPanel(m_items.size() - 1));
+    if (!m_items.isEmpty())
+        emit panelSelectRequested(int(m_items.size()) - 1);
 }
 
 void AnimaticPage::goPrev()
 {
     if (m_items.isEmpty())
         return;
-    const int target = qMax(0, (m_current < 0 ? 0 : m_current) - 1);
-    jumpTo(target);
+    emit panelSelectRequested(qMax(0, (m_current < 0 ? 0 : m_current) - 1));
 }
 
 void AnimaticPage::goNext()
 {
     if (m_items.isEmpty())
         return;
-    const int target = qMin(m_items.size() - 1, (m_current < 0 ? 0 : m_current) + 1);
-    jumpTo(target);
-}
-
-void AnimaticPage::jumpTo(int index)
-{
-    showPanel(index);
-    if (m_playing)
-        scheduleTick();
-    if (hasAudio())
-        m_player->setPosition(offsetForPanel(index)); // seek only, no auto-play
+    emit panelSelectRequested(qMin(int(m_items.size()) - 1,
+                                   (m_current < 0 ? 0 : m_current) + 1));
 }
 
 // --- Audio ----------------------------------------------------------------

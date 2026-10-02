@@ -1,27 +1,51 @@
 #pragma once
 
+#include <QPoint>
+#include <QRect>
 #include <QString>
 #include <QVector>
 #include <QWidget>
 
 class AnimaticPage;
 class TimelineCanvas; // inner painted surface, defined in the .cpp
+class QContextMenuEvent;
 class QPushButton;
 class QScrollBar;
 class QSlider;
 struct Panel;
 struct Scene;
 
-// Professional NLE-style timeline for the Animatic screen. A zoom toolbar sits
-// above a multi-track canvas (timecode ruler, scene track, panel/shot clips,
-// audio waveform, and reserved camera/markers tracks) with a fixed left label
-// column and a horizontally scrollable, zoomable canvas.
+// Professional NLE-style timeline, shown under the drawing canvas in the
+// storyboard workspace. A zoom toolbar sits above a multi-track canvas
+// (timecode ruler, scene track, panel/shot clips, audio) with a fixed left
+// label column and a horizontally scrollable, zoomable canvas. Its height is
+// the user's: the shots track takes whatever the other tracks leave.
+//
+// It is a second VIEW of the storyboard's own panels, never a second list of
+// them: blocks hold scene/panel indices into the workspace's scenes, and
+// every change to what is selected, added, removed or moved is REQUESTED from
+// the workspace (the signals below) and arrives back as state (the slots).
 class AnimaticTimeline : public QWidget
 {
     Q_OBJECT
 
 public:
     explicit AnimaticTimeline(QWidget *parent = nullptr);
+
+    // Test hooks: the painted surface (to send it real mouse events), where
+    // a clip is on it, and what the view currently holds.
+    QWidget *surfaceForTest() const;
+    QRect clipRectForTest(int flatIndex) const { return clipRect(flatIndex); }
+    int blockCountForTest() const { return int(m_blocks.size()); }
+    int blockDurationForTest(int flatIndex) const
+    {
+        return flatIndex >= 0 && flatIndex < m_blocks.size()
+            ? m_blocks.at(flatIndex).duration
+            : -1;
+    }
+    int selectedPanelForTest() const { return m_selected; }
+    int playheadPanelForTest() const { return m_current; }
+    int shotsTrackHeightForTest() const { return panelTrackH(); }
 
     // The timeline reads the live elapsed time / current index from the page
     // when rendering the playhead (see updatePlayhead()).
@@ -38,15 +62,25 @@ public:
 
 public slots:
     void setScenes(const QVector<Scene *> &scenes);
-    void setCurrentPanel(int flatIndex);
+    void setCurrentPanel(int flatIndex);  // the panel under the PLAYHEAD
+    void setSelectedPanel(int flatIndex); // the panel on the drawing canvas
     void setPlaying(bool playing);
     void setLoopRegion(int startIndex, int endIndex);
     void setAudioLoaded(bool loaded, qint64 audioDurationMs);
     void updatePlayhead();
+    void refreshThumbnails(); // a panel's artwork changed: repaint the clips
 
 signals:
+    // The user pressed a clip: select that panel and put the playhead on it.
     void panelSeekRequested(int flatPanelIndex);
+    // The user is dragging the playhead: show that panel, select nothing.
+    void playheadScrubbed(int flatPanelIndex);
     void durationChanged(int sceneIndex, int panelIndex, int newDurationSeconds);
+    // A clip was dragged to a new place in its scene. `flatGap` is the block
+    // it should land in front of (one past the scene's last block = the end).
+    void panelMoveRequested(int flatIndex, int flatGap);
+    // Right-click on a clip (already requested as the selection).
+    void clipContextMenuRequested(int flatPanelIndex, const QPoint &globalPos);
     void zoomChanged(float zoomLevel); // internal use
 
 private:
@@ -72,6 +106,15 @@ private:
     void canvasMouseRelease(QMouseEvent *e);
     void canvasLeave();
     void canvasResized();
+    void canvasContextMenu(QContextMenuEvent *e);
+
+    // Track geometry: the shots track is whatever the canvas height leaves
+    // after the ruler, the scene track and the audio track.
+    int tracksH() const;
+    int panelTrackH() const;
+    int audioTrackY() const;
+    QRect clipRect(int flatIndex) const; // on the canvas; empty if no such clip
+    int moveGapAt(int screenX) const;
 
     // Geometry / model helpers.
     void rebuildBlocks();
@@ -100,7 +143,8 @@ private:
     QVector<Scene *> m_scenes;
     QVector<Block> m_blocks;
     int m_fps = 24; // project frame rate; every frame count derives from it
-    int m_current = -1;
+    int m_current = -1;  // playhead panel (flat index)
+    int m_selected = -1; // selected panel (flat index): accent + trim handles
     bool m_playing = false;
     int m_loopStart = -1;
     int m_loopEnd = -1;
@@ -115,8 +159,13 @@ private:
 
     // Interaction.
     int m_hoverIndex = -1;
-    enum class Drag { None, ResizeRight, ResizeLeft, Playhead };
+    enum class Drag { None, ResizeRight, ResizeLeft, Playhead, Move };
     Drag m_drag = Drag::None;
+    int m_scrubIndex = -1;     // last panel announced during a playhead drag
+    int m_moveFrom = -1;       // clip pressed (flat index)
+    int m_moveGap = -1;        // gap it would drop into (flat index)
+    bool m_moveActive = false; // the press has travelled far enough to drag
+    QPoint m_movePress;
     int m_resizeIndex = -1;
     int m_dragDuration = 0;
     int m_dragLeftFrames = -1;  // visual-only left trim preview

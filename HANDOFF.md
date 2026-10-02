@@ -5042,6 +5042,158 @@ whose sources are never staged. A NEW FAMILY MUST BE ADDED TO THAT LIST.
    back on its own, with a failing code, the reason on its output, and
    not one check of its own run. Lifecycle 351 -> 355.
 
+## THE COMBINED WORKSPACE, PASS 1: the animatic moves under the canvas (2026-10-02)
+
+The user wants to draw, manage panels, time them, add audio and watch the
+animatic WITHOUT changing screens. Four passes, each its own commit:
+1 layout and sync (this one), 2 audio and menus, 3 Generation removal,
+4 export. The Animatic screen and "Continue to Animatic" are gone; the
+workspace is Panel Strip / drawing canvas / timeline, top to bottom.
+
+REQUIREMENT 0 WAS MEASURED BEFORE ANYTHING WAS BUILT, with a probe compiled
+OUT OF TREE (build/_probe/combined - the app's own sources by absolute
+path, so a "do not modify code" checkpoint stays true while still driving
+the real MainWindow). Archived: tests/_backups/probe_combined_req0_20261002*.
+What it found, and what was decided from it:
+
+1. PLAYBACK DOES NOT USE THE DRAWING CANVAS. Cost was not the reason - per
+   cut at 4K the canvas costs 9.0 ms bare, 14.1 ms through the real panel
+   selection (43.7 ms with onion skin on), against 16.2 ms for the old
+   screen's full flatten. BEHAVIOUR was: DrawingCanvas::setActivePanel
+   commits a floating paste, a live transform and a pending QuickShape,
+   clears the selection, rebuilds the layer panel / Shot Info / onion
+   ghost, and playback would run through the artist's own zoom, rotation,
+   flip, guides and onion skin. So the film plays in a PREVIEW WIDGET LAID
+   OVER THE CANVAS (PanelDisplay, a child of the canvas covering it):
+   canvas, selection, in-flight edit and undo history are exactly as they
+   were when it goes away. It accepts every pointer event - an ignored
+   TABLET event propagates to the parent, and the parent draws.
+   THE RULE: selecting moves the playhead; playing does not select.
+   A click on a clip, a strip click, the transport's first/prev/next/last
+   and the arrow keys are navigation and SELECT; Play and a playhead drag
+   only LOOK. Leaving the preview (click it, Esc, select something, Undo,
+   the end of the film, leaving the workspace) returns the playhead to the
+   selected panel, so Play always starts from what is on the canvas.
+   DECLINED: compositing the layers straight to preview size (1.7 ms
+   against 16 ms at 4K). It is a second implementation of
+   Panel::flattenedPixmap(), the kind of duplicate that has drifted here
+   before; the preview shows the same flatten every consumer reads, at the
+   same cost the old screen paid.
+
+2. ONE SET OF PANELS, ONE SELECTION, ONE HISTORY. The two views already
+   read the same Scene/Panel objects; what was missing is that the animatic
+   keeps m_items - a flat row per panel holding Panel* - built only when
+   its screen was visited. On screen all the time, a row for a deleted
+   panel whose undo command is later dropped is a use-after-free. So:
+   StoryboardPage creates and owns the AnimaticPage; loadScenes and
+   detachScenes feed and empty it (whatever feeds the strip feeds the
+   timeline - Open, Script Editor Continue; New, Close, re-parse, the
+   destructor); the three apply...ForUndo callbacks, the ONLY places the
+   panel lists change, call refreshStructure(). The page owns the
+   selection: the timeline emits requests from the user's mouse only, and
+   is told state through slots that emit nothing, so a selection cannot
+   bounce (Lifecycle counts selectPanel calls: exactly one per action,
+   cross-scene included - selectScene took a panel argument for that).
+   Timeline add / duplicate / delete / reorder call the strip's own
+   functions: same commands, same delete prompt, same last-panel rule.
+   Reorder stays within a scene, as on the strip.
+
+3. THE POINTER DECIDES THE KEYS, the rule Ctrl+Z already follows over the
+   Brush Settings studio. Space on the canvas is the pan modifier and
+   needs keyboard focus there; a timeline that took focus on a click would
+   leave Space toggling playback until the artist clicked the canvas -
+   which puts a mark on the drawing. So nothing in the section takes focus
+   (every button is NoFocus; measured: focus stays on the canvas after a
+   timeline click), and Space / Left / Right / Home / End / Esc / Delete
+   are QShortcuts that are DISABLED except while the pointer is over the
+   section - or over the preview, where all but Delete apply. A focused
+   text field still keeps its keys (ShortcutOverride).
+
+4. DRAWING PAYS NOTHING FOR THE TIMELINE. Measured at 4K: per input event
+   1.9 ms median with no timeline, 1.7-1.9 with it visible; an idle
+   timeline repaints ZERO times during a stroke. The ~19 ms turn after
+   pen-up is the strip's existing thumbnail refresh (a 17 ms flatten),
+   and the timeline shares that mip - so it is repainted FROM
+   refreshCurrentThumbNow, after the strip has rebuilt it. Repainting it
+   on contentChanged instead makes the timeline the one that pays the
+   rebuild, possibly on pixels the engine has not published yet.
+
+5. A TIMING CHANGE IS UNDOABLE (PanelDurationCommand, one per drag). It
+   used to be written straight to the panel with a documentChanged, so on
+   one screen Ctrl+Z after a timing drag would have undone the last
+   STROKE. It reaches the dirty flag through the undo-stack backstop now.
+   Any structure or timing change pauses playback rather than guess what
+   "mid-panel" means afterwards.
+
+6. NOT A DOCK. The timeline is a pane of a vertical QSplitter in the
+   central column, between the canvas and the bottom bar; its collapse and
+   height live under storyboard/timeline/v1/. A dock would have shared the
+   bottom dock area with a Panel Strip the user may dock there,
+   DockController::normalizeDockAreas pulls its panels out of top/bottom,
+   and an older saved layout restores an unknown dock HIDDEN. The price,
+   accepted by the user: it cannot float and is canvas-width.
+   TWO THINGS A SPLITTER DOES NOT DO BY ITSELF, both found by the checks:
+   when a pane's limits change it clamps that pane and leaves the other at
+   its old size (a collapsed timeline with a band of nothing above it) -
+   so both collapse and expand call setSizes; and it can only be given
+   sizes once it has one, so the request is kept pending until the page
+   is first shown.
+   Header row (40 px) stays when collapsed: fold, transport, timecode,
+   total, loop, speed, volume. Open on a first run. The shots track takes
+   any extra height; the empty Camera and Markers tracks are gone.
+
+7. THE FLOATING TOOLBARS DO NOT DRIFT ON A RESIZE. Zero differences in 20
+   settled cycles, 10 runs of rapid toggles, 5 simulated drags, default and
+   dragged/snapped placements, both configs. The known residual (above,
+   "Modal dialogs vs the floating tool windows") lives in hide-all ->
+   show-all; a resize hides nothing. That is also why playback does NOT
+   hide the bars over the preview.
+
+RE-MEASURED ON THE BUILT WORKSPACE (the Requirement 0 numbers came from a
+stand-in dock), probe archived as tests/_backups/probe_combined_pass1_
+20261002*: at 4K a stroke is 1.88 ms per event with the timeline collapsed
+and 1.87 ms with it open (1080p: 1.33 / 1.34), the timeline repaints 0
+times during a stroke and twice after it settles (~1 ms each); a playback
+cut is 16.4 ms + a 2.2 ms repaint at 4K (3.9 + 1.9 at 1080p); a panel
+selection with both views repainted is 14.1 ms at 4K. Toolbar places:
+0 differences in every cycle again, Debug identical to Release, and the
+Size bar inside the canvas at every size tried (398 px tall beside an open
+timeline at 1600x900, 222 px at the minimum window).
+
+TWO OLDER DEFECTS FIXED ON THE WAY, each its own commit:
+- Reset Layout never reset the Panel Strip (not a controller panel, own
+  keys). Lifecycle (ab).
+- The Size bar was a fixed 46x574 and simply hung below a canvas shorter
+  than that (~108 px over the bottom bar at the 1280x720 minimum, long
+  before any timeline). It now shortens: sliders first, then the gaps;
+  the Figma column exactly whenever it fits. Lifecycle (ac).
+
+TEMPORARY, BY DESIGN: Import Audio / Remove Audio / Export MP4 / Continue
+to Generation sit in the workspace's bottom bar (AnimaticPage::
+createLegacyActions) so no pass leaves a feature without a way in. Pass 2
+removes the audio pair, Pass 3 the Generation button, Pass 4 the export
+button and the function. The class is still called AnimaticPage; renaming
+it is a mechanical change kept out of this pass.
+
+STILL TO DO, decided by the user, in the pass that touches each area:
+- Pass 2: Import/Remove Audio in Edit and on the audio track's context
+  menu, both UNDOABLE; the drawn sine "waveform" replaced by a plain bar
+  with the file name; and the dropped-audio-path defect (a project whose
+  audio file is missing at load opens clean with the path cleared, and the
+  next save erases it).
+- Pass 3: delete the Generation page source (record here the commit it
+  last lived in); a take whose video is missing is rewritten "Failed" on
+  load and saved that way; Save As does not copy take videos.
+- Pass 4: File > Export > MP4 / PNG / PDF. MP4 at the project fps (it is
+  hard-coded 24), video length wins over audio (-shortest cuts panels
+  today), every frame write checked, a unique temp folder; stays 1080p.
+
+GATE: Lifecycle (ab) (ac) and (ad)-(ai) - the strip and the timeline as
+one set of panels, the freed-panel case, playback leaving the document
+alone, keys by pointer, undo order, layout persistence and toolbar
+places. (d) no longer clicks a button that does not exist; it proves the
+animatic is not empty instead. Lifecycle 355 -> 450.
+
 ## METHOD: measure interior structure ACROSS THE SIZE RANGE before calling it character (2026-09-25)
 
 The Painting census measured Acrylic at size 20 only and found "one

@@ -85,7 +85,11 @@ MainWindow::MainWindow(QWidget *parent)
     m_dashboard = new DashboardPage;
     m_scriptEditor = new ScriptEditorPage;
     m_storyboard = new StoryboardPage;
-    m_animatic = new AnimaticPage;
+    // The animatic is not a page any more: it is the timeline section of
+    // the storyboard workspace, which creates and owns it. This window still
+    // reaches it for the things it always did - the project's audio path
+    // and frame rate, and its "the document changed" signal.
+    m_animatic = m_storyboard->animatic();
     m_consistencyBoard = new ConsistencyBoard;
     m_generation = new GenerationPage;
 
@@ -151,10 +155,9 @@ MainWindow::MainWindow(QWidget *parent)
 
     m_stack->addWidget(m_dashboard);        // index 0
     m_stack->addWidget(m_scriptEditor);     // index 1
-    m_stack->addWidget(m_storyboard);       // index 2
-    m_stack->addWidget(m_animatic);         // index 3
-    m_stack->addWidget(m_consistencyBoard); // index 4
-    m_stack->addWidget(m_generation);       // index 5
+    m_stack->addWidget(m_storyboard);       // index 2 (the workspace)
+    m_stack->addWidget(m_consistencyBoard); // index 3
+    m_stack->addWidget(m_generation);       // index 4
 
     // Dashboard -> New Project window -> Script Editor. Through the same
     // guarded request File > New Project uses: see requestNewProject().
@@ -177,20 +180,15 @@ MainWindow::MainWindow(QWidget *parent)
         m_stack->setCurrentWidget(m_storyboard);
     });
 
-    // Storyboard <-> Animatic.
+    // Storyboard -> Script Editor. (There is no Storyboard <-> Animatic any
+    // more: the animatic is in the workspace, fed by StoryboardPage's own
+    // loadScenes / detachScenes, so it holds the project's scenes from the
+    // moment a project opens instead of from the first visit.)
     connect(m_storyboard, &StoryboardPage::backRequested, this, [this] {
         m_stack->setCurrentWidget(m_scriptEditor);
     });
-    connect(m_storyboard, &StoryboardPage::continueToAnimaticRequested, this,
-            [this](const QVector<Scene *> &scenes) {
-        m_animatic->loadScenes(scenes);
-        m_stack->setCurrentWidget(m_animatic);
-    });
-    connect(m_animatic, &AnimaticPage::backRequested, this, [this] {
-        m_stack->setCurrentWidget(m_storyboard);
-    });
 
-    // Animatic -> Generation (AI video clips via fal.ai).
+    // Workspace -> Generation (AI video clips via fal.ai).
     connect(m_animatic, &AnimaticPage::generationRequested, this, [this] {
         const QString dir = m_currentProjectPath.isEmpty()
             ? QDir::tempPath() + QStringLiteral("/sankotv_generated")
@@ -201,7 +199,7 @@ MainWindow::MainWindow(QWidget *parent)
         m_stack->setCurrentWidget(m_generation);
     });
     connect(m_generation, &GenerationPage::backRequested, this, [this] {
-        m_stack->setCurrentWidget(m_animatic);
+        m_stack->setCurrentWidget(m_storyboard);
     });
 
     // Storyboard <-> Consistency Board.
@@ -848,8 +846,10 @@ void MainWindow::freeScenes()
     //     it through invalidateComposite().
     //   * AnimaticTimeline::m_scenes — loadFromPath calls setFps() AFTER
     //     this, and a CHANGED rate rebuilds the timeline by walking the
-    //     scene list. The animatic otherwise only reloads when the user
-    //     navigates to it, so the stale list survives until then.
+    //     scene list. (When the animatic was a screen it only reloaded on a
+    //     visit, so a stale list survived until then. It lives in the
+    //     workspace now and StoryboardPage::detachScenes empties it; the
+    //     explicit call below stays as the second lock on the same door.)
     //   * GenerationPage::m_scenes and its per-row Panel* — same lazy
     //     refresh, same exposure.
     // The detach lives HERE rather than at the four call sites (this one,

@@ -2,6 +2,7 @@
 #include "SankoSettings.h"
 #include "SankoTheme.h"
 
+#include "AnimaticPage.h"
 #include "ColorPanel.h"
 
 #include "DrawingCanvas.h"
@@ -65,6 +66,7 @@
 #include <QSettings>
 #include <QShortcut>
 #include <QSlider>
+#include <QSplitter>
 #include <QStyle>
 #include <QTabletEvent>
 #include <QPropertyAnimation>
@@ -1892,6 +1894,30 @@ private:
     int m_to;
 };
 
+// A panel's on-screen duration, changed by dragging its clip's edge on the
+// timeline: ONE command per drag (the timeline reports on release). It holds
+// the Panel the way a drawing command does - history order guarantees the
+// panel is alive whenever this runs, because a command that removed it sits
+// later in the same stack and is undone first.
+class PanelDurationCommand : public QUndoCommand
+{
+public:
+    PanelDurationCommand(StoryboardPage *page, Panel *panel, int before,
+                         int after)
+        : QUndoCommand(QStringLiteral("Change Panel Duration")), m_page(page),
+          m_panel(panel), m_before(before), m_after(after)
+    {
+    }
+    void redo() override { m_page->applyPanelDurationForUndo(m_panel, m_after); }
+    void undo() override { m_page->applyPanelDurationForUndo(m_panel, m_before); }
+
+private:
+    StoryboardPage *m_page;
+    Panel *m_panel;
+    int m_before;
+    int m_after;
+};
+
 } // namespace
 
 // ONE reusable tooltip for the Floating Brush Toolbar. Every tooltip appears
@@ -2025,6 +2051,10 @@ StoryboardPage::StoryboardPage(QWidget *parent)
 
     // Build the panel widgets in the original order (their signal wiring is
     // established here and must survive the re-parenting into docks below).
+    // The animatic section exists before the columns are built: the bottom
+    // bar places its not-yet-moved buttons, and the canvas takes its
+    // preview (setupAnimaticSection, below, once the canvas exists).
+    m_animatic = new AnimaticPage;
     QWidget *scenesPanel = createLeftColumn();
     QWidget *centerColumn = createCenterColumn();
     QWidget *layersPanel = createLayerPanel();
@@ -2044,14 +2074,14 @@ StoryboardPage::StoryboardPage(QWidget *parent)
     root->addWidget(m_dockHost, 1);
 
     // Central workspace: the canvas area exactly as before (tool column,
-    // brush settings, panel strip, canvas) plus the bottom toolbar — the
-    // host's central widget, never a dock, never closable.
+    // brush settings, panel strip, canvas), the animatic timeline under it,
+    // then the bottom toolbar — the host's central widget, never a dock,
+    // never closable.
     QWidget *central = new QWidget;
     QVBoxLayout *centralLayout = new QVBoxLayout(central);
     centralLayout->setContentsMargins(0, 0, 0, 0);
     centralLayout->setSpacing(0);
-    centralLayout->addWidget(centerColumn, 1);
-    centralLayout->addWidget(bottomBar);
+    setupAnimaticSection(centerColumn, bottomBar, centralLayout);
     m_dockHost->setCentralWidget(central);
 
     // The controller persists through sankoSettings() — same store, same
@@ -2101,6 +2131,7 @@ StoryboardPage::StoryboardPage(QWidget *parent)
     m_dockController->resetLayout();
     m_dockController->restoreLayout();
     restorePanelStripState();
+    restoreTimelineState();
     connect(QCoreApplication::instance(), &QCoreApplication::aboutToQuit,
             this, [this] { saveDockState(); });
 
@@ -2265,6 +2296,7 @@ void StoryboardPage::installDockViewActions()
         // The Panel Strip keeps its own keys and is not one of the
         // controller's panels, so the two lines above never reached it.
         resetPanelStripToDefault();
+        resetTimelineToDefault(); // likewise: its own keys, not a dock
     });
     // (The old Help > "About Qt Advanced Docking System" entry left with the
     // ADS library: the docking layer is now first-party code.)
@@ -2284,6 +2316,7 @@ void StoryboardPage::saveDockState()
     if (m_dockController)
         m_dockController->saveLayout();
     savePanelStripState();
+    saveTimelineState();
 }
 
 // --- Left column ----------------------------------------------------------
@@ -2446,6 +2479,8 @@ QWidget *StoryboardPage::createCenterColumn()
     });
     // Undo/redo may rewrite a panel that is NOT current; refresh ITS thumb.
     connect(m_canvas, &DrawingCanvas::panelEdited, this, [this](Panel *panel) {
+        if (m_animatic)
+            m_animatic->refreshThumbnails(); // its clip may be in any scene
         Scene *scene = currentScene();
         if (!scene)
             return;
@@ -4620,6 +4655,338 @@ void StoryboardPage::resetPanelStripToDefault()
     });
 }
 
+// --- The animatic section (timeline under the canvas) ------------------------
+
+namespace {
+// Versioned, like the strip's: bump it if the stored meaning ever changes.
+const QString kTimelineSettings = QStringLiteral("storyboard/timeline/v1/");
+} // namespace
+
+// The canvas column and the animatic share a vertical splitter; the bottom
+// bar stays below both. NOT a dock: the timeline has one place (under the
+// canvas), a dock would have had to share the bottom dock area with a Panel
+// Strip the user is allowed to dock there, the dock controller pulls its own
+// panels out of top/bottom on restore, and a saved layout that pre-dates a
+// new dock restores it hidden. A splitter pane has none of those states.
+void StoryboardPage::setupAnimaticSection(QWidget *centerColumn,
+                                          QWidget *bottomBar,
+                                          QVBoxLayout *centralLayout)
+{
+    m_workSplitter = new QSplitter(Qt::Vertical);
+    m_workSplitter->setObjectName(QStringLiteral("workspaceSplitter"));
+    m_workSplitter->setChildrenCollapsible(false); // collapse is the header's button
+    m_workSplitter->setHandleWidth(5);
+    m_workSplitter->setStyleSheet(SankoTheme::themed(
+        "QSplitter#workspaceSplitter::handle { background: #1a1a1a; }"
+        "QSplitter#workspaceSplitter::handle:hover { background: %ACCENT%; }"));
+    m_workSplitter->addWidget(centerColumn);
+    m_workSplitter->addWidget(m_animatic);
+    // A window resize goes to the canvas; the timeline keeps the height the
+    // user gave it.
+    m_workSplitter->setStretchFactor(0, 1);
+    m_workSplitter->setStretchFactor(1, 0);
+    centralLayout->addWidget(m_workSplitter, 1);
+    centralLayout->addWidget(bottomBar);
+
+    m_animatic->setMinimumHeight(m_animatic->minimumExpandedHeight());
+    m_animatic->attachPreview(m_canvas);
+
+    // Requests from the timeline and the transport. Every one of them ends
+    // in a function the strip already uses, so there is one implementation
+    // of select / add / duplicate / delete / reorder, one undo history, and
+    // one delete prompt - whichever view the request came from.
+    connect(m_animatic, &AnimaticPage::panelSelectRequested, this,
+            &StoryboardPage::selectFlatPanel);
+    connect(m_animatic, &AnimaticPage::durationChangeRequested, this,
+            &StoryboardPage::onDurationChangeRequested);
+    connect(m_animatic, &AnimaticPage::panelMoveRequested, this,
+            &StoryboardPage::onTimelineMoveRequested);
+    connect(m_animatic, &AnimaticPage::clipContextMenuRequested, this,
+            &StoryboardPage::onClipContextMenu);
+    connect(m_animatic, &AnimaticPage::collapsedChanged, this,
+            &StoryboardPage::applyTimelineCollapsed);
+    connect(m_workSplitter, &QSplitter::splitterMoved, this, [this] {
+        if (m_animatic && !m_animatic->isCollapsed())
+            m_timelineHeight = m_animatic->height();
+    });
+
+    // Where the pointer is decides whose keys these are (see eventFilter).
+    m_animatic->installEventFilter(this);
+    if (QWidget *preview = m_animatic->previewSurface())
+        preview->installEventFilter(this);
+    m_workSplitter->installEventFilter(this);
+
+    // THE POINTER DECIDES - the rule Ctrl+Z already follows over the Brush
+    // Settings studio. Space on the canvas is the pan modifier, and the
+    // canvas needs keyboard focus for it; a timeline that took focus on a
+    // click would leave Space toggling playback until the artist clicked
+    // the canvas again, which puts a mark on the drawing. So the timeline
+    // never takes focus. These shortcuts are DISABLED - they do not exist as
+    // far as Qt's key routing is concerned - except while the pointer is
+    // over the timeline section, or over the preview it is playing.
+    auto addKey = [this](const QKeySequence &sequence, bool overPreviewToo,
+                         std::function<void()> action) {
+        QShortcut *shortcut = new QShortcut(sequence, this);
+        shortcut->setContext(Qt::WindowShortcut);
+        shortcut->setAutoRepeat(false); // a held Space is not twenty toggles
+        shortcut->setEnabled(false);
+        connect(shortcut, &QShortcut::activated, this, std::move(action));
+        m_timelineKeys.append({shortcut, overPreviewToo});
+    };
+    addKey(QKeySequence(Qt::Key_Space), true,
+           [this] { m_animatic->togglePlay(); });
+    addKey(QKeySequence(Qt::Key_Left), true, [this] { m_animatic->goPrev(); });
+    addKey(QKeySequence(Qt::Key_Right), true, [this] { m_animatic->goNext(); });
+    addKey(QKeySequence(Qt::Key_Home), true, [this] { m_animatic->goFirst(); });
+    addKey(QKeySequence(Qt::Key_End), true, [this] { m_animatic->goLast(); });
+    addKey(QKeySequence(Qt::Key_Escape), true,
+           [this] { m_animatic->leavePreview(); });
+    // Delete only over the timeline itself: over the preview it would be
+    // deleting a panel the artist is not looking at.
+    addKey(QKeySequence(Qt::Key_Delete), false,
+           [this] { deleteSelectedPanel(); });
+}
+
+void StoryboardPage::updateTimelineKeys()
+{
+    const bool overPreview = m_pointerOverPreview && m_animatic
+        && m_animatic->previewVisible();
+    m_timelineKeysArmed = m_pointerOverTimeline || overPreview;
+    for (const TimelineKey &key : std::as_const(m_timelineKeys))
+        key.shortcut->setEnabled(m_pointerOverTimeline
+                                 || (overPreview && key.overPreviewToo));
+}
+
+int StoryboardPage::currentFlatIndex() const
+{
+    if (m_currentScene < 0 || m_currentScene >= m_scenes.size()
+        || m_currentPanel < 0)
+        return -1;
+    int flat = 0;
+    for (int i = 0; i < m_currentScene; ++i)
+        flat += m_scenes.at(i)->panels.size();
+    return flat + m_currentPanel;
+}
+
+bool StoryboardPage::flatToScenePanel(int flat, int *sceneIndex,
+                                      int *panelIndex) const
+{
+    if (flat < 0)
+        return false;
+    for (int i = 0; i < m_scenes.size(); ++i) {
+        const int count = m_scenes.at(i)->panels.size();
+        if (flat < count) {
+            *sceneIndex = i;
+            *panelIndex = flat;
+            return true;
+        }
+        flat -= count;
+    }
+    return false;
+}
+
+// A timeline click or a transport button asks for a panel by its position
+// over ALL scenes; the strip only ever shows one scene, so this may change
+// scene as well.
+void StoryboardPage::selectFlatPanel(int flat)
+{
+    int scene = -1, panel = -1;
+    if (!flatToScenePanel(flat, &scene, &panel))
+        return;
+    if (scene != m_currentScene) {
+        selectScene(scene, panel); // one canvas switch, straight to that panel
+    } else if (panel != m_currentPanel) {
+        selectPanel(panel);
+    } else if (m_animatic) {
+        // Already the selected panel: nothing to select, but the request
+        // still means "put the playhead here" (and leave a paused preview).
+        m_animatic->setSelectedPanel(flat);
+    }
+    if (m_panelScroll && m_currentPanel >= 0
+        && m_currentPanel < m_panelThumbs.size())
+        m_panelScroll->ensureWidgetVisible(m_panelThumbs.at(m_currentPanel));
+}
+
+void StoryboardPage::onDurationChangeRequested(int sceneIndex, int panelIndex,
+                                               int seconds)
+{
+    if (sceneIndex < 0 || sceneIndex >= m_scenes.size())
+        return;
+    Scene *scene = m_scenes.at(sceneIndex);
+    if (panelIndex < 0 || panelIndex >= scene->panels.size())
+        return;
+    Panel *panel = scene->panels.at(panelIndex);
+    const int bounded = qBound(1, seconds, 30);
+    if (panel->duration == bounded) {
+        if (m_animatic)
+            m_animatic->refreshTiming();
+        return;
+    }
+    if (!m_undoStack) {
+        // No history to put it in (never the case inside the app): apply it
+        // and say so the old way, rather than lose the edit.
+        applyPanelDurationForUndo(panel, bounded);
+        emit documentChanged();
+        return;
+    }
+    m_undoStack->push(
+        new PanelDurationCommand(this, panel, panel->duration, bounded));
+}
+
+// A clip was dragged to a gap in its own scene. The press that started the
+// drag already selected it, so "the current panel" is the one being moved
+// and the strip's own reorder does the rest (same command, same no-op rule
+// for a drop right beside itself).
+void StoryboardPage::onTimelineMoveRequested(int flat, int flatGap)
+{
+    int scene = -1, panel = -1;
+    if (!flatToScenePanel(flat, &scene, &panel))
+        return;
+    if (scene != m_currentScene || panel != m_currentPanel)
+        selectFlatPanel(flat);
+    const int sceneFirstFlat = flat - panel;
+    movePanel(panel, flatGap - sceneFirstFlat); // an insertion index, 0..N
+}
+
+void StoryboardPage::onClipContextMenu(int flat, const QPoint &globalPos)
+{
+    Q_UNUSED(flat); // the timeline requested it as the selection first
+    Scene *scene = currentScene();
+    if (!scene || !currentPanel())
+        return;
+    QMenu menu(this);
+    menu.setStyleSheet(QStringLiteral(
+        "QMenu { background: #161616; color: #cccccc; border: 1px solid #2a2a2a; }"
+        "QMenu::item { padding: 4px 18px; font-size: 11px; }"
+        "QMenu::item:selected { background: #262626; color: #ffffff; }"
+        "QMenu::item:disabled { color: #555555; }"));
+    QAction *add = menu.addAction(QStringLiteral("Add Panel After"));
+    connect(add, &QAction::triggered, this,
+            [this] { addPanelAfterSelected(); });
+    QAction *duplicate = menu.addAction(QStringLiteral("Duplicate Panel"));
+    connect(duplicate, &QAction::triggered, this, [this] { duplicatePanel(); });
+    menu.addSeparator();
+    QAction *remove = menu.addAction(QStringLiteral("Delete Panel"));
+    remove->setEnabled(scene->panels.size() > 1); // a scene keeps one panel
+    connect(remove, &QAction::triggered, this,
+            [this] { deleteSelectedPanel(); });
+    if (m_clipMenuHookForTest) {
+        m_clipMenuHookForTest(&menu);
+        return;
+    }
+    menu.exec(globalPos);
+}
+
+void StoryboardPage::applyTimelineCollapsed(bool collapsed)
+{
+    if (!m_workSplitter || !m_animatic)
+        return;
+    if (collapsed) {
+        // Still the expanded height at this point: the section announces
+        // the collapse before any layout has run.
+        if (!m_timelineHeightPending
+            && m_animatic->height() > AnimaticPage::kHeaderHeight)
+            m_timelineHeight = m_animatic->height();
+        m_animatic->setFixedHeight(AnimaticPage::kHeaderHeight);
+    } else {
+        m_animatic->setMinimumHeight(m_animatic->minimumExpandedHeight());
+        m_animatic->setMaximumHeight(QWIDGETSIZE_MAX);
+    }
+    // Either way the splitter is TOLD the new sizes. Left to itself it
+    // clamps the pane to its new limits and keeps the canvas at the size it
+    // had - a collapsed timeline with a band of nothing above it (measured:
+    // the canvas stayed 408 px tall).
+    m_timelineHeightPending = true;
+    applyTimelineHeight();
+    // Collapsed, there is nothing to drag: the header is the whole section.
+    if (QSplitterHandle *handle = m_workSplitter->handle(1))
+        handle->setEnabled(!collapsed);
+}
+
+// Give the expanded timeline its remembered (or default) height. A splitter
+// can only be told sizes once it HAS one, and this page is built long before
+// it is first shown, so the request is kept pending and retried when the
+// splitter is resized or shown (eventFilter).
+void StoryboardPage::applyTimelineHeight()
+{
+    if (!m_timelineHeightPending || !m_workSplitter || !m_animatic)
+        return;
+    const int total = m_workSplitter->height();
+    if (!m_workSplitter->isVisible() || total <= 0)
+        return;
+    const int handle = m_workSplitter->handleWidth();
+    if (m_animatic->isCollapsed()) {
+        // The header row, and everything else to the canvas.
+        m_workSplitter->setSizes({total - handle - AnimaticPage::kHeaderHeight,
+                                  AnimaticPage::kHeaderHeight});
+        m_timelineHeightPending = false;
+        return;
+    }
+    const int minimum = m_animatic->minimumExpandedHeight();
+    const int wanted = m_timelineHeight > 0
+        ? m_timelineHeight
+        : m_animatic->defaultExpandedHeight();
+    // The canvas column keeps at least its own minimum; the splitter would
+    // enforce that anyway, this just asks for something it can grant.
+    const int canvasMin =
+        qMax(120, m_workSplitter->widget(0)->minimumSizeHint().height());
+    const int height =
+        qBound(minimum, wanted, qMax(minimum, total - handle - canvasMin));
+    m_workSplitter->setSizes({total - handle - height, height});
+    m_timelineHeight = height;
+    m_timelineHeightPending = false;
+}
+
+void StoryboardPage::saveTimelineState()
+{
+    if (!m_animatic)
+        return;
+    QSettings s = sankoSettings();
+    s.setValue(kTimelineSettings + QStringLiteral("collapsed"),
+               m_animatic->isCollapsed());
+    // The EXPANDED height: the live one when it is open and laid out, the
+    // remembered one when it is collapsed or was never shown this session.
+    const int height = (m_animatic->isCollapsed() || m_timelineHeightPending)
+        ? m_timelineHeight
+        : m_animatic->height();
+    if (height > 0)
+        s.setValue(kTimelineSettings + QStringLiteral("height"), height);
+}
+
+void StoryboardPage::restoreTimelineState()
+{
+    if (!m_animatic)
+        return;
+    const QSettings s = sankoSettings();
+    // First run (no keys): OPEN, at the default height - a collapsed
+    // timeline on first launch is a feature nobody finds.
+    const bool collapsed =
+        s.value(kTimelineSettings + QStringLiteral("collapsed"), false).toBool();
+    m_timelineHeight =
+        s.value(kTimelineSettings + QStringLiteral("height"), 0).toInt();
+    m_timelineHeightPending = true;
+    if (collapsed)
+        m_animatic->setCollapsed(true); // -> applyTimelineCollapsed
+    else
+        applyTimelineHeight(); // retried once the splitter has a size
+}
+
+void StoryboardPage::resetTimelineToDefault()
+{
+    if (!m_animatic)
+        return;
+    {
+        QSettings s = sankoSettings();
+        s.remove(kTimelineSettings.chopped(1));
+    }
+    m_timelineHeight = 0; // = the default
+    m_timelineHeightPending = true;
+    if (m_animatic->isCollapsed())
+        m_animatic->setCollapsed(false); // -> applyTimelineCollapsed(false)
+    else
+        applyTimelineHeight();
+}
+
 // --- Right column ---------------------------------------------------------
 
 QWidget *StoryboardPage::createRightColumn()
@@ -4752,15 +5119,12 @@ QWidget *StoryboardPage::createBottomBar()
 
     layout->addStretch(1);
 
-    QPushButton *animatic = new QPushButton(QStringLiteral("Continue to Animatic"));
-    animatic->setCursor(Qt::PointingHandCursor);
-    animatic->setStyleSheet(QStringLiteral(
-        "QPushButton { background-color: #ffffff; color: #0a0a0a; border: none;"
-        " border-radius: 6px; padding: 9px 22px; font-size: 14px; font-weight: 600; }"
-        "QPushButton:hover { background-color: #e6e6e6; }"));
-    connect(animatic, &QPushButton::clicked, this,
-            [this] { emit continueToAnimaticRequested(m_scenes); });
-    layout->addWidget(animatic);
+    // "Continue to Animatic" stood here. The animatic is the timeline under
+    // the canvas now - there is nowhere to continue to. In its place, for
+    // the passes still to come: the buttons of the old Animatic screen that
+    // have not yet moved to the menus (AnimaticPage::createLegacyActions).
+    if (m_animatic && m_animatic->legacyActions())
+        layout->addWidget(m_animatic->legacyActions());
 
     return bar;
 }
@@ -4791,6 +5155,12 @@ void StoryboardPage::clearPanelClipboard()
 
 void StoryboardPage::detachScenes()
 {
+    // The animatic's rows point at these panels too, and it is no longer a
+    // screen that gets reloaded on arrival: it is on screen now, with a
+    // timer that may be running. Empty it first (this stops playback and
+    // drops the preview's picture).
+    if (m_animatic)
+        m_animatic->loadScenes({});
     if (m_canvas)
         m_canvas->setActivePanel(nullptr);
     m_layerSelPanel = nullptr; // compared by pointer; a recycled address
@@ -4810,6 +5180,15 @@ void StoryboardPage::loadScenes(const QVector<Scene *> &scenes)
     m_currentScene = -1;
     m_currentPanel = -1;
 
+    // WHATEVER FEEDS THE STRIP FEEDS THE TIMELINE. The animatic used to be
+    // handed the scenes only when the user walked to its screen; it has no
+    // screen to be walked to now, so it is loaded here, by the one function
+    // every way into a project comes through (Open, and Continue from the
+    // Script Editor) - and BEFORE the first selection below, which is
+    // pushed to it as an index into these rows.
+    if (m_animatic)
+        m_animatic->loadScenes(m_scenes);
+
     rebuildSceneList();
     if (!m_scenes.isEmpty())
         selectScene(0);
@@ -4817,7 +5196,7 @@ void StoryboardPage::loadScenes(const QVector<Scene *> &scenes)
         rebuildPanelStrip();
 }
 
-void StoryboardPage::selectScene(int index)
+void StoryboardPage::selectScene(int index, int panelIndex)
 {
     if (index < 0 || index >= m_scenes.size())
         return;
@@ -4829,19 +5208,28 @@ void StoryboardPage::selectScene(int index)
 
     rebuildPanelStrip();
     if (!scene->panels.isEmpty())
-        selectPanel(0);
+        selectPanel(qBound(0, panelIndex, int(scene->panels.size()) - 1));
     else {
         m_currentPanel = -1;
         m_canvas->setActivePanel(nullptr);
         updateDuplicateButton();
+        if (m_animatic)
+            m_animatic->setSelectedPanel(-1);
     }
 }
 
+// THE one place a panel becomes the selected one - from a strip click, a
+// timeline click, a transport button, an undo landing on it. Both views are
+// told from here and neither is asked: the strip restyles its thumbnails,
+// the animatic is handed the index (AnimaticPage::setSelectedPanel emits
+// nothing). So a selection made in either view cannot come back round as a
+// second selection from the other.
 void StoryboardPage::selectPanel(int index)
 {
     Scene *scene = currentScene();
     if (!scene || index < 0 || index >= scene->panels.size())
         return;
+    ++m_selectPanelCalls;
     flushThumbRefresh(); // finalize the OLD panel's debounced thumbnail
     m_currentPanel = index;
     m_canvas->setActivePanel(scene->panels.at(index));
@@ -4851,6 +5239,8 @@ void StoryboardPage::selectPanel(int index)
     updateLightTable();
     updateDuplicateButton();
     rebuildLayerPanel();
+    if (m_animatic)
+        m_animatic->setSelectedPanel(currentFlatIndex());
 }
 
 void StoryboardPage::updateOnionGhost()
@@ -4899,6 +5289,10 @@ void StoryboardPage::applyPanelInsertForUndo(Scene *scene, int index, Panel *pan
     index = qBound(0, index, int(scene->panels.size()));
     scene->panels.insert(index, panel);
     rebuildPanelStrip();
+    // The timeline is the same panels: it re-reads them now, before the
+    // selection below is pushed to it as an index into the new list.
+    if (m_animatic)
+        m_animatic->refreshStructure();
     selectPanel(index);
     updateDuplicateButton();
     if (m_panelScroll && index < m_panelThumbs.size())
@@ -4916,8 +5310,14 @@ Panel *StoryboardPage::applyPanelRemoveForUndo(Scene *scene, int index)
         m_canvas->flushPaintCommit();
     Panel *panel = scene->panels.takeAt(index);
     rebuildPanelStrip();
+    // The removed panel now belongs to the undo command, which may delete
+    // it: the animatic must not keep a row pointing at it.
+    if (m_animatic)
+        m_animatic->refreshStructure();
     if (!scene->panels.isEmpty())
         selectPanel(qBound(0, index, int(scene->panels.size()) - 1));
+    else if (m_animatic)
+        m_animatic->setSelectedPanel(-1);
     updateDuplicateButton();
     return panel;
 }
@@ -4932,7 +5332,24 @@ void StoryboardPage::applyPanelMoveForUndo(Scene *scene, int from, int to)
         selectScene(sceneIdx);
     scene->panels.move(from, to);
     rebuildPanelStrip();
+    if (m_animatic)
+        m_animatic->refreshStructure();
     selectPanel(to);
+}
+
+// A duration is the one timeline edit that has no strip counterpart, and it
+// used to be the one edit there that could not be undone: the timeline wrote
+// the panel directly. It is a command now (PanelDurationCommand), so Ctrl+Z
+// after a timing drag takes back the timing - not the last stroke - in the
+// same chronological history as everything else. The command's two ends
+// both land here.
+void StoryboardPage::applyPanelDurationForUndo(Panel *panel, int seconds)
+{
+    if (!panel)
+        return;
+    panel->duration = qBound(1, seconds, 30);
+    if (m_animatic)
+        m_animatic->refreshTiming();
 }
 
 void StoryboardPage::addPanelToScene(int sceneIndex)
@@ -5040,6 +5457,12 @@ void StoryboardPage::refreshCurrentThumbNow()
         m_canvas->ensurePanelCpuCoherent(panel, BrushCoherenceTrigger::Thumbnail);
     m_panelThumbImages.at(m_currentPanel)
         ->setPixmap(stripThumbPixmap(panel));
+    // The timeline's clip reads the SAME cached mip the line above just
+    // rebuilt, so repainting it here costs a repaint and no second flatten
+    // (measured: a timeline that repaints first pays the 17 ms rebuild at 4K
+    // instead - and may pay it on pixels the engine has not published yet).
+    if (m_animatic)
+        m_animatic->refreshThumbnails();
 }
 
 // --- Helpers --------------------------------------------------------------
@@ -5077,6 +5500,50 @@ bool StoryboardPage::eventFilter(QObject *object, QEvent *event)
             FloatingToolWindow::suppressFloatingBars(m_canvas);
         else if (event->type() == QEvent::WindowUnblocked)
             FloatingToolWindow::restoreFloatingBars(m_canvas);
+        else if (event->type() == QEvent::WindowDeactivate
+                 && (m_pointerOverTimeline || m_pointerOverPreview)) {
+            // No Leave arrives when the window merely loses activation;
+            // the keys go back to the canvas until the pointer says
+            // otherwise again.
+            m_pointerOverTimeline = false;
+            m_pointerOverPreview = false;
+            updateTimelineKeys();
+        }
+    }
+
+    // WHOSE KEYS: the timeline's while the pointer is over the animatic
+    // section, or over the preview it is playing (see setupAnimaticSection).
+    if (m_animatic && object == m_animatic) {
+        if (event->type() == QEvent::Enter) {
+            m_pointerOverTimeline = true;
+            updateTimelineKeys();
+        } else if (event->type() == QEvent::Leave
+                   || event->type() == QEvent::Hide) {
+            m_pointerOverTimeline = false;
+            updateTimelineKeys();
+        }
+    } else if (m_animatic && object == m_animatic->previewSurface()) {
+        if (event->type() == QEvent::Enter) {
+            m_pointerOverPreview = true;
+            updateTimelineKeys();
+        } else if (event->type() == QEvent::Leave
+                   || event->type() == QEvent::Hide) {
+            m_pointerOverPreview = false;
+            updateTimelineKeys();
+        } else if (event->type() == QEvent::Show) {
+            // It appeared UNDER a pointer that has not moved: no Enter is
+            // coming until it does.
+            auto *preview = static_cast<QWidget *>(object);
+            m_pointerOverPreview = preview->rect().contains(
+                preview->mapFromGlobal(QCursor::pos()));
+            // Deferred: previewVisible() turns true around this event.
+            QTimer::singleShot(0, this, [this] { updateTimelineKeys(); });
+        }
+    } else if (object == m_workSplitter && m_timelineHeightPending
+               && (event->type() == QEvent::Resize
+                   || event->type() == QEvent::Show)) {
+        // Queued, so the splitter has finished the resize being announced.
+        QTimer::singleShot(0, this, [this] { applyTimelineHeight(); });
     }
     // Floating toolbars/panels manage themselves now: FloatingToolWindow's
     // shared manager watches the canvas and the main window, handling drag,
@@ -5431,6 +5898,9 @@ void StoryboardPage::editUndo()
         m_brushStudio->undoStack()->undo();
         return;
     }
+    // Undo changes the document; it should not do so behind the preview.
+    if (m_animatic)
+        m_animatic->leavePreview();
     if (m_canvas)
         m_canvas->undo();
 }
@@ -5441,6 +5911,8 @@ void StoryboardPage::editRedo()
         m_brushStudio->undoStack()->redo();
         return;
     }
+    if (m_animatic)
+        m_animatic->leavePreview();
     if (m_canvas)
         m_canvas->redo();
 }
@@ -5590,6 +6062,11 @@ void StoryboardPage::applyProjectResize(const QSize &newSize,
     // rendered at panel size and nothing else would trigger them.
     rebuildPanelStrip();
     refreshCurrentThumbNow();
+    // The preview, if it was up, is showing a picture at the old size.
+    if (m_animatic) {
+        m_animatic->leavePreview();
+        m_animatic->refreshThumbnails();
+    }
 }
 
 bool StoryboardPage::refuseMismatchedPaste()
@@ -6867,6 +7344,8 @@ bool StoryboardPage::duplicateLayerToPanelCore(int index, Panel *target)
         if (idx >= 0 && idx < m_panelThumbImages.size())
             m_panelThumbImages.at(idx)->setPixmap(stripThumbPixmap(target));
     }
+    if (m_animatic)
+        m_animatic->refreshThumbnails(); // the target's clip changed too
     return true;
 }
 
@@ -7241,6 +7720,8 @@ void StoryboardPage::applyLayerStackForUndo(Panel *panel,
         if (idx >= 0 && idx < m_panelThumbImages.size())
             m_panelThumbImages.at(idx)->setPixmap(stripThumbPixmap(panel));
     }
+    if (m_animatic)
+        m_animatic->refreshThumbnails(); // whichever panel it was
 }
 
 void StoryboardPage::pushLayerCommand(Panel *panel,

@@ -13,11 +13,15 @@ handoff — keep that file current instead of duplicating its content here:
 ## What the app does
 
 A director takes a screenplay through a pipeline of screens:
-**Dashboard → Script Editor → Storyboard → Animatic → Generation**, with a
-**Consistency Board** off the Storyboard for character/prop reference.
-The Script Editor parses a screenplay into scenes; the Storyboard is where
-the drawing happens (the heart of the app); the Animatic sequences panels
-on a timeline with audio; Generation sends panels to fal.ai for AI video.
+**Dashboard → Script Editor → Storyboard workspace**, with a
+**Consistency Board** off the workspace for character/prop reference.
+The Script Editor parses a screenplay into scenes; the workspace is where
+everything else happens (the heart of the app): the Panel Strip on top,
+the drawing canvas in the middle, and the **animatic timeline** underneath
+— panels are drawn, timed and played back without leaving it. There is no
+separate Animatic screen any more. (A Generation screen that sends panels
+to fal.ai for AI video is still reachable from a temporary button and is
+being removed; see HANDOFF "The combined workspace".)
 
 ## Architecture
 
@@ -34,6 +38,26 @@ on a timeline with audio; Generation sends panels to fal.ai for AI video.
   `src/ProjectIO.{h,cpp}` (version stays 1). Two deliberate 960×540
   literals in ProjectIO are migration facts for pre-versioned files —
   do not remove them (each site's comment explains what breaks).
+- **The workspace is ONE set of panels with two views** (`StoryboardPage`
+  owns both): the strip shows the current scene, the timeline
+  (`AnimaticPage` — a section under the canvas now, the name is historical
+  — and `AnimaticTimeline`) shows every scene. The page owns the one
+  selection and the one undo history. The timeline only REQUESTS (select,
+  move, re-time, context menu) and is told the result
+  (`setSelectedPanel` / `refreshStructure` / `refreshTiming`, none of which
+  emit) — that is what keeps a selection from bouncing between the views.
+  Anything that changes the panel lists must go through the
+  `apply…ForUndo` callbacks, which refresh the animatic: its rows hold
+  `Panel*` and a stale one is a use-after-free.
+- **Playback never touches the drawing canvas.** It shows in a preview
+  widget laid OVER the canvas (`AnimaticPage::attachPreview`): switching
+  the canvas's panel would commit a floating paste / transform / QuickShape
+  and clear the selection. Selecting moves the playhead; playing does not
+  select.
+- **Timeline keys go to where the POINTER is, never to focus** (Space,
+  arrows, Home/End, Esc, Delete — `StoryboardPage::updateTimelineKeys`).
+  The canvas needs keyboard focus for the Space pan modifier, so nothing in
+  the timeline section may take focus (every button there is `NoFocus`).
 - **The start window** (`DashboardPage`) is where recent projects live:
   three cards plus compact rows (`RecentProjectsView`), thumbnails decoded
   off the paint path (`RecentThumbnails`), store and thumbnail source in

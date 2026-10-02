@@ -36,13 +36,24 @@ class SankoTipPopup;
 class DockController;
 class QDockWidget;
 class QMainWindow;
+class AnimaticPage;
+class QMenu;
+class QShortcut;
+class QSplitter;
 
 struct Panel;
 struct Scene;
 struct ConsistencyEntry;
 
-// Third pipeline screen: scene list (left), panel grid + drawing canvas
-// (center), and shot info (right). Scenes are passed in from the Script Editor.
+// THE WORKSPACE: scene list (left), panel strip over the drawing canvas
+// (centre), the animatic timeline under it, and shot info (right). Drawing,
+// panels, timing and playback all happen here; there is no separate animatic
+// screen. Scenes are passed in from the Script Editor or a project file.
+//
+// The strip and the timeline are two views of the same panels. This page
+// owns the one selection and the one undo history; both views ask it to
+// change things and are told the result (see selectPanel and the
+// apply...ForUndo callbacks).
 class StoryboardPage : public QWidget
 {
     Q_OBJECT
@@ -142,6 +153,29 @@ public:
     void applyPanelInsertForUndo(Scene *scene, int index, Panel *panel);
     Panel *applyPanelRemoveForUndo(Scene *scene, int index);
     void applyPanelMoveForUndo(Scene *scene, int from, int to);
+    // A panel's duration, set by the undoable command a timeline drag
+    // pushes (and by its undo): writes the panel and re-times the timeline.
+    void applyPanelDurationForUndo(Panel *panel, int seconds);
+
+    // The animatic section under the canvas (timeline + transport). Created
+    // and owned here; MainWindow reaches it for the project's audio path and
+    // frame rate.
+    AnimaticPage *animatic() const { return m_animatic; }
+
+    // Test hooks for the combined workspace.
+    // How many times a panel has been selected: one user action must select
+    // exactly once, whichever view it came from (a feedback loop between
+    // the strip and the timeline would show up here as more).
+    int selectPanelCallsForTest() const { return m_selectPanelCalls; }
+    int selectedFlatIndexForTest() const { return currentFlatIndex(); }
+    // Whether Space / arrows / Home / End / Delete currently belong to the
+    // timeline (the pointer is over it) rather than to the canvas.
+    bool timelineKeysArmedForTest() const { return m_timelineKeysArmed; }
+    // The clip context menu, handed to the test instead of being shown.
+    void setClipMenuHookForTest(std::function<void(QMenu *)> hook)
+    {
+        m_clipMenuHookForTest = std::move(hook);
+    }
     // Layer-stack undo: restore a panel's whole layer vector + active index
     // (QImage handles are implicitly shared, so snapshots are cheap), then
     // refresh the canvas/panel/thumb UI.
@@ -178,7 +212,6 @@ signals:
     // this, or the project can be closed with the change unsaved.
     void documentChanged();
     void backRequested();
-    void continueToAnimaticRequested(const QVector<Scene *> &scenes);
     void consistencyBoardRequested();
     void settingsRequested(); // Layers toolbar Settings button -> Preferences
 
@@ -292,8 +325,27 @@ private:
     void updateSceneCardStyles();
     void updatePanelThumbStyles();
 
-    void selectScene(int index);
+    // panelIndex: which panel of that scene to land on (the timeline selects
+    // across scenes, and going through panel 0 first would switch the canvas
+    // twice).
+    void selectScene(int index, int panelIndex = 0);
     void selectPanel(int index);
+
+    // --- The animatic section (timeline under the canvas) -----------------
+    void setupAnimaticSection(QWidget *centerColumn, QWidget *bottomBar,
+                              class QVBoxLayout *centralLayout);
+    int currentFlatIndex() const; // the selection over ALL scenes, or -1
+    bool flatToScenePanel(int flat, int *sceneIndex, int *panelIndex) const;
+    void selectFlatPanel(int flat);          // a timeline / transport request
+    void onDurationChangeRequested(int sceneIndex, int panelIndex, int seconds);
+    void onTimelineMoveRequested(int flat, int flatGap);
+    void onClipContextMenu(int flat, const QPoint &globalPos);
+    void applyTimelineCollapsed(bool collapsed);
+    void applyTimelineHeight();              // the pending expanded height
+    void saveTimelineState();
+    void restoreTimelineState();
+    void resetTimelineToDefault();           // Reset Layout: open, default height
+    void updateTimelineKeys();               // arm/disarm by where the pointer is
     void addPanelToScene(int sceneIndex);
     void addPanelAfterSelected();           // control column "+": insert after the selected panel
     void deleteSelectedPanel();             // control column trash: confirm, then delete (blocks the last)
@@ -466,6 +518,29 @@ private:
     QPushButton *m_lightTableButton = nullptr; // toggles neighbour-panel ghosts
 
     QUndoStack *m_undoStack = nullptr; // app-wide history (owned by MainWindow)
+
+    // The animatic section: a splitter pane under the canvas column, NOT a
+    // dock (it has one place, and a dock would have had to share the bottom
+    // area with a strip the user may dock there). Collapsed = its header
+    // row; expanded, its height is the user's and is remembered.
+    AnimaticPage *m_animatic = nullptr;
+    QSplitter *m_workSplitter = nullptr;
+    int m_timelineHeight = 0;           // expanded height to apply / restore
+    bool m_timelineHeightPending = false; // waiting for the splitter to have a size
+    // Keys that belong to the timeline only while the pointer is over it
+    // (or over the preview it is playing): disabled otherwise, so Space on
+    // the canvas is still the pan modifier.
+    struct TimelineKey
+    {
+        QShortcut *shortcut;
+        bool overPreviewToo;
+    };
+    QVector<TimelineKey> m_timelineKeys;
+    bool m_pointerOverTimeline = false;
+    bool m_pointerOverPreview = false;
+    bool m_timelineKeysArmed = false;
+    int m_selectPanelCalls = 0;
+    std::function<void(QMenu *)> m_clipMenuHookForTest;
 
     // Drag-reorder state.
     bool m_panelPressActive = false;

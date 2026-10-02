@@ -62,10 +62,18 @@
 #include "StoryboardModel.h"
 #include "devrecorder/DevRecorder.h"
 
+#include "AnimaticTimeline.h"
+
 #include <QAction>
 #include <QApplication>
+#include <QContextMenuEvent>
 #include <QDockWidget>
+#include <QEnterEvent>
 #include <QMainWindow>
+#include <QMenu>
+#include <QShortcut>
+#include <QSplitter>
+#include <QStackedWidget>
 #include <QCryptographicHash>
 #include <QDir>
 #include <QThread>
@@ -344,17 +352,20 @@ void runDirtyTrackingPass(const QString &projectPath, const QString &scratch)
             notes->setPlainText(QStringLiteral("A note about this shot."));
     });
 
-    // The animatic only receives the scenes when the user NAVIGATES to it
-    // (loadFromPath does not populate it - the same lazy refresh that let a
-    // stale scene list survive a project switch). So drive the real
-    // navigation first, exactly as the artist does, or the duration change
-    // is a no-op on an empty list and the check would pass vacuously.
-    for (QPushButton *b : storyboard->findChildren<QPushButton *>())
-        if (b->text() == QStringLiteral("Continue to Animatic")) {
-            b->click();
-            break;
-        }
-    pump(400);
+    // The animatic used to receive the scenes only when the user NAVIGATED
+    // to its screen, so this check had to click "Continue to Animatic"
+    // first or the duration change was a no-op on an empty list. There is
+    // no such screen now: the animatic is the timeline in the workspace and
+    // holds the scenes from the moment the project opens. The control keeps
+    // the old point - a duration change against an EMPTY animatic would
+    // pass vacuously - by proving it is not empty, with no navigation.
+    check(QStringLiteral("(d) control: the animatic already holds the "
+                         "project's panels, with no screen to visit"),
+          animatic->itemCountForTest() > 0,
+          QStringLiteral("%1 panel(s)").arg(animatic->itemCountForTest()));
+    // A duration change is an UNDOABLE command now, so it reaches the flag
+    // through the undo-stack backstop rather than a documentChanged of its
+    // own; this is the request the timeline's drag makes.
     marksDirty(QStringLiteral("a panel duration change"), [animatic] {
         animatic->setPanelDurationForTest(0, 0, 7);
     });
@@ -4188,6 +4199,15 @@ void runSizeBarFitPass(const QString &project)
           canvas && bar && bar->isVisible());
     if (!canvas || !bar)
         return;
+    // The timeline under the canvas is folded away for this section: its
+    // "room for the whole Figma column" case needs the canvas at its
+    // tallest, which on this screen is a collapsed timeline. (With it open
+    // the bar is the shortened one - section (ai) covers that.)
+    auto *animatic = window.findChild<AnimaticPage *>();
+    const bool wasCollapsed = animatic && animatic->isCollapsed();
+    if (animatic)
+        animatic->setCollapsed(true);
+    pump(500);
 
     struct Reading
     {
@@ -4296,9 +4316,1093 @@ void runSizeBarFitPass(const QString &project)
                          "again"),
           isFigma(again) && again.above >= 4 && again.below >= 4, again.text);
 
+    if (animatic)
+        animatic->setCollapsed(wasCollapsed); // as found: the state persists
+    pump(300);
     window.markCleanForTest();
     window.close();
     pump(300);
+}
+
+// ======================= THE COMBINED WORKSPACE ============================
+// The Animatic screen is gone: its timeline sits under the drawing canvas and
+// plays in a preview laid over it. Sections (ad)-(ai) hold what that change
+// had to get right, each one a risk named before it was built:
+//   (ad) the strip and the timeline are ONE set of panels, and a selection
+//        made in either selects exactly once;
+//   (ae) the animatic never keeps a row for a panel that has been freed;
+//   (af) playing or scrubbing changes nothing in the document or the canvas;
+//   (ag) Space and friends belong to the timeline only under the pointer;
+//   (ah) a timing change is undoable, in order with drawing;
+//   (ai) the timeline's place, height and collapse persist and reset, and
+//        the floating toolbars come back to the same places.
+namespace workspace {
+
+struct Rig
+{
+    MainWindow window;
+    StoryboardPage *storyboard = nullptr;
+    AnimaticPage *animatic = nullptr;
+    AnimaticTimeline *timeline = nullptr;
+    QWidget *surface = nullptr; // the timeline's painted canvas
+    DrawingCanvas *canvas = nullptr;
+    bool ok = false;
+
+    explicit Rig(const QString &project, const QSize &size = QSize(1400, 900))
+    {
+        window.resize(size);
+        window.show();
+        pump(800);
+        if (!window.loadProjectForTest(project))
+            return;
+        pump(700);
+        storyboard = window.findChild<StoryboardPage *>();
+        animatic = window.findChild<AnimaticPage *>();
+        canvas = window.findChild<DrawingCanvas *>();
+        timeline = animatic ? animatic->timelineForTest() : nullptr;
+        surface = timeline ? timeline->surfaceForTest() : nullptr;
+        ok = storyboard && animatic && canvas && timeline && surface;
+    }
+    ~Rig()
+    {
+        window.markCleanForTest();
+        window.close();
+        pump(300);
+    }
+};
+
+QVector<QLabel *> thumbs(StoryboardPage *page)
+{
+    // The strip rebuilds by deleteLater-ing its old thumbnails. Inside the
+    // app's event loop they are gone by the next turn; a test that calls a
+    // page function directly has no loop above it for them to be deleted
+    // from, so they would be counted here as if still on the strip.
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    QVector<QLabel *> list =
+        page->findChildren<QLabel *>(QStringLiteral("panelThumb")).toVector();
+    std::sort(list.begin(), list.end(), [](QLabel *x, QLabel *y) {
+        return x->property("panelIndex").toInt()
+            < y->property("panelIndex").toInt();
+    });
+    return list;
+}
+
+// Which strip thumbnail wears the selection border (-1: none).
+int selectedThumb(StoryboardPage *page)
+{
+    const QVector<QLabel *> list = thumbs(page);
+    for (int i = 0; i < list.size(); ++i)
+        if (list.at(i)->styleSheet().contains(QStringLiteral("3px solid")))
+            return i;
+    return -1;
+}
+
+void clickThumb(Rig &r, int index)
+{
+    const QVector<QLabel *> list = thumbs(r.storyboard);
+    if (index < 0 || index >= list.size())
+        return;
+    const QPointF c(list.at(index)->width() / 2.0, list.at(index)->height() / 2.0);
+    sendMouse(list.at(index), QEvent::MouseButtonPress, c, Qt::LeftButton);
+    sendMouse(list.at(index), QEvent::MouseButtonRelease, c, Qt::LeftButton);
+    pump(200);
+}
+
+void clickClip(Rig &r, int flat)
+{
+    const QPointF c = r.timeline->clipRectForTest(flat).center();
+    sendMouse(r.surface, QEvent::MouseButtonPress, c, Qt::LeftButton);
+    sendMouse(r.surface, QEvent::MouseButtonRelease, c, Qt::LeftButton);
+    pump(200);
+}
+
+void rightClickClip(Rig &r, int flat)
+{
+    const QPoint c = r.timeline->clipRectForTest(flat).center();
+    QContextMenuEvent ev(QContextMenuEvent::Mouse, c, r.surface->mapToGlobal(c));
+    QCoreApplication::sendEvent(r.surface, &ev);
+    pump(250);
+}
+
+QVector<int> durations(Rig &r)
+{
+    QVector<int> d;
+    for (int i = 0; i < r.timeline->blockCountForTest(); ++i)
+        d.append(r.timeline->blockDurationForTest(i));
+    return d;
+}
+
+QString show(const QVector<int> &v)
+{
+    QStringList parts;
+    for (int x : v)
+        parts << QString::number(x);
+    return parts.join(QLatin1Char(' '));
+}
+
+// Everything the two views say about themselves, for a failing check.
+QString state(Rig &r)
+{
+    return QStringLiteral("clips %1 | rows %2, strip thumbs %3 (highlight "
+                          "%4), selected: workspace %5 timeline %6, playhead "
+                          "%7")
+        .arg(show(durations(r))).arg(r.animatic->itemCountForTest())
+        .arg(thumbs(r.storyboard).size()).arg(selectedThumb(r.storyboard))
+        .arg(r.storyboard->selectedFlatIndexForTest())
+        .arg(r.timeline->selectedPanelForTest())
+        .arg(r.timeline->playheadPanelForTest());
+}
+
+// The pointer arriving over / leaving a widget, as Qt would announce it.
+// (The real cursor is not moved: this machine may be in use.)
+void hover(QWidget *w, bool over)
+{
+    if (over) {
+        const QPointF p(6, 6);
+        QEnterEvent ev(p, p, w->mapToGlobal(p.toPoint()));
+        QCoreApplication::sendEvent(w, &ev);
+    } else {
+        QEvent ev(QEvent::Leave);
+        QCoreApplication::sendEvent(w, &ev);
+    }
+    pump(60);
+}
+
+// True when a SHORTCUT claimed the key (the canvas's own key handling is
+// not a shortcut, so "not claimed" is what leaves a key to the canvas).
+bool keyClaimed(QWidget *target, int key,
+                Qt::KeyboardModifiers mods = Qt::NoModifier)
+{
+    const bool claimed = startWindowKeys::press(target, key, mods);
+    pump(200);
+    return claimed;
+}
+
+void stroke(DrawingCanvas *canvas, int row = 0)
+{
+    const QTransform t = canvas->viewTransformForTest();
+    const qreal y = 160 + 40 * row;
+    sendMouse(canvas, QEvent::MouseButtonPress, t.map(QPointF(200, y)),
+              Qt::LeftButton);
+    for (int i = 1; i <= 8; ++i)
+        sendMouse(canvas, QEvent::MouseMove,
+                  t.map(QPointF(200 + i * 10, y + i * 5)), Qt::LeftButton);
+    sendMouse(canvas, QEvent::MouseButtonRelease, t.map(QPointF(280, y + 40)),
+              Qt::LeftButton);
+}
+
+class PaintCount : public QObject
+{
+public:
+    int paints = 0;
+    bool eventFilter(QObject *, QEvent *e) override
+    {
+        if (e->type() == QEvent::Paint)
+            ++paints;
+        return false;
+    }
+};
+
+// Where every visible floating tool window sits, relative to the canvas.
+QStringList barPlaces(Rig &r)
+{
+    QStringList places;
+    const QPoint origin = r.canvas->mapToGlobal(QPoint(0, 0));
+    for (FloatingToolWindow *w : r.window.findChildren<FloatingToolWindow *>())
+        if (w->isVisible())
+            places << QStringLiteral("%1:%2,%3 %4x%5")
+                          .arg(w->objectName().isEmpty()
+                                   ? QString::fromLatin1(
+                                         w->metaObject()->className())
+                                   : w->objectName())
+                          .arg(w->x() - origin.x()).arg(w->y() - origin.y())
+                          .arg(w->width()).arg(w->height());
+    places.sort();
+    return places;
+}
+
+bool barsInsideCanvas(Rig &r, QString *why)
+{
+    const QRect canvas(r.canvas->mapToGlobal(QPoint(0, 0)), r.canvas->size());
+    for (FloatingToolWindow *w : r.window.findChildren<FloatingToolWindow *>())
+        if (w->isVisible() && !canvas.contains(w->frameGeometry())) {
+            *why = QStringLiteral("%1 at %2,%3 %4x%5 is not inside the %6x%7 "
+                                  "canvas")
+                       .arg(QString::fromLatin1(w->metaObject()->className()))
+                       .arg(w->x() - canvas.x()).arg(w->y() - canvas.y())
+                       .arg(w->width()).arg(w->height()).arg(canvas.width())
+                       .arg(canvas.height());
+            return false;
+        }
+    return true;
+}
+
+} // namespace workspace
+
+void runWorkspaceSyncPass(const QString &project)
+{
+    using namespace workspace;
+    out() << "--- (ad) one workspace: the strip and the timeline are the "
+             "same panels ---" << Qt::endl;
+    Rig r(project);
+    check(QStringLiteral("(ad) the project opened into the workspace, with "
+                         "its timeline"),
+          r.ok);
+    if (!r.ok)
+        return;
+
+    // ---- no screen to go to ------------------------------------------------
+    bool continueButton = false;
+    for (QPushButton *b : r.window.findChildren<QPushButton *>())
+        if (b->text().contains(QStringLiteral("Continue to Animatic")))
+            continueButton = true;
+    auto *stack = qobject_cast<QStackedWidget *>(r.window.centralWidget());
+    bool animaticIsAPage = false;
+    for (int i = 0; stack && i < stack->count(); ++i)
+        if (stack->widget(i) == r.animatic)
+            animaticIsAPage = true;
+    check(QStringLiteral("(ad) there is no Animatic screen and no Continue "
+                         "to Animatic button: the animatic is inside the "
+                         "workspace, on screen"),
+          !continueButton && stack && !animaticIsAPage
+              && r.storyboard->isAncestorOf(r.animatic)
+              && r.animatic->isVisible() && r.surface->isVisible());
+    auto *strip = r.storyboard->findChild<QDockWidget *>(
+        QStringLiteral("dockPanelStrip"));
+    const int stripY = strip ? strip->mapToGlobal(QPoint(0, 0)).y() : -1;
+    const int canvasY = r.canvas->mapToGlobal(QPoint(0, 0)).y();
+    const int timelineY = r.animatic->mapToGlobal(QPoint(0, 0)).y();
+    check(QStringLiteral("(ad) top to bottom: Panel Strip, drawing canvas, "
+                         "timeline"),
+          strip && stripY < canvasY
+              && canvasY + r.canvas->height() <= timelineY,
+          QStringLiteral("strip y %1, canvas y %2..%3, timeline y %4")
+              .arg(stripY).arg(canvasY).arg(canvasY + r.canvas->height())
+              .arg(timelineY));
+
+    // ---- fed on open, not on a visit ---------------------------------------
+    check(QStringLiteral("(ad) the timeline holds every panel of every scene "
+                         "the moment the project opens (2 scenes x 3)"),
+          r.timeline->blockCountForTest() == 6
+              && r.animatic->itemCountForTest() == 6
+              && thumbs(r.storyboard).size() == 3,
+          QStringLiteral("%1 clips, %2 rows, %3 strip thumbs")
+              .arg(r.timeline->blockCountForTest())
+              .arg(r.animatic->itemCountForTest())
+              .arg(thumbs(r.storyboard).size()));
+    check(QStringLiteral("(ad) ...with the durations the panels carry"),
+          durations(r) == QVector<int>({2, 3, 4, 2, 3, 4}), show(durations(r)));
+    check(QStringLiteral("(ad) the opening selection is the same panel in "
+                         "both views, and the playhead is on it"),
+          r.storyboard->selectedFlatIndexForTest() == 0
+              && r.timeline->selectedPanelForTest() == 0
+              && r.timeline->playheadPanelForTest() == 0
+              && selectedThumb(r.storyboard) == 0);
+
+    // ---- selection, both directions, ONCE each ------------------------------
+    int calls = r.storyboard->selectPanelCallsForTest();
+    clickThumb(r, 2);
+    check(QStringLiteral("(ad) a STRIP click selects that panel in the "
+                         "timeline and moves the playhead to it"),
+          r.timeline->selectedPanelForTest() == 2
+              && r.timeline->playheadPanelForTest() == 2
+              && selectedThumb(r.storyboard) == 2);
+    check(QStringLiteral("(ad) ...and selected exactly ONCE (the timeline "
+                         "did not answer back)"),
+          r.storyboard->selectPanelCallsForTest() == calls + 1,
+          QStringLiteral("%1 selection(s)")
+              .arg(r.storyboard->selectPanelCallsForTest() - calls));
+
+    calls = r.storyboard->selectPanelCallsForTest();
+    clickClip(r, 4); // scene 2, its second panel
+    check(QStringLiteral("(ad) a TIMELINE click on a clip in another scene "
+                         "selects it in the strip: the strip shows that "
+                         "scene with that panel highlighted"),
+          r.storyboard->selectedFlatIndexForTest() == 4
+              && thumbs(r.storyboard).size() == 3
+              && selectedThumb(r.storyboard) == 1
+              && r.timeline->selectedPanelForTest() == 4,
+          QStringLiteral("flat %1, strip highlight %2")
+              .arg(r.storyboard->selectedFlatIndexForTest())
+              .arg(selectedThumb(r.storyboard)));
+    check(QStringLiteral("(ad) ...exactly ONCE, scene change included (not "
+                         "panel 1 of the scene and then the one asked for)"),
+          r.storyboard->selectPanelCallsForTest() == calls + 1,
+          QStringLiteral("%1 selection(s)")
+              .arg(r.storyboard->selectPanelCallsForTest() - calls));
+    calls = r.storyboard->selectPanelCallsForTest();
+    clickClip(r, 4);
+    check(QStringLiteral("(ad) clicking the clip that is already selected "
+                         "selects nothing again"),
+          r.storyboard->selectPanelCallsForTest() == calls
+              && r.storyboard->selectedFlatIndexForTest() == 4);
+
+    // ---- add / duplicate / delete, from either view -------------------------
+    r.storyboard->copySelectedPanel();
+    r.storyboard->pastePanelAfterSelected(); // the strip side's own insert
+    pump(250);
+    check(QStringLiteral("(ad) a panel added on the STRIP side appears in "
+                         "the timeline, where it was added, with its "
+                         "duration"),
+          durations(r) == QVector<int>({2, 3, 4, 2, 3, 3, 4})
+              && thumbs(r.storyboard).size() == 4
+              && r.timeline->selectedPanelForTest() == 5
+              && r.animatic->itemCountForTest() == 7,
+          state(r));
+
+    QStringList menuSaw;
+    QString trigger;
+    r.storyboard->setClipMenuHookForTest([&](QMenu *menu) {
+        menuSaw.clear();
+        for (QAction *a : menu->actions())
+            if (!a->isSeparator())
+                menuSaw << a->text()
+                        + (a->isEnabled() ? QString()
+                                          : QStringLiteral(" (disabled)"));
+        for (QAction *a : menu->actions())
+            if (a->text() == trigger)
+                a->trigger();
+    });
+    trigger = QStringLiteral("Duplicate Panel");
+    rightClickClip(r, 3); // scene 2's first panel, which is NOT the selection
+    check(QStringLiteral("(ad) right-clicking a clip selects it and offers "
+                         "Add Panel After, Duplicate Panel, Delete Panel"),
+          menuSaw == QStringList({QStringLiteral("Add Panel After"),
+                                  QStringLiteral("Duplicate Panel"),
+                                  QStringLiteral("Delete Panel")}),
+          menuSaw.join(QStringLiteral(" | ")));
+    check(QStringLiteral("(ad) Duplicate from the TIMELINE duplicates THAT "
+                         "clip's panel, and the strip shows it"),
+          durations(r) == QVector<int>({2, 3, 4, 2, 2, 3, 3, 4})
+              && thumbs(r.storyboard).size() == 5
+              && r.storyboard->selectedFlatIndexForTest() == 4
+              && selectedThumb(r.storyboard) == 1,
+          state(r));
+    trigger = QStringLiteral("Add Panel After");
+    rightClickClip(r, 4);
+    check(QStringLiteral("(ad) Add Panel After from the timeline adds a new "
+                         "panel after that clip, in both views"),
+          r.timeline->blockCountForTest() == 9
+              && thumbs(r.storyboard).size() == 6
+              && r.storyboard->selectedFlatIndexForTest() == 5
+              && r.timeline->blockDurationForTest(5) == 3,
+          state(r));
+    r.storyboard->cutSelectedPanel(); // the same removal Delete performs
+    pump(250);
+    check(QStringLiteral("(ad) removing a panel removes its clip"),
+          durations(r) == QVector<int>({2, 3, 4, 2, 2, 3, 3, 4})
+              && thumbs(r.storyboard).size() == 5
+              && r.animatic->itemCountForTest() == 8,
+          state(r));
+    r.storyboard->setClipMenuHookForTest({});
+
+    // ---- reorder, from either view, and undo --------------------------------
+    clickClip(r, 2); // scene 1's last panel (4 s)
+    const bool moved = keyClaimed(&r.window, Qt::Key_Left, Qt::ControlModifier);
+    check(QStringLiteral("(ad) reordering on the STRIP side (Ctrl+Left) "
+                         "reorders the clips"),
+          moved && durations(r) == QVector<int>({2, 4, 3, 2, 2, 3, 3, 4})
+              && r.timeline->selectedPanelForTest() == 1,
+          state(r));
+    {
+        // Drag the first clip past the middle of the scene's last one.
+        const QPointF from = r.timeline->clipRectForTest(0).center();
+        const QPointF to(r.timeline->clipRectForTest(2).center().x() + 12,
+                         from.y());
+        sendMouse(r.surface, QEvent::MouseButtonPress, from, Qt::LeftButton);
+        sendMouse(r.surface, QEvent::MouseMove, from + QPointF(12, 0),
+                  Qt::LeftButton);
+        sendMouse(r.surface, QEvent::MouseMove, (from + to) / 2, Qt::LeftButton);
+        sendMouse(r.surface, QEvent::MouseMove, to, Qt::LeftButton);
+        sendMouse(r.surface, QEvent::MouseButtonRelease, to, Qt::LeftButton);
+        pump(250);
+    }
+    check(QStringLiteral("(ad) dragging a clip on the TIMELINE reorders the "
+                         "panels, and the strip follows (the moved panel "
+                         "stays selected)"),
+          durations(r) == QVector<int>({4, 3, 2, 2, 2, 3, 3, 4})
+              && r.storyboard->selectedFlatIndexForTest() == 2
+              && selectedThumb(r.storyboard) == 2,
+          state(r));
+    {
+        // A press that does not travel is a click, not a reorder.
+        const QVector<int> before = durations(r);
+        const QPointF at = r.timeline->clipRectForTest(1).center();
+        sendMouse(r.surface, QEvent::MouseButtonPress, at, Qt::LeftButton);
+        sendMouse(r.surface, QEvent::MouseMove, at + QPointF(3, 0),
+                  Qt::LeftButton);
+        sendMouse(r.surface, QEvent::MouseButtonRelease, at + QPointF(3, 0),
+                  Qt::LeftButton);
+        pump(200);
+        check(QStringLiteral("(ad) control: a press that moves 3 px is a "
+                             "click - it selects and reorders nothing"),
+              durations(r) == before
+                  && r.storyboard->selectedFlatIndexForTest() == 1);
+    }
+    r.window.undoStackForTest()->undo();
+    pump(200);
+    const bool undoneOnce =
+        durations(r) == QVector<int>({2, 4, 3, 2, 2, 3, 3, 4});
+    r.window.undoStackForTest()->undo();
+    pump(200);
+    check(QStringLiteral("(ad) both reorders are ONE history: undo takes "
+                         "back the timeline's, then the strip's"),
+          undoneOnce && durations(r) == QVector<int>({2, 3, 4, 2, 2, 3, 3, 4}),
+          state(r));
+
+    // ---- thumbnails: one repaint, after the stroke ---------------------------
+    pump(400);
+    PaintCount paints;
+    r.surface->installEventFilter(&paints);
+    paints.paints = 0;
+    stroke(r.canvas);
+    QCoreApplication::processEvents();
+    const int during = paints.paints;
+    pump(700);
+    check(QStringLiteral("(ad) the timeline does not repaint DURING a "
+                         "stroke (measured before this was built: it must "
+                         "cost drawing nothing)"),
+          during == 0, QStringLiteral("%1 repaint(s)").arg(during));
+    check(QStringLiteral("(ad) ...and repaints once the edit settles, so "
+                         "its clip shows the new artwork (control: the "
+                         "counter can see a repaint)"),
+          paints.paints >= 1, QStringLiteral("%1 repaint(s)").arg(paints.paints));
+    r.surface->removeEventFilter(&paints);
+}
+
+void runWorkspaceFreedPanelPass(const QString &project, const QString &other)
+{
+    using namespace workspace;
+    out() << "--- (ae) the animatic never keeps a freed panel ---" << Qt::endl;
+    Rig r(project);
+    check(QStringLiteral("(ae) the workspace opened"), r.ok);
+    if (!r.ok)
+        return;
+    const int before = r.animatic->itemCountForTest();
+    clickThumb(r, 1);
+    r.storyboard->cutSelectedPanel(); // the undo command now owns the panel
+    pump(250);
+    // Dropping the history DELETES the removed panel for real. A row left
+    // pointing at it would be read by everything below; a version that does
+    // not rebuild its rows dies here instead of failing a comparison, so
+    // the line above has already been flushed.
+    r.window.undoStackForTest()->clear();
+    pump(100);
+    check(QStringLiteral("(ae) control: removing a panel removed its row "
+                         "(the rows were rebuilt, not left alone)"),
+          r.animatic->itemCountForTest() == before - 1
+              && r.timeline->blockCountForTest() == before - 1,
+          QStringLiteral("%1 -> %2").arg(before)
+              .arg(r.animatic->itemCountForTest()));
+    r.surface->repaint();
+    r.animatic->togglePlay();
+    pump(150);
+    for (int i = 0; i < r.animatic->itemCountForTest() + 2; ++i) {
+        r.animatic->advanceForTest(); // every row, through the end and round
+        pump(30);
+    }
+    check(QStringLiteral("(ae) repainting the timeline and playing through "
+                         "every panel after the removed one was freed is "
+                         "safe"),
+          true);
+
+    // Opening another project while it PLAYS: the rows, the preview's
+    // picture and the timer all refer to panels that are about to go.
+    r.animatic->togglePlay();
+    pump(150);
+    const bool wasPlaying = r.animatic->isPlaying() && r.animatic->previewVisible();
+    check(QStringLiteral("(ae) a second project opens while the first is "
+                         "playing"),
+          r.window.loadProjectForTest(other));
+    pump(500);
+    check(QStringLiteral("(ae) ...playback stopped, the preview is gone, and "
+                         "the timeline holds the NEW project's panels "
+                         "(control: it was playing)"),
+          wasPlaying && !r.animatic->isPlaying() && !r.animatic->previewVisible()
+              && r.animatic->itemCountForTest() == 2
+              && r.timeline->blockCountForTest() == 2
+              && r.timeline->selectedPanelForTest() == 0,
+          QStringLiteral("%1 row(s)").arg(r.animatic->itemCountForTest()));
+    r.animatic->togglePlay();
+    pump(150);
+    r.window.markCleanForTest();
+    r.window.closeProjectForTest();
+    pump(400);
+    check(QStringLiteral("(ae) Close Project while playing leaves the "
+                         "animatic empty and stopped"),
+          !r.animatic->isPlaying() && r.animatic->itemCountForTest() == 0
+              && r.timeline->blockCountForTest() == 0);
+    r.window.newProjectForTest();
+    pump(400);
+    check(QStringLiteral("(ae) ...and so does New Project"),
+          r.animatic->itemCountForTest() == 0
+              && r.timeline->blockCountForTest() == 0);
+}
+
+void runWorkspacePreviewPass(const QString &project)
+{
+    using namespace workspace;
+    out() << "--- (af) playing and scrubbing leave the drawing alone ---"
+          << Qt::endl;
+    Rig r(project);
+    check(QStringLiteral("(af) the workspace opened"), r.ok);
+    if (!r.ok)
+        return;
+    QWidget *preview = r.animatic->previewSurface();
+    r.canvas->selectAll();
+    pump(300);
+    const bool hadSelection = r.canvas->hasSelection();
+    r.window.markCleanForTest();
+    const int undoIndex = r.window.undoStackForTest()->index();
+    const int calls = r.storyboard->selectPanelCallsForTest();
+    check(QStringLiteral("(af) control: before Play there is no preview, "
+                         "and the canvas holds a selection"),
+          preview && !preview->isVisible() && !r.animatic->previewVisible()
+              && hadSelection);
+
+    r.animatic->togglePlay();
+    pump(200);
+    check(QStringLiteral("(af) Play shows the preview OVER the canvas - a "
+                         "child of it, covering it exactly - with the first "
+                         "panel's picture"),
+          r.animatic->isPlaying() && r.animatic->previewVisible()
+              && preview->isVisible() && preview->parentWidget() == r.canvas
+              && preview->geometry() == r.canvas->rect()
+              && r.animatic->previewHasPictureForTest()
+              && r.animatic->previewCaptionForTest().contains(
+                     QStringLiteral("Panel 1")),
+          r.animatic->previewCaptionForTest());
+    r.animatic->advanceForTest(); // the per-panel timer, without the wait
+    pump(120);
+    check(QStringLiteral("(af) playback advances the PLAYHEAD and the "
+                         "preview..."),
+          r.timeline->playheadPanelForTest() == 1
+              && r.animatic->previewCaptionForTest().contains(
+                     QStringLiteral("Panel 2")),
+          r.animatic->previewCaptionForTest());
+    check(QStringLiteral("(af) ...and NOT the selection: same panel in the "
+                         "strip, in the timeline and on the canvas, and no "
+                         "panel was selected along the way"),
+          r.storyboard->selectedFlatIndexForTest() == 0
+              && r.timeline->selectedPanelForTest() == 0
+              && selectedThumb(r.storyboard) == 0
+              && r.storyboard->selectPanelCallsForTest() == calls);
+    check(QStringLiteral("(af) the canvas still holds its selection, the "
+                         "project is still clean, and the undo history has "
+                         "not moved"),
+          r.canvas->hasSelection() && !r.window.isDirty()
+              && r.window.undoStackForTest()->index() == undoIndex);
+
+    // A pen or mouse over the preview must not draw on what is under it.
+    sendMouse(preview, QEvent::MouseButtonPress, QPointF(240, 200),
+              Qt::LeftButton);
+    sendMouse(preview, QEvent::MouseMove, QPointF(300, 230), Qt::LeftButton);
+    sendMouse(preview, QEvent::MouseButtonRelease, QPointF(300, 230),
+              Qt::LeftButton);
+    pump(500);
+    check(QStringLiteral("(af) a click on the preview goes back to drawing: "
+                         "playback stops, the preview is gone, the playhead "
+                         "is back on the selected panel"),
+          !r.animatic->isPlaying() && !r.animatic->previewVisible()
+              && !preview->isVisible()
+              && r.timeline->playheadPanelForTest() == 0);
+    check(QStringLiteral("(af) ...and that press-drag-release drew NOTHING "
+                         "on the canvas underneath"),
+          !r.window.isDirty()
+              && r.window.undoStackForTest()->index() == undoIndex);
+    r.canvas->clearSelection();
+    pump(100);
+    stroke(r.canvas);
+    pump(600);
+    check(QStringLiteral("(af) control: the same gesture on the uncovered "
+                         "canvas DOES draw (the check above can fail)"),
+          r.window.isDirty()
+              && r.window.undoStackForTest()->index() > undoIndex);
+
+    // ---- scrubbing ----------------------------------------------------------
+    r.window.markCleanForTest();
+    const int calls2 = r.storyboard->selectPanelCallsForTest();
+    {
+        // Press in the ruler above the fifth clip and drag onto the fourth.
+        const QPointF a(r.timeline->clipRectForTest(4).center().x(), 10);
+        const QPointF b(r.timeline->clipRectForTest(3).center().x(), 10);
+        sendMouse(r.surface, QEvent::MouseButtonPress, a, Qt::LeftButton);
+        pump(100);
+        const bool onFifth = r.timeline->playheadPanelForTest() == 4
+            && r.animatic->previewVisible();
+        sendMouse(r.surface, QEvent::MouseMove, b, Qt::LeftButton);
+        sendMouse(r.surface, QEvent::MouseButtonRelease, b, Qt::LeftButton);
+        pump(200);
+        check(QStringLiteral("(af) dragging the playhead PREVIEWS the panel "
+                             "under it, panel by panel, and stays there on "
+                             "release"),
+              onFifth && r.animatic->previewVisible() && !r.animatic->isPlaying()
+                  && r.timeline->playheadPanelForTest() == 3
+                  && r.animatic->previewCaptionForTest().contains(
+                         QStringLiteral("Scene 2")),
+              r.animatic->previewCaptionForTest());
+    }
+    check(QStringLiteral("(af) ...without selecting it: the canvas, the "
+                         "strip and the dirty flag are untouched"),
+          r.storyboard->selectedFlatIndexForTest() == 0
+              && r.storyboard->selectPanelCallsForTest() == calls2
+              && !r.window.isDirty());
+    clickThumb(r, 1);
+    check(QStringLiteral("(af) selecting a panel leaves the preview and "
+                         "puts the playhead on that panel"),
+          !r.animatic->previewVisible()
+              && r.timeline->playheadPanelForTest() == 1
+              && r.storyboard->selectedFlatIndexForTest() == 1);
+
+    // ---- the end of the film ------------------------------------------------
+    r.animatic->togglePlay();
+    pump(150);
+    const bool playing = r.animatic->isPlaying();
+    int advances = 0;
+    while (r.animatic->isPlaying() && advances < 20) {
+        r.animatic->advanceForTest(); // each panel's timer, without the wait
+        ++advances;
+        pump(30);
+    }
+    check(QStringLiteral("(af) playing off the end stops, goes back to "
+                         "drawing, and parks the playhead on the selected "
+                         "panel (control: it was playing)"),
+          playing && advances == 5 && !r.animatic->isPlaying()
+              && !r.animatic->previewVisible()
+              && r.timeline->playheadPanelForTest() == 1,
+          QStringLiteral("%1 advance(s); %2").arg(advances).arg(state(r)));
+
+    // ---- leaving the workspace ----------------------------------------------
+    // The old screen paused in its Back button. There is no Back now, and a
+    // film left playing behind another screen would keep its audio running.
+    r.animatic->togglePlay();
+    pump(150);
+    const bool playingBefore = r.animatic->isPlaying();
+    auto *stack = qobject_cast<QStackedWidget *>(r.window.centralWidget());
+    QPushButton *board = nullptr;
+    for (QPushButton *b : r.storyboard->findChildren<QPushButton *>())
+        if (b->text() == QStringLiteral("Consistency Board"))
+            board = b;
+    if (board)
+        board->click();
+    pump(400);
+    check(QStringLiteral("(af) going to another screen (the Consistency "
+                         "Board) stops playback and drops the preview "
+                         "(control: it was playing, and the screen did "
+                         "change)"),
+          playingBefore && board && stack
+              && stack->currentWidget() != r.storyboard
+              && !r.animatic->isPlaying() && !r.animatic->previewVisible());
+    if (stack)
+        stack->setCurrentWidget(r.storyboard);
+    pump(500);
+
+    // Undo changes the document, so it goes back to drawing first.
+    r.animatic->scrubForTest(2);
+    pump(150);
+    const bool previewUp = r.animatic->previewVisible();
+    const int indexBefore = r.window.undoStackForTest()->index();
+    for (QAction *a : r.window.findChildren<QAction *>())
+        if (a->text() == QStringLiteral("Undo"))
+            a->trigger();
+    pump(300);
+    check(QStringLiteral("(af) Edit > Undo while previewing leaves the "
+                         "preview before it undoes (control: the preview "
+                         "was up, and something was undone)"),
+          previewUp && !r.animatic->previewVisible()
+              && r.window.undoStackForTest()->index() == indexBefore - 1);
+}
+
+void runWorkspaceKeysPass(const QString &project)
+{
+    using namespace workspace;
+    out() << "--- (ag) Space belongs to the timeline only under the "
+             "pointer ---" << Qt::endl;
+    Rig r(project);
+    check(QStringLiteral("(ag) the workspace opened"), r.ok);
+    if (!r.ok)
+        return;
+    QWidget *preview = r.animatic->previewSurface();
+    r.canvas->setFocus();
+    hover(r.animatic, false);
+    hover(preview, false);
+
+    check(QStringLiteral("(ag) a click on the timeline does not take "
+                         "keyboard focus from the canvas (the pan modifier "
+                         "is a key event on the canvas)"),
+          [&] {
+              clickClip(r, 1);
+              return QApplication::focusWidget() == r.canvas;
+          }());
+    check(QStringLiteral("(ag) pointer NOT over the timeline: Space is "
+                         "claimed by no shortcut - it is the canvas's"),
+          !r.storyboard->timelineKeysArmedForTest()
+              && !keyClaimed(&r.window, Qt::Key_Space)
+              && !r.animatic->isPlaying());
+    hover(r.animatic, true);
+    const bool armed = r.storyboard->timelineKeysArmedForTest();
+    const bool claimed = keyClaimed(&r.window, Qt::Key_Space);
+    check(QStringLiteral("(ag) pointer OVER the timeline: the same Space "
+                         "plays (control: the same key, the same focus)"),
+          armed && claimed && r.animatic->isPlaying()
+              && QApplication::focusWidget() == r.canvas);
+    keyClaimed(&r.window, Qt::Key_Space);
+    check(QStringLiteral("(ag) ...and Space again pauses, with the preview "
+                         "still up"),
+          !r.animatic->isPlaying() && r.animatic->previewVisible());
+    keyClaimed(&r.window, Qt::Key_Escape);
+    check(QStringLiteral("(ag) Escape over the timeline goes back to "
+                         "drawing"),
+          !r.animatic->previewVisible());
+
+    // Arrows / Home / End navigate - they select, as a click would.
+    int calls = r.storyboard->selectPanelCallsForTest();
+    keyClaimed(&r.window, Qt::Key_Right);
+    const bool right = r.storyboard->selectedFlatIndexForTest() == 2
+        && r.storyboard->selectPanelCallsForTest() == calls + 1;
+    keyClaimed(&r.window, Qt::Key_End);
+    const bool end = r.storyboard->selectedFlatIndexForTest() == 5;
+    keyClaimed(&r.window, Qt::Key_Home);
+    const bool home = r.storyboard->selectedFlatIndexForTest() == 0;
+    keyClaimed(&r.window, Qt::Key_Right);
+    keyClaimed(&r.window, Qt::Key_Left);
+    check(QStringLiteral("(ag) over the timeline, Right / End / Home / Left "
+                         "select the next, last, first and previous panel"),
+          right && end && home
+              && r.storyboard->selectedFlatIndexForTest() == 0,
+          QStringLiteral("right %1 end %2 home %3").arg(right).arg(end)
+              .arg(home));
+
+    // Typing wins over the pointer: a text field with focus keeps its keys.
+    if (auto *notes = r.storyboard->findChild<QPlainTextEdit *>()) {
+        // Shot Info is tabbed behind Scenes by default: bring it forward so
+        // the field can really hold the focus.
+        if (auto *shotInfo = r.storyboard->findChild<QDockWidget *>(
+                QStringLiteral("dockShotInfo")))
+            shotInfo->raise();
+        pump(200);
+        notes->setFocus();
+        pump(150);
+        const bool focused = QApplication::focusWidget() == notes;
+        const bool typed = !keyClaimed(notes, Qt::Key_Space);
+        check(QStringLiteral("(ag) with the pointer over the timeline but a "
+                             "text field focused, Space is the text "
+                             "field's: nothing plays"),
+              focused && typed && !r.animatic->isPlaying()
+                  && r.storyboard->timelineKeysArmedForTest());
+        r.canvas->setFocus();
+        pump(100);
+    }
+
+    QShortcut *deleteKey = nullptr, *spaceKey = nullptr;
+    for (QShortcut *s : r.storyboard->findChildren<QShortcut *>()) {
+        if (s->key() == QKeySequence(Qt::Key_Delete))
+            deleteKey = s;
+        if (s->key() == QKeySequence(Qt::Key_Space))
+            spaceKey = s;
+    }
+    const bool deleteOverTimeline = deleteKey && deleteKey->isEnabled();
+    hover(r.animatic, false);
+    check(QStringLiteral("(ag) the pointer leaves: every timeline key is "
+                         "disarmed again (Delete was armed over it)"),
+          deleteOverTimeline && deleteKey && !deleteKey->isEnabled()
+              && spaceKey && !spaceKey->isEnabled()
+              && !r.storyboard->timelineKeysArmedForTest()
+              && !keyClaimed(&r.window, Qt::Key_Space)
+              && !r.animatic->isPlaying());
+
+    // Over the PREVIEW the transport keys work too - what is under the
+    // pointer there is the film, not the canvas - but Delete does not.
+    r.animatic->togglePlay();
+    pump(150);
+    hover(preview, false);
+    const bool notYet = !r.storyboard->timelineKeysArmedForTest();
+    hover(preview, true);
+    const bool overPreview = r.storyboard->timelineKeysArmedForTest();
+    const bool pausedThere = keyClaimed(&r.window, Qt::Key_Space)
+        && !r.animatic->isPlaying();
+    check(QStringLiteral("(ag) pointer over the PREVIEW: Space pauses the "
+                         "film there too, and Delete stays disarmed"),
+          notYet && overPreview && pausedThere && deleteKey
+              && !deleteKey->isEnabled());
+    keyClaimed(&r.window, Qt::Key_Escape);
+    check(QStringLiteral("(ag) ...and once the preview is gone the keys go "
+                         "back to the canvas without the pointer moving"),
+          !r.animatic->previewVisible()
+              && !r.storyboard->timelineKeysArmedForTest()
+              && !keyClaimed(&r.window, Qt::Key_Space)
+              && !r.animatic->isPlaying());
+}
+
+void runWorkspaceUndoPass(const QString &project)
+{
+    using namespace workspace;
+    out() << "--- (ah) a timing change is undoable, in order with drawing "
+             "---" << Qt::endl;
+    Rig r(project);
+    check(QStringLiteral("(ah) the workspace opened"), r.ok);
+    if (!r.ok)
+        return;
+    QUndoStack *undo = r.window.undoStackForTest();
+    QAction *undoAction = nullptr, *redoAction = nullptr;
+    for (QAction *a : r.window.findChildren<QAction *>()) {
+        if (a->text() == QStringLiteral("Undo"))
+            undoAction = a;
+        if (a->text() == QStringLiteral("Redo"))
+            redoAction = a;
+    }
+    stroke(r.canvas);
+    pump(600);
+    const int afterStroke = undo->index();
+    check(QStringLiteral("(ah) control: a stroke is on the history, and the "
+                         "Edit menu's Undo and Redo were found"),
+          afterStroke >= 1 && undoAction && redoAction);
+    if (!undoAction || !redoAction)
+        return;
+
+    // The real gesture: drag the selected clip's right edge two seconds out.
+    r.window.markCleanForTest();
+    auto dragEdge = [&](int flat, int toSeconds, bool andBack) {
+        const QRect clip = r.timeline->clipRectForTest(flat);
+        const int had = r.timeline->blockDurationForTest(flat);
+        const double perSecond = double(clip.width()) / had;
+        const QPointF edge(clip.left() + clip.width() - 2, clip.center().y());
+        const QPointF out(clip.left() + perSecond * toSeconds, edge.y());
+        sendMouse(r.surface, QEvent::MouseButtonPress, edge, Qt::LeftButton);
+        sendMouse(r.surface, QEvent::MouseMove, (edge + out) / 2, Qt::LeftButton);
+        sendMouse(r.surface, QEvent::MouseMove, out, Qt::LeftButton);
+        if (andBack) {
+            sendMouse(r.surface, QEvent::MouseMove, edge, Qt::LeftButton);
+            sendMouse(r.surface, QEvent::MouseButtonRelease, edge, Qt::LeftButton);
+        } else {
+            sendMouse(r.surface, QEvent::MouseButtonRelease, out, Qt::LeftButton);
+        }
+        pump(250);
+    };
+    dragEdge(0, 4, false);
+    check(QStringLiteral("(ah) dragging a clip's edge re-times its panel "
+                         "(2 s -> 4 s) as ONE command, and marks the project "
+                         "unsaved"),
+          r.timeline->blockDurationForTest(0) == 4
+              && undo->index() == afterStroke + 1
+              && undo->undoText() == QStringLiteral("Change Panel Duration")
+              && r.window.isDirty(),
+          QStringLiteral("%1 s, history %2 -> %3, top \"%4\"")
+              .arg(r.timeline->blockDurationForTest(0)).arg(afterStroke)
+              .arg(undo->index()).arg(undo->undoText()));
+
+    undoAction->trigger(); // Edit > Undo, the path Ctrl+Z takes
+    pump(250);
+    check(QStringLiteral("(ah) Ctrl+Z right after it takes back the TIMING "
+                         "- the clip is 2 s again - and NOT the stroke "
+                         "before it"),
+          r.timeline->blockDurationForTest(0) == 2
+              && undo->index() == afterStroke,
+          QStringLiteral("%1 s, history at %2 (the stroke is %3)")
+              .arg(r.timeline->blockDurationForTest(0)).arg(undo->index())
+              .arg(afterStroke));
+    redoAction->trigger();
+    pump(250);
+    const bool redone = r.timeline->blockDurationForTest(0) == 4;
+    undoAction->trigger();
+    undoAction->trigger();
+    pump(300);
+    check(QStringLiteral("(ah) redo re-times it; two undos then take back "
+                         "the timing and the stroke, in that order"),
+          redone && r.timeline->blockDurationForTest(0) == 2
+              && undo->index() == afterStroke - 1);
+    redoAction->trigger();
+    pump(250);
+
+    const int count = undo->count();
+    dragEdge(0, 4, true);
+    check(QStringLiteral("(ah) a drag that ends where it began changes "
+                         "nothing and adds nothing to the history"),
+          r.timeline->blockDurationForTest(0) == 2 && undo->count() == count);
+
+    // Saved with the project, like any other edit.
+    r.animatic->setPanelDurationForTest(1, 2, 9);
+    pump(200);
+    check(QStringLiteral("(ah) a re-timed panel in ANOTHER scene updates "
+                         "its clip too (the timeline shows every scene)"),
+          r.timeline->blockDurationForTest(5) == 9);
+    r.animatic->togglePlay();
+    pump(150);
+    const bool playing = r.animatic->isPlaying();
+    r.animatic->setPanelDurationForTest(0, 1, 6);
+    pump(200);
+    check(QStringLiteral("(ah) a timing change during playback stops "
+                         "playback (control: it was playing)"),
+          playing && !r.animatic->isPlaying()
+              && r.timeline->blockDurationForTest(1) == 6);
+    r.animatic->leavePreview();
+}
+
+void runWorkspaceLayoutPass(const QString &project)
+{
+    using namespace workspace;
+    out() << "--- (ai) the timeline's height and collapse persist, and the "
+             "toolbars come back ---" << Qt::endl;
+    const QString keys = QStringLiteral("storyboard/timeline/v1/");
+    {
+        QSettings s = sankoSettings();
+        s.remove(QStringLiteral("storyboard/timeline/v1")); // a first run
+    }
+    int openHeight = 0, draggedHeight = 0;
+    {
+        Rig r(project);
+        check(QStringLiteral("(ai) the workspace opened"), r.ok);
+        if (!r.ok)
+            return;
+        auto *splitter = r.storyboard->findChild<QSplitter *>(
+            QStringLiteral("workspaceSplitter"));
+        auto *fold = r.animatic->findChild<QPushButton *>(
+            QStringLiteral("animaticCollapse"));
+        auto *play = r.animatic->findChild<QPushButton *>(
+            QStringLiteral("animaticPlay"));
+        check(QStringLiteral("(ai) found the splitter, the fold button and "
+                             "the play button"),
+              splitter && fold && play);
+        if (!splitter || !fold || !play)
+            return;
+        openHeight = r.animatic->height();
+        check(QStringLiteral("(ai) on a FIRST run the timeline is open, at "
+                             "its default height"),
+              !r.animatic->isCollapsed() && r.timeline->isVisible()
+                  && openHeight == r.animatic->defaultExpandedHeight(),
+              QStringLiteral("%1 px (default %2)").arg(openHeight)
+                  .arg(r.animatic->defaultExpandedHeight()));
+        const int canvasOpen = r.canvas->height();
+        const QStringList barsOpen = barPlaces(r);
+        QString why;
+        check(QStringLiteral("(ai) with it open every floating toolbar is "
+                             "inside the canvas"),
+              barsInsideCanvas(r, &why), why);
+
+        fold->click();
+        pump(500);
+        const int canvasFolded = r.canvas->height();
+        const QStringList barsFolded = barPlaces(r);
+        check(QStringLiteral("(ai) collapsing leaves ONE row - the header, "
+                             "transport and all - and gives the rest to the "
+                             "canvas"),
+              r.animatic->isCollapsed()
+                  && r.animatic->height() == AnimaticPage::kHeaderHeight
+                  && !r.timeline->isVisible() && play->isVisible()
+                  && canvasFolded
+                         == canvasOpen + openHeight - AnimaticPage::kHeaderHeight,
+              QStringLiteral("section %1 px, canvas %2 -> %3")
+                  .arg(r.animatic->height()).arg(canvasOpen).arg(canvasFolded));
+        play->click();
+        pump(200);
+        const bool playsFolded = r.animatic->isPlaying()
+            && r.animatic->previewVisible();
+        play->click();
+        r.animatic->leavePreview();
+        pump(150);
+        check(QStringLiteral("(ai) ...and Play still works collapsed"),
+              playsFolded);
+        fold->click();
+        pump(500);
+        check(QStringLiteral("(ai) expanding gives it back the height it "
+                             "had"),
+              !r.animatic->isCollapsed() && r.timeline->isVisible()
+                  && r.animatic->height() == openHeight
+                  && r.canvas->height() == canvasOpen,
+              QStringLiteral("%1 px").arg(r.animatic->height()));
+
+        // The toolbars: the same places every time, in both states.
+        int moved = 0;
+        for (int i = 0; i < 8; ++i) {
+            fold->click();
+            pump(350);
+            if (barPlaces(r) != barsFolded)
+                ++moved;
+            fold->click();
+            pump(350);
+            if (barPlaces(r) != barsOpen)
+                ++moved;
+        }
+        check(QStringLiteral("(ai) eight collapse/expand cycles: the "
+                             "floating toolbars return to exactly the same "
+                             "places every time (control: they do move "
+                             "between the two states)"),
+              moved == 0 && barsOpen != barsFolded && !barsOpen.isEmpty(),
+              QStringLiteral("%1 mismatch(es); %2 bars").arg(moved)
+                  .arg(barsOpen.size()));
+
+        // Drag the handle up: the timeline grows, the shots track takes it.
+        const int shotsBefore = r.timeline->shotsTrackHeightForTest();
+        QSplitterHandle *handle = splitter->handle(1);
+        const QPointF grip = handle->rect().center();
+        // ONE move: the handle follows the pointer, so a second move given
+        // in the handle's own coordinates would be measured from where the
+        // first one left it.
+        sendMouse(handle, QEvent::MouseButtonPress, grip, Qt::LeftButton);
+        sendMouse(handle, QEvent::MouseMove, grip + QPointF(0, -60),
+                  Qt::LeftButton);
+        sendMouse(handle, QEvent::MouseButtonRelease, grip, Qt::LeftButton);
+        pump(400);
+        draggedHeight = r.animatic->height();
+        check(QStringLiteral("(ai) dragging the handle up 60 px makes the "
+                             "timeline 60 px taller, and the SHOTS track "
+                             "takes all of it"),
+              draggedHeight == openHeight + 60
+                  && r.timeline->shotsTrackHeightForTest() == shotsBefore + 60
+                  && r.canvas->height() == canvasOpen - 60,
+              QStringLiteral("section %1 -> %2, shots track %3 -> %4")
+                  .arg(openHeight).arg(draggedHeight).arg(shotsBefore)
+                  .arg(r.timeline->shotsTrackHeightForTest()));
+        check(QStringLiteral("(ai) ...and the toolbars are still inside the "
+                             "shorter canvas"),
+              barsInsideCanvas(r, &why), why);
+    }
+    {
+        Rig r(project);
+        if (!r.ok)
+            return;
+        check(QStringLiteral("(ai) after a relaunch the timeline is open at "
+                             "the height it was dragged to"),
+              !r.animatic->isCollapsed() && r.animatic->height() == draggedHeight,
+              QStringLiteral("%1 px (dragged to %2)").arg(r.animatic->height())
+                  .arg(draggedHeight));
+        r.animatic->setCollapsed(true);
+        pump(300);
+    }
+    {
+        Rig r(project);
+        if (!r.ok)
+            return;
+        check(QStringLiteral("(ai) left collapsed, it comes back collapsed"),
+              r.animatic->isCollapsed()
+                  && r.animatic->height() == AnimaticPage::kHeaderHeight
+                  && !r.timeline->isVisible(),
+              QStringLiteral("%1 px").arg(r.animatic->height()));
+        r.animatic->setCollapsed(false);
+        pump(500);
+        check(QStringLiteral("(ai) ...and expands to the remembered height, "
+                             "not the default"),
+              r.animatic->height() == draggedHeight
+                  && draggedHeight != openHeight,
+              QStringLiteral("%1 px").arg(r.animatic->height()));
+
+        r.animatic->setCollapsed(true);
+        pump(300);
+        QAction *reset = nullptr;
+        for (QAction *a : r.window.findChildren<QAction *>())
+            if (a->text() == QStringLiteral("Reset Layout"))
+                reset = a;
+        if (reset)
+            reset->trigger();
+        pump(600);
+        check(QStringLiteral("(ai) Reset Layout opens it at the default "
+                             "height and forgets the saved one"),
+              reset && !r.animatic->isCollapsed()
+                  && r.animatic->height() == openHeight
+                  && !sankoSettings().contains(keys + QStringLiteral("height")),
+              QStringLiteral("%1 px (default %2)").arg(r.animatic->height())
+                  .arg(openHeight));
+    }
 }
 
 int main(int argc, char **argv)
@@ -4486,6 +5590,20 @@ int main(int argc, char **argv)
     runProvenancePass(scratch);
     runResetLayoutStripPass(a);
     runSizeBarFitPass(a);
+    {
+        // Their own projects: the sections above have re-timed and resized
+        // the shared ones, and these compare exact panel lists.
+        const QString work = writeProject(projects, QStringLiteral("Workspace"),
+                                          QSize(960, 540), 24, 2, 3);
+        const QString second = writeProject(projects, QStringLiteral("WorkspaceB"),
+                                            QSize(1280, 720), 30, 1, 2);
+        runWorkspaceSyncPass(work);
+        runWorkspaceFreedPanelPass(work, second);
+        runWorkspacePreviewPass(work);
+        runWorkspaceKeysPass(work);
+        runWorkspaceUndoPass(work);
+        runWorkspaceLayoutPass(work);
+    }
 
     // ---- (aa) a test that cannot start says why and exits ----------------
     // An unattended gate must FAIL, not wait. Measured 2026-10-02: with its
