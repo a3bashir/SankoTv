@@ -83,9 +83,15 @@ public:
     void goNext();
     bool isPlaying() const { return m_playing; }
 
-    // Scratch audio path persistence (used by project save/load).
+    // Scratch audio path persistence (used by project save/load). The path
+    // is the DOCUMENT's: it is kept, and saved, whether or not its file can
+    // be found right now. audioMissing() is what the disk says about it.
     QString audioPath() const;
-    void setAudioPath(const QString &path); // loads silently if the file exists
+    void setAudioPath(const QString &path); // silent: a load is not an edit
+    bool audioMissing() const { return m_audioMissing; }
+    // Where the Locate dialog starts when the stored path's own folder is
+    // gone too: the project's folder.
+    void setFallbackFolder(const QString &folder) { m_fallbackFolder = folder; }
 
     // The audio track's two edits, for the Edit menu and the track's own
     // right-click menu. Both only REQUEST (audioChangeRequested): the
@@ -93,6 +99,7 @@ public:
     // applyAudioPath when it runs, is undone, or is redone.
     void importAudio(); // asks for a file
     void removeAudio();
+    void locateAudio(); // a missing track: point it at its file again
     void applyAudioPath(const QString &path); // pauses playback first
 
     // Project frame rate (New Project dialog / project file): forwarded to
@@ -236,7 +243,9 @@ private:
     // Audio.
     QMediaPlayer *m_player = nullptr;
     QAudioOutput *m_audioOutput = nullptr;
-    QString m_audioPath;
+    QString m_audioPath;          // what the project says
+    bool m_audioMissing = false;  // ...and its file is not there
+    QString m_fallbackFolder;
     QLabel *m_audioLabel = nullptr;
     std::function<QString()> m_audioPickerForTest;
     std::function<void(QMenu *)> m_audioMenuHookForTest;

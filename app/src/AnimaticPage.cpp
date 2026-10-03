@@ -205,8 +205,11 @@ AnimaticPage::AnimaticPage(QWidget *parent)
     // The audio length is only known once the media metadata has loaded; feed
     // it to the timeline so the waveform can scale.
     connect(m_player, &QMediaPlayer::durationChanged, this, [this](qint64 d) {
+        // "Loaded" to the timeline means the project NAMES a track, not
+        // that it can be played: hasAudio() here told it a missing track
+        // was no track, and its bar read "Right-click to import audio".
         if (m_timeline)
-            m_timeline->setAudioLoaded(hasAudio(), d);
+            m_timeline->setAudioLoaded(!m_audioPath.isEmpty(), d);
     });
 
     QVBoxLayout *root = new QVBoxLayout(this);
@@ -737,7 +740,8 @@ void AnimaticPage::loadScenes(const QVector<Scene *> &scenes)
     if (m_timeline) {
         m_timeline->setScenes(m_scenes);
         m_timeline->setLoopRegion(m_loopStartIndex, m_loopEndIndex);
-        m_timeline->setAudioLoaded(hasAudio(), m_player ? m_player->duration() : 0);
+        m_timeline->setAudioLoaded(!m_audioPath.isEmpty(),
+                                   m_player ? m_player->duration() : 0);
         m_timeline->setCurrentPanel(-1);
         m_timeline->setSelectedPanel(-1);
     }
@@ -1097,9 +1101,11 @@ void AnimaticPage::goNext()
 
 // --- Audio ----------------------------------------------------------------
 
+// A track that can be PLAYED: the project names one and its file is there.
+// (The project naming one is audioPath(); see installAudio.)
 bool AnimaticPage::hasAudio() const
 {
-    return m_player && !m_audioPath.isEmpty();
+    return m_player && !m_audioPath.isEmpty() && !m_audioMissing;
 }
 
 qint64 AnimaticPage::offsetForPanel(int index) const
@@ -1162,18 +1168,24 @@ void AnimaticPage::applyAudioPath(const QString &path)
 // The one place the track is set, for a command and for a project load
 // alike. It announces nothing about the DOCUMENT - a load adopting its
 // saved path is not an edit, and an edit is announced by its command.
+//
+// THE PATH IS KEPT WHETHER OR NOT THE FILE IS THERE. This used to adopt a
+// path only if its file existed and clear it otherwise - and save writes
+// whatever path is held here. So a project opened while its audio file was
+// unavailable (a drive not mounted, a folder renamed) opened clean, said
+// nothing, and the next save erased the reference for good. The document's
+// path and "a file is loaded" are two facts now: m_audioPath is what the
+// project says, m_audioMissing is what the disk says about it.
 void AnimaticPage::installAudio(const QString &path)
 {
     if (m_player)
         m_player->stop();
-    if (!path.isEmpty() && QFileInfo::exists(path)) {
-        m_audioPath = path;
-        m_player->setSource(QUrl::fromLocalFile(path));
-    } else {
-        m_audioPath.clear();
-        if (m_player)
-            m_player->setSource(QUrl());
-    }
+    m_audioPath = path;
+    m_audioMissing = !path.isEmpty() && !QFileInfo::exists(path);
+    if (m_player)
+        m_player->setSource(path.isEmpty() || m_audioMissing
+                                ? QUrl()
+                                : QUrl::fromLocalFile(path));
     updateAudioUi();
 }
 
@@ -1181,15 +1193,69 @@ void AnimaticPage::updateAudioUi()
 {
     const bool has = !m_audioPath.isEmpty();
     if (m_volumeSlider)
-        m_volumeSlider->setVisible(has);
+        m_volumeSlider->setVisible(has && !m_audioMissing);
     if (m_audioLabel) {
+        // In the header row, which stays when the timeline is collapsed: a
+        // missing track is announced where it cannot be folded away.
         m_audioLabel->setVisible(has);
-        if (has)
-            m_audioLabel->setText(QFileInfo(m_audioPath).fileName());
+        if (has) {
+            const QString name = QFileInfo(m_audioPath).fileName();
+            m_audioLabel->setText(
+                m_audioMissing
+                    ? name + QString::fromUtf8(" \xE2\x80\x94 missing")
+                    : name);
+            m_audioLabel->setStyleSheet(
+                m_audioMissing
+                    ? SankoTheme::themed("color: %WARNING%; font-size: 12px;")
+                    : QStringLiteral("color: #888888; font-size: 12px;"));
+            m_audioLabel->setToolTip(
+                m_audioMissing
+                    ? QStringLiteral("This project's audio file was not found "
+                                     "at:\n%1\n\nRight-click the audio track, "
+                                     "or use Edit > Locate Audio File, to "
+                                     "point to it.")
+                          .arg(QDir::toNativeSeparators(m_audioPath))
+                    : QDir::toNativeSeparators(m_audioPath));
+        }
     }
-    if (m_timeline)
+    if (m_timeline) {
+        m_timeline->setAudioMissing(m_audioMissing);
         m_timeline->setAudioLoaded(has, m_player ? m_player->duration() : 0);
-    emit audioStateChanged(); // the menus enable Remove from this
+    }
+    emit audioStateChanged(); // the menus enable Remove and Locate from this
+}
+
+// POINT THE TRACK AT ITS FILE AGAIN. Choosing a different path changes what
+// the project says, so it is a command like Import (undo returns to the
+// missing track at the old path). Choosing the SAME path - the file has
+// been put back - changes nothing in the document: the file is simply
+// loaded, with no command and no unsaved change.
+void AnimaticPage::locateAudio()
+{
+    if (m_audioPath.isEmpty())
+        return;
+    if (m_playing)
+        pause();
+    const QFileInfo stored(m_audioPath);
+    const QString folder = QDir(stored.absolutePath()).exists()
+        ? stored.absolutePath()
+        : m_fallbackFolder;
+    const QString suggestion = folder.isEmpty()
+        ? stored.fileName()
+        : folder + QLatin1Char('/') + stored.fileName();
+    const QString path = m_audioPickerForTest
+        ? m_audioPickerForTest()
+        : QFileDialog::getOpenFileName(
+              this, QStringLiteral("Locate Audio File"), suggestion,
+              QStringLiteral("Audio (*.wav *.mp3 *.aac *.m4a)"));
+    if (path.isEmpty())
+        return;
+    if (QFileInfo(path).absoluteFilePath().compare(stored.absoluteFilePath(),
+                                                   Qt::CaseInsensitive) == 0) {
+        applyAudioPath(m_audioPath); // re-read the disk: same document
+        return;
+    }
+    emit audioChangeRequested(path, QStringLiteral("Locate Audio File"));
 }
 
 QString AnimaticPage::audioPath() const
@@ -1214,6 +1280,12 @@ void AnimaticPage::showAudioMenu(const QPoint &globalPos)
         "QMenu::item { padding: 4px 18px; font-size: 11px; }"
         "QMenu::item:selected { background: #262626; color: #ffffff; }"
         "QMenu::item:disabled { color: #555555; }"));
+    if (m_audioMissing) {
+        // Offered only while there is something to locate.
+        QAction *locate = menu.addAction(QStringLiteral("Locate Audio File..."));
+        connect(locate, &QAction::triggered, this, [this] { locateAudio(); });
+        menu.addSeparator();
+    }
     QAction *importAction = menu.addAction(QStringLiteral("Import Audio..."));
     connect(importAction, &QAction::triggered, this, [this] { importAudio(); });
     QAction *removeAction = menu.addAction(QStringLiteral("Remove Audio"));

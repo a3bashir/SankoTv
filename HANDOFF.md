@@ -5255,10 +5255,54 @@ PASS 2 ITSELF:
   either later survives the hidden menu bar. Neither has one today (Ctrl+I
   is Import Image).
 
-GATE: Lifecycle (aj) entry points and the bar, (ak) undo. The file dialog
-cannot run under a test, so AnimaticPage takes a picker in its place
+A MISSING AUDIO FILE NO LONGER COSTS THE PROJECT ITS REFERENCE (its own
+commit, on top of the above). The animatic adopted a project's audio path
+only if the file existed, and save writes whatever path the animatic
+holds: a project opened while its audio was unavailable - a drive not
+mounted, a folder renamed - opened clean, said nothing, and the next save
+erased the path. Now:
+- the PATH IS KEPT. The document's path (audioPath) and "its file is
+  there" (audioMissing) are two facts; save always writes the first. The
+  project still opens clean.
+- it is SHOWN AS MISSING where it cannot be overlooked: the audio track
+  draws a hatched, dashed bar across the whole film in the new theme
+  colour kWarning (%WARNING% - the red several destructive hovers already
+  spelled as a literal) reading "MISSING - <file> - right-click to locate",
+  and the header row - which stays when the timeline is collapsed - shows
+  "<file> - missing" with the full stored path in its tooltip. No dialog
+  at load: the user's call (it would appear on every open until fixed).
+- it CAN BE POINTED AT ITS FILE AGAIN: Locate Audio File... on the track's
+  right-click menu (first entry, only while missing) and in Edit (enabled
+  only while missing). A DIFFERENT path is a command like Import - undo
+  returns to the missing track at the old path. The SAME path, the file
+  having been put back, just loads it: no command, not dirty. The dialog
+  opens in the stored path's folder, or the project's if that is gone too.
+- playback with a missing track runs silently; Remove and Import work on
+  it, undoably; a redo of an import whose file has since gone brings the
+  track back as missing rather than dropping it.
+CAUGHT BY THE CHECK WHILE BUILDING IT: the timeline was told "a track is
+loaded" from hasAudio(), which now means PLAYABLE - so a missing track
+arrived as no track and its bar read "Right-click to import audio". The
+timeline's "loaded" is "the project names a track".
+NOT COVERED: a file that disappears while the project is open is noticed
+only at the next load, import, locate, undo or redo. MP4 export still
+omits a missing track without saying so - Pass 4.
+
+OPEN ITEM, user's decision 2026-10-03, not this pass: THE AUDIO TRACK IS A
+REFERENCE BY ABSOLUTE PATH AND IS NEVER COPIED. A project moved to another
+machine, or whose audio is moved, shows its track as missing until it is
+located - honestly now, but it is the same class of defect as Save As not
+copying take videos (Pass 3's list): a project is not self-contained.
+Whatever is decided for one (copy into "<basename>_assets", or store a
+path relative to the project) should be decided for both.
+
+GATE: Lifecycle (aj) entry points and the bar, (ak) undo, (al) the missing
+file - including the check today's code fails: after an unrelated edit and
+a save, the project file still names the audio. The file dialog cannot run
+under a test, so AnimaticPage takes a picker in its place
 (setAudioPickerForTest); everything after the dialog is the real path.
-Lifecycle 450 -> 482.
+Lifecycle 450 -> 494 (451 and 453 after the two Pass 1 fixes, 482 after
+Pass 2, 494 with the missing-file fix).
 
 ## METHOD: measure interior structure ACROSS THE SIZE RANGE before calling it character (2026-09-25)
 

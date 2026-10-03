@@ -46,8 +46,9 @@ public:
     int selectedPanelForTest() const { return m_selected; }
     int playheadPanelForTest() const { return m_current; }
     int shotsTrackHeightForTest() const { return panelTrackH(); }
-    // What the audio track is showing: "none", "loading" or "present"; its
-    // text (the hint, or "name | m:ss"); and where the AUDIO row is.
+    // What the audio track is showing: "none", "loading", "present" or
+    // "missing"; its text (the hint, "name | m:ss", or the missing label);
+    // and where the AUDIO row is.
     QString audioBarStateForTest() const;
     QString audioBarTextForTest() const;
     QRect audioRowForTest() const;
@@ -72,6 +73,7 @@ public slots:
     void setPlaying(bool playing);
     void setLoopRegion(int startIndex, int endIndex);
     void setAudioLoaded(bool loaded, qint64 audioDurationMs);
+    void setAudioMissing(bool missing); // the project names a file that is gone
     void updatePlayhead();
     void refreshThumbnails(); // a panel's artwork changed: repaint the clips
 
@@ -127,12 +129,13 @@ private:
     // gate. Loading = a track is set and its length is not known yet.
     struct AudioBar
     {
-        enum State { None, Loading, Present };
+        enum State { None, Loading, Present, Missing };
         State state = None;
         QString name;   // the file's name
         QString length; // "m:ss", Present only
         QString hint;   // None only
-        QRect rect;     // Present only, on the canvas
+        QString label;  // Missing only: what the bar says
+        QRect rect;     // Present and Missing, on the canvas
     };
     AudioBar audioBar() const;
 
@@ -169,6 +172,7 @@ private:
     int m_loopStart = -1;
     int m_loopEnd = -1;
     bool m_audioLoaded = false;
+    bool m_audioMissing = false;
     qint64 m_audioDurationMs = 0;
     AnimaticPage *m_host = nullptr;
 

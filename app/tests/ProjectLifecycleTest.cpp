@@ -5847,6 +5847,189 @@ void runAudioUndoPass(const QString &project, const QString &scratch)
     }
 }
 
+// ---- (al) a project whose audio file is missing ----------------------------
+// The defect: the animatic adopted a project's audio path only if the file
+// existed, and save writes whatever path the animatic holds. A project
+// opened while its audio was unavailable opened clean, said nothing, and
+// the next save erased the reference. Now the path is kept, the track is
+// shown as missing, and it can be pointed at its file again.
+void runAudioMissingPass(const QString &scratch)
+{
+    using namespace workspace;
+    using namespace audio;
+    out() << "--- (al) a missing audio file keeps its path, shows as missing, "
+             "and can be located ---" << Qt::endl;
+    const QString wavA = scratch + QStringLiteral("/audio/first take.wav");
+    const QString wavB = scratch + QStringLiteral("/audio/second.wav");
+    const QString parked = wavA + QStringLiteral(".moved");
+    const QString saved = scratch
+        + QStringLiteral("/projects/WithAudio/WithAudio.sankotv");
+    auto manifestAudio = [&saved] {
+        QFile f(saved);
+        if (!f.open(QIODevice::ReadOnly))
+            return QStringLiteral("<unreadable>");
+        return QJsonDocument::fromJson(f.readAll())
+            .object()
+            .value(QStringLiteral("audioPath"))
+            .toString();
+    };
+
+    // CONTROL FIRST, with the file present: the same readings say "present".
+    {
+        Rig r(saved);
+        if (!r.ok) {
+            check(QStringLiteral("(al) the project with a track opens"), false);
+            return;
+        }
+        QAction *locate =
+            editAction(r.window, QStringLiteral("Locate Audio File..."));
+        const bool present = waitFor([&] {
+            return r.timeline->audioBarStateForTest() == QStringLiteral("present");
+        });
+        check(QStringLiteral("(al) control: with the file where the project "
+                             "says, the track is present and Locate Audio "
+                             "File is disabled"),
+              present && !r.animatic->audioMissing() && locate
+                  && !locate->isEnabled() && manifestAudio() == wavA,
+              r.timeline->audioBarTextForTest());
+    }
+
+    check(QStringLiteral("(al) fixture: the audio file is moved away"),
+          QFile::rename(wavA, parked) && !QFileInfo::exists(wavA));
+    {
+        Rig r(saved);
+        if (!r.ok) {
+            check(QStringLiteral("(al) the project opens without its audio "
+                                 "file"), false);
+            return;
+        }
+        QUndoStack *undo = r.window.undoStackForTest();
+        QAction *locate =
+            editAction(r.window, QStringLiteral("Locate Audio File..."));
+        QAction *removeAct = editAction(r.window, QStringLiteral("Remove Audio"));
+        QAction *undoAct = editAction(r.window, QStringLiteral("Undo"));
+        check(QStringLiteral("(al) it opens CLEAN and still holds the path "
+                             "(it used to drop it here)"),
+              !r.window.isDirty() && r.animatic->audioPath() == wavA
+                  && r.animatic->audioMissing() && undo->count() == 0,
+              QFileInfo(r.animatic->audioPath()).fileName());
+        check(QStringLiteral("(al) the audio track says MISSING, with the "
+                             "file's name and what to do"),
+              r.timeline->audioBarStateForTest() == QStringLiteral("missing")
+                  && r.timeline->audioBarTextForTest().contains(
+                         QStringLiteral("MISSING"))
+                  && r.timeline->audioBarTextForTest().contains(
+                         QStringLiteral("first take.wav"))
+                  && r.timeline->audioBarTextForTest().contains(
+                         QStringLiteral("right-click to locate")),
+              r.timeline->audioBarTextForTest());
+        bool headerSays = false;
+        for (QLabel *label : r.animatic->findChildren<QLabel *>())
+            if (label->isVisible()
+                && label->text().contains(QStringLiteral("first take.wav"))
+                && label->text().contains(QStringLiteral("missing")))
+                headerSays = true;
+        r.animatic->setCollapsed(true);
+        pump(400);
+        bool headerSaysCollapsed = false;
+        for (QLabel *label : r.animatic->findChildren<QLabel *>())
+            if (label->isVisible()
+                && label->text().contains(QStringLiteral("missing")))
+                headerSaysCollapsed = true;
+        r.animatic->setCollapsed(false);
+        pump(400);
+        check(QStringLiteral("(al) the header row says so too - and still "
+                             "does with the timeline collapsed"),
+              headerSays && headerSaysCollapsed);
+        check(QStringLiteral("(al) Locate Audio File and Remove Audio are "
+                             "both enabled for it"),
+              locate && locate->isEnabled() && removeAct
+                  && removeAct->isEnabled());
+
+        QStringList menuSaw;
+        r.animatic->setAudioMenuHookForTest([&](QMenu *menu) {
+            menuSaw.clear();
+            for (QAction *a : menu->actions())
+                if (!a->isSeparator())
+                    menuSaw << a->text();
+        });
+        rightClickAudioRow(r);
+        r.animatic->setAudioMenuHookForTest({});
+        check(QStringLiteral("(al) the track's right-click menu leads with "
+                             "Locate Audio File..."),
+              menuSaw == QStringList({QStringLiteral("Locate Audio File..."),
+                                      QStringLiteral("Import Audio..."),
+                                      QStringLiteral("Remove Audio")}),
+              menuSaw.join(QStringLiteral(" | ")));
+
+        // THE DEFECT ITSELF: an unrelated edit, a save - the path survives.
+        r.animatic->setPanelDurationForTest(0, 0, 6);
+        pump(200);
+        check(QStringLiteral("(al) after an unrelated edit and a SAVE the "
+                             "project file still names the audio (it used to "
+                             "be written back empty)"),
+              r.window.saveProjectForTest(saved) && manifestAudio() == wavA,
+              QFileInfo(manifestAudio()).fileName());
+
+        r.animatic->togglePlay();
+        pump(150);
+        r.animatic->advanceForTest();
+        pump(100);
+        check(QStringLiteral("(al) the film plays, silently, with the track "
+                             "missing"),
+              r.animatic->isPlaying());
+        r.animatic->leavePreview();
+
+        // ---- locate: a DIFFERENT file -----------------------------------------
+        r.window.markCleanForTest();
+        const int count = undo->count();
+        r.animatic->setAudioPickerForTest([wavB] { return wavB; });
+        if (locate)
+            locate->trigger();
+        pump(250);
+        const bool relinked = waitFor([&] {
+            return r.timeline->audioBarStateForTest() == QStringLiteral("present");
+        });
+        check(QStringLiteral("(al) Locate to another file re-points the "
+                             "track: playable, ONE command, project "
+                             "unsaved"),
+              relinked && r.animatic->audioPath() == wavB
+                  && !r.animatic->audioMissing() && r.window.isDirty()
+                  && undo->count() == count + 1
+                  && undo->undoText() == QStringLiteral("Locate Audio File")
+                  && locate && !locate->isEnabled(),
+              r.timeline->audioBarTextForTest());
+        if (undoAct)
+            undoAct->trigger();
+        pump(250);
+        check(QStringLiteral("(al) ...and undo returns to the missing track "
+                             "at the old path"),
+              r.animatic->audioPath() == wavA && r.animatic->audioMissing()
+                  && r.timeline->audioBarStateForTest()
+                         == QStringLiteral("missing"));
+
+        // ---- locate: the SAME path, the file put back --------------------------
+        const bool restored = QFile::rename(parked, wavA);
+        r.window.markCleanForTest();
+        const int countBefore = undo->count();
+        r.animatic->setAudioPickerForTest([wavA] { return wavA; });
+        if (locate)
+            locate->trigger();
+        pump(250);
+        const bool back = waitFor([&] {
+            return r.timeline->audioBarStateForTest() == QStringLiteral("present");
+        });
+        check(QStringLiteral("(al) with the file put back, Locate to the SAME "
+                             "path just loads it: playable, NOT dirty, "
+                             "nothing added to the history"),
+              restored && back && !r.animatic->audioMissing()
+                  && r.animatic->audioPath() == wavA && !r.window.isDirty()
+                  && undo->count() == countBefore,
+              r.timeline->audioBarTextForTest());
+        r.animatic->setAudioPickerForTest({});
+    }
+}
+
 int main(int argc, char **argv)
 {
 #ifdef Q_OS_WIN
@@ -6047,6 +6230,7 @@ int main(int argc, char **argv)
         runWorkspaceLayoutPass(work);
         runAudioEntryPointsPass(work, scratch);
         runAudioUndoPass(work, scratch);
+        runAudioMissingPass(scratch);
     }
 
     // ---- (aa) a test that cannot start says why and exits ----------------

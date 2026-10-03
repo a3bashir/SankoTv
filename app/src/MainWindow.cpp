@@ -530,8 +530,16 @@ void MainWindow::setupMenuBar()
         if (m_stack && m_stack->currentWidget() == m_storyboard && m_animatic)
             m_animatic->removeAudio();
     });
+    // For a project whose audio file is not where the project says: enabled
+    // only then.
+    m_locateAudioAct = editMenu->addAction(QStringLiteral("Locate Audio File..."));
+    connect(m_locateAudioAct, &QAction::triggered, this, [this] {
+        if (m_stack && m_stack->currentWidget() == m_storyboard && m_animatic)
+            m_animatic->locateAudio();
+    });
     m_importAudioAct->setEnabled(false);
     m_removeAudioAct->setEnabled(false);
+    m_locateAudioAct->setEnabled(false);
 
 
     editMenu->addSeparator();
@@ -652,6 +660,9 @@ void MainWindow::updateAudioActions()
     if (m_removeAudioAct)
         m_removeAudioAct->setEnabled(inWorkspace && m_animatic
                                      && !m_animatic->audioPath().isEmpty());
+    if (m_locateAudioAct)
+        m_locateAudioAct->setEnabled(inWorkspace && m_animatic
+                                     && m_animatic->audioMissing());
 }
 
 // --- Project Settings -----------------------------------------------------
@@ -1343,6 +1354,8 @@ bool MainWindow::saveToPath(const QString &path)
 void MainWindow::markSavedTo(const QString &path, SaveCompleted)
 {
     m_currentProjectPath = path;
+    if (m_animatic)
+        m_animatic->setFallbackFolder(QFileInfo(path).absolutePath());
     RecentProjects::record(path);
     setClean(); // what is on disk now matches what is in memory
 }
@@ -1386,7 +1399,11 @@ bool MainWindow::loadFromPath(const QString &path)
     if (m_consistencyBoard)
         m_consistencyBoard->refresh();
 
-    // Scratch audio track (loaded only if the file still exists at that path).
+    // Scratch audio track. The path is adopted as the project gives it,
+    // whether or not the file is there right now: a missing file is shown
+    // as missing (and can be located), never dropped - dropping it here is
+    // how the next save used to erase the reference.
+    m_animatic->setFallbackFolder(folder);
     m_animatic->setAudioPath(loaded.audioPath);
 
     m_currentProjectPath = path;

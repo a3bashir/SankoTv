@@ -819,6 +819,33 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
                 p.drawText(QRect(left, bar.rect.top(), nameW, bar.rect.height()),
                            Qt::AlignVCenter | Qt::AlignLeft,
                            fm.elidedText(bar.name, Qt::ElideMiddle, nameW));
+        } else if (bar.state == AudioBar::Missing) {
+            // The project names a file that is not there. Its length is
+            // unknown, so the bar spans the film, HATCHED and outlined in
+            // the warning colour - nothing about it can be mistaken for a
+            // track that will play.
+            QColor line = SankoTheme::kWarning;
+            QColor hatch = SankoTheme::kWarning;
+            hatch.setAlphaF(0.35);
+            p.setPen(QPen(line, 1.0, Qt::DashLine));
+            p.setBrush(QBrush(hatch, Qt::BDiagPattern));
+            p.drawRect(bar.rect.adjusted(0, 0, -1, -1));
+            const int left = qMax(bar.rect.left(), kLabelCol) + 8;
+            const int right = qMin(bar.rect.right(), contentRight) - 8;
+            const int textW = qMin(fm.horizontalAdvance(bar.label) + 12,
+                                   right - left);
+            if (textW > 24) {
+                // The words sit on an opaque chip so the hatch does not run
+                // through them.
+                const QRect chip(left, bar.rect.top() + 2, textW,
+                                 bar.rect.height() - 4);
+                p.fillRect(chip, QColor("#111111"));
+                p.setPen(line);
+                p.drawText(chip.adjusted(6, 0, -6, 0),
+                           Qt::AlignVCenter | Qt::AlignLeft,
+                           fm.elidedText(bar.label, Qt::ElideMiddle,
+                                         textW - 12));
+            }
         } else if (bar.state == AudioBar::Loading) {
             // The track is set but its length has not been read yet: the
             // name, and no bar - never a bar of a guessed length.
@@ -896,6 +923,15 @@ AnimaticTimeline::AudioBar AnimaticTimeline::audioBar() const
         return bar;
     }
     bar.name = path.section('/', -1).section('\\', -1);
+    if (m_audioMissing) {
+        bar.state = AudioBar::Missing;
+        bar.label = QString::fromUtf8("MISSING \xE2\x80\x94 %1 \xC2\xB7 "
+                                      "right-click to locate").arg(bar.name);
+        const int x0 = contentXToScreen(0);
+        const int x1 = contentXToScreen(contentWidthPx());
+        bar.rect = QRect(x0, audioTrackY() + 6, qMax(2, x1 - x0), kAudioH - 12);
+        return bar;
+    }
     if (m_audioDurationMs <= 0) {
         bar.state = AudioBar::Loading;
         return bar;
@@ -917,6 +953,7 @@ QString AnimaticTimeline::audioBarStateForTest() const
     case AudioBar::None: return QStringLiteral("none");
     case AudioBar::Loading: return QStringLiteral("loading");
     case AudioBar::Present: return QStringLiteral("present");
+    case AudioBar::Missing: return QStringLiteral("missing");
     }
     return QString();
 }
@@ -924,10 +961,21 @@ QString AnimaticTimeline::audioBarStateForTest() const
 QString AnimaticTimeline::audioBarTextForTest() const
 {
     const AudioBar bar = audioBar();
-    return bar.state == AudioBar::None
-        ? bar.hint
-        : (bar.length.isEmpty() ? bar.name
-                                : bar.name + QStringLiteral(" | ") + bar.length);
+    if (bar.state == AudioBar::None)
+        return bar.hint;
+    if (bar.state == AudioBar::Missing)
+        return bar.label;
+    return bar.length.isEmpty() ? bar.name
+                                : bar.name + QStringLiteral(" | ") + bar.length;
+}
+
+void AnimaticTimeline::setAudioMissing(bool missing)
+{
+    if (m_audioMissing == missing)
+        return;
+    m_audioMissing = missing;
+    if (m_canvas)
+        m_canvas->update();
 }
 
 QRect AnimaticTimeline::audioRowForTest() const

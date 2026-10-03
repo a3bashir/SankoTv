@@ -257,4 +257,5 @@ private:
     // Edit-menu audio actions (the workspace page, with a project open).
     QAction *m_importAudioAct = nullptr;
     QAction *m_removeAudioAct = nullptr;
+    QAction *m_locateAudioAct = nullptr; // only while the track is missing
 };

@@ -58,6 +58,11 @@ being removed; see HANDOFF "The combined workspace".)
   arrows, Home/End, Esc, Delete — `StoryboardPage::updateTimelineKeys`).
   The canvas needs keyboard focus for the Space pan modifier, so nothing in
   the timeline section may take focus (every button there is `NoFocus`).
+- **Every timeline edit is a command on the one undo stack** — a duration
+  drag, Import / Remove / Locate Audio. None of them writes the model
+  directly or emits a "document changed"; the stack marks the project
+  dirty. The audio track is a PATH in the document, kept whether or not
+  the file is there (`AnimaticPage::audioPath` vs `audioMissing`).
 - **The start window** (`DashboardPage`) is where recent projects live:
   three cards plus compact rows (`RecentProjectsView`), thumbnails decoded
   off the paint path (`RecentThumbnails`), store and thumbnail source in

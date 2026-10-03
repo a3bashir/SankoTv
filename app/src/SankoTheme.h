@@ -74,14 +74,21 @@ inline const QString kAccentDisabledHex = QStringLiteral("#3d3766");
 inline const QColor kAccentDisabledText(0x8a, 0x86, 0xa8);
 inline const QString kAccentDisabledTextHex = QStringLiteral("#8a86a8");
 
+// WARNING: something the project refers to is not where it says - today, a
+// scratch audio file that is missing. The red several destructive hovers
+// already spell as a literal (#e06c6c); new uses take it from here.
+inline const QColor kWarning(0xe0, 0x6c, 0x6c);
+inline const QString kWarningHex = QStringLiteral("#e06c6c");
+
 // Stylesheet templates carry %ACCENT% / %ACCENT_RGB% / %ACCENT_LIGHT% /
 // %ACCENT_HOVER% / %ACCENT_PRESSED% / %ACCENT_DISABLED% /
-// %ACCENT_DISABLED_TEXT% / %PURPLE% and are resolved here, so a stylesheet
-// never embeds an accent literal. Longest placeholders are replaced first so
-// none can shadow another by prefix.
+// %ACCENT_DISABLED_TEXT% / %PURPLE% / %WARNING% and are resolved here, so a
+// stylesheet never embeds a theme literal. Longest placeholders are replaced
+// first so none can shadow another by prefix.
 inline QString themed(const char *qss)
 {
     QString s = QString::fromLatin1(qss);
+    s.replace(QLatin1String("%WARNING%"), kWarningHex);
     s.replace(QLatin1String("%ACCENT_DISABLED_TEXT%"), kAccentDisabledTextHex);
     s.replace(QLatin1String("%ACCENT_DISABLED%"), kAccentDisabledHex);
     s.replace(QLatin1String("%ACCENT_PRESSED%"), kAccentPressedHex);
