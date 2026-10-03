@@ -168,6 +168,14 @@ Learned from real defects. Follow them exactly.
    runs on the REAL platform only — Qt's offscreen platform passes most
    families while measuring a different font engine and a simulated
    screen, and is not to be used for it.
+   **A check may not depend on the machine's real pointer, its cursor
+   position, or which window is active.** The gate runs on a machine
+   someone is using: a hover-driven check passed five times and then
+   failed six assertions on unchanged code because the mouse had been left
+   over the test window. Anything decided by Enter/Leave or by focus needs
+   a seam that takes only the test's own events
+   (`StoryboardPage::setRealPointerIgnoredForTest`) and reads the window's
+   focus widget, not the application's.
 5. **Build hygiene.** Kill any running `SankoTV.exe` before building.
    Verify the exe timestamp and the real exit code; grep build output for
    `error C|error MSB|error LNK|Shader baking`. Stale exes have produced

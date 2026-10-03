@@ -4747,6 +4747,30 @@ void StoryboardPage::setupAnimaticSection(QWidget *centerColumn,
            [this] { deleteSelectedPanel(); });
 }
 
+// THE GATE'S POINTER. Whose keys these are depends on Enter / Leave, and the
+// real mouse sends those too: with the pointer resting where a test window
+// opens, the real events arrived between the test's own and section (ag)
+// failed six checks on code that had not changed (2026-10-03 - it had passed
+// five times the day before, with the pointer parked elsewhere). A check
+// that depends on where somebody left their mouse is not a gate. With this
+// on, the page hears only the pointer events delivered through
+// sendPointerEventForTest - which go through the same event filter, by the
+// same sendEvent, as real ones - and does not read the cursor position.
+void StoryboardPage::setRealPointerIgnoredForTest(bool ignored)
+{
+    m_ignoreRealPointerForTest = ignored;
+    m_pointerOverTimeline = false;
+    m_pointerOverPreview = false;
+    updateTimelineKeys();
+}
+
+void StoryboardPage::sendPointerEventForTest(QWidget *target, QEvent *event)
+{
+    m_inTestPointerEvent = true;
+    QCoreApplication::sendEvent(target, event);
+    m_inTestPointerEvent = false;
+}
+
 void StoryboardPage::updateTimelineKeys()
 {
     const bool overPreview = m_pointerOverPreview && m_animatic
@@ -5501,6 +5525,7 @@ bool StoryboardPage::eventFilter(QObject *object, QEvent *event)
         else if (event->type() == QEvent::WindowUnblocked)
             FloatingToolWindow::restoreFloatingBars(m_canvas);
         else if (event->type() == QEvent::WindowDeactivate
+                 && !m_ignoreRealPointerForTest
                  && (m_pointerOverTimeline || m_pointerOverPreview)) {
             // No Leave arrives when the window merely loses activation;
             // the keys go back to the canvas until the pointer says
@@ -5513,24 +5538,31 @@ bool StoryboardPage::eventFilter(QObject *object, QEvent *event)
 
     // WHOSE KEYS: the timeline's while the pointer is over the animatic
     // section, or over the preview it is playing (see setupAnimaticSection).
+    // `pointerSpeaks` is always true in the app. Under the gate it is true
+    // only for the Enter / Leave the test itself delivers (see
+    // setRealPointerIgnoredForTest): the mouse of whoever is sitting at the
+    // machine sends real ones, and they are not part of the test.
+    const bool pointerSpeaks =
+        !m_ignoreRealPointerForTest || m_inTestPointerEvent;
     if (m_animatic && object == m_animatic) {
-        if (event->type() == QEvent::Enter) {
+        if (event->type() == QEvent::Enter && pointerSpeaks) {
             m_pointerOverTimeline = true;
             updateTimelineKeys();
-        } else if (event->type() == QEvent::Leave
+        } else if ((event->type() == QEvent::Leave && pointerSpeaks)
                    || event->type() == QEvent::Hide) {
             m_pointerOverTimeline = false;
             updateTimelineKeys();
         }
     } else if (m_animatic && object == m_animatic->previewSurface()) {
-        if (event->type() == QEvent::Enter) {
+        if (event->type() == QEvent::Enter && pointerSpeaks) {
             m_pointerOverPreview = true;
             updateTimelineKeys();
-        } else if (event->type() == QEvent::Leave
+        } else if ((event->type() == QEvent::Leave && pointerSpeaks)
                    || event->type() == QEvent::Hide) {
             m_pointerOverPreview = false;
             updateTimelineKeys();
-        } else if (event->type() == QEvent::Show) {
+        } else if (event->type() == QEvent::Show
+                   && !m_ignoreRealPointerForTest) {
             // It appeared UNDER a pointer that has not moved: no Enter is
             // coming until it does.
             auto *preview = static_cast<QWidget *>(object);

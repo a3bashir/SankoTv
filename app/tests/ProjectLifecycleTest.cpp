@@ -4362,6 +4362,11 @@ struct Rig
         timeline = animatic ? animatic->timelineForTest() : nullptr;
         surface = timeline ? timeline->surfaceForTest() : nullptr;
         ok = storyboard && animatic && canvas && timeline && surface;
+        // Whose keys the timeline's are depends on the pointer, and this
+        // machine has a real one, wherever its owner left it. From here the
+        // page hears only the pointer events hover() delivers.
+        if (storyboard)
+            storyboard->setRealPointerIgnoredForTest(true);
     }
     ~Rig()
     {
@@ -4453,17 +4458,21 @@ QString state(Rig &r)
         .arg(r.timeline->playheadPanelForTest());
 }
 
-// The pointer arriving over / leaving a widget, as Qt would announce it.
-// (The real cursor is not moved: this machine may be in use.)
-void hover(QWidget *w, bool over)
+// The pointer arriving over / leaving a widget, as Qt would announce it:
+// the same Enter / Leave, sent the same way, through the page's own event
+// filter. (The real cursor is not moved - this machine may be in use - and
+// since 2026-10-03 the page does not listen to it either: with the real
+// pointer resting over the test window its events arrived in between these
+// and six checks failed on unchanged code.)
+void hover(Rig &r, QWidget *w, bool over)
 {
     if (over) {
         const QPointF p(6, 6);
         QEnterEvent ev(p, p, w->mapToGlobal(p.toPoint()));
-        QCoreApplication::sendEvent(w, &ev);
+        r.storyboard->sendPointerEventForTest(w, &ev);
     } else {
         QEvent ev(QEvent::Leave);
-        QCoreApplication::sendEvent(w, &ev);
+        r.storyboard->sendPointerEventForTest(w, &ev);
     }
     pump(60);
 }
@@ -5024,28 +5033,45 @@ void runWorkspaceKeysPass(const QString &project)
         return;
     QWidget *preview = r.animatic->previewSurface();
     r.canvas->setFocus();
-    hover(r.animatic, false);
-    hover(preview, false);
+    hover(r, r.animatic, false);
+    hover(r, preview, false);
+
+    // THE CONTROL FOR THE SEAM ITSELF: an Enter that does not come through
+    // hover() - which is what the real mouse's would be - arms nothing.
+    {
+        const QPointF p(6, 6);
+        QEnterEvent stray(p, p, r.animatic->mapToGlobal(p.toPoint()));
+        QCoreApplication::sendEvent(r.animatic, &stray);
+        pump(60);
+        check(QStringLiteral("(ag) control: an Enter the test did not "
+                             "deliver (the real mouse's would be one) arms "
+                             "nothing - this section cannot depend on where "
+                             "the pointer was left"),
+              !r.storyboard->timelineKeysArmedForTest());
+    }
 
     check(QStringLiteral("(ag) a click on the timeline does not take "
                          "keyboard focus from the canvas (the pan modifier "
                          "is a key event on the canvas)"),
           [&] {
               clickClip(r, 1);
-              return QApplication::focusWidget() == r.canvas;
+              // The WINDOW's focus widget: the application-wide one is
+              // null whenever this is not the active window, which is not
+              // the test's to decide on a machine in use.
+              return r.window.focusWidget() == r.canvas;
           }());
     check(QStringLiteral("(ag) pointer NOT over the timeline: Space is "
                          "claimed by no shortcut - it is the canvas's"),
           !r.storyboard->timelineKeysArmedForTest()
               && !keyClaimed(&r.window, Qt::Key_Space)
               && !r.animatic->isPlaying());
-    hover(r.animatic, true);
+    hover(r, r.animatic, true);
     const bool armed = r.storyboard->timelineKeysArmedForTest();
     const bool claimed = keyClaimed(&r.window, Qt::Key_Space);
     check(QStringLiteral("(ag) pointer OVER the timeline: the same Space "
                          "plays (control: the same key, the same focus)"),
           armed && claimed && r.animatic->isPlaying()
-              && QApplication::focusWidget() == r.canvas);
+              && r.window.focusWidget() == r.canvas);
     keyClaimed(&r.window, Qt::Key_Space);
     check(QStringLiteral("(ag) ...and Space again pauses, with the preview "
                          "still up"),
@@ -5083,7 +5109,7 @@ void runWorkspaceKeysPass(const QString &project)
         pump(200);
         notes->setFocus();
         pump(150);
-        const bool focused = QApplication::focusWidget() == notes;
+        const bool focused = r.window.focusWidget() == notes;
         const bool typed = !keyClaimed(notes, Qt::Key_Space);
         check(QStringLiteral("(ag) with the pointer over the timeline but a "
                              "text field focused, Space is the text "
@@ -5102,7 +5128,7 @@ void runWorkspaceKeysPass(const QString &project)
             spaceKey = s;
     }
     const bool deleteOverTimeline = deleteKey && deleteKey->isEnabled();
-    hover(r.animatic, false);
+    hover(r, r.animatic, false);
     check(QStringLiteral("(ag) the pointer leaves: every timeline key is "
                          "disarmed again (Delete was armed over it)"),
           deleteOverTimeline && deleteKey && !deleteKey->isEnabled()
@@ -5115,9 +5141,9 @@ void runWorkspaceKeysPass(const QString &project)
     // pointer there is the film, not the canvas - but Delete does not.
     r.animatic->togglePlay();
     pump(150);
-    hover(preview, false);
+    hover(r, preview, false);
     const bool notYet = !r.storyboard->timelineKeysArmedForTest();
-    hover(preview, true);
+    hover(r, preview, true);
     const bool overPreview = r.storyboard->timelineKeysArmedForTest();
     const bool pausedThere = keyClaimed(&r.window, Qt::Key_Space)
         && !r.animatic->isPlaying();

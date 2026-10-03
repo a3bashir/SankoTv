@@ -171,6 +171,11 @@ public:
     // Whether Space / arrows / Home / End / Delete currently belong to the
     // timeline (the pointer is over it) rather than to the canvas.
     bool timelineKeysArmedForTest() const { return m_timelineKeysArmed; }
+    // The gate's pointer (see the .cpp): hear only the Enter / Leave events
+    // the test delivers through sendPointerEventForTest, never the real
+    // mouse, so the result cannot depend on where the pointer was left.
+    void setRealPointerIgnoredForTest(bool ignored);
+    void sendPointerEventForTest(QWidget *target, QEvent *event);
     // The clip context menu, handed to the test instead of being shown.
     void setClipMenuHookForTest(std::function<void(QMenu *)> hook)
     {
@@ -539,6 +544,8 @@ private:
     bool m_pointerOverTimeline = false;
     bool m_pointerOverPreview = false;
     bool m_timelineKeysArmed = false;
+    bool m_ignoreRealPointerForTest = false; // the gate: test events only
+    bool m_inTestPointerEvent = false;       // ...and this is one of them
     int m_selectPanelCalls = 0;
     std::function<void(QMenu *)> m_clipMenuHookForTest;
 
