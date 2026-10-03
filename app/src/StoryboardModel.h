@@ -94,7 +94,9 @@ struct Panel
     // AI video generation. KEPT DATA WITH NO UI: the Generation screen that
     // wrote these was removed (HANDOFF "Pass 3"), and nothing in the app
     // reads or shows them now. ProjectIO still loads and saves every one,
-    // so a project that carries takes keeps them.
+    // exactly as saved, so a project that carries takes keeps them -
+    // Lifecycle (am) is the only thing that will notice if that stops
+    // being true.
     QString generationStatus = QStringLiteral("Not Queued"); // Not Queued, Queued,
                                                              // Generating, Complete, Failed
     QString generatedVideoPath; // mirrors the SELECTED take's videoPath (Export/Save compat)

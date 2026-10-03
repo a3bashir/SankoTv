@@ -6047,6 +6047,258 @@ void runAudioMissingPass(const QString &scratch)
     }
 }
 
+// ---- (am) generation data survives open and save ---------------------------
+// The Generation page is gone, and with it every screen that showed a take.
+// The data is still in the model and still read and written by ProjectIO -
+// request ids, statuses, prompts, timestamps, costs, the selected take - and
+// THIS SECTION IS NOW THE ONLY THING THAT WILL NOTICE IF IT STOPS SURVIVING.
+// Three kinds of panel, as old projects can hold them: one with three takes
+// (video present / video missing / already failed, no path), one from
+// before takes existed (a lone video path), one that was mid-generation.
+namespace takes {
+
+const char *const kFields[] = {"generationStatus", "generatedVideoPath",
+                               "falRequestId", "takes", "selectedTakeId"};
+
+QJsonArray panelsOf(const QString &manifest)
+{
+    QJsonArray all;
+    QFile f(manifest);
+    if (!f.open(QIODevice::ReadOnly))
+        return all;
+    const QJsonObject root = QJsonDocument::fromJson(f.readAll()).object();
+    for (const QJsonValue &s : root.value(QStringLiteral("scenes")).toArray())
+        for (const QJsonValue &p :
+             s.toObject().value(QStringLiteral("panels")).toArray())
+            all.append(p);
+    return all;
+}
+
+QJsonObject generationOf(const QJsonValue &panel)
+{
+    QJsonObject out;
+    for (const char *key : kFields)
+        out[QLatin1String(key)] = panel.toObject().value(QLatin1String(key));
+    return out;
+}
+
+QString text(const QJsonObject &o)
+{
+    return QString::fromUtf8(QJsonDocument(o).toJson(QJsonDocument::Compact));
+}
+
+// Every generation field of every panel, file against file.
+bool same(const QString &a, const QString &b, QString *why)
+{
+    const QJsonArray pa = panelsOf(a), pb = panelsOf(b);
+    if (pa.isEmpty() || pa.size() != pb.size()) {
+        *why = QStringLiteral("%1 vs %2 panels").arg(pa.size()).arg(pb.size());
+        return false;
+    }
+    for (int i = 0; i < pa.size(); ++i)
+        if (generationOf(pa.at(i)) != generationOf(pb.at(i))) {
+            *why = QStringLiteral("panel %1: %2  ->  %3")
+                       .arg(i)
+                       .arg(text(generationOf(pa.at(i))),
+                            text(generationOf(pb.at(i))));
+            return false;
+        }
+    return true;
+}
+
+void touch(const QString &path)
+{
+    QFile f(path);
+    if (f.open(QIODevice::WriteOnly))
+        f.write("not really a video");
+}
+
+} // namespace takes
+
+void runTakesRoundTripPass(const QString &scratch)
+{
+    using namespace takes;
+    out() << "--- (am) generation data survives open and save, with no "
+             "screen left to show it ---" << Qt::endl;
+    const QString dirA = scratch + QStringLiteral("/projects/Takes");
+    const QString dirB = scratch + QStringLiteral("/projects/TakesCopy");
+    QDir().mkpath(dirA);
+    QDir().mkpath(dirB);
+    const QString path = dirA + QStringLiteral("/Takes.sankotv");
+    const QString original = dirA + QStringLiteral("/original.json");
+    const QString firstSave = dirA + QStringLiteral("/first_save.json");
+    touch(dirA + QStringLiteral("/take_one.mp4"));
+    touch(dirA + QStringLiteral("/old_clip.mp4"));
+    {
+        Scene *scene = new Scene;
+        scene->number = 1;
+        scene->location = QStringLiteral("INT. TAKES");
+        for (int i = 0; i < 3; ++i)
+            scene->panels.append(makeBlankPanel(QSize(960, 540)));
+        Panel *p0 = scene->panels.at(0);
+        GeneratedTake present;
+        present.id = QStringLiteral("take-1");
+        present.videoPath = QStringLiteral("take_one.mp4");
+        present.promptUsed = QStringLiteral("A slow push in on the door.");
+        present.timestamp = QStringLiteral("2026-07-01 10:00:00");
+        present.status = QStringLiteral("Complete");
+        present.costEstimate = 0.05;
+        GeneratedTake gone = present; // finished - its video is not here
+        gone.id = QStringLiteral("take-2");
+        gone.videoPath = QStringLiteral("take_two_MISSING.mp4");
+        gone.promptUsed = QStringLiteral("Same, faster.");
+        gone.costEstimate = 0.07;
+        GeneratedTake failed = present; // failed at the time: no file at all
+        failed.id = QStringLiteral("take-3");
+        failed.videoPath.clear();
+        failed.status = QStringLiteral("Failed");
+        p0->takes = {present, gone, failed};
+        p0->selectedTakeId = present.id;
+        p0->generatedVideoPath = present.videoPath;
+        p0->falRequestId = QStringLiteral("req-abc-123");
+        p0->generationStatus = QStringLiteral("Complete");
+        Panel *p1 = scene->panels.at(1); // from before takes existed
+        p1->generatedVideoPath = QStringLiteral("old_clip.mp4");
+        p1->falRequestId = QStringLiteral("req-old");
+        p1->generationStatus = QStringLiteral("Complete");
+        Panel *p2 = scene->panels.at(2); // was mid-generation when saved
+        p2->falRequestId = QStringLiteral("req-live");
+        p2->generationStatus = QStringLiteral("Generating");
+
+        ProjectIO::SaveData data;
+        data.projectName = QStringLiteral("Takes");
+        data.fps = 24;
+        data.canvasSize = QSize(960, 540);
+        data.scenes = {scene};
+        const ProjectIO::WriteResult written = ProjectIO::projectToJson(data, path);
+        QFile f(path);
+        const bool wrote = written.ok && f.open(QIODevice::WriteOnly)
+            && f.write(QJsonDocument(written.root).toJson()) > 0;
+        f.close();
+        delete scene;
+        check(QStringLiteral("(am) fixture: a project with three takes, a "
+                             "pre-takes panel and a mid-generation panel"),
+              wrote && QFile::copy(path, original)
+                  && panelsOf(original).size() == 3);
+    }
+
+    // THE COMPARATOR'S OWN CONTROL: one changed status in one take, and it
+    // says "different" - otherwise every PASS below could be a comparator
+    // that sees nothing.
+    {
+        const QString tampered = dirA + QStringLiteral("/tampered.json");
+        QFile in(original);
+        in.open(QIODevice::ReadOnly);
+        QByteArray bytes = in.readAll();
+        // take-2's own "status" line (keys are written in alphabetical
+        // order, so it follows that take's "id").
+        const int line = bytes.indexOf("\"status\"", bytes.indexOf("take-2"));
+        bytes.replace(line, bytes.indexOf('\n', line) - line,
+                      "\"status\": \"Failed\",");
+        QFile outFile(tampered);
+        outFile.open(QIODevice::WriteOnly);
+        outFile.write(bytes);
+        outFile.close();
+        QString why;
+        check(QStringLiteral("(am) control: the comparator SEES one take's "
+                             "status changing"),
+              !same(original, tampered, &why) && why.contains(QStringLiteral("panel 0")),
+              why.left(120));
+    }
+
+    MainWindow window;
+    window.resize(1300, 850);
+    window.show();
+    pump(700);
+    QString why;
+    check(QStringLiteral("(am) the project opens, clean"),
+          window.loadProjectForTest(path) && !window.isDirty());
+    pump(400);
+    check(QStringLiteral("(am) ...and saves"), window.saveProjectForTest(path));
+    QFile::copy(path, firstSave);
+
+    const QJsonArray was = panelsOf(original), now = panelsOf(firstSave);
+    const bool threeTakesKept = was.size() == 3 && now.size() == 3
+        && generationOf(was.at(0)) == generationOf(now.at(0));
+    check(QStringLiteral("(am) the panel with three takes is UNCHANGED by "
+                         "open + save: ids, paths, prompts, timestamps, "
+                         "costs, the selected take, the request id - and "
+                         "every status, including the finished take whose "
+                         "video is not on disk (it used to be rewritten "
+                         "\"Failed\")"),
+          threeTakesKept,
+          threeTakesKept ? QString()
+                         : text(generationOf(now.at(0))).left(400));
+    check(QStringLiteral("(am) the mid-generation panel is unchanged: still "
+                         "\"Generating\", request id intact"),
+          now.size() == 3 && generationOf(was.at(2)) == generationOf(now.at(2))
+              && now.at(2).toObject().value(QStringLiteral("falRequestId"))
+                     .toString() == QStringLiteral("req-live"));
+    const QJsonObject folded = now.size() == 3 ? now.at(1).toObject()
+                                               : QJsonObject();
+    const QJsonArray foldedTakes =
+        folded.value(QStringLiteral("takes")).toArray();
+    const QJsonObject onlyTake = foldedTakes.size() == 1
+        ? foldedTakes.at(0).toObject()
+        : QJsonObject();
+    check(QStringLiteral("(am) the pre-takes panel keeps its path, status "
+                         "and request id, and its lone video is folded into "
+                         "exactly ONE take: Complete, that path, selected"),
+          foldedTakes.size() == 1
+              && onlyTake.value(QStringLiteral("status")).toString()
+                     == QStringLiteral("Complete")
+              && onlyTake.value(QStringLiteral("videoPath")).toString()
+                     == QStringLiteral("old_clip.mp4")
+              && !onlyTake.value(QStringLiteral("id")).toString().isEmpty()
+              && folded.value(QStringLiteral("selectedTakeId")).toString()
+                     == onlyTake.value(QStringLiteral("id")).toString()
+              && folded.value(QStringLiteral("generatedVideoPath")).toString()
+                     == QStringLiteral("old_clip.mp4")
+              && folded.value(QStringLiteral("falRequestId")).toString()
+                     == QStringLiteral("req-old")
+              && folded.value(QStringLiteral("generationStatus")).toString()
+                     == QStringLiteral("Complete"),
+          text(generationOf(folded)).left(300));
+
+    // ---- the fixed point ------------------------------------------------------
+    window.loadProjectForTest(path);
+    pump(300);
+    window.saveProjectForTest(path);
+    check(QStringLiteral("(am) a SECOND open + save changes nothing at all: "
+                         "the first save is a fixed point"),
+          same(firstSave, path, &why), why.left(300));
+
+    // ---- every video gone -------------------------------------------------------
+    QFile::remove(dirA + QStringLiteral("/take_one.mp4"));
+    QFile::remove(dirA + QStringLiteral("/old_clip.mp4"));
+    window.loadProjectForTest(path);
+    pump(300);
+    window.saveProjectForTest(path);
+    check(QStringLiteral("(am) with EVERY video file deleted, open + save "
+                         "still changes nothing: a take's status records "
+                         "what happened, not what is on the disk today"),
+          same(firstSave, path, &why), why.left(300));
+
+    // ---- Save As: the videos are not carried, the record is ---------------------
+    const QString copy = dirB + QStringLiteral("/TakesCopy.sankotv");
+    check(QStringLiteral("(am) Save As into another folder writes the same "
+                         "generation data"),
+          window.saveProjectForTest(copy) && same(firstSave, copy, &why),
+          why.left(300));
+    window.loadProjectForTest(copy);
+    pump(300);
+    window.saveProjectForTest(copy);
+    check(QStringLiteral("(am) ...and re-opening and saving that copy - "
+                         "which has no video beside it - still changes "
+                         "nothing (every take there used to become "
+                         "\"Failed\")"),
+          same(firstSave, copy, &why), why.left(300));
+
+    window.markCleanForTest();
+    window.close();
+    pump(300);
+}
+
 int main(int argc, char **argv)
 {
 #ifdef Q_OS_WIN
@@ -6249,6 +6501,7 @@ int main(int argc, char **argv)
         runAudioUndoPass(work, scratch);
         runAudioMissingPass(scratch);
     }
+    runTakesRoundTripPass(scratch);
 
     // ---- (aa) a test that cannot start says why and exits ----------------
     // An unattended gate must FAIL, not wait. Measured 2026-10-02: with its

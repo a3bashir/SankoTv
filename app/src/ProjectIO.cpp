@@ -279,7 +279,17 @@ LoadedProject projectFromJson(const QJsonObject &root, const QString &folder)
             panel->generatedVideoPath = panelObj.value(QStringLiteral("generatedVideoPath")).toString();
             panel->falRequestId = panelObj.value(QStringLiteral("falRequestId")).toString();
 
-            // Version tree: reconstruct takes; a take whose file is missing is Failed.
+            // Version tree: reconstruct takes EXACTLY AS SAVED.
+            // This used to consult the disk: a take whose video file was
+            // not beside the project was rewritten to "Failed", and the next
+            // save made that permanent - the record of a finished, paid-for
+            // render replaced by a claim that it had failed, because a
+            // folder had been moved or a project opened from a Save As copy
+            // (which does not carry the videos). Whether a file is present
+            // is a fact about the disk today; a take's status is a fact
+            // about what happened when it was generated. Load reads the
+            // second and leaves the first to whoever displays takes - which,
+            // since the Generation page was removed, is nobody.
             panel->takes.clear();
             const QJsonArray takesArray = panelObj.value(QStringLiteral("takes")).toArray();
             for (const QJsonValue &tv : takesArray) {
@@ -291,23 +301,20 @@ LoadedProject projectFromJson(const QJsonObject &root, const QString &folder)
                 take.timestamp = takeObj.value(QStringLiteral("timestamp")).toString();
                 take.status = takeObj.value(QStringLiteral("status")).toString();
                 take.costEstimate = takeObj.value(QStringLiteral("costEstimate")).toDouble();
-                if (take.videoPath.isEmpty()
-                    || !QFileInfo::exists(folder + QStringLiteral("/") + take.videoPath))
-                    take.status = QStringLiteral("Failed");
                 panel->takes.append(take);
             }
             panel->selectedTakeId = panelObj.value(QStringLiteral("selectedTakeId")).toString();
 
-            // Migrate pre-takes projects: fold a lone generatedVideoPath into one take.
+            // Migrate pre-takes projects: fold a lone generatedVideoPath into
+            // one take. The panel says the render completed - that is the
+            // condition for folding it at all - so the take says so too,
+            // whether or not the file is here today (see above).
             if (panel->takes.isEmpty() && !panel->generatedVideoPath.isEmpty()
                 && panel->generationStatus == QLatin1String("Complete")) {
                 GeneratedTake take;
                 take.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
                 take.videoPath = panel->generatedVideoPath;
-                take.status =
-                    QFileInfo::exists(folder + QStringLiteral("/") + take.videoPath)
-                        ? QStringLiteral("Complete")
-                        : QStringLiteral("Failed");
+                take.status = QStringLiteral("Complete");
                 panel->takes.append(take);
                 panel->selectedTakeId = take.id;
             }

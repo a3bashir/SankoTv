@@ -22,8 +22,9 @@ the drawing canvas in the middle, and the **animatic timeline** underneath
 separate Animatic screen any more. The Generation screen (panels sent to
 fal.ai for AI video) has been REMOVED: the application contains no network
 code and reads no API key. The take data that screen wrote is still loaded
-and saved by ProjectIO, untouched, with no UI; HANDOFF "Pass 3" names the
-commit to revive the page from.
+and saved by ProjectIO, exactly as saved, with no UI — Lifecycle (am) is
+the only thing guarding it; HANDOFF "Pass 3" names the commit to revive
+the page from.
 
 ## Architecture
 
@@ -37,7 +38,13 @@ commit to revive the page from.
   the truth; `DrawingCanvas::canvasSize()` forwards to the active panel.
   Every layer factory takes a required QSize — never add a size default.
 - **Save format:** `.sankotv` JSON plus sibling PNGs, serialized in
-  `src/ProjectIO.{h,cpp}` (version stays 1). Two deliberate 960×540
+  `src/ProjectIO.{h,cpp}` (version stays 1). **Load never consults the
+  disk to decide what a record says** — a take's status and the audio
+  path are kept as saved whether or not their files are present; "missing"
+  is a display state, never a rewrite. **Policy for media a project owns
+  (adopted 2026-10-03, not yet built):** it lives in `<name>_assets`,
+  referenced by relative path, and Save As carries it, as panel images
+  already are. Audio is still an absolute path today. Two deliberate 960×540
   literals in ProjectIO are migration facts for pre-versioned files —
   do not remove them (each site's comment explains what breaks).
 - **The workspace is ONE set of panels with two views** (`StoryboardPage`

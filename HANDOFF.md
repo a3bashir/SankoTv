@@ -5355,6 +5355,53 @@ Get-ChildItem -LiteralPath ... -Recurse -Include *.mp4 does NOT filter - it
 returned every file, and the first count said "363 video files". Filter
 with Where-Object on .Extension.)
 
+LOAD NO LONGER REWRITES A TAKE'S STATUS (its own commit). projectFromJson
+consulted the disk in two places: a take whose video file was not beside
+the project was set to "Failed", and a pre-takes panel's lone video path
+was folded into a take marked "Failed" if the file was absent. Save then
+made it permanent - the record of a finished, paid-for render replaced by
+a claim that it failed, because a folder was moved or the project was
+opened from a Save As copy. Measured in Requirement 0: after one open +
+save a missing-video take read "Failed"; in a Save As copy EVERY take did.
+Now load reads what was saved. Whether a file is present is a fact about
+the disk today; a status is a fact about what happened. The same rule the
+audio path got in Pass 2, and now written in CLAUDE.md as one: load never
+consults the disk to decide what a record says.
+The pre-takes fold-in itself is KEPT (the user's call): a lone
+generatedVideoPath on a "Complete" panel still becomes exactly one take,
+selected - so an old project changes once, on its first save, and is a
+fixed point from the second.
+
+SAVE AS DOES NOT COPY TAKE VIDEOS - LEFT THAT WAY, the user's decision:
+they have none, and the feature that made them is gone. With the fix above
+that is harmless to the record: the copy keeps every take's status, path
+and prompt, and its relative video paths simply point at files that stayed
+in the old folder.
+
+POLICY, ADOPTED 2026-10-03, NOT YET BUILT: MEDIA A PROJECT OWNS LIVES IN
+ITS "<name>_assets" FOLDER, REFERENCED BY A RELATIVE PATH, AND IS CARRIED
+BY SAVE AS - as panel images already are. It closes both open items of the
+same class: the audio track (an absolute path today, never copied - see
+Pass 2) and take videos (a bare filename beside the project, not carried).
+TO BUILD, as its own later task, for AUDIO: import copies the file into
+the assets folder; the manifest stores the relative path; old projects
+with an absolute path keep working and are converted on a deliberate
+step, not silently; Save As copies it, and a copy that cannot be made
+fails the save loudly, like an image that cannot be written. Take videos
+follow the same rule only if Generation is ever revived.
+
+GATE: Lifecycle (am), 11 checks - the Requirement 0 fixture made
+permanent: a panel with three takes (video present / video missing /
+already failed with no path), a pre-takes panel, a mid-generation panel.
+Open + save leaves the three-take and mid-generation panels identical
+field for field; the pre-takes panel gains exactly one take; a second open
++ save is a fixed point; so is one with every video deleted; so is a Save
+As copy re-opened and saved. First, a control that the comparator sees one
+changed status. WITH NO SCREEN LEFT TO SHOW A TAKE, THIS SECTION IS THE
+ONLY THING THAT WILL NOTICE IF TAKES STOP SURVIVING - do not thin it. (ad)
+gained one check: no Generation button, four screens. Lifecycle 494 ->
+495 with the removal, 506 with the take fix.
+
 ## METHOD: measure interior structure ACROSS THE SIZE RANGE before calling it character (2026-09-25)
 
 The Painting census measured Acrylic at size 20 only and found "one
