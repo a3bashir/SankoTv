@@ -780,28 +780,54 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
     }
 
     // ----- Audio track -----
+    // A PLAIN BAR, as long as the audio, with the file's name on it. This
+    // used to draw a sine wave under an envelope - a picture of a waveform
+    // that had nothing to do with the audio's own, on the track that claims
+    // to show the audio. A bar says only what is known: there is a track,
+    // this is its file, it runs this long. (A real waveform is a separate,
+    // later piece of work.)
     {
-        if (m_audioLoaded && m_audioDurationMs > 0) {
-            const double audioFrames = (m_audioDurationMs / 1000.0) * m_fps;
-            const double audioWidthPx = audioFrames * ppf;
-            const int x0 = contentXToScreen(0);
-            const int x1 = contentXToScreen(audioWidthPx);
-            const double midY = audioTrackY() + kAudioH / 2.0;
-            const double amp = kAudioH * 0.40;
+        const AudioBar bar = audioBar();
+        QFont f = font();
+        f.setPointSizeF(7.5);
+        p.setFont(f);
+        const QFontMetrics fm(f);
+        if (bar.state == AudioBar::Present) {
             QColor blue(0x4d, 0x9f, 0xff);
+            QColor fill = blue;
+            fill.setAlphaF(0.22);
             blue.setAlphaF(0.60);
+            p.setRenderHint(QPainter::Antialiasing, true);
             p.setPen(QPen(blue, 1.0));
-            QPainterPath wave;
-            bool started = false;
-            for (int x = qMax(x0, kLabelCol); x <= qMin(x1, contentRight); x += 2) {
-                const double phase = (x - x0) * 0.10;
-                const double env = 0.55 + 0.45 * std::sin((x - x0) * 0.012);
-                const double y = midY + std::sin(phase) * amp * env;
-                if (!started) { wave.moveTo(x, y); started = true; }
-                else wave.lineTo(x, y);
-            }
-            if (started)
-                p.drawPath(wave);
+            p.setBrush(fill);
+            p.drawRoundedRect(QRectF(bar.rect).adjusted(0.5, 0.5, -0.5, -0.5),
+                              3, 3);
+            p.setRenderHint(QPainter::Antialiasing, false);
+            // The texts stay inside the VISIBLE part of the bar, so the
+            // name is readable however far the timeline is scrolled.
+            const int left = qMax(bar.rect.left(), kLabelCol) + 8;
+            const int right = qMin(bar.rect.right(), contentRight) - 8;
+            const int lengthW = fm.horizontalAdvance(bar.length);
+            const bool showLength = right - left > lengthW + 60;
+            p.setPen(QColor("#88a6c4"));
+            if (showLength)
+                p.drawText(QRect(right - lengthW, bar.rect.top(), lengthW,
+                                 bar.rect.height()),
+                           Qt::AlignVCenter | Qt::AlignRight, bar.length);
+            const int nameW = right - left - (showLength ? lengthW + 12 : 0);
+            if (nameW > 12)
+                p.drawText(QRect(left, bar.rect.top(), nameW, bar.rect.height()),
+                           Qt::AlignVCenter | Qt::AlignLeft,
+                           fm.elidedText(bar.name, Qt::ElideMiddle, nameW));
+        } else if (bar.state == AudioBar::Loading) {
+            // The track is set but its length has not been read yet: the
+            // name, and no bar - never a bar of a guessed length.
+            p.setPen(QColor("#88a6c4"));
+            p.drawText(QRect(kLabelCol + 8, audioTrackY(), W - kLabelCol - 16,
+                             kAudioH),
+                       Qt::AlignVCenter | Qt::AlignLeft,
+                       fm.elidedText(bar.name, Qt::ElideMiddle,
+                                     W - kLabelCol - 16));
         }
     }
 
@@ -843,30 +869,70 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
             p.drawText(QRect(0, t.y, kLabelCol - 8, t.h),
                        Qt::AlignVCenter | Qt::AlignRight,
                        QString::fromLatin1(t.name));
-
-        // Audio filename (just right of the label column).
-        if (m_audioLoaded && m_host) {
-            const QString path = m_host->audioPath();
-            if (!path.isEmpty()) {
-                QString name = path.section('/', -1).section('\\', -1);
-                if (name.size() > 20) name = name.left(19) + QChar(0x2026);
-                p.setPen(QColor("#88a6c4"));
-                p.drawText(QRect(kLabelCol + 4, audioTrackY(), 160, kAudioH),
-                           Qt::AlignVCenter | Qt::AlignLeft, name);
-            }
-        }
     }
 
-    // Empty-audio hint.
-    if (!m_audioLoaded) {
+    // Empty-audio hint. It names the thing that works: this used to say
+    // "Drop audio file here", and nothing here accepts a drop.
+    if (audioBar().state == AudioBar::None) {
         QFont f = font();
         f.setPointSizeF(7.5);
         p.setFont(f);
         p.setPen(QColor("#555555"));
         p.drawText(QRect(kLabelCol, audioTrackY(), W - kLabelCol, kAudioH),
-                   Qt::AlignCenter,
-                   QStringLiteral("Drop audio file here or use Import Audio"));
+                   Qt::AlignCenter, audioBar().hint);
     }
+}
+
+// What the audio track shows, in one place: the painter draws exactly this
+// and the gate reads exactly this, so a check on "what the bar says" cannot
+// pass over a bar that paints something else.
+AnimaticTimeline::AudioBar AnimaticTimeline::audioBar() const
+{
+    AudioBar bar;
+    const QString path = (m_audioLoaded && m_host) ? m_host->audioPath()
+                                                    : QString();
+    if (path.isEmpty()) {
+        bar.hint = QStringLiteral("Right-click to import audio");
+        return bar;
+    }
+    bar.name = path.section('/', -1).section('\\', -1);
+    if (m_audioDurationMs <= 0) {
+        bar.state = AudioBar::Loading;
+        return bar;
+    }
+    bar.state = AudioBar::Present;
+    const int seconds = int((m_audioDurationMs + 500) / 1000);
+    bar.length = QStringLiteral("%1:%2").arg(seconds / 60)
+                     .arg(seconds % 60, 2, 10, QChar('0'));
+    const double audioFrames = (m_audioDurationMs / 1000.0) * m_fps;
+    const int x0 = contentXToScreen(0);
+    const int x1 = contentXToScreen(audioFrames * pxPerFrame());
+    bar.rect = QRect(x0, audioTrackY() + 6, qMax(2, x1 - x0), kAudioH - 12);
+    return bar;
+}
+
+QString AnimaticTimeline::audioBarStateForTest() const
+{
+    switch (audioBar().state) {
+    case AudioBar::None: return QStringLiteral("none");
+    case AudioBar::Loading: return QStringLiteral("loading");
+    case AudioBar::Present: return QStringLiteral("present");
+    }
+    return QString();
+}
+
+QString AnimaticTimeline::audioBarTextForTest() const
+{
+    const AudioBar bar = audioBar();
+    return bar.state == AudioBar::None
+        ? bar.hint
+        : (bar.length.isEmpty() ? bar.name
+                                : bar.name + QStringLiteral(" | ") + bar.length);
+}
+
+QRect AnimaticTimeline::audioRowForTest() const
+{
+    return QRect(0, audioTrackY(), m_canvas ? m_canvas->width() : 0, kAudioH);
 }
 
 // --- Interaction ----------------------------------------------------------
@@ -953,7 +1019,16 @@ void AnimaticTimeline::canvasMousePress(QMouseEvent *e)
 void AnimaticTimeline::canvasContextMenu(QContextMenuEvent *e)
 {
     const QPoint pos = e->pos();
-    if (pos.x() < kLabelCol || m_drag != Drag::None)
+    if (m_drag != Drag::None)
+        return;
+    // The AUDIO row, its label included: the track's own menu. Whoever owns
+    // the audio builds it; nothing is selected by asking.
+    if (pos.y() >= audioTrackY() && pos.y() < audioTrackY() + kAudioH) {
+        emit audioContextMenuRequested(e->globalPos());
+        e->accept();
+        return;
+    }
+    if (pos.x() < kLabelCol)
         return;
     if (pos.y() >= kPanelY && pos.y() < kPanelY + panelTrackH()) {
         const int idx = blockAtFrame(frameAtScreenX(pos.x()));

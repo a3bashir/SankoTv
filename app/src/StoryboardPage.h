@@ -156,6 +156,9 @@ public:
     // A panel's duration, set by the undoable command a timeline drag
     // pushes (and by its undo): writes the panel and re-times the timeline.
     void applyPanelDurationForUndo(Panel *panel, int seconds);
+    // The scratch audio track, set by the undoable command Import / Remove
+    // Audio pushes (and by its undo): empty = no track.
+    void applyAudioPathForUndo(const QString &path);
 
     // The animatic section under the canvas (timeline + transport). Created
     // and owned here; MainWindow reaches it for the project's audio path and
@@ -344,6 +347,8 @@ private:
     void selectFlatPanel(int flat);          // a timeline / transport request
     void onDurationChangeRequested(int sceneIndex, int panelIndex, int seconds);
     void onTimelineMoveRequested(int flat, int flatGap);
+    void onAudioChangeRequested(const QString &newPath,
+                                const QString &commandText);
     void onClipContextMenu(int flat, const QPoint &globalPos);
     void applyTimelineCollapsed(bool collapsed);
     void applyTimelineHeight();              // the pending expanded height

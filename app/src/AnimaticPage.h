@@ -6,7 +6,10 @@
 #include <QVector>
 #include <QWidget>
 
+#include <functional>
+
 class AnimaticTimeline;
+class QMenu;
 class PanelDisplay;
 class QAudioOutput;
 class QHBoxLayout;
@@ -84,6 +87,14 @@ public:
     QString audioPath() const;
     void setAudioPath(const QString &path); // loads silently if the file exists
 
+    // The audio track's two edits, for the Edit menu and the track's own
+    // right-click menu. Both only REQUEST (audioChangeRequested): the
+    // workspace makes the change an undoable command and calls
+    // applyAudioPath when it runs, is undone, or is redone.
+    void importAudio(); // asks for a file
+    void removeAudio();
+    void applyAudioPath(const QString &path); // pauses playback first
+
     // Project frame rate (New Project dialog / project file): forwarded to
     // the timeline, which derives every frame count from it.
     void setFps(int fps);
@@ -94,12 +105,15 @@ public:
 
 signals:
     void generationRequested();
-    // A change to the PROJECT's contents made here and NOT through the undo
-    // stack: the scratch audio track, which is serialized with the project.
-    // Deliberately NOT emitted by setAudioPath(), which is how a project
-    // LOAD installs its track — adopting a saved path is not an edit.
-    void documentChanged();
+    // The track changed, by any route (an edit, an undo, a project load):
+    // the menus enable Remove Audio from this. NOT a statement about the
+    // document - nothing here says "unsaved" any more; an audio edit is a
+    // command on the undo stack, and the stack is what marks the project
+    // dirty. (This class used to emit documentChanged for it.)
+    void audioStateChanged();
     // --- requests to the workspace (user input only; never from a slot) ---
+    // newPath empty = remove the track. commandText names it in the history.
+    void audioChangeRequested(const QString &newPath, const QString &commandText);
     void panelSelectRequested(int flatIndex);
     void durationChangeRequested(int sceneIndex, int panelIndex, int seconds);
     void panelMoveRequested(int flatIndex, int flatGap);
@@ -121,6 +135,17 @@ public:
     void scrubForTest(int flatIndex) { onScrubbed(flatIndex); }
     QString previewCaptionForTest() const;
     bool previewHasPictureForTest() const;
+    // The file dialog cannot run under a test: this answers in its place.
+    // Everything after the dialog is the real path.
+    void setAudioPickerForTest(std::function<QString()> picker)
+    {
+        m_audioPickerForTest = std::move(picker);
+    }
+    // The audio track's menu, handed to the test instead of being shown.
+    void setAudioMenuHookForTest(std::function<void(QMenu *)> hook)
+    {
+        m_audioMenuHookForTest = std::move(hook);
+    }
 
 protected:
     bool eventFilter(QObject *object, QEvent *event) override;
@@ -162,9 +187,8 @@ private:
 
     void onExportMp4();
 
-    void onImportAudio();
-    void onRemoveAudio();
-    void loadAudioFile(const QString &path);
+    void installAudio(const QString &path); // set or clear the track, silently
+    void showAudioMenu(const QPoint &globalPos);
     void updateAudioUi();
     bool hasAudio() const;
     qint64 offsetForPanel(int index) const; // ms before this panel
@@ -213,8 +237,9 @@ private:
     QMediaPlayer *m_player = nullptr;
     QAudioOutput *m_audioOutput = nullptr;
     QString m_audioPath;
-    QPushButton *m_removeAudioButton = nullptr;
     QLabel *m_audioLabel = nullptr;
+    std::function<QString()> m_audioPickerForTest;
+    std::function<void(QMenu *)> m_audioMenuHookForTest;
     QSlider *m_volumeSlider = nullptr;
 
     // Loop region (session-only).

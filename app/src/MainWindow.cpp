@@ -126,13 +126,16 @@ MainWindow::MainWindow(QWidget *parent)
 
     // Paste / Paste in Place enable once a panel lands on the clipboard.
     // The changes the undo stack cannot see, because they are not undoable:
-    // Shot Info fields, panel durations and the scratch audio track, and the
-    // consistency entries. Each page says so itself rather than the window
-    // guessing from repaints.
+    // Shot Info fields and the consistency entries. Each page says so
+    // itself rather than the window guessing from repaints.
     connect(m_storyboard, &StoryboardPage::documentChanged, this,
             &MainWindow::markDirty);
-    connect(m_animatic, &AnimaticPage::documentChanged, this,
-            &MainWindow::markDirty);
+    // (The animatic used to be connected here for its duration drags and
+    // its audio track. Both are undoable commands now and reach the flag
+    // through the undo stack above; it has no documentChanged any more.)
+    // Remove Audio is offered only while there is a track to remove.
+    connect(m_animatic, &AnimaticPage::audioStateChanged, this,
+            &MainWindow::updateAudioActions);
     if (m_consistencyBoard)
         connect(m_consistencyBoard, &ConsistencyBoard::documentChanged, this,
                 &MainWindow::markDirty);
@@ -224,8 +227,10 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_dashboard, &DashboardPage::openRecentRequested, this,
             &MainWindow::openProject);
     // What surrounds the page depends on which page it is.
-    connect(m_stack, &QStackedWidget::currentChanged, this,
-            [this] { updateChromeForPage(); });
+    connect(m_stack, &QStackedWidget::currentChanged, this, [this] {
+        updateChromeForPage();
+        updateAudioActions(); // they belong to the workspace page only
+    });
 
     updateSaveActions();
     updateTitle();
@@ -508,6 +513,26 @@ void MainWindow::setupMenuBar()
     m_pastePanelAct->setEnabled(false);        // until something is copied
     m_pastePanelInPlaceAct->setEnabled(false); // (wired after m_storyboard exists)
 
+    // The scratch audio track. The same two functions the audio track's
+    // right-click menu calls (AnimaticPage::importAudio / removeAudio), so
+    // the two ways in cannot drift apart. Created HERE, before
+    // keepMenuShortcutsAlive runs, so that a shortcut given to either one
+    // later survives the hidden menu bar without anyone remembering to
+    // attach it. Disabled until a project is open (updateAudioActions).
+    editMenu->addSeparator();
+    m_importAudioAct = editMenu->addAction(QStringLiteral("Import Audio..."));
+    connect(m_importAudioAct, &QAction::triggered, this, [this] {
+        if (m_stack && m_stack->currentWidget() == m_storyboard && m_animatic)
+            m_animatic->importAudio();
+    });
+    m_removeAudioAct = editMenu->addAction(QStringLiteral("Remove Audio"));
+    connect(m_removeAudioAct, &QAction::triggered, this, [this] {
+        if (m_stack && m_stack->currentWidget() == m_storyboard && m_animatic)
+            m_animatic->removeAudio();
+    });
+    m_importAudioAct->setEnabled(false);
+    m_removeAudioAct->setEnabled(false);
+
 
     editMenu->addSeparator();
     QAction *prefsAct = editMenu->addAction(QStringLiteral("Preferences..."));
@@ -611,6 +636,22 @@ void MainWindow::updateSaveActions()
     if (m_closeProjectAct)
         m_closeProjectAct->setEnabled(hasScenes
                                       || !m_currentProjectPath.isEmpty());
+    updateAudioActions();
+}
+
+// Import Audio needs a film to put the track under (scenes) and the
+// workspace on screen; Remove Audio needs, in addition, a track. On the
+// start window, the Script Editor and the Consistency Board both are
+// disabled - there the menu says so instead of silently doing nothing.
+void MainWindow::updateAudioActions()
+{
+    const bool inWorkspace = m_stack && m_storyboard
+        && m_stack->currentWidget() == m_storyboard && !m_scenes.isEmpty();
+    if (m_importAudioAct)
+        m_importAudioAct->setEnabled(inWorkspace);
+    if (m_removeAudioAct)
+        m_removeAudioAct->setEnabled(inWorkspace && m_animatic
+                                     && !m_animatic->audioPath().isEmpty());
 }
 
 // --- Project Settings -----------------------------------------------------

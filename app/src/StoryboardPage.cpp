@@ -1918,6 +1918,27 @@ private:
     int m_after;
 };
 
+// The scratch audio track, imported or removed. The document holds only the
+// track's PATH, so that is all a command needs: the path before and the path
+// after (empty = no track). Undoing an import that replaced a track restores
+// the earlier one.
+class AudioTrackCommand : public QUndoCommand
+{
+public:
+    AudioTrackCommand(StoryboardPage *page, const QString &before,
+                      const QString &after, const QString &text)
+        : QUndoCommand(text), m_page(page), m_before(before), m_after(after)
+    {
+    }
+    void redo() override { m_page->applyAudioPathForUndo(m_after); }
+    void undo() override { m_page->applyAudioPathForUndo(m_before); }
+
+private:
+    StoryboardPage *m_page;
+    QString m_before;
+    QString m_after;
+};
+
 } // namespace
 
 // ONE reusable tooltip for the Floating Brush Toolbar. Every tooltip appears
@@ -4710,6 +4731,8 @@ void StoryboardPage::setupAnimaticSection(QWidget *centerColumn,
             &StoryboardPage::onClipContextMenu);
     connect(m_animatic, &AnimaticPage::collapsedChanged, this,
             &StoryboardPage::applyTimelineCollapsed);
+    connect(m_animatic, &AnimaticPage::audioChangeRequested, this,
+            &StoryboardPage::onAudioChangeRequested);
     connect(m_workSplitter, &QSplitter::splitterMoved, this, [this] {
         if (m_animatic && !m_animatic->isCollapsed())
             m_timelineHeight = m_animatic->height();
@@ -4860,6 +4883,34 @@ void StoryboardPage::onDurationChangeRequested(int sceneIndex, int panelIndex,
     }
     m_undoStack->push(
         new PanelDurationCommand(this, panel, panel->duration, bounded));
+}
+
+// Import Audio and Remove Audio, from the Edit menu or the audio track's own
+// menu. On the SAME history as drawing: Ctrl+Z right after importing audio
+// takes back the import, not the stroke before it. The undo-stack backstop
+// marks the project unsaved, as it does for every other command.
+void StoryboardPage::onAudioChangeRequested(const QString &newPath,
+                                            const QString &commandText)
+{
+    if (!m_animatic)
+        return;
+    const QString before = m_animatic->audioPath();
+    if (before == newPath)
+        return;
+    if (!m_undoStack) {
+        // No history to put it in (never the case inside the app): apply it
+        // and say so the old way, rather than lose the edit.
+        m_animatic->applyAudioPath(newPath);
+        emit documentChanged();
+        return;
+    }
+    m_undoStack->push(new AudioTrackCommand(this, before, newPath, commandText));
+}
+
+void StoryboardPage::applyAudioPathForUndo(const QString &path)
+{
+    if (m_animatic)
+        m_animatic->applyAudioPath(path); // pauses playback first
 }
 
 // A clip was dragged to a gap in its own scene. The press that started the

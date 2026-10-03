@@ -22,6 +22,7 @@
 #include <QImage>
 #include <QLabel>
 #include <QMediaPlayer>
+#include <QMenu>
 #include <QMessageBox>
 #include <QMouseEvent>
 #include <QPainter>
@@ -226,8 +227,7 @@ AnimaticPage::AnimaticPage(QWidget *parent)
     connect(m_display, &QObject::destroyed, this, [this] { m_display = nullptr; });
     connect(m_legacyActions, &QObject::destroyed, this, [this] {
         m_legacyActions = nullptr;
-        m_removeAudioButton = nullptr; // its children go with it
-        m_exportButton = nullptr;
+        m_exportButton = nullptr; // its children go with it
         m_generationButton = nullptr;
     });
     root->addWidget(createHeader());
@@ -260,35 +260,20 @@ AnimaticPage::~AnimaticPage()
 
 // TEMPORARY, and shrinking by design: Import / Remove Audio, Export MP4 and
 // Continue to Generation lived on the Animatic screen's top bar. The screen
-// is gone; their new homes arrive in later passes (the Edit menu and the
-// audio track, File > Export, and - for Generation - nowhere). Until each
-// one moves it stays reachable from the workspace's bottom bar, so no pass
-// leaves a feature without a way in. Each later pass deletes its button
-// here; the last one deletes this function.
+// is gone; their new homes arrive pass by pass. Until each one moves it
+// stays reachable from the workspace's bottom bar, so no pass leaves a
+// feature without a way in. Each pass deletes its button here; the last one
+// deletes this function.
+//   Pass 2 (done): Import / Remove Audio -> the Edit menu and the audio
+//                  track's right-click menu. Their buttons are gone.
+//   Pass 3: Continue to Generation -> nowhere.
+//   Pass 4: Export MP4 -> File > Export.
 QWidget *AnimaticPage::createLegacyActions()
 {
     QWidget *bar = new QWidget;
     QHBoxLayout *layout = new QHBoxLayout(bar);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(8);
-
-    const QString outlined = SankoTheme::themed("QPushButton { background: transparent; color: #cccccc; border: 1px solid #2a2a2a;"
-        " border-radius: 6px; padding: 7px 14px; font-size: 13px; }"
-        "QPushButton:hover { color: %ACCENT%; border-color: %ACCENT%; }");
-
-    QPushButton *importAudio = new QPushButton(QStringLiteral("Import Audio"));
-    importAudio->setCursor(Qt::PointingHandCursor);
-    importAudio->setToolTip(QStringLiteral("Import a scratch audio track (WAV/MP3)"));
-    importAudio->setStyleSheet(outlined);
-    connect(importAudio, &QPushButton::clicked, this, &AnimaticPage::onImportAudio);
-    layout->addWidget(importAudio);
-
-    m_removeAudioButton = new QPushButton(QStringLiteral("Remove Audio"));
-    m_removeAudioButton->setCursor(Qt::PointingHandCursor);
-    m_removeAudioButton->setStyleSheet(outlined);
-    m_removeAudioButton->setVisible(false);
-    connect(m_removeAudioButton, &QPushButton::clicked, this, &AnimaticPage::onRemoveAudio);
-    layout->addWidget(m_removeAudioButton);
 
     m_exportButton = new QPushButton(QStringLiteral("Export MP4"));
     m_exportButton->setCursor(Qt::PointingHandCursor);
@@ -474,6 +459,8 @@ QWidget *AnimaticPage::createTimingStrip()
             this, &AnimaticPage::panelMoveRequested);
     connect(m_timeline, &AnimaticTimeline::clipContextMenuRequested,
             this, &AnimaticPage::clipContextMenuRequested);
+    connect(m_timeline, &AnimaticTimeline::audioContextMenuRequested,
+            this, &AnimaticPage::showAudioMenu);
     wrapLayout->addWidget(m_timeline, 1);
 
     return wrap;
@@ -1123,40 +1110,76 @@ qint64 AnimaticPage::offsetForPanel(int index) const
     return ms;
 }
 
-void AnimaticPage::onImportAudio()
+// IMPORT AND REMOVE ARE REQUESTS. They used to write the track here and emit
+// documentChanged, which made them - like a duration drag before them - an
+// edit Ctrl+Z could not take back, and on one screen with the drawing that
+// means Ctrl+Z right after importing audio undoes the artist's last STROKE.
+// The workspace owns the history: it turns the request into a command and
+// calls applyAudioPath() when the command runs (and again on undo and redo).
+// Both entry points - the Edit menu and the audio track's right-click menu
+// - call these two functions, so there is one implementation of each.
+void AnimaticPage::importAudio()
 {
-    const QString path = QFileDialog::getOpenFileName(
-        this, QStringLiteral("Import Audio"), QString(),
-        QStringLiteral("Audio (*.wav *.mp3 *.aac *.m4a)"));
+    if (m_playing)
+        pause(); // a dialog is about to open over the film
+    const QString path = m_audioPickerForTest
+        ? m_audioPickerForTest()
+        : QFileDialog::getOpenFileName(
+              this, QStringLiteral("Import Audio"), QString(),
+              QStringLiteral("Audio (*.wav *.mp3 *.aac *.m4a)"));
     if (path.isEmpty())
+        return; // cancelled: nothing changes, nothing joins the history
+    if (path == m_audioPath) {
+        // The same file again (re-exported, perhaps): reload it. The
+        // document already names it, so there is nothing to undo.
+        applyAudioPath(path);
         return;
-    loadAudioFile(path); // does not auto-play
-    emit documentChanged(); // the USER chose a track; load does not come here
+    }
+    emit audioChangeRequested(path, QStringLiteral("Import Audio"));
 }
 
-void AnimaticPage::loadAudioFile(const QString &path)
+void AnimaticPage::removeAudio()
 {
-    m_audioPath = path;
-    m_player->setSource(QUrl::fromLocalFile(path));
-    updateAudioUi();
+    if (m_audioPath.isEmpty())
+        return;
+    emit audioChangeRequested(QString(), QStringLiteral("Remove Audio"));
 }
 
-void AnimaticPage::onRemoveAudio()
+// The audio track changes - a command running, being undone or redone.
+// ANY change to the track pauses playback first, the rule timing and
+// structure changes already follow: the player is about to be stopped and
+// re-sourced under a film that was in step with it.
+void AnimaticPage::applyAudioPath(const QString &path)
 {
-    m_audioPath.clear();
-    if (m_player) {
+    if (m_playing)
+        pause();
+    installAudio(path);
+    // Parked where the playhead is, so Play resumes in step.
+    if (hasAudio() && m_current >= 0)
+        m_player->setPosition(offsetForPanel(m_current));
+}
+
+// The one place the track is set, for a command and for a project load
+// alike. It announces nothing about the DOCUMENT - a load adopting its
+// saved path is not an edit, and an edit is announced by its command.
+void AnimaticPage::installAudio(const QString &path)
+{
+    if (m_player)
         m_player->stop();
-        m_player->setSource(QUrl());
+    if (!path.isEmpty() && QFileInfo::exists(path)) {
+        m_audioPath = path;
+        m_player->setSource(QUrl::fromLocalFile(path));
+    } else {
+        m_audioPath.clear();
+        if (m_player)
+            m_player->setSource(QUrl());
     }
     updateAudioUi();
-    emit documentChanged(); // removing the track is as much an edit as adding
 }
 
 void AnimaticPage::updateAudioUi()
 {
     const bool has = !m_audioPath.isEmpty();
-    if (m_removeAudioButton)
-        m_removeAudioButton->setVisible(has);
     if (m_volumeSlider)
         m_volumeSlider->setVisible(has);
     if (m_audioLabel) {
@@ -1166,6 +1189,7 @@ void AnimaticPage::updateAudioUi()
     }
     if (m_timeline)
         m_timeline->setAudioLoaded(has, m_player ? m_player->duration() : 0);
+    emit audioStateChanged(); // the menus enable Remove from this
 }
 
 QString AnimaticPage::audioPath() const
@@ -1175,17 +1199,31 @@ QString AnimaticPage::audioPath() const
 
 void AnimaticPage::setAudioPath(const QString &path)
 {
-    // Used by project load. Adopt the path only if the file still exists.
-    if (!path.isEmpty() && QFileInfo::exists(path)) {
-        loadAudioFile(path);
-    } else {
-        m_audioPath.clear();
-        if (m_player) {
-            m_player->stop();
-            m_player->setSource(QUrl());
-        }
-        updateAudioUi();
+    // Used by project load (and New / Close, with an empty path). Silent:
+    // no command, no dirty flag.
+    installAudio(path);
+}
+
+// The audio track's right-click menu: the same two functions the Edit menu
+// calls.
+void AnimaticPage::showAudioMenu(const QPoint &globalPos)
+{
+    QMenu menu(this);
+    menu.setStyleSheet(QStringLiteral(
+        "QMenu { background: #161616; color: #cccccc; border: 1px solid #2a2a2a; }"
+        "QMenu::item { padding: 4px 18px; font-size: 11px; }"
+        "QMenu::item:selected { background: #262626; color: #ffffff; }"
+        "QMenu::item:disabled { color: #555555; }"));
+    QAction *importAction = menu.addAction(QStringLiteral("Import Audio..."));
+    connect(importAction, &QAction::triggered, this, [this] { importAudio(); });
+    QAction *removeAction = menu.addAction(QStringLiteral("Remove Audio"));
+    removeAction->setEnabled(!m_audioPath.isEmpty());
+    connect(removeAction, &QAction::triggered, this, [this] { removeAudio(); });
+    if (m_audioMenuHookForTest) {
+        m_audioMenuHookForTest(&menu);
+        return;
     }
+    menu.exec(globalPos);
 }
 
 // --- MP4 export -----------------------------------------------------------

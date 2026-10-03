@@ -67,6 +67,7 @@
 #include <QAction>
 #include <QApplication>
 #include <QContextMenuEvent>
+#include <QDataStream>
 #include <QDockWidget>
 #include <QEnterEvent>
 #include <QMainWindow>
@@ -5463,6 +5464,389 @@ void runWorkspaceLayoutPass(const QString &project)
     }
 }
 
+// ===================== AUDIO: MENUS, UNDO, THE PLAIN BAR ===================
+namespace audio {
+
+// A real, playable WAV: 16-bit mono PCM silence of the given length.
+bool writeWav(const QString &path, double seconds)
+{
+    QDir().mkpath(QFileInfo(path).absolutePath());
+    const quint32 rate = 11025;
+    const QByteArray pcm(int(rate * seconds) * 2, '\0');
+    QByteArray out;
+    QDataStream s(&out, QIODevice::WriteOnly);
+    s.setByteOrder(QDataStream::LittleEndian);
+    s.writeRawData("RIFF", 4);
+    s << quint32(36 + pcm.size());
+    s.writeRawData("WAVEfmt ", 8);
+    s << quint32(16) << quint16(1) << quint16(1) << rate << quint32(rate * 2)
+      << quint16(2) << quint16(16);
+    s.writeRawData("data", 4);
+    s << quint32(pcm.size());
+    out.append(pcm);
+    QFile f(path);
+    return f.open(QIODevice::WriteOnly) && f.write(out) == out.size();
+}
+
+// The media backend reads a file's length a moment after it is set.
+bool waitFor(const std::function<bool()> &condition, int timeoutMs = 5000)
+{
+    QElapsedTimer t;
+    t.start();
+    while (t.elapsed() < timeoutMs) {
+        if (condition())
+            return true;
+        pump(50);
+    }
+    return condition();
+}
+
+QAction *editAction(MainWindow &window, const QString &text, int *index = nullptr)
+{
+    for (QAction *top : window.menuBar()->actions()) {
+        QString title = top->text();
+        title.remove(QLatin1Char('&'));
+        if (!top->menu() || title != QStringLiteral("Edit"))
+            continue;
+        const QList<QAction *> actions = top->menu()->actions();
+        for (int i = 0; i < actions.size(); ++i)
+            if (actions.at(i)->text() == text) {
+                if (index)
+                    *index = i;
+                return actions.at(i);
+            }
+    }
+    return nullptr;
+}
+
+void rightClickAudioRow(workspace::Rig &r, int x = -1)
+{
+    const QRect row = r.timeline->audioRowForTest();
+    const QPoint at(x >= 0 ? x : row.center().x(), row.center().y());
+    QContextMenuEvent ev(QContextMenuEvent::Mouse, at, r.surface->mapToGlobal(at));
+    QCoreApplication::sendEvent(r.surface, &ev);
+    pump(250);
+}
+
+} // namespace audio
+
+void runAudioEntryPointsPass(const QString &project, const QString &scratch)
+{
+    using namespace workspace;
+    using namespace audio;
+    out() << "--- (aj) audio: the Edit menu, the track's own menu, and the "
+             "plain bar ---" << Qt::endl;
+    const QString wavA = scratch + QStringLiteral("/audio/first take.wav");
+    const QString wavB = scratch + QStringLiteral("/audio/second.wav");
+    check(QStringLiteral("(aj) fixture: two real WAV files written"),
+          writeWav(wavA, 2.0) && writeWav(wavB, 3.0));
+
+    // ---- no project: both entries are there, and both are off ---------------
+    {
+        MainWindow window;
+        window.resize(1300, 850);
+        window.show();
+        pump(700);
+        int importAt = -1, removeAt = -1;
+        QAction *importAct =
+            editAction(window, QStringLiteral("Import Audio..."), &importAt);
+        QAction *removeAct =
+            editAction(window, QStringLiteral("Remove Audio"), &removeAt);
+        check(QStringLiteral("(aj) Edit has Import Audio... and Remove "
+                             "Audio, side by side"),
+              importAct && removeAct && removeAt == importAt + 1,
+              QStringLiteral("positions %1 and %2").arg(importAt).arg(removeAt));
+        check(QStringLiteral("(aj) with no project open both are disabled"),
+              importAct && removeAct && !importAct->isEnabled()
+                  && !removeAct->isEnabled());
+        window.close();
+        pump(300);
+    }
+
+    Rig r(project);
+    check(QStringLiteral("(aj) the workspace opened"), r.ok);
+    if (!r.ok)
+        return;
+    QAction *importAct = editAction(r.window, QStringLiteral("Import Audio..."));
+    QAction *removeAct = editAction(r.window, QStringLiteral("Remove Audio"));
+    QUndoStack *undo = r.window.undoStackForTest();
+    if (!importAct || !removeAct)
+        return;
+    check(QStringLiteral("(aj) with a project open Import is enabled, and "
+                         "Remove is not until there is a track"),
+          importAct->isEnabled() && !removeAct->isEnabled()
+              && r.animatic->audioPath().isEmpty());
+
+    bool audioButton = false, exportButton = false;
+    for (QPushButton *b : r.window.findChildren<QPushButton *>()) {
+        if (b->text() == QStringLiteral("Import Audio")
+            || b->text() == QStringLiteral("Remove Audio"))
+            audioButton = true;
+        if (b->text() == QStringLiteral("Export MP4"))
+            exportButton = true;
+    }
+    check(QStringLiteral("(aj) the bottom bar no longer has Import Audio or "
+                         "Remove Audio buttons (control: Export MP4, not yet "
+                         "moved, is still found by the same search)"),
+          !audioButton && exportButton);
+    check(QStringLiteral("(aj) an empty audio track says how to fill it - "
+                         "and no longer claims to accept a drop"),
+          r.timeline->audioBarStateForTest() == QStringLiteral("none")
+              && r.timeline->audioBarTextForTest()
+                     == QStringLiteral("Right-click to import audio"),
+          r.timeline->audioBarTextForTest());
+
+    // ---- a cancelled dialog ---------------------------------------------------
+    r.window.markCleanForTest();
+    const int countBefore = undo->count();
+    r.animatic->setAudioPickerForTest([] { return QString(); });
+    importAct->trigger();
+    pump(200);
+    check(QStringLiteral("(aj) a cancelled Import changes nothing: no track, "
+                         "not dirty, nothing added to the history"),
+          r.animatic->audioPath().isEmpty() && !r.window.isDirty()
+              && undo->count() == countBefore);
+
+    // ---- Edit > Import Audio --------------------------------------------------
+    r.animatic->setAudioPickerForTest([wavA] { return wavA; });
+    importAct->trigger();
+    pump(200);
+    check(QStringLiteral("(aj) Edit > Import Audio sets the track, as ONE "
+                         "command, and marks a clean project unsaved"),
+          r.animatic->audioPath() == wavA && r.window.isDirty()
+              && undo->count() == countBefore + 1
+              && undo->undoText() == QStringLiteral("Import Audio"),
+          QStringLiteral("track \"%1\", top \"%2\"")
+              .arg(QFileInfo(r.animatic->audioPath()).fileName(),
+                   undo->undoText()));
+    const bool present = waitFor([&] {
+        return r.timeline->audioBarStateForTest() == QStringLiteral("present");
+    });
+    check(QStringLiteral("(aj) the audio track shows a plain bar carrying "
+                         "the file's name and its real length"),
+          present && r.timeline->audioBarTextForTest()
+                         == QStringLiteral("first take.wav | 0:02"),
+          QStringLiteral("%1: %2").arg(r.timeline->audioBarStateForTest(),
+                                       r.timeline->audioBarTextForTest()));
+    check(QStringLiteral("(aj) ...and Remove Audio is now enabled"),
+          removeAct->isEnabled());
+
+    // ---- the audio track's own menu -------------------------------------------
+    QStringList menuSaw;
+    QString trigger;
+    r.animatic->setAudioMenuHookForTest([&](QMenu *menu) {
+        menuSaw.clear();
+        for (QAction *a : menu->actions())
+            if (!a->isSeparator())
+                menuSaw << a->text()
+                        + (a->isEnabled() ? QString()
+                                          : QStringLiteral(" (disabled)"));
+        for (QAction *a : menu->actions())
+            if (a->text() == trigger && a->isEnabled())
+                a->trigger();
+    });
+    const int calls = r.storyboard->selectPanelCallsForTest();
+    const int selected = r.storyboard->selectedFlatIndexForTest();
+    r.window.markCleanForTest();
+    trigger = QStringLiteral("Remove Audio");
+    rightClickAudioRow(r);
+    check(QStringLiteral("(aj) right-clicking the audio track offers the "
+                         "same two entries"),
+          menuSaw == QStringList({QStringLiteral("Import Audio..."),
+                                  QStringLiteral("Remove Audio")}),
+          menuSaw.join(QStringLiteral(" | ")));
+    check(QStringLiteral("(aj) Remove Audio from that menu removes the "
+                         "track, as a command, and marks the project "
+                         "unsaved"),
+          r.animatic->audioPath().isEmpty() && r.window.isDirty()
+              && undo->undoText() == QStringLiteral("Remove Audio")
+              && r.timeline->audioBarStateForTest() == QStringLiteral("none")
+              && !removeAct->isEnabled());
+    check(QStringLiteral("(aj) ...and the right-click selected no panel"),
+          r.storyboard->selectPanelCallsForTest() == calls
+              && r.storyboard->selectedFlatIndexForTest() == selected);
+    trigger = QStringLiteral("Import Audio...");
+    r.animatic->setAudioPickerForTest([wavB] { return wavB; });
+    rightClickAudioRow(r, 20); // on the row's LABEL: still the audio track
+    check(QStringLiteral("(aj) with no track the menu shows Remove Audio "
+                         "disabled; Import from it sets the track"),
+          menuSaw == QStringList({QStringLiteral("Import Audio..."),
+                                  QStringLiteral("Remove Audio (disabled)")})
+              && r.animatic->audioPath() == wavB,
+          menuSaw.join(QStringLiteral(" | ")));
+    r.animatic->setAudioMenuHookForTest({});
+
+    // ---- Edit > Remove Audio ---------------------------------------------------
+    removeAct->trigger();
+    pump(200);
+    check(QStringLiteral("(aj) Edit > Remove Audio removes it"),
+          r.animatic->audioPath().isEmpty());
+
+    // ---- only in the workspace --------------------------------------------------
+    auto *stack = qobject_cast<QStackedWidget *>(r.window.centralWidget());
+    QWidget *elsewhere = nullptr;
+    for (int i = 0; stack && i < stack->count(); ++i)
+        if (qobject_cast<ConsistencyBoard *>(stack->widget(i)))
+            elsewhere = stack->widget(i);
+    if (stack && elsewhere) {
+        stack->setCurrentWidget(elsewhere);
+        pump(300);
+        const bool offElsewhere = !importAct->isEnabled();
+        stack->setCurrentWidget(r.storyboard);
+        pump(400);
+        check(QStringLiteral("(aj) on another screen Import Audio is "
+                             "disabled, and enabled again back in the "
+                             "workspace"),
+              offElsewhere && importAct->isEnabled());
+    }
+
+    // ---- opening the dialog pauses the film -------------------------------------
+    r.animatic->togglePlay();
+    pump(150);
+    const bool playing = r.animatic->isPlaying();
+    r.animatic->setAudioPickerForTest([] { return QString(); });
+    importAct->trigger();
+    pump(200);
+    check(QStringLiteral("(aj) opening the Import dialog pauses playback "
+                         "(control: it was playing)"),
+          playing && !r.animatic->isPlaying());
+    r.animatic->leavePreview();
+    r.animatic->setAudioPickerForTest({});
+}
+
+void runAudioUndoPass(const QString &project, const QString &scratch)
+{
+    using namespace workspace;
+    using namespace audio;
+    out() << "--- (ak) audio is undoable, in order with drawing ---" << Qt::endl;
+    const QString wavA = scratch + QStringLiteral("/audio/first take.wav");
+    const QString wavB = scratch + QStringLiteral("/audio/second.wav");
+    const QString saved = scratch
+        + QStringLiteral("/projects/WithAudio/WithAudio.sankotv");
+    {
+        Rig r(project);
+        check(QStringLiteral("(ak) the workspace opened"), r.ok);
+        if (!r.ok)
+            return;
+        QUndoStack *undo = r.window.undoStackForTest();
+        QAction *importAct =
+            editAction(r.window, QStringLiteral("Import Audio..."));
+        QAction *removeAct = editAction(r.window, QStringLiteral("Remove Audio"));
+        QAction *undoAct = editAction(r.window, QStringLiteral("Undo"));
+        QAction *redoAct = editAction(r.window, QStringLiteral("Redo"));
+        if (!importAct || !removeAct || !undoAct || !redoAct) {
+            check(QStringLiteral("(ak) found the Edit actions"), false);
+            return;
+        }
+        stroke(r.canvas);
+        pump(600);
+        const int afterStroke = undo->index();
+        r.animatic->setAudioPickerForTest([wavA] { return wavA; });
+        importAct->trigger();
+        pump(200);
+        const bool imported = r.animatic->audioPath() == wavA
+            && undo->index() == afterStroke + 1;
+        undoAct->trigger(); // Edit > Undo, the path Ctrl+Z takes
+        pump(250);
+        check(QStringLiteral("(ak) Ctrl+Z right after importing audio takes "
+                             "back the IMPORT - no track - and not the stroke "
+                             "before it (control: the import was on the "
+                             "history, above the stroke)"),
+              imported && afterStroke >= 1 && r.animatic->audioPath().isEmpty()
+                  && undo->index() == afterStroke,
+              QStringLiteral("history at %1 (the stroke is %2)")
+                  .arg(undo->index()).arg(afterStroke));
+        redoAct->trigger();
+        pump(250);
+        check(QStringLiteral("(ak) redo brings the track back"),
+              r.animatic->audioPath() == wavA);
+
+        r.animatic->setAudioPickerForTest([wavB] { return wavB; });
+        importAct->trigger();
+        pump(200);
+        const bool replaced = r.animatic->audioPath() == wavB;
+        undoAct->trigger();
+        pump(250);
+        check(QStringLiteral("(ak) undoing an import that REPLACED a track "
+                             "restores the earlier track"),
+              replaced && r.animatic->audioPath() == wavA);
+        removeAct->trigger();
+        pump(200);
+        const bool removed = r.animatic->audioPath().isEmpty();
+        undoAct->trigger();
+        pump(250);
+        check(QStringLiteral("(ak) undoing Remove Audio restores the track"),
+              removed && r.animatic->audioPath() == wavA);
+
+        // Undoing the import WHILE THE FILM PLAYS. The stack is undone
+        // directly, which is what the command must survive on its own -
+        // Edit > Undo and the toolbar's button both stop playback before
+        // they get here.
+        while (undo->index() > afterStroke + 1)
+            undo->undo(); // back to: stroke, import A
+        waitFor([&] {
+            return r.timeline->audioBarStateForTest()
+                == QStringLiteral("present");
+        });
+        r.animatic->togglePlay();
+        pump(200);
+        const bool playing = r.animatic->isPlaying()
+            && r.animatic->audioPath() == wavA
+            && undo->index() == afterStroke + 1;
+        undo->undo();
+        pump(250);
+        check(QStringLiteral("(ak) undoing the import while playing stops "
+                             "playback and removes the track; the stroke "
+                             "stays (control: it was playing, with the "
+                             "track)"),
+              playing && !r.animatic->isPlaying()
+                  && r.animatic->audioPath().isEmpty()
+                  && r.timeline->audioBarStateForTest() == QStringLiteral("none")
+                  && undo->index() == afterStroke);
+        r.animatic->togglePlay();
+        pump(150);
+        r.animatic->advanceForTest();
+        pump(100);
+        check(QStringLiteral("(ak) ...and Play carries on afterwards, "
+                             "without a track"),
+              r.animatic->isPlaying());
+        r.animatic->leavePreview();
+
+        // Save it WITH a track, for the load check below.
+        undo->redo();
+        pump(200);
+        QDir().mkpath(QFileInfo(saved).absolutePath());
+        check(QStringLiteral("(ak) the project saves with its track"),
+              r.animatic->audioPath() == wavA
+                  && r.window.saveProjectForTest(saved) && !r.window.isDirty());
+        r.animatic->setAudioPickerForTest({});
+    }
+    {
+        Rig r(saved);
+        if (!r.ok) {
+            check(QStringLiteral("(ak) the saved project re-opens"), false);
+            return;
+        }
+        QUndoStack *undo = r.window.undoStackForTest();
+        check(QStringLiteral("(ak) a project LOADED with a track has the "
+                             "track, is clean, and has nothing on its "
+                             "history: a load is not an edit"),
+              r.animatic->audioPath() == wavA && !r.window.isDirty()
+                  && undo->count() == 0,
+              QStringLiteral("%1 command(s)").arg(undo->count()));
+        QAction *removeAct = editAction(r.window, QStringLiteral("Remove Audio"));
+        check(QStringLiteral("(ak) ...and Remove Audio is enabled for it "
+                             "straight away"),
+              removeAct && removeAct->isEnabled());
+        if (removeAct)
+            removeAct->trigger();
+        pump(200);
+        check(QStringLiteral("(ak) control: removing it IS an edit - one "
+                             "command, dirty"),
+              undo->count() == 1 && r.window.isDirty());
+    }
+}
+
 int main(int argc, char **argv)
 {
 #ifdef Q_OS_WIN
@@ -5661,6 +6045,8 @@ int main(int argc, char **argv)
         runWorkspaceKeysPass(work);
         runWorkspaceUndoPass(work);
         runWorkspaceLayoutPass(work);
+        runAudioEntryPointsPass(work, scratch);
+        runAudioUndoPass(work, scratch);
     }
 
     // ---- (aa) a test that cannot start says why and exits ----------------

@@ -5194,6 +5194,72 @@ alone, keys by pointer, undo order, layout persistence and toolbar
 places. (d) no longer clicks a button that does not exist; it proves the
 animatic is not empty instead. Lifecycle 355 -> 450.
 
+## THE COMBINED WORKSPACE, PASS 2: audio in the menus, undoable, and a bar that does not pretend (2026-10-03)
+
+TWO THINGS FIRST, each its own commit, both left over from Pass 1:
+
+- THE GATE DEPENDED ON WHERE THE MOUSE WAS LEFT. Whose keys the timeline's
+  are is decided by Enter / Leave, and the real mouse sends those too. With
+  the pointer resting where a test window opens, real events arrived in
+  between the test's own and Lifecycle (ag) failed six checks on unchanged
+  code - after passing five times the day before with the pointer parked
+  elsewhere. A second read was just as fragile: QApplication::focusWidget()
+  is null whenever the test window is not the ACTIVE one. Fix: under the
+  gate the page hears only the pointer events the test delivers
+  (StoryboardPage::setRealPointerIgnoredForTest /
+  sendPointerEventForTest - same events, same sendEvent, same event filter,
+  and it no longer reads the cursor position), and the checks read the
+  WINDOW's focus widget. (ag) gained a control: an Enter the test did not
+  deliver arms nothing. RULE: a check may not depend on the real pointer,
+  the real cursor position, or which window is active. Anything driven by
+  hover needs a seam like this one before it goes in the gate.
+- THE TOOLBAR'S UNDO AND REDO SKIPPED THE PREVIEW. Pass 1 made Undo leave
+  the animatic preview first, and added that to the Edit menu's path only.
+  The floating toolbar's buttons called the canvas directly - and the
+  toolbars stay visible over the preview - so a click on Undo there changed
+  a drawing the artist could not see. Both now go through one function
+  (StoryboardPage::undoDocument / redoDocument). Lifecycle (af).
+
+PASS 2 ITSELF:
+
+- IMPORT AUDIO AND REMOVE AUDIO ARE IN TWO PLACES AND ARE ONE THING. Edit >
+  Import Audio... / Remove Audio, and the same two entries on the audio
+  track's right-click menu (the whole AUDIO row, label included). Both
+  call AnimaticPage::importAudio / removeAudio. The bottom-bar buttons are
+  gone. Remove Audio has no ellipsis: no dialog follows it.
+- THEY ARE UNDOABLE (AudioTrackCommand, on the shared stack). They used to
+  write the track and emit documentChanged, so on one screen Ctrl+Z right
+  after importing audio would have undone the last STROKE - the trap a
+  duration drag had in Pass 1. The command holds only the path before and
+  the path after, so undoing an import that replaced a track restores the
+  earlier one. AnimaticPage has no documentChanged signal any more; the
+  undo-stack backstop marks the project dirty. A LOAD still installs its
+  track silently and, because loading clears the stack, a loaded track is
+  never a command.
+- ANY CHANGE TO THE TRACK PAUSES PLAYBACK - import, remove, undo, redo -
+  inside applyAudioPath itself, so it holds however the command was
+  reached. Opening the Import dialog pauses too. A cancelled dialog adds
+  nothing to the history; importing the path the document already names
+  reloads the file without a command.
+- THE SINE WAVE IS GONE. The audio track drew a sine under an envelope - a
+  picture of a waveform that had nothing to do with the audio's. It is a
+  plain bar now, as long as the audio really is, with the file name and the
+  length on it; until the length has been read, the name and no bar. One
+  function (AnimaticTimeline::audioBar) describes what the track shows and
+  both the painter and the gate read it. The empty track's hint no longer
+  says "Drop audio file here" - nothing there accepts a drop. A REAL
+  waveform is a separate, later piece of work.
+- MENU STATE. Import is enabled in the workspace with a project open;
+  Remove only when there is a track. Both actions are created in
+  setupMenuBar, before keepMenuShortcutsAlive, so a shortcut given to
+  either later survives the hidden menu bar. Neither has one today (Ctrl+I
+  is Import Image).
+
+GATE: Lifecycle (aj) entry points and the bar, (ak) undo. The file dialog
+cannot run under a test, so AnimaticPage takes a picker in its place
+(setAudioPickerForTest); everything after the dialog is the real path.
+Lifecycle 450 -> 482.
+
 ## METHOD: measure interior structure ACROSS THE SIZE RANGE before calling it character (2026-09-25)
 
 The Painting census measured Acrylic at size 20 only and found "one

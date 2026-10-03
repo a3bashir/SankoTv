@@ -117,6 +117,7 @@ private:
     // still be seen.
     void updateChromeForPage();
     void updateSaveActions();
+    void updateAudioActions(); // Edit > Import Audio / Remove Audio
     void updateTitle();
     void freeScenes();
     void buildScenesFromJson(const QJsonArray &scenes);
@@ -253,4 +254,7 @@ private:
     // Edit-menu panel clipboard actions (enabled once a panel is copied).
     QAction *m_pastePanelAct = nullptr;
     QAction *m_pastePanelInPlaceAct = nullptr;
+    // Edit-menu audio actions (the workspace page, with a project open).
+    QAction *m_importAudioAct = nullptr;
+    QAction *m_removeAudioAct = nullptr;
 };

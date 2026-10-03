@@ -46,6 +46,11 @@ public:
     int selectedPanelForTest() const { return m_selected; }
     int playheadPanelForTest() const { return m_current; }
     int shotsTrackHeightForTest() const { return panelTrackH(); }
+    // What the audio track is showing: "none", "loading" or "present"; its
+    // text (the hint, or "name | m:ss"); and where the AUDIO row is.
+    QString audioBarStateForTest() const;
+    QString audioBarTextForTest() const;
+    QRect audioRowForTest() const;
 
     // The timeline reads the live elapsed time / current index from the page
     // when rendering the playhead (see updatePlayhead()).
@@ -81,6 +86,8 @@ signals:
     void panelMoveRequested(int flatIndex, int flatGap);
     // Right-click on a clip (already requested as the selection).
     void clipContextMenuRequested(int flatPanelIndex, const QPoint &globalPos);
+    // Right-click anywhere on the AUDIO row.
+    void audioContextMenuRequested(const QPoint &globalPos);
     void zoomChanged(float zoomLevel); // internal use
 
 private:
@@ -115,6 +122,19 @@ private:
     int audioTrackY() const;
     QRect clipRect(int flatIndex) const; // on the canvas; empty if no such clip
     int moveGapAt(int screenX) const;
+
+    // The audio track's one description, shared by the painter and the
+    // gate. Loading = a track is set and its length is not known yet.
+    struct AudioBar
+    {
+        enum State { None, Loading, Present };
+        State state = None;
+        QString name;   // the file's name
+        QString length; // "m:ss", Present only
+        QString hint;   // None only
+        QRect rect;     // Present only, on the canvas
+    };
+    AudioBar audioBar() const;
 
     // Geometry / model helpers.
     void rebuildBlocks();
