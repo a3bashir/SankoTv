@@ -144,6 +144,129 @@ drawing canvas, animatic, AI generation).
   was obtainable from git (pre-integration commits either lack the app state
   or do not build standalone), so these are measured absolutes, not a delta.
 
+## BEFORE SELLING: open licensing items (opened 2026-10-03)
+
+SankoTV IS TO BE SOLD. NOTHING SHIPS TO A CUSTOMER UNTIL A LAWYER HAS
+REVIEWED THE ITEMS BELOW. They were found during the Pass 4 export
+research; most of them were true of the app BEFORE export was rebuilt (Qt
+and FFmpeg already shipped for audio playback). The research, with its
+primary sources, is app/docs/licensing/export-licensing-report-2026-10-03.md
+- written to be handed to the lawyer. It is research, not legal advice.
+Its ADDENDUM records the later decision (same day) to make the MP4 through
+Windows' Media Foundation called directly instead of Qt's recorder: the
+same Windows encoders, nothing new shipped, and the export no longer goes
+through FFmpeg at all.
+
+THE RULE FOR THIS LIST: NO ITEM IS MARKED DONE WITHOUT THE USER'S WORD.
+Not when the code for it is written, not when a notice file exists, not
+when a source seems to settle it. Record what was done under the item and
+leave it OPEN until the user says it is closed; when they do, write the
+date and what they said. Do not delete an item.
+
+STANDING GATE (the user's, 2026-10-03, still in force): do not introduce,
+bundle or distribute any new codec, FFmpeg executable, FFmpeg library or
+other encoding dependency until its exact licence and commercial
+redistribution requirements have been identified and reported. No GPL
+dependency without explicit approval. Where it is unclear whether something
+may ship in a closed-source commercial product, flag it - do not decide.
+
+1. OPEN - QT IS USED UNDER LGPL v3 (the open-source install:
+   C:\Qt\licenseInfo.txt). Selling a closed-source app on that basis needs:
+   the Qt source (or a written offer of it) made available; the LGPL and
+   GPL texts shipped; a prominent notice that Qt is used under the LGPL;
+   dynamic linking (already so); the user able to replace the Qt DLLs and
+   run the app; an EULA that does not forbid the reverse engineering that
+   takes. NONE of the notices, texts or offers exist in the app yet. The
+   alternative is a Qt commercial licence - terms for a project started on
+   open-source Qt not checked.
+
+2. OPEN - SIGNED / SEALED PACKAGES vs THE LGPL. If SankoTV is distributed
+   as MSIX or through the Microsoft Store, the user cannot replace a DLL
+   inside the package. Whether that satisfies the LGPL's relinking
+   requirement, and what form of distribution does, is the lawyer's.
+   Decide the distribution format AFTER this answer, not before.
+
+3. OPEN - THE GuiPrivate VERSION LOCK. The build links Qt's GuiPrivate
+   interfaces (find_package ... GuiPrivate), which are not stable across Qt
+   versions: a replacement Qt must be the SAME version. Whether that is
+   acceptable under the relinking requirement is the lawyer's. (If not:
+   find what uses the private headers and whether it can be done without.)
+
+4. OPEN - FFMPEG LGPL COMPLIANCE. avcodec-61 / avformat-61 / avutil-59 /
+   swresample-5 / swscale-8 (FFmpeg 7.1.3, LGPL 2.1+, no --enable-gpl, no
+   --enable-nonfree) ship beside the exe via windeployqt, as Qt Multimedia's
+   backend. FFmpeg's own checklist: distribute the exact source used and
+   say where it came from, name FFmpeg and the LGPL in About, do not rename
+   the DLLs, do not forbid reverse engineering in the EULA. None of this
+   exists yet. REPEAT THE MEASUREMENT whenever Qt is upgraded: the claim
+   "LGPL build, no GPL parts" was read from THIS version's DLL
+   (configuration string in avcodec-61.dll), not promised for the next.
+   WHAT STILL USES IT once the MP4 export is on Media Foundation direct:
+   playing the animatic's audio track, and decoding an imported audio file
+   for the export (both through Qt Multimedia). The DLLs keep shipping.
+
+5. OPEN - H.264 POOL (Via LA AVC). Two separate questions:
+   a. The MP4 export compresses with WINDOWS' encoders (H.264 and AAC,
+      through Media Foundation). Is a paid, professional application
+      entitled to rely on that, and if a licence is needed, whose is it?
+      (Linked to item 7.)
+   b. avcodec-61.dll contains FFmpeg's own H.264 and HEVC DECODERS. Does
+      shipping it make SankoTV an "AVC product" needing its publisher's own
+      licence? Published terms: no royalty on the first 100,000 units a
+      year, then $0.20; the published briefing covers the term to the end
+      of 2025 - GET THE CURRENT TERM'S. Does the zero tier require signing?
+
+6. OPEN - AAC POOL (Via LA AAC). avcodec-61.dll contains FFmpeg's own AAC
+   ENCODER AND DECODER; the app decodes AAC when the artist imports an
+   .aac or .m4a (Import Audio offers wav, mp3, aac, m4a), and the export
+   writes AAC (through Windows' encoder, measured). FFMPEG'S OWN AAC
+   ENCODER MUST STAY UNUSED: measured 2026-10-03, Qt's recorder switches
+   to it by itself when it is fed floating-point audio - which would make
+   code we ship the AAC encoder. The export never does that; do not
+   "fix" audio quality that way.
+   The published AAC schedule has NO free tier ($0.98 a unit to 500,000, a
+   $15,000 initial fee, $1,000 for small entities; "PC software" rates not
+   published - figures as read 2026-10-03, verify). Does SankoTV need this
+   licence?
+   A WAY OUT OF 5b AND 6, NOT BUILT, NEEDS THE USER'S APPROVAL (it is a new
+   FFmpeg build, so the standing gate applies): build Qt's FFmpeg with only
+   the Windows-encoder wrappers and patent-free decoders, so SankoTV ships
+   no H.264 / HEVC / AAC code of its own.
+
+7. OPEN - THE WINDOWS ENCODER'S PERSONAL-USE NOTICE. Windows' licence terms
+   (Windows 11 OEM terms, April 2024, section 14(b)) license its H.264
+   technology for "personal and non-commercial use of a consumer". The
+   pool's briefing words the end user's right as personal and consumer use
+   INCLUDING internal business use, without remuneration. A storyboard
+   artist exporting an animatic for a client is a professional. Inside the
+   licence or not, and whose problem if not - the lawyer's. Applies equally
+   to calling Media Foundation directly, and (unmeasured) to Apple's
+   encoders on macOS.
+
+8. OPEN - WINDOWS N EDITIONS ARE UNTESTED. They have no Media Foundation
+   and no H.264 / AAC until the user adds the free Media Feature Pack. The
+   rebuilt MP4 export (Pass 4) checks for three system DLLs before it
+   offers to export and shows a message pointing to the pack - no fallback
+   codec, the user's decision. That DETECTION has never run on an N
+   edition: test on one before selling where they are
+   sold (N for Europe, KN for Korea - general knowledge; the Microsoft
+   page cited in the report does not list regions).
+
+9. OPEN - THE REST OF THE DEPLOY FOLDER IS NOT INVENTORIED. Not examined:
+   opengl32sw.dll, D3Dcompiler_47.dll, dxcompiler.dll, dxil.dll, the Qt
+   plugins, Qt Multimedia's other attributions (DR Libs, Signalsmith
+   Stretch, TLSF, Boost, libjpeg, zlib), QuickShapeKit, SankoPaintEngine,
+   the brush assets and scans, the fonts the UI and the PDF export use. A
+   full third-party notice list is its own task.
+
+10. OPEN - NOTICED, NOT EXAMINED: the repository root is an OpenToonz
+    checkout (toonz/, thirdparty/, stuff/, its LICENSE.txt). The app builds
+    from app/ alone and its CMakeLists pulls nothing from those folders -
+    but nobody has checked that no file under app/ (assets, brushes, code)
+    was derived from them. Confirm before selling.
+
+ALSO BEFORE SELLING, not licensing: the Developer Recorder below comes out.
+
 ## Developer Recorder (TEMPORARY — remove before release)
 
 A self-contained bug-capture tool for intermittent UI issues (built for the

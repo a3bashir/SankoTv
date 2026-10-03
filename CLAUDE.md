@@ -241,6 +241,17 @@ Learned from real defects. Follow them exactly.
     - Remember that DELETING is real: removing the promoted file
       afterwards removes the user's file, so it still waits for their
       word.
+13. **SankoTV is to be SOLD: nothing new ships without its licence
+    reported first.** Do not introduce, bundle or distribute a codec, an
+    FFmpeg executable or library, or any other third-party dependency
+    until its exact licence and its terms for closed-source commercial
+    redistribution have been identified and reported to the user, with
+    primary sources. No GPL dependency without explicit approval. Do not
+    assume a wrapper (Qt Multimedia, a framework) removes the obligations
+    of what it wraps — find out what would actually ship. Unclear means
+    flag it, not decide it. Findings are research, not legal advice.
+    HANDOFF "BEFORE SELLING" is the list of open items; **no item there
+    is marked done without the user's word.**
 
 ## Finding bugs
 
