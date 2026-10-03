@@ -481,6 +481,8 @@ private:
     QPushButton *m_eraserToolButton = nullptr; // eraser-scope anchor
     QAction *m_brushLibViewAction = nullptr; // View menu toggle
     bool brushStudioUnderCursor() const; // Ctrl+Z routing (studio-local undo)
+    void undoDocument(); // Edit > Undo AND the toolbar's Undo button
+    void redoDocument();
     void refreshBrushDirtyState();       // white dot + Reset chip on the row
     QScrollArea *m_panelScroll = nullptr;
     QPushButton *m_importButton = nullptr;

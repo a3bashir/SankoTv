@@ -5020,6 +5020,38 @@ void runWorkspacePreviewPass(const QString &project)
                          "was up, and something was undone)"),
           previewUp && !r.animatic->previewVisible()
               && r.window.undoStackForTest()->index() == indexBefore - 1);
+
+    // The floating toolbar's Undo and Redo are the same door. They used to
+    // call the canvas directly and skip this step - and the toolbars stay
+    // visible over the preview, so the buttons are right there to click.
+    auto *barUndo =
+        r.window.findChild<QPushButton *>(QStringLiteral("toolbarUndo"));
+    auto *barRedo =
+        r.window.findChild<QPushButton *>(QStringLiteral("toolbarRedo"));
+    check(QStringLiteral("(af) found the floating toolbar's Undo and Redo"),
+          barUndo && barRedo);
+    if (barUndo && barRedo) {
+        const int at = r.window.undoStackForTest()->index();
+        r.animatic->scrubForTest(2);
+        pump(150);
+        const bool upForRedo = r.animatic->previewVisible();
+        barRedo->click();
+        pump(300);
+        const bool redoLeft = !r.animatic->previewVisible()
+            && r.window.undoStackForTest()->index() == at + 1;
+        r.animatic->scrubForTest(2);
+        pump(150);
+        const bool upForUndo = r.animatic->previewVisible();
+        barUndo->click();
+        pump(300);
+        check(QStringLiteral("(af) the TOOLBAR's Redo and Undo leave the "
+                             "preview before they act, like the Edit menu's "
+                             "(control: the preview was up each time, and "
+                             "each did redo / undo)"),
+              upForRedo && redoLeft && upForUndo
+                  && !r.animatic->previewVisible()
+                  && r.window.undoStackForTest()->index() == at);
+    }
 }
 
 void runWorkspaceKeysPass(const QString &project)

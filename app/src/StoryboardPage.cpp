@@ -3183,13 +3183,18 @@ void StoryboardPage::createFloatingToolbar()
     QPushButton *undo = toolButton(
         figIconPixmap(QStringLiteral(":/icons/undo.svg"), QSizeF(19.2, 15.2)),
         QStringLiteral("<b>Undo</b> | Undo the last action."), false);
-    connect(undo, &QPushButton::clicked, this, [this] { m_canvas->undo(); });
+    undo->setObjectName(QStringLiteral("toolbarUndo"));
+    // Through the same door as Edit > Undo (undoDocument): this button used
+    // to call the canvas directly, so it skipped whatever that door does
+    // first - today, leaving the animatic preview.
+    connect(undo, &QPushButton::clicked, this, [this] { undoDocument(); });
     bar->addWidget(undo, 0, Qt::AlignVCenter);
 
     QPushButton *redo = toolButton(
         figIconPixmap(QStringLiteral(":/icons/undo.svg"), QSizeF(19.2, 15.2), /*mirror*/ true),
         QStringLiteral("<b>Redo</b> | Redo the last action."), false);
-    connect(redo, &QPushButton::clicked, this, [this] { m_canvas->redo(); });
+    redo->setObjectName(QStringLiteral("toolbarRedo"));
+    connect(redo, &QPushButton::clicked, this, [this] { redoDocument(); });
     bar->addWidget(redo, 0, Qt::AlignVCenter);
 
     m_floatToolbar->adjustSize(); // fixed content -> final bar width
@@ -5930,11 +5935,7 @@ void StoryboardPage::editUndo()
         m_brushStudio->undoStack()->undo();
         return;
     }
-    // Undo changes the document; it should not do so behind the preview.
-    if (m_animatic)
-        m_animatic->leavePreview();
-    if (m_canvas)
-        m_canvas->undo();
+    undoDocument();
 }
 
 void StoryboardPage::editRedo()
@@ -5943,6 +5944,27 @@ void StoryboardPage::editRedo()
         m_brushStudio->undoStack()->redo();
         return;
     }
+    redoDocument();
+}
+
+// THE ONE DOOR to the document history, for the Edit menu and the floating
+// toolbar's buttons alike. The combined workspace gave Undo a first step -
+// leave the animatic preview, because undo changes the document and should
+// not do so behind a picture of something else - and that step was added to
+// the Edit menu's path only. The toolbar's buttons called the canvas
+// directly and skipped it: with the preview up (the toolbars stay visible
+// over it) a click on Undo changed a drawing the artist could not see. Two
+// call sites that must agree are one function.
+void StoryboardPage::undoDocument()
+{
+    if (m_animatic)
+        m_animatic->leavePreview();
+    if (m_canvas)
+        m_canvas->undo();
+}
+
+void StoryboardPage::redoDocument()
+{
     if (m_animatic)
         m_animatic->leavePreview();
     if (m_canvas)
