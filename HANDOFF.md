@@ -5304,6 +5304,57 @@ under a test, so AnimaticPage takes a picker in its place
 Lifecycle 450 -> 494 (451 and 453 after the two Pass 1 fixes, 482 after
 Pass 2, 494 with the missing-file fix).
 
+## THE COMBINED WORKSPACE, PASS 3: the Generation page is removed (2026-10-03)
+
+THE PAGE IS GONE, NOT HIDDEN. GenerationPage sent panels to fal.ai
+(Seedance) for AI video, built its prompts through the Anthropic API,
+polled, downloaded and kept "takes" per panel. It was reachable only from
+the old Animatic screen's Continue to Generation button. The user's
+decision: remove the button, delete the source, keep the data.
+TO REVIVE IT: the page last lived in commit 57d8aa4dd
+(app/src/GenerationPage.{h,cpp}, 1,472 lines; last edited in a96299813,
+2026-08-21). `git show 57d8aa4dd:app/src/GenerationPage.cpp` is the whole
+thing. It also needs back: Qt Network and MultimediaWidgets in
+CMakeLists, the page in MainWindow's stack, its line in freeScenes (its
+rows hold Panel pointers), and a way in.
+
+WHAT WENT WITH IT:
+- The button, its signal, and the navigation in MainWindow; the page's
+  place in the stack (four screens now: start, script, workspace,
+  consistency board); its detach in freeScenes.
+- QT NETWORK AND MULTIMEDIAWIDGETS, from find_package and from the SankoTV,
+  CanvasSizeLock and Lifecycle link lines. The page was the only user of
+  both. The CMake comment claiming Network was for the Script Editor's
+  Claude call was stale: the Script Editor parses on-device. Verified on
+  the built exes, with the previous build as the control: SankoTV.exe
+  imports Core, Gui, Multimedia, Svg, Widgets and nothing else, and no
+  longer contains the fal.run / api.anthropic.com endpoints or either key
+  name. Qt6Network.dll STILL SHIPS - Qt6Multimedia.dll imports it - but
+  nothing of ours links or calls it.
+- THE APPLICATION NOW HAS NO NETWORK CODE AND READS NO API KEY.
+  FAL_API_KEY and ANTHROPIC_API_KEY were read only inside the page, at
+  the moment of each request, and never stored.
+- A side effect: clicking the button in an unsaved project created
+  %TEMP%/sankotv_generated. (Not present in the user's real Temp - checked
+  from outside the app package.)
+NOT TOUCHED: the Dev Recorder (it names widgets generically), the menus
+(none referred to it), the gate's tests (none referred to it), and the 59
+old backup copies under app/src/_backups (git-ignored, not in the build).
+
+THE DATA STAYS. Panel::generationStatus, generatedVideoPath, falRequestId,
+takes and selectedTakeId, and everything in a GeneratedTake, are still
+loaded and saved by ProjectIO with no UI at all.
+
+A CENSUS OF THE USER'S REAL PROJECTS (2026-10-03; Documents, Downloads,
+Desktop, Videos, Pictures and G:\ - none of it under AppData): 30 project
+files in 28 folders, 89 panels, ZERO takes, zero generated video paths,
+zero fal request ids, zero video files, zero audio files; 284 PNGs and 30
+manifests, 95 MB. So the take-data work in this pass protects a format,
+not anything the user currently has. (A scanning note: PowerShell 5.1's
+Get-ChildItem -LiteralPath ... -Recurse -Include *.mp4 does NOT filter - it
+returned every file, and the first count said "363 video files". Filter
+with Where-Object on .Extension.)
+
 ## METHOD: measure interior structure ACROSS THE SIZE RANGE before calling it character (2026-09-25)
 
 The Painting census measured Acrylic at size 20 only and found "one

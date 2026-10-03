@@ -21,13 +21,18 @@ if(NOT CMAKE_PREFIX_PATH AND WIN32)
 endif()
 
 # --- Find Qt6 -------------------------------------------------------------
-# Network is needed for the Claude API call in the Script Editor screen.
-# Multimedia is needed for the Animatic scratch-audio track.
+# Multimedia is needed for the animatic's scratch-audio track.
 # Svg is required for QIcon to render .svg icon resources (without it QIcon
 # silently returns a null icon for SVG files).
+# NOT here any more: Network and MultimediaWidgets. Both were used by the
+# Generation page alone (its fal.ai / Anthropic requests and its take
+# player) and left with it. The comment that stood here said Network was
+# for the Script Editor's Claude call - the Script Editor parses on-device
+# and has made no network call for a long time. The application now
+# contains no network code. (Qt6Network.dll still ships: Qt Multimedia
+# depends on it. Nothing of ours links or calls it.)
 find_package(Qt6 REQUIRED COMPONENTS
-    Core Concurrent Gui GuiPrivate Widgets Network Multimedia
-    MultimediaWidgets ShaderTools Svg)
+    Core Concurrent Gui GuiPrivate Widgets Multimedia ShaderTools Svg)
 
 # (Qt Advanced Docking System was removed in the native-docking migration:
 # the reusable src/docking/ classes on stock QDockWidget replace it, so no
@@ -83,8 +88,6 @@ qt_add_executable(SankoTV
     src/AnimaticTimeline.h
     src/ConsistencyBoard.cpp
     src/ConsistencyBoard.h
-    src/GenerationPage.cpp
-    src/GenerationPage.h
     src/FloatingToolWindow.cpp
     src/FloatingToolWindow.h
     src/SankoScrollBarStyle.h
@@ -131,7 +134,7 @@ qt_add_executable(SankoTV
     brush_assets.qrc
 )
 
-target_link_libraries(SankoTV PRIVATE Qt6::Widgets Qt6::Network Qt6::Multimedia Qt6::MultimediaWidgets
+target_link_libraries(SankoTV PRIVATE Qt6::Widgets Qt6::Multimedia
     Qt6::Svg QuickShape::Kit SankoPaint::Engine)
 # src on the include path: subdirectory units (src/brushlib/) include
 # top-level headers like "SankoPaintHostAdapter.h" without ../ paths.
@@ -276,7 +279,7 @@ qt_add_executable(SankoCanvasSizeLock
 )
 target_include_directories(SankoCanvasSizeLock PRIVATE src)
 target_link_libraries(SankoCanvasSizeLock PRIVATE Qt6::Widgets Qt6::Svg
-    Qt6::Concurrent Qt6::Multimedia Qt6::MultimediaWidgets
+    Qt6::Concurrent Qt6::Multimedia
     QuickShape::Kit SankoPaint::Engine)
 
 # Permanent project-LIFECYCLE lock (tests/ProjectLifecycleTest.cpp): the one
@@ -293,8 +296,8 @@ qt_add_executable(SankoProjectLifecycle
     ${_sankotv_lifecycle_srcs}
 )
 target_include_directories(SankoProjectLifecycle PRIVATE src)
-target_link_libraries(SankoProjectLifecycle PRIVATE Qt6::Widgets Qt6::Network
-    Qt6::Multimedia Qt6::MultimediaWidgets Qt6::Svg Qt6::Concurrent
+target_link_libraries(SankoProjectLifecycle PRIVATE Qt6::Widgets
+    Qt6::Multimedia Qt6::Svg Qt6::Concurrent
     QuickShape::Kit SankoPaint::Engine dbghelp)
 
 # --- Preset promotion instrument (permanent tool) ---------------------------

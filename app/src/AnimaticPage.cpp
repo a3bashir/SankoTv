@@ -230,8 +230,7 @@ AnimaticPage::AnimaticPage(QWidget *parent)
     connect(m_display, &QObject::destroyed, this, [this] { m_display = nullptr; });
     connect(m_legacyActions, &QObject::destroyed, this, [this] {
         m_legacyActions = nullptr;
-        m_exportButton = nullptr; // its children go with it
-        m_generationButton = nullptr;
+        m_exportButton = nullptr; // its child goes with it
     });
     root->addWidget(createHeader());
     root->addWidget(createTimingStrip(), 1);
@@ -269,7 +268,8 @@ AnimaticPage::~AnimaticPage()
 // deletes this function.
 //   Pass 2 (done): Import / Remove Audio -> the Edit menu and the audio
 //                  track's right-click menu. Their buttons are gone.
-//   Pass 3: Continue to Generation -> nowhere.
+//   Pass 3 (done): Continue to Generation -> nowhere. The Generation page
+//                  is removed from the app; its button went with it.
 //   Pass 4: Export MP4 -> File > Export.
 QWidget *AnimaticPage::createLegacyActions()
 {
@@ -288,20 +288,6 @@ QWidget *AnimaticPage::createLegacyActions()
         " border: 1px solid #2a2a2a; }"));
     connect(m_exportButton, &QPushButton::clicked, this, &AnimaticPage::onExportMp4);
     layout->addWidget(m_exportButton);
-
-    m_generationButton = new QPushButton(QStringLiteral("Continue to Generation"));
-    m_generationButton->setCursor(Qt::PointingHandCursor);
-    m_generationButton->setEnabled(false); // enabled once panels are loaded
-    m_generationButton->setStyleSheet(SankoTheme::themed("QPushButton { background-color: %PURPLE%; color: #ffffff; border: none;"
-        " border-radius: 6px; padding: 8px 16px; font-size: 13px; font-weight: 600; }"
-        "QPushButton:hover { background-color: #8f82ff; }"
-        "QPushButton:disabled { background-color: #1c1c1c; color: #555555;"
-        " border: 1px solid #2a2a2a; }"));
-    connect(m_generationButton, &QPushButton::clicked, this, [this] {
-        leavePreview(); // stops playback too: the workspace is being left
-        emit generationRequested();
-    });
-    layout->addWidget(m_generationButton);
 
     return bar;
 }
@@ -749,8 +735,6 @@ void AnimaticPage::loadScenes(const QVector<Scene *> &scenes)
     // strip, and that selection arrives here through setSelectedPanel.
     if (m_exportButton)
         m_exportButton->setEnabled(!m_items.isEmpty());
-    if (m_generationButton)
-        m_generationButton->setEnabled(!m_items.isEmpty());
     updateTotalLabel();
     updateTimecodeLabel();
 }
@@ -778,8 +762,6 @@ void AnimaticPage::refreshStructure()
     }
     if (m_exportButton)
         m_exportButton->setEnabled(!m_items.isEmpty());
-    if (m_generationButton)
-        m_generationButton->setEnabled(!m_items.isEmpty());
     updateTotalLabel();
     updateTimecodeLabel();
 }

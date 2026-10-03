@@ -19,9 +19,11 @@ The Script Editor parses a screenplay into scenes; the workspace is where
 everything else happens (the heart of the app): the Panel Strip on top,
 the drawing canvas in the middle, and the **animatic timeline** underneath
 — panels are drawn, timed and played back without leaving it. There is no
-separate Animatic screen any more. (A Generation screen that sends panels
-to fal.ai for AI video is still reachable from a temporary button and is
-being removed; see HANDOFF "The combined workspace".)
+separate Animatic screen any more. The Generation screen (panels sent to
+fal.ai for AI video) has been REMOVED: the application contains no network
+code and reads no API key. The take data that screen wrote is still loaded
+and saved by ProjectIO, untouched, with no UI; HANDOFF "Pass 3" names the
+commit to revive the page from.
 
 ## Architecture
 

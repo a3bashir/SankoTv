@@ -91,7 +91,10 @@ struct Panel
     int duration = 3; // seconds on screen in the animatic
     // Undo/redo lives in the app-wide QUndoStack (MainWindow), not per panel.
 
-    // AI video generation (Generation screen).
+    // AI video generation. KEPT DATA WITH NO UI: the Generation screen that
+    // wrote these was removed (HANDOFF "Pass 3"), and nothing in the app
+    // reads or shows them now. ProjectIO still loads and saves every one,
+    // so a project that carries takes keeps them.
     QString generationStatus = QStringLiteral("Not Queued"); // Not Queued, Queued,
                                                              // Generating, Complete, Failed
     QString generatedVideoPath; // mirrors the SELECTED take's videoPath (Export/Save compat)
@@ -157,7 +160,7 @@ struct Panel
 
     // Composite all VISIBLE layers bottom-to-top with per-layer opacity onto
     // white paper. This is the single merged view — thumbnails, onion skin,
-    // Animatic, Generation, and Export all read this instead of raw pixels.
+    // the animatic preview, and Export all read this instead of raw pixels.
     // Group folders paint nothing themselves; members composite with the
     // folder's visibility/opacity applied. Sized from the panel's OWN
     // layers, so it can never crop a document to some other size.
@@ -187,7 +190,7 @@ struct Panel
 
     // --- Flattened-THUMBNAIL cache (performance pass 3b) --------------------
     // The hot consumers of the flatten (timeline clip thumbs, panel-strip
-    // thumbs, generation row thumbs) all want SMALL images, yet each call
+    // thumbs) all want SMALL images, yet each call
     // paid a full-resolution composite: 16 ms per panel at 3840x2160, per
     // clip, per timeline repaint. This caches one ~512 px long-edge mip per
     // panel (~0.6 MB at 4K) and VALIDATES it on every read instead of

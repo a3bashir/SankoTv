@@ -17,8 +17,6 @@
 // chrome, and keep their literals at the site —
 //   * the panel tag palette ("Amber" and "Violet" are user-facing choices)
 //     and the layer colour-tag picker's default seed,
-//   * the Generation page's status set (blue queued / amber generating /
-//     green complete / red failed): badge, dot, and spinner,
 //   * the Consistency Board's type badges (amber Character / blue Location),
 //   * the canvas action-safe mask, which stays amber specifically so it can
 //     never be confused with the purple perspective/selection overlays —

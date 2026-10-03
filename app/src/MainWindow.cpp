@@ -38,7 +38,6 @@ this fence."
 #include "ResizeProjectDialog.h"
 #include "ProjectIO.h"
 #include "RecentProjects.h"
-#include "GenerationPage.h"
 #include "ScriptEditorPage.h"
 #include "StoryboardModel.h"
 #include "StoryboardPage.h"
@@ -91,7 +90,10 @@ MainWindow::MainWindow(QWidget *parent)
     // and frame rate, and its "the document changed" signal.
     m_animatic = m_storyboard->animatic();
     m_consistencyBoard = new ConsistencyBoard;
-    m_generation = new GenerationPage;
+    // (A Generation page was created here: AI video clips through fal.ai,
+    // reached from the old Animatic screen. It was removed with that screen;
+    // the take data it wrote is still read and written by ProjectIO, with no
+    // UI. HANDOFF "Pass 3" names the commit to revive it from.)
 
     // ONE app-wide chronological undo history: drawing, selection, panel,
     // and transform actions all funnel into this shared stack.
@@ -122,7 +124,6 @@ MainWindow::MainWindow(QWidget *parent)
 
     m_storyboard->setConsistencyEntries(&m_consistencyEntries); // read-only
     m_consistencyBoard->setEntries(&m_consistencyEntries);      // read-write
-    m_generation->setConsistencyEntries(&m_consistencyEntries); // read-only
 
     // Paste / Paste in Place enable once a panel lands on the clipboard.
     // The changes the undo stack cannot see, because they are not undoable:
@@ -160,7 +161,6 @@ MainWindow::MainWindow(QWidget *parent)
     m_stack->addWidget(m_scriptEditor);     // index 1
     m_stack->addWidget(m_storyboard);       // index 2 (the workspace)
     m_stack->addWidget(m_consistencyBoard); // index 3
-    m_stack->addWidget(m_generation);       // index 4
 
     // Dashboard -> New Project window -> Script Editor. Through the same
     // guarded request File > New Project uses: see requestNewProject().
@@ -189,20 +189,6 @@ MainWindow::MainWindow(QWidget *parent)
     // moment a project opens instead of from the first visit.)
     connect(m_storyboard, &StoryboardPage::backRequested, this, [this] {
         m_stack->setCurrentWidget(m_scriptEditor);
-    });
-
-    // Workspace -> Generation (AI video clips via fal.ai).
-    connect(m_animatic, &AnimaticPage::generationRequested, this, [this] {
-        const QString dir = m_currentProjectPath.isEmpty()
-            ? QDir::tempPath() + QStringLiteral("/sankotv_generated")
-            : QFileInfo(m_currentProjectPath).absolutePath();
-        QDir().mkpath(dir);
-        m_generation->setProjectDir(dir);
-        m_generation->loadScenes(m_scenes);
-        m_stack->setCurrentWidget(m_generation);
-    });
-    connect(m_generation, &GenerationPage::backRequested, this, [this] {
-        m_stack->setCurrentWidget(m_storyboard);
     });
 
     // Storyboard <-> Consistency Board.
@@ -902,8 +888,7 @@ void MainWindow::freeScenes()
     //     visit, so a stale list survived until then. It lives in the
     //     workspace now and StoryboardPage::detachScenes empties it; the
     //     explicit call below stays as the second lock on the same door.)
-    //   * GenerationPage::m_scenes and its per-row Panel* — same lazy
-    //     refresh, same exposure.
+    // (A third holder, the Generation page's rows, went with that page.)
     // The detach lives HERE rather than at the four call sites (this one,
     // the destructor, buildScenesFromJson and onNewProject) because a fifth
     // caller added later would have to remember, and this is the last
@@ -922,8 +907,6 @@ void MainWindow::freeScenes()
         m_storyboard->detachScenes(); // NOT loadScenes({}): see detachScenes
     if (m_animatic)
         m_animatic->loadScenes({}); // clears its rows AND its timeline's list
-    if (m_generation)
-        m_generation->loadScenes({});
     for (Scene *scene : m_scenes)
         delete scene; // Scene destructor deletes its panels
     m_scenes.clear();

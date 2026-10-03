@@ -111,7 +111,6 @@ public:
     int elapsedMsInCurrentPanel() const { return m_elapsedMsInCurrentPanel; }
 
 signals:
-    void generationRequested();
     // The track changed, by any route (an edit, an undo, a project load):
     // the menus enable Remove Audio from this. NOT a statement about the
     // document - nothing here says "unsaved" any more; an audio edit is a
@@ -225,7 +224,6 @@ private:
 
     QPushButton *m_playButton = nullptr;
     QPushButton *m_exportButton = nullptr;
-    QPushButton *m_generationButton = nullptr;
     QLabel *m_totalLabel = nullptr;
     QLabel *m_timecodeLabel = nullptr;
     QTimer *m_timer = nullptr;

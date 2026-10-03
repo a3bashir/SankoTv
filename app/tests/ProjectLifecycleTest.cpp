@@ -4577,6 +4577,23 @@ void runWorkspaceSyncPass(const QString &project)
           !continueButton && stack && !animaticIsAPage
               && r.storyboard->isAncestorOf(r.animatic)
               && r.animatic->isVisible() && r.surface->isVisible());
+    // The Generation page went the same way (Pass 3): no button leads to
+    // it and the window has four screens - start, script, workspace,
+    // consistency board. The same search still finds Export MP4, the one
+    // button of the old Animatic screen that has not moved yet.
+    bool generationButton = false, exportStillThere = false;
+    for (QPushButton *b : r.window.findChildren<QPushButton *>()) {
+        if (b->text().contains(QStringLiteral("Generation")))
+            generationButton = true;
+        if (b->text() == QStringLiteral("Export MP4"))
+            exportStillThere = true;
+    }
+    check(QStringLiteral("(ad) there is no Generation screen and no button "
+                         "to it: the window has four screens (control: the "
+                         "same search finds Export MP4)"),
+          !generationButton && exportStillThere && stack
+              && stack->count() == 4,
+          QStringLiteral("%1 screen(s)").arg(stack ? stack->count() : -1));
     auto *strip = r.storyboard->findChild<QDockWidget *>(
         QStringLiteral("dockPanelStrip"));
     const int stripY = strip ? strip->mapToGlobal(QPoint(0, 0)).y() : -1;
