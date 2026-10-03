@@ -5525,6 +5525,20 @@ ONLY THING THAT WILL NOTICE IF TAKES STOP SURVIVING - do not thin it. (ad)
 gained one check: no Generation button, four screens. Lifecycle 494 ->
 495 with the removal, 506 with the take fix.
 
+## The header timecode counts frames in the project's rate (2026-10-03)
+
+FOUND WHILE REBUILDING THE EXPORT (which had its own constant 24), FIXED
+AS ITS OWN COMMIT. AnimaticPage::updateTimecodeLabel computed HH:MM:SS:FF
+with a constant 24 whatever the project's frame rate. Hours, minutes and
+seconds came out right - it multiplied and divided by the same 24 - but
+the FRAMES field counted 0-23 in a 60 fps project, beside a ruler that has
+always used the project's rate and counted 0-59. It reads the timeline's
+fps now, and setFps refreshes the label.
+GATE: Lifecycle (ap), 3 checks. Part-way through the first second of a
+60 fps project the label and the clock it is written from are read in the
+same turn of the event loop: the frames field must be the 60ths, and that
+must differ from what 24ths would give. Lifecycle 506 -> 509.
+
 ## METHOD: measure interior structure ACROSS THE SIZE RANGE before calling it character (2026-09-25)
 
 The Painting census measured Acrylic at size 20 only and found "one

@@ -141,6 +141,7 @@ public:
     void scrubForTest(int flatIndex) { onScrubbed(flatIndex); }
     QString previewCaptionForTest() const;
     bool previewHasPictureForTest() const;
+    QString timecodeTextForTest() const; // the header's HH:MM:SS:FF
     // The file dialog cannot run under a test: this answers in its place.
     // Everything after the dialog is the real path.
     void setAudioPickerForTest(std::function<QString()> picker)

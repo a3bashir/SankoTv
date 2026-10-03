@@ -6299,6 +6299,46 @@ void runTakesRoundTripPass(const QString &scratch)
     pump(300);
 }
 
+// ---- (ap) the header's timecode counts in the project's frame rate ---------
+void runTimecodeRatePass(const QString &project)
+{
+    using namespace workspace;
+    out() << "--- (ap) the timecode's frames field uses the project's frame "
+             "rate ---" << Qt::endl;
+    Rig r(project);
+    check(QStringLiteral("(ap) the workspace opened"), r.ok);
+    if (!r.ok)
+        return;
+    r.window.applyProjectSettingsForTest(r.window.projectNameForTest(), 60);
+    pump(200);
+    clickClip(r, 0);
+    check(QStringLiteral("(ap) at rest on the first panel it reads zero"),
+          r.animatic->timecodeTextForTest() == QStringLiteral("00:00:00:00"),
+          r.animatic->timecodeTextForTest());
+    r.animatic->togglePlay();
+    QElapsedTimer t;
+    t.start();
+    while (r.animatic->elapsedMsInCurrentPanel() < 400 && t.elapsed() < 6000)
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 5);
+    // Read in the same turn of the event loop, with nothing pumped between:
+    // the label and the clock it was written from.
+    const int elapsed = r.animatic->elapsedMsInCurrentPanel();
+    const QString shown = r.animatic->timecodeTextForTest();
+    r.animatic->leavePreview();
+    pump(200);
+    const int at60 = int(elapsed / (1000.0 / 60)) % 60;
+    const int at24 = int(elapsed / (1000.0 / 24)) % 24;
+    check(QStringLiteral("(ap) part-way through the first second of a 60 fps "
+                         "project the frames field counts sixtieths (it "
+                         "counted in 24ths whatever the project was)"),
+          elapsed >= 400 && elapsed < 1000 && at60 != at24
+              && shown == QStringLiteral("00:00:00:%1").arg(at60, 2, 10,
+                                                            QLatin1Char('0')),
+          QStringLiteral("%1 ms in: shows %2; at 60 fps that is frame %3, at "
+                         "24 it would be %4").arg(elapsed).arg(shown).arg(at60)
+              .arg(at24));
+}
+
 int main(int argc, char **argv)
 {
 #ifdef Q_OS_WIN
@@ -6502,6 +6542,8 @@ int main(int argc, char **argv)
         runAudioMissingPass(scratch);
     }
     runTakesRoundTripPass(scratch);
+    runTimecodeRatePass(writeProject(projects, QStringLiteral("Timecode"),
+                                     QSize(960, 540), 30, 2, 2));
 
     // ---- (aa) a test that cannot start says why and exits ----------------
     // An unattended gate must FAIL, not wait. Measured 2026-10-02: with its

@@ -381,6 +381,11 @@ bool AnimaticPage::previewHasPictureForTest() const
     return m_display && m_display->hasPixmapForTest();
 }
 
+QString AnimaticPage::timecodeTextForTest() const
+{
+    return m_timecodeLabel ? m_timecodeLabel->text() : QString();
+}
+
 QWidget *AnimaticPage::previewSurface() const
 {
     return m_display;
@@ -849,13 +854,18 @@ void AnimaticPage::updateTimecodeLabel()
 {
     if (!m_timecodeLabel)
         return;
-    constexpr int kFps = 24;
+    // THE PROJECT'S frame rate. This said 24 whatever the project was: the
+    // hours, minutes and seconds came out right (it multiplied and divided
+    // by the same 24), but the FRAMES field counted 0-23 in a 60 fps
+    // project while the ruler beside it, which always used the project's
+    // rate, counted 0-59.
+    const int fps = m_timeline ? qMax(1, m_timeline->fps()) : 24;
     int frame = 0;
     for (int i = 0; i < m_current && i < m_items.size(); ++i)
-        frame += qMax(1, m_items.at(i).panel->duration) * kFps;
-    frame += static_cast<int>(m_elapsedMsInCurrentPanel / (1000.0 / kFps));
-    const int ff = frame % kFps;
-    const int totalSec = frame / kFps;
+        frame += qMax(1, m_items.at(i).panel->duration) * fps;
+    frame += static_cast<int>(m_elapsedMsInCurrentPanel / (1000.0 / fps));
+    const int ff = frame % fps;
+    const int totalSec = frame / fps;
     const int ss = totalSec % 60;
     const int mm = (totalSec / 60) % 60;
     const int hh = totalSec / 3600;
@@ -1468,4 +1478,5 @@ void AnimaticPage::setFps(int fps)
 {
     if (m_timeline)
         m_timeline->setFps(fps);
+    updateTimecodeLabel(); // its frames field counts in the project's rate
 }
