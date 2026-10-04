@@ -71,10 +71,6 @@ public:
     int minimumExpandedHeight() const;
     int defaultExpandedHeight() const;
 
-    // The buttons that have not yet moved to the menus (see the .cpp); the
-    // workspace places this in its bottom bar.
-    QWidget *legacyActions() const { return m_legacyActions; }
-
     // Transport, for the workspace's pointer-routed keys.
     void togglePlay();
     void goFirst();
@@ -167,7 +163,6 @@ private:
         int panelInScene = 0; // 1-based index within its scene
     };
 
-    QWidget *createLegacyActions();
     QWidget *createHeader();
     QWidget *createTimingStrip();
 
@@ -192,8 +187,6 @@ private:
 
     void updateTimecodeLabel(); // HH:MM:SS:FF of the playhead
 
-    void onExportMp4();
-
     void installAudio(const QString &path); // set or clear the track, silently
     void showAudioMenu(const QPoint &globalPos);
     void updateAudioUi();
@@ -215,7 +208,6 @@ private:
     PanelDisplay *m_display = nullptr;  // the preview, a child of m_previewHost
     QPointer<QWidget> m_previewHost;    // the drawing canvas
     bool m_previewShown = false;
-    QWidget *m_legacyActions = nullptr;
     QWidget *m_body = nullptr;          // everything below the header row
     QPushButton *m_collapseButton = nullptr;
     bool m_collapsed = false;
@@ -224,7 +216,6 @@ private:
     QVector<Scene *> m_scenes; // source scenes, for duration edits + timeline rebuilds
 
     QPushButton *m_playButton = nullptr;
-    QPushButton *m_exportButton = nullptr;
     QLabel *m_totalLabel = nullptr;
     QLabel *m_timecodeLabel = nullptr;
     QTimer *m_timer = nullptr;

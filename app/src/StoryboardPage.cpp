@@ -5200,11 +5200,9 @@ QWidget *StoryboardPage::createBottomBar()
     layout->addStretch(1);
 
     // "Continue to Animatic" stood here. The animatic is the timeline under
-    // the canvas now - there is nowhere to continue to. In its place, for
-    // the passes still to come: the buttons of the old Animatic screen that
-    // have not yet moved to the menus (AnimaticPage::createLegacyActions).
-    if (m_animatic && m_animatic->legacyActions())
-        layout->addWidget(m_animatic->legacyActions());
+    // the canvas now - there is nowhere to continue to. (For three passes
+    // the old Animatic screen's buttons stood in its place while they moved
+    // to the menus one by one; the last, Export MP4, is File > Export.)
 
     return bar;
 }

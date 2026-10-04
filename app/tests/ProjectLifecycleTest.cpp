@@ -61,6 +61,9 @@
 #include "SankoTheme.h"
 #include "StoryboardModel.h"
 #include "devrecorder/DevRecorder.h"
+#include "export/MovieEncoder.h"
+#include "export/Mp4Probe.h"
+#include "export/ProjectExport.h"
 
 #include "AnimaticTimeline.h"
 
@@ -93,6 +96,7 @@
 #include <QPlainTextEdit>
 #include <QFileInfo>
 #include <QPushButton>
+#include <QRegularExpression>
 #include <QTextStream>
 #include <QLabel>
 #include <QMenuBar>
@@ -4579,19 +4583,21 @@ void runWorkspaceSyncPass(const QString &project)
               && r.animatic->isVisible() && r.surface->isVisible());
     // The Generation page went the same way (Pass 3): no button leads to
     // it and the window has four screens - start, script, workspace,
-    // consistency board. The same search still finds Export MP4, the one
-    // button of the old Animatic screen that has not moved yet.
-    bool generationButton = false, exportStillThere = false;
+    // consistency board. The same search finds Consistency Board, a button
+    // of the same bottom bar. (Until Pass 4 the control was Export MP4,
+    // the last button of the old Animatic screen; it is File > Export now,
+    // and section (an) proves it is gone from the bar.)
+    bool generationButton = false, searchFindsButtons = false;
     for (QPushButton *b : r.window.findChildren<QPushButton *>()) {
         if (b->text().contains(QStringLiteral("Generation")))
             generationButton = true;
-        if (b->text() == QStringLiteral("Export MP4"))
-            exportStillThere = true;
+        if (b->text() == QStringLiteral("Consistency Board"))
+            searchFindsButtons = true;
     }
     check(QStringLiteral("(ad) there is no Generation screen and no button "
                          "to it: the window has four screens (control: the "
-                         "same search finds Export MP4)"),
-          !generationButton && exportStillThere && stack
+                         "same search finds Consistency Board)"),
+          !generationButton && searchFindsButtons && stack
               && stack->count() == 4,
           QStringLiteral("%1 screen(s)").arg(stack ? stack->count() : -1));
     auto *strip = r.storyboard->findChild<QDockWidget *>(
@@ -5594,18 +5600,18 @@ void runAudioEntryPointsPass(const QString &project, const QString &scratch)
           importAct->isEnabled() && !removeAct->isEnabled()
               && r.animatic->audioPath().isEmpty());
 
-    bool audioButton = false, exportButton = false;
+    bool audioButton = false, searchFindsButtons = false;
     for (QPushButton *b : r.window.findChildren<QPushButton *>()) {
         if (b->text() == QStringLiteral("Import Audio")
             || b->text() == QStringLiteral("Remove Audio"))
             audioButton = true;
-        if (b->text() == QStringLiteral("Export MP4"))
-            exportButton = true;
+        if (b->text() == QStringLiteral("Import Image"))
+            searchFindsButtons = true;
     }
     check(QStringLiteral("(aj) the bottom bar no longer has Import Audio or "
-                         "Remove Audio buttons (control: Export MP4, not yet "
-                         "moved, is still found by the same search)"),
-          !audioButton && exportButton);
+                         "Remove Audio buttons (control: Import Image, in "
+                         "the same bar, is found by the same search)"),
+          !audioButton && searchFindsButtons);
     check(QStringLiteral("(aj) an empty audio track says how to fill it - "
                          "and no longer claims to accept a drop"),
           r.timeline->audioBarStateForTest() == QStringLiteral("none")
@@ -6299,6 +6305,733 @@ void runTakesRoundTripPass(const QString &scratch)
     pump(300);
 }
 
+// ---- (an) (ao) File > Export ------------------------------------------------
+// The old export wrote PNG frames into one fixed temp folder without checking
+// a single write, encoded them at 24 fps whatever the project said, and let
+// audio shorter than the film cut the film. None of that could be seen from
+// inside the app: it reported "Export complete". So these sections never ask
+// the export how it went - they open the FILE and count.
+//
+// AND THEY MEASURE THE SOUND. The first rebuilt export passed every check
+// here while writing its sound track as HE-AAC at 16 kbit/s under a request
+// for 192: the checks asked only whether a sound track existed and how long
+// it was. The kind of AAC and the bit rate MEASURED from the file's bytes
+// are asserted now, with an encoder that writes half the rate as the proof
+// that the assertion can fail.
+namespace exporting {
+
+using sankoexport::MovieEncoder;
+using sankoexport::MovieResult;
+using sankoexport::MovieSpec;
+
+int g_offers = 0, g_refusals = 0, g_dropped = 0;
+
+// Stands in front of the real encoder and misbehaves on purpose. This is
+// the MovieEncoder seam doing its second job: the first is letting another
+// encoder replace Qt's.
+class Meddler : public MovieEncoder
+{
+public:
+    enum Fault { DropEveryTenth, RefuseEveryOther, HalfTheSoundBitRate };
+    explicit Meddler(Fault fault)
+        : m_fault(fault)
+        , m_inner(sankoexport::createMovieEncoder(this))
+    {
+        connect(m_inner, &MovieEncoder::videoWanted, this, &MovieEncoder::videoWanted);
+        connect(m_inner, &MovieEncoder::audioWanted, this, &MovieEncoder::audioWanted);
+        connect(m_inner, &MovieEncoder::finished, this, &MovieEncoder::finished);
+        g_offers = g_refusals = g_dropped = 0;
+    }
+    bool begin(const MovieSpec &spec, QString *error) override
+    {
+        MovieSpec handed = spec;
+        // A perfectly good sound track - at half the rate that was asked.
+        if (m_fault == HalfTheSoundBitRate)
+            handed.audioBitRate = spec.audioBitRate / 2;
+        return m_inner->begin(handed, error);
+    }
+    bool addFrame(const QImage &frame, int index) override
+    {
+        ++g_offers;
+        if (m_fault == RefuseEveryOther && g_offers % 2 == 0) {
+            ++g_refusals;
+            QMetaObject::invokeMethod(this, &MovieEncoder::videoWanted,
+                                      Qt::QueuedConnection);
+            return false;
+        }
+        if (m_fault == DropEveryTenth && index % 10 == 9) {
+            ++g_dropped;
+            return true; // "accepted" - and thrown away
+        }
+        // Renumbered, so the file that results is a perfectly well-formed,
+        // perfectly playable film that is simply missing frames.
+        return m_inner->addFrame(frame, index - g_dropped);
+    }
+    bool endVideo() override { return m_inner->endVideo(); }
+    bool addAudio(const QByteArray &pcm, qint64 first) override
+    {
+        return m_inner->addAudio(pcm, first);
+    }
+    bool endAudio() override { return m_inner->endAudio(); }
+    void cancel() override { m_inner->cancel(); }
+
+private:
+    Fault m_fault;
+    MovieEncoder *m_inner;
+};
+
+// No real encoder behind it at all.
+class Fake : public MovieEncoder
+{
+public:
+    enum Mode { ClaimsSuccessWritesNothing, FailsPartWay, NeverAnswers };
+    explicit Fake(Mode mode) : m_mode(mode) {}
+    bool begin(const MovieSpec &spec, QString *) override
+    {
+        if (m_mode == FailsPartWay) {
+            QFile f(spec.path); // it had started writing when it failed
+            if (f.open(QIODevice::WriteOnly))
+                f.write("half a film");
+        }
+        QMetaObject::invokeMethod(this, &MovieEncoder::videoWanted,
+                                  Qt::QueuedConnection);
+        return true;
+    }
+    bool addFrame(const QImage &, int index) override
+    {
+        if (m_mode == NeverAnswers && index >= 5)
+            return false; // refuses, and never asks again
+        if (m_mode == FailsPartWay && index == 20)
+            report(false, QStringLiteral("simulated: the disk is full"));
+        return true;
+    }
+    bool endVideo() override
+    {
+        if (m_mode == ClaimsSuccessWritesNothing)
+            report(true, QString());
+        return true;
+    }
+    bool addAudio(const QByteArray &, qint64) override { return true; }
+    bool endAudio() override { return true; }
+    void cancel() override
+    {
+        if (m_mode != NeverAnswers)
+            report(false, QString());
+    }
+
+private:
+    void report(bool ok, const QString &error)
+    {
+        if (m_reported)
+            return;
+        m_reported = true;
+        QMetaObject::invokeMethod(this, [this, ok, error] { emit finished(ok, error); },
+                                  Qt::QueuedConnection);
+    }
+    Mode m_mode;
+    bool m_reported = false;
+};
+
+QMenu *exportMenu(MainWindow &window)
+{
+    for (QAction *top : window.menuBar()->actions()) {
+        QString title = top->text();
+        title.remove(QLatin1Char('&'));
+        if (!top->menu() || title != QStringLiteral("File"))
+            continue;
+        for (QAction *a : top->menu()->actions())
+            if (a->menu() && a->text() == QStringLiteral("Export"))
+                return a->menu();
+    }
+    return nullptr;
+}
+
+QStringList actionTexts(QMenu *menu)
+{
+    QStringList texts;
+    if (menu)
+        for (QAction *a : menu->actions())
+            texts << a->text();
+    return texts;
+}
+
+QStringList listing(const QString &folder)
+{
+    return QDir(folder).entryList(QDir::Files | QDir::Dirs | QDir::NoDotAndDotDot,
+                                  QDir::Name);
+}
+
+QByteArray fileHash(const QString &path)
+{
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly))
+        return QByteArray();
+    return QCryptographicHash::hash(f.readAll(), QCryptographicHash::Sha1);
+}
+
+QString describe(const MovieResult &r)
+{
+    return QStringLiteral("ok=%1 cancelled=%2 frames %3 of %4, video %5 s, "
+                          "audio %6 (%7 s), %8 bytes; ")
+               .arg(r.ok).arg(r.cancelled).arg(r.framesInFile).arg(r.framesExpected)
+               .arg(r.videoSeconds, 0, 'f', 3)
+               .arg(r.audioTrack
+                        ? QStringLiteral("AAC type %1 at %2 kbit/s")
+                              .arg(r.audioObjectType).arg(r.audioBitRate / 1000.0, 0, 'f', 1)
+                        : QStringLiteral("no"))
+               .arg(r.audioSeconds, 0, 'f', 3).arg(r.bytes)
+        + r.error.simplified().left(180);
+}
+
+// The video track of a file, as the file itself says: frames, whether every
+// frame lasts the same, and the frame rate that timing amounts to.
+struct Seen
+{
+    bool readable = false;
+    int frames = 0;
+    bool constant = false;
+    double fps = 0, seconds = 0;
+    QByteArray codec;
+    bool audio = false;
+    QByteArray audioCodec;
+    double audioSeconds = 0;
+    int audioObjectType = 0; // 2 = AAC-LC, 5 = HE-AAC
+    double audioKbps = 0;    // measured: the track's bytes over its length
+    int audioRate = 0, audioChannels = 0;
+    int colourMatrix = 0;    // 1 = the file says BT.709
+    QString text() const
+    {
+        return QStringLiteral("%1 frame(s) of %2, %3 fps%4, %5 s, colour tag %6; "
+                              "audio %7 %8 s%9")
+            .arg(frames).arg(QString::fromLatin1(codec)).arg(fps, 0, 'f', 3)
+            .arg(constant ? QString() : QStringLiteral(" (NOT constant)"))
+            .arg(seconds, 0, 'f', 3).arg(colourMatrix)
+            .arg(audio ? QString::fromLatin1(audioCodec) : QStringLiteral("none"))
+            .arg(audioSeconds, 0, 'f', 3)
+            .arg(audio ? QStringLiteral(", AAC object type %1, %2 kbit/s measured, "
+                                        "%3 Hz, %4 ch")
+                             .arg(audioObjectType).arg(audioKbps, 0, 'f', 1)
+                             .arg(audioRate).arg(audioChannels)
+                       : QString());
+    }
+    // The sound the export promises: AAC-LC, 192 kbit/s within 5 %, stereo
+    // at 48 kHz.
+    bool soundAsPromised() const
+    {
+        return audio && audioCodec == "mp4a" && audioObjectType == 2
+            && qAbs(audioKbps - 192.0) < 9.6 && audioRate == 48000
+            && audioChannels == 2;
+    }
+};
+
+Seen look(const QString &path)
+{
+    Seen s;
+    const sankoexport::Mp4Info info = sankoexport::readMp4(path);
+    s.readable = info.readable;
+    if (const sankoexport::Mp4Track *v = info.video()) {
+        s.frames = int(v->samples);
+        s.constant = v->timing.size() == 1;
+        if (s.constant && v->timing.first().second > 0)
+            s.fps = double(v->timescale) / v->timing.first().second;
+        s.seconds = v->seconds();
+        s.codec = v->codec;
+        s.colourMatrix = v->colourMatrix;
+    }
+    if (const sankoexport::Mp4Track *a = info.audio()) {
+        s.audio = true;
+        s.audioCodec = a->codec;
+        s.audioSeconds = a->seconds();
+        s.audioObjectType = a->audioObjectType;
+        s.audioKbps = a->bitsPerSecond() / 1000.0;
+        s.audioRate = a->sampleRate;
+        s.audioChannels = a->channels;
+    }
+    return s;
+}
+
+} // namespace exporting
+
+void runExportMoviePass(const QString &project, const QString &scratch)
+{
+    using namespace workspace;
+    using namespace exporting;
+    out() << "--- (an) File > Export > MP4: the project's frame rate, the "
+             "video's length, and every frame counted in the file ---"
+          << Qt::endl;
+    const QStringList wanted = {QStringLiteral("MP4 Video..."),
+                                QStringLiteral("PNG Images..."),
+                                QStringLiteral("PDF Storyboard...")};
+    {
+        MainWindow window;
+        window.resize(1300, 850);
+        window.show();
+        pump(700);
+        QMenu *menu = exportMenu(window);
+        bool anyEnabled = false;
+        if (menu)
+            for (QAction *a : menu->actions())
+                anyEnabled = anyEnabled || a->isEnabled();
+        check(QStringLiteral("(an) File > Export offers MP4 Video, PNG Images "
+                             "and PDF Storyboard"),
+              actionTexts(menu) == wanted,
+              actionTexts(menu).join(QStringLiteral(" | ")));
+        check(QStringLiteral("(an) with no project open all three are disabled"),
+              menu && !anyEnabled);
+        window.close();
+        pump(300);
+    }
+
+    Rig r(project);
+    check(QStringLiteral("(an) the workspace opened"), r.ok);
+    if (!r.ok)
+        return;
+    QMenu *menu = exportMenu(r.window);
+    bool allEnabled = menu != nullptr;
+    if (menu)
+        for (QAction *a : menu->actions())
+            allEnabled = allEnabled && a->isEnabled();
+    check(QStringLiteral("(an) with a project open all three are enabled"),
+          allEnabled);
+    bool exportButton = false, searchFindsButtons = false;
+    for (QPushButton *b : r.window.findChildren<QPushButton *>()) {
+        if (b->text().contains(QStringLiteral("Export")))
+            exportButton = true;
+        if (b->text() == QStringLiteral("Import Image"))
+            searchFindsButtons = true;
+    }
+    check(QStringLiteral("(an) the Export MP4 button is gone from the bottom "
+                         "bar (control: the same search finds Import Image)"),
+          !exportButton && searchFindsButtons);
+
+    // ---- can this machine do it, and what is said when one cannot -----------
+    check(QStringLiteral("(an) this machine can write an H.264 MP4 (the checks "
+                         "below need it)"),
+          r.window.mp4UnavailableReasonForTest().isEmpty(),
+          r.window.mp4UnavailableReasonForTest().simplified().left(120));
+    const QString pack = sankoexport::mediaFeaturePackMessage();
+    r.window.setMp4UnavailableForTest(pack);
+    check(QStringLiteral("(an) where Windows has no encoders the export says "
+                         "so and names the Media Feature Pack and where to "
+                         "add it (the wording and its route to the dialog; "
+                         "the DETECTION cannot be exercised on this machine)"),
+          r.window.mp4UnavailableReasonForTest() == pack
+              && pack.contains(QStringLiteral("Media Feature Pack"))
+              && pack.contains(QStringLiteral("Optional features"))
+              && pack.contains(QStringLiteral("restart")));
+    r.window.setMp4UnavailableForTest(QString());
+
+    const QString dir = scratch + QStringLiteral("/export/mp4");
+    QDir().mkpath(dir);
+    const QString film = dir + QStringLiteral("/film.mp4");
+    QUndoStack *undo = r.window.undoStackForTest();
+
+    // ---- a silent film, through the real progress dialog ---------------------
+    // The fixture is 10 seconds (2 + 3 + 2 + 3) at 30 fps.
+    r.window.markCleanForTest();
+    const int undoBefore = undo->count();
+    const MovieResult first = r.window.exportMp4ForTest(film);
+    Seen seen = look(film);
+    check(QStringLiteral("(an) a silent film exports"),
+          first.ok && QFile::exists(film), describe(first));
+    check(QStringLiteral("(an) at the PROJECT's frame rate: 300 frames at a "
+                         "constant 30 fps (the old export's fixed 24 would be "
+                         "240)"),
+          seen.frames == 300 && seen.constant && qAbs(seen.fps - 30.0) < 0.001,
+          seen.text());
+    check(QStringLiteral("(an) H.264 in an MP4, exactly as long as the panels "
+                         "run, and no sound track"),
+          seen.readable && seen.codec == "avc1"
+              && qAbs(seen.seconds - 10.0) < 0.001 && !seen.audio,
+          seen.text());
+    check(QStringLiteral("(an) the file says what colour it is in: a BT.709 "
+                         "tag (the first rebuilt export stored 1080p in the "
+                         "older matrix and said nothing, so every player "
+                         "showed it slightly wrong)"),
+          seen.colourMatrix == 1 && first.colourTagged, seen.text());
+    check(QStringLiteral("(an) what the export reports is what the file "
+                         "holds - it read it back"),
+          first.framesExpected == 300 && first.framesInFile == seen.frames
+              && first.constantTiming && first.bytes == QFileInfo(film).size(),
+          describe(first));
+    check(QStringLiteral("(an) nothing else is left beside it: no frame "
+                         "files, no partial file"),
+          listing(dir) == QStringList{QStringLiteral("film.mp4")},
+          listing(dir).join(QStringLiteral(", ")));
+    check(QStringLiteral("(an) exporting is not an edit: the project stays "
+                         "clean and the history is untouched"),
+          !r.window.isDirty() && undo->count() == undoBefore);
+
+    // ---- the frame rate follows the project -----------------------------------
+    const QString name = r.window.projectNameForTest();
+    r.window.applyProjectSettingsForTest(name, 24);
+    pump(200);
+    const MovieResult at24 = r.window.exportMp4ForTest(film);
+    seen = look(film);
+    check(QStringLiteral("(an) change the project to 24 fps and the same "
+                         "film is 240 frames at 24 - written over the "
+                         "earlier file"),
+          at24.ok && seen.frames == 240 && seen.constant
+              && qAbs(seen.fps - 24.0) < 0.001 && qAbs(seen.seconds - 10.0) < 0.001,
+          seen.text() + QStringLiteral(" | ") + describe(at24));
+    r.window.applyProjectSettingsForTest(name, 30);
+    pump(200);
+
+    // ---- audio: the video's length is the film's length ------------------------
+    const QString shortWav = scratch + QStringLiteral("/export/audio/short.wav");
+    const QString longWav = scratch + QStringLiteral("/export/audio/long.wav");
+    check(QStringLiteral("(an) fixture: a 4 s and a 15 s WAV written"),
+          audio::writeWav(shortWav, 4.0) && audio::writeWav(longWav, 15.0));
+    r.animatic->setAudioPath(shortWav);
+    pump(300);
+    check(QStringLiteral("(an) control: with the audio file present there is "
+                         "nothing to warn about"),
+          r.window.mp4AudioWarningForTest().isEmpty() && !r.animatic->audioMissing());
+    const QString shortFilm = dir + QStringLiteral("/short_audio.mp4");
+    const MovieResult withShort = r.window.exportMp4ForTest(shortFilm);
+    seen = look(shortFilm);
+    check(QStringLiteral("(an) audio SHORTER than the film does not cut the "
+                         "film: still 300 frames and 10 s, with a sound track "
+                         "of about 4 s (the old -shortest stopped the film at "
+                         "4 s)"),
+          withShort.ok && seen.frames == 300 && qAbs(seen.seconds - 10.0) < 0.001
+              && seen.audio && seen.audioSeconds > 3.8 && seen.audioSeconds < 4.3,
+          seen.text() + QStringLiteral(" | ") + describe(withShort));
+    check(QStringLiteral("(an) THE SOUND IS WHAT WAS PROMISED, measured from "
+                         "the file: AAC-LC, 192 kbit/s, 48 kHz stereo (the "
+                         "first rebuilt export wrote HE-AAC at 16 kbit/s and "
+                         "every check here passed)"),
+          seen.soundAsPromised() && withShort.audioObjectType == 2
+              && qAbs(withShort.audioBitRate - 192000.0) < 9600.0,
+          seen.text());
+    r.animatic->setAudioPath(longWav);
+    pump(300);
+    const QString longFilm = dir + QStringLiteral("/long_audio.mp4");
+    const MovieResult withLong = r.window.exportMp4ForTest(longFilm);
+    seen = look(longFilm);
+    check(QStringLiteral("(an) audio LONGER than the film ends with the "
+                         "film: 300 frames, 10 s, and a sound track that "
+                         "stops within a tenth of a second of the last frame "
+                         "and never after it (15 s of audio went in)"),
+          withLong.ok && seen.frames == 300 && qAbs(seen.seconds - 10.0) < 0.001
+              && seen.audio && seen.audioSeconds > 9.9
+              && seen.audioSeconds <= seen.seconds && seen.soundAsPromised(),
+          seen.text() + QStringLiteral(" | ") + describe(withLong));
+    // The control for the sound check: an encoder that does everything
+    // right except the bit rate. Its file plays; the export must refuse it.
+    {
+        const QString halfPath = dir + QStringLiteral("/half_rate_sound.mp4");
+        const QStringList beforeHalf = listing(dir);
+        r.window.setMovieEncoderFactoryForTest(
+            [] { return new Meddler(Meddler::HalfTheSoundBitRate); });
+        const MovieResult half = r.window.exportMp4ForTest(halfPath);
+        r.window.setMovieEncoderFactoryForTest({});
+        check(QStringLiteral("(an) AN ENCODER THAT WRITES THE SOUND AT HALF "
+                             "THE RATE and reports success is caught: the "
+                             "export measures 96 kbit/s in the file, refuses "
+                             "it and says why"),
+              !half.ok && !half.cancelled && half.audioObjectType == 2
+                  && qAbs(half.audioBitRate - 96000.0) < 4800.0
+                  && half.error.contains(QStringLiteral("96 kbit/s"))
+                  && half.error.contains(QStringLiteral("192"))
+                  && !QFile::exists(halfPath) && listing(dir) == beforeHalf,
+              describe(half));
+    }
+
+    // ---- a missing audio file is said, not skipped ------------------------------
+    const QString gone = scratch + QStringLiteral("/export/audio/gone.wav");
+    r.animatic->setAudioPath(gone);
+    pump(300);
+    const QString warning = r.window.mp4AudioWarningForTest();
+    check(QStringLiteral("(an) a project whose audio file is missing: the "
+                         "export says so, by name, before it asks for a file"),
+          r.animatic->audioMissing() && warning.contains(QStringLiteral("gone.wav"))
+              && warning.contains(QStringLiteral("without sound")),
+          warning.simplified().left(140));
+    const QString silentFilm = dir + QStringLiteral("/silent_after_warning.mp4");
+    const MovieResult silent = r.window.exportMp4ForTest(silentFilm);
+    seen = look(silentFilm);
+    check(QStringLiteral("(an) ...and \"Export Without Sound\" gives exactly "
+                         "that: the whole film, no sound track"),
+          silent.ok && seen.frames == 300 && !seen.audio,
+          seen.text() + QStringLiteral(" | ") + describe(silent));
+
+    // ---- an audio file that is there but cannot be read --------------------------
+    const QString bad = scratch + QStringLiteral("/export/audio/not_audio.wav");
+    {
+        QFile f(bad);
+        if (f.open(QIODevice::WriteOnly))
+            f.write(QByteArray(4096, 'x'));
+    }
+    r.animatic->setAudioPath(bad);
+    pump(300);
+    const QString badFilm = dir + QStringLiteral("/bad_audio.mp4");
+    const QStringList before = listing(dir);
+    const MovieResult withBad = r.window.exportMp4ForTest(badFilm);
+    check(QStringLiteral("(an) an audio file that cannot be read FAILS the "
+                         "export and names the file - it does not quietly "
+                         "export a silent film"),
+          !withBad.ok && !withBad.cancelled
+              && withBad.error.contains(QStringLiteral("not_audio.wav"))
+              && !QFile::exists(badFilm) && listing(dir) == before,
+          describe(withBad));
+    r.animatic->setAudioPath(QString());
+    pump(300);
+
+    // ---- cancel -------------------------------------------------------------------
+    const QByteArray filmBefore = fileHash(film);
+    r.window.setExportProgressHookForTest(
+        [](int, int total) { return total <= 0; }); // Cancel, as soon as it starts
+    const MovieResult cancelled = r.window.exportMp4ForTest(film);
+    r.window.setExportProgressHookForTest({});
+    check(QStringLiteral("(an) Cancel: no error, no new file, no partial "
+                         "file - and the film already at that name is "
+                         "untouched"),
+          cancelled.cancelled && !cancelled.ok && cancelled.error.isEmpty()
+              && !filmBefore.isEmpty() && fileHash(film) == filmBefore
+              && listing(dir) == before,
+          describe(cancelled) + QStringLiteral(" | ")
+              + listing(dir).join(QStringLiteral(", ")));
+
+    // ---- a film Windows cannot even start writing ---------------------------------
+    const QString noFolder = scratch + QStringLiteral("/export/no_such_folder/film.mp4");
+    const MovieResult unwritable = r.window.exportMp4ForTest(noFolder);
+    check(QStringLiteral("(an) a film whose folder does not exist fails with "
+                         "what Windows said, and creates nothing (control: "
+                         "the same export into a real folder worked above)"),
+          !unwritable.ok && !unwritable.cancelled
+              && unwritable.error.contains(QStringLiteral("Windows could not"))
+              && !QFileInfo::exists(QFileInfo(noFolder).absolutePath())
+              && listing(dir) == before,
+          describe(unwritable));
+
+    // ---- THE READ-BACK, against encoders that misbehave ----------------------------
+    auto exportWith = [&](const std::function<MovieEncoder *()> &factory,
+                          const QString &path) {
+        r.window.setMovieEncoderFactoryForTest(factory);
+        const MovieResult result = r.window.exportMp4ForTest(path);
+        r.window.setMovieEncoderFactoryForTest({});
+        return result;
+    };
+    const MovieResult dropped = exportWith(
+        [] { return new Meddler(Meddler::DropEveryTenth); }, film);
+    check(QStringLiteral("(an) AN ENCODER THAT SILENTLY DROPS ONE FRAME IN "
+                         "TEN and reports success is caught: the export "
+                         "counts 270 of 300 in the file and refuses it"),
+          !dropped.ok && g_dropped == 30 && dropped.framesInFile == 270
+              && dropped.error.contains(QStringLiteral("270"))
+              && dropped.error.contains(QStringLiteral("300")),
+          describe(dropped));
+    check(QStringLiteral("(an) ...the short file is not kept, and the good "
+                         "film at that name is still the good film"),
+          fileHash(film) == filmBefore && listing(dir) == before,
+          listing(dir).join(QStringLiteral(", ")));
+    const QString grudged = dir + QStringLiteral("/refused_frames.mp4");
+    const MovieResult refused = exportWith(
+        [] { return new Meddler(Meddler::RefuseEveryOther); }, grudged);
+    seen = look(grudged);
+    check(QStringLiteral("(an) a frame the encoder REFUSES is offered again, "
+                         "not skipped: every other offer refused, and the "
+                         "film still has all 300 frames"),
+          refused.ok && g_refusals >= 150 && seen.frames == 300 && seen.constant,
+          QStringLiteral("%1 refusal(s) in %2 offer(s); %3").arg(g_refusals)
+              .arg(g_offers).arg(seen.text()));
+    QFile::remove(grudged);
+    const QString nowhere = dir + QStringLiteral("/claimed.mp4");
+    const MovieResult claimed = exportWith(
+        [] { return new Fake(Fake::ClaimsSuccessWritesNothing); }, nowhere);
+    check(QStringLiteral("(an) an encoder that reports success having "
+                         "written nothing: the export fails, and says the "
+                         "file has no video"),
+          !claimed.ok && claimed.error.contains(QStringLiteral("no video"))
+              && !QFile::exists(nowhere) && listing(dir) == before,
+          describe(claimed));
+    const MovieResult failed = exportWith(
+        [] { return new Fake(Fake::FailsPartWay); }, nowhere);
+    check(QStringLiteral("(an) an encoder that fails part-way: its reason is "
+                         "passed on, and the half-written file it left is "
+                         "removed"),
+          !failed.ok && !failed.cancelled
+              && failed.error.contains(QStringLiteral("the disk is full"))
+              && listing(dir) == before,
+          describe(failed) + QStringLiteral(" | ")
+              + listing(dir).join(QStringLiteral(", ")));
+    r.window.setExportStallTimeoutForTest(1500);
+    QElapsedTimer stallTimer;
+    stallTimer.start();
+    const MovieResult stalled = exportWith(
+        [] { return new Fake(Fake::NeverAnswers); }, nowhere);
+    r.window.setExportStallTimeoutForTest(0);
+    check(QStringLiteral("(an) an encoder that stops answering does not hang "
+                         "the app: the export gives up and says so"),
+          !stalled.ok && stalled.error.contains(QStringLiteral("stopped making "
+                                                               "progress"))
+              && stallTimer.elapsed() < 15000 && listing(dir) == before,
+          QStringLiteral("%1 ms; %2").arg(stallTimer.elapsed()).arg(describe(stalled)));
+    const MovieResult after = r.window.exportMp4ForTest(film);
+    seen = look(film);
+    check(QStringLiteral("(an) control: after all of that the real encoder "
+                         "still exports the whole film"),
+          after.ok && seen.frames == 300, describe(after));
+}
+
+void runExportFilesPass(const QString &project, const QString &board,
+                        const QString &scratch)
+{
+    using namespace workspace;
+    using namespace exporting;
+    out() << "--- (ao) File > Export > PNG and PDF: every write checked, "
+             "every file whole or absent ---" << Qt::endl;
+    {
+        Rig r(project);
+        check(QStringLiteral("(ao) the workspace opened"), r.ok);
+        if (!r.ok)
+            return;
+        const QVector<sankoexport::ExportPanel> panels =
+            sankoexport::collectPanels(r.window.scenesForTest());
+        const QString dir = scratch + QStringLiteral("/export/png");
+        QDir().mkpath(dir);
+        check(QStringLiteral("(ao) control: an empty folder holds nothing a "
+                             "PNG export would replace"),
+              panels.size() == 4 && r.window.pngExportClashesForTest(dir).isEmpty());
+        r.window.markCleanForTest();
+        const sankoexport::FilesResult png = r.window.exportPngForTest(dir);
+        const QStringList names = {QStringLiteral("Export_S01_P01.png"),
+                                   QStringLiteral("Export_S01_P02.png"),
+                                   QStringLiteral("Export_S02_P01.png"),
+                                   QStringLiteral("Export_S02_P02.png")};
+        check(QStringLiteral("(ao) PNG: one file per panel, named by project, "
+                             "scene and panel, and nothing else in the folder"),
+              png.ok && png.written.size() == 4 && listing(dir) == names,
+              png.error + listing(dir).join(QStringLiteral(", ")));
+        bool sizes = true, pixels = true;
+        for (int i = 0; i < panels.size() && i < names.size(); ++i) {
+            const QImage file(dir + QLatin1Char('/') + names.at(i));
+            const QImage flat = panels.at(i).panel->flattenedPixmap().toImage();
+            sizes = sizes && file.size() == QSize(960, 540);
+            pixels = pixels
+                && file.convertToFormat(QImage::Format_ARGB32)
+                       == flat.convertToFormat(QImage::Format_ARGB32);
+        }
+        const QImage firstFile(dir + QLatin1Char('/') + names.at(0));
+        const bool differs = panels.size() > 1
+            && firstFile.convertToFormat(QImage::Format_ARGB32)
+                   != panels.at(1).panel->flattenedPixmap().toImage()
+                          .convertToFormat(QImage::Format_ARGB32);
+        check(QStringLiteral("(ao) each PNG is at the project's size and is "
+                             "pixel for pixel what its panel shows (control: "
+                             "panel 1's file is NOT panel 2's picture)"),
+              sizes && pixels && differs);
+        check(QStringLiteral("(ao) a second export into that folder knows "
+                             "which four files it would replace; and "
+                             "exporting was not an edit"),
+              r.window.pngExportClashesForTest(dir) == names && !r.window.isDirty(),
+              r.window.pngExportClashesForTest(dir).join(QStringLiteral(", ")));
+
+        // A write that cannot happen: the third panel's name is taken by a
+        // FOLDER, so no file can be put there.
+        const QString blocked = scratch + QStringLiteral("/export/png_blocked");
+        QDir().mkpath(blocked + QStringLiteral("/Export_S02_P01.png"));
+        const sankoexport::FilesResult stopped = r.window.exportPngForTest(blocked);
+        check(QStringLiteral("(ao) a PNG that cannot be written STOPS the "
+                             "export and names the panel (the old export "
+                             "checked no write at all)"),
+              !stopped.ok && !stopped.cancelled
+                  && stopped.error.contains(QStringLiteral("Scene 2, panel 1")),
+              stopped.error.simplified().left(160));
+        check(QStringLiteral("(ao) ...the two files before it are complete "
+                             "and reported, and no half-written file is left"),
+              stopped.written.size() == 2
+                  && listing(blocked)
+                         == QStringList{names.at(0), names.at(1), names.at(2)}
+                  && QFileInfo(blocked + QLatin1Char('/') + names.at(2)).isDir()
+                  && !QImage(blocked + QLatin1Char('/') + names.at(1)).isNull(),
+              listing(blocked).join(QStringLiteral(", ")));
+
+        const QString partDir = scratch + QStringLiteral("/export/png_cancel");
+        r.window.setExportProgressHookForTest(
+            [](int done, int) { return done < 1; });
+        const sankoexport::FilesResult part = r.window.exportPngForTest(partDir);
+        r.window.setExportProgressHookForTest({});
+        check(QStringLiteral("(ao) Cancel after the first PNG: one whole file, "
+                             "and it says cancelled rather than failed"),
+              part.cancelled && !part.ok && part.error.isEmpty()
+                  && part.written.size() == 1
+                  && listing(partDir) == QStringList{names.at(0)},
+              listing(partDir).join(QStringLiteral(", ")));
+        check(QStringLiteral("(ao) a project name a file name cannot hold is "
+                             "made safe, not refused"),
+              sankoexport::pngFileName(QStringLiteral("A:B/C*?"), panels.first())
+                  == QStringLiteral("A_B_C___S01_P01.png"),
+              sankoexport::pngFileName(QStringLiteral("A:B/C*?"), panels.first()));
+
+        // The four-panel board: one page.
+        const QString onePage = scratch + QStringLiteral("/export/pdf/four.pdf");
+        QDir().mkpath(QFileInfo(onePage).absolutePath());
+        const sankoexport::FilesResult four = r.window.exportPdfForTest(onePage);
+        QFile f(onePage);
+        const QString text = f.open(QIODevice::ReadOnly)
+            ? QString::fromLatin1(f.readAll())
+            : QString();
+        const int pages = int(
+            text.count(QRegularExpression(QStringLiteral("/Type\\s*/Page(?!s)"))));
+        check(QStringLiteral("(ao) PDF: four panels are one page"),
+              four.ok && text.startsWith(QStringLiteral("%PDF-")) && pages == 1,
+              QStringLiteral("%1 page(s); %2").arg(pages).arg(four.error));
+    }
+
+    Rig r(board);
+    check(QStringLiteral("(ao) the 13-panel board opened"), r.ok);
+    if (!r.ok)
+        return;
+    const QString dir = scratch + QStringLiteral("/export/pdf");
+    QDir().mkpath(dir);
+    const QString pdfPath = dir + QStringLiteral("/board.pdf");
+    const sankoexport::FilesResult pdf = r.window.exportPdfForTest(pdfPath);
+    QFile f(pdfPath);
+    const QString text = f.open(QIODevice::ReadOnly)
+        ? QString::fromLatin1(f.readAll())
+        : QString();
+    const int pages =
+        int(text.count(QRegularExpression(QStringLiteral("/Type\\s*/Page(?!s)"))));
+    check(QStringLiteral("(ao) PDF: thirteen panels make three pages - six "
+                         "to a page"),
+          pdf.ok && text.startsWith(QStringLiteral("%PDF-")) && pages == 3,
+          QStringLiteral("%1 page(s); %2").arg(pages).arg(pdf.error));
+    const QRegularExpressionMatch box = QRegularExpression(
+        QStringLiteral("/MediaBox\\s*\\[\\s*0\\s+0\\s+([0-9.]+)\\s+([0-9.]+)"))
+        .match(text);
+    check(QStringLiteral("(ao) ...each A4, landscape (842 x 595 points)"),
+          box.hasMatch() && qAbs(box.captured(1).toDouble() - 841.9) < 1.0
+              && qAbs(box.captured(2).toDouble() - 595.3) < 1.0,
+          box.hasMatch() ? box.captured(0) : QStringLiteral("no MediaBox"));
+    const sankoexport::FilesResult png =
+        r.window.exportPngForTest(scratch + QStringLiteral("/export/png_board"));
+    const QImage boardPng(scratch + QStringLiteral("/export/png_board/"
+                                                   "Board_S01_P13.png"));
+    check(QStringLiteral("(ao) PNG at a different project size: thirteen "
+                         "files, each 1280 x 720"),
+          png.ok && png.written.size() == 13 && boardPng.size() == QSize(1280, 720),
+          QStringLiteral("%1 file(s), last %2x%3").arg(png.written.size())
+              .arg(boardPng.width()).arg(boardPng.height()));
+
+    const QString noFolder = scratch + QStringLiteral("/export/no_such_folder/x.pdf");
+    const sankoexport::FilesResult lost = r.window.exportPdfForTest(noFolder);
+    check(QStringLiteral("(ao) a PDF that cannot be written fails with the "
+                         "file's name, and creates nothing"),
+          !lost.ok && lost.error.contains(QStringLiteral("x.pdf"))
+              && !QFile::exists(noFolder),
+          lost.error.simplified().left(140));
+    const QString halfPdf = dir + QStringLiteral("/cancelled.pdf");
+    r.window.setExportProgressHookForTest([](int done, int) { return done < 7; });
+    const sankoexport::FilesResult half = r.window.exportPdfForTest(halfPdf);
+    r.window.setExportProgressHookForTest({});
+    check(QStringLiteral("(ao) Cancel part-way through a PDF leaves no PDF "
+                         "at all (control: the finished one is still there)"),
+          half.cancelled && !QFile::exists(halfPdf) && QFile::exists(pdfPath),
+          listing(dir).join(QStringLiteral(", ")));
+}
+
 // ---- (ap) the header's timecode counts in the project's frame rate ---------
 void runTimecodeRatePass(const QString &project)
 {
@@ -6544,6 +7277,16 @@ int main(int argc, char **argv)
     runTakesRoundTripPass(scratch);
     runTimecodeRatePass(writeProject(projects, QStringLiteral("Timecode"),
                                      QSize(960, 540), 30, 2, 2));
+    {
+        // 10 seconds at 30 fps (so that a fixed 24 shows), and a board long
+        // enough to need three PDF pages.
+        const QString film = writeProject(projects, QStringLiteral("Export"),
+                                          QSize(960, 540), 30, 2, 2);
+        const QString board = writeProject(projects, QStringLiteral("Board"),
+                                           QSize(1280, 720), 24, 1, 13);
+        runExportMoviePass(film, scratch);
+        runExportFilesPass(film, board, scratch);
+    }
 
     // ---- (aa) a test that cannot start says why and exits ----------------
     // An unattended gate must FAIL, not wait. Measured 2026-10-02: with its

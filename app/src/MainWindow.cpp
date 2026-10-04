@@ -42,11 +42,15 @@ this fence."
 #include "StoryboardModel.h"
 #include "StoryboardPage.h"
 #include "SankoSlider.h"
+#include "export/MovieEncoder.h"
+#include "export/ProjectExport.h"
 
 #include <QAction>
 #include <QDialog>
 #include <QDir>
+#include <QEventLoop>
 #include <QFile>
+#include <QProgressDialog>
 #include <QSaveFile>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -446,6 +450,19 @@ void MainWindow::setupMenuBar()
     connect(m_projectSettingsAct, &QAction::triggered, this,
             &MainWindow::onProjectSettings);
 
+    // EXPORT: the film, the panels, the board. This is where the old
+    // Animatic screen's "Export MP4" button went (it sat in the workspace's
+    // bottom bar between the passes); PNG and PDF are new beside it.
+    // Enabled once the project has a panel (updateExportActions).
+    fileMenu->addSeparator();
+    m_exportMenu = fileMenu->addMenu(QStringLiteral("Export"));
+    m_exportMp4Act = m_exportMenu->addAction(QStringLiteral("MP4 Video..."));
+    connect(m_exportMp4Act, &QAction::triggered, this, &MainWindow::onExportMp4);
+    m_exportPngAct = m_exportMenu->addAction(QStringLiteral("PNG Images..."));
+    connect(m_exportPngAct, &QAction::triggered, this, &MainWindow::onExportPng);
+    m_exportPdfAct = m_exportMenu->addAction(QStringLiteral("PDF Storyboard..."));
+    connect(m_exportPdfAct, &QAction::triggered, this, &MainWindow::onExportPdf);
+
     fileMenu->addSeparator();
 
     // Exit does NOTHING but close the window, so the unsaved-changes prompt
@@ -631,6 +648,7 @@ void MainWindow::updateSaveActions()
         m_closeProjectAct->setEnabled(hasScenes
                                       || !m_currentProjectPath.isEmpty());
     updateAudioActions();
+    updateExportActions();
 }
 
 // Import Audio needs a film to put the track under (scenes) and the
@@ -649,6 +667,344 @@ void MainWindow::updateAudioActions()
     if (m_locateAudioAct)
         m_locateAudioAct->setEnabled(inWorkspace && m_animatic
                                      && m_animatic->audioMissing());
+}
+
+// --- File > Export ----------------------------------------------------------
+//
+// Three outputs of the project's panels in play order, each reading the same
+// Panel::flattenedPixmap() that Save writes - an export shows what a save
+// would save. The work is in src/export/; what is here is the asking (which
+// file, replace these?), the progress, and the telling.
+
+void MainWindow::updateExportActions()
+{
+    bool hasPanels = false;
+    for (const Scene *scene : m_scenes)
+        if (scene && !scene->panels.isEmpty())
+            hasPanels = true;
+    if (m_exportMenu)
+        m_exportMenu->setEnabled(hasPanels);
+    for (QAction *action : {m_exportMp4Act, m_exportPngAct, m_exportPdfAct})
+        if (action)
+            action->setEnabled(hasPanels);
+}
+
+QString MainWindow::exportStartDir() const
+{
+    if (!m_currentProjectPath.isEmpty()) {
+        const QString folder = QFileInfo(m_currentProjectPath).absolutePath();
+        if (QFileInfo(folder).isDir())
+            return folder;
+    }
+    return QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+}
+
+// Empty when this machine can write an H.264 MP4. Otherwise the sentence to
+// show - on Windows, the one that points to the Media Feature Pack. There is
+// NO fallback to another codec: a film quietly exported in a format the
+// client's player may not open is worse than being told what to install.
+QString MainWindow::mp4UnavailableReason() const
+{
+    if (!m_mp4UnavailableForTest.isNull())
+        return m_mp4UnavailableForTest;
+    return sankoexport::movieEncoderUnavailableReason();
+}
+
+// The project names an audio file that is not there (HANDOFF "Pass 2": the
+// path is kept, the track shown as missing). The old export skipped the
+// sound without a word; this says so first and lets the artist decide.
+QString MainWindow::mp4AudioWarning() const
+{
+    if (!m_animatic || !m_animatic->audioMissing())
+        return QString();
+    return QStringLiteral(
+               "The project's audio file cannot be found:\n%1\n\n"
+               "The film can be exported without sound, or you can cancel and "
+               "point the track at its file first (Edit > Locate Audio File...).")
+        .arg(QDir::toNativeSeparators(m_animatic->audioPath()));
+}
+
+sankoexport::MovieResult MainWindow::runMovieExport(const QString &path)
+{
+    using namespace sankoexport;
+    if (m_exporting) {
+        MovieResult busy;
+        busy.error = QStringLiteral("An export is already running.");
+        return busy;
+    }
+    m_exporting = true;
+    if (m_animatic)
+        m_animatic->leavePreview(); // playback does not run under an export
+
+    MovieRequest request;
+    request.outPath = path;
+    request.panels = collectPanels(m_scenes);
+    request.fps = m_projectFps; // THE PROJECT'S, not a constant 24
+    if (m_animatic && !m_animatic->audioPath().isEmpty()
+        && !m_animatic->audioMissing())
+        request.audioPath = m_animatic->audioPath();
+
+    // The platform's encoder: Media Foundation called directly on Windows.
+    // (Its availability was asked before the file dialog; null here means
+    // a platform with no encoder yet, and the job says so.)
+    MovieEncoder *encoder = m_movieEncoderFactoryForTest
+        ? m_movieEncoderFactoryForTest()
+        : createMovieEncoder();
+    MovieExportJob job(request, encoder);
+    if (m_exportStallMsForTest > 0)
+        job.setStallTimeoutForTest(m_exportStallMsForTest);
+
+    QEventLoop loop;
+    connect(&job, &MovieExportJob::finished, &loop, &QEventLoop::quit);
+
+    QProgressDialog *dialog = nullptr;
+    if (!m_exportProgressHookForTest) {
+        dialog = new QProgressDialog(QStringLiteral("Preparing..."),
+                                     QStringLiteral("Cancel"), 0, 0, this);
+        dialog->setWindowTitle(QStringLiteral("Export MP4"));
+        dialog->setWindowModality(Qt::WindowModal);
+        dialog->setMinimumDuration(0);
+        dialog->setAutoReset(false);
+        dialog->setAutoClose(false);
+        connect(dialog, &QProgressDialog::canceled, &job, &MovieExportJob::cancel);
+        dialog->show();
+    }
+    // QUEUED on purpose: a modal progress dialog runs the event loop inside
+    // setValue(), and that must never happen in the middle of the job's own
+    // code handing a frame to the encoder. The receiver is an object that
+    // dies with this function, taking any still-queued call with it - the
+    // lambda refers to the job and the dialog, which die here too.
+    QObject relay;
+    connect(&job, &MovieExportJob::progress, &relay,
+            [this, dialog, &job](const QString &stage, int done, int total) {
+        if (job.isDone())
+            return;
+        if (m_exportProgressHookForTest) {
+            if (!m_exportProgressHookForTest(done, total))
+                job.cancel();
+            return;
+        }
+        dialog->setRange(0, total);
+        dialog->setLabelText(total > 0
+            ? QStringLiteral("%1  %2 / %3 frames").arg(stage).arg(done).arg(total)
+            : stage);
+        dialog->setValue(done);
+    }, Qt::QueuedConnection);
+
+    job.start();
+    loop.exec();
+    delete dialog;
+    m_exporting = false;
+    return job.result();
+}
+
+sankoexport::FilesResult MainWindow::runPngExport(const QString &folder)
+{
+    using namespace sankoexport;
+    if (m_exporting) {
+        FilesResult busy;
+        busy.error = QStringLiteral("An export is already running.");
+        return busy;
+    }
+    m_exporting = true;
+    if (m_animatic)
+        m_animatic->leavePreview();
+    const QVector<ExportPanel> panels = collectPanels(m_scenes);
+    QProgressDialog *dialog = nullptr;
+    if (!m_exportProgressHookForTest) {
+        dialog = new QProgressDialog(QStringLiteral("Writing PNG files..."),
+                                     QStringLiteral("Cancel"), 0,
+                                     int(panels.size()), this);
+        dialog->setWindowTitle(QStringLiteral("Export PNG"));
+        dialog->setWindowModality(Qt::WindowModal);
+        dialog->setMinimumDuration(300);
+    }
+    const FilesResult result = exportPng(
+        panels, folder, m_projectName, [this, dialog](int done, int total) {
+            if (m_exportProgressHookForTest)
+                return m_exportProgressHookForTest(done, total);
+            dialog->setValue(done);
+            return !dialog->wasCanceled();
+        });
+    delete dialog;
+    m_exporting = false;
+    return result;
+}
+
+sankoexport::FilesResult MainWindow::runPdfExport(const QString &path)
+{
+    using namespace sankoexport;
+    if (m_exporting) {
+        FilesResult busy;
+        busy.error = QStringLiteral("An export is already running.");
+        return busy;
+    }
+    m_exporting = true;
+    if (m_animatic)
+        m_animatic->leavePreview();
+    const QVector<ExportPanel> panels = collectPanels(m_scenes);
+    QProgressDialog *dialog = nullptr;
+    if (!m_exportProgressHookForTest) {
+        dialog = new QProgressDialog(QStringLiteral("Writing the PDF..."),
+                                     QStringLiteral("Cancel"), 0,
+                                     int(panels.size()), this);
+        dialog->setWindowTitle(QStringLiteral("Export PDF"));
+        dialog->setWindowModality(Qt::WindowModal);
+        dialog->setMinimumDuration(300);
+    }
+    const FilesResult result = exportPdf(
+        panels, path, m_projectName, [this, dialog](int done, int total) {
+            if (m_exportProgressHookForTest)
+                return m_exportProgressHookForTest(done, total);
+            dialog->setValue(done);
+            return !dialog->wasCanceled();
+        });
+    delete dialog;
+    m_exporting = false;
+    return result;
+}
+
+QStringList MainWindow::pngExportClashes(const QString &folder) const
+{
+    QStringList clashes;
+    const QDir dir(folder);
+    for (const sankoexport::ExportPanel &row : sankoexport::collectPanels(m_scenes)) {
+        const QString name = sankoexport::pngFileName(m_projectName, row);
+        if (dir.exists(name))
+            clashes << name;
+    }
+    return clashes;
+}
+
+sankoexport::MovieResult MainWindow::exportMp4ForTest(const QString &path)
+{
+    return runMovieExport(path);
+}
+
+sankoexport::FilesResult MainWindow::exportPngForTest(const QString &folder)
+{
+    return runPngExport(folder);
+}
+
+sankoexport::FilesResult MainWindow::exportPdfForTest(const QString &path)
+{
+    return runPdfExport(path);
+}
+
+void MainWindow::onExportMp4()
+{
+    if (m_exporting || sankoexport::collectPanels(m_scenes).isEmpty())
+        return;
+    const QString unavailable = mp4UnavailableReason();
+    if (!unavailable.isEmpty()) {
+        QMessageBox::warning(this, QStringLiteral("MP4 export is not available"),
+                             unavailable);
+        return;
+    }
+    const QString audioWarning = mp4AudioWarning();
+    if (!audioWarning.isEmpty()) {
+        QMessageBox box(QMessageBox::Warning, QStringLiteral("Export MP4"),
+                        audioWarning, QMessageBox::NoButton, this);
+        QPushButton *silent = box.addButton(QStringLiteral("Export Without Sound"),
+                                            QMessageBox::AcceptRole);
+        box.addButton(QMessageBox::Cancel);
+        box.exec();
+        if (box.clickedButton() != silent)
+            return;
+    }
+    QString path = QFileDialog::getSaveFileName(
+        this, QStringLiteral("Export MP4"),
+        exportStartDir() + QLatin1Char('/') + sankoexport::fileStem(m_projectName)
+            + QStringLiteral(".mp4"),
+        QStringLiteral("MP4 Video (*.mp4)"));
+    if (path.isEmpty())
+        return;
+    if (!path.endsWith(QStringLiteral(".mp4"), Qt::CaseInsensitive))
+        path += QStringLiteral(".mp4");
+
+    const sankoexport::MovieResult result = runMovieExport(path);
+    if (result.cancelled)
+        return;
+    if (!result.ok) {
+        QMessageBox::critical(this, QStringLiteral("Export failed"),
+                              QStringLiteral("The film was not exported.\n\n%1")
+                                  .arg(result.error));
+        return;
+    }
+    const int seconds = int(result.videoSeconds + 0.5);
+    QMessageBox::information(
+        this, QStringLiteral("Export complete"),
+        QStringLiteral("The film was exported to:\n%1\n\n%2 frames at %3 fps "
+                       "(%4:%5), %6 MB, %7.")
+            .arg(QDir::toNativeSeparators(path))
+            .arg(result.framesInFile).arg(m_projectFps)
+            .arg(seconds / 60).arg(seconds % 60, 2, 10, QLatin1Char('0'))
+            .arg(result.bytes / 1024.0 / 1024.0, 0, 'f', 1)
+            .arg(result.audioTrack ? QStringLiteral("with sound")
+                                   : QStringLiteral("no sound")));
+}
+
+void MainWindow::onExportPng()
+{
+    if (m_exporting || sankoexport::collectPanels(m_scenes).isEmpty())
+        return;
+    const QString folder = QFileDialog::getExistingDirectory(
+        this, QStringLiteral("Export PNG Images - Choose a Folder"),
+        exportStartDir());
+    if (folder.isEmpty())
+        return;
+    // A folder picker asks nothing about what is already in the folder, so
+    // the question the Save dialog would have asked is asked here.
+    const QStringList clashes = pngExportClashes(folder);
+    if (!clashes.isEmpty()) {
+        const QMessageBox::StandardButton answer = QMessageBox::question(
+            this, QStringLiteral("Export PNG"),
+            QStringLiteral("%1 of the files this export writes already exist in "
+                           "that folder (the first is %2).\n\nReplace them?")
+                .arg(clashes.size()).arg(clashes.first()),
+            QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel);
+        if (answer != QMessageBox::Yes)
+            return;
+    }
+    const sankoexport::FilesResult result = runPngExport(folder);
+    if (result.cancelled)
+        return;
+    if (!result.ok) {
+        QMessageBox::critical(
+            this, QStringLiteral("Export failed"),
+            QStringLiteral("%1\n\n%2 file(s) were written before this.")
+                .arg(result.error).arg(result.written.size()));
+        return;
+    }
+    QMessageBox::information(
+        this, QStringLiteral("Export complete"),
+        QStringLiteral("%1 PNG file(s) were written to:\n%2")
+            .arg(result.written.size()).arg(QDir::toNativeSeparators(folder)));
+}
+
+void MainWindow::onExportPdf()
+{
+    if (m_exporting || sankoexport::collectPanels(m_scenes).isEmpty())
+        return;
+    QString path = QFileDialog::getSaveFileName(
+        this, QStringLiteral("Export PDF"),
+        exportStartDir() + QLatin1Char('/') + sankoexport::fileStem(m_projectName)
+            + QStringLiteral(".pdf"),
+        QStringLiteral("PDF Document (*.pdf)"));
+    if (path.isEmpty())
+        return;
+    if (!path.endsWith(QStringLiteral(".pdf"), Qt::CaseInsensitive))
+        path += QStringLiteral(".pdf");
+    const sankoexport::FilesResult result = runPdfExport(path);
+    if (result.cancelled)
+        return;
+    if (!result.ok) {
+        QMessageBox::critical(this, QStringLiteral("Export failed"), result.error);
+        return;
+    }
+    QMessageBox::information(this, QStringLiteral("Export complete"),
+                             QStringLiteral("The storyboard was exported to:\n%1")
+                                 .arg(QDir::toNativeSeparators(path)));
 }
 
 // --- Project Settings -----------------------------------------------------

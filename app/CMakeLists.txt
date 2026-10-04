@@ -21,7 +21,11 @@ if(NOT CMAKE_PREFIX_PATH AND WIN32)
 endif()
 
 # --- Find Qt6 -------------------------------------------------------------
-# Multimedia is needed for the animatic's scratch-audio track.
+# Multimedia is needed for the animatic's scratch-audio track, and the MP4
+# export uses it to DECODE that track (QAudioDecoder). The MP4 itself is
+# made by Windows (Media Foundation, see src/export/MfMovieEncoder): no
+# encoder, codec or FFmpeg binary is added for the export.
+# LICENSING: HANDOFF "BEFORE SELLING" and docs/licensing/.
 # Svg is required for QIcon to render .svg icon resources (without it QIcon
 # silently returns a null icon for SVG files).
 # NOT here any more: Network and MultimediaWidgets. Both were used by the
@@ -86,6 +90,15 @@ qt_add_executable(SankoTV
     src/AnimaticPage.h
     src/AnimaticTimeline.cpp
     src/AnimaticTimeline.h
+    # File > Export: MP4 / PNG / PDF. MovieEncoder is the seam the MP4
+    # encoder sits behind; the Windows implementation (MfMovieEncoder,
+    # Media Foundation called directly) is added below, for WIN32 only.
+    src/export/MovieEncoder.cpp
+    src/export/MovieEncoder.h
+    src/export/Mp4Probe.cpp
+    src/export/Mp4Probe.h
+    src/export/ProjectExport.cpp
+    src/export/ProjectExport.h
     src/ConsistencyBoard.cpp
     src/ConsistencyBoard.h
     src/FloatingToolWindow.cpp
@@ -140,10 +153,34 @@ target_link_libraries(SankoTV PRIVATE Qt6::Widgets Qt6::Multimedia
 # top-level headers like "SankoPaintHostAdapter.h" without ../ paths.
 target_include_directories(SankoTV PRIVATE src)
 
+# --- The MP4 encoder on Windows: Media Foundation, called directly ---------
+# Windows system libraries only - nothing is redistributed. mfplat and
+# mfreadwrite are DELAY-LOADED, and that is not an optimisation: a Windows
+# "N" edition without the Media Feature Pack does not have them, and an
+# ordinary import of a missing DLL stops the whole application from
+# starting. Delay-loaded, the app starts, the export asks whether the
+# libraries exist (MfMovieEncoder::unavailableReason) and says what to
+# install. A function, because the lifecycle family links the same sources
+# and needs exactly the same treatment.
+function(sanko_link_media_foundation target)
+    if(WIN32)
+        target_sources(${target} PRIVATE
+            src/export/MfMovieEncoder.cpp
+            src/export/MfMovieEncoder.h)
+        target_link_libraries(${target} PRIVATE
+            mfplat mfreadwrite mfuuid ole32 delayimp)
+        target_link_options(${target} PRIVATE
+            /DELAYLOAD:mfplat.dll /DELAYLOAD:mfreadwrite.dll)
+    endif()
+endfunction()
+
 # The lifecycle family builds the whole application (it constructs
 # MainWindow); reuse the executable's own source list minus its main().
+# (Read BEFORE the Media Foundation sources are added to SankoTV: the
+# function adds them to each target itself.)
 get_target_property(_sankotv_lifecycle_srcs SankoTV SOURCES)
 list(REMOVE_ITEM _sankotv_lifecycle_srcs "src/main.cpp")
+sanko_link_media_foundation(SankoTV)
 
 # Permanent brush pixel-lock test (tests/PixelLockTest.cpp): asserts the
 # committed R16 baseline hash, seeded CPU determinism, and the CPU/GPU
@@ -299,6 +336,7 @@ target_include_directories(SankoProjectLifecycle PRIVATE src)
 target_link_libraries(SankoProjectLifecycle PRIVATE Qt6::Widgets
     Qt6::Multimedia Qt6::Svg Qt6::Concurrent
     QuickShape::Kit SankoPaint::Engine dbghelp)
+sanko_link_media_foundation(SankoProjectLifecycle)
 
 # --- Preset promotion instrument (permanent tool) ---------------------------
 # SankoPresetDiff <override.sankobrush>: prints the field-by-field diff of a

@@ -27,13 +27,10 @@
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPaintEvent>
-#include <QProcess>
-#include <QProgressDialog>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QSlider>
 #include <QSpinBox>
-#include <QStandardPaths>
 #include <QTimer>
 #include <QUrl>
 #include <QVBoxLayout>
@@ -218,20 +215,13 @@ AnimaticPage::AnimaticPage(QWidget *parent)
 
     // One header row that stays when the section is collapsed, then the
     // timeline. There is no display here any more: the preview is laid over
-    // the drawing canvas (attachPreview), and the buttons that have not yet
-    // moved to the menus are handed to the workspace (legacyActions).
+    // the drawing canvas (attachPreview).
     m_display = new PanelDisplay;
     m_display->hide();
     m_display->onDismissed = [this] { leavePreview(); };
-    m_legacyActions = createLegacyActions();
-    // Both are re-parented out of this widget (the preview onto the canvas,
-    // the buttons into the workspace's bottom bar), so either may be
+    // It is re-parented out of this widget (onto the canvas), so it may be
     // destroyed before this object is: never keep a pointer to a dead one.
     connect(m_display, &QObject::destroyed, this, [this] { m_display = nullptr; });
-    connect(m_legacyActions, &QObject::destroyed, this, [this] {
-        m_legacyActions = nullptr;
-        m_exportButton = nullptr; // its child goes with it
-    });
     root->addWidget(createHeader());
     root->addWidget(createTimingStrip(), 1);
 
@@ -240,8 +230,7 @@ AnimaticPage::AnimaticPage(QWidget *parent)
     // that took focus on a click would both steal it and start answering
     // Space itself. Which keys the timeline gets is decided by where the
     // POINTER is, in the workspace - never by focus.
-    const QList<QWidget *> ours = findChildren<QWidget *>()
-        + m_legacyActions->findChildren<QWidget *>();
+    const QList<QWidget *> ours = findChildren<QWidget *>();
     for (QWidget *w : ours)
         if (qobject_cast<QAbstractButton *>(w)
             || qobject_cast<QAbstractSlider *>(w))
@@ -250,47 +239,16 @@ AnimaticPage::AnimaticPage(QWidget *parent)
 
 AnimaticPage::~AnimaticPage()
 {
-    // Neither is necessarily in a layout of ours: the preview belongs to the
-    // canvas once attached, the legacy bar to the workspace once placed.
+    // Not necessarily in a layout of ours: the preview belongs to the canvas
+    // once attached.
     if (m_display && !m_display->parent())
         delete m_display;
-    if (m_legacyActions && !m_legacyActions->parent())
-        delete m_legacyActions;
 }
 
-// --- Not yet moved to the menus --------------------------------------------
-
-// TEMPORARY, and shrinking by design: Import / Remove Audio, Export MP4 and
-// Continue to Generation lived on the Animatic screen's top bar. The screen
-// is gone; their new homes arrive pass by pass. Until each one moves it
-// stays reachable from the workspace's bottom bar, so no pass leaves a
-// feature without a way in. Each pass deletes its button here; the last one
-// deletes this function.
-//   Pass 2 (done): Import / Remove Audio -> the Edit menu and the audio
-//                  track's right-click menu. Their buttons are gone.
-//   Pass 3 (done): Continue to Generation -> nowhere. The Generation page
-//                  is removed from the app; its button went with it.
-//   Pass 4: Export MP4 -> File > Export.
-QWidget *AnimaticPage::createLegacyActions()
-{
-    QWidget *bar = new QWidget;
-    QHBoxLayout *layout = new QHBoxLayout(bar);
-    layout->setContentsMargins(0, 0, 0, 0);
-    layout->setSpacing(8);
-
-    m_exportButton = new QPushButton(QStringLiteral("Export MP4"));
-    m_exportButton->setCursor(Qt::PointingHandCursor);
-    m_exportButton->setEnabled(false); // enabled once panels are loaded
-    m_exportButton->setStyleSheet(SankoTheme::themed("QPushButton { background-color: %ACCENT%; color: #0a0a0a; border: none;"
-        " border-radius: 6px; padding: 8px 16px; font-size: 13px; font-weight: 600; }"
-        "QPushButton:hover { background-color: %ACCENT_HOVER%; }"
-        "QPushButton:disabled { background-color: #1c1c1c; color: #555555;"
-        " border: 1px solid #2a2a2a; }"));
-    connect(m_exportButton, &QPushButton::clicked, this, &AnimaticPage::onExportMp4);
-    layout->addWidget(m_exportButton);
-
-    return bar;
-}
+// (The old Animatic screen's top-bar buttons stood in the workspace's bottom
+// bar between the passes, built by a createLegacyActions() here. The last of
+// them, Export MP4, moved to File > Export in Pass 4 - the export itself is
+// src/export/ and MainWindow, not this class - and the function went with it.)
 
 // --- The preview, over the canvas -------------------------------------------
 
@@ -738,8 +696,6 @@ void AnimaticPage::loadScenes(const QVector<Scene *> &scenes)
     }
     // The workspace selects a panel right after loading scenes into its
     // strip, and that selection arrives here through setSelectedPanel.
-    if (m_exportButton)
-        m_exportButton->setEnabled(!m_items.isEmpty());
     updateTotalLabel();
     updateTimecodeLabel();
 }
@@ -765,8 +721,6 @@ void AnimaticPage::refreshStructure()
         m_timeline->setCurrentPanel(m_current);
         m_timeline->setSelectedPanel(m_selected);
     }
-    if (m_exportButton)
-        m_exportButton->setEnabled(!m_items.isEmpty());
     updateTotalLabel();
     updateTimecodeLabel();
 }
@@ -1288,190 +1242,6 @@ void AnimaticPage::showAudioMenu(const QPoint &globalPos)
         return;
     }
     menu.exec(globalPos);
-}
-
-// --- MP4 export -----------------------------------------------------------
-
-namespace {
-
-// The MP4 export's DELIVERY FORMAT — deliberately fixed at 1080p, a product
-// decision, NOT a canvas size. Panels of any project resolution are fitted
-// (KeepAspectRatio) and letterboxed into this frame; changing the project's
-// canvas must never change this constant. (The 960,540 below is this
-// frame's centre — 1920/2, 1080/2 — not the old canvas size, despite the
-// coincidental digits.)
-constexpr QSize kExportFrameSize(1920, 1080);
-
-// Render a panel into the export frame: scaled to fit (KeepAspectRatio),
-// centered, black padding around it (matches PanelDisplay behavior).
-QImage renderExportFrame(const QPixmap &pixmap)
-{
-    QImage frame(kExportFrameSize, QImage::Format_RGB32);
-    frame.fill(Qt::black);
-    if (!pixmap.isNull()) {
-        QPainter painter(&frame);
-        painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
-        QSize target = pixmap.size();
-        target.scale(kExportFrameSize, Qt::KeepAspectRatio);
-        QRect r(QPoint(0, 0), target);
-        r.moveCenter(QPoint(kExportFrameSize.width() / 2,
-                            kExportFrameSize.height() / 2));
-        painter.drawPixmap(r, pixmap);
-    }
-    return frame;
-}
-
-} // namespace
-
-void AnimaticPage::onExportMp4()
-{
-    if (m_items.isEmpty())
-        return;
-
-    pause(); // don't let playback run during export
-
-    // 1. Where to save.
-    QString outPath = QFileDialog::getSaveFileName(
-        this, QStringLiteral("Export MP4"),
-        QDir::homePath() + QStringLiteral("/animatic.mp4"),
-        QStringLiteral("MP4 Video (*.mp4)"));
-    if (outPath.isEmpty())
-        return;
-    if (!outPath.endsWith(QStringLiteral(".mp4"), Qt::CaseInsensitive))
-        outPath += QStringLiteral(".mp4");
-
-    // 2. Locate ffmpeg: alongside the exe first, then the system PATH.
-    QString ffmpeg;
-    const QString localFfmpeg =
-        QCoreApplication::applicationDirPath() + QStringLiteral("/ffmpeg.exe");
-    if (QFile::exists(localFfmpeg))
-        ffmpeg = localFfmpeg;
-    else
-        ffmpeg = QStandardPaths::findExecutable(QStringLiteral("ffmpeg"));
-
-    if (ffmpeg.isEmpty()) {
-        QMessageBox::warning(
-            this, QStringLiteral("ffmpeg not found"),
-            QStringLiteral(
-                "Could not find ffmpeg.exe.\n\n"
-                "Place ffmpeg.exe in the same folder as SankoTV.exe, or install it "
-                "somewhere on your system PATH, then try again.\n\n"
-                "Windows builds are available at:\n"
-                "https://www.gyan.dev/ffmpeg/builds/"));
-        return;
-    }
-
-    // 3. Prepare a clean temp frames directory.
-    const QString base = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
-    QDir framesDir(base + QStringLiteral("/sankotv_frames"));
-    if (framesDir.exists())
-        framesDir.removeRecursively();
-    QDir().mkpath(framesDir.absolutePath());
-
-    constexpr int kFps = 24;
-    int totalFrames = 0;
-    for (const Item &it : m_items)
-        totalFrames += qMax(1, it.panel->duration) * kFps;
-
-    // 4. Write PNG frames with a cancelable progress dialog.
-    QProgressDialog progress(QStringLiteral("Preparing frames..."),
-                             QStringLiteral("Cancel"), 0, totalFrames, this);
-    progress.setWindowTitle(QStringLiteral("Export MP4"));
-    progress.setWindowModality(Qt::WindowModal);
-    progress.setMinimumDuration(0);
-    progress.setAutoReset(false);
-    progress.setAutoClose(false);
-    progress.setValue(0);
-
-    int frameIndex = 0;
-    bool cancelled = false;
-    for (const Item &it : m_items) {
-        const QImage frame = renderExportFrame(it.panel->flattenedPixmap());
-        const int copies = qMax(1, it.panel->duration) * kFps;
-        for (int c = 0; c < copies; ++c) {
-            if (progress.wasCanceled()) {
-                cancelled = true;
-                break;
-            }
-            const QString name =
-                QStringLiteral("frame_%1.png").arg(frameIndex, 4, 10, QChar('0'));
-            frame.save(framesDir.filePath(name), "PNG");
-            ++frameIndex;
-            progress.setValue(frameIndex);
-            progress.setLabelText(QStringLiteral("Preparing frames... %1 / %2")
-                                      .arg(frameIndex).arg(totalFrames));
-        }
-        if (cancelled)
-            break;
-    }
-
-    if (cancelled) {
-        framesDir.removeRecursively(); // clean up partial frames
-        return;
-    }
-
-    // 5. Encode with ffmpeg (busy/marquee progress).
-    progress.setLabelText(QStringLiteral("Encoding video..."));
-    progress.setRange(0, 0); // marquee
-    QCoreApplication::processEvents();
-
-    QProcess proc;
-    proc.setWorkingDirectory(framesDir.absolutePath());
-
-    // Mux in the scratch audio track if one is loaded and still on disk.
-    const bool includeAudio = !m_audioPath.isEmpty() && QFileInfo::exists(m_audioPath);
-
-    QStringList args;
-    args << QStringLiteral("-framerate") << QStringLiteral("24")
-         << QStringLiteral("-i") << QStringLiteral("frame_%04d.png");
-    if (includeAudio)
-        args << QStringLiteral("-i") << m_audioPath; // second input
-    args << QStringLiteral("-c:v") << QStringLiteral("libx264");
-    if (includeAudio)
-        args << QStringLiteral("-c:a") << QStringLiteral("aac");
-    args << QStringLiteral("-pix_fmt") << QStringLiteral("yuv420p")
-         << QStringLiteral("-crf") << QStringLiteral("23");
-    if (includeAudio)
-        args << QStringLiteral("-shortest"); // end with the shorter stream
-    args << QStringLiteral("-y") << outPath;
-
-    proc.start(ffmpeg, args);
-
-    if (!proc.waitForStarted(5000)) {
-        framesDir.removeRecursively();
-        QMessageBox::critical(this, QStringLiteral("Export failed"),
-                              QStringLiteral("Could not start ffmpeg."));
-        return;
-    }
-
-    while (!proc.waitForFinished(100)) {
-        QCoreApplication::processEvents();
-        if (progress.wasCanceled()) {
-            proc.kill();
-            proc.waitForFinished(2000);
-            framesDir.removeRecursively();
-            return;
-        }
-    }
-
-    const QByteArray stderrOut = proc.readAllStandardError();
-    const bool ok = (proc.exitStatus() == QProcess::NormalExit && proc.exitCode() == 0);
-
-    // 6. Always clean up temp frames.
-    framesDir.removeRecursively();
-    progress.close();
-
-    if (ok) {
-        QMessageBox::information(
-            this, QStringLiteral("Export complete"),
-            QStringLiteral("Animatic exported to:\n%1").arg(outPath));
-    } else {
-        QMessageBox::critical(
-            this, QStringLiteral("Export failed"),
-            QStringLiteral("ffmpeg exited with code %1.\n\n%2")
-                .arg(proc.exitCode())
-                .arg(QString::fromLocal8Bit(stderrOut)));
-    }
 }
 
 void AnimaticPage::setFps(int fps)

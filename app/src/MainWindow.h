@@ -5,6 +5,7 @@
 #include <QMainWindow>
 #include <QSize>
 #include <QString>
+#include <QStringList>
 #include <QVector>
 
 #include <functional>
@@ -23,6 +24,12 @@ class QJsonArray;
 
 struct Scene;
 struct ConsistencyEntry;
+
+namespace sankoexport {
+struct MovieResult;
+struct FilesResult;
+class MovieEncoder;
+}
 
 class MainWindow : public QMainWindow
 {
@@ -98,6 +105,44 @@ public:
     // native and cannot be driven).
     QString openDialogStartDirForTest() const { return openDialogStartDir(); }
 
+    // FILE > EXPORT WITHOUT ITS DIALOGS. Each is everything the menu entry
+    // does after the artist has answered the file dialog: the same job, the
+    // same checks, the same result the message box is written from.
+    sankoexport::MovieResult exportMp4ForTest(const QString &path);
+    sankoexport::FilesResult exportPngForTest(const QString &folder);
+    sankoexport::FilesResult exportPdfForTest(const QString &path);
+    // The two things MP4 export says BEFORE the file dialog: that it cannot
+    // run here at all (empty when it can), and that the project's audio file
+    // is missing (empty when there is no track or the file is there).
+    QString mp4UnavailableReasonForTest() const { return mp4UnavailableReason(); }
+    QString mp4AudioWarningForTest() const { return mp4AudioWarning(); }
+    // Stand in for "this machine has no encoder" (an N edition of Windows
+    // cannot be had on a developer's machine). Null string = ask the system.
+    void setMp4UnavailableForTest(const QString &reason)
+    {
+        m_mp4UnavailableForTest = reason;
+    }
+    // Names in the folder that a PNG export would replace.
+    QStringList pngExportClashesForTest(const QString &folder) const
+    {
+        return pngExportClashes(folder);
+    }
+    // Replace the encoder (the interface exists so that it can be).
+    void setMovieEncoderFactoryForTest(
+        std::function<sankoexport::MovieEncoder *()> factory)
+    {
+        m_movieEncoderFactoryForTest = std::move(factory);
+    }
+    // In place of the progress dialog: called with (done, total); return
+    // false to press Cancel.
+    void setExportProgressHookForTest(std::function<bool(int, int)> hook)
+    {
+        m_exportProgressHookForTest = std::move(hook);
+    }
+    void setExportStallTimeoutForTest(int ms) { m_exportStallMsForTest = ms; }
+    // The project's own scenes, to compare an export with what it exported.
+    const QVector<Scene *> &scenesForTest() const { return m_scenes; }
+
 protected:
     // THE single unsaved-changes gate. Every way of closing this window —
     // the X button, Alt+F4, the taskbar, a Windows shutdown, and File > Exit
@@ -117,7 +162,22 @@ private:
     void updateChromeForPage();
     void updateSaveActions();
     void updateAudioActions(); // Edit > Import Audio / Remove Audio
+    void updateExportActions(); // File > Export: needs at least one panel
     void updateTitle();
+
+    // File > Export. The on... functions ask (which file, replace these?)
+    // and report; the run... functions do the export and are what the test
+    // hooks call.
+    void onExportMp4();
+    void onExportPng();
+    void onExportPdf();
+    sankoexport::MovieResult runMovieExport(const QString &path);
+    sankoexport::FilesResult runPngExport(const QString &folder);
+    sankoexport::FilesResult runPdfExport(const QString &path);
+    QString mp4UnavailableReason() const;
+    QString mp4AudioWarning() const;
+    QStringList pngExportClashes(const QString &folder) const;
+    QString exportStartDir() const;
     void freeScenes();
     void buildScenesFromJson(const QJsonArray &scenes);
 
@@ -256,4 +316,14 @@ private:
     QAction *m_importAudioAct = nullptr;
     QAction *m_removeAudioAct = nullptr;
     QAction *m_locateAudioAct = nullptr; // only while the track is missing
+    // File > Export.
+    QMenu *m_exportMenu = nullptr;
+    QAction *m_exportMp4Act = nullptr;
+    QAction *m_exportPngAct = nullptr;
+    QAction *m_exportPdfAct = nullptr;
+    bool m_exporting = false; // one export at a time
+    QString m_mp4UnavailableForTest; // null = ask the system
+    std::function<sankoexport::MovieEncoder *()> m_movieEncoderFactoryForTest;
+    std::function<bool(int, int)> m_exportProgressHookForTest;
+    int m_exportStallMsForTest = 0;
 };

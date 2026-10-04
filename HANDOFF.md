@@ -245,10 +245,13 @@ may ship in a closed-source commercial product, flag it - do not decide.
 
 8. OPEN - WINDOWS N EDITIONS ARE UNTESTED. They have no Media Foundation
    and no H.264 / AAC until the user adds the free Media Feature Pack. The
-   rebuilt MP4 export (Pass 4) checks for three system DLLs before it
+   rebuilt MP4 export (Pass 4) checks for four system DLLs before it
    offers to export and shows a message pointing to the pack - no fallback
-   codec, the user's decision. That DETECTION has never run on an N
-   edition: test on one before selling where they are
+   codec, the user's decision. The application itself must also START
+   there: the Media Foundation libraries are delay-loaded for exactly that
+   reason (checked in the exe's import tables, never run on an N edition).
+   Neither the DETECTION nor the start-up has ever run on an N edition:
+   test on one before selling where they are
    sold (N for Europe, KN for Korea - general knowledge; the Microsoft
    page cited in the report does not list regions).
 
@@ -5538,6 +5541,283 @@ GATE: Lifecycle (ap), 3 checks. Part-way through the first second of a
 60 fps project the label and the clock it is written from are read in the
 same turn of the event loop: the frames field must be the 60ths, and that
 must differ from what 24ths would give. Lifecycle 506 -> 509.
+
+## THE COMBINED WORKSPACE, PASS 4: File > Export - MP4, PNG, PDF (2026-10-03)
+
+THE LAST BUTTON OF THE OLD ANIMATIC SCREEN IS GONE. File > Export has
+MP4 Video..., PNG Images... and PDF Storyboard... (enabled once the project
+has a panel). AnimaticPage::onExportMp4 and createLegacyActions are
+deleted; the workspace's bottom bar holds nothing of the animatic's any
+more. The export is app/src/export/ plus the asking and telling in
+MainWindow (onExport... ask and report; runMovieExport / runPngExport /
+runPdfExport do the work and are what the gate calls).
+
+WHAT THE CUSTOMER GETS: install SankoTV, File > Export > MP4 works. No
+FFmpeg to install, nothing on the PATH. The old export needed an ffmpeg.exe
+the customer supplied (none was on this machine - the old button could not
+have worked here).
+
+HOW AN MP4 IS MADE: WINDOWS MAKES IT. MfMovieEncoder calls Media
+Foundation's Sink Writer directly: Windows' own H.264 and AAC encoders
+compress, and Windows writes the MP4 container. Nothing of ours and nothing
+of FFmpeg's is in the file's making; no codec, encoder or binary was added
+to the app. (FFmpeg still ships, for Qt Multimedia: it plays the audio
+track and DECODES it for the export.)
+
+THIS IS THE SECOND ENCODER BUILT, AND WHY THE FIRST WAS REPLACED IS THE
+LESSON OF THE PASS. Four ways were compared and reported first (the user's
+checkpoint; app/docs/licensing/export-licensing-report-2026-10-03.md):
+1. Qt Multimedia's QMediaRecorder fed from memory   <- built first
+2. bundling an ffmpeg.exe - an LGPL one has no x264 and ends at the same
+   Windows encoder for ~100 MB more; a GPL one needs approval and makes us
+   the supplier of an H.264 encoder
+3. the customer's own FFmpeg - the old behaviour; fails the requirement
+4. Media Foundation called directly                  <- WHAT SHIPS
+Option 1 was built, gated green and reported. The user's ear found what
+the gate had not: THE SOUND WAS BAD. Measured on real music and speech
+(tests/_backups/export_probe_audio_20261003*):
+- The recorder reaches Windows' encoders through FFmpeg's wrappers. In
+  constant-quality mode - the only mode that gives a good picture - Qt
+  passes the AAC encoder NO BIT RATE, and FFmpeg's wrapper then picks the
+  lowest-rate format Windows offers: HE-AAC AT 16 KBIT/S, whatever
+  setAudioBitRate said (64..320 all gave 16.1). Signal-to-noise 10 dB,
+  nothing above 9 kHz.
+- The mode that does pass the rate (average / constant bit rate) gave
+  AAC-LC at exactly the rate asked - and makes the FIRST SECOND OF EVERY
+  PANEL soft (41 dB against 46 on line work, 32 against 36 on paint, until
+  the next keyframe), at any video bit rate up to 40 Mbit/s. One recorder,
+  one mode: good picture or good sound.
+- Fed FLOATING-POINT audio, Qt silently switches to FFMPEG'S OWN AAC
+  encoder (128 kbit/s). Not taken: it would make code we ship the AAC
+  encoder (BEFORE SELLING 6).
+- It also stored 1080p in the BT.601 matrix with NO COLOUR TAG. Players
+  read untagged HD as BT.709: an orange drawn 230,120,60 was shown as
+  241,126,55.
+THE GATE HAD PASSED ALL OF IT, because it asked only whether a sound track
+existed and how long it was. Not any more - see GATE.
+Rejected on the way: recording picture and sound separately and joining
+the two files ourselves. That is our own MP4 muxer (300 lines for a
+non-interleaved file, 600+ for a proper one), and a container that plays
+in one player and fails in a client's editing software is a defect no gate
+of ours would catch. Windows' muxer is everyone's.
+
+THE MEDIA FOUNDATION ENCODER, EACH SETTING PROVED IN A PROBE FIRST
+(tests/_backups/export_probe_mf_20261003*, the user's checkpoint):
+- PICTURE: H.264 quality mode at 100, Baseline, level 4.0, a keyframe every
+  second, no B-frames - the same encoder, mode and value Qt's "VeryHigh"
+  amounted to (Qt's five steps are quality 25/50/75/90/100: sizes within
+  3 % at every step, keyframes on the same frames, fidelity equal or
+  better). WITHOUT the settings Windows encodes at a constant bit rate and
+  the soft first second is back. High profile was accepted and changed
+  neither size nor fidelity in software.
+- COLOUR: our own RGB -> NV12 conversion (BT.709, limited range, chroma the
+  mean of each 2x2), and the file SAYS SO - Windows writes a colour tag
+  (colr nclx 1/1/1) from the media type. The same orange decodes to
+  230,119,60. This is a deliberate change from the first export the user
+  approved by eye; they compared the two and chose this.
+- FRAME TIMES are computed from the frame NUMBER every time
+  ((n * 10^7 + fps/2) / fps, in 100 ns units) - 1/24 s is not a whole
+  number of those units and added durations would drift. Measured: Windows
+  writes a timescale of fps x 1000 with every frame exactly 1000 ticks;
+  zero error on every frame at 24, 25, 30 and 60 fps, over 86,400 frames
+  (one hour) at 24. One wrinkle: at 24 and 60 fps the track header's
+  length field is one tick short (42 / 17 microseconds) while the frame
+  table is exact; the read-back's tolerance is half a frame.
+- INTERLEAVED like a normal MP4: picture and sound chunks alternate, about
+  three of each a second, never more than 0.36 s apart (Qt's own combined
+  files were 5.7-9 s apart). The encoder enforces it: sound is accepted
+  only up to the picture already written.
+- SOUND: AAC-LC at 192 kbit/s (the top rate Microsoft documents for its
+  encoder), 16-bit PCM in, 44.1 or 48 kHz, 1 or 2 channels. Decoded and
+  compared: 41.3 / 38.3 / 39.1 dB mid-track on two pieces of music and a
+  voice recording, level -0.01 dB, no clipping, the source's highs carried
+  whole, lined up with the source to the sample.
+- KNOWN, ACCEPTED BY THE USER: THE FIRST ~15 MS OF THE SOUND TRACK FADES IN
+  instead of starting at full level. It is the Windows AAC encoder's own
+  start-up (identical through Qt's recorder and through Media Foundation
+  direct); it only shows when a track has sound at its very first sample.
+  No fix is known that does not shift the sound. Do not chase it.
+- THE SOFTWARE ENCODER, DELIBERATELY. Windows offers "NVIDIA H.264 Encoder
+  MFT" on this machine and it accepts the same quality mode: equal or
+  better fidelity at slightly smaller sizes, no faster at 1080p (443 fps
+  either way), 117 against 96 fps at 4K. NOT USED: every vendor's encoder
+  behaves differently and only this one could be measured. It is one
+  attribute (MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS) if that changes.
+- Speed in software: 1080p 443 fps, about twice the recorder's.
+- THE LIBRARIES ARE DELAY-LOADED (CMakeLists, sanko_link_media_foundation).
+  Not an optimisation: an N edition has no mfplat.dll, and an ordinary
+  import of a missing DLL stops the application from STARTING. Nothing in
+  MfMovieEncoder may be called unless unavailableReason() is empty.
+- The Sink Writer's calls block, so the encoder offers the job work in
+  TURNS of ~15 ms (sound first, as far as the picture has gone; then
+  frames; then back to the event loop) - the window keeps answering and
+  Cancel is heard. Throttling is left ON: it is what stops a long film
+  piling up in memory.
+
+THE 16-BIT STEP AND THE RESAMPLING ARE NOT LOSSES - measured because a
+31 dB "ceiling" on music looked like one. It was the comparison (the last
+16 ms: sound was fed for exactly 30 s, the encoder pads its last block, and
+the source still had music there). Directly: Qt's 44.1 -> 48 kHz resampler
+agrees with an independent windowed-sinc resampler to 104-106 dB; keeping
+44.1 kHz end to end changes nothing; 16 bits without dither puts noise at
+-101 dBFS, 40 dB under the AAC's own. Keep 48 kHz, no dither.
+
+THE SEAM: src/export/MovieEncoder.h. The job (MovieExportJob) knows panels,
+durations, fps and audio; an encoder knows how an MP4 is made. Frames are
+QImages, audio is 16-bit PCM bytes - no platform or Qt Multimedia type
+crosses it. It has now been used for what it was built for: the encoder
+was swapped and the job did not change. An Apple path is one new class
+and a line in createMovieEncoder(). It is PULL: the encoder says
+videoWanted / audioWanted, the job offers until one is refused, and a
+refused frame is offered again. The gate uses the same seam to put
+misbehaving encoders in front of the job.
+THE RECORDER ENCODER IS NOT IN THE TREE (it was never committed): archived
+as tests/_backups/QtMovieEncoder_removed_20261003.{h,cpp}. A second
+encoder nobody runs would rot, and it must not be used on Windows.
+
+THE FOUR DEFECTS OF THE OLD EXPORT, none of which it could report - it
+said "Export complete" over all of them:
+- 24 FPS WHATEVER THE PROJECT SAID (a constant in the function). Now the
+  project's rate, each frame's time computed from its NUMBER, never
+  accumulated. Durations are whole seconds, so frame counts are exact.
+- AUDIO SHORTER THAN THE FILM CUT THE FILM (ffmpeg -shortest). Now the
+  video's length is the film's length: the audio is decoded up front
+  (QAudioDecoder, to 48 kHz stereo 16-bit, in memory - 11.5 MB a minute)
+  and only as far as the film runs; shorter audio simply ends. ONE AAC
+  BLOCK (1024 samples, 0.02 s) is HELD BACK when the audio is at least as
+  long as the film: the encoder pads its last block (fed 1,440,000
+  samples, the track holds 1,440,768), and sound fed right to the end
+  would make the FILE run past its last frame.
+- ONE FIXED TEMP FOLDER OF PNG FRAMES (%TEMP%/sankotv_frames, deleted and
+  refilled by every export on the machine). Now no frame files exist at
+  all: frames go from memory to the encoder. The MP4 is written as
+  "<name>.partial-<8 hex>.mp4" beside its destination and renamed when,
+  and only when, it is complete; cancel, failure and a destroyed job all
+  remove it, and a film already at the destination is not touched until
+  then.
+- NOT ONE FRAME WRITE CHECKED (frame.save's result was dropped). Now every
+  frame offered is accepted or offered again; an encoder error stops the
+  export with Windows' error code; a stall watchdog (60 s of silence)
+  abandons an encoder that stops answering; and THE FINISHED FILE IS READ
+  BACK (src/export/Mp4Probe - it walks the MP4's box structure, never
+  reading the picture data): kept only if it holds exactly the frames
+  sent, runs the film's length, and - when the project has audio - has a
+  sound track that is AAC-LC at the rate asked for, MEASURED from the
+  track's bytes and length, not read from a header. Two Lifecycle checks
+  put a misbehaving encoder in front of the real one: one drops a frame in
+  ten and reports success (the export counts 270 of 300 and refuses the
+  file), one writes the sound at half the rate (the export measures 96
+  kbit/s and refuses it).
+Also from Pass 2's open list: a project whose audio file is MISSING now
+says so before the file dialog (by name; Export Without Sound / Cancel)
+instead of silently exporting a silent film, and an audio file that is
+present but cannot be read FAILS the export rather than dropping the sound.
+
+A FIFTH, FOUND ON THE WAY: the header timecode's frames field - its own
+section above, and its own commit.
+
+PICTURE QUALITY - the Windows encoder's steps, measured through the
+recorder (probe: tests/_backups/export_probe_quality_20261003*; four 2 s
+panels at 1080p24, each file decoded and compared with what went in; PSNR
+at the first frame after a cut / at the end of a hold). "CQ" is the
+encoder's quality mode at 25/50/75/90/100; ABR/CBR its bit-rate modes.
+Media Foundation direct reproduces the CQ rows (same sizes; its colour
+conversion measures a little better):
+  fine line work on white          painted panels with grain
+  CQ VeryLow   0.8 Mbit/s 32/32 dB   0.4 Mbit/s 28/28 dB
+  CQ Low       1.3        38/38      1.6        30/30
+  CQ Normal    1.8        42/43      4.7        34/34
+  CQ High      2.2        44/45      6.5        35/35
+  CQ VeryHigh  2.7        45/46      8.1        36/36     <- THE DEFAULT
+  ABR  4 Mbit  2.6        41/46      5.6        27/33
+  ABR  8 Mbit  2.7        41/46      8.1        32/36
+  ABR 16 Mbit  2.7        41/46      8.4        32/36
+  CBR  8 Mbit  2.7        41/46      8.1        32/36
+  two-pass 8   1.8        42/43      4.7        34/34   (= CQ Normal: not
+                                                         implemented)
+(min at cut / min at end of hold.) What it says:
+- The first probe's "2 Mbit/s at 1080p" was not a starved encoder. Lines
+  on white compress to very little and a held panel costs almost nothing
+  after its first frame; the SAME setting spends 8 Mbit/s on grainy paint.
+- Quality mode at the top step is already the Windows encoder's ceiling:
+  asking for 8 or 16 Mbit/s gives the same size and a WORSE first second
+  after each cut (41 dB against 45 on line work, 32 against 36 on paint) -
+  and the first frames after a cut are what an animatic is made of.
+- So: quality mode, 100, one place (MfMovieEncoder::begin).
+- Looked at, not only measured: crops of decoded frames beside their
+  sources (line work, lettering, a 4K panel reduced to 1080p) are not
+  distinguishable by eye at the top two steps; lettering softens at 50.
+THE USER JUDGED THE PICTURE BY EYE AND APPROVED IT AT THE TOP STEP, then
+compared the tagged BT.709 colour with that export and chose it.
+The frame is also SCALED better than before: the panel is reduced with
+QImage::scaled(SmoothTransformation) - area averaging - where the old
+export let the painter sample a 4K panel bilinearly.
+STILL FIXED AT 1920x1080 (sankoexport::kMovieFrameSize; it was
+kExportFrameSize in AnimaticPage) - a delivery format, not a canvas size.
+
+WINDOWS N EDITIONS: no Media Foundation, no H.264 / AAC, until the user
+adds the free Media Feature Pack. The export checks BEFORE the file dialog
+(MfMovieEncoder::unavailableReason: four system DLLs looked for by name,
+loaded as data so that nothing in them runs - mfplat, mfreadwrite,
+mfh264enc, mfAACEnc) and shows a message naming the pack and where to add
+it. NO FALLBACK CODEC, the user's decision. And the app must still START
+there: see the delay-load above. UNTESTED ON AN N EDITION (BEFORE SELLING
+8).
+
+PNG: one file per panel at the panel's own size, "<Project>_S01_P03.png"
+(project name made file-safe), into a folder the artist picks. Each is
+written through QSaveFile - whole or absent - and every write is checked;
+the first failure stops the export and names the panel. A folder picker
+asks nothing about what is already there, so the export asks itself:
+"N of the files this export writes already exist... Replace them?"
+PDF: A4 landscape, six panels a page (3 x 2), QPdfWriter (Qt Gui - no new
+module) into a QSaveFile. Header: project, panel count, running time, page
+n of m. Each cell: the picture, "Scene s . Panel p", seconds, the shot line
+(shot type, angle, lens, mood) and the notes, wrapped and clipped to the
+cell. Pictures are reduced to the cell's size at 300 dpi before embedding
+(a 4K panel embedded whole would make a page ~50 MB). The page is painted
+by paintBoardPage(QPainter&...), which is how it was LOOKED at: there is
+no PDF renderer on this machine, so the probe pointed the same function at
+an image. The notes and shot line were not in the user's one-line brief
+("six panels per page"); the user read a page and KEPT them.
+All three read Panel::flattenedPixmap(): an export shows what a save would
+save (an uncommitted floating paste or transform is in neither).
+
+NOT VERIFIED - say so if asked:
+- Any machine but this one; Windows N; macOS (there is no encoder for it
+  yet - createMovieEncoder returns null and the export says so).
+- How other players and editing software read the file, beyond the user's
+  hand test (2026-10-04): the export opens in DaVinci Resolve as one
+  linked stereo clip at 24 fps with square pixels and left / right the
+  right way round, its colour matches the drawing, and music and a
+  voice-over sound right. No other editor or player has been tried.
+- A very long film's audio in memory (30 minutes = 345 MB).
+- The gate's own audio is 11 kHz mono silence resampled; real music and
+  speech (mp3, m4a, 48 kHz WAV) went through the probes and the user's
+  hand test, not the gate.
+
+GATE: Lifecycle (an) MP4 - 33 checks; (ao) PNG and PDF - 16. (an) never
+asks the export how it went: it opens the file and counts (frames,
+constant timing, the rate that timing amounts to, length, codec, colour
+tag) - AND IT MEASURES THE SOUND: the AAC object type from the stream's
+own description and the bit rate from the track's bytes over its length
+must be AAC-LC and 192 kbit/s within 5 %, at 48 kHz stereo. Its control
+is an encoder that writes a perfectly playable sound track at 96 kbit/s:
+the export must measure it, refuse the file and say why. THIS IS THE CHECK
+THAT WOULD HAVE CAUGHT 16 KBIT/S; do not let it be weakened to "a sound
+track exists". (ad) and (aj) used the Export MP4 button as their "the
+search finds buttons" control; they use Consistency Board and Import Image
+now. Lifecycle 509 -> 558.
+THE BUILT ENCODER, MEASURED THROUGH THE APP'S OWN CODE (probes linked
+against src/export/, tests/_backups/export_probe_final_app_path_20261003*):
+three real sources (m4a, mp3, 48 kHz WAV) come out AAC-LC at 192.1 kbit/s,
+lined up with the source to the sample at seven points across 30 s, level
+-0.02 dB, highs carried whole; a 20-minute 1080p film from 4K panels
+exports in 47 s (619 frames/s) with the process's peak memory rising 80 MB
+- nothing piles up; the built exe imports mfplat and mfreadwrite ONLY in
+its delay-load table (dumpbin /imports).
+Probes archived: tests/_backups/export_probe_* (recorder, quality, sample,
+audio, mf; each run in Debug and Release).
 
 ## METHOD: measure interior structure ACROSS THE SIZE RANGE before calling it character (2026-09-25)
 

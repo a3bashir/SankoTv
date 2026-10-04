@@ -19,7 +19,9 @@ The Script Editor parses a screenplay into scenes; the workspace is where
 everything else happens (the heart of the app): the Panel Strip on top,
 the drawing canvas in the middle, and the **animatic timeline** underneath
 — panels are drawn, timed and played back without leaving it. There is no
-separate Animatic screen any more. The Generation screen (panels sent to
+separate Animatic screen any more. The work leaves through **File >
+Export**: the film as an MP4, the panels as PNGs, the board as a PDF.
+The Generation screen (panels sent to
 fal.ai for AI video) has been REMOVED: the application contains no network
 code and reads no API key. The take data that screen wrote is still loaded
 and saved by ProjectIO, exactly as saved, with no UI — Lifecycle (am) is
@@ -72,6 +74,21 @@ the page from.
   directly or emits a "document changed"; the stack marks the project
   dirty. The audio track is a PATH in the document, kept whether or not
   the file is there (`AnimaticPage::audioPath` vs `audioMissing`).
+- **File > Export** (MP4, PNG, PDF) is `src/export/` plus the asking and
+  telling in `MainWindow`. All three read `Panel::flattenedPixmap()` —
+  never a second idea of what a panel looks like. The MP4 encoder sits
+  behind `MovieEncoder`; the one implementation is `MfMovieEncoder`:
+  Windows' Media Foundation called directly, so Windows' own H.264 and AAC
+  encoders compress and Windows writes the container. Its libraries are
+  DELAY-LOADED and nothing in it may run unless `unavailableReason()` is
+  empty — a Windows N edition does not have them, and a plain import would
+  stop the app from starting. Do NOT route export audio through Qt's
+  recorder: it writes 16 kbit/s whatever is asked (HANDOFF "Pass 4"). The
+  export believes no encoder: it reads the finished file back and keeps it
+  only if every frame is there and the sound track is AAC-LC at the rate
+  asked, measured from the file. The film's length is the panels' length —
+  audio never shortens or lengthens it. No frame files, no shared temp
+  folder; outputs are written beside their name and renamed when complete.
 - **The start window** (`DashboardPage`) is where recent projects live:
   three cards plus compact rows (`RecentProjectsView`), thumbnails decoded
   off the paint path (`RecentThumbnails`), store and thumbnail source in
