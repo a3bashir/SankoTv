@@ -316,6 +316,7 @@ private:
     QAction *m_importAudioAct = nullptr;
     QAction *m_removeAudioAct = nullptr;
     QAction *m_locateAudioAct = nullptr; // only while the track is missing
+    QAction *m_copyAudioAct = nullptr;   // only for a linked track that is there
     // File > Export.
     QMenu *m_exportMenu = nullptr;
     QAction *m_exportMp4Act = nullptr;

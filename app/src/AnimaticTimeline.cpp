@@ -937,6 +937,11 @@ AnimaticTimeline::AudioBar AnimaticTimeline::audioBar() const
         return bar;
     }
     bar.state = AudioBar::Present;
+    // A LINKED track (an old project's file outside the project) says so on
+    // the bar itself, as the header label does: it is the one that loses
+    // its sound when the project folder moves.
+    if (m_host->audioLinked())
+        bar.name += QString::fromUtf8(" \xE2\x80\x94 linked");
     const int seconds = int((m_audioDurationMs + 500) / 1000);
     bar.length = QStringLiteral("%1:%2").arg(seconds / 60)
                      .arg(seconds % 60, 2, 10, QChar('0'));

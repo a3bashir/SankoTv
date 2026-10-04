@@ -7,6 +7,8 @@
 #include <QString>
 #include <QVector>
 
+#include <functional>
+
 // File-level project serialization, extracted from MainWindow with the
 // resolution epic. Two reasons, both structural:
 //  1. The pixels-win reconciliation (manifest vs artwork) is CORRECTNESS
@@ -25,7 +27,12 @@ struct SaveData
     QSize canvasSize; // the project's real resolution (post-reconcile)
     QVector<Scene *> scenes; // not owned
     QVector<ConsistencyEntry> consistency;
+    // The audio track: WHERE ITS FILE IS NOW (absolute), empty for none.
+    // audioLinked = an old project's reference to a file outside the
+    // project, written back exactly as it was given and never copied. A
+    // track that is not linked is the project's own: see projectToJson.
     QString audioPath;
+    bool audioLinked = false;
     QJsonObject perspective;
 };
 
@@ -49,6 +56,13 @@ struct [[nodiscard]] WriteResult
     QString failedFile;     // the first file that could not be written
     QString reason;         // why, in words an artist can act on
     int imagesWritten = 0;  // before the failure, if any
+    // The audio copy was CANCELLED by the artist (Save As with a large
+    // track): ok is false, and there is nothing to warn about.
+    bool cancelled = false;
+    // Where the project's own audio track is once this save is on disk
+    // (absolute; empty for no track or a linked one). After a Save As it is
+    // the NEW project's copy, which the caller should now play.
+    QString audioFile;
 };
 
 // Build the project's JSON root AND write its images (panel flattens +
@@ -71,7 +85,22 @@ struct [[nodiscard]] WriteResult
 //
 // Loading is unaffected: names are stored RELATIVE to the manifest, so an
 // old project naming flat files still finds them exactly where it did.
-WriteResult projectToJson(const SaveData &data, const QString &projectFilePath);
+//
+// THE AUDIO TRACK (media policy, 2026-10-04) is carried the same way. A
+// track the project owns is named RELATIVE to the manifest
+// ("<basename>_assets/<file>"), and a save whose assets folder does not
+// hold the file yet - Save As, a project file renamed by hand, a project
+// that had no file when the audio was imported - COPIES IT IN FIRST, before
+// any image and before the manifest (ProjectMedia::adopt: never overwrites,
+// never leaves a half file). A copy that cannot be made fails the save like
+// an image that cannot be written. Two cases are written back untouched:
+// a LINKED track (an old project's absolute path - converted only by the
+// artist, never by a save), and an owned track whose file is not there to
+// copy (already shown as missing; the reference is carried, the save does
+// not fail over a file nobody could have saved). audioProgress reports the
+// copy and may cancel it (WriteResult::cancelled).
+WriteResult projectToJson(const SaveData &data, const QString &projectFilePath,
+                          const std::function<bool(qint64, qint64)> &audioProgress = {});
 
 // The images subfolder a given project file uses ("<basename>_assets").
 QString assetSubdirFor(const QString &projectFilePath);
@@ -102,7 +131,13 @@ struct LoadedProject
     QVector<OffSizePanel> offSizePanels; // every panel that is not
     QVector<Scene *> scenes; // caller takes ownership
     QVector<ConsistencyEntry> consistency;
+    // The audio track as the manifest gives it, RESOLVED BY STRING WORK
+    // ONLY (load never consults the disk to decide what a record says):
+    // a relative name is the project's own file and comes back absolute,
+    // under the project's folder; an absolute path is an old project's
+    // LINKED file and comes back exactly as stored, with audioLinked set.
     QString audioPath;
+    bool audioLinked = false;
     QJsonObject perspective;
 };
 

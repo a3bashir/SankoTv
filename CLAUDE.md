@@ -43,10 +43,19 @@ the page from.
   `src/ProjectIO.{h,cpp}` (version stays 1). **Load never consults the
   disk to decide what a record says** — a take's status and the audio
   path are kept as saved whether or not their files are present; "missing"
-  is a display state, never a rewrite. **Policy for media a project owns
-  (adopted 2026-10-03, not yet built):** it lives in `<name>_assets`,
-  referenced by relative path, and Save As carries it, as panel images
-  already are. Audio is still an absolute path today. Two deliberate 960×540
+  is a display state, never a rewrite. **Media a project owns lives in
+  `<name>_assets`, is named relative to the manifest, and is carried by
+  Save As**, as panel images are — built for the AUDIO TRACK 2026-10-04
+  (HANDOFF "The audio track travels with the project"). Import, Locate and
+  Copy Audio Into Project copy the file in FIRST (`ProjectMedia::adopt`)
+  and the track names the copy; a save whose assets folder does not hold
+  it yet copies it in before any image and before the manifest. Nothing in
+  an assets folder is ever overwritten or deleted by the app — a taken
+  name is reused if identical, else stepped past (`name (2).wav`); undo
+  and Remove leave the file. An absolute `audioPath` is an OLD project's
+  LINKED track: it loads and saves back byte for byte, says "linked" on
+  its label, and converts only by the artist (Copy Audio Into Project, or
+  Locate) — never by a save. Two deliberate 960×540
   literals in ProjectIO are migration facts for pre-versioned files —
   do not remove them (each site's comment explains what breaks).
 - **The workspace is ONE set of panels with two views** (`StoryboardPage`
@@ -70,10 +79,13 @@ the page from.
   The canvas needs keyboard focus for the Space pan modifier, so nothing in
   the timeline section may take focus (every button there is `NoFocus`).
 - **Every timeline edit is a command on the one undo stack** — a duration
-  drag, Import / Remove / Locate Audio. None of them writes the model
-  directly or emits a "document changed"; the stack marks the project
-  dirty. The audio track is a PATH in the document, kept whether or not
-  the file is there (`AnimaticPage::audioPath` vs `audioMissing`).
+  drag, Import / Remove / Locate Audio, Copy Audio Into Project. None of
+  them writes the model directly or emits a "document changed"; the stack
+  marks the project dirty. The audio track is WHICH FILE and whether it is
+  LINKED, kept whether or not the file is there (`AnimaticPage::audioPath`
+  / `audioLinked` vs `audioMissing`); the copy into the project happens
+  before the command is requested, so a failed or cancelled copy is no
+  edit at all.
 - **File > Export** (MP4, PNG, PDF) is `src/export/` plus the asking and
   telling in `MainWindow`. All three read `Panel::flattenedPixmap()` —
   never a second idea of what a panel looks like. The MP4 encoder sits

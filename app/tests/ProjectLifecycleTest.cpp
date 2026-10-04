@@ -56,7 +56,9 @@
 #include "brushlib/BuiltinRoster.h"
 #include "StrokeBuilder.h"
 #include "NewProjectDialog.h"
+#include "MediaCopyProgress.h"
 #include "ProjectIO.h"
+#include "ProjectMedia.h"
 #include "RecentProjects.h"
 #include "SankoTheme.h"
 #include "StoryboardModel.h"
@@ -102,6 +104,7 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QProcess>
+#include <QProgressDialog>
 #include <QScrollArea>
 #include <QUndoStack>
 #include <QtGui/QTransform>
@@ -5542,6 +5545,26 @@ QAction *editAction(MainWindow &window, const QString &text, int *index = nullpt
     return nullptr;
 }
 
+// Where a project keeps ITS OWN copy of an imported audio file: in its
+// "<name>_assets" folder, under the file's own name (media policy,
+// 2026-10-04). Import copies the file there and the track names the copy.
+QString owned(const QString &projectFile, const QString &name)
+{
+    const QFileInfo project(projectFile);
+    return QDir::cleanPath(project.absolutePath() + QStringLiteral("/")
+                           + project.completeBaseName()
+                           + QStringLiteral("_assets/") + name);
+}
+
+// Two paths to one file, as Windows compares names.
+bool sameFile(const QString &a, const QString &b)
+{
+    return !a.isEmpty() && !b.isEmpty()
+        && QDir::cleanPath(QFileInfo(a).absoluteFilePath())
+               .compare(QDir::cleanPath(QFileInfo(b).absoluteFilePath()),
+                        Qt::CaseInsensitive) == 0;
+}
+
 void rightClickAudioRow(workspace::Rig &r, int x = -1)
 {
     const QRect row = r.timeline->audioRowForTest();
@@ -5563,6 +5586,10 @@ void runAudioEntryPointsPass(const QString &project, const QString &scratch)
     const QString wavB = scratch + QStringLiteral("/audio/second.wav");
     check(QStringLiteral("(aj) fixture: two real WAV files written"),
           writeWav(wavA, 2.0) && writeWav(wavB, 3.0));
+    // What the track names after an import: the project's own copy, not
+    // the file that was picked (section (aq) is about that copy).
+    const QString ownA = owned(project, QStringLiteral("first take.wav"));
+    const QString ownB = owned(project, QStringLiteral("second.wav"));
 
     // ---- no project: both entries are there, and both are off ---------------
     {
@@ -5636,7 +5663,7 @@ void runAudioEntryPointsPass(const QString &project, const QString &scratch)
     pump(200);
     check(QStringLiteral("(aj) Edit > Import Audio sets the track, as ONE "
                          "command, and marks a clean project unsaved"),
-          r.animatic->audioPath() == wavA && r.window.isDirty()
+          sameFile(r.animatic->audioPath(), ownA) && r.window.isDirty()
               && undo->count() == countBefore + 1
               && undo->undoText() == QStringLiteral("Import Audio"),
           QStringLiteral("track \"%1\", top \"%2\"")
@@ -5695,7 +5722,7 @@ void runAudioEntryPointsPass(const QString &project, const QString &scratch)
                          "disabled; Import from it sets the track"),
           menuSaw == QStringList({QStringLiteral("Import Audio..."),
                                   QStringLiteral("Remove Audio (disabled)")})
-              && r.animatic->audioPath() == wavB,
+              && sameFile(r.animatic->audioPath(), ownB),
           menuSaw.join(QStringLiteral(" | ")));
     r.animatic->setAudioMenuHookForTest({});
 
@@ -5746,6 +5773,8 @@ void runAudioUndoPass(const QString &project, const QString &scratch)
     const QString wavB = scratch + QStringLiteral("/audio/second.wav");
     const QString saved = scratch
         + QStringLiteral("/projects/WithAudio/WithAudio.sankotv");
+    const QString ownA = owned(project, QStringLiteral("first take.wav"));
+    const QString ownB = owned(project, QStringLiteral("second.wav"));
     {
         Rig r(project);
         check(QStringLiteral("(ak) the workspace opened"), r.ok);
@@ -5767,7 +5796,7 @@ void runAudioUndoPass(const QString &project, const QString &scratch)
         r.animatic->setAudioPickerForTest([wavA] { return wavA; });
         importAct->trigger();
         pump(200);
-        const bool imported = r.animatic->audioPath() == wavA
+        const bool imported = sameFile(r.animatic->audioPath(), ownA)
             && undo->index() == afterStroke + 1;
         undoAct->trigger(); // Edit > Undo, the path Ctrl+Z takes
         pump(250);
@@ -5782,24 +5811,24 @@ void runAudioUndoPass(const QString &project, const QString &scratch)
         redoAct->trigger();
         pump(250);
         check(QStringLiteral("(ak) redo brings the track back"),
-              r.animatic->audioPath() == wavA);
+              sameFile(r.animatic->audioPath(), ownA));
 
         r.animatic->setAudioPickerForTest([wavB] { return wavB; });
         importAct->trigger();
         pump(200);
-        const bool replaced = r.animatic->audioPath() == wavB;
+        const bool replaced = sameFile(r.animatic->audioPath(), ownB);
         undoAct->trigger();
         pump(250);
         check(QStringLiteral("(ak) undoing an import that REPLACED a track "
                              "restores the earlier track"),
-              replaced && r.animatic->audioPath() == wavA);
+              replaced && sameFile(r.animatic->audioPath(), ownA));
         removeAct->trigger();
         pump(200);
         const bool removed = r.animatic->audioPath().isEmpty();
         undoAct->trigger();
         pump(250);
         check(QStringLiteral("(ak) undoing Remove Audio restores the track"),
-              removed && r.animatic->audioPath() == wavA);
+              removed && sameFile(r.animatic->audioPath(), ownA));
 
         // Undoing the import WHILE THE FILM PLAYS. The stack is undone
         // directly, which is what the command must survive on its own -
@@ -5814,7 +5843,7 @@ void runAudioUndoPass(const QString &project, const QString &scratch)
         r.animatic->togglePlay();
         pump(200);
         const bool playing = r.animatic->isPlaying()
-            && r.animatic->audioPath() == wavA
+            && sameFile(r.animatic->audioPath(), ownA)
             && undo->index() == afterStroke + 1;
         undo->undo();
         pump(250);
@@ -5839,9 +5868,14 @@ void runAudioUndoPass(const QString &project, const QString &scratch)
         undo->redo();
         pump(200);
         QDir().mkpath(QFileInfo(saved).absolutePath());
+        // A save to ANOTHER project file: the new project gets its own copy
+        // of the track and plays that from here on.
         check(QStringLiteral("(ak) the project saves with its track"),
-              r.animatic->audioPath() == wavA
-                  && r.window.saveProjectForTest(saved) && !r.window.isDirty());
+              sameFile(r.animatic->audioPath(), ownA)
+                  && r.window.saveProjectForTest(saved) && !r.window.isDirty()
+                  && sameFile(r.animatic->audioPath(),
+                              owned(saved, QStringLiteral("first take.wav"))),
+              QDir::toNativeSeparators(r.animatic->audioPath()));
         r.animatic->setAudioPickerForTest({});
     }
     {
@@ -5854,7 +5888,9 @@ void runAudioUndoPass(const QString &project, const QString &scratch)
         check(QStringLiteral("(ak) a project LOADED with a track has the "
                              "track, is clean, and has nothing on its "
                              "history: a load is not an edit"),
-              r.animatic->audioPath() == wavA && !r.window.isDirty()
+              sameFile(r.animatic->audioPath(),
+                       owned(saved, QStringLiteral("first take.wav")))
+                  && !r.animatic->audioLinked() && !r.window.isDirty()
                   && undo->count() == 0,
               QStringLiteral("%1 command(s)").arg(undo->count()));
         QAction *removeAct = editAction(r.window, QStringLiteral("Remove Audio"));
@@ -5876,6 +5912,13 @@ void runAudioUndoPass(const QString &project, const QString &scratch)
 // opened while its audio was unavailable opened clean, said nothing, and
 // the next save erased the reference. Now the path is kept, the track is
 // shown as missing, and it can be pointed at its file again.
+//
+// SINCE THE MEDIA POLICY (2026-10-04) THIS IS THE LINKED-TRACK CASE: a
+// project that names its audio by an absolute path outside the project is
+// what an OLD project is, and they keep working exactly as this section
+// always required. The fixture is therefore written the way an old build
+// wrote it (the manifest's audioPath is made absolute, below). A track the
+// project OWNS, and what a missing one of those does, is section (aq).
 void runAudioMissingPass(const QString &scratch)
 {
     using namespace workspace;
@@ -5896,6 +5939,28 @@ void runAudioMissingPass(const QString &scratch)
             .value(QStringLiteral("audioPath"))
             .toString();
     };
+    // The old project: (ak) saved this one with a track of its own, so the
+    // manifest names it relative to itself. Rewrite that one value the way
+    // every build before the media policy wrote it.
+    {
+        QFile f(saved);
+        bool rewritten = false;
+        if (f.open(QIODevice::ReadOnly)) {
+            QJsonObject root = QJsonDocument::fromJson(f.readAll()).object();
+            f.close();
+            const bool wasRelative = !QDir::isAbsolutePath(
+                root.value(QStringLiteral("audioPath")).toString());
+            root[QStringLiteral("audioPath")] = wavA;
+            rewritten = wasRelative && f.open(QIODevice::WriteOnly | QIODevice::Truncate)
+                && f.write(QJsonDocument(root).toJson()) > 0;
+            f.close(); // on disk before it is read back below
+        }
+        check(QStringLiteral("(al) fixture: the project is made an OLD one - "
+                             "its manifest names the audio by absolute path, "
+                             "outside the project (control: it was saved "
+                             "naming its own copy, relative)"),
+              rewritten && manifestAudio() == wavA);
+    }
 
     // CONTROL FIRST, with the file present: the same readings say "present".
     {
@@ -6014,9 +6079,13 @@ void runAudioMissingPass(const QString &scratch)
             return r.timeline->audioBarStateForTest() == QStringLiteral("present");
         });
         check(QStringLiteral("(al) Locate to another file re-points the "
-                             "track: playable, ONE command, project "
+                             "track - at the project's OWN COPY of it, no "
+                             "longer a link: playable, ONE command, project "
                              "unsaved"),
-              relinked && r.animatic->audioPath() == wavB
+              relinked
+                  && sameFile(r.animatic->audioPath(),
+                              owned(saved, QStringLiteral("second.wav")))
+                  && !r.animatic->audioLinked()
                   && !r.animatic->audioMissing() && r.window.isDirty()
                   && undo->count() == count + 1
                   && undo->undoText() == QStringLiteral("Locate Audio File")
@@ -6026,15 +6095,22 @@ void runAudioMissingPass(const QString &scratch)
             undoAct->trigger();
         pump(250);
         check(QStringLiteral("(al) ...and undo returns to the missing track "
-                             "at the old path"),
+                             "at the old path, a link again"),
               r.animatic->audioPath() == wavA && r.animatic->audioMissing()
+                  && r.animatic->audioLinked()
                   && r.timeline->audioBarStateForTest()
                          == QStringLiteral("missing"));
 
         // ---- locate: the SAME path, the file put back --------------------------
+        // This used to "just load it" with no command. A linked track now
+        // CONVERTS when it is located (the user's decision, 2026-10-04:
+        // Locate is one of the two deliberate steps), so picking the file -
+        // even where the project already says it is - copies it in and is
+        // an edit. The no-command case belongs to a track the project
+        // owns, and is checked in (aq).
         const bool restored = QFile::rename(parked, wavA);
         r.window.markCleanForTest();
-        const int countBefore = undo->count();
+        const int indexBefore = undo->index(); // (the undone Locate is above it)
         r.animatic->setAudioPickerForTest([wavA] { return wavA; });
         if (locate)
             locate->trigger();
@@ -6042,12 +6118,17 @@ void runAudioMissingPass(const QString &scratch)
         const bool back = waitFor([&] {
             return r.timeline->audioBarStateForTest() == QStringLiteral("present");
         });
-        check(QStringLiteral("(al) with the file put back, Locate to the SAME "
-                             "path just loads it: playable, NOT dirty, "
-                             "nothing added to the history"),
+        check(QStringLiteral("(al) with the file put back, Locate to it "
+                             "COPIES IT INTO THE PROJECT: playable, the "
+                             "project's own now, ONE command, unsaved - and "
+                             "the file outside is left where it was"),
               restored && back && !r.animatic->audioMissing()
-                  && r.animatic->audioPath() == wavA && !r.window.isDirty()
-                  && undo->count() == countBefore,
+                  && sameFile(r.animatic->audioPath(),
+                              owned(saved, QStringLiteral("first take.wav")))
+                  && !r.animatic->audioLinked() && r.window.isDirty()
+                  && undo->index() == indexBefore + 1
+                  && undo->undoText() == QStringLiteral("Locate Audio File")
+                  && QFileInfo::exists(wavA),
               r.timeline->audioBarTextForTest());
         r.animatic->setAudioPickerForTest({});
     }
@@ -7072,6 +7153,946 @@ void runTimecodeRatePass(const QString &project)
               .arg(at24));
 }
 
+// ---- (aq) the soundtrack travels with the project --------------------------
+// The media policy (HANDOFF, adopted 2026-10-03, built for audio 2026-10-04):
+// media a project owns lives in its "<name>_assets" folder, is named
+// relative to the manifest, and is carried by Save As - as panel images
+// are. Before it, the audio track was an absolute path to wherever the file
+// happened to be, and a project moved, copied or handed to someone else
+// arrived without its sound.
+//
+// "PLAYS" HERE IS MEASURED, NOT HEARD: the player loaded the file and read
+// its real length (the bar is "present" and says that length), its position
+// advances under Play, and an MP4 exported from the moved project has a
+// sound track as long as the film. The gate has no ears.
+namespace travel {
+
+using workspace::Rig;
+
+QString manifestText(const QString &project)
+{
+    QFile f(project);
+    return f.open(QIODevice::ReadOnly) ? QString::fromUtf8(f.readAll())
+                                       : QStringLiteral("<unreadable>");
+}
+
+QString manifestAudio(const QString &project)
+{
+    QFile f(project);
+    if (!f.open(QIODevice::ReadOnly))
+        return QStringLiteral("<unreadable>");
+    return QJsonDocument::fromJson(f.readAll())
+        .object()
+        .value(QStringLiteral("audioPath"))
+        .toString();
+}
+
+// Make a project an OLD one: its audio named the way every build before
+// the policy wrote it.
+bool setManifestAudio(const QString &project, const QString &value)
+{
+    QFile f(project);
+    if (!f.open(QIODevice::ReadOnly))
+        return false;
+    QJsonObject root = QJsonDocument::fromJson(f.readAll()).object();
+    f.close();
+    root[QStringLiteral("audioPath")] = value;
+    return f.open(QIODevice::WriteOnly | QIODevice::Truncate)
+        && f.write(QJsonDocument(root).toJson()) > 0;
+}
+
+bool copyFolder(const QString &from, const QString &to)
+{
+    if (!QDir().mkpath(to))
+        return false;
+    const QDir dir(from);
+    for (const QFileInfo &entry :
+         dir.entryInfoList(QDir::Files | QDir::Dirs | QDir::NoDotAndDotDot)) {
+        const QString target = to + QStringLiteral("/") + entry.fileName();
+        if (entry.isDir() ? !copyFolder(entry.absoluteFilePath(), target)
+                          : !QFile::copy(entry.absoluteFilePath(), target))
+            return false;
+    }
+    return true;
+}
+
+// Everything in an assets folder that is not a panel image: the audio
+// files - and any half-written leftover, which is what this is for.
+QStringList media(const QString &project)
+{
+    QStringList found;
+    const QFileInfo info(project);
+    const QDir dir(info.absolutePath() + QStringLiteral("/")
+                   + info.completeBaseName() + QStringLiteral("_assets"));
+    for (const QString &name :
+         dir.entryList(QDir::Files | QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name))
+        if (!name.endsWith(QStringLiteral(".png"), Qt::CaseInsensitive))
+            found << name;
+    return found;
+}
+
+// A silent WAV of the same length - and so the same SIZE - as another, with
+// one sample that differs: what a re-export under the same name is.
+bool writeWavVariant(const QString &path, double seconds)
+{
+    if (!audio::writeWav(path, seconds))
+        return false;
+    QFile f(path);
+    return f.open(QIODevice::ReadWrite) && f.seek(200) && f.write("\x01", 1) == 1;
+}
+
+bool present(Rig &r)
+{
+    return audio::waitFor([&] {
+        return r.timeline->audioBarStateForTest() == QStringLiteral("present");
+    });
+}
+
+void pick(Rig &r, const QString &actionText, const QString &file)
+{
+    r.animatic->setAudioPickerForTest([file] { return file; });
+    if (QAction *a = audio::editAction(r.window, actionText))
+        a->trigger();
+    pump(200);
+    r.animatic->setAudioPickerForTest({});
+}
+
+bool plays(Rig &r, qint64 *reached)
+{
+    workspace::clickClip(r, 0);
+    r.animatic->togglePlay();
+    const bool moved = audio::waitFor([&] {
+        return r.animatic->audioPlayingForTest()
+            && r.animatic->audioPositionForTest() > 150;
+    });
+    *reached = r.animatic->audioPositionForTest();
+    r.animatic->leavePreview();
+    pump(200);
+    return moved;
+}
+
+// A copy that FAILS warns, in a modal this run cannot click. This closes
+// it and keeps what it said - so "it failed loudly" is a check on the
+// words, and "it was cancelled quietly" is a check that there were none.
+struct Warnings
+{
+    QTimer timer;
+    QStringList texts;
+    Warnings()
+    {
+        timer.setInterval(80);
+        QObject::connect(&timer, &QTimer::timeout, [this] {
+            QWidget *modal = QApplication::activeModalWidget();
+            if (!modal)
+                return;
+            if (auto *box = qobject_cast<QMessageBox *>(modal))
+                texts << box->text();
+            modal->close();
+        });
+        timer.start();
+    }
+};
+
+} // namespace travel
+
+void runAudioTravelsPass(const QString &scratch)
+{
+    using namespace travel;
+    using audio::editAction;
+    using audio::owned;
+    using audio::sameFile;
+    using audio::writeWav;
+    using exporting::fileHash;
+    out() << "--- (aq) the soundtrack travels with the project: copied in at "
+             "import, named relative, carried by Save As ---" << Qt::endl;
+    const QString base = scratch + QStringLiteral("/travel");
+    QDir(base).removeRecursively();
+    const QString src = base + QStringLiteral("/source/theme.wav");
+    const QString other = base + QStringLiteral("/elsewhere/theme.wav");
+    const QString voice = base + QStringLiteral("/source/voice.wav");
+    const QSize size(960, 540);
+    // 1 scene, 2 panels: 2 s + 3 s = a 5 second film, 120 frames at 24.
+    const QString film = writeProject(base + QStringLiteral("/home"),
+                                      QStringLiteral("Film"), size, 24, 1, 2);
+    check(QStringLiteral("(aq) fixture: a project, a 6 s WAV, a different "
+                         "WAV of the same name and the same size, and a "
+                         "third"),
+          QFileInfo::exists(film) && writeWav(src, 6.0)
+              && writeWavVariant(other, 6.0) && writeWav(voice, 2.0)
+              && QFileInfo(src).size() == QFileInfo(other).size()
+              && fileHash(src) != fileHash(other));
+    const QByteArray srcHash = fileHash(src);
+    const QString themeName = QStringLiteral("theme.wav");
+
+    // ---- import copies the file in; save names it relative -----------------
+    {
+        Rig r(film);
+        check(QStringLiteral("(aq) the workspace opened"), r.ok);
+        if (!r.ok)
+            return;
+        QUndoStack *undo = r.window.undoStackForTest();
+        const QByteArray manifestBefore = fileHash(film);
+        const QString own = owned(film, themeName);
+        pick(r, QStringLiteral("Import Audio..."), src);
+        check(QStringLiteral("(aq) IMPORT COPIES THE FILE INTO THE PROJECT: "
+                             "the track is the copy in Film_assets, byte for "
+                             "byte the file that was picked, which is left "
+                             "where it was - one command, project unsaved"),
+              sameFile(r.animatic->audioPath(), own) && !r.animatic->audioLinked()
+                  && fileHash(own) == srcHash && !srcHash.isEmpty()
+                  && fileHash(src) == srcHash
+                  && undo->undoText() == QStringLiteral("Import Audio")
+                  && r.window.isDirty(),
+              QDir::toNativeSeparators(r.animatic->audioPath()));
+        check(QStringLiteral("(aq) ...and the project file on disk has not "
+                             "been touched by the import: what was last "
+                             "saved is still exactly what was saved"),
+              fileHash(film) == manifestBefore && manifestAudio(film).isEmpty());
+        check(QStringLiteral("(aq) the track's label is the file's name, and "
+                             "the bar carries its real length (a track the "
+                             "project owns is not marked)"),
+              present(r) && r.animatic->audioLabelTextForTest() == themeName
+                  && r.timeline->audioBarTextForTest()
+                         == QStringLiteral("theme.wav | 0:06"),
+              r.animatic->audioLabelTextForTest() + QStringLiteral(" / ")
+                  + r.timeline->audioBarTextForTest());
+        const bool saved = r.window.saveProjectForTest(film);
+        const QString text = manifestText(film);
+        check(QStringLiteral("(aq) SAVE NAMES IT RELATIVE TO THE PROJECT "
+                             "FILE - \"Film_assets/theme.wav\" - and no "
+                             "absolute path appears anywhere in the manifest"),
+              saved && manifestAudio(film) == QStringLiteral("Film_assets/theme.wav")
+                  && !text.contains(base, Qt::CaseInsensitive)
+                  && !text.contains(QDir::toNativeSeparators(base),
+                                    Qt::CaseInsensitive)
+                  && !text.contains(QStringLiteral(":/"))
+                  && !text.contains(QStringLiteral(":\\")),
+              manifestAudio(film));
+        check(QStringLiteral("(aq) an ordinary save leaves the track where "
+                             "it is and the project clean"),
+              sameFile(r.animatic->audioPath(), own) && !r.window.isDirty()
+                  && media(film) == QStringList({themeName}),
+              media(film).join(QStringLiteral(", ")));
+    }
+
+    // ---- the file that was picked is gone ------------------------------------
+    check(QStringLiteral("(aq) fixture: the file that was imported is "
+                         "deleted"),
+          QFile::remove(src) && !QFileInfo::exists(src));
+    {
+        Rig r(film);
+        if (!r.ok) {
+            check(QStringLiteral("(aq) the project re-opens"), false);
+            return;
+        }
+        check(QStringLiteral("(aq) with the picked file DELETED the project "
+                             "re-opens with its track: present, its own, "
+                             "clean, nothing on the history"),
+              present(r) && !r.animatic->audioMissing()
+                  && !r.animatic->audioLinked() && !r.window.isDirty()
+                  && r.window.undoStackForTest()->count() == 0,
+              r.timeline->audioBarTextForTest());
+    }
+
+    // ---- THE FOLDER IS MOVED ---------------------------------------------------
+    // A control first, because "it still plays" must be a result the check
+    // could have failed: an OLD project, naming its audio by absolute path
+    // - a file INSIDE its own folder, as favourably as an absolute path can
+    // be placed - moved the same way, must lose it.
+    const QString linkedHome = base + QStringLiteral("/home2");
+    const QString linkedProject = writeProject(linkedHome, QStringLiteral("Linked"),
+                                               size, 24, 1, 2);
+    const QString linkedWav = linkedHome + QStringLiteral("/Linked/sound/theme.wav");
+    check(QStringLiteral("(aq) fixture: an old project whose manifest names "
+                         "an audio file in its own folder by absolute path"),
+          writeWav(linkedWav, 6.0) && setManifestAudio(linkedProject, linkedWav));
+    {
+        Rig r(linkedProject);
+        check(QStringLiteral("(aq) control: where it was made, the old "
+                             "project plays its track"),
+              r.ok && present(r) && r.animatic->audioLinked());
+    }
+    const QString movedHome = base + QStringLiteral("/moved");
+    const QString movedLinkedHome = base + QStringLiteral("/moved2");
+    check(QStringLiteral("(aq) both project folders are MOVED - renamed, so "
+                         "nothing is left at the old place to be found by "
+                         "accident"),
+          QDir().rename(base + QStringLiteral("/home"), movedHome)
+              && QDir().rename(linkedHome, movedLinkedHome)
+              && !QFileInfo::exists(film) && !QFileInfo::exists(linkedWav));
+    const QString movedFilm = movedHome + QStringLiteral("/Film/Film.sankotv");
+    {
+        Rig r(movedLinkedHome + QStringLiteral("/Linked/Linked.sankotv"));
+        check(QStringLiteral("(aq) CONTROL: the moved OLD project has lost "
+                             "its sound - missing, still naming the old "
+                             "place (so the next check can fail)"),
+              r.ok && r.animatic->audioMissing() && r.animatic->audioLinked()
+                  && r.animatic->audioPath() == linkedWav
+                  && r.timeline->audioBarStateForTest() == QStringLiteral("missing"),
+              r.ok ? r.timeline->audioBarTextForTest() : QString());
+    }
+    {
+        Rig r(movedFilm);
+        if (!r.ok) {
+            check(QStringLiteral("(aq) the moved project opens"), false);
+            return;
+        }
+        check(QStringLiteral("(aq) THE MOVED PROJECT STILL HAS ITS "
+                             "SOUNDTRACK: it opens clean, the track is the "
+                             "file in the folder's NEW place, present, with "
+                             "its real length"),
+              present(r) && !r.window.isDirty() && !r.animatic->audioMissing()
+                  && sameFile(r.animatic->audioPath(), owned(movedFilm, themeName))
+                  && r.timeline->audioBarTextForTest()
+                         == QStringLiteral("theme.wav | 0:06"),
+              QDir::toNativeSeparators(r.animatic->audioPath()));
+        qint64 reached = 0;
+        const bool advanced = plays(r, &reached);
+        check(QStringLiteral("(aq) ...and it PLAYS: under Play the audio "
+                             "player is playing and its position advances"),
+              advanced, QStringLiteral("reached %1 ms").arg(reached));
+        const QString mp4 = base + QStringLiteral("/moved_film.mp4");
+        const sankoexport::MovieResult made = r.window.exportMp4ForTest(mp4);
+        const exporting::Seen seen = exporting::look(mp4);
+        check(QStringLiteral("(aq) ...and an MP4 exported from the moved "
+                             "project has its sound: 120 frames, 5 s, and a "
+                             "sound track that runs the film's length (6 s "
+                             "of audio went in)"),
+              made.ok && seen.frames == 120 && seen.audio
+                  && seen.audioSeconds > 4.9 && seen.audioSeconds <= seen.seconds
+                  && seen.soundAsPromised(),
+              seen.text() + QStringLiteral(" | ") + exporting::describe(made));
+    }
+
+    // ---- THE FOLDER IS COPIED, and the original deleted -------------------------
+    const QString copiedHome = base + QStringLiteral("/copied");
+    const QString copiedFilm = copiedHome + QStringLiteral("/Film/Film.sankotv");
+    check(QStringLiteral("(aq) the project folder is COPIED and the "
+                         "original deleted"),
+          copyFolder(movedHome, copiedHome) && QDir(movedHome).removeRecursively()
+              && !QFileInfo::exists(movedFilm));
+    const QString cut2 = base + QStringLiteral("/saveas/Cut2.sankotv");
+    const QString cut3 = base + QStringLiteral("/saveas2/Cut3.sankotv");
+    QDir().mkpath(QFileInfo(cut2).absolutePath());
+    QDir().mkpath(QFileInfo(cut3).absolutePath());
+    {
+        Rig r(copiedFilm);
+        if (!r.ok) {
+            check(QStringLiteral("(aq) the copied project opens"), false);
+            return;
+        }
+        check(QStringLiteral("(aq) THE COPY HAS ITS SOUNDTRACK: clean, "
+                             "present, the file in the copy's own folder"),
+              present(r) && !r.window.isDirty() && !r.animatic->audioMissing()
+                  && sameFile(r.animatic->audioPath(), owned(copiedFilm, themeName)),
+              QDir::toNativeSeparators(r.animatic->audioPath()));
+
+        // ---- Save As carries it ------------------------------------------------
+        const QByteArray originalManifest = fileHash(copiedFilm);
+        const bool savedAs = r.window.saveProjectForTest(cut2);
+        check(QStringLiteral("(aq) SAVE AS CARRIES THE TRACK: the new "
+                             "project has its own copy, identical, named "
+                             "relative to ITS file (\"Cut2_assets/"
+                             "theme.wav\")"),
+              savedAs && fileHash(owned(cut2, themeName)) == srcHash
+                  && manifestAudio(cut2) == QStringLiteral("Cut2_assets/theme.wav"),
+              manifestAudio(cut2));
+        check(QStringLiteral("(aq) ...the open project now plays the NEW "
+                             "copy, and is clean - a Save As is not an edit"),
+              present(r) && sameFile(r.animatic->audioPath(), owned(cut2, themeName))
+                  && !r.window.isDirty(),
+              QDir::toNativeSeparators(r.animatic->audioPath()));
+        check(QStringLiteral("(aq) ...and the project it was saved FROM is "
+                             "untouched: its manifest and its audio file are "
+                             "byte for byte what they were"),
+              fileHash(copiedFilm) == originalManifest
+                  && fileHash(owned(copiedFilm, themeName)) == srcHash);
+    }
+    check(QStringLiteral("(aq) fixture: the Save As copy's folder is "
+                         "deleted"),
+          QDir(QFileInfo(cut2).absolutePath()).removeRecursively());
+    {
+        Rig r(copiedFilm);
+        check(QStringLiteral("(aq) the ORIGINAL survives its Save As copy "
+                             "being deleted: track present"),
+              r.ok && present(r) && !r.animatic->audioMissing());
+        if (!r.ok)
+            return;
+        check(QStringLiteral("(aq) fixture: saved as another project"),
+              r.window.saveProjectForTest(cut3));
+    }
+    check(QStringLiteral("(aq) fixture: the original's folder is deleted"),
+          QDir(copiedHome).removeRecursively() && !QFileInfo::exists(copiedFilm));
+
+    // ---- a Save As whose copy cannot be made ------------------------------------
+    const QString failed = base + QStringLiteral("/saveas2/Fail.sankotv");
+    const QString cancelled = base + QStringLiteral("/saveas2/Stopped.sankotv");
+    {
+        Rig r(cut3);
+        check(QStringLiteral("(aq) the SAVE AS COPY survives the original "
+                             "being deleted: track present"),
+              r.ok && present(r) && !r.animatic->audioMissing());
+        if (!r.ok)
+            return;
+        r.animatic->setPanelDurationForTest(0, 0, 4); // unsaved work
+        pump(200);
+        const QString own3 = owned(cut3, themeName);
+        bool ok = true;
+        {
+            Warnings warnings;
+            ProjectMedia::setWriteLimitForTest(1000); // the disk "fills"
+            ok = r.window.saveProjectForTest(failed);
+            ProjectMedia::setWriteLimitForTest(-1);
+            check(QStringLiteral("(aq) A SAVE AS WHOSE AUDIO COPY CANNOT BE "
+                                 "MADE FAILS LOUDLY: it returns false and "
+                                 "says the project was NOT saved, naming the "
+                                 "audio file and why"),
+                  !ok && warnings.texts.size() == 1
+                      && warnings.texts.value(0).contains(QStringLiteral("NOT saved"))
+                      && warnings.texts.value(0).contains(themeName)
+                      && warnings.texts.value(0).contains(QStringLiteral("audio"))
+                      && warnings.texts.value(0).contains(QStringLiteral("disk may be full")),
+                  warnings.texts.join(QStringLiteral(" / ")).simplified().left(220));
+        }
+        check(QStringLiteral("(aq) ...no project file was written, nothing "
+                             "half-copied was left, and the open project is "
+                             "still the one it was: same file, same track, "
+                             "still unsaved"),
+              !QFileInfo::exists(failed) && media(failed).isEmpty()
+                  && sameFile(r.window.projectPathForTest(), cut3)
+                  && sameFile(r.animatic->audioPath(), own3) && r.window.isDirty(),
+              media(failed).join(QStringLiteral(", ")));
+        {
+            Warnings warnings;
+            MediaCopyProgress::setTapForTest([](qint64, qint64) { return false; });
+            ok = r.window.saveProjectForTest(cancelled);
+            MediaCopyProgress::setTapForTest({});
+            check(QStringLiteral("(aq) CANCELLING the copy stops the Save As "
+                                 "the same way - and says nothing, because "
+                                 "the artist is the one who stopped it"),
+                  !ok && warnings.texts.isEmpty() && !QFileInfo::exists(cancelled)
+                      && media(cancelled).isEmpty()
+                      && sameFile(r.window.projectPathForTest(), cut3)
+                      && r.window.isDirty(),
+                  warnings.texts.join(QStringLiteral(" / ")));
+        }
+        ok = r.window.saveProjectForTest(failed);
+        check(QStringLiteral("(aq) control: with neither, the same Save As "
+                             "succeeds and the copy is there"),
+              ok && fileHash(owned(failed, themeName)) == srcHash
+                  && !r.window.isDirty());
+    }
+
+    // ---- a project file renamed by hand ------------------------------------------
+    const QString renamed = base + QStringLiteral("/saveas2/Renamed.sankotv");
+    check(QStringLiteral("(aq) fixture: a project file is copied under "
+                         "another name, in Explorer's way - its assets "
+                         "folder keeps the old name"),
+          QFile::copy(failed, renamed));
+    {
+        Rig r(renamed);
+        check(QStringLiteral("(aq) a project file RENAMED BY HAND still "
+                             "finds its track, in the folder with the old "
+                             "name"),
+              r.ok && present(r)
+                  && sameFile(r.animatic->audioPath(), owned(failed, themeName)));
+        if (!r.ok)
+            return;
+        const bool saved = r.window.saveProjectForTest(renamed);
+        check(QStringLiteral("(aq) ...and its next save brings the track "
+                             "into the folder of its NEW name, as it does "
+                             "the images; the other project's file is "
+                             "untouched"),
+              saved && fileHash(owned(renamed, themeName)) == srcHash
+                  && manifestAudio(renamed)
+                         == QStringLiteral("Renamed_assets/theme.wav")
+                  && sameFile(r.animatic->audioPath(), owned(renamed, themeName))
+                  && fileHash(owned(failed, themeName)) == srcHash,
+              manifestAudio(renamed));
+    }
+
+    // ---- names: the same file twice, two files of one name ------------------------
+    const QString names = writeProject(base + QStringLiteral("/names"),
+                                       QStringLiteral("Names"), size, 24, 1, 1);
+    const QString second = QStringLiteral("theme (2).wav");
+    check(QStringLiteral("(aq) fixture: the first WAV is written again"),
+          writeWav(src, 6.0) && fileHash(src) == srcHash);
+    {
+        Rig r(names);
+        check(QStringLiteral("(aq) a second project opened"), r.ok);
+        if (!r.ok)
+            return;
+        QUndoStack *undo = r.window.undoStackForTest();
+        pick(r, QStringLiteral("Import Audio..."), src);
+        const QString own = owned(names, themeName);
+        const bool first = sameFile(r.animatic->audioPath(), own)
+            && media(names) == QStringList({themeName});
+        r.window.markCleanForTest();
+        const int count = undo->count();
+        pick(r, QStringLiteral("Import Audio..."), src);
+        check(QStringLiteral("(aq) THE SAME FILE IMPORTED AGAIN changes "
+                             "nothing: no second copy, no command, not "
+                             "unsaved (control: the first import made one "
+                             "file)"),
+              first && sameFile(r.animatic->audioPath(), own)
+                  && media(names) == QStringList({themeName})
+                  && undo->count() == count && !r.window.isDirty(),
+              media(names).join(QStringLiteral(", ")));
+        pick(r, QStringLiteral("Import Audio..."), other);
+        check(QStringLiteral("(aq) A DIFFERENT FILE OF THE SAME NAME (and "
+                             "the same size) arrives as \"theme (2).wav\": "
+                             "the first file is not overwritten, the track "
+                             "and its label are the new one, one command"),
+              sameFile(r.animatic->audioPath(), owned(names, second))
+                  && media(names) == QStringList({second, themeName})
+                  && fileHash(own) == srcHash
+                  && fileHash(owned(names, second)) == fileHash(other)
+                  && present(r) && r.animatic->audioLabelTextForTest() == second
+                  && undo->count() == count + 1,
+              media(names).join(QStringLiteral(", ")) + QStringLiteral(" / ")
+                  + r.animatic->audioLabelTextForTest());
+        pick(r, QStringLiteral("Import Audio..."), src);
+        check(QStringLiteral("(aq) importing the first file again finds its "
+                             "copy already there and uses it: the track "
+                             "goes back to theme.wav and no third file is "
+                             "made"),
+              sameFile(r.animatic->audioPath(), own)
+                  && media(names) == QStringList({second, themeName})
+                  && undo->count() == count + 2);
+        pick(r, QStringLiteral("Import Audio..."), owned(names, second));
+        check(QStringLiteral("(aq) a file picked from INSIDE the project's "
+                             "folder is used where it is"),
+              sameFile(r.animatic->audioPath(), owned(names, second))
+                  && media(names) == QStringList({second, themeName})
+                  && undo->count() == count + 3);
+
+        // ---- undo deletes nothing; redo plays with the sources gone -----------
+        while (undo->canUndo())
+            undo->undo();
+        pump(250);
+        check(QStringLiteral("(aq) UNDOING EVERY IMPORT removes the track "
+                             "and DELETES NOTHING: both copied files are "
+                             "still in the project's folder"),
+              r.animatic->audioPath().isEmpty()
+                  && media(names) == QStringList({second, themeName})
+                  && fileHash(own) == srcHash,
+              media(names).join(QStringLiteral(", ")));
+        const bool sourcesGone = QFile::remove(src) && QFile::remove(other);
+        while (undo->canRedo())
+            undo->redo();
+        pump(250);
+        check(QStringLiteral("(aq) ...which is what lets REDO bring back a "
+                             "track that plays after the files that were "
+                             "picked have been deleted"),
+              sourcesGone && present(r) && !r.animatic->audioMissing()
+                  && sameFile(r.animatic->audioPath(), owned(names, second)),
+              r.timeline->audioBarTextForTest());
+        if (QAction *removeAct = editAction(r.window, QStringLiteral("Remove Audio")))
+            removeAct->trigger();
+        pump(200);
+        check(QStringLiteral("(aq) Remove Audio removes the track from the "
+                             "project and leaves its file in the folder"),
+              r.animatic->audioPath().isEmpty()
+                  && media(names) == QStringList({second, themeName}));
+
+        // ---- an import whose copy cannot be made ---------------------------------
+        r.window.markCleanForTest();
+        const int before = undo->count();
+        const int at = undo->index();
+        {
+            Warnings warnings;
+            ProjectMedia::setWriteLimitForTest(1000);
+            pick(r, QStringLiteral("Import Audio..."), voice);
+            ProjectMedia::setWriteLimitForTest(-1);
+            check(QStringLiteral("(aq) AN IMPORT WHOSE COPY FAILS imports "
+                                 "nothing and says so, naming the file: no "
+                                 "track, no command, not unsaved, and no "
+                                 "partial file in the project's folder"),
+                  r.animatic->audioPath().isEmpty() && undo->count() == before
+                      && undo->index() == at && !r.window.isDirty()
+                      && media(names) == QStringList({second, themeName})
+                      && warnings.texts.size() == 1
+                      && warnings.texts.value(0).contains(QStringLiteral("NOT copied"))
+                      && warnings.texts.value(0).contains(QStringLiteral("voice.wav")),
+                  warnings.texts.join(QStringLiteral(" / ")).simplified().left(200)
+                      + QStringLiteral(" | ") + media(names).join(QStringLiteral(", ")));
+        }
+        {
+            Warnings warnings;
+            MediaCopyProgress::setTapForTest([](qint64, qint64) { return false; });
+            pick(r, QStringLiteral("Import Audio..."), voice);
+            MediaCopyProgress::setTapForTest({});
+            check(QStringLiteral("(aq) a CANCELLED copy imports nothing "
+                                 "either, leaves nothing, and says nothing"),
+                  r.animatic->audioPath().isEmpty() && undo->index() == at
+                      && !r.window.isDirty()
+                      && media(names) == QStringList({second, themeName})
+                      && warnings.texts.isEmpty(),
+                  warnings.texts.join(QStringLiteral(" / ")));
+        }
+        pick(r, QStringLiteral("Import Audio..."), voice);
+        check(QStringLiteral("(aq) control: with neither, the same import "
+                             "succeeds"),
+              sameFile(r.animatic->audioPath(),
+                       owned(names, QStringLiteral("voice.wav")))
+                  && undo->index() == at + 1);
+
+        // ---- a project with no file yet -------------------------------------------
+        // Not reachable through the app (New Project writes the file before
+        // the workspace opens), so the animatic is TOLD the project has
+        // none: the track must then name the file where it is, and the
+        // first save must bring it in.
+        if (QAction *removeAct = editAction(r.window, QStringLiteral("Remove Audio")))
+            removeAct->trigger();
+        pump(200);
+        r.animatic->setProjectFile(QString());
+        const QStringList mediaBefore = media(names);
+        pick(r, QStringLiteral("Import Audio..."), voice);
+        const bool held = sameFile(r.animatic->audioPath(), voice)
+            && !r.animatic->audioLinked() && media(names) == mediaBefore;
+        const QString firstSave = base + QStringLiteral("/first/First.sankotv");
+        QDir().mkpath(QFileInfo(firstSave).absolutePath());
+        const bool saved = r.window.saveProjectForTest(firstSave);
+        check(QStringLiteral("(aq) A PROJECT WITH NO FILE YET: the import "
+                             "names the file where it is (there is nowhere "
+                             "to copy it), and the FIRST SAVE copies it in "
+                             "and names it relative"),
+              held && saved
+                  && fileHash(owned(firstSave, QStringLiteral("voice.wav")))
+                         == fileHash(voice)
+                  && manifestAudio(firstSave)
+                         == QStringLiteral("First_assets/voice.wav")
+                  && sameFile(r.animatic->audioPath(),
+                              owned(firstSave, QStringLiteral("voice.wav"))),
+              manifestAudio(firstSave));
+    }
+
+    // ---- AN OLD PROJECT: a linked track ----------------------------------------------
+    const QString shared = base + QStringLiteral("/shared/score.wav");
+    const QString scoreName = QStringLiteral("score.wav");
+    const QString old = writeProject(base + QStringLiteral("/old"),
+                                     QStringLiteral("Old"), size, 24, 1, 2);
+    const QString linkedText = QString::fromUtf8("score.wav \xE2\x80\x94 linked");
+    check(QStringLiteral("(aq) fixture: an old project naming an audio file "
+                         "outside its folder by absolute path"),
+          writeWav(shared, 4.0) && setManifestAudio(old, shared)
+              && manifestAudio(old) == shared);
+    const QByteArray sharedHash = fileHash(shared);
+    {
+        Rig r(old);
+        if (!r.ok) {
+            check(QStringLiteral("(aq) the old project opens"), false);
+            return;
+        }
+        QAction *copyIn =
+            editAction(r.window, QStringLiteral("Copy Audio Into Project"));
+        QAction *locate = editAction(r.window, QStringLiteral("Locate Audio File..."));
+        check(QStringLiteral("(aq) AN OLD PROJECT LOADS AS IT ALWAYS DID: "
+                             "clean, its track playing from the absolute "
+                             "path, exactly as stored - a LINKED track"),
+              present(r) && !r.window.isDirty() && r.animatic->audioLinked()
+                  && r.animatic->audioPath() == shared
+                  && r.window.undoStackForTest()->count() == 0);
+        check(QStringLiteral("(aq) A LINKED TRACK SAYS SO WITHOUT HOVERING: "
+                             "the header label and the bar both read "
+                             "\"score.wav - linked\""),
+              r.animatic->audioLabelTextForTest() == linkedText
+                  && r.timeline->audioBarTextForTest()
+                         == linkedText + QStringLiteral(" | 0:04"),
+              r.animatic->audioLabelTextForTest() + QStringLiteral(" / ")
+                  + r.timeline->audioBarTextForTest());
+        QStringList menuSaw;
+        r.animatic->setAudioMenuHookForTest([&](QMenu *menu) {
+            menuSaw.clear();
+            for (QAction *a : menu->actions())
+                if (!a->isSeparator())
+                    menuSaw << a->text();
+        });
+        audio::rightClickAudioRow(r);
+        r.animatic->setAudioMenuHookForTest({});
+        check(QStringLiteral("(aq) Edit > Copy Audio Into Project is enabled "
+                             "for it (Locate is not: nothing is missing), "
+                             "and the track's own menu leads with it"),
+              copyIn && copyIn->isEnabled() && locate && !locate->isEnabled()
+                  && menuSaw == QStringList({QStringLiteral("Copy Audio Into Project"),
+                                             QStringLiteral("Import Audio..."),
+                                             QStringLiteral("Remove Audio")}),
+              menuSaw.join(QStringLiteral(" | ")));
+        r.animatic->setPanelDurationForTest(0, 0, 4);
+        pump(200);
+        const bool saved = r.window.saveProjectForTest(old);
+        check(QStringLiteral("(aq) A SAVE DOES NOT CONVERT IT: the manifest "
+                             "still names the absolute path, character for "
+                             "character, and no audio file has appeared in "
+                             "the project's folder (control: the search "
+                             "that found no absolute path in a new "
+                             "project's manifest finds this one)"),
+              saved && manifestAudio(old) == shared && media(old).isEmpty()
+                  && r.animatic->audioLinked()
+                  && manifestText(old).contains(base, Qt::CaseInsensitive),
+              manifestAudio(old));
+    }
+    {
+        Rig r(old);
+        if (!r.ok) {
+            check(QStringLiteral("(aq) the old project re-opens"), false);
+            return;
+        }
+        const QString oldCopy = base + QStringLiteral("/old/Old/OldCopy.sankotv");
+        const bool again = r.window.saveProjectForTest(old);
+        const bool fixedPoint = manifestAudio(old) == shared && media(old).isEmpty();
+        const bool savedAs = r.window.saveProjectForTest(oldCopy);
+        check(QStringLiteral("(aq) open + save again is a fixed point, and "
+                             "SAVE AS keeps the link too: the copy names "
+                             "the same absolute path and gets no audio file"),
+              again && fixedPoint && savedAs && manifestAudio(oldCopy) == shared
+                  && media(oldCopy).isEmpty() && r.animatic->audioLinked()
+                  && r.animatic->audioPath() == shared,
+              manifestAudio(oldCopy));
+    }
+    {
+        Rig r(old);
+        if (!r.ok) {
+            check(QStringLiteral("(aq) the old project opens a third time"), false);
+            return;
+        }
+        QUndoStack *undo = r.window.undoStackForTest();
+        QAction *copyIn =
+            editAction(r.window, QStringLiteral("Copy Audio Into Project"));
+        const QString own = owned(old, scoreName);
+        if (copyIn)
+            copyIn->trigger();
+        pump(250);
+        check(QStringLiteral("(aq) COPY AUDIO INTO PROJECT converts it: the "
+                             "track is the project's own copy, identical; "
+                             "one command, unsaved; the label no longer "
+                             "says linked and the action is off; the file "
+                             "outside is left alone"),
+              present(r) && sameFile(r.animatic->audioPath(), own)
+                  && !r.animatic->audioLinked() && fileHash(own) == sharedHash
+                  && undo->count() == 1
+                  && undo->undoText() == QStringLiteral("Copy Audio Into Project")
+                  && r.window.isDirty()
+                  && r.animatic->audioLabelTextForTest() == scoreName
+                  && copyIn && !copyIn->isEnabled() && fileHash(shared) == sharedHash,
+              r.animatic->audioLabelTextForTest());
+        undo->undo();
+        pump(250);
+        const bool linkedAgain = r.animatic->audioLinked()
+            && r.animatic->audioPath() == shared
+            && r.animatic->audioLabelTextForTest() == linkedText
+            && media(old) == QStringList({scoreName});
+        undo->redo();
+        pump(250);
+        check(QStringLiteral("(aq) undo returns to the linked track (the "
+                             "copy stays in the folder); redo converts "
+                             "again"),
+              linkedAgain && sameFile(r.animatic->audioPath(), own)
+                  && !r.animatic->audioLinked());
+        const bool savedConverted = r.window.saveProjectForTest(old);
+        const QString nowNamed = manifestAudio(old);
+        check(QStringLiteral("(aq) saved, the converted project names its "
+                             "own copy, relative"),
+              savedConverted && nowNamed == QStringLiteral("Old_assets/score.wav"),
+              nowNamed);
+    }
+    const QString oldMoved = base + QStringLiteral("/old_moved");
+    check(QStringLiteral("(aq) fixture: the file outside is deleted and the "
+                         "converted project's folder moved"),
+          QFile::remove(shared)
+              && QDir().rename(base + QStringLiteral("/old"), oldMoved));
+    {
+        Rig r(oldMoved + QStringLiteral("/Old/Old.sankotv"));
+        check(QStringLiteral("(aq) ONCE CONVERTED, THE OLD PROJECT TRAVELS "
+                             "TOO: moved, with the outside file gone, its "
+                             "track is present and not linked"),
+              r.ok && present(r) && !r.animatic->audioMissing()
+                  && !r.animatic->audioLinked() && !r.window.isDirty());
+    }
+
+    // ---- a track the project owns, whose file has gone ----------------------------------
+    const QString lost = writeProject(base + QStringLiteral("/lost"),
+                                      QStringLiteral("Lost"), size, 24, 1, 2);
+    const QString ownLost = owned(lost, themeName);
+    const QString outside = base + QStringLiteral("/found/theme.wav");
+    check(QStringLiteral("(aq) fixture: the WAV again, in another folder"),
+          writeWav(outside, 6.0) && fileHash(outside) == srcHash);
+    {
+        Rig r(lost);
+        if (!r.ok) {
+            check(QStringLiteral("(aq) a third project opens"), false);
+            return;
+        }
+        pick(r, QStringLiteral("Import Audio..."), outside);
+        check(QStringLiteral("(aq) fixture: a project saved with a track of "
+                             "its own"),
+              r.window.saveProjectForTest(lost)
+                  && manifestAudio(lost) == QStringLiteral("Lost_assets/theme.wav"));
+    }
+    check(QStringLiteral("(aq) fixture: its audio file is deleted from the "
+                         "project's folder"),
+          QFile::remove(ownLost));
+    {
+        Rig r(lost);
+        if (!r.ok) {
+            check(QStringLiteral("(aq) it opens without its audio file"), false);
+            return;
+        }
+        QAction *locate = editAction(r.window, QStringLiteral("Locate Audio File..."));
+        check(QStringLiteral("(aq) A MISSING TRACK OF THE PROJECT'S OWN "
+                             "opens clean and is shown as missing, by name; "
+                             "it still names its place in the project's "
+                             "folder, and Locate is enabled"),
+              !r.window.isDirty() && r.animatic->audioMissing()
+                  && !r.animatic->audioLinked()
+                  && sameFile(r.animatic->audioPath(), ownLost)
+                  && r.timeline->audioBarStateForTest() == QStringLiteral("missing")
+                  && r.timeline->audioBarTextForTest().contains(themeName)
+                  && locate && locate->isEnabled(),
+              r.timeline->audioBarTextForTest());
+        r.animatic->setPanelDurationForTest(0, 0, 4);
+        pump(200);
+        const bool saved = r.window.saveProjectForTest(lost);
+        const QString lostCopy = base + QStringLiteral("/lost/Lost/LostCopy.sankotv");
+        bool savedAs = false;
+        {
+            Warnings warnings;
+            savedAs = r.window.saveProjectForTest(lostCopy);
+            check(QStringLiteral("(aq) a save keeps its reference, and a "
+                                 "SAVE AS DOES NOT FAIL over a file that was "
+                                 "not there to copy: it succeeds, silently, "
+                                 "and the copy names the track as missing "
+                                 "in its own folder"),
+                  saved && manifestAudio(lost) == QStringLiteral("Lost_assets/theme.wav")
+                      && savedAs && warnings.texts.isEmpty()
+                      && manifestAudio(lostCopy)
+                             == QStringLiteral("LostCopy_assets/theme.wav")
+                      && r.animatic->audioMissing() && media(lostCopy).isEmpty(),
+                  manifestAudio(lost) + QStringLiteral(" / ")
+                      + manifestAudio(lostCopy));
+        }
+    }
+    {
+        Rig r(lost);
+        if (!r.ok)
+            return;
+        QUndoStack *undo = r.window.undoStackForTest();
+        const bool wasMissing = r.animatic->audioMissing();
+        pick(r, QStringLiteral("Locate Audio File..."), outside);
+        check(QStringLiteral("(aq) LOCATE, with a file of the same name "
+                             "from elsewhere: it is copied in under the name "
+                             "the project already says, so the document "
+                             "does not change - playable, no command, not "
+                             "unsaved (control: it was missing)"),
+              wasMissing && present(r) && !r.animatic->audioMissing()
+                  && sameFile(r.animatic->audioPath(), ownLost)
+                  && fileHash(ownLost) == srcHash && undo->count() == 0
+                  && !r.window.isDirty(),
+              r.timeline->audioBarTextForTest());
+    }
+    check(QStringLiteral("(aq) fixture: deleted again"), QFile::remove(ownLost));
+    {
+        Rig r(lost);
+        if (!r.ok)
+            return;
+        QUndoStack *undo = r.window.undoStackForTest();
+        const bool wasMissing = r.animatic->audioMissing();
+        const bool putBack = QFile::copy(outside, ownLost);
+        pick(r, QStringLiteral("Locate Audio File..."), ownLost);
+        check(QStringLiteral("(aq) LOCATE, the file PUT BACK where the "
+                             "project says and picked there: it just loads "
+                             "- no command, not unsaved"),
+              wasMissing && putBack && present(r) && !r.animatic->audioMissing()
+                  && sameFile(r.animatic->audioPath(), ownLost)
+                  && undo->count() == 0 && !r.window.isDirty()
+                  && media(lost) == QStringList({themeName}),
+              media(lost).join(QStringLiteral(", ")));
+    }
+    check(QStringLiteral("(aq) fixture: deleted a third time"),
+          QFile::remove(ownLost));
+    {
+        Rig r(lost);
+        if (!r.ok)
+            return;
+        QUndoStack *undo = r.window.undoStackForTest();
+        pick(r, QStringLiteral("Locate Audio File..."), voice);
+        const bool repointed = present(r)
+            && sameFile(r.animatic->audioPath(),
+                        owned(lost, QStringLiteral("voice.wav")))
+            && undo->count() == 1
+            && undo->undoText() == QStringLiteral("Locate Audio File")
+            && r.window.isDirty();
+        undo->undo();
+        pump(250);
+        check(QStringLiteral("(aq) LOCATE, a file of ANOTHER name: the "
+                             "project now says something else, so it is one "
+                             "command and unsaved - and undo returns to the "
+                             "missing track at the old name"),
+              repointed && r.animatic->audioMissing()
+                  && sameFile(r.animatic->audioPath(), ownLost),
+              r.timeline->audioBarTextForTest());
+
+        // ---- the progress window ---------------------------------------------------
+        // No copy in this run lasts long enough to show it (a 6 s WAV is
+        // 130 KB), so the window is driven the way a slow copy drives it:
+        // the same reports, arriving over most of a second.
+        auto shownDialog = []() -> QProgressDialog * {
+            for (QWidget *w : QApplication::topLevelWidgets())
+                if (auto *d = qobject_cast<QProgressDialog *>(w))
+                    if (d->isVisible())
+                        return d;
+            return nullptr;
+        };
+        bool quickMadeNone = false;
+        {
+            MediaCopyProgress quick(&r.window, QStringLiteral("quick"));
+            const ProjectMedia::Progress report = quick.callback();
+            bool went = true;
+            for (int i = 1; i <= 10; ++i)
+                went = went && report(i * 100, 1000);
+            pump(100);
+            quickMadeNone = went && !shownDialog();
+        }
+        const QString saying = QStringLiteral("Copying theme.wav into the project...");
+        bool appeared = false, modal = false, stopped = false;
+        QString said;
+        int value = -1;
+        {
+            MediaCopyProgress slow(&r.window, saying);
+            const ProjectMedia::Progress report = slow.callback();
+            bool went = report(1, 1000);
+            const bool noneAtFirst = !shownDialog();
+            QElapsedTimer t;
+            t.start();
+            while (went && t.elapsed() < 900) {
+                QThread::msleep(40);
+                went = report(qMin<qint64>(900, t.elapsed()), 1000);
+            }
+            if (QProgressDialog *dialog = shownDialog()) {
+                appeared = went && noneAtFirst;
+                modal = dialog->isModal();
+                said = dialog->labelText();
+                value = dialog->value();
+                dialog->cancel(); // what pressing Cancel does
+                stopped = !report(950, 1000);
+            }
+        }
+        pump(100);
+        check(QStringLiteral("(aq) THE PROGRESS WINDOW: a copy that is over "
+                             "at once never makes one; a copy still running "
+                             "after half a second shows one - modal, saying "
+                             "what is being copied, part-way along - Cancel "
+                             "stops the copy, and the window is gone when "
+                             "the copy is"),
+              quickMadeNone && appeared && modal && said == saying && value > 0
+                  && value < 1000 && stopped && !shownDialog(),
+              QStringLiteral("quick made none: %1; appeared: %2, modal: %3, "
+                             "at %4 of 1000, \"%5\"; Cancel stopped it: %6")
+                  .arg(quickMadeNone).arg(appeared).arg(modal).arg(value)
+                  .arg(said).arg(stopped));
+    }
+}
+
 int main(int argc, char **argv)
 {
 #ifdef Q_OS_WIN
@@ -7287,6 +8308,7 @@ int main(int argc, char **argv)
         runExportMoviePass(film, scratch);
         runExportFilesPass(film, board, scratch);
     }
+    runAudioTravelsPass(scratch);
 
     // ---- (aa) a test that cannot start says why and exits ----------------
     // An unattended gate must FAIL, not wait. Measured 2026-10-02: with its

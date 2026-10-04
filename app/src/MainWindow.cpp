@@ -32,6 +32,7 @@ this fence."
 #include "AnimaticPage.h"
 #include "ConsistencyBoard.h"
 #include "DashboardPage.h"
+#include "MediaCopyProgress.h"
 #include "NewProjectDialog.h"
 #include "ProjectResize.h"
 #include "ProjectSettingsDialog.h"
@@ -540,9 +541,18 @@ void MainWindow::setupMenuBar()
         if (m_stack && m_stack->currentWidget() == m_storyboard && m_animatic)
             m_animatic->locateAudio();
     });
+    // For an old project whose audio is a LINK to a file outside it: copy
+    // the file into the project, so the project carries its sound. Enabled
+    // only for a linked track whose file is there.
+    m_copyAudioAct = editMenu->addAction(QStringLiteral("Copy Audio Into Project"));
+    connect(m_copyAudioAct, &QAction::triggered, this, [this] {
+        if (m_stack && m_stack->currentWidget() == m_storyboard && m_animatic)
+            m_animatic->copyAudioIntoProject();
+    });
     m_importAudioAct->setEnabled(false);
     m_removeAudioAct->setEnabled(false);
     m_locateAudioAct->setEnabled(false);
+    m_copyAudioAct->setEnabled(false);
 
 
     editMenu->addSeparator();
@@ -667,6 +677,11 @@ void MainWindow::updateAudioActions()
     if (m_locateAudioAct)
         m_locateAudioAct->setEnabled(inWorkspace && m_animatic
                                      && m_animatic->audioMissing());
+    if (m_copyAudioAct)
+        m_copyAudioAct->setEnabled(inWorkspace && m_animatic
+                                   && m_animatic->audioLinked()
+                                   && !m_animatic->audioMissing()
+                                   && !m_currentProjectPath.isEmpty());
 }
 
 // --- File > Export ----------------------------------------------------------
@@ -1323,6 +1338,7 @@ void MainWindow::resetProjectState(ClipboardPolicy clipboards)
         m_consistencyBoard->refresh();
     if (m_animatic) {
         m_animatic->setAudioPath(QString()); // stops the player too
+        m_animatic->setProjectFile(QString());
         m_animatic->setFps(m_projectFps);
     }
     if (m_undoStack)
@@ -1387,6 +1403,9 @@ void MainWindow::runNewProjectDialog()
     m_canvasHeight = dialog.canvasHeight(); // real canvas resolution
     m_storyboard->setProjectCanvasSize(QSize(m_canvasWidth, m_canvasHeight));
     m_animatic->setFps(m_projectFps);
+    // The project has a file from this moment (Create wrote it), so audio
+    // imported before its first save has a folder to be copied into.
+    m_animatic->setProjectFile(m_currentProjectPath);
     updateSaveActions();
     updateTitle();
     m_stack->setCurrentWidget(m_scriptEditor);
@@ -1624,14 +1643,27 @@ bool MainWindow::saveToPath(const QString &path)
     data.canvasSize = QSize(m_canvasWidth, m_canvasHeight);
     data.scenes = m_scenes;
     data.consistency = m_consistencyEntries;
-    data.audioPath = m_animatic->audioPath(); // scratch track (path only)
+    data.audioPath = m_animatic->audioPath(); // where the track's file is
+    data.audioLinked = m_animatic->audioLinked();
     data.perspective = m_storyboard->perspectiveToJson();
     // STEP 1 — the images, every write checked. This stops at the first
     // failure and, crucially, happens BEFORE the manifest is touched: if a
     // single PNG cannot be written, the project file on disk must stay
     // exactly as it was rather than become a manifest naming pixels that
     // are not there.
-    const ProjectIO::WriteResult written = ProjectIO::projectToJson(data, path);
+    //
+    // The project's own AUDIO TRACK is part of this step: a save whose
+    // assets folder does not hold it yet (Save As) copies it in first, with
+    // a progress window if that takes long enough to notice. The window
+    // lives only for this call - it must not be alive under the warnings
+    // below.
+    const ProjectIO::WriteResult written = [&] {
+        MediaCopyProgress progress(
+            this, QStringLiteral("Copying the audio file into the project..."));
+        return ProjectIO::projectToJson(data, path, progress.callback());
+    }();
+    if (!written.ok && written.cancelled)
+        return false; // the artist pressed Cancel: nothing to tell them
     if (!written.ok) {
         QMessageBox::warning(
             this, QStringLiteral("Save Project"),
@@ -1685,6 +1717,12 @@ bool MainWindow::saveToPath(const QString &path)
     // Reached only when every image and the manifest are on disk. This is
     // the one place a SaveCompleted can be made.
     markSavedTo(path, SaveCompleted{});
+    // The project's own audio track is now the copy in THIS project's
+    // folder. After an ordinary save that is where it already was and
+    // nothing happens; after a Save As it is the new project's copy, and
+    // the old project's is left to the old project. Not an edit.
+    if (m_animatic && !written.audioFile.isEmpty())
+        m_animatic->relocateAudio(written.audioFile);
     return true;
 }
 
@@ -1694,7 +1732,7 @@ void MainWindow::markSavedTo(const QString &path, SaveCompleted)
 {
     m_currentProjectPath = path;
     if (m_animatic)
-        m_animatic->setFallbackFolder(QFileInfo(path).absolutePath());
+        m_animatic->setProjectFile(path);
     RecentProjects::record(path);
     setClean(); // what is on disk now matches what is in memory
 }
@@ -1741,9 +1779,12 @@ bool MainWindow::loadFromPath(const QString &path)
     // Scratch audio track. The path is adopted as the project gives it,
     // whether or not the file is there right now: a missing file is shown
     // as missing (and can be located), never dropped - dropping it here is
-    // how the next save used to erase the reference.
-    m_animatic->setFallbackFolder(folder);
-    m_animatic->setAudioPath(loaded.audioPath);
+    // how the next save used to erase the reference. A track the project
+    // OWNS arrives resolved against this project's folder (so a moved or
+    // copied folder plays); an old project's absolute path arrives as it
+    // was stored, LINKED, and stays that way until the artist converts it.
+    m_animatic->setProjectFile(path);
+    m_animatic->setAudioPath(loaded.audioPath, loaded.audioLinked);
 
     m_currentProjectPath = path;
     updateSaveActions();

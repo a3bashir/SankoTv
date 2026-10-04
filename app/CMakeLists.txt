@@ -60,6 +60,13 @@ qt_add_executable(SankoTV
     src/NewProjectDialog.cpp
     src/ProjectIO.cpp
     src/ProjectIO.h
+    # Media the project owns (the audio track) is copied into its
+    # "<name>_assets" folder: ProjectMedia does the copy, MediaCopyProgress
+    # is its progress window.
+    src/ProjectMedia.cpp
+    src/ProjectMedia.h
+    src/MediaCopyProgress.cpp
+    src/MediaCopyProgress.h
     src/NewProjectDialog.h
     src/RecentProjects.cpp
     src/RecentProjects.h
@@ -297,6 +304,10 @@ qt_add_executable(SankoCanvasSizeLock
     tests/CanvasSizeLockTest.cpp
     src/ProjectIO.cpp
     src/ProjectIO.h
+    src/ProjectMedia.cpp
+    src/ProjectMedia.h
+    src/MediaCopyProgress.cpp
+    src/MediaCopyProgress.h
     src/ProjectResize.cpp
     src/ProjectResize.h
     src/DrawingCanvas.cpp

@@ -1,5 +1,7 @@
 #include "ProjectIO.h"
 
+#include "ProjectMedia.h"
+
 #include <QDir>
 #include <QFileInfo>
 #include <QJsonArray>
@@ -52,7 +54,8 @@ struct ImageWriter
 
 } // namespace
 
-WriteResult projectToJson(const SaveData &data, const QString &projectFilePath)
+WriteResult projectToJson(const SaveData &data, const QString &projectFilePath,
+                          const std::function<bool(qint64, qint64)> &audioProgress)
 {
     WriteResult res;
     res.ok = true; // cleared by the first failure below
@@ -85,6 +88,46 @@ WriteResult projectToJson(const SaveData &data, const QString &projectFilePath)
     }
     // Every stored name gets this prefix; every write goes through it.
     const QString rel = assets + QStringLiteral("/");
+
+    // THE AUDIO TRACK, FIRST: it is the one write here that can be large
+    // and can be cancelled, and stopping before forty images are written
+    // is cheaper than after. What the manifest will call it:
+    QString storedAudio;
+    if (!data.audioPath.isEmpty()) {
+        if (data.audioLinked) {
+            // An old project's reference, byte for byte as it was loaded.
+            storedAudio = data.audioPath;
+        } else if (ProjectMedia::isInAssets(data.audioPath, projectFilePath)) {
+            // Already this project's own: the ordinary save. Nothing is
+            // read, nothing is copied.
+            res.audioFile = data.audioPath;
+            storedAudio = ProjectMedia::storedName(data.audioPath, projectFilePath);
+        } else if (!QFileInfo::exists(data.audioPath)) {
+            // The project's own track, but its file is not there to copy
+            // (it is shown as missing). The reference is carried, under a
+            // name nothing else has - so the copy's track is honestly
+            // missing rather than quietly becoming some other file.
+            const QString name = ProjectMedia::freeName(
+                projectFilePath, QFileInfo(data.audioPath).fileName());
+            res.audioFile = assetsPath + QStringLiteral("/") + name;
+            storedAudio = rel + name;
+        } else {
+            const ProjectMedia::Adoption copy = ProjectMedia::adopt(
+                data.audioPath, projectFilePath, audioProgress);
+            if (!copy.ok()) {
+                res.ok = false;
+                res.cancelled = copy.outcome == ProjectMedia::Adoption::Cancelled;
+                res.failedFile = copy.failedFile;
+                res.reason = QStringLiteral("The project's audio file could "
+                                            "not be copied into the project. ")
+                    + copy.reason;
+                return res;
+            }
+            res.audioFile = copy.file;
+            storedAudio = ProjectMedia::storedName(copy.file, projectFilePath);
+        }
+    }
+
     ImageWriter writer{folder, &res};
 
     QJsonArray scenesArray;
@@ -217,7 +260,7 @@ WriteResult projectToJson(const SaveData &data, const QString &projectFilePath)
     root[QStringLiteral("canvasHeight")] = data.canvasSize.height();
     root[QStringLiteral("scenes")] = scenesArray;
     root[QStringLiteral("consistencyBoard")] = consistencyArray;
-    root[QStringLiteral("audioPath")] = data.audioPath;
+    root[QStringLiteral("audioPath")] = storedAudio;
     root[QStringLiteral("perspective")] = data.perspective;
 
     // Reached only with every image on disk: res.ok is still true, so the
@@ -233,7 +276,17 @@ LoadedProject projectFromJson(const QJsonObject &root, const QString &folder)
     out.fps = root.value(QStringLiteral("fps")).toInt(24);
     out.manifestSize = QSize(root.value(QStringLiteral("canvasWidth")).toInt(0),
                              root.value(QStringLiteral("canvasHeight")).toInt(0));
-    out.audioPath = root.value(QStringLiteral("audioPath")).toString();
+    // The audio track. A relative name is the project's own file, in its
+    // assets folder, and resolves against THIS manifest's folder - which is
+    // what lets the folder be moved or copied. An absolute path is an old
+    // project's link to a file outside it and is kept exactly as stored.
+    // String work only: whether the file is there is the animatic's to
+    // find out and to show, never a reason to change what the record says.
+    const QString storedAudio = root.value(QStringLiteral("audioPath")).toString();
+    out.audioLinked = !storedAudio.isEmpty() && QDir::isAbsolutePath(storedAudio);
+    out.audioPath = storedAudio.isEmpty() || out.audioLinked
+        ? storedAudio
+        : QDir::cleanPath(folder + QStringLiteral("/") + storedAudio);
     out.perspective = root.value(QStringLiteral("perspective")).toObject();
 
     // LEGACY shared layers ("Copy/Reuse Layer in Another Panel", removed):

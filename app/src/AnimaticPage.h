@@ -79,24 +79,42 @@ public:
     void goNext();
     bool isPlaying() const { return m_playing; }
 
-    // Scratch audio path persistence (used by project save/load). The path
-    // is the DOCUMENT's: it is kept, and saved, whether or not its file can
-    // be found right now. audioMissing() is what the disk says about it.
+    // The scratch audio track (used by project save/load). audioPath() is
+    // WHERE THE TRACK'S FILE IS - absolute, empty for no track - and is the
+    // DOCUMENT's: kept, and saved, whether or not the file can be found
+    // right now. audioMissing() is what the disk says about it.
+    //
+    // A track is one of two kinds (media policy, HANDOFF 2026-10-04):
+    // - the project's OWN: a copy in its "<name>_assets" folder, which the
+    //   manifest names relative to itself, so it travels with the folder;
+    // - LINKED (audioLinked()): an old project's absolute path to a file
+    //   outside the project. It plays, it is saved back exactly as it was,
+    //   and it is the one that loses its sound when the folder moves -
+    //   which is why the track says "linked" where it can be seen.
     QString audioPath() const;
-    void setAudioPath(const QString &path); // silent: a load is not an edit
+    bool audioLinked() const { return m_audioLinked; }
+    void setAudioPath(const QString &path, bool linked = false); // silent: a load is not an edit
     bool audioMissing() const { return m_audioMissing; }
-    // Where the Locate dialog starts when the stored path's own folder is
-    // gone too: the project's folder.
-    void setFallbackFolder(const QString &folder) { m_fallbackFolder = folder; }
+    // The project's file, empty while it has none: what decides where an
+    // imported file is copied to, and where the Locate dialog starts when
+    // the stored path's own folder is gone.
+    void setProjectFile(const QString &path) { m_projectFile = path; }
+    // After a save: the project's own copy of the track is HERE now (a Save
+    // As made a new one). Not an edit; nothing happens if it already is.
+    void relocateAudio(const QString &path);
 
-    // The audio track's two edits, for the Edit menu and the track's own
-    // right-click menu. Both only REQUEST (audioChangeRequested): the
+    // The audio track's edits, for the Edit menu and the track's own
+    // right-click menu. All only REQUEST (audioChangeRequested): the
     // workspace makes the change an undoable command and calls
-    // applyAudioPath when it runs, is undone, or is redone.
+    // applyAudioPath when it runs, is undone, or is redone. Import, Locate
+    // and Copy Into Project COPY THE FILE INTO THE PROJECT FIRST
+    // (ProjectMedia::adopt) and request the copy; a copy that fails or is
+    // cancelled requests nothing.
     void importAudio(); // asks for a file
     void removeAudio();
     void locateAudio(); // a missing track: point it at its file again
-    void applyAudioPath(const QString &path); // pauses playback first
+    void copyAudioIntoProject(); // a linked track becomes the project's own
+    void applyAudioPath(const QString &path, bool linked); // pauses playback first
 
     // Project frame rate (New Project dialog / project file): forwarded to
     // the timeline, which derives every frame count from it.
@@ -115,7 +133,8 @@ signals:
     void audioStateChanged();
     // --- requests to the workspace (user input only; never from a slot) ---
     // newPath empty = remove the track. commandText names it in the history.
-    void audioChangeRequested(const QString &newPath, const QString &commandText);
+    void audioChangeRequested(const QString &newPath, bool linked,
+                              const QString &commandText);
     void panelSelectRequested(int flatIndex);
     void durationChangeRequested(int sceneIndex, int panelIndex, int seconds);
     void panelMoveRequested(int flatIndex, int flatGap);
@@ -138,6 +157,11 @@ public:
     QString previewCaptionForTest() const;
     bool previewHasPictureForTest() const;
     QString timecodeTextForTest() const; // the header's HH:MM:SS:FF
+    // The audio player's own position (ms) and whether it is playing: what
+    // "the soundtrack plays" can be measured by. The gate cannot hear.
+    qint64 audioPositionForTest() const;
+    bool audioPlayingForTest() const;
+    QString audioLabelTextForTest() const; // the header's track label
     // The file dialog cannot run under a test: this answers in its place.
     // Everything after the dialog is the real path.
     void setAudioPickerForTest(std::function<QString()> picker)
@@ -187,7 +211,11 @@ private:
 
     void updateTimecodeLabel(); // HH:MM:SS:FF of the playhead
 
-    void installAudio(const QString &path); // set or clear the track, silently
+    void installAudio(const QString &path, bool linked); // set or clear the track, silently
+    // Copy a picked file into the project (with progress; says why if it
+    // cannot). False = nothing to request: failed, or cancelled.
+    bool adoptIntoProject(const QString &picked, const QString &title,
+                          QString *file);
     void showAudioMenu(const QPoint &globalPos);
     void updateAudioUi();
     bool hasAudio() const;
@@ -234,8 +262,9 @@ private:
     QMediaPlayer *m_player = nullptr;
     QAudioOutput *m_audioOutput = nullptr;
     QString m_audioPath;          // what the project says
+    bool m_audioLinked = false;   // ...as an old project's outside file
     bool m_audioMissing = false;  // ...and its file is not there
-    QString m_fallbackFolder;
+    QString m_projectFile;        // empty: the project has no file yet
     QLabel *m_audioLabel = nullptr;
     std::function<QString()> m_audioPickerForTest;
     std::function<void(QMenu *)> m_audioMenuHookForTest;

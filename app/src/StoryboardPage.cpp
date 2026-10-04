@@ -1918,25 +1918,38 @@ private:
     int m_after;
 };
 
-// The scratch audio track, imported or removed. The document holds only the
-// track's PATH, so that is all a command needs: the path before and the path
-// after (empty = no track). Undoing an import that replaced a track restores
-// the earlier one.
+// The scratch audio track, imported or removed. The document holds only
+// WHICH FILE the track is and whether it is LINKED (an old project's file
+// outside the project) or the project's own, so that is all a command
+// needs: the two before and the two after (an empty path = no track).
+// Undoing an import that replaced a track restores the earlier one.
+//
+// UNDO NEVER DELETES THE FILE AN IMPORT COPIED INTO THE PROJECT. Redo has
+// to bring back a track that plays, and the file it was copied from may be
+// gone - which is the whole reason it was copied. The copy stays in the
+// project's folder, named by nothing, until the artist removes it; that is
+// the rule for every file there (HANDOFF: "Orphaned ... files are the
+// user's to remove, never the app's"). Importing the same file again
+// reuses it rather than making another.
 class AudioTrackCommand : public QUndoCommand
 {
 public:
     AudioTrackCommand(StoryboardPage *page, const QString &before,
-                      const QString &after, const QString &text)
-        : QUndoCommand(text), m_page(page), m_before(before), m_after(after)
+                      bool beforeLinked, const QString &after, bool afterLinked,
+                      const QString &text)
+        : QUndoCommand(text), m_page(page), m_before(before), m_after(after),
+          m_beforeLinked(beforeLinked), m_afterLinked(afterLinked)
     {
     }
-    void redo() override { m_page->applyAudioPathForUndo(m_after); }
-    void undo() override { m_page->applyAudioPathForUndo(m_before); }
+    void redo() override { m_page->applyAudioPathForUndo(m_after, m_afterLinked); }
+    void undo() override { m_page->applyAudioPathForUndo(m_before, m_beforeLinked); }
 
 private:
     StoryboardPage *m_page;
     QString m_before;
     QString m_after;
+    bool m_beforeLinked;
+    bool m_afterLinked;
 };
 
 } // namespace
@@ -4889,28 +4902,30 @@ void StoryboardPage::onDurationChangeRequested(int sceneIndex, int panelIndex,
 // menu. On the SAME history as drawing: Ctrl+Z right after importing audio
 // takes back the import, not the stroke before it. The undo-stack backstop
 // marks the project unsaved, as it does for every other command.
-void StoryboardPage::onAudioChangeRequested(const QString &newPath,
+void StoryboardPage::onAudioChangeRequested(const QString &newPath, bool linked,
                                             const QString &commandText)
 {
     if (!m_animatic)
         return;
     const QString before = m_animatic->audioPath();
-    if (before == newPath)
+    const bool beforeLinked = m_animatic->audioLinked();
+    if (before == newPath && beforeLinked == linked)
         return;
     if (!m_undoStack) {
         // No history to put it in (never the case inside the app): apply it
         // and say so the old way, rather than lose the edit.
-        m_animatic->applyAudioPath(newPath);
+        m_animatic->applyAudioPath(newPath, linked);
         emit documentChanged();
         return;
     }
-    m_undoStack->push(new AudioTrackCommand(this, before, newPath, commandText));
+    m_undoStack->push(new AudioTrackCommand(this, before, beforeLinked, newPath,
+                                            linked, commandText));
 }
 
-void StoryboardPage::applyAudioPathForUndo(const QString &path)
+void StoryboardPage::applyAudioPathForUndo(const QString &path, bool linked)
 {
     if (m_animatic)
-        m_animatic->applyAudioPath(path); // pauses playback first
+        m_animatic->applyAudioPath(path, linked); // pauses playback first
 }
 
 // A clip was dragged to a gap in its own scene. The press that started the

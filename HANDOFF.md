@@ -5423,6 +5423,7 @@ NOT COVERED: a file that disappears while the project is open is noticed
 only at the next load, import, locate, undo or redo. MP4 export still
 omits a missing track without saying so - Pass 4.
 
+(CLOSED 2026-10-04 - "The audio track travels with the project".)
 OPEN ITEM, user's decision 2026-10-03, not this pass: THE AUDIO TRACK IS A
 REFERENCE BY ABSOLUTE PATH AND IS NEVER COPIED. A project moved to another
 machine, or whose audio is moved, shows its track as missing until it is
@@ -5513,6 +5514,8 @@ that is harmless to the record: the copy keeps every take's status, path
 and prompt, and its relative video paths simply point at files that stayed
 in the old folder.
 
+(BUILT FOR AUDIO 2026-10-04 - see "The audio track travels with the
+project". What follows is the policy as adopted.)
 POLICY, ADOPTED 2026-10-03, NOT YET BUILT: MEDIA A PROJECT OWNS LIVES IN
 ITS "<name>_assets" FOLDER, REFERENCED BY A RELATIVE PATH, AND IS CARRIED
 BY SAVE AS - as panel images already are. It closes both open items of the
@@ -6003,6 +6006,149 @@ Lifecycle logged one loss, to "Preset Images Resized" - its own modal. The
 application reads as inactive for a moment whenever activation passes
 between two of its own windows. A reporting line that cries wolf in a
 quiet run is worse than none.)
+
+## The audio track travels with the project (2026-10-04)
+
+THE MEDIA POLICY (adopted 2026-10-03, see Pass 3) IS BUILT FOR AUDIO. The
+track was an absolute path to wherever the file happened to be; a project
+moved, copied or handed to someone arrived without its sound. Now the
+project's own track is a file in its "<name>_assets" folder, the manifest
+names it relative to itself ("Film_assets/first take.wav", the same key
+`audioPath`, no version change), and Save As carries it.
+
+THE USER'S FOUR DECISIONS (2026-10-04, after a report):
+1. COPY AT IMPORT, not at save. A copy that fails at import costs nothing
+   ("nothing was imported"); at save it would stand between the artist and
+   saving their drawings. The picked file can be unplugged a moment later,
+   an ordinary Save does no audio work, and - because import never
+   overwrites - the project last saved stays valid whatever happens next.
+   THE COST, accepted: the folder changes before a save. Import, then close
+   without saving, and the copy stays, named by nothing.
+2. OLD PROJECTS CONVERT ONLY BY A DELIBERATE STEP: Copy Audio Into Project
+   (Edit, and the track's right-click menu - only for a linked track whose
+   file is there), or Locate on a missing linked track. NEVER BY A SAVE, and
+   not by Save As: open + save of an old project is a fixed point, the
+   absolute path written back character for character.
+3. A LINKED TRACK SAYS SO ON ITS LABEL - "score.wav - linked" in the header
+   row (which stays when the timeline is collapsed) and on the bar - not
+   only in the tooltip. Their words: it is the one that will lose its sound
+   when the folder moves, so it must be seen without hovering. ("missing"
+   outranks it.) The label's colour is the ordinary grey; only the word is
+   new - say so if it should stand out more.
+4. A name that is taken becomes "name (2).wav".
+
+HOW IT WORKS
+- `src/ProjectMedia.{h,cpp}` (no widgets) is the ONE place a media file
+  enters an assets folder: `adopt(source, projectFile, progress)`. NOTHING
+  IN THE FOLDER IS EVER OVERWRITTEN OR DELETED. The file's own name is used
+  if free; if a file of that name is there and is byte-for-byte the same
+  (sizes first, then contents) it is REUSED - importing the same file twice
+  makes one copy; otherwise the name is stepped past, "(2)", "(3)". A file
+  picked from inside the assets folder is used where it is. The copy is
+  written through QSaveFile (a temporary name, renamed when complete), so
+  a failed or cancelled copy leaves nothing; free space is asked first.
+- `src/MediaCopyProgress.{h,cpp}` is the progress window: modal, Cancel,
+  and it appears only if the copy is still running after half a second.
+  NOT a background copy - until the file is in the project the track has
+  no file, and save, undo and export would each need an answer for that.
+- The track in memory is WHICH FILE (absolute) and whether it is LINKED
+  (`AnimaticPage::audioPath` / `audioLinked`); the undo command carries
+  both. Import / Locate / Copy Into Project copy FIRST and then request the
+  command, so a copy that fails or is cancelled is not an edit at all.
+- LOAD (`ProjectIO::projectFromJson`) is string work only: a relative name
+  resolves under the manifest's folder (owned); an absolute path is kept
+  exactly as stored (linked). Whether the file is there is still only a
+  display state.
+- SAVE (`projectToJson`) handles the audio BEFORE any image and before the
+  manifest. Linked: written back as given. Owned and already in this
+  project's assets folder (every ordinary save): named, nothing read.
+  Owned and elsewhere - a Save As, a project file renamed by hand, a
+  project that had no file when the audio came in: COPIED IN, and a copy
+  that cannot be made fails the save with the usual "NOT saved" warning,
+  naming the file. Owned and NOT THERE TO COPY (already shown as missing):
+  the reference is carried and the save does not fail - nothing was there
+  to lose. Cancel in the progress window stops a Save As silently.
+  After the save the open project plays the new project's copy
+  (`relocateAudio`, not an edit; a no-op on every ordinary save, so Ctrl+S
+  never interrupts playback).
+- LOCATE on a track the project owns: the copy usually lands under the
+  very name the project says (it was missing, so the name is free; or the
+  file was put back and picked there) - then the document is unchanged: no
+  command, not unsaved. Another name is a command. The dialog opens in the
+  assets folder.
+- MP4 EXPORT is unchanged: it reads whichever file the track plays.
+- UNDO NEVER DELETES THE COPIED FILE, and neither does Remove Audio. Redo
+  must bring back a track that plays and the picked file may be gone; the
+  saved manifest may still name it; and it is the rule for every file in
+  a project folder ("Orphaned ... files are the user's to remove, never
+  the app's"). Re-importing the same file reuses the kept copy.
+
+OPEN ITEM (the user's, 2026-10-04): AUDIO ORPHANS FROM UNDO AND
+REPLACEMENT ACCUMULATE AND ARE LARGE, UNLIKE IMAGE ORPHANS. Image files
+are named by position and overwritten by later saves, so their orphans are
+bounded; every replaced, undone or removed track - and every import closed
+without saving - leaves its whole file, 11.5 MB a minute of 16-bit 48 kHz
+stereo WAV, and nothing ever removes one. A DELIBERATE "REMOVE UNUSED
+FILES" TOOL IS A SEPARATE FUTURE TASK; nothing automatic.
+
+MEASURED (C:, the NVMe SSD, sources in the OS cache - a best case; record
+in tests/_backups/audio_copy_timing_20261004.txt): copying in 4 MB blocks
+and flushing to disk, 345 MB (a 30-minute WAV) 0.28 s, 1036 MB 0.84 s -
+about 1.2 GB/s; SHA-256 about 1 GB/s. NOT MEASURED: a source on either
+hard disk, a USB stick, a network share, a nearly full disk - which is
+where the progress window will actually be seen.
+
+KNOWN EDGES, none of them handled further:
+- AFTER A SAVE AS, undoing back across an audio command and redoing points
+  the track at the OLD project's copy (the commands hold the paths they
+  were made with). It plays while that copy exists, and the next save
+  brings it into the new project again (reused if identical).
+- A file deleted while the project is open is still noticed only at the
+  next load, import, locate, undo or redo - as before.
+- A missing owned track carried by Save As gets a name nothing else has in
+  the new folder, so it is honestly missing there rather than quietly
+  becoming some other file of that name.
+- A PROJECT WITH NO FILE cannot be reached through the app (New Project
+  writes the file before the workspace opens). The code allows for it: the
+  track names the file where it is and the first save copies it in. The
+  gate reaches it by telling the animatic the project has no file.
+- The app does not read back the copy to compare it with the source (the
+  gate does, by hash).
+
+GATE: Lifecycle (aq), 68 checks, and one fixture check added to (al);
+558 -> 627. (aq): import copies in and leaves the saved manifest untouched;
+save names it relative and NO ABSOLUTE PATH is in the manifest; the picked
+file deleted; THE FOLDER MOVED (renamed, so nothing is left behind) - opens
+clean, present with its real length, the player's position advances under
+Play, and an MP4 exported from it has a sound track the film's length -
+after a CONTROL in which an old absolute-path project moved the same way
+is missing; the folder copied and the original deleted; Save As both ways
+round; a Save As whose copy fails (the disk "fills":
+`ProjectMedia::setWriteLimitForTest`, which refuses the write where a full
+disk would, so the real clean-up runs) and one that is cancelled; a project
+file renamed by hand; the same file twice, a different file of the same
+name AND SIZE, a file picked from inside the folder; undo of every import
+deletes nothing and redo plays with the sources deleted; an import that
+fails and one that is cancelled; no file yet; an old project (loads linked,
+says so, a save and a Save As do not convert it, Copy Audio Into Project
+does, undoably, and then it travels); a missing owned track and the three
+Locate cases; the progress window (none for a quick copy; modal, labelled,
+cancellable for a slow one - driven by timed reports, since no copy in the
+gate lasts half a second).
+"PLAYS" IS MEASURED, NOT HEARD - the gate has no ears.
+HEARD, BY THE USER (their hand test, 2026-10-04, their report): a moved
+project folder keeps its sound with the original file deleted; a copied
+folder exports an MP4 with audible sound; Save As carries the audio;
+collisions and undo/redo behave as described; old projects show "linked"
+clearly enough; a missing file comes back with Locate; the progress window
+appears and Cancel leaves nothing; mp3 and m4a import.
+(aj) and (ak) changed only in WHERE they expect the track: the project's
+copy, not the picked file (16 comparisons). (al) IS NOW THE LINKED-TRACK
+SECTION: its fixture rewrites the manifest the way an old build wrote it,
+and its last check changed meaning - Locate to the same path with the file
+put back used to "just load, no command"; a linked track now converts when
+located, so it is one command. The no-command case moved to (aq), for a
+track the project owns.
 
 ## METHOD: measure interior structure ACROSS THE SIZE RANGE before calling it character (2026-09-25)
 

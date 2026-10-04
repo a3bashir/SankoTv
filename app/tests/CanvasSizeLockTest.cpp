@@ -567,6 +567,7 @@ void runPersistencePass(const QSize &S, const QString &projRoot)
     d2.scenes = L.scenes;
     d2.consistency = L.consistency;
     d2.audioPath = L.audioPath;
+    d2.audioLinked = L.audioLinked;
     d2.perspective = L.perspective;
     const QJsonObject root2 = ProjectIO::projectToJson(
         d2, folder2 + QStringLiteral("/proj.sankotv")).root;

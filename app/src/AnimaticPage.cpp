@@ -2,6 +2,8 @@
 #include "SankoTheme.h"
 
 #include "AnimaticTimeline.h"
+#include "MediaCopyProgress.h"
+#include "ProjectMedia.h"
 #include "StoryboardModel.h"
 
 #include <QAbstractButton>
@@ -342,6 +344,22 @@ bool AnimaticPage::previewHasPictureForTest() const
 QString AnimaticPage::timecodeTextForTest() const
 {
     return m_timecodeLabel ? m_timecodeLabel->text() : QString();
+}
+
+qint64 AnimaticPage::audioPositionForTest() const
+{
+    return m_player ? m_player->position() : -1;
+}
+
+bool AnimaticPage::audioPlayingForTest() const
+{
+    return m_player && m_player->playbackState() == QMediaPlayer::PlayingState;
+}
+
+QString AnimaticPage::audioLabelTextForTest() const
+{
+    return m_audioLabel && !m_audioLabel->isHidden() ? m_audioLabel->text()
+                                                     : QString();
 }
 
 QWidget *AnimaticPage::previewSurface() const
@@ -1047,6 +1065,17 @@ void AnimaticPage::goNext()
 
 // --- Audio ----------------------------------------------------------------
 
+namespace {
+// Two paths to one file, as Windows compares names.
+bool samePath(const QString &a, const QString &b)
+{
+    return !a.isEmpty() && !b.isEmpty()
+        && QDir::cleanPath(QFileInfo(a).absoluteFilePath())
+               .compare(QDir::cleanPath(QFileInfo(b).absoluteFilePath()),
+                        Qt::CaseInsensitive) == 0;
+}
+} // namespace
+
 // A track that can be PLAYED: the project names one and its file is there.
 // (The project naming one is audioPath(); see installAudio.)
 bool AnimaticPage::hasAudio() const
@@ -1081,34 +1110,104 @@ void AnimaticPage::importAudio()
               QStringLiteral("Audio (*.wav *.mp3 *.aac *.m4a)"));
     if (path.isEmpty())
         return; // cancelled: nothing changes, nothing joins the history
-    if (path == m_audioPath) {
-        // The same file again (re-exported, perhaps): reload it. The
-        // document already names it, so there is nothing to undo.
-        applyAudioPath(path);
+    // INTO THE PROJECT FIRST. What the track will name is the project's own
+    // copy, so the file picked can be moved, renamed or unplugged a moment
+    // later. (A project with no file yet has nowhere to copy to: the track
+    // names the file where it is, and the first save brings it in.)
+    QString file = path;
+    if (!m_projectFile.isEmpty()
+        && !adoptIntoProject(path, QStringLiteral("Import Audio"), &file))
+        return; // failed (and said so) or cancelled: nothing changes
+    if (!m_audioLinked && samePath(file, m_audioPath)) {
+        // The file the track already plays, picked again: reload it. The
+        // document already names it, so there is nothing to undo. (A file
+        // of the same NAME with different contents - a re-export - is not
+        // this: it arrives as "name (2)", a new track, and undo returns to
+        // the earlier one.)
+        applyAudioPath(m_audioPath, false);
         return;
     }
-    emit audioChangeRequested(path, QStringLiteral("Import Audio"));
+    emit audioChangeRequested(file, false, QStringLiteral("Import Audio"));
 }
 
 void AnimaticPage::removeAudio()
 {
     if (m_audioPath.isEmpty())
         return;
-    emit audioChangeRequested(QString(), QStringLiteral("Remove Audio"));
+    // The file stays in the project's folder: undo needs it, and nothing in
+    // that folder is ever deleted by the app.
+    emit audioChangeRequested(QString(), false, QStringLiteral("Remove Audio"));
+}
+
+// A LINKED track becomes the project's own: the deliberate step an old
+// project's absolute path is converted by (a save never does it). A command
+// like Import - undo returns to the linked track, and the copy stays.
+void AnimaticPage::copyAudioIntoProject()
+{
+    if (m_audioPath.isEmpty() || !m_audioLinked || m_audioMissing
+        || m_projectFile.isEmpty())
+        return;
+    if (m_playing)
+        pause();
+    QString file;
+    if (!adoptIntoProject(m_audioPath, QStringLiteral("Copy Audio Into Project"),
+                          &file))
+        return;
+    emit audioChangeRequested(file, false,
+                              QStringLiteral("Copy Audio Into Project"));
+}
+
+// The copy, with its progress window and its one way of saying no. `title`
+// is the command the artist chose, so the message is headed by what they
+// were doing.
+bool AnimaticPage::adoptIntoProject(const QString &picked, const QString &title,
+                                    QString *file)
+{
+    ProjectMedia::Adoption copy;
+    {
+        MediaCopyProgress progress(
+            this, QStringLiteral("Copying %1 into the project...")
+                      .arg(QFileInfo(picked).fileName()));
+        copy = ProjectMedia::adopt(picked, m_projectFile, progress.callback());
+    }
+    if (copy.ok()) {
+        *file = copy.file;
+        return true;
+    }
+    if (copy.outcome == ProjectMedia::Adoption::Failed)
+        QMessageBox::warning(
+            this, title,
+            QStringLiteral("The audio file was NOT copied into the project, "
+                           "and the project's audio track has not been "
+                           "changed.\n\n%1\n\n%2")
+                .arg(copy.failedFile, copy.reason));
+    return false;
 }
 
 // The audio track changes - a command running, being undone or redone.
 // ANY change to the track pauses playback first, the rule timing and
 // structure changes already follow: the player is about to be stopped and
 // re-sourced under a film that was in step with it.
-void AnimaticPage::applyAudioPath(const QString &path)
+void AnimaticPage::applyAudioPath(const QString &path, bool linked)
 {
     if (m_playing)
         pause();
-    installAudio(path);
+    installAudio(path, linked);
     // Parked where the playhead is, so Play resumes in step.
     if (hasAudio() && m_current >= 0)
         m_player->setPosition(offsetForPanel(m_current));
+}
+
+// A Save As has just made the new project its own copy of the track, and
+// that is the file this project plays from now on. Not an edit - the
+// document says what it said - and when the track is already there (every
+// ordinary save) nothing is touched, so Ctrl+S never interrupts playback.
+void AnimaticPage::relocateAudio(const QString &path)
+{
+    if (path.isEmpty() || m_audioPath.isEmpty() || m_audioLinked
+        || samePath(path, m_audioPath))
+        return;
+    applyAudioPath(path, false);
 }
 
 // The one place the track is set, for a command and for a project load
@@ -1122,11 +1221,12 @@ void AnimaticPage::applyAudioPath(const QString &path)
 // nothing, and the next save erased the reference for good. The document's
 // path and "a file is loaded" are two facts now: m_audioPath is what the
 // project says, m_audioMissing is what the disk says about it.
-void AnimaticPage::installAudio(const QString &path)
+void AnimaticPage::installAudio(const QString &path, bool linked)
 {
     if (m_player)
         m_player->stop();
     m_audioPath = path;
+    m_audioLinked = linked && !path.isEmpty();
     m_audioMissing = !path.isEmpty() && !QFileInfo::exists(path);
     if (m_player)
         m_player->setSource(path.isEmpty() || m_audioMissing
@@ -1146,10 +1246,17 @@ void AnimaticPage::updateAudioUi()
         m_audioLabel->setVisible(has);
         if (has) {
             const QString name = QFileInfo(m_audioPath).fileName();
+            // LINKED IS SAID ON THE LABEL, not left to the tooltip (the
+            // user's decision, 2026-10-04): a linked track is the one that
+            // loses its sound when the project folder moves, and that must
+            // be visible without hovering. Missing outranks it - a track
+            // that is not there at all is the more urgent thing to say.
             m_audioLabel->setText(
                 m_audioMissing
                     ? name + QString::fromUtf8(" \xE2\x80\x94 missing")
-                    : name);
+                    : m_audioLinked
+                          ? name + QString::fromUtf8(" \xE2\x80\x94 linked")
+                          : name);
             m_audioLabel->setStyleSheet(
                 m_audioMissing
                     ? SankoTheme::themed("color: %WARNING%; font-size: 12px;")
@@ -1161,7 +1268,16 @@ void AnimaticPage::updateAudioUi()
                                      "or use Edit > Locate Audio File, to "
                                      "point to it.")
                           .arg(QDir::toNativeSeparators(m_audioPath))
-                    : QDir::toNativeSeparators(m_audioPath));
+                    : m_audioLinked
+                          ? QStringLiteral(
+                                "This audio file is outside the project's "
+                                "folder:\n%1\n\nThe project will lose its "
+                                "sound if it is moved or copied without this "
+                                "file. Right-click the audio track, or use "
+                                "Edit > Copy Audio Into Project, to make the "
+                                "project carry it.")
+                                .arg(QDir::toNativeSeparators(m_audioPath))
+                          : QDir::toNativeSeparators(m_audioPath));
         }
     }
     if (m_timeline) {
@@ -1171,11 +1287,19 @@ void AnimaticPage::updateAudioUi()
     emit audioStateChanged(); // the menus enable Remove and Locate from this
 }
 
-// POINT THE TRACK AT ITS FILE AGAIN. Choosing a different path changes what
-// the project says, so it is a command like Import (undo returns to the
-// missing track at the old path). Choosing the SAME path - the file has
-// been put back - changes nothing in the document: the file is simply
-// loaded, with no command and no unsaved change.
+// POINT THE TRACK AT ITS FILE AGAIN. The file chosen is COPIED INTO THE
+// PROJECT, like an import - so Locate on an old project's linked track is
+// also what makes that project carry its sound (the user's decision,
+// 2026-10-04: a linked track converts by Copy Audio Into Project or by
+// this, never by a save).
+//
+// For the project's OWN track the copy usually lands under the very name
+// the project already says - the file was missing, so the name is free; or
+// the artist put it back and picked it where it belongs. Then nothing in
+// the document changes: the file is simply loaded, with no command and no
+// unsaved change. Anything else - another name, or a linked track - changes
+// what the project says, so it is a command like Import (undo returns to
+// the missing track at the old path).
 void AnimaticPage::locateAudio()
 {
     if (m_audioPath.isEmpty())
@@ -1185,7 +1309,7 @@ void AnimaticPage::locateAudio()
     const QFileInfo stored(m_audioPath);
     const QString folder = QDir(stored.absolutePath()).exists()
         ? stored.absolutePath()
-        : m_fallbackFolder;
+        : QFileInfo(m_projectFile).absolutePath();
     const QString suggestion = folder.isEmpty()
         ? stored.fileName()
         : folder + QLatin1Char('/') + stored.fileName();
@@ -1196,12 +1320,24 @@ void AnimaticPage::locateAudio()
               QStringLiteral("Audio (*.wav *.mp3 *.aac *.m4a)"));
     if (path.isEmpty())
         return;
-    if (QFileInfo(path).absoluteFilePath().compare(stored.absoluteFilePath(),
-                                                   Qt::CaseInsensitive) == 0) {
-        applyAudioPath(m_audioPath); // re-read the disk: same document
+    if (m_projectFile.isEmpty()) {
+        // No project file, so nowhere to copy to: as it was before the
+        // media policy. The same path again just re-reads the disk.
+        if (samePath(path, m_audioPath))
+            applyAudioPath(m_audioPath, m_audioLinked);
+        else
+            emit audioChangeRequested(path, false,
+                                      QStringLiteral("Locate Audio File"));
         return;
     }
-    emit audioChangeRequested(path, QStringLiteral("Locate Audio File"));
+    QString file;
+    if (!adoptIntoProject(path, QStringLiteral("Locate Audio File"), &file))
+        return;
+    if (!m_audioLinked && samePath(file, m_audioPath)) {
+        applyAudioPath(m_audioPath, false); // re-read the disk: same document
+        return;
+    }
+    emit audioChangeRequested(file, false, QStringLiteral("Locate Audio File"));
 }
 
 QString AnimaticPage::audioPath() const
@@ -1209,11 +1345,11 @@ QString AnimaticPage::audioPath() const
     return m_audioPath;
 }
 
-void AnimaticPage::setAudioPath(const QString &path)
+void AnimaticPage::setAudioPath(const QString &path, bool linked)
 {
     // Used by project load (and New / Close, with an empty path). Silent:
     // no command, no dirty flag.
-    installAudio(path);
+    installAudio(path, linked);
 }
 
 // The audio track's right-click menu: the same two functions the Edit menu
@@ -1230,6 +1366,13 @@ void AnimaticPage::showAudioMenu(const QPoint &globalPos)
         // Offered only while there is something to locate.
         QAction *locate = menu.addAction(QStringLiteral("Locate Audio File..."));
         connect(locate, &QAction::triggered, this, [this] { locateAudio(); });
+        menu.addSeparator();
+    } else if (m_audioLinked && !m_projectFile.isEmpty()) {
+        // Offered only for a linked track whose file is there to copy.
+        QAction *copyIn =
+            menu.addAction(QStringLiteral("Copy Audio Into Project"));
+        connect(copyIn, &QAction::triggered, this,
+                [this] { copyAudioIntoProject(); });
         menu.addSeparator();
     }
     QAction *importAction = menu.addAction(QStringLiteral("Import Audio..."));
