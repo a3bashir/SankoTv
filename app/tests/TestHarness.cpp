@@ -39,12 +39,24 @@
 //      SANKO_TEST_SCREEN   a screen name or part of one ("DELL"), a 1-based
 //                          index, "primary", or "cursor" (the old behaviour:
 //                          no pinning)
-//      the launcher's      the console window if this process has a visible
-//                          one; else the nearest parent process that owns a
-//                          visible window, preferring the foreground window
-//                          when it is that process's
-//      the primary screen
-//    and one line on stderr says which was chosen and why.
+//      THE TEST SCREEN     the screen whose name contains kTestScreen below
+//                          - the user's Cintiq. A FIXED default, their
+//                          decision (2026-10-04): every run, theirs from
+//                          PowerShell and Claude's, uses that one screen and
+//                          the other stays free for their work.
+//      the primary screen  when that screen is not connected - and the line
+//                          says so.
+//    One line on stderr says which was chosen and why.
+//
+//    WHAT THIS REPLACED, so nobody rebuilds it: the default used to be "the
+//    launcher's screen" - this process's console window if visible, else
+//    the nearest parent process owning a window. It could not keep its
+//    promise. From Claude it found the Claude window only on a DIRECT
+//    launch; the gate is launched through a bash script that runs a bash
+//    script, the chain of parents ends at a process that no longer exists,
+//    and every gate fell through to the primary screen. From a console it
+//    put the windows on top of the output the person was watching. A fixed
+//    screen has neither problem and nothing to detect.
 //
 //    HOW IT MOVES A WINDOW WITHOUT CHANGING WHAT A TEST MEASURES: only a
 //    ROOT window (no parent) that nobody positioned is touched, once,
@@ -52,12 +64,30 @@
 //    so the only thing that changes is which monitor. A window already on
 //    the target screen is not touched at all. Dialogs and tool windows
 //    position themselves against their parent and follow it.
+//
+// 3. A TEST WINDOW THAT IS MINIMISED, OR LOSES THE FOREGROUND, IS SAID SO.
+//
+//    No test minimises a window. If one is minimised during a run, someone
+//    at the machine did it (or something else did), and checks that read
+//    the screen or the floating bars fail for that reason alone: a
+//    minimised main window hides the bars and the studio by design.
+//
+//    And no test gives the foreground away. If ANOTHER PROGRAM is activated
+//    while a test window is on screen - a click in any other window does it
+//    - the canvas loses focus, and the product then bakes a pending
+//    QuickShape (DrawingCanvas::focusOutEvent; right for an artist who
+//    clicks away). The QuickShape family's "button" checks fail from that
+//    point on, at a different check each time (2026-10-04, with the machine
+//    in use: 14 failures, then 0, 0, 9).
+//
+//    For both, a line is printed where it happens and another at exit, so
+//    such a failure names its own cause instead of looking like a defect.
+//    The lines report; they change nothing a test measures.
 
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
 #include <windows.h>
-#include <tlhelp32.h>
 
 #include <QByteArray>
 #include <QCoreApplication>
@@ -72,6 +102,7 @@
 
 #ifdef QT_WIDGETS_LIB
 #include <QApplication>
+#include <QElapsedTimer>
 #include <QEvent>
 #include <QGuiApplication>
 #include <QPointer>
@@ -79,6 +110,7 @@
 #include <QVector>
 #include <QWidget>
 #include <QWindow>
+#include <QWindowStateChangeEvent>
 #endif
 
 namespace {
@@ -182,106 +214,10 @@ struct BeforeMain
 
 #ifdef QT_WIDGETS_LIB
 
-struct TopLevelSearch
-{
-    DWORD pid = 0;
-    HWND foreground = nullptr;
-    HWND found = nullptr;
-};
-
-BOOL CALLBACK findLauncherWindow(HWND hwnd, LPARAM lp)
-{
-    auto *s = reinterpret_cast<TopLevelSearch *>(lp);
-    DWORD pid = 0;
-    GetWindowThreadProcessId(hwnd, &pid);
-    if (pid != s->pid || !IsWindowVisible(hwnd) || GetWindow(hwnd, GW_OWNER))
-        return TRUE;
-    RECT r{};
-    GetWindowRect(hwnd, &r);
-    if (r.right - r.left < 200 || r.bottom - r.top < 120)
-        return TRUE; // not a main window: a tray helper, a tooltip host
-    if (hwnd == s->foreground) {
-        s->found = hwnd; // the window the user is actually looking at
-        return FALSE;
-    }
-    if (!s->found)
-        s->found = hwnd;
-    return TRUE;
-}
-
-// The window this test was launched from, and a word for the report line.
-HWND launcherWindow(QString *why)
-{
-    // A classic console: the window itself. (Under Windows Terminal the
-    // console window is a hidden stand-in, so this is skipped and the
-    // parent-process walk below finds the terminal's own window.)
-    if (HWND console = GetConsoleWindow()) {
-        if (IsWindowVisible(console)) {
-            *why = QStringLiteral("this process's console window");
-            return console;
-        }
-    }
-    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if (snap == INVALID_HANDLE_VALUE)
-        return nullptr;
-    HWND result = nullptr;
-    DWORD pid = GetCurrentProcessId();
-    for (int depth = 0; depth < 12 && pid && !result; ++depth) {
-        PROCESSENTRY32W pe;
-        pe.dwSize = sizeof(pe);
-        DWORD parent = 0;
-        QString name;
-        if (Process32FirstW(snap, &pe)) {
-            do {
-                if (pe.th32ProcessID == pid) {
-                    parent = pe.th32ParentProcessID;
-                    name = QString::fromWCharArray(pe.szExeFile);
-                    break;
-                }
-            } while (Process32NextW(snap, &pe));
-        }
-        if (name.isEmpty())
-            break; // the chain is broken: a parent has exited
-        if (depth > 0) { // never this process's own windows
-            TopLevelSearch s;
-            s.pid = pid;
-            s.foreground = GetForegroundWindow();
-            EnumWindows(findLauncherWindow, reinterpret_cast<LPARAM>(&s));
-            if (s.found) {
-                result = s.found;
-                *why = QStringLiteral("the window of %1, which launched this "
-                                      "test%2")
-                           .arg(name, s.found == s.foreground
-                                          ? QStringLiteral(" (its foreground "
-                                                           "window)")
-                                          : QString());
-            }
-        }
-        pid = parent;
-    }
-    CloseHandle(snap);
-    return result;
-}
-
-QScreen *screenOfNativeWindow(HWND hwnd)
-{
-    if (!hwnd)
-        return nullptr;
-    // Ask Windows which MONITOR the window is on and match Qt's screens by
-    // their own monitor handles - no coordinates converted, so differing
-    // scale factors cannot put the answer on the neighbour.
-    const HMONITOR monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONULL);
-    if (!monitor)
-        return nullptr;
-    const QList<QScreen *> screens = QGuiApplication::screens();
-    for (QScreen *s : screens) {
-        const auto *native =
-            s->nativeInterface<QNativeInterface::QWindowsScreen>();
-        if (native && native->handle() == monitor)
-            return s;
-    }
-    return nullptr;
-}
+// THE TEST SCREEN: part of the name of the one screen every gate run uses
+// unless SANKO_TEST_SCREEN says otherwise. The user's Cintiq 22HD - their
+// decision; the Dell beside it is kept free for their other work.
+const char kTestScreen[] = "Cintiq";
 
 struct Choice
 {
@@ -325,15 +261,17 @@ Choice chooseScreen()
         note = QStringLiteral("SANKO_TEST_SCREEN=\"%1\" matches no screen; ")
                    .arg(wanted);
     }
-    QString why;
-    if (QScreen *s = screenOfNativeWindow(launcherWindow(&why))) {
-        c.screen = s;
-        c.why = note + why;
-        return c;
+    for (QScreen *s : screens) {
+        if (s->name().contains(QLatin1String(kTestScreen), Qt::CaseInsensitive)) {
+            c.screen = s;
+            c.why = note + QStringLiteral("the fixed test screen");
+            return c;
+        }
     }
     c.screen = QGuiApplication::primaryScreen();
-    c.why = note + QStringLiteral("no launcher window found, so the primary "
-                                  "screen");
+    c.why = note
+        + QStringLiteral("the test screen \"%1\" is NOT CONNECTED, so the "
+                         "primary screen").arg(QLatin1String(kTestScreen));
     return c;
 }
 
@@ -426,6 +364,128 @@ private:
     int m_elsewhere = 0;
 };
 
+// ---------------------------------------------------------------------------
+// 3. A test window that is minimised, or loses the foreground, is reported
+// ---------------------------------------------------------------------------
+
+// A test's own window, on screen now: a visible root that is not minimised.
+bool rootWindowOnScreen()
+{
+    const QWidgetList tops = QApplication::topLevelWidgets();
+    for (QWidget *w : tops) {
+        if (w->parentWidget() || !w->isVisible() || w->isMinimized()
+            || w->testAttribute(Qt::WA_DontShowOnScreen)
+            || (w->windowType() != Qt::Window && w->windowType() != Qt::Dialog))
+            continue;
+        return true;
+    }
+    return false;
+}
+
+class WindowWatch : public QObject
+{
+public:
+    explicit WindowWatch(QObject *parent)
+        : QObject(parent)
+    {
+        m_clock.start();
+        // THE APPLICATION going inactive, not one window: a family's own
+        // windows and dialogs pass activation among themselves all the
+        // time, and that is nobody's interference. Closing the last window
+        // also makes the application inactive - so it counts only while a
+        // test window is still on screen, which is when something else
+        // took the foreground FROM it.
+        connect(qGuiApp, &QGuiApplication::applicationStateChanged, this,
+                [this](Qt::ApplicationState state) {
+            if (state == Qt::ApplicationActive || !rootWindowOnScreen())
+                return;
+            // ANOTHER PROGRAM'S window, and nothing else. The application
+            // also reads as inactive for a moment whenever activation
+            // passes between two of its OWN windows - the first version of
+            // this reported Lifecycle's own "Preset Images Resized" dialog
+            // as the program that took the foreground. So: whose window is
+            // in front? Ours, or none yet, is not a loss.
+            const HWND front = GetForegroundWindow();
+            DWORD owner = 0;
+            if (front)
+                GetWindowThreadProcessId(front, &owner);
+            if (!front || owner == GetCurrentProcessId())
+                return;
+            wchar_t title[96] = {0};
+            GetWindowTextW(front, title, 96);
+            if (m_lost++ == 0) {
+                m_firstLostMs = m_clock.elapsed();
+                m_firstTaker = QString::fromWCharArray(title);
+            }
+            std::fflush(stdout);
+            std::fprintf(stderr,
+                         "TESTWINDOW: a test window LOST THE FOREGROUND here, "
+                         "%.1f s into the run - another program was activated "
+                         "(\"%ls\"), not by the test\n",
+                         m_clock.elapsed() / 1000.0, title);
+            std::fflush(stderr);
+        });
+    }
+    ~WindowWatch() override
+    {
+        if (m_count > 0) {
+            std::fprintf(stderr,
+                         "TESTWINDOW: a test window was minimised %d time(s) "
+                         "during this run, first %.1f s in. No test does that "
+                         "- someone or something else did - and checks that "
+                         "read the screen or the floating bars can fail for "
+                         "that reason alone.\n",
+                         m_count, m_firstMs / 1000.0);
+        }
+        if (m_lost > 0) {
+            std::fprintf(stderr,
+                         "TESTWINDOW: a test window lost the foreground %d "
+                         "time(s) during this run, first %.1f s in, to \"%ls\". "
+                         "No test does that - someone or something else "
+                         "activated another program - and checks that need "
+                         "the window to keep focus (a pending QuickShape is "
+                         "baked when its canvas loses it) can fail for that "
+                         "reason alone.\n",
+                         m_lost, m_firstLostMs / 1000.0,
+                         reinterpret_cast<const wchar_t *>(m_firstTaker.utf16()));
+        }
+        std::fflush(stderr);
+    }
+
+protected:
+    bool eventFilter(QObject *object, QEvent *event) override
+    {
+        if (event->type() != QEvent::WindowStateChange || !object->isWidgetType())
+            return false;
+        auto *w = static_cast<QWidget *>(object);
+        if (!w->isWindow() || w->parentWidget())
+            return false; // roots only: tool windows follow their parent
+        const auto *change = static_cast<QWindowStateChangeEvent *>(event);
+        if ((w->windowState() & Qt::WindowMinimized)
+            && !(change->oldState() & Qt::WindowMinimized)) {
+            if (m_count++ == 0)
+                m_firstMs = m_clock.elapsed();
+            // Said HERE as well, so the log shows which checks it sits
+            // between (stdout is flushed after every check).
+            std::fflush(stdout);
+            std::fprintf(stderr,
+                         "TESTWINDOW: a test window was MINIMISED here, "
+                         "%.1f s into the run - not by the test\n",
+                         m_clock.elapsed() / 1000.0);
+            std::fflush(stderr);
+        }
+        return false; // observe only
+    }
+
+private:
+    QElapsedTimer m_clock;
+    int m_count = 0; // minimised
+    qint64 m_firstMs = 0;
+    int m_lost = 0; // lost the foreground to another program
+    qint64 m_firstLostMs = 0;
+    QString m_firstTaker;
+};
+
 #endif // QT_WIDGETS_LIB
 
 void applicationCreated()
@@ -434,6 +494,9 @@ void applicationCreated()
 #ifdef QT_WIDGETS_LIB
     if (!qobject_cast<QApplication *>(QCoreApplication::instance()))
         return; // no widgets in this run, so no windows to place
+    // Whatever screen is chosen, and also when none is ("cursor").
+    QCoreApplication::instance()->installEventFilter(
+        new WindowWatch(QCoreApplication::instance()));
     const Choice choice = chooseScreen();
     if (!choice.screen) {
         std::fprintf(stderr, "TESTSCREEN: not pinned - windows follow the "

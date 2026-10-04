@@ -5075,9 +5075,18 @@ whose sources are never staged. A NEW FAMILY MUST BE ADDED TO THAT LIST.
    visible, so the move is never seen - keeping its offset within the
    screen. A window already on the target is not touched. Dialogs and
    tool windows follow their parent.
+   (THE RULE CHANGED ON 2026-10-04 - see "THE GATE'S SCREEN RULE,
+   CORRECTED" further down. The launcher's-screen default described here
+   is GONE: every run uses the Cintiq, the fixed test screen.)
    CAN A PROCESS FIND ITS LAUNCHER? Three cases, two now measured:
-   - From Claude: MEASURED. No console window; the parent walk reaches
-     the Claude window.
+   - From Claude: MEASURED, AND THIS LINE USED TO OVERSTATE IT. A test
+     launched DIRECTLY from a tool call finds the Claude window through
+     the parent walk (the log names claude.exe). THE GATE DID NOT, from
+     the first day until the 2026-10-04 fix: it is launched through a
+     bash script that runs a bash script, the chain of parents ends at a
+     process that no longer exists, and every gate run fell through to
+     the PRIMARY screen. The claim here was written from the direct
+     launches and was never true of the gate.
    - From a classic Windows PowerShell console, outside Claude: MEASURED
      BY THE USER, 2026-10-02. run-gate.ps1 from a fresh Start-menu
      Windows PowerShell with no setup, Release, all eight families exit
@@ -5818,6 +5827,174 @@ exports in 47 s (619 frames/s) with the process's peak memory rising 80 MB
 its delay-load table (dumpbin /imports).
 Probes archived: tests/_backups/export_probe_* (recorder, quality, sample,
 audio, mf; each run in Debug and Release).
+
+## THE GATE'S SCREEN RULE, CORRECTED - and the day the probes used the user's screens (2026-10-04)
+
+WHAT HAPPENED. The user ran the gate outside Claude. Debug was green;
+Release failed two families with the test windows on the Cintiq, the same
+screen as their console: the edge family "no undisturbed capture in 10
+attempts" on six checks, Lifecycle three (q) checks. A hands-off Release
+re-run with -Screen DELL passed all eight. The failing logs were gone -
+run-gate.ps1 overwrote them in place - so the cause was never read from
+them.
+
+(q) DOES NOT DEPEND ON ACTIVATION OR ON WHAT IS ON TOP. The test sends the
+modal's open / close events itself and reads intents and isVisible(); it
+never activates a window and never reads a pixel. The code under it
+reacts to the host window being shown, hidden or MINIMISED, and to a modal
+opening - nothing else. Measured: Lifecycle passed twice on the Cintiq
+launched from a console that was not the foreground window. What does
+break it is the test window's own state: a minimised main window hides the
+bars and the studio by design (applyEffectiveVisibility: hostAllows), and
+the studio's holder releases its suppression. THAT IS FROM READING THE
+CODE; it was not measured. A minimised window is also the edge family's
+signature exactly - the watcher probe logged one: not exposed, the grab
+black. One event explains both families. Whether it is what happened in
+the user's run is NOT KNOWN.
+
+THE PROBES USED THE USER'S SCREENS WHILE THEY WERE WORKING. To reproduce,
+GUI families and a watcher were run - during a "report, do not fix"
+investigation, without asking. The watcher's own log shows Explorer and
+Photos taking the foreground, and a test-style window taking it BACK
+within 160 ms each time (the edge family's raise + activate loop does the
+same), and two windows being minimised. So the one "reproduction" (45 of
+74 edge checks, from a console on the Cintiq) proves nothing: a person's
+clicks were in it. CLAUDE.md hard rule 14 is the result: nothing opens a
+window or takes the foreground on the user's desktop without asking first
+and waiting. A measurement taken on a machine someone is using is not a
+measurement.
+(A probe mistake worth keeping: the stand-in console was first "placed on
+the Cintiq" at x = -1750. The Cintiq is the PRIMARY screen at 0,0; the
+Dell is the one at negative x. The harness's TESTSCREEN line said DELL,
+which is how it was caught. Ask Windows where a window is; do not assume
+which monitor is on the left.)
+
+TWO TRUE STATEMENTS THAT LOOKED LIKE A CONTRADICTION. The pinning report
+said that from Claude the harness finds the Claude window by walking
+parent processes; a later report said no launcher is found and the
+primary screen is used. Both were measured, and both logs exist from the
+first day (2026-10-02: direct runs at 18:25 name claude.exe, the gate at
+19:21 says "no launcher window found"). The difference is HOW THE TEST IS
+LAUNCHED, not when:
+- directly from a tool call: test <- bash <- bash <- bash <- claude.exe
+  <- claude.exe (the one with the window). Found at depth 5.
+- through the gate's scripts (prove.sh / fullgate.sh run gate.sh with
+  bash): the third parent up is a process that no longer exists - Git
+  Bash replaces the process when one script runs another - so the walk
+  ends without a window. Measured with a script that walks the chain and
+  opens nothing (tests/_backups/screen_probe_chain_20261004*).
+Background versus foreground launch is NOT the cause (measured: a direct
+background call still reaches Claude). Nobody noticed because Claude's
+window is on the Cintiq and the Cintiq is the primary screen: both routes
+gave the same screen. Each report generalised from one kind of launch.
+
+THE RULE NOW (tests/TestHarness.cpp) - THE USER'S DECISION, AND SIMPLER
+THAN EVERYTHING TRIED BEFORE IT:
+1. SANKO_TEST_SCREEN (or run-gate.ps1 -Screen), as before.
+2. THE CINTIQ 22HD - a fixed default (kTestScreen, matched by name) for
+   every run, the user's from PowerShell and Claude's from inside the
+   app. The Dell is kept free for the user's other work: RUN THE TESTS ON
+   THE CINTIQ ONLY.
+3. The primary screen when the Cintiq is not connected - and the
+   TESTSCREEN line says so in those words.
+There is nothing left to detect. The launcher's-screen logic (console
+window, parent-process walk) is DELETED. Two replacements were built on
+the way and removed the same day at the user's word, so nobody rebuilds
+them: "a screen the console is not on" for a visible console, and
+"Claude's window by process name" for when the parent walk fails. Both
+tried to guess where the person was not; a named screen does not guess.
+
+run-gate.ps1 GETS ITS OWN CONSOLE OUT OF THE WAY. The user keeps their
+PowerShell window on the Cintiq too, and the earlier failures came with
+console and test windows sharing a screen. The script minimises its
+console when the tests start (SW_SHOWMINNOACTIVE - nothing else is
+activated) and restores it in a finally, so it returns after a failure
+and after Ctrl+C. Only a CLASSIC console can do this: under Windows
+Terminal the console window is a hidden stand-in with no window of its
+own, the script says so in one line and does nothing - keep such a
+terminal off the test screen by hand.
+
+ALSO NEW:
+- A MINIMISED TEST WINDOW IS REPORTED. No test minimises a window. The
+  harness prints "TESTWINDOW: a test window was MINIMISED here" where it
+  happens and a count at exit, and run-gate.ps1 puts that line first in a
+  failing family's reasons - so this kind of failure names its own cause.
+- run-gate.ps1 KEEPS THE RUN BEFORE: whatever is in %TEMP%\sanko_gate
+  moves to runs\<time of its newest log>\ before a run starts; the ten
+  newest are kept. The current run's logs stay where they always were.
+- CLAUDE.md RULE 14, as the user finally set it: in a report-only
+  investigation nothing opens a window or takes the foreground without
+  asking first; the GATE needs no asking, because its windows stay on the
+  Cintiq.
+
+MEASURED AFTER THE CHANGE (2026-10-04, tests/_backups/screen_probe_*):
+- Every family's log reads: TESTSCREEN: test windows open on "Cintiq
+  22HD" (the fixed test screen) - from Claude through the gate scripts,
+  and from run-gate.ps1 in a visible classic console.
+- run-gate.ps1 from a classic console placed on the Cintiq: the console
+  minimised two seconds after start and was back when the script ended
+  (watched from a second, hidden process); all eight Release families
+  passed with it minimised; the two stand-in logs of "the run before"
+  were found under runs\<stamp>\. NOT TESTED: Ctrl+C part-way (the
+  restore is in a finally), and Windows Terminal (nothing to minimise).
+- The minimise and lost-foreground lines, from a window with the harness
+  linked in that minimises itself and then gives the foreground to the
+  desktop, Debug and Release: one line at each event, in sequence with
+  the checks around it, naming what took the foreground ("Program
+  Manager"), and the counts at exit. A minimise does not also count as
+  losing the foreground.
+- NOT EXERCISED: the Cintiq-not-connected branch (it is connected).
+- The gate itself, with the user's SankoTV open and the machine in use:
+  Debug eight of eight. Release seven of eight - see next.
+- THE CLEAN GATE, WITH THE MACHINE LEFT ALONE (the user closed SankoTV and
+  stepped away): eight of eight in Debug and in Release after clean
+  builds, every window on the Cintiq, and NOT ONE TESTWINDOW line in any
+  of the sixteen logs. (The first clean gate also passed sixteen of
+  sixteen but printed three lost-foreground lines naming the tests' own
+  dialogs; the line was corrected - see the open item below - and the
+  gate run again.)
+
+OPEN ITEM FOR THE SESSION THAT OWNS tests/QuickShapeGeometryLockTest.cpp
+(the user's other session; this one must not edit that file):
+THE QUICKSHAPE FAMILY DEPENDS ON ITS WINDOW KEEPING FOCUS.
+- SEEN: in the Release gate above SankoQuickShapeGeometryLock failed 14
+  checks ("button '3' missing" - the Edit Shape buttons gone part-way,
+  the family taking 63 s instead of 4); re-run three times it passed,
+  passed, then failed 9, the first with "Polygon 8 -> Triangle: node
+  count 0 != 3". The break is at a different check each time. Debug
+  passed; run-gate.ps1's Release run minutes later passed.
+  (tests/_backups/screen_probe_quickshape_failure_20261004.txt)
+- MECHANISM, read from the product: DrawingCanvas::focusOutEvent BAKES a
+  ready QuickShape when the canvas loses focus ("if
+  (m_quickShape.hasActiveShape()) commitQuickShape();"). That is right
+  for an artist who clicks away. Under the gate it means one click in any
+  other window while this family runs ends the pending shape, and every
+  later check that looks for an Edit Shape button fails.
+- SO: a gate check that depends on which window is active - what
+  CLAUDE.md forbids - and it has been there all along. It showed on
+  2026-10-04 because the machine was in use during the run.
+- NOT PROVEN: that a click is what happened in those runs. Nothing logged
+  focus then.
+- WHAT THIS SESSION DID, at the user's decision: the harness now SAYS SO.
+  When another program is activated while a test window is on screen it
+  prints "TESTWINDOW: a test window LOST THE FOREGROUND here ... (\"the
+  window that took it\")" at that point in the log, and a count at exit;
+  run-gate.ps1 shows the line first among a failing family's reasons. A
+  failure of this kind now names its cause. It does not prevent it.
+- FOR THE OWNER TO DECIDE: whether the test should shield itself the way
+  Lifecycle's key-routing checks were shielded from the real pointer
+  (a test seam on the canvas, or driving the shape session without
+  relying on focus), or whether the line is enough.
+(WHAT THE LINE COUNTS, each part learned: the APPLICATION going inactive -
+not one window deactivating, a family's own windows pass activation among
+themselves constantly; while a root test window is visible and not
+minimised - closing the last window also makes the application inactive;
+and with the window now in front belonging to ANOTHER PROCESS. That last
+part was added after the first clean gate: with nobody at the machine,
+Lifecycle logged one loss, to "Preset Images Resized" - its own modal. The
+application reads as inactive for a moment whenever activation passes
+between two of its own windows. A reporting line that cries wolf in a
+quiet run is worse than none.)
 
 ## METHOD: measure interior structure ACROSS THE SIZE RANGE before calling it character (2026-09-25)
 

@@ -269,6 +269,23 @@ Learned from real defects. Follow them exactly.
     flag it, not decide it. Findings are research, not legal advice.
     HANDOFF "BEFORE SELLING" is the list of open items; **no item there
     is marked done without the user's word.**
+14. **During a report-only investigation, nothing opens a window or takes
+    the foreground on the user's desktop without asking first and waiting
+    for their go-ahead.** Permission to investigate is not permission to
+    use their screens: a probe that shows a window, a console or a dialog,
+    a single test, the app itself — say what will run, on which screen and
+    for roughly how long, then WAIT. It happened on 2026-10-04: probes for
+    a report opened windows over the user's work and one re-took the
+    foreground from Explorer and Photos every time they clicked away
+    (measured, 160 ms) — and the "reproduction" it produced was worthless,
+    because their own clicks were in it. Reading logs, walking process
+    lists and building do not need to ask.
+    **THE GATE NEEDS NO ASKING** (the user's decision, same day): every
+    test window opens on the Cintiq 22HD, the fixed test screen
+    (`tests/TestHarness.cpp`), and the Dell is theirs. So keep it that
+    way — run the tests on the Cintiq ONLY, never pass a
+    `SANKO_TEST_SCREEN` that sends them elsewhere, and put any probe that
+    must show a window there too.
 
 ## Finding bugs
 
