@@ -5946,6 +5946,14 @@ MEASURED AFTER THE CHANGE (2026-10-04, tests/_backups/screen_probe_*):
 - NOT EXERCISED: the Cintiq-not-connected branch (it is connected).
 - The gate itself, with the user's SankoTV open and the machine in use:
   Debug eight of eight. Release seven of eight - see next.
+- THE USER'S OWN RUN, MEASURED BY THEM (2026-10-04, after 5d970c6da):
+  tools\run-gate.ps1 from a Start-menu PowerShell window on the Cintiq.
+  All sixteen passed - eight families in Release and in Debug; the
+  TESTSCREEN line read "Cintiq 22HD" as the fixed test screen; GUARDING
+  said their REAL settings store; the console minimised itself and came
+  back; and the previous run was kept under runs\. This is the outside
+  run the earlier measurements could only stand in for (those wrote to a
+  scratch folder and guarded a private copy of the store).
 - THE CLEAN GATE, WITH THE MACHINE LEFT ALONE (the user closed SankoTV and
   stepped away): eight of eight in Debug and in Release after clean
   builds, every window on the Cintiq, and NOT ONE TESTWINDOW line in any
