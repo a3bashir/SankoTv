@@ -76,6 +76,8 @@
 #include <QDockWidget>
 #include <QEnterEvent>
 #include <QMainWindow>
+#include <QAudioDevice>
+#include <QMediaDevices>
 #include <QMenu>
 #include <QShortcut>
 #include <QSplitter>
@@ -8093,6 +8095,267 @@ void runAudioTravelsPass(const QString &scratch)
     }
 }
 
+// ---- (ar) a track that cannot be heard says why -----------------------------
+// 2026-10-05: the user imported a WAV and heard nothing. The file was fine.
+// SankoTV had been started before the speaker was connected, and Qt's audio
+// output keeps the device that was the system default when it was made - so
+// the film played, "successfully", into a device nobody could hear, and
+// nothing anywhere said so. Looking for it turned up the other silences: a
+// file the player cannot open was accepted at import and then sat on the
+// track with its name and no bar, for ever. Silence with no explanation is
+// the failure; each of these now says what it is.
+void runAudioSaysWhyPass(const QString &scratch)
+{
+    using namespace travel;
+    using audio::editAction;
+    using audio::owned;
+    using audio::sameFile;
+    using audio::waitFor;
+    using audio::writeWav;
+    out() << "--- (ar) a track that cannot be heard says why: files that "
+             "cannot be read, and where the sound goes ---" << Qt::endl;
+    const QString base = scratch + QStringLiteral("/saywhy");
+    QDir(base).removeRecursively();
+    const QString good = base + QStringLiteral("/source/good.wav");
+    const QString other = base + QStringLiteral("/source/second.wav");
+    const QString notAudio = base + QStringLiteral("/source/not_audio.wav");
+    const QString empty = base + QStringLiteral("/source/empty.wav");
+    const QString project = writeProject(base + QStringLiteral("/p"),
+                                         QStringLiteral("Say"), QSize(960, 540),
+                                         24, 1, 2);
+    bool wroteJunk = false;
+    {
+        QDir().mkpath(QFileInfo(notAudio).absolutePath());
+        QFile f(notAudio);
+        wroteJunk = f.open(QIODevice::WriteOnly)
+            && f.write(QByteArray(4096, 'x')) == 4096;
+    }
+    check(QStringLiteral("(ar) fixture: a project, two real WAVs, a file "
+                         "named .wav that is not audio, and a WAV with a "
+                         "correct header and no sound in it"),
+          QFileInfo::exists(project) && writeWav(good, 3.0) && writeWav(other, 2.0)
+              && wroteJunk && writeWav(empty, 0.0));
+    const QString ownGood = owned(project, QStringLiteral("good.wav"));
+    {
+        Rig r(project);
+        check(QStringLiteral("(ar) the workspace opened"), r.ok);
+        if (!r.ok)
+            return;
+        QUndoStack *undo = r.window.undoStackForTest();
+        {
+            Warnings warnings;
+            pick(r, QStringLiteral("Import Audio..."), notAudio);
+            check(QStringLiteral("(ar) A FILE THAT IS NOT AUDIO IS REFUSED AT "
+                                 "IMPORT, in words: it names the file, says "
+                                 "it was NOT imported and why - and nothing "
+                                 "was copied, no track, no command, not "
+                                 "unsaved"),
+                  warnings.texts.size() == 1
+                      && warnings.texts.value(0).contains(
+                             QStringLiteral("cannot read this file as audio"))
+                      && warnings.texts.value(0).contains(QStringLiteral("NOT imported"))
+                      && warnings.texts.value(0).contains(QStringLiteral("not_audio.wav"))
+                      && r.animatic->audioPath().isEmpty() && undo->count() == 0
+                      && !r.window.isDirty() && media(project).isEmpty(),
+                  warnings.texts.join(QStringLiteral(" / ")).simplified().left(260));
+        }
+        {
+            Warnings warnings;
+            pick(r, QStringLiteral("Import Audio..."), empty);
+            check(QStringLiteral("(ar) so is a WAV with nothing in it: "
+                                 "refused, by name, with a reason"),
+                  warnings.texts.size() == 1
+                      && warnings.texts.value(0).contains(QStringLiteral("NOT imported"))
+                      && warnings.texts.value(0).contains(QStringLiteral("empty.wav"))
+                      && r.animatic->audioPath().isEmpty() && undo->count() == 0
+                      && media(project).isEmpty(),
+                  warnings.texts.join(QStringLiteral(" / ")).simplified().left(260));
+        }
+        {
+            Warnings warnings;
+            pick(r, QStringLiteral("Import Audio..."), good);
+            check(QStringLiteral("(ar) control: a real WAV is imported, "
+                                 "without a word, and is not marked as "
+                                 "anything"),
+                  warnings.texts.isEmpty() && present(r)
+                      && sameFile(r.animatic->audioPath(), ownGood)
+                      && !r.animatic->audioUnplayable()
+                      && r.animatic->audioLabelTextForTest()
+                             == QStringLiteral("good.wav"),
+                  r.animatic->audioLabelTextForTest());
+        }
+        check(QStringLiteral("(ar) fixture: saved with that track"),
+              r.window.saveProjectForTest(project));
+    }
+
+    // ---- a track whose file is there and cannot be played ------------------------
+    // What an old project can hold, or what a file becomes when something
+    // else overwrites it: the project names it, it exists, it is not audio.
+    {
+        QFile f(ownGood);
+        check(QStringLiteral("(ar) fixture: the project's audio file is "
+                             "overwritten with something that is not audio"),
+              f.open(QIODevice::WriteOnly | QIODevice::Truncate)
+                  && f.write(QByteArray(4096, 'x')) == 4096);
+    }
+    {
+        Rig r(project);
+        if (!r.ok) {
+            check(QStringLiteral("(ar) the project re-opens"), false);
+            return;
+        }
+        QUndoStack *undo = r.window.undoStackForTest();
+        const bool noticed = waitFor([&] { return r.animatic->audioUnplayable(); });
+        check(QStringLiteral("(ar) A TRACK THAT CANNOT BE PLAYED SAYS SO: the "
+                             "project opens clean, still naming the file; "
+                             "the bar reads CANNOT BE PLAYED with its name "
+                             "(it used to show the name and no bar, for "
+                             "ever), and the header label says it too"),
+              noticed && !r.window.isDirty() && !r.animatic->audioMissing()
+                  && sameFile(r.animatic->audioPath(), ownGood)
+                  && r.timeline->audioBarStateForTest() == QStringLiteral("unplayable")
+                  && r.timeline->audioBarTextForTest().contains(
+                         QStringLiteral("CANNOT BE PLAYED"))
+                  && r.timeline->audioBarTextForTest().contains(QStringLiteral("good.wav"))
+                  && r.animatic->audioLabelTextForTest()
+                         == QString::fromUtf8("good.wav \xE2\x80\x94 cannot be played"),
+              r.timeline->audioBarStateForTest() + QStringLiteral(": ")
+                  + r.timeline->audioBarTextForTest() + QStringLiteral(" / ")
+                  + r.animatic->audioLabelTextForTest());
+        check(QStringLiteral("(ar) ...with the player's reason and the "
+                             "file's place in the label's tooltip"),
+              !r.animatic->audioProblem().isEmpty()
+                  && r.animatic->audioLabelToolTipForTest().contains(
+                         r.animatic->audioProblem())
+                  && r.animatic->audioLabelToolTipForTest().contains(
+                         QStringLiteral("good.wav")),
+              r.animatic->audioProblem());
+        r.animatic->togglePlay();
+        pump(150);
+        r.animatic->advanceForTest();
+        pump(100);
+        check(QStringLiteral("(ar) the film plays, without sound, and the "
+                             "audio player is not asked to play it"),
+              r.animatic->isPlaying() && !r.animatic->audioPlayingForTest());
+        r.animatic->leavePreview();
+        r.animatic->setPanelDurationForTest(0, 0, 4);
+        pump(200);
+        const bool saved = r.window.saveProjectForTest(project);
+        const QString named = manifestAudio(project);
+        check(QStringLiteral("(ar) it is a display state, not a rewrite: a "
+                             "save still names the file"),
+              saved && named == QStringLiteral("Say_assets/good.wav"), named);
+        pick(r, QStringLiteral("Import Audio..."), other);
+        const bool replaced = present(r) && !r.animatic->audioUnplayable()
+            && r.animatic->audioLabelTextForTest() == QStringLiteral("second.wav");
+        undo->undo();
+        pump(250);
+        const bool again = waitFor([&] { return r.animatic->audioUnplayable(); });
+        check(QStringLiteral("(ar) importing a file that plays clears it; "
+                             "undo returns to the track that cannot be "
+                             "played, and it says so again"),
+              replaced && again
+                  && r.timeline->audioBarStateForTest() == QStringLiteral("unplayable"),
+              r.timeline->audioBarTextForTest());
+        undo->redo();
+        pump(250);
+
+        // ---- WHERE THE SOUND GOES ------------------------------------------------
+        // The gate cannot change this machine's default audio device, so it
+        // answers "what is the default now?" in the system's place
+        // (setDefaultAudioOutputForTest) - with real devices of this
+        // machine, or with none. What the app does with the answer is the
+        // real path.
+        const bool playable = present(r);
+        const QAudioDevice real = QMediaDevices::defaultAudioOutput();
+        const QList<QAudioDevice> outputs = QMediaDevices::audioOutputs();
+        if (!real.isNull()) {
+            check(QStringLiteral("(ar) the volume slider's tooltip names the "
+                                 "device the sound goes to - the system's "
+                                 "default"),
+                  playable && !r.animatic->noAudioOutput()
+                      && r.animatic->audioOutputName() == real.description()
+                      && r.animatic->volumeToolTipForTest().contains(
+                             QStringLiteral("Playing through: ") + real.description()),
+                  r.animatic->volumeToolTipForTest().simplified());
+        } else {
+            out() << "  NOTE (ar) this machine has no audio output device: the "
+                     "checks that name a device were not run" << Qt::endl;
+        }
+        r.animatic->setDefaultAudioOutputForTest([] { return QAudioDevice(); });
+        r.animatic->syncAudioOutputForTest();
+        pump(100);
+        const QString noOutputLabel = r.animatic->audioLabelTextForTest();
+        r.animatic->togglePlay();
+        pump(150);
+        const bool filmPlays = r.animatic->isPlaying();
+        r.animatic->leavePreview();
+        check(QStringLiteral("(ar) NO OUTPUT DEVICE AT ALL is said on the "
+                             "track: \"second.wav - no audio output\", with "
+                             "what to do in both tooltips - and the film "
+                             "still plays"),
+              r.animatic->noAudioOutput()
+                  && noOutputLabel
+                         == QString::fromUtf8("second.wav \xE2\x80\x94 no audio output")
+                  && r.animatic->audioLabelToolTipForTest().contains(
+                         QStringLiteral("No audio output device"))
+                  && r.animatic->volumeToolTipForTest().contains(
+                         QStringLiteral("No audio output device"))
+                  && filmPlays,
+              noOutputLabel);
+        if (!real.isNull()) {
+            r.animatic->setDefaultAudioOutputForTest([real] { return real; });
+            r.animatic->syncAudioOutputForTest();
+            pump(100);
+            check(QStringLiteral("(ar) a device arriving is taken up: the "
+                                 "label is the plain name again and the "
+                                 "tooltip names the device"),
+                  !r.animatic->noAudioOutput()
+                      && r.animatic->audioLabelTextForTest()
+                             == QStringLiteral("second.wav")
+                      && r.animatic->audioOutputName() == real.description(),
+                  r.animatic->audioLabelTextForTest());
+            QAudioDevice another;
+            for (const QAudioDevice &d : outputs)
+                if (d != real && another.isNull())
+                    another = d;
+            if (!another.isNull()) {
+                r.animatic->setDefaultAudioOutputForTest([another] { return another; });
+                r.animatic->syncAudioOutputForTest();
+                pump(100);
+                const bool followed =
+                    r.animatic->audioOutputName() == another.description()
+                    && r.animatic->volumeToolTipForTest().contains(another.description());
+                // Back to the first - and this time NOBODY REPORTS IT: only
+                // Play asks.
+                r.animatic->setDefaultAudioOutputForTest([real] { return real; });
+                const bool notYet =
+                    r.animatic->audioOutputName() == another.description();
+                r.animatic->togglePlay();
+                pump(200);
+                const bool atPlay = r.animatic->audioOutputName() == real.description();
+                r.animatic->leavePreview();
+                check(QStringLiteral("(ar) THE OUTPUT FOLLOWS THE SYSTEM'S "
+                                     "DEFAULT DEVICE: when the default becomes "
+                                     "another device the app moves to it (Qt "
+                                     "alone stays on the old one - that was "
+                                     "the silence), and a change nobody "
+                                     "reported is still picked up at Play"),
+                      followed && notYet && atPlay,
+                      QStringLiteral("\"%1\" then \"%2\"; followed: %3, picked "
+                                     "up at Play: %4")
+                          .arg(real.description(), another.description())
+                          .arg(followed).arg(atPlay));
+            } else {
+                out() << "  NOTE (ar) only one audio output on this machine: "
+                         "the two-device check was not run" << Qt::endl;
+            }
+        }
+        r.animatic->setDefaultAudioOutputForTest({});
+        r.animatic->syncAudioOutputForTest();
+    }
+}
+
 int main(int argc, char **argv)
 {
 #ifdef Q_OS_WIN
@@ -8309,6 +8572,7 @@ int main(int argc, char **argv)
         runExportFilesPass(film, board, scratch);
     }
     runAudioTravelsPass(scratch);
+    runAudioSaysWhyPass(scratch);
 
     // ---- (aa) a test that cannot start says why and exits ----------------
     // An unattended gate must FAIL, not wait. Measured 2026-10-02: with its

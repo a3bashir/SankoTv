@@ -67,6 +67,9 @@ qt_add_executable(SankoTV
     src/ProjectMedia.h
     src/MediaCopyProgress.cpp
     src/MediaCopyProgress.h
+    # A picked audio file is asked "can you be read?" before it is copied in.
+    src/AudioFileCheck.cpp
+    src/AudioFileCheck.h
     src/NewProjectDialog.h
     src/RecentProjects.cpp
     src/RecentProjects.h
@@ -308,6 +311,8 @@ qt_add_executable(SankoCanvasSizeLock
     src/ProjectMedia.h
     src/MediaCopyProgress.cpp
     src/MediaCopyProgress.h
+    src/AudioFileCheck.cpp
+    src/AudioFileCheck.h
     src/ProjectResize.cpp
     src/ProjectResize.h
     src/DrawingCanvas.cpp

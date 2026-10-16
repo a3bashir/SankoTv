@@ -819,11 +819,12 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
                 p.drawText(QRect(left, bar.rect.top(), nameW, bar.rect.height()),
                            Qt::AlignVCenter | Qt::AlignLeft,
                            fm.elidedText(bar.name, Qt::ElideMiddle, nameW));
-        } else if (bar.state == AudioBar::Missing) {
-            // The project names a file that is not there. Its length is
-            // unknown, so the bar spans the film, HATCHED and outlined in
-            // the warning colour - nothing about it can be mistaken for a
-            // track that will play.
+        } else if (bar.state == AudioBar::Missing
+                   || bar.state == AudioBar::Unplayable) {
+            // The project names a file that is not there - or one that is
+            // there and cannot be played. Its length is unknown, so the bar
+            // spans the film, HATCHED and outlined in the warning colour -
+            // nothing about it can be mistaken for a track that will play.
             QColor line = SankoTheme::kWarning;
             QColor hatch = SankoTheme::kWarning;
             hatch.setAlphaF(0.35);
@@ -932,6 +933,17 @@ AnimaticTimeline::AudioBar AnimaticTimeline::audioBar() const
         bar.rect = QRect(x0, audioTrackY() + 6, qMax(2, x1 - x0), kAudioH - 12);
         return bar;
     }
+    if (m_audioUnplayable) {
+        // The file is there and the player could not open it. This used to
+        // fall through to Loading - the name and no bar, for ever.
+        bar.state = AudioBar::Unplayable;
+        bar.label = QString::fromUtf8("CANNOT BE PLAYED \xE2\x80\x94 %1 \xC2\xB7 "
+                                      "right-click to import another").arg(bar.name);
+        const int x0 = contentXToScreen(0);
+        const int x1 = contentXToScreen(contentWidthPx());
+        bar.rect = QRect(x0, audioTrackY() + 6, qMax(2, x1 - x0), kAudioH - 12);
+        return bar;
+    }
     if (m_audioDurationMs <= 0) {
         bar.state = AudioBar::Loading;
         return bar;
@@ -959,6 +971,7 @@ QString AnimaticTimeline::audioBarStateForTest() const
     case AudioBar::Loading: return QStringLiteral("loading");
     case AudioBar::Present: return QStringLiteral("present");
     case AudioBar::Missing: return QStringLiteral("missing");
+    case AudioBar::Unplayable: return QStringLiteral("unplayable");
     }
     return QString();
 }
@@ -968,10 +981,19 @@ QString AnimaticTimeline::audioBarTextForTest() const
     const AudioBar bar = audioBar();
     if (bar.state == AudioBar::None)
         return bar.hint;
-    if (bar.state == AudioBar::Missing)
+    if (bar.state == AudioBar::Missing || bar.state == AudioBar::Unplayable)
         return bar.label;
     return bar.length.isEmpty() ? bar.name
                                 : bar.name + QStringLiteral(" | ") + bar.length;
+}
+
+void AnimaticTimeline::setAudioUnplayable(bool unplayable)
+{
+    if (m_audioUnplayable == unplayable)
+        return;
+    m_audioUnplayable = unplayable;
+    if (m_canvas)
+        m_canvas->update();
 }
 
 void AnimaticTimeline::setAudioMissing(bool missing)

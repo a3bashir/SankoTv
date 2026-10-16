@@ -6150,6 +6150,140 @@ put back used to "just load, no command"; a linked track now converts when
 located, so it is one command. The no-command case moved to (aq), for a
 track the project owns.
 
+## A track that cannot be heard says why (2026-10-05)
+
+WHAT HAPPENED. The user imported a WAV (24-bit, 48 kHz, stereo, 133.85 s,
+a JUNK chunk before fmt and an iXML chunk after the data) and heard
+nothing. Every audio fixture until then had been 16-bit, so the format was
+the suspect. IT WAS NOT THE FILE: Qt's decoder read all of it, Qt's player
+played it, and Windows' own peak meter for the probe's audio session
+showed its sound arriving at the default device (played at -60 dB).
+
+THE CAUSE, CONFIRMED BY THE USER'S HAND TEST OF THE FIX (their report,
+2026-10-16: with the speaker off at start and turned on afterwards, sound
+came without restarting SankoTV; switching from speaker to headphones
+mid-play followed; the tooltip named the device they heard; a fake .wav
+was refused with nothing copied; their 24-bit WAV imported and played; a
+junk audio file showed CANNOT BE PLAYED): QT'S QAudioOutput TAKES THE SYSTEM DEFAULT
+DEVICE ONCE, WHEN IT IS CONSTRUCTED, AND NEVER FOLLOWS A CHANGE (read in
+qtmultimedia 6.11's qaudiooutput.cpp: the default constructor passes
+QMediaDevices::defaultAudioOutput(), and nothing listens for a change).
+The app made its output at start. That day Windows' audio log shows no
+real output device until 17:19:26 - only two Steam Streaming virtual
+devices and an SPDIF port - and the project folder was created at 17:12,
+so the app was already running; the WAV was imported at 17:18:59, the
+Bluetooth speaker became active 27 seconds later, headphones after that.
+Everything the user could hear arrived after the app had chosen. Measured
+in a probe: bound to a device that is not the default, the player plays,
+its position advances, NO ERROR IS RAISED, and nothing reaches the
+speaker. There is nothing to catch; the app has to look.
+
+BUILT (the user's decisions: items 1-4 of the report; item 5 waits):
+1. THE OUTPUT FOLLOWS THE SYSTEM DEFAULT. AnimaticPage::syncAudioOutput
+   moves the QAudioOutput to QMediaDevices::defaultAudioOutput() whenever
+   it differs - when Qt reports a device change (audioOutputsChanged), when
+   a track is set, AND AT EVERY PLAY, because the cost of being wrong is a
+   silent film with nothing to say why. The volume slider's tooltip names
+   the device in use ("Playing through: ...") - the first question "why
+   can I not hear it" needs answered, and nothing could answer it before.
+2. NO OUTPUT DEVICE AT ALL is said on the track's label, in the warning
+   colour: "name - no audio output" (after "- linked" if it is), with what
+   to do in the tooltips. The film still plays.
+3. A PICKED FILE IS CHECKED BEFORE IT IS COPIED (src/AudioFileCheck, used
+   by Import and Locate): the player must open it with an audio stream and
+   a length, and the export's decoder must produce a first block of sound.
+   Otherwise it is refused in words - the file, that it was NOT imported,
+   and why - and nothing is copied or changed. It used to be accepted.
+4. A TRACK THE PLAYER CANNOT OPEN is a state of its own, like missing: the
+   bar reads "CANNOT BE PLAYED - name", the label "name - cannot be
+   played", the reason is in the tooltip; the path is kept and saved, the
+   film plays without sound, importing a file that plays clears it.
+   Nothing listened for the player's errors before: such a track showed
+   its name and no bar, for ever. Only a file that never became playable
+   counts - an error after it has loaded does not take a working track
+   away.
+
+FORMATS, MEASURED with the app's Qt, both readers, Release and Debug
+(tests/_backups/wavformats_probe_20261005_*): PCM 8 / 16 / 24 / 32-bit,
+float 32 / 64, A-law, mu-law; 8 kHz to 192 kHz; mono, stereo, 5.1;
+WAVE_FORMAT_EXTENSIBLE headers; a JUNK chunk first - ALL READ AND PLAYED
+CORRECTLY. NOT TESTED: mp3 / m4a / aac variants (the user's hand tests
+cover one of each), ADPCM, RF64, files over 4 GB.
+ONE LAYOUT IS READ WRONGLY, AND SILENTLY: 24 VALID BITS IN A 32-BIT
+CONTAINER (WAVE_FORMAT_EXTENSIBLE, wBitsPerSample 32, wValidBitsPerSample
+24). Release decodes garbage with no error; the Debug build of Qt dies in
+the decoder. THE TEST FILE WAS CHECKED (the user's condition before acting
+on it): Windows' own Media Foundation reader describes it as PCM, 32-bit
+container, 24 valid bits, and reads the 2 s tone at the right level - the
+file is correct, and so is a second one with the unused low byte zeroed.
+The reader is at fault, by a deliberate rule: FFmpeg's wavdec.c turns
+"pcm_s24le with a block of 4 bytes a channel and 24 coded bits" into
+PCM_F24LE, and riffdec.c's parse_waveformatex is what sets "24 coded bits"
+from the valid-bits field. ITEM 5 (refuse such files at import) IS NOT
+BUILT - the user's decision: one synthetic file is not enough to refuse
+real recordings. Open until a real file of this layout is seen; no tool
+known to write it has been identified.
+
+NOT COVERED: a file that decodes WRONGLY (the layout above) is not caught
+by the import check - nothing in it can hear. A device that is the
+system's default and makes no sound (a virtual device, as on the day)
+cannot be told from one that does; the tooltip naming it is what there is.
+The gate cannot change the machine's default device: it answers "what is
+the default now?" in the system's place (setDefaultAudioOutputForTest),
+with real devices of the machine or with none. Whether Qt emits
+audioOutputsChanged when ONLY the default changes was not measured, which
+is why Play asks too.
+
+GATE: Lifecycle (ar), 16 checks; 627 -> 643. A file that is not audio and
+a WAV with nothing in it are refused at import by name with a reason; a
+real one is imported without a word; a project whose audio file has been
+overwritten with junk opens clean, says CANNOT BE PLAYED on the bar and
+the label with the reason in the tooltip, plays silently, still names the
+file after a save, is cleared by importing a file that plays, and says so
+again after undo; the slider's tooltip names the default device; no
+device at all is said on the label and the film still plays; a device
+arriving is taken up; and with two real outputs the app follows the
+default to the other and picks up an unreported change at Play. (On a
+machine with fewer than two outputs the last check prints a NOTE and is
+not run.)
+
+TWO SYNC FINDINGS, MEASURED AND NOT FIXED (reported to the user
+2026-10-05; tests/_backups/audiosync_probe_20261005_*). The probe drives
+the app's real AnimaticPage, never shown, with a WAV whose loudness is a
+staircase - second k of the file has its own level - and reads from
+Windows' peak meter which second is reaching the device.
+1. AFTER AN IMPORT, THE SOUND STARTS FROM THE BEGINNING OF THE FILE, NOT
+   FROM THE PLAYHEAD. applyAudioPath sets the file and seeks in the same
+   breath, and Qt drops a seek asked before the file has loaded. With the
+   playhead on panel 5 (12 s in), Play gave the file's second 1 - twelve
+   seconds out of step - and the sound began 1.0 to 1.5 s after Play. The
+   same path runs for undo, redo and after a Save As. Selecting any panel
+   afterwards puts it right. Every other sequence measured was in step:
+   opening a project and selecting a panel, pause and resume, selecting a
+   panel while playing, the end of the film, scrubbing.
+2. SOMETIMES THE SOUND STARTS LATE. Normally it reaches Windows 20 to
+   115 ms after Play. Four times across the probe runs, on the Bluetooth
+   speaker, it took 0.65 to 0.9 s - twice on the first playback of a
+   process, twice after 20 s of silence - and did not after 5 s or 45 s,
+   nor in a third run at 20 s, nor on a virtual device. The film's clock
+   starts at Play and does not wait, so the picture leads by that much
+   for that playback. Cause not established. (A Bluetooth speaker's own
+   delay comes on top and was not measured.)
+FOUND WHILE MEASURING THOSE TWO, the same kind of defect, also not fixed:
+3. PAUSE IN THE MIDDLE OF A PANEL, THEN PLAY: the picture starts that
+   panel's time again from zero (play() re-arms the full duration) and the
+   sound carries on from where it paused. Paused 1.2 s into a panel, the
+   sound was 1.2 s AHEAD of the picture at the next panel and stayed so.
+4. THE 0.5x AND 2x SPEEDS CHANGE THE PICTURE ONLY: the audio player's rate
+   is never set. At 2x the sound fell 1.5 s further behind with every 3 s
+   panel.
+5. OVER A WHOLE PLAYBACK WITH NOTHING TOUCHED the two stay together: the
+   sound trails by whatever the start delay was (0.1 s and 0.36 s in the
+   two runs) and that gap held to within the player's own 85 ms position
+   steps across eight panels. There is no drift worth the name; there is
+   no mechanism that would correct one either - each panel is a timer, and
+   nothing compares the film's clock with the player's.
+
 ## METHOD: measure interior structure ACROSS THE SIZE RANGE before calling it character (2026-09-25)
 
 The Painting census measured Acrylic at size 20 only and found "one

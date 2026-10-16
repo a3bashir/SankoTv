@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QAudioDevice>
 #include <QPoint>
 #include <QPointer>
 #include <QString>
@@ -14,6 +15,7 @@ class PanelDisplay;
 class QAudioOutput;
 class QHBoxLayout;
 class QLabel;
+class QMediaDevices;
 class QMediaPlayer;
 class QPushButton;
 class QSlider;
@@ -95,6 +97,22 @@ public:
     bool audioLinked() const { return m_audioLinked; }
     void setAudioPath(const QString &path, bool linked = false); // silent: a load is not an edit
     bool audioMissing() const { return m_audioMissing; }
+    // The file is THERE and the player cannot play it (it could not be
+    // opened as audio). Like missing, a display state: the track is kept
+    // and saved, shown in the warning colour with the reason, and the film
+    // plays without sound. audioProblem() is why, in the player's words.
+    bool audioUnplayable() const { return m_audioUnplayable; }
+    QString audioProblem() const { return m_audioProblem; }
+    // WHERE THE SOUND GOES. Qt's QAudioOutput takes the system's default
+    // device once, when it is made, and keeps it: started before the
+    // speaker was connected, the app played into a device nobody could hear,
+    // with no error anywhere (measured 2026-10-05). So the output FOLLOWS
+    // the system default - when Windows reports a device change, and again
+    // at every Play. noAudioOutput() = Windows has nothing to play through,
+    // which the track says; audioOutputName() names the device in use (the
+    // volume slider's tooltip shows it).
+    bool noAudioOutput() const { return m_noAudioOutput; }
+    QString audioOutputName() const;
     // The project's file, empty while it has none: what decides where an
     // imported file is copied to, and where the Locate dialog starts when
     // the stored path's own folder is gone.
@@ -162,6 +180,17 @@ public:
     qint64 audioPositionForTest() const;
     bool audioPlayingForTest() const;
     QString audioLabelTextForTest() const; // the header's track label
+    QString audioLabelToolTipForTest() const;
+    QString volumeToolTipForTest() const;
+    // The gate cannot change the machine's default audio device: this
+    // answers "what is the default output now?" in the system's place, and
+    // syncAudioOutputForTest is what a device-change report from Windows
+    // runs. Everything after the question is the real path.
+    void setDefaultAudioOutputForTest(std::function<QAudioDevice()> provider)
+    {
+        m_defaultOutputForTest = std::move(provider);
+    }
+    void syncAudioOutputForTest() { syncAudioOutput(); }
     // The file dialog cannot run under a test: this answers in its place.
     // Everything after the dialog is the real path.
     void setAudioPickerForTest(std::function<QString()> picker)
@@ -216,6 +245,11 @@ private:
     // cannot). False = nothing to request: failed, or cancelled.
     bool adoptIntoProject(const QString &picked, const QString &title,
                           QString *file);
+    // Can a picked file be read as audio at all (AudioFileCheck)? Says why
+    // not, and returns false: nothing is copied, nothing is requested.
+    bool readableAsAudio(const QString &picked, const QString &title);
+    void syncAudioOutput();                      // follow the system default
+    void onPlayerProblem(const QString &reason); // the player could not open it
     void showAudioMenu(const QPoint &globalPos);
     void updateAudioUi();
     bool hasAudio() const;
@@ -264,6 +298,11 @@ private:
     QString m_audioPath;          // what the project says
     bool m_audioLinked = false;   // ...as an old project's outside file
     bool m_audioMissing = false;  // ...and its file is not there
+    bool m_audioUnplayable = false; // ...or is there and cannot be played
+    QString m_audioProblem;         // ......and why
+    bool m_noAudioOutput = false; // the system has no output device
+    QMediaDevices *m_mediaDevices = nullptr;
+    std::function<QAudioDevice()> m_defaultOutputForTest;
     QString m_projectFile;        // empty: the project has no file yet
     QLabel *m_audioLabel = nullptr;
     std::function<QString()> m_audioPickerForTest;

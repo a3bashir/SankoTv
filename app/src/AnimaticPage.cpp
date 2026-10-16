@@ -2,6 +2,7 @@
 #include "SankoTheme.h"
 
 #include "AnimaticTimeline.h"
+#include "AudioFileCheck.h"
 #include "MediaCopyProgress.h"
 #include "ProjectMedia.h"
 #include "StoryboardModel.h"
@@ -23,6 +24,7 @@
 #include <QHBoxLayout>
 #include <QImage>
 #include <QLabel>
+#include <QMediaDevices>
 #include <QMediaPlayer>
 #include <QMenu>
 #include <QMessageBox>
@@ -210,6 +212,23 @@ AnimaticPage::AnimaticPage(QWidget *parent)
         if (m_timeline)
             m_timeline->setAudioLoaded(!m_audioPath.isEmpty(), d);
     });
+    // A FILE THE PLAYER CANNOT OPEN. Nothing listened for this: the track
+    // showed its name with no bar, for ever, and played nothing. Both
+    // signals are needed - the status is how "invalid" arrives, the error
+    // is where the reason is.
+    connect(m_player, &QMediaPlayer::errorOccurred, this,
+            [this](QMediaPlayer::Error, const QString &text) { onPlayerProblem(text); });
+    connect(m_player, &QMediaPlayer::mediaStatusChanged, this,
+            [this](QMediaPlayer::MediaStatus status) {
+                if (status == QMediaPlayer::InvalidMedia)
+                    onPlayerProblem(m_player->errorString());
+            });
+    // THE OUTPUT FOLLOWS THE SYSTEM DEFAULT (see audioOutputName in the
+    // header for why). Windows reports a device arriving, leaving or
+    // becoming the default through this signal.
+    m_mediaDevices = new QMediaDevices(this);
+    connect(m_mediaDevices, &QMediaDevices::audioOutputsChanged, this,
+            [this] { syncAudioOutput(); });
 
     QVBoxLayout *root = new QVBoxLayout(this);
     root->setContentsMargins(0, 0, 0, 0);
@@ -237,6 +256,9 @@ AnimaticPage::AnimaticPage(QWidget *parent)
         if (qobject_cast<QAbstractButton *>(w)
             || qobject_cast<QAbstractSlider *>(w))
             w->setFocusPolicy(Qt::NoFocus);
+
+    syncAudioOutput();
+    updateAudioUi(); // the device in use, named in the slider's tooltip
 }
 
 AnimaticPage::~AnimaticPage()
@@ -360,6 +382,16 @@ QString AnimaticPage::audioLabelTextForTest() const
 {
     return m_audioLabel && !m_audioLabel->isHidden() ? m_audioLabel->text()
                                                      : QString();
+}
+
+QString AnimaticPage::audioLabelToolTipForTest() const
+{
+    return m_audioLabel ? m_audioLabel->toolTip() : QString();
+}
+
+QString AnimaticPage::volumeToolTipForTest() const
+{
+    return m_volumeSlider ? m_volumeSlider->toolTip() : QString();
 }
 
 QWidget *AnimaticPage::previewSurface() const
@@ -893,6 +925,10 @@ void AnimaticPage::play()
         m_playheadTimer->start();
     if (m_timeline)
         m_timeline->setPlaying(true);
+    // Asked again at every Play, not only when Windows reports a change:
+    // the cost of being wrong is a film that plays in silence with nothing
+    // to say why.
+    syncAudioOutput();
     if (hasAudio())
         m_player->play(); // resumes from current position
 }
@@ -1080,7 +1116,66 @@ bool samePath(const QString &a, const QString &b)
 // (The project naming one is audioPath(); see installAudio.)
 bool AnimaticPage::hasAudio() const
 {
-    return m_player && !m_audioPath.isEmpty() && !m_audioMissing;
+    return m_player && !m_audioPath.isEmpty() && !m_audioMissing
+        && !m_audioUnplayable;
+}
+
+// --- Where the sound goes -------------------------------------------------
+
+QString AnimaticPage::audioOutputName() const
+{
+    return m_noAudioOutput || !m_audioOutput ? QString()
+                                             : m_audioOutput->device().description();
+}
+
+// Put the output on the system's default device, whatever that is NOW.
+// QAudioOutput does not do this itself: it takes the default when it is
+// constructed and keeps it, so an app started before the speaker was
+// connected plays into the old device - successfully, as far as Qt and
+// Windows are concerned - and is silent. No default at all (nothing
+// connected, or the audio service not running) is a state of its own,
+// which the track says.
+void AnimaticPage::syncAudioOutput()
+{
+    if (!m_audioOutput)
+        return;
+    const QAudioDevice wanted = m_defaultOutputForTest
+        ? m_defaultOutputForTest()
+        : QMediaDevices::defaultAudioOutput();
+    const bool none = wanted.isNull();
+    bool changed = none != m_noAudioOutput;
+    if (!none && m_audioOutput->device() != wanted) {
+        m_audioOutput->setDevice(wanted);
+        changed = true;
+    }
+    m_noAudioOutput = none;
+    if (changed)
+        updateAudioUi();
+}
+
+// The player could not open the track's file. Only that: an error after
+// the file has loaded (it has a length) is not a statement about the file,
+// and is not allowed to take a working track away.
+void AnimaticPage::onPlayerProblem(const QString &reason)
+{
+    if (!m_player || m_audioPath.isEmpty() || m_audioMissing)
+        return; // clearing the source, or no file to have a problem with
+    // A report that belongs to a source already replaced: setSource has
+    // reset the player's error by the time it arrives.
+    if (m_player->error() == QMediaPlayer::NoError
+        && m_player->mediaStatus() != QMediaPlayer::InvalidMedia)
+        return;
+    if (m_player->mediaStatus() != QMediaPlayer::InvalidMedia
+        && m_player->duration() > 0)
+        return;
+    const QString why = reason.simplified().isEmpty()
+        ? QStringLiteral("It could not be opened as audio.")
+        : reason.simplified();
+    if (m_audioUnplayable && m_audioProblem == why)
+        return;
+    m_audioUnplayable = true;
+    m_audioProblem = why;
+    updateAudioUi();
 }
 
 qint64 AnimaticPage::offsetForPanel(int index) const
@@ -1110,6 +1205,9 @@ void AnimaticPage::importAudio()
               QStringLiteral("Audio (*.wav *.mp3 *.aac *.m4a)"));
     if (path.isEmpty())
         return; // cancelled: nothing changes, nothing joins the history
+    // CAN IT BE READ AT ALL? Asked before anything is copied or changed.
+    if (!readableAsAudio(path, QStringLiteral("Import Audio")))
+        return;
     // INTO THE PROJECT FIRST. What the track will name is the project's own
     // copy, so the file picked can be moved, renamed or unplugged a moment
     // later. (A project with no file yet has nowhere to copy to: the track
@@ -1155,6 +1253,25 @@ void AnimaticPage::copyAudioIntoProject()
         return;
     emit audioChangeRequested(file, false,
                               QStringLiteral("Copy Audio Into Project"));
+}
+
+// A picked file that SankoTV cannot read as audio is REFUSED HERE, in words,
+// before it is copied or the track is touched. It used to be accepted: the
+// track then showed its name and no bar, played nothing, and only an MP4
+// export ever said why. (A file that can be read but is decoded WRONGLY is
+// not caught - nothing here can hear.)
+bool AnimaticPage::readableAsAudio(const QString &picked, const QString &title)
+{
+    const AudioFileCheck::Result read = AudioFileCheck::check(picked);
+    if (read.ok)
+        return true;
+    QMessageBox::warning(
+        this, title,
+        QStringLiteral("SankoTV cannot read this file as audio, so it was NOT "
+                       "imported.\n\n%1\n\n%2\n\nNothing has been copied, and "
+                       "the project's audio track has not been changed.")
+            .arg(QDir::toNativeSeparators(picked), read.reason));
+    return false;
 }
 
 // The copy, with its progress window and its one way of saying no. `title`
@@ -1227,20 +1344,61 @@ void AnimaticPage::installAudio(const QString &path, bool linked)
         m_player->stop();
     m_audioPath = path;
     m_audioLinked = linked && !path.isEmpty();
+    m_audioUnplayable = false; // a new file: the player has not judged it yet
+    m_audioProblem.clear();
     m_audioMissing = !path.isEmpty() && !QFileInfo::exists(path);
     if (m_player)
         m_player->setSource(path.isEmpty() || m_audioMissing
                                 ? QUrl()
                                 : QUrl::fromLocalFile(path));
+    syncAudioOutput(); // a new track: make sure of where it will be heard
     updateAudioUi();
 }
 
 void AnimaticPage::updateAudioUi()
 {
     const bool has = !m_audioPath.isEmpty();
-    if (m_volumeSlider)
-        m_volumeSlider->setVisible(has && !m_audioMissing);
-    if (m_audioLabel) {
+    // WHICH DEVICE, in the volume slider's tooltip: the one question "why
+    // can I not hear it" needs answered first, and until 2026-10-05 nothing
+    // in the app could answer it.
+    const QString playingThrough = m_noAudioOutput
+        ? QStringLiteral("No audio output device: Windows has nothing to play "
+                         "through. Connect speakers or headphones and SankoTV "
+                         "will use them.")
+        : QStringLiteral("Playing through: %1").arg(audioOutputName());
+    if (m_volumeSlider) {
+        m_volumeSlider->setVisible(has && !m_audioMissing && !m_audioUnplayable);
+        m_volumeSlider->setToolTip(QStringLiteral("Audio volume\n") + playingThrough);
+    }
+    if (m_audioLabel && has && !m_audioMissing && (m_audioUnplayable || m_noAudioOutput)) {
+        // THE TWO WAYS A TRACK THAT IS THERE MAKES NO SOUND, said on the
+        // label - which stays when the timeline is collapsed - in the
+        // warning colour, because silence with no explanation is the
+        // failure this exists to end. A file the player cannot open
+        // outranks a missing output device: it is the one that needs the
+        // artist to do something to the project.
+        const QString name = QFileInfo(m_audioPath).fileName();
+        m_audioLabel->setVisible(true);
+        m_audioLabel->setStyleSheet(
+            SankoTheme::themed("color: %WARNING%; font-size: 12px;"));
+        if (m_audioUnplayable) {
+            m_audioLabel->setText(name + QString::fromUtf8(" \xE2\x80\x94 cannot be played"));
+            m_audioLabel->setToolTip(
+                QStringLiteral("SankoTV cannot play this audio file:\n%1\n\n%2\n\n"
+                               "The film plays without sound. Right-click the "
+                               "audio track, or use Edit > Import Audio, to "
+                               "choose another file.")
+                    .arg(QDir::toNativeSeparators(m_audioPath), m_audioProblem));
+        } else {
+            m_audioLabel->setText(
+                name
+                + (m_audioLinked ? QString::fromUtf8(" \xE2\x80\x94 linked") : QString())
+                + QString::fromUtf8(" \xE2\x80\x94 no audio output"));
+            m_audioLabel->setToolTip(
+                QStringLiteral("%1\n\n%2").arg(QDir::toNativeSeparators(m_audioPath),
+                                               playingThrough));
+        }
+    } else if (m_audioLabel) {
         // In the header row, which stays when the timeline is collapsed: a
         // missing track is announced where it cannot be folded away.
         m_audioLabel->setVisible(has);
@@ -1282,6 +1440,7 @@ void AnimaticPage::updateAudioUi()
     }
     if (m_timeline) {
         m_timeline->setAudioMissing(m_audioMissing);
+        m_timeline->setAudioUnplayable(m_audioUnplayable);
         m_timeline->setAudioLoaded(has, m_player ? m_player->duration() : 0);
     }
     emit audioStateChanged(); // the menus enable Remove and Locate from this
@@ -1319,6 +1478,8 @@ void AnimaticPage::locateAudio()
               this, QStringLiteral("Locate Audio File"), suggestion,
               QStringLiteral("Audio (*.wav *.mp3 *.aac *.m4a)"));
     if (path.isEmpty())
+        return;
+    if (!readableAsAudio(path, QStringLiteral("Locate Audio File")))
         return;
     if (m_projectFile.isEmpty()) {
         // No project file, so nowhere to copy to: as it was before the

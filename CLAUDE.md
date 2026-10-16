@@ -86,6 +86,18 @@ the page from.
   / `audioLinked` vs `audioMissing`); the copy into the project happens
   before the command is requested, so a failed or cancelled copy is no
   edit at all.
+- **A track that cannot be heard must say why** (HANDOFF "A track that
+  cannot be heard says why", 2026-10-05). Qt's `QAudioOutput` takes the
+  system default device ONCE, at construction, and keeps it — an app
+  started before the speaker was connected plays "successfully" into a
+  device nobody hears, with no error anywhere. So `AnimaticPage` FOLLOWS
+  the default (`syncAudioOutput`: on `QMediaDevices::audioOutputsChanged`
+  and again at every Play) and never constructs an output it then leaves
+  alone. A picked file is asked "can you be read?" before it is copied
+  (`AudioFileCheck`, the player AND the export's decoder); a track whose
+  file the player cannot open is a display state like missing
+  (`audioUnplayable`, bar "CANNOT BE PLAYED"), and no output device at all
+  is said on the label. None of these may be made silent again.
 - **File > Export** (MP4, PNG, PDF) is `src/export/` plus the asking and
   telling in `MainWindow`. All three read `Panel::flattenedPixmap()` —
   never a second idea of what a panel looks like. The MP4 encoder sits
