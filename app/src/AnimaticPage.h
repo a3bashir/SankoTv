@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QAudioDevice>
+#include <QElapsedTimer>
 #include <QPoint>
 #include <QPointer>
 #include <QString>
@@ -142,6 +143,22 @@ public:
     int currentFlatIndex() const { return m_current; }
     int elapsedMsInCurrentPanel() const { return m_elapsedMsInCurrentPanel; }
 
+    // THE PICTURE KEEPS STEP WITH THE SOUND (sync pass, HANDOFF 2026-10-16).
+    // Four rules, each the fix for a measured fault:
+    // - a seek asked of the player before its file has loaded is dropped
+    //   by Qt, so seeks are REMEMBERED and applied when it loads, and Play
+    //   checks the position once more before it starts (seekAudio);
+    // - Play RESUMES a panel from where it was paused - the panel's clock
+    //   is a wall clock that freezes on pause, not a dwell restarted from
+    //   zero - so the picture continues from where the sound does;
+    // - the 0.5x / 2x speeds are given to the player too (setPlaybackRate;
+    //   the pitch changes with them);
+    // - THE FILM'S CLOCK WAITS FOR THE SOUND TO BEGIN: Play starts the
+    //   player and the panel timers start when its position first moves
+    //   from where it was asked to start, with the picture's clock set from
+    //   the player's own position at that moment. A cap (one second) starts
+    //   the picture anyway.
+
 signals:
     // The track changed, by any route (an edit, an undo, a project load):
     // the menus enable Remove Audio from this. NOT a statement about the
@@ -191,6 +208,13 @@ public:
         m_defaultOutputForTest = std::move(provider);
     }
     void syncAudioOutputForTest() { syncAudioOutput(); }
+    // The film clock's wait for the sound: its cap, and a switch that makes
+    // the sound "never begin" so the cap is what starts the picture.
+    void setAudioStartCapForTest(int ms) { m_audioStartCapMsForTest = ms; }
+    void setAudioNeverBeginsForTest(bool never) { m_audioNeverBeginsForTest = never; }
+    bool waitingForAudioForTest() const { return m_waitingForAudio; }
+    qreal audioRateForTest() const;      // the player's playback rate
+    qint64 audioWantedMsForTest() const { return m_audioWantedMs; } // a seek still pending
     // The file dialog cannot run under a test: this answers in its place.
     // Everything after the dialog is the real path.
     void setAudioPickerForTest(std::function<QString()> picker)
@@ -233,6 +257,10 @@ private:
 
     void play();
     void pause();
+    void seekAudio(qint64 ms);           // remembered until the file has loaded
+    void onAudioPosition(qint64 ms);     // the player's position moved
+    void startFilmClock(qint64 audioMs); // the picture begins (-1: no sound to follow)
+    qint64 filmPositionMs() const;       // where the film is: panel offset + elapsed
     void setPlaybackSpeed(float speed); // takes effect on the next panel
     void updateSpeedButtons();          // active = amber-filled, others outlined
     void scheduleTick();
@@ -282,9 +310,22 @@ private:
     QLabel *m_timecodeLabel = nullptr;
     QTimer *m_timer = nullptr;
 
-    // Real-time playhead tracking.
+    // Real-time playhead tracking. The elapsed time within the panel is a
+    // WALL CLOCK (m_panelClock, scaled by the speed the panel was started
+    // at) on top of a base - the time already spent when it was last
+    // started, which is what a resume continues from.
     QTimer *m_playheadTimer = nullptr;
     int m_elapsedMsInCurrentPanel = 0;
+    QElapsedTimer m_panelClock;
+    int m_panelBaseMs = 0;
+    float m_panelSpeed = 1.0f;
+    // The wait for the sound to begin (see the class comment).
+    bool m_waitingForAudio = false;
+    qint64 m_audioStartFromMs = 0; // where the player was asked to start
+    QTimer *m_audioStartCap = nullptr;
+    qint64 m_audioWantedMs = -1; // a seek the player could not take yet
+    int m_audioStartCapMsForTest = -1;
+    bool m_audioNeverBeginsForTest = false;
 
     // Playback speed (session-only): 0.5, 1.0, or 2.0.
     float m_playbackSpeed = 1.0f;

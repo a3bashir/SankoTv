@@ -191,12 +191,27 @@ AnimaticPage::AnimaticPage(QWidget *parent)
 
     m_timer = new QTimer(this);
     m_timer->setSingleShot(true);
+    // PRECISE: a coarse timer may fire up to 5 % late, 150 ms on a 3 s
+    // panel, and the sound does not wait for it.
+    m_timer->setTimerType(Qt::PreciseTimer);
     connect(m_timer, &QTimer::timeout, this, &AnimaticPage::advance);
 
-    // Drives the real-time playhead while playing (50ms cadence).
+    // Drives the real-time playhead while playing (50ms cadence). It only
+    // READS the panel's wall clock (onPlayheadTick); nothing accrues per
+    // tick, so a late tick costs nothing.
     m_playheadTimer = new QTimer(this);
     m_playheadTimer->setInterval(50);
+    m_playheadTimer->setTimerType(Qt::PreciseTimer);
     connect(m_playheadTimer, &QTimer::timeout, this, &AnimaticPage::onPlayheadTick);
+
+    // The cap on the film clock's wait for the sound to begin.
+    m_audioStartCap = new QTimer(this);
+    m_audioStartCap->setSingleShot(true);
+    m_audioStartCap->setTimerType(Qt::PreciseTimer);
+    connect(m_audioStartCap, &QTimer::timeout, this, [this] {
+        if (m_waitingForAudio && m_playing)
+            startFilmClock(-1); // the sound did not come: start anyway
+    });
 
     // Scratch audio playback (created up front so the volume slider can bind).
     m_audioOutput = new QAudioOutput(this);
@@ -212,6 +227,22 @@ AnimaticPage::AnimaticPage(QWidget *parent)
         if (m_timeline)
             m_timeline->setAudioLoaded(!m_audioPath.isEmpty(), d);
     });
+    // THE SEEK THE PLAYER COULD NOT TAKE YET is applied the moment the file
+    // has loaded (Qt drops a setPosition made before then - measured:
+    // after an import with the playhead on panel 5, the sound started from
+    // the beginning of the file).
+    connect(m_player, &QMediaPlayer::mediaStatusChanged, this,
+            [this](QMediaPlayer::MediaStatus status) {
+                if ((status == QMediaPlayer::LoadedMedia
+                     || status == QMediaPlayer::BufferedMedia)
+                    && m_audioWantedMs >= 0) {
+                    const qint64 wanted = m_audioWantedMs;
+                    m_audioWantedMs = -1;
+                    m_player->setPosition(wanted);
+                }
+            });
+    connect(m_player, &QMediaPlayer::positionChanged, this,
+            &AnimaticPage::onAudioPosition);
     // A FILE THE PLAYER CANNOT OPEN. Nothing listened for this: the track
     // showed its name with no bar, for ever, and played nothing. Both
     // signals are needed - the status is how "invalid" arrives, the error
@@ -838,8 +869,13 @@ void AnimaticPage::seekTo(int index)
     movePlayheadTo(index);
     if (m_playing)
         scheduleTick();
-    if (hasAudio())
-        m_player->setPosition(offsetForPanel(index));
+    if (hasAudio()) {
+        seekAudio(offsetForPanel(index));
+        // Jumping back into a track the film had run past: sound again.
+        if (m_playing && m_player->playbackState() != QMediaPlayer::PlayingState
+            && (m_player->duration() <= 0 || offsetForPanel(index) < m_player->duration()))
+            m_player->play();
+    }
 }
 
 // The playhead is being dragged along the ruler: LOOK at that panel. The
@@ -912,30 +948,124 @@ void AnimaticPage::play()
     if (loopActive()) {
         movePlayheadTo(m_loopStartIndex); // loop playback always starts at the loop start
         if (hasAudio())
-            m_player->setPosition(offsetForPanel(m_loopStartIndex));
+            seekAudio(offsetForPanel(m_loopStartIndex));
     } else if (m_current < 0) {
         movePlayheadTo(0);
     }
     m_playing = true;
     enterPreview(); // playback is watched over the canvas, not on it
-    m_elapsedMsInCurrentPanel = 0; // fresh dwell for the current panel
+    // NOT reset here: a Play after a pause continues the panel from where
+    // it was paused (movePlayheadTo resets it for every fresh start).
     m_playButton->setText(QString::fromUtf8("\xE2\x8F\xB8")); // pause glyph
-    scheduleTick();
-    if (m_playheadTimer)
-        m_playheadTimer->start();
     if (m_timeline)
         m_timeline->setPlaying(true);
     // Asked again at every Play, not only when Windows reports a change:
     // the cost of being wrong is a film that plays in silence with nothing
     // to say why.
     syncAudioOutput();
-    if (hasAudio())
-        m_player->play(); // resumes from current position
+    if (!hasAudio()) {
+        startFilmClock(-1); // nothing to wait for
+        return;
+    }
+    // WHERE THE SOUND MUST START: where the film is. Checked here as well
+    // as when it was asked, because a seek made before the file had loaded
+    // was dropped - and because after a pause the two are compared once
+    // more rather than trusted.
+    const qint64 wanted = filmPositionMs();
+    // A track shorter than the film, with the film past its end: there is
+    // no sound here to start, and asking the player to play past its end
+    // would start it from the beginning.
+    if (m_player->duration() > 0 && wanted >= m_player->duration()) {
+        startFilmClock(-1);
+        return;
+    }
+    if (m_audioWantedMs >= 0 || qAbs(m_player->position() - wanted) > 200)
+        seekAudio(wanted);
+    m_panelSpeed = m_playbackSpeed;
+    m_player->setPlaybackRate(m_panelSpeed); // the sound at the picture's speed
+    // THE PICTURE WAITS FOR THE SOUND. The panel timers start when the
+    // player's position first moves on from where it was asked to start
+    // (onAudioPosition), or when the cap says start anyway.
+    m_waitingForAudio = true;
+    m_audioStartFromMs = wanted;
+    m_audioStartCap->start(m_audioStartCapMsForTest > 0 ? m_audioStartCapMsForTest
+                                                        : 1000);
+    m_player->play();
+}
+
+// The player's position has moved. While the film is waiting for its
+// sound, a position that has moved on from where the sound was asked to
+// start IS the sound beginning: the picture starts from the player's own
+// position, so the two begin together.
+void AnimaticPage::onAudioPosition(qint64 ms)
+{
+    if (!m_waitingForAudio || !m_playing || m_audioNeverBeginsForTest)
+        return;
+    // Moved on from the start, and not a stale report from before a
+    // pending seek took effect (the file's beginning while 12 s in was
+    // wanted, say).
+    if (ms > m_audioStartFromMs && ms - m_audioStartFromMs < 2000)
+        startFilmClock(ms);
+}
+
+// The picture's clock begins. With the sound's position given, the panel's
+// elapsed time is taken from it; otherwise the picture starts from where
+// it was. Every panel start and every resume runs the clock from here.
+void AnimaticPage::startFilmClock(qint64 audioMs)
+{
+    m_waitingForAudio = false;
+    m_audioStartCap->stop();
+    if (audioMs >= 0 && m_current >= 0 && m_current < m_items.size()) {
+        const qint64 duration =
+            qMax(1, m_items.at(m_current).panel->duration) * qint64(1000);
+        m_elapsedMsInCurrentPanel =
+            int(qBound<qint64>(0, audioMs - offsetForPanel(m_current), duration - 1));
+    }
+    scheduleTick();
+    if (m_playheadTimer)
+        m_playheadTimer->start();
+}
+
+qint64 AnimaticPage::filmPositionMs() const
+{
+    if (m_current < 0 || m_current >= m_items.size())
+        return 0;
+    return offsetForPanel(m_current) + m_elapsedMsInCurrentPanel;
+}
+
+// A seek the player may not be able to take yet (it drops one made before
+// the file has loaded): remembered, and applied when it loads.
+void AnimaticPage::seekAudio(qint64 ms)
+{
+    if (!m_player)
+        return;
+    const QMediaPlayer::MediaStatus status = m_player->mediaStatus();
+    const bool loaded = status == QMediaPlayer::LoadedMedia
+        || status == QMediaPlayer::BufferedMedia || status == QMediaPlayer::EndOfMedia
+        || status == QMediaPlayer::BufferingMedia;
+    if (loaded) {
+        m_audioWantedMs = -1;
+        m_player->setPosition(ms);
+    } else {
+        m_audioWantedMs = ms;
+    }
+}
+
+qreal AnimaticPage::audioRateForTest() const
+{
+    return m_player ? m_player->playbackRate() : 0.0;
 }
 
 void AnimaticPage::pause()
 {
     m_playing = false;
+    // The panel's clock FREEZES where it is; Play continues from here.
+    if (m_waitingForAudio) {
+        m_waitingForAudio = false; // the sound never began: nothing elapsed
+        m_audioStartCap->stop();
+    } else if (m_panelClock.isValid()) {
+        onPlayheadTick();
+    }
     if (m_timer)
         m_timer->stop();
     if (m_playheadTimer)
@@ -958,9 +1088,12 @@ void AnimaticPage::togglePlay()
 
 void AnimaticPage::onPlayheadTick()
 {
-    // Advance the playhead clock. Scale by speed so the playhead still sweeps
-    // the full block in real time at 0.5x / 2x (at 1x this is the spec's 50ms).
-    m_elapsedMsInCurrentPanel += qRound(50.0 * m_playbackSpeed);
+    // Read the panel's wall clock, scaled by the speed the panel was started
+    // at (so the playhead still sweeps the full block in real time at 0.5x
+    // / 2x). It used to ADD 50 ms per tick, and a late tick was time lost.
+    if (m_panelClock.isValid())
+        m_elapsedMsInCurrentPanel =
+            m_panelBaseMs + qRound(m_panelClock.elapsed() * double(m_panelSpeed));
     if (m_timeline)
         m_timeline->updatePlayhead();
     updateTimecodeLabel();
@@ -1020,9 +1153,18 @@ void AnimaticPage::scheduleTick()
 {
     if (m_current < 0 || m_current >= m_items.size())
         return;
+    // The REMAINDER of the panel, at the speed in force now - which is the
+    // whole panel for a fresh start (movePlayheadTo zeroes the elapsed
+    // time) and what is left for a resume. The sound is given the same
+    // speed, so a speed change reaches both at the next panel.
     const int duration = qMax(1, m_items.at(m_current).panel->duration);
-    const int ms = qRound(duration * 1000.0 / m_playbackSpeed);
-    m_timer->start(ms);
+    const int remaining = qMax(1, duration * 1000 - m_elapsedMsInCurrentPanel);
+    m_panelSpeed = m_playbackSpeed;
+    m_panelBaseMs = m_elapsedMsInCurrentPanel;
+    m_panelClock.start();
+    if (m_player && hasAudio() && !qFuzzyCompare(m_player->playbackRate(), qreal(m_panelSpeed)))
+        m_player->setPlaybackRate(m_panelSpeed);
+    m_timer->start(qRound(remaining / double(m_panelSpeed)));
 }
 
 void AnimaticPage::advance()
@@ -1035,7 +1177,7 @@ void AnimaticPage::advance()
         if (m_current >= m_loopEndIndex) {
             movePlayheadTo(m_loopStartIndex);
             if (hasAudio()) {
-                m_player->setPosition(offsetForPanel(m_loopStartIndex));
+                seekAudio(offsetForPanel(m_loopStartIndex));
                 if (m_playing)
                     m_player->play(); // restart audio if it had reached its end
             }
@@ -1058,7 +1200,7 @@ void AnimaticPage::advance()
         movePlayheadTo(home);
         if (hasAudio()) {
             m_player->stop();
-            m_player->setPosition(offsetForPanel(home));
+            seekAudio(offsetForPanel(home));
         }
         return;
     }
@@ -1310,9 +1452,10 @@ void AnimaticPage::applyAudioPath(const QString &path, bool linked)
     if (m_playing)
         pause();
     installAudio(path, linked);
-    // Parked where the playhead is, so Play resumes in step.
+    // Parked where the film is, so Play resumes in step. The file has not
+    // loaded yet, so this is the seek Qt used to drop: seekAudio keeps it.
     if (hasAudio() && m_current >= 0)
-        m_player->setPosition(offsetForPanel(m_current));
+        seekAudio(filmPositionMs());
 }
 
 // A Save As has just made the new project its own copy of the track, and
@@ -1346,6 +1489,7 @@ void AnimaticPage::installAudio(const QString &path, bool linked)
     m_audioLinked = linked && !path.isEmpty();
     m_audioUnplayable = false; // a new file: the player has not judged it yet
     m_audioProblem.clear();
+    m_audioWantedMs = -1; // a seek meant for the file before
     m_audioMissing = !path.isEmpty() && !QFileInfo::exists(path);
     if (m_player)
         m_player->setSource(path.isEmpty() || m_audioMissing

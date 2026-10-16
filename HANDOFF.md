@@ -267,6 +267,20 @@ may ship in a closed-source commercial product, flag it - do not decide.
     from app/ alone and its CMakeLists pulls nothing from those folders -
     but nobody has checked that no file under app/ (assets, brushes, code)
     was derived from them. Confirm before selling.
+11. OPEN - SIGNALSMITH STRETCH (opened 2026-10-16). The 0.5x / 2x speeds
+    now set the player's playback rate, and Qt 6.10+'s QMediaPlayer keeps
+    the pitch at other rates by default ("pitchCompensation", on when
+    available - it is, on this machine's FFmpeg backend). Qt does that
+    with the Signalsmith Stretch library, built INTO Qt's FFmpeg media
+    plugin, which already ships. Nothing new is added by SankoTV; the
+    library was shipping before and is now USED. Its licence as Qt
+    records it (qtmultimedia src/3rdparty/signalsmith-stretch/
+    qt_attribution.json, 6.11 branch): MIT, "Copyright (c) 2022 Geraint
+    Luff / Signalsmith Audio Ltd.", version 1.0.0, QtUsage "Used in the
+    FFMpeg media backend for pitch compensation (QMediaPlayer)". MIT asks
+    for the copyright notice and licence text to accompany the software.
+    Confirm with the lawyer that the attribution shipped with Qt covers
+    it, or add the notice to SankoTV's own. Research, not legal advice.
 
 ALSO BEFORE SELLING, not licensing: the Developer Recorder below comes out.
 
@@ -5992,6 +6006,15 @@ THE QUICKSHAPE FAMILY DEPENDS ON ITS WINDOW KEEPING FOCUS.
   window that took it\")" at that point in the log, and a count at exit;
   run-gate.ps1 shows the line first among a failing family's reasons. A
   failure of this kind now names its cause. It does not prevent it.
+- ALSO ON RECORD, UNATTRIBUTED (2026-10-16): in a full gate run while the
+  user was working in Photoshop (eight foreground losses logged by other
+  families), Debug SankoCanvasSizeLock failed one check - (j) "5000 px
+  stroke footprint matches the size", no corners inked - with no
+  disturbance line of its own. Run alone three times with the user's
+  hands off the Cintiq, it passed 165/165 every time, and once more
+  before that. A pen over a test window on the Cintiq is the one thing
+  that fits and cannot be shown. Treated as a one-off; if it recurs, it
+  is this and not the change under test.
 - FOR THE OWNER TO DECIDE: whether the test should shield itself the way
   Lifecycle's key-routing checks were shielded from the real pointer
   (a test seam on the canvas, or driving the shape session without
@@ -6283,6 +6306,81 @@ FOUND WHILE MEASURING THOSE TWO, the same kind of defect, also not fixed:
    steps across eight panels. There is no drift worth the name; there is
    no mechanism that would correct one either - each panel is a timer, and
    nothing compares the film's clock with the player's.
+(ALL FOUR FIXED 2026-10-16 - the next section.)
+
+## The picture keeps step with the sound (2026-10-16)
+
+The five findings above, fixed as one pass at the user's decisions
+("hold the wanted position until the file has loaded, and check it again
+at Play"; "resume continues the panel from where it paused, in step with
+the sound"; "the sound follows 0.5x and 2x"; "the film's clock waits for
+the sound to actually begin, with a cap of about one second"). All in
+AnimaticPage; the player is still QMediaPlayer, the sound still goes
+through it alone.
+
+- SEEKS ARE REMEMBERED (seekAudio): a seek asked while the file has not
+  loaded is kept in m_audioWantedMs and applied on the player's
+  LoadedMedia. Every seek the page makes goes through it - a selected
+  panel, the loop, the end of the film, and applyAudioPath, which is the
+  one Qt dropped (import, undo, redo, Save As). Play compares the player's
+  position with where the film is (panel offset + elapsed) once more and
+  seeks if they differ by over 200 ms.
+- THE PANEL'S CLOCK IS A WALL CLOCK (m_panelClock, scaled by the speed the
+  panel was started at, on a base of time already spent). It FREEZES on
+  pause and a resume continues from it: scheduleTick arms the REMAINDER of
+  the panel, and Play no longer zeroes the elapsed time (movePlayheadTo
+  does, for every fresh start). The playhead tick READS the clock; it used
+  to add 50 ms per tick, so a late tick was time lost. The panel and
+  playhead timers are PreciseTimer now: a coarse timer may fire 5 % late,
+  150 ms on a 3 s panel.
+- THE SOUND IS GIVEN THE SPEED: setPlaybackRate(m_panelSpeed) at Play and
+  whenever a panel is armed, so a speed change reaches picture and sound
+  together at the next panel, as the speed buttons always promised. PITCH
+  IS KEPT: Qt 6.10+ pitch-compensates a rate other than 1 by default
+  (QMediaPlayer::pitchCompensation; available on this backend, measured
+  by asking the player) - with the Signalsmith Stretch library inside
+  Qt's FFmpeg plugin; see BEFORE SELLING 11. Qt's documentation says it
+  costs CPU. NOT MEASURED BY INSTRUMENT: a loopback capture of what the
+  device received refused to start (IAudioClient::Initialize answered
+  E_HANDLE, inside and outside the Claude package, with the mix format
+  and with plain float), and QAudioBufferOutput taps the stream BEFORE
+  the rate is applied (measured: 440 Hz at every rate). The user's ears
+  are the measurement, in the hand test.
+- THE PICTURE WAITS FOR THE SOUND. Play starts the player and the panel
+  timers wait (m_waitingForAudio) until the player's position first moves
+  on from where it was asked to start; the panel's elapsed time is then
+  taken FROM the player's position, so the two begin together. A cap
+  (m_audioStartCap, 1000 ms) starts the picture anyway. No track, a
+  missing or unplayable one, or the film already past the end of a
+  shorter track: the picture starts at once and the player is not asked
+  to play past its end (it would start from the beginning).
+
+MEASURED, BEFORE AND AFTER, with the windowless probe
+(tests/_backups/audiosync_probe_20261005_* and _20261016_*; the app's
+real AnimaticPage, the player's position read at every change of panel):
+- import with the playhead on panel 5, then Play: BEFORE the sound at
+  1024 ms when the picture began (12 s out of step), AFTER 12085 ms, the
+  picture starting 99-100 ms after Play; the next panel 14 ms out.
+- a whole playback: BEFORE the sound 100-400 ms behind (the start delay,
+  carried); AFTER 8-80 ms behind throughout - within the player's own
+  85 ms position steps.
+- pause 1.2 s into a panel, Play: BEFORE the sound 1.2 s ahead; AFTER
+  14-27 ms behind.
+- 2x: BEFORE the sound 1.5 s further behind per panel; AFTER 14-40 ms.
+The meter-read "which second is heard" measurement of 2026-10-05 could
+not be repeated: the Bluetooth speaker was off and the default device was
+a virtual one whose meter reads nothing; the position-read measurement is
+what stands. The occasional 0.65-0.9 s late start (finding 2) is what the
+wait is for; it was not seen again in these runs.
+
+GATE: Lifecycle (as), 9 checks; 643 -> 652. Import with the playhead on
+panel 3 keeps the seek and applies it when the file loads; Play waits for
+the sound and then the two are within 250 ms; pause mid-panel freezes the
+clock and resume continues it, with the sound; 2x sets the player's rate
+and the clock gains about a second in half a second; a seek with the file
+loaded is immediate; a sound that never begins (setAudioNeverBeginsForTest)
+holds the picture for the cap (300 ms there) and then it starts; no track
+starts at once.
 
 ## METHOD: measure interior structure ACROSS THE SIZE RANGE before calling it character (2026-09-25)
 

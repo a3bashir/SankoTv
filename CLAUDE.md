@@ -98,6 +98,16 @@ the page from.
   file the player cannot open is a display state like missing
   (`audioUnplayable`, bar "CANNOT BE PLAYED"), and no output device at all
   is said on the label. None of these may be made silent again.
+- **The picture keeps step with the sound** (HANDOFF 2026-10-16). Every
+  seek of the player goes through `AnimaticPage::seekAudio` — Qt drops a
+  `setPosition` made before the file has loaded, so it is remembered and
+  applied on load, and Play checks the position again. The panel's clock
+  is a wall clock that freezes on pause and resumes from where it was;
+  `play()` must not zero it. The speeds are given to the player
+  (`setPlaybackRate`; pitch kept by Qt's pitch compensation, BEFORE
+  SELLING 11). Play waits for the player's position to move before the
+  panel timers start (cap one second). Never start the film's timers from
+  Play directly again, and never call `m_player->setPosition` directly.
 - **File > Export** (MP4, PNG, PDF) is `src/export/` plus the asking and
   telling in `MainWindow`. All three read `Panel::flattenedPixmap()` —
   never a second idea of what a panel looks like. The MP4 encoder sits

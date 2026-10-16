@@ -8356,6 +8356,161 @@ void runAudioSaysWhyPass(const QString &scratch)
     }
 }
 
+// ---- (as) the picture keeps step with the sound ------------------------------
+// Measured 2026-10-05 with the app's own AnimaticPage, never shown: after an
+// import with the playhead on panel 5 the sound started from the beginning
+// of the file (Qt drops a seek asked before the file has loaded); a pause
+// in the middle of a panel restarted that panel's time while the sound
+// carried on; the 0.5x / 2x speeds moved the picture only; and the picture
+// started on Play while the sound took up to a second to begin. Fixed
+// 2026-10-16 (HANDOFF "The picture keeps step with the sound"). The gate
+// cannot hear; it reads the player's position and the film's clock, which
+// is what the probe did too.
+void runAudioKeepsStepPass(const QString &scratch)
+{
+    using namespace workspace;
+    using audio::waitFor;
+    using audio::writeWav;
+    out() << "--- (as) the picture keeps step with the sound: a seek before the "
+             "file has loaded, resume after pause, the speeds, the wait for "
+             "the sound ---" << Qt::endl;
+    const QString base = scratch + QStringLiteral("/keepstep");
+    QDir(base).removeRecursively();
+    const QString wav = base + QStringLiteral("/source/track.wav");
+    // One scene, three panels of 2, 3 and 4 s: panel 3 begins 5 s in.
+    const QString project = writeProject(base + QStringLiteral("/p"),
+                                         QStringLiteral("Step"), QSize(960, 540),
+                                         24, 1, 3);
+    check(QStringLiteral("(as) fixture: a project of three panels and a 12 s "
+                         "WAV"),
+          QFileInfo::exists(project) && writeWav(wav, 12.0));
+    Rig r(project);
+    check(QStringLiteral("(as) the workspace opened"), r.ok);
+    if (!r.ok)
+        return;
+    AnimaticPage *page = r.animatic;
+    auto started = [&] {
+        return waitFor([&] { return !page->waitingForAudioForTest(); }, 3000);
+    };
+
+    // ---- a seek asked before the file has loaded ----------------------------------
+    clickClip(r, 2);
+    pump(300);
+    travel::pick(r, QStringLiteral("Import Audio..."), wav);
+    const bool kept = page->audioWantedMsForTest() == 5000
+        || page->audioPositionForTest() == 5000;
+    const bool applied = waitFor([&] {
+        return page->audioWantedMsForTest() < 0 && page->audioPositionForTest() == 5000;
+    });
+    check(QStringLiteral("(as) IMPORT WITH THE PLAYHEAD ON PANEL 3: the seek "
+                         "to 5 s is kept while the file loads and applied "
+                         "when it has (Qt alone dropped it, and the sound "
+                         "started from the beginning)"),
+          kept && applied,
+          QStringLiteral("wanted %1, position %2")
+              .arg(page->audioWantedMsForTest()).arg(page->audioPositionForTest()));
+    page->togglePlay();
+    const bool waited = page->waitingForAudioForTest()
+        && page->elapsedMsInCurrentPanel() == 0;
+    const bool began = started();
+    pump(250);
+    const qint64 audioA = page->audioPositionForTest();
+    const int filmA = page->elapsedMsInCurrentPanel();
+    check(QStringLiteral("(as) PLAY: the picture's clock waits for the sound "
+                         "to begin, then runs from the sound's own "
+                         "position - a quarter of a second in, the two are "
+                         "within 250 ms"),
+          waited && began && page->isPlaying() && page->audioPlayingForTest()
+              && audioA >= 5000 && qAbs((audioA - 5000) - filmA) < 250,
+          QStringLiteral("sound at %1, film %2 ms into panel 3").arg(audioA).arg(filmA));
+
+    // ---- pause in the middle of a panel, then resume -------------------------------
+    pump(500);
+    page->togglePlay(); // pause
+    const int atPause = page->elapsedMsInCurrentPanel();
+    const qint64 audioAtPause = page->audioPositionForTest();
+    pump(400);
+    const bool frozen = page->elapsedMsInCurrentPanel() == atPause
+        && !page->audioPlayingForTest();
+    page->togglePlay(); // resume
+    const bool resumed = started();
+    pump(250);
+    const qint64 audioB = page->audioPositionForTest();
+    const int filmB = page->elapsedMsInCurrentPanel();
+    check(QStringLiteral("(as) PAUSE IN THE MIDDLE OF A PANEL, THEN PLAY: the "
+                         "panel's clock freezes and CONTINUES from there - "
+                         "not from zero - and the sound is with it"),
+          atPause >= 600 && frozen && resumed && filmB >= atPause
+              && qAbs((audioB - 5000) - filmB) < 250
+              && qAbs(audioAtPause - 5000 - atPause) < 300,
+          QStringLiteral("paused at %1 ms (sound %2); after resume film %3, sound %4")
+              .arg(atPause).arg(audioAtPause).arg(filmB).arg(audioB));
+
+    // ---- the speeds -------------------------------------------------------------------
+    page->togglePlay(); // pause
+    pump(200);
+    for (QPushButton *b : page->findChildren<QPushButton *>())
+        if (b->text() == QStringLiteral("2x"))
+            b->click();
+    const int before2x = page->elapsedMsInCurrentPanel();
+    page->togglePlay();
+    const bool began2x = started();
+    pump(500);
+    const int gained = page->elapsedMsInCurrentPanel() - before2x;
+    check(QStringLiteral("(as) AT 2x THE SOUND IS GIVEN THE SPEED TOO: the "
+                         "player's rate is 2, and the picture's clock gains "
+                         "about a second in half a second"),
+          began2x && qFuzzyCompare(page->audioRateForTest(), 2.0) && gained > 700
+              && gained < 1400,
+          QStringLiteral("rate %1, gained %2 ms").arg(page->audioRateForTest()).arg(gained));
+    page->togglePlay(); // pause
+    for (QPushButton *b : page->findChildren<QPushButton *>())
+        if (b->text() == QStringLiteral("1x"))
+            b->click();
+    page->leavePreview();
+    pump(300);
+
+    // ---- a seek with the file loaded is immediate (control) -----------------------------
+    clickClip(r, 1);
+    pump(200);
+    check(QStringLiteral("(as) control: with the file loaded, selecting panel "
+                         "2 seeks the sound to 2 s at once, nothing pending"),
+          page->audioWantedMsForTest() < 0 && page->audioPositionForTest() == 2000,
+          QStringLiteral("position %1").arg(page->audioPositionForTest()));
+
+    // ---- the cap on the wait -----------------------------------------------------------
+    page->setAudioNeverBeginsForTest(true);
+    page->setAudioStartCapForTest(300);
+    page->togglePlay();
+    pump(150);
+    const bool stillWaiting = page->waitingForAudioForTest()
+        && page->elapsedMsInCurrentPanel() == 0 && page->isPlaying();
+    pump(450);
+    const bool startedAnyway = !page->waitingForAudioForTest()
+        && page->elapsedMsInCurrentPanel() > 0;
+    page->setAudioNeverBeginsForTest(false);
+    page->setAudioStartCapForTest(-1);
+    page->leavePreview();
+    pump(200);
+    check(QStringLiteral("(as) THE WAIT HAS A CAP: a sound that never begins "
+                         "holds the picture for the cap (300 ms here, a "
+                         "second in the app) and then the picture starts "
+                         "anyway"),
+          stillWaiting && startedAnyway);
+
+    // ---- no sound: nothing to wait for ---------------------------------------------------
+    if (QAction *removeAct = audio::editAction(r.window, QStringLiteral("Remove Audio")))
+        removeAct->trigger();
+    pump(200);
+    page->togglePlay();
+    const bool immediate = !page->waitingForAudioForTest() && page->isPlaying();
+    pump(200);
+    check(QStringLiteral("(as) with no track the picture starts at once"),
+          immediate && page->elapsedMsInCurrentPanel() > 0);
+    page->leavePreview();
+    pump(200);
+}
+
 int main(int argc, char **argv)
 {
 #ifdef Q_OS_WIN
@@ -8573,6 +8728,7 @@ int main(int argc, char **argv)
     }
     runAudioTravelsPass(scratch);
     runAudioSaysWhyPass(scratch);
+    runAudioKeepsStepPass(scratch);
 
     // ---- (aa) a test that cannot start says why and exits ----------------
     // An unattended gate must FAIL, not wait. Measured 2026-10-02: with its
