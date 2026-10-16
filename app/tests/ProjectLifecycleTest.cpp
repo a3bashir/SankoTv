@@ -108,6 +108,8 @@
 #include <QProcess>
 #include <QProgressDialog>
 #include <QScrollArea>
+#include <QScrollBar>
+#include <QSlider>
 #include <QUndoStack>
 #include <QtGui/QTransform>
 #include <functional>
@@ -8511,6 +8513,308 @@ void runAudioKeepsStepPass(const QString &scratch)
     pump(200);
 }
 
+// ---- (at) the timeline follows the playhead -----------------------------------
+// 2026-10-16: during playback the playhead ran off the right edge of the
+// timeline and the view stayed where it was (nothing in the timeline read
+// the playhead to scroll). Now the view follows: freely until the playhead
+// reaches a follow point two-thirds across, then the strip scrolls under it;
+// a scroll the user made is never undone by following; a jump moves the
+// view only if the playhead would be off-screen, and puts it a third across.
+// Nothing here depends on the real pointer, the cursor or the active window:
+// the playhead is moved with advanceForTest, the user's scroll with
+// userScrollForTest, and the pointer is already shut out.
+void runTimelineFollowsPass(const QString &scratch)
+{
+    using namespace workspace;
+    using audio::waitFor;
+    using audio::writeWav;
+    out() << "--- (at) the timeline follows the playhead: the follow point, "
+             "the user's scroll, the jump rule, the stopped case ---" << Qt::endl;
+    const QString base = scratch + QStringLiteral("/follow");
+    QDir(base).removeRecursively();
+    const QString wav = base + QStringLiteral("/source/track.wav");
+    // One scene of 24 panels (2, 3, 4 s cycling): a 72 s film, 6912 px at
+    // the 400 % zoom, in a view about 1200 px wide.
+    const QString project = writeProject(base + QStringLiteral("/p"),
+                                         QStringLiteral("Follow"), QSize(960, 540),
+                                         24, 1, 24);
+    check(QStringLiteral("(at) fixture: a 72 s film of 24 panels and an 80 s WAV"),
+          QFileInfo::exists(project) && writeWav(wav, 80.0));
+    Rig r(project);
+    check(QStringLiteral("(at) the workspace opened"), r.ok);
+    if (!r.ok)
+        return;
+    AnimaticPage *page = r.animatic;
+    AnimaticTimeline *tl = r.timeline;
+    travel::pick(r, QStringLiteral("Import Audio..."), wav);
+    travel::present(r);
+    QSlider *zoom = tl->findChild<QSlider *>();
+    QScrollBar *bar = tl->findChild<QScrollBar *>();
+    if (zoom)
+        zoom->setValue(400);
+    pump(150);
+    const int vw = tl->visibleWidthForTest();
+    const int fp = tl->followPointForTest();
+    const int labelCol = fp - vw * 2 / 3; // followPoint = labelCol + 2/3 of the view
+    const int rightEdge = labelCol + vw;
+    check(QStringLiteral("(at) at 400 % the film overflows the view and the "
+                         "view starts at the beginning"),
+          bar && bar->maximum() > 2000 && tl->scrollXForTest() == 0 && vw > 600,
+          QStringLiteral("view %1 px, content beyond it %2 px, follow point at %3")
+              .arg(vw).arg(bar ? bar->maximum() : -1).arg(fp));
+    auto started = [&] {
+        return waitFor([&] { return !page->waitingForAudioForTest(); }, 3000);
+    };
+    auto advanceTo = [&](int panel) {
+        while (page->currentFlatIndex() < panel && page->isPlaying()) {
+            page->advanceForTest();
+            pump(40);
+        }
+        pump(60);
+    };
+
+    // ---- positive control: following off -----------------------------------------
+    clickClip(r, 0);
+    pump(200);
+    tl->setFollowForTest(false);
+    page->togglePlay();
+    started();
+    advanceTo(12);
+    check(QStringLiteral("(at) CONTROL, following off: the playhead runs off "
+                         "the right edge and the view does not move - so the "
+                         "checks below can see the failure"),
+          tl->playheadScreenXForTest() > rightEdge && tl->scrollXForTest() == 0,
+          QStringLiteral("playhead at x %1, right edge %2, scroll %3")
+              .arg(tl->playheadScreenXForTest()).arg(rightEdge).arg(tl->scrollXForTest()));
+    page->leavePreview();
+    pump(200);
+    tl->setFollowForTest(true);
+
+    // ---- following on ----------------------------------------------------------------
+    clickClip(r, 0);
+    pump(200);
+    int requests = 0, scrubs = 0;
+    QObject::connect(page, &AnimaticPage::panelSelectRequested, page, [&] { ++requests; });
+    QObject::connect(tl, &AnimaticTimeline::playheadScrubbed, tl, [&] { ++scrubs; });
+    const int selectCalls = r.storyboard->selectPanelCallsForTest();
+    page->togglePlay();
+    started();
+    const bool timerRuns = tl->followTimerActiveForTest();
+    QElapsedTimer clock;
+    clock.start();
+    const qint64 audioAtStart = page->audioPositionForTest();
+    advanceTo(6); // 18 s = 1728 px: well past the follow point
+    QList<int> held;
+    for (int i = 0; i < 8; ++i) {
+        pump(40);
+        held << tl->playheadScreenXForTest();
+    }
+    bool holds = true;
+    for (int x : held)
+        holds = holds && qAbs(x - fp) <= 1;
+    check(QStringLiteral("(at) FOLLOWING: the follow timer runs; once the "
+                         "playhead reaches the follow point the view scrolls "
+                         "and the playhead HOLDS there within 1 px (eight "
+                         "readings)"),
+          timerRuns && holds && tl->scrollXForTest() > 0,
+          QStringLiteral("follow point %1; readings %2; scroll %3").arg(fp)
+              .arg([&] { QStringList s; for (int x : held) s << QString::number(x); return s.join(QLatin1Char(',')); }())
+              .arg(tl->scrollXForTest()));
+    const qint64 audioNow = page->audioPositionForTest();
+    const qint64 expected = audioAtStart + clock.elapsed();
+    check(QStringLiteral("(at) scrolling issued NO SEEK (the sound ran on by "
+                         "the clock, not to a panel), selected nothing and "
+                         "scrubbed nothing"),
+          qAbs(audioNow - expected) < 400 && requests == 0 && scrubs == 0
+              && r.storyboard->selectPanelCallsForTest() == selectCalls
+              && tl->selectedPanelForTest() == 0,
+          QStringLiteral("sound at %1, by the clock %2; requests %3, scrubs %4")
+              .arg(audioNow).arg(expected).arg(requests).arg(scrubs));
+    advanceTo(23);
+    // The last panel is 4 s = 384 px; the strip reaches its end when the
+    // playhead is within a third of the view (349 px) of the content's end,
+    // so let the last panel run for a moment.
+    pump(1500);
+    const int scrollAtEnd = tl->scrollXForTest();
+    const int playheadAtEnd = tl->playheadScreenXForTest();
+    page->advanceForTest(); // the last panel's time is up: the film ends
+    pump(300);
+    check(QStringLiteral("(at) near the end the strip STOPS at its end and "
+                         "the playhead runs on past the follow point; the "
+                         "end of the film stops the follow timer, and the "
+                         "playhead's return to panel 1 - off-screen by then - "
+                         "brings the view back to it"),
+          bar && scrollAtEnd == bar->maximum() && playheadAtEnd > fp
+              && !page->isPlaying() && !tl->followTimerActiveForTest()
+              && page->currentFlatIndex() == 0 && tl->scrollXForTest() == 0
+              && tl->playheadScreenXForTest() == labelCol,
+          QStringLiteral("scroll at the end %1 of %2, playhead x %3; after: scroll %4, "
+                         "playhead x %5")
+              .arg(scrollAtEnd).arg(bar ? bar->maximum() : -1).arg(playheadAtEnd)
+              .arg(tl->scrollXForTest()).arg(tl->playheadScreenXForTest()));
+
+    // ---- the timer stops on Pause, a scrub, and Stop ------------------------------------
+    page->togglePlay();
+    started();
+    const bool onPlay = tl->followTimerActiveForTest();
+    page->togglePlay(); // pause
+    pump(50);
+    const bool offPause = !tl->followTimerActiveForTest();
+    page->togglePlay();
+    started();
+    page->scrubForTest(3);
+    pump(50);
+    const bool offScrub = !tl->followTimerActiveForTest() && !page->isPlaying();
+    page->togglePlay();
+    started();
+    page->leavePreview(); // Stop
+    pump(50);
+    const bool offStop = !tl->followTimerActiveForTest();
+    check(QStringLiteral("(at) the follow timer runs on Play and is stopped "
+                         "after Pause, a scrub, and Stop"),
+          onPlay && offPause && offScrub && offStop);
+
+    // ---- the user's scroll: ahead ---------------------------------------------------------
+    clickClip(r, 0);
+    pump(200);
+    page->togglePlay();
+    started();
+    const int ahead = bar ? bar->maximum() / 2 : 0;
+    tl->userScrollForTest(ahead); // the playhead is now far LEFT of the view
+    advanceTo(2);
+    const bool leftAlone = tl->scrollXForTest() == ahead;
+    advanceTo(16); // 16 panels = 48 s = 4608 px: past the follow point of that view
+    const bool resumed = tl->scrollXForTest() > ahead
+        && qAbs(tl->playheadScreenXForTest() - fp) <= 1;
+    check(QStringLiteral("(at) MY SCROLL AHEAD: the view stays where I put it "
+                         "while the playhead is left of the follow point, "
+                         "and following resumes when the playhead reaches it"),
+          leftAlone && resumed,
+          QStringLiteral("put at %1; after 2 panels %2; later %3, playhead x %4")
+              .arg(ahead).arg(leftAlone ? ahead : tl->scrollXForTest())
+              .arg(tl->scrollXForTest()).arg(tl->playheadScreenXForTest()));
+
+    // ---- the user's scroll: back, playhead right of the follow point, in view ---------------
+    const int following = tl->scrollXForTest();
+    tl->userScrollForTest(following - 150); // the playhead sits 150 px right of the point
+    const bool inViewAfter = tl->playheadScreenXForTest() > fp
+        && tl->playheadScreenXForTest() <= rightEdge;
+    advanceTo(page->currentFlatIndex() + 2);
+    const bool heldInView = tl->scrollXForTest() == following - 150;
+    page->togglePlay(); // pause: the hold stands
+    pump(50);
+    const bool heldThroughPause = tl->scrollXForTest() == following - 150;
+    page->togglePlay(); // Play: the jump rule, applied in this call
+    // Read NOW: once the sound begins the playhead moves on from the third
+    // (Release read it 12 px along after waiting for the sound).
+    const int jumpedTo = tl->playheadScreenXForTest();
+    started();
+    const bool jumped = qAbs(jumpedTo - (labelCol + vw / 3)) <= 1;
+    check(QStringLiteral("(at) MY SCROLL BACK with the playhead right of the "
+                         "follow point, in view: the view stays where I left "
+                         "it - through two panels and a pause - and the next "
+                         "Play puts the playhead a third across"),
+          inViewAfter && heldInView && heldThroughPause && jumped,
+          QStringLiteral("in view after the scroll %1; held %2 / %3; after Play "
+                         "playhead x %4 (a third across is %5)")
+              .arg(inViewAfter).arg(heldInView).arg(heldThroughPause)
+              .arg(jumpedTo).arg(labelCol + vw / 3));
+
+    // ---- the user's scroll: back, playhead OFF the right edge -------------------------------
+    const int following2 = tl->scrollXForTest();
+    tl->userScrollForTest(following2 - vw); // a whole view back: off the right edge
+    const bool offRight = tl->playheadScreenXForTest() > rightEdge;
+    advanceTo(page->currentFlatIndex() + 1);
+    const bool heldOff = tl->scrollXForTest() == following2 - vw;
+    page->togglePlay();
+    pump(50);
+    page->togglePlay();
+    const int jumpedTo2 = tl->playheadScreenXForTest(); // read now, as above
+    started();
+    const bool jumped2 = qAbs(jumpedTo2 - (labelCol + vw / 3)) <= 1;
+    check(QStringLiteral("(at) MY SCROLL BACK with the playhead off the right "
+                         "edge: held until the next Play, which repositions"),
+          offRight && heldOff && jumped2,
+          QStringLiteral("off right %1, held %2, after Play playhead x %3")
+              .arg(offRight).arg(heldOff).arg(jumpedTo2));
+    page->leavePreview();
+    pump(200);
+
+    // ---- stopped: End, Home, the arrows, and a Stop that sends the playhead off-screen ---
+    page->goFirst();
+    pump(200);
+    tl->setFollowForTest(false);
+    page->goLast(); // through the workspace's selection, as the End key goes
+    pump(200);
+    const bool endOffScreenWithoutFollow = tl->playheadScreenXForTest() > rightEdge
+        && tl->scrollXForTest() == 0;
+    tl->setFollowForTest(true);
+    page->goFirst();
+    pump(200);
+    page->goLast();
+    pump(200);
+    // The last panel starts 384 px before the content's end, and a third of
+    // the view is 349 px: the view cannot put it a third across without
+    // running past the content, so the jump clamps to the end of the strip
+    // and the playhead is a little right of a third.
+    const int endX = tl->playheadScreenXForTest();
+    const bool endInView = endX >= labelCol + vw / 3 && endX <= rightEdge
+        && bar && tl->scrollXForTest() == bar->maximum();
+    check(QStringLiteral("(at) STOPPED: End on a long film brings the playhead "
+                         "into view - the strip at its end, the playhead at a "
+                         "third across or as near as the end allows (control: "
+                         "with following off it stays off-screen)"),
+          endOffScreenWithoutFollow && endInView,
+          QStringLiteral("without following x %1; with it x %2")
+              .arg(endOffScreenWithoutFollow).arg(tl->playheadScreenXForTest()));
+    page->goFirst();
+    pump(200);
+    const bool homeShowsStart = tl->scrollXForTest() == 0
+        && tl->playheadScreenXForTest() == labelCol;
+    page->goNext();
+    pump(200);
+    const bool arrowLeavesView = tl->scrollXForTest() == 0
+        && tl->playheadScreenXForTest() > labelCol
+        && tl->playheadScreenXForTest() < rightEdge;
+    page->goPrev();
+    pump(200);
+    const bool backLeavesView = tl->scrollXForTest() == 0;
+    check(QStringLiteral("(at) Home shows the start; the arrows inside the "
+                         "view leave the offset unchanged"),
+          homeShowsStart && arrowLeavesView && backLeavesView);
+    // Stop with the playhead's home off-screen: play far along, then Stop.
+    page->togglePlay();
+    started();
+    advanceTo(14);
+    const bool farAlong = tl->scrollXForTest() > vw;
+    page->leavePreview(); // Stop: the playhead goes home to panel 1
+    pump(200);
+    check(QStringLiteral("(at) a Stop that returns the playhead to a panel "
+                         "off-screen shows it"),
+          farAlong && page->currentFlatIndex() == 0 && tl->scrollXForTest() == 0
+              && tl->playheadScreenXForTest() == labelCol,
+          QStringLiteral("scroll %1, playhead x %2").arg(tl->scrollXForTest())
+              .arg(tl->playheadScreenXForTest()));
+
+    // ---- the whole film fits -------------------------------------------------------------
+    for (QPushButton *b : tl->findChildren<QPushButton *>())
+        if (b->text() == QStringLiteral("Fit"))
+            b->click();
+    pump(150);
+    const bool fits = bar && bar->maximum() == 0;
+    page->togglePlay();
+    started();
+    advanceTo(20);
+    check(QStringLiteral("(at) when the whole film fits, nothing moves"),
+          fits && tl->scrollXForTest() == 0 && tl->playheadScreenXForTest() < rightEdge,
+          QStringLiteral("scroll range %1, scroll %2, playhead x %3, right edge %4, zoom %5")
+              .arg(bar ? bar->maximum() : -1).arg(tl->scrollXForTest())
+              .arg(tl->playheadScreenXForTest()).arg(rightEdge)
+              .arg(zoom ? zoom->value() : -1));
+    page->leavePreview();
+    pump(200);
+}
+
 int main(int argc, char **argv)
 {
 #ifdef Q_OS_WIN
@@ -8729,6 +9033,7 @@ int main(int argc, char **argv)
     runAudioTravelsPass(scratch);
     runAudioSaysWhyPass(scratch);
     runAudioKeepsStepPass(scratch);
+    runTimelineFollowsPass(scratch);
 
     // ---- (aa) a test that cannot start says why and exits ----------------
     // An unattended gate must FAIL, not wait. Measured 2026-10-02: with its

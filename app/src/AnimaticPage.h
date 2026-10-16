@@ -142,6 +142,11 @@ public:
     // Read by AnimaticTimeline when rendering the real-time playhead.
     int currentFlatIndex() const { return m_current; }
     int elapsedMsInCurrentPanel() const { return m_elapsedMsInCurrentPanel; }
+    // The same, read LIVE from the panel's wall clock while the film runs -
+    // for the timeline's own 60 Hz follow (2026-10-16), which would
+    // otherwise repaint the 20 Hz value three times over. Const, reads
+    // only; while paused or waiting for the sound it is the frozen value.
+    int liveElapsedMsInCurrentPanel() const;
 
     // THE PICTURE KEEPS STEP WITH THE SOUND (sync pass, HANDOFF 2026-10-16).
     // Four rules, each the fix for a measured fault:

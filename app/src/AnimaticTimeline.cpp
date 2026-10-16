@@ -17,6 +17,7 @@
 #include <QScrollBar>
 #include <QSignalBlocker>
 #include <QSlider>
+#include <QTimer>
 #include <QToolTip>
 #include <QVBoxLayout>
 
@@ -174,8 +175,18 @@ AnimaticTimeline::AnimaticTimeline(QWidget *parent)
     });
     connect(m_hScroll, &QScrollBar::valueChanged, this, [this](int v) {
         m_scrollX = v;
+        // A change following did not make is the user's: a drag, the wheel
+        // over the bar, its arrows, a click on its track.
+        if (!m_settingScroll)
+            onUserScroll();
         m_canvas->update();
     });
+
+    // The follow timer (followTick): 60 Hz, precise, only while playing.
+    m_followTimer = new QTimer(this);
+    m_followTimer->setInterval(16);
+    m_followTimer->setTimerType(Qt::PreciseTimer);
+    connect(m_followTimer, &QTimer::timeout, this, &AnimaticTimeline::followTick);
 }
 
 void AnimaticTimeline::setHost(AnimaticPage *host)
@@ -261,7 +272,18 @@ void AnimaticTimeline::setCurrentPanel(int flatIndex)
 {
     if (m_current == flatIndex)
         return;
+    // Playback stepping to the next panel is not a jump: the view is left
+    // to following (or to the user, if they hold it). Anything else - a
+    // selection, a scrub, Home / End, the loop restarting, the playhead
+    // going home at the end - is a jump, which ends a hold and moves the
+    // view only if the playhead would be off-screen.
+    const bool stepping = m_playing && flatIndex == m_current + 1;
     m_current = flatIndex;
+    m_liveElapsedMs = -1; // a new panel: the host's own value until the next tick
+    if (!stepping && m_drag != Drag::Playhead) {
+        m_viewHeld = false;
+        jumpIfOffScreen();
+    }
     if (m_canvas)
         m_canvas->update();
 }
@@ -289,8 +311,109 @@ void AnimaticTimeline::refreshThumbnails()
 void AnimaticTimeline::setPlaying(bool playing)
 {
     m_playing = playing;
+    if (playing) {
+        // Play: a hold ends, the playhead is brought into view if it is
+        // not, and the follow timer runs. Stop, Pause, the end of the film
+        // and a scrub all arrive here as false: the timer stops and the
+        // view stays where it is.
+        m_viewHeld = false;
+        jumpIfOffScreen();
+        if (m_followTimer)
+            m_followTimer->start();
+    } else {
+        if (m_followTimer)
+            m_followTimer->stop();
+        m_liveElapsedMs = -1;
+    }
     if (m_canvas)
         m_canvas->update();
+}
+
+// --- Following ------------------------------------------------------------
+
+void AnimaticTimeline::followTick()
+{
+    if (!m_host)
+        return;
+    // ONE reading for this tick: the scroll below and the paint after it
+    // both use it, so the playhead sits exactly on the follow point.
+    m_liveElapsedMs = m_host->liveElapsedMsInCurrentPanel();
+    if (m_follow && !m_viewHeld && m_drag != Drag::Playhead) {
+        const int phx = qRound(playheadContentX());
+        const int fp = followPoint() - kLabelCol;
+        if (phx - m_scrollX > fp)
+            setScrollX(phx - fp); // held at the follow point (stops at the end)
+    }
+    if (m_canvas)
+        m_canvas->update();
+}
+
+int AnimaticTimeline::followPoint() const
+{
+    return kLabelCol + visibleWidth() * 2 / 3;
+}
+
+// A scroll made by following, not by the user: the scrollbar's own signal
+// must not read it as the user's.
+void AnimaticTimeline::setScrollX(int scrollX)
+{
+    if (!m_hScroll)
+        return;
+    const int clamped = qBound(0, scrollX, m_hScroll->maximum());
+    if (clamped == m_scrollX)
+        return;
+    m_settingScroll = true;
+    m_hScroll->setValue(clamped); // valueChanged sets m_scrollX
+    m_settingScroll = false;
+}
+
+// The user's scroll wins. With the playhead now RIGHT of the follow point
+// (in view or off the right edge) the view is theirs until the next Play,
+// scrub, seek or loop restart. Left of it, following simply has nothing to
+// do until the playhead arrives there, and then carries on as usual.
+void AnimaticTimeline::onUserScroll()
+{
+    const int phx = qRound(playheadContentX());
+    m_viewHeld = phx - m_scrollX > followPoint() - kLabelCol;
+}
+
+bool AnimaticTimeline::playheadInView(int *screenX) const
+{
+    const int sx = contentXToScreen(playheadContentX());
+    if (screenX)
+        *screenX = sx;
+    return sx >= kLabelCol && sx <= kLabelCol + visibleWidth();
+}
+
+// The jump rule: only if the playhead would be off-screen, and then a third
+// of the way across, so two-thirds of the view shows what is coming. At the
+// film's start that is simply the start.
+void AnimaticTimeline::jumpIfOffScreen()
+{
+    if (!m_follow || !m_hScroll || m_hScroll->maximum() <= 0 || playheadInView())
+        return;
+    setScrollX(qRound(playheadContentX()) - visibleWidth() / 3);
+}
+
+int AnimaticTimeline::playheadScreenXForTest() const
+{
+    return contentXToScreen(playheadContentX());
+}
+
+int AnimaticTimeline::followPointForTest() const
+{
+    return followPoint();
+}
+
+bool AnimaticTimeline::followTimerActiveForTest() const
+{
+    return m_followTimer && m_followTimer->isActive();
+}
+
+void AnimaticTimeline::userScrollForTest(int scrollX)
+{
+    if (m_hScroll)
+        m_hScroll->setValue(scrollX); // unguarded: counts as the user's
 }
 
 void AnimaticTimeline::setLoopRegion(int startIndex, int endIndex)
@@ -417,7 +540,10 @@ int AnimaticTimeline::playheadFrame() const
     if (m_current < 0 || m_current >= m_blocks.size())
         return 0;
     const Block &b = m_blocks.at(m_current);
-    const int elapsedMs = m_host ? m_host->elapsedMsInCurrentPanel() : 0;
+    // While following, the value read at this tick (see followTick); else
+    // the host's own.
+    const int elapsedMs = m_liveElapsedMs >= 0 ? m_liveElapsedMs
+        : m_host ? m_host->elapsedMsInCurrentPanel() : 0;
     int elapsedFrames = static_cast<int>(elapsedMs / (1000.0 / m_fps));
     elapsedFrames = qBound(0, elapsedFrames, b.frames);
     return b.startFrame + elapsedFrames;
@@ -427,13 +553,20 @@ void AnimaticTimeline::updateScrollRange()
 {
     if (!m_hScroll)
         return;
-    const int maxScroll = qMax(0, static_cast<int>(std::ceil(contentWidthPx())) - visibleWidth());
+    // ROUNDED, not ceil'd: Fit chooses a zoom whose content width is the
+    // view's width in floating point, and ceil turned a width of
+    // 1047.00006 into a scroll range of 1 px - which following then used
+    // (measured in the gate's "whole film fits" check, 2026-10-16). A film
+    // that fits has no range.
+    const int maxScroll = qMax(0, qRound(contentWidthPx()) - visibleWidth());
     m_hScroll->setRange(0, maxScroll);
     m_hScroll->setPageStep(qMax(1, visibleWidth()));
     m_hScroll->setSingleStep(qMax(1, static_cast<int>(pxPerSecond())));
     if (m_scrollX > maxScroll) {
         m_scrollX = maxScroll;
+        m_settingScroll = true; // a clamp, not the user's scroll
         m_hScroll->setValue(maxScroll);
+        m_settingScroll = false;
     }
     m_hScroll->setVisible(maxScroll > 0);
 }
@@ -456,8 +589,11 @@ void AnimaticTimeline::fitZoom()
     float z = static_cast<float>(vw) * 100.0f / static_cast<float>(totalFrames());
     z = qBound(10.0f, z, 400.0f);
     m_scrollX = 0;
-    if (m_hScroll)
+    if (m_hScroll) {
+        m_settingScroll = true; // Fit, not the user's scroll
         m_hScroll->setValue(0);
+        m_settingScroll = false;
+    }
     if (m_zoomSlider) {
         QSignalBlocker blk(m_zoomSlider);
         m_zoomSlider->setValue(qRound(z));
@@ -1254,6 +1390,12 @@ void AnimaticTimeline::canvasMouseRelease(QMouseEvent *e)
         if (idx >= 0 && idx != m_scrubIndex)
             emit playheadScrubbed(idx);
         m_scrubIndex = -1;
+        // The playhead came to rest at a panel's start, which may be off
+        // the left edge of the view: the jump rule, once, now that the
+        // drag is over (jumps are suppressed while it lasts - the strip
+        // must not move under a dragging hand).
+        m_viewHeld = false;
+        jumpIfOffScreen();
         m_canvas->update();
         QToolTip::hideText();
         return;

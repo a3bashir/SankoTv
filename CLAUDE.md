@@ -108,6 +108,14 @@ the page from.
   SELLING 11). Play waits for the player's position to move before the
   panel timers start (cap one second). Never start the film's timers from
   Play directly again, and never call `m_player->setPosition` directly.
+- **The timeline follows the playhead** (HANDOFF 2026-10-16): a 60 Hz
+  precise timer in `AnimaticTimeline`, running only while playing, reads
+  `AnimaticPage::liveElapsedMsInCurrentPanel()` (const, reads only) once
+  per tick and scrolls so the playhead holds a follow point two-thirds
+  across. A scroll the user made is never undone by following; jumps move
+  the view only if the playhead would be off-screen. Following writes
+  `m_scrollX` through `setScrollX` (guarded) and nothing else — it must
+  never seek, scrub, select or hover.
 - **File > Export** (MP4, PNG, PDF) is `src/export/` plus the asking and
   telling in `MainWindow`. All three read `Panel::flattenedPixmap()` —
   never a second idea of what a panel looks like. The MP4 encoder sits

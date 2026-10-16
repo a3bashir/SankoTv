@@ -1026,6 +1026,13 @@ void AnimaticPage::startFilmClock(qint64 audioMs)
         m_playheadTimer->start();
 }
 
+int AnimaticPage::liveElapsedMsInCurrentPanel() const
+{
+    if (m_playing && !m_waitingForAudio && m_panelClock.isValid())
+        return m_panelBaseMs + qRound(m_panelClock.elapsed() * double(m_panelSpeed));
+    return m_elapsedMsInCurrentPanel;
+}
+
 qint64 AnimaticPage::filmPositionMs() const
 {
     if (m_current < 0 || m_current >= m_items.size())

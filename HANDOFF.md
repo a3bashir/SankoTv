@@ -6382,6 +6382,104 @@ loaded is immediate; a sound that never begins (setAudioNeverBeginsForTest)
 holds the picture for the cap (300 ms there) and then it starts; no track
 starts at once.
 
+## The timeline follows the playhead (2026-10-16)
+
+WHAT HAPPENED: during playback the playhead ran off the right edge of the
+timeline and the view stayed where it was. The user's Dev Recorder session
+(Documents\SankoTV-DevRecordings\20261016-091521) showed it: a 2:06 film
+at the default zoom, about 45 s of it in view, the timecode at 1:56 and no
+playhead drawn. Nothing in the timeline read the playhead to scroll:
+m_scrollX changed only from the scrollbar, the clamp in updateScrollRange,
+and Fit, and the playhead was simply not drawn past the canvas edge. (The
+recorder logged no timeline state and no wheel events; the screenshots
+did the work. Those fields are added to it in the commit after this one.)
+
+THE RULES, the user's decisions:
+- FOLLOW POINT AT TWO-THIRDS, CONTINUOUS. The playhead moves freely until
+  it reaches a point two-thirds across the view; from there the strip
+  scrolls under it so it holds that point and the last third shows what
+  is coming. The scroll stops at the end of the content and the playhead
+  runs on to the end.
+- JUMPS put the playhead A THIRD across, and only if it would be
+  off-screen; in view, nothing moves. A jump is: Play, a scrub, a
+  selection (Home, End, the arrows, a click in the strip), the loop
+  restarting, and the playhead going home at the end of the film or on
+  Stop. Pause moves nothing. Playback stepping to the next panel is not a
+  jump. A loop back to the start shows the start (the jump clamps to 0).
+- THE USER'S SCROLL WINS: any scrollbar change that following did not
+  make - a drag, the wheel over the bar, its arrows, a click on its track.
+  With the playhead then LEFT of the follow point (in view or off the
+  left edge), following resumes when the playhead reaches it. RIGHT of it
+  (in view or off the right edge), the view is held where the user left
+  it until the next jump. Following never moves the view because of a
+  scroll the user made.
+- 60 Hz, ONE VALUE. AnimaticTimeline::followTick runs on a precise 16 ms
+  timer only while playing (started and stopped by setPlaying, which
+  Pause, Stop, the end of the film and a scrub all reach). Each tick reads
+  the panel's elapsed time ONCE from AnimaticPage::liveElapsedMsInCurrent-
+  Panel - the one change in AnimaticPage, a const accessor that reads the
+  panel clock the sync pass already keeps - and keeps it for the paint
+  that follows, so scroll and playhead come from one number and the
+  playhead holds exactly on the follow point (the screen x is
+  kLabelCol + qRound(px) - scrollX, and scrollX is set to qRound(px) - fp).
+  Following keeps computing while the timeline is collapsed, so expanding
+  shows the right place.
+- Following never seeks, scrubs, selects or hovers: it writes m_scrollX
+  through the scrollbar (guarded, so the scrollbar's signal does not read
+  it as the user's) and repaints. The hover highlight lives in
+  canvasMouseMove, which a scroll does not raise.
+
+COST, measured without a window (the timeline laid out with
+WA_DontShowOnScreen, 1400 px wide, 40 panels with thumbnails, the scroll
+moved between repaints; tests/_backups/audiosync_probe_20261016_paint_*):
+Release 0.9-2.0 ms per repaint across zooms (worst 3.0 at 100 %), Debug
+4.8-13.3 ms. At 60 Hz about 12 % of a core in Release at the costliest
+zoom. OPTION, NOT TAKEN (the user's decision for this pass): the clip
+thumbnails are rescaled from the 512 px mip on every repaint
+(renderCanvas); a per-zoom cache of the scaled pixmaps would roughly
+halve the cost.
+
+NO EFFECT ON SYNC, MEASURED: the sync-pass measurement rerun with the
+AnimaticPage shown off-screen (WA_DontShowOnScreen) so the timeline
+really paints at 60 Hz, following at 400 % zoom, both configs
+(tests/_backups/audiosync_probe_20261016_painting_drift_*). The first
+rerun read a whole-playback offset of 99 ms in Release against the sync
+pass's 80, so the whole-playback case was then run EIGHT TIMES BACK TO
+BACK in Release, alternating painting off and on
+(..._whole_Release.txt). The player reports its position in 85 ms steps,
+and the seven boundary offsets (sound minus picture) were the same
+sequence, -14, -27, -40, +32, +18, +5, -8 ms, in seven of the eight runs
+- the four painting-on runs among them - with a median of -8 and a range
+of -40..+32; one painting-OFF run read +45 instead of -40 at one
+boundary (one step), median +5, range -27..+45. The 99 was that step
+landing the other way. Painting changes nothing the measurement can see.
+
+GATE: Lifecycle (at), 15 checks; 652 -> 667. A 72 s film at 400 %
+(6912 px in a ~1050 px view).
+Positive control first: with following off, the playhead runs off the
+right edge and the view does not move. Then: following holds the playhead
+on the follow point within 1 px over eight readings; no seek (the sound
+runs on by the clock, not to a panel), no selection, no scrub; the strip
+stops at its end and the playhead runs on; the end of the film stops the
+timer and the playhead's return to panel 1 brings the view back; the
+timer runs on Play and stops after Pause, a scrub and Stop; the user's
+scroll ahead is left alone and following resumes at the follow point; the
+user's scroll back with the playhead right of the point, in view and off
+the right edge, is held through panels and a pause until the next Play
+repositions; End on a long film brings the playhead into view a third
+across (control: following off, it stays off-screen); Home shows the
+start and the arrows inside the view leave the offset unchanged; a Stop
+that sends the playhead home off-screen shows it; when the film fits,
+nothing moves. Nothing in it depends on the real pointer, the cursor or
+the active window.
+FOUND BY THE GATE WHILE BUILDING IT: Fit left a scroll range of 1 px
+(updateScrollRange ceil'd a content width of 1047.00006), and following
+duly scrolled that pixel. The range is rounded now; a film that fits has
+no range. The three other first-run failures of (at) were the checks'
+own: the strip reaches its end during the last panel, not at its start,
+and End cannot sit a third across when the strip has already reached its
+end - the jump clamps and the playhead sits a little right of a third.
+
 ## METHOD: measure interior structure ACROSS THE SIZE RANGE before calling it character (2026-09-25)
 
 The Painting census measured Acrylic at size 20 only and found "one

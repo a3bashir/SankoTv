@@ -11,6 +11,7 @@ class TimelineCanvas; // inner painted surface, defined in the .cpp
 class QContextMenuEvent;
 class QPushButton;
 class QScrollBar;
+class QTimer;
 class QSlider;
 struct Panel;
 struct Scene;
@@ -53,6 +54,18 @@ public:
     QString audioBarStateForTest() const;
     QString audioBarTextForTest() const;
     QRect audioRowForTest() const;
+    // The view's following of the playhead (see followTick): where the
+    // view is, how wide, where the playhead is drawn, the follow point,
+    // whether the follow timer runs; a switch to turn following off (the
+    // gate's positive control); and a scroll made "by the user", as any
+    // scrollbar change that following did not make counts.
+    int scrollXForTest() const { return m_scrollX; }
+    int visibleWidthForTest() const { return visibleWidth(); }
+    int playheadScreenXForTest() const;
+    int followPointForTest() const;
+    bool followTimerActiveForTest() const;
+    void setFollowForTest(bool follow) { m_follow = follow; }
+    void userScrollForTest(int scrollX);
 
     // The timeline reads the live elapsed time / current index from the page
     // when rendering the playhead (see updatePlayhead()).
@@ -156,6 +169,24 @@ private:
     double playheadContentX() const; // px, in content space
     int playheadFrame() const;
     void updateScrollRange();
+    // THE VIEW FOLLOWS THE PLAYHEAD (2026-10-16; HANDOFF "The timeline
+    // follows the playhead"). While the film plays, followTick runs at
+    // 60 Hz: it reads the panel's elapsed time live from the host ONCE,
+    // keeps it for the paint that follows (so scroll and playhead come
+    // from one value and the playhead holds still at the follow point),
+    // and, once the playhead has reached the follow point two-thirds across
+    // the view, scrolls so it stays there; the scroll stops at the end of
+    // the content and the playhead runs on. A scroll the user made is
+    // never undone by following (m_viewHeld). A jump - a change of panel
+    // that is not playback stepping to the next one, or Play - moves the
+    // view only if the playhead would be off-screen, and then puts it a
+    // third of the way across.
+    void followTick();
+    void setScrollX(int scrollX);       // by following: not a user scroll
+    void onUserScroll();                // any other scrollbar change
+    int followPoint() const;            // screen x, two-thirds across
+    void jumpIfOffScreen();             // the jump rule
+    bool playheadInView(int *screenX = nullptr) const;
     void applyZoom(float z);
     void fitZoom();
     int snapFrame(int frame) const;
@@ -181,6 +212,15 @@ private:
 
     float m_zoom = 100.0f; // 100 = 1px per frame
     int m_scrollX = 0;     // content scroll offset in px
+    // Following (see followTick).
+    QTimer *m_followTimer = nullptr;
+    bool m_follow = true;        // off only for the gate's positive control
+    bool m_settingScroll = false; // a scrollbar change made by following
+    bool m_viewHeld = false;      // the user scrolled with the playhead right
+                                  // of the follow point: the view is theirs
+                                  // until the next Play, scrub, seek or loop
+    int m_liveElapsedMs = -1;     // the host's elapsed time read this tick
+                                  // (-1: read the host's plain value)
     bool m_framesMode = false; // false = timecode, true = frame numbers
     bool m_snap = true;
 
