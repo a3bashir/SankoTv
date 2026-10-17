@@ -14,6 +14,7 @@
 #include <QPainterPath>
 #include <QPolygon>
 #include <QPushButton>
+#include <QEvent>
 #include <QScrollBar>
 #include <QSignalBlocker>
 #include <QSlider>
@@ -173,14 +174,15 @@ AnimaticTimeline::AnimaticTimeline(QWidget *parent)
         m_snap = !m_snap;
         styleToolbarButtons();
     });
+    // valueChanged is WHERE the view is, whoever moved it; whether the user
+    // moved it is decided from the bar's actions (onScrollbarAction).
     connect(m_hScroll, &QScrollBar::valueChanged, this, [this](int v) {
         m_scrollX = v;
-        // A change following did not make is the user's: a drag, the wheel
-        // over the bar, its arrows, a click on its track.
-        if (!m_settingScroll)
-            onUserScroll();
         m_canvas->update();
     });
+    connect(m_hScroll, &QScrollBar::actionTriggered, this,
+            &AnimaticTimeline::onScrollbarAction);
+    m_hScroll->installEventFilter(this); // to see the wheel arrive
 
     // The follow timer (followTick): 60 Hz, precise, only while playing.
     m_followTimer = new QTimer(this);
@@ -311,6 +313,7 @@ void AnimaticTimeline::refreshThumbnails()
 void AnimaticTimeline::setPlaying(bool playing)
 {
     m_playing = playing;
+    m_following = false; // engages again when following next scrolls
     if (playing) {
         // Play: a hold ends, the playhead is brought into view if it is
         // not, and the follow timer runs. Stop, Pause, the end of the film
@@ -341,8 +344,10 @@ void AnimaticTimeline::followTick()
     if (m_follow && !m_viewHeld && m_drag != Drag::Playhead) {
         const int phx = qRound(playheadContentX());
         const int fp = followPoint() - kLabelCol;
-        if (phx - m_scrollX > fp)
+        if (phx - m_scrollX > fp) {
             setScrollX(phx - fp); // held at the follow point (stops at the end)
+            m_following = true;   // from here, geometry changes keep it there
+        }
     }
     if (m_canvas)
         m_canvas->update();
@@ -362,19 +367,60 @@ void AnimaticTimeline::setScrollX(int scrollX)
     const int clamped = qBound(0, scrollX, m_hScroll->maximum());
     if (clamped == m_scrollX)
         return;
-    m_settingScroll = true;
-    m_hScroll->setValue(clamped); // valueChanged sets m_scrollX
-    m_settingScroll = false;
+    m_hScroll->setValue(clamped); // valueChanged sets m_scrollX; no action
+}
+
+// The scrollbar reports an action. Which of them are the user's is the
+// whole question (see the header): steps, pages and to-min / to-max come
+// only from the bar's own buttons, track and keys; a SliderMove is a drag
+// when the handle is pressed, the wheel when a wheel event is being
+// delivered, and otherwise a programmatic setSliderPosition - not the
+// user's. The position the action chose is sliderPosition(), which is
+// ahead of value() at this moment.
+void AnimaticTimeline::onScrollbarAction(int action)
+{
+    bool user = false;
+    switch (action) {
+    case QAbstractSlider::SliderSingleStepAdd:
+    case QAbstractSlider::SliderSingleStepSub:
+    case QAbstractSlider::SliderPageStepAdd:
+    case QAbstractSlider::SliderPageStepSub:
+    case QAbstractSlider::SliderToMinimum:
+    case QAbstractSlider::SliderToMaximum:
+        user = true;
+        break;
+    case QAbstractSlider::SliderMove:
+        user = (m_hScroll && m_hScroll->isSliderDown()) || m_wheelOnScrollbar;
+        break;
+    default:
+        break;
+    }
+    if (user && m_hScroll)
+        onUserScroll(m_hScroll->sliderPosition());
+}
+
+bool AnimaticTimeline::eventFilter(QObject *watched, QEvent *event)
+{
+    if (watched == m_hScroll && event->type() == QEvent::Wheel) {
+        // The bar handles the wheel after this returns, reporting a
+        // SliderMove; the flag is what tells that move from a programmatic
+        // one. Cleared once the event has been dealt with, whether or not
+        // the bar moved (at the end of its range it reports nothing).
+        m_wheelOnScrollbar = true;
+        QTimer::singleShot(0, this, [this] { m_wheelOnScrollbar = false; });
+    }
+    return QWidget::eventFilter(watched, event);
 }
 
 // The user's scroll wins. With the playhead now RIGHT of the follow point
 // (in view or off the right edge) the view is theirs until the next Play,
 // scrub, seek or loop restart. Left of it, following simply has nothing to
 // do until the playhead arrives there, and then carries on as usual.
-void AnimaticTimeline::onUserScroll()
+void AnimaticTimeline::onUserScroll(int scrollX)
 {
     const int phx = qRound(playheadContentX());
-    m_viewHeld = phx - m_scrollX > followPoint() - kLabelCol;
+    m_viewHeld = phx - scrollX > followPoint() - kLabelCol;
+    m_following = false; // the user placed the view; following re-engages at the point
 }
 
 bool AnimaticTimeline::playheadInView(int *screenX) const
@@ -392,6 +438,7 @@ void AnimaticTimeline::jumpIfOffScreen()
 {
     if (!m_follow || !m_hScroll || m_hScroll->maximum() <= 0 || playheadInView())
         return;
+    m_following = false; // a jump: following engages again at the point
     setScrollX(qRound(playheadContentX()) - visibleWidth() / 3);
 }
 
@@ -428,8 +475,13 @@ QVariantMap AnimaticTimeline::devrecState() const
 
 void AnimaticTimeline::userScrollForTest(int scrollX)
 {
-    if (m_hScroll)
-        m_hScroll->setValue(scrollX); // unguarded: counts as the user's
+    if (!m_hScroll)
+        return;
+    // A drag, as the bar reports one: handle pressed, position moved,
+    // handle released. (Section (au) drives the real events as well.)
+    m_hScroll->setSliderDown(true);
+    m_hScroll->setSliderPosition(scrollX);
+    m_hScroll->setSliderDown(false);
 }
 
 void AnimaticTimeline::setLoopRegion(int startIndex, int endIndex)
@@ -580,11 +632,25 @@ void AnimaticTimeline::updateScrollRange()
     m_hScroll->setSingleStep(qMax(1, static_cast<int>(pxPerSecond())));
     if (m_scrollX > maxScroll) {
         m_scrollX = maxScroll;
-        m_settingScroll = true; // a clamp, not the user's scroll
-        m_hScroll->setValue(maxScroll);
-        m_settingScroll = false;
+        m_hScroll->setValue(maxScroll); // a clamp: valueChanged, no action
     }
     m_hScroll->setVisible(maxScroll > 0);
+    // A GEOMETRY CHANGE WHILE THE STRIP IS SCROLLING UNDER THE PLAYHEAD -
+    // a zoom, the timeline's width, a panel lengthened - moves the
+    // playhead within the view (a zoom-out halves its content x and can
+    // put it off the left edge). The user's rule: the playhead stays in
+    // view, held at the follow point while there is room. So the view is
+    // re-anchored to it here, through following's own path - never the
+    // user's. Before following has engaged nothing is moved; while the
+    // user holds the view (m_viewHeld) nothing is moved and the hold
+    // stands - only Play, a scrub, a seek or a loop restart end a hold.
+    // PAUSED OR STOPPED, A CHANGE OF SIZE MOVES NOTHING (the user's rule,
+    // 2026-10-17): a timing edit, a duration drag, zoom, resize, the
+    // splitter, collapse / expand. If the playhead ends up off-screen,
+    // the next Play brings it back by the jump rule.
+    if (m_following && m_playing && m_follow && !m_viewHeld && m_host
+        && m_drag != Drag::Playhead)
+        setScrollX(qRound(playheadContentX()) - (followPoint() - kLabelCol));
 }
 
 void AnimaticTimeline::applyZoom(float z)
@@ -605,11 +671,8 @@ void AnimaticTimeline::fitZoom()
     float z = static_cast<float>(vw) * 100.0f / static_cast<float>(totalFrames());
     z = qBound(10.0f, z, 400.0f);
     m_scrollX = 0;
-    if (m_hScroll) {
-        m_settingScroll = true; // Fit, not the user's scroll
-        m_hScroll->setValue(0);
-        m_settingScroll = false;
-    }
+    if (m_hScroll)
+        m_hScroll->setValue(0); // Fit: valueChanged, no action
     if (m_zoomSlider) {
         QSignalBlocker blk(m_zoomSlider);
         m_zoomSlider->setValue(qRound(z));

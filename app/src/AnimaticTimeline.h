@@ -65,6 +65,7 @@ public:
     int playheadScreenXForTest() const;
     int followPointForTest() const;
     bool followTimerActiveForTest() const;
+    bool viewHeldForTest() const { return m_viewHeld; }
     void setFollowForTest(bool follow) { m_follow = follow; }
     void userScrollForTest(int scrollX);
     // For the Dev Recorder's statePoll (2026-10-16): the view's zoom,
@@ -189,7 +190,20 @@ private:
     // third of the way across.
     void followTick();
     void setScrollX(int scrollX);       // by following: not a user scroll
-    void onUserScroll();                // any other scrollbar change
+    // "MY SCROLL" IS ONLY WHAT THE USER DOES TO THE SCROLLBAR (the user's
+    // rule, 2026-10-17): a drag of its handle, the wheel over it, its arrow
+    // buttons, a click on its track. The scrollbar reports those through
+    // actionTriggered - but it reports a programmatic setSliderPosition the
+    // same way (SliderMove), and a range change (zoom out) clamps the value
+    // with valueChanged alone. So: valueChanged is never read as the
+    // user's; an action is the user's when it is a step or page action, or
+    // a SliderMove while the handle is pressed (a drag) or while a wheel
+    // event is being delivered to the bar (the event filter). The first
+    // version read valueChanged, and the clamp of a zoom-out held the view
+    // - the Dev Recorder showed it.
+    void onScrollbarAction(int action);
+    void onUserScroll(int scrollX);     // the user's scroll, to this offset
+    bool eventFilter(QObject *watched, QEvent *event) override;
     int followPoint() const;            // screen x, two-thirds across
     void jumpIfOffScreen();             // the jump rule
     bool playheadInView(int *screenX = nullptr) const;
@@ -221,7 +235,10 @@ private:
     // Following (see followTick).
     QTimer *m_followTimer = nullptr;
     bool m_follow = true;        // off only for the gate's positive control
-    bool m_settingScroll = false; // a scrollbar change made by following
+    bool m_wheelOnScrollbar = false; // a wheel event is being delivered to the bar
+    bool m_following = false;     // the strip is scrolling under the playhead:
+                                  // a geometry change (zoom, width, panels)
+                                  // keeps it on the follow point
     bool m_viewHeld = false;      // the user scrolled with the playhead right
                                   // of the follow point: the view is theirs
                                   // until the next Play, scrub, seek or loop

@@ -6006,6 +6006,13 @@ THE QUICKSHAPE FAMILY DEPENDS ON ITS WINDOW KEEPING FOCUS.
   window that took it\")" at that point in the log, and a count at exit;
   run-gate.ps1 shows the line first among a failing family's reasons. A
   failure of this kind now names its cause. It does not prevent it.
+- THE SAME DEPENDENCY IN THE DEV RECORDER FAMILY (2026-10-17, the user's
+  note): SankoDevRecorderTest's check "Ctrl+Shift+R stops the recording
+  from inside the modal" sends a keyboard shortcut, so it depends on
+  which window is active, like QuickShape's focus dependency. In the
+  2026-10-17 Debug gate it failed once with "a test window LOST THE
+  FOREGROUND here, 4.3 s into the run" in its log, and passed twice when
+  run alone. Open, for whoever owns that family's test.
 - ALSO ON RECORD, UNATTRIBUTED (2026-10-16): in a full gate run while the
   user was working in Photoshop (eight foreground losses logged by other
   families), Debug SankoCanvasSizeLock failed one check - (j) "5000 px
@@ -6509,6 +6516,98 @@ THE USER'S NOTE: their own scrolling during playback (no scrollbar drag,
 no wheel - viewHeld was false in all 383 polls) and End / Home on a film
 wider than the view (the film fit when those were used). They will
 record those separately.
+
+## "My scroll" is only what the user does to the scrollbar (2026-10-17)
+
+FOUND BY THE SECOND RECORDING (Documents\SankoTV-DevRecordings\
+20261017-135215), read back from the new timeline fields: viewHeld went
+true twice, at 73.0 s and 108.5 s, and neither was the user's scroll -
+both were zoom-slider drags OUT during playback. Following stopped while
+the playhead ran on to the edge of the view (x 1908 of 1920 at 112.5 s).
+THE MECHANISM: applyZoom -> updateScrollRange -> QScrollBar::setRange;
+when the new range is smaller than the value, Qt's setRange re-bounds the
+value through setValue, which emits valueChanged. The first version read
+every valueChanged that following had not made as the user's (a guard
+flag around following's own setValue). The clamp inside setRange was
+not guarded, so it counted.
+
+THE RULE, the user's: "my scroll" is only what they do to the scrollbar
+- a drag of its handle, the wheel over it, its arrow buttons, a click on
+its track. A change the program makes to the scrollbar must never set
+viewHeld.
+
+TWO WAYS CONSIDERED. (1) Guard the setRange call too: a blacklist - every
+future programmatic path has to remember the guard, and the next one that
+forgets is this bug again. (2) Read the bar's own report of its actions
+(QAbstractSlider::actionTriggered) instead of valueChanged: a whitelist of
+the user's acts. Measured against qtbase 6.11's qabstractslider.cpp and
+qscrollbar.cpp: steps, pages and to-min/max come only from triggerAction
+(the bar's buttons, track and keys); a drag and the wheel arrive as
+SliderMove; setValue and setRange emit NO action - but a programmatic
+setSliderPosition (tracking on) DOES emit SliderMove, as the user warned.
+BUILT: (2), with SliderMove accepted only while the handle is pressed
+(isSliderDown: a drag) or while a wheel event is being delivered to the
+bar (an event filter sets a flag for the duration of the event). A
+programmatic setSliderPosition is therefore not the user's either. The
+guard flag is gone; valueChanged only records where the view is.
+
+EVERY PLACE THE SCROLLBAR CHANGES WITHOUT THE USER (none may hold the
+view): zoom (slider, + and - buttons) -> applyZoom -> updateScrollRange
+(setRange / setPageStep / setSingleStep, and the clamp); Fit (setValue(0)
++ applyZoom); the timeline's width changing - window resize, the splitter,
+collapse / expand - -> canvasResized -> updateScrollRange; the panel list
+or a duration changing - panels added, removed, moved, lengthened, undo /
+redo of any of those, a duration drag in progress, the frame rate changing
+-> setScenes / setFps -> rebuildBlocks + updateScrollRange; following
+(setScrollX -> setValue) and the jump rule (the same). Audio import
+changes nothing on the scrollbar (the audio bar is painted, not scrolled).
+A GEOMETRY CHANGE KEEPS THE PLAYHEAD IN VIEW. Found by the check, not
+the recording: a zoom-out halves the playhead's content x, so with the
+view unmoved the playhead landed off the LEFT edge (x -76, measured),
+and following - which only scrolls when the playhead is right of the
+point - would have left it there. So: once following has engaged
+(m_following, set when it first scrolls; cleared by Play, a jump, a
+hold), every updateScrollRange re-anchors the view so the playhead sits
+on the follow point - zoom in or out, the timeline's width, the panel
+list - through following's own setScrollX, never the user's path. A HOLD
+SURVIVES IT: while viewHeld is true nothing is re-anchored and the hold
+stands (the re-anchor is conditioned on !m_viewHeld, and nothing in
+updateScrollRange touches the flag) - only Play, a scrub, a seek or a
+loop restart end a hold. PAUSED OR STOPPED, A CHANGE OF SIZE MOVES
+NOTHING (the user's rule): a timing edit, a duration drag, zoom, resize,
+the splitter, collapse / expand; if the playhead ends up off-screen the
+next Play brings it back by the jump rule. (A first version jumped the
+view while paused when the playhead went off-screen; removed at the
+user's decision.) The rule for End, Home and selection changes while
+stopped is unchanged. Measured on the way: A TIMING EDIT PAUSES THE FILM
+before it reflows the blocks, so "a panel lengthened during playback"
+cannot happen; the gate checks the paused case (the reflow pushes the
+playhead off the right edge, x 1368 of 1137, the offset does not move,
+and the next Play brings it back).
+THE ARROW BUTTONS: SankoScrollBarStyle gives add-line / sub-line
+"width: 0; height: 0", but the stylesheet style still reports a 12 x 12
+sub-line rect at the horizontal bar's left end (the gate prints it); a
+click there is a single step and holds the view like the others. Nothing
+is drawn there, so a person has no button to aim at; the check runs on
+the rect the style reports and says what it measured. LEFT AS QT HAS IT,
+the user's decision 2026-10-17: the invisible 12 px spot stays. THE WHEEL on this
+horizontal bar reads the Y axis: +120 scrolls left, -120 right, and an
+event with both axes set moves nothing (measured while writing the
+check; the recorder's wheel records carry both deltas, so a reading of
+a real session should use Y).
+
+GATE: Lifecycle (au), 23 checks; 669 -> 692. Written BEFORE the fix and run against the old code
+first: the zoom-out check failed there (held true), as the recording
+said, and the user-action checks passed - the positive controls. Then,
+with the fix: playing at 400 % held on the follow point, each programmatic
+path - zoom out, zoom in, Fit, the window narrowed and widened (the one
+canvasResized the splitter and collapse reach too), a panel lengthened
+and its undo, and a programmatic setSliderPosition - leaves viewHeld
+false, the playhead in view, and on the follow point while there is room
+to scroll. Then the user's acts, each by synthetic events sent straight to
+the scrollbar (never the real pointer): a drag of the handle, the wheel
+over the bar, a click on the track left of the handle - each holds the
+view, with a control that the bar moved.
 
 ## METHOD: measure interior structure ACROSS THE SIZE RANGE before calling it character (2026-09-25)
 

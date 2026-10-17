@@ -110,6 +110,8 @@
 #include <QScrollArea>
 #include <QScrollBar>
 #include <QSlider>
+#include <QStyle>
+#include <QStyleOptionSlider>
 #include <QUndoStack>
 #include <QtGui/QTransform>
 #include <functional>
@@ -8863,6 +8865,328 @@ void runTimelineFollowsPass(const QString &scratch)
     pump(200);
 }
 
+// ---- (au) "my scroll" is only what the user does to the scrollbar ------------
+// 2026-10-17, found by the Dev Recorder's new timeline fields: zooming OUT
+// during playback set viewHeld and stopped following. The zoom shrank the
+// scroll range, Qt's scrollbar clamped its own value, and the clamp's
+// valueChanged was read as the user's scroll. The rule the user approved:
+// "my scroll" is a drag, the wheel over the bar, its arrow buttons, or a
+// click on its track - and a change the program makes to the scrollbar
+// must never set viewHeld. These checks drive each with synthetic events
+// sent straight to the scrollbar (never the real pointer), and each
+// programmatic path with the calls the app makes.
+namespace scrollbar {
+
+QStyleOptionSlider optionFor(QScrollBar *bar)
+{
+    QStyleOptionSlider opt;
+    opt.initFrom(bar);
+    opt.subControls = QStyle::SC_All;
+    opt.activeSubControls = QStyle::SC_None;
+    opt.orientation = bar->orientation();
+    opt.minimum = bar->minimum();
+    opt.maximum = bar->maximum();
+    opt.sliderPosition = bar->sliderPosition();
+    opt.sliderValue = bar->value();
+    opt.singleStep = bar->singleStep();
+    opt.pageStep = bar->pageStep();
+    opt.upsideDown = bar->invertedAppearance();
+    if (bar->orientation() == Qt::Horizontal)
+        opt.state |= QStyle::State_Horizontal;
+    return opt;
+}
+
+QRect partRect(QScrollBar *bar, QStyle::SubControl part)
+{
+    const QStyleOptionSlider opt = optionFor(bar);
+    return bar->style()->subControlRect(QStyle::CC_ScrollBar, &opt, part, bar);
+}
+
+// A real drag: press on the handle, move left by `px`, release.
+void drag(QScrollBar *bar, int px)
+{
+    const QRect handle = partRect(bar, QStyle::SC_ScrollBarSlider);
+    const QPointF start = QRectF(handle).center();
+    sendMouse(bar, QEvent::MouseButtonPress, start, Qt::LeftButton);
+    pump(30);
+    sendMouse(bar, QEvent::MouseMove, start - QPointF(px / 2.0, 0), Qt::LeftButton);
+    pump(30);
+    sendMouse(bar, QEvent::MouseMove, start - QPointF(px, 0), Qt::LeftButton);
+    pump(30);
+    sendMouse(bar, QEvent::MouseButtonRelease, start - QPointF(px, 0), Qt::LeftButton);
+    pump(60);
+}
+
+// The wheel over the bar, in the direction that scrolls LEFT. Measured on
+// this horizontal bar: an event with BOTH axes set moved nothing (the two
+// earlier readings of "+12" were following's own motion during the wait);
+// Y alone at -120 moved the view RIGHT by 864 px over three notches; so
+// +120 on Y, X at zero, is "left".
+void wheelLeft(QScrollBar *bar, int notches)
+{
+    const QRect handle = partRect(bar, QStyle::SC_ScrollBarSlider);
+    const QPointF at = QRectF(handle).center();
+    for (int i = 0; i < notches; ++i) {
+        QWheelEvent ev(at, bar->mapToGlobal(at.toPoint()), QPoint(), QPoint(0, 120),
+                       Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+        QCoreApplication::sendEvent(bar, &ev);
+        pump(20);
+    }
+    pump(60);
+}
+
+// A click on a part of the bar (the track left of the handle, or the left
+// arrow button if the style has one).
+void click(QScrollBar *bar, const QPointF &at)
+{
+    sendMouse(bar, QEvent::MouseButtonPress, at, Qt::LeftButton);
+    pump(30);
+    sendMouse(bar, QEvent::MouseButtonRelease, at, Qt::LeftButton);
+    pump(60);
+}
+
+} // namespace scrollbar
+
+void runScrollbarOwnershipPass(const QString &scratch)
+{
+    using namespace workspace;
+    using audio::waitFor;
+    out() << "--- (au) \"my scroll\" is only what the user does to the scrollbar: "
+             "programmatic changes never hold the view; a drag, the wheel, a track "
+             "click do ---" << Qt::endl;
+    const QString base = scratch + QStringLiteral("/scrollown");
+    QDir(base).removeRecursively();
+    const QString project = writeProject(base + QStringLiteral("/p"),
+                                         QStringLiteral("Own"), QSize(960, 540),
+                                         24, 1, 24);
+    Rig r(project);
+    check(QStringLiteral("(au) the workspace opened"), r.ok);
+    if (!r.ok)
+        return;
+    AnimaticPage *page = r.animatic;
+    AnimaticTimeline *tl = r.timeline;
+    QSlider *zoom = tl->findChild<QSlider *>();
+    QScrollBar *bar = tl->findChild<QScrollBar *>();
+    if (!zoom || !bar) {
+        check(QStringLiteral("(au) the timeline's zoom slider and scrollbar were found"),
+              false);
+        return;
+    }
+    auto started = [&] {
+        return waitFor([&] { return !page->waitingForAudioForTest(); }, 3000);
+    };
+    auto fp = [&] { return tl->followPointForTest(); };
+    auto labelCol = [&] { return fp() - tl->visibleWidthForTest() * 2 / 3; };
+    auto rightEdge = [&] { return labelCol() + tl->visibleWidthForTest(); };
+    auto inView = [&] {
+        const int x = tl->playheadScreenXForTest();
+        return x >= labelCol() && x <= rightEdge();
+    };
+    // Play from the start at 400 % and run until following holds the
+    // playhead on the follow point. Every case begins from here.
+    auto heldAtFollowPoint = [&]() -> bool {
+        page->leavePreview();
+        pump(150);
+        zoom->setValue(400);
+        pump(100);
+        clickClip(r, 0);
+        pump(150);
+        page->togglePlay();
+        if (!started())
+            return false;
+        while (page->currentFlatIndex() < 6 && page->isPlaying()) {
+            page->advanceForTest();
+            pump(40);
+        }
+        pump(80);
+        return qAbs(tl->playheadScreenXForTest() - fp()) <= 1 && tl->scrollXForTest() > 0
+            && page->isPlaying();
+    };
+    // What a programmatic change must leave: not held, the playhead in
+    // view, and - while there is still room to scroll - on the follow
+    // point once following has had a tick.
+    auto settledRight = [&](QString *why) {
+        pump(80);
+        const bool room = bar->maximum() > 0 && tl->scrollXForTest() < bar->maximum();
+        const bool onPoint = qAbs(tl->playheadScreenXForTest() - fp()) <= 1;
+        const bool ok = !tl->viewHeldForTest() && inView() && (!room || onPoint);
+        *why = QStringLiteral("held %1, playhead x %2 (follow point %3, right edge %4), "
+                              "scroll %5/%6, zoom %7, playing %8")
+                   .arg(tl->viewHeldForTest()).arg(tl->playheadScreenXForTest()).arg(fp())
+                   .arg(rightEdge()).arg(tl->scrollXForTest()).arg(bar->maximum())
+                   .arg(zoom->value()).arg(page->isPlaying());
+        return ok && page->isPlaying();
+    };
+    QString why;
+
+    // ---- programmatic changes during playback --------------------------------------
+    check(QStringLiteral("(au) fixture: playing at 400 %, held on the follow point"),
+          heldAtFollowPoint());
+    zoom->setValue(200); // ZOOM OUT: the range shrinks, Qt clamps the value
+    check(QStringLiteral("(au) ZOOM OUT during playback: not held, the playhead "
+                         "in view and back on the follow point (the recording of "
+                         "2026-10-17 showed this holding the view)"),
+          settledRight(&why), why);
+    zoom->setValue(300); // zoom in
+    check(QStringLiteral("(au) zoom IN during playback: the same"), settledRight(&why), why);
+    for (QPushButton *b : tl->findChildren<QPushButton *>())
+        if (b->text() == QStringLiteral("Fit"))
+            b->click();
+    check(QStringLiteral("(au) FIT during playback: not held, playhead in view "
+                         "(no room left to scroll)"),
+          settledRight(&why), why);
+    check(QStringLiteral("(au) fixture: held on the follow point again"), heldAtFollowPoint());
+    const QSize before = r.window.size();
+    r.window.resize(before.width() - 300, before.height()); // the view narrows
+    pump(250);
+    check(QStringLiteral("(au) a NARROWER TIMELINE during playback (window "
+                         "resized; the splitter and collapse reach the same "
+                         "canvasResized): not held, playhead in view, on the "
+                         "new follow point"),
+          settledRight(&why), why);
+    r.window.resize(before);
+    pump(250);
+    check(QStringLiteral("(au) ...and back to the old width: the same"),
+          settledRight(&why), why);
+    // A panel BEFORE the playhead lengthened (the structure changes and
+    // the range with it), and its undo.
+    // A timing edit PAUSES the film before it reflows the blocks (measured:
+    // playing was false after the command), so "during playback" is not
+    // possible here. The user's rule for paused or stopped: a change of
+    // size moves nothing - the reflow pushes the playhead off the right
+    // edge (x 1368 of 1137, measured) and the view stays; the next Play
+    // brings it back by the jump rule.
+    QUndoStack *undo = r.window.undoStackForTest();
+    const int undoCount = undo->count();
+    const int scrollBeforeEdit = tl->scrollXForTest();
+    page->setPanelDurationForTest(0, 1, 9);
+    pump(80);
+    auto stayedPut = [&](QString *w) {
+        const bool ok = !tl->viewHeldForTest() && !page->isPlaying()
+            && tl->scrollXForTest() == scrollBeforeEdit;
+        *w = QStringLiteral("held %1, playhead x %2 (right edge %3), scroll %4 (was %5), "
+                            "range %6, playing %7")
+                 .arg(tl->viewHeldForTest()).arg(tl->playheadScreenXForTest())
+                 .arg(rightEdge()).arg(tl->scrollXForTest()).arg(scrollBeforeEdit)
+                 .arg(bar->maximum()).arg(page->isPlaying());
+        return ok;
+    };
+    check(QStringLiteral("(au) a PANEL LENGTHENED by a timing command (which "
+                         "pauses the film and rebuilds the blocks): PAUSED, A "
+                         "CHANGE OF SIZE MOVES NOTHING - the view's offset is "
+                         "unchanged even with the playhead pushed off the "
+                         "right edge, and not held"),
+          stayedPut(&why) && undo->count() == undoCount + 1
+              && tl->playheadScreenXForTest() > rightEdge(),
+          why);
+    undo->undo();
+    pump(80);
+    check(QStringLiteral("(au) ...and its UNDO: the same, offset unchanged"),
+          stayedPut(&why), why);
+    page->togglePlay();
+    const int afterPlay = tl->playheadScreenXForTest();
+    started();
+    check(QStringLiteral("(au) ...and the next Play brings the playhead back "
+                         "by the jump rule (a third across) - it was in view "
+                         "after the undo, so here nothing moves unless it was "
+                         "off-screen"),
+          afterPlay >= labelCol() && afterPlay <= rightEdge(),
+          QStringLiteral("playhead x %1 at Play (view %2..%3)").arg(afterPlay)
+              .arg(labelCol()).arg(rightEdge()));
+    check(QStringLiteral("(au) fixture: held on the follow point"), heldAtFollowPoint());
+    bar->setSliderPosition(qMax(0, bar->value() - 200)); // what a future programmer might write
+    check(QStringLiteral("(au) a programmatic setSliderPosition during playback "
+                         "(which Qt reports with the same signal as a wheel or a "
+                         "drag) is NOT the user's: not held, and following takes "
+                         "the playhead back to the follow point"),
+          settledRight(&why), why);
+
+    // ---- the user's actions, each a positive control for the above -----------------------
+    check(QStringLiteral("(au) fixture: held on the follow point"), heldAtFollowPoint());
+    scrollbar::drag(bar, 400);
+    check(QStringLiteral("(au) A DRAG of the handle to the left holds the view: "
+                         "viewHeld true, the playhead right of the follow point, "
+                         "and the view does not come back while playing"),
+          tl->viewHeldForTest() && tl->playheadScreenXForTest() > fp()
+              && [&] { const int s = tl->scrollXForTest(); pump(300); return tl->scrollXForTest() == s; }(),
+          QStringLiteral("held %1, playhead x %2, scroll %3").arg(tl->viewHeldForTest())
+              .arg(tl->playheadScreenXForTest()).arg(tl->scrollXForTest()));
+    // ---- a hold survives a change of size -------------------------------------------
+    // Only Play, a scrub, a seek or a loop restart end a hold: zoom and
+    // resize while held must leave viewHeld true and must not re-anchor.
+    check(QStringLiteral("(au) fixture: held on the follow point"), heldAtFollowPoint());
+    scrollbar::drag(bar, 400);
+    const bool heldFirst = tl->viewHeldForTest();
+    const int heldScroll = tl->scrollXForTest();
+    zoom->setValue(200); // zoom out while held: the range shrinks
+    pump(80);
+    const bool heldAfterZoom = tl->viewHeldForTest();
+    const int scrollAfterZoom = tl->scrollXForTest();
+    const bool notAnchoredZoom = scrollAfterZoom == qMin(heldScroll, bar->maximum());
+    r.window.resize(before.width() - 300, before.height());
+    pump(250);
+    const bool heldAfterResize = tl->viewHeldForTest();
+    const int scrollAfterResize = tl->scrollXForTest();
+    const bool notAnchoredResize = scrollAfterResize == qMin(scrollAfterZoom, bar->maximum());
+    r.window.resize(before);
+    pump(250);
+    const bool heldAfterRestore = tl->viewHeldForTest();
+    check(QStringLiteral("(au) A HOLD SURVIVES A CHANGE OF SIZE: after a drag "
+                         "back, a zoom-out and a window resize leave viewHeld "
+                         "true and move the offset only by the range's clamp - "
+                         "no re-anchoring"),
+          heldFirst && heldAfterZoom && notAnchoredZoom && heldAfterResize
+              && notAnchoredResize && heldAfterRestore,
+          QStringLiteral("held %1 -> zoom %2 (scroll %3 -> %4, max %5) -> resize %6 "
+                         "(scroll %7) -> restore %8")
+              .arg(heldFirst).arg(heldAfterZoom).arg(heldScroll).arg(scrollAfterZoom)
+              .arg(bar->maximum()).arg(heldAfterResize).arg(scrollAfterResize)
+              .arg(heldAfterRestore));
+    check(QStringLiteral("(au) fixture: held on the follow point"), heldAtFollowPoint());
+    const int beforeWheel = tl->scrollXForTest();
+    scrollbar::wheelLeft(bar, 3);
+    check(QStringLiteral("(au) THE WHEEL over the scrollbar, scrolling left, holds "
+                         "the view (control: the wheel moved it)"),
+          tl->scrollXForTest() < beforeWheel && tl->viewHeldForTest()
+              && tl->playheadScreenXForTest() > fp(),
+          QStringLiteral("scroll %1 -> %2, held %3").arg(beforeWheel)
+              .arg(tl->scrollXForTest()).arg(tl->viewHeldForTest()));
+    check(QStringLiteral("(au) fixture: held on the follow point"), heldAtFollowPoint());
+    const QRect track = scrollbar::partRect(bar, QStyle::SC_ScrollBarSubPage);
+    const int beforeTrack = tl->scrollXForTest();
+    scrollbar::click(bar, QPointF(track.left() + 2, track.center().y()));
+    check(QStringLiteral("(au) A CLICK ON THE TRACK left of the handle (a page "
+                         "step back) holds the view (control: it moved)"),
+          !track.isEmpty() && tl->scrollXForTest() < beforeTrack && tl->viewHeldForTest(),
+          QStringLiteral("track %1x%2 at %3; scroll %4 -> %5, held %6").arg(track.width())
+              .arg(track.height()).arg(track.left()).arg(beforeTrack)
+              .arg(tl->scrollXForTest()).arg(tl->viewHeldForTest()));
+    const QRect arrow = scrollbar::partRect(bar, QStyle::SC_ScrollBarSubLine);
+    // The style gives add-line / sub-line "width: 0; height: 0". A rect a
+    // few pixels wide is the style's placeholder, not a button a person
+    // could press: say so rather than click the track beside it and call
+    // it the arrow.
+    if (arrow.width() < 8 || arrow.height() < 8) {
+        out() << "  NOTE (au) this scrollbar style has NO ARROW BUTTONS (sub-line "
+                 "rect " << arrow.width() << "x" << arrow.height() << " at x "
+              << arrow.left() << "): the left-arrow check cannot be run and is not "
+                 "pretended." << Qt::endl;
+    } else {
+        check(QStringLiteral("(au) fixture: held on the follow point"), heldAtFollowPoint());
+        const int beforeArrow = tl->scrollXForTest();
+        scrollbar::click(bar, QRectF(arrow).center());
+        check(QStringLiteral("(au) THE LEFT ARROW BUTTON (the style gives it a "
+                             "rect, see the detail) holds the view: a single "
+                             "step back"),
+              tl->scrollXForTest() < beforeArrow && tl->viewHeldForTest(),
+              QStringLiteral("sub-line rect %1x%2 at x %3; scroll %4 -> %5, held %6")
+                  .arg(arrow.width()).arg(arrow.height()).arg(arrow.left())
+                  .arg(beforeArrow).arg(tl->scrollXForTest()).arg(tl->viewHeldForTest()));
+    }
+    page->leavePreview();
+    pump(200);
+}
+
 int main(int argc, char **argv)
 {
 #ifdef Q_OS_WIN
@@ -9082,6 +9406,7 @@ int main(int argc, char **argv)
     runAudioSaysWhyPass(scratch);
     runAudioKeepsStepPass(scratch);
     runTimelineFollowsPass(scratch);
+    runScrollbarOwnershipPass(scratch);
 
     // ---- (aa) a test that cannot start says why and exits ----------------
     // An unattended gate must FAIL, not wait. Measured 2026-10-02: with its

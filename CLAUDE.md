@@ -114,8 +114,14 @@ the page from.
   per tick and scrolls so the playhead holds a follow point two-thirds
   across. A scroll the user made is never undone by following; jumps move
   the view only if the playhead would be off-screen. Following writes
-  `m_scrollX` through `setScrollX` (guarded) and nothing else — it must
-  never seek, scrub, select or hover.
+  `m_scrollX` through `setScrollX` and nothing else — it must never seek,
+  scrub, select or hover. **"My scroll" is only what the user does to the
+  scrollbar** (2026-10-17): it is read from the bar's `actionTriggered`
+  (steps, pages; `SliderMove` only with the handle pressed or during a
+  wheel event), never from `valueChanged`, so no programmatic change —
+  zoom, Fit, resize, panels, `setSliderPosition` — can hold the view.
+  Once following has engaged, a geometry change re-anchors the playhead
+  to the follow point.
 - **File > Export** (MP4, PNG, PDF) is `src/export/` plus the asking and
   telling in `MainWindow`. All three read `Panel::flattenedPixmap()` —
   never a second idea of what a panel looks like. The MP4 encoder sits
