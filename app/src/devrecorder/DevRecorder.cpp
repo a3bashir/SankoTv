@@ -13,6 +13,14 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QWindow>
+#include <QAbstractButton>
+#include <QAbstractSpinBox>
+#include <QKeyEvent>
+#include <QKeySequence>
+#include <QLineEdit>
+#include <QMessageBox>
+#include <QPlainTextEdit>
+#include <QTextEdit>
 
 #ifdef SANKOTV_GIT_HEAD_GENERATED
 #include "SankoGitHead.h" // GENERATED at build time; see cmake/WriteGitHead.cmake
@@ -86,8 +94,64 @@ QString eventName(QEvent::Type t)
     case QEvent::WindowUnblocked: return QStringLiteral("modalClose");
     case QEvent::Shortcut: return QStringLiteral("shortcut");
     case QEvent::Wheel: return QStringLiteral("wheel");
+    case QEvent::KeyPress: return QStringLiteral("key");
     default: return QString();
     }
+}
+
+// WHAT A MODAL SAYS. A recording showed a message box open for 131 s and
+// nothing about which one: class and geometry only. The title, the text,
+// the informative text and the buttons name it; which button closed it
+// is written at modalClose (see eventFilter). Mnemonic ampersands are
+// stripped so "&Yes" reads "Yes". No host knowledge: QMessageBox and the
+// window title are all Qt.
+void describeModal(QWidget *modal, QJsonObject &o, const QString &prefix)
+{
+    o.insert(prefix + QLatin1String("title"), modal->windowTitle());
+    if (auto *box = qobject_cast<QMessageBox *>(modal)) {
+        o.insert(prefix + QLatin1String("text"), box->text());
+        o.insert(prefix + QLatin1String("informativeText"), box->informativeText());
+        QJsonArray buttons;
+        for (QAbstractButton *b : box->buttons())
+            buttons.append(b->text().remove(QLatin1Char('&')));
+        o.insert(prefix + QLatin1String("buttons"), buttons);
+    }
+}
+
+// WHICH KEYS ARE LOGGED (the user's rule, 2026-10-17): navigation and
+// command keys only - the arrows, Home, End, Page Up / Down, Space,
+// Delete, Backspace, Enter / Return, Escape, the F-keys - and any key
+// pressed with Ctrl or Alt. Never a printable character on its own, never
+// the event's text (so what is typed is never written, even with Ctrl),
+// never a modifier key by itself, and never anything while a text field
+// has the focus.
+bool isTextField(const QWidget *w)
+{
+    return w
+        && (qobject_cast<const QLineEdit *>(w) || qobject_cast<const QTextEdit *>(w)
+            || qobject_cast<const QPlainTextEdit *>(w)
+            || qobject_cast<const QAbstractSpinBox *>(w));
+}
+
+bool isLoggedKey(const QKeyEvent *e)
+{
+    const int k = e->key();
+    switch (k) {
+    case Qt::Key_Shift: case Qt::Key_Control: case Qt::Key_Alt: case Qt::Key_Meta:
+    case Qt::Key_AltGr: case Qt::Key_CapsLock: case Qt::Key_NumLock:
+    case Qt::Key_ScrollLock:
+        return false; // a modifier by itself
+    case Qt::Key_Left: case Qt::Key_Right: case Qt::Key_Up: case Qt::Key_Down:
+    case Qt::Key_Home: case Qt::Key_End: case Qt::Key_PageUp: case Qt::Key_PageDown:
+    case Qt::Key_Space: case Qt::Key_Delete: case Qt::Key_Backspace:
+    case Qt::Key_Return: case Qt::Key_Enter: case Qt::Key_Escape:
+        return true;
+    default:
+        break;
+    }
+    if (k >= Qt::Key_F1 && k <= Qt::Key_F35)
+        return true;
+    return e->modifiers() & (Qt::ControlModifier | Qt::AltModifier);
 }
 
 QString widgetLabel(const QObject *o)
@@ -484,6 +548,12 @@ public:
     QJsonObject lastInput; // most recent input event, for attribution
     QPointer<QWidget> pressedWindow;
     QPoint pressedFramePos;
+    // The message box that is open, so modalClose can say which button
+    // closed it; and the key press being propagated, so a key that walks
+    // up the parent chain is logged once (the same QKeyEvent is delivered
+    // to each widget in turn; a release ends the chain).
+    QPointer<QMessageBox> openBox;
+    const QEvent *keyChain = nullptr;
 
     bool recording = false;
     QString sessionDir;
@@ -926,7 +996,7 @@ void Recorder::logState(const QString &type)
         o.insert(QLatin1String("modal.class"),
                  QString::fromLatin1(modal->metaObject()->className()));
         o.insert(QLatin1String("modal.name"), modal->objectName());
-        o.insert(QLatin1String("modal.title"), modal->windowTitle());
+        describeModal(modal, o, QStringLiteral("modal."));
         o.insert(QLatin1String("modal.geom"),
                  QStringLiteral("%1,%2 %3x%4").arg(mf.x()).arg(mf.y())
                      .arg(mf.width()).arg(mf.height()));
@@ -935,8 +1005,11 @@ void Recorder::logState(const QString &type)
         if (d->window)
             o.insert(QLatin1String("modal.insideApp"),
                      d->window->frameGeometry().contains(mf));
+        // Only when the dialog implements it: invokeMethod on a dialog
+        // that does not warns "No such method" on every poll.
         QVariantMap hostState;
-        if (QMetaObject::invokeMethod(modal, "devrecState",
+        if (modal->metaObject()->indexOfMethod("devrecState()") >= 0
+            && QMetaObject::invokeMethod(modal, "devrecState",
                                       Qt::DirectConnection,
                                       Q_RETURN_ARG(QVariantMap, hostState))) {
             for (auto it = hostState.cbegin(); it != hostState.cend(); ++it)
@@ -1010,9 +1083,22 @@ bool Recorder::eventFilter(QObject *object, QEvent *event)
         return false;
     }
     const QString name = eventName(t);
+    if (t == QEvent::KeyRelease)
+        d->keyChain = nullptr;
     if (name.isEmpty())
         return false;
     auto *w = static_cast<QWidget *>(object);
+    if (t == QEvent::KeyPress) {
+        // Once per press: the same event object is delivered up the
+        // parent chain until a widget accepts it.
+        if (d->keyChain == event)
+            return false;
+        d->keyChain = event;
+        if (isTextField(w) || isTextField(QApplication::focusWidget()))
+            return false; // never while a text field has the focus
+        if (!isLoggedKey(static_cast<QKeyEvent *>(event)))
+            return false;
+    }
     // WINDOW-SCOPED events belong to the WINDOW, but Qt delivers them to
     // every widget inside it — so without this filter one modal dialog
     // opening produced 388 "modalOpen" records (one per button, label and
@@ -1077,6 +1163,24 @@ bool Recorder::eventFilter(QObject *object, QEvent *event)
         o.insert(QLatin1String("mods"), int(e->modifiers()));
         break;
     }
+    case QEvent::KeyPress: {
+        // The key and its modifiers as a portable name ("Ctrl+Z", "Del",
+        // "F5"); never the event's text.
+        auto *e = static_cast<QKeyEvent *>(event);
+        o.insert(QLatin1String("key"), e->key());
+        o.insert(QLatin1String("mods"), int(e->modifiers()));
+        o.insert(QLatin1String("name"),
+                 QKeySequence(e->keyCombination()).toString(QKeySequence::PortableText));
+        o.insert(QLatin1String("autoRepeat"), e->isAutoRepeat());
+        break;
+    }
+    case QEvent::Shortcut: {
+        // A key claimed by a shortcut never arrives as a KeyPress; the
+        // sequence says which one it was.
+        auto *e = static_cast<QShortcutEvent *>(event);
+        o.insert(QLatin1String("seq"), e->key().toString(QKeySequence::PortableText));
+        break;
+    }
     case QEvent::TabletPress:
     case QEvent::TabletRelease:
     case QEvent::TabletMove: {
@@ -1121,8 +1225,27 @@ bool Recorder::eventFilter(QObject *object, QEvent *event)
                      QStringLiteral("%1,%2 %3x%4").arg(modalRect.x())
                          .arg(modalRect.y()).arg(modalRect.width())
                          .arg(modalRect.height()));
+            describeModal(modal, o, QString());
+            d->openBox = qobject_cast<QMessageBox *>(modal);
         }
         o.insert(QLatin1String("topLevels"), topLevelAudit(modalRect));
+        break;
+    }
+    case QEvent::WindowUnblocked: {
+        // The message box has already recorded the button that closed it
+        // (or none: Escape / the close box fall to its escape button,
+        // which Qt also reports as clicked; a close with no escape button
+        // reads "", with the dialog's result code beside it).
+        if (QMessageBox *box = d->openBox) {
+            o.insert(QLatin1String("modal"),
+                     QString::fromLatin1(box->metaObject()->className()));
+            o.insert(QLatin1String("title"), box->windowTitle());
+            QAbstractButton *clicked = box->clickedButton();
+            o.insert(QLatin1String("closedBy"),
+                     clicked ? clicked->text().remove(QLatin1Char('&')) : QString());
+            o.insert(QLatin1String("result"), box->result());
+            d->openBox = nullptr;
+        }
         break;
     }
     default:
@@ -1147,7 +1270,8 @@ bool Recorder::eventFilter(QObject *object, QEvent *event)
         logState(QStringLiteral("statePoll"));
     }
     if (t == QEvent::Wheel || t == QEvent::MouseButtonRelease
-        || t == QEvent::MouseButtonPress || t == QEvent::Shortcut)
+        || t == QEvent::MouseButtonPress || t == QEvent::Shortcut
+        || t == QEvent::KeyPress)
         checkCamera();
     return false; // observe only — never consume, never perturb routing
 }

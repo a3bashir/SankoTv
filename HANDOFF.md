@@ -6620,6 +6620,108 @@ over the bar, a click on its track, the invisible arrow spot, a hold
 surviving a resize or zoom, and scrolling the playhead off the right edge
 then Pause and Play. They still need a hand test.
 
+## The wheel over the timeline (2026-10-17)
+
+WHY: in three recordings the user's wheel went over the tracks, where it
+did nothing (the only wheel the timeline answered was over the 10 px
+scrollbar). Now the TimelineCanvas - tracks, ruler and label column -
+takes the wheel: a plain wheel and Shift+wheel scroll sideways; Ctrl+wheel
+zooms around the pointer. The user's wheel arrives as a notched mouse
+wheel (angleY +/-120, no pixelDelta, ~35 ms apart, in fast runs).
+
+SIDEWAYS: one named constant, kWheelNotchPx (AnimaticTimeline.cpp), 120
+content px per notch - smaller than a third of the view, the user's
+starting point; "I will tune it after trying". Wheel up (+120) scrolls
+toward the start, down toward the end, as the scrollbar's own wheel
+does. Fractional notches (a high-resolution wheel) accumulate in
+m_wheelRemainder and move when a whole notch is reached. THE HOLD RULE:
+the scroll is routed through the scrollbar - setSliderPosition while
+m_wheelOnScrollbar is set, the same flag the bar's own wheel sets - so it
+arrives as a SliderMove the bar reports as the user's, and
+onUserScroll decides the hold exactly as for a drag of the handle:
+scrolling back during playback (the playhead moving right of the follow
+point) holds the view; scrolling ahead does not, and following resumes
+when the playhead reaches the follow point. Nothing new decides a hold.
+CTRL+WHEEL: multiplies the zoom by kWheelZoomStep (1.15) per notch, within
+the slider's 10..400 range, sets the zoom slider with its signal blocked
+and calls applyZoom as the slider would; then scrolls through
+following's setScrollX (never the user's path, so viewHeld cannot be set
+by a zoom) so the content under the pointer stays under it. When the
+film fits the view the zoom-scroll and the sideways scroll are skipped
+(no range), nothing moves, nothing holds. Playback is untouched: the
+wheel neither seeks, scrubs, selects nor hovers.
+
+GATE: Lifecycle (av), 12 checks, 692 -> 704, synthetic QWheelEvents sent
+straight to the canvas: playing at 400 % held on the follow point, three
+notches up (one of them Shift+wheel) move the view back 120 px each, the
+playhead ends right of the point and the view is held and stays put
+while the film plays on; three notches down move it ahead 360 px, the
+view is not held, and following resumes on the follow point by panel 14;
+Ctrl+wheel in and out keep the content under the pointer within 1 px
+(measured exact) with the slider in step and viewHeld false; forty
+notches in stop at 400 and sixty out at 10, the slider with them; with
+the film fitted, four notches move nothing and hold nothing; and the
+positive control - the canvas's wheel handling switched off through a
+test hook - leaves the offset, the hold and the zoom unchanged for the
+same events. HAND TEST still needed: the step size (tune kWheelNotchPx),
+and the feel of Ctrl+wheel on a real wheel's fast runs.
+
+## Dev Recorder: a message box says what it said (2026-10-17)
+
+WHY: the recording of 20261017-135215 showed a message box open for
+131.5 s and the record said "QMessageBox, 400 x 150" - not which box, not
+what it asked, not what was answered. Now modalOpen carries the modal's
+title and, for a QMessageBox, its text, informative text and the texts of
+its buttons (mnemonic ampersands stripped); the statePoll taken at
+modalOpen carries the same as modal.title / modal.text /
+modal.informativeText / modal.buttons; and modalClose carries closedBy
+(the text of QMessageBox::clickedButton, which Qt also sets for Escape and
+the close box through the escape button; "" when there is none) and the
+dialog's result code. A QFileDialog's title arrives the same way (the
+test uses the non-native dialog; the native Windows picker is a shell
+window and the title the recorder reads is the QFileDialog's own). Also
+fixed on the way: the state poll's optional devrecState() invoke is now
+guarded by indexOfMethod, so a dialog that does not implement it no
+longer logs "No such method" on every poll. Recorder only; no host
+knowledge.
+
+GATE: SankoDevRecorderTest 7, four checks: a Question box with Yes / No,
+closed by No from a timer, and a non-native file dialog "Locate the
+sound" rejected from a timer; the modalOpen, the poll and the modalClose
+read back as above.
+
+## Dev Recorder: which keys are logged (2026-10-17)
+
+THE RULE (the user's): log navigation and command keys only, with the
+widget that received them; never a key while a text field has the focus;
+never a printable character without Ctrl or Alt. EXACTLY WHICH: the
+arrows, Home, End, Page Up, Page Down, Space, Delete, Backspace, Return,
+Enter, Escape, F1 to F35, and any key pressed with Ctrl or Alt held.
+NEVER: a letter, digit or punctuation on its own; a modifier key by
+itself (Shift, Control, Alt, Meta, AltGr, Caps Lock, Num Lock, Scroll
+Lock); anything while the focus widget, or the widget the key is
+delivered to, is a QLineEdit, QTextEdit, QPlainTextEdit or
+QAbstractSpinBox (an editable combo's line edit is a QLineEdit); and the
+event's text is never written, for any key, so Ctrl+V's control
+character is not in the file either. The record ("key") carries the Qt
+key code, the modifiers, the portable name (QKeySequence: "Del",
+"Ctrl+Z", "F5", "Left") and autoRepeat. ONCE PER PRESS: Qt delivers one
+QKeyEvent object up the parent chain until a widget accepts it; the
+recorder remembers the event being propagated and logs the first
+delivery only, and the key release ends the chain. A key claimed by a
+shortcut never arrives as a KeyPress; the existing "shortcut" record now
+carries the sequence ("seq"), so Ctrl+Z through the Undo action reads as
+a shortcut and a bare Delete reads as a key. Keys also re-check the
+camera, as the wheel and presses do.
+
+GATE: SankoDevRecorderTest 8, five checks, synthetic QKeyEvents (press
+and release) sent straight to the widgets, no dependence on the active
+window: "panel", Delete, Left, Home, Ctrl+A, F5 and Return typed into a
+QLineEdit log nothing; then, outside it (the positive control), Delete,
+a bare "a", Ctrl+Z, F5, Left, Escape, Control alone and two more Deletes
+read back as exactly [Del, Ctrl+Z, F5, Left, Esc, Del, Del], each naming
+target:QPushButton, and no record carries text. 28 -> 37 checks.
+
 ## METHOD: measure interior structure ACROSS THE SIZE RANGE before calling it character (2026-09-25)
 
 The Painting census measured Acrylic at size 20 only and found "one

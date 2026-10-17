@@ -9187,6 +9187,194 @@ void runScrollbarOwnershipPass(const QString &scratch)
     pump(200);
 }
 
+// ---- (av) the wheel over the timeline ---------------------------------------
+// 2026-10-17: in three recordings the user's wheel went over the tracks,
+// where it did nothing. Now a plain or Shift+wheel there scrolls sideways
+// (routed through the scrollbar, so it is "my scroll" for the hold rule),
+// and Ctrl+wheel zooms around the pointer and never holds. Synthetic wheel
+// events sent straight to the canvas; never the real pointer.
+namespace {
+void wheelOnCanvas(QWidget *canvas, const QPointF &at, int angleY, Qt::KeyboardModifiers mods)
+{
+    QWheelEvent ev(at, canvas->mapToGlobal(at.toPoint()), QPoint(), QPoint(0, angleY),
+                   Qt::NoButton, mods, Qt::NoScrollPhase, false);
+    QCoreApplication::sendEvent(canvas, &ev);
+    pump(40);
+}
+} // namespace
+
+void runTimelineWheelPass(const QString &scratch)
+{
+    using namespace workspace;
+    using audio::waitFor;
+    out() << "--- (av) the wheel over the timeline: sideways by a named step as the "
+             "user's scroll; Ctrl+wheel zooms around the pointer ---" << Qt::endl;
+    const QString base = scratch + QStringLiteral("/wheel");
+    QDir(base).removeRecursively();
+    const QString project = writeProject(base + QStringLiteral("/p"),
+                                         QStringLiteral("Wheel"), QSize(960, 540),
+                                         24, 1, 24);
+    Rig r(project);
+    check(QStringLiteral("(av) the workspace opened"), r.ok);
+    if (!r.ok)
+        return;
+    AnimaticPage *page = r.animatic;
+    AnimaticTimeline *tl = r.timeline;
+    QWidget *canvas = tl->surfaceForTest();
+    QSlider *zoom = tl->findChild<QSlider *>();
+    QScrollBar *bar = tl->findChild<QScrollBar *>();
+    if (!zoom || !bar || !canvas) {
+        check(QStringLiteral("(av) the timeline's parts were found"), false);
+        return;
+    }
+    auto started = [&] {
+        return waitFor([&] { return !page->waitingForAudioForTest(); }, 3000);
+    };
+    auto fp = [&] { return tl->followPointForTest(); };
+    auto labelCol = [&] { return fp() - tl->visibleWidthForTest() * 2 / 3; };
+    auto heldAtFollowPoint = [&]() -> bool {
+        page->leavePreview();
+        pump(150);
+        zoom->setValue(400);
+        pump(100);
+        clickClip(r, 0);
+        pump(150);
+        page->togglePlay();
+        if (!started())
+            return false;
+        while (page->currentFlatIndex() < 6 && page->isPlaying()) {
+            page->advanceForTest();
+            pump(40);
+        }
+        pump(80);
+        return qAbs(tl->playheadScreenXForTest() - fp()) <= 1 && tl->scrollXForTest() > 0
+            && page->isPlaying();
+    };
+    const QPointF overTracks(labelCol() + 300, canvas->height() / 2);
+
+    // ---- scrolling back during playback holds -------------------------------------
+    check(QStringLiteral("(av) fixture: playing at 400 %, held on the follow point"),
+          heldAtFollowPoint());
+    const int before = tl->scrollXForTest();
+    wheelOnCanvas(canvas, overTracks, 120, Qt::NoModifier); // one notch up: toward the start
+    const int afterOne = tl->scrollXForTest();
+    wheelOnCanvas(canvas, overTracks, 120, Qt::NoModifier);
+    wheelOnCanvas(canvas, overTracks, 120, Qt::ShiftModifier); // Shift+wheel: the same
+    check(QStringLiteral("(av) THE WHEEL OVER THE TRACKS, up: the view scrolls "
+                         "toward the start by one named step a notch (Shift+wheel "
+                         "too), and - the playhead now right of the follow point - "
+                         "the view is HELD"),
+          before - afterOne > 0 && before - afterOne < tl->visibleWidthForTest() / 3
+              && tl->scrollXForTest() == before - 3 * (before - afterOne)
+              && tl->viewHeldForTest() && tl->playheadScreenXForTest() > fp(),
+          QStringLiteral("scroll %1 -> %2 -> %3 (step %4 px), held %5, playhead x %6")
+              .arg(before).arg(afterOne).arg(tl->scrollXForTest()).arg(before - afterOne)
+              .arg(tl->viewHeldForTest()).arg(tl->playheadScreenXForTest()));
+    const int heldAt = tl->scrollXForTest();
+    pump(400);
+    check(QStringLiteral("(av) ...and the view stays where the wheel put it "
+                         "while the film plays on"),
+          tl->scrollXForTest() == heldAt && page->isPlaying());
+
+    // ---- scrolling ahead does not hold; following resumes at the point -----------------
+    check(QStringLiteral("(av) fixture: held on the follow point"), heldAtFollowPoint());
+    const int beforeAhead = tl->scrollXForTest();
+    for (int i = 0; i < 3; ++i)
+        wheelOnCanvas(canvas, overTracks, -120, Qt::NoModifier); // down: toward the end
+    const int ahead = tl->scrollXForTest();
+    const bool movedAhead = ahead > beforeAhead && !tl->viewHeldForTest()
+        && tl->playheadScreenXForTest() < fp();
+    while (page->currentFlatIndex() < 14 && page->isPlaying()) {
+        page->advanceForTest();
+        pump(40);
+    }
+    pump(80);
+    check(QStringLiteral("(av) THE WHEEL DOWN scrolls ahead and does NOT hold; "
+                         "following resumes when the playhead reaches the follow "
+                         "point"),
+          movedAhead && tl->scrollXForTest() > ahead
+              && qAbs(tl->playheadScreenXForTest() - fp()) <= 1 && !tl->viewHeldForTest(),
+          QStringLiteral("scroll %1 -> %2 (held %3) -> %4, playhead x %5")
+              .arg(beforeAhead).arg(ahead).arg(tl->viewHeldForTest())
+              .arg(tl->scrollXForTest()).arg(tl->playheadScreenXForTest()));
+    page->leavePreview();
+    pump(200);
+
+    // ---- Ctrl+wheel zooms around the pointer ------------------------------------------
+    zoom->setValue(200);
+    pump(100);
+    tl->userScrollForTest(600);
+    pump(100);
+    page->leavePreview();
+    pump(100);
+    const QPointF anchor(labelCol() + 500, canvas->height() / 2);
+    const int ax = anchor.toPoint().x();
+    const double contentBefore = tl->contentXAtForTest(ax);
+    const double ppfBefore = tl->pxPerFrameForTest();
+    const double zoomBefore = tl->zoomForTest();
+    wheelOnCanvas(canvas, anchor, 120, Qt::ControlModifier); // one notch in
+    const double contentAfter = tl->contentXAtForTest(ax);
+    const double expectedAfter = contentBefore * (tl->pxPerFrameForTest() / ppfBefore);
+    check(QStringLiteral("(av) CTRL+WHEEL zooms in around the pointer: the content "
+                         "under the pointer stays within 1 px, the zoom slider is "
+                         "in step, and viewHeld is false"),
+          tl->zoomForTest() > zoomBefore && qAbs(contentAfter - expectedAfter) <= 1.0
+              && zoom->value() == qRound(tl->zoomForTest()) && !tl->viewHeldForTest(),
+          QStringLiteral("zoom %1 -> %2 (slider %3); content at x %4: %5 -> %6 (expected %7)")
+              .arg(zoomBefore).arg(tl->zoomForTest()).arg(zoom->value()).arg(ax)
+              .arg(contentBefore, 0, 'f', 1).arg(contentAfter, 0, 'f', 1)
+              .arg(expectedAfter, 0, 'f', 1));
+    const double contentBefore2 = tl->contentXAtForTest(ax);
+    const double ppfBefore2 = tl->pxPerFrameForTest();
+    wheelOnCanvas(canvas, anchor, -120, Qt::ControlModifier); // one notch out
+    const double expectedAfter2 = contentBefore2 * (tl->pxPerFrameForTest() / ppfBefore2);
+    check(QStringLiteral("(av) ...and out: the same"),
+          qAbs(tl->contentXAtForTest(ax) - expectedAfter2) <= 1.0
+              && zoom->value() == qRound(tl->zoomForTest()) && !tl->viewHeldForTest(),
+          QStringLiteral("content %1 -> %2 (expected %3)").arg(contentBefore2, 0, 'f', 1)
+              .arg(tl->contentXAtForTest(ax), 0, 'f', 1).arg(expectedAfter2, 0, 'f', 1));
+    for (int i = 0; i < 40; ++i)
+        wheelOnCanvas(canvas, anchor, 120, Qt::ControlModifier);
+    const bool capped = qFuzzyCompare(tl->zoomForTest(), 400.0) && zoom->value() == 400;
+    for (int i = 0; i < 60; ++i)
+        wheelOnCanvas(canvas, anchor, -120, Qt::ControlModifier);
+    check(QStringLiteral("(av) Ctrl+wheel respects the zoom limits: 400 % at the "
+                         "top, 10 % at the bottom, the slider with it"),
+          capped && qFuzzyCompare(tl->zoomForTest(), 10.0) && zoom->value() == 10
+              && !tl->viewHeldForTest(),
+          QStringLiteral("zoom %1, slider %2").arg(tl->zoomForTest()).arg(zoom->value()));
+
+    // ---- the film fits: nothing moves, nothing breaks ---------------------------------
+    for (QPushButton *b : tl->findChildren<QPushButton *>())
+        if (b->text() == QStringLiteral("Fit"))
+            b->click();
+    pump(100);
+    for (int i = 0; i < 4; ++i)
+        wheelOnCanvas(canvas, overTracks, i % 2 ? 120 : -120, Qt::NoModifier);
+    check(QStringLiteral("(av) when the film fits, the wheel over the tracks "
+                         "moves nothing and holds nothing"),
+          bar->maximum() == 0 && tl->scrollXForTest() == 0 && !tl->viewHeldForTest());
+
+    // ---- positive control: the canvas's wheel handling off ----------------------------------
+    check(QStringLiteral("(av) fixture: held on the follow point"), heldAtFollowPoint());
+    tl->setCanvasWheelForTest(false);
+    const int offBefore = tl->scrollXForTest();
+    const double zoomOffBefore = tl->zoomForTest();
+    wheelOnCanvas(canvas, overTracks, 120, Qt::NoModifier);
+    wheelOnCanvas(canvas, overTracks, 120, Qt::ControlModifier);
+    const int offAfter = tl->scrollXForTest();
+    tl->setCanvasWheelForTest(true);
+    check(QStringLiteral("(av) CONTROL, the canvas's wheel handling off: the same "
+                         "events leave the offset, the hold and the zoom unchanged "
+                         "(so the checks above could have failed)"),
+          qAbs(offAfter - offBefore) <= 2 * 6 /* following's own motion in the wait */
+              && !tl->viewHeldForTest() && qFuzzyCompare(tl->zoomForTest(), zoomOffBefore),
+          QStringLiteral("scroll %1 -> %2, held %3, zoom %4").arg(offBefore).arg(offAfter)
+              .arg(tl->viewHeldForTest()).arg(tl->zoomForTest()));
+    page->leavePreview();
+    pump(200);
+}
+
 int main(int argc, char **argv)
 {
 #ifdef Q_OS_WIN
@@ -9407,6 +9595,7 @@ int main(int argc, char **argv)
     runAudioKeepsStepPass(scratch);
     runTimelineFollowsPass(scratch);
     runScrollbarOwnershipPass(scratch);
+    runTimelineWheelPass(scratch);
 
     // ---- (aa) a test that cannot start says why and exits ----------------
     // An unattended gate must FAIL, not wait. Measured 2026-10-02: with its

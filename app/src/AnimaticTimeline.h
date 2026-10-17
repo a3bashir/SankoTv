@@ -66,6 +66,12 @@ public:
     int followPointForTest() const;
     bool followTimerActiveForTest() const;
     bool viewHeldForTest() const { return m_viewHeld; }
+    // The wheel over the canvas: its switch (the gate's positive control),
+    // the zoom as a number, and where a screen x is in content space.
+    void setCanvasWheelForTest(bool on) { m_canvasWheel = on; }
+    double zoomForTest() const { return m_zoom; }
+    double contentXAtForTest(int screenX) const { return screenXToContent(screenX); }
+    double pxPerFrameForTest() const { return pxPerFrame(); }
     void setFollowForTest(bool follow) { m_follow = follow; }
     void userScrollForTest(int scrollX);
     // For the Dev Recorder's statePoll (2026-10-16): the view's zoom,
@@ -138,6 +144,14 @@ private:
     void canvasLeave();
     void canvasResized();
     void canvasContextMenu(QContextMenuEvent *e);
+    // THE WHEEL OVER THE TRACKS, RULER AND LABEL COLUMN (2026-10-17, the
+    // user's decision after three recordings in which the wheel went
+    // there and did nothing): plain and Shift+wheel scroll sideways by
+    // kWheelNotchPx a notch, routed through the scrollbar as the user's
+    // own scroll (so it counts for the hold rule); Ctrl+wheel zooms around
+    // the pointer, keeps the zoom slider in step, and never holds. When
+    // the film fits, nothing moves.
+    void canvasWheel(QWheelEvent *e);
 
     // Track geometry: the shots track is whatever the canvas height leaves
     // after the ruler, the scene track and the audio track.
@@ -236,6 +250,8 @@ private:
     QTimer *m_followTimer = nullptr;
     bool m_follow = true;        // off only for the gate's positive control
     bool m_wheelOnScrollbar = false; // a wheel event is being delivered to the bar
+    bool m_canvasWheel = true;       // off only for the gate's positive control
+    double m_wheelRemainder = 0;     // a high-resolution wheel's part-notches
     bool m_following = false;     // the strip is scrolling under the playhead:
                                   // a geometry change (zoom, width, panels)
                                   // keeps it on the follow point

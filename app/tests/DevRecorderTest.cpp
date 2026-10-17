@@ -15,11 +15,17 @@
 #include <QElapsedTimer>
 #include <QFile>
 #include <QImage>
+#include <QFileDialog>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QKeyEvent>
+#include <QLineEdit>
+#include <QMessageBox>
 #include <QLabel>
 #include <QMouseEvent>
 
+#include <algorithm>
 #include <cstdio>
 
 static int failures = 0;
@@ -477,6 +483,209 @@ int main(int argc, char **argv)
               QStringLiteral("got %1").arg(markers6));
         window.removeAction(rec->toggleAction());
         window.removeAction(rec->markAction());
+        rec->setOutputRoot(root);
+    }
+
+    // Every record of a session, in order.
+    auto records = [](const QString &dir) {
+        QVector<QJsonObject> rs;
+        QFile f(dir + QStringLiteral("/events.jsonl"));
+        if (f.open(QIODevice::ReadOnly | QIODevice::Text))
+            while (!f.atEnd())
+                rs.append(QJsonDocument::fromJson(f.readLine()).object());
+        return rs;
+    };
+
+    // --- 7. a message box is logged by what it says ------------------------
+    // A real session had a message box open for 131 s and the record said
+    // only "QMessageBox, 400x150": not which one, not what it asked, not
+    // what was answered. Title, text, informative text and buttons at
+    // modalOpen (and on the state poll that follows it); the button that
+    // closed it at modalClose; a file dialog's title at modalOpen.
+    {
+        const QString root7 = root + QStringLiteral("/msgbox");
+        rec->setOutputRoot(root7);
+        rec->startRecording();
+        const QString dir7 = rec->sessionDir();
+        settle(200);
+        {
+            QMessageBox box(QMessageBox::Question, QStringLiteral("Delete this panel?"),
+                            QStringLiteral("Panel 3 of scene 1 will be deleted."),
+                            QMessageBox::Yes | QMessageBox::No, &window);
+            box.setInformativeText(QStringLiteral("This can be undone."));
+            box.setDefaultButton(QMessageBox::No);
+            QTimer::singleShot(250, &box, [&box] {
+                box.button(QMessageBox::No)->click();
+            });
+            box.exec();
+        }
+        settle(300);
+        {
+            // Not the native dialog: that is a shell window, not a QWidget,
+            // and the check is about the title the recorder reads.
+            QFileDialog dlg(&window, QStringLiteral("Locate the sound"));
+            dlg.setOption(QFileDialog::DontUseNativeDialog, true);
+            QTimer::singleShot(250, &dlg, [&dlg] { dlg.reject(); });
+            dlg.exec();
+        }
+        settle(300);
+        rec->stopRecording();
+
+        QJsonObject boxOpen, boxClose, boxPoll, fileOpen;
+        for (const QJsonObject &o : records(dir7)) {
+            const QString type = o.value(QLatin1String("type")).toString();
+            const QString modal = o.value(QLatin1String("modal")).toString();
+            if (type == QLatin1String("modalOpen") && modal == QLatin1String("QMessageBox"))
+                boxOpen = o;
+            else if (type == QLatin1String("modalClose")
+                     && modal == QLatin1String("QMessageBox"))
+                boxClose = o;
+            else if (type == QLatin1String("statePoll")
+                     && o.value(QLatin1String("modal.class")).toString()
+                         == QLatin1String("QMessageBox")
+                     && boxPoll.isEmpty())
+                boxPoll = o;
+            else if (type == QLatin1String("modalOpen")
+                     && modal == QLatin1String("QFileDialog"))
+                fileOpen = o;
+        }
+        QStringList buttons;
+        for (const QJsonValue &v : boxOpen.value(QLatin1String("buttons")).toArray())
+            buttons << v.toString();
+        check(boxOpen.value(QLatin1String("title")).toString()
+                      == QLatin1String("Delete this panel?")
+                  && boxOpen.value(QLatin1String("text")).toString()
+                      == QLatin1String("Panel 3 of scene 1 will be deleted.")
+                  && boxOpen.value(QLatin1String("informativeText")).toString()
+                      == QLatin1String("This can be undone.")
+                  && buttons.size() == 2 && buttons.contains(QStringLiteral("Yes"))
+                  && buttons.contains(QStringLiteral("No")),
+              "modalOpen of a message box carries its title, text, informative "
+              "text and buttons (mnemonics stripped)",
+              QStringLiteral("title '%1' text '%2' info '%3' buttons [%4]")
+                  .arg(boxOpen.value(QLatin1String("title")).toString(),
+                       boxOpen.value(QLatin1String("text")).toString(),
+                       boxOpen.value(QLatin1String("informativeText")).toString(),
+                       buttons.join(QLatin1String(", "))));
+        check(boxPoll.value(QLatin1String("modal.text")).toString()
+                      == QLatin1String("Panel 3 of scene 1 will be deleted.")
+                  && boxPoll.value(QLatin1String("modal.title")).toString()
+                      == QLatin1String("Delete this panel?"),
+              "the state poll taken at modalOpen carries the same text",
+              QStringLiteral("modal.text '%1'")
+                  .arg(boxPoll.value(QLatin1String("modal.text")).toString()));
+        check(boxClose.value(QLatin1String("closedBy")).toString() == QLatin1String("No")
+                  && boxClose.value(QLatin1String("title")).toString()
+                      == QLatin1String("Delete this panel?"),
+              "modalClose names the button that closed the message box",
+              QStringLiteral("closedBy '%1' result %2")
+                  .arg(boxClose.value(QLatin1String("closedBy")).toString())
+                  .arg(boxClose.value(QLatin1String("result")).toInt()));
+        check(fileOpen.value(QLatin1String("title")).toString()
+                  == QLatin1String("Locate the sound"),
+              "modalOpen of a file dialog carries its title",
+              QStringLiteral("title '%1'")
+                  .arg(fileOpen.value(QLatin1String("title")).toString()));
+        rec->setOutputRoot(root);
+    }
+
+    // --- 8. keys: navigation and command keys only, never in a text field --
+    // Synthetic QKeyEvents sent straight to the widgets (never the real
+    // keyboard, never dependent on which window is active): a press and
+    // its release, as a keyboard sends them.
+    {
+        const QString root8 = root + QStringLiteral("/keys");
+        auto *field = new QLineEdit(&window);
+        field->setObjectName(QStringLiteral("nameField"));
+        field->setGeometry(4, 200, 120, 22);
+        field->show();
+        auto *button = new QPushButton(QStringLiteral("target"), &window);
+        button->setObjectName(QStringLiteral("target"));
+        button->setGeometry(4, 230, 90, 22);
+        button->show();
+        settle(150);
+        auto press = [](QWidget *to, int key, Qt::KeyboardModifiers mods,
+                        const QString &text = QString()) {
+            QKeyEvent down(QEvent::KeyPress, key, mods, text);
+            QApplication::sendEvent(to, &down);
+            QKeyEvent up(QEvent::KeyRelease, key, mods, text);
+            QApplication::sendEvent(to, &up);
+        };
+        rec->setOutputRoot(root8);
+        rec->startRecording();
+        const QString dir8 = rec->sessionDir();
+        settle(200);
+        // Typing into the text field: a word, then the keys that ARE
+        // logged elsewhere, then Ctrl+A and F5 - none of it may appear.
+        for (QChar c : QStringLiteral("panel"))
+            press(field, c.unicode() - 'a' + Qt::Key_A, Qt::NoModifier, QString(c));
+        press(field, Qt::Key_Delete, Qt::NoModifier);
+        press(field, Qt::Key_Left, Qt::NoModifier);
+        press(field, Qt::Key_Home, Qt::NoModifier);
+        press(field, Qt::Key_A, Qt::ControlModifier, QStringLiteral("\x01"));
+        press(field, Qt::Key_F5, Qt::NoModifier);
+        press(field, Qt::Key_Return, Qt::NoModifier);
+        settle(100);
+        rec->markIssue(QStringLiteral("field done"));
+        // Outside the text field: Delete (the positive control), a letter
+        // on its own (not logged), Ctrl+Z, F5, Left, Escape, Control alone
+        // (not logged), and the same Delete twice in a row (two records).
+        press(button, Qt::Key_Delete, Qt::NoModifier);
+        press(button, Qt::Key_A, Qt::NoModifier, QStringLiteral("a"));
+        press(button, Qt::Key_Z, Qt::ControlModifier, QStringLiteral("\x1a"));
+        press(button, Qt::Key_F5, Qt::NoModifier);
+        press(button, Qt::Key_Left, Qt::NoModifier);
+        press(button, Qt::Key_Escape, Qt::NoModifier);
+        press(button, Qt::Key_Control, Qt::ControlModifier);
+        press(button, Qt::Key_Delete, Qt::NoModifier);
+        press(button, Qt::Key_Delete, Qt::NoModifier);
+        settle(300);
+        rec->stopRecording();
+
+        int beforeMark = 0;
+        QStringList after;
+        QStringList widgets;
+        bool marked = false, textLeaked = false;
+        for (const QJsonObject &o : records(dir8)) {
+            const QString type = o.value(QLatin1String("type")).toString();
+            if (type == QLatin1String("marker")) {
+                marked = true;
+                continue;
+            }
+            if (type != QLatin1String("key"))
+                continue;
+            if (o.contains(QLatin1String("text")))
+                textLeaked = true;
+            if (!marked) {
+                ++beforeMark;
+                continue;
+            }
+            after << o.value(QLatin1String("name")).toString();
+            widgets << o.value(QLatin1String("w")).toString();
+        }
+        check(marked, "the marker between the two halves was written");
+        check(beforeMark == 0,
+              "typing into a text field logs NO key - not the letters, not "
+              "Delete, Left, Home, Ctrl+A, F5 or Enter",
+              QStringLiteral("%1 key record(s) before the marker").arg(beforeMark));
+        const QStringList expected{QStringLiteral("Del"),  QStringLiteral("Ctrl+Z"),
+                                   QStringLiteral("F5"),   QStringLiteral("Left"),
+                                   QStringLiteral("Esc"),  QStringLiteral("Del"),
+                                   QStringLiteral("Del")};
+        check(after == expected,
+              "CONTROL, outside a text field: Delete, Ctrl+Z, F5, Left, Escape and "
+              "two more Deletes are logged, once each, in order; a letter on its "
+              "own and Control by itself are not",
+              QStringLiteral("logged [%1]").arg(after.join(QLatin1String(", "))));
+        check(!widgets.isEmpty()
+                  && std::all_of(widgets.cbegin(), widgets.cend(), [](const QString &w) {
+                         return w == QLatin1String("target:QPushButton");
+                     }),
+              "each key record names the widget that received it",
+              QStringLiteral("widgets [%1]").arg(widgets.join(QLatin1String(", "))));
+        check(!textLeaked, "no key record carries the event's text");
+        delete field;
+        delete button;
         rec->setOutputRoot(root);
     }
 

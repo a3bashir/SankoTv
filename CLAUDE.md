@@ -121,7 +121,11 @@ the page from.
   wheel event), never from `valueChanged`, so no programmatic change —
   zoom, Fit, resize, panels, `setSliderPosition` — can hold the view.
   Once following has engaged, a geometry change re-anchors the playhead
-  to the follow point.
+  to the follow point. **The wheel over the tracks** (2026-10-17) scrolls
+  sideways by `kWheelNotchPx` per notch (tunable, one constant) through
+  the scrollbar's own path, so it is the user's scroll for the hold rule;
+  Ctrl+wheel zooms around the pointer through following's `setScrollX`
+  and never holds.
 - **File > Export** (MP4, PNG, PDF) is `src/export/` plus the asking and
   telling in `MainWindow`. All three read `Panel::flattenedPixmap()` —
   never a second idea of what a panel looks like. The MP4 encoder sits
@@ -341,3 +345,9 @@ A built-in Dev Recorder captures real sessions to
 `Documents/SankoTV-DevRecordings/<timestamp>/` as `events.jsonl` plus a
 summary — every mouse/tablet event, widget state polls, perf samples. When
 the user says "check the recordings", those events are the evidence.
+A message box is logged by its title, text, informative text and buttons,
+and `modalClose` says which button closed it (HANDOFF 2026-10-17).
+Keys: navigation and command keys only (arrows, Home, End, Page Up/Down,
+Space, Delete, Backspace, Enter, Escape, F-keys, anything with Ctrl or
+Alt), never while a text field has focus, never a printable character on
+its own, never the event's text (HANDOFF 2026-10-17).

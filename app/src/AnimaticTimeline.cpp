@@ -17,6 +17,7 @@
 #include <QEvent>
 #include <QScrollBar>
 #include <QSignalBlocker>
+#include <QWheelEvent>
 #include <QSlider>
 #include <QTimer>
 #include <QToolTip>
@@ -83,6 +84,7 @@ protected:
     {
         m_owner->canvasContextMenu(e);
     }
+    void wheelEvent(QWheelEvent *e) override { m_owner->canvasWheel(e); }
 
 private:
     AnimaticTimeline *m_owner;
@@ -1226,6 +1228,70 @@ QRect AnimaticTimeline::audioRowForTest() const
 }
 
 // --- Interaction ----------------------------------------------------------
+
+// ONE named step per notch. Smaller than a third of the view (about 610 px
+// here): the user's wheel arrives in fast runs of notches, 35 ms apart,
+// and a run of ten should not fly past a page. To be tuned by them.
+constexpr int kWheelNotchPx = 120;
+// Ctrl+wheel: one notch multiplies the zoom by this.
+constexpr double kWheelZoomStep = 1.15;
+
+void AnimaticTimeline::canvasWheel(QWheelEvent *e)
+{
+    if (!m_canvasWheel) {
+        e->ignore();
+        return;
+    }
+    // Notches, with a high-resolution wheel's part-notches carried over.
+    // The Y axis: a mouse wheel has no other.
+    m_wheelRemainder += e->angleDelta().y() / 120.0;
+    const int notches = int(m_wheelRemainder);
+    m_wheelRemainder -= notches;
+    e->accept();
+    if (notches == 0)
+        return;
+
+    if (e->modifiers() & Qt::ControlModifier) {
+        // ZOOM AROUND THE POINTER: the content under the pointer before is
+        // the content under it after. Through applyZoom (the limits, the
+        // range) and setScrollX (following's own path, never the user's),
+        // so a zoom can never hold the view. While the film plays and
+        // following is engaged, applyZoom re-anchors the playhead and the
+        // next tick keeps it there; this pointer anchor is for the rest.
+        if (!m_zoomSlider)
+            return;
+        const int anchorX = e->position().toPoint().x();
+        const double contentBefore = screenXToContent(anchorX);
+        const double ppfBefore = pxPerFrame();
+        double z = m_zoom;
+        for (int i = 0; i < qAbs(notches); ++i)
+            z = notches > 0 ? z * kWheelZoomStep : z / kWheelZoomStep;
+        z = qBound(10.0, z, 400.0);
+        {
+            QSignalBlocker blocked(m_zoomSlider); // in step, without a second applyZoom
+            m_zoomSlider->setValue(qRound(z));
+        }
+        applyZoom(float(z));
+        const double contentAfter = contentBefore * (pxPerFrame() / ppfBefore);
+        if (m_hScroll && m_hScroll->maximum() > 0)
+            setScrollX(qRound(contentAfter - (anchorX - kLabelCol)));
+        return;
+    }
+
+    // SCROLL SIDEWAYS: up (a positive notch) toward the start, down toward
+    // the end. Through the scrollbar's own position, flagged as a wheel, so
+    // onScrollbarAction reads it as the user's scroll - which it is - and
+    // the hold rule applies exactly as for the wheel over the bar. When the
+    // film fits, the bar's range is 0 and nothing moves.
+    if (!m_hScroll || m_hScroll->maximum() <= 0)
+        return;
+    const int wanted = qBound(0, m_scrollX - notches * kWheelNotchPx, m_hScroll->maximum());
+    if (wanted == m_scrollX)
+        return;
+    m_wheelOnScrollbar = true;
+    m_hScroll->setSliderPosition(wanted); // actionTriggered(SliderMove) -> the user's
+    m_wheelOnScrollbar = false;
+}
 
 void AnimaticTimeline::canvasResized()
 {
