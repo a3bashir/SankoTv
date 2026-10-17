@@ -6608,6 +6608,17 @@ to scroll. Then the user's acts, each by synthetic events sent straight to
 the scrollbar (never the real pointer): a drag of the handle, the wheel
 over the bar, a click on the track left of the handle - each holds the
 view, with a control that the bar moved.
+HAND-TESTED (session 20261017-162141, read back from the recording and
+confirmed by the user): zoom-out during playback keeps the playhead on
+the follow point and in view; End / Home while stopped on a film wider
+than the view move the view only when the playhead is off-screen; a panel
+lengthened or a zoom while paused moves nothing and the next Play resumes
+following. NOT HAND-TESTED - covered only by the gate's synthetic events,
+because in three recordings the user never touched the scrollbar (the
+wheel went over the tracks each time): a drag of the handle, the wheel
+over the bar, a click on its track, the invisible arrow spot, a hold
+surviving a resize or zoom, and scrolling the playhead off the right edge
+then Pause and Play. They still need a hand test.
 
 ## METHOD: measure interior structure ACROSS THE SIZE RANGE before calling it character (2026-09-25)
 
