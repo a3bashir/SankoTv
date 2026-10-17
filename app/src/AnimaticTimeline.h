@@ -3,6 +3,7 @@
 #include <QPoint>
 #include <QRect>
 #include <QString>
+#include <QVariantMap>
 #include <QVector>
 #include <QWidget>
 
@@ -66,6 +67,11 @@ public:
     bool followTimerActiveForTest() const;
     void setFollowForTest(bool follow) { m_follow = follow; }
     void userScrollForTest(int scrollX);
+    // For the Dev Recorder's statePoll (2026-10-16): the view's zoom,
+    // scroll offset and visible width, the playhead's frame, and the
+    // following state - what a recording of "the playhead left the view"
+    // needed and did not have.
+    QVariantMap devrecState() const;
 
     // The timeline reads the live elapsed time / current index from the page
     // when rendering the playhead (see updatePlayhead()).

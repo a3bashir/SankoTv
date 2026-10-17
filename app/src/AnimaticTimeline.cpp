@@ -410,6 +410,22 @@ bool AnimaticTimeline::followTimerActiveForTest() const
     return m_followTimer && m_followTimer->isActive();
 }
 
+QVariantMap AnimaticTimeline::devrecState() const
+{
+    return {{QStringLiteral("timeline.zoom"), double(m_zoom)},
+            {QStringLiteral("timeline.scrollX"), m_scrollX},
+            {QStringLiteral("timeline.scrollMax"), m_hScroll ? m_hScroll->maximum() : 0},
+            {QStringLiteral("timeline.visibleWidth"), visibleWidth()},
+            {QStringLiteral("timeline.playheadFrame"), playheadFrame()},
+            {QStringLiteral("timeline.playheadX"), contentXToScreen(playheadContentX())},
+            {QStringLiteral("timeline.followPoint"), followPoint()},
+            {QStringLiteral("timeline.playing"), m_playing},
+            {QStringLiteral("timeline.follow"), m_follow},
+            {QStringLiteral("timeline.viewHeld"), m_viewHeld},
+            {QStringLiteral("timeline.followTimer"),
+             m_followTimer && m_followTimer->isActive()}};
+}
+
 void AnimaticTimeline::userScrollForTest(int scrollX)
 {
     if (m_hScroll)

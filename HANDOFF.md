@@ -6480,6 +6480,36 @@ own: the strip reaches its end during the last panel, not at its start,
 and End cannot sit a third across when the strip has already reached its
 end - the jump clamps and the playhead sits a little right of a third.
 
+THE DEV RECORDER NOW CARRIES THE TIMELINE'S VIEW (its own commit, after
+this pass): every statePoll / stateInitial / stateAtMarker record has
+timeline.zoom, scrollX, scrollMax, visibleWidth, playheadFrame,
+playheadX, followPoint, playing, follow, viewHeld and followTimer
+(AnimaticTimeline::devrecState, merged into MainWindow's state
+provider). Wheel events were already recorded (DevRecorder's Wheel case)
+- the 2026-10-16 session simply had none. Gate: one check in (at) reads
+the map while the film plays and matches every value against the view
+(Lifecycle 667 -> 669; the zoom is matched to within one of the slider,
+since Fit keeps the exact zoom and shows the slider the nearest whole
+number). Its positive control runs the same comparison over the map with
+one field changed by a pixel - scroll, width, playhead x, follow point -
+and with "held" set true, and each must fail. The map is 292 bytes and a
+state poll runs with every screenshot (500 ms): about 35 KB a minute on
+top of the ~900 KB a minute a recording already writes. devrecState is
+const and calls only const functions; the recorder reads the timeline
+and changes nothing in it.
+FIRST RECORDING WITH THESE FIELDS (Documents\SankoTV-DevRecordings\
+20261017-122051, build 51fccc657+dirty, read back by Claude without
+being told what was done; the user confirmed the reading): following
+started at 39.0 s when the playhead reached the follow point and held it
+within a pixel for 22 s; the end of the film sent the playhead home
+off-screen and the view came back to it; scrub releases off the left
+edge jumped the view a third across; zooming out during playback shrank
+the range and the view followed it down. NOT EXERCISED IN THAT SESSION,
+THE USER'S NOTE: their own scrolling during playback (no scrollbar drag,
+no wheel - viewHeld was false in all 383 polls) and End / Home on a film
+wider than the view (the film fit when those were used). They will
+record those separately.
+
 ## METHOD: measure interior structure ACROSS THE SIZE RANGE before calling it character (2026-09-25)
 
 The Painting census measured Acrylic at size 20 only and found "one

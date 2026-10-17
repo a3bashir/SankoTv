@@ -30,6 +30,7 @@ this fence."
 #endif
 
 #include "AnimaticPage.h"
+#include "AnimaticTimeline.h"
 #include "ConsistencyBoard.h"
 #include "DashboardPage.h"
 #include "MediaCopyProgress.h"
@@ -282,6 +283,13 @@ MainWindow::MainWindow(QWidget *parent)
                                  .arg(bar->y())
                                  .arg(int(bar->isVisible()))
                                  .arg(0));
+            // The timeline's view (2026-10-16): a recording of "the
+            // playhead left the view" had no zoom, offset, width or
+            // playhead in it; the screenshots had to do. Now every poll
+            // carries them, with the following state.
+            if (auto *timeline = m_animatic
+                    ? m_animatic->findChild<AnimaticTimeline *>() : nullptr)
+                m.insert(timeline->devrecState());
             return m;
         });
         rec->setCameraProvider([this]() -> QVariantMap {

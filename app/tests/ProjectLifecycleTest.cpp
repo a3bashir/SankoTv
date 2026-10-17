@@ -8805,6 +8805,54 @@ void runTimelineFollowsPass(const QString &scratch)
     page->togglePlay();
     started();
     advanceTo(20);
+    // What the Dev Recorder's statePoll carries about the view, read while
+    // it plays: the same numbers the checks above read.
+    const QVariantMap rec = tl->devrecState();
+    const int playheadXNow = tl->playheadScreenXForTest(); // read with the map
+    // Does a map agree with the view? One function, so the positive control
+    // below runs the same comparison over a map with one field changed.
+    auto agrees = [&](const QVariantMap &m) {
+        // Fit keeps the exact zoom (60.59 here) and shows the slider the
+        // nearest whole number (61): within one of the slider.
+        return qAbs(m.value(QStringLiteral("timeline.zoom")).toDouble()
+                    - (zoom ? zoom->value() : -1)) < 1.0
+            && m.value(QStringLiteral("timeline.scrollX")).toInt() == tl->scrollXForTest()
+            && m.value(QStringLiteral("timeline.scrollMax")).toInt() == (bar ? bar->maximum() : -1)
+            && m.value(QStringLiteral("timeline.visibleWidth")).toInt() == vw
+            && m.value(QStringLiteral("timeline.playheadX")).toInt() == playheadXNow
+            && m.value(QStringLiteral("timeline.playheadFrame")).toInt() > 0
+            && m.value(QStringLiteral("timeline.followPoint")).toInt() == fp
+            && m.value(QStringLiteral("timeline.playing")).toBool()
+            && m.value(QStringLiteral("timeline.follow")).toBool()
+            && m.value(QStringLiteral("timeline.followTimer")).toBool()
+            && !m.value(QStringLiteral("timeline.viewHeld")).toBool();
+    };
+    check(QStringLiteral("(at) the Dev Recorder's state carries the view: "
+                         "zoom, scroll offset and range, visible width, "
+                         "playhead frame and x, follow point, playing and "
+                         "following - and they agree with the view"),
+          agrees(rec),
+          QString::fromUtf8(QJsonDocument(QJsonObject::fromVariantMap(rec)).toJson(QJsonDocument::Compact)));
+    // POSITIVE CONTROL: the same comparison must SEE a field that disagrees
+    // - each of four fields changed by one, in turn, and the whole map with
+    // the playhead's x off by a pixel.
+    int blind = 0;
+    for (const char *key : {"timeline.scrollX", "timeline.visibleWidth",
+                            "timeline.playheadX", "timeline.followPoint"}) {
+        QVariantMap altered = rec;
+        altered.insert(QLatin1String(key), altered.value(QLatin1String(key)).toInt() + 1);
+        if (agrees(altered))
+            ++blind;
+    }
+    QVariantMap heldMap = rec;
+    heldMap.insert(QStringLiteral("timeline.viewHeld"), true);
+    if (agrees(heldMap))
+        ++blind;
+    check(QStringLiteral("(at) control: the same comparison FAILS a map in "
+                         "which one field disagrees with the view by a pixel "
+                         "(scroll, width, playhead x, follow point) or says "
+                         "the view is held when it is not"),
+          blind == 0, QStringLiteral("%1 altered map(s) passed").arg(blind));
     check(QStringLiteral("(at) when the whole film fits, nothing moves"),
           fits && tl->scrollXForTest() == 0 && tl->playheadScreenXForTest() < rightEdge,
           QStringLiteral("scroll range %1, scroll %2, playhead x %3, right edge %4, zoom %5")
