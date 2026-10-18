@@ -77,6 +77,18 @@ public:
     // answered — the part with no modal in it.
     void resizeProjectForTest(const QSize &newSize) { applyCanvasResize(newSize); }
     QUndoStack *undoStackForTest() const { return m_undoStack; }
+    // The locks (Part B): the Script Editor's re-parse, as its scenesReady
+    // signal reaches this window - refused with a message while the SCENES
+    // or SHOTS track is locked. The message box goes to the hook instead.
+    bool applyScriptScenesForTest(const QJsonArray &scenes) { return onScenesReady(scenes); }
+    void setLockMessageHookForTest(std::function<void(const QString &)> hook)
+    {
+        m_lockMessageHookForTest = std::move(hook);
+    }
+    QString lastLockRefusalForTest() const { return m_lastLockRefusal; }
+    // The track an export would carry right now (the real decision the
+    // movie request is built from): empty for none, missing or MUTED.
+    QString exportAudioPathForTest() const { return exportAudioPath(); }
     void closeProjectForTest() { onCloseProject(); }
     // The real answer-to-consequence mapping, without the modal in front.
     bool mayDiscardForTest(DiscardAnswer answer)
@@ -176,10 +188,12 @@ private:
     sankoexport::FilesResult runPdfExport(const QString &path);
     QString mp4UnavailableReason() const;
     QString mp4AudioWarning() const;
+    QString exportAudioPath() const; // the track the film carries; empty: silent
     QStringList pngExportClashes(const QString &folder) const;
     QString exportStartDir() const;
     void freeScenes();
     void buildScenesFromJson(const QJsonArray &scenes);
+    bool onScenesReady(const QJsonArray &scenes); // false: refused by a lock
 
     void onNewProject();
     // THE entrance to a new project: asks about unsaved work, then shows
@@ -302,6 +316,8 @@ private:
     // at all.
     bool m_dirty = false;
     std::function<DiscardAnswer()> m_discardPromptForTest;
+    std::function<void(const QString &)> m_lockMessageHookForTest;
+    QString m_lastLockRefusal;
     int m_discardPromptCount = 0;
 
     QAction *m_saveAct = nullptr;

@@ -79,6 +79,7 @@
 #include <QUndoCommand>
 #include <QUndoStack>
 #include <QToolButton>
+#include <QCursor>
 #include <QToolTip>
 #include <QVBoxLayout>
 #include <Qt>
@@ -4744,6 +4745,10 @@ void StoryboardPage::setupAnimaticSection(QWidget *centerColumn,
             &StoryboardPage::onClipContextMenu);
     connect(m_animatic, &AnimaticPage::collapsedChanged, this,
             &StoryboardPage::applyTimelineCollapsed);
+    // A lock toggled: the strip's buttons follow it (the window marks the
+    // project unsaved from the same signal).
+    connect(m_animatic, &AnimaticPage::tracksChanged, this,
+            &StoryboardPage::updateDuplicateButton);
     connect(m_animatic, &AnimaticPage::audioChangeRequested, this,
             &StoryboardPage::onAudioChangeRequested);
     connect(m_workSplitter, &QSplitter::splitterMoved, this, [this] {
@@ -4882,6 +4887,13 @@ void StoryboardPage::onDurationChangeRequested(int sceneIndex, int panelIndex,
         return;
     Panel *panel = scene->panels.at(panelIndex);
     const int bounded = qBound(1, seconds, 30);
+    if (refuseShotsEdit()) {
+        // The timeline refuses the drag itself; should a request still
+        // arrive, the clip snaps back to the duration it has.
+        if (m_animatic)
+            m_animatic->refreshTiming();
+        return;
+    }
     if (panel->duration == bounded) {
         if (m_animatic)
             m_animatic->refreshTiming();
@@ -4965,6 +4977,14 @@ void StoryboardPage::onClipContextMenu(int flat, const QPoint &globalPos)
     remove->setEnabled(scene->panels.size() > 1); // a scene keeps one panel
     connect(remove, &QAction::triggered, this,
             [this] { deleteSelectedPanel(); });
+    // A LOCKED SHOTS track (Part B): the three entries stay, disabled and
+    // suffixed, so the lock is seen where the edit was tried.
+    if (shotsLocked()) {
+        for (QAction *a : {add, duplicate, remove}) {
+            a->setEnabled(false);
+            a->setText(a->text() + QStringLiteral(" (locked)"));
+        }
+    }
     if (m_clipMenuHookForTest) {
         m_clipMenuHookForTest(&menu);
         return;
@@ -5865,6 +5885,8 @@ void StoryboardPage::movePanel(int from, int target)
     Scene *scene = currentScene();
     if (!scene || from < 0 || from >= scene->panels.size())
         return;
+    if (refuseShotsEdit())
+        return;
     // Dropping right before or right after itself is a no-op.
     if (target == from || target == from + 1)
         return;
@@ -5880,6 +5902,8 @@ void StoryboardPage::movePanelBy(int delta)
 {
     Scene *scene = currentScene();
     if (!scene || m_currentPanel < 0)
+        return;
+    if (refuseShotsEdit())
         return;
     const int dst = m_currentPanel + delta;
     if (dst < 0 || dst >= scene->panels.size())
@@ -5916,6 +5940,8 @@ void StoryboardPage::insertPanelClone(const Panel *panel, int insertAt,
 {
     Scene *scene = currentScene();
     if (!scene || !panel || !m_undoStack)
+        return;
+    if (refuseShotsEdit()) // Duplicate, Paste, Paste in Place
         return;
     insertAt = qBound(0, insertAt, int(scene->panels.size()));
     m_undoStack->push(
@@ -6023,6 +6049,12 @@ void StoryboardPage::undoDocument()
 {
     if (m_animatic)
         m_animatic->leavePreview();
+    // A locked track's command is not undone (Part B): the stack is left
+    // exactly as it is and a message says why - a silent no-op here would
+    // read as a broken Undo.
+    if (m_undoStack && m_undoStack->index() > 0
+        && refuseLockedHistory(m_undoStack->command(m_undoStack->index() - 1)))
+        return;
     if (m_canvas)
         m_canvas->undo();
 }
@@ -6031,8 +6063,78 @@ void StoryboardPage::redoDocument()
 {
     if (m_animatic)
         m_animatic->leavePreview();
+    if (m_undoStack && m_undoStack->index() < m_undoStack->count()
+        && refuseLockedHistory(m_undoStack->command(m_undoStack->index())))
+        return;
     if (m_canvas)
         m_canvas->redo();
+}
+
+// --- The locks (Part B) -------------------------------------------------------
+
+bool StoryboardPage::shotsLocked() const
+{
+    return m_animatic && m_animatic->tracks().shotsLocked;
+}
+
+// What the user sees when an edit is refused: for a key, a button or a
+// menu, a tooltip at the pointer ("SHOTS track is locked"); for Undo /
+// Redo a message box (sayLocked(.., true)). Under the gate the pointer is
+// the real one, wherever its owner left it, so the tooltip is not shown
+// there (the refusal itself is what the gate reads).
+void StoryboardPage::sayLocked(const QString &message, bool asBox)
+{
+    m_lastLockRefusal = message;
+    if (m_lockMessageHookForTest) {
+        m_lockMessageHookForTest(message);
+        return;
+    }
+    if (asBox) {
+        QMessageBox::information(this, QStringLiteral("Locked track"), message);
+        return;
+    }
+    if (!m_ignoreRealPointerForTest)
+        QToolTip::showText(QCursor::pos(), message, this);
+}
+
+bool StoryboardPage::refuseShotsEdit()
+{
+    if (!shotsLocked())
+        return false;
+    sayLocked(QStringLiteral("SHOTS track is locked"), false);
+    return true;
+}
+
+// The command the history door is about to undo or redo: a panel command
+// (insert, remove, move, duration) is the SHOTS track's, the audio command
+// the AUDIO track's; drawing and the rest are never refused.
+bool StoryboardPage::refuseLockedHistory(const QUndoCommand *command)
+{
+    if (!command || !m_animatic)
+        return false;
+    const TimelineTracks &t = m_animatic->tracks();
+    const bool shots = dynamic_cast<const InsertPanelCommand *>(command)
+        || dynamic_cast<const RemovePanelCommand *>(command)
+        || dynamic_cast<const MovePanelCommand *>(command)
+        || dynamic_cast<const PanelDurationCommand *>(command);
+    const bool audio = dynamic_cast<const AudioTrackCommand *>(command) != nullptr;
+    if (shots && t.shotsLocked) {
+        sayLocked(QStringLiteral("\"%1\" is a change to the SHOTS track, which is "
+                                 "locked. Unlock the track (the lock on the "
+                                 "timeline) to undo or redo it.")
+                      .arg(command->text()),
+                  true);
+        return true;
+    }
+    if (audio && t.audioLocked) {
+        sayLocked(QStringLiteral("\"%1\" is a change to the AUDIO track, which is "
+                                 "locked. Unlock the track (the lock on the "
+                                 "timeline) to undo or redo it.")
+                      .arg(command->text()),
+                  true);
+        return true;
+    }
+    return false;
 }
 
 // --- Edit-menu clipboard routing ----------------------------------------------
@@ -6106,6 +6208,8 @@ void StoryboardPage::cutSelectedPanel()
     Scene *scene = currentScene();
     Panel *source = currentPanel();
     if (!scene || !source || m_currentPanel < 0)
+        return;
+    if (refuseShotsEdit()) // Cut changes the track; Copy never does
         return;
     if (scene->panels.size() <= 1) { // same rule as Delete
         QMessageBox::information(this, QStringLiteral("Cut Panel"),
@@ -6428,6 +6532,8 @@ void StoryboardPage::addPanelAfterSelected()
     Scene *scene = currentScene();
     if (!scene)
         return;
+    if (refuseShotsEdit())
+        return;
     // Insert immediately AFTER the selected panel (or append when the scene is empty).
     const int insertAt = (m_currentPanel >= 0 && m_currentPanel < scene->panels.size())
         ? m_currentPanel + 1
@@ -6446,6 +6552,8 @@ void StoryboardPage::deleteSelectedPanel()
     Scene *scene = currentScene();
     Panel *panel = currentPanel();
     if (!scene || !panel || m_currentPanel < 0)
+        return;
+    if (refuseShotsEdit()) // before any question: a locked track asks nothing
         return;
 
     if (scene->panels.size() <= 1) {
@@ -6472,14 +6580,18 @@ void StoryboardPage::updateDuplicateButton()
     Scene *scene = currentScene();
     const bool hasScene = (scene != nullptr);
     const bool hasPanel = (currentPanel() != nullptr);
+    // A locked SHOTS track (Part B) takes Add, Duplicate and Delete away;
+    // Clear is drawing, not structure, and Import Image stays (the user's
+    // decision d).
+    const bool unlocked = !shotsLocked();
     if (m_addPanelButton)
-        m_addPanelButton->setEnabled(hasScene);                 // needs a scene to add into
+        m_addPanelButton->setEnabled(hasScene && unlocked);     // needs a scene to add into
     if (m_dupPanelButton)
-        m_dupPanelButton->setEnabled(hasPanel);
+        m_dupPanelButton->setEnabled(hasPanel && unlocked);
     if (m_clearPanelButton)
         m_clearPanelButton->setEnabled(hasPanel);
     if (m_deletePanelButton)                                     // blocked on the last remaining panel
-        m_deletePanelButton->setEnabled(hasPanel && scene && scene->panels.size() > 1);
+        m_deletePanelButton->setEnabled(hasPanel && unlocked && scene && scene->panels.size() > 1);
     if (m_importButton)
         m_importButton->setEnabled(hasPanel);
 }

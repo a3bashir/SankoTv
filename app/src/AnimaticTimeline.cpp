@@ -22,6 +22,7 @@
 #include <QWheelEvent>
 #include <QSlider>
 #include <QTimer>
+#include <QToolButton>
 #include <QToolTip>
 #include <QVBoxLayout>
 
@@ -195,6 +196,7 @@ AnimaticTimeline::AnimaticTimeline(QWidget *parent)
     // --- Canvas + horizontal scrollbar -----------------------------------
     m_canvas = new TimelineCanvas(this);
     root->addWidget(m_canvas, 1); // the shots track takes the spare height
+    buildTrackControls();
 
     m_hScroll = new QScrollBar(Qt::Horizontal);
     // Styled by the app-wide sheet (SankoScrollBarStyle.h) — this bar's
@@ -247,6 +249,166 @@ AnimaticTimeline::AnimaticTimeline(QWidget *parent)
 void AnimaticTimeline::setHost(AnimaticPage *host)
 {
     m_host = host;
+}
+
+// --- The track controls (Part B) ------------------------------------------
+
+namespace {
+
+// One icon with the two states the button shows: unchecked in the column's
+// grey, checked (locked / hidden / muted) in the accent.
+QIcon trackIcon(const QString &file, qreal dpr)
+{
+    using namespace SankoTimelineTheme;
+    QIcon icon;
+    for (qreal scale : {1.0, 2.0}) {
+        icon.addPixmap(SankoIcons::renderSvg(file, QSize(kControlSize, kControlSize),
+                                             scale, kTrackControl),
+                       QIcon::Normal, QIcon::Off);
+        icon.addPixmap(SankoIcons::renderSvg(file, QSize(kControlSize, kControlSize),
+                                             scale, kTrackControlActive),
+                       QIcon::Normal, QIcon::On);
+    }
+    Q_UNUSED(dpr);
+    return icon;
+}
+
+const char *trackName(TimelineTrack t)
+{
+    return t == TimelineTrack::Scenes ? "SCENES" : t == TimelineTrack::Shots ? "SHOTS" : "AUDIO";
+}
+
+} // namespace
+
+void AnimaticTimeline::buildTrackControls()
+{
+    if (!m_canvas)
+        return;
+    auto make = [&](const QString &file, const QString &name) {
+        auto *b = new QToolButton(m_canvas);
+        b->setObjectName(name);
+        b->setCheckable(true);
+        b->setAutoRaise(true);
+        b->setCursor(Qt::PointingHandCursor);
+        b->setFocusPolicy(Qt::NoFocus);
+        b->setIcon(trackIcon(file, devicePixelRatioF()));
+        b->setIconSize(QSize(kControlSize, kControlSize));
+        b->setFixedSize(kControlSize + 4, kControlSize + 4);
+        b->setStyleSheet(QStringLiteral(
+            "QToolButton { border: none; background: transparent; padding: 0; }"
+            "QToolButton:hover { background: #1e1e26; border-radius: 4px; }"));
+        return b;
+    };
+    const TimelineTrack tracks[3] = {TimelineTrack::Scenes, TimelineTrack::Shots,
+                                     TimelineTrack::Audio};
+    const char *suffix[3] = {"Scenes", "Shots", "Audio"};
+    for (int i = 0; i < 3; ++i) {
+        const TimelineTrack t = tracks[i];
+        m_lockButtons[i] = make(QStringLiteral(":/icons/timeline/track_lock.svg"),
+                                QStringLiteral("trackLock") + QLatin1String(suffix[i]));
+        connect(m_lockButtons[i], &QToolButton::clicked, this, [this, t](bool on) {
+            if (m_host)
+                m_host->setTrackLocked(t, on); // comes back through setTracks
+        });
+        m_eyeButtons[i] = make(QStringLiteral(":/icons/timeline/track_eye.svg"),
+                               QStringLiteral("trackEye") + QLatin1String(suffix[i]));
+        connect(m_eyeButtons[i], &QToolButton::clicked, this, [this, t](bool on) {
+            if (m_host)
+                m_host->setTrackVisible(t, !on); // checked = hidden
+        });
+    }
+    m_muteButton = make(QStringLiteral(":/icons/timeline/track_speaker.svg"),
+                        QStringLiteral("trackMuteAudio"));
+    connect(m_muteButton, &QToolButton::clicked, this, [this](bool on) {
+        if (m_host)
+            m_host->setAudioMuted(on);
+    });
+    styleTrackControls();
+    layoutTrackControls();
+}
+
+void AnimaticTimeline::layoutTrackControls()
+{
+    if (!m_canvas || !m_lockButtons[0])
+        return;
+    const int rowY[3] = {kSceneY, kPanelY, audioTrackY()};
+    const int rowH[3] = {kSceneH, panelTrackH(), kAudioH};
+    for (int i = 0; i < 3; ++i) {
+        // The 16 px icon centred in the row at the design's x; the button
+        // is 2 px larger on every side.
+        const int y = rowY[i] + (rowH[i] - kControlSize) / 2 - 2;
+        m_lockButtons[i]->move(kControlX[0] - 2, y);
+        m_eyeButtons[i]->move(kControlX[2] - 2, y);
+        if (i == 2)
+            m_muteButton->move(kControlX[1] - 2, y);
+    }
+}
+
+void AnimaticTimeline::styleTrackControls()
+{
+    if (!m_lockButtons[0])
+        return;
+    const TimelineTrack tracks[3] = {TimelineTrack::Scenes, TimelineTrack::Shots,
+                                     TimelineTrack::Audio};
+    for (int i = 0; i < 3; ++i) {
+        const TimelineTrack t = tracks[i];
+        const QString name = QLatin1String(trackName(t));
+        const bool locked = m_tracks.locked(t);
+        const bool visible = m_tracks.visible(t);
+        m_lockButtons[i]->setChecked(locked);
+        m_lockButtons[i]->setToolTip(
+            locked ? QStringLiteral("Unlock the %1 track").arg(name)
+                   : t == TimelineTrack::Scenes
+                ? QStringLiteral("Lock the SCENES track: the Script Editor cannot "
+                                 "replace the scenes while it is locked")
+                : t == TimelineTrack::Shots
+                    ? QStringLiteral("Lock the SHOTS track: no panel can be added, "
+                                     "duplicated, deleted, moved or retimed; drawing "
+                                     "stays allowed")
+                    : QStringLiteral("Lock the AUDIO track: the file cannot be "
+                                     "imported, removed, located or copied"));
+        m_eyeButtons[i]->setChecked(!visible);
+        m_eyeButtons[i]->setToolTip(
+            visible ? QStringLiteral("Hide the %1 track (the timeline only: playback "
+                                     "and export are not affected)")
+                          .arg(name)
+                    : QStringLiteral("Show the %1 track").arg(name));
+    }
+    m_muteButton->setChecked(m_tracks.audioMuted);
+    m_muteButton->setToolTip(
+        m_tracks.audioMuted
+            ? QStringLiteral("Unmute the audio track")
+            : QStringLiteral("Mute the audio track: silent in playback and left out "
+                             "of the MP4"));
+}
+
+void AnimaticTimeline::setTracks(const TimelineTracks &tracks)
+{
+    m_tracks = tracks;
+    styleTrackControls();
+    // A hidden SHOTS track ends any drag or hover on it.
+    if (!m_tracks.shotsVisible) {
+        if (m_drag == Drag::Move || m_drag == Drag::ResizeRight
+            || m_drag == Drag::ResizeLeft)
+            m_drag = Drag::None;
+        m_moveActive = false;
+        m_hoverIndex = -1;
+    }
+    if (m_canvas)
+        m_canvas->update();
+}
+
+QToolButton *AnimaticTimeline::trackControlForTest(const QString &objectName) const
+{
+    return m_canvas ? m_canvas->findChild<QToolButton *>(objectName) : nullptr;
+}
+
+// A press the lock refuses: say why at the pointer (the same tooltip path
+// the trim drag uses) and remember it for the gate.
+void AnimaticTimeline::refuse(const QString &why, const QPoint &globalPos)
+{
+    m_lastRefusal = why;
+    QToolTip::showText(globalPos, why, m_canvas);
 }
 
 // --- Track geometry -------------------------------------------------------
@@ -530,7 +692,15 @@ QVariantMap AnimaticTimeline::devrecState() const
             {QStringLiteral("timeline.follow"), m_follow},
             {QStringLiteral("timeline.viewHeld"), m_viewHeld},
             {QStringLiteral("timeline.followTimer"),
-             m_followTimer && m_followTimer->isActive()}};
+             m_followTimer && m_followTimer->isActive()},
+            // The tracks' lock / visibility / mute (Part B).
+            {QStringLiteral("timeline.scenesLocked"), m_tracks.scenesLocked},
+            {QStringLiteral("timeline.shotsLocked"), m_tracks.shotsLocked},
+            {QStringLiteral("timeline.audioLocked"), m_tracks.audioLocked},
+            {QStringLiteral("timeline.scenesVisible"), m_tracks.scenesVisible},
+            {QStringLiteral("timeline.shotsVisible"), m_tracks.shotsVisible},
+            {QStringLiteral("timeline.audioVisible"), m_tracks.audioVisible},
+            {QStringLiteral("timeline.audioMuted"), m_tracks.audioMuted}};
 }
 
 void AnimaticTimeline::userScrollForTest(int scrollX)
@@ -831,7 +1001,8 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
     }
 
     // ----- Scene track -----
-    {
+    // A HIDDEN track (Part B) paints its background and nothing on it.
+    if (m_tracks.scenesVisible) {
         QFont f = font();
         f.setPointSize(7);
         f.setBold(true);
@@ -875,7 +1046,9 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
     // a 2 px border, nothing else (the design's glow and trim handles are
     // hidden layers, not built; the 6 px grab zones at the edges stay, with
     // the size cursor as their only cue). Layout: clipLayout().
-    {
+    // A hidden SHOTS track paints no clip (and, below, no loop overlay and
+    // no drop indicator; a press on it finds nothing - canvasMousePress).
+    if (m_tracks.shotsVisible) {
         p.setRenderHint(QPainter::Antialiasing, true);
         QFont nameFont = font();
         nameFont.setPixelSize(11);
@@ -974,7 +1147,8 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
     }
 
     // ----- Loop region overlay (on the panel track) -----
-    if (m_loopStart >= 0 && m_loopEnd >= 0 && m_loopStart < m_blocks.size()
+    if (m_tracks.shotsVisible && m_loopStart >= 0 && m_loopEnd >= 0
+        && m_loopStart < m_blocks.size()
         && m_loopEnd < m_blocks.size() && m_loopStart <= m_loopEnd) {
         const Block &a = m_blocks.at(m_loopStart);
         const Block &z = m_blocks.at(m_loopEnd);
@@ -989,8 +1163,8 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
     }
 
     // ----- Reorder drop indicator (a clip is being dragged) -----
-    if (m_drag == Drag::Move && m_moveActive && m_moveGap >= 0
-        && !m_blocks.isEmpty()) {
+    if (m_tracks.shotsVisible && m_drag == Drag::Move && m_moveActive
+        && m_moveGap >= 0 && !m_blocks.isEmpty()) {
         const int frame = m_moveGap < m_blocks.size()
             ? m_blocks.at(m_moveGap).startFrame
             : m_blocks.last().startFrame + m_blocks.last().frames;
@@ -1005,8 +1179,8 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
     // that had nothing to do with the audio's own, on the track that claims
     // to show the audio. A bar says only what is known: there is a track,
     // this is its file, it runs this long. (A real waveform is a separate,
-    // later piece of work.)
-    {
+    // later piece of work.) A hidden AUDIO track paints no bar and no hint.
+    if (m_tracks.audioVisible) {
         const AudioBar bar = audioBar();
         QFont f = font();
         f.setPointSizeF(7.5);
@@ -1101,8 +1275,8 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
     // ----- Left label column (painted on top, fixed) -----
     // 136 px, its separator on the content's first pixel; the labels end
     // 15 px before the column's edge; the track controls (lock, speaker on
-    // AUDIO, eye) are 16 px icons centred in their rows - painted in Part A,
-    // live in Part B.
+    // AUDIO, eye) are 16 px icons centred in their rows - real buttons
+    // since Part B (buildTrackControls), children of the canvas.
     {
         p.fillRect(QRect(0, 0, kLabelColW, tracksH()), kLabelColumnBg);
         p.fillRect(QRect(kLabelColW, 0, 1, tracksH()), kLabelColumnSeparator);
@@ -1121,30 +1295,13 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
                        Qt::AlignVCenter | Qt::AlignRight,
                        QString::fromLatin1(t.name));
 
-        static const QPixmap lock = SankoIcons::renderSvg(
-            QStringLiteral(":/icons/timeline/track_lock.svg"),
-            QSize(kControlSize, kControlSize), devicePixelRatioF());
-        static const QPixmap eye = SankoIcons::renderSvg(
-            QStringLiteral(":/icons/timeline/track_eye.svg"),
-            QSize(kControlSize, kControlSize), devicePixelRatioF());
-        static const QPixmap speaker = SankoIcons::renderSvg(
-            QStringLiteral(":/icons/timeline/track_speaker.svg"),
-            QSize(kControlSize, kControlSize), devicePixelRatioF());
-        struct Row { int y, h; bool speaker; };
-        const Row rows[] = {{kSceneY, kSceneH, false}, {kPanelY, panelTrackH(), false},
-                            {audioTrackY(), kAudioH, true}};
-        for (const Row &row : rows) {
-            const int y = row.y + (row.h - kControlSize) / 2;
-            p.drawPixmap(kControlX[0], y, lock);
-            if (row.speaker)
-                p.drawPixmap(kControlX[1], y, speaker);
-            p.drawPixmap(kControlX[2], y, eye);
-        }
+        // The lock / speaker / eye controls are real buttons over this
+        // column (buildTrackControls), not painted here any more.
     }
 
     // Empty-audio hint. It names the thing that works: this used to say
     // "Drop audio file here", and nothing here accepts a drop.
-    if (audioBar().state == AudioBar::None) {
+    if (m_tracks.audioVisible && audioBar().state == AudioBar::None) {
         QFont f = font();
         f.setPixelSize(10);
         p.setFont(f);
@@ -1373,6 +1530,7 @@ void AnimaticTimeline::canvasWheel(QWheelEvent *e)
 void AnimaticTimeline::canvasResized()
 {
     updateScrollRange();
+    layoutTrackControls(); // the rows moved with the height
     if (m_canvas)
         m_canvas->update();
 }
@@ -1401,13 +1559,23 @@ void AnimaticTimeline::canvasMousePress(QMouseEvent *e)
         return;
     }
 
-    // Trim handles on the selected clip (panel track only).
+    // A hidden SHOTS track has nothing to press (Part B).
+    if (!m_tracks.shotsVisible && pos.y() >= kPanelY
+        && pos.y() < kPanelY + panelTrackH())
+        return;
+
+    // Trim handles on the selected clip (panel track only). A LOCKED SHOTS
+    // track refuses the trim with the message at the pointer; the press
+    // then goes on to select, which a lock never blocks.
     if (m_selected >= 0 && m_selected < m_blocks.size()
         && pos.y() >= kPanelY && pos.y() < kPanelY + panelTrackH()) {
         const Block &b = m_blocks.at(m_selected);
         const int x0 = contentXToScreen(b.startFrame * pxPerFrame());
         const int x1 = contentXToScreen((b.startFrame + b.frames) * pxPerFrame());
-        if (qAbs(pos.x() - x1) <= kHandleW) {
+        const bool onHandle = qAbs(pos.x() - x1) <= kHandleW || qAbs(pos.x() - x0) <= kHandleW;
+        if (onHandle && m_tracks.shotsLocked) {
+            refuse(QStringLiteral("SHOTS track is locked"), e->globalPosition().toPoint());
+        } else if (qAbs(pos.x() - x1) <= kHandleW) {
             m_drag = Drag::ResizeRight;
             m_resizeIndex = m_selected;
             m_dragDuration = b.duration;
@@ -1415,8 +1583,7 @@ void AnimaticTimeline::canvasMousePress(QMouseEvent *e)
             QToolTip::showText(e->globalPosition().toPoint(),
                                QStringLiteral("%1.0s").arg(m_dragDuration), m_canvas);
             return;
-        }
-        if (qAbs(pos.x() - x0) <= kHandleW) {
+        } else if (qAbs(pos.x() - x0) <= kHandleW) {
             m_drag = Drag::ResizeLeft; // visual only for now
             m_resizeIndex = m_selected;
             m_dragLeftFrames = 0;
@@ -1427,7 +1594,8 @@ void AnimaticTimeline::canvasMousePress(QMouseEvent *e)
 
     // Otherwise: a press on a clip SELECTS that panel (the workspace does
     // the selecting and pushes the highlight back through setSelectedPanel),
-    // and may turn into a reorder drag once it has moved far enough.
+    // and may turn into a reorder drag once it has moved far enough - not
+    // on a locked SHOTS track, where the press selects and nothing more.
     if (pos.y() >= kPanelY && pos.y() < kPanelY + panelTrackH()) {
         const int frame = frameAtScreenX(pos.x());
         const int idx = blockAtFrame(frame);
@@ -1435,7 +1603,7 @@ void AnimaticTimeline::canvasMousePress(QMouseEvent *e)
             emit panelSeekRequested(idx);
             // The request may have rebuilt the blocks (it never does today,
             // but nothing here should assume it): re-check before arming.
-            if (idx < m_blocks.size()) {
+            if (idx < m_blocks.size() && !m_tracks.shotsLocked) {
                 m_drag = Drag::Move;
                 m_moveFrom = idx;
                 m_moveGap = -1;
@@ -1455,15 +1623,17 @@ void AnimaticTimeline::canvasContextMenu(QContextMenuEvent *e)
     if (m_drag != Drag::None)
         return;
     // The AUDIO row, its label included: the track's own menu. Whoever owns
-    // the audio builds it; nothing is selected by asking.
+    // the audio builds it; nothing is selected by asking. A hidden track
+    // (Part B) takes no press, this one included.
     if (pos.y() >= audioTrackY() && pos.y() < audioTrackY() + kAudioH) {
-        emit audioContextMenuRequested(e->globalPos());
+        if (m_tracks.audioVisible)
+            emit audioContextMenuRequested(e->globalPos());
         e->accept();
         return;
     }
     if (pos.x() < kLabelCol)
         return;
-    if (pos.y() >= kPanelY && pos.y() < kPanelY + panelTrackH()) {
+    if (m_tracks.shotsVisible && pos.y() >= kPanelY && pos.y() < kPanelY + panelTrackH()) {
         const int idx = blockAtFrame(frameAtScreenX(pos.x()));
         if (idx >= 0) {
             emit panelSeekRequested(idx);
@@ -1556,15 +1726,17 @@ void AnimaticTimeline::canvasMouseMove(QMouseEvent *e)
         return;
     }
 
-    // Idle hover: cursor + highlight.
+    // Idle hover: cursor + highlight. A hidden SHOTS track has nothing to
+    // hover; a locked one shows no resize cursor (there is no trim to cue).
     Qt::CursorShape cursor = Qt::ArrowCursor;
     int hover = -1;
-    if (pos.x() >= kLabelCol && pos.y() >= kPanelY && pos.y() < kPanelY + panelTrackH()) {
+    if (m_tracks.shotsVisible && pos.x() >= kLabelCol && pos.y() >= kPanelY
+        && pos.y() < kPanelY + panelTrackH()) {
         const int frame = frameAtScreenX(pos.x());
         hover = blockAtFrame(frame);
         cursor = (hover >= 0) ? Qt::PointingHandCursor : Qt::ArrowCursor;
         // Resize-handle cursor on the selected clip edges.
-        if (m_selected >= 0 && m_selected < m_blocks.size()) {
+        if (!m_tracks.shotsLocked && m_selected >= 0 && m_selected < m_blocks.size()) {
             const Block &b = m_blocks.at(m_selected);
             const int x0 = contentXToScreen(b.startFrame * pxPerFrame());
             const int x1 = contentXToScreen((b.startFrame + b.frames) * pxPerFrame());

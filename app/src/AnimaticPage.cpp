@@ -920,11 +920,15 @@ void AnimaticPage::layoutHeader()
         return m_header->layout()->sizeHint().width() + kPillW + 2 * kPillGap;
     };
 
-    // Natural widths first: the slider at 160, the label at its text.
+    // Natural widths first: the slider at 160, the label at its text and
+    // on screen (if a track exists).
     if (zoom)
         zoom->setFixedWidth(160);
-    if (m_audioLabel)
+    m_audioNameGivenWay = false;
+    if (m_audioLabel) {
         m_audioLabel->setMaximumWidth(QWIDGETSIZE_MAX);
+        showAudioLabel();
+    }
     refresh();
     int shortage = need() - available;
     // The group's own flag, not isVisible(): the row is laid out before it
@@ -940,19 +944,42 @@ void AnimaticPage::layoutHeader()
     if (shortage > 0 && zoom) {
         zoom->setFixedWidth(qMax(80, 160 - shortage));
         refresh();
+        shortage = need() - available;
     }
-    // The floor: every group at its minimum, the slider at 80, the label at
-    // 60, the pill and its gaps. The slider's width is FIXED above (so the
-    // layout never squeezes it on its own), which makes its minimum its
-    // current width: the left group's minimum hint counts the slider as it
-    // is now, and the slack above 80 is taken off again. (Found 2026-10-18:
-    // without this the floor rose with the slider, the window's minimum
-    // stopped at the slider's current width, and the slider only narrowed
-    // when the width dropped in one jump.)
+    // THE LAST STAGE (the user's, Part B, 2026-10-18): the name at 60 and
+    // the slider at 80 and still short - the audio name goes entirely (the
+    // audio bar on the track shows it anyway) and the slider takes back
+    // what that frees, as far as it needs to.
+    if (shortage > 0 && zoom && m_audioLabel && m_audioLabelWanted && m_audioGroup
+        && !m_audioGroup->isHidden()) {
+        m_audioNameGivenWay = true;
+        showAudioLabel();
+        zoom->setFixedWidth(160);
+        refresh();
+        shortage = need() - available;
+        if (shortage > 0) {
+            zoom->setFixedWidth(qMax(80, 160 - shortage));
+            refresh();
+        }
+    }
+    // The floor: every group at its minimum, the slider at 80, the audio
+    // name gone, the pill and its gaps. The slider's width is FIXED above
+    // (so the layout never squeezes it on its own), which makes its minimum
+    // its current width: the left group's minimum hint counts the slider
+    // as it is now, and the slack above 80 is taken off again. (Found
+    // 2026-10-18: without this the floor rose with the slider, the
+    // window's minimum stopped at the slider's current width, and the
+    // slider only narrowed when the width dropped in one jump.) The name,
+    // while shown, counts its 60 px minimum and the 8 px before the
+    // volume slider; both go with it, so they come off too.
     const QMargins m = m_header->layout()->contentsMargins();
     const int sliderSlack = zoom ? qMax(0, zoom->minimumWidth() - 80) : 0;
+    const int nameSlack = (m_audioLabel && !m_audioLabel->isHidden() && m_audioGroup
+                           && !m_audioGroup->isHidden())
+        ? 60 + 8
+        : 0;
     const int floorWidth = m.left() + m_leftGroup->minimumSizeHint().width() - sliderSlack + kPillGap
-        + kPillW + kPillGap + m_rightGroup->minimumSizeHint().width() + m.right();
+        + kPillW + kPillGap + m_rightGroup->minimumSizeHint().width() - nameSlack + m.right();
     if (m_header->minimumWidth() != floorWidth)
         m_header->setMinimumWidth(floorWidth);
 
@@ -985,6 +1012,75 @@ QString AnimaticPage::audioLabelDrawnTextForTest() const
 {
     auto *label = dynamic_cast<ElidedLabel *>(m_audioLabel);
     return label && !label->isHidden() ? label->drawnText() : QString();
+}
+
+bool AnimaticPage::audioLabelShownForTest() const
+{
+    return m_audioLabel && !m_audioLabel->isHidden();
+}
+
+bool AnimaticPage::audioMutedForTest() const
+{
+    return m_audioOutput && m_audioOutput->isMuted();
+}
+
+// The audio label's two owners (see the header): wanted by updateAudioUi,
+// allowed by layoutHeader.
+void AnimaticPage::setAudioLabelWanted(bool wanted)
+{
+    m_audioLabelWanted = wanted;
+    showAudioLabel();
+}
+
+void AnimaticPage::showAudioLabel()
+{
+    if (m_audioLabel)
+        m_audioLabel->setVisible(m_audioLabelWanted && !m_audioNameGivenWay);
+}
+
+// --- The tracks' lock / visibility / mute (Part B) ---------------------------
+
+void AnimaticPage::setTracks(const TimelineTracks &tracks)
+{
+    m_tracks = tracks; // a load: silent
+    applyTracks();
+}
+
+void AnimaticPage::setTrackLocked(TimelineTrack track, bool locked)
+{
+    if (m_tracks.locked(track) == locked)
+        return;
+    m_tracks.setLocked(track, locked);
+    applyTracks();
+    emit tracksChanged();
+}
+
+void AnimaticPage::setTrackVisible(TimelineTrack track, bool visible)
+{
+    if (m_tracks.visible(track) == visible)
+        return;
+    m_tracks.setVisible(track, visible);
+    applyTracks();
+    emit tracksChanged();
+}
+
+void AnimaticPage::setAudioMuted(bool muted)
+{
+    if (m_tracks.audioMuted == muted)
+        return;
+    m_tracks.audioMuted = muted;
+    applyTracks();
+    emit tracksChanged();
+}
+
+// Mute is the player's own flag (QAudioOutput::setMuted): the volume
+// slider's value is kept, so unmuting plays at the volume it had.
+void AnimaticPage::applyTracks()
+{
+    if (m_timeline)
+        m_timeline->setTracks(m_tracks);
+    if (m_audioOutput)
+        m_audioOutput->setMuted(m_tracks.audioMuted);
 }
 
 // --- Data / display -------------------------------------------------------
@@ -1604,6 +1700,8 @@ qint64 AnimaticPage::offsetForPanel(int index) const
 // - call these two functions, so there is one implementation of each.
 void AnimaticPage::importAudio()
 {
+    if (m_tracks.audioLocked)
+        return; // the menus say "(locked)"; this is the belt to their braces
     if (m_playing)
         pause(); // a dialog is about to open over the film
     const QString path = m_audioPickerForTest
@@ -1638,7 +1736,7 @@ void AnimaticPage::importAudio()
 
 void AnimaticPage::removeAudio()
 {
-    if (m_audioPath.isEmpty())
+    if (m_audioPath.isEmpty() || m_tracks.audioLocked)
         return;
     // The file stays in the project's folder: undo needs it, and nothing in
     // that folder is ever deleted by the app.
@@ -1651,7 +1749,7 @@ void AnimaticPage::removeAudio()
 void AnimaticPage::copyAudioIntoProject()
 {
     if (m_audioPath.isEmpty() || !m_audioLinked || m_audioMissing
-        || m_projectFile.isEmpty())
+        || m_projectFile.isEmpty() || m_tracks.audioLocked)
         return;
     if (m_playing)
         pause();
@@ -1788,7 +1886,7 @@ void AnimaticPage::updateAudioUi()
         // outranks a missing output device: it is the one that needs the
         // artist to do something to the project.
         const QString name = QFileInfo(m_audioPath).fileName();
-        m_audioLabel->setVisible(true);
+        setAudioLabelWanted(true);
         m_audioLabel->setStyleSheet(
             SankoTheme::themed("color: %WARNING%; font-size: 12px;"));
         if (m_audioUnplayable) {
@@ -1811,7 +1909,7 @@ void AnimaticPage::updateAudioUi()
     } else if (m_audioLabel) {
         // In the header row, which stays when the timeline is collapsed: a
         // missing track is announced where it cannot be folded away.
-        m_audioLabel->setVisible(has);
+        setAudioLabelWanted(has);
         if (has) {
             const QString name = QFileInfo(m_audioPath).fileName();
             // LINKED IS SAID ON THE LABEL, not left to the tooltip (the
@@ -1853,10 +1951,11 @@ void AnimaticPage::updateAudioUi()
         m_timeline->setAudioUnplayable(m_audioUnplayable);
         m_timeline->setAudioLoaded(has, m_player ? m_player->duration() : 0);
     }
-    // The header's audio group shows with the label; the row is re-laid
-    // out because the group's width changed (the give-way rule).
+    // The header's audio group shows while a track exists (the label may
+    // still be hidden inside it by the give-way rule's last stage); the row
+    // is re-laid out because the group's width changed.
     if (m_audioGroup)
-        m_audioGroup->setVisible(m_audioLabel && !m_audioLabel->isHidden());
+        m_audioGroup->setVisible(m_audioLabelWanted);
     layoutHeader();
     emit audioStateChanged(); // the menus enable Remove and Locate from this
 }
@@ -1876,7 +1975,7 @@ void AnimaticPage::updateAudioUi()
 // the missing track at the old path).
 void AnimaticPage::locateAudio()
 {
-    if (m_audioPath.isEmpty())
+    if (m_audioPath.isEmpty() || m_tracks.audioLocked)
         return;
     if (m_playing)
         pause();
@@ -1956,6 +2055,16 @@ void AnimaticPage::showAudioMenu(const QPoint &globalPos)
     QAction *removeAction = menu.addAction(QStringLiteral("Remove Audio"));
     removeAction->setEnabled(!m_audioPath.isEmpty());
     connect(removeAction, &QAction::triggered, this, [this] { removeAudio(); });
+    // A LOCKED AUDIO track (Part B): every entry stays, disabled and saying
+    // why, so the lock is seen rather than guessed at.
+    if (m_tracks.audioLocked) {
+        for (QAction *a : menu.actions()) {
+            if (a->isSeparator())
+                continue;
+            a->setEnabled(false);
+            a->setText(a->text() + QStringLiteral(" (locked)"));
+        }
+    }
     if (m_audioMenuHookForTest) {
         m_audioMenuHookForTest(&menu);
         return;

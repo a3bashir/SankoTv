@@ -126,6 +126,17 @@ the page from.
   the scrollbar's own path, so it is the user's scroll for the hold rule;
   Ctrl+wheel zooms around the pointer through following's `setScrollX`
   and never holds.
+- **The timeline section is never narrower than its header's floor**
+  (HANDOFF 2026-10-18, "Part B"): `MainWindow` sets only a minimum
+  HEIGHT, so the window's minimum width is its content's (the docks at
+  their minimums plus the central column at its, and the column's
+  minimum is the header's floor from `AnimaticPage::layoutHeader`). Do
+  not give the window a flat minimum width again, and do not let any
+  header element escape the give-way rule (name shortens, slider
+  narrows, name hides, in that order). The tracks' lock / visibility /
+  mute live in `src/TimelineTracks.h`; every edit path a lock blocks is
+  listed in that HANDOFF section - a new edit path to the SHOTS track
+  must ask `refuseShotsEdit()` first.
 - **The timeline's look is the user's Figma design** (HANDOFF 2026-10-18,
   "The timeline redesign, Part A"): file Dasktop_UI_test, node 380:644,
   is the source of truth; every colour is a role-named token in

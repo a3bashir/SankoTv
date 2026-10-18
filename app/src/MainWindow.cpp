@@ -82,7 +82,17 @@ MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
 {
     setObjectName(QStringLiteral("SankoTVMainWindow")); // stable saveState key
-    setMinimumSize(1280, 720);
+    // THE WINDOW'S MINIMUM WIDTH IS ITS CONTENT'S (Part B, 2026-10-18: the
+    // user's rule that the timeline section can never be made narrower
+    // than its header's floor - the docks or the window give way instead).
+    // Only the height is fixed here; with no explicit minimum width Qt's
+    // layout sets it to the layout's own minimum (QLayout's default size
+    // constraint), which is the docks at their minimums plus the central
+    // column at its - and the timeline's floor is the column's minimum
+    // (AnimaticPage::layoutHeader). It used to be a flat 1280 x 720, which
+    // let the window shrink under the content and cut the header's right
+    // group at the edge.
+    setMinimumHeight(720);
 
     setupMenuBar();
 
@@ -143,6 +153,12 @@ MainWindow::MainWindow(QWidget *parent)
     // Remove Audio is offered only while there is a track to remove.
     connect(m_animatic, &AnimaticPage::audioStateChanged, this,
             &MainWindow::updateAudioActions);
+    // A track locked, hidden or muted (Part B): not an undo command (the
+    // user's decision c), so it marks the project unsaved from here; the
+    // Edit menu's audio entries follow the AUDIO lock.
+    connect(m_animatic, &AnimaticPage::tracksChanged, this, &MainWindow::markDirty);
+    connect(m_animatic, &AnimaticPage::tracksChanged, this,
+            &MainWindow::updateAudioActions);
     if (m_consistencyBoard)
         connect(m_consistencyBoard, &ConsistencyBoard::documentChanged, this,
                 &MainWindow::markDirty);
@@ -178,10 +194,7 @@ MainWindow::MainWindow(QWidget *parent)
         m_stack->setCurrentWidget(m_dashboard);
     });
     connect(m_scriptEditor, &ScriptEditorPage::scenesReady, this,
-            [this](const QJsonArray &scenes) {
-        buildScenesFromJson(scenes);
-        updateSaveActions();
-    });
+            [this](const QJsonArray &scenes) { onScenesReady(scenes); });
     connect(m_scriptEditor, &ScriptEditorPage::continueRequested, this, [this] {
         if (m_scenes.isEmpty())
             return;
@@ -677,19 +690,25 @@ void MainWindow::updateAudioActions()
 {
     const bool inWorkspace = m_stack && m_storyboard
         && m_stack->currentWidget() == m_storyboard && !m_scenes.isEmpty();
-    if (m_importAudioAct)
-        m_importAudioAct->setEnabled(inWorkspace);
-    if (m_removeAudioAct)
-        m_removeAudioAct->setEnabled(inWorkspace && m_animatic
-                                     && !m_animatic->audioPath().isEmpty());
-    if (m_locateAudioAct)
-        m_locateAudioAct->setEnabled(inWorkspace && m_animatic
-                                     && m_animatic->audioMissing());
-    if (m_copyAudioAct)
-        m_copyAudioAct->setEnabled(inWorkspace && m_animatic
-                                   && m_animatic->audioLinked()
-                                   && !m_animatic->audioMissing()
-                                   && !m_currentProjectPath.isEmpty());
+    // A LOCKED AUDIO track (Part B): the four entries stay, disabled and
+    // suffixed "(locked)"; the suffix comes off again with the lock.
+    const bool locked = m_animatic && m_animatic->tracks().audioLocked;
+    const QString suffix = QStringLiteral(" (locked)");
+    auto apply = [&](QAction *act, bool enabled) {
+        if (!act)
+            return;
+        QString text = act->text();
+        if (text.endsWith(suffix))
+            text.chop(suffix.size());
+        act->setText(locked ? text + suffix : text);
+        act->setEnabled(enabled && !locked);
+    };
+    apply(m_importAudioAct, inWorkspace);
+    apply(m_removeAudioAct, inWorkspace && m_animatic && !m_animatic->audioPath().isEmpty());
+    apply(m_locateAudioAct, inWorkspace && m_animatic && m_animatic->audioMissing());
+    apply(m_copyAudioAct, inWorkspace && m_animatic && m_animatic->audioLinked()
+                              && !m_animatic->audioMissing()
+                              && !m_currentProjectPath.isEmpty());
 }
 
 // --- File > Export ----------------------------------------------------------
@@ -736,9 +755,29 @@ QString MainWindow::mp4UnavailableReason() const
 // The project names an audio file that is not there (HANDOFF "Pass 2": the
 // path is kept, the track shown as missing). The old export skipped the
 // sound without a word; this says so first and lets the artist decide.
+// The track the film carries: the project's, when its file is there and
+// the track is not MUTED (a muted track is left out, the user's decision
+// b; the pre-export message said so and offered Cancel). Empty: silent.
+QString MainWindow::exportAudioPath() const
+{
+    if (!m_animatic || m_animatic->audioPath().isEmpty() || m_animatic->audioMissing()
+        || m_animatic->tracks().audioMuted)
+        return QString();
+    return m_animatic->audioPath();
+}
+
 QString MainWindow::mp4AudioWarning() const
 {
-    if (!m_animatic || !m_animatic->audioMissing())
+    if (!m_animatic || m_animatic->audioPath().isEmpty())
+        return QString();
+    // Muted (Part B): the track is there and would be left out on purpose;
+    // said before the file dialog, with Cancel, like the missing case.
+    if (m_animatic->tracks().audioMuted)
+        return QStringLiteral(
+            "The audio track is muted and will be left out of the film.\n\n"
+            "The film can be exported without sound, or you can cancel and "
+            "unmute the track first (the speaker on the timeline's AUDIO track).");
+    if (!m_animatic->audioMissing())
         return QString();
     return QStringLiteral(
                "The project's audio file cannot be found:\n%1\n\n"
@@ -763,9 +802,7 @@ sankoexport::MovieResult MainWindow::runMovieExport(const QString &path)
     request.outPath = path;
     request.panels = collectPanels(m_scenes);
     request.fps = m_projectFps; // THE PROJECT'S, not a constant 24
-    if (m_animatic && !m_animatic->audioPath().isEmpty()
-        && !m_animatic->audioMissing())
-        request.audioPath = m_animatic->audioPath();
+    request.audioPath = exportAudioPath();
 
     // The platform's encoder: Media Foundation called directly on Windows.
     // (Its availability was asked before the file dialog; null here means
@@ -1291,6 +1328,31 @@ void MainWindow::freeScenes()
     m_scenes.clear();
 }
 
+// The Script Editor's parse, arriving as scenes. A re-parse replaces every
+// scene and every panel with them: while the SCENES or the SHOTS track is
+// locked (Part B) it is refused, with a message, and the project is left
+// as it is.
+bool MainWindow::onScenesReady(const QJsonArray &scenes)
+{
+    if (m_animatic && !m_scenes.isEmpty()
+        && (m_animatic->tracks().scenesLocked || m_animatic->tracks().shotsLocked)) {
+        const QString which = m_animatic->tracks().scenesLocked
+            ? QStringLiteral("SCENES") : QStringLiteral("SHOTS");
+        m_lastLockRefusal = QStringLiteral(
+            "The script was not applied: the %1 track is locked, and applying "
+            "the script replaces every scene and panel. Unlock the track (the "
+            "lock on the timeline) and apply the script again.").arg(which);
+        if (m_lockMessageHookForTest)
+            m_lockMessageHookForTest(m_lastLockRefusal);
+        else
+            QMessageBox::information(this, QStringLiteral("Locked track"), m_lastLockRefusal);
+        return false;
+    }
+    buildScenesFromJson(scenes);
+    updateSaveActions();
+    return true;
+}
+
 void MainWindow::buildScenesFromJson(const QJsonArray &scenes)
 {
     // A Script Editor re-parse REPLACES every scene in the project. That is
@@ -1346,6 +1408,7 @@ void MainWindow::resetProjectState(ClipboardPolicy clipboards)
         m_consistencyBoard->refresh();
     if (m_animatic) {
         m_animatic->setAudioPath(QString()); // stops the player too
+        m_animatic->setTracks(TimelineTracks()); // unlocked, visible, unmuted
         m_animatic->setProjectFile(QString());
         m_animatic->setFps(m_projectFps);
     }
@@ -1653,6 +1716,7 @@ bool MainWindow::saveToPath(const QString &path)
     data.consistency = m_consistencyEntries;
     data.audioPath = m_animatic->audioPath(); // where the track's file is
     data.audioLinked = m_animatic->audioLinked();
+    data.tracks = m_animatic->tracks(); // lock / visibility / mute (Part B)
     data.perspective = m_storyboard->perspectiveToJson();
     // STEP 1 — the images, every write checked. This stops at the first
     // failure and, crucially, happens BEFORE the manifest is touched: if a
@@ -1793,6 +1857,10 @@ bool MainWindow::loadFromPath(const QString &path)
     // was stored, LINKED, and stays that way until the artist converts it.
     m_animatic->setProjectFile(path);
     m_animatic->setAudioPath(loaded.audioPath, loaded.audioLinked);
+    // The tracks' lock / visibility / mute, silently (a load is not an
+    // edit); the Edit menu's audio entries follow the AUDIO lock.
+    m_animatic->setTracks(loaded.tracks);
+    updateAudioActions();
 
     m_currentProjectPath = path;
     updateSaveActions();

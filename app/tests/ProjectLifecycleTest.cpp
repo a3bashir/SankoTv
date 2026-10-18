@@ -61,6 +61,7 @@
 #include "ProjectMedia.h"
 #include "RecentProjects.h"
 #include "SankoIcons.h"
+#include "SankoTimelineTheme.h"
 #include "SankoTheme.h"
 #include "StoryboardModel.h"
 #include "devrecorder/DevRecorder.h"
@@ -113,6 +114,7 @@
 #include <QSlider>
 #include <QStyle>
 #include <QStyleOptionSlider>
+#include <QToolButton>
 #include <QUndoStack>
 #include <QtGui/QTransform>
 #include <functional>
@@ -4363,7 +4365,12 @@ struct Rig
     DrawingCanvas *canvas = nullptr;
     bool ok = false;
 
-    explicit Rig(const QString &project, const QSize &size = QSize(1400, 900))
+    // 1640 wide (was 1400): the window's minimum width is its content's
+    // since Part B (the timeline's header floor plus the docks), and a
+    // 1400 window would be grown to it at once; with an audio track the
+    // floor is higher still. 1640 keeps every section's window its own
+    // size, with the audio name whole.
+    explicit Rig(const QString &project, const QSize &size = QSize(1640, 900))
     {
         window.resize(size);
         window.show();
@@ -8962,7 +8969,10 @@ void runScrollbarOwnershipPass(const QString &scratch)
     const QString project = writeProject(base + QStringLiteral("/p"),
                                          QStringLiteral("Own"), QSize(960, 540),
                                          24, 1, 24);
-    Rig r(project);
+    // 1400 wide, as this section was written: its follow-point arithmetic
+    // (the playhead past the follow point after a zoom-out at 200 %) holds
+    // for this width; the window grows to its content minimum (~1492).
+    Rig r(project, QSize(1400, 900));
     check(QStringLiteral("(au) the workspace opened"), r.ok);
     if (!r.ok)
         return;
@@ -9651,63 +9661,565 @@ void runTimelineLookPass(const QString &scratch)
         page->setAudioPath(wav, true);
         audio::waitFor([&] { return tl->audioBarStateForTest() == QStringLiteral("present"); }, 4000);
         pump(200);
+        // THE FLOOR (Part B): the width at which the name is GONE (the last
+        // stage) and the slider at 80. The stages above it, in the user's
+        // order - the name shortens to 60, the slider narrows to 80, the
+        // name hides and the slider takes back what that frees - at exact
+        // widths: `give` is what the name can shorten by (its natural
+        // width less 60), 68 what hiding it frees (60 and the 8 px gap).
         const int floor = page->headerMinimumWidthForTest();
         const int beside = r.window.width() - page->width();
+        QLabel *audioLabel = page->findChild<QLabel *>(QStringLiteral("animaticAudioLabel"));
+        auto groupRect = [&](const char *name) {
+            return QRect(widget(name)->mapTo(page, QPoint(0, 0)), widget(name)->size());
+        };
+        auto clear = [&] {
+            const QRect pill = page->transportPillRectForTest();
+            const QRect left = groupRect("animaticHeaderLeft");
+            const QRect right = groupRect("animaticHeaderRight");
+            return pill.left() >= left.right() + 1 + 16 && pill.right() + 1 + 16 <= right.left()
+                && right.right() + 1 + 32 <= page->width();
+        };
+        auto state = [&] {
+            return QStringLiteral("W %1 slider %2 name %3 '%4' shown %5 clear %6")
+                .arg(page->width()).arg(page->zoomSliderWidthForTest())
+                .arg(audioLabel ? audioLabel->width() : -1)
+                .arg(page->audioLabelDrawnTextForTest()).arg(page->audioLabelShownForTest())
+                .arg(clear());
+        };
         // Wide: nothing gives.
         r.window.resize(floor + beside + 400, 900);
         pump(400);
-        const bool wideOk = page->zoomSliderWidthForTest() == 160
-            && page->audioLabelDrawnTextForTest() == page->audioLabelTextForTest();
-        // Just above the floor: the name elides, the slider narrows but stays >= 80,
-        // and the pill keeps clear of both groups.
+        const int give = audioLabel ? audioLabel->sizeHint().width() - 60 : 0;
+        const bool wideOk = page->zoomSliderWidthForTest() == 160 && page->audioLabelShownForTest()
+            && page->audioLabelDrawnTextForTest() == page->audioLabelTextForTest() && give > 0 && clear();
+        const QString wideText = state();
+        // Stage 1 + 2: 20 px above the width where the name is at 60 and
+        // the slider at 80 (floor + 68, the name not yet hidden): the name
+        // elided at 60, the slider at 100.
+        r.window.resize(floor + beside + 68 + 20, 900);
+        pump(400);
+        const QString drawn = page->audioLabelDrawnTextForTest();
+        const bool elided = drawn.contains(QChar(0x2026)) && drawn != page->audioLabelTextForTest();
+        const bool stage2Ok = page->audioLabelShownForTest() && elided && audioLabel
+            && audioLabel->width() == 60 && page->zoomSliderWidthForTest() == 100 && clear();
+        const QString stage2Text = state();
+        // Stage 3: 20 px above the floor the name is hidden and the slider,
+        // given back the 68 px, is 100.
         r.window.resize(floor + beside + 20, 900);
         pump(400);
-        const int sliderNarrow = page->zoomSliderWidthForTest();
-        const QString drawn = page->audioLabelDrawnTextForTest();
-        const QRect pill = page->transportPillRectForTest();
-        const QRect left = QRect(widget("animaticHeaderLeft")->mapTo(page, QPoint(0, 0)), widget("animaticHeaderLeft")->size());
-        const QRect right = QRect(widget("animaticHeaderRight")->mapTo(page, QPoint(0, 0)), widget("animaticHeaderRight")->size());
-        // THE RULE, exactly: the floor is the width at which the name is at
-        // its 60 px minimum and the slider at 80, so 20 px above it the
-        // name has given everything (60, elided) and the slider has given
-        // all but 20 (100); the pill keeps 16 px from both groups; the right
-        // group ends inside the window.
-        const int labelNarrow = page->findChild<QLabel *>(QStringLiteral("animaticAudioLabel"))->width();
-        const bool elided = drawn.contains(QChar(0x2026)) && drawn != page->audioLabelTextForTest();
-        const bool narrowOk = elided && labelNarrow == 60 && sliderNarrow == 100
-            && pill.left() >= left.right() + 1 + 16
-            && pill.right() + 1 + 16 <= right.left() && right.right() + 1 + 32 <= page->width();
-        check(QStringLiteral("(aw) THE GIVE-WAY RULE: wide, the slider is 160 and the audio "
-                             "name whole; 20 px above the header's floor the name is elided at "
-                             "its 60 px minimum and the slider is 100 (all but 20 of its 80 "
-                             "given), the pill clear of both groups and the right group inside "
-                             "the window"),
-              wideOk && narrowOk,
-              QStringLiteral("floor %1; wide ok %2; narrow: drawn '%3' label %4 slider %5 pill %6..%7 left ends %8 right %9..%10 W %11")
-                  .arg(floor).arg(wideOk).arg(drawn).arg(labelNarrow).arg(sliderNarrow).arg(pill.left()).arg(pill.right())
-                  .arg(left.right()).arg(right.left()).arg(right.right()).arg(page->width()));
-        // At the narrowest the window allows (its own minimum, and the other
-        // columns', may hold it above the header's floor): the ORDER holds -
-        // the slider has not narrowed unless the name is already at its
-        // 60 px minimum - and nothing overlaps.
+        const bool stage3Ok = !page->audioLabelShownForTest()
+            && page->zoomSliderWidthForTest() == 100 && clear();
+        const QString stage3Text = state();
+        check(QStringLiteral("(aw) THE GIVE-WAY RULE, in the user's order: wide, the slider "
+                             "is 160 and the audio name whole; 20 px above the name-at-60-"
+                             "slider-at-80 width the name is elided at 60 and the slider is "
+                             "100; 20 px above the floor the name is hidden entirely and the "
+                             "slider 100 again; the pill clear of both groups and the right "
+                             "group inside the window throughout"),
+              wideOk && stage2Ok && stage3Ok,
+              QStringLiteral("floor %1 give %2 | wide: %3 | stage 2: %4 | stage 3: %5")
+                  .arg(floor).arg(give).arg(wideText).arg(stage2Text).arg(stage3Text));
+        // At the floor: the name hidden, the slider at 80, nothing overlapping.
         r.window.resize(floor + beside, 900);
         pump(400);
-        const int sliderAtFloor = page->zoomSliderWidthForTest();
-        const int labelAtFloor = page->findChild<QLabel *>(QStringLiteral("animaticAudioLabel"))->width();
-        const QRect pillF = page->transportPillRectForTest();
-        const QRect rightF = QRect(widget("animaticHeaderRight")->mapTo(page, QPoint(0, 0)), widget("animaticHeaderRight")->size());
-        check(QStringLiteral("(aw) control, as narrow as the window goes: the slider is 160 "
-                             "unless the name is already at its 60 px minimum, the slider "
-                             "never below 80, the pill clear of the groups and the right "
-                             "group inside the window"),
-              (sliderAtFloor == 160 || labelAtFloor == 60) && sliderAtFloor >= 80 && labelAtFloor >= 60
-                  && pillF.right() + 1 + 16 <= rightF.left() && rightF.right() + 1 + 32 <= page->width(),
-              QStringLiteral("slider %1 label %2 pill ..%3 right %4..%5 W %6 (floor %7)")
-                  .arg(sliderAtFloor).arg(labelAtFloor).arg(pillF.right()).arg(rightF.left())
-                  .arg(rightF.right()).arg(page->width()).arg(floor));
+        const bool floorOk = !page->audioLabelShownForTest()
+            && page->zoomSliderWidthForTest() == 80 && clear() && page->width() == floor;
+        const QString floorText = state();
+        // Below it: the window refuses (its minimum width is its content's,
+        // Part B) - the section is never narrower than its floor.
+        r.window.resize(floor + beside - 150, 900);
+        pump(400);
+        const bool belowOk = page->width() >= floor && clear();
+        const QString belowText = state();
+        check(QStringLiteral("(aw) AT THE FLOOR the name is hidden and the slider is 80; "
+                             "150 px below it the window refuses and the section is still "
+                             "at least its floor wide, nothing overlapping"),
+              floorOk && belowOk,
+              QStringLiteral("floor %1 | at: %2 | below: %3 window min %4")
+                  .arg(floor).arg(floorText).arg(belowText).arg(r.window.minimumWidth()));
         page->setAudioPath(QString(), false);
         pump(200);
     }
+}
+
+// ---- (ax) the tracks' lock, visibility and mute (Part B) --------------------
+// The three tracks' lock / eye / speaker buttons over the label column.
+// Every lock blocks every path in the lock table, each with its positive
+// control (the same edit succeeds unlocked); a hidden track paints nothing
+// and takes no press; mute reaches the player and the export; the seven
+// flags round-trip through the manifest and an old project loads with the
+// defaults; the toggles mark the project unsaved and push nothing on the
+// undo stack; Undo / Redo of a locked track's command is refused with a
+// message and the stack is left as it is. Synthetic events only.
+void runTrackLocksPass(const QString &scratch)
+{
+    using namespace workspace;
+    out() << "--- (ax) the tracks' lock, visibility and mute (Part B) ---" << Qt::endl;
+    const QString base = scratch + QStringLiteral("/track_locks");
+    QDir(base).removeRecursively();
+    // Two scenes of three panels; durations 2, 3, 4 s (writeProject's
+    // 2 + p % 3), so a reorder shows in the clips' durations.
+    const QString project = writeProject(base, QStringLiteral("Locks"), QSize(960, 540), 24, 2, 3);
+    Rig r(project);
+    check(QStringLiteral("(ax) the rig: the workspace with the timeline"), r.ok);
+    if (!r.ok)
+        return;
+    AnimaticPage *page = r.animatic;
+    AnimaticTimeline *tl = r.timeline;
+    StoryboardPage *sb = r.storyboard;
+    QUndoStack *stack = r.window.undoStackForTest();
+    auto control = [&](const char *name) { return tl->trackControlForTest(QLatin1String(name)); };
+    auto clickControl = [&](const char *name) {
+        if (QToolButton *b = control(name))
+            b->click(); // the button's own click: checked flips, clicked(bool) fires
+        pump(150);
+    };
+    auto panels = [&] { return page->itemCountForTest(); };
+    auto durations = [&] {
+        QStringList d;
+        for (int i = 0; i < tl->blockCountForTest(); ++i)
+            d << QString::number(tl->blockDurationForTest(i));
+        return d.join(QLatin1Char(','));
+    };
+    QStringList messages; // what the lock hooks were handed
+    sb->setLockMessageHookForTest([&](const QString &m) { messages << m; });
+    r.window.setLockMessageHookForTest([&](const QString &m) { messages << m; });
+
+    // ---- the controls, and an old project's defaults ----
+    {
+        const char *names[] = {"trackLockScenes", "trackEyeScenes", "trackLockShots",
+                               "trackEyeShots", "trackLockAudio", "trackEyeAudio",
+                               "trackMuteAudio"};
+        int found = 0, unchecked = 0, placed = 0;
+        QStringList where;
+        const QRect audioRow = tl->audioRowForTest();
+        for (const char *n : names) {
+            QToolButton *b = control(n);
+            if (!b)
+                continue;
+            ++found;
+            if (!b->isChecked())
+                ++unchecked;
+            const QString name = QLatin1String(n);
+            // The icon's x: 8 for the lock, 32 for the speaker, 56 for the
+            // eye (the button is 2 px larger each side); the icon centred in
+            // its row.
+            const int iconX = b->x() + 2;
+            const int wantX = name.startsWith(QStringLiteral("trackLock")) ? 8
+                : name.startsWith(QStringLiteral("trackMute")) ? 32 : 56;
+            const int rowY = name.endsWith(QStringLiteral("Scenes")) ? 24
+                : name.endsWith(QStringLiteral("Shots")) ? 48 : audioRow.y();
+            const int rowH = name.endsWith(QStringLiteral("Scenes")) ? 24
+                : name.endsWith(QStringLiteral("Shots")) ? audioRow.y() - 48 : audioRow.height();
+            const int wantY = rowY + (rowH - 16) / 2;
+            if (iconX == wantX && b->y() + 2 == wantY && b->isVisible())
+                ++placed;
+            where << QStringLiteral("%1 %2,%3").arg(name).arg(b->x()).arg(b->y());
+        }
+        const TimelineTracks t = page->tracks();
+        check(QStringLiteral("(ax) THE SEVEN CONTROLS are real buttons over the label column "
+                             "(lock at x 8, speaker at 32 on AUDIO, eye at 56, 16 px icons "
+                             "centred in their rows), all unchecked; a project saved without "
+                             "a tracks key loads unlocked, visible and unmuted"),
+              found == 7 && unchecked == 7 && placed == 7 && t == TimelineTracks(),
+              QStringLiteral("found %1 unchecked %2 placed %3 | %4 | audio row %5")
+                  .arg(found).arg(unchecked).arg(placed).arg(where.join(QStringLiteral("; ")))
+                  .arg(QStringLiteral("%1,%2 %3x%4").arg(audioRow.x()).arg(audioRow.y()).arg(audioRow.width()).arg(audioRow.height())));
+    }
+
+    // ---- a toggle: state, the button, unsaved, and nothing on the stack ----
+    r.window.markCleanForTest();
+    const int n0 = stack->count();
+    clickControl("trackLockShots");
+    check(QStringLiteral("(ax) CLICKING THE SHOTS LOCK locks the track: tracks() says so, "
+                         "the button is checked, the project is unsaved, and the undo stack "
+                         "is untouched (a toggle is not a command)"),
+          page->tracks().shotsLocked && control("trackLockShots")->isChecked()
+              && r.window.isDirty() && stack->count() == n0,
+          QStringLiteral("locked %1 checked %2 dirty %3 stack %4 -> %5")
+              .arg(page->tracks().shotsLocked).arg(control("trackLockShots")->isChecked())
+              .arg(r.window.isDirty()).arg(n0).arg(stack->count()));
+
+    // ---- the SHOTS lock, path by path, each with its control ----
+    QPushButton *addBtn = nullptr, *dupBtn = nullptr, *delBtn = nullptr;
+    for (QPushButton *b : sb->findChildren<QPushButton *>()) {
+        if (b->toolTip().startsWith(QStringLiteral("<b>Add Panel</b>")))
+            addBtn = b;
+        else if (b->toolTip().startsWith(QStringLiteral("<b>Duplicate Panel</b>")))
+            dupBtn = b;
+        else if (b->toolTip().startsWith(QStringLiteral("<b>Delete Panel</b>")))
+            delBtn = b;
+    }
+    check(QStringLiteral("(ax) locked: the strip's Add, Duplicate and Delete buttons are "
+                         "disabled"),
+          addBtn && dupBtn && delBtn && !addBtn->isEnabled() && !dupBtn->isEnabled()
+              && !delBtn->isEnabled(),
+          QStringLiteral("found %1 %2 %3 enabled %4 %5 %6")
+              .arg(addBtn != nullptr).arg(dupBtn != nullptr).arg(delBtn != nullptr)
+              .arg(addBtn && addBtn->isEnabled()).arg(dupBtn && dupBtn->isEnabled())
+              .arg(delBtn && delBtn->isEnabled()));
+    // The clip menu: the three entries disabled and suffixed.
+    {
+        QStringList items;
+        sb->setClipMenuHookForTest([&](QMenu *menu) {
+            for (QAction *a : menu->actions())
+                if (!a->isSeparator())
+                    items << QStringLiteral("%1[%2]").arg(a->text()).arg(a->isEnabled());
+        });
+        rightClickClip(r, 0);
+        sb->setClipMenuHookForTest({});
+        check(QStringLiteral("(ax) locked: the clip's menu shows Add Panel After, Duplicate "
+                             "Panel and Delete Panel disabled and suffixed \"(locked)\""),
+              items.size() == 3 && items.at(0) == QStringLiteral("Add Panel After (locked)[0]")
+                  && items.at(1) == QStringLiteral("Duplicate Panel (locked)[0]")
+                  && items.at(2) == QStringLiteral("Delete Panel (locked)[0]"),
+              items.join(QStringLiteral(" | ")));
+    }
+    // Cut, Paste (Copy allowed), the Delete key over the timeline, Ctrl+Right.
+    {
+        const int before = panels();
+        const QString order = durations();
+        clickClip(r, 1);
+        sb->clearLockRefusalForTest();
+        sb->editCopy();
+        const bool copied = sb->hasPanelClipboard() && sb->lastLockRefusalForTest().isEmpty();
+        sb->editCut();
+        const bool cutRefused = panels() == before
+            && sb->lastLockRefusalForTest() == QStringLiteral("SHOTS track is locked");
+        sb->clearLockRefusalForTest();
+        sb->editPaste();
+        const bool pasteRefused = panels() == before
+            && sb->lastLockRefusalForTest() == QStringLiteral("SHOTS track is locked");
+        sb->clearLockRefusalForTest();
+        hover(r, r.animatic, true); // arms the timeline's keys (Delete among them)
+        const bool armed = sb->timelineKeysArmedForTest();
+        keyClaimed(&r.window, Qt::Key_Delete);
+        const bool deleteRefused = armed && panels() == before
+            && sb->lastLockRefusalForTest() == QStringLiteral("SHOTS track is locked");
+        sb->clearLockRefusalForTest();
+        startWindowKeys::press(&r.window, Qt::Key_Right, Qt::ControlModifier);
+        pump(200);
+        const bool moveRefused = durations() == order
+            && sb->lastLockRefusalForTest() == QStringLiteral("SHOTS track is locked");
+        hover(r, r.animatic, false);
+        check(QStringLiteral("(ax) locked: Copy is allowed; Cut, Paste, the Delete key over "
+                             "the timeline (no question asked) and Ctrl+Right are refused "
+                             "with \"SHOTS track is locked\" and change nothing"),
+              copied && cutRefused && pasteRefused && deleteRefused && moveRefused
+                  && stack->count() == n0,
+              QStringLiteral("copied %1 cut %2 paste %3 delete %4 move %5 panels %6 stack %7")
+                  .arg(copied).arg(cutRefused).arg(pasteRefused).arg(deleteRefused)
+                  .arg(moveRefused).arg(panels()).arg(stack->count()));
+    }
+    // The timeline's own paths: a trim and a reorder, locked then unlocked.
+    auto trim = [&](int flat, int dx) {
+        clickClip(r, flat);
+        const QRect c = tl->clipRectForTest(flat);
+        const QPointF edge(c.right(), c.center().y());
+        tl->clearRefusalForTest();
+        sendMouse(r.surface, QEvent::MouseButtonPress, edge, Qt::LeftButton);
+        sendMouse(r.surface, QEvent::MouseMove, edge + QPointF(dx, 0), Qt::LeftButton);
+        sendMouse(r.surface, QEvent::MouseButtonRelease, edge + QPointF(dx, 0), Qt::LeftButton);
+        pump(200);
+    };
+    auto reorder = [&](int flat, int toFlat) {
+        const QPointF from = tl->clipRectForTest(flat).center();
+        const QPointF to(tl->clipRectForTest(toFlat).right() - 2,
+                         tl->clipRectForTest(toFlat).center().y());
+        sendMouse(r.surface, QEvent::MouseButtonPress, from, Qt::LeftButton);
+        sendMouse(r.surface, QEvent::MouseMove, from + QPointF(12, 0), Qt::LeftButton);
+        sendMouse(r.surface, QEvent::MouseMove, to, Qt::LeftButton);
+        sendMouse(r.surface, QEvent::MouseButtonRelease, to, Qt::LeftButton);
+        pump(200);
+    };
+    {
+        const int d0 = tl->blockDurationForTest(0);
+        const QString order = durations();
+        trim(0, 90); // at zoom 100, 24 fps: 90 px = nearly 4 s more
+        const bool trimRefused = tl->blockDurationForTest(0) == d0
+            && tl->lastRefusalForTest() == QStringLiteral("SHOTS track is locked")
+            && stack->count() == n0;
+        reorder(0, 1);
+        const bool reorderRefused = durations() == order && stack->count() == n0
+            && page->selectedPanelForTest() == 0; // the press still selected
+        check(QStringLiteral("(ax) locked: a trim drag on the selected clip's edge is refused "
+                             "with the message at the pointer, and a drag of a clip onto "
+                             "another selects it and moves nothing"),
+              trimRefused && reorderRefused,
+              QStringLiteral("trim: duration %1 -> %2 refusal '%3'; reorder: %4 -> %5 selected %6 stack %7")
+                  .arg(d0).arg(tl->blockDurationForTest(0)).arg(tl->lastRefusalForTest())
+                  .arg(order).arg(durations()).arg(page->selectedPanelForTest()).arg(stack->count()));
+        // CONTROL: unlocked, the same two drags change the track.
+        clickControl("trackLockShots");
+        trim(0, 90);
+        const bool trimmed = tl->blockDurationForTest(0) > d0 && stack->count() == n0 + 1;
+        const int d0b = tl->blockDurationForTest(0);
+        reorder(0, 1);
+        const bool reordered = durations() != order && stack->count() == n0 + 2;
+        check(QStringLiteral("(ax) CONTROL: unlocked, the same trim lengthens the clip and the "
+                             "same drag reorders, one command each"),
+              trimmed && reordered && !page->tracks().shotsLocked,
+              QStringLiteral("duration %1 -> %2, order %3 -> %4, stack %5 -> %6")
+                  .arg(d0).arg(d0b).arg(order).arg(durations()).arg(n0).arg(stack->count()));
+        // Back to the start through the history (unlocked: allowed).
+        sb->editUndo();
+        sb->editUndo();
+        pump(200);
+    }
+    // Unlocked: the keys, the buttons, the menu work; then Undo / Redo of
+    // a SHOTS command is refused while locked and works unlocked.
+    {
+        const int before = panels();
+        clickClip(r, 1);
+        addBtn->click();
+        pump(200);
+        const bool added = panels() == before + 1 && stack->count() == n0 + 1
+            && addBtn->isEnabled() && dupBtn->isEnabled() && delBtn->isEnabled();
+        clickControl("trackLockShots");
+        messages.clear();
+        const int index = stack->index();
+        sb->editUndo();
+        pump(200);
+        const bool undoRefused = stack->index() == index && panels() == before + 1
+            && messages.size() == 1 && messages.first().contains(QStringLiteral("SHOTS track"))
+            && messages.first().contains(QStringLiteral("Add Panel"));
+        clickControl("trackLockShots");
+        sb->editUndo();
+        pump(200);
+        const bool undone = stack->index() == index - 1 && panels() == before;
+        clickControl("trackLockShots");
+        messages.clear();
+        sb->editRedo();
+        pump(200);
+        const bool redoRefused = stack->index() == index - 1 && panels() == before
+            && messages.size() == 1 && messages.first().contains(QStringLiteral("SHOTS track"));
+        clickControl("trackLockShots");
+        sb->editRedo();
+        pump(200);
+        const bool redone = stack->index() == index && panels() == before + 1;
+        sb->editUndo();
+        pump(200);
+        check(QStringLiteral("(ax) UNDO / REDO of a SHOTS command (Add Panel) is refused with "
+                             "a message while the track is locked, the stack left as it is; "
+                             "unlocked, the same Undo and Redo work"),
+              added && undoRefused && undone && redoRefused && redone,
+              QStringLiteral("added %1 undoRefused %2 undone %3 redoRefused %4 redone %5 | %6")
+                  .arg(added).arg(undoRefused).arg(undone).arg(redoRefused).arg(redone)
+                  .arg(messages.join(QStringLiteral(" / "))));
+    }
+
+    // ---- the AUDIO lock ----
+    {
+        const QString wav = base + QStringLiteral("/sound/theme.wav");
+        audio::writeWav(wav, 6.0);
+        // The stack's INDEX, not its count: the block above ended with an
+        // Undo, and a push after an Undo drops the redo branch.
+        const int before = stack->index();
+        emit page->audioChangeRequested(wav, true, QStringLiteral("Import Audio"));
+        audio::waitFor([&] { return tl->audioBarStateForTest() == QStringLiteral("present"); }, 4000);
+        pump(200);
+        auto isWav = [&] { return QFileInfo(page->audioPath()).fileName() == QStringLiteral("theme.wav"); };
+        const bool imported = isWav() && stack->index() == before + 1;
+        clickControl("trackLockAudio");
+        // The track's own menu, and the Edit menu's entries.
+        QStringList items;
+        page->setAudioMenuHookForTest([&](QMenu *menu) {
+            for (QAction *a : menu->actions())
+                if (!a->isSeparator())
+                    items << QStringLiteral("%1[%2]").arg(a->text()).arg(a->isEnabled());
+        });
+        const QRect row = tl->audioRowForTest();
+        const QPoint at(AnimaticTimeline::labelColumnWidthForTest() + 40, row.center().y());
+        QContextMenuEvent ev(QContextMenuEvent::Mouse, at, r.surface->mapToGlobal(at));
+        QCoreApplication::sendEvent(r.surface, &ev);
+        pump(200);
+        page->setAudioMenuHookForTest({});
+        bool menuLocked = !items.isEmpty();
+        for (const QString &i : items)
+            menuLocked = menuLocked && i.endsWith(QStringLiteral(" (locked)[0]"));
+        QAction *importAct = nullptr, *removeAct = nullptr;
+        for (QAction *a : r.window.findChildren<QAction *>()) {
+            if (a->text().startsWith(QStringLiteral("Import Audio")))
+                importAct = a;
+            else if (a->text().startsWith(QStringLiteral("Remove Audio")))
+                removeAct = a;
+        }
+        const bool editMenuLocked = importAct && removeAct && !importAct->isEnabled()
+            && !removeAct->isEnabled()
+            && importAct->text() == QStringLiteral("Import Audio... (locked)")
+            && removeAct->text() == QStringLiteral("Remove Audio (locked)");
+        page->removeAudio();
+        pump(200);
+        const bool removeRefused = isWav() && stack->index() == before + 1;
+        messages.clear();
+        const int index = stack->index();
+        sb->editUndo();
+        pump(200);
+        const bool undoRefused = stack->index() == index && isWav()
+            && messages.size() == 1 && messages.first().contains(QStringLiteral("AUDIO track"));
+        check(QStringLiteral("(ax) THE AUDIO LOCK: the track's menu and the Edit menu show "
+                             "Import / Remove Audio disabled and suffixed \"(locked)\", Remove "
+                             "Audio does nothing, and Undo of the import is refused with a "
+                             "message"),
+              imported && menuLocked && editMenuLocked && removeRefused && undoRefused,
+              QStringLiteral("imported %1 menu [%2] edit menu %3 (%4 / %5) remove %6 undo %7 | %8")
+                  .arg(imported).arg(items.join(QStringLiteral(", "))).arg(editMenuLocked)
+                  .arg(importAct ? importAct->text() : QStringLiteral("-"))
+                  .arg(removeAct ? removeAct->text() : QStringLiteral("-"))
+                  .arg(removeRefused).arg(undoRefused).arg(messages.join(QStringLiteral(" / "))));
+        // CONTROL: unlocked, the entries come back whole and the Undo works.
+        clickControl("trackLockAudio");
+        const bool entriesBack = importAct && importAct->isEnabled()
+            && importAct->text() == QStringLiteral("Import Audio...") && removeAct
+            && removeAct->isEnabled() && removeAct->text() == QStringLiteral("Remove Audio");
+        sb->editUndo();
+        pump(300);
+        const bool undone = page->audioPath().isEmpty() && stack->index() == index - 1;
+        sb->editRedo();
+        audio::waitFor([&] { return tl->audioBarStateForTest() == QStringLiteral("present"); }, 4000);
+        pump(200);
+        check(QStringLiteral("(ax) CONTROL: unlocked, the entries are whole and enabled again "
+                             "and the same Undo removes the track (redone for what follows)"),
+              entriesBack && undone && isWav(),
+              QStringLiteral("entries %1 undone %2 path '%3'")
+                  .arg(entriesBack).arg(undone).arg(page->audioPath()));
+    }
+
+    // ---- hidden tracks: paint nothing, take no press ----
+    {
+        using namespace SankoTimelineTheme;
+        auto pixel = [&](const QPoint &at) {
+            return r.surface->grab().toImage().pixelColor(at).name();
+        };
+        const QRect clip0 = tl->clipRectForTest(0);
+        const QPoint onClip = clip0.center();
+        const QPoint onScene(clip0.center().x(), 24 + 12);
+        const QString clipShown = pixel(onClip);
+        const QString sceneShown = pixel(onScene);
+        clickControl("trackEyeShots");
+        clickControl("trackEyeScenes");
+        pump(200);
+        const QString clipHidden = pixel(onClip);
+        const QString sceneHidden = pixel(onScene);
+        const int selectedBefore = page->selectedPanelForTest();
+        clickClip(r, selectedBefore == 0 ? 1 : 0); // a press on a hidden clip selects nothing
+        const int selectedWhileHidden = page->selectedPanelForTest();
+        // The audio row: hidden, its menu does not open.
+        clickControl("trackEyeAudio");
+        int menus = 0;
+        page->setAudioMenuHookForTest([&](QMenu *) { ++menus; });
+        const QRect row = tl->audioRowForTest();
+        const QPoint at(AnimaticTimeline::labelColumnWidthForTest() + 40, row.center().y());
+        QContextMenuEvent ev(QContextMenuEvent::Mouse, at, r.surface->mapToGlobal(at));
+        QCoreApplication::sendEvent(r.surface, &ev);
+        pump(150);
+        const int menusHidden = menus;
+        clickControl("trackEyeAudio");
+        QContextMenuEvent ev2(QContextMenuEvent::Mouse, at, r.surface->mapToGlobal(at));
+        QCoreApplication::sendEvent(r.surface, &ev2);
+        pump(150);
+        page->setAudioMenuHookForTest({});
+        check(QStringLiteral("(ax) HIDDEN TRACKS paint nothing: the clip's pixel is the shots "
+                             "track's background and the scene block's pixel the scene "
+                             "track's; a press on a hidden clip selects nothing; the hidden "
+                             "audio row opens no menu - and each returns when shown"),
+              clipShown != kPageBg.name() && clipHidden == kPageBg.name()
+                  && sceneShown == kSceneBlock.name() && sceneHidden == kHeaderBg.name()
+                  && selectedWhileHidden == selectedBefore && !page->tracks().shotsVisible
+                  && !page->tracks().scenesVisible && menusHidden == 0 && menus == 1,
+              QStringLiteral("clip %1 -> %2, scene %3 -> %4, selected %5, audio menus hidden %6 shown %7")
+                  .arg(clipShown).arg(clipHidden).arg(sceneShown).arg(sceneHidden)
+                  .arg(selectedWhileHidden).arg(menusHidden).arg(menus));
+        clickControl("trackEyeShots");
+        clickControl("trackEyeScenes");
+        pump(200);
+        const QString clipBack = pixel(onClip); // read before the press re-selects it
+        const QString sceneBack = pixel(onScene);
+        clickClip(r, 0);
+        check(QStringLiteral("(ax) CONTROL: shown again, the clip and the scene block paint as "
+                             "before and the press selects the clip"),
+              clipBack == clipShown && sceneBack == sceneShown
+                  && page->selectedPanelForTest() == 0,
+              QStringLiteral("clip %1 scene %2 selected %3")
+                  .arg(clipBack).arg(sceneBack).arg(page->selectedPanelForTest()));
+    }
+
+    // ---- mute: the player, the volume kept, the export ----
+    {
+        QSlider *volume = page->findChild<QSlider *>(QStringLiteral("animaticVolume"));
+        const int volumeBefore = volume ? volume->value() : -1;
+        const QString carriedBefore = r.window.exportAudioPathForTest();
+        clickControl("trackMuteAudio");
+        const bool muted = page->audioMutedForTest() && page->tracks().audioMuted
+            && volume && volume->value() == volumeBefore
+            && r.window.exportAudioPathForTest().isEmpty();
+        clickControl("trackMuteAudio");
+        const bool unmuted = !page->audioMutedForTest()
+            && r.window.exportAudioPathForTest() == carriedBefore && !carriedBefore.isEmpty();
+        check(QStringLiteral("(ax) MUTE reaches the player (QAudioOutput::isMuted), keeps the "
+                             "volume slider's value, and takes the track out of the movie "
+                             "request; unmute puts it back"),
+              muted && unmuted,
+              QStringLiteral("muted %1 unmuted %2 volume %3 carried '%4'")
+                  .arg(muted).arg(unmuted).arg(volumeBefore).arg(carriedBefore));
+    }
+
+    // ---- save -> load round trip of the seven flags; New resets them ----
+    {
+        TimelineTracks all;
+        all.scenesLocked = all.shotsLocked = all.audioLocked = true;
+        all.scenesVisible = all.shotsVisible = all.audioVisible = false;
+        all.audioMuted = true;
+        page->setTracks(all);
+        const bool saved = r.window.saveProjectForTest(project);
+        page->setTracks(TimelineTracks());
+        const bool reloaded = r.window.loadProjectForTest(project);
+        pump(500);
+        const bool back = page->tracks() == all && tl->trackControlForTest(QStringLiteral("trackLockShots"))->isChecked()
+            && tl->trackControlForTest(QStringLiteral("trackEyeAudio"))->isChecked()
+            && tl->trackControlForTest(QStringLiteral("trackMuteAudio"))->isChecked()
+            && page->audioMutedForTest();
+        QFile f(project);
+        f.open(QIODevice::ReadOnly);
+        const QJsonObject root = QJsonDocument::fromJson(f.readAll()).object();
+        const QJsonObject tracks = root.value(QStringLiteral("tracks")).toObject();
+        const bool written = tracks.value(QStringLiteral("shots")).toObject().value(QStringLiteral("locked")).toBool()
+            && !tracks.value(QStringLiteral("audio")).toObject().value(QStringLiteral("visible")).toBool(true)
+            && tracks.value(QStringLiteral("audio")).toObject().value(QStringLiteral("muted")).toBool();
+        check(QStringLiteral("(ax) ALL SEVEN FLAGS round-trip through the manifest's tracks "
+                             "key (saved, read back on load, the buttons and the player "
+                             "following)"),
+              saved && reloaded && back && written,
+              QStringLiteral("saved %1 reloaded %2 back %3 written %4").arg(saved).arg(reloaded).arg(back).arg(written));
+    }
+    // The SCENES lock refuses the Script Editor's re-parse; unlocked it applies.
+    {
+        TimelineTracks scenesOnly;
+        scenesOnly.scenesLocked = true;
+        page->setTracks(scenesOnly);
+        QJsonArray scenes;
+        QJsonObject one;
+        one[QStringLiteral("scene_number")] = 1;
+        one[QStringLiteral("location")] = QStringLiteral("INT. ROOM");
+        scenes.append(one);
+        const int before = panels();
+        messages.clear();
+        const bool refused = !r.window.applyScriptScenesForTest(scenes) && panels() == before
+            && messages.size() == 1 && messages.first().contains(QStringLiteral("SCENES track"));
+        page->setTracks(TimelineTracks());
+        const bool applied = r.window.applyScriptScenesForTest(scenes);
+        pump(300);
+        check(QStringLiteral("(ax) THE SCENES LOCK refuses the Script Editor's re-parse with a "
+                             "message and the project is unchanged; unlocked, the same scenes "
+                             "apply"),
+              refused && applied,
+              QStringLiteral("refused %1 applied %2 panels %3 -> %4 | %5")
+                  .arg(refused).arg(applied).arg(before).arg(panels())
+                  .arg(messages.join(QStringLiteral(" / "))));
+    }
+    sb->setLockMessageHookForTest({});
+    r.window.setLockMessageHookForTest({});
 }
 
 int main(int argc, char **argv)
@@ -9932,6 +10444,7 @@ int main(int argc, char **argv)
     runScrollbarOwnershipPass(scratch);
     runTimelineWheelPass(scratch);
     runTimelineLookPass(scratch);
+    runTrackLocksPass(scratch);
 
     // ---- (aa) a test that cannot start says why and exits ----------------
     // An unattended gate must FAIL, not wait. Measured 2026-10-02: with its

@@ -28,6 +28,7 @@ class QPushButton;
 class QScrollArea;
 class QSlider;
 class QTimer;
+class QUndoCommand;
 class QUndoStack;
 class QVBoxLayout;
 class SankoSlider;
@@ -185,6 +186,15 @@ public:
     {
         m_clipMenuHookForTest = std::move(hook);
     }
+    // A locked track's refusals (Part B). The message box an Undo / Redo
+    // of a locked track's command shows is handed to the test instead;
+    // the last refusal of any kind (key, menu, button, history) is kept.
+    void setLockMessageHookForTest(std::function<void(const QString &)> hook)
+    {
+        m_lockMessageHookForTest = std::move(hook);
+    }
+    QString lastLockRefusalForTest() const { return m_lastLockRefusal; }
+    void clearLockRefusalForTest() { m_lastLockRefusal.clear(); }
     // Layer-stack undo: restore a panel's whole layer vector + active index
     // (QImage handles are implicitly shared, so snapshots are cheap), then
     // refresh the canvas/panel/thumb UI.
@@ -556,6 +566,15 @@ private:
     bool m_inTestPointerEvent = false;       // ...and this is one of them
     int m_selectPanelCalls = 0;
     std::function<void(QMenu *)> m_clipMenuHookForTest;
+    // The SHOTS lock (Part B): every path that changes the track's content
+    // asks refuseShotsEdit() first; the history door asks
+    // refuseLockedHistory() about the command it is about to undo or redo.
+    bool shotsLocked() const;
+    bool refuseShotsEdit();
+    bool refuseLockedHistory(const QUndoCommand *command);
+    void sayLocked(const QString &message, bool asBox);
+    std::function<void(const QString &)> m_lockMessageHookForTest;
+    QString m_lastLockRefusal;
 
     // Drag-reorder state.
     bool m_panelPressActive = false;

@@ -23,6 +23,7 @@ inline const QColor kLabelColumnSeparator(0x2a, 0x2a, 0x2a);
 // Text and icons.
 inline const QColor kTrackLabel(0xb1, 0xb2, 0xbf);   // TIMECODE / SCENES / SHOTS / AUDIO
 inline const QColor kTrackControl(0xa4, 0xa7, 0xae); // lock / speaker / eye icons
+inline const QColor kTrackControlActive(0x7c, 0x6e, 0xf6); // ...when locked / hidden / muted (the accent fill's colour)
 inline const QColor kRulerLabel(0xb0, 0xb2, 0xc2);
 inline const QColor kSceneName(0xb7, 0xb3, 0xc7);
 inline const QColor kClipNumber(0xf4, 0xf1, 0xff);

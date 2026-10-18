@@ -1,6 +1,7 @@
 #pragma once
 
 #include "StoryboardModel.h"
+#include "TimelineTracks.h"
 
 #include <QJsonObject>
 #include <QSize>
@@ -34,6 +35,7 @@ struct SaveData
     QString audioPath;
     bool audioLinked = false;
     QJsonObject perspective;
+    TimelineTracks tracks; // lock / visibility / mute, written under "tracks"
 };
 
 // The outcome of a save's IMAGE pass.
@@ -139,6 +141,7 @@ struct LoadedProject
     QString audioPath;
     bool audioLinked = false;
     QJsonObject perspective;
+    TimelineTracks tracks; // defaults (unlocked, visible, unmuted) when absent
 };
 
 // Rebuild the model from a parsed root + its folder. Applies every

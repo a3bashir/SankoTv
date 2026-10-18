@@ -262,6 +262,9 @@ WriteResult projectToJson(const SaveData &data, const QString &projectFilePath,
     root[QStringLiteral("consistencyBoard")] = consistencyArray;
     root[QStringLiteral("audioPath")] = storedAudio;
     root[QStringLiteral("perspective")] = data.perspective;
+    // The tracks' lock / visibility / mute flags (TimelineTracks.h). Always
+    // written; a reader without the key gets the defaults.
+    root[QStringLiteral("tracks")] = data.tracks.toJson();
 
     // Reached only with every image on disk: res.ok is still true, so the
     // caller is clear to write the manifest.
@@ -288,6 +291,9 @@ LoadedProject projectFromJson(const QJsonObject &root, const QString &folder)
         ? storedAudio
         : QDir::cleanPath(folder + QStringLiteral("/") + storedAudio);
     out.perspective = root.value(QStringLiteral("perspective")).toObject();
+    // No "tracks" key (every project saved before 2026-10-18): unlocked,
+    // visible, unmuted - exactly what those projects were.
+    out.tracks = TimelineTracks::fromJson(root.value(QStringLiteral("tracks")).toObject());
 
     // LEGACY shared layers ("Copy/Reuse Layer in Another Panel", removed):
     // old files store the PNG only on the FIRST instance of a sharedId;

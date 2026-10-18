@@ -6867,6 +6867,103 @@ give-way rule 20 px above the floor and its control at the narrowest
 width the window allows. The six older checks that found the zoom slider
 and Fit inside the timeline find them in the page now.
 
+## The timeline redesign, Part B: the floor enforced; lock, hide, mute (2026-10-18)
+
+THE FLOOR, ENFORCED (the user's first item for Part B, after Part A left
+it open). Two rules, the user's: the section can never be made narrower
+than its header's floor - the docks or the window give way instead; and
+below the Part A floor with a track loaded, the header's audio file name
+hides entirely (the audio bar on the track already shows it).
+- MainWindow sets only its minimum HEIGHT (720) now. With no explicit
+  minimum width, QLayout's default size constraint makes the window's
+  minimum width the layout's own: the docks at their minimums plus the
+  central column at its, and the column's minimum is the timeline's
+  floor (the header's setMinimumWidth, through the splitter and the dock
+  host). Dragging a dock separator or the window edge stops there. The
+  flat 1280 x 720 is gone: a 1280-wide screen can no longer show the
+  workspace with every dock open (it could not show it uncut before
+  either; it was cut at the edge). Measured: the window's minimum width
+  in the default layout is 1492 (1572 with a track).
+- The give-way rule's last stage (AnimaticPage::layoutHeader): the name
+  at 60 and the slider at 80 and still short -> the name hides
+  (m_audioNameGivenWay; the label's visibility has two owners, wanted by
+  updateAudioUi and allowed by layoutHeader, combined in showAudioLabel)
+  and the slider takes back what that frees (68 px: the name's 60 and
+  the 8 px gap). The floor counts the name as gone. Measured: 1309
+  px without a track, 1389 with one.
+- THE USER'S LAYOUT (their real registry, read through WMI, seeded into
+  the probe's private store): all three docks are CLOSED (Layers docked
+  right, Scenes and Shot Info floating, all open=false), so on their
+  1920 screens the section is 1657 px wide; in the default layout
+  (Reset Layout: Layers over the Scenes / Shot Info tabs at the right)
+  it is 1657 px.
+
+THE TRACKS (TimelineTracks.h): seven flags - scenes / shots / audio
+locked, visible, and audio muted - one struct shared by AnimaticTimeline
+(the buttons, the painting, the presses), AnimaticPage (the state, the
+setters, the player's mute), StoryboardPage and MainWindow (what the
+locks gate), ProjectIO (the manifest's "tracks" key; absent = defaults).
+- The controls are QToolButtons parented to the painted canvas
+  (AnimaticTimeline::buildTrackControls), at the design's x (lock 8,
+  speaker 32 on AUDIO, eye 56), the 16 px icon centred in its row, the
+  button 2 px larger each side; placed again whenever the rows move
+  (canvasResized). Checked = locked / hidden / muted, the icon in the
+  accent (kTrackControlActive #7c6ef6; the design has one icon per
+  control and no "off" art, so the tint is the state). Their click goes
+  to the page (setTrackLocked / setTrackVisible / setAudioMuted), which
+  applies the state back (setTracks) and says tracksChanged.
+- The lock table, as agreed, each row at its own door:
+  SHOTS - timeline: trim refused (refuse(): the tooltip at the pointer,
+  the message kept for the gate), reorder not armed (the press still
+  selects), no resize cursor; StoryboardPage: movePanel, movePanelBy,
+  insertPanelClone (Duplicate / Paste / Paste in Place),
+  addPanelAfterSelected, deleteSelectedPanel (before its question),
+  cutSelectedPanel, onDurationChangeRequested, all through
+  refuseShotsEdit() -> sayLocked("SHOTS track is locked"): a tooltip at
+  QCursor::pos() in the app, NOT under the gate (the real pointer is
+  wherever its owner left it; the refusal text is what the gate reads);
+  the strip's Add / Duplicate / Delete disabled (updateDuplicateButton);
+  the clip menu's three entries disabled and suffixed "(locked)". Copy,
+  Clear, Import Image, Shot Info, drawing: allowed.
+  SCENES (and SHOTS): the Script Editor's re-parse
+  (MainWindow::onScenesReady) refused with a message box; the lambda
+  that took scenesReady is that function now, so the gate can call it.
+  AUDIO: AnimaticPage::importAudio / removeAudio / locateAudio /
+  copyAudioIntoProject return at once; the track's menu and the Edit
+  menu show the entries disabled and suffixed (updateAudioActions
+  strips and re-adds the suffix, so it never doubles).
+  UNDO / REDO: StoryboardPage::undoDocument / redoDocument look at the
+  command the stack would undo or redo (command(index-1) / (index)) and
+  refuseLockedHistory() classifies it by dynamic_cast (the four panel
+  commands = SHOTS, AudioTrackCommand = AUDIO); refused with a message
+  box naming the command and the track, the stack untouched. (A pending
+  QuickShape's cancel-on-first-Undo is behind this check: with a locked
+  panel command next on the stack the refusal comes first. Noted, not
+  handled.)
+- Hidden: renderCanvas skips the scene blocks / the clips, loop overlay
+  and drop indicator / the audio bar and hint; canvasMousePress returns
+  on a hidden SHOTS track, the hover finds nothing, the context menus do
+  not open (the audio row's included). setTracks ends a drag in
+  progress on a track that just hid.
+- Mute: applyTracks -> QAudioOutput::setMuted; MainWindow::
+  exportAudioPath() (the one decision the movie request is built from,
+  exposed ForTest) is empty while muted; mp4AudioWarning says so before
+  the file dialog with the same two buttons as the missing case.
+- Not undoable, marks the project unsaved: MainWindow connects
+  tracksChanged to markDirty (and to updateAudioActions). Saved under
+  "tracks" by projectToJson, read by projectFromJson with defaults;
+  resetProjectState clears them.
+- DevRecorder: devrecState carries timeline.scenesLocked ...
+  timeline.audioMuted.
+
+GATE: Lifecycle (ax), 16 checks, 724 -> 740 (see msg_partB for
+the list); (aw)'s give-way check restated as exact stages (name 60 +
+slider 100; name hidden + slider 100; the floor at slider 80; the window
+refusing 150 px below). The rig's default window is 1640 x 900 (was
+1400): the window's minimum is its content's now, and a 1400 window was
+grown to it at once - with a track, past the width at which the name
+hides, which the audio sections read.
+
 ## METHOD: measure interior structure ACROSS THE SIZE RANGE before calling it character (2026-09-25)
 
 The Painting census measured Acrylic at size 20 only and found "one

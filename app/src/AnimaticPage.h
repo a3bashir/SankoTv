@@ -8,6 +8,8 @@
 #include <QVector>
 #include <QWidget>
 
+#include "TimelineTracks.h"
+
 #include <functional>
 
 class AnimaticTimeline;
@@ -73,6 +75,17 @@ public:
     void setCollapsed(bool collapsed);
     int minimumExpandedHeight() const;
     int defaultExpandedHeight() const;
+
+    // THE TRACKS' LOCK / VISIBILITY / MUTE STATE (TimelineTracks.h). The
+    // three setters are the user's toggles: they change the state, apply
+    // it (the timeline's buttons and painting, the player's mute) and say
+    // tracksChanged, which marks the project unsaved - they are not undo
+    // commands. setTracks is the silent form for a project load.
+    const TimelineTracks &tracks() const { return m_tracks; }
+    void setTracks(const TimelineTracks &tracks);
+    void setTrackLocked(TimelineTrack track, bool locked);
+    void setTrackVisible(TimelineTrack track, bool visible);
+    void setAudioMuted(bool muted);
     // THE HEADER ROW (the redesign, Figma 380:644): collapse, Fit / - /
     // slider / +, a transport pill centred on the window, the timecode, a
     // separator, the total, the speed buttons, the audio label and volume,
@@ -86,6 +99,11 @@ public:
     QRect transportPillRectForTest() const;
     int zoomSliderWidthForTest() const;
     QString audioLabelDrawnTextForTest() const;
+    // Whether the audio name is on screen: false with no track, and false
+    // when the give-way rule's last stage has hidden it (the slider at 80
+    // was not enough).
+    bool audioLabelShownForTest() const;
+    bool audioMutedForTest() const; // what the player itself reports
 
     // Transport, for the workspace's pointer-routed keys.
     void togglePlay();
@@ -193,6 +211,10 @@ signals:
     void panelMoveRequested(int flatIndex, int flatGap);
     void clipContextMenuRequested(int flatIndex, const QPoint &globalPos);
     void collapsedChanged(bool collapsed);
+    // A lock, visibility or mute toggle by the user (never a load): the
+    // window marks the project unsaved and the pages refresh what the
+    // locks gate.
+    void tracksChanged();
 
 public:
     // Test hooks. The duration one is the REAL request the timeline drag
@@ -302,6 +324,13 @@ private:
     void onPlayerProblem(const QString &reason); // the player could not open it
     void showAudioMenu(const QPoint &globalPos);
     void updateAudioUi();
+    void applyTracks(); // push m_tracks to the timeline and the player
+    // The audio label's visibility has two owners: updateAudioUi decides
+    // whether the header WANTS it (a track exists), layoutHeader whether
+    // the width ALLOWS it (the give-way rule's last stage). One function
+    // combines them so neither overwrites the other.
+    void setAudioLabelWanted(bool wanted);
+    void showAudioLabel();
     bool hasAudio() const;
     qint64 offsetForPanel(int index) const; // ms before this panel
 
@@ -332,6 +361,9 @@ private:
     QWidget *m_audioGroup = nullptr;    // the audio label and the volume slider
     QWidget *m_loopGroup = nullptr;
     QWidget *m_timecodeSeparator = nullptr;
+    bool m_audioLabelWanted = false;   // a track exists (updateAudioUi)
+    bool m_audioNameGivenWay = false;  // hidden by the give-way rule (layoutHeader)
+    TimelineTracks m_tracks;
 
     AnimaticTimeline *m_timeline = nullptr;
     QVector<Scene *> m_scenes; // source scenes, for duration edits + timeline rebuilds

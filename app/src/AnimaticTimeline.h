@@ -7,6 +7,8 @@
 #include <QVector>
 #include <QWidget>
 
+#include "TimelineTracks.h"
+
 class AnimaticPage;
 class TimelineCanvas; // inner painted surface, defined in the .cpp
 class QContextMenuEvent;
@@ -14,6 +16,7 @@ class QPushButton;
 class QScrollBar;
 class QTimer;
 class QSlider;
+class QToolButton;
 struct Panel;
 struct Scene;
 
@@ -110,6 +113,19 @@ public:
     int rulerLabelStepForTest() const { return rulerLabelStep(); }
     QVariantMap clipPartsForTest(int flatIndex) const;
     static int labelColumnWidthForTest();
+    // The tracks' lock / eye / speaker buttons over the label column
+    // ("trackLockScenes", "trackEyeShots", "trackMuteAudio", ...), for the
+    // gate to press and read; the host's tracks() is what they show.
+    QToolButton *trackControlForTest(const QString &objectName) const;
+    // What a press on the painted canvas was refused for, last ("SHOTS
+    // track is locked"), empty when nothing was refused since the reset.
+    QString lastRefusalForTest() const { return m_lastRefusal; }
+    void clearRefusalForTest() { m_lastRefusal.clear(); }
+
+    // The host's track state, pushed in whenever it changes (a toggle or a
+    // load): the buttons show it, hidden tracks paint empty and take no
+    // press, a locked SHOTS track takes no trim or reorder.
+    void setTracks(const TimelineTracks &tracks);
 
 public slots:
     void setScenes(const QVector<Scene *> &scenes);
@@ -259,6 +275,17 @@ private:
     // Toolbar handlers.
     void styleToolbarButtons();
 
+    // THE TRACK CONTROLS (Part B): real buttons parented to the canvas, at
+    // the design's positions over the label column (the lock at x 8, the
+    // speaker at 32 on AUDIO, the eye at 56; 16 px icons). Built once,
+    // placed again whenever the rows move (the shots track takes the spare
+    // height), restyled from m_tracks (checked = locked / hidden / muted,
+    // the icon in the accent).
+    void buildTrackControls();
+    void layoutTrackControls();
+    void styleTrackControls();
+    void refuse(const QString &why, const QPoint &globalPos);
+
     // Data + state.
     QVector<Scene *> m_scenes;
     QVector<Block> m_blocks;
@@ -273,6 +300,11 @@ private:
     bool m_audioUnplayable = false;
     qint64 m_audioDurationMs = 0;
     AnimaticPage *m_host = nullptr;
+    TimelineTracks m_tracks;
+    QToolButton *m_lockButtons[3] = {nullptr, nullptr, nullptr}; // SCENES, SHOTS, AUDIO
+    QToolButton *m_eyeButtons[3] = {nullptr, nullptr, nullptr};
+    QToolButton *m_muteButton = nullptr;
+    QString m_lastRefusal;
 
     float m_zoom = 100.0f; // 100 = 1px per frame
     int m_scrollX = 0;     // content scroll offset in px
