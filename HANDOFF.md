@@ -282,6 +282,17 @@ may ship in a closed-source commercial product, flag it - do not decide.
     Confirm with the lawyer that the attribution shipped with Qt covers
     it, or add the notice to SankoTV's own. Research, not legal advice.
 
+12. OPEN - THE TIMELINE ICONS (opened 2026-10-18; the user's statement,
+    2026-10-18). Timeline icons (collapse, transport, loop, Frames,
+    Seconds, Snap, playhead, lock, eye, speaker) were generated with Figma
+    AI. Figma's AI Terms (figma.com/legal/ai-terms) give the customer
+    ownership of the output, and make the customer responsible for
+    reviewing it and obtaining any clearances. Before selling: check that
+    no icon copies an existing icon set or a trademark.
+    (The sixteen SVGs ship under app/icons/timeline/, exported from
+    Dasktop_UI_test node 380:644; two were authored here from the same
+    shapes, the collapsed chevron and the pause bars.)
+
 ALSO BEFORE SELLING, not licensing: the Developer Recorder below comes out.
 
 ## Developer Recorder (TEMPORARY — remove before release)
@@ -6721,6 +6732,140 @@ QLineEdit log nothing; then, outside it (the positive control), Delete,
 a bare "a", Ctrl+Z, F5, Left, Escape, Control alone and two more Deletes
 read back as exactly [Del, Ctrl+Z, F5, Left, Esc, Del, Del], each naming
 target:QPushButton, and no record carries text. 28 -> 37 checks.
+
+## The timeline redesign, Part A: the look (2026-10-18)
+
+THE SOURCE OF TRUTH is the user's Figma design: file Dasktop_UI_test,
+page "SankoTV App", node 380:644 "REDESIGN - real screen". It was read
+through the connector (get_metadata, get_design_context, the SVG
+assets), never estimated from a screenshot; the reference it was diffed
+against is the locked "Timeline - Current (2096120d8)" section in the
+same file. The 34-row difference list, the Qt mapping and the user's
+twelve decisions are in Documents\SankoTV-Design\implementation-report.md
+(outside the repo). Part B - the lock / visibility / mute controls the
+design adds to the tracks - follows as its own pass.
+
+WHAT THE DESIGN SAYS, now in the code (every number the design's):
+- The section is 204 px at its default height: header 40 + canvas 164.
+  The zoom row is gone; its controls are still AnimaticTimeline's (the
+  same QPushButtons and QSlider, the same handlers) in two containers,
+  zoomControls() and viewControls(), that AnimaticPage::createHeader
+  places. They hide with the body when the section is collapsed (the
+  user's decision; the design shows no collapsed state). Collapsed is
+  still 40. A remembered height (storyboard/timeline/v1/height) still
+  wins over the default; Reset Layout restores 204. When the film is
+  wider than the view at load, the default includes the 10 px scrollbar
+  (214) and the shots track is 80 under it, as before.
+- The header row (AnimaticPage.cpp createHeader): #1c1e25, border-bottom
+  1 px #292b35, margins 12 / 32. Left group: collapse 26 x 26 at (12,7)
+  (gradient #2e2e41 -> #282839, 1 px #3c3c52, radius 4, the chevron SVG),
+  23 px, Fit 33 x 28 at 61, - 27 x 28 at 108, the slider 160 x 10 at
+  (149,13) (groove #333333 radius 2, the filled part #4b4397 -> #7c6ef6,
+  a 20 x 10 #b3b3b3 dragger), + 27 x 28 at 323; 14 px gaps. The transport
+  pill 228 x 32: five 40 x 28 buttons, gap 7, radius 6, gradient #303042
+  -> #272735 with a 1 px #3e3d53 border, the Play button #8060ef ->
+  #6846db with #8a6bf0; SVG glyphs #f2f1fa in their natural sizes (first
+  / last 12.5 x 13, prev / next 10 x 13, play 10.5 x 13, pause two bars
+  authored here). Right group, right-aligned: timecode 132 x 40 Courier
+  New Bold 16 px #a294ff, a 1 x 22 #373a4b separator, 28 px, the total
+  (13 px #b4b6c9, "Total: HH:MM:SS:FF" in the project's rate, the speed
+  suffix kept), 28 px, the three speed buttons 36 x 32 in the loop-button
+  style (#292b35, 1 px #2a2a2a, radius 6; active = the accent fill - the
+  user's answer to the design's missing speed controls), the audio label
+  and volume slider (hidden until a track exists; 20 px before, 8 px
+  between), 105 px, the two loop icon buttons 36 x 32 (18 px icons), the
+  clear-loop button in the same style when a loop is set, the warning
+  label while one point is set, 31 px, Frames / Seconds / Snap 32 x 28
+  with 24 px icons, 14 px apart (checked = #7c6ef6 fill with a white
+  icon; unchecked = no fill, the icon #cccccd2).
+- THE PILL IS CENTRED ON THE WINDOW and pushed inward only when a group
+  would come within 16 px of it; the groups never move for it. At 1920 the
+  right group starts at 1141 (the design: 1127; the Total is 14 px
+  narrower in Segoe UI than in the design's Open Sans).
+- THE GIVE-WAY RULE (the user's): the audio file name shortens first (an
+  ElidedLabel: text() stays whole, the paint elides, down to 60 px), then
+  the slider narrows (160 -> 80). The header's floor, measured: 1309 px
+  with no track, 1457 with one (layoutHeader sets it as the header's minimum
+  width). FOUND AND FIXED THE SAME DAY: the slider's width is FIXED (so the
+  row's layout never squeezes it on its own), which makes its minimum its
+  current width - the floor was computed with the slider AS IT WAS, so it
+  rose with the slider and the window's minimum stopped the slider at
+  whatever width it had; it only reached 80 when the width dropped in one
+  jump. The floor now takes the slack above 80 off again. The first (aw)
+  give-way check caught this as "the slider is still 160 twenty pixels
+  above the floor" and was WRONGLY RELAXED for a run before the cause was
+  read in the code; it is exact again: 20 px above the floor the name is
+  at 60 and the slider at 100, at the floor 80 and 60. Positive control
+  in a scratch worktree (build/_probe/split/ctrl_giveway): with the pill's
+  clamp removed the check fails on the overlap; with the name never giving
+  it fails on the order. OPEN: the main window's own minimum is 1280 x 720
+  (MainWindow.cpp:85) and the central column has its own minimums, so a
+  window can be narrower than the section's floor; the right group is
+  then cut at the edge. The user decides: raise the window minimum, or a
+  further give-way (hide the speed group, then the total). Nothing
+  overlaps in any case; the pill keeps 16 px from both groups.
+- The canvas (AnimaticTimeline.cpp renderCanvas), at y 40: the ruler and
+  the empty audio row #181a21, the scene track #1c1e25, the shots track
+  #101115 (a row with a file named keeps its #0d1a26: the design shows
+  no track). The label column is 136 px #0d0d0d (kLabelColW) with its
+  1 px #2a2a2a separator at x 136, on the content's first pixel: content
+  x 0 is at 135 (kLabelCol), as the design has it. Labels 7 pt #b1b2bf
+  right-aligned ending 15 px before the edge; the lock (x 8), speaker
+  (32, AUDIO only) and eye (56) icons, 16 px #a4a7ae, centred in their
+  rows - PAINTED ONLY in Part A. The ruler: ticks hang from the bottom
+  edge in #292b35 at 65 % 7 px on labelled seconds, 30 % 5 px on the
+  others, 18 % 3 px on half seconds (only at 30 px/s or more; no second
+  ticks below 8 px/s); labels Courier New 11 px #b0b2c2 at x+4 in a 15 px
+  line 2 px down, every N seconds, N the smallest of 1 2 3 5 10 15 30 60
+  with N x pps >= 120 (42 px/s gives 3 s as drawn; 24 gives 5; 60 gives
+  2; 120 gives 1). Scene blocks #202029 (one colour; the design shows one
+  scene), baseline #2a2766, separator #444444, name 7 pt bold #b7b3c7
+  centred. Clips: body = the clip less a 2 px gap, radius 5, #252330 with
+  1 px #3b374b; thumbnail (6,6), body - 12 wide, 42 tall, radius 3, 1 px
+  #292b35, crop-to-fill centred, placeholder #4a4a4a; number Segoe UI
+  Bold 11 px #f4f1ff at (10,9) over the thumbnail; name 11 px #d3d0df at
+  (8, bottom-20) up to the pill; pill 28 x 18 at (right-33, bottom-22),
+  #17171f with 1 px #292b35, Consolas 10 px #e5e5ed. Selected: #302a48
+  with a 2 px #9787ff border, nothing else (the glow and the trim handles
+  are hidden layers in the design; the 6 px grab zones stay, the size
+  cursor is their cue). Hover: the border #9787ff at 50 %. The drop
+  indicator is 3 px #9787ff. Narrow clips hide the NAME first (body below
+  86), then the THUMBNAIL (below 48), then the PILL (below 42); the
+  number stays to 20. The empty-audio hint 10 px #999ba9. The playhead
+  #d5cbff. Every colour is a token in SankoTimelineTheme.h, named by its
+  Figma role.
+- ICONS: sixteen SVGs under icons/timeline/ in resources.qrc, rendered by
+  SankoIcons.h (QSvgRenderer into a tinted pixmap at 1x and 2x; a missing
+  file gives a NULL icon, which is what the gate checks - a bare
+  QIcon(":/missing.svg") is not null, it paints nothing). Their licence:
+  BEFORE SELLING 12. FONTS: the design's Open Sans / Courier Prime /
+  Inconsolata stand in for Segoe UI / Courier New / Consolas; nothing is
+  bundled.
+
+MEASURED (the TimelineCapture probe, tests/_backups/timelinecap_20261017,
+rebuilt for Part A; one window on the test screen, the Figma sample - 60
+fps, ten UNTITLED clips, the fourth 2 s and selected, no audio, the
+playhead at 00:00:18:41, zoom 70; QScreen::grabWindow at 100 %; the
+captures and geometry.json beside the spec in Documents\SankoTV-Design):
+every header widget's rect equals the design's x and size (collapse 12,7
+26x26; Fit 61,4 33x28; - 108; slider 149,13 160x10; + 323; timecode
+132x40; separator 1x22; total +28; speed +28; loop +105; Frames +31,
+Seconds +14, Snap +14; right margin 32); the clips 126 / 84 wide with
+bodies 124 / 82, thumbnails 112 / 70 x 42 at (6,6), pills 28 x 18; the
+label column 136; the ruler step 3; the timecode 00:00:18:41. The
+section was 1737 px wide (a maximized window less the docks), so the
+pill sat at 716, pushed left of centre by the rule; at 1920 it centres.
+
+GATE: Lifecycle (aw), 20 checks, 704 -> 724: every icon loads (16 files,
+painted; a wrong path is null - the control); the header's geometry; the
+checked states; the total's format; the heights (204 / 172 / 40) and the
+canvas at y 40; collapsed hides the zoom and view controls; the label
+column and the ruler step at 42, 60, 120 and 12 px/s; the 3 s and 2 s
+clip layouts and the hide order as the zoom drops; the track, clip,
+selection and playhead colours read from the canvas's own grab; the
+give-way rule 20 px above the floor and its control at the narrowest
+width the window allows. The six older checks that found the zoom slider
+and Fit inside the timeline find them in the page now.
 
 ## METHOD: measure interior structure ACROSS THE SIZE RANGE before calling it character (2026-09-25)
 

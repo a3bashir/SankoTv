@@ -1,0 +1,10 @@
+<svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+<g id="Scene / Lock">
+<path id="Vector" d="M5.2 7V4.8C5.2 4.05739 5.495 3.3452 6.0201 2.8201C6.5452 2.295 7.25739 2 8 2C8.74261 2 9.4548 2.295 9.9799 2.8201C10.505 3.3452 10.8 4.05739 10.8 4.8" stroke-width="1.5" stroke-linecap="round" stroke="#A4A7AE"/>
+<path id="Vector_2" d="M10.8 6.5H5.2C4.53726 6.5 4 7.03726 4 7.7V12.3C4 12.9627 4.53726 13.5 5.2 13.5H10.8C11.4627 13.5 12 12.9627 12 12.3V7.7C12 7.03726 11.4627 6.5 10.8 6.5Z" fill="#A4A7AE"/>
+<g id="Vector_3">
+<path d="M8 9.2V11Z" fill="black"/>
+<path d="M8 9.2V11" stroke-width="1.2" stroke-linecap="round" stroke="#0D0D0D"/>
+</g>
+</g>
+</svg>

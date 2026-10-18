@@ -1,5 +1,7 @@
 #include "AnimaticPage.h"
+#include "SankoIcons.h"
 #include "SankoTheme.h"
+#include "SankoTimelineTheme.h"
 
 #include "AnimaticTimeline.h"
 #include "AudioFileCheck.h"
@@ -165,21 +167,61 @@ private:
 
 namespace {
 
-QPushButton *transportButton(const QString &glyph, const QString &tip)
+// A transport button of the redesign: 40 x 28, radius 6, the dark gradient
+// (the Play button gets the purple one), an SVG glyph in its natural size.
+QPushButton *transportButton(const QString &iconFile, const QSize &iconSize,
+                             const QString &tip, const QString &objectName)
 {
-    QPushButton *button = new QPushButton(glyph);
+    QPushButton *button = new QPushButton;
+    button->setObjectName(objectName);
     button->setToolTip(tip);
     button->setCursor(Qt::PointingHandCursor);
-    button->setFixedSize(36, 28); // sized for the 40 px header row
-    button->setStyleSheet(QStringLiteral(
-        "QPushButton {"
-        "  background-color: #1c1c1c; color: #ffffff; border: 1px solid #2a2a2a;"
-        "  border-radius: 5px; font-size: 13px;"
-        "}"
-        "QPushButton:hover { background-color: #262626; }"
-        "QPushButton:pressed { background-color: #303030; }"));
+    button->setFixedSize(40, 28);
+    button->setIconSize(iconSize);
+    button->setIcon(SankoIcons::icon(
+        QStringLiteral(":/icons/timeline/%1.svg").arg(iconFile), iconSize));
+    button->setStyleSheet(SankoTimelineTheme::kTransportSheet);
     return button;
 }
+
+// A label that keeps its whole text (text() is what the tests and the
+// tooltip read) and draws it elided to its width: the audio file name is
+// what gives way first when the header is short of room.
+class ElidedLabel : public QLabel
+{
+public:
+    using QLabel::QLabel;
+    QString drawnText() const
+    {
+        const QFontMetrics fm(font());
+        return fm.elidedText(text(), Qt::ElideMiddle, qMax(0, width()));
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setPen(palette().color(QPalette::WindowText));
+        p.drawText(rect(), int(alignment()), drawnText());
+    }
+};
+
+// The header row: a plain widget that tells the page when its width
+// changes, so the give-way rule and the pill's place are redone.
+class HeaderBar : public QWidget
+{
+public:
+    using QWidget::QWidget;
+    std::function<void()> onResize;
+
+protected:
+    void resizeEvent(QResizeEvent *e) override
+    {
+        QWidget::resizeEvent(e);
+        if (onResize)
+            onResize();
+    }
+};
 
 } // namespace
 
@@ -187,7 +229,8 @@ AnimaticPage::AnimaticPage(QWidget *parent)
     : QWidget(parent)
 {
     setAttribute(Qt::WA_StyledBackground, true);
-    setStyleSheet(QStringLiteral("background-color: #0a0a0a;"));
+    setStyleSheet(QStringLiteral("background-color: %1;")
+                      .arg(SankoTimelineTheme::kPageBg.name()));
 
     m_timer = new QTimer(this);
     m_timer->setSingleShot(true);
@@ -274,8 +317,12 @@ AnimaticPage::AnimaticPage(QWidget *parent)
     // It is re-parented out of this widget (onto the canvas), so it may be
     // destroyed before this object is: never keep a pointer to a dead one.
     connect(m_display, &QObject::destroyed, this, [this] { m_display = nullptr; });
+    // The body first: the header takes the timeline's zoom and view
+    // controls, so the timeline must exist when the header is built.
+    QWidget *body = createTimingStrip();
     root->addWidget(createHeader());
-    root->addWidget(createTimingStrip(), 1);
+    root->addWidget(body, 1);
+    layoutHeader();
 
     // NOTHING HERE TAKES KEYBOARD FOCUS. The drawing canvas needs it (the
     // spacebar pan modifier is a key event on the canvas), and a button
@@ -409,6 +456,17 @@ bool AnimaticPage::audioPlayingForTest() const
     return m_player && m_player->playbackState() == QMediaPlayer::PlayingState;
 }
 
+void AnimaticPage::setPlayheadForTest(int flatIndex, int elapsedMs)
+{
+    if (flatIndex < 0 || flatIndex >= m_items.size())
+        return;
+    movePlayheadTo(flatIndex);
+    m_elapsedMsInCurrentPanel = qMax(0, elapsedMs);
+    updateTimecodeLabel();
+    if (m_timeline)
+        m_timeline->updatePlayhead();
+}
+
 QString AnimaticPage::audioLabelTextForTest() const
 {
     return m_audioLabel && !m_audioLabel->isHidden() ? m_audioLabel->text()
@@ -441,12 +499,24 @@ void AnimaticPage::setCollapsed(bool collapsed)
         m_body->setVisible(!collapsed);
     if (m_collapseButton) {
         // Down-pointing while open (click to fold away), up while collapsed.
-        m_collapseButton->setText(QString::fromUtf8(
-            collapsed ? "\xE2\x96\xB4" : "\xE2\x96\xBE"));
+        m_collapseButton->setIcon(SankoIcons::icon(
+            QStringLiteral(":/icons/timeline/%1.svg")
+                .arg(collapsed ? QStringLiteral("collapse_up")
+                               : QStringLiteral("collapse_down")),
+            QSize(10, 9)));
         m_collapseButton->setToolTip(collapsed
                                          ? QStringLiteral("Show the timeline")
                                          : QStringLiteral("Hide the timeline"));
     }
+    // The zoom and view controls go with the body (the user's decision
+    // 2026-10-18: the design shows no collapsed state).
+    if (m_timeline) {
+        if (QWidget *z = m_timeline->zoomControls())
+            z->setVisible(!collapsed);
+        if (QWidget *v = m_timeline->viewControls())
+            v->setVisible(!collapsed);
+    }
+    layoutHeader();
     emit collapsedChanged(collapsed);
 }
 
@@ -568,6 +638,7 @@ void AnimaticPage::updateLoopUi()
         const bool onlyOne = ((m_loopStartIndex >= 0) != (m_loopEndIndex >= 0));
         m_loopWarningLabel->setVisible(onlyOne);
     }
+    layoutHeader(); // the loop group's width changed
 }
 
 // --- Header row -------------------------------------------------------------
@@ -576,163 +647,344 @@ void AnimaticPage::updateLoopUi()
 // fold button, the transport, the timecode and total, then loop, speed and
 // volume. Collapsed, the workspace keeps exactly this - so playback is one
 // click away with the timeline folded and the canvas at its tallest.
+// THE HEADER ROW, as the redesign draws it at 1920 px (every x is the
+// design's): collapse at 12; Fit 61, - 108, the slider 149..309, + 323 (the
+// timeline's own controls, in its container); the transport pill 846..1074
+// (centred on the window, placed by layoutHeader); timecode 1127, separator
+// 1258, total 1287; then the speed buttons, the audio label and volume
+// (hidden until a track exists); the loop buttons 1655..1735; Frames 1764,
+// Seconds 1810, Snap 1856; right margin 32. The groups to the right of the
+// pill are right-aligned, the groups to its left are left-aligned, and the
+// stretch between them is what the pill is centred over.
 QWidget *AnimaticPage::createHeader()
 {
-    QWidget *bar = new QWidget;
+    using namespace SankoTimelineTheme;
+    auto *bar = new HeaderBar;
+    m_header = bar;
     bar->setObjectName(QStringLiteral("animaticHeader"));
     bar->setAttribute(Qt::WA_StyledBackground, true);
     bar->setFixedHeight(kHeaderHeight);
     bar->setStyleSheet(QStringLiteral(
-        "QWidget#animaticHeader { background-color: #0d0d0d;"
-        " border-top: 1px solid #1f1f1f; }"));
+        "QWidget#animaticHeader { background-color: %1;"
+        " border-bottom: 1px solid %2; }")
+                           .arg(kHeaderBg.name(), kHairline.name()));
+    bar->onResize = [this] { layoutHeader(); };
 
     QHBoxLayout *layout = new QHBoxLayout(bar);
-    layout->setContentsMargins(8, 0, 12, 0);
-    layout->setSpacing(8);
+    layout->setContentsMargins(12, 0, 32, 0);
+    layout->setSpacing(0);
 
-    m_collapseButton = new QPushButton(QString::fromUtf8("\xE2\x96\xBE"));
+    // --- Left group: collapse + the timeline's zoom controls ---------------
+    m_leftGroup = new QWidget;
+    m_leftGroup->setObjectName(QStringLiteral("animaticHeaderLeft"));
+    QHBoxLayout *left = new QHBoxLayout(m_leftGroup);
+    left->setContentsMargins(0, 0, 0, 0);
+    left->setSpacing(0);
+
+    m_collapseButton = new QPushButton;
     m_collapseButton->setObjectName(QStringLiteral("animaticCollapse"));
     m_collapseButton->setCursor(Qt::PointingHandCursor);
     m_collapseButton->setFocusPolicy(Qt::NoFocus);
     m_collapseButton->setFixedSize(26, 26);
+    m_collapseButton->setIconSize(QSize(10, 9));
+    m_collapseButton->setIcon(SankoIcons::icon(
+        QStringLiteral(":/icons/timeline/collapse_down.svg"), QSize(10, 9)));
     m_collapseButton->setToolTip(QStringLiteral("Hide the timeline"));
-    m_collapseButton->setStyleSheet(SankoTheme::themed(
-        "QPushButton { background: transparent; color: #cccccc; border: 1px solid #2a2a2a;"
-        " border-radius: 4px; font-size: 13px; }"
-        "QPushButton:hover { color: %ACCENT%; border-color: %ACCENT%; }"));
+    m_collapseButton->setStyleSheet(kCollapseSheet);
     connect(m_collapseButton, &QPushButton::clicked, this,
             [this] { setCollapsed(!m_collapsed); });
-    layout->addWidget(m_collapseButton);
-
-    // --- Transport (icons only) ------------------------------------------
-    QPushButton *first = transportButton(QString::fromUtf8("|\xE2\x97\x80"),
-                                         QStringLiteral("First panel"));
-    connect(first, &QPushButton::clicked, this, &AnimaticPage::goFirst);
-    layout->addWidget(first);
-
-    QPushButton *prev = transportButton(QString::fromUtf8("\xE2\x97\x80"),
-                                        QStringLiteral("Previous panel"));
-    connect(prev, &QPushButton::clicked, this, &AnimaticPage::goPrev);
-    layout->addWidget(prev);
-
-    m_playButton = transportButton(QString::fromUtf8("\xE2\x96\xB6"),
-                                   QStringLiteral("Play / Pause"));
-    m_playButton->setObjectName(QStringLiteral("animaticPlay"));
-    connect(m_playButton, &QPushButton::clicked, this, &AnimaticPage::togglePlay);
-    layout->addWidget(m_playButton);
-
-    QPushButton *next = transportButton(QString::fromUtf8("\xE2\x96\xB6"),
-                                        QStringLiteral("Next panel"));
-    connect(next, &QPushButton::clicked, this, &AnimaticPage::goNext);
-    layout->addWidget(next);
-
-    QPushButton *last = transportButton(QString::fromUtf8("\xE2\x96\xB6|"),
-                                        QStringLiteral("Last panel"));
-    connect(last, &QPushButton::clicked, this, &AnimaticPage::goLast);
-    layout->addWidget(last);
-
-    m_timecodeLabel = new QLabel(QStringLiteral("00:00:00:00"));
-    m_timecodeLabel->setStyleSheet(SankoTheme::themed("color: %ACCENT%; font-family: 'Courier New'; font-size: 13px;"));
-    layout->addWidget(m_timecodeLabel);
-
-    m_totalLabel = new QLabel(QStringLiteral("Total: 0:00"));
-    m_totalLabel->setStyleSheet(QStringLiteral("color: #aaaaaa; font-size: 13px;"));
-    layout->addWidget(m_totalLabel);
+    left->addWidget(m_collapseButton);
+    left->addSpacing(23);
+    if (m_timeline && m_timeline->zoomControls())
+        left->addWidget(m_timeline->zoomControls());
+    layout->addWidget(m_leftGroup, 0, Qt::AlignVCenter);
 
     layout->addStretch(1);
 
-    // --- Loop controls (compact) -----------------------------------------
-    const QString loopBtn = QStringLiteral(
-        "QPushButton { background: transparent; color: #cccccc; border: 1px solid #2a2a2a;"
-        " border-radius: 4px; padding: 4px 8px; font-size: 11px; }"
-        "QPushButton:hover { color: #4dff91; border-color: #4dff91; }");
+    // --- Right group: timecode .. view controls ------------------------------
+    m_rightGroup = new QWidget;
+    m_rightGroup->setObjectName(QStringLiteral("animaticHeaderRight"));
+    QHBoxLayout *right = new QHBoxLayout(m_rightGroup);
+    right->setContentsMargins(0, 0, 0, 0);
+    right->setSpacing(0);
 
-    QWidget *loopGroup = new QWidget;
-    QHBoxLayout *loopLayout = new QHBoxLayout(loopGroup);
-    loopLayout->setContentsMargins(0, 0, 0, 0);
-    loopLayout->setSpacing(4);
+    m_timecodeLabel = new QLabel(QStringLiteral("00:00:00:00"));
+    m_timecodeLabel->setObjectName(QStringLiteral("animaticTimecode"));
+    m_timecodeLabel->setFixedSize(132, kHeaderHeight);
+    m_timecodeLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    m_timecodeLabel->setStyleSheet(
+        QStringLiteral("color: %1; font-family: 'Courier New'; font-size: 16px;"
+                       " font-weight: bold; background: transparent;")
+            .arg(kTimecode.name()));
+    right->addWidget(m_timecodeLabel);
 
-    QPushButton *setStart = new QPushButton(QStringLiteral("[ Loop"));
-    setStart->setCursor(Qt::PointingHandCursor);
-    setStart->setToolTip(QStringLiteral("Set loop start to the selected panel"));
-    setStart->setStyleSheet(loopBtn);
-    connect(setStart, &QPushButton::clicked, this, &AnimaticPage::setLoopStart);
-    loopLayout->addWidget(setStart);
+    m_timecodeSeparator = new QWidget;
+    m_timecodeSeparator->setObjectName(QStringLiteral("animaticTimecodeSeparator"));
+    m_timecodeSeparator->setFixedSize(1, 22);
+    m_timecodeSeparator->setAttribute(Qt::WA_StyledBackground, true);
+    m_timecodeSeparator->setStyleSheet(
+        QStringLiteral("background-color: %1;").arg(kTimecodeSeparator.name()));
+    right->addWidget(m_timecodeSeparator, 0, Qt::AlignVCenter);
+    right->addSpacing(28);
 
-    QPushButton *setEnd = new QPushButton(QStringLiteral("Loop ]"));
-    setEnd->setCursor(Qt::PointingHandCursor);
-    setEnd->setToolTip(QStringLiteral("Set loop end to the selected panel"));
-    setEnd->setStyleSheet(loopBtn);
-    connect(setEnd, &QPushButton::clicked, this, &AnimaticPage::setLoopEnd);
-    loopLayout->addWidget(setEnd);
+    m_totalLabel = new QLabel(QStringLiteral("Total: 00:00:00:00"));
+    m_totalLabel->setObjectName(QStringLiteral("animaticTotal"));
+    m_totalLabel->setFixedHeight(kHeaderHeight);
+    m_totalLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    m_totalLabel->setStyleSheet(
+        QStringLiteral("color: %1; font-size: 13px; background: transparent;")
+            .arg(kTotal.name()));
+    right->addWidget(m_totalLabel);
 
-    m_clearLoopButton = new QPushButton(QString::fromUtf8("\xE2\x9C\x95"));
-    m_clearLoopButton->setCursor(Qt::PointingHandCursor);
-    m_clearLoopButton->setToolTip(QStringLiteral("Clear the loop region"));
-    m_clearLoopButton->setStyleSheet(QStringLiteral(
-        "QPushButton { background: transparent; color: #cccccc; border: 1px solid #2a2a2a;"
-        " border-radius: 4px; padding: 4px 8px; font-size: 11px; }"
-        "QPushButton:hover { color: #e06c6c; border-color: #e06c6c; }"));
-    m_clearLoopButton->setVisible(false);
-    connect(m_clearLoopButton, &QPushButton::clicked, this, &AnimaticPage::clearLoop);
-    loopLayout->addWidget(m_clearLoopButton);
-
-    m_loopWarningLabel = new QLabel(QStringLiteral("Set both loop points to activate"));
-    m_loopWarningLabel->setStyleSheet(SankoTheme::themed("color: %ACCENT%; font-size: 11px;"));
-    m_loopWarningLabel->setVisible(false);
-    loopLayout->addWidget(m_loopWarningLabel);
-
-    layout->addWidget(loopGroup);
-
-    // --- Speed -------------------------------------------------------------
-    QWidget *speedGroup = new QWidget;
-    QHBoxLayout *speedLayout = new QHBoxLayout(speedGroup);
-    speedLayout->setContentsMargins(0, 0, 0, 0);
-    speedLayout->setSpacing(4);
-
-    m_speedHalfButton = new QPushButton(QStringLiteral("0.5x"));
-    m_speedHalfButton->setCursor(Qt::PointingHandCursor);
-    m_speedHalfButton->setToolTip(QStringLiteral("Play at half speed"));
-    connect(m_speedHalfButton, &QPushButton::clicked, this,
-            [this] { setPlaybackSpeed(0.5f); });
-    speedLayout->addWidget(m_speedHalfButton);
-
-    m_speed1xButton = new QPushButton(QStringLiteral("1x"));
-    m_speed1xButton->setCursor(Qt::PointingHandCursor);
-    m_speed1xButton->setToolTip(QStringLiteral("Play at normal speed"));
-    connect(m_speed1xButton, &QPushButton::clicked, this,
-            [this] { setPlaybackSpeed(1.0f); });
-    speedLayout->addWidget(m_speed1xButton);
-
-    m_speed2xButton = new QPushButton(QStringLiteral("2x"));
-    m_speed2xButton->setCursor(Qt::PointingHandCursor);
-    m_speed2xButton->setToolTip(QStringLiteral("Play at double speed"));
-    connect(m_speed2xButton, &QPushButton::clicked, this,
-            [this] { setPlaybackSpeed(2.0f); });
-    speedLayout->addWidget(m_speed2xButton);
-
-    layout->addWidget(speedGroup);
+    // --- Speed: three buttons in the loop-button style (the user's answer
+    // to the design's missing speed controls, 2026-10-18) ---------------------
+    m_speedGroup = new QWidget;
+    m_speedGroup->setObjectName(QStringLiteral("animaticSpeed"));
+    QHBoxLayout *speedLayout = new QHBoxLayout(m_speedGroup);
+    speedLayout->setContentsMargins(28, 0, 0, 0);
+    speedLayout->setSpacing(6);
+    const struct { QPushButton **slot; const char *text; const char *tip; float speed; } speeds[] = {
+        {&m_speedHalfButton, "0.5x", "Play at half speed", 0.5f},
+        {&m_speed1xButton, "1x", "Play at normal speed", 1.0f},
+        {&m_speed2xButton, "2x", "Play at double speed", 2.0f},
+    };
+    for (const auto &s : speeds) {
+        QPushButton *b = new QPushButton(QLatin1String(s.text));
+        b->setObjectName(QStringLiteral("animaticSpeed%1").arg(QLatin1String(s.text)));
+        b->setCursor(Qt::PointingHandCursor);
+        b->setToolTip(QLatin1String(s.tip));
+        b->setFixedSize(36, 32);
+        const float speed = s.speed;
+        connect(b, &QPushButton::clicked, this, [this, speed] { setPlaybackSpeed(speed); });
+        speedLayout->addWidget(b);
+        *s.slot = b;
+    }
+    right->addWidget(m_speedGroup, 0, Qt::AlignVCenter);
     updateSpeedButtons(); // 1x active by default
 
-    // --- Audio: the track's name and its volume (shown once one is loaded)
-    m_audioLabel = new QLabel;
+    // --- Audio: the track's name and its volume (shown once one is loaded) -
+    m_audioGroup = new QWidget;
+    m_audioGroup->setObjectName(QStringLiteral("animaticAudio"));
+    QHBoxLayout *audioLayout = new QHBoxLayout(m_audioGroup);
+    audioLayout->setContentsMargins(20, 0, 0, 0);
+    audioLayout->setSpacing(8);
+    auto *audioLabel = new ElidedLabel;
+    m_audioLabel = audioLabel;
+    m_audioLabel->setObjectName(QStringLiteral("animaticAudioLabel"));
     m_audioLabel->setStyleSheet(QStringLiteral("color: #888888; font-size: 12px;"));
-    m_audioLabel->setVisible(false);
-    layout->addWidget(m_audioLabel);
-
+    m_audioLabel->setMinimumWidth(60); // the name elides down to this, then the slider narrows
+    m_audioLabel->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
+    audioLayout->addWidget(m_audioLabel);
     m_volumeSlider = new QSlider(Qt::Horizontal);
+    m_volumeSlider->setObjectName(QStringLiteral("animaticVolume"));
     m_volumeSlider->setRange(0, 100);
     m_volumeSlider->setValue(80);
     m_volumeSlider->setFixedWidth(60);
     m_volumeSlider->setToolTip(QStringLiteral("Audio volume"));
-    m_volumeSlider->setVisible(false);
     connect(m_volumeSlider, &QSlider::valueChanged, this, [this](int v) {
         if (m_audioOutput)
             m_audioOutput->setVolume(v / 100.0);
     });
-    layout->addWidget(m_volumeSlider);
+    audioLayout->addWidget(m_volumeSlider);
+    m_audioGroup->setVisible(false);
+    right->addWidget(m_audioGroup, 0, Qt::AlignVCenter);
+
+    // --- Loop: icon buttons, the clear button when a loop is set, the
+    // warning while one point is set -------------------------------------------
+    m_loopGroup = new QWidget;
+    m_loopGroup->setObjectName(QStringLiteral("animaticLoop"));
+    QHBoxLayout *loopLayout = new QHBoxLayout(m_loopGroup);
+    loopLayout->setContentsMargins(105, 0, 0, 0); // the design's gap from the total
+    loopLayout->setSpacing(6);
+
+    m_loopWarningLabel = new QLabel(QStringLiteral("Set both loop points to activate"));
+    m_loopWarningLabel->setObjectName(QStringLiteral("animaticLoopWarning"));
+    m_loopWarningLabel->setStyleSheet(
+        QStringLiteral("color: %1; font-size: 11px;").arg(kTimecode.name()));
+    m_loopWarningLabel->setVisible(false);
+    loopLayout->addWidget(m_loopWarningLabel);
+
+    const struct { const char *file; const char *tip; const char *name; void (AnimaticPage::*slot)(); } loops[] = {
+        {"loop_start", "Set loop start to the selected panel", "animaticLoopStart", &AnimaticPage::setLoopStart},
+        {"loop_end", "Set loop end to the selected panel", "animaticLoopEnd", &AnimaticPage::setLoopEnd},
+    };
+    for (const auto &l : loops) {
+        QPushButton *b = new QPushButton;
+        b->setObjectName(QLatin1String(l.name));
+        b->setCursor(Qt::PointingHandCursor);
+        b->setToolTip(QLatin1String(l.tip));
+        b->setFixedSize(36, 32);
+        b->setIconSize(QSize(15, 14));
+        b->setIcon(SankoIcons::icon(
+            QStringLiteral(":/icons/timeline/%1.svg").arg(QLatin1String(l.file)), QSize(15, 14)));
+        b->setStyleSheet(kLoopButtonSheet);
+        connect(b, &QPushButton::clicked, this, l.slot);
+        loopLayout->addWidget(b);
+    }
+    m_clearLoopButton = new QPushButton(QString::fromUtf8("\xE2\x9C\x95"));
+    m_clearLoopButton->setObjectName(QStringLiteral("animaticLoopClear"));
+    m_clearLoopButton->setCursor(Qt::PointingHandCursor);
+    m_clearLoopButton->setToolTip(QStringLiteral("Clear the loop region"));
+    m_clearLoopButton->setFixedSize(36, 32);
+    m_clearLoopButton->setStyleSheet(QStringLiteral(
+        "QPushButton { background: #292b35; color: #cccccc; border: 1px solid #2a2a2a;"
+        " border-radius: 6px; font-size: 13px; }"
+        "QPushButton:hover { color: #e06c6c; border-color: #e06c6c; }"));
+    m_clearLoopButton->setVisible(false);
+    connect(m_clearLoopButton, &QPushButton::clicked, this, &AnimaticPage::clearLoop);
+    loopLayout->addWidget(m_clearLoopButton);
+    right->addWidget(m_loopGroup, 0, Qt::AlignVCenter);
+
+    // --- Frames / Seconds / Snap: the timeline's view controls ------------------
+    right->addSpacing(31); // the design: loop end at 1733, Frames at 1764
+    if (m_timeline && m_timeline->viewControls())
+        right->addWidget(m_timeline->viewControls(), 0, Qt::AlignVCenter);
+    layout->addWidget(m_rightGroup, 0, Qt::AlignVCenter);
+
+    // --- The transport pill: five buttons, placed by layoutHeader ------------
+    m_transportPill = new QWidget(bar);
+    m_transportPill->setObjectName(QStringLiteral("animaticTransport"));
+    m_transportPill->setFixedSize(228, 32);
+    QHBoxLayout *pill = new QHBoxLayout(m_transportPill);
+    pill->setContentsMargins(0, 2, 0, 2);
+    pill->setSpacing(7);
+    QPushButton *first = transportButton(QStringLiteral("tr_first"), QSize(13, 13),
+                                         QStringLiteral("First panel"),
+                                         QStringLiteral("animaticFirst"));
+    connect(first, &QPushButton::clicked, this, &AnimaticPage::goFirst);
+    pill->addWidget(first);
+    QPushButton *prev = transportButton(QStringLiteral("tr_prev"), QSize(10, 13),
+                                        QStringLiteral("Previous panel"),
+                                        QStringLiteral("animaticPrev"));
+    connect(prev, &QPushButton::clicked, this, &AnimaticPage::goPrev);
+    pill->addWidget(prev);
+    m_playButton = transportButton(QStringLiteral("tr_play"), QSize(11, 13),
+                                   QStringLiteral("Play / Pause"),
+                                   QStringLiteral("animaticPlay"));
+    m_playButton->setStyleSheet(kPlaySheet);
+    connect(m_playButton, &QPushButton::clicked, this, &AnimaticPage::togglePlay);
+    pill->addWidget(m_playButton);
+    QPushButton *next = transportButton(QStringLiteral("tr_next"), QSize(10, 13),
+                                        QStringLiteral("Next panel"),
+                                        QStringLiteral("animaticNext"));
+    connect(next, &QPushButton::clicked, this, &AnimaticPage::goNext);
+    pill->addWidget(next);
+    QPushButton *last = transportButton(QStringLiteral("tr_last"), QSize(13, 13),
+                                        QStringLiteral("Last panel"),
+                                        QStringLiteral("animaticLast"));
+    connect(last, &QPushButton::clicked, this, &AnimaticPage::goLast);
+    pill->addWidget(last);
 
     return bar;
+}
+
+// THE GIVE-WAY RULE (the user's, 2026-10-18) and the pill's place. The
+// header's layout holds the left and right groups with a stretch between
+// them; the pill is not in the layout: it is centred on the window and
+// pushed inward only when the groups would otherwise meet it. When the
+// row is short of room the audio file name shortens first (its label
+// elides down to 60 px), then the zoom slider narrows (160 -> 80); below
+// that the header's minimum width stops the window, so nothing overlaps
+// and no button is cut off.
+void AnimaticPage::layoutHeader()
+{
+    if (!m_header || !m_leftGroup || !m_rightGroup || !m_transportPill)
+        return;
+    QSlider *zoom = m_timeline ? m_timeline->zoomSlider() : nullptr;
+    constexpr int kPillW = 228, kPillGap = 16;
+    const int available = m_header->width();
+
+    // A changed maximum or fixed width is seen by the widget's own layout
+    // item at once, but the CONTAINER's item in the layout above keeps its
+    // cached size hint (QWidgetItemV2) until the container itself reports
+    // a geometry change. So every container on the path is told
+    // (updateGeometry) and its layout invalidated, bottom up, before the
+    // row's layout is activated and measured. (Measured 2026-10-18: without
+    // this the audio group still reported its elided width after the limit
+    // was lifted, the row believed it had room, and the pill overlapped.)
+    auto refresh = [&] {
+        for (QWidget *w : {m_audioGroup, m_speedGroup, m_loopGroup,
+                           m_timeline ? m_timeline->zoomControls() : nullptr,
+                           m_timeline ? m_timeline->viewControls() : nullptr,
+                           m_leftGroup, m_rightGroup}) {
+            if (!w)
+                continue;
+            if (w->layout())
+                w->layout()->invalidate();
+            w->updateGeometry();
+        }
+        m_header->layout()->invalidate();
+        m_header->layout()->activate();
+    };
+    auto need = [&] {
+        return m_header->layout()->sizeHint().width() + kPillW + 2 * kPillGap;
+    };
+
+    // Natural widths first: the slider at 160, the label at its text.
+    if (zoom)
+        zoom->setFixedWidth(160);
+    if (m_audioLabel)
+        m_audioLabel->setMaximumWidth(QWIDGETSIZE_MAX);
+    refresh();
+    int shortage = need() - available;
+    // The group's own flag, not isVisible(): the row is laid out before it
+    // is shown and again while the window closes, and neither may change
+    // the decision.
+    if (shortage > 0 && m_audioLabel && m_audioGroup && !m_audioGroup->isHidden()) {
+        const int natural = m_audioLabel->sizeHint().width();
+        const int give = qMin(shortage, qMax(0, natural - 60));
+        m_audioLabel->setMaximumWidth(qMax(60, natural - give));
+        refresh();
+        shortage = need() - available;
+    }
+    if (shortage > 0 && zoom) {
+        zoom->setFixedWidth(qMax(80, 160 - shortage));
+        refresh();
+    }
+    // The floor: every group at its minimum, the slider at 80, the label at
+    // 60, the pill and its gaps. The slider's width is FIXED above (so the
+    // layout never squeezes it on its own), which makes its minimum its
+    // current width: the left group's minimum hint counts the slider as it
+    // is now, and the slack above 80 is taken off again. (Found 2026-10-18:
+    // without this the floor rose with the slider, the window's minimum
+    // stopped at the slider's current width, and the slider only narrowed
+    // when the width dropped in one jump.)
+    const QMargins m = m_header->layout()->contentsMargins();
+    const int sliderSlack = zoom ? qMax(0, zoom->minimumWidth() - 80) : 0;
+    const int floorWidth = m.left() + m_leftGroup->minimumSizeHint().width() - sliderSlack + kPillGap
+        + kPillW + kPillGap + m_rightGroup->minimumSizeHint().width() + m.right();
+    if (m_header->minimumWidth() != floorWidth)
+        m_header->setMinimumWidth(floorWidth);
+
+    // The pill: centred on the window, kept out of both groups.
+    const int leftRight = m_leftGroup->geometry().right() + 1;
+    const int rightLeft = m_rightGroup->geometry().left();
+    int x = (available - kPillW) / 2;
+    x = qMin(x, rightLeft - kPillGap - kPillW);
+    x = qMax(x, leftRight + kPillGap);
+    m_transportPill->move(x, 4);
+    m_transportPill->raise();
+}
+
+int AnimaticPage::headerMinimumWidthForTest() const
+{
+    return m_header ? m_header->minimumWidth() : 0;
+}
+
+QRect AnimaticPage::transportPillRectForTest() const
+{
+    return m_transportPill ? m_transportPill->geometry() : QRect();
+}
+
+int AnimaticPage::zoomSliderWidthForTest() const
+{
+    return m_timeline && m_timeline->zoomSlider() ? m_timeline->zoomSlider()->width() : 0;
+}
+
+QString AnimaticPage::audioLabelDrawnTextForTest() const
+{
+    auto *label = dynamic_cast<ElidedLabel *>(m_audioLabel);
+    return label && !label->isHidden() ? label->drawnText() : QString();
 }
 
 // --- Data / display -------------------------------------------------------
@@ -922,9 +1174,17 @@ void AnimaticPage::updateTotalLabel()
     for (const Item &it : m_items)
         total += it.panel->duration;
 
-    // Show the speed-adjusted duration, with a suffix when not at 1x.
-    const int adjusted = qRound(total / static_cast<double>(m_playbackSpeed));
-    QString text = QStringLiteral("Total: ") + formatTime(adjusted);
+    // Show the speed-adjusted duration as HH:MM:SS:FF in the project's rate
+    // (the redesign's format, the user's decision 2026-10-18), with a suffix
+    // when not at 1x.
+    const int fps = m_timeline ? qMax(1, m_timeline->fps()) : 24;
+    const int frames = qRound(total * fps / static_cast<double>(m_playbackSpeed));
+    const int ff = frames % fps, totalSec = frames / fps;
+    QString text = QStringLiteral("Total: %1:%2:%3:%4")
+                       .arg(totalSec / 3600, 2, 10, QChar('0'))
+                       .arg((totalSec / 60) % 60, 2, 10, QChar('0'))
+                       .arg(totalSec % 60, 2, 10, QChar('0'))
+                       .arg(ff, 2, 10, QChar('0'));
     if (m_playbackSpeed < 0.99f)
         text += QStringLiteral(" (0.5x)");
     else if (m_playbackSpeed > 1.01f)
@@ -956,7 +1216,8 @@ void AnimaticPage::play()
     enterPreview(); // playback is watched over the canvas, not on it
     // NOT reset here: a Play after a pause continues the panel from where
     // it was paused (movePlayheadTo resets it for every fresh start).
-    m_playButton->setText(QString::fromUtf8("\xE2\x8F\xB8")); // pause glyph
+    m_playButton->setIcon(SankoIcons::icon( // the pause bars
+        QStringLiteral(":/icons/timeline/tr_pause.svg"), QSize(11, 13)));
     if (m_timeline)
         m_timeline->setPlaying(true);
     // Asked again at every Play, not only when Windows reports a change:
@@ -1080,7 +1341,8 @@ void AnimaticPage::pause()
     if (m_timeline)
         m_timeline->setPlaying(false);
     if (m_playButton)
-        m_playButton->setText(QString::fromUtf8("\xE2\x96\xB6")); // play glyph
+        m_playButton->setIcon(SankoIcons::icon( // the play triangle
+            QStringLiteral(":/icons/timeline/tr_play.svg"), QSize(11, 13)));
     if (hasAudio())
         m_player->pause();
 }
@@ -1141,11 +1403,8 @@ void AnimaticPage::setPlaybackSpeed(float speed)
 
 void AnimaticPage::updateSpeedButtons()
 {
-    const QString outlined = SankoTheme::themed("QPushButton { background: transparent; color: #cccccc; border: 1px solid #2a2a2a;"
-        " border-radius: 4px; padding: 5px 11px; font-size: 12px; }"
-        "QPushButton:hover { color: %ACCENT%; border-color: %ACCENT%; }");
-    const QString active = SankoTheme::themed("QPushButton { background-color: %ACCENT%; color: #0a0a0a; border: 1px solid %ACCENT%;"
-        " border-radius: 4px; padding: 5px 11px; font-size: 12px; font-weight: 600; }");
+    const QString outlined = SankoTimelineTheme::kSpeedButtonSheet;
+    const QString active = SankoTimelineTheme::kSpeedButtonActiveSheet;
 
     if (m_speedHalfButton)
         m_speedHalfButton->setStyleSheet(m_playbackSpeed < 0.99f ? active : outlined);
@@ -1594,6 +1853,11 @@ void AnimaticPage::updateAudioUi()
         m_timeline->setAudioUnplayable(m_audioUnplayable);
         m_timeline->setAudioLoaded(has, m_player ? m_player->duration() : 0);
     }
+    // The header's audio group shows with the label; the row is re-laid
+    // out because the group's width changed (the give-way rule).
+    if (m_audioGroup)
+        m_audioGroup->setVisible(m_audioLabel && !m_audioLabel->isHidden());
+    layoutHeader();
     emit audioStateChanged(); // the menus enable Remove and Locate from this
 }
 

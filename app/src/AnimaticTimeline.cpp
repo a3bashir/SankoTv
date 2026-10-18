@@ -1,5 +1,7 @@
 #include "AnimaticTimeline.h"
+#include "SankoIcons.h"
 #include "SankoTheme.h"
+#include "SankoTimelineTheme.h"
 
 #include "AnimaticPage.h"
 #include "StoryboardModel.h"
@@ -27,7 +29,18 @@
 
 namespace {
 
-constexpr int kLabelCol = 90; // left track-name column width
+// THE LABEL COLUMN, from the redesign (Figma 380:644): the painted column
+// is 136 px wide (kLabelColW) with its separator line at x 136, and the
+// time content begins at x 135 (kLabelCol) - one pixel under the column, as
+// the design has it, so the separator sits on the content's first pixel.
+// Every mapping between content and screen reads kLabelCol.
+constexpr int kLabelCol = 135;  // where content x 0 is on the canvas
+constexpr int kLabelColW = 136; // the painted column's width
+// The track controls (lock, speaker, eye) in the column: 16 px icons at
+// these x offsets, centred in their track rows. Painted in Part A; live in
+// Part B.
+constexpr int kControlX[3] = {8, 32, 56};
+constexpr int kControlSize = 16;
 
 // Track geometry (top to bottom), all within the canvas. The timeline sits
 // under the drawing canvas now and its height is the user's to drag, so the
@@ -47,7 +60,20 @@ constexpr int kGrab = 5;      // px grab tolerance
 constexpr int kMinDur = 1, kMaxDur = 30;
 constexpr int kReorderThreshold = 8; // px before a clip press becomes a drag
 
-constexpr int kToolbarH = 32;
+// The clip, as the design lays it out on a 76 px body (every number is the
+// design's; see HANDOFF "The timeline redesign, Part A"): the body is the
+// clip's rect less a 2 px gap on the right, radius 5; the thumbnail sits
+// at (6,6), body width - 12 wide, 42 tall, radius 3; the number at (10,9);
+// the name at (8, bottom - 20) up to the pill; the pill 28 x 18 at
+// (right - 33, bottom - 22).
+constexpr int kClipGap = 2;
+constexpr qreal kClipR = 5.0;
+constexpr int kThumbInset = 6, kThumbH = 42, kThumbR = 3;
+constexpr int kPillW = 28, kPillH = 18;
+// What hides first as a clip narrows (the user's order, 2026-10-18): the
+// name (below 86 px of body), then the thumbnail (below 48), then the pill
+// (below 42); the number stays while the body is 20 px or more.
+constexpr int kNameMinBody = 86, kThumbMinBody = 48, kPillMinBody = 42, kNumberMinBody = 20;
 } // namespace
 
 // =====================================================================
@@ -98,48 +124,73 @@ AnimaticTimeline::AnimaticTimeline(QWidget *parent)
     : QWidget(parent)
 {
     setAttribute(Qt::WA_StyledBackground, true);
-    setStyleSheet(QStringLiteral("background-color: #0d0d0d;"));
+    setStyleSheet(QStringLiteral("background-color: %1;")
+                      .arg(SankoTimelineTheme::kPageBg.name()));
 
     QVBoxLayout *root = new QVBoxLayout(this);
     root->setContentsMargins(0, 0, 0, 0);
     root->setSpacing(0);
 
-    // --- Zoom toolbar -----------------------------------------------------
-    QWidget *toolbar = new QWidget;
-    toolbar->setFixedHeight(kToolbarH);
-    toolbar->setAttribute(Qt::WA_StyledBackground, true);
-    toolbar->setStyleSheet(QStringLiteral(
-        "background-color: #0d0d0d; border-bottom: 1px solid #1f1f1f;"));
-    QHBoxLayout *tb = new QHBoxLayout(toolbar);
-    tb->setContentsMargins(10, 0, 10, 0);
-    tb->setSpacing(6);
+    // --- The zoom and view controls (shown in the header row) ----------------
+    // The redesign merged the zoom row into the header. The widgets are
+    // still the timeline's (the handlers below are unchanged); the page
+    // places the two containers. Sizes are the design's: Fit 33 x 28,
+    // - and + 27 x 28, the slider 160 x 10 (narrowing to 80 when the window
+    // is short of room), Frames / Seconds / Snap 32 x 28 with 24 px icons.
+    m_zoomControls = new QWidget;
+    m_zoomControls->setObjectName(QStringLiteral("timelineZoomControls"));
+    QHBoxLayout *zc = new QHBoxLayout(m_zoomControls);
+    zc->setContentsMargins(0, 0, 0, 4); // the row centres at y 18, not 20
+    zc->setSpacing(14);
 
     m_fitButton = new QPushButton(QStringLiteral("Fit"));
+    m_fitButton->setObjectName(QStringLiteral("timelineFit"));
+    m_fitButton->setFixedSize(33, 28);
     m_zoomOutButton = new QPushButton(QStringLiteral("\xE2\x88\x92")); // minus
+    m_zoomOutButton->setObjectName(QStringLiteral("timelineZoomOut"));
+    m_zoomOutButton->setFixedSize(27, 28);
     m_zoomInButton = new QPushButton(QStringLiteral("+"));
+    m_zoomInButton->setObjectName(QStringLiteral("timelineZoomIn"));
+    m_zoomInButton->setFixedSize(27, 28);
     m_zoomSlider = new QSlider(Qt::Horizontal);
+    m_zoomSlider->setObjectName(QStringLiteral("timelineZoom"));
     m_zoomSlider->setRange(10, 400);
     m_zoomSlider->setValue(100);
-    m_zoomSlider->setFixedWidth(140);
+    m_zoomSlider->setFixedHeight(10);
+    m_zoomSlider->setMinimumWidth(80);
+    m_zoomSlider->setMaximumWidth(160);
+    m_zoomSlider->resize(160, 10);
+    m_zoomSlider->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
     m_zoomSlider->setToolTip(QStringLiteral("Zoom"));
+    m_zoomSlider->setStyleSheet(SankoTimelineTheme::kZoomSliderSheet);
 
-    m_framesButton = new QPushButton(QStringLiteral("Frames"));
-    m_secondsButton = new QPushButton(QStringLiteral("Seconds"));
-    m_snapButton = new QPushButton(QStringLiteral("Snap"));
+    zc->addWidget(m_fitButton);
+    zc->addWidget(m_zoomOutButton);
+    zc->addWidget(m_zoomSlider);
+    zc->addWidget(m_zoomInButton);
+
+    m_viewControls = new QWidget;
+    m_viewControls->setObjectName(QStringLiteral("timelineViewControls"));
+    QHBoxLayout *vc = new QHBoxLayout(m_viewControls);
+    vc->setContentsMargins(0, 0, 0, 0);
+    vc->setSpacing(14);
+    m_framesButton = new QPushButton;
+    m_framesButton->setObjectName(QStringLiteral("timelineFrames"));
+    m_framesButton->setToolTip(QStringLiteral("Ruler in frames"));
+    m_secondsButton = new QPushButton;
+    m_secondsButton->setObjectName(QStringLiteral("timelineSeconds"));
+    m_secondsButton->setToolTip(QStringLiteral("Ruler in timecode"));
+    m_snapButton = new QPushButton;
+    m_snapButton->setObjectName(QStringLiteral("timelineSnap"));
+    m_snapButton->setToolTip(QStringLiteral("Snap"));
+    for (QPushButton *b : {m_framesButton, m_secondsButton, m_snapButton}) {
+        b->setFixedSize(32, 28);
+        b->setIconSize(QSize(24, 24));
+        vc->addWidget(b);
+    }
     for (QPushButton *b : {m_fitButton, m_zoomOutButton, m_zoomInButton,
                            m_framesButton, m_secondsButton, m_snapButton})
         b->setCursor(Qt::PointingHandCursor);
-
-    tb->addWidget(m_fitButton);
-    tb->addWidget(m_zoomOutButton);
-    tb->addWidget(m_zoomSlider);
-    tb->addWidget(m_zoomInButton);
-    tb->addStretch(1);
-    tb->addWidget(m_framesButton);
-    tb->addWidget(m_secondsButton);
-    tb->addSpacing(8);
-    tb->addWidget(m_snapButton);
-    root->addWidget(toolbar);
 
     // --- Canvas + horizontal scrollbar -----------------------------------
     m_canvas = new TimelineCanvas(this);
@@ -231,20 +282,27 @@ QWidget *AnimaticTimeline::surfaceForTest() const
     return m_canvas;
 }
 
+// The look of the six controls. Frames / Seconds / Snap are icon-only now:
+// checked = the accent fill with a white icon, unchecked = no fill and the
+// icon in the design's grey. The state itself is what it always was (the
+// sheet swap on m_framesMode and m_snap); only the sheets changed.
 void AnimaticTimeline::styleToolbarButtons()
 {
-    const QString plain = SankoTheme::themed("QPushButton { background: #1a1a1a; color: #cccccc; border: 1px solid #2a2a2a;"
-        " border-radius: 4px; padding: 3px 9px; font-size: 11px; }"
-        "QPushButton:hover { border-color: %ACCENT%; color: %ACCENT%; }");
-    const QString active = SankoTheme::themed("QPushButton { background: %ACCENT%; color: #0a0a0a; border: 1px solid %ACCENT%;"
-        " border-radius: 4px; padding: 3px 9px; font-size: 11px; font-weight: 600; }");
-
-    m_fitButton->setStyleSheet(plain);
-    m_zoomInButton->setStyleSheet(plain);
-    m_zoomOutButton->setStyleSheet(plain);
-    m_framesButton->setStyleSheet(m_framesMode ? active : plain);
-    m_secondsButton->setStyleSheet(m_framesMode ? plain : active);
-    m_snapButton->setStyleSheet(m_snap ? active : plain);
+    using namespace SankoTimelineTheme;
+    m_fitButton->setStyleSheet(kZoomButtonSheet);
+    m_zoomInButton->setStyleSheet(kZoomButtonSheet);
+    m_zoomOutButton->setStyleSheet(kZoomButtonSheet);
+    const struct { QPushButton *button; const char *file; bool checked; } views[] = {
+        {m_framesButton, "view_frames", m_framesMode},
+        {m_secondsButton, "view_seconds", !m_framesMode},
+        {m_snapButton, "view_snap", m_snap},
+    };
+    for (const auto &v : views) {
+        v.button->setStyleSheet(v.checked ? kViewButtonCheckedSheet : kViewButtonSheet);
+        v.button->setIcon(SankoIcons::icon(
+            QStringLiteral(":/icons/timeline/%1.svg").arg(QLatin1String(v.file)),
+            QSize(24, 24), v.checked ? kViewIconChecked : kViewIcon));
+    }
 }
 
 // --- Public slots ---------------------------------------------------------
@@ -709,12 +767,16 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
     const int W = m_canvas->width();
     const int contentRight = W;
 
-    // Backgrounds per track (full width first).
-    p.fillRect(QRect(0, kRulerY, W, kRulerH), QColor("#0d0d0d"));
-    p.fillRect(QRect(0, kSceneY, W, kSceneH), QColor("#181818"));
-    p.fillRect(QRect(0, kPanelY, W, panelTrackH()), QColor("#141414"));
+    // Backgrounds per track (full width first), the redesign's: the ruler
+    // and the empty audio row in kRulerBg, the scene track in kHeaderBg, the
+    // shots track in the page colour. A row with a file named keeps the
+    // blue it had (the design shows no track).
+    using namespace SankoTimelineTheme;
+    p.fillRect(QRect(0, kRulerY, W, kRulerH), kRulerBg);
+    p.fillRect(QRect(0, kSceneY, W, kSceneH), kHeaderBg);
+    p.fillRect(QRect(0, kPanelY, W, panelTrackH()), kPageBg);
     p.fillRect(QRect(0, audioTrackY(), W, kAudioH),
-               QColor(m_audioLoaded ? "#0d1a26" : "#111111"));
+               m_audioLoaded ? QColor("#0d1a26") : kRulerBg);
 
     // Clip all time-based content to the area right of the label column.
     p.save();
@@ -723,50 +785,46 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
     const double ppf = pxPerFrame();
     const double pps = pxPerSecond();
 
-    // ----- Timecode ruler -----
+    // ----- Timecode ruler (the redesign) -----
+    // Ticks hang from the ruler's bottom edge in one colour at three
+    // strengths: 7 px at 65 % on a labelled second, 5 px at 30 % on the
+    // other seconds, 3 px at 18 % on the half seconds (only when a second is
+    // 30 px or wider). Labels every rulerLabelStep() seconds, Courier New
+    // 11 px, 4 px right of the tick, in a 15 px line 2 px down. Below 8 px
+    // per second no second ticks are drawn (they would be a comb).
     {
         QFont f(QStringLiteral("Courier New"));
-        f.setPointSizeF(6.5);
+        f.setPixelSize(11);
         p.setFont(f);
-
-        // Choose the major-label interval in seconds so labels stay readable.
-        int labelSecs = 1;
-        if (pps < 16) labelSecs = 10;
-        else if (pps < 32) labelSecs = 5;
-        else labelSecs = 1;
-
+        const int step = rulerLabelStep();
         const int tSecs = totalSeconds();
-        const bool frameTicks = ppf >= 8.0;     // per-frame ticks when zoomed in
-        const bool halfTicks = pps >= 30.0;     // 0.5s minor ticks
-
-        if (frameTicks) {
-            for (int fr = 0; fr <= totalFrames(); ++fr) {
-                const int x = contentXToScreen(fr * ppf);
-                if (x < kLabelCol - 2 || x > contentRight) continue;
-                p.setPen(QColor("#333333"));
-                p.drawLine(x, kRulerY + kRulerH - 4, x, kRulerY + kRulerH);
-            }
-        }
+        const bool secondTicks = pps >= 8.0;
+        const bool halfTicks = pps >= 30.0;
+        const int bottom = kRulerY + kRulerH;
+        QColor major = kHairline, minor = kHairline, half = kHairline;
+        major.setAlphaF(0.65);
+        minor.setAlphaF(0.30);
+        half.setAlphaF(0.18);
         if (halfTicks) {
-            for (int s2 = 0; s2 <= tSecs * 2; ++s2) {
-                if (s2 % 2 == 0) continue; // skip whole seconds (drawn below)
-                const int x = contentXToScreen((s2 * m_fps / 2) * ppf);
+            for (int s2 = 1; s2 <= tSecs * 2; s2 += 2) {
+                const int x = contentXToScreen((s2 * m_fps / 2.0) * ppf);
                 if (x < kLabelCol - 2 || x > contentRight) continue;
-                p.setPen(QColor("#444444"));
-                p.drawLine(x, kRulerY + kRulerH - 7, x, kRulerY + kRulerH);
+                p.fillRect(QRect(x, bottom - 3, 1, 3), half);
             }
         }
         for (int s = 0; s <= tSecs; ++s) {
             const int x = contentXToScreen(s * pps);
-            if (x < kLabelCol - 40 || x > contentRight + 10) continue;
-            p.setPen(QColor("#444444"));
-            p.drawLine(x, kRulerY, x, kRulerY + kRulerH);
-            if (s % labelSecs == 0) {
-                p.setPen(QColor("#666666"));
+            if (x < kLabelCol - 120 || x > contentRight + 10) continue;
+            const bool labelled = (s % step == 0);
+            if (secondTicks)
+                p.fillRect(QRect(x, bottom - (labelled ? 7 : 5), 1, labelled ? 7 : 5),
+                           labelled ? major : minor);
+            if (labelled) {
+                p.setPen(kRulerLabel);
                 const QString lbl = m_framesMode
                     ? QString::number(s * m_fps)
                     : timecode(s * m_fps);
-                p.drawText(QRect(x + 2, kRulerY, 80, kRulerH),
+                p.drawText(QRect(x + 4, kRulerY + 2, 110, 15),
                            Qt::AlignVCenter | Qt::AlignLeft, lbl);
             }
         }
@@ -793,36 +851,46 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
             const int x0 = contentXToScreen(startFrame * ppf);
             const int x1 = contentXToScreen(endFrame * ppf);
             QRect r(x0, kSceneY, x1 - x0, kSceneH);
-            p.fillRect(r, QColor((sceneOrdinal % 2 == 0) ? "#13112e" : "#0f0d24"));
-            p.setPen(QColor("#2a2766"));
+            // One block colour in the design (it shows one scene); the
+            // ordinal is kept for when a second colour is given.
+            Q_UNUSED(sceneOrdinal);
+            p.fillRect(r, kSceneBlock);
+            p.setPen(kSceneBaseline);
             p.drawLine(r.left(), kSceneY + kSceneH - 1, r.right(), kSceneY + kSceneH - 1);
             // Scene separator.
-            p.setPen(QColor("#444444"));
+            p.setPen(kSceneSeparator);
             p.drawLine(x0, kSceneY, x0, kSceneY + kSceneH);
             p.setFont(f);
-            p.setPen(QColor("#ffffff"));
+            p.setPen(kSceneName);
             p.drawText(r, Qt::AlignCenter, name);
             i = j;
             ++sceneOrdinal;
         }
     }
 
-    // ----- Panel / shot clips -----
+    // ----- Panel / shot clips (the redesign) -----
+    // Flat bodies with a 2 px gap between neighbours, the thumbnail across
+    // the top with the number over it, the name bottom-left and the
+    // duration pill bottom-right; the selected clip is a lighter body with
+    // a 2 px border, nothing else (the design's glow and trim handles are
+    // hidden layers, not built; the 6 px grab zones at the edges stay, with
+    // the size cursor as their only cue). Layout: clipLayout().
     {
         p.setRenderHint(QPainter::Antialiasing, true);
-        QFont small = font();
-        small.setPointSize(7);
+        QFont nameFont = font();
+        nameFont.setPixelSize(11);
+        QFont numberFont = nameFont;
+        numberFont.setBold(true);
         QFont mono(QStringLiteral("Consolas"));
-        mono.setPointSize(7);
-
-        constexpr qreal kClipR = 4.0; // corner radius
+        mono.setPixelSize(10);
 
         for (const Block &b : m_blocks) {
             const int x0 = contentXToScreen(b.startFrame * ppf);
             const int x1 = contentXToScreen((b.startFrame + b.frames) * ppf);
             if (x1 < kLabelCol || x0 > contentRight) continue;
-            QRect r(x0, kPanelY + 2, x1 - x0, panelTrackH() - 4);
-            const QRectF rf(r);
+            const QRect r(x0, kPanelY + 2, x1 - x0, panelTrackH() - 4);
+            const ClipLayout L = clipLayout(r);
+            const QRectF bf(L.body);
 
             // "current" is the SELECTED panel - the one on the drawing
             // canvas - not the one under the playhead: playback moves the
@@ -830,141 +898,76 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
             const bool current = (b.flatIndex == m_selected);
             const bool hovered = (b.flatIndex == m_hoverIndex);
 
-            // Accent bloom around the selected clip: explicit filled rounded rects
-            // stepping outward, opacity rising toward the clip body, drawn under
-            // the clip fill so a visible halo punches through the dark background.
-            if (current) {
-                struct Glow { qreal off; int alpha; };
-                const Glow glows[3] = {{6.0, 40}, {4.0, 60}, {2.0, 90}};
-                for (const Glow &gl : glows) {
-                    QColor c = SankoTheme::kAccent;
-                    c.setAlpha(gl.alpha);
-                    p.setPen(Qt::NoPen);
-                    p.setBrush(c);
-                    p.drawRoundedRect(rf.adjusted(-gl.off, -gl.off, gl.off, gl.off),
-                                      kClipR, kClipR);
-                }
-            }
-
-            // Vertical gradient fill (SankoTV purple).
-            QLinearGradient grad(r.left(), r.top(), r.left(), r.bottom());
-            if (current) {
-                grad.setColorAt(0.0, QColor("#3d3894"));
-                grad.setColorAt(1.0, QColor("#2a2570"));
-            } else {
-                grad.setColorAt(0.0, QColor("#2a2766"));
-                grad.setColorAt(1.0, QColor("#1e1a4d"));
-            }
             p.setPen(Qt::NoPen);
-            p.setBrush(grad);
-            p.drawRoundedRect(rf, kClipR, kClipR);
-
-            // Border (selected: 2.5px accent; else 1px #3d3894, accent-50% on hover).
+            p.setBrush(current ? kClipSelectedBg : kClipBg);
+            p.drawRoundedRect(bf, kClipR, kClipR);
             p.setBrush(Qt::NoBrush);
             if (current) {
-                QColor sel = SankoTheme::kAccentLight;
-                sel.setAlpha(255);
-                p.setPen(QPen(sel, 2.5));
-                p.drawRoundedRect(rf.adjusted(1, 1, -1, -1), kClipR, kClipR);
+                p.setPen(QPen(kClipSelectedBorder, 2));
+                p.drawRoundedRect(bf.adjusted(1, 1, -1, -1), kClipR, kClipR);
             } else {
-                QColor bord("#3d3894");
-                if (hovered) { bord = SankoTheme::kAccentLight; bord.setAlphaF(0.50); }
+                QColor bord = kClipBorder;
+                if (hovered) { bord = kClipSelectedBorder; bord.setAlphaF(0.50); }
                 p.setPen(QPen(bord, 1));
-                p.drawRoundedRect(rf.adjusted(0.5, 0.5, -0.5, -0.5), kClipR, kClipR);
+                p.drawRoundedRect(bf.adjusted(0.5, 0.5, -0.5, -0.5), kClipR, kClipR);
             }
 
-            // Thumbnail in the left portion of the clip.
-            int thumbW = 0;
-            const bool showThumb = (r.width() >= 50);
-            if (showThumb) {
-                // A taller shots track gets a wider thumbnail (16:9 of its
-                // height) rather than a taller crop of a 60 px sliver.
-                const int thumbH = r.height() - 8;
-                thumbW = qMin(static_cast<int>(r.width() * 0.35),
-                              qMax(60, thumbH * 16 / 9));
-                const QRect thumbRect(r.left() + 4, r.top() + 4, thumbW, thumbH);
-
+            if (L.thumbShown) {
                 QPixmap pix;
                 if (b.sceneIndex < m_scenes.size()) {
                     Scene *sc = m_scenes.at(b.sceneIndex);
                     if (b.panelIndex < sc->panels.size())
                         // The cached 512px mip, not the full flatten: this
-                        // runs per visible clip on EVERY repaint — each
-                        // scrub mouse-move and every playback tick — and
-                        // the full composite here cost 16 ms/clip at 4K
-                        // (287 ms per repaint, measured). The mip
-                        // self-validates against layer edits, and the
-                        // clip thumb is at most ~60 px wide.
+                        // runs per visible clip on EVERY repaint (each scrub
+                        // mouse-move and every playback tick); the full
+                        // composite cost 16 ms/clip at 4K, measured.
                         pix = sc->panels.at(b.panelIndex)->flattenedThumb();
                 }
-
                 p.save();
                 QPainterPath clip;
-                clip.addRoundedRect(QRectF(thumbRect), 2, 2);
+                clip.addRoundedRect(QRectF(L.thumb), kThumbR, kThumbR);
                 p.setClipPath(clip, Qt::IntersectClip);
                 if (!pix.isNull()) {
+                    // Crop to fill, centred (one setting; "fit with bars" is
+                    // the other, not built - the user's choice 2026-10-18).
                     const QPixmap scaled = pix.scaled(
-                        thumbRect.size(), Qt::KeepAspectRatioByExpanding,
+                        L.thumb.size(), Qt::KeepAspectRatioByExpanding,
                         Qt::SmoothTransformation);
-                    const int sx = (scaled.width() - thumbRect.width()) / 2;
-                    const int sy = (scaled.height() - thumbRect.height()) / 2;
-                    p.drawPixmap(thumbRect, scaled,
-                                 QRect(sx, sy, thumbRect.width(), thumbRect.height()));
+                    const int sx = (scaled.width() - L.thumb.width()) / 2;
+                    const int sy = (scaled.height() - L.thumb.height()) / 2;
+                    p.drawPixmap(L.thumb, scaled,
+                                 QRect(sx, sy, L.thumb.width(), L.thumb.height()));
                 } else {
-                    p.fillRect(thumbRect, QColor("#0d0d0d"));
+                    p.fillRect(L.thumb, kThumbPlaceholder);
                 }
-                // Dark gradient overlay (left transparent -> right #0a0a0a 60%).
-                QLinearGradient ov(thumbRect.left(), 0, thumbRect.right(), 0);
-                ov.setColorAt(0.0, QColor(0x0a, 0x0a, 0x0a, 0));
-                ov.setColorAt(1.0, QColor(0x0a, 0x0a, 0x0a, 153));
-                p.fillRect(thumbRect, ov);
                 p.restore();
-
-                // Thumbnail border.
                 p.setBrush(Qt::NoBrush);
-                p.setPen(QPen(QColor("#2a2a2a"), 1));
-                p.drawRoundedRect(QRectF(thumbRect).adjusted(0.5, 0.5, -0.5, -0.5), 2, 2);
+                p.setPen(QPen(kHairline, 1));
+                p.drawRoundedRect(QRectF(L.thumb).adjusted(0.5, 0.5, -0.5, -0.5),
+                                  kThumbR, kThumbR);
             }
 
-            // Clip text, shifted right past the thumbnail.
-            const int textX = showThumb ? (r.left() + thumbW + 8) : (r.left() + 6);
-            const QRect textRect(textX, r.top() + 4, r.right() - textX - 4, r.height() - 8);
-            if (textRect.width() > 8) {
-                QFont bold = small; bold.setBold(true);
-                p.setFont(bold);
-                p.setPen(SankoTheme::kAccentLight);
-                p.drawText(textRect, Qt::AlignTop | Qt::AlignLeft,
+            if (L.body.width() >= kNumberMinBody) {
+                p.setFont(numberFont);
+                p.setPen(kClipNumber);
+                p.drawText(L.number, Qt::AlignTop | Qt::AlignLeft,
                            QString::number(b.flatIndex + 1));
-                p.setFont(small);
-                p.setPen(QColor("#888888"));
-                QFontMetrics fm(small);
-                p.drawText(textRect, Qt::AlignBottom | Qt::AlignLeft,
-                           fm.elidedText(b.sceneName, Qt::ElideRight, textRect.width() - 24));
             }
-
-            // Duration badge: rounded pill, bottom-right (only on wider clips).
-            if (r.width() > 70) {
-                const QString dtext = QStringLiteral("%1s").arg(b.duration);
-                QFontMetrics fmm(mono);
-                const int bw = fmm.horizontalAdvance(dtext) + 8;
-                const QRectF pill(r.right() - bw - 4, r.bottom() - 17, bw, 14);
-                if (pill.left() > textX) {
-                    p.setPen(QPen(QColor("#333333"), 1));
-                    p.setBrush(QColor("#111111"));
-                    p.drawRoundedRect(pill, 4, 4);
-                    p.setBrush(Qt::NoBrush);
-                    p.setFont(mono);
-                    p.setPen(QColor("#ffffff"));
-                    p.drawText(pill, Qt::AlignCenter, dtext);
-                }
+            if (L.nameShown) {
+                p.setFont(nameFont);
+                p.setPen(kClipName);
+                const QFontMetrics fm(nameFont);
+                p.drawText(L.name, Qt::AlignVCenter | Qt::AlignLeft,
+                           fm.elidedText(b.sceneName, Qt::ElideRight, L.name.width()));
             }
-
-            // Trim handles on the selected clip.
-            if (current) {
-                p.fillRect(QRect(r.left(), r.top(), kHandleW, r.height()),
-                           SankoTheme::kAccentLight);
-                p.fillRect(QRect(r.right() - kHandleW + 1, r.top(), kHandleW, r.height()),
-                           SankoTheme::kAccentLight);
+            if (L.pillShown) {
+                p.setPen(QPen(kHairline, 1));
+                p.setBrush(kPillBg);
+                p.drawRoundedRect(QRectF(L.pill).adjusted(0.5, 0.5, -0.5, -0.5), 4, 4);
+                p.setBrush(Qt::NoBrush);
+                p.setFont(mono);
+                p.setPen(kPillText);
+                p.drawText(L.pill, Qt::AlignCenter, QStringLiteral("%1s").arg(b.duration));
             }
         }
         p.setRenderHint(QPainter::Antialiasing, false);
@@ -992,7 +995,7 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
             ? m_blocks.at(m_moveGap).startFrame
             : m_blocks.last().startFrame + m_blocks.last().frames;
         const int x = contentXToScreen(frame * ppf);
-        p.setPen(QPen(SankoTheme::kAccentLight, 3));
+        p.setPen(QPen(kClipSelectedBorder, 3)); // the design's selection colour
         p.drawLine(x, kPanelY + 1, x, kPanelY + panelTrackH() - 1);
     }
 
@@ -1082,13 +1085,13 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
     {
         const int px = contentXToScreen(playheadContentX());
         if (px >= kLabelCol && px <= W) {
-            p.setPen(QPen(SankoTheme::kAccent, 1.5));
+            p.setPen(QPen(kPlayhead, 1.5));
             p.drawLine(px, 0, px, tracksH());
             // Triangle handle in the ruler.
             p.setRenderHint(QPainter::Antialiasing, true);
             QPolygon tri;
             tri << QPoint(px - 5, 0) << QPoint(px + 5, 0) << QPoint(px, 8);
-            p.setBrush(SankoTheme::kAccent);
+            p.setBrush(kPlayhead);
             p.setPen(Qt::NoPen);
             p.drawPolygon(tri);
             p.setRenderHint(QPainter::Antialiasing, false);
@@ -1096,36 +1099,110 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
     }
 
     // ----- Left label column (painted on top, fixed) -----
+    // 136 px, its separator on the content's first pixel; the labels end
+    // 15 px before the column's edge; the track controls (lock, speaker on
+    // AUDIO, eye) are 16 px icons centred in their rows - painted in Part A,
+    // live in Part B.
     {
-        p.fillRect(QRect(0, 0, kLabelCol, tracksH()), QColor("#0d0d0d"));
-        p.setPen(QColor("#2a2a2a"));
-        p.drawLine(kLabelCol - 1, 0, kLabelCol - 1, tracksH());
+        p.fillRect(QRect(0, 0, kLabelColW, tracksH()), kLabelColumnBg);
+        p.fillRect(QRect(kLabelColW, 0, 1, tracksH()), kLabelColumnSeparator);
 
         QFont f = font();
         f.setPointSize(7);
         p.setFont(f);
-        p.setPen(QColor("#666666"));
+        p.setPen(kTrackLabel);
         struct TL { const char *name; int y, h; };
         const TL labels[] = {
             {"TIMECODE", kRulerY, kRulerH}, {"SCENES", kSceneY, kSceneH},
             {"SHOTS", kPanelY, panelTrackH()},    {"AUDIO", audioTrackY(), kAudioH},
         };
         for (const TL &t : labels)
-            p.drawText(QRect(0, t.y, kLabelCol - 8, t.h),
+            p.drawText(QRect(0, t.y, kLabelColW - 15, t.h),
                        Qt::AlignVCenter | Qt::AlignRight,
                        QString::fromLatin1(t.name));
+
+        static const QPixmap lock = SankoIcons::renderSvg(
+            QStringLiteral(":/icons/timeline/track_lock.svg"),
+            QSize(kControlSize, kControlSize), devicePixelRatioF());
+        static const QPixmap eye = SankoIcons::renderSvg(
+            QStringLiteral(":/icons/timeline/track_eye.svg"),
+            QSize(kControlSize, kControlSize), devicePixelRatioF());
+        static const QPixmap speaker = SankoIcons::renderSvg(
+            QStringLiteral(":/icons/timeline/track_speaker.svg"),
+            QSize(kControlSize, kControlSize), devicePixelRatioF());
+        struct Row { int y, h; bool speaker; };
+        const Row rows[] = {{kSceneY, kSceneH, false}, {kPanelY, panelTrackH(), false},
+                            {audioTrackY(), kAudioH, true}};
+        for (const Row &row : rows) {
+            const int y = row.y + (row.h - kControlSize) / 2;
+            p.drawPixmap(kControlX[0], y, lock);
+            if (row.speaker)
+                p.drawPixmap(kControlX[1], y, speaker);
+            p.drawPixmap(kControlX[2], y, eye);
+        }
     }
 
     // Empty-audio hint. It names the thing that works: this used to say
     // "Drop audio file here", and nothing here accepts a drop.
     if (audioBar().state == AudioBar::None) {
         QFont f = font();
-        f.setPointSizeF(7.5);
+        f.setPixelSize(10);
         p.setFont(f);
-        p.setPen(QColor("#555555"));
+        p.setPen(kAudioHint);
         p.drawText(QRect(kLabelCol, audioTrackY(), W - kLabelCol, kAudioH),
                    Qt::AlignCenter, audioBar().hint);
     }
+}
+
+// The ruler's label step (see rulerLabelStep in the header).
+int AnimaticTimeline::rulerLabelStep() const
+{
+    const double pps = pxPerSecond();
+    for (int step : {1, 2, 3, 5, 10, 15, 30, 60})
+        if (step * pps >= 120.0)
+            return step;
+    return 60;
+}
+
+// The design's clip layout for a clip rect r (see the constants at the top).
+AnimaticTimeline::ClipLayout AnimaticTimeline::clipLayout(const QRect &r) const
+{
+    ClipLayout L;
+    L.body = QRect(r.left(), r.top(), qMax(1, r.width() - kClipGap), r.height());
+    const int bw = L.body.width();
+    L.thumbShown = bw >= kThumbMinBody;
+    L.thumb = QRect(L.body.left() + kThumbInset, L.body.top() + kThumbInset,
+                    bw - 2 * kThumbInset, kThumbH);
+    L.number = QRect(L.body.left() + 10, L.body.top() + 9, qMax(1, bw - 14), 12);
+    L.pillShown = bw >= kPillMinBody;
+    L.pill = QRect(L.body.right() - kPillW - 5, L.body.bottom() - kPillH - 4, kPillW, kPillH);
+    const int nameRight = L.pillShown ? L.pill.left() - 4 : L.body.right() - 8;
+    L.name = QRect(L.body.left() + 8, L.body.bottom() - 20,
+                   qMax(0, nameRight - (L.body.left() + 8)), 15);
+    L.nameShown = bw >= kNameMinBody && L.name.width() > 0;
+    return L;
+}
+
+QVariantMap AnimaticTimeline::clipPartsForTest(int flatIndex) const
+{
+    const QRect r = clipRect(flatIndex);
+    if (r.isEmpty())
+        return {};
+    const ClipLayout L = clipLayout(r);
+    const auto rs = [](const QRect &q) {
+        return QStringLiteral("%1,%2 %3x%4").arg(q.x()).arg(q.y()).arg(q.width()).arg(q.height());
+    };
+    return {{QStringLiteral("clip"), rs(r)},       {QStringLiteral("body"), rs(L.body)},
+            {QStringLiteral("thumb"), rs(L.thumb)}, {QStringLiteral("number"), rs(L.number)},
+            {QStringLiteral("name"), rs(L.name)},   {QStringLiteral("pill"), rs(L.pill)},
+            {QStringLiteral("thumbShown"), L.thumbShown},
+            {QStringLiteral("nameShown"), L.nameShown},
+            {QStringLiteral("pillShown"), L.pillShown}};
+}
+
+int AnimaticTimeline::labelColumnWidthForTest()
+{
+    return kLabelColW;
 }
 
 // What the audio track shows, in one place: the painter draws exactly this

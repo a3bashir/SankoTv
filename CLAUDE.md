@@ -126,6 +126,16 @@ the page from.
   the scrollbar's own path, so it is the user's scroll for the hold rule;
   Ctrl+wheel zooms around the pointer through following's `setScrollX`
   and never holds.
+- **The timeline's look is the user's Figma design** (HANDOFF 2026-10-18,
+  "The timeline redesign, Part A"): file Dasktop_UI_test, node 380:644,
+  is the source of truth; every colour is a role-named token in
+  `src/SankoTimelineTheme.h`, the icons are the design's SVGs under
+  `icons/timeline/` rendered by `src/SankoIcons.h`, and the zoom
+  controls are the timeline's widgets placed in the page's header
+  (`zoomControls()` / `viewControls()`). Change a look value only from
+  the design, and never add, drop or move a header element without the
+  user: the header's give-way rule (audio name first, then the slider)
+  and its floor are theirs.
 - **File > Export** (MP4, PNG, PDF) is `src/export/` plus the asking and
   telling in `MainWindow`. All three read `Panel::flattenedPixmap()` —
   never a second idea of what a panel looks like. The MP4 encoder sits

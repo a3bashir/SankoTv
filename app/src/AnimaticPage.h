@@ -73,6 +73,19 @@ public:
     void setCollapsed(bool collapsed);
     int minimumExpandedHeight() const;
     int defaultExpandedHeight() const;
+    // THE HEADER ROW (the redesign, Figma 380:644): collapse, Fit / - /
+    // slider / +, a transport pill centred on the window, the timecode, a
+    // separator, the total, the speed buttons, the audio label and volume,
+    // the loop buttons, Frames / Seconds / Snap. What gives way when the
+    // window is narrow: the audio file name shortens first, then the zoom
+    // slider narrows to 80 px; below that the header's minimum width holds
+    // the window, so nothing overlaps and no button is cut. Test hooks:
+    // that minimum, the pill's place, the slider's width, the label's text
+    // as drawn.
+    int headerMinimumWidthForTest() const;
+    QRect transportPillRectForTest() const;
+    int zoomSliderWidthForTest() const;
+    QString audioLabelDrawnTextForTest() const;
 
     // Transport, for the workspace's pointer-routed keys.
     void togglePlay();
@@ -194,6 +207,9 @@ public:
     int itemCountForTest() const { return int(m_items.size()); }
     void advanceForTest() { advance(); }
     void scrubForTest(int flatIndex) { onScrubbed(flatIndex); }
+    // Put the playhead inside a panel without playing: the accuracy capture
+    // (2026-10-18) needs 00:00:18:41 exactly, which no navigation key gives.
+    void setPlayheadForTest(int flatIndex, int elapsedMs);
     QString previewCaptionForTest() const;
     bool previewHasPictureForTest() const;
     QString timecodeTextForTest() const; // the header's HH:MM:SS:FF
@@ -247,6 +263,7 @@ private:
 
     QWidget *createHeader();
     QWidget *createTimingStrip();
+    void layoutHeader(); // the give-way rule and the pill's place
 
     void rebuildItems();
     void movePlayheadTo(int index); // playhead + timeline + timecode + preview
@@ -306,6 +323,15 @@ private:
     QWidget *m_body = nullptr;          // everything below the header row
     QPushButton *m_collapseButton = nullptr;
     bool m_collapsed = false;
+    // The header row's parts (see createHeader / layoutHeader).
+    QWidget *m_header = nullptr;
+    QWidget *m_leftGroup = nullptr;     // collapse + the timeline's zoom controls
+    QWidget *m_rightGroup = nullptr;    // timecode .. view controls
+    QWidget *m_transportPill = nullptr; // placed by layoutHeader, not the layout
+    QWidget *m_speedGroup = nullptr;
+    QWidget *m_audioGroup = nullptr;    // the audio label and the volume slider
+    QWidget *m_loopGroup = nullptr;
+    QWidget *m_timecodeSeparator = nullptr;
 
     AnimaticTimeline *m_timeline = nullptr;
     QVector<Scene *> m_scenes; // source scenes, for duration edits + timeline rebuilds

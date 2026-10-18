@@ -3,6 +3,22 @@
     <qresource prefix="/">
         <file>assets/logo.png</file>
         <file>icons/brushlib/chevron-down.svg</file>
+        <file>icons/timeline/collapse_down.svg</file>
+        <file>icons/timeline/collapse_up.svg</file>
+        <file>icons/timeline/tr_first.svg</file>
+        <file>icons/timeline/tr_prev.svg</file>
+        <file>icons/timeline/tr_play.svg</file>
+        <file>icons/timeline/tr_pause.svg</file>
+        <file>icons/timeline/tr_next.svg</file>
+        <file>icons/timeline/tr_last.svg</file>
+        <file>icons/timeline/loop_start.svg</file>
+        <file>icons/timeline/loop_end.svg</file>
+        <file>icons/timeline/view_frames.svg</file>
+        <file>icons/timeline/view_seconds.svg</file>
+        <file>icons/timeline/view_snap.svg</file>
+        <file>icons/timeline/track_lock.svg</file>
+        <file>icons/timeline/track_eye.svg</file>
+        <file>icons/timeline/track_speaker.svg</file>
         <file>icons/add.svg</file>
         <file>icons/duplicate.svg</file>
         <file>icons/lighttable.svg</file>

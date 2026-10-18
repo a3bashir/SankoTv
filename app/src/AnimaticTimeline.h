@@ -93,6 +93,24 @@ public:
     // reading the stored rate back.
     int totalFramesForTest() const { return totalFrames(); }
 
+    // THE REDESIGN (Figma 380:644, 2026-10-18): the zoom row is gone. Its
+    // controls still belong to the timeline - the same buttons, the same
+    // slider, the same handlers - but they live in two containers the
+    // header row above takes: Fit, -, the slider and + on the left, and the
+    // Frames / Seconds / Snap icons on the right. The page hides both with
+    // the body when the section is collapsed (the design shows no collapsed
+    // state; the user's decision).
+    QWidget *zoomControls() const { return m_zoomControls; }
+    QWidget *viewControls() const { return m_viewControls; }
+    QSlider *zoomSlider() const { return m_zoomSlider; }
+    // Test hooks for the look: the ruler's label step in seconds at the
+    // current zoom, and where the parts of a clip are drawn (body,
+    // thumbnail, number, name, pill - with which of them are shown), as
+    // "x,y,wxh" strings in canvas coordinates.
+    int rulerLabelStepForTest() const { return rulerLabelStep(); }
+    QVariantMap clipPartsForTest(int flatIndex) const;
+    static int labelColumnWidthForTest();
+
 public slots:
     void setScenes(const QVector<Scene *> &scenes);
     void setCurrentPanel(int flatIndex);  // the panel under the PLAYHEAD
@@ -225,6 +243,18 @@ private:
     void fitZoom();
     int snapFrame(int frame) const;
     QString timecode(int frame) const;
+    // The ruler's label step: the smallest of 1, 2, 3, 5, 10, 15, 30, 60 s
+    // whose pitch is at least 120 px (the user's rule, 2026-10-18).
+    int rulerLabelStep() const;
+    // Where a clip's parts go for a body of this rect (the design's layout
+    // and its hide order as the clip narrows: the name first, then the
+    // thumbnail, then the pill; the number stays).
+    struct ClipLayout
+    {
+        QRect body, thumb, number, name, pill;
+        bool thumbShown = false, nameShown = false, pillShown = false;
+    };
+    ClipLayout clipLayout(const QRect &r) const;
 
     // Toolbar handlers.
     void styleToolbarButtons();
@@ -280,6 +310,8 @@ private:
     // Widgets.
     TimelineCanvas *m_canvas = nullptr;
     QScrollBar *m_hScroll = nullptr;
+    QWidget *m_zoomControls = nullptr; // Fit, -, slider, +: shown in the header
+    QWidget *m_viewControls = nullptr; // Frames, Seconds, Snap: likewise
     QSlider *m_zoomSlider = nullptr;
     QPushButton *m_fitButton = nullptr;
     QPushButton *m_zoomInButton = nullptr;

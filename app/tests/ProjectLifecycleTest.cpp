@@ -60,6 +60,7 @@
 #include "ProjectIO.h"
 #include "ProjectMedia.h"
 #include "RecentProjects.h"
+#include "SankoIcons.h"
 #include "SankoTheme.h"
 #include "StoryboardModel.h"
 #include "devrecorder/DevRecorder.h"
@@ -8550,7 +8551,9 @@ void runTimelineFollowsPass(const QString &scratch)
     AnimaticTimeline *tl = r.timeline;
     travel::pick(r, QStringLiteral("Import Audio..."), wav);
     travel::present(r);
-    QSlider *zoom = tl->findChild<QSlider *>();
+    // The zoom slider lives in the page's header since the redesign
+    // (2026-10-18); it is still the timeline's, found by its name.
+    QSlider *zoom = r.animatic->findChild<QSlider *>(QStringLiteral("timelineZoom"));
     QScrollBar *bar = tl->findChild<QScrollBar *>();
     if (zoom)
         zoom->setValue(400);
@@ -8799,7 +8802,7 @@ void runTimelineFollowsPass(const QString &scratch)
               .arg(tl->playheadScreenXForTest()));
 
     // ---- the whole film fits -------------------------------------------------------------
-    for (QPushButton *b : tl->findChildren<QPushButton *>())
+    for (QPushButton *b : r.animatic->findChildren<QPushButton *>())
         if (b->text() == QStringLiteral("Fit"))
             b->click();
     pump(150);
@@ -8965,7 +8968,9 @@ void runScrollbarOwnershipPass(const QString &scratch)
         return;
     AnimaticPage *page = r.animatic;
     AnimaticTimeline *tl = r.timeline;
-    QSlider *zoom = tl->findChild<QSlider *>();
+    // The zoom slider lives in the page's header since the redesign
+    // (2026-10-18); it is still the timeline's, found by its name.
+    QSlider *zoom = r.animatic->findChild<QSlider *>(QStringLiteral("timelineZoom"));
     QScrollBar *bar = tl->findChild<QScrollBar *>();
     if (!zoom || !bar) {
         check(QStringLiteral("(au) the timeline's zoom slider and scrollbar were found"),
@@ -9029,7 +9034,7 @@ void runScrollbarOwnershipPass(const QString &scratch)
           settledRight(&why), why);
     zoom->setValue(300); // zoom in
     check(QStringLiteral("(au) zoom IN during playback: the same"), settledRight(&why), why);
-    for (QPushButton *b : tl->findChildren<QPushButton *>())
+    for (QPushButton *b : r.animatic->findChildren<QPushButton *>())
         if (b->text() == QStringLiteral("Fit"))
             b->click();
     check(QStringLiteral("(au) FIT during playback: not held, playhead in view "
@@ -9221,7 +9226,9 @@ void runTimelineWheelPass(const QString &scratch)
     AnimaticPage *page = r.animatic;
     AnimaticTimeline *tl = r.timeline;
     QWidget *canvas = tl->surfaceForTest();
-    QSlider *zoom = tl->findChild<QSlider *>();
+    // The zoom slider lives in the page's header since the redesign
+    // (2026-10-18); it is still the timeline's, found by its name.
+    QSlider *zoom = r.animatic->findChild<QSlider *>(QStringLiteral("timelineZoom"));
     QScrollBar *bar = tl->findChild<QScrollBar *>();
     if (!zoom || !bar || !canvas) {
         check(QStringLiteral("(av) the timeline's parts were found"), false);
@@ -9345,7 +9352,7 @@ void runTimelineWheelPass(const QString &scratch)
           QStringLiteral("zoom %1, slider %2").arg(tl->zoomForTest()).arg(zoom->value()));
 
     // ---- the film fits: nothing moves, nothing breaks ---------------------------------
-    for (QPushButton *b : tl->findChildren<QPushButton *>())
+    for (QPushButton *b : r.animatic->findChildren<QPushButton *>())
         if (b->text() == QStringLiteral("Fit"))
             b->click();
     pump(100);
@@ -9373,6 +9380,334 @@ void runTimelineWheelPass(const QString &scratch)
               .arg(tl->viewHeldForTest()).arg(tl->zoomForTest()));
     page->leavePreview();
     pump(200);
+}
+
+// ---- (aw) the timeline's new look (Part A of the redesign) ---------------------
+// 2026-10-18: the Figma redesign (Dasktop_UI_test, node 380:644). Checks
+// that the look is the design's where a number can say so: every icon
+// loads (with a wrong path as the control), the header's geometry, the
+// merged zoom row and what collapses with the body, the label column, the
+// ruler's label step, the clip layout and its hide order, the painted
+// colours, and the give-way rule for a narrow window. Pixel reads come
+// from the canvas's own grab, never from the screen.
+void runTimelineLookPass(const QString &scratch)
+{
+    using namespace workspace;
+    out() << "--- (aw) the timeline's new look: icons, header, label column, ruler, "
+             "clips, colours, the give-way rule ---" << Qt::endl;
+
+    // ---- every icon loads; a wrong path does not ------------------------------
+    {
+        const char *files[] = {"collapse_down", "collapse_up", "tr_first", "tr_prev",
+                               "tr_play", "tr_pause", "tr_next", "tr_last", "loop_start",
+                               "loop_end", "view_frames", "view_seconds", "view_snap",
+                               "track_lock", "track_eye", "track_speaker"};
+        QStringList missing, blank;
+        for (const char *f : files) {
+            const QString path = QStringLiteral(":/icons/timeline/%1.svg").arg(QLatin1String(f));
+            const QIcon ic = SankoIcons::icon(path, QSize(16, 16));
+            if (ic.isNull()) { missing << QLatin1String(f); continue; }
+            const QImage img = ic.pixmap(16, 16).toImage();
+            bool painted = false;
+            for (int y = 0; y < img.height() && !painted; ++y)
+                for (int x = 0; x < img.width(); ++x)
+                    if (qAlpha(img.pixel(x, y)) > 0) { painted = true; break; }
+            if (!painted)
+                blank << QLatin1String(f);
+        }
+        check(QStringLiteral("(aw) EVERY TIMELINE ICON LOADS from the resources and paints "
+                             "something (16 files)"),
+              missing.isEmpty() && blank.isEmpty(),
+              QStringLiteral("missing [%1] blank [%2]").arg(missing.join(' '), blank.join(' ')));
+        check(QStringLiteral("(aw) control: a wrong path gives a null icon (so the check "
+                             "above could have failed)"),
+              SankoIcons::icon(QStringLiteral(":/icons/timeline/no_such_icon.svg"),
+                               QSize(16, 16)).isNull(),
+              QString());
+    }
+
+    const QString base = scratch + QStringLiteral("/look");
+    QDir(base).removeRecursively();
+    // The Figma sample: 60 fps, ten 3 s panels (the fourth 2 s), one scene.
+    const QString project = writeProject(base + QStringLiteral("/p"), QStringLiteral("Look"),
+                                         QSize(960, 540), 60, 1, 10);
+    // A window wide enough for the whole header (its floor is about 1390):
+    // 1800 on the 1920 test screen.
+    Rig r(project, QSize(1800, 900));
+    check(QStringLiteral("(aw) the workspace opened"), r.ok);
+    if (!r.ok)
+        return;
+    AnimaticPage *page = r.animatic;
+    AnimaticTimeline *tl = r.timeline;
+    QWidget *canvas = tl->surfaceForTest();
+    // The fixture writes 2 / 3 / 4 s panels; the sample is ten of 3 s with
+    // the fourth at 2 s.
+    for (int i = 0; i < 10; ++i)
+        page->setPanelDurationForTest(0, i, i == 3 ? 2 : 3);
+    pump(200);
+    auto widget = [&](const char *name) -> QWidget * {
+        return page->findChild<QWidget *>(QLatin1String(name));
+    };
+    auto rectOf = [&](const char *name) -> QRect {
+        QWidget *w = widget(name);
+        return w ? QRect(w->mapTo(page, QPoint(0, 0)), w->size()) : QRect();
+    };
+    pump(300);
+
+    // ---- the header: the design's geometry ---------------------------------------
+    {
+        const QRect collapse = rectOf("animaticCollapse"), fit = rectOf("timelineFit"),
+                    minus = rectOf("timelineZoomOut"), slider = rectOf("timelineZoom"),
+                    plus = rectOf("timelineZoomIn"), tc = rectOf("animaticTimecode"),
+                    sep = rectOf("animaticTimecodeSeparator"), total = rectOf("animaticTotal"),
+                    frames = rectOf("timelineFrames"), seconds = rectOf("timelineSeconds"),
+                    snap = rectOf("timelineSnap"), pill = page->transportPillRectForTest();
+        const int W = page->width();
+        check(QStringLiteral("(aw) THE HEADER'S LEFT GROUP is the design's: collapse 26x26 at "
+                             "(12,7); Fit 33x28 at (61,4); - 27x28 at 108; the slider 160x10 "
+                             "at (149,13); + 27x28 at 323"),
+              collapse == QRect(12, 7, 26, 26) && fit == QRect(61, 4, 33, 28)
+                  && minus == QRect(108, 4, 27, 28) && slider == QRect(149, 13, 160, 10)
+                  && plus == QRect(323, 4, 27, 28),
+              QStringLiteral("collapse %1,%2 %3x%4; fit %5,%6; minus %7; slider %8,%9 %10x%11; plus %12")
+                  .arg(collapse.x()).arg(collapse.y()).arg(collapse.width()).arg(collapse.height())
+                  .arg(fit.x()).arg(fit.y()).arg(minus.x()).arg(slider.x()).arg(slider.y())
+                  .arg(slider.width()).arg(slider.height()).arg(plus.x()));
+        check(QStringLiteral("(aw) THE RIGHT GROUP ends 32 px before the edge: Snap 32x28 at "
+                             "y 6, Seconds 14 px before it, Frames 14 px before that; the "
+                             "timecode label is 132x40 with the 1x22 separator right after "
+                             "it and the total 28 px further"),
+              snap.right() == W - 32 - 1 && snap.size() == QSize(32, 28) && snap.y() == 6
+                  && seconds.right() + 1 + 14 == snap.x() && frames.right() + 1 + 14 == seconds.x()
+                  && tc.size() == QSize(132, 40) && sep == QRect(tc.right() + 1, 9, 1, 22)
+                  && total.x() == sep.right() + 1 + 28,
+              QStringLiteral("W %1 snap %2,%3 %4x%5 seconds %6 frames %7 tc %8 %9x%10 sep %11,%12 total %13")
+                  .arg(W).arg(snap.x()).arg(snap.y()).arg(snap.width()).arg(snap.height())
+                  .arg(seconds.x()).arg(frames.x()).arg(tc.x()).arg(tc.width()).arg(tc.height())
+                  .arg(sep.x()).arg(sep.y()).arg(total.x()));
+        const QRect left = rectOf("animaticHeaderLeft"), right = rectOf("animaticHeaderRight");
+        const bool centred = pill.x() == (W - 228) / 2;
+        const bool clear = pill.left() >= left.right() + 1 + 16 && pill.right() + 1 + 16 <= right.left();
+        check(QStringLiteral("(aw) THE TRANSPORT PILL is 228x32 at y 4, centred on the window "
+                             "when there is room, and never within 16 px of either group"),
+              pill.size() == QSize(228, 32) && pill.y() == 4 && clear
+                  && (centred || pill.right() + 1 + 16 == right.left()),
+              QStringLiteral("pill %1,%2 %3x%4; left group ends %5; right group starts %6; W %7")
+                  .arg(pill.x()).arg(pill.y()).arg(pill.width()).arg(pill.height())
+                  .arg(left.right()).arg(right.left()).arg(W));
+        check(QStringLiteral("(aw) the Seconds button wears the checked fill and Frames does "
+                             "not; Snap is checked by default (the states are unchanged)"),
+              widget("timelineSeconds")->styleSheet().contains(QStringLiteral("#7c6ef6"))
+                  && !widget("timelineFrames")->styleSheet().contains(QStringLiteral("background: #7c6ef6"))
+                  && widget("timelineSnap")->styleSheet().contains(QStringLiteral("#7c6ef6")));
+        check(QStringLiteral("(aw) THE TOTAL reads HH:MM:SS:FF in the project's rate: ten "
+                             "panels of 3 s with one of 2 s at 60 fps = Total: 00:00:29:00"),
+              qobject_cast<QLabel *>(widget("animaticTotal"))->text()
+                  == QStringLiteral("Total: 00:00:29:00"),
+              qobject_cast<QLabel *>(widget("animaticTotal"))->text());
+        // The heights with the scrollbar hidden (the film fits at zoom 70);
+        // with it shown, the timeline's size hint grows by the bar's height,
+        // as it always did.
+        page->findChild<QSlider *>(QStringLiteral("timelineZoom"))->setValue(70);
+        pump(150);
+        check(QStringLiteral("(aw) the zoom row is gone: the canvas starts at y 40 of the "
+                             "section, the expanded default is 204 and the minimum 172, the "
+                             "collapsed height stays 40"),
+              canvas->mapTo(page, QPoint(0, 0)).y() == 40 && page->defaultExpandedHeight() == 204
+                  && page->minimumExpandedHeight() == 172 && AnimaticPage::kHeaderHeight == 40,
+              QStringLiteral("canvas y %1, default %2, minimum %3")
+                  .arg(canvas->mapTo(page, QPoint(0, 0)).y()).arg(page->defaultExpandedHeight())
+                  .arg(page->minimumExpandedHeight()));
+    }
+
+    // ---- collapsed: the zoom and view controls go with the body -------------------
+    {
+        page->setCollapsed(true);
+        pump(200);
+        const bool hidden = !widget("timelineZoomControls")->isVisible()
+            && !widget("timelineViewControls")->isVisible() && widget("animaticTransport")->isVisible();
+        page->setCollapsed(false);
+        pump(200);
+        check(QStringLiteral("(aw) COLLAPSED hides the zoom and view controls with the body "
+                             "and keeps the transport; expanded shows them again"),
+              hidden && widget("timelineZoomControls")->isVisible()
+                  && widget("timelineViewControls")->isVisible());
+    }
+
+    // ---- the label column, the ruler step, the clip layout ------------------------
+    {
+        QSlider *zoom = page->findChild<QSlider *>(QStringLiteral("timelineZoom"));
+        zoom->setValue(70);
+        pump(150);
+        check(QStringLiteral("(aw) THE LABEL COLUMN is 136 px and the ruler labels every 3 s "
+                             "at zoom 70 / 60 fps (42 px/s)"),
+              AnimaticTimeline::labelColumnWidthForTest() == 136 && tl->rulerLabelStepForTest() == 3,
+              QStringLiteral("column %1, step %2").arg(AnimaticTimeline::labelColumnWidthForTest())
+                  .arg(tl->rulerLabelStepForTest()));
+        const QVariantMap c0 = tl->clipPartsForTest(0), c3 = tl->clipPartsForTest(3);
+        const QRect clip0 = tl->clipRectForTest(0);
+        check(QStringLiteral("(aw) A 3 s CLIP at 42 px/s is 126 wide: body 124 (a 2 px gap), "
+                             "thumbnail at (6,6) 112x42, number at (10,9), name at (8, bottom-20) "
+                             "78 wide, pill 28x18 at (right-33, bottom-22); all shown"),
+              c0.value(QStringLiteral("body")).toString()
+                      == QStringLiteral("%1,%2 124x%3").arg(clip0.x()).arg(clip0.y()).arg(clip0.height())
+                  && c0.value(QStringLiteral("thumb")).toString()
+                      == QStringLiteral("%1,%2 112x42").arg(clip0.x() + 6).arg(clip0.y() + 6)
+                  && c0.value(QStringLiteral("number")).toString().startsWith(
+                      QStringLiteral("%1,%2 ").arg(clip0.x() + 10).arg(clip0.y() + 9))
+                  && c0.value(QStringLiteral("name")).toString()
+                      == QStringLiteral("%1,%2 78x15").arg(clip0.x() + 8).arg(clip0.bottom() - 20)
+                  && c0.value(QStringLiteral("pill")).toString()
+                      == QStringLiteral("%1,%2 28x18").arg(clip0.right() - 2 - 33).arg(clip0.bottom() - 22)
+                  && c0.value(QStringLiteral("thumbShown")).toBool()
+                  && c0.value(QStringLiteral("nameShown")).toBool()
+                  && c0.value(QStringLiteral("pillShown")).toBool(),
+              QStringLiteral("clip %1,%2 %3x%4; %5").arg(clip0.x()).arg(clip0.y()).arg(clip0.width())
+                  .arg(clip0.height()).arg(QJsonDocument(QJsonObject::fromVariantMap(c0)).toJson(QJsonDocument::Compact)));
+        check(QStringLiteral("(aw) the 2 s clip (84 px, body 82) hides its NAME and keeps the "
+                             "thumbnail (70 wide) and the pill, as the design draws it"),
+              c3.value(QStringLiteral("body")).toString().contains(QStringLiteral(" 82x"))
+                  && !c3.value(QStringLiteral("nameShown")).toBool()
+                  && c3.value(QStringLiteral("thumbShown")).toBool()
+                  && c3.value(QStringLiteral("thumb")).toString().contains(QStringLiteral(" 70x42"))
+                  && c3.value(QStringLiteral("pillShown")).toBool(),
+              QJsonDocument(QJsonObject::fromVariantMap(c3)).toJson(QJsonDocument::Compact));
+        // The hide order as the zoom drops: name, then thumbnail, then pill.
+        int nameGone = -1, thumbGone = -1, pillGone = -1, numberAt10 = -1;
+        for (int z = 400; z >= 10; --z) {
+            zoom->setValue(z);
+            const QVariantMap c = tl->clipPartsForTest(0);
+            if (nameGone < 0 && !c.value(QStringLiteral("nameShown")).toBool()) nameGone = z;
+            if (thumbGone < 0 && !c.value(QStringLiteral("thumbShown")).toBool()) thumbGone = z;
+            if (pillGone < 0 && !c.value(QStringLiteral("pillShown")).toBool()) pillGone = z;
+            if (z == 10) numberAt10 = tl->clipRectForTest(0).width();
+        }
+        check(QStringLiteral("(aw) AS A CLIP NARROWS the name hides first, then the thumbnail, "
+                             "then the pill (the user's order), and at zoom 10 (18 px) only the "
+                             "number is left"),
+              nameGone > thumbGone && thumbGone > pillGone && pillGone > 0 && numberAt10 == 18,
+              QStringLiteral("name hidden from zoom %1, thumbnail from %2, pill from %3; width at 10: %4")
+                  .arg(nameGone).arg(thumbGone).arg(pillGone).arg(numberAt10));
+        zoom->setValue(100);
+        pump(100);
+        // The step rule at other zooms: 24 px/s (zoom 100 at 24 fps) -> 5 s
+        // is the old project's case; here at 60 fps zoom 100 = 60 px/s -> 2 s,
+        // zoom 200 = 120 px/s -> 1 s, zoom 20 = 12 px/s -> 10 s.
+        const int s100 = tl->rulerLabelStepForTest();
+        zoom->setValue(200);
+        const int s200 = tl->rulerLabelStepForTest();
+        zoom->setValue(20);
+        const int s20 = tl->rulerLabelStepForTest();
+        zoom->setValue(70);
+        pump(100);
+        check(QStringLiteral("(aw) THE LABEL STEP is the smallest of 1,2,3,5,10,15,30,60 s at "
+                             "least 120 px apart: 60 px/s -> 2 s, 120 px/s -> 1 s, 12 px/s -> 10 s"),
+              s100 == 2 && s200 == 1 && s20 == 10,
+              QStringLiteral("%1 %2 %3").arg(s100).arg(s200).arg(s20));
+    }
+
+    // ---- the painted colours, read from the canvas's own grab ----------------------
+    {
+        page->setSelectedPanel(3);
+        pump(200);
+        const QImage img = canvas->grab().toImage();
+        auto px = [&](int x, int y) { return QColor(img.pixel(x, y)).name(); };
+        const QRect c3 = tl->clipRectForTest(3);
+        const int shotsY = 48 + tl->shotsTrackHeightForTest() / 2;
+        const QString shots = px(canvas->width() - 20, shotsY), ruler = px(canvas->width() - 20, 4),
+                      scenes = px(canvas->width() - 20, 36), column = px(60, 10), separator = px(136, 10),
+                      audio = px(canvas->width() - 20, 48 + tl->shotsTrackHeightForTest() + 4),
+                      selectedBorder = px(c3.x() + 1, c3.y() + c3.height() / 2),
+                      // the body's own pixel: inside the border, under the thumbnail's
+                      // bottom edge (6 + 42) and above the name line
+                      body0 = px(tl->clipRectForTest(0).x() + 3, tl->clipRectForTest(0).y() + 51);
+        check(QStringLiteral("(aw) THE TRACK COLOURS are the design's: shots #101115, ruler "
+                             "#181a21, scenes #1c1e25, empty audio #181a21, label column #0d0d0d "
+                             "with its #2a2a2a separator at x 136"),
+              shots == QStringLiteral("#101115") && ruler == QStringLiteral("#181a21")
+                  && scenes == QStringLiteral("#1c1e25") && audio == QStringLiteral("#181a21")
+                  && column == QStringLiteral("#0d0d0d") && separator == QStringLiteral("#2a2a2a"),
+              QStringLiteral("shots %1 ruler %2 scenes %3 audio %4 column %5 separator %6")
+                  .arg(shots, ruler, scenes, audio, column, separator));
+        check(QStringLiteral("(aw) THE SELECTED CLIP wears the 2 px #9787ff border and a plain "
+                             "clip's body is #252330 (no gradient)"),
+              selectedBorder == QStringLiteral("#9787ff") && body0 == QStringLiteral("#252330"),
+              QStringLiteral("border %1 body %2").arg(selectedBorder, body0));
+        page->setPlayheadForTest(6, 1684);
+        pump(150);
+        const QImage img2 = canvas->grab().toImage();
+        const int phx = tl->playheadScreenXForTest();
+        const QString ph = QColor(img2.pixel(phx, 40)).name();
+        check(QStringLiteral("(aw) THE PLAYHEAD is #d5cbff and the timecode 00:00:18:41 at "
+                             "1 s 41 f into the seventh panel"),
+              ph == QStringLiteral("#d5cbff") && page->timecodeTextForTest() == QStringLiteral("00:00:18:41"),
+              QStringLiteral("playhead %1 at x %2, timecode %3").arg(ph).arg(phx).arg(page->timecodeTextForTest()));
+    }
+
+    // ---- the give-way rule: the audio name shortens first, then the slider ---------
+    {
+        const QString wav = base + QStringLiteral("/sound/theme.wav");
+        audio::writeWav(wav, 20.0);
+        page->setAudioPath(wav, true);
+        audio::waitFor([&] { return tl->audioBarStateForTest() == QStringLiteral("present"); }, 4000);
+        pump(200);
+        const int floor = page->headerMinimumWidthForTest();
+        const int beside = r.window.width() - page->width();
+        // Wide: nothing gives.
+        r.window.resize(floor + beside + 400, 900);
+        pump(400);
+        const bool wideOk = page->zoomSliderWidthForTest() == 160
+            && page->audioLabelDrawnTextForTest() == page->audioLabelTextForTest();
+        // Just above the floor: the name elides, the slider narrows but stays >= 80,
+        // and the pill keeps clear of both groups.
+        r.window.resize(floor + beside + 20, 900);
+        pump(400);
+        const int sliderNarrow = page->zoomSliderWidthForTest();
+        const QString drawn = page->audioLabelDrawnTextForTest();
+        const QRect pill = page->transportPillRectForTest();
+        const QRect left = QRect(widget("animaticHeaderLeft")->mapTo(page, QPoint(0, 0)), widget("animaticHeaderLeft")->size());
+        const QRect right = QRect(widget("animaticHeaderRight")->mapTo(page, QPoint(0, 0)), widget("animaticHeaderRight")->size());
+        // THE RULE, exactly: the floor is the width at which the name is at
+        // its 60 px minimum and the slider at 80, so 20 px above it the
+        // name has given everything (60, elided) and the slider has given
+        // all but 20 (100); the pill keeps 16 px from both groups; the right
+        // group ends inside the window.
+        const int labelNarrow = page->findChild<QLabel *>(QStringLiteral("animaticAudioLabel"))->width();
+        const bool elided = drawn.contains(QChar(0x2026)) && drawn != page->audioLabelTextForTest();
+        const bool narrowOk = elided && labelNarrow == 60 && sliderNarrow == 100
+            && pill.left() >= left.right() + 1 + 16
+            && pill.right() + 1 + 16 <= right.left() && right.right() + 1 + 32 <= page->width();
+        check(QStringLiteral("(aw) THE GIVE-WAY RULE: wide, the slider is 160 and the audio "
+                             "name whole; 20 px above the header's floor the name is elided at "
+                             "its 60 px minimum and the slider is 100 (all but 20 of its 80 "
+                             "given), the pill clear of both groups and the right group inside "
+                             "the window"),
+              wideOk && narrowOk,
+              QStringLiteral("floor %1; wide ok %2; narrow: drawn '%3' label %4 slider %5 pill %6..%7 left ends %8 right %9..%10 W %11")
+                  .arg(floor).arg(wideOk).arg(drawn).arg(labelNarrow).arg(sliderNarrow).arg(pill.left()).arg(pill.right())
+                  .arg(left.right()).arg(right.left()).arg(right.right()).arg(page->width()));
+        // At the narrowest the window allows (its own minimum, and the other
+        // columns', may hold it above the header's floor): the ORDER holds -
+        // the slider has not narrowed unless the name is already at its
+        // 60 px minimum - and nothing overlaps.
+        r.window.resize(floor + beside, 900);
+        pump(400);
+        const int sliderAtFloor = page->zoomSliderWidthForTest();
+        const int labelAtFloor = page->findChild<QLabel *>(QStringLiteral("animaticAudioLabel"))->width();
+        const QRect pillF = page->transportPillRectForTest();
+        const QRect rightF = QRect(widget("animaticHeaderRight")->mapTo(page, QPoint(0, 0)), widget("animaticHeaderRight")->size());
+        check(QStringLiteral("(aw) control, as narrow as the window goes: the slider is 160 "
+                             "unless the name is already at its 60 px minimum, the slider "
+                             "never below 80, the pill clear of the groups and the right "
+                             "group inside the window"),
+              (sliderAtFloor == 160 || labelAtFloor == 60) && sliderAtFloor >= 80 && labelAtFloor >= 60
+                  && pillF.right() + 1 + 16 <= rightF.left() && rightF.right() + 1 + 32 <= page->width(),
+              QStringLiteral("slider %1 label %2 pill ..%3 right %4..%5 W %6 (floor %7)")
+                  .arg(sliderAtFloor).arg(labelAtFloor).arg(pillF.right()).arg(rightF.left())
+                  .arg(rightF.right()).arg(page->width()).arg(floor));
+        page->setAudioPath(QString(), false);
+        pump(200);
+    }
 }
 
 int main(int argc, char **argv)
@@ -9596,6 +9931,7 @@ int main(int argc, char **argv)
     runTimelineFollowsPass(scratch);
     runScrollbarOwnershipPass(scratch);
     runTimelineWheelPass(scratch);
+    runTimelineLookPass(scratch);
 
     // ---- (aa) a test that cannot start says why and exits ----------------
     // An unattended gate must FAIL, not wait. Measured 2026-10-02: with its
