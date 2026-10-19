@@ -115,6 +115,7 @@
 #include <QStyle>
 #include <QStyleOptionSlider>
 #include <QToolButton>
+#include <cmath>
 #include <QUndoStack>
 #include <QtGui/QTransform>
 #include <functional>
@@ -9828,6 +9829,49 @@ void runTrackLocksPass(const QString &scratch)
                   .arg(QStringLiteral("%1,%2 %3x%4").arg(audioRow.x()).arg(audioRow.y()).arg(audioRow.width()).arg(audioRow.height())));
     }
 
+    // ---- the icon states: a lock "on" is the accent; hidden and muted read as "off" (dimmed) ----
+    {
+        using namespace SankoTimelineTheme;
+        auto maxAlpha = [](const QPixmap &pm, QColor *colourAtMax) {
+            const QImage img = pm.toImage().convertToFormat(QImage::Format_ARGB32);
+            int best = 0;
+            for (int y = 0; y < img.height(); ++y)
+                for (int x = 0; x < img.width(); ++x) {
+                    const QColor c = img.pixelColor(x, y);
+                    if (c.alpha() > best) { best = c.alpha(); if (colourAtMax) *colourAtMax = c; }
+                }
+            return best;
+        };
+        QStringList detail;
+        bool ok = true;
+        for (const char *n : {"trackLockScenes", "trackLockShots", "trackLockAudio"}) {
+            QToolButton *b = control(n);
+            QColor on;
+            const int aOn = b ? maxAlpha(b->icon().pixmap(QSize(16, 16), QIcon::Normal, QIcon::On), &on) : 0;
+            const int aOff = b ? maxAlpha(b->icon().pixmap(QSize(16, 16), QIcon::Normal, QIcon::Off), nullptr) : 0;
+            const bool accent = aOn >= 200 && aOff >= 200 && on.red() == kTrackControlActive.red()
+                && on.green() == kTrackControlActive.green() && on.blue() == kTrackControlActive.blue();
+            ok = ok && accent;
+            detail << QStringLiteral("%1 on %2 (%3) off %4").arg(QLatin1String(n)).arg(aOn).arg(on.name()).arg(aOff);
+        }
+        for (const char *n : {"trackEyeScenes", "trackEyeShots", "trackEyeAudio", "trackMuteAudio"}) {
+            QToolButton *b = control(n);
+            const int aOn = b ? maxAlpha(b->icon().pixmap(QSize(16, 16), QIcon::Normal, QIcon::On), nullptr) : 0;
+            const int aOff = b ? maxAlpha(b->icon().pixmap(QSize(16, 16), QIcon::Normal, QIcon::Off), nullptr) : 0;
+            // A thin glyph's antialiased strokes may never reach 255 (the eye
+            // peaks at 246 at 16 px): "opaque" is at least 200, and the
+            // dimmed one at most 40 % of it.
+            const bool dimmed = aOff >= 200 && aOn > 0 && aOn * 10 <= aOff * 4;
+            ok = ok && dimmed;
+            detail << QStringLiteral("%1 on %2 off %3").arg(QLatin1String(n)).arg(aOn).arg(aOff);
+        }
+        check(QStringLiteral("(ax) ICON STATES: a lock's checked icon is the accent at full "
+                             "opacity; the eyes' and the speaker's checked icons are the grey "
+                             "at 35 % (at most 40 % of their unchecked opacity) and their "
+                             "unchecked icons opaque - hidden and muted read as off"),
+              ok, detail.join(QStringLiteral("; ")));
+    }
+
     // ---- a toggle: state, the button, unsaved, and nothing on the stack ----
     r.window.markCleanForTest();
     const int n0 = stack->count();
@@ -9982,8 +10026,7 @@ void runTrackLocksPass(const QString &scratch)
         sb->editUndo();
         pump(200);
         const bool undoRefused = stack->index() == index && panels() == before + 1
-            && messages.size() == 1 && messages.first().contains(QStringLiteral("SHOTS track"))
-            && messages.first().contains(QStringLiteral("Add Panel"));
+            && messages.size() == 1 && messages.first() == QStringLiteral("SHOTS track is locked");
         clickControl("trackLockShots");
         sb->editUndo();
         pump(200);
@@ -10001,12 +10044,58 @@ void runTrackLocksPass(const QString &scratch)
         sb->editUndo();
         pump(200);
         check(QStringLiteral("(ax) UNDO / REDO of a SHOTS command (Add Panel) is refused with "
-                             "a message while the track is locked, the stack left as it is; "
-                             "unlocked, the same Undo and Redo work"),
+                             "the same non-modal message as every other refusal while the "
+                             "track is locked, the stack left as it is; unlocked, the same "
+                             "Undo and Redo work"),
               added && undoRefused && undone && redoRefused && redone,
               QStringLiteral("added %1 undoRefused %2 undone %3 redoRefused %4 redone %5 | %6")
                   .arg(added).arg(undoRefused).arg(undone).arg(redoRefused).arg(redone)
                   .arg(messages.join(QStringLiteral(" / "))));
+    }
+
+    // ---- a pending QuickShape: the first Undo cancels it, lock or no lock ----
+    // (the user's rule: drawing is never locked, so the shape goes before
+    // the lock looks at the history). The shape is made pending through
+    // the session the canvas owns: a circle, then a hold until it is
+    // recognised, then the release that leaves it pending.
+    {
+        addBtn->click(); // unlocked: a SHOTS command next on the stack
+        pump(200);
+        clickControl("trackLockShots");
+        const int index = stack->index();
+        quickshape::QuickShapeSession *qs = r.canvas->quickShape();
+        qs->setHoldDelayMs(20);
+        qs->setMorphDurationMs(1);
+        const QPointF c(300, 300);
+        qs->pointerPress(c + QPointF(80, 0));
+        for (int i = 1; i <= 36; ++i) {
+            const double a = i * 2.0 * 3.14159265 / 36.0;
+            qs->pointerMove(c + QPointF(80 * std::cos(a), 80 * std::sin(a)));
+            pump(4);
+        }
+        pump(400); // the hold
+        const bool recognised = qs->hasActiveShape();
+        qs->pointerRelease(c + QPointF(80, 0));
+        pump(100);
+        const bool pending = qs->hasActiveShape();
+        messages.clear();
+        sb->editUndo();
+        pump(200);
+        const bool cancelled = !qs->hasActiveShape() && stack->index() == index && messages.isEmpty();
+        sb->editUndo();
+        pump(200);
+        const bool thenRefused = stack->index() == index && messages.size() == 1;
+        clickControl("trackLockShots");
+        sb->editUndo(); // the Add Panel, unlocked
+        pump(200);
+        check(QStringLiteral("(ax) UNDO WITH A PENDING QUICKSHAPE cancels the shape first, "
+                             "lock or no lock (drawing is never locked), touching no history "
+                             "and saying nothing; the next Undo is the lock's refusal; "
+                             "unlocked, the Undo after that takes the panel back"),
+              recognised && pending && cancelled && thenRefused && stack->index() == index - 1,
+              QStringLiteral("recognised %1 pending %2 cancelled %3 thenRefused %4 index %5 -> %6 | %7")
+                  .arg(recognised).arg(pending).arg(cancelled).arg(thenRefused).arg(index)
+                  .arg(stack->index()).arg(messages.join(QStringLiteral(" / "))));
     }
 
     // ---- the AUDIO lock ----
@@ -10057,7 +10146,7 @@ void runTrackLocksPass(const QString &scratch)
         sb->editUndo();
         pump(200);
         const bool undoRefused = stack->index() == index && isWav()
-            && messages.size() == 1 && messages.first().contains(QStringLiteral("AUDIO track"));
+            && messages.size() == 1 && messages.first() == QStringLiteral("AUDIO track is locked");
         check(QStringLiteral("(ax) THE AUDIO LOCK: the track's menu and the Edit menu show "
                              "Import / Remove Audio disabled and suffixed \"(locked)\", Remove "
                              "Audio does nothing, and Undo of the import is refused with a "

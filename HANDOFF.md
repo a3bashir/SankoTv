@@ -293,6 +293,17 @@ may ship in a closed-source commercial product, flag it - do not decide.
     Dasktop_UI_test node 380:644; two were authored here from the same
     shapes, the collapsed chevron and the pause bars.)
 
+13. OPEN - THE WORKSPACE WINDOW'S MINIMUM WIDTH (opened 2026-10-18, the
+    user's item). Since Part B the window's minimum width is its
+    content's: the timeline header's floor (1309 logical px without an
+    audio track, 1389 with one) plus the docks at their minimums, which
+    is 1492 to 1572 logical px in the default layout. That is wider than
+    common laptop screens: 1366 px, and 1536 px at 125 % scaling (a
+    1920 panel). A narrower header layout is needed before selling - a
+    further give-way (the speed buttons, the total, the loop group), a
+    wrapping header, or a compact mode - so the workspace fits those
+    screens with every dock open. Not licensing; a product requirement.
+
 ALSO BEFORE SELLING, not licensing: the Developer Recorder below comes out.
 
 ## Developer Recorder (TEMPORARY — remove before release)
@@ -6907,9 +6918,11 @@ locks gate), ProjectIO (the manifest's "tracks" key; absent = defaults).
   (AnimaticTimeline::buildTrackControls), at the design's x (lock 8,
   speaker 32 on AUDIO, eye 56), the 16 px icon centred in its row, the
   button 2 px larger each side; placed again whenever the rows move
-  (canvasResized). Checked = locked / hidden / muted, the icon in the
-  accent (kTrackControlActive #7c6ef6; the design has one icon per
-  control and no "off" art, so the tint is the state). Their click goes
+  (canvasResized). Checked = locked / hidden / muted. The LOCK's checked
+  icon is the accent (kTrackControlActive #7c6ef6: the lock is "on");
+  the EYE's and the SPEAKER's checked icons are the column grey at 35 %
+  (hidden and muted read as "off"; the user's rule, the follow-up of
+  2026-10-18, until eye-off / speaker-off icons are drawn). Their click goes
   to the page (setTrackLocked / setTrackVisible / setAudioMuted), which
   applies the state back (setTracks) and says tracksChanged.
 - The lock table, as agreed, each row at its own door:
@@ -6935,11 +6948,13 @@ locks gate), ProjectIO (the manifest's "tracks" key; absent = defaults).
   UNDO / REDO: StoryboardPage::undoDocument / redoDocument look at the
   command the stack would undo or redo (command(index-1) / (index)) and
   refuseLockedHistory() classifies it by dynamic_cast (the four panel
-  commands = SHOTS, AudioTrackCommand = AUDIO); refused with a message
-  box naming the command and the track, the stack untouched. (A pending
-  QuickShape's cancel-on-first-Undo is behind this check: with a locked
-  panel command next on the stack the refusal comes first. Noted, not
-  handled.)
+  commands = SHOTS, AudioTrackCommand = AUDIO); refused with the same
+  non-modal message as every other refusal ("SHOTS track is locked" at
+  the pointer; it was a message box in the first build, the user's
+  follow-up made it the tooltip), the stack untouched. A pending
+  QuickShape is cancelled by the first Undo BEFORE the lock looks at the
+  history (drawing is never locked), exactly as DrawingCanvas::undo did
+  before the lock existed.
 - Hidden: renderCanvas skips the scene blocks / the clips, loop overlay
   and drop indicator / the audio bar and hint; canvasMousePress returns
   on a hidden SHOTS track, the hover finds nothing, the context menus do
@@ -6956,7 +6971,7 @@ locks gate), ProjectIO (the manifest's "tracks" key; absent = defaults).
 - DevRecorder: devrecState carries timeline.scenesLocked ...
   timeline.audioMuted.
 
-GATE: Lifecycle (ax), 16 checks, 724 -> 740 (see msg_partB for
+GATE: Lifecycle (ax), 16 checks, 724 -> 740, then 18 and 742 with the follow-up (the icon states; the pending QuickShape before the lock) (see msg_partB for
 the list); (aw)'s give-way check restated as exact stages (name 60 +
 slider 100; name hidden + slider 100; the floor at slider 80; the window
 refusing 150 px below). The rig's default window is 1640 x 900 (was

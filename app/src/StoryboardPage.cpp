@@ -6049,9 +6049,16 @@ void StoryboardPage::undoDocument()
 {
     if (m_animatic)
         m_animatic->leavePreview();
+    // A pending QuickShape is cancelled by the first Undo, as always
+    // (DrawingCanvas::undo): drawing is never locked, so that comes BEFORE
+    // the lock looks at the history (the user's rule, 2026-10-18).
+    if (m_canvas && m_canvas->quickShape()->hasActiveShape()) {
+        m_canvas->undo();
+        return;
+    }
     // A locked track's command is not undone (Part B): the stack is left
-    // exactly as it is and a message says why - a silent no-op here would
-    // read as a broken Undo.
+    // exactly as it is and the message says why - a silent no-op here
+    // would read as a broken Undo.
     if (m_undoStack && m_undoStack->index() > 0
         && refuseLockedHistory(m_undoStack->command(m_undoStack->index() - 1)))
         return;
@@ -6077,11 +6084,12 @@ bool StoryboardPage::shotsLocked() const
     return m_animatic && m_animatic->tracks().shotsLocked;
 }
 
-// What the user sees when an edit is refused: for a key, a button or a
-// menu, a tooltip at the pointer ("SHOTS track is locked"); for Undo /
-// Redo a message box (sayLocked(.., true)). Under the gate the pointer is
-// the real one, wherever its owner left it, so the tooltip is not shown
-// there (the refusal itself is what the gate reads).
+// What the user sees when an edit is refused: a tooltip at the pointer
+// ("SHOTS track is locked"), the same for a key, a button, a menu and for
+// Undo / Redo (the user's rule, 2026-10-18: one non-modal message, not a
+// box; asBox is kept for a caller that needs one). Under the gate the
+// pointer is the real one, wherever its owner left it, so the tooltip is
+// not shown there (the refusal itself is what the gate reads).
 void StoryboardPage::sayLocked(const QString &message, bool asBox)
 {
     m_lastLockRefusal = message;
@@ -6119,19 +6127,11 @@ bool StoryboardPage::refuseLockedHistory(const QUndoCommand *command)
         || dynamic_cast<const PanelDurationCommand *>(command);
     const bool audio = dynamic_cast<const AudioTrackCommand *>(command) != nullptr;
     if (shots && t.shotsLocked) {
-        sayLocked(QStringLiteral("\"%1\" is a change to the SHOTS track, which is "
-                                 "locked. Unlock the track (the lock on the "
-                                 "timeline) to undo or redo it.")
-                      .arg(command->text()),
-                  true);
+        sayLocked(QStringLiteral("SHOTS track is locked"), false);
         return true;
     }
     if (audio && t.audioLocked) {
-        sayLocked(QStringLiteral("\"%1\" is a change to the AUDIO track, which is "
-                                 "locked. Unlock the track (the lock on the "
-                                 "timeline) to undo or redo it.")
-                      .arg(command->text()),
-                  true);
+        sayLocked(QStringLiteral("AUDIO track is locked"), false);
         return true;
     }
     return false;

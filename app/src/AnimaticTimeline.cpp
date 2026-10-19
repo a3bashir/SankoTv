@@ -256,8 +256,12 @@ void AnimaticTimeline::setHost(AnimaticPage *host)
 namespace {
 
 // One icon with the two states the button shows: unchecked in the column's
-// grey, checked (locked / hidden / muted) in the accent.
-QIcon trackIcon(const QString &file, qreal dpr)
+// grey; checked in `on` - the accent for a LOCK (the lock is "on"), the
+// grey at 35 % for the eye and the speaker (hidden and muted read as
+// "off"; the user's rule, 2026-10-18, until eye-off / speaker-off icons
+// are drawn). The tint composes SourceIn, so a translucent `on` dims the
+// whole glyph.
+QIcon trackIcon(const QString &file, const QColor &on)
 {
     using namespace SankoTimelineTheme;
     QIcon icon;
@@ -266,11 +270,17 @@ QIcon trackIcon(const QString &file, qreal dpr)
                                              scale, kTrackControl),
                        QIcon::Normal, QIcon::Off);
         icon.addPixmap(SankoIcons::renderSvg(file, QSize(kControlSize, kControlSize),
-                                             scale, kTrackControlActive),
+                                             scale, on),
                        QIcon::Normal, QIcon::On);
     }
-    Q_UNUSED(dpr);
     return icon;
+}
+
+QColor dimmed(const QColor &c)
+{
+    QColor d = c;
+    d.setAlphaF(0.35);
+    return d;
 }
 
 const char *trackName(TimelineTrack t)
@@ -284,14 +294,15 @@ void AnimaticTimeline::buildTrackControls()
 {
     if (!m_canvas)
         return;
-    auto make = [&](const QString &file, const QString &name) {
+    using namespace SankoTimelineTheme;
+    auto make = [&](const QString &file, const QString &name, const QColor &on) {
         auto *b = new QToolButton(m_canvas);
         b->setObjectName(name);
         b->setCheckable(true);
         b->setAutoRaise(true);
         b->setCursor(Qt::PointingHandCursor);
         b->setFocusPolicy(Qt::NoFocus);
-        b->setIcon(trackIcon(file, devicePixelRatioF()));
+        b->setIcon(trackIcon(file, on));
         b->setIconSize(QSize(kControlSize, kControlSize));
         b->setFixedSize(kControlSize + 4, kControlSize + 4);
         b->setStyleSheet(QStringLiteral(
@@ -305,20 +316,22 @@ void AnimaticTimeline::buildTrackControls()
     for (int i = 0; i < 3; ++i) {
         const TimelineTrack t = tracks[i];
         m_lockButtons[i] = make(QStringLiteral(":/icons/timeline/track_lock.svg"),
-                                QStringLiteral("trackLock") + QLatin1String(suffix[i]));
+                                QStringLiteral("trackLock") + QLatin1String(suffix[i]),
+                                kTrackControlActive);
         connect(m_lockButtons[i], &QToolButton::clicked, this, [this, t](bool on) {
             if (m_host)
                 m_host->setTrackLocked(t, on); // comes back through setTracks
         });
         m_eyeButtons[i] = make(QStringLiteral(":/icons/timeline/track_eye.svg"),
-                               QStringLiteral("trackEye") + QLatin1String(suffix[i]));
+                               QStringLiteral("trackEye") + QLatin1String(suffix[i]),
+                               dimmed(kTrackControl));
         connect(m_eyeButtons[i], &QToolButton::clicked, this, [this, t](bool on) {
             if (m_host)
                 m_host->setTrackVisible(t, !on); // checked = hidden
         });
     }
     m_muteButton = make(QStringLiteral(":/icons/timeline/track_speaker.svg"),
-                        QStringLiteral("trackMuteAudio"));
+                        QStringLiteral("trackMuteAudio"), dimmed(kTrackControl));
     connect(m_muteButton, &QToolButton::clicked, this, [this](bool on) {
         if (m_host)
             m_host->setAudioMuted(on);
