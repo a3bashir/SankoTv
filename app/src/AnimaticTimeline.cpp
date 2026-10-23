@@ -31,12 +31,13 @@
 namespace {
 
 // THE LABEL COLUMN, from the redesign (Figma 380:644): the painted column
-// is 136 px wide (kLabelColW) with its separator line at x 136, and the
-// time content begins at x 135 (kLabelCol) - one pixel under the column, as
-// the design has it, so the separator sits on the content's first pixel.
+// is 134 px wide (kLabelColW) with its separator line at x 134, and the
+// time content begins at x 135 (kLabelCol), right after the separator (the
+// user's design of 2026-10-23; Part A had 136 with the separator on the
+// content's first pixel).
 // Every mapping between content and screen reads kLabelCol.
 constexpr int kLabelCol = 135;  // where content x 0 is on the canvas
-constexpr int kLabelColW = 136; // the painted column's width
+constexpr int kLabelColW = 134; // the painted column's width (134 since the design of 2026-10-23)
 // The track controls (lock, speaker, eye) in the column: 16 px icons at
 // these x offsets, centred in their track rows. Painted in Part A; live in
 // Part B.

@@ -133,7 +133,10 @@ the page from.
   minimum is the header's floor from `AnimaticPage::layoutHeader`). Do
   not give the window a flat minimum width again, and do not let any
   header element escape the give-way rule (name shortens, slider
-  narrows, name hides, in that order). The tracks' lock / visibility /
+  narrows, name hides, in that order). The centre cluster (timecode |
+  pill | total | speed, "animaticCentre") is placed by `layoutHeader`,
+  not by the row's layout: a new header element goes into the left
+  group, the right group or the cluster, never beside them. The tracks' lock / visibility /
   mute live in `src/TimelineTracks.h`; every edit path a lock blocks is
   listed in that HANDOFF section - a new edit path to the SHOTS track
   must ask `refuseShotsEdit()` first.

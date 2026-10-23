@@ -16,6 +16,9 @@
         <file>icons/timeline/view_frames.svg</file>
         <file>icons/timeline/view_seconds.svg</file>
         <file>icons/timeline/view_snap.svg</file>
+        <file>icons/timeline/speed_chevron.svg</file>
+        <file>icons/timeline/speed_chevron_hover.svg</file>
+        <file>icons/timeline/speed_tick.svg</file>
         <file>icons/timeline/track_lock.svg</file>
         <file>icons/timeline/track_eye.svg</file>
         <file>icons/timeline/track_speaker.svg</file>

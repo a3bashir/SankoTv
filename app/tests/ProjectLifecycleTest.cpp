@@ -4366,12 +4366,13 @@ struct Rig
     DrawingCanvas *canvas = nullptr;
     bool ok = false;
 
-    // 1640 wide (was 1400): the window's minimum width is its content's
-    // since Part B (the timeline's header floor plus the docks), and a
-    // 1400 window would be grown to it at once; with an audio track the
-    // floor is higher still. 1640 keeps every section's window its own
-    // size, with the audio name whole.
-    explicit Rig(const QString &project, const QSize &size = QSize(1640, 900))
+    // 1880 wide (1640 in Part B, 1400 before): the window's minimum width
+    // is its content's since Part B (the timeline's header floor plus the
+    // docks), and a narrower window is grown to it at once; with an audio
+    // track the name must have room to stay whole, which Part C's centre
+    // cluster (two 68 px gaps beside the pill, the speed dropdown) made
+    // about 1860 of window. 1880 fits the 1920 test screen.
+    explicit Rig(const QString &project, const QSize &size = QSize(1880, 900))
     {
         window.resize(size);
         window.show();
@@ -8462,9 +8463,11 @@ void runAudioKeepsStepPass(const QString &scratch)
     // ---- the speeds -------------------------------------------------------------------
     page->togglePlay(); // pause
     pump(200);
-    for (QPushButton *b : page->findChildren<QPushButton *>())
-        if (b->text() == QStringLiteral("2x"))
-            b->click();
+    // The speed dropdown's 2x item (Part C; it was a button): the same
+    // setPlaybackSpeed path the button took.
+    for (QAction *a : page->findChildren<QAction *>())
+        if (a->objectName() == QStringLiteral("animaticSpeed2x"))
+            a->trigger();
     const int before2x = page->elapsedMsInCurrentPanel();
     page->togglePlay();
     const bool began2x = started();
@@ -9485,27 +9488,40 @@ void runTimelineLookPass(const QString &scratch)
                   .arg(fit.x()).arg(fit.y()).arg(minus.x()).arg(slider.x()).arg(slider.y())
                   .arg(slider.width()).arg(slider.height()).arg(plus.x()));
         check(QStringLiteral("(aw) THE RIGHT GROUP ends 32 px before the edge: Snap 32x28 at "
-                             "y 6, Seconds 14 px before it, Frames 14 px before that; the "
-                             "timecode label is 132x40 with the 1x22 separator right after "
-                             "it and the total 28 px further"),
+                             "y 6, Seconds 14 px before it, Frames 14 px before that"),
               snap.right() == W - 32 - 1 && snap.size() == QSize(32, 28) && snap.y() == 6
-                  && seconds.right() + 1 + 14 == snap.x() && frames.right() + 1 + 14 == seconds.x()
-                  && tc.size() == QSize(132, 40) && sep == QRect(tc.right() + 1, 9, 1, 22)
-                  && total.x() == sep.right() + 1 + 28,
-              QStringLiteral("W %1 snap %2,%3 %4x%5 seconds %6 frames %7 tc %8 %9x%10 sep %11,%12 total %13")
+                  && seconds.right() + 1 + 14 == snap.x() && frames.right() + 1 + 14 == seconds.x(),
+              QStringLiteral("W %1 snap %2,%3 %4x%5 seconds %6 frames %7")
                   .arg(W).arg(snap.x()).arg(snap.y()).arg(snap.width()).arg(snap.height())
-                  .arg(seconds.x()).arg(frames.x()).arg(tc.x()).arg(tc.width()).arg(tc.height())
-                  .arg(sep.x()).arg(sep.y()).arg(total.x()));
-        const QRect left = rectOf("animaticHeaderLeft"), right = rectOf("animaticHeaderRight");
+                  .arg(seconds.x()).arg(frames.x()));
+        // The centre cluster (the design of 2026-10-23), measured from the pill:
+        // the timecode box 132x40 ending 75 px before it, a 1x22 separator at
+        // pill - 69 (y 9), a second at pill + 296, the total 331 px after the
+        // pill's left edge, the speed dropdown 60x28 at y 6, 28 px after the total.
+        const QRect sep2 = rectOf("animaticTotalSeparator"), speed = rectOf("animaticSpeed");
+        check(QStringLiteral("(aw) THE CENTRE CLUSTER is the design's: the timecode 132x40 ends "
+                             "75 px before the pill, the separators (1x22 at y 9) sit at pill-69 "
+                             "and pill+296, the total starts at pill+331, the speed dropdown "
+                             "60x28 at y 6 starts 28 px after the total"),
+              tc.size() == QSize(132, 40) && tc.y() == 0 && tc.right() + 1 == pill.x() - 75
+                  && sep == QRect(pill.x() - 69, 9, 1, 22) && sep2 == QRect(pill.x() + 296, 9, 1, 22)
+                  && total.x() == pill.x() + 331 && total.height() == 40
+                  && speed.size() == QSize(60, 28) && speed.y() == 6 && speed.x() == total.right() + 1 + 28,
+              QStringLiteral("pill %1; tc %2,%3 %4x%5; sep %6,%7 %8x%9; sep2 %10,%11; total %12 (%13 wide); speed %14,%15 %16x%17")
+                  .arg(pill.x()).arg(tc.x()).arg(tc.y()).arg(tc.width()).arg(tc.height())
+                  .arg(sep.x()).arg(sep.y()).arg(sep.width()).arg(sep.height()).arg(sep2.x()).arg(sep2.y())
+                  .arg(total.x()).arg(total.width()).arg(speed.x()).arg(speed.y()).arg(speed.width()).arg(speed.height()));
+        const QRect left = rectOf("animaticHeaderLeft"), right = rectOf("animaticHeaderRight"),
+                    cluster = rectOf("animaticCentre");
         const bool centred = pill.x() == (W - 228) / 2;
-        const bool clear = pill.left() >= left.right() + 1 + 16 && pill.right() + 1 + 16 <= right.left();
+        const bool clear = cluster.left() >= left.right() + 1 + 16 && cluster.right() + 1 + 16 <= right.left();
         check(QStringLiteral("(aw) THE TRANSPORT PILL is 228x32 at y 4, centred on the window "
-                             "when there is room, and never within 16 px of either group"),
+                             "when there is room; its cluster never within 16 px of either group"),
               pill.size() == QSize(228, 32) && pill.y() == 4 && clear
-                  && (centred || pill.right() + 1 + 16 == right.left()),
-              QStringLiteral("pill %1,%2 %3x%4; left group ends %5; right group starts %6; W %7")
+                  && (centred || cluster.right() + 1 + 16 == right.left()),
+              QStringLiteral("pill %1,%2 %3x%4; cluster %5..%6; left group ends %7; right group starts %8; W %9")
                   .arg(pill.x()).arg(pill.y()).arg(pill.width()).arg(pill.height())
-                  .arg(left.right()).arg(right.left()).arg(W));
+                  .arg(cluster.left()).arg(cluster.right()).arg(left.right()).arg(right.left()).arg(W));
         check(QStringLiteral("(aw) the Seconds button wears the checked fill and Frames does "
                              "not; Snap is checked by default (the states are unchanged)"),
               widget("timelineSeconds")->styleSheet().contains(QStringLiteral("#7c6ef6"))
@@ -9516,6 +9532,53 @@ void runTimelineLookPass(const QString &scratch)
               qobject_cast<QLabel *>(widget("animaticTotal"))->text()
                   == QStringLiteral("Total: 00:00:29:00"),
               qobject_cast<QLabel *>(widget("animaticTotal"))->text());
+        // The speed dropdown (the user's choice, 2026-10-23): three checkable
+        // items, the current one checked, the third not clipped by the menu's
+        // own height; choosing 2x is the same setPlaybackSpeed as before.
+        {
+            auto *btn = page->findChild<QToolButton *>(QStringLiteral("animaticSpeed"));
+            auto *menu = page->findChild<QMenu *>(QStringLiteral("animaticSpeedMenu"));
+            QStringList items;
+            int checked = 0; QString checkedText;
+            if (menu)
+                for (QAction *a : menu->actions()) {
+                    items << a->text();
+                    if (a->isChecked()) { ++checked; checkedText = a->text(); }
+                }
+            const int menuH = menu ? menu->sizeHint().height() : 0;
+            const QRect third = menu && menu->actions().size() == 3 ? menu->actionGeometry(menu->actions().at(2)) : QRect();
+            const bool thirdFits = !third.isEmpty() && third.bottom() < menuH;
+            QAction *twoX = nullptr;
+            if (menu) for (QAction *a : menu->actions()) if (a->text() == QStringLiteral("2x")) twoX = a;
+            if (twoX) twoX->trigger();
+            pump(100);
+            const QString totalAt2x = qobject_cast<QLabel *>(widget("animaticTotal"))->text();
+            const QString buttonAt2x = btn ? btn->text() : QString();
+            QAction *oneX = nullptr;
+            if (menu) for (QAction *a : menu->actions()) if (a->text() == QStringLiteral("1x")) oneX = a;
+            if (oneX) oneX->trigger();
+            pump(100);
+            check(QStringLiteral("(aw) THE SPEED DROPDOWN: 60x28, the menu lists 0.5x, 1x and 2x "
+                             "with 1x checked, the third item inside the menu's height; choosing "
+                             "2x shows 2x on the button and the Total's (2x) suffix (the same "
+                             "speed path as before); 1x again restores it"),
+                  btn && menu && items == QStringList({QStringLiteral("0.5x"), QStringLiteral("1x"), QStringLiteral("2x")})
+                      && checked == 1 && checkedText == QStringLiteral("1x") && thirdFits
+                      && buttonAt2x == QStringLiteral("2x") && totalAt2x == QStringLiteral("Total: 00:00:14:30 (2x)")
+                      && btn->text() == QStringLiteral("1x")
+                      && qobject_cast<QLabel *>(widget("animaticTotal"))->text() == QStringLiteral("Total: 00:00:29:00"),
+                  QStringLiteral("items [%1] checked %2 '%3' third %4,%5 %6x%7 menu h %8; at 2x: button '%9' total '%10'; back: '%11'")
+                      .arg(items.join(QStringLiteral(","))).arg(checked).arg(checkedText).arg(third.x()).arg(third.y())
+                      .arg(third.width()).arg(third.height()).arg(menuH).arg(buttonAt2x).arg(totalAt2x)
+                      .arg(btn ? btn->text() : QString()));
+            auto *volume = page->findChild<QSlider *>(QStringLiteral("animaticVolume"));
+            check(QStringLiteral("(aw) THE VOLUME SLIDER wears the zoom slider's sheet exactly, 60 x 10"),
+                  volume && volume->styleSheet() == SankoTimelineTheme::kZoomSliderSheet
+                      && volume->size() == QSize(60, 10),
+                  volume ? QStringLiteral("%1x%2 same sheet %3").arg(volume->width()).arg(volume->height())
+                               .arg(volume->styleSheet() == SankoTimelineTheme::kZoomSliderSheet)
+                         : QStringLiteral("no slider"));
+        }
         // The heights with the scrollbar hidden (the film fits at zoom 70);
         // with it shown, the timeline's size hint grows by the bar's height,
         // as it always did.
@@ -9550,9 +9613,9 @@ void runTimelineLookPass(const QString &scratch)
         QSlider *zoom = page->findChild<QSlider *>(QStringLiteral("timelineZoom"));
         zoom->setValue(70);
         pump(150);
-        check(QStringLiteral("(aw) THE LABEL COLUMN is 136 px and the ruler labels every 3 s "
-                             "at zoom 70 / 60 fps (42 px/s)"),
-              AnimaticTimeline::labelColumnWidthForTest() == 136 && tl->rulerLabelStepForTest() == 3,
+        check(QStringLiteral("(aw) THE LABEL COLUMN is 134 px (the design of 2026-10-23) and the "
+                             "ruler labels every 3 s at zoom 70 / 60 fps (42 px/s)"),
+              AnimaticTimeline::labelColumnWidthForTest() == 134 && tl->rulerLabelStepForTest() == 3,
               QStringLiteral("column %1, step %2").arg(AnimaticTimeline::labelColumnWidthForTest())
                   .arg(tl->rulerLabelStepForTest()));
         const QVariantMap c0 = tl->clipPartsForTest(0), c3 = tl->clipPartsForTest(3);
@@ -9626,7 +9689,8 @@ void runTimelineLookPass(const QString &scratch)
         const QRect c3 = tl->clipRectForTest(3);
         const int shotsY = 48 + tl->shotsTrackHeightForTest() / 2;
         const QString shots = px(canvas->width() - 20, shotsY), ruler = px(canvas->width() - 20, 4),
-                      scenes = px(canvas->width() - 20, 36), column = px(60, 10), separator = px(136, 10),
+                      scenes = px(canvas->width() - 20, 36), column = px(60, 10), separator = px(134, 10),
+                      afterSeparator = px(135, 10),
                       audio = px(canvas->width() - 20, 48 + tl->shotsTrackHeightForTest() + 4),
                       selectedBorder = px(c3.x() + 1, c3.y() + c3.height() / 2),
                       // the body's own pixel: inside the border, under the thumbnail's
@@ -9634,12 +9698,13 @@ void runTimelineLookPass(const QString &scratch)
                       body0 = px(tl->clipRectForTest(0).x() + 3, tl->clipRectForTest(0).y() + 51);
         check(QStringLiteral("(aw) THE TRACK COLOURS are the design's: shots #101115, ruler "
                              "#181a21, scenes #1c1e25, empty audio #181a21, label column #0d0d0d "
-                             "with its #2a2a2a separator at x 136"),
+                             "with its #2a2a2a separator at x 134 and the ruler's content from x 135"),
               shots == QStringLiteral("#101115") && ruler == QStringLiteral("#181a21")
                   && scenes == QStringLiteral("#1c1e25") && audio == QStringLiteral("#181a21")
-                  && column == QStringLiteral("#0d0d0d") && separator == QStringLiteral("#2a2a2a"),
-              QStringLiteral("shots %1 ruler %2 scenes %3 audio %4 column %5 separator %6")
-                  .arg(shots, ruler, scenes, audio, column, separator));
+                  && column == QStringLiteral("#0d0d0d") && separator == QStringLiteral("#2a2a2a")
+                  && afterSeparator == QStringLiteral("#181a21"),
+              QStringLiteral("shots %1 ruler %2 scenes %3 audio %4 column %5 separator %6 x135 %7")
+                  .arg(shots, ruler, scenes, audio, column, separator, afterSeparator));
         check(QStringLiteral("(aw) THE SELECTED CLIP wears the 2 px #9787ff border and a plain "
                              "clip's body is #252330 (no gradient)"),
               selectedBorder == QStringLiteral("#9787ff") && body0 == QStringLiteral("#252330"),
@@ -9675,10 +9740,10 @@ void runTimelineLookPass(const QString &scratch)
             return QRect(widget(name)->mapTo(page, QPoint(0, 0)), widget(name)->size());
         };
         auto clear = [&] {
-            const QRect pill = page->transportPillRectForTest();
+            const QRect cluster = groupRect("animaticCentre");
             const QRect left = groupRect("animaticHeaderLeft");
             const QRect right = groupRect("animaticHeaderRight");
-            return pill.left() >= left.right() + 1 + 16 && pill.right() + 1 + 16 <= right.left()
+            return cluster.left() >= left.right() + 1 + 16 && cluster.right() + 1 + 16 <= right.left()
                 && right.right() + 1 + 32 <= page->width();
         };
         auto state = [&] {

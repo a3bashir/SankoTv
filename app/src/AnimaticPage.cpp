@@ -28,6 +28,7 @@
 #include <QLabel>
 #include <QMediaDevices>
 #include <QMediaPlayer>
+#include <QActionGroup>
 #include <QMenu>
 #include <QMessageBox>
 #include <QMouseEvent>
@@ -38,6 +39,7 @@
 #include <QSlider>
 #include <QSpinBox>
 #include <QTimer>
+#include <QToolButton>
 #include <QUrl>
 #include <QVBoxLayout>
 #include <Qt>
@@ -166,6 +168,30 @@ private:
 };
 
 namespace {
+
+// The speed dropdown's button: the stylesheet draws the button and its
+// text; the chevron (8 x 5, 10 px from the right edge, centred vertically)
+// is painted here, grey at rest and the loop buttons' green under the
+// pointer, because Qt's stylesheet menu-indicator drew it wrong (see
+// kSpeedDropdownSheet).
+class SpeedButton : public QToolButton
+{
+public:
+    using QToolButton::QToolButton;
+
+protected:
+    void paintEvent(QPaintEvent *e) override
+    {
+        QToolButton::paintEvent(e);
+        const bool hot = underMouse() || isDown();
+        const QPixmap chevron = SankoIcons::renderSvg(
+            hot ? QStringLiteral(":/icons/timeline/speed_chevron_hover.svg")
+                : QStringLiteral(":/icons/timeline/speed_chevron.svg"),
+            QSize(8, 5), devicePixelRatioF());
+        QPainter p(this);
+        p.drawPixmap(width() - 10 - 8, (height() - 5) / 2, chevron);
+    }
+};
 
 // A transport button of the redesign: 40 x 28, radius 6, the dark gradient
 // (the Play button gets the purple one), an SVG glyph in its natural size.
@@ -701,68 +727,16 @@ QWidget *AnimaticPage::createHeader()
 
     layout->addStretch(1);
 
-    // --- Right group: timecode .. view controls ------------------------------
+    // --- Right group: audio .. view controls (the design of 2026-10-23
+    // moved the timecode and the total into the centre cluster, below) ----
     m_rightGroup = new QWidget;
     m_rightGroup->setObjectName(QStringLiteral("animaticHeaderRight"));
     QHBoxLayout *right = new QHBoxLayout(m_rightGroup);
     right->setContentsMargins(0, 0, 0, 0);
     right->setSpacing(0);
 
-    m_timecodeLabel = new QLabel(QStringLiteral("00:00:00:00"));
-    m_timecodeLabel->setObjectName(QStringLiteral("animaticTimecode"));
-    m_timecodeLabel->setFixedSize(132, kHeaderHeight);
-    m_timecodeLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-    m_timecodeLabel->setStyleSheet(
-        QStringLiteral("color: %1; font-family: 'Courier New'; font-size: 16px;"
-                       " font-weight: bold; background: transparent;")
-            .arg(kTimecode.name()));
-    right->addWidget(m_timecodeLabel);
-
-    m_timecodeSeparator = new QWidget;
-    m_timecodeSeparator->setObjectName(QStringLiteral("animaticTimecodeSeparator"));
-    m_timecodeSeparator->setFixedSize(1, 22);
-    m_timecodeSeparator->setAttribute(Qt::WA_StyledBackground, true);
-    m_timecodeSeparator->setStyleSheet(
-        QStringLiteral("background-color: %1;").arg(kTimecodeSeparator.name()));
-    right->addWidget(m_timecodeSeparator, 0, Qt::AlignVCenter);
-    right->addSpacing(28);
-
-    m_totalLabel = new QLabel(QStringLiteral("Total: 00:00:00:00"));
-    m_totalLabel->setObjectName(QStringLiteral("animaticTotal"));
-    m_totalLabel->setFixedHeight(kHeaderHeight);
-    m_totalLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-    m_totalLabel->setStyleSheet(
-        QStringLiteral("color: %1; font-size: 13px; background: transparent;")
-            .arg(kTotal.name()));
-    right->addWidget(m_totalLabel);
-
-    // --- Speed: three buttons in the loop-button style (the user's answer
-    // to the design's missing speed controls, 2026-10-18) ---------------------
-    m_speedGroup = new QWidget;
-    m_speedGroup->setObjectName(QStringLiteral("animaticSpeed"));
-    QHBoxLayout *speedLayout = new QHBoxLayout(m_speedGroup);
-    speedLayout->setContentsMargins(28, 0, 0, 0);
-    speedLayout->setSpacing(6);
-    const struct { QPushButton **slot; const char *text; const char *tip; float speed; } speeds[] = {
-        {&m_speedHalfButton, "0.5x", "Play at half speed", 0.5f},
-        {&m_speed1xButton, "1x", "Play at normal speed", 1.0f},
-        {&m_speed2xButton, "2x", "Play at double speed", 2.0f},
-    };
-    for (const auto &s : speeds) {
-        QPushButton *b = new QPushButton(QLatin1String(s.text));
-        b->setObjectName(QStringLiteral("animaticSpeed%1").arg(QLatin1String(s.text)));
-        b->setCursor(Qt::PointingHandCursor);
-        b->setToolTip(QLatin1String(s.tip));
-        b->setFixedSize(36, 32);
-        const float speed = s.speed;
-        connect(b, &QPushButton::clicked, this, [this, speed] { setPlaybackSpeed(speed); });
-        speedLayout->addWidget(b);
-        *s.slot = b;
-    }
-    right->addWidget(m_speedGroup, 0, Qt::AlignVCenter);
-    updateSpeedButtons(); // 1x active by default
-
-    // --- Audio: the track's name and its volume (shown once one is loaded) -
+    // --- Audio: the track's name and its volume (shown once one is loaded),
+    // first in the right group (the user's placement, 2026-10-23) -----------
     m_audioGroup = new QWidget;
     m_audioGroup->setObjectName(QStringLiteral("animaticAudio"));
     QHBoxLayout *audioLayout = new QHBoxLayout(m_audioGroup);
@@ -779,7 +753,10 @@ QWidget *AnimaticPage::createHeader()
     m_volumeSlider->setObjectName(QStringLiteral("animaticVolume"));
     m_volumeSlider->setRange(0, 100);
     m_volumeSlider->setValue(80);
-    m_volumeSlider->setFixedWidth(60);
+    // The zoom slider's style exactly (the user's choice, 2026-10-23): the
+    // same groove, fill, handle and 10 px height; 60 px wide as before.
+    m_volumeSlider->setFixedSize(60, 10);
+    m_volumeSlider->setStyleSheet(kZoomSliderSheet);
     m_volumeSlider->setToolTip(QStringLiteral("Audio volume"));
     connect(m_volumeSlider, &QSlider::valueChanged, this, [this](int v) {
         if (m_audioOutput)
@@ -841,8 +818,43 @@ QWidget *AnimaticPage::createHeader()
         right->addWidget(m_timeline->viewControls(), 0, Qt::AlignVCenter);
     layout->addWidget(m_rightGroup, 0, Qt::AlignVCenter);
 
-    // --- The transport pill: five buttons, placed by layoutHeader ------------
-    m_transportPill = new QWidget(bar);
+    // --- The centre cluster (the design of 2026-10-23): the timecode, a
+    // separator, the transport pill, a second separator, the total and the
+    // speed dropdown, one widget placed by layoutHeader so the PILL is
+    // centred on the window. Gaps from the design: timecode box 132, 6,
+    // separator, 68, pill 228, 68, separator, 34, total, 28, speed 60.
+    m_centreGroup = new QWidget(bar);
+    m_centreGroup->setObjectName(QStringLiteral("animaticCentre"));
+    m_centreGroup->setFixedHeight(kHeaderHeight);
+    QHBoxLayout *centre = new QHBoxLayout(m_centreGroup);
+    centre->setContentsMargins(0, 0, 0, 0);
+    centre->setSpacing(0);
+
+    m_timecodeLabel = new QLabel(QStringLiteral("00:00:00:00"));
+    m_timecodeLabel->setObjectName(QStringLiteral("animaticTimecode"));
+    m_timecodeLabel->setFixedSize(132, kHeaderHeight);
+    m_timecodeLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    m_timecodeLabel->setStyleSheet(
+        QStringLiteral("color: %1; font-family: 'Courier New'; font-size: 16px;"
+                       " font-weight: bold; background: transparent;")
+            .arg(kTimecode.name()));
+    centre->addWidget(m_timecodeLabel);
+    centre->addSpacing(6);
+
+    auto separator = [&](const QString &name) {
+        QWidget *s = new QWidget;
+        s->setObjectName(name);
+        s->setFixedSize(1, 22);
+        s->setAttribute(Qt::WA_StyledBackground, true);
+        s->setStyleSheet(QStringLiteral("background-color: %1;").arg(kTimecodeSeparator.name()));
+        centre->addWidget(s, 0, Qt::AlignVCenter);
+        return s;
+    };
+    m_timecodeSeparator = separator(QStringLiteral("animaticTimecodeSeparator"));
+    centre->addSpacing(68);
+
+    // --- The transport pill: five buttons, inside the cluster ----------------
+    m_transportPill = new QWidget(m_centreGroup);
     m_transportPill->setObjectName(QStringLiteral("animaticTransport"));
     m_transportPill->setFixedSize(228, 32);
     QHBoxLayout *pill = new QHBoxLayout(m_transportPill);
@@ -874,14 +886,62 @@ QWidget *AnimaticPage::createHeader()
                                         QStringLiteral("animaticLast"));
     connect(last, &QPushButton::clicked, this, &AnimaticPage::goLast);
     pill->addWidget(last);
+    centre->addWidget(m_transportPill, 0, Qt::AlignVCenter);
+    centre->addSpacing(68);
+    m_totalSeparator = separator(QStringLiteral("animaticTotalSeparator"));
+    centre->addSpacing(34);
+
+    m_totalLabel = new QLabel(QStringLiteral("Total: 00:00:00:00"));
+    m_totalLabel->setObjectName(QStringLiteral("animaticTotal"));
+    m_totalLabel->setFixedHeight(kHeaderHeight);
+    m_totalLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    m_totalLabel->setStyleSheet(
+        QStringLiteral("color: %1; font-size: 13px; background: transparent;")
+            .arg(kTotal.name()));
+    centre->addWidget(m_totalLabel);
+    centre->addSpacing(28);
+
+    // --- Speed: one dropdown (the user's choice, 2026-10-23; Figma frame
+    // 417:390), 60 x 28 at y 6, the current speed shown, a menu of the same
+    // three speeds; the behaviour is setPlaybackSpeed's, unchanged ------------
+    m_speedButton = new SpeedButton;
+    m_speedButton->setObjectName(QStringLiteral("animaticSpeed"));
+    m_speedButton->setCursor(Qt::PointingHandCursor);
+    m_speedButton->setFocusPolicy(Qt::NoFocus);
+    m_speedButton->setToolTip(QStringLiteral("Playback speed (takes effect on the next panel)"));
+    m_speedButton->setFixedSize(60, 28);
+    m_speedButton->setPopupMode(QToolButton::InstantPopup);
+    m_speedButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    m_speedButton->setStyleSheet(kSpeedDropdownSheet);
+    m_speedMenu = new QMenu(m_speedButton);
+    m_speedMenu->setObjectName(QStringLiteral("animaticSpeedMenu"));
+    m_speedMenu->setStyleSheet(kSpeedMenuSheet);
+    auto *speedGroup = new QActionGroup(m_speedMenu);
+    speedGroup->setExclusive(true);
+    const struct { const char *text; float speed; } speeds[] = {
+        {"0.5x", 0.5f}, {"1x", 1.0f}, {"2x", 2.0f}};
+    for (int i = 0; i < 3; ++i) {
+        QAction *a = m_speedMenu->addAction(QLatin1String(speeds[i].text));
+        a->setCheckable(true);
+        a->setObjectName(QStringLiteral("animaticSpeed%1").arg(QLatin1String(speeds[i].text)));
+        speedGroup->addAction(a);
+        const float speed = speeds[i].speed;
+        connect(a, &QAction::triggered, this, [this, speed] { setPlaybackSpeed(speed); });
+        m_speedActions[i] = a;
+    }
+    m_speedButton->setMenu(m_speedMenu);
+    centre->addWidget(m_speedButton, 0, Qt::AlignVCenter);
+    updateSpeedControl(); // 1x checked by default
 
     return bar;
 }
 
 // THE GIVE-WAY RULE (the user's, 2026-10-18) and the pill's place. The
 // header's layout holds the left and right groups with a stretch between
-// them; the pill is not in the layout: it is centred on the window and
-// pushed inward only when the groups would otherwise meet it. When the
+// them; the centre cluster (timecode | pill | total | speed, since the
+// design of 2026-10-23) is not in the layout: it is placed so the pill is
+// centred on the window, and pushed inward only when a group would
+// otherwise come within 16 px of the cluster. When the
 // row is short of room the audio file name shortens first (its label
 // elides down to 60 px), then the zoom slider narrows (160 -> 80); below
 // that the header's minimum width stops the window, so nothing overlaps
@@ -903,7 +963,7 @@ void AnimaticPage::layoutHeader()
     // this the audio group still reported its elided width after the limit
     // was lifted, the row believed it had room, and the pill overlapped.)
     auto refresh = [&] {
-        for (QWidget *w : {m_audioGroup, m_speedGroup, m_loopGroup,
+        for (QWidget *w : {m_audioGroup, m_centreGroup, m_loopGroup,
                            m_timeline ? m_timeline->zoomControls() : nullptr,
                            m_timeline ? m_timeline->viewControls() : nullptr,
                            m_leftGroup, m_rightGroup}) {
@@ -917,7 +977,10 @@ void AnimaticPage::layoutHeader()
         m_header->layout()->activate();
     };
     auto need = [&] {
-        return m_header->layout()->sizeHint().width() + kPillW + 2 * kPillGap;
+        // The centre cluster is outside the row's layout: its width and
+        // the 16 px it keeps from each group are added by hand.
+        return m_header->layout()->sizeHint().width() + m_centreGroup->sizeHint().width()
+            + 2 * kPillGap;
     };
 
     // Natural widths first: the slider at 160, the label at its text and
@@ -979,18 +1042,29 @@ void AnimaticPage::layoutHeader()
         ? 60 + 8
         : 0;
     const int floorWidth = m.left() + m_leftGroup->minimumSizeHint().width() - sliderSlack + kPillGap
-        + kPillW + kPillGap + m_rightGroup->minimumSizeHint().width() - nameSlack + m.right();
+        + m_centreGroup->sizeHint().width() + kPillGap
+        + m_rightGroup->minimumSizeHint().width() - nameSlack + m.right();
     if (m_header->minimumWidth() != floorWidth)
         m_header->setMinimumWidth(floorWidth);
 
     // The pill: centred on the window, kept out of both groups.
+    // The centre cluster is placed so that the PILL is centred on the window;
+    // the cluster is pushed inward only when it would come within 16 px of
+    // a group. The pill sits `before` px into the cluster (timecode, 6,
+    // separator, 68) and `after` px of cluster follow it (68, separator,
+    // 34, total, 28, speed).
     const int leftRight = m_leftGroup->geometry().right() + 1;
     const int rightLeft = m_rightGroup->geometry().left();
+    m_centreGroup->layout()->activate();
+    const int clusterW = m_centreGroup->sizeHint().width();
+    m_centreGroup->resize(clusterW, kHeaderHeight);
+    const int before = m_transportPill->geometry().x();
+    const int after = clusterW - before - kPillW;
     int x = (available - kPillW) / 2;
-    x = qMin(x, rightLeft - kPillGap - kPillW);
-    x = qMax(x, leftRight + kPillGap);
-    m_transportPill->move(x, 4);
-    m_transportPill->raise();
+    x = qMin(x, rightLeft - kPillGap - kPillW - after);
+    x = qMax(x, leftRight + kPillGap + before);
+    m_centreGroup->move(x - before, 0);
+    m_centreGroup->raise();
 }
 
 int AnimaticPage::headerMinimumWidthForTest() const
@@ -1000,7 +1074,10 @@ int AnimaticPage::headerMinimumWidthForTest() const
 
 QRect AnimaticPage::transportPillRectForTest() const
 {
-    return m_transportPill ? m_transportPill->geometry() : QRect();
+    // In the header's coordinates (the pill lives inside the centre cluster).
+    return m_transportPill && m_header
+        ? QRect(m_transportPill->mapTo(m_header, QPoint(0, 0)), m_transportPill->size())
+        : QRect();
 }
 
 int AnimaticPage::zoomSliderWidthForTest() const
@@ -1491,24 +1568,20 @@ void AnimaticPage::onDurationChanged(int sceneIndex, int panelIndex, int newDura
 void AnimaticPage::setPlaybackSpeed(float speed)
 {
     m_playbackSpeed = speed;
-    updateSpeedButtons();
+    updateSpeedControl();
     updateTotalLabel();
     // Intentionally do NOT re-arm the timer: a speed change takes effect on the
     // next panel (mid-playback) or when Play resumes (while paused).
 }
 
-void AnimaticPage::updateSpeedButtons()
+void AnimaticPage::updateSpeedControl()
 {
-    const QString outlined = SankoTimelineTheme::kSpeedButtonSheet;
-    const QString active = SankoTimelineTheme::kSpeedButtonActiveSheet;
-
-    if (m_speedHalfButton)
-        m_speedHalfButton->setStyleSheet(m_playbackSpeed < 0.99f ? active : outlined);
-    if (m_speed1xButton)
-        m_speed1xButton->setStyleSheet(
-            (m_playbackSpeed >= 0.99f && m_playbackSpeed <= 1.01f) ? active : outlined);
-    if (m_speed2xButton)
-        m_speed2xButton->setStyleSheet(m_playbackSpeed > 1.01f ? active : outlined);
+    const int which = m_playbackSpeed < 0.99f ? 0 : m_playbackSpeed > 1.01f ? 2 : 1;
+    for (int i = 0; i < 3; ++i)
+        if (m_speedActions[i])
+            m_speedActions[i]->setChecked(i == which);
+    if (m_speedButton && m_speedActions[which])
+        m_speedButton->setText(m_speedActions[which]->text());
 }
 
 void AnimaticPage::scheduleTick()

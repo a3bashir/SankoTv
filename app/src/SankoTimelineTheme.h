@@ -78,13 +78,28 @@ inline const QString kLoopButtonSheet = QStringLiteral(
     "QPushButton { background: #292b35; color: #cccccc; border: 1px solid #2a2a2a;"
     " border-radius: 6px; font-size: 12px; }"
     "QPushButton:hover { border-color: #4dff91; }");
-inline const QString kSpeedButtonSheet = QStringLiteral(
-    "QPushButton { background: #292b35; color: #cccccc; border: 1px solid #2a2a2a;"
-    " border-radius: 6px; font-size: 12px; }"
-    "QPushButton:hover { color: #7c6ef6; border-color: #7c6ef6; }");
-inline const QString kSpeedButtonActiveSheet = QStringLiteral(
-    "QPushButton { background: #7c6ef6; color: #0a0a0a; border: 1px solid #7c6ef6;"
-    " border-radius: 6px; font-size: 12px; font-weight: 600; }");
+// The speed dropdown (Figma proposal frame 417:390, the user's choice
+// 2026-10-23): the loop-button look, the current speed left, a chevron
+// right; hover in the loop buttons' accent. Its menu is the clip menu's
+// sheet with the checked speed in the accent and a tick before it.
+// The chevron is painted by the button itself (SpeedButton in
+// AnimaticPage.cpp): the stylesheet's menu-indicator subcontrol ignored its
+// width, height and position and drew the image enlarged over the text
+// (measured 2026-10-23), so it is switched off here. The text sits in the
+// left 30 px (padding), the chevron 10 px from the right edge.
+inline const QString kSpeedDropdownSheet = QStringLiteral(
+    "QToolButton { background: #292b35; color: #e5e5ed; border: 1px solid #2a2a2a;"
+    " border-radius: 6px; font-size: 11px; padding: 0 30px 0 6px; }"
+    "QToolButton:hover { color: #4dff91; border-color: #4dff91; }"
+    "QToolButton::menu-indicator { image: none; width: 0px; height: 0px; }");
+inline const QString kSpeedMenuSheet = QStringLiteral(
+    "QMenu { background: #161616; color: #cccccc; border: 1px solid #2a2a2a;"
+    " border-radius: 4px; padding: 4px 0; }"
+    "QMenu::item { padding: 4px 18px 4px 24px; font-size: 11px; }"
+    "QMenu::item:selected { background: #262626; color: #ffffff; }"
+    "QMenu::item:checked { color: #7c6ef6; }"
+    "QMenu::indicator { width: 12px; height: 12px; left: 6px; }"
+    "QMenu::indicator:checked { image: url(:/icons/timeline/speed_tick.svg); }");
 // Fit / - / + keep the old fill and border; only the radius and height moved.
 inline const QString kZoomButtonSheet = QStringLiteral(
     "QPushButton { background: #1a1a1a; color: #cccccc; border: 1px solid #2a2a2a;"

@@ -13,7 +13,9 @@
 #include <functional>
 
 class AnimaticTimeline;
+class QAction;
 class QMenu;
+class QToolButton;
 class PanelDisplay;
 class QAudioOutput;
 class QHBoxLayout;
@@ -306,7 +308,7 @@ private:
     void startFilmClock(qint64 audioMs); // the picture begins (-1: no sound to follow)
     qint64 filmPositionMs() const;       // where the film is: panel offset + elapsed
     void setPlaybackSpeed(float speed); // takes effect on the next panel
-    void updateSpeedButtons();          // active = amber-filled, others outlined
+    void updateSpeedControl();          // the dropdown's text and its checked item
     void scheduleTick();
     void advance();           // QTimer timeout
 
@@ -357,10 +359,11 @@ private:
     QWidget *m_leftGroup = nullptr;     // collapse + the timeline's zoom controls
     QWidget *m_rightGroup = nullptr;    // timecode .. view controls
     QWidget *m_transportPill = nullptr; // placed by layoutHeader, not the layout
-    QWidget *m_speedGroup = nullptr;
+    QWidget *m_centreGroup = nullptr;   // timecode | pill | total | speed, placed by layoutHeader
     QWidget *m_audioGroup = nullptr;    // the audio label and the volume slider
     QWidget *m_loopGroup = nullptr;
-    QWidget *m_timecodeSeparator = nullptr;
+    QWidget *m_timecodeSeparator = nullptr; // between the timecode and the pill
+    QWidget *m_totalSeparator = nullptr;    // between the pill and the total
     bool m_audioLabelWanted = false;   // a track exists (updateAudioUi)
     bool m_audioNameGivenWay = false;  // hidden by the give-way rule (layoutHeader)
     TimelineTracks m_tracks;
@@ -392,9 +395,11 @@ private:
 
     // Playback speed (session-only): 0.5, 1.0, or 2.0.
     float m_playbackSpeed = 1.0f;
-    QPushButton *m_speedHalfButton = nullptr;
-    QPushButton *m_speed1xButton = nullptr;
-    QPushButton *m_speed2xButton = nullptr;
+    // The speed dropdown (the user's choice, 2026-10-23): one 60 x 28 button
+    // showing the current speed, a menu of the same three speeds.
+    QToolButton *m_speedButton = nullptr;
+    QMenu *m_speedMenu = nullptr;
+    QAction *m_speedActions[3] = {nullptr, nullptr, nullptr}; // 0.5x, 1x, 2x
 
     // Audio.
     QMediaPlayer *m_player = nullptr;

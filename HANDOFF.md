@@ -294,10 +294,13 @@ may ship in a closed-source commercial product, flag it - do not decide.
     shapes, the collapsed chevron and the pause bars.)
 
 13. OPEN - THE WORKSPACE WINDOW'S MINIMUM WIDTH (opened 2026-10-18, the
-    user's item). Since Part B the window's minimum width is its
-    content's: the timeline header's floor (1309 logical px without an
-    audio track, 1389 with one) plus the docks at their minimums, which
-    is 1492 to 1572 logical px in the default layout. That is wider than
+    user's item; numbers updated 2026-10-23 for Part C's header). Since
+    Part B the window's minimum width is its content's: the timeline
+    header's floor (1398 logical px without an audio track,
+    1478 with one; Part B had 1309 / 1389 - the design's two 68 px
+    gaps beside the pill and the speed dropdown added the rest) plus the
+    docks at their minimums, which is 1581 to 1661 logical px in the
+    default layout (1571 to 1651 in the user's). That is wider than
     common laptop screens: 1366 px, and 1536 px at 125 % scaling (a
     1920 panel). A narrower header layout is needed before selling - a
     further give-way (the speed buttons, the total, the loop group), a
@@ -6818,8 +6821,9 @@ WHAT THE DESIGN SAYS, now in the code (every number the design's):
 - The canvas (AnimaticTimeline.cpp renderCanvas), at y 40: the ruler and
   the empty audio row #181a21, the scene track #1c1e25, the shots track
   #101115 (a row with a file named keeps its #0d1a26: the design shows
-  no track). The label column is 136 px #0d0d0d (kLabelColW) with its
-  1 px #2a2a2a separator at x 136, on the content's first pixel: content
+  no track). The label column WAS 136 px #0d0d0d (kLabelColW) with its
+  1 px #2a2a2a separator at x 136, on the content's first pixel (134
+  with the separator at 134 since Part C, 2026-10-23): content
   x 0 is at 135 (kLabelCol), as the design has it. Labels 7 pt #b1b2bf
   right-aligned ending 15 px before the edge; the lock (x 8), speaker
   (32, AUDIO only) and eye (56) icons, 16 px #a4a7ae, centred in their
@@ -6978,6 +6982,63 @@ refusing 150 px below). The rig's default window is 1640 x 900 (was
 1400): the window's minimum is its content's now, and a 1400 window was
 grown to it at once - with a track, past the width at which the name
 hides, which the audio sections read.
+
+## The timeline redesign, Part C: the header's new arrangement (2026-10-23)
+
+The user changed node 380:644 (read 2026-10-19, measured against the
+app as committed at 249d49c49: 10 differences of 53) and chose the open
+parts on 2026-10-23. What changed and why it is built the way it is:
+- THE CENTRE CLUSTER. The timecode is left of the pill and the total
+  right of it, a 1 x 22 #373a4b separator on each side: timecode box
+  132 x 40 | 6 | separator | 68 | pill 228 | 68 | separator | 34 | total
+  | 28 | speed dropdown 60 x 28 (y 6). One widget ("animaticCentre"),
+  outside the row's layout like the pill was, placed by layoutHeader so
+  the PILL is centred on the window (x = (W - 228) / 2) and pushed
+  inward only when a group would come within 16 px of the cluster's
+  edge; `before` (207) and `after` (the rest) are read from the
+  cluster's own layout, so a wider total (fonts) moves nothing else.
+  need() and the floor add the cluster's width by hand. The right group
+  is the audio group (20 px before it), the loop group (its 105 px
+  margin, the warning, start, end, the clear button) and the view icons.
+  transportPillRectForTest maps the pill to the header now that it is
+  the cluster's child.
+- THE SPEED DROPDOWN (the user's choice; Figma proposal frame 417:390,
+  Components section): QToolButton "animaticSpeed", InstantPopup, 60 x
+  28, kSpeedDropdownSheet (the loop-button look, text left, the chevron
+  drawn as the menu-indicator subcontrol from speed_chevron.svg, green
+  on hover from speed_chevron_hover.svg); QMenu "animaticSpeedMenu",
+  kSpeedMenuSheet (the clip menu's sheet; the checked item in the accent
+  with speed_tick.svg as its indicator - Qt draws the indicator at the
+  left, the proposal drew it at the right). The actions are an exclusive
+  QActionGroup; each triggers setPlaybackSpeed as the buttons did;
+  updateSpeedControl (was updateSpeedButtons) checks the action and
+  writes the button's text. The speed is not saved and has no shortcut,
+  as before.
+- THE VOLUME SLIDER: kZoomSliderSheet, fixed 60 x 10.
+- THE LABEL COLUMN: kLabelColW 134, separator at x 134, content from
+  135 (kLabelCol unchanged, so every content mapping and the follow
+  point are unchanged).
+- THE VIEW ICONS: the user's 1.2 px re-export with the lines moved to
+  pixel centres (Frames: the path translated 0.5, 0.5; Snap: legs at
+  4.5 / 8.5 / 16.5 / 20.5, horizontals at 4.5 / 8.5, the bottom of the
+  arcs at 20.5 / 16.5 - the inner opening is 8 px, the design's 7.1;
+  Seconds: the stem and hand at x 12.5, the cap at y 3.5, the circle
+  centred 12.5 / 13.5 r 7 so its extremes sit on pixel centres). Solid
+  pixels at 24 px, before -> after: Frames 56 -> 107, Snap 40 -> 62,
+  Seconds 34 -> 30 (a circle cannot be crisp). Blow-ups in
+  Documents\SankoTV-Design\v2\svgcheck (before) and svgcheck_after.
+- Floors, measured: 1398 / 1478; the window's minimum
+  1581 to 1661 (default layout) / 1571 to 1651 (the user's). The
+  user's 1657 px section: without a track nothing gives (the row needs
+  1478 at the slider's full width); with a track the name shortens by
+  17 px (the row would need 1674 for it whole), the slider stays 160.
+
+GATE (742 -> 745): (aw) restated - the right group check keeps Snap / Seconds /
+Frames; a cluster check measures every gap from the pill; the pill
+check and the give-way clearance read the cluster; new checks for the
+dropdown (three items, 1x checked, the third inside the menu's height,
+2x -> the total's suffix and the button text, 1x back) and the volume
+sheet; the column 134 with its separator and the content pixel at 135.
 
 ## METHOD: measure interior structure ACROSS THE SIZE RANGE before calling it character (2026-09-25)
 
