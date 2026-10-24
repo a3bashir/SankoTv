@@ -86,6 +86,8 @@
 #include <QStackedWidget>
 #include <QCryptographicHash>
 #include <QDir>
+#include <QDirIterator>
+#include <QRandomGenerator>
 #include <QThread>
 #include <QElapsedTimer>
 #include <QFile>
@@ -1382,7 +1384,7 @@ void runOverrideMarkPass(const QString &scratch)
           panel->overrideMarkForTest(id) == 0,
           QStringLiteral("mark=%1").arg(panel->overrideMarkForTest(id)));
 
-    ::Brush tuned = model->preset(id)->brush;
+    ::Brush tuned = model->preset(id)->brush();
     tuned.setSpacing(0.02);
     check(QStringLiteral("(n) tuning the built-in succeeds"),
           model->updateBrush(id, tuned));
@@ -1591,13 +1593,13 @@ void runTipShapePreviewPass(const QString &scratch)
     check(QStringLiteral("(o) ONE DEFINITION: preview == the test's own "
                          "shapedTipForStamp, byte for byte"),
           !shown.isNull()
-              && shown == engineTip(model->preset(id)->brush, shown.width()));
+              && shown == engineTip(model->preset(id)->brush(), shown.width()));
 
     // DISPLAY-SIZE LAYER in the studio: the Size row shows the session
     // brush's VISIBLE width; the preset keeps its engine size; the number
     // FOLLOWS an edit that changes the mark (nothing remembered).
     {
-        const ::Brush stock = model->preset(id)->brush;
+        const ::Brush stock = model->preset(id)->brush();
         const int label =
             brushlib::BrushWidthRatio::displaySize(stock, stock.size());
         check(QStringLiteral("(o) the studio's Size row shows Round Brush's "
@@ -1673,7 +1675,7 @@ void runTipShapePreviewPass(const QString &scratch)
     const QImage soft = studio->tipPreviewImageForTest();
     check(QStringLiteral("(o) a hardness edit re-renders the preview"),
           !soft.isNull() && soft != shown);
-    ::Brush softBrush = model->preset(id)->brush;
+    ::Brush softBrush = model->preset(id)->brush();
     softBrush.setHardness(0.05);
     check(QStringLiteral("(o) ...and the identity holds at the new state"),
           soft == engineTip(softBrush, soft.width()));
@@ -1964,7 +1966,7 @@ void runGrainPreviewPass(const QString &scratch)
     check(QStringLiteral("(p) ONE DEFINITION: preview == the test's own "
                          "engine render, byte for byte"),
           !shown.isNull()
-              && shown == enginePatch(model->preset(id)->brush));
+              && shown == enginePatch(model->preset(id)->brush()));
 
     // Depth 0 through the REAL edit path: grain leaves, the falloff
     // stays, and the identity holds at the new state — so the difference
@@ -1976,7 +1978,7 @@ void runGrainPreviewPass(const QString &scratch)
     check(QStringLiteral("(p) Grain Depth reaches the preview"),
           !flat.isNull() && flat != shown);
     {
-        ::Brush zeroBrush = model->preset(id)->brush;
+        ::Brush zeroBrush = model->preset(id)->brush();
         zeroBrush.setGrainDepth(0.0);
         check(QStringLiteral("(p) ...identity holds at depth 0 (the "
                              "difference WAS grain)"),
@@ -2032,7 +2034,7 @@ void runGrainPreviewPass(const QString &scratch)
     check(QStringLiteral("(p) a loaded grain reaches the preview"),
           !custom.isNull() && custom != blended);
     {
-        ::Brush expect = model->preset(id)->brush;
+        ::Brush expect = model->preset(id)->brush();
         expect.setGrainDepth(0.5);
         expect.setGrainScale(23.0);
         expect.setGrainRotation(37.0);
@@ -3213,11 +3215,11 @@ void runIdentityColorPass(const QString &scratch)
     const auto rosterS = brushlib::builtinRoster();
     for (const brushlib::BrushPreset &p : rosterS) {
         if (p.id == QStringLiteral("builtin/sketching/blue-pencil"))
-            blue = &p.brush;
+            blue = &p.brush();
         if (p.id == QStringLiteral("builtin/drawing/sepia"))
-            sepia = &p.brush;
+            sepia = &p.brush();
         if (p.id == QStringLiteral("builtin/sketching/2b-pencil"))
-            pencil2b = &p.brush;
+            pencil2b = &p.brush();
     }
     check(QStringLiteral("(s) roster carries Blue, Sepia and 2B"),
           blue && sepia && pencil2b);
@@ -3283,6 +3285,268 @@ void runIdentityColorPass(const QString &scratch)
 }
 
 // ---- (m) the MIRRORED tool-scoped library, end to end ---------------------
+// THE LIBRARY'S WORK ON OPEN AND SELECT (2026-10-24), through the real
+// page. Opening the library, switching the tool with it open and selecting
+// a brush froze the app for 1.4-2.7 s because every list rebuild hashed
+// every tip on the UI thread (BrushLibrary (m1)/(m2) pin the memo and the
+// keyed renderer). Pinned here END TO END, as work counts and never as
+// time: a second open rebuilds, encodes, measures, renders and writes
+// nothing; a tool-switch open is ONE rebuild; a selection writes only the
+// Recent list and touches no preset file; a studio edit (the control) does
+// write one file and render one swatch.
+void runLibraryWorkCountPass(const QString &scratch)
+{
+    out() << "--- (bw) the library's work on open and select ---" << Qt::endl;
+    MainWindow window;
+    window.resize(1300, 850);
+    window.show();
+    pump(800);
+    const QString fixture = writeProject(scratch + QStringLiteral("/bwork"),
+                                         QStringLiteral("BWork"),
+                                         QSize(960, 540), 24, 1, 1);
+    check(QStringLiteral("(bw) fixture opens"),
+          window.loadProjectForTest(fixture));
+    pump(500);
+    auto *canvas = window.findChild<DrawingCanvas *>();
+    auto *panel = window.findChild<brushlib::BrushLibraryPanel *>();
+    auto *model = window.findChild<brushlib::BrushLibraryModel *>();
+    if (!canvas || !panel || !model) {
+        check(QStringLiteral("(bw) found canvas, panel and model"), false);
+        window.markCleanForTest();
+        window.close();
+        return;
+    }
+    // This pass OPENS the library, which records "visible" (D1 intent)
+    // and its geometry in the scratch settings; every later pass's page
+    // would then restore it open - (ai) counted it as a fifth floating
+    // bar the first time this ran. Put both keys back as they were.
+    const QString visibleKey =
+        QStringLiteral("storyboard/brushLibrary/v1/visible");
+    const QString geoKey = QStringLiteral("storyboard/brushLibrary/v1/geo");
+    const QVariant visibleBefore = sankoSettings().value(visibleKey);
+    const QVariant geoBefore = sankoSettings().value(geoKey);
+    auto restoreLibraryKeys = [&] {
+        QSettings s = sankoSettings();
+        if (visibleBefore.isValid())
+            s.setValue(visibleKey, visibleBefore);
+        else
+            s.remove(visibleKey);
+        if (geoBefore.isValid())
+            s.setValue(geoKey, geoBefore);
+        else
+            s.remove(geoKey);
+    };
+    // The key warm-up started with the page; the counts below assume it
+    // has finished (the app's user opens the library seconds after launch).
+    int presets = 0;
+    for (const QString &cat : brushlib::BrushLibraryModel::categories())
+        presets += model->presetsIn(cat).size();
+    presets += model->presetsIn(QStringLiteral("Imported")).size();
+    presets += model->presetsIn(QStringLiteral("Eraser")).size();
+    QElapsedTimer guard;
+    guard.start();
+    while (!model->keyWarmupDoneForTest() && guard.elapsed() < 180000)
+        pump(50);
+    check(QStringLiteral("(bw) the key warm-up finished with every "
+                         "preset's keys stored"),
+          model->keyWarmupDoneForTest()
+              && model->keysKnownCountForTest() == presets,
+          QStringLiteral("%1 of %2 known after %3 ms")
+              .arg(model->keysKnownCountForTest())
+              .arg(presets)
+              .arg(guard.elapsed()));
+
+    struct Work
+    {
+        int encodes, measures, renders, writes, rebuilds;
+    };
+    auto now = [&] {
+        return Work{brushlib::BrushPresetCodec::imageEncodeCountForTest(),
+                    brushlib::BrushWidthRatio::measureCountForTest(),
+                    brushlib::BrushPreviewRenderer::renderCountForTest(),
+                    brushlib::BrushPreviewRenderer::cacheWriteCountForTest(),
+                    panel->rebuildCountForTest()};
+    };
+    auto delta = [](const Work &a, const Work &b) {
+        return QStringLiteral("rebuilds +%1 encodes +%2 measures +%3 "
+                              "renders +%4 writes +%5")
+            .arg(b.rebuilds - a.rebuilds)
+            .arg(b.encodes - a.encodes)
+            .arg(b.measures - a.measures)
+            .arg(b.renders - a.renders)
+            .arg(b.writes - a.writes);
+    };
+    auto labelled = [&] {
+        const QStringList ids = panel->visiblePresetIdsForTest();
+        for (const QString &id : ids)
+            if (panel->rowSizeLabelForTest(id) < 0)
+                return false;
+        return !ids.isEmpty();
+    };
+    auto settle = [&](int ms) {
+        guard.restart();
+        while (!labelled() && guard.elapsed() < ms)
+            pump(50);
+        return labelled();
+    };
+
+    // --- plain open, twice ------------------------------------------------
+    canvas->setTool(DrawingCanvas::Brush);
+    pump(200);
+    panel->selectCategoryForTest(QStringLiteral("Painting")); // 20 tips
+    pump(200);
+    panel->openAtDefault();
+    pump(300);
+    check(QStringLiteral("(bw) first open: every Painting row is labelled "
+                         "(the worker delivered)"),
+          settle(120000),
+          QStringLiteral("%1 rows")
+              .arg(panel->visiblePresetIdsForTest().size()));
+    const Work a = now();
+    panel->setVisible(false);
+    pump(300);
+    panel->openAtDefault();
+    pump(300);
+    settle(20000);
+    const Work b = now();
+    check(QStringLiteral("(bw) the second open of the same list rebuilds "
+                         "nothing, encodes nothing, measures nothing, "
+                         "renders nothing and writes nothing"),
+          panel->isVisible() && labelled() && b.rebuilds == a.rebuilds
+              && b.encodes == a.encodes && b.measures == a.measures
+              && b.renders == a.renders && b.writes == a.writes,
+          delta(a, b));
+
+    // --- tool-switch open ---------------------------------------------------
+    panel->setVisible(false);
+    pump(200);
+    const Work c = now();
+    canvas->setTool(DrawingCanvas::Eraser); // scope follows: ONE rebuild
+    pump(200);
+    panel->openAtDefault();                 // the show finds it current
+    pump(300);
+    settle(120000);
+    const Work d = now();
+    check(QStringLiteral("(bw) a tool-switch open is exactly ONE rebuild "
+                         "(the scope's), with no encode and no measure"),
+          panel->toolScope() == brushlib::BrushLibraryPanel::ToolScope::Eraser
+              && labelled() && d.rebuilds == c.rebuilds + 1
+              && d.encodes == c.encodes && d.measures == c.measures,
+          delta(c, d));
+    panel->setVisible(false);
+    canvas->setTool(DrawingCanvas::Brush);
+    pump(200);
+    canvas->setTool(DrawingCanvas::Eraser);
+    pump(200);
+    const Work e = now();
+    panel->openAtDefault();
+    pump(300);
+    settle(20000);
+    const Work f = now();
+    check(QStringLiteral("(bw) the eraser list seen before: the show "
+                         "rebuilds, renders and writes nothing"),
+          labelled() && f.rebuilds == e.rebuilds && f.renders == e.renders
+              && f.writes == e.writes && f.encodes == e.encodes,
+          delta(e, f));
+
+    // --- selection ------------------------------------------------------------
+    canvas->setTool(DrawingCanvas::Brush);
+    pump(200);
+    settle(20000);
+    const QString ini = scratch + QStringLiteral("/sanko_settings.ini");
+    auto iniSnapshot = [&] {
+        QSettings s(ini, QSettings::IniFormat);
+        s.sync();
+        QMap<QString, QVariant> m;
+        for (const QString &k : s.allKeys())
+            m.insert(k, s.value(k));
+        return m;
+    };
+    auto dirSnapshot = [&] {
+        QStringList files;
+        QDirIterator it(model->userPresetDir(), QDir::Files,
+                        QDirIterator::Subdirectories);
+        while (it.hasNext()) {
+            it.next();
+            const QFileInfo fi = it.fileInfo();
+            files << QStringLiteral("%1|%2|%3")
+                         .arg(fi.absoluteFilePath())
+                         .arg(fi.size())
+                         .arg(fi.lastModified().toMSecsSinceEpoch());
+        }
+        files.sort();
+        return files;
+    };
+    const QString id = QStringLiteral("builtin/painting/gouache");
+    const QMap<QString, QVariant> ini0 = iniSnapshot();
+    const QStringList dir0 = dirSnapshot();
+    const Work g = now();
+    model->recordUsage(id);          // the row's click, part one
+    panel->activatePresetForTest(id); // ...and part two (the page's lambda)
+    pump(400);
+    settle(20000);
+    const Work h = now();
+    const QMap<QString, QVariant> ini1 = iniSnapshot();
+    const QStringList dir1 = dirSnapshot();
+    QStringList changedKeys;
+    for (auto it = ini1.cbegin(); it != ini1.cend(); ++it)
+        if (!ini0.contains(it.key()) || ini0.value(it.key()) != it.value())
+            changedKeys << it.key();
+    for (auto it = ini0.cbegin(); it != ini0.cend(); ++it)
+        if (!ini1.contains(it.key()))
+            changedKeys << it.key();
+    check(QStringLiteral("(bw) selecting a brush writes ONLY the Recent "
+                         "list: one settings key changed, no preset file "
+                         "touched, no cache write, no render, no encode"),
+          changedKeys == QStringList{QStringLiteral("brushLibrary/v1/recent")}
+              && dir1 == dir0 && h.writes == g.writes
+              && h.renders == g.renders && h.encodes == g.encodes,
+          QStringLiteral("changed keys: %1; files %2 -> %3; %4")
+              .arg(changedKeys.join(QStringLiteral(", ")))
+              .arg(dir0.size())
+              .arg(dir1.size())
+              .arg(delta(g, h)));
+    // Positive control: a studio edit DOES write a file and render anew.
+    // The edit is a tip NOBODY has had before (a fresh noise image), so
+    // its swatch cannot be waiting in the disk cache from an earlier pass
+    // or an earlier gate run: (n) tunes this same brush's spacing, and
+    // the first run of this control found that edit's swatch cached.
+    ::Brush tuned = model->preset(id)->brush();
+    {
+        QImage noise(64, 64, QImage::Format_Grayscale8);
+        for (int y = 0; y < noise.height(); ++y) {
+            uchar *row = noise.scanLine(y);
+            for (int x = 0; x < noise.width(); ++x)
+                row[x] = uchar(QRandomGenerator::global()->bounded(256));
+        }
+        tuned.setCustomShape(noise);
+    }
+    const Work i = now();
+    check(QStringLiteral("(bw) control: the edit is accepted"),
+          model->updateBrush(id, tuned));
+    pump(400);
+    settle(120000);
+    const Work j = now();
+    const QStringList dir2 = dirSnapshot();
+    check(QStringLiteral("(bw) control: a studio edit writes exactly one "
+                         "preset file, measures its width once and renders "
+                         "exactly one new swatch"),
+          dir2.size() == dir1.size() + 1 && j.renders == i.renders + 1
+              && j.writes == i.writes + 1 && j.measures == i.measures + 1,
+          QStringLiteral("files %1 -> %2; %3")
+              .arg(dir1.size())
+              .arg(dir2.size())
+              .arg(delta(i, j)));
+    model->resetBuiltinToStock(id);
+    pump(300);
+    panel->setVisible(false);
+    pump(200);
+    restoreLibraryKeys();
+    window.markCleanForTest();
+    window.close();
+    pump(300);
+}
+
 // REWRITTEN AGAIN 2026-08-28 (mirror pass): the eraser scope now MIRRORS
 // the brush categories - one definition, referenced twice - so the old
 // assertions (eraser sidebar = {Eraser}, category stranding on scope flip)
@@ -3344,8 +3608,8 @@ void runEraserLibraryPass(const QString &scratch)
             const QStringList ids = panel->visiblePresetIdsForTest();
             shown += ids.size();
             for (const brushlib::BrushPreset *p : model->presetsIn(cat)) {
-                const bool mirrorable = !p->brush.smudgeActive()
-                    && !p->brush.dualBrushEnabled();
+                const bool mirrorable = !p->brush().smudgeActive()
+                    && !p->brush().dualBrushEnabled();
                 if (mirrorable) {
                     ++expected;
                     allPresent = allPresent && ids.contains(p->id);
@@ -3388,7 +3652,7 @@ void runEraserLibraryPass(const QString &scratch)
                   return false;
               cleared.setEraseMode(false);
               return brushlib::BrushPresetCodec::saveBrush(cleared)
-                  == brushlib::BrushPresetCodec::saveBrush(gouache->brush);
+                  == brushlib::BrushPresetCodec::saveBrush(gouache->brush());
           }());
     check(QStringLiteral("(m) activation did NOT touch the tool"),
           canvas->tool() == DrawingCanvas::Eraser);
@@ -3422,13 +3686,13 @@ void runEraserLibraryPass(const QString &scratch)
                          "untouched)"),
           canvas->tool() == DrawingCanvas::Brush
               && !canvas->paintBrush().eraseMode()
-              && canvas->paintBrush().size() == gouache->brush.size());
+              && canvas->paintBrush().size() == gouache->brush().size());
 
     // --- both selections survived --------------------------------------
     check(QStringLiteral("(m) the eraser selection survived (still "
                          "eraser-Gouache)"),
           canvas->eraserBrush().eraseMode()
-              && canvas->eraserBrush().size() == gouache->brush.size());
+              && canvas->eraserBrush().size() == gouache->brush().size());
 
     // --- DISPLAY-SIZE LAYER: the library ROW's size label ----------------
     // The row prints the VISIBLE width (the worker measures the ratio with
@@ -3451,12 +3715,12 @@ void runEraserLibraryPass(const QString &scratch)
                                  "VISIBLE width, not its engine size"),
                   panel->rowSizeLabelForTest(roundId)
                           == brushlib::BrushWidthRatio::displaySize(
-                                 round->brush, round->brush.size())
+                                 round->brush(), round->brush().size())
                       && panel->rowSizeLabelForTest(roundId)
-                             < round->brush.size(),
+                             < round->brush().size(),
                   QStringLiteral("row=%1 engine=%2")
                       .arg(panel->rowSizeLabelForTest(roundId))
-                      .arg(round->brush.size()));
+                      .arg(round->brush().size()));
         }
         panel->selectCategoryForTest(QStringLiteral("Inking"));
         const QString splatterId = QStringLiteral("builtin/inking/splatter");
@@ -3469,7 +3733,7 @@ void runEraserLibraryPass(const QString &scratch)
                              "droplet size as the row's number (Splatter)"),
               splatter
                   && panel->rowSizeLabelForTest(splatterId)
-                         == splatter->brush.size(),
+                         == splatter->brush().size(),
               QStringLiteral("row=%1").arg(
                   panel->rowSizeLabelForTest(splatterId)));
         panel->selectCategoryForTest(QStringLiteral("Painting"));
@@ -3665,15 +3929,15 @@ void runSizeCtlAgreementPass(const QString &scratch)
         QString firstBad;
         int relabelled = 0;
         for (const brushlib::BrushPreset &p : rosterW) {
-            if (p.brush.dualBrushEnabled() || p.brush.smudgeActive())
+            if (p.brush().dualBrushEnabled() || p.brush().smudgeActive())
                 continue; // own passes; the bar logic is identical
             const brushlib::WidthRatio r =
-                brushlib::BrushWidthRatio::ratioFor(p.brush);
-            canvas->setPaintBrush(p.brush);
+                brushlib::BrushWidthRatio::ratioFor(p.brush());
+            canvas->setPaintBrush(p.brush());
             pump(20);
-            const int engine0 = p.brush.size();
+            const int engine0 = p.brush().size();
             const int label0 =
-                brushlib::BrushWidthRatio::displaySize(p.brush, engine0);
+                brushlib::BrushWidthRatio::displaySize(p.brush(), engine0);
             if (label0 != engine0)
                 ++relabelled;
             if (canvas->paintBrush().size() != engine0) {
@@ -3725,7 +3989,7 @@ void runSizeCtlAgreementPass(const QString &scratch)
         const ::Brush *round = nullptr;
         for (const brushlib::BrushPreset &p : rosterW)
             if (p.id == QStringLiteral("builtin/painting/round-brush"))
-                round = &p.brush;
+                round = &p.brush();
         if (round) {
             canvas->setPaintBrush(*round);
             pump(20);
@@ -3777,7 +4041,7 @@ void runSizeCtlAgreementPass(const QString &scratch)
     const auto rosterJ = brushlib::builtinRoster();
     for (const brushlib::BrushPreset &p : rosterJ)
         if (p.id == QStringLiteral("builtin/sketching/hb-pencil"))
-            hbStock = &p.brush;
+            hbStock = &p.brush();
     check(QStringLiteral("(j) control: HB Pencil exists with base 0.55"),
           hbStock && hbStock->opacity() == 0.55);
     if (hbStock) {
@@ -3808,7 +4072,7 @@ void runSizeCtlAgreementPass(const QString &scratch)
     const ::Brush *gouacheJ = nullptr;
     for (const brushlib::BrushPreset &p : rosterJ)
         if (p.id == QStringLiteral("builtin/painting/gouache"))
-            gouacheJ = &p.brush;
+            gouacheJ = &p.brush();
     if (gouacheJ) {
         canvas->setEraserPreset(*gouacheJ); // base 0.95
         check(QStringLiteral("(j) eraser preset base survives at "
@@ -10738,6 +11002,7 @@ int main(int argc, char **argv)
     runSizeCtlAgreementPass(scratch);
     runNewProjectPromptPass(a);
     runEraserLibraryPass(scratch);
+    runLibraryWorkCountPass(scratch);
     runAccentStatesPass();
     runOverrideMarkPass(scratch);
     runRecorderUnderModalPass();

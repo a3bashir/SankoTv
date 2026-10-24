@@ -364,6 +364,8 @@ qt_add_executable(SankoPresetDiff
     tools/PresetDiff.cpp
     src/brushlib/BuiltinRoster.cpp
     src/brushlib/BrushPresetCodec.cpp
+    src/brushlib/BrushWidthRatio.cpp
+    src/brushlib/BrushWidthRatio.h
     brush_assets.qrc
 )
 target_include_directories(SankoPresetDiff PRIVATE src)

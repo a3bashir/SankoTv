@@ -2588,13 +2588,13 @@ QWidget *StoryboardPage::createCenterColumn()
                          && m_brushLibPanel->toolScope()
                              == brushlib::BrushLibraryPanel::ToolScope::
                                  Eraser)
-                        || p->brush.eraseMode();
+                        || p->brush().eraseMode();
                     if (eraseDoor) {
                         m_activeEraserPresetId = id;
-                        m_canvas->setEraserPreset(p->brush);
+                        m_canvas->setEraserPreset(p->brush());
                     } else {
                         m_activeBrushPresetId = id;
-                        m_canvas->setPaintBrush(p->brush);
+                        m_canvas->setPaintBrush(p->brush());
                         refreshBrushDirtyState();
                     }
                 }
@@ -2654,7 +2654,7 @@ QWidget *StoryboardPage::createCenterColumn()
                     return;
                 if (const brushlib::BrushPreset *p =
                         m_brushLibModel->preset(id)) {
-                    m_canvas->setPaintBrush(p->brush);
+                    m_canvas->setPaintBrush(p->brush());
                     refreshBrushDirtyState();
                 }
             });
@@ -3602,8 +3602,8 @@ void StoryboardPage::createFloatingToolbar()
         if (m_brushLibModel) {
             if (const brushlib::BrushPreset *p = m_brushLibModel->preset(
                     eraser ? m_activeEraserPresetId : m_activeBrushPresetId))
-                if (qAbs(p->brush.opacity() - b.opacity()) < 1e-6)
-                    b.setOpacity(p->brush.opacity());
+                if (qAbs(p->brush().opacity() - b.opacity()) < 1e-6)
+                    b.setOpacity(p->brush().opacity());
         }
         return b;
     };
@@ -6011,7 +6011,7 @@ void StoryboardPage::refreshBrushDirtyState()
         return;
     }
     ::Brush working = m_canvas->paintBrush();
-    ::Brush stock = p->brush;
+    ::Brush stock = p->brush();
     working.setColor(Qt::black);
     stock.setColor(Qt::black);
     const bool dirty = brushlib::BrushPresetCodec::saveBrush(working)

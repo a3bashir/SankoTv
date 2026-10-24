@@ -11,10 +11,14 @@
 #include <QStandardPaths>
 #include <QtMath>
 
+#include <atomic>
 #include <memory>
 
 namespace brushlib {
 namespace {
+
+std::atomic<int> g_renderCount{0};
+std::atomic<int> g_cacheWriteCount{0};
 
 constexpr quint64 kPreviewSeed = 4242;
 constexpr int kSampleCount = 48;
@@ -192,6 +196,7 @@ BrushPreviewRenderer::BrushPreviewRenderer(const QString &cacheRootOverride,
     : QObject(parent)
 {
     qRegisterMetaType<brushlib::WidthRatio>("brushlib::WidthRatio");
+    qRegisterMetaType<brushlib::BrushKeys>("brushlib::BrushKeys");
     m_cacheRoot = cacheRootOverride.isEmpty()
         ? QStandardPaths::writableLocation(QStandardPaths::CacheLocation)
             + QStringLiteral("/brushPreviews")
@@ -228,12 +233,46 @@ QString BrushPreviewRenderer::cacheDir() const
 void BrushPreviewRenderer::requestPreview(const QString &presetId,
                                           const ::Brush &brush)
 {
+    Job job;
+    job.requestId = presetId;
+    job.brush = brush;
+    enqueue(std::move(job));
+}
+
+void BrushPreviewRenderer::requestPreview(const BrushPreset &preset,
+                                          bool eraseVariant)
+{
+    Job job;
+    job.requestId = eraseVariant ? preset.id + QStringLiteral("#erase")
+                                 : preset.id;
+    job.presetId = preset.id;
+    job.brush = preset.brush();
+    if (preset.keysKnown())
+        job.keys = preset.keys();
+    job.brushRevision = preset.brushRevision();
+    job.eraseVariant = eraseVariant;
+    enqueue(std::move(job));
+}
+
+void BrushPreviewRenderer::enqueue(Job job)
+{
     QMutexLocker lock(&m_mutex);
-    if (m_quit || m_pendingIds.contains(presetId))
+    if (m_quit || m_pendingIds.contains(job.requestId))
         return; // deduplicated: already queued or in flight
-    m_pendingIds.insert(presetId);
-    m_queue.enqueue({presetId, brush, m_epoch});
+    m_pendingIds.insert(job.requestId);
+    job.epoch = m_epoch;
+    m_queue.enqueue(std::move(job));
     m_wake.wakeOne();
+}
+
+int BrushPreviewRenderer::renderCountForTest()
+{
+    return g_renderCount.load();
+}
+
+int BrushPreviewRenderer::cacheWriteCountForTest()
+{
+    return g_cacheWriteCount.load();
 }
 
 void BrushPreviewRenderer::cancelAll()
@@ -247,9 +286,12 @@ void BrushPreviewRenderer::cancelAll()
 void BrushPreviewRenderer::cancelPreset(const QString &presetId)
 {
     QMutexLocker lock(&m_mutex);
-    m_pendingIds.remove(presetId); // in-flight result will not be emitted
+    // Both of the preset's request ids: in-flight results will not be emitted.
+    m_pendingIds.remove(presetId);
+    m_pendingIds.remove(presetId + QStringLiteral("#erase"));
     for (int i = m_queue.size() - 1; i >= 0; --i)
-        if (m_queue.at(i).presetId == presetId)
+        if (m_queue.at(i).requestId == presetId
+            || m_queue.at(i).presetId == presetId)
             m_queue.removeAt(i);
 }
 
@@ -265,37 +307,53 @@ void BrushPreviewRenderer::workerLoop()
                 return;
             job = m_queue.dequeue();
         }
+        // The keys: stored on the preset (nothing hashed), else computed
+        // HERE, once, and reported for the model to store.
+        BrushKeys keys = job.keys;
+        const bool computed = !keys.valid;
+        if (computed)
+            keys = BrushPreset::computeKeys(job.brush);
         const WidthRatio width =
-            BrushWidthRatio::ratioFor(job.brush, m_cacheRoot);
-        const QImage image = loadOrRender(job.brush);
+            BrushWidthRatio::ratioForKey(job.brush, keys.width, m_cacheRoot);
+        ::Brush swatchBrush = job.brush;
+        if (job.eraseVariant)
+            swatchBrush.setEraseMode(true);
+        const QImage image = loadOrRender(
+            swatchBrush, job.eraseVariant ? keys.eraseSwatch : keys.swatch);
         {
             QMutexLocker lock(&m_mutex);
             // Dropped if cancelAll() bumped the epoch or cancelPreset()
             // removed the id (preset deleted mid-render): no dangling result.
             const bool stale =
                 m_quit || job.epoch != m_epoch
-                || !m_pendingIds.remove(job.presetId);
+                || !m_pendingIds.remove(job.requestId);
             if (stale)
                 continue;
         }
         m_lastRenderThread = QThread::currentThread();
-        emit widthRatioReady(job.presetId, width);
-        emit previewReady(job.presetId, image);
+        if (computed && !job.presetId.isEmpty())
+            emit keysReady(job.presetId, job.brushRevision, keys);
+        emit widthRatioReady(job.requestId, width);
+        emit previewReady(job.requestId, image);
     }
 }
 
-QImage BrushPreviewRenderer::loadOrRender(const ::Brush &brush)
+QImage BrushPreviewRenderer::loadOrRender(const ::Brush &brush,
+                                          const QByteArray &key)
 {
-    const QString key = QString::fromLatin1(
-        BrushPresetCodec::settingsHash(brush).toHex());
-    const QString file =
-        cacheDir() + QLatin1Char('/') + key + QStringLiteral(".png");
+    const QString file = cacheDir() + QLatin1Char('/')
+        + QString::fromLatin1(key.toHex()) + QStringLiteral(".png");
     QImage cached(file);
     if (!cached.isNull())
         return cached.convertToFormat(QImage::Format_ARGB32);
     const QImage fresh = renderPreviewImage(brush);
-    if (!fresh.isNull())
-        fresh.save(file, "PNG");
+    ++g_renderCount;
+    // The directory was made at construction; a cache folder removed
+    // while the app runs (a cleaner, the gate's control) must not stop
+    // the swatch from being kept.
+    QDir().mkpath(cacheDir());
+    if (!fresh.isNull() && fresh.save(file, "PNG"))
+        ++g_cacheWriteCount;
     return fresh;
 }
 

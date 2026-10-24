@@ -70,6 +70,7 @@
 #include <QFile>
 #include <QGuiApplication>
 #include <QPainter>
+#include <QRandomGenerator>
 #include <QSettings>
 #include <QTextStream>
 
@@ -288,6 +289,9 @@ quint64 workingSetMb()
 int main(int argc, char **argv)
 {
     QGuiApplication app(argc, argv);
+    // The model's key warm-up thread would move the encode counts the
+    // (b10) and (m) checks read; it is exercised on its own in (m4).
+    brushlib::BrushLibraryModel::setKeyWarmupEnabledForTest(false);
 
     QFile out(QStringLiteral("brushlib_test.txt"));
     out.open(QIODevice::WriteOnly | QIODevice::Truncate);
@@ -339,8 +343,8 @@ int main(int argc, char **argv)
                 ++count;
                 ++total;
                 ts << "  " << p.name << "  ["
-                   << (p.brush.usesColorStrokeBuffer() ? "RGBA16" : "R16")
-                   << "]  " << recipeSummary(p.brush) << nl;
+                   << (p.brush().usesColorStrokeBuffer() ? "RGBA16" : "R16")
+                   << "]  " << recipeSummary(p.brush()) << nl;
             }
         check(QStringLiteral("(a) %1 has >= 10 brushes").arg(cat),
               count >= 10, QStringLiteral("count=%1").arg(count));
@@ -364,7 +368,7 @@ int main(int argc, char **argv)
         bool bytesOk = true, renderOk = true, presetOk = true;
         QString firstBad;
         for (const BrushPreset &p : roster) {
-            const QByteArray bytes = BrushPresetCodec::saveBrush(p.brush);
+            const QByteArray bytes = BrushPresetCodec::saveBrush(p.brush());
             ::Brush loaded;
             if (!BrushPresetCodec::loadBrush(bytes, loaded)
                 || BrushPresetCodec::saveBrush(loaded) != bytes) {
@@ -372,7 +376,7 @@ int main(int argc, char **argv)
                 firstBad = p.name;
                 break;
             }
-            const QString h0 = renderHash(p.brush);
+            const QString h0 = renderHash(p.brush());
             if (h0 != renderHash(loaded)
                 || h0.startsWith(QStringLiteral("RENDER-FAILED"))) {
                 renderOk = false;
@@ -384,7 +388,7 @@ int main(int argc, char **argv)
                     BrushPresetCodec::savePreset(p), back)
                 || back.id != p.id || back.name != p.name
                 || back.category != p.category || back.builtin != p.builtin
-                || BrushPresetCodec::saveBrush(back.brush) != bytes) {
+                || BrushPresetCodec::saveBrush(back.brush()) != bytes) {
                 presetOk = false;
                 firstBad = p.name;
                 break;
@@ -555,7 +559,7 @@ int main(int argc, char **argv)
                   model.overrideState(gouache) == State::None);
 
             // Modified: a real divergence, fingerprint recorded.
-            ::Brush tuned = model.preset(gouache)->brush;
+            ::Brush tuned = model.preset(gouache)->brush();
             tuned.setSpacing(0.02);
             check(QStringLiteral("(b9) updateBrush writes the override"),
                   model.updateBrush(gouache, tuned)
@@ -576,7 +580,7 @@ int main(int argc, char **argv)
                         if (r.at(i).id == pencil)
                             return i;
                     return 0;
-                }()).brush;
+                }()).brush();
             check(QStringLiteral("(b9) an override byte-equal to stock "
                                  "reads None (harmless residue)"),
                   model.updateBrush(pencil, stockPencil)
@@ -642,12 +646,12 @@ int main(int argc, char **argv)
             const auto roster3 = brushlib::builtinRoster();
             for (const BrushPreset &pr : roster3)
                 if (pr.id == gouache)
-                    stock = &pr.brush;
+                    stock = &pr.brush();
             check(QStringLiteral("(b9) ...the model holds STOCK again, "
                                  "byte-exact through the codec"),
                   stock
                       && BrushPresetCodec::saveBrush(
-                             model.preset(gouache)->brush)
+                             model.preset(gouache)->brush())
                           == BrushPresetCodec::saveBrush(*stock));
             check(QStringLiteral("(b9) reset on a non-overridden preset "
                                  "refuses"),
@@ -815,25 +819,25 @@ int main(int argc, char **argv)
                              "ASSET tip loaded (1177x1102 - a null here "
                              "means brush_assets.qrc is missing from this "
                              "target)"),
-              hb && hb->brush.hasCustomShape()
-                  && hb->brush.customShape().size() == QSize(1177, 1102));
+              hb && hb->brush().hasCustomShape()
+                  && hb->brush().customShape().size() == QSize(1177, 1102));
         if (hb) {
-            ::Brush want = variation.brush;
+            ::Brush want = variation.brush();
             want.setSize(36); // THE single approved delta
             const QByteArray fromVariation =
                 BrushPresetCodec::saveBrush(want);
             const QByteArray fromRecipe =
-                BrushPresetCodec::saveBrush(hb->brush);
+                BrushPresetCodec::saveBrush(hb->brush());
             check(QStringLiteral("(b11) built-in == variation, byte for "
                                  "byte, with ONLY size differing"),
                   fromVariation == fromRecipe,
                   fromVariation == fromRecipe
                       ? QString()
-                      : firstBrushDiff(want, hb->brush));
+                      : firstBrushDiff(want, hb->brush()));
             check(QStringLiteral("(b11) control: opacity is the KEPT 0.55 "
                                  "ceiling on both sides"),
-                  hb->brush.opacity() == 0.55
-                      && variation.brush.opacity() == 0.55);
+                  hb->brush().opacity() == 0.55
+                      && variation.brush().opacity() == 0.55);
         }
     }
 
@@ -931,11 +935,11 @@ int main(int argc, char **argv)
             for (const BrushPreset &candidate : roster)
                 if (candidate.id == QLatin1String(s.id))
                     p = &candidate;
-            const bool loaded = p && p->brush.hasCustomShape();
+            const bool loaded = p && p->brush().hasCustomShape();
             QString sha12;
             double mean = 0.0;
             if (loaded) {
-                const QImage &tip = p->brush.customShape();
+                const QImage &tip = p->brush().customShape();
                 QCryptographicHash h(QCryptographicHash::Sha256);
                 double sum = 0.0;
                 for (int y = 0; y < tip.height(); ++y) {
@@ -951,15 +955,15 @@ int main(int argc, char **argv)
             }
             const QString actual = loaded
                 ? QStringLiteral("%1x%2 sha %3 mean %4")
-                      .arg(p->brush.customShape().width())
-                      .arg(p->brush.customShape().height())
+                      .arg(p->brush().customShape().width())
+                      .arg(p->brush().customShape().height())
                       .arg(sha12)
                       .arg(mean, 0, 'f', 1)
                 : QStringLiteral("preset missing or no tip");
             check(QStringLiteral("(b12) %1 carries its stamp tip at "
                                  "%2x%3")
                       .arg(QLatin1String(s.id)).arg(s.w).arg(s.h),
-                  loaded && p->brush.customShape().size() == QSize(s.w, s.h),
+                  loaded && p->brush().customShape().size() == QSize(s.w, s.h),
                   actual);
             check(QStringLiteral("(b12) %1 holds the PINNED stamp bytes "
                                  "(sha %2, mean %3)")
@@ -1183,7 +1187,7 @@ int main(int argc, char **argv)
         const QVector<BrushPreset> roster2 = brushlib::builtinRoster();
         QVector<const BrushPreset *> mirrorable, excluded;
         for (const BrushPreset &p : roster2)
-            (p.brush.smudgeActive() || p.brush.dualBrushEnabled()
+            (p.brush().smudgeActive() || p.brush().dualBrushEnabled()
                  ? excluded : mirrorable) << &p;
         // 55 of 62 since 2026-09-26: Dry Brush became a dual brush (its
         // path-following streaks come from a Mask secondary), so it joins
@@ -1195,7 +1199,7 @@ int main(int argc, char **argv)
         bool exclOk = excluded.size() == 7;
         for (const BrushPreset *p : excluded)
             exclOk = exclOk
-                && (p->brush.smudgeActive() || p->brush.dualBrushEnabled());
+                && (p->brush().smudgeActive() || p->brush().dualBrushEnabled());
         check(QStringLiteral("(b8) exactly 7 excluded, each smudge or dual"),
               exclOk, QStringLiteral("%1 excluded").arg(excluded.size()));
 
@@ -1205,11 +1209,11 @@ int main(int argc, char **argv)
         bool identityOk = true;
         QString firstBad2;
         for (const BrushPreset *p : mirrorable) {
-            ::Brush copy = p->brush;
+            ::Brush copy = p->brush();
             copy.setEraseMode(true);
             copy.setEraseMode(false);
             if (BrushPresetCodec::saveBrush(copy)
-                != BrushPresetCodec::saveBrush(p->brush)) {
+                != BrushPresetCodec::saveBrush(p->brush())) {
                 identityOk = false;
                 firstBad2 = p->name;
                 break;
@@ -1266,7 +1270,7 @@ int main(int argc, char **argv)
         bool renderOk = true, lookOk = true, determOk = true;
         QString firstBad3;
         for (const BrushPreset *p : mirrorable) {
-            ::Brush eraseCopy = p->brush;
+            ::Brush eraseCopy = p->brush();
             eraseCopy.setEraseMode(true);
             const QImage a = BrushPreviewRenderer::renderPreviewImage(eraseCopy);
             const QImage b = BrushPreviewRenderer::renderPreviewImage(eraseCopy);
@@ -1416,13 +1420,13 @@ int main(int argc, char **argv)
     }
     {
         const BrushPreset &p = roster.first();
-        const QByteArray h0 = BrushPresetCodec::settingsHash(p.brush);
-        ::Brush edited = p.brush;
-        edited.setSize(p.brush.size() + 5);
-        const QByteArray wire = BrushPresetCodec::saveBrush(p.brush);
+        const QByteArray h0 = BrushPresetCodec::settingsHash(p.brush());
+        ::Brush edited = p.brush();
+        edited.setSize(p.brush().size() + 5);
+        const QByteArray wire = BrushPresetCodec::saveBrush(p.brush());
         check(QStringLiteral("(b4) settingsHash rename-stable, "
                              "edit-sensitive, covers the wire version"),
-              BrushPresetCodec::settingsHash(p.brush) == h0
+              BrushPresetCodec::settingsHash(p.brush()) == h0
                   && BrushPresetCodec::settingsHash(edited) != h0
                   && h0 == QCryptographicHash::hash(
                          wire, QCryptographicHash::Sha256)
@@ -1435,7 +1439,7 @@ int main(int argc, char **argv)
         QString detail;
         int rgbaCount = 0;
         for (const BrushPreset &p : roster) {
-            const bool rgba = p.brush.usesColorStrokeBuffer();
+            const bool rgba = p.brush().usesColorStrokeBuffer();
             if (rgba)
                 ++rgbaCount;
             if (rgba != expectedRgba16.contains(p.id)) {
@@ -1462,7 +1466,7 @@ int main(int argc, char **argv)
         bool flagsOk = true;
         QString detail;
         for (const BrushPreset &p : roster)
-            if (p.brush.tiltAffectsShape()
+            if (p.brush().tiltAffectsShape()
                 == expectedNoTilt.contains(p.id)) {
                 flagsOk = false;
                 detail += p.id + QStringLiteral(" ");
@@ -1480,11 +1484,11 @@ int main(int argc, char **argv)
                 sixB = &p;
         bool tiltVisible = false;
         if (sixB) {
-            ::Brush noTilt = sixB->brush;
+            ::Brush noTilt = sixB->brush();
             noTilt.setTiltAffectsShape(false);
             tiltVisible =
                 imageBytes(BrushPreviewRenderer::renderPreviewImage(
-                    sixB->brush))
+                    sixB->brush()))
                 != imageBytes(
                     BrushPreviewRenderer::renderPreviewImage(noTilt));
         }
@@ -1503,10 +1507,10 @@ int main(int argc, char **argv)
         for (const BrushPreset &p : roster) {
             timer.start();
             const QImage a = BrushPreviewRenderer::renderPreviewImage(
-                p.brush);
+                p.brush());
             perPreviewNs.append(timer.nsecsElapsed());
             const QImage b = BrushPreviewRenderer::renderPreviewImage(
-                p.brush);
+                p.brush());
             if (a.isNull()) {
                 nonEmpty = false;
                 firstBad = p.name;
@@ -1529,11 +1533,11 @@ int main(int argc, char **argv)
         bool smudgeOk = true;
         QString detail;
         for (const BrushPreset &p : roster) {
-            if (!p.brush.smudgeActive())
+            if (!p.brush().smudgeActive())
                 continue;
             const QImage swatch =
-                BrushPreviewRenderer::renderPreviewImage(p.brush);
-            ::Brush inert = p.brush;
+                BrushPreviewRenderer::renderPreviewImage(p.brush());
+            ::Brush inert = p.brush();
             inert.setSmudgeStrength(0.0); // bands unharmed = no drag at all
             int diff = 0;
             const QImage base =
@@ -1586,7 +1590,7 @@ int main(int argc, char **argv)
                          });
         timer.start();
         for (const BrushPreset *p : inking)
-            renderer.requestPreview(p->id, p->brush);
+            renderer.requestPreview(p->id, p->brush());
         QElapsedTimer gap;
         gap.start();
         QElapsedTimer guard;
@@ -1620,7 +1624,7 @@ int main(int argc, char **argv)
                          });
         timer.start();
         for (const BrushPreset *p : inking)
-            warm.requestPreview(p->id, p->brush);
+            warm.requestPreview(p->id, p->brush());
         guard.restart();
         while (warmReady < inking.size() && guard.elapsed() < 30000)
             QCoreApplication::processEvents(QEventLoop::AllEvents, 5);
@@ -1628,7 +1632,7 @@ int main(int argc, char **argv)
         for (const BrushPreset *p : inking)
             if (firstBytes.value(p->id)
                 != imageBytes(
-                    BrushPreviewRenderer::renderPreviewImage(p->brush)))
+                    BrushPreviewRenderer::renderPreviewImage(p->brush())))
                 warmIdentical = false;
         check(QStringLiteral("(p4) cache survives restart and serves "
                              "identical bytes"),
@@ -1639,7 +1643,7 @@ int main(int argc, char **argv)
             QDir(renderer.cacheDir())
                 .entryList({QStringLiteral("*.png")}, QDir::Files)
                 .size();
-        ::Brush edited = inking.first()->brush;
+        ::Brush edited = inking.first()->brush();
         edited.setSize(edited.size() + 7);
         int editReady = 0;
         QObject::connect(&warm, &BrushPreviewRenderer::previewReady, &app,
@@ -1675,7 +1679,7 @@ int main(int argc, char **argv)
                              ++emissions;
                          });
         for (const BrushPreset *p : inking)
-            renderer.requestPreview(p->id, p->brush);
+            renderer.requestPreview(p->id, p->brush());
         renderer.cancelAll();
         QElapsedTimer guard;
         guard.start();
@@ -1692,7 +1696,7 @@ int main(int argc, char **argv)
         auto *renderer = new BrushPreviewRenderer(
             scratch + QStringLiteral("_shutdown"));
         for (const BrushPreset *p : inking)
-            renderer->requestPreview(p->id, p->brush);
+            renderer->requestPreview(p->id, p->brush());
         delete renderer;
         check(QStringLiteral(
                   "(p7) shutdown mid-generation: no hang, no crash"),
@@ -1714,7 +1718,7 @@ int main(int argc, char **argv)
         auto byName = [&](const char *name) {
             for (const BrushPreset &p : all)
                 if (p.name == QLatin1String(name))
-                    return p.brush;
+                    return p.brush();
             return ::Brush();
         };
 
@@ -1731,10 +1735,10 @@ int main(int argc, char **argv)
         QString worstName;
         ts << nl << "== (w) DISPLAY SIZE: engine -> label / drawn ==" << nl;
         for (const BrushPreset &p : all) {
-            const WidthRatio r = BrushWidthRatio::ratioFor(p.brush);
-            const int engine = p.brush.size();
-            const int label = BrushWidthRatio::displaySize(p.brush, engine);
-            if (BrushWidthRatio::engineSize(p.brush, label, engine)
+            const WidthRatio r = BrushWidthRatio::ratioFor(p.brush());
+            const int engine = p.brush().size();
+            const int label = BrushWidthRatio::displaySize(p.brush(), engine);
+            if (BrushWidthRatio::engineSize(p.brush(), label, engine)
                 != engine) {
                 defaultsReachable = false;
                 if (firstUnreachable.isEmpty())
@@ -1754,8 +1758,8 @@ int main(int argc, char **argv)
                 continue;
             }
             for (int size : {engine, 120}) {
-                const int shown = BrushWidthRatio::displaySize(p.brush, size);
-                const double drawn = independentVisibleWidth(p.brush, size);
+                const int shown = BrushWidthRatio::displaySize(p.brush(), size);
+                const double drawn = independentVisibleWidth(p.brush(), size);
                 const double off = std::abs(shown - drawn);
                 ts << p.id << "  engine " << size << "  label " << shown
                    << "  draws " << drawn << "  ratio " << r.ratio << nl;
@@ -2057,6 +2061,416 @@ int main(int argc, char **argv)
                                   .arg(BrushWidthRatio::kRevision))
                           .entryList({QStringLiteral("*.txt")}, QDir::Files)
                           .size() == 1);
+            QDir(root).removeRecursively();
+        }
+    }
+
+    // ---- (m) THE WORK DONE, NOT THE TIME (2026-10-24) --------------------
+    // The library froze for 1.4-2.7 s per open and 1.7 s per selection
+    // (the user's recording; the probe reproduced it): every list rebuild
+    // PNG-encoded every tip AGAIN on the UI thread, because the encode
+    // memo held 16 images and wiped itself on the 17th while the Recent
+    // list carries 30 presets with 21+ distinct 1254x1254 tips. These pin
+    // the WORK the fix rests on; the timings are the probe's to report.
+    // On the code before the fix: (m1) FAILS (42 tips > 16 entries), (m2)
+    // FAILS (the second pass encodes every tip again); (m4) and the keyed
+    // requests do not exist to compile.
+    {
+        using brushlib::BrushKeys;
+        using brushlib::BrushLibraryModel;
+        using brushlib::BrushWidthRatio;
+        const BrushPreset *tipped = nullptr;
+        for (const BrushPreset &p : roster)
+            if (p.brush().hasCustomShape()) {
+                tipped = &p;
+                break;
+            }
+        // (m1) the encode memo holds the whole roster.
+        {
+            const int e0 = BrushPresetCodec::imageEncodeCountForTest();
+            for (const BrushPreset &p : roster)
+                (void)BrushPresetCodec::saveBrush(p.brush());
+            const int e1 = BrushPresetCodec::imageEncodeCountForTest();
+            for (const BrushPreset &p : roster)
+                (void)BrushPresetCodec::saveBrush(p.brush());
+            const int e2 = BrushPresetCodec::imageEncodeCountForTest();
+            const qint64 bytes =
+                BrushPresetCodec::imageEncodeMemoBytesForTest();
+            const int entries =
+                BrushPresetCodec::imageEncodeMemoEntriesForTest();
+            check(QStringLiteral("(m1) the encode memo holds the whole "
+                                 "roster: a second pass over all %1 "
+                                 "built-ins encodes ZERO images")
+                      .arg(roster.size()),
+                  e2 == e1,
+                  QStringLiteral("encodes %1 -> %2 -> %3; memo %4 MB in %5 "
+                                 "images")
+                      .arg(e0).arg(e1).arg(e2)
+                      .arg(bytes / (1024.0 * 1024.0), 0, 'f', 1)
+                      .arg(entries));
+            check(QStringLiteral("(m1) ...within its byte cap"),
+                  bytes <= BrushPresetCodec::imageEncodeMemoCapBytes()
+                      && entries >= 40,
+                  QStringLiteral("%1 of %2 MB, %3 images")
+                      .arg(bytes / (1024.0 * 1024.0), 0, 'f', 1)
+                      .arg(BrushPresetCodec::imageEncodeMemoCapBytes()
+                           / (1024.0 * 1024.0), 0, 'f', 0)
+                      .arg(entries));
+            // Control: a REPLACED tip (a new cacheKey) is encoded exactly
+            // once, then served.
+            ::Brush replaced = tipped ? tipped->brush() : ::Brush();
+            replaced.setCustomShape(replaced.customShape().copy());
+            const int e3 = BrushPresetCodec::imageEncodeCountForTest();
+            (void)BrushPresetCodec::saveBrush(replaced);
+            const int e4 = BrushPresetCodec::imageEncodeCountForTest();
+            (void)BrushPresetCodec::saveBrush(replaced);
+            const int e5 = BrushPresetCodec::imageEncodeCountForTest();
+            check(QStringLiteral("(m1) control: a replaced tip is encoded "
+                                 "once, then served from the memo"),
+                  tipped && e4 == e3 + 1 && e5 == e4,
+                  QStringLiteral("encodes %1 -> %2 -> %3").arg(e3).arg(e4)
+                      .arg(e5));
+            // The bound, and LEAST RECENTLY USED (not oldest-inserted): a
+            // victim image V goes in first, then more than a cap's worth
+            // of 2048x2048 noise (about 4 MB each) - and V is TOUCHED after
+            // every one. V must survive the whole run (every touch served),
+            // the first noise image must be gone, and the bytes must stay
+            // under the cap. An insertion-order policy would have evicted V
+            // first.
+            QRandomGenerator rng(7);
+            auto noiseBrush = [&] {
+                QImage noise(2048, 2048, QImage::Format_Grayscale8);
+                for (int y = 0; y < noise.height(); ++y) {
+                    uchar *row = noise.scanLine(y);
+                    for (int x = 0; x < noise.width(); ++x)
+                        row[x] = uchar(rng.generate());
+                }
+                ::Brush b;
+                b.setCustomShape(noise);
+                return b;
+            };
+            const ::Brush victim = noiseBrush();
+            (void)BrushPresetCodec::saveBrush(victim);
+            ::Brush first;
+            int victimReencodes = 0;
+            const int made = 30; // about 120 MB, past the 96 MB cap
+            for (int i = 0; i < made; ++i) {
+                const ::Brush n = noiseBrush();
+                if (i == 0)
+                    first = n;
+                (void)BrushPresetCodec::saveBrush(n);
+                const int before = BrushPresetCodec::imageEncodeCountForTest();
+                (void)BrushPresetCodec::saveBrush(victim); // the touch
+                victimReencodes +=
+                    BrushPresetCodec::imageEncodeCountForTest() - before;
+            }
+            const qint64 boundBytes =
+                BrushPresetCodec::imageEncodeMemoBytesForTest();
+            const int boundEntries =
+                BrushPresetCodec::imageEncodeMemoEntriesForTest();
+            const int e6 = BrushPresetCodec::imageEncodeCountForTest();
+            (void)BrushPresetCodec::saveBrush(first); // the first noise: gone
+            const int e7 = BrushPresetCodec::imageEncodeCountForTest();
+            check(QStringLiteral("(m1) past the cap the memo evicts the "
+                                 "LEAST RECENTLY USED image (a touched "
+                                 "victim survives %1 insertions, the first "
+                                 "untouched one is gone), staying within "
+                                 "its bytes")
+                      .arg(made),
+                  boundBytes <= BrushPresetCodec::imageEncodeMemoCapBytes()
+                      && victimReencodes == 0 && e7 == e6 + 1
+                      && boundEntries < made + 1,
+                  QStringLiteral("%1 MB held in %2 images; victim "
+                                 "re-encoded %3 times; first noise +%4")
+                      .arg(boundBytes / (1024.0 * 1024.0), 0, 'f', 1)
+                      .arg(boundEntries)
+                      .arg(victimReencodes)
+                      .arg(e7 - e6));
+        }
+        // (m2) keyed requests: previews rendered once, then reused, and
+        // nothing hashed on a list the worker has seen - on a list shaped
+        // like the user's (every built-in with a tip, 42 > the old 16).
+        {
+            const QString root = scratch + QStringLiteral("_keyed");
+            QDir(root).removeRecursively();
+            BrushLibraryModel model(nullptr, root + QStringLiteral("/lib"));
+            QVector<const BrushPreset *> list;
+            for (const QString &cat : BrushLibraryModel::categories())
+                for (const BrushPreset *p : model.presetsIn(cat))
+                    if (p->brush().hasCustomShape())
+                        list.append(p);
+            struct Work
+            {
+                int encodes, measures, renders, writes;
+            };
+            auto now = [] {
+                return Work{BrushPresetCodec::imageEncodeCountForTest(),
+                            BrushWidthRatio::measureCountForTest(),
+                            BrushPreviewRenderer::renderCountForTest(),
+                            BrushPreviewRenderer::cacheWriteCountForTest()};
+            };
+            auto delta = [](const Work &a, const Work &b) {
+                return QStringLiteral(
+                           "encodes +%1 measures +%2 renders +%3 writes +%4")
+                    .arg(b.encodes - a.encodes)
+                    .arg(b.measures - a.measures)
+                    .arg(b.renders - a.renders)
+                    .arg(b.writes - a.writes);
+            };
+            int keysReported = 0;
+            auto pass = [&](BrushPreviewRenderer &r, bool erase) {
+                int ready = 0;
+                QMetaObject::Connection c1 = QObject::connect(
+                    &r, &BrushPreviewRenderer::previewReady, &app,
+                    [&](const QString &, const QImage &) { ++ready; });
+                QMetaObject::Connection c2 = QObject::connect(
+                    &r, &BrushPreviewRenderer::keysReady, &app,
+                    [&](const QString &id, quint64 rev,
+                        const BrushKeys &k) {
+                        ++keysReported;
+                        model.storeKeys(id, rev, k);
+                    });
+                for (const BrushPreset *p : list)
+                    r.requestPreview(*p, erase);
+                QElapsedTimer guard;
+                guard.start();
+                while (ready < list.size() && guard.elapsed() < 180000)
+                    QCoreApplication::processEvents(QEventLoop::AllEvents,
+                                                    5);
+                QObject::disconnect(c1);
+                QObject::disconnect(c2);
+                return ready == list.size();
+            };
+            const QString cache = root + QStringLiteral("/cache");
+            // The width memory tier is process-wide and the (w) checks
+            // filled it: start this list cold, so "measured once" counts.
+            BrushWidthRatio::clearMemoryCacheForTest();
+            const Work w0 = now();
+            bool ok1 = false, ok2 = false, ok3 = false, ok4 = false,
+                 ok5 = false, ok6 = false;
+            Work w1{}, w2{}, w3{}, w4{}, w5{}, w6{};
+            {
+                BrushPreviewRenderer r(cache);
+                ok1 = pass(r, false); // cold: renders, measures, computes keys
+                w1 = now();
+                const int keysAfterCold = keysReported;
+                ok2 = pass(r, false); // the second open
+                w2 = now();
+                check(QStringLiteral("(m2) first pass over %1 tipped presets: "
+                                     "every swatch rendered and written, "
+                                     "every width measured, every key "
+                                     "computed once and stored")
+                          .arg(list.size()),
+                      ok1 && w1.renders - w0.renders == list.size()
+                          && w1.writes - w0.writes == list.size()
+                          && w1.measures - w0.measures == list.size()
+                          && keysAfterCold == list.size()
+                          && model.keysKnownCountForTest() == list.size(),
+                      delta(w0, w1)
+                          + QStringLiteral("; keys %1, known %2")
+                                .arg(keysAfterCold)
+                                .arg(model.keysKnownCountForTest()));
+                check(QStringLiteral("(m2) the SECOND pass over the same list "
+                                     "encodes, measures, renders and writes "
+                                     "NOTHING, and computes no key"),
+                      ok2 && w2.encodes == w1.encodes
+                          && w2.measures == w1.measures
+                          && w2.renders == w1.renders
+                          && w2.writes == w1.writes
+                          && keysReported == keysAfterCold,
+                      delta(w1, w2));
+            }
+            {
+                BrushPreviewRenderer r(cache); // a restart over the same cache
+                ok3 = pass(r, false);
+                w3 = now();
+                check(QStringLiteral("(m2) ...and so does a NEW renderer over "
+                                     "the same cache (restart)"),
+                      ok3 && w3.encodes == w2.encodes
+                          && w3.measures == w2.measures
+                          && w3.renders == w2.renders
+                          && w3.writes == w2.writes,
+                      delta(w2, w3));
+                ok4 = pass(r, true); // the Eraser Library's variant
+                w4 = now();
+                ok5 = pass(r, true);
+                w5 = now();
+                check(QStringLiteral("(m2) the ERASE variant renders once "
+                                     "under its own stored key (no hashing, "
+                                     "no measuring), then is reused"),
+                      ok4 && ok5 && w4.renders - w3.renders == list.size()
+                          && w4.encodes == w3.encodes
+                          && w4.measures == w3.measures
+                          && w5.renders == w4.renders
+                          && w5.writes == w4.writes,
+                      delta(w3, w4) + QStringLiteral(" | ") + delta(w4, w5));
+                // Positive control: with the swatch cache gone, the
+                // counters see the renders again - and still no hashing.
+                QDir(r.cacheDir()).removeRecursively();
+                ok6 = pass(r, false);
+                w6 = now();
+                check(QStringLiteral("(m2) control: the swatch cache wiped -> "
+                                     "every swatch renders and writes again, "
+                                     "still with no encode and no measure"),
+                      ok6 && w6.renders - w5.renders == list.size()
+                          && w6.writes - w5.writes == list.size()
+                          && w6.encodes == w5.encodes
+                          && w6.measures == w5.measures,
+                      delta(w5, w6));
+            }
+            QDir(root).removeRecursively();
+        }
+        // (m4) the one setter, and every path that moves a brush.
+        {
+            BrushPreset p = roster.first();
+            const BrushKeys k = BrushPreset::computeKeys(p.brush());
+            p.storeKeys(k, p.brushRevision());
+            const bool knownA = p.keysKnown() && p.keys() == k;
+            ::Brush edited = p.brush();
+            edited.setSize(edited.size() + 3);
+            const quint64 oldRevision = p.brushRevision();
+            p.setBrush(edited);
+            const bool droppedB = !p.keysKnown()
+                && p.brushRevision() == oldRevision + 1;
+            p.storeKeys(k, oldRevision); // the worker's late answer
+            const bool staleC = !p.keysKnown();
+            const BrushKeys fresh = BrushPreset::computeKeys(edited);
+            p.storeKeys(fresh, p.brushRevision());
+            const bool freshD = p.keysKnown() && p.keys() == fresh
+                && fresh != k;
+            check(QStringLiteral("(m4) setBrush is the one door: it drops the "
+                                 "stored keys and moves the revision; keys "
+                                 "for the OLD revision are refused; the new "
+                                 "revision's keys store"),
+                  knownA && droppedB && staleC && freshD);
+
+            const QString root = scratch + QStringLiteral("_keys");
+            QDir(root).removeRecursively();
+            BrushLibraryModel model(nullptr, root);
+            auto everyId = [&] {
+                QStringList ids;
+                for (const QString &cat : BrushLibraryModel::categories())
+                    for (const BrushPreset *q : model.presetsIn(cat))
+                        ids << q->id;
+                for (const BrushPreset *q :
+                     model.presetsIn(QStringLiteral("Imported")))
+                    ids << q->id;
+                return ids;
+            };
+            auto warm = [&] {
+                for (const QString &id : everyId()) {
+                    const BrushPreset *q = model.preset(id);
+                    model.storeKeys(id, q->brushRevision(),
+                                    BrushPreset::computeKeys(q->brush()));
+                }
+            };
+            auto consistent = [&](const QString &id) {
+                const BrushPreset *q = model.preset(id);
+                return q
+                    && (!q->keysKnown()
+                        || q->keys() == BrushPreset::computeKeys(q->brush()));
+            };
+            auto allConsistent = [&] {
+                for (const QString &id : everyId())
+                    if (!consistent(id))
+                        return false;
+                return true;
+            };
+            warm();
+            const int total = everyId().size();
+            const bool warmed = model.keysKnownCountForTest() == total;
+            const QString g = QStringLiteral("builtin/painting/gouache");
+            ::Brush tuned = model.preset(g)->brush();
+            tuned.setSpacing(0.02);
+            const bool u1 = model.updateBrush(g, tuned);
+            const bool droppedByUpdate = !model.preset(g)->keysKnown();
+            warm();
+            const bool r1 = model.resetBuiltinToStock(g);
+            const bool droppedByReset = !model.preset(g)->keysKnown();
+            warm();
+            BrushPreset copy;
+            copy.name = QStringLiteral("Keys Copy");
+            copy.category = QStringLiteral("Painting");
+            copy.setBrush(tuned);
+            const QString userId = model.addUserPreset(copy);
+            const bool addedOk = !userId.isEmpty();
+            warm();
+            ::Brush tuned2 = tuned;
+            tuned2.setSpacing(0.03);
+            const bool u2 = model.updateBrush(userId, tuned2);
+            const bool droppedByUserUpdate = !model.preset(userId)->keysKnown();
+            warm();
+            const QString dupId = model.duplicatePreset(userId);
+            const bool dupOk = !dupId.isEmpty() && consistent(dupId);
+            // A native import that lands as a built-in OVERRIDE (the
+            // import path's updateBrush).
+            ::Brush tuned3 = tuned;
+            tuned3.setSpacing(0.04);
+            BrushPreset file = *model.preset(g);
+            file.setBrush(tuned3);
+            const QString importPath = root + QStringLiteral("/keys.sankobrush");
+            {
+                QFile f(importPath);
+                f.open(QIODevice::WriteOnly | QIODevice::Truncate);
+                f.write(BrushPresetCodec::savePreset(file));
+            }
+            const int imported = model.importFile(importPath);
+            const bool droppedByImport = imported == 1
+                && !model.preset(g)->keysKnown()
+                && qFuzzyCompare(model.preset(g)->brush().spacing(), 0.04);
+            warm();
+            model.restoreDefaultBrushes();
+            const bool okAfterRestore = allConsistent();
+            check(QStringLiteral("(m4) every model path that moves a brush "
+                                 "leaves its stored keys dropped (updateBrush "
+                                 "x2, resetBuiltinToStock, importFile) or "
+                                 "equal to a fresh hash (addUserPreset, "
+                                 "duplicatePreset, restoreDefaultBrushes)"),
+                  warmed && u1 && droppedByUpdate && r1 && droppedByReset
+                      && addedOk && u2 && droppedByUserUpdate && dupOk
+                      && droppedByImport && okAfterRestore,
+                  QStringLiteral("warmed=%1 update=%2/%3 reset=%4/%5 add=%6 "
+                                 "userUpdate=%7/%8 dup=%9 import=%10/%11 "
+                                 "restore=%12")
+                      .arg(warmed).arg(u1).arg(droppedByUpdate).arg(r1)
+                      .arg(droppedByReset).arg(addedOk).arg(u2)
+                      .arg(droppedByUserUpdate).arg(dupOk).arg(imported)
+                      .arg(droppedByImport).arg(okAfterRestore));
+            // The warm-up: a model built with it on stores every preset's
+            // keys off the UI thread, each equal to a fresh hash.
+            BrushLibraryModel::setKeyWarmupEnabledForTest(true);
+            {
+                const QString wroot = scratch + QStringLiteral("_warm");
+                QDir(wroot).removeRecursively();
+                BrushLibraryModel warmModel(nullptr, wroot);
+                QElapsedTimer guard;
+                guard.start();
+                while (!warmModel.keyWarmupDoneForTest()
+                       && guard.elapsed() < 180000)
+                    QCoreApplication::processEvents(QEventLoop::AllEvents,
+                                                    5);
+                int known = 0, equal = 0, totalW = 0;
+                for (const QString &cat : BrushLibraryModel::categories())
+                    for (const BrushPreset *q : warmModel.presetsIn(cat)) {
+                        ++totalW;
+                        if (q->keysKnown()) {
+                            ++known;
+                            if (q->keys()
+                                == BrushPreset::computeKeys(q->brush()))
+                                ++equal;
+                        }
+                    }
+                check(QStringLiteral("(m4) the warm-up stores every preset's "
+                                     "keys off the UI thread, each equal to a "
+                                     "fresh hash"),
+                      warmModel.keyWarmupDoneForTest() && known == totalW
+                          && equal == totalW,
+                      QStringLiteral("%1 of %2 known, %3 equal, %4 ms")
+                          .arg(known).arg(totalW).arg(equal)
+                          .arg(guard.elapsed()));
+                QDir(wroot).removeRecursively();
+            }
+            BrushLibraryModel::setKeyWarmupEnabledForTest(false);
             QDir(root).removeRecursively();
         }
     }

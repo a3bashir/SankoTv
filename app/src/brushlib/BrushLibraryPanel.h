@@ -60,6 +60,9 @@ public:
     {
         selectCategory(category);
     }
+    // How many times the row list was rebuilt (2026-10-24): a second open
+    // of an unchanged list must add nothing.
+    int rebuildCountForTest() const { return m_rebuildCount; }
 
     // --- Brush-button anchoring -------------------------------------------
     // The panel opens attached to the Brush BUTTON: directly below it when
@@ -132,6 +135,7 @@ private:
     void updateEraserRow(); // legacy-eraser row visibility (mirror pass)
     bool presetFitsScope(const BrushPreset &preset) const;
     void rebuildBrushList();
+    bool listStale() const; // what the rows show vs what they should
     void showRowMenu(BrushRow *row, const QPoint &globalPos);
     void showChevronMenu(const QPoint &globalPos);
     void importBrushes();
@@ -145,6 +149,12 @@ private:
     ToolScope m_scope = ToolScope::Brush;
     QString m_selectedId;
     QString m_dirtyId; // preset whose row shows the dirty dot + Reset chip
+    // The record of the last rebuild (listStale()).
+    bool m_listed = false;
+    ToolScope m_listedScope = ToolScope::Brush;
+    QString m_listedCategory;
+    quint64 m_listedRevision = 0;
+    int m_rebuildCount = 0;
 
     QLabel *m_titleLabel = nullptr;
     QWidget *m_headerWidget = nullptr;

@@ -7131,6 +7131,111 @@ the stack, a change during playback with the film and sound still
 playing); the round trip writes "volume"; old projects (muted -> 0, none
 -> 100).
 
+## The Brush Library opens at once: the encode memo, stored keys, one rebuild (2026-10-24)
+
+The user's report, recorded with the dev recorder (session 20261024-182201,
+Release 39fef5382+dirty): the Brush and Eraser Library took too long to
+open and a selection responded slowly. From the recording: every open
+froze the UI thread for 1.3-2.7 s AFTER the show event (the panel's show
+fired 0.6 ms after the pen release; nothing painted until the freeze
+ended), a tool-switch open twice as long (1.1 s before the show, 1.2-1.6
+after), a row click 1.7 s; slow EVERY time, the seventh open as much as
+the first. The probe (build/_probe/brushslow, archived to
+tests/_backups/brushslow_20261024; the real BrushLibraryPanel on the
+offscreen platform, a read-only copy of the user's library, the user's
+30-entry Recent list seeded) reproduced it: plain open 1.4-1.7 s Release
+/ 1.7-3.4 s Debug, selection 0.9-1.8 s / 1.8-2.9 s, 33-43 PNG encodes per
+rebuild.
+
+THE CAUSE. Every list rebuild (`rebuildBrushList`: once per open from
+showEvent, twice per tool-switch open, once per selection through
+recordUsage -> changed) asked each row for its width ratio by HASHING
+the preset's brush, and a hash serialises the brush, which PNG-encodes
+its tip (1254x1254 Grayscale8 for 42 of the 62 built-ins: 67 ms median
+per encode in Release, 107 in Debug). The codec's encode memo held 16
+images and CLEARED ITSELF on the 17th; the Recent list carries 30
+presets with 21+ distinct tips, so no tip was ever found memoised on the
+next rebuild, and the preview worker's own two hashes per row held the
+memo's mutex through its encodes, which the UI thread then waited for.
+Ruled out, with numbers: previews are not drawn per open (worker thread,
+warm disk cache: 21 ms median per render, 0.3 ms per cached PNG);
+nothing is loaded from disk per open (the roster decodes once at
+startup); the row widgets are pooled; the settings writes on open and
+select are RegSetValueEx + RegFlushKey through QSettings::sync (confirmed
+in Qt's qsettings_win.cpp), under 100 ms for two (the close path, which
+writes the same two keys, never stalled); the canvas does nothing on a
+brush change but copy and emit; the Size CTL's displaySize measures a
+brush on the UI thread only for a working-brush key never seen in the
+process (106-260 ms once in Release, 0 ms afterwards) - not the cause,
+left as is on the user's rule.
+
+THE FIX, nothing drawn changes (the preview pin 608366fc..., the eraser pin
+d312bc9b... and the pixel locks are untouched; renderPreviewImage, the
+engine and the codec's bytes are not edited):
+1. The encode memo is an LRU BOUNDED BY BYTES (96 MB; the roster's tips
+   are about 40 MB of PNG), evicting the least recently used past the cap,
+   never clearing. Keyed by QImage::cacheKey as before: a replaced or
+   edited image is a new key and a key is never reused, so a stale entry
+   is unreachable. Seams: imageEncodeMemoBytesForTest / EntriesForTest /
+   CapBytes.
+2. STORED KEYS. `BrushPreset` keeps its brush PRIVATE: `brush()` reads,
+   `setBrush()` is the one door and drops the stored `BrushKeys` (swatch,
+   erase-swatch and width keys) while bumping a revision; `storeKeys()`
+   accepts keys only for the revision they were computed from, so a
+   worker's late answer for an edited brush is refused. Keys are computed
+   OFF the UI thread: by the preview worker when a request finds them
+   missing (reported through keysReady and stored by the panel into the
+   model), and by the model's WARM-UP, a low-priority thread started at
+   construction that computes every preset's keys (about 50 encodes, 3.5
+   s of background CPU in Release) so the first open hashes nothing. A row
+   whose keys are not stored yet leaves its label blank until the worker
+   reports, exactly the old cold path; the UI thread never hashes. The
+   renderer's library form `requestPreview(preset, eraseVariant)` carries
+   the stored keys; BrushWidthRatio gained ratioForKey / cachedByKey.
+   Debug builds assert, on every read of stored keys, that they equal a
+   fresh computation (the Debug after-numbers carry that cost: about 20 ms
+   per row). The warm-up is off under the gate's unit checks
+   (setKeyWarmupEnabledForTest), whose encode counts must not move
+   underneath them; the app and the lifecycle family run it.
+3. ONE REBUILD PER OPEN: rebuildBrushList records what it listed (scope,
+   category, the model's revision, which moves on every changed()), and
+   showEvent rebuilds only when that record is stale - every path that
+   changes the list rebuilds it at once, shown or hidden.
+4. Settings writes: left as they are (the probe showed one write with
+   sync at 6 ms on an INI and 0.05 ms on the registry's private hive;
+   the recording bounded two real-registry writes under 100 ms).
+
+AFTER (the same probe, same library copy, same seeded list): see the
+report of 2026-10-24 for the Release and Debug tables; the memo held
+about 40 MB after both libraries were opened several times.
+
+GATE: BrushLibrary (m1) the memo holds the whole roster (a second pass
+over 62 built-ins encodes zero images; a replaced tip once; past the cap
+the least recently used goes, the newest stays, within the bytes), (m2)
+keyed requests on 42 tipped presets: rendered, written, measured and
+keyed once, then a second pass and a restarted renderer encode, measure,
+render and write NOTHING, the erase variant renders once under its own
+key, and the control (cache wiped) renders everything again with still
+no encode; (m4) setBrush is the one door (drops keys, refuses the old
+revision, stores the new), every model path that moves a brush leaves
+keys dropped or equal to a fresh hash (updateBrush x2, resetBuiltinToStock,
+importFile, addUserPreset, duplicatePreset, restoreDefaultBrushes), and
+the warm-up stores every key off the UI thread. Lifecycle (bw), through
+the real page: the warm-up finishes; the second open of a list rebuilds,
+encodes, measures, renders and writes nothing; a tool-switch open is one
+rebuild; a selection changes exactly one settings key
+(brushLibrary/v1/recent), touches no preset file, writes no cache file,
+renders and encodes nothing; the control (a studio edit) writes one file
+and renders one swatch. On the code before the fix (m1) and (m2) fail;
+(m4) and (bw) do not compile.
+
+OPEN (recorded 2026-10-24, from the same recording, not this pass): a
+`QFont::setPointSize: Point size <= 0 (-1)` warning 9.7 s into the
+session, and a `QPainter::begin: Paint device returned engine == 0, type:
+3` (an image) followed by `setCompositionMode: Painter not active` at the
+end of the first pen stroke - a null QImage painted somewhere on the
+stroke path. Both harmless so far; both to be found.
+
 ## METHOD: measure interior structure ACROSS THE SIZE RANGE before calling it character (2026-09-25)
 
 The Painting census measured Acrylic at size 20 only and found "one

@@ -131,8 +131,8 @@ int main(int argc, char **argv)
     out() << "OVERRIDE: " << over.id << " (\"" << stockPreset->name
           << "\")" << Qt::endl;
 
-    const ::Brush &S = stockPreset->brush;
-    const ::Brush &T = over.brush;
+    const ::Brush &S = stockPreset->brush();
+    const ::Brush &T = over.brush();
     if (S.dualBrushEnabled() || T.dualBrushEnabled()) {
         out() << "  STOP: dual-brush presets carry a secondary payload this "
                  "tool does not walk; promote by hand with care."

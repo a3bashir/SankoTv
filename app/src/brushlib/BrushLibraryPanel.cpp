@@ -111,24 +111,34 @@ public:
         : QWidget(parent)
         , m_id(preset->id)
         , m_name(preset->name)
-        , m_sizePx(preset->brush.size())
-        , m_smudge(preset->brush.smudgeActive())
+        , m_sizePx(preset->brush().size())
+        , m_smudge(preset->brush().smudgeActive())
     {
         setFixedHeight(74);
         setCursor(Qt::PointingHandCursor);
         setMouseTracking(true);
         WidthRatio known;
-        m_labelKnown = BrushWidthRatio::cached(preset->brush, &known);
+        m_labelKnown = knownRatio(preset, &known);
         m_labelPx = m_labelKnown
             ? BrushWidthRatio::displaySizeWith(known, m_sizePx) : 0;
     }
     QString presetId() const { return m_id; }
+    // NEVER HASHES (2026-10-24): the ratio is looked up by the preset's
+    // STORED width key. A preset whose keys are not stored yet (the
+    // worker has not got there) leaves the label blank until the worker
+    // reports - hashing here PNG-encoded the tip on the UI thread, 30
+    // rows per open, which is what froze the library.
+    static bool knownRatio(const BrushPreset *preset, WidthRatio *out)
+    {
+        return preset->keysKnown()
+            && BrushWidthRatio::cachedByKey(preset->keys().width, out);
+    }
     void setPreset(const BrushPreset *preset)
     {
         m_id = preset->id;
         m_name = preset->name;
-        m_sizePx = preset->brush.size();
-        m_smudge = preset->brush.smudgeActive();
+        m_sizePx = preset->brush().size();
+        m_smudge = preset->brush().smudgeActive();
         m_swatch = QPixmap();
         // DISPLAY-SIZE LAYER: the label is the VISIBLE width, which needs
         // the brush's width ratio. If this process already knows it, the
@@ -136,7 +146,7 @@ public:
         // worker reports (setWidthRatio) - never the engine size in the
         // meantime, which is the number that was lying.
         WidthRatio known;
-        m_labelKnown = BrushWidthRatio::cached(preset->brush, &known);
+        m_labelKnown = knownRatio(preset, &known);
         m_labelPx = m_labelKnown
             ? BrushWidthRatio::displaySizeWith(known, m_sizePx) : 0;
         update();
@@ -423,6 +433,14 @@ BrushLibraryPanel::BrushLibraryPanel(BrushLibraryModel *model,
                     if (row->presetId() == id)
                         row->setWidthRatio(ratio);
             });
+    // Keys the worker had to compute (a preset the warm-up had not
+    // reached, or one just edited) land on the preset for every later
+    // rebuild and request.
+    connect(&m_previews, &BrushPreviewRenderer::keysReady, this,
+            [this](const QString &presetId, quint64 revision,
+                   const BrushKeys &keys) {
+                m_model->storeKeys(presetId, revision, keys);
+            });
     connect(m_model, &BrushLibraryModel::changed, this, [this] {
         updateImportedRow();
         rebuildBrushList();
@@ -626,16 +644,26 @@ void BrushLibraryPanel::rebuildBrushList()
         // separately by construction - settingsHash covers the v11
         // eraseMode field, so the two variants can never collide. The
         // "#erase" suffix keys the request/routing; the stored preset is
-        // never touched.
-        if (m_scope == ToolScope::Eraser) {
-            ::Brush eraseCopy = preset->brush;
-            eraseCopy.setEraseMode(true);
-            m_previews.requestPreview(
-                preset->id + QStringLiteral("#erase"), eraseCopy);
-        } else {
-            m_previews.requestPreview(preset->id, preset->brush);
-        }
+        // never touched. The request carries the preset's STORED keys:
+        // nothing is hashed on this thread, and a cache-warm row costs
+        // the worker one file read.
+        m_previews.requestPreview(*preset, m_scope == ToolScope::Eraser);
     }
+    // What this list is of: showEvent() rebuilds only when one of these
+    // moved (fix 3, 2026-10-24 - a plain open used to rebuild a list that
+    // every mutation path had already kept current).
+    m_listedScope = m_scope;
+    m_listedCategory = m_category;
+    m_listedRevision = m_model->revision();
+    m_listed = true;
+    ++m_rebuildCount;
+}
+
+bool BrushLibraryPanel::listStale() const
+{
+    return !m_listed || m_listedScope != m_scope
+        || m_listedCategory != m_category
+        || m_listedRevision != m_model->revision();
 }
 
 int BrushLibraryPanel::overrideMarkForTest(const QString &presetId) const
@@ -900,9 +928,9 @@ void BrushLibraryPanel::updateEraserRow()
 bool BrushLibraryPanel::presetFitsScope(const BrushPreset &preset) const
 {
     if (m_scope == ToolScope::Eraser)
-        return !preset.brush.smudgeActive()
-            && !preset.brush.dualBrushEnabled();
-    return !preset.brush.eraseMode();
+        return !preset.brush().smudgeActive()
+            && !preset.brush().dualBrushEnabled();
+    return !preset.brush().eraseMode();
 }
 
 QStringList BrushLibraryPanel::visibleCategoriesForTest() const
@@ -1125,9 +1153,13 @@ void BrushLibraryPanel::showEvent(QShowEvent *event)
     FloatingToolWindow::showEvent(event);
     saveGeometry();
     emit visibilityChanged(true);
-    // Kick previews for the visible category (cheap: cache-warm rows are
-    // 2ms; cold rows fill progressively as the worker delivers).
-    rebuildBrushList();
+    // ONE REBUILD PER OPEN (2026-10-24): every path that changes what the
+    // list should show (category, scope, any model change) rebuilds it
+    // at once, shown or hidden, so a show finds it current; this rebuild
+    // runs only when the record says otherwise. (It used to run
+    // unconditionally - a second full rebuild on every tool-switch open.)
+    if (listStale())
+        rebuildBrushList();
 }
 
 void BrushLibraryPanel::hideEvent(QHideEvent *event)

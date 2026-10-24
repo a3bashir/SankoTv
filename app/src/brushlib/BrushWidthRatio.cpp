@@ -203,7 +203,13 @@ WidthRatio BrushWidthRatio::measure(const ::Brush &brush)
 WidthRatio BrushWidthRatio::ratioFor(const ::Brush &brush,
                                      const QString &diskDir)
 {
-    const QByteArray k = key(brush);
+    return ratioForKey(brush, key(brush), diskDir);
+}
+
+WidthRatio BrushWidthRatio::ratioForKey(const ::Brush &brush,
+                                        const QByteArray &k,
+                                        const QString &diskDir)
+{
     {
         QMutexLocker lock(&g_mutex);
         const auto it = g_memory.constFind(k);
@@ -265,7 +271,11 @@ WidthRatio BrushWidthRatio::ratioFor(const ::Brush &brush,
 
 bool BrushWidthRatio::cached(const ::Brush &brush, WidthRatio *out)
 {
-    const QByteArray k = key(brush);
+    return cachedByKey(key(brush), out);
+}
+
+bool BrushWidthRatio::cachedByKey(const QByteArray &k, WidthRatio *out)
+{
     QMutexLocker lock(&g_mutex);
     const auto it = g_memory.constFind(k);
     if (it == g_memory.constEnd())

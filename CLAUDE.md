@@ -186,6 +186,16 @@ the page from.
   hash — never stored in a preset. The engine, `DrawingCanvas` slots,
   preset files and persisted sizes all stay engine-valued. Convert only
   at the UI boundary (Size CTL bar, library rows, studio Size row).
+- **Nothing hashes a brush on the UI thread** (HANDOFF 2026-10-24). A
+  brush's content hash PNG-encodes its tip (67 ms per 1254 px tip in
+  Release); `BrushPreset` keeps its brush PRIVATE behind `setBrush()`,
+  which drops the stored `BrushKeys` (swatch, erase swatch, width), and
+  the keys are computed once off the UI thread (the preview worker, the
+  model's warm-up) and stored by revision. Library rows and preview
+  requests use the stored keys; the codec's encode memo is an LRU bounded
+  by bytes, never cleared wholesale. Debug asserts every read of stored
+  keys against a fresh hash; the gate pins the work counts (BrushLibrary
+  (m1)/(m2)/(m4), Lifecycle (bw)), never the time.
 - **QuickShape** (`third_party/QuickShapeKit`): hold the pen still after a
   stroke and it snaps to a recognised, editable vector shape.
 - **Perspective tool:** tap-created vanishing points, derived horizon,

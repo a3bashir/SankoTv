@@ -88,8 +88,14 @@ public:
     // scratch override and never write the real cache.
     static WidthRatio ratioFor(const ::Brush &brush,
                                const QString &diskDir = QString());
+    // The same with the key already in hand (a preset's STORED key,
+    // 2026-10-24): the caller has not hashed the brush and must not - a
+    // hash PNG-encodes the tip, and that is what froze the library.
+    static WidthRatio ratioForKey(const ::Brush &brush, const QByteArray &key,
+                                  const QString &diskDir = QString());
     // Memory tier only - never measures. False when not yet known.
     static bool cached(const ::Brush &brush, WidthRatio *out);
+    static bool cachedByKey(const QByteArray &key, WidthRatio *out);
 
     static int displaySize(const ::Brush &brush, int engineSize);
     // presetDefaultEngine: the active preset's own engine size. When the

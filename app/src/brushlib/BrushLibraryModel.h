@@ -6,7 +6,10 @@
 #include <QObject>
 #include <QSettings>
 #include <QStringList>
+#include <QThread>
 #include <QVector>
+
+#include <atomic>
 
 namespace brushlib {
 
@@ -40,8 +43,28 @@ public:
     // with an injectable root, a test never touches user files at all.
     explicit BrushLibraryModel(QObject *parent = nullptr,
                                const QString &rootOverride = QString());
+    ~BrushLibraryModel() override; // joins the key warm-up thread
 
     static QStringList categories(); // fixed order; excludes "Recent"
+
+    // --- Content keys (2026-10-24) ----------------------------------------
+    // A preset's keys (BrushKeys) are computed OFF the UI thread - by the
+    // preview worker when a request finds them missing, or by the warm-up
+    // below - and stored here; the preset drops them for a revision its
+    // brush has moved past, so a stale key cannot be stored.
+    void storeKeys(const QString &id, quint64 brushRevision,
+                   const BrushKeys &keys);
+    int keysKnownCountForTest() const;
+    // Moves on every changed(): the panel keeps its row list when nothing
+    // moved (one rebuild per open, never one per show event).
+    quint64 revision() const { return m_revision; }
+    // THE WARM-UP: a low-priority thread computes every preset's keys
+    // right after construction (about 50 tip encodes, 3.5 s of background
+    // CPU in Release), so the library's first open hashes nothing. Off
+    // under the gate's unit checks, whose encode counts must not move
+    // underneath them; the app and the lifecycle family run it.
+    static void setKeyWarmupEnabledForTest(bool on);
+    bool keyWarmupDoneForTest() const { return m_warmupDone; }
 
     // Hidden built-ins filtered out; built-ins first (roster order), then
     // user presets by name.
@@ -127,8 +150,10 @@ public:
 
 signals:
     void changed(); // any roster/shelf mutation (coarse; the UI re-lists)
+    void keysWarmedUp(); // the warm-up stored its last key
 
 private:
+    void startKeyWarmup();
     void loadUserPresets();
     void loadShelfState();
     void loadBuiltinOverrides();
@@ -157,6 +182,11 @@ private:
     QHash<QString, QString> m_builtinRenames;
     QStringList m_overridden; // built-in ids with a brush override on disk
     QString m_libraryName;
+    quint64 m_revision = 0;
+    QThread *m_warmup = nullptr;
+    std::atomic<bool> m_warmupQuit{false};
+    int m_warmupPending = 0;
+    bool m_warmupDone = false;
 };
 
 } // namespace brushlib

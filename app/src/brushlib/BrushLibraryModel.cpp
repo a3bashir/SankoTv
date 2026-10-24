@@ -17,6 +17,7 @@
 #include <QUuid>
 
 #include <algorithm>
+#include <memory>
 #include <utility>
 
 namespace brushlib {
@@ -24,6 +25,7 @@ namespace {
 
 const QString kKeyPrefix = QStringLiteral("brushLibrary/v1/");
 constexpr int kRecentCap = 30;
+bool g_keyWarmup = true; // setKeyWarmupEnabledForTest
 
 QSettings appSettings()
 {
@@ -83,6 +85,89 @@ BrushLibraryModel::BrushLibraryModel(QObject *parent,
     // Built-in BRUSH overrides (studio "Done" on a built-in) apply the same
     // way: over the in-code roster, never into it.
     loadBuiltinOverrides();
+    // Connected FIRST, so every later listener of changed() (the panel)
+    // sees the moved revision.
+    connect(this, &BrushLibraryModel::changed, this,
+            [this] { ++m_revision; });
+    if (g_keyWarmup)
+        startKeyWarmup();
+    else
+        m_warmupDone = true;
+}
+
+BrushLibraryModel::~BrushLibraryModel()
+{
+    m_warmupQuit = true;
+    if (m_warmup) {
+        m_warmup->wait(); // one key computation in flight at most
+        delete m_warmup;
+    }
+}
+
+void BrushLibraryModel::setKeyWarmupEnabledForTest(bool on)
+{
+    g_keyWarmup = on;
+}
+
+void BrushLibraryModel::startKeyWarmup()
+{
+    struct Item
+    {
+        QString id;
+        quint64 revision;
+        ::Brush brush;
+    };
+    auto items = std::make_shared<QVector<Item>>();
+    for (const BrushPreset &p : m_presets)
+        items->append({p.id, p.brushRevision(), p.brush()});
+    m_warmupPending = items->size();
+    if (m_warmupPending == 0) {
+        m_warmupDone = true;
+        return;
+    }
+    // The thread reads only its own copies (the Brush is implicitly
+    // shared, nothing is touched); results come back queued on the model's
+    // thread, and a result for a brush that moved on is dropped by the
+    // preset's revision check. The destructor joins the thread first, so
+    // no result can be posted to a dead model.
+    m_warmup = QThread::create([this, items] {
+        for (const Item &it : *items) {
+            if (m_warmupQuit)
+                return;
+            const BrushKeys keys = BrushPreset::computeKeys(it.brush);
+            const QString id = it.id;
+            const quint64 revision = it.revision;
+            QMetaObject::invokeMethod(
+                this,
+                [this, id, revision, keys] {
+                    storeKeys(id, revision, keys);
+                    if (--m_warmupPending == 0) {
+                        m_warmupDone = true;
+                        emit keysWarmedUp();
+                    }
+                },
+                Qt::QueuedConnection);
+        }
+    });
+    m_warmup->setObjectName(QStringLiteral("BrushKeyWarmup"));
+    m_warmup->start(QThread::LowPriority);
+}
+
+void BrushLibraryModel::storeKeys(const QString &id, quint64 brushRevision,
+                                  const BrushKeys &keys)
+{
+    const int idx = m_byId.value(id, -1);
+    if (idx >= 0)
+        m_presets[idx].storeKeys(keys, brushRevision);
+}
+
+int BrushLibraryModel::keysKnownCountForTest() const
+{
+    int n = 0;
+    for (const BrushPreset &p : m_presets)
+        if (p.keysKnown())
+            ++n;
+    return n;
 }
 
 QStringList BrushLibraryModel::categories()
@@ -197,7 +282,7 @@ void BrushLibraryModel::restoreDefaultBrushes()
                 if (stock.id == p.id) {
                     p.name = stock.name;
                     if (!m_overridden.contains(p.id))
-                        p.brush = stock.brush; // override gone: stock returns
+                        p.setBrush(stock.brush()); // override gone: stock returns
                     break;
                 }
     saveShelfList("hidden", m_hidden);
@@ -297,7 +382,7 @@ static const ::Brush *stockBrushFor(const QString &id,
         cache = builtinRoster();
     for (const BrushPreset &p : cache)
         if (p.id == id)
-            return &p.brush;
+            return &p.brush();
     return nullptr;
 }
 
@@ -310,7 +395,7 @@ bool BrushLibraryModel::updateBrush(const QString &id, const ::Brush &brush)
     // a successful write commits to memory. On failure the model still
     // shows — and a restart still loads — the previous value.
     BrushPreset candidate = m_presets.at(idx);
-    candidate.brush = brush;
+    candidate.setBrush(brush);
     if (candidate.builtin) {
         // Never destroy the stock recipe: the edit is an override FILE the
         // constructor applies over the in-code roster. Restore Default
@@ -320,7 +405,7 @@ bool BrushLibraryModel::updateBrush(const QString &id, const ::Brush &brush)
         if (!atomicWrite(overrideFilePath(id),
                          BrushPresetCodec::savePreset(candidate)))
             return false;
-        m_presets[idx].brush = brush;
+        m_presets[idx].setBrush(brush);
         if (!m_overridden.contains(id))
             m_overridden.append(id);
         // THE STOCK FINGERPRINT, recorded at save time: overrideState()
@@ -338,7 +423,7 @@ bool BrushLibraryModel::updateBrush(const QString &id, const ::Brush &brush)
     } else {
         if (!writeUserPresetFile(candidate))
             return false;
-        m_presets[idx].brush = brush;
+        m_presets[idx].setBrush(brush);
     }
     // The write above serialised the CAPPED in-memory images, so any
     // pre-cap oversize in the old file is gone - the flag's moment has
@@ -374,7 +459,7 @@ BrushLibraryModel::overrideState(const QString &id) const
         return OverrideState::Unknown; // no roster entry to compare against
     const QByteArray stockHash = BrushPresetCodec::settingsHash(*stock);
     // Byte-equal to current stock: harmless residue, no mark.
-    if (BrushPresetCodec::settingsHash(m_presets.at(idx).brush) == stockHash)
+    if (BrushPresetCodec::settingsHash(m_presets.at(idx).brush()) == stockHash)
         return OverrideState::None;
     const QString stored =
         shelfSettings().value(fingerprintKey(id)).toString();
@@ -401,7 +486,7 @@ bool BrushLibraryModel::resetBuiltinToStock(const QString &id)
     if (QFile::exists(overrideFilePath(id))
         && !QFile::remove(overrideFilePath(id)))
         return false;
-    m_presets[idx].brush = *stock;
+    m_presets[idx].setBrush(*stock);
     m_overridden.removeAll(id);
     shelfSettings().remove(fingerprintKey(id));
     emit changed();
@@ -614,15 +699,15 @@ int BrushLibraryModel::importFile(const QString &path, QString *report,
             const int existingIdx = m_byId.value(p.id, -1);
             if (p.builtin && existingIdx >= 0
                 && m_presets.at(existingIdx).builtin) {
-                if (BrushPresetCodec::saveBrush(p.brush)
+                if (BrushPresetCodec::saveBrush(p.brush())
                     == BrushPresetCodec::saveBrush(
-                        m_presets.at(existingIdx).brush)) {
+                        m_presets.at(existingIdx).brush())) {
                     recordAlreadyPresent(
                         p, QStringLiteral(" (built-in, already in this "
                                           "state)"));
                     continue; // already in this state
                 }
-                if (updateBrush(p.id, p.brush)) { // override, disk-first
+                if (updateBrush(p.id, p.brush())) { // override, disk-first
                     ++applied;
                     recordUpgraded(p, QStringLiteral(
                         "built-in brush updated with this file's version"));
@@ -655,13 +740,13 @@ int BrushLibraryModel::importFile(const QString &path, QString *report,
             if (p.id.startsWith(QStringLiteral("user/abr-"))) {
                 bool handled = false;
                 const QByteArray incomingBytes =
-                    BrushPresetCodec::saveBrush(p.brush);
+                    BrushPresetCodec::saveBrush(p.brush());
                 for (const BrushPreset &existing : m_presets)
                     if (!existing.builtin
                         && existing.id.startsWith(
                             QStringLiteral("user/abr-"))
                         && existing.name == p.name // same-content brushes
-                        && BrushPresetCodec::saveBrush(existing.brush)
+                        && BrushPresetCodec::saveBrush(existing.brush())
                             == incomingBytes) { // under other names coexist
                         handled = true; // identical content already here
                         recordAlreadyPresent(
@@ -690,7 +775,7 @@ int BrushLibraryModel::importFile(const QString &path, QString *report,
                         // memory (D3), and must not also be added as a
                         // duplicate — but it is REPORTED as a failure, not
                         // silently folded into "already present".
-                        if (updateBrush(claim, p.brush)) {
+                        if (updateBrush(claim, p.brush())) {
                             ++applied;
                             recordUpgraded(p, QStringLiteral(
                                 "upgraded in place — kept its id, "
@@ -829,7 +914,7 @@ void BrushLibraryModel::loadBuiltinOverrides()
         const int idx = m_byId.value(loaded.id, -1);
         if (idx < 0 || !m_presets.at(idx).builtin)
             continue; // stale override for a roster entry that no longer exists
-        m_presets[idx].brush = loaded.brush;
+        m_presets[idx].setBrush(loaded.brush());
         m_overridden.append(loaded.id);
     }
 }

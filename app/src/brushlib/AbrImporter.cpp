@@ -1109,7 +1109,9 @@ MappedBrush buildBrush(const AbrSample *sample, const QVariantMap &desc,
 {
     MappedBrush out;
     BrushReport &rep = out.report;
-    ::Brush &b = out.preset.brush;
+    // Assembled here and handed to the preset through its one setter at
+    // each valid exit below (2026-10-24: the brush member is private).
+    ::Brush b;
     silenceAllDynamics(b);
 
     // --- Tip descriptor (nested 'Brsh' object inside the brush entry) ---
@@ -1235,6 +1237,7 @@ MappedBrush buildBrush(const AbrSample *sample, const QVariantMap &desc,
 
     if (desc.isEmpty()) {
         out.valid = true; // legacy: nothing further to read
+        out.preset.setBrush(b);
         return out;
     }
 
@@ -1691,6 +1694,7 @@ MappedBrush buildBrush(const AbrSample *sample, const QVariantMap &desc,
             "6b's buildUp is an amount — mapping deferred)"));
 
     out.valid = true;
+    out.preset.setBrush(b);
     return out;
 }
 
@@ -1716,7 +1720,7 @@ void assignIdentity(BrushPreset &preset)
 
 QString AbrImporter::contentId(const BrushPreset &preset)
 {
-    const ::Brush &b = preset.brush;
+    const ::Brush &b = preset.brush();
     QString canon;
     QTextStream ts(&canon);
     ts.setRealNumberPrecision(9);

@@ -60,8 +60,16 @@ public:
 
     // Queue a render (deduplicated: a preset already queued or in flight is
     // not rendered twice). Emits previewReady(presetId, image) on the
-    // caller's thread via a queued connection.
+    // caller's thread via a queued connection. This form hashes the brush
+    // on the worker (tests and ad-hoc brushes).
     void requestPreview(const QString &presetId, const ::Brush &brush);
+    // THE LIBRARY'S FORM (2026-10-24): a preset with its STORED keys, so
+    // nothing is hashed anywhere when the keys are known; when they are
+    // not, the worker computes them once and reports them through
+    // keysReady for the model to store. The erase variant renders the
+    // brush with eraseMode forced on under the preset's eraseSwatch key
+    // and answers under "<id>#erase".
+    void requestPreview(const BrushPreset &preset, bool eraseVariant);
 
     // Category switched: obsolete queued requests are dropped; the one
     // in-flight render finishes but its result is NOT emitted.
@@ -77,6 +85,12 @@ public:
 
     // Test hook: the thread the last render actually ran on.
     QThread *lastRenderThread() const { return m_lastRenderThread; }
+    // Work counters (process-wide): swatches actually RENDERED (a disk
+    // hit is not a render) and cache files WRITTEN. The gate asserts on
+    // these instead of on time: a second open of the same list must add
+    // nothing to either.
+    static int renderCountForTest();
+    static int cacheWriteCountForTest();
 
     // The root the disk tiers live under (previews in r<N>/, the width
     // ratios in widths-r<N>/): the SAME scratch override serves both.
@@ -91,16 +105,25 @@ signals:
     // is the droplet size.
     void widthRatioReady(const QString &presetId,
                          const brushlib::WidthRatio &ratio);
+    // The keys the worker had to compute for a preset request whose keys
+    // were not stored yet (with the brush revision they describe).
+    void keysReady(const QString &presetId, quint64 brushRevision,
+                   const brushlib::BrushKeys &keys);
 
 private:
     struct Job
     {
-        QString presetId;
-        ::Brush brush;
+        QString requestId;  // what the signals answer under
+        QString presetId;   // empty for the ad-hoc form
+        ::Brush brush;      // the preset's brush (eraseMode as stored)
+        BrushKeys keys;     // invalid = compute on the worker
+        quint64 brushRevision = 0;
+        bool eraseVariant = false;
         quint64 epoch = 0;
     };
+    void enqueue(Job job);
     void workerLoop();
-    QImage loadOrRender(const ::Brush &brush);
+    QImage loadOrRender(const ::Brush &brush, const QByteArray &key);
     static void prune(const QString &dir);
 
     QString m_cacheRoot;
@@ -115,3 +138,5 @@ private:
 };
 
 } // namespace brushlib
+
+Q_DECLARE_METATYPE(brushlib::BrushKeys)

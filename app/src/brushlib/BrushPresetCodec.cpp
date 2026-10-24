@@ -1,5 +1,7 @@
 #include "BrushPresetCodec.h"
 
+#include "BrushWidthRatio.h"
+
 #include <QBuffer>
 #include <QCryptographicHash>
 #include <QDataStream>
@@ -60,11 +62,24 @@ constexpr QDataStream::Version kStreamVersion = QDataStream::Qt_6_5;
 //
 // Determinism: the memo stores exactly the bytes it produced, so repeated
 // saves are byte-identical by construction (the codec idempotence checks
-// b1/b2 stand guard). Bounded at 16 entries - presets carry at most a few
-// images; on overflow the memo clears rather than evicts (simplicity over
-// an LRU nothing needs).
+// b1/b2 stand guard).
+//
+// BOUNDED BY BYTES, LEAST-RECENTLY-USED (2026-10-24). The memo was 16
+// entries and CLEARED itself on the 17th: the Brush Library's Recent list
+// holds 30 presets with 21 or more distinct 1254x1254 tips, so every list
+// rebuild re-encoded every tip on the UI thread - 67 ms each in Release,
+// 107 in Debug - and every open of the library froze the app for 1.4 to
+// 2.7 s (measured from the user's recording and the probe, HANDOFF
+// 2026-10-24). An LRU bounded by bytes holds the whole roster's tips
+// (about 40 MB) and evicts the oldest only past the cap, so an image is
+// encoded once per process. Keyed by cacheKey as before: a replaced or
+// edited image is a new key, and a key is never reused for other
+// contents, so a stale entry is unreachable rather than invalidated.
+constexpr qint64 kEncodeMemoCapBytes = qint64(96) << 20;
 QMutex g_encodeMemoMutex;
 QHash<qint64, QByteArray> g_encodeMemo;
+QList<qint64> g_encodeMemoOrder; // least recent first
+qint64 g_encodeMemoBytes = 0;
 int g_imageEncodeCount = 0; // test seam: how many REAL encodes ran
 
 QByteArray encodePng(const QImage &image)
@@ -74,16 +89,24 @@ QByteArray encodePng(const QImage &image)
     QMutexLocker lock(&g_encodeMemoMutex);
     const qint64 key = image.cacheKey();
     const auto it = g_encodeMemo.constFind(key);
-    if (it != g_encodeMemo.constEnd())
+    if (it != g_encodeMemo.constEnd()) {
+        g_encodeMemoOrder.removeOne(key);
+        g_encodeMemoOrder.append(key); // most recent at the back
         return it.value();
+    }
     QByteArray png;
     QBuffer buffer(&png);
     buffer.open(QIODevice::WriteOnly);
     image.save(&buffer, "PNG");
     ++g_imageEncodeCount;
-    if (g_encodeMemo.size() >= 16)
-        g_encodeMemo.clear();
     g_encodeMemo.insert(key, png);
+    g_encodeMemoOrder.append(key);
+    g_encodeMemoBytes += png.size();
+    while (g_encodeMemoBytes > kEncodeMemoCapBytes
+           && g_encodeMemoOrder.size() > 1) {
+        const qint64 oldest = g_encodeMemoOrder.takeFirst();
+        g_encodeMemoBytes -= g_encodeMemo.take(oldest).size();
+    }
     return png;
 }
 
@@ -481,7 +504,7 @@ QByteArray BrushPresetCodec::savePreset(const BrushPreset &preset)
     QDataStream s(&bytes, QIODevice::WriteOnly);
     s.setVersion(kStreamVersion);
     s << kPresetMagic << kVersion << preset.id << preset.name
-      << preset.category << preset.builtin << saveBrush(preset.brush);
+      << preset.category << preset.builtin << saveBrush(preset.brush());
     return bytes;
 }
 
@@ -502,9 +525,11 @@ bool BrushPresetCodec::loadPreset(const QByteArray &bytes, BrushPreset &out)
     QByteArray brushBytes;
     s >> p.id >> p.name >> p.category >> p.builtin >> brushBytes;
     bool capped = false;
+    ::Brush brush;
     if (s.status() != QDataStream::Ok
-        || !loadBrush(brushBytes, p.brush, &capped))
+        || !loadBrush(brushBytes, brush, &capped))
         return false;
+    p.setBrush(brush);
     p.imagesCappedOnLoad = capped;
     out = p;
     return true;
@@ -514,6 +539,43 @@ int BrushPresetCodec::imageEncodeCountForTest()
 {
     QMutexLocker lock(&g_encodeMemoMutex);
     return g_imageEncodeCount;
+}
+
+qint64 BrushPresetCodec::imageEncodeMemoBytesForTest()
+{
+    QMutexLocker lock(&g_encodeMemoMutex);
+    return g_encodeMemoBytes;
+}
+
+int BrushPresetCodec::imageEncodeMemoEntriesForTest()
+{
+    QMutexLocker lock(&g_encodeMemoMutex);
+    return g_encodeMemo.size();
+}
+
+qint64 BrushPresetCodec::imageEncodeMemoCapBytes()
+{
+    return kEncodeMemoCapBytes;
+}
+
+// The three content keys of a brush, from the ONE serialisation: the
+// swatch key is settingsHash(brush); the erase-swatch key is the same
+// with eraseMode forced on (what the Eraser Library renders, cached apart
+// by construction); the width key is BrushWidthRatio::key (size, colour
+// and eraseMode normalised away). Computed off the UI thread (the preview
+// worker, or the model's warm-up) and STORED on the preset; the preset's
+// setBrush() is the only mutation path and it drops them, so a stored key
+// can never describe another brush.
+BrushKeys BrushPreset::computeKeys(const ::Brush &brush)
+{
+    BrushKeys k;
+    k.swatch = BrushPresetCodec::settingsHash(brush);
+    ::Brush erase = brush;
+    erase.setEraseMode(true);
+    k.eraseSwatch = BrushPresetCodec::settingsHash(erase);
+    k.width = BrushWidthRatio::key(brush);
+    k.valid = true;
+    return k;
 }
 
 } // namespace brushlib

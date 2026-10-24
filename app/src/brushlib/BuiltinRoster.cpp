@@ -262,7 +262,9 @@ BrushPreset make(const QString &category, const QString &name,
     p.category = category;
     p.builtin = true;
     p.id = QStringLiteral("builtin/%1/%2").arg(slug(category), slug(name));
-    recipe(p.brush);
+    ::Brush b;
+    recipe(b);
+    p.setBrush(b);
     return p;
 }
 

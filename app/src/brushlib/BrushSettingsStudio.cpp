@@ -1718,8 +1718,8 @@ void BrushSettingsStudio::loadSession(const BrushPreset &preset)
     m_presetName = preset.name;
     m_presetCategory = preset.category;
     m_presetBuiltin = preset.builtin;
-    m_original = preset.brush;
-    m_session = preset.brush;
+    m_original = preset.brush();
+    m_session = preset.brush();
     m_scopeB = false;
     m_undo.clear();
     m_gestureBefore.reset();
@@ -1843,7 +1843,7 @@ void BrushSettingsStudio::saveVariationClicked()
     BrushPreset variation;
     variation.name = m_presetName + QStringLiteral(" Variation");
     variation.category = m_presetCategory;
-    variation.brush = m_session;
+    variation.setBrush(m_session);
     const QString newId = m_model->addUserPreset(std::move(variation));
     if (newId.isEmpty()) {
         // Same contract as Done (D4): a failed write never closes the

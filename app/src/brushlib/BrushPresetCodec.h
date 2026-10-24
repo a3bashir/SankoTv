@@ -36,6 +36,11 @@ public:
     // memo makes repeated saves of an unchanged image cost zero encodes —
     // the per-gesture serialization fix, pinned by the gate).
     static int imageEncodeCountForTest();
+    // The memo is an LRU bounded by BYTES (2026-10-24): what it holds now,
+    // how many images, and the cap it evicts past.
+    static qint64 imageEncodeMemoBytesForTest();
+    static int imageEncodeMemoEntriesForTest();
+    static qint64 imageEncodeMemoCapBytes();
 
     // SHA-256 of saveBrush() — the preview-cache key.
     static QByteArray settingsHash(const ::Brush &brush);
