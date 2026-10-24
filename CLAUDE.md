@@ -131,9 +131,11 @@ the page from.
   HEIGHT, so the window's minimum width is its content's (the docks at
   their minimums plus the central column at its, and the column's
   minimum is the header's floor from `AnimaticPage::layoutHeader`). Do
-  not give the window a flat minimum width again, and do not let any
-  header element escape the give-way rule (name shortens, slider
-  narrows, name hides, in that order). The centre cluster (timecode |
+  not give the window a flat minimum width again. Since Part D
+  (2026-10-23) nothing in the header gives way: the zoom is a field, the
+  audio name and volume are gone from the header (the Audio track's
+  speaker opens the volume), and the floor is one fixed number - keep
+  it that way rather than adding a give-way stage. The centre cluster (timecode |
   pill | total | speed, "animaticCentre") is placed by `layoutHeader`,
   not by the row's layout: a new header element goes into the left
   group, the right group or the cluster, never beside them. The tracks' lock / visibility /

@@ -509,7 +509,19 @@ void MovieExportJob::onAudioBuffer()
                      .arg(QDir::toNativeSeparators(m_request.audioPath)));
             return;
         }
-        const QByteArray pcm = toInt16(buffer);
+        QByteArray pcm = toInt16(buffer);
+        // The track volume (Part D): the same linear gain playback uses,
+        // multiplied into the samples here, where the sound is 16-bit PCM
+        // in memory before the encoder sees it.
+        if (m_request.audioGain < 0.9999) {
+            const double g = qBound(0.0, m_request.audioGain, 1.0);
+            auto *samples = reinterpret_cast<qint16 *>(pcm.data());
+            for (qsizetype i = 0; i < pcm.size() / 2; ++i)
+            {
+                const long v = std::lround(samples[i] * g);
+                samples[i] = qint16(v < -32768 ? -32768 : v > 32767 ? 32767 : v);
+            }
+        }
         if (pcm.isEmpty() || m_audioRate <= 0 || m_audioChannels <= 0) {
             fail(QStringLiteral("The audio file is in a form that cannot be "
                                 "exported:\n%1")

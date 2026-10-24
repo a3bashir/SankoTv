@@ -51,46 +51,45 @@ inline const QColor kThumbPlaceholder(0x4a, 0x4a, 0x4a); // a panel with no artw
 inline const QColor kPillBg(0x17, 0x17, 0x1f);
 inline const QColor kPlayhead(0xd5, 0xcb, 0xff);
 
-// Header stylesheet fragments (the gradients a QColor cannot hold).
+// Header stylesheet fragments. FLAT CONTROLS (the user's rule, Part D,
+// 2026-10-23; Figma proposal frame 424:390): every icon sits directly on
+// the header - no squares, no borders. Hover: a rounded highlight of the
+// accent #7c6ef6 at 14 % behind it; pressed 26 %; checked (Frames /
+// Seconds / Snap) the accent at 100 % with a white icon. Play keeps its
+// purple fill as the main action. No green anywhere: every hover is the
+// accent (the loop buttons and the speed dropdown used #4dff91 before).
+inline const QString kFlatHoverBg = QStringLiteral("rgba(124, 110, 246, 0.14)");
+inline const QString kFlatPressedBg = QStringLiteral("rgba(124, 110, 246, 0.26)");
 inline const QString kTransportSheet = QStringLiteral(
-    "QPushButton { background: qlineargradient(x1:0, y1:0, x2:0, y2:1,"
-    " stop:0 #303042, stop:1 #272735); border: 1px solid #3e3d53;"
-    " border-radius: 6px; }"
-    "QPushButton:hover { background: qlineargradient(x1:0, y1:0, x2:0, y2:1,"
-    " stop:0 #3a3a4f, stop:1 #303042); }"
-    "QPushButton:pressed { background: qlineargradient(x1:0, y1:0, x2:0, y2:1,"
-    " stop:0 #272735, stop:1 #303042); }");
+    "QPushButton { background: transparent; border: none; border-radius: 6px; }"
+    "QPushButton:hover { background: rgba(124, 110, 246, 0.14); }"
+    "QPushButton:pressed { background: rgba(124, 110, 246, 0.26); }");
 inline const QString kPlaySheet = QStringLiteral(
     "QPushButton { background: qlineargradient(x1:0, y1:0, x2:0, y2:1,"
-    " stop:0 #8060ef, stop:1 #6846db); border: 1px solid #8a6bf0;"
-    " border-radius: 6px; }"
+    " stop:0 #8060ef, stop:1 #6846db); border: none; border-radius: 6px; }"
     "QPushButton:hover { background: qlineargradient(x1:0, y1:0, x2:0, y2:1,"
-    " stop:0 #8d70f5, stop:1 #7555e5); }"
+    " stop:0 #8f72ff, stop:1 #7a58e6); }"
     "QPushButton:pressed { background: qlineargradient(x1:0, y1:0, x2:0, y2:1,"
-    " stop:0 #6846db, stop:1 #8060ef); }");
+    " stop:0 #6f52d6, stop:1 #5a3bc4); }");
 inline const QString kCollapseSheet = QStringLiteral(
-    "QPushButton { background: qlineargradient(x1:0, y1:0, x2:0, y2:1,"
-    " stop:0 #2e2e41, stop:1 #282839); border: 1px solid #3c3c52;"
-    " border-radius: 4px; }"
-    "QPushButton:hover { border-color: #7c6ef6; }");
-// The icon-only loop buttons, and the speed buttons built in their style.
+    "QPushButton { background: transparent; border: none; border-radius: 5px; }"
+    "QPushButton:hover { background: rgba(124, 110, 246, 0.14); }"
+    "QPushButton:pressed { background: rgba(124, 110, 246, 0.26); }");
+// The icon-only loop buttons (the clear-loop button keeps its own red hover).
 inline const QString kLoopButtonSheet = QStringLiteral(
-    "QPushButton { background: #292b35; color: #cccccc; border: 1px solid #2a2a2a;"
-    " border-radius: 6px; font-size: 12px; }"
-    "QPushButton:hover { border-color: #4dff91; }");
-// The speed dropdown (Figma proposal frame 417:390, the user's choice
-// 2026-10-23): the loop-button look, the current speed left, a chevron
-// right; hover in the loop buttons' accent. Its menu is the clip menu's
-// sheet with the checked speed in the accent and a tick before it.
-// The chevron is painted by the button itself (SpeedButton in
-// AnimaticPage.cpp): the stylesheet's menu-indicator subcontrol ignored its
-// width, height and position and drew the image enlarged over the text
-// (measured 2026-10-23), so it is switched off here. The text sits in the
-// left 30 px (padding), the chevron 10 px from the right edge.
+    "QPushButton { background: transparent; color: #cccccc; border: none;"
+    " border-radius: 5px; font-size: 12px; }"
+    "QPushButton:hover { background: rgba(124, 110, 246, 0.14); }"
+    "QPushButton:pressed { background: rgba(124, 110, 246, 0.26); }");
+// The speed dropdown (Figma proposal frame 417:390, flat since 424:390):
+// text left, the chevron painted by the button itself (SpeedButton in
+// AnimaticPage.cpp - the stylesheet's menu-indicator drew it wrong), no
+// border at rest; hover = accent text, chevron and a 1 px accent border.
 inline const QString kSpeedDropdownSheet = QStringLiteral(
-    "QToolButton { background: #292b35; color: #e5e5ed; border: 1px solid #2a2a2a;"
+    "QToolButton { background: transparent; color: #e5e5ed; border: 1px solid transparent;"
     " border-radius: 6px; font-size: 11px; padding: 0 30px 0 6px; }"
-    "QToolButton:hover { color: #4dff91; border-color: #4dff91; }"
+    "QToolButton:hover { color: #7c6ef6; border-color: #7c6ef6; }"
+    "QToolButton:pressed { background: rgba(124, 110, 246, 0.26); }"
     "QToolButton::menu-indicator { image: none; width: 0px; height: 0px; }");
 inline const QString kSpeedMenuSheet = QStringLiteral(
     "QMenu { background: #161616; color: #cccccc; border: 1px solid #2a2a2a;"
@@ -100,19 +99,47 @@ inline const QString kSpeedMenuSheet = QStringLiteral(
     "QMenu::item:checked { color: #7c6ef6; }"
     "QMenu::indicator { width: 12px; height: 12px; left: 6px; }"
     "QMenu::indicator:checked { image: url(:/icons/timeline/speed_tick.svg); }");
-// Fit / - / + keep the old fill and border; only the radius and height moved.
+// Fit / - / +: text only; hover = accent text on the highlight.
 inline const QString kZoomButtonSheet = QStringLiteral(
-    "QPushButton { background: #1a1a1a; color: #cccccc; border: 1px solid #2a2a2a;"
+    "QPushButton { background: transparent; color: #cccccc; border: none;"
     " border-radius: 5px; font-size: 11px; }"
-    "QPushButton:hover { border-color: #7c6ef6; color: #7c6ef6; }");
+    "QPushButton:hover { background: rgba(124, 110, 246, 0.14); color: #7c6ef6; }"
+    "QPushButton:pressed { background: rgba(124, 110, 246, 0.26); color: #7c6ef6; }");
+// The zoom field (Part D; Figma proposal frame 423:476): the design's
+// 46 x 28 #333333 radius 5, the percentage centred in 11 px #cccccc; while
+// editing a 1 px accent border and white text.
+inline const QString kZoomFieldSheet = QStringLiteral(
+    "QLineEdit { background: #333333; color: #cccccc; border: 1px solid #333333;"
+    " border-radius: 5px; font-size: 11px; padding: 0; }");
+inline const QString kZoomFieldEditSheet = QStringLiteral(
+    "QLineEdit { background: #333333; color: #ffffff; border: 1px solid #7c6ef6;"
+    " border-radius: 5px; font-size: 11px; padding: 0;"
+    " selection-background-color: rgba(124, 110, 246, 0.35); selection-color: #ffffff; }");
 // Frames / Seconds / Snap: icon-only; checked = the accent fill.
 inline const QString kViewButtonSheet = QStringLiteral(
-    "QPushButton { background: transparent; border: 1px solid transparent;"
-    " border-radius: 5px; }"
-    "QPushButton:hover { border-color: #7c6ef6; }");
+    "QPushButton { background: transparent; border: none; border-radius: 5px; }"
+    "QPushButton:hover { background: rgba(124, 110, 246, 0.14); }"
+    "QPushButton:pressed { background: rgba(124, 110, 246, 0.26); }");
 inline const QString kViewButtonCheckedSheet = QStringLiteral(
-    "QPushButton { background: #7c6ef6; border: 1px solid #7c6ef6;"
-    " border-radius: 5px; }");
+    "QPushButton { background: #7c6ef6; border: none; border-radius: 5px; }");
+// The audio warning (Part D; Figma proposal frame 425:390): a flat 28 x 28
+// hit area for the 16 px warning glyph, the message as its tooltip.
+inline const QString kWarningButtonSheet = QStringLiteral(
+    "QToolButton { background: transparent; border: none; border-radius: 5px; }"
+    "QToolButton:hover { background: rgba(124, 110, 246, 0.14); }");
+// The Audio track's volume popup (Part D; the user's drawing in node
+// 380:644 and proposal frame 423:492): the zoom slider's look upright - a
+// 10 px groove, the accent gradient filling from the bottom, a 10 x 16
+// dragger - rising from the speaker inside the label column.
+inline const QString kVolumeSliderSheet = QStringLiteral(
+    "QSlider { background: transparent; }"
+    "QSlider::groove:vertical { width: 10px; background: #333333;"
+    " border-radius: 2px; margin: 0; }"
+    "QSlider::add-page:vertical { background: qlineargradient(x1:0, y1:1,"
+    " x2:0, y2:0, stop:0 #4b4397, stop:1 #7c6ef6); border-radius: 1px; }"
+    "QSlider::sub-page:vertical { background: transparent; }"
+    "QSlider::handle:vertical { width: 10px; height: 16px; margin: 0;"
+    " background: #b3b3b3; border-radius: 1px; }");
 // The zoom slider: a 10 px groove, the filled part in the accent gradient,
 // a 20 x 10 dragger. (The design's extra white 10 % -> 0 % sheen on the
 // filled part is not expressible in a stylesheet; noted in HANDOFF.)

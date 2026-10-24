@@ -16,6 +16,7 @@
 // and ProjectIO agree on one definition.
 
 #include <QJsonObject>
+#include <QtGlobal>
 
 enum class TimelineTrack { Scenes, Shots, Audio };
 
@@ -27,7 +28,8 @@ struct TimelineTracks
     bool scenesVisible = true;
     bool shotsVisible = true;
     bool audioVisible = true;
-    bool audioMuted = false;
+    int audioVolume = 100; // 0..100 (perceptual, Part D 2026-10-23); 0 = muted
+    bool audioMuted() const { return audioVolume == 0; }
 
     bool locked(TimelineTrack t) const
     {
@@ -59,13 +61,13 @@ struct TimelineTracks
         return scenesLocked == o.scenesLocked && shotsLocked == o.shotsLocked
             && audioLocked == o.audioLocked && scenesVisible == o.scenesVisible
             && shotsVisible == o.shotsVisible && audioVisible == o.audioVisible
-            && audioMuted == o.audioMuted;
+            && audioVolume == o.audioVolume;
     }
     bool operator!=(const TimelineTracks &o) const { return !(*this == o); }
 
     // {"scenes":{"locked":false,"visible":true},
     //  "shots":{"locked":false,"visible":true},
-    //  "audio":{"locked":false,"visible":true,"muted":false}}
+    //  "audio":{"locked":false,"visible":true,"volume":100}}
     QJsonObject toJson() const
     {
         QJsonObject scenes, shots, audio;
@@ -75,7 +77,7 @@ struct TimelineTracks
         shots[QStringLiteral("visible")] = shotsVisible;
         audio[QStringLiteral("locked")] = audioLocked;
         audio[QStringLiteral("visible")] = audioVisible;
-        audio[QStringLiteral("muted")] = audioMuted;
+        audio[QStringLiteral("volume")] = audioVolume;
         QJsonObject root;
         root[QStringLiteral("scenes")] = scenes;
         root[QStringLiteral("shots")] = shots;
@@ -96,7 +98,12 @@ struct TimelineTracks
         t.shotsVisible = shots.value(QStringLiteral("visible")).toBool(true);
         t.audioLocked = audio.value(QStringLiteral("locked")).toBool(false);
         t.audioVisible = audio.value(QStringLiteral("visible")).toBool(true);
-        t.audioMuted = audio.value(QStringLiteral("muted")).toBool(false);
+        // "volume" (Part D) wins; a Part B project saved with "muted": true
+        // opens at 0 %, any other without a volume at 100 % (the user's rule).
+        if (audio.contains(QStringLiteral("volume")))
+            t.audioVolume = qBound(0, audio.value(QStringLiteral("volume")).toInt(100), 100);
+        else
+            t.audioVolume = audio.value(QStringLiteral("muted")).toBool(false) ? 0 : 100;
         return t;
     }
 };

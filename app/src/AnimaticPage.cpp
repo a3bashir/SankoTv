@@ -210,27 +210,6 @@ QPushButton *transportButton(const QString &iconFile, const QSize &iconSize,
     return button;
 }
 
-// A label that keeps its whole text (text() is what the tests and the
-// tooltip read) and draws it elided to its width: the audio file name is
-// what gives way first when the header is short of room.
-class ElidedLabel : public QLabel
-{
-public:
-    using QLabel::QLabel;
-    QString drawnText() const
-    {
-        const QFontMetrics fm(font());
-        return fm.elidedText(text(), Qt::ElideMiddle, qMax(0, width()));
-    }
-
-protected:
-    void paintEvent(QPaintEvent *) override
-    {
-        QPainter p(this);
-        p.setPen(palette().color(QPalette::WindowText));
-        p.drawText(rect(), int(alignment()), drawnText());
-    }
-};
 
 // The header row: a plain widget that tells the page when its width
 // changes, so the give-way rule and the pill's place are redone.
@@ -284,7 +263,7 @@ AnimaticPage::AnimaticPage(QWidget *parent)
 
     // Scratch audio playback (created up front so the volume slider can bind).
     m_audioOutput = new QAudioOutput(this);
-    m_audioOutput->setVolume(0.8);
+    m_audioOutput->setVolume(1.0); // 100 %: the tracks' default (Part D)
     m_player = new QMediaPlayer(this);
     m_player->setAudioOutput(m_audioOutput);
     // The audio length is only known once the media metadata has loaded; feed
@@ -493,21 +472,8 @@ void AnimaticPage::setPlayheadForTest(int flatIndex, int elapsedMs)
         m_timeline->updatePlayhead();
 }
 
-QString AnimaticPage::audioLabelTextForTest() const
-{
-    return m_audioLabel && !m_audioLabel->isHidden() ? m_audioLabel->text()
-                                                     : QString();
-}
 
-QString AnimaticPage::audioLabelToolTipForTest() const
-{
-    return m_audioLabel ? m_audioLabel->toolTip() : QString();
-}
 
-QString AnimaticPage::volumeToolTipForTest() const
-{
-    return m_volumeSlider ? m_volumeSlider->toolTip() : QString();
-}
 
 QWidget *AnimaticPage::previewSurface() const
 {
@@ -703,6 +669,13 @@ QWidget *AnimaticPage::createHeader()
     // --- Left group: collapse + the timeline's zoom controls ---------------
     m_leftGroup = new QWidget;
     m_leftGroup->setObjectName(QStringLiteral("animaticHeaderLeft"));
+    // The page's background sheet cascades to plain children; with the
+    // controls flat (Part D) a container would show as a dark box, so each
+    // one is made transparent by name (the children keep their own sheets).
+    auto transparent = [](QWidget *w) {
+        w->setStyleSheet(QStringLiteral("QWidget#%1 { background: transparent; }").arg(w->objectName()));
+    };
+    transparent(m_leftGroup);
     QHBoxLayout *left = new QHBoxLayout(m_leftGroup);
     left->setContentsMargins(0, 0, 0, 0);
     left->setSpacing(0);
@@ -720,7 +693,7 @@ QWidget *AnimaticPage::createHeader()
     connect(m_collapseButton, &QPushButton::clicked, this,
             [this] { setCollapsed(!m_collapsed); });
     left->addWidget(m_collapseButton);
-    left->addSpacing(23);
+    left->addSpacing(20); // the design of 2026-10-23: Fit at x 58
     if (m_timeline && m_timeline->zoomControls())
         left->addWidget(m_timeline->zoomControls());
     layout->addWidget(m_leftGroup, 0, Qt::AlignVCenter);
@@ -731,47 +704,44 @@ QWidget *AnimaticPage::createHeader()
     // moved the timecode and the total into the centre cluster, below) ----
     m_rightGroup = new QWidget;
     m_rightGroup->setObjectName(QStringLiteral("animaticHeaderRight"));
+    transparent(m_rightGroup);
     QHBoxLayout *right = new QHBoxLayout(m_rightGroup);
     right->setContentsMargins(0, 0, 0, 0);
     right->setSpacing(0);
 
-    // --- Audio: the track's name and its volume (shown once one is loaded),
-    // first in the right group (the user's placement, 2026-10-23) -----------
-    m_audioGroup = new QWidget;
-    m_audioGroup->setObjectName(QStringLiteral("animaticAudio"));
-    QHBoxLayout *audioLayout = new QHBoxLayout(m_audioGroup);
-    audioLayout->setContentsMargins(20, 0, 0, 0);
-    audioLayout->setSpacing(8);
-    auto *audioLabel = new ElidedLabel;
-    m_audioLabel = audioLabel;
-    m_audioLabel->setObjectName(QStringLiteral("animaticAudioLabel"));
-    m_audioLabel->setStyleSheet(QStringLiteral("color: #888888; font-size: 12px;"));
-    m_audioLabel->setMinimumWidth(60); // the name elides down to this, then the slider narrows
-    m_audioLabel->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
-    audioLayout->addWidget(m_audioLabel);
-    m_volumeSlider = new QSlider(Qt::Horizontal);
-    m_volumeSlider->setObjectName(QStringLiteral("animaticVolume"));
-    m_volumeSlider->setRange(0, 100);
-    m_volumeSlider->setValue(80);
-    // The zoom slider's style exactly (the user's choice, 2026-10-23): the
-    // same groove, fill, handle and 10 px height; 60 px wide as before.
-    m_volumeSlider->setFixedSize(60, 10);
-    m_volumeSlider->setStyleSheet(kZoomSliderSheet);
-    m_volumeSlider->setToolTip(QStringLiteral("Audio volume"));
-    connect(m_volumeSlider, &QSlider::valueChanged, this, [this](int v) {
-        if (m_audioOutput)
-            m_audioOutput->setVolume(v / 100.0);
-    });
-    audioLayout->addWidget(m_volumeSlider);
-    m_audioGroup->setVisible(false);
-    right->addWidget(m_audioGroup, 0, Qt::AlignVCenter);
+    // --- The audio warning (Part D, 2026-10-23; the user's rule, drawn as
+    // Figma proposal frame 425:390): a 16 px warning glyph on a flat 28 x 28
+    // hit area, shown ONLY while the track is missing, cannot be played or
+    // there is no audio output device, with the message as its tooltip; 20
+    // px before the loop group. The header's audio name and volume slider
+    // are gone: the audio bar names the track, the Audio track's speaker
+    // opens the volume.
+    m_warningGroup = new QWidget;
+    m_warningGroup->setObjectName(QStringLiteral("animaticAudioWarningGroup"));
+    transparent(m_warningGroup);
+    QHBoxLayout *warnLayout = new QHBoxLayout(m_warningGroup);
+    warnLayout->setContentsMargins(0, 0, 20, 0);
+    warnLayout->setSpacing(0);
+    m_audioWarning = new QToolButton;
+    m_audioWarning->setObjectName(QStringLiteral("animaticAudioWarning"));
+    m_audioWarning->setFixedSize(28, 28);
+    m_audioWarning->setIconSize(QSize(16, 16));
+    m_audioWarning->setIcon(SankoIcons::icon(QStringLiteral(":/icons/timeline/audio_warning.svg"), QSize(16, 16)));
+    m_audioWarning->setAutoRaise(true);
+    m_audioWarning->setFocusPolicy(Qt::NoFocus);
+    m_audioWarning->setCursor(Qt::ArrowCursor);
+    m_audioWarning->setStyleSheet(kWarningButtonSheet);
+    warnLayout->addWidget(m_audioWarning);
+    m_warningGroup->setVisible(false);
+    right->addWidget(m_warningGroup, 0, Qt::AlignVCenter);
 
     // --- Loop: icon buttons, the clear button when a loop is set, the
     // warning while one point is set -------------------------------------------
     m_loopGroup = new QWidget;
     m_loopGroup->setObjectName(QStringLiteral("animaticLoop"));
+    transparent(m_loopGroup);
     QHBoxLayout *loopLayout = new QHBoxLayout(m_loopGroup);
-    loopLayout->setContentsMargins(105, 0, 0, 0); // the design's gap from the total
+    loopLayout->setContentsMargins(0, 0, 0, 0); // right-anchored; the 105 px gap was to the total, now in the cluster
     loopLayout->setSpacing(6);
 
     m_loopWarningLabel = new QLabel(QStringLiteral("Set both loop points to activate"));
@@ -825,6 +795,7 @@ QWidget *AnimaticPage::createHeader()
     // separator, 68, pill 228, 68, separator, 34, total, 28, speed 60.
     m_centreGroup = new QWidget(bar);
     m_centreGroup->setObjectName(QStringLiteral("animaticCentre"));
+    transparent(m_centreGroup);
     m_centreGroup->setFixedHeight(kHeaderHeight);
     QHBoxLayout *centre = new QHBoxLayout(m_centreGroup);
     centre->setContentsMargins(0, 0, 0, 0);
@@ -856,6 +827,7 @@ QWidget *AnimaticPage::createHeader()
     // --- The transport pill: five buttons, inside the cluster ----------------
     m_transportPill = new QWidget(m_centreGroup);
     m_transportPill->setObjectName(QStringLiteral("animaticTransport"));
+    transparent(m_transportPill);
     m_transportPill->setFixedSize(228, 32);
     QHBoxLayout *pill = new QHBoxLayout(m_transportPill);
     pill->setContentsMargins(0, 2, 0, 2);
@@ -941,29 +913,25 @@ QWidget *AnimaticPage::createHeader()
 // them; the centre cluster (timecode | pill | total | speed, since the
 // design of 2026-10-23) is not in the layout: it is placed so the pill is
 // centred on the window, and pushed inward only when a group would
-// otherwise come within 16 px of the cluster. When the
-// row is short of room the audio file name shortens first (its label
-// elides down to 60 px), then the zoom slider narrows (160 -> 80); below
-// that the header's minimum width stops the window, so nothing overlaps
-// and no button is cut off.
+// otherwise come within 16 px of the cluster. Nothing gives way (Part D
+// took the slider and the audio name out of the header): the header's
+// minimum width stops the window, so nothing overlaps and no button is
+// cut off.
 void AnimaticPage::layoutHeader()
 {
     if (!m_header || !m_leftGroup || !m_rightGroup || !m_transportPill)
         return;
-    QSlider *zoom = m_timeline ? m_timeline->zoomSlider() : nullptr;
     constexpr int kPillW = 228, kPillGap = 16;
     const int available = m_header->width();
 
-    // A changed maximum or fixed width is seen by the widget's own layout
-    // item at once, but the CONTAINER's item in the layout above keeps its
-    // cached size hint (QWidgetItemV2) until the container itself reports
-    // a geometry change. So every container on the path is told
-    // (updateGeometry) and its layout invalidated, bottom up, before the
-    // row's layout is activated and measured. (Measured 2026-10-18: without
-    // this the audio group still reported its elided width after the limit
-    // was lifted, the row believed it had room, and the pill overlapped.)
+    // A changed size is seen by the widget's own layout item at once, but
+    // the CONTAINER's item in the layout above keeps its cached size hint
+    // (QWidgetItemV2) until the container itself reports a geometry
+    // change. So every container on the path is told (updateGeometry) and
+    // its layout invalidated, bottom up, before the row's layout is
+    // activated and measured. (Measured 2026-10-18.)
     auto refresh = [&] {
-        for (QWidget *w : {m_audioGroup, m_centreGroup, m_loopGroup,
+        for (QWidget *w : {m_warningGroup, m_centreGroup, m_loopGroup,
                            m_timeline ? m_timeline->zoomControls() : nullptr,
                            m_timeline ? m_timeline->viewControls() : nullptr,
                            m_leftGroup, m_rightGroup}) {
@@ -976,74 +944,16 @@ void AnimaticPage::layoutHeader()
         m_header->layout()->invalidate();
         m_header->layout()->activate();
     };
-    auto need = [&] {
-        // The centre cluster is outside the row's layout: its width and
-        // the 16 px it keeps from each group are added by hand.
-        return m_header->layout()->sizeHint().width() + m_centreGroup->sizeHint().width()
-            + 2 * kPillGap;
-    };
-
-    // Natural widths first: the slider at 160, the label at its text and
-    // on screen (if a track exists).
-    if (zoom)
-        zoom->setFixedWidth(160);
-    m_audioNameGivenWay = false;
-    if (m_audioLabel) {
-        m_audioLabel->setMaximumWidth(QWIDGETSIZE_MAX);
-        showAudioLabel();
-    }
     refresh();
-    int shortage = need() - available;
-    // The group's own flag, not isVisible(): the row is laid out before it
-    // is shown and again while the window closes, and neither may change
-    // the decision.
-    if (shortage > 0 && m_audioLabel && m_audioGroup && !m_audioGroup->isHidden()) {
-        const int natural = m_audioLabel->sizeHint().width();
-        const int give = qMin(shortage, qMax(0, natural - 60));
-        m_audioLabel->setMaximumWidth(qMax(60, natural - give));
-        refresh();
-        shortage = need() - available;
-    }
-    if (shortage > 0 && zoom) {
-        zoom->setFixedWidth(qMax(80, 160 - shortage));
-        refresh();
-        shortage = need() - available;
-    }
-    // THE LAST STAGE (the user's, Part B, 2026-10-18): the name at 60 and
-    // the slider at 80 and still short - the audio name goes entirely (the
-    // audio bar on the track shows it anyway) and the slider takes back
-    // what that frees, as far as it needs to.
-    if (shortage > 0 && zoom && m_audioLabel && m_audioLabelWanted && m_audioGroup
-        && !m_audioGroup->isHidden()) {
-        m_audioNameGivenWay = true;
-        showAudioLabel();
-        zoom->setFixedWidth(160);
-        refresh();
-        shortage = need() - available;
-        if (shortage > 0) {
-            zoom->setFixedWidth(qMax(80, 160 - shortage));
-            refresh();
-        }
-    }
-    // The floor: every group at its minimum, the slider at 80, the audio
-    // name gone, the pill and its gaps. The slider's width is FIXED above
-    // (so the layout never squeezes it on its own), which makes its minimum
-    // its current width: the left group's minimum hint counts the slider
-    // as it is now, and the slack above 80 is taken off again. (Found
-    // 2026-10-18: without this the floor rose with the slider, the
-    // window's minimum stopped at the slider's current width, and the
-    // slider only narrowed when the width dropped in one jump.) The name,
-    // while shown, counts its 60 px minimum and the 8 px before the
-    // volume slider; both go with it, so they come off too.
+
+    // THE FLOOR (Part D, 2026-10-23): nothing gives way any more - the zoom
+    // slider and the audio name are gone from the header - so the floor is
+    // every group at its size, the cluster, and the 16 px it keeps from
+    // each group. The window's minimum width follows it (MainWindow).
     const QMargins m = m_header->layout()->contentsMargins();
-    const int sliderSlack = zoom ? qMax(0, zoom->minimumWidth() - 80) : 0;
-    const int nameSlack = (m_audioLabel && !m_audioLabel->isHidden() && m_audioGroup
-                           && !m_audioGroup->isHidden())
-        ? 60 + 8
-        : 0;
-    const int floorWidth = m.left() + m_leftGroup->minimumSizeHint().width() - sliderSlack + kPillGap
+    const int floorWidth = m.left() + m_leftGroup->minimumSizeHint().width() + kPillGap
         + m_centreGroup->sizeHint().width() + kPillGap
-        + m_rightGroup->minimumSizeHint().width() - nameSlack + m.right();
+        + m_rightGroup->minimumSizeHint().width() + m.right();
     if (m_header->minimumWidth() != floorWidth)
         m_header->setMinimumWidth(floorWidth);
 
@@ -1080,40 +990,15 @@ QRect AnimaticPage::transportPillRectForTest() const
         : QRect();
 }
 
-int AnimaticPage::zoomSliderWidthForTest() const
-{
-    return m_timeline && m_timeline->zoomSlider() ? m_timeline->zoomSlider()->width() : 0;
-}
 
-QString AnimaticPage::audioLabelDrawnTextForTest() const
-{
-    auto *label = dynamic_cast<ElidedLabel *>(m_audioLabel);
-    return label && !label->isHidden() ? label->drawnText() : QString();
-}
 
-bool AnimaticPage::audioLabelShownForTest() const
-{
-    return m_audioLabel && !m_audioLabel->isHidden();
-}
 
 bool AnimaticPage::audioMutedForTest() const
 {
     return m_audioOutput && m_audioOutput->isMuted();
 }
 
-// The audio label's two owners (see the header): wanted by updateAudioUi,
-// allowed by layoutHeader.
-void AnimaticPage::setAudioLabelWanted(bool wanted)
-{
-    m_audioLabelWanted = wanted;
-    showAudioLabel();
-}
 
-void AnimaticPage::showAudioLabel()
-{
-    if (m_audioLabel)
-        m_audioLabel->setVisible(m_audioLabelWanted && !m_audioNameGivenWay);
-}
 
 // --- The tracks' lock / visibility / mute (Part B) ---------------------------
 
@@ -1141,14 +1026,6 @@ void AnimaticPage::setTrackVisible(TimelineTrack track, bool visible)
     emit tracksChanged();
 }
 
-void AnimaticPage::setAudioMuted(bool muted)
-{
-    if (m_tracks.audioMuted == muted)
-        return;
-    m_tracks.audioMuted = muted;
-    applyTracks();
-    emit tracksChanged();
-}
 
 // Mute is the player's own flag (QAudioOutput::setMuted): the volume
 // slider's value is kept, so unmuting plays at the volume it had.
@@ -1156,8 +1033,55 @@ void AnimaticPage::applyTracks()
 {
     if (m_timeline)
         m_timeline->setTracks(m_tracks);
-    if (m_audioOutput)
-        m_audioOutput->setMuted(m_tracks.audioMuted);
+    if (m_audioOutput) {
+        m_audioOutput->setVolume(audioGainForExport()); // the same gain the export uses
+        m_audioOutput->setMuted(m_tracks.audioMuted());
+    }
+}
+
+// THE VOLUME (Part D, the user's rules): 0..100 on a PERCEPTUAL scale - the
+// slider's value goes through the power curve in audioGainForExport, so
+// 50 % sounds half as loud - applied to the player at once (QAudioOutput
+// takes a new volume mid-stream without a restart), 0 mutes. Not an undo
+// command: tracksChanged marks the project unsaved. The AUDIO lock does
+// not touch it.
+void AnimaticPage::setAudioVolume(int percent)
+{
+    percent = qBound(0, percent, 100);
+    if (m_tracks.audioVolume == percent)
+        return;
+    m_tracks.audioVolume = percent;
+    applyTracks();
+    emit tracksChanged();
+}
+
+// THE VOLUME CURVE (the user's choice, 2026-10-23): a power curve,
+// gain = (v / 100) ^ (5/3), so 50 % is -10 dB (about half as loud, after
+// Stevens' loudness law), 25 % -20.1 dB, 75 % -4.2 dB; 0 % is silence and
+// 100 % full volume. The ONE function the player and the export read.
+// (Qt's LogarithmicVolumeScale was tried first and measured -16.4 dB at
+// 50 %, far quieter than half loudness.)
+double AnimaticPage::audioGainForExport() const
+{
+    const double v = qBound(0, m_tracks.audioVolume, 100) / 100.0;
+    return v <= 0.0 ? 0.0 : std::pow(v, 5.0 / 3.0);
+}
+
+QString AnimaticPage::audioWarningForTest() const
+{
+    return audioWarningShownForTest() ? m_audioWarning->toolTip() : QString();
+}
+
+bool AnimaticPage::audioWarningShownForTest() const
+{
+    return m_warningGroup && m_audioWarning && !m_warningGroup->isHidden();
+}
+
+QString AnimaticPage::volumeToolTipForTest() const
+{
+    return m_timeline && m_timeline->volumePopupForTest()
+        ? m_timeline->volumePopupForTest()->toolTip()
+        : QString();
 }
 
 // --- Data / display -------------------------------------------------------
@@ -1939,7 +1863,7 @@ void AnimaticPage::installAudio(const QString &path, bool linked)
 void AnimaticPage::updateAudioUi()
 {
     const bool has = !m_audioPath.isEmpty();
-    // WHICH DEVICE, in the volume slider's tooltip: the one question "why
+    // WHICH DEVICE, in the volume popup's tooltip: the one question "why
     // can I not hear it" needs answered first, and until 2026-10-05 nothing
     // in the app could answer it.
     const QString playingThrough = m_noAudioOutput
@@ -1947,89 +1871,42 @@ void AnimaticPage::updateAudioUi()
                          "through. Connect speakers or headphones and SankoTV "
                          "will use them.")
         : QStringLiteral("Playing through: %1").arg(audioOutputName());
-    if (m_volumeSlider) {
-        m_volumeSlider->setVisible(has && !m_audioMissing && !m_audioUnplayable);
-        m_volumeSlider->setToolTip(QStringLiteral("Audio volume\n") + playingThrough);
-    }
-    if (m_audioLabel && has && !m_audioMissing && (m_audioUnplayable || m_noAudioOutput)) {
-        // THE TWO WAYS A TRACK THAT IS THERE MAKES NO SOUND, said on the
-        // label - which stays when the timeline is collapsed - in the
-        // warning colour, because silence with no explanation is the
-        // failure this exists to end. A file the player cannot open
-        // outranks a missing output device: it is the one that needs the
-        // artist to do something to the project.
-        const QString name = QFileInfo(m_audioPath).fileName();
-        setAudioLabelWanted(true);
-        m_audioLabel->setStyleSheet(
-            SankoTheme::themed("color: %WARNING%; font-size: 12px;"));
-        if (m_audioUnplayable) {
-            m_audioLabel->setText(name + QString::fromUtf8(" \xE2\x80\x94 cannot be played"));
-            m_audioLabel->setToolTip(
-                QStringLiteral("SankoTV cannot play this audio file:\n%1\n\n%2\n\n"
-                               "The film plays without sound. Right-click the "
-                               "audio track, or use Edit > Import Audio, to "
-                               "choose another file.")
-                    .arg(QDir::toNativeSeparators(m_audioPath), m_audioProblem));
-        } else {
-            m_audioLabel->setText(
-                name
-                + (m_audioLinked ? QString::fromUtf8(" \xE2\x80\x94 linked") : QString())
-                + QString::fromUtf8(" \xE2\x80\x94 no audio output"));
-            m_audioLabel->setToolTip(
-                QStringLiteral("%1\n\n%2").arg(QDir::toNativeSeparators(m_audioPath),
-                                               playingThrough));
-        }
-    } else if (m_audioLabel) {
-        // In the header row, which stays when the timeline is collapsed: a
-        // missing track is announced where it cannot be folded away.
-        setAudioLabelWanted(has);
-        if (has) {
-            const QString name = QFileInfo(m_audioPath).fileName();
-            // LINKED IS SAID ON THE LABEL, not left to the tooltip (the
-            // user's decision, 2026-10-04): a linked track is the one that
-            // loses its sound when the project folder moves, and that must
-            // be visible without hovering. Missing outranks it - a track
-            // that is not there at all is the more urgent thing to say.
-            m_audioLabel->setText(
-                m_audioMissing
-                    ? name + QString::fromUtf8(" \xE2\x80\x94 missing")
-                    : m_audioLinked
-                          ? name + QString::fromUtf8(" \xE2\x80\x94 linked")
-                          : name);
-            m_audioLabel->setStyleSheet(
-                m_audioMissing
-                    ? SankoTheme::themed("color: %WARNING%; font-size: 12px;")
-                    : QStringLiteral("color: #888888; font-size: 12px;"));
-            m_audioLabel->setToolTip(
-                m_audioMissing
-                    ? QStringLiteral("This project's audio file was not found "
-                                     "at:\n%1\n\nRight-click the audio track, "
-                                     "or use Edit > Locate Audio File, to "
-                                     "point to it.")
-                          .arg(QDir::toNativeSeparators(m_audioPath))
-                    : m_audioLinked
-                          ? QStringLiteral(
-                                "This audio file is outside the project's "
-                                "folder:\n%1\n\nThe project will lose its "
-                                "sound if it is moved or copied without this "
-                                "file. Right-click the audio track, or use "
-                                "Edit > Copy Audio Into Project, to make the "
-                                "project carry it.")
-                                .arg(QDir::toNativeSeparators(m_audioPath))
-                          : QDir::toNativeSeparators(m_audioPath));
-        }
-    }
+    if (m_timeline)
+        m_timeline->setVolumeTooltip(QStringLiteral("Audio volume\n") + playingThrough);
+
+    // THE WARNING ICON (Part D, the user's rule): shown only while the
+    // track is MISSING, CANNOT BE PLAYED, or there is NO AUDIO OUTPUT -
+    // the three ways a track makes no sound - with the message the
+    // header's name used to carry as its tooltip. Nothing shows when the
+    // audio is fine; "linked" is the audio bar's to say. A file the player
+    // cannot open outranks a missing output device: it is the one that
+    // needs the artist to do something to the project.
+    const QString native = QDir::toNativeSeparators(m_audioPath);
+    QString warning;
+    if (has && m_audioMissing)
+        warning = QStringLiteral("This project's audio file was not found at:\n%1\n\n"
+                                 "Right-click the audio track, or use Edit > Locate "
+                                 "Audio File, to point to it.")
+                      .arg(native);
+    else if (has && m_audioUnplayable)
+        warning = QStringLiteral("SankoTV cannot play this audio file:\n%1\n\n%2\n\n"
+                                 "The film plays without sound. Right-click the audio "
+                                 "track, or use Edit > Import Audio, to choose another "
+                                 "file.")
+                      .arg(native, m_audioProblem);
+    else if (has && m_noAudioOutput)
+        warning = QStringLiteral("%1\n\n%2").arg(native, playingThrough);
+    if (m_audioWarning)
+        m_audioWarning->setToolTip(warning);
+    if (m_warningGroup)
+        m_warningGroup->setVisible(!warning.isEmpty());
+
     if (m_timeline) {
         m_timeline->setAudioMissing(m_audioMissing);
         m_timeline->setAudioUnplayable(m_audioUnplayable);
         m_timeline->setAudioLoaded(has, m_player ? m_player->duration() : 0);
     }
-    // The header's audio group shows while a track exists (the label may
-    // still be hidden inside it by the give-way rule's last stage); the row
-    // is re-laid out because the group's width changed.
-    if (m_audioGroup)
-        m_audioGroup->setVisible(m_audioLabelWanted);
-    layoutHeader();
+    layoutHeader(); // the warning came or went
     emit audioStateChanged(); // the menus enable Remove and Locate from this
 }
 

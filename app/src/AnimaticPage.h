@@ -87,7 +87,7 @@ public:
     void setTracks(const TimelineTracks &tracks);
     void setTrackLocked(TimelineTrack track, bool locked);
     void setTrackVisible(TimelineTrack track, bool visible);
-    void setAudioMuted(bool muted);
+    void setAudioVolume(int percent); // 0..100 on a perceptual scale; 0 mutes (Part D)
     // THE HEADER ROW (the redesign, Figma 380:644): collapse, Fit / - /
     // slider / +, a transport pill centred on the window, the timecode, a
     // separator, the total, the speed buttons, the audio label and volume,
@@ -99,13 +99,13 @@ public:
     // as drawn.
     int headerMinimumWidthForTest() const;
     QRect transportPillRectForTest() const;
-    int zoomSliderWidthForTest() const;
-    QString audioLabelDrawnTextForTest() const;
-    // Whether the audio name is on screen: false with no track, and false
-    // when the give-way rule's last stage has hidden it (the slider at 80
-    // was not enough).
-    bool audioLabelShownForTest() const;
     bool audioMutedForTest() const; // what the player itself reports
+    int audioVolumeForTest() const { return m_tracks.audioVolume; }
+    double audioGainForExport() const; // the volume as the export's linear gain
+    // The header's audio warning (Part D): its message while shown, empty
+    // when the audio is fine.
+    QString audioWarningForTest() const;
+    bool audioWarningShownForTest() const;
 
     // Transport, for the workspace's pointer-routed keys.
     void togglePlay();
@@ -241,8 +241,6 @@ public:
     // "the soundtrack plays" can be measured by. The gate cannot hear.
     qint64 audioPositionForTest() const;
     bool audioPlayingForTest() const;
-    QString audioLabelTextForTest() const; // the header's track label
-    QString audioLabelToolTipForTest() const;
     QString volumeToolTipForTest() const;
     // The gate cannot change the machine's default audio device: this
     // answers "what is the default output now?" in the system's place, and
@@ -327,12 +325,6 @@ private:
     void showAudioMenu(const QPoint &globalPos);
     void updateAudioUi();
     void applyTracks(); // push m_tracks to the timeline and the player
-    // The audio label's visibility has two owners: updateAudioUi decides
-    // whether the header WANTS it (a track exists), layoutHeader whether
-    // the width ALLOWS it (the give-way rule's last stage). One function
-    // combines them so neither overwrites the other.
-    void setAudioLabelWanted(bool wanted);
-    void showAudioLabel();
     bool hasAudio() const;
     qint64 offsetForPanel(int index) const; // ms before this panel
 
@@ -360,12 +352,11 @@ private:
     QWidget *m_rightGroup = nullptr;    // timecode .. view controls
     QWidget *m_transportPill = nullptr; // placed by layoutHeader, not the layout
     QWidget *m_centreGroup = nullptr;   // timecode | pill | total | speed, placed by layoutHeader
-    QWidget *m_audioGroup = nullptr;    // the audio label and the volume slider
     QWidget *m_loopGroup = nullptr;
+    QWidget *m_warningGroup = nullptr;      // the audio warning icon and its 20 px gap (Part D)
+    QToolButton *m_audioWarning = nullptr;
     QWidget *m_timecodeSeparator = nullptr; // between the timecode and the pill
     QWidget *m_totalSeparator = nullptr;    // between the pill and the total
-    bool m_audioLabelWanted = false;   // a track exists (updateAudioUi)
-    bool m_audioNameGivenWay = false;  // hidden by the give-way rule (layoutHeader)
     TimelineTracks m_tracks;
 
     AnimaticTimeline *m_timeline = nullptr;
@@ -413,10 +404,8 @@ private:
     QMediaDevices *m_mediaDevices = nullptr;
     std::function<QAudioDevice()> m_defaultOutputForTest;
     QString m_projectFile;        // empty: the project has no file yet
-    QLabel *m_audioLabel = nullptr;
     std::function<QString()> m_audioPickerForTest;
     std::function<void(QMenu *)> m_audioMenuHookForTest;
-    QSlider *m_volumeSlider = nullptr;
 
     // Loop region (session-only).
     int m_loopStartIndex = -1;

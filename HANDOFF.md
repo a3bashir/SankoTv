@@ -294,7 +294,13 @@ may ship in a closed-source commercial product, flag it - do not decide.
     shapes, the collapsed chevron and the pause bars.)
 
 13. OPEN - THE WORKSPACE WINDOW'S MINIMUM WIDTH (opened 2026-10-18, the
-    user's item; numbers updated 2026-10-23 for Part C's header). Since
+    user's item; numbers updated 2026-10-23 for Part C's header, then
+    MEASURED for Part D the same day: with the zoom slider, the audio
+    name and the volume slider out of the header the floor is 1236
+    logical px, one floor with or without a track (1278 with the
+    clear-loop button showing, computed), and the window's minimum width
+    1419 in the default layout, 1409 in the user's - still wider than a
+    1366 px laptop, so the item stays open). Since
     Part B the window's minimum width is its content's: the timeline
     header's floor (1398 logical px without an audio track,
     1478 with one; Part B had 1309 / 1389 - the design's two 68 px
@@ -7039,6 +7045,91 @@ check and the give-way clearance read the cluster; new checks for the
 dropdown (three items, 1x checked, the third inside the menu's height,
 2x -> the total's suffix and the button text, 1x back) and the volume
 sheet; the column 134 with its separator and the content pixel at 135.
+
+## The timeline redesign, Part D: flat controls, the zoom field, the volume on the track (2026-10-23)
+
+The user's refinements, approved from the report of 2026-10-23 (Figma
+proposal frames in the Components section: 424:390 flat controls, 423:476
+the zoom field, 423:492 the volume popup and the muted speaker, 425:390
+the audio warning icon).
+- FLAT CONTROLS (SankoTimelineTheme.h): no square, no border behind any
+  header icon; hover = the accent at 14 % on a rounded-5 highlight,
+  pressed 26 %, checked (Frames / Seconds / Snap) the accent at 100 %
+  with a white icon; Play keeps its purple gradient (hover lighter,
+  pressed darker). NO GREEN in the timeline: the loop buttons' and the
+  speed dropdown's hovers (and the chevron's hover SVG) are the accent;
+  the loop REGION overlay on the shots track keeps its green on the
+  user's instruction (a range marker, not a hover, must not read as the
+  purple selection); the clear-loop button keeps its red hover.
+- THE ZOOM FIELD (AnimaticTimeline: ZoomField, a QLineEdit): Fit 33 x 28
+  at (58,6), 16 px, then - 27 x 28, 3 px, the field 46 x 28 (#333333,
+  radius 5, 11 px #cccccc centred, "100%"), 3 px, + 27 x 28 - the
+  design's group at y 6 (the user's choice; the design drew y 7). At
+  rest read-only and NoFocus, so the timeline's keys stay the
+  timeline's; double-click begins the edit (StrongFocus, the accent
+  border, white selected text); Enter and a lost focus apply through
+  editingFinished, Escape cancels (the field reports it to the owner);
+  "150" / "150%" / spaces accepted, clamped to applyZoom's 10..400,
+  anything else restores. applyZoom writes the field, so Fit, - / +
+  (the old 25-point steps, now through applyZoom) and Ctrl+wheel always
+  show the real zoom. THE SLIDER IS GONE, and with it the header's
+  give-way rule: nothing in the header gives way any more. The gate's
+  sections that set zoom through the slider use ZoomSetter (the test's
+  stand-in over setZoomForTest).
+- THE VOLUME ON THE TRACK (AnimaticTimeline + AnimaticPage): the
+  speaker OPENS a vertical QSlider ("trackVolumePopup", a child of the
+  canvas) at x 34 of the label column, 10 wide, rising 128 px from the
+  speaker's icon top (or as much as leaves 10 px below the column's
+  top; placed again whenever the rows move), the zoom slider's look
+  upright (kVolumeSliderSheet); it closes on the speaker, Escape, a lost
+  focus and any press on the canvas. The value is the track's VOLUME,
+  0..100 on a PERCEPTUAL scale: the power curve gain = (v/100)^(5/3)
+  in AnimaticPage::audioGainForExport, the ONE function the player and
+  the export read (-20.1 / -10.0 / -4.2 dB at 25 / 50 / 75 %: 50 % is
+  about half as loud; Qt's LogarithmicVolumeScale was measured at
+  -16.4 dB at 50 % and dropped on the user's instruction, 2026-10-23)
+  (ProjectExport multiplies the decoded PCM by
+  MovieRequest::audioGain; at 0 % the track is left out and
+  mp4AudioWarning says so). 0 % is muted: the speaker shows the muted
+  glyph (speaker_muted.svg, the design's speaker with a 1.2 px slash,
+  full grey) and QAudioOutput::setMuted. TimelineTracks::audioVolume
+  replaces audioMuted (audioMuted() is derived); the manifest writes
+  "volume" and reads "volume", else "muted": true -> 0, else 100. Not
+  undoable; tracksChanged marks the project unsaved; the AUDIO lock
+  does not touch it. The header's volume slider is gone.
+- THE AUDIO NAME IS GONE from the header (the audio bar names the
+  track). In its place THE WARNING ICON ("animaticAudioWarning", a flat
+  28 x 28 QToolButton with a 16 px triangle in the app's warning colour
+  #e06c6c (%WARNING%; the first build drew it #e6b65c), 20 px before the
+  loop group): shown only while the track is MISSING, CANNOT BE PLAYED,
+  or there is NO AUDIO OUTPUT device, with the message the name used to
+  carry as its tooltip; nothing when the audio is fine ("linked" is the
+  bar's to say). The loop group's 105 px margin is gone (it was the gap
+  to the total, now in the cluster); the view icons keep their 31 px.
+  Figma frame 425:390 was recoloured to match.
+- Floors, measured: 1236 px (one floor, with or without a track; 1284
+  while the warning icon shows, measured; 1278 with the clear-loop
+  button, computed); the window's minimum 1419 in the default layout
+  (1467 with the warning showing), 1409 in the user's (computed from the
+  measured floor and the user's 173 px of docks). BEFORE SELLING 13
+  carries the measured numbers. The volume popup measured at x 34, 10 x
+  128 on the 204 px section and 10 x 118 at the section's minimum height.
+
+GATE (745 -> 748): (aw) the left group at the new positions; the
+zoom field (rest, + / -, a set zoom, Fit; editing: Enter with "150%" and
+" 80 ", clamps, invalid, Escape, a lost focus; EVERY KEY the field's while
+editing - Backspace, Delete, arrows, Home, End, Space - with the timeline's
+keys armed and the SHOTS track locked so a leak would be refused and
+counted, and the control that Space plays once the field is at rest); the
+give-way checks replaced by the fixed floor (wide, at, below; the same
+floor without a track; no warning for a fine track); (aq) / (ar) / (al)
+read the warning icon instead of the name; (ax) the speaker's checked
+icon is the muted glyph; the volume popup (placement, focus, 50 % as the
+perceptual gain, 0 % muted and out of the export, closed by the speaker,
+Escape and a press, the lock leaving it alone, unsaved and nothing on
+the stack, a change during playback with the film and sound still
+playing); the round trip writes "volume"; old projects (muted -> 0, none
+-> 100).
 
 ## METHOD: measure interior structure ACROSS THE SIZE RANGE before calling it character (2026-09-25)
 

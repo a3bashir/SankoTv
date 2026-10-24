@@ -761,7 +761,7 @@ QString MainWindow::mp4UnavailableReason() const
 QString MainWindow::exportAudioPath() const
 {
     if (!m_animatic || m_animatic->audioPath().isEmpty() || m_animatic->audioMissing()
-        || m_animatic->tracks().audioMuted)
+        || m_animatic->tracks().audioMuted())
         return QString();
     return m_animatic->audioPath();
 }
@@ -772,11 +772,11 @@ QString MainWindow::mp4AudioWarning() const
         return QString();
     // Muted (Part B): the track is there and would be left out on purpose;
     // said before the file dialog, with Cancel, like the missing case.
-    if (m_animatic->tracks().audioMuted)
+    if (m_animatic->tracks().audioMuted())
         return QStringLiteral(
-            "The audio track is muted and will be left out of the film.\n\n"
+            "The audio track's volume is 0 %, so the film would have no sound.\n\n"
             "The film can be exported without sound, or you can cancel and "
-            "unmute the track first (the speaker on the timeline's AUDIO track).");
+            "turn the volume up first (the speaker on the timeline's AUDIO track).");
     if (!m_animatic->audioMissing())
         return QString();
     return QStringLiteral(
@@ -803,6 +803,7 @@ sankoexport::MovieResult MainWindow::runMovieExport(const QString &path)
     request.panels = collectPanels(m_scenes);
     request.fps = m_projectFps; // THE PROJECT'S, not a constant 24
     request.audioPath = exportAudioPath();
+    request.audioGain = m_animatic ? m_animatic->audioGainForExport() : 1.0; // the track volume (Part D)
 
     // The platform's encoder: Media Foundation called directly on Windows.
     // (Its availability was asked before the file dialog; null here means

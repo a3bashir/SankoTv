@@ -114,8 +114,19 @@
 #include <QSlider>
 #include <QStyle>
 #include <QStyleOptionSlider>
+#include <QLineEdit>
 #include <QToolButton>
 #include <cmath>
+
+// Part D (2026-10-23): the zoom slider is gone from the header; the sections
+// that set zoom through it use this stand-in with the slider's two calls,
+// routed to the timeline's own zoom (the same applyZoom the field uses).
+struct ZoomSetter
+{
+    AnimaticTimeline *tl = nullptr;
+    void setValue(int v) { if (tl) tl->setZoomForTest(float(v)); }
+    int value() const { return tl ? qRound(tl->zoomForTest()) : 0; }
+};
 #include <QUndoStack>
 #include <QtGui/QTransform>
 #include <functional>
@@ -6027,19 +6038,15 @@ void runAudioMissingPass(const QString &scratch)
                   && r.timeline->audioBarTextForTest().contains(
                          QStringLiteral("right-click to locate")),
               r.timeline->audioBarTextForTest());
-        bool headerSays = false;
-        for (QLabel *label : r.animatic->findChildren<QLabel *>())
-            if (label->isVisible()
-                && label->text().contains(QStringLiteral("first take.wav"))
-                && label->text().contains(QStringLiteral("missing")))
-                headerSays = true;
+        // Part D: the header warns with an icon whose tooltip carries the message.
+        const bool headerSays = r.animatic->audioWarningShownForTest()
+            && r.animatic->audioWarningForTest().contains(QStringLiteral("first take.wav"))
+            && r.animatic->audioWarningForTest().contains(QStringLiteral("not found"));
         r.animatic->setCollapsed(true);
         pump(400);
         bool headerSaysCollapsed = false;
-        for (QLabel *label : r.animatic->findChildren<QLabel *>())
-            if (label->isVisible()
-                && label->text().contains(QStringLiteral("missing")))
-                headerSaysCollapsed = true;
+        headerSaysCollapsed = r.animatic->audioWarningShownForTest()
+            && r.animatic->audioWarningForTest().contains(QStringLiteral("not found"));
         r.animatic->setCollapsed(false);
         pump(400);
         check(QStringLiteral("(al) the header row says so too - and still "
@@ -7364,13 +7371,13 @@ void runAudioTravelsPass(const QString &scratch)
                              "been touched by the import: what was last "
                              "saved is still exactly what was saved"),
               fileHash(film) == manifestBefore && manifestAudio(film).isEmpty());
-        check(QStringLiteral("(aq) the track's label is the file's name, and "
-                             "the bar carries its real length (a track the "
+        check(QStringLiteral("(aq) a fine track shows no warning in the header, and "
+                             "the bar carries its name and real length (a track the "
                              "project owns is not marked)"),
-              present(r) && r.animatic->audioLabelTextForTest() == themeName
+              present(r) && !r.animatic->audioWarningShownForTest()
                   && r.timeline->audioBarTextForTest()
                          == QStringLiteral("theme.wav | 0:06"),
-              r.animatic->audioLabelTextForTest() + QStringLiteral(" / ")
+              r.animatic->audioWarningForTest() + QStringLiteral(" / ")
                   + r.timeline->audioBarTextForTest());
         const bool saved = r.window.saveProjectForTest(film);
         const QString text = manifestText(film);
@@ -7663,10 +7670,10 @@ void runAudioTravelsPass(const QString &scratch)
                   && media(names) == QStringList({second, themeName})
                   && fileHash(own) == srcHash
                   && fileHash(owned(names, second)) == fileHash(other)
-                  && present(r) && r.animatic->audioLabelTextForTest() == second
+                  && present(r) && !r.animatic->audioWarningShownForTest()
                   && undo->count() == count + 1,
               media(names).join(QStringLiteral(", ")) + QStringLiteral(" / ")
-                  + r.animatic->audioLabelTextForTest());
+                  + r.animatic->audioWarningForTest());
         pick(r, QStringLiteral("Import Audio..."), src);
         check(QStringLiteral("(aq) importing the first file again finds its "
                              "copy already there and uses it: the track "
@@ -7810,12 +7817,12 @@ void runAudioTravelsPass(const QString &scratch)
                   && r.animatic->audioPath() == shared
                   && r.window.undoStackForTest()->count() == 0);
         check(QStringLiteral("(aq) A LINKED TRACK SAYS SO WITHOUT HOVERING: "
-                             "the header label and the bar both read "
-                             "\"score.wav - linked\""),
-              r.animatic->audioLabelTextForTest() == linkedText
+                             "the bar reads \"score.wav - linked\" (and the header, which "
+                             "warns only of a problem, shows nothing)"),
+              !r.animatic->audioWarningShownForTest()
                   && r.timeline->audioBarTextForTest()
                          == linkedText + QStringLiteral(" | 0:04"),
-              r.animatic->audioLabelTextForTest() + QStringLiteral(" / ")
+              r.animatic->audioWarningForTest() + QStringLiteral(" / ")
                   + r.timeline->audioBarTextForTest());
         QStringList menuSaw;
         r.animatic->setAudioMenuHookForTest([&](QMenu *menu) {
@@ -7889,14 +7896,14 @@ void runAudioTravelsPass(const QString &scratch)
                   && undo->count() == 1
                   && undo->undoText() == QStringLiteral("Copy Audio Into Project")
                   && r.window.isDirty()
-                  && r.animatic->audioLabelTextForTest() == scoreName
+                  && !r.animatic->audioWarningShownForTest()
                   && copyIn && !copyIn->isEnabled() && fileHash(shared) == sharedHash,
-              r.animatic->audioLabelTextForTest());
+              r.animatic->audioWarningForTest());
         undo->undo();
         pump(250);
         const bool linkedAgain = r.animatic->audioLinked()
             && r.animatic->audioPath() == shared
-            && r.animatic->audioLabelTextForTest() == linkedText
+            && !r.animatic->audioWarningShownForTest()
             && media(old) == QStringList({scoreName});
         undo->redo();
         pump(250);
@@ -8194,9 +8201,8 @@ void runAudioSaysWhyPass(const QString &scratch)
                   warnings.texts.isEmpty() && present(r)
                       && sameFile(r.animatic->audioPath(), ownGood)
                       && !r.animatic->audioUnplayable()
-                      && r.animatic->audioLabelTextForTest()
-                             == QStringLiteral("good.wav"),
-                  r.animatic->audioLabelTextForTest());
+                      && !r.animatic->audioWarningShownForTest(),
+                  r.animatic->audioWarningForTest());
         }
         check(QStringLiteral("(ar) fixture: saved with that track"),
               r.window.saveProjectForTest(project));
@@ -8231,17 +8237,17 @@ void runAudioSaysWhyPass(const QString &scratch)
                   && r.timeline->audioBarTextForTest().contains(
                          QStringLiteral("CANNOT BE PLAYED"))
                   && r.timeline->audioBarTextForTest().contains(QStringLiteral("good.wav"))
-                  && r.animatic->audioLabelTextForTest()
-                         == QString::fromUtf8("good.wav \xE2\x80\x94 cannot be played"),
+                  && r.animatic->audioWarningShownForTest()
+                  && r.animatic->audioWarningForTest().contains(QStringLiteral("cannot play")),
               r.timeline->audioBarStateForTest() + QStringLiteral(": ")
                   + r.timeline->audioBarTextForTest() + QStringLiteral(" / ")
-                  + r.animatic->audioLabelTextForTest());
+                  + r.animatic->audioWarningForTest());
         check(QStringLiteral("(ar) ...with the player's reason and the "
                              "file's place in the label's tooltip"),
               !r.animatic->audioProblem().isEmpty()
-                  && r.animatic->audioLabelToolTipForTest().contains(
+                  && r.animatic->audioWarningForTest().contains(
                          r.animatic->audioProblem())
-                  && r.animatic->audioLabelToolTipForTest().contains(
+                  && r.animatic->audioWarningForTest().contains(
                          QStringLiteral("good.wav")),
               r.animatic->audioProblem());
         r.animatic->togglePlay();
@@ -8261,7 +8267,7 @@ void runAudioSaysWhyPass(const QString &scratch)
               saved && named == QStringLiteral("Say_assets/good.wav"), named);
         pick(r, QStringLiteral("Import Audio..."), other);
         const bool replaced = present(r) && !r.animatic->audioUnplayable()
-            && r.animatic->audioLabelTextForTest() == QStringLiteral("second.wav");
+            && !r.animatic->audioWarningShownForTest();
         undo->undo();
         pump(250);
         const bool again = waitFor([&] { return r.animatic->audioUnplayable(); });
@@ -8299,7 +8305,7 @@ void runAudioSaysWhyPass(const QString &scratch)
         r.animatic->setDefaultAudioOutputForTest([] { return QAudioDevice(); });
         r.animatic->syncAudioOutputForTest();
         pump(100);
-        const QString noOutputLabel = r.animatic->audioLabelTextForTest();
+        const QString noOutputLabel = r.animatic->audioWarningForTest();
         r.animatic->togglePlay();
         pump(150);
         const bool filmPlays = r.animatic->isPlaying();
@@ -8308,10 +8314,10 @@ void runAudioSaysWhyPass(const QString &scratch)
                              "track: \"second.wav - no audio output\", with "
                              "what to do in both tooltips - and the film "
                              "still plays"),
-              r.animatic->noAudioOutput()
-                  && noOutputLabel
-                         == QString::fromUtf8("second.wav \xE2\x80\x94 no audio output")
-                  && r.animatic->audioLabelToolTipForTest().contains(
+              r.animatic->noAudioOutput() && r.animatic->audioWarningShownForTest()
+                  && noOutputLabel.contains(QStringLiteral("second.wav"))
+                  && noOutputLabel.contains(QStringLiteral("No audio output device"))
+                  && r.animatic->audioWarningForTest().contains(
                          QStringLiteral("No audio output device"))
                   && r.animatic->volumeToolTipForTest().contains(
                          QStringLiteral("No audio output device"))
@@ -8325,10 +8331,9 @@ void runAudioSaysWhyPass(const QString &scratch)
                                  "label is the plain name again and the "
                                  "tooltip names the device"),
                   !r.animatic->noAudioOutput()
-                      && r.animatic->audioLabelTextForTest()
-                             == QStringLiteral("second.wav")
+                      && !r.animatic->audioWarningShownForTest()
                       && r.animatic->audioOutputName() == real.description(),
-                  r.animatic->audioLabelTextForTest());
+                  r.animatic->audioWarningForTest());
             QAudioDevice another;
             for (const QAudioDevice &d : outputs)
                 if (d != real && another.isNull())
@@ -8564,7 +8569,8 @@ void runTimelineFollowsPass(const QString &scratch)
     travel::present(r);
     // The zoom slider lives in the page's header since the redesign
     // (2026-10-18); it is still the timeline's, found by its name.
-    QSlider *zoom = r.animatic->findChild<QSlider *>(QStringLiteral("timelineZoom"));
+    ZoomSetter zoomSetter{r.timeline};
+    ZoomSetter *zoom = &zoomSetter;
     QScrollBar *bar = tl->findChild<QScrollBar *>();
     if (zoom)
         zoom->setValue(400);
@@ -8984,7 +8990,8 @@ void runScrollbarOwnershipPass(const QString &scratch)
     AnimaticTimeline *tl = r.timeline;
     // The zoom slider lives in the page's header since the redesign
     // (2026-10-18); it is still the timeline's, found by its name.
-    QSlider *zoom = r.animatic->findChild<QSlider *>(QStringLiteral("timelineZoom"));
+    ZoomSetter zoomSetter{r.timeline};
+    ZoomSetter *zoom = &zoomSetter;
     QScrollBar *bar = tl->findChild<QScrollBar *>();
     if (!zoom || !bar) {
         check(QStringLiteral("(au) the timeline's zoom slider and scrollbar were found"),
@@ -9242,7 +9249,8 @@ void runTimelineWheelPass(const QString &scratch)
     QWidget *canvas = tl->surfaceForTest();
     // The zoom slider lives in the page's header since the redesign
     // (2026-10-18); it is still the timeline's, found by its name.
-    QSlider *zoom = r.animatic->findChild<QSlider *>(QStringLiteral("timelineZoom"));
+    ZoomSetter zoomSetter{r.timeline};
+    ZoomSetter *zoom = &zoomSetter;
     QScrollBar *bar = tl->findChild<QScrollBar *>();
     if (!zoom || !bar || !canvas) {
         check(QStringLiteral("(av) the timeline's parts were found"), false);
@@ -9471,22 +9479,22 @@ void runTimelineLookPass(const QString &scratch)
     // ---- the header: the design's geometry ---------------------------------------
     {
         const QRect collapse = rectOf("animaticCollapse"), fit = rectOf("timelineFit"),
-                    minus = rectOf("timelineZoomOut"), slider = rectOf("timelineZoom"),
+                    minus = rectOf("timelineZoomOut"), field = rectOf("timelineZoomField"),
                     plus = rectOf("timelineZoomIn"), tc = rectOf("animaticTimecode"),
                     sep = rectOf("animaticTimecodeSeparator"), total = rectOf("animaticTotal"),
                     frames = rectOf("timelineFrames"), seconds = rectOf("timelineSeconds"),
                     snap = rectOf("timelineSnap"), pill = page->transportPillRectForTest();
         const int W = page->width();
-        check(QStringLiteral("(aw) THE HEADER'S LEFT GROUP is the design's: collapse 26x26 at "
-                             "(12,7); Fit 33x28 at (61,4); - 27x28 at 108; the slider 160x10 "
-                             "at (149,13); + 27x28 at 323"),
-              collapse == QRect(12, 7, 26, 26) && fit == QRect(61, 4, 33, 28)
-                  && minus == QRect(108, 4, 27, 28) && slider == QRect(149, 13, 160, 10)
-                  && plus == QRect(323, 4, 27, 28),
-              QStringLiteral("collapse %1,%2 %3x%4; fit %5,%6; minus %7; slider %8,%9 %10x%11; plus %12")
+        check(QStringLiteral("(aw) THE HEADER'S LEFT GROUP is the design's (2026-10-23, at y 6): "
+                             "collapse 26x26 at (12,7); Fit 33x28 at (58,6); - 27x28 at 107; "
+                             "the zoom field 46x28 at (137,6); + 27x28 at 186"),
+              collapse == QRect(12, 7, 26, 26) && fit == QRect(58, 6, 33, 28)
+                  && minus == QRect(107, 6, 27, 28) && field == QRect(137, 6, 46, 28)
+                  && plus == QRect(186, 6, 27, 28),
+              QStringLiteral("collapse %1,%2 %3x%4; fit %5,%6; minus %7,%8; field %9,%10 %11x%12; plus %13,%14")
                   .arg(collapse.x()).arg(collapse.y()).arg(collapse.width()).arg(collapse.height())
-                  .arg(fit.x()).arg(fit.y()).arg(minus.x()).arg(slider.x()).arg(slider.y())
-                  .arg(slider.width()).arg(slider.height()).arg(plus.x()));
+                  .arg(fit.x()).arg(fit.y()).arg(minus.x()).arg(minus.y()).arg(field.x()).arg(field.y())
+                  .arg(field.width()).arg(field.height()).arg(plus.x()).arg(plus.y()));
         check(QStringLiteral("(aw) THE RIGHT GROUP ends 32 px before the edge: Snap 32x28 at "
                              "y 6, Seconds 14 px before it, Frames 14 px before that"),
               snap.right() == W - 32 - 1 && snap.size() == QSize(32, 28) && snap.y() == 6
@@ -9571,18 +9579,128 @@ void runTimelineLookPass(const QString &scratch)
                       .arg(items.join(QStringLiteral(","))).arg(checked).arg(checkedText).arg(third.x()).arg(third.y())
                       .arg(third.width()).arg(third.height()).arg(menuH).arg(buttonAt2x).arg(totalAt2x)
                       .arg(btn ? btn->text() : QString()));
-            auto *volume = page->findChild<QSlider *>(QStringLiteral("animaticVolume"));
-            check(QStringLiteral("(aw) THE VOLUME SLIDER wears the zoom slider's sheet exactly, 60 x 10"),
-                  volume && volume->styleSheet() == SankoTimelineTheme::kZoomSliderSheet
-                      && volume->size() == QSize(60, 10),
-                  volume ? QStringLiteral("%1x%2 same sheet %3").arg(volume->width()).arg(volume->height())
-                               .arg(volume->styleSheet() == SankoTimelineTheme::kZoomSliderSheet)
-                         : QStringLiteral("no slider"));
+            // ---- THE ZOOM FIELD (Part D): shows the real zoom, whole percent ----
+            QLineEdit *field = tl->zoomField();
+            auto textNow = [&] { return tl->zoomFieldTextForTest(); };
+            tl->setZoomForTest(100);
+            pump(50);
+            const bool rest = field && textNow() == QStringLiteral("100%") && field->isReadOnly()
+                && field->focusPolicy() == Qt::NoFocus && !tl->zoomEditingForTest();
+            qobject_cast<QPushButton *>(widget("timelineZoomIn"))->click();
+            pump(50);
+            const QString afterPlus = textNow();
+            qobject_cast<QPushButton *>(widget("timelineZoomOut"))->click();
+            qobject_cast<QPushButton *>(widget("timelineZoomOut"))->click();
+            pump(50);
+            const QString afterMinus = textNow();
+            tl->setZoomForTest(133.4f); // any setter (Ctrl+wheel lands here too): rounded
+            pump(50);
+            const QString afterSet = textNow();
+            qobject_cast<QPushButton *>(widget("timelineFit"))->click();
+            pump(50);
+            const QString afterFit = textNow(), fitWant = QStringLiteral("%1%").arg(qRound(tl->zoomForTest()));
+            check(QStringLiteral("(aw) THE ZOOM FIELD shows the real zoom in whole percent: 100% at "
+                                 "rest (read-only, no focus); + gives 125%, two - give 75%; a zoom of "
+                                 "133.4 reads 133%; Fit reads Fit's own value rounded"),
+                  rest && afterPlus == QStringLiteral("125%") && afterMinus == QStringLiteral("75%")
+                      && afterSet == QStringLiteral("133%") && afterFit == fitWant,
+                  QStringLiteral("rest %1 '%2' + '%3' -- '%4' set '%5' fit '%6' (want %7)")
+                      .arg(rest).arg(textNow()).arg(afterPlus).arg(afterMinus).arg(afterSet).arg(afterFit).arg(fitWant));
+            // Editing: double-click opens (begun through the same path), Enter
+            // applies "150%" and "150"; out of range clamps; invalid restores;
+            // Escape cancels; a lost focus (a click elsewhere) applies.
+            auto pressKey = [&](QWidget *w, int key) {
+                QKeyEvent down(QEvent::KeyPress, key, Qt::NoModifier);
+                QCoreApplication::sendEvent(w, &down);
+                QKeyEvent up(QEvent::KeyRelease, key, Qt::NoModifier);
+                QCoreApplication::sendEvent(w, &up);
+                pump(50);
+            };
+            tl->setZoomForTest(100);
+            tl->beginZoomEditForTest();
+            pump(50);
+            const bool editing = tl->zoomEditingForTest() && field && !field->isReadOnly() && field->hasFocus()
+                && field->selectedText() == field->text();
+            field->setText(QStringLiteral("150%"));
+            pressKey(field, Qt::Key_Return);
+            const bool applied150 = !tl->zoomEditingForTest() && qFuzzyCompare(tl->zoomForTest(), 150.0)
+                && textNow() == QStringLiteral("150%") && field->isReadOnly();
+            tl->beginZoomEditForTest(); field->setText(QStringLiteral(" 80 ")); pressKey(field, Qt::Key_Return);
+            const bool applied80 = qFuzzyCompare(tl->zoomForTest(), 80.0) && textNow() == QStringLiteral("80%");
+            tl->beginZoomEditForTest(); field->setText(QStringLiteral("900")); pressKey(field, Qt::Key_Return);
+            const bool clampedHigh = qFuzzyCompare(tl->zoomForTest(), 400.0) && textNow() == QStringLiteral("400%");
+            tl->beginZoomEditForTest(); field->setText(QStringLiteral("3%")); pressKey(field, Qt::Key_Return);
+            const bool clampedLow = qFuzzyCompare(tl->zoomForTest(), 10.0) && textNow() == QStringLiteral("10%");
+            tl->beginZoomEditForTest(); field->setText(QStringLiteral("abc")); pressKey(field, Qt::Key_Return);
+            const bool invalidRestored = qFuzzyCompare(tl->zoomForTest(), 10.0) && textNow() == QStringLiteral("10%");
+            tl->beginZoomEditForTest(); field->setText(QStringLiteral("200")); pressKey(field, Qt::Key_Escape);
+            const bool escaped = !tl->zoomEditingForTest() && qFuzzyCompare(tl->zoomForTest(), 10.0)
+                && textNow() == QStringLiteral("10%") && field->isReadOnly();
+            tl->beginZoomEditForTest(); field->setText(QStringLiteral("60")); field->clearFocus(); pump(50);
+            const bool clickAway = !tl->zoomEditingForTest() && qFuzzyCompare(tl->zoomForTest(), 60.0)
+                && textNow() == QStringLiteral("60%");
+            check(QStringLiteral("(aw) EDITING THE ZOOM FIELD: double-click opens it with the text "
+                                 "selected; Enter applies \"150%\" and \" 80 \"; 900 clamps to 400% and "
+                                 "3% to 10%; \"abc\" restores the value; Escape cancels; a lost focus "
+                                 "applies"),
+                  editing && applied150 && applied80 && clampedHigh && clampedLow && invalidRestored
+                      && escaped && clickAway,
+                  QStringLiteral("editing %1 150 %2 80 %3 high %4 low %5 invalid %6 esc %7 away %8 (zoom %9 '%10')")
+                      .arg(editing).arg(applied150).arg(applied80).arg(clampedHigh).arg(clampedLow)
+                      .arg(invalidRestored).arg(escaped).arg(clickAway).arg(tl->zoomForTest()).arg(textNow()));
+            // WHILE EDITING, EVERY KEY IS THE FIELD'S: Delete, Backspace, Space,
+            // the arrows, Home and End change no panel, move no selection and
+            // start no playback (the timeline's keys are armed - the pointer is
+            // over it - and the SHOTS track is locked, so a Delete that did get
+            // through would be refused and counted rather than ask a question).
+            page->setTrackLocked(TimelineTrack::Shots, true);
+            r.storyboard->clearLockRefusalForTest();
+            hover(r, r.animatic, true);
+            const bool armed = r.storyboard->timelineKeysArmedForTest();
+            tl->beginZoomEditForTest();
+            field->setText(QStringLiteral("123%"));
+            field->deselect();
+            field->setCursorPosition(4);
+            pump(30);
+            const int panels0 = page->itemCountForTest(), sel0 = page->selectedPanelForTest();
+            const int ph0 = page->currentFlatIndex();
+            // keyClaimed is true when a SHORTCUT took the key - the leak this
+            // check exists to catch; then the real press goes to the field.
+            bool claimed = false;
+            for (int k : {Qt::Key_Backspace, Qt::Key_Delete, Qt::Key_Left, Qt::Key_Home, Qt::Key_End, Qt::Key_Space,
+                          Qt::Key_Right, Qt::Key_Up, Qt::Key_Down}) {
+                claimed = keyClaimed(field, k) || claimed;
+                pressKey(field, k);
+            }
+            const QString typed = field->text();
+            const bool fieldKept = !claimed && page->itemCountForTest() == panels0
+                && page->selectedPanelForTest() == sel0 && page->currentFlatIndex() == ph0
+                && !page->isPlaying() && r.storyboard->lastLockRefusalForTest().isEmpty()
+                && tl->zoomEditingForTest() && typed != QStringLiteral("123%");
+            pressKey(field, Qt::Key_Escape);
+            // CONTROL: not editing, the same Space starts playback (the keys are
+            // the timeline's again).
+            keyClaimed(&r.window, Qt::Key_Space);
+            pump(100);
+            const bool spacePlays = page->isPlaying();
+            page->leavePreview();
+            hover(r, r.animatic, false);
+            page->setTrackLocked(TimelineTrack::Shots, false);
+            check(QStringLiteral("(aw) WHILE THE ZOOM FIELD IS BEING EDITED every key is the field's: "
+                                 "Backspace, Delete, the arrows, Home, End and Space edit the text "
+                                 "and change no panel, selection or playhead and start no playback; "
+                                 "control: with the field at rest the same Space plays"),
+                  armed && fieldKept && spacePlays,
+                  QStringLiteral("armed %1 shortcut took a key %2 typed '%3' panels %4->%5 sel %6->%7 playing %8 refusal '%9' | control plays %10")
+                      .arg(armed).arg(claimed).arg(typed).arg(panels0).arg(page->itemCountForTest()).arg(sel0)
+                      .arg(page->selectedPanelForTest()).arg(page->isPlaying()).arg(r.storyboard->lastLockRefusalForTest()).arg(spacePlays));
+            tl->setZoomForTest(70);
+            pump(50);
         }
         // The heights with the scrollbar hidden (the film fits at zoom 70);
         // with it shown, the timeline's size hint grows by the bar's height,
         // as it always did.
-        page->findChild<QSlider *>(QStringLiteral("timelineZoom"))->setValue(70);
+        tl->setZoomForTest(70);
         pump(150);
         check(QStringLiteral("(aw) the zoom row is gone: the canvas starts at y 40 of the "
                              "section, the expanded default is 204 and the minimum 172, the "
@@ -9610,7 +9728,8 @@ void runTimelineLookPass(const QString &scratch)
 
     // ---- the label column, the ruler step, the clip layout ------------------------
     {
-        QSlider *zoom = page->findChild<QSlider *>(QStringLiteral("timelineZoom"));
+        ZoomSetter zoomSetter{tl};
+        ZoomSetter *zoom = &zoomSetter;
         zoom->setValue(70);
         pump(150);
         check(QStringLiteral("(aw) THE LABEL COLUMN is 134 px (the design of 2026-10-23) and the "
@@ -9727,15 +9846,10 @@ void runTimelineLookPass(const QString &scratch)
         page->setAudioPath(wav, true);
         audio::waitFor([&] { return tl->audioBarStateForTest() == QStringLiteral("present"); }, 4000);
         pump(200);
-        // THE FLOOR (Part B): the width at which the name is GONE (the last
-        // stage) and the slider at 80. The stages above it, in the user's
-        // order - the name shortens to 60, the slider narrows to 80, the
-        // name hides and the slider takes back what that frees - at exact
-        // widths: `give` is what the name can shorten by (its natural
-        // width less 60), 68 what hiding it frees (60 and the 8 px gap).
-        const int floor = page->headerMinimumWidthForTest();
-        const int beside = r.window.width() - page->width();
-        QLabel *audioLabel = page->findChild<QLabel *>(QStringLiteral("animaticAudioLabel"));
+        // THE FLOOR (Part D): nothing gives way any more - the zoom slider
+        // and the audio name are gone from the header - so the floor is one
+        // number, the same with and without a track, and the window refuses
+        // below it. A fine track shows no warning in the header.
         auto groupRect = [&](const char *name) {
             return QRect(widget(name)->mapTo(page, QPoint(0, 0)), widget(name)->size());
         };
@@ -9746,66 +9860,29 @@ void runTimelineLookPass(const QString &scratch)
             return cluster.left() >= left.right() + 1 + 16 && cluster.right() + 1 + 16 <= right.left()
                 && right.right() + 1 + 32 <= page->width();
         };
-        auto state = [&] {
-            return QStringLiteral("W %1 slider %2 name %3 '%4' shown %5 clear %6")
-                .arg(page->width()).arg(page->zoomSliderWidthForTest())
-                .arg(audioLabel ? audioLabel->width() : -1)
-                .arg(page->audioLabelDrawnTextForTest()).arg(page->audioLabelShownForTest())
-                .arg(clear());
-        };
-        // Wide: nothing gives.
-        r.window.resize(floor + beside + 400, 900);
+        const int floorWithAudio = page->headerMinimumWidthForTest();
+        const int beside = r.window.width() - page->width();
+        const bool noWarning = !page->audioWarningShownForTest();
+        r.window.resize(floorWithAudio + beside + 400, 900);
         pump(400);
-        const int give = audioLabel ? audioLabel->sizeHint().width() - 60 : 0;
-        const bool wideOk = page->zoomSliderWidthForTest() == 160 && page->audioLabelShownForTest()
-            && page->audioLabelDrawnTextForTest() == page->audioLabelTextForTest() && give > 0 && clear();
-        const QString wideText = state();
-        // Stage 1 + 2: 20 px above the width where the name is at 60 and
-        // the slider at 80 (floor + 68, the name not yet hidden): the name
-        // elided at 60, the slider at 100.
-        r.window.resize(floor + beside + 68 + 20, 900);
+        const bool wideOk = clear();
+        r.window.resize(floorWithAudio + beside, 900);
         pump(400);
-        const QString drawn = page->audioLabelDrawnTextForTest();
-        const bool elided = drawn.contains(QChar(0x2026)) && drawn != page->audioLabelTextForTest();
-        const bool stage2Ok = page->audioLabelShownForTest() && elided && audioLabel
-            && audioLabel->width() == 60 && page->zoomSliderWidthForTest() == 100 && clear();
-        const QString stage2Text = state();
-        // Stage 3: 20 px above the floor the name is hidden and the slider,
-        // given back the 68 px, is 100.
-        r.window.resize(floor + beside + 20, 900);
+        const bool atFloor = page->width() == floorWithAudio && clear();
+        r.window.resize(floorWithAudio + beside - 150, 900);
         pump(400);
-        const bool stage3Ok = !page->audioLabelShownForTest()
-            && page->zoomSliderWidthForTest() == 100 && clear();
-        const QString stage3Text = state();
-        check(QStringLiteral("(aw) THE GIVE-WAY RULE, in the user's order: wide, the slider "
-                             "is 160 and the audio name whole; 20 px above the name-at-60-"
-                             "slider-at-80 width the name is elided at 60 and the slider is "
-                             "100; 20 px above the floor the name is hidden entirely and the "
-                             "slider 100 again; the pill clear of both groups and the right "
-                             "group inside the window throughout"),
-              wideOk && stage2Ok && stage3Ok,
-              QStringLiteral("floor %1 give %2 | wide: %3 | stage 2: %4 | stage 3: %5")
-                  .arg(floor).arg(give).arg(wideText).arg(stage2Text).arg(stage3Text));
-        // At the floor: the name hidden, the slider at 80, nothing overlapping.
-        r.window.resize(floor + beside, 900);
-        pump(400);
-        const bool floorOk = !page->audioLabelShownForTest()
-            && page->zoomSliderWidthForTest() == 80 && clear() && page->width() == floor;
-        const QString floorText = state();
-        // Below it: the window refuses (its minimum width is its content's,
-        // Part B) - the section is never narrower than its floor.
-        r.window.resize(floor + beside - 150, 900);
-        pump(400);
-        const bool belowOk = page->width() >= floor && clear();
-        const QString belowText = state();
-        check(QStringLiteral("(aw) AT THE FLOOR the name is hidden and the slider is 80; "
-                             "150 px below it the window refuses and the section is still "
-                             "at least its floor wide, nothing overlapping"),
-              floorOk && belowOk,
-              QStringLiteral("floor %1 | at: %2 | below: %3 window min %4")
-                  .arg(floor).arg(floorText).arg(belowText).arg(r.window.minimumWidth()));
+        const bool belowOk = page->width() >= floorWithAudio && clear();
+        const int windowMin = r.window.minimumWidth();
         page->setAudioPath(QString(), false);
-        pump(200);
+        pump(300);
+        const int floorWithout = page->headerMinimumWidthForTest();
+        check(QStringLiteral("(aw) THE FLOOR (Part D): one number with or without a track; wide, "
+                             "at the floor and 150 px below it nothing overlaps and the section "
+                             "is never narrower than the floor; a fine track shows no warning"),
+              wideOk && atFloor && belowOk && floorWithout == floorWithAudio && noWarning,
+              QStringLiteral("floor %1 (without a track %2); wide %3 at %4 below %5 (W %6, window min %7); warning shown %8")
+                  .arg(floorWithAudio).arg(floorWithout).arg(wideOk).arg(atFloor).arg(belowOk)
+                  .arg(page->width()).arg(windowMin).arg(!noWarning));
     }
 }
 
@@ -9919,7 +9996,7 @@ void runTrackLocksPass(const QString &scratch)
             ok = ok && accent;
             detail << QStringLiteral("%1 on %2 (%3) off %4").arg(QLatin1String(n)).arg(aOn).arg(on.name()).arg(aOff);
         }
-        for (const char *n : {"trackEyeScenes", "trackEyeShots", "trackEyeAudio", "trackMuteAudio"}) {
+        for (const char *n : {"trackEyeScenes", "trackEyeShots", "trackEyeAudio"}) {
             QToolButton *b = control(n);
             const int aOn = b ? maxAlpha(b->icon().pixmap(QSize(16, 16), QIcon::Normal, QIcon::On), nullptr) : 0;
             const int aOff = b ? maxAlpha(b->icon().pixmap(QSize(16, 16), QIcon::Normal, QIcon::Off), nullptr) : 0;
@@ -9930,10 +10007,20 @@ void runTrackLocksPass(const QString &scratch)
             ok = ok && dimmed;
             detail << QStringLiteral("%1 on %2 off %3").arg(QLatin1String(n)).arg(aOn).arg(aOff);
         }
+        {
+            QToolButton *b = control("trackMuteAudio");
+            const QPixmap on = b ? b->icon().pixmap(QSize(16, 16), QIcon::Normal, QIcon::On) : QPixmap();
+            const QPixmap off = b ? b->icon().pixmap(QSize(16, 16), QIcon::Normal, QIcon::Off) : QPixmap();
+            const int aOn = maxAlpha(on, nullptr), aOff = maxAlpha(off, nullptr);
+            const bool mutedGlyph = aOn >= 200 && aOff >= 200 && on.toImage() != off.toImage();
+            ok = ok && mutedGlyph;
+            detail << QStringLiteral("trackMuteAudio on %1 off %2 differ %3 (the muted glyph, Part D)")
+                          .arg(aOn).arg(aOff).arg(on.toImage() != off.toImage());
+        }
         check(QStringLiteral("(ax) ICON STATES: a lock's checked icon is the accent at full "
-                             "opacity; the eyes' and the speaker's checked icons are the grey "
-                             "at 35 % (at most 40 % of their unchecked opacity) and their "
-                             "unchecked icons opaque - hidden and muted read as off"),
+                             "opacity; the eyes' checked icons are the grey at 35 % (at most "
+                             "40 % of their unchecked opacity) and their unchecked icons opaque; "
+                             "the speaker's checked icon is the muted glyph, opaque and its own"),
               ok, detail.join(QStringLiteral("; ")));
     }
 
@@ -10299,24 +10386,100 @@ void runTrackLocksPass(const QString &scratch)
                   .arg(clipBack).arg(sceneBack).arg(page->selectedPanelForTest()));
     }
 
-    // ---- mute: the player, the volume kept, the export ----
+    // ---- THE VOLUME (Part D): the speaker opens a popup slider in the label
+    // column; the value reaches the player at once, perceptually; 0 % mutes
+    // (the muted glyph, no audio in the export); Escape, the speaker and a
+    // press elsewhere close it; the AUDIO lock leaves it alone; a change
+    // marks the project unsaved and pushes nothing. ----
     {
-        QSlider *volume = page->findChild<QSlider *>(QStringLiteral("animaticVolume"));
-        const int volumeBefore = volume ? volume->value() : -1;
-        const QString carriedBefore = r.window.exportAudioPathForTest();
+        QToolButton *speaker = control("trackMuteAudio");
+        QSlider *popup = tl->volumePopupForTest();
+        const bool hiddenAtRest = popup && !popup->isVisible();
+        r.window.markCleanForTest();
+        const int n0 = stack->count();
         clickControl("trackMuteAudio");
-        const bool muted = page->audioMutedForTest() && page->tracks().audioMuted
-            && volume && volume->value() == volumeBefore
-            && r.window.exportAudioPathForTest().isEmpty();
+        const QRect pr = popup ? popup->geometry() : QRect();
+        const QRect audioRow = tl->audioRowForTest();
+        const QRect lockR = control("trackLockAudio")->geometry(), eyeR = control("trackEyeAudio")->geometry();
+        const int iconTop = audioRow.y() + (audioRow.height() - 16) / 2;
+        const bool placed = popup && popup->isVisible() && pr.x() == 34 && pr.width() == 10
+            && pr.bottom() + 1 == iconTop && pr.height() == qMin(128, iconTop - 10) && pr.top() >= 10
+            && pr.right() < eyeR.left() && pr.left() > lockR.right() && !popup->invertedAppearance()
+            && popup->hasFocus();
+        // The expected gain is the user's formula, written here and not read
+        // from the app: gain = (v / 100) ^ (5/3), -10.0 dB at 50 %.
+        const double expect50 = std::pow(0.5, 5.0 / 3.0);
+        const double expect25 = std::pow(0.25, 5.0 / 3.0), expect75 = std::pow(0.75, 5.0 / 3.0);
+        popup->setValue(50);
+        pump(60);
+        const double gain50 = page->audioGainForExport();
+        const bool live50 = page->audioVolumeForTest() == 50 && qAbs(gain50 - expect50) < 1e-6
+            && !page->audioMutedForTest() && r.window.isDirty() && stack->count() == n0
+            && !speaker->isChecked() && !r.window.exportAudioPathForTest().isEmpty()
+            && gain50 > 0.0 && gain50 < 1.0;
+        popup->setValue(25);
+        pump(30);
+        const double gain25 = page->audioGainForExport();
+        popup->setValue(75);
+        pump(30);
+        const double gain75 = page->audioGainForExport();
+        const bool monotonic = qAbs(gain25 - expect25) < 1e-6 && qAbs(gain75 - expect75) < 1e-6
+            && gain25 < gain50 && gain50 < gain75 && gain75 < 1.0;
+        popup->setValue(0);
+        pump(60);
+        const bool muted0 = page->audioMutedForTest() && page->audioVolumeForTest() == 0 && speaker->isChecked()
+            && r.window.exportAudioPathForTest().isEmpty() && qFuzzyIsNull(page->audioGainForExport());
+        clickControl("trackMuteAudio"); // the speaker closes it
+        const bool closedBySpeaker = !popup->isVisible();
         clickControl("trackMuteAudio");
-        const bool unmuted = !page->audioMutedForTest()
-            && r.window.exportAudioPathForTest() == carriedBefore && !carriedBefore.isEmpty();
-        check(QStringLiteral("(ax) MUTE reaches the player (QAudioOutput::isMuted), keeps the "
-                             "volume slider's value, and takes the track out of the movie "
-                             "request; unmute puts it back"),
-              muted && unmuted,
-              QStringLiteral("muted %1 unmuted %2 volume %3 carried '%4'")
-                  .arg(muted).arg(unmuted).arg(volumeBefore).arg(carriedBefore));
+        QKeyEvent esc(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+        QCoreApplication::sendEvent(popup, &esc);
+        pump(60);
+        const bool closedByEscape = !popup->isVisible();
+        clickControl("trackMuteAudio");
+        clickClip(r, 0); // a press on the canvas, outside it
+        const bool closedByPress = !popup->isVisible();
+        // The AUDIO lock does not lock the volume.
+        clickControl("trackLockAudio");
+        clickControl("trackMuteAudio");
+        popup->setValue(100);
+        pump(60);
+        const bool lockLeavesIt = speaker->isEnabled() && popup->isEnabled() && page->audioVolumeForTest() == 100
+            && !page->audioMutedForTest() && !speaker->isChecked();
+        clickControl("trackMuteAudio");
+        clickControl("trackLockAudio");
+        check(QStringLiteral("(ax) THE VOLUME POPUP: hidden at rest; the speaker opens it at x 34 of "
+                             "the column, 10 wide, rising 128 px (or less) from the speaker's icon, "
+                             "clear of the lock and the eye, focused; 50 % reaches the player at once "
+                             "as the perceptual gain, unsaved, nothing on the stack; 0 % mutes "
+                             "(muted glyph, no audio in the export); the speaker, Escape and a press "
+                             "elsewhere close it; the AUDIO lock leaves it alone"),
+              hiddenAtRest && placed && live50 && monotonic && muted0 && closedBySpeaker && closedByEscape && closedByPress
+                  && lockLeavesIt,
+              QStringLiteral("rest %1 placed %2 (%3,%4 %5x%6; icon top %7; lock..%8 eye %9..) live50 %10 (gains 25/50/75 %% = %11 / %12 / %13 linear) "
+                             "muted0 %14 closed: speaker %15 esc %16 press %17; lock leaves it %18")
+                  .arg(hiddenAtRest).arg(placed).arg(pr.x()).arg(pr.y()).arg(pr.width()).arg(pr.height()).arg(iconTop)
+                  .arg(lockR.right()).arg(eyeR.left()).arg(live50).arg(gain25, 0, 'f', 3).arg(gain50, 0, 'f', 3).arg(gain75, 0, 'f', 3)
+                  .arg(muted0).arg(closedBySpeaker).arg(closedByEscape).arg(closedByPress).arg(lockLeavesIt));
+        // DURING PLAYBACK: the volume changes without a restart - the film
+        // keeps playing and the sound with it.
+        page->setSelectedPanel(0);
+        page->togglePlay();
+        audio::waitFor([&] { return page->audioPlayingForTest(); }, 3000);
+        pump(300);
+        const bool playingBefore = page->isPlaying() && page->audioPlayingForTest();
+        page->setAudioVolume(30);
+        pump(300);
+        const bool playingAfter = page->isPlaying() && page->audioPlayingForTest() && page->audioVolumeForTest() == 30
+            && qAbs(page->audioGainForExport() - std::pow(0.3, 5.0 / 3.0)) < 1e-6;
+        page->togglePlay();
+        page->leavePreview();
+        pump(200);
+        page->setAudioVolume(100);
+        check(QStringLiteral("(ax) A VOLUME CHANGE DURING PLAYBACK is applied at once: the film and "
+                             "the sound keep playing, the player at the new gain"),
+              playingBefore && playingAfter,
+              QStringLiteral("before %1 after %2 volume %3").arg(playingBefore).arg(playingAfter).arg(page->audioVolumeForTest()));
     }
 
     // ---- save -> load round trip of the seven flags; New resets them ----
@@ -10324,7 +10487,7 @@ void runTrackLocksPass(const QString &scratch)
         TimelineTracks all;
         all.scenesLocked = all.shotsLocked = all.audioLocked = true;
         all.scenesVisible = all.shotsVisible = all.audioVisible = false;
-        all.audioMuted = true;
+        all.audioVolume = 0;
         page->setTracks(all);
         const bool saved = r.window.saveProjectForTest(project);
         page->setTracks(TimelineTracks());
@@ -10340,12 +10503,39 @@ void runTrackLocksPass(const QString &scratch)
         const QJsonObject tracks = root.value(QStringLiteral("tracks")).toObject();
         const bool written = tracks.value(QStringLiteral("shots")).toObject().value(QStringLiteral("locked")).toBool()
             && !tracks.value(QStringLiteral("audio")).toObject().value(QStringLiteral("visible")).toBool(true)
-            && tracks.value(QStringLiteral("audio")).toObject().value(QStringLiteral("muted")).toBool();
+            && tracks.value(QStringLiteral("audio")).toObject().value(QStringLiteral("volume")).toInt(-1) == 0;
         check(QStringLiteral("(ax) ALL SEVEN FLAGS round-trip through the manifest's tracks "
                              "key (saved, read back on load, the buttons and the player "
-                             "following)"),
+                             "following); the volume is written as \"volume\""),
               saved && reloaded && back && written,
               QStringLiteral("saved %1 reloaded %2 back %3 written %4").arg(saved).arg(reloaded).arg(back).arg(written));
+        // OLD PROJECTS (the user's rule): one saved as muted (Part B) opens at
+        // 0 %; one without a volume opens at 100 %.
+        auto rewriteAudioTracks = [&](std::function<void(QJsonObject &)> edit) {
+            QFile rf(project);
+            rf.open(QIODevice::ReadOnly);
+            QJsonObject rootNow = QJsonDocument::fromJson(rf.readAll()).object();
+            rf.close();
+            QJsonObject tr = rootNow.value(QStringLiteral("tracks")).toObject();
+            QJsonObject au = tr.value(QStringLiteral("audio")).toObject();
+            edit(au);
+            tr[QStringLiteral("audio")] = au;
+            rootNow[QStringLiteral("tracks")] = tr;
+            QFile wf(project);
+            wf.open(QIODevice::WriteOnly | QIODevice::Truncate);
+            wf.write(QJsonDocument(rootNow).toJson(QJsonDocument::Indented));
+            wf.close();
+        };
+        rewriteAudioTracks([](QJsonObject &au) { au.remove(QStringLiteral("volume")); au[QStringLiteral("muted")] = true; });
+        page->setTracks(TimelineTracks());
+        const bool mutedOld = r.window.loadProjectForTest(project) && page->audioVolumeForTest() == 0 && page->audioMutedForTest();
+        rewriteAudioTracks([](QJsonObject &au) { au.remove(QStringLiteral("volume")); au.remove(QStringLiteral("muted")); });
+        page->setTracks(TimelineTracks());
+        const bool plainOld = r.window.loadProjectForTest(project) && page->audioVolumeForTest() == 100 && !page->audioMutedForTest();
+        check(QStringLiteral("(ax) OLD PROJECTS: one saved as muted opens at 0 %; one without a "
+                             "volume opens at 100 %"),
+              mutedOld && plainOld,
+              QStringLiteral("muted-old %1 plain-old %2 volume now %3").arg(mutedOld).arg(plainOld).arg(page->audioVolumeForTest()));
     }
     // The SCENES lock refuses the Script Editor's re-parse; unlocked it applies.
     {

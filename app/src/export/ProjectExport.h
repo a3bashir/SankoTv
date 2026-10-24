@@ -100,6 +100,7 @@ struct MovieRequest
     QVector<ExportPanel> panels;
     int fps = 24;
     QString audioPath; // empty: a silent film
+    double audioGain = 1.0; // the track volume as a linear gain (Part D), 0..1
     QSize frameSize = kMovieFrameSize;
 };
 

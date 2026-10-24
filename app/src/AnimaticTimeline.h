@@ -15,6 +15,7 @@ class QContextMenuEvent;
 class QPushButton;
 class QScrollBar;
 class QTimer;
+class QLineEdit;
 class QSlider;
 class QToolButton;
 struct Panel;
@@ -105,7 +106,18 @@ public:
     // state; the user's decision).
     QWidget *zoomControls() const { return m_zoomControls; }
     QWidget *viewControls() const { return m_viewControls; }
-    QSlider *zoomSlider() const { return m_zoomSlider; }
+    // THE ZOOM FIELD (Part D, 2026-10-23; the user's design: [ - ] [ 100% ]
+    // [ + ]): the current zoom in whole percent; double-click to edit, Enter
+    // applies, Escape cancels, a click elsewhere applies; "150" or "150%",
+    // clamped to the zoom's 10..400; invalid text restores the value.
+    QLineEdit *zoomField() const { return m_zoomField; }
+    void setZoomForTest(float zoom) { applyZoom(zoom); }
+    QString zoomFieldTextForTest() const;
+    bool zoomEditingForTest() const { return m_zoomEditing; }
+    void beginZoomEditForTest() { beginZoomEdit(); }
+    // THE VOLUME POPUP (Part D): the Audio track's speaker opens it.
+    QSlider *volumePopupForTest() const { return m_volumePopup; }
+    void setVolumeTooltip(const QString &tip);
     // Test hooks for the look: the ruler's label step in seconds at the
     // current zoom, and where the parts of a clip are drawn (body,
     // thumbnail, number, name, pill - with which of them are shown), as
@@ -285,6 +297,12 @@ private:
     void layoutTrackControls();
     void styleTrackControls();
     void refuse(const QString &why, const QPoint &globalPos);
+    // The zoom field and the volume popup (Part D).
+    void updateZoomField();
+    void beginZoomEdit();
+    void endZoomEdit(bool apply);
+    void toggleVolumePopup();
+    void layoutVolumePopup();
 
     // Data + state.
     QVector<Scene *> m_scenes;
@@ -342,9 +360,13 @@ private:
     // Widgets.
     TimelineCanvas *m_canvas = nullptr;
     QScrollBar *m_hScroll = nullptr;
-    QWidget *m_zoomControls = nullptr; // Fit, -, slider, +: shown in the header
+    QWidget *m_zoomControls = nullptr; // Fit, -, field, +: shown in the header
     QWidget *m_viewControls = nullptr; // Frames, Seconds, Snap: likewise
-    QSlider *m_zoomSlider = nullptr;
+    QLineEdit *m_zoomField = nullptr;  // the percentage, editable on double-click
+    bool m_zoomEditing = false;
+    QString m_zoomTextBeforeEdit;
+    QSlider *m_volumePopup = nullptr;  // vertical, a child of the canvas, hidden until the speaker opens it
+    bool m_syncingVolume = false;      // setValue from the host, not the user
     QPushButton *m_fitButton = nullptr;
     QPushButton *m_zoomInButton = nullptr;
     QPushButton *m_zoomOutButton = nullptr;

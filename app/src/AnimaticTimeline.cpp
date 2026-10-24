@@ -9,7 +9,9 @@
 #include <QContextMenuEvent>
 #include <QFontMetrics>
 #include <QHBoxLayout>
+#include <QKeyEvent>
 #include <QLabel>
+#include <QLineEdit>
 #include <QLinearGradient>
 #include <QMouseEvent>
 #include <QPainter>
@@ -27,6 +29,7 @@
 #include <QVBoxLayout>
 
 #include <cmath>
+#include <functional>
 
 namespace {
 
@@ -81,6 +84,38 @@ constexpr int kNameMinBody = 86, kThumbMinBody = 48, kPillMinBody = 42, kNumberM
 // =====================================================================
 // TimelineCanvas — the painted surface. Forwards everything to its owner.
 // =====================================================================
+// THE ZOOM FIELD (Part D): a QLineEdit that is read-only and takes no
+// focus at rest (so the timeline's keys stay the timeline's), and becomes a
+// real editor on double-click; Escape is reported to the owner, everything
+// else is the line edit's own.
+class ZoomField : public QLineEdit
+{
+public:
+    using QLineEdit::QLineEdit;
+    std::function<void()> onDoubleClick;
+    std::function<void()> onEscape;
+
+protected:
+    void mouseDoubleClickEvent(QMouseEvent *e) override
+    {
+        if (isReadOnly()) {
+            if (onDoubleClick)
+                onDoubleClick();
+            return;
+        }
+        QLineEdit::mouseDoubleClickEvent(e);
+    }
+    void keyPressEvent(QKeyEvent *e) override
+    {
+        if (e->key() == Qt::Key_Escape && !isReadOnly()) {
+            if (onEscape)
+                onEscape();
+            return;
+        }
+        QLineEdit::keyPressEvent(e);
+    }
+};
+
 class TimelineCanvas : public QWidget
 {
 public:
@@ -136,43 +171,62 @@ AnimaticTimeline::AnimaticTimeline(QWidget *parent)
     // --- The zoom and view controls (shown in the header row) ----------------
     // The redesign merged the zoom row into the header. The widgets are
     // still the timeline's (the handlers below are unchanged); the page
-    // places the two containers. Sizes are the design's: Fit 33 x 28,
-    // - and + 27 x 28, the slider 160 x 10 (narrowing to 80 when the window
-    // is short of room), Frames / Seconds / Snap 32 x 28 with 24 px icons.
+    // places the two containers. Sizes are the design's (2026-10-23): Fit
+    // 33 x 28, 16 px, then - 27 x 28, 3 px, the zoom FIELD 46 x 28, 3 px,
+    // + 27 x 28; Frames / Seconds / Snap 32 x 28 with 24 px icons. The
+    // slider is gone (Part D), and with it the header's give-way stage.
     m_zoomControls = new QWidget;
     m_zoomControls->setObjectName(QStringLiteral("timelineZoomControls"));
+    // Transparent by name: these containers live in the page's header, whose
+    // page background would otherwise show through them as dark boxes now
+    // that the controls are flat (Part D).
+    m_zoomControls->setStyleSheet(QStringLiteral("QWidget#timelineZoomControls { background: transparent; }"));
     QHBoxLayout *zc = new QHBoxLayout(m_zoomControls);
-    zc->setContentsMargins(0, 0, 0, 4); // the row centres at y 18, not 20
-    zc->setSpacing(14);
+    zc->setContentsMargins(0, 0, 0, 0);
+    zc->setSpacing(16);
 
     m_fitButton = new QPushButton(QStringLiteral("Fit"));
     m_fitButton->setObjectName(QStringLiteral("timelineFit"));
     m_fitButton->setFixedSize(33, 28);
+    zc->addWidget(m_fitButton, 0, Qt::AlignVCenter);
+
+    QWidget *zoomGroup = new QWidget;
+    zoomGroup->setObjectName(QStringLiteral("timelineZoomGroup"));
+    zoomGroup->setStyleSheet(QStringLiteral("QWidget#timelineZoomGroup { background: transparent; }"));
+    QHBoxLayout *zg = new QHBoxLayout(zoomGroup);
+    zg->setContentsMargins(0, 0, 0, 0);
+    zg->setSpacing(3);
     m_zoomOutButton = new QPushButton(QStringLiteral("\xE2\x88\x92")); // minus
     m_zoomOutButton->setObjectName(QStringLiteral("timelineZoomOut"));
     m_zoomOutButton->setFixedSize(27, 28);
+    auto *field = new ZoomField;
+    m_zoomField = field;
+    m_zoomField->setObjectName(QStringLiteral("timelineZoomField"));
+    m_zoomField->setFixedSize(46, 28);
+    m_zoomField->setAlignment(Qt::AlignCenter);
+    m_zoomField->setReadOnly(true);
+    m_zoomField->setFocusPolicy(Qt::NoFocus);
+    m_zoomField->setContextMenuPolicy(Qt::NoContextMenu);
+    m_zoomField->setToolTip(QStringLiteral("Zoom (double-click to type a percentage, 10 to 400)"));
+    m_zoomField->setStyleSheet(SankoTimelineTheme::kZoomFieldSheet);
+    field->onDoubleClick = [this] { beginZoomEdit(); };
+    field->onEscape = [this] { endZoomEdit(false); };
+    connect(m_zoomField, &QLineEdit::editingFinished, this, [this] {
+        if (m_zoomEditing)
+            endZoomEdit(true); // Enter, or the focus went elsewhere
+    });
     m_zoomInButton = new QPushButton(QStringLiteral("+"));
     m_zoomInButton->setObjectName(QStringLiteral("timelineZoomIn"));
     m_zoomInButton->setFixedSize(27, 28);
-    m_zoomSlider = new QSlider(Qt::Horizontal);
-    m_zoomSlider->setObjectName(QStringLiteral("timelineZoom"));
-    m_zoomSlider->setRange(10, 400);
-    m_zoomSlider->setValue(100);
-    m_zoomSlider->setFixedHeight(10);
-    m_zoomSlider->setMinimumWidth(80);
-    m_zoomSlider->setMaximumWidth(160);
-    m_zoomSlider->resize(160, 10);
-    m_zoomSlider->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
-    m_zoomSlider->setToolTip(QStringLiteral("Zoom"));
-    m_zoomSlider->setStyleSheet(SankoTimelineTheme::kZoomSliderSheet);
-
-    zc->addWidget(m_fitButton);
-    zc->addWidget(m_zoomOutButton);
-    zc->addWidget(m_zoomSlider);
-    zc->addWidget(m_zoomInButton);
+    zg->addWidget(m_zoomOutButton);
+    zg->addWidget(m_zoomField);
+    zg->addWidget(m_zoomInButton);
+    zc->addWidget(zoomGroup, 0, Qt::AlignVCenter);
+    updateZoomField();
 
     m_viewControls = new QWidget;
     m_viewControls->setObjectName(QStringLiteral("timelineViewControls"));
+    m_viewControls->setStyleSheet(QStringLiteral("QWidget#timelineViewControls { background: transparent; }"));
     QHBoxLayout *vc = new QHBoxLayout(m_viewControls);
     vc->setContentsMargins(0, 0, 0, 0);
     vc->setSpacing(14);
@@ -209,12 +263,11 @@ AnimaticTimeline::AnimaticTimeline(QWidget *parent)
 
     styleToolbarButtons();
 
-    connect(m_zoomSlider, &QSlider::valueChanged, this,
-            [this](int v) { applyZoom(static_cast<float>(v)); });
+    // - and +: the same 25-point steps the slider had, clamped by applyZoom.
     connect(m_zoomInButton, &QPushButton::clicked, this,
-            [this] { m_zoomSlider->setValue(m_zoomSlider->value() + 25); });
+            [this] { applyZoom(m_zoom + 25.0f); });
     connect(m_zoomOutButton, &QPushButton::clicked, this,
-            [this] { m_zoomSlider->setValue(m_zoomSlider->value() - 25); });
+            [this] { applyZoom(m_zoom - 25.0f); });
     connect(m_fitButton, &QPushButton::clicked, this, [this] { fitZoom(); });
     connect(m_framesButton, &QPushButton::clicked, this, [this] {
         m_framesMode = true;
@@ -331,11 +384,43 @@ void AnimaticTimeline::buildTrackControls()
                 m_host->setTrackVisible(t, !on); // checked = hidden
         });
     }
+    // The speaker (Part D): OPENS the volume popup; its checked look is the
+    // muted glyph, shown while the volume is 0 % (proposal frame 423:492).
     m_muteButton = make(QStringLiteral(":/icons/timeline/track_speaker.svg"),
                         QStringLiteral("trackMuteAudio"), dimmed(kTrackControl));
-    connect(m_muteButton, &QToolButton::clicked, this, [this](bool on) {
-        if (m_host)
-            m_host->setAudioMuted(on);
+    {
+        QIcon speaker;
+        for (qreal scale : {1.0, 2.0}) {
+            speaker.addPixmap(SankoIcons::renderSvg(QStringLiteral(":/icons/timeline/track_speaker.svg"),
+                                                    QSize(kControlSize, kControlSize), scale, kTrackControl),
+                              QIcon::Normal, QIcon::Off);
+            speaker.addPixmap(SankoIcons::renderSvg(QStringLiteral(":/icons/timeline/speaker_muted.svg"),
+                                                    QSize(kControlSize, kControlSize), scale, kTrackControl),
+                              QIcon::Normal, QIcon::On);
+        }
+        m_muteButton->setIcon(speaker);
+    }
+    connect(m_muteButton, &QToolButton::clicked, this, [this] {
+        toggleVolumePopup();
+        styleTrackControls(); // a checkable button toggles itself on click: put the muted state back
+    });
+
+    // The volume popup: a vertical slider, a child of the canvas, hidden
+    // until the speaker opens it; placed by layoutVolumePopup (x 34 of the
+    // column, rising 128 px from the speaker, or less on a short section).
+    m_volumePopup = new QSlider(Qt::Vertical, m_canvas);
+    m_volumePopup->setObjectName(QStringLiteral("trackVolumePopup"));
+    m_volumePopup->setRange(0, 100);
+    m_volumePopup->setValue(m_tracks.audioVolume);
+    m_volumePopup->setFixedWidth(10);
+    m_volumePopup->setStyleSheet(kVolumeSliderSheet);
+    m_volumePopup->setFocusPolicy(Qt::StrongFocus);
+    m_volumePopup->setToolTip(QStringLiteral("Audio volume"));
+    m_volumePopup->hide();
+    m_volumePopup->installEventFilter(this); // Escape and a lost focus close it
+    connect(m_volumePopup, &QSlider::valueChanged, this, [this](int v) {
+        if (!m_syncingVolume && m_host)
+            m_host->setAudioVolume(v); // applied to the player at once; comes back through setTracks
     });
     styleTrackControls();
     layoutTrackControls();
@@ -356,6 +441,44 @@ void AnimaticTimeline::layoutTrackControls()
         if (i == 2)
             m_muteButton->move(kControlX[1] - 2, y);
     }
+    layoutVolumePopup();
+}
+
+// The popup rises from the speaker's icon top: x 34 of the column (the
+// user's drawing), 10 wide, 128 tall - or as tall as the column allows,
+// ending 10 px below its top, so it never leaves the column.
+void AnimaticTimeline::layoutVolumePopup()
+{
+    if (!m_volumePopup)
+        return;
+    const int iconTop = audioTrackY() + (kAudioH - kControlSize) / 2;
+    const int h = qMax(24, qMin(128, iconTop - 10));
+    m_volumePopup->setGeometry(34, iconTop - h, 10, h);
+}
+
+void AnimaticTimeline::toggleVolumePopup()
+{
+    if (!m_volumePopup)
+        return;
+    if (m_volumePopup->isVisible()) {
+        m_volumePopup->hide();
+        return;
+    }
+    layoutVolumePopup();
+    {
+        m_syncingVolume = true;
+        m_volumePopup->setValue(m_tracks.audioVolume);
+        m_syncingVolume = false;
+    }
+    m_volumePopup->show();
+    m_volumePopup->raise();
+    m_volumePopup->setFocus(Qt::MouseFocusReason);
+}
+
+void AnimaticTimeline::setVolumeTooltip(const QString &tip)
+{
+    if (m_volumePopup)
+        m_volumePopup->setToolTip(tip);
 }
 
 void AnimaticTimeline::styleTrackControls()
@@ -388,18 +511,24 @@ void AnimaticTimeline::styleTrackControls()
                           .arg(name)
                     : QStringLiteral("Show the %1 track").arg(name));
     }
-    m_muteButton->setChecked(m_tracks.audioMuted);
+    m_muteButton->setChecked(m_tracks.audioMuted());
     m_muteButton->setToolTip(
-        m_tracks.audioMuted
-            ? QStringLiteral("Unmute the audio track")
-            : QStringLiteral("Mute the audio track: silent in playback and left out "
-                             "of the MP4"));
+        m_tracks.audioMuted()
+            ? QStringLiteral("Audio volume 0 % (muted: silent in playback, left out "
+                             "of the MP4). Click to open the volume.")
+            : QStringLiteral("Audio volume %1 %. Click to open the volume.")
+                  .arg(m_tracks.audioVolume));
 }
 
 void AnimaticTimeline::setTracks(const TimelineTracks &tracks)
 {
     m_tracks = tracks;
     styleTrackControls();
+    if (m_volumePopup && m_volumePopup->value() != m_tracks.audioVolume) {
+        m_syncingVolume = true;
+        m_volumePopup->setValue(m_tracks.audioVolume);
+        m_syncingVolume = false;
+    }
     // A hidden SHOTS track ends any drag or hover on it.
     if (!m_tracks.shotsVisible) {
         if (m_drag == Drag::Move || m_drag == Drag::ResizeRight
@@ -637,6 +766,15 @@ void AnimaticTimeline::onScrollbarAction(int action)
 
 bool AnimaticTimeline::eventFilter(QObject *watched, QEvent *event)
 {
+    if (m_volumePopup && watched == m_volumePopup) {
+        if (event->type() == QEvent::KeyPress
+            && static_cast<QKeyEvent *>(event)->key() == Qt::Key_Escape) {
+            m_volumePopup->hide();
+            return true;
+        }
+        if (event->type() == QEvent::FocusOut)
+            m_volumePopup->hide(); // a click elsewhere, or the keyboard moved on
+    }
     if (watched == m_hScroll && event->type() == QEvent::Wheel) {
         // The bar handles the wheel after this returns, reporting a
         // SliderMove; the flag is what tells that move from a programmatic
@@ -714,7 +852,7 @@ QVariantMap AnimaticTimeline::devrecState() const
             {QStringLiteral("timeline.scenesVisible"), m_tracks.scenesVisible},
             {QStringLiteral("timeline.shotsVisible"), m_tracks.shotsVisible},
             {QStringLiteral("timeline.audioVisible"), m_tracks.audioVisible},
-            {QStringLiteral("timeline.audioMuted"), m_tracks.audioMuted}};
+            {QStringLiteral("timeline.audioVolume"), m_tracks.audioVolume}};
 }
 
 void AnimaticTimeline::userScrollForTest(int scrollX)
@@ -903,7 +1041,61 @@ void AnimaticTimeline::applyZoom(float z)
     updateScrollRange();
     if (m_canvas)
         m_canvas->update();
+    updateZoomField(); // whoever changed it: Fit, - / +, Ctrl+wheel, the field
     emit zoomChanged(m_zoom);
+}
+
+// --- The zoom field (Part D) ---------------------------------------------------
+
+void AnimaticTimeline::updateZoomField()
+{
+    if (!m_zoomField || m_zoomEditing)
+        return;
+    m_zoomField->setText(QStringLiteral("%1%").arg(qRound(m_zoom)));
+}
+
+QString AnimaticTimeline::zoomFieldTextForTest() const
+{
+    return m_zoomField ? m_zoomField->text() : QString();
+}
+
+void AnimaticTimeline::beginZoomEdit()
+{
+    if (!m_zoomField || m_zoomEditing)
+        return;
+    m_zoomEditing = true;
+    m_zoomTextBeforeEdit = m_zoomField->text();
+    m_zoomField->setReadOnly(false);
+    m_zoomField->setFocusPolicy(Qt::StrongFocus);
+    m_zoomField->setStyleSheet(SankoTimelineTheme::kZoomFieldEditSheet);
+    m_zoomField->setFocus(Qt::MouseFocusReason);
+    m_zoomField->selectAll();
+}
+
+// Enter and a click elsewhere apply (editingFinished); Escape cancels. The
+// text may be "150" or "150%" with spaces; out of range clamps to 10 or
+// 400; anything else restores the value the field showed before.
+void AnimaticTimeline::endZoomEdit(bool apply)
+{
+    if (!m_zoomField || !m_zoomEditing)
+        return;
+    m_zoomEditing = false; // before clearFocus: its editingFinished is ignored
+    if (apply) {
+        QString t = m_zoomField->text().trimmed();
+        if (t.endsWith(QLatin1Char('%')))
+            t.chop(1);
+        t = t.trimmed();
+        bool ok = false;
+        const double v = t.toDouble(&ok);
+        if (ok)
+            applyZoom(static_cast<float>(qBound(10.0, v, 400.0)));
+    }
+    m_zoomField->setReadOnly(true);
+    m_zoomField->setFocusPolicy(Qt::NoFocus);
+    m_zoomField->clearFocus();
+    m_zoomField->setStyleSheet(SankoTimelineTheme::kZoomFieldSheet);
+    m_zoomField->deselect();
+    updateZoomField(); // the real zoom, whether applied, clamped or restored
 }
 
 void AnimaticTimeline::fitZoom()
@@ -917,10 +1109,6 @@ void AnimaticTimeline::fitZoom()
     m_scrollX = 0;
     if (m_hScroll)
         m_hScroll->setValue(0); // Fit: valueChanged, no action
-    if (m_zoomSlider) {
-        QSignalBlocker blk(m_zoomSlider);
-        m_zoomSlider->setValue(qRound(z));
-    }
     applyZoom(z);
 }
 
@@ -1506,8 +1694,6 @@ void AnimaticTimeline::canvasWheel(QWheelEvent *e)
         // so a zoom can never hold the view. While the film plays and
         // following is engaged, applyZoom re-anchors the playhead and the
         // next tick keeps it there; this pointer anchor is for the rest.
-        if (!m_zoomSlider)
-            return;
         const int anchorX = e->position().toPoint().x();
         const double contentBefore = screenXToContent(anchorX);
         const double ppfBefore = pxPerFrame();
@@ -1515,10 +1701,6 @@ void AnimaticTimeline::canvasWheel(QWheelEvent *e)
         for (int i = 0; i < qAbs(notches); ++i)
             z = notches > 0 ? z * kWheelZoomStep : z / kWheelZoomStep;
         z = qBound(10.0, z, 400.0);
-        {
-            QSignalBlocker blocked(m_zoomSlider); // in step, without a second applyZoom
-            m_zoomSlider->setValue(qRound(z));
-        }
         applyZoom(float(z));
         const double contentAfter = contentBefore * (pxPerFrame() / ppfBefore);
         if (m_hScroll && m_hScroll->maximum() > 0)
@@ -1551,6 +1733,8 @@ void AnimaticTimeline::canvasResized()
 
 void AnimaticTimeline::canvasMousePress(QMouseEvent *e)
 {
+    if (m_volumePopup && m_volumePopup->isVisible())
+        m_volumePopup->hide(); // a press on the canvas is a press outside the popup
     if (e->button() != Qt::LeftButton)
         return;
     const QPoint pos = e->position().toPoint();
