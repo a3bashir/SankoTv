@@ -282,16 +282,85 @@ may ship in a closed-source commercial product, flag it - do not decide.
     Confirm with the lawyer that the attribution shipped with Qt covers
     it, or add the notice to SankoTV's own. Research, not legal advice.
 
-12. OPEN - THE TIMELINE ICONS (opened 2026-10-18; the user's statement,
-    2026-10-18). Timeline icons (collapse, transport, loop, Frames,
-    Seconds, Snap, playhead, lock, eye, speaker) were generated with Figma
-    AI. Figma's AI Terms (figma.com/legal/ai-terms) give the customer
-    ownership of the output, and make the customer responsible for
-    reviewing it and obtaining any clearances. Before selling: check that
-    no icon copies an existing icon set or a trademark.
+12. CLOSED 2026-10-25 - THE TIMELINE ICONS (opened 2026-10-18; the
+    user's statement, 2026-10-18). Timeline icons (collapse, transport,
+    loop, Frames, Seconds, Snap, playhead, lock, eye, speaker) were
+    generated with Figma AI. Figma's AI Terms (figma.com/legal/ai-terms)
+    give the customer ownership of the output, and make the customer
+    responsible for reviewing it and obtaining any clearances. Before
+    selling: check that no icon copies an existing icon set or a trademark.
     (The sixteen SVGs ship under app/icons/timeline/, exported from
     Dasktop_UI_test node 380:644; two were authored here from the same
     shapes, the collapsed chevron and the pause bars.)
+    CLOSED by the user, 2026-10-25: "Icon check is clear. Record it in
+    HANDOFF ... close BEFORE SELLING 12."
+    THE CHECK (2026-10-25, report only - nothing in the app, its icons or
+    the repository changed for it):
+    - WHAT: all 21 SVGs now in app/icons/timeline/ - the sixteen above,
+      plus five drawn in this project in Parts C and D (speed_chevron,
+      speed_chevron_hover, speed_tick, speaker_muted, audio_warning) -
+      and one positive control, Lucide's magnet copied in as a test item.
+    - AGAINST: 23,357 icons, all rendered, none failed. Downloaded from
+      the npm registry into a scratch folder OUTSIDE the repository, for
+      comparison only, never added to the project:
+        Lucide 1.61.0 (ISC), 2171
+        Tabler 3.49.0 outline + filled (MIT), 5184 + 1054
+        Phosphor 2.1.1 regular (MIT), 1512
+        Material Symbols 0.48.1 outlined incl. the fill variants
+          (Apache-2.0; npm @material-symbols/svg-400, a repackaging of
+          Google's Material Symbols), 7864
+        Font Awesome Free 7.3.1 solid + regular + brands (icons CC BY
+          4.0), 2001 + 273 + 609
+        Heroicons 2.2.0 outline 24 (MIT), 324
+        Bootstrap Icons 1.13.2 (MIT), 2078
+        Feather 4.29.2 (MIT), 287
+    - METHOD: every icon rendered the same way with Qt's SVG renderer
+      (the app's): colours to black ink on white (ours: light colours to
+      ink, near-black to paper, for track_lock's keyhole), cropped to the
+      ink, fitted in 52 x 52, centred on 64 x 64. Score = mean of a
+      tolerant shape overlap (Dice with 2 px tolerance) and a structural
+      similarity (SSIM on lightly blurred shapes, counted only where
+      there is ink); every reference also tried mirrored. Separately,
+      identical path data: all elements to absolute commands, the icon
+      normalised to unit size, rounded to 1 %, compared whole and element
+      by element, also mirrored.
+    - CONTROLS AND THRESHOLD: the copied magnet scored 1.000 and was
+      path-identical; two clearly different pairs scored 0.380 and 0.291.
+      "Worth a look" = the midpoint, 0.69. For scale: Phosphor's magnet,
+      an independent drawing of the same idea, scores 0.907 against
+      Lucide's - so every hit was read by eye.
+    - RESULT: no icon is a near-copy of a drawing from these sets. Above
+      0.69 are only primitives and standard symbols every set draws: the
+      speed chevron (0.995; path-identical to the chevron-down of Lucide,
+      Tabler, Heroicons and Feather - three points, the only way to draw
+      a 90-degree V), the play / next / previous triangles (0.94-0.999 vs
+      Material play_arrow fill: a solid triangle of nearly the same
+      proportions; path data differs), pause bars, skip symbols, check,
+      eye, padlock, stopwatch (0.87 vs Material timer, drawn differently),
+      film strip, warning triangle, the two collapse chevrons (0.692).
+      Closest drawing: track_speaker vs Feather volume-2 (0.77, box-and-
+      cone proportions within a few per cent, waves drawn differently),
+      read as the common speaker glyph - and Feather is MIT. Below 0.69:
+      loop_start, loop_end, speaker_muted, view_snap (its best 0.645).
+      The only path identities: the control and the speed chevron.
+    - LOGOS (by eye, not a trademark search): the 609 Font Awesome brand
+      logos and Tabler's brand-* icons were in the comparison; the closest
+      is Tabler's Vercel triangle vs audio_warning (0.84, on the triangle
+      outline alone). No icon resembles a company logo.
+    - LIMITS: eight sets, not every icon library; mirroring tested,
+      rotation not; an icon redrawn and re-exported escapes the path
+      check (the shape scores cover it); Figma's AI training data cannot
+      be known. Every set compared is permissively licensed.
+    - NOTICED: track_lock is drawn with its shackle OPEN (the right leg
+      stops at y 4.8, the body starts at 6.5) - it reads as an unlocked
+      padlock. A design remark, not a licensing one; unchanged.
+    - EVIDENCE: Documents\SankoTV-Design\icon-check\ - icon-check.html
+      (each icon beside its three closest matches with set, name, licence
+      and score; the above-threshold table with a reading of each; the
+      controls; the logo table; the sets), results.json, pathcheck.json,
+      and tool\ (the renderer/scorer source, the manifest, path-check and
+      page scripts, the control pairs). The downloaded sets were scratch
+      and are not kept.
 
 13. OPEN - THE WORKSPACE WINDOW'S MINIMUM WIDTH (opened 2026-10-18, the
     user's item; numbers updated 2026-10-23 for Part C's header, then
