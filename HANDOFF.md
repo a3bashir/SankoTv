@@ -7389,17 +7389,20 @@ flatten-and-fit. MP4 export per minute of film, Release: 2.7 s (1080p) and
 frame (every frame a new picture for the encoder); Debug 4.0 / 4.5 s and
 136 / 159 s.
 
-OPEN, FOUND BY THIS GATE (not caused by 1A; brush code unchanged since
-bdd8e3f5b): SankoBrushLibraryTest (p6) "cancelAll drops queued and
-in-flight results" fails in DEBUG (emissions=1, twice in a row; Release
-passes). It is a TIMING dependence in the check: it assumes cancelAll runs
-before the worker finishes its first preview. The brush-speed fix made a
-warm preview take 1.03 ms in Debug while queueing ten requests and
-cancelling takes 1.08 ms (P6Probe: the race is lost in 17 of 20 replays in
-Debug, 0 of 20 in Release). Proposed fix, for the user's approval: a test
-hold on the renderer's worker so (p6) queues and cancels while the worker
-is held, then releases it (deterministic), with the control that the same
-queue without cancelAll delivers all ten.
+FOUND BY THIS GATE, FIXED IN fa1e45f5b (not caused by 1A; brush code
+unchanged since bdd8e3f5b): SankoBrushLibraryTest (p6) "cancelAll drops
+queued and in-flight results" failed in DEBUG (emissions=1, twice in a
+row; Release passed). It was a TIMING dependence in the check: it assumed
+cancelAll ran before the worker finished its first preview. The
+brush-speed fix made a warm preview take 1.03 ms in Debug while queueing
+ten requests and cancelling takes 1.08 ms (P6Probe: the race was lost in
+17 of 20 replays in Debug, 0 of 20 in Release). fa1e45f5b, approved by the
+user: a test seam (BrushPreviewRenderer::setHeldForTest, never used by the
+app) holds the worker while (p6) queues and cancels, then releases it;
+nothing may arrive, and the control (the same queue without cancelAll)
+delivers all ten. Three runs in each configuration green. The held worker
+has nothing in flight, so (p6) now covers QUEUED results only; the
+in-flight case needs its own check.
 
 ## METHOD: measure interior structure ACROSS THE SIZE RANGE before calling it character (2026-09-25)
 
