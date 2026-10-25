@@ -1724,6 +1724,50 @@ int main(int argc, char **argv)
               emissions == inking.size(),
               QStringLiteral("emissions=%1").arg(emissions));
     }
+    // (p6b) THE IN-FLIGHT CASE, deterministic (2026-10-25): a job already
+    // running when cancelAll arrives must deliver nothing (the epoch check).
+    // The worker is paused INSIDE the job - started and rendered, not yet
+    // checked or delivered - the cancel comes, the worker is released, and
+    // the gate waits until it is idle again before counting: every signal
+    // it could have sent is posted by then, and flushed below. No timing.
+    auto inFlight = [&](bool cancel, bool *paused, bool *idle) {
+        BrushPreviewRenderer renderer(scratch + QStringLiteral("_inflight"));
+        int emissions = 0;
+        QObject::connect(&renderer, &BrushPreviewRenderer::previewReady,
+                         &app,
+                         [&](const QString &, const QImage &) {
+                             ++emissions;
+                         });
+        renderer.setPauseInJobForTest(true);
+        renderer.requestPreview(inking.first()->id, inking.first()->brush());
+        *paused = renderer.waitUntilPausedInJobForTest(60000);
+        if (cancel)
+            renderer.cancelAll();
+        renderer.setPauseInJobForTest(false);
+        *idle = renderer.waitUntilIdleForTest(60000);
+        QCoreApplication::sendPostedEvents();
+        QCoreApplication::processEvents();
+        return emissions;
+    };
+    {
+        bool paused = false, idle = false;
+        const int emissions = inFlight(true, &paused, &idle);
+        check(QStringLiteral("(p6b) a job already running when cancelAll arrives "
+                             "delivers nothing (the worker paused inside it, "
+                             "started and not yet delivered)"),
+              paused && idle && emissions == 0,
+              QStringLiteral("paused=%1 idle=%2 emissions=%3")
+                  .arg(paused).arg(idle).arg(emissions));
+    }
+    {
+        bool paused = false, idle = false;
+        const int emissions = inFlight(false, &paused, &idle);
+        check(QStringLiteral("(p6b) control: the same job without cancelAll "
+                             "delivers exactly one"),
+              paused && idle && emissions == 1,
+              QStringLiteral("paused=%1 idle=%2 emissions=%3")
+                  .arg(paused).arg(idle).arg(emissions));
+    }
     {
         // Shutdown mid-generation: queue a category and destroy the
         // renderer immediately. Reaching the next check IS the assert.

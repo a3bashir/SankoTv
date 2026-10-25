@@ -95,6 +95,14 @@ public:
     // no job, so a check can queue and cancel without racing it. Off by
     // default; the app never holds it.
     void setHeldForTest(bool held);
+    // Test seam (the gate's (p6b), 2026-10-25): the worker pauses INSIDE
+    // its next job - rendered, not yet checked or delivered - until
+    // released. The gate waits for that pause, cancels, releases, and waits
+    // for the worker to be idle again, so the in-flight case is decided by
+    // the code and never by timing. Off by default; the app never uses it.
+    void setPauseInJobForTest(bool pause);
+    bool waitUntilPausedInJobForTest(int timeoutMs);
+    bool waitUntilIdleForTest(int timeoutMs); // no job running, none queued
 
     // The root the disk tiers live under (previews in r<N>/, the width
     // ratios in widths-r<N>/): the SAME scratch override serves both.
@@ -139,6 +147,10 @@ private:
     quint64 m_epoch = 0;        // bumped by cancelAll
     bool m_quit = false;
     bool m_heldForTest = false; // setHeldForTest
+    bool m_pauseInJobForTest = false;  // setPauseInJobForTest
+    bool m_pausedInJobForTest = false; // ...and the worker is there now
+    bool m_busy = false;               // a job is between dequeue and done
+    QWaitCondition m_testWake;         // the test seams' own condition
     QThread *m_lastRenderThread = nullptr;
 };
 

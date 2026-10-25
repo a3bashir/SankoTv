@@ -5,6 +5,7 @@
 #include "SankoPaintHostAdapter.h"
 
 #include <QDateTime>
+#include <QDeadlineTimer>
 #include <QDir>
 #include <QFile>
 #include <QPainter>
@@ -216,6 +217,7 @@ BrushPreviewRenderer::~BrushPreviewRenderer()
         m_queue.clear();
         m_pendingIds.clear();
         m_wake.wakeAll();
+        m_testWake.wakeAll(); // a worker paused by a test seam leaves too
     }
     m_thread->wait(); // one in-flight render at most (~tens of ms)
     delete m_thread;
@@ -283,6 +285,34 @@ void BrushPreviewRenderer::setHeldForTest(bool held)
         m_wake.wakeAll();
 }
 
+void BrushPreviewRenderer::setPauseInJobForTest(bool pause)
+{
+    QMutexLocker lock(&m_mutex);
+    m_pauseInJobForTest = pause;
+    if (!pause)
+        m_testWake.wakeAll();
+}
+
+bool BrushPreviewRenderer::waitUntilPausedInJobForTest(int timeoutMs)
+{
+    QMutexLocker lock(&m_mutex);
+    const QDeadlineTimer deadline(timeoutMs);
+    while (!m_pausedInJobForTest)
+        if (!m_testWake.wait(&m_mutex, deadline))
+            return m_pausedInJobForTest;
+    return true;
+}
+
+bool BrushPreviewRenderer::waitUntilIdleForTest(int timeoutMs)
+{
+    QMutexLocker lock(&m_mutex);
+    const QDeadlineTimer deadline(timeoutMs);
+    while (m_busy || !m_queue.isEmpty())
+        if (!m_testWake.wait(&m_mutex, deadline))
+            return !m_busy && m_queue.isEmpty();
+    return true;
+}
+
 void BrushPreviewRenderer::cancelAll()
 {
     QMutexLocker lock(&m_mutex);
@@ -309,11 +339,14 @@ void BrushPreviewRenderer::workerLoop()
         Job job;
         {
             QMutexLocker lock(&m_mutex);
+            m_busy = false; // the last job is done (waitUntilIdleForTest)
+            m_testWake.wakeAll();
             while (!m_quit && (m_queue.isEmpty() || m_heldForTest))
                 m_wake.wait(&m_mutex);
             if (m_quit)
                 return;
             job = m_queue.dequeue();
+            m_busy = true;
         }
         // The keys: stored on the preset (nothing hashed), else computed
         // HERE, once, and reported for the model to store.
@@ -330,6 +363,15 @@ void BrushPreviewRenderer::workerLoop()
             swatchBrush, job.eraseVariant ? keys.eraseSwatch : keys.swatch);
         {
             QMutexLocker lock(&m_mutex);
+            // Test seam (p6b): started, rendered, not yet checked or
+            // delivered - paused here until released.
+            if (m_pauseInJobForTest) {
+                m_pausedInJobForTest = true;
+                m_testWake.wakeAll();
+                while (m_pauseInJobForTest && !m_quit)
+                    m_testWake.wait(&m_mutex);
+                m_pausedInJobForTest = false;
+            }
             // Dropped if cancelAll() bumped the epoch or cancelPreset()
             // removed the id (preset deleted mid-render): no dangling result.
             const bool stale =
