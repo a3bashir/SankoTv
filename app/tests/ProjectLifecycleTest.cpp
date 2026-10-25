@@ -64,6 +64,7 @@
 #include "SankoTimelineTheme.h"
 #include "SankoTheme.h"
 #include "StoryboardModel.h"
+#include "camera/ShotCamera.h"
 #include "devrecorder/DevRecorder.h"
 #include "export/MovieEncoder.h"
 #include "export/Mp4Probe.h"
@@ -10159,6 +10160,105 @@ void runTimelineLookPass(const QString &scratch)
 // defaults; the toggles mark the project unsaved and push nothing on the
 // undo stack; Undo / Redo of a locked track's command is refused with a
 // message and the stack is left as it is. Synthetic events only.
+// (cm) THE SHOT CAMERA, Phase 1A (2026-10-25; the user's rule): removing a
+// panel that holds camera keys changes the scene's camera move, so it must
+// not be silent - the history names the keys ("Delete Panel and 1 Camera
+// Key") and the locks' non-modal note says the move changed. Through the
+// real page and the real undo stack: Cut (no question) and Delete (its
+// confirmation answered), the plural, undo bringing the key back at the
+// same frame, and the control (a panel without keys: the plain text, no
+// note). Part of the spec's C4.
+void runCameraPanelRemovalPass(const QString &scratch)
+{
+    using namespace workspace;
+    out() << "--- (cm) removing a panel that holds camera keys ---" << Qt::endl;
+    const QString project = writeProject(scratch + QStringLiteral("/camdel"),
+                                         QStringLiteral("CamDel"), QSize(960, 540),
+                                         24, 1, 4);
+    Rig r(project);
+    check(QStringLiteral("(cm) the workspace opened"), r.ok);
+    if (!r.ok)
+        return;
+    Scene *scene = r.window.scenesForTest().value(0);
+    QUndoStack *stack = r.window.undoStackForTest();
+    if (!scene || scene->panels.size() < 4 || !stack) {
+        check(QStringLiteral("(cm) found a scene of four panels and the history"), false);
+        return;
+    }
+    shotcam::CameraState pushed = shotcam::neutral(QSize(960, 540));
+    pushed.zoom = 1.4;
+    scene->camera.keys = {shotcam::makeKey(*scene, 1, 10, 24, pushed),
+                          shotcam::makeKey(*scene, 3, 0, 24,
+                                           shotcam::neutral(QSize(960, 540)))};
+    const double k1Frame = shotcam::keyFrame(*scene, scene->camera.keys.at(0), 24);
+    auto lastText = [&] { return stack->index() > 0 ? stack->text(stack->index() - 1)
+                                                    : QString(); };
+
+    // Control: a panel without keys.
+    clickThumb(r, 0);
+    r.storyboard->clearNoteForTest();
+    r.storyboard->cutSelectedPanel();
+    pump(200);
+    const QString plainText = lastText();
+    const QString plainNote = r.storyboard->lastNoteForTest();
+    stack->undo();
+    pump(200);
+    check(QStringLiteral("(cm) control: cutting a panel WITHOUT camera keys says "
+                         "\"Cut Panel\" and shows no note"),
+          plainText == QStringLiteral("Cut Panel") && plainNote.isEmpty(), plainText);
+
+    // The panel holding the first key.
+    clickThumb(r, 1);
+    r.storyboard->clearNoteForTest();
+    r.storyboard->cutSelectedPanel();
+    pump(200);
+    const QString cutText = lastText();
+    const QString cutNote = r.storyboard->lastNoteForTest();
+    const int liveAfterCut = shotcam::liveKeyCount(*scene);
+    check(QStringLiteral("(cm) cutting the panel that holds a camera key says \"Cut "
+                         "Panel and 1 Camera Key\", shows the note, and the key "
+                         "leaves the move"),
+          cutText == QStringLiteral("Cut Panel and 1 Camera Key")
+              && cutNote.contains(QStringLiteral("camera move")) && liveAfterCut == 1,
+          cutText + QStringLiteral(" | ") + cutNote);
+    stack->undo();
+    pump(200);
+    check(QStringLiteral("(cm) undo brings the panel and its key back, at the same "
+                         "frame"),
+          shotcam::liveKeyCount(*scene) == 2
+              && shotcam::keyFrame(*scene, scene->camera.keys.at(0), 24) == k1Frame);
+
+    clickThumb(r, 1);
+    r.storyboard->clearNoteForTest();
+    r.storyboard->deleteSelectedPanelConfirmedForTest();
+    pump(200);
+    const QString deleteText = lastText();
+    const QString deleteNote = r.storyboard->lastNoteForTest();
+    stack->undo();
+    pump(200);
+    check(QStringLiteral("(cm) Delete says \"Delete Panel and 1 Camera Key\" with the "
+                         "same note"),
+          deleteText == QStringLiteral("Delete Panel and 1 Camera Key")
+              && deleteNote == cutNote,
+          deleteText);
+
+    scene->camera.keys.append(shotcam::makeKey(*scene, 3, 30, 24, pushed));
+    clickThumb(r, 3);
+    r.storyboard->clearNoteForTest();
+    r.storyboard->cutSelectedPanel();
+    pump(200);
+    const QString pluralText = lastText();
+    const QString pluralNote = r.storyboard->lastNoteForTest();
+    stack->undo();
+    pump(200);
+    check(QStringLiteral("(cm) a panel holding two keys says \"Cut Panel and 2 Camera "
+                         "Keys\""),
+          pluralText == QStringLiteral("Cut Panel and 2 Camera Keys")
+              && pluralNote.contains(QStringLiteral("2 keys")),
+          pluralText + QStringLiteral(" | ") + pluralNote);
+    scene->camera.keys.clear();
+}
+
 void runTrackLocksPass(const QString &scratch)
 {
     using namespace workspace;
@@ -11054,6 +11154,7 @@ int main(int argc, char **argv)
     runTimelineWheelPass(scratch);
     runTimelineLookPass(scratch);
     runTrackLocksPass(scratch);
+    runCameraPanelRemovalPass(scratch);
 
     // ---- (aa) a test that cannot start says why and exits ----------------
     // An unattended gate must FAIL, not wait. Measured 2026-10-02: with its

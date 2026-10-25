@@ -42,6 +42,7 @@ this fence."
 #include "RecentProjects.h"
 #include "ScriptEditorPage.h"
 #include "StoryboardModel.h"
+#include "camera/ShotCamera.h"
 #include "StoryboardPage.h"
 #include "SankoSlider.h"
 #include "export/MovieEncoder.h"
@@ -303,6 +304,10 @@ MainWindow::MainWindow(QWidget *parent)
             if (auto *timeline = m_animatic
                     ? m_animatic->findChild<AnimaticTimeline *>() : nullptr)
                 m.insert(timeline->devrecState());
+            // The SHOT camera at the playhead (Phase 1A). "shotCam.", never
+            // "camera": the recorder's cameraChange is the canvas VIEW.
+            if (m_animatic)
+                m.insert(m_animatic->shotCamDevrecState());
             return m;
         });
         rec->setCameraProvider([this]() -> QVariantMap {
@@ -800,7 +805,7 @@ sankoexport::MovieResult MainWindow::runMovieExport(const QString &path)
 
     MovieRequest request;
     request.outPath = path;
-    request.panels = collectPanels(m_scenes);
+    request.panels = collectPanels(m_scenes, m_projectFps);
     request.fps = m_projectFps; // THE PROJECT'S, not a constant 24
     request.audioPath = exportAudioPath();
     request.audioGain = m_animatic ? m_animatic->audioGainForExport() : 1.0; // the track volume (Part D)
@@ -870,7 +875,9 @@ sankoexport::FilesResult MainWindow::runPngExport(const QString &folder)
     m_exporting = true;
     if (m_animatic)
         m_animatic->leavePreview();
-    const QVector<ExportPanel> panels = collectPanels(m_scenes);
+    // The stills show the shot at each panel's first frame (Phase 1A);
+    // the "Full artwork" choice reaches here with Part 1B's dialog.
+    const QVector<ExportPanel> panels = collectPanels(m_scenes, m_projectFps);
     QProgressDialog *dialog = nullptr;
     if (!m_exportProgressHookForTest) {
         dialog = new QProgressDialog(QStringLiteral("Writing PNG files..."),
@@ -903,7 +910,9 @@ sankoexport::FilesResult MainWindow::runPdfExport(const QString &path)
     m_exporting = true;
     if (m_animatic)
         m_animatic->leavePreview();
-    const QVector<ExportPanel> panels = collectPanels(m_scenes);
+    // The stills show the shot at each panel's first frame (Phase 1A);
+    // the "Full artwork" choice reaches here with Part 1B's dialog.
+    const QVector<ExportPanel> panels = collectPanels(m_scenes, m_projectFps);
     QProgressDialog *dialog = nullptr;
     if (!m_exportProgressHookForTest) {
         dialog = new QProgressDialog(QStringLiteral("Writing the PDF..."),
@@ -1220,6 +1229,14 @@ ProjectResize::Outcome MainWindow::applyCanvasResizeInternal(const QSize &newSiz
     const QPoint offset = ProjectResize::centreOffset(currentSize, newSize);
     const ProjectResize::Outcome outcome =
         ProjectResize::apply(m_scenes, newSize, offset);
+    // The shot camera keeps each framing over the same artwork (Phase 1A).
+    // Only after a complete resize: a partial one leaves panels at two
+    // sizes, which the load census reports, and no framing can be right
+    // for both.
+    if (outcome.ok)
+        for (Scene *scene : std::as_const(m_scenes))
+            if (scene)
+                shotcam::remapForResize(scene->camera, currentSize, newSize, offset);
 
     // ORDER MATTERS: the members must be updated before anything can save,
     // or a save would write the old manifest against new pixels — a

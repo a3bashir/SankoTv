@@ -1,6 +1,7 @@
 #include "ProjectIO.h"
 
 #include "ProjectMedia.h"
+#include "camera/ShotCamera.h"
 
 #include <QDir>
 #include <QFileInfo>
@@ -215,6 +216,12 @@ WriteResult projectToJson(const SaveData &data, const QString &projectFilePath,
             panelsArray.append(panelObj);
         }
         sceneObj[QStringLiteral("panels")] = panelsArray;
+        // THE SHOT CAMERA (Phase 1A): written only when the scene has live
+        // keys, so a project without camera moves saves the JSON it saved
+        // before the camera existed.
+        const QJsonObject camera = shotcam::toJson(*scene);
+        if (!camera.isEmpty())
+            sceneObj[QStringLiteral("camera")] = camera;
         scenesArray.append(sceneObj);
     }
 
@@ -509,6 +516,12 @@ LoadedProject projectFromJson(const QJsonObject &root, const QString &folder)
 
             scene->panels.append(panel);
         }
+        // The camera after the panels (its keys name them by index). No
+        // "camera" (every project saved before Phase 1A): the neutral one.
+        int droppedKeys = 0;
+        shotcam::fromJson(sceneObj.value(QStringLiteral("camera")).toObject(),
+                          *scene, &droppedKeys);
+        out.cameraKeysDropped += droppedKeys;
         out.scenes.append(scene);
     }
 

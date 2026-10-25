@@ -54,7 +54,7 @@ Add-Type -Namespace Sanko -Name ErrorMode -MemberDefinition @'
 
 $families = 'SankoBrushLibraryTest', 'SankoPaintPixelLock', 'SankoCanvasBrushLock',
             'SankoQuickShapeGeometryLock', 'SankoDevRecorderTest', 'SankoCanvasEdgeLock',
-            'SankoCanvasSizeLock', 'SankoProjectLifecycle'
+            'SankoCanvasSizeLock', 'SankoProjectLifecycle', 'SankoCameraTest'
 $out = Join-Path $env:TEMP 'sanko_gate'
 New-Item -ItemType Directory -Force $out | Out-Null
 # THE RUN BEFORE THIS ONE IS KEPT. The logs used to be overwritten in place,

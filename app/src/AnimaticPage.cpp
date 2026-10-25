@@ -8,6 +8,7 @@
 #include "MediaCopyProgress.h"
 #include "ProjectMedia.h"
 #include "StoryboardModel.h"
+#include "camera/ShotCamera.h"
 
 #include <QAbstractButton>
 #include <QAbstractSlider>
@@ -84,18 +85,43 @@ public:
     {
         m_pixmap = QPixmap();
         m_caption.clear();
+        m_neutral = true;
+        update();
+    }
+
+    // THE SHOT CAMERA (Phase 1A). Neutral = the paint below exactly as it
+    // was before the camera (the neutral pins); otherwise the panel is
+    // drawn through shotcam::drawShot, fitted the same way.
+    void setCamera(const shotcam::CameraState &camera, bool neutral)
+    {
+        if (m_neutral == neutral && (neutral || m_camera == camera))
+            return;
+        m_camera = camera;
+        m_neutral = neutral;
         update();
     }
 
     QString captionForTest() const { return m_caption; }
     bool hasPixmapForTest() const { return !m_pixmap.isNull(); }
+    shotcam::CameraState cameraForTest() const { return m_camera; }
+    bool neutralForTest() const { return m_neutral; }
+    QTransform transformForTest() const
+    {
+        return m_pixmap.isNull()
+            ? QTransform()
+            : shotcam::shotTransform(m_camera, m_pixmap.size(), QRectF(rect()));
+    }
 
 protected:
     void paintEvent(QPaintEvent *) override
     {
         QPainter painter(this);
         painter.fillRect(rect(), Qt::black);
-        if (!m_pixmap.isNull()) {
+        if (!m_pixmap.isNull() && !m_neutral) {
+            // The flatten is canvas-sized, so its size IS the canvas.
+            shotcam::drawShot(painter, m_pixmap, m_pixmap.size(), m_camera,
+                              QRectF(rect()), false);
+        } else if (!m_pixmap.isNull()) {
             painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
             QSize target = m_pixmap.size();
             target.scale(size(), Qt::KeepAspectRatio);
@@ -165,6 +191,8 @@ private:
     QPixmap m_pixmap;
     QString m_caption;
     bool m_pressed = false;
+    shotcam::CameraState m_camera;
+    bool m_neutral = true;
 };
 
 namespace {
@@ -251,6 +279,11 @@ AnimaticPage::AnimaticPage(QWidget *parent)
     m_playheadTimer->setInterval(50);
     m_playheadTimer->setTimerType(Qt::PreciseTimer);
     connect(m_playheadTimer, &QTimer::timeout, this, &AnimaticPage::onPlayheadTick);
+
+    // The shot camera's tick while playing (see m_cameraTimer).
+    m_cameraTimer = new QTimer(this);
+    m_cameraTimer->setInterval(16);
+    connect(m_cameraTimer, &QTimer::timeout, this, &AnimaticPage::onCameraTick);
 
     // The cap on the film clock's wait for the sound to begin.
     m_audioStartCap = new QTimer(this);
@@ -434,6 +467,93 @@ void AnimaticPage::showPreviewFrame()
                          QString::fromUtf8("Scene %1 \xE2\x80\x94 Panel %2")
                              .arg(it.sceneNumber)
                              .arg(it.panelInScene));
+    updatePreviewCamera();
+}
+
+// --- The shot camera (Phase 1A) ----------------------------------------------
+
+shotcam::CameraState AnimaticPage::cameraAtPlayhead() const
+{
+    if (m_current < 0 || m_current >= m_items.size())
+        return shotcam::CameraState();
+    const Item &it = m_items.at(m_current);
+    const int fps = m_timeline ? qMax(1, m_timeline->fps()) : 24;
+    const int frames = shotcam::panelFrames(*it.panel, fps);
+    const int frame = qBound(
+        0, shotcam::frameInPanelFromMs(liveElapsedMsInCurrentPanel(), fps), frames - 1);
+    return shotcam::evaluateAtPanel(*it.scene, it.panelInScene - 1, frame, fps);
+}
+
+void AnimaticPage::updatePreviewCamera()
+{
+    if (!m_display || !m_previewShown || m_current < 0 || m_current >= m_items.size())
+        return;
+    const Item &it = m_items.at(m_current);
+    if (it.scene->camera.isEmpty()) {
+        m_display->setCamera(shotcam::CameraState(), true); // the old paint
+        return;
+    }
+    const shotcam::CameraState camera = cameraAtPlayhead();
+    m_display->setCamera(camera, shotcam::isNeutral(camera, it.panel->canvasSize()));
+}
+
+void AnimaticPage::onCameraTick()
+{
+    updatePreviewCamera();
+}
+
+shotcam::CameraState AnimaticPage::previewCameraForTest() const
+{
+    return m_display ? m_display->cameraForTest() : shotcam::CameraState();
+}
+
+bool AnimaticPage::previewCameraNeutralForTest() const
+{
+    return !m_display || m_display->neutralForTest();
+}
+
+QTransform AnimaticPage::previewTransformForTest() const
+{
+    return m_display ? m_display->transformForTest() : QTransform();
+}
+
+bool AnimaticPage::cameraTimerActiveForTest() const
+{
+    return m_cameraTimer && m_cameraTimer->isActive();
+}
+
+QVariantMap AnimaticPage::shotCamDevrecState() const
+{
+    QVariantMap m;
+    if (m_current < 0 || m_current >= m_items.size()) {
+        m.insert(QStringLiteral("shotCam.scene"), -1);
+        return m;
+    }
+    const Item &it = m_items.at(m_current);
+    const int fps = m_timeline ? qMax(1, m_timeline->fps()) : 24;
+    const int frames = shotcam::panelFrames(*it.panel, fps);
+    const int frameIn = qBound(
+        0, shotcam::frameInPanelFromMs(liveElapsedMsInCurrentPanel(), fps), frames - 1);
+    const int sceneFrame =
+        shotcam::panelStartFrame(*it.scene, it.panelInScene - 1, fps) + frameIn;
+    const shotcam::CameraState camera = cameraAtPlayhead();
+    bool keyAtPlayhead = false;
+    for (const shotcam::CameraKey &key : it.scene->camera.keys) {
+        const double f = shotcam::keyFrame(*it.scene, key, fps);
+        if (f >= 0.0 && qAbs(f - sceneFrame) < 0.5)
+            keyAtPlayhead = true;
+    }
+    m.insert(QStringLiteral("shotCam.scene"), it.sceneNumber);
+    m.insert(QStringLiteral("shotCam.keys"), shotcam::liveKeyCount(*it.scene));
+    m.insert(QStringLiteral("shotCam.frame"), sceneFrame);
+    m.insert(QStringLiteral("shotCam.x"), camera.cx);
+    m.insert(QStringLiteral("shotCam.y"), camera.cy);
+    m.insert(QStringLiteral("shotCam.zoom"), camera.zoom);
+    m.insert(QStringLiteral("shotCam.rotation"), camera.rotation);
+    m.insert(QStringLiteral("shotCam.keyAtPlayhead"), keyAtPlayhead);
+    m.insert(QStringLiteral("shotCam.soft"),
+             camera.zoom > shotcam::sharpLimit(it.panel->canvasSize()) + 1e-9);
+    return m;
 }
 
 QString AnimaticPage::previewCaptionForTest() const
@@ -470,6 +590,7 @@ void AnimaticPage::setPlayheadForTest(int flatIndex, int elapsedMs)
     updateTimecodeLabel();
     if (m_timeline)
         m_timeline->updatePlayhead();
+    updatePreviewCamera();
 }
 
 
@@ -548,6 +669,8 @@ QWidget *AnimaticPage::createTimingStrip()
             this, &AnimaticPage::panelSelectRequested);
     connect(m_timeline, &AnimaticTimeline::playheadScrubbed,
             this, &AnimaticPage::onScrubbed);
+    connect(m_timeline, &AnimaticTimeline::playheadScrubbedTo,
+            this, &AnimaticPage::onScrubbedTo);
     connect(m_timeline, &AnimaticTimeline::durationChanged,
             this, &AnimaticPage::onDurationChanged);
     connect(m_timeline, &AnimaticTimeline::panelMoveRequested,
@@ -1239,6 +1362,29 @@ void AnimaticPage::onScrubbed(int index)
     enterPreview();
 }
 
+// FRAME-ACCURATE SCRUB (Phase 1A): the timeline reports the frame inside
+// the panel as the playhead is dragged, and the playhead STAYS on it - a
+// camera move is seen frame by frame, and the panel is no longer the only
+// place a scrub can land. The sound is not sought here: Play seeks it to
+// where the film is (filmPositionMs) before it starts, as it always has.
+void AnimaticPage::onScrubbedTo(int index, int frameInPanel)
+{
+    if (index < 0 || index >= m_items.size())
+        return;
+    if (m_playing)
+        pause();
+    if (index != m_current)
+        onScrubbed(index);
+    const int fps = m_timeline ? qMax(1, m_timeline->fps()) : 24;
+    const int frames = shotcam::panelFrames(*m_items.at(index).panel, fps);
+    m_elapsedMsInCurrentPanel =
+        shotcam::msForFrameInPanel(qBound(0, frameInPanel, frames - 1), fps);
+    updateTimecodeLabel();
+    if (m_timeline)
+        m_timeline->updatePlayhead();
+    updatePreviewCamera();
+}
+
 void AnimaticPage::updateTimecodeLabel()
 {
     if (!m_timecodeLabel)
@@ -1382,6 +1528,8 @@ void AnimaticPage::startFilmClock(qint64 audioMs)
     scheduleTick();
     if (m_playheadTimer)
         m_playheadTimer->start();
+    if (m_cameraTimer)
+        m_cameraTimer->start();
 }
 
 int AnimaticPage::liveElapsedMsInCurrentPanel() const
@@ -1435,6 +1583,9 @@ void AnimaticPage::pause()
         m_timer->stop();
     if (m_playheadTimer)
         m_playheadTimer->stop();
+    if (m_cameraTimer)
+        m_cameraTimer->stop();
+    updatePreviewCamera(); // the frame it stopped on
     if (m_timeline)
         m_timeline->setPlaying(false);
     if (m_playButton)

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "camera/CameraModel.h"
+
 #include <QColor>
 #include <QHash>
 #include <QImage>
@@ -90,6 +92,10 @@ struct Panel
     QString notes;
     int duration = 3; // seconds on screen in the animatic
     // Undo/redo lives in the app-wide QUndoStack (MainWindow), not per panel.
+
+    // The shot camera's name for this panel (camera/CameraModel.h): a key
+    // is anchored to it. Minted per object, never copied, never saved.
+    shotcam::PanelUid uid;
 
     // AI video generation. KEPT DATA WITH NO UI: the Generation screen that
     // wrote these was removed (HANDOFF "Pass 3"), and nothing in the app
@@ -256,6 +262,10 @@ struct Scene
     QString timeOfDay;
     QString action;
     QVector<Panel *> panels;
+    // THE SHOT CAMERA (Phase 1A, 2026-10-25): one per scene, keys anchored
+    // to panels (camera/ShotCamera.h evaluates it). Empty = the neutral
+    // camera, the whole canvas: the shot every project had before.
+    shotcam::SceneCamera camera;
 
     ~Scene()
     {

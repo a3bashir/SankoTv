@@ -5,6 +5,7 @@
 
 #include "AnimaticPage.h"
 #include "StoryboardModel.h"
+#include "camera/ShotCamera.h"
 
 #include <QContextMenuEvent>
 #include <QFontMetrics>
@@ -983,6 +984,33 @@ double AnimaticTimeline::playheadContentX() const
     return playheadFrame() * pxPerFrame();
 }
 
+// The frame inside the scrubbed panel (Phase 1A): sent on the press, on
+// every move that changes it, and on the release.
+void AnimaticTimeline::emitScrubFrame()
+{
+    if (m_dragPlayheadFrame < 0)
+        return;
+    const int idx = blockAtFrame(m_dragPlayheadFrame);
+    if (idx < 0 || idx >= m_blocks.size())
+        return;
+    const Block &b = m_blocks.at(idx);
+    const int frameIn = qBound(0, m_dragPlayheadFrame - b.startFrame, b.frames - 1);
+    if (b.startFrame + frameIn == m_scrubFrameSent)
+        return;
+    m_scrubFrameSent = b.startFrame + frameIn;
+    emit playheadScrubbedTo(idx, frameIn);
+}
+
+shotcam::CameraState AnimaticTimeline::clipCameraForTest(int flatIndex) const
+{
+    if (flatIndex < 0 || flatIndex >= m_blocks.size())
+        return shotcam::CameraState();
+    const Block &b = m_blocks.at(flatIndex);
+    if (b.sceneIndex >= m_scenes.size())
+        return shotcam::CameraState();
+    return shotcam::evaluateAtPanel(*m_scenes.at(b.sceneIndex), b.panelIndex, 0, m_fps);
+}
+
 int AnimaticTimeline::playheadFrame() const
 {
     if (m_drag == Drag::Playhead && m_dragPlayheadFrame >= 0)
@@ -1289,20 +1317,37 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
 
             if (L.thumbShown) {
                 QPixmap pix;
+                // THE SHOT CAMERA (Phase 1A): the clip shows the cut as it
+                // begins - the camera at the panel's first frame. A scene
+                // without a camera move draws exactly as before.
+                bool shot = false;
+                shotcam::CameraState shotCamera;
+                QSize canvas;
                 if (b.sceneIndex < m_scenes.size()) {
                     Scene *sc = m_scenes.at(b.sceneIndex);
-                    if (b.panelIndex < sc->panels.size())
+                    if (b.panelIndex < sc->panels.size()) {
                         // The cached 512px mip, not the full flatten: this
                         // runs per visible clip on EVERY repaint (each scrub
                         // mouse-move and every playback tick); the full
                         // composite cost 16 ms/clip at 4K, measured.
                         pix = sc->panels.at(b.panelIndex)->flattenedThumb();
+                        if (!sc->camera.isEmpty()) {
+                            canvas = sc->panels.at(b.panelIndex)->canvasSize();
+                            shotCamera = shotcam::evaluateAtPanel(*sc, b.panelIndex, 0,
+                                                                  m_fps);
+                            shot = !shotcam::isNeutral(shotCamera, canvas);
+                        }
+                    }
                 }
                 p.save();
                 QPainterPath clip;
                 clip.addRoundedRect(QRectF(L.thumb), kThumbR, kThumbR);
                 p.setClipPath(clip, Qt::IntersectClip);
-                if (!pix.isNull()) {
+                if (!pix.isNull() && shot) {
+                    // The shot, cropped to fill like the plain thumbnail.
+                    p.fillRect(L.thumb, Qt::black);
+                    shotcam::drawShot(p, pix, canvas, shotCamera, QRectF(L.thumb), true);
+                } else if (!pix.isNull()) {
                     // Crop to fill, centred (one setting; "fit with bars" is
                     // the other, not built - the user's choice 2026-10-18).
                     const QPixmap scaled = pix.scaled(
@@ -1752,8 +1797,10 @@ void AnimaticTimeline::canvasMousePress(QMouseEvent *e)
         // Scrubbing LOOKS without selecting: the host previews the panel
         // under the playhead and the drawing canvas stays where it is.
         m_scrubIndex = blockAtFrame(m_dragPlayheadFrame);
-        if (m_scrubIndex >= 0)
+        if (m_scrubIndex >= 0) {
             emit playheadScrubbed(m_scrubIndex);
+            emitScrubFrame();
+        }
         return;
     }
 
@@ -1876,6 +1923,7 @@ void AnimaticTimeline::canvasMouseMove(QMouseEvent *e)
             m_scrubIndex = idx; // one preview per panel crossed, not per pixel
             emit playheadScrubbed(idx);
         }
+        emitScrubFrame(); // ...and the frame inside it (Phase 1A)
         return;
     }
 
@@ -1974,14 +2022,17 @@ void AnimaticTimeline::canvasMouseRelease(QMouseEvent *e)
     }
     if (m_drag == Drag::Playhead) {
         const int idx = blockAtFrame(m_dragPlayheadFrame);
-        m_drag = Drag::None;
-        m_dragPlayheadFrame = -1;
-        // The playhead comes to rest at the start of the panel it was
-        // dropped in, as it always did - but that panel is PREVIEWED, not
-        // selected (this used to emit panelSeekRequested).
+        // The panel it was dropped in is PREVIEWED, not selected (this used
+        // to emit panelSeekRequested), and since Phase 1A the playhead
+        // comes to rest on the FRAME it was dropped on, not the panel's
+        // start (emitScrubFrame, before the drag state is cleared).
         if (idx >= 0 && idx != m_scrubIndex)
             emit playheadScrubbed(idx);
+        emitScrubFrame();
+        m_drag = Drag::None;
+        m_dragPlayheadFrame = -1;
         m_scrubIndex = -1;
+        m_scrubFrameSent = -1;
         // The playhead came to rest at a panel's start, which may be off
         // the left edge of the view: the jump rule, once, now that the
         // drag is over (jumps are suppressed while it lasts - the strip

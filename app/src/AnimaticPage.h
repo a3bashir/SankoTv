@@ -9,6 +9,10 @@
 #include <QWidget>
 
 #include "TimelineTracks.h"
+#include "camera/CameraModel.h"
+
+#include <QTransform>
+#include <QVariantMap>
 
 #include <functional>
 
@@ -181,6 +185,16 @@ public:
     // only; while paused or waiting for the sound it is the frozen value.
     int liveElapsedMsInCurrentPanel() const;
 
+    // THE SHOT CAMERA AT THE PLAYHEAD (Phase 1A, 2026-10-25): the film's own
+    // clock (the value above, live while playing - the clock that already
+    // starts from the sound's position and follows the speed), quantised
+    // to the frame it falls in exactly as the timeline's playhead and the
+    // MP4 count it. The preview draws with this; nothing else is asked.
+    shotcam::CameraState cameraAtPlayhead() const;
+    // For the Dev Recorder's statePoll: "shotCam." keys (the recorder's own
+    // "camera" events are the canvas VIEW).
+    QVariantMap shotCamDevrecState() const;
+
     // THE PICTURE KEEPS STEP WITH THE SOUND (sync pass, HANDOFF 2026-10-16).
     // Four rules, each the fix for a measured fault:
     // - a seek asked of the player before its file has loaded is dropped
@@ -231,6 +245,20 @@ public:
     int itemCountForTest() const { return int(m_items.size()); }
     void advanceForTest() { advance(); }
     void scrubForTest(int flatIndex) { onScrubbed(flatIndex); }
+    // The frame-accurate scrub (Phase 1A): what a playhead drag inside a
+    // panel now requests.
+    void scrubToForTest(int flatIndex, int frameInPanel)
+    {
+        onScrubbedTo(flatIndex, frameInPanel);
+    }
+    // What the preview draws with: its camera, whether it took the neutral
+    // (pre-camera) path, and the transform it maps the panel through; the
+    // 60 Hz camera tick, run once; whether its timer runs.
+    shotcam::CameraState previewCameraForTest() const;
+    bool previewCameraNeutralForTest() const;
+    QTransform previewTransformForTest() const;
+    void cameraTickForTest() { onCameraTick(); }
+    bool cameraTimerActiveForTest() const;
     // Put the playhead inside a panel without playing: the accuracy capture
     // (2026-10-18) needs 00:00:18:41 exactly, which no navigation key gives.
     void setPlayheadForTest(int flatIndex, int elapsedMs);
@@ -291,6 +319,9 @@ private:
     void movePlayheadTo(int index); // playhead + timeline + timecode + preview
     void seekTo(int index);         // ...plus the running tick and the audio
     void onScrubbed(int index);     // playhead dragged: preview, select nothing
+    void onScrubbedTo(int index, int frameInPanel); // ...to this frame of it
+    void updatePreviewCamera(); // the preview's camera from cameraAtPlayhead()
+    void onCameraTick();        // 60 Hz while playing: a move is smooth
     void enterPreview();
     void showPreviewFrame();
     void updateTotalLabel();
@@ -372,6 +403,10 @@ private:
     // at) on top of a base - the time already spent when it was last
     // started, which is what a resume continues from.
     QTimer *m_playheadTimer = nullptr;
+    // The shot camera's own tick while playing (16 ms): the playhead's 20 Hz
+    // would show a camera move in steps. Does nothing in a scene without
+    // keys (the camera there is neutral and the preview never repaints).
+    QTimer *m_cameraTimer = nullptr;
     int m_elapsedMsInCurrentPanel = 0;
     QElapsedTimer m_panelClock;
     int m_panelBaseMs = 0;

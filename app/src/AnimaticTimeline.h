@@ -8,6 +8,7 @@
 #include <QWidget>
 
 #include "TimelineTracks.h"
+#include "camera/CameraModel.h"
 
 class AnimaticPage;
 class TimelineCanvas; // inner painted surface, defined in the .cpp
@@ -124,6 +125,9 @@ public:
     // "x,y,wxh" strings in canvas coordinates.
     int rulerLabelStepForTest() const { return rulerLabelStep(); }
     QVariantMap clipPartsForTest(int flatIndex) const;
+    // The camera a SHOTS clip's thumbnail is drawn with (Phase 1A): the
+    // shot camera at the panel's first frame.
+    shotcam::CameraState clipCameraForTest(int flatIndex) const;
     static int labelColumnWidthForTest();
     // The tracks' lock / eye / speaker buttons over the label column
     // ("trackLockScenes", "trackEyeShots", "trackMuteAudio", ...), for the
@@ -156,6 +160,9 @@ signals:
     void panelSeekRequested(int flatPanelIndex);
     // The user is dragging the playhead: show that panel, select nothing.
     void playheadScrubbed(int flatPanelIndex);
+    // ...and the frame inside it, whenever that changes (Phase 1A: the
+    // scrub is frame-accurate; the camera is seen frame by frame).
+    void playheadScrubbedTo(int flatPanelIndex, int frameInPanel);
     void durationChanged(int sceneIndex, int panelIndex, int newDurationSeconds);
     // A clip was dragged to a new place in its scene. `flatGap` is the block
     // it should land in front of (one past the scene's last block = the end).
@@ -348,6 +355,8 @@ private:
     enum class Drag { None, ResizeRight, ResizeLeft, Playhead, Move };
     Drag m_drag = Drag::None;
     int m_scrubIndex = -1;     // last panel announced during a playhead drag
+    int m_scrubFrameSent = -1; // last frame announced (playheadScrubbedTo)
+    void emitScrubFrame();
     int m_moveFrom = -1;       // clip pressed (flat index)
     int m_moveGap = -1;        // gap it would drop into (flat index)
     bool m_moveActive = false; // the press has travelled far enough to drag

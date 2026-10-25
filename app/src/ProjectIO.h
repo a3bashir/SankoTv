@@ -142,6 +142,10 @@ struct LoadedProject
     bool audioLinked = false;
     QJsonObject perspective;
     TimelineTracks tracks; // defaults (unlocked, visible, unmuted) when absent
+    // Camera keys the file named that could not be read (a panel index or a
+    // number out of range): left out, never guessed. 0 for every project
+    // written by the app.
+    int cameraKeysDropped = 0;
 };
 
 // Rebuild the model from a parsed root + its folder. Applies every

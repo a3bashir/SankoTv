@@ -1,0 +1,111 @@
+#pragma once
+
+// THE SHOT CAMERA'S ONE EVALUATION PATH (Phase 1A, 2026-10-25; spec
+// sections 1-3). Every consumer - the playback preview, the SHOTS clip
+// thumbnails, the MP4, the PNG and PDF stills, and (Part 1B) the canvas
+// frame - asks evaluate() for the camera at a frame and draws through
+// shotTransform() / renderShot(). The same frame number gives the same
+// CameraState everywhere.
+//
+// NEUTRAL TAKES THE OLD CODE. A scene without keys evaluates to the exact
+// neutral state, and every consumer, seeing isNeutral(), runs the code it
+// ran before the camera existed: a project without camera moves renders
+// the bytes the neutral pins (SankoCameraTest c1p) recorded on f46ccbcc6.
+
+#include "camera/CameraModel.h"
+
+#include <QImage>
+#include <QJsonObject>
+#include <QPoint>
+#include <QPolygonF>
+#include <QRectF>
+#include <QSize>
+#include <QString>
+#include <QTransform>
+
+class QPainter;
+class QPixmap;
+struct Panel;
+struct Scene;
+
+namespace shotcam {
+
+// The MP4's frame: the reference for "sharp" (spec section 5).
+inline constexpr QSize kOutputFrame(1920, 1080);
+
+CameraState neutral(const QSize &canvas);
+bool isNeutral(const CameraState &state, const QSize &canvas);
+
+// w(u) for u in [0, 1]: Linear u; Ease In u^2; Ease Out 1-(1-u)^2;
+// Ease In/Out 3u^2-2u^3; Hold 0 until the next key.
+double ease(Ease e, double u);
+QString easeName(Ease e);
+Ease easeFromName(const QString &name, bool *known = nullptr);
+
+// THE PLAYHEAD'S ROUNDING: the frame a time inside a panel falls in - the
+// timeline's own expression (AnimaticTimeline::playheadFrame), so the
+// camera and the playhead never disagree about which frame it is.
+int frameInPanelFromMs(qint64 ms, int fps);
+// The first millisecond of a frame inside a panel (its inverse).
+int msForFrameInPanel(int frame, int fps);
+
+int panelFrames(const Panel &panel, int fps); // duration (>= 1 s) * fps
+int panelStartFrame(const Scene &scene, int panelIndex, int fps);
+int panelIndexOfUid(const Scene &scene, quint64 uid); // -1: not in the scene
+
+// A key's derived frame in its scene; -1 when it is INERT (its panel is
+// not in the scene: deleted, its delete still in the undo history).
+double keyFrame(const Scene &scene, const CameraKey &key, int fps);
+int liveKeyCount(const Scene &scene);
+int liveKeysOnPanel(const Scene &scene, const Panel *panel);
+// A key set at frame `frameInPanel` of panel `panelIndex`.
+CameraKey makeKey(const Scene &scene, int panelIndex, int frameInPanel,
+                  int fps, const CameraState &state,
+                  Ease ease = Ease::EaseInOut);
+
+// THE EVALUATION. `sceneFrame` counts from the scene's first frame. No
+// live keys: neutral for `canvas`. Before the first / after the last key:
+// that key's state. Between: centre and rotation linear in w, zoom
+// geometric (a push-in at a steady speed).
+CameraState evaluate(const Scene &scene, double sceneFrame, int fps,
+                     const QSize &canvas);
+// The camera at frame `frameInPanel` of a panel, for that panel's canvas.
+CameraState evaluateAtPanel(const Scene &scene, int panelIndex,
+                            int frameInPanel, int fps);
+
+// The frame as a quad in canvas px (rotated about its centre).
+QPolygonF frameQuad(const CameraState &state, const QSize &canvas);
+// canvas px -> target: the frame FITTED in `target` (KeepAspectRatio,
+// centred, as every consumer fits the whole panel today), or COVERING it
+// (crop to fill, as the SHOTS clips are).
+QTransform shotTransform(const CameraState &state, const QSize &canvas,
+                         const QRectF &target, bool cover = false);
+// The shot as a picture of `out` size (black beyond the artwork, as the
+// letterbox is). `flat` is the panel's full-resolution flatten. Reduces
+// with the same area-averaging filter the export uses before the final
+// bilinear placement, so fine line work is not thinned.
+QImage renderShot(const QImage &flat, const CameraState &state,
+                  const QSize &out);
+// Draws `picture` (the whole canvas at any resolution) through the camera
+// into `target` on a painter (the preview, the clips).
+void drawShot(QPainter &painter, const QPixmap &picture, const QSize &canvas,
+              const CameraState &state, const QRectF &target, bool cover);
+// Past this zoom an output pixel has less than one source pixel (spec 5).
+double sharpLimit(const QSize &canvas, const QSize &out = kOutputFrame);
+
+// THE FILE. {"keys": [{"panel", "at", "x", "y", "zoom", "rotation",
+// "ease"}]}; an EMPTY object when the scene has no live keys (the caller
+// then writes no "camera" at all, so a project without camera moves saves
+// the JSON it saved before). Inert keys are not written.
+QJsonObject toJson(const Scene &scene);
+// Read after the scene's panels are in place. A key whose panel index,
+// numbers or zoom are out of range is dropped and counted.
+void fromJson(const QJsonObject &obj, Scene &scene, int *dropped = nullptr);
+
+// Canvas resize (centre-anchored, nothing scaled): every key keeps its
+// framing over the same artwork - the centre moves with the offset, and
+// the zoom keeps the frame's pixel width.
+void remapForResize(SceneCamera &camera, const QSize &oldSize,
+                    const QSize &newSize, const QPoint &offset);
+
+} // namespace shotcam

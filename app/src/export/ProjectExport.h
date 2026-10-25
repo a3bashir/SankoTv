@@ -1,6 +1,7 @@
 #pragma once
 
 #include "MovieEncoder.h"
+#include "camera/ShotCamera.h"
 
 #include <QImage>
 #include <QObject>
@@ -47,9 +48,21 @@ struct ExportPanel
     int sceneNumber = 0;
     int panelInScene = 0; // 1-based
     int seconds = 1;      // on screen; never less than 1
+    // THE SHOT CAMERA (Phase 1A, 2026-10-25). Where the panel sits, so the
+    // movie evaluates the camera at every frame of it; and the camera at
+    // its FIRST frame, which is what a PNG / PDF still shows (the user's
+    // decision 3) - neutral when "Full artwork" is asked for, or when the
+    // scene has no camera move, and then the still is today's picture.
+    const Scene *scene = nullptr;
+    int panelIndex = 0; // 0-based, in its scene
+    shotcam::CameraState still;
+    bool stillNeutral = true;
 };
 
-QVector<ExportPanel> collectPanels(const QVector<Scene *> &scenes);
+// fps places the stills' camera (a key's frame depends on it); fullArtwork
+// makes every still the whole panel, as before the camera.
+QVector<ExportPanel> collectPanels(const QVector<Scene *> &scenes,
+                                   int fps = 24, bool fullArtwork = false);
 
 // seconds x fps, summed. A panel's duration is whole seconds and the frame
 // rate a whole number, so this is exact: no frame is ever rounded away.
@@ -57,6 +70,18 @@ int movieFrameCount(const QVector<ExportPanel> &panels, int fps);
 
 // The panel fitted into the movie frame, smooth-scaled, on black.
 QImage renderMovieFrame(const Panel *panel, const QSize &frameSize);
+// ...through the shot camera: a neutral camera IS the line above, byte for
+// byte; any other renders shotcam::renderShot.
+QImage renderMovieFrame(const Panel *panel, const QSize &frameSize,
+                        const shotcam::CameraState &camera);
+// The camera of movie frame `frame` (0-based over the whole film): the one
+// question MovieExportJob asks, so a test can ask it too.
+shotcam::CameraState movieFrameCamera(const QVector<ExportPanel> &panels,
+                                      int fps, int frame);
+// The picture a PNG / PDF still shows for a row: the whole panel when its
+// first-frame camera is neutral (today's bytes), else the shot at the
+// panel's own resolution.
+QImage stillImage(const ExportPanel &row);
 
 // Return false to cancel. Called on the caller's thread, between files.
 using Progress = std::function<bool(int done, int total)>;
@@ -185,6 +210,12 @@ private:
     int m_frame = 0;
     int m_panelOfImage = -1;
     QImage m_image;
+    // A scene with a camera move: the panel's flatten made once, and the
+    // camera the held image was rendered with (a frame whose camera has not
+    // moved reuses it).
+    QImage m_flat;
+    shotcam::CameraState m_imageCamera;
+    bool m_imageMoving = false;
     bool m_videoEnded = false;
 
     QAudioDecoder *m_decoder = nullptr;

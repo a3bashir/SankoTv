@@ -28,7 +28,8 @@ namespace sankoexport {
 
 // --- The list every export reads ---------------------------------------------
 
-QVector<ExportPanel> collectPanels(const QVector<Scene *> &scenes)
+QVector<ExportPanel> collectPanels(const QVector<Scene *> &scenes, int fps,
+                                   bool fullArtwork)
 {
     QVector<ExportPanel> list;
     for (const Scene *scene : scenes) {
@@ -44,10 +45,45 @@ QVector<ExportPanel> collectPanels(const QVector<Scene *> &scenes)
             row.panelInScene = i + 1;
             // The same floor the timeline and playback apply.
             row.seconds = qMax(1, panel->duration);
+            row.scene = scene;
+            row.panelIndex = i;
+            const QSize canvas = panel->canvasSize();
+            row.still = (fullArtwork || scene->camera.isEmpty())
+                ? shotcam::neutral(canvas)
+                : shotcam::evaluateAtPanel(*scene, i, 0, fps);
+            row.stillNeutral = shotcam::isNeutral(row.still, canvas);
             list.append(row);
         }
     }
     return list;
+}
+
+QImage stillImage(const ExportPanel &row)
+{
+    const QImage flat = row.panel ? row.panel->flattenedPixmap().toImage() : QImage();
+    if (row.stillNeutral || flat.isNull())
+        return flat; // today's picture, byte for byte
+    return shotcam::renderShot(flat, row.still, flat.size());
+}
+
+shotcam::CameraState movieFrameCamera(const QVector<ExportPanel> &panels,
+                                      int fps, int frame)
+{
+    fps = qMax(1, fps);
+    int start = 0;
+    for (const ExportPanel &row : panels) {
+        const int frames = row.seconds * fps;
+        if (frame < start + frames || &row == &panels.last()) {
+            if (!row.panel)
+                return shotcam::CameraState();
+            if (!row.scene)
+                return shotcam::neutral(row.panel->canvasSize());
+            return shotcam::evaluateAtPanel(*row.scene, row.panelIndex,
+                                            qMax(0, frame - start), fps);
+        }
+        start += frames;
+    }
+    return shotcam::CameraState();
 }
 
 int movieFrameCount(const QVector<ExportPanel> &panels, int fps)
@@ -78,6 +114,15 @@ QImage renderMovieFrame(const Panel *panel, const QSize &frameSize)
                              (frameSize.height() - target.height()) / 2),
                       fitted);
     return frame;
+}
+
+QImage renderMovieFrame(const Panel *panel, const QSize &frameSize,
+                        const shotcam::CameraState &camera)
+{
+    if (!panel || shotcam::isNeutral(camera, panel->canvasSize()))
+        return renderMovieFrame(panel, frameSize); // the neutral pins' path
+    return shotcam::renderShot(panel->flattenedPixmap().toImage(), camera,
+                               frameSize);
 }
 
 // --- PNG ------------------------------------------------------------------------
@@ -122,7 +167,7 @@ FilesResult exportPng(const QVector<ExportPanel> &panels, const QString &folder,
         }
         const ExportPanel &row = panels.at(i);
         const QString path = dir.filePath(pngFileName(projectName, row));
-        const QImage image = row.panel->flattenedPixmap().toImage();
+        const QImage image = stillImage(row); // the shot at the panel's first frame
         // QSaveFile: the PNG is written beside its name and renamed over it
         // on commit, so a failed write leaves no half-file and cannot damage
         // an earlier export of the same panel.
@@ -222,7 +267,7 @@ void paintBoardPage(QPainter &painter, const QSize &pageSize, int dpi,
         // The picture: fitted into the top of the cell, and reduced to the
         // cell's own pixel size first (a 4K panel embedded whole would make
         // a six-panel page some 50 MB for nothing the paper can show).
-        QImage image = row.panel->flattenedPixmap().toImage();
+        QImage image = stillImage(row); // the shot at the panel's first frame
         const QRect box(cell.left(), cell.top(), cellW, cellH - textH);
         QRect pictureRect = box;
         if (!image.isNull()) {
@@ -590,11 +635,32 @@ void MovieExportJob::pumpVideo()
         int panel = qMax(0, m_panelOfImage);
         while (panel < m_endFrame.size() - 1 && m_frame >= m_endFrame.at(panel))
             ++panel;
-        if (panel != m_panelOfImage) {
-            // Rendered once per panel, however many frames it is held for.
-            m_image = renderMovieFrame(m_request.panels.at(panel).panel,
-                                       m_request.frameSize);
-            m_panelOfImage = panel;
+        const ExportPanel &row = m_request.panels.at(panel);
+        if (!row.scene || row.scene->camera.isEmpty()) {
+            // No camera move in this scene: the old path exactly - rendered
+            // once per panel, however many frames it is held for.
+            if (panel != m_panelOfImage || m_imageMoving) {
+                m_image = renderMovieFrame(row.panel, m_request.frameSize);
+                m_panelOfImage = panel;
+                m_imageMoving = false;
+            }
+        } else {
+            // THE SHOT CAMERA: evaluated at this frame (movieFrameCamera's
+            // question); a frame whose camera has not moved reuses the
+            // image, and the flatten is made once per panel.
+            const int start = panel > 0 ? m_endFrame.at(panel - 1) : 0;
+            const shotcam::CameraState camera = shotcam::evaluateAtPanel(
+                *row.scene, row.panelIndex, m_frame - start, qMax(1, m_request.fps));
+            if (panel != m_panelOfImage)
+                m_flat = row.panel->flattenedPixmap().toImage();
+            if (panel != m_panelOfImage || !m_imageMoving || camera != m_imageCamera) {
+                m_image = shotcam::isNeutral(camera, m_flat.size())
+                    ? renderMovieFrame(row.panel, m_request.frameSize)
+                    : shotcam::renderShot(m_flat, camera, m_request.frameSize);
+                m_imageCamera = camera;
+                m_imageMoving = true;
+                m_panelOfImage = panel;
+            }
         }
         if (!m_encoder->addFrame(m_image, m_frame))
             break; // refused: the SAME frame is offered again next time

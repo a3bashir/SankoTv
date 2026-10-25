@@ -196,6 +196,17 @@ the page from.
   by bytes, never cleared wholesale. Debug asserts every read of stored
   keys against a fresh hash; the gate pins the work counts (BrushLibrary
   (m1)/(m2)/(m4), Lifecycle (bw)), never the time.
+- **The shot camera** (Phase 1A, 2026-10-25; spec
+  `Documents\SankoTV-Design\camera\phase1-spec.md`, HANDOFF "The shot
+  camera"): one camera per SCENE (`Scene::camera`), keys ANCHORED to the
+  panel they were set on (`Panel::uid`, never saved, never copied), their
+  time derived from the panels - so no structural command touches a key.
+  ONE evaluation path, `src/camera/ShotCamera`: the preview, the SHOTS
+  clips, the MP4, the PNG / PDF stills (and, from 1B, the canvas frame)
+  all ask `evaluate()` at a frame and draw through it. A neutral camera
+  runs the code each of them ran before the camera existed; the canvas
+  view (zoom, pan, rotate - the Dev Recorder's `cameraChange`) is a
+  different thing and never writes the camera.
 - **QuickShape** (`third_party/QuickShapeKit`): hold the pen still after a
   stroke and it snaps to a recognised, editable vector shape.
 - **Perspective tool:** tap-created vanishing points, derived horizon,
@@ -251,10 +262,15 @@ Learned from real defects. Follow them exactly.
    hit region, stale archived artifact, transparent corner pixels instead
    of glyphs, an assertion validating itself, antialiasing sampled instead
    of flat fill.
-4. **Eight-family gate.** Keep these green in both configs, runs spaced
+4. **Nine-family gate.** Keep these green in both configs, runs spaced
    apart: SankoBrushLibraryTest, SankoPaintPixelLock, SankoCanvasBrushLock,
    SankoQuickShapeGeometryLock, SankoDevRecorderTest, SankoCanvasEdgeLock,
-   SankoCanvasSizeLock, SankoProjectLifecycle. Preview SHA must stay
+   SankoCanvasSizeLock, SankoProjectLifecycle, SankoCameraTest (since the
+   shot camera's Phase 1A, 2026-10-25: its 17 NEUTRAL PINS - MP4 frame,
+   PNG, PDF page, playback preview, SHOTS clip at four canvas sizes - were
+   recorded on f46ccbcc6, before the camera existed, and are what a project
+   without camera moves must keep rendering; never re-baselined without
+   the user). Preview SHA must stay
    `608366fcb169e5f9cf29a97858db6b2b6fdafe0d0b63e10c3dd1a9d0aadecf46`
    (re-baselined 2026-09-30: the soft-end pencil ladder — 2B flow 0.19,
    4B flow 0.30 / floor 0.36 — moved the swatches, which render at 16 px
@@ -276,7 +292,7 @@ Learned from real defects. Follow them exactly.
    remains legacy-size only is SCREEN-PIXEL rendering: EdgeLock samples
    real screen pixels at 960×540 fixtures only — do not claim the gate
    proves variable-size display output.
-   **Running it:** `app/tools/run-gate.ps1` runs the eight families and
+   **Running it:** `app/tools/run-gate.ps1` runs the nine families and
    prints each exit code with the reason for any failure. Every family
    links `tests/TestHarness.cpp` (through the list in CMakeLists.txt — a
    new family must be added to it), which does two things for a gate

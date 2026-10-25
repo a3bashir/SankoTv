@@ -7305,6 +7305,102 @@ session, and a `QPainter::begin: Paint device returned engine == 0, type:
 end of the first pen stroke - a null QImage painted somewhere on the
 stroke path. Both harmless so far; both to be found.
 
+## The shot camera, Phase 1A: data and evaluation (2026-10-25)
+
+The camera's spec is `Documents\SankoTV-Design\camera\phase1-spec.md`,
+approved 2026-10-25 with the user's decisions: anchored retiming (B); the
+panel strip keeps the whole artwork with a frame outline (1B); PNG / PDF
+stills show the shot at the panel's first frame with a "Full artwork"
+option; Stay inside artwork on by default, black beyond; the CAMERA row
+between SHOTS and AUDIO (1C); a one-line 4K hint in the New Project dialog
+(1B); Quick Move sizes tuned in 1D. Phase 1A is the model and the one
+evaluation path, with NO new UI: keys come from code and tests only.
+
+- THE MODEL (`src/camera/CameraModel.h`): `Scene::camera` (one per scene),
+  keys `{panelUid, at, state, ease}`; `CameraState {cx, cy, zoom,
+  rotation}` in canvas px, the frame the canvas's aspect, neutral = the
+  whole canvas. `Panel::uid` (`shotcam::PanelUid`) is minted per object,
+  copied panels get a new one, and it is never saved: a key names a number,
+  never a pointer, so a deleted panel can only make its keys INERT.
+- THE PATH (`src/camera/ShotCamera`): `evaluate` (ease closed forms: u,
+  u^2, 1-(1-u)^2, 3u^2-2u^3, Hold; centre and rotation linear, zoom
+  geometric), `frameQuad`, `shotTransform` (fit or cover), `renderShot`
+  (crop to the frame's bounds, area-average down to the output scale, then
+  one bilinear placement), `drawShot`, `toJson` / `fromJson`,
+  `remapForResize`, `sharpLimit`. Consumers: the playback preview
+  (`PanelDisplay`, a 60 Hz camera tick while playing), the SHOTS clips
+  (the camera at the panel's first frame, crop to fill), the MP4
+  (`MovieExportJob`: per frame, an image reused while the camera does not
+  move, the flatten once per panel), the PNG / PDF stills
+  (`stillImage`, `collectPanels(scenes, fps, fullArtwork)`). The canvas
+  frame is 1B. EVERY consumer takes its pre-camera code when the camera is
+  neutral, so a project without camera moves renders exactly what it did.
+- THE FILE: a scene's `"camera": {"keys": [{panel, at, x, y, zoom,
+  rotation, ease}]}`, written only when it has live keys (the manifest of
+  a project without camera moves is unchanged; note each PANEL already
+  writes its camera-ANGLE text under "camera", one level down). Old
+  projects load neutral; a key naming a missing panel or an out-of-range
+  number is dropped and counted (`LoadedProject::cameraKeysDropped`; no UI
+  says so yet). A canvas resize moves every key with the artwork and keeps
+  its frame's pixel width (`MainWindow::applyCanvasResizeInternal`, only
+  after a complete resize).
+- SCRUBBING IS FRAME-ACCURATE: the timeline sends the frame inside the
+  panel as the playhead is dragged (`playheadScrubbedTo`), and the playhead
+  now RESTS where it was dropped instead of the panel's start. The sound is
+  not sought on a scrub; Play seeks it to the film's position, as always.
+- REMOVING A PANEL THAT HOLDS KEYS (the user's rule, 2026-10-25): the
+  history names them ("Delete Panel and 1 Camera Key", "Cut Panel and 2
+  Camera Keys") and the locks' non-modal tooltip says the move changed
+  (`StoryboardPage::removeSelectedPanel`, `sayNote`).
+- THE DEV RECORDER: statePoll carries `shotCam.scene / keys / frame / x / y
+  / zoom / rotation / keyAtPlayhead / soft`. The recorder's own
+  `cameraChange` / `cameraInitial` remain the canvas VIEW.
+
+PINS FIRST. SankoCameraTest (a new, ninth gate family: the app's sources,
+its widgets shown with WA_DontShowOnScreen on the real platform, no
+window) recorded 17 NEUTRAL PINS on f46ccbcc6, before any camera code
+existed, identical in Debug and Release: the MP4 frame, the PNG file, the
+playback preview and the SHOTS clip at 1920x1080, 2048x1080, 3840x2160
+and 1001x777, and one PDF page. They pass unchanged on 1A. Its checks:
+(c1) each pin changes for a 0.1 % push-in, and "Full artwork" stills are
+the pinned bytes; (c2) the closed forms, the geometric zoom, the rotation
+direction, neutral without keys; (c3) the frames the REAL export job
+offered (the real encoder behind a capturing one), the preview's camera
+and transform, every clip and still - all the camera evaluate() gives for
+that frame, with one-frame-later controls; (c4) anchored retiming through
+duration changes, an insert, a delete and its undo, a reorder and 60 fps,
+against the fixed-time expectation as the control; (c8) save / load
+through JSON text, an old project re-saving the same scenes JSON, a
+dropped key, the resize remap; (c10) the scrub, a real ruler drag resting
+on its frame, the camera tick reading the panel clock, the 60 Hz tick
+running only while playing; (c11) the recorder fields. 64 checks.
+Lifecycle (cm): the removal texts and note through the real page, undo
+bringing the key back at its frame, the plural, and a keyless panel as the
+control (Lifecycle 757 -> 763).
+
+TIMINGS (probe `build/_probe/camera1a/probe`, archived to
+`tests/_backups/camera1a_20261025`; off screen; MEASURED, NOT GATED):
+preview paint per frame on a 1600 x 900 preview, Release: 1.65 / 1.74 ms
+(1080p, no camera / moving), 1.91 / 2.27 ms (4K); Debug about 13 ms (one
+37 ms row on the first, cold run). One MP4 frame, Release: renderShot
+3.4 ms (1080p) and 9.2 ms (4K), against 5.4 / 18.6 ms for today's
+flatten-and-fit. MP4 export per minute of film, Release: 2.7 s (1080p) and
+2.9 s (4K) with no camera move; 24.0 s and 32.8 s with a move on every
+frame (every frame a new picture for the encoder); Debug 4.0 / 4.5 s and
+136 / 159 s.
+
+OPEN, FOUND BY THIS GATE (not caused by 1A; brush code unchanged since
+bdd8e3f5b): SankoBrushLibraryTest (p6) "cancelAll drops queued and
+in-flight results" fails in DEBUG (emissions=1, twice in a row; Release
+passes). It is a TIMING dependence in the check: it assumes cancelAll runs
+before the worker finishes its first preview. The brush-speed fix made a
+warm preview take 1.03 ms in Debug while queueing ten requests and
+cancelling takes 1.08 ms (P6Probe: the race is lost in 17 of 20 replays in
+Debug, 0 of 20 in Release). Proposed fix, for the user's approval: a test
+hold on the renderer's worker so (p6) queues and cancels while the worker
+is held, then releases it (deterministic), with the control that the same
+queue without cancelAll delivers all ten.
+
 ## METHOD: measure interior structure ACROSS THE SIZE RANGE before calling it character (2026-09-25)
 
 The Painting census measured Acrylic at size 20 only and found "one

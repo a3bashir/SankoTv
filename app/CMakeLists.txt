@@ -92,6 +92,9 @@ qt_add_executable(SankoTV
     src/StoryboardPage.cpp
     src/StoryboardPage.h
     src/StoryboardModel.h
+    src/camera/CameraModel.h
+    src/camera/ShotCamera.cpp
+    src/camera/ShotCamera.h
     src/DrawingCanvas.cpp
     src/DrawingCanvas.h
     src/SankoPaintHostAdapter.cpp
@@ -329,6 +332,8 @@ qt_add_executable(SankoCanvasSizeLock
     src/AnimaticPage.h
     src/brushlib/StudioControls.cpp
     src/brushlib/StudioControls.h
+    src/camera/ShotCamera.cpp
+    src/camera/ShotCamera.h
 )
 target_include_directories(SankoCanvasSizeLock PRIVATE src)
 target_link_libraries(SankoCanvasSizeLock PRIVATE Qt6::Widgets Qt6::Svg
@@ -353,6 +358,23 @@ target_link_libraries(SankoProjectLifecycle PRIVATE Qt6::Widgets
     Qt6::Multimedia Qt6::Svg Qt6::Concurrent
     QuickShape::Kit SankoPaint::Engine dbghelp)
 sanko_link_media_foundation(SankoProjectLifecycle)
+
+# Permanent CAMERA family (tests/CameraTest.cpp; the shot camera's Phase 1A,
+# 2026-10-25): the neutral pins recorded before the camera existed (MP4
+# frame, PNG, PDF page, playback preview, SHOTS clip at four canvas sizes),
+# and the camera's evaluation, retiming, persistence and one-path checks.
+# Builds the application's own sources (it drives the real AnimaticPage,
+# off screen: WA_DontShowOnScreen, no window).
+# Run: build/<config>/SankoCameraTest.exe (exit code = failure count).
+qt_add_executable(SankoCameraTest
+    tests/CameraTest.cpp
+    ${_sankotv_lifecycle_srcs}
+)
+target_include_directories(SankoCameraTest PRIVATE src)
+target_link_libraries(SankoCameraTest PRIVATE Qt6::Widgets
+    Qt6::Multimedia Qt6::Svg Qt6::Concurrent
+    QuickShape::Kit SankoPaint::Engine dbghelp)
+sanko_link_media_foundation(SankoCameraTest)
 
 # --- Preset promotion instrument (permanent tool) ---------------------------
 # SankoPresetDiff <override.sankobrush>: prints the field-by-field diff of a
@@ -433,7 +455,7 @@ endif()
 foreach(_gate_family
         SankoBrushLibraryTest SankoPaintPixelLock SankoCanvasBrushLock
         SankoQuickShapeGeometryLock SankoDevRecorderTest SankoCanvasEdgeLock
-        SankoCanvasSizeLock SankoProjectLifecycle)
+        SankoCanvasSizeLock SankoProjectLifecycle SankoCameraTest)
     if(TARGET ${_gate_family})
         target_sources(${_gate_family} PRIVATE tests/TestHarness.cpp)
     endif()

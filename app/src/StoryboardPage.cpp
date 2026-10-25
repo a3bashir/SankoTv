@@ -15,6 +15,7 @@
 #include "brushlib/BrushSettingsStudio.h"
 #include "brushlib/BrushWidthRatio.h"
 #include "StoryboardModel.h"
+#include "camera/ShotCamera.h"
 
 #include "docking/DockController.h"
 
@@ -6105,6 +6106,45 @@ void StoryboardPage::sayLocked(const QString &message, bool asBox)
         QToolTip::showText(QCursor::pos(), message, this);
 }
 
+void StoryboardPage::sayNote(const QString &message)
+{
+    m_lastNote = message;
+    if (!m_ignoreRealPointerForTest)
+        QToolTip::showText(QCursor::pos(), message, this);
+}
+
+void StoryboardPage::removeSelectedPanel(const QString &baseText)
+{
+    Scene *scene = currentScene();
+    Panel *panel = currentPanel();
+    if (!scene || !panel || m_currentPanel < 0 || !m_undoStack)
+        return;
+    const int keys = shotcam::liveKeysOnPanel(*scene, panel);
+    QString text = baseText;
+    if (keys > 0) {
+        const QString keysText = keys == 1
+            ? QStringLiteral("1 Camera Key")
+            : QStringLiteral("%1 Camera Keys").arg(keys);
+        text = QStringLiteral("%1 and %2").arg(baseText, keysText);
+    }
+    m_undoStack->push(new RemovePanelCommand(this, scene, m_currentPanel, text));
+    if (keys > 0)
+        sayNote(QStringLiteral("The panel held %1 of this scene's camera; "
+                               "its camera move has changed. Undo brings %2 back.")
+                    .arg(keys == 1 ? QStringLiteral("a key")
+                                   : QStringLiteral("%1 keys").arg(keys),
+                         keys == 1 ? QStringLiteral("it") : QStringLiteral("them")));
+}
+
+void StoryboardPage::deleteSelectedPanelConfirmedForTest()
+{
+    Scene *scene = currentScene();
+    if (!scene || !currentPanel() || m_currentPanel < 0 || refuseShotsEdit()
+        || scene->panels.size() <= 1)
+        return;
+    removeSelectedPanel(QStringLiteral("Delete Panel"));
+}
+
 bool StoryboardPage::refuseShotsEdit()
 {
     if (!shotsLocked())
@@ -6218,10 +6258,7 @@ void StoryboardPage::cutSelectedPanel()
     }
     copySelectedPanel();
     // No confirmation (unlike Delete): the clipboard copy AND undo are the nets.
-    if (!m_undoStack)
-        return;
-    m_undoStack->push(new RemovePanelCommand(this, scene, m_currentPanel,
-                                             QStringLiteral("Cut Panel")));
+    removeSelectedPanel(QStringLiteral("Cut Panel"));
 }
 
 // A panel copied from a project of a DIFFERENT size would leave this one
@@ -6569,10 +6606,7 @@ void StoryboardPage::deleteSelectedPanel()
     if (answer != QMessageBox::Yes)
         return;
 
-    if (!m_undoStack)
-        return;
-    m_undoStack->push(new RemovePanelCommand(this, scene, m_currentPanel,
-                                             QStringLiteral("Delete Panel")));
+    removeSelectedPanel(QStringLiteral("Delete Panel"));
 }
 
 void StoryboardPage::updateDuplicateButton()

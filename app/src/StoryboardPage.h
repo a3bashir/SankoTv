@@ -195,6 +195,13 @@ public:
     }
     QString lastLockRefusalForTest() const { return m_lastLockRefusal; }
     void clearLockRefusalForTest() { m_lastLockRefusal.clear(); }
+    // The last non-modal NOTE (the locks' tooltip, not a refusal): today
+    // the one a panel removal shows when it took camera keys with it.
+    QString lastNoteForTest() const { return m_lastNote; }
+    void clearNoteForTest() { m_lastNote.clear(); }
+    // Delete Panel without its confirmation box (the gate cannot answer
+    // it); everything after the question is the real path.
+    void deleteSelectedPanelConfirmedForTest();
     // Layer-stack undo: restore a panel's whole layer vector + active index
     // (QImage handles are implicitly shared, so snapshots are cheap), then
     // refresh the canvas/panel/thumb UI.
@@ -573,6 +580,14 @@ private:
     bool refuseShotsEdit();
     bool refuseLockedHistory(const QUndoCommand *command);
     void sayLocked(const QString &message, bool asBox);
+    // The same non-modal tooltip for a note that is not a refusal.
+    void sayNote(const QString &message);
+    // Remove the selected panel with this history text ("Delete Panel",
+    // "Cut Panel"); when the panel held camera keys the text names them
+    // and a note says the scene's camera move changes (the user's rule,
+    // 2026-10-25: a deletion must not change a move silently).
+    void removeSelectedPanel(const QString &baseText);
+    QString m_lastNote;
     std::function<void(const QString &)> m_lockMessageHookForTest;
     QString m_lastLockRefusal;
 
