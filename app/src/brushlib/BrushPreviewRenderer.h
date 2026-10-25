@@ -91,6 +91,10 @@ public:
     // nothing to either.
     static int renderCountForTest();
     static int cacheWriteCountForTest();
+    // Test seam (the gate's (p6), 2026-10-25): while held, the worker takes
+    // no job, so a check can queue and cancel without racing it. Off by
+    // default; the app never holds it.
+    void setHeldForTest(bool held);
 
     // The root the disk tiers live under (previews in r<N>/, the width
     // ratios in widths-r<N>/): the SAME scratch override serves both.
@@ -134,6 +138,7 @@ private:
     QSet<QString> m_pendingIds; // queued or in flight
     quint64 m_epoch = 0;        // bumped by cancelAll
     bool m_quit = false;
+    bool m_heldForTest = false; // setHeldForTest
     QThread *m_lastRenderThread = nullptr;
 };
 

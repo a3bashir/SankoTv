@@ -275,6 +275,14 @@ int BrushPreviewRenderer::cacheWriteCountForTest()
     return g_cacheWriteCount.load();
 }
 
+void BrushPreviewRenderer::setHeldForTest(bool held)
+{
+    QMutexLocker lock(&m_mutex);
+    m_heldForTest = held;
+    if (!held)
+        m_wake.wakeAll();
+}
+
 void BrushPreviewRenderer::cancelAll()
 {
     QMutexLocker lock(&m_mutex);
@@ -301,7 +309,7 @@ void BrushPreviewRenderer::workerLoop()
         Job job;
         {
             QMutexLocker lock(&m_mutex);
-            while (!m_quit && m_queue.isEmpty())
+            while (!m_quit && (m_queue.isEmpty() || m_heldForTest))
                 m_wake.wait(&m_mutex);
             if (m_quit)
                 return;

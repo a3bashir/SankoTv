@@ -1669,7 +1669,13 @@ int main(int argc, char **argv)
     }
     {
         // Cancellation: everything cancelled right after queueing -> zero
-        // emissions (queued dropped, in-flight suppressed by epoch).
+        // emissions. THE WORKER IS HELD while the queue is made and
+        // cancelled (2026-10-25): the check used to race it - it assumed
+        // cancelAll ran before the worker finished its first preview, and
+        // since the keys are stored and the encode memo keeps (bdd8e3f5b) a
+        // warm preview takes 1.03 ms in Debug against 1.08 ms to queue ten
+        // and cancel, so it lost 17 runs in 20 (P6Probe). Held, nothing can
+        // start before the cancel; released, nothing must arrive.
         BrushPreviewRenderer renderer(
             scratch + QStringLiteral("_cancel"));
         int emissions = 0;
@@ -1678,16 +1684,44 @@ int main(int argc, char **argv)
                          [&](const QString &, const QImage &) {
                              ++emissions;
                          });
+        renderer.setHeldForTest(true);
         for (const BrushPreset *p : inking)
             renderer.requestPreview(p->id, p->brush());
         renderer.cancelAll();
+        renderer.setHeldForTest(false);
         QElapsedTimer guard;
         guard.start();
         while (guard.elapsed() < 1500)
             QCoreApplication::processEvents(QEventLoop::AllEvents, 5);
         check(QStringLiteral(
-                  "(p6) cancelAll drops queued and in-flight results"),
+                  "(p6) cancelAll drops every queued result (the worker held "
+                  "while the queue is made and cancelled, then released)"),
               emissions == 0,
+              QStringLiteral("emissions=%1").arg(emissions));
+    }
+    {
+        // Positive control: the SAME queue, held and released WITHOUT
+        // cancelAll, delivers every preview - so the zero above is the
+        // cancel's doing, not a held worker that never ran.
+        BrushPreviewRenderer renderer(
+            scratch + QStringLiteral("_cancel"));
+        int emissions = 0;
+        QObject::connect(&renderer, &BrushPreviewRenderer::previewReady,
+                         &app,
+                         [&](const QString &, const QImage &) {
+                             ++emissions;
+                         });
+        renderer.setHeldForTest(true);
+        for (const BrushPreset *p : inking)
+            renderer.requestPreview(p->id, p->brush());
+        renderer.setHeldForTest(false);
+        QElapsedTimer guard;
+        guard.start();
+        while (emissions < inking.size() && guard.elapsed() < 60000)
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 5);
+        check(QStringLiteral("(p6) control: the same queue without cancelAll "
+                             "delivers all %1").arg(inking.size()),
+              emissions == inking.size(),
               QStringLiteral("emissions=%1").arg(emissions));
     }
     {
