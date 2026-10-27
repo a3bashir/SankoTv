@@ -200,6 +200,10 @@ public:
     QWidget *cameraBarForTest() const { return m_cameraPanel; }
     // For the Dev Recorder's statePoll: shotCam.animate, shotCam.toolActive.
     QVariantMap shotCamToolDevrecState() const;
+    // What Edit > Undo / Redo would do now, in the history's words ("Undo
+    // Move Camera"); the Dev Recorder logs it with each Undo / Redo action.
+    QString undoStepText() const;
+    QString redoStepText() const;
 
     // The animatic section under the canvas (timeline + transport). Created
     // and owned here; MainWindow reaches it for the project's audio path and

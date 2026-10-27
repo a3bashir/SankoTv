@@ -6,6 +6,7 @@
 #include <QSize>
 #include <QString>
 #include <QStringList>
+#include <QVariantMap>
 #include <QVector>
 
 #include <functional>
@@ -125,6 +126,11 @@ public:
     sankoexport::FilesResult exportPdfForTest(const QString &path);
     // File > Export > Stills Show Full Artwork (Phase 1B), as the menu has it.
     QAction *exportFullArtworkActionForTest() const { return m_exportFullArtworkAct; }
+    // The Dev Recorder's words for an action (2026-10-27): Edit > Undo and
+    // Redo name their step, "Undo Move Camera"; other actions add nothing.
+    QVariantMap recorderActionDetail(QAction *action) const;
+    QAction *undoActionForTest() const { return m_undoAct; }
+    QAction *redoActionForTest() const { return m_redoAct; }
     // The two things MP4 export says BEFORE the file dialog: that it cannot
     // run here at all (empty when it can), and that the project's audio file
     // is missing (empty when there is no track or the file is there).
@@ -341,6 +347,8 @@ private:
     QAction *m_exportPngAct = nullptr;
     QAction *m_exportPdfAct = nullptr;
     QAction *m_exportFullArtworkAct = nullptr; // checkable; stills = whole panel
+    QAction *m_undoAct = nullptr; // Edit > Undo / Redo (the recorder names their step)
+    QAction *m_redoAct = nullptr;
     bool stillsFullArtwork() const;
     bool m_exporting = false; // one export at a time
     QString m_mp4UnavailableForTest; // null = ask the system

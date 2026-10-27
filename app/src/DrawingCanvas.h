@@ -813,6 +813,9 @@ private:
     {
         return m_tool == Move ? Qt::SizeAllCursor : Qt::CrossCursor;
     }
+    // The tools whose hover needs buttonless moves (mouse tracking) for as
+    // long as they are active: Camera and Perspective.
+    bool toolTracksHover() const { return m_tool == Camera || m_tool == Perspective; }
 
     // Visual debug: dump the move-pipeline stages to C:\SankoTv\app\debug\.
     // Off in shipped builds; flip to true to re-inspect the move stages.

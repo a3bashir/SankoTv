@@ -85,9 +85,14 @@ inline const QString kLoopButtonSheet = QStringLiteral(
 // text left, the chevron painted by the button itself (SpeedButton in
 // AnimaticPage.cpp - the stylesheet's menu-indicator drew it wrong), no
 // border at rest; hover = accent text, chevron and a 1 px accent border.
+// font-size in POINTS, 8.25pt = 11 px at 96 dpi (pixel-identical, probe
+// build/_probe/polish/fontprobe): Qt 6.11's Windows 11 style sizes a tool
+// button's menu indicator from the font's point size, and a font set in
+// pixels has none (-1) - "QFont::setPointSize: Point size <= 0 (-1)" when
+// the pointer left this button (2026-10-27).
 inline const QString kSpeedDropdownSheet = QStringLiteral(
     "QToolButton { background: transparent; color: #e5e5ed; border: 1px solid transparent;"
-    " border-radius: 6px; font-size: 11px; padding: 0 30px 0 6px; }"
+    " border-radius: 6px; font-size: 8.25pt; padding: 0 30px 0 6px; }"
     "QToolButton:hover { color: #7c6ef6; border-color: #7c6ef6; }"
     "QToolButton:pressed { background: rgba(124, 110, 246, 0.26); }"
     "QToolButton::menu-indicator { image: none; width: 0px; height: 0px; }");

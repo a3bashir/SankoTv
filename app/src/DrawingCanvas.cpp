@@ -132,7 +132,11 @@ bool firstImageUrl(const QMimeData *mime, QString *outPath)
 // on the application, sees the press after that clear and before the
 // popup handles it: a press outside a popup, over this canvas (or the
 // preview laid on it), marks the popup "no replay". Every tool, every
-// popup (menus, dropdowns); presses anywhere else replay as before.
+// popup (menus, dropdowns). Since 2026-10-27 the same for a press over a
+// floating bar (any window marked "sankoNoClickThrough" - every
+// FloatingToolWindow: the Camera, Selection, Move and Perspective bars and
+// the toolbars): the third 1B hand test pressed Next Key with the click
+// that closed a menu. Presses anywhere else replay as before.
 class PopupClickGuard : public QObject
 {
 public:
@@ -151,7 +155,8 @@ protected:
         if (popup->rect().contains(press->position().toPoint()))
             return false; // inside the popup: its own click
         QWidget *under = QApplication::widgetAt(press->globalPosition().toPoint());
-        if (under && (under == m_canvas || m_canvas->isAncestorOf(under)))
+        if (under && (under == m_canvas || m_canvas->isAncestorOf(under)
+                      || under->window()->property("sankoNoClickThrough").toBool()))
             popup->setAttribute(Qt::WA_NoMouseReplay, true);
         return false;
     }
@@ -2499,8 +2504,10 @@ void DrawingCanvas::cancelShape()
     m_shapeDrag = false;
     m_polygonPts.clear();
     // Hover tracking only while a polygon is open - and always with the
-    // Camera tool, whose hover tints the frame and names the handle.
-    setMouseTracking(m_tool == Camera);
+    // Camera and Perspective tools, whose hovers tint the frame / grow a
+    // vanishing point's handle (setTool turns tracking on, then calls this;
+    // the Perspective hover was dead until 2026-10-27 for that reason).
+    setMouseTracking(toolTracksHover());
     update();
 }
 
@@ -2513,9 +2520,9 @@ void DrawingCanvas::clearSelection()
     m_selectionPath = QPainterPath();
     m_selDrag = false;
     m_lassoPts.clear();
-    // Drop any in-progress polygon-selection rubber (the Camera tool keeps
-    // its hover tracking).
-    setMouseTracking(m_tool == Camera);
+    // Drop any in-progress polygon-selection rubber (the Camera and
+    // Perspective tools keep their hover tracking).
+    setMouseTracking(toolTracksHover());
     updateAntsTimer();
     update();
 }

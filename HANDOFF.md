@@ -7633,6 +7633,83 @@ user's four fixes and one behaviour change, 2026-10-26):
   harness's TESTWINDOW lines: "Claude", then Chrome); rerun alone with
   focus kept, both green (QuickShape 0 failures, Lifecycle 828). Pins
   unchanged in both configurations.
+- Committed as 6f68b71dc (2026-10-27) after three recorded hand tests.
+
+## Polish after 1B: floating bars, undo words, Perspective hover, a font warning (2026-10-27)
+
+From the third 1B hand test (recording 20261026-213156) and the earlier
+Perspective finding. Each check was run on the unfixed code first and
+failed there (`build/_probe/polish/runs/life_before.txt`).
+
+- CLICK-THROUGH ON THE FLOATING BARS. The canvas's PopupClickGuard now
+  also stops the replay of a press that closes a popup over any window
+  marked `sankoNoClickThrough` - which FloatingToolWindow sets on itself:
+  the Camera, Selection, Move and Perspective bars and the toolbars. The
+  hand test's dismissing click pressed Next Key, and Qt's replay tried to
+  activate the bar's window, which takes no focus ("requestActivate() ...
+  WindowDoesNotAcceptFocus" - gone with the replay). A bar's own menu (the
+  ease menu) closed by a click on another of its controls now needs a
+  second click; that is the rule.
+- UNDO / REDO IN THE DEV RECORDER name their step: the "action" record of
+  Edit > Undo carries "step": "Undo Move Camera" (Redo likewise), from
+  `StoryboardPage::undoStepText / redoStepText` - the same routing as
+  editUndo / editRedo (the Brush Studio's history under the pointer, a
+  pending QuickShape, the document) - via
+  `Recorder::setActionDetailProvider`. It is asked BEFORE the action runs:
+  a shortcut is logged as its QShortcutEvent arrives, and a menu item now
+  as the release (or Enter) that activates it, not from the menu's
+  triggered relay, which comes after. A refused undo (a locked track)
+  still names the step it was asked for.
+- PERSPECTIVE HOVER: dead since setTool called cancelShape() after turning
+  tracking on (the Camera tool had the same fault, fixed in 1B). cancelShape
+  and clearSelection keep tracking for `toolTracksHover()` (Camera,
+  Perspective).
+- THE FONT WARNING ("QFont::setPointSize: Point size <= 0 (-1)", once per
+  launch, as the pointer left the timeline's speed button - it predates
+  1B). Reproduced in the real app (probe `build/_probe/polish/warnprobe`:
+  during the button's HoverLeave). Cause, from the Qt 6.11 source: the
+  Windows 11 style sizes a tool button's menu indicator from the font's
+  POINT size, and the button's style sheet gave its font in pixels (point
+  size -1); the style caches the answer, hence once per launch. Fix: the
+  speed button's font-size is 8.25pt - 11 px at 96 dpi, pixel-identical
+  (probe `fontprobe`: same image hash). It is the app's only tool button
+  with a menu.
+- CHECKS (Lifecycle, each with a control): (pz1) a window-system click on
+  a Camera-bar switch that closes a menu does not press it and logs no
+  activation warning (control: the same click without a menu presses it),
+  and every FloatingToolWindow carries the mark; (pz2) Undo / Redo's
+  detail is "Undo Move Camera" / "Redo Move Camera" (control: another
+  action adds none); (pz3) the Perspective tool tracks the pointer and an
+  idle pointer grows a vanishing point's handle (control: moving away
+  shrinks it); (pz4) the speed button's sweep logs no setPointSize warning
+  and its font has a point size (control: a tool button with the old pixel
+  font and a menu, swept the same way, does warn - so nothing had cached
+  the answer). DevRecorder (9): the host's words are asked before the
+  action runs, for a menu click and a shortcut (each record reads "fired
+  0"). Lifecycle 828 -> 837, DevRecorder 40 -> 41.
+- GATE (clean builds): nine families green in Debug and Release; the 17
+  neutral pins, the preview 608366fc, eraser d312bc9b, pixel locks
+  666f7b45 / cafcec7f and erase 0bc24381 unchanged. Probes archived to
+  `tests/_backups/polish_20261027`. Hand-test list:
+  `Documents\SankoTV-Design\camera\handtest_polish.md`.
+- OPEN BUG (noted 2026-10-27, to be traced after the polish commit): a
+  TAP - a pen tap or a click with no drag - with the Brush or the Eraser
+  logs "QPainter::begin: Paint device returned engine == 0, type: 3" and
+  "QPainter::setCompositionMode: Painter not active", once per tap, on the
+  release: something paints into a NULL QImage (type 3 = QImage) when a
+  stroke has no extent. NOT from the camera or the polish: the Oct 24
+  recording (built Oct 23, before Phase 1A) shows the same pair on a pen
+  tap. Seen 11 times in recording 20261027-185330 and 6 times in
+  20261027-193205 (taps at 189.4 s, 277.7 s, 277.8 s, 280.5 s, 283.6 s,
+  285.9 s). Whether the tap leaves a mark is not yet checked.
+- OPEN BUG (noted 2026-10-27, to be investigated after the polish
+  commit): SAVE FREEZES THE UI FOR ABOUT 25 SECONDS. In recording
+  20261027-193205 each Ctrl+S on the user's 4K test project
+  (Test_SB_006_A, 54 layer/panel PNGs, about 78 MB in
+  Test_SB_006_A_assets) froze the window: 226.6 -> 252.8 s and
+  252.8 -> 277.8 s, with no recorder polls in between, so the UI thread
+  was blocked. Every save rewrote all the PNGs, changed or not. NOT
+  from the camera or the polish: neither touched the save code.
 
 ## METHOD: measure interior structure ACROSS THE SIZE RANGE before calling it character (2026-09-25)
 

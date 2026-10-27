@@ -125,6 +125,10 @@ FloatingToolWindow::FloatingToolWindow(QWidget *anchor, const QString &settingsK
     setAttribute(Qt::WA_TranslucentBackground); // smooth antialiased corners
     setAttribute(Qt::WA_ShowWithoutActivating);
     setFocusPolicy(Qt::NoFocus); // never steals canvas focus
+    // A click that closes a menu over a bar never presses the control under
+    // it (the canvas's PopupClickGuard reads this mark; 2026-10-27). It also
+    // spares Qt's replay from activating a window that takes no focus.
+    setProperty("sankoNoClickThrough", true);
 
     if (!m_settingsKey.isEmpty()) {
         const QSettings settings = sankoSettings();

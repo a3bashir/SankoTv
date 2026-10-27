@@ -317,6 +317,11 @@ MainWindow::MainWindow(QWidget *parent)
                 m.insert(m_storyboard->shotCamToolDevrecState());
             return m;
         });
+        // Undo / Redo name their step ("Undo Move Camera"), asked before
+        // the action runs (2026-10-27).
+        rec->setActionDetailProvider([this](QAction *action) {
+            return recorderActionDetail(action);
+        });
         // One shotCamEdit event per camera edit (Phase 1B).
         if (m_storyboard)
             connect(m_storyboard, &StoryboardPage::shotCameraEdited, rec,
@@ -550,11 +555,12 @@ void MainWindow::setupMenuBar()
     // App-wide undo/redo (Ctrl+Z / Ctrl+Y or Ctrl+Shift+Z): ONE chronological
     // history shared with the Brush-bar Undo/Redo buttons — drawing,
     // selection, panel, and transform actions in strict order.
-    editAction(QStringLiteral("Undo"), QKeySequence(Qt::CTRL | Qt::Key_Z),
-               &StoryboardPage::editUndo);
+    m_undoAct = editAction(QStringLiteral("Undo"), QKeySequence(Qt::CTRL | Qt::Key_Z),
+                           &StoryboardPage::editUndo);
     QAction *redoAct = editAction(QStringLiteral("Redo"),
                                   QKeySequence(Qt::CTRL | Qt::Key_Y),
                                   &StoryboardPage::editRedo);
+    m_redoAct = redoAct;
     redoAct->setShortcuts({QKeySequence(Qt::CTRL | Qt::Key_Y),
                            QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_Z)});
     editMenu->addSeparator();
@@ -978,6 +984,17 @@ QStringList MainWindow::pngExportClashes(const QString &folder) const
 sankoexport::MovieResult MainWindow::exportMp4ForTest(const QString &path)
 {
     return runMovieExport(path);
+}
+
+QVariantMap MainWindow::recorderActionDetail(QAction *action) const
+{
+    if (!m_storyboard || !action)
+        return {};
+    if (action == m_undoAct)
+        return {{QStringLiteral("step"), m_storyboard->undoStepText()}};
+    if (action == m_redoAct)
+        return {{QStringLiteral("step"), m_storyboard->redoStepText()}};
+    return {};
 }
 
 bool MainWindow::stillsFullArtwork() const

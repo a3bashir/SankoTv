@@ -709,6 +709,20 @@ int main(int argc, char **argv)
         QMenu menu(&window);
         menu.addAction(&undo); // the same action in a menu: one record, not two
         QAction *redo = menu.addAction(QStringLiteral("Redo Move Camera"));
+        // The host's words (2026-10-27), asked BEFORE the action runs: a
+        // counter each action bumps when it fires must still read 0.
+        int undoFired = 0, redoFired = 0;
+        QObject::connect(&undo, &QAction::triggered, [&undoFired] { ++undoFired; });
+        QObject::connect(redo, &QAction::triggered, [&redoFired] { ++redoFired; });
+        rec->setActionDetailProvider([&](QAction *a) -> QVariantMap {
+            if (a == &undo)
+                return {{QStringLiteral("step"),
+                         QStringLiteral("undo fired %1").arg(undoFired)}};
+            if (a == redo)
+                return {{QStringLiteral("step"),
+                         QStringLiteral("redo fired %1").arg(redoFired)}};
+            return {};
+        });
         activate(&window);
         rec->startRecording();
         const QString dir9 = rec->sessionDir();
@@ -726,20 +740,28 @@ int main(int argc, char **argv)
         QApplication::sendEvent(&menu, &up);
         settle(150);
         activate(&window);
-        int undoFired = 0;
-        QObject::connect(&undo, &QAction::triggered, [&undoFired] { ++undoFired; });
         const bool claimed =
             qt_sendShortcutOverrideEvent(&window, 0, Qt::Key_Z, Qt::ControlModifier);
         settle(300);
         rec->stopRecording();
+        rec->setActionDetailProvider({});
 
-        QStringList actions;
+        QStringList actions, steps;
         for (const QJsonObject &o : records(dir9))
-            if (o.value(QLatin1String("type")).toString() == QLatin1String("action"))
+            if (o.value(QLatin1String("type")).toString() == QLatin1String("action")) {
                 actions << QStringLiteral("%1|%2|%3")
                                .arg(o.value(QLatin1String("text")).toString(),
                                     o.value(QLatin1String("via")).toString(),
                                     o.value(QLatin1String("key")).toString());
+                steps << o.value(QLatin1String("step")).toString();
+            }
+        check(steps == QStringList{QStringLiteral("redo fired 0"),
+                                   QStringLiteral("undo fired 0")}
+                  && redoFired == 1 && undoFired == 1,
+              "the host's words are asked BEFORE the action runs, for a menu click "
+              "and for a shortcut alike (each record reads 'fired 0'; each fired once)",
+              QStringLiteral("[%1] fired %2/%3").arg(steps.join(QLatin1String(", ")))
+                  .arg(redoFired).arg(undoFired));
         check(claimed && undoFired == 1
                   && actions.count(QStringLiteral("Undo Move Camera|shortcut|Ctrl+Z")) == 1
                   && actions.filter(QStringLiteral("Undo Move Camera")).size() == 1,

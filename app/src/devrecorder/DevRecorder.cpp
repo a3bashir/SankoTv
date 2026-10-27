@@ -544,6 +544,7 @@ public:
     HostInfo info;
     QPointer<QAction> lastAction; // logAction's once-per-firing guard
     qint64 lastActionMs = 0;
+    std::function<QVariantMap(QAction *)> actionDetail; // the host's words
     std::function<QVariantMap()> stateProvider;
     std::function<QVariantMap()> cameraProvider;
     std::function<QVariantMap(QWidget *, const QPoint &)> pressClassifier;
@@ -1087,6 +1088,28 @@ bool Recorder::eventFilter(QObject *object, QEvent *event)
     if (event->type() == QEvent::Show)
         if (auto *menu = qobject_cast<QMenu *>(object))
             hookMenu(menu);
+    // A menu item is logged as the release (or Enter) that ACTIVATES it -
+    // before it runs, so the host's words (setActionDetailProvider) say what
+    // it is about to do; the menu's own triggered relay then finds it
+    // logged. A release on a separator, a submenu or a disabled item
+    // activates nothing and logs nothing.
+    if (d->recording && (event->type() == QEvent::MouseButtonRelease
+                         || event->type() == QEvent::KeyPress))
+        if (auto *menu = qobject_cast<QMenu *>(object)) {
+            QAction *action = nullptr;
+            if (event->type() == QEvent::MouseButtonRelease) {
+                action = menu->actionAt(
+                    static_cast<QMouseEvent *>(event)->position().toPoint());
+            } else {
+                const int key = static_cast<QKeyEvent *>(event)->key();
+                if (key == Qt::Key_Return || key == Qt::Key_Enter)
+                    action = menu->activeAction();
+            }
+            if (action && action->isEnabled() && !action->isSeparator()
+                && !action->menu())
+                logAction(action, action->shortcut().toString(QKeySequence::PortableText),
+                          QStringLiteral("menu"));
+        }
     if (d->recording && event->type() == QEvent::Shortcut
         && !object->isWidgetType()) {
         const QString key = static_cast<QShortcutEvent *>(event)->key()
@@ -1403,7 +1426,17 @@ void Recorder::logAction(QAction *action, const QString &key, const QString &via
         o.insert(QLatin1String("key"), key);
     if (action->isCheckable())
         o.insert(QLatin1String("checked"), action->isChecked());
+    if (d->actionDetail) {
+        const QVariantMap extra = d->actionDetail(action);
+        for (auto it = extra.cbegin(); it != extra.cend(); ++it)
+            o.insert(it.key(), QJsonValue::fromVariant(it.value()));
+    }
     enqueue(QStringLiteral("action"), o);
+}
+
+void Recorder::setActionDetailProvider(std::function<QVariantMap(QAction *)> provider)
+{
+    d->actionDetail = std::move(provider);
 }
 
 QtMessageHandler Recorder::d_previousHandler() const

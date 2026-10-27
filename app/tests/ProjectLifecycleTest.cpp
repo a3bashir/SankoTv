@@ -129,6 +129,7 @@
 #include <QStyleOptionSlider>
 #include <QLineEdit>
 #include <QToolButton>
+#include <QtMath>
 #include <cmath>
 
 // Part D (2026-10-23): the zoom slider is gone from the header; the sections
@@ -10409,6 +10410,40 @@ QImage grabCanvas(DrawingCanvas *c)
     return c->grab().toImage();
 }
 
+// Qt's own warnings while a check runs (the polish batch, 2026-10-27):
+// collected, and passed on to whatever handler was there before.
+QStringList g_qtWarnings;
+QtMessageHandler g_previousHandler = nullptr;
+void collectWarnings(QtMsgType type, const QMessageLogContext &context, const QString &msg)
+{
+    if (type == QtWarningMsg)
+        g_qtWarnings << msg;
+    if (g_previousHandler)
+        g_previousHandler(type, context, msg);
+}
+struct WarningCapture
+{
+    WarningCapture()
+    {
+        g_qtWarnings.clear();
+        g_previousHandler = qInstallMessageHandler(collectWarnings);
+    }
+    ~WarningCapture() { qInstallMessageHandler(g_previousHandler); }
+    int count(const QString &part) const
+    {
+        return int(g_qtWarnings.filter(part).size());
+    }
+};
+
+// A pointer event at the WINDOW-SYSTEM level, as a real one arrives.
+void wsMouse(QWindow *win, const QPointF &global, QEvent::Type type,
+             Qt::MouseButtons buttons)
+{
+    const QPointF local = global - QPointF(win->mapToGlobal(QPoint(0, 0)));
+    QWindowSystemInterface::handleMouseEvent<QWindowSystemInterface::SynchronousDelivery>(
+        win, local, global, buttons, Qt::LeftButton, type);
+}
+
 } // namespace camtool
 
 void runCameraToolPass(const QString &scratch)
@@ -10692,6 +10727,179 @@ void runCameraToolPass(const QString &scratch)
             stack->undo(); // back to the framing the checks below expect
             pump(30);
         }
+    }
+
+    // ---- The polish batch (2026-10-27) -------------------------------------
+    // (pz1) A click that closes a menu over a FLOATING BAR does not press
+    // the control under it - the third 1B hand test pressed Next Key that
+    // way, and Qt's replay tried to activate the bar's window
+    // ("requestActivate() ... WindowDoesNotAcceptFocus").
+    {
+        QWidget *sw = bar->findChild<QWidget *>(QStringLiteral("camAnimate"));
+        QWindow *barWin = bar->windowHandle();
+        const QPointF g = QPointF(sw->mapToGlobal(sw->rect().center()));
+        const bool animate0 = r.storyboard->cameraAnimate();
+        int activationWarnings = 0;
+        bool closed = false;
+        {
+            WarningCapture warnings;
+            QMenu menu(r.canvas);
+            menu.addAction(QStringLiteral("Show Grid"));
+            menu.popup(r.canvas->mapToGlobal(QPoint(12, 12)));
+            pump(120);
+            wsMouse(menu.windowHandle(), g, QEvent::MouseButtonPress, Qt::LeftButton);
+            pump(60);
+            wsMouse(barWin, g, QEvent::MouseButtonRelease, Qt::NoButton);
+            pump(120);
+            closed = !menu.isVisible();
+            activationWarnings = warnings.count(QStringLiteral("requestActivate"));
+        }
+        check(QStringLiteral("(pz1) a click on a Camera-bar switch that closes a menu does "
+                             "not press it, and Qt logs no activation warning"),
+              closed && r.storyboard->cameraAnimate() == animate0 && activationWarnings == 0,
+              QStringLiteral("animate %1 -> %2, %3 warning(s)").arg(animate0)
+                  .arg(r.storyboard->cameraAnimate()).arg(activationWarnings));
+        // Compared with the state just before THIS click (the first run, on
+        // the unfixed code, had already flipped it with the replayed press).
+        const bool beforeControl = r.storyboard->cameraAnimate();
+        wsMouse(barWin, g, QEvent::MouseButtonPress, Qt::LeftButton);
+        wsMouse(barWin, g, QEvent::MouseButtonRelease, Qt::NoButton);
+        pump(80);
+        const bool toggled = r.storyboard->cameraAnimate() != beforeControl;
+        check(QStringLiteral("(pz1) control: the same click with no menu open presses the "
+                             "switch"),
+              toggled);
+        r.storyboard->setCameraAnimate(animate0);
+        QStringList unguarded;
+        for (FloatingToolWindow *w : r.window.findChildren<FloatingToolWindow *>())
+            if (!w->property("sankoNoClickThrough").toBool())
+                unguarded << (w->objectName().isEmpty()
+                                  ? QString::fromLatin1(w->metaObject()->className())
+                                  : w->objectName());
+        check(QStringLiteral("(pz1) every floating bar (Camera, Selection, Move, "
+                             "Perspective, the toolbars) carries the guard"),
+              unguarded.isEmpty(), unguarded.join(QLatin1String(", ")));
+    }
+    // (pz2) The Dev Recorder's words for Undo / Redo: the history's own text,
+    // as Edit > Undo is about to do it.
+    {
+        const QPointF body = centre(r.canvas->shotCameraQuadForTest());
+        drag(r.canvas, body, body + QPointF(30, 0));
+        const QString undoStep = r.window.recorderActionDetail(r.window.undoActionForTest())
+                                     .value(QStringLiteral("step")).toString();
+        stack->undo();
+        pump(30);
+        const QString redoStep = r.window.recorderActionDetail(r.window.redoActionForTest())
+                                     .value(QStringLiteral("step")).toString();
+        check(QStringLiteral("(pz2) Edit > Undo's recorder detail names the step it is "
+                             "about to undo, and Redo's the step it would redo"),
+              undoStep == QStringLiteral("Undo Move Camera")
+                  && redoStep == QStringLiteral("Redo Move Camera"),
+              undoStep + QStringLiteral(" | ") + redoStep);
+        check(QStringLiteral("(pz2) control: any other action adds no detail"),
+              r.window.recorderActionDetail(r.window.exportFullArtworkActionForTest())
+                  .isEmpty());
+    }
+    // (pz3) The Perspective tool's hover: its handles grow under an idle
+    // pointer - which needs mouse tracking, and setTool's cancelShape()
+    // turned it off again (the same fault the Camera tool had).
+    {
+        r.canvas->setTool(DrawingCanvas::Perspective);
+        pump(50);
+        const int idxP = stack->index();
+        const QPointF vp(r.canvas->width() * 0.3, r.canvas->height() * 0.5);
+        mouse(r.canvas, QEvent::MouseButtonPress, vp, Qt::LeftButton, Qt::LeftButton);
+        mouse(r.canvas, QEvent::MouseButtonRelease, vp, Qt::LeftButton, Qt::NoButton);
+        pump(60);
+        const QPointF away(4, 4);
+        mouse(r.canvas, QEvent::MouseMove, away, Qt::NoButton, Qt::NoButton);
+        pump(30);
+        const QImage idle = grabCanvas(r.canvas);
+        mouse(r.canvas, QEvent::MouseMove, vp, Qt::NoButton, Qt::NoButton);
+        pump(30);
+        const QImage hovered = grabCanvas(r.canvas);
+        mouse(r.canvas, QEvent::MouseMove, away, Qt::NoButton, Qt::NoButton);
+        pump(30);
+        const QImage left = grabCanvas(r.canvas);
+        // The handle's rim: a ring of points a few px out from its centre.
+        QVector<QPointF> rim;
+        for (int a = 0; a < 360; a += 30)
+            rim << vp + QPointF(9 * std::cos(qDegreesToRadians(double(a))),
+                                9 * std::sin(qDegreesToRadians(double(a))));
+        const bool created = stack->index() == idxP + 1;
+        const int grew = changedAt(idle, hovered, rim);
+        check(QStringLiteral("(pz3) Perspective tool: it tracks the pointer, and an idle "
+                             "pointer over a vanishing point grows its handle"),
+              created && r.canvas->hasMouseTracking() && grew >= 3,
+              QStringLiteral("vp %1 tracking %2 rim changed %3/12").arg(created)
+                  .arg(r.canvas->hasMouseTracking()).arg(grew));
+        check(QStringLiteral("(pz3) control: moving away shrinks it back"),
+              changedAt(idle, left, rim) == 0,
+              QStringLiteral("%1/12").arg(changedAt(idle, left, rim)));
+        if (created) {
+            stack->undo(); // the vanishing point goes
+            pump(30);
+        }
+        r.canvas->setTool(DrawingCanvas::Camera);
+        pump(50);
+    }
+    // (pz4) No Qt warning when the pointer leaves the timeline's speed
+    // button. The cause (probe build/_probe/polish/warnprobe): Qt 6.11's
+    // Windows 11 style sizes a tool button's menu indicator from the font's
+    // POINT size, and the speed button's style sheet gave it PIXELS (point
+    // size -1) - "QFont::setPointSize: Point size <= 0 (-1)" on HoverLeave,
+    // once per launch (the style caches the answer).
+    {
+        auto *speed = r.window.findChild<QToolButton *>(QStringLiteral("animaticSpeed"));
+        QWindow *win = r.window.windowHandle();
+        auto sweep = [&](QWidget *over) {
+            const QPoint c = over->mapToGlobal(over->rect().center());
+            for (int dy = -90; dy <= 90; dy += 6)
+                wsMouse(win, QPointF(c + QPoint(0, dy)), QEvent::MouseMove, Qt::NoButton);
+            wsMouse(win, QPointF(c), QEvent::MouseMove, Qt::NoButton);
+            pump(120);
+            wsMouse(win, QPointF(c + QPoint(160, 120)), QEvent::MouseMove, Qt::NoButton);
+            pump(120);
+        };
+        int speedWarnings = -1;
+        if (speed) {
+            WarningCapture warnings;
+            sweep(speed);
+            speedWarnings = warnings.count(QStringLiteral("setPointSize"));
+        }
+        check(QStringLiteral("(pz4) the pointer over the speed button and away: no "
+                             "\"QFont::setPointSize\" warning, and its font has a point "
+                             "size"),
+              speed && speedWarnings == 0 && speed->font().pointSize() > 0,
+              QStringLiteral("%1 warning(s), pointSize %2").arg(speedWarnings)
+                  .arg(speed ? speed->font().pointSize() : -99));
+        // Control: a tool button with the OLD sheet (font in pixels) and a
+        // menu, swept the same way, does warn - so the check can see it (and
+        // nothing had cached the bad answer before it).
+        int oldWarnings = 0;
+        {
+            auto *old = new QToolButton(&r.window);
+            old->setText(QStringLiteral("1x"));
+            old->setPopupMode(QToolButton::InstantPopup);
+            old->setStyleSheet(QStringLiteral(
+                "QToolButton { font-size: 11px; padding: 0 30px 0 6px; }"
+                "QToolButton:hover { color: #7c6ef6; }"
+                "QToolButton::menu-indicator { image: none; width: 0px; height: 0px; }"));
+            auto *m = new QMenu(old);
+            m->addAction(QStringLiteral("2x"));
+            old->setMenu(m);
+            old->setGeometry(r.window.width() / 2, 60, 60, 28);
+            old->show();
+            old->raise();
+            pump(60);
+            WarningCapture warnings;
+            sweep(old);
+            oldWarnings = warnings.count(QStringLiteral("setPointSize"));
+            delete old;
+        }
+        check(QStringLiteral("(pz4) control: a tool button with the old pixel font and a "
+                             "menu, swept the same way, does warn"),
+              oldWarnings >= 1, QStringLiteral("%1 warning(s)").arg(oldWarnings));
     }
 
     // ---- Animate on: a key at the playhead; the rotate zone; Shift -------------

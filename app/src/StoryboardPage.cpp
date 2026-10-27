@@ -6825,6 +6825,34 @@ void StoryboardPage::editRedo()
     redoDocument();
 }
 
+// What Edit > Undo / Redo is ABOUT to do, in the history's own words, by the
+// same routing as editUndo / editRedo: the Brush Studio's history under the
+// pointer, a pending QuickShape (the first Undo cancels it), else the
+// document's. For the Dev Recorder's action records (2026-10-27).
+QString StoryboardPage::undoStepText() const
+{
+    if (brushStudioUnderCursor() && m_brushStudio) {
+        const QString t = m_brushStudio->undoStack()->undoText();
+        return QStringLiteral("Undo %1 (Brush Studio)").arg(t).simplified();
+    }
+    if (m_canvas && m_canvas->quickShape()->hasActiveShape())
+        return QStringLiteral("Undo QuickShape (cancels the pending shape)");
+    if (!m_undoStack || !m_undoStack->canUndo())
+        return QStringLiteral("Undo (nothing to undo)");
+    return QStringLiteral("Undo ") + m_undoStack->undoText();
+}
+
+QString StoryboardPage::redoStepText() const
+{
+    if (brushStudioUnderCursor() && m_brushStudio) {
+        const QString t = m_brushStudio->undoStack()->redoText();
+        return QStringLiteral("Redo %1 (Brush Studio)").arg(t).simplified();
+    }
+    if (!m_undoStack || !m_undoStack->canRedo())
+        return QStringLiteral("Redo (nothing to redo)");
+    return QStringLiteral("Redo ") + m_undoStack->redoText();
+}
+
 // THE ONE DOOR to the document history, for the Edit menu and the floating
 // toolbar's buttons alike. The combined workspace gave Undo a first step -
 // leave the animatic preview, because undo changes the document and should

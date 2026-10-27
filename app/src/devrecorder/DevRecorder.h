@@ -153,6 +153,11 @@ public slots:
     // A host event of the app's own (Phase 1B: "shotCamEdit", one per shot
     // camera edit). Recorded only while recording, like every other event.
     void logEvent(const QString &type, const QVariantMap &data);
+    // The host's words for an action, merged into its "action" record (the
+    // undo history's "Undo Move Camera" for Edit > Undo). Asked BEFORE the
+    // action runs - for a shortcut and for a menu click alike - so it
+    // describes what the action is about to do.
+    void setActionDetailProvider(std::function<QVariantMap(QAction *)> provider);
 
     // Internal bridge for the installed Qt message handler (a free
     // function); not part of the host integration surface.
