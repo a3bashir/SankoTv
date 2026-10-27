@@ -887,6 +887,73 @@ int main(int argc, char **argv)
     }
     delete path;
 
+    // ---- (c12) the canvas tool's limits and key lookups (Phase 1B) -------
+    ts << "--- (c12) the canvas tool's limits ---\n";
+    {
+        const QSize cs(1920, 1080);
+        auto onCanvas = [&](const shotcam::CameraState &s) {
+            for (const QPointF &p : shotcam::frameQuad(s, cs))
+                if (p.x() < -1e-6 || p.y() < -1e-6 || p.x() > cs.width() + 1e-6
+                    || p.y() > cs.height() + 1e-6)
+                    return false;
+            return true;
+        };
+        check(QStringLiteral("(c12) the zoom a turned frame needs to fit: 1 unturned; "
+                             "(W s + H c) / H at 90 degrees"),
+              near(shotcam::insideMinZoom(0.0, cs), 1.0)
+                  && near(shotcam::insideMinZoom(90.0, cs), 1920.0 / 1080.0, 1e-9)
+                  && near(shotcam::insideMinZoom(-90.0, cs), 1920.0 / 1080.0, 1e-9));
+        shotcam::CameraState wild{-500.0, 5000.0, 0.3, 37.0};
+        const shotcam::CameraState kept = shotcam::clampInside(wild, cs);
+        check(QStringLiteral("(c12) clampInside: a frame far off, too wide and turned "
+                             "37 degrees comes back with every corner on the canvas, "
+                             "at the least zoom that allows (and its turn kept)"),
+              onCanvas(kept) && kept.rotation == 37.0
+                  && near(kept.zoom, shotcam::insideMinZoom(37.0, cs), 1e-9),
+              QStringLiteral("%1,%2 z%3").arg(kept.cx).arg(kept.cy).arg(kept.zoom));
+        const shotcam::CameraState loose = shotcam::clampZoom(wild);
+        check(QStringLiteral("(c12) control: the zoom caps alone (Stay inside off) keep "
+                             "0.5..4 and leave the frame off the canvas"),
+              loose.zoom == shotcam::kMinZoom && !onCanvas(loose)
+                  && shotcam::clampZoom({0, 0, 9.0, 0}).zoom == shotcam::kMaxZoom);
+        const shotcam::CameraState inner{960, 540, 2.0, 0.0};
+        check(QStringLiteral("(c12) a frame already inside is left exactly as it is"),
+              shotcam::clampInside(inner, cs) == inner);
+        check(QStringLiteral("(c12) angles fold into (-180, 180]"),
+              shotcam::normalisedAngle(190.0) == -170.0
+                  && shotcam::normalisedAngle(-180.0) == 180.0
+                  && shotcam::normalisedAngle(540.0) == 180.0
+                  && shotcam::normalisedAngle(15.0) == 15.0);
+        check(QStringLiteral("(c12) the timecode: HH:MM:SS:FF of a film frame"),
+              shotcam::timecodeText(24 * 61 + 5, 24) == QStringLiteral("00:01:01:05")
+                  && shotcam::timecodeText(0, 30) == QStringLiteral("00:00:00:00"));
+
+        Scene *k = new Scene;
+        for (int i = 0; i < 3; ++i) {
+            Panel *p = new Panel;
+            p->duration = 2;
+            k->panels.append(p);
+        }
+        const shotcam::CameraState n = shotcam::neutral(cs);
+        k->camera.keys = {shotcam::makeKey(*k, 1, 0, 24, n),   // frame 48
+                          shotcam::makeKey(*k, 0, 10, 24, n)}; // frame 10
+        const QVector<double> frames = shotcam::liveKeyFrames(*k, 24);
+        check(QStringLiteral("(c12) key lookups: the live frames in order; the key AT a "
+                             "frame; the key whose segment a frame is in"),
+              frames == QVector<double>({10.0, 48.0})
+                  && shotcam::keyIndexAtFrame(*k, 48.0, 24) == 0
+                  && shotcam::keyIndexAtFrame(*k, 47.0, 24) == -1
+                  && shotcam::segmentKeyIndex(*k, 47.0, 24) == 1
+                  && shotcam::segmentKeyIndex(*k, 9.0, 24) == -1
+                  && shotcam::segmentKeyIndex(*k, 100.0, 24) == 0);
+        Panel *gone = k->panels.takeAt(1); // its key goes inert
+        check(QStringLiteral("(c12) an inert key (its panel deleted) is in no lookup"),
+              shotcam::liveKeyFrames(*k, 24) == QVector<double>({10.0})
+                  && shotcam::keyIndexAtFrame(*k, 48.0, 24) == -1);
+        delete gone;
+        delete k;
+    }
+
     delete scene;
     QDir(scratch).removeRecursively();
     ts << "\nRESULT " << (g_failures ? "FAIL" : "PASS") << " (checks=" << g_checks

@@ -117,6 +117,7 @@ qt_add_executable(SankoTV
     src/FloatingToolWindow.cpp
     src/FloatingToolWindow.h
     src/SankoScrollBarStyle.h
+    src/SankoNoteStyle.h
     src/SankoTheme.h
     # SankoDockOverlay.cpp/.h stay on disk but are ADS-specific and left out
     # of the build since the native docking migration (src/docking/).
@@ -244,6 +245,8 @@ qt_add_executable(SankoCanvasBrushLock
     tests/CanvasBrushLockTest.cpp
     src/DrawingCanvas.cpp
     src/DrawingCanvas.h
+    src/camera/ShotCamera.cpp
+    src/camera/ShotCamera.h
     src/PerspectiveTool.cpp
     src/PerspectiveTool.h
     src/SankoPaintHostAdapter.cpp
@@ -264,6 +267,8 @@ qt_add_executable(SankoQuickShapeGeometryLock
     tests/QuickShapeGeometryLockTest.cpp
     src/DrawingCanvas.cpp
     src/DrawingCanvas.h
+    src/camera/ShotCamera.cpp
+    src/camera/ShotCamera.h
     src/PerspectiveTool.cpp
     src/PerspectiveTool.h
     src/SankoPaintHostAdapter.cpp
@@ -284,6 +289,8 @@ qt_add_executable(SankoCanvasEdgeLock
     tests/CanvasEdgeLockTest.cpp
     src/DrawingCanvas.cpp
     src/DrawingCanvas.h
+    src/camera/ShotCamera.cpp
+    src/camera/ShotCamera.h
     src/PerspectiveTool.cpp
     src/PerspectiveTool.h
     src/SankoPaintHostAdapter.cpp
@@ -356,7 +363,10 @@ qt_add_executable(SankoProjectLifecycle
 target_include_directories(SankoProjectLifecycle PRIVATE src)
 target_link_libraries(SankoProjectLifecycle PRIVATE Qt6::Widgets
     Qt6::Multimedia Qt6::Svg Qt6::Concurrent
-    QuickShape::Kit SankoPaint::Engine dbghelp)
+    QuickShape::Kit SankoPaint::Engine dbghelp
+    # QWindowSystemInterface (qpa): the (ct) click-through check delivers
+    # its clicks at the window-system level, as a real click arrives.
+    Qt6::GuiPrivate)
 sanko_link_media_foundation(SankoProjectLifecycle)
 
 # Permanent CAMERA family (tests/CameraTest.cpp; the shot camera's Phase 1A,

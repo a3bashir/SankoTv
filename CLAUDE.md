@@ -206,7 +206,13 @@ the page from.
   all ask `evaluate()` at a frame and draw through it. A neutral camera
   runs the code each of them ran before the camera existed; the canvas
   view (zoom, pan, rotate - the Dev Recorder's `cameraChange`) is a
-  different thing and never writes the camera.
+  different thing and never writes the camera. Phase 1B (the canvas
+  Camera tool and the Camera bar): the canvas only DRAWS the camera it is
+  given (`DrawingCanvas::setShotCameraProvider`) and ASKS for an edit on
+  release (`shotCameraEditRequested`); `StoryboardPage` owns the rules
+  (Animate, the single framing, the refusal) and makes every edit one
+  `CameraEditCommand`. Navigation input (Space, middle drag, the wheels)
+  is handled before the tool sees a press and must never reach it.
 - **QuickShape** (`third_party/QuickShapeKit`): hold the pen still after a
   stroke and it snaps to a recognised, editable vector shape.
 - **Perspective tool:** tap-created vanishing points, derived horizon,

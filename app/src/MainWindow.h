@@ -123,6 +123,8 @@ public:
     sankoexport::MovieResult exportMp4ForTest(const QString &path);
     sankoexport::FilesResult exportPngForTest(const QString &folder);
     sankoexport::FilesResult exportPdfForTest(const QString &path);
+    // File > Export > Stills Show Full Artwork (Phase 1B), as the menu has it.
+    QAction *exportFullArtworkActionForTest() const { return m_exportFullArtworkAct; }
     // The two things MP4 export says BEFORE the file dialog: that it cannot
     // run here at all (empty when it can), and that the project's audio file
     // is missing (empty when there is no track or the file is there).
@@ -338,6 +340,8 @@ private:
     QAction *m_exportMp4Act = nullptr;
     QAction *m_exportPngAct = nullptr;
     QAction *m_exportPdfAct = nullptr;
+    QAction *m_exportFullArtworkAct = nullptr; // checkable; stills = whole panel
+    bool stillsFullArtwork() const;
     bool m_exporting = false; // one export at a time
     QString m_mp4UnavailableForTest; // null = ask the system
     std::function<sankoexport::MovieEncoder *()> m_movieEncoderFactoryForTest;

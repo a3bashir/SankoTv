@@ -93,6 +93,29 @@ void drawShot(QPainter &painter, const QPixmap &picture, const QSize &canvas,
 // Past this zoom an output pixel has less than one source pixel (spec 5).
 double sharpLimit(const QSize &canvas, const QSize &out = kOutputFrame);
 
+// THE CANVAS TOOL'S LIMITS (Phase 1B). The zoom runs from 0.5x (outwards)
+// to 4x (inwards); STAY INSIDE ARTWORK (on by default) keeps every corner
+// of the frame on the canvas - the centre is clamped, and a rotation pushes
+// the zoom in just as far as the turned frame needs to fit.
+inline constexpr double kMinZoom = 0.5;
+inline constexpr double kMaxZoom = 4.0;
+CameraState clampZoom(const CameraState &state);
+double insideMinZoom(double rotation, const QSize &canvas);
+CameraState clampInside(const CameraState &state, const QSize &canvas);
+// Degrees into (-180, 180].
+double normalisedAngle(double degrees);
+
+// Keys at the playhead (Phase 1B). The live key AT this scene frame
+// (within half a frame), or -1; the key whose segment the frame is in (the
+// key at it, else the last one before it), or -1; the live keys' frames in
+// order.
+int keyIndexAtFrame(const Scene &scene, double sceneFrame, int fps);
+int segmentKeyIndex(const Scene &scene, double sceneFrame, int fps);
+QVector<double> liveKeyFrames(const Scene &scene, int fps);
+// HH:MM:SS:FF of a frame counted from the film's start (the header's own
+// format, AnimaticPage::updateTimecodeLabel).
+QString timecodeText(int filmFrame, int fps);
+
 // THE FILE. {"keys": [{"panel", "at", "x", "y", "zoom", "rotation",
 // "ease"}]}; an EMPTY object when the scene has no live keys (the caller
 // then writes no "camera" at all, so a project without camera moves saves

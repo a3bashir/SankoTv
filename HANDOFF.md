@@ -7402,7 +7402,237 @@ app) holds the worker while (p6) queues and cancels, then releases it;
 nothing may arrive, and the control (the same queue without cancelAll)
 delivers all ten. Three runs in each configuration green. The held worker
 has nothing in flight, so (p6) now covers QUEUED results only; the
-in-flight case needs its own check.
+in-flight case has its own check since 151b42fce: (p6b) pauses the worker
+INSIDE a job (setPauseInJobForTest), cancels, releases, and requires
+nothing to arrive; its control delivers exactly one.
+
+## The shot camera, Phase 1B: the canvas Camera tool (2026-10-25)
+
+Built to the approved Figma frames 1B-1 .. 1B-5 (Dasktop_UI_test,
+section "Timeline - Components": 432:390, 432:531, 433:390, 433:421,
+433:572) and the user's decisions of 2026-10-25: notes in the dark Sanko
+style app-wide, hover tooltips included, in the app's own UI font (Inter
+is neither bundled nor installed, so no font is named and none bundled);
+Safe Area and Title Safe stay on with every tool and are remembered across
+launches as ONE app setting; the three items deferred from 1A.
+
+- THE CANVAS (`DrawingCanvas`, "the shot camera's tool"). The canvas
+  holds no key: the workspace gives it the camera at the playhead through
+  `setShotCameraProvider` (`ShotCameraView`: state, keys or not, Animate,
+  key at the playhead, editable, Stay inside, sharp limit, timecode). With
+  the Camera tool: the frame (accent #7c6ef6, 1.5 px), four 8 x 8 white
+  corner handles, a 9 px centre cross, black 40 % outside, the body 10 %
+  accent on hover; the dragged handle filled; the rotate zone 22 px
+  outside a corner (dashed ring, the Move tool's rotate cursors); a chip at
+  the pointer (zoom "1.62x", angle "8.0 deg", "Soft ..." past the limit);
+  the mode chip at the top centre in the PREVIEW chip's style (ANIMATE
+  OFF dark, ANIMATE ON accent with "key at" / "new key at" the timecode,
+  amber "Soft 1.40x"). Past `sharpLimit` everything turns amber #f5a623.
+  Other tools: the outline only, only when the scene has keys. Handles are
+  SCREEN px: the frame is `frameQuad` through `viewTransform()`, drags come
+  back through `toCanvasF()` (zoom, rotation and flip of the view all
+  hold); under 40 px a side the handles step 8 px outward. Corners scale
+  about the centre, the body moves, the rotate zone turns (Shift: 15 deg
+  steps). Nothing is written until the release: ONE `shotCameraEditRequested`
+  per drag (an interrupted drag - lost grab, focus loss, tool change -
+  lands the same way, like a stroke). Pan (Space, middle drag) and the
+  wheels are handled before the tool ever sees a press. The pen reaches
+  the tool as Qt's synthesized mouse (tabletEvent ignores non-brush tools).
+- THE LIMITS (`ShotCamera`): zoom 0.5 .. 4 (`clampZoom`); STAY INSIDE
+  ARTWORK (on at every launch) - `clampInside`: zoom at least
+  `insideMinZoom(rotation)` = max((W|c| + H|s|) / W, (W|s| + H|c|) / H),
+  then the centre clamped by the turned frame's bounding box.
+- THE RULES (`StoryboardPage`): Animate is a session switch, off at launch.
+  Animate off with two or more live keys: a press is refused and the note
+  says "Turn on Animate to change the camera at this point." Animate off
+  with none or one: the drag sets the scene's SINGLE FRAMING - one key on
+  its first frame (inert keys kept). Animate on: the key at the playhead
+  (within half a frame) is updated, or one is added there. The edit lands
+  on the canvas's panel at the playhead's frame when the playhead is in
+  that panel, at its first frame otherwise. Every edit is one
+  `CameraEditCommand` (the whole key list before and after): "Move / Zoom
+  / Rotate Camera", "Add Camera Key", "Delete Camera Key", "Camera Ease".
+- THE CAMERA BAR replaces the old floating Camera panel (the "Camera
+  Frame" overlay toggle is gone; the canvas keeps its API, off - the
+  locked edge / size families call it): a Modifier bar in the Selection
+  bar's translucent body, bottom-centre 10 px above the status bar, only
+  with the Camera tool. Animate | previous key, Add Key ("Key set" on a
+  key), Delete Key, next key | Ease (Linear / Ease In / Ease Out / Ease
+  In/Out / Hold of the segment at the playhead, ticked in the accent) |
+  Stay inside artwork | Safe Area, Title Safe. Previous / next move the
+  playhead (and the canvas's panel) without the preview
+  (`AnimaticPage::setPlayheadFrameInPanel`; `playheadMoved` keeps the bar
+  and the frame in step). Object names `camAnimate`, `camPrevKey`,
+  `camAddKey`, `camDeleteKey`, `camNextKey`, `camEase`, `camEaseMenu`,
+  `camStayInside`, `camSafeArea`, `camTitleSafe`; tool buttons
+  `toolCamera`, `toolBrush`.
+- THE GUIDES are canvas state, independent of the tool, remembered as
+  `storyboard/cameraGuides` (bit 1 Safe Area, bit 2 Title Safe) and loaded
+  by the page, not the canvas (the canvas defaults stay off for the locked
+  families). With a camera that is not neutral they are inset from the
+  camera's frame at the playhead; neutral draws the old canvas guides
+  byte for byte.
+- THE NOTE STYLE (`src/SankoNoteStyle.h`): one QToolTip rule appended to
+  the application style sheet by the MainWindow constructor, once
+  (#161616, 1 px #2a2a2a, radius 6, #dddddd, padding 4 x 8, no
+  font-family). It styles every QToolTip: sayNote, sayLocked, the
+  timeline's notes, every hover tooltip.
+- THE DEFERRED 1A ITEMS: the strip thumbnails outline the camera at each
+  panel's first frame over the whole artwork (only in a scene with live
+  keys); File > Export > "Stills Show Full Artwork" (checkable, off at
+  every launch, PNG and PDF only, the MP4 is always the shot); the New
+  Project dialog's 1080p preset carries a grey hint on the Canvas Preset
+  line (the longest of four wordings that fits; "Push-ins look soft; 4K
+  for camera work" at the dialog's width).
+- THE DEV RECORDER: `Recorder::logEvent(type, map)` (public) and one
+  `shotCamEdit` event per edit (what, Animate, frame, the camera, keys
+  before / after), connected only in MainWindow's guarded block; statePoll
+  adds `shotCam.animate` and `shotCam.toolActive`.
+
+CHECKS. Lifecycle (ct), through the real tool button, synthetic events
+and the bar's own controls: C3 on the canvas (the drawn frame is frameQuad
+through the view; control: turned 15 deg and flipped, it follows the NEW
+view); the grab zones under a turned, flipped view; C5 (Space+drag, middle
+drag, Ctrl+wheel, the plain wheel and a pen press make no key and no
+command; control: the view panned and zoomed, and one corner drag makes
+exactly one key and one command); C6 (Animate off with two keys refuses
+with the note; control: Animate on takes the same drag); C9 for zoom,
+move, rotate, Add Key, ease and Delete Key (undo and redo byte-equal JSON;
+control: the edit changed it); the single framing; the rotate zone with
+Shift; the bar's enabled states and labels; previous / next across
+panels; Stay inside and its control; the strip outline and its control;
+the guide with the Brush tool, inset from the camera, its control on a
+neutral camera; the remembered setting across two new windows and its
+control; the note style (#161616) and its control; the 1080p hint and the
+4K control; Full Artwork byte-equal to the camera-less still, control the
+shot. Camera (c12): the clamp math, the caps, angle folding, the
+timecode, the key lookups, inert keys; the hover and its control (added
+after the capture, below). Lifecycle 763 -> 814; Camera 64 -> 72.
+
+TWO EXISTING CHECKS CHANGED (intended: the Export menu has a new entry).
+(an) old: `wanted = {"MP4 Video...", "PNG Images...", "PDF Storyboard..."}`,
+"File > Export offers MP4 Video, PNG Images and PDF Storyboard"; new: the
+same plus `QString()` (the separator) and "Stills Show Full Artwork". (an)
+old: "with no project open all three are disabled", `menu && !anyEnabled`
+over every action; new: "with no project open all four entries are
+disabled (the separator is not an entry)", `menu && entries == 4 &&
+!anyEnabled` over the non-separator actions - a separator is a QAction
+that is never disabled. The positive control is the existing "with a
+project open all four are enabled".
+
+FOUND WHILE GATING: the first run of the note-style check read #000000
+for the check AND its control. Read before changing: Windows shows a
+tooltip through a roll / fade effect, so right after showText the
+QTipLabel is not yet visible and the check grabbed nothing (an invalid
+colour). A probe (`build/_probe/camera1b/tipprobe`) measured it: with the
+effects on, only QRollEffect is visible; with them off the label shows at
+once - plain #3c3c3c, styled #161616. The check now turns the two tooltip
+effects off for its grabs (and restores them), so no wait and no real
+pointer can decide it; the condition is unchanged.
+
+FOUND BY THE SIDE-BY-SIDE CAPTURE (after the first green gate), both fixed
+and the gate re-run: (1) THE HOVER NEVER SHOWED. `setTool` turned mouse
+tracking on for the Camera tool and then called `cancelShape()`, which
+switched it off again (so did `clearSelection()`); Qt delivers no
+buttonless move without tracking, so the body tint and the handle cursors
+never appeared. `cancelShape` / `clearSelection` now leave tracking on
+while the Camera tool is active; a new Lifecycle check (hover tints the
+body; control: moving away removes it) would have caught it. The
+PERSPECTIVE tool has the same ordering (`setTool` sets tracking, then
+`cancelShape` clears it), so its hover-grow is likely dead too - not
+touched here, reported. (2) The rotate chip read "Soft 8.0 deg": "Soft"
+now prefixes the zoom chip only; the angle chip just turns amber. The
+capture probe (`build/_probe/camera1b`, out-of-tree, its window on the
+Cintiq through TestHarness) writes to its own `out` folder, copied to
+`Documents\SankoTV-Design\camera\1b-capture` by the shell: a rebuilt
+probe's writes to Documents were silently not kept. Probes archived to
+`tests/_backups/camera1b_20261025`.
+
+GATE (clean builds, both configs, on the final code): nine families green;
+Lifecycle 814, Camera 72 (the 17 neutral pins unchanged), preview
+608366fc and eraser d312bc9b identical in Debug and Release, pixel locks
+666f7b45 / cafcec7f and erase 0bc24381 unchanged. Hand-test list:
+`Documents\SankoTV-Design\camera\handtest_1B.md`.
+
+FOLLOW-UP TO THE FIRST 1B HAND TEST (recording 20261025-210228; the
+user's three changes, 2026-10-25):
+- The recorder's shotCamEdit counted `keysBefore` AFTER the push for
+  button edits (Add Key logged 2 -> 2 for keys that went 1 -> 2): callers
+  pass `scene->camera` itself as `before` and the push's redo rewrites it.
+  `pushCameraEdit` now counts before pushing. The undo commands were never
+  affected (they copy `before` by value).
+- The Camera bar stayed clickable over the preview (the hand test added a
+  key at a frame whose frame and chip were hidden). While the preview
+  covers the canvas (`AnimaticPage::previewShownChanged`) every control is
+  disabled - the switches dimmed to 40 % - and its hover says "Close the
+  preview to edit the camera"; the controls and their own tooltips return
+  with the canvas. The edits themselves refuse while covered (backstop).
+- The ease of the scene's LAST key moves nothing (no segment starts
+  there). The Ease field is disabled on the last key - and past it, where
+  the segment is that same key's - with the hover "No move after this key";
+  `cameraSetEase` refuses there too. A disabled widget still shows its
+  tooltip for the hover's ToolTip event (probe `tipprobe/tip2.cpp`).
+- Checks (Lifecycle, all with controls): the counts 2 -> 3 and 3 -> 2
+  (control: an ease edit logs 3 -> 3); the last key disabled with its note
+  and no ease set (control: the key before it, enabled, no note); the
+  preview disabling all nine controls with the note and ignoring clicks
+  (control: back with the canvas, tooltips restored). The ease step of
+  (ct) now sets Hold on the key BEFORE the last (it was set on the last
+  key, which can no longer take one), then steps forward to delete. The
+  hover helper shows a placeholder first: `QToolTip::hideText()` only
+  starts a hide timer, and the first run read a stale label. Lifecycle
+  814 -> 820.
+
+FOLLOW-UP TO THE SECOND 1B HAND TEST (recording 20261026-194210; the
+user's four fixes and one behaviour change, 2026-10-26):
+- CLICK-THROUGH. A pen tap that closed the canvas's context menu was
+  replayed to the canvas and became a camera drag (with Space held: the
+  Space press had gone to the menu). Qt replays a press that closes a popup
+  unless the popup has Qt::WA_NoMouseReplay - and Qt 6.11 clears that
+  attribute on the popup just before each press (QApplication::notify,
+  read from the 6.11 source), so setting it in advance does nothing (probe
+  `build/_probe/camera1b/replayprobe`: replayed with it set beforehand,
+  stopped when set during the press). `PopupClickGuard` (DrawingCanvas.cpp,
+  an application event filter owned by the canvas) sets it while the popup
+  handles a press that lands outside it, over the canvas or the preview on
+  it: any popup, any tool. Presses anywhere else replay as before.
+- THE CAMERA TOOL'S SCRUB. With the Camera tool a ruler click or drag
+  SELECTS the panel under the playhead (as a clip click does) and stays on
+  the canvas at the exact frame (`AnimaticPage::setScrubShowsCanvas`, set
+  from the canvas's toolChanged), so Animate can key any frame. Every other
+  tool keeps "scrubbing looks without selecting" (the preview); Play still
+  opens the preview; a scrub during playback with the Camera tool pauses and
+  shows the canvas. Cost: each panel crossed during a scrub is a full panel
+  switch on the canvas.
+- THE CHIP when soft names the key's frame AND "Soft", in that order, in
+  amber ("ANIMATE ON  new key at 00:00:03:12  Soft 1.43x").
+- THE BAR OVER THE PREVIEW is SOLID (#212121; SelModBar::setSolid) while
+  its controls are disabled, so they read over a bright picture.
+- THE DEV RECORDER logs every action that fires as "action": a shortcut
+  on a QAction or QShortcut (its QShortcutEvent goes to the action, never a
+  widget, so the widget-only filter missed it - the hand test's Ctrl+Z left
+  no trace) with its text and key, and every menu's triggered actions
+  (hooked when the menu is first shown), once per firing.
+- Checks, each with its control: Lifecycle (ct) - a window-system click on
+  the frame that closes a menu makes no edit and no undo step (control: the
+  same click with no menu is one "Move Camera"); a ruler drag to frame 36
+  of panel 2 with the Camera tool stays on the canvas, selects panel 2 and
+  a drag keys scene frame 84 (control: the Brush tool's same drag opens the
+  preview); the soft chip with Animate on carries both (control: Animate
+  off names no frame); the covered bar's body alpha 255 (control: 166 with
+  the canvas back). DevRecorder (9): Ctrl+Z through the shortcut map logged
+  once with text and key, a menu click logged (control: an action that
+  never fired is absent). The preview-disabled check now opens the preview
+  with Play / pause (a Camera-tool scrub no longer does) and puts the
+  playhead back on the panel's start after. Lifecycle 820 -> 828,
+  DevRecorder 37 -> 40. The lifecycle family links Qt6::GuiPrivate for
+  QWindowSystemInterface.
+- GATE (clean builds): Debug nine families green. Release: QuickShape
+  (5) and Lifecycle (2: the zoom field's keys, the volume popup) failed
+  right after their windows lost the foreground to other programs (the
+  harness's TESTWINDOW lines: "Claude", then Chrome); rerun alone with
+  focus kept, both green (QuickShape 0 failures, Lifecycle 828). Pins
+  unchanged in both configurations.
 
 ## METHOD: measure interior structure ACROSS THE SIZE RANGE before calling it character (2026-09-25)
 

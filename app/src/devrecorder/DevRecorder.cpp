@@ -15,6 +15,8 @@
 #include <QWindow>
 #include <QAbstractButton>
 #include <QAbstractSpinBox>
+#include <QAction>
+#include <QMenu>
 #include <QKeyEvent>
 #include <QKeySequence>
 #include <QLineEdit>
@@ -540,6 +542,8 @@ class RecorderPrivate
 public:
     QWidget *window = nullptr;
     HostInfo info;
+    QPointer<QAction> lastAction; // logAction's once-per-firing guard
+    qint64 lastActionMs = 0;
     std::function<QVariantMap()> stateProvider;
     std::function<QVariantMap()> cameraProvider;
     std::function<QVariantMap(QWidget *, const QPoint &)> pressClassifier;
@@ -1074,6 +1078,32 @@ void Recorder::enqueue(const QString &type, const QJsonObject &data)
 
 bool Recorder::eventFilter(QObject *object, QEvent *event)
 {
+    // ACTIONS (2026-10-26, after the second 1B hand test: an undo by Ctrl+Z
+    // left no trace). A key claimed by a QAction or QShortcut never arrives
+    // as a KeyPress, and its QShortcutEvent goes to the action - not a
+    // widget - so the widget-only path below never saw it. Every shortcut
+    // that fires is logged as "action" (with the action's text), and every
+    // menu, the first time it is shown, reports its triggered actions too.
+    if (event->type() == QEvent::Show)
+        if (auto *menu = qobject_cast<QMenu *>(object))
+            hookMenu(menu);
+    if (d->recording && event->type() == QEvent::Shortcut
+        && !object->isWidgetType()) {
+        const QString key = static_cast<QShortcutEvent *>(event)->key()
+                                .toString(QKeySequence::PortableText);
+        if (auto *action = qobject_cast<QAction *>(object)) {
+            logAction(action, key, QStringLiteral("shortcut"));
+        } else {
+            QJsonObject o; // a QShortcut: its key and its name
+            o.insert(QLatin1String("via"), QStringLiteral("shortcut"));
+            o.insert(QLatin1String("key"), key);
+            o.insert(QLatin1String("object"),
+                     object->objectName().isEmpty()
+                         ? QString::fromLatin1(object->metaObject()->className())
+                         : object->objectName());
+            enqueue(QStringLiteral("action"), o);
+        }
+    }
     if (!d->recording || !object->isWidgetType())
         return false;
     const QEvent::Type t = event->type();
@@ -1338,6 +1368,42 @@ static void messageHandler(QtMsgType type, const QMessageLogContext &ctx,
 void Recorder::enqueueFromHandler(const QJsonObject &o)
 {
     enqueue(QStringLiteral("qtMessage"), o);
+}
+
+void Recorder::logEvent(const QString &type, const QVariantMap &data)
+{
+    enqueue(type, QJsonObject::fromVariantMap(data));
+}
+
+void Recorder::hookMenu(QMenu *menu)
+{
+    if (menu->property("devrecHooked").toBool())
+        return;
+    menu->setProperty("devrecHooked", true);
+    connect(menu, &QMenu::triggered, this, [this](QAction *action) {
+        if (d->recording && action)
+            logAction(action, action->shortcut().toString(QKeySequence::PortableText),
+                      QStringLiteral("menu"));
+    });
+}
+
+void Recorder::logAction(QAction *action, const QString &key, const QString &via)
+{
+    // Once per firing: a shortcut is logged as it arrives, and the menu that
+    // holds the action relays the same trigger a moment later.
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    if (d->lastAction == action && now - d->lastActionMs < 250)
+        return;
+    d->lastAction = action;
+    d->lastActionMs = now;
+    QJsonObject o;
+    o.insert(QLatin1String("text"), action->text().remove(QLatin1Char('&')));
+    o.insert(QLatin1String("via"), via);
+    if (!key.isEmpty())
+        o.insert(QLatin1String("key"), key);
+    if (action->isCheckable())
+        o.insert(QLatin1String("checked"), action->isChecked());
+    enqueue(QStringLiteral("action"), o);
 }
 
 QtMessageHandler Recorder::d_previousHandler() const

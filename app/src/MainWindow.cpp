@@ -29,6 +29,7 @@ this fence."
 #include <QTimer>
 #endif
 
+#include "SankoNoteStyle.h"
 #include "AnimaticPage.h"
 #include "AnimaticTimeline.h"
 #include "ConsistencyBoard.h"
@@ -94,6 +95,9 @@ MainWindow::MainWindow(QWidget *parent)
     // let the window shrink under the content and cut the header's right
     // group at the edge.
     setMinimumHeight(720);
+
+    // Every note and hover tooltip in the dark Sanko style (Phase 1B).
+    applySankoNoteStyle();
 
     setupMenuBar();
 
@@ -308,8 +312,17 @@ MainWindow::MainWindow(QWidget *parent)
             // "camera": the recorder's cameraChange is the canvas VIEW.
             if (m_animatic)
                 m.insert(m_animatic->shotCamDevrecState());
+            // ...and the Camera tool's own state (Phase 1B).
+            if (m_storyboard)
+                m.insert(m_storyboard->shotCamToolDevrecState());
             return m;
         });
+        // One shotCamEdit event per camera edit (Phase 1B).
+        if (m_storyboard)
+            connect(m_storyboard, &StoryboardPage::shotCameraEdited, rec,
+                    [rec](const QVariantMap &event) {
+                        rec->logEvent(QStringLiteral("shotCamEdit"), event);
+                    });
         rec->setCameraProvider([this]() -> QVariantMap {
             auto *canvas = m_storyboard
                 ? m_storyboard->findChild<DrawingCanvas *>() : nullptr;
@@ -489,6 +502,19 @@ void MainWindow::setupMenuBar()
     connect(m_exportPngAct, &QAction::triggered, this, &MainWindow::onExportPng);
     m_exportPdfAct = m_exportMenu->addAction(QStringLiteral("PDF Storyboard..."));
     connect(m_exportPdfAct, &QAction::triggered, this, &MainWindow::onExportPdf);
+    // FULL ARTWORK (the user's decision 3, Phase 1B): PNG and PDF stills
+    // show the shot at each panel's first frame; checked, they show the
+    // whole panel instead, as before the camera. The MP4 is always the
+    // shot. Off at every launch (a session choice, like the export dialogs'
+    // folders being asked each time).
+    m_exportMenu->addSeparator();
+    m_exportFullArtworkAct =
+        m_exportMenu->addAction(QStringLiteral("Stills Show Full Artwork"));
+    m_exportFullArtworkAct->setObjectName(QStringLiteral("exportFullArtwork"));
+    m_exportFullArtworkAct->setCheckable(true);
+    m_exportFullArtworkAct->setChecked(false);
+    m_exportFullArtworkAct->setToolTip(QStringLiteral(
+        "PNG and PDF: the whole panel instead of the camera's shot"));
 
     fileMenu->addSeparator();
 
@@ -731,7 +757,8 @@ void MainWindow::updateExportActions()
             hasPanels = true;
     if (m_exportMenu)
         m_exportMenu->setEnabled(hasPanels);
-    for (QAction *action : {m_exportMp4Act, m_exportPngAct, m_exportPdfAct})
+    for (QAction *action : {m_exportMp4Act, m_exportPngAct, m_exportPdfAct,
+                            m_exportFullArtworkAct})
         if (action)
             action->setEnabled(hasPanels);
 }
@@ -875,9 +902,10 @@ sankoexport::FilesResult MainWindow::runPngExport(const QString &folder)
     m_exporting = true;
     if (m_animatic)
         m_animatic->leavePreview();
-    // The stills show the shot at each panel's first frame (Phase 1A);
-    // the "Full artwork" choice reaches here with Part 1B's dialog.
-    const QVector<ExportPanel> panels = collectPanels(m_scenes, m_projectFps);
+    // The stills show the shot at each panel's first frame (Phase 1A), or
+    // the whole panel with File > Export > Stills Show Full Artwork (1B).
+    const QVector<ExportPanel> panels =
+        collectPanels(m_scenes, m_projectFps, stillsFullArtwork());
     QProgressDialog *dialog = nullptr;
     if (!m_exportProgressHookForTest) {
         dialog = new QProgressDialog(QStringLiteral("Writing PNG files..."),
@@ -910,9 +938,10 @@ sankoexport::FilesResult MainWindow::runPdfExport(const QString &path)
     m_exporting = true;
     if (m_animatic)
         m_animatic->leavePreview();
-    // The stills show the shot at each panel's first frame (Phase 1A);
-    // the "Full artwork" choice reaches here with Part 1B's dialog.
-    const QVector<ExportPanel> panels = collectPanels(m_scenes, m_projectFps);
+    // The stills show the shot at each panel's first frame (Phase 1A), or
+    // the whole panel with File > Export > Stills Show Full Artwork (1B).
+    const QVector<ExportPanel> panels =
+        collectPanels(m_scenes, m_projectFps, stillsFullArtwork());
     QProgressDialog *dialog = nullptr;
     if (!m_exportProgressHookForTest) {
         dialog = new QProgressDialog(QStringLiteral("Writing the PDF..."),
@@ -949,6 +978,11 @@ QStringList MainWindow::pngExportClashes(const QString &folder) const
 sankoexport::MovieResult MainWindow::exportMp4ForTest(const QString &path)
 {
     return runMovieExport(path);
+}
+
+bool MainWindow::stillsFullArtwork() const
+{
+    return m_exportFullArtworkAct && m_exportFullArtworkAct->isChecked();
 }
 
 sankoexport::FilesResult MainWindow::exportPngForTest(const QString &folder)

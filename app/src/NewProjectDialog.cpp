@@ -236,6 +236,29 @@ void NewProjectDialog::applyPreset(int index)
         m_height->setFieldEnabled(true);
     }
     revalidate();
+    update(); // the 1080p camera hint comes and goes with the preset
+}
+
+// THE 1080p CAMERA HINT (the user's decision 6, Phase 1B): beside the
+// default preset, one line saying a camera push-in will look soft there and
+// 4K is recommended for camera work. The default does not change. Drawn on
+// the Canvas Preset label's line, right-aligned in the note grey; the
+// longest wording that fits the line is used.
+QString NewProjectDialog::canvasHint() const
+{
+    if (!m_preset || m_preset->currentIndex() != 0)
+        return QString();
+    const QFontMetrics fm(studio::fieldLabelFont());
+    const int room = kLeftW - fm.horizontalAdvance(QStringLiteral("Canvas Preset")) - 12;
+    for (const QString &text : {
+             QStringLiteral("Camera push-ins look soft here; 4K is recommended for camera work"),
+             QStringLiteral("Camera push-ins look soft; 4K recommended for camera work"),
+             QStringLiteral("Push-ins look soft; 4K recommended for camera work"),
+             QStringLiteral("Push-ins look soft; 4K for camera work")})
+        if (fm.horizontalAdvance(text) <= room)
+            return text;
+    return fm.elidedText(QStringLiteral("Push-ins look soft; 4K for camera work"),
+                         Qt::ElideRight, room);
 }
 
 // Writability is probed by actually creating a temp file — isWritable()
@@ -476,6 +499,13 @@ void NewProjectDialog::paintEvent(QPaintEvent *)
     p.drawText(QRect(kLeftX + kDimW + kDimGap, kFormY + 3 * kFieldPitch,
                      kDimW, 12),
                Qt::AlignLeft, QStringLiteral("Height"));
+    // The 1080p camera hint, right-aligned on the Canvas Preset line.
+    const QString hint = canvasHint();
+    if (!hint.isEmpty()) {
+        p.setPen(kNoteText);
+        p.drawText(QRect(kLeftX, kFormY + 2 * kFieldPitch, kLeftW, 12),
+                   Qt::AlignRight, hint);
+    }
     // The x between the dimension fields (design 350:51, #666).
     p.setFont(studio::fieldFont());
     p.setPen(kNoteText);

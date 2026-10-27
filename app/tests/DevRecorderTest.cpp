@@ -23,6 +23,8 @@
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QLabel>
+#include <QAction>
+#include <QMenu>
 #include <QMouseEvent>
 
 #include <algorithm>
@@ -686,6 +688,73 @@ int main(int argc, char **argv)
         check(!textLeaked, "no key record carries the event's text");
         delete field;
         delete button;
+        rec->setOutputRoot(root);
+    }
+
+    // --- 9. menu and shortcut ACTIONS are logged (2026-10-26) --------------
+    // The second 1B hand test lost an undo: Ctrl+Z belongs to a QAction, so
+    // its key never arrives as a KeyPress and its QShortcutEvent goes to the
+    // action, not a widget. Every action that fires is now an "action"
+    // record with its text: through the shortcut map (the real resolution,
+    // qt_sendShortcutOverrideEvent) and through a menu click.
+    {
+        const QString root9 = root + QStringLiteral("/actions");
+        rec->setOutputRoot(root9);
+        QAction undo(QStringLiteral("&Undo Move Camera"), &window);
+        undo.setShortcut(QKeySequence(Qt::CTRL | Qt::Key_Z));
+        window.addAction(&undo);
+        QAction never(QStringLiteral("Never Fired"), &window);
+        never.setShortcut(QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_F12));
+        window.addAction(&never);
+        QMenu menu(&window);
+        menu.addAction(&undo); // the same action in a menu: one record, not two
+        QAction *redo = menu.addAction(QStringLiteral("Redo Move Camera"));
+        activate(&window);
+        rec->startRecording();
+        const QString dir9 = rec->sessionDir();
+        settle(150);
+        menu.popup(window.mapToGlobal(QPoint(10, 10)));
+        settle(150);
+        const QPoint item = menu.actionGeometry(redo).center();
+        QMouseEvent down(QEvent::MouseButtonPress, QPointF(item),
+                         menu.mapToGlobal(item), Qt::LeftButton, Qt::LeftButton,
+                         Qt::NoModifier);
+        QApplication::sendEvent(&menu, &down);
+        QMouseEvent up(QEvent::MouseButtonRelease, QPointF(item),
+                       menu.mapToGlobal(item), Qt::LeftButton, Qt::NoButton,
+                       Qt::NoModifier);
+        QApplication::sendEvent(&menu, &up);
+        settle(150);
+        activate(&window);
+        int undoFired = 0;
+        QObject::connect(&undo, &QAction::triggered, [&undoFired] { ++undoFired; });
+        const bool claimed =
+            qt_sendShortcutOverrideEvent(&window, 0, Qt::Key_Z, Qt::ControlModifier);
+        settle(300);
+        rec->stopRecording();
+
+        QStringList actions;
+        for (const QJsonObject &o : records(dir9))
+            if (o.value(QLatin1String("type")).toString() == QLatin1String("action"))
+                actions << QStringLiteral("%1|%2|%3")
+                               .arg(o.value(QLatin1String("text")).toString(),
+                                    o.value(QLatin1String("via")).toString(),
+                                    o.value(QLatin1String("key")).toString());
+        check(claimed && undoFired == 1
+                  && actions.count(QStringLiteral("Undo Move Camera|shortcut|Ctrl+Z")) == 1
+                  && actions.filter(QStringLiteral("Undo Move Camera")).size() == 1,
+              "a shortcut that fires (Ctrl+Z on an action that is also in a menu) is "
+              "logged ONCE as an action, with its text and key",
+              QStringLiteral("claimed=%1 fired=%2 [%3]").arg(claimed).arg(undoFired)
+                  .arg(actions.join(QLatin1String(", "))));
+        check(actions.contains(QStringLiteral("Redo Move Camera|menu|")),
+              "a menu item clicked is logged as an action with its text",
+              actions.join(QLatin1String(", ")));
+        check(actions.filter(QStringLiteral("Never Fired")).isEmpty() && actions.size() == 2,
+              "control: an action that never fired is not logged; nothing else is",
+              actions.join(QLatin1String(", ")));
+        window.removeAction(&undo);
+        window.removeAction(&never);
         rec->setOutputRoot(root);
     }
 

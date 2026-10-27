@@ -303,6 +303,102 @@ double sharpLimit(const QSize &canvas, const QSize &out)
                 canvas.height() / double(out.height()));
 }
 
+CameraState clampZoom(const CameraState &state)
+{
+    CameraState s = state;
+    s.zoom = qBound(kMinZoom, s.zoom, kMaxZoom);
+    return s;
+}
+
+double insideMinZoom(double rotation, const QSize &canvas)
+{
+    if (canvas.isEmpty())
+        return 1.0;
+    const double r = qDegreesToRadians(rotation);
+    const double c = qAbs(std::cos(r)), s = qAbs(std::sin(r));
+    const double W = canvas.width(), H = canvas.height();
+    // The turned frame's bounding box (fw c + fh s) x (fw s + fh c), with
+    // fw = W / z and fh = H / z, must fit W x H.
+    return qMax((W * c + H * s) / W, (W * s + H * c) / H);
+}
+
+CameraState clampInside(const CameraState &state, const QSize &canvas)
+{
+    CameraState s = clampZoom(state);
+    if (canvas.isEmpty())
+        return s;
+    s.zoom = qMin(kMaxZoom, qMax(s.zoom, insideMinZoom(s.rotation, canvas)));
+    const double r = qDegreesToRadians(s.rotation);
+    const double c = qAbs(std::cos(r)), sn = qAbs(std::sin(r));
+    const double fw = canvas.width() / s.zoom, fh = canvas.height() / s.zoom;
+    const double bw = fw * c + fh * sn, bh = fw * sn + fh * c;
+    s.cx = qBound(bw / 2.0, s.cx, canvas.width() - bw / 2.0);
+    s.cy = qBound(bh / 2.0, s.cy, canvas.height() - bh / 2.0);
+    return s;
+}
+
+double normalisedAngle(double degrees)
+{
+    double a = std::fmod(degrees, 360.0);
+    if (a <= -180.0)
+        a += 360.0;
+    else if (a > 180.0)
+        a -= 360.0;
+    return a;
+}
+
+int keyIndexAtFrame(const Scene &scene, double sceneFrame, int fps)
+{
+    for (int i = 0; i < scene.camera.keys.size(); ++i) {
+        const double f = keyFrame(scene, scene.camera.keys.at(i), fps);
+        if (f >= 0.0 && qAbs(f - sceneFrame) < 0.5)
+            return i;
+    }
+    return -1;
+}
+
+int segmentKeyIndex(const Scene &scene, double sceneFrame, int fps)
+{
+    const int at = keyIndexAtFrame(scene, sceneFrame, fps);
+    if (at >= 0)
+        return at;
+    int best = -1;
+    double bestFrame = -1.0;
+    for (int i = 0; i < scene.camera.keys.size(); ++i) {
+        const double f = keyFrame(scene, scene.camera.keys.at(i), fps);
+        if (f >= 0.0 && f < sceneFrame && f > bestFrame) {
+            best = i;
+            bestFrame = f;
+        }
+    }
+    return best;
+}
+
+QVector<double> liveKeyFrames(const Scene &scene, int fps)
+{
+    QVector<double> frames;
+    for (const CameraKey &key : scene.camera.keys) {
+        const double f = keyFrame(scene, key, fps);
+        if (f >= 0.0)
+            frames.append(f);
+    }
+    std::sort(frames.begin(), frames.end());
+    return frames;
+}
+
+QString timecodeText(int filmFrame, int fps)
+{
+    fps = qMax(1, fps);
+    filmFrame = qMax(0, filmFrame);
+    const int ff = filmFrame % fps;
+    const int totalSec = filmFrame / fps;
+    return QStringLiteral("%1:%2:%3:%4")
+        .arg(totalSec / 3600, 2, 10, QChar('0'))
+        .arg((totalSec / 60) % 60, 2, 10, QChar('0'))
+        .arg(totalSec % 60, 2, 10, QChar('0'))
+        .arg(ff, 2, 10, QChar('0'));
+}
+
 QJsonObject toJson(const Scene &scene)
 {
     QJsonArray keys;

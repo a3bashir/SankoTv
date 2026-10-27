@@ -3,9 +3,11 @@
 #include "DrawingCanvas.h"
 
 #include "StoryboardModel.h"
+#include "camera/ShotCamera.h"
 
 #include <QDir>
 #include <QActionGroup>
+#include <QApplication>
 #include <QColorDialog>
 #include <QContextMenuEvent>
 #include <QCryptographicHash>
@@ -53,6 +55,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <utility>
 
 namespace {
@@ -119,11 +122,50 @@ bool firstImageUrl(const QMimeData *mime, QString *outPath)
     return true;
 }
 
+// A CLICK THAT CLOSES A MENU NEVER REACHES THE CANVAS (the user's rule,
+// 2026-10-26, after the second 1B hand test: a pen tap that closed the
+// canvas's context menu was replayed to the canvas and became a camera
+// drag). Qt replays a press that closes a popup to the widget under it
+// unless the popup carries Qt::WA_NoMouseReplay - and Qt 6.11 CLEARS that
+// attribute on the popup just before each press is delivered to it
+// (QApplication::notify), so it cannot be set in advance. This filter,
+// on the application, sees the press after that clear and before the
+// popup handles it: a press outside a popup, over this canvas (or the
+// preview laid on it), marks the popup "no replay". Every tool, every
+// popup (menus, dropdowns); presses anywhere else replay as before.
+class PopupClickGuard : public QObject
+{
+public:
+    explicit PopupClickGuard(QWidget *canvas) : QObject(canvas), m_canvas(canvas) {}
+
+protected:
+    bool eventFilter(QObject *object, QEvent *event) override
+    {
+        if (event->type() != QEvent::MouseButtonPress
+            && event->type() != QEvent::MouseButtonDblClick)
+            return false;
+        auto *popup = qobject_cast<QWidget *>(object);
+        if (!popup || !popup->isWindow() || popup->windowType() != Qt::Popup)
+            return false;
+        auto *press = static_cast<QMouseEvent *>(event);
+        if (popup->rect().contains(press->position().toPoint()))
+            return false; // inside the popup: its own click
+        QWidget *under = QApplication::widgetAt(press->globalPosition().toPoint());
+        if (under && (under == m_canvas || m_canvas->isAncestorOf(under)))
+            popup->setAttribute(Qt::WA_NoMouseReplay, true);
+        return false;
+    }
+
+private:
+    QWidget *m_canvas;
+};
+
 } // namespace
 
 DrawingCanvas::DrawingCanvas(QWidget *parent)
     : QWidget(parent)
 {
+    qApp->installEventFilter(new PopupClickGuard(this)); // see the class
     setMouseTracking(false);
     setTabletTracking(true); // deliver stylus events (with pressure) to tabletEvent
     setCursor(Qt::CrossCursor);
@@ -874,6 +916,439 @@ void DrawingCanvas::setTitleSafeMaskOpacity(int percent)
     update();
 }
 
+// --- The shot camera's tool (Phase 1B) ---------------------------------------
+// The approved design (Figma 1B-1 .. 1B-3, 2026-10-25). Everything here is
+// display and pointer handling: the camera itself lives in the scene, and
+// the workspace answers shotCameraEditRequested with one undo command.
+
+namespace {
+const QColor kCamAccent(0x7c, 0x6e, 0xf6);   // the Sanko accent
+const QColor kCamSoft(0xf5, 0xa6, 0x23);     // past the sharp limit
+constexpr double kCamHandle = 8.0;           // handle side, screen px
+constexpr double kCamHandleTol = 8.0;        // grab reach about a handle centre
+constexpr double kCamRotateZone = 22.0;      // outside a corner: turn
+constexpr double kCamSmallSide = 40.0;       // a side below this: handles step out
+constexpr double kCamStepOut = 8.0;
+
+// The canvas chips, in the PREVIEW chip's own style (AnimaticPage's
+// PanelDisplay): 24 px tall, radius 6, 11 px text, 10 px padding.
+void paintCamChip(QPainter &painter, const QRectF &r, const QString &text,
+                  const QColor &fill, const QColor &border,
+                  const QColor &textColor, bool diamond)
+{
+    painter.save();
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    painter.setPen(border.isValid() ? QPen(border, 1.0) : QPen(Qt::NoPen));
+    painter.setBrush(fill);
+    painter.drawRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5), 6, 6);
+    QRectF textR = r.adjusted(10, 0, -10, 0);
+    if (diamond) {
+        const QPointF c(r.left() + 13.5, r.center().y());
+        QPolygonF d({c + QPointF(0, -3.5), c + QPointF(3.5, 0),
+                     c + QPointF(0, 3.5), c + QPointF(-3.5, 0)});
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(textColor);
+        painter.drawPolygon(d);
+        textR.setLeft(r.left() + 22);
+    }
+    painter.setPen(textColor);
+    painter.drawText(textR, Qt::AlignVCenter | Qt::AlignLeft, text);
+    painter.restore();
+}
+
+QFont camChipFont(const QFont &base)
+{
+    QFont f = base;
+    f.setPixelSize(11);
+    return f;
+}
+} // namespace
+
+void DrawingCanvas::setShotCameraProvider(std::function<ShotCameraView()> provider)
+{
+    m_shotCamProvider = std::move(provider);
+    update();
+}
+
+DrawingCanvas::ShotCameraView DrawingCanvas::shotCameraView() const
+{
+    if (!m_shotCamProvider || !m_panel || canvasSize().isEmpty())
+        return ShotCameraView();
+    return m_shotCamProvider();
+}
+
+shotcam::CameraState DrawingCanvas::shotCameraShownState(const ShotCameraView &v) const
+{
+    return m_camDrag >= 0 ? m_camLive : v.state;
+}
+
+QPolygonF DrawingCanvas::shotCameraWidgetQuad(const shotcam::CameraState &s) const
+{
+    return viewTransform().map(shotcam::frameQuad(s, canvasSize()));
+}
+
+QVector<QPointF> DrawingCanvas::shotCameraHandles(const QPolygonF &quad) const
+{
+    QVector<QPointF> handles;
+    if (quad.size() < 4)
+        return handles;
+    const QPointF c = (quad.at(0) + quad.at(2)) / 2.0;
+    double minSide = std::numeric_limits<double>::max();
+    for (int i = 0; i < 4; ++i)
+        minSide = qMin(minSide, QLineF(quad.at(i), quad.at((i + 1) % 4)).length());
+    // A frame small on screen: the handles step out along the diagonals so
+    // the body between them stays pressable.
+    const double out = minSide < kCamSmallSide ? kCamStepOut : 0.0;
+    for (int i = 0; i < 4; ++i) {
+        QPointF p = quad.at(i);
+        const double len = QLineF(c, p).length();
+        if (out > 0.0 && len > 1e-9)
+            p += (p - c) * (out / len);
+        handles.append(p);
+    }
+    return handles;
+}
+
+int DrawingCanvas::shotCameraHitTest(const QPointF &p) const
+{
+    if (m_tool != Camera)
+        return -1;
+    const ShotCameraView v = shotCameraView();
+    if (!v.valid)
+        return -1;
+    const QPolygonF quad = shotCameraWidgetQuad(shotCameraShownState(v));
+    const QVector<QPointF> h = shotCameraHandles(quad);
+    if (h.size() < 4)
+        return -1;
+    for (int i = 0; i < 4; ++i)
+        if (qAbs(p.x() - h.at(i).x()) <= kCamHandleTol
+            && qAbs(p.y() - h.at(i).y()) <= kCamHandleTol)
+            return 1 + i;
+    if (quad.containsPoint(p, Qt::OddEvenFill))
+        return 0;
+    for (int i = 0; i < 4; ++i)
+        if (QLineF(h.at(i), p).length() <= kCamRotateZone)
+            return 5 + i;
+    return -1;
+}
+
+void DrawingCanvas::shotCameraUpdateCursor(int hit)
+{
+    if (m_panning || m_spaceHeld)
+        return;
+    if (hit < 0) {
+        setCursor(defaultCursorShape());
+        return;
+    }
+    if (hit == 0) {
+        setCursor(Qt::SizeAllCursor);
+        return;
+    }
+    const QPolygonF quad =
+        shotCameraWidgetQuad(shotCameraShownState(shotCameraView()));
+    if (quad.size() < 4)
+        return;
+    // The corner as it sits ON SCREEN (the view may be turned or flipped).
+    const QPointF d = quad.at((hit - 1) % 4) - (quad.at(0) + quad.at(2)) / 2.0;
+    const int corner = d.y() < 0 ? (d.x() < 0 ? 0 : 1) : (d.x() < 0 ? 3 : 2);
+    if (hit <= 4)
+        setCursor((corner == 0 || corner == 2) ? Qt::SizeFDiagCursor
+                                               : Qt::SizeBDiagCursor);
+    else
+        setCursor(m_rotateCursors[corner]);
+}
+
+shotcam::CameraState DrawingCanvas::shotCameraDragState(const QPointF &widgetPos,
+                                                        bool shift) const
+{
+    shotcam::CameraState s = m_camStart;
+    const QPointF cp = toCanvasF(widgetPos); // back through the view
+    const QPointF c(m_camStart.cx, m_camStart.cy);
+    if (m_camDrag == 0) {
+        s.cx += cp.x() - m_camPressCanvas.x();
+        s.cy += cp.y() - m_camPressCanvas.y();
+    } else if (m_camDrag >= 1 && m_camDrag <= 4) {
+        // Scale about the centre: the frame's corner follows the pointer.
+        const double d0 = QLineF(c, m_camPressCanvas).length();
+        const double d1 = QLineF(c, cp).length();
+        if (d0 > 1e-6 && d1 > 1e-6)
+            s.zoom = m_camStart.zoom * d0 / d1;
+    } else if (m_camDrag >= 5) {
+        const double a0 = std::atan2(m_camPressCanvas.y() - c.y(),
+                                     m_camPressCanvas.x() - c.x());
+        const double a1 = std::atan2(cp.y() - c.y(), cp.x() - c.x());
+        double r = m_camStart.rotation + qRadiansToDegrees(a1 - a0);
+        if (shift)
+            r = std::round(r / 15.0) * 15.0;
+        s.rotation = shotcam::normalisedAngle(r);
+    }
+    return shotCameraView().stayInside ? shotcam::clampInside(s, canvasSize())
+                                       : shotcam::clampZoom(s);
+}
+
+bool DrawingCanvas::shotCameraSoft(const ShotCameraView &v,
+                                   const shotcam::CameraState &s) const
+{
+    return s.zoom > v.sharpLimit + 1e-9;
+}
+
+QString DrawingCanvas::shotCameraChipText(const ShotCameraView &v,
+                                          const shotcam::CameraState &s) const
+{
+    const QString dot = QStringLiteral("  ") + QChar(0x00B7) + QStringLiteral("  ");
+    QString t = QStringLiteral("SHOT CAMERA") + dot
+        + (v.animate ? QStringLiteral("ANIMATE ON") : QStringLiteral("ANIMATE OFF"));
+    // With Animate on the frame a drag writes is always named; past the
+    // sharp limit "Soft" is ADDED after it (the user's rule, 2026-10-26: the
+    // key's frame stays visible when the frame is soft), amber.
+    if (v.animate)
+        t += dot + (v.keyAtPlayhead ? QStringLiteral("key at ")
+                                    : QStringLiteral("new key at "))
+            + v.timecode;
+    if (shotCameraSoft(v, s))
+        t += dot + QStringLiteral("Soft ") + QString::number(s.zoom, 'f', 2)
+            + QChar(0x00D7);
+    return t;
+}
+
+QRectF DrawingCanvas::shotCameraChipRect(const QString &text) const
+{
+    const QFontMetricsF fm(camChipFont(font()));
+    const ShotCameraView v = shotCameraView();
+    const double w = fm.horizontalAdvance(text) + 20.0 + (v.animate ? 12.0 : 0.0);
+    return QRectF(qRound((width() - w) / 2.0), 12.0, qCeil(w), 24.0);
+}
+
+void DrawingCanvas::shotCameraPress(const QPointF &widgetPos)
+{
+    const ShotCameraView v = shotCameraView();
+    if (!v.valid)
+        return;
+    const int hit = shotCameraHitTest(widgetPos);
+    if (hit < 0)
+        return; // outside the frame and its zones: nothing
+    if (!v.editable) {
+        emit shotCameraEditRefused();
+        return;
+    }
+    m_camDrag = hit;
+    m_camStart = v.state;
+    m_camLive = v.state;
+    m_camShift = false;
+    m_camPressCanvas = toCanvasF(widgetPos);
+    m_camPressWidget = widgetPos;
+    m_camPointer = widgetPos;
+    update();
+}
+
+void DrawingCanvas::shotCameraMove(const QPointF &widgetPos,
+                                   Qt::MouseButtons buttons,
+                                   Qt::KeyboardModifiers mods)
+{
+    if (m_camDrag >= 0) {
+        if (!(buttons & Qt::LeftButton)) { // the release went elsewhere
+            shotCameraFinishDrag();
+            return;
+        }
+        m_camShift = mods & Qt::ShiftModifier;
+        m_camPointer = widgetPos;
+        m_camLive = shotCameraDragState(widgetPos, m_camShift);
+        update();
+        return;
+    }
+    const int hit = shotCameraHitTest(widgetPos);
+    if (hit != m_camHover) {
+        m_camHover = hit;
+        update();
+    }
+    shotCameraUpdateCursor(hit);
+}
+
+void DrawingCanvas::shotCameraFinishDrag()
+{
+    if (m_camDrag < 0)
+        return;
+    const int kind = m_camDrag == 0 ? ShotCameraMove
+        : (m_camDrag <= 4 ? ShotCameraZoom : ShotCameraRotate);
+    const bool moved = m_camPointer != m_camPressWidget;
+    const shotcam::CameraState state = m_camLive;
+    const shotcam::CameraState start = m_camStart;
+    m_camDrag = -1;
+    update();
+    if (moved && state != start)
+        emit shotCameraEditRequested(state, kind);
+}
+
+// The safe-area guides INSIDE THE CAMERA'S FRAME: the same 5 % / 10 %
+// insets, colours and labels as the canvas guides, in the frame's own
+// (turned) space. Canvas space, through T, like the canvas guides.
+void DrawingCanvas::paintShotCameraGuides(QPainter &painter, const QSize &cs,
+                                          const shotcam::CameraState &s)
+{
+    auto cosmetic = [](const QColor &c) {
+        QPen p(c, 0.0);
+        p.setCosmetic(true);
+        return p;
+    };
+    const double fw = cs.width() / s.zoom;
+    const double fh = cs.height() / s.zoom;
+    const QRectF frame(-fw / 2.0, -fh / 2.0, fw, fh);
+    painter.save();
+    painter.translate(s.cx, s.cy);
+    painter.rotate(s.rotation);
+    painter.setBrush(Qt::NoBrush);
+    QFont f = font();
+    f.setPointSize(7);
+    painter.setFont(f);
+    if (m_safeArea) {
+        const QRectF r = frame.adjusted(fw * 0.05, fh * 0.05, -fw * 0.05, -fh * 0.05);
+        painter.setPen(cosmetic(QColor(0xf5, 0xa6, 0x23, m_actionSafeMaskPct * 255 / 100)));
+        painter.drawRect(r);
+        painter.drawText(r.adjusted(4, 2, -4, -2), Qt::AlignTop | Qt::AlignLeft,
+                         QStringLiteral("ACTION SAFE"));
+    }
+    if (m_titleSafe) {
+        const QRectF r = frame.adjusted(fw * 0.10, fh * 0.10, -fw * 0.10, -fh * 0.10);
+        painter.setPen(cosmetic(QColor(0x4d, 0x9f, 0xff, m_titleSafeMaskPct * 255 / 100)));
+        painter.drawRect(r);
+        painter.drawText(r.adjusted(4, 2, -4, -2), Qt::AlignTop | Qt::AlignLeft,
+                         QStringLiteral("TITLE SAFE"));
+    }
+    painter.restore();
+}
+
+// Widget space, after the canvas: the frame, its handles and chips.
+void DrawingCanvas::paintShotCamera(QPainter &painter)
+{
+    const ShotCameraView v = shotCameraView();
+    if (!v.valid)
+        return;
+    const bool tool = m_tool == Camera;
+    if (!tool && !v.sceneHasKeys)
+        return; // outside the tool: the outline only when there are keys
+    const shotcam::CameraState s = shotCameraShownState(v);
+    const bool soft = shotCameraSoft(v, s);
+    const QColor accent = soft ? kCamSoft : kCamAccent;
+    const QPolygonF quad = shotCameraWidgetQuad(s);
+    if (quad.size() < 4)
+        return;
+
+    painter.save();
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    QPainterPath inside;
+    inside.addPolygon(quad);
+    inside.closeSubpath();
+    if (tool) {
+        QPainterPath outside;
+        outside.addRect(QRectF(rect()));
+        painter.fillPath(outside.subtracted(inside), QColor(0, 0, 0, 102)); // 40 %
+        const int hover = m_camDrag >= 0 ? m_camDrag : m_camHover;
+        if (hover == 0) {
+            QColor tint = accent;
+            tint.setAlpha(26); // 10 %
+            painter.fillPath(inside, tint);
+        }
+    }
+    QPen outline(accent, 1.5);
+    outline.setJoinStyle(Qt::MiterJoin);
+    painter.setPen(outline);
+    painter.setBrush(Qt::NoBrush);
+    painter.drawPolygon(quad);
+
+    if (tool) {
+        const QPointF c = (quad.at(0) + quad.at(2)) / 2.0;
+        painter.setPen(QPen(accent, 1.0));
+        painter.drawLine(c - QPointF(4.5, 0), c + QPointF(4.5, 0));
+        painter.drawLine(c - QPointF(0, 4.5), c + QPointF(0, 4.5));
+
+        const QVector<QPointF> h = shotCameraHandles(quad);
+        const int active = (m_camDrag >= 1 && m_camDrag <= 4) ? m_camDrag - 1 : -1;
+        for (int i = 0; i < h.size(); ++i) {
+            QRectF r(0, 0, kCamHandle, kCamHandle);
+            r.moveCenter(h.at(i));
+            painter.setPen(QPen(accent, 1.0));
+            painter.setBrush(i == active ? accent : QColor(Qt::white));
+            painter.drawRect(r);
+        }
+        const int ringAt = m_camDrag >= 5 ? m_camDrag - 5
+            : (m_camDrag < 0 && m_camHover >= 5 ? m_camHover - 5 : -1);
+        if (ringAt >= 0 && ringAt < h.size()) {
+            QPen ring(accent, 1.0);
+            ring.setStyle(Qt::DashLine);
+            painter.setPen(ring);
+            painter.setBrush(Qt::NoBrush);
+            painter.drawEllipse(h.at(ringAt), kCamRotateZone, kCamRotateZone);
+        }
+
+        painter.setFont(camChipFont(font()));
+        const QFontMetricsF fm(painter.font());
+        // The drag chip, at the pointer: the zoom or the angle.
+        if (m_camDrag >= 1) {
+            QString t = m_camDrag <= 4
+                ? QString::number(s.zoom, 'f', 2) + QChar(0x00D7)
+                : QString::number(s.rotation, 'f', 1) + QChar(0x00B0);
+            if (soft && m_camDrag <= 4) // "Soft" names the zoom; a turn shows its angle
+                t = QStringLiteral("Soft ") + t;
+            const double w = qCeil(fm.horizontalAdvance(t) + 20.0);
+            QRectF r(m_camPointer + QPointF(14, 10), QSizeF(w, 24));
+            r.moveLeft(qBound(4.0, r.left(), width() - w - 4.0));
+            r.moveTop(qBound(4.0, r.top(), height() - 28.0));
+            if (soft)
+                paintCamChip(painter, r, t, kCamSoft, QColor(), QColor(0x1c, 0x1e, 0x25), false);
+            else
+                paintCamChip(painter, r, t, QColor(0x16, 0x16, 0x16),
+                             QColor(0x2a, 0x2a, 0x2a), QColor(0xdd, 0xdd, 0xdd), false);
+        }
+        // The mode chip, top centre: which mode the next drag is in.
+        const QString text = shotCameraChipText(v, s);
+        const QRectF chip = shotCameraChipRect(text);
+        if (soft)
+            paintCamChip(painter, chip, text, kCamSoft, QColor(),
+                         QColor(0x1c, 0x1e, 0x25), v.animate);
+        else if (v.animate)
+            paintCamChip(painter, chip, text, kCamAccent, QColor(), Qt::white, true);
+        else
+            paintCamChip(painter, chip, text, QColor(0x16, 0x16, 0x16),
+                         QColor(0x2a, 0x2a, 0x2a), QColor(0xdd, 0xdd, 0xdd), false);
+    }
+    painter.restore();
+}
+
+QPolygonF DrawingCanvas::shotCameraQuadForTest() const
+{
+    const ShotCameraView v = shotCameraView();
+    if (!v.valid || (m_tool != Camera && !v.sceneHasKeys))
+        return QPolygonF();
+    return shotCameraWidgetQuad(shotCameraShownState(v));
+}
+
+int DrawingCanvas::shotCameraHitForTest(const QPointF &widgetPos) const
+{
+    return shotCameraHitTest(widgetPos);
+}
+
+QVector<QPointF> DrawingCanvas::shotCameraHandlesForTest() const
+{
+    const ShotCameraView v = shotCameraView();
+    if (!v.valid || m_tool != Camera)
+        return {};
+    return shotCameraHandles(shotCameraWidgetQuad(shotCameraShownState(v)));
+}
+
+QString DrawingCanvas::shotCameraChipForTest() const
+{
+    const ShotCameraView v = shotCameraView();
+    if (!v.valid || m_tool != Camera)
+        return QString();
+    return shotCameraChipText(v, shotCameraShownState(v));
+}
+
+QRectF DrawingCanvas::shotCameraChipRectForTest() const
+{
+    const QString text = shotCameraChipForTest();
+    return text.isEmpty() ? QRectF() : shotCameraChipRect(text);
+}
+
 // The active layer, but only when it can legally take strokes: locked layers
 // ignore input entirely (no cursor change), hidden layers can't be drawn on
 // (the stroke would be invisible), and a panel with no layers draws nowhere.
@@ -971,13 +1446,18 @@ void DrawingCanvas::setTool(Tool tool)
         setMouseTracking(false);
     }
     m_tool = tool;
+    // Leaving the Camera tool mid-drag lands the drag (one request).
+    if (m_camDrag >= 0 && tool != Camera)
+        shotCameraFinishDrag();
     // Perspective hover feedback (handles grow under the cursor) needs
-    // buttonless move events; SelectPoly manages its own tracking below.
-    if (tool == Perspective)
+    // buttonless move events, as does the Camera tool's (the body tints,
+    // the cursor names the handle); SelectPoly manages its own tracking.
+    if (tool == Perspective || tool == Camera)
         setMouseTracking(true);
     else if (tool != SelectPoly)
         setMouseTracking(false);
     m_perspHover = -1;
+    m_camHover = -1;
     cancelShape(); // an in-progress shape never survives a tool switch
     // Activating Move shows the transform box at once (like Photoshop).
     if (tool == Move)
@@ -2018,7 +2498,9 @@ void DrawingCanvas::cancelShape()
 {
     m_shapeDrag = false;
     m_polygonPts.clear();
-    setMouseTracking(false); // hover tracking only while a polygon is open
+    // Hover tracking only while a polygon is open - and always with the
+    // Camera tool, whose hover tints the frame and names the handle.
+    setMouseTracking(m_tool == Camera);
     update();
 }
 
@@ -2031,7 +2513,9 @@ void DrawingCanvas::clearSelection()
     m_selectionPath = QPainterPath();
     m_selDrag = false;
     m_lassoPts.clear();
-    setMouseTracking(false); // drop any in-progress polygon-selection rubber
+    // Drop any in-progress polygon-selection rubber (the Camera tool keeps
+    // its hover tracking).
+    setMouseTracking(m_tool == Camera);
     updateAntsTimer();
     update();
 }
@@ -5157,7 +5641,8 @@ bool DrawingCanvas::viewInteractionActive() const
     // mode.
     return m_brushStroke || m_strokeMask != StrokeMaskNone
         || m_panning || m_selDrag || m_selOutlineDrag
-        || !m_polygonPts.isEmpty() || m_xformMode != XNone || m_qsEditing;
+        || !m_polygonPts.isEmpty() || m_xformMode != XNone || m_qsEditing
+        || m_camDrag >= 0;
 }
 
 QMenu *DrawingCanvas::buildGridMenu()
@@ -5596,8 +6081,19 @@ void DrawingCanvas::paintEvent(QPaintEvent *event)
         painter.drawRect(frameR);
     }
 
+    // The safe-area guides follow the SHOT CAMERA when it is not neutral
+    // (Phase 1B): inset from its frame at the playhead. Neutral (or no
+    // camera at all) keeps the canvas guides below, byte for byte.
+    const ShotCameraView guideCam = (m_safeArea || m_titleSafe)
+        ? shotCameraView() : ShotCameraView();
+    const shotcam::CameraState guideState = shotCameraShownState(guideCam);
+    const bool guidesFromCamera = guideCam.valid
+        && !shotcam::isNeutral(guideState, cs);
+    if (guidesFromCamera)
+        paintShotCameraGuides(painter, cs, guideState);
+
     // Action-safe: 5% inset, amber.
-    if (m_safeArea) {
+    if (m_safeArea && !guidesFromCamera) {
         const QRectF r = canvasR.adjusted(cs.width() * 0.05, cs.height() * 0.05,
                                           -cs.width() * 0.05, -cs.height() * 0.05);
         painter.setPen(cosmetic(QColor(0xf5, 0xa6, 0x23, m_actionSafeMaskPct * 255 / 100)));
@@ -5610,7 +6106,7 @@ void DrawingCanvas::paintEvent(QPaintEvent *event)
     }
 
     // Title-safe: 10% inset, blue.
-    if (m_titleSafe) {
+    if (m_titleSafe && !guidesFromCamera) {
         const QRectF r = canvasR.adjusted(cs.width() * 0.10, cs.height() * 0.10,
                                           -cs.width() * 0.10, -cs.height() * 0.10);
         painter.setPen(cosmetic(QColor(0x4d, 0x9f, 0xff, m_titleSafeMaskPct * 255 / 100)));
@@ -5771,6 +6267,10 @@ void DrawingCanvas::paintEvent(QPaintEvent *event)
         inside.addPolygon(quad);
         painter.fillPath(outside.subtracted(inside), QColor(0, 0, 0, 102));
     }
+
+    // The shot camera's frame (Phase 1B): with the Camera tool, the frame,
+    // handles, dim and chips; otherwise the outline when the scene has keys.
+    paintShotCamera(painter);
 
     // Perspective tool with no VPs yet: centred prompt chip over the canvas
     // (display-only, Sanko dark chip in the Modifier-bar language).
@@ -6086,8 +6586,11 @@ void DrawingCanvas::keyReleaseEvent(QKeyEvent *event)
 // the stroke exactly like focus loss: commit, never orphan.
 bool DrawingCanvas::event(QEvent *event)
 {
-    if (event->type() == QEvent::UngrabMouse)
+    if (event->type() == QEvent::UngrabMouse) {
         finishInterruptedStroke();
+        if (m_camDrag >= 0)
+            shotCameraFinishDrag(); // a camera drag lands, like a stroke
+    }
     return QWidget::event(event);
 }
 
@@ -6095,6 +6598,8 @@ void DrawingCanvas::focusOutEvent(QFocusEvent *event)
 {
     clearPenUiLatch(); // never leave a control stuck pressed on focus loss
     finishInterruptedStroke(); // a live stroke commits, never orphans
+    if (m_camDrag >= 0)
+        shotCameraFinishDrag(); // ...and so does a camera drag
     if (m_qsHeld) {    // pen focus torn away mid-hold: drop the held flag so
         m_qsHeld = false; // the UI never sticks in the held state
         updateQuickShapeUi();
@@ -6134,6 +6639,13 @@ void DrawingCanvas::mousePressEvent(QMouseEvent *event)
 
     if (!m_panel || event->button() != Qt::LeftButton)
         return;
+
+    // The shot camera's tool takes every left press (after the pan above:
+    // Space and the middle button are the view's, never the camera's).
+    if (m_tool == Camera) {
+        shotCameraPress(event->position());
+        return;
+    }
 
     // Ctrl + Left click: Photoshop-style auto-select — pick the topmost
     // VISIBLE layer with opaque pixels under the cursor, whatever layer it
@@ -6406,6 +6918,10 @@ void DrawingCanvas::mouseMoveEvent(QMouseEvent *event)
         update();
         return;
     }
+    if (m_tool == Camera) {
+        shotCameraMove(event->position(), event->buttons(), event->modifiers());
+        return;
+    }
     if (m_tool == Perspective) {
         if ((event->buttons() & Qt::LeftButton) && m_perspHandle >= 0) {
             m_perspective.moveVanishingPoint(m_perspHandle,
@@ -6512,6 +7028,16 @@ void DrawingCanvas::mouseReleaseEvent(QMouseEvent *event)
         && (event->button() == Qt::MiddleButton || event->button() == Qt::LeftButton)) {
         m_panning = false;
         setCursor(m_spaceHeld ? Qt::OpenHandCursor : defaultCursorShape());
+        return;
+    }
+    if (m_tool == Camera && event->button() == Qt::LeftButton) {
+        if (m_camDrag >= 0) {
+            m_camShift = event->modifiers() & Qt::ShiftModifier;
+            m_camPointer = event->position();
+            m_camLive = shotCameraDragState(event->position(), m_camShift);
+            shotCameraFinishDrag();
+        }
+        shotCameraUpdateCursor(shotCameraHitTest(event->position()));
         return;
     }
     if (m_tool == Perspective && event->button() == Qt::LeftButton) {

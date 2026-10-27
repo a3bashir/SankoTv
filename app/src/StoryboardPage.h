@@ -7,6 +7,7 @@
 #include <QPoint>
 #include <QPointer>
 #include <QSet>
+#include <QVariantMap>
 #include <QVector>
 #include <QWidget>
 
@@ -161,6 +162,44 @@ public:
     // Audio pushes (and by its undo): empty = no track; linked = an old
     // project's file outside the project (AnimaticPage::audioLinked).
     void applyAudioPathForUndo(const QString &path, bool linked);
+    // A scene's shot camera, set by the undoable command every camera edit
+    // pushes (a canvas drag, Add / Delete Key, the ease) and by its undo:
+    // the keys, then the canvas, the preview, the SHOTS clips, the strip.
+    void applyCameraForUndo(Scene *scene, const shotcam::SceneCamera &camera);
+
+    // THE SHOT CAMERA BAR (Phase 1B, Figma 1B-4): the Camera tool's
+    // Modifier bar. Animate (session), previous key / Add Key / Delete Key /
+    // next key, the ease of the segment at the playhead, Stay inside artwork
+    // (session, on by default), and the Safe Area / Title Safe guides -
+    // which stay on with every tool and are remembered across launches as
+    // ONE app setting (kCameraGuidesKey, bit 1 Safe Area, bit 2 Title Safe).
+    // EDIT RULES: Animate off with two or more keys refuses a frame drag
+    // with a note; Animate off with none or one sets the scene's single
+    // framing (one key on its first frame); Animate on updates the key at
+    // the playhead or adds one there. Every edit is one undo command.
+    static const QString kCameraGuidesKey;
+    // The bar's hover notes (follow-up to the 1B hand test, 2026-10-25):
+    // every control while the preview covers the canvas, and the Ease field
+    // on (or past) the scene's last key.
+    static QString cameraPreviewNote();
+    static QString cameraLastKeyNote();
+    bool cameraAnimate() const { return m_cameraAnimate; }
+    void setCameraAnimate(bool on);
+    bool cameraStayInside() const { return m_cameraStayInside; }
+    void setCameraStayInside(bool on);
+    void setCameraGuides(bool safeArea, bool titleSafe); // also remembered
+    void cameraAddKey();
+    void cameraDeleteKey();
+    void cameraStepKey(int direction); // -1 previous, +1 next
+    void cameraSetEase(shotcam::Ease ease);
+    // What the canvas is shown (DrawingCanvas::setShotCameraProvider).
+    DrawingCanvas::ShotCameraView shotCameraView() const;
+    // The bar's state, for the gate: which controls are enabled and what
+    // they read ("addKey" "Add Key" / "Key set", "ease" text, ...).
+    QVariantMap cameraBarStateForTest() const;
+    QWidget *cameraBarForTest() const { return m_cameraPanel; }
+    // For the Dev Recorder's statePoll: shotCam.animate, shotCam.toolActive.
+    QVariantMap shotCamToolDevrecState() const;
 
     // The animatic section under the canvas (timeline + transport). Created
     // and owned here; MainWindow reaches it for the project's audio path and
@@ -240,6 +279,9 @@ signals:
     void backRequested();
     void consistencyBoardRequested();
     void settingsRequested(); // Layers toolbar Settings button -> Preferences
+    // A camera edit was made (for the Dev Recorder's shotCamEdit event):
+    // what, on which scene frame, and the camera before and after.
+    void shotCameraEdited(const QVariantMap &event);
 
 protected:
     bool eventFilter(QObject *object, QEvent *event) override;
@@ -515,8 +557,23 @@ private:
     // edited in the Studio — its per-tool persistence lives on under
     // toolCtl/brush/hardness. See HANDOFF.md.)
     QWidget *m_sizeCtlBar = nullptr;
-    // Camera panel (visible only while the Camera tool is active).
+    // The Camera bar (visible only while the Camera tool is active).
     QWidget *m_cameraPanel = nullptr;
+    std::function<void()> m_syncCameraBar; // bar controls <- scene / playhead
+    bool m_cameraAnimate = false;    // session; off at every launch
+    bool m_cameraStayInside = true;  // session; on at every launch
+    // Where a camera edit lands: the canvas's panel, at the playhead's
+    // frame when the playhead is in it (its first frame otherwise).
+    bool cameraTarget(Scene **scene, int *panelIndex, int *frameInPanel) const;
+    double cameraSceneFrame(const Scene *scene, int panelIndex,
+                            int frameInPanel) const;
+    int cameraFps() const;
+    bool cameraCovered() const; // the preview is over the canvas
+    void onShotCameraEdit(const shotcam::CameraState &state, int kind);
+    void pushCameraEdit(Scene *scene, const shotcam::SceneCamera &before,
+                        const shotcam::SceneCamera &after, const QString &text);
+    void refreshCameraViews(Scene *scene); // canvas, preview, clips, strip, bar
+    void loadCameraGuides();               // the remembered setting
     // Figma "Floating Toolbar Layers" (node 173-36): dock toggles + tools.
     QWidget *m_layersToolbar = nullptr;
     // Perspective Modifier toolbar (visible only while Perspective is active).

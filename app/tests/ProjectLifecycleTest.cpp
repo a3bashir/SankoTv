@@ -71,6 +71,16 @@
 #include "export/ProjectExport.h"
 
 #include "AnimaticTimeline.h"
+#include "SankoNoteStyle.h"
+
+#include <QAbstractButton>
+#include <QHelpEvent>
+#include <QWindow>
+#include <qpa/qwindowsysteminterface.h>
+#include <QPointingDevice>
+#include <QTabletEvent>
+#include <QToolTip>
+#include <memory>
 
 #include <QAction>
 #include <QApplication>
@@ -6928,9 +6938,13 @@ void runExportMoviePass(const QString &project, const QString &scratch)
     out() << "--- (an) File > Export > MP4: the project's frame rate, the "
              "video's length, and every frame counted in the file ---"
           << Qt::endl;
+    // Phase 1B added a separator and "Stills Show Full Artwork" (the user's
+    // decision 3); a separator is a QAction with empty text, never disabled.
     const QStringList wanted = {QStringLiteral("MP4 Video..."),
                                 QStringLiteral("PNG Images..."),
-                                QStringLiteral("PDF Storyboard...")};
+                                QStringLiteral("PDF Storyboard..."),
+                                QString(),
+                                QStringLiteral("Stills Show Full Artwork")};
     {
         MainWindow window;
         window.resize(1300, 850);
@@ -6938,15 +6952,20 @@ void runExportMoviePass(const QString &project, const QString &scratch)
         pump(700);
         QMenu *menu = exportMenu(window);
         bool anyEnabled = false;
+        int entries = 0;
         if (menu)
             for (QAction *a : menu->actions())
-                anyEnabled = anyEnabled || a->isEnabled();
+                if (!a->isSeparator()) {
+                    ++entries;
+                    anyEnabled = anyEnabled || a->isEnabled();
+                }
         check(QStringLiteral("(an) File > Export offers MP4 Video, PNG Images "
-                             "and PDF Storyboard"),
+                             "and PDF Storyboard, then Stills Show Full Artwork"),
               actionTexts(menu) == wanted,
               actionTexts(menu).join(QStringLiteral(" | ")));
-        check(QStringLiteral("(an) with no project open all three are disabled"),
-              menu && !anyEnabled);
+        check(QStringLiteral("(an) with no project open all four entries are "
+                             "disabled (the separator is not an entry)"),
+              menu && entries == 4 && !anyEnabled);
         window.close();
         pump(300);
     }
@@ -6960,7 +6979,7 @@ void runExportMoviePass(const QString &project, const QString &scratch)
     if (menu)
         for (QAction *a : menu->actions())
             allEnabled = allEnabled && a->isEnabled();
-    check(QStringLiteral("(an) with a project open all three are enabled"),
+    check(QStringLiteral("(an) with a project open all four are enabled"),
           allEnabled);
     bool exportButton = false, searchFindsButtons = false;
     for (QPushButton *b : r.window.findChildren<QPushButton *>()) {
@@ -10259,6 +10278,977 @@ void runCameraPanelRemovalPass(const QString &scratch)
     scene->camera.keys.clear();
 }
 
+// ---- (ct) the shot camera's canvas tool (Phase 1B, 2026-10-25) ------------
+// The tool the artist frames a shot with, through the REAL paths: the
+// Camera tool button, synthetic pointer / key / wheel events on the canvas
+// (never the real pointer), the Camera bar's own switches and buttons.
+// C3 (the canvas frame is frameQuad through the view), C5 (navigation input
+// never makes a key), C6 (Animate off refuses with two or more keys), C9
+// (every camera command undoes and redoes byte for byte), each with its
+// positive control; and the bar, the clamp, the guides (on with every tool,
+// inset from the camera, remembered), the note style, the strip outline,
+// Stills Show Full Artwork, the 1080p hint.
+namespace camtool {
+
+void mouse(QWidget *w, QEvent::Type type, const QPointF &local, Qt::MouseButton b,
+           Qt::MouseButtons held, Qt::KeyboardModifiers mods = Qt::NoModifier)
+{
+    QMouseEvent ev(type, local, w->mapToGlobal(local), b, held, mods);
+    QCoreApplication::sendEvent(w, &ev);
+}
+
+void drag(QWidget *w, const QPointF &from, const QPointF &to,
+          Qt::KeyboardModifiers mods = Qt::NoModifier,
+          Qt::MouseButton b = Qt::LeftButton)
+{
+    mouse(w, QEvent::MouseButtonPress, from, b, b, mods);
+    for (int i = 1; i <= 6; ++i)
+        mouse(w, QEvent::MouseMove, from + (to - from) * (i / 6.0), Qt::NoButton, b,
+              mods);
+    mouse(w, QEvent::MouseButtonRelease, to, b, Qt::NoButton, mods);
+    pump(30);
+}
+
+void key(QWidget *w, QEvent::Type type, int k)
+{
+    QKeyEvent ev(type, k, Qt::NoModifier, k == Qt::Key_Space ? QStringLiteral(" ")
+                                                             : QString());
+    QCoreApplication::sendEvent(w, &ev);
+}
+
+void wheel(QWidget *w, const QPointF &at, Qt::KeyboardModifiers mods)
+{
+    QWheelEvent ev(at, w->mapToGlobal(at), QPoint(), QPoint(0, 120), Qt::NoButton,
+                   mods, Qt::NoScrollPhase, false);
+    QCoreApplication::sendEvent(w, &ev);
+}
+
+// A Camera-bar switch, pressed where the artist presses it.
+void pressSwitch(QWidget *bar, const QString &name)
+{
+    QWidget *s = bar ? bar->findChild<QWidget *>(name) : nullptr;
+    if (!s)
+        return;
+    const QPointF c(s->width() / 2.0, s->height() / 2.0);
+    mouse(s, QEvent::MouseButtonPress, c, Qt::LeftButton, Qt::LeftButton);
+    mouse(s, QEvent::MouseButtonRelease, c, Qt::LeftButton, Qt::NoButton);
+    pump(30);
+}
+
+void clickBar(QWidget *bar, const QString &name)
+{
+    if (auto *b = bar ? bar->findChild<QAbstractButton *>(name) : nullptr)
+        b->click();
+    pump(30);
+}
+
+QByteArray json(const Scene *scene)
+{
+    return QJsonDocument(shotcam::toJson(*scene)).toJson(QJsonDocument::Compact);
+}
+
+bool samePoly(const QPolygonF &a, const QPolygonF &b, double tol = 1e-6)
+{
+    if (a.size() != b.size() || a.isEmpty())
+        return false;
+    for (int i = 0; i < a.size(); ++i)
+        if (QLineF(a.at(i), b.at(i)).length() > tol)
+            return false;
+    return true;
+}
+
+QString polyText(const QPolygonF &p)
+{
+    QStringList s;
+    for (const QPointF &q : p)
+        s << QStringLiteral("%1,%2").arg(q.x(), 0, 'f', 2).arg(q.y(), 0, 'f', 2);
+    return s.join(QLatin1Char(' '));
+}
+
+QPointF centre(const QPolygonF &q) { return (q.at(0) + q.at(2)) / 2.0; }
+
+// Points along a frame-local edge (the safe-area insets): the camera's frame
+// turned and placed, then the view.
+QVector<QPointF> insetTopEdge(const shotcam::CameraState &s, const QSize &cs,
+                              double inset, const QTransform &view)
+{
+    const double fw = cs.width() / s.zoom, fh = cs.height() / s.zoom;
+    QTransform t;
+    t.translate(s.cx, s.cy);
+    t.rotate(s.rotation);
+    QVector<QPointF> pts;
+    for (int i = 2; i <= 8; ++i) {
+        const double x = -fw / 2.0 + fw * inset + (fw * (1.0 - 2.0 * inset)) * (i / 10.0);
+        pts.append(view.map(t.map(QPointF(x, -fh / 2.0 + fh * inset))));
+    }
+    return pts;
+}
+
+// How many of `pts` (widget px) show a changed pixel between the two grabs
+// within one pixel.
+int changedAt(const QImage &a, const QImage &b, const QVector<QPointF> &pts)
+{
+    const double dpr = a.devicePixelRatio();
+    int n = 0;
+    for (const QPointF &p : pts) {
+        bool changed = false;
+        for (int dy = -2; dy <= 2 && !changed; ++dy)
+            for (int dx = -2; dx <= 2 && !changed; ++dx) {
+                const QPoint q(qRound(p.x() * dpr) + dx, qRound(p.y() * dpr) + dy);
+                if (a.rect().contains(q) && a.pixel(q) != b.pixel(q))
+                    changed = true;
+            }
+        n += changed ? 1 : 0;
+    }
+    return n;
+}
+
+QImage grabCanvas(DrawingCanvas *c)
+{
+    c->repaint();
+    return c->grab().toImage();
+}
+
+} // namespace camtool
+
+void runCameraToolPass(const QString &scratch)
+{
+    using namespace workspace;
+    using namespace camtool;
+    out() << "--- (ct) the shot camera's canvas tool (Phase 1B) ---" << Qt::endl;
+    sankoSettings().remove(StoryboardPage::kCameraGuidesKey); // the default: off
+    const QSize cs(1920, 1080); // sharp limit 1.0: neutral is sharp
+    const QString project = writeProject(scratch + QStringLiteral("/camtool"),
+                                         QStringLiteral("CamTool"), cs, 24, 2, 4);
+    auto rig = std::make_unique<Rig>(project);
+    Rig &r = *rig;
+    check(QStringLiteral("(ct) the workspace opened"), r.ok);
+    if (!r.ok)
+        return;
+    Scene *scene = r.window.scenesForTest().value(0);
+    QUndoStack *stack = r.window.undoStackForTest();
+    auto *camBtn = r.storyboard->findChild<QPushButton *>(QStringLiteral("toolCamera"));
+    auto *brushBtn = r.storyboard->findChild<QPushButton *>(QStringLiteral("toolBrush"));
+    QWidget *bar = r.storyboard->cameraBarForTest();
+    if (!scene || scene->panels.size() < 4 || !stack || !camBtn || !brushBtn || !bar) {
+        check(QStringLiteral("(ct) found the scene, the history, the tool buttons and "
+                             "the Camera bar"), false);
+        return;
+    }
+    QVector<QVariantMap> recorded;
+    QObject::connect(r.storyboard, &StoryboardPage::shotCameraEdited, r.storyboard,
+                     [&recorded](const QVariantMap &e) { recorded.append(e); });
+    auto lastText = [&] { return stack->index() > 0 ? stack->text(stack->index() - 1)
+                                                    : QString(); };
+    auto bars = [&] { return r.storyboard->cameraBarStateForTest(); };
+    auto place = [&] { // the whole canvas at half size, centred
+        r.canvas->placeViewForTest(0.25, QPointF(cs.width() / 2.0, cs.height() / 2.0),
+                                   QPointF(r.canvas->width() / 2.0,
+                                           r.canvas->height() / 2.0));
+        pump(30);
+    };
+    const QString dot = QStringLiteral("  ") + QChar(0x00B7) + QStringLiteral("  ");
+
+    clickThumb(r, 1);
+    camBtn->click();
+    pump(200);
+    place();
+    check(QStringLiteral("(ct) the Camera tool button selects the tool and shows the "
+                         "Camera bar; the mode chip says Animate is off"),
+          r.canvas->tool() == DrawingCanvas::Camera && bar->isVisible()
+              && r.canvas->shotCameraChipForTest()
+                     == QStringLiteral("SHOT CAMERA") + dot + QStringLiteral("ANIMATE OFF"),
+          r.canvas->shotCameraChipForTest());
+    check(QStringLiteral("(ct) Stay inside artwork starts on, Animate off, the old "
+                         "\"Camera Frame\" toggle is gone"),
+          bars().value(QStringLiteral("camStayInside.on")).toBool()
+              && !bars().value(QStringLiteral("camAnimate.on")).toBool()
+              && [&] {
+                     for (QAbstractButton *b :
+                          r.window.findChildren<QAbstractButton *>())
+                         if (b->text() == QStringLiteral("Camera Frame"))
+                             return false;
+                     return true;
+                 }()
+              && !r.canvas->isCameraFrameEnabled());
+
+    // ---- Hover (found by the 1B capture: setTool's cancelShape() turned the
+    // tracking back off, so no buttonless move ever reached the tool) --------
+    {
+        const QPolygonF q = r.canvas->shotCameraQuadForTest();
+        const QPointF body = centre(q) + QPointF(0, (q.at(2).y() - q.at(0).y()) / 4.0);
+        const QPointF away(3, 3);
+        mouse(r.canvas, QEvent::MouseMove, away, Qt::NoButton, Qt::NoButton);
+        pump(20);
+        const QImage idle = grabCanvas(r.canvas);
+        mouse(r.canvas, QEvent::MouseMove, body, Qt::NoButton, Qt::NoButton);
+        pump(20);
+        const QImage hovered = grabCanvas(r.canvas);
+        mouse(r.canvas, QEvent::MouseMove, away, Qt::NoButton, Qt::NoButton);
+        pump(20);
+        const QImage left = grabCanvas(r.canvas);
+        const QVector<QPointF> spot{body};
+        check(QStringLiteral("(ct) hover: the Camera tool tracks the pointer, and a "
+                             "buttonless move over the body tints it"),
+              r.canvas->hasMouseTracking() && changedAt(idle, hovered, spot) == 1);
+        check(QStringLiteral("(ct) hover control: moving away takes the tint off again"),
+              changedAt(idle, left, spot) == 0 && changedAt(hovered, left, spot) == 1);
+    }
+
+    // ---- C3 on the canvas -------------------------------------------------
+    {
+        const QPolygonF drawn = r.canvas->shotCameraQuadForTest();
+        const QPolygonF expect = r.canvas->viewTransformForTest().map(
+            shotcam::frameQuad(shotcam::neutral(cs), cs));
+        check(QStringLiteral("(ct) C3: the frame on the canvas IS frameQuad mapped "
+                             "through the view"),
+              samePoly(drawn, expect), polyText(drawn) + QStringLiteral(" vs ")
+                                           + polyText(expect));
+        r.canvas->setViewRotation(15.0);
+        r.canvas->toggleFlipH();
+        pump(30);
+        const QPolygonF turned = r.canvas->shotCameraQuadForTest();
+        const QPolygonF turnedExpect = r.canvas->viewTransformForTest().map(
+            shotcam::frameQuad(shotcam::neutral(cs), cs));
+        const QVector<QPointF> h = r.canvas->shotCameraHandlesForTest();
+        check(QStringLiteral("(ct) C3 control: with the view turned 15 degrees and "
+                             "flipped the frame turns with it (still frameQuad through "
+                             "the NEW view, not the old quad), handles on its corners"),
+              samePoly(turned, turnedExpect) && !samePoly(turned, drawn, 1.0)
+                  && h.size() == 4 && samePoly(QPolygonF(h), turned),
+              polyText(turned));
+        // The grab zones are screen-sized: 7 px off a corner grabs it, 15 px
+        // out along the diagonal turns, the middle moves, far away nothing.
+        const QPointF c = centre(turned);
+        const QPointF dir = (turned.at(0) - c) / QLineF(c, turned.at(0)).length();
+        const int atCorner = r.canvas->shotCameraHitForTest(turned.at(0) + QPointF(7, -7) * 0.5);
+        const int outside = r.canvas->shotCameraHitForTest(turned.at(0) + dir * 15.0);
+        const int middle = r.canvas->shotCameraHitForTest(c);
+        const int away = r.canvas->shotCameraHitForTest(turned.at(0) + dir * 60.0);
+        check(QStringLiteral("(ct) under a turned, flipped view: a corner handle "
+                             "grabs, 15 px outside it turns, the body moves, 60 px out "
+                             "nothing"),
+              atCorner == 1 && outside == 5 && middle == 0 && away == -1,
+              QStringLiteral("%1 %2 %3 %4").arg(atCorner).arg(outside).arg(middle).arg(away));
+        r.canvas->toggleFlipH();
+        r.canvas->resetViewRotation();
+        place();
+    }
+
+    // ---- C5: navigation never makes a key -----------------------------------
+    {
+        const int idx0 = stack->index();
+        const QByteArray before = json(scene);
+        const QPointF body = centre(r.canvas->shotCameraQuadForTest());
+        const QPointF pan0 = r.canvas->viewPanOffset();
+        key(r.canvas, QEvent::KeyPress, Qt::Key_Space);
+        drag(r.canvas, body, body + QPointF(60, 30));
+        key(r.canvas, QEvent::KeyRelease, Qt::Key_Space);
+        const QPointF pan1 = r.canvas->viewPanOffset();
+        const QPointF body1 = centre(r.canvas->shotCameraQuadForTest());
+        drag(r.canvas, body1, body1 + QPointF(-40, 20), Qt::NoModifier, Qt::MiddleButton);
+        const QPointF pan2 = r.canvas->viewPanOffset();
+        const double zoom0 = r.canvas->viewZoom();
+        wheel(r.canvas, centre(r.canvas->shotCameraQuadForTest()), Qt::ControlModifier);
+        const double zoom1 = r.canvas->viewZoom();
+        wheel(r.canvas, centre(r.canvas->shotCameraQuadForTest()), Qt::NoModifier);
+        // The pen: the canvas leaves a tablet press with the Camera tool to
+        // Qt's mouse synthesis (the same press as the mouse's, above).
+        const QPointF pt = centre(r.canvas->shotCameraQuadForTest());
+        QTabletEvent tab(QEvent::TabletPress, QPointingDevice::primaryPointingDevice(),
+                         pt, r.canvas->mapToGlobal(pt), 0.5, 0, 0, 0, 0, 0,
+                         Qt::NoModifier, Qt::LeftButton, Qt::LeftButton);
+        QCoreApplication::sendEvent(r.canvas, &tab);
+        pump(30);
+        check(QStringLiteral("(ct) C5: Space+drag, middle drag, Ctrl+wheel, the plain "
+                             "wheel and a pen press over the frame make no key and no "
+                             "command"),
+              stack->index() == idx0 && json(scene) == before
+                  && shotcam::liveKeyCount(*scene) == 0
+                  && !r.canvas->shotCameraDraggingForTest(),
+              QString::fromUtf8(json(scene)));
+        check(QStringLiteral("(ct) C5 control: those inputs reached the canvas - "
+                             "Space+drag and the middle drag panned it, Ctrl+wheel "
+                             "zoomed it"),
+              pan1 != pan0 && pan2 != pan1 && zoom1 != zoom0,
+              QStringLiteral("pan %1,%2 -> %3,%4 -> %5,%6 zoom %7 -> %8")
+                  .arg(pan0.x()).arg(pan0.y()).arg(pan1.x()).arg(pan1.y())
+                  .arg(pan2.x()).arg(pan2.y()).arg(zoom0).arg(zoom1));
+        place();
+    }
+
+    // Animate on with no keys: the chip names the frame a drag would key.
+    pressSwitch(bar, QStringLiteral("camAnimate"));
+    const QString chipOn = r.canvas->shotCameraChipForTest();
+    pressSwitch(bar, QStringLiteral("camAnimate"));
+    check(QStringLiteral("(ct) the Animate switch: on, the chip says \"new key at\" the "
+                         "playhead's timecode; off again"),
+          chipOn == QStringLiteral("SHOT CAMERA") + dot + QStringLiteral("ANIMATE ON")
+                        + dot + QStringLiteral("new key at 00:00:02:00")
+              && !r.storyboard->cameraAnimate(),
+          chipOn);
+
+    // ---- C5's positive control, the single framing, C9 -------------------------
+    auto c9 = [&](const QString &what, const QByteArray &before, const QByteArray &after) {
+        stack->undo();
+        pump(30);
+        const QByteArray undone = json(scene);
+        stack->redo();
+        pump(30);
+        const QByteArray redone = json(scene);
+        check(QStringLiteral("(ct) C9 %1: undo gives the camera's JSON back byte for "
+                             "byte, redo the edit's").arg(what),
+              undone == before && redone == after,
+              QString::fromUtf8(undone) + QStringLiteral(" | ") + QString::fromUtf8(redone));
+        check(QStringLiteral("(ct) C9 %1 control: the edit changed the JSON").arg(what),
+              before != after);
+    };
+    {
+        const int idx0 = stack->index();
+        const QByteArray before = json(scene);
+        recorded.clear();
+        const QPolygonF q = r.canvas->shotCameraQuadForTest();
+        const QPointF h0 = r.canvas->shotCameraHandlesForTest().value(0);
+        drag(r.canvas, h0, h0 + (centre(q) - h0) * 0.25);
+        const QByteArray after = json(scene);
+        const shotcam::CameraKey k = scene->camera.keys.value(0);
+        check(QStringLiteral("(ct) C5 control: ONE drag of a corner with Animate off "
+                             "and no keys adds one key - the scene's single framing, on "
+                             "its first frame - and one command, \"Zoom Camera\""),
+              stack->index() == idx0 + 1 && shotcam::liveKeyCount(*scene) == 1
+                  && k.panelUid == scene->panels.at(0)->uid.value() && k.at == 0.0
+                  && lastText() == QStringLiteral("Zoom Camera")
+                  && qAbs(k.state.zoom - 4.0 / 3.0) < 0.02,
+              lastText() + QStringLiteral(" zoom %1").arg(k.state.zoom));
+        check(QStringLiteral("(ct) the edit is reported once for the Dev Recorder "
+                             "(shotCamEdit), and the statePoll carries the tool's state"),
+              recorded.size() == 1
+                  && recorded.at(0).value(QStringLiteral("what")) == QStringLiteral("Zoom Camera")
+                  && recorded.at(0).value(QStringLiteral("keysAfter")).toInt() == 1
+                  && r.storyboard->shotCamToolDevrecState()
+                         .value(QStringLiteral("shotCam.toolActive")).toBool());
+        c9(QStringLiteral("(zoom)"), before, after);
+        const QString soft = r.canvas->shotCameraChipForTest();
+        check(QStringLiteral("(ct) past the sharp limit the chip says Soft and the zoom"),
+              soft.endsWith(QStringLiteral("Soft 1.33") + QChar(0x00D7)), soft);
+    }
+    {
+        const QByteArray before = json(scene);
+        const QPointF body = centre(r.canvas->shotCameraQuadForTest());
+        drag(r.canvas, body, body + QPointF(30, 10));
+        const QByteArray after = json(scene);
+        check(QStringLiteral("(ct) Animate off with one key: a body drag MOVES the single "
+                             "framing - still one key, on the scene's first frame"),
+              shotcam::liveKeyCount(*scene) == 1
+                  && scene->camera.keys.at(0).panelUid == scene->panels.at(0)->uid.value()
+                  && lastText() == QStringLiteral("Move Camera") && before != after,
+              lastText());
+        c9(QStringLiteral("(move)"), before, after);
+    }
+
+    // ---- A click that closes a menu never reaches the canvas (2026-10-26) ----
+    // Delivered at the WINDOW-SYSTEM level (QWindowSystemInterface), as a
+    // real click is: while a popup is open Windows gives the press to the
+    // popup, which closes and - unless stopped - has Qt replay the press to
+    // the widget under it. The second 1B hand test lost a camera move that
+    // way. Probe: build/_probe/camera1b/replayprobe.
+    {
+        QWindow *mainWin = r.window.windowHandle();
+        const QPointF body = centre(r.canvas->shotCameraQuadForTest());
+        const QPointF g0 = QPointF(r.canvas->mapToGlobal(body.toPoint()));
+        const QPointF g1 = g0 + QPointF(40, 0);
+        auto ws = [&](QWindow *win, const QPointF &global, QEvent::Type type,
+                      Qt::MouseButtons buttons) {
+            const QPointF local = global - QPointF(win->mapToGlobal(QPoint(0, 0)));
+            QWindowSystemInterface::handleMouseEvent<QWindowSystemInterface::SynchronousDelivery>(
+                win, local, global, buttons, Qt::LeftButton, type);
+        };
+        const int idx0 = stack->index();
+        const QByteArray before = json(scene);
+        QMenu menu(r.canvas);
+        menu.addAction(QStringLiteral("Show Grid"));
+        menu.popup(r.canvas->mapToGlobal(QPoint(12, 12)));
+        pump(120);
+        const bool opened = menu.isVisible();
+        ws(menu.windowHandle(), g0, QEvent::MouseButtonPress, Qt::LeftButton);
+        pump(60);
+        ws(mainWin, g1, QEvent::MouseMove, Qt::LeftButton);
+        ws(mainWin, g1, QEvent::MouseButtonRelease, Qt::NoButton);
+        pump(120);
+        check(QStringLiteral("(ct) a click on the camera frame that closes a menu does "
+                             "not reach the canvas: no edit, no undo step"),
+              opened && !menu.isVisible() && stack->index() == idx0
+                  && json(scene) == before && !r.canvas->shotCameraDraggingForTest(),
+              lastText());
+        ws(mainWin, g0, QEvent::MouseButtonPress, Qt::LeftButton);
+        ws(mainWin, g1, QEvent::MouseMove, Qt::LeftButton);
+        ws(mainWin, g1, QEvent::MouseButtonRelease, Qt::NoButton);
+        pump(120);
+        check(QStringLiteral("(ct) click-through control: the same click with no menu "
+                             "open starts a drag - one \"Move Camera\""),
+              stack->index() == idx0 + 1 && lastText() == QStringLiteral("Move Camera"),
+              lastText());
+        if (stack->index() == idx0 + 1) {
+            stack->undo(); // back to the framing the checks below expect
+            pump(30);
+        }
+    }
+
+    // ---- Animate on: a key at the playhead; the rotate zone; Shift -------------
+    pressSwitch(bar, QStringLiteral("camAnimate"));
+    {
+        const QByteArray before = json(scene);
+        const QPolygonF q = r.canvas->shotCameraQuadForTest();
+        const QPointF c = centre(q);
+        const QPointF dir = (q.at(0) - c) / QLineF(c, q.at(0)).length();
+        const QPointF from = q.at(0) + dir * 12.0;
+        QTransform turn;
+        turn.translate(c.x(), c.y());
+        turn.rotate(20.0);
+        turn.translate(-c.x(), -c.y());
+        drag(r.canvas, from, turn.map(from), Qt::ShiftModifier);
+        const QByteArray after = json(scene);
+        const shotcam::CameraState now = r.storyboard->shotCameraView().state;
+        bool inside = true;
+        for (const QPointF &p : shotcam::frameQuad(now, cs))
+            inside = inside && p.x() >= -1e-6 && p.y() >= -1e-6
+                && p.x() <= cs.width() + 1e-6 && p.y() <= cs.height() + 1e-6;
+        check(QStringLiteral("(ct) Animate on: a drag in the rotate zone with Shift adds "
+                             "a key AT THE PLAYHEAD, turned 15 degrees (20 snapped), and "
+                             "Stay inside keeps every corner on the artwork"),
+              shotcam::liveKeyCount(*scene) == 2 && now.rotation == 15.0 && inside
+                  && lastText() == QStringLiteral("Rotate Camera"),
+              QStringLiteral("rot %1 zoom %2 %3").arg(now.rotation).arg(now.zoom)
+                  .arg(lastText()));
+        c9(QStringLiteral("(rotate)"), before, after);
+    }
+
+    // ---- C6: Animate off with two keys refuses --------------------------------
+    {
+        pressSwitch(bar, QStringLiteral("camAnimate")); // off
+        const int idx0 = stack->index();
+        const QByteArray before = json(scene);
+        r.storyboard->clearNoteForTest();
+        const QPointF body = centre(r.canvas->shotCameraQuadForTest());
+        drag(r.canvas, body, body + QPointF(-25, 0));
+        check(QStringLiteral("(ct) C6: Animate off with two keys - a frame drag is "
+                             "refused: no command, the keys unchanged, and the note says "
+                             "why"),
+              stack->index() == idx0 && json(scene) == before
+                  && r.storyboard->lastNoteForTest()
+                         == QStringLiteral("Turn on Animate to change the camera at "
+                                           "this point."),
+              r.storyboard->lastNoteForTest());
+        pressSwitch(bar, QStringLiteral("camAnimate")); // on
+        drag(r.canvas, body, body + QPointF(-25, 0));
+        check(QStringLiteral("(ct) C6 control: the same drag with Animate on is taken - "
+                             "one command that updates the key at the playhead"),
+              stack->index() == idx0 + 1 && json(scene) != before
+                  && shotcam::liveKeyCount(*scene) == 2
+                  && lastText() == QStringLiteral("Move Camera"),
+              lastText());
+    }
+
+    // ---- The bar's keys: Add / Delete, ease, previous / next ------------------
+    {
+        const int flat = r.storyboard->selectedFlatIndexForTest();
+        r.animatic->setPlayheadFrameInPanel(flat, 12);
+        pump(30);
+        const QVariantMap b0 = bars();
+        check(QStringLiteral("(ct) between keys the bar offers Add Key, no Delete, a "
+                             "previous key and no next, and the ease of the segment"),
+              b0.value(QStringLiteral("camAddKey.text")) == QStringLiteral("Add Key")
+                  && !b0.value(QStringLiteral("camDeleteKey.enabled")).toBool()
+                  && b0.value(QStringLiteral("camPrevKey.enabled")).toBool()
+                  && !b0.value(QStringLiteral("camNextKey.enabled")).toBool()
+                  && b0.value(QStringLiteral("camEase.text")) == QStringLiteral("Ease In/Out"),
+              b0.value(QStringLiteral("camEase.text")).toString());
+        const shotcam::CameraState shot0 = r.storyboard->shotCameraView().state;
+        QByteArray before = json(scene);
+        clickBar(bar, QStringLiteral("camAddKey"));
+        QByteArray after = json(scene);
+        const shotcam::CameraState shot1 = r.storyboard->shotCameraView().state;
+        check(QStringLiteral("(ct) Add Key adds a key at the playhead without moving the "
+                             "shot; the button then reads \"Key set\""),
+              shotcam::liveKeyCount(*scene) == 3 && shot0 == shot1
+                  && lastText() == QStringLiteral("Add Camera Key")
+                  && bars().value(QStringLiteral("camAddKey.text"))
+                         == QStringLiteral("Key set")
+                  && bars().value(QStringLiteral("camDeleteKey.enabled")).toBool(),
+              lastText());
+        c9(QStringLiteral("(Add Key)"), before, after);
+        const QVariantMap addEvent = recorded.isEmpty() ? QVariantMap() : recorded.last();
+
+        // THE SCENE'S LAST KEY (hand-test follow-up, 2026-10-25): the key
+        // just added is the last; its ease would move nothing.
+        auto *easeField = bar->findChild<QAbstractButton *>(QStringLiteral("camEase"));
+        // What the hover shows: the ToolTip event a hover sends, delivered to
+        // the control (disabled or not), with the reveal effects off so the
+        // tooltip is up at once and nothing real can decide it. A PLACEHOLDER
+        // is shown first: hideText() only starts a hide timer, so a control
+        // with no tooltip would otherwise read the previous label (the first
+        // run of the last-key control did exactly that).
+        auto hoverNote = [&](QWidget *w) {
+            if (!w)
+                return QStringLiteral("<no control>");
+            const bool roll = QApplication::isEffectEnabled(Qt::UI_AnimateTooltip);
+            const bool fade = QApplication::isEffectEnabled(Qt::UI_FadeTooltip);
+            QApplication::setEffectEnabled(Qt::UI_AnimateTooltip, false);
+            QApplication::setEffectEnabled(Qt::UI_FadeTooltip, false);
+            const QString placeholder = QStringLiteral("(no tooltip shown)");
+            QToolTip::showText(w->mapToGlobal(QPoint(4, 4)), placeholder, w);
+            QHelpEvent ev(QEvent::ToolTip, QPoint(4, 4), w->mapToGlobal(QPoint(4, 4)));
+            QCoreApplication::sendEvent(w, &ev);
+            QString shown = QToolTip::isVisible() ? QToolTip::text() : QString();
+            if (shown == placeholder)
+                shown.clear();
+            QToolTip::hideText();
+            QApplication::setEffectEnabled(Qt::UI_AnimateTooltip, roll);
+            QApplication::setEffectEnabled(Qt::UI_FadeTooltip, fade);
+            return shown;
+        };
+        {
+            const bool disabledOnLast = easeField && !easeField->isEnabled();
+            const QString lastNote = hoverNote(easeField);
+            const int idxLast = stack->index();
+            r.storyboard->cameraSetEase(shotcam::Ease::Linear); // the backstop
+            check(QStringLiteral("(ct) on the scene's last key the Ease field is "
+                                 "disabled, its hover says \"No move after this key\", "
+                                 "and no ease can be set there"),
+                  disabledOnLast && lastNote == StoryboardPage::cameraLastKeyNote()
+                      && stack->index() == idxLast,
+                  lastNote);
+            clickBar(bar, QStringLiteral("camPrevKey")); // the key with a move after it
+            const QString midNote = hoverNote(easeField);
+            check(QStringLiteral("(ct) last-key control: on a key with a move after it "
+                                 "the Ease field is enabled and says nothing"),
+                  easeField && easeField->isEnabled() && midNote.isEmpty()
+                      && r.animatic->playheadFrameInPanel() == 0,
+                  midNote);
+        }
+
+        before = json(scene);
+        auto *menu = bar->findChild<QMenu *>(QStringLiteral("camEaseMenu"));
+        QAction *hold = nullptr;
+        for (QAction *a : menu ? menu->actions() : QList<QAction *>())
+            if (a->text() == QStringLiteral("Hold"))
+                hold = a;
+        if (hold)
+            hold->trigger();
+        pump(30);
+        after = json(scene);
+        check(QStringLiteral("(ct) the ease menu sets the key's ease, one command, and "
+                             "the field and menu show it"),
+              hold && lastText() == QStringLiteral("Camera Ease")
+                  && bars().value(QStringLiteral("camEase.text")) == QStringLiteral("Hold")
+                  && hold->isChecked(),
+              lastText());
+        c9(QStringLiteral("(ease)"), before, after);
+        const QVariantMap easeEvent = recorded.isEmpty() ? QVariantMap() : recorded.last();
+
+        clickBar(bar, QStringLiteral("camNextKey")); // back to the key Add Key made
+        before = json(scene);
+        clickBar(bar, QStringLiteral("camDeleteKey"));
+        after = json(scene);
+        check(QStringLiteral("(ct) Delete Key removes the key at the playhead"),
+              shotcam::liveKeyCount(*scene) == 2
+                  && lastText() == QStringLiteral("Delete Camera Key"));
+        c9(QStringLiteral("(Delete Key)"), before, after);
+        const QVariantMap deleteEvent = recorded.isEmpty() ? QVariantMap() : recorded.last();
+        auto counts = [](const QVariantMap &e) {
+            return QStringLiteral("%1 %2->%3").arg(e.value(QStringLiteral("what")).toString())
+                .arg(e.value(QStringLiteral("keysBefore")).toInt())
+                .arg(e.value(QStringLiteral("keysAfter")).toInt());
+        };
+        check(QStringLiteral("(ct) the recorder's shotCamEdit counts the keys BEFORE a "
+                             "button edit: Add Key 2 -> 3, Delete Key 3 -> 2"),
+              counts(addEvent) == QStringLiteral("Add Camera Key 2->3")
+                  && counts(deleteEvent) == QStringLiteral("Delete Camera Key 3->2"),
+              counts(addEvent) + QStringLiteral(" | ") + counts(deleteEvent));
+        check(QStringLiteral("(ct) recorder control: an ease edit, which adds no key, "
+                             "logs the same count before and after (3 -> 3)"),
+              counts(easeEvent) == QStringLiteral("Camera Ease 3->3"), counts(easeEvent));
+
+        clickBar(bar, QStringLiteral("camPrevKey"));
+        const int f1 = r.animatic->playheadFrameInPanel();
+        const int s1 = r.storyboard->selectedFlatIndexForTest();
+        clickBar(bar, QStringLiteral("camPrevKey"));
+        const int s2 = r.storyboard->selectedFlatIndexForTest();
+        const int f2 = r.animatic->playheadFrameInPanel();
+        clickBar(bar, QStringLiteral("camNextKey"));
+        const int s3 = r.storyboard->selectedFlatIndexForTest();
+        check(QStringLiteral("(ct) previous / next key move the playhead (and the canvas) "
+                             "from key to key, across panels, without the preview"),
+              f1 == 0 && s1 == flat && s2 == flat - 1 && f2 == 0 && s3 == flat
+                  && !r.animatic->previewVisible(),
+              QStringLiteral("%1/%2 %3/%4 %5").arg(s1).arg(f1).arg(s2).arg(f2).arg(s3));
+
+        // THE PREVIEW OVER THE CANVAS (hand-test follow-up, 2026-10-25).
+        const QStringList names{QStringLiteral("camAnimate"), QStringLiteral("camPrevKey"),
+                                QStringLiteral("camAddKey"), QStringLiteral("camDeleteKey"),
+                                QStringLiteral("camNextKey"), QStringLiteral("camEase"),
+                                QStringLiteral("camStayInside"), QStringLiteral("camSafeArea"),
+                                QStringLiteral("camTitleSafe")};
+        auto control = [&](const QString &n) { return bar->findChild<QWidget *>(n); };
+        // Play, then pause: the preview stays up over the canvas. (A scrub
+        // opened it here until 2026-10-26; with the Camera tool a scrub now
+        // stays on the canvas - see "the Camera tool's scrub" below.)
+        r.animatic->togglePlay();
+        pump(80);
+        r.animatic->togglePlay();
+        pump(30);
+        // The bar's body while covered: SOLID, so the dimmed controls read
+        // over a bright picture (2026-10-26); the control is the canvas back.
+        auto barAlpha = [&] {
+            const QImage img = bar->grab().toImage();
+            return img.isNull() ? -1
+                : qAlpha(img.pixel(qRound(6 * img.devicePixelRatio()), img.height() / 2));
+        };
+        const int coveredAlpha = barAlpha();
+        QStringList on;
+        for (const QString &n : names)
+            if (!control(n) || control(n)->isEnabled())
+                on << n;
+        const QString addNote = hoverNote(control(QStringLiteral("camAddKey")));
+        const QString switchNote = hoverNote(control(QStringLiteral("camAnimate")));
+        const int idxCovered = stack->index();
+        const bool animateBefore = r.storyboard->cameraAnimate();
+        pressSwitch(bar, QStringLiteral("camAnimate"));
+        clickBar(bar, QStringLiteral("camPrevKey"));
+        check(QStringLiteral("(ct) with the preview over the canvas every Camera bar "
+                             "control is disabled, the hover says \"Close the preview to "
+                             "edit the camera\", and a click changes nothing"),
+              r.animatic->previewVisible() && on.isEmpty()
+                  && addNote == StoryboardPage::cameraPreviewNote()
+                  && switchNote == StoryboardPage::cameraPreviewNote()
+                  && stack->index() == idxCovered
+                  && r.storyboard->cameraAnimate() == animateBefore,
+              on.join(QLatin1Char(',')) + QStringLiteral(" | ") + addNote);
+        r.animatic->leavePreview();
+        pump(30);
+        // Play moved the playhead a frame or two: back onto the key at the
+        // panel's start, where the checks below expect it.
+        r.animatic->setPlayheadFrameInPanel(flat, 0);
+        pump(30);
+        QStringList off;
+        for (const QString &n : {QStringLiteral("camAnimate"), QStringLiteral("camPrevKey"),
+                                 QStringLiteral("camAddKey"), QStringLiteral("camStayInside"),
+                                 QStringLiteral("camSafeArea"), QStringLiteral("camTitleSafe")})
+            if (!control(n) || !control(n)->isEnabled())
+                off << n;
+        const QString prevNote = hoverNote(control(QStringLiteral("camPrevKey")));
+        check(QStringLiteral("(ct) preview control: with the canvas back the controls "
+                             "work again and their own tooltips return"),
+              !r.animatic->previewVisible() && off.isEmpty()
+                  && prevNote == QStringLiteral("Previous camera key"),
+              off.join(QLatin1Char(',')) + QStringLiteral(" | ") + prevNote);
+        const int canvasAlpha = barAlpha();
+        check(QStringLiteral("(ct) while the preview covers the canvas the Camera bar's "
+                             "body is SOLID, so its dimmed controls stay readable"),
+              coveredAlpha == 255, QStringLiteral("alpha %1").arg(coveredAlpha));
+        check(QStringLiteral("(ct) solid-bar control: with the canvas back the body is "
+                             "translucent again (0.65)"),
+              canvasAlpha == 166, QStringLiteral("alpha %1").arg(canvasAlpha));
+    }
+
+    // ---- Stay inside artwork: the clamp, and its control -----------------------
+    {
+        const QPointF body = centre(r.canvas->shotCameraQuadForTest());
+        drag(r.canvas, body, body + QPointF(-2000, 0));
+        const shotcam::CameraState kept = r.storyboard->shotCameraView().state;
+        auto onCanvas = [&](const shotcam::CameraState &s) {
+            for (const QPointF &p : shotcam::frameQuad(s, cs))
+                if (p.x() < -1e-6 || p.y() < -1e-6 || p.x() > cs.width() + 1e-6
+                    || p.y() > cs.height() + 1e-6)
+                    return false;
+            return true;
+        };
+        pressSwitch(bar, QStringLiteral("camStayInside")); // off
+        const QPointF body2 = centre(r.canvas->shotCameraQuadForTest());
+        drag(r.canvas, body2, body2 + QPointF(-2000, 0));
+        const shotcam::CameraState free = r.storyboard->shotCameraView().state;
+        stack->undo(); // the frame back on the artwork for what follows
+        pump(30);
+        pressSwitch(bar, QStringLiteral("camStayInside")); // on again
+        check(QStringLiteral("(ct) Stay inside artwork: a drag far off the canvas keeps "
+                             "the turned frame on the artwork"),
+              onCanvas(kept), QStringLiteral("cx %1").arg(kept.cx));
+        check(QStringLiteral("(ct) Stay inside control: switched off, the same drag "
+                             "takes the frame off the artwork"),
+              !onCanvas(free), QStringLiteral("cx %1").arg(free.cx));
+    }
+
+    // ---- The strip's frame outline -----------------------------------------
+    {
+        auto amberNear = [&](const QImage &img, const QPointF &p) {
+            for (int dy = -3; dy <= 3; ++dy)
+                for (int dx = -3; dx <= 3; ++dx) {
+                    const QPoint q(qRound(p.x()) + dx, qRound(p.y()) + dy);
+                    if (!img.rect().contains(q))
+                        continue;
+                    const QColor c = img.pixelColor(q);
+                    if (c.red() > 200 && c.green() > 120 && c.green() < 200 && c.blue() < 110)
+                        return true;
+                }
+            return false;
+        };
+        auto outlinePoint = [&](const QImage &img) {
+            // The thumb's fit (16:9 into the 16:9 well: the whole well).
+            const shotcam::CameraState s = shotcam::evaluateAtPanel(*scene, 0, 0, 24);
+            const QPolygonF q = shotcam::frameQuad(s, cs);
+            const QPointF mid = (q.at(0) + q.at(1)) / 2.0;
+            return QPointF(mid.x() * img.width() / cs.width(),
+                           mid.y() * img.height() / cs.height());
+        };
+        const QImage withKeys = thumbs(r.storyboard).value(0)->pixmap().toImage();
+        const QPointF p = outlinePoint(withKeys);
+        const shotcam::SceneCamera saved = scene->camera;
+        r.storyboard->applyCameraForUndo(scene, shotcam::SceneCamera());
+        const QImage without = thumbs(r.storyboard).value(0)->pixmap().toImage();
+        r.storyboard->applyCameraForUndo(scene, saved);
+        check(QStringLiteral("(ct) the strip thumbnail draws the whole artwork with the "
+                             "camera's frame outlined (amber: past the sharp limit)"),
+              amberNear(withKeys, p), QStringLiteral("at %1,%2").arg(p.x()).arg(p.y()));
+        check(QStringLiteral("(ct) strip control: the scene without keys has no outline "
+                             "there"),
+              !amberNear(without, p));
+    }
+
+    // ---- The guides: on with every tool, inset from the camera ------------------
+    {
+        pressSwitch(bar, QStringLiteral("camSafeArea"));
+        check(QStringLiteral("(ct) the Safe Area switch turns the guide on and remembers "
+                             "it as the one app setting"),
+              r.canvas->isSafeAreaEnabled() && !r.canvas->isTitleSafeEnabled()
+                  && sankoSettings().value(StoryboardPage::kCameraGuidesKey).toInt() == 1);
+        brushBtn->setChecked(true);
+        pump(100);
+        const shotcam::CameraState s = r.storyboard->shotCameraView().state;
+        const QTransform view = r.canvas->viewTransformForTest();
+        const QImage on = grabCanvas(r.canvas);
+        r.storyboard->setCameraGuides(false, false);
+        const QImage off = grabCanvas(r.canvas);
+        const QVector<QPointF> camLine = insetTopEdge(s, cs, 0.05, view);
+        const QVector<QPointF> canvasLine =
+            insetTopEdge(shotcam::neutral(cs), cs, 0.05, view);
+        const int onCam = changedAt(off, on, camLine);
+        const int onCanvas = changedAt(off, on, canvasLine);
+        check(QStringLiteral("(ct) with the Brush tool the Camera bar is gone and the "
+                             "guide STAYS; switched off, its pixels go"),
+              r.canvas->tool() == DrawingCanvas::Brush && !bar->isVisible()
+                  && onCam >= 6,
+              QStringLiteral("camera line %1/7").arg(onCam));
+        check(QStringLiteral("(ct) with a pushed-in key the guide is inset from the "
+                             "CAMERA's frame: nothing changes along the canvas's own "
+                             "inset line"),
+              onCanvas <= 2 && !shotcam::isNeutral(s, cs),
+              QStringLiteral("canvas line %1/7").arg(onCanvas));
+        // Control: a scene without keys puts it back on the canvas's inset.
+        const shotcam::SceneCamera saved = scene->camera;
+        r.storyboard->applyCameraForUndo(scene, shotcam::SceneCamera());
+        const QImage plainOff = grabCanvas(r.canvas);
+        r.storyboard->setCameraGuides(true, false);
+        const QImage plainOn = grabCanvas(r.canvas);
+        r.storyboard->applyCameraForUndo(scene, saved);
+        check(QStringLiteral("(ct) guides control: with a neutral camera the guide is the "
+                             "canvas's own 5 % inset"),
+              changedAt(plainOff, plainOn, canvasLine) >= 6,
+              QStringLiteral("%1/7").arg(changedAt(plainOff, plainOn, canvasLine)));
+        // Safe Area stays on: remembered for the next window.
+    }
+
+    // ---- The note style ---------------------------------------------------
+    {
+        // Windows reveals a tooltip with a roll or fade effect: until it ends
+        // the QTipLabel is not visible and there is nothing to grab (the
+        // first run read an invalid colour, #000000, for both the check and
+        // its control). With the effects off, showText shows the label at
+        // once and it is grabbed before any event - so neither time nor the
+        // real pointer can decide the result. Restored after.
+        const bool rollWas = QApplication::isEffectEnabled(Qt::UI_AnimateTooltip);
+        const bool fadeWas = QApplication::isEffectEnabled(Qt::UI_FadeTooltip);
+        QApplication::setEffectEnabled(Qt::UI_AnimateTooltip, false);
+        QApplication::setEffectEnabled(Qt::UI_FadeTooltip, false);
+        auto tipImage = [&](const QString &text) {
+            QToolTip::showText(r.canvas->mapToGlobal(QPoint(120, 120)), text, r.canvas);
+            QWidget *tip = nullptr;
+            for (QWidget *w : QApplication::topLevelWidgets())
+                if (w->inherits("QTipLabel") && w->isVisible())
+                    tip = w;
+            return tip ? tip->grab().toImage() : QImage();
+        };
+        const QImage dark = tipImage(QStringLiteral("Turn on Animate to change the "
+                                                    "camera at this point."));
+        auto fillOf = [](const QImage &img) {
+            return img.isNull() ? QColor()
+                                : img.pixelColor(img.width() - qRound(4 * img.devicePixelRatio()),
+                                                 img.height() / 2);
+        };
+        const QColor fill = fillOf(dark);
+        const QString sheet = qApp->styleSheet();
+        check(QStringLiteral("(ct) notes and tooltips take the dark Sanko style "
+                             "(#161616), applied once"),
+              fill == QColor(0x16, 0x16, 0x16)
+                  && sheet.count(QStringLiteral("QToolTip{")) == 1,
+              fill.name());
+        QString plain = sheet;
+        plain.remove(sankoNoteStyle());
+        qApp->setStyleSheet(plain);
+        QToolTip::hideText();
+        const QColor plainFill = fillOf(tipImage(QStringLiteral("Plain note")));
+        qApp->setStyleSheet(sheet);
+        QToolTip::hideText();
+        check(QStringLiteral("(ct) note style control: without the style the tooltip is "
+                             "not #161616"),
+              plainFill.isValid() && plainFill != QColor(0x16, 0x16, 0x16),
+              plainFill.name());
+        QApplication::setEffectEnabled(Qt::UI_AnimateTooltip, rollWas);
+        QApplication::setEffectEnabled(Qt::UI_FadeTooltip, fadeWas);
+    }
+
+    // ---- The 1080p hint in the New Project dialog -------------------------------
+    {
+        NewProjectDialog dialog(&r.window);
+        const QString hint = dialog.canvasHintForTest();
+        const QImage with = dialog.grab().toImage();
+        dialog.presetDropdown()->choose(2); // 4K
+        const QString none = dialog.canvasHintForTest();
+        const QImage without = dialog.grab().toImage();
+        const double dpr = with.devicePixelRatio();
+        int differ = 0;
+        for (int y = qRound(155 * dpr); y < qRound(167 * dpr); ++y)
+            for (int x = qRound(180 * dpr); x < qRound(322 * dpr); ++x)
+                differ += with.pixel(x, y) != without.pixel(x, y) ? 1 : 0;
+        check(QStringLiteral("(ct) the New Project dialog's 1080p preset carries the "
+                             "camera hint (soft push-ins, 4K recommended), drawn on the "
+                             "Canvas Preset line"),
+              hint.contains(QStringLiteral("soft")) && hint.contains(QStringLiteral("4K"))
+                  && differ > 20,
+              hint + QStringLiteral(" (%1 px)").arg(differ));
+        check(QStringLiteral("(ct) hint control: the 4K preset shows no hint"),
+              none.isEmpty());
+    }
+
+    // ---- Stills Show Full Artwork ------------------------------------------
+    {
+        QAction *full = r.window.exportFullArtworkActionForTest();
+        const QString root = scratch + QStringLiteral("/camtool_png");
+        auto exportTo = [&](const QString &name) {
+            const QString dir = root + QStringLiteral("/") + name;
+            QDir(dir).removeRecursively();
+            QDir().mkpath(dir);
+            r.window.exportPngForTest(dir);
+            QStringList files = QDir(dir).entryList(QDir::Files, QDir::Name);
+            QFile f(dir + QStringLiteral("/") + files.value(0));
+            return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+        };
+        r.window.setExportProgressHookForTest([](int, int) { return true; });
+        const QByteArray shot = exportTo(QStringLiteral("shot"));
+        if (full)
+            full->setChecked(true);
+        const QByteArray whole = exportTo(QStringLiteral("whole"));
+        if (full)
+            full->setChecked(false);
+        const shotcam::SceneCamera saved = scene->camera;
+        r.storyboard->applyCameraForUndo(scene, shotcam::SceneCamera());
+        const QByteArray noCamera = exportTo(QStringLiteral("nocamera"));
+        r.storyboard->applyCameraForUndo(scene, saved);
+        r.window.setExportProgressHookForTest({});
+        check(QStringLiteral("(ct) File > Export > Stills Show Full Artwork: the PNG is "
+                             "the whole panel, byte for byte the picture without a "
+                             "camera"),
+              full && full->isCheckable() && !whole.isEmpty() && whole == noCamera);
+        check(QStringLiteral("(ct) Full Artwork control: unchecked, the still is the "
+                             "camera's shot"),
+              !shot.isEmpty() && shot != noCamera);
+    }
+
+    // ---- The Camera tool's scrub, and the chip when soft (2026-10-26) --------
+    // With the Camera tool a ruler drag selects the panel under the playhead
+    // and stays on the canvas at the exact frame; a drag then keys THAT
+    // frame. Panel 2 is 3 s (72 frames at 24 fps): its middle, frame 36, is
+    // scene frame 48 + 36 = 84 - 00:00:03:12 of the film.
+    {
+        camBtn->click();
+        pump(150);
+        auto rulerDrag = [&](int flatPanel, double frameIn) {
+            const double ppf = r.timeline->pxPerFrameForTest();
+            const QPointF start(r.timeline->clipRectForTest(0).center().x(), 10);
+            const QPointF at(r.timeline->clipRectForTest(flatPanel).left()
+                                 + (frameIn + 0.25) * ppf, 10);
+            mouse(r.surface, QEvent::MouseButtonPress, start, Qt::LeftButton, Qt::LeftButton);
+            mouse(r.surface, QEvent::MouseMove, at, Qt::NoButton, Qt::LeftButton);
+            mouse(r.surface, QEvent::MouseButtonRelease, at, Qt::LeftButton, Qt::NoButton);
+            pump(150);
+        };
+        if (!r.storyboard->cameraAnimate())
+            pressSwitch(bar, QStringLiteral("camAnimate"));
+        rulerDrag(1, 36);
+        const bool onCanvas = !r.animatic->previewVisible()
+            && r.storyboard->selectedFlatIndexForTest() == 1
+            && r.animatic->playheadFrameInPanel() == 36;
+        const QString chip = r.canvas->shotCameraChipForTest();
+        // To the RIGHT: the Stay-inside check above left this framing at the
+        // artwork's left edge, where a leftward drag is clamped to no change.
+        const QPointF body = centre(r.canvas->shotCameraQuadForTest());
+        drag(r.canvas, body, body + QPointF(40, 0));
+        const int keyAt84 = shotcam::keyIndexAtFrame(*scene, 84.0, 24);
+        check(QStringLiteral("(ct) with the Camera tool a ruler drag to the middle of "
+                             "panel 2 stays on the canvas, selects that panel at frame 36, "
+                             "and a drag with Animate on keys THAT frame (84)"),
+              onCanvas && keyAt84 >= 0 && lastText() == QStringLiteral("Move Camera"),
+              QStringLiteral("preview=%1 sel=%2 frame=%3 key=%4")
+                  .arg(r.animatic->previewVisible())
+                  .arg(r.storyboard->selectedFlatIndexForTest())
+                  .arg(r.animatic->playheadFrameInPanel()).arg(keyAt84));
+        // The chip, soft (1080p, zoom past 1.0) with Animate on: the frame
+        // the drag keys AND "Soft", both.
+        const QString soft = QStringLiteral("Soft ");
+        check(QStringLiteral("(ct) soft with Animate on, the chip names the key's frame "
+                             "AND says Soft: \"... ANIMATE ON  new key at 00:00:03:12  "
+                             "Soft ...\""),
+              chip.contains(QStringLiteral("ANIMATE ON")) && chip.contains(
+                  QStringLiteral("new key at 00:00:03:12")) && chip.contains(soft)
+                  && chip.indexOf(QStringLiteral("new key at")) < chip.indexOf(soft),
+              chip);
+        pressSwitch(bar, QStringLiteral("camAnimate")); // off
+        const QString offChip = r.canvas->shotCameraChipForTest();
+        check(QStringLiteral("(ct) chip control: with Animate off the soft chip names no "
+                             "key frame"),
+              offChip.contains(soft) && !offChip.contains(QStringLiteral("key at")),
+              offChip);
+        // Control: the Brush tool's scrub still previews.
+        brushBtn->setChecked(true);
+        pump(100);
+        rulerDrag(2, 10);
+        const bool brushPreviews = r.animatic->previewVisible();
+        r.animatic->leavePreview();
+        pump(50);
+        check(QStringLiteral("(ct) scrub control: with the Brush tool the same ruler "
+                             "drag opens the preview, as before"),
+              brushPreviews);
+    }
+
+    rig.reset(); // the window closes; the guide setting stays
+    {
+        Rig again(project);
+        check(QStringLiteral("(ct) the guides are remembered: a new window opens with "
+                             "Safe Area on and Title Safe off"),
+              again.ok && again.canvas->isSafeAreaEnabled()
+                  && !again.canvas->isTitleSafeEnabled());
+        again.storyboard->setCameraGuides(false, false);
+    }
+    {
+        Rig third(project);
+        check(QStringLiteral("(ct) guide setting control: switched off, the next window "
+                             "opens with both off"),
+              third.ok && !third.canvas->isSafeAreaEnabled()
+                  && !third.canvas->isTitleSafeEnabled()
+                  && sankoSettings().value(StoryboardPage::kCameraGuidesKey).toInt() == 0);
+    }
+    sankoSettings().remove(StoryboardPage::kCameraGuidesKey);
+}
+
 void runTrackLocksPass(const QString &scratch)
 {
     using namespace workspace;
@@ -11155,6 +12145,7 @@ int main(int argc, char **argv)
     runTimelineLookPass(scratch);
     runTrackLocksPass(scratch);
     runCameraPanelRemovalPass(scratch);
+    runCameraToolPass(scratch);
 
     // ---- (aa) a test that cannot start says why and exits ----------------
     // An unattended gate must FAIL, not wait. Measured 2026-10-02: with its

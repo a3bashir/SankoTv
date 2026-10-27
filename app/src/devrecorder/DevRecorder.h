@@ -57,6 +57,7 @@
 #include <functional>
 
 class QWidget;
+class QMenu;
 
 namespace devrec {
 
@@ -149,6 +150,10 @@ public slots:
     // snapshot. Safe mid-interaction: changes no focus, grabs nothing.
     void markIssue(const QString &note = QString());
 
+    // A host event of the app's own (Phase 1B: "shotCamEdit", one per shot
+    // camera edit). Recorded only while recording, like every other event.
+    void logEvent(const QString &type, const QVariantMap &data);
+
     // Internal bridge for the installed Qt message handler (a free
     // function); not part of the host integration surface.
     void enqueueFromHandler(const QJsonObject &data);
@@ -167,6 +172,9 @@ private:
     QJsonArray topLevelAudit(const QRect &modalRect) const;
     void checkCamera();
     void enqueue(const QString &type, const QJsonObject &data);
+    // Menu and shortcut actions ("action" records; see eventFilter).
+    void hookMenu(QMenu *menu);
+    void logAction(QAction *action, const QString &key, const QString &via);
     void writeSystemInfo();
 
     RecorderPrivate *d;

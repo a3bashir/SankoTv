@@ -195,6 +195,28 @@ public:
     // "camera" events are the canvas VIEW).
     QVariantMap shotCamDevrecState() const;
 
+    // THE PLAYHEAD, FOR THE CANVAS'S CAMERA TOOL (Phase 1B). Which panel it
+    // is in (null: none), the frame inside that panel (the same rounding as
+    // cameraAtPlayhead), the project's rate, and the header's timecode.
+    // setPlayheadFrameInPanel puts it on a frame of a panel WITHOUT the
+    // preview (the Camera bar's previous / next key: the artist keeps
+    // looking at the canvas). refreshCamera: a key changed - the preview
+    // and the SHOTS clips redraw. playheadMoved is said whenever the
+    // playhead's panel or frame changes while the film is not running, and
+    // once when it stops.
+    Panel *playheadPanel() const;
+    int playheadFrameInPanel() const;
+    int projectFps() const;
+    QString playheadTimecode() const;
+    void setPlayheadFrameInPanel(int flatIndex, int frameInPanel);
+    void refreshCamera();
+    // THE CAMERA TOOL'S SCRUB (2026-10-26): on, a ruler click or drag
+    // selects the panel under the playhead and stays on the canvas at the
+    // exact frame instead of opening the preview. The workspace turns it on
+    // with the Camera tool and off with every other; Play is unchanged.
+    void setScrubShowsCanvas(bool on);
+    bool scrubShowsCanvas() const { return m_scrubShowsCanvas; }
+
     // THE PICTURE KEEPS STEP WITH THE SOUND (sync pass, HANDOFF 2026-10-16).
     // Four rules, each the fix for a measured fault:
     // - a seek asked of the player before its file has loaded is dropped
@@ -231,6 +253,11 @@ signals:
     // window marks the project unsaved and the pages refresh what the
     // locks gate.
     void tracksChanged();
+    // The playhead's panel or frame changed (see playheadPanel above).
+    void playheadMoved();
+    // The preview came over the canvas (true) or went (false). The Camera
+    // bar is disabled while it covers the canvas (Phase 1B follow-up).
+    void previewShownChanged(bool shown);
 
 public:
     // Test hooks. The duration one is the REAL request the timeline drag
@@ -441,6 +468,8 @@ private:
     QString m_projectFile;        // empty: the project has no file yet
     std::function<QString()> m_audioPickerForTest;
     std::function<void(QMenu *)> m_audioMenuHookForTest;
+
+    bool m_scrubShowsCanvas = false; // the Camera tool's scrub (above)
 
     // Loop region (session-only).
     int m_loopStartIndex = -1;

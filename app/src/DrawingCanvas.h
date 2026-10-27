@@ -2,6 +2,9 @@
 
 #include "PerspectiveTool.h"
 #include "SankoPaintHostAdapter.h"
+#include "camera/CameraModel.h"
+
+#include <functional>
 
 #include <QuickShape/quickshape_session.h>
 
@@ -55,8 +58,9 @@ public:
     // QuickShape stays Brush-only. Shapes stamps geometric primitives (see
     // ShapeKind). SelectRect/SelectEllipse/Lasso/SelectPoly define a mask on
     // the ACTIVE layer (marching ants); Move drags the selected pixels within
-    // that layer. Camera is a non-drawing tool: selecting it only opens the
-    // Camera overlay panel; canvas clicks do nothing.
+    // that layer. Camera is the SHOT CAMERA's tool (Phase 1B): it draws the
+    // scene camera's frame at the playhead and its handles move, scale and
+    // turn it; it never paints (see setShotCameraProvider).
     //   Lasso     = freehand: drag to trace the selection boundary.
     //   SelectPoly = polygon:  click to drop vertices, double-click/Enter to
     //                close them into the selection (Esc cancels).
@@ -120,6 +124,53 @@ public:
     bool isCameraFrameEnabled() const { return m_cameraFrame; }
     bool isSafeAreaEnabled() const { return m_safeArea; }
     bool isTitleSafeEnabled() const { return m_titleSafe; }
+
+    // THE SHOT CAMERA ON THE CANVAS (Phase 1B, 2026-10-25). The workspace
+    // tells the canvas, through this provider, what the scene's camera is
+    // at the playhead for the panel on the canvas; the canvas never holds a
+    // key. With the Camera tool active it draws the frame (the canvas's
+    // aspect, 1.5 px accent), four 8 x 8 corner handles, a centre cross and
+    // a 40 % dim outside, and a mode chip at the top centre; with any other
+    // tool it draws the outline only, and only when the scene has keys.
+    // Past the sharp limit the frame, handles and chips turn amber.
+    // HANDLES ARE SCREEN-SIZED and follow the view's zoom, rotation and
+    // flip: the frame is mapped through viewTransform() and every drag is
+    // mapped back through toCanvasF(). A press inside the frame moves it, a
+    // corner scales it about its centre, a press within 22 px outside a
+    // corner turns it (Shift: 15-degree steps). NOTHING IS WRITTEN UNTIL
+    // THE RELEASE: one drag asks for one edit (shotCameraEditRequested);
+    // the workspace decides, and makes it one undo command. Panning (Space,
+    // middle drag), Ctrl+wheel zoom and the plain wheel are view input and
+    // are handled before the tool ever sees the press: they never ask.
+    // When the safe-area guides are on and the camera is not neutral, they
+    // are inset from the camera's frame instead of the canvas.
+    struct ShotCameraView
+    {
+        bool valid = false;           // a scene and a panel are there
+        shotcam::CameraState state;   // the camera at the playhead
+        bool sceneHasKeys = false;
+        bool animate = false;
+        bool keyAtPlayhead = false;
+        bool editable = true;         // false: a press is refused (Animate off, 2+ keys)
+        bool stayInside = true;       // clamp drags to the artwork
+        double sharpLimit = 1.0;      // past it: soft (amber)
+        QString timecode;             // the frame a drag writes, HH:MM:SS:FF
+    };
+    enum ShotCameraEditKind { ShotCameraMove = 0, ShotCameraZoom = 1,
+                              ShotCameraRotate = 2 };
+    void setShotCameraProvider(std::function<ShotCameraView()> provider);
+    void refreshShotCamera() { update(); }
+    // Test hooks (read state; no test-only behaviour). The frame as drawn,
+    // in widget px (empty: nothing drawn); what a press here would grab
+    // (-1 nothing, 0 body, 1-4 corners TL TR BR BL, 5-8 their rotate
+    // zones); the handle centres as drawn; the mode chip's text and rect
+    // (empty: not drawn); whether a drag is under way; the cursor shown.
+    QPolygonF shotCameraQuadForTest() const;
+    int shotCameraHitForTest(const QPointF &widgetPos) const;
+    QVector<QPointF> shotCameraHandlesForTest() const;
+    QString shotCameraChipForTest() const;
+    QRectF shotCameraChipRectForTest() const;
+    bool shotCameraDraggingForTest() const { return m_camDrag >= 0; }
 
     // Safe-area guide opacities in percent (Preferences > Camera). Defaults
     // are loaded from sankoSettings() in the constructor.
@@ -445,6 +496,12 @@ signals:
     // A perspective VP was created, selected, or removed: the Perspective
     // Modifier toolbar re-syncs its per-VP sliders.
     void perspectiveEdited();
+    // A Camera-tool drag was released with the frame changed: the camera
+    // the artist made (kind: ShotCameraEditKind). The workspace records it.
+    void shotCameraEditRequested(const shotcam::CameraState &state, int kind);
+    // A Camera-tool press the view says is not editable (Animate off with
+    // two or more keys): nothing moves; the workspace says why.
+    void shotCameraEditRefused();
 
 protected:
     bool eventFilter(QObject *object, QEvent *event) override; // toolbar grip drag
@@ -1028,4 +1085,35 @@ private:
     bool m_titleSafe = false;    // title safe, 10% inset
     int m_actionSafeMaskPct = 50; // guide opacity, percent (persisted)
     int m_titleSafeMaskPct = 50;
+
+    // The shot camera's tool (Phase 1B; see setShotCameraProvider).
+    std::function<ShotCameraView()> m_shotCamProvider;
+    ShotCameraView shotCameraView() const;
+    shotcam::CameraState shotCameraShownState(const ShotCameraView &v) const;
+    QPolygonF shotCameraWidgetQuad(const shotcam::CameraState &s) const;
+    QVector<QPointF> shotCameraHandles(const QPolygonF &quad) const;
+    int shotCameraHitTest(const QPointF &widgetPos) const;
+    void shotCameraUpdateCursor(int hit);
+    shotcam::CameraState shotCameraDragState(const QPointF &widgetPos,
+                                             bool shift) const;
+    bool shotCameraSoft(const ShotCameraView &v,
+                        const shotcam::CameraState &s) const;
+    QString shotCameraChipText(const ShotCameraView &v,
+                               const shotcam::CameraState &s) const;
+    QRectF shotCameraChipRect(const QString &text) const;
+    void shotCameraPress(const QPointF &widgetPos);
+    void shotCameraMove(const QPointF &widgetPos, Qt::MouseButtons buttons,
+                        Qt::KeyboardModifiers mods);
+    void shotCameraFinishDrag(); // release, or an interruption: one request
+    void paintShotCameraGuides(QPainter &painter, const QSize &cs,
+                               const shotcam::CameraState &s);
+    void paintShotCamera(QPainter &painter);
+    int m_camHover = -1;          // hit under the idle pointer
+    int m_camDrag = -1;           // hit at the press; -1 = no drag
+    bool m_camShift = false;
+    shotcam::CameraState m_camStart; // at the press
+    shotcam::CameraState m_camLive;  // during the drag
+    QPointF m_camPressCanvas;
+    QPointF m_camPressWidget;
+    QPointF m_camPointer;         // widget px, for the drag chip
 };

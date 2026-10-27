@@ -23,6 +23,7 @@
 #include <QMainWindow>
 
 #include <QAction>
+#include <QActionGroup>
 #include <QApplication>
 #include <QButtonGroup>
 #include <QColorDialog>
@@ -500,6 +501,17 @@ public:
     {
         setWindowFlags(windowFlags() | Qt::NoDropShadowWindowHint);
     }
+    // SOLID body (the Camera bar while the preview covers the canvas, the
+    // user's rule 2026-10-26): its dimmed controls stay readable over a
+    // bright picture. Off: the usual translucent body.
+    void setSolid(bool solid)
+    {
+        if (solid != m_solid) {
+            m_solid = solid;
+            update();
+        }
+    }
+    bool isSolid() const { return m_solid; }
 
 protected:
     void paintEvent(QPaintEvent *) override
@@ -510,9 +522,13 @@ protected:
         p.fillRect(rect(), Qt::transparent); // clear -> clean corners, no artifact
         p.setCompositionMode(QPainter::CompositionMode_SourceOver);
         p.setPen(Qt::NoPen);
-        p.setBrush(QColor(0x21, 0x21, 0x21, 166)); // rgba(33,33,33,0.65), r8
+        p.setBrush(m_solid ? QColor(0x21, 0x21, 0x21)            // solid #212121
+                           : QColor(0x21, 0x21, 0x21, 166)); // rgba(33,33,33,0.65), r8
         p.drawRoundedRect(QRectF(0, 0, width(), height()), 8, 8);
     }
+
+private:
+    bool m_solid = false;
 };
 
 // Like SelModBar, but with a SOLID #212121 body — the Perspective Modifier
@@ -1954,6 +1970,218 @@ private:
     bool m_afterLinked;
 };
 
+// A scene's shot camera, edited (Phase 1B): a canvas drag, Add / Delete
+// Key, or the ease. The whole key list before and after - a few dozen
+// numbers - so undo is exact whatever the edit was (keys are anchored by
+// panel uid, so the lists stay right through any panel edit around them).
+// It holds the Scene the way the panel commands do: history order
+// guarantees the scene is alive whenever this runs.
+class CameraEditCommand : public QUndoCommand
+{
+public:
+    CameraEditCommand(StoryboardPage *page, Scene *scene,
+                      shotcam::SceneCamera before, shotcam::SceneCamera after,
+                      const QString &text)
+        : QUndoCommand(text), m_page(page), m_scene(scene),
+          m_before(std::move(before)), m_after(std::move(after))
+    {
+    }
+    void redo() override { m_page->applyCameraForUndo(m_scene, m_after); }
+    void undo() override { m_page->applyCameraForUndo(m_scene, m_before); }
+
+private:
+    StoryboardPage *m_page;
+    Scene *m_scene;
+    shotcam::SceneCamera m_before;
+    shotcam::SceneCamera m_after;
+};
+
+// --- The Camera bar's controls (Phase 1B, Figma 1B-4) ---------------------------
+// Drawn in the Perspective Modifier's language: 12 px #cccccc labels, the
+// purple switch, flat buttons that take a #333 fill on hover.
+
+QFont cameraBarFont()
+{
+    QFont f = QApplication::font();
+    f.setPixelSize(12);
+    return f;
+}
+
+// The 26 x 14 switch: accent with the white knob at the right when on,
+// #4d4d4d with it at the left when off.
+class CamSwitch : public QWidget
+{
+public:
+    explicit CamSwitch(QWidget *parent) : QWidget(parent)
+    {
+        setFixedSize(26, 14);
+        setCursor(Qt::PointingHandCursor);
+        setAttribute(Qt::WA_TranslucentBackground);
+    }
+    std::function<void(bool)> onToggled;
+    bool isOn() const { return m_on; }
+    void setOn(bool on)
+    {
+        if (on != m_on) {
+            m_on = on;
+            update();
+        }
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        if (!isEnabled())
+            p.setOpacity(0.4); // disabled: dimmed like the bar's buttons
+        p.setPen(Qt::NoPen);
+        p.setBrush(m_on ? SankoTheme::kPurple : QColor(0x4d, 0x4d, 0x4d));
+        p.drawRoundedRect(QRectF(0, 0, 26, 14), 7, 7);
+        p.setBrush(Qt::white);
+        p.drawEllipse(QRectF(m_on ? 14.0 : 2.0, 2.0, 10.0, 10.0));
+    }
+    void mousePressEvent(QMouseEvent *event) override
+    {
+        if (event->button() != Qt::LeftButton)
+            return;
+        m_on = !m_on;
+        update();
+        if (onToggled)
+            onToggled(m_on);
+    }
+
+private:
+    bool m_on = false;
+};
+
+// A flat bar button with a drawn glyph: the key diamond, the delete cross,
+// or the previous / next key arrows (an arrowhead beside a small diamond).
+class CamBarButton : public QAbstractButton
+{
+public:
+    enum Glyph { Diamond, Cross, PrevKey, NextKey };
+    CamBarButton(Glyph glyph, const QString &text, QWidget *parent)
+        : QAbstractButton(parent), m_glyph(glyph)
+    {
+        setText(text);
+        setFont(cameraBarFont());
+        setCursor(Qt::PointingHandCursor);
+        setAttribute(Qt::WA_Hover);
+        const int textW = text.isEmpty()
+            ? 0 : QFontMetrics(font()).horizontalAdvance(text) + 8;
+        setFixedSize((text.isEmpty() ? 28 : 34) + textW, 30);
+    }
+    QSize sizeHint() const override { return size(); }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        if (isEnabled() && underMouse()) {
+            p.setPen(Qt::NoPen);
+            p.setBrush(QColor(0x33, 0x33, 0x33));
+            p.drawRoundedRect(QRectF(rect()), 6, 6);
+        }
+        const QColor ink = isEnabled() ? QColor(0xdd, 0xdd, 0xdd)
+                                       : QColor(0x66, 0x66, 0x66);
+        const double cy = height() / 2.0;
+        auto diamond = [&](QPointF c, double r) {
+            p.setPen(Qt::NoPen);
+            p.setBrush(ink);
+            p.drawPolygon(QPolygonF({c + QPointF(0, -r), c + QPointF(r, 0),
+                                     c + QPointF(0, r), c + QPointF(-r, 0)}));
+        };
+        QPen pen(ink, 1.6);
+        pen.setCapStyle(Qt::RoundCap);
+        pen.setJoinStyle(Qt::RoundJoin);
+        double textX = 30;
+        switch (m_glyph) {
+        case Diamond:
+            diamond(QPointF(15, cy), 4.5);
+            break;
+        case Cross:
+            p.setPen(pen);
+            p.drawLine(QPointF(11, cy - 4), QPointF(19, cy + 4));
+            p.drawLine(QPointF(19, cy - 4), QPointF(11, cy + 4));
+            break;
+        case PrevKey:
+            p.setPen(pen);
+            p.setBrush(Qt::NoBrush);
+            p.drawPolyline(QPolygonF({QPointF(11, cy - 5), QPointF(7, cy),
+                                      QPointF(11, cy + 5)}));
+            diamond(QPointF(18, cy), 2.5);
+            break;
+        case NextKey:
+            diamond(QPointF(10, cy), 2.5);
+            p.setPen(pen);
+            p.setBrush(Qt::NoBrush);
+            p.drawPolyline(QPolygonF({QPointF(17, cy - 5), QPointF(21, cy),
+                                      QPointF(17, cy + 5)}));
+            break;
+        }
+        if (!text().isEmpty()) {
+            p.setPen(ink);
+            p.setFont(font());
+            p.drawText(QRectF(textX, 0, width() - textX, height()),
+                       Qt::AlignVCenter | Qt::AlignLeft, text());
+        }
+    }
+
+private:
+    Glyph m_glyph;
+};
+
+// The ease dropdown: a 128 x 26 #333 field with the ease's name and a
+// chevron; a click opens the menu (Linear .. Hold, the current one checked
+// in the accent). Empty text: no segment to choose for ("—", disabled).
+class CamEaseField : public QAbstractButton
+{
+public:
+    explicit CamEaseField(QWidget *parent) : QAbstractButton(parent)
+    {
+        setFixedSize(128, 26);
+        setFont(cameraBarFont());
+        setCursor(Qt::PointingHandCursor);
+    }
+    bool menuOpen = false;
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setPen(menuOpen ? QPen(SankoTheme::kPurple, 1.0) : QPen(Qt::NoPen));
+        p.setBrush(QColor(0x33, 0x33, 0x33));
+        p.drawRoundedRect(QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5), 4, 4);
+        const QColor ink = isEnabled() ? QColor(0xdd, 0xdd, 0xdd)
+                                       : QColor(0x66, 0x66, 0x66);
+        p.setPen(ink);
+        p.drawText(QRectF(10, 0, width() - 34, height()),
+                   Qt::AlignVCenter | Qt::AlignLeft,
+                   text().isEmpty() ? QString(QChar(0x2014)) : text());
+        QPen pen(ink, 1.4);
+        pen.setCapStyle(Qt::RoundCap);
+        p.setPen(pen);
+        const double cx = width() - 16, cy = height() / 2.0;
+        p.drawPolyline(QPolygonF({QPointF(cx - 4, cy - 2), QPointF(cx, cy + 2),
+                                  QPointF(cx + 4, cy - 2)}));
+    }
+};
+
+QString easeLabel(shotcam::Ease e)
+{
+    switch (e) {
+    case shotcam::Ease::Linear: return QStringLiteral("Linear");
+    case shotcam::Ease::EaseIn: return QStringLiteral("Ease In");
+    case shotcam::Ease::EaseOut: return QStringLiteral("Ease Out");
+    case shotcam::Ease::EaseInOut: return QStringLiteral("Ease In/Out");
+    case shotcam::Ease::Hold: return QStringLiteral("Hold");
+    }
+    return QString();
+}
+
 } // namespace
 
 // ONE reusable tooltip for the Floating Brush Toolbar. Every tooltip appears
@@ -2792,6 +3020,7 @@ void StoryboardPage::createFloatingToolbar()
         figIconPixmap(QStringLiteral(":/icons/move.svg"), QSizeF(20.4, 20.4)),
         QStringLiteral("<b>Move</b> | Move the selected pixels."), true);
     brushTool->setChecked(true); // Brush is the default drawing tool
+    brushTool->setObjectName(QStringLiteral("toolBrush"));
 
     tools->addButton(brushTool);
     tools->addButton(eraser);
@@ -3328,11 +3557,16 @@ void StoryboardPage::createFloatingToolbar()
 
     // Camera: this button OWNS the tool (the old extras bar is gone) —
     // exclusive with the other tools and driving the Camera panel.
+    cameraBtn->setObjectName(QStringLiteral("toolCamera"));
     tools->addButton(cameraBtn);
     bindTool(cameraBtn, DrawingCanvas::Camera);
     connect(cameraBtn, &QPushButton::toggled, this, [this](bool on) {
         if (m_cameraPanel)
             m_cameraPanel->setVisible(on);
+        if (on && m_syncCameraBar)
+            m_syncCameraBar();
+        if (m_canvas)
+            m_canvas->update(); // the frame, its handles and the dim
     });
 
     // Dock toggles wire up once the docks exist (they are created after the
@@ -4001,43 +4235,530 @@ QWidget *StoryboardPage::createPerspectiveModifier()
     return bar;
 }
 
+// THE CAMERA BAR (Phase 1B; the approved Figma 1B-4). It replaces the old
+// floating Camera panel and its three toggles: the frame IS the tool now,
+// so the old "Camera Frame" overlay toggle is gone (the canvas keeps its
+// API, off). A Modifier bar in the Selection bar's translucent body,
+// bottom-centre 10 px above the status bar, shown only with the Camera
+// tool. Every button is one undoable command; the switches are not.
 QWidget *StoryboardPage::createCameraPanel()
 {
-    QWidget *body = new QWidget;
-    body->setStyleSheet(QStringLiteral("background: transparent;"));
+    SelModBar *bar = new SelModBar(m_canvas, this);
+    bar->setObjectName(QStringLiteral("cameraBar"));
+    m_cameraPanel = bar;
 
-    QVBoxLayout *layout = new QVBoxLayout(body);
-    layout->setContentsMargins(10, 8, 10, 10);
-    layout->setSpacing(6);
+    auto *row = new QHBoxLayout(bar);
+    row->setContentsMargins(14, 11, 14, 11);
+    row->setSpacing(10);
+    auto label = [bar](const QString &text, bool dim = false) {
+        auto *l = new QLabel(text, bar);
+        l->setFont(cameraBarFont());
+        l->setStyleSheet(dim ? QStringLiteral("color:#999999;background:transparent;")
+                             : QStringLiteral("color:#cccccc;background:transparent;"));
+        return l;
+    };
+    auto divider = [bar, row] {
+        auto *d = new QFrame(bar);
+        d->setFixedSize(1, 24);
+        d->setStyleSheet(QStringLiteral("background:#4d4d4d;border:none;"));
+        row->addWidget(d, 0, Qt::AlignVCenter);
+    };
+    auto addSwitch = [bar, row, &label](const QString &text, const QString &name) {
+        row->addWidget(label(text), 0, Qt::AlignVCenter);
+        auto *s = new CamSwitch(bar);
+        s->setObjectName(name);
+        row->addWidget(s, 0, Qt::AlignVCenter);
+        return s;
+    };
 
-    // Overlay toggles (display-only; never saved into the artwork).
-    QPushButton *cameraFrame = toolButton(QStringLiteral("Camera Frame"),
-                                          QStringLiteral("Camera frame \xE2\x80\x94 16:9 framing, dims outside"));
-    // OFF by default, matching DrawingCanvas::m_cameraFrame. The button is the
-    // only source of truth for the overlay's state (it is not persisted), so
-    // the two defaults must stay in step or the toggle starts out inverted.
-    cameraFrame->setChecked(false);
-    connect(cameraFrame, &QPushButton::toggled, this,
-            [this](bool on) { m_canvas->setCameraFrameEnabled(on); });
-    layout->addWidget(cameraFrame);
+    CamSwitch *animate = addSwitch(QStringLiteral("Animate"), QStringLiteral("camAnimate"));
+    divider();
+    auto *prev = new CamBarButton(CamBarButton::PrevKey, QString(), bar);
+    prev->setObjectName(QStringLiteral("camPrevKey"));
+    prev->setToolTip(QStringLiteral("Previous camera key"));
+    auto *addKey = new CamBarButton(CamBarButton::Diamond, QStringLiteral("Add Key"), bar);
+    addKey->setObjectName(QStringLiteral("camAddKey"));
+    addKey->setToolTip(QStringLiteral("Add a camera key at the playhead"));
+    auto *delKey = new CamBarButton(CamBarButton::Cross, QStringLiteral("Delete Key"), bar);
+    delKey->setObjectName(QStringLiteral("camDeleteKey"));
+    delKey->setToolTip(QStringLiteral("Delete the camera key at the playhead"));
+    auto *next = new CamBarButton(CamBarButton::NextKey, QString(), bar);
+    next->setObjectName(QStringLiteral("camNextKey"));
+    next->setToolTip(QStringLiteral("Next camera key"));
+    row->addWidget(prev, 0, Qt::AlignVCenter);
+    row->addWidget(addKey, 0, Qt::AlignVCenter);
+    row->addWidget(delKey, 0, Qt::AlignVCenter);
+    row->addWidget(next, 0, Qt::AlignVCenter);
+    divider();
+    QLabel *easeLabelW = label(QStringLiteral("Ease"), true);
+    row->addWidget(easeLabelW, 0, Qt::AlignVCenter);
+    auto *ease = new CamEaseField(bar);
+    ease->setObjectName(QStringLiteral("camEase"));
+    row->addWidget(ease, 0, Qt::AlignVCenter);
+    divider();
+    CamSwitch *inside = addSwitch(QStringLiteral("Stay inside artwork"),
+                                  QStringLiteral("camStayInside"));
+    divider();
+    CamSwitch *safe = addSwitch(QStringLiteral("Safe Area"), QStringLiteral("camSafeArea"));
+    CamSwitch *title = addSwitch(QStringLiteral("Title Safe"), QStringLiteral("camTitleSafe"));
+    bar->setFixedSize(row->sizeHint().width(), 52);
 
-    QPushButton *safeArea = toolButton(QStringLiteral("Safe Area"),
-                                       QStringLiteral("Action-safe guide \xE2\x80\x94 5% inset"));
-    connect(safeArea, &QPushButton::toggled, this,
-            [this](bool on) { m_canvas->setSafeAreaEnabled(on); });
-    layout->addWidget(safeArea);
+    // The ease menu: the five eases, the current one checked in the accent.
+    auto *menu = new QMenu(bar);
+    menu->setObjectName(QStringLiteral("camEaseMenu"));
+    menu->setStyleSheet(QStringLiteral(
+        "QMenu{background:#212121;border:1px solid #2a2a2a;border-radius:6px;"
+        "padding:4px;color:#dddddd;}"
+        "QMenu::item{padding:6px 18px 6px 26px;border-radius:4px;}"
+        "QMenu::item:selected{background:#333333;}"
+        "QMenu::indicator{width:12px;height:12px;left:8px;}"
+        "QMenu::indicator:checked{image:none;background:transparent;}"));
+    menu->setFont(cameraBarFont());
+    QActionGroup *group = new QActionGroup(menu);
+    for (shotcam::Ease e : {shotcam::Ease::Linear, shotcam::Ease::EaseIn,
+                            shotcam::Ease::EaseOut, shotcam::Ease::EaseInOut,
+                            shotcam::Ease::Hold}) {
+        QAction *a = menu->addAction(easeLabel(e));
+        a->setCheckable(true);
+        a->setData(int(e));
+        group->addAction(a);
+        connect(a, &QAction::triggered, this, [this, e] { cameraSetEase(e); });
+    }
+    connect(ease, &QAbstractButton::clicked, this, [ease, menu] {
+        for (QAction *a : menu->actions()) {
+            // The checked ease in the accent: a drawn tick as the icon.
+            QPixmap tick(12, 12);
+            tick.fill(Qt::transparent);
+            if (a->isChecked()) {
+                QPainter p(&tick);
+                p.setRenderHint(QPainter::Antialiasing, true);
+                QPen pen(SankoTheme::kPurple, 1.6);
+                pen.setCapStyle(Qt::RoundCap);
+                p.setPen(pen);
+                p.drawPolyline(QPolygonF({QPointF(2, 6.5), QPointF(5, 9.5),
+                                          QPointF(10, 3)}));
+            }
+            a->setIcon(QIcon(tick));
+        }
+        ease->menuOpen = true;
+        ease->update();
+        menu->exec(ease->mapToGlobal(QPoint(0, ease->height() + 4)));
+        ease->menuOpen = false;
+        ease->update();
+    });
 
-    QPushButton *titleSafe = toolButton(QStringLiteral("Title Safe"),
-                                        QStringLiteral("Title-safe guide \xE2\x80\x94 10% inset"));
-    connect(titleSafe, &QPushButton::toggled, this,
-            [this](bool on) { m_canvas->setTitleSafeEnabled(on); });
-    layout->addWidget(titleSafe);
+    animate->onToggled = [this](bool on) { setCameraAnimate(on); };
+    inside->onToggled = [this](bool on) { setCameraStayInside(on); };
+    safe->onToggled = [this, title](bool on) { setCameraGuides(on, title->isOn()); };
+    title->onToggled = [this, safe](bool on) { setCameraGuides(safe->isOn(), on); };
+    connect(addKey, &QAbstractButton::clicked, this, [this] { cameraAddKey(); });
+    connect(delKey, &QAbstractButton::clicked, this, [this] { cameraDeleteKey(); });
+    connect(prev, &QAbstractButton::clicked, this, [this] { cameraStepKey(-1); });
+    connect(next, &QAbstractButton::clicked, this, [this] { cameraStepKey(+1); });
 
-    m_cameraPanel = createFloatingPanel(QStringLiteral("Camera"), body);
-    m_cameraPanel->setFixedWidth(170);
-    m_cameraPanel->adjustSize();
-    m_cameraPanel->setVisible(false); // Brush is the default tool
-    return m_cameraPanel;
+    // The hover notes: each control's own tooltip is kept in "camTip" so a
+    // note can stand in for it and the original come back.
+    const QList<QWidget *> controls{animate, prev, addKey, delKey, next, ease,
+                                    inside, safe, title};
+    for (QWidget *w : controls)
+        w->setProperty("camTip", w->toolTip());
+
+    // Bar <- the scene, the playhead and the preview.
+    m_syncCameraBar = [this, bar, animate, inside, safe, title, prev, addKey, delKey,
+                       next, ease, easeLabelW, menu, controls] {
+        animate->setOn(m_cameraAnimate);
+        inside->setOn(m_cameraStayInside);
+        safe->setOn(m_canvas->isSafeAreaEnabled());
+        title->setOn(m_canvas->isTitleSafeEnabled());
+        Scene *scene = nullptr;
+        int pi = 0, frame = 0;
+        const bool valid = cameraTarget(&scene, &pi, &frame);
+        const int fps = cameraFps();
+        const double at = valid ? cameraSceneFrame(scene, pi, frame) : 0.0;
+        const QVector<double> frames =
+            valid ? shotcam::liveKeyFrames(*scene, fps) : QVector<double>();
+        const int keyHere = valid ? shotcam::keyIndexAtFrame(*scene, at, fps) : -1;
+        const int segment = valid ? shotcam::segmentKeyIndex(*scene, at, fps) : -1;
+        bool before = false, after = false;
+        for (double f : frames) {
+            before = before || f < at - 0.5;
+            after = after || f > at + 0.5;
+        }
+        // THE SCENE'S LAST KEY (the user's rule, 2026-10-25): the ease of a
+        // key with no key after it moves nothing, so the field is disabled
+        // there - on the last key or past it - and says why.
+        const bool lastKey = segment >= 0 && !frames.isEmpty()
+            && qAbs(shotcam::keyFrame(*scene, scene->camera.keys.at(segment), fps)
+                    - frames.last()) < 0.5;
+        // THE PREVIEW OVER THE CANVAS (the user's rule, 2026-10-25): nothing
+        // in the bar edits a camera the artist cannot see. Every control is
+        // disabled and says so on hover; all come back with the canvas.
+        const bool covered = m_animatic && m_animatic->previewVisible();
+        bar->setSolid(covered); // readable over a bright preview
+        for (QWidget *w : controls)
+            w->setToolTip(covered ? cameraPreviewNote()
+                                  : w->property("camTip").toString());
+        animate->setEnabled(!covered);
+        inside->setEnabled(!covered);
+        safe->setEnabled(!covered);
+        title->setEnabled(!covered);
+        prev->setEnabled(!covered && before);
+        next->setEnabled(!covered && after);
+        addKey->setEnabled(!covered && valid);
+        addKey->setText(keyHere >= 0 ? QStringLiteral("Key set")
+                                     : QStringLiteral("Add Key"));
+        delKey->setEnabled(!covered && keyHere >= 0);
+        ease->setEnabled(!covered && segment >= 0 && !lastKey);
+        easeLabelW->setEnabled(!covered && segment >= 0 && !lastKey);
+        if (!covered && lastKey)
+            ease->setToolTip(cameraLastKeyNote());
+        const shotcam::Ease current = segment >= 0
+            ? scene->camera.keys.at(segment).ease : shotcam::Ease::EaseInOut;
+        ease->setText(segment >= 0 ? easeLabel(current) : QString());
+        for (QAction *a : menu->actions())
+            a->setChecked(segment >= 0 && a->data().toInt() == int(current));
+        prev->update();
+        addKey->update();
+        delKey->update();
+        next->update();
+        ease->update();
+    };
+
+    bar->setDefaultOffsetProvider([this, bar] {
+        int statusTop = m_canvas->height();
+        if (m_bottomBar && m_bottomBar->isVisible())
+            statusTop = m_canvas->mapFromGlobal(
+                m_bottomBar->mapToGlobal(QPoint(0, 0))).y();
+        return QPoint(qMax(6, (m_canvas->width() - bar->width()) / 2),
+                      qMax(6, statusTop - bar->height() - 10));
+    });
+
+    // The canvas asks for the camera through the provider; its drags and
+    // refusals come back here.
+    m_canvas->setShotCameraProvider([this] { return shotCameraView(); });
+    connect(m_canvas, &DrawingCanvas::shotCameraEditRequested, this,
+            &StoryboardPage::onShotCameraEdit);
+    connect(m_canvas, &DrawingCanvas::shotCameraEditRefused, this, [this] {
+        sayNote(QStringLiteral("Turn on Animate to change the camera at this point."));
+    });
+
+    loadCameraGuides();
+    m_syncCameraBar();
+    bar->setVisible(false); // shown while the Camera tool is active
+    return bar;
+}
+
+// --- The shot camera's edits (Phase 1B) -------------------------------------------
+
+const QString StoryboardPage::kCameraGuidesKey =
+    QStringLiteral("storyboard/cameraGuides");
+
+QString StoryboardPage::cameraPreviewNote()
+{
+    return QStringLiteral("Close the preview to edit the camera");
+}
+
+QString StoryboardPage::cameraLastKeyNote()
+{
+    return QStringLiteral("No move after this key");
+}
+
+int StoryboardPage::cameraFps() const
+{
+    return m_animatic ? m_animatic->projectFps() : 24;
+}
+
+bool StoryboardPage::cameraTarget(Scene **scene, int *panelIndex,
+                                  int *frameInPanel) const
+{
+    Scene *s = currentScene();
+    Panel *panel = currentPanel();
+    if (!s || !panel || m_currentPanel < 0)
+        return false;
+    *scene = s;
+    *panelIndex = m_currentPanel;
+    *frameInPanel = (m_animatic && m_animatic->playheadPanel() == panel)
+        ? m_animatic->playheadFrameInPanel() : 0;
+    return true;
+}
+
+double StoryboardPage::cameraSceneFrame(const Scene *scene, int panelIndex,
+                                        int frameInPanel) const
+{
+    return shotcam::panelStartFrame(*scene, panelIndex, cameraFps()) + frameInPanel;
+}
+
+DrawingCanvas::ShotCameraView StoryboardPage::shotCameraView() const
+{
+    DrawingCanvas::ShotCameraView v;
+    Scene *scene = nullptr;
+    int pi = 0, frame = 0;
+    if (!cameraTarget(&scene, &pi, &frame))
+        return v;
+    const int fps = cameraFps();
+    const Panel *panel = scene->panels.at(pi);
+    const double at = cameraSceneFrame(scene, pi, frame);
+    const int live = shotcam::liveKeyCount(*scene);
+    v.valid = true;
+    v.state = shotcam::evaluateAtPanel(*scene, pi, frame, fps);
+    v.sceneHasKeys = live > 0;
+    v.animate = m_cameraAnimate;
+    v.keyAtPlayhead = shotcam::keyIndexAtFrame(*scene, at, fps) >= 0;
+    v.editable = m_cameraAnimate || live <= 1;
+    v.stayInside = m_cameraStayInside;
+    v.sharpLimit = shotcam::sharpLimit(panel->canvasSize());
+    // The film frame: every panel before this one, in every scene.
+    int film = 0;
+    for (const Scene *s : m_scenes) {
+        if (s == scene)
+            break;
+        for (const Panel *p : s->panels)
+            film += shotcam::panelFrames(*p, fps);
+    }
+    v.timecode = shotcam::timecodeText(film + int(at), fps);
+    return v;
+}
+
+void StoryboardPage::onShotCameraEdit(const shotcam::CameraState &state, int kind)
+{
+    Scene *scene = nullptr;
+    int pi = 0, frame = 0;
+    if (!cameraTarget(&scene, &pi, &frame) || !m_undoStack)
+        return;
+    const int fps = cameraFps();
+    const int live = shotcam::liveKeyCount(*scene);
+    const shotcam::SceneCamera before = scene->camera;
+    shotcam::SceneCamera after = before;
+    if (!m_cameraAnimate) {
+        if (live >= 2) { // the canvas refuses first; this is the backstop
+            sayNote(QStringLiteral("Turn on Animate to change the camera at this point."));
+            return;
+        }
+        // THE SCENE'S SINGLE FRAMING: one key, on its first frame. Inert keys
+        // (a deleted panel's, its delete still in the history) are kept.
+        shotcam::Ease ease = shotcam::Ease::EaseInOut;
+        after.keys.clear();
+        for (const shotcam::CameraKey &key : before.keys) {
+            if (shotcam::keyFrame(*scene, key, fps) < 0.0)
+                after.keys.append(key);
+            else
+                ease = key.ease;
+        }
+        after.keys.append(shotcam::makeKey(*scene, 0, 0, fps, state, ease));
+    } else {
+        const int at = shotcam::keyIndexAtFrame(
+            *scene, cameraSceneFrame(scene, pi, frame), fps);
+        if (at >= 0)
+            after.keys[at].state = state;
+        else
+            after.keys.append(shotcam::makeKey(*scene, pi, frame, fps, state));
+    }
+    const QString text = kind == DrawingCanvas::ShotCameraZoom
+        ? QStringLiteral("Zoom Camera")
+        : (kind == DrawingCanvas::ShotCameraRotate ? QStringLiteral("Rotate Camera")
+                                                   : QStringLiteral("Move Camera"));
+    pushCameraEdit(scene, before, after, text);
+}
+
+void StoryboardPage::pushCameraEdit(Scene *scene, const shotcam::SceneCamera &before,
+                                    const shotcam::SceneCamera &after,
+                                    const QString &text)
+{
+    if (!m_undoStack || !scene)
+        return;
+    // Counted BEFORE the push: callers may pass scene->camera itself as
+    // `before`, and the push's redo rewrites it (the hand test's Add Key
+    // logged 2 -> 2 for keys that went 1 -> 2).
+    int liveBefore = 0;
+    for (const shotcam::CameraKey &key : before.keys)
+        liveBefore += shotcam::keyFrame(*scene, key, cameraFps()) >= 0.0 ? 1 : 0;
+    m_undoStack->push(new CameraEditCommand(this, scene, before, after, text));
+    // The Dev Recorder's shotCamEdit (MainWindow connects it when built in).
+    Scene *s = nullptr;
+    int pi = 0, frame = 0;
+    QVariantMap ev{{QStringLiteral("what"), text},
+                   {QStringLiteral("animate"), m_cameraAnimate}};
+    if (cameraTarget(&s, &pi, &frame) && s == scene) {
+        const shotcam::CameraState now =
+            shotcam::evaluateAtPanel(*scene, pi, frame, cameraFps());
+        ev.insert(QStringLiteral("frame"), cameraSceneFrame(scene, pi, frame));
+        ev.insert(QStringLiteral("x"), now.cx);
+        ev.insert(QStringLiteral("y"), now.cy);
+        ev.insert(QStringLiteral("zoom"), now.zoom);
+        ev.insert(QStringLiteral("rotation"), now.rotation);
+    }
+    ev.insert(QStringLiteral("keysBefore"), liveBefore);
+    ev.insert(QStringLiteral("keysAfter"), shotcam::liveKeyCount(*scene));
+    emit shotCameraEdited(ev);
+}
+
+void StoryboardPage::applyCameraForUndo(Scene *scene, const shotcam::SceneCamera &camera)
+{
+    if (!scene)
+        return;
+    scene->camera = camera;
+    refreshCameraViews(scene);
+}
+
+void StoryboardPage::refreshCameraViews(Scene *scene)
+{
+    if (m_canvas)
+        m_canvas->refreshShotCamera();
+    if (m_animatic)
+        m_animatic->refreshCamera();
+    if (scene && scene == currentScene()) // the strip's frame outlines
+        for (int i = 0; i < scene->panels.size() && i < m_panelThumbImages.size(); ++i)
+            m_panelThumbImages.at(i)->setPixmap(stripThumbPixmap(scene->panels.at(i)));
+    if (m_syncCameraBar)
+        m_syncCameraBar();
+}
+
+void StoryboardPage::setCameraAnimate(bool on)
+{
+    m_cameraAnimate = on;
+    if (m_syncCameraBar)
+        m_syncCameraBar();
+    if (m_canvas)
+        m_canvas->refreshShotCamera();
+}
+
+void StoryboardPage::setCameraStayInside(bool on)
+{
+    m_cameraStayInside = on;
+    if (m_syncCameraBar)
+        m_syncCameraBar();
+}
+
+void StoryboardPage::setCameraGuides(bool safeArea, bool titleSafe)
+{
+    m_canvas->setSafeAreaEnabled(safeArea);
+    m_canvas->setTitleSafeEnabled(titleSafe);
+    sankoSettings().setValue(kCameraGuidesKey,
+                             (safeArea ? 1 : 0) | (titleSafe ? 2 : 0));
+    if (m_syncCameraBar)
+        m_syncCameraBar();
+}
+
+void StoryboardPage::loadCameraGuides()
+{
+    const int bits = sankoSettings().value(kCameraGuidesKey, 0).toInt();
+    m_canvas->setSafeAreaEnabled(bits & 1);
+    m_canvas->setTitleSafeEnabled(bits & 2);
+}
+
+bool StoryboardPage::cameraCovered() const
+{
+    return m_animatic && m_animatic->previewVisible();
+}
+
+void StoryboardPage::cameraAddKey()
+{
+    Scene *scene = nullptr;
+    int pi = 0, frame = 0;
+    if (cameraCovered() || !cameraTarget(&scene, &pi, &frame) || !m_undoStack)
+        return;
+    const int fps = cameraFps();
+    if (shotcam::keyIndexAtFrame(*scene, cameraSceneFrame(scene, pi, frame), fps) >= 0)
+        return; // "Key set": the key is there
+    shotcam::SceneCamera after = scene->camera;
+    // The camera as it is at this frame: adding a key never moves the shot.
+    after.keys.append(shotcam::makeKey(
+        *scene, pi, frame, fps, shotcam::evaluateAtPanel(*scene, pi, frame, fps)));
+    pushCameraEdit(scene, scene->camera, after, QStringLiteral("Add Camera Key"));
+}
+
+void StoryboardPage::cameraDeleteKey()
+{
+    Scene *scene = nullptr;
+    int pi = 0, frame = 0;
+    if (cameraCovered() || !cameraTarget(&scene, &pi, &frame) || !m_undoStack)
+        return;
+    const int at = shotcam::keyIndexAtFrame(
+        *scene, cameraSceneFrame(scene, pi, frame), cameraFps());
+    if (at < 0)
+        return;
+    shotcam::SceneCamera after = scene->camera;
+    after.keys.removeAt(at);
+    pushCameraEdit(scene, scene->camera, after, QStringLiteral("Delete Camera Key"));
+}
+
+void StoryboardPage::cameraSetEase(shotcam::Ease ease)
+{
+    Scene *scene = nullptr;
+    int pi = 0, frame = 0;
+    if (cameraCovered() || !cameraTarget(&scene, &pi, &frame) || !m_undoStack)
+        return;
+    const int fps = cameraFps();
+    const int at = shotcam::segmentKeyIndex(
+        *scene, cameraSceneFrame(scene, pi, frame), fps);
+    if (at < 0 || scene->camera.keys.at(at).ease == ease)
+        return;
+    // The scene's last key starts no move: its ease changes nothing.
+    const QVector<double> frames = shotcam::liveKeyFrames(*scene, fps);
+    if (qAbs(shotcam::keyFrame(*scene, scene->camera.keys.at(at), fps)
+             - frames.last()) < 0.5)
+        return;
+    shotcam::SceneCamera after = scene->camera;
+    after.keys[at].ease = ease;
+    pushCameraEdit(scene, scene->camera, after, QStringLiteral("Camera Ease"));
+}
+
+void StoryboardPage::cameraStepKey(int direction)
+{
+    Scene *scene = nullptr;
+    int pi = 0, frame = 0;
+    if (cameraCovered() || !cameraTarget(&scene, &pi, &frame) || !m_animatic)
+        return;
+    const int fps = cameraFps();
+    const double at = cameraSceneFrame(scene, pi, frame);
+    double target = -1.0;
+    for (double f : shotcam::liveKeyFrames(*scene, fps)) {
+        if (direction < 0 && f < at - 0.5)
+            target = f; // the last one before
+        if (direction > 0 && f > at + 0.5) {
+            target = f; // the first one after
+            break;
+        }
+    }
+    if (target < 0.0)
+        return;
+    // The panel the key falls in, and the frame inside it.
+    int panelIndex = scene->panels.size() - 1;
+    for (int i = 0; i < scene->panels.size(); ++i) {
+        const int start = shotcam::panelStartFrame(*scene, i, fps);
+        if (target < start + shotcam::panelFrames(*scene->panels.at(i), fps)) {
+            panelIndex = i;
+            break;
+        }
+    }
+    const int inPanel = qMax(0, int(std::lround(
+        target - shotcam::panelStartFrame(*scene, panelIndex, fps))));
+    if (panelIndex != m_currentPanel)
+        selectPanel(panelIndex);
+    m_animatic->setPlayheadFrameInPanel(currentFlatIndex(), inPanel);
+}
+
+QVariantMap StoryboardPage::cameraBarStateForTest() const
+{
+    QVariantMap m;
+    if (!m_cameraPanel)
+        return m;
+    for (QAbstractButton *b : m_cameraPanel->findChildren<QAbstractButton *>()) {
+        m.insert(b->objectName() + QStringLiteral(".enabled"), b->isEnabled());
+        m.insert(b->objectName() + QStringLiteral(".text"), b->text());
+    }
+    for (QWidget *w : m_cameraPanel->findChildren<QWidget *>())
+        if (auto *s = dynamic_cast<CamSwitch *>(w))
+            m.insert(s->objectName() + QStringLiteral(".on"), s->isOn());
+    m.insert(QStringLiteral("visible"), m_cameraPanel->isVisible());
+    return m;
+}
+
+QVariantMap StoryboardPage::shotCamToolDevrecState() const
+{
+    return {{QStringLiteral("shotCam.animate"), m_cameraAnimate},
+            {QStringLiteral("shotCam.toolActive"),
+             m_canvas && m_canvas->tool() == DrawingCanvas::Camera}};
 }
 
 // Floating overlay shown only while the Shapes tool is active: shape
@@ -4211,8 +4932,39 @@ QPixmap StoryboardPage::stripThumbPixmap(Panel *panel, qreal dprOverride) const
         const QPixmap fit = art.scaled(well, Qt::KeepAspectRatio,
                                        Qt::SmoothTransformation);
         QPainter p(&out); // DEVICE pixels: the DPR tag comes after painting
-        p.drawPixmap((well.width() - fit.width()) / 2,
-                     (well.height() - fit.height()) / 2, fit);
+        const QPoint at((well.width() - fit.width()) / 2,
+                        (well.height() - fit.height()) / 2);
+        p.drawPixmap(at, fit);
+        // THE SHOT CAMERA'S FRAME (the user's decision 2, Phase 1B): the
+        // whole artwork stays, with the camera at the panel's first frame
+        // outlined over it - accent, amber past the sharp limit. Only in a
+        // scene with live keys: without them the thumbnail is the bytes it
+        // always was.
+        const Scene *scene = nullptr;
+        for (const Scene *s : m_scenes)
+            if (s && s->panels.contains(panel)) {
+                scene = s;
+                break;
+            }
+        const QSize cs = panel->canvasSize();
+        if (scene && shotcam::liveKeyCount(*scene) > 0 && !cs.isEmpty()) {
+            const int fps = cameraFps();
+            const shotcam::CameraState state = shotcam::evaluateAtPanel(
+                *scene, int(scene->panels.indexOf(panel)), 0, fps);
+            QTransform t;
+            t.translate(at.x(), at.y());
+            t.scale(double(fit.width()) / cs.width(),
+                    double(fit.height()) / cs.height());
+            const bool soft = state.zoom > shotcam::sharpLimit(cs) + 1e-9;
+            QPen pen(soft ? QColor(0xf5, 0xa6, 0x23) : SankoTheme::kPurple,
+                     1.5 * dpr);
+            pen.setJoinStyle(Qt::MiterJoin);
+            p.setRenderHint(QPainter::Antialiasing, true);
+            p.setPen(pen);
+            p.setBrush(Qt::NoBrush);
+            p.setClipRect(QRect(at, fit.size()));
+            p.drawPolygon(t.map(shotcam::frameQuad(state, cs)));
+        }
     }
     out.setDevicePixelRatio(dpr);
     return out;
@@ -4738,6 +5490,26 @@ void StoryboardPage::setupAnimaticSection(QWidget *centerColumn,
     // one delete prompt - whichever view the request came from.
     connect(m_animatic, &AnimaticPage::panelSelectRequested, this,
             &StoryboardPage::selectFlatPanel);
+    // The shot camera follows the playhead (Phase 1B): the canvas's frame
+    // and the Camera bar's keys are "at the playhead".
+    connect(m_animatic, &AnimaticPage::playheadMoved, this, [this] {
+        if (m_syncCameraBar)
+            m_syncCameraBar();
+        if (m_canvas && !m_animatic->previewVisible())
+            m_canvas->refreshShotCamera();
+    });
+    // The Camera bar is disabled while the preview covers the canvas.
+    connect(m_animatic, &AnimaticPage::previewShownChanged, this, [this] {
+        if (m_syncCameraBar)
+            m_syncCameraBar();
+    });
+    // With the Camera tool a ruler scrub stays on the canvas at the exact
+    // frame (AnimaticPage::setScrubShowsCanvas); every other tool previews.
+    m_animatic->setScrubShowsCanvas(m_canvas->tool() == DrawingCanvas::Camera);
+    connect(m_canvas, &DrawingCanvas::toolChanged, this, [this](int tool) {
+        if (m_animatic)
+            m_animatic->setScrubShowsCanvas(tool == DrawingCanvas::Camera);
+    });
     connect(m_animatic, &AnimaticPage::durationChangeRequested, this,
             &StoryboardPage::onDurationChangeRequested);
     connect(m_animatic, &AnimaticPage::panelMoveRequested, this,
@@ -5377,6 +6149,16 @@ void StoryboardPage::setUndoStack(QUndoStack *stack)
     m_undoStack = stack;
     if (m_canvas)
         m_canvas->setUndoStack(stack);
+    // Any edit can move a key's frame (a duration, an insert, a removal):
+    // the Camera bar and the canvas's frame re-read after every step.
+    if (stack)
+        connect(stack, &QUndoStack::indexChanged, this, [this] {
+            if (m_syncCameraBar)
+                m_syncCameraBar();
+            if (m_canvas && (m_canvas->tool() == DrawingCanvas::Camera
+                             || (currentScene() && !currentScene()->camera.isEmpty())))
+                m_canvas->refreshShotCamera();
+        });
 }
 
 void StoryboardPage::ensureBrushPixelsForSave()
@@ -5464,6 +6246,11 @@ void StoryboardPage::applyPanelDurationForUndo(Panel *panel, int seconds)
     panel->duration = qBound(1, seconds, 30);
     if (m_animatic)
         m_animatic->refreshTiming();
+    // A camera move across panels is re-timed with them: the strip's frame
+    // outlines (the camera at each panel's first frame) are redrawn.
+    Scene *scene = currentScene();
+    if (scene && scene->panels.contains(panel) && !scene->camera.isEmpty())
+        refreshCameraViews(scene);
 }
 
 void StoryboardPage::addPanelToScene(int sceneIndex)

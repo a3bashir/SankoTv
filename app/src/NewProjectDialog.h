@@ -75,6 +75,8 @@ public:
     QPushButton *createButton() const { return m_create; }
     QPushButton *cancelButton() const { return m_cancel; }
     QString validationReason() const { return m_reason; }
+    // The 1080p camera hint as drawn (empty: not shown). Phase 1B.
+    QString canvasHintForTest() const { return canvasHint(); }
     void attemptCreate(); // the Create click path (re-validates, writes)
 
     // Verification only: the folder a new dialog offers as its Save
@@ -94,6 +96,7 @@ protected:
 
 private:
     void applyPreset(int index);
+    QString canvasHint() const; // the 1080p camera hint, or empty
     void revalidate();       // live: sets m_reason + Create enabled state
     QString validate() const; // empty = valid
     void browse();

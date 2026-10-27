@@ -435,6 +435,9 @@ void AnimaticPage::enterPreview()
         m_display->setGeometry(m_previewHost->rect());
         m_display->show();
         m_display->raise(); // above the canvas's own child controls
+        showPreviewFrame();
+        emit previewShownChanged(true);
+        return;
     }
     showPreviewFrame();
 }
@@ -455,6 +458,7 @@ void AnimaticPage::leavePreview()
     }
     if (m_selected >= 0 && m_selected < m_items.size() && m_selected != m_current)
         seekTo(m_selected);
+    emit previewShownChanged(false);
 }
 
 void AnimaticPage::showPreviewFrame()
@@ -500,6 +504,59 @@ void AnimaticPage::updatePreviewCamera()
 void AnimaticPage::onCameraTick()
 {
     updatePreviewCamera();
+}
+
+Panel *AnimaticPage::playheadPanel() const
+{
+    if (m_current < 0 || m_current >= m_items.size())
+        return nullptr;
+    return m_items.at(m_current).panel;
+}
+
+int AnimaticPage::playheadFrameInPanel() const
+{
+    if (m_current < 0 || m_current >= m_items.size())
+        return 0;
+    const int fps = projectFps();
+    const int frames = shotcam::panelFrames(*m_items.at(m_current).panel, fps);
+    return qBound(0, shotcam::frameInPanelFromMs(liveElapsedMsInCurrentPanel(), fps),
+                  frames - 1);
+}
+
+int AnimaticPage::projectFps() const
+{
+    return m_timeline ? qMax(1, m_timeline->fps()) : 24;
+}
+
+QString AnimaticPage::playheadTimecode() const
+{
+    return m_timecodeLabel ? m_timecodeLabel->text() : QString();
+}
+
+void AnimaticPage::setPlayheadFrameInPanel(int flatIndex, int frameInPanel)
+{
+    if (flatIndex < 0 || flatIndex >= m_items.size())
+        return;
+    if (m_playing)
+        pause();
+    if (flatIndex != m_current)
+        movePlayheadTo(flatIndex);
+    const int fps = projectFps();
+    const int frames = shotcam::panelFrames(*m_items.at(flatIndex).panel, fps);
+    m_elapsedMsInCurrentPanel =
+        shotcam::msForFrameInPanel(qBound(0, frameInPanel, frames - 1), fps);
+    updateTimecodeLabel();
+    if (m_timeline)
+        m_timeline->updatePlayhead();
+    updatePreviewCamera();
+    emit playheadMoved();
+}
+
+void AnimaticPage::refreshCamera()
+{
+    updatePreviewCamera();
+    if (m_timeline)
+        m_timeline->refreshThumbnails(); // the SHOTS clips show the camera
 }
 
 shotcam::CameraState AnimaticPage::previewCameraForTest() const
@@ -591,6 +648,7 @@ void AnimaticPage::setPlayheadForTest(int flatIndex, int elapsedMs)
     if (m_timeline)
         m_timeline->updatePlayhead();
     updatePreviewCamera();
+    emit playheadMoved();
 }
 
 
@@ -1330,6 +1388,8 @@ void AnimaticPage::movePlayheadTo(int index)
         m_timeline->setCurrentPanel(index);
     updateTimecodeLabel();
     showPreviewFrame(); // no-op unless the preview is showing
+    if (!m_playing)
+        emit playheadMoved();
 }
 
 // movePlayheadTo + what a jump needs: the running tick re-armed for the new
@@ -1358,8 +1418,26 @@ void AnimaticPage::onScrubbed(int index)
         return;
     if (m_playing)
         pause();
+    // WITH THE CAMERA TOOL (the user's rule, 2026-10-26) a scrub moves the
+    // playhead ON THE CANVAS: the panel under it is SELECTED (the workspace
+    // decides, as for a clip click) and no preview opens, so the camera
+    // frame is drawn - and Animate keys - at any frame, not only a panel's
+    // start. Every other tool keeps "scrubbing looks without selecting".
+    if (m_scrubShowsCanvas) {
+        if (index != m_selected)
+            emit panelSelectRequested(index); // -> setSelectedPanel -> seekTo
+        if (index != m_current)
+            seekTo(index); // the workspace did not select it: look anyway
+        leavePreview();
+        return;
+    }
     seekTo(index);
     enterPreview();
+}
+
+void AnimaticPage::setScrubShowsCanvas(bool on)
+{
+    m_scrubShowsCanvas = on;
 }
 
 // FRAME-ACCURATE SCRUB (Phase 1A): the timeline reports the frame inside
@@ -1383,6 +1461,7 @@ void AnimaticPage::onScrubbedTo(int index, int frameInPanel)
     if (m_timeline)
         m_timeline->updatePlayhead();
     updatePreviewCamera();
+    emit playheadMoved();
 }
 
 void AnimaticPage::updateTimecodeLabel()
@@ -1593,6 +1672,7 @@ void AnimaticPage::pause()
             QStringLiteral(":/icons/timeline/tr_play.svg"), QSize(11, 13)));
     if (hasAudio())
         m_player->pause();
+    emit playheadMoved(); // the frame it stopped on
 }
 
 void AnimaticPage::togglePlay()
