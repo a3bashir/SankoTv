@@ -4105,6 +4105,318 @@ void runSizeCtlAgreementPass(const QString &scratch)
     pump(300);
 }
 
+// ---- (sv) a save writes only the images that changed ----------------------
+// The defect (2026-10-27): every Ctrl+S re-encoded every panel flatten and
+// every layer as a PNG on the UI thread, changed or not - 54 images at
+// 3840x2160 froze the window for 25 seconds, twice in a row with nothing
+// edited in between. Now a save skips each image whose file already holds
+// it (ProjectIO::ImageLedger) and encodes the rest on several threads.
+//
+// Skipping is the dangerous half: a skip that should have been a write
+// leaves old pixels on disk under a manifest that says the work is saved.
+// So every way an image can change is a check that it IS written - a
+// stroke, an Undo, a file deleted or replaced behind the app's back, a
+// Save As to a new folder - and every "nothing was written" is paired with
+// a control proving the same measurement sees a write. The written list
+// comes from the save itself and is cross-checked against the disk (a
+// file's size and modification time), so neither can drift from the other.
+void runIncrementalSavePass(const QString &scratch)
+{
+    out() << "--- (sv) a save writes only the images that changed ---" << Qt::endl;
+    const QString dir = scratch + QStringLiteral("/incremental");
+    QDir(dir).removeRecursively();
+    QDir().mkpath(dir);
+
+    MainWindow window;
+    window.resize(1300, 850);
+    window.show();
+    pump(800);
+
+    // 1 scene x 3 panels, each a Background and one drawn layer: 9 images.
+    const QString proj = writeProject(dir, QStringLiteral("Inc"), QSize(960, 540),
+                                      24, 1, 3);
+    const QString assets = QFileInfo(proj).absolutePath() + QStringLiteral("/Inc_assets");
+    check(QStringLiteral("(sv) fixture opens"), window.loadProjectForTest(proj));
+    pump(500);
+
+    using Stamps = QMap<QString, QPair<qint64, QDateTime>>;
+    auto stamps = [](const QString &folder) {
+        Stamps m;
+        for (const QFileInfo &fi : QDir(folder).entryInfoList(
+                 {QStringLiteral("*.png")}, QDir::Files, QDir::Name))
+            m.insert(fi.fileName(), {fi.size(), fi.lastModified()});
+        return m;
+    };
+    // Files written since `before`, as the disk shows it.
+    auto touched = [&stamps](const Stamps &before, const QString &folder) {
+        QStringList names;
+        const Stamps now = stamps(folder);
+        for (auto it = now.cbegin(); it != now.cend(); ++it)
+            if (!before.contains(it.key()) || before.value(it.key()) != it.value())
+                names << it.key();
+        return names; // sorted: QMap order
+    };
+    // Files written by the last save, as the save reports it.
+    auto written = [&window] {
+        QStringList names;
+        for (const QString &f : window.lastSaveWrittenForTest())
+            names << QFileInfo(f).fileName();
+        names.sort();
+        return names;
+    };
+    auto panelAt = [&window](int p) { return window.scenesForTest().at(0)->panels.at(p); };
+    auto decoded = [](const QString &file) {
+        return QImage(file).convertToFormat(QImage::Format_ARGB32_Premultiplied);
+    };
+    auto paint = [&window] {
+        auto *canvas = window.findChild<DrawingCanvas *>();
+        if (!canvas)
+            return;
+        const QTransform t = canvas->viewTransformForTest();
+        sendMouse(canvas, QEvent::MouseButtonPress, t.map(QPointF(150, 130)),
+                  Qt::LeftButton);
+        for (int i = 1; i <= 8; ++i)
+            sendMouse(canvas, QEvent::MouseMove,
+                      t.map(QPointF(150 + i * 24, 130 + i * 17)), Qt::LeftButton);
+        sendMouse(canvas, QEvent::MouseButtonRelease, t.map(QPointF(342, 266)),
+                  Qt::LeftButton);
+        pump(700);
+    };
+    auto save = [&window](const QString &path) {
+        const bool ok = window.saveProjectForTest(path);
+        pump(200);
+        return ok;
+    };
+    const int total = stamps(assets).size();
+    check(QStringLiteral("(sv) control: the fixture has 9 images on disk"),
+          total == 9, QString::number(total));
+
+    // --- (sv.1) nothing changed since opening: nothing is written --------
+    Stamps before = stamps(assets);
+    const bool saved1 = save(proj);
+    check(QStringLiteral("(sv.1) a save with no changes since opening writes no "
+                         "image"),
+          saved1 && written().isEmpty() && touched(before, assets).isEmpty(),
+          QStringLiteral("saved %1, written [%2], on disk [%3]")
+              .arg(saved1)
+              .arg(written().join(QStringLiteral(", ")),
+                   touched(before, assets).join(QStringLiteral(", "))));
+    check(QStringLiteral("(sv.1) CONTROL: ...because it found every image "
+                         "already on disk, not because it skipped the images"),
+          window.lastSaveSkippedForTest() == total,
+          QStringLiteral("skipped %1 of %2").arg(window.lastSaveSkippedForTest()).arg(total));
+
+    // --- (sv.2) one stroke: exactly that layer and its panel's flatten ---
+    QVector<QVector<qint64>> keys;
+    for (int p = 0; p < 3; ++p) {
+        keys.append(QVector<qint64>());
+        for (const Layer &layer : panelAt(p)->layers)
+            keys.last().append(layer.image.cacheKey());
+    }
+    int strokeP = -1, strokeK = -1, changedLayers = 0;
+    QImage preStroke;
+    {
+        // The stroke's layer, found by its pixels changing in memory - not
+        // assumed - so the expectation below is the edit that happened.
+        QVector<QImage> copies;
+        for (const Layer &layer : panelAt(0)->layers)
+            copies.append(layer.image.copy());
+        paint();
+        for (int p = 0; p < 3; ++p)
+            for (int k = 0; k < panelAt(p)->layers.size(); ++k)
+                if (panelAt(p)->layers.at(k).image.cacheKey() != keys.at(p).at(k)) {
+                    ++changedLayers;
+                    strokeP = p;
+                    strokeK = k;
+                }
+        if (strokeP == 0 && strokeK >= 0)
+            preStroke = copies.at(strokeK);
+    }
+    check(QStringLiteral("(sv.2) control: the stroke changed exactly one layer, "
+                         "in memory"),
+          changedLayers == 1 && strokeP == 0 && !preStroke.isNull()
+              && panelAt(0)->layers.at(strokeK).image != preStroke,
+          QStringLiteral("%1 layer(s) changed; panel %2 layer %3")
+              .arg(changedLayers).arg(strokeP).arg(strokeK));
+    const QString strokeFile =
+        QStringLiteral("panel_s0_p%1_layer%2.png").arg(strokeP).arg(strokeK);
+    const QString flatFile = QStringLiteral("panel_s0_p%1.png").arg(strokeP);
+    QStringList expected{strokeFile, flatFile};
+    expected.sort();
+    const QImage onDiskBefore = decoded(assets + QStringLiteral("/") + strokeFile);
+    before = stamps(assets);
+    save(proj);
+    check(QStringLiteral("(sv.2) a stroke on one layer rewrites exactly that "
+                         "layer's image and its panel's flatten"),
+          written() == expected && touched(before, assets) == expected,
+          QStringLiteral("expected [%1], written [%2], on disk [%3]")
+              .arg(expected.join(QStringLiteral(", ")),
+                   written().join(QStringLiteral(", ")),
+                   touched(before, assets).join(QStringLiteral(", "))));
+    check(QStringLiteral("(sv.2) CONTROL: the rewritten file really holds the "
+                         "stroke now"),
+          decoded(assets + QStringLiteral("/") + strokeFile) != onDiskBefore
+              && decoded(assets + QStringLiteral("/") + strokeFile)
+                     == panelAt(strokeP)->layers.at(strokeK).image);
+
+    // --- (sv.3) Save, Undo, save again: the image is rewritten -----------
+    before = stamps(assets);
+    save(proj);
+    check(QStringLiteral("(sv.3) control: saving again with no Undo writes "
+                         "nothing"),
+          written().isEmpty() && touched(before, assets).isEmpty(),
+          written().join(QStringLiteral(", ")));
+    window.undoActionForTest()->trigger();
+    pump(500);
+    check(QStringLiteral("(sv.3) control: Undo put the pre-stroke pixels back "
+                         "in memory"),
+          panelAt(strokeP)->layers.at(strokeK).image == preStroke);
+    before = stamps(assets);
+    save(proj);
+    check(QStringLiteral("(sv.3) save, Undo, save again: the layer and its "
+                         "flatten are rewritten"),
+          written() == expected && touched(before, assets) == expected,
+          QStringLiteral("written [%1], on disk [%2]")
+              .arg(written().join(QStringLiteral(", ")),
+                   touched(before, assets).join(QStringLiteral(", "))));
+    check(QStringLiteral("(sv.3) ...and the file holds the pre-stroke pixels "
+                         "again"),
+          decoded(assets + QStringLiteral("/") + strokeFile) == preStroke);
+
+    // --- (sv.4) a PNG deleted behind the app's back is written again -----
+    const QString victim = QStringLiteral("panel_s0_p2_layer1.png");
+    QFile::remove(assets + QStringLiteral("/") + victim);
+    check(QStringLiteral("(sv.4) control: the PNG is gone"),
+          !QFileInfo::exists(assets + QStringLiteral("/") + victim));
+    before = stamps(assets);
+    save(proj);
+    check(QStringLiteral("(sv.4) a deleted PNG is rewritten on the next save, "
+                         "and nothing else"),
+          written() == QStringList{victim} && touched(before, assets) == QStringList{victim},
+          QStringLiteral("written [%1], on disk [%2]")
+              .arg(written().join(QStringLiteral(", ")),
+                   touched(before, assets).join(QStringLiteral(", "))));
+    check(QStringLiteral("(sv.4) ...with the layer's pixels"),
+          decoded(assets + QStringLiteral("/") + victim)
+              == panelAt(2)->layers.at(1).image);
+
+    // --- (sv.5) a PNG replaced by another program is written again -------
+    const QString replaced = QStringLiteral("panel_s0_p1_layer1.png");
+    {
+        QImage other(960, 540, QImage::Format_ARGB32);
+        other.fill(QColor(200, 30, 30));
+        other.save(assets + QStringLiteral("/") + replaced, "PNG");
+    }
+    check(QStringLiteral("(sv.5) control: the file on disk is no longer the "
+                         "layer"),
+          decoded(assets + QStringLiteral("/") + replaced)
+              != panelAt(1)->layers.at(1).image);
+    save(proj);
+    check(QStringLiteral("(sv.5) a PNG another program wrote over is rewritten "
+                         "with the layer"),
+          written() == QStringList{replaced}
+              && decoded(assets + QStringLiteral("/") + replaced)
+                     == panelAt(1)->layers.at(1).image,
+          written().join(QStringLiteral(", ")));
+
+    // --- (sv.6) Save As to a new folder writes every image ---------------
+    const QString asPath = dir + QStringLiteral("/as/IncCopy.sankotv");
+    const QString asAssets = dir + QStringLiteral("/as/IncCopy_assets");
+    QDir().mkpath(dir + QStringLiteral("/as"));
+    save(asPath);
+    check(QStringLiteral("(sv.6) Save As to a new folder writes every image"),
+          written().size() == total && stamps(asAssets).size() == total
+              && window.lastSaveSkippedForTest() == 0,
+          QStringLiteral("written %1, on disk %2, skipped %3 of %4")
+              .arg(written().size()).arg(stamps(asAssets).size())
+              .arg(window.lastSaveSkippedForTest()).arg(total));
+    // (How many threads shared the encoding depends on how fast each image
+    // finishes, so it is measured by the timing probe, not checked here.)
+    // The same bytes the UI thread's QImage::save makes, image by image.
+    {
+        const QString ref = dir + QStringLiteral("/ref");
+        QDir().mkpath(ref);
+        auto bytes = [](const QString &file) {
+            QFile f(file);
+            return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+        };
+        int same = 0, compared = 0;
+        QStringList differ;
+        for (int p = 0; p < 3; ++p) {
+            QVector<QPair<QString, QImage>> images;
+            images.append({QStringLiteral("panel_s0_p%1.png").arg(p),
+                           panelAt(p)->flattenedPixmap().toImage()});
+            for (int k = 0; k < panelAt(p)->layers.size(); ++k)
+                images.append({QStringLiteral("panel_s0_p%1_layer%2.png").arg(p).arg(k),
+                               panelAt(p)->layers.at(k).image});
+            for (const auto &[name, image] : images) {
+                image.save(ref + QStringLiteral("/") + name, "PNG");
+                ++compared;
+                if (bytes(ref + QStringLiteral("/") + name)
+                    == bytes(asAssets + QStringLiteral("/") + name))
+                    ++same;
+                else
+                    differ << name;
+            }
+        }
+        check(QStringLiteral("(sv.6) ...and every file is byte-identical to the "
+                             "same image saved on this thread"),
+              compared == total && same == total,
+              QStringLiteral("%1 of %2 identical; differ: %3")
+                  .arg(same).arg(compared).arg(differ.join(QStringLiteral(", "))));
+        const QString probe = ref + QStringLiteral("/control.png");
+        panelAt(0)->layers.at(1).image.save(probe, "PNG", 80);
+        check(QStringLiteral("(sv.6) CONTROL: the byte comparison sees a "
+                             "different encoding of the same image"),
+              bytes(probe) != bytes(asAssets + QStringLiteral("/panel_s0_p0_layer1.png"))
+                  && !bytes(probe).isEmpty());
+    }
+    before = stamps(asAssets);
+    save(asPath);
+    check(QStringLiteral("(sv.6) CONTROL: the next save to the new folder writes "
+                         "nothing - Save As wrote everything because it had to"),
+          written().isEmpty() && touched(before, asAssets).isEmpty()
+              && window.lastSaveSkippedForTest() == total,
+          written().join(QStringLiteral(", ")));
+
+    // --- (sv.7) save, then reload: pixel-identical -----------------------
+    paint(); // fresh work in memory, so the reload has something to prove
+    QVector<QVector<QImage>> mem;
+    for (int p = 0; p < 3; ++p) {
+        mem.append(QVector<QImage>());
+        for (const Layer &layer : panelAt(p)->layers)
+            mem.last().append(layer.image.copy());
+    }
+    check(QStringLiteral("(sv.7) control: the save after the stroke succeeds"),
+          save(asPath) && !written().isEmpty());
+    window.markCleanForTest();
+    check(QStringLiteral("(sv.7) the project reopens"),
+          window.loadProjectForTest(asPath));
+    pump(500);
+    int layersSame = 0, layersCompared = 0;
+    for (int p = 0; p < 3 && p < window.scenesForTest().at(0)->panels.size(); ++p)
+        for (int k = 0; k < panelAt(p)->layers.size() && k < mem.at(p).size(); ++k) {
+            ++layersCompared;
+            if (panelAt(p)->layers.at(k).image == mem.at(p).at(k))
+                ++layersSame;
+        }
+    check(QStringLiteral("(sv.7) save, then reload: every layer is "
+                         "pixel-identical"),
+          layersCompared == 6 && layersSame == 6,
+          QStringLiteral("%1 of %2 identical").arg(layersSame).arg(layersCompared));
+    {
+        QImage nudged = mem.at(0).at(1).copy();
+        nudged.setPixel(5, 5, nudged.pixel(5, 5) ^ 0x00010101u);
+        check(QStringLiteral("(sv.7) CONTROL: the comparison sees a one-pixel "
+                             "difference"),
+              nudged != panelAt(0)->layers.at(1).image);
+    }
+
+    window.markCleanForTest();
+    window.close();
+    pump(300);
+}
+
 // ---- (i) a save that CANNOT fully happen must not look like one ----------
 // Every write in the save used to be unchecked: QDir::mkpath, every
 // QImage::save, and QFile::write's byte count. A save that could not write
@@ -12296,6 +12608,7 @@ int main(int argc, char **argv)
     runSaveAsIndependencePass(scratch);
     runRecentsStorePass(scratch);
     runSaveFailurePass(scratch);
+    runIncrementalSavePass(scratch);
     runRecentThumbnailSourcePass(scratch);
     runSizeCtlAgreementPass(scratch);
     runNewProjectPromptPass(a);

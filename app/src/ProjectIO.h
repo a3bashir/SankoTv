@@ -3,9 +3,13 @@
 #include "StoryboardModel.h"
 #include "TimelineTracks.h"
 
+#include <QByteArray>
+#include <QDateTime>
+#include <QHash>
 #include <QJsonObject>
 #include <QSize>
 #include <QString>
+#include <QStringList>
 #include <QVector>
 
 #include <functional>
@@ -20,6 +24,59 @@
 // MainWindow keeps everything user-facing: file dialogs, the mismatch
 // dialog, page updates, recents. This owns bytes, JSON, and sibling PNGs.
 namespace ProjectIO {
+
+// WHAT EACH IMAGE FILE ON DISK HOLDS (the save freeze, 2026-10-27).
+//
+// Every save used to re-encode every panel flatten and every layer as a
+// PNG on the UI thread, changed or not: 54 images at 3840x2160 froze the
+// window for 25 seconds on each Ctrl+S. The ledger lets a save skip an
+// image whose file already holds it.
+//
+// It is keyed by FILE, never by panel or layer. Image files are named by
+// POSITION, so a panel deleted and brought back by Undo lands on a file
+// that another panel has been written to since; a ledger keyed by panel
+// would call it unchanged and leave the other panel's pixels in its file.
+// Keyed by file it asks the only question that matters: does THIS file
+// hold THIS image?
+//
+// The content is an identity, not a hash: a layer's QImage::cacheKey()
+// (ser_no << 32 | detach_no: unique for the life of the process, and
+// changed by QPainter::begin, bits()/scanLine() and assignment - the paint
+// engine's own authority check already rests on this), and for a flatten
+// every input flattenedPixmap() reads. An entry also keeps the file's size
+// and modification time as this process left them, so a file deleted, or
+// written since by anything else - another program, another project - no
+// longer matches and is written again. A wrong match would cost an artist
+// their work and a missed one costs a write, so every doubt writes.
+class ImageLedger
+{
+public:
+    // True only when `file` was last written or read by this process as
+    // `content` and is exactly as it was left: a file, same size, same
+    // modification time.
+    bool holds(const QString &file, const QByteArray &content) const;
+    // `file` now holds `content`: it was just written, or just read.
+    // Records nothing for a file that is not there.
+    void record(const QString &file, const QByteArray &content);
+    void forget(const QString &file);
+    void merge(const ImageLedger &other);
+    int size() const { return int(m_entries.size()); }
+
+private:
+    struct Entry
+    {
+        QByteArray content;
+        qint64 bytes = -1;
+        QDateTime modified;
+    };
+    static QString keyFor(const QString &file);
+    QHash<QString, Entry> m_entries;
+};
+
+// The identities the ledger compares: a layer is its image; a panel's
+// flatten is everything flattenedPixmap() reads.
+QByteArray layerContent(const QImage &image);
+QByteArray flattenContent(const Panel &panel);
 
 struct SaveData
 {
@@ -36,6 +93,10 @@ struct SaveData
     bool audioLinked = false;
     QJsonObject perspective;
     TimelineTracks tracks; // lock / visibility / mute, written under "tracks"
+    // What the image files already hold (see ImageLedger): the save skips
+    // every image whose file holds it, and records each one it writes.
+    // Null (the seam, the fixtures) writes every image, as before.
+    ImageLedger *ledger = nullptr;
 };
 
 // The outcome of a save's IMAGE pass.
@@ -58,6 +119,9 @@ struct [[nodiscard]] WriteResult
     QString failedFile;     // the first file that could not be written
     QString reason;         // why, in words an artist can act on
     int imagesWritten = 0;  // before the failure, if any
+    int imagesSkipped = 0;  // unchanged: their files already hold them
+    QStringList writtenFiles; // every image this save wrote (absolute)
+    int encodeThreads = 0;  // distinct threads that encoded them
     // The audio copy was CANCELLED by the artist (Save As with a large
     // track): ok is false, and there is nothing to warn about.
     bool cancelled = false;
@@ -146,6 +210,9 @@ struct LoadedProject
     // number out of range): left out, never guessed. 0 for every project
     // written by the app.
     int cameraKeysDropped = 0;
+    // Every image file this load read, recorded as what it now holds, so
+    // the first save after opening writes only what has changed since.
+    ImageLedger images;
 };
 
 // Rebuild the model from a parsed root + its folder. Applies every
@@ -162,7 +229,15 @@ struct LoadedProject
 // uniform project the majority IS the first, so this path cannot move.
 // The disagreement is reported through mixedSizes/offSizePanels — never
 // repaired, because repairing means altering artwork.
-LoadedProject projectFromJson(const QJsonObject &root, const QString &folder);
+//
+// LoadedProject::images records every layer file read. A panel's flatten
+// file is recorded too, but only when the manifest's own file is given
+// and is no older than the flatten and every layer beside it: a save
+// writes its manifest last, so a newer image was written after the last
+// save that finished (a save that failed part-way, another program), and
+// the flatten can no longer be trusted to show these layers.
+LoadedProject projectFromJson(const QJsonObject &root, const QString &folder,
+                              const QString &manifestFile = QString());
 
 // The message for a project whose PANELS disagree with each other. The
 // plain mismatch text (canvasMismatchDialogText) must never be shown for

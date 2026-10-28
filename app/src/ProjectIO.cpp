@@ -3,13 +3,20 @@
 #include "ProjectMedia.h"
 #include "camera/ShotCamera.h"
 
+#include <QDataStream>
 #include <QDir>
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonValue>
+#include <QMutex>
 #include <QRegularExpression>
+#include <QSemaphore>
+#include <QSet>
+#include <QThread>
+#include <QThreadPool>
 
 #include <algorithm>
+#include <atomic>
 
 namespace ProjectIO {
 
@@ -24,33 +31,205 @@ QString assetSubdirFor(const QString &projectFilePath)
         + QStringLiteral("_assets");
 }
 
+QString ImageLedger::keyFor(const QString &file)
+{
+    return QDir::cleanPath(QFileInfo(file).absoluteFilePath());
+}
+
+bool ImageLedger::holds(const QString &file, const QByteArray &content) const
+{
+    const auto it = m_entries.constFind(keyFor(file));
+    if (it == m_entries.cend() || it->content != content)
+        return false;
+    const QFileInfo now(file);
+    return now.isFile() && now.size() == it->bytes
+        && now.lastModified() == it->modified;
+}
+
+void ImageLedger::record(const QString &file, const QByteArray &content)
+{
+    const QFileInfo now(file);
+    if (!now.isFile()) {
+        forget(file);
+        return;
+    }
+    m_entries.insert(keyFor(file), Entry{content, now.size(), now.lastModified()});
+}
+
+void ImageLedger::forget(const QString &file)
+{
+    m_entries.remove(keyFor(file));
+}
+
+void ImageLedger::merge(const ImageLedger &other)
+{
+    for (auto it = other.m_entries.cbegin(); it != other.m_entries.cend(); ++it)
+        m_entries.insert(it.key(), it.value());
+}
+
+QByteArray layerContent(const QImage &image)
+{
+    QByteArray id;
+    QDataStream s(&id, QIODevice::WriteOnly);
+    s << quint8('L') << image.cacheKey();
+    return id;
+}
+
+QByteArray flattenContent(const Panel &panel)
+{
+    // Everything Panel::flattenedPixmap() reads: each layer's pixels, its
+    // opacity and visibility, whether it is a folder, and which folder it
+    // is in (a folder's own visibility and opacity reach its members). The
+    // canvas size is the layers' own, so their images already carry it.
+    QByteArray id;
+    QDataStream s(&id, QIODevice::WriteOnly);
+    s << quint8('F');
+    for (const Layer &layer : panel.layers)
+        s << layer.image.cacheKey() << layer.opacity << layer.visible
+          << layer.type << layer.groupId;
+    return id;
+}
+
 namespace {
 
-// One place where an image reaches the disk, so one place that can fail.
-// Records the FIRST failure and refuses to keep going: a save that cannot
-// write every pixel it is about to name must not become a project file.
-struct ImageWriter
+QByteArray thumbnailContent(const QPixmap &pixmap)
 {
-    QString folder;
-    WriteResult *res = nullptr;
+    QByteArray id;
+    QDataStream s(&id, QIODevice::WriteOnly);
+    s << quint8('C') << pixmap.cacheKey();
+    return id;
+}
 
-    bool write(const QImage &img, const QString &relName)
+// Where the save's images reach the disk, so the one place that can fail.
+//
+// An image whose file already holds it (ImageLedger) is skipped. The rest
+// are ENCODED IN PARALLEL: each one whole, by one thread, with the same
+// QImage::save call the UI thread used to make, so every file is the same
+// bytes it always was - only several are made at once. The flattens are
+// still made on the UI thread (flattenedPixmap is a QPixmap) and only for
+// panels that changed; at most one per thread waits in the queue, so a
+// large project never holds every flatten in memory at once.
+//
+// A failure stops further writes and is reported as the EARLIEST image in
+// the save's order that failed, as the sequential writer reported it. A
+// save that cannot write every pixel it is about to name must not become
+// a project file: the caller writes the manifest only after finish() says
+// every image is on disk.
+class ImageSaver
+{
+public:
+    ImageSaver(const QString &folder, ImageLedger *ledger, WriteResult *res)
+        : m_folder(folder), m_ledger(ledger), m_res(res)
     {
-        if (!res->ok)
-            return false; // already failed; do not pile more writes on
-        const QString full = folder + QStringLiteral("/") + relName;
-        if (!img.save(full, "PNG")) {
-            res->ok = false;
-            res->failedFile = full;
-            res->reason = QStringLiteral(
-                "The image could not be written. The disk may be full, the "
-                "file may be open in another program, or the folder may be "
-                "read-only.");
-            return false;
+        // Enough to finish a full 4K save in about two seconds, few enough
+        // that the encoders' working copies (one image each) stay bounded.
+        const int threads = qBound(1, QThread::idealThreadCount(), 8);
+        m_pool.setMaxThreadCount(threads);
+        m_slots.release(threads * 2);
+    }
+    ~ImageSaver() { m_pool.waitForDone(); }
+
+    bool failed() const { return m_failed.load(); }
+
+    void layer(const QImage &image, const QString &relName)
+    {
+        const QByteArray content = layerContent(image);
+        if (!skip(relName, content))
+            push(relName, image, content);
+    }
+
+    void flatten(const Panel &panel, const QString &relName)
+    {
+        const QByteArray content = flattenContent(panel);
+        if (!skip(relName, content))
+            push(relName, panel.flattenedPixmap().toImage(), content);
+    }
+
+    void thumbnail(const QPixmap &pixmap, const QString &relName)
+    {
+        const QByteArray content = thumbnailContent(pixmap);
+        if (!skip(relName, content))
+            push(relName, pixmap.toImage(), content);
+    }
+
+    // Waits for every write, then reports them in the save's order.
+    void finish()
+    {
+        m_pool.waitForDone();
+        std::sort(m_done.begin(), m_done.end(),
+                  [](const Done &a, const Done &b) { return a.order < b.order; });
+        QSet<Qt::HANDLE> threads;
+        for (const Done &d : m_done) {
+            if (d.ok) {
+                ++m_res->imagesWritten;
+                m_res->writtenFiles.append(d.file);
+                threads.insert(d.thread);
+                if (m_ledger)
+                    m_ledger->record(d.file, d.content);
+                continue;
+            }
+            if (m_ledger)
+                m_ledger->forget(d.file); // may be half-written now
+            if (m_res->ok) {
+                m_res->ok = false;
+                m_res->failedFile = d.file;
+                m_res->reason = QStringLiteral(
+                    "The image could not be written. The disk may be full, "
+                    "the file may be open in another program, or the folder "
+                    "may be read-only.");
+            }
         }
-        ++res->imagesWritten;
+        m_res->encodeThreads = int(threads.size());
+    }
+
+private:
+    struct Done
+    {
+        int order = 0;
+        QString file;
+        QByteArray content;
+        bool ok = false;
+        Qt::HANDLE thread = nullptr;
+    };
+
+    bool skip(const QString &relName, const QByteArray &content)
+    {
+        if (!m_ledger || !m_ledger->holds(m_folder + QStringLiteral("/") + relName,
+                                          content))
+            return false;
+        ++m_res->imagesSkipped;
         return true;
     }
+
+    void push(const QString &relName, const QImage &image, const QByteArray &content)
+    {
+        if (m_failed.load())
+            return; // already failed; do not pile more writes on
+        const int order = m_next++;
+        const QString full = m_folder + QStringLiteral("/") + relName;
+        m_slots.acquire(); // bounds the images waiting to be encoded
+        m_pool.start([this, order, full, image, content] {
+            Done d{order, full, content, false, QThread::currentThreadId()};
+            if (!m_failed.load()) {
+                d.ok = image.save(full, "PNG");
+                if (!d.ok)
+                    m_failed.store(true);
+                QMutexLocker lock(&m_mutex);
+                m_done.append(d);
+            }
+            m_slots.release();
+        });
+    }
+
+    const QString m_folder;
+    ImageLedger *const m_ledger;
+    WriteResult *const m_res;
+    int m_next = 0;
+    std::atomic<bool> m_failed{false};
+    QSemaphore m_slots;
+    QMutex m_mutex;
+    QVector<Done> m_done;
+    QThreadPool m_pool; // last: destroyed first, after its writes finish
 };
 
 } // namespace
@@ -129,10 +308,10 @@ WriteResult projectToJson(const SaveData &data, const QString &projectFilePath,
         }
     }
 
-    ImageWriter writer{folder, &res};
+    ImageSaver saver(folder, data.ledger, &res);
 
     QJsonArray scenesArray;
-    for (int i = 0; i < data.scenes.size() && res.ok; ++i) {
+    for (int i = 0; i < data.scenes.size() && !saver.failed(); ++i) {
         Scene *scene = data.scenes.at(i);
 
         QJsonObject sceneObj;
@@ -143,7 +322,7 @@ WriteResult projectToJson(const SaveData &data, const QString &projectFilePath,
         sceneObj[QStringLiteral("action")] = scene->action;
 
         QJsonArray panelsArray;
-        for (int j = 0; j < scene->panels.size() && res.ok; ++j) {
+        for (int j = 0; j < scene->panels.size() && !saver.failed(); ++j) {
             Panel *panel = scene->panels.at(j);
 
             // Flattened composite — kept for forward-compat (older builds and any
@@ -151,12 +330,11 @@ WriteResult projectToJson(const SaveData &data, const QString &projectFilePath,
             // flattenedPixmap() is panel-sized, so this PNG matches the layers.
             const QString pngName =
                 rel + QStringLiteral("panel_s%1_p%2.png").arg(i).arg(j);
-            if (!writer.write(panel->flattenedPixmap().toImage(), pngName))
-                break;
+            saver.flatten(*panel, pngName);
 
             // Layer stack: one PNG per layer + a JSON descriptor array.
             QJsonArray layersArray;
-            for (int k = 0; k < panel->layers.size() && res.ok; ++k) {
+            for (int k = 0; k < panel->layers.size() && !saver.failed(); ++k) {
                 const Layer &layer = panel->layers.at(k);
 
                 QJsonObject layerObj;
@@ -178,8 +356,7 @@ WriteResult projectToJson(const SaveData &data, const QString &projectFilePath,
                     const QString layerPng =
                         rel + QStringLiteral("panel_s%1_p%2_layer%3.png")
                                   .arg(i).arg(j).arg(k);
-                    if (!writer.write(layer.image, layerPng))
-                        break;
+                    saver.layer(layer.image, layerPng);
                     layerObj[QStringLiteral("imageFile")] = layerPng;
                 }
                 layersArray.append(layerObj);
@@ -225,9 +402,6 @@ WriteResult projectToJson(const SaveData &data, const QString &projectFilePath,
         scenesArray.append(sceneObj);
     }
 
-    if (!res.ok)
-        return res; // no manifest is built from a half-written image set
-
     // Consistency board entries + their thumbnail PNGs.
     QJsonArray consistencyArray;
     for (const ConsistencyEntry &entry : data.consistency) {
@@ -249,12 +423,17 @@ WriteResult projectToJson(const SaveData &data, const QString &projectFilePath,
                              QStringLiteral("_"));
             thumbFile = rel + QStringLiteral("consistency_%1_%2.png")
                                   .arg(safeName, entry.id);
-            if (!writer.write(entry.thumbnail.toImage(), thumbFile))
-                return res;
+            saver.thumbnail(entry.thumbnail, thumbFile);
         }
         entryObj[QStringLiteral("thumbnailFile")] = thumbFile;
         consistencyArray.append(entryObj);
     }
+
+    // Every image on disk, or the first one that could not be: the
+    // encoders are waited for HERE, before any manifest exists to name them.
+    saver.finish();
+    if (!res.ok)
+        return res; // no manifest is built from a half-written image set
 
     QJsonObject root;
     root[QStringLiteral("version")] = 1;
@@ -279,9 +458,14 @@ WriteResult projectToJson(const SaveData &data, const QString &projectFilePath,
     return res;
 }
 
-LoadedProject projectFromJson(const QJsonObject &root, const QString &folder)
+LoadedProject projectFromJson(const QJsonObject &root, const QString &folder,
+                              const QString &manifestFile)
 {
     LoadedProject out;
+    // The manifest's time, when known: the flatten trust test (see the
+    // declaration). Invalid = trust no flatten.
+    const QDateTime manifestTime =
+        manifestFile.isEmpty() ? QDateTime() : QFileInfo(manifestFile).lastModified();
     out.projectName = root.value(QStringLiteral("projectName")).toString();
     out.fps = root.value(QStringLiteral("fps")).toInt(24);
     out.manifestSize = QSize(root.value(QStringLiteral("canvasWidth")).toInt(0),
@@ -395,6 +579,10 @@ LoadedProject projectFromJson(const QJsonObject &root, const QString &folder)
             // PNG per panel) are migrated into a single "Layer 1" raster layer
             // so old projects open with their drawing intact.
             panel->layers.clear();
+            // The images this panel read from their own files, and whether
+            // any of those files is newer than the manifest.
+            QSet<qint64> readKeys;
+            bool readNewerThanManifest = false;
             const QJsonArray layersArray = panelObj.value(QStringLiteral("layers")).toArray();
             if (!layersArray.isEmpty()) {
                 for (const QJsonValue &lv : layersArray) {
@@ -423,6 +611,9 @@ LoadedProject projectFromJson(const QJsonObject &root, const QString &folder)
                     const QString layerPng = layerObj.value(QStringLiteral("imageFile")).toString();
                     if (!layerPng.isEmpty())
                         img.load(folder + QStringLiteral("/") + layerPng);
+                    // Pixels from the layer's OWN file - not a legacy
+                    // reference's copy, made below only when this is null.
+                    const bool readOwnFile = !img.isNull();
                     if (!legacySharedId.isEmpty()) {
                         if (!img.isNull()) {
                             // First instance: keeps its pixels/identity and
@@ -451,6 +642,14 @@ LoadedProject projectFromJson(const QJsonObject &root, const QString &folder)
                         : img.convertToFormat(
                               QImage::Format_ARGB32_Premultiplied);
                     panel->layers.append(layer);
+                    if (readOwnFile && !layer.image.isNull()) {
+                        const QString file = folder + QStringLiteral("/") + layerPng;
+                        out.images.record(file, layerContent(layer.image));
+                        readKeys.insert(layer.image.cacheKey());
+                        if (!manifestTime.isValid()
+                            || QFileInfo(file).lastModified() > manifestTime)
+                            readNewerThanManifest = true;
+                    }
                 }
             } else {
                 // BACKWARD COMPAT: old single-PNG project -> one raster layer.
@@ -514,6 +713,22 @@ LoadedProject projectFromJson(const QJsonObject &root, const QString &folder)
             // legacy opaque-white canvases are migrated without losing art.
             migratePanelToBackground(panel);
 
+            // The flatten beside them holds these layers only if every
+            // layer drawn into it is one just read from its own file, still
+            // untouched by the migrations above, and nothing here is newer
+            // than the manifest (see the declaration).
+            const QString flatPng = panelObj.value(QStringLiteral("pixmapFile")).toString();
+            if (!layersArray.isEmpty() && !flatPng.isEmpty() && manifestTime.isValid()
+                && !readNewerThanManifest) {
+                const QString flatFile = folder + QStringLiteral("/") + flatPng;
+                bool allRead = QFileInfo(flatFile).lastModified() <= manifestTime;
+                for (const Layer &layer : panel->layers)
+                    if (!isGroupLayer(layer) && !readKeys.contains(layer.image.cacheKey()))
+                        allRead = false;
+                if (allRead)
+                    out.images.record(flatFile, flattenContent(*panel));
+            }
+
             scene->panels.append(panel);
         }
         // The camera after the panels (its keys name them by index). No
@@ -553,8 +768,11 @@ LoadedProject projectFromJson(const QJsonObject &root, const QString &folder)
         const QString thumbFile = entryObj.value(QStringLiteral("thumbnailFile")).toString();
         if (!thumbFile.isEmpty()) {
             QPixmap pm;
-            if (pm.load(folder + QStringLiteral("/") + thumbFile))
+            if (pm.load(folder + QStringLiteral("/") + thumbFile)) {
                 entry.thumbnail = pm;
+                out.images.record(folder + QStringLiteral("/") + thumbFile,
+                                  thumbnailContent(pm));
+            }
         }
         out.consistency.append(entry);
     }

@@ -81,7 +81,7 @@ this fence."
 #include <Qt>
 
 MainWindow::MainWindow(QWidget *parent)
-    : QMainWindow(parent)
+    : QMainWindow(parent), m_imageLedger(std::make_unique<ProjectIO::ImageLedger>())
 {
     setObjectName(QStringLiteral("SankoTVMainWindow")); // stable saveState key
     // THE WINDOW'S MINIMUM WIDTH IS ITS CONTENT'S (Part B, 2026-10-18: the
@@ -1787,6 +1787,9 @@ bool MainWindow::saveToPath(const QString &path)
     data.audioLinked = m_animatic->audioLinked();
     data.tracks = m_animatic->tracks(); // lock / visibility / mute (Part B)
     data.perspective = m_storyboard->perspectiveToJson();
+    // Only the images whose files do not already hold them are written, and
+    // those are encoded on several threads (the 25-second save, 2026-10-27).
+    data.ledger = m_imageLedger.get();
     // STEP 1 — the images, every write checked. This stops at the first
     // failure and, crucially, happens BEFORE the manifest is touched: if a
     // single PNG cannot be written, the project file on disk must stay
@@ -1803,6 +1806,9 @@ bool MainWindow::saveToPath(const QString &path)
             this, QStringLiteral("Copying the audio file into the project..."));
         return ProjectIO::projectToJson(data, path, progress.callback());
     }();
+    m_lastSaveWritten = written.writtenFiles;
+    m_lastSaveSkipped = written.imagesSkipped;
+    m_lastSaveEncodeThreads = written.encodeThreads;
     if (!written.ok && written.cancelled)
         return false; // the artist pressed Cancel: nothing to tell them
     if (!written.ok) {
@@ -1906,7 +1912,10 @@ bool MainWindow::loadFromPath(const QString &path)
     // The model rebuild + every migration + the pixels-win reconciliation
     // live in ProjectIO (extracted with the resolution epic); this shell
     // owns dialogs, member assignment, and page updates.
-    ProjectIO::LoadedProject loaded = ProjectIO::projectFromJson(root, folder);
+    ProjectIO::LoadedProject loaded = ProjectIO::projectFromJson(root, folder, path);
+    // The files just read hold exactly these images: the next save skips
+    // every one that is still unchanged.
+    m_imageLedger->merge(loaded.images);
 
     m_projectName = loaded.projectName;
     if (m_projectName.isEmpty())

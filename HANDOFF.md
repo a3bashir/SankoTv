@@ -7710,6 +7710,57 @@ failed there (`build/_probe/polish/runs/life_before.txt`).
   252.8 -> 277.8 s, with no recorder polls in between, so the UI thread
   was blocked. Every save rewrote all the PNGs, changed or not. NOT
   from the camera or the polish: neither touched the save code.
+  FIXED after the polish commit - see "The 25-second save" below.
+
+## The 25-second save: skip unchanged images, encode the rest in parallel (2026-10-27)
+
+CAUSE. ProjectIO::projectToJson re-encoded every panel flatten and every
+layer as a PNG, one after another, on the UI thread, on every save. The
+cost is the PNG compression of a 4K image (33 MB raw): even a near-empty
+40 KB layer took 0.16 s. A probe on a copy of Test_SB_006_A measured
+15.8 s per Ctrl+S, all 54 images every time; the 10 flattens were 0.15 s
+of it. THE OTHER ~8 s seen in the app was not code: the per-file times
+from the user's save match the probe's (within 3%) for the first 19
+files, then EVERY file - 40 KB or 8 MB - took exactly twice as long. That
+is the thread's CPU halving, consistent with Windows moving a hung
+window's thread to an efficiency core on this i9-13900KF (8 P + 16 E
+cores); an inference, not reproduced.
+
+FIX (approved: options 1 and 2, not 3 or 4).
+- ProjectIO::ImageLedger records what each image FILE holds: a layer's
+  QImage::cacheKey(), or for a flatten every input flattenedPixmap()
+  reads (flattenContent), plus the file's size and modification time as
+  this process left them. A save skips an image only when its file holds
+  that exact content and is unchanged on disk; a deleted file, or one
+  written since by anything else, is written again. Keyed by FILE, not
+  panel: names are positional, so a panel brought back by Undo lands on
+  a file another panel was written to since.
+- Load records every layer file it reads. A flatten is recorded only
+  when the manifest is no older than it and every layer beside it, and
+  every layer drawn into it was read from its own file (a save writes
+  its manifest last, so a newer image means a save that failed part-way
+  or another program). MainWindow owns one ledger for its lifetime.
+- The images that do need writing are encoded on up to 8 threads
+  (ImageSaver, a local QThreadPool), each whole with the same
+  QImage::save call, so the bytes are unchanged. Flattens are still made
+  on the UI thread (a QPixmap), only for changed panels, at most one per
+  thread queued. The manifest is still written only after every image is
+  on disk; a failure reports the earliest failed image in save order.
+
+TIMING on a copy of Test_SB_006_A (Release, the real saveToPath):
+Ctrl+S with no change 15.8 s -> 0.02 s; after one stroke 15.9 s -> 0.21 s
+(2 images written); first Ctrl+S after opening 15.8 s -> 0.02 s; Save As
+to a new folder 15.9 s -> 2.6 s (54 images, 8 threads). The Save As
+output of the old and new code is byte-identical (all 54 PNGs and the
+manifest). Probe and results: `tests/_backups/savefreeze_20261027`.
+
+CHECKS: Lifecycle (sv.1)-(sv.7), each with a control - no-change save
+writes nothing (and skipped all 9); a stroke writes exactly its layer and
+its flatten; save, Undo, save rewrites them with the pre-stroke pixels; a
+deleted PNG and a PNG overwritten by another program are rewritten; Save
+As writes every image, byte-identical to a save on the test thread; save
+then reload is pixel-identical. The thread count is not checked (it
+depends on timing); the probe reports it.
 
 ## METHOD: measure interior structure ACROSS THE SIZE RANGE before calling it character (2026-09-25)
 

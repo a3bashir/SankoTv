@@ -10,6 +10,7 @@
 #include <QVector>
 
 #include <functional>
+#include <memory>
 
 class DashboardPage;
 class QUndoStack;
@@ -25,6 +26,10 @@ class QJsonArray;
 
 struct Scene;
 struct ConsistencyEntry;
+
+namespace ProjectIO {
+class ImageLedger;
+}
 
 namespace sankoexport {
 struct MovieResult;
@@ -69,6 +74,11 @@ public:
     bool loadProjectForTest(const QString &path) { return loadFromPath(path); }
     void newProjectForTest() { onNewProject(); }
     bool saveProjectForTest(const QString &path) { return saveToPath(path); }
+    // What the last save did with each image: the files it wrote, and how
+    // many it skipped because their files already held them.
+    QStringList lastSaveWrittenForTest() const { return m_lastSaveWritten; }
+    int lastSaveSkippedForTest() const { return m_lastSaveSkipped; }
+    int lastSaveEncodeThreadsForTest() const { return m_lastSaveEncodeThreads; }
     // The real slot the Project Settings dialog's applied() signal reaches.
     void applyProjectSettingsForTest(const QString &name, int fps)
     {
@@ -303,6 +313,15 @@ private:
     QVector<Scene *> m_scenes;
     QVector<ConsistencyEntry> m_consistencyEntries;
     QString m_currentProjectPath;
+    // What each image file this window has read or written now holds, so a
+    // save writes only the images that changed (ProjectIO::ImageLedger).
+    // Keyed by file, so it outlives any one project: an entry for another
+    // project's file stays a true statement about that file (its size and
+    // time catch any change), and nothing ever needs clearing.
+    std::unique_ptr<ProjectIO::ImageLedger> m_imageLedger;
+    QStringList m_lastSaveWritten;
+    int m_lastSaveSkipped = 0;
+    int m_lastSaveEncodeThreads = 0;
     QString m_projectName = QStringLiteral("Untitled Project");
     // Project properties. fps drives the animatic timeline; canvasWidth/
     // Height are the project's REAL canvas resolution — the single source
