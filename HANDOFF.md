@@ -7762,6 +7762,70 @@ As writes every image, byte-identical to a save on the test thread; save
 then reload is pixel-identical. The thread count is not checked (it
 depends on timing); the probe reports it.
 
+## The shot camera, Phase 1C: the CAMERA row on the timeline (2026-10-28)
+
+Figma (Dasktop_UI_test, page "SankoTV App", section 383:141): proposals
+1C-1 (key diamonds), 1C-2 (segments), 1C-3 (label column), 1C-4 (menus),
+1C-5 (the row in place), approved with all five extras and two changes:
+Animate is a small RECORD DOT (never a diamond: it must not look like a
+key), and the volume popup may cover it because it only shows while the
+volume is being set.
+
+WHAT IT IS. A 28 px CAMERA row between SHOTS and AUDIO (ruler 24, SCENES
+24, SHOTS flexible, CAMERA 28, AUDIO 36); the canvas minimum went from 132
+to 160, the section's default 204 -> 232 and minimum 172 -> 200; the
+header is unchanged.
+- Each live key is a 10 px diamond at its frame (16 px hit area): normal,
+  hover (accent halo + tooltip "Key 2 · 00:00:03:00 · panel 2 · Linear"),
+  selected (accent), at the playhead (playhead colour), both (ring).
+- Segments: a 2 px bar between consecutive keys of a scene, the ease of
+  the key that starts it in an 18 x 12 pill (only on 40 px or more), Hold
+  dashed, the segment from the selected key in the accent. Never across a
+  cut between scenes.
+- Click a key: selects it, selects its panel, puts the playhead on it.
+  Drag: moves it in time within its scene, re-anchored on release to the
+  panel it lands in (one "Move Camera Key"); with Snap on it snaps to a
+  cut or the playhead within 6 px; never onto another key (a note says
+  so). Any other press on the timeline, or selecting another panel, ends
+  the key selection, so Delete over the timeline takes a key only when one
+  is visibly selected (else the panel, as before).
+- Right-click a key: header (Key n · timecode · panel), Ease submenu (the
+  five eases with their glyphs, the key's ticked; disabled on the scene's
+  last key, "no move after this key"), Copy Framing, Paste Framing (from
+  key n), Delete Key (Del). Off a key: Add Key at Playhead (disabled and
+  reading "Key Set at Playhead" when a key is already there, as the Camera
+  bar's "Key set" - the hand test found it enabled and doing nothing),
+  Paste Framing at Playhead. The ease rows are painted rows (EaseMenuRow): a QMenu entry
+  with an icon draws the icon where its tick goes.
+- Label column: lock (x 8), ANIMATE record dot (x 32, the Camera bar's
+  switch - one state, StoryboardPage::m_cameraAnimate), eye (x 56).
+- LOCK: refuses every key edit - row drag (at the pointer), menu entries
+  (disabled, header "The CAMERA track is locked"; Copy stays), Delete, the
+  Camera bar's Add / Delete Key and Ease, the canvas frame (not draggable;
+  a press says why), and Undo / Redo of a CameraEditCommand.
+- EYE OFF: the camera is off EVERYWHERE, unlike the other eyes - the
+  preview, the SHOTS clips and every export (collectPanels cameraOff: the
+  movie takes the pre-camera path, every still the whole panel); the MP4
+  export warns first ("Export Without Camera Moves" / Cancel) when a scene
+  has a move. The hidden row takes no press. The canvas tool still edits.
+- Saved under tracks.camera {locked, visible} ONLY when not the default,
+  so every older project re-saves the same JSON.
+- Recorder statePoll: timeline.cameraLocked / cameraVisible /
+  cameraAnimate / cameraKey ("scene:key") / cameraDrag; row edits log
+  shotCamEdit like every camera edit.
+- shotcam::easeLabel is now the one list of the eases' display names (the
+  Camera bar's was private to StoryboardPage).
+
+CHECKS: Lifecycle (cr.1)-(cr.13), each with a control (geometry; key x at
+three zooms and two scrolls; segments; click; drags across a cut / within
+a panel / snap on and off / onto a key; the menus; Delete; Animate both
+ways; lock; eye with clip, preview, PNG and the MP4 warning; save / load;
+recorder; tooltip). Changed checks: (aw) heights 204 / 172 -> 232 / 200,
+the AUDIO colour sampled at the AUDIO row (it was SHOTS' end) plus the
+CAMERA colour; (ax) seven controls -> ten, SHOTS' height read directly
+(it was "AUDIO's y - 48"). Grabs: Documents\SankoTV-Design\camera\
+1c-capture; probe in tests/_backups/camera1c_20261028.
+
 ## METHOD: measure interior structure ACROSS THE SIZE RANGE before calling it character (2026-09-25)
 
 The Painting census measured Acrylic at size 20 only and found "one

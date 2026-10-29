@@ -146,6 +146,7 @@ public:
     // is missing (empty when there is no track or the file is there).
     QString mp4UnavailableReasonForTest() const { return mp4UnavailableReason(); }
     QString mp4AudioWarningForTest() const { return mp4AudioWarning(); }
+    QString mp4CameraWarningForTest() const { return mp4CameraWarning(); }
     // Stand in for "this machine has no encoder" (an N edition of Windows
     // cannot be had on a developer's machine). Null string = ask the system.
     void setMp4UnavailableForTest(const QString &reason)
@@ -206,6 +207,8 @@ private:
     sankoexport::FilesResult runPdfExport(const QString &path);
     QString mp4UnavailableReason() const;
     QString mp4AudioWarning() const;
+    QString mp4CameraWarning() const; // the CAMERA track hidden (Phase 1C)
+    bool exportCameraOff() const;
     QString exportAudioPath() const; // the track the film carries; empty: silent
     QStringList pngExportClashes(const QString &folder) const;
     QString exportStartDir() const;

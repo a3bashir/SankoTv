@@ -10299,11 +10299,13 @@ void runTimelineLookPass(const QString &scratch)
         // as it always did.
         tl->setZoomForTest(70);
         pump(150);
+        // Phase 1C (2026-10-28): the CAMERA row's 28 px is added to both -
+        // 204 and 172 before it.
         check(QStringLiteral("(aw) the zoom row is gone: the canvas starts at y 40 of the "
-                             "section, the expanded default is 204 and the minimum 172, the "
-                             "collapsed height stays 40"),
-              canvas->mapTo(page, QPoint(0, 0)).y() == 40 && page->defaultExpandedHeight() == 204
-                  && page->minimumExpandedHeight() == 172 && AnimaticPage::kHeaderHeight == 40,
+                             "section, the expanded default is 232 and the minimum 200 (the "
+                             "CAMERA row's 28 px on 204 / 172), the collapsed height stays 40"),
+              canvas->mapTo(page, QPoint(0, 0)).y() == 40 && page->defaultExpandedHeight() == 232
+                  && page->minimumExpandedHeight() == 200 && AnimaticPage::kHeaderHeight == 40,
               QStringLiteral("canvas y %1, default %2, minimum %3")
                   .arg(canvas->mapTo(page, QPoint(0, 0)).y()).arg(page->defaultExpandedHeight())
                   .arg(page->minimumExpandedHeight()));
@@ -10407,7 +10409,9 @@ void runTimelineLookPass(const QString &scratch)
         const QString shots = px(canvas->width() - 20, shotsY), ruler = px(canvas->width() - 20, 4),
                       scenes = px(canvas->width() - 20, 36), column = px(60, 10), separator = px(134, 10),
                       afterSeparator = px(135, 10),
-                      audio = px(canvas->width() - 20, 48 + tl->shotsTrackHeightForTest() + 4),
+                      // the AUDIO row is under the CAMERA row since Phase 1C
+                      audio = px(canvas->width() - 20, tl->audioRowForTest().y() + 4),
+                      cameraRow = px(canvas->width() - 20, tl->cameraRowForTest().y() + 14),
                       selectedBorder = px(c3.x() + 1, c3.y() + c3.height() / 2),
                       // the body's own pixel: inside the border, under the thumbnail's
                       // bottom edge (6 + 42) and above the name line
@@ -10421,6 +10425,10 @@ void runTimelineLookPass(const QString &scratch)
                   && afterSeparator == QStringLiteral("#181a21"),
               QStringLiteral("shots %1 ruler %2 scenes %3 audio %4 column %5 separator %6 x135 %7")
                   .arg(shots, ruler, scenes, audio, column, separator, afterSeparator));
+        check(QStringLiteral("(aw) the CAMERA row (Phase 1C) is #15161c, between SHOTS and AUDIO"),
+              cameraRow == QStringLiteral("#15161c")
+                  && tl->cameraRowForTest().bottom() + 1 == tl->audioRowForTest().y(),
+              cameraRow);
         check(QStringLiteral("(aw) THE SELECTED CLIP wears the 2 px #9787ff border and a plain "
                              "clip's body is #252330 (no gradient)"),
               selectedBorder == QStringLiteral("#9787ff") && body0 == QStringLiteral("#252330"),
@@ -10757,6 +10765,658 @@ void wsMouse(QWindow *win, const QPointF &global, QEvent::Type type,
 }
 
 } // namespace camtool
+
+// ---- (cr) the CAMERA row on the timeline (Phase 1C, 2026-10-28) ------------
+// The row between SHOTS and AUDIO: a diamond on every live key at its frame,
+// segments with the move's ease (Hold dashed) never across a cut between
+// scenes; click, drag (re-anchoring to the panel it lands in), the key's and
+// the row's menus, Delete; the lock, the eye (the camera off EVERYWHERE) and
+// Animate (the Camera bar's switch). Each check has a control proving the
+// measurement can see the other outcome.
+void runCameraRowPass(const QString &scratch)
+{
+    using namespace workspace;
+    using namespace camtool;
+    out() << "--- (cr) the CAMERA row on the timeline (Phase 1C) ---" << Qt::endl;
+    const QSize cs(1920, 1080);
+    // 2 scenes x 4 panels of 2, 3, 4, 2 s at 24 fps: 48, 72, 96, 48 frames;
+    // the panels start at scene frames 0, 48, 120, 216 and a scene ends at 264.
+    const QString project = writeProject(scratch + QStringLiteral("/camrow"),
+                                         QStringLiteral("CamRow"), cs, 24, 2, 4);
+    auto rig = std::make_unique<Rig>(project);
+    Rig &r = *rig;
+    check(QStringLiteral("(cr) the workspace opened"), r.ok);
+    if (!r.ok)
+        return;
+    Scene *s0 = r.window.scenesForTest().value(0);
+    Scene *s1 = r.window.scenesForTest().value(1);
+    QUndoStack *stack = r.window.undoStackForTest();
+    QWidget *bar = r.storyboard->cameraBarForTest();
+    if (!s0 || !s1 || s0->panels.size() < 4 || s1->panels.size() < 2 || !stack || !bar) {
+        check(QStringLiteral("(cr) found the two scenes, the history and the Camera bar"), false);
+        return;
+    }
+    // The keys, set as a load would: scene 0 at its frames 12 (Ease In/Out),
+    // 72 (Linear), 168 (Hold) and 240 (Ease Out, the last); scene 1 at 0
+    // and 72 (film frames 264 and 336).
+    using shotcam::CameraState;
+    using shotcam::Ease;
+    {
+        shotcam::SceneCamera c0, c1;
+        c0.keys << shotcam::makeKey(*s0, 0, 12, 24, CameraState{960, 540, 1.2, 0}, Ease::EaseInOut)
+                << shotcam::makeKey(*s0, 1, 24, 24, CameraState{900, 500, 1.5, 0}, Ease::Linear)
+                << shotcam::makeKey(*s0, 2, 48, 24, CameraState{1000, 560, 2.0, 10}, Ease::Hold)
+                << shotcam::makeKey(*s0, 3, 24, 24, CameraState{960, 540, 1.3, 0}, Ease::EaseOut);
+        c1.keys << shotcam::makeKey(*s1, 0, 0, 24, CameraState{960, 540, 1.4, 0}, Ease::EaseInOut)
+                << shotcam::makeKey(*s1, 1, 24, 24, CameraState{800, 450, 1.8, 0}, Ease::EaseInOut);
+        r.storyboard->applyCameraForUndo(s0, c0);
+        r.storyboard->applyCameraForUndo(s1, c1);
+    }
+    r.timeline->setZoomForTest(100); // 1 px a frame: content x = film frame
+    pump(150);
+    const int rowY = r.timeline->cameraRowForTest().y() + 14;
+    auto keys = [&] { return r.timeline->cameraKeysForTest(); };
+    auto keyMap = [&](int s, int k) {
+        for (const QVariant &v : keys())
+            if (v.toMap().value(QStringLiteral("scene")).toInt() == s
+                && v.toMap().value(QStringLiteral("key")).toInt() == k)
+                return v.toMap();
+        return QVariantMap();
+    };
+    auto keyX = [&](int s, int k) {
+        const QVariantMap m = keyMap(s, k);
+        return m.isEmpty() ? -1000 : m.value(QStringLiteral("x")).toInt();
+    };
+    auto screenX = [&](double filmFrame) {
+        return 135 + qRound(filmFrame * r.timeline->pxPerFrameForTest()
+                            - r.timeline->scrollXForTest());
+    };
+    auto click = [&](int x) {
+        mouse(r.surface, QEvent::MouseButtonPress, QPointF(x, rowY), Qt::LeftButton, Qt::LeftButton);
+        mouse(r.surface, QEvent::MouseButtonRelease, QPointF(x, rowY), Qt::LeftButton, Qt::NoButton);
+        pump(80);
+    };
+    auto dragKey = [&](int fromX, int toX) {
+        drag(r.surface, QPointF(fromX, rowY), QPointF(toX, rowY));
+        pump(80);
+    };
+    auto menuAt = [&](int x, const std::function<void(QMenu *)> &fn) {
+        r.storyboard->setClipMenuHookForTest(fn);
+        QContextMenuEvent ev(QContextMenuEvent::Mouse, QPoint(x, rowY),
+                             r.surface->mapToGlobal(QPoint(x, rowY)));
+        QCoreApplication::sendEvent(r.surface, &ev);
+        r.storyboard->setClipMenuHookForTest({});
+        pump(80);
+    };
+    auto selected = [&](int *s, int *k) { return r.animatic->selectedCameraKey(s, k); };
+    auto lastText = [&] { return stack->index() > 0 ? stack->text(stack->index() - 1) : QString(); };
+    auto liveKeys = [&](const Scene *s) { return shotcam::liveKeyCount(*s); };
+    auto findAction = [](QMenu *m, const QString &name) {
+        return m ? m->findChild<QAction *>(name) : nullptr;
+    };
+    const QString dot = QString::fromUtf8(" \xC2\xB7 ");
+
+    // --- (cr.1) the row: 28 px between SHOTS and AUDIO; the minimum 160 ---
+    {
+        const QRect cam = r.timeline->cameraRowForTest();
+        const QRect audio = r.timeline->audioRowForTest();
+        const int shotsBottom = 48 + r.timeline->shotsTrackHeightForTest();
+        check(QStringLiteral("(cr.1) the CAMERA row is 28 px, right under SHOTS and right over "
+                             "AUDIO; the timeline canvas's minimum is 160 (48 + 48 + 28 + 36)"),
+              cam.y() == shotsBottom && cam.height() == 28 && audio.y() == cam.y() + 28
+                  && r.surface->minimumHeight() == 160,
+              QStringLiteral("camera y %1 h %2, shots end %3, audio y %4, minimum %5")
+                  .arg(cam.y()).arg(cam.height()).arg(shotsBottom).arg(audio.y())
+                  .arg(r.surface->minimumHeight()));
+        check(QStringLiteral("(cr.1) control: the minimum is not the pre-camera 132"),
+              r.surface->minimumHeight() != 132);
+    }
+
+    // --- (cr.2) every key where its frame is, at three zooms, two scrolls ---
+    {
+        auto expected = [&](int s, int k) {
+            const Scene *sc = s == 0 ? s0 : s1;
+            const double start = s == 0 ? 0.0 : 264.0;
+            return start + shotcam::keyFrame(*sc, sc->camera.keys.at(k), 24);
+        };
+        const QVector<QPair<int, int>> all{{0, 0}, {0, 1}, {0, 2}, {0, 3}, {1, 0}, {1, 1}};
+        QStringList bad;
+        int checked = 0, controlSame = 0;
+        for (float zoom : {100.0f, 400.0f, 60.0f}) {
+            r.timeline->setZoomForTest(zoom);
+            pump(60);
+            for (int scroll : {0, 300}) {
+                if (scroll > 0 && zoom != 400.0f)
+                    continue; // the film fits the view below 400 %
+                r.timeline->userScrollForTest(scroll);
+                pump(40);
+                for (const auto &sk : all) {
+                    ++checked;
+                    const int want = screenX(expected(sk.first, sk.second));
+                    if (keyX(sk.first, sk.second) != want)
+                        bad << QStringLiteral("z%1 s%2 key %3:%4 x %5 want %6")
+                                   .arg(zoom).arg(scroll).arg(sk.first).arg(sk.second)
+                                   .arg(keyX(sk.first, sk.second)).arg(want);
+                    if (zoom == 400.0f
+                        && keyX(sk.first, sk.second) == screenX(expected(sk.first, sk.second) + 1))
+                        ++controlSame;
+                }
+            }
+        }
+        r.timeline->setZoomForTest(100);
+        r.timeline->userScrollForTest(0);
+        pump(80);
+        check(QStringLiteral("(cr.2) each of the 6 keys is drawn at its frame's x, at zoom 100, "
+                             "400 and 60, scrolled 0 and 300"),
+              keys().size() == 6 && checked == 24 && bad.isEmpty(),
+              QStringLiteral("%1 keys; %2").arg(keys().size()).arg(bad.join(QStringLiteral("; "))));
+        check(QStringLiteral("(cr.2) control: at 400 % one frame later is a different x for every key"),
+              controlSame == 0, QString::number(controlSame));
+    }
+
+    // --- (cr.13) the hover tooltip names the key ---------------------------
+    check(QStringLiteral("(cr.13) a key's tooltip names it - Key 2, 00:00:03:00, panel 2, "
+                         "Linear - and the scene's last key says \"last key\""),
+          keyMap(0, 1).value(QStringLiteral("tip")).toString()
+                  == QStringLiteral("Key 2") + dot + QStringLiteral("00:00:03:00") + dot
+                         + QStringLiteral("panel 2") + dot + QStringLiteral("Linear")
+              && keyMap(0, 3).value(QStringLiteral("tip")).toString().endsWith(QStringLiteral("last key")),
+          keyMap(0, 1).value(QStringLiteral("tip")).toString() + QStringLiteral(" | ")
+              + keyMap(0, 3).value(QStringLiteral("tip")).toString());
+
+    // --- (cr.3) the segments --------------------------------------------------
+    {
+        auto segs = [&] { return r.timeline->cameraSegmentsForTest(); };
+        QStringList seen;
+        bool crossed = false;
+        for (const QVariant &v : segs()) {
+            const QVariantMap m = v.toMap();
+            seen << QStringLiteral("%1:%2>%3 %4%5%6")
+                        .arg(m.value(QStringLiteral("scene")).toInt())
+                        .arg(m.value(QStringLiteral("from")).toInt())
+                        .arg(m.value(QStringLiteral("to")).toInt())
+                        .arg(m.value(QStringLiteral("ease")).toString())
+                        .arg(m.value(QStringLiteral("dashed")).toBool() ? QStringLiteral(" dashed") : QString())
+                        .arg(m.value(QStringLiteral("glyph")).toBool() ? QStringLiteral(" glyph") : QString());
+            crossed = crossed || (m.value(QStringLiteral("scene")).toInt() == 0
+                                  && m.value(QStringLiteral("from")).toInt() == 3);
+        }
+        const QStringList want{QStringLiteral("0:0>1 Ease In/Out glyph"),
+                               QStringLiteral("0:1>2 Linear glyph"),
+                               QStringLiteral("0:2>3 Hold dashed glyph"),
+                               QStringLiteral("1:0>1 Ease In/Out glyph")};
+        check(QStringLiteral("(cr.3) a segment between each two keys of a scene, named by the "
+                             "first key's ease, Hold dashed; none from scene 1's last key to "
+                             "scene 2's first"),
+              seen == want && !crossed, seen.join(QStringLiteral(", ")));
+        // CONTROL: the segment really reads the key - change its ease, and
+        // the segment changes with it.
+        shotcam::SceneCamera c0 = s0->camera;
+        c0.keys[1].ease = Ease::EaseOut;
+        r.storyboard->applyCameraForUndo(s0, c0);
+        pump(40);
+        const bool follows = segs().value(1).toMap().value(QStringLiteral("ease")).toString()
+            == QStringLiteral("Ease Out");
+        c0.keys[1].ease = Ease::Linear;
+        r.storyboard->applyCameraForUndo(s0, c0);
+        pump(40);
+        check(QStringLiteral("(cr.3) control: changing key 2's ease changes its segment"), follows);
+    }
+
+    // --- (cr.4) a click selects the key and moves the playhead to it --------
+    click(keyX(0, 1));
+    {
+        int s = -1, k = -1;
+        const bool sel = selected(&s, &k);
+        check(QStringLiteral("(cr.4) a click on key 2 selects it, selects its panel and puts the "
+                             "playhead on its frame (panel 2, frame 24)"),
+              sel && s == 0 && k == 1 && r.storyboard->selectedFlatIndexForTest() == 1
+                  && r.animatic->playheadPanel() == s0->panels.at(1)
+                  && r.animatic->playheadFrameInPanel() == 24
+                  && keyMap(0, 1).value(QStringLiteral("selected")).toBool()
+                  && keyMap(0, 1).value(QStringLiteral("atPlayhead")).toBool(),
+              QStringLiteral("selected %1 (%2:%3), panel %4, frame %5")
+                  .arg(sel).arg(s).arg(k).arg(r.storyboard->selectedFlatIndexForTest())
+                  .arg(r.animatic->playheadFrameInPanel()));
+        // (cr.12) the recorder sees it.
+        const QVariantMap rec = r.timeline->devrecState();
+        check(QStringLiteral("(cr.12) the Dev Recorder's statePoll has the CAMERA row's lock, eye, "
+                             "Animate, drag and the selected key (\"0:1\")"),
+              rec.contains(QStringLiteral("timeline.cameraLocked"))
+                  && rec.contains(QStringLiteral("timeline.cameraVisible"))
+                  && rec.contains(QStringLiteral("timeline.cameraAnimate"))
+                  && rec.contains(QStringLiteral("timeline.cameraDrag"))
+                  && rec.value(QStringLiteral("timeline.cameraKey")).toString() == QStringLiteral("0:1"),
+              rec.value(QStringLiteral("timeline.cameraKey")).toString());
+        click(255); // the row between key 2 and key 3, away from the playhead
+        check(QStringLiteral("(cr.4) control: a click on the row off every key selects none"),
+              !selected(nullptr, nullptr)
+                  && r.timeline->devrecState().value(QStringLiteral("timeline.cameraKey")).toString().isEmpty());
+    }
+
+    // --- (cr.5) drags: across a cut, within a panel, the snap, onto a key ---
+    {
+        const QByteArray before = json(s0);
+        const int count = stack->index(); // a position in the history, not its size
+        dragKey(keyX(0, 1), screenX(130)); // panel 3 starts at 120: frame 10 of it
+        const shotcam::CameraKey moved = s0->camera.keys.at(1);
+        check(QStringLiteral("(cr.5) a key dragged across a cut is re-anchored to the panel it "
+                             "lands in (panel 3, frame 10 of 96), as ONE command"),
+              moved.panelUid == s0->panels.at(2)->uid.value() && qAbs(moved.at - 10.0 / 96) < 1e-9
+                  && stack->index() == count + 1 && lastText() == QStringLiteral("Move Camera Key")
+                  && moved.state == CameraState({900, 500, 1.5, 0}) && moved.ease == Ease::Linear,
+              QStringLiteral("uid ok %1, at %2, commands +%3 (%4)")
+                  .arg(moved.panelUid == s0->panels.at(2)->uid.value()).arg(moved.at)
+                  .arg(stack->index() - count).arg(lastText()));
+        r.window.undoActionForTest()->trigger();
+        pump(80);
+        check(QStringLiteral("(cr.5) Undo puts the camera back byte for byte"), json(s0) == before);
+        dragKey(keyX(0, 1), screenX(80)); // inside panel 2
+        const shotcam::CameraKey inside = s0->camera.keys.at(1);
+        check(QStringLiteral("(cr.5) control: a drag inside one panel leaves the key on that panel "
+                             "(panel 2, frame 32 of 72)"),
+              inside.panelUid == s0->panels.at(1)->uid.value() && qAbs(inside.at - 32.0 / 72) < 1e-9,
+              QString::number(inside.at));
+        r.window.undoActionForTest()->trigger();
+        pump(80);
+        dragKey(keyX(0, 1), screenX(117)); // 3 px before the cut at 120
+        const bool snapped = s0->camera.keys.at(1).panelUid == s0->panels.at(2)->uid.value()
+            && s0->camera.keys.at(1).at == 0.0;
+        r.window.undoActionForTest()->trigger();
+        pump(80);
+        // The Snap button lives in the page's header, not under the timeline.
+        auto *snap = r.window.findChild<QPushButton *>(QStringLiteral("timelineSnap"));
+        if (snap)
+            snap->click(); // off
+        dragKey(keyX(0, 1), screenX(117));
+        const bool unsnapped = s0->camera.keys.at(1).panelUid == s0->panels.at(1)->uid.value()
+            && qAbs(s0->camera.keys.at(1).at - 69.0 / 72) < 1e-9;
+        r.window.undoActionForTest()->trigger();
+        pump(80);
+        if (snap)
+            snap->click(); // on again
+        check(QStringLiteral("(cr.5) with Snap on, a key dropped 3 px from a cut lands ON the cut "
+                             "(the next panel's first frame)"),
+              snapped);
+        check(QStringLiteral("(cr.5) control: with Snap off the same drop stays 3 frames short"),
+              unsnapped);
+        const int before2 = stack->index();
+        r.storyboard->clearNoteForTest();
+        dragKey(keyX(0, 1), keyX(0, 2)); // onto key 3
+        check(QStringLiteral("(cr.5) a key is never dropped onto another key: nothing changes "
+                             "and a note says why"),
+              json(s0) == before && stack->index() == before2
+                  && r.storyboard->lastNoteForTest() == QStringLiteral("Another camera key is at this frame."),
+              r.storyboard->lastNoteForTest());
+    }
+
+    // --- (cr.6) the key's menu and the row's --------------------------------
+    {
+        const int count = stack->index();
+        QString header;
+        bool easeOn = false;
+        QStringList entries;
+        QString checkedEase;
+        menuAt(keyX(0, 1), [&](QMenu *m) {
+            header = findAction(m, QStringLiteral("cameraKeyHeader"))
+                ? findAction(m, QStringLiteral("cameraKeyHeader"))->text() : QString();
+            QMenu *ease = m->findChild<QMenu *>(QStringLiteral("cameraKeyEase"));
+            easeOn = ease && ease->menuAction()->isEnabled();
+            if (ease)
+                for (QAction *a : ease->actions()) {
+                    entries << a->text();
+                    if (a->isChecked())
+                        checkedEase = a->text();
+                }
+            if (ease)
+                for (QAction *a : ease->actions())
+                    if (a->text() == QStringLiteral("Ease In"))
+                        a->trigger();
+        });
+        check(QStringLiteral("(cr.6) the key's menu names it (Key 2, 00:00:03:00, panel 2) and "
+                             "offers the five eases, its own checked; choosing Ease In is one "
+                             "command"),
+              header == QStringLiteral("Key 2") + dot + QStringLiteral("00:00:03:00") + dot
+                            + QStringLiteral("panel 2")
+                  && easeOn
+                  && entries == QStringList({QStringLiteral("Linear"), QStringLiteral("Ease In"),
+                                             QStringLiteral("Ease Out"), QStringLiteral("Ease In/Out"),
+                                             QStringLiteral("Hold")})
+                  && checkedEase == QStringLiteral("Linear")
+                  && s0->camera.keys.at(1).ease == Ease::EaseIn && stack->index() == count + 1
+                  && lastText() == QStringLiteral("Camera Ease"),
+              QStringLiteral("%1 | %2 | checked %3 | +%4").arg(header, entries.join(QLatin1Char(',')),
+                                                               checkedEase).arg(stack->index() - count));
+        const int count2 = stack->index();
+        menuAt(keyX(0, 1), [&](QMenu *m) {
+            if (QMenu *ease = m->findChild<QMenu *>(QStringLiteral("cameraKeyEase")))
+                for (QAction *a : ease->actions())
+                    if (a->text() == QStringLiteral("Ease In"))
+                        a->trigger(); // the key's own ease already
+        });
+        check(QStringLiteral("(cr.6) control: choosing the ease the key already has makes no command"),
+              stack->index() == count2);
+        // Copy on key 2, Paste on key 3.
+        menuAt(keyX(0, 1), [&](QMenu *m) {
+            if (QAction *a = findAction(m, QStringLiteral("cameraCopyFraming")))
+                a->trigger();
+        });
+        QString pasteText;
+        bool pasteOn = false;
+        menuAt(keyX(0, 2), [&](QMenu *m) {
+            if (QAction *a = findAction(m, QStringLiteral("cameraPasteFraming"))) {
+                pasteText = a->text();
+                pasteOn = a->isEnabled();
+                a->trigger();
+            }
+        });
+        check(QStringLiteral("(cr.6) Copy Framing on key 2, then Paste Framing (from key 2) on key "
+                             "3: key 3 takes key 2's framing, one command"),
+              r.storyboard->hasCameraFramingForTest() && pasteOn
+                  && pasteText == QStringLiteral("Paste Framing (from key 2)")
+                  && s0->camera.keys.at(2).state == s0->camera.keys.at(1).state
+                  && lastText() == QStringLiteral("Paste Camera Framing"),
+              pasteText);
+        // The last key: no move after it, so no ease.
+        QString lastHeader, lastEase;
+        bool lastEaseOn = true;
+        menuAt(keyX(0, 3), [&](QMenu *m) {
+            if (QAction *a = findAction(m, QStringLiteral("cameraKeyHeader")))
+                lastHeader = a->text();
+            if (QMenu *ease = m->findChild<QMenu *>(QStringLiteral("cameraKeyEase"))) {
+                lastEaseOn = ease->menuAction()->isEnabled();
+                lastEase = ease->menuAction()->text();
+            }
+        });
+        check(QStringLiteral("(cr.6) on the scene's last key Ease is disabled (\"no move after this "
+                             "key\") and the header says \"last key\""),
+              !lastEaseOn && lastEase == QString::fromUtf8("Ease \xE2\x80\x94 no move after this key")
+                  && lastHeader.endsWith(QStringLiteral("last key")),
+              lastHeader + QStringLiteral(" | ") + lastEase);
+        // Delete Key, and Undo.
+        const QByteArray beforeDelete = json(s0);
+        menuAt(keyX(0, 2), [&](QMenu *m) {
+            if (QAction *a = findAction(m, QStringLiteral("cameraDeleteKey")))
+                a->trigger();
+        });
+        const bool deleted = liveKeys(s0) == 3 && lastText() == QStringLiteral("Delete Camera Key");
+        r.window.undoActionForTest()->trigger();
+        pump(80);
+        check(QStringLiteral("(cr.6) Delete Key removes the key (one command); Undo brings the "
+                             "camera back byte for byte"),
+              deleted && json(s0) == beforeDelete);
+        // The row's menu, off every key: Add Key at Playhead.
+        // (Positions in the history, not its size: a push after an Undo
+        // drops the redo entries.)
+        r.animatic->setPlayheadFrameInPanel(2, 60); // scene frame 180
+        pump(60);
+        const int index3 = stack->index();
+        QString addFree;
+        bool addFreeOn = false;
+        menuAt(255, [&](QMenu *m) {
+            if (QAction *a = findAction(m, QStringLiteral("cameraAddKeyAtPlayhead"))) {
+                addFree = a->text();
+                addFreeOn = a->isEnabled();
+                a->trigger();
+            }
+        });
+        const bool added = liveKeys(s0) == 5 && stack->index() == index3 + 1
+            && shotcam::keyIndexAtFrame(*s0, 180, 24) >= 0
+            && lastText() == QStringLiteral("Add Camera Key");
+        const int index4 = stack->index();
+        QString addSet;
+        bool addSetOn = true;
+        menuAt(255, [&](QMenu *m) {
+            if (QAction *a = findAction(m, QStringLiteral("cameraAddKeyAtPlayhead"))) {
+                addSet = a->text();
+                addSetOn = a->isEnabled();
+                a->trigger();
+            }
+        });
+        // The 1C hand test (2026-10-29): an enabled entry that did nothing.
+        check(QStringLiteral("(cr.6) with a key already at the playhead the row's entry reads "
+                             "\"Key Set at Playhead\" and is disabled, as the Camera bar's "
+                             "\"Key set\""),
+              addSet == QStringLiteral("Key Set at Playhead") && !addSetOn, addSet);
+        check(QStringLiteral("(cr.6) control: with no key at the playhead it read \"Add Key at "
+                             "Playhead\" and was enabled"),
+              addFree == QStringLiteral("Add Key at Playhead") && addFreeOn, addFree);
+        check(QStringLiteral("(cr.6) the row's menu adds a key at the playhead (scene frame 180), "
+                             "one command"),
+              added, QStringLiteral("%1 keys, +%2").arg(liveKeys(s0)).arg(stack->index() - index3));
+        check(QStringLiteral("(cr.6) control: a second Add at the same frame adds nothing"),
+              stack->index() == index4 && liveKeys(s0) == 5);
+        r.window.undoActionForTest()->trigger(); // the added key
+        pump(60);
+        // Paste at a frame with no key and a different camera (scene frame
+        // 30, inside the first move): a key with the copied framing.
+        r.animatic->setPlayheadFrameInPanel(0, 30);
+        pump(60);
+        const int index5 = stack->index();
+        menuAt(255, [&](QMenu *m) {
+            if (QAction *a = findAction(m, QStringLiteral("cameraPasteFramingAtPlayhead")))
+                a->trigger();
+        });
+        const int at = shotcam::keyIndexAtFrame(*s0, 30, 24);
+        check(QStringLiteral("(cr.6) Paste Framing at Playhead sets a key there with the copied "
+                             "framing, one command"),
+              at >= 0 && s0->camera.keys.at(at).state == CameraState({900, 500, 1.5, 0})
+                  && stack->index() == index5 + 1
+                  && lastText() == QStringLiteral("Paste Camera Framing"));
+        const int index6 = stack->index();
+        menuAt(255, [&](QMenu *m) {
+            if (QAction *a = findAction(m, QStringLiteral("cameraPasteFramingAtPlayhead")))
+                a->trigger();
+        });
+        check(QStringLiteral("(cr.6) control: pasting the same framing again on that key is no "
+                             "command"),
+              stack->index() == index6);
+        r.window.undoActionForTest()->trigger(); // the pasted key
+        pump(80);
+    }
+
+    // --- (cr.7) Delete over the timeline takes the selected key -------------
+    {
+        click(keyX(0, 0));
+        const int liveBefore = liveKeys(s0);
+        r.storyboard->timelineDeleteForTest();
+        pump(60);
+        check(QStringLiteral("(cr.7) Delete with a key selected deletes the key, not its panel"),
+              liveKeys(s0) == liveBefore - 1 && s0->panels.size() == 4
+                  && lastText() == QStringLiteral("Delete Camera Key"));
+        r.window.undoActionForTest()->trigger();
+        pump(80);
+        click(keyX(0, 0));
+        const QPointF clip = r.timeline->clipRectForTest(2).center();
+        mouse(r.surface, QEvent::MouseButtonPress, clip, Qt::LeftButton, Qt::LeftButton);
+        mouse(r.surface, QEvent::MouseButtonRelease, clip, Qt::LeftButton, Qt::NoButton);
+        pump(80);
+        check(QStringLiteral("(cr.7) control: a press on a clip ends the key selection, so Delete "
+                             "is the panel's again"),
+              !selected(nullptr, nullptr));
+    }
+
+    // --- (cr.10) Animate: the row's record dot and the Camera bar's switch --
+    {
+        QToolButton *dotBtn = r.timeline->trackControlForTest(QStringLiteral("trackAnimateCamera"));
+        const bool offBefore = dotBtn && !dotBtn->isChecked() && !r.storyboard->cameraAnimate()
+            && !r.storyboard->cameraBarStateForTest().value(QStringLiteral("camAnimate.on")).toBool();
+        if (dotBtn)
+            dotBtn->click();
+        pump(60);
+        const bool onBoth = r.storyboard->cameraAnimate() && dotBtn && dotBtn->isChecked()
+            && r.storyboard->cameraBarStateForTest().value(QStringLiteral("camAnimate.on")).toBool();
+        pressSwitch(bar, QStringLiteral("camAnimate"));
+        pump(60);
+        const bool offAgain = !r.storyboard->cameraAnimate() && dotBtn && !dotBtn->isChecked();
+        check(QStringLiteral("(cr.10) the CAMERA row's Animate turns the Camera bar's switch on, and "
+                             "the bar's switch turns the row's off: one state"),
+              onBoth && offAgain, QStringLiteral("on %1 off %2").arg(onBoth).arg(offAgain));
+        check(QStringLiteral("(cr.10) control: both read off before the click"), offBefore);
+    }
+
+    // --- (cr.8) the CAMERA lock ------------------------------------------------
+    {
+        QToolButton *lock = r.timeline->trackControlForTest(QStringLiteral("trackLockCamera"));
+        if (lock)
+            lock->click();
+        pump(60);
+        const QByteArray before = json(s0);
+        const int count = stack->index();
+        r.timeline->clearRefusalForTest();
+        dragKey(keyX(0, 1), screenX(130));
+        const bool dragRefused = json(s0) == before && stack->index() == count
+            && r.timeline->lastRefusalForTest() == QStringLiteral("CAMERA track is locked");
+        QString header;
+        bool easeOn = true, delOn = true, pasteOn = true, copyOn = false;
+        menuAt(keyX(0, 1), [&](QMenu *m) {
+            if (QAction *a = findAction(m, QStringLiteral("cameraKeyHeader")))
+                header = a->text();
+            if (QMenu *ease = m->findChild<QMenu *>(QStringLiteral("cameraKeyEase")))
+                easeOn = ease->menuAction()->isEnabled();
+            if (QAction *a = findAction(m, QStringLiteral("cameraDeleteKey")))
+                delOn = a->isEnabled();
+            if (QAction *a = findAction(m, QStringLiteral("cameraPasteFraming")))
+                pasteOn = a->isEnabled();
+            if (QAction *a = findAction(m, QStringLiteral("cameraCopyFraming")))
+                copyOn = a->isEnabled();
+        });
+        r.storyboard->clearLockRefusalForTest();
+        r.animatic->setPlayheadFrameInPanel(1, 5); // on no key
+        pump(40);
+        clickBar(bar, QStringLiteral("camAddKey"));
+        const bool barRefused = stack->index() == count
+            && r.storyboard->lastLockRefusalForTest() == QStringLiteral("CAMERA track is locked");
+        r.storyboard->clearLockRefusalForTest();
+        const int index = stack->index();
+        r.window.undoActionForTest()->trigger(); // the top command is a camera edit
+        pump(60);
+        const bool undoRefused = stack->index() == index
+            && r.storyboard->lastLockRefusalForTest() == QStringLiteral("CAMERA track is locked");
+        check(QStringLiteral("(cr.8) CAMERA locked: a key drag is refused at the pointer (\"CAMERA "
+                             "track is locked\") and nothing changes"),
+              dragRefused, r.timeline->lastRefusalForTest());
+        check(QStringLiteral("(cr.8) ...the key's menu says it is locked and every edit in it is "
+                             "disabled (Copy stays)"),
+              header == QStringLiteral("The CAMERA track is locked") && !easeOn && !delOn && !pasteOn
+                  && copyOn,
+              header);
+        check(QStringLiteral("(cr.8) ...the Camera bar's Add Key and Undo of a camera edit are "
+                             "refused too"),
+              barRefused && undoRefused,
+              QStringLiteral("bar %1 undo %2 (top: %3)").arg(barRefused).arg(undoRefused)
+                  .arg(lastText()));
+        check(QStringLiteral("(cr.8) ...and the row is drawn at 40 %"),
+              qAbs(r.timeline->cameraRowOpacityForTest() - 0.4) < 1e-9);
+        if (lock)
+            lock->click(); // unlocked
+        pump(60);
+        dragKey(keyX(0, 1), screenX(130));
+        const bool accepted = stack->index() == count + 1 && json(s0) != before;
+        r.window.undoActionForTest()->trigger();
+        pump(80);
+        check(QStringLiteral("(cr.8) control: unlocked, the same drag is accepted (and the row is "
+                             "opaque)"),
+              accepted && r.timeline->cameraRowOpacityForTest() == 1.0);
+    }
+
+    // --- (cr.9) the eye: the camera off EVERYWHERE ------------------------------
+    {
+        QToolButton *eye = r.timeline->trackControlForTest(QStringLiteral("trackEyeCamera"));
+        const QString pngDir = scratch + QStringLiteral("/camrow_png");
+        auto pngOfPanel2 = [&](const QString &folder) {
+            QDir(folder).removeRecursively();
+            QDir().mkpath(folder);
+            const sankoexport::FilesResult res = r.window.exportPngForTest(folder);
+            for (const QString &f : res.written)
+                if (f.endsWith(QStringLiteral("_S01_P02.png")))
+                    return QImage(f).convertToFormat(QImage::Format_RGB32);
+            return QImage();
+        };
+        const QImage flat = s0->panels.at(1)->flattenedPixmap().toImage()
+                                .convertToFormat(QImage::Format_RGB32);
+        auto state = [&](bool *clipNeutral, bool *previewNeutral, QString *warning, QImage *png,
+                         const QString &folder) {
+            *clipNeutral = shotcam::isNeutral(r.timeline->clipCameraForTest(1), cs);
+            r.animatic->scrubForTest(1);
+            pump(120);
+            r.animatic->cameraTickForTest();
+            *previewNeutral = r.animatic->previewCameraNeutralForTest();
+            r.animatic->leavePreview();
+            pump(80);
+            *warning = r.window.mp4CameraWarningForTest();
+            *png = pngOfPanel2(folder);
+        };
+        bool clipOn = true, previewOn = true, clipOff = false, previewOff = false;
+        QString warnOn, warnOff;
+        QImage pngOn, pngOff;
+        state(&clipOn, &previewOn, &warnOn, &pngOn, pngDir + QStringLiteral("_on"));
+        if (eye)
+            eye->click(); // hidden
+        pump(80);
+        state(&clipOff, &previewOff, &warnOff, &pngOff, pngDir + QStringLiteral("_off"));
+        r.animatic->setSelectedCameraKey(-1, -1);
+        click(keyX(0, 1));
+        const bool pressIgnored = !selected(nullptr, nullptr);
+        check(QStringLiteral("(cr.9) CAMERA hidden: the SHOTS clip, the preview and the PNG export "
+                             "show the whole panel, and the MP4 export warns first"),
+              clipOff && previewOff && !pngOff.isNull() && pngOff == flat
+                  && warnOff.contains(QStringLiteral("The CAMERA track is hidden")),
+              QStringLiteral("clip %1 preview %2 png==flat %3 warning \"%4\"")
+                  .arg(clipOff).arg(previewOff).arg(pngOff == flat).arg(warnOff.left(40)));
+        check(QStringLiteral("(cr.9) ...the hidden row takes no press and is drawn at 40 %"),
+              pressIgnored && qAbs(r.timeline->cameraRowOpacityForTest() - 0.4) < 1e-9);
+        check(QStringLiteral("(cr.9) control: shown, the clip, the preview and the PNG are the "
+                             "shot (not the whole panel) and there is no warning"),
+              !clipOn && !previewOn && !pngOn.isNull() && pngOn != flat && warnOn.isEmpty(),
+              QStringLiteral("clip %1 preview %2 png==flat %3").arg(clipOn).arg(previewOn)
+                  .arg(pngOn == flat));
+    }
+
+    // --- (cr.11) the camera lock and eye are saved -----------------------------
+    {
+        const QString saved = scratch + QStringLiteral("/camrow_saved/CamRow.sankotv");
+        QDir().mkpath(QFileInfo(saved).absolutePath());
+        auto tracksJson = [&] {
+            QFile f(saved);
+            f.open(QIODevice::ReadOnly);
+            return QJsonDocument::fromJson(f.readAll()).object()
+                .value(QStringLiteral("tracks")).toObject();
+        };
+        // Shown and unlocked: the old JSON (no "camera").
+        if (r.animatic->tracks().cameraLocked)
+            r.animatic->setTrackLocked(TimelineTrack::Camera, false);
+        r.animatic->setTrackVisible(TimelineTrack::Camera, true);
+        r.window.saveProjectForTest(saved);
+        pump(100);
+        const bool plain = !tracksJson().contains(QStringLiteral("camera"));
+        r.animatic->setTrackLocked(TimelineTrack::Camera, true);
+        r.animatic->setTrackVisible(TimelineTrack::Camera, false);
+        r.window.saveProjectForTest(saved);
+        pump(100);
+        const QJsonObject cam = tracksJson().value(QStringLiteral("camera")).toObject();
+        const bool written = cam.value(QStringLiteral("locked")).toBool(false)
+            && !cam.value(QStringLiteral("visible")).toBool(true);
+        r.window.markCleanForTest();
+        r.window.loadProjectForTest(project); // the fixture: no "camera" at all
+        pump(300);
+        const bool oldDefaults = !r.animatic->tracks().cameraLocked && r.animatic->tracks().cameraVisible;
+        r.window.loadProjectForTest(saved);
+        pump(300);
+        const bool back = r.animatic->tracks().cameraLocked && !r.animatic->tracks().cameraVisible
+            && r.timeline->trackControlForTest(QStringLiteral("trackLockCamera"))->isChecked()
+            && r.timeline->trackControlForTest(QStringLiteral("trackEyeCamera"))->isChecked();
+        check(QStringLiteral("(cr.11) the CAMERA lock and eye are saved under tracks.camera and come "
+                             "back on load; a project without them opens unlocked and shown"),
+              written && back && oldDefaults,
+              QStringLiteral("written %1 back %2 defaults %3").arg(written).arg(back).arg(oldDefaults));
+        check(QStringLiteral("(cr.11) control: unlocked and shown, the save writes no \"camera\" - "
+                             "the JSON every older project has"),
+              plain);
+        r.animatic->setTrackLocked(TimelineTrack::Camera, false);
+        r.animatic->setTrackVisible(TimelineTrack::Camera, true);
+    }
+}
 
 void runCameraToolPass(const QString &scratch)
 {
@@ -11805,12 +12465,16 @@ void runTrackLocksPass(const QString &scratch)
 
     // ---- the controls, and an old project's defaults ----
     {
+        // Phase 1C (2026-10-28): the CAMERA row's lock, Animate (at the
+        // speaker's x 32) and eye join the seven.
         const char *names[] = {"trackLockScenes", "trackEyeScenes", "trackLockShots",
                                "trackEyeShots", "trackLockAudio", "trackEyeAudio",
-                               "trackMuteAudio"};
+                               "trackMuteAudio", "trackLockCamera", "trackAnimateCamera",
+                               "trackEyeCamera"};
         int found = 0, unchecked = 0, placed = 0;
         QStringList where;
         const QRect audioRow = tl->audioRowForTest();
+        const QRect cameraRow = tl->cameraRowForTest();
         for (const char *n : names) {
             QToolButton *b = control(n);
             if (!b)
@@ -11824,22 +12488,28 @@ void runTrackLocksPass(const QString &scratch)
             // its row.
             const int iconX = b->x() + 2;
             const int wantX = name.startsWith(QStringLiteral("trackLock")) ? 8
-                : name.startsWith(QStringLiteral("trackMute")) ? 32 : 56;
+                : (name.startsWith(QStringLiteral("trackMute"))
+                   || name.startsWith(QStringLiteral("trackAnimate"))) ? 32 : 56;
+            // SHOTS ends where the CAMERA row begins (Phase 1C); it ended at
+            // the AUDIO row before.
             const int rowY = name.endsWith(QStringLiteral("Scenes")) ? 24
-                : name.endsWith(QStringLiteral("Shots")) ? 48 : audioRow.y();
+                : name.endsWith(QStringLiteral("Shots")) ? 48
+                : name.endsWith(QStringLiteral("Camera")) ? cameraRow.y() : audioRow.y();
             const int rowH = name.endsWith(QStringLiteral("Scenes")) ? 24
-                : name.endsWith(QStringLiteral("Shots")) ? audioRow.y() - 48 : audioRow.height();
+                : name.endsWith(QStringLiteral("Shots")) ? tl->shotsTrackHeightForTest()
+                : name.endsWith(QStringLiteral("Camera")) ? cameraRow.height() : audioRow.height();
             const int wantY = rowY + (rowH - 16) / 2;
             if (iconX == wantX && b->y() + 2 == wantY && b->isVisible())
                 ++placed;
             where << QStringLiteral("%1 %2,%3").arg(name).arg(b->x()).arg(b->y());
         }
         const TimelineTracks t = page->tracks();
-        check(QStringLiteral("(ax) THE SEVEN CONTROLS are real buttons over the label column "
-                             "(lock at x 8, speaker at 32 on AUDIO, eye at 56, 16 px icons "
-                             "centred in their rows), all unchecked; a project saved without "
-                             "a tracks key loads unlocked, visible and unmuted"),
-              found == 7 && unchecked == 7 && placed == 7 && t == TimelineTracks(),
+        check(QStringLiteral("(ax) THE TEN CONTROLS are real buttons over the label column "
+                             "(lock at x 8, speaker at 32 on AUDIO and Animate at 32 on CAMERA, "
+                             "eye at 56, 16 px icons centred in their rows), all unchecked; a "
+                             "project saved without a tracks key loads unlocked, visible and "
+                             "unmuted"),
+              found == 10 && unchecked == 10 && placed == 10 && t == TimelineTracks(),
               QStringLiteral("found %1 unchecked %2 placed %3 | %4 | audio row %5")
                   .arg(found).arg(unchecked).arg(placed).arg(where.join(QStringLiteral("; ")))
                   .arg(QStringLiteral("%1,%2 %3x%4").arg(audioRow.x()).arg(audioRow.y()).arg(audioRow.width()).arg(audioRow.height())));
@@ -12667,6 +13337,7 @@ int main(int argc, char **argv)
     runTrackLocksPass(scratch);
     runCameraPanelRemovalPass(scratch);
     runCameraToolPass(scratch);
+    runCameraRowPass(scratch);
 
     // ---- (aa) a test that cannot start says why and exits ----------------
     // An unattended gate must FAIL, not wait. Measured 2026-10-02: with its

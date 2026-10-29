@@ -39,7 +39,8 @@ bool isNeutral(const CameraState &state, const QSize &canvas);
 // w(u) for u in [0, 1]: Linear u; Ease In u^2; Ease Out 1-(1-u)^2;
 // Ease In/Out 3u^2-2u^3; Hold 0 until the next key.
 double ease(Ease e, double u);
-QString easeName(Ease e);
+QString easeName(Ease e);   // the file's word ("easeInOut")
+QString easeLabel(Ease e);  // the artist's ("Ease In/Out"): the Camera bar, the CAMERA row
 Ease easeFromName(const QString &name, bool *known = nullptr);
 
 // THE PLAYHEAD'S ROUNDING: the frame a time inside a panel falls in - the

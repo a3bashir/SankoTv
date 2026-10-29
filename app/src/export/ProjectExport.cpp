@@ -29,7 +29,7 @@ namespace sankoexport {
 // --- The list every export reads ---------------------------------------------
 
 QVector<ExportPanel> collectPanels(const QVector<Scene *> &scenes, int fps,
-                                   bool fullArtwork)
+                                   bool fullArtwork, bool cameraOff)
 {
     QVector<ExportPanel> list;
     for (const Scene *scene : scenes) {
@@ -45,10 +45,10 @@ QVector<ExportPanel> collectPanels(const QVector<Scene *> &scenes, int fps,
             row.panelInScene = i + 1;
             // The same floor the timeline and playback apply.
             row.seconds = qMax(1, panel->duration);
-            row.scene = scene;
+            row.scene = cameraOff ? nullptr : scene;
             row.panelIndex = i;
             const QSize canvas = panel->canvasSize();
-            row.still = (fullArtwork || scene->camera.isEmpty())
+            row.still = (fullArtwork || cameraOff || scene->camera.isEmpty())
                 ? shotcam::neutral(canvas)
                 : shotcam::evaluateAtPanel(*scene, i, 0, fps);
             row.stillNeutral = shotcam::isNeutral(row.still, canvas);

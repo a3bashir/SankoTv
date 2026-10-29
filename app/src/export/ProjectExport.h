@@ -60,9 +60,13 @@ struct ExportPanel
 };
 
 // fps places the stills' camera (a key's frame depends on it); fullArtwork
-// makes every still the whole panel, as before the camera.
+// makes every still the whole panel, as before the camera. cameraOff (the
+// CAMERA track hidden, Phase 1C) turns the camera off for the film as well:
+// every row's scene is left unset, so the movie takes the pre-camera path
+// and every still is the whole panel.
 QVector<ExportPanel> collectPanels(const QVector<Scene *> &scenes,
-                                   int fps = 24, bool fullArtwork = false);
+                                   int fps = 24, bool fullArtwork = false,
+                                   bool cameraOff = false);
 
 // seconds x fps, summed. A panel's duration is whole seconds and the frame
 // rate a whole number, so this is exact: no frame is ever rounded away.

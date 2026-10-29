@@ -838,7 +838,7 @@ sankoexport::MovieResult MainWindow::runMovieExport(const QString &path)
 
     MovieRequest request;
     request.outPath = path;
-    request.panels = collectPanels(m_scenes, m_projectFps);
+    request.panels = collectPanels(m_scenes, m_projectFps, false, exportCameraOff());
     request.fps = m_projectFps; // THE PROJECT'S, not a constant 24
     request.audioPath = exportAudioPath();
     request.audioGain = m_animatic ? m_animatic->audioGainForExport() : 1.0; // the track volume (Part D)
@@ -909,9 +909,10 @@ sankoexport::FilesResult MainWindow::runPngExport(const QString &folder)
     if (m_animatic)
         m_animatic->leavePreview();
     // The stills show the shot at each panel's first frame (Phase 1A), or
-    // the whole panel with File > Export > Stills Show Full Artwork (1B).
+    // the whole panel with File > Export > Stills Show Full Artwork (1B) -
+    // or with the CAMERA track hidden (1C).
     const QVector<ExportPanel> panels =
-        collectPanels(m_scenes, m_projectFps, stillsFullArtwork());
+        collectPanels(m_scenes, m_projectFps, stillsFullArtwork(), exportCameraOff());
     QProgressDialog *dialog = nullptr;
     if (!m_exportProgressHookForTest) {
         dialog = new QProgressDialog(QStringLiteral("Writing PNG files..."),
@@ -945,9 +946,10 @@ sankoexport::FilesResult MainWindow::runPdfExport(const QString &path)
     if (m_animatic)
         m_animatic->leavePreview();
     // The stills show the shot at each panel's first frame (Phase 1A), or
-    // the whole panel with File > Export > Stills Show Full Artwork (1B).
+    // the whole panel with File > Export > Stills Show Full Artwork (1B) -
+    // or with the CAMERA track hidden (1C).
     const QVector<ExportPanel> panels =
-        collectPanels(m_scenes, m_projectFps, stillsFullArtwork());
+        collectPanels(m_scenes, m_projectFps, stillsFullArtwork(), exportCameraOff());
     QProgressDialog *dialog = nullptr;
     if (!m_exportProgressHookForTest) {
         dialog = new QProgressDialog(QStringLiteral("Writing the PDF..."),
@@ -1002,6 +1004,30 @@ bool MainWindow::stillsFullArtwork() const
     return m_exportFullArtworkAct && m_exportFullArtworkAct->isChecked();
 }
 
+// The CAMERA track hidden (Phase 1C): the camera is off in every export.
+bool MainWindow::exportCameraOff() const
+{
+    return m_animatic && !m_animatic->tracks().cameraVisible;
+}
+
+// Said before the MP4's file dialog, with Cancel, like the audio warnings -
+// only when it changes the film: the track hidden AND a scene has a move.
+QString MainWindow::mp4CameraWarning() const
+{
+    if (!exportCameraOff())
+        return QString();
+    bool moves = false;
+    for (const Scene *scene : m_scenes)
+        moves = moves || (scene && shotcam::liveKeyCount(*scene) > 0);
+    if (!moves)
+        return QString();
+    return QStringLiteral(
+        "The CAMERA track is hidden, so the film will not move: every panel will "
+        "show its whole artwork.\n\n"
+        "The film can be exported without its camera moves, or you can cancel and "
+        "show the track first (the eye on the timeline's CAMERA track).");
+}
+
 sankoexport::FilesResult MainWindow::exportPngForTest(const QString &folder)
 {
     return runPngExport(folder);
@@ -1031,6 +1057,17 @@ void MainWindow::onExportMp4()
         box.addButton(QMessageBox::Cancel);
         box.exec();
         if (box.clickedButton() != silent)
+            return;
+    }
+    const QString cameraWarning = mp4CameraWarning();
+    if (!cameraWarning.isEmpty()) {
+        QMessageBox box(QMessageBox::Warning, QStringLiteral("Export MP4"),
+                        cameraWarning, QMessageBox::NoButton, this);
+        QPushButton *still = box.addButton(QStringLiteral("Export Without Camera Moves"),
+                                           QMessageBox::AcceptRole);
+        box.addButton(QMessageBox::Cancel);
+        box.exec();
+        if (box.clickedButton() != still)
             return;
     }
     QString path = QFileDialog::getSaveFileName(

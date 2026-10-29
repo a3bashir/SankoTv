@@ -493,7 +493,9 @@ void AnimaticPage::updatePreviewCamera()
     if (!m_display || !m_previewShown || m_current < 0 || m_current >= m_items.size())
         return;
     const Item &it = m_items.at(m_current);
-    if (it.scene->camera.isEmpty()) {
+    // No move in the scene, or the CAMERA track hidden (Phase 1C: the eye
+    // turns the camera off everywhere): the old paint, the whole panel.
+    if (it.scene->camera.isEmpty() || !m_tracks.cameraVisible) {
         m_display->setCamera(shotcam::CameraState(), true); // the old paint
         return;
     }
@@ -556,7 +558,24 @@ void AnimaticPage::refreshCamera()
 {
     updatePreviewCamera();
     if (m_timeline)
-        m_timeline->refreshThumbnails(); // the SHOTS clips show the camera
+        m_timeline->refreshThumbnails(); // the SHOTS clips (and the CAMERA row) show the camera
+}
+
+void AnimaticPage::setCameraAnimate(bool on)
+{
+    if (m_timeline)
+        m_timeline->setCameraAnimate(on);
+}
+
+bool AnimaticPage::selectedCameraKey(int *sceneIndex, int *keyIndex) const
+{
+    return m_timeline && m_timeline->selectedCameraKey(sceneIndex, keyIndex);
+}
+
+void AnimaticPage::setSelectedCameraKey(int sceneIndex, int keyIndex)
+{
+    if (m_timeline)
+        m_timeline->setSelectedCameraKey(sceneIndex, keyIndex);
 }
 
 shotcam::CameraState AnimaticPage::previewCameraForTest() const
@@ -737,6 +756,17 @@ QWidget *AnimaticPage::createTimingStrip()
             this, &AnimaticPage::clipContextMenuRequested);
     connect(m_timeline, &AnimaticTimeline::audioContextMenuRequested,
             this, &AnimaticPage::showAudioMenu);
+    // The CAMERA row (Phase 1C): every key edit is the workspace's.
+    connect(m_timeline, &AnimaticTimeline::cameraKeyActivated,
+            this, &AnimaticPage::cameraKeyActivated);
+    connect(m_timeline, &AnimaticTimeline::cameraKeyMoveRequested,
+            this, &AnimaticPage::cameraKeyMoveRequested);
+    connect(m_timeline, &AnimaticTimeline::cameraKeyContextMenuRequested,
+            this, &AnimaticPage::cameraKeyContextMenuRequested);
+    connect(m_timeline, &AnimaticTimeline::cameraRowContextMenuRequested,
+            this, &AnimaticPage::cameraRowContextMenuRequested);
+    connect(m_timeline, &AnimaticTimeline::cameraAnimateToggled,
+            this, &AnimaticPage::cameraAnimateToggled);
     wrapLayout->addWidget(m_timeline, 1);
 
     return wrap;
@@ -1214,6 +1244,7 @@ void AnimaticPage::applyTracks()
 {
     if (m_timeline)
         m_timeline->setTracks(m_tracks);
+    updatePreviewCamera(); // the CAMERA eye reaches the preview at once
     if (m_audioOutput) {
         m_audioOutput->setVolume(audioGainForExport()); // the same gain the export uses
         m_audioOutput->setMuted(m_tracks.audioMuted());

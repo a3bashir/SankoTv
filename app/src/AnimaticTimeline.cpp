@@ -9,6 +9,9 @@
 
 #include <QContextMenuEvent>
 #include <QFontMetrics>
+#include <QIcon>
+#include <QPixmap>
+#include <QPolygonF>
 #include <QHBoxLayout>
 #include <QKeyEvent>
 #include <QLabel>
@@ -29,6 +32,7 @@
 #include <QToolTip>
 #include <QVBoxLayout>
 
+#include <algorithm>
 #include <cmath>
 #include <functional>
 
@@ -54,12 +58,25 @@ constexpr int kControlSize = 16;
 // audio track keep their heights and the shots track takes whatever is left
 // (panelTrackH), never less than kPanelMinH. The two reserved tracks that
 // used to follow - Camera and Markers, 24 px each, both "coming soon" - are
-// gone: 48 px of the workspace for two labels.
+// gone: 48 px of the workspace for two labels. THE CAMERA ROW came back as
+// a real track in Phase 1C (28 px, between SHOTS and AUDIO, next to the
+// clips it frames): ruler 24, SCENES 24, SHOTS flexible, CAMERA 28, AUDIO 36.
 constexpr int kRulerY = 0,   kRulerH = 24;
 constexpr int kSceneY = 24,  kSceneH = 24;
 constexpr int kPanelY = 48;
 constexpr int kPanelMinH = 48, kPanelDefaultH = 80;
+constexpr int kCameraH = 28;
 constexpr int kAudioH = 36;
+
+// The CAMERA row's marks (Figma 1C-1 / 1C-2): a 10 px diamond whose hit
+// area is 16 px wide (the row's full height); the segment's ease pill,
+// 18 x 12, drawn only on a segment of 40 px or more; a drag starts after
+// 4 px and snaps (with Snap on) to a cut or the playhead within 6 px.
+constexpr qreal kKeyHalf = 5.0;
+constexpr int kKeyHit = 8;
+constexpr int kGlyphW = 18, kGlyphH = 12, kGlyphMinSegment = 40;
+constexpr int kKeyDragThreshold = 4;
+constexpr int kKeySnapPx = 6;
 
 constexpr int kHandleW = 6;   // trim handle width
 constexpr int kGrab = 5;      // px grab tolerance
@@ -123,14 +140,14 @@ public:
     explicit TimelineCanvas(AnimaticTimeline *owner)
         : QWidget(owner), m_owner(owner)
     {
-        setMinimumHeight(kPanelY + kPanelMinH + kAudioH);
+        setMinimumHeight(kPanelY + kPanelMinH + kCameraH + kAudioH);
         setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
         setMouseTracking(true);
         setAttribute(Qt::WA_StyledBackground, true);
     }
     QSize sizeHint() const override
     {
-        return QSize(400, kPanelY + kPanelDefaultH + kAudioH);
+        return QSize(400, kPanelY + kPanelDefaultH + kCameraH + kAudioH);
     }
 
 protected:
@@ -340,10 +357,103 @@ QColor dimmed(const QColor &c)
 
 const char *trackName(TimelineTrack t)
 {
-    return t == TimelineTrack::Scenes ? "SCENES" : t == TimelineTrack::Shots ? "SHOTS" : "AUDIO";
+    switch (t) {
+    case TimelineTrack::Scenes: return "SCENES";
+    case TimelineTrack::Shots: return "SHOTS";
+    case TimelineTrack::Audio: return "AUDIO";
+    case TimelineTrack::Camera: return "CAMERA";
+    }
+    return "";
+}
+
+// THE ANIMATE BUTTON (Figma 1C-3, the user's change of 2026-10-28): a small
+// record dot, never a diamond, so it cannot be mistaken for a key - a grey
+// ring when off, a filled accent dot when on.
+QIcon recordDotIcon()
+{
+    using namespace SankoTimelineTheme;
+    QIcon icon;
+    for (qreal scale : {1.0, 2.0}) {
+        for (bool on : {false, true}) {
+            QPixmap pm(QSize(kControlSize, kControlSize) * scale);
+            pm.setDevicePixelRatio(scale);
+            pm.fill(Qt::transparent);
+            QPainter p(&pm);
+            p.setRenderHint(QPainter::Antialiasing, true);
+            const QPointF c(kControlSize / 2.0, kControlSize / 2.0);
+            if (on) {
+                p.setPen(Qt::NoPen);
+                p.setBrush(kCameraAccent);
+                p.drawEllipse(c, 4.0, 4.0);
+            } else {
+                p.setPen(QPen(kTrackControl, 1.3));
+                p.setBrush(Qt::NoBrush);
+                p.drawEllipse(c, 3.5, 3.5);
+            }
+            p.end();
+            icon.addPixmap(pm, QIcon::Normal, on ? QIcon::On : QIcon::Off);
+        }
+    }
+    return icon;
+}
+
+// The ease glyph (Figma 1C-2): the curve w(u) in an 18 x 12 pill - Linear
+// a diagonal, Ease In flat then rising, Ease Out rising then flat, Ease
+// In/Out both, Hold a step. Drawn in a box whose top-left is `r`.
+void paintEaseGlyph(QPainter &p, const QRectF &r, shotcam::Ease ease)
+{
+    using namespace SankoTimelineTheme;
+    p.save();
+    p.setRenderHint(QPainter::Antialiasing, true);
+    p.setPen(QPen(kHairline, 1.0));
+    p.setBrush(kPillBg);
+    p.drawRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5), 3, 3);
+    const auto pt = [&](qreal x, qreal y) { return QPointF(r.left() + x, r.top() + y); };
+    QPainterPath path;
+    path.moveTo(pt(3, 9));
+    switch (ease) {
+    case shotcam::Ease::Linear:
+        path.lineTo(pt(15, 3));
+        break;
+    case shotcam::Ease::EaseIn:
+        path.cubicTo(pt(9, 9), pt(12, 7), pt(15, 3));
+        break;
+    case shotcam::Ease::EaseOut:
+        path.cubicTo(pt(6, 5), pt(9, 3), pt(15, 3));
+        break;
+    case shotcam::Ease::EaseInOut:
+        path.cubicTo(pt(9, 9), pt(9, 3), pt(15, 3));
+        break;
+    case shotcam::Ease::Hold:
+        path = QPainterPath();
+        path.moveTo(pt(3, 8));
+        path.lineTo(pt(13, 8));
+        path.lineTo(pt(13, 3));
+        path.lineTo(pt(15, 3));
+        break;
+    }
+    p.setBrush(Qt::NoBrush);
+    p.setPen(QPen(kCameraGlyph, 1.2, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    p.drawPath(path);
+    p.restore();
 }
 
 } // namespace
+
+QIcon AnimaticTimeline::easeGlyphIcon(int ease)
+{
+    QIcon icon;
+    for (qreal scale : {1.0, 2.0}) {
+        QPixmap pm(QSize(kGlyphW, kGlyphH) * scale);
+        pm.setDevicePixelRatio(scale);
+        pm.fill(Qt::transparent);
+        QPainter p(&pm);
+        paintEaseGlyph(p, QRectF(0, 0, kGlyphW, kGlyphH), shotcam::Ease(ease));
+        p.end();
+        icon.addPixmap(pm);
+    }
+    return icon;
+}
 
 void AnimaticTimeline::buildTrackControls()
 {
@@ -365,10 +475,10 @@ void AnimaticTimeline::buildTrackControls()
             "QToolButton:hover { background: #1e1e26; border-radius: 4px; }"));
         return b;
     };
-    const TimelineTrack tracks[3] = {TimelineTrack::Scenes, TimelineTrack::Shots,
-                                     TimelineTrack::Audio};
-    const char *suffix[3] = {"Scenes", "Shots", "Audio"};
-    for (int i = 0; i < 3; ++i) {
+    const TimelineTrack tracks[4] = {TimelineTrack::Scenes, TimelineTrack::Shots,
+                                     TimelineTrack::Audio, TimelineTrack::Camera};
+    const char *suffix[4] = {"Scenes", "Shots", "Audio", "Camera"};
+    for (int i = 0; i < 4; ++i) {
         const TimelineTrack t = tracks[i];
         m_lockButtons[i] = make(QStringLiteral(":/icons/timeline/track_lock.svg"),
                                 QStringLiteral("trackLock") + QLatin1String(suffix[i]),
@@ -405,6 +515,27 @@ void AnimaticTimeline::buildTrackControls()
         toggleVolumePopup();
         styleTrackControls(); // a checkable button toggles itself on click: put the muted state back
     });
+    // The CAMERA row's Animate (Phase 1C): the canvas Camera bar's switch,
+    // the same state, owned by the workspace - a click asks, and the answer
+    // comes back through setCameraAnimate. Its hover is the accent at 14 %
+    // (the flat-controls rule, Figma 1C-3).
+    m_animateButton = new QToolButton(m_canvas);
+    m_animateButton->setObjectName(QStringLiteral("trackAnimateCamera"));
+    m_animateButton->setCheckable(true);
+    m_animateButton->setAutoRaise(true);
+    m_animateButton->setCursor(Qt::PointingHandCursor);
+    m_animateButton->setFocusPolicy(Qt::NoFocus);
+    m_animateButton->setIcon(recordDotIcon());
+    m_animateButton->setIconSize(QSize(kControlSize, kControlSize));
+    m_animateButton->setFixedSize(kControlSize + 4, kControlSize + 4);
+    m_animateButton->setStyleSheet(QStringLiteral(
+        "QToolButton { border: none; background: transparent; padding: 0; }"
+        "QToolButton:hover { background: %1; border-radius: 4px; }")
+                                       .arg(kFlatHoverBg));
+    connect(m_animateButton, &QToolButton::clicked, this, [this](bool on) {
+        m_animateButton->setChecked(m_cameraAnimate); // until the answer
+        emit cameraAnimateToggled(on);
+    });
 
     // The volume popup: a vertical slider, a child of the canvas, hidden
     // until the speaker opens it; placed by layoutVolumePopup (x 34 of the
@@ -431,9 +562,9 @@ void AnimaticTimeline::layoutTrackControls()
 {
     if (!m_canvas || !m_lockButtons[0])
         return;
-    const int rowY[3] = {kSceneY, kPanelY, audioTrackY()};
-    const int rowH[3] = {kSceneH, panelTrackH(), kAudioH};
-    for (int i = 0; i < 3; ++i) {
+    const int rowY[4] = {kSceneY, kPanelY, audioTrackY(), cameraTrackY()};
+    const int rowH[4] = {kSceneH, panelTrackH(), kAudioH, kCameraH};
+    for (int i = 0; i < 4; ++i) {
         // The 16 px icon centred in the row at the design's x; the button
         // is 2 px larger on every side.
         const int y = rowY[i] + (rowH[i] - kControlSize) / 2 - 2;
@@ -441,6 +572,8 @@ void AnimaticTimeline::layoutTrackControls()
         m_eyeButtons[i]->move(kControlX[2] - 2, y);
         if (i == 2)
             m_muteButton->move(kControlX[1] - 2, y);
+        if (i == 3 && m_animateButton)
+            m_animateButton->move(kControlX[1] - 2, y);
     }
     layoutVolumePopup();
 }
@@ -486,9 +619,9 @@ void AnimaticTimeline::styleTrackControls()
 {
     if (!m_lockButtons[0])
         return;
-    const TimelineTrack tracks[3] = {TimelineTrack::Scenes, TimelineTrack::Shots,
-                                     TimelineTrack::Audio};
-    for (int i = 0; i < 3; ++i) {
+    const TimelineTrack tracks[4] = {TimelineTrack::Scenes, TimelineTrack::Shots,
+                                     TimelineTrack::Audio, TimelineTrack::Camera};
+    for (int i = 0; i < 4; ++i) {
         const TimelineTrack t = tracks[i];
         const QString name = QLatin1String(trackName(t));
         const bool locked = m_tracks.locked(t);
@@ -503,14 +636,37 @@ void AnimaticTimeline::styleTrackControls()
                     ? QStringLiteral("Lock the SHOTS track: no panel can be added, "
                                      "duplicated, deleted, moved or retimed; drawing "
                                      "stays allowed")
+                : t == TimelineTrack::Camera
+                    ? QStringLiteral("Lock the CAMERA track: no camera key can be "
+                                     "added, moved, changed or deleted, here or with "
+                                     "the Camera tool")
                     : QStringLiteral("Lock the AUDIO track: the file cannot be "
                                      "imported, removed, located or copied"));
         m_eyeButtons[i]->setChecked(!visible);
+        // The CAMERA eye is not the timeline's only: hidden, the camera is
+        // off in the preview, the clips and every export too.
         m_eyeButtons[i]->setToolTip(
-            visible ? QStringLiteral("Hide the %1 track (the timeline only: playback "
-                                     "and export are not affected)")
-                          .arg(name)
-                    : QStringLiteral("Show the %1 track").arg(name));
+            t == TimelineTrack::Camera
+                ? (visible ? QStringLiteral("Hide the CAMERA track: the preview, the "
+                                            "SHOTS clips and every export show the "
+                                            "whole panel")
+                           : QStringLiteral("Show the CAMERA track: the camera moves "
+                                            "again in the preview, the clips and the "
+                                            "exports"))
+            : visible ? QStringLiteral("Hide the %1 track (the timeline only: playback "
+                                       "and export are not affected)")
+                            .arg(name)
+                      : QStringLiteral("Show the %1 track").arg(name));
+    }
+    if (m_animateButton) {
+        m_animateButton->setChecked(m_cameraAnimate);
+        m_animateButton->setToolTip(
+            m_cameraAnimate
+                ? QStringLiteral("Animate is on: camera changes on the canvas add or "
+                                 "change a key at the playhead. Same switch as the "
+                                 "Camera bar.")
+                : QStringLiteral("Animate: camera changes on the canvas add keys at "
+                                 "the playhead. Same switch as the Camera bar."));
     }
     m_muteButton->setChecked(m_tracks.audioMuted());
     m_muteButton->setToolTip(
@@ -538,6 +694,43 @@ void AnimaticTimeline::setTracks(const TimelineTracks &tracks)
         m_moveActive = false;
         m_hoverIndex = -1;
     }
+    // ...and a hidden or locked CAMERA track any key drag.
+    if ((!m_tracks.cameraVisible || m_tracks.cameraLocked) && m_drag == Drag::CameraKey) {
+        m_drag = Drag::None;
+        m_camDragActive = false;
+        m_camDragScene = m_camDragKey = -1;
+    }
+    if (!m_tracks.cameraVisible)
+        m_camHoverScene = m_camHoverKey = -1;
+    if (m_canvas)
+        m_canvas->update();
+}
+
+void AnimaticTimeline::setCameraAnimate(bool on)
+{
+    m_cameraAnimate = on;
+    styleTrackControls();
+}
+
+bool AnimaticTimeline::selectedCameraKey(int *sceneIndex, int *keyIndex) const
+{
+    if (m_camSelScene < 0 || m_camSelScene >= m_scenes.size())
+        return false;
+    const Scene *scene = m_scenes.at(m_camSelScene);
+    if (m_camSelKey < 0 || m_camSelKey >= scene->camera.keys.size()
+        || shotcam::keyFrame(*scene, scene->camera.keys.at(m_camSelKey), m_fps) < 0.0)
+        return false; // gone (deleted, or its panel is)
+    if (sceneIndex)
+        *sceneIndex = m_camSelScene;
+    if (keyIndex)
+        *keyIndex = m_camSelKey;
+    return true;
+}
+
+void AnimaticTimeline::setSelectedCameraKey(int sceneIndex, int keyIndex)
+{
+    m_camSelScene = sceneIndex;
+    m_camSelKey = keyIndex;
     if (m_canvas)
         m_canvas->update();
 }
@@ -559,18 +752,23 @@ void AnimaticTimeline::refuse(const QString &why, const QPoint &globalPos)
 
 int AnimaticTimeline::tracksH() const
 {
-    return qMax(kPanelY + kPanelMinH + kAudioH,
+    return qMax(kPanelY + kPanelMinH + kCameraH + kAudioH,
                 m_canvas ? m_canvas->height() : 0);
 }
 
 int AnimaticTimeline::panelTrackH() const
 {
-    return tracksH() - kPanelY - kAudioH;
+    return tracksH() - kPanelY - kCameraH - kAudioH;
+}
+
+int AnimaticTimeline::cameraTrackY() const
+{
+    return kPanelY + panelTrackH();
 }
 
 int AnimaticTimeline::audioTrackY() const
 {
-    return kPanelY + panelTrackH();
+    return cameraTrackY() + kCameraH;
 }
 
 QRect AnimaticTimeline::clipRect(int flatIndex) const
@@ -623,13 +821,20 @@ void AnimaticTimeline::setScenes(const QVector<Scene *> &scenes)
         m_current = count - 1;
     if (m_selected >= count)
         m_selected = count - 1;
-    // A reorder drag armed against the old block list means nothing now.
+    // A reorder drag armed against the old block list means nothing now;
+    // nor does a camera key drag.
     if (m_drag == Drag::Move) {
         m_drag = Drag::None;
         m_moveActive = false;
         m_moveFrom = -1;
         m_moveGap = -1;
     }
+    if (m_drag == Drag::CameraKey) {
+        m_drag = Drag::None;
+        m_camDragActive = false;
+        m_camDragScene = m_camDragKey = -1;
+    }
+    m_camHoverScene = m_camHoverKey = -1;
     rebuildBlocks();
     updateScrollRange();
     if (m_canvas)
@@ -666,6 +871,20 @@ void AnimaticTimeline::setSelectedPanel(int flatIndex)
     if (m_selected == flatIndex)
         return;
     m_selected = flatIndex;
+    // A selected camera key stays selected only while its clip is the
+    // selected one (a key on a cut belongs to both clips): picking another
+    // panel, anywhere, ends it.
+    int si = -1, ki = -1;
+    if (selectedCameraKey(&si, &ki)) {
+        const Scene *scene = m_scenes.at(si);
+        const int start = sceneStartFrame(si);
+        const double f = start + shotcam::keyFrame(*scene, scene->camera.keys.at(ki), m_fps);
+        const bool onIt = flatIndex >= 0 && flatIndex < m_blocks.size()
+            && f >= m_blocks.at(flatIndex).startFrame - 0.5
+            && f <= m_blocks.at(flatIndex).startFrame + m_blocks.at(flatIndex).frames + 0.5;
+        if (!onIt)
+            m_camSelScene = m_camSelKey = -1;
+    }
     if (m_canvas)
         m_canvas->update();
 }
@@ -853,7 +1072,18 @@ QVariantMap AnimaticTimeline::devrecState() const
             {QStringLiteral("timeline.scenesVisible"), m_tracks.scenesVisible},
             {QStringLiteral("timeline.shotsVisible"), m_tracks.shotsVisible},
             {QStringLiteral("timeline.audioVisible"), m_tracks.audioVisible},
-            {QStringLiteral("timeline.audioVolume"), m_tracks.audioVolume}};
+            {QStringLiteral("timeline.audioVolume"), m_tracks.audioVolume},
+            // The CAMERA row (Phase 1C): its lock and eye, the Animate it
+            // shows, the selected key ("scene:key", empty for none) and
+            // whether a key is being dragged.
+            {QStringLiteral("timeline.cameraLocked"), m_tracks.cameraLocked},
+            {QStringLiteral("timeline.cameraVisible"), m_tracks.cameraVisible},
+            {QStringLiteral("timeline.cameraAnimate"), m_cameraAnimate},
+            {QStringLiteral("timeline.cameraKey"),
+             selectedCameraKey(nullptr, nullptr)
+                 ? QStringLiteral("%1:%2").arg(m_camSelScene).arg(m_camSelKey)
+                 : QString()},
+            {QStringLiteral("timeline.cameraDrag"), m_drag == Drag::CameraKey && m_camDragActive}};
 }
 
 void AnimaticTimeline::userScrollForTest(int scrollX)
@@ -1008,7 +1238,10 @@ shotcam::CameraState AnimaticTimeline::clipCameraForTest(int flatIndex) const
     const Block &b = m_blocks.at(flatIndex);
     if (b.sceneIndex >= m_scenes.size())
         return shotcam::CameraState();
-    return shotcam::evaluateAtPanel(*m_scenes.at(b.sceneIndex), b.panelIndex, 0, m_fps);
+    const Scene *scene = m_scenes.at(b.sceneIndex);
+    if (!m_tracks.cameraVisible && b.panelIndex < scene->panels.size())
+        return shotcam::neutral(scene->panels.at(b.panelIndex)->canvasSize()); // the eye is off
+    return shotcam::evaluateAtPanel(*scene, b.panelIndex, 0, m_fps);
 }
 
 int AnimaticTimeline::playheadFrame() const
@@ -1175,6 +1408,8 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
     p.fillRect(QRect(0, kRulerY, W, kRulerH), kRulerBg);
     p.fillRect(QRect(0, kSceneY, W, kSceneH), kHeaderBg);
     p.fillRect(QRect(0, kPanelY, W, panelTrackH()), kPageBg);
+    p.fillRect(QRect(0, cameraTrackY(), W, kCameraH), kCameraRowBg);
+    p.fillRect(QRect(0, cameraTrackY(), W, 1), kHairline);
     p.fillRect(QRect(0, audioTrackY(), W, kAudioH),
                m_audioLoaded ? QColor("#0d1a26") : kRulerBg);
 
@@ -1331,7 +1566,8 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
                         // mouse-move and every playback tick); the full
                         // composite cost 16 ms/clip at 4K, measured.
                         pix = sc->panels.at(b.panelIndex)->flattenedThumb();
-                        if (!sc->camera.isEmpty()) {
+                        // The CAMERA eye off (Phase 1C): the whole panel.
+                        if (!sc->camera.isEmpty() && m_tracks.cameraVisible) {
                             canvas = sc->panels.at(b.panelIndex)->canvasSize();
                             shotCamera = shotcam::evaluateAtPanel(*sc, b.panelIndex, 0,
                                                                   m_fps);
@@ -1419,6 +1655,9 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
         p.setPen(QPen(kClipSelectedBorder, 3)); // the design's selection colour
         p.drawLine(x, kPanelY + 1, x, kPanelY + panelTrackH() - 1);
     }
+
+    // ----- The CAMERA row (Phase 1C) -----
+    paintCameraRow(p);
 
     // ----- Audio track -----
     // A PLAIN BAR, as long as the audio, with the file's name on it. This
@@ -1535,7 +1774,8 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
         struct TL { const char *name; int y, h; };
         const TL labels[] = {
             {"TIMECODE", kRulerY, kRulerH}, {"SCENES", kSceneY, kSceneH},
-            {"SHOTS", kPanelY, panelTrackH()},    {"AUDIO", audioTrackY(), kAudioH},
+            {"SHOTS", kPanelY, panelTrackH()},    {"CAMERA", cameraTrackY(), kCameraH},
+            {"AUDIO", audioTrackY(), kAudioH},
         };
         for (const TL &t : labels)
             p.drawText(QRect(0, t.y, kLabelColW - 15, t.h),
@@ -1708,6 +1948,252 @@ QRect AnimaticTimeline::audioRowForTest() const
     return QRect(0, audioTrackY(), m_canvas ? m_canvas->width() : 0, kAudioH);
 }
 
+// --- The CAMERA row (Phase 1C) ---------------------------------------------
+
+int AnimaticTimeline::sceneStartFrame(int sceneIndex) const
+{
+    for (const Block &b : m_blocks)
+        if (b.sceneIndex == sceneIndex)
+            return b.startFrame;
+    return -1;
+}
+
+int AnimaticTimeline::sceneEndFrame(int sceneIndex) const
+{
+    int end = -1;
+    for (const Block &b : m_blocks)
+        if (b.sceneIndex == sceneIndex)
+            end = b.startFrame + b.frames;
+    return end;
+}
+
+QVector<AnimaticTimeline::CameraMark> AnimaticTimeline::cameraMarks() const
+{
+    QVector<CameraMark> marks;
+    const double ppf = pxPerFrame();
+    for (int si = 0; si < m_scenes.size(); ++si) {
+        const Scene *scene = m_scenes.at(si);
+        const int start = sceneStartFrame(si);
+        if (scene->camera.isEmpty() || start < 0)
+            continue;
+        QVector<CameraMark> sceneMarks;
+        for (int k = 0; k < scene->camera.keys.size(); ++k) {
+            const shotcam::CameraKey &key = scene->camera.keys.at(k);
+            double f = shotcam::keyFrame(*scene, key, m_fps);
+            if (f < 0.0)
+                continue; // inert: its panel is gone (its delete still undoable)
+            if (m_drag == Drag::CameraKey && m_camDragActive && si == m_camDragScene
+                && k == m_camDragKey)
+                f = m_camDragFrame - start; // where the drag has it
+            CameraMark m;
+            m.sceneIndex = si;
+            m.keyIndex = k;
+            m.frame = start + f;
+            m.x = contentXToScreen(m.frame * ppf);
+            m.ease = int(key.ease);
+            sceneMarks.append(m);
+        }
+        std::stable_sort(sceneMarks.begin(), sceneMarks.end(),
+                         [](const CameraMark &a, const CameraMark &b) { return a.frame < b.frame; });
+        marks += sceneMarks;
+    }
+    return marks;
+}
+
+QVector<AnimaticTimeline::CameraSegment>
+AnimaticTimeline::cameraSegments(const QVector<CameraMark> &marks) const
+{
+    QVector<CameraSegment> segments;
+    int selScene = -1, selKey = -1;
+    const bool hasSel = selectedCameraKey(&selScene, &selKey);
+    for (int i = 0; i + 1 < marks.size(); ++i) {
+        const CameraMark &a = marks.at(i);
+        const CameraMark &b = marks.at(i + 1);
+        if (a.sceneIndex != b.sceneIndex)
+            continue; // no move crosses a cut between scenes
+        CameraSegment s;
+        s.sceneIndex = a.sceneIndex;
+        s.fromKey = a.keyIndex;
+        s.toKey = b.keyIndex;
+        s.ease = a.ease;
+        s.x0 = a.x + kKeyHalf + 1.0;
+        s.x1 = b.x - kKeyHalf - 1.0;
+        s.dashed = shotcam::Ease(a.ease) == shotcam::Ease::Hold;
+        s.glyph = s.x1 - s.x0 >= kGlyphMinSegment;
+        s.accent = hasSel && a.sceneIndex == selScene && a.keyIndex == selKey;
+        if (s.x1 > s.x0)
+            segments.append(s);
+    }
+    return segments;
+}
+
+bool AnimaticTimeline::inCameraRow(const QPoint &pos) const
+{
+    return pos.x() >= kLabelCol && pos.y() >= cameraTrackY()
+        && pos.y() < cameraTrackY() + kCameraH;
+}
+
+bool AnimaticTimeline::cameraKeyAt(const QPoint &pos, CameraMark *mark) const
+{
+    if (!inCameraRow(pos))
+        return false;
+    int best = kKeyHit + 1;
+    bool found = false;
+    for (const CameraMark &m : cameraMarks()) {
+        const int d = qAbs(m.x - pos.x());
+        if (d < best) { // the nearer of two close keys wins
+            best = d;
+            *mark = m;
+            found = true;
+        }
+    }
+    return found;
+}
+
+// "Key 2 · 00:00:06:00 · panel 3 · Ease In/Out" (Figma 1C-1's tooltip): the
+// key's place among its scene's keys, its film timecode, the clip it sits
+// on (the number the clip shows), and the ease of the move it starts - or
+// "last key", which starts none.
+QString AnimaticTimeline::cameraKeyTip(const CameraMark &mark) const
+{
+    const QVector<CameraMark> marks = cameraMarks();
+    int number = 0, inScene = 0;
+    for (const CameraMark &m : marks) {
+        if (m.sceneIndex != mark.sceneIndex)
+            continue;
+        ++inScene;
+        if (m.keyIndex == mark.keyIndex)
+            number = inScene;
+    }
+    const int frame = int(std::lround(mark.frame));
+    const int clip = blockAtFrame(frame);
+    return QString::fromUtf8("Key %1 \xC2\xB7 %2 \xC2\xB7 panel %3 \xC2\xB7 %4")
+        .arg(number)
+        .arg(timecode(frame))
+        .arg(clip + 1)
+        .arg(number == inScene ? QStringLiteral("last key")
+                               : shotcam::easeLabel(shotcam::Ease(mark.ease)));
+}
+
+double AnimaticTimeline::cameraRowOpacityForTest() const
+{
+    return (!m_tracks.cameraVisible || m_tracks.cameraLocked) ? 0.4 : 1.0;
+}
+
+void AnimaticTimeline::paintCameraRow(QPainter &p)
+{
+    using namespace SankoTimelineTheme;
+    const QVector<CameraMark> marks = cameraMarks();
+    if (marks.isEmpty() || !m_canvas)
+        return;
+    const int y0 = cameraTrackY();
+    const qreal cy = y0 + kCameraH / 2.0;
+    p.save();
+    p.setClipRect(QRect(kLabelCol, y0, m_canvas->width() - kLabelCol, kCameraH),
+                  Qt::IntersectClip);
+    // Locked or hidden: the whole row at 40 % (Figma 1C-1, 1C-3).
+    p.setOpacity(cameraRowOpacityForTest());
+    p.setRenderHint(QPainter::Antialiasing, true);
+
+    for (const CameraSegment &s : cameraSegments(marks)) {
+        const QColor c = s.accent ? kCameraAccent : kCameraSegment;
+        if (s.dashed) {
+            QPen pen(c, 2.0, Qt::CustomDashLine, Qt::FlatCap);
+            pen.setDashPattern({2.5, 2.0}); // 5 px on, 4 off (units of the width)
+            p.setPen(pen);
+            p.drawLine(QPointF(s.x0, cy), QPointF(s.x1, cy));
+        } else {
+            p.fillRect(QRectF(s.x0, cy - 1.0, s.x1 - s.x0, 2.0), c);
+        }
+        if (s.glyph)
+            paintEaseGlyph(p, QRectF((s.x0 + s.x1) / 2.0 - kGlyphW / 2.0, cy - kGlyphH / 2.0,
+                                     kGlyphW, kGlyphH),
+                           shotcam::Ease(s.ease));
+    }
+
+    int selScene = -1, selKey = -1;
+    const bool hasSel = selectedCameraKey(&selScene, &selKey);
+    const int phFrame = playheadFrame();
+    for (const CameraMark &m : marks) {
+        const bool selected = hasSel && m.sceneIndex == selScene && m.keyIndex == selKey;
+        const bool hover = m.sceneIndex == m_camHoverScene && m.keyIndex == m_camHoverKey;
+        const bool atPlayhead = qAbs(m.frame - phFrame) < 0.5;
+        const QPointF c(m.x + 0.5, cy);
+        if (hover) { // the accent at 14 %, the flat controls' hover
+            QColor halo = kCameraAccent;
+            halo.setAlphaF(0.14);
+            p.setPen(Qt::NoPen);
+            p.setBrush(halo);
+            p.drawEllipse(c, 8.0, 8.0);
+        }
+        if (selected && atPlayhead) { // the playhead's ring around the accent
+            p.setPen(QPen(kPlayhead, 1.0));
+            p.setBrush(Qt::NoBrush);
+            p.drawEllipse(c, 7.5, 7.5);
+        }
+        QColor fill = kCameraKeyFill, edge = kCameraKeyEdge;
+        if (selected) {
+            fill = kCameraAccent;
+            edge = atPlayhead ? QColor(Qt::white) : kClipSelectedBorder;
+        } else if (atPlayhead) {
+            fill = kPlayhead;
+            edge = Qt::white;
+        } else if (hover) {
+            fill = kCameraAccent;
+            fill.setAlphaF(0.35);
+            edge = kCameraAccent;
+        }
+        QPolygonF diamond;
+        diamond << QPointF(c.x(), c.y() - kKeyHalf) << QPointF(c.x() + kKeyHalf, c.y())
+                << QPointF(c.x(), c.y() + kKeyHalf) << QPointF(c.x() - kKeyHalf, c.y());
+        p.setPen(QPen(edge, 1.5, Qt::SolidLine, Qt::FlatCap, Qt::RoundJoin));
+        p.setBrush(fill);
+        p.drawPolygon(diamond);
+    }
+    p.restore();
+}
+
+QRect AnimaticTimeline::cameraRowForTest() const
+{
+    return QRect(0, cameraTrackY(), m_canvas ? m_canvas->width() : 0, kCameraH);
+}
+
+QVariantList AnimaticTimeline::cameraKeysForTest() const
+{
+    QVariantList list;
+    int selScene = -1, selKey = -1;
+    const bool hasSel = selectedCameraKey(&selScene, &selKey);
+    const int phFrame = playheadFrame();
+    for (const CameraMark &m : cameraMarks())
+        list.append(QVariantMap{
+            {QStringLiteral("scene"), m.sceneIndex},
+            {QStringLiteral("key"), m.keyIndex},
+            {QStringLiteral("x"), m.x},
+            {QStringLiteral("frame"), m.frame},
+            {QStringLiteral("selected"), hasSel && m.sceneIndex == selScene && m.keyIndex == selKey},
+            {QStringLiteral("atPlayhead"), qAbs(m.frame - phFrame) < 0.5},
+            {QStringLiteral("hover"), m.sceneIndex == m_camHoverScene && m.keyIndex == m_camHoverKey},
+            {QStringLiteral("tip"), cameraKeyTip(m)}});
+    return list;
+}
+
+QVariantList AnimaticTimeline::cameraSegmentsForTest() const
+{
+    QVariantList list;
+    for (const CameraSegment &s : cameraSegments(cameraMarks()))
+        list.append(QVariantMap{
+            {QStringLiteral("scene"), s.sceneIndex},
+            {QStringLiteral("from"), s.fromKey},
+            {QStringLiteral("to"), s.toKey},
+            {QStringLiteral("ease"), shotcam::easeLabel(shotcam::Ease(s.ease))},
+            {QStringLiteral("dashed"), s.dashed},
+            {QStringLiteral("glyph"), s.glyph},
+            {QStringLiteral("accent"), s.accent},
+            {QStringLiteral("x0"), s.x0},
+            {QStringLiteral("x1"), s.x1}});
+    return list;
+}
+
 // --- Interaction ----------------------------------------------------------
 
 // ONE named step per notch. Smaller than a third of the view (about 610 px
@@ -1785,6 +2271,42 @@ void AnimaticTimeline::canvasMousePress(QMouseEvent *e)
     const QPoint pos = e->position().toPoint();
     if (pos.x() < kLabelCol)
         return;
+
+    // THE CAMERA ROW (Phase 1C), BEFORE the playhead: a key often sits under
+    // the playhead (a click on a key puts it there), and the key must win.
+    // A press on a key selects it and asks for the playhead to go to it;
+    // unlocked, it may become a drag. A press on the row off any key clears
+    // the selection - unless it is on the playhead's line, which it grabs.
+    // A hidden row takes no press of its own.
+    if (inCameraRow(pos) && m_tracks.cameraVisible) {
+        CameraMark mark;
+        if (cameraKeyAt(pos, &mark)) {
+            m_camSelScene = mark.sceneIndex;
+            m_camSelKey = mark.keyIndex;
+            m_canvas->update();
+            emit cameraKeyActivated(mark.sceneIndex, mark.keyIndex);
+            m_drag = Drag::CameraKey; // locked: a drag is refused when it starts
+            m_camDragScene = mark.sceneIndex;
+            m_camDragKey = mark.keyIndex;
+            m_camDragFromFrame = int(std::lround(mark.frame));
+            m_camDragFrame = m_camDragFromFrame;
+            m_camDragActive = false;
+            m_camPress = pos;
+            return;
+        }
+        if (qAbs(pos.x() - contentXToScreen(playheadContentX())) > kGrab) {
+            m_camSelScene = m_camSelKey = -1;
+            m_canvas->update();
+            return;
+        }
+    }
+    // Any other press on the timeline ends the key selection: Delete over
+    // the timeline must never take a key the artist is no longer looking at
+    // when they have just picked a clip.
+    if (m_camSelKey >= 0) {
+        m_camSelScene = m_camSelKey = -1;
+        m_canvas->update();
+    }
 
     // Playhead: triangle in the ruler, or near the line anywhere.
     const int phx = contentXToScreen(playheadContentX());
@@ -1867,6 +2389,26 @@ void AnimaticTimeline::canvasContextMenu(QContextMenuEvent *e)
     const QPoint pos = e->pos();
     if (m_drag != Drag::None)
         return;
+    // THE CAMERA ROW (Phase 1C): on a key, select it (the playhead goes
+    // there, as for a left press) and ask for the key's menu; off a key,
+    // the row's menu. A hidden row takes no press, this one included.
+    if (inCameraRow(pos)) {
+        if (m_tracks.cameraVisible) {
+            CameraMark mark;
+            if (cameraKeyAt(pos, &mark)) {
+                m_camSelScene = mark.sceneIndex;
+                m_camSelKey = mark.keyIndex;
+                m_canvas->update();
+                emit cameraKeyActivated(mark.sceneIndex, mark.keyIndex);
+                emit cameraKeyContextMenuRequested(mark.sceneIndex, mark.keyIndex,
+                                                   e->globalPos());
+            } else {
+                emit cameraRowContextMenuRequested(e->globalPos());
+            }
+        }
+        e->accept();
+        return;
+    }
     // The AUDIO row, its label included: the track's own menu. Whoever owns
     // the audio builds it; nothing is selected by asking. A hidden track
     // (Part B) takes no press, this one included.
@@ -1924,6 +2466,57 @@ void AnimaticTimeline::canvasMouseMove(QMouseEvent *e)
             emit playheadScrubbed(idx);
         }
         emitScrubFrame(); // ...and the frame inside it (Phase 1A)
+        return;
+    }
+
+    // A camera key dragged in time (Phase 1C): within its own scene, from
+    // its first frame to its end; with Snap on, onto a cut or the playhead
+    // when within kKeySnapPx. A LOCKED row refuses the drag as it starts.
+    if (m_drag == Drag::CameraKey) {
+        if (!(e->buttons() & Qt::LeftButton)) {
+            m_drag = Drag::None; // the release went elsewhere
+            m_camDragActive = false;
+            m_canvas->update();
+            return;
+        }
+        if (!m_camDragActive) {
+            if ((pos - m_camPress).manhattanLength() < kKeyDragThreshold)
+                return;
+            if (m_tracks.cameraLocked) {
+                refuse(QStringLiteral("CAMERA track is locked"),
+                       e->globalPosition().toPoint());
+                m_drag = Drag::None;
+                return;
+            }
+            m_camDragActive = true;
+            m_canvas->setCursor(Qt::SizeHorCursor);
+        }
+        const int lo = sceneStartFrame(m_camDragScene);
+        const int hi = sceneEndFrame(m_camDragScene);
+        int frame = qBound(lo, frameAtScreenX(pos.x()), hi);
+        if (m_snap) {
+            QVector<int> targets;
+            for (const Block &b : m_blocks)
+                if (b.sceneIndex == m_camDragScene)
+                    targets << b.startFrame;
+            targets << hi;
+            const int ph = playheadFrame();
+            if (ph >= lo && ph <= hi)
+                targets << ph;
+            int best = kKeySnapPx + 1;
+            for (int t : targets) {
+                const int d = qAbs(contentXToScreen(t * pxPerFrame()) - pos.x());
+                if (d < best) {
+                    best = d;
+                    frame = t;
+                }
+            }
+        }
+        if (frame != m_camDragFrame) {
+            m_camDragFrame = frame;
+            m_canvas->update();
+        }
+        QToolTip::showText(e->globalPosition().toPoint(), timecode(m_camDragFrame), m_canvas);
         return;
     }
 
@@ -1992,9 +2585,27 @@ void AnimaticTimeline::canvasMouseMove(QMouseEvent *e)
     } else if (pos.y() < kRulerY + kRulerH) {
         cursor = Qt::PointingHandCursor;
     }
+    // The CAMERA row: the key under the pointer is lit (the accent halo)
+    // and named in a tooltip (Figma 1C-1).
+    int camScene = -1, camKey = -1;
+    CameraMark mark;
+    if (m_tracks.cameraVisible && cameraKeyAt(pos, &mark)) {
+        camScene = mark.sceneIndex;
+        camKey = mark.keyIndex;
+        cursor = Qt::PointingHandCursor;
+    }
     m_canvas->setCursor(cursor);
     if (hover != m_hoverIndex) {
         m_hoverIndex = hover;
+        m_canvas->update();
+    }
+    if (camScene != m_camHoverScene || camKey != m_camHoverKey) {
+        m_camHoverScene = camScene;
+        m_camHoverKey = camKey;
+        if (camKey >= 0)
+            QToolTip::showText(e->globalPosition().toPoint(), cameraKeyTip(mark), m_canvas);
+        else
+            QToolTip::hideText();
         m_canvas->update();
     }
 }
@@ -2043,6 +2654,22 @@ void AnimaticTimeline::canvasMouseRelease(QMouseEvent *e)
         QToolTip::hideText();
         return;
     }
+    if (m_drag == Drag::CameraKey) {
+        const bool moved = m_camDragActive && m_camDragFrame != m_camDragFromFrame;
+        const int scene = m_camDragScene, key = m_camDragKey;
+        const int sceneFrame = m_camDragFrame - sceneStartFrame(m_camDragScene);
+        m_drag = Drag::None;
+        m_camDragActive = false;
+        m_camDragScene = m_camDragKey = -1;
+        m_canvas->setCursor(Qt::ArrowCursor);
+        m_canvas->update();
+        QToolTip::hideText();
+        // ONE request on release: the workspace re-anchors the key to the
+        // panel it landed in, as one undo step.
+        if (moved)
+            emit cameraKeyMoveRequested(scene, key, sceneFrame);
+        return;
+    }
     if (m_drag == Drag::Move) {
         const bool moved = m_moveActive && m_moveGap >= 0;
         const int from = m_moveFrom;
@@ -2063,8 +2690,9 @@ void AnimaticTimeline::canvasMouseRelease(QMouseEvent *e)
 
 void AnimaticTimeline::canvasLeave()
 {
-    if (m_hoverIndex != -1) {
+    if (m_hoverIndex != -1 || m_camHoverKey != -1) {
         m_hoverIndex = -1;
+        m_camHoverScene = m_camHoverKey = -1;
         if (m_canvas)
             m_canvas->update();
     }

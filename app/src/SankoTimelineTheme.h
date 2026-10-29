@@ -51,6 +51,14 @@ inline const QColor kThumbPlaceholder(0x4a, 0x4a, 0x4a); // a panel with no artw
 inline const QColor kPillBg(0x17, 0x17, 0x1f);
 inline const QColor kPlayhead(0xd5, 0xcb, 0xff);
 
+// The CAMERA row (Phase 1C; Figma proposals 1C-1 to 1C-5, 2026-10-28).
+inline const QColor kCameraRowBg(0x15, 0x16, 0x1c);
+inline const QColor kCameraSegment(0x6a, 0x64, 0x94);   // the 2 px bar between keys
+inline const QColor kCameraKeyFill(0x25, 0x23, 0x30);   // a key at rest: this fill...
+inline const QColor kCameraKeyEdge(0xd3, 0xd0, 0xdf);   // ...and this outline
+inline const QColor kCameraGlyph(0xb7, 0xb3, 0xc7);     // the ease curve in its pill
+inline const QColor kCameraAccent(0x7c, 0x6e, 0xf6);    // selected key, its segment, hover
+
 // Header stylesheet fragments. FLAT CONTROLS (the user's rule, Part D,
 // 2026-10-23; Figma proposal frame 424:390): every icon sits directly on
 // the header - no squares, no borders. Hover: a rounded highlight of the

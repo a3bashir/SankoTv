@@ -210,6 +210,11 @@ public:
     QString playheadTimecode() const;
     void setPlayheadFrameInPanel(int flatIndex, int frameInPanel);
     void refreshCamera();
+    // What the CAMERA row's Animate shows (the workspace's state, Phase 1C).
+    void setCameraAnimate(bool on);
+    // The CAMERA row's selected key (scene and key indices; false: none).
+    bool selectedCameraKey(int *sceneIndex, int *keyIndex) const;
+    void setSelectedCameraKey(int sceneIndex, int keyIndex);
     // THE CAMERA TOOL'S SCRUB (2026-10-26): on, a ruler click or drag
     // selects the panel under the playhead and stays on the canvas at the
     // exact frame instead of opening the preview. The workspace turns it on
@@ -258,6 +263,14 @@ signals:
     // The preview came over the canvas (true) or went (false). The Camera
     // bar is disabled while it covers the canvas (Phase 1B follow-up).
     void previewShownChanged(bool shown);
+    // The CAMERA row's requests (Phase 1C; AnimaticTimeline's signals of
+    // the same names), relayed to the workspace, which owns the edits.
+    void cameraKeyActivated(int sceneIndex, int keyIndex);
+    void cameraKeyMoveRequested(int sceneIndex, int keyIndex, int sceneFrame);
+    void cameraKeyContextMenuRequested(int sceneIndex, int keyIndex,
+                                       const QPoint &globalPos);
+    void cameraRowContextMenuRequested(const QPoint &globalPos);
+    void cameraAnimateToggled(bool on);
 
 public:
     // Test hooks. The duration one is the REAL request the timeline drag

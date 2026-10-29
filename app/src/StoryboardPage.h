@@ -224,11 +224,16 @@ public:
     // mouse, so the result cannot depend on where the pointer was left.
     void setRealPointerIgnoredForTest(bool ignored);
     void sendPointerEventForTest(QWidget *target, QEvent *event);
-    // The clip context menu, handed to the test instead of being shown.
+    // The clip context menu, handed to the test instead of being shown -
+    // and the CAMERA row's key and row menus (Phase 1C), by the same hook.
     void setClipMenuHookForTest(std::function<void(QMenu *)> hook)
     {
         m_clipMenuHookForTest = std::move(hook);
     }
+    // Delete over the timeline (the shortcut's own path): a selected camera
+    // key if there is one, else the selected panel (with its question).
+    void timelineDeleteForTest() { timelineDelete(); }
+    bool hasCameraFramingForTest() const { return m_hasCameraFraming; }
     // A locked track's refusals (Part B). The message box an Undo / Redo
     // of a locked track's command shows is handed to the test instead;
     // the last refusal of any kind (key, menu, button, history) is kept.
@@ -576,6 +581,32 @@ private:
     void onShotCameraEdit(const shotcam::CameraState &state, int kind);
     void pushCameraEdit(Scene *scene, const shotcam::SceneCamera &before,
                         const shotcam::SceneCamera &after, const QString &text);
+    // THE CAMERA ROW (Phase 1C). The CAMERA lock refuses every key edit
+    // (row, menu, Delete, the Camera bar and the canvas tool, Undo / Redo).
+    // A key pressed on the row: its panel selected, the playhead on it. A
+    // key dragged: re-anchored to the panel it lands in. The key's menu and
+    // the row's (Figma 1C-4): Ease, Copy / Paste Framing, Delete Key; Add
+    // Key / Paste Framing at Playhead. Each edit is one CameraEditCommand.
+    bool cameraLocked() const;
+    bool refuseCameraEdit(); // true (and says so) when locked
+    void timelineDelete();
+    bool cameraKeyLive(int sceneIndex, int keyIndex) const;
+    void cameraPlayheadTo(int sceneIndex, double sceneFrame);
+    void cameraGoToKey(int sceneIndex, int keyIndex);
+    void cameraMoveKey(int sceneIndex, int keyIndex, int sceneFrame);
+    void cameraSetKeyEase(int sceneIndex, int keyIndex, shotcam::Ease ease);
+    void cameraDeleteKeyAt(int sceneIndex, int keyIndex);
+    void cameraCopyFraming(int sceneIndex, int keyIndex);
+    void cameraPasteFraming(int sceneIndex, int keyIndex);
+    void cameraAddKeyAtPlayhead(bool paste);
+    bool cameraKeyAtPlayhead() const; // the row menu's "Key Set at Playhead"
+    bool deleteSelectedCameraKey(); // false: no key selected (Delete is the panel's)
+    QString cameraKeyHeader(int sceneIndex, int keyIndex, bool *last) const;
+    void onCameraKeyMenu(int sceneIndex, int keyIndex, const QPoint &globalPos);
+    void onCameraRowMenu(const QPoint &globalPos);
+    bool m_hasCameraFraming = false;   // Copy Framing's clipboard (session)
+    shotcam::CameraState m_cameraFraming;
+    QString m_cameraFramingSource;     // "key 3": named by Paste
     void refreshCameraViews(Scene *scene); // canvas, preview, clips, strip, bar
     void loadCameraGuides();               // the remembered setting
     // Figma "Floating Toolbar Layers" (node 173-36): dock toggles + tools.

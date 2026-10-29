@@ -62,6 +62,18 @@ QString easeName(Ease e)
     return QStringLiteral("easeInOut");
 }
 
+QString easeLabel(Ease e)
+{
+    switch (e) {
+    case Ease::Linear: return QStringLiteral("Linear");
+    case Ease::EaseIn: return QStringLiteral("Ease In");
+    case Ease::EaseOut: return QStringLiteral("Ease Out");
+    case Ease::EaseInOut: return QStringLiteral("Ease In/Out");
+    case Ease::Hold: return QStringLiteral("Hold");
+    }
+    return QString();
+}
+
 Ease easeFromName(const QString &name, bool *known)
 {
     const Ease all[] = {Ease::Linear, Ease::EaseIn, Ease::EaseOut,

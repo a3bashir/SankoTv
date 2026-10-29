@@ -3,7 +3,9 @@
 #include "SankoTheme.h"
 
 #include "AnimaticPage.h"
+#include "AnimaticTimeline.h"
 #include "ColorPanel.h"
+#include "SankoTimelineTheme.h"
 
 #include "DrawingCanvas.h"
 #include "FloatingToolWindow.h"
@@ -52,6 +54,7 @@
 #include <QLineEdit>
 #include <QMainWindow>
 #include <QMenu>
+#include <QWidgetAction>
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QEnterEvent>
@@ -2169,18 +2172,6 @@ protected:
                                   QPointF(cx + 4, cy - 2)}));
     }
 };
-
-QString easeLabel(shotcam::Ease e)
-{
-    switch (e) {
-    case shotcam::Ease::Linear: return QStringLiteral("Linear");
-    case shotcam::Ease::EaseIn: return QStringLiteral("Ease In");
-    case shotcam::Ease::EaseOut: return QStringLiteral("Ease Out");
-    case shotcam::Ease::EaseInOut: return QStringLiteral("Ease In/Out");
-    case shotcam::Ease::Hold: return QStringLiteral("Hold");
-    }
-    return QString();
-}
 
 } // namespace
 
@@ -4318,7 +4309,7 @@ QWidget *StoryboardPage::createCameraPanel()
     for (shotcam::Ease e : {shotcam::Ease::Linear, shotcam::Ease::EaseIn,
                             shotcam::Ease::EaseOut, shotcam::Ease::EaseInOut,
                             shotcam::Ease::Hold}) {
-        QAction *a = menu->addAction(easeLabel(e));
+        QAction *a = menu->addAction(shotcam::easeLabel(e));
         a->setCheckable(true);
         a->setData(int(e));
         group->addAction(a);
@@ -4414,7 +4405,7 @@ QWidget *StoryboardPage::createCameraPanel()
             ease->setToolTip(cameraLastKeyNote());
         const shotcam::Ease current = segment >= 0
             ? scene->camera.keys.at(segment).ease : shotcam::Ease::EaseInOut;
-        ease->setText(segment >= 0 ? easeLabel(current) : QString());
+        ease->setText(segment >= 0 ? shotcam::easeLabel(current) : QString());
         for (QAction *a : menu->actions())
             a->setChecked(segment >= 0 && a->data().toInt() == int(current));
         prev->update();
@@ -4439,6 +4430,8 @@ QWidget *StoryboardPage::createCameraPanel()
     connect(m_canvas, &DrawingCanvas::shotCameraEditRequested, this,
             &StoryboardPage::onShotCameraEdit);
     connect(m_canvas, &DrawingCanvas::shotCameraEditRefused, this, [this] {
+        if (refuseCameraEdit()) // the CAMERA lock (Phase 1C) is the reason first
+            return;
         sayNote(QStringLiteral("Turn on Animate to change the camera at this point."));
     });
 
@@ -4504,7 +4497,9 @@ DrawingCanvas::ShotCameraView StoryboardPage::shotCameraView() const
     v.sceneHasKeys = live > 0;
     v.animate = m_cameraAnimate;
     v.keyAtPlayhead = shotcam::keyIndexAtFrame(*scene, at, fps) >= 0;
-    v.editable = m_cameraAnimate || live <= 1;
+    // A locked CAMERA track (Phase 1C): the frame cannot be dragged at all;
+    // a press says why (shotCameraEditRefused).
+    v.editable = !cameraLocked() && (m_cameraAnimate || live <= 1);
     v.stayInside = m_cameraStayInside;
     v.sharpLimit = shotcam::sharpLimit(panel->canvasSize());
     // The film frame: every panel before this one, in every scene.
@@ -4523,7 +4518,7 @@ void StoryboardPage::onShotCameraEdit(const shotcam::CameraState &state, int kin
 {
     Scene *scene = nullptr;
     int pi = 0, frame = 0;
-    if (!cameraTarget(&scene, &pi, &frame) || !m_undoStack)
+    if (!cameraTarget(&scene, &pi, &frame) || !m_undoStack || refuseCameraEdit())
         return;
     const int fps = cameraFps();
     const int live = shotcam::liveKeyCount(*scene);
@@ -4620,6 +4615,8 @@ void StoryboardPage::setCameraAnimate(bool on)
         m_syncCameraBar();
     if (m_canvas)
         m_canvas->refreshShotCamera();
+    if (m_animatic) // the CAMERA row's Animate: the same switch (Phase 1C)
+        m_animatic->setCameraAnimate(on);
 }
 
 void StoryboardPage::setCameraStayInside(bool on)
@@ -4655,7 +4652,8 @@ void StoryboardPage::cameraAddKey()
 {
     Scene *scene = nullptr;
     int pi = 0, frame = 0;
-    if (cameraCovered() || !cameraTarget(&scene, &pi, &frame) || !m_undoStack)
+    if (cameraCovered() || !cameraTarget(&scene, &pi, &frame) || !m_undoStack
+        || refuseCameraEdit())
         return;
     const int fps = cameraFps();
     if (shotcam::keyIndexAtFrame(*scene, cameraSceneFrame(scene, pi, frame), fps) >= 0)
@@ -4675,7 +4673,7 @@ void StoryboardPage::cameraDeleteKey()
         return;
     const int at = shotcam::keyIndexAtFrame(
         *scene, cameraSceneFrame(scene, pi, frame), cameraFps());
-    if (at < 0)
+    if (at < 0 || refuseCameraEdit())
         return;
     shotcam::SceneCamera after = scene->camera;
     after.keys.removeAt(at);
@@ -4691,7 +4689,7 @@ void StoryboardPage::cameraSetEase(shotcam::Ease ease)
     const int fps = cameraFps();
     const int at = shotcam::segmentKeyIndex(
         *scene, cameraSceneFrame(scene, pi, frame), fps);
-    if (at < 0 || scene->camera.keys.at(at).ease == ease)
+    if (at < 0 || scene->camera.keys.at(at).ease == ease || refuseCameraEdit())
         return;
     // The scene's last key starts no move: its ease changes nothing.
     const QVector<double> frames = shotcam::liveKeyFrames(*scene, fps);
@@ -4722,7 +4720,21 @@ void StoryboardPage::cameraStepKey(int direction)
     }
     if (target < 0.0)
         return;
-    // The panel the key falls in, and the frame inside it.
+    cameraPlayheadTo(m_currentScene, target);
+}
+
+// The panel a scene frame falls in is selected, and the playhead put on the
+// frame inside it (the Camera bar's previous / next key, and a key pressed
+// on the CAMERA row).
+void StoryboardPage::cameraPlayheadTo(int sceneIndex, double target)
+{
+    if (!m_animatic || sceneIndex < 0 || sceneIndex >= m_scenes.size())
+        return;
+    const Scene *scene = m_scenes.at(sceneIndex);
+    if (scene->panels.isEmpty())
+        return;
+    const int fps = cameraFps();
+    // The panel the frame falls in, and the frame inside it.
     int panelIndex = scene->panels.size() - 1;
     for (int i = 0; i < scene->panels.size(); ++i) {
         const int start = shotcam::panelStartFrame(*scene, i, fps);
@@ -4733,9 +4745,404 @@ void StoryboardPage::cameraStepKey(int direction)
     }
     const int inPanel = qMax(0, int(std::lround(
         target - shotcam::panelStartFrame(*scene, panelIndex, fps))));
-    if (panelIndex != m_currentPanel)
-        selectPanel(panelIndex);
-    m_animatic->setPlayheadFrameInPanel(currentFlatIndex(), inPanel);
+    int flat = panelIndex;
+    for (int s = 0; s < sceneIndex; ++s)
+        flat += m_scenes.at(s)->panels.size();
+    if (flat != currentFlatIndex())
+        selectFlatPanel(flat);
+    m_animatic->setPlayheadFrameInPanel(flat, inPanel);
+}
+
+// --- The CAMERA row (Phase 1C) ----------------------------------------------------
+
+bool StoryboardPage::cameraLocked() const
+{
+    return m_animatic && m_animatic->tracks().cameraLocked;
+}
+
+bool StoryboardPage::refuseCameraEdit()
+{
+    if (!cameraLocked())
+        return false;
+    sayLocked(QStringLiteral("CAMERA track is locked"), false);
+    return true;
+}
+
+bool StoryboardPage::cameraKeyLive(int sceneIndex, int keyIndex) const
+{
+    if (sceneIndex < 0 || sceneIndex >= m_scenes.size())
+        return false;
+    const Scene *scene = m_scenes.at(sceneIndex);
+    return keyIndex >= 0 && keyIndex < scene->camera.keys.size()
+        && shotcam::keyFrame(*scene, scene->camera.keys.at(keyIndex), cameraFps()) >= 0.0;
+}
+
+void StoryboardPage::cameraGoToKey(int sceneIndex, int keyIndex)
+{
+    if (!cameraKeyLive(sceneIndex, keyIndex))
+        return;
+    const Scene *scene = m_scenes.at(sceneIndex);
+    cameraPlayheadTo(sceneIndex,
+                     shotcam::keyFrame(*scene, scene->camera.keys.at(keyIndex), cameraFps()));
+}
+
+// A key dragged to `sceneFrame` (from the scene's first frame): re-anchored
+// to the panel it landed in, at the frame inside it - the scene's very end
+// is its last panel's end. Its framing and ease go with it. Never onto
+// another key: two keys on one frame would be one move with no length.
+void StoryboardPage::cameraMoveKey(int sceneIndex, int keyIndex, int sceneFrame)
+{
+    if (!cameraKeyLive(sceneIndex, keyIndex) || !m_undoStack || refuseCameraEdit())
+        return;
+    Scene *scene = m_scenes.at(sceneIndex);
+    const int fps = cameraFps();
+    int panelIndex = scene->panels.size() - 1;
+    for (int i = 0; i < scene->panels.size(); ++i) {
+        const int start = shotcam::panelStartFrame(*scene, i, fps);
+        if (sceneFrame < start + shotcam::panelFrames(*scene->panels.at(i), fps)) {
+            panelIndex = i;
+            break;
+        }
+    }
+    const int inPanel = sceneFrame - shotcam::panelStartFrame(*scene, panelIndex, fps);
+    for (int j = 0; j < scene->camera.keys.size(); ++j) {
+        const double f = shotcam::keyFrame(*scene, scene->camera.keys.at(j), fps);
+        if (j != keyIndex && f >= 0.0 && qAbs(f - sceneFrame) < 0.5) {
+            sayNote(QStringLiteral("Another camera key is at this frame."));
+            return;
+        }
+    }
+    const shotcam::CameraKey &key = scene->camera.keys.at(keyIndex);
+    const shotcam::CameraKey moved =
+        shotcam::makeKey(*scene, panelIndex, inPanel, fps, key.state, key.ease);
+    if (moved.panelUid == key.panelUid && moved.at == key.at)
+        return;
+    shotcam::SceneCamera after = scene->camera;
+    after.keys[keyIndex] = moved;
+    pushCameraEdit(scene, scene->camera, after, QStringLiteral("Move Camera Key"));
+    cameraGoToKey(sceneIndex, keyIndex); // the playhead stays on the key
+}
+
+void StoryboardPage::cameraSetKeyEase(int sceneIndex, int keyIndex, shotcam::Ease ease)
+{
+    if (!cameraKeyLive(sceneIndex, keyIndex) || !m_undoStack || refuseCameraEdit())
+        return;
+    Scene *scene = m_scenes.at(sceneIndex);
+    const int fps = cameraFps();
+    if (scene->camera.keys.at(keyIndex).ease == ease)
+        return;
+    // The scene's last key starts no move: its ease changes nothing.
+    const QVector<double> frames = shotcam::liveKeyFrames(*scene, fps);
+    if (qAbs(shotcam::keyFrame(*scene, scene->camera.keys.at(keyIndex), fps) - frames.last())
+        < 0.5)
+        return;
+    shotcam::SceneCamera after = scene->camera;
+    after.keys[keyIndex].ease = ease;
+    pushCameraEdit(scene, scene->camera, after, QStringLiteral("Camera Ease"));
+}
+
+void StoryboardPage::cameraDeleteKeyAt(int sceneIndex, int keyIndex)
+{
+    if (!cameraKeyLive(sceneIndex, keyIndex) || !m_undoStack || refuseCameraEdit())
+        return;
+    Scene *scene = m_scenes.at(sceneIndex);
+    shotcam::SceneCamera after = scene->camera;
+    after.keys.removeAt(keyIndex);
+    if (m_animatic)
+        m_animatic->setSelectedCameraKey(-1, -1); // its index is gone
+    pushCameraEdit(scene, scene->camera, after, QStringLiteral("Delete Camera Key"));
+}
+
+// Copy Framing is not an edit (no command): the key's centre, zoom and
+// rotation, for Paste Framing on another key or at the playhead.
+void StoryboardPage::cameraCopyFraming(int sceneIndex, int keyIndex)
+{
+    if (!cameraKeyLive(sceneIndex, keyIndex))
+        return;
+    bool last = false;
+    m_cameraFraming = m_scenes.at(sceneIndex)->camera.keys.at(keyIndex).state;
+    m_hasCameraFraming = true;
+    const QString header = cameraKeyHeader(sceneIndex, keyIndex, &last);
+    m_cameraFramingSource = header.section(QString::fromUtf8(" \xC2\xB7 "), 0, 0).toLower();
+}
+
+void StoryboardPage::cameraPasteFraming(int sceneIndex, int keyIndex)
+{
+    if (!m_hasCameraFraming || !cameraKeyLive(sceneIndex, keyIndex) || !m_undoStack
+        || refuseCameraEdit())
+        return;
+    Scene *scene = m_scenes.at(sceneIndex);
+    if (scene->camera.keys.at(keyIndex).state == m_cameraFraming)
+        return;
+    shotcam::SceneCamera after = scene->camera;
+    after.keys[keyIndex].state = m_cameraFraming;
+    pushCameraEdit(scene, scene->camera, after, QStringLiteral("Paste Camera Framing"));
+}
+
+// The row's menu, off any key: a key at the PLAYHEAD (wherever the canvas
+// is) - the camera as it is there (Add), or the copied framing (Paste; on
+// the key already there, if there is one).
+void StoryboardPage::cameraAddKeyAtPlayhead(bool paste)
+{
+    if (!m_animatic || !m_undoStack || (paste && !m_hasCameraFraming) || refuseCameraEdit())
+        return;
+    const Panel *panel = m_animatic->playheadPanel();
+    for (int si = 0; si < m_scenes.size(); ++si) {
+        Scene *scene = m_scenes.at(si);
+        const int pi = scene->panels.indexOf(const_cast<Panel *>(panel));
+        if (pi < 0)
+            continue;
+        const int fps = cameraFps();
+        const int frame = m_animatic->playheadFrameInPanel();
+        const int at = shotcam::keyIndexAtFrame(
+            *scene, shotcam::panelStartFrame(*scene, pi, fps) + frame, fps);
+        shotcam::SceneCamera after = scene->camera;
+        if (at >= 0) {
+            if (!paste || after.keys.at(at).state == m_cameraFraming)
+                return; // Add: the key is already there
+            after.keys[at].state = m_cameraFraming;
+        } else {
+            after.keys.append(shotcam::makeKey(
+                *scene, pi, frame, fps,
+                paste ? m_cameraFraming : shotcam::evaluateAtPanel(*scene, pi, frame, fps)));
+        }
+        pushCameraEdit(scene, scene->camera, after,
+                       paste ? QStringLiteral("Paste Camera Framing")
+                             : QStringLiteral("Add Camera Key"));
+        return;
+    }
+}
+
+bool StoryboardPage::cameraKeyAtPlayhead() const
+{
+    if (!m_animatic)
+        return false;
+    const Panel *panel = m_animatic->playheadPanel();
+    for (const Scene *scene : m_scenes) {
+        const int pi = scene->panels.indexOf(const_cast<Panel *>(panel));
+        if (pi < 0)
+            continue;
+        const int fps = cameraFps();
+        return shotcam::keyIndexAtFrame(
+                   *scene,
+                   shotcam::panelStartFrame(*scene, pi, fps) + m_animatic->playheadFrameInPanel(),
+                   fps)
+            >= 0;
+    }
+    return false;
+}
+
+bool StoryboardPage::deleteSelectedCameraKey()
+{
+    int si = -1, ki = -1;
+    if (!m_animatic || !m_animatic->selectedCameraKey(&si, &ki))
+        return false;
+    cameraDeleteKeyAt(si, ki); // refused (and said) when locked
+    return true;
+}
+
+// Delete over the timeline: the selected camera key first, else the panel.
+void StoryboardPage::timelineDelete()
+{
+    if (!deleteSelectedCameraKey())
+        deleteSelectedPanel();
+}
+
+// "Key 3 · 00:00:10:00 · panel 4" (+ " · last key"): its place among the
+// scene's keys, its film timecode, the clip it sits on.
+QString StoryboardPage::cameraKeyHeader(int sceneIndex, int keyIndex, bool *last) const
+{
+    if (!cameraKeyLive(sceneIndex, keyIndex))
+        return QString();
+    const Scene *scene = m_scenes.at(sceneIndex);
+    const int fps = cameraFps();
+    const double f = shotcam::keyFrame(*scene, scene->camera.keys.at(keyIndex), fps);
+    const QVector<double> frames = shotcam::liveKeyFrames(*scene, fps);
+    int number = 1;
+    for (double g : frames)
+        if (g < f - 0.5)
+            ++number;
+    *last = qAbs(f - frames.last()) < 0.5;
+    int film = 0, clip = 0;
+    for (int s = 0; s < sceneIndex; ++s)
+        for (const Panel *p : m_scenes.at(s)->panels) {
+            film += shotcam::panelFrames(*p, fps);
+            ++clip;
+        }
+    const int keyFilmFrame = film + int(std::lround(f));
+    // The clip the key sits on (a key on a cut is the next clip's first frame).
+    for (int i = 0; i < scene->panels.size(); ++i) {
+        if (f < shotcam::panelStartFrame(*scene, i, fps)
+                + shotcam::panelFrames(*scene->panels.at(i), fps)
+            || i == scene->panels.size() - 1) {
+            clip += i + 1;
+            break;
+        }
+    }
+    return QString::fromUtf8("Key %1 \xC2\xB7 %2 \xC2\xB7 panel %3%4")
+        .arg(number)
+        .arg(shotcam::timecodeText(keyFilmFrame, fps))
+        .arg(clip)
+        .arg(*last ? QString::fromUtf8(" \xC2\xB7 last key") : QString());
+}
+
+namespace {
+
+// One Ease entry of the key menu as the design draws it (Figma 1C-4): the
+// tick at the left when it is the key's ease (the text then in the accent),
+// the name, and the ease's glyph at the right. A QMenu entry with an icon
+// draws the icon where its tick goes, hence a row of its own; it triggers
+// its action and closes the menus as a normal entry does.
+class EaseMenuRow : public QWidget
+{
+public:
+    EaseMenuRow(QAction *action, int ease, QWidget *parent = nullptr)
+        : QWidget(parent), m_action(action), m_glyph(AnimaticTimeline::easeGlyphIcon(ease))
+    {
+        setMouseTracking(true);
+        setFixedSize(176, 22);
+        setAttribute(Qt::WA_Hover, true);
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        const bool hover = underMouse();
+        const bool on = m_action->isChecked();
+        if (hover)
+            p.fillRect(rect(), QColor(0x26, 0x26, 0x26));
+        p.setRenderHint(QPainter::Antialiasing, true);
+        if (on) {
+            p.setPen(QPen(SankoTimelineTheme::kCameraAccent, 1.4, Qt::SolidLine,
+                          Qt::RoundCap, Qt::RoundJoin));
+            QPainterPath tick;
+            tick.moveTo(8.5, 11.2);
+            tick.lineTo(11, 13.6);
+            tick.lineTo(15.5, 8.6);
+            p.drawPath(tick);
+        }
+        QFont f = font();
+        f.setPixelSize(11);
+        p.setFont(f);
+        p.setPen(on ? SankoTimelineTheme::kCameraAccent
+                    : hover ? QColor(Qt::white) : QColor(0xcc, 0xcc, 0xcc));
+        p.drawText(QRect(24, 0, width() - 60, height()), Qt::AlignVCenter | Qt::AlignLeft,
+                   m_action->text());
+        m_glyph.paint(&p, QRect(width() - 30, 5, 18, 12));
+    }
+    void enterEvent(QEnterEvent *) override { update(); }
+    void leaveEvent(QEvent *) override { update(); }
+    void mouseReleaseEvent(QMouseEvent *e) override
+    {
+        if (e->button() != Qt::LeftButton || !rect().contains(e->position().toPoint()))
+            return;
+        while (QWidget *popup = QApplication::activePopupWidget())
+            popup->close();
+        m_action->trigger();
+    }
+
+private:
+    QAction *m_action;
+    QIcon m_glyph;
+};
+
+} // namespace
+
+void StoryboardPage::onCameraKeyMenu(int sceneIndex, int keyIndex, const QPoint &globalPos)
+{
+    if (!cameraKeyLive(sceneIndex, keyIndex))
+        return;
+    const Scene *scene = m_scenes.at(sceneIndex);
+    const bool locked = cameraLocked();
+    bool last = false;
+    const QString header = cameraKeyHeader(sceneIndex, keyIndex, &last);
+    // The timeline's own menu style (kSpeedMenuSheet: the accent tick).
+    const QString sheet = SankoTimelineTheme::kSpeedMenuSheet
+        + QStringLiteral("QMenu::item:disabled { color: #5c5c62; }"
+                         "QMenu::separator { height: 1px; background: #2a2a2a; margin: 4px 0; }");
+    QMenu menu(this);
+    menu.setObjectName(QStringLiteral("cameraKeyMenu"));
+    menu.setStyleSheet(sheet);
+    QAction *title = menu.addAction(locked ? QStringLiteral("The CAMERA track is locked") : header);
+    title->setObjectName(QStringLiteral("cameraKeyHeader"));
+    title->setEnabled(false);
+    menu.addSeparator();
+    QMenu *easeMenu = menu.addMenu(last ? QString::fromUtf8("Ease \xE2\x80\x94 no move after this key")
+                                        : QStringLiteral("Ease"));
+    easeMenu->setObjectName(QStringLiteral("cameraKeyEase"));
+    easeMenu->setStyleSheet(sheet);
+    easeMenu->menuAction()->setEnabled(!last && !locked);
+    const shotcam::Ease current = scene->camera.keys.at(keyIndex).ease;
+    for (shotcam::Ease e : {shotcam::Ease::Linear, shotcam::Ease::EaseIn, shotcam::Ease::EaseOut,
+                            shotcam::Ease::EaseInOut, shotcam::Ease::Hold}) {
+        auto *action = new QWidgetAction(easeMenu);
+        action->setText(shotcam::easeLabel(e));
+        action->setCheckable(true);
+        action->setChecked(e == current);
+        action->setDefaultWidget(new EaseMenuRow(action, int(e)));
+        connect(action, &QAction::triggered, this, [this, sceneIndex, keyIndex, e] {
+            cameraSetKeyEase(sceneIndex, keyIndex, e);
+        });
+        easeMenu->addAction(action);
+    }
+    menu.addSeparator();
+    QAction *copy = menu.addAction(QStringLiteral("Copy Framing"));
+    copy->setObjectName(QStringLiteral("cameraCopyFraming"));
+    connect(copy, &QAction::triggered, this,
+            [this, sceneIndex, keyIndex] { cameraCopyFraming(sceneIndex, keyIndex); });
+    QAction *paste = menu.addAction(m_hasCameraFraming
+                                        ? QStringLiteral("Paste Framing (from %1)").arg(m_cameraFramingSource)
+                                        : QStringLiteral("Paste Framing"));
+    paste->setObjectName(QStringLiteral("cameraPasteFraming"));
+    paste->setEnabled(m_hasCameraFraming && !locked);
+    connect(paste, &QAction::triggered, this,
+            [this, sceneIndex, keyIndex] { cameraPasteFraming(sceneIndex, keyIndex); });
+    menu.addSeparator();
+    QAction *remove = menu.addAction(QStringLiteral("Delete Key\tDel"));
+    remove->setObjectName(QStringLiteral("cameraDeleteKey"));
+    remove->setEnabled(!locked);
+    connect(remove, &QAction::triggered, this,
+            [this, sceneIndex, keyIndex] { cameraDeleteKeyAt(sceneIndex, keyIndex); });
+    if (m_clipMenuHookForTest) {
+        m_clipMenuHookForTest(&menu);
+        return;
+    }
+    menu.exec(globalPos);
+}
+
+void StoryboardPage::onCameraRowMenu(const QPoint &globalPos)
+{
+    const bool locked = cameraLocked();
+    QMenu menu(this);
+    menu.setObjectName(QStringLiteral("cameraRowMenu"));
+    menu.setStyleSheet(SankoTimelineTheme::kSpeedMenuSheet
+                       + QStringLiteral("QMenu::item:disabled { color: #5c5c62; }"
+                                        "QMenu::separator { height: 1px; background: #2a2a2a; "
+                                        "margin: 4px 0; }"));
+    if (locked) {
+        QAction *title = menu.addAction(QStringLiteral("The CAMERA track is locked"));
+        title->setEnabled(false);
+        menu.addSeparator();
+    }
+    // A key already at the playhead: the entry says so and is disabled, as
+    // the Camera bar's Add Key reads "Key set" (the 1C hand test: an enabled
+    // entry that did nothing, twice).
+    const bool keySet = cameraKeyAtPlayhead();
+    QAction *add = menu.addAction(keySet ? QStringLiteral("Key Set at Playhead")
+                                         : QStringLiteral("Add Key at Playhead"));
+    add->setObjectName(QStringLiteral("cameraAddKeyAtPlayhead"));
+    add->setEnabled(!locked && !keySet && m_animatic && m_animatic->playheadPanel());
+    connect(add, &QAction::triggered, this, [this] { cameraAddKeyAtPlayhead(false); });
+    QAction *paste = menu.addAction(QStringLiteral("Paste Framing at Playhead"));
+    paste->setObjectName(QStringLiteral("cameraPasteFramingAtPlayhead"));
+    paste->setEnabled(!locked && m_hasCameraFraming && m_animatic && m_animatic->playheadPanel());
+    connect(paste, &QAction::triggered, this, [this] { cameraAddKeyAtPlayhead(true); });
+    if (m_clipMenuHookForTest) {
+        m_clipMenuHookForTest(&menu);
+        return;
+    }
+    menu.exec(globalPos);
 }
 
 QVariantMap StoryboardPage::cameraBarStateForTest() const
@@ -5522,6 +5929,26 @@ void StoryboardPage::setupAnimaticSection(QWidget *centerColumn,
     // project unsaved from the same signal).
     connect(m_animatic, &AnimaticPage::tracksChanged, this,
             &StoryboardPage::updateDuplicateButton);
+    // THE CAMERA ROW (Phase 1C): its requests are camera edits made here,
+    // and its Animate is the Camera bar's. A CAMERA lock toggled: the canvas
+    // frame becomes (un)draggable and the bar follows.
+    connect(m_animatic, &AnimaticPage::cameraKeyActivated, this,
+            &StoryboardPage::cameraGoToKey);
+    connect(m_animatic, &AnimaticPage::cameraKeyMoveRequested, this,
+            &StoryboardPage::cameraMoveKey);
+    connect(m_animatic, &AnimaticPage::cameraKeyContextMenuRequested, this,
+            &StoryboardPage::onCameraKeyMenu);
+    connect(m_animatic, &AnimaticPage::cameraRowContextMenuRequested, this,
+            &StoryboardPage::onCameraRowMenu);
+    connect(m_animatic, &AnimaticPage::cameraAnimateToggled, this,
+            &StoryboardPage::setCameraAnimate);
+    connect(m_animatic, &AnimaticPage::tracksChanged, this, [this] {
+        if (m_canvas)
+            m_canvas->refreshShotCamera();
+        if (m_syncCameraBar)
+            m_syncCameraBar();
+    });
+    m_animatic->setCameraAnimate(m_cameraAnimate);
     connect(m_animatic, &AnimaticPage::audioChangeRequested, this,
             &StoryboardPage::onAudioChangeRequested);
     connect(m_workSplitter, &QSplitter::splitterMoved, this, [this] {
@@ -5561,9 +5988,10 @@ void StoryboardPage::setupAnimaticSection(QWidget *centerColumn,
     addKey(QKeySequence(Qt::Key_Escape), true,
            [this] { m_animatic->leavePreview(); });
     // Delete only over the timeline itself: over the preview it would be
-    // deleting a panel the artist is not looking at.
+    // deleting a panel the artist is not looking at. A selected camera key
+    // (Phase 1C) is what it deletes first.
     addKey(QKeySequence(Qt::Key_Delete), false,
-           [this] { deleteSelectedPanel(); });
+           [this] { timelineDelete(); });
 }
 
 // THE GATE'S POINTER. Whose keys these are depends on Enter / Leave, and the
@@ -6970,7 +7398,8 @@ bool StoryboardPage::refuseShotsEdit()
 
 // The command the history door is about to undo or redo: a panel command
 // (insert, remove, move, duration) is the SHOTS track's, the audio command
-// the AUDIO track's; drawing and the rest are never refused.
+// the AUDIO track's, a camera edit the CAMERA track's (Phase 1C); drawing
+// and the rest are never refused.
 bool StoryboardPage::refuseLockedHistory(const QUndoCommand *command)
 {
     if (!command || !m_animatic)
@@ -6981,8 +7410,13 @@ bool StoryboardPage::refuseLockedHistory(const QUndoCommand *command)
         || dynamic_cast<const MovePanelCommand *>(command)
         || dynamic_cast<const PanelDurationCommand *>(command);
     const bool audio = dynamic_cast<const AudioTrackCommand *>(command) != nullptr;
+    const bool camera = dynamic_cast<const CameraEditCommand *>(command) != nullptr;
     if (shots && t.shotsLocked) {
         sayLocked(QStringLiteral("SHOTS track is locked"), false);
+        return true;
+    }
+    if (camera && t.cameraLocked) {
+        sayLocked(QStringLiteral("CAMERA track is locked"), false);
         return true;
     }
     if (audio && t.audioLocked) {

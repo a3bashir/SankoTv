@@ -13,6 +13,7 @@
 class AnimaticPage;
 class TimelineCanvas; // inner painted surface, defined in the .cpp
 class QContextMenuEvent;
+class QIcon;
 class QPushButton;
 class QScrollBar;
 class QTimer;
@@ -143,6 +144,35 @@ public:
     // press, a locked SHOTS track takes no trim or reorder.
     void setTracks(const TimelineTracks &tracks);
 
+    // THE CAMERA ROW (Phase 1C, 2026-10-28; Figma proposals 1C-1 to 1C-5).
+    // A 28 px row between SHOTS and AUDIO: a diamond on each live camera
+    // key at its frame, a 2 px bar between consecutive keys of a scene with
+    // the move's ease in a small pill (Hold dashed), never across a cut
+    // between scenes. A press on a key selects it and asks for the playhead
+    // to go there (cameraKeyActivated); a drag moves it in time, one
+    // request on release (cameraKeyMoveRequested); right-click asks for
+    // the key's menu or, off a key, the row's. The edits themselves are
+    // the workspace's (StoryboardPage), so they are its undo commands and
+    // its lock refusals. Locked or hidden, the row is drawn at 40 %; a
+    // locked row selects but does not drag, a hidden one takes no press.
+    // The label column holds lock, ANIMATE (a record dot: the canvas Camera
+    // bar's switch, the same state) and eye.
+    void setCameraAnimate(bool on); // what the Animate button shows
+    bool cameraAnimateShown() const { return m_cameraAnimate; }
+    // The selected key: false when none (or it has gone).
+    bool selectedCameraKey(int *sceneIndex, int *keyIndex) const;
+    void setSelectedCameraKey(int sceneIndex, int keyIndex); // -1, -1: none
+    // The ease glyph (the row's pill and the key menu's Ease entries).
+    static QIcon easeGlyphIcon(int ease);
+    // Test hooks: the row; each key as the row draws it ("scene", "key",
+    // "x" on the canvas, "frame" in the film, "selected", "atPlayhead",
+    // "hover"); each segment ("scene", "from", "to", "ease", "dashed",
+    // "glyph", "accent", "x0", "x1"); the row's dimming.
+    QRect cameraRowForTest() const;
+    QVariantList cameraKeysForTest() const;
+    QVariantList cameraSegmentsForTest() const;
+    double cameraRowOpacityForTest() const;
+
 public slots:
     void setScenes(const QVector<Scene *> &scenes);
     void setCurrentPanel(int flatIndex);  // the panel under the PLAYHEAD
@@ -171,6 +201,16 @@ signals:
     void clipContextMenuRequested(int flatPanelIndex, const QPoint &globalPos);
     // Right-click anywhere on the AUDIO row.
     void audioContextMenuRequested(const QPoint &globalPos);
+    // THE CAMERA ROW (see setCameraAnimate). A key pressed (left or right):
+    // select its panel and put the playhead on it. A key dragged to another
+    // frame of its scene (counted from the scene's first frame). Right-click
+    // on a key, and on the row off any key. The Animate button clicked.
+    void cameraKeyActivated(int sceneIndex, int keyIndex);
+    void cameraKeyMoveRequested(int sceneIndex, int keyIndex, int sceneFrame);
+    void cameraKeyContextMenuRequested(int sceneIndex, int keyIndex,
+                                       const QPoint &globalPos);
+    void cameraRowContextMenuRequested(const QPoint &globalPos);
+    void cameraAnimateToggled(bool on);
     void zoomChanged(float zoomLevel); // internal use
 
 private:
@@ -210,7 +250,40 @@ private:
     // after the ruler, the scene track and the audio track.
     int tracksH() const;
     int panelTrackH() const;
+    int cameraTrackY() const;
     int audioTrackY() const;
+
+    // The CAMERA row's keys as drawn: one per live key, in film frames,
+    // sorted by scene then frame. While a key is dragged it is drawn (and
+    // its segments are) at the frame the drag has reached.
+    struct CameraMark
+    {
+        int sceneIndex = 0;
+        int keyIndex = 0;
+        double frame = 0.0; // in the film
+        int x = 0;          // on the canvas
+        int ease = 0;       // shotcam::Ease
+    };
+    QVector<CameraMark> cameraMarks() const;
+    // The bars between consecutive keys of a scene, as drawn: what the
+    // painter draws and the gate reads, from one place.
+    struct CameraSegment
+    {
+        int sceneIndex = 0;
+        int fromKey = 0, toKey = 0; // key indices; the ease is fromKey's
+        int ease = 0;
+        qreal x0 = 0, x1 = 0;       // the bar, between the diamonds
+        bool dashed = false;        // Hold
+        bool glyph = false;         // long enough for the ease pill
+        bool accent = false;        // starts at the selected key
+    };
+    QVector<CameraSegment> cameraSegments(const QVector<CameraMark> &marks) const;
+    bool cameraKeyAt(const QPoint &pos, CameraMark *mark) const;
+    bool inCameraRow(const QPoint &pos) const;
+    int sceneStartFrame(int sceneIndex) const; // its first block's start
+    int sceneEndFrame(int sceneIndex) const;   // its last block's end
+    QString cameraKeyTip(const CameraMark &mark) const;
+    void paintCameraRow(QPainter &p);
     QRect clipRect(int flatIndex) const; // on the canvas; empty if no such clip
     int moveGapAt(int screenX) const;
 
@@ -326,10 +399,21 @@ private:
     qint64 m_audioDurationMs = 0;
     AnimaticPage *m_host = nullptr;
     TimelineTracks m_tracks;
-    QToolButton *m_lockButtons[3] = {nullptr, nullptr, nullptr}; // SCENES, SHOTS, AUDIO
-    QToolButton *m_eyeButtons[3] = {nullptr, nullptr, nullptr};
+    // SCENES, SHOTS, AUDIO, CAMERA.
+    QToolButton *m_lockButtons[4] = {nullptr, nullptr, nullptr, nullptr};
+    QToolButton *m_eyeButtons[4] = {nullptr, nullptr, nullptr, nullptr};
     QToolButton *m_muteButton = nullptr;
+    QToolButton *m_animateButton = nullptr; // the CAMERA row's record dot
+    bool m_cameraAnimate = false;
     QString m_lastRefusal;
+    // The CAMERA row's selection, hover and drag (scene, key indices).
+    int m_camSelScene = -1, m_camSelKey = -1;
+    int m_camHoverScene = -1, m_camHoverKey = -1;
+    int m_camDragScene = -1, m_camDragKey = -1;
+    int m_camDragFrame = -1;     // film frame the drag has reached
+    int m_camDragFromFrame = -1; // ...and where the key was
+    bool m_camDragActive = false;
+    QPoint m_camPress;
 
     float m_zoom = 100.0f; // 100 = 1px per frame
     int m_scrollX = 0;     // content scroll offset in px
@@ -352,7 +436,7 @@ private:
 
     // Interaction.
     int m_hoverIndex = -1;
-    enum class Drag { None, ResizeRight, ResizeLeft, Playhead, Move };
+    enum class Drag { None, ResizeRight, ResizeLeft, Playhead, Move, CameraKey };
     Drag m_drag = Drag::None;
     int m_scrubIndex = -1;     // last panel announced during a playhead drag
     int m_scrubFrameSent = -1; // last frame announced (playheadScrubbedTo)
