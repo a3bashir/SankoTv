@@ -12017,6 +12017,66 @@ void runQuickMovePass(const QString &scratch)
         check(QStringLiteral("(qm.12) control: unlocked, the same eight entries are enabled"),
               all(open, true), listed(open));
     }
+
+    // --- (qm.13) a scene action with nothing to change says so ----------------
+    // The round-2 hand test: a Continue on a scene that already started on
+    // the previous scene's last framing did nothing, silently (clean-up
+    // batch, 2026-10-30). Both scene actions now leave a note instead.
+    {
+        auto trigger = [&](int sceneIndex, const char *name) {
+            menuHooked([&] { r.storyboard->sceneMenuForTest(sceneIndex); }, [&](QMenu *m) {
+                if (QAction *a = m->findChild<QAction *>(QLatin1String(name)))
+                    a->trigger();
+            });
+            pump(30);
+        };
+        const CameraState F{1100, 600, 2.0, 0};
+        setCam(s0, {shotcam::makeKey(*s0, 0, 0, 24, F)});
+        setCam(s1, {});
+        r.storyboard->clearNoteForTest();
+        const int i0 = stack->index();
+        trigger(1, "cameraContinue");
+        const bool firstMoved = stack->index() == i0 + 1 && lastText() == QStringLiteral("Continue Camera")
+            && sameState(stateAt(s1, 0), F);
+        const QString firstNote = r.storyboard->lastNoteForTest();
+        const int i1 = stack->index();
+        const QByteArray once = json(s1);
+        trigger(1, "cameraContinue");
+        const QString againNote = r.storyboard->lastNoteForTest();
+        check(QStringLiteral("(qm.13) Continue on a scene that already starts on the previous scene's "
+                             "last framing pushes nothing and says \"Scene 2 already starts on Scene 1's "
+                             "last framing.\""),
+              stack->index() == i1 && json(s1) == once
+                  && againNote == QStringLiteral("Scene 2 already starts on Scene 1's last framing."),
+              againNote);
+        check(QStringLiteral("(qm.13) control: the first Continue is one \"Continue Camera\" edit and "
+                             "leaves no note"),
+              firstMoved && firstNote.isEmpty(), firstNote);
+
+        // Use Last Framing: scene 1 has no camera and scene 2 no keys.
+        setCam(s0, {});
+        setCam(s1, {});
+        r.storyboard->clearNoteForTest();
+        const int i2 = stack->index();
+        trigger(1, "cameraUseLastFraming");
+        const QString wholeNote = r.storyboard->lastNoteForTest();
+        check(QStringLiteral("(qm.13) Use Last Framing with nothing to change (scene 1 the whole canvas, "
+                             "scene 2 no keys) pushes nothing and says \"Scene 2 already shows the "
+                             "whole canvas.\""),
+              stack->index() == i2 && shotcam::liveKeyCount(*s1) == 0
+                  && wholeNote == QStringLiteral("Scene 2 already shows the whole canvas."),
+              wholeNote);
+        setCam(s1, {shotcam::makeKey(*s1, 1, 0, 24, F)});
+        r.storyboard->clearNoteForTest();
+        const int i3 = stack->index();
+        trigger(1, "cameraUseLastFraming");
+        const QString clearedNote = r.storyboard->lastNoteForTest();
+        check(QStringLiteral("(qm.13) control: with a key on scene 2 the same entry clears it as one "
+                             "\"Use Last Framing\" edit and leaves no note"),
+              stack->index() == i3 + 1 && lastText() == QStringLiteral("Use Last Framing")
+                  && shotcam::liveKeyCount(*s1) == 0 && clearedNote.isEmpty(),
+              clearedNote);
+    }
     setCam(s0, {});
     setCam(s1, {});
 }
@@ -13169,6 +13229,43 @@ void runTrackLocksPass(const QString &scratch)
                              "40 % of their unchecked opacity) and their unchecked icons opaque; "
                              "the speaker's checked icon is the muted glyph, opaque and its own"),
               ok, detail.join(QStringLiteral("; ")));
+    }
+
+    // ---- locked reads as locked: a closed padlock (clean-up batch, 2026-10-30) ----
+    {
+        using namespace SankoTimelineTheme;
+        const QSize box(16, 16);
+        auto render = [&](const char *file, qreal scale, const QColor &c) {
+            return SankoIcons::renderSvg(QStringLiteral(":/icons/timeline/%1.svg").arg(QLatin1String(file)),
+                                         box, scale, c)
+                .toImage().convertToFormat(QImage::Format_ARGB32_Premultiplied);
+        };
+        QStringList bad;
+        for (const char *n : {"trackLockScenes", "trackLockShots", "trackLockAudio", "trackLockCamera"}) {
+            QToolButton *b = control(n);
+            for (qreal scale : {1.0, 2.0}) {
+                const QImage on = b ? b->icon().pixmap(box, scale, QIcon::Normal, QIcon::On).toImage()
+                                          .convertToFormat(QImage::Format_ARGB32_Premultiplied) : QImage();
+                const QImage off = b ? b->icon().pixmap(box, scale, QIcon::Normal, QIcon::Off).toImage()
+                                           .convertToFormat(QImage::Format_ARGB32_Premultiplied) : QImage();
+                if (on != render("track_lock_closed", scale, kTrackControlActive)
+                    || off != render("track_lock", scale, kTrackControl))
+                    bad << QStringLiteral("%1@%2x").arg(QLatin1String(n)).arg(scale);
+            }
+        }
+        // The shape itself, at 2x: the shackle's right leg between the open
+        // glyph's end (y 4.8 plus its round cap) and the body (y 6.5) - pixel
+        // (21, 12) - is ink on the closed padlock and clear on the open one.
+        const int aClosed = qAlpha(render("track_lock_closed", 2.0, kTrackControlActive).pixel(21, 12));
+        const int aOpen = qAlpha(render("track_lock", 2.0, kTrackControlActive).pixel(21, 12));
+        check(QStringLiteral("(ax) LOCKED IS A CLOSED PADLOCK: on all four tracks, at 1x and 2x, the "
+                             "lock's checked icon is track_lock_closed.svg in the accent and its "
+                             "unchecked icon track_lock.svg in the column grey"),
+              bad.isEmpty(), bad.join(QLatin1Char(' ')));
+        check(QStringLiteral("(ax) control: the two glyphs differ where the shackle closes - at 2x, "
+                             "pixel (21, 12) is ink on the closed padlock and clear on the open one"),
+              aClosed >= 200 && aOpen < 16,
+              QStringLiteral("closed %1 open %2").arg(aClosed).arg(aOpen));
     }
 
     // ---- a toggle: state, the button, unsaved, and nothing on the stack ----

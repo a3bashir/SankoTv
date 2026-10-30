@@ -46,6 +46,10 @@
 //       (editing emits nothing, Cancel emits nothing, Apply emits once and
 //       stays open, OK emits once and closes) — a future convenience that
 //       applies on edit or on Cancel would silently mutate the project.
+//   (l) a pen tap with no ink (Brush and Eraser): no QPainter warning, no
+//       undo step, the layer untouched; and across a pressure sweep a mark
+//       is committed exactly when the live preview showed one — with ink
+//       taps as the control.
 //
 // Scope note, stated rather than implied: this family drives DrawingCanvas
 // and ProjectIO directly; it does NOT construct StoryboardPage, so the
@@ -433,6 +437,170 @@ void runEraserPass(DrawingCanvas *canvas, QUndoStack *stack)
     canvas->setTool(DrawingCanvas::Brush); // leave the canvas as found
     canvas->setEraserSize(25);
     canvas->setActivePanel(nullptr);
+    delete panel;
+}
+
+// ---- (l) a pen tap with no ink (the clean-up batch, 2026-10-30) ----------
+// The open bug: a Brush or Eraser tap whose pressure never rose above ~0
+// logged "QPainter::begin: Paint device returned engine == 0" and
+// "QPainter::setCompositionMode: Painter not active" on the release. Every
+// stamp was under the engine's 0.5 px floor, so the stroke touched nothing,
+// yet the commit still read the layer over that empty rect - TiledImage::read
+// opened a painter on a 0x0 image. A sweep of real pen taps (press, two
+// moves, release) with size following pressure from zero answers both
+// halves: no tap warns, and no tap loses its mark - a mark is committed
+// exactly when the live preview showed one. Each tap waits on the commit's
+// own in-flight flag, never on a clock.
+QStringList g_tapWarnings;
+QtMessageHandler g_tapPrevious = nullptr;
+void collectTapWarnings(QtMsgType type, const QMessageLogContext &context, const QString &msg)
+{
+    if (type == QtWarningMsg && msg.startsWith(QStringLiteral("QPainter::")))
+        g_tapWarnings << msg;
+    if (g_tapPrevious)
+        g_tapPrevious(type, context, msg);
+}
+
+struct Tap
+{
+    int previewInk = 0;   // the live preview's inked pixels before the release
+    bool changed = false; // the layer's bytes once the commit has landed
+    int commands = 0;     // undo steps the tap added
+    int warnings = 0;     // QPainter warnings during the tap
+};
+
+Tap penTap(DrawingCanvas *canvas, QUndoStack *stack, const QImage &layer,
+           const QPointF &canvasPt, qreal pressure)
+{
+    Tap tap;
+    const QImage before = layer.copy();
+    const int n0 = stack->count();
+    g_tapWarnings.clear();
+    g_tapPrevious = qInstallMessageHandler(collectTapWarnings);
+    const QTransform t = canvas->viewTransformForTest();
+    auto send = [&](QEvent::Type type, const QPointF &at) {
+        const QPointF w = t.map(at);
+        QTabletEvent ev(type, QPointingDevice::primaryPointingDevice(), w,
+                        canvas->mapToGlobal(w.toPoint()), pressure, 0.0f, 0.0f,
+                        0.0f, 0.0, 0.0f, Qt::NoModifier, Qt::LeftButton,
+                        type == QEvent::TabletRelease ? Qt::NoButton : Qt::LeftButton);
+        QCoreApplication::sendEvent(canvas, &ev);
+    };
+    send(QEvent::TabletPress, canvasPt);
+    send(QEvent::TabletMove, canvasPt + QPointF(1, 0));
+    send(QEvent::TabletMove, canvasPt + QPointF(2, 1));
+    tap.previewInk = canvas->previewInkPixelsForTest();
+    send(QEvent::TabletRelease, canvasPt + QPointF(2, 1));
+    QElapsedTimer guard;
+    guard.start();
+    while (canvas->paintCommitPendingForTest() && guard.elapsed() < 30000)
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 5);
+    qInstallMessageHandler(g_tapPrevious);
+    tap.warnings = int(g_tapWarnings.size());
+    tap.changed = layer != before;
+    tap.commands = stack->count() - n0;
+    return tap;
+}
+
+void runPenTapPass(DrawingCanvas *canvas, QUndoStack *stack)
+{
+    const QSize S(960, 540);
+    out() << "--- (l) a pen tap with no ink: no warning, no lost mark ---" << Qt::endl;
+    const QPointF wc(canvas->width() / 2.0, canvas->height() / 2.0);
+    const ::Brush paintBefore = canvas->paintBrush();
+    const ::Brush eraserBefore = canvas->eraserBrush();
+    const int eraserSizeBefore = canvas->eraserSize();
+    stack->clear();
+    Panel *panel = makeBlankPanel(S);
+    canvas->setActivePanel(panel);
+    canvas->setTool(DrawingCanvas::Brush);
+    canvas->setColor(QColor(20, 20, 20));
+    canvas->setBrushHardness(100);
+    canvas->setBrushOpacity(100);
+    canvas->setBrushToolSize(100);
+    // Size follows pressure from zero, as the recorded taps' brush did:
+    // under 0.005 every stamp of this 100 px brush is under the floor.
+    ::Brush pen = canvas->paintBrush();
+    pen.setControlSource(::Brush::DynamicProperty::Size, ::Brush::ControlSource::Pressure);
+    pen.setControlMinimum(::Brush::DynamicProperty::Size, 0.0);
+    canvas->setPaintBrush(pen);
+    canvas->placeViewForTest(1.0, QPointF(480, 270), wc);
+    pump(150);
+    const int idx = panel->activeLayerIndex;
+    const QImage &li = panel->layers.at(idx).image;
+
+    const qreal sweep[] = {0.0, 0.001, 0.002, 0.004, 0.005, 0.006, 0.008,
+                           0.01, 0.02, 0.05, 0.2, 0.5};
+    int noInk = 0, inked = 0, lost = 0, unseen = 0;
+    int noInkWarned = 0, noInkStray = 0, inkWarned = 0, inkStray = 0;
+    QStringList rows;
+    int i = 0;
+    for (const qreal p : sweep) {
+        const Tap tap = penTap(canvas, stack, li, QPointF(60 + 75 * i++, 270), p);
+        rows << QStringLiteral("%1: ink %2 changed %3 cmds %4 warn %5")
+                    .arg(p).arg(tap.previewInk).arg(tap.changed).arg(tap.commands)
+                    .arg(tap.warnings);
+        if (tap.previewInk > 0 && !tap.changed)
+            ++lost;
+        if (tap.previewInk == 0 && tap.changed)
+            ++unseen;
+        if (tap.previewInk == 0) {
+            ++noInk;
+            noInkWarned += tap.warnings > 0 ? 1 : 0;
+            noInkStray += (tap.commands != 0 || tap.changed) ? 1 : 0;
+        } else {
+            ++inked;
+            inkWarned += tap.warnings > 0 ? 1 : 0;
+            inkStray += tap.commands != 1 ? 1 : 0;
+        }
+    }
+    const QString table = rows.join(QStringLiteral("; "));
+    check(QStringLiteral("(l) NO TAP LOSES ITS MARK: across a pressure sweep that crosses "
+                         "the 0.5 px floor, a mark is committed exactly when the live "
+                         "preview showed one"),
+          lost == 0 && unseen == 0 && noInk >= 2 && inked >= 2, table);
+    check(QStringLiteral("(l) A BRUSH TAP WITH NO INK warns nothing (no QPainter "
+                         "message), adds no undo step and leaves the layer's bytes as "
+                         "they were"),
+          noInk >= 2 && noInkWarned == 0 && noInkStray == 0, table);
+    check(QStringLiteral("(l) control: every tap with ink, 0.5 among them, is one undo "
+                         "step and warns nothing"),
+          inked >= 2 && inkWarned == 0 && inkStray == 0, table);
+
+    // The Eraser: the same tap with no ink over paint, and its control.
+    panel->layers[idx].image.fill(QColor(200, 30, 30));
+    canvas->setActivePanel(panel);
+    stack->clear();
+    canvas->setTool(DrawingCanvas::Eraser);
+    canvas->setEraserSize(100);
+    canvas->setEraserOpacity(100);
+    ::Brush rubber = canvas->eraserBrush();
+    rubber.setControlSource(::Brush::DynamicProperty::Size, ::Brush::ControlSource::Pressure);
+    rubber.setControlMinimum(::Brush::DynamicProperty::Size, 0.0);
+    canvas->setEraserPreset(rubber);
+    pump(150);
+    const Tap empty = penTap(canvas, stack, li, QPointF(300, 200), 0.0);
+    const Tap erase = penTap(canvas, stack, li, QPointF(600, 360), 0.5);
+    const QString eraserRows =
+        QStringLiteral("0: ink %1 changed %2 cmds %3 warn %4; 0.5: ink %5 changed %6 cmds %7 warn %8")
+            .arg(empty.previewInk).arg(empty.changed).arg(empty.commands).arg(empty.warnings)
+            .arg(erase.previewInk).arg(erase.changed).arg(erase.commands).arg(erase.warnings);
+    check(QStringLiteral("(l) AN ERASER TAP WITH NO INK warns nothing, adds no undo step "
+                         "and leaves the paint as it was"),
+          empty.previewInk == 0 && empty.warnings == 0 && empty.commands == 0
+              && !empty.changed,
+          eraserRows);
+    check(QStringLiteral("(l) control: an eraser tap at 0.5 erases - one undo step, no "
+                         "warning"),
+          erase.previewInk > 0 && erase.changed && erase.commands == 1 && erase.warnings == 0,
+          eraserRows);
+
+    canvas->setTool(DrawingCanvas::Brush); // leave the canvas as found
+    canvas->setPaintBrush(paintBefore);
+    canvas->setEraserPreset(eraserBefore);
+    canvas->setEraserSize(eraserSizeBefore);
+    canvas->setActivePanel(nullptr);
+    stack->clear();
     delete panel;
 }
 
@@ -1411,6 +1579,7 @@ int main(int argc, char **argv)
             runBrushRangePass(s, canvas, &stack);
 
         runEraserPass(canvas, &stack);
+        runPenTapPass(canvas, &stack);
 
         runMigrationPass(projRoot);
         runResizeRefusalPass(canvas, &stack);

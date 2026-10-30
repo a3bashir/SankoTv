@@ -261,6 +261,11 @@ public:
         return m_qsPreviewInFlight || m_qsPreviewDirty
                || (m_qsPreviewTimer && m_qsPreviewTimer->isActive());
     }
+    // The pen-tap check (clean-up batch, 2026-10-30): a stroke's commit
+    // still in flight, and the inked pixels of the live preview - what the
+    // artist sees before the release.
+    bool paintCommitPendingForTest() const { return m_paintCommitPending; }
+    int previewInkPixelsForTest() const;
 
     Tool tool() const { return m_tool; } // active tool (per-tool sliders)
     // Selection changed while Move is active: commit the running transform

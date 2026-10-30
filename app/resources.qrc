@@ -22,6 +22,7 @@
         <file>icons/timeline/speaker_muted.svg</file>
         <file>icons/timeline/audio_warning.svg</file>
         <file>icons/timeline/track_lock.svg</file>
+        <file>icons/timeline/track_lock_closed.svg</file>
         <file>icons/timeline/track_eye.svg</file>
         <file>icons/timeline/track_speaker.svg</file>
         <file>icons/camera/quick_push_in.svg</file>

@@ -4217,6 +4217,24 @@ void DrawingCanvas::restorePaintBrushAfterStroke()
     m_paintEngine.setBrush(m_savedPaintBrush);
 }
 
+int DrawingCanvas::previewInkPixelsForTest() const
+{
+    const TiledImage *preview = m_paintEngine.previewTiles();
+    if (!preview)
+        return 0;
+    int inked = 0;
+    for (auto it = preview->allocatedTiles().cbegin();
+         it != preview->allocatedTiles().cend(); ++it) {
+        const QImage &tile = it.value();
+        for (int y = 0; y < tile.height(); ++y) {
+            const QRgb *row = reinterpret_cast<const QRgb *>(tile.constScanLine(y));
+            for (int x = 0; x < tile.width(); ++x)
+                inked += qAlpha(row[x]) > 0 ? 1 : 0;
+        }
+    }
+    return inked;
+}
+
 void DrawingCanvas::endBrushStroke(const QString &undoText)
 {
     m_brushStroke = false;

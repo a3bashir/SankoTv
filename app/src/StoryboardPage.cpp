@@ -5464,8 +5464,12 @@ void StoryboardPage::cameraUseLastFraming(int sceneIndex)
             after.keys.append(key); // inert keys stay, as with the single framing
     if (!whole)
         after.keys.append(shotcam::makeKey(*scene, 0, 0, fps, framing));
-    if (whole && shotcam::liveKeyCount(*scene) == 0)
-        return; // the whole canvas already
+    if (whole && shotcam::liveKeyCount(*scene) == 0) {
+        // The whole canvas already: nothing to change, and the artist is
+        // told so rather than left with an entry that did nothing.
+        sayNote(QStringLiteral("Scene %1 already shows the whole canvas.").arg(scene->number));
+        return;
+    }
     pushCameraEdit(scene, scene->camera, after, QStringLiteral("Use Last Framing"));
 }
 
@@ -5480,8 +5484,12 @@ void StoryboardPage::cameraContinue(int sceneIndex)
     shotcam::SceneCamera after = scene->camera;
     const int first = shotcam::keyIndexAtFrame(*scene, 0, fps);
     if (first >= 0) {
-        if (after.keys.at(first).state == framing)
+        if (after.keys.at(first).state == framing) {
+            // Already starts there (the round-2 hand test's silent no-op).
+            sayNote(QStringLiteral("Scene %1 already starts on Scene %2's last framing.")
+                        .arg(scene->number).arg(m_scenes.at(sceneIndex - 1)->number));
             return;
+        }
         after.keys[first].state = framing;
     } else {
         after.keys.append(shotcam::makeKey(*scene, 0, 0, fps, framing));

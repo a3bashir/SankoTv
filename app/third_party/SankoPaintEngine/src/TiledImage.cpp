@@ -67,6 +67,11 @@ QImage &TiledImage::ensureTile(const QPoint &coordinate)
 QImage TiledImage::read(const QRect &requestedRect) const
 {
     const QRect region = requestedRect.intersected(rect());
+    // A read of nothing (a tap whose stamps were all under the 0.5 px floor)
+    // is the same null image as before, without opening a painter on it -
+    // which is what logged "QPainter::begin: Paint device returned engine == 0".
+    if (region.isEmpty())
+        return QImage();
     QImage output(region.size(), m_format);
     output.fill(0);
     QPainter painter(&output);

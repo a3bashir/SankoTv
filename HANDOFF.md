@@ -354,6 +354,16 @@ may ship in a closed-source commercial product, flag it - do not decide.
     - NOTICED: track_lock is drawn with its shackle OPEN (the right leg
       stops at y 4.8, the body starts at 6.5) - it reads as an unlocked
       padlock. A design remark, not a licensing one; unchanged.
+    - ADDED 2026-10-30: icons/timeline/track_lock_closed.svg, the locked
+      state's closed padlock, drawn in this project from track_lock.svg
+      (only the shackle changed). Checked the same way against the same
+      eight sets (23,357 icons, re-fetched from npm into scratch, same
+      counts): no identical path data; best scores are standard padlocks
+      and plain rounded shapes - Font Awesome solid bucket 0.804, Font
+      Awesome lock 0.745, Tabler filled lock 0.742 - none closer than the
+      open padlock already cleared (0.817 / 0.735 / 0.731). Controls
+      unchanged: 1.000, 0.380, 0.291. Evidence:
+      Documents\SankoTV-Design\icon-check\closed-lock-2026-10-30\.
     - EVIDENCE: Documents\SankoTV-Design\icon-check\ - icon-check.html
       (each icon beside its three closest matches with set, name, licence
       and score; the above-threshold table with a reading of each; the
@@ -7304,6 +7314,8 @@ session, and a `QPainter::begin: Paint device returned engine == 0, type:
 3` (an image) followed by `setCompositionMode: Painter not active` at the
 end of the first pen stroke - a null QImage painted somewhere on the
 stroke path. Both harmless so far; both to be found.
+(The QPainter pair: found and fixed 2026-10-30 - see "Clean-up batch after
+1D", item 1.)
 
 ## The shot camera, Phase 1A: data and evaluation (2026-10-25)
 
@@ -7702,6 +7714,9 @@ failed there (`build/_probe/polish/runs/life_before.txt`).
   tap. Seen 11 times in recording 20261027-185330 and 6 times in
   20261027-193205 (taps at 189.4 s, 277.7 s, 277.8 s, 280.5 s, 283.6 s,
   285.9 s). Whether the tap leaves a mark is not yet checked.
+  CLOSED 2026-10-30 (clean-up batch after 1D, item 1): a tap with no ink
+  (every stamp under the 0.5 px floor) read an empty rect through
+  TiledImage::read; no tap loses its mark. CanvasSizeLock (l).
 - OPEN BUG (noted 2026-10-27, to be investigated after the polish
   commit): SAVE FREEZES THE UI FOR ABOUT 25 SECONDS. In recording
   20261027-193205 each Ctrl+S on the user's 4K test project
@@ -7958,8 +7973,84 @@ AFTER THE 1D HAND TEST (2026-10-30; recording 20261030-145310):
 - (qm.12): every 1D menu entry - Quick Move on the row and the clip, Use
   Last Framing / Continue on the row, the SCENES row and the dock - is
   greyed with the CAMERA track locked; control: all eight enabled unlocked.
+
+1D ROUND-2 HAND TEST (2026-10-30; recordings 20261030-182412, setup only,
+and 20261030-184440; build f62d6ce6d+dirty, Release, built 16:15:47;
+list handtest_1D_r2.md). Nothing failed; 1D committed as c731c3105.
+- PASS: 1-2 (Over at "To the scene's end", "Quick Move on Panel 2" ▸ Pan
+  Right keyed panel 2 only), 5 (Over shows the whole text), 7 (Zoom
+  ignored the wheel until clicked, stepped after, ignored it again on
+  reopening), 12 (Use Last Framing and Continue from scene 2's dock card,
+  each one edit and one Undo; "(replaces 1 key)" shown with a key there).
+- PASS ON THE DOCK ONLY: 13 (scene 1's card: both "— no scene before this
+  one", greyed), 15 (locked: the dock menu's header "The CAMERA track is
+  locked", both entries greyed). The SCENES row, the CAMERA row and the
+  clip menu were not opened locked, and the track was not unlocked.
+- NOT TESTED: 3 (clip menu) and 4 (the popover's own move) - (qm.8); 6 for
+  Move and Turn (only Zoom was wheeled) - (qm.10); 9 on the SCENES row
+  (every scene menu came from the dock; the header was read there) -
+  (qm.7), (qm.12); 14 ("(the whole canvas)") - (qm.7) control.
+- WEAK: 8 - both scene 1 keys were added at the whole canvas (960, 540,
+  1x), so 10-11 could not show a framing different from none; 11 - scene 2
+  had no later keys of its own. (qm.7) covers both with real framings.
+- NOTED: a "Continue Camera from Scene 1" at 544.6 s did nothing: scene 2
+  already started on scene 1's last framing (the redone Use Last Framing),
+  so cameraContinue returned without a command, by design but silently;
+  the next Ctrl+Z undid the redone Use Last Framing. (Clean-up batch item
+  2: say so with a note.)
 Grabs: Documents\SankoTV-Design\camera\1d-capture; probe in
 tests/_backups/camera1d_20261029.
+
+## Clean-up batch after 1D (2026-10-30)
+
+Approved after a report-only pass; four items.
+
+1. THE TAP WARNING (the OPEN BUG of 2026-10-27, closed). Cause: a Brush or
+   Eraser tap whose pressure never rose above ~0.002 makes only stamps
+   under the engine's 0.5 px floor (StrokeBuilder::placeStamp), so the
+   stroke's affected rect is empty; finishStrokeWork still read the layer
+   over it, and TiledImage::read opened a QPainter on the 0x0 image and set
+   its composition mode - the two warnings. render() then returned early:
+   nothing published, no undo step. Recording 20261030-182412: the two
+   warned taps had max pressure 0 and 0.002; 213 other taps were clean.
+   A TAP NEVER LOSES ITS MARK: the live preview and the commit share the
+   0.5 px rule, so a tap that showed ink has a non-empty rect and commits.
+   FIX: TiledImage::read returns the null image before any painter when
+   the region is empty (third_party/SankoPaintEngine, LF; the same null
+   image as before, so no pin can move). Test seams: DrawingCanvas
+   paintCommitPendingForTest / previewInkPixelsForTest.
+   CHECKS: CanvasSizeLock (l), 5 checks - real pen taps (press, two moves,
+   release) with size following pressure from 0 across a 12-step sweep
+   (0 to 0.5, crossing the floor at 0.005); each waits on the commit's own
+   flag. No tap loses its mark (committed exactly when the preview showed
+   ink); a no-ink Brush tap and a no-ink Eraser tap warn nothing, add no
+   undo step and leave the layer's bytes; controls: every ink tap is one
+   undo step, and an eraser tap at 0.5 erases. POSITIVE CONTROL: on the
+   unfixed reader both no-ink checks FAIL with 2 warnings per tap
+   (build/_probe/split/cleanup_pc_sizelock_before_fix.txt, labelled (h)
+   there before the section was renamed (l) - (h) was already this
+   family's mixed-sizes section). CanvasSizeLock 165 -> 170.
+2. THE SCENE ACTIONS SAY WHEN THERE IS NOTHING TO CHANGE: Continue on a
+   scene already starting on the previous scene's last framing notes
+   "Scene 2 already starts on Scene 1's last framing."; Use Last Framing
+   with a whole-canvas previous scene and no keys notes "Scene 2 already
+   shows the whole canvas." (sayNote, the dark tooltip at the pointer).
+   (qm.13), 4 checks, each with its control (the first Continue is one
+   edit and no note; with a key on scene 2 Use Last Framing clears it as
+   one edit and no note).
+3. LOCKED READS AS LOCKED: the four track locks take two glyphs, as the
+   speaker does - Off track_lock.svg (open shackle) in kTrackControl, On
+   the new icons/timeline/track_lock_closed.svg (the shackle closed onto
+   the body; body, keyhole and stroke unchanged) in kTrackControlActive.
+   Figma: "PROPOSAL 2026-10-30 — Track lock: a closed padlock when the
+   track is locked" (Timeline — Components). Licence: drawn here from
+   track_lock.svg; checked as BEFORE SELLING 12 (see there). (ax) 2 new
+   checks: the checked / unchecked icons of all four locks at 1x and 2x
+   are exactly the two renders; control: at 2x pixel (21, 12) is ink on
+   the closed glyph and clear on the open one. The existing (ax) ICON
+   STATES check is unchanged and still passes.
+4. The round-2 hand-test results above (1D section), as drafted.
+Lifecycle 935 -> 941.
 
 ## METHOD: measure interior structure ACROSS THE SIZE RANGE before calling it character (2026-09-25)
 

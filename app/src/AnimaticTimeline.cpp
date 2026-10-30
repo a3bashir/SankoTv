@@ -483,6 +483,22 @@ void AnimaticTimeline::buildTrackControls()
         m_lockButtons[i] = make(QStringLiteral(":/icons/timeline/track_lock.svg"),
                                 QStringLiteral("trackLock") + QLatin1String(suffix[i]),
                                 kTrackControlActive);
+        // Locked reads as locked (clean-up batch, 2026-10-30): the checked
+        // state is a CLOSED padlock in the accent, the open one stays for
+        // unlocked - two glyphs, as the speaker has.
+        {
+            QIcon lock;
+            for (qreal scale : {1.0, 2.0}) {
+                lock.addPixmap(SankoIcons::renderSvg(QStringLiteral(":/icons/timeline/track_lock.svg"),
+                                                     QSize(kControlSize, kControlSize), scale, kTrackControl),
+                               QIcon::Normal, QIcon::Off);
+                lock.addPixmap(SankoIcons::renderSvg(QStringLiteral(":/icons/timeline/track_lock_closed.svg"),
+                                                     QSize(kControlSize, kControlSize), scale,
+                                                     kTrackControlActive),
+                               QIcon::Normal, QIcon::On);
+            }
+            m_lockButtons[i]->setIcon(lock);
+        }
         connect(m_lockButtons[i], &QToolButton::clicked, this, [this, t](bool on) {
             if (m_host)
                 m_host->setTrackLocked(t, on); // comes back through setTracks
