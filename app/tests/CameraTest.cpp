@@ -954,6 +954,123 @@ int main(int argc, char **argv)
         delete k;
     }
 
+    // ---- (qm) the Quick Moves, as pure functions (Phase 1D) ------------------
+    // Each move against its closed form at the four canvas sizes; then the
+    // user's decisions 3 and 4 (no room: the START gives way), each with the
+    // Stay-inside-off control that shows the clamp is what made the
+    // difference.
+    ts << "--- (qm) the quick moves ---\n";
+    {
+        using shotcam::CameraState;
+        using shotcam::QuickMove;
+        auto near = [](double a, double b, double tol = 0.5) { return qAbs(a - b) <= tol; };
+        const shotcam::QuickAmounts amt; // 1.25x, 25 %, 10 deg
+        QStringList bad;
+        int checked = 0;
+        for (const QSize &cs : kSizes) {
+            const double W = cs.width(), H = cs.height();
+            const CameraState z2{W / 2, H / 2, 2.0, 0.0}; // room to move every way
+            auto mv = [&](QuickMove m) { return shotcam::quickMove(m, z2, amt, cs, true); };
+            struct Want { QuickMove m; double cx, cy, zoom, rot; };
+            const Want wants[] = {
+                {QuickMove::PushIn, W / 2, H / 2, 2.5, 0.0},
+                {QuickMove::PullOut, W / 2, H / 2, 1.6, 0.0},
+                {QuickMove::PanLeft, W / 2 - 0.25 * W / 2, H / 2, 2.0, 0.0},
+                {QuickMove::PanRight, W / 2 + 0.25 * W / 2, H / 2, 2.0, 0.0},
+                {QuickMove::TiltUp, W / 2, H / 2 - 0.25 * H / 2, 2.0, 0.0},
+                {QuickMove::TiltDown, W / 2, H / 2 + 0.25 * H / 2, 2.0, 0.0},
+                {QuickMove::RotateLeft, W / 2, H / 2, 2.0, -10.0},
+                {QuickMove::RotateRight, W / 2, H / 2, 2.0, 10.0},
+            };
+            for (const Want &w : wants) {
+                ++checked;
+                const shotcam::QuickFrames f = mv(w.m);
+                if (!(f.moves && f.start == z2 && near(f.end.cx, w.cx) && near(f.end.cy, w.cy)
+                      && near(f.end.zoom, w.zoom, 1e-9) && near(f.end.rotation, w.rot, 1e-9)))
+                    bad << QStringLiteral("%1 %2x%3: %4,%5 %6x %7deg")
+                               .arg(shotcam::quickMoveLabel(w.m)).arg(cs.width()).arg(cs.height())
+                               .arg(f.end.cx).arg(f.end.cy).arg(f.end.zoom).arg(f.end.rotation);
+            }
+        }
+        check(QStringLiteral("(qm1) each of the eight moves from a 2x framing lands on its closed "
+                             "form (Zoom 1.25x / its inverse, Move 25 % of the frame, Turn 10 deg), "
+                             "the START unchanged, at the four canvas sizes"),
+              checked == 32 && bad.isEmpty(), bad.join(QStringLiteral("; ")));
+        {
+            const QSize cs = kSizes[1];
+            const CameraState z2{cs.width() / 2.0, cs.height() / 2.0, 2.0, 0.0};
+            shotcam::QuickAmounts other;
+            other.zoom = 1.5;
+            other.move = 0.1;
+            other.turn = 5.0;
+            const auto p = shotcam::quickMove(QuickMove::PushIn, z2, other, cs, true);
+            const auto t = shotcam::quickMove(QuickMove::PanRight, z2, other, cs, true);
+            const auto r = shotcam::quickMove(QuickMove::RotateRight, z2, other, cs, true);
+            check(QStringLiteral("(qm1) control: other amounts give other ends (Zoom 1.5x, Move "
+                                 "10 %, Turn 5 deg)"),
+                  near(p.end.zoom, 3.0, 1e-9) && near(t.end.cx, cs.width() / 2.0 + 0.1 * cs.width() / 2)
+                      && near(r.end.rotation, 5.0, 1e-9));
+            // A turned frame pans along its own axis.
+            const CameraState turned{cs.width() / 2.0, cs.height() / 2.0, 2.5, 30.0};
+            const auto pr = shotcam::quickMove(QuickMove::PanRight, turned, shotcam::QuickAmounts(), cs, true);
+            const double d = 0.25 * cs.width() / 2.5;
+            check(QStringLiteral("(qm1) a frame turned 30 deg pans along its own x axis"),
+                  near(pr.end.cx, turned.cx + d * std::cos(qDegreesToRadians(30.0)))
+                      && near(pr.end.cy, turned.cy + d * std::sin(qDegreesToRadians(30.0))));
+            const CameraState full{cs.width() / 2.0, cs.height() / 2.0, 4.0, 0.0};
+            check(QStringLiteral("(qm1) Push In at the 4x limit is no move"),
+                  !shotcam::quickMove(QuickMove::PushIn, full, shotcam::QuickAmounts(), cs, true).moves);
+        }
+        // Decisions 3 and 4, at the whole canvas.
+        QStringList bad3;
+        for (const QSize &cs : kSizes) {
+            const double W = cs.width(), H = cs.height();
+            const CameraState whole = shotcam::neutral(cs);
+            const auto pan = shotcam::quickMove(QuickMove::PanRight, whole, amt, cs, true);
+            const auto tilt = shotcam::quickMove(QuickMove::TiltUp, whole, amt, cs, true);
+            const auto pull = shotcam::quickMove(QuickMove::PullOut, whole, amt, cs, true);
+            const auto turn = shotcam::quickMove(QuickMove::RotateRight, whole, amt, cs, true);
+            // The pan at 1.25x: from the left edge to the right edge (0.2 W = 25 % of 0.8 W).
+            if (!(pan.moves && near(pan.start.zoom, 1.25, 1e-3) && near(pan.start.cx, W / 2 - 0.1 * W, 1.0)
+                  && near(pan.end.cx, W / 2 + 0.1 * W, 1.0) && near(pan.end.zoom, pan.start.zoom, 1e-12)))
+                bad3 << QStringLiteral("pan %1x%2: %3x %4 -> %5").arg(cs.width()).arg(cs.height())
+                            .arg(pan.start.zoom).arg(pan.start.cx).arg(pan.end.cx);
+            if (!(tilt.moves && near(tilt.start.zoom, 1.25, 1e-3) && near(tilt.start.cy, H / 2 + 0.1 * H, 1.0)
+                  && near(tilt.end.cy, H / 2 - 0.1 * H, 1.0)))
+                bad3 << QStringLiteral("tilt %1x%2").arg(cs.width()).arg(cs.height());
+            if (!(pull.moves && near(pull.start.zoom, 1.25, 1e-9) && near(pull.end.zoom, 1.0, 1e-9)))
+                bad3 << QStringLiteral("pull %1x%2: %3 -> %4").arg(cs.width()).arg(cs.height())
+                            .arg(pull.start.zoom).arg(pull.end.zoom);
+            const double need = shotcam::insideMinZoom(10.0, cs);
+            if (!(turn.moves && near(turn.end.rotation, 10.0, 1e-9) && near(turn.start.rotation, 0.0, 1e-9)
+                  && near(turn.start.zoom, need, 1e-9) && near(turn.end.zoom, need, 1e-9)
+                  && near(turn.start.cx, W / 2) && near(turn.start.cy, H / 2)
+                  && near(turn.end.cx, W / 2) && near(turn.end.cy, H / 2)))
+                bad3 << QStringLiteral("turn %1x%2: %3x -> %4x").arg(cs.width()).arg(cs.height())
+                            .arg(turn.start.zoom).arg(turn.end.zoom);
+        }
+        check(QStringLiteral("(qm3) at the whole canvas with Stay inside on, Pan / Tilt push the "
+                             "START in to 1.25x and slide it back so the whole 25 % fits; Pull "
+                             "Out starts at 1.25x and ends at the whole canvas; Rotate pushes the "
+                             "START in just enough and turns at that zoom about the centre "
+                             "(decisions 3 and 4)"),
+              bad3.isEmpty(), bad3.join(QStringLiteral("; ")));
+        {
+            const QSize cs = kSizes[1];
+            const CameraState whole = shotcam::neutral(cs);
+            const auto pan = shotcam::quickMove(QuickMove::PanRight, whole, amt, cs, false);
+            const auto pull = shotcam::quickMove(QuickMove::PullOut, whole, amt, cs, false);
+            const auto turn = shotcam::quickMove(QuickMove::RotateRight, whole, amt, cs, false);
+            check(QStringLiteral("(qm3) control: with Stay inside off nothing gives way - the pan "
+                                 "starts where it is and runs off the artwork, the pull-out ends "
+                                 "at 0.8x, the turn stays at 1x"),
+                  pan.start == whole && near(pan.end.cx, cs.width() * 0.75)
+                      && pull.start == whole && near(pull.end.zoom, 0.8, 1e-9)
+                      && turn.start == whole && near(turn.end.zoom, 1.0, 1e-9)
+                      && near(turn.end.rotation, 10.0, 1e-9));
+        }
+    }
+
     delete scene;
     QDir(scratch).removeRecursively();
     ts << "\nRESULT " << (g_failures ? "FAIL" : "PASS") << " (checks=" << g_checks

@@ -5,6 +5,7 @@
 #include "AnimaticPage.h"
 #include "AnimaticTimeline.h"
 #include "ColorPanel.h"
+#include "SankoIcons.h"
 #include "SankoTimelineTheme.h"
 
 #include "DrawingCanvas.h"
@@ -38,6 +39,11 @@
 #include <memory>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDoubleSpinBox>
+#include <QGridLayout>
+#include <QHideEvent>
+#include <QSpinBox>
+#include <QStandardItemModel>
 #include <QCoreApplication>
 #include <QEvent>
 #include <QFileDialog>
@@ -2173,6 +2179,138 @@ protected:
     }
 };
 
+// --- The Quick Move popover (Phase 1D, Figma 1D-1) -------------------------------
+
+// The eight moves: their icon, their name in object names, in the grid's order.
+struct QuickMoveInfo
+{
+    shotcam::QuickMove move;
+    const char *icon;
+    const char *name;
+};
+const QuickMoveInfo kQuickMoves[] = {
+    {shotcam::QuickMove::PushIn, "quick_push_in", "PushIn"},
+    {shotcam::QuickMove::PullOut, "quick_pull_out", "PullOut"},
+    {shotcam::QuickMove::PanLeft, "quick_pan_left", "PanLeft"},
+    {shotcam::QuickMove::PanRight, "quick_pan_right", "PanRight"},
+    {shotcam::QuickMove::TiltUp, "quick_tilt_up", "TiltUp"},
+    {shotcam::QuickMove::TiltDown, "quick_tilt_down", "TiltDown"},
+    {shotcam::QuickMove::RotateLeft, "quick_rotate_left", "RotateLeft"},
+    {shotcam::QuickMove::RotateRight, "quick_rotate_right", "RotateRight"},
+};
+
+QIcon quickMoveIcon(const QuickMoveInfo &info, int size, const QColor &tint)
+{
+    return SankoIcons::icon(QStringLiteral(":/icons/camera/%1.svg").arg(QLatin1String(info.icon)),
+                            QSize(size, size), tint);
+}
+
+// "1.25x", "0.8x", "25 %", "10 deg": what a move does at these amounts.
+QString quickAmountText(shotcam::QuickMove move, const shotcam::QuickAmounts &a)
+{
+    switch (move) {
+    case shotcam::QuickMove::PushIn:
+        return QString::number(a.zoom, 'g', 3) + QChar(0x00D7);
+    case shotcam::QuickMove::PullOut:
+        return QString::number(1.0 / a.zoom, 'g', 3) + QChar(0x00D7);
+    case shotcam::QuickMove::PanLeft:
+    case shotcam::QuickMove::PanRight:
+    case shotcam::QuickMove::TiltUp:
+    case shotcam::QuickMove::TiltDown:
+        return QStringLiteral("%1 %").arg(qRound(a.move * 100.0));
+    case shotcam::QuickMove::RotateLeft:
+    case shotcam::QuickMove::RotateRight:
+        return QString::number(a.turn, 'g', 3) + QChar(0x00B0);
+    }
+    return QString();
+}
+
+// A move's tile: the hover is the preview, the click applies it.
+class QuickTile : public QToolButton
+{
+public:
+    using QToolButton::QToolButton;
+    std::function<void()> onEnter, onLeave;
+
+protected:
+    void enterEvent(QEnterEvent *e) override
+    {
+        QToolButton::enterEvent(e);
+        if (onEnter)
+            onEnter();
+    }
+    void leaveEvent(QEvent *e) override
+    {
+        QToolButton::leaveEvent(e);
+        if (onLeave)
+            onLeave();
+    }
+};
+
+// The popover itself: a popup that says when it closes (the preview ends).
+class QuickPopover : public QFrame
+{
+public:
+    explicit QuickPopover(QWidget *parent) : QFrame(parent, Qt::Popup) {}
+    std::function<void()> onHidden;
+
+protected:
+    void hideEvent(QHideEvent *e) override
+    {
+        QFrame::hideEvent(e);
+        if (onHidden)
+            onHidden();
+    }
+};
+
+// The popover's amounts take the mouse wheel only once clicked: a wheel
+// passing over a field stepped it, and the step is remembered between
+// launches (the 1D hand test opened on Zoom 1.05x, the field's minimum).
+// A press on the field (its arrows or its text) arms it; losing focus or
+// the popover closing disarms it.
+class WheelAfterClick : public QObject
+{
+public:
+    using QObject::QObject;
+    void guard(QAbstractSpinBox *box)
+    {
+        box->setFocusPolicy(Qt::StrongFocus); // a wheel no longer takes focus
+        box->installEventFilter(this);
+        if (auto *edit = box->findChild<QLineEdit *>())
+            edit->installEventFilter(this);
+    }
+    static void disarm(QAbstractSpinBox *box) { box->setProperty("wheelArmed", false); }
+
+protected:
+    bool eventFilter(QObject *object, QEvent *event) override
+    {
+        auto *box = qobject_cast<QAbstractSpinBox *>(object);
+        if (!box)
+            box = qobject_cast<QAbstractSpinBox *>(object->parent());
+        if (!box)
+            return false;
+        switch (event->type()) {
+        case QEvent::MouseButtonPress:
+            box->setProperty("wheelArmed", true);
+            break;
+        case QEvent::FocusOut:
+            if (object == box)
+                disarm(box);
+            break;
+        case QEvent::Wheel:
+            // The text's wheel reaches the box too: refuse it there.
+            if (object == box && !box->property("wheelArmed").toBool()) {
+                event->ignore();
+                return true;
+            }
+            break;
+        default:
+            break;
+        }
+        return false;
+    }
+};
+
 } // namespace
 
 // ONE reusable tooltip for the Floating Brush Toolbar. Every tooltip appears
@@ -4281,6 +4419,25 @@ QWidget *StoryboardPage::createCameraPanel()
     row->addWidget(delKey, 0, Qt::AlignVCenter);
     row->addWidget(next, 0, Qt::AlignVCenter);
     divider();
+    // QUICK MOVE (Phase 1D, Figma 1D-1): opens the popover above it.
+    auto *quick = new QToolButton(bar);
+    quick->setObjectName(QStringLiteral("camQuickMove"));
+    quick->setText(QStringLiteral("Quick Move"));
+    quick->setIcon(quickMoveIcon(kQuickMoves[0], 20, QColor(0xdd, 0xdd, 0xdd)));
+    quick->setIconSize(QSize(20, 20));
+    quick->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    quick->setFont(cameraBarFont());
+    quick->setCursor(Qt::PointingHandCursor);
+    quick->setFixedHeight(30);
+    quick->setToolTip(QStringLiteral("A whole camera move in one click: two keys over the span"));
+    quick->setStyleSheet(QStringLiteral(
+        "QToolButton{color:#dddddd;background:transparent;border:none;border-radius:6px;"
+        "padding:0 8px;}"
+        "QToolButton:hover{background:rgba(124,110,246,0.14);color:#7c6ef6;}"
+        "QToolButton:pressed{background:rgba(124,110,246,0.26);color:#7c6ef6;}"
+        "QToolButton:disabled{color:#666666;}"));
+    row->addWidget(quick, 0, Qt::AlignVCenter);
+    divider();
     QLabel *easeLabelW = label(QStringLiteral("Ease"), true);
     row->addWidget(easeLabelW, 0, Qt::AlignVCenter);
     auto *ease = new CamEaseField(bar);
@@ -4347,16 +4504,181 @@ QWidget *StoryboardPage::createCameraPanel()
     connect(prev, &QAbstractButton::clicked, this, [this] { cameraStepKey(-1); });
     connect(next, &QAbstractButton::clicked, this, [this] { cameraStepKey(+1); });
 
+    // The Quick Move popover: the eight moves, the three remembered amounts,
+    // the span and the ease (Figma 1D-1). Hovering a move previews it; a
+    // click applies it and closes the popover; closing ends the preview.
+    {
+        const shotcam::QuickAmounts loaded = [] {
+            shotcam::QuickAmounts a;
+            a.zoom = qBound(1.05, sankoSettings().value(kCameraQuickKey + QStringLiteral("Zoom"), 1.25).toDouble(), 4.0);
+            a.move = qBound(0.05, sankoSettings().value(kCameraQuickKey + QStringLiteral("Move"), 0.25).toDouble(), 0.9);
+            a.turn = qBound(1.0, sankoSettings().value(kCameraQuickKey + QStringLiteral("Turn"), 10.0).toDouble(), 90.0);
+            return a;
+        }();
+        m_quickAmounts = loaded;
+    }
+    auto *pop = new QuickPopover(this);
+    m_quickPopover = pop;
+    pop->setObjectName(QStringLiteral("camQuickPopover"));
+    pop->setStyleSheet(QStringLiteral(
+        "QFrame#camQuickPopover{background:#161616;border:1px solid #2a2a2a;border-radius:8px;}"
+        "QLabel{color:#9a9aa2;background:transparent;font-size:11px;}"
+        "QLabel#camQuickTitle{color:#e5e5ed;font-size:12px;}"
+        "QLabel#camQuickSpanText,QLabel[note=\"true\"]{color:#6f6f76;font-size:10px;}"
+        "QToolButton{background:#1f1f22;border:1px solid #2a2a2a;border-radius:6px;"
+        "color:#cccccc;font-size:11px;padding:4px 0 2px 0;}"
+        "QToolButton:hover{background:rgba(124,110,246,0.14);border-color:#7c6ef6;color:#ffffff;}"
+        "QToolButton:disabled{color:#555555;}"
+        "QDoubleSpinBox,QSpinBox,QComboBox{background:#333333;color:#e5e5ed;border:none;"
+        "border-radius:5px;padding:3px 6px;font-size:11px;min-height:18px;}"
+        "QComboBox QAbstractItemView{background:#161616;color:#cccccc;"
+        "selection-background-color:#262626;border:1px solid #2a2a2a;}"));
+    auto *pv = new QVBoxLayout(pop);
+    pv->setContentsMargins(16, 12, 16, 14);
+    pv->setSpacing(10);
+    auto *head = new QHBoxLayout;
+    auto *titleL = new QLabel(QStringLiteral("Quick Move"), pop);
+    titleL->setObjectName(QStringLiteral("camQuickTitle"));
+    auto *spanL = new QLabel(pop);
+    spanL->setObjectName(QStringLiteral("camQuickSpanText"));
+    head->addWidget(titleL);
+    head->addSpacing(8);
+    head->addWidget(spanL, 1);
+    pv->addLayout(head);
+    auto *grid = new QGridLayout;
+    grid->setSpacing(8);
+    for (int i = 0; i < 8; ++i) {
+        const QuickMoveInfo &info = kQuickMoves[i];
+        auto *tile = new QuickTile(pop);
+        tile->setObjectName(QStringLiteral("camQuick") + QLatin1String(info.name));
+        tile->setText(shotcam::quickMoveLabel(info.move));
+        tile->setIcon(quickMoveIcon(info, 20, QColor(0xe5, 0xe5, 0xed)));
+        tile->setIconSize(QSize(20, 20));
+        tile->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
+        tile->setFixedSize(74, 58);
+        tile->setCursor(Qt::PointingHandCursor);
+        const shotcam::QuickMove move = info.move;
+        tile->onEnter = [this, move] { showQuickPreview(move); };
+        tile->onLeave = [this] { clearQuickPreview(); };
+        connect(tile, &QToolButton::clicked, this, [this, move, pop] {
+            pop->hide();
+            cameraQuickMove(move);
+        });
+        grid->addWidget(tile, i / 4, i % 4);
+    }
+    pv->addLayout(grid);
+    auto *form = new QGridLayout;
+    form->setHorizontalSpacing(10);
+    form->setVerticalSpacing(8);
+    auto addRow = [pop, form](int r, const QString &text, QWidget *field, const QString &note) {
+        form->addWidget(new QLabel(text, pop), r, 0);
+        field->setFixedWidth(120);
+        form->addWidget(field, r, 1);
+        auto *n = new QLabel(note, pop);
+        n->setProperty("note", true);
+        form->addWidget(n, r, 2);
+    };
+    auto *zoomS = new QDoubleSpinBox(pop);
+    zoomS->setObjectName(QStringLiteral("camQuickZoom"));
+    zoomS->setRange(1.05, 4.0);
+    zoomS->setSingleStep(0.05);
+    zoomS->setDecimals(2);
+    zoomS->setSuffix(QString(QChar(0x00D7)));
+    auto *moveS = new QSpinBox(pop);
+    moveS->setObjectName(QStringLiteral("camQuickMoveAmount"));
+    moveS->setRange(5, 90);
+    moveS->setSingleStep(5);
+    moveS->setSuffix(QStringLiteral(" %"));
+    auto *turnS = new QSpinBox(pop);
+    turnS->setObjectName(QStringLiteral("camQuickTurn"));
+    turnS->setRange(1, 90);
+    turnS->setSuffix(QString(QChar(0x00B0)));
+    auto *overC = new QComboBox(pop);
+    overC->setObjectName(QStringLiteral("camQuickOver"));
+    overC->addItems({QStringLiteral("This panel"), QStringLiteral("To the scene's end"),
+                     QStringLiteral("The loop region")});
+    auto *easeC = new QComboBox(pop);
+    easeC->setObjectName(QStringLiteral("camQuickEase"));
+    for (shotcam::Ease e : {shotcam::Ease::Linear, shotcam::Ease::EaseIn, shotcam::Ease::EaseOut,
+                            shotcam::Ease::EaseInOut, shotcam::Ease::Hold})
+        easeC->addItem(shotcam::easeLabel(e), int(e));
+    addRow(0, QStringLiteral("Zoom"), zoomS, QStringLiteral("Push In; Pull Out uses its inverse"));
+    addRow(1, QStringLiteral("Move"), moveS, QStringLiteral("Pan, Tilt (of the frame)"));
+    addRow(2, QStringLiteral("Turn"), turnS, QStringLiteral("Rotate"));
+    addRow(3, QStringLiteral("Over"), overC, QString());
+    addRow(4, QStringLiteral("Ease"), easeC, QString());
+    // Over and Ease as wide as their longest entry, with a little air before
+    // the arrow: at the fields' 120 px "To the scene's end" read "To the
+    // scene's enc" (the 1D hand test).
+    overC->ensurePolished();
+    easeC->ensurePolished();
+    const int comboW = qMax(120, qMax(overC->sizeHint().width(), easeC->sizeHint().width()) + 8);
+    overC->setFixedWidth(comboW);
+    easeC->setFixedWidth(comboW);
+    pv->addLayout(form);
+    auto *wheelGuard = new WheelAfterClick(pop);
+    wheelGuard->guard(zoomS);
+    wheelGuard->guard(moveS);
+    wheelGuard->guard(turnS);
+    auto syncPopover = [this, zoomS, moveS, turnS, overC, easeC, spanL] {
+        const QSignalBlocker b1(zoomS), b2(moveS), b3(turnS), b4(overC), b5(easeC);
+        zoomS->setValue(m_quickAmounts.zoom);
+        moveS->setValue(qRound(m_quickAmounts.move * 100.0));
+        turnS->setValue(qRound(m_quickAmounts.turn));
+        overC->setCurrentIndex(int(m_quickSpan));
+        easeC->setCurrentIndex(easeC->findData(int(m_quickEase)));
+        // The loop region is offered only when it lies inside one scene.
+        int a = -1, b = -1, sa = -1, sb = -1, pa = -1, pb = -1;
+        const bool loopOk = m_animatic && m_animatic->loopRegion(&a, &b)
+            && flatToScenePanel(a, &sa, &pa) && flatToScenePanel(b, &sb, &pb) && sa == sb;
+        if (auto *model = qobject_cast<QStandardItemModel *>(overC->model()))
+            if (QStandardItem *item = model->item(int(QuickSpan::LoopRegion)))
+                item->setEnabled(loopOk);
+        spanL->setText(quickSpanText(m_currentScene, m_currentPanel));
+    };
+    auto amountsChanged = [this, zoomS, moveS, turnS, spanL] {
+        shotcam::QuickAmounts a;
+        a.zoom = zoomS->value();
+        a.move = moveS->value() / 100.0;
+        a.turn = turnS->value();
+        setQuickAmounts(a);
+        spanL->setText(quickSpanText(m_currentScene, m_currentPanel));
+    };
+    connect(zoomS, &QDoubleSpinBox::valueChanged, this, amountsChanged);
+    connect(moveS, &QSpinBox::valueChanged, this, amountsChanged);
+    connect(turnS, &QSpinBox::valueChanged, this, amountsChanged);
+    connect(overC, &QComboBox::currentIndexChanged, this, [this, spanL](int i) {
+        m_quickSpan = QuickSpan(qBound(0, i, 2));
+        spanL->setText(quickSpanText(m_currentScene, m_currentPanel));
+    });
+    connect(easeC, &QComboBox::currentIndexChanged, this, [this, easeC](int) {
+        m_quickEase = shotcam::Ease(easeC->currentData().toInt());
+    });
+    pop->onHidden = [this, zoomS, moveS, turnS] {
+        clearQuickPreview();
+        WheelAfterClick::disarm(zoomS);
+        WheelAfterClick::disarm(moveS);
+        WheelAfterClick::disarm(turnS);
+    };
+    connect(quick, &QToolButton::clicked, this, [this, quick, pop, syncPopover] {
+        syncPopover();
+        pop->adjustSize();
+        const QPoint at = quick->mapToGlobal(QPoint(quick->width() / 2 - pop->width() / 2,
+                                                    -pop->height() - 8));
+        pop->move(at);
+        pop->show();
+    });
+
     // The hover notes: each control's own tooltip is kept in "camTip" so a
     // note can stand in for it and the original come back.
-    const QList<QWidget *> controls{animate, prev, addKey, delKey, next, ease,
+    const QList<QWidget *> controls{animate, prev, addKey, delKey, next, quick, ease,
                                     inside, safe, title};
     for (QWidget *w : controls)
         w->setProperty("camTip", w->toolTip());
 
     // Bar <- the scene, the playhead and the preview.
     m_syncCameraBar = [this, bar, animate, inside, safe, title, prev, addKey, delKey,
-                       next, ease, easeLabelW, menu, controls] {
+                       next, quick, ease, easeLabelW, menu, controls] {
         animate->setOn(m_cameraAnimate);
         inside->setOn(m_cameraStayInside);
         safe->setOn(m_canvas->isSafeAreaEnabled());
@@ -4399,6 +4721,7 @@ QWidget *StoryboardPage::createCameraPanel()
         addKey->setText(keyHere >= 0 ? QStringLiteral("Key set")
                                      : QStringLiteral("Add Key"));
         delKey->setEnabled(!covered && keyHere >= 0);
+        quick->setEnabled(!covered && valid);
         ease->setEnabled(!covered && segment >= 0 && !lastKey);
         easeLabelW->setEnabled(!covered && segment >= 0 && !lastKey);
         if (!covered && lastKey)
@@ -4511,6 +4834,13 @@ DrawingCanvas::ShotCameraView StoryboardPage::shotCameraView() const
             film += shotcam::panelFrames(*p, fps);
     }
     v.timecode = shotcam::timecodeText(film + int(at), fps);
+    // A Quick Move under the pointer, on this scene (Phase 1D).
+    if (m_quickPreviewValid && m_quickPreviewScene >= 0 && m_quickPreviewScene < m_scenes.size()
+        && m_scenes.at(m_quickPreviewScene) == scene) {
+        v.previewValid = true;
+        v.previewStart = m_quickPreviewStart;
+        v.previewEnd = m_quickPreviewEnd;
+    }
     return v;
 }
 
@@ -4913,6 +5243,318 @@ void StoryboardPage::cameraAddKeyAtPlayhead(bool paste)
     }
 }
 
+// --- The Quick Moves and the scene framing (Phase 1D) -------------------------------
+
+const QString StoryboardPage::kCameraQuickKey = QStringLiteral("storyboard/cameraQuick");
+
+void StoryboardPage::setQuickAmounts(const shotcam::QuickAmounts &amounts)
+{
+    m_quickAmounts = amounts;
+    sankoSettings().setValue(kCameraQuickKey + QStringLiteral("Zoom"), amounts.zoom);
+    sankoSettings().setValue(kCameraQuickKey + QStringLiteral("Move"), amounts.move);
+    sankoSettings().setValue(kCameraQuickKey + QStringLiteral("Turn"), amounts.turn);
+}
+
+int StoryboardPage::sceneFilmStart(int sceneIndex) const
+{
+    const int fps = cameraFps();
+    int film = 0;
+    for (int s = 0; s < sceneIndex && s < m_scenes.size(); ++s)
+        for (const Panel *p : m_scenes.at(s)->panels)
+            film += shotcam::panelFrames(*p, fps);
+    return film;
+}
+
+bool StoryboardPage::quickMovePlan(shotcam::QuickMove move, int sceneIndex, int panelIndex,
+                                   QuickSpan span, QuickPlan *plan, QString *why) const
+{
+    const int fps = cameraFps();
+    int si = sceneIndex, sp = panelIndex, ep = panelIndex;
+    if (span == QuickSpan::LoopRegion) {
+        int a = -1, b = -1, sa = -1, pa = -1, sb = -1, pb = -1;
+        if (!m_animatic || !m_animatic->loopRegion(&a, &b) || !flatToScenePanel(a, &sa, &pa)
+            || !flatToScenePanel(b, &sb, &pb) || sa != sb) {
+            *why = QStringLiteral("Set a loop region inside one scene first.");
+            return false;
+        }
+        si = sa;
+        sp = pa;
+        ep = pb;
+    }
+    if (si < 0 || si >= m_scenes.size())
+        return false;
+    const Scene *scene = m_scenes.at(si);
+    if (sp < 0 || sp >= scene->panels.size() || ep < sp || ep >= scene->panels.size())
+        return false;
+    if (span == QuickSpan::ToSceneEnd)
+        ep = scene->panels.size() - 1;
+    plan->sceneIndex = si;
+    plan->startPanel = sp;
+    plan->endPanel = ep;
+    plan->startFrame = shotcam::panelStartFrame(*scene, sp, fps);
+    const int endFrames = shotcam::panelFrames(*scene->panels.at(ep), fps);
+    plan->endFrame = shotcam::panelStartFrame(*scene, ep, fps) + endFrames;
+    // START: the camera as it already is at the span's first frame.
+    const shotcam::CameraState start = shotcam::evaluateAtPanel(*scene, sp, 0, fps);
+    plan->frames = shotcam::quickMove(move, start, m_quickAmounts,
+                                      scene->panels.at(sp)->canvasSize(), m_cameraStayInside);
+    if (!plan->frames.moves) {
+        *why = QStringLiteral("No room for this move: the zoom is at its limit.");
+        return false;
+    }
+    // The END key keeps the ease the move through its frame had.
+    shotcam::Ease endEase = shotcam::Ease::EaseInOut;
+    const int through = shotcam::segmentKeyIndex(*scene, plan->endFrame, fps);
+    if (through >= 0)
+        endEase = scene->camera.keys.at(through).ease;
+    // Keys inside the span, or on its ends, give way; the rest stay.
+    plan->after.keys.clear();
+    plan->replaced.clear();
+    for (int k = 0; k < scene->camera.keys.size(); ++k) {
+        const double f = shotcam::keyFrame(*scene, scene->camera.keys.at(k), fps);
+        if (f >= 0.0 && f > plan->startFrame - 0.5 && f < plan->endFrame + 0.5)
+            plan->replaced.append(k);
+        else
+            plan->after.keys.append(scene->camera.keys.at(k));
+    }
+    plan->after.keys.append(shotcam::makeKey(*scene, sp, 0, fps, plan->frames.start, m_quickEase));
+    plan->after.keys.append(shotcam::makeKey(*scene, ep, endFrames, fps, plan->frames.end, endEase));
+    return true;
+}
+
+void StoryboardPage::applyQuickPlan(const QuickPlan &plan)
+{
+    Scene *scene = m_scenes.value(plan.sceneIndex);
+    if (!scene)
+        return;
+    pushCameraEdit(scene, scene->camera, plan.after, QStringLiteral("Quick Camera Move"));
+}
+
+void StoryboardPage::cameraQuickMove(shotcam::QuickMove move)
+{
+    clearQuickPreview();
+    Scene *scene = nullptr;
+    int pi = 0, frame = 0;
+    if (!cameraTarget(&scene, &pi, &frame) || !m_undoStack || refuseCameraEdit())
+        return;
+    QuickPlan plan;
+    QString why;
+    if (quickMovePlan(move, m_currentScene, pi, m_quickSpan, &plan, &why))
+        applyQuickPlan(plan);
+    else if (!why.isEmpty())
+        sayNote(why);
+}
+
+// The menus' entry: "Quick Move on Panel N" moves over panel N only, whatever
+// the popover's Over says (the 1D hand test: Over left at "To the scene's
+// end" made the row menu's Panel 2 move run to panel 11).
+void StoryboardPage::cameraQuickMoveOnPanel(shotcam::QuickMove move, int flatPanel)
+{
+    int si = -1, pi = -1;
+    if (!flatToScenePanel(flatPanel, &si, &pi) || !m_undoStack || refuseCameraEdit())
+        return;
+    QuickPlan plan;
+    QString why;
+    if (quickMovePlan(move, si, pi, QuickSpan::ThisPanel, &plan, &why))
+        applyQuickPlan(plan);
+    else if (!why.isEmpty())
+        sayNote(why);
+}
+
+void StoryboardPage::showQuickPreview(shotcam::QuickMove move)
+{
+    Scene *scene = nullptr;
+    int pi = 0, frame = 0;
+    QuickPlan plan;
+    QString why;
+    if (!cameraTarget(&scene, &pi, &frame)
+        || !quickMovePlan(move, m_currentScene, pi, m_quickSpan, &plan, &why)) {
+        clearQuickPreview();
+        return;
+    }
+    m_quickPreviewValid = true;
+    m_quickPreviewScene = plan.sceneIndex;
+    m_quickPreviewStart = plan.frames.start;
+    m_quickPreviewEnd = plan.frames.end;
+    if (m_canvas)
+        m_canvas->refreshShotCamera();
+    if (m_animatic) {
+        const int film = sceneFilmStart(plan.sceneIndex);
+        m_animatic->setCameraPreview(plan.sceneIndex, film + plan.startFrame,
+                                     film + plan.endFrame, plan.replaced);
+    }
+}
+
+void StoryboardPage::clearQuickPreview()
+{
+    m_quickPreviewValid = false;
+    if (m_canvas)
+        m_canvas->refreshShotCamera();
+    if (m_animatic)
+        m_animatic->clearCameraPreview();
+}
+
+// "over panel 3 · 00:00:06:00 – 00:00:09:00" (or "panels 2–4"): the span the
+// popover's moves would cover, or why there is none.
+QString StoryboardPage::quickSpanText(int sceneIndex, int panelIndex) const
+{
+    QuickPlan plan;
+    QString why;
+    if (!quickMovePlan(shotcam::QuickMove::PushIn, sceneIndex, panelIndex, m_quickSpan, &plan, &why)
+        && plan.sceneIndex < 0)
+        return why;
+    const int fps = cameraFps();
+    const int film = sceneFilmStart(plan.sceneIndex);
+    int first = plan.startPanel + 1;
+    for (int s = 0; s < plan.sceneIndex; ++s)
+        first += m_scenes.at(s)->panels.size();
+    const int last = first + (plan.endPanel - plan.startPanel);
+    const QString panels = first == last ? QStringLiteral("over panel %1").arg(first)
+                                         : QStringLiteral("over panels %1–%2").arg(first).arg(last);
+    return QString::fromUtf8("%1 \xC2\xB7 %2 \xE2\x80\x93 %3")
+        .arg(panels, shotcam::timecodeText(film + int(plan.startFrame), fps),
+             shotcam::timecodeText(film + int(plan.endFrame), fps));
+}
+
+void StoryboardPage::addQuickMoveEntries(QMenu *menu, const QString &title, int flatPanel)
+{
+    QMenu *sub = menu->addMenu(title);
+    sub->setObjectName(QStringLiteral("cameraQuickMenu"));
+    sub->setStyleSheet(menu->styleSheet());
+    for (const QuickMoveInfo &info : kQuickMoves) {
+        QAction *a = sub->addAction(quickMoveIcon(info, 16, QColor(0xcc, 0xcc, 0xcc)),
+                                    shotcam::quickMoveLabel(info.move) + QLatin1Char('\t')
+                                        + quickAmountText(info.move, m_quickAmounts));
+        a->setObjectName(QStringLiteral("quick") + QLatin1String(info.name));
+        const shotcam::QuickMove move = info.move;
+        connect(a, &QAction::triggered, this,
+                [this, move, flatPanel] { cameraQuickMoveOnPanel(move, flatPanel); });
+    }
+    sub->menuAction()->setEnabled(!cameraLocked() && flatPanel >= 0);
+}
+
+// The previous scene's camera at its last frame - or the whole canvas when it
+// has no keys (*whole).
+shotcam::CameraState StoryboardPage::lastFramingOf(int sceneIndex, bool *whole) const
+{
+    const Scene *scene = m_scenes.value(sceneIndex);
+    *whole = true;
+    if (!scene || scene->panels.isEmpty())
+        return shotcam::CameraState();
+    const int last = scene->panels.size() - 1;
+    if (shotcam::liveKeyCount(*scene) == 0)
+        return shotcam::neutral(scene->panels.at(last)->canvasSize());
+    *whole = false;
+    const int fps = cameraFps();
+    return shotcam::evaluateAtPanel(*scene, last,
+                                    shotcam::panelFrames(*scene->panels.at(last), fps) - 1, fps);
+}
+
+void StoryboardPage::cameraUseLastFraming(int sceneIndex)
+{
+    if (sceneIndex <= 0 || sceneIndex >= m_scenes.size() || !m_undoStack || refuseCameraEdit())
+        return;
+    Scene *scene = m_scenes.at(sceneIndex);
+    bool whole = true;
+    const shotcam::CameraState framing = lastFramingOf(sceneIndex - 1, &whole);
+    const int fps = cameraFps();
+    shotcam::SceneCamera after;
+    for (const shotcam::CameraKey &key : scene->camera.keys)
+        if (shotcam::keyFrame(*scene, key, fps) < 0.0)
+            after.keys.append(key); // inert keys stay, as with the single framing
+    if (!whole)
+        after.keys.append(shotcam::makeKey(*scene, 0, 0, fps, framing));
+    if (whole && shotcam::liveKeyCount(*scene) == 0)
+        return; // the whole canvas already
+    pushCameraEdit(scene, scene->camera, after, QStringLiteral("Use Last Framing"));
+}
+
+void StoryboardPage::cameraContinue(int sceneIndex)
+{
+    if (sceneIndex <= 0 || sceneIndex >= m_scenes.size() || !m_undoStack || refuseCameraEdit())
+        return;
+    Scene *scene = m_scenes.at(sceneIndex);
+    bool whole = true;
+    const shotcam::CameraState framing = lastFramingOf(sceneIndex - 1, &whole);
+    const int fps = cameraFps();
+    shotcam::SceneCamera after = scene->camera;
+    const int first = shotcam::keyIndexAtFrame(*scene, 0, fps);
+    if (first >= 0) {
+        if (after.keys.at(first).state == framing)
+            return;
+        after.keys[first].state = framing;
+    } else {
+        after.keys.append(shotcam::makeKey(*scene, 0, 0, fps, framing));
+    }
+    pushCameraEdit(scene, scene->camera, after, QStringLiteral("Continue Camera"));
+}
+
+// "Use Last Framing of Scene 1 (replaces 2 keys)" / "Continue Camera from
+// Scene 1" (Figma 1D-4): disabled on the first scene and on a locked track.
+void StoryboardPage::addSceneCameraEntries(QMenu *menu, int sceneIndex)
+{
+    const Scene *scene = m_scenes.value(sceneIndex);
+    if (!scene)
+        return;
+    QAction *use = nullptr;
+    QAction *cont = nullptr;
+    if (sceneIndex == 0) {
+        use = menu->addAction(QString::fromUtf8("Use Last Framing \xE2\x80\x94 no scene before this one"));
+        cont = menu->addAction(QString::fromUtf8("Continue Camera \xE2\x80\x94 no scene before this one"));
+        use->setEnabled(false);
+        cont->setEnabled(false);
+    } else {
+        const int prev = m_scenes.at(sceneIndex - 1)->number;
+        bool whole = true;
+        lastFramingOf(sceneIndex - 1, &whole);
+        const int live = shotcam::liveKeyCount(*scene);
+        QString useText = QStringLiteral("Use Last Framing of Scene %1").arg(prev);
+        if (whole)
+            useText += QStringLiteral(" (the whole canvas)");
+        else if (live > 0)
+            useText += live == 1 ? QStringLiteral(" (replaces 1 key)")
+                                 : QStringLiteral(" (replaces %1 keys)").arg(live);
+        QString contText = QStringLiteral("Continue Camera from Scene %1").arg(prev);
+        if (whole)
+            contText += QStringLiteral(" (the whole canvas)");
+        use = menu->addAction(useText);
+        cont = menu->addAction(contText);
+        use->setEnabled(!cameraLocked());
+        cont->setEnabled(!cameraLocked());
+        connect(use, &QAction::triggered, this, [this, sceneIndex] { cameraUseLastFraming(sceneIndex); });
+        connect(cont, &QAction::triggered, this, [this, sceneIndex] { cameraContinue(sceneIndex); });
+    }
+    use->setObjectName(QStringLiteral("cameraUseLastFraming"));
+    cont->setObjectName(QStringLiteral("cameraContinue"));
+}
+
+void StoryboardPage::onSceneMenu(int sceneIndex, const QPoint &globalPos)
+{
+    const Scene *scene = m_scenes.value(sceneIndex);
+    if (!scene)
+        return;
+    QMenu menu(this);
+    menu.setObjectName(QStringLiteral("sceneMenu"));
+    menu.setStyleSheet(SankoTimelineTheme::kSpeedMenuSheet
+                       + QStringLiteral("QMenu::item:disabled { color: #5c5c62; }"
+                                        "QMenu::separator { height: 1px; background: #2a2a2a; "
+                                        "margin: 4px 0; }"));
+    QAction *title = menu.addAction(
+        cameraLocked() ? QStringLiteral("The CAMERA track is locked")
+                       : (scene->location.isEmpty()
+                              ? QStringLiteral("Scene %1").arg(scene->number)
+                              : QString::fromUtf8("Scene %1 \xC2\xB7 %2").arg(scene->number).arg(scene->location)));
+    title->setObjectName(QStringLiteral("sceneMenuHeader"));
+    title->setEnabled(false);
+    menu.addSeparator();
+    addSceneCameraEntries(&menu, sceneIndex);
+    if (m_clipMenuHookForTest) {
+        m_clipMenuHookForTest(&menu);
+        return;
+    }
+    menu.exec(globalPos);
+}
+
 bool StoryboardPage::cameraKeyAtPlayhead() const
 {
     if (!m_animatic)
@@ -5111,7 +5753,7 @@ void StoryboardPage::onCameraKeyMenu(int sceneIndex, int keyIndex, const QPoint 
     menu.exec(globalPos);
 }
 
-void StoryboardPage::onCameraRowMenu(const QPoint &globalPos)
+void StoryboardPage::onCameraRowMenu(int flatPanel, const QPoint &globalPos)
 {
     const bool locked = cameraLocked();
     QMenu menu(this);
@@ -5138,6 +5780,16 @@ void StoryboardPage::onCameraRowMenu(const QPoint &globalPos)
     paste->setObjectName(QStringLiteral("cameraPasteFramingAtPlayhead"));
     paste->setEnabled(!locked && m_hasCameraFraming && m_animatic && m_animatic->playheadPanel());
     connect(paste, &QAction::triggered, this, [this] { cameraAddKeyAtPlayhead(true); });
+    // Phase 1D: a Quick Move on the panel under the click, and the scene's
+    // framing entries (Figma 1D-3).
+    int si = -1, pi = -1;
+    if (flatToScenePanel(flatPanel, &si, &pi)) {
+        menu.addSeparator();
+        addQuickMoveEntries(&menu, QStringLiteral("Quick Move on Panel %1").arg(flatPanel + 1),
+                            flatPanel);
+        menu.addSeparator();
+        addSceneCameraEntries(&menu, si);
+    }
     if (m_clipMenuHookForTest) {
         m_clipMenuHookForTest(&menu);
         return;
@@ -5942,6 +6594,8 @@ void StoryboardPage::setupAnimaticSection(QWidget *centerColumn,
             &StoryboardPage::onCameraRowMenu);
     connect(m_animatic, &AnimaticPage::cameraAnimateToggled, this,
             &StoryboardPage::setCameraAnimate);
+    connect(m_animatic, &AnimaticPage::sceneContextMenuRequested, this,
+            &StoryboardPage::onSceneMenu);
     connect(m_animatic, &AnimaticPage::tracksChanged, this, [this] {
         if (m_canvas)
             m_canvas->refreshShotCamera();
@@ -6186,6 +6840,9 @@ void StoryboardPage::onClipContextMenu(int flat, const QPoint &globalPos)
             a->setText(a->text() + QStringLiteral(" (locked)"));
         }
     }
+    // Phase 1D: a Quick Move on this clip (Figma 1D-3).
+    menu.addSeparator();
+    addQuickMoveEntries(&menu, QStringLiteral("Quick Camera Move"), currentFlatIndex());
     if (m_clipMenuHookForTest) {
         m_clipMenuHookForTest(&menu);
         return;
@@ -6994,6 +7651,15 @@ bool StoryboardPage::eventFilter(QObject *object, QEvent *event)
         }
     }
 
+    // Scene cards: the scene's camera menu, the SCENES row's own (Use Last
+    // Framing / Continue Camera) - the 1D hand test looked for it here.
+    if (event->type() == QEvent::ContextMenu) {
+        const QVariant sceneIdx = object->property("sceneIndex");
+        if (sceneIdx.isValid()) {
+            onSceneMenu(sceneIdx.toInt(), static_cast<QContextMenuEvent *>(event)->globalPos());
+            return true;
+        }
+    }
     // Scene cards: select on click.
     if (event->type() == QEvent::MouseButtonPress
         && static_cast<QMouseEvent *>(event)->button() == Qt::LeftButton) {

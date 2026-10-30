@@ -132,4 +132,23 @@ void fromJson(const QJsonObject &obj, Scene &scene, int *dropped = nullptr);
 void remapForResize(SceneCamera &camera, const QSize &oldSize,
                     const QSize &newSize, const QPoint &offset);
 
+// THE QUICK MOVES (Phase 1D, 2026-10-29; Figma 1D-1 to 1D-5). A whole move
+// from one framing: Push In / Pull Out by the Zoom (Pull Out by its
+// inverse), Pan / Tilt by the Move (a fraction of the frame, along the
+// frame's own axes, so a turned frame pans the way it looks), Rotate by
+// the Turn. Pure: the workspace puts START and END on the span's two keys.
+// (QuickMove, QuickAmounts and QuickFrames are in CameraModel.h.)
+QString quickMoveLabel(QuickMove move); // "Push In" .. "Rotate Right"
+// With STAY INSIDE ARTWORK on, END is clamped onto the artwork, and when
+// that would leave less than the whole move the START gives way just
+// enough (the user's decisions 3 and 4, 2026-10-29): a Pan or Tilt first
+// slides the start back along the move, then pushes it in, until the full
+// distance fits; a Pull Out with no room to pull starts pushed in by the
+// Zoom and ends at the whole artwork; a Rotate pushes the END in just far
+// enough for the turned frame. With it off nothing is clamped but the
+// zoom's 0.5x .. 4x.
+QuickFrames quickMove(QuickMove move, const CameraState &start,
+                      const QuickAmounts &amounts, const QSize &canvas,
+                      bool stayInside);
+
 } // namespace shotcam

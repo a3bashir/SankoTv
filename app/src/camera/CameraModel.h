@@ -55,6 +55,23 @@ struct SceneCamera
     bool isEmpty() const { return keys.isEmpty(); }
 };
 
+// THE QUICK MOVES (Phase 1D): the data; shotcam::quickMove (ShotCamera.h)
+// works them out.
+enum class QuickMove { PushIn, PullOut, PanLeft, PanRight, TiltUp, TiltDown,
+                       RotateLeft, RotateRight };
+struct QuickAmounts
+{
+    double zoom = 1.25; // Push In multiplies, Pull Out divides
+    double move = 0.25; // of the frame's width (Pan) or height (Tilt)
+    double turn = 10.0; // degrees
+};
+struct QuickFrames
+{
+    CameraState start; // may differ from the given start (see quickMove)
+    CameraState end;
+    bool moves = false; // false: no move fits (the zoom is at its limit)
+};
+
 // A panel's identity for the camera. Minted per OBJECT: a copied Panel
 // (duplicate, paste, clipboard) gets a new one, an assignment keeps the
 // target's own, and it is never saved - in the file a key names its panel

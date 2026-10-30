@@ -198,6 +198,39 @@ public:
     // they read ("addKey" "Add Key" / "Key set", "ease" text, ...).
     QVariantMap cameraBarStateForTest() const;
     QWidget *cameraBarForTest() const { return m_cameraPanel; }
+
+    // THE QUICK MOVES (Phase 1D, 2026-10-29; Figma 1D-1 to 1D-5). The
+    // Camera bar's Quick Move popover, the CAMERA row's and the SHOTS clip's
+    // menus. A move is two keys over its SPAN - this panel, from it to the
+    // scene's end, or the loop region (inside one scene): START the camera
+    // as it already is at the span's first frame (shotcam::quickMove may
+    // give way, decisions 3 and 4), END that framing moved; the START key
+    // takes the chosen ease, the END key the ease the move through it had.
+    // Keys inside the span are replaced, keys on its ends updated, keys
+    // outside never touched. One "Quick Camera Move" command; the CAMERA
+    // lock refuses it. The three amounts are remembered between launches
+    // (kCameraQuickKey + "Zoom" / "Move" / "Turn"); the span and the ease
+    // for the session.
+    enum class QuickSpan { ThisPanel, ToSceneEnd, LoopRegion };
+    static const QString kCameraQuickKey;
+    shotcam::QuickAmounts quickAmounts() const { return m_quickAmounts; }
+    void setQuickAmounts(const shotcam::QuickAmounts &amounts); // also remembered
+    QuickSpan quickSpan() const { return m_quickSpan; }
+    void setQuickSpan(QuickSpan span) { m_quickSpan = span; }
+    shotcam::Ease quickEase() const { return m_quickEase; }
+    void setQuickEase(shotcam::Ease ease) { m_quickEase = ease; }
+    void cameraQuickMove(shotcam::QuickMove move);             // at the canvas's panel
+    void cameraQuickMoveOnPanel(shotcam::QuickMove move, int flatPanel);
+    void showQuickPreview(shotcam::QuickMove move); // the popover's hover
+    void clearQuickPreview();
+    QWidget *cameraQuickPopoverForTest() const { return m_quickPopover; }
+    // USE LAST FRAMING / CONTINUE CAMERA (Figma 1D-4): the previous scene's
+    // camera at its last frame as this scene's single framing (its own keys
+    // replaced), or on a key at this scene's first frame (its keys kept).
+    void cameraUseLastFraming(int sceneIndex);
+    void cameraContinue(int sceneIndex);
+    // The SCENES track's menu, handed to the menu hook in the gate.
+    void sceneMenuForTest(int sceneIndex) { onSceneMenu(sceneIndex, QPoint()); }
     // For the Dev Recorder's statePoll: shotCam.animate, shotCam.toolActive.
     QVariantMap shotCamToolDevrecState() const;
     // What Edit > Undo / Redo would do now, in the history's words ("Undo
@@ -603,7 +636,37 @@ private:
     bool deleteSelectedCameraKey(); // false: no key selected (Delete is the panel's)
     QString cameraKeyHeader(int sceneIndex, int keyIndex, bool *last) const;
     void onCameraKeyMenu(int sceneIndex, int keyIndex, const QPoint &globalPos);
-    void onCameraRowMenu(const QPoint &globalPos);
+    void onCameraRowMenu(int flatPanel, const QPoint &globalPos);
+    // Phase 1D. A quick move worked out (not applied): the span, START /
+    // END, the camera after it, and the live keys it replaces. False (and
+    // *why* set) when there is nothing to do.
+    struct QuickPlan
+    {
+        int sceneIndex = -1;
+        int startPanel = 0, endPanel = 0;
+        double startFrame = 0, endFrame = 0; // in the scene
+        shotcam::QuickFrames frames;
+        shotcam::SceneCamera after;
+        QVector<int> replaced;
+    };
+    // *span*: the popover's Over; the CAMERA row's and the clip's menus act
+    // on the panel they name, so they pass ThisPanel (the 1D hand test).
+    bool quickMovePlan(shotcam::QuickMove move, int sceneIndex, int panelIndex, QuickSpan span,
+                       QuickPlan *plan, QString *why) const;
+    void applyQuickPlan(const QuickPlan &plan);
+    QString quickSpanText(int sceneIndex, int panelIndex) const; // the popover's title
+    void addQuickMoveEntries(QMenu *menu, const QString &title, int flatPanel);
+    void addSceneCameraEntries(QMenu *menu, int sceneIndex);
+    void onSceneMenu(int sceneIndex, const QPoint &globalPos);
+    shotcam::CameraState lastFramingOf(int sceneIndex, bool *whole) const;
+    int sceneFilmStart(int sceneIndex) const; // frames before the scene
+    shotcam::QuickAmounts m_quickAmounts;      // loaded with the guides
+    QuickSpan m_quickSpan = QuickSpan::ThisPanel;
+    shotcam::Ease m_quickEase = shotcam::Ease::EaseInOut;
+    QWidget *m_quickPopover = nullptr;
+    bool m_quickPreviewValid = false; // the hover preview, for the canvas
+    int m_quickPreviewScene = -1;
+    shotcam::CameraState m_quickPreviewStart, m_quickPreviewEnd;
     bool m_hasCameraFraming = false;   // Copy Framing's clipboard (session)
     shotcam::CameraState m_cameraFraming;
     QString m_cameraFramingSource;     // "key 3": named by Paste

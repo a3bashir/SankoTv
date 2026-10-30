@@ -578,6 +578,28 @@ void AnimaticPage::setSelectedCameraKey(int sceneIndex, int keyIndex)
         m_timeline->setSelectedCameraKey(sceneIndex, keyIndex);
 }
 
+void AnimaticPage::setCameraPreview(int sceneIndex, double startFrame, double endFrame,
+                                    const QVector<int> &replacedKeys)
+{
+    if (m_timeline)
+        m_timeline->setCameraPreview(sceneIndex, startFrame, endFrame, replacedKeys);
+}
+
+void AnimaticPage::clearCameraPreview()
+{
+    if (m_timeline)
+        m_timeline->clearCameraPreview();
+}
+
+bool AnimaticPage::loopRegion(int *startFlat, int *endFlat) const
+{
+    if (m_loopStartIndex < 0 || m_loopEndIndex < m_loopStartIndex)
+        return false;
+    *startFlat = m_loopStartIndex;
+    *endFlat = m_loopEndIndex;
+    return true;
+}
+
 shotcam::CameraState AnimaticPage::previewCameraForTest() const
 {
     return m_display ? m_display->cameraForTest() : shotcam::CameraState();
@@ -767,6 +789,8 @@ QWidget *AnimaticPage::createTimingStrip()
             this, &AnimaticPage::cameraRowContextMenuRequested);
     connect(m_timeline, &AnimaticTimeline::cameraAnimateToggled,
             this, &AnimaticPage::cameraAnimateToggled);
+    connect(m_timeline, &AnimaticTimeline::sceneContextMenuRequested,
+            this, &AnimaticPage::sceneContextMenuRequested);
     wrapLayout->addWidget(m_timeline, 1);
 
     return wrap;

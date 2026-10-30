@@ -85,6 +85,10 @@
 #include <QAction>
 #include <QApplication>
 #include <QContextMenuEvent>
+#include <QComboBox>
+#include <QDoubleSpinBox>
+#include <QSpinBox>
+#include <QStyleOptionComboBox>
 #include <QDataStream>
 #include <QDockWidget>
 #include <QEnterEvent>
@@ -5316,11 +5320,13 @@ void runWorkspaceSyncPass(const QString &project)
     });
     trigger = QStringLiteral("Duplicate Panel");
     rightClickClip(r, 3); // scene 2's first panel, which is NOT the selection
+    // Phase 1D (2026-10-29) added Quick Camera Move (a submenu) after them.
     check(QStringLiteral("(ad) right-clicking a clip selects it and offers "
-                         "Add Panel After, Duplicate Panel, Delete Panel"),
+                         "Add Panel After, Duplicate Panel, Delete Panel, Quick Camera Move"),
           menuSaw == QStringList({QStringLiteral("Add Panel After"),
                                   QStringLiteral("Duplicate Panel"),
-                                  QStringLiteral("Delete Panel")}),
+                                  QStringLiteral("Delete Panel"),
+                                  QStringLiteral("Quick Camera Move")}),
           menuSaw.join(QStringLiteral(" | ")));
     check(QStringLiteral("(ad) Duplicate from the TIMELINE duplicates THAT "
                          "clip's panel, and the strip shows it"),
@@ -11418,6 +11424,603 @@ void runCameraRowPass(const QString &scratch)
     }
 }
 
+// ---- (qm) the Quick Moves and the scene framing (Phase 1D, 2026-10-29) -----
+// The popover (its preview changes nothing; a click is one command), the span
+// rule (inside replaced, ends updated, outside untouched, the eases), moves
+// chaining, Undo, the lock and the covered canvas, the three amounts kept
+// between launches, the CAMERA row's and the clip's menus, and Use Last
+// Framing / Continue Camera. Each check has a control.
+void runQuickMovePass(const QString &scratch)
+{
+    using namespace workspace;
+    using namespace camtool;
+    out() << "--- (qm) Quick Moves and the scene framing (Phase 1D) ---" << Qt::endl;
+    const QSize cs(1920, 1080);
+    sankoSettings().remove(StoryboardPage::kCameraQuickKey + QStringLiteral("Zoom"));
+    sankoSettings().remove(StoryboardPage::kCameraQuickKey + QStringLiteral("Move"));
+    sankoSettings().remove(StoryboardPage::kCameraQuickKey + QStringLiteral("Turn"));
+    // 2 scenes x 4 panels of 2, 3, 4, 2 s at 24 fps: panel starts 0, 48, 120,
+    // 216; a scene is 264 frames.
+    const QString project = writeProject(scratch + QStringLiteral("/quickmove"),
+                                         QStringLiteral("Quick"), cs, 24, 2, 4);
+    auto rig = std::make_unique<Rig>(project);
+    Rig &r = *rig;
+    check(QStringLiteral("(qm) the workspace opened"), r.ok);
+    if (!r.ok)
+        return;
+    Scene *s0 = r.window.scenesForTest().value(0);
+    Scene *s1 = r.window.scenesForTest().value(1);
+    QUndoStack *stack = r.window.undoStackForTest();
+    QWidget *bar = r.storyboard->cameraBarForTest();
+    QWidget *pop = r.storyboard->cameraQuickPopoverForTest();
+    if (!s0 || !s1 || !stack || !bar || !pop) {
+        check(QStringLiteral("(qm) found the scenes, the history, the bar and the popover"), false);
+        return;
+    }
+    using shotcam::CameraState;
+    using shotcam::Ease;
+    using shotcam::QuickMove;
+    auto lastText = [&] { return stack->index() > 0 ? stack->text(stack->index() - 1) : QString(); };
+    auto keyAt = [&](const Scene *s, double f) { return shotcam::keyIndexAtFrame(*s, f, 24); };
+    auto stateAt = [&](const Scene *s, double f) {
+        const int k = keyAt(s, f);
+        return k >= 0 ? s->camera.keys.at(k).state : CameraState{-1, -1, -1, -1};
+    };
+    // ("near" is a Windows macro, hence the name.)
+    auto sameState = [](const CameraState &a, const CameraState &b) {
+        return qAbs(a.cx - b.cx) < 0.01 && qAbs(a.cy - b.cy) < 0.01
+            && qAbs(a.zoom - b.zoom) < 1e-9 && qAbs(a.rotation - b.rotation) < 1e-9;
+    };
+    auto setCam = [&](Scene *s, const QVector<shotcam::CameraKey> &keys) {
+        shotcam::SceneCamera c;
+        c.keys = keys;
+        r.storyboard->applyCameraForUndo(s, c);
+        pump(30);
+    };
+    auto menuHooked = [&](const std::function<void()> &open, const std::function<void(QMenu *)> &fn) {
+        r.storyboard->setClipMenuHookForTest(fn);
+        open();
+        r.storyboard->setClipMenuHookForTest({});
+        pump(60);
+    };
+    const CameraState z2{960, 540, 2.0, 0};
+    clickThumb(r, 1); // the canvas on panel 2 (scene 1): the span starts at frame 48
+
+    // --- (qm.1) the popover, its preview, the click -------------------------
+    setCam(s0, {shotcam::makeKey(*s0, 0, 0, 24, z2)}); // a still 2x framing
+    QToolButton *quickBtn = bar->findChild<QToolButton *>(QStringLiteral("camQuickMove"));
+    if (quickBtn)
+        quickBtn->click();
+    pump(150);
+    QToolButton *pushTile = pop->findChild<QToolButton *>(QStringLiteral("camQuickPushIn"));
+    int tiles = 0;
+    for (auto *t : pop->findChildren<QToolButton *>())
+        tiles += t->objectName().startsWith(QStringLiteral("camQuick")) ? 1 : 0;
+    const auto *zoomField = pop->findChild<QDoubleSpinBox *>(QStringLiteral("camQuickZoom"));
+    const auto *moveField = pop->findChild<QSpinBox *>(QStringLiteral("camQuickMoveAmount"));
+    const auto *turnField = pop->findChild<QSpinBox *>(QStringLiteral("camQuickTurn"));
+    check(QStringLiteral("(qm.1) Quick Move opens the popover: eight moves and the three amounts "
+                         "Zoom 1.25x, Move 25 %, Turn 10 deg"),
+          pop->isVisible() && tiles == 8 && zoomField && moveField && turnField
+              && qAbs(zoomField->value() - 1.25) < 1e-9 && moveField->value() == 25
+              && turnField->value() == 10,
+          QStringLiteral("visible %1 tiles %2").arg(pop->isVisible()).arg(tiles));
+    const QByteArray beforePreview = json(s0);
+    const int indexBefore = stack->index();
+    if (pushTile) {
+        QEnterEvent ev(QPointF(5, 5), QPointF(5, 5), pushTile->mapToGlobal(QPoint(5, 5)));
+        QCoreApplication::sendEvent(pushTile, &ev);
+    }
+    pump(80);
+    const QVariantMap prev = r.timeline->cameraPreviewForTest();
+    const bool previewShown = prev.value(QStringLiteral("shown")).toBool()
+        && !r.canvas->shotCameraPreviewEndForTest().isEmpty();
+    const bool rowSpan = qAbs(prev.value(QStringLiteral("x1")).toInt() - prev.value(QStringLiteral("x0")).toInt()
+                              - 72 * r.timeline->pxPerFrameForTest()) <= 1.0;
+    check(QStringLiteral("(qm.1) hovering Push In previews it on the canvas and the CAMERA row "
+                         "(the span: panel 2's 72 frames) and changes nothing"),
+          previewShown && rowSpan && json(s0) == beforePreview && stack->index() == indexBefore,
+          QStringLiteral("shown %1 span %2..%3").arg(previewShown)
+              .arg(prev.value(QStringLiteral("x0")).toInt()).arg(prev.value(QStringLiteral("x1")).toInt()));
+    if (pushTile) {
+        QEvent leave(QEvent::Leave);
+        QCoreApplication::sendEvent(pushTile, &leave);
+    }
+    pump(60);
+    check(QStringLiteral("(qm.1) control: leaving the move clears the preview"),
+          !r.timeline->cameraPreviewForTest().value(QStringLiteral("shown")).toBool()
+              && r.canvas->shotCameraPreviewEndForTest().isEmpty());
+    if (pushTile)
+        pushTile->click();
+    pump(100);
+    check(QStringLiteral("(qm.1) a click on Push In applies it as ONE command and closes the "
+                         "popover: keys at the span's start (2x) and end (2.5x)"),
+          !pop->isVisible() && stack->index() == indexBefore + 1
+              && lastText() == QStringLiteral("Quick Camera Move")
+              && sameState(stateAt(s0, 48), z2) && sameState(stateAt(s0, 120), CameraState{960, 540, 2.5, 0}),
+          QStringLiteral("+%1 %2").arg(stack->index() - indexBefore).arg(lastText()));
+    r.window.undoActionForTest()->trigger();
+    pump(60);
+    check(QStringLiteral("(qm.1) Undo puts the camera back byte for byte"), json(s0) == beforePreview);
+
+    // --- (qm.2) the span rule ------------------------------------------------
+    {
+        r.storyboard->setQuickEase(Ease::Linear);
+        setCam(s0, {shotcam::makeKey(*s0, 0, 12, 24, z2, Ease::EaseInOut),              // 12: outside
+                    shotcam::makeKey(*s0, 1, 24, 24, CameraState{900, 500, 2.2, 0}),   // 72: inside
+                    shotcam::makeKey(*s0, 2, 0, 24, CameraState{1000, 560, 2.4, 0}, Ease::Hold), // 120: on the end
+                    shotcam::makeKey(*s0, 2, 80, 24, CameraState{960, 540, 3.0, 0})}); // 200: outside
+        const CameraState startHere = shotcam::evaluateAtPanel(*s0, 1, 0, 24);
+        r.storyboard->cameraQuickMove(QuickMove::PanRight);
+        pump(60);
+        const bool outsideKept = keyAt(s0, 12) >= 0 && sameState(stateAt(s0, 12), z2)
+            && keyAt(s0, 200) >= 0 && sameState(stateAt(s0, 200), CameraState{960, 540, 3.0, 0});
+        const bool insideGone = keyAt(s0, 72) < 0;
+        const bool ends = keyAt(s0, 48) >= 0 && keyAt(s0, 120) >= 0
+            && sameState(stateAt(s0, 48), startHere)
+            && s0->camera.keys.at(keyAt(s0, 48)).ease == Ease::Linear
+            && s0->camera.keys.at(keyAt(s0, 120)).ease == Ease::Hold;
+        check(QStringLiteral("(qm.2) a move replaces the keys inside its span and the one on its "
+                             "end, never the keys outside; the START is the camera as it was, "
+                             "with the chosen ease (Linear); the END keeps the ease that was there "
+                             "(Hold)"),
+              outsideKept && insideGone && ends && shotcam::liveKeyCount(*s0) == 4,
+              QStringLiteral("outside %1 inside gone %2 ends %3 keys %4").arg(outsideKept)
+                  .arg(insideGone).arg(ends).arg(shotcam::liveKeyCount(*s0)));
+        // Chaining: a Push In on panel 3 starts where the pan ended.
+        const CameraState panEnd = stateAt(s0, 120);
+        clickThumb(r, 2);
+        r.storyboard->cameraQuickMove(QuickMove::PushIn);
+        pump(60);
+        check(QStringLiteral("(qm.2) moves chain: a Push In on the next panel starts on the pan's "
+                             "end framing"),
+              sameState(stateAt(s0, 120), panEnd) && keyAt(s0, 216) >= 0
+                  && qAbs(stateAt(s0, 216).zoom - panEnd.zoom * 1.25) < 1e-9);
+        r.storyboard->setQuickEase(Ease::EaseInOut);
+        clickThumb(r, 1);
+    }
+
+    // --- (qm.3) the other spans ------------------------------------------------
+    {
+        setCam(s0, {});
+        r.storyboard->setQuickSpan(StoryboardPage::QuickSpan::ToSceneEnd);
+        r.storyboard->cameraQuickMove(QuickMove::PushIn);
+        pump(60);
+        const bool toEnd = keyAt(s0, 48) >= 0 && keyAt(s0, 264) >= 0 && shotcam::liveKeyCount(*s0) == 2;
+        // The loop region: panels 3-4 of scene 1.
+        r.storyboard->setQuickSpan(StoryboardPage::QuickSpan::LoopRegion);
+        r.storyboard->clearNoteForTest();
+        r.storyboard->cameraQuickMove(QuickMove::PushIn);
+        const QString noLoop = r.storyboard->lastNoteForTest();
+        r.animatic->setPlayheadForTest(2, 0);
+        if (auto *b = r.window.findChild<QPushButton *>(QStringLiteral("animaticLoopStart")))
+            b->click();
+        r.animatic->setPlayheadForTest(3, 0);
+        if (auto *b = r.window.findChild<QPushButton *>(QStringLiteral("animaticLoopEnd")))
+            b->click();
+        pump(60);
+        setCam(s0, {});
+        r.storyboard->cameraQuickMove(QuickMove::PushIn);
+        pump(60);
+        const bool loop = keyAt(s0, 120) >= 0 && keyAt(s0, 264) >= 0 && shotcam::liveKeyCount(*s0) == 2;
+        r.storyboard->setQuickSpan(StoryboardPage::QuickSpan::ThisPanel);
+        if (auto *b = r.window.findChild<QPushButton *>(QStringLiteral("animaticLoopClear")))
+            b->click();
+        check(QStringLiteral("(qm.3) To the scene's end spans panel 2 to the scene's end (48-264); "
+                             "the loop region spans its panels (120-264)"),
+              toEnd && loop, QStringLiteral("to end %1 loop %2").arg(toEnd).arg(loop));
+        check(QStringLiteral("(qm.3) control: with no loop region the loop span says so and adds "
+                             "nothing"),
+              noLoop == QStringLiteral("Set a loop region inside one scene first."), noLoop);
+    }
+
+    // --- (qm.4) the lock and the covered canvas ---------------------------------
+    {
+        setCam(s0, {});
+        r.animatic->setTrackLocked(TimelineTrack::Camera, true);
+        r.storyboard->clearLockRefusalForTest();
+        const int index = stack->index();
+        r.storyboard->cameraQuickMove(QuickMove::PushIn);
+        const bool refused = stack->index() == index
+            && r.storyboard->lastLockRefusalForTest() == QStringLiteral("CAMERA track is locked");
+        r.animatic->setTrackLocked(TimelineTrack::Camera, false);
+        r.storyboard->cameraQuickMove(QuickMove::PushIn);
+        const bool accepted = stack->index() == index + 1;
+        r.window.undoActionForTest()->trigger();
+        check(QStringLiteral("(qm.4) the CAMERA lock refuses a Quick Move with its message"), refused);
+        check(QStringLiteral("(qm.4) control: unlocked, the same move is one command"), accepted);
+        const bool enabledBefore =
+            r.storyboard->cameraBarStateForTest().value(QStringLiteral("camQuickMove.enabled")).toBool();
+        r.animatic->scrubForTest(1);
+        pump(150);
+        const bool coveredOff =
+            !r.storyboard->cameraBarStateForTest().value(QStringLiteral("camQuickMove.enabled")).toBool();
+        r.animatic->leavePreview();
+        pump(100);
+        check(QStringLiteral("(qm.4) with the preview over the canvas the Quick Move button is "
+                             "disabled (and enabled without it)"),
+              coveredOff && enabledBefore);
+    }
+
+    // --- (qm.5) the amounts, remembered between launches -----------------------
+    {
+        shotcam::QuickAmounts a;
+        a.zoom = 1.5;
+        a.move = 0.1;
+        a.turn = 15.0;
+        r.storyboard->setQuickAmounts(a);
+        Rig second(project);
+        const shotcam::QuickAmounts b = second.storyboard ? second.storyboard->quickAmounts()
+                                                          : shotcam::QuickAmounts();
+        check(QStringLiteral("(qm.5) Zoom, Move and Turn are remembered: a new window opens with "
+                             "1.5x, 10 %, 15 deg"),
+              second.ok && qAbs(b.zoom - 1.5) < 1e-9 && qAbs(b.move - 0.1) < 1e-9
+                  && qAbs(b.turn - 15.0) < 1e-9,
+              QStringLiteral("%1 %2 %3").arg(b.zoom).arg(b.move).arg(b.turn));
+        r.storyboard->setQuickAmounts(shotcam::QuickAmounts());
+        check(QStringLiteral("(qm.5) control: the defaults are 1.25x, 25 %, 10 deg"),
+              qAbs(shotcam::QuickAmounts().zoom - 1.25) < 1e-9 && qAbs(shotcam::QuickAmounts().move - 0.25) < 1e-9);
+    }
+
+    // --- (qm.6) the menus ----------------------------------------------------------
+    {
+        setCam(s0, {});
+        const int rowY = r.timeline->cameraRowForTest().y() + 14;
+        const QRect clip2 = r.timeline->clipRectForTest(1);
+        QStringList entries;
+        bool triggered = false;
+        menuHooked([&] {
+            const QPoint at(clip2.center().x(), rowY);
+            QContextMenuEvent ev(QContextMenuEvent::Mouse, at, r.surface->mapToGlobal(at));
+            QCoreApplication::sendEvent(r.surface, &ev);
+        }, [&](QMenu *m) {
+            if (QMenu *q = m->findChild<QMenu *>(QStringLiteral("cameraQuickMenu"))) {
+                entries << q->title();
+                for (QAction *a : q->actions())
+                    entries << a->objectName();
+                if (QAction *a = q->findChild<QAction *>(QStringLiteral("quickPanRight"))) {
+                    a->trigger();
+                    triggered = true;
+                }
+            }
+        });
+        const bool panned = triggered && lastText() == QStringLiteral("Quick Camera Move")
+            && keyAt(s0, 48) >= 0 && keyAt(s0, 120) >= 0;
+        check(QStringLiteral("(qm.6) the CAMERA row's menu off a key: Quick Move on Panel 2 with the "
+                             "eight moves; Pan Right applies on that panel"),
+              entries.value(0) == QStringLiteral("Quick Move on Panel 2") && entries.size() == 9 && panned,
+              entries.join(QLatin1Char(',')));
+        QString clipSub;
+        int clipCount = 0;
+        r.storyboard->setClipMenuHookForTest([&](QMenu *m) {
+            for (QMenu *q : m->findChildren<QMenu *>(QStringLiteral("cameraQuickMenu"))) {
+                clipSub = q->title();
+                clipCount = q->actions().size();
+            }
+        });
+        const QPoint c = clip2.center();
+        QContextMenuEvent ev(QContextMenuEvent::Mouse, c, r.surface->mapToGlobal(c));
+        QCoreApplication::sendEvent(r.surface, &ev);
+        r.storyboard->setClipMenuHookForTest({});
+        check(QStringLiteral("(qm.6) the SHOTS clip menu has Quick Camera Move with the eight moves"),
+              clipSub == QStringLiteral("Quick Camera Move") && clipCount == 8, clipSub);
+        r.window.undoActionForTest()->trigger();
+        pump(60);
+    }
+
+    // --- (qm.7) Use Last Framing / Continue Camera -------------------------------
+    {
+        // Scene 1 ends on F (its last key); scene 2 moves P -> Q.
+        const CameraState F{1100, 600, 2.0, 0};
+        setCam(s0, {shotcam::makeKey(*s0, 0, 0, 24, z2), shotcam::makeKey(*s0, 3, 48, 24, F)});
+        const CameraState P{900, 500, 1.5, 0}, Q{1000, 560, 1.8, 0};
+        setCam(s1, {shotcam::makeKey(*s1, 1, 0, 24, P), shotcam::makeKey(*s1, 2, 48, 24, Q)});
+        const QByteArray before = json(s1);
+        const CameraState lastOf0 = shotcam::evaluateAtPanel(*s0, 3, 47, 24);
+        QString useText, contText, s0Use, s0Cont;
+        bool s0UseOn = true, s0ContOn = true;
+        auto sceneMenu = [&](int i, const std::function<void(QMenu *)> &fn) {
+            menuHooked([&] { r.storyboard->sceneMenuForTest(i); }, fn);
+        };
+        sceneMenu(1, [&](QMenu *m) {
+            if (QAction *a = m->findChild<QAction *>(QStringLiteral("cameraUseLastFraming"))) {
+                useText = a->text();
+                a->trigger();
+            }
+        });
+        const bool used = shotcam::liveKeyCount(*s1) == 1 && sameState(stateAt(s1, 0), lastOf0)
+            && lastText() == QStringLiteral("Use Last Framing");
+        r.window.undoActionForTest()->trigger();
+        pump(60);
+        const bool usedUndone = json(s1) == before;
+        sceneMenu(1, [&](QMenu *m) {
+            if (QAction *a = m->findChild<QAction *>(QStringLiteral("cameraContinue"))) {
+                contText = a->text();
+                a->trigger();
+            }
+        });
+        const bool continued = shotcam::liveKeyCount(*s1) == 3 && sameState(stateAt(s1, 0), lastOf0)
+            && keyAt(s1, 48) >= 0 && keyAt(s1, 168) >= 0 && lastText() == QStringLiteral("Continue Camera");
+        r.window.undoActionForTest()->trigger();
+        pump(60);
+        sceneMenu(0, [&](QMenu *m) {
+            if (QAction *a = m->findChild<QAction *>(QStringLiteral("cameraUseLastFraming"))) {
+                s0Use = a->text();
+                s0UseOn = a->isEnabled();
+            }
+            if (QAction *a = m->findChild<QAction *>(QStringLiteral("cameraContinue"))) {
+                s0Cont = a->text();
+                s0ContOn = a->isEnabled();
+            }
+        });
+        check(QStringLiteral("(qm.7) \"Use Last Framing of Scene 1 (replaces 2 keys)\": scene 2 "
+                             "holds scene 1's last framing, still; Undo restores it byte for byte"),
+              useText == QStringLiteral("Use Last Framing of Scene 1 (replaces 2 keys)") && used
+                  && usedUndone,
+              useText);
+        check(QStringLiteral("(qm.7) \"Continue Camera from Scene 1\": scene 2 starts on that "
+                             "framing and keeps its own keys"),
+              contText == QStringLiteral("Continue Camera from Scene 1") && continued, contText);
+        check(QStringLiteral("(qm.7) on scene 1 both are disabled: no scene before it"),
+              !s0UseOn && !s0ContOn
+                  && s0Use == QString::fromUtf8("Use Last Framing \xE2\x80\x94 no scene before this one")
+                  && s0Cont == QString::fromUtf8("Continue Camera \xE2\x80\x94 no scene before this one"),
+              s0Use);
+        setCam(s0, {});
+        QString wholeText;
+        sceneMenu(1, [&](QMenu *m) {
+            if (QAction *a = m->findChild<QAction *>(QStringLiteral("cameraUseLastFraming")))
+                wholeText = a->text();
+        });
+        check(QStringLiteral("(qm.7) control: when scene 1 has no camera the entry says \"(the whole "
+                             "canvas)\""),
+              wholeText == QStringLiteral("Use Last Framing of Scene 1 (the whole canvas)"), wholeText);
+    }
+
+    // --- (qm.8) the menus act on the panel they name, whatever Over says --------
+    // The 1D hand test: Over left at "To the scene's end" made the row menu's
+    // "Quick Move on Panel 2" run to the scene's last panel.
+    {
+        setCam(s0, {});
+        r.storyboard->setQuickSpan(StoryboardPage::QuickSpan::ToSceneEnd);
+        const int rowY = r.timeline->cameraRowForTest().y() + 14;
+        auto pickFromMenu = [&](const QPoint &at) {
+            bool picked = false;
+            menuHooked([&] {
+                QContextMenuEvent ev(QContextMenuEvent::Mouse, at, r.surface->mapToGlobal(at));
+                QCoreApplication::sendEvent(r.surface, &ev);
+            }, [&](QMenu *m) {
+                if (QMenu *q = m->findChild<QMenu *>(QStringLiteral("cameraQuickMenu")))
+                    if (QAction *a = q->findChild<QAction *>(QStringLiteral("quickPanRight"))) {
+                        a->trigger();
+                        picked = true;
+                    }
+            });
+            return picked;
+        };
+        // Panel 2 is frames 48-120, panel 3 120-216, the scene ends at 264.
+        const bool rowPicked = pickFromMenu(QPoint(r.timeline->clipRectForTest(1).center().x(), rowY));
+        const bool rowOnPanel = rowPicked && keyAt(s0, 48) >= 0 && keyAt(s0, 120) >= 0
+            && keyAt(s0, 264) < 0 && shotcam::liveKeyCount(*s0) == 2;
+        r.window.undoActionForTest()->trigger();
+        pump(60);
+        const bool clipPicked = pickFromMenu(r.timeline->clipRectForTest(2).center());
+        const bool clipOnPanel = clipPicked && keyAt(s0, 120) >= 0 && keyAt(s0, 216) >= 0
+            && keyAt(s0, 264) < 0 && shotcam::liveKeyCount(*s0) == 2;
+        r.window.undoActionForTest()->trigger();
+        pump(60);
+        check(QStringLiteral("(qm.8) with Over at \"To the scene's end\", the CAMERA row's \"Quick "
+                             "Move on Panel 2\" keys panel 2 only (48 / 120) and the clip menu's "
+                             "panel 3 only (120 / 216)"),
+              rowOnPanel && clipOnPanel,
+              QStringLiteral("row %1 clip %2 keys %3").arg(rowOnPanel).arg(clipOnPanel)
+                  .arg(shotcam::liveKeyCount(*s0)));
+        // Control: the popover (the canvas on panel 2 - the clip's right-click
+        // selected panel 3) does follow Over.
+        clickThumb(r, 1);
+        pump(60);
+        r.storyboard->cameraQuickMove(QuickMove::PanRight);
+        pump(60);
+        const bool popoverToEnd = keyAt(s0, 48) >= 0 && keyAt(s0, 264) >= 0 && keyAt(s0, 120) < 0;
+        r.window.undoActionForTest()->trigger();
+        pump(60);
+        check(QStringLiteral("(qm.8) control: the popover's own move with the same Over runs from "
+                             "panel 2 to the scene's end (48 / 264)"),
+              popoverToEnd);
+        r.storyboard->setQuickSpan(StoryboardPage::QuickSpan::ThisPanel);
+    }
+
+    // --- (qm.9) Over shows its longest entry whole ------------------------------
+    {
+        auto *overC = pop->findChild<QComboBox *>(QStringLiteral("camQuickOver"));
+        const QString longest = QStringLiteral("To the scene's end");
+        auto textRoom = [&](int width) {
+            QStyleOptionComboBox opt;
+            opt.initFrom(overC);
+            opt.rect = QRect(0, 0, width, qMax(overC->height(), overC->sizeHint().height()));
+            opt.editable = false;
+            opt.subControls = QStyle::SC_All;
+            return overC->style()
+                ->subControlRect(QStyle::CC_ComboBox, &opt, QStyle::SC_ComboBoxEditField, overC)
+                .width();
+        };
+        const int need = overC ? overC->fontMetrics().horizontalAdvance(longest) : 0;
+        const int room = overC ? textRoom(overC->width()) : 0;
+        check(QStringLiteral("(qm.9) the Over field has room for \"To the scene's end\" and 4 px to "
+                             "spare"),
+              overC && room >= need + 4, QStringLiteral("room %1 need %2").arg(room).arg(need));
+        check(QStringLiteral("(qm.9) control: at the old 120 px it had not"),
+              overC && textRoom(120) < need,
+              QStringLiteral("room %1 need %2").arg(overC ? textRoom(120) : 0).arg(need));
+    }
+
+    // --- (qm.10) the amounts take the wheel only once clicked -------------------
+    {
+        if (quickBtn)
+            quickBtn->click(); // the fields show the amounts (1.25x, 25 %, 10 deg)
+        pump(60);
+        pop->hide(); // closing disarms them
+        pump(30);
+        QList<QAbstractSpinBox *> boxes{
+            pop->findChild<QAbstractSpinBox *>(QStringLiteral("camQuickZoom")),
+            pop->findChild<QAbstractSpinBox *>(QStringLiteral("camQuickMoveAmount")),
+            pop->findChild<QAbstractSpinBox *>(QStringLiteral("camQuickTurn"))};
+        auto wheel = [](QAbstractSpinBox *b) {
+            QWheelEvent ev(QPointF(10, 8), b->mapToGlobal(QPointF(10, 8)), QPoint(), QPoint(0, 120),
+                           Qt::NoButton, Qt::NoModifier, Qt::NoScrollPhase, false);
+            QCoreApplication::sendEvent(b, &ev);
+        };
+        const shotcam::QuickAmounts before = r.storyboard->quickAmounts();
+        int found = 0;
+        for (QAbstractSpinBox *b : boxes)
+            if (b) {
+                ++found;
+                wheel(b);
+            }
+        const shotcam::QuickAmounts afterWheel = r.storyboard->quickAmounts();
+        const bool unmoved = found == 3 && afterWheel.zoom == before.zoom
+            && afterWheel.move == before.move && afterWheel.turn == before.turn;
+        for (QAbstractSpinBox *b : boxes)
+            if (b) {
+                QWidget *text = b->findChild<QLineEdit *>();
+                QMouseEvent press(QEvent::MouseButtonPress, QPointF(4, 4), text->mapToGlobal(QPointF(4, 4)),
+                                  Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+                QCoreApplication::sendEvent(text, &press);
+                QMouseEvent release(QEvent::MouseButtonRelease, QPointF(4, 4),
+                                    text->mapToGlobal(QPointF(4, 4)), Qt::LeftButton, Qt::NoButton,
+                                    Qt::NoModifier);
+                QCoreApplication::sendEvent(text, &release);
+                wheel(b);
+            }
+        const shotcam::QuickAmounts clicked = r.storyboard->quickAmounts();
+        check(QStringLiteral("(qm.10) a wheel over Zoom, Move or Turn changes nothing until the field "
+                             "is clicked"),
+              unmoved, QStringLiteral("%1 %2 %3").arg(afterWheel.zoom).arg(afterWheel.move).arg(afterWheel.turn));
+        check(QStringLiteral("(qm.10) control: clicked first, the same wheel steps each one (1.30x, "
+                             "30 %, 11 deg)"),
+              qAbs(clicked.zoom - 1.30) < 1e-9 && qAbs(clicked.move - 0.30) < 1e-9
+                  && qAbs(clicked.turn - 11.0) < 1e-9,
+              QStringLiteral("%1 %2 %3").arg(clicked.zoom).arg(clicked.move).arg(clicked.turn));
+        r.storyboard->setQuickAmounts(shotcam::QuickAmounts());
+    }
+
+    // --- (qm.11) the Scenes dock's cards have the scene's camera menu -----------
+    QFrame *cards[2] = {nullptr, nullptr};
+    for (QFrame *f : r.window.findChildren<QFrame *>(QStringLiteral("sceneCard"))) {
+        const int i = f->property("sceneIndex").toInt();
+        if (i >= 0 && i < 2)
+            cards[i] = f;
+    }
+    auto cardMenu = [&](int i, const std::function<void(QMenu *)> &fn) {
+        menuHooked([&] {
+            // On the card's label, as a hand does: it reaches the card.
+            QWidget *at = cards[i] ? cards[i]->findChild<QLabel *>() : nullptr;
+            if (!at)
+                at = cards[i];
+            if (!at)
+                return;
+            QContextMenuEvent ev(QContextMenuEvent::Mouse, QPoint(4, 4), at->mapToGlobal(QPoint(4, 4)));
+            QCoreApplication::sendEvent(at, &ev);
+        }, fn);
+    };
+    {
+        const CameraState F{1100, 600, 2.0, 0};
+        setCam(s0, {shotcam::makeKey(*s0, 0, 0, 24, z2), shotcam::makeKey(*s0, 3, 48, 24, F)});
+        const CameraState P{900, 500, 1.5, 0};
+        setCam(s1, {shotcam::makeKey(*s1, 1, 0, 24, P)});
+        const QByteArray before = json(s1);
+        const CameraState lastOf0 = shotcam::evaluateAtPanel(*s0, 3, 47, 24);
+        QString useText, s0Use;
+        bool s0UseOn = true;
+        cardMenu(1, [&](QMenu *m) {
+            if (QAction *a = m->findChild<QAction *>(QStringLiteral("cameraUseLastFraming"))) {
+                useText = a->text();
+                a->trigger();
+            }
+        });
+        const bool used = shotcam::liveKeyCount(*s1) == 1 && sameState(stateAt(s1, 0), lastOf0)
+            && lastText() == QStringLiteral("Use Last Framing");
+        r.window.undoActionForTest()->trigger();
+        pump(60);
+        const bool undone = json(s1) == before;
+        cardMenu(0, [&](QMenu *m) {
+            if (QAction *a = m->findChild<QAction *>(QStringLiteral("cameraUseLastFraming"))) {
+                s0Use = a->text();
+                s0UseOn = a->isEnabled();
+            }
+        });
+        check(QStringLiteral("(qm.11) right-clicking scene 2's card in the Scenes dock offers \"Use "
+                             "Last Framing of Scene 1 (replaces 1 key)\": the same edit, one Undo"),
+              cards[0] && cards[1] && useText == QStringLiteral("Use Last Framing of Scene 1 (replaces 1 key)")
+                  && used && undone,
+              useText);
+        check(QStringLiteral("(qm.11) control: scene 1's card has it disabled - no scene before it"),
+              !s0UseOn && s0Use == QString::fromUtf8("Use Last Framing \xE2\x80\x94 no scene before this one"),
+              s0Use);
+    }
+
+    // --- (qm.12) every 1D menu entry is greyed while the CAMERA track is locked --
+    {
+        const int rowY = r.timeline->cameraRowForTest().y() + 14;
+        const QRect clip6 = r.timeline->clipRectForTest(5); // scene 2's second panel
+        auto surfaceMenu = [&](const QPoint &at, const std::function<void(QMenu *)> &fn) {
+            menuHooked([&] {
+                QContextMenuEvent ev(QContextMenuEvent::Mouse, at, r.surface->mapToGlobal(at));
+                QCoreApplication::sendEvent(r.surface, &ev);
+            }, fn);
+        };
+        // name -> enabled, for the 1D entries each menu carries.
+        auto survey = [&] {
+            QMap<QString, bool> on;
+            auto scan = [&](const QString &where, QMenu *m) {
+                for (QMenu *q : m->findChildren<QMenu *>(QStringLiteral("cameraQuickMenu")))
+                    on[where + QStringLiteral(".quick")] = q->menuAction()->isEnabled();
+                for (const char *n : {"cameraUseLastFraming", "cameraContinue"})
+                    if (QAction *a = m->findChild<QAction *>(QLatin1String(n)))
+                        on[where + QLatin1Char('.') + QLatin1String(n)] = a->isEnabled();
+            };
+            surfaceMenu(QPoint(clip6.center().x(), rowY), [&](QMenu *m) { scan(QStringLiteral("row"), m); });
+            surfaceMenu(clip6.center(), [&](QMenu *m) { scan(QStringLiteral("clip"), m); });
+            surfaceMenu(QPoint(clip6.center().x(), clip6.top() - 12),
+                        [&](QMenu *m) { scan(QStringLiteral("scenes"), m); });
+            cardMenu(1, [&](QMenu *m) { scan(QStringLiteral("dock"), m); });
+            return on;
+        };
+        const QStringList want{QStringLiteral("row.quick"), QStringLiteral("row.cameraUseLastFraming"),
+                               QStringLiteral("row.cameraContinue"), QStringLiteral("clip.quick"),
+                               QStringLiteral("scenes.cameraUseLastFraming"),
+                               QStringLiteral("scenes.cameraContinue"),
+                               QStringLiteral("dock.cameraUseLastFraming"),
+                               QStringLiteral("dock.cameraContinue")};
+        auto all = [&](const QMap<QString, bool> &on, bool value) {
+            for (const QString &k : want)
+                if (!on.contains(k) || on.value(k) != value)
+                    return false;
+            return true;
+        };
+        auto listed = [](const QMap<QString, bool> &on) {
+            QStringList l;
+            for (auto it = on.cbegin(); it != on.cend(); ++it)
+                l << it.key() + QLatin1Char('=') + (it.value() ? QLatin1Char('1') : QLatin1Char('0'));
+            return l.join(QLatin1Char(' '));
+        };
+        r.animatic->setTrackLocked(TimelineTrack::Camera, true);
+        pump(30);
+        const QMap<QString, bool> locked = survey();
+        r.animatic->setTrackLocked(TimelineTrack::Camera, false);
+        pump(30);
+        const QMap<QString, bool> open = survey();
+        check(QStringLiteral("(qm.12) CAMERA locked: Quick Move on the row and the clip, and Use Last "
+                             "Framing / Continue on the row, the SCENES row and the Scenes dock, are "
+                             "all greyed"),
+              all(locked, false), listed(locked));
+        check(QStringLiteral("(qm.12) control: unlocked, the same eight entries are enabled"),
+              all(open, true), listed(open));
+    }
+    setCam(s0, {});
+    setCam(s1, {});
+}
+
 void runCameraToolPass(const QString &scratch)
 {
     using namespace workspace;
@@ -12609,11 +13212,15 @@ void runTrackLocksPass(const QString &scratch)
         });
         rightClickClip(r, 0);
         sb->setClipMenuHookForTest({});
+        // Phase 1D: Quick Camera Move follows them, enabled - a camera
+        // edit is the CAMERA lock's, not the SHOTS lock's.
         check(QStringLiteral("(ax) locked: the clip's menu shows Add Panel After, Duplicate "
-                             "Panel and Delete Panel disabled and suffixed \"(locked)\""),
-              items.size() == 3 && items.at(0) == QStringLiteral("Add Panel After (locked)[0]")
+                             "Panel and Delete Panel disabled and suffixed \"(locked)\"; Quick "
+                             "Camera Move (the CAMERA track's) stays enabled"),
+              items.size() == 4 && items.at(0) == QStringLiteral("Add Panel After (locked)[0]")
                   && items.at(1) == QStringLiteral("Duplicate Panel (locked)[0]")
-                  && items.at(2) == QStringLiteral("Delete Panel (locked)[0]"),
+                  && items.at(2) == QStringLiteral("Delete Panel (locked)[0]")
+                  && items.at(3) == QStringLiteral("Quick Camera Move[1]"),
               items.join(QStringLiteral(" | ")));
     }
     // Cut, Paste (Copy allowed), the Delete key over the timeline, Ctrl+Right.
@@ -13338,6 +13945,7 @@ int main(int argc, char **argv)
     runCameraPanelRemovalPass(scratch);
     runCameraToolPass(scratch);
     runCameraRowPass(scratch);
+    runQuickMovePass(scratch);
 
     // ---- (aa) a test that cannot start says why and exits ----------------
     // An unattended gate must FAIL, not wait. Measured 2026-10-02: with its

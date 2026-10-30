@@ -2084,7 +2084,7 @@ void AnimaticTimeline::paintCameraRow(QPainter &p)
 {
     using namespace SankoTimelineTheme;
     const QVector<CameraMark> marks = cameraMarks();
-    if (marks.isEmpty() || !m_canvas)
+    if ((marks.isEmpty() && !m_camPreview) || !m_canvas)
         return;
     const int y0 = cameraTrackY();
     const qreal cy = y0 + kCameraH / 2.0;
@@ -2150,7 +2150,73 @@ void AnimaticTimeline::paintCameraRow(QPainter &p)
         p.setBrush(fill);
         p.drawPolygon(diamond);
     }
+
+    // The Quick Move under the pointer (Figma 1D-2): the keys it would
+    // replace crossed out, the two it would add hollow and dashed, joined by
+    // a dashed accent bar.
+    if (m_camPreview) {
+        for (const CameraMark &m : marks) {
+            if (m.sceneIndex != m_camPreviewScene || !m_camPreviewReplaced.contains(m.keyIndex))
+                continue;
+            const QPointF c(m.x + 0.5, cy);
+            p.setPen(QPen(QColor(0xe0, 0x56, 0x5b), 1.5, Qt::SolidLine, Qt::RoundCap));
+            p.drawLine(c + QPointF(-4, -4), c + QPointF(4, 4));
+            p.drawLine(c + QPointF(4, -4), c + QPointF(-4, 4));
+        }
+        const qreal xa = contentXToScreen(m_camPreviewStart * pxPerFrame()) + 0.5;
+        const qreal xb = contentXToScreen(m_camPreviewEnd * pxPerFrame()) + 0.5;
+        QPen dash(kCameraAccent, 1.5, Qt::CustomDashLine, Qt::FlatCap, Qt::RoundJoin);
+        dash.setDashPattern({1.7, 1.2});
+        if (xb - xa > 2 * kKeyHalf + 2) {
+            QPen bar(kCameraAccent, 2.0, Qt::CustomDashLine, Qt::FlatCap);
+            bar.setDashPattern({2.5, 2.0});
+            p.setPen(bar);
+            p.drawLine(QPointF(xa + kKeyHalf + 1, cy), QPointF(xb - kKeyHalf - 1, cy));
+        }
+        p.setPen(dash);
+        p.setBrush(Qt::NoBrush);
+        for (qreal x : {xa, xb}) {
+            QPolygonF diamond;
+            diamond << QPointF(x, cy - kKeyHalf) << QPointF(x + kKeyHalf, cy)
+                    << QPointF(x, cy + kKeyHalf) << QPointF(x - kKeyHalf, cy);
+            p.drawPolygon(diamond);
+        }
+    }
     p.restore();
+}
+
+void AnimaticTimeline::setCameraPreview(int sceneIndex, double startFrame, double endFrame,
+                                        const QVector<int> &replacedKeys)
+{
+    m_camPreview = true;
+    m_camPreviewScene = sceneIndex;
+    m_camPreviewStart = startFrame;
+    m_camPreviewEnd = endFrame;
+    m_camPreviewReplaced = replacedKeys;
+    if (m_canvas)
+        m_canvas->update();
+}
+
+void AnimaticTimeline::clearCameraPreview()
+{
+    if (!m_camPreview)
+        return;
+    m_camPreview = false;
+    m_camPreviewReplaced.clear();
+    if (m_canvas)
+        m_canvas->update();
+}
+
+QVariantMap AnimaticTimeline::cameraPreviewForTest() const
+{
+    QStringList replaced;
+    for (int k : m_camPreviewReplaced)
+        replaced << QStringLiteral("%1:%2").arg(m_camPreviewScene).arg(k);
+    return {{QStringLiteral("shown"), m_camPreview},
+            {QStringLiteral("scene"), m_camPreviewScene},
+            {QStringLiteral("x0"), contentXToScreen(m_camPreviewStart * pxPerFrame())},
+            {QStringLiteral("x1"), contentXToScreen(m_camPreviewEnd * pxPerFrame())},
+            {QStringLiteral("replaced"), replaced}};
 }
 
 QRect AnimaticTimeline::cameraRowForTest() const
@@ -2403,7 +2469,8 @@ void AnimaticTimeline::canvasContextMenu(QContextMenuEvent *e)
                 emit cameraKeyContextMenuRequested(mark.sceneIndex, mark.keyIndex,
                                                    e->globalPos());
             } else {
-                emit cameraRowContextMenuRequested(e->globalPos());
+                emit cameraRowContextMenuRequested(blockAtFrame(frameAtScreenX(pos.x())),
+                                                   e->globalPos());
             }
         }
         e->accept();
@@ -2420,6 +2487,17 @@ void AnimaticTimeline::canvasContextMenu(QContextMenuEvent *e)
     }
     if (pos.x() < kLabelCol)
         return;
+    // THE SCENES TRACK (Phase 1D): the scene under the pointer's own menu
+    // (Use Last Framing / Continue Camera). A hidden track takes no press.
+    if (pos.y() >= kSceneY && pos.y() < kSceneY + kSceneH) {
+        if (m_tracks.scenesVisible) {
+            const int idx = blockAtFrame(frameAtScreenX(pos.x()));
+            if (idx >= 0 && idx < m_blocks.size())
+                emit sceneContextMenuRequested(m_blocks.at(idx).sceneIndex, e->globalPos());
+        }
+        e->accept();
+        return;
+    }
     if (m_tracks.shotsVisible && pos.y() >= kPanelY && pos.y() < kPanelY + panelTrackH()) {
         const int idx = blockAtFrame(frameAtScreenX(pos.x()));
         if (idx >= 0) {

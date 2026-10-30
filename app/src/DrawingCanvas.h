@@ -155,6 +155,12 @@ public:
         bool stayInside = true;       // clamp drags to the artwork
         double sharpLimit = 1.0;      // past it: soft (amber)
         QString timecode;             // the frame a drag writes, HH:MM:SS:FF
+        // A QUICK MOVE under the pointer (Phase 1D, Figma 1D-2): its START
+        // drawn solid and its END dashed (a pan or tilt with an arrow from
+        // centre to centre). Nothing is changed until the click.
+        bool previewValid = false;
+        shotcam::CameraState previewStart;
+        shotcam::CameraState previewEnd;
     };
     enum ShotCameraEditKind { ShotCameraMove = 0, ShotCameraZoom = 1,
                               ShotCameraRotate = 2 };
@@ -166,6 +172,9 @@ public:
     // zones); the handle centres as drawn; the mode chip's text and rect
     // (empty: not drawn); whether a drag is under way; the cursor shown.
     QPolygonF shotCameraQuadForTest() const;
+    // The Quick Move preview as drawn (empty: none): START and END, widget px.
+    QPolygonF shotCameraPreviewStartForTest() const;
+    QPolygonF shotCameraPreviewEndForTest() const;
     int shotCameraHitForTest(const QPointF &widgetPos) const;
     QVector<QPointF> shotCameraHandlesForTest() const;
     QString shotCameraChipForTest() const;

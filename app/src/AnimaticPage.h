@@ -215,6 +215,12 @@ public:
     // The CAMERA row's selected key (scene and key indices; false: none).
     bool selectedCameraKey(int *sceneIndex, int *keyIndex) const;
     void setSelectedCameraKey(int sceneIndex, int keyIndex);
+    // The Quick Move preview on the CAMERA row (Phase 1D; film frames).
+    void setCameraPreview(int sceneIndex, double startFrame, double endFrame,
+                          const QVector<int> &replacedKeys);
+    void clearCameraPreview();
+    // The loop region's panels (flat indices); false when none is set.
+    bool loopRegion(int *startFlat, int *endFlat) const;
     // THE CAMERA TOOL'S SCRUB (2026-10-26): on, a ruler click or drag
     // selects the panel under the playhead and stays on the canvas at the
     // exact frame instead of opening the preview. The workspace turns it on
@@ -269,8 +275,9 @@ signals:
     void cameraKeyMoveRequested(int sceneIndex, int keyIndex, int sceneFrame);
     void cameraKeyContextMenuRequested(int sceneIndex, int keyIndex,
                                        const QPoint &globalPos);
-    void cameraRowContextMenuRequested(const QPoint &globalPos);
+    void cameraRowContextMenuRequested(int flatPanelIndex, const QPoint &globalPos);
     void cameraAnimateToggled(bool on);
+    void sceneContextMenuRequested(int sceneIndex, const QPoint &globalPos); // Phase 1D
 
 public:
     // Test hooks. The duration one is the REAL request the timeline drag

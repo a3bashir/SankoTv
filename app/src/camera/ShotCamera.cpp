@@ -344,8 +344,11 @@ CameraState clampInside(const CameraState &state, const QSize &canvas)
     const double c = qAbs(std::cos(r)), sn = qAbs(std::sin(r));
     const double fw = canvas.width() / s.zoom, fh = canvas.height() / s.zoom;
     const double bw = fw * c + fh * sn, bh = fw * sn + fh * c;
-    s.cx = qBound(bw / 2.0, s.cx, canvas.width() - bw / 2.0);
-    s.cy = qBound(bh / 2.0, s.cy, canvas.height() - bh / 2.0);
+    // qBound's own order, written out: at exactly insideMinZoom the box is
+    // the canvas give or take a rounding, so the two bounds can cross by
+    // ~1e-13 - Debug's qBound asserts on that, Release takes the lower one.
+    s.cx = qMax(bw / 2.0, qMin(canvas.width() - bw / 2.0, s.cx));
+    s.cy = qMax(bh / 2.0, qMin(canvas.height() - bh / 2.0, s.cy));
     return s;
 }
 
@@ -479,6 +482,182 @@ void remapForResize(SceneCamera &camera, const QSize &oldSize,
         key.state.cy += offset.y();
         key.state.zoom *= newSize.width() / double(oldSize.width());
     }
+}
+
+// --- The quick moves (Phase 1D) ----------------------------------------------
+
+QString quickMoveLabel(QuickMove move)
+{
+    switch (move) {
+    case QuickMove::PushIn: return QStringLiteral("Push In");
+    case QuickMove::PullOut: return QStringLiteral("Pull Out");
+    case QuickMove::PanLeft: return QStringLiteral("Pan Left");
+    case QuickMove::PanRight: return QStringLiteral("Pan Right");
+    case QuickMove::TiltUp: return QStringLiteral("Tilt Up");
+    case QuickMove::TiltDown: return QStringLiteral("Tilt Down");
+    case QuickMove::RotateLeft: return QStringLiteral("Rotate Left");
+    case QuickMove::RotateRight: return QStringLiteral("Rotate Right");
+    }
+    return QString();
+}
+
+namespace {
+
+bool sameFraming(const CameraState &a, const CameraState &b)
+{
+    return qAbs(a.cx - b.cx) < 0.5 && qAbs(a.cy - b.cy) < 0.5
+        && qAbs(a.zoom / b.zoom - 1.0) < 1e-6 && qAbs(a.rotation - b.rotation) < 1e-6;
+}
+
+// A pan or tilt with Stay inside on, at zoom `z`: the START as near the
+// given one as the move allows (where it is; else slid back along the move
+// so the whole distance stays on the artwork). False: it does not fit.
+bool travelFits(const CameraState &start, double z, double dx, double dy,
+                const QSize &canvas, CameraState *s, CameraState *e)
+{
+    CameraState a = start;
+    a.zoom = z;
+    a = clampInside(a, canvas);
+    const double tx = dx / z, ty = dy / z; // the move scales with the frame
+    CameraState b = a;
+    b.cx += tx;
+    b.cy += ty;
+    CameraState bc = clampInside(b, canvas);
+    if (qAbs(bc.cx - b.cx) < 0.5 && qAbs(bc.cy - b.cy) < 0.5) {
+        *s = a;
+        *e = bc;
+        return true;
+    }
+    // Slide the start back: the end where the artwork lets it be, the start
+    // the whole distance behind it.
+    CameraState a2 = bc;
+    a2.cx -= tx;
+    a2.cy -= ty;
+    const CameraState a2c = clampInside(a2, canvas);
+    if (qAbs(a2c.cx - a2.cx) < 0.5 && qAbs(a2c.cy - a2.cy) < 0.5) {
+        *s = a2c;
+        *e = bc;
+        return true;
+    }
+    return false;
+}
+
+} // namespace
+
+QuickFrames quickMove(QuickMove move, const CameraState &start,
+                      const QuickAmounts &amounts, const QSize &canvas,
+                      bool stayInside)
+{
+    QuickFrames r;
+    r.start = stayInside ? clampInside(start, canvas) : clampZoom(start);
+    auto place = [&](const CameraState &s) {
+        return stayInside ? clampInside(s, canvas) : clampZoom(s);
+    };
+    switch (move) {
+    case QuickMove::PushIn: {
+        CameraState e = r.start;
+        e.zoom *= amounts.zoom;
+        r.end = place(e);
+        break;
+    }
+    case QuickMove::PullOut: {
+        CameraState e = r.start;
+        e.zoom /= amounts.zoom;
+        r.end = place(e);
+        if (stayInside && r.end.zoom >= r.start.zoom * (1.0 - 1e-9)) {
+            // No room to pull out (decision 4): start pushed in by the Zoom,
+            // end at the whole artwork.
+            const double whole = insideMinZoom(r.start.rotation, canvas);
+            CameraState s = r.start;
+            s.zoom = whole * amounts.zoom;
+            r.start = place(s);
+            CameraState w = r.start;
+            w.zoom = whole;
+            r.end = place(w);
+        }
+        break;
+    }
+    case QuickMove::PanLeft:
+    case QuickMove::PanRight:
+    case QuickMove::TiltUp:
+    case QuickMove::TiltDown: {
+        // Along the frame's own axes: x = (cos r, sin r), y = (-sin r, cos r)
+        // in canvas px (y down, the rotation clockwise). The distance at zoom
+        // 1 is the Move's share of the canvas; it scales as 1 / zoom.
+        const double rad = qDegreesToRadians(r.start.rotation);
+        const bool pan = move == QuickMove::PanLeft || move == QuickMove::PanRight;
+        const double sign = (move == QuickMove::PanRight || move == QuickMove::TiltDown) ? 1.0 : -1.0;
+        const double d = sign * amounts.move * (pan ? canvas.width() : canvas.height());
+        const double dx = pan ? d * std::cos(rad) : -d * std::sin(rad);
+        const double dy = pan ? d * std::sin(rad) : d * std::cos(rad);
+        if (!stayInside) {
+            CameraState e = r.start;
+            e.cx += dx / e.zoom;
+            e.cy += dy / e.zoom;
+            r.end = e;
+            break;
+        }
+        // Decision 3: the start gives way just enough - slid back, then
+        // pushed in (the smallest zoom that fits, found by halving).
+        CameraState s, e;
+        if (travelFits(r.start, r.start.zoom, dx, dy, canvas, &s, &e)) {
+            r.start = s;
+            r.end = e;
+            break;
+        }
+        double lo = r.start.zoom, hi = lo;
+        bool found = false;
+        while (hi < kMaxZoom) {
+            hi = qMin(kMaxZoom, hi * 1.05);
+            if (travelFits(r.start, hi, dx, dy, canvas, &s, &e)) {
+                found = true;
+                break;
+            }
+            lo = hi;
+        }
+        if (!found) {
+            r.end = r.start;
+            break;
+        }
+        for (int i = 0; i < 40; ++i) {
+            const double mid = (lo + hi) / 2.0;
+            CameraState ms, me;
+            if (travelFits(r.start, mid, dx, dy, canvas, &ms, &me))
+                hi = mid;
+            else
+                lo = mid;
+        }
+        travelFits(r.start, hi, dx, dy, canvas, &s, &e);
+        r.start = s;
+        r.end = e;
+        break;
+    }
+    case QuickMove::RotateLeft:
+    case QuickMove::RotateRight: {
+        CameraState e = r.start;
+        e.rotation = normalisedAngle(e.rotation
+                                     + (move == QuickMove::RotateRight ? amounts.turn
+                                                                       : -amounts.turn));
+        if (stayInside) {
+            // Decision 3: the START gives way - pushed in just enough that
+            // the turned frame fits at the same zoom, so the move stays a
+            // pure turn (no zoom hidden in it).
+            CameraState s = r.start;
+            s.zoom = qMax(s.zoom, insideMinZoom(e.rotation, canvas));
+            e.zoom = s.zoom;
+            e = place(e);
+            s.cx = e.cx;
+            s.cy = e.cy;
+            r.start = place(s);
+            e.cx = r.start.cx;
+            e.cy = r.start.cy;
+        }
+        r.end = place(e);
+        break;
+    }
+    }
+    r.moves = !sameFraming(r.start, r.end);
+    return r;
 }
 
 } // namespace shotcam

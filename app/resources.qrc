@@ -24,6 +24,14 @@
         <file>icons/timeline/track_lock.svg</file>
         <file>icons/timeline/track_eye.svg</file>
         <file>icons/timeline/track_speaker.svg</file>
+        <file>icons/camera/quick_push_in.svg</file>
+        <file>icons/camera/quick_pull_out.svg</file>
+        <file>icons/camera/quick_pan_left.svg</file>
+        <file>icons/camera/quick_pan_right.svg</file>
+        <file>icons/camera/quick_tilt_up.svg</file>
+        <file>icons/camera/quick_tilt_down.svg</file>
+        <file>icons/camera/quick_rotate_left.svg</file>
+        <file>icons/camera/quick_rotate_right.svg</file>
         <file>icons/add.svg</file>
         <file>icons/duplicate.svg</file>
         <file>icons/lighttable.svg</file>

@@ -1260,6 +1260,34 @@ void DrawingCanvas::paintShotCamera(QPainter &painter)
     painter.setBrush(Qt::NoBrush);
     painter.drawPolygon(quad);
 
+    // A QUICK MOVE under the pointer (Phase 1D): START solid, END dashed,
+    // and an arrow from centre to centre when the frame travels.
+    if (v.previewValid) {
+        const QPolygonF a = shotCameraWidgetQuad(v.previewStart);
+        const QPolygonF b = shotCameraWidgetQuad(v.previewEnd);
+        if (a.size() == 4 && b.size() == 4) {
+            QPen solid(kCamAccent, 2.0);
+            solid.setJoinStyle(Qt::MiterJoin);
+            painter.setPen(solid);
+            painter.drawPolygon(a);
+            QPen dashed(kCamAccent, 2.0, Qt::CustomDashLine);
+            dashed.setDashPattern({3.0, 2.0});
+            dashed.setJoinStyle(Qt::MiterJoin);
+            painter.setPen(dashed);
+            painter.drawPolygon(b);
+            const QPointF ca = (a.at(0) + a.at(2)) / 2.0, cb = (b.at(0) + b.at(2)) / 2.0;
+            const QPointF d = cb - ca;
+            const double len = std::hypot(d.x(), d.y());
+            if (len > 12.0) {
+                const QPointF u = d / len, n(-u.y(), u.x());
+                painter.setPen(QPen(kCamAccent, 2.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+                painter.drawLine(ca, cb);
+                painter.drawLine(cb, cb - u * 8.0 + n * 5.0);
+                painter.drawLine(cb, cb - u * 8.0 - n * 5.0);
+            }
+        }
+    }
+
     if (tool) {
         const QPointF c = (quad.at(0) + quad.at(2)) / 2.0;
         painter.setPen(QPen(accent, 1.0));
@@ -1317,6 +1345,18 @@ void DrawingCanvas::paintShotCamera(QPainter &painter)
                          QColor(0x2a, 0x2a, 0x2a), QColor(0xdd, 0xdd, 0xdd), false);
     }
     painter.restore();
+}
+
+QPolygonF DrawingCanvas::shotCameraPreviewStartForTest() const
+{
+    const ShotCameraView v = shotCameraView();
+    return v.valid && v.previewValid ? shotCameraWidgetQuad(v.previewStart) : QPolygonF();
+}
+
+QPolygonF DrawingCanvas::shotCameraPreviewEndForTest() const
+{
+    const ShotCameraView v = shotCameraView();
+    return v.valid && v.previewValid ? shotCameraWidgetQuad(v.previewEnd) : QPolygonF();
 }
 
 QPolygonF DrawingCanvas::shotCameraQuadForTest() const

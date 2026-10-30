@@ -7826,6 +7826,141 @@ CAMERA colour; (ax) seven controls -> ten, SHOTS' height read directly
 (it was "AUDIO's y - 48"). Grabs: Documents\SankoTV-Design\camera\
 1c-capture; probe in tests/_backups/camera1c_20261028.
 
+## The shot camera, Phase 1D: Quick Moves and the scene framing (2026-10-29)
+
+Figma (section 383:141): 1D-1 (the Camera bar button and its popover),
+1D-2 (the hover preview), 1D-3 (menus), 1D-4 (Use Last Framing /
+Continue), 1D-5 (rules and decisions); icon set CameraQuickMove/icon
+447:618. Approved with decisions 1-5 as recommended and three changes:
+- ICONS: Push In / Pull Out and Rotate Left / Right must not look alike -
+  arrows in, out, turning left, turning right (icons/camera/quick_*.svg,
+  20 x 20, stroke #E5E5ED 1.3).
+- AMOUNTS: three fixed fields, not one that follows the pointer - Zoom
+  (1.25x; Pull Out uses its inverse), Move (25 % of the frame), Turn
+  (10 deg) - remembered between launches like the guides (sankoSettings
+  storyboard/cameraQuickZoom | Move | Turn). Over and Ease stay for the
+  session only.
+- RENAME: the scene action is "Use Last Framing of Scene N" everywhere
+  (never "Copy ... Framing": that is the key menu's Copy Framing).
+  "Continue Camera from Scene N" is unchanged.
+
+THE MOVES (shotcam::quickMove, pure, CameraModel.h QuickMove /
+QuickAmounts / QuickFrames). START = the camera as it already is at the
+span's first frame; END = START moved:
+- Push In zoom x Zoom; Pull Out zoom / Zoom.
+- Pan / Tilt along the FRAME's own axes (x = (cos r, sin r), y = (-sin r,
+  cos r), clockwise r), Move x W (or H) / zoom - a share of the frame.
+- Rotate +- Turn.
+- Stay inside on and no room (decision 3): the START gives way just
+  enough. Pan / Tilt: slid back along the move, then pushed in (the least
+  zoom that fits, a x1.05 search then 40 halvings). Rotate: pushed in to
+  insideMinZoom of the turned frame, so the move stays a pure turn (the
+  first build pushed the END in, hiding a zoom inside the turn; caught
+  against 1D-5 before the gate and fixed, (qm3) changed - see below).
+- Pull Out with no room (decision 4): starts at whole x Zoom and ends at
+  the whole canvas. Stay inside off: nothing gives way (the pan runs off
+  the artwork, the pull-out ends at 0.8x).
+- Push In at the 4x limit is no move: refused with a note.
+
+THE SPAN RULE (StoryboardPage::quickMovePlan). Over: This panel (default)
+/ To the scene's end (from the target panel) / The loop region (only
+when the loop lies inside one scene; else the item is disabled and the
+span text says "Set a loop region inside one scene first."). Keys inside
+the span or on its ends are replaced, keys outside are untouched (decision
+2). The START key takes the chosen Ease; the END key takes the ease of the
+segment through the end frame. One "Quick Camera Move" command, one Undo.
+Moves chain: the next panel's move starts where the last one ended.
+
+WHERE.
+- Camera bar: "Quick Move" (camQuickMove) after the next-key button,
+  enabled when the canvas shows a panel with a valid target (not
+  covered). Opens the popover camQuickPopover: title, the span text
+  (camQuickSpanText, "over panel 1 · 00:00:00:00 – 00:00:03:00"), eight
+  tiles camQuick<Name>, Zoom camQuickZoom (1.05-4), Move
+  camQuickMoveAmount (5-90 %), Turn camQuickTurn (1-90 deg), Over
+  camQuickOver, Ease camQuickEase.
+- Hover a tile: the canvas draws the START solid (accent 2 px) and the
+  END dashed {3,2} with an arrow when the centres are 12 px apart; the
+  CAMERA row draws the span as a dashed accent bar, hollow dashed
+  diamonds at its ends and the keys it would replace crossed out. Leaving
+  the tile clears both. A click closes the popover and applies.
+- CAMERA row menu: "Quick Move on Panel N" (the panel under the pointer -
+  cameraRowContextMenuRequested now carries the flat panel, not the key).
+- SHOTS clip menu: "Quick Camera Move" submenu after Delete Panel; it is
+  the CAMERA lock's, so it stays enabled when SHOTS is locked.
+- SCENES row right-click (new sceneContextMenuRequested -> onSceneMenu):
+  "Use Last Framing of Scene N" - scene N+1 holds scene N's last framing
+  still: its keys are replaced (" (replaces K keys)", decision 5; " (the
+  whole canvas)" when scene N has no camera), inert keys kept.
+  "Continue Camera from Scene N" - sets or adds the frame-0 key and keeps
+  the scene's own keys. On scene 1 both read "... — no scene before this
+  one", disabled.
+- LOCK refuses every entry with its message; Undo restores byte for byte.
+
+FILES: camera/CameraModel.h, camera/ShotCamera.{h,cpp}, DrawingCanvas.{h,cpp}
+(preview fields + two test hooks), AnimaticTimeline.{h,cpp} (preview
+paint, the two signals), AnimaticPage.{h,cpp} (relays, loopRegion),
+StoryboardPage.{h,cpp}, resources.qrc + icons/camera/quick_*.svg (new).
+
+CHECKS. CameraTest (qm): (qm1) the eight closed forms x four canvas sizes
+from a 2x framing, START unchanged; control: other amounts give other
+ends; a 30-deg frame pans along its own axis; Push In at 4x is no move.
+(qm3) decisions 3 and 4 at the whole canvas; control: Stay inside off.
+Lifecycle (qm.1)-(qm.7), 21 checks: the popover and hover preview on both
+surfaces (control: leave clears), one command + Undo; the span rule and
+eases, chaining; To the scene's end and the loop region (control: no
+loop); lock (control: unlocked) and covered; amounts remembered by a
+second window (control: the defaults); the row and clip menus; Use Last
+Framing / Continue / scene 1 disabled (control: the whole-canvas text).
+
+CHANGED CHECKS (old -> new):
+- (ad) "...offers Add Panel After, Duplicate Panel, Delete Panel", menu
+  == those three -> "...Delete Panel, Quick Camera Move", menu == the four.
+- (ax) "locked: the clip's menu shows Add Panel After, Duplicate Panel
+  and Delete Panel disabled and suffixed "(locked)"", items.size() == 3 ->
+  the same plus Quick Camera Move enabled, items.size() == 4 and
+  items.at(3) == "Quick Camera Move[1]".
+- (qm3), changed within 1D before the gate: "...Rotate pushes the END in
+  just enough", turn.end.zoom == insideMinZoom(10) -> "...Rotate pushes
+  the START in just enough and turns at that zoom about the centre", start
+  and end both at insideMinZoom(10), both centred; its control gained
+  "the turn stays at 1x" with Stay inside off. Positive control: the old
+  Rotate code put back fails it ("turn 1920x1080: 1x -> 1.29352x").
+
+DEBUG ASSERT FOUND BY THE GATE (first 1D gate, c1d): the Debug Camera
+family aborted in (qm3) with qminmax.h "!(max < min)". clampInside at
+EXACTLY insideMinZoom of a turned frame (1D's Rotate and Pull Out reach
+it every time) computes the box as the canvas times (1 + ~1e-16), so
+qBound(bw/2, cx, W - bw/2) gets bounds crossed by ~1e-13: Debug asserts,
+Release returns the lower bound. clampInside now writes qBound's own order
+out (qMax(lo, qMin(hi, v))): Release bytes identical by construction,
+no assert. The Debug (qm3) run that aborted is the positive control.
+
+AFTER THE 1D HAND TEST (2026-10-30; recording 20261030-145310):
+- FAIL fixed: the CAMERA row's "Quick Move on Panel N" and the clip's
+  "Quick Camera Move" used the popover's Over. With Over left at "To the
+  scene's end" the Panel 2 move ran over panels 2-11. quickMovePlan now
+  takes the span; the menus pass ThisPanel (cameraQuickMoveOnPanel), the
+  popover and its preview / span text pass m_quickSpan. (qm.8) + control
+  (the popover's own move with the same Over runs to the scene's end).
+- Over / Ease are as wide as their longest entry + 8 px ("To the scene's
+  enc" at 120 px). (qm.9): edit-field room >= text + 4; control: at 120 px
+  the room was short (92 < 94).
+- Zoom / Move / Turn take the wheel only once clicked (WheelAfterClick:
+  StrongFocus; a press on the box or its text arms it; FocusOut or the
+  popover closing disarms it). The test opened on Zoom 1.05x - the field's
+  minimum - from a run before the recording; a passing wheel steps the
+  field and the step is remembered. (qm.10) + control (clicked, the same
+  wheel steps each).
+- The Scenes dock's scene cards open the SCENES row's menu (onSceneMenu via
+  the card's ContextMenu in eventFilter; a label's right-click reaches the
+  card). (qm.11) + control (scene 1's card: disabled).
+- (qm.12): every 1D menu entry - Quick Move on the row and the clip, Use
+  Last Framing / Continue on the row, the SCENES row and the dock - is
+  greyed with the CAMERA track locked; control: all eight enabled unlocked.
+Grabs: Documents\SankoTV-Design\camera\1d-capture; probe in
+tests/_backups/camera1d_20261029.
+
 ## METHOD: measure interior structure ACROSS THE SIZE RANGE before calling it character (2026-09-25)
 
 The Painting census measured Acrylic at size 20 only and found "one

@@ -164,6 +164,14 @@ public:
     void setSelectedCameraKey(int sceneIndex, int keyIndex); // -1, -1: none
     // The ease glyph (the row's pill and the key menu's Ease entries).
     static QIcon easeGlyphIcon(int ease);
+    // A QUICK MOVE under the pointer (Phase 1D, Figma 1D-2): the two keys it
+    // would add, hollow and dashed, joined by a dashed bar, and the keys it
+    // would replace crossed out. Film frames; nothing is changed.
+    void setCameraPreview(int sceneIndex, double startFrame, double endFrame,
+                          const QVector<int> &replacedKeys);
+    void clearCameraPreview();
+    // ("shown", "scene", "x0", "x1", "replaced" as "s:k" strings)
+    QVariantMap cameraPreviewForTest() const;
     // Test hooks: the row; each key as the row draws it ("scene", "key",
     // "x" on the canvas, "frame" in the film, "selected", "atPlayhead",
     // "hover"); each segment ("scene", "from", "to", "ease", "dashed",
@@ -209,8 +217,10 @@ signals:
     void cameraKeyMoveRequested(int sceneIndex, int keyIndex, int sceneFrame);
     void cameraKeyContextMenuRequested(int sceneIndex, int keyIndex,
                                        const QPoint &globalPos);
-    void cameraRowContextMenuRequested(const QPoint &globalPos);
+    void cameraRowContextMenuRequested(int flatPanelIndex, const QPoint &globalPos);
     void cameraAnimateToggled(bool on);
+    // Right-click on the SCENES track (Phase 1D): that scene's menu.
+    void sceneContextMenuRequested(int sceneIndex, const QPoint &globalPos);
     void zoomChanged(float zoomLevel); // internal use
 
 private:
@@ -414,6 +424,11 @@ private:
     int m_camDragFromFrame = -1; // ...and where the key was
     bool m_camDragActive = false;
     QPoint m_camPress;
+    // The Quick Move preview (setCameraPreview).
+    bool m_camPreview = false;
+    int m_camPreviewScene = -1;
+    double m_camPreviewStart = 0, m_camPreviewEnd = 0;
+    QVector<int> m_camPreviewReplaced;
 
     float m_zoom = 100.0f; // 100 = 1px per frame
     int m_scrollX = 0;     // content scroll offset in px
