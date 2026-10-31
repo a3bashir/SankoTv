@@ -12480,6 +12480,209 @@ void runBlockedWritePass(const QString &scratch)
     deny(other, false);
 }
 
+// ---- (fd) a folder survives Duplicate Panel and Copy / Paste (2026-10-31) ---
+// clonePanel gave every layer of the copy a new id but left each folder
+// member's groupId naming the SOURCE's folder, so in the copy the members fell
+// out of their folder: its eye and opacity no longer reached them (found
+// reading for the Phase 2 spec, reproduced by this pass on the unfixed code).
+// The fixture's folder is HIDDEN, so a member that has fallen out shows in
+// the copy's picture.
+void runFolderClonePass(const QString &scratch)
+{
+    out() << "--- (fd) a folder survives Duplicate Panel and Copy / Paste ---" << Qt::endl;
+    using namespace workspace;
+    const QString dir = scratch + QStringLiteral("/folderclone");
+    QDir(dir).removeRecursively();
+    QDir().mkpath(dir);
+    const QString project = dir + QStringLiteral("/FolderClone.sankotv");
+    const QSize size(960, 540);
+    QString sourceFolderId;
+    {
+        // Background, Layer 1, then the folder block: Member A, Member B and
+        // the hidden "Group 1" row directly above them.
+        Scene *scene = new Scene;
+        scene->number = 1;
+        Panel *panel = makeBlankPanel(size);
+        {
+            QPainter p(&panel->layers[1].image);
+            p.fillRect(QRect(40, 40, 200, 120), QColor(40, 90, 200));
+        }
+        Layer a = makeRasterLayer(QStringLiteral("Member A"), size);
+        Layer b = makeRasterLayer(QStringLiteral("Member B"), size);
+        {
+            QPainter p(&a.image);
+            p.fillRect(QRect(300, 200, 180, 140), QColor(220, 40, 40));
+        }
+        {
+            QPainter p(&b.image);
+            p.setPen(Qt::NoPen);
+            p.setBrush(QColor(40, 180, 60));
+            p.drawEllipse(QRect(600, 260, 220, 160));
+        }
+        Layer folder;
+        folder.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        folder.type = QStringLiteral("group");
+        folder.name = QStringLiteral("Group 1");
+        folder.visible = false;
+        a.groupId = folder.id;
+        b.groupId = folder.id;
+        sourceFolderId = folder.id;
+        panel->layers << a << b << folder;
+        scene->panels.append(panel);
+        ProjectIO::SaveData data;
+        data.projectName = QStringLiteral("FolderClone");
+        data.fps = 24;
+        data.canvasSize = size;
+        data.scenes = {scene};
+        const ProjectIO::WriteResult w = ProjectIO::projectToJson(data, project);
+        QFile f(project);
+        if (w.ok && f.open(QIODevice::WriteOnly))
+            f.write(QJsonDocument(w.root).toJson(QJsonDocument::Indented));
+        f.close();
+        delete scene;
+    }
+
+    // The folder row and how many of the two members it really holds.
+    auto folderOf = [](const Panel *p) -> const Layer * {
+        for (const Layer &layer : p->layers)
+            if (isGroupLayer(layer))
+                return &layer;
+        return nullptr;
+    };
+    auto inFolder = [&](const Panel *p) {
+        const Layer *folder = folderOf(p);
+        int n = 0;
+        for (const Layer &layer : p->layers)
+            if (layer.name.startsWith(QStringLiteral("Member")) && folder
+                && p->groupOf(layer) == folder)
+                ++n;
+        return n;
+    };
+    auto says = [&](const Panel *p, const QImage &want) {
+        const Layer *folder = folderOf(p);
+        return QStringLiteral("members in the copy's folder %1 of 2; folder id %2; picture %3")
+            .arg(inFolder(p))
+            .arg(!folder ? QStringLiteral("missing")
+                         : folder->id == sourceFolderId ? QStringLiteral("the source's")
+                                                        : QStringLiteral("its own"))
+            .arg(paropen::sameBytes(p->flattenedImage(), want)
+                     ? QStringLiteral("the original's")
+                     : QStringLiteral("DIFFERENT from the original's"));
+    };
+
+    Rig r(project);
+    if (!r.ok || r.window.scenesForTest().isEmpty()) {
+        check(QStringLiteral("(fd) the folder fixture opens"), false);
+        return;
+    }
+    const Scene *scene = r.window.scenesForTest().first();
+    const Panel *source = scene->panels.value(0);
+    const QImage sourceFlat = source ? source->flattenedImage() : QImage();
+
+    // Duplicate Panel, from the clip's own menu.
+    r.storyboard->setClipMenuHookForTest([&](QMenu *menu) {
+        for (QAction *a : menu->actions())
+            if (a->text() == QLatin1String("Duplicate Panel"))
+                a->trigger();
+    });
+    rightClickClip(r, 0);
+    r.storyboard->setClipMenuHookForTest({});
+    const Panel *dup = scene->panels.value(1);
+    check(QStringLiteral("(fd) DUPLICATE PANEL KEEPS A FOLDER WHOLE: both members are in the "
+                         "copy's own folder, so its hidden eye hides them and the copy's picture "
+                         "is the original's, byte for byte"),
+          source && dup && scene->panels.size() == 2 && inFolder(dup) == 2
+              && folderOf(dup)->id != sourceFolderId
+              && paropen::sameBytes(dup->flattenedImage(), sourceFlat),
+          dup ? says(dup, sourceFlat) : QStringLiteral("no copy"));
+
+    // Copy / Paste: the clipboard holds a clone, and the paste clones it again.
+    clickClip(r, 0);
+    r.storyboard->copySelectedPanel();
+    r.storyboard->pastePanelAfterSelected();
+    pump(250);
+    const Panel *pasted = scene->panels.value(1);
+    check(QStringLiteral("(fd) ...and so does COPY / PASTE: the pasted panel's members are in its "
+                         "own folder (not the original's, not the duplicate's), its picture the "
+                         "original's"),
+          pasted && pasted != dup && scene->panels.size() == 3 && inFolder(pasted) == 2
+              && folderOf(pasted)->id != sourceFolderId && folderOf(pasted)->id != folderOf(dup)->id
+              && paropen::sameBytes(pasted->flattenedImage(), sourceFlat),
+          pasted ? says(pasted, sourceFlat) : QStringLiteral("no paste"));
+
+    // Saved and read back: every groupId names a folder in its own panel.
+    const QString savedDir = dir + QStringLiteral("/saved");
+    QDir().mkpath(savedDir);
+    const QString saved = savedDir + QStringLiteral("/FolderCloneSaved.sankotv");
+    const bool wrote = r.window.saveProjectForTest(saved);
+    QJsonObject root;
+    {
+        QFile f(saved);
+        if (f.open(QIODevice::ReadOnly))
+            root = QJsonDocument::fromJson(f.readAll()).object();
+    }
+    int members = 0, dangling = 0;
+    for (const QJsonValue &sv : root.value(QStringLiteral("scenes")).toArray())
+        for (const QJsonValue &pv : sv.toObject().value(QStringLiteral("panels")).toArray()) {
+            const QJsonArray layers = pv.toObject().value(QStringLiteral("layers")).toArray();
+            QSet<QString> folders;
+            for (const QJsonValue &lv : layers)
+                if (lv.toObject().value(QStringLiteral("type")).toString() == QLatin1String("group"))
+                    folders.insert(lv.toObject().value(QStringLiteral("id")).toString());
+            for (const QJsonValue &lv : layers) {
+                const QString g = lv.toObject().value(QStringLiteral("groupId")).toString();
+                if (g.isEmpty())
+                    continue;
+                ++members;
+                dangling += folders.contains(g) ? 0 : 1;
+            }
+        }
+    const ProjectIO::LoadedProject back =
+        ProjectIO::projectFromJson(root, QFileInfo(saved).absolutePath(), saved);
+    int whole = 0, samePicture = 0, panels = 0;
+    for (const Scene *s : back.scenes)
+        for (const Panel *p : s->panels) {
+            ++panels;
+            whole += inFolder(p) == 2 ? 1 : 0;
+            samePicture += paropen::sameBytes(p->flattenedImage(), sourceFlat) ? 1 : 0;
+        }
+    qDeleteAll(back.scenes);
+    check(QStringLiteral("(fd) ...SAVED AND REOPENED: every member's groupId names a folder in its "
+                         "own panel, and all three panels come back with their folder whole and "
+                         "the original's picture"),
+          wrote && members == 6 && dangling == 0 && panels == 3 && whole == 3 && samePicture == 3,
+          QStringLiteral("saved %1; members %2, naming no folder in their panel %3; panels %4, "
+                         "folder whole %5, original's picture %6")
+              .arg(wrote).arg(members).arg(dangling).arg(panels).arg(whole).arg(samePicture));
+
+    // Control: the copy's folder is its own. Its eye in the Layers panel
+    // brings its members into ITS picture, and the original stays hidden.
+    clickClip(r, 2); // the duplicate
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    const int folderRow = 4; // Background, Layer 1, Member A, Member B, Group 1
+    QToolButton *eye = nullptr;
+    for (QWidget *w : r.storyboard->findChildren<QWidget *>())
+        if (w->property("layerIndex").isValid() && w->property("layerIndex").toInt() == folderRow)
+            if (QToolButton *b = w->findChild<QToolButton *>(QStringLiteral("layerEye"),
+                                                             Qt::FindDirectChildrenOnly))
+                eye = b;
+    const QImage dupBefore = dup ? dup->flattenedImage() : QImage();
+    if (eye)
+        eye->click();
+    pump(150);
+    const bool shown = dup && folderOf(dup) && folderOf(dup)->visible;
+    const bool dupChanged = dup && !paropen::sameBytes(dup->flattenedImage(), dupBefore);
+    const bool sourceKept = source && folderOf(source) && !folderOf(source)->visible
+        && paropen::sameBytes(source->flattenedImage(), sourceFlat);
+    check(QStringLiteral("(fd) control: the COPY's folder eye (the Layers panel's own button) "
+                         "shows its members in the copy's picture, and leaves the original's "
+                         "folder hidden and its picture as it was"),
+          eye && r.storyboard->currentPanelForTest() == dup && shown && dupChanged && sourceKept,
+          QStringLiteral("eye found %1; copy's folder shown %2; copy's picture changed %3; "
+                         "original kept %4")
+              .arg(eye != nullptr).arg(shown).arg(dupChanged).arg(sourceKept));
+}
+
 void runCameraToolPass(const QString &scratch)
 {
     using namespace workspace;
@@ -14623,6 +14826,7 @@ int main(int argc, char **argv)
     runQuickMovePass(scratch);
     runParallelOpenPass(scratch);
     runBlockedWritePass(scratch);
+    runFolderClonePass(scratch);
 
     // ---- (aa) a test that cannot start says why and exits ----------------
     // An unattended gate must FAIL, not wait. Measured 2026-10-02: with its

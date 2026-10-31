@@ -7894,14 +7894,25 @@ void StoryboardPage::movePanelBy(int delta)
 
 // Deep copy shared by Duplicate and the Edit-menu panel clipboard: layers
 // (QImage is copy-on-write: painting detaches, so assignment is a safe deep
-// copy) with fresh UUIDs so undo/UI never cross panels, plus shot metadata
+// copy) with fresh UUIDs so undo/UI never cross panels - folder members
+// renamed with their folder - plus shot metadata
 // and duration. Undo history and generation state start fresh.
 Panel *StoryboardPage::clonePanel(const Panel *source)
 {
     Panel *copy = new Panel;
     copy->layers = source->layers;
+    // A folder's members name it by id, so they follow it to its new one -
+    // left on the source's id they fell out of the copy's folder, and its
+    // eye and opacity stopped reaching them (2026-10-31).
+    QHash<QString, QString> newIds;
+    for (Layer &layer : copy->layers) {
+        const QString fresh = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        newIds.insert(layer.id, fresh);
+        layer.id = fresh;
+    }
     for (Layer &layer : copy->layers)
-        layer.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        if (!layer.groupId.isEmpty())
+            layer.groupId = newIds.value(layer.groupId, layer.groupId);
     copy->activeLayerIndex = source->activeLayerIndex;
     copy->duration = source->duration;
     copy->shotType = source->shotType;

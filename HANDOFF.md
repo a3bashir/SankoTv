@@ -157,6 +157,16 @@ Windows' Media Foundation called directly instead of Qt's recorder: the
 same Windows encoders, nothing new shipped, and the export no longer goes
 through FFmpeg at all.
 
+POSTPONED (the user, 2026-10-31): "Postpone all legal and licensing
+reviews until we are close to release; keep those items in BEFORE SELLING
+and note in HANDOFF that they are postponed." Every legal / licensing
+review below (1-11, and any opened later) stays OPEN and on this list, and
+is not worked on until release is near; the priority is the camera's
+Phase 2. NOT POSTPONED: the standing gate below and CLAUDE.md rule 13 - a
+new library, codec, font or other dependency still has its licence
+identified and reported BEFORE it is added. Items 14 and 15 are product
+requirements, not legal reviews.
+
 THE RULE FOR THIS LIST: NO ITEM IS MARKED DONE WITHOUT THE USER'S WORD.
 Not when the code for it is written, not when a notice file exists, not
 when a source seems to settle it. Record what was done under the item and
@@ -8369,6 +8379,102 @@ Both approved from the report-only pass the same day.
 Lifecycle 953 -> 962.
    BEFORE SELLING 14 (test with the real feature on, unsigned and signed)
    and 15 (code-sign the release) opened.
+
+## The shot camera, Phase 2: the spec, APPROVED (2026-10-31)
+
+The user's new priority (2026-10-31): the camera's Phase 2 - depth and
+parallax (2.5D), a stage margin beyond the camera frame, and camera keys
+pinned to a time on the timeline so the camera stays in sync with the
+sound. Legal and licensing reviews are postponed (see BEFORE SELLING).
+The spec is `Documents\SankoTV-Design\camera\phase2-spec.md`. APPROVED
+by the user the same day with all 21 decisions as recommended (D1 the
+order 2A margin, 2B depth core, 2C depth tools, 2D waveform, 2E pinned
+keys) and two changes: the folder bug below fixed now, as its own batch
+before 2A; and the Figma screens one part at a time - 2A first, as the
+spec's section 12 lists them, report and Figma only, 2A not built until
+approved.
+FIGMA 2A (2026-10-31, section "Timeline — Components" 383:141, which
+grew to 15860 tall): 2A-1 New Project's Stage Margin line, four states
+(475:696); 2A-2 Project Settings, frame and stage, Stage Margin...
+(476:696); 2A-3 the Stage Margin dialog - grow, shrink with nothing
+there, shrink that cuts art, too big (477:696); 2A-4 the canvas - a
+drawing tool, the Camera tool at the base framing, a 1x pan into the
+margin, the widest pull-out (478:696); 2A-5 strip thumbnails (479:696);
+2A-6 the presets in numbers and six screen questions Q1-Q6 (480:696).
+Drawn from the code's real geometry (NewProjectDialog 340 wide,
+ResizeProjectDialog / ProjectSettingsDialog 380), not from the older
+design 350:24.
+
+## Duplicate Panel and the panel clipboard kept a folder whole (2026-10-31)
+
+THE BUG (found reading for the Phase 2 spec; the user asked for it to be
+reproduced in the app first). StoryboardPage::clonePanel - Duplicate
+Panel, and both ends of the panel clipboard (Copy clones into it, Paste
+clones out of it) - gave every layer of the copy a new id but left each
+folder member's groupId naming the SOURCE's folder. In the copy the
+members still drew indented under the folder (the row indents on a
+non-empty groupId) but were in no folder: its eye, its opacity and
+collapsing it no longer reached them, and the file saved it so. Layer
+duplicate (groupRemap) was right; only the panel clone was not.
+REPRODUCED on the unfixed code through the real window (the Lifecycle
+pass below, run before the fix: build/_probe/folderfix/life_before.txt):
+a panel whose folder is HIDDEN, duplicated from the clip's menu - the
+copy's picture showed the hidden members ("members in the copy's folder
+0 of 2 ... picture DIFFERENT from the original's"); the same through
+Copy / Paste; saved, 4 of the 6 members named no folder in their own
+panel; the copy's folder eye changed nothing in the copy's picture. The
+other 962 checks passed.
+THE USER'S PROJECTS: all 37 .sankotv files under Documents and Downloads
+were read (hashed before and after, unchanged): two have folders
+(Storyboard_002, Storyboard_003), none has a member naming a missing
+folder. So nothing on disk needed repairing, and no load repair was
+added.
+THE FIX: clonePanel maps each layer's old id to its new one and moves
+every member's groupId with its folder (an id it cannot map is kept as
+it was, so a copy is never more broken than its source).
+CHECKS: Lifecycle (fd), 4, through the real window: Duplicate Panel from
+the clip menu keeps both members in the copy's own folder (a new id), so
+its hidden eye hides them and the copy's picture is the original's byte
+for byte; Copy / Paste likewise, with a folder of its own (not the
+original's or the duplicate's); saved and reopened, every member's
+groupId names a folder in its own panel and all three panels come back
+whole with the original's picture; control: the COPY's folder eye (the
+Layers panel's own button) brings its members into the copy's picture
+and leaves the original's folder hidden and its picture unchanged (on
+the unfixed code: "copy's picture changed 0"). Lifecycle 962 -> 966.
+GATE: the normal (overlapped) gate `folderfix` failed one Lifecycle check
+in each configuration, a different one each time, both far from this
+change and both while the test window lost the foreground 7-8 times to
+programs in use: Release (ax) the volume popup ("placed 0"; it had also
+failed the Release quick check after the fix, and passed before it);
+Debug (aw) the section's default / minimum height 244 / 212 instead of
+232 / 200 (+12: the timeline scrollbar showing). Per the rule, the full
+gate was rerun SERIAL (`folderfix_serial`, 1879 s): nine families green
+in both configurations, Lifecycle 966 / 966, every (fd) check passing;
+the foreground was lost once. Pins unchanged: 34 c1p (17 a
+configuration), preview 608366fc and eraser d312bc9b in both
+brushlib_test reports, pixel locks 666f7b45 / cafcec7f, erase 0bc24381.
+HAND TEST (recording 20261031-201905, the serial gate's Release build
+of 19:17; the user did steps 1-4 and 9, on Test_SB_009_A): 1 PASS (Layer
+5 and Layer 3 grouped into "Group 1", renamed "GR1"); 2 PASS (its eye hid
+the character on the canvas and the strip); 3 PASS with the folder SHOWN
+rather than hidden (Ctrl+Shift+D at 96.4 s; the copy P2 matched P1, its
+folder whole and collapsed) - the hidden case is (fd)'s first check; 4
+PASS (the copy's folder eye hid the character in P2 only, P1 kept it -
+what the bug made impossible); 9 PASS (saved, closed, reopened from
+recents twice: P2's folder came back hidden, P1's shown, each eye its own
+panel's). NOT TESTED: 5 (collapse on the copy; the copy did open
+collapsed with its member rows hidden, which the bug would not have done;
+no gate check toggles it - (fd) checks the membership it reads); 6 (Copy /
+Paste - (fd)'s second check); 7 (folder opacity on a copy - no gate check;
+(fd) checks the membership the opacity reads); 8 (Undo / Redo - no (fd)
+check). Stalls: 2421 ms on the first Ctrl+S after the duplicate (the
+image files are named by position, so inserting P2 moved every later
+panel's files and the save wrote them all - the ledger's design); the
+two opens 449 / 474 ms. No warnings. Committed on the user's word.
+Hand-test list: Documents\SankoTV-Design\camera\handtest_folderclone.md.
+NOTICED, not changed: the Layers panel's Group button's tooltip says
+"Group: flatten the selected layers into one", but it makes a folder.
 
 ## METHOD: measure interior structure ACROSS THE SIZE RANGE before calling it character (2026-09-25)
 
