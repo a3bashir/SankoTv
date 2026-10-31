@@ -95,6 +95,11 @@
 #include <QToolTip>
 #include <QVBoxLayout>
 #include <Qt>
+#include <QThread>
+#include <QThreadPool>
+
+#include <atomic>
+#include <vector>
 
 namespace {
 
@@ -5949,6 +5954,7 @@ void StoryboardPage::rebuildPanelStrip()
 
     Scene *scene = currentScene();
     if (scene) {
+        warmStripThumbs(scene->panels); // the expensive part, in parallel
         for (int i = 0; i < scene->panels.size(); ++i) {
             Panel *panel = scene->panels.at(i);
 
@@ -5976,6 +5982,51 @@ void StoryboardPage::rebuildPanelStrip()
     // (Add Panel now lives ONLY in the fixed control column at the left of the strip.)
     m_panelStripLayout->addStretch(1);
     updatePanelThumbStyles();
+}
+
+// THE STRIP IN PARALLEL (2026-10-31; a 4K scene's strip took 185 ms of the
+// open, one full composite per panel): every panel whose cached thumbnail
+// is stale gets its composite and scale on a worker thread - images only,
+// the pixmap is made on this thread by adoptThumb - so the loop that builds
+// the strip finds each one cached. Bounded like the save's encoders.
+namespace {
+std::atomic<int> g_stripThumbsOffUi{0};
+}
+
+int StoryboardPage::stripThumbsBuiltOffUiForTest()
+{
+    return g_stripThumbsOffUi.load();
+}
+
+void StoryboardPage::resetStripThumbCountForTest()
+{
+    g_stripThumbsOffUi = 0;
+}
+
+void StoryboardPage::warmStripThumbs(const QVector<Panel *> &panels)
+{
+    QVector<Panel *> stale;
+    for (Panel *panel : panels)
+        if (panel && !panel->thumbFresh())
+            stale.append(panel);
+    if (stale.size() < 2)
+        return; // one panel gains nothing: flattenedThumb builds it in place
+    std::vector<QImage> images(size_t(stale.size()));
+    std::vector<QVector<quint64>> keys(size_t(stale.size()));
+    {
+        QThreadPool pool;
+        pool.setMaxThreadCount(qBound(1, QThread::idealThreadCount(), 8));
+        QThread *ui = thread();
+        for (int i = 0; i < stale.size(); ++i)
+            pool.start([&images, &keys, &stale, ui, i] {
+                images[size_t(i)] = stale.at(i)->flattenedThumbImage(&keys[size_t(i)]);
+                if (QThread::currentThread() != ui)
+                    g_stripThumbsOffUi.fetch_add(1);
+            });
+        pool.waitForDone();
+    }
+    for (int i = 0; i < stale.size(); ++i)
+        stale.at(i)->adoptThumb(images[size_t(i)], keys[size_t(i)]);
 }
 
 void StoryboardPage::updatePanelThumbStyles()
@@ -7186,6 +7237,16 @@ void StoryboardPage::loadScenes(const QVector<Scene *> &scenes)
     m_scenes = scenes; // non-owning; MainWindow owns the Scene/Panel objects
     m_currentScene = -1;
     m_currentPanel = -1;
+    // Every panel's thumbnail, in parallel (2026-10-31): the strip below
+    // and the timeline's clips both draw the cached one - built here once,
+    // on worker threads, instead of one by one at their first paint.
+    {
+        QVector<Panel *> all;
+        for (Scene *scene : m_scenes)
+            if (scene)
+                all += scene->panels;
+        warmStripThumbs(all);
+    }
 
     // WHATEVER FEEDS THE STRIP FEEDS THE TIMELINE. The animatic used to be
     // handed the scenes only when the user walked to its screen; it has no

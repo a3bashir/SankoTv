@@ -68,6 +68,10 @@ qt_add_executable(SankoTV
     src/NewProjectDialog.cpp
     src/ProjectIO.cpp
     src/ProjectIO.h
+    # Controlled Folder Access: the plain message when Windows blocks a
+    # save, an export or a recording in a protected folder (2026-10-31).
+    src/ProtectedFolders.cpp
+    src/ProtectedFolders.h
     # Media the project owns (the audio track) is copied into its
     # "<name>_assets" folder: ProjectMedia does the copy, MediaCopyProgress
     # is its progress window.

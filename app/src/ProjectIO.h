@@ -239,6 +239,21 @@ struct LoadedProject
 LoadedProject projectFromJson(const QJsonObject &root, const QString &folder,
                               const QString &manifestFile = QString());
 
+// THE OPEN IN PARALLEL (2026-10-31; a 4K project's open spent 1.75 of its
+// 2 s decoding layer PNGs one after another): projectFromJson decodes every
+// layer file it will read on worker threads first. The gate's witness:
+// how many layer files were decoded off the UI thread and on it since the
+// last reset; and the old one-at-a-time way, for the control that both
+// give the same pixels.
+struct DecodeCounts
+{
+    int offUiThread = 0;
+    int onUiThread = 0;
+};
+DecodeCounts decodeCountsForTest();
+void resetDecodeCountsForTest();
+void setSerialDecodeForTest(bool serial);
+
 // The message for a project whose PANELS disagree with each other. The
 // plain mismatch text (canvasMismatchDialogText) must never be shown for
 // one of these: it says "its artwork is W x H", which is false when only

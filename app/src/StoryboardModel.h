@@ -174,9 +174,16 @@ struct Panel
     // layers, so it can never crop a document to some other size.
     QPixmap flattenedPixmap() const
     {
+        const QImage out = flattenedImage();
+        return out.isNull() ? QPixmap() : QPixmap::fromImage(out);
+    }
+    // The same composite as an image - usable on a worker thread (a QPixmap
+    // belongs to the UI thread), for the strip's parallel thumbnails.
+    QImage flattenedImage() const
+    {
         const QSize size = canvasSize();
         if (!size.isValid())
-            return QPixmap();
+            return QImage();
         QImage out(size, QImage::Format_ARGB32_Premultiplied);
         out.fill(Qt::white); // paper — keeps blank checks / ghosts / export identical
         QPainter painter(&out);
@@ -193,7 +200,7 @@ struct Panel
             painter.drawImage(0, 0, layer.image);
         }
         painter.end();
-        return QPixmap::fromImage(out);
+        return out;
     }
 
     // --- Flattened-THUMBNAIL cache (performance pass 3b) --------------------
@@ -247,6 +254,32 @@ struct Panel
             m_thumbKey = fp;
         }
         return m_thumbCache;
+    }
+    // THE STRIP IN PARALLEL (2026-10-31): the open builds every stale strip
+    // thumbnail on worker threads. flattenedThumbImage is flattenedThumb's
+    // composite and scale in images (worker-safe), with the fingerprint it
+    // was built from; adoptThumb (UI thread) puts it in the cache only if
+    // the panel still matches that fingerprint.
+    bool thumbFresh() const
+    {
+        return !m_thumbCache.isNull() && flattenFingerprint() == m_thumbKey;
+    }
+    QImage flattenedThumbImage(QVector<quint64> *fingerprint) const
+    {
+        constexpr int kThumbLongEdge = 512; // as flattenedThumb()
+        *fingerprint = flattenFingerprint();
+        const QImage full = flattenedImage();
+        return (full.width() > kThumbLongEdge || full.height() > kThumbLongEdge)
+            ? full.scaled(kThumbLongEdge, kThumbLongEdge, Qt::KeepAspectRatio,
+                          Qt::SmoothTransformation)
+            : full;
+    }
+    void adoptThumb(const QImage &thumb, const QVector<quint64> &fingerprint) const
+    {
+        if (thumb.isNull() || fingerprint != flattenFingerprint())
+            return;
+        m_thumbCache = QPixmap::fromImage(thumb);
+        m_thumbKey = fingerprint;
     }
 
 private:

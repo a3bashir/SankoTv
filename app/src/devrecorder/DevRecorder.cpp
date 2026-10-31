@@ -827,7 +827,18 @@ void Recorder::startRecording()
     const QString stamp = QDateTime::currentDateTime().toString(
         QStringLiteral("yyyyMMdd-HHmmss"));
     d->sessionDir = d->outputRoot + QLatin1Char('/') + stamp;
-    QDir().mkpath(d->sessionDir + QStringLiteral("/screenshots"));
+    // A folder that cannot be made or written records nothing - refuse, and
+    // let the host say why, rather than "record" into nowhere.
+    {
+        QFile probe(d->sessionDir + QStringLiteral("/system.txt"));
+        if (!QDir().mkpath(d->sessionDir + QStringLiteral("/screenshots"))
+            || !probe.open(QIODevice::WriteOnly)) {
+            const QString folder = d->sessionDir;
+            d->sessionDir.clear();
+            emit recordingRefused(folder);
+            return;
+        }
+    }
 
     d->worker->imageFormat = d->format;
     d->worker->buildConfig = d->info.buildConfig;

@@ -3,6 +3,7 @@
 #include "ProjectMedia.h"
 #include "camera/ShotCamera.h"
 
+#include <QCoreApplication>
 #include <QDataStream>
 #include <QDir>
 #include <QFileInfo>
@@ -17,6 +18,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <vector>
 
 namespace ProjectIO {
 
@@ -458,6 +460,114 @@ WriteResult projectToJson(const SaveData &data, const QString &projectFilePath,
     return res;
 }
 
+namespace {
+// THE OPEN IN PARALLEL (2026-10-31). The load below used to decode each
+// layer PNG where it met it, one after another on the UI thread: 46 4K
+// layers took 1.75 s of a 2 s open. Now every file it will read is decoded
+// - and converted to the layers' format - on worker threads FIRST; the load
+// then takes each image in its own order, so every migration and identity
+// rule sees exactly what it saw. Bounded like the save's encoders: at most
+// 8 threads, one image each in flight.
+std::atomic<int> g_decodedOffUi{0};
+std::atomic<int> g_decodedOnUi{0};
+bool g_serialDecodeForTest = false;
+
+QImage decodeLayerFile(const QString &file)
+{
+    QImage img;
+    img.load(file);
+    if (!img.isNull())
+        img = img.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+    const bool ui = QCoreApplication::instance()
+        && QThread::currentThread() == QCoreApplication::instance()->thread();
+    (ui ? g_decodedOnUi : g_decodedOffUi).fetch_add(1);
+    return img;
+}
+
+class LayerDecodes
+{
+public:
+    // The files the load will read, in the panels' own terms: each layer's
+    // imageFile in a panel with layers, the panel's pixmapFile in an old
+    // panel without (a layered panel's pixmapFile is its flatten, never
+    // decoded on open).
+    LayerDecodes(const QJsonArray &scenes, const QString &folder)
+    {
+        QStringList files;
+        QSet<QString> seen;
+        auto want = [&](const QString &name) {
+            if (name.isEmpty())
+                return;
+            const QString file = folder + QStringLiteral("/") + name;
+            if (!seen.contains(file)) {
+                seen.insert(file);
+                files.append(file);
+            }
+        };
+        for (const QJsonValue &sv : scenes)
+            for (const QJsonValue &pv : sv.toObject().value(QStringLiteral("panels")).toArray()) {
+                const QJsonObject panel = pv.toObject();
+                const QJsonArray layers = panel.value(QStringLiteral("layers")).toArray();
+                if (!layers.isEmpty())
+                    for (const QJsonValue &lv : layers)
+                        want(lv.toObject().value(QStringLiteral("imageFile")).toString());
+                else
+                    want(panel.value(QStringLiteral("pixmapFile")).toString());
+            }
+        std::vector<QImage> images(size_t(files.size()));
+        if (g_serialDecodeForTest || files.size() < 2) {
+            for (int i = 0; i < files.size(); ++i)
+                images[size_t(i)] = decodeLayerFile(files.at(i));
+        } else {
+            QThreadPool pool;
+            pool.setMaxThreadCount(qBound(1, QThread::idealThreadCount(), 8));
+            for (int i = 0; i < files.size(); ++i)
+                pool.start([&images, &files, i] {
+                    images[size_t(i)] = decodeLayerFile(files.at(i));
+                });
+            pool.waitForDone();
+        }
+        for (int i = 0; i < files.size(); ++i)
+            m_images.insert(files.at(i), images[size_t(i)]);
+    }
+
+    // The file's pixels, as a fresh load would give them: the first reader
+    // gets the decoded image, a second reader of the same file its own deep
+    // copy (two loads of one file were two images). A file not collected
+    // above is loaded here, as before.
+    QImage take(const QString &file)
+    {
+        const auto it = m_images.constFind(file);
+        if (it == m_images.cend())
+            return decodeLayerFile(file);
+        if (m_taken.contains(file))
+            return it.value().copy();
+        m_taken.insert(file);
+        return it.value();
+    }
+
+private:
+    QHash<QString, QImage> m_images;
+    QSet<QString> m_taken;
+};
+} // namespace
+
+DecodeCounts decodeCountsForTest()
+{
+    return {g_decodedOffUi.load(), g_decodedOnUi.load()};
+}
+
+void resetDecodeCountsForTest()
+{
+    g_decodedOffUi = 0;
+    g_decodedOnUi = 0;
+}
+
+void setSerialDecodeForTest(bool serial)
+{
+    g_serialDecodeForTest = serial;
+}
+
 LoadedProject projectFromJson(const QJsonObject &root, const QString &folder,
                               const QString &manifestFile)
 {
@@ -493,6 +603,9 @@ LoadedProject projectFromJson(const QJsonObject &root, const QString &folder,
     // old projects load with nothing missing. New saves drop sharedId.
     QHash<QString, QImage> legacySharedImages;
     const QJsonArray scenesArray = root.value(QStringLiteral("scenes")).toArray();
+    // Every layer file below, decoded in parallel before the walk (see
+    // LayerDecodes); the walk takes them in its own order.
+    LayerDecodes decodes(scenesArray, folder);
     for (const QJsonValue &sv : scenesArray) {
         const QJsonObject sceneObj = sv.toObject();
         Scene *scene = new Scene;
@@ -610,7 +723,7 @@ LoadedProject projectFromJson(const QJsonObject &root, const QString &folder,
                     QImage img;
                     const QString layerPng = layerObj.value(QStringLiteral("imageFile")).toString();
                     if (!layerPng.isEmpty())
-                        img.load(folder + QStringLiteral("/") + layerPng);
+                        img = decodes.take(folder + QStringLiteral("/") + layerPng);
                     // Pixels from the layer's OWN file - not a legacy
                     // reference's copy, made below only when this is null.
                     const bool readOwnFile = !img.isNull();
@@ -656,7 +769,7 @@ LoadedProject projectFromJson(const QJsonObject &root, const QString &folder,
                 const QString pngName = panelObj.value(QStringLiteral("pixmapFile")).toString();
                 QImage img;
                 if (!pngName.isEmpty())
-                    img.load(folder + QStringLiteral("/") + pngName);
+                    img = decodes.take(folder + QStringLiteral("/") + pngName);
                 Layer layer;
                 layer.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
                 layer.name = QStringLiteral("Layer 1");

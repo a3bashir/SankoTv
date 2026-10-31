@@ -281,6 +281,10 @@ public:
     QString lastNoteForTest() const { return m_lastNote; }
     void clearNoteForTest() { m_lastNote.clear(); }
     Panel *currentPanelForTest() const { return currentPanel(); }
+    // The strip's parallel thumbnails (2026-10-31): how many were built off
+    // the UI thread since the last reset.
+    static int stripThumbsBuiltOffUiForTest();
+    static void resetStripThumbCountForTest();
     // Delete Panel without its confirmation box (the gate cannot answer
     // it); everything after the question is the real path.
     void deleteSelectedPanelConfirmedForTest();
@@ -406,6 +410,7 @@ private:
 
     void rebuildSceneList();
     void rebuildPanelStrip();
+    void warmStripThumbs(const QVector<Panel *> &panels); // stale thumbs, in parallel
     // --- Panel Strip dock (top/bottom, resizable, floatable) --------------
     void setupPanelStripDock();     // wrap the strip bar in its QDockWidget
     void onPanelStripResized();     // live label rescale + debounced regen

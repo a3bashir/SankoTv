@@ -406,6 +406,37 @@ may ship in a closed-source commercial product, flag it - do not decide.
     and ran maximised on a 1280 px screen with the compact header -
     and it was committed as 4f30e900f.
 
+14. OPEN - CONTROLLED FOLDER ACCESS, TESTED FOR REAL (opened 2026-10-31,
+    the user's words): "test save, export and auto-recovery with
+    Controlled Folder Access on, unsigned and signed." With Windows
+    Security > Ransomware protection > Controlled folder access ON, an
+    app Windows does not trust cannot write to Documents, Pictures,
+    Videos, Music, Desktop or Favorites. The app now says so in plain
+    words and offers to write elsewhere (see "Controlled Folder Access"),
+    and the gate checks that with a real ACCESS DENIED made in a scratch
+    folder - but not with the real feature, which nobody has turned on
+    here. Test: Save, Save As, every export (MP4, PNG, PDF) and a Dev
+    Recorder recording into Documents, unsigned, then signed (item 15).
+    ALSO (the user, 2026-10-31): "also test with Norton 360's Data
+    Protector and one other common antivirus." Other antivirus blocks
+    writes the same way, and with one in charge Windows hides Controlled
+    folder access - the user's PC runs Norton 360, which is why the
+    round's Windows-setting hand test could not be done there. The app
+    then shows the neutral words ("Windows or your antivirus blocked
+    SankoTV ..."); check that they appear, and that Save As / Export to
+    Another Folder recover, under Norton 360 and one other (e.g. Bitdefender
+    or ESET), unsigned and signed.
+    NOTE: SankoTV has no auto-recovery yet (nothing autosaves; the Script
+    Editor's "Saving..." is a display only) - test it if one is built.
+    Not licensing; a product requirement.
+
+15. OPEN - CODE-SIGN THE RELEASE (opened 2026-10-31, the user's words:
+    "code-sign the release"). An unsigned SankoTV.exe meets SmartScreen
+    on first run and is the kind of app Controlled Folder Access blocks;
+    signing (an OV or EV code-signing certificate, the installer and the
+    exe) helps Windows trust it but does not guarantee it is allowed
+    (item 14 tests both). Not licensing; a product requirement.
+
 ALSO BEFORE SELLING, not licensing: the Developer Recorder below comes out.
 
 ## Developer Recorder (TEMPORARY — remove before release)
@@ -8248,6 +8279,96 @@ line can no longer touch it; pixel 666f7b45 / cafcec7f, erase 0bc24381,
 34 c1p, preview 608366fc and eraser d312bc9b from the Release report),
 no COUNT MISMATCH. TOTAL 1326 s - about 22 minutes, from 41 this
 morning. The CLAUDE.md rule names the script and the load rule.
+Committed as 707fb0622.
+
+## The open in parallel, and Controlled Folder Access (2026-10-31)
+
+Both approved from the report-only pass the same day.
+1. THE OPEN. Measured first (out-of-tree probe build/_probe/openstall:
+   timed COPIES of MainWindow.cpp / StoryboardPage.cpp, offscreen, on
+   copies of the user's projects, originals hashed before and after):
+   Test_SB_009_A (4K, 60 fps, 11 panels, 46 layer PNGs) opened in about
+   2.0 s - 1755 ms decoding the layer PNGs one by one on the UI thread
+   (ProjectIO::projectFromJson), 185 ms building the strip's thumbnails
+   (rebuildPanelStrip -> flattenedThumb), the rest under 20 ms; no
+   deferred stall after it (the event loop's worst gap 13-25 ms).
+   FIX: ProjectIO's LayerDecodes collects every file the load will read
+   (a layered panel's layer imageFiles; an old panel's pixmapFile - a
+   layered panel's flatten is never decoded) and decodes and converts
+   them on up to 8 threads first; the load takes each in its own order
+   (a file named twice: a deep copy for the second, as a second load
+   was), so every migration and the ledger see what they saw. Panel
+   gained flattenedImage (the composite, worker-safe; flattenedPixmap
+   wraps it), flattenedThumbImage / thumbFresh / adoptThumb; StoryboardPage
+   ::warmStripThumbs builds every stale thumbnail on up to 8 threads -
+   in loadScenes for ALL panels (the strip and the timeline's clips draw
+   the same cached thumb) and again in rebuildPanelStrip (a no-op when
+   fresh) - and adopts each only if its panel still matches the
+   fingerprint it was built from.
+   CHECKS (op), 4: every layer file decoded off the UI thread; control:
+   the old serial way on the UI thread gives the same bytes layer for
+   layer; every thumbnail built off the UI thread on open and identical
+   to the old pixmap path's; control: a thumbnail built before its panel
+   changed is refused, one built after adopted. Seams:
+   ProjectIO::decodeCountsForTest / resetDecodeCountsForTest /
+   setSerialDecodeForTest, StoryboardPage::stripThumbsBuiltOffUiForTest.
+   MEASURED AFTER (probe build/_probe/openstall/probe2 - the real sources,
+   offscreen, copies; two runs): Test_SB_009_A 1973 -> 382 / 392 ms on a
+   first open, 2036 -> 520 / 538 ms opened again (that includes freeing
+   the previous copy); Test_SB_2scenes_001 300 -> 146 / 150 and 251 ->
+   84 / 93 ms. No stall after the open (worst gap 15-24 ms).
+2. CONTROLLED FOLDER ACCESS. New src/ProtectedFolders.{h,cpp}: the
+   protected folders by name (Documents, Pictures, Videos, Music,
+   Desktop, Favorites and their Public twins), writeDenied (a temporary
+   file Windows refuses with ERROR_ACCESS_DENIED), blockedMessage.
+   MainWindow::sayWriteFailed: every save failure (four places), every
+   export failure (MP4, PNG, PDF) and a refused recording come through
+   it; denied in a protected folder, a plain message with Save As...
+   (saves) or Export to Another Folder... (exports); any other failure
+   keeps its own message. THE WORDING (corrected after the hand test,
+   the user: Norton 360's Data Protector and other antivirus block the
+   same way, and with one in charge Windows hides the setting): only when
+   Windows' own Controlled folder access is detected ON
+   (ProtectedFolders::controlledFolderAccessOn - the registry's
+   EnableControlledFolderAccess == 1, group policy first; absent or
+   unreadable = not on) does it say "Windows blocked SankoTV from saving
+   to Documents (Ransomware protection > Controlled folder access). Allow
+   SankoTV there, or save to another folder." plus where to allow it;
+   otherwise it says "Windows or your antivirus blocked SankoTV from
+   saving to Documents. Allow SankoTV in your security settings, or save
+   to another folder." (exporting / recording likewise). The Dev Recorder now refuses to start when its folder
+   cannot be made or written (it used to "record" into nowhere) and
+   emits recordingRefused for the host to say why.
+   CHECKS (cf), 5: the simulation is real (a scratch folder denied write
+   by its own ACL - icacls, removed after - refuses a new file with
+   ACCESS DENIED, a free one accepts); a save there, standing for
+   Documents, with Controlled folder access NOT on, gets the neutral
+   words and no Windows setting named, and its Save As saves elsewhere;
+   the same with it ON gets the exact Controlled folder access words and
+   path, and no "your antivirus" (each is the other's control); control:
+   the same denied save in a folder that is not protected keeps its own
+   message and offers nothing; the export wording both ways, with a free
+   folder saying nothing. CHANGED after the hand test: "(cf) A SAVE
+   WINDOWS BLOCKS IN DOCUMENTS fails and says so plainly - ..." became
+   "(cf) WITH WINDOWS' CONTROLLED FOLDER ACCESS ON, the blocked save names
+   it - ..." (the same assertions, now under the seam's "on", plus no
+   "your antivirus"), and the export check "(cf) an EXPORT blocked in
+   Documents gets the same plain words (...)" became "(cf) an EXPORT
+   blocked in Documents gets the same words - neutral (...), naming
+   Controlled folder access only when it is on; ...". Seams:
+   ProtectedFolders::setFoldersForTest / setControlledFolderAccessForTest,
+   MainWindow::setBlockedPromptForTest / setSaveAsPathForTest /
+   lastWriteFailureForTest.
+   HAND TEST (recording 20261031-172910): part A passed - Test_SB_009_A
+   opened by File > Open with a 482 ms stall (the dialog's close and
+   repaint included) and again from recents with 412 ms, against about
+   1.9 s before; every strip and clip thumbnail drawn; strokes, undo,
+   save, close and reopen fine. Step 4 (a small project, scene switches)
+   not exercised - (op). Part B skipped: Norton 360 is in charge, so
+   Windows hides Controlled folder access (see BEFORE SELLING 14).
+Lifecycle 953 -> 962.
+   BEFORE SELLING 14 (test with the real feature on, unsigned and signed)
+   and 15 (code-sign the release) opened.
 
 ## METHOD: measure interior structure ACROSS THE SIZE RANGE before calling it character (2026-09-25)
 

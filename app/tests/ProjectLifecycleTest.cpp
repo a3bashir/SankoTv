@@ -58,6 +58,7 @@
 #include "NewProjectDialog.h"
 #include "MediaCopyProgress.h"
 #include "ProjectIO.h"
+#include "ProtectedFolders.h"
 #include "ProjectMedia.h"
 #include "RecentProjects.h"
 #include "SankoIcons.h"
@@ -12206,6 +12207,279 @@ void runQuickMovePass(const QString &scratch)
     setCam(s1, {});
 }
 
+// ---- (op) the open in parallel (2026-10-31) --------------------------------
+// A 4K project's open spent 1.75 of its 2 s decoding the layer PNGs one
+// after another on the UI thread, and 185 ms building the strip's
+// thumbnails. Both now run on worker threads; what must not change is any
+// pixel. The decode's control is the old way - every file on the UI thread
+// - giving the same bytes, layer for layer; the thumbnails' is the old
+// pixmap path's bytes, and a thumbnail built before its panel changed
+// being refused.
+namespace paropen {
+bool sameBytes(QImage a, QImage b)
+{
+    if (a.isNull() || b.isNull() || a.size() != b.size())
+        return a.isNull() && b.isNull();
+    a = a.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+    b = b.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+    for (int y = 0; y < a.height(); ++y)
+        if (memcmp(a.constScanLine(y), b.constScanLine(y), size_t(a.width()) * 4) != 0)
+            return false;
+    return true;
+}
+} // namespace paropen
+
+void runParallelOpenPass(const QString &scratch)
+{
+    out() << "--- (op) the open decodes and builds thumbnails in parallel ---" << Qt::endl;
+    // 2 scenes x 4 panels at 1920x1080: each panel a Background and a layer
+    // of translucent ellipses (the premultiplied conversion is exercised).
+    const QString project = writeProject(scratch + QStringLiteral("/paropen"),
+                                         QStringLiteral("ParOpen"), QSize(1920, 1080), 24, 2, 4);
+    QJsonObject root;
+    {
+        QFile f(project);
+        if (f.open(QIODevice::ReadOnly))
+            root = QJsonDocument::fromJson(f.readAll()).object();
+    }
+    int files = 0; // the layer files the manifest names
+    for (const QJsonValue &sv : root.value(QStringLiteral("scenes")).toArray())
+        for (const QJsonValue &pv : sv.toObject().value(QStringLiteral("panels")).toArray())
+            for (const QJsonValue &lv : pv.toObject().value(QStringLiteral("layers")).toArray())
+                if (!lv.toObject().value(QStringLiteral("imageFile")).toString().isEmpty())
+                    ++files;
+    auto loadVia = [&](bool serial, ProjectIO::DecodeCounts *counts) {
+        ProjectIO::setSerialDecodeForTest(serial);
+        ProjectIO::resetDecodeCountsForTest();
+        ProjectIO::LoadedProject loaded =
+            ProjectIO::projectFromJson(root, QFileInfo(project).absolutePath(), project);
+        *counts = ProjectIO::decodeCountsForTest();
+        ProjectIO::setSerialDecodeForTest(false);
+        return loaded;
+    };
+    ProjectIO::DecodeCounts par, ser;
+    const ProjectIO::LoadedProject a = loadVia(false, &par);
+    const ProjectIO::LoadedProject b = loadVia(true, &ser);
+    int layers = 0, same = 0;
+    bool shape = a.scenes.size() == b.scenes.size();
+    for (int s = 0; shape && s < a.scenes.size(); ++s) {
+        shape = a.scenes.at(s)->panels.size() == b.scenes.at(s)->panels.size();
+        for (int p = 0; shape && p < a.scenes.at(s)->panels.size(); ++p) {
+            const Panel *pa = a.scenes.at(s)->panels.at(p);
+            const Panel *pb = b.scenes.at(s)->panels.at(p);
+            shape = pa->layers.size() == pb->layers.size();
+            for (int l = 0; shape && l < pa->layers.size(); ++l) {
+                ++layers;
+                same += paropen::sameBytes(pa->layers.at(l).image, pb->layers.at(l).image) ? 1 : 0;
+            }
+        }
+    }
+    qDeleteAll(a.scenes);
+    qDeleteAll(b.scenes);
+    check(QStringLiteral("(op) THE OPEN DECODES EVERY LAYER FILE OFF THE UI THREAD (16 files: "
+                         "2 scenes x 4 panels x Background + a drawn layer)"),
+          files == 16 && par.offUiThread == files && par.onUiThread == 0,
+          QStringLiteral("files %1; off the UI thread %2, on it %3")
+              .arg(files).arg(par.offUiThread).arg(par.onUiThread));
+    check(QStringLiteral("(op) control: the old one-at-a-time way decodes the same files on the "
+                         "UI thread, and every layer's pixels are the parallel open's, byte for "
+                         "byte"),
+          ser.onUiThread == files && ser.offUiThread == 0 && shape && layers == files
+              && same == layers,
+          QStringLiteral("on %1 off %2; layers %3, identical %4")
+              .arg(ser.onUiThread).arg(ser.offUiThread).arg(layers).arg(same));
+
+    // The thumbnails, through the real open.
+    MainWindow window;
+    window.resize(1500, 950);
+    window.show();
+    pump(600);
+    StoryboardPage::resetStripThumbCountForTest();
+    const bool opened = window.loadProjectForTest(project);
+    pump(400);
+    const int built = StoryboardPage::stripThumbsBuiltOffUiForTest();
+    int panels = 0, sameThumbs = 0;
+    for (const Scene *scene : window.scenesForTest())
+        for (const Panel *panel : scene->panels) {
+            ++panels;
+            // The old path: the full flatten as a pixmap, scaled as a pixmap.
+            const QPixmap full = panel->flattenedPixmap();
+            const QImage old = full.scaled(512, 512, Qt::KeepAspectRatio,
+                                           Qt::SmoothTransformation).toImage();
+            sameThumbs += paropen::sameBytes(panel->flattenedThumb().toImage(), old) ? 1 : 0;
+        }
+    check(QStringLiteral("(op) THE THUMBNAILS (the strip's and the timeline's) are built off the "
+                         "UI thread on open - all 8 panels - and each is the old pixmap path's "
+                         "thumbnail, byte for byte"),
+          opened && panels == 8 && built == panels && sameThumbs == panels,
+          QStringLiteral("panels %1, built off the UI thread %2, identical %3")
+              .arg(panels).arg(built).arg(sameThumbs));
+    // Control: a thumbnail built before its panel changed is refused.
+    bool refused = false, adopted = false;
+    if (!window.scenesForTest().isEmpty() && !window.scenesForTest().first()->panels.isEmpty()) {
+        Panel *panel = window.scenesForTest().first()->panels.first();
+        QVector<quint64> key;
+        const QImage before = panel->flattenedThumbImage(&key);
+        panel->layers[1].image.setPixel(0, 0, qRgba(10, 20, 30, 255)); // a change (it detaches)
+        panel->adoptThumb(before, key);
+        refused = !panel->thumbFresh();
+        QVector<quint64> key2;
+        const QImage now = panel->flattenedThumbImage(&key2);
+        panel->adoptThumb(now, key2);
+        adopted = panel->thumbFresh();
+    }
+    check(QStringLiteral("(op) control: a thumbnail built before its panel changed is not "
+                         "adopted; one built after is"),
+          refused && adopted, QStringLiteral("refused %1 adopted %2").arg(refused).arg(adopted));
+    window.markCleanForTest();
+    window.close();
+    pump(200);
+}
+
+// ---- (cf) a write Windows blocks in a protected folder (2026-10-31) ----------
+// Controlled Folder Access lets an untrusted app read Documents but not write
+// there: creating a file fails with ACCESS DENIED. The simulation is real
+// access denied - a scratch folder denied write by its own ACL (icacls) -
+// made to stand for "Documents" through ProtectedFolders' test seam. A save
+// there fails, says in plain words what Windows did and how to allow
+// SankoTV, and offers Save As, which saves elsewhere. Control: the same
+// denied save in a folder that is NOT protected keeps the save's own
+// message and offers nothing.
+void runBlockedWritePass(const QString &scratch)
+{
+    out() << "--- (cf) a write Windows blocks in a protected folder ---" << Qt::endl;
+    const QString docs = scratch + QStringLiteral("/cf_docs");    // stands for Documents
+    const QString other = scratch + QStringLiteral("/cf_other");  // denied, not protected
+    const QString free = scratch + QStringLiteral("/cf_free");
+    for (const QString &d : {docs, other, free})
+        QDir().mkpath(d);
+    auto deny = [](const QString &dir, bool on) {
+        const QStringList args = on
+            ? QStringList{QDir::toNativeSeparators(dir), QStringLiteral("/deny"),
+                          QStringLiteral("*S-1-1-0:(OI)(CI)(W)")}
+            : QStringList{QDir::toNativeSeparators(dir), QStringLiteral("/remove:d"),
+                          QStringLiteral("*S-1-1-0")};
+        return QProcess::execute(QStringLiteral("icacls"), args) == 0;
+    };
+    const bool denied = deny(docs, true) && deny(other, true);
+    const bool probeDenied = ProtectedFolders::writeDenied(docs);
+    const bool probeFree = !ProtectedFolders::writeDenied(free);
+    check(QStringLiteral("(cf) the simulation is real: Windows answers ACCESS DENIED to a new file "
+                         "in the denied folder (and not in a free one)"),
+          denied && probeDenied && probeFree,
+          QStringLiteral("acl set %1, denied folder refuses %2, free folder accepts %3")
+              .arg(denied).arg(probeDenied).arg(probeFree));
+    ProtectedFolders::setFoldersForTest({{QStringLiteral("Documents"), docs}});
+
+    const QString fixture = writeProject(scratch + QStringLiteral("/cf_src"),
+                                         QStringLiteral("Blocked"), QSize(960, 540), 24, 1, 2);
+    MainWindow window;
+    window.resize(1300, 850);
+    window.show();
+    pump(600);
+    window.loadProjectForTest(fixture);
+    pump(300);
+    QStringList titles;
+    window.setBlockedPromptForTest([&](const QString &title, const QString &) {
+        titles << title;
+        return true; // take the offer
+    });
+    // What Windows itself reports, before the seam overrides it (on the
+    // user's PC Norton 360 is in charge and Windows hides the setting).
+    const bool realCfa = ProtectedFolders::controlledFolderAccessOn();
+    QString rescued = free + QStringLiteral("/Rescued.sankotv");
+    window.setSaveAsPathForTest([&] { return rescued; });
+
+    // NOT ON (another antivirus - Norton 360's Data Protector - blocks the
+    // same way): neutral words, no Windows setting named.
+    ProtectedFolders::setControlledFolderAccessForTest(0);
+    const bool savedNeutral = window.saveProjectForTest(docs + QStringLiteral("/Work.sankotv"));
+    pump(400); // the Save As the offer queued
+    const QString neutralText = window.lastWriteFailureForTest();
+    const bool rescuedNeutral = window.projectPathForTest() == rescued && QFileInfo::exists(rescued);
+    check(QStringLiteral("(cf) A SAVE BLOCKED IN DOCUMENTS WITHOUT WINDOWS' CONTROLLED FOLDER "
+                         "ACCESS ON (another antivirus, as Norton 360's Data Protector, blocks the "
+                         "same way) says so neutrally - \"Windows or your antivirus blocked "
+                         "SankoTV from saving to Documents. Allow SankoTV in your security "
+                         "settings, or save to another folder.\" - naming no Windows setting, and "
+                         "its Save As saves elsewhere"),
+          !savedNeutral && neutralText.contains(QStringLiteral("This project was NOT saved."))
+              && neutralText.contains(QStringLiteral(
+                  "Windows or your antivirus blocked SankoTV from saving to Documents. Allow "
+                  "SankoTV in your security settings, or save to another folder."))
+              && !neutralText.contains(QStringLiteral("Controlled folder access"))
+              && rescuedNeutral && !window.isDirty(),
+          QStringLiteral("saved %1; rescued %2; Windows' own setting read as %3; text: %4")
+              .arg(savedNeutral).arg(rescuedNeutral).arg(realCfa ? "on" : "off")
+              .arg(neutralText.left(200)));
+
+    // ON: the exact Controlled folder access words and the way to allow it.
+    ProtectedFolders::setControlledFolderAccessForTest(1);
+    rescued = free + QStringLiteral("/Rescued2.sankotv");
+    const bool savedBlocked = window.saveProjectForTest(docs + QStringLiteral("/Work.sankotv"));
+    pump(400);
+    const QString blockedText = window.lastWriteFailureForTest();
+    const bool rescuedThere = window.projectPathForTest() == rescued && QFileInfo::exists(rescued);
+    check(QStringLiteral("(cf) WITH WINDOWS' CONTROLLED FOLDER ACCESS ON, the blocked save names "
+                         "it - \"Windows blocked SankoTV from saving to Documents (Ransomware "
+                         "protection > Controlled folder access). Allow SankoTV there, or save to "
+                         "another folder.\" with the way to allow it - and its Save As saves "
+                         "elsewhere"),
+          !savedBlocked && blockedText.contains(QStringLiteral("This project was NOT saved."))
+              && blockedText.contains(QStringLiteral("Windows blocked SankoTV from saving to Documents"))
+              && blockedText.contains(QStringLiteral("Allow SankoTV there, or save to another folder."))
+              && blockedText.contains(QStringLiteral("Allow an app through Controlled folder access"))
+              && !blockedText.contains(QStringLiteral("your antivirus"))
+              && rescuedThere && !window.isDirty(),
+          QStringLiteral("saved %1; rescued at %2 %3; text: %4")
+              .arg(savedBlocked).arg(QDir::toNativeSeparators(window.projectPathForTest()))
+              .arg(rescuedThere).arg(blockedText.left(220)));
+
+    titles.clear();
+    const bool savedOther = window.saveProjectForTest(other + QStringLiteral("/Work.sankotv"));
+    pump(300);
+    const QString otherText = window.lastWriteFailureForTest();
+    check(QStringLiteral("(cf) control: the same denied save in a folder that is not protected "
+                         "keeps the save's own message and offers no Save As"),
+          !savedOther && otherText.contains(QStringLiteral("This project was NOT saved."))
+              && !otherText.contains(QStringLiteral("Windows blocked"))
+              && window.projectPathForTest() == rescued,
+          otherText.left(160));
+
+    // The export's wording, both ways, and its control (a free folder).
+    ProtectedFolders::setControlledFolderAccessForTest(1);
+    const QString exportCfa = ProtectedFolders::blockedMessage(docs + QStringLiteral("/Film.mp4"),
+                                                               QStringLiteral("exporting"));
+    ProtectedFolders::setControlledFolderAccessForTest(0);
+    const QString exportNeutral = ProtectedFolders::blockedMessage(
+        docs + QStringLiteral("/Film.mp4"), QStringLiteral("exporting"));
+    const QString freeText = ProtectedFolders::blockedMessage(free + QStringLiteral("/Film.mp4"),
+                                                              QStringLiteral("exporting"));
+    check(QStringLiteral("(cf) an EXPORT blocked in Documents gets the same words - neutral "
+                         "(\"Windows or your antivirus blocked SankoTV from exporting to "
+                         "Documents. ... or export to another folder.\"), naming Controlled folder "
+                         "access only when it is on; control: nothing to say for a folder Windows "
+                         "lets SankoTV write"),
+          exportCfa.contains(QStringLiteral("Windows blocked SankoTV from exporting to Documents (Ransomware"))
+              && exportCfa.contains(QStringLiteral("or export to another folder."))
+              && exportNeutral.contains(QStringLiteral(
+                  "Windows or your antivirus blocked SankoTV from exporting to Documents. Allow "
+                  "SankoTV in your security settings, or export to another folder."))
+              && !exportNeutral.contains(QStringLiteral("Controlled folder access"))
+              && freeText.isEmpty(),
+          exportNeutral.left(140));
+
+    window.setBlockedPromptForTest({});
+    window.setSaveAsPathForTest({});
+    window.markCleanForTest();
+    window.close();
+    pump(200);
+    ProtectedFolders::setFoldersForTest({});
+    ProtectedFolders::setControlledFolderAccessForTest(-1);
+    deny(docs, false);
+    deny(other, false);
+}
+
 void runCameraToolPass(const QString &scratch)
 {
     using namespace workspace;
@@ -14347,6 +14621,8 @@ int main(int argc, char **argv)
     runCameraToolPass(scratch);
     runCameraRowPass(scratch);
     runQuickMovePass(scratch);
+    runParallelOpenPass(scratch);
+    runBlockedWritePass(scratch);
 
     // ---- (aa) a test that cannot start says why and exits ----------------
     // An unattended gate must FAIL, not wait. Measured 2026-10-02: with its

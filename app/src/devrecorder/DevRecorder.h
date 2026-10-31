@@ -164,6 +164,13 @@ public slots:
     void enqueueFromHandler(const QJsonObject &data);
     QtMessageHandler d_previousHandler() const;
 
+signals:
+    // A recording that could not start because its folder could not be
+    // made or written (Windows' Controlled Folder Access blocks exactly
+    // that in Documents, 2026-10-31). Nothing was recorded; the host says
+    // why. `folder` is the session folder it tried.
+    void recordingRefused(const QString &folder);
+
 protected:
     bool eventFilter(QObject *object, QEvent *event) override;
 

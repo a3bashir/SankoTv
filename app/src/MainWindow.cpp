@@ -40,6 +40,7 @@ this fence."
 #include "ProjectSettingsDialog.h"
 #include "ResizeProjectDialog.h"
 #include "ProjectIO.h"
+#include "ProtectedFolders.h"
 #include "RecentProjects.h"
 #include "ScriptEditorPage.h"
 #include "StoryboardModel.h"
@@ -358,6 +359,17 @@ MainWindow::MainWindow(QWidget *parent)
         QMenu *dev = menuBar()->addMenu(QStringLiteral("Developer"));
         dev->addAction(rec->toggleAction());
         dev->addAction(rec->markAction());
+        // A recording whose folder Windows will not let it write (Controlled
+        // Folder Access in Documents): said, not silently recorded nowhere.
+        connect(rec, &devrec::Recorder::recordingRefused, this, [this](const QString &folder) {
+            sayWriteFailed(QStringLiteral("Recording"),
+                           QStringLiteral("The recording did not start."), folder,
+                           QStringLiteral("recording"),
+                           QStringLiteral("The recording did not start: its folder could not "
+                                          "be written.\n\n%1")
+                               .arg(QDir::toNativeSeparators(folder)),
+                           QString(), false);
+        });
         menuBar()->setCornerWidget(rec->indicatorWidget(),
                                    Qt::TopRightCorner);
         // Autostart (env-guarded): record from process start — startup
@@ -1084,9 +1096,12 @@ void MainWindow::onExportMp4()
     if (result.cancelled)
         return;
     if (!result.ok) {
-        QMessageBox::critical(this, QStringLiteral("Export failed"),
-                              QStringLiteral("The film was not exported.\n\n%1")
-                                  .arg(result.error));
+        if (sayWriteFailed(QStringLiteral("Export failed"),
+                           QStringLiteral("The film was not exported."), path,
+                           QStringLiteral("exporting"),
+                           QStringLiteral("The film was not exported.\n\n%1").arg(result.error),
+                           QStringLiteral("Export to Another Folder..."), true))
+            QTimer::singleShot(0, this, &MainWindow::onExportMp4);
         return;
     }
     const int seconds = int(result.videoSeconds + 0.5);
@@ -1128,10 +1143,14 @@ void MainWindow::onExportPng()
     if (result.cancelled)
         return;
     if (!result.ok) {
-        QMessageBox::critical(
-            this, QStringLiteral("Export failed"),
-            QStringLiteral("%1\n\n%2 file(s) were written before this.")
-                .arg(result.error).arg(result.written.size()));
+        if (sayWriteFailed(QStringLiteral("Export failed"),
+                           QStringLiteral("%1 file(s) were written before this.")
+                               .arg(result.written.size()),
+                           folder, QStringLiteral("exporting"),
+                           QStringLiteral("%1\n\n%2 file(s) were written before this.")
+                               .arg(result.error).arg(result.written.size()),
+                           QStringLiteral("Export to Another Folder..."), true))
+            QTimer::singleShot(0, this, &MainWindow::onExportPng);
         return;
     }
     QMessageBox::information(
@@ -1157,7 +1176,11 @@ void MainWindow::onExportPdf()
     if (result.cancelled)
         return;
     if (!result.ok) {
-        QMessageBox::critical(this, QStringLiteral("Export failed"), result.error);
+        if (sayWriteFailed(QStringLiteral("Export failed"),
+                           QStringLiteral("The storyboard was not exported."), path,
+                           QStringLiteral("exporting"), result.error,
+                           QStringLiteral("Export to Another Folder..."), true))
+            QTimer::singleShot(0, this, &MainWindow::onExportPdf);
         return;
     }
     QMessageBox::information(this, QStringLiteral("Export complete"),
@@ -1775,9 +1798,10 @@ void MainWindow::onSaveProjectAs()
         ? QDir::homePath() + QStringLiteral("/") + m_projectName + QStringLiteral(".sankotv")
         : m_currentProjectPath;
 
-    QString path = QFileDialog::getSaveFileName(
-        this, QStringLiteral("Save Project As"), start,
-        QStringLiteral("SankoTV Project (*.sankotv)"));
+    QString path = m_saveAsPathForTest
+        ? m_saveAsPathForTest()
+        : QFileDialog::getSaveFileName(this, QStringLiteral("Save Project As"), start,
+                                       QStringLiteral("SankoTV Project (*.sankotv)"));
     if (path.isEmpty())
         return;
     if (!path.endsWith(QStringLiteral(".sankotv"), Qt::CaseInsensitive))
@@ -1802,6 +1826,53 @@ void MainWindow::onSaveProjectAs()
         updateTitle();
     else
         m_projectName = previousName;
+}
+
+// --- A write Windows blocked (Controlled Folder Access, 2026-10-31) --------
+// Every save, export and recording failure comes through here. When Windows
+// denied the write in a protected folder the artist is told so in plain
+// words, with the way to allow SankoTV and an offer to write elsewhere;
+// any other failure keeps the message it always had.
+bool MainWindow::sayWriteFailed(const QString &title, const QString &lead, const QString &target,
+                                const QString &doing, const QString &generic,
+                                const QString &elsewhereLabel, bool criticalIcon)
+{
+    const QString blocked = ProtectedFolders::blockedMessage(target, doing);
+    if (blocked.isEmpty()) {
+        m_lastWriteFailure = generic;
+        if (m_blockedPromptForTest)
+            m_blockedPromptForTest(title, generic);
+        else if (criticalIcon)
+            QMessageBox::critical(this, title, generic);
+        else
+            QMessageBox::warning(this, title, generic);
+        return false;
+    }
+    const QString text = lead.isEmpty() ? blocked : lead + QStringLiteral("\n\n") + blocked;
+    m_lastWriteFailure = text;
+    if (m_blockedPromptForTest)
+        return m_blockedPromptForTest(title, text);
+    QMessageBox box(QMessageBox::Warning, title, text, QMessageBox::NoButton, this);
+    QPushButton *elsewhere =
+        elsewhereLabel.isEmpty() ? nullptr : box.addButton(elsewhereLabel, QMessageBox::AcceptRole);
+    box.addButton(QMessageBox::Cancel);
+    if (elsewhere)
+        box.setDefaultButton(elsewhere);
+    box.exec();
+    return elsewhere && box.clickedButton() == elsewhere;
+}
+
+// A save that failed. Blocked by Windows: "Save As..." is offered and, taken,
+// opens right after this save has finished failing (the work stays open and
+// unsaved either way).
+void MainWindow::saySaveFailed(const QString &target, const QString &generic)
+{
+    if (sayWriteFailed(QStringLiteral("Save Project"),
+                       QStringLiteral("This project was NOT saved. Your work is still "
+                                      "open and still unsaved."),
+                       target, QStringLiteral("saving"),
+                       generic, QStringLiteral("Save As..."), false))
+        QTimer::singleShot(0, this, &MainWindow::onSaveProjectAs);
 }
 
 // --- Save / Load ----------------------------------------------------------
@@ -1849,14 +1920,13 @@ bool MainWindow::saveToPath(const QString &path)
     if (!written.ok && written.cancelled)
         return false; // the artist pressed Cancel: nothing to tell them
     if (!written.ok) {
-        QMessageBox::warning(
-            this, QStringLiteral("Save Project"),
-            QStringLiteral("This project was NOT saved.\n\n%1\n\n%2\n\n"
-                           "Your work is still open and still unsaved. The "
-                           "previous version of the project file has not "
-                           "been changed. Try saving again, or use Save As "
-                           "to write it somewhere else.")
-                .arg(written.failedFile, written.reason));
+        saySaveFailed(written.failedFile.isEmpty() ? path : written.failedFile,
+                      QStringLiteral("This project was NOT saved.\n\n%1\n\n%2\n\n"
+                                     "Your work is still open and still unsaved. The "
+                                     "previous version of the project file has not "
+                                     "been changed. Try saving again, or use Save As "
+                                     "to write it somewhere else.")
+                          .arg(written.failedFile, written.reason));
         return false; // no token is made: the dirty flag stays set
     }
 
@@ -1869,32 +1939,29 @@ bool MainWindow::saveToPath(const QString &path)
     const QByteArray json = QJsonDocument(written.root).toJson(QJsonDocument::Indented);
     QSaveFile file(path);
     if (!file.open(QIODevice::WriteOnly)) {
-        QMessageBox::warning(this, QStringLiteral("Save Project"),
-                             QStringLiteral("This project was NOT saved.\n\n"
-                                            "Could not write to:\n%1\n\n"
-                                            "Your work is still open and "
-                                            "still unsaved.").arg(path));
+        saySaveFailed(path, QStringLiteral("This project was NOT saved.\n\n"
+                                           "Could not write to:\n%1\n\n"
+                                           "Your work is still open and "
+                                           "still unsaved.").arg(path));
         return false;
     }
     // A SHORT WRITE IS A FAILED WRITE. write() returning fewer bytes than it
     // was given was previously discarded, and the save reported success.
     if (file.write(json) != json.size()) {
         file.cancelWriting(); // the previous file survives untouched
-        QMessageBox::warning(this, QStringLiteral("Save Project"),
-                             QStringLiteral("This project was NOT saved.\n\n"
-                                            "Only part of the project file "
-                                            "could be written to:\n%1\n\n"
-                                            "The disk may be full. The "
-                                            "previous version has not been "
-                                            "changed.").arg(path));
+        saySaveFailed(path, QStringLiteral("This project was NOT saved.\n\n"
+                                           "Only part of the project file "
+                                           "could be written to:\n%1\n\n"
+                                           "The disk may be full. The "
+                                           "previous version has not been "
+                                           "changed.").arg(path));
         return false;
     }
     if (!file.commit()) {
-        QMessageBox::warning(this, QStringLiteral("Save Project"),
-                             QStringLiteral("This project was NOT saved.\n\n"
-                                            "The project file could not be "
-                                            "completed at:\n%1\n\n%2")
-                                 .arg(path, file.errorString()));
+        saySaveFailed(path, QStringLiteral("This project was NOT saved.\n\n"
+                                           "The project file could not be "
+                                           "completed at:\n%1\n\n%2")
+                                .arg(path, file.errorString()));
         return false;
     }
 

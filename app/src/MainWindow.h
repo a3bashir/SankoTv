@@ -173,6 +173,21 @@ public:
     void setExportStallTimeoutForTest(int ms) { m_exportStallMsForTest = ms; }
     // The project's own scenes, to compare an export with what it exported.
     const QVector<Scene *> &scenesForTest() const { return m_scenes; }
+    // CONTROLLED FOLDER ACCESS (2026-10-31): in place of the "Windows
+    // blocked SankoTV" box - given its title and text, return true for its
+    // Save As / Export to Another Folder button; and in place of Save As's
+    // file dialog, the path it would have returned.
+    void setBlockedPromptForTest(std::function<bool(const QString &, const QString &)> prompt)
+    {
+        m_blockedPromptForTest = std::move(prompt);
+    }
+    void setSaveAsPathForTest(std::function<QString()> picker)
+    {
+        m_saveAsPathForTest = std::move(picker);
+    }
+    // The last failure message a save, export or recording showed (either
+    // kind: the plain "Windows blocked" one or the write's own).
+    QString lastWriteFailureForTest() const { return m_lastWriteFailure; }
 
 protected:
     // THE single unsaved-changes gate. Every way of closing this window —
@@ -272,6 +287,13 @@ private:
     ProjectResize::Outcome applyCanvasResizeInternal(const QSize &newSize);
     void applyProjectSettings(const QString &projectName, int fps);
     bool saveToPath(const QString &path);
+    // A save, export or recording that failed: when Windows blocked it in a
+    // protected folder, the plain explanation and an offer to write
+    // elsewhere (true when taken); otherwise the caller's own message.
+    bool sayWriteFailed(const QString &title, const QString &lead, const QString &target,
+                        const QString &doing, const QString &generic,
+                        const QString &elsewhereLabel, bool criticalIcon);
+    void saySaveFailed(const QString &target, const QString &generic);
 
     // THE DIRTY FLAG IS WHAT STANDS BETWEEN THE ARTIST AND CLOSING THE APP
     // ON WORK THAT NEVER REACHED DISK, so "never clear it for a save that
@@ -346,6 +368,9 @@ private:
     // at all.
     bool m_dirty = false;
     std::function<DiscardAnswer()> m_discardPromptForTest;
+    std::function<bool(const QString &, const QString &)> m_blockedPromptForTest;
+    std::function<QString()> m_saveAsPathForTest;
+    QString m_lastWriteFailure;
     std::function<void(const QString &)> m_lockMessageHookForTest;
     QString m_lastLockRefusal;
     int m_discardPromptCount = 0;
