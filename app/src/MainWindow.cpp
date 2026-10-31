@@ -39,6 +39,7 @@ this fence."
 #include "ProjectResize.h"
 #include "ProjectSettingsDialog.h"
 #include "ResizeProjectDialog.h"
+#include "StageMarginDialog.h"
 #include "ProjectIO.h"
 #include "ProtectedFolders.h"
 #include "RecentProjects.h"
@@ -850,7 +851,8 @@ sankoexport::MovieResult MainWindow::runMovieExport(const QString &path)
 
     MovieRequest request;
     request.outPath = path;
-    request.panels = collectPanels(m_scenes, m_projectFps, false, exportCameraOff());
+    request.panels = collectPanels(m_scenes, m_projectFps, false, exportCameraOff(),
+                                   m_stageMargin);
     request.fps = m_projectFps; // THE PROJECT'S, not a constant 24
     request.audioPath = exportAudioPath();
     request.audioGain = m_animatic ? m_animatic->audioGainForExport() : 1.0; // the track volume (Part D)
@@ -922,9 +924,10 @@ sankoexport::FilesResult MainWindow::runPngExport(const QString &folder)
         m_animatic->leavePreview();
     // The stills show the shot at each panel's first frame (Phase 1A), or
     // the whole panel with File > Export > Stills Show Full Artwork (1B) -
-    // or with the CAMERA track hidden (1C).
-    const QVector<ExportPanel> panels =
-        collectPanels(m_scenes, m_projectFps, stillsFullArtwork(), exportCameraOff());
+    // or with the CAMERA track hidden (1C). With a stage margin (2A) the shot
+    // is the frame and Full Artwork the whole stage.
+    const QVector<ExportPanel> panels = collectPanels(
+        m_scenes, m_projectFps, stillsFullArtwork(), exportCameraOff(), m_stageMargin);
     QProgressDialog *dialog = nullptr;
     if (!m_exportProgressHookForTest) {
         dialog = new QProgressDialog(QStringLiteral("Writing PNG files..."),
@@ -959,9 +962,10 @@ sankoexport::FilesResult MainWindow::runPdfExport(const QString &path)
         m_animatic->leavePreview();
     // The stills show the shot at each panel's first frame (Phase 1A), or
     // the whole panel with File > Export > Stills Show Full Artwork (1B) -
-    // or with the CAMERA track hidden (1C).
-    const QVector<ExportPanel> panels =
-        collectPanels(m_scenes, m_projectFps, stillsFullArtwork(), exportCameraOff());
+    // or with the CAMERA track hidden (1C). With a stage margin (2A) the shot
+    // is the frame and Full Artwork the whole stage.
+    const QVector<ExportPanel> panels = collectPanels(
+        m_scenes, m_projectFps, stillsFullArtwork(), exportCameraOff(), m_stageMargin);
     QProgressDialog *dialog = nullptr;
     if (!m_exportProgressHookForTest) {
         dialog = new QProgressDialog(QStringLiteral("Writing the PDF..."),
@@ -1202,7 +1206,7 @@ void MainWindow::onProjectSettings()
             break;
         }
     }
-    ProjectSettingsDialog dialog(m_projectName, m_projectFps, canvas, this);
+    ProjectSettingsDialog dialog(m_projectName, m_projectFps, canvas, this, m_stageMargin);
     // Apply and OK both route here; Cancel emits nothing, so the project is
     // untouched until the artist commits — the dialog holds the pending
     // values, the window holds the truth.
@@ -1212,14 +1216,23 @@ void MainWindow::onProjectSettings()
     // pending edit: close the settings window first so the size prompt and
     // the confirm are not stacked three dialogs deep.
     bool resizeAsked = false;
+    bool marginAsked = false;
     connect(&dialog, &ProjectSettingsDialog::resizeRequested, this,
             [&dialog, &resizeAsked] {
                 resizeAsked = true;
                 dialog.reject();
             });
+    // Stage Margin... (Phase 2A): the same, for the margin around the shot.
+    connect(&dialog, &ProjectSettingsDialog::stageMarginRequested, this,
+            [&dialog, &marginAsked] {
+                marginAsked = true;
+                dialog.reject();
+            });
     dialog.exec();
     if (resizeAsked)
         onResizeProject(canvas);
+    else if (marginAsked)
+        onStageMargin();
 }
 
 // Canvas-only resize. The order here is the whole safety argument: refuse
@@ -1242,10 +1255,28 @@ void MainWindow::onResizeProject(const QSize &currentSize)
         return;
     }
 
-    ResizeProjectDialog sizeDialog(currentSize, this);
+    // With a stage margin (Phase 2A, the user's decision D4) the size asked
+    // for is the SHOT's, and the margins stay: the canvas is that plus them.
+    const shotcam::Stage stageNow = shotcam::stageWithMargin(currentSize, m_stageMargin);
+    ResizeProjectDialog sizeDialog(stageNow.frame, this,
+                                   stageNow.hasMargin() ? currentSize : QSize());
     if (sizeDialog.exec() != QDialog::Accepted)
         return;
-    const QSize newSize = sizeDialog.chosenSize();
+    const QSize newFrame = sizeDialog.chosenSize();
+    const QSize newSize = stageNow.hasMargin()
+        ? QSize(newFrame.width() + 2 * m_stageMargin.width(),
+                newFrame.height() + 2 * m_stageMargin.height())
+        : newFrame;
+    if (newSize.width() > 8192 || newSize.height() > 8192) {
+        QMessageBox::warning(
+            this, QStringLiteral("Resize Project"),
+            QStringLiteral("With its stage margin the canvas would be %1 × %2 pixels, "
+                           "more than 8192 on a side.\n\nNothing has been changed. Choose a "
+                           "smaller shot, or a smaller margin first.")
+                .arg(newSize.width())
+                .arg(newSize.height()));
+        return;
+    }
 
     // 2. PRECHECK, before a single pixel moves. A refusal at this point is
     // perfectly atomic: nothing has been touched.
@@ -1286,6 +1317,15 @@ void MainWindow::onResizeProject(const QSize &currentSize)
             .arg(currentSize.height())
             .arg(newSize.width())
             .arg(newSize.height());
+    if (stageNow.hasMargin())
+        body = QStringLiteral("The shot changes from %1 × %2 to %3 × %4; with the "
+                              "stage margin kept, the canvas becomes %5 × %6.\n\n")
+                   .arg(stageNow.frame.width())
+                   .arg(stageNow.frame.height())
+                   .arg(newFrame.width())
+                   .arg(newFrame.height())
+                   .arg(newSize.width())
+                   .arg(newSize.height());
     body += grows
         ? QStringLiteral("Artwork keeps its current size and position, "
                          "centred on the new canvas. Nothing is scaled.\n\n")
@@ -1336,24 +1376,37 @@ void MainWindow::onResizeProject(const QSize &currentSize)
 // No dialogs, so this is also what the gate drives.
 ProjectResize::Outcome MainWindow::applyCanvasResizeInternal(const QSize &newSize)
 {
+    // A resize keeps the margins (the user's decision D4): the stage is the
+    // new canvas, the shot that minus the margins.
+    return applyStageResizeInternal(newSize, m_stageMargin);
+}
+
+ProjectResize::Outcome MainWindow::applyStageResizeInternal(const QSize &newSize,
+                                                            const QSize &newMargin)
+{
     const QSize currentSize(m_canvasWidth, m_canvasHeight);
+    const shotcam::Stage oldStage = shotcam::stageWithMargin(currentSize, m_stageMargin);
+    const shotcam::Stage newStage = shotcam::stageWithMargin(newSize, newMargin);
     const QPoint offset = ProjectResize::centreOffset(currentSize, newSize);
     const ProjectResize::Outcome outcome =
         ProjectResize::apply(m_scenes, newSize, offset);
     // The shot camera keeps each framing over the same artwork (Phase 1A).
     // Only after a complete resize: a partial one leaves panels at two
     // sizes, which the load census reports, and no framing can be right
-    // for both.
+    // for both. With a margin (Phase 2A) the zoom follows the FRAME: a
+    // margin change keeps it, a frame resize keeps the frame's pixel width.
     if (outcome.ok)
         for (Scene *scene : std::as_const(m_scenes))
             if (scene)
-                shotcam::remapForResize(scene->camera, currentSize, newSize, offset);
+                shotcam::remapForResize(scene->camera, oldStage, newStage, offset);
 
     // ORDER MATTERS: the members must be updated before anything can save,
     // or a save would write the old manifest against new pixels — a
     // mismatch of our own making.
     m_canvasWidth = newSize.width();
     m_canvasHeight = newSize.height();
+    m_stageMargin = newStage.hasMargin() ? newStage.margin() : QSize(0, 0);
+    pushStageMargin();
     if (m_storyboard)
         m_storyboard->applyProjectResize(newSize, offset);
     if (m_undoStack)
@@ -1369,6 +1422,162 @@ ProjectResize::Outcome MainWindow::applyCanvasResizeInternal(const QSize &newSiz
 void MainWindow::applyCanvasResize(const QSize &newSize)
 {
     applyCanvasResizeInternal(newSize);
+}
+
+namespace {
+// The tight bounds of what is drawn on a layer: every pixel that is not
+// fully transparent. Empty for an empty layer.
+QRect drawnBounds(const QImage &image)
+{
+    const QImage a = image.format() == QImage::Format_ARGB32_Premultiplied
+        ? image : image.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+    int top = -1, bottom = -1, left = a.width(), right = -1;
+    for (int y = 0; y < a.height(); ++y) {
+        const QRgb *row = reinterpret_cast<const QRgb *>(a.constScanLine(y));
+        int first = -1, last = -1;
+        for (int x = 0; x < a.width(); ++x)
+            if (qAlpha(row[x])) {
+                if (first < 0)
+                    first = x;
+                last = x;
+            }
+        if (first < 0)
+            continue;
+        if (top < 0)
+            top = y;
+        bottom = y;
+        left = qMin(left, first);
+        right = qMax(right, last);
+    }
+    return top < 0 ? QRect() : QRect(QPoint(left, top), QPoint(right, bottom));
+}
+} // namespace
+
+// Stage Margin... (Phase 2A, Figma 2A-3). The order is the resize's, for
+// the resize's reasons: refuse while an edit is in flight, ask, PRECHECK
+// the memory, offer to save (the rollback), confirm the irreversible part,
+// then swap - the shot kept, the stage grown or shrunk around it.
+void MainWindow::onStageMargin()
+{
+    QString active;
+    if (m_storyboard && m_storyboard->hasActiveEdit(&active)) {
+        QMessageBox::information(
+            this, QStringLiteral("Stage Margin"),
+            QStringLiteral("Finish %1 before changing the stage margin.\n\nNothing has "
+                           "been changed.")
+                .arg(active));
+        return;
+    }
+    const QSize currentSize(m_canvasWidth, m_canvasHeight);
+    const shotcam::Stage stageNow = shotcam::stageWithMargin(currentSize, m_stageMargin);
+    const QSize marginNow = stageNow.hasMargin() ? m_stageMargin : QSize(0, 0);
+
+    // What a shrink would cut, asked live by the dialog: the panels whose
+    // art reaches into the part that goes, and the camera keys whose frame
+    // does (the user's Q2). The art's bounds are measured once, at the
+    // first shrink asked about - a grow never needs them.
+    QVector<QRect> art;
+    bool artMeasured = false;
+    auto probe = [&](const QSize &newMargin) {
+        StageMarginDialog::Band band;
+        // The new stage, in the CURRENT canvas's pixels.
+        const QRectF kept(marginNow.width() - newMargin.width(),
+                          marginNow.height() - newMargin.height(),
+                          stageNow.frame.width() + 2.0 * newMargin.width(),
+                          stageNow.frame.height() + 2.0 * newMargin.height());
+        if (!artMeasured) {
+            artMeasured = true;
+            for (const Scene *scene : std::as_const(m_scenes))
+                for (const Panel *panel : scene->panels) {
+                    QRect drawn;
+                    for (const Layer &layer : panel->layers)
+                        if (!isGroupLayer(layer) && layer.type != QLatin1String("background")
+                            && !layer.image.isNull())
+                            drawn |= drawnBounds(layer.image);
+                    art.append(drawn);
+                }
+        }
+        for (const QRect &drawn : std::as_const(art))
+            if (!drawn.isEmpty() && !kept.contains(QRectF(drawn)))
+                ++band.panelsWithArt;
+        for (const Scene *scene : std::as_const(m_scenes))
+            for (const shotcam::CameraKey &key : scene->camera.keys)
+                if (shotcam::panelIndexOfUid(*scene, key.panelUid) >= 0
+                    && !kept.adjusted(-0.5, -0.5, 0.5, 0.5).contains(
+                        shotcam::frameQuad(key.state, stageNow).boundingRect()))
+                    ++band.keysInBand;
+        return band;
+    };
+    StageMarginDialog dialog(stageNow.frame, marginNow, probe, this);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+    const QSize newMargin = dialog.chosenMargin();
+    const QSize newSize = stagemargin::stageSize(stageNow.frame, newMargin);
+
+    const ProjectResize::Plan plan = ProjectResize::plan(m_scenes, currentSize, newSize);
+    if (!plan.fits) {
+        QMessageBox::warning(this, QStringLiteral("Stage Margin"), plan.refusal);
+        return;
+    }
+    if (!m_currentProjectPath.isEmpty() || !m_scenes.isEmpty()) {
+        const QMessageBox::StandardButton save = QMessageBox::question(
+            this, QStringLiteral("Stage Margin"),
+            QStringLiteral("Save the project before changing the stage margin?\n\nIt "
+                           "cannot be undone. A saved copy is the only way back to the "
+                           "current stage."),
+            QMessageBox::Save | QMessageBox::No | QMessageBox::Cancel, QMessageBox::Save);
+        if (save == QMessageBox::Cancel)
+            return;
+        if (save == QMessageBox::Save) {
+            onSaveProject();
+            if (m_currentProjectPath.isEmpty())
+                return;
+        }
+    }
+    QString body = QStringLiteral("The stage changes from %1 × %2 to %3 × %4 around "
+                                  "the same shot (%5 × %6).\n\n")
+                       .arg(currentSize.width())
+                       .arg(currentSize.height())
+                       .arg(newSize.width())
+                       .arg(newSize.height())
+                       .arg(stageNow.frame.width())
+                       .arg(stageNow.frame.height());
+    body += plan.crops ? dialog.effectText() + QStringLiteral("\n\n")
+                       : QStringLiteral("Artwork keeps its size and place, and the shot and "
+                                        "every camera key are unchanged. Nothing is "
+                                        "scaled.\n\n");
+    body += QStringLiteral("This cannot be undone. Your undo history will be cleared.");
+    QMessageBox confirm(QMessageBox::Question,
+                        QStringLiteral("Set the stage margin to %1 / %2 px?")
+                            .arg(newMargin.width())
+                            .arg(newMargin.height()),
+                        body, QMessageBox::NoButton, this);
+    QPushButton *go = confirm.addButton(QStringLiteral("Set Margin"), QMessageBox::AcceptRole);
+    confirm.addButton(QMessageBox::Cancel);
+    confirm.setDefaultButton(QMessageBox::Cancel);
+    confirm.exec();
+    if (confirm.clickedButton() != go)
+        return;
+
+    const ProjectResize::Outcome outcome = applyStageResizeInternal(newSize, newMargin);
+    if (!outcome.ok)
+        QMessageBox::critical(
+            this, QStringLiteral("Stage Margin"),
+            QStringLiteral("The change ran out of memory at scene %1, panel %2, after %3 "
+                           "panel%4.\n\nThe project now holds panels of two sizes. Close it "
+                           "WITHOUT saving and reopen the version you saved a moment ago.")
+                .arg(outcome.failedSceneNumber)
+                .arg(outcome.failedPanelIndex)
+                .arg(outcome.panelsResized)
+                .arg(outcome.panelsResized == 1 ? "" : "s"));
+}
+
+void MainWindow::pushStageMargin()
+{
+    if (m_storyboard)
+        m_storyboard->setStageMargin(m_stageMargin);
+    if (m_animatic)
+        m_animatic->setStageMargin(m_stageMargin);
 }
 
 void MainWindow::applyProjectSettings(const QString &projectName, int fps)
@@ -1529,8 +1738,10 @@ void MainWindow::resetProjectState(ClipboardPolicy clipboards)
     // path would build garbage from.
     m_canvasWidth = 960;
     m_canvasHeight = 540;
+    m_stageMargin = QSize(0, 0);
     if (m_storyboard)
         m_storyboard->setProjectCanvasSize(QSize(m_canvasWidth, m_canvasHeight));
+    pushStageMargin();
 
     m_consistencyEntries.clear();
     if (m_consistencyBoard)
@@ -1600,8 +1811,10 @@ void MainWindow::runNewProjectDialog()
     m_currentProjectPath = dialog.projectFilePath();
     m_projectFps = dialog.fps();
     m_canvasWidth = dialog.canvasWidth();   // APPLIED: the project's
-    m_canvasHeight = dialog.canvasHeight(); // real canvas resolution
+    m_canvasHeight = dialog.canvasHeight(); // real canvas resolution (the stage)
+    m_stageMargin = dialog.stageMargin();   // Phase 2A: px each side; none
     m_storyboard->setProjectCanvasSize(QSize(m_canvasWidth, m_canvasHeight));
+    pushStageMargin();
     m_animatic->setFps(m_projectFps);
     // The project has a file from this moment (Create wrote it), so audio
     // imported before its first save has a folder to be copied into.
@@ -1889,6 +2102,7 @@ bool MainWindow::saveToPath(const QString &path)
     data.projectName = m_projectName;
     data.fps = m_projectFps;
     data.canvasSize = QSize(m_canvasWidth, m_canvasHeight);
+    data.stageMargin = m_stageMargin;
     data.scenes = m_scenes;
     data.consistency = m_consistencyEntries;
     data.audioPath = m_animatic->audioPath(); // where the track's file is
@@ -2066,7 +2280,18 @@ bool MainWindow::loadFromPath(const QString &path)
             canvasMismatchDialogText(loaded.manifestSize, loaded.pixelSize));
     m_canvasWidth = loaded.pixelSize.width();
     m_canvasHeight = loaded.pixelSize.height();
+    // THE STAGE MARGIN (Phase 2A), before the pages adopt the scenes: the
+    // strip and the clips are drawn from it. A frame size the artwork cannot
+    // have is reported, never silently dropped; the next save writes none.
+    m_stageMargin = loaded.stageMargin;
+    if (loaded.stageMarginRepaired)
+        QMessageBox::information(
+            this, QStringLiteral("Stage Margin"),
+            QStringLiteral("This project names a shot size that does not fit its "
+                           "artwork, so it opens without a stage margin: the whole "
+                           "canvas is the shot. No artwork was changed."));
     m_storyboard->setProjectCanvasSize(QSize(m_canvasWidth, m_canvasHeight));
+    pushStageMargin();
     m_animatic->setFps(m_projectFps);
     RecentProjects::record(path);
 

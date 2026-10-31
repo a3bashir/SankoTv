@@ -989,7 +989,7 @@ shotcam::CameraState DrawingCanvas::shotCameraShownState(const ShotCameraView &v
 
 QPolygonF DrawingCanvas::shotCameraWidgetQuad(const shotcam::CameraState &s) const
 {
-    return viewTransform().map(shotcam::frameQuad(s, canvasSize()));
+    return viewTransform().map(shotcam::frameQuad(s, stage()));
 }
 
 QVector<QPointF> DrawingCanvas::shotCameraHandles(const QPolygonF &quad) const
@@ -1087,7 +1087,7 @@ shotcam::CameraState DrawingCanvas::shotCameraDragState(const QPointF &widgetPos
             r = std::round(r / 15.0) * 15.0;
         s.rotation = shotcam::normalisedAngle(r);
     }
-    return shotCameraView().stayInside ? shotcam::clampInside(s, canvasSize())
+    return shotCameraView().stayInside ? shotcam::clampInside(s, stage())
                                        : shotcam::clampZoom(s);
 }
 
@@ -1187,7 +1187,7 @@ void DrawingCanvas::shotCameraFinishDrag()
 // The safe-area guides INSIDE THE CAMERA'S FRAME: the same 5 % / 10 %
 // insets, colours and labels as the canvas guides, in the frame's own
 // (turned) space. Canvas space, through T, like the canvas guides.
-void DrawingCanvas::paintShotCameraGuides(QPainter &painter, const QSize &cs,
+void DrawingCanvas::paintShotCameraGuides(QPainter &painter, const shotcam::Stage &stage,
                                           const shotcam::CameraState &s)
 {
     auto cosmetic = [](const QColor &c) {
@@ -1195,8 +1195,8 @@ void DrawingCanvas::paintShotCameraGuides(QPainter &painter, const QSize &cs,
         p.setCosmetic(true);
         return p;
     };
-    const double fw = cs.width() / s.zoom;
-    const double fh = cs.height() / s.zoom;
+    const double fw = stage.frame.width() / s.zoom;
+    const double fh = stage.frame.height() / s.zoom;
     const QRectF frame(-fw / 2.0, -fh / 2.0, fw, fh);
     painter.save();
     painter.translate(s.cx, s.cy);
@@ -1229,8 +1229,12 @@ void DrawingCanvas::paintShotCamera(QPainter &painter)
     if (!v.valid)
         return;
     const bool tool = m_tool == Camera;
-    if (!tool && !v.sceneHasKeys)
-        return; // outside the tool: the outline only when there are keys
+    // With a stage margin (Phase 2A) the shot is never the whole canvas, so
+    // every tool shows it; without one, outside the tool only when there
+    // are keys.
+    const bool margin = stage().hasMargin();
+    if (!tool && !v.sceneHasKeys && !margin)
+        return;
     const shotcam::CameraState s = shotCameraShownState(v);
     const bool soft = shotCameraSoft(v, s);
     const QColor accent = soft ? kCamSoft : kCamAccent;
@@ -1253,8 +1257,16 @@ void DrawingCanvas::paintShotCamera(QPainter &painter)
             tint.setAlpha(26); // 10 %
             painter.fillPath(inside, tint);
         }
+    } else if (margin) {
+        // A drawing tool: the margin under a light veil (the user's decision
+        // D5) - it reads as off camera and still takes strokes.
+        QPainterPath outside;
+        outside.addRect(QRectF(rect()));
+        painter.fillPath(outside.subtracted(inside), shotcam::kStageVeil);
     }
-    QPen outline(accent, 1.5);
+    // 1 px with a drawing tool in a margin project (Q5): never the Camera
+    // tool's 1.5 px frame with handles.
+    QPen outline(accent, (!tool && margin) ? 1.0 : 1.5);
     outline.setJoinStyle(Qt::MiterJoin);
     painter.setPen(outline);
     painter.setBrush(Qt::NoBrush);
@@ -1362,7 +1374,7 @@ QPolygonF DrawingCanvas::shotCameraPreviewEndForTest() const
 QPolygonF DrawingCanvas::shotCameraQuadForTest() const
 {
     const ShotCameraView v = shotCameraView();
-    if (!v.valid || (m_tool != Camera && !v.sceneHasKeys))
+    if (!v.valid || (m_tool != Camera && !v.sceneHasKeys && !stage().hasMargin()))
         return QPolygonF();
     return shotCameraWidgetQuad(shotCameraShownState(v));
 }
@@ -1910,11 +1922,48 @@ void DrawingCanvas::resetView()
 void DrawingCanvas::fitToScreen()
 {
     constexpr double kFitMargin = 0.96; // 4% breathing room around the canvas
+    // With a stage margin the SHOT fills the view: m_zoom is relative to the
+    // canvas's own fit, so the frame's fit is that fit times how much
+    // smaller the frame is. The frame is centred on the canvas, so the pan
+    // stays zero.
+    const shotcam::Stage st = stage();
+    double zoom = kFitMargin;
+    if (st.hasMargin() && width() > 0 && height() > 0) {
+        const double canvasFit = qMin(width() / double(st.canvas.width()),
+                                      height() / double(st.canvas.height()));
+        const double frameFit = qMin(width() / double(st.frame.width()),
+                                     height() / double(st.frame.height()));
+        zoom = qBound(0.25, kFitMargin * frameFit / canvasFit, 4.0);
+    }
+    m_zoom = zoom;
+    m_panOffset = QPointF(0, 0);
+    syncViewToolbar();
+    emit viewZoomChanged(m_zoom);
+    update();
+}
+
+void DrawingCanvas::fitStageToScreen()
+{
+    constexpr double kFitMargin = 0.96; // as Fit Screen, for the whole canvas
     m_zoom = kFitMargin;
     m_panOffset = QPointF(0, 0);
     syncViewToolbar();
     emit viewZoomChanged(m_zoom);
     update();
+}
+
+void DrawingCanvas::setStageMargin(const QSize &margin)
+{
+    if (m_stageMargin == margin)
+        return;
+    m_stageMargin = margin;
+    update();
+}
+
+shotcam::Stage DrawingCanvas::stage() const
+{
+    return m_panel ? shotcam::stageWithMargin(canvasSize(), m_stageMargin)
+                   : shotcam::Stage();
 }
 
 void DrawingCanvas::resizeEvent(QResizeEvent *event)
@@ -6149,13 +6198,17 @@ void DrawingCanvas::paintEvent(QPaintEvent *event)
     // The safe-area guides follow the SHOT CAMERA when it is not neutral
     // (Phase 1B): inset from its frame at the playhead. Neutral (or no
     // camera at all) keeps the canvas guides below, byte for byte.
+    // With a stage margin (Phase 2A) the guides are ALWAYS inset from the
+    // frame: the base framing when the camera is neutral or absent.
     const ShotCameraView guideCam = (m_safeArea || m_titleSafe)
         ? shotCameraView() : ShotCameraView();
-    const shotcam::CameraState guideState = shotCameraShownState(guideCam);
-    const bool guidesFromCamera = guideCam.valid
-        && !shotcam::isNeutral(guideState, cs);
+    const shotcam::Stage guideStage = stage();
+    const shotcam::CameraState guideState = guideCam.valid
+        ? shotCameraShownState(guideCam) : shotcam::neutral(cs);
+    const bool guidesFromCamera = (guideCam.valid && !shotcam::isNeutral(guideState, cs))
+        || ((m_safeArea || m_titleSafe) && guideStage.hasMargin());
     if (guidesFromCamera)
-        paintShotCameraGuides(painter, cs, guideState);
+        paintShotCameraGuides(painter, guideStage, guideState);
 
     // Action-safe: 5% inset, amber.
     if (m_safeArea && !guidesFromCamera) {

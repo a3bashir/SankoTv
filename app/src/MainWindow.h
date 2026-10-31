@@ -87,6 +87,13 @@ public:
     // Everything the resize workflow does AFTER its dialogs have been
     // answered — the part with no modal in it.
     void resizeProjectForTest(const QSize &newSize) { applyCanvasResize(newSize); }
+    // THE STAGE MARGIN (Phase 2A): the margin change once its dialogs are
+    // answered (the same swap a resize does, the frame kept), and the
+    // project's margin, px each side.
+    void setStageMarginForTest(const QSize &margin) { applyStageResizeInternal(
+        QSize(m_canvasWidth - 2 * m_stageMargin.width() + 2 * margin.width(),
+              m_canvasHeight - 2 * m_stageMargin.height() + 2 * margin.height()), margin); }
+    QSize stageMarginForTest() const { return m_stageMargin; }
     QUndoStack *undoStackForTest() const { return m_undoStack; }
     // The locks (Part B): the Script Editor's re-parse, as its scenesReady
     // signal reaches this window - refused with a message while the SCENES
@@ -285,6 +292,16 @@ private:
     // does rather than a test-shaped copy of it.
     void applyCanvasResize(const QSize &newSize);
     ProjectResize::Outcome applyCanvasResizeInternal(const QSize &newSize);
+    // Stage Margin... (Phase 2A): the same workflow as a resize - in-flight
+    // refusal, the margin dialog, memory precheck, save prompt, confirm -
+    // with the shot kept and the stage grown or shrunk around it.
+    void onStageMargin();
+    // The swap for both: the canvas to newSize with newMargin px each side;
+    // camera keys keep framing the same artwork (Stage remap).
+    ProjectResize::Outcome applyStageResizeInternal(const QSize &newSize,
+                                                    const QSize &newMargin);
+    // The margin into every page that draws or measures the shot.
+    void pushStageMargin();
     void applyProjectSettings(const QString &projectName, int fps);
     bool saveToPath(const QString &path);
     // A save, export or recording that failed: when Windows blocked it in a
@@ -359,6 +376,9 @@ private:
     int m_projectFps = 24;
     int m_canvasWidth = 960;
     int m_canvasHeight = 540;
+    // THE STAGE MARGIN (Phase 2A): px each side of the shot; the canvas
+    // above is the stage. 0 x 0 = none, every project made before 2A.
+    QSize m_stageMargin = QSize(0, 0);
     // Unsaved changes. Set by every document mutation, cleared only by
     // save/load/new/close. Not derived from the undo stack's clean state:
     // that stack has a 60-command limit (so its clean index can fall off

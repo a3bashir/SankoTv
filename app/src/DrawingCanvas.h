@@ -282,9 +282,19 @@ public:
     {
         m_selectedLayerIds = ids;
     }
-    // Fit Screen: centre the canvas in the viewport and fit it fully with a
+    // Fit Screen: centre the SHOT in the viewport and fit it fully with a
     // small margin, whatever the current zoom/pan (rotation/flip untouched).
+    // Without a stage margin the shot is the whole canvas, as it always was;
+    // with one (Phase 2A, the user's word) it is the frame, and Fit Stage
+    // fits the whole stage.
     void fitToScreen();
+    void fitStageToScreen();
+    // THE STAGE MARGIN (Phase 2A): px each side of the shot (0 x 0: none).
+    // With one, every tool shows the frame - a 1 px outline and the margin
+    // veiled 20 % with a drawing tool, the Camera tool's own frame and dim
+    // with it - and the camera's limits and guides use the frame.
+    void setStageMargin(const QSize &margin);
+    shotcam::Stage stage() const;
 
     // Standalone Sanko Paint engine settings. The engine receives only
     // canvas-space samples and one stable layer key; SankoTV retains all
@@ -943,6 +953,7 @@ private:
     // reads viewZoom() at construction so its readout shows 85%.
     static constexpr double kStartupZoom = 0.85;
     double m_zoom = kStartupZoom; // 0.25 .. 4.0
+    QSize m_stageMargin = QSize(0, 0); // Phase 2A: px each side; none
     QPointF m_panOffset;         // screen-px offset from the centred position
     bool m_spaceHeld = false;    // spacebar pan modifier
     bool m_panning = false;      // mid-drag (space+left or middle button)
@@ -1122,7 +1133,7 @@ private:
     void shotCameraMove(const QPointF &widgetPos, Qt::MouseButtons buttons,
                         Qt::KeyboardModifiers mods);
     void shotCameraFinishDrag(); // release, or an interruption: one request
-    void paintShotCameraGuides(QPainter &painter, const QSize &cs,
+    void paintShotCameraGuides(QPainter &painter, const shotcam::Stage &stage,
                                const shotcam::CameraState &s);
     void paintShotCamera(QPainter &painter);
     int m_camHover = -1;          // hit under the idle pointer

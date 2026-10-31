@@ -1550,22 +1550,27 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
                 // without a camera move draws exactly as before.
                 bool shot = false;
                 shotcam::CameraState shotCamera;
-                QSize canvas;
+                shotcam::Stage stage;
                 if (b.sceneIndex < m_scenes.size()) {
                     Scene *sc = m_scenes.at(b.sceneIndex);
                     if (b.panelIndex < sc->panels.size()) {
+                        const Panel *panel = sc->panels.at(b.panelIndex);
+                        stage = shotcam::stageWithMargin(panel->canvasSize(), m_stageMargin);
+                        // The CAMERA eye off (Phase 1C): the neutral camera.
+                        if (!sc->camera.isEmpty() && m_tracks.cameraVisible) {
+                            shotCamera = shotcam::evaluateAtPanel(*sc, b.panelIndex, 0,
+                                                                  m_fps);
+                            shot = !shotcam::isNeutral(shotCamera, stage.canvas);
+                        }
                         // The cached 512px mip, not the full flatten: this
                         // runs per visible clip on EVERY repaint (each scrub
                         // mouse-move and every playback tick); the full
-                        // composite cost 16 ms/clip at 4K, measured.
-                        pix = sc->panels.at(b.panelIndex)->flattenedThumb();
-                        // The CAMERA eye off (Phase 1C): the whole panel.
-                        if (!sc->camera.isEmpty() && m_tracks.cameraVisible) {
-                            canvas = sc->panels.at(b.panelIndex)->canvasSize();
-                            shotCamera = shotcam::evaluateAtPanel(*sc, b.panelIndex, 0,
-                                                                  m_fps);
-                            shot = !shotcam::isNeutral(shotCamera, canvas);
-                        }
+                        // composite cost 16 ms/clip at 4K, measured. With a
+                        // margin (Phase 2A) the base framing is the FRAME's
+                        // own mip, cropped to fill as the whole panel was.
+                        pix = (stage.hasMargin() && !shot)
+                            ? panel->flattenedFrameThumb(stage.frameRect())
+                            : panel->flattenedThumb();
                     }
                 }
                 p.save();
@@ -1575,7 +1580,7 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
                 if (!pix.isNull() && shot) {
                     // The shot, cropped to fill like the plain thumbnail.
                     p.fillRect(L.thumb, Qt::black);
-                    shotcam::drawShot(p, pix, canvas, shotCamera, QRectF(L.thumb), true);
+                    shotcam::drawShot(p, pix, stage, shotCamera, QRectF(L.thumb), true);
                 } else if (!pix.isNull()) {
                     // Crop to fill, centred (one setting; "fit with bars" is
                     // the other, not built - the user's choice 2026-10-18).
@@ -2769,6 +2774,13 @@ void AnimaticTimeline::canvasLeave()
     }
     if (m_canvas)
         m_canvas->setCursor(Qt::ArrowCursor);
+}
+
+void AnimaticTimeline::setStageMargin(const QSize &margin)
+{
+    m_stageMargin = margin;
+    if (m_canvas)
+        m_canvas->update();
 }
 
 void AnimaticTimeline::setFps(int fps)

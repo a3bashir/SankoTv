@@ -144,6 +144,18 @@ drawing canvas, animatic, AI generation).
   was obtainable from git (pre-integration commits either lack the app state
   or do not build standalone), so these are measured absolutes, not a delta.
 
+- **IMAGE FILES ARE NAMED BY PANEL POSITION** (opened 2026-10-31, the
+  user's item; report later on naming them by id, do NOT change it now) -
+  ProjectIO writes `panel_s<scene>_p<panel>.png` and
+  `..._layer<k>.png`, so inserting a panel (Duplicate, Paste, Add) moves
+  every later panel to another file name, and the next save rewrites all
+  of their images even though their pixels did not change (the ledger is
+  keyed by FILE, correctly, so it cannot skip them). Seen: a 2421 ms stall
+  on the first Ctrl+S after duplicating P1 of the 11-panel 4K
+  Test_SB_009_A (recording 20261031-201905); the next save, 183 ms. To
+  report: names by a stable panel / layer id, what that means for old
+  projects, Save As and the ledger, and the cost.
+
 ## BEFORE SELLING: open licensing items (opened 2026-10-03)
 
 SankoTV IS TO BE SOLD. NOTHING SHIPS TO A CUSTOMER UNTIL A LAWYER HAS
@@ -8404,6 +8416,16 @@ margin, the widest pull-out (478:696); 2A-5 strip thumbnails (479:696);
 Drawn from the code's real geometry (NewProjectDialog 340 wide,
 ResizeProjectDialog / ProjectSettingsDialog 380), not from the older
 design 350:24.
+FIGMA 2B, depth core (2026-10-31, the same section, now 18026 tall):
+2B-1 the Layers panel's depth badge, a folder's dimmed members, the
+paper, the hovers, Depth... in the row menu (484:696); 2B-2 the Depth
+popover - slider with five named stops, value field, readout - in four
+states (484:825); 2B-3 the Camera tool's view with depth (base framing,
+a 400 px pan, a 1.5x push-in, and the same pan without depth as the
+control), each layer placed by the spec's 4.3 formula (486:696); 2B-4
+the drawing view with its chip, and the same shot in the preview, the
+SHOTS clip and the strip (486:813); 2B-5 what 2B builds and the screen
+questions Q1-Q6 (487:696). Report and Figma only; 2B not built.
 
 ## Duplicate Panel and the panel clipboard kept a folder whole (2026-10-31)
 
@@ -8475,6 +8497,149 @@ two opens 449 / 474 ms. No warnings. Committed on the user's word.
 Hand-test list: Documents\SankoTV-Design\camera\handtest_folderclone.md.
 NOTICED, not changed: the Layers panel's Group button's tooltip says
 "Group: flatten the selected layers into one", but it makes a folder.
+(Changed with 2A, on the user's word: "Group: put the selected layers in
+a folder".)
+
+## The shot camera, Phase 2A: the stage margin (2026-10-31)
+
+Built as drawn in Figma 2A-1 .. 2A-6 (section 383:141), Q1-Q6 as
+recommended, and the user's three changes: Fit fits the SHOT and a new
+Fit Stage shows the whole stage; the Stage Margin dialog's line reads
+"current stage" (was "stage now"); the Group button's tooltip. NOT
+COMMITTED (the user: "Don't commit 2A until I say").
+
+PINS FIRST (spec 8.1), recorded on 32763eb6b before any 2A code:
+SankoCameraTest (mp), 42 MOVING PINS - one scene per pin size, panel 1 a
+six-key move (every ease, turning), panel 2 a Quick Move: five MP4 frames
+a size as the real export job offered them, both PNG stills, a PDF page,
+a preview grab, both SHOTS clips, and the GEOMETRY (frame quad, shot
+transform, Stay inside, its minimum zoom, every Quick Move, as text to 12
+digits); identical in Debug and Release; control: every key 1 px across
+changes all 42. Lifecycle (mp): the strip's two thumbnails of a keyed
+scene; control: 1 px across changes both. All held on the 2A code.
+
+THE MODEL. shotcam::Stage {canvas, frame} (CameraModel.h): the canvas is
+the stage, the frame the shot at 1x; implicit from a QSize (no margin), so
+every Phase 1 expression keeps its terms when frame == canvas - the moving
+pins prove it. stageWithMargin(canvas, margin): symmetric whole-pixel
+margins, an invalid one is none. Every frame function takes a Stage:
+frameQuad, shotTransform, renderShot, drawShot, sharpLimit (the FRAME vs
+1920 x 1080), insideMinZoom / clampInside (the frame inside the STAGE, so
+a pull-out reaches the largest framing the stage holds), quickMove (Move
+is a share of the frame), remapForResize (zoom scaled by the FRAME: a
+margin change keeps it). neutral() is the same numbers - with a margin it
+is the BASE FRAMING. takesOldPath(state, stage): no margin and neutral.
+THE MARGIN is a project value like the fps: MainWindow::m_stageMargin (px
+each side), pushed to StoryboardPage / AnimaticPage / AnimaticTimeline /
+DrawingCanvas (setStageMargin) and passed to collectPanels.
+THE BASE FRAMING TAKES THE OLD CODE ON THE FRAME'S CROP: the MP4
+(renderMovieFrame(panel, size, camera, stage) -> the old fit of
+flat.copy(frameRect)), the stills (the crop; Full Artwork the whole
+stage), the preview (PanelDisplay paints its frame pixmap with the old
+fit), the clips (Panel::flattenedFrameThumb, the frame's own 512 px mip,
+validated like flattenedThumb plus the rect). So a keyless margin project
+gives the bytes a frame-sized project gives: (mg1) against the 17 neutral
+pins.
+THE FILE: "frameWidth" / "frameHeight" only with a margin (ProjectIO and
+New Project); load reconciles against the pixels - off-centre or larger
+than the stage is NO margin, LoadedProject::stageMarginRepaired, and a
+message says so (artwork never cropped). Old builds would show the margin
+as part of the shot - no such build is in a customer's hands.
+THE UI: New Project - Stage Margin (None / 10 / 25 / 50 % / Custom, a
+share of the shot each side), Across / Down px each side (locked by a
+preset, the Width/Height rule), the note "Stage W x H . N MB a layer",
+amber past a 4K layer (Q1); 340 x 487 (was 385). Project Settings - Frame
+(the shot), Stage (... px each side), Aspect ratio (the frame's), Resize
+Project... (resizes the SHOT, margins kept - D4; tooltip changed) and
+Stage Margin... (new StageMarginDialog: presets, Same share both ways on
+by default - Q4, "Frame ... . current stage ... (25 %)", grow in the info
+grey, shrink probing the band that goes: nothing drawn says so plainly;
+art cut or camera keys framing the band are amber and named - Q2; the
+8192 cap). MainWindow::onStageMargin runs the resize's order (in-flight
+refusal, dialog, memory precheck, save prompt, confirm, swap) through
+applyStageResizeInternal, which Resize Project now shares. Resize
+Project's "Current" line names the shot and the stage with a margin.
+Canvas: with a margin every tool shows the frame - a 1 px outline and a
+20 % veil (shotcam::kStageVeil, D5 / Q5) with a drawing tool, the Camera
+tool's own 40 % dim; the guides inset from the frame always. Fit Screen /
+View > Fit Shot fit the shot (zoom 0.96 x frameFit / canvasFit); View >
+Fit Stage the whole canvas. The strip: the frame always outlined with a
+margin, the margin veiled 20 % (D6). Labels unchanged (Q3), the 1080p hint
+unchanged (Q6). Recorder statePoll: shotCam.stageW / stageH / frameW /
+frameH; the dialogs' devrecState carry the margin.
+CHECKS: Camera (mg1)-(mg7), (mg10), each with a control - the 17 neutral
+pins from a keyless margin project (control: 1 px across changes every
+frame and still; Full Artwork is the stage); a stage without a margin is
+the canvas (control: a frame 2 px smaller); the zoom, sharp limit and the
+0.667x pull-out (control: 1x without); the 1x pan into the margin, not
+soft (control: pulled back without); Quick Moves (control: Phase 1D's
+push-in without); the margin remap (control: the canvas-scaled zoom puts
+it off its art); the file and its repair (control: no keys without a
+margin); New Project and Stage Margin dialog rules (controls: the 8192
+cap). Camera 78 -> 140 (the (mp) 43 and (mg) 19). Lifecycle (mg) through
+the real window, 10: the margin change moves a key with its art; the
+canvas outline and veil (controls: nothing without; the Camera tool's 40
+%); Fit Shot 1.44 / Fit Stage 0.96 (control: 0.96 without); the strip's
+outline (control: none without); the recorder and the save; the reopen.
+Lifecycle 966 -> 980 (strip pins 3, (mg) 10, (z) control 1).
+CHANGED CHECK (intended: the dialog grew by the two margin rows). (z)
+old: "(z) the dialog is one column, 340 x 385", dialog.size() ==
+QSize(340, 385) && == (kWidth, kHeight); new: "(z) the dialog is one
+column, 340 x 487 (the two Stage Margin rows on the old 385)",
+QSize(340, 487) && == (kWidth, kHeight). Its content rect for the
+layout walk 304 x 385 -> 304 x 487. Positive control (new): "(z)
+control: the old 385 could not hold the new rows - Frame Rate moved down
+to the seventh row and ends below 385" (the fps field's bottom >= 385,
+the margin dropdown and fields on rows 5 and 6).
+Hand-test list: Documents\SankoTV-Design\camera\handtest_2A.md.
+GATE (`stagemargin`, normal mode, 1506 s): nine families green in Debug
+and Release; Lifecycle 980, Camera 140; the 17 neutral pins (34 c1p
+lines), the 42 moving pins and the strip's 2 in both configurations,
+preview 608366fc / eraser d312bc9b in both brushlib reports, pixel locks
+666f7b45 / cafcec7f, erase 0bc24381 - all unchanged. Exe stamp
+32763eb6b+dirty, Release built 21:06:08.
+HAND TEST (recordings 20261031-214135 = s1 and 20261031-214902 = s2, the
+gate's build; the user did steps 1-8 and 13): NOT COMMITTED - step 13
+crashed. 1 PASS (s1; None, 0 / 0 dimmed, "No margin: the stage is the
+frame"); 2 PASS for 25 % (480 / 270, "Stage 2880 x 1620 . 18.7 MB a
+layer"), the 4K / amber half not tested - (mg10); 3 PASS (s1; thin outline,
+veiled margin drawn on, guides in the frame); 4 PASS (s1; Fit 140.6 s, Fit
+Stage 152.8, Fit Shot 154.6); 5 PASS for the 1x pan to the stage's edge
+(key x 1920, zoom 1, no amber), the corner pull-out not tested - (mg3);
+6 PASS with Pan Left from that edge (keys 1920 -> 1440 at 1x, no push-in;
+the preview pans across the margin art); 7 PASS (strip: whole stage,
+margin veiled, shot outlined; clip: the shot); 8 PASS for the shot PNG
+(1920 x 1080 on disk), Full Artwork not tested - (mg1) control. 13 FAIL:
+s1 crashed at 396.2 s on File > Open Recent > Test_SB_009_A (dump
+SankoTV.exe.56104.dmp, 21:48:19, 0xC0000374 heap corruption); in s2 the
+same project, opened before the recording, showed Phase 1's outline (it
+has keys), no veil and "(no margin)" - Fit not tried. ALSO in s2 (not in
+the list): Stage Margin 50 % on that 4K project - stage 7680 x 4320, the
+art and the key's frame kept their place, a 1752 ms stall, 6.4 GB
+working set; Discard on quit (the file is untouched: last written
+20:21:58) - and the quit CRASHED (SankoTV.exe.63908.dmp, 21:50:24).
+THE TWO CRASHES, read from the dumps (a read-only Python minidump reader,
+and a Release rebuild WITH symbols, build/_probe/sym - its 6360 function
+ranges identical to the crashed exe's, so its PDB names those frames):
+both are the TEMPORARY DEV RECORDER, neither is 2A code. (1) the open:
+MainWindow::openProject (Open Recent) -> loadFromPath, then
+rebuildRecentMenu() (MainWindow.cpp:1966) m_recentMenu->clear() DELETES
+the recent actions - including the one being triggered; the menu then
+relays triggered(action) and the recorder's menu hook (DevRecorder.cpp
+:1434, Recorder::hookMenu -> logAction) reads the deleted action's
+shortcut and text: a use after free, reported by the heap as corruption.
+Only with the recorder recording and an open from FILE > OPEN RECENT (the
+start window's recents do not rebuild that menu under the click). (2) the
+quit: the recorder still recording when the app exits is stopped in
+QCoreApplication's teardown, after qApp is null; Recorder::stop()
+(DevRecorder.cpp:891) calls qApp->removeEventFilter(this) - an access
+violation at 0x8 (main.cpp:21 -> ~QObject -> deleteChildren). The same
+crash is in two dumps from 17:01 and 17:03 today (the build before), so
+it predates 2A: any quit while recording. NOT FIXED (report only). Both
+recordings lack sessionEnd / summary.txt for that reason.
+COMMITTED on the user's word (2026-10-31): "Every 2A step passed; both
+crashes are the Dev Recorder's, not 2A's." The two crashes are fixed in
+the batch below.
 
 ## METHOD: measure interior structure ACROSS THE SIZE RANGE before calling it character (2026-09-25)
 

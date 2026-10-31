@@ -83,6 +83,11 @@ struct SaveData
     QString projectName;
     int fps = 24;
     QSize canvasSize; // the project's real resolution (post-reconcile)
+    // THE STAGE MARGIN (Phase 2A): px each side of the shot; 0 x 0 = none.
+    // With one, the file says the shot's size as "frameWidth" /
+    // "frameHeight" (the canvas is the stage); without one it writes
+    // neither, so every project made before 2A saves the JSON it did.
+    QSize stageMargin = QSize(0, 0);
     QVector<Scene *> scenes; // not owned
     QVector<ConsistencyEntry> consistency;
     // The audio track: WHERE ITS FILE IS NOW (absolute), empty for none.
@@ -210,6 +215,12 @@ struct LoadedProject
     // number out of range): left out, never guessed. 0 for every project
     // written by the app.
     int cameraKeysDropped = 0;
+    // THE STAGE MARGIN (Phase 2A): px each side, from the file's frame size
+    // against the artwork's real size. A frame that cannot be one - larger
+    // than the canvas, not centred on whole pixels - is no margin and
+    // stageMarginRepaired says so; the artwork is never cropped for it.
+    QSize stageMargin = QSize(0, 0);
+    bool stageMarginRepaired = false;
     // Every image file this load read, recorded as what it now holds, so
     // the first save after opening writes only what has changed since.
     ImageLedger images;

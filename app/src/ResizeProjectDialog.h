@@ -32,7 +32,11 @@ class ResizeProjectDialog : public QDialog
     Q_OBJECT
 
 public:
-    ResizeProjectDialog(const QSize &currentSize, QWidget *parent = nullptr);
+    // currentSize is the SHOT's size. With a stage margin (Phase 2A) the
+    // stage's is given too, for the "Current" line; the size chosen is the
+    // shot's and the window keeps the margins.
+    ResizeProjectDialog(const QSize &currentSize, QWidget *parent = nullptr,
+                        const QSize &stageSize = QSize());
 
     QSize chosenSize() const;          // valid only after exec() == Accepted
     QString validationReason() const { return m_reason; } // empty = valid
@@ -64,6 +68,7 @@ private:
 
     HeaderDrag m_drag;
     QSize m_current;
+    QSize m_stage; // Phase 2A: invalid without a stage margin
     bool m_syncing = false; // re-entry guard while mirroring the locked ratio
 
     brushlib::StudioTextField *m_width = nullptr;

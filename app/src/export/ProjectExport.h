@@ -57,16 +57,23 @@ struct ExportPanel
     int panelIndex = 0; // 0-based, in its scene
     shotcam::CameraState still;
     bool stillNeutral = true;
+    // THE STAGE (Phase 2A): the panel's canvas and the frame the shot is.
+    // Without a margin the frame is the canvas, and every picture below is
+    // the one it always was.
+    shotcam::Stage stage;
+    bool fullArtwork = false; // the still is the whole stage
 };
 
 // fps places the stills' camera (a key's frame depends on it); fullArtwork
-// makes every still the whole panel, as before the camera. cameraOff (the
-// CAMERA track hidden, Phase 1C) turns the camera off for the film as well:
-// every row's scene is left unset, so the movie takes the pre-camera path
-// and every still is the whole panel.
+// makes every still the whole panel (the whole STAGE with a margin), as
+// before the camera. cameraOff (the CAMERA track hidden, Phase 1C) turns the
+// camera off for the film as well: every row's scene is left unset, so the
+// movie takes the pre-camera path - the base framing with a margin - and
+// every still is the neutral shot. stageMargin: px each side (0 x 0: none).
 QVector<ExportPanel> collectPanels(const QVector<Scene *> &scenes,
                                    int fps = 24, bool fullArtwork = false,
-                                   bool cameraOff = false);
+                                   bool cameraOff = false,
+                                   const QSize &stageMargin = QSize(0, 0));
 
 // seconds x fps, summed. A panel's duration is whole seconds and the frame
 // rate a whole number, so this is exact: no frame is ever rounded away.
@@ -78,13 +85,20 @@ QImage renderMovieFrame(const Panel *panel, const QSize &frameSize);
 // byte; any other renders shotcam::renderShot.
 QImage renderMovieFrame(const Panel *panel, const QSize &frameSize,
                         const shotcam::CameraState &camera);
+// ...on a stage (Phase 2A): the base framing is the frame CROPPED out of the
+// flatten and fitted by the line above's own code - the bytes a project of
+// the frame's size gives; any other camera renders shotcam::renderShot.
+QImage renderMovieFrame(const Panel *panel, const QSize &frameSize,
+                        const shotcam::CameraState &camera, const shotcam::Stage &stage);
 // The camera of movie frame `frame` (0-based over the whole film): the one
 // question MovieExportJob asks, so a test can ask it too.
 shotcam::CameraState movieFrameCamera(const QVector<ExportPanel> &panels,
                                       int fps, int frame);
 // The picture a PNG / PDF still shows for a row: the whole panel when its
 // first-frame camera is neutral (today's bytes), else the shot at the
-// panel's own resolution.
+// panel's own resolution. With a margin (Phase 2A): the frame cropped out
+// when neutral, the shot at the frame's size otherwise, and the whole stage
+// for Full Artwork.
 QImage stillImage(const ExportPanel &row);
 
 // Return false to cancel. Called on the caller's thread, between files.

@@ -281,10 +281,35 @@ struct Panel
         m_thumbCache = QPixmap::fromImage(thumb);
         m_thumbKey = fingerprint;
     }
+    // THE FRAME'S THUMBNAIL (Phase 2A, the stage margin): the SHOTS clip of
+    // the base framing is the frame cut out of the flatten and reduced as
+    // flattenedThumb() reduces a whole panel, so a margin project's clip is
+    // the picture a frame-sized panel's is. Validated the same way, plus
+    // the rectangle.
+    QPixmap flattenedFrameThumb(const QRect &frame) const
+    {
+        constexpr int kThumbLongEdge = 512; // as flattenedThumb()
+        QVector<quint64> fp = flattenFingerprint();
+        if (m_frameThumbCache.isNull() || fp != m_frameThumbKey
+            || frame != m_frameThumbRect) {
+            const QPixmap full = flattenedPixmap().copy(frame);
+            m_frameThumbCache = (full.width() > kThumbLongEdge
+                                 || full.height() > kThumbLongEdge)
+                ? full.scaled(kThumbLongEdge, kThumbLongEdge,
+                              Qt::KeepAspectRatio, Qt::SmoothTransformation)
+                : full;
+            m_frameThumbKey = fp;
+            m_frameThumbRect = frame;
+        }
+        return m_frameThumbCache;
+    }
 
 private:
     mutable QPixmap m_thumbCache;
     mutable QVector<quint64> m_thumbKey;
+    mutable QPixmap m_frameThumbCache;
+    mutable QVector<quint64> m_frameThumbKey;
+    mutable QRect m_frameThumbRect;
 };
 
 // A scene carried over from the Script Editor, owning its panels.

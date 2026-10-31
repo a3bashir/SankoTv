@@ -2874,10 +2874,18 @@ void runStartWindowChromePass(const QString &scratch, const QString &project)
     out() << "--- (z) the New Project dialog only creates ---" << Qt::endl;
     {
         NewProjectDialog dialog(&window);
-        check(QStringLiteral("(z) the dialog is one column, 340 x 385"),
-              dialog.size() == QSize(340, 385)
+        // Phase 2A (2026-10-31) added the Stage Margin rows: 385 -> 487.
+        check(QStringLiteral("(z) the dialog is one column, 340 x 487 (the two Stage Margin "
+                             "rows on the old 385)"),
+              dialog.size() == QSize(340, 487)
                   && dialog.size() == QSize(NewProjectDialog::kWidth,
                                             NewProjectDialog::kHeight));
+        check(QStringLiteral("(z) control: the old 385 could not hold the new rows - Frame Rate "
+                             "moved down to the seventh row and ends below 385"),
+              dialog.fpsDropdown()->geometry().bottom() >= 385
+                  && dialog.marginDropdown()->geometry().top() == 53 + 4 * 51 + 16
+                  && dialog.acrossField()->geometry().top() == 53 + 5 * 51 + 16,
+              QStringLiteral("fps bottom %1").arg(dialog.fpsDropdown()->geometry().bottom()));
         QStringList buttons;
         for (QPushButton *b : dialog.findChildren<QPushButton *>())
             buttons << b->text();
@@ -2891,7 +2899,7 @@ void runStartWindowChromePass(const QString &scratch, const QString &project)
                   && dialog.findChildren<QScrollArea *>().isEmpty(),
               buttons.join(QStringLiteral(", ")));
         // Everything sits inside the 18 px padding, nothing overlaps.
-        const QRect content(18, 0, 304, 385);
+        const QRect content(18, 0, 304, 487);
         bool insideContent = true, noOverlap = true;
         const QList<QWidget *> kids =
             dialog.findChildren<QWidget *>(Qt::FindDirectChildrenOnly);
@@ -12683,6 +12691,264 @@ void runFolderClonePass(const QString &scratch)
               .arg(eye != nullptr).arg(shown).arg(dupChanged).arg(sourceKept));
 }
 
+// ---- (mp) the strip's moving pins (recorded before Phase 2A) ---------------
+// The Camera family pins what a project WITH camera moves renders (MP4,
+// stills, PDF, preview, clips, the frame geometry); the strip needs the
+// real page, so its pins are here: two panels whose first frames are framed
+// by keys (pushed in, one turned), the strip's thumbnails as drawn - the
+// whole artwork with the camera outlined. Recorded on 32763eb6b; a project
+// without a margin must draw these bytes for ever.
+namespace mppins {
+const char *const kStrip[2] = {
+    "8a9b72ae4452f0ca06f42f8bac967136910ebc1223a54d46154d2ad542107737",
+    "dda9ef45b96e461b5cedb9eb5c22afc2aa7e414f347088ab14220a7e0e460b6a"};
+
+QString shaOfImage(const QImage &image)
+{
+    const QImage a = image.convertToFormat(QImage::Format_ARGB32);
+    QCryptographicHash h(QCryptographicHash::Sha256);
+    for (int y = 0; y < a.height(); ++y)
+        h.addData(QByteArrayView(reinterpret_cast<const char *>(a.constScanLine(y)),
+                                 qsizetype(a.width()) * 4));
+    return QString::fromLatin1(h.result().toHex());
+}
+
+QString writeMovingProject(const QString &dir, double nudge)
+{
+    QDir(dir).removeRecursively();
+    QDir().mkpath(dir);
+    const QString path = dir + QStringLiteral("/StripPins.sankotv");
+    const QSize size(1920, 1080);
+    Scene *scene = new Scene;
+    scene->number = 1;
+    for (int i = 0; i < 2; ++i) {
+        Panel *panel = makeBlankPanel(size);
+        QPainter p(&panel->layers[1].image);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setPen(QPen(QColor(20, 20, 20), 4));
+        for (int k = 1; k < 10; ++k)
+            p.drawLine(QPointF(192 * k, 60), QPointF(1920 - 192 * k, 1020));
+        p.setPen(Qt::NoPen);
+        p.setBrush(i ? QColor(40, 90, 200) : QColor(200, 40, 40));
+        p.drawEllipse(QPointF(1150, 480), 260, 200);
+        p.end();
+        panel->duration = 3;
+        scene->panels.append(panel);
+    }
+    shotcam::CameraState a;
+    a.cx = 1100 + nudge;
+    a.cy = 500;
+    a.zoom = 1.6;
+    a.rotation = 10.0;
+    shotcam::CameraState b;
+    b.cx = 800 + nudge;
+    b.cy = 600;
+    b.zoom = 1.3;
+    b.rotation = -5.0;
+    scene->camera.keys = {shotcam::makeKey(*scene, 0, 0, 24, a),
+                          shotcam::makeKey(*scene, 1, 0, 24, b)};
+    ProjectIO::SaveData data;
+    data.projectName = QStringLiteral("StripPins");
+    data.fps = 24;
+    data.canvasSize = size;
+    data.scenes = {scene};
+    const ProjectIO::WriteResult w = ProjectIO::projectToJson(data, path);
+    QFile f(path);
+    if (w.ok && f.open(QIODevice::WriteOnly))
+        f.write(QJsonDocument(w.root).toJson(QJsonDocument::Indented));
+    f.close();
+    delete scene;
+    return path;
+}
+
+QStringList stripShas(const QString &project)
+{
+    using namespace workspace;
+    QStringList out;
+    Rig r(project);
+    if (!r.ok)
+        return out;
+    for (QLabel *label : thumbs(r.storyboard))
+        out << shaOfImage(label->pixmap().toImage());
+    return out;
+}
+} // namespace mppins
+
+void runMovingStripPinPass(const QString &scratch)
+{
+    out() << "--- (mp) the strip's moving pins ---" << Qt::endl;
+    const QStringList got =
+        mppins::stripShas(mppins::writeMovingProject(scratch + QStringLiteral("/mp_strip_a"), 0.0));
+    for (int i = 0; i < 2; ++i) {
+        const QString want = QString::fromLatin1(mppins::kStrip[i]);
+        const QString sha = got.value(i, QStringLiteral("no thumbnail"));
+        check(QStringLiteral("(mp) strip thumbnail %1 (a key frames its first frame) draws its "
+                             "pinned bytes").arg(i + 1),
+              got.size() == 2 && !want.isEmpty() && sha == want,
+              want.isEmpty() ? QStringLiteral("RECORD %1").arg(sha) : sha.left(16));
+    }
+    const QStringList moved =
+        mppins::stripShas(mppins::writeMovingProject(scratch + QStringLiteral("/mp_strip_b"), 1.0));
+    check(QStringLiteral("(mp) control: both keys 1 px further across change both strip "
+                         "thumbnails"),
+          got.size() == 2 && moved.size() == 2 && got.at(0) != moved.at(0)
+              && got.at(1) != moved.at(1),
+          QStringLiteral("%1 / %2 thumbnails").arg(got.size()).arg(moved.size()));
+}
+
+// ---- (mg) the stage margin through the real window (Phase 2A) --------------
+// The Camera family proves the margin's pictures and numbers headless; this
+// pass drives the real window: the margin change (the resize's own swap,
+// the frame kept) moves a camera key with its artwork; the canvas outlines
+// the shot and veils the margin with a drawing tool; Fit Shot / Fit Stage;
+// the strip outlines the shot; the file and the recorder say the margin.
+void runStageMarginPass(const QString &scratch)
+{
+    out() << "--- (mg) the stage margin through the real window ---" << Qt::endl;
+    using namespace workspace;
+    const QString project = writeProject(scratch + QStringLiteral("/stagemargin"),
+                                         QStringLiteral("StageMargin"), QSize(1920, 1080), 24, 1, 2);
+    Rig r(project);
+    if (!r.ok) {
+        check(QStringLiteral("(mg) the stage-margin fixture opens"), false);
+        return;
+    }
+    // Purple pixels: the shot's outline (#7c6ef6 within a tolerance).
+    auto purple = [](const QImage &img) {
+        int n = 0;
+        const QImage a = img.convertToFormat(QImage::Format_ARGB32);
+        for (int y = 0; y < a.height(); ++y) {
+            const QRgb *row = reinterpret_cast<const QRgb *>(a.constScanLine(y));
+            for (int x = 0; x < a.width(); ++x)
+                if (qAbs(qRed(row[x]) - 0x7c) < 30 && qAbs(qGreen(row[x]) - 0x6e) < 30
+                    && qAbs(qBlue(row[x]) - 0xf6) < 30)
+                    ++n;
+        }
+        return n;
+    };
+    auto fitAction = [&](const char *name) {
+        return r.window.findChild<QAction *>(QLatin1String(name));
+    };
+
+    // Before: no margin, no keys - nothing outlined, Fit is the canvas's.
+    r.canvas->setTool(DrawingCanvas::Brush);
+    pump(100);
+    const bool quadBefore = !r.canvas->shotCameraQuadForTest().isEmpty();
+    const int stripPurpleBefore = purple(thumbs(r.storyboard).value(0)->pixmap().toImage());
+    if (QAction *fit = fitAction("viewFitShot"))
+        fit->trigger();
+    pump(100);
+    const double fitBefore = r.canvas->viewZoom();
+
+    // A key on panel 1, then a 25 % margin through the real window.
+    Scene *scene = r.window.scenesForTest().first();
+    shotcam::CameraState k;
+    k.cx = 1100;
+    k.cy = 500;
+    k.zoom = 1.6;
+    k.rotation = 10.0;
+    scene->camera.keys = {shotcam::makeKey(*scene, 0, 0, 24, k)};
+    r.window.setStageMarginForTest(QSize(480, 270));
+    pump(300);
+    const shotcam::CameraState moved = scene->camera.keys.value(0).state;
+    const QSize canvas = scene->panels.first()->canvasSize();
+    check(QStringLiteral("(mg6) A 25 % MARGIN through the real window: the canvas becomes the "
+                         "2880 x 1620 stage around the 1920 x 1080 shot, and the camera key keeps "
+                         "framing the same artwork (centre + 480 / 270, zoom and turn unchanged)"),
+          canvas == QSize(2880, 1620) && r.window.stageMarginForTest() == QSize(480, 270)
+              && moved.cx == 1580 && moved.cy == 770 && moved.zoom == 1.6 && moved.rotation == 10.0,
+          QStringLiteral("canvas %1x%2, key (%3, %4, %5x, %6 deg)").arg(canvas.width())
+              .arg(canvas.height()).arg(moved.cx).arg(moved.cy).arg(moved.zoom).arg(moved.rotation));
+    scene->camera.keys.clear(); // keyless from here: the base framing
+    r.storyboard->setStageMargin(QSize(480, 270)); // repaints with the keys gone
+    pump(150);
+
+    // The canvas with a drawing tool: the shot outlined, the margin veiled.
+    const QPolygonF quad = r.canvas->shotCameraQuadForTest();
+    const QImage grab = r.canvas->grab().toImage();
+    QColor veiled;
+    if (quad.size() == 4) // the margin's paper, outside the frame's top-left corner
+        veiled = grab.pixelColor((quad.boundingRect().topLeft() + QPointF(-20, -20)).toPoint());
+    check(QStringLiteral("(mg8) THE CANVAS with a drawing tool, no keys: the shot is outlined "
+                         "(16:9, 1 px) and the margin's white paper is under the 20 % veil"),
+          quad.size() == 4
+              && qAbs(quad.boundingRect().width() / quad.boundingRect().height() - 16.0 / 9.0) < 0.01
+              && veiled.red() >= 190 && veiled.red() <= 215,
+          QStringLiteral("quad %1x%2, margin paper %3").arg(quad.boundingRect().width())
+              .arg(quad.boundingRect().height()).arg(veiled.name()));
+    check(QStringLiteral("(mg8) control: without the margin (and no keys) nothing was outlined"),
+          !quadBefore);
+    r.canvas->setTool(DrawingCanvas::Camera);
+    pump(150);
+    const QImage grabCam = r.canvas->grab().toImage();
+    const QColor dimmed = quad.size() == 4
+        ? grabCam.pixelColor((quad.boundingRect().topLeft() + QPointF(-20, -20)).toPoint())
+        : QColor();
+    check(QStringLiteral("(mg8) control: the Camera tool keeps its own 40 % dim over the same "
+                         "margin pixel"),
+          dimmed.red() >= 140 && dimmed.red() <= 165, dimmed.name());
+    r.canvas->setTool(DrawingCanvas::Brush);
+    pump(100);
+
+    // Fit Shot and Fit Stage (the user's word).
+    if (QAction *fit = fitAction("viewFitShot"))
+        fit->trigger();
+    pump(100);
+    const double fitShot = r.canvas->viewZoom();
+    if (QAction *fit = fitAction("viewFitStage"))
+        fit->trigger();
+    pump(100);
+    const double fitStage = r.canvas->viewZoom();
+    check(QStringLiteral("(mg8) FIT SHOT fits the shot (0.96 x 1.5: the stage is 1.5 x the shot), "
+                         "FIT STAGE the whole stage (0.96)"),
+          qAbs(fitShot - 1.44) < 1e-9 && qAbs(fitStage - 0.96) < 1e-9,
+          QStringLiteral("shot %1, stage %2").arg(fitShot).arg(fitStage));
+    check(QStringLiteral("(mg8) control: without a margin Fit Shot was the canvas's fit (0.96)"),
+          qAbs(fitBefore - 0.96) < 1e-9, QString::number(fitBefore));
+
+    // The strip: the whole stage, the shot outlined.
+    const int stripPurple = purple(thumbs(r.storyboard).value(0)->pixmap().toImage());
+    check(QStringLiteral("(mg9) THE STRIP in a margin project outlines the shot, keys or not"),
+          stripPurple > 50, QString::number(stripPurple));
+    check(QStringLiteral("(mg9) control: without the margin (and no keys) no outline"),
+          stripPurpleBefore == 0, QString::number(stripPurpleBefore));
+
+    // The recorder and the file.
+    const QVariantMap rec = r.animatic->shotCamDevrecState();
+    const bool recOk = rec.value(QStringLiteral("shotCam.stageW")).toInt() == 2880
+        && rec.value(QStringLiteral("shotCam.frameW")).toInt() == 1920
+        && rec.value(QStringLiteral("shotCam.frameH")).toInt() == 1080;
+    const QString saved = scratch + QStringLiteral("/stagemargin/saved/StageMarginSaved.sankotv");
+    QDir().mkpath(QFileInfo(saved).absolutePath());
+    const bool wrote = r.window.saveProjectForTest(saved);
+    QJsonObject root;
+    {
+        QFile f(saved);
+        if (f.open(QIODevice::ReadOnly))
+            root = QJsonDocument::fromJson(f.readAll()).object();
+    }
+    check(QStringLiteral("(mg7) the recorder says the stage and the frame; the save writes the "
+                         "shot's size beside the stage's"),
+          recOk && wrote && root.value(QStringLiteral("canvasWidth")).toInt() == 2880
+              && root.value(QStringLiteral("frameWidth")).toInt() == 1920
+              && root.value(QStringLiteral("frameHeight")).toInt() == 1080,
+          QStringLiteral("recorder %1, saved %2, frame %3").arg(recOk).arg(wrote)
+              .arg(root.value(QStringLiteral("frameWidth")).toInt()));
+    MainWindow reopened;
+    reopened.resize(1500, 950);
+    reopened.show();
+    pump(400);
+    const bool loaded = reopened.loadProjectForTest(saved);
+    pump(300);
+    check(QStringLiteral("(mg7) ...and reopening it brings the margin back"),
+          loaded && reopened.stageMarginForTest() == QSize(480, 270),
+          QStringLiteral("%1x%2").arg(reopened.stageMarginForTest().width())
+              .arg(reopened.stageMarginForTest().height()));
+    reopened.markCleanForTest();
+    reopened.close();
+    pump(200);
+}
+
 void runCameraToolPass(const QString &scratch)
 {
     using namespace workspace;
@@ -14827,6 +15093,8 @@ int main(int argc, char **argv)
     runParallelOpenPass(scratch);
     runBlockedWritePass(scratch);
     runFolderClonePass(scratch);
+    runMovingStripPinPass(scratch);
+    runStageMarginPass(scratch);
 
     // ---- (aa) a test that cannot start says why and exits ----------------
     // An unattended gate must FAIL, not wait. Measured 2026-10-02: with its

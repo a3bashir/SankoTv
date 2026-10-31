@@ -27,6 +27,11 @@ bool isNeutral(const CameraState &state, const QSize &canvas)
     return state == neutral(canvas);
 }
 
+bool takesOldPath(const CameraState &state, const Stage &stage)
+{
+    return !stage.hasMargin() && isNeutral(state, stage.canvas);
+}
+
 double ease(Ease e, double u)
 {
     u = qBound(0.0, u, 1.0);
@@ -226,10 +231,10 @@ CameraState evaluateAtPanel(const Scene &scene, int panelIndex,
                     fps, canvas);
 }
 
-QPolygonF frameQuad(const CameraState &state, const QSize &canvas)
+QPolygonF frameQuad(const CameraState &state, const Stage &stage)
 {
-    const double hw = canvas.width() / state.zoom / 2.0;
-    const double hh = canvas.height() / state.zoom / 2.0;
+    const double hw = stage.frame.width() / state.zoom / 2.0;
+    const double hh = stage.frame.height() / state.zoom / 2.0;
     QTransform t;
     t.translate(state.cx, state.cy);
     t.rotate(state.rotation);
@@ -237,11 +242,11 @@ QPolygonF frameQuad(const CameraState &state, const QSize &canvas)
                             QPointF(hw, hh), QPointF(-hw, hh)}));
 }
 
-QTransform shotTransform(const CameraState &state, const QSize &canvas,
+QTransform shotTransform(const CameraState &state, const Stage &stage,
                          const QRectF &target, bool cover)
 {
-    const double fw = canvas.width() / state.zoom;
-    const double fh = canvas.height() / state.zoom;
+    const double fw = stage.frame.width() / state.zoom;
+    const double fh = stage.frame.height() / state.zoom;
     const double sx = target.width() / fw;
     const double sy = target.height() / fh;
     const double s = cover ? qMax(sx, sy) : qMin(sx, sy);
@@ -256,20 +261,25 @@ QTransform shotTransform(const CameraState &state, const QSize &canvas,
 QImage renderShot(const QImage &flat, const CameraState &state,
                   const QSize &out)
 {
+    return renderShot(flat, state, Stage(flat.size()), out);
+}
+
+QImage renderShot(const QImage &flat, const CameraState &state, const Stage &stage,
+                  const QSize &out)
+{
     QImage frame(out, QImage::Format_RGBX8888);
     frame.fill(Qt::black);
     if (flat.isNull() || out.isEmpty())
         return frame;
-    const QSize canvas = flat.size();
-    const QTransform toOut = shotTransform(state, canvas, QRectF(QPointF(0, 0), out));
+    const QTransform toOut = shotTransform(state, stage, QRectF(QPointF(0, 0), out));
     // Only the artwork the frame can see: the quad's bounds, in source px.
     const QRect src =
-        frameQuad(state, canvas).boundingRect().adjusted(-2, -2, 2, 2).toAlignedRect()
+        frameQuad(state, stage).boundingRect().adjusted(-2, -2, 2, 2).toAlignedRect()
         & flat.rect();
     if (src.isEmpty())
         return frame;
-    const double scale = qMin(out.width() / (canvas.width() / state.zoom),
-                              out.height() / (canvas.height() / state.zoom));
+    const double scale = qMin(out.width() / (stage.frame.width() / state.zoom),
+                              out.height() / (stage.frame.height() / state.zoom));
     QImage piece = flat.copy(src);
     if (scale < 1.0) {
         // Area-average down to the output scale first (the export's own
@@ -291,28 +301,28 @@ QImage renderShot(const QImage &flat, const CameraState &state,
     return frame;
 }
 
-void drawShot(QPainter &painter, const QPixmap &picture, const QSize &canvas,
+void drawShot(QPainter &painter, const QPixmap &picture, const Stage &stage,
               const CameraState &state, const QRectF &target, bool cover)
 {
-    if (picture.isNull() || canvas.isEmpty())
+    if (picture.isNull() || stage.canvas.isEmpty())
         return;
     QTransform pictureToCanvas;
-    pictureToCanvas.scale(canvas.width() / double(picture.width()),
-                          canvas.height() / double(picture.height()));
+    pictureToCanvas.scale(stage.canvas.width() / double(picture.width()),
+                          stage.canvas.height() / double(picture.height()));
     painter.save();
     painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
-    painter.setTransform(pictureToCanvas * shotTransform(state, canvas, target, cover),
+    painter.setTransform(pictureToCanvas * shotTransform(state, stage, target, cover),
                          true);
     painter.drawPixmap(0, 0, picture);
     painter.restore();
 }
 
-double sharpLimit(const QSize &canvas, const QSize &out)
+double sharpLimit(const Stage &stage, const QSize &out)
 {
     if (out.isEmpty())
         return 1.0;
-    return qMax(canvas.width() / double(out.width()),
-                canvas.height() / double(out.height()));
+    return qMax(stage.frame.width() / double(out.width()),
+                stage.frame.height() / double(out.height()));
 }
 
 CameraState clampZoom(const CameraState &state)
@@ -322,27 +332,29 @@ CameraState clampZoom(const CameraState &state)
     return s;
 }
 
-double insideMinZoom(double rotation, const QSize &canvas)
+double insideMinZoom(double rotation, const Stage &stage)
 {
-    if (canvas.isEmpty())
+    if (stage.canvas.isEmpty())
         return 1.0;
     const double r = qDegreesToRadians(rotation);
     const double c = qAbs(std::cos(r)), s = qAbs(std::sin(r));
-    const double W = canvas.width(), H = canvas.height();
+    const double W = stage.canvas.width(), H = stage.canvas.height();
+    const double FW = stage.frame.width(), FH = stage.frame.height();
     // The turned frame's bounding box (fw c + fh s) x (fw s + fh c), with
-    // fw = W / z and fh = H / z, must fit W x H.
-    return qMax((W * c + H * s) / W, (W * s + H * c) / H);
+    // fw = FW / z and fh = FH / z, must fit W x H.
+    return qMax((FW * c + FH * s) / W, (FW * s + FH * c) / H);
 }
 
-CameraState clampInside(const CameraState &state, const QSize &canvas)
+CameraState clampInside(const CameraState &state, const Stage &stage)
 {
     CameraState s = clampZoom(state);
+    const QSize &canvas = stage.canvas;
     if (canvas.isEmpty())
         return s;
-    s.zoom = qMin(kMaxZoom, qMax(s.zoom, insideMinZoom(s.rotation, canvas)));
+    s.zoom = qMin(kMaxZoom, qMax(s.zoom, insideMinZoom(s.rotation, stage)));
     const double r = qDegreesToRadians(s.rotation);
     const double c = qAbs(std::cos(r)), sn = qAbs(std::sin(r));
-    const double fw = canvas.width() / s.zoom, fh = canvas.height() / s.zoom;
+    const double fw = stage.frame.width() / s.zoom, fh = stage.frame.height() / s.zoom;
     const double bw = fw * c + fh * sn, bh = fw * sn + fh * c;
     // qBound's own order, written out: at exactly insideMinZoom the box is
     // the canvas give or take a rounding, so the two bounds can cross by
@@ -472,15 +484,15 @@ void fromJson(const QJsonObject &obj, Scene &scene, int *dropped)
         *dropped = bad;
 }
 
-void remapForResize(SceneCamera &camera, const QSize &oldSize,
-                    const QSize &newSize, const QPoint &offset)
+void remapForResize(SceneCamera &camera, const Stage &oldStage,
+                    const Stage &newStage, const QPoint &offset)
 {
-    if (oldSize.isEmpty() || newSize.isEmpty())
+    if (oldStage.frame.isEmpty() || newStage.frame.isEmpty())
         return;
     for (CameraKey &key : camera.keys) {
         key.state.cx += offset.x();
         key.state.cy += offset.y();
-        key.state.zoom *= newSize.width() / double(oldSize.width());
+        key.state.zoom *= newStage.frame.width() / double(oldStage.frame.width());
     }
 }
 
@@ -513,16 +525,16 @@ bool sameFraming(const CameraState &a, const CameraState &b)
 // given one as the move allows (where it is; else slid back along the move
 // so the whole distance stays on the artwork). False: it does not fit.
 bool travelFits(const CameraState &start, double z, double dx, double dy,
-                const QSize &canvas, CameraState *s, CameraState *e)
+                const Stage &stage, CameraState *s, CameraState *e)
 {
     CameraState a = start;
     a.zoom = z;
-    a = clampInside(a, canvas);
+    a = clampInside(a, stage);
     const double tx = dx / z, ty = dy / z; // the move scales with the frame
     CameraState b = a;
     b.cx += tx;
     b.cy += ty;
-    CameraState bc = clampInside(b, canvas);
+    CameraState bc = clampInside(b, stage);
     if (qAbs(bc.cx - b.cx) < 0.5 && qAbs(bc.cy - b.cy) < 0.5) {
         *s = a;
         *e = bc;
@@ -533,7 +545,7 @@ bool travelFits(const CameraState &start, double z, double dx, double dy,
     CameraState a2 = bc;
     a2.cx -= tx;
     a2.cy -= ty;
-    const CameraState a2c = clampInside(a2, canvas);
+    const CameraState a2c = clampInside(a2, stage);
     if (qAbs(a2c.cx - a2.cx) < 0.5 && qAbs(a2c.cy - a2.cy) < 0.5) {
         *s = a2c;
         *e = bc;
@@ -545,13 +557,13 @@ bool travelFits(const CameraState &start, double z, double dx, double dy,
 } // namespace
 
 QuickFrames quickMove(QuickMove move, const CameraState &start,
-                      const QuickAmounts &amounts, const QSize &canvas,
+                      const QuickAmounts &amounts, const Stage &stage,
                       bool stayInside)
 {
     QuickFrames r;
-    r.start = stayInside ? clampInside(start, canvas) : clampZoom(start);
+    r.start = stayInside ? clampInside(start, stage) : clampZoom(start);
     auto place = [&](const CameraState &s) {
-        return stayInside ? clampInside(s, canvas) : clampZoom(s);
+        return stayInside ? clampInside(s, stage) : clampZoom(s);
     };
     switch (move) {
     case QuickMove::PushIn: {
@@ -566,8 +578,9 @@ QuickFrames quickMove(QuickMove move, const CameraState &start,
         r.end = place(e);
         if (stayInside && r.end.zoom >= r.start.zoom * (1.0 - 1e-9)) {
             // No room to pull out (decision 4): start pushed in by the Zoom,
-            // end at the whole artwork.
-            const double whole = insideMinZoom(r.start.rotation, canvas);
+            // end at the whole artwork - with a margin, the largest framing
+            // the stage holds (Phase 2A).
+            const double whole = insideMinZoom(r.start.rotation, stage);
             CameraState s = r.start;
             s.zoom = whole * amounts.zoom;
             r.start = place(s);
@@ -583,11 +596,12 @@ QuickFrames quickMove(QuickMove move, const CameraState &start,
     case QuickMove::TiltDown: {
         // Along the frame's own axes: x = (cos r, sin r), y = (-sin r, cos r)
         // in canvas px (y down, the rotation clockwise). The distance at zoom
-        // 1 is the Move's share of the canvas; it scales as 1 / zoom.
+        // 1 is the Move's share of the FRAME (the canvas without a margin);
+        // it scales as 1 / zoom.
         const double rad = qDegreesToRadians(r.start.rotation);
         const bool pan = move == QuickMove::PanLeft || move == QuickMove::PanRight;
         const double sign = (move == QuickMove::PanRight || move == QuickMove::TiltDown) ? 1.0 : -1.0;
-        const double d = sign * amounts.move * (pan ? canvas.width() : canvas.height());
+        const double d = sign * amounts.move * (pan ? stage.frame.width() : stage.frame.height());
         const double dx = pan ? d * std::cos(rad) : -d * std::sin(rad);
         const double dy = pan ? d * std::sin(rad) : d * std::cos(rad);
         if (!stayInside) {
@@ -600,7 +614,7 @@ QuickFrames quickMove(QuickMove move, const CameraState &start,
         // Decision 3: the start gives way just enough - slid back, then
         // pushed in (the smallest zoom that fits, found by halving).
         CameraState s, e;
-        if (travelFits(r.start, r.start.zoom, dx, dy, canvas, &s, &e)) {
+        if (travelFits(r.start, r.start.zoom, dx, dy, stage, &s, &e)) {
             r.start = s;
             r.end = e;
             break;
@@ -609,7 +623,7 @@ QuickFrames quickMove(QuickMove move, const CameraState &start,
         bool found = false;
         while (hi < kMaxZoom) {
             hi = qMin(kMaxZoom, hi * 1.05);
-            if (travelFits(r.start, hi, dx, dy, canvas, &s, &e)) {
+            if (travelFits(r.start, hi, dx, dy, stage, &s, &e)) {
                 found = true;
                 break;
             }
@@ -622,12 +636,12 @@ QuickFrames quickMove(QuickMove move, const CameraState &start,
         for (int i = 0; i < 40; ++i) {
             const double mid = (lo + hi) / 2.0;
             CameraState ms, me;
-            if (travelFits(r.start, mid, dx, dy, canvas, &ms, &me))
+            if (travelFits(r.start, mid, dx, dy, stage, &ms, &me))
                 hi = mid;
             else
                 lo = mid;
         }
-        travelFits(r.start, hi, dx, dy, canvas, &s, &e);
+        travelFits(r.start, hi, dx, dy, stage, &s, &e);
         r.start = s;
         r.end = e;
         break;
@@ -643,7 +657,7 @@ QuickFrames quickMove(QuickMove move, const CameraState &start,
             // the turned frame fits at the same zoom, so the move stays a
             // pure turn (no zoom hidden in it).
             CameraState s = r.start;
-            s.zoom = qMax(s.zoom, insideMinZoom(e.rotation, canvas));
+            s.zoom = qMax(s.zoom, insideMinZoom(e.rotation, stage));
             e.zoom = s.zoom;
             e = place(e);
             s.cx = e.cx;

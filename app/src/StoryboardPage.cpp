@@ -2637,6 +2637,30 @@ void StoryboardPage::installDockViewActions()
         viewMenu = bar->addMenu(QStringLiteral("View"));
 
     viewMenu->addSeparator();
+    // FIT (Phase 2A, the user's word): Fit Shot is the zoom bar's Fit Screen
+    // - the shot fills the view, the whole canvas without a stage margin -
+    // and Fit Stage shows the whole stage, margin included.
+    QAction *fitShot = viewMenu->addAction(QStringLiteral("Fit Shot"));
+    fitShot->setObjectName(QStringLiteral("viewFitShot"));
+    connect(fitShot, &QAction::triggered, this, [this] {
+        if (!m_canvas)
+            return;
+        m_canvas->fitToScreen();
+        m_canvas->resetViewRotation();
+        if (m_zoomToolbar)
+            m_zoomToolbar->setRotation(0.0);
+    });
+    QAction *fitStage = viewMenu->addAction(QStringLiteral("Fit Stage"));
+    fitStage->setObjectName(QStringLiteral("viewFitStage"));
+    connect(fitStage, &QAction::triggered, this, [this] {
+        if (!m_canvas)
+            return;
+        m_canvas->fitStageToScreen();
+        m_canvas->resetViewRotation();
+        if (m_zoomToolbar)
+            m_zoomToolbar->setRotation(0.0);
+    });
+    viewMenu->addSeparator();
     // Floating toolbars: restore the Figma default corners (Brush top-right,
     // Layers top-left, Zoom bottom-left) and clear their saved placement.
     QAction *resetToolbars =
@@ -4842,7 +4866,7 @@ DrawingCanvas::ShotCameraView StoryboardPage::shotCameraView() const
     // a press says why (shotCameraEditRefused).
     v.editable = !cameraLocked() && (m_cameraAnimate || live <= 1);
     v.stayInside = m_cameraStayInside;
-    v.sharpLimit = shotcam::sharpLimit(panel->canvasSize());
+    v.sharpLimit = shotcam::sharpLimit(stageFor(panel));
     // The film frame: every panel before this one, in every scene.
     int film = 0;
     for (const Scene *s : m_scenes) {
@@ -5315,7 +5339,7 @@ bool StoryboardPage::quickMovePlan(shotcam::QuickMove move, int sceneIndex, int 
     // START: the camera as it already is at the span's first frame.
     const shotcam::CameraState start = shotcam::evaluateAtPanel(*scene, sp, 0, fps);
     plan->frames = shotcam::quickMove(move, start, m_quickAmounts,
-                                      scene->panels.at(sp)->canvasSize(), m_cameraStayInside);
+                                      stageFor(scene->panels.at(sp)), m_cameraStayInside);
     if (!plan->frames.moves) {
         *why = QStringLiteral("No room for this move: the zoom is at its limit.");
         return false;
@@ -6083,7 +6107,10 @@ QPixmap StoryboardPage::stripThumbPixmap(Panel *panel, qreal dprOverride) const
         // whole artwork stays, with the camera at the panel's first frame
         // outlined over it - accent, amber past the sharp limit. Only in a
         // scene with live keys: without them the thumbnail is the bytes it
-        // always was.
+        // always was. With a STAGE MARGIN (Phase 2A, the user's decision
+        // D6) the whole artwork is the stage and the shot is never all of
+        // it: the frame is always outlined and the margin under it veiled
+        // 20 %, as on the canvas.
         const Scene *scene = nullptr;
         for (const Scene *s : m_scenes)
             if (s && s->panels.contains(panel)) {
@@ -6091,7 +6118,9 @@ QPixmap StoryboardPage::stripThumbPixmap(Panel *panel, qreal dprOverride) const
                 break;
             }
         const QSize cs = panel->canvasSize();
-        if (scene && shotcam::liveKeyCount(*scene) > 0 && !cs.isEmpty()) {
+        const shotcam::Stage stage = stageFor(panel);
+        if (scene && (shotcam::liveKeyCount(*scene) > 0 || stage.hasMargin())
+            && !cs.isEmpty()) {
             const int fps = cameraFps();
             const shotcam::CameraState state = shotcam::evaluateAtPanel(
                 *scene, int(scene->panels.indexOf(panel)), 0, fps);
@@ -6099,15 +6128,24 @@ QPixmap StoryboardPage::stripThumbPixmap(Panel *panel, qreal dprOverride) const
             t.translate(at.x(), at.y());
             t.scale(double(fit.width()) / cs.width(),
                     double(fit.height()) / cs.height());
-            const bool soft = state.zoom > shotcam::sharpLimit(cs) + 1e-9;
+            const bool soft = state.zoom > shotcam::sharpLimit(stage) + 1e-9;
             QPen pen(soft ? QColor(0xf5, 0xa6, 0x23) : SankoTheme::kPurple,
                      1.5 * dpr);
             pen.setJoinStyle(Qt::MiterJoin);
             p.setRenderHint(QPainter::Antialiasing, true);
+            p.setClipRect(QRect(at, fit.size()));
+            const QPolygonF quad = t.map(shotcam::frameQuad(state, stage));
+            if (stage.hasMargin()) {
+                QPainterPath outside;
+                outside.addRect(QRectF(at, fit.size()));
+                QPainterPath inside;
+                inside.addPolygon(quad);
+                inside.closeSubpath();
+                p.fillPath(outside.subtracted(inside), shotcam::kStageVeil);
+            }
             p.setPen(pen);
             p.setBrush(Qt::NoBrush);
-            p.setClipRect(QRect(at, fit.size()));
-            p.drawPolygon(t.map(shotcam::frameQuad(state, cs)));
+            p.drawPolygon(quad);
         }
     }
     out.setDevicePixelRatio(dpr);
@@ -8311,6 +8349,22 @@ bool StoryboardPage::hasActiveEdit(QString *what) const
 // the engine mirror all key off size or panel identity and rebuild on next
 // use, but they are invalidated explicitly anyway rather than trusted. The
 // rest cannot heal, because it holds OLD-canvas coordinates or pixels.
+void StoryboardPage::setStageMargin(const QSize &margin)
+{
+    m_stageMargin = margin;
+    if (m_canvas)
+        m_canvas->setStageMargin(margin);
+    if (m_animatic)
+        m_animatic->setStageMargin(margin);
+    regenerateStripThumbs();
+}
+
+shotcam::Stage StoryboardPage::stageFor(const Panel *panel) const
+{
+    return panel ? shotcam::stageWithMargin(panel->canvasSize(), m_stageMargin)
+                 : shotcam::Stage();
+}
+
 void StoryboardPage::applyProjectResize(const QSize &newSize,
                                         const QPoint &offset)
 {
@@ -8865,7 +8919,7 @@ QWidget *StoryboardPage::createLayerPanel()
 
     LayerToolButton *groupButton = new LayerToolButton(
         QStringLiteral(":/icons/layer_group.svg"), iconSize,
-        QStringLiteral("Group: flatten the selected layers into one"), footer);
+        QStringLiteral("Group: put the selected layers in a folder"), footer);
     connect(groupButton, &QPushButton::clicked, this,
             [this] { layerGroupSelected(); });
     footerLayout->addWidget(groupButton);

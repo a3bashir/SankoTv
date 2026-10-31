@@ -33,8 +33,11 @@ class ProjectSettingsDialog : public QDialog
     Q_OBJECT
 
 public:
+    // canvasSize is the STAGE; stageMargin (Phase 2A) the px each side of
+    // the shot (0 x 0: none - the canvas is the shot).
     ProjectSettingsDialog(const QString &projectName, int fps,
-                          const QSize &canvasSize, QWidget *parent = nullptr);
+                          const QSize &canvasSize, QWidget *parent = nullptr,
+                          const QSize &stageMargin = QSize(0, 0));
 
     // The PENDING values (what the fields show right now).
     QString projectName() const;
@@ -53,6 +56,10 @@ public:
     QPushButton *applyButton() const { return m_apply; }
     QPushButton *okButton() const { return m_ok; }
     QPushButton *resizeButton() const { return m_resize; }
+    QPushButton *stageMarginButton() const { return m_stageMarginButton; }
+    // The Canvas section's rows as painted (Phase 2A): the frame, the stage
+    // with its margin, the frame's aspect.
+    static QString stageText(const QSize &stage, const QSize &margin);
 
     // Drag-by-header (behaviour only, no chrome): the band above the first
     // field — the painted "General" header and its rule. Exposed so a test
@@ -74,6 +81,8 @@ signals:
     // "Resize Project..." was pressed. The window owns the workflow: the
     // size prompt, the memory precheck, the save prompt and the confirm.
     void resizeRequested();
+    // "Stage Margin..." was pressed (Phase 2A): the same kind of workflow.
+    void stageMarginRequested();
 
 protected:
     void paintEvent(QPaintEvent *event) override;
@@ -88,7 +97,9 @@ private:
     bool applyPending(); // false if invalid (nothing emitted)
 
     HeaderDrag m_drag;
-    QSize m_canvasSize;
+    QSize m_canvasSize;  // the stage
+    QSize m_stageMargin; // px each side
+    QPushButton *m_stageMarginButton = nullptr;
     QVector<int> m_fpsValues; // dropdown index -> fps value
     brushlib::StudioTextField *m_name = nullptr;
     brushlib::StudioDropdown *m_fps = nullptr;

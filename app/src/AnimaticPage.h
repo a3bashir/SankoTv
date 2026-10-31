@@ -185,6 +185,12 @@ public:
     // Project frame rate (New Project dialog / project file): forwarded to
     // the timeline, which derives every frame count from it.
     void setFps(int fps);
+    // THE STAGE MARGIN (Phase 2A): px each side of the shot, a project
+    // value like the frame rate (0 x 0: none). The preview and the SHOTS
+    // clips show the frame; forwarded to the timeline.
+    void setStageMargin(const QSize &margin);
+    QSize stageMargin() const { return m_stageMargin; }
+    shotcam::Stage stageFor(const Panel *panel) const;
 
     // Read by AnimaticTimeline when rendering the real-time playhead.
     int currentFlatIndex() const { return m_current; }
@@ -448,6 +454,7 @@ private:
     QWidget *m_timecodeSeparator = nullptr; // between the timecode and the pill
     QWidget *m_totalSeparator = nullptr;    // between the pill and the total
     TimelineTracks m_tracks;
+    QSize m_stageMargin = QSize(0, 0); // Phase 2A: px each side; none
 
     AnimaticTimeline *m_timeline = nullptr;
     QVector<Scene *> m_scenes; // source scenes, for duration edits + timeline rebuilds

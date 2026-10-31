@@ -446,6 +446,13 @@ WriteResult projectToJson(const SaveData &data, const QString &projectFilePath,
     root[QStringLiteral("fps")] = data.fps;
     root[QStringLiteral("canvasWidth")] = data.canvasSize.width();
     root[QStringLiteral("canvasHeight")] = data.canvasSize.height();
+    // The shot's size, ONLY with a stage margin (Phase 2A): without one the
+    // keys are absent and the manifest is the one it always was.
+    const shotcam::Stage stage = shotcam::stageWithMargin(data.canvasSize, data.stageMargin);
+    if (stage.hasMargin()) {
+        root[QStringLiteral("frameWidth")] = stage.frame.width();
+        root[QStringLiteral("frameHeight")] = stage.frame.height();
+    }
     root[QStringLiteral("scenes")] = scenesArray;
     root[QStringLiteral("consistencyBoard")] = consistencyArray;
     root[QStringLiteral("audioPath")] = storedAudio;
@@ -949,6 +956,20 @@ LoadedProject projectFromJson(const QJsonObject &root, const QString &folder,
             : QSize(960, 540); // pre-versioned era: see above
     out.mismatch = out.manifestSize.isValid() && !out.manifestSize.isEmpty()
         && out.manifestSize != out.pixelSize;
+    // THE STAGE MARGIN (Phase 2A), against the artwork's REAL size: written
+    // only with a margin, so absent keys are every older project - none.
+    if (root.contains(QStringLiteral("frameWidth"))
+        || root.contains(QStringLiteral("frameHeight"))) {
+        const QSize frame(root.value(QStringLiteral("frameWidth")).toInt(0),
+                          root.value(QStringLiteral("frameHeight")).toInt(0));
+        const int dw = out.pixelSize.width() - frame.width();
+        const int dh = out.pixelSize.height() - frame.height();
+        if (frame.width() >= 1 && frame.height() >= 1 && dw >= 0 && dh >= 0
+            && dw % 2 == 0 && dh % 2 == 0)
+            out.stageMargin = QSize(dw / 2, dh / 2);
+        else
+            out.stageMarginRepaired = true;
+    }
     return out;
 }
 

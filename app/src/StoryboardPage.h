@@ -109,6 +109,13 @@ public:
     // added. Existing panels carry their own size (pixels are the truth);
     // this member only shapes panels that do not exist yet.
     void setProjectCanvasSize(const QSize &size) { m_projectCanvasSize = size; }
+    // THE STAGE MARGIN (Phase 2A): px each side of the shot (0 x 0: none),
+    // a project value like the canvas size. The canvas draws the frame and
+    // veils the margin, the strip outlines the frame, the camera's limits
+    // and Quick Moves measure against the frame and the stage.
+    void setStageMargin(const QSize &margin);
+    QSize stageMargin() const { return m_stageMargin; }
+    shotcam::Stage stageFor(const Panel *panel) const;
     QSize projectCanvasSize() const { return m_projectCanvasSize; }
 
     // Read-only reference to the project's consistency entries (for future
@@ -368,7 +375,7 @@ private:
     void layerDuplicateSelected();
     void layerMergeSelected();    // multi: into one; single: merge down
     void layerClearSelected();    // wipe pixels to transparent
-    void layerGroupSelected();    // flatten selection into one "Group" layer
+    void layerGroupSelected();    // put the selection in a new folder ("Group N")
     void layerSetColorTag(int index);
     void layerBeginRename(int index); // inline QLineEdit over the name label
     // Drag-reorder: move the given ascending source indices so the block
@@ -549,6 +556,7 @@ private:
     // Invalid until MainWindow supplies it; makeProjectPanel() refuses to
     // create a panel without it — never a 960x540 stand-in.
     QSize m_projectCanvasSize;
+    QSize m_stageMargin = QSize(0, 0); // Phase 2A: px each side; none
     int m_thumbW = 160;
     int m_thumbH = 90; // 16:9
     // Title-bar-less window drag state (background press-drag on the strip).

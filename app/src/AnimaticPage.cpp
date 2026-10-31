@@ -77,9 +77,15 @@ public:
 
     std::function<void()> onDismissed; // a click anywhere on the preview
 
-    void setPixmap(const QPixmap &pixmap, const QString &caption)
+    // `stageMargin` (Phase 2A): px each side of the frame; 0 x 0 is none.
+    void setPixmap(const QPixmap &pixmap, const QString &caption,
+                   const QSize &stageMargin = QSize(0, 0))
     {
         m_pixmap = pixmap; // implicitly shared — no deep copy
+        m_stage = shotcam::stageWithMargin(pixmap.size(), stageMargin);
+        // The base framing's picture: the frame cut out once per panel, then
+        // painted exactly as a frame-sized panel is.
+        m_framePixmap = m_stage.hasMargin() ? pixmap.copy(m_stage.frameRect()) : pixmap;
         m_caption = caption;
         update();
     }
@@ -87,6 +93,8 @@ public:
     void clear()
     {
         m_pixmap = QPixmap();
+        m_framePixmap = QPixmap();
+        m_stage = shotcam::Stage();
         m_caption.clear();
         m_neutral = true;
         update();
@@ -112,8 +120,9 @@ public:
     {
         return m_pixmap.isNull()
             ? QTransform()
-            : shotcam::shotTransform(m_camera, m_pixmap.size(), QRectF(rect()));
+            : shotcam::shotTransform(m_camera, m_stage, QRectF(rect()));
     }
+    shotcam::Stage stageForTest() const { return m_stage; }
 
 protected:
     void paintEvent(QPaintEvent *) override
@@ -121,16 +130,16 @@ protected:
         QPainter painter(this);
         painter.fillRect(rect(), Qt::black);
         if (!m_pixmap.isNull() && !m_neutral) {
-            // The flatten is canvas-sized, so its size IS the canvas.
-            shotcam::drawShot(painter, m_pixmap, m_pixmap.size(), m_camera,
+            // The flatten is canvas-sized, so its size IS the stage.
+            shotcam::drawShot(painter, m_pixmap, m_stage, m_camera,
                               QRectF(rect()), false);
-        } else if (!m_pixmap.isNull()) {
+        } else if (!m_framePixmap.isNull()) {
             painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
-            QSize target = m_pixmap.size();
+            QSize target = m_framePixmap.size();
             target.scale(size(), Qt::KeepAspectRatio);
             QRect r(QPoint(0, 0), target);
             r.moveCenter(rect().center());
-            painter.drawPixmap(r, m_pixmap);
+            painter.drawPixmap(r, m_framePixmap);
         }
         // Says what this is and how to leave it. An OPAQUE chip: it sits
         // over artwork of any colour and cannot borrow contrast from it.
@@ -191,7 +200,9 @@ private:
             onDismissed();
     }
 
-    QPixmap m_pixmap;
+    QPixmap m_pixmap;      // the whole stage
+    QPixmap m_framePixmap; // the base framing's picture (the pixmap without a margin)
+    shotcam::Stage m_stage;
     QString m_caption;
     bool m_pressed = false;
     shotcam::CameraState m_camera;
@@ -477,8 +488,25 @@ void AnimaticPage::showPreviewFrame()
     m_display->setPixmap(it.panel->flattenedPixmap(),
                          QString::fromUtf8("Scene %1 \xE2\x80\x94 Panel %2")
                              .arg(it.sceneNumber)
-                             .arg(it.panelInScene));
+                             .arg(it.panelInScene),
+                         m_stageMargin);
     updatePreviewCamera();
+}
+
+void AnimaticPage::setStageMargin(const QSize &margin)
+{
+    if (m_stageMargin == margin)
+        return;
+    m_stageMargin = margin;
+    if (m_timeline)
+        m_timeline->setStageMargin(margin);
+    showPreviewFrame();
+}
+
+shotcam::Stage AnimaticPage::stageFor(const Panel *panel) const
+{
+    return panel ? shotcam::stageWithMargin(panel->canvasSize(), m_stageMargin)
+                 : shotcam::Stage();
 }
 
 // --- The shot camera (Phase 1A) ----------------------------------------------
@@ -656,8 +684,14 @@ QVariantMap AnimaticPage::shotCamDevrecState() const
     m.insert(QStringLiteral("shotCam.zoom"), camera.zoom);
     m.insert(QStringLiteral("shotCam.rotation"), camera.rotation);
     m.insert(QStringLiteral("shotCam.keyAtPlayhead"), keyAtPlayhead);
+    const shotcam::Stage stage = stageFor(it.panel);
     m.insert(QStringLiteral("shotCam.soft"),
-             camera.zoom > shotcam::sharpLimit(it.panel->canvasSize()) + 1e-9);
+             camera.zoom > shotcam::sharpLimit(stage) + 1e-9);
+    // Phase 2A: the stage and the frame the shot is (the same without a margin).
+    m.insert(QStringLiteral("shotCam.stageW"), stage.canvas.width());
+    m.insert(QStringLiteral("shotCam.stageH"), stage.canvas.height());
+    m.insert(QStringLiteral("shotCam.frameW"), stage.frame.width());
+    m.insert(QStringLiteral("shotCam.frameH"), stage.frame.height());
     return m;
 }
 

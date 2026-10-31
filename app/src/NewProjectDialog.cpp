@@ -1,6 +1,7 @@
 #include "NewProjectDialog.h"
 #include "RecentProjects.h"
 #include "SankoTheme.h"
+#include "StageMarginDialog.h" // the stage margin's shared presets and note rules
 #include "brushlib/StudioControls.h"
 
 #include <QDir>
@@ -44,8 +45,9 @@ constexpr int kBrowseW = 65;       // the design's Browse button
 constexpr int kBrowseGap = 6;
 constexpr int kDimGap = 32;        // between Width and Height (holds the x)
 constexpr int kDimW = (kLeftW - kDimGap) / 2; // 136
-// The last field ends at 298; the validation line sits under it and the
-// buttons under that, leaving the same 18 px at the bottom as at the sides.
+// The last field ends at 400 (298 before Phase 2A's two margin rows); the
+// validation line sits under it and the buttons under that, leaving the
+// same 18 px at the bottom as at the sides.
 constexpr int kFooterH = 33;
 constexpr int kFooterY = kDialogH - kLeftX - kFooterH; // 334
 constexpr int kCancelW = 96;
@@ -145,12 +147,30 @@ NewProjectDialog::NewProjectDialog(QWidget *parent)
     m_height->setGeometry(kLeftX + kDimW + kDimGap, fieldY(3), kDimW, kBoxH);
     m_height->setNumericMode(1, 99999);
 
+    // THE STAGE MARGIN (Phase 2A, Figma 2A-1): a share of the shot on
+    // every side, or Custom; the two fields below are the margin across and
+    // down, px EACH SIDE, dimmed and locked while a preset owns them - the
+    // Width and Height rule.
+    QStringList marginLabels;
+    for (int i = 0; i < stagemargin::kPresetCount; ++i)
+        marginLabels << stagemargin::presetLabel(i);
+    m_margin = new StudioDropdown(marginLabels, this);
+    m_margin->setObjectName(QStringLiteral("newProjectStageMargin"));
+    m_margin->setGeometry(kLeftX, fieldY(4), kLeftW, kBoxH);
+    connect(m_margin, &StudioDropdown::chosen, this, &NewProjectDialog::applyMarginPreset);
+    m_across = new StudioTextField(this);
+    m_across->setGeometry(kLeftX, fieldY(5), kDimW, kBoxH);
+    m_across->setNumericMode(0, 99999); // range enforced by validate()
+    m_down = new StudioTextField(this);
+    m_down->setGeometry(kLeftX + kDimW + kDimGap, fieldY(5), kDimW, kBoxH);
+    m_down->setNumericMode(0, 99999);
+
     m_fps = new StudioDropdown({QStringLiteral("24 fps"),
                                 QStringLiteral("25 fps"),
                                 QStringLiteral("30 fps"),
                                 QStringLiteral("60 fps")},
                                this);
-    m_fps->setGeometry(kLeftX, fieldY(4), kLeftW, kBoxH);
+    m_fps->setGeometry(kLeftX, fieldY(6), kLeftW, kBoxH);
 
     // Footer: Cancel | Create Project. Create is the filled accent button
     // and takes the width Cancel leaves.
@@ -185,7 +205,7 @@ NewProjectDialog::NewProjectDialog(QWidget *parent)
     connect(m_cancel, &QPushButton::clicked, this, &QDialog::reject);
 
     // Live validation + Enter-submits from any field.
-    for (StudioTextField *f : {m_name, m_location, m_width, m_height}) {
+    for (StudioTextField *f : {m_name, m_location, m_width, m_height, m_across, m_down}) {
         connect(f, &StudioTextField::textEdited, this,
                 [this] { revalidate(); });
         connect(f, &StudioTextField::submitted, this,
@@ -200,10 +220,14 @@ NewProjectDialog::NewProjectDialog(QWidget *parent)
     setTabOrder(m_browse, m_preset);
     setTabOrder(m_preset, m_width);
     setTabOrder(m_width, m_height);
-    setTabOrder(m_height, m_fps);
+    setTabOrder(m_height, m_margin);
+    setTabOrder(m_margin, m_across);
+    setTabOrder(m_across, m_down);
+    setTabOrder(m_down, m_fps);
     setTabOrder(m_fps, m_create);
     setTabOrder(m_create, m_cancel);
 
+    applyMarginPreset(0); // None: the project every older build made
     applyPreset(0); // HDTV 1080p default: 1920x1080, dims locked
     revalidate();
 }
@@ -218,8 +242,52 @@ QString NewProjectDialog::projectName() const
     return m_name->text().trimmed();
 }
 int NewProjectDialog::fps() const { return kFpsValues[m_fps->currentIndex()]; }
-int NewProjectDialog::canvasWidth() const { return m_width->intValue(); }
-int NewProjectDialog::canvasHeight() const { return m_height->intValue(); }
+int NewProjectDialog::canvasWidth() const
+{
+    return m_width->intValue() + 2 * qMax(0, m_across->intValue());
+}
+int NewProjectDialog::canvasHeight() const
+{
+    return m_height->intValue() + 2 * qMax(0, m_down->intValue());
+}
+QSize NewProjectDialog::stageMargin() const
+{
+    return QSize(qMax(0, m_across->intValue()), qMax(0, m_down->intValue()));
+}
+
+void NewProjectDialog::applyMarginPreset(int index)
+{
+    const bool custom = index == stagemargin::kCustom;
+    m_across->setFieldEnabled(custom);
+    m_down->setFieldEnabled(custom);
+    if (!custom) {
+        const QSize m = stagemargin::presetMargin(
+            index, QSize(m_width->intValue(), m_height->intValue()));
+        m_across->setText(QString::number(qMax(0, m.width())));
+        m_down->setText(QString::number(qMax(0, m.height())));
+    }
+    revalidate();
+    update(); // the note on the Stage Margin line
+}
+
+// The note on the Stage Margin line (Figma 2A-1): the stage and what one
+// layer of it weighs; with none, that the stage is the shot.
+QString NewProjectDialog::stageNote() const
+{
+    if (!m_across || stageMargin() == QSize(0, 0))
+        return QStringLiteral("No margin: the stage is the frame");
+    const QSize stage(canvasWidth(), canvasHeight());
+    return QStringLiteral("Stage %1 × %2 · %3 MB a layer")
+        .arg(stage.width())
+        .arg(stage.height())
+        .arg(stagemargin::layerMegabytes(stage), 0, 'f', 1);
+}
+
+bool NewProjectDialog::stageNoteHeavyForTest() const
+{
+    return stageMargin() != QSize(0, 0)
+        && stagemargin::heavy(QSize(canvasWidth(), canvasHeight()));
+}
 
 void NewProjectDialog::applyPreset(int index)
 {
@@ -235,6 +303,9 @@ void NewProjectDialog::applyPreset(int index)
         m_width->setFieldEnabled(true);
         m_height->setFieldEnabled(true);
     }
+    // A margin preset is a share of the shot: it follows the new size.
+    if (m_margin && m_margin->currentIndex() != stagemargin::kCustom)
+        applyMarginPreset(m_margin->currentIndex());
     revalidate();
     update(); // the 1080p camera hint comes and goes with the preset
 }
@@ -311,6 +382,15 @@ QString NewProjectDialog::validate() const
         return QStringLiteral("Width and Height must be %1-%2.")
             .arg(kDimMin)
             .arg(kDimMax);
+    // The stage (Phase 2A) is the canvas: the same cap holds for it.
+    if (m_across->intValue() < 0 || m_down->intValue() < 0)
+        return QStringLiteral("The margin cannot be less than 0.");
+    if (canvasWidth() > kDimMax || canvasHeight() > kDimMax)
+        return QStringLiteral("The stage can be at most %1 × %1; this would be "
+                              "%2 × %3.")
+            .arg(kDimMax)
+            .arg(canvasWidth())
+            .arg(canvasHeight());
     return QString();
 }
 
@@ -359,6 +439,11 @@ void NewProjectDialog::attemptCreate()
     root[QStringLiteral("fps")] = fps();
     root[QStringLiteral("canvasWidth")] = canvasWidth();
     root[QStringLiteral("canvasHeight")] = canvasHeight();
+    // The shot's size, only with a stage margin (Phase 2A): ProjectIO's rule.
+    if (stageMargin() != QSize(0, 0)) {
+        root[QStringLiteral("frameWidth")] = m_width->intValue();
+        root[QStringLiteral("frameHeight")] = m_height->intValue();
+    }
     root[QStringLiteral("scenes")] = QJsonArray();
     root[QStringLiteral("consistencyBoard")] = QJsonArray();
     root[QStringLiteral("audioPath")] = QString();
@@ -422,6 +507,10 @@ QVariantMap NewProjectDialog::devrecState() const
     s.insert(QStringLiteral("preset"), m_preset->currentText());
     s.insert(QStringLiteral("canvasW"), canvasWidth());
     s.insert(QStringLiteral("canvasH"), canvasHeight());
+    s.insert(QStringLiteral("stageMargin"), m_margin->currentText());
+    s.insert(QStringLiteral("marginW"), stageMargin().width());
+    s.insert(QStringLiteral("marginH"), stageMargin().height());
+    s.insert(QStringLiteral("stageNote"), stageNote());
     s.insert(QStringLiteral("fps"), fps());
     s.insert(QStringLiteral("validationReason"), m_reason);
     s.insert(QStringLiteral("createEnabled"), m_create && m_create->isEnabled());
@@ -489,8 +578,8 @@ void NewProjectDialog::paintEvent(QPaintEvent *)
     p.setFont(studio::fieldLabelFont());
     p.setPen(studio::kFieldLabel);
     const char *labels[] = {"Project Name", "Save Location", "Canvas Preset",
-                            nullptr, "Frame Rate"};
-    for (int i = 0; i < 5; ++i)
+                            nullptr, "Stage Margin", nullptr, "Frame Rate"};
+    for (int i = 0; i < 7; ++i)
         if (labels[i])
             p.drawText(QRect(kLeftX, kFormY + i * kFieldPitch, kLeftW, 12),
                        Qt::AlignLeft, QLatin1String(labels[i]));
@@ -499,6 +588,17 @@ void NewProjectDialog::paintEvent(QPaintEvent *)
     p.drawText(QRect(kLeftX + kDimW + kDimGap, kFormY + 3 * kFieldPitch,
                      kDimW, 12),
                Qt::AlignLeft, QStringLiteral("Height"));
+    // The margin, each side (Phase 2A, Figma 2A-1).
+    p.drawText(QRect(kLeftX, kFormY + 5 * kFieldPitch, kDimW + kDimGap, 12),
+               Qt::AlignLeft, QStringLiteral("Across, each side (px)"));
+    p.drawText(QRect(kLeftX + kDimW + kDimGap, kFormY + 5 * kFieldPitch, kDimW, 12),
+               Qt::AlignLeft, QStringLiteral("Down, each side (px)"));
+    // The note on the Stage Margin line: the stage and one layer's weight,
+    // amber past a 4K layer (the user's Q1).
+    p.setPen(stageNoteHeavyForTest() ? QColor(0xe0, 0xa8, 0x60) : kNoteText);
+    p.drawText(QRect(kLeftX, kFormY + 4 * kFieldPitch, kLeftW, 12), Qt::AlignRight,
+               stageNote());
+    p.setPen(studio::kFieldLabel);
     // The 1080p camera hint, right-aligned on the Canvas Preset line.
     const QString hint = canvasHint();
     if (!hint.isEmpty()) {

@@ -17,7 +17,7 @@ namespace {
 // Geometry in the New Project window's idiom: one column, headers with
 // underline rules, 41-tall fields at a 51 pitch.
 constexpr int kDialogW = 380;
-constexpr int kDialogH = 352;
+constexpr int kDialogH = 372; // 352 before Phase 2A's third Canvas row
 constexpr int kX = 18;
 constexpr int kW = kDialogW - 2 * kX;
 constexpr int kGeneralHeaderY = 18;
@@ -26,8 +26,8 @@ constexpr int kFieldPitch = 51;
 constexpr int kBoxH = 25;
 constexpr int kCanvasHeaderY = 166;
 constexpr int kCanvasInfoY = 201;
-constexpr int kResizeY = 246;
-constexpr int kFooterY = 301;
+constexpr int kResizeY = 266;
+constexpr int kFooterY = 321;
 constexpr int kFooterH = 33;
 constexpr int kFooterGap = 8;
 
@@ -59,9 +59,9 @@ const char *kSecondaryButtonQss =
 
 ProjectSettingsDialog::ProjectSettingsDialog(const QString &projectName,
                                              int fps, const QSize &canvasSize,
-                                             QWidget *parent)
+                                             QWidget *parent, const QSize &stageMargin)
     : QDialog(parent, Qt::Dialog | Qt::FramelessWindowHint),
-      m_canvasSize(canvasSize)
+      m_canvasSize(canvasSize), m_stageMargin(stageMargin)
 {
     setModal(true);
     setFixedSize(kDialogW, kDialogH);
@@ -93,12 +93,23 @@ ProjectSettingsDialog::ProjectSettingsDialog(const QString &projectName,
     m_resize->setGeometry(kX, kResizeY, 150, kBoxH);
     m_resize->setStyleSheet(QLatin1String(kSecondaryButtonQss));
     m_resize->setToolTip(
-        QStringLiteral("Change the canvas size. Artwork is not scaled."));
+        QStringLiteral("Change the shot size. The margin stays; artwork is not scaled."));
     // Unlike name and frame rate, a resize is NOT pending: it is its own
     // confirmed, non-undoable operation, so the request leaves through its
     // own signal and this dialog closes out of the way of the confirm.
     connect(m_resize, &QPushButton::clicked, this, [this] {
         emit resizeRequested();
+    });
+    // Stage Margin... (Phase 2A, Figma 2A-2): beside it, the same kind of
+    // workflow - the stage grows or shrinks around the same shot.
+    m_stageMarginButton = new QPushButton(QStringLiteral("Stage Margin..."), this);
+    m_stageMarginButton->setObjectName(QStringLiteral("stageMarginButton"));
+    m_stageMarginButton->setGeometry(kX + 160, kResizeY, 150, kBoxH);
+    m_stageMarginButton->setStyleSheet(QLatin1String(kSecondaryButtonQss));
+    m_stageMarginButton->setToolTip(
+        QStringLiteral("Room around the shot for camera moves. Artwork is not scaled."));
+    connect(m_stageMarginButton, &QPushButton::clicked, this, [this] {
+        emit stageMarginRequested();
     });
 
     // Footer: Cancel | Apply | OK, right-aligned; OK is the filled accent
@@ -163,6 +174,14 @@ QString ProjectSettingsDialog::resolutionText(const QSize &size)
     return QStringLiteral("%1 \xC3\x97 %2").arg(size.width()).arg(size.height());
 }
 
+QString ProjectSettingsDialog::stageText(const QSize &stage, const QSize &margin)
+{
+    if (margin.width() <= 0 && margin.height() <= 0)
+        return resolutionText(stage) + QStringLiteral("  (no margin)");
+    return resolutionText(stage)
+        + QStringLiteral("  (%1 / %2 px each side)").arg(margin.width()).arg(margin.height());
+}
+
 QString ProjectSettingsDialog::aspectRatioText(const QSize &size)
 {
     if (size.width() <= 0 || size.height() <= 0)
@@ -219,6 +238,9 @@ QVariantMap ProjectSettingsDialog::devrecState() const
     // look blank" report needs, and which no earlier recording could show.
     s.insert(QStringLiteral("resolutionText"), resolutionText(m_canvasSize));
     s.insert(QStringLiteral("aspectRatioText"), aspectRatioText(m_canvasSize));
+    s.insert(QStringLiteral("stageText"), stageText(m_canvasSize, m_stageMargin));
+    s.insert(QStringLiteral("marginW"), m_stageMargin.width());
+    s.insert(QStringLiteral("marginH"), m_stageMargin.height());
     s.insert(QStringLiteral("validationReason"), m_reason);
     s.insert(QStringLiteral("applyEnabled"),
              m_apply && m_apply->isEnabled());
@@ -304,17 +326,25 @@ void ProjectSettingsDialog::paintEvent(QPaintEvent *)
     p.drawText(QRect(kX, kFormY + kFieldPitch, kW, 12), Qt::AlignLeft,
                QStringLiteral("Frame Rate"));
 
-    // Canvas facts (read-only in this part).
+    // Canvas facts (read-only): the FRAME - the shot, what the MP4 and the
+    // stills show - and the STAGE it sits in (Phase 2A, Figma 2A-2); the
+    // aspect is the frame's.
+    const QSize frame(m_canvasSize.width() - 2 * qMax(0, m_stageMargin.width()),
+                      m_canvasSize.height() - 2 * qMax(0, m_stageMargin.height()));
     p.drawText(QRect(kX, kCanvasInfoY, 120, 12), Qt::AlignLeft,
-               QStringLiteral("Current resolution"));
+               QStringLiteral("Frame (the shot)"));
     p.drawText(QRect(kX, kCanvasInfoY + 20, 120, 12), Qt::AlignLeft,
+               QStringLiteral("Stage"));
+    p.drawText(QRect(kX, kCanvasInfoY + 40, 120, 12), Qt::AlignLeft,
                QStringLiteral("Aspect ratio"));
     p.setFont(studio::fieldFont());
     p.setPen(kInfoText);
     p.drawText(QRect(kX + 128, kCanvasInfoY - 1, kW - 128, 14), Qt::AlignLeft,
-               resolutionText(m_canvasSize));
+               resolutionText(frame));
     p.drawText(QRect(kX + 128, kCanvasInfoY + 19, kW - 128, 14), Qt::AlignLeft,
-               aspectRatioText(m_canvasSize));
+               stageText(m_canvasSize, m_stageMargin));
+    p.drawText(QRect(kX + 128, kCanvasInfoY + 39, kW - 128, 14), Qt::AlignLeft,
+               aspectRatioText(frame));
 
     // Validation reason, above the footer.
     if (!m_reason.isEmpty()) {

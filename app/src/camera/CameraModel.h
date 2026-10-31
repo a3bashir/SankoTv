@@ -12,12 +12,54 @@
 // drawing without any command touching a key (the spec's section 2, the
 // user's decision 1).
 
+#include <QRect>
+#include <QSize>
 #include <QVector>
 #include <QtGlobal>
 
 #include <atomic>
 
 namespace shotcam {
+
+// THE STAGE (Phase 2A, the stage margin, 2026-10-31; the Phase 2 spec's
+// section 3). The CANVAS is what the layers are - the stage, drawn on - and
+// the FRAME is the shot at 1x, what the MP4 and the stills show. Without a
+// margin they are the same size (every project made before 2A), and every
+// camera function reduces, term for term, to the Phase 1 expression it
+// replaced. The margins are symmetric whole pixels, so the base framing
+// (zoom 1, centred) is the frame centred on the stage.
+struct Stage
+{
+    QSize canvas;
+    QSize frame;
+    Stage() = default;
+    // Implicit on purpose: a size alone is a stage without a margin.
+    Stage(const QSize &size) : canvas(size), frame(size) {}
+    Stage(const QSize &canvasSize, const QSize &frameSize)
+        : canvas(canvasSize), frame(frameSize.isEmpty() ? canvasSize : frameSize)
+    {
+    }
+    bool hasMargin() const { return frame != canvas; }
+    QSize margin() const
+    {
+        return QSize((canvas.width() - frame.width()) / 2,
+                     (canvas.height() - frame.height()) / 2);
+    }
+    // The base framing in canvas px.
+    QRect frameRect() const { return QRect(QPoint(margin().width(), margin().height()), frame); }
+};
+
+// A stage of `canvas` with `margin` px on each side (0 x 0: none). An
+// invalid margin - negative, or leaving no frame - is no margin.
+inline Stage stageWithMargin(const QSize &canvas, const QSize &margin)
+{
+    const QSize frame(canvas.width() - 2 * margin.width(),
+                      canvas.height() - 2 * margin.height());
+    if (margin.width() < 0 || margin.height() < 0 || frame.width() < 1
+        || frame.height() < 1)
+        return Stage(canvas);
+    return Stage(canvas, frame);
+}
 
 // One framing. The frame has the CANVAS's aspect: width = canvasW / zoom,
 // height = canvasH / zoom, centred on (cx, cy), turned by `rotation`

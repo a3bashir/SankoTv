@@ -3,6 +3,7 @@
 #include "FramelessDialogDrag.h"
 
 #include <QDateTime>
+#include <QSize>
 #include <QVariantMap>
 #include <QDialog>
 #include <QVector>
@@ -42,7 +43,7 @@ class NewProjectDialog : public QDialog
     Q_OBJECT
 public:
     static constexpr int kWidth = 340;
-    static constexpr int kHeight = 385;
+    static constexpr int kHeight = 487; // 385 before Phase 2A's two margin rows
 
     explicit NewProjectDialog(QWidget *parent = nullptr);
 
@@ -54,8 +55,12 @@ public:
     QString projectFilePath() const { return m_createdFile; }
     QString projectName() const;
     int fps() const;
+    // The CANVAS - the stage: the shot (the preset, Width x Height) plus the
+    // stage margin on every side (Phase 2A, Figma 2A-1). Without a margin
+    // the shot's size, as it always was.
     int canvasWidth() const;
     int canvasHeight() const;
+    QSize stageMargin() const; // px each side; 0 x 0 = none
 
     // Exposed for the verification seam.
     brushlib::StudioTextField *nameField() const { return m_name; }
@@ -64,6 +69,12 @@ public:
     brushlib::StudioTextField *heightField() const { return m_height; }
     brushlib::StudioDropdown *presetDropdown() const { return m_preset; }
     brushlib::StudioDropdown *fpsDropdown() const { return m_fps; }
+    brushlib::StudioDropdown *marginDropdown() const { return m_margin; }
+    brushlib::StudioTextField *acrossField() const { return m_across; }
+    brushlib::StudioTextField *downField() const { return m_down; }
+    // The note on the Stage Margin line as drawn, and whether it is amber.
+    QString stageNoteForTest() const { return stageNote(); }
+    bool stageNoteHeavyForTest() const;
     // Drag-by-header (behaviour only): the band above the first field,
     // across the painted header. Exposed for tests.
     QRect dragHeaderBand() const;
@@ -96,7 +107,9 @@ protected:
 
 private:
     void applyPreset(int index);
+    void applyMarginPreset(int index); // a share of the shot, or Custom
     QString canvasHint() const; // the 1080p camera hint, or empty
+    QString stageNote() const;  // the Stage Margin line's note
     void revalidate();       // live: sets m_reason + Create enabled state
     QString validate() const; // empty = valid
     void browse();
@@ -107,6 +120,9 @@ private:
     brushlib::StudioTextField *m_height = nullptr;
     brushlib::StudioDropdown *m_preset = nullptr;
     brushlib::StudioDropdown *m_fps = nullptr;
+    brushlib::StudioDropdown *m_margin = nullptr;  // Phase 2A
+    brushlib::StudioTextField *m_across = nullptr; // px each side
+    brushlib::StudioTextField *m_down = nullptr;
     QPushButton *m_browse = nullptr;
     QPushButton *m_create = nullptr;
     QPushButton *m_cancel = nullptr;

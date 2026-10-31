@@ -14,6 +14,7 @@
 
 #include "camera/CameraModel.h"
 
+#include <QColor>
 #include <QImage>
 #include <QJsonObject>
 #include <QPoint>
@@ -32,9 +33,17 @@ namespace shotcam {
 
 // The MP4's frame: the reference for "sharp" (spec section 5).
 inline constexpr QSize kOutputFrame(1920, 1080);
+// The veil over a stage margin with a drawing tool and in the strip
+// (Phase 2A, the user's decision D5): black at 20 %. The Camera tool keeps
+// its own 40 % dim.
+inline const QColor kStageVeil(0, 0, 0, 51);
 
+// The neutral camera: centred, 1x. On a stage with a margin that is the
+// BASE FRAMING (the frame centred), not the whole canvas - the same numbers.
 CameraState neutral(const QSize &canvas);
 bool isNeutral(const CameraState &state, const QSize &canvas);
+// The pre-camera code may draw it: no margin, and the neutral camera.
+bool takesOldPath(const CameraState &state, const Stage &stage);
 
 // w(u) for u in [0, 1]: Linear u; Ease In u^2; Ease Out 1-(1-u)^2;
 // Ease In/Out 3u^2-2u^3; Hold 0 until the next key.
@@ -74,25 +83,29 @@ CameraState evaluate(const Scene &scene, double sceneFrame, int fps,
 CameraState evaluateAtPanel(const Scene &scene, int panelIndex,
                             int frameInPanel, int fps);
 
-// The frame as a quad in canvas px (rotated about its centre).
-QPolygonF frameQuad(const CameraState &state, const QSize &canvas);
+// The frame as a quad in canvas px (rotated about its centre). Its size is
+// the stage's FRAME over the zoom (Phase 2A); without a margin, the canvas.
+QPolygonF frameQuad(const CameraState &state, const Stage &stage);
 // canvas px -> target: the frame FITTED in `target` (KeepAspectRatio,
 // centred, as every consumer fits the whole panel today), or COVERING it
 // (crop to fill, as the SHOTS clips are).
-QTransform shotTransform(const CameraState &state, const QSize &canvas,
+QTransform shotTransform(const CameraState &state, const Stage &stage,
                          const QRectF &target, bool cover = false);
 // The shot as a picture of `out` size (black beyond the artwork, as the
-// letterbox is). `flat` is the panel's full-resolution flatten. Reduces
-// with the same area-averaging filter the export uses before the final
-// bilinear placement, so fine line work is not thinned.
+// letterbox is). `flat` is the panel's full-resolution flatten - the whole
+// stage. Reduces with the same area-averaging filter the export uses before
+// the final bilinear placement, so fine line work is not thinned.
 QImage renderShot(const QImage &flat, const CameraState &state,
                   const QSize &out);
-// Draws `picture` (the whole canvas at any resolution) through the camera
+QImage renderShot(const QImage &flat, const CameraState &state, const Stage &stage,
+                  const QSize &out);
+// Draws `picture` (the whole stage at any resolution) through the camera
 // into `target` on a painter (the preview, the clips).
-void drawShot(QPainter &painter, const QPixmap &picture, const QSize &canvas,
+void drawShot(QPainter &painter, const QPixmap &picture, const Stage &stage,
               const CameraState &state, const QRectF &target, bool cover);
-// Past this zoom an output pixel has less than one source pixel (spec 5).
-double sharpLimit(const QSize &canvas, const QSize &out = kOutputFrame);
+// Past this zoom an output pixel has less than one source pixel (spec 5):
+// the FRAME's pixels against the output's.
+double sharpLimit(const Stage &stage, const QSize &out = kOutputFrame);
 
 // THE CANVAS TOOL'S LIMITS (Phase 1B). The zoom runs from 0.5x (outwards)
 // to 4x (inwards); STAY INSIDE ARTWORK (on by default) keeps every corner
@@ -100,9 +113,12 @@ double sharpLimit(const QSize &canvas, const QSize &out = kOutputFrame);
 // the zoom in just as far as the turned frame needs to fit.
 inline constexpr double kMinZoom = 0.5;
 inline constexpr double kMaxZoom = 4.0;
+// With a margin (Phase 2A) "the artwork" is the stage: the turned frame
+// must fit the canvas, so insideMinZoom can be below 1 (a pull-out shows
+// the margin, down to the largest framing the stage holds).
 CameraState clampZoom(const CameraState &state);
-double insideMinZoom(double rotation, const QSize &canvas);
-CameraState clampInside(const CameraState &state, const QSize &canvas);
+double insideMinZoom(double rotation, const Stage &stage);
+CameraState clampInside(const CameraState &state, const Stage &stage);
 // Degrees into (-180, 180].
 double normalisedAngle(double degrees);
 
@@ -128,9 +144,10 @@ void fromJson(const QJsonObject &obj, Scene &scene, int *dropped = nullptr);
 
 // Canvas resize (centre-anchored, nothing scaled): every key keeps its
 // framing over the same artwork - the centre moves with the offset, and
-// the zoom keeps the frame's pixel width.
-void remapForResize(SceneCamera &camera, const QSize &oldSize,
-                    const QSize &newSize, const QPoint &offset);
+// the zoom keeps the frame's pixel width. A margin change leaves the frame
+// as it was, so only the centres move (Phase 2A).
+void remapForResize(SceneCamera &camera, const Stage &oldStage,
+                    const Stage &newStage, const QPoint &offset);
 
 // THE QUICK MOVES (Phase 1D, 2026-10-29; Figma 1D-1 to 1D-5). A whole move
 // from one framing: Push In / Pull Out by the Zoom (Pull Out by its
@@ -148,7 +165,7 @@ QString quickMoveLabel(QuickMove move); // "Push In" .. "Rotate Right"
 // enough for the turned frame. With it off nothing is clamped but the
 // zoom's 0.5x .. 4x.
 QuickFrames quickMove(QuickMove move, const CameraState &start,
-                      const QuickAmounts &amounts, const QSize &canvas,
+                      const QuickAmounts &amounts, const Stage &stage,
                       bool stayInside);
 
 } // namespace shotcam

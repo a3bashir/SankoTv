@@ -94,6 +94,8 @@ public:
     // loadScenes/setBlocks — per-block frame counts derive from it.
     void setFps(int fps);
     int fps() const { return m_fps; }
+    // The stage margin (Phase 2A): px each side; the clips show the frame.
+    void setStageMargin(const QSize &margin);
     // Test hook: the DERIVED total (sum of per-block duration*fps), so a
     // test can prove frame counts re-derive after setFps rather than just
     // reading the stored rate back.
@@ -398,6 +400,7 @@ private:
     QVector<Scene *> m_scenes;
     QVector<Block> m_blocks;
     int m_fps = 24; // project frame rate; every frame count derives from it
+    QSize m_stageMargin = QSize(0, 0); // Phase 2A: px each side; none
     int m_current = -1;  // playhead panel (flat index)
     int m_selected = -1; // selected panel (flat index): accent + trim handles
     bool m_playing = false;

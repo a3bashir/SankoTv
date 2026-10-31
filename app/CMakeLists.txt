@@ -93,6 +93,8 @@ qt_add_executable(SankoTV
     src/ProjectSettingsDialog.h
     src/ResizeProjectDialog.cpp
     src/ResizeProjectDialog.h
+    src/StageMarginDialog.cpp
+    src/StageMarginDialog.h
     src/ProjectResize.cpp
     src/ProjectResize.h
     src/FramelessDialogDrag.h

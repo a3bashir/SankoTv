@@ -16,7 +16,10 @@
 
 #include "AnimaticPage.h"
 #include "AnimaticTimeline.h"
+#include "NewProjectDialog.h"
 #include "ProjectIO.h"
+#include "StageMarginDialog.h"
+#include "brushlib/StudioControls.h"
 #include "StoryboardModel.h"
 #include "camera/ShotCamera.h"
 #include "export/MovieEncoder.h"
@@ -26,6 +29,8 @@
 #include <QHash>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QLineEdit>
+#include <QMap>
 #include <QMouseEvent>
 #include <QSet>
 #include <QtMath>
@@ -35,6 +40,7 @@
 #include <QFile>
 #include <QPainter>
 #include <QPainterPath>
+#include <QPushButton>
 #include <QTextStream>
 #include <QVariantMap>
 
@@ -128,6 +134,43 @@ Panel *fixturePanel(const QSize &size)
 // The four canvas sizes the pins cover: the three presets and an odd one.
 const QSize kSizes[4] = {{1920, 1080}, {2048, 1080}, {3840, 2160}, {1001, 777}};
 
+// A STAGE MARGIN fixture (Phase 2A, mg1): the fixture panel of `frame`,
+// every layer placed whole at the centre of a stage `margin` px larger on
+// each side, with other art (filled bands) drawn in the margin only. Its
+// shot at the base framing must be the frame-sized fixture's, byte for byte.
+Panel *marginPanel(const QSize &frame, const QSize &margin)
+{
+    Panel *src = fixturePanel(frame);
+    const QSize stage(frame.width() + 2 * margin.width(), frame.height() + 2 * margin.height());
+    Panel *panel = new Panel;
+    panel->duration = src->duration;
+    for (int i = 0; i < src->layers.size(); ++i) {
+        Layer copy = src->layers.at(i);
+        QImage big(stage, QImage::Format_ARGB32_Premultiplied);
+        big.fill(copy.type == QLatin1String("background") ? QColor(Qt::white)
+                                                           : QColor(Qt::transparent));
+        QPainter p(&big);
+        p.setCompositionMode(QPainter::CompositionMode_Source);
+        p.drawImage(margin.width(), margin.height(), src->layers.at(i).image);
+        if (i == 1) { // the margin's own art, outside the frame
+            p.setCompositionMode(QPainter::CompositionMode_SourceOver);
+            const QColor band(200, 0, 120, 220);
+            p.fillRect(QRect(0, 0, margin.width(), stage.height()), band);
+            p.fillRect(QRect(stage.width() - margin.width(), 0, margin.width(), stage.height()),
+                       band);
+            p.fillRect(QRect(0, 0, stage.width(), margin.height()), band);
+            p.fillRect(QRect(0, stage.height() - margin.height(), stage.width(), margin.height()),
+                       band);
+        }
+        p.end();
+        copy.image = big;
+        panel->layers.append(copy);
+    }
+    panel->activeLayerIndex = src->activeLayerIndex;
+    delete src;
+    return panel;
+}
+
 // THE PINS (recorded on f46ccbcc6, Release; identical in Debug). Empty
 // strings mean "not recorded yet": the check prints the value to record.
 struct Pin
@@ -169,6 +212,72 @@ void checkPin(const QString &name, const QString &sha)
     check(QStringLiteral("(c1p) %1 renders its pinned bytes").arg(name),
           !want.isEmpty() && sha == want,
           want.isEmpty() ? QStringLiteral("RECORD %1").arg(sha) : sha.left(16));
+}
+
+// THE MOVING PINS (mp): recorded on 32763eb6b, before Phase 2A's stage
+// margin rewrote every camera function's canvas into a frame and a stage
+// (the Phase 2 spec, 8.1). What a project WITH camera moves rendered then:
+// a project without a margin must render these bytes for ever.
+const Pin kMovingPins[] = {
+    {"clip.1001x777.p1", "2accf11ac555f4470e935a14207fb33102a3361d4186b25f959b189fc4ee2348"},
+    {"clip.1001x777.p2", "c9c608dbd0eefb67221a6d7f941c5fbcff18e5f1e3739a699d617b4f435c3683"},
+    {"clip.1920x1080.p1", "152733aa11048019c847cee7962ad3ab4e621f75d68530a45b4f98b8096b8263"},
+    {"clip.1920x1080.p2", "11241632deac9b256df1fedc25cd6074fe446eb83a94f84a7acfa5b4c265a970"},
+    {"clip.2048x1080.p1", "865a0214de00157cee8e27fdb4cfd2729ab741dd553a86482dc60cdcaa881c1c"},
+    {"clip.2048x1080.p2", "faa8fa41434e3177a12dec533f9cf040e75d5cab36c659ce4b4a067cb4076607"},
+    {"clip.3840x2160.p1", "f7c28c2bb02319805b8a434816ee13e2a4cc418cd0c5768285921ef7da35baf5"},
+    {"clip.3840x2160.p2", "5ea62a720bfb6a8fea6323df780315c4c7fd7dabdcf1dcf9a04b00a85b202a51"},
+    {"geometry", "7491456e39c08683270894b0e979b30f0f88e9d9c21a0469ca41fc55815323c6"},
+    {"mp4.1001x777.f102", "e822b3637cea41129d9f7b7d998cf5eb5c54f338c2fb81f6efa204b611b24e3c"},
+    {"mp4.1001x777.f35", "a228adfa196dd487cd114cbbbb6035299acf766fa9bc1c158dc6f9cfcf184be4"},
+    {"mp4.1001x777.f50", "4cc088e8fde0de7f8643e14a98292a94eba9e9bc7c8051b537fc9cf1a4092f94"},
+    {"mp4.1001x777.f64", "9aeb6c943dd904aad7a4049bdc726a8da9c8cdc2c72905e43cb5025829a54d86"},
+    {"mp4.1001x777.f7", "8ecedd5d24a8a52daa33d20046eeec31af3eaa2fe07c2d19cf64c69e9c69fbe3"},
+    {"mp4.1920x1080.f102", "e2f0d413726867a5bd3828f7aa22ae11597720a293857e4334da9ffad16654a6"},
+    {"mp4.1920x1080.f35", "ca72016dbdc4d62fd26a3b2fb6da28d36e6360653323b1de33f2bb0fee817fb6"},
+    {"mp4.1920x1080.f50", "abc98ad4503ddabe9d9c310c25ddec35342ea72567f0652db09f0a1caa8e4db5"},
+    {"mp4.1920x1080.f64", "779b999217d6896de571edb96d0e4c0cb70a050c3b4b80bdf9624a239dab83a5"},
+    {"mp4.1920x1080.f7", "791a7f39c948ae9db025b81e49372064437e448c03b004608a154113d7fb4460"},
+    {"mp4.2048x1080.f102", "729316275cc03774407f6dddf69cba8e753c6ef4d829244ce07c1b79a12624f2"},
+    {"mp4.2048x1080.f35", "a4343276036b04db7a721cd8100e901e87e50f976a21ce28bdf16ba70796b01b"},
+    {"mp4.2048x1080.f50", "31080745b39b6920fc12fb6d157ee4003a50f95d23906460a97e647f73fe5db3"},
+    {"mp4.2048x1080.f64", "c153c77013f365c27eaa10fc4e759396dca4c89ac4bf71307483387804feec8b"},
+    {"mp4.2048x1080.f7", "99fbd33c5a87a832a4078e0ca4a18114a19e6bbb90af47cc7d70ac120d58eb61"},
+    {"mp4.3840x2160.f102", "da08563f2b9a143dea8c21859a97ce58eccf942f031a78325ae3b74c5fbd0c8b"},
+    {"mp4.3840x2160.f35", "65da98376bdc3d7b4f754a1e84ae4b50bc870e5b0f43cdc1329aa91bfe724941"},
+    {"mp4.3840x2160.f50", "b9db097e61146dae3d582111ce378baf517dea149563fa34edf9649426d4f235"},
+    {"mp4.3840x2160.f64", "c1f0e6f9e65a703d90631340ffe8787b69420d844fc985a3f524d90cfd0540ad"},
+    {"mp4.3840x2160.f7", "ba36988fecc7dece976702ab1557ba1aaac1f8fc871691c0464860b364a50158"},
+    {"pdf.page0", "26dac732de30bd69b3db0f3b3dd8ada74df0351bbafc97594c6cde9829b7cad0"},
+    {"png.1001x777.p1", "d133429b56cf8ae72391ca821ed1617d443191a2adcf90b2a2acc829757397b3"},
+    {"png.1001x777.p2", "de9ee4c7aa8b6d4754be5da75f6df4ee4f80008bc88fa9b6bfe7963056957321"},
+    {"png.1920x1080.p1", "40a4fc2d48c5b7118bca1a348df0f4488897dd09175547baf8cd5cc2d24f944e"},
+    {"png.1920x1080.p2", "5a603de51d74dbc1b6abd59b275db78de591a8cc6269d857af08bc027f1d452b"},
+    {"png.2048x1080.p1", "516ea162b5c74653da2ca2f7d032d4e027a00f2e50a5ee82a94059ccbbfa28fe"},
+    {"png.2048x1080.p2", "e850bb8385904be35d23b58170e7e5e15163139c451b0e0e1d42924afc37c23b"},
+    {"png.3840x2160.p1", "2b933bb5f1842d088ba0220a78d5a9e1b80c7e3c18906be88f0712b5a992aad7"},
+    {"png.3840x2160.p2", "958c12bf319fbf7ff8e976aa0d3b5e6e54d3e82b21f66e2effbbdf62efc63aad"},
+    {"preview.1001x777.f50", "78286c3d49e1acce4dfa1c0736acbc5332e39cf48ac46f32916aae6c14f3ee54"},
+    {"preview.1920x1080.f50", "ca07a614060b69d8bbc1ac7272872d245da9393ad5ae6d029d6cf0d3a3021ae6"},
+    {"preview.2048x1080.f50", "a913f1a95fc39bbb81388c4cb1c88242bf3c56610f4fee67363d13a5a2c5ee9a"},
+    {"preview.3840x2160.f50", "c9ad14cd60f502785bec5be4f81b6c1e3333f59cae6f088c3a6655036cdd821a"},
+};
+
+QString movingPinned(const QString &name)
+{
+    for (const Pin &p : kMovingPins)
+        if (name == QLatin1String(p.name))
+            return QString::fromLatin1(p.sha);
+    return QString();
+}
+
+void checkMovingPin(const QString &name, const QString &sha)
+{
+    const QString want = movingPinned(name);
+    check(QStringLiteral("(mp) %1 renders its pinned bytes").arg(name),
+          !want.isEmpty() && sha == want,
+          want.isEmpty() ? QStringLiteral("RECORD {\"%1\", \"%2\"},").arg(name, sha)
+                         : sha.left(16));
 }
 
 // Stands in front of the real encoder and keeps the SHA of the frames the
@@ -1069,6 +1178,554 @@ int main(int argc, char **argv)
                       && turn.start == whole && near(turn.end.zoom, 1.0, 1e-9)
                       && near(turn.end.rotation, 10.0, 1e-9));
         }
+    }
+
+    // ---- (mp) the moving pins (recorded before Phase 2A) -------------------
+    // One scene per pin size, two panels of 3 s: panel 1 holds six keys, one
+    // of each ease, pushing in and turning; panel 2 a Quick Move (Pan Right
+    // from a turned 1.5x framing, Stay inside on). Pinned: five MP4 frames a
+    // size as the REAL export job offered them, both PNG stills, a PDF page,
+    // a preview grab, both SHOTS clips, and the numbers the frame functions
+    // give (frame quad, shot transform, the Stay inside clamp, every Quick
+    // Move) - the geometry the canvas draws its frame from.
+    ts << "--- (mp) moving pins ---\n";
+    {
+        auto buildMoving = [&](double nudge) {
+            QVector<Scene *> list;
+            for (int i = 0; i < 4; ++i) {
+                const QSize cs = kSizes[i];
+                const double W = cs.width(), H = cs.height();
+                Scene *s = new Scene;
+                s->number = i + 1;
+                s->panels << fixturePanel(cs) << fixturePanel(cs);
+                const struct
+                {
+                    int frame;
+                    double x, y, z, r;
+                    shotcam::Ease e;
+                } k[] = {{0, 0.5, 0.5, 1.0, 0.0, shotcam::Ease::Linear},
+                         {14, 0.42, 0.47, 1.35, 4.0, shotcam::Ease::EaseIn},
+                         {28, 0.6, 0.55, 1.8, -6.0, shotcam::Ease::EaseOut},
+                         {42, 0.55, 0.4, 1.5, 12.0, shotcam::Ease::EaseInOut},
+                         {56, 0.48, 0.52, 2.2, 20.0, shotcam::Ease::Hold},
+                         {70, 0.5, 0.5, 1.2, 0.0, shotcam::Ease::EaseInOut}};
+                for (const auto &key : k)
+                    s->camera.keys.append(shotcam::makeKey(
+                        *s, 0, key.frame, 24,
+                        state(W * key.x + nudge, H * key.y, key.z, key.r), key.e));
+                const shotcam::QuickFrames q = shotcam::quickMove(
+                    shotcam::QuickMove::PanRight, state(W * 0.4 + nudge, H * 0.5, 1.5, 5.0),
+                    shotcam::QuickAmounts(), cs, true);
+                s->camera.keys.append(shotcam::makeKey(*s, 1, 0, 24, q.start));
+                s->camera.keys.append(shotcam::makeKey(*s, 1, 72, 24, q.end));
+                list.append(s);
+            }
+            return list;
+        };
+        auto tagOf = [](int i) {
+            return QStringLiteral("%1x%2").arg(kSizes[i].width()).arg(kSizes[i].height());
+        };
+        auto renderAll = [&](const QVector<Scene *> &list, const QString &run) {
+            QMap<QString, QString> out;
+            const QVector<sankoexport::ExportPanel> rows = sankoexport::collectPanels(list, 24);
+            // The MP4: the real export job; each scene is 144 frames.
+            const int sampleFrames[] = {7, 35, 50, 64, 72 + 30};
+            QSet<int> wanted;
+            for (int i = 0; i < 4; ++i)
+                for (int f : sampleFrames)
+                    wanted.insert(i * 144 + f);
+            sankoexport::MovieRequest request;
+            request.outPath = scratch + QStringLiteral("/mp_%1.mp4").arg(run);
+            request.panels = rows;
+            request.fps = 24;
+            auto *encoder = new CaptureEncoder(wanted);
+            sankoexport::MovieExportJob job(request, encoder);
+            job.start();
+            QElapsedTimer guard;
+            guard.start();
+            while (!job.isDone() && guard.elapsed() < 180000)
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+            for (int i = 0; i < 4; ++i)
+                for (int f : sampleFrames)
+                    out.insert(QStringLiteral("mp4.%1.f%2").arg(tagOf(i)).arg(f),
+                               job.result().ok ? encoder->shas.value(i * 144 + f,
+                                                                     QStringLiteral("missing"))
+                                               : QStringLiteral("export failed"));
+            // The PNG stills (the shot at each panel's first frame).
+            const sankoexport::FilesResult png = sankoexport::exportPng(
+                rows, scratch + QStringLiteral("/mp_png_%1").arg(run), QStringLiteral("Pin"), {});
+            for (int i = 0; i < 8; ++i)
+                out.insert(QStringLiteral("png.%1.p%2").arg(tagOf(i / 2)).arg(i % 2 + 1),
+                           png.ok && png.written.size() == 8 ? shaOfFile(png.written.at(i))
+                                                             : QStringLiteral("no file"));
+            QImage page(1091, 748, QImage::Format_ARGB32);
+            page.fill(Qt::white);
+            {
+                QPainter p(&page);
+                sankoexport::paintBoardPage(p, page.size(), 100, rows, 0, QStringLiteral("Pin"));
+            }
+            out.insert(QStringLiteral("pdf.page0"), shaOf(page));
+            // The preview and the SHOTS clips, through the real page, off screen.
+            {
+                QWidget host;
+                host.setAttribute(Qt::WA_DontShowOnScreen, true);
+                host.resize(960, 540);
+                host.show();
+                AnimaticPage apage;
+                apage.setAttribute(Qt::WA_DontShowOnScreen, true);
+                apage.resize(1600, 320);
+                apage.setFps(24);
+                apage.show();
+                apage.loadScenes(list);
+                apage.attachPreview(&host);
+                pump(200);
+                AnimaticTimeline *tl = apage.timelineForTest();
+                tl->setZoomForTest(200.0f);
+                pump(200);
+                const QImage surface = tl->surfaceForTest()->grab().toImage();
+                for (int i = 0; i < 8; ++i) {
+                    const QVariantMap parts = tl->clipPartsForTest(i);
+                    const QRect thumb = rectOf(parts.value(QStringLiteral("thumb")).toString());
+                    out.insert(QStringLiteral("clip.%1.p%2").arg(tagOf(i / 2)).arg(i % 2 + 1),
+                               parts.value(QStringLiteral("thumbShown")).toBool() && thumb.isValid()
+                                   ? shaOf(surface.copy(thumb))
+                                   : QStringLiteral("no thumb"));
+                }
+                apage.scrubForTest(0);
+                pump(50);
+                for (int i = 0; i < 4; ++i) {
+                    apage.setPlayheadForTest(2 * i, shotcam::msForFrameInPanel(50, 24));
+                    pump(50);
+                    QWidget *surf = apage.previewSurface();
+                    out.insert(QStringLiteral("preview.%1.f50").arg(tagOf(i)),
+                               apage.previewVisible() && surf ? shaOf(surf->grab().toImage())
+                                                              : QStringLiteral("no preview"));
+                }
+                apage.leavePreview();
+                apage.loadScenes({});
+                pump(100);
+            }
+            // The geometry, as text with 12 significant digits.
+            QString g;
+            QTextStream gs(&g);
+            gs.setRealNumberPrecision(12);
+            for (int i = 0; i < 4; ++i) {
+                const QSize cs = kSizes[i];
+                QVector<shotcam::CameraState> states;
+                for (const shotcam::CameraKey &k : list.at(i)->camera.keys)
+                    states << k.state;
+                states << state(cs.width() * 0.3, cs.height() * 0.7, 0.7, 30.0)
+                       << state(cs.width() * 0.9, cs.height() * 0.1, 3.0, -45.0);
+                gs << tagOf(i) << " sharp " << shotcam::sharpLimit(cs) << '\n';
+                for (const shotcam::CameraState &st : states) {
+                    for (const QPointF &pt : shotcam::frameQuad(st, cs))
+                        gs << pt.x() << ',' << pt.y() << ' ';
+                    for (bool cover : {false, true}) {
+                        const QTransform t =
+                            shotcam::shotTransform(st, cs, QRectF(0, 0, 1600, 900), cover);
+                        gs << t.m11() << ' ' << t.m12() << ' ' << t.m21() << ' ' << t.m22()
+                           << ' ' << t.dx() << ' ' << t.dy() << ' ';
+                    }
+                    const shotcam::CameraState c = shotcam::clampInside(st, cs);
+                    gs << c.cx << ' ' << c.cy << ' ' << c.zoom << ' ' << c.rotation << ' '
+                       << shotcam::insideMinZoom(st.rotation, cs) << ' '
+                       << shotcam::isNeutral(st, cs) << '\n';
+                }
+                for (int m = 0; m < 8; ++m)
+                    for (bool inside : {true, false}) {
+                        const shotcam::QuickFrames q = shotcam::quickMove(
+                            shotcam::QuickMove(m), states.at(3), shotcam::QuickAmounts(), cs, inside);
+                        gs << m << inside << ' ' << q.start.cx << ' ' << q.start.cy << ' '
+                           << q.start.zoom << ' ' << q.start.rotation << ' ' << q.end.cx << ' '
+                           << q.end.cy << ' ' << q.end.zoom << ' ' << q.end.rotation << ' '
+                           << q.moves << '\n';
+                    }
+            }
+            gs.flush();
+            out.insert(QStringLiteral("geometry"),
+                       QString::fromLatin1(QCryptographicHash::hash(
+                           g.toUtf8(), QCryptographicHash::Sha256).toHex()));
+            return out;
+        };
+        const QVector<Scene *> moving = buildMoving(0.0);
+        const QMap<QString, QString> got = renderAll(moving, QStringLiteral("a"));
+        for (auto it = got.cbegin(); it != got.cend(); ++it)
+            checkMovingPin(it.key(), it.value());
+        // Control: every key 1 px further across changes every pinned output.
+        const QVector<Scene *> nudged = buildMoving(1.0);
+        const QMap<QString, QString> other = renderAll(nudged, QStringLiteral("b"));
+        QStringList unchanged;
+        for (auto it = got.cbegin(); it != got.cend(); ++it)
+            if (other.value(it.key()) == it.value())
+                unchanged << it.key();
+        check(QStringLiteral("(mp) control: every key moved 1 px across changes every pinned "
+                             "output - each MP4 frame, still, the PDF page, preview, clip and the "
+                             "geometry (%1 outputs)").arg(got.size()),
+              got.size() == 42 && other.size() == got.size() && unchanged.isEmpty(),
+              unchanged.isEmpty() ? QString() : QStringLiteral("unchanged: ") + unchanged.join(' '));
+        qDeleteAll(moving);
+        qDeleteAll(nudged);
+    }
+
+    // ---- (mg) THE STAGE MARGIN (Phase 2A) -------------------------------------
+    ts << "--- (mg) the stage margin ---\n";
+    const QSize kMargin(160, 90); // one project margin, px each side
+    {
+        // (mg1) a keyless margin project: the four pin fixtures, each inside
+        // a stage 160 / 90 px larger with other art in the margin, give the
+        // 17 NEUTRAL PINS' bytes - the shot is the frame, cut out and drawn
+        // by the code that drew the frame-sized panel.
+        Scene *ms = new Scene;
+        ms->number = 1;
+        for (const QSize &size : kSizes)
+            ms->panels.append(marginPanel(size, kMargin));
+        const QVector<sankoexport::ExportPanel> rows =
+            sankoexport::collectPanels({ms}, 24, false, false, kMargin);
+        QStringList off;
+        {
+            const QSet<int> wanted{0, 72, 144, 216};
+            sankoexport::MovieRequest request;
+            request.outPath = scratch + QStringLiteral("/mg1.mp4");
+            request.panels = rows;
+            request.fps = 24;
+            auto *encoder = new CaptureEncoder(wanted);
+            sankoexport::MovieExportJob job(request, encoder);
+            job.start();
+            QElapsedTimer guard;
+            guard.start();
+            while (!job.isDone() && guard.elapsed() < 120000)
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+            for (int i = 0; i < 4; ++i) {
+                const QString tag = QStringLiteral("%1x%2").arg(kSizes[i].width())
+                                        .arg(kSizes[i].height());
+                if (encoder->shas.value(i * 72) != pinned(QStringLiteral("mp4.") + tag))
+                    off << QStringLiteral("mp4.") + tag;
+            }
+        }
+        const sankoexport::FilesResult png = sankoexport::exportPng(
+            rows, scratch + QStringLiteral("/mg1_png"), QStringLiteral("Pin"), {});
+        for (int i = 0; i < 4; ++i) {
+            const QString tag = QStringLiteral("%1x%2").arg(kSizes[i].width())
+                                    .arg(kSizes[i].height());
+            if (!png.ok || png.written.size() != 4
+                || shaOfFile(png.written.at(i)) != pinned(QStringLiteral("png.") + tag))
+                off << QStringLiteral("png.") + tag;
+        }
+        {
+            QImage page(1091, 748, QImage::Format_ARGB32);
+            page.fill(Qt::white);
+            QPainter p(&page);
+            sankoexport::paintBoardPage(p, page.size(), 100, rows, 0, QStringLiteral("Pin"));
+            p.end();
+            if (shaOf(page) != pinned(QStringLiteral("pdf.page0")))
+                off << QStringLiteral("pdf.page0");
+        }
+        {
+            QWidget host;
+            host.setAttribute(Qt::WA_DontShowOnScreen, true);
+            host.resize(960, 540);
+            host.show();
+            AnimaticPage page;
+            page.setAttribute(Qt::WA_DontShowOnScreen, true);
+            page.resize(1600, 320);
+            page.setFps(24);
+            page.setStageMargin(kMargin);
+            page.show();
+            page.loadScenes({ms});
+            page.attachPreview(&host);
+            pump(200);
+            AnimaticTimeline *tl = page.timelineForTest();
+            tl->setZoomForTest(400.0f);
+            pump(200);
+            const QImage surface = tl->surfaceForTest()->grab().toImage();
+            for (int i = 0; i < 4; ++i) {
+                const QString tag = QStringLiteral("%1x%2").arg(kSizes[i].width())
+                                        .arg(kSizes[i].height());
+                const QRect thumb = rectOf(tl->clipPartsForTest(i)
+                                               .value(QStringLiteral("thumb")).toString());
+                if (!thumb.isValid() || shaOf(surface.copy(thumb)) != pinned(QStringLiteral("clip.") + tag))
+                    off << QStringLiteral("clip.") + tag;
+            }
+            for (int i = 0; i < 4; ++i) {
+                const QString tag = QStringLiteral("%1x%2").arg(kSizes[i].width())
+                                        .arg(kSizes[i].height());
+                page.scrubForTest(i);
+                pump(100);
+                QWidget *surf = page.previewSurface();
+                if (!surf || shaOf(surf->grab().toImage()) != pinned(QStringLiteral("preview.") + tag))
+                    off << QStringLiteral("preview.") + tag;
+            }
+            page.leavePreview();
+            page.loadScenes({});
+            pump(100);
+        }
+        check(QStringLiteral("(mg1) A KEYLESS MARGIN PROJECT GIVES THE 17 NEUTRAL PINS' BYTES: the "
+                             "MP4 the real export job wrote, the PNG files, the PDF page, the SHOTS "
+                             "clips and the preview, at the four pin sizes inside a 160 / 90 px "
+                             "margin full of other art"),
+              off.isEmpty(), off.isEmpty() ? QStringLiteral("17 of 17") : off.join(' '));
+        // Control: the base framing 1 px across is no longer the frame's crop.
+        Scene *shifted = new Scene;
+        shifted->number = 1;
+        for (const QSize &size : kSizes)
+            shifted->panels.append(marginPanel(size, kMargin));
+        for (int i = 0; i < 4; ++i) {
+            shotcam::CameraState s = shotcam::neutral(shifted->panels.at(i)->canvasSize());
+            s.cx += 1.0;
+            shifted->camera.keys.append(shotcam::makeKey(*shifted, i, 0, 24, s));
+        }
+        const QVector<sankoexport::ExportPanel> srows =
+            sankoexport::collectPanels({shifted}, 24, false, false, kMargin);
+        int changed = 0;
+        for (int i = 0; i < 4; ++i) {
+            const QString tag = QStringLiteral("%1x%2").arg(kSizes[i].width())
+                                    .arg(kSizes[i].height());
+            const shotcam::Stage st = shotcam::stageWithMargin(
+                shifted->panels.at(i)->canvasSize(), kMargin);
+            changed += shaOf(sankoexport::renderMovieFrame(
+                           shifted->panels.at(i), sankoexport::kMovieFrameSize,
+                           shotcam::evaluateAtPanel(*shifted, i, 0, 24), st))
+                    != pinned(QStringLiteral("mp4.") + tag);
+            changed += shaOf(sankoexport::stillImage(srows.at(i))) != shaOf(sankoexport::stillImage(rows.at(i)));
+        }
+        const QVector<sankoexport::ExportPanel> full =
+            sankoexport::collectPanels({ms}, 24, true, false, kMargin);
+        const QImage whole = sankoexport::stillImage(full.at(0));
+        check(QStringLiteral("(mg1) control: the camera 1 px across changes every MP4 frame and "
+                             "still; Full Artwork is the whole stage, margin art and all"),
+              changed == 8 && whole.size() == ms->panels.at(0)->canvasSize()
+                  && whole.pixelColor(kMargin.width() / 2, kMargin.height() / 2) != QColor(Qt::white),
+              QStringLiteral("%1 of 8 changed; full artwork %2x%3").arg(changed)
+                  .arg(whole.width()).arg(whole.height()));
+        delete shifted;
+        delete ms;
+    }
+    {
+        // (mg2) without a margin a stage is the canvas: every frame function
+        // given Stage(cs, cs) answers what the canvas alone answers.
+        bool same = true;
+        bool differs = true;
+        for (const QSize &cs : kSizes) {
+            const shotcam::Stage plain(cs, cs), narrow(cs, cs - QSize(2, 2));
+            const shotcam::CameraState st = state(cs.width() * 0.45, cs.height() * 0.55, 1.4, 12.0);
+            same = same && shotcam::frameQuad(st, plain) == shotcam::frameQuad(st, cs)
+                && shotcam::shotTransform(st, plain, QRectF(0, 0, 800, 450))
+                       == shotcam::shotTransform(st, cs, QRectF(0, 0, 800, 450))
+                && shotcam::clampInside(st, plain) == shotcam::clampInside(st, cs)
+                && shotcam::insideMinZoom(12.0, plain) == shotcam::insideMinZoom(12.0, cs)
+                && shotcam::sharpLimit(plain) == shotcam::sharpLimit(cs)
+                && !plain.hasMargin();
+            differs = differs && shotcam::frameQuad(st, narrow) != shotcam::frameQuad(st, cs);
+        }
+        check(QStringLiteral("(mg2) a stage without a margin is the canvas: frame quad, shot "
+                             "transform, Stay inside, its minimum zoom and the sharp limit all "
+                             "equal the canvas's own"),
+              same);
+        check(QStringLiteral("(mg2) control: a frame 2 px smaller than the canvas changes the "
+                             "frame quad"),
+              differs);
+    }
+    {
+        // (mg3) - (mg5) on a 1080p shot with a 25 % margin.
+        const shotcam::Stage st(QSize(2880, 1620), QSize(1920, 1080));
+        const shotcam::CameraState base = shotcam::neutral(st.canvas);
+        const QPolygonF quad = shotcam::frameQuad(base, st);
+        check(QStringLiteral("(mg3) the zoom is the frame's: at 1x the frame is 1920 x 1080 "
+                             "centred on the 2880 x 1620 stage; the sharp limit is 1.00x; Stay "
+                             "inside lets it pull out to 0.667x (the largest framing)"),
+              quad.boundingRect() == QRectF(480, 270, 1920, 1080)
+                  && near(shotcam::sharpLimit(st), 1.0)
+                  && near(shotcam::insideMinZoom(0.0, st), 1920.0 / 2880.0),
+              QStringLiteral("%1; sharp %2; min %3")
+                  .arg(QStringLiteral("%1,%2 %3x%4").arg(quad.boundingRect().x())
+                           .arg(quad.boundingRect().y()).arg(quad.boundingRect().width())
+                           .arg(quad.boundingRect().height()))
+                  .arg(shotcam::sharpLimit(st)).arg(shotcam::insideMinZoom(0.0, st)));
+        check(QStringLiteral("(mg3) control: without the margin the same 1080p canvas cannot "
+                             "pull out (minimum 1x)"),
+              near(shotcam::insideMinZoom(0.0, QSize(1920, 1080)), 1.0));
+        const shotcam::CameraState pan = shotcam::clampInside(state(1920, 810, 1.0, 0.0), st);
+        check(QStringLiteral("(mg4) a pan at 1x to the margin's edge stays where it is and is "
+                             "not soft; a 1.01x push-in is"),
+              pan == state(1920, 810, 1.0, 0.0) && !(pan.zoom > shotcam::sharpLimit(st) + 1e-9)
+                  && 1.01 > shotcam::sharpLimit(st) + 1e-9,
+              stateText(pan));
+        check(QStringLiteral("(mg4) control: without the margin Stay inside pulls the same pan "
+                             "back to the canvas's centre"),
+              shotcam::clampInside(state(1920, 540, 1.0, 0.0), QSize(1920, 1080)).cx == 960.0);
+        const shotcam::QuickAmounts amt;
+        const shotcam::QuickFrames pr = shotcam::quickMove(shotcam::QuickMove::PanRight, base,
+                                                           amt, st, true);
+        const shotcam::Stage st10(QSize(2304, 1296), QSize(1920, 1080));
+        const shotcam::QuickFrames po = shotcam::quickMove(
+            shotcam::QuickMove::PullOut, shotcam::neutral(st10.canvas), amt, st10, true);
+        check(QStringLiteral("(mg5) Quick Moves on the margin: Pan Right at 1x has room (starts "
+                             "where it is, travels 25 % of the FRAME, 480 px); Pull Out at 10 % "
+                             "ends at the largest framing the stage holds (0.833x)"),
+              pr.moves && pr.start == base && near(pr.end.cx, 1440 + 480) && near(pr.end.zoom, 1.0)
+                  && po.moves && near(po.end.zoom, 1920.0 / 2304.0) && near(po.start.zoom, 1.0),
+              QStringLiteral("pan %1 -> %2; pull %3 -> %4").arg(stateText(pr.start), stateText(pr.end),
+                                                             stateText(po.start), stateText(po.end)));
+        const shotcam::QuickFrames pr0 = shotcam::quickMove(
+            shotcam::QuickMove::PanRight, shotcam::neutral(QSize(1920, 1080)), amt, QSize(1920, 1080), true);
+        check(QStringLiteral("(mg5) control: without the margin the pan has no room at 1x and "
+                             "pushes the start in (Phase 1D's decision 3)"),
+              pr0.start.zoom > 1.0, stateText(pr0.start));
+    }
+    {
+        // (mg6) a margin change keeps every key over the same artwork: the
+        // centre moves with the offset and the zoom stays (the frame did not
+        // change). Control: the Phase 1 rule - the zoom scaled by the canvas -
+        // moves the frame off its art.
+        const QSize oldCanvas(1920, 1080), newCanvas(2880, 1620);
+        const shotcam::Stage oldStage(oldCanvas), newStage(newCanvas, QSize(1920, 1080));
+        const QPoint offset(480, 270);
+        shotcam::SceneCamera cam;
+        shotcam::CameraKey key;
+        key.state = state(1100, 500, 1.6, 10.0);
+        cam.keys = {key};
+        shotcam::SceneCamera old = cam, phase1 = cam;
+        shotcam::remapForResize(cam, oldStage, newStage, offset);
+        shotcam::remapForResize(phase1, oldCanvas, newCanvas, offset);
+        const QPolygonF before = shotcam::frameQuad(old.keys.at(0).state, oldStage)
+                                     .translated(offset);
+        const QPolygonF after = shotcam::frameQuad(cam.keys.at(0).state, newStage);
+        bool over = before.size() == after.size();
+        for (int i = 0; over && i < after.size(); ++i)
+            over = near(before.at(i).x(), after.at(i).x()) && near(before.at(i).y(), after.at(i).y());
+        const QPolygonF wrong = shotcam::frameQuad(phase1.keys.at(0).state, newStage);
+        check(QStringLiteral("(mg6) adding a margin keeps a key's frame over the same pixels "
+                             "(centre + offset, zoom unchanged)"),
+              over && near(cam.keys.at(0).state.zoom, 1.6), stateText(cam.keys.at(0).state));
+        check(QStringLiteral("(mg6) control: the canvas-scaled zoom (no stage) puts it off its art"),
+              !near(wrong.boundingRect().width(), after.boundingRect().width()),
+              QString::number(wrong.boundingRect().width()));
+    }
+    {
+        // (mg7) the file: frameWidth / frameHeight only with a margin, read
+        // back; a frame that cannot be one is repaired, not cropped.
+        Scene *fs = new Scene;
+        fs->number = 1;
+        fs->panels.append(marginPanel(QSize(1920, 1080), QSize(480, 270)));
+        ProjectIO::SaveData data;
+        data.projectName = QStringLiteral("Margin");
+        data.fps = 24;
+        data.canvasSize = QSize(2880, 1620);
+        data.stageMargin = QSize(480, 270);
+        data.scenes = {fs};
+        const QString dir = scratch + QStringLiteral("/mg7");
+        QDir().mkpath(dir);
+        const ProjectIO::WriteResult w = ProjectIO::projectToJson(data, dir + QStringLiteral("/m.sankotv"));
+        ProjectIO::LoadedProject back = ProjectIO::projectFromJson(w.root, dir, dir + QStringLiteral("/m.sankotv"));
+        const bool written = w.root.value(QStringLiteral("frameWidth")).toInt() == 1920
+            && w.root.value(QStringLiteral("frameHeight")).toInt() == 1080;
+        check(QStringLiteral("(mg7) a margin project writes its shot's size and reads its margin "
+                             "back (480 / 270 px each side)"),
+              w.ok && written && back.stageMargin == QSize(480, 270) && !back.stageMarginRepaired,
+              QStringLiteral("frame %1x%2, margin %3x%4").arg(w.root.value(QStringLiteral("frameWidth")).toInt())
+                  .arg(w.root.value(QStringLiteral("frameHeight")).toInt())
+                  .arg(back.stageMargin.width()).arg(back.stageMargin.height()));
+        qDeleteAll(back.scenes);
+        data.stageMargin = QSize(0, 0);
+        const ProjectIO::WriteResult w0 = ProjectIO::projectToJson(data, dir + QStringLiteral("/m.sankotv"));
+        check(QStringLiteral("(mg7) control: without a margin neither key is written (the manifest "
+                             "every older project has)"),
+              w0.ok && !w0.root.contains(QStringLiteral("frameWidth"))
+                  && !w0.root.contains(QStringLiteral("frameHeight")));
+        QJsonObject bad = w.root;
+        bad[QStringLiteral("frameWidth")] = 1921; // not centred on whole pixels
+        ProjectIO::LoadedProject repaired = ProjectIO::projectFromJson(bad, dir, dir + QStringLiteral("/m.sankotv"));
+        QJsonObject big = w.root;
+        big[QStringLiteral("frameWidth")] = 4000; // larger than the stage
+        ProjectIO::LoadedProject repaired2 = ProjectIO::projectFromJson(big, dir, dir + QStringLiteral("/m.sankotv"));
+        check(QStringLiteral("(mg7) a frame the artwork cannot have (off-centre, or larger than "
+                             "the stage) opens with no margin and says so; the artwork keeps its "
+                             "size"),
+              repaired.stageMarginRepaired && repaired.stageMargin == QSize(0, 0)
+                  && repaired2.stageMarginRepaired && repaired2.stageMargin == QSize(0, 0)
+                  && !repaired.scenes.isEmpty()
+                  && repaired.scenes.first()->panels.first()->canvasSize() == QSize(2880, 1620));
+        qDeleteAll(repaired.scenes);
+        qDeleteAll(repaired2.scenes);
+        delete fs;
+    }
+    {
+        // (mg10) the dialogs' rules: the presets are shares of the shot, the
+        // note says the stage and its weight, amber past a 4K layer.
+        NewProjectDialog::setDefaultLocationForTest(scratch);
+        NewProjectDialog np;
+        np.marginDropdown()->choose(2); // 25 %
+        const bool at25 = np.stageMargin() == QSize(480, 270) && np.canvasWidth() == 2880
+            && np.canvasHeight() == 1620
+            && np.stageNoteForTest() == QStringLiteral("Stage 2880 × 1620 · 18.7 MB a layer")
+            && !np.stageNoteHeavyForTest() && !np.acrossField()->fieldEnabled();
+        np.presetDropdown()->choose(2); // 4K: the margin follows the shot
+        const bool at4k = np.stageMargin() == QSize(960, 540)
+            && np.stageNoteForTest() == QStringLiteral("Stage 5760 × 3240 · 74.6 MB a layer")
+            && np.stageNoteHeavyForTest();
+        np.presetDropdown()->choose(0);
+        np.marginDropdown()->choose(0);
+        const bool none = np.stageMargin() == QSize(0, 0) && np.canvasWidth() == 1920
+            && np.stageNoteForTest() == QStringLiteral("No margin: the stage is the frame")
+            && !np.stageNoteHeavyForTest();
+        check(QStringLiteral("(mg10) New Project: 25 % at 1080p is 480 / 270 px each side, a 2880 x "
+                             "1620 stage, 18.7 MB a layer, fields locked; at 4K it follows the shot "
+                             "and the note turns amber (74.6 MB); None is today's project"),
+              at25 && at4k && none,
+              QStringLiteral("25 %1, 4K %2, none %3").arg(at25).arg(at4k).arg(none));
+        np.marginDropdown()->choose(stagemargin::kCustom);
+        np.acrossField()->setText(QStringLiteral("4000"));
+        Q_EMIT np.acrossField()->textEdited(QStringLiteral("4000"));
+        check(QStringLiteral("(mg10) control: a Custom margin past the 8192 px stage is refused "
+                             "and Create is off"),
+              np.acrossField()->fieldEnabled() && !np.validationReason().isEmpty()
+                  && !np.createButton()->isEnabled(),
+              np.validationReason());
+        NewProjectDialog::setDefaultLocationForTest(QString());
+
+        // The Stage Margin dialog: grow, shrink with nothing there, shrink
+        // that cuts art (the probe says what lies in the band), too big.
+        int asked = 0;
+        StageMarginDialog::Band answer;
+        StageMarginDialog md(QSize(1920, 1080), QSize(192, 108),
+                             [&](const QSize &) { ++asked; return answer; });
+        const QString current = md.currentText();
+        md.presetDropdown()->choose(2); // grow to 25 %
+        const QString grow = md.effectText();
+        const bool growOk = grow.startsWith(QStringLiteral("The stage grows to 2880 × 1620"))
+            && !md.effectWarns() && asked == 0;
+        StageMarginDialog sd(QSize(1920, 1080), QSize(480, 270),
+                             [&](const QSize &) { ++asked; return answer; });
+        sd.presetDropdown()->choose(1); // shrink to 10 %, nothing drawn there
+        const bool quiet = sd.effectText().contains(QStringLiteral("Nothing is drawn in the part "
+                                                                    "that goes (288 px each side, "
+                                                                    "162 px top and bottom)"))
+            && !sd.effectWarns();
+        answer.panelsWithArt = 3;
+        answer.keysInBand = 2;
+        sd.presetDropdown()->choose(0);
+        sd.presetDropdown()->choose(1); // the same shrink, art there
+        const bool warns = sd.effectWarns()
+            && sd.effectText().contains(QStringLiteral("Art on 3 panels"))
+            && sd.effectText().contains(QStringLiteral("2 camera keys frame part of it."));
+        check(QStringLiteral("(mg10) Stage Margin: the current line reads \"current stage\"; "
+                             "growing says nothing is lost (no band asked about); shrinking with "
+                             "nothing drawn there says so plainly; art cut is amber, naming the "
+                             "panels and the camera keys (Q2)"),
+              current == QStringLiteral("Frame 1920 × 1080 · current stage 2304 × 1296 (10 %)")
+                  && growOk && quiet && warns,
+              QStringLiteral("current '%1' grow %2 quiet %3 warns %4").arg(current).arg(growOk)
+                  .arg(quiet).arg(warns));
+        sd.presetDropdown()->choose(stagemargin::kCustom);
+        sd.acrossField()->setText(QStringLiteral("4000"));
+        // The dialog hears the field's own line edit, as Resize Project does.
+        Q_EMIT sd.acrossField()->edit()->textEdited(QStringLiteral("4000"));
+        check(QStringLiteral("(mg10) control: past the cap Set Margin is off with the reason; "
+                             "Same share both ways filled the other field"),
+              !sd.setButton()->isEnabled() && sd.validationReason().startsWith(
+                  QStringLiteral("The stage can be at most 8192"))
+                  && sd.downField()->intValue() == qRound(4000.0 * 1080 / 1920),
+              sd.validationReason());
     }
 
     delete scene;

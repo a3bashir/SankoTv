@@ -29,7 +29,8 @@ namespace sankoexport {
 // --- The list every export reads ---------------------------------------------
 
 QVector<ExportPanel> collectPanels(const QVector<Scene *> &scenes, int fps,
-                                   bool fullArtwork, bool cameraOff)
+                                   bool fullArtwork, bool cameraOff,
+                                   const QSize &stageMargin)
 {
     QVector<ExportPanel> list;
     for (const Scene *scene : scenes) {
@@ -52,6 +53,8 @@ QVector<ExportPanel> collectPanels(const QVector<Scene *> &scenes, int fps,
                 ? shotcam::neutral(canvas)
                 : shotcam::evaluateAtPanel(*scene, i, 0, fps);
             row.stillNeutral = shotcam::isNeutral(row.still, canvas);
+            row.stage = shotcam::stageWithMargin(canvas, stageMargin);
+            row.fullArtwork = fullArtwork;
             list.append(row);
         }
     }
@@ -61,9 +64,14 @@ QVector<ExportPanel> collectPanels(const QVector<Scene *> &scenes, int fps,
 QImage stillImage(const ExportPanel &row)
 {
     const QImage flat = row.panel ? row.panel->flattenedPixmap().toImage() : QImage();
-    if (row.stillNeutral || flat.isNull())
-        return flat; // today's picture, byte for byte
-    return shotcam::renderShot(flat, row.still, flat.size());
+    if (flat.isNull() || row.fullArtwork)
+        return flat; // the whole panel - the whole stage with a margin
+    // A row not made by collectPanels has no stage: the panel is the frame.
+    const shotcam::Stage stage =
+        row.stage.canvas.isEmpty() ? shotcam::Stage(flat.size()) : row.stage;
+    if (row.stillNeutral) // today's picture, byte for byte; with a margin the frame
+        return stage.hasMargin() ? flat.copy(stage.frameRect()) : flat;
+    return shotcam::renderShot(flat, row.still, stage, stage.frame);
 }
 
 shotcam::CameraState movieFrameCamera(const QVector<ExportPanel> &panels,
@@ -94,12 +102,14 @@ int movieFrameCount(const QVector<ExportPanel> &panels, int fps)
     return frames;
 }
 
-QImage renderMovieFrame(const Panel *panel, const QSize &frameSize)
+namespace {
+// The pre-camera movie frame: `flat` fitted into the frame, smooth-scaled,
+// on black. A margin's base framing hands it the frame's crop.
+QImage fitMovieFrame(const QImage &flat, const QSize &frameSize)
 {
     // RGBX8888: the format a video frame is made from without a conversion.
     QImage frame(frameSize, QImage::Format_RGBX8888);
     frame.fill(Qt::black);
-    const QImage flat = panel ? panel->flattenedPixmap().toImage() : QImage();
     if (flat.isNull())
         return frame;
     const QSize target = flat.size().scaled(frameSize, Qt::KeepAspectRatio);
@@ -115,6 +125,12 @@ QImage renderMovieFrame(const Panel *panel, const QSize &frameSize)
                       fitted);
     return frame;
 }
+} // namespace
+
+QImage renderMovieFrame(const Panel *panel, const QSize &frameSize)
+{
+    return fitMovieFrame(panel ? panel->flattenedPixmap().toImage() : QImage(), frameSize);
+}
 
 QImage renderMovieFrame(const Panel *panel, const QSize &frameSize,
                         const shotcam::CameraState &camera)
@@ -123,6 +139,17 @@ QImage renderMovieFrame(const Panel *panel, const QSize &frameSize,
         return renderMovieFrame(panel, frameSize); // the neutral pins' path
     return shotcam::renderShot(panel->flattenedPixmap().toImage(), camera,
                                frameSize);
+}
+
+QImage renderMovieFrame(const Panel *panel, const QSize &frameSize,
+                        const shotcam::CameraState &camera, const shotcam::Stage &stage)
+{
+    if (!stage.hasMargin())
+        return renderMovieFrame(panel, frameSize, camera);
+    const QImage flat = panel ? panel->flattenedPixmap().toImage() : QImage();
+    if (flat.isNull() || shotcam::isNeutral(camera, stage.canvas))
+        return fitMovieFrame(flat.isNull() ? flat : flat.copy(stage.frameRect()), frameSize);
+    return shotcam::renderShot(flat, camera, stage, frameSize);
 }
 
 // --- PNG ------------------------------------------------------------------------
@@ -638,9 +665,13 @@ void MovieExportJob::pumpVideo()
         const ExportPanel &row = m_request.panels.at(panel);
         if (!row.scene || row.scene->camera.isEmpty()) {
             // No camera move in this scene: the old path exactly - rendered
-            // once per panel, however many frames it is held for.
+            // once per panel, however many frames it is held for. With a
+            // margin, the base framing: the frame cropped, the same path.
             if (panel != m_panelOfImage || m_imageMoving) {
-                m_image = renderMovieFrame(row.panel, m_request.frameSize);
+                m_image = row.stage.hasMargin()
+                    ? renderMovieFrame(row.panel, m_request.frameSize,
+                                       shotcam::neutral(row.stage.canvas), row.stage)
+                    : renderMovieFrame(row.panel, m_request.frameSize);
                 m_panelOfImage = panel;
                 m_imageMoving = false;
             }
@@ -654,9 +685,13 @@ void MovieExportJob::pumpVideo()
             if (panel != m_panelOfImage)
                 m_flat = row.panel->flattenedPixmap().toImage();
             if (panel != m_panelOfImage || !m_imageMoving || camera != m_imageCamera) {
+                const shotcam::Stage stage =
+                    row.stage.canvas.isEmpty() ? shotcam::Stage(m_flat.size()) : row.stage;
                 m_image = shotcam::isNeutral(camera, m_flat.size())
-                    ? renderMovieFrame(row.panel, m_request.frameSize)
-                    : shotcam::renderShot(m_flat, camera, m_request.frameSize);
+                    ? (stage.hasMargin()
+                           ? renderMovieFrame(row.panel, m_request.frameSize, camera, stage)
+                           : renderMovieFrame(row.panel, m_request.frameSize))
+                    : shotcam::renderShot(m_flat, camera, stage, m_request.frameSize);
                 m_imageCamera = camera;
                 m_imageMoving = true;
                 m_panelOfImage = panel;

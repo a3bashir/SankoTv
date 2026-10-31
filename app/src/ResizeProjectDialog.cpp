@@ -65,9 +65,9 @@ const char *kPrimaryButtonQss =
 } // namespace
 
 ResizeProjectDialog::ResizeProjectDialog(const QSize &currentSize,
-                                         QWidget *parent)
+                                         QWidget *parent, const QSize &stageSize)
     : QDialog(parent, Qt::Dialog | Qt::FramelessWindowHint),
-      m_current(currentSize)
+      m_current(currentSize), m_stage(stageSize)
 {
     setModal(true);
     setFixedSize(kDialogW, kDialogH);
@@ -327,10 +327,18 @@ void ResizeProjectDialog::paintEvent(QPaintEvent *)
 
     // Current size, then what the chosen one would do.
     p.setPen(kInfoText);
+    // With a stage margin (Phase 2A, Figma 2A-2) the shot is what is resized;
+    // the line says so and names the stage around it.
     p.drawText(QRect(kX, kEffectY, kW, 12), Qt::AlignLeft,
-               QStringLiteral("Current: %1 \xC3\x97 %2")
-                   .arg(m_current.width())
-                   .arg(m_current.height()));
+               m_stage.isValid() && m_stage != m_current
+                   ? QStringLiteral("Current: %1 × %2 (the shot) · stage %3 × %4")
+                         .arg(m_current.width())
+                         .arg(m_current.height())
+                         .arg(m_stage.width())
+                         .arg(m_stage.height())
+                   : QStringLiteral("Current: %1 \xC3\x97 %2")
+                         .arg(m_current.width())
+                         .arg(m_current.height()));
 
     const QString message = m_reason.isEmpty() ? m_effect : m_reason;
     if (!message.isEmpty()) {
