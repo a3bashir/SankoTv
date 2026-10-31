@@ -7,6 +7,7 @@
 #include "ColorPanel.h"
 #include "SankoIcons.h"
 #include "SankoTimelineTheme.h"
+#include "SankoToggleControls.h"
 
 #include "DrawingCanvas.h"
 #include "FloatingToolWindow.h"
@@ -1334,7 +1335,11 @@ public:
         m_button->setGeometry(38, 3, 21, 21);
         m_button->setCursor(Qt::PointingHandCursor);
         m_button->setFocusPolicy(Qt::NoFocus);
-        m_button->setStyleSheet(SankoTheme::themed("QToolButton { color:#ffffff; font-size:15px; font-weight:600;"
+        // The font in POINTS (11.25pt = 15px at 96 dpi): on every hover the
+        // Windows 11 style sizes a tool button's menu area - menu or not -
+        // from the font's point size, and a pixel font has none (-1) - the
+        // QFont::setPointSize warning (clean-up batch 2, 2026-10-30).
+        m_button->setStyleSheet(SankoTheme::themed("QToolButton { color:#ffffff; font-size:11.25pt; font-weight:600;"
             " background:#3a3a3a; border:none; border-radius:5px;"
             " padding-bottom:2px; }"
             "QToolButton:hover { background:%PURPLE%; }"));
@@ -4207,8 +4212,10 @@ QWidget *StoryboardPage::createFloatingPanel(const QString &title, QWidget *body
     closeButton->setText(QString::fromUtf8("\xE2\x9C\x95")); // ✕
     closeButton->setCursor(Qt::PointingHandCursor);
     closeButton->setToolTip(QStringLiteral("Close"));
+    // 8.25pt = 11px at 96 dpi: a tool button's font in points (the Windows 11
+    // style's hover sizing reads the point size - see PresetPill).
     closeButton->setStyleSheet(SankoTheme::themed("QToolButton { background: transparent; color: #999999; border: none;"
-        " font-size: 11px; padding: 2px 6px; }"
+        " font-size: 8.25pt; padding: 2px 6px; }"
         "QToolButton:hover { background: #262626; color: %ACCENT%; }"));
     connect(closeButton, &QToolButton::clicked, panel, &QWidget::hide);
     headerLayout->addWidget(closeButton);
@@ -4426,7 +4433,13 @@ QWidget *StoryboardPage::createCameraPanel()
     quick->setIcon(quickMoveIcon(kQuickMoves[0], 20, QColor(0xdd, 0xdd, 0xdd)));
     quick->setIconSize(QSize(20, 20));
     quick->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-    quick->setFont(cameraBarFont());
+    {
+        // In POINTS (9pt = 12px at 96 dpi): a tool button's font must have a
+        // point size - see PresetPill.
+        QFont f = cameraBarFont();
+        f.setPointSizeF(9.0);
+        quick->setFont(f);
+    }
     quick->setCursor(Qt::PointingHandCursor);
     quick->setFixedHeight(30);
     quick->setToolTip(QStringLiteral("A whole camera move in one click: two keys over the span"));
@@ -4526,7 +4539,7 @@ QWidget *StoryboardPage::createCameraPanel()
         "QLabel#camQuickTitle{color:#e5e5ed;font-size:12px;}"
         "QLabel#camQuickSpanText,QLabel[note=\"true\"]{color:#6f6f76;font-size:10px;}"
         "QToolButton{background:#1f1f22;border:1px solid #2a2a2a;border-radius:6px;"
-        "color:#cccccc;font-size:11px;padding:4px 0 2px 0;}"
+        "color:#cccccc;font-size:8.25pt;padding:4px 0 2px 0;}" // points: see PresetPill
         "QToolButton:hover{background:rgba(124,110,246,0.14);border-color:#7c6ef6;color:#ffffff;}"
         "QToolButton:disabled{color:#555555;}"
         "QDoubleSpinBox,QSpinBox,QComboBox{background:#333333;color:#e5e5ed;border:none;"
@@ -5462,8 +5475,21 @@ void StoryboardPage::cameraUseLastFraming(int sceneIndex)
     for (const shotcam::CameraKey &key : scene->camera.keys)
         if (shotcam::keyFrame(*scene, key, fps) < 0.0)
             after.keys.append(key); // inert keys stay, as with the single framing
-    if (!whole)
-        after.keys.append(shotcam::makeKey(*scene, 0, 0, fps, framing));
+    if (!whole) {
+        const shotcam::CameraKey key = shotcam::makeKey(*scene, 0, 0, fps, framing);
+        after.keys.append(key);
+        // Already holds it - its one live key is that very key: no Undo step
+        // that changes nothing (the clean-up hand test ran it three times).
+        if (shotcam::liveKeyCount(*scene) == 1) {
+            for (const shotcam::CameraKey &k : scene->camera.keys)
+                if (shotcam::keyFrame(*scene, k, fps) >= 0.0 && k.panelUid == key.panelUid
+                    && k.at == key.at && k.state == key.state && k.ease == key.ease) {
+                    sayNote(QStringLiteral("Scene %1 already holds Scene %2's last framing.")
+                                .arg(scene->number).arg(m_scenes.at(sceneIndex - 1)->number));
+                    return;
+                }
+        }
+    }
     if (whole && shotcam::liveKeyCount(*scene) == 0) {
         // The whole canvas already: nothing to change, and the artist is
         // told so rather than left with an entry that did nothing.
@@ -8894,19 +8920,14 @@ void StoryboardPage::rebuildLayerPanel()
             rowLayout->addSpacing(14);
 
 
-        // Visibility (eye) toggle — Figma eye 13x13 (7:74 eye), native #CCC.
-        QPushButton *eye = new QPushButton;
+        // Visibility (eye) toggle - the Timeline's eye in the Timeline's
+        // button (one lock and one eye across SankoTV, 2026-10-30): checked =
+        // hidden, the eye at 35 %. Still an Undo step.
+        QToolButton *eye = SankoToggleControls::makeToggle(
+            nullptr, QStringLiteral("layerEye"), SankoToggleControls::eyeIcon());
         eye->setToolTip(QStringLiteral("Show / hide layer"));
-        eye->setCursor(Qt::PointingHandCursor);
-        eye->setFocusPolicy(Qt::NoFocus);
-        eye->setFixedSize(13, 13);
-        eye->setIcon(QIcon(layerIconPm(QStringLiteral(":/icons/layer_eye.svg"),
-                                       QSizeF(13, 13), QColor(),
-                                       layer.visible ? 1.0 : 0.3)));
-        eye->setIconSize(QSize(13, 13));
-        eye->setStyleSheet(QStringLiteral(
-            "QPushButton { background: transparent; border: none; padding: 0; }"));
-        connect(eye, &QPushButton::clicked, this, [this, i] {
+        eye->setChecked(!layer.visible);
+        connect(eye, &QToolButton::clicked, this, [this, i] {
             Panel *p = currentPanel();
             if (!p || i < 0 || i >= p->layers.size())
                 return;
@@ -8977,21 +8998,14 @@ void StoryboardPage::rebuildLayerPanel()
         rowLayout->addWidget(name, 0, Qt::AlignVCenter);
         rowLayout->addStretch(1); // Figma 'sp' spacer
 
-        // Lock toggle — Figma Lock Layer 7x8 (7:74 lock), native colour.
-        QPushButton *lock = new QPushButton;
+        // Lock toggle - the Timeline's padlock in the Timeline's button:
+        // open and grey unlocked, closed and the accent locked. Still an
+        // Undo step.
+        QToolButton *lock = SankoToggleControls::makeToggle(
+            nullptr, QStringLiteral("layerLock"), SankoToggleControls::lockIcon());
         lock->setToolTip(QStringLiteral("Lock / unlock layer"));
-        lock->setCursor(Qt::PointingHandCursor);
-        lock->setFocusPolicy(Qt::NoFocus);
-        lock->setFixedSize(7, 8);
-        lock->setIcon(QIcon(layerIconPm(QStringLiteral(":/icons/layer_lock.svg"),
-                                        QSizeF(7, 8),
-                                        layer.locked ? SankoTheme::kAccent
-                                                     : QColor(),
-                                        layer.locked ? 1.0 : 0.55)));
-        lock->setIconSize(QSize(7, 8));
-        lock->setStyleSheet(QStringLiteral(
-            "QPushButton { background: transparent; border: none; padding: 0; }"));
-        connect(lock, &QPushButton::clicked, this, [this, i] {
+        lock->setChecked(layer.locked);
+        connect(lock, &QToolButton::clicked, this, [this, i] {
             Panel *p = currentPanel();
             if (!p || i < 0 || i >= p->layers.size())
                 return;

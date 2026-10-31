@@ -7686,6 +7686,9 @@ failed there (`build/_probe/polish/runs/life_before.txt`).
   speed button's font-size is 8.25pt - 11 px at 96 dpi, pixel-identical
   (probe `fontprobe`: same image hash). It is the app's only tool button
   with a menu.
+  CORRECTED 2026-10-30 (clean-up batch 2, item 3): the menu is not the
+  condition - ANY style-sheeted tool button with a pixel font asks on
+  hover; twelve more were found and fixed, and (pz5) checks every one.
 - CHECKS (Lifecycle, each with a control): (pz1) a window-system click on
   a Camera-bar switch that closes a menu does not press it and logs no
   activation warning (control: the same click without a menu presses it),
@@ -8051,6 +8054,73 @@ Approved after a report-only pass; four items.
    STATES check is unchanged and still passes.
 4. The round-2 hand-test results above (1D section), as drafted.
 Lifecycle 935 -> 941.
+Committed as 589bb5473. Its hand test (recording 20261030-202842): steps 4
+and 9 passed; 1-3 never went below the ink floor (lightest taps 2.3 px and
+1.4 px) and 5-8 never used Continue - all covered by (l) and (qm.13). No
+QPainter warning. Two findings, both fixed in clean-up batch 2 below.
+
+## Clean-up batch 2: one lock and one eye, the QFont warning (2026-10-30)
+
+1. ONE LOCK AND ONE EYE (Figma "PROPOSAL 2026-10-30 — One lock and one eye
+   across SankoTV"). New header src/SankoToggleControls.h holds the
+   Timeline's toggle: makeToggle (16 px icon in a 20 px flat checkable
+   QToolButton, hover #1e1e26 rounded 4, pointing hand, no focus),
+   lockIcon (open padlock #A4A7AE / closed padlock accent) and eyeIcon
+   (#A4A7AE / the same at 35 %). The Timeline's track buttons now come from
+   it (look unchanged), and so do the Layers panel's rows: "layerEye" and
+   "layerLock" replace the 13 px QPushButton eye and the 7 x 8 lock
+   (checked = hidden / locked). Each keeps its meaning: layer toggles are
+   Undo steps, track toggles view state. Rows stay 32 px; the eye slot
+   13 -> 20 px moves the thumbnail and name 7 px right, the lock 7 -> 20 px
+   keeps the right edge - the name has 20 px less. icons/layer_eye.svg and
+   layer_lock.svg are no longer used (still in resources.qrc). The switches
+   (Camera bar, Show Guides, Grid, Lock aspect ratio, the collapse chevron)
+   stay as they are, by decision.
+   CHECKS (ax), 3: every layer row's lock and eye is the track's button
+   (size, icon size, checkable, sheet, cursor, focus, icons at 1x / 2x on /
+   off); control: the comparison tells a lock from an eye; a click is one
+   "Toggle Layer Lock" / "Toggle Layer Visibility" step, the rebuilt button
+   checked, Undo reverses each (the track toggle's no-Undo control is the
+   existing (ax) "CLICKING THE SHOTS LOCK"). Test seam:
+   StoryboardPage::currentPanelForTest.
+2. REPEATED USE LAST FRAMING: when scene N+1's one live key is already the
+   key it would make, no Undo step and the note "Scene 2 already holds
+   Scene 1's last framing." (the hand test ran it three times, three empty
+   steps). (qm.13) + control (the first one is an edit with no note).
+3. THE QFONT WARNING, PROPERLY. The hand test logged it as the pointer
+   left a Quick Move tile - a tool button with NO menu, so the polish
+   batch's rule above ("a tool button's menu indicator") was too narrow.
+   From the Qt 6.11.1 source and a stack taken in the real app (probe
+   build/_probe/cleanup2/askprobe): on every hover QToolButton hit-tests
+   its sub-controls (QCommonStyle::hitTestComplexControl); for a
+   style-sheeted button with a box, QStyleSheetStyle sizes SC_ToolButtonMenu
+   from the base style's PM_MenuButtonIndicator whether or not there is a
+   menu; QWindows11Style computes that from widget->font().pointSize() -
+   -1 for a pixel font - and caches it per point size, so it warns once per
+   launch, for whichever pixel-font tool button is hovered first. The probe
+   wraps the style and lists every asker: twelve tool buttons, none with a
+   menu - the eight Quick Move tiles (11px), Quick Move (12px), the floating
+   panel's two close buttons (11px), the size preset pill's + / - (15px).
+   All now in points - 8.25pt, 9pt, 8.25pt, 11.25pt - pixel-identical at 96
+   dpi (probe build/_probe/cleanup2/pxpt: the same image hash for each
+   pair, offscreen and on Windows). After: no asker, no warning.
+   CHECKS (pz5), 3, before (pz4): no QToolButton in the app has a font
+   without a point size (the popover's tiles included); control: a tool
+   button with the old pixel sheet is found by the same census; the
+   pointer over every tile and away logs no setPointSize warning - and
+   (pz4)'s control, right after, still warns, so nothing was cached. The
+   check covers EVERY tool button, not only those with a menu (asked
+   for), because the culprit had none. On the old code the census lists
+   the twelve (probe output build/_probe/cleanup2/ask_all.txt).
+Lifecycle 941 -> 949.
+TEST NOTE (found building the LAYERS check): rows rebuilt with
+deleteLater() are never deleted under the gate - pump() is
+processEvents(), and deferred deletes need a running event loop - so a
+findChildren after a rebuild also finds every older row, oldest first. The
+check takes the NEWEST match. Its first run took the oldest and failed,
+and its two undone commands, left on the stack, failed two later (ax)
+checks that count stack entries; the block now asserts the stack began
+empty and clears it back.
 
 ## METHOD: measure interior structure ACROSS THE SIZE RANGE before calling it character (2026-09-25)
 

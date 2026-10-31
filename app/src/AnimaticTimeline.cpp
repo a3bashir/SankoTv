@@ -2,6 +2,7 @@
 #include "SankoIcons.h"
 #include "SankoTheme.h"
 #include "SankoTimelineTheme.h"
+#include "SankoToggleControls.h"
 
 #include "AnimaticPage.h"
 #include "StoryboardModel.h"
@@ -460,52 +461,28 @@ void AnimaticTimeline::buildTrackControls()
     if (!m_canvas)
         return;
     using namespace SankoTimelineTheme;
+    // The button is SankoToggleControls' - the Layers panel's lock and eye
+    // sit in the same one (one lock and one eye across SankoTV, 2026-10-30).
     auto make = [&](const QString &file, const QString &name, const QColor &on) {
-        auto *b = new QToolButton(m_canvas);
-        b->setObjectName(name);
-        b->setCheckable(true);
-        b->setAutoRaise(true);
-        b->setCursor(Qt::PointingHandCursor);
-        b->setFocusPolicy(Qt::NoFocus);
-        b->setIcon(trackIcon(file, on));
-        b->setIconSize(QSize(kControlSize, kControlSize));
-        b->setFixedSize(kControlSize + 4, kControlSize + 4);
-        b->setStyleSheet(QStringLiteral(
-            "QToolButton { border: none; background: transparent; padding: 0; }"
-            "QToolButton:hover { background: #1e1e26; border-radius: 4px; }"));
-        return b;
+        return SankoToggleControls::makeToggle(m_canvas, name, trackIcon(file, on));
     };
     const TimelineTrack tracks[4] = {TimelineTrack::Scenes, TimelineTrack::Shots,
                                      TimelineTrack::Audio, TimelineTrack::Camera};
     const char *suffix[4] = {"Scenes", "Shots", "Audio", "Camera"};
     for (int i = 0; i < 4; ++i) {
         const TimelineTrack t = tracks[i];
-        m_lockButtons[i] = make(QStringLiteral(":/icons/timeline/track_lock.svg"),
-                                QStringLiteral("trackLock") + QLatin1String(suffix[i]),
-                                kTrackControlActive);
-        // Locked reads as locked (clean-up batch, 2026-10-30): the checked
-        // state is a CLOSED padlock in the accent, the open one stays for
-        // unlocked - two glyphs, as the speaker has.
-        {
-            QIcon lock;
-            for (qreal scale : {1.0, 2.0}) {
-                lock.addPixmap(SankoIcons::renderSvg(QStringLiteral(":/icons/timeline/track_lock.svg"),
-                                                     QSize(kControlSize, kControlSize), scale, kTrackControl),
-                               QIcon::Normal, QIcon::Off);
-                lock.addPixmap(SankoIcons::renderSvg(QStringLiteral(":/icons/timeline/track_lock_closed.svg"),
-                                                     QSize(kControlSize, kControlSize), scale,
-                                                     kTrackControlActive),
-                               QIcon::Normal, QIcon::On);
-            }
-            m_lockButtons[i]->setIcon(lock);
-        }
+        // Locked reads as locked: the checked state is the CLOSED padlock in
+        // the accent, the open one in the grey for unlocked.
+        m_lockButtons[i] = SankoToggleControls::makeToggle(
+            m_canvas, QStringLiteral("trackLock") + QLatin1String(suffix[i]),
+            SankoToggleControls::lockIcon());
         connect(m_lockButtons[i], &QToolButton::clicked, this, [this, t](bool on) {
             if (m_host)
                 m_host->setTrackLocked(t, on); // comes back through setTracks
         });
-        m_eyeButtons[i] = make(QStringLiteral(":/icons/timeline/track_eye.svg"),
-                               QStringLiteral("trackEye") + QLatin1String(suffix[i]),
-                               dimmed(kTrackControl));
+        m_eyeButtons[i] = SankoToggleControls::makeToggle(
+            m_canvas, QStringLiteral("trackEye") + QLatin1String(suffix[i]),
+            SankoToggleControls::eyeIcon());
         connect(m_eyeButtons[i], &QToolButton::clicked, this, [this, t](bool on) {
             if (m_host)
                 m_host->setTrackVisible(t, !on); // checked = hidden

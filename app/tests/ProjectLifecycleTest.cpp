@@ -12076,6 +12076,30 @@ void runQuickMovePass(const QString &scratch)
               stack->index() == i3 + 1 && lastText() == QStringLiteral("Use Last Framing")
                   && shotcam::liveKeyCount(*s1) == 0 && clearedNote.isEmpty(),
               clearedNote);
+
+        // Use Last Framing twice (the clean-up hand test ran it three times):
+        // the second finds scene 2 already holding the framing.
+        setCam(s0, {shotcam::makeKey(*s0, 0, 0, 24, F)});
+        setCam(s1, {});
+        r.storyboard->clearNoteForTest();
+        const int i4 = stack->index();
+        trigger(1, "cameraUseLastFraming");
+        const bool usedOnce = stack->index() == i4 + 1 && lastText() == QStringLiteral("Use Last Framing")
+            && sameState(stateAt(s1, 0), F);
+        const QString onceNote = r.storyboard->lastNoteForTest();
+        const int i5 = stack->index();
+        const QByteArray held = json(s1);
+        trigger(1, "cameraUseLastFraming");
+        const QString holdNote = r.storyboard->lastNoteForTest();
+        check(QStringLiteral("(qm.13) Use Last Framing on a scene that already holds that framing "
+                             "pushes nothing and says \"Scene 2 already holds Scene 1's last "
+                             "framing.\""),
+              stack->index() == i5 && json(s1) == held
+                  && holdNote == QStringLiteral("Scene 2 already holds Scene 1's last framing."),
+              holdNote);
+        check(QStringLiteral("(qm.13) control: the first Use Last Framing is one edit and leaves no "
+                             "note"),
+              usedOnce && onceNote.isEmpty(), onceNote);
     }
     setCam(s0, {});
     setCam(s1, {});
@@ -12478,6 +12502,83 @@ void runCameraToolPass(const QString &scratch)
         r.canvas->setTool(DrawingCanvas::Camera);
         pump(50);
     }
+    // (pz5) NO TOOL BUTTON ANYWHERE HAS A PIXEL FONT (clean-up batch 2,
+    // 2026-10-30). The clean-up hand test logged the warning again, as the
+    // pointer left a Quick Move tile - a tool button with NO menu. From the
+    // Qt 6.11.1 source (probe build/_probe/cleanup2/askprobe): on every hover
+    // QToolButton hit-tests its sub-controls; for a style-sheeted button the
+    // menu area is sized by QStyleSheetStyle from the base style's
+    // PM_MenuButtonIndicator (menu or not), and the Windows 11 style reads
+    // the font's POINT size there - -1 for a pixel font. So the rule is every
+    // tool button, not only those with a menu. Twelve had one (the eight
+    // tiles, Quick Move, two panel close buttons, the size preset pill); all
+    // now give it in points, pixel-identical at 96 dpi (probe pxpt). Placed
+    // BEFORE (pz4): the style caches the answer per launch, and (pz4)'s
+    // control asks it on purpose - so that control still warning below also
+    // proves this sweep left nothing cached.
+    {
+        auto pixelFonted = [] {
+            QStringList bad;
+            for (QWidget *w : QApplication::allWidgets())
+                if (auto *tb = qobject_cast<QToolButton *>(w)) {
+                    tb->ensurePolished();
+                    if (tb->font().pointSize() <= 0)
+                        bad << QStringLiteral("%1/%2 (%3 px)")
+                                   .arg(tb->parentWidget() ? tb->parentWidget()->objectName() : QString(),
+                                        tb->objectName())
+                                   .arg(tb->font().pixelSize());
+                }
+            return bad;
+        };
+        QWidget *pop = r.storyboard->cameraQuickPopoverForTest();
+        int tiles = pop ? int(pop->findChildren<QToolButton *>().size()) : 0;
+        const QStringList bad = pixelFonted();
+        check(QStringLiteral("(pz5) NO TOOL BUTTON ANYWHERE IN THE APP has a font without a point "
+                             "size (a pixel size) - the Quick Move popover's tiles included"),
+              bad.isEmpty() && tiles >= 8,
+              QStringLiteral("%1 tile(s); %2").arg(tiles).arg(bad.join(QStringLiteral("; "))));
+        // Control: the census sees a tool button with the old pixel sheet.
+        QStringList withOld;
+        {
+            auto *old = new QToolButton(&r.window);
+            old->setObjectName(QStringLiteral("pz5OldPixelFont"));
+            old->setStyleSheet(QStringLiteral(
+                "QToolButton { border: 1px solid #2a2a2a; font-size: 11px; padding: 4px; }"));
+            withOld = pixelFonted();
+            delete old;
+        }
+        check(QStringLiteral("(pz5) control: a tool button given the old pixel font is found by the "
+                             "same census"),
+              withOld.size() == bad.size() + 1
+                  && withOld.filter(QStringLiteral("pz5OldPixelFont")).size() == 1,
+              withOld.join(QStringLiteral("; ")));
+        // Live: the pointer over every tile and away, at the window-system
+        // level, as in the recording.
+        int tileWarnings = -1;
+        QToolButton *quick = bar->findChild<QToolButton *>(QStringLiteral("camQuickMove"));
+        if (pop && quick) {
+            quick->click();
+            pump(150);
+            if (pop->isVisible()) {
+                WarningCapture warnings;
+                QWindow *pwin = pop->windowHandle();
+                for (QToolButton *t : pop->findChildren<QToolButton *>()) {
+                    const QPoint c = t->mapToGlobal(t->rect().center());
+                    wsMouse(pwin, QPointF(c), QEvent::MouseMove, Qt::NoButton);
+                    pump(30);
+                    wsMouse(pwin, QPointF(c + QPoint(0, t->height())), QEvent::MouseMove, Qt::NoButton);
+                    pump(30);
+                }
+                tileWarnings = warnings.count(QStringLiteral("setPointSize"));
+            }
+            pop->hide();
+            pump(60);
+        }
+        check(QStringLiteral("(pz5) the pointer over each Quick Move tile and away logs no "
+                             "\"QFont::setPointSize\" warning (that it could: (pz4)'s control below)"),
+              tileWarnings == 0, QStringLiteral("%1 warning(s)").arg(tileWarnings));
+    }
+
     // (pz4) No Qt warning when the pointer leaves the timeline's speed
     // button. The cause (probe build/_probe/polish/warnprobe): Qt 6.11's
     // Windows 11 style sizes a tool button's menu indicator from the font's
@@ -13266,6 +13367,108 @@ void runTrackLocksPass(const QString &scratch)
                              "pixel (21, 12) is ink on the closed padlock and clear on the open one"),
               aClosed >= 200 && aOpen < 16,
               QStringLiteral("closed %1 open %2").arg(aClosed).arg(aOpen));
+    }
+
+    // ---- the Layers panel takes the same lock and eye (one lock and one eye
+    //      across SankoTV, approved 2026-10-30) ----
+    {
+        auto img = [](const QIcon &ic, qreal scale, QIcon::State st) {
+            return ic.pixmap(QSize(16, 16), scale, QIcon::Normal, st).toImage()
+                .convertToFormat(QImage::Format_ARGB32_Premultiplied);
+        };
+        auto sameIcon = [&](const QIcon &a, const QIcon &b) {
+            for (qreal s : {1.0, 2.0})
+                for (QIcon::State st : {QIcon::Off, QIcon::On})
+                    if (img(a, s, st) != img(b, s, st))
+                        return false;
+            return true;
+        };
+        // The NEWEST match: a rebuild deleteLater()s the old rows, and with no
+        // event loop running (pump is processEvents) deferred deletes never
+        // run - the old rows stay, earlier in the child list.
+        auto rowButton = [&](const char *name, int layerIndex) -> QToolButton * {
+            QToolButton *found = nullptr;
+            for (QToolButton *b : sb->findChildren<QToolButton *>(QLatin1String(name)))
+                if (b->parentWidget() && b->parentWidget()->property("layerIndex").toInt() == layerIndex)
+                    found = b;
+            return found;
+        };
+        QToolButton *trackLock = control("trackLockShots");
+        QToolButton *trackEye = control("trackEyeShots");
+        const QList<QToolButton *> locks = sb->findChildren<QToolButton *>(QStringLiteral("layerLock"));
+        const QList<QToolButton *> eyes = sb->findChildren<QToolButton *>(QStringLiteral("layerEye"));
+        QStringList bad;
+        auto alike = [&](QToolButton *b, QToolButton *ref, const QString &what) {
+            if (!b || !ref) {
+                bad << what + QStringLiteral(" missing");
+                return;
+            }
+            if (b->size() != ref->size() || b->iconSize() != ref->iconSize() || !b->isCheckable()
+                || b->styleSheet() != ref->styleSheet() || b->cursor().shape() != ref->cursor().shape()
+                || b->focusPolicy() != ref->focusPolicy() || !sameIcon(b->icon(), ref->icon()))
+                bad << QStringLiteral("%1 %2x%3").arg(what).arg(b->width()).arg(b->height());
+        };
+        for (QToolButton *b : locks)
+            alike(b, trackLock, QStringLiteral("lock"));
+        for (QToolButton *b : eyes)
+            alike(b, trackEye, QStringLiteral("eye"));
+        check(QStringLiteral("(ax) THE LAYERS PANEL'S LOCK AND EYE ARE THE TIMELINE'S: every layer "
+                             "row's lock and eye is the track's button - 20 px, a 16 px icon, "
+                             "checkable, the same sheet (the hover square), cursor and focus - with "
+                             "the same icons at 1x and 2x, checked and unchecked"),
+              !locks.isEmpty() && locks.size() == eyes.size() && bad.isEmpty(),
+              QStringLiteral("%1 lock(s), %2 eye(s); %3").arg(locks.size()).arg(eyes.size())
+                  .arg(bad.join(QStringLiteral("; "))));
+        check(QStringLiteral("(ax) control: the same comparison tells a lock from an eye (a row's "
+                             "lock against the track's eye fails it)"),
+              !locks.isEmpty() && trackEye && !sameIcon(locks.first()->icon(), trackEye->icon()));
+
+        // A click is still the layer's Undo step; the rebuilt row shows it.
+        Panel *p = sb->currentPanelForTest();
+        const int idx = locks.isEmpty() || !locks.first()->parentWidget()
+            ? -1 : locks.first()->parentWidget()->property("layerIndex").toInt();
+        QString detail;
+        bool lockOk = false, eyeOk = false;
+        // The stack must end as it began - empty (track toggles are not
+        // commands): the checks below count its entries.
+        const int count0 = stack->count();
+        if (p && idx >= 0 && idx < p->layers.size() && !p->layers.at(idx).locked
+            && p->layers.at(idx).visible && count0 == 0) {
+            auto lastStep = [&] { return stack->index() > 0 ? stack->text(stack->index() - 1) : QString(); };
+            const int i0 = stack->index();
+            const bool before = rowButton("layerLock", idx)->isChecked();
+            rowButton("layerLock", idx)->click();
+            pump(120);
+            QToolButton *after = rowButton("layerLock", idx);
+            const bool locked = p->layers.at(idx).locked && after && after->isChecked()
+                && stack->index() == i0 + 1 && lastStep() == QStringLiteral("Toggle Layer Lock");
+            stack->undo();
+            pump(120);
+            QToolButton *undone = rowButton("layerLock", idx);
+            lockOk = !before && locked && !p->layers.at(idx).locked && undone && !undone->isChecked();
+            const int i1 = stack->index();
+            rowButton("layerEye", idx)->click();
+            pump(120);
+            QToolButton *hid = rowButton("layerEye", idx);
+            const bool hidden = !p->layers.at(idx).visible && hid && hid->isChecked()
+                && stack->index() == i1 + 1 && lastStep() == QStringLiteral("Toggle Layer Visibility");
+            stack->undo();
+            pump(120);
+            QToolButton *shown = rowButton("layerEye", idx);
+            eyeOk = hidden && p->layers.at(idx).visible && shown && !shown->isChecked();
+            detail = QStringLiteral("layer %1: lock [before %2 locked-step %3 undone-ok %4] eye "
+                                    "[hidden-step %5 shown-ok %6]")
+                         .arg(idx).arg(before).arg(locked).arg(lockOk).arg(hidden).arg(eyeOk);
+            stack->clear(); // back to empty, as it began
+            pump(60);
+        } else {
+            detail = QStringLiteral("no unlocked visible layer row (%1), stack %2").arg(idx).arg(count0);
+        }
+        check(QStringLiteral("(ax) LAYERS: a click on a row's lock locks the layer as one \"Toggle "
+                             "Layer Lock\" step and the rebuilt lock is checked (the closed padlock); "
+                             "the eye hides it as one \"Toggle Layer Visibility\" step and the rebuilt "
+                             "eye is checked (35 %); Undo reverses each, unchecked again"),
+              lockOk && eyeOk, detail);
     }
 
     // ---- a toggle: state, the button, unsaved, and nothing on the stack ----

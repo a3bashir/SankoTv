@@ -280,6 +280,7 @@ public:
     // the one a panel removal shows when it took camera keys with it.
     QString lastNoteForTest() const { return m_lastNote; }
     void clearNoteForTest() { m_lastNote.clear(); }
+    Panel *currentPanelForTest() const { return currentPanel(); }
     // Delete Panel without its confirmation box (the gate cannot answer
     // it); everything after the question is the real path.
     void deleteSelectedPanelConfirmedForTest();
