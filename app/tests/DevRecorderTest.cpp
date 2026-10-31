@@ -27,8 +27,18 @@
 #include <QMenu>
 #include <QMouseEvent>
 
+#include <QProcess>
+#include <QTextStream>
+
 #include <algorithm>
 #include <cstdio>
+
+#ifdef Q_OS_WIN
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 static int failures = 0;
 static void check(bool ok, const char *name, const QString &info = {})
@@ -73,8 +83,48 @@ static void activate(QWidget *w)
     }
 }
 
+// A CHILD RUN (2026-10-31, the 2A hand test's quit crash): the app shut
+// down with the recorder still recording - "quit" through the event loop
+// as the app quits, "destroy" with the application destroyed and no loop,
+// "stop" stopped first (the control). A crash ends the child at once with
+// 0xDEAD: no Windows error report, no dialog left waiting.
+static int quitChild(int argc, char **argv, const QString &mode, const QString &root)
+{
+#ifdef Q_OS_WIN
+    SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
+    SetUnhandledExceptionFilter([](EXCEPTION_POINTERS *) -> LONG {
+        TerminateProcess(GetCurrentProcess(), 0xDEAD);
+        return EXCEPTION_EXECUTE_HANDLER;
+    });
+#endif
+    QApplication app(argc, argv);
+    sankoSettingsSetOverrideForTest(root + QStringLiteral("/sanko_settings.ini"));
+    QLabel window(QStringLiteral("devrec quit child"));
+    window.resize(200, 100);
+    window.show();
+    settle(200);
+    auto *rec = devrec::Recorder::instance();
+    rec->initialize(&window, {QStringLiteral("DevRecorderQuitChild"), QStringLiteral("1"),
+                              QStringLiteral("test"), QStringLiteral("none")});
+    rec->setOutputRoot(root);
+    rec->startRecording();
+    settle(300);
+    if (mode == QLatin1String("stop")) {
+        rec->stopRecording();
+        return 0;
+    }
+    if (mode == QLatin1String("quit")) {
+        QTimer::singleShot(100, &app, &QCoreApplication::quit);
+        app.exec();
+    }
+    return 0; // the window, then the application, go with the recording on
+}
+
 int main(int argc, char **argv)
 {
+    if (argc >= 4 && QByteArray(argv[1]) == "--quit-child")
+        return quitChild(argc, argv, QString::fromLocal8Bit(argv[2]),
+                         QString::fromLocal8Bit(argv[3]));
     QApplication app(argc, argv);
 
     QLabel window(QStringLiteral("devrec test window"));
@@ -808,6 +858,92 @@ int main(int argc, char **argv)
     std::printf("INFO overhead under synthetic load: max UI-thread gap "
                 "OFF=%.1f ms ON=%.1f ms\n",
                 offGap, onGap);
+
+    // --- 10. a menu relay of an action no longer in it (2026-10-31) -------
+    // Qt relays a submenu click to its parent menus with the action's
+    // pointer even when the click deleted the action (File > Open Recent
+    // did); the hook must not read an action that is not in the menu's
+    // tree. A STRANGER action (alive, but in no menu) stands for the
+    // deleted one, so the old code reads it harmlessly and logs it.
+    {
+        rec->startRecording();
+        const QString d10 = rec->sessionDir();
+        QMenu parentMenu(&window);
+        QMenu *sub = parentMenu.addMenu(QStringLiteral("Open Recent"));
+        QAction *inside = sub->addAction(QStringLiteral("Inside Sub"));
+        QAction stranger(QStringLiteral("Stranger Action"), &window);
+        parentMenu.popup(window.mapToGlobal(QPoint(10, 10))); // hooked when shown
+        settle(150);
+        parentMenu.hide();
+        settle(100);
+        emit parentMenu.triggered(&stranger);
+        settle(300); // past the once-per-firing window
+        emit parentMenu.triggered(inside);
+        settle(200);
+        rec->stopRecording();
+        QStringList seen;
+        QFile f(d10 + QStringLiteral("/events.jsonl"));
+        if (f.open(QIODevice::ReadOnly))
+            while (!f.atEnd()) {
+                const QJsonObject o = QJsonDocument::fromJson(f.readLine()).object();
+                if (o.value(QStringLiteral("type")).toString() == QLatin1String("action"))
+                    seen << o.value(QStringLiteral("text")).toString();
+            }
+        check(!seen.contains(QStringLiteral("Stranger Action")),
+              "a menu's relay of an action that is not in its tree (a submenu item deleted by "
+              "its own click) is not read or logged",
+              seen.join(QStringLiteral(", ")));
+        check(seen.contains(QStringLiteral("Inside Sub")),
+              "control: the relay of an action in the menu's submenu is logged",
+              seen.join(QStringLiteral(", ")));
+    }
+
+    // --- 11. quitting while recording (2026-10-31) -------------------------
+    // A child process records, then: quits through the event loop, as the
+    // app does (the 2A hand test's crash); is destroyed with no loop; or
+    // (control) stops first. Each must exit cleanly with its session
+    // finished: summary.txt, and sessionEnd the last record.
+    auto runChild = [&](const QString &mode) {
+        const QString childRoot = root + QStringLiteral("/quit_") + mode;
+        QDir(childRoot).removeRecursively();
+        QDir().mkpath(childRoot);
+        QProcess p;
+        p.start(QCoreApplication::applicationFilePath(),
+                {QStringLiteral("--quit-child"), mode, childRoot});
+        const bool done = p.waitForFinished(60000);
+        const int code = done && p.exitStatus() == QProcess::NormalExit ? p.exitCode() : -1;
+        QString session;
+        for (const QFileInfo &fi : QDir(childRoot).entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot))
+            if (QFileInfo::exists(fi.absoluteFilePath() + QStringLiteral("/events.jsonl")))
+                session = fi.absoluteFilePath();
+        QString last;
+        QFile f(session + QStringLiteral("/events.jsonl"));
+        if (f.open(QIODevice::ReadOnly))
+            while (!f.atEnd()) {
+                const QByteArray line = f.readLine().trimmed();
+                if (!line.isEmpty())
+                    last = QJsonDocument::fromJson(line).object().value(QStringLiteral("type")).toString();
+            }
+        const bool summary = QFileInfo::exists(session + QStringLiteral("/summary.txt"));
+        const bool ok = code == 0 && summary && last == QLatin1String("sessionEnd");
+        return qMakePair(ok, QStringLiteral("exit 0x%1, summary %2, last record '%3'")
+                                 .arg(uint(code), 0, 16).arg(summary).arg(last));
+    };
+    const auto quitRun = runChild(QStringLiteral("quit"));
+    check(quitRun.first,
+          "QUITTING WHILE RECORDING (the app's own quit): the child exits cleanly and the "
+          "session is finished - sessionEnd last, summary written",
+          quitRun.second);
+    const auto destroyRun = runChild(QStringLiteral("destroy"));
+    check(destroyRun.first,
+          "the application destroyed with no event loop while recording: exits cleanly, the "
+          "session finished",
+          destroyRun.second);
+    const auto stopRun = runChild(QStringLiteral("stop"));
+    check(stopRun.first,
+          "control: a child that stops recording before it quits exits cleanly with its session "
+          "finished",
+          stopRun.second);
 
     std::printf("%s (%d failure%s)\n",
                 failures ? "RESULT FAIL" : "RESULT PASS", failures,

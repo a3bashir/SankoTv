@@ -395,6 +395,17 @@ public slots:
             m_file.close();
         done->release();
     }
+    // The same finish when the application is being destroyed: no queued
+    // call is delivered any more, so the caller has stopped this worker's
+    // thread and finishes on its own. (The drain timer lived in that thread
+    // and cannot fire now; it is left alone.)
+    void finishStopped(double durationMs)
+    {
+        drain();
+        writeSummary(durationMs);
+        if (m_file.isOpen())
+            m_file.close();
+    }
 
 private:
     void write(const Record &r)
@@ -689,6 +700,14 @@ Recorder::Recorder(QObject *parent) : QObject(parent), d(new RecorderPrivate)
     d->cameraTimer.setInterval(150); // cheap: a handful of doubles
     connect(&d->cameraTimer, &QTimer::timeout, this,
             [this] { checkCamera(); });
+
+    // QUITTING WHILE RECORDING (2026-10-31): end the session as the app
+    // quits, while the window and the application are still whole - the
+    // session gets its sessionEnd and summary like any stop. (The recorder
+    // is the application's child, so without this it was stopped from
+    // ~QCoreApplication, after qApp was already null: a crash on quit.)
+    if (QCoreApplication *app = QCoreApplication::instance())
+        connect(app, &QCoreApplication::aboutToQuit, this, [this] { stopRecording(); });
 }
 
 Recorder::~Recorder()
@@ -888,7 +907,10 @@ void Recorder::stopRecording()
         return;
     enqueue(QStringLiteral("sessionEnd"), {});
     d->recording = false;
-    qApp->removeEventFilter(this);
+    // Reached from ~Recorder during ~QCoreApplication too (an application
+    // destroyed without its loop quitting): qApp is null by then.
+    if (QCoreApplication *app = QCoreApplication::instance())
+        app->removeEventFilter(this);
     qInstallMessageHandler(d->previousHandler);
     d->previousHandler = nullptr;
     d->shotTimer.stop();
@@ -905,10 +927,20 @@ void Recorder::stopRecording()
     QSemaphore done;
     RecorderWorker *worker = d->worker;
     const double duration = double(d->clock.elapsed());
-    QMetaObject::invokeMethod(
-        d->worker, [worker, duration, &done] { worker->finish(duration, &done); },
-        Qt::QueuedConnection);
-    done.acquire();
+    if (!QCoreApplication::instance() || QCoreApplication::closingDown()) {
+        // The application is being destroyed (quit with no event loop, or
+        // ~QCoreApplication deleting its children): a queued finish would
+        // never be delivered and this wait would never end. Stop the
+        // worker's thread and finish here.
+        d->thread.quit();
+        d->thread.wait(3000);
+        worker->finishStopped(duration);
+    } else {
+        QMetaObject::invokeMethod(
+            d->worker, [worker, duration, &done] { worker->finish(duration, &done); },
+            Qt::QueuedConnection);
+        done.acquire();
+    }
     d->sessionDir.clear();
 }
 
@@ -1414,11 +1446,27 @@ void Recorder::hookMenu(QMenu *menu)
     if (menu->property("devrecHooked").toBool())
         return;
     menu->setProperty("devrecHooked", true);
-    connect(menu, &QMenu::triggered, this, [this](QAction *action) {
-        if (d->recording && action)
+    connect(menu, &QMenu::triggered, this, [this, menu](QAction *action) {
+        // Qt relays a submenu's click to its parent menus with the action's
+        // pointer even when the click DELETED the action (File > Open Recent
+        // rebuilt its menu under the click: the 2A hand test's crash). Read
+        // only an action still in this menu's tree - found by comparing
+        // pointers, never by touching the one relayed.
+        if (d->recording && action && menuTreeHolds(menu, action))
             logAction(action, action->shortcut().toString(QKeySequence::PortableText),
                       QStringLiteral("menu"));
     });
+}
+
+bool Recorder::menuTreeHolds(QMenu *menu, QAction *action)
+{
+    for (QAction *a : menu->actions()) {
+        if (a == action)
+            return true;
+        if (QMenu *sub = a->menu(); sub && sub != menu && menuTreeHolds(sub, action))
+            return true;
+    }
+    return false;
 }
 
 void Recorder::logAction(QAction *action, const QString &key, const QString &via)

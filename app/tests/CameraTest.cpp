@@ -1720,6 +1720,30 @@ int main(int argc, char **argv)
         sd.acrossField()->setText(QStringLiteral("4000"));
         // The dialog hears the field's own line edit, as Resize Project does.
         Q_EMIT sd.acrossField()->edit()->textEdited(QStringLiteral("4000"));
+        // The whole project's memory (the user's item, 2026-10-31): 46
+        // layers of a 4K project, 25 % around the shot = a 5760 x 3240
+        // stage, 74,649,600 bytes a layer, about 3.2 GB; amber when it
+        // passes 75 % of (free + held).
+        StageMarginDialog mem(QSize(3840, 2160), QSize(0, 0), {});
+        const qint64 held = qint64(46) * 3840 * 2160 * 4; // about 1.4 GB held now
+        mem.setProjectMemory(46, 11, held, qint64(16) * 1024 * 1024 * 1024, true);
+        mem.presetDropdown()->choose(2); // 25 %
+        const QString roomy = mem.memoryText();
+        const bool roomyOk = roomy.startsWith(QStringLiteral("Whole project: about 3.2 GB (46 layers "
+                                                             "in 11 panels)"))
+            && roomy.endsWith(QStringLiteral("16.0 GB free now")) && !mem.memoryWarns();
+        mem.setProjectMemory(46, 11, held, qint64(2) * 1024 * 1024 * 1024, true);
+        const bool tight = mem.memoryWarns(); // 3.2 GB > 0.75 x (2 GB + 1.4 GB)
+        check(QStringLiteral("(mg10) the Stage Margin dialog says the WHOLE project's memory at the "
+                             "chosen stage (layers x stage) and what is free; with 16 GB free it is "
+                             "plain, with 2 GB free it is amber"),
+              roomyOk && tight, roomy);
+        mem.presetDropdown()->choose(0); // back to no margin: 1.5 GB
+        check(QStringLiteral("(mg10) control: at the stage the project already has, the same "
+                             "2 GB free is not amber (1.4 GB < 0.75 x 3.4 GB)"),
+              !mem.memoryWarns() && mem.memoryText().startsWith(QStringLiteral("Whole project: about 1.4 GB")),
+              mem.memoryText());
+
         check(QStringLiteral("(mg10) control: past the cap Set Margin is off with the reason; "
                              "Same share both ways filled the other field"),
               !sd.setButton()->isEnabled() && sd.validationReason().startsWith(

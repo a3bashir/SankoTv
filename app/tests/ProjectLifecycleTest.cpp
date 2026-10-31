@@ -12949,6 +12949,121 @@ void runStageMarginPass(const QString &scratch)
     pump(200);
 }
 
+// ---- (rm) Open Recent keeps the clicked item alive through its click -------
+// (2026-10-31, the 2A hand test's crash.) Choosing a project in File > Open
+// Recent opens it, and the open used to rebuild that menu at once -
+// deleting the very item still being clicked. Qt then relays the click to
+// the File menu with a pointer to the deleted item, and anything listening
+// (the Dev Recorder did) reads freed memory. Driven through the real menus
+// by keyboard, so the relay is Qt's own; the item's life is followed by
+// its destroyed() signal, and the relayed pointer is only compared, never
+// read. The Dev Recorder is not recording here.
+void runRecentMenuPass(const QString &scratch)
+{
+    out() << "--- (rm) Open Recent keeps the clicked item alive through its click ---" << Qt::endl;
+    const QString dir = scratch + QStringLiteral("/recentmenu");
+    QDir(dir).removeRecursively();
+    const QString a = writeProject(dir, QStringLiteral("RecentA"), QSize(640, 360), 24, 1, 1);
+    const QString b = writeProject(dir, QStringLiteral("RecentB"), QSize(640, 360), 24, 1, 1);
+    MainWindow window;
+    window.resize(1500, 950);
+    window.show();
+    pump(600);
+    window.loadProjectForTest(a);
+    pump(200);
+    window.loadProjectForTest(b);
+    pump(200);
+    window.markCleanForTest();
+    window.rebuildRecentMenuForTest(); // RecentB first, RecentA second
+    QMenu *fileMenu = nullptr;
+    for (QAction *act : window.menuBar()->actions())
+        if (act->menu() && act->text().remove(QLatin1Char('&')) == QLatin1String("File"))
+            fileMenu = act->menu();
+    QMenu *recentMenu = nullptr;
+    for (QMenu *m : window.findChildren<QMenu *>())
+        if (m->title() == QLatin1String("Open Recent"))
+            recentMenu = m;
+    if (!fileMenu || !recentMenu || recentMenu->actions().size() < 2) {
+        check(QStringLiteral("(rm) the File menu and two recent projects are there"), false);
+        return;
+    }
+    auto key = [](QWidget *w, int k) {
+        QKeyEvent press(QEvent::KeyPress, k, Qt::NoModifier);
+        QApplication::sendEvent(w, &press);
+        QKeyEvent release(QEvent::KeyRelease, k, Qt::NoModifier);
+        QApplication::sendEvent(w, &release);
+        pump(120);
+    };
+    // One choice of the SECOND recent project through the real menus. The
+    // menu rebuilds itself as it opens (aboutToShow), so its items are
+    // followed from THEN. `oldWay` hooks an immediate rebuild onto the
+    // chosen item - what openProject did before the fix - as the control.
+    struct Run
+    {
+        bool opened = false, relayed = false, aliveAtRelay = false;
+        QString project;
+        QSet<QObject *> items;
+    };
+    auto choose = [&](bool oldWay) {
+        Run run;
+        QSet<QObject *> alive;
+        fileMenu->popup(window.mapToGlobal(QPoint(40, 40)));
+        pump(200);
+        fileMenu->setActiveAction(recentMenu->menuAction());
+        pump(100);
+        key(fileMenu, Qt::Key_Right); // opens Open Recent (rebuilt) on its first item
+        run.opened = QApplication::activePopupWidget() == recentMenu;
+        if (!run.opened || recentMenu->actions().size() < 2)
+            return run;
+        for (QAction *act : recentMenu->actions()) {
+            alive.insert(act);
+            QObject::connect(act, &QObject::destroyed, &window,
+                             [&alive](QObject *o) { alive.remove(o); });
+        }
+        run.items = alive;
+        QAction *target = recentMenu->actions().at(1);
+        if (oldWay) // after the window's own slot, as the old open was
+            QObject::connect(target, &QAction::triggered, &window,
+                             [&window] { window.rebuildRecentMenuForTest(); });
+        const QMetaObject::Connection relay = QObject::connect(
+            fileMenu, &QMenu::triggered, &window, [&](QAction *x) {
+                run.relayed = true;
+                run.aliveAtRelay = alive.contains(x); // compared, never read
+            });
+        key(recentMenu, Qt::Key_Down);   // the second project
+        key(recentMenu, Qt::Key_Return); // choose it
+        pump(300);
+        QObject::disconnect(relay);
+        run.project = QFileInfo(window.projectPathForTest()).completeBaseName();
+        window.markCleanForTest();
+        return run;
+    };
+    const Run control = choose(true);  // RecentB open: opens RecentA
+    const Run fixed = choose(false);   // RecentA open: opens RecentB
+    check(QStringLiteral("(rm) CHOOSING A PROJECT IN FILE > OPEN RECENT: it opens, and the item "
+                         "clicked is still alive when the File menu relays the click"),
+          fixed.opened && fixed.relayed && fixed.aliveAtRelay
+              && fixed.project == QLatin1String("RecentB"),
+          QStringLiteral("submenu opened %1, relayed %2, alive at the relay %3, opened '%4'")
+              .arg(fixed.opened).arg(fixed.relayed).arg(fixed.aliveAtRelay).arg(fixed.project));
+    check(QStringLiteral("(rm) control: rebuilding the menu UNDER the click (the old open) deletes "
+                         "the item before the File menu relays it - the check sees the bug"),
+          control.opened && control.relayed && !control.aliveAtRelay
+              && control.project == QLatin1String("RecentA"),
+          QStringLiteral("submenu opened %1, relayed %2, alive at the relay %3, opened '%4'")
+              .arg(control.opened).arg(control.relayed).arg(control.aliveAtRelay)
+              .arg(control.project));
+    const QList<QAction *> after = recentMenu->actions();
+    // (By its order, not by pointer: a new item may reuse a freed one's address.)
+    check(QStringLiteral("(rm) control: once the click is over the menu IS rebuilt - the project "
+                         "just opened is first"),
+          !after.isEmpty() && after.first()->text() == QLatin1String("RecentB"),
+          after.isEmpty() ? QStringLiteral("empty") : after.first()->text());
+    window.markCleanForTest();
+    window.close();
+    pump(200);
+}
+
 void runCameraToolPass(const QString &scratch)
 {
     using namespace workspace;
@@ -15095,6 +15210,7 @@ int main(int argc, char **argv)
     runFolderClonePass(scratch);
     runMovingStripPinPass(scratch);
     runStageMarginPass(scratch);
+    runRecentMenuPass(scratch);
 
     // ---- (aa) a test that cannot start says why and exits ----------------
     // An unattended gate must FAIL, not wait. Measured 2026-10-02: with its

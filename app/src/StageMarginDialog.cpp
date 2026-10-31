@@ -1,7 +1,9 @@
 #include "StageMarginDialog.h"
+#include "ProjectResize.h" // formatBytes, the precheck's own units
 #include "SankoTheme.h"
 #include "brushlib/StudioControls.h"
 
+#include <QFontMetrics>
 #include <QKeyEvent>
 #include <QLineEdit>
 #include <QMouseEvent>
@@ -299,8 +301,39 @@ void StageMarginDialog::revalidate()
             m_warn = band.panelsWithArt > 0 || band.keysInBand > 0;
         }
     }
+    // The whole project at the chosen stage (the user's item, 2026-10-31).
+    m_memText.clear();
+    m_memWarn = false;
+    if (m_layers > 0) {
+        const QSize stage = stagemargin::stageSize(m_frame, chosenMargin());
+        const qint64 projected =
+            qint64(m_layers) * qint64(qMax(0, stage.width())) * qint64(qMax(0, stage.height())) * 4;
+        m_memText = QStringLiteral("Whole project: about %1 (%2 layers in %3 panels)")
+                        .arg(ProjectResize::formatBytes(projected))
+                        .arg(m_layers)
+                        .arg(m_panels);
+        if (m_memKnown) {
+            m_memText += QStringLiteral(" · %1 free now")
+                             .arg(ProjectResize::formatBytes(m_availableBytes));
+            // What the project could use is the free memory plus what it
+            // already holds (its images are swapped panel by panel).
+            m_memWarn = double(projected)
+                > 0.75 * double(m_availableBytes + m_currentBytes);
+        }
+    }
     m_set->setEnabled(m_reason.isEmpty());
     update();
+}
+
+void StageMarginDialog::setProjectMemory(int layers, int panels, qint64 currentBytes,
+                                         qint64 availableBytes, bool known)
+{
+    m_layers = layers;
+    m_panels = panels;
+    m_currentBytes = currentBytes;
+    m_availableBytes = availableBytes;
+    m_memKnown = known;
+    revalidate();
 }
 
 QRect StageMarginDialog::dragHeaderBand() const
@@ -322,6 +355,8 @@ QVariantMap StageMarginDialog::devrecState() const
     s.insert(QStringLiteral("validationReason"), m_reason);
     s.insert(QStringLiteral("effectText"), m_effect);
     s.insert(QStringLiteral("warns"), m_warn);
+    s.insert(QStringLiteral("memoryText"), m_memText);
+    s.insert(QStringLiteral("memoryWarns"), m_memWarn);
     return s;
 }
 
@@ -351,6 +386,13 @@ void StageMarginDialog::paintEvent(QPaintEvent *)
     p.drawText(QRect(kX + kHalfW + 10, kFormY + kFieldPitch, kHalfW, 12), Qt::AlignLeft,
                QStringLiteral("Down, each side (px)"));
 
+    // The whole project's memory, under Same share both ways; amber when it
+    // nears what the PC has.
+    if (!m_memText.isEmpty()) {
+        p.setPen(m_memWarn ? kWarnText : kInfoText);
+        p.drawText(QRect(kX, kEffectY - 24, kW, 12), Qt::AlignLeft,
+                   QFontMetrics(p.font()).elidedText(m_memText, Qt::ElideRight, kW));
+    }
     p.setPen(kInfoText);
     p.drawText(QRect(kX, kEffectY, kW, 12), Qt::AlignLeft, currentText());
     const QString message = m_reason.isEmpty() ? m_effect : m_reason;

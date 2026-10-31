@@ -60,6 +60,17 @@ public:
     bool effectWarns() const { return m_warn; }           // amber: art is cut
     QString currentText() const;                          // the "Frame ... current stage" line
 
+    // THE WHOLE PROJECT'S MEMORY (the user's item, 2026-10-31): the image
+    // layers of every panel, held now (currentBytes), and the PC's free
+    // physical memory (known = it could be read). The dialog then shows the
+    // project's estimate at the chosen stage - layers x stage x 4 bytes -
+    // amber when it nears what the project could use: more than 75 % of the
+    // free memory plus what the project already holds.
+    void setProjectMemory(int layers, int panels, qint64 currentBytes,
+                          qint64 availableBytes, bool known);
+    QString memoryText() const { return m_memText; } // empty: not set
+    bool memoryWarns() const { return m_memWarn; }
+
     brushlib::StudioDropdown *presetDropdown() const { return m_preset; }
     brushlib::StudioTextField *acrossField() const { return m_across; }
     brushlib::StudioTextField *downField() const { return m_down; }
@@ -98,4 +109,11 @@ private:
     QString m_reason;
     QString m_effect;
     bool m_warn = false;
+    int m_layers = 0;
+    int m_panels = 0;
+    qint64 m_currentBytes = 0;
+    qint64 m_availableBytes = 0;
+    bool m_memKnown = false;
+    QString m_memText;
+    bool m_memWarn = false;
 };

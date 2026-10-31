@@ -124,6 +124,7 @@ public:
     }
     int discardPromptCountForTest() const { return m_discardPromptCount; }
     QString projectPathForTest() const { return m_currentProjectPath; }
+    void rebuildRecentMenuForTest() { rebuildRecentMenu(); }
     QString projectNameForTest() const { return m_projectName; }
     int projectFpsForTest() const { return m_projectFps; }
     bool onDashboardForTest() const;
@@ -279,6 +280,8 @@ private:
     // File > Open, Open Recent, AND the start window's cards and rows.
     void openProject(const QString &path);
     void rebuildRecentMenu();
+    // ...once the current event is over: never under a click on its items.
+    void rebuildRecentMenuLater();
 
     void onProjectSettings();
     // Resize Project...: the whole confirmed, non-undoable canvas-only

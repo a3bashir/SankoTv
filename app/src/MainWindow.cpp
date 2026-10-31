@@ -1509,6 +1509,12 @@ void MainWindow::onStageMargin()
         return band;
     };
     StageMarginDialog dialog(stageNow.frame, marginNow, probe, this);
+    // The whole project's estimate at each margin offered, against the
+    // PC's free memory (the user's item, 2026-10-31): measured by the
+    // resize precheck's own count, at the size the project is now.
+    const ProjectResize::Plan held = ProjectResize::plan(m_scenes, currentSize, currentSize);
+    dialog.setProjectMemory(held.layerCount, held.panelCount, held.currentBytes,
+                            held.availableBytes, held.memoryKnown);
     if (dialog.exec() != QDialog::Accepted)
         return;
     const QSize newMargin = dialog.chosenMargin();
@@ -1952,7 +1958,7 @@ void MainWindow::openProject(const QString &path)
         // A recent entry whose file has been moved or deleted: say so and
         // forget it, rather than failing to load something invisible.
         RecentProjects::remove(path);
-        rebuildRecentMenu();
+        rebuildRecentMenuLater();
         if (m_dashboard)
             m_dashboard->reloadRecents(); // it may be the page on screen
         QMessageBox::warning(
@@ -1963,7 +1969,18 @@ void MainWindow::openProject(const QString &path)
         return;
     }
     loadFromPath(path);
-    rebuildRecentMenu(); // the just-opened project moves to the top
+    rebuildRecentMenuLater(); // the just-opened project moves to the top
+}
+
+// The recent menu is rebuilt AFTER the event that asked for it (2026-10-31).
+// openProject runs inside a click on one of that menu's own items (File >
+// Open Recent): rebuilding at once deleted the item being clicked, and Qt
+// then relayed the click to the File menu with a pointer to it - the Dev
+// Recorder read that freed memory (the 2A hand test's crash), and anything
+// else listening would have too, in a customer's build as much as ours.
+void MainWindow::rebuildRecentMenuLater()
+{
+    QTimer::singleShot(0, this, &MainWindow::rebuildRecentMenu);
 }
 
 // Rebuilt from the shared recents store. Every entry routes through

@@ -8641,6 +8641,56 @@ COMMITTED on the user's word (2026-10-31): "Every 2A step passed; both
 crashes are the Dev Recorder's, not 2A's." The two crashes are fixed in
 the batch below.
 
+## Fix batch after 2A: the recorder's two crashes, Open Recent, the project's memory (2026-10-31)
+
+The user's batch after the 2A commit (9636c32ac). Each crash was
+reproduced by a check on the code as it was, then fixed; each check has a
+control.
+1. QUITTING WHILE RECORDING (the Dev Recorder). Cause (the 2A hand test's
+   dump, and two from 17:01 / 17:03): the recorder is qApp's child and was
+   stopped from ~QCoreApplication, after qApp is null -
+   qApp->removeEventFilter crashed. FIX: the recording stops on
+   QCoreApplication::aboutToQuit, while everything is whole, so the session
+   gets its sessionEnd and summary; stopRecording guards a null qApp; and
+   when the application is closing (no event loop delivers the queued
+   finish any more - the first fix HUNG there, found by the check) it stops
+   the worker's thread and finishes on the calling thread
+   (RecorderWorker::finishStopped). CHECKS, SankoDevRecorderTest, child
+   processes of the family itself (--quit-child; a crash ends the child
+   with 0xDEAD, no Windows report): "quit" through the event loop and
+   "destroy" with no loop both exit 0 with summary.txt and sessionEnd last
+   (before the fix: 0xDEAD, last record sessionStart); control "stop"
+   first, clean before and after.
+2. OPEN RECENT WHILE RECORDING (the Dev Recorder): the recorder's menu hook
+   now reads a relayed action only if it is still in that menu's tree
+   (Recorder::menuTreeHolds, pointers compared, never dereferenced). CHECK:
+   a hooked menu relaying a stranger action (alive, in no menu, standing for
+   the deleted one) is not logged - before the fix it was; control: a
+   submenu's own action is.
+3. OPEN RECENT IN EVERY BUILD: openProject rebuilt the recent menu at once,
+   deleting the item being clicked; Qt then relays the click to the File
+   menu with a pointer to it. Now MainWindow::rebuildRecentMenuLater
+   (QTimer 0): the item outlives its click, the menu is rebuilt after.
+   CHECK, Lifecycle (rm), through the real menus by keyboard (File > Open
+   Recent > the second project > Enter), the item followed by destroyed()
+   and the relayed pointer only compared: alive at the relay, the project
+   opened; control: the old way (a rebuild hooked onto the clicked item)
+   sees it dead at the relay; control: after the click the menu IS rebuilt
+   (the opened project first). NOTE: the first version of this check read
+   the items BEFORE the submenu opened and the menu rebuilds itself on
+   aboutToShow, so it called the item dead on the fixed code too; caught,
+   corrected, and the corrected check was then run on the unfixed open
+   (rebuildRecentMenuLater temporarily immediate): FAIL "alive at the relay
+   0" - the reproduction - and the fix put back.
+4. THE STAGE MARGIN DIALOG on an existing project says the WHOLE project's
+   memory at the chosen stage - "Whole project: about 3.2 GB (46 layers in
+   11 panels) . 16.0 GB free now" - from the resize precheck's own count
+   (ProjectResize::plan at today's size) and its units; amber when the
+   estimate passes 75 % of the free memory plus what the project already
+   holds. CHECK, Camera (mg10): plain with 16 GB free, amber with 2 GB;
+   control: at the stage it has, the same 2 GB is not amber.
+Lifecycle 980 -> 983, DevRecorder 41 -> 46, Camera 140 -> 142.
+
 ## METHOD: measure interior structure ACROSS THE SIZE RANGE before calling it character (2026-09-25)
 
 The Painting census measured Acrylic at size 20 only and found "one

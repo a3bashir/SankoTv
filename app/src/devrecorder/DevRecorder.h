@@ -186,6 +186,8 @@ private:
     void enqueue(const QString &type, const QJsonObject &data);
     // Menu and shortcut actions ("action" records; see eventFilter).
     void hookMenu(QMenu *menu);
+    // `action` is one of `menu`'s or one of its submenus' (pointers compared).
+    static bool menuTreeHolds(QMenu *menu, QAction *action);
     void logAction(QAction *action, const QString &key, const QString &via);
     void writeSystemInfo();
 
