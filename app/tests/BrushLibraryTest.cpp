@@ -35,7 +35,9 @@
 //        crashes; perf numbers reported (informational, loose bounds)
 //
 // Run: build/<config>/SankoBrushLibraryTest.exe (exit code = failure count;
-// report written to brushlib_test.txt in the working directory).
+// report written to brushlib_test_Release.txt or brushlib_test_Debug.txt
+// in the working directory - one per configuration since 2026-10-31, so a
+// Debug run no longer overwrites the Release report the pins are read from).
 //
 // RE-BASELINING THE COMBINED PREVIEW SHA — read before "fixing" a failure.
 // The combined SHA printed by (p1) fingerprints all 62 preview renders. It
@@ -293,7 +295,11 @@ int main(int argc, char **argv)
     // (b10) and (m) checks read; it is exercised on its own in (m4).
     brushlib::BrushLibraryModel::setKeyWarmupEnabledForTest(false);
 
-    QFile out(QStringLiteral("brushlib_test.txt"));
+#ifdef QT_DEBUG
+    QFile out(QStringLiteral("brushlib_test_Debug.txt"));
+#else
+    QFile out(QStringLiteral("brushlib_test_Release.txt"));
+#endif
     out.open(QIODevice::WriteOnly | QIODevice::Truncate);
     QTextStream ts(&out);
     int failures = 0;

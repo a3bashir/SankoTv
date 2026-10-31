@@ -372,7 +372,7 @@ may ship in a closed-source commercial product, flag it - do not decide.
       page scripts, the control pairs). The downloaded sets were scratch
       and are not kept.
 
-13. OPEN - THE WORKSPACE WINDOW'S MINIMUM WIDTH (opened 2026-10-18, the
+13. CLOSED 2026-10-31 - THE WORKSPACE WINDOW'S MINIMUM WIDTH (opened 2026-10-18, the
     user's item; numbers updated 2026-10-23 for Part C's header, then
     MEASURED for Part D the same day: with the zoom slider, the audio
     name and the volume slider out of the header the floor is 1236
@@ -399,6 +399,12 @@ may ship in a closed-source commercial product, flag it - do not decide.
     with one loop point, 1273 with the clear-loop button, 1321 with the
     audio warning and the clear-loop button (the worst) - against 1419 /
     1419 / 1461 / 1509 at full spacing. See "BEFORE SELLING 13 built".
+    CLOSED by the user, 2026-10-31: "If nothing failed, commit and push
+    ... and mark BEFORE SELLING 13 closed in HANDOFF." Its hand test
+    (recording 20261031-143633) failed nothing - the user's window went
+    down to 1221 px (their docks, 10 px under the default layout's 1231)
+    and ran maximised on a 1280 px screen with the compact header -
+    and it was committed as 4f30e900f.
 
 ALSO BEFORE SELLING, not licensing: the Developer Recorder below comes out.
 
@@ -8181,6 +8187,67 @@ Approved from the Figma proposal of the same name.
   compact at the floor. Its positive control is a new check: at the floor
   the full design's 32 px margin does NOT fit.
 Lifecycle 949 -> 953.
+Committed as 4f30e900f; BEFORE SELLING 13 closed (see there).
+
+## The gate speed-up (2026-10-31)
+
+Approved: steps 1-3 of the report; steps 4-5 trial only.
+1. QUICK CHECK WHILE WORKING, THE FULL GATE BEFORE EVERY COMMIT: written
+   into CLAUDE.md (rule 4) - between edits an incremental Release build
+   and only the families the change can reach; the full gate
+   (fullgate.sh, unchanged) once before every commit, never skipped.
+2. ONE BRUSH REPORT PER CONFIGURATION: SankoBrushLibraryTest writes
+   brushlib_test_Release.txt or brushlib_test_Debug.txt (QT_DEBUG) in
+   app/, so the Debug run no longer overwrites the Release report and the
+   preview / eraser pins need no Release rerun after the gate. The old
+   app/brushlib_test.txt is no longer written (a stale copy may remain;
+   it is untracked).
+3. /MP: CMakeLists.txt adds /MP for MSVC (files of a target compile at
+   once; the generated code is the same - the pins are the proof).
+PROOF (fullgate_speedup, clean builds, both configurations): every
+family's check count identical to fullgate_bs13 (187 / 13 / 3 / 19 / 41 /
+74 / 170 / 953 / 78, both), every pin identical (pixel 666f7b45 /
+cafcec7f, erase 0bc24381, 34 c1p, preview 608366fc and eraser d312bc9b
+from the Release report - the Debug report shows the same two). Times:
+Release build 379 -> 115 s, Debug build 345 -> 96 s, no brush rerun
+(was 110 s); the whole gate about 41 -> 31 minutes. NOTE: the gate's
+"pass-lines" count read 952 for Debug Lifecycle while its RESULT said
+953 / 0 failures - an FFmpeg stderr line ("Stream #0:0") had landed in
+front of one PASS on the same line (stdout and stderr share the log).
+The RESULT line is the count to trust; the pass-lines column is a quick
+grep.
+TRIAL OF STEPS 4-5 (not adopted; build/_probe/split/fullgate_trial.sh,
+log fullgate_trial45b.log): the Debug clean build beside the Release
+families (-p:CL_MPCount=8 - in Git Bash "/p:" is rewritten as a path; the
+first trial failed that way, trial45.log), and the three window-free
+families beside the window families in each configuration. Every check
+count and pin identical to fullgate_speedup; no TESTWINDOW note; Lifecycle
+402 / 552 s as before; the brush family 123 s in Release (111 alone);
+the Debug build 112 s (96 alone) and done long before the Release
+families. TOTAL 1313 s, about 22 minutes (the adopted gate about 31).
+ADOPTED (the user, same day: "Also adopt steps 4-5 ... as the normal
+gate, based on the trial. If a check ever fails only under that load,
+rerun the full gate the old way before treating it as a real failure,
+and note it in HANDOFF."). THE GATE IS NOW app/tools/fullgate.sh (tracked;
+LF, kept LF by a new .gitattributes rule "*.sh text eol=lf" - with
+core.autocrlf on, a checkout would otherwise make it CRLF and bash fails
+on CR): `bash app/tools/fullgate.sh <tag>` overlaps as the trial did;
+`bash app/tools/fullgate.sh <tag> serial` is the old order, for a check
+that fails only under load. Output stays in build/_probe/split/
+(fullgate_<tag>.log, fullgate_<tag>/). THE COUNT: each family's stdout
+and stderr now go to separate files (<family>_<config>.txt and
+.stderr.txt); PASS lines are counted on stdout only (every family prints
+its PASS lines there; FFmpeg and the harness notes go to stderr - 112-113
+FFmpeg lines per Lifecycle run), FAIL lines on both (three families print
+FAIL on stderr), and the log flags COUNT MISMATCH when a family's own
+"checks=N" differs from pass + fail. The exit code is the verdict.
+PROOF (fullgate_final, the final script): every check count and pin
+identical (187 / 13 / 3 / 19 / 41 / 74 / 170 / 953 / 78 in both
+configurations, Lifecycle's pass column 953 in both - the stray FFmpeg
+line can no longer touch it; pixel 666f7b45 / cafcec7f, erase 0bc24381,
+34 c1p, preview 608366fc and eraser d312bc9b from the Release report),
+no COUNT MISMATCH. TOTAL 1326 s - about 22 minutes, from 41 this
+morning. The CLAUDE.md rule names the script and the load rule.
 
 ## METHOD: measure interior structure ACROSS THE SIZE RANGE before calling it character (2026-09-25)
 

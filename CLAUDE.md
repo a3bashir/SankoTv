@@ -317,6 +317,31 @@ Learned from real defects. Follow them exactly.
    a seam that takes only the test's own events
    (`StoryboardPage::setRealPointerIgnoredForTest`) and reads the window's
    focus widget, not the application's.
+   **Quick check while working, the full gate before every commit** (the
+   user's rule, 2026-10-31). Between edits, build incrementally (Release)
+   only the targets the change touches and run only the families it can
+   reach - e.g. SankoProjectLifecycle for a workspace change,
+   SankoCanvasSizeLock for the canvas, SankoCameraTest for the camera
+   model - instead of the full gate. The FULL gate (clean builds, all nine
+   families, Release and Debug; `bash app/tools/fullgate.sh <tag>`, output
+   in `app/build/_probe/split/fullgate_<tag>.log`) still runs once before
+   every commit, after the last edit, and is never skipped or shortened;
+   report its numbers, not a quick check's. A quick check that passes is
+   not a gate result. The gate overlaps what shares no screen: the Debug
+   build runs beside the Release families, and the window-free families
+   (BrushLibrary, PixelLock, CanvasBrushLock) beside the window families,
+   which stay one at a time. **If a check fails only under that load,
+   rerun the gate the old way (`bash app/tools/fullgate.sh <tag> serial`)
+   before treating it as a real failure, and note it in HANDOFF** (the
+   user's rule, 2026-10-31). The log counts PASS on each family's stdout
+   only (FFmpeg writes to stderr; the two are kept in separate files) and
+   flags a COUNT MISMATCH against the family's own "checks=N"; the exit
+   code is the verdict. The brush family writes one report per
+   configuration (`app/brushlib_test_Release.txt`,
+   `app/brushlib_test_Debug.txt`): read the preview and eraser pins from
+   the Release file - no Release rerun after the gate. Builds compile with
+   /MP (CMakeLists.txt); it changes how many files compile at once, not
+   the code.
 5. **Build hygiene.** Kill any running `SankoTV.exe` before building.
    Verify the exe timestamp and the real exit code; grep build output for
    `error C|error MSB|error LNK|Shader baking`. Stale exes have produced

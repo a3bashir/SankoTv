@@ -49,5 +49,7 @@ app/*_verification_*.txt
 # SankoBrushLibraryTest writes this relative to its WORKING DIRECTORY, so
 # it lands wherever the test was run from, not only under app/.
 brushlib_test.txt
+# ...one per configuration since 2026-10-31 (the gate speed-up).
+brushlib_test_*.txt
 # SankoCameraTest's report, the same way.
 camera_test.txt

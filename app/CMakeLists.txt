@@ -6,6 +6,14 @@ project(SankoTV LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# --- Parallel compiling (MSVC) ---------------------------------------------
+# /MP compiles a target's files at the same time (the gate speed-up,
+# 2026-10-31): it changes only how many files compile at once, never the
+# code generated - the pins are the proof.
+if(MSVC)
+    add_compile_options(/MP)
+endif()
+
 # --- Qt automatic tooling -------------------------------------------------
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)

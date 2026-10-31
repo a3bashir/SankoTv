@@ -3,3 +3,7 @@
 
 # Ensure .bat files use CRLF line endings
 *.bat text eol=crlf
+
+# Shell scripts must stay LF (bash fails on CR); the gate is one
+# (app/tools/fullgate.sh, 2026-10-31)
+*.sh text eol=lf
