@@ -10464,22 +10464,28 @@ void runTimelineLookPass(const QString &scratch)
         auto groupRect = [&](const char *name) {
             return QRect(widget(name)->mapTo(page, QPoint(0, 0)), widget(name)->size());
         };
-        auto clear = [&] {
+        // The right margin is the spacing's in force: 32 at the design's
+        // full spacing, 16 compact (BEFORE SELLING 13).
+        auto clearWith = [&](int margin) {
             const QRect cluster = groupRect("animaticCentre");
             const QRect left = groupRect("animaticHeaderLeft");
             const QRect right = groupRect("animaticHeaderRight");
             return cluster.left() >= left.right() + 1 + 16 && cluster.right() + 1 + 16 <= right.left()
-                && right.right() + 1 + 32 <= page->width();
+                && right.right() + 1 + margin <= page->width();
         };
+        auto clear = [&] { return clearWith(page->headerRightMarginForTest()); };
         const int floorWithAudio = page->headerMinimumWidthForTest();
         const int beside = r.window.width() - page->width();
         const bool noWarning = !page->audioWarningShownForTest();
         r.window.resize(floorWithAudio + beside + 400, 900);
         pump(400);
-        const bool wideOk = clear();
+        const bool wideOk = clear() && !page->headerCompactForTest()
+            && page->headerRightMarginForTest() == 32;
         r.window.resize(floorWithAudio + beside, 900);
         pump(400);
         const bool atFloor = page->width() == floorWithAudio && clear();
+        const bool compactAtFloor = page->headerCompactForTest() && page->headerRightMarginForTest() == 16;
+        const bool fullMarginFits = clearWith(32); // the control: it must not
         r.window.resize(floorWithAudio + beside - 150, 900);
         pump(400);
         const bool belowOk = page->width() >= floorWithAudio && clear();
@@ -10487,13 +10493,108 @@ void runTimelineLookPass(const QString &scratch)
         page->setAudioPath(QString(), false);
         pump(300);
         const int floorWithout = page->headerMinimumWidthForTest();
-        check(QStringLiteral("(aw) THE FLOOR (Part D): one number with or without a track; wide, "
-                             "at the floor and 150 px below it nothing overlaps and the section "
-                             "is never narrower than the floor; a fine track shows no warning"),
-              wideOk && atFloor && belowOk && floorWithout == floorWithAudio && noWarning,
-              QStringLiteral("floor %1 (without a track %2); wide %3 at %4 below %5 (W %6, window min %7); warning shown %8")
-                  .arg(floorWithAudio).arg(floorWithout).arg(wideOk).arg(atFloor).arg(belowOk)
+        check(QStringLiteral("(aw) THE FLOOR (Part D; compact below the full floor, BEFORE SELLING "
+                             "13): one number with or without a track; wide (the design's spacing, "
+                             "32 px right margin), at the floor and 150 px below it (compact, 16 px) "
+                             "nothing overlaps and the section is never narrower than the floor; a "
+                             "fine track shows no warning"),
+              wideOk && atFloor && compactAtFloor && belowOk && floorWithout == floorWithAudio
+                  && noWarning,
+              QStringLiteral("floor %1 (without a track %2; full %3); wide %4 at %5 compact %6 below %7 (W %8, window min %9); warning shown %10")
+                  .arg(floorWithAudio).arg(floorWithout).arg(page->headerFullFloorForTest())
+                  .arg(wideOk).arg(atFloor).arg(compactAtFloor).arg(belowOk)
                   .arg(page->width()).arg(windowMin).arg(!noWarning));
+        check(QStringLiteral("(aw) control: at the floor the full design's 32 px right margin "
+                             "would not fit - the compact spacing is what makes it"),
+              !fullMarginFits);
+    }
+
+    // ---- BEFORE SELLING 13: the window fits a 1366 px laptop in every header state ----
+    {
+        auto *loopStart = r.window.findChild<QPushButton *>(QStringLiteral("animaticLoopStart"));
+        auto *loopEnd = r.window.findChild<QPushButton *>(QStringLiteral("animaticLoopEnd"));
+        auto *loopClear = r.window.findChild<QPushButton *>(QStringLiteral("animaticLoopClear"));
+        const QString hint = QStringLiteral("Set the other loop point to play the loop.");
+        // The window at its narrowest: the minimum then is the one in force.
+        auto windowMin = [&] {
+            r.window.resize(600, 900);
+            pump(400);
+            return r.window.minimumWidth();
+        };
+        QStringList rows;
+        int worst = 0, worstFull = 0;
+        auto measure = [&](const QString &state) {
+            const int w = windowMin();
+            const int docks = w - page->headerMinimumWidthForTest();
+            const int full = page->headerFullFloorForTest() + docks;
+            rows << QStringLiteral("%1 %2 (full spacing %3)").arg(state).arg(w).arg(full);
+            worst = qMax(worst, w);
+            worstFull = qMax(worstFull, full);
+            return w;
+        };
+        // (The clear button is hidden while one point is set; its click
+        // clears either way.)
+        if (loopClear)
+            loopClear->click();
+        pump(100);
+        measure(QStringLiteral("plain"));
+        // One point - the start first, then (cleared) the end first.
+        page->clearNoteForTest();
+        page->setPlayheadForTest(2, 0);
+        if (loopStart)
+            loopStart->click();
+        pump(100);
+        const QString startNote = page->lastNoteForTest();
+        const QString startTip = loopStart ? loopStart->toolTip() : QString();
+        measure(QStringLiteral("start only"));
+        if (loopClear)
+            loopClear->click();
+        page->clearNoteForTest();
+        page->setPlayheadForTest(4, 0);
+        if (loopEnd)
+            loopEnd->click();
+        pump(100);
+        const QString endNote = page->lastNoteForTest();
+        const QString endTip = loopEnd ? loopEnd->toolTip() : QString();
+        const bool noLabel = !r.window.findChild<QLabel *>(QStringLiteral("animaticLoopWarning"));
+        measure(QStringLiteral("end only"));
+        // Both: the clear-loop button shows.
+        page->setPlayheadForTest(2, 0);
+        if (loopStart)
+            loopStart->click();
+        pump(100);
+        const bool clearShown = loopClear && loopClear->isVisible();
+        const QString bothTip = loopStart ? loopStart->toolTip() : QString();
+        measure(QStringLiteral("clear-loop"));
+        // The audio warning, with the clear-loop button and without.
+        page->setAudioPath(base + QStringLiteral("/sound/no_such_file.wav"), true);
+        pump(400);
+        const bool warningShown = page->audioWarningShownForTest();
+        measure(QStringLiteral("warning + clear-loop"));
+        if (loopClear)
+            loopClear->click();
+        pump(100);
+        measure(QStringLiteral("warning"));
+        page->setAudioPath(QString(), false);
+        pump(300);
+        check(QStringLiteral("(aw) BEFORE SELLING 13: THE WINDOW'S MINIMUM WIDTH IS AT MOST 1366 PX "
+                             "in every header state - plain, one loop point (either first), the "
+                             "clear-loop button, the audio warning, and the warning with the "
+                             "clear-loop button - every dock open"),
+              worst > 0 && worst <= 1366 && warningShown && clearShown && rows.size() == 6,
+              QStringLiteral("worst %1; %2; warning shown %3, clear-loop shown %4")
+                  .arg(worst).arg(rows.join(QStringLiteral("; "))).arg(warningShown).arg(clearShown));
+        check(QStringLiteral("(aw) control: at the design's full spacing the same states would need "
+                             "more than 1366 px (the check could fail)"),
+              worstFull > 1366, QStringLiteral("full-spacing worst %1").arg(worstFull));
+        check(QStringLiteral("(aw) THE LOOP HINT is a note at the pointer and the set button's "
+                             "tooltip, \"Set the other loop point to play the loop.\", whichever "
+                             "point is set first - and no longer a label in the header; with both "
+                             "points set the tooltip is the button's own again"),
+              startNote == hint && startTip == hint && endNote == hint && endTip == hint && noLabel
+                  && bothTip == QStringLiteral("Set loop start to the selected panel"),
+              QStringLiteral("start note '%1' tip '%2'; end note '%3' tip '%4'; label gone %5; both '%6'")
+                  .arg(startNote, startTip, endNote, endTip).arg(noLabel).arg(bothTip));
     }
 }
 

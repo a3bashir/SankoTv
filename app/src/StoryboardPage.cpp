@@ -6694,6 +6694,8 @@ void StoryboardPage::setupAnimaticSection(QWidget *centerColumn,
 void StoryboardPage::setRealPointerIgnoredForTest(bool ignored)
 {
     m_ignoreRealPointerForTest = ignored;
+    if (m_animatic) // its notes (the loop hint) are said at the real pointer too
+        m_animatic->setNotesAtPointerForTest(!ignored);
     m_pointerOverTimeline = false;
     m_pointerOverPreview = false;
     updateTimelineKeys();

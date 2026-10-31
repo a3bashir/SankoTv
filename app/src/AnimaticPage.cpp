@@ -41,6 +41,9 @@
 #include <QSpinBox>
 #include <QTimer>
 #include <QToolButton>
+#include <QToolTip>
+#include <QCursor>
+#include <QSpacerItem>
 #include <QUrl>
 #include <QVBoxLayout>
 #include <Qt>
@@ -196,6 +199,10 @@ private:
 };
 
 namespace {
+
+// The loop hint while only one point is set (BEFORE SELLING 13: a note and
+// the set button's tooltip, no longer a header label). Either point first.
+constexpr char kLoopHint[] = "Set the other loop point to play the loop.";
 
 // The speed dropdown's button: the stylesheet draws the button and its
 // text; the chevron (8 x 5, 10 px from the right edge, centred vertically)
@@ -835,6 +842,8 @@ void AnimaticPage::setLoopStart()
     updateLoopUi();
     if (m_timeline)
         m_timeline->setLoopRegion(m_loopStartIndex, m_loopEndIndex);
+    if (m_loopEndIndex < 0)
+        sayNote(QString::fromLatin1(kLoopHint));
 }
 
 void AnimaticPage::setLoopEnd()
@@ -846,6 +855,8 @@ void AnimaticPage::setLoopEnd()
     updateLoopUi();
     if (m_timeline)
         m_timeline->setLoopRegion(m_loopStartIndex, m_loopEndIndex);
+    if (m_loopStartIndex < 0)
+        sayNote(QString::fromLatin1(kLoopHint));
 }
 
 void AnimaticPage::clearLoop()
@@ -861,10 +872,17 @@ void AnimaticPage::updateLoopUi()
 {
     if (m_clearLoopButton)
         m_clearLoopButton->setVisible(loopActive());
-    if (m_loopWarningLabel) {
-        const bool onlyOne = ((m_loopStartIndex >= 0) != (m_loopEndIndex >= 0));
-        m_loopWarningLabel->setVisible(onlyOne);
-    }
+    // One point set: that button's tooltip carries the hint (the note at the
+    // pointer is said where the point is set - setLoopStart / setLoopEnd).
+    const bool onlyOne = ((m_loopStartIndex >= 0) != (m_loopEndIndex >= 0));
+    if (m_loopStartButton)
+        m_loopStartButton->setToolTip(onlyOne && m_loopStartIndex >= 0
+                                          ? QString::fromLatin1(kLoopHint)
+                                          : QStringLiteral("Set loop start to the selected panel"));
+    if (m_loopEndButton)
+        m_loopEndButton->setToolTip(onlyOne && m_loopEndIndex >= 0
+                                        ? QString::fromLatin1(kLoopHint)
+                                        : QStringLiteral("Set loop end to the selected panel"));
     layoutHeader(); // the loop group's width changed
 }
 
@@ -970,8 +988,10 @@ QWidget *AnimaticPage::createHeader()
     m_warningGroup->setVisible(false);
     right->addWidget(m_warningGroup, 0, Qt::AlignVCenter);
 
-    // --- Loop: icon buttons, the clear button when a loop is set, the
-    // warning while one point is set -------------------------------------------
+    // --- Loop: icon buttons, the clear button when a loop is set. While one
+    // point is set, the hint is a note at the pointer and that button's
+    // tooltip (BEFORE SELLING 13: a header label widened the window by
+    // about 170 px) --------------------------------------------------------------
     m_loopGroup = new QWidget;
     m_loopGroup->setObjectName(QStringLiteral("animaticLoop"));
     transparent(m_loopGroup);
@@ -979,19 +999,13 @@ QWidget *AnimaticPage::createHeader()
     loopLayout->setContentsMargins(0, 0, 0, 0); // right-anchored; the 105 px gap was to the total, now in the cluster
     loopLayout->setSpacing(6);
 
-    m_loopWarningLabel = new QLabel(QStringLiteral("Set both loop points to activate"));
-    m_loopWarningLabel->setObjectName(QStringLiteral("animaticLoopWarning"));
-    m_loopWarningLabel->setStyleSheet(
-        QStringLiteral("color: %1; font-size: 11px;").arg(kTimecode.name()));
-    m_loopWarningLabel->setVisible(false);
-    loopLayout->addWidget(m_loopWarningLabel);
-
     const struct { const char *file; const char *tip; const char *name; void (AnimaticPage::*slot)(); } loops[] = {
         {"loop_start", "Set loop start to the selected panel", "animaticLoopStart", &AnimaticPage::setLoopStart},
         {"loop_end", "Set loop end to the selected panel", "animaticLoopEnd", &AnimaticPage::setLoopEnd},
     };
     for (const auto &l : loops) {
         QPushButton *b = new QPushButton;
+        (l.slot == &AnimaticPage::setLoopStart ? m_loopStartButton : m_loopEndButton) = b;
         b->setObjectName(QLatin1String(l.name));
         b->setCursor(Qt::PointingHandCursor);
         b->setToolTip(QLatin1String(l.tip));
@@ -1018,7 +1032,8 @@ QWidget *AnimaticPage::createHeader()
     right->addWidget(m_loopGroup, 0, Qt::AlignVCenter);
 
     // --- Frames / Seconds / Snap: the timeline's view controls ------------------
-    right->addSpacing(31); // the design: loop end at 1733, Frames at 1764
+    m_viewGap = new QSpacerItem(31, 0, QSizePolicy::Fixed, QSizePolicy::Minimum);
+    right->addItem(m_viewGap); // the design: loop end at 1733, Frames at 1764 (16 compact)
     if (m_timeline && m_timeline->viewControls())
         right->addWidget(m_timeline->viewControls(), 0, Qt::AlignVCenter);
     layout->addWidget(m_rightGroup, 0, Qt::AlignVCenter);
@@ -1057,7 +1072,13 @@ QWidget *AnimaticPage::createHeader()
         return s;
     };
     m_timecodeSeparator = separator(QStringLiteral("animaticTimecodeSeparator"));
-    centre->addSpacing(68);
+    // The design's gaps, adjustable for the compact header (applyHeaderSpacing).
+    auto gap = [&](int w) {
+        auto *s = new QSpacerItem(w, 0, QSizePolicy::Fixed, QSizePolicy::Minimum);
+        centre->addItem(s);
+        return s;
+    };
+    m_pillGapBefore = gap(68);
 
     // --- The transport pill: five buttons, inside the cluster ----------------
     m_transportPill = new QWidget(m_centreGroup);
@@ -1094,9 +1115,9 @@ QWidget *AnimaticPage::createHeader()
     connect(last, &QPushButton::clicked, this, &AnimaticPage::goLast);
     pill->addWidget(last);
     centre->addWidget(m_transportPill, 0, Qt::AlignVCenter);
-    centre->addSpacing(68);
+    m_pillGapAfter = gap(68);
     m_totalSeparator = separator(QStringLiteral("animaticTotalSeparator"));
-    centre->addSpacing(34);
+    m_totalGap = gap(34);
 
     m_totalLabel = new QLabel(QStringLiteral("Total: 00:00:00:00"));
     m_totalLabel->setObjectName(QStringLiteral("animaticTotal"));
@@ -1106,7 +1127,7 @@ QWidget *AnimaticPage::createHeader()
         QStringLiteral("color: %1; font-size: 13px; background: transparent;")
             .arg(kTotal.name()));
     centre->addWidget(m_totalLabel);
-    centre->addSpacing(28);
+    m_speedGap = gap(28);
 
     // --- Speed: one dropdown (the user's choice, 2026-10-23; Figma frame
     // 417:390), 60 x 28 at y 6, the current speed shown, a menu of the same
@@ -1185,12 +1206,34 @@ void AnimaticPage::layoutHeader()
     // slider and the audio name are gone from the header - so the floor is
     // every group at its size, the cluster, and the 16 px it keeps from
     // each group. The window's minimum width follows it (MainWindow).
-    const QMargins m = m_header->layout()->contentsMargins();
-    const int floorWidth = m.left() + m_leftGroup->minimumSizeHint().width() + kPillGap
-        + m_centreGroup->sizeHint().width() + kPillGap
-        + m_rightGroup->minimumSizeHint().width() + m.right();
-    if (m_header->minimumWidth() != floorWidth)
-        m_header->setMinimumWidth(floorWidth);
+    // COMPACT (BEFORE SELLING 13, 2026-10-31): below the floor at the
+    // design's full spacing the gaps shrink and the total drops its word;
+    // the header's minimum is the COMPACT floor, so a 1366 px laptop fits
+    // with every dock open. The two floors differ by exactly the gaps'
+    // difference and the width of "Total: ", so one measurement gives both.
+    auto floorNow = [&] {
+        const QMargins m = m_header->layout()->contentsMargins();
+        return m.left() + m_leftGroup->minimumSizeHint().width() + kPillGap
+            + m_centreGroup->sizeHint().width() + kPillGap
+            + m_rightGroup->minimumSizeHint().width() + m.right();
+    };
+    const QFontMetrics fm(m_totalLabel->font());
+    const int wordWidth = fm.horizontalAdvance(QStringLiteral("Total: ") + m_totalTime)
+        - fm.horizontalAdvance(m_totalTime);
+    constexpr int kGapSaving = (68 - 24) * 2 + (34 - 16) + (28 - 12) + (31 - 16) + (32 - 16);
+    const int measured = floorNow();
+    const int fullFloor = m_headerCompact ? measured + kGapSaving + wordWidth : measured;
+    int compactFloor = fullFloor - kGapSaving - wordWidth;
+    m_headerFullFloor = fullFloor;
+    const bool compact = available < fullFloor;
+    if (compact != m_headerCompact) {
+        applyHeaderSpacing(compact);
+        refresh();
+    }
+    if (m_headerCompact)
+        compactFloor = floorNow(); // measured whenever it is the one in force
+    if (m_header->minimumWidth() != compactFloor)
+        m_header->setMinimumWidth(compactFloor);
 
     // The pill: centred on the window, kept out of both groups.
     // The centre cluster is placed so that the PILL is centred on the window;
@@ -1203,7 +1246,21 @@ void AnimaticPage::layoutHeader()
     m_centreGroup->layout()->activate();
     const int clusterW = m_centreGroup->sizeHint().width();
     m_centreGroup->resize(clusterW, kHeaderHeight);
-    const int before = m_transportPill->geometry().x();
+    // The pill's offset in the cluster, from the layout's own item sizes,
+    // not the pill's geometry: a hidden header has not laid its children
+    // out, and after a spacing switch that geometry was the old spacing's
+    // (measured: 177 for 207 - (aw) THE TRANSPORT PILL, BEFORE SELLING 13).
+    int before = 0;
+    if (QLayout *cl = m_centreGroup->layout()) {
+        const QMargins cm = cl->contentsMargins();
+        before = cm.left();
+        for (int i = 0; i < cl->count(); ++i) {
+            QLayoutItem *item = cl->itemAt(i);
+            if (item->widget() == m_transportPill)
+                break;
+            before += item->sizeHint().width() + cl->spacing();
+        }
+    }
     const int after = clusterW - before - kPillW;
     int x = (available - kPillW) / 2;
     x = qMin(x, rightLeft - kPillGap - kPillW - after);
@@ -1215,6 +1272,43 @@ void AnimaticPage::layoutHeader()
 int AnimaticPage::headerMinimumWidthForTest() const
 {
     return m_header ? m_header->minimumWidth() : 0;
+}
+
+int AnimaticPage::headerRightMarginForTest() const
+{
+    return m_header && m_header->layout() ? m_header->layout()->contentsMargins().right() : 0;
+}
+
+// The design's spacing, or the compact one (BEFORE SELLING 13): the gaps
+// beside the pill 68 -> 24, before the total 34 -> 16, before the speed
+// 28 -> 12, before the view controls 31 -> 16, the right margin 32 -> 16,
+// and "Total:" keeps its word only at full spacing (the tooltip always has
+// it). Nothing is hidden and nothing moves group.
+void AnimaticPage::applyHeaderSpacing(bool compact)
+{
+    m_headerCompact = compact;
+    const auto set = [](QSpacerItem *s, int w) {
+        if (s)
+            s->changeSize(w, 0, QSizePolicy::Fixed, QSizePolicy::Minimum);
+    };
+    set(m_pillGapBefore, compact ? 24 : 68);
+    set(m_pillGapAfter, compact ? 24 : 68);
+    set(m_totalGap, compact ? 16 : 34);
+    set(m_speedGap, compact ? 12 : 28);
+    set(m_viewGap, compact ? 16 : 31);
+    if (m_header && m_header->layout())
+        m_header->layout()->setContentsMargins(12, 0, compact ? 16 : 32, 0);
+    if (m_totalLabel && !m_totalTime.isEmpty())
+        m_totalLabel->setText(compact ? m_totalTime : QStringLiteral("Total: ") + m_totalTime);
+}
+
+// The dark note at the pointer, as the workspace's camera notes. Under the
+// gate the pointer is the real one, so it is only recorded there.
+void AnimaticPage::sayNote(const QString &message)
+{
+    m_lastNote = message;
+    if (m_notesAtPointer)
+        QToolTip::showText(QCursor::pos(), message, this);
 }
 
 QRect AnimaticPage::transportPillRectForTest() const
@@ -1557,7 +1651,7 @@ void AnimaticPage::updateTotalLabel()
     const int fps = m_timeline ? qMax(1, m_timeline->fps()) : 24;
     const int frames = qRound(total * fps / static_cast<double>(m_playbackSpeed));
     const int ff = frames % fps, totalSec = frames / fps;
-    QString text = QStringLiteral("Total: %1:%2:%3:%4")
+    QString text = QStringLiteral("%1:%2:%3:%4")
                        .arg(totalSec / 3600, 2, 10, QChar('0'))
                        .arg((totalSec / 60) % 60, 2, 10, QChar('0'))
                        .arg(totalSec % 60, 2, 10, QChar('0'))
@@ -1566,7 +1660,11 @@ void AnimaticPage::updateTotalLabel()
         text += QStringLiteral(" (0.5x)");
     else if (m_playbackSpeed > 1.01f)
         text += QStringLiteral(" (2x)");
-    m_totalLabel->setText(text);
+    // The compact header shows the time alone; the word is always in the
+    // tooltip (BEFORE SELLING 13).
+    m_totalTime = text;
+    m_totalLabel->setText(m_headerCompact ? text : QStringLiteral("Total: ") + text);
+    m_totalLabel->setToolTip(QStringLiteral("Total: ") + text);
 }
 
 QString AnimaticPage::formatTime(int seconds) const

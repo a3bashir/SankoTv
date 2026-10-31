@@ -391,6 +391,14 @@ may ship in a closed-source commercial product, flag it - do not decide.
     further give-way (the speed buttons, the total, the loop group), a
     wrapping header, or a compact mode - so the workspace fits those
     screens with every dock open. Not licensing; a product requirement.
+    BUILT 2026-10-31 (approved; Figma "PROPOSAL 2026-10-31 — BEFORE
+    SELLING 13"), still OPEN until the user closes it: the compact header
+    below the full design's floor, the loop hint out of the header, the
+    total's word dropped when compact. MEASURED by the gate (aw): header
+    floor 1048 compact / 1236 full; the window's minimum 1231 plain, 1231
+    with one loop point, 1273 with the clear-loop button, 1321 with the
+    audio warning and the clear-loop button (the worst) - against 1419 /
+    1419 / 1461 / 1509 at full spacing. See "BEFORE SELLING 13 built".
 
 ALSO BEFORE SELLING, not licensing: the Developer Recorder below comes out.
 
@@ -8121,6 +8129,58 @@ check takes the NEWEST match. Its first run took the oldest and failed,
 and its two undone commands, left on the stack, failed two later (ax)
 checks that count stack entries; the block now asserts the stack began
 empty and clears it back.
+Committed as c37bc8b42. Its hand test (recording 20261031-123535): no Qt
+warning at all; steps 4 and 9 not exercised (covered by (ax) / (pz5)).
+
+## BEFORE SELLING 13 built: the compact header (2026-10-31)
+
+Approved from the Figma proposal of the same name.
+- COMPACT SPACING (AnimaticPage::applyHeaderSpacing): below the floor at
+  the design's full spacing the gaps beside the pill go 68 -> 24, before
+  the total 34 -> 16, before the speed 28 -> 12, before the view controls
+  31 -> 16, the right margin 32 -> 16, and the total shows the time alone
+  (the tooltip always reads "Total: ..."). The spacers are QSpacerItems
+  kept as members. layoutHeader measures the floor in force and derives
+  the other (the gaps' 153 px plus the width of "Total: "); the compact
+  floor is re-measured whenever it is the one in force, and it is the
+  header's minimum. The pill's offset in the cluster is now summed from
+  the cluster layout's item sizes, not read from the pill's geometry: the
+  first build failed (aw) THE TRANSPORT PILL (pill at 724 on a 1617 px
+  header; centred is 694). Two guesses at the cause (a stale width, a
+  nested pass) changed nothing and were taken out; an instrumented run
+  (stderr lines, removed) showed the last layout pass ran while the
+  header was HIDDEN, just after the switch from compact to full spacing,
+  and read the pill at 177 in the cluster - the compact spacing's place -
+  instead of 207: a hidden widget has not laid its children out. Nothing
+  re-ran on show, the size being unchanged. The old code never changed the
+  cluster's inner spacing, so its geometry read was never stale.
+- THE LOOP HINT: the header label "Set both loop points to activate" is
+  gone (it added about 170 px to the floor). Setting one point says "Set
+  the other loop point to play the loop." as the dark note at the pointer
+  (AnimaticPage::sayNote; quiet under the gate with the real pointer
+  ignored - StoryboardPage::setRealPointerIgnoredForTest passes it on),
+  and that button's tooltip says the same until the other point is set.
+- icons/layer_eye.svg and layer_lock.svg removed (unused since clean-up
+  batch 2).
+- CHECKS (aw): the window's minimum width is at most 1366 px in every
+  header state - plain, start only, end only, the clear-loop button, the
+  warning with it and without (the window at its narrowest in each; the
+  warning and the clear button asserted shown); control: the same states
+  at full spacing need more than 1366 (worst 1509). The loop hint: the
+  note and tooltip either point first, no header label, the tooltip back
+  with both. CHANGED (aw) THE FLOOR - old: "(aw) THE FLOOR (Part D): one
+  number with or without a track; wide, at the floor and 150 px below it
+  nothing overlaps and the section is never narrower than the floor; a
+  fine track shows no warning", with a 32 px right margin required in
+  every case; new: "(aw) THE FLOOR (Part D; compact below the full floor,
+  BEFORE SELLING 13): one number with or without a track; wide (the
+  design's spacing, 32 px right margin), at the floor and 150 px below it
+  (compact, 16 px) nothing overlaps and the section is never narrower
+  than the floor; a fine track shows no warning" - the margin is the one
+  in force, and the check now also asserts full spacing when wide and
+  compact at the floor. Its positive control is a new check: at the floor
+  the full design's 32 px margin does NOT fit.
+Lifecycle 949 -> 953.
 
 ## METHOD: measure interior structure ACROSS THE SIZE RANGE before calling it character (2026-09-25)
 

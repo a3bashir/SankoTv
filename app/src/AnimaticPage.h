@@ -28,6 +28,7 @@ class QMediaDevices;
 class QMediaPlayer;
 class QPushButton;
 class QSlider;
+class QSpacerItem;
 class QTimer;
 
 struct Panel;
@@ -102,6 +103,15 @@ public:
     // that minimum, the pill's place, the slider's width, the label's text
     // as drawn.
     int headerMinimumWidthForTest() const;
+    // BEFORE SELLING 13 (2026-10-31): the floor at the design's full spacing
+    // (the header is compact below it) and whether it is compact now.
+    int headerFullFloorForTest() const { return m_headerFullFloor; }
+    bool headerCompactForTest() const { return m_headerCompact; }
+    int headerRightMarginForTest() const;
+    // The loop hint is a note at the pointer now (not a header label).
+    QString lastNoteForTest() const { return m_lastNote; }
+    void clearNoteForTest() { m_lastNote.clear(); }
+    void setNotesAtPointerForTest(bool shown) { m_notesAtPointer = shown; }
     QRect transportPillRectForTest() const;
     bool audioMutedForTest() const; // what the player itself reports
     int audioVolumeForTest() const { return m_tracks.audioVolume; }
@@ -361,6 +371,8 @@ private:
     QWidget *createHeader();
     QWidget *createTimingStrip();
     void layoutHeader(); // the give-way rule and the pill's place
+    void applyHeaderSpacing(bool compact); // BEFORE SELLING 13
+    void sayNote(const QString &message);  // the dark note at the pointer
 
     void rebuildItems();
     void movePlayheadTo(int index); // playhead + timeline + timecode + preview
@@ -495,5 +507,19 @@ private:
     int m_loopStartIndex = -1;
     int m_loopEndIndex = -1;
     QPushButton *m_clearLoopButton = nullptr;
-    QLabel *m_loopWarningLabel = nullptr;
+    QPushButton *m_loopStartButton = nullptr;
+    QPushButton *m_loopEndButton = nullptr;
+
+    // The header's compact spacing (BEFORE SELLING 13): the design's gaps
+    // shrink, and the total drops its word, only below the full floor.
+    QSpacerItem *m_pillGapBefore = nullptr; // 68 / 24
+    QSpacerItem *m_pillGapAfter = nullptr;  // 68 / 24
+    QSpacerItem *m_totalGap = nullptr;      // 34 / 16
+    QSpacerItem *m_speedGap = nullptr;      // 28 / 12
+    QSpacerItem *m_viewGap = nullptr;       // 31 / 16 (loop group to the view controls)
+    bool m_headerCompact = false;
+    int m_headerFullFloor = 0;
+    QString m_totalTime; // the total without its word
+    QString m_lastNote;
+    bool m_notesAtPointer = true;
 };
