@@ -22,7 +22,9 @@
 #include <QRectF>
 #include <QSize>
 #include <QString>
+#include <QStringList>
 #include <QTransform>
+#include <QVector>
 
 class QPainter;
 class QPixmap;
@@ -229,5 +231,40 @@ QString quickMoveLabel(QuickMove move); // "Push In" .. "Rotate Right"
 QuickFrames quickMove(QuickMove move, const CameraState &start,
                       const QuickAmounts &amounts, const Stage &stage,
                       bool stayInside);
+
+// STAY INSIDE WITH DEPTH (Phase 2C, 2026-11-01; the spec's 4.6, decision
+// D12, Figma 2C-3 / 2C-4). Stay inside keeps the frame's FOOTPRINT on every
+// layer whose art reaches an edge of the stage inside that edge. On a layer
+// of depth a the footprint is the turned frame box scaled by d, centred at
+// c0 + a (c - c0), so each edge is one linear bound on the centre. The
+// paper reaches every edge and is 2A's clamp; a layer at 0 % (its
+// footprint is the base framing) or at 100 % (the paper's bound) adds
+// nothing, nor does a layer the camera has passed. (DepthEdge, the data, is
+// in CameraModel.h.)
+// The panel's drawn layers off the picture plane (and not fixed to the
+// camera) whose art reaches an edge: a pixel at 10 % opacity or more within
+// 2 px of it (the user's Q6), worked out once per change of a layer (by its
+// QImage::cacheKey). Empty for a panel without depth.
+QVector<DepthEdge> depthEdges(const Panel &panel);
+// clampInside with those layers. With none it IS clampInside(state, stage).
+// When no centre fits at the zoom, the zoom is pushed in by Phase 1D's
+// search (x1.05, then 40 halvings). *stoppedBy: the index in `edges` of the
+// layer that held the frame in, -1 for the stage or nothing.
+CameraState clampInside(const CameraState &state, const Stage &stage,
+                        const QVector<DepthEdge> &edges, int *stoppedBy = nullptr);
+// quickMove through that clamp (1D's rules unchanged: the START gives way,
+// slid back, then pushed in). With no edges it is quickMove() exactly.
+QuickFrames quickMove(QuickMove move, const CameraState &start,
+                      const QuickAmounts &amounts, const Stage &stage,
+                      bool stayInside, const QVector<DepthEdge> &edges);
+// THE CAMERA PASSES A NEAR LAYER (Phase 2C, decision D10, Figma 2C-2): the
+// drawn layers whose divisor is below kNearCut at `state` - not drawn -
+// bottom to top, by name.
+QStringList passedLayers(const Panel &panel, const CameraState &state);
+// The mode chip's words for them (the user's Q1): "Passed 'Bush'",
+// "Passed 'Bush', 'Leaves'", "Passed 3 layers"; empty for none.
+QString passedText(const QStringList &names);
+// Test hook: the edge cache's entries.
+int depthEdgeCacheCountForTest();
 
 } // namespace shotcam

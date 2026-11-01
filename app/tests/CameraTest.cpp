@@ -2349,6 +2349,177 @@ int main(int argc, char **argv)
         }
     }
 
+    // ---- (dt) DEPTH TOOLS (Phase 2C) -----------------------------------------
+    // Stay inside with depth (D12, Figma 2C-3), Quick Moves through it (2C-4),
+    // the passed layers (D10, 2C-2). A 25 % stage, 2880 x 1620 around the
+    // 1920 x 1080 frame: Sky 0 % and Mountains 50 % reach the side edges,
+    // the Ground (150 %) the sides and the bottom, the Bush (150 %) no edge.
+    ts << "--- (dt) depth tools ---\n";
+    {
+        const QSize big(2880, 1620);
+        const shotcam::Stage st = shotcam::stageWithMargin(big, QSize(480, 270));
+        auto layerOf = [&](const char *name, double a, const QRect &art) {
+            Layer l = makeRasterLayer(QString::fromLatin1(name), big);
+            QPainter p(&l.image);
+            p.fillRect(art, QColor(90, 120, 80));
+            p.end();
+            l.parallax = a;
+            return l;
+        };
+        auto scenePanel = [&](bool ground, bool bushToEdge) {
+            Panel *p = makeBlankPanel(big);
+            p->layers.removeLast();
+            p->layers.append(layerOf("Sky", 0.0, QRect(0, 0, 2880, 500)));
+            p->layers.append(layerOf("Mountains", 0.5, QRect(0, 500, 2880, 400)));
+            if (ground)
+                p->layers.append(layerOf("Ground", 1.5, QRect(0, 1300, 2880, 320)));
+            p->layers.append(layerOf("Bush", 1.5, bushToEdge ? QRect(600, 1100, 2280, 200)
+                                                             : QRect(600, 1100, 300, 200)));
+            return p;
+        };
+        Panel *gp = scenePanel(true, false);
+        const QVector<shotcam::DepthEdge> edges = shotcam::depthEdges(*gp);
+        QStringList found;
+        for (const shotcam::DepthEdge &e : edges)
+            found << QStringLiteral("%1 %2%3%4%5").arg(e.name).arg(e.left ? "L" : "")
+                         .arg(e.top ? "T" : "").arg(e.right ? "R" : "").arg(e.bottom ? "B" : "");
+        check(QStringLiteral("(dt) the layers that hold the frame in: the Mountains (50 %, both "
+                             "sides) and the Ground (150 %, sides and bottom); not the Sky (0 %, "
+                             "its footprint is always the base framing) nor the Bush (no edge)"),
+              found == QStringList({QStringLiteral("Mountains LR"), QStringLiteral("Ground LRB")}),
+              found.join(QStringLiteral(", ")));
+        // (dt1) a pan right at 1x: the Ground stops it at 320 px, its
+        // footprint's right edge exactly on the stage's.
+        int by = -2;
+        const shotcam::CameraState asked = state(1440 + 480, 810, 1.0, 0.0);
+        const shotcam::CameraState held = shotcam::clampInside(asked, st, edges, &by);
+        const double groundRight = 1440 + 1.5 * (held.cx - 1440) + 1.0 * 960;
+        check(QStringLiteral("(dt1) STAY INSIDE WITH DEPTH: a 480 px pan at 1x stops at 320 px, "
+                             "where the Ground's footprint meets the stage's right edge, and says "
+                             "the Ground stopped it"),
+              qAbs(held.cx - 1760) < 1e-6 && held.cy == 810 && held.zoom == 1.0
+                  && by >= 0 && edges.at(by).name == QStringLiteral("Ground")
+                  && qAbs(groundRight - 2880) < 1e-6,
+              QStringLiteral("cx %1, by %2").arg(held.cx).arg(by));
+        const shotcam::CameraState loose = shotcam::clampZoom(asked);
+        check(QStringLiteral("(dt1) control: with Stay inside off the same pan keeps its 480 px "
+                             "and the Ground's footprint crosses the edge (its end shows)"),
+              loose.cx == 1920 && 1440 + 1.5 * 480 + 960 > 2880);
+        // Every edge-reaching footprint inside, over turned and zoomed frames.
+        QStringList outside;
+        const shotcam::CameraState tries[] = {state(2600, 1500, 1.3, 12.0), state(100, 1500, 1.1, -25.0),
+                                              state(2800, 100, 2.0, 40.0), state(1440, 1610, 0.9, 5.0)};
+        for (const shotcam::CameraState &t : tries) {
+            const shotcam::CameraState c = shotcam::clampInside(t, st, edges);
+            const double rr = qDegreesToRadians(c.rotation);
+            const double bw = 1920 / c.zoom * qAbs(std::cos(rr)) + 1080 / c.zoom * qAbs(std::sin(rr));
+            const double bh = 1920 / c.zoom * qAbs(std::sin(rr)) + 1080 / c.zoom * qAbs(std::cos(rr));
+            for (const shotcam::DepthEdge &e : edges) {
+                const double d = shotcam::depthDivisor(e.parallax, c);
+                const double fx = 1440 + e.parallax * (c.cx - 1440), fy = 810 + e.parallax * (c.cy - 810);
+                if ((e.left && fx - d * bw / 2 < -1e-6) || (e.right && fx + d * bw / 2 > 2880 + 1e-6)
+                    || (e.top && fy - d * bh / 2 < -1e-6) || (e.bottom && fy + d * bh / 2 > 1620 + 1e-6))
+                    outside << QStringLiteral("%1 at %2").arg(e.name, stateText(c));
+            }
+            const QPolygonF q = shotcam::frameQuad(c, st); // and the stage's own rule
+            for (const QPointF &pt : q)
+                if (pt.x() < -1e-6 || pt.y() < -1e-6 || pt.x() > 2880 + 1e-6 || pt.y() > 1620 + 1e-6)
+                    outside << QStringLiteral("frame at %1").arg(stateText(c));
+        }
+        check(QStringLiteral("(dt1) over four turned and zoomed framings every edge-reaching layer's "
+                             "footprint and the frame itself stay inside the stage"),
+              outside.isEmpty(), outside.join(QStringLiteral("; ")));
+        bool sameAs2A = true;
+        for (const shotcam::CameraState &t : tries)
+            sameAs2A = sameAs2A && shotcam::clampInside(t, st, {}) == shotcam::clampInside(t, st);
+        check(QStringLiteral("(dt) with no edge-reaching depth layer the clamp IS 2A's, number for "
+                             "number"),
+              sameAs2A);
+        // (dt) no centre fits at the zoom: pushed in by 1D's search.
+        Panel *near2 = scenePanel(true, false);
+        for (Layer &l : near2->layers)
+            if (l.name == QStringLiteral("Ground"))
+                l.parallax = 2.0;
+        const QVector<shotcam::DepthEdge> edges2 = shotcam::depthEdges(*near2);
+        const shotcam::CameraState wide = state(1440, 810, 0.7, 0.0);
+        const shotcam::CameraState pushed = shotcam::clampInside(wide, st, edges2);
+        check(QStringLiteral("(dt) a 200 % Ground that cannot fit a 0.7x framing pushes the zoom in "
+                             "to the smallest that fits (0.8x: (2 - z) 960 / z = 1440)"),
+              qAbs(pushed.zoom - 0.8) < 1e-6, QString::number(pushed.zoom, 'f', 9));
+        check(QStringLiteral("(dt) control: without it 0.7x stands (the stage holds 0.67x)"),
+              shotcam::clampInside(wide, st).zoom == 0.7);
+        // (dt2) a layer that reaches no edge constrains nothing.
+        Panel *bushOnly = scenePanel(false, false);
+        int byB = -2;
+        const shotcam::CameraState free = shotcam::clampInside(asked, st, shotcam::depthEdges(*bushOnly), &byB);
+        Panel *bushEdge = scenePanel(false, true);
+        const shotcam::CameraState heldB = shotcam::clampInside(asked, st, shotcam::depthEdges(*bushEdge));
+        check(QStringLiteral("(dt2) THE BUSH REACHES NO EDGE: it constrains nothing - the pan goes "
+                             "its 480 px to the stage's edge, and nothing is named"),
+              free.cx == 1920 && byB == -1, QStringLiteral("cx %1").arg(free.cx));
+        check(QStringLiteral("(dt2) control: the same bush running to the right edge holds the "
+                             "frame in (320 px)"),
+              qAbs(heldB.cx - 1760) < 1e-6, QString::number(heldB.cx));
+        // Q6: a faint speck at the edge is not "reaching" it.
+        auto speckPanel = [&](int alpha) {
+            Panel *p = makeBlankPanel(big);
+            p->layers.removeLast();
+            Layer l = makeRasterLayer(QStringLiteral("Speck"), big);
+            QPainter sp(&l.image);
+            sp.fillRect(QRect(2878, 800, 2, 4), QColor(0, 0, 0, alpha));
+            sp.end();
+            l.parallax = 1.5;
+            p->layers.append(l);
+            return p;
+        };
+        Panel *faint = speckPanel(20), *seen = speckPanel(30);
+        const QVector<shotcam::DepthEdge> faintEdges = shotcam::depthEdges(*faint);
+        const QVector<shotcam::DepthEdge> seenEdges = shotcam::depthEdges(*seen);
+        check(QStringLiteral("(dt) A FAINT SPECK (alpha 20, under 10 %) at the edge does not count as "
+                             "reaching it (your Q6)"),
+              faintEdges.isEmpty());
+        check(QStringLiteral("(dt) control: the same speck at alpha 30 (over 10 %) reaches the right "
+                             "edge"),
+              seenEdges.size() == 1 && seenEdges.first().right && !seenEdges.first().left);
+        // (dt3) Quick Moves respect depth: the START gives way.
+        const shotcam::CameraState base2 = shotcam::neutral(big);
+        const shotcam::QuickFrames qd = shotcam::quickMove(shotcam::QuickMove::PanRight, base2,
+                                                           shotcam::QuickAmounts(), st, true, edges);
+        const shotcam::QuickFrames q2 = shotcam::quickMove(shotcam::QuickMove::PanRight, base2,
+                                                           shotcam::QuickAmounts(), st, true);
+        check(QStringLiteral("(dt3) QUICK MOVES RESPECT DEPTH: Pan Right 480 px from the base framing "
+                             "with the Ground - the START slides back 160 px, the END stops at 320, "
+                             "the whole 480 px kept, and the Ground is named"),
+              qAbs(qd.start.cx - 1280) < 0.5 && qAbs(qd.end.cx - 1760) < 0.5
+                  && qd.placedStart == base2 && qd.stoppedBy == QStringLiteral("Ground")
+                  && qd.stoppedByDepth == 1.5,
+              QStringLiteral("start %1, end %2, by '%3'").arg(qd.start.cx).arg(qd.end.cx).arg(qd.stoppedBy));
+        check(QStringLiteral("(dt3) control: with no depth layer the same move is 1D's (start 1440, "
+                             "end 1920, nothing named), and quickMove with an empty list is "
+                             "quickMove itself"),
+              q2.start.cx == 1440 && q2.end.cx == 1920 && q2.stoppedBy.isEmpty()
+                  && shotcam::quickMove(shotcam::QuickMove::PanRight, base2, shotcam::QuickAmounts(),
+                                        st, true, {}).end == q2.end);
+        // Passed (D10, Q1).
+        Panel *pp = scenePanel(true, false);
+        const QStringList at285 = shotcam::passedLayers(*pp, state(1440, 810, 2.85, 0.0));
+        const QStringList at27 = shotcam::passedLayers(*pp, state(1440, 810, 2.7, 0.0));
+        const QChar L(0x2018), R(0x2019);
+        check(QStringLiteral("(dt) PASSED: at 2.85x the camera has passed both 150 % layers (the "
+                             "Ground and the Bush), and the chip's words name them; 1, 2 and 3 "
+                             "names read as in Figma 2C-2"),
+              at285 == QStringList({QStringLiteral("Ground"), QStringLiteral("Bush")})
+                  && shotcam::passedText(at285) == QStringLiteral("Passed ") + L + "Ground" + R
+                         + QStringLiteral(", ") + L + "Bush" + R
+                  && shotcam::passedText({QStringLiteral("Bush")}) == QStringLiteral("Passed ") + L + "Bush" + R
+                  && shotcam::passedText({QStringLiteral("a"), QStringLiteral("b"), QStringLiteral("c")})
+                         == QStringLiteral("Passed 3 layers"),
+              at285.join(QLatin1Char(',')));
+        check(QStringLiteral("(dt) control: at 2.7x nothing is passed"), at27.isEmpty());
+        for (Panel *p : {gp, near2, bushOnly, bushEdge, faint, seen, pp})
+            delete p;
+    }
+
     delete scene;
     QDir(scratch).removeRecursively();
     ts << "\nRESULT " << (g_failures ? "FAIL" : "PASS") << " (checks=" << g_checks

@@ -13619,6 +13619,254 @@ void runDepthPass(const QString &scratch)
     }
 }
 
+// ---- (dt) DEPTH TOOLS through the real window (Phase 2C) ----------------------
+// The Camera family proves the clamp, the Quick Moves and the passed layers
+// headless; this drives the real workspace: a frame drag the Ground holds in
+// and its "Edge of" chip (Figma 2C-3), the mode chip's "Passed" (2C-2), a
+// Quick Move's give-way note (2C-4), and the Depth popover's every-panel box
+// with its one undo step (2C-1).
+namespace dtpins {
+// A 25 % margin project (2880 x 1620 around 1920 x 1080), scene 1: panel 1
+// Sky 0 %, Mountains 50 % (both sides), Ground 150 % (sides and bottom),
+// Bush 150 % (no edge); panel 2 a Mountains; panel 3 a Mountains inside the
+// folder "Far things"; panel 4 none.
+QString writeProject(const QString &dir, double groundDepth)
+{
+    QDir(dir).removeRecursively();
+    QDir().mkpath(dir);
+    const QString path = dir + QStringLiteral("/DepthTools.sankotv");
+    const QSize size(2880, 1620);
+    auto layer = [&](const char *name, double a, const QRect &art) {
+        Layer l = makeRasterLayer(QString::fromLatin1(name), size);
+        QPainter p(&l.image);
+        p.fillRect(art, QColor(90, 120, 80));
+        p.end();
+        l.parallax = a;
+        return l;
+    };
+    Scene *scene = new Scene;
+    scene->number = 1;
+    Panel *p1 = makeBlankPanel(size);
+    p1->layers.removeLast();
+    p1->layers << layer("Sky", 0.0, QRect(0, 0, 2880, 500))
+               << layer("Mountains", 0.5, QRect(0, 500, 2880, 400))
+               << layer("Ground", groundDepth, QRect(0, 1300, 2880, 320))
+               << layer("Bush", 1.5, QRect(600, 1100, 300, 200));
+    p1->activeLayerIndex = 1;
+    Panel *p2 = makeBlankPanel(size);
+    p2->layers.removeLast();
+    p2->layers << layer("Mountains", 1.0, QRect(0, 500, 2880, 400));
+    Panel *p3 = makeBlankPanel(size);
+    p3->layers.removeLast();
+    Layer folder;
+    folder.id = QStringLiteral("folder-far-things");
+    folder.name = QStringLiteral("Far things");
+    folder.type = QStringLiteral("group");
+    Layer m3 = layer("Mountains", 1.0, QRect(0, 500, 2880, 400));
+    m3.groupId = folder.id;
+    p3->layers << m3 << folder;
+    Panel *p4 = makeBlankPanel(size);
+    for (Panel *p : {p1, p2, p3, p4}) {
+        p->duration = 2;
+        scene->panels.append(p);
+    }
+    ProjectIO::SaveData data;
+    data.projectName = QStringLiteral("DepthTools");
+    data.fps = 24;
+    data.canvasSize = size;
+    data.stageMargin = QSize(480, 270);
+    data.scenes = {scene};
+    const ProjectIO::WriteResult w = ProjectIO::projectToJson(data, path);
+    QFile f(path);
+    if (w.ok && f.open(QIODevice::WriteOnly))
+        f.write(QJsonDocument(w.root).toJson(QJsonDocument::Indented));
+    f.close();
+    delete scene;
+    return path;
+}
+} // namespace dtpins
+
+void runDepthToolsPass(const QString &scratch)
+{
+    out() << "--- (dt) depth tools through the real window ---" << Qt::endl;
+    using namespace workspace;
+    Rig r(dtpins::writeProject(scratch + QStringLiteral("/depthtools"), 1.5));
+    if (!r.ok) {
+        check(QStringLiteral("(dt) the depth-tools fixture opens"), false);
+        return;
+    }
+    Scene *scene = r.window.scenesForTest().first();
+    QUndoStack *stack = r.window.undoStackForTest();
+    const QChar L(0x2018), R(0x2019);
+
+    // (dt1) THE FRAME DRAG the Ground holds in, through the real canvas.
+    r.canvas->setTool(DrawingCanvas::Camera);
+    pump(150);
+    auto drag = [&](double dx, QString *chipDuring) {
+        const QTransform t = r.canvas->viewTransformForTest();
+        const QPointF from = t.map(QPointF(1440, 810));
+        sendMouse(r.canvas, QEvent::MouseButtonPress, from, Qt::LeftButton);
+        for (int i = 1; i <= 10; ++i) {
+            sendMouse(r.canvas, QEvent::MouseMove, t.map(QPointF(1440 + dx * i / 10.0, 810)),
+                      Qt::LeftButton);
+            pump(10);
+        }
+        if (chipDuring)
+            *chipDuring = r.canvas->shotCameraEdgeChipForTest();
+        sendMouse(r.canvas, QEvent::MouseButtonRelease, t.map(QPointF(1440 + dx, 810)), Qt::LeftButton);
+        pump(120);
+    };
+    QString chip;
+    drag(700, &chip);
+    const double landed = scene->camera.keys.isEmpty() ? -1 : scene->camera.keys.first().state.cx;
+    check(QStringLiteral("(dt1) A FRAME DRAG on the real canvas stops where the Ground's end would "
+                         "show (320 px right of the base framing), and while it is held the drag "
+                         "chip says \"Edge of 'Ground'\""),
+          qAbs(landed - 1760) < 0.5 && chip == QStringLiteral("Edge of ") + L + "Ground" + R,
+          QStringLiteral("landed %1, chip '%2'").arg(landed).arg(chip));
+    stack->undo();
+    pump(80);
+    r.storyboard->setCameraStayInside(false);
+    QString chipOff;
+    drag(700, &chipOff);
+    const double landedOff = scene->camera.keys.isEmpty() ? -1 : scene->camera.keys.first().state.cx;
+    check(QStringLiteral("(dt1) control: with Stay inside off the same drag goes the whole 700 px, "
+                         "and no chip names a layer"),
+          qAbs(landedOff - 2140) < 0.5 && chipOff.isEmpty(),
+          QStringLiteral("landed %1, chip '%2'").arg(landedOff).arg(chipOff));
+    stack->undo();
+    r.storyboard->setCameraStayInside(true);
+    pump(80);
+
+    // PASSED (D10, Q1): the mode chip names the layers the camera passed.
+    scene->camera.keys = {shotcam::makeKey(*scene, 0, 0, 24, shotcam::neutral(QSize(2880, 1620)))};
+    scene->camera.keys.first().state.zoom = 2.85;
+    r.canvas->refreshShotCamera();
+    pump(80);
+    const QString passedChip = r.canvas->shotCameraChipForTest();
+    scene->camera.keys.first().state.zoom = 2.7;
+    r.canvas->refreshShotCamera();
+    pump(80);
+    const QString nearChip = r.canvas->shotCameraChipForTest();
+    // (The 1920 px frame is past its sharp limit at either zoom, so "Soft"
+    // follows, as it always has.)
+    check(QStringLiteral("(dt) PASSED: at 2.85x the mode chip reads \"... DEPTH . Passed 'Ground', "
+                         "'Bush'\" (both 150 % layers are behind the camera), right after DEPTH"),
+          passedChip.contains(QStringLiteral("DEPTH  ") + QChar(0x00B7) + QStringLiteral("  Passed ")
+                              + L + "Ground" + R + QStringLiteral(", ") + L + "Bush" + R),
+          passedChip);
+    check(QStringLiteral("(dt) control: at 2.7x nothing is passed - no \"Passed\" in the chip"),
+          nearChip.contains(QStringLiteral("DEPTH")) && !nearChip.contains(QStringLiteral("Passed")),
+          nearChip);
+    scene->camera.keys.clear();
+    r.canvas->refreshShotCamera();
+
+    // (dt3) THE GIVE-WAY NOTE (Q7) on a real Quick Move.
+    r.storyboard->clearNoteForTest();
+    r.storyboard->cameraQuickMove(shotcam::QuickMove::PanRight);
+    pump(80);
+    const QString note = r.storyboard->lastNoteForTest();
+    double qs = -1, qe = -1;
+    if (scene->camera.keys.size() == 2) {
+        qs = scene->camera.keys.at(0).state.cx;
+        qe = scene->camera.keys.at(1).state.cx;
+    }
+    check(QStringLiteral("(dt3) A QUICK MOVE whose start gives way says so: Pan Right 480 px, the "
+                         "start moved back 160 px, the Ground named (Figma 2C-4's words)"),
+          note == QStringLiteral("Pan Right ") + QChar(0x00B7)
+                      + QStringLiteral(" 480 px. The start moved back 160 px so the whole pan fits: ")
+                      + L + "Ground" + R + QStringLiteral(" (150 %) reaches the stage's edge.")
+              && qAbs(qs - 1280) < 0.5 && qAbs(qe - 1760) < 0.5,
+          QStringLiteral("'%1' (%2 -> %3)").arg(note).arg(qs).arg(qe));
+    stack->undo();
+    pump(80);
+    r.window.markCleanForTest();
+    {
+        Rig flat(dtpins::writeProject(scratch + QStringLiteral("/depthtools100"), 1.0));
+        if (flat.ok) {
+            flat.storyboard->clearNoteForTest();
+            flat.storyboard->cameraQuickMove(shotcam::QuickMove::PanRight);
+            pump(80);
+            check(QStringLiteral("(dt3) control: with the Ground on the picture plane the pan fits "
+                                 "as asked (480 px to the stage's edge) and says nothing"),
+                  flat.storyboard->lastNoteForTest().isEmpty(), flat.storyboard->lastNoteForTest());
+        } else {
+            check(QStringLiteral("(dt3) control fixture opens"), false);
+        }
+    }
+
+    // (dt4) THE EVERY-PANEL BOX (D13, Q4, Q5).
+    Panel *p1 = scene->panels.at(0), *p2 = scene->panels.at(1), *p3 = scene->panels.at(2);
+    auto mountains = [](Panel *p) {
+        for (const Layer &l : p->layers)
+            if (l.name == QStringLiteral("Mountains"))
+                return l.parallax;
+        return -1.0;
+    };
+    r.storyboard->openLayerDepthForTest(2); // panel 1's Mountains
+    pump(80);
+    LayerDepthPopover *pop = r.storyboard->depthPopoverForTest();
+    const bool offAtOpen = pop && !pop->everyPanel() && pop->everyPanelEnabledForTest();
+    const QString line = pop ? pop->everyPanelLineForTest() : QString();
+    const QString boxText = pop ? pop->everyPanelTextForTest() : QString();
+    check(QStringLiteral("(dt4) THE EVERY-PANEL BOX opens off, says \"Same depth for 'Mountains' in "
+                         "every panel of scene 1\" and that 3 panels have it, one in a folder"),
+          offAtOpen && boxText == QStringLiteral("Same depth for ") + L + "Mountains" + R
+                                      + QStringLiteral(" in every panel of scene 1")
+              && line == QStringLiteral("3 panels have a layer named ") + L + "Mountains" + R
+                             + QStringLiteral("; in 1 it is in a folder, whose depth applies there"),
+          boxText + QStringLiteral(" | ") + line);
+    // (By the stack's index: the earlier Undo left a redo step, which the
+    // new push truncates.)
+    const int indexBefore = stack->index();
+    if (pop) {
+        pop->setEveryPanelForTest(true);
+        pop->slideForTest(50, true);
+    }
+    pump(100);
+    check(QStringLiteral("(dt4) ON: one release sets 50 % on every panel's Mountains (the folder's "
+                         "member keeps its own 50 %, its folder's applies), ONE undo step \"Layer "
+                         "Depth (3 panels)\""),
+          mountains(p1) == 0.5 && mountains(p2) == 0.5 && mountains(p3) == 0.5
+              && stack->index() == indexBefore + 1 && stack->count() == indexBefore + 1
+              && stack->undoText() == QStringLiteral("Layer Depth (3 panels)"),
+          QStringLiteral("%1 %2 %3, '%4'").arg(mountains(p1)).arg(mountains(p2)).arg(mountains(p3))
+              .arg(stack->undoText()));
+    stack->undo();
+    pump(80);
+    check(QStringLiteral("(dt4) ...and one Undo puts all three back (50 %, 100 %, 100 %)"),
+          mountains(p1) == 0.5 && mountains(p2) == 1.0 && mountains(p3) == 1.0,
+          QStringLiteral("%1 %2 %3").arg(mountains(p1)).arg(mountains(p2)).arg(mountains(p3)));
+    if (LayerDepthPopover *open = r.storyboard->depthPopoverForTest())
+        open->close();
+    pump(50);
+    r.storyboard->openLayerDepthForTest(2);
+    pump(80);
+    if ((pop = r.storyboard->depthPopoverForTest()))
+        pop->slideForTest(10, true); // the box left off: only this panel
+    pump(100);
+    check(QStringLiteral("(dt4) control: OFF (as it opens again) the same kind of step changes "
+                         "only this panel"),
+          pop && !pop->everyPanel() && mountains(p1) == 0.1 && mountains(p2) == 1.0
+              && stack->undoText() == QStringLiteral("Layer Depth"),
+          QStringLiteral("%1 %2, '%3'").arg(mountains(p1)).arg(mountains(p2)).arg(stack->undoText()));
+    if (LayerDepthPopover *open = r.storyboard->depthPopoverForTest())
+        open->close();
+    pump(50);
+    r.storyboard->openLayerDepthForTest(3); // the Ground: only panel 1 has one
+    pump(80);
+    pop = r.storyboard->depthPopoverForTest();
+    check(QStringLiteral("(dt4) a name no other panel has: the box is off and says why"),
+          pop && !pop->everyPanelEnabledForTest()
+              && pop->everyPanelLineForTest()
+                     == QStringLiteral("No other panel in scene 1 has a layer named ") + L + "Ground" + R,
+          pop ? pop->everyPanelLineForTest() : QString());
+    if (pop)
+        pop->close();
+    pump(50);
+    r.window.markCleanForTest();
+}
+
 void runCameraToolPass(const QString &scratch)
 {
     using namespace workspace;
@@ -15767,6 +16015,7 @@ int main(int argc, char **argv)
     runStageMarginPass(scratch);
     runRecentMenuPass(scratch);
     runDepthPass(scratch);
+    runDepthToolsPass(scratch);
 
     // ---- (aa) a test that cannot start says why and exits ----------------
     // An unattended gate must FAIL, not wait. Measured 2026-10-02: with its

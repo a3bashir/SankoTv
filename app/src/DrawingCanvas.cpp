@@ -6,6 +6,8 @@
 #include "camera/ShotCamera.h"
 
 #include <QDir>
+#include <QHelpEvent>
+#include <QToolTip>
 #include <QActionGroup>
 #include <QApplication>
 #include <QColorDialog>
@@ -1064,8 +1066,10 @@ void DrawingCanvas::shotCameraUpdateCursor(int hit)
 }
 
 shotcam::CameraState DrawingCanvas::shotCameraDragState(const QPointF &widgetPos,
-                                                        bool shift) const
+                                                        bool shift, int *stoppedBy) const
 {
+    if (stoppedBy)
+        *stoppedBy = -1;
     shotcam::CameraState s = m_camStart;
     const QPointF cp = toCanvasF(widgetPos); // back through the view
     const QPointF c(m_camStart.cx, m_camStart.cy);
@@ -1087,8 +1091,18 @@ shotcam::CameraState DrawingCanvas::shotCameraDragState(const QPointF &widgetPos
             r = std::round(r / 15.0) * 15.0;
         s.rotation = shotcam::normalisedAngle(r);
     }
-    return shotCameraView().stayInside ? shotcam::clampInside(s, stage())
+    // Stay inside with depth (Phase 2C): the layers that reach an edge hold
+    // the frame in too; with none it is 2A's clamp exactly.
+    return shotCameraView().stayInside ? shotcam::clampInside(s, stage(), m_camEdges, stoppedBy)
                                        : shotcam::clampZoom(s);
+}
+
+QString DrawingCanvas::shotCameraEdgeText() const
+{
+    if (m_camDrag != 0 || m_camStoppedBy < 0 || m_camStoppedBy >= m_camEdges.size())
+        return QString();
+    return QStringLiteral("Edge of ") + QChar(0x2018) + m_camEdges.at(m_camStoppedBy).name
+        + QChar(0x2019);
 }
 
 bool DrawingCanvas::shotCameraSoft(const ShotCameraView &v,
@@ -1103,9 +1117,15 @@ QString DrawingCanvas::shotCameraChipText(const ShotCameraView &v,
     const QString dot = QStringLiteral("  ") + QChar(0x00B7) + QStringLiteral("  ");
     QString t = QStringLiteral("SHOT CAMERA") + dot
         + (v.animate ? QStringLiteral("ANIMATE ON") : QStringLiteral("ANIMATE OFF"));
-    // The panel has a layer off the picture plane (Phase 2B, Q4).
+    // The panel has a layer off the picture plane (Phase 2B, Q4)...
     if (m_panel && m_panel->hasDepth())
         t += dot + QStringLiteral("DEPTH");
+    // ...and the layers the camera has passed (Phase 2C, D10 / Q1).
+    if (m_panel) {
+        const QString passed = shotcam::passedText(shotcam::passedLayers(*m_panel, s));
+        if (!passed.isEmpty())
+            t += dot + passed;
+    }
     // With Animate on the frame a drag writes is always named; past the
     // sharp limit "Soft" is ADDED after it (the user's rule, 2026-10-26: the
     // key's frame stays visible when the frame is soft), amber.
@@ -1143,6 +1163,9 @@ void DrawingCanvas::shotCameraPress(const QPointF &widgetPos)
     m_camStart = v.state;
     m_camLive = v.state;
     m_camShift = false;
+    m_camEdges = (v.stayInside && m_panel) ? shotcam::depthEdges(*m_panel)
+                                           : QVector<shotcam::DepthEdge>();
+    m_camStoppedBy = -1;
     m_camPressCanvas = toCanvasF(widgetPos);
     m_camPressWidget = widgetPos;
     m_camPointer = widgetPos;
@@ -1160,7 +1183,7 @@ void DrawingCanvas::shotCameraMove(const QPointF &widgetPos,
         }
         m_camShift = mods & Qt::ShiftModifier;
         m_camPointer = widgetPos;
-        m_camLive = shotCameraDragState(widgetPos, m_camShift);
+        m_camLive = shotCameraDragState(widgetPos, m_camShift, &m_camStoppedBy);
         update();
         return;
     }
@@ -1346,6 +1369,14 @@ void DrawingCanvas::paintShotCamera(QPainter &painter)
             else
                 paintCamChip(painter, r, t, QColor(0x16, 0x16, 0x16),
                              QColor(0x2a, 0x2a, 0x2a), QColor(0xdd, 0xdd, 0xdd), false);
+        } else if (const QString edge = shotCameraEdgeText(); !edge.isEmpty()) {
+            // A frame drag a depth layer holds in (Phase 2C, Q3): which one.
+            const double w = qCeil(fm.horizontalAdvance(edge) + 20.0);
+            QRectF r(m_camPointer + QPointF(14, 10), QSizeF(w, 24));
+            r.moveLeft(qBound(4.0, r.left(), width() - w - 4.0));
+            r.moveTop(qBound(4.0, r.top(), height() - 28.0));
+            paintCamChip(painter, r, edge, QColor(0x16, 0x16, 0x16), QColor(0x2a, 0x2a, 0x2a),
+                         QColor(0xdd, 0xdd, 0xdd), false);
         }
         // The mode chip, top centre: which mode the next drag is in.
         const QString text = shotCameraChipText(v, s);
@@ -6777,6 +6808,22 @@ void DrawingCanvas::keyReleaseEvent(QKeyEvent *event)
 // the stroke exactly like focus loss: commit, never orphan.
 bool DrawingCanvas::event(QEvent *event)
 {
+    // The mode chip's "Passed 3 layers" (Phase 2C, Q1): its hover names them.
+    if (event->type() == QEvent::ToolTip && m_tool == Camera && m_panel) {
+        const ShotCameraView v = shotCameraView();
+        if (v.valid) {
+            const shotcam::CameraState s = shotCameraShownState(v);
+            const QStringList passed = shotcam::passedLayers(*m_panel, s);
+            auto *help = static_cast<QHelpEvent *>(event);
+            if (passed.size() >= 3
+                && shotCameraChipRect(shotCameraChipText(v, s)).contains(help->pos())) {
+                QToolTip::showText(help->globalPos(),
+                                   QStringLiteral("Passed: ") + passed.join(QStringLiteral(", ")),
+                                   this);
+                return true;
+            }
+        }
+    }
     if (event->type() == QEvent::UngrabMouse) {
         finishInterruptedStroke();
         if (m_camDrag >= 0)

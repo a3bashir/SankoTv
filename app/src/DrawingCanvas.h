@@ -182,6 +182,9 @@ public:
     // whether the Camera tool is showing the layers placed for their depth.
     QString drawingViewChipForTest() const;
     bool shotCameraDepthViewForTest() const;
+    // Phase 2C: the drag chip naming the depth layer that holds a frame
+    // drag in ("Edge of 'Ground'"; empty: none shown).
+    QString shotCameraEdgeChipForTest() const { return shotCameraEdgeText(); }
     QRectF shotCameraChipRectForTest() const;
     bool shotCameraDraggingForTest() const { return m_camDrag >= 0; }
 
@@ -1127,7 +1130,7 @@ private:
     int shotCameraHitTest(const QPointF &widgetPos) const;
     void shotCameraUpdateCursor(int hit);
     shotcam::CameraState shotCameraDragState(const QPointF &widgetPos,
-                                             bool shift) const;
+                                             bool shift, int *stoppedBy = nullptr) const;
     bool shotCameraSoft(const ShotCameraView &v,
                         const shotcam::CameraState &s) const;
     QString shotCameraChipText(const ShotCameraView &v,
@@ -1149,6 +1152,12 @@ private:
     bool m_camShift = false;
     shotcam::CameraState m_camStart; // at the press
     shotcam::CameraState m_camLive;  // during the drag
+    // Stay inside with depth (Phase 2C): the panel's edge-reaching depth
+    // layers, worked out at the press, and the one holding the frame in now
+    // (-1: the stage or nothing) - the drag chip names it (Q3).
+    QVector<shotcam::DepthEdge> m_camEdges;
+    int m_camStoppedBy = -1;
+    QString shotCameraEdgeText() const;
     QPointF m_camPressCanvas;
     QPointF m_camPressWidget;
     QPointF m_camPointer;         // widget px, for the drag chip

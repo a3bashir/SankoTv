@@ -31,6 +31,7 @@ int snapPercent(int percent);
 } // namespace layerdepth
 
 class LayerDepthSlider;
+class LayerDepthCheck;
 
 class LayerDepthPopover : public QFrame
 {
@@ -46,6 +47,14 @@ public:
     // Opens under `anchor` (global px), kept on its screen.
     void popupBelow(const QPoint &anchor);
 
+    // THE EVERY-PANEL BOX (Phase 2C, decision D13; Figma 2C-1): how many
+    // panels of scene `sceneNumber` have a layer of this name (this one
+    // counted) and in how many of the others it sits in a folder. Fewer
+    // than 2: the box is off and says why. Off each time (the user's Q4).
+    void setEveryPanel(const QString &layerName, int sceneNumber, int panelsWithName,
+                       int inFolders);
+    bool everyPanel() const; // on: a step sets the depth in every such panel
+
     // Test hooks: the same paths the pointer and the keyboard take.
     int percentForTest() const;
     QString fieldTextForTest() const;
@@ -54,6 +63,11 @@ public:
     QColor fieldSelectionForTest() const; // the value field's selected-text background
     void slideForTest(int percent, bool release);
     void typeForTest(const QString &text); // then Enter
+    QString everyPanelTextForTest() const;
+    QString everyPanelLineForTest() const;
+    bool everyPanelEnabledForTest() const;
+    void setEveryPanelForTest(bool on); // as a click on the box
+    QString footForTest() const;
 
 protected:
     void closeEvent(QCloseEvent *event) override;
@@ -61,8 +75,16 @@ protected:
 private:
     void showValue(int percent);
     void applyField();
+    void showEveryPanel();
 
     LayerDepthSlider *m_slider = nullptr;
     QLineEdit *m_field = nullptr;
     QLabel *m_readout = nullptr;
+    LayerDepthCheck *m_everyBox = nullptr;
+    QLabel *m_everyLine = nullptr;
+    QLabel *m_foot = nullptr;
+    QString m_layerName;
+    int m_sceneNumber = 0;
+    int m_panelsWithName = 1;
+    int m_inFolders = 0;
 };

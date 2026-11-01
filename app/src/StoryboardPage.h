@@ -679,12 +679,15 @@ private:
         shotcam::QuickFrames frames;
         shotcam::SceneCamera after;
         QVector<int> replaced;
+        QString note; // Phase 2C (Q7): the START gave way - by how much, and why
     };
     // *span*: the popover's Over; the CAMERA row's and the clip's menus act
     // on the panel they name, so they pass ThisPanel (the 1D hand test).
     bool quickMovePlan(shotcam::QuickMove move, int sceneIndex, int panelIndex, QuickSpan span,
                        QuickPlan *plan, QString *why) const;
     void applyQuickPlan(const QuickPlan &plan);
+    QString quickGiveWayNote(shotcam::QuickMove move, const shotcam::QuickFrames &f,
+                             const shotcam::Stage &stage) const;
     QString quickSpanText(int sceneIndex, int panelIndex) const; // the popover's title
     void addQuickMoveEntries(QMenu *menu, const QString &title, int flatPanel);
     void addSceneCameraEntries(QMenu *menu, int sceneIndex);

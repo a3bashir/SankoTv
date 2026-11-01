@@ -1850,11 +1850,14 @@ bool layerHasContent(const Layer &layer)
 class LayerStackCommand : public QUndoCommand
 {
 public:
+    // `parent`: one step over several panels (Phase 2C's "Layer Depth (N
+    // panels)") - the parent's push redoes its children, each skipping its
+    // first redo as alone.
     LayerStackCommand(StoryboardPage *page, Panel *panel,
                       QVector<Layer> before, int beforeActive,
                       QVector<Layer> after, int afterActive,
-                      const QString &text)
-        : QUndoCommand(text), m_page(page), m_panel(panel),
+                      const QString &text, QUndoCommand *parent = nullptr)
+        : QUndoCommand(text, parent), m_page(page), m_panel(panel),
           m_before(std::move(before)), m_beforeActive(beforeActive),
           m_after(std::move(after)), m_afterActive(afterActive)
     {
@@ -5379,12 +5382,18 @@ bool StoryboardPage::quickMovePlan(shotcam::QuickMove move, int sceneIndex, int 
     plan->endFrame = shotcam::panelStartFrame(*scene, ep, fps) + endFrames;
     // START: the camera as it already is at the span's first frame.
     const shotcam::CameraState start = shotcam::evaluateAtPanel(*scene, sp, 0, fps);
-    plan->frames = shotcam::quickMove(move, start, m_quickAmounts,
-                                      stageFor(scene->panels.at(sp)), m_cameraStayInside);
+    // Stay inside with depth (Phase 2C): the START panel's layers that reach
+    // an edge hold the frame in, as they do on the canvas.
+    const shotcam::Stage stage = stageFor(scene->panels.at(sp));
+    plan->frames = shotcam::quickMove(move, start, m_quickAmounts, stage, m_cameraStayInside,
+                                      m_cameraStayInside
+                                          ? shotcam::depthEdges(*scene->panels.at(sp))
+                                          : QVector<shotcam::DepthEdge>());
     if (!plan->frames.moves) {
         *why = QStringLiteral("No room for this move: the zoom is at its limit.");
         return false;
     }
+    plan->note = quickGiveWayNote(move, plan->frames, stage);
     // The END key keeps the ease the move through its frame had.
     shotcam::Ease endEase = shotcam::Ease::EaseInOut;
     const int through = shotcam::segmentKeyIndex(*scene, plan->endFrame, fps);
@@ -5405,6 +5414,51 @@ bool StoryboardPage::quickMovePlan(shotcam::QuickMove move, int sceneIndex, int 
     return true;
 }
 
+// THE GIVE-WAY NOTE (Phase 2C, the user's Q7; Figma 2C-4): when Stay inside
+// made a Quick Move's START give way - slid back, or pushed in - it says by
+// how much, and what made it: a depth layer by name, or the stage. Empty
+// when the START is where it was (1D's moves that fit say nothing).
+QString StoryboardPage::quickGiveWayNote(shotcam::QuickMove move,
+                                         const shotcam::QuickFrames &f,
+                                         const shotcam::Stage &stage) const
+{
+    using shotcam::QuickMove;
+    const double moved =
+        std::hypot(f.start.cx - f.placedStart.cx, f.start.cy - f.placedStart.cy);
+    const bool pushed = f.start.zoom > f.placedStart.zoom * (1.0 + 1e-6);
+    if (!f.moves || (moved < 0.5 && !pushed))
+        return QString();
+    const bool pan = move == QuickMove::PanLeft || move == QuickMove::PanRight;
+    const bool tilt = move == QuickMove::TiltUp || move == QuickMove::TiltDown;
+    const bool turn = move == QuickMove::RotateLeft || move == QuickMove::RotateRight;
+    const QString dot = QStringLiteral(" ") + QChar(0x00B7) + QStringLiteral(" ");
+    QString head = shotcam::quickMoveLabel(move);
+    if (pan || tilt)
+        head += dot + QStringLiteral("%1 px").arg(qRound(
+            m_quickAmounts.move * (pan ? stage.frame.width() : stage.frame.height())
+            / f.placedStart.zoom));
+    QString how;
+    const QString zoomText = QString::number(f.start.zoom, 'f', 2) + QChar(0x00D7);
+    if (moved >= 0.5 && pushed)
+        how = QStringLiteral("The start moved back %1 px and in to %2").arg(qRound(moved)).arg(zoomText);
+    else if (moved >= 0.5)
+        how = ((pan || tilt) ? QStringLiteral("The start moved back %1 px")
+                             : QStringLiteral("The start moved %1 px"))
+                  .arg(qRound(moved));
+    else
+        how = QStringLiteral("The start was pushed in to %1").arg(zoomText);
+    const QString what = pan ? QStringLiteral("the whole pan")
+        : tilt ? QStringLiteral("the whole tilt")
+        : turn ? QStringLiteral("the turned frame")
+        : move == QuickMove::PullOut ? QStringLiteral("the pull-out")
+                                     : QStringLiteral("the move");
+    const QString why = f.stoppedBy.isEmpty()
+        ? QStringLiteral(" fits on the stage.")
+        : QStringLiteral(" fits: ") + QChar(0x2018) + f.stoppedBy + QChar(0x2019)
+            + QStringLiteral(" (%1 %) reaches the stage's edge.").arg(qRound(f.stoppedByDepth * 100));
+    return head + QStringLiteral(". ") + how + QStringLiteral(" so ") + what + why;
+}
+
 void StoryboardPage::applyQuickPlan(const QuickPlan &plan)
 {
     Scene *scene = m_scenes.value(plan.sceneIndex);
@@ -5422,10 +5476,13 @@ void StoryboardPage::cameraQuickMove(shotcam::QuickMove move)
         return;
     QuickPlan plan;
     QString why;
-    if (quickMovePlan(move, m_currentScene, pi, m_quickSpan, &plan, &why))
+    if (quickMovePlan(move, m_currentScene, pi, m_quickSpan, &plan, &why)) {
         applyQuickPlan(plan);
-    else if (!why.isEmpty())
+        if (!plan.note.isEmpty())
+            sayNote(plan.note);
+    } else if (!why.isEmpty()) {
         sayNote(why);
+    }
 }
 
 // The menus' entry: "Quick Move on Panel N" moves over panel N only, whatever
@@ -5438,10 +5495,13 @@ void StoryboardPage::cameraQuickMoveOnPanel(shotcam::QuickMove move, int flatPan
         return;
     QuickPlan plan;
     QString why;
-    if (quickMovePlan(move, si, pi, QuickSpan::ThisPanel, &plan, &why))
+    if (quickMovePlan(move, si, pi, QuickSpan::ThisPanel, &plan, &why)) {
         applyQuickPlan(plan);
-    else if (!why.isEmpty())
+        if (!plan.note.isEmpty())
+            sayNote(plan.note);
+    } else if (!why.isEmpty()) {
         sayNote(why);
+    }
 }
 
 void StoryboardPage::showQuickPreview(shotcam::QuickMove move)
@@ -9605,6 +9665,39 @@ void StoryboardPage::layerOpenDepth(int index, const QPoint &globalAt)
     };
     auto *popover = new LayerDepthPopover(layer.name, layer.parallax, this);
     m_depthPopover = popover;
+    // THE EVERY-PANEL BOX (Phase 2C, decision D13): the scene's panels with
+    // a layer of exactly this name (a folder matches folders, a layer
+    // layers; never the paper), and in how many of the others it sits in a
+    // folder - there its own depth is set, and the folder's applies (Q5).
+    Scene *scene = currentScene();
+    const QString layerName = layer.name;
+    const bool isFolder = isGroupLayer(layer);
+    auto matchesIn = [layerName, isFolder](const Panel *p) {
+        QVector<int> at;
+        for (int k = 0; k < p->layers.size(); ++k) {
+            const Layer &l = p->layers.at(k);
+            if (l.name == layerName && isGroupLayer(l) == isFolder
+                && l.type != QLatin1String("background"))
+                at << k;
+        }
+        return at;
+    };
+    if (scene) {
+        int withName = 0, inFolders = 0;
+        for (const Panel *p : scene->panels) {
+            const QVector<int> at = matchesIn(p);
+            if (at.isEmpty())
+                continue;
+            ++withName;
+            if (p != panel)
+                for (int k : at)
+                    if (p->groupOf(p->layers.at(k))) {
+                        ++inFolders;
+                        break;
+                    }
+        }
+        popover->setEveryPanel(layerName, scene->number, qMax(1, withName), inFolders);
+    }
     // A live value not yet let go: only that is put back on a close. (Once
     // a step is made the stack is the undo history's - an undo while this
     // is open must not be overwritten by it.)
@@ -9616,19 +9709,65 @@ void StoryboardPage::layerOpenDepth(int index, const QPoint &globalAt)
             refreshLayerCanvas(); // the canvas at once; strip, clip and preview debounced
         }
     };
-    popover->onCommit = [this, panel, target, committed, before, beforeActive, pending](double a) {
+    QPointer<LayerDepthPopover> box(popover);
+    popover->onCommit = [this, panel, scene, matchesIn, box, target, committed, before,
+                         beforeActive, pending](double a) {
         *pending = false;
         Layer *l = target();
         if (!l)
             return;
         l->parallax = a;
         const double was = committed();
-        if (a == was) { // back where it started: no step
+        // Every panel (Phase 2C): the same depth on that name everywhere in
+        // the scene, ONE undo step over all of them.
+        struct Other
+        {
+            Panel *panel;
+            QVector<Layer> before;
+            int active;
+        };
+        QVector<Other> others;
+        const bool every = box && box->everyPanel() && scene && m_scenes.contains(scene);
+        if (every)
+            for (Panel *p : scene->panels) {
+                if (p == panel)
+                    continue;
+                const QVector<int> at = matchesIn(p);
+                if (at.isEmpty())
+                    continue;
+                Other o{p, p->layers, p->activeLayerIndex};
+                bool changed = false;
+                for (int k : at)
+                    if (p->layers.at(k).parallax != a) {
+                        p->layers[k].parallax = a;
+                        changed = true;
+                    }
+                if (changed)
+                    others << o;
+            }
+        if (a == was && others.isEmpty()) { // back where it started: no step
             refreshLayerCanvas();
             return;
         }
         const QString name = l->name;
-        pushLayerCommand(panel, *before, *beforeActive, QStringLiteral("Layer Depth"));
+        if (others.isEmpty()) {
+            pushLayerCommand(panel, *before, *beforeActive, QStringLiteral("Layer Depth"));
+        } else if (m_undoStack) {
+            const QString text =
+                QStringLiteral("Layer Depth (%1 panels)").arg(others.size() + 1);
+            auto *step = new QUndoCommand(text);
+            new LayerStackCommand(this, panel, *before, *beforeActive, panel->layers,
+                                  panel->activeLayerIndex, text, step);
+            for (const Other &o : others)
+                new LayerStackCommand(this, o.panel, o.before, o.active, o.panel->layers,
+                                      o.panel->activeLayerIndex, text, step);
+            m_undoStack->push(step);
+            for (const Other &o : others) { // their strip thumbnails
+                const int idx = scene->panels.indexOf(o.panel);
+                if (idx >= 0 && idx < m_panelThumbImages.size())
+                    m_panelThumbImages.at(idx)->setPixmap(stripThumbPixmap(o.panel));
+            }
+        }
         *before = panel->layers;
         *beforeActive = panel->activeLayerIndex;
         rebuildLayerPanel(); // the badge
@@ -9637,6 +9776,7 @@ void StoryboardPage::layerOpenDepth(int index, const QPoint &globalAt)
         emit layerDepthEdited({{QStringLiteral("layer"), name},
                                {QStringLiteral("from"), was},
                                {QStringLiteral("to"), a},
+                               {QStringLiteral("panels"), int(others.size()) + 1},
                                {QStringLiteral("depthLayers"), panel->depthLayerCount()}});
     };
     // Closed with a live value never let go (the panel changed under it):

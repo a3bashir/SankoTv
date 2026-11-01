@@ -18,7 +18,8 @@ drawing canvas, animatic, AI generation).
 
 ## Working style / conventions (IMPORTANT — keep doing these)
 - **Commit ONLY when I explicitly say "commit and push."** Never commit otherwise.
-  Commit messages end with `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`.
+  Commit messages end with `Co-Authored-By: Claude <model that wrote it> <noreply@anthropic.com>`
+  (Opus 5.5 through 879893ab3; Fable 5.1 from 2026-11-01 evening).
   Stage only the intended files; leave `PerspectiveLab/` untracked.
 - **Verify every change with a temporary "seam" before reporting PASS/FAIL.**
   Pattern: two env-var seams — `SANKOTV_GOTO_STORYBOARD` (MainWindow ctor: builds a
@@ -8861,6 +8862,77 @@ Section 383:141 (now 20252 tall), below 2B-5:
 - 2C-4 496:696: Quick Move Pan Right 480 px with that Ground: the START
   gives way 160 px (1D's rule), END at 320; a proposed give-way note.
 - 2C-5 498:696: what 2C builds, the 2B badge fix first, and Q1-Q7.
+2B COMMITTED 879893ab3 (pushed) with the fix, on the serial gate's
+evidence. CLAUDE.md gained hard rule 15 ("ALL DONE" ends every finished
+task) - left uncommitted, for the user's word.
+
+## The shot camera, Phase 2C: depth tools (2026-11-01) - NOT COMMITTED
+Built as drawn (Figma 2C-1 .. 2C-5) with Q1-Q7 as recommended.
+- STAY INSIDE WITH DEPTH (D12): shotcam::depthEdges(panel) - the drawn
+  layers off the plane and not at 0 % whose art has a pixel at alpha >= 26
+  (10 %, Q6) within 2 px of an edge, cached by cacheKey (1024 entries, then
+  cleared). shotcam::clampInside(state, stage, edges, &stoppedBy): 2A's
+  clamp, then each edge as one linear bound on the centre (footprint centre
+  c0 + a (c - c0), half extents d x the turned box), the zoom pushed in by
+  1D's search if nothing fits; with no edges it IS 2A's clamp (checked).
+  DepthEdge lives in CameraModel.h (DrawingCanvas.h sees only that).
+- The canvas drag uses it (edges worked out at the press); a drag a depth
+  layer holds in shows the drag chip "Edge of 'Ground'" (Q3).
+- quickMove(..., edges): 1D's give-way through that clamp; QuickFrames
+  gained placedStart / stoppedBy / stoppedByDepth; the old quickMove is
+  the new one with no edges. StoryboardPage::quickGiveWayNote says it
+  (Q7): "Pan Right . 480 px. The start moved back 160 px so the whole pan
+  fits: 'Ground' (150 %) reaches the stage's edge." (the stage: "... fits on
+  the stage."; NEW for 1D's own give-ways too).
+- PASSED (D10, Q1): shotcam::passedLayers / passedText; the mode chip adds
+  "Passed 'Bush'" after DEPTH (before Soft); 3 or more: "Passed N layers",
+  the names in its hover (DrawingCanvas::event, QEvent::ToolTip).
+- EVERY PANEL (D13, Q4, Q5): the popover's box (LayerDepthCheck, painted,
+  off at every open), its line and foot texts from Figma 2C-1; on, a step
+  sets the depth on every panel's layer of that exact name (folders match
+  folders; a member's own depth is set) as ONE QUndoCommand with
+  LayerStackCommand children, "Layer Depth (N panels)"; the recorder's
+  layerDepth event carries "panels".
+CHECKS: Camera (dt) 15 - the edge list, dt1 (320 px stop and its name;
+control: Stay inside off), footprints inside over four framings, no edges
+= 2A, the zoom push (0.8x; control 0.7x), dt2 (a bush reaching no edge;
+control: the same bush to the edge), the 10 % speck (control: 12 %), dt3
+(start 1280, end 1760, Ground named; control: 1D's ends), Passed (control:
+2.7x). Lifecycle (dt) 10 - the real drag and its chip (control: Stay
+inside off), the Passed chip (control), the give-way note (control: Ground
+at 100 %), the every-panel box opening off with its line, on (3 panels,
+one step, one undo), off (control), and a name no other panel has.
+Three of the new Lifecycle checks first failed on their own expectations,
+read against the code: the Passed chip is followed by "Soft 2.85x" (the
+1920 frame is soft there), so "endsWith" became "contains" (the control
+now: no "Passed" at 2.7x); and the step count after an earlier Undo is
+truncated by the push, so the check reads the stack's index.
+GATE 2C (normal mode): 0 families failing, Release and Debug; Lifecycle
+1020, Camera 226; c1p 34, (mp) 88, (mq) 92 PASS lines, brush / pixel /
+erase pins unchanged. Exe stamp 879893ab3+dirty, Release SankoTV.exe
+2026-11-01 16:54:21. Hashes in sha_2C.txt (12 files; CLAUDE.md is apart).
+Hand test: handtest_2C.md (it also covers the Layers badge and lock, and
+quitting while recording, which the 2B recording did not contain).
+2C HAND TEST (2026-11-01, session 20261101-172535, 805.4 s, the gate's
+build 879893ab3+dirty 16:54; ENDED ON A QUIT: the main window hid at
+805.37 s, sessionEnd 20 ms later, summary.txt written, 0 dropped, 0 issue
+markers, no crash dump). Read against handtest_2C.md: 1 PASS (the panel
+at its narrowest: "Gr..." and "Mou..." shortened, every row's badge and
+lock in view; the hover not seen - Lifecycle (dp) THE LOCK STAYS), 2 not
+tested, 3 PASS (the drag stopped at x 1760 = 320 px, the chip "Edge of
+'Ground along the river bank at dusk'" at the pointer; the Stay-inside-off
+half not done - Lifecycle (dt1) control), 4 not tested, 5 PASS with the
+user's own Move amount - the popover showed Move 50 %, so 960 px: the
+start slid back 427 px AND pushed in to 1.12x (960 needs z >= 1.125 with
+the Ground's range), and the note read "Pan Right . 960 px. The start
+moved back 427 px and in to 1.12x so the whole pan fits: 'Ground along
+the river bank at dusk' (150 %) reaches the stage's edge." - 1D's rule
+through 2C's clamp, as Camera (dt3) computes it, 6 PASS (at 2.80x the chip
+"... DEPTH . Passed 'Bush', 'Ground along the river bank at dusk' . key at
+00:00:00:00 . Soft 2.80x", the two layers not drawn; the pull-back not
+done - Camera (dt) control at 2.7x), 7 not tested (Lifecycle dt4), 8 PASS.
+MINOR (seen at 500 s): the Layers panel's inline RENAME field selects in
+the system red too - give it the popover field's accent selection.
 
 ## METHOD: measure interior structure ACROSS THE SIZE RANGE before calling it character (2026-09-25)
 

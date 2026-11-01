@@ -1,5 +1,6 @@
 #include "LayerDepthPopover.h"
 
+#include <QAbstractButton>
 #include <QCloseEvent>
 #include <QGuiApplication>
 #include <QKeyEvent>
@@ -214,12 +215,51 @@ private:
     bool m_dragging = false;
 };
 
+// THE EVERY-PANEL BOX's button (Figma 2C-1): a 12 px box - the accent with
+// a tick when on - and its words, shortened with "..." if they must be.
+class LayerDepthCheck : public QAbstractButton
+{
+public:
+    explicit LayerDepthCheck(QWidget *parent) : QAbstractButton(parent)
+    {
+        setCheckable(true);
+        setCursor(Qt::PointingHandCursor);
+        setFocusPolicy(Qt::NoFocus);
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        const QRectF box(0.5, 3.5, 11, 11);
+        const bool on = isChecked() && isEnabled();
+        p.setPen(QPen(!isEnabled() ? QColor(0x33, 0x33, 0x33)
+                                   : (on ? QColor(0x7c, 0x6e, 0xf6) : QColor(0x5a, 0x5a, 0x5a)),
+                      1.0));
+        p.setBrush(on ? QColor(0x7c, 0x6e, 0xf6) : QColor(0x1c, 0x1c, 0x1c));
+        p.drawRoundedRect(box, 2, 2);
+        if (on) {
+            p.setPen(QPen(Qt::white, 1.6, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+            p.drawPolyline(QPolygonF({QPointF(3, 9), QPointF(5.5, 11.5), QPointF(9.5, 6)}));
+        }
+        QFont f(QStringLiteral("Inter"));
+        f.setPixelSize(10);
+        p.setFont(f);
+        p.setPen(isEnabled() ? QColor(0xdd, 0xdd, 0xdd) : QColor(0x5f, 0x5f, 0x6a));
+        const QRect textR(20, 0, width() - 20, height());
+        p.drawText(textR, Qt::AlignLeft | Qt::AlignVCenter,
+                   QFontMetrics(f).elidedText(text(), Qt::ElideRight, textR.width()));
+    }
+    QSize sizeHint() const override { return QSize(272, 18); }
+};
+
 LayerDepthPopover::LayerDepthPopover(const QString &layerName, double parallax, QWidget *parent)
     : QFrame(parent, Qt::Popup | Qt::FramelessWindowHint | Qt::NoDropShadowWindowHint)
 {
     setObjectName(QStringLiteral("layerDepthPopover"));
     setAttribute(Qt::WA_DeleteOnClose, true);
-    setFixedSize(300, 200);
+    setFixedSize(300, 262); // 2B's 200, plus 2C's every-panel box (Figma 2C-1)
     setStyleSheet(QStringLiteral(
         "QFrame#layerDepthPopover { background: #1e1e1e; border: 1px solid #2a2a2a;"
         " border-radius: 8px; }"
@@ -266,11 +306,25 @@ LayerDepthPopover::LayerDepthPopover(const QString &layerName, double parallax, 
     m_readout->setWordWrap(true);
     m_readout->setAlignment(Qt::AlignLeft | Qt::AlignTop);
     m_readout->setStyleSheet(QStringLiteral("color: #b3b3b3; font-size: 10px;"));
-    m_readout->setGeometry(14, 136, 272, 36);
+    m_readout->setGeometry(14, 136, 272, 34);
 
-    auto *foot = new QLabel(QStringLiteral("One undo step when you let go."), this);
-    foot->setStyleSheet(QStringLiteral("color: #6f6f80; font-size: 9px;"));
-    foot->setGeometry(14, 176, 272, 14);
+    // THE EVERY-PANEL BOX (Phase 2C, decision D13, Figma 2C-1): off by
+    // default and off again each time the popover opens (the user's Q4).
+    auto *rule2 = new QFrame(this);
+    rule2->setGeometry(12, 172, 276, 1);
+    rule2->setStyleSheet(QStringLiteral("background: #2a2a2a; border: none;"));
+    m_everyBox = new LayerDepthCheck(this);
+    m_everyBox->setGeometry(14, 180, 272, 18);
+    m_everyLine = new QLabel(this);
+    m_everyLine->setWordWrap(true);
+    m_everyLine->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+    m_everyLine->setGeometry(34, 202, 252, 28);
+    connect(m_everyBox, &QAbstractButton::toggled, this, [this] { showEveryPanel(); });
+
+    m_foot = new QLabel(this);
+    m_foot->setStyleSheet(QStringLiteral("color: #6f6f80; font-size: 9px;"));
+    m_foot->setGeometry(14, 238, 272, 14);
+    setEveryPanel(layerName, 0, 1, 0);
 
     const int percent = qBound(0, int(std::lround(parallax * 100.0)), 200);
     m_slider->setValue(percent);
@@ -297,6 +351,76 @@ void LayerDepthPopover::closeEvent(QCloseEvent *event)
     if (onClosed)
         onClosed();
     QFrame::closeEvent(event);
+}
+
+void LayerDepthPopover::setEveryPanel(const QString &layerName, int sceneNumber,
+                                      int panelsWithName, int inFolders)
+{
+    m_layerName = layerName;
+    m_sceneNumber = sceneNumber;
+    m_panelsWithName = panelsWithName;
+    m_inFolders = inFolders;
+    const QChar l(0x2018), r(0x2019);
+    m_everyBox->setText(QStringLiteral("Same depth for ") + l + layerName + r
+                        + QStringLiteral(" in every panel of scene %1").arg(sceneNumber));
+    m_everyBox->setChecked(false); // off each time it opens (Q4)
+    m_everyBox->setEnabled(panelsWithName > 1);
+    showEveryPanel();
+}
+
+bool LayerDepthPopover::everyPanel() const
+{
+    return m_everyBox->isEnabled() && m_everyBox->isChecked();
+}
+
+void LayerDepthPopover::showEveryPanel()
+{
+    const QChar l(0x2018), r(0x2019);
+    const bool on = everyPanel();
+    QString line;
+    if (m_panelsWithName <= 1) {
+        line = QStringLiteral("No other panel in scene %1 has a layer named ").arg(m_sceneNumber) + l
+            + m_layerName + r;
+    } else {
+        line = QStringLiteral("%1 panels have a layer named ").arg(m_panelsWithName) + l + m_layerName
+            + r;
+        if (m_inFolders > 0)
+            line += QStringLiteral("; in %1 it is in a folder, whose depth applies there")
+                        .arg(m_inFolders);
+        else
+            line += QStringLiteral(" (this one and %1 more)").arg(m_panelsWithName - 1);
+    }
+    m_everyLine->setText(line);
+    m_everyLine->setStyleSheet(QStringLiteral("color: %1; font-size: 9px;")
+                                   .arg(on ? QStringLiteral("#d9d4ff") : QStringLiteral("#8a8a8a")));
+    m_foot->setText(on ? QStringLiteral("One undo step for all %1 panels when you let go.")
+                             .arg(m_panelsWithName)
+                       : QStringLiteral("One undo step when you let go. Only this panel changes."));
+}
+
+QString LayerDepthPopover::everyPanelTextForTest() const
+{
+    return m_everyBox->text();
+}
+
+QString LayerDepthPopover::everyPanelLineForTest() const
+{
+    return m_everyLine->text();
+}
+
+bool LayerDepthPopover::everyPanelEnabledForTest() const
+{
+    return m_everyBox->isEnabled();
+}
+
+void LayerDepthPopover::setEveryPanelForTest(bool on)
+{
+    m_everyBox->setChecked(on);
+}
+
+QString LayerDepthPopover::footForTest() const
+{
+    return m_foot->text();
 }
 
 void LayerDepthPopover::showValue(int percent)

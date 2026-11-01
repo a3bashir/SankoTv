@@ -14,6 +14,7 @@
 
 #include <QRect>
 #include <QSize>
+#include <QString>
 #include <QVector>
 #include <QtGlobal>
 
@@ -107,11 +108,27 @@ struct QuickAmounts
     double move = 0.25; // of the frame's width (Pan) or height (Tilt)
     double turn = 10.0; // degrees
 };
+// A layer whose art reaches an edge of the stage, off the picture plane:
+// what Stay inside with depth holds the frame in by (Phase 2C;
+// shotcam::depthEdges works them out).
+struct DepthEdge
+{
+    double parallax = 1.0; // the layer's depth (Panel::effectiveParallax)
+    bool left = false, top = false, right = false, bottom = false;
+    QString name;
+};
+
 struct QuickFrames
 {
     CameraState start; // may differ from the given start (see quickMove)
     CameraState end;
     bool moves = false; // false: no move fits (the zoom is at its limit)
+    // Phase 2C (the give-way note, Q7): the START as given, placed on the
+    // artwork before it gave way (compare with `start`), and the depth
+    // layer that made it give way - its name and depth; empty: the stage.
+    CameraState placedStart;
+    QString stoppedBy;
+    double stoppedByDepth = 1.0;
 };
 
 // A panel's identity for the camera. Minted per OBJECT: a copied Panel

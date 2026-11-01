@@ -632,6 +632,209 @@ CameraState clampInside(const CameraState &state, const Stage &stage)
     return s;
 }
 
+// --- Stay inside with depth (Phase 2C) ------------------------------------------
+
+namespace {
+// The centres the frame may have at this zoom and turn: the stage's (the
+// paper's) and each edge-reaching depth layer's bounds, with the index of
+// the layer that sets each side (-1: the stage). False: none fits.
+struct CentreRange
+{
+    double lo = 0.0, hi = 0.0;
+    int loBy = -1, hiBy = -1;
+};
+bool depthRanges(double zoom, double rotation, const Stage &stage,
+                 const QVector<DepthEdge> &edges, CentreRange *x, CentreRange *y)
+{
+    const double r = qDegreesToRadians(rotation);
+    const double c = qAbs(std::cos(r)), sn = qAbs(std::sin(r));
+    const double fw = stage.frame.width() / zoom, fh = stage.frame.height() / zoom;
+    const double bw = fw * c + fh * sn, bh = fw * sn + fh * c;
+    const double W = stage.canvas.width(), H = stage.canvas.height();
+    const double c0x = W / 2.0, c0y = H / 2.0;
+    *x = CentreRange{bw / 2.0, W - bw / 2.0, -1, -1};
+    *y = CentreRange{bh / 2.0, H - bh / 2.0, -1, -1};
+    for (int i = 0; i < edges.size(); ++i) {
+        const DepthEdge &e = edges.at(i);
+        const double a = e.parallax;
+        const double d = zoom * (1.0 - a) + a;
+        if (a <= 0.0 || d < kNearCut)
+            continue; // fixed to the camera, or passed: no bound
+        // The footprint: centre c0 + a (c - c0), half extents d * box / 2.
+        const double hx = d * bw / 2.0, hy = d * bh / 2.0;
+        if (e.left) {
+            const double lo = c0x - (c0x - hx) / a;
+            if (lo > x->lo) { x->lo = lo; x->loBy = i; }
+        }
+        if (e.right) {
+            const double hi = c0x + (W - c0x - hx) / a;
+            if (hi < x->hi) { x->hi = hi; x->hiBy = i; }
+        }
+        if (e.top) {
+            const double lo = c0y - (c0y - hy) / a;
+            if (lo > y->lo) { y->lo = lo; y->loBy = i; }
+        }
+        if (e.bottom) {
+            const double hi = c0y + (H - c0y - hy) / a;
+            if (hi < y->hi) { y->hi = hi; y->hiBy = i; }
+        }
+    }
+    return x->lo <= x->hi + 1e-9 && y->lo <= y->hi + 1e-9;
+}
+
+// THE EDGE CACHE: which edges a layer's art reaches, by its cacheKey (which
+// changes on every edit). Bits: 1 left, 2 top, 4 right, 8 bottom.
+QHash<qint64, quint8> g_edgeBits;
+
+quint8 edgeBitsOf(const QImage &image)
+{
+    {
+        QMutexLocker lock(&g_depthMutex);
+        auto it = g_edgeBits.constFind(image.cacheKey());
+        if (it != g_edgeBits.constEnd())
+            return it.value();
+    }
+    constexpr int kBand = 2;        // px from the edge
+    constexpr int kVisible = 26;    // alpha: 10 % (the user's Q6)
+    const QImage img = (image.format() == QImage::Format_ARGB32_Premultiplied
+                        || image.format() == QImage::Format_ARGB32)
+        ? image
+        : image.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+    const int w = img.width(), h = img.height();
+    quint8 bits = 0;
+    auto visible = [&](int x, int y) {
+        return qAlpha(reinterpret_cast<const QRgb *>(img.constScanLine(y))[x]) >= kVisible;
+    };
+    for (int y = 0; y < h && !(bits & 2 && bits & 8); ++y) {
+        if (y >= kBand && y < h - kBand)
+            y = h - kBand; // only the top and bottom bands
+        for (int x = 0; x < w; ++x)
+            if (visible(x, y)) {
+                bits |= y < kBand ? 2 : 8;
+                break;
+            }
+    }
+    for (int y = 0; y < h && !(bits & 1 && bits & 4); ++y) {
+        for (int x = 0; x < qMin(kBand, w); ++x)
+            if (visible(x, y))
+                bits |= 1;
+        for (int x = qMax(0, w - kBand); x < w; ++x)
+            if (visible(x, y))
+                bits |= 4;
+    }
+    QMutexLocker lock(&g_depthMutex);
+    if (g_edgeBits.size() > 1024)
+        g_edgeBits.clear(); // keys of images long since edited
+    g_edgeBits.insert(image.cacheKey(), bits);
+    return bits;
+}
+} // namespace
+
+QVector<DepthEdge> depthEdges(const Panel &panel)
+{
+    QVector<DepthEdge> out;
+    for (const Layer &layer : panel.layers) {
+        if (!panel.layerDrawn(layer))
+            continue;
+        const double a = panel.effectiveParallax(layer);
+        if (a <= 0.0 || a == 1.0)
+            continue;
+        const quint8 bits = edgeBitsOf(layer.image);
+        if (!bits)
+            continue;
+        DepthEdge e;
+        e.parallax = a;
+        e.left = bits & 1;
+        e.top = bits & 2;
+        e.right = bits & 4;
+        e.bottom = bits & 8;
+        e.name = layer.name;
+        out.append(e);
+    }
+    return out;
+}
+
+CameraState clampInside(const CameraState &state, const Stage &stage,
+                        const QVector<DepthEdge> &edges, int *stoppedBy)
+{
+    if (stoppedBy)
+        *stoppedBy = -1;
+    CameraState s = clampInside(state, stage);
+    if (edges.isEmpty() || stage.canvas.isEmpty())
+        return s;
+    CentreRange x, y;
+    if (!depthRanges(s.zoom, s.rotation, stage, edges, &x, &y)) {
+        // No centre fits at this zoom: pushed in by Phase 1D's search.
+        const int by = x.lo > x.hi ? (x.loBy >= 0 ? x.loBy : x.hiBy)
+                                   : (y.loBy >= 0 ? y.loBy : y.hiBy);
+        double lo = s.zoom, hi = s.zoom;
+        bool found = false;
+        CentreRange tx, ty;
+        while (hi < kMaxZoom) {
+            hi = qMin(kMaxZoom, hi * 1.05);
+            if (depthRanges(hi, s.rotation, stage, edges, &tx, &ty)) {
+                found = true;
+                break;
+            }
+            lo = hi;
+        }
+        if (!found)
+            return s; // at the zoom's limit: the stage's clamp stands
+        for (int i = 0; i < 40; ++i) {
+            const double mid = (lo + hi) / 2.0;
+            if (depthRanges(mid, s.rotation, stage, edges, &tx, &ty))
+                hi = mid;
+            else
+                lo = mid;
+        }
+        s.zoom = hi;
+        depthRanges(s.zoom, s.rotation, stage, edges, &x, &y);
+        if (stoppedBy)
+            *stoppedBy = by;
+    }
+    // qBound's order written out, as clampInside: at a pushed-in zoom the
+    // two bounds can cross by a rounding.
+    const double cx = qMax(x.lo, qMin(x.hi, s.cx));
+    const double cy = qMax(y.lo, qMin(y.hi, s.cy));
+    if (stoppedBy && *stoppedBy < 0) {
+        if (cx != s.cx)
+            *stoppedBy = cx == x.lo ? x.loBy : x.hiBy;
+        if (*stoppedBy < 0 && cy != s.cy)
+            *stoppedBy = cy == y.lo ? y.loBy : y.hiBy;
+    }
+    s.cx = cx;
+    s.cy = cy;
+    return s;
+}
+
+QStringList passedLayers(const Panel &panel, const CameraState &state)
+{
+    QStringList out;
+    for (const Layer &layer : panel.layers)
+        if (panel.layerDrawn(layer) && !layerShown(panel.effectiveParallax(layer), state))
+            out << layer.name;
+    return out;
+}
+
+QString passedText(const QStringList &names)
+{
+    const QChar l(0x2018), r(0x2019);
+    if (names.isEmpty())
+        return QString();
+    if (names.size() == 1)
+        return QStringLiteral("Passed ") + l + names.at(0) + r;
+    if (names.size() == 2)
+        return QStringLiteral("Passed ") + l + names.at(0) + r + QStringLiteral(", ") + l
+            + names.at(1) + r;
+    return QStringLiteral("Passed %1 layers").arg(names.size());
+}
+
+int depthEdgeCacheCountForTest()
+{
+    QMutexLocker lock(&g_depthMutex);
+    return g_edgeBits.size();
+}
+
 double normalisedAngle(double degrees)
 {
     double a = std::fmod(degrees, 360.0);
@@ -792,17 +995,23 @@ bool sameFraming(const CameraState &a, const CameraState &b)
 // A pan or tilt with Stay inside on, at zoom `z`: the START as near the
 // given one as the move allows (where it is; else slid back along the move
 // so the whole distance stays on the artwork). False: it does not fit.
+// With depth (Phase 2C) every clamp is clampInside's with the panel's
+// edge-reaching layers; *by: the layer that held the END in (-1: the stage).
 bool travelFits(const CameraState &start, double z, double dx, double dy,
-                const Stage &stage, CameraState *s, CameraState *e)
+                const Stage &stage, const QVector<DepthEdge> &edges,
+                CameraState *s, CameraState *e, int *by = nullptr)
 {
     CameraState a = start;
     a.zoom = z;
-    a = clampInside(a, stage);
+    a = clampInside(a, stage, edges);
     const double tx = dx / z, ty = dy / z; // the move scales with the frame
     CameraState b = a;
     b.cx += tx;
     b.cy += ty;
-    CameraState bc = clampInside(b, stage);
+    int endBy = -1;
+    CameraState bc = clampInside(b, stage, edges, &endBy);
+    if (by)
+        *by = endBy;
     if (qAbs(bc.cx - b.cx) < 0.5 && qAbs(bc.cy - b.cy) < 0.5) {
         *s = a;
         *e = bc;
@@ -813,7 +1022,7 @@ bool travelFits(const CameraState &start, double z, double dx, double dy,
     CameraState a2 = bc;
     a2.cx -= tx;
     a2.cy -= ty;
-    const CameraState a2c = clampInside(a2, stage);
+    const CameraState a2c = clampInside(a2, stage, edges);
     if (qAbs(a2c.cx - a2.cx) < 0.5 && qAbs(a2c.cy - a2.cy) < 0.5) {
         *s = a2c;
         *e = bc;
@@ -828,10 +1037,25 @@ QuickFrames quickMove(QuickMove move, const CameraState &start,
                       const QuickAmounts &amounts, const Stage &stage,
                       bool stayInside)
 {
+    return quickMove(move, start, amounts, stage, stayInside, QVector<DepthEdge>());
+}
+
+QuickFrames quickMove(QuickMove move, const CameraState &start,
+                      const QuickAmounts &amounts, const Stage &stage,
+                      bool stayInside, const QVector<DepthEdge> &edges)
+{
     QuickFrames r;
-    r.start = stayInside ? clampInside(start, stage) : clampZoom(start);
+    r.start = stayInside ? clampInside(start, stage, edges) : clampZoom(start);
+    r.placedStart = r.start;
+    int lastBy = -1; // the depth layer behind the latest clamp that held
     auto place = [&](const CameraState &s) {
-        return stayInside ? clampInside(s, stage) : clampZoom(s);
+        if (!stayInside)
+            return clampZoom(s);
+        int by = -1;
+        const CameraState c = clampInside(s, stage, edges, &by);
+        if (by >= 0)
+            lastBy = by;
+        return c;
     };
     switch (move) {
     case QuickMove::PushIn: {
@@ -882,7 +1106,11 @@ QuickFrames quickMove(QuickMove move, const CameraState &start,
         // Decision 3: the start gives way just enough - slid back, then
         // pushed in (the smallest zoom that fits, found by halving).
         CameraState s, e;
-        if (travelFits(r.start, r.start.zoom, dx, dy, stage, &s, &e)) {
+        int by = -1;
+        const bool fitsHere = travelFits(r.start, r.start.zoom, dx, dy, stage, edges, &s, &e, &by);
+        if (by >= 0)
+            lastBy = by; // what held the END in at the start's own zoom
+        if (fitsHere) {
             r.start = s;
             r.end = e;
             break;
@@ -891,7 +1119,7 @@ QuickFrames quickMove(QuickMove move, const CameraState &start,
         bool found = false;
         while (hi < kMaxZoom) {
             hi = qMin(kMaxZoom, hi * 1.05);
-            if (travelFits(r.start, hi, dx, dy, stage, &s, &e)) {
+            if (travelFits(r.start, hi, dx, dy, stage, edges, &s, &e)) {
                 found = true;
                 break;
             }
@@ -904,12 +1132,12 @@ QuickFrames quickMove(QuickMove move, const CameraState &start,
         for (int i = 0; i < 40; ++i) {
             const double mid = (lo + hi) / 2.0;
             CameraState ms, me;
-            if (travelFits(r.start, mid, dx, dy, stage, &ms, &me))
+            if (travelFits(r.start, mid, dx, dy, stage, edges, &ms, &me))
                 hi = mid;
             else
                 lo = mid;
         }
-        travelFits(r.start, hi, dx, dy, stage, &s, &e);
+        travelFits(r.start, hi, dx, dy, stage, edges, &s, &e);
         r.start = s;
         r.end = e;
         break;
@@ -939,6 +1167,12 @@ QuickFrames quickMove(QuickMove move, const CameraState &start,
     }
     }
     r.moves = !sameFraming(r.start, r.end);
+    // The START gave way (Phase 2C's note): name the depth layer behind it.
+    if (r.moves && !sameFraming(r.placedStart, r.start) && lastBy >= 0
+        && lastBy < edges.size()) {
+        r.stoppedBy = edges.at(lastBy).name;
+        r.stoppedByDepth = edges.at(lastBy).parallax;
+    }
     return r;
 }
 
