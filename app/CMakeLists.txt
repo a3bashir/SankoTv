@@ -105,6 +105,9 @@ qt_add_executable(SankoTV
     src/CodeEditor.h
     src/StoryboardPage.cpp
     src/StoryboardPage.h
+    # Phase 2B: the Layers panel's Depth popover (Figma 2B-2).
+    src/LayerDepthPopover.cpp
+    src/LayerDepthPopover.h
     src/StoryboardModel.h
     src/camera/CameraModel.h
     src/camera/ShotCamera.cpp

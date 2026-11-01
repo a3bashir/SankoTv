@@ -330,6 +330,12 @@ MainWindow::MainWindow(QWidget *parent)
                     [rec](const QVariantMap &event) {
                         rec->logEvent(QStringLiteral("shotCamEdit"), event);
                     });
+        // One layerDepth event per "Layer Depth" step (Phase 2B).
+        if (m_storyboard)
+            connect(m_storyboard, &StoryboardPage::layerDepthEdited, rec,
+                    [rec](const QVariantMap &event) {
+                        rec->logEvent(QStringLiteral("layerDepth"), event);
+                    });
         rec->setCameraProvider([this]() -> QVariantMap {
             auto *canvas = m_storyboard
                 ? m_storyboard->findChild<DrawingCanvas *>() : nullptr;

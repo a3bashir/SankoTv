@@ -8690,6 +8690,177 @@ control.
    holds. CHECK, Camera (mg10): plain with 16 GB free, amber with 2 GB;
    control: at the stage it has, the same 2 GB is not amber.
 Lifecycle 980 -> 983, DevRecorder 41 -> 46, Camera 140 -> 142.
+COMMITTED 35ea9ab05 (pushed) on the gate's evidence (fixbatch: 0 families
+failing, Release and Debug); the user hand-tests it with 2B (handtest_2B
+steps 11-12).
+
+## The shot camera, Phase 2B: depth, the core (2026-11-01) - NOT COMMITTED
+
+Built as drawn in Figma 2B-1 .. 2B-5 with Q1-Q6 as recommended. NOT
+committed: the user's word comes after the hand test (handtest_2B.md).
+PINS FIRST (spec 8.1), recorded on 35ea9ab05 before any 2B edit:
+- Camera (mq): the 42 moving-pin outputs inside a 480 x 270 margin (25 %
+  of 1080p; one project, one margin for the four sizes). FINDING while
+  recording: 36 of the 42 are the (mp) pins' own bytes - the frame is the
+  same size and the margin whole pixels, so a shot that sees only the
+  frame's art samples the same pixels (2A's promise, now pinned). Only the
+  geometry (stage px) and the 4 moving clips (the 512 px mip of the larger
+  stage) differ. The control was first written as "every output differs",
+  then "only panel 1's base framing equals", both wrong expectations of a
+  new check; after reading the code it states the finding exactly:
+  "(mq) control: inside the margin the shots that see only the frame's art
+  are the no-margin pins' bytes; only the geometry and the 4 moving clips
+  differ". Its positive control is the 1 px nudge (all 42 change).
+- Lifecycle (mq): the strip's two moving thumbnails inside the margin and
+  the same project keyless (base framing outlined, margin veiled); control:
+  the nudge changes both, keyless differs from keyed. A keyless margin
+  scene's MP4 / stills / clips are (mg1): the 17 neutral pins' bytes.
+THE MODEL: Layer::parallax (0 .. 2, 1 = the picture plane); the folder rule
+in one place, Panel::effectiveParallax (a member uses its folder's, keeps
+its own; the paper is always 1); Panel::hasDepth / depthLayerCount /
+layerDrawn. FILE: "parallax" written only when != 1; a value that is not
+a number or outside 0 .. 2 loads as 1, counted (LoadedProject::
+parallaxRepaired).
+THE PLACEMENT, shotcam (ShotCamera.h): depthDivisor, layerToStage (spec
+4.3's formula as one QTransform), layerShown (kNearCut 0.1),
+offBaseFraming, layeredShot (depth AND off the base framing - otherwise
+every consumer runs the Phase 1 / 2A code untouched, which is why every
+pin holds by construction). ONE LAYERED PAINT (paintLayers): white paper on
+the stage, each drawn layer through layerToStage and the consumer's own
+transform, resampled once; a reduced layer is first area-averaged to the
+quarter-octave at or above its scale, cached by cacheKey (256 MB budget,
+oldest out). Its faces: renderShot(Panel) (MP4, stills), drawShot(Panel)
+(preview), stageImage / drawStage (strip, Camera-tool canvas), and two
+cached small pictures, shotThumb (SHOTS clip) and stageThumb (strip),
+keyed by the flatten fingerprint + every layer's effective depth + camera
++ stage + size.
+THE CONSUMERS: ProjectExport (stillImage, renderMovieFrame x2, the MP4
+loop), PanelDisplay (setPanel; refreshThumbnails repaints it, so a depth
+change is live there too), the SHOTS clip, the strip (stripThumbPixmap),
+the canvas (paintEvent: with the Camera tool and a layered shot the stage
+is drawn by drawStage through the view transform, live through a drag).
+THE UI: the badge before the lock (only off 100 %; a member's dimmed with
+"Set by folder '...'", not clickable; never on the paper), Depth... in
+the row menu (off for the paper and members, with the reason as its
+hover), LayerDepthPopover (new files; slider snapping within 3 % to Fixed
+0 / Sky 10 / Far 50 / Picture plane 100 / Near 150, exact typed values,
+the readout, live onLive, ONE "Layer Depth" step per release or Enter via
+pushLayerCommand). The mode chip adds DEPTH (an accent-25 % tag); a drawing
+tool on a panel with depth and the camera off its base framing shows the
+"Drawing view . depth shows with the Camera tool" chip (bottom centre).
+Recorder: statePoll shotCam.depthLayers / shotCam.passedLayers; a
+layerDepth event per step (MainWindow connects StoryboardPage::
+layerDepthEdited).
+A BUG FOUND BY (dp9) and fixed before the report: closing a popover after
+an Undo made while it was open put its own last value back over the undo
+(it reverted to "the last step" unconditionally). Now only a live value
+never let go is put back (a pending flag); check "(dp9) closing the
+popover after an UNDO keeps the undo". On the unfixed code the pass's
+first run showed it: the House went 1.5 -> 0.52 (the stale value) instead
+of back to 1.0. Lifecycle 988 -> 1005, Camera 142 -> 211.
+GATE 2B (2026-11-01): 0 families failing, Release and Debug (normal
+mode); c1p 34, (mp) 88 and (mq) 92 PASS lines over both configurations,
+brush / pixel / erase pins unchanged. Exe stamp 35ea9ab05+dirty, Release
+SankoTV.exe 2026-11-01 00:13:34. Hashes in sha_2B.txt.
+CHECKS. Camera (dp1)-(dp8): closed forms (identity on the plane and at
+the base framing, pan a x delta, push-in z / d), markers where
+layerToStage puts them in the MP4 picture (control: the flat shot), the
+folder rule, the file (exact round trip, two bad values counted, control:
+no "parallax" without depth), a passed layer, the shared roll, and ONE
+GEOMETRY through the real consumers - the export job's MP4 frames, the
+PNG, the preview at 1920 x 1080 and the SHOTS clip are the layered
+picture byte for byte (controls: one frame later; the base framing). The
+clip comparison leaves out the clip's panel number, which the timeline
+prints over the thumbnail's corner (the first version compared it too
+and saw a faint "1"). Lifecycle (dp): the badges and hovers, the row
+menu, the drawing view and its chip, the Camera tool's view and DEPTH,
+the strip, the popover's live / one step / exact typed / undo / redo /
+revert-on-close, the paper and members opening nothing; control: the
+same project at 100 % shows none of it.
+COST (4.8), Release, measured by the Camera family's probe (INFO lines,
+never a check): preview paint 1.7-3.4 ms a frame, MP4 frame 6.6-17 ms
+(10-25 s a minute of film with a move on every frame), a strip thumbnail
+from cold 1.8-5.5 ms, for 4 / 8 depth layers at 2880 x 1620 and 3840 x
+2160. Below the spec's 30-40 s estimate.
+KNOWN LIMITS (2B, reported): the light table is not drawn under the
+Camera tool's depth view (it is a drawing aid; drawing tools still show
+it); a depth panel's strip thumbnail is built on the UI thread when first
+needed (cached), not by warmStripThumbs' workers (cheap: <= 5.5 ms); the
+"Passed 'Bush'" chip and Stay inside with depth are 2C.
+2B HAND TEST (2026-11-01, session 20261101-135148, 1312.7 s, the gate's
+Release build 35ea9ab05+dirty 00:13; ended cleanly: summary.txt, sessionEnd
+last, 0 dropped, 0 issue markers). Read against handtest_2B.md: 1 pass, 2
+pass, 3 FAIL, 4 pass in part (Bush typed 150 %; the project had no Sky),
+5 not tested, 6 pass in part (chip "ANIMATE ON . DEPTH", drag; no push-in),
+7 pass in part (drawing view and chip; no stroke drawn), 8 pass, 9 not
+tested, 10 pass in part (MP4 192 frames, save, close and reopen with Bush
+200 % / Mountains 50 % kept; no PNG), 11 pass, 12 NOT IN THE RECORDING
+(the session was stopped with Stop Recording after Close Project; no
+crash dump since 2026-10-31 21:50). 2B NOT COMMITTED.
+OPEN - THE FAILURE (step 3): the depth badge pushes EVERY row's lock out
+of the Layers panel. Screenshots 489 s (no badge: every row shows its
+lock) against 492 s (Mountains' "50 %" badge sits where the lock was, and
+no row shows a lock), still so after the reopen (1311 s). Cause, from the
+code: the row's minimum width (margins, eye, 40 px thumb, the name's full
+width, badge, lock, spacing) passes the docked panel's width (about 176 px
+of row on this screen; Figma 2B-1 drew a 264 px row), and the rows share
+one width, so the right end - every lock - is clipped. The gate missed it:
+Lifecycle (dp) reads the badges' text and hovers, never whether the lock
+stays on screen in the real panel. Proposed fix (not made): the name gives
+way - elided, its full text in the hover - so badge and lock always fit,
+and a check that every row's lock lies inside the panel with a badge
+present (control: the old layout clips it).
+OPEN - RECORDER (cosmetic, found reading step 11): a menu item is logged
+on its release and its menu's relay is ignored for 250 ms; Open Recent of
+a 4K project took 367 ms, so the relay was logged as a second
+"Test_SB_009_A". (It also shows the fix batch working: the relayed item
+was alive after the load.) A timing window; better: drop the relay of the
+action logged at the release, whatever the time.
+MINOR (same reading): the Depth popover's value field shows its selected
+text in the system highlight, red on this PC; style it with the accent.
+2B FIX (2026-11-01, approved; both items above, now FIXED):
+- The layer's name gives way: LayerNameLabel paints its text elided ("..."),
+  its hover the full name, text() still the full name; it takes the row's
+  free width (the old separate stretch is gone). Not enough alone at the
+  narrowest: a folder's or member's row with the widest badge needs about
+  187 px of row, and the panel docked down to 170. Raising the panel's
+  minimum to fit that row with full 40 px thumbnails (226 px in the test
+  style) broke Lifecycle (aw) - BEFORE SELLING 13's 1366 px window minimum
+  - by ONE px (1367): the cap leaves the right column about 225 px. So the
+  thumbnail gives way last: StoryboardPage::fitLayerRows narrows a row's
+  thumbnail only when that row, its name already down to "...", is still
+  wider than the list, to a floor of 22 px; the panel's minimum is worked
+  out from the row's pieces with the floor (208 px in the test style, about
+  201 px in the app with its 10 px scrollbar). At the default 260 px every
+  thumbnail is 40. Checks, Lifecycle (dp): THE LOCK STAYS at the narrowest
+  (7 rows, every lock and badge inside, two long names shortened with their
+  hover, thumbnails 22..40); at 260 every thumbnail is 40; control: the old
+  layout (full-width name + stretch, 40 px thumbnails, 170 px minimum)
+  rebuilt on the same rows cuts the locks off. (aw) holds.
+- The popover's field selects in the accent (selection-background-color
+  #7c6ef6); check with a plain field's system highlight (#e2241a here) as
+  its control.
+GATE 2Bfix (normal mode): Release Lifecycle failed 2 - "(aw) WHILE THE
+ZOOM FIELD IS BEING EDITED every key is the field's" and "(ax) THE VOLUME
+POPUP" - the normal-mode foreground flakes seen before (both passed in
+three standalone Lifecycle runs that day and in the same gate's Debug
+half). Rerun SERIAL (fullgate_2Bfix_serial): green.
+
+## Phase 2C (depth tools): Figma only, NOT BUILT (2026-11-01)
+Section 383:141 (now 20252 tall), below 2B-5:
+- 2C-1 493:696: the Depth popover's "every panel" box - off (default),
+  on (the folder count line), no other panel has the name, and the result
+  in panel 3 with "Undo Layer Depth (6 panels)".
+- 2C-2 494:696: a push-in through a near bush at 1.5x / 2.2x / 2.7x /
+  2.85x, each layer magnified z / d (the 2B formula); at 2.85x it is passed
+  and the mode chip adds "Passed 'Bush'".
+- 2C-3 495:696: Stay inside with depth on a 25 % stage - no depth stops at
+  480 px; a Ground at 150 % reaching both edges stops it at 320 px with the
+  drag chip "Edge of 'Ground'"; Stay inside off shows the Ground's end; a
+  bush reaching no edge leaves the frame.
+- 2C-4 496:696: Quick Move Pan Right 480 px with that Ground: the START
+  gives way 160 px (1D's rule), END at 320; a proposed give-way note.
+- 2C-5 498:696: what 2C builds, the 2B badge fix first, and Q1-Q7.
 
 ## METHOD: measure interior structure ACROSS THE SIZE RANGE before calling it character (2026-09-25)
 

@@ -107,6 +107,68 @@ void drawShot(QPainter &painter, const QPixmap &picture, const Stage &stage,
 // the FRAME's pixels against the output's.
 double sharpLimit(const Stage &stage, const QSize &out = kOutputFrame);
 
+// DEPTH (Phase 2B, 2026-11-01; the Phase 2 spec's 4.3 / 4.4, Figma 2B-1 to
+// 2B-5). A layer of parallax `a` (Layer::parallax through the folder rule,
+// Panel::effectiveParallax) under the camera (c, z), with the base
+// framing's centre c0 (the stage's centre), shows a layer pixel p on the
+// picture plane at
+//     d = z (1 - a) + a,   q = c + (a (c0 - c) + (p - c0)) / d
+// - a uniform scale by 1/d and a shift: layerToStage. Rotation stays in
+// shotTransform, so the roll turns every layer alike. a = 1 is the identity
+// for every camera, and the base framing (c = c0, z = 1) is the identity for
+// every a: every layer lines up as drawn (the user's decision D8).
+//
+// THE ONE PLACEMENT. Every consumer that shows depth - the Camera tool's
+// canvas, the preview, the SHOTS clips, the strip, the MP4 and the stills -
+// draws each layer through layerToStage and nothing else decides where a
+// layer goes. A panel without depth, or a camera at the base framing, takes
+// the Phase 1 / 2A code unchanged (layeredShot is false): the neutral,
+// moving and margin pins hold by construction.
+double depthDivisor(double a, const CameraState &state); // d
+QTransform layerToStage(double a, const CameraState &state, const Stage &stage);
+// A layer the camera has reached is not drawn: d below kNearCut (a = 1.5
+// stops just past 2.8x). Naming it on the canvas is 2C's (decision D10).
+inline constexpr double kNearCut = 0.1;
+bool layerShown(double a, const CameraState &state);
+// The camera is away from the base framing (it moves or zooms; a turn alone
+// places every layer alike).
+bool offBaseFraming(const CameraState &state, const Stage &stage);
+// The layered path draws this shot: the panel has depth and the camera is
+// off its base framing.
+bool layeredShot(const Panel &panel, const CameraState &state, const Stage &stage);
+// THE LAYERED PATH. The paper is white on the picture plane's stage, then
+// every drawn layer bottom to top with its opacity through layerToStage and
+// the consumer's own transform, each resampled ONCE into its target (never
+// composited at stage size and resampled again, so near layers are not
+// softened twice); a layer that is reduced is first area-averaged to the
+// nearest quarter-octave at or above its scale (Phase 1's rule against
+// thinned lines), and that mip is cached by the layer's QImage::cacheKey().
+// renderShot / drawShot are the Phase 1 functions' layered twins (the MP4
+// and stills; the preview); stageImage is the stage as the camera sees it,
+// in stage px scaled to `target` (the strip).
+QImage renderShot(const Panel &panel, const CameraState &state, const Stage &stage,
+                  const QSize &out);
+void drawShot(QPainter &painter, const Panel &panel, const Stage &stage,
+              const CameraState &state, const QRectF &target, bool cover);
+QImage stageImage(const Panel &panel, const CameraState &state, const Stage &stage,
+                  const QSize &target);
+// stageImage's painter twin, in STAGE px through the painter's own
+// transform (the Camera tool's canvas: the view transform); only what falls
+// inside `visible` (stage px) is drawn.
+void drawStage(QPainter &painter, const Panel &panel, const CameraState &state,
+               const Stage &stage, const QRectF &visible);
+// The layered pictures the small, often-repainted consumers show, cached by
+// everything that shapes them (the layers' pixels, visibility, opacity and
+// depth, the camera, the stage and the size): the SHOTS clip (drawShot into
+// a `size` image) and the strip (stageImage). Worker-thread safe.
+QImage shotThumb(const Panel &panel, const CameraState &state, const Stage &stage,
+                 const QSize &size, bool cover);
+QImage stageThumb(const Panel &panel, const CameraState &state, const Stage &stage,
+                  const QSize &size);
+// Test hooks: the mip cache's entries, and emptying both caches.
+int layerMipCountForTest();
+void clearDepthCachesForTest();
+
 // THE CANVAS TOOL'S LIMITS (Phase 1B). The zoom runs from 0.5x (outwards)
 // to 4x (inwards); STAY INSIDE ARTWORK (on by default) keeps every corner
 // of the frame on the canvas - the centre is clamped, and a rotation pushes

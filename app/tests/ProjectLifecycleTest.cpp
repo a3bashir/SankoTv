@@ -45,6 +45,7 @@
 #include "PerspectiveTool.h"
 #include "MainWindow.h"
 #include "StoryboardPage.h"
+#include "LayerDepthPopover.h"
 #include "RecentProjectsView.h"
 #include "RecentThumbnails.h"
 #include "RealStoreView.h"
@@ -133,6 +134,7 @@
 #include <QStyle>
 #include <QStyleOptionSlider>
 #include <QLineEdit>
+#include <QHBoxLayout>
 #include <QToolButton>
 #include <QtMath>
 #include <cmath>
@@ -12713,17 +12715,31 @@ QString shaOfImage(const QImage &image)
     return QString::fromLatin1(h.result().toHex());
 }
 
-QString writeMovingProject(const QString &dir, double nudge)
+// THE MARGIN PINS (mq, recorded on 35ea9ab05 before Phase 2B): the same two
+// panels inside a 480 x 270 px stage margin (25 % of the frame), with the
+// keys over the same art, and the same project with no keys at all (the
+// base framing outlined, the margin veiled). A margin project without
+// depth must draw these bytes for ever.
+const char *const kStripMargin[2] = {
+    "cd95a588ee9e99d691c915d3d872657d460dd36c5fd672f6c33a73b8373420c7",
+    "ad2258ecdb6c504e691e7e637d5db894807e7f20eb4b18194f34515bf8723af8"};
+const char *const kStripMarginKeyless[2] = {
+    "36d160939238b0d2eebe407fe6256645b9425fa837f77e304de3c4784752008e",
+    "eb84862b981cbf07d01b1d1143f73fe3b749cc168f32433735a06e0241b11a35"};
+
+QString writeMovingProject(const QString &dir, double nudge,
+                           const QSize &margin = QSize(0, 0), bool keys = true)
 {
     QDir(dir).removeRecursively();
     QDir().mkpath(dir);
     const QString path = dir + QStringLiteral("/StripPins.sankotv");
-    const QSize size(1920, 1080);
+    const QSize size(1920 + 2 * margin.width(), 1080 + 2 * margin.height());
     Scene *scene = new Scene;
     scene->number = 1;
     for (int i = 0; i < 2; ++i) {
         Panel *panel = makeBlankPanel(size);
         QPainter p(&panel->layers[1].image);
+        p.translate(margin.width(), margin.height()); // the same art, in the frame
         p.setRenderHint(QPainter::Antialiasing, true);
         p.setPen(QPen(QColor(20, 20, 20), 4));
         for (int k = 1; k < 10; ++k)
@@ -12736,21 +12752,23 @@ QString writeMovingProject(const QString &dir, double nudge)
         scene->panels.append(panel);
     }
     shotcam::CameraState a;
-    a.cx = 1100 + nudge;
-    a.cy = 500;
+    a.cx = margin.width() + 1100 + nudge;
+    a.cy = margin.height() + 500;
     a.zoom = 1.6;
     a.rotation = 10.0;
     shotcam::CameraState b;
-    b.cx = 800 + nudge;
-    b.cy = 600;
+    b.cx = margin.width() + 800 + nudge;
+    b.cy = margin.height() + 600;
     b.zoom = 1.3;
     b.rotation = -5.0;
-    scene->camera.keys = {shotcam::makeKey(*scene, 0, 0, 24, a),
-                          shotcam::makeKey(*scene, 1, 0, 24, b)};
+    if (keys)
+        scene->camera.keys = {shotcam::makeKey(*scene, 0, 0, 24, a),
+                              shotcam::makeKey(*scene, 1, 0, 24, b)};
     ProjectIO::SaveData data;
     data.projectName = QStringLiteral("StripPins");
     data.fps = 24;
     data.canvasSize = size;
+    data.stageMargin = margin;
     data.scenes = {scene};
     const ProjectIO::WriteResult w = ProjectIO::projectToJson(data, path);
     QFile f(path);
@@ -12794,6 +12812,38 @@ void runMovingStripPinPass(const QString &scratch)
           got.size() == 2 && moved.size() == 2 && got.at(0) != moved.at(0)
               && got.at(1) != moved.at(1),
           QStringLiteral("%1 / %2 thumbnails").arg(got.size()).arg(moved.size()));
+
+    // (mq) the margin pins: the same panels and keys inside a 25 % margin,
+    // and the same project without keys.
+    const QSize margin(480, 270);
+    const QStringList inMargin = mppins::stripShas(mppins::writeMovingProject(
+        scratch + QStringLiteral("/mq_strip_a"), 0.0, margin));
+    const QStringList keyless = mppins::stripShas(mppins::writeMovingProject(
+        scratch + QStringLiteral("/mq_strip_k"), 0.0, margin, false));
+    for (int i = 0; i < 2; ++i) {
+        const QString want = QString::fromLatin1(mppins::kStripMargin[i]);
+        const QString sha = inMargin.value(i, QStringLiteral("no thumbnail"));
+        check(QStringLiteral("(mq) strip thumbnail %1 in a 25 % margin (a key frames its first "
+                             "frame) draws its pinned bytes").arg(i + 1),
+              inMargin.size() == 2 && !want.isEmpty() && sha == want,
+              want.isEmpty() ? QStringLiteral("RECORD %1").arg(sha) : sha.left(16));
+        const QString wantK = QString::fromLatin1(mppins::kStripMarginKeyless[i]);
+        const QString shaK = keyless.value(i, QStringLiteral("no thumbnail"));
+        check(QStringLiteral("(mq) strip thumbnail %1 in a 25 % margin WITHOUT keys (the base "
+                             "framing outlined, the margin veiled) draws its pinned bytes")
+                  .arg(i + 1),
+              keyless.size() == 2 && !wantK.isEmpty() && shaK == wantK,
+              wantK.isEmpty() ? QStringLiteral("RECORD %1").arg(shaK) : shaK.left(16));
+    }
+    const QStringList mMoved = mppins::stripShas(mppins::writeMovingProject(
+        scratch + QStringLiteral("/mq_strip_b"), 1.0, margin));
+    check(QStringLiteral("(mq) control: both keys 1 px further across change both margin strip "
+                         "thumbnails, and the keyless ones differ from the keyed"),
+          inMargin.size() == 2 && mMoved.size() == 2 && keyless.size() == 2
+              && inMargin.at(0) != mMoved.at(0) && inMargin.at(1) != mMoved.at(1)
+              && keyless.at(0) != inMargin.at(0) && keyless.at(1) != inMargin.at(1),
+          QStringLiteral("%1 / %2 / %3 thumbnails")
+              .arg(inMargin.size()).arg(mMoved.size()).arg(keyless.size()));
 }
 
 // ---- (mg) the stage margin through the real window (Phase 2A) --------------
@@ -13062,6 +13112,511 @@ void runRecentMenuPass(const QString &scratch)
     window.markCleanForTest();
     window.close();
     pump(200);
+}
+
+// ---- (dp) DEPTH through the real window (Phase 2B) ---------------------------
+// The Camera family proves the placement and every consumer's pixels
+// headless; this drives the real workspace: the Layers panel's badges and
+// row menu (Figma 2B-1), the Depth popover's live slider and its ONE undo
+// step (2B-2), the Camera tool's view and its DEPTH tag (2B-3), the drawing
+// view and its chip (2B-4), the strip, and the recorder's layerDepth event.
+namespace dppins {
+// The 2B-3 scene on a 1920 x 1080 panel: Sky 0 %, Mountains 50 %, House on
+// the picture plane, Bush 150 %, and a folder "Far things" at 40 % holding
+// "Clouds" (its own depth 150 %, unused). Each layer has one 40 px marker.
+const QPointF kMarker[] = {{0, 0}, {300, 260}, {900, 500}, {1400, 620}, {620, 820}, {1500, 200}};
+const QColor kColour[] = {Qt::white, QColor(220, 30, 30), QColor(30, 170, 60),
+                          QColor(30, 60, 220), QColor(200, 30, 200), QColor(240, 160, 20)};
+
+QString writeDepthProject(const QString &dir, bool depth, bool keys)
+{
+    QDir(dir).removeRecursively();
+    QDir().mkpath(dir);
+    const QString path = dir + QStringLiteral("/Depth.sankotv");
+    const QSize size(1920, 1080);
+    Scene *scene = new Scene;
+    scene->number = 1;
+    Panel *panel = makeBlankPanel(size);
+    panel->layers.removeLast();
+    const char *names[] = {"", "Sky", "Mountains", "House", "Bush", "Clouds"};
+    const double depths[] = {1.0, 0.0, 0.5, 1.0, 1.5, 1.5};
+    for (int i = 1; i < 6; ++i) {
+        Layer layer = makeRasterLayer(QString::fromLatin1(names[i]), size);
+        QPainter p(&layer.image);
+        p.fillRect(QRectF(kMarker[i] - QPointF(20, 20), QSizeF(40, 40)), kColour[i]);
+        p.end();
+        layer.parallax = depth ? depths[i] : 1.0;
+        panel->layers.append(layer);
+    }
+    Layer folder;
+    folder.id = QStringLiteral("folder-far-things");
+    folder.name = QStringLiteral("Far things");
+    folder.type = QStringLiteral("group");
+    folder.parallax = depth ? 0.4 : 1.0;
+    panel->layers[5].groupId = folder.id; // Clouds, directly beneath its folder
+    panel->layers.append(folder);
+    panel->activeLayerIndex = 3;
+    panel->duration = 3;
+    scene->panels.append(panel);
+    Panel *second = makeBlankPanel(size);
+    second->duration = 3;
+    scene->panels.append(second);
+    if (keys) {
+        shotcam::CameraState pan;
+        pan.cx = 960 + 400;
+        pan.cy = 540;
+        scene->camera.keys = {shotcam::makeKey(*scene, 0, 0, 24, pan)};
+    }
+    ProjectIO::SaveData data;
+    data.projectName = QStringLiteral("Depth");
+    data.fps = 24;
+    data.canvasSize = size;
+    data.scenes = {scene};
+    const ProjectIO::WriteResult w = ProjectIO::projectToJson(data, path);
+    QFile f(path);
+    if (w.ok && f.open(QIODevice::WriteOnly))
+        f.write(QJsonDocument(w.root).toJson(QJsonDocument::Indented));
+    f.close();
+    delete scene;
+    return path;
+}
+
+QList<QPushButton *> badges(StoryboardPage *page)
+{
+    // A rebuild retires the old rows with deleteLater, which no running
+    // event loop delivers here: deliver it, or the old rows' badges count.
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    QList<QPushButton *> out;
+    for (QPushButton *b : page->findChildren<QPushButton *>(QStringLiteral("layerDepthBadge")))
+        if (b->isVisible())
+            out << b;
+    return out;
+}
+
+QPushButton *badgeOf(StoryboardPage *page, int layerIndex)
+{
+    for (QPushButton *b : badges(page))
+        if (b->property("layerIndex").toInt() == layerIndex)
+            return b;
+    return nullptr;
+}
+
+// The row menu's Depth... action for layer `index`, read while the menu is
+// open (it is closed straight after).
+struct MenuItem
+{
+    bool found = false;
+    bool enabled = false;
+    QString tooltip;
+};
+MenuItem depthMenuItem(StoryboardPage *page, int index)
+{
+    MenuItem item;
+    QTimer::singleShot(150, [&item] {
+        if (auto *menu = qobject_cast<QMenu *>(QApplication::activePopupWidget())) {
+            for (QAction *a : menu->actions())
+                if (a->objectName() == QLatin1String("layerDepthAction")) {
+                    item.found = true;
+                    item.enabled = a->isEnabled();
+                    item.tooltip = a->toolTip();
+                }
+            menu->close();
+        }
+    });
+    page->layerContextMenuForTest(index);
+    pump(100);
+    return item;
+}
+
+QColor canvasAt(DrawingCanvas *canvas, const QPointF &canvasPoint)
+{
+    const QImage grab = canvas->grab().toImage();
+    return grab.pixelColor(canvas->viewTransformForTest().map(canvasPoint).toPoint());
+}
+
+bool closeTo(const QColor &a, const QColor &b, int tol = 16) // ("near" is a Windows macro)
+{
+    return qAbs(a.red() - b.red()) <= tol && qAbs(a.green() - b.green()) <= tol
+        && qAbs(a.blue() - b.blue()) <= tol;
+}
+} // namespace dppins
+
+void runDepthPass(const QString &scratch)
+{
+    out() << "--- (dp) depth through the real window ---" << Qt::endl;
+    using namespace workspace;
+    using namespace dppins;
+    const QString project = writeDepthProject(scratch + QStringLiteral("/depth"), true, true);
+    Rig r(project);
+    if (!r.ok) {
+        check(QStringLiteral("(dp) the depth fixture opens"), false);
+        return;
+    }
+    Panel *panel = r.window.scenesForTest().first()->panels.first();
+    QUndoStack *stack = r.window.undoStackForTest();
+    QVector<QVariantMap> events;
+    QObject::connect(r.storyboard, &StoryboardPage::layerDepthEdited, r.storyboard,
+                     [&events](const QVariantMap &e) { events << e; });
+
+    // (dp) the badges (Figma 2B-1, Q1 / Q6).
+    r.storyboard->rebuildLayerPanelForTest();
+    pump(100);
+    QStringList shown;
+    for (QPushButton *b : badges(r.storyboard))
+        shown << QStringLiteral("%1:%2").arg(b->property("layerIndex").toInt()).arg(b->text());
+    shown.sort();
+    QPushButton *sky = badgeOf(r.storyboard, 1), *mountains = badgeOf(r.storyboard, 2),
+                *bush = badgeOf(r.storyboard, 4), *clouds = badgeOf(r.storyboard, 5),
+                *folderBadge = badgeOf(r.storyboard, 6);
+    const QString dot = QStringLiteral(" ") + QChar(0x00B7) + QStringLiteral(" ");
+    check(QStringLiteral("(dp) THE BADGES: Sky 0 %, Mountains 50 %, Bush 150 %, the folder 40 % and "
+                         "its member Clouds the folder's 40 % (dimmed, its own 150 % kept); none "
+                         "on the House (100 %) or the paper"),
+          shown == QStringList({QStringLiteral("1:0 %"), QStringLiteral("2:50 %"),
+                                QStringLiteral("4:150 %"), QStringLiteral("5:40 %"),
+                                QStringLiteral("6:40 %")})
+              && clouds && clouds->property("depthMember").toBool()
+              && !folderBadge->property("depthMember").toBool()
+              && panel->layers.at(5).parallax == 1.5,
+          shown.join(QLatin1Char(' ')));
+    check(QStringLiteral("(dp) THE HOVERS say what each depth does, in Figma 2B-1's words"),
+          sky && mountains && bush && clouds
+              && sky->toolTip() == QStringLiteral("Depth 0 %") + dot
+                     + QStringLiteral("fixed to the camera (the sky)")
+              && mountains->toolTip() == QStringLiteral("Depth 50 %") + dot
+                     + QStringLiteral("moves half as far as the drawing when the camera pans")
+              && bush->toolTip() == QStringLiteral("Depth 150 %") + dot
+                     + QStringLiteral("moves one and a half times as far (near)")
+              && clouds->toolTip() == QStringLiteral("Set by folder ") + QChar(0x2018)
+                     + QStringLiteral("Far things") + QChar(0x2019),
+          sky ? sky->toolTip() : QString());
+
+    // The row menu's Depth... (2B-1): the paper's and a member's are off.
+    const MenuItem houseItem = depthMenuItem(r.storyboard, 3);
+    const MenuItem paperItem = depthMenuItem(r.storyboard, 0);
+    const MenuItem memberItem = depthMenuItem(r.storyboard, 5);
+    check(QStringLiteral("(dp) DEPTH... in the row menu reaches the House (no badge); the paper's "
+                         "is off (\"The paper stays on the picture plane\"), a member's is off "
+                         "(\"Set by folder 'Far things'\")"),
+          houseItem.found && houseItem.enabled && paperItem.found && !paperItem.enabled
+              && paperItem.tooltip == QStringLiteral("The paper stays on the picture plane")
+              && memberItem.found && !memberItem.enabled
+              && memberItem.tooltip.startsWith(QStringLiteral("Set by folder")),
+          QStringLiteral("house %1/%2, paper %3/%4, member %5/%6").arg(houseItem.found)
+              .arg(houseItem.enabled).arg(paperItem.found).arg(paperItem.enabled)
+              .arg(memberItem.found).arg(memberItem.enabled));
+
+    // (dp) THE LOCK STAYS IN THE PANEL (2026-11-01, the 2B hand test: a
+    // badge made the rows wider than a narrow Layers panel and every lock
+    // was cut off). At the NARROWEST the panel docks, with the widest badge
+    // (200 %) and long names on a root row, a folder and its member, every
+    // row's lock and badge lies inside the list's viewport and a long name
+    // gives way ("...", its full text in its hover). Control: the old layout
+    // (the name at its full width, then a stretch; the panel's old 170 px
+    // minimum), rebuilt here on the same rows, cuts locks off.
+    {
+        auto *dock = r.storyboard->findChild<QDockWidget *>(QStringLiteral("dockLayers"));
+        auto *host = dock ? qobject_cast<QMainWindow *>(dock->parentWidget()) : nullptr;
+        QWidget *column = dock ? dock->widget() : nullptr;
+        const QVector<Layer> keep = panel->layers;
+        const int widthBefore = dock ? dock->width() : 0;
+        panel->layers[3].name = QStringLiteral("House on the hill behind the old church");
+        panel->layers[3].parallax = 1.5;
+        panel->layers[4].parallax = 2.0; // Bush: "200 %", the widest badge
+        panel->layers[5].name = QStringLiteral("Clouds over the far mountain range");
+        r.storyboard->rebuildLayerPanelForTest();
+        pump(150);
+        auto thumbWidths = [&] {
+            QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+            QList<int> w;
+            for (QLabel *t : r.storyboard->findChildren<QLabel *>(QStringLiteral("layerThumb")))
+                if (t->isVisible())
+                    w << t->width();
+            return w;
+        };
+        if (host) // the default layout's width (StoryboardPage's default layout: 260)
+            host->resizeDocks({dock}, {260}, Qt::Horizontal);
+        pump(200);
+        const int defaultWidth = dock ? dock->width() : 0;
+        const QList<int> thumbsWide = thumbWidths();
+        if (host)
+            host->resizeDocks({dock}, {1}, Qt::Horizontal);
+        pump(250);
+        const QList<int> thumbsNarrow = thumbWidths();
+        auto measure = [&](QStringList *outside, int *rows) {
+            QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+            *rows = 0;
+            for (QToolButton *lock : r.storyboard->findChildren<QToolButton *>(QStringLiteral("layerLock"))) {
+                if (!lock->isVisible())
+                    continue;
+                QWidget *viewport = nullptr;
+                for (QWidget *w = lock->parentWidget(); w && !viewport; w = w->parentWidget())
+                    if (auto *sa = qobject_cast<QScrollArea *>(w))
+                        viewport = sa->viewport();
+                if (!viewport)
+                    continue;
+                ++*rows;
+                QList<QWidget *> parts{lock};
+                for (QPushButton *b : lock->parentWidget()->findChildren<QPushButton *>(
+                         QStringLiteral("layerDepthBadge")))
+                    parts << b;
+                for (QWidget *part : parts) {
+                    const int left = part->mapTo(viewport, QPoint(0, 0)).x();
+                    if (left < 0 || left + part->width() > viewport->width())
+                        *outside << QStringLiteral("%1 %2..%3/%4").arg(part->objectName()).arg(left)
+                                        .arg(left + part->width()).arg(viewport->width());
+                }
+            }
+        };
+        QStringList outside;
+        int rows = 0;
+        measure(&outside, &rows);
+        const int narrowest = dock ? dock->width() : 0;
+        QStringList elided;
+        for (QLabel *name : r.storyboard->findChildren<QLabel *>(QStringLiteral("layerName")))
+            if (name->isVisible() && name->text().size() > 20 && name->toolTip() == name->text())
+                elided << name->text().left(12);
+        check(QStringLiteral("(dp) THE LOCK STAYS: at the narrowest the Layers panel docks, with the "
+                             "widest badge (200 %) and long names on a root row, a folder member and "
+                             "the folder, every row's lock and badge is inside the panel, and the long "
+                             "names give way with their full text in their hover"),
+              host && rows == 7 && outside.isEmpty() && elided.size() == 2
+                  && column->minimumWidth() > 170 && narrowest <= column->minimumWidth() + 4
+                  && std::all_of(thumbsNarrow.cbegin(), thumbsNarrow.cend(),
+                                 [](int w) { return w >= 22 && w <= 40; }),
+              QStringLiteral("dock %1 px (minimum %2), %3 rows, outside: %4, shortened: %5, "
+                             "thumbnails %6")
+                  .arg(narrowest).arg(column ? column->minimumWidth() : 0).arg(rows)
+                  .arg(outside.join(QLatin1Char(' '))).arg(elided.join(QStringLiteral(", ")))
+                  .arg([&] { QStringList s; for (int w : thumbsNarrow) s << QString::number(w); return s.join(QLatin1Char(' ')); }()));
+        check(QStringLiteral("(dp) ...and at the panel's default width every thumbnail keeps its "
+                             "Figma 40 px: a thumbnail narrows only at the narrowest widths"),
+              !thumbsWide.isEmpty() && defaultWidth >= 250
+                  && std::all_of(thumbsWide.cbegin(), thumbsWide.cend(), [](int w) { return w == 40; }),
+              QStringLiteral("dock %1 px, thumbnails %2").arg(defaultWidth)
+                  .arg([&] { QStringList s; for (int w : thumbsWide) s << QString::number(w); return s.join(QLatin1Char(' ')); }()));
+        // Control: the old layout on the same rows.
+        const int minimumNow = column ? column->minimumWidth() : 0;
+        for (QLabel *name : r.storyboard->findChildren<QLabel *>(QStringLiteral("layerName"))) {
+            auto *row = name->parentWidget() ? qobject_cast<QHBoxLayout *>(name->parentWidget()->layout())
+                                             : nullptr;
+            if (!row || !name->isVisible())
+                continue;
+            name->setMinimumWidth(name->fontMetrics().horizontalAdvance(name->text()));
+            const int at = row->indexOf(name);
+            row->setStretch(at, 0);
+            row->insertStretch(at + 1, 1);
+        }
+        if (column)
+            column->setMinimumWidth(170);
+        if (host)
+            host->resizeDocks({dock}, {1}, Qt::Horizontal);
+        pump(250);
+        // ...and the old layout's thumbnails were always 40 px.
+        for (QLabel *t : r.storyboard->findChildren<QLabel *>(QStringLiteral("layerThumb")))
+            t->setFixedWidth(40);
+        pump(100);
+        QStringList oldOutside;
+        int oldRows = 0;
+        measure(&oldOutside, &oldRows);
+        check(QStringLiteral("(dp) control: the old layout (the name at its full width, the 170 px "
+                             "minimum) on the same rows cuts locks off - the hand test's failure"),
+              oldRows == 7 && !oldOutside.isEmpty(),
+              QStringLiteral("dock %1 px, outside: %2").arg(dock ? dock->width() : 0)
+                  .arg(oldOutside.join(QLatin1Char(' '))));
+        if (column)
+            column->setMinimumWidth(minimumNow);
+        panel->layers = keep;
+        r.storyboard->rebuildLayerPanelForTest();
+        if (host)
+            host->resizeDocks({dock}, {widthBefore}, Qt::Horizontal);
+        pump(200);
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    }
+
+    // (dp10) the drawing view: the layers as drawn, the chip (Q5).
+    r.canvas->setTool(DrawingCanvas::Brush);
+    pump(150);
+    const shotcam::Stage stage(QSize(1920, 1080));
+    shotcam::CameraState pan;
+    pan.cx = 960 + 400;
+    pan.cy = 540;
+    const QPointF skyPlaced = shotcam::layerToStage(0.0, pan, stage).map(kMarker[1]);
+    const QColor drawnHere = canvasAt(r.canvas, kMarker[1]);
+    check(QStringLiteral("(dp10) A DRAWING TOOL shows the layers AS DRAWN, the camera panned 400 px "
+                         "on a panel with depth: the Sky's marker is where it was drawn (a stroke "
+                         "lands where the pen is), and the chip says which view this is"),
+          closeTo(drawnHere, kColour[1])
+              && r.canvas->drawingViewChipForTest()
+                  == QStringLiteral("Drawing view  ") + QChar(0x00B7)
+                         + QStringLiteral("  depth shows with the Camera tool"),
+          drawnHere.name() + QStringLiteral(" | ") + r.canvas->drawingViewChipForTest());
+
+    // The Camera tool: each layer placed for its depth, DEPTH on the chip.
+    r.canvas->setTool(DrawingCanvas::Camera);
+    pump(150);
+    const QColor placed = canvasAt(r.canvas, skyPlaced);
+    const QColor asDrawn = canvasAt(r.canvas, kMarker[1]);
+    check(QStringLiteral("(dp4) THE CAMERA TOOL shows the stage as the camera sees it: the Sky "
+                         "(0 %) moved 400 px with the frame, the chip says DEPTH"),
+          r.canvas->shotCameraDepthViewForTest() && closeTo(placed, kColour[1])
+              && r.canvas->shotCameraChipForTest().contains(QStringLiteral("DEPTH")),
+          placed.name() + QStringLiteral(" | ") + r.canvas->shotCameraChipForTest());
+    check(QStringLiteral("(dp10) control: under the Camera tool the Sky is no longer where it was "
+                         "drawn - the drawing tool's view above was the drawing, not the shot"),
+          !closeTo(asDrawn, kColour[1]), asDrawn.name());
+
+    // The strip: the stage as the camera sees it at the panel's first frame.
+    const QImage strip = thumbs(r.storyboard).value(0)->pixmap().toImage();
+    QSize fit = QSize(1920, 1080).scaled(strip.size(), Qt::KeepAspectRatio);
+    const QPointF fitAt((strip.width() - fit.width()) / 2.0, (strip.height() - fit.height()) / 2.0);
+    const double k = fit.width() / 1920.0;
+    const QPointF skyInStrip = fitAt + skyPlaced * k;
+    const QColor stripSky = strip.pixelColor(skyInStrip.toPoint());
+    check(QStringLiteral("(dp) THE STRIP draws the stage as the camera at the panel's first frame "
+                         "sees it: the Sky's marker moved with the frame"),
+          closeTo(stripSky, kColour[1], 40),
+          QStringLiteral("%1 at %2,%3").arg(stripSky.name()).arg(skyInStrip.x()).arg(skyInStrip.y()));
+
+    // (dp9) THE POPOVER: live, then ONE "Layer Depth" step.
+    const int stepsBefore = stack->count();
+    r.storyboard->openLayerDepthForTest(3); // the House
+    pump(100);
+    LayerDepthPopover *pop = r.storyboard->depthPopoverForTest();
+    if (!pop) {
+        check(QStringLiteral("(dp9) the Depth popover opens for the House"), false);
+        return;
+    }
+    {
+        QLineEdit plain; // the system highlight a field gets without the style
+        plain.ensurePolished();
+        const QColor system = plain.palette().color(QPalette::Active, QPalette::Highlight);
+        check(QStringLiteral("(dp) the Depth popover's value field selects in the accent "
+                             "(#7c6ef6), not the system highlight; control: a plain field gets "
+                             "the system's"),
+              pop->fieldSelectionForTest() == QColor(0x7c, 0x6e, 0xf6) && system != QColor(0x7c, 0x6e, 0xf6),
+              QStringLiteral("field %1, system %2").arg(pop->fieldSelectionForTest().name(), system.name()));
+    }
+    const QVector<Layer> original = panel->layers;
+    pop->slideForTest(80, false);
+    pop->slideForTest(52, false); // within 3 % of Far: snapped to 50
+    pump(50);
+    const double live = panel->layers.at(3).parallax;
+    const bool liveView = r.canvas->shotCameraDepthViewForTest();
+    const int stepsLive = stack->count();
+    const int eventsLive = events.size();
+    pop->slideForTest(52, true);
+    pump(100);
+    check(QStringLiteral("(dp9) THE SLIDER is live: the House follows it at once (52 snaps to "
+                         "Far, 50 %), the readout says what it does, and nothing is a step "
+                         "until it is let go"),
+          live == 0.5 && liveView && stepsLive == stepsBefore && eventsLive == 0
+              && pop->activeStopForTest() == QStringLiteral("Far")
+              && pop->readoutForTest().startsWith(QStringLiteral("Moves half as far")),
+          QStringLiteral("live %1, steps %2 -> %3").arg(live).arg(stepsBefore).arg(stepsLive));
+    check(QStringLiteral("(dp9) LETTING GO is ONE undo step, \"Layer Depth\", and one layerDepth "
+                         "event (House 1 -> 0.5); the House now has a badge"),
+          stack->count() == stepsBefore + 1
+              && stack->undoText() == QStringLiteral("Layer Depth") && events.size() == 1
+              && events.first().value(QStringLiteral("layer")).toString() == QStringLiteral("House")
+              && events.first().value(QStringLiteral("from")).toDouble() == 1.0
+              && events.first().value(QStringLiteral("to")).toDouble() == 0.5
+              && badgeOf(r.storyboard, 3) && badgeOf(r.storyboard, 3)->text() == QStringLiteral("50 %"),
+          QStringLiteral("%1 steps, '%2', %3 events").arg(stack->count() - stepsBefore)
+              .arg(stack->undoText()).arg(events.size()));
+    // Typed values are exact (never snapped).
+    pop = r.storyboard->depthPopoverForTest();
+    if (pop)
+        pop->typeForTest(QStringLiteral("52 %"));
+    pump(80);
+    check(QStringLiteral("(dp9) the field takes an exact % (52, not snapped): a second step"),
+          panel->layers.at(3).parallax == 0.52 && stack->count() == stepsBefore + 2,
+          QString::number(panel->layers.at(3).parallax));
+    stack->undo();
+    stack->undo();
+    pump(80);
+    bool sameStack = panel->layers.size() == original.size();
+    for (int i = 0; sameStack && i < original.size(); ++i)
+        sameStack = panel->layers.at(i).parallax == original.at(i).parallax
+            && panel->layers.at(i).image.cacheKey() == original.at(i).image.cacheKey();
+    check(QStringLiteral("(dp9) UNDO twice puts the House back on the picture plane, the stack "
+                         "exactly as it was"),
+          sameStack && panel->layers.at(3).parallax == 1.0 && !badgeOf(r.storyboard, 3));
+    stack->redo();
+    pump(80);
+    check(QStringLiteral("(dp9) control: REDO gives 50 % again (skipping the step would leave it "
+                         "at 100 %)"),
+          panel->layers.at(3).parallax == 0.5);
+    stack->undo();
+    pump(80);
+    // The popover that made those steps is still open. Closing it now must
+    // leave the undo alone (the first build put its last value, 52 %, back
+    // over the undo on close - found by this pass).
+    if (LayerDepthPopover *open = r.storyboard->depthPopoverForTest())
+        open->close();
+    pump(80);
+    check(QStringLiteral("(dp9) closing the popover after an UNDO keeps the undo: the House stays "
+                         "at 100 %, no step added"),
+          panel->layers.at(3).parallax == 1.0 && stack->count() == stepsBefore + 2
+              && stack->index() == stepsBefore,
+          QString::number(panel->layers.at(3).parallax));
+
+    // A live value that is never let go goes back when the popover closes.
+    r.storyboard->openLayerDepthForTest(3);
+    pump(80);
+    if ((pop = r.storyboard->depthPopoverForTest())) {
+        pop->slideForTest(150, false);
+        pump(30);
+        const double during = panel->layers.at(3).parallax;
+        pop->close();
+        pump(80);
+        check(QStringLiteral("(dp9) a slide never let go (the popover closed under it) is undone: "
+                             "no step, the House back at 100 %"),
+              during == 1.5 && panel->layers.at(3).parallax == 1.0
+                  && stack->count() == stepsBefore + 2 && stack->index() == stepsBefore,
+              QStringLiteral("%1 -> %2").arg(during).arg(panel->layers.at(3).parallax));
+    }
+    // The paper and a member open nothing.
+    r.storyboard->openLayerDepthForTest(0);
+    pump(50);
+    const bool paperOpened = r.storyboard->depthPopoverForTest() != nullptr;
+    r.storyboard->openLayerDepthForTest(5);
+    pump(50);
+    check(QStringLiteral("(dp5) the paper and a folder's member open no Depth popover"),
+          !paperOpened && !r.storyboard->depthPopoverForTest());
+
+    // Q5 control: at the base framing (the key moved to it) there is no chip.
+    Scene *scene = r.window.scenesForTest().first();
+    scene->camera.keys.first().state = shotcam::neutral(QSize(1920, 1080));
+    r.canvas->setTool(DrawingCanvas::Brush);
+    r.canvas->refreshShotCamera();
+    pump(120);
+    check(QStringLiteral("(dp10) control: at the base framing every layer lines up as drawn and "
+                         "the drawing-view chip is not shown"),
+          r.canvas->drawingViewChipForTest().isEmpty());
+    r.window.markCleanForTest();
+
+    // Control: a project without depth has no badge, no DEPTH, no chip.
+    {
+        Rig flat(writeDepthProject(scratch + QStringLiteral("/depth_none"), false, true));
+        if (flat.ok) {
+            flat.storyboard->rebuildLayerPanelForTest();
+            flat.canvas->setTool(DrawingCanvas::Brush);
+            pump(120);
+            const QString chipDraw = flat.canvas->drawingViewChipForTest();
+            flat.canvas->setTool(DrawingCanvas::Camera);
+            pump(120);
+            check(QStringLiteral("(dp) control: the same project with every layer at 100 % shows no "
+                                 "badge, no DEPTH tag, no drawing-view chip, and the Camera tool "
+                                 "draws the drawing"),
+                  badges(flat.storyboard).isEmpty() && chipDraw.isEmpty()
+                      && !flat.canvas->shotCameraChipForTest().contains(QStringLiteral("DEPTH"))
+                      && !flat.canvas->shotCameraDepthViewForTest(),
+                  flat.canvas->shotCameraChipForTest());
+        } else {
+            check(QStringLiteral("(dp) control: the no-depth fixture opens"), false);
+        }
+    }
 }
 
 void runCameraToolPass(const QString &scratch)
@@ -15211,6 +15766,7 @@ int main(int argc, char **argv)
     runMovingStripPinPass(scratch);
     runStageMarginPass(scratch);
     runRecentMenuPass(scratch);
+    runDepthPass(scratch);
 
     // ---- (aa) a test that cannot start says why and exits ----------------
     // An unattended gate must FAIL, not wait. Measured 2026-10-02: with its

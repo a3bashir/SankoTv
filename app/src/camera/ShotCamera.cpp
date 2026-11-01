@@ -2,13 +2,18 @@
 
 #include "StoryboardModel.h"
 
+#include <QHash>
 #include <QJsonArray>
+#include <QMutex>
+#include <QMutexLocker>
 #include <QPainter>
 #include <QPixmap>
 #include <QtMath>
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
+#include <functional>
 
 namespace shotcam {
 
@@ -323,6 +328,269 @@ double sharpLimit(const Stage &stage, const QSize &out)
         return 1.0;
     return qMax(stage.frame.width() / double(out.width()),
                 stage.frame.height() / double(out.height()));
+}
+
+// --- Depth (Phase 2B) ----------------------------------------------------------
+
+double depthDivisor(double a, const CameraState &state)
+{
+    return state.zoom * (1.0 - a) + a;
+}
+
+QTransform layerToStage(double a, const CameraState &state, const Stage &stage)
+{
+    // q = k p + (c + a (c0 - c) k - c0 k), k = 1 / d.
+    const double d = depthDivisor(a, state);
+    const double k = d > 0.0 ? 1.0 / d : 0.0;
+    const double c0x = stage.canvas.width() / 2.0, c0y = stage.canvas.height() / 2.0;
+    return QTransform(k, 0.0, 0.0, k, state.cx + a * (c0x - state.cx) * k - c0x * k,
+                      state.cy + a * (c0y - state.cy) * k - c0y * k);
+}
+
+bool layerShown(double a, const CameraState &state)
+{
+    return depthDivisor(a, state) >= kNearCut;
+}
+
+bool offBaseFraming(const CameraState &state, const Stage &stage)
+{
+    return state.zoom != 1.0 || state.cx != stage.canvas.width() / 2.0
+        || state.cy != stage.canvas.height() / 2.0;
+}
+
+bool layeredShot(const Panel &panel, const CameraState &state, const Stage &stage)
+{
+    return offBaseFraming(state, stage) && panel.hasDepth();
+}
+
+namespace {
+// THE MIP CACHE: a layer reduced to a quarter-octave level, by the image's
+// cacheKey (which changes on every edit) and the level. Shared by every
+// consumer and thread; the oldest entries go past 256 MB.
+struct MipEntry
+{
+    QImage image;
+    quint64 used = 0;
+};
+QMutex g_depthMutex;
+QHash<QPair<qint64, int>, MipEntry> g_mips;
+qint64 g_mipBytes = 0;
+quint64 g_mipClock = 0;
+constexpr qint64 kMipBudget = 256ll * 1024 * 1024;
+
+// `image` reduced for drawing at `scale` (target px per layer px): itself at
+// 1 and above, else area-averaged to 2^(-n/4) >= scale.
+QImage layerMip(const QImage &image, double scale)
+{
+    if (scale >= 1.0 || image.isNull())
+        return image;
+    const int n = qMax(0, int(std::floor(-std::log2(qMax(scale, 1e-6)) * 4.0)));
+    if (n == 0)
+        return image;
+    const QPair<qint64, int> key(image.cacheKey(), n);
+    {
+        QMutexLocker lock(&g_depthMutex);
+        auto it = g_mips.find(key);
+        if (it != g_mips.end()) {
+            it->used = ++g_mipClock;
+            return it->image;
+        }
+    }
+    const double level = std::pow(2.0, -n / 4.0);
+    const QImage mip = image.scaled(qMax(1, qRound(image.width() * level)),
+                                    qMax(1, qRound(image.height() * level)),
+                                    Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+    QMutexLocker lock(&g_depthMutex);
+    if (!g_mips.contains(key)) {
+        g_mips.insert(key, MipEntry{mip, ++g_mipClock});
+        g_mipBytes += mip.sizeInBytes();
+        while (g_mipBytes > kMipBudget && g_mips.size() > 1) {
+            auto oldest = g_mips.begin();
+            for (auto it = g_mips.begin(); it != g_mips.end(); ++it)
+                if (it->used < oldest->used)
+                    oldest = it;
+            g_mipBytes -= oldest->image.sizeInBytes();
+            g_mips.erase(oldest);
+        }
+    }
+    return mip;
+}
+
+// THE LAYERED PAINT, every depth consumer's: the paper on the picture
+// plane's stage, then each drawn layer through layerToStage and
+// `canvasToTarget` (stage px -> the painter's own coordinates), only what
+// falls inside `visible` (the painter's coordinates).
+void paintLayers(QPainter &painter, const Panel &panel, const CameraState &state,
+                 const Stage &stage, const QTransform &canvasToTarget, const QRectF &visible)
+{
+    painter.save();
+    const QTransform base = painter.transform();
+    painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
+    painter.setTransform(canvasToTarget * base);
+    painter.fillRect(QRectF(QPointF(0, 0), QSizeF(stage.canvas)), Qt::white);
+    for (const Layer &layer : panel.layers) {
+        if (!panel.layerDrawn(layer))
+            continue;
+        const double a = panel.effectiveParallax(layer);
+        if (!layerShown(a, state))
+            continue;
+        const QTransform toTarget = layerToStage(a, state, stage) * canvasToTarget;
+        const double scale = std::sqrt(qAbs(toTarget.determinant()));
+        const QImage mip = layerMip(layer.image, scale);
+        if (mip.isNull())
+            continue;
+        const QTransform mipToTarget =
+            QTransform::fromScale(layer.image.width() / double(mip.width()),
+                                  layer.image.height() / double(mip.height()))
+            * toTarget;
+        const QRect src = mipToTarget.inverted()
+                              .mapRect(visible)
+                              .adjusted(-2, -2, 2, 2)
+                              .toAlignedRect()
+            & mip.rect();
+        if (src.isEmpty())
+            continue;
+        painter.setTransform(mipToTarget * base);
+        painter.setOpacity(panel.layerEffectiveOpacity(layer));
+        painter.drawImage(QPointF(src.topLeft()), mip, src);
+    }
+    painter.restore();
+}
+
+// Everything a cached layered picture depends on.
+QVector<quint64> depthKey(const Panel &panel, const CameraState &state, const Stage &stage,
+                          const QSize &size, int kind)
+{
+    QVector<quint64> key = panel.flattenFingerprint();
+    auto bits = [](double v) {
+        quint64 b = 0;
+        memcpy(&b, &v, sizeof(b));
+        return b;
+    };
+    for (const Layer &layer : panel.layers)
+        key.append(bits(panel.effectiveParallax(layer)));
+    key << bits(state.cx) << bits(state.cy) << bits(state.zoom) << bits(state.rotation)
+        << quint64(stage.canvas.width()) << quint64(stage.canvas.height())
+        << quint64(stage.frame.width()) << quint64(stage.frame.height())
+        << quint64(size.width()) << quint64(size.height()) << quint64(kind)
+        << panel.uid.value();
+    return key;
+}
+
+struct ThumbEntry
+{
+    QImage image;
+    quint64 used = 0;
+};
+QHash<QVector<quint64>, ThumbEntry> g_thumbs;
+constexpr int kThumbBudget = 160; // entries: a scene's clips and strip
+
+QImage cachedThumb(const QVector<quint64> &key, const std::function<QImage()> &make)
+{
+    {
+        QMutexLocker lock(&g_depthMutex);
+        auto it = g_thumbs.find(key);
+        if (it != g_thumbs.end()) {
+            it->used = ++g_mipClock;
+            return it->image;
+        }
+    }
+    const QImage image = make();
+    QMutexLocker lock(&g_depthMutex);
+    g_thumbs.insert(key, ThumbEntry{image, ++g_mipClock});
+    while (g_thumbs.size() > kThumbBudget) {
+        auto oldest = g_thumbs.begin();
+        for (auto it = g_thumbs.begin(); it != g_thumbs.end(); ++it)
+            if (it->used < oldest->used)
+                oldest = it;
+        g_thumbs.erase(oldest);
+    }
+    return image;
+}
+} // namespace
+
+QImage renderShot(const Panel &panel, const CameraState &state, const Stage &stage,
+                  const QSize &out)
+{
+    QImage frame(out, QImage::Format_RGBX8888);
+    frame.fill(Qt::black);
+    if (out.isEmpty() || stage.canvas.isEmpty())
+        return frame;
+    const QRectF target(QPointF(0, 0), out);
+    QPainter p(&frame);
+    paintLayers(p, panel, state, stage, shotTransform(state, stage, target), target);
+    p.end();
+    return frame;
+}
+
+void drawShot(QPainter &painter, const Panel &panel, const Stage &stage,
+              const CameraState &state, const QRectF &target, bool cover)
+{
+    if (stage.canvas.isEmpty())
+        return;
+    QRectF visible = target;
+    if (painter.hasClipping())
+        visible &= painter.clipBoundingRect();
+    paintLayers(painter, panel, state, stage, shotTransform(state, stage, target, cover),
+                visible);
+}
+
+QImage stageImage(const Panel &panel, const CameraState &state, const Stage &stage,
+                  const QSize &target)
+{
+    QImage image(target, QImage::Format_ARGB32_Premultiplied);
+    image.fill(Qt::white);
+    if (target.isEmpty() || stage.canvas.isEmpty())
+        return image;
+    QPainter p(&image);
+    paintLayers(p, panel, state, stage,
+                QTransform::fromScale(target.width() / double(stage.canvas.width()),
+                                      target.height() / double(stage.canvas.height())),
+                QRectF(QPointF(0, 0), target));
+    p.end();
+    return image;
+}
+
+void drawStage(QPainter &painter, const Panel &panel, const CameraState &state,
+               const Stage &stage, const QRectF &visible)
+{
+    if (stage.canvas.isEmpty())
+        return;
+    paintLayers(painter, panel, state, stage, QTransform(), visible);
+}
+
+QImage shotThumb(const Panel &panel, const CameraState &state, const Stage &stage,
+                 const QSize &size, bool cover)
+{
+    return cachedThumb(depthKey(panel, state, stage, size, cover ? 1 : 0), [&] {
+        QImage image(size, QImage::Format_ARGB32_Premultiplied);
+        image.fill(Qt::black);
+        QPainter p(&image);
+        drawShot(p, panel, stage, state, QRectF(QPointF(0, 0), size), cover);
+        p.end();
+        return image;
+    });
+}
+
+QImage stageThumb(const Panel &panel, const CameraState &state, const Stage &stage,
+                  const QSize &size)
+{
+    return cachedThumb(depthKey(panel, state, stage, size, 2),
+                       [&] { return stageImage(panel, state, stage, size); });
+}
+
+int layerMipCountForTest()
+{
+    QMutexLocker lock(&g_depthMutex);
+    return g_mips.size();
+}
+
+void clearDepthCachesForTest()
+{
+    QMutexLocker lock(&g_depthMutex);
+    g_mips.clear();
+    g_mipBytes = 0;
+    g_thumbs.clear();
 }
 
 CameraState clampZoom(const CameraState &state)

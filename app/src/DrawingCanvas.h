@@ -178,6 +178,10 @@ public:
     int shotCameraHitForTest(const QPointF &widgetPos) const;
     QVector<QPointF> shotCameraHandlesForTest() const;
     QString shotCameraChipForTest() const;
+    // DEPTH (Phase 2B): the drawing-view chip's text (empty: not drawn), and
+    // whether the Camera tool is showing the layers placed for their depth.
+    QString drawingViewChipForTest() const;
+    bool shotCameraDepthViewForTest() const;
     QRectF shotCameraChipRectForTest() const;
     bool shotCameraDraggingForTest() const { return m_camDrag >= 0; }
 
@@ -1129,6 +1133,10 @@ private:
     QString shotCameraChipText(const ShotCameraView &v,
                                const shotcam::CameraState &s) const;
     QRectF shotCameraChipRect(const QString &text) const;
+    // Phase 2B, Q5: a drawing tool, a panel with depth, the camera elsewhere.
+    bool shotCameraDrawingViewChip() const;
+    static QString drawingViewChipText();
+    QRectF drawingViewChipRect(const QString &text) const;
     void shotCameraPress(const QPointF &widgetPos);
     void shotCameraMove(const QPointF &widgetPos, Qt::MouseButtons buttons,
                         Qt::KeyboardModifiers mods);

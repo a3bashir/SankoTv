@@ -47,7 +47,17 @@ struct Layer
     // cannot nest). groupExpanded is UI state on the group entry only.
     QString groupId;        // member -> owning group's id; empty = root
     bool groupExpanded = true;
+    // DEPTH (Phase 2B, the Phase 2 spec's 4.2): how far the layer moves
+    // when the camera does, as a parallax. 1 = the picture plane (Phase 1's
+    // behaviour, every older layer), 0 = fixed to the camera, 0.5 = half as
+    // far, 1.5 = a near layer; 0 .. 2. A folder's value is its members';
+    // a member's own is kept for when it leaves (Panel::effectiveParallax).
+    double parallax = 1.0;
 };
+
+// The depth range and the picture plane (Phase 2B).
+inline constexpr double kMinParallax = 0.0;
+inline constexpr double kMaxParallax = 2.0;
 
 // True for a group (folder) entry — a UI/organisation row, never a paint
 // target.
@@ -151,6 +161,40 @@ struct Panel
         const double own = qBound(0.0, layer.opacity, 1.0);
         const Layer *group = groupOf(layer);
         return group ? own * qBound(0.0, group->opacity, 1.0) : own;
+    }
+
+    // THE FOLDER RULE (Phase 2B, the user's decision D11), its one place: a
+    // member uses its folder's depth (its own is kept, unused); the paper
+    // is always the picture plane.
+    double effectiveParallax(const Layer &layer) const
+    {
+        if (layer.type == QLatin1String("background"))
+            return 1.0;
+        const Layer *group = groupOf(layer);
+        return qBound(kMinParallax, group ? group->parallax : layer.parallax, kMaxParallax);
+    }
+    // A layer that is drawn: not a folder, has pixels, visible and not clear.
+    bool layerDrawn(const Layer &layer) const
+    {
+        return !isGroupLayer(layer) && !layer.image.isNull() && layerEffectivelyVisible(layer)
+            && layerEffectiveOpacity(layer) > 0.0;
+    }
+    // True when any drawn layer is off the picture plane: only then does
+    // the camera place the layers one by one (shotcam's layered path).
+    bool hasDepth() const
+    {
+        for (const Layer &layer : layers)
+            if (layerDrawn(layer) && effectiveParallax(layer) != 1.0)
+                return true;
+        return false;
+    }
+    int depthLayerCount() const
+    {
+        int n = 0;
+        for (const Layer &layer : layers)
+            if (layerDrawn(layer) && effectiveParallax(layer) != 1.0)
+                ++n;
+        return n;
     }
 
     // The panel's canvas size — THE runtime size authority. Pixels are the

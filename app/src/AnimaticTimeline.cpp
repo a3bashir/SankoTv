@@ -1551,10 +1551,12 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
                 bool shot = false;
                 shotcam::CameraState shotCamera;
                 shotcam::Stage stage;
+                const Panel *shotPanel = nullptr; // depth's layered clip (Phase 2B)
                 if (b.sceneIndex < m_scenes.size()) {
                     Scene *sc = m_scenes.at(b.sceneIndex);
                     if (b.panelIndex < sc->panels.size()) {
                         const Panel *panel = sc->panels.at(b.panelIndex);
+                        shotPanel = panel;
                         stage = shotcam::stageWithMargin(panel->canvasSize(), m_stageMargin);
                         // The CAMERA eye off (Phase 1C): the neutral camera.
                         if (!sc->camera.isEmpty() && m_tracks.cameraVisible) {
@@ -1577,7 +1579,18 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
                 QPainterPath clip;
                 clip.addRoundedRect(QRectF(L.thumb), kThumbR, kThumbR);
                 p.setClipPath(clip, Qt::IntersectClip);
-                if (!pix.isNull() && shot) {
+                if (!pix.isNull() && shot && shotPanel
+                    && shotcam::layeredShot(*shotPanel, shotCamera, stage)) {
+                    // Depth: every layer placed for its depth, drawn once
+                    // into a clip-sized picture and cached by what shapes it.
+                    const qreal dpr = p.device() ? p.device()->devicePixelRatioF() : 1.0;
+                    QImage clipImage = shotcam::shotThumb(
+                        *shotPanel, shotCamera, stage,
+                        QSize(qRound(L.thumb.width() * dpr), qRound(L.thumb.height() * dpr)),
+                        true);
+                    clipImage.setDevicePixelRatio(dpr);
+                    p.drawImage(L.thumb.topLeft(), clipImage);
+                } else if (!pix.isNull() && shot) {
                     // The shot, cropped to fill like the plain thumbnail.
                     p.fillRect(L.thumb, Qt::black);
                     shotcam::drawShot(p, pix, stage, shotCamera, QRectF(L.thumb), true);

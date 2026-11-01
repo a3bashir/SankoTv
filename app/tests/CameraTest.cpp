@@ -131,6 +131,63 @@ Panel *fixturePanel(const QSize &size)
     return panel;
 }
 
+// THE DEPTH FIXTURE (Phase 2B, dp): the Figma 2B-3 scene - Sky 0 %,
+// Mountains 50 %, House on the picture plane, Bush 150 % - each a layer with
+// line work and one solid 40 px MARKER square in its own colour, so where a
+// layer went can be read off a pixel. Index: 0 paper, 1 Sky, 2 Mountains,
+// 3 House, 4 Bush.
+struct DepthMarker
+{
+    QPointF centre;
+    QColor colour;
+};
+const DepthMarker kDepthMarkers[5] = {{{0, 0}, Qt::white},
+                                      {{300, 260}, QColor(220, 30, 30)},
+                                      {{900, 500}, QColor(30, 170, 60)},
+                                      {{1400, 620}, QColor(30, 60, 220)},
+                                      {{620, 820}, QColor(200, 30, 200)}};
+const double kDepths[5] = {1.0, 0.0, 0.5, 1.0, 1.5};
+
+Panel *depthPanel(const QSize &size = QSize(1920, 1080), const QPoint &offset = QPoint())
+{
+    Panel *panel = makeBlankPanel(size);
+    panel->layers.removeLast();
+    const char *names[] = {"", "Sky", "Mountains", "House", "Bush"};
+    for (int i = 1; i < 5; ++i) {
+        Layer layer = makeRasterLayer(QString::fromLatin1(names[i]), size);
+        QPainter p(&layer.image);
+        p.translate(offset);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setPen(QPen(kDepthMarkers[i].colour.darker(150), 3));
+        for (int k = 0; k < 6; ++k) // line work in a band below every marker
+            p.drawLine(QPointF(160 * i + 90 * k, 960), QPointF(160 * i + 90 * k + 300, 1060));
+        p.fillRect(QRectF(kDepthMarkers[i].centre - QPointF(20, 20), QSizeF(40, 40)),
+                   kDepthMarkers[i].colour);
+        p.end();
+        layer.parallax = kDepths[i];
+        panel->layers.append(layer);
+    }
+    panel->activeLayerIndex = 1;
+    panel->duration = 3;
+    return panel;
+}
+
+// Where layer `i`'s marker centre shows in a shot of `out` size.
+QPointF markerInShot(const Panel &panel, int i, const shotcam::CameraState &cam,
+                     const shotcam::Stage &stage, const QSize &out, const QPoint &offset = QPoint())
+{
+    const double a = panel.effectiveParallax(panel.layers.at(i));
+    return (shotcam::layerToStage(a, cam, stage)
+            * shotcam::shotTransform(cam, stage, QRectF(QPointF(0, 0), out)))
+        .map(kDepthMarkers[i].centre + QPointF(offset));
+}
+
+bool colourNear(const QColor &a, const QColor &b, int tol = 12)
+{
+    return qAbs(a.red() - b.red()) <= tol && qAbs(a.green() - b.green()) <= tol
+        && qAbs(a.blue() - b.blue()) <= tol;
+}
+
 // The four canvas sizes the pins cover: the three presets and an odd one.
 const QSize kSizes[4] = {{1920, 1080}, {2048, 1080}, {3840, 2160}, {1001, 777}};
 
@@ -275,6 +332,67 @@ void checkMovingPin(const QString &name, const QString &sha)
 {
     const QString want = movingPinned(name);
     check(QStringLiteral("(mp) %1 renders its pinned bytes").arg(name),
+          !want.isEmpty() && sha == want,
+          want.isEmpty() ? QStringLiteral("RECORD {\"%1\", \"%2\"},").arg(name, sha)
+                         : sha.left(16));
+}
+
+// THE MARGIN PINS (mq): recorded on 35ea9ab05, before Phase 2B's depth (the
+// Phase 2 spec, 8.1). The moving pins' scenes inside a stage margin of
+// 480 x 270 px each side (25 % of a 1080p frame; one project, one margin):
+// what a margin project with camera moves renders after 2A. A project with
+// a margin and no depth must render these bytes for ever. (A KEYLESS
+// margin scene is pinned by (mg1): it renders the 17 neutral pins' bytes.)
+const QSize kMarginPinMargin(480, 270);
+const QMap<QString, QString> kMarginPins = {
+    {"clip.1001x777.p1", "2accf11ac555f4470e935a14207fb33102a3361d4186b25f959b189fc4ee2348"},
+    {"clip.1001x777.p2", "4c601adadcffa1acf4e3575545f5db1c3db20547b6134de76b26f59d7d31ad39"},
+    {"clip.1920x1080.p1", "152733aa11048019c847cee7962ad3ab4e621f75d68530a45b4f98b8096b8263"},
+    {"clip.1920x1080.p2", "326402d420a05a7c1417e894a7e27a35359d1d541756f9505ad5438a2cdea45a"},
+    {"clip.2048x1080.p1", "865a0214de00157cee8e27fdb4cfd2729ab741dd553a86482dc60cdcaa881c1c"},
+    {"clip.2048x1080.p2", "9294042f04f9f754bdcc8f03c93bc5153d9ba4cfce3a90487cd5cd873a26f6dc"},
+    {"clip.3840x2160.p1", "f7c28c2bb02319805b8a434816ee13e2a4cc418cd0c5768285921ef7da35baf5"},
+    {"clip.3840x2160.p2", "39d701b46b7fb791bba9b37f35a1722088448d814bf807b7f1c545ccf796a15a"},
+    {"geometry", "94c6580cedecbf1882cd30b5ad84ce346726a87ae0d5f8e0a6e966b9d2a51fa2"},
+    {"mp4.1001x777.f102", "e822b3637cea41129d9f7b7d998cf5eb5c54f338c2fb81f6efa204b611b24e3c"},
+    {"mp4.1001x777.f35", "a228adfa196dd487cd114cbbbb6035299acf766fa9bc1c158dc6f9cfcf184be4"},
+    {"mp4.1001x777.f50", "4cc088e8fde0de7f8643e14a98292a94eba9e9bc7c8051b537fc9cf1a4092f94"},
+    {"mp4.1001x777.f64", "9aeb6c943dd904aad7a4049bdc726a8da9c8cdc2c72905e43cb5025829a54d86"},
+    {"mp4.1001x777.f7", "8ecedd5d24a8a52daa33d20046eeec31af3eaa2fe07c2d19cf64c69e9c69fbe3"},
+    {"mp4.1920x1080.f102", "e2f0d413726867a5bd3828f7aa22ae11597720a293857e4334da9ffad16654a6"},
+    {"mp4.1920x1080.f35", "ca72016dbdc4d62fd26a3b2fb6da28d36e6360653323b1de33f2bb0fee817fb6"},
+    {"mp4.1920x1080.f50", "abc98ad4503ddabe9d9c310c25ddec35342ea72567f0652db09f0a1caa8e4db5"},
+    {"mp4.1920x1080.f64", "779b999217d6896de571edb96d0e4c0cb70a050c3b4b80bdf9624a239dab83a5"},
+    {"mp4.1920x1080.f7", "791a7f39c948ae9db025b81e49372064437e448c03b004608a154113d7fb4460"},
+    {"mp4.2048x1080.f102", "729316275cc03774407f6dddf69cba8e753c6ef4d829244ce07c1b79a12624f2"},
+    {"mp4.2048x1080.f35", "a4343276036b04db7a721cd8100e901e87e50f976a21ce28bdf16ba70796b01b"},
+    {"mp4.2048x1080.f50", "31080745b39b6920fc12fb6d157ee4003a50f95d23906460a97e647f73fe5db3"},
+    {"mp4.2048x1080.f64", "c153c77013f365c27eaa10fc4e759396dca4c89ac4bf71307483387804feec8b"},
+    {"mp4.2048x1080.f7", "99fbd33c5a87a832a4078e0ca4a18114a19e6bbb90af47cc7d70ac120d58eb61"},
+    {"mp4.3840x2160.f102", "da08563f2b9a143dea8c21859a97ce58eccf942f031a78325ae3b74c5fbd0c8b"},
+    {"mp4.3840x2160.f35", "65da98376bdc3d7b4f754a1e84ae4b50bc870e5b0f43cdc1329aa91bfe724941"},
+    {"mp4.3840x2160.f50", "b9db097e61146dae3d582111ce378baf517dea149563fa34edf9649426d4f235"},
+    {"mp4.3840x2160.f64", "c1f0e6f9e65a703d90631340ffe8787b69420d844fc985a3f524d90cfd0540ad"},
+    {"mp4.3840x2160.f7", "ba36988fecc7dece976702ab1557ba1aaac1f8fc871691c0464860b364a50158"},
+    {"pdf.page0", "26dac732de30bd69b3db0f3b3dd8ada74df0351bbafc97594c6cde9829b7cad0"},
+    {"png.1001x777.p1", "d133429b56cf8ae72391ca821ed1617d443191a2adcf90b2a2acc829757397b3"},
+    {"png.1001x777.p2", "de9ee4c7aa8b6d4754be5da75f6df4ee4f80008bc88fa9b6bfe7963056957321"},
+    {"png.1920x1080.p1", "40a4fc2d48c5b7118bca1a348df0f4488897dd09175547baf8cd5cc2d24f944e"},
+    {"png.1920x1080.p2", "5a603de51d74dbc1b6abd59b275db78de591a8cc6269d857af08bc027f1d452b"},
+    {"png.2048x1080.p1", "516ea162b5c74653da2ca2f7d032d4e027a00f2e50a5ee82a94059ccbbfa28fe"},
+    {"png.2048x1080.p2", "e850bb8385904be35d23b58170e7e5e15163139c451b0e0e1d42924afc37c23b"},
+    {"png.3840x2160.p1", "2b933bb5f1842d088ba0220a78d5a9e1b80c7e3c18906be88f0712b5a992aad7"},
+    {"png.3840x2160.p2", "958c12bf319fbf7ff8e976aa0d3b5e6e54d3e82b21f66e2effbbdf62efc63aad"},
+    {"preview.1001x777.f50", "78286c3d49e1acce4dfa1c0736acbc5332e39cf48ac46f32916aae6c14f3ee54"},
+    {"preview.1920x1080.f50", "ca07a614060b69d8bbc1ac7272872d245da9393ad5ae6d029d6cf0d3a3021ae6"},
+    {"preview.2048x1080.f50", "a913f1a95fc39bbb81388c4cb1c88242bf3c56610f4fee67363d13a5a2c5ee9a"},
+    {"preview.3840x2160.f50", "c9ad14cd60f502785bec5be4f81b6c1e3333f59cae6f088c3a6655036cdd821a"},
+};
+
+void checkMarginPin(const QString &name, const QString &sha)
+{
+    const QString want = kMarginPins.value(name);
+    check(QStringLiteral("(mq) %1 renders its pinned bytes").arg(name),
           !want.isEmpty() && sha == want,
           want.isEmpty() ? QStringLiteral("RECORD {\"%1\", \"%2\"},").arg(name, sha)
                          : sha.left(16));
@@ -1190,14 +1308,24 @@ int main(int argc, char **argv)
     // Move) - the geometry the canvas draws its frame from.
     ts << "--- (mp) moving pins ---\n";
     {
-        auto buildMoving = [&](double nudge) {
+        // `margin` (the margin pins, mq): the same scenes, each panel the
+        // fixture inside a stage with that margin, every key and the Quick
+        // Move over the same art (offset by the margin). 0 x 0: the (mp) pins.
+        auto buildMoving = [&](double nudge, const QSize &margin = QSize(0, 0)) {
             QVector<Scene *> list;
             for (int i = 0; i < 4; ++i) {
                 const QSize cs = kSizes[i];
                 const double W = cs.width(), H = cs.height();
+                const double mx = margin.width(), my = margin.height();
+                const shotcam::Stage stage = shotcam::stageWithMargin(
+                    QSize(cs.width() + 2 * margin.width(), cs.height() + 2 * margin.height()),
+                    margin);
                 Scene *s = new Scene;
                 s->number = i + 1;
-                s->panels << fixturePanel(cs) << fixturePanel(cs);
+                if (margin.isEmpty())
+                    s->panels << fixturePanel(cs) << fixturePanel(cs);
+                else
+                    s->panels << marginPanel(cs, margin) << marginPanel(cs, margin);
                 const struct
                 {
                     int frame;
@@ -1212,10 +1340,11 @@ int main(int argc, char **argv)
                 for (const auto &key : k)
                     s->camera.keys.append(shotcam::makeKey(
                         *s, 0, key.frame, 24,
-                        state(W * key.x + nudge, H * key.y, key.z, key.r), key.e));
+                        state(mx + W * key.x + nudge, my + H * key.y, key.z, key.r), key.e));
                 const shotcam::QuickFrames q = shotcam::quickMove(
-                    shotcam::QuickMove::PanRight, state(W * 0.4 + nudge, H * 0.5, 1.5, 5.0),
-                    shotcam::QuickAmounts(), cs, true);
+                    shotcam::QuickMove::PanRight,
+                    state(mx + W * 0.4 + nudge, my + H * 0.5, 1.5, 5.0),
+                    shotcam::QuickAmounts(), stage, true);
                 s->camera.keys.append(shotcam::makeKey(*s, 1, 0, 24, q.start));
                 s->camera.keys.append(shotcam::makeKey(*s, 1, 72, 24, q.end));
                 list.append(s);
@@ -1225,9 +1354,12 @@ int main(int argc, char **argv)
         auto tagOf = [](int i) {
             return QStringLiteral("%1x%2").arg(kSizes[i].width()).arg(kSizes[i].height());
         };
-        auto renderAll = [&](const QVector<Scene *> &list, const QString &run) {
+        auto renderAll = [&](const QVector<Scene *> &list, const QString &run,
+                             const QSize &margin = QSize(0, 0)) {
             QMap<QString, QString> out;
-            const QVector<sankoexport::ExportPanel> rows = sankoexport::collectPanels(list, 24);
+            const QVector<sankoexport::ExportPanel> rows = margin.isEmpty()
+                ? sankoexport::collectPanels(list, 24)
+                : sankoexport::collectPanels(list, 24, false, false, margin);
             // The MP4: the real export job; each scene is 144 frames.
             const int sampleFrames[] = {7, 35, 50, 64, 72 + 30};
             QSet<int> wanted;
@@ -1275,6 +1407,8 @@ int main(int argc, char **argv)
                 apage.setAttribute(Qt::WA_DontShowOnScreen, true);
                 apage.resize(1600, 320);
                 apage.setFps(24);
+                if (!margin.isEmpty())
+                    apage.setStageMargin(margin);
                 apage.show();
                 apage.loadScenes(list);
                 apage.attachPreview(&host);
@@ -1310,12 +1444,21 @@ int main(int argc, char **argv)
             QTextStream gs(&g);
             gs.setRealNumberPrecision(12);
             for (int i = 0; i < 4; ++i) {
-                const QSize cs = kSizes[i];
+                // Without a margin the stage IS the size (the (mp) numbers).
+                const shotcam::Stage cs = margin.isEmpty()
+                    ? shotcam::Stage(kSizes[i])
+                    : shotcam::stageWithMargin(
+                          QSize(kSizes[i].width() + 2 * margin.width(),
+                                kSizes[i].height() + 2 * margin.height()),
+                          margin);
+                const double mx = margin.width(), my = margin.height();
                 QVector<shotcam::CameraState> states;
                 for (const shotcam::CameraKey &k : list.at(i)->camera.keys)
                     states << k.state;
-                states << state(cs.width() * 0.3, cs.height() * 0.7, 0.7, 30.0)
-                       << state(cs.width() * 0.9, cs.height() * 0.1, 3.0, -45.0);
+                states << state(mx + kSizes[i].width() * 0.3, my + kSizes[i].height() * 0.7,
+                                0.7, 30.0)
+                       << state(mx + kSizes[i].width() * 0.9, my + kSizes[i].height() * 0.1,
+                                3.0, -45.0);
                 gs << tagOf(i) << " sharp " << shotcam::sharpLimit(cs) << '\n';
                 for (const shotcam::CameraState &st : states) {
                     for (const QPointF &pt : shotcam::frameQuad(st, cs))
@@ -1329,7 +1472,7 @@ int main(int argc, char **argv)
                     const shotcam::CameraState c = shotcam::clampInside(st, cs);
                     gs << c.cx << ' ' << c.cy << ' ' << c.zoom << ' ' << c.rotation << ' '
                        << shotcam::insideMinZoom(st.rotation, cs) << ' '
-                       << shotcam::isNeutral(st, cs) << '\n';
+                       << shotcam::isNeutral(st, cs.canvas) << '\n';
                 }
                 for (int m = 0; m < 8; ++m)
                     for (bool inside : {true, false}) {
@@ -1365,6 +1508,46 @@ int main(int argc, char **argv)
               unchanged.isEmpty() ? QString() : QStringLiteral("unchanged: ") + unchanged.join(' '));
         qDeleteAll(moving);
         qDeleteAll(nudged);
+
+        // ---- (mq) the margin pins (recorded before Phase 2B) ----------------
+        ts << "--- (mq) margin pins ---\n";
+        const QVector<Scene *> inMargin = buildMoving(0.0, kMarginPinMargin);
+        const QMap<QString, QString> mgot =
+            renderAll(inMargin, QStringLiteral("ma"), kMarginPinMargin);
+        for (auto it = mgot.cbegin(); it != mgot.cend(); ++it)
+            checkMarginPin(it.key(), it.value());
+        // Control: the same 1 px nudge changes every margin output too.
+        const QVector<Scene *> mNudged = buildMoving(1.0, kMarginPinMargin);
+        const QMap<QString, QString> mother =
+            renderAll(mNudged, QStringLiteral("mb"), kMarginPinMargin);
+        QStringList mSame;
+        for (auto it = mgot.cbegin(); it != mgot.cend(); ++it)
+            if (mother.value(it.key()) == it.value())
+                mSame << it.key();
+        check(QStringLiteral("(mq) control: every key moved 1 px across changes every margin "
+                             "output (%1 outputs)").arg(mgot.size()),
+              mgot.size() == 42 && mother.size() == mgot.size() && mSame.isEmpty(),
+              mSame.isEmpty() ? QString() : QStringLiteral("unchanged: ") + mSame.join(' '));
+        // Control, and 2A's own promise: the frame is the same size and the
+        // margin whole pixels, so every shot that sees only the frame's art
+        // (each MP4 frame, still, the PDF page, the preview, the base
+        // framing's clip) is the no-margin pin's bytes. Only the geometry
+        // (stage px) and the MOVING clips (drawn from the 512 px mip of the
+        // whole, larger stage) differ.
+        QStringList mDiffer, wantDiffer{QStringLiteral("geometry")};
+        for (auto it = mgot.cbegin(); it != mgot.cend(); ++it)
+            if (got.value(it.key()) != it.value())
+                mDiffer << it.key();
+        for (int i = 0; i < 4; ++i)
+            wantDiffer << QStringLiteral("clip.%1.p2").arg(tagOf(i));
+        mDiffer.sort();
+        wantDiffer.sort();
+        check(QStringLiteral("(mq) control: inside the margin the shots that see only the frame's "
+                             "art are the no-margin pins' bytes; only the geometry and the 4 "
+                             "moving clips differ"),
+              mDiffer == wantDiffer, mDiffer.join(' '));
+        qDeleteAll(inMargin);
+        qDeleteAll(mNudged);
     }
 
     // ---- (mg) THE STAGE MARGIN (Phase 2A) -------------------------------------
@@ -1750,6 +1933,420 @@ int main(int argc, char **argv)
                   QStringLiteral("The stage can be at most 8192"))
                   && sd.downField()->intValue() == qRound(4000.0 * 1080 / 1920),
               sd.validationReason());
+    }
+
+    // ---- (dp) DEPTH (Phase 2B) ----------------------------------------------
+    // The 2B-3 scene: Sky 0 %, Mountains 50 %, House 100 %, Bush 150 %. Every
+    // depth consumer draws each layer through shotcam::layerToStage; these
+    // checks prove the placement's closed forms, then that each real
+    // consumer's pixels are that placement.
+    ts << "--- (dp) depth ---\n";
+    {
+        const QSize out(1920, 1080);
+        const shotcam::Stage st(out);
+        const shotcam::CameraState base = shotcam::neutral(out);
+        const shotcam::CameraState pan = state(960 + 400, 540, 1.0, 0.0);
+        auto at = [](const QTransform &t, const QPointF &p) { return t.map(p); };
+
+        // (dp2) the closed forms.
+        bool planeId = true, baseId = true;
+        for (const shotcam::CameraState &cam :
+             {state(1100, 500, 1.6, 10), state(700, 620, 0.8, -20), state(960, 540, 2.5, 0)})
+            planeId = planeId && shotcam::layerToStage(1.0, cam, st).isIdentity();
+        for (double a : {0.0, 0.5, 1.5, 2.0})
+            for (double r : {0.0, 25.0})
+                baseId = baseId && shotcam::layerToStage(a, state(960, 540, 1.0, r), st).isIdentity();
+        check(QStringLiteral("(dp2) a = 1 (the picture plane) is the identity for every camera, "
+                             "and the base framing is the identity for every depth, turned or not "
+                             "(every layer lines up as drawn, D8)"),
+              planeId && baseId);
+        QStringList panText;
+        bool panOk = true;
+        for (int i = 1; i < 5; ++i) {
+            const double a = kDepths[i];
+            const QPointF p = kDepthMarkers[i].centre;
+            const QPointF q0 = at(shotcam::layerToStage(a, base, st)
+                                      * shotcam::shotTransform(base, st, QRectF(QPointF(), out)), p);
+            const QPointF q1 = at(shotcam::layerToStage(a, pan, st)
+                                      * shotcam::shotTransform(pan, st, QRectF(QPointF(), out)), p);
+            panOk = panOk && qAbs((q1.x() - q0.x()) + a * 400.0) < 1e-6 && qAbs(q1.y() - q0.y()) < 1e-6;
+            panText << QStringLiteral("%1 %2").arg(a).arg(q1.x() - q0.x());
+        }
+        check(QStringLiteral("(dp2) a pan of 400 px at 1x moves each layer a x 400 px on screen: "
+                             "the sky 0, the mountains 200, the house 400, the bush 600"),
+              panOk, panText.join(QStringLiteral(", ")));
+        const shotcam::CameraState push = state(960, 540, 2.0, 0.0);
+        auto magnification = [&](double a, const shotcam::CameraState &cam) {
+            return std::sqrt(qAbs((shotcam::layerToStage(a, cam, st)
+                                   * shotcam::shotTransform(cam, st, QRectF(QPointF(), out)))
+                                      .determinant()));
+        };
+        const double m0 = magnification(0.0, push), mHalf = magnification(0.5, push),
+                     mNear = magnification(1.5, push), mPlane = magnification(1.0, push);
+        check(QStringLiteral("(dp2) a push-in to 2x is a dolly: each layer magnified z / d - the "
+                             "sky 1x, the mountains 1.33x, the picture plane 2x, the bush 4x"),
+              qAbs(m0 - 1.0) < 1e-9 && qAbs(mHalf - 2.0 / 1.5) < 1e-9 && qAbs(mPlane - 2.0) < 1e-9
+                  && qAbs(mNear - 4.0) < 1e-9,
+              QStringLiteral("%1 %2 %3 %4").arg(m0).arg(mHalf).arg(mPlane).arg(mNear));
+
+        // (dp4) the MP4's pixels are that placement: every marker where
+        // layerToStage puts it; the flat (no depth) picture has them as drawn.
+        Panel *dp = depthPanel();
+        const QImage shot = shotcam::renderShot(*dp, pan, st, out);
+        const QImage flatShot = shotcam::renderShot(dp->flattenedImage(), pan, st, out);
+        QStringList probe;
+        bool placed = true, flatOff = true;
+        for (int i = 1; i < 5; ++i) {
+            const QPoint q = markerInShot(*dp, i, pan, st, out).toPoint();
+            const QColor got = shot.pixelColor(q);
+            placed = placed && colourNear(got, kDepthMarkers[i].colour);
+            if (kDepths[i] != 1.0)
+                flatOff = flatOff && !colourNear(flatShot.pixelColor(q), kDepthMarkers[i].colour);
+            probe << QStringLiteral("%1@%2,%3 %4").arg(dp->layers.at(i).name).arg(q.x()).arg(q.y())
+                         .arg(got.name());
+        }
+        check(QStringLiteral("(dp4) THE SHOT, 400 px pan: each layer's marker is exactly where "
+                             "layerToStage puts it"),
+              placed, probe.join(QStringLiteral(", ")));
+        check(QStringLiteral("(dp4) control: without depth (the flat shot) the three off-plane "
+                             "markers are not there"),
+              flatOff);
+        Panel *swapped = depthPanel();
+        swapped->layers[1].parallax = 1.5;
+        swapped->layers[4].parallax = 0.0;
+        check(QStringLiteral("(dp2) control: swapping two layers' depths (Sky <-> Bush) changes "
+                             "the frame"),
+              shaOf(shotcam::renderShot(*swapped, pan, st, out)) != shaOf(shot));
+        delete swapped;
+
+        // (dp1) every layer at 100 %: the Phase 1 path, the same bytes.
+        Panel *plane = depthPanel();
+        for (Layer &l : plane->layers)
+            l.parallax = 1.0;
+        const QString planeSha = shaOf(sankoexport::renderMovieFrame(plane, out, pan));
+        const QString oldSha = shaOf(shotcam::renderShot(plane->flattenedImage(), pan, out));
+        plane->layers[2].parallax = 0.95;
+        const QString nearlySha = shaOf(sankoexport::renderMovieFrame(plane, out, pan));
+        check(QStringLiteral("(dp1) every layer at 100 %: no depth, and the movie frame is the "
+                             "Phase 1 picture byte for byte (the moving and margin pins above "
+                             "hold on this code)"),
+              planeSha == oldSha, planeSha.left(16));
+        check(QStringLiteral("(dp1) control: one layer at 95 % changes the moving frame"),
+              nearlySha != planeSha);
+        delete plane;
+
+        // (dp5) the folder rule.
+        Panel *fp = depthPanel();
+        Layer folder;
+        folder.id = QStringLiteral("folder-far");
+        folder.name = QStringLiteral("Far things");
+        folder.type = QStringLiteral("group");
+        folder.parallax = 0.4;
+        Layer member = makeRasterLayer(QStringLiteral("Clouds"), out);
+        member.groupId = folder.id;
+        member.parallax = 1.5;
+        fp->layers.append(member);
+        fp->layers.append(folder);
+        fp->layers[0].parallax = 0.3; // the paper, given a depth it cannot have
+        const double inFolder = fp->effectiveParallax(fp->layers.at(5));
+        const double paper = fp->effectiveParallax(fp->layers.at(0));
+        Layer left = fp->layers.at(5);
+        left.groupId.clear();
+        const double outOfFolder = fp->effectiveParallax(left);
+        check(QStringLiteral("(dp5) THE FOLDER RULE: a member uses its folder's depth (40 %) and "
+                             "keeps its own (150 %) for when it leaves; the paper is always 100 %"),
+              inFolder == 0.4 && outOfFolder == 1.5 && paper == 1.0,
+              QStringLiteral("%1 / %2 / %3").arg(inFolder).arg(outOfFolder).arg(paper));
+        check(QStringLiteral("(dp5) control: a root layer uses its own (Mountains 50 %)"),
+              fp->effectiveParallax(fp->layers.at(2)) == 0.5);
+
+        // (dp8) the file: "parallax" only off the picture plane, exact, repaired.
+        {
+            Scene *ds = new Scene;
+            ds->number = 1;
+            ds->panels.append(fp);
+            ProjectIO::SaveData data;
+            data.projectName = QStringLiteral("Depth");
+            data.fps = 24;
+            data.canvasSize = out;
+            data.scenes = {ds};
+            const QString dir = scratch + QStringLiteral("/dp8");
+            QDir().mkpath(dir);
+            const QString path = dir + QStringLiteral("/d.sankotv");
+            const ProjectIO::WriteResult w = ProjectIO::projectToJson(data, path);
+            const QJsonArray layers = w.root.value(QStringLiteral("scenes")).toArray().at(0)
+                .toObject().value(QStringLiteral("panels")).toArray().at(0).toObject()
+                .value(QStringLiteral("layers")).toArray();
+            QStringList written;
+            for (const QJsonValue &v : layers)
+                if (v.toObject().contains(QStringLiteral("parallax")))
+                    written << QStringLiteral("%1=%2").arg(v.toObject().value(QStringLiteral("name")).toString())
+                                   .arg(v.toObject().value(QStringLiteral("parallax")).toDouble());
+            const QStringList wantWritten{QStringLiteral("Sky=0"), QStringLiteral("Mountains=0.5"),
+                                          QStringLiteral("Bush=1.5"), QStringLiteral("Clouds=1.5"),
+                                          QStringLiteral("Far things=0.4")};
+            ProjectIO::LoadedProject back = ProjectIO::projectFromJson(w.root, dir, path);
+            QStringList read;
+            if (!back.scenes.isEmpty() && !back.scenes.first()->panels.isEmpty())
+                for (const Layer &l : back.scenes.first()->panels.first()->layers)
+                    read << QString::number(l.parallax);
+            QStringList wantRead; // the paper (index 0) is left out: its depth is never used
+            for (const Layer &l : fp->layers)
+                wantRead << QString::number(l.parallax);
+            check(QStringLiteral("(dp8) the save writes \"parallax\" only on the layers off the "
+                             "picture plane (and the folder's own and its member's own), and the "
+                             "load reads every one back exactly"),
+                  w.ok && written.size() >= 5 && read.size() == fp->layers.size()
+                      && read.mid(1) == wantRead.mid(1)
+                      && [&] { for (const QString &s : wantWritten) if (!written.contains(s)) return false; return true; }(),
+                  written.join(QLatin1Char(' ')) + QStringLiteral(" | ") + read.join(QLatin1Char(' ')));
+            qDeleteAll(back.scenes);
+            QJsonObject bad = w.root;
+            QJsonArray scenesA = bad.value(QStringLiteral("scenes")).toArray();
+            QJsonObject s0 = scenesA.at(0).toObject();
+            QJsonArray panelsA = s0.value(QStringLiteral("panels")).toArray();
+            QJsonObject p0 = panelsA.at(0).toObject();
+            QJsonArray layersA = p0.value(QStringLiteral("layers")).toArray();
+            QJsonObject l1 = layersA.at(1).toObject();
+            l1[QStringLiteral("parallax")] = 3.0; // past 200 %
+            layersA[1] = l1;
+            QJsonObject l2 = layersA.at(2).toObject();
+            l2[QStringLiteral("parallax")] = QStringLiteral("far"); // not a number
+            layersA[2] = l2;
+            p0[QStringLiteral("layers")] = layersA;
+            panelsA[0] = p0;
+            s0[QStringLiteral("panels")] = panelsA;
+            scenesA[0] = s0;
+            bad[QStringLiteral("scenes")] = scenesA;
+            ProjectIO::LoadedProject fixed = ProjectIO::projectFromJson(bad, dir, path);
+            const Panel *fixedPanel = fixed.scenes.isEmpty() || fixed.scenes.first()->panels.isEmpty()
+                ? nullptr : fixed.scenes.first()->panels.first();
+            check(QStringLiteral("(dp8) a depth that cannot be one (300 %, a word) opens on the "
+                                 "picture plane and is counted"),
+                  fixed.parallaxRepaired == 2 && fixedPanel && fixedPanel->layers.at(1).parallax == 1.0
+                      && fixedPanel->layers.at(2).parallax == 1.0
+                      && fixedPanel->layers.at(4).parallax == 1.5,
+                  QStringLiteral("repaired %1").arg(fixed.parallaxRepaired));
+            qDeleteAll(fixed.scenes);
+            // Control: a project without depth writes no "parallax" at all.
+            for (Layer &l : fp->layers)
+                l.parallax = 1.0;
+            const ProjectIO::WriteResult w0 = ProjectIO::projectToJson(data, path);
+            check(QStringLiteral("(dp8) control: with every layer on the picture plane no "
+                                 "\"parallax\" is written (the JSON every older project saves)"),
+                  w0.ok && !QJsonDocument(w0.root).toJson().contains("parallax"));
+            delete ds; // owns fp
+        }
+
+        // (dp6) a layer the camera reaches is not drawn.
+        Panel *bp = depthPanel();
+        {
+            QPainter p(&bp->layers[4].image);
+            p.fillRect(QRect(860, 440, 200, 200), kDepthMarkers[4].colour); // round the centre
+        }
+        Panel *bpHidden = depthPanel();
+        bpHidden->layers[4].visible = false;
+        const shotcam::CameraState z285 = state(960, 540, 2.85, 0.0), z27 = state(960, 540, 2.7, 0.0);
+        check(QStringLiteral("(dp6) the camera reaches a near layer: at 2.85x the 150 % bush has "
+                             "d = 0.075 < 0.1 and is not drawn (the frame is the bush-less one)"),
+              !shotcam::layerShown(1.5, z285)
+                  && qAbs(shotcam::depthDivisor(1.5, z285) - 0.075) < 1e-12
+                  && shaOf(shotcam::renderShot(*bp, z285, st, out))
+                      == shaOf(shotcam::renderShot(*bpHidden, z285, st, out)));
+        check(QStringLiteral("(dp6) control: at 2.7x (d = 0.15) it is drawn"),
+              shotcam::layerShown(1.5, z27)
+                  && shaOf(shotcam::renderShot(*bp, z27, st, out))
+                      != shaOf(shotcam::renderShot(*bpHidden, z27, st, out)));
+        delete bp;
+        delete bpHidden;
+
+        // (dp7) the roll is shared: a turn alone places every layer alike.
+        const shotcam::CameraState turned = state(960, 540, 1.0, 20.0);
+        const shotcam::CameraState turnedPan = state(960 + 200, 540, 1.0, 20.0);
+        bool rollAlike = !shotcam::layeredShot(*dp, turned, st);
+        for (double a : {0.0, 0.5, 1.5})
+            rollAlike = rollAlike && shotcam::layerToStage(a, turned, st).isIdentity();
+        check(QStringLiteral("(dp7) a 20 degree turn at the base framing moves every layer alike: "
+                             "no parallax, the Phase 1 path"),
+              rollAlike);
+        check(QStringLiteral("(dp7) control: a 200 px pan under the same turn shows parallax (the "
+                             "sky and the picture plane placed differently)"),
+              shotcam::layeredShot(*dp, turnedPan, st)
+                  && shotcam::layerToStage(0.0, turnedPan, st)
+                      != shotcam::layerToStage(1.0, turnedPan, st));
+
+        // (dp3) ONE GEOMETRY, through the real consumers: a scene whose
+        // camera holds the 400 px pan on frame 0 and drifts after it.
+        Scene *ps = new Scene;
+        ps->number = 1;
+        ps->panels.append(depthPanel());
+        ps->panels.append(fixturePanel(out)); // where the playhead parks for the clip grab
+        ps->camera.keys = {shotcam::makeKey(*ps, 0, 0, 24, pan, shotcam::Ease::Linear),
+                           shotcam::makeKey(*ps, 0, 71, 24, state(960 - 300, 560, 1.4, 0.0))};
+        const shotcam::CameraState f0 = shotcam::evaluateAtPanel(*ps, 0, 0, 24);
+        const shotcam::CameraState f1 = shotcam::evaluateAtPanel(*ps, 0, 1, 24);
+        const QString want0 = shaOf(shotcam::renderShot(*ps->panels.first(), f0, st, out));
+        const QString want1 = shaOf(shotcam::renderShot(*ps->panels.first(), f1, st, out));
+        const QVector<sankoexport::ExportPanel> rows = sankoexport::collectPanels({ps}, 24);
+        QString mp4Sha0, mp4Sha1;
+        {
+            sankoexport::MovieRequest request;
+            request.outPath = scratch + QStringLiteral("/dp3.mp4");
+            request.panels = rows;
+            request.fps = 24;
+            auto *encoder = new CaptureEncoder({0, 1});
+            sankoexport::MovieExportJob job(request, encoder);
+            job.start();
+            QElapsedTimer guard;
+            guard.start();
+            while (!job.isDone() && guard.elapsed() < 120000)
+                QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+            mp4Sha0 = encoder->shas.value(0);
+            mp4Sha1 = encoder->shas.value(1);
+        }
+        check(QStringLiteral("(dp3) THE MP4 the real export job offered is the layered shot of "
+                             "its frame, byte for byte"),
+              mp4Sha0 == want0 && mp4Sha1 == want1, mp4Sha0.left(16));
+        check(QStringLiteral("(dp3) control: one frame later is a different picture"),
+              want0 != want1);
+        const sankoexport::FilesResult png = sankoexport::exportPng(
+            rows, scratch + QStringLiteral("/dp3_png"), QStringLiteral("Depth"), {});
+        check(QStringLiteral("(dp3) THE PNG still is the layered shot of the panel's first frame"),
+              png.ok && png.written.size() == 2
+                  && shaOf(QImage(png.written.value(0))) == want0);
+        {
+            QWidget host;
+            host.setAttribute(Qt::WA_DontShowOnScreen, true);
+            host.resize(out);
+            host.show();
+            AnimaticPage apage;
+            apage.setAttribute(Qt::WA_DontShowOnScreen, true);
+            apage.resize(1600, 320);
+            apage.setFps(24);
+            apage.show();
+            apage.loadScenes({ps});
+            apage.attachPreview(&host);
+            pump(200);
+            AnimaticTimeline *tl = apage.timelineForTest();
+            tl->setZoomForTest(200.0f);
+            pump(200);
+            // The SHOTS clip: the layered shot of the first frame, cover -
+            // grabbed with the playhead on panel 2, so its line is not over it.
+            apage.scrubForTest(1);
+            pump(80);
+            const QVariantMap parts = tl->clipPartsForTest(0);
+            const QRect thumb = rectOf(parts.value(QStringLiteral("thumb")).toString());
+            const QImage surface = tl->surfaceForTest()->grab().toImage();
+            const QImage clipWant = shotcam::shotThumb(*ps->panels.first(), f0, st, thumb.size(), true);
+            const QRect inner = QRect(QPoint(0, 0), thumb.size()).adjusted(5, 5, -5, -5);
+            const QImage gotClip = surface.copy(inner.translated(thumb.topLeft()))
+                                       .convertToFormat(QImage::Format_ARGB32);
+            const QImage wantClip = clipWant.copy(inner).convertToFormat(QImage::Format_ARGB32);
+            // The clip's panel number is printed over its top-left corner.
+            const QRect number = rectOf(parts.value(QStringLiteral("number")).toString())
+                                     .translated(-thumb.topLeft() - inner.topLeft());
+            int clipDiff = 0;
+            QString firstDiff;
+            for (int y = 0; y < gotClip.height() && gotClip.size() == wantClip.size(); ++y)
+                for (int x = 0; x < gotClip.width(); ++x)
+                    if (!number.contains(x, y) && gotClip.pixel(x, y) != wantClip.pixel(x, y)) {
+                        if (clipDiff < 30)
+                            firstDiff += QStringLiteral("%1,%2 %3/%4 ").arg(x).arg(y)
+                                            .arg(QColor(gotClip.pixel(x, y)).name())
+                                            .arg(QColor(wantClip.pixel(x, y)).name());
+                        ++clipDiff;
+                    }
+            check(QStringLiteral("(dp3) THE SHOTS CLIP is drawShot of the first frame at the "
+                                 "clip's size, pixel for pixel (inside its rounded border, its "
+                                 "panel number aside)"),
+                  thumb.isValid() && number.isValid() && gotClip.size() == wantClip.size()
+                      && clipDiff == 0,
+                  QStringLiteral("%1x%2, %3 px differ %4").arg(thumb.width()).arg(thumb.height())
+                      .arg(clipDiff).arg(firstDiff));
+            const QImage flatClip = shotcam::shotThumb(*ps->panels.first(), base, st, thumb.size(), true);
+            check(QStringLiteral("(dp3) control: the clip is not the base framing's picture"),
+                  shaOf(flatClip.copy(inner)) != shaOf(clipWant.copy(inner)));
+            // The preview at the MP4's size: the same bytes above its chip.
+            apage.scrubForTest(0);
+            pump(50);
+            apage.setPlayheadForTest(0, 0);
+            pump(80);
+            QWidget *surf = apage.previewSurface();
+            const QImage grab0 = surf ? surf->grab().toImage() : QImage();
+            const QRect above(0, 0, out.width(), out.height() - 40);
+            check(QStringLiteral("(dp3) THE PREVIEW at 1920 x 1080 is the MP4's frame, byte for "
+                                 "byte (above its PREVIEW chip)"),
+                  apage.previewVisible() && grab0.size() == out
+                      && shaOf(grab0.copy(above))
+                          == shaOf(shotcam::renderShot(*ps->panels.first(), f0, st, out).copy(above)),
+                  QStringLiteral("%1x%2").arg(grab0.width()).arg(grab0.height()));
+            apage.setPlayheadForTest(0, shotcam::msForFrameInPanel(1, 24));
+            pump(80);
+            const QImage grab1 = surf ? surf->grab().toImage() : QImage();
+            check(QStringLiteral("(dp3) control: the preview one frame later differs"),
+                  !grab1.isNull() && shaOf(grab1.copy(above)) != shaOf(grab0.copy(above)));
+            const QVariantMap recState = apage.shotCamDevrecState();
+            check(QStringLiteral("(dp) the recorder's statePoll counts the playhead panel's "
+                                 "depth layers (3) and the passed ones (0)"),
+                  recState.value(QStringLiteral("shotCam.depthLayers")).toInt() == 3
+                      && recState.value(QStringLiteral("shotCam.passedLayers")).toInt() == 0);
+            apage.leavePreview();
+            apage.loadScenes({});
+            pump(100);
+        }
+        delete ps;
+        delete dp;
+
+        // (4.8) THE COST, measured and reported - never a check.
+        {
+            auto timeIt = [](const std::function<void()> &f, int n) {
+                QElapsedTimer t;
+                t.start();
+                for (int i = 0; i < n; ++i)
+                    f();
+                return t.nsecsElapsed() / 1e6 / n;
+            };
+            for (const QSize &stage : {QSize(2880, 1620), QSize(3840, 2160)}) {
+                for (int layersN : {4, 8}) {
+                    Panel *cp = makeBlankPanel(stage);
+                    cp->layers.removeLast();
+                    for (int i = 0; i < layersN; ++i) {
+                        Layer l = makeRasterLayer(QStringLiteral("L%1").arg(i), stage);
+                        QPainter p(&l.image);
+                        p.fillRect(QRect(i * 50, i * 40, stage.width() / 3, stage.height() / 3),
+                                   QColor(20 * i, 100, 200 - 20 * i));
+                        p.end();
+                        l.parallax = 0.2 + 0.2 * i;
+                        cp->layers.append(l);
+                    }
+                    const shotcam::Stage cst = shotcam::stageWithMargin(
+                        stage, stage == QSize(2880, 1620) ? QSize(480, 270) : QSize(0, 0));
+                    const shotcam::CameraState mv =
+                        state(stage.width() / 2.0 + 120, stage.height() / 2.0 - 40, 1.25, 3.0);
+                    QImage preview(960, 540, QImage::Format_ARGB32_Premultiplied);
+                    const double previewMs = timeIt([&] {
+                        QPainter p(&preview);
+                        shotcam::drawShot(p, *cp, cst, mv, QRectF(0, 0, 960, 540), false);
+                    }, 10);
+                    const double mp4Ms = timeIt([&] {
+                        shotcam::renderShot(*cp, mv, cst, QSize(1920, 1080));
+                    }, 5);
+                    shotcam::clearDepthCachesForTest();
+                    const double stripMs = timeIt([&] {
+                        shotcam::clearDepthCachesForTest();
+                        shotcam::stageThumb(*cp, mv, cst, QSize(192, 108));
+                    }, 3);
+                    ts << QStringLiteral("INFO (dp cost) %1x%2, %3 depth layers: preview paint "
+                                         "%4 ms, MP4 frame %5 ms (%6 s a minute of film at 24 "
+                                         "fps), strip thumbnail from cold %7 ms\n")
+                              .arg(stage.width()).arg(stage.height()).arg(layersN)
+                              .arg(previewMs, 0, 'f', 1).arg(mp4Ms, 0, 'f', 1)
+                              .arg(mp4Ms * 24 * 60 / 1000.0, 0, 'f', 0).arg(stripMs, 0, 'f', 1);
+                    delete cp;
+                }
+            }
+            shotcam::clearDepthCachesForTest();
+        }
     }
 
     delete scene;

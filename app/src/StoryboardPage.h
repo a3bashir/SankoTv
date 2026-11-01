@@ -12,6 +12,7 @@
 #include <QWidget>
 
 class ZoomToolbar;
+class LayerDepthPopover;
 namespace brushlib {
 class BrushLibraryModel;
 class BrushLibraryPanel;
@@ -240,6 +241,14 @@ public:
     void sceneMenuForTest(int sceneIndex) { onSceneMenu(sceneIndex, QPoint()); }
     // For the Dev Recorder's statePoll: shotCam.animate, shotCam.toolActive.
     QVariantMap shotCamToolDevrecState() const;
+    // DEPTH (Phase 2B): the Depth popover for layer `index` of the current
+    // panel, as its badge or Depth... opens it (the paper and a folder's
+    // member open nothing); the popover open now, or null.
+    void openLayerDepthForTest(int index) { layerOpenDepth(index, QPoint(0, 0)); }
+    LayerDepthPopover *depthPopoverForTest() const;
+    // The Layers panel's context menu, to read its items (the gate's menu hook).
+    void layerContextMenuForTest(int index) { layerContextMenu(index, QPoint(0, 0)); }
+    void rebuildLayerPanelForTest() { rebuildLayerPanel(); }
     // What Edit > Undo / Redo would do now, in the history's words ("Undo
     // Move Camera"); the Dev Recorder logs it with each Undo / Redo action.
     QString undoStepText() const;
@@ -336,6 +345,9 @@ signals:
     // A camera edit was made (for the Dev Recorder's shotCamEdit event):
     // what, on which scene frame, and the camera before and after.
     void shotCameraEdited(const QVariantMap &event);
+    // A layer's depth was changed: one "Layer Depth" step (the Dev
+    // Recorder's layerDepth event): the layer, its depth before and after.
+    void layerDepthEdited(const QVariantMap &event);
 
 protected:
     bool eventFilter(QObject *object, QEvent *event) override;
@@ -363,6 +375,7 @@ private:
 
     // Layer panel (docked, right of the canvas; Figma 7-70).
     void rebuildLayerPanel();     // rows from the current panel's layer stack
+    void fitLayerRows();          // narrow a row's thumbnail only if it must, to fit the list
     void setActiveLayer(int index);
     // Photoshop-style selection: plain click = single, Shift = range from
     // the anchor, Ctrl = toggle. Selection indices live in m_layerSelection;
@@ -385,6 +398,9 @@ private:
     void refreshLayerCanvas();    // repaint canvas + panel thumbnail after a layer change
 
     void layerContextMenu(int index, const QPoint &globalPos);
+    // The Depth popover (Phase 2B, Figma 2B-2) under `globalAt`: live while
+    // the slider moves, one "Layer Depth" undo step per release or Enter.
+    void layerOpenDepth(int index, const QPoint &globalAt);
     void startLayerDrag(int index); // QDrag carrying the selected indices
     // Merge core: flatten the given ascending indices into the lowest one
     // (optionally renaming it).
@@ -589,6 +605,7 @@ private:
     // floating tool windows hide while any modal dialog is open (they are
     // Qt::Tool windows owned by it and would otherwise paint over the modal).
     QPointer<QWidget> m_modalWatchWindow;
+    QPointer<LayerDepthPopover> m_depthPopover; // the open Depth popover (Phase 2B)
     ZoomToolbar *m_zoomToolbar = nullptr; // custom-painted view controls
     brushlib::BrushLibraryModel *m_brushLibModel = nullptr;
     brushlib::BrushLibraryPanel *m_brushLibPanel = nullptr;

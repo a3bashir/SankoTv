@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <vector>
 
 namespace ProjectIO {
@@ -353,6 +354,10 @@ WriteResult projectToJson(const SaveData &data, const QString &projectFilePath,
                     layerObj[QStringLiteral("groupId")] = layer.groupId;
                 if (layer.type == QLatin1String("group"))
                     layerObj[QStringLiteral("groupExpanded")] = layer.groupExpanded;
+                // Depth (Phase 2B): only off the picture plane, so a project
+                // without depth saves the JSON it saved before.
+                if (layer.parallax != 1.0)
+                    layerObj[QStringLiteral("parallax")] = layer.parallax;
 
                 if (layer.type != QLatin1String("group")) { // folders own no pixels
                     const QString layerPng =
@@ -726,6 +731,20 @@ LoadedProject projectFromJson(const QJsonObject &root, const QString &folder,
                     layer.groupId = layerObj.value(QStringLiteral("groupId")).toString();
                     layer.groupExpanded =
                         layerObj.value(QStringLiteral("groupExpanded")).toBool(true);
+                    // Depth (Phase 2B): absent = the picture plane. A value
+                    // that cannot be one (not a number, out of 0 .. 2) is
+                    // the picture plane, counted.
+                    if (layerObj.contains(QStringLiteral("parallax"))) {
+                        const QJsonValue pv = layerObj.value(QStringLiteral("parallax"));
+                        const double a = pv.toDouble(-1.0);
+                        if (pv.isDouble() && std::isfinite(a) && a >= kMinParallax
+                            && a <= kMaxParallax) {
+                            layer.parallax = a;
+                        } else {
+                            layer.parallax = 1.0;
+                            ++out.parallaxRepaired;
+                        }
+                    }
 
                     QImage img;
                     const QString layerPng = layerObj.value(QStringLiteral("imageFile")).toString();

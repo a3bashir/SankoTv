@@ -19,6 +19,7 @@
 #include "brushlib/BrushSettingsStudio.h"
 #include "brushlib/BrushWidthRatio.h"
 #include "StoryboardModel.h"
+#include "LayerDepthPopover.h"
 #include "camera/ShotCamera.h"
 
 #include "docking/DockController.h"
@@ -1463,6 +1464,46 @@ QPixmap layerIconPm(const QString &svgPath, QSizeF size,
     fp.end();
     return faded;
 }
+
+// A layer row's thumbnail: the Figma 40 px, and the narrowest it may get
+// when a row must fit a very narrow panel (StoryboardPage::fitLayerRows).
+constexpr int kLayerThumbWidth = 40;
+constexpr int kLayerThumbFloor = 22;
+
+// A layer row's NAME, which gives way (2026-11-01, the 2B hand test): a
+// depth badge made the row wider than a narrow Layers panel, and the rows
+// share one width, so every lock was cut off. The name now shortens with
+// "..." as far as it must, its full text in its hover; text() stays the
+// full name. Its minimum is the ellipsis alone.
+class LayerNameLabel : public QLabel
+{
+public:
+    explicit LayerNameLabel(const QString &text) : QLabel(text) {}
+    QSize minimumSizeHint() const override
+    {
+        return QSize(fontMetrics().horizontalAdvance(QChar(0x2026)) + 2,
+                     QLabel::minimumSizeHint().height());
+    }
+    bool elided() const
+    {
+        return fontMetrics().horizontalAdvance(text()) > contentsRect().width();
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        const QRect r = contentsRect();
+        style()->drawItemText(&p, r, int(alignment()), palette(), isEnabled(),
+                              fontMetrics().elidedText(text(), Qt::ElideRight, r.width()),
+                              foregroundRole());
+    }
+    void resizeEvent(QResizeEvent *event) override
+    {
+        QLabel::resizeEvent(event);
+        setToolTip(elided() ? text() : QString());
+    }
+};
 
 // One layer row: Photoshop-style selection on PRESS (immediately for a fresh
 // row or with modifiers; deferred for a press inside the current selection,
@@ -6134,6 +6175,11 @@ QPixmap StoryboardPage::stripThumbPixmap(Panel *panel, qreal dprOverride) const
             pen.setJoinStyle(Qt::MiterJoin);
             p.setRenderHint(QPainter::Antialiasing, true);
             p.setClipRect(QRect(at, fit.size()));
+            // DEPTH (Phase 2B, Figma 2B-4): the whole stage as the camera
+            // at the panel's first frame sees it - each layer placed for
+            // its depth - in place of the drawing as drawn.
+            if (shotcam::layeredShot(*panel, state, stage))
+                p.drawImage(at, shotcam::stageThumb(*panel, state, stage, fit.size()));
             const QPolygonF quad = t.map(shotcam::frameQuad(state, stage));
             if (stage.hasMargin()) {
                 QPainterPath outside;
@@ -7605,6 +7651,10 @@ Panel *StoryboardPage::currentPanel() const
 
 bool StoryboardPage::eventFilter(QObject *object, QEvent *event)
 {
+    // The Layers list's viewport changed width: the rows fit it again.
+    if (event->type() == QEvent::Resize && m_layerListHost
+        && object == m_layerListHost->parentWidget())
+        fitLayerRows();
     // A MODAL DIALOG is open over this window: hide the floating tool
     // windows for its lifetime. They are Qt::Tool top-levels owned by the
     // main window, so nothing keeps them behind a modal surface — captured
@@ -8877,6 +8927,32 @@ QWidget *StoryboardPage::createLayerPanel()
     scroll->setWidget(listHost);
     bodyLayout->addWidget(scroll, 1);
 
+    // THE NARROWEST THE PANEL DOCKS (2026-11-01, the 2B hand test): 170 px
+    // cut every lock off once a row had a depth badge, and the name giving
+    // way is not enough on its own - a folder member's row (or a folder's,
+    // whose chevron is as wide as the indent) with the widest badge, its
+    // name down to "..." and its thumbnail at its floor, must fit beside
+    // the scrollbar. Worked out from the row's own pieces: margins 5 + 6,
+    // the indent 14, the eye 20, the thumbnail's floor, the name's ellipsis,
+    // the badge, the lock 20, five gaps of 6, and 2 for the row's border.
+    // (The thumbnail narrows only down here: a minimum with the full 40 px
+    // would push the window past BEFORE SELLING 13's 1366 px, Lifecycle aw.)
+    scroll->viewport()->installEventFilter(this);
+    {
+        QFont nameFont(QStringLiteral("Inter"));
+        nameFont.setPixelSize(11);
+        QFont badgeFont(QStringLiteral("Inter"));
+        badgeFont.setPixelSize(9);
+        badgeFont.setWeight(QFont::DemiBold);
+        const int nameMin = QFontMetrics(nameFont).horizontalAdvance(QChar(0x2026)) + 2;
+        const int badgeMax =
+            QFontMetrics(badgeFont).horizontalAdvance(layerdepth::percentText(kMaxParallax)) + 14;
+        const int rowMin = 2 + 5 + 6 + 14 + SankoToggleControls::kButtonSize + kLayerThumbFloor
+            + nameMin + badgeMax + SankoToggleControls::kButtonSize + 5 * 6;
+        const int scrollBar = qMax(10, scroll->verticalScrollBar()->sizeHint().width());
+        column->setMinimumWidth(qMax(170, rowMin + 8 + 8 + scrollBar));
+    }
+
     // Footer toolbar (Figma "Layers Footer Toolbar"), left to right: Delete,
     // Clear, Merge, Group, Duplicate, Import Image, New Layer.
     QWidget *footer = new QWidget;
@@ -9117,14 +9193,53 @@ void StoryboardPage::rebuildLayerPanel()
         rowLayout->addWidget(thumb, 0, Qt::AlignVCenter);
 
         // Name (Figma 7:77, Inter Regular 11px #CCC). Double-click to rename.
-        QLabel *name = new QLabel(layer.name);
+        // It takes the row's free width (the Figma 'sp' spacer) and gives
+        // way when there is none, so the badge and the lock always fit.
+        QLabel *name = new LayerNameLabel(layer.name);
         name->setObjectName(QStringLiteral("layerName"));
         name->setStyleSheet(QStringLiteral(
             "color: %1; font-family: 'Inter'; font-size: 11px; border: none;"
             " background: transparent;")
             .arg(layer.visible ? QStringLiteral("#cccccc") : QStringLiteral("#666666")));
-        rowLayout->addWidget(name, 0, Qt::AlignVCenter);
-        rowLayout->addStretch(1); // Figma 'sp' spacer
+        rowLayout->addWidget(name, 1, Qt::AlignVCenter);
+
+        // THE DEPTH BADGE (Phase 2B, Figma 2B-1, Q1): before the lock, only
+        // on a layer off the picture plane. A folder's member shows its
+        // folder's value dimmed and cannot change it alone (Q6); the paper
+        // never has one. Clicking it opens the Depth popover.
+        const double depth = panel->effectiveParallax(layer);
+        if (layer.type != QLatin1String("background") && depth != 1.0) {
+            const Layer *folder = panel->groupOf(layer);
+            QPushButton *badge = new QPushButton(layerdepth::percentText(depth));
+            badge->setObjectName(QStringLiteral("layerDepthBadge"));
+            badge->setProperty("layerIndex", i);
+            badge->setFocusPolicy(Qt::NoFocus);
+            badge->setFixedHeight(16);
+            QFont bf(QStringLiteral("Inter"));
+            bf.setPixelSize(9);
+            bf.setWeight(QFont::DemiBold);
+            badge->setFont(bf);
+            badge->setFixedWidth(QFontMetrics(bf).horizontalAdvance(badge->text()) + 14);
+            if (folder) {
+                // Not clickable, but enabled so its hover says why.
+                badge->setProperty("depthMember", true);
+                badge->setToolTip(layerdepth::memberTooltip(folder->name));
+                badge->setStyleSheet(QStringLiteral(
+                    "QPushButton { background: #20202a; border: 1px solid #33333d;"
+                    " border-radius: 8px; color: #6f6f80; padding: 0; }"));
+            } else {
+                badge->setCursor(Qt::PointingHandCursor);
+                badge->setToolTip(layerdepth::badgeTooltip(depth));
+                badge->setStyleSheet(QStringLiteral(
+                    "QPushButton { background: #2a2456; border: 1px solid #7c6ef6;"
+                    " border-radius: 8px; color: #d9d4ff; padding: 0; }"
+                    "QPushButton:hover { background: #352d6e; }"));
+                connect(badge, &QPushButton::clicked, this, [this, i, row] {
+                    layerOpenDepth(i, row->mapToGlobal(QPoint(0, row->height() + 4)));
+                });
+            }
+            rowLayout->addWidget(badge, 0, Qt::AlignVCenter);
+        }
 
         // Lock toggle - the Timeline's padlock in the Timeline's button:
         // open and grey unlocked, closed and the accent locked. Still an
@@ -9162,6 +9277,30 @@ void StoryboardPage::rebuildLayerPanel()
         m_layerRows.append(row);
     }
     m_layerListLayout->addStretch(1);
+    fitLayerRows();
+}
+
+// THE ROWS FIT THE PANEL (2026-11-01, the 2B hand test). Each row's name
+// gives way first (LayerNameLabel); a row still wider than the list -
+// only at the narrowest panel widths, a folder's or a member's row with a
+// depth badge - then narrows its thumbnail, down to kLayerThumbFloor, so
+// its badge and lock stay in view. At any ordinary width every thumbnail
+// keeps the Figma 40 px.
+void StoryboardPage::fitLayerRows()
+{
+    if (!m_layerListHost || !m_layerListHost->parentWidget())
+        return;
+    const int avail = m_layerListHost->parentWidget()->width();
+    for (QWidget *row : m_layerRows) {
+        auto *thumb = row->findChild<QLabel *>(QStringLiteral("layerThumb"));
+        if (!thumb || !row->layout())
+            continue;
+        thumb->setFixedWidth(kLayerThumbWidth);
+        row->layout()->invalidate();
+        const int over = row->layout()->minimumSize().width() - avail;
+        if (over > 0)
+            thumb->setFixedWidth(qMax(kLayerThumbFloor, kLayerThumbWidth - over));
+    }
 }
 
 // Selection-only refresh: the stack structure is unchanged, so restyle the
@@ -9384,6 +9523,30 @@ void StoryboardPage::layerContextMenu(int index, const QPoint &globalPos)
     connect(custom, &QAction::triggered, this,
             [this, index] { layerSetColorTag(index); });
 
+    // Depth... (Phase 2B, Figma 2B-1): reaches a layer on the picture plane,
+    // which has no badge. The paper and a folder's member cannot take one;
+    // the item says why.
+    menu.setToolTipsVisible(true);
+    QAction *depth = menu.addAction(QStringLiteral("Depth..."));
+    depth->setObjectName(QStringLiteral("layerDepthAction"));
+    {
+        const Layer &layer = panel->layers.at(index);
+        const Layer *folder = panel->groupOf(layer);
+        if (layer.type == QLatin1String("background")) {
+            depth->setEnabled(false);
+            depth->setToolTip(layerdepth::paperTooltip());
+        } else if (folder) {
+            depth->setEnabled(false);
+            depth->setToolTip(layerdepth::memberTooltip(folder->name));
+        }
+    }
+    const QPoint depthAt = globalPos + QPoint(0, 8);
+    // Opened after the menu's own click has finished (a popup opened from
+    // inside a closing menu's triggered() can be closed by it).
+    connect(depth, &QAction::triggered, this, [this, index, depthAt] {
+        QTimer::singleShot(0, this, [this, index, depthAt] { layerOpenDepth(index, depthAt); });
+    });
+
     QAction *duplicate = menu.addAction(QStringLiteral("Duplicate Layer"));
     connect(duplicate, &QAction::triggered, this,
             [this] { layerDuplicateSelected(); });
@@ -9403,6 +9566,92 @@ void StoryboardPage::layerContextMenu(int index, const QPoint &globalPos)
     }
 
     menu.exec(globalPos);
+}
+
+LayerDepthPopover *StoryboardPage::depthPopoverForTest() const
+{
+    return m_depthPopover;
+}
+
+void StoryboardPage::layerOpenDepth(int index, const QPoint &globalAt)
+{
+    Panel *panel = currentPanel();
+    if (!panel || index < 0 || index >= panel->layers.size())
+        return;
+    const Layer &layer = panel->layers.at(index);
+    // The paper stays on the picture plane; a member's depth is its folder's.
+    if (layer.type == QLatin1String("background") || panel->groupOf(layer))
+        return;
+    if (m_depthPopover)
+        m_depthPopover->close();
+    const QString layerId = layer.id;
+    // Each step starts from the stack as it was before it: the first at the
+    // open, every later one at the previous step's end.
+    auto before = std::make_shared<QVector<Layer>>(panel->layers);
+    auto beforeActive = std::make_shared<int>(panel->activeLayerIndex);
+    auto target = [this, panel, layerId]() -> Layer * {
+        if (currentPanel() != panel)
+            return nullptr;
+        for (Layer &l : panel->layers)
+            if (l.id == layerId)
+                return &l;
+        return nullptr;
+    };
+    auto committed = [before, layerId]() {
+        for (const Layer &l : *before)
+            if (l.id == layerId)
+                return l.parallax;
+        return 1.0;
+    };
+    auto *popover = new LayerDepthPopover(layer.name, layer.parallax, this);
+    m_depthPopover = popover;
+    // A live value not yet let go: only that is put back on a close. (Once
+    // a step is made the stack is the undo history's - an undo while this
+    // is open must not be overwritten by it.)
+    auto pending = std::make_shared<bool>(false);
+    popover->onLive = [this, target, pending](double a) {
+        if (Layer *l = target()) {
+            l->parallax = a;
+            *pending = true;
+            refreshLayerCanvas(); // the canvas at once; strip, clip and preview debounced
+        }
+    };
+    popover->onCommit = [this, panel, target, committed, before, beforeActive, pending](double a) {
+        *pending = false;
+        Layer *l = target();
+        if (!l)
+            return;
+        l->parallax = a;
+        const double was = committed();
+        if (a == was) { // back where it started: no step
+            refreshLayerCanvas();
+            return;
+        }
+        const QString name = l->name;
+        pushLayerCommand(panel, *before, *beforeActive, QStringLiteral("Layer Depth"));
+        *before = panel->layers;
+        *beforeActive = panel->activeLayerIndex;
+        rebuildLayerPanel(); // the badge
+        refreshLayerCanvas();
+        emit documentChanged();
+        emit layerDepthEdited({{QStringLiteral("layer"), name},
+                               {QStringLiteral("from"), was},
+                               {QStringLiteral("to"), a},
+                               {QStringLiteral("depthLayers"), panel->depthLayerCount()}});
+    };
+    // Closed with a live value never let go (the panel changed under it):
+    // the depth goes back to its last step.
+    popover->onClosed = [this, target, committed, pending] {
+        if (!*pending)
+            return;
+        *pending = false;
+        if (Layer *l = target())
+            if (l->parallax != committed()) {
+                l->parallax = committed();
+                refreshLayerCanvas();
+            }
+    };
+    popover->popupBelow(globalAt);
 }
 
 void StoryboardPage::layerSetColorTag(int index)

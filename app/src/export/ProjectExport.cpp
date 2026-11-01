@@ -71,6 +71,8 @@ QImage stillImage(const ExportPanel &row)
         row.stage.canvas.isEmpty() ? shotcam::Stage(flat.size()) : row.stage;
     if (row.stillNeutral) // today's picture, byte for byte; with a margin the frame
         return stage.hasMargin() ? flat.copy(stage.frameRect()) : flat;
+    if (shotcam::layeredShot(*row.panel, row.still, stage)) // depth (Phase 2B)
+        return shotcam::renderShot(*row.panel, row.still, stage, stage.frame);
     return shotcam::renderShot(flat, row.still, stage, stage.frame);
 }
 
@@ -137,6 +139,8 @@ QImage renderMovieFrame(const Panel *panel, const QSize &frameSize,
 {
     if (!panel || shotcam::isNeutral(camera, panel->canvasSize()))
         return renderMovieFrame(panel, frameSize); // the neutral pins' path
+    if (shotcam::layeredShot(*panel, camera, panel->canvasSize())) // depth (Phase 2B)
+        return shotcam::renderShot(*panel, camera, panel->canvasSize(), frameSize);
     return shotcam::renderShot(panel->flattenedPixmap().toImage(), camera,
                                frameSize);
 }
@@ -149,6 +153,8 @@ QImage renderMovieFrame(const Panel *panel, const QSize &frameSize,
     const QImage flat = panel ? panel->flattenedPixmap().toImage() : QImage();
     if (flat.isNull() || shotcam::isNeutral(camera, stage.canvas))
         return fitMovieFrame(flat.isNull() ? flat : flat.copy(stage.frameRect()), frameSize);
+    if (shotcam::layeredShot(*panel, camera, stage)) // depth (Phase 2B)
+        return shotcam::renderShot(*panel, camera, stage, frameSize);
     return shotcam::renderShot(flat, camera, stage, frameSize);
 }
 
@@ -687,11 +693,15 @@ void MovieExportJob::pumpVideo()
             if (panel != m_panelOfImage || !m_imageMoving || camera != m_imageCamera) {
                 const shotcam::Stage stage =
                     row.stage.canvas.isEmpty() ? shotcam::Stage(m_flat.size()) : row.stage;
+                // Depth (Phase 2B): each layer placed for its depth, the
+                // same placement every consumer draws.
                 m_image = shotcam::isNeutral(camera, m_flat.size())
                     ? (stage.hasMargin()
                            ? renderMovieFrame(row.panel, m_request.frameSize, camera, stage)
                            : renderMovieFrame(row.panel, m_request.frameSize))
-                    : shotcam::renderShot(m_flat, camera, stage, m_request.frameSize);
+                    : shotcam::layeredShot(*row.panel, camera, stage)
+                        ? shotcam::renderShot(*row.panel, camera, stage, m_request.frameSize)
+                        : shotcam::renderShot(m_flat, camera, stage, m_request.frameSize);
                 m_imageCamera = camera;
                 m_imageMoving = true;
                 m_panelOfImage = panel;

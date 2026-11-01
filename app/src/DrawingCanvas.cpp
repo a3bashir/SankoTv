@@ -1103,6 +1103,9 @@ QString DrawingCanvas::shotCameraChipText(const ShotCameraView &v,
     const QString dot = QStringLiteral("  ") + QChar(0x00B7) + QStringLiteral("  ");
     QString t = QStringLiteral("SHOT CAMERA") + dot
         + (v.animate ? QStringLiteral("ANIMATE ON") : QStringLiteral("ANIMATE OFF"));
+    // The panel has a layer off the picture plane (Phase 2B, Q4).
+    if (m_panel && m_panel->hasDepth())
+        t += dot + QStringLiteral("DEPTH");
     // With Animate on the frame a drag writes is always named; past the
     // sharp limit "Soft" is ADDED after it (the user's rule, 2026-10-26: the
     // key's frame stays visible when the frame is soft), amber.
@@ -1355,8 +1358,63 @@ void DrawingCanvas::paintShotCamera(QPainter &painter)
         else
             paintCamChip(painter, chip, text, QColor(0x16, 0x16, 0x16),
                          QColor(0x2a, 0x2a, 0x2a), QColor(0xdd, 0xdd, 0xdd), false);
+        // The DEPTH tag (Figma 2B-3): the word on an accent tint at 25 %.
+        const QString depthWord = QStringLiteral("DEPTH");
+        const int at = text.indexOf(depthWord);
+        if (at >= 0) {
+            const double left = chip.left() + (v.animate ? 22.0 : 10.0)
+                + fm.horizontalAdvance(text.left(at));
+            QColor tint = kCamAccent;
+            tint.setAlpha(64);
+            painter.setPen(Qt::NoPen);
+            painter.setBrush(tint);
+            painter.drawRoundedRect(QRectF(left - 4.0, chip.center().y() - 8.0,
+                                           fm.horizontalAdvance(depthWord) + 8.0, 16.0),
+                                    3, 3);
+        }
+    } else if (shotCameraDrawingViewChip()) {
+        // A drawing tool while the camera is elsewhere on a panel with depth
+        // (Phase 2B, Q5): the layers are as drawn here, not as the shot.
+        painter.setFont(camChipFont(font()));
+        const QString text = drawingViewChipText();
+        const QRectF chip = drawingViewChipRect(text);
+        paintCamChip(painter, chip, text, QColor(0x16, 0x16, 0x16), QColor(0x2a, 0x2a, 0x2a),
+                     QColor(0xdd, 0xdd, 0xdd), false);
     }
     painter.restore();
+}
+
+QString DrawingCanvas::drawingViewChipText()
+{
+    return QStringLiteral("Drawing view  ") + QChar(0x00B7)
+        + QStringLiteral("  depth shows with the Camera tool");
+}
+
+QRectF DrawingCanvas::drawingViewChipRect(const QString &text) const
+{
+    const QFontMetricsF fm(camChipFont(font()));
+    const double w = qCeil(fm.horizontalAdvance(text) + 20.0);
+    return QRectF(qRound((width() - w) / 2.0), height() - 36.0, w, 24.0);
+}
+
+bool DrawingCanvas::shotCameraDrawingViewChip() const
+{
+    if (m_tool == Camera || !m_panel)
+        return false;
+    const ShotCameraView v = shotCameraView();
+    return v.valid && shotcam::layeredShot(*m_panel, shotCameraShownState(v), stage());
+}
+
+QString DrawingCanvas::drawingViewChipForTest() const
+{
+    return shotCameraDrawingViewChip() ? drawingViewChipText() : QString();
+}
+
+bool DrawingCanvas::shotCameraDepthViewForTest() const
+{
+    const ShotCameraView v = m_tool == Camera ? shotCameraView() : ShotCameraView();
+    return v.valid && m_panel
+        && shotcam::layeredShot(*m_panel, shotCameraShownState(v), stage());
 }
 
 QPolygonF DrawingCanvas::shotCameraPreviewStartForTest() const
@@ -6109,8 +6167,23 @@ void DrawingCanvas::paintEvent(QPaintEvent *event)
     // state the caches cannot represent (transform session lifting arbitrary
     // layers, light-table interleaving) falls back to the direct loop —
     // identical output either way, since both call paintLayerContent().
+    // DEPTH (Phase 2B, Figma 2B-3): with the Camera tool, on a panel with
+    // depth and the camera off its base framing, the stage AS THE CAMERA AT
+    // THE PLAYHEAD SEES IT - each layer placed for its depth by the one
+    // placement (shotcam::layerToStage), live through a drag. Inside the
+    // frame that is the shot. Every other tool draws the layers as drawn,
+    // below, so a stroke lands where the pen is.
+    const ShotCameraView depthCam = m_tool == Camera ? shotCameraView() : ShotCameraView();
+    const bool depthView = depthCam.valid
+        && shotcam::layeredShot(*m_panel, shotCameraShownState(depthCam), stage());
     const int activeIdx = m_panel->activeLayerIndex;
-    if (!m_xformActive && !m_lightTable && activeIdx >= 0
+    if (depthView) {
+        painter.save();
+        painter.setClipRect(canvasR);
+        shotcam::drawStage(painter, *m_panel, shotCameraShownState(depthCam), stage(),
+                           T.inverted().mapRect(QRectF(event->rect())) & canvasR);
+        painter.restore();
+    } else if (!m_xformActive && !m_lightTable && activeIdx >= 0
         && activeIdx < m_panel->layers.size()) {
         ensureComposite();
         painter.drawImage(0, 0, m_compBelow); // white paper + layers below

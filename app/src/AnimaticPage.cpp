@@ -90,8 +90,15 @@ public:
         update();
     }
 
+    // DEPTH (Phase 2B): the panel shown, for the layered path - each layer
+    // placed for its depth through shotcam::drawShot, live (a depth change
+    // repaints, nothing is re-flattened). Dropped by clear(), which every
+    // load or structure change reaches through leavePreview().
+    void setPanel(const Panel *panel) { m_panel = panel; }
+
     void clear()
     {
+        m_panel = nullptr;
         m_pixmap = QPixmap();
         m_framePixmap = QPixmap();
         m_stage = shotcam::Stage();
@@ -129,7 +136,10 @@ protected:
     {
         QPainter painter(this);
         painter.fillRect(rect(), Qt::black);
-        if (!m_pixmap.isNull() && !m_neutral) {
+        if (!m_pixmap.isNull() && !m_neutral && m_panel
+            && shotcam::layeredShot(*m_panel, m_camera, m_stage)) {
+            shotcam::drawShot(painter, *m_panel, m_stage, m_camera, QRectF(rect()), false);
+        } else if (!m_pixmap.isNull() && !m_neutral) {
             // The flatten is canvas-sized, so its size IS the stage.
             shotcam::drawShot(painter, m_pixmap, m_stage, m_camera,
                               QRectF(rect()), false);
@@ -200,6 +210,7 @@ private:
             onDismissed();
     }
 
+    const Panel *m_panel = nullptr; // depth's layered path (setPanel)
     QPixmap m_pixmap;      // the whole stage
     QPixmap m_framePixmap; // the base framing's picture (the pixmap without a margin)
     shotcam::Stage m_stage;
@@ -490,6 +501,7 @@ void AnimaticPage::showPreviewFrame()
                              .arg(it.sceneNumber)
                              .arg(it.panelInScene),
                          m_stageMargin);
+    m_display->setPanel(it.panel);
     updatePreviewCamera();
 }
 
@@ -692,6 +704,14 @@ QVariantMap AnimaticPage::shotCamDevrecState() const
     m.insert(QStringLiteral("shotCam.stageH"), stage.canvas.height());
     m.insert(QStringLiteral("shotCam.frameW"), stage.frame.width());
     m.insert(QStringLiteral("shotCam.frameH"), stage.frame.height());
+    // Phase 2B: the layers off the picture plane in the playhead's panel.
+    m.insert(QStringLiteral("shotCam.depthLayers"), it.panel->depthLayerCount());
+    int passed = 0; // drawn layers the camera has reached (not drawn)
+    for (const Layer &layer : it.panel->layers)
+        if (it.panel->layerDrawn(layer)
+            && !shotcam::layerShown(it.panel->effectiveParallax(layer), camera))
+            ++passed;
+    m.insert(QStringLiteral("shotCam.passedLayers"), passed);
     return m;
 }
 
@@ -1536,6 +1556,10 @@ void AnimaticPage::refreshThumbnails()
 {
     if (m_timeline)
         m_timeline->refreshThumbnails();
+    // A depth change is live on the preview too (Phase 2B, Q3): its layered
+    // path reads the panel itself.
+    if (m_display && m_previewShown)
+        m_display->update();
 }
 
 // THE WORKSPACE SELECTED A PANEL (in the strip, by a timeline click it

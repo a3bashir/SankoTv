@@ -221,6 +221,9 @@ struct LoadedProject
     // stageMarginRepaired says so; the artwork is never cropped for it.
     QSize stageMargin = QSize(0, 0);
     bool stageMarginRepaired = false;
+    // Layers whose "parallax" (Phase 2B) could not be a depth - not a
+    // number, or outside 0 .. 2: loaded on the picture plane, counted here.
+    int parallaxRepaired = 0;
     // Every image file this load read, recorded as what it now holds, so
     // the first save after opening writes only what has changed since.
     ImageLedger images;
