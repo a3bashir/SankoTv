@@ -45,7 +45,9 @@
 #include "PerspectiveTool.h"
 #include "MainWindow.h"
 #include "StoryboardPage.h"
+#include "AudioPeaks.h"
 #include "LayerDepthPopover.h"
+#include "SankoScrollBarStyle.h"
 #include "RecentProjectsView.h"
 #include "RecentThumbnails.h"
 #include "RealStoreView.h"
@@ -135,6 +137,11 @@
 #include <QStyleOptionSlider>
 #include <QLineEdit>
 #include <QHBoxLayout>
+#include <QKeyEvent>
+#include <QPlainTextEdit>
+#include <QTextEdit>
+#include <QtMath>
+#include <cstring>
 #include <QToolButton>
 #include <QtMath>
 #include <cmath>
@@ -12727,8 +12734,13 @@ const char *const kStripMarginKeyless[2] = {
     "36d160939238b0d2eebe407fe6256645b9425fa837f77e304de3c4784752008e",
     "eb84862b981cbf07d01b1d1143f73fe3b749cc168f32433735a06e0241b11a35"};
 
+// keyBFrame: panel 2's key at that frame of its panel (0: the pins'). The
+// CAMERA row draws a key by its FRAME and ease, never by where the camera
+// looks, so the row pins' control moves a key in time; the nudge is the
+// strip's (the frame outline moves on the thumbnail).
 QString writeMovingProject(const QString &dir, double nudge,
-                           const QSize &margin = QSize(0, 0), bool keys = true)
+                           const QSize &margin = QSize(0, 0), bool keys = true,
+                           int keyBFrame = 0)
 {
     QDir(dir).removeRecursively();
     QDir().mkpath(dir);
@@ -12763,7 +12775,7 @@ QString writeMovingProject(const QString &dir, double nudge,
     b.rotation = -5.0;
     if (keys)
         scene->camera.keys = {shotcam::makeKey(*scene, 0, 0, 24, a),
-                              shotcam::makeKey(*scene, 1, 0, 24, b)};
+                              shotcam::makeKey(*scene, 1, keyBFrame, 24, b)};
     ProjectIO::SaveData data;
     data.projectName = QStringLiteral("StripPins");
     data.fps = 24;
@@ -12844,6 +12856,348 @@ void runMovingStripPinPass(const QString &scratch)
               && keyless.at(0) != inMargin.at(0) && keyless.at(1) != inMargin.at(1),
           QStringLiteral("%1 / %2 / %3 thumbnails")
               .arg(inMargin.size()).arg(mMoved.size()).arg(keyless.size()));
+}
+
+// ---- (rp) THE ROW PINS (recorded before Phase 2D) ----------------------------
+// The Phase 2 spec's 8.1: the CAMERA row and the AUDIO row as the real page
+// draws them, grabbed from the timeline's surface - the strip-pin project
+// (two anchored keys, panel 1 pushed in and turned, panel 2 at 1.3x) at
+// zoom 100, scroll 0, in the 1880 px window: the CAMERA row with its two
+// diamonds and segment; the AUDIO row with no track (the hint); the AUDIO
+// row with a 6 s silent track imported (the plain bar). Recorded on
+// 2d8116226. The CAMERA row and the no-track AUDIO row must hold through
+// 2D (wf4) and 2E for a project without pinned keys; the AUDIO row WITH a
+// track changes in 2D by design (the waveform, Figma 2D-1), so its value
+// here is the record of what it was, replaced when 2D lands.
+namespace rowpins {
+const char *const kCameraRow = "bd989a38ad162d560b14b82c4256db2d46b05720c874bcc05762e09194842830";
+const char *const kAudioRowNone = "a4994d6287c27421f8034eaa0a6896e06bff6f3b79d50e874a5b6be43f65935e";
+// Before 2D (the plain bar, recorded on 2d8116226 in the worktree):
+// 0a0484390c785677788cbc0e0223ced658b96c9f1cb0812d619d30f4bb216668.
+// 2D draws the waveform of the silent track (the zero line, the chips).
+const char *const kAudioRowBar = "a3e7f938917bbb06fff83489ce478c5d3f9c61d93269fb8e72abf4ecfa941b1a";
+} // namespace rowpins
+
+void runRowPinPass(const QString &scratch)
+{
+    out() << "--- (rp) the row pins ---" << Qt::endl;
+    using namespace workspace;
+    const QString project = mppins::writeMovingProject(scratch + QStringLiteral("/rp_rows"), 0.0);
+    Rig r(project);
+    if (!r.ok) {
+        check(QStringLiteral("(rp) the row-pin fixture opens"), false);
+        return;
+    }
+    auto rowSha = [&](const QRect &row) {
+        const QImage surface = r.surface->grab().toImage();
+        return mppins::shaOfImage(surface.copy(row));
+    };
+    pump(300);
+    const QString cam = rowSha(r.timeline->cameraRowForTest());
+    const QString none = rowSha(r.timeline->audioRowForTest());
+    auto pin = [&](const char *label, const char *wantC, const QString &sha) {
+        const QString want = QString::fromLatin1(wantC);
+        check(QStringLiteral("(rp) %1 draws its pinned bytes").arg(QLatin1String(label)),
+              !want.isEmpty() && sha == want,
+              want.isEmpty() ? QStringLiteral("RECORD %1").arg(sha) : sha.left(16));
+    };
+    pin("the CAMERA row (two anchored keys, zoom 100)", rowpins::kCameraRow, cam);
+    pin("the AUDIO row with no track (the hint)", rowpins::kAudioRowNone, none);
+    // A track imported through the real menu: the plain bar.
+    const QString wav = scratch + QStringLiteral("/rp_rows/beat.wav");
+    audio::writeWav(wav, 6.0);
+    travel::pick(r, QStringLiteral("Import Audio..."), wav);
+    const bool present = travel::present(r);
+    pump(300);
+    const QString bar = rowSha(r.timeline->audioRowForTest());
+    pin("the AUDIO row with a 6 s track (the bar; changes in 2D by design)", rowpins::kAudioRowBar,
+        present ? bar : QStringLiteral("not present"));
+    check(QStringLiteral("(rp) control: importing the track changes the AUDIO row; the CAMERA "
+                         "row is unchanged by it"),
+          present && bar != none && rowSha(r.timeline->cameraRowForTest()) == cam);
+    r.window.markCleanForTest();
+    // Control: the second key one second later in its panel moves its
+    // diamond and stretches the segment - the CAMERA row differs. (A key
+    // moved 1 px ACROSS, the strip's control, draws the same row: the row
+    // shows when a key is, not where the camera looks.)
+    Rig n(mppins::writeMovingProject(scratch + QStringLiteral("/rp_rows_b"), 0.0, QSize(0, 0),
+                                     true, 24));
+    if (n.ok) {
+        pump(300);
+        const QImage surface = n.surface->grab().toImage();
+        check(QStringLiteral("(rp) control: panel 2's key one second later changes the CAMERA row"),
+              mppins::shaOfImage(surface.copy(n.timeline->cameraRowForTest())) != cam);
+    }
+}
+
+// ---- (wf) THE WAVEFORM (Phase 2D) ----------------------------------------------
+// The spec's wf1-wf4 plus the chips' hover (the user's addition). wf4 - no
+// audio, the AUDIO grab equals today's - is the (rp) pin above, which holds
+// through 2D; its control (importing changes it) is there too.
+namespace wave {
+// A real WAV at 48 kHz mono Int16 - the format the reader asks the decoder
+// for, so the samples come back as written - of a tone, amplitude 20000: a
+// square whose half-periods are counted in whole samples (at 100 Hz, 240
+// samples each: the first check's closed form holds exactly - the sign of
+// a floating sin() at its zero crossings does not, sin(pi) being 1e-16), or
+// a sine. The samples are handed back for the closed forms.
+// `swell`: the sine's amplitude rises and falls over 3 s (the page's track:
+// a steady tone has the same peaks in every bucket, and scrolling it would
+// show nothing).
+bool writeToneWav(const QString &path, double seconds, bool square, double hz,
+                  QVector<qint16> *samples, bool swell = false)
+{
+    QDir().mkpath(QFileInfo(path).absolutePath());
+    const quint32 rate = 48000;
+    const int n = int(rate * seconds);
+    const double A = 20000.0;
+    const int halfPeriod = qMax(1, int(std::lround(rate / hz / 2.0)));
+    samples->resize(n);
+    for (int i = 0; i < n; ++i) {
+        if (square) {
+            (*samples)[i] = qint16((i / halfPeriod) % 2 == 0 ? A : -A);
+        } else {
+            const double t = double(i) / rate;
+            const double amp = swell ? A * (0.3 + 0.7 * qAbs(std::sin(M_PI * t / 3.0))) : A;
+            (*samples)[i] = qint16(std::lround(amp * std::sin(2.0 * M_PI * hz * t)));
+        }
+    }
+    QByteArray pcm(n * 2, '\0');
+    memcpy(pcm.data(), samples->constData(), size_t(n) * 2);
+    QByteArray out;
+    QDataStream s(&out, QIODevice::WriteOnly);
+    s.setByteOrder(QDataStream::LittleEndian);
+    s.writeRawData("RIFF", 4);
+    s << quint32(36 + pcm.size());
+    s.writeRawData("WAVEfmt ", 8);
+    s << quint32(16) << quint16(1) << quint16(1) << rate << quint32(rate * 2) << quint16(2)
+      << quint16(16);
+    s.writeRawData("data", 4);
+    s << quint32(pcm.size());
+    out.append(pcm);
+    QFile f(path);
+    return f.open(QIODevice::WriteOnly) && f.write(out) == out.size();
+}
+} // namespace wave
+
+void runWaveformPass(const QString &scratch)
+{
+    out() << "--- (wf) the waveform ---" << Qt::endl;
+    using namespace workspace;
+    const QString dir = scratch + QStringLiteral("/waveform");
+    QDir(dir).removeRecursively();
+    const QString squarePath = dir + QStringLiteral("/square100.wav");
+    const QString sinePath = dir + QStringLiteral("/sine440.wav");
+    const QString longPath = dir + QStringLiteral("/sine440_20s.wav"); // the page's track
+    QVector<qint16> square, sine, longSine;
+    check(QStringLiteral("(wf) fixture: a 2 s 100 Hz square, a 2 s 440 Hz sine and a 20 s 440 Hz "
+                         "sine at 48 kHz mono"),
+          wave::writeToneWav(squarePath, 2.0, true, 100.0, &square)
+              && wave::writeToneWav(sinePath, 2.0, false, 440.0, &sine)
+              && wave::writeToneWav(longPath, 20.0, false, 440.0, &longSine, true));
+
+    // (wf1) THE PEAKS equal their closed form per bucket.
+    AudioPeaks::resetFoldedOffUiForTest();
+    AudioPeaks threaded;
+    threaded.request(squarePath);
+    threaded.request(sinePath);
+    const bool read = audio::waitFor([&] {
+        return threaded.state(squarePath) == AudioPeaks::Ready
+            && threaded.state(sinePath) == AudioPeaks::Ready;
+    }, 20000);
+    const audiopeaks::PeakData *sq = threaded.peaks(squarePath);
+    const audiopeaks::PeakData *sn = threaded.peaks(sinePath);
+    // The square's closed form: a 5 ms bucket is exactly one half-period of
+    // 100 Hz, so every peak is +20000 in an even bucket and -20000 in an odd
+    // one, max and min alike.
+    bool squareOk = read && sq && sq->count() == 400;
+    for (int n = 0; squareOk && n < 400; ++n) {
+        const qint16 want = (n % 2 == 0) ? 20000 : -20000;
+        squareOk = sq->maxes.at(n) == want && sq->mins.at(n) == want;
+    }
+    // The sine's: the bucket arithmetic over the samples as generated.
+    audiopeaks::PeakData sineWant;
+    qint64 idx = 0;
+    audiopeaks::fold(sineWant, sine.constData(), sine.size(), 48000, &idx);
+    // (A 440 Hz sine's bucket peaks are not A itself - its top rarely falls
+    // on a sample - which is why they are compared to the fold, not to A.)
+    const bool sineOk = read && sn && sn->maxes == sineWant.maxes && sn->mins == sineWant.mins
+        && sn->count() == 400 && sineWant.maxes.at(0) > 19000 && sineWant.mins.at(0) < -19000;
+    check(QStringLiteral("(wf1) THE PEAKS of a 100 Hz square are its closed form - +20000 in every "
+                         "even 5 ms bucket, -20000 in every odd one, 400 buckets for 2 s - and a 440 "
+                         "Hz sine's equal the bucket arithmetic over its own samples, exactly"),
+          squareOk && sineOk,
+          QStringLiteral("read %1, square %2 (%3 buckets), sine %4; decoder gave format %5, %6 ch, "
+                         "%7 Hz; square peaks %8 %9 %10 %11, sine %12 %13 vs wanted %14 %15")
+              .arg(read).arg(squareOk).arg(sq ? sq->count() : -1).arg(sineOk)
+              .arg(sq ? sq->sourceFormat : -1).arg(sq ? sq->sourceChannels : -1)
+              .arg(sq ? sq->sampleRate : -1)
+              .arg(sq && sq->count() > 1 ? sq->maxes.at(0) : 0).arg(sq && sq->count() > 1 ? sq->mins.at(0) : 0)
+              .arg(sq && sq->count() > 1 ? sq->maxes.at(1) : 0).arg(sq && sq->count() > 1 ? sq->mins.at(1) : 0)
+              .arg(sn && sn->count() > 0 ? sn->maxes.at(0) : 0).arg(sn && sn->count() > 0 ? sn->mins.at(0) : 0)
+              .arg(sineWant.count() > 0 ? sineWant.maxes.at(0) : 0).arg(sineWant.count() > 0 ? sineWant.mins.at(0) : 0));
+    check(QStringLiteral("(wf1) control: a different tone differs - the sine's peaks are not the "
+                         "square's"),
+          sq && sn && sn->maxes != sq->maxes);
+
+    // (wf3) DECODING IS OFF THE UI THREAD, by a counter (as (op) counts the
+    // strip's workers); control: the serial seam reads on the UI thread and
+    // gives the same peaks.
+    const int offUi = AudioPeaks::foldedOffUiForTest();
+    AudioPeaks::resetFoldedOffUiForTest();
+    AudioPeaks serial(nullptr, true);
+    serial.request(squarePath);
+    const bool serialRead = audio::waitFor([&] { return serial.state(squarePath) == AudioPeaks::Ready; }, 20000);
+    const int serialOffUi = AudioPeaks::foldedOffUiForTest();
+    check(QStringLiteral("(wf3) THE TRACK IS READ OFF THE UI THREAD: every buffer of the two "
+                         "tones was folded on the reader's thread (%1 buffers)").arg(offUi),
+          offUi > 0);
+    check(QStringLiteral("(wf3) control: the serial seam reads on the UI thread - no buffer "
+                         "counted - and gives the same peaks"),
+          serialRead && serialOffUi == 0 && serial.peaks(squarePath) && sq
+              && serial.peaks(squarePath)->maxes == sq->maxes,
+          QStringLiteral("read %1, off-UI %2").arg(serialRead).arg(serialOffUi));
+
+    // (wf2) THE ROW FOLLOWS THE RULER, through the real page.
+    // 12 panels of 3 s: 36 s of film, so the zoomed-in views below have
+    // room to scroll (at zoom 400 that is 3456 px against a 1800 px view).
+    const QString project = writeProject(dir + QStringLiteral("/proj"), QStringLiteral("Wave"),
+                                         QSize(1920, 1080), 24, 1, 12);
+    Rig r(project);
+    if (!r.ok) {
+        check(QStringLiteral("(wf) the waveform fixture opens"), false);
+        return;
+    }
+    AnimaticTimeline *tl = r.timeline;
+    const QRect row = tl->audioRowForTest();
+    auto hoverRow = [&](bool over) {
+        const QPoint at = over ? row.center() : QPoint(row.center().x(), row.y() - 20);
+        sendMouse(r.surface, QEvent::MouseMove, at, Qt::NoButton);
+        pump(60);
+    };
+    hoverRow(true);
+    const bool hiddenWithoutTrack = tl->audioChipsHiddenForTest();
+    hoverRow(false);
+    const QString stateNone = tl->audioWaveformStateForTest();
+    travel::pick(r, QStringLiteral("Import Audio..."), longPath);
+    const bool present = travel::present(r);
+    const bool ready = audio::waitFor([&] { return tl->audioWaveformStateForTest() == QStringLiteral("ready"); }, 20000);
+    check(QStringLiteral("(wf) importing a track reads it: the row's waveform state goes none -> "
+                         "ready, and the recorder's statePoll says so (timeline.waveform)"),
+          stateNone == QStringLiteral("none") && present && ready
+              && tl->devrecState().value(QStringLiteral("timeline.waveform")).toString() == QStringLiteral("ready"),
+          QStringLiteral("before '%1', present %2, ready %3").arg(stateNone).arg(present).arg(ready));
+    const QString ownPath = r.animatic->audioPath();
+    const audiopeaks::PeakData *data = r.animatic->audioPeaks()
+        ? r.animatic->audioPeaks()->peaks(ownPath) : nullptr;
+    auto expectedColumns = [&](QString *why) {
+        QVariantList want;
+        if (!data) {
+            *why = QStringLiteral("no peaks");
+            return want;
+        }
+        const double pxPerSec = tl->pxPerFrameForTest() * 24.0;
+        const int labelCol = AnimaticTimeline::labelColumnWidthForTest();
+        // The row's y as it is NOW: a zoom whose content is wider than the
+        // view adds the horizontal scrollbar, and the rows move up.
+        const double cy = tl->audioRowForTest().y() + 6 + 12.0, half = 11.0;
+        // Content x 0 sits one past the painted label column; the last
+        // column is the canvas's last pixel.
+        for (int x = labelCol + 1; x <= r.surface->width() - 1; ++x) {
+            const double content = tl->contentXAtForTest(x); // px from the track's start
+            if (content < 0)
+                continue;
+            const double t0 = content / pxPerSec, t1 = (content + 1) / pxPerSec;
+            int i0 = int(std::floor(t0 * 200)), i1 = qMax(i0, int(std::ceil(t1 * 200)) - 1);
+            if (i0 >= data->count())
+                break;
+            i1 = qMin(i1, data->count() - 1);
+            qint16 mx = -32768, mn = 32767;
+            for (int i = i0; i <= i1; ++i) {
+                mx = qMax(mx, data->maxes.at(i));
+                mn = qMin(mn, data->mins.at(i));
+            }
+            want << QVariantMap{{QStringLiteral("x"), x},
+                                {QStringLiteral("top"), cy - mx / 32767.0 * half},
+                                {QStringLiteral("bottom"), cy - mn / 32767.0 * half}};
+        }
+        return want;
+    };
+    auto same = [](const QVariantList &a, const QVariantList &b) {
+        if (a.size() != b.size() || a.isEmpty())
+            return false;
+        for (int i = 0; i < a.size(); ++i) {
+            const QVariantMap p = a.at(i).toMap(), q = b.at(i).toMap();
+            if (p.value(QStringLiteral("x")).toInt() != q.value(QStringLiteral("x")).toInt()
+                || qAbs(p.value(QStringLiteral("top")).toDouble() - q.value(QStringLiteral("top")).toDouble()) > 1e-9
+                || qAbs(p.value(QStringLiteral("bottom")).toDouble() - q.value(QStringLiteral("bottom")).toDouble()) > 1e-9)
+                return false;
+        }
+        return true;
+    };
+    QStringList bad;
+    QVariantList previous;
+    bool previousDiffers = true;
+    int columnsAt100 = 0;
+    // Three zooms and two scrolls (the spec's wf2): the scrolls at the
+    // zooms whose content is wider than the view.
+    const struct { float zoom; int scroll; } views[] = {{100.0f, 0}, {400.0f, 0}, {400.0f, 300}, {800.0f, 900}, {25.0f, 0}};
+    for (const auto &v : views) {
+        tl->setZoomForTest(v.zoom);
+        tl->setFollowForTest(false);
+        tl->userScrollForTest(v.scroll);
+        pump(80);
+        QString why;
+        const QVariantList drawn = tl->waveformColumnsForTest();
+        const QVariantList want = expectedColumns(&why);
+        if (!same(drawn, want))
+            bad << QStringLiteral("zoom %1 scroll %2 (scrollX %3): %4 drawn vs %5 wanted %6; first drawn %7 "
+                                  "wanted %8").arg(v.zoom).arg(v.scroll).arg(tl->scrollXForTest())
+                       .arg(drawn.size()).arg(want.size()).arg(why)
+                       .arg(drawn.isEmpty() ? QStringLiteral("-") : QStringLiteral("%1:%2..%3").arg(drawn.first().toMap().value(QStringLiteral("x")).toInt()).arg(drawn.first().toMap().value(QStringLiteral("top")).toDouble()).arg(drawn.first().toMap().value(QStringLiteral("bottom")).toDouble()))
+                       .arg(want.isEmpty() ? QStringLiteral("-") : QStringLiteral("%1:%2..%3").arg(want.first().toMap().value(QStringLiteral("x")).toInt()).arg(want.first().toMap().value(QStringLiteral("top")).toDouble()).arg(want.first().toMap().value(QStringLiteral("bottom")).toDouble()));
+        if (!previous.isEmpty() && same(drawn, previous))
+            previousDiffers = false;
+        if (v.zoom == 100.0f)
+            columnsAt100 = drawn.size();
+        previous = drawn;
+    }
+    check(QStringLiteral("(wf2) THE WAVEFORM FOLLOWS THE RULER: at zoom 100, 400 and 25, scrolled "
+                         "and not, every drawn column is the extremes of the peaks in the span the "
+                         "ruler's x mapping gives it; a 20 s track at 24 px a second is 480 "
+                         "columns (%1)").arg(columnsAt100),
+          bad.isEmpty() && columnsAt100 == 480, bad.join(QStringLiteral("; ")));
+    check(QStringLiteral("(wf2) control: each view's columns differ from the view before it (the "
+                         "previous zoom's or scroll's x differs)"),
+          previousDiffers);
+
+    // THE CHIPS HIDE under the pointer (the user's addition): over the row
+    // the name and length chips are not drawn, and the row's pixels change;
+    // off the row, and after a leave, they are back. Control: with no
+    // waveform (before the import) hovering hid nothing.
+    tl->setZoomForTest(100.0f);
+    tl->userScrollForTest(0);
+    pump(80);
+    hoverRow(false);
+    const QImage shown = r.surface->grab().toImage().copy(row);
+    hoverRow(true);
+    const bool hidden = tl->audioChipsHiddenForTest();
+    const QImage hid = r.surface->grab().toImage().copy(row);
+    QEvent leave(QEvent::Leave);
+    QCoreApplication::sendEvent(r.surface, &leave);
+    pump(60);
+    const bool backAfterLeave = !tl->audioChipsHiddenForTest();
+    const QImage back = r.surface->grab().toImage().copy(row);
+    check(QStringLiteral("(wf) THE CHIPS HIDE while the pointer is over the AUDIO row, so the "
+                         "waveform under them shows (the row's pixels change), and come back when "
+                         "it leaves"),
+          hidden && backAfterLeave && mppins::shaOfImage(shown) != mppins::shaOfImage(hid)
+              && mppins::shaOfImage(back) == mppins::shaOfImage(shown),
+          QStringLiteral("hidden %1, back %2").arg(hidden).arg(backAfterLeave));
+    check(QStringLiteral("(wf) control: before the import (no waveform) hovering the row hid "
+                         "nothing"),
+          !hiddenWithoutTrack);
+    r.window.markCleanForTest();
 }
 
 // ---- (mg) the stage margin through the real window (Phase 2A) --------------
@@ -13488,14 +13842,63 @@ void runDepthPass(const QString &scratch)
         return;
     }
     {
-        QLineEdit plain; // the system highlight a field gets without the style
-        plain.ensurePolished();
-        const QColor system = plain.palette().color(QPalette::Active, QPalette::Highlight);
-        check(QStringLiteral("(dp) the Depth popover's value field selects in the accent "
-                             "(#7c6ef6), not the system highlight; control: a plain field gets "
-                             "the system's"),
-              pop->fieldSelectionForTest() == QColor(0x7c, 0x6e, 0xf6) && system != QColor(0x7c, 0x6e, 0xf6),
-              QStringLiteral("field %1, system %2").arg(pop->fieldSelectionForTest().name(), system.name()));
+        // THE SELECTION COLOUR IS THE APP'S (2026-11-01, the user's rule
+        // after the 2B / 2C hand tests): set once, app-wide, by the style
+        // main.cpp installs - not field by field. The checks run without
+        // that style, so it is installed here, measured on the popover's
+        // field, the Layers rename field and one of each text widget, then
+        // cleared again: the control, where every field selects in the
+        // system's colour (red on this PC).
+        const QColor accent(0x7c, 0x6e, 0xf6);
+        auto highlight = [](QWidget *w) {
+            w->ensurePolished();
+            return w->palette().color(QPalette::Active, QPalette::Highlight);
+        };
+        QLineEdit plain;
+        QTextEdit textEdit;
+        QPlainTextEdit plainEdit;
+        QSpinBox spin;
+        const QColor systemBefore = highlight(&plain);
+        qApp->setStyleSheet(sankoAppStyle());
+        pump(50);
+        // The Layers rename field: a double-click on the House's name.
+        QLineEdit *rename = nullptr;
+        for (QLabel *name : r.storyboard->findChildren<QLabel *>(QStringLiteral("layerName")))
+            if (name->isVisible() && name->text() == QStringLiteral("House") && name->parentWidget()) {
+                QWidget *row = name->parentWidget();
+                sendMouse(row, QEvent::MouseButtonDblClick, QPointF(row->width() / 2.0, row->height() / 2.0),
+                          Qt::LeftButton);
+                pump(80);
+                rename = qobject_cast<QLineEdit *>(QApplication::focusWidget());
+                break;
+            }
+        const QColor popField = pop->fieldSelectionForTest();
+        const QColor renameField = rename ? highlight(rename) : QColor();
+        const QColor plainOn = highlight(&plain), textOn = highlight(&textEdit),
+                     plainTextOn = highlight(&plainEdit), spinOn = highlight(&spin);
+        if (rename) { // cancel the rename
+            QKeyEvent esc(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+            QCoreApplication::sendEvent(rename, &esc);
+            pump(50);
+        }
+        check(QStringLiteral("(dp) THE SELECTION COLOUR IS THE APP'S, set once (sankoSelectionStyle, "
+                             "installed by main.cpp): with it the Depth popover's field, the Layers "
+                             "rename field, a plain QLineEdit, a QTextEdit, a QPlainTextEdit and a "
+                             "spin box all select in the accent (#7c6ef6)"),
+              rename && popField == accent && renameField == accent && plainOn == accent
+                  && textOn == accent && plainTextOn == accent && spinOn == accent,
+              QStringLiteral("popover %1, rename %2, line %3, text %4, plain %5, spin %6")
+                  .arg(popField.name(), renameField.name(), plainOn.name(), textOn.name(),
+                       plainTextOn.name(), spinOn.name()));
+        qApp->setStyleSheet(QString());
+        pump(50);
+        const QColor popOff = pop->fieldSelectionForTest();
+        check(QStringLiteral("(dp) control: with the app's style cleared the same fields select in "
+                             "the system's colour again - the accent came from that one style, "
+                             "not from any field"),
+              systemBefore != accent && highlight(&plain) == systemBefore && popOff == systemBefore
+                  && highlight(&textEdit) == systemBefore,
+              QStringLiteral("system %1, popover now %2").arg(systemBefore.name(), popOff.name()));
     }
     const QVector<Layer> original = panel->layers;
     pop->slideForTest(80, false);
@@ -16012,6 +16415,8 @@ int main(int argc, char **argv)
     runBlockedWritePass(scratch);
     runFolderClonePass(scratch);
     runMovingStripPinPass(scratch);
+    runRowPinPass(scratch);
+    runWaveformPass(scratch);
     runStageMarginPass(scratch);
     runRecentMenuPass(scratch);
     runDepthPass(scratch);

@@ -7,6 +7,7 @@
 #include <QVector>
 #include <QWidget>
 
+#include "AudioPeaks.h"
 #include "TimelineTracks.h"
 #include "camera/CameraModel.h"
 
@@ -61,6 +62,13 @@ public:
     QString audioBarStateForTest() const;
     QString audioBarTextForTest() const;
     QRect audioRowForTest() const;
+    // THE WAVEFORM (Phase 2D): what the row shows of the sound - "none",
+    // "reading", "ready" or "plain" (the decoder could not read it); whether
+    // the name and length chips are hidden (the pointer over the row); and
+    // the columns as drawn, {x, top, bottom} each, screen px.
+    QString audioWaveformStateForTest() const;
+    bool audioChipsHiddenForTest() const;
+    QVariantList waveformColumnsForTest() const;
     // The view's following of the playhead (see followTick): where the
     // view is, how wide, where the playhead is drawn, the follow point,
     // whether the follow timer runs; a switch to turn following off (the
@@ -312,6 +320,19 @@ private:
         QRect rect;     // Present and Missing, on the canvas
     };
     AudioBar audioBar() const;
+    // The waveform's columns (Phase 2D): for every screen column of the
+    // visible bar, the lowest and highest peak in the column's time span by
+    // the ruler's own x mapping - one function, drawn by paint and read by
+    // the checks (wf2). Empty unless the peaks are in.
+    struct WaveColumn
+    {
+        int x = 0;
+        double top = 0.0;
+        double bottom = 0.0;
+    };
+    QVector<WaveColumn> waveformColumns(const AudioBar &bar) const;
+    AudioPeaks::State audioWaveformState() const;
+    bool m_audioHover = false; // the pointer is over the AUDIO row: the chips hide
 
     // Geometry / model helpers.
     void rebuildBlocks();

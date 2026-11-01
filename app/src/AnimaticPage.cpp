@@ -4,6 +4,7 @@
 #include "SankoTimelineTheme.h"
 
 #include "AnimaticTimeline.h"
+#include "AudioPeaks.h"
 #include "AudioFileCheck.h"
 #include "MediaCopyProgress.h"
 #include "ProjectMedia.h"
@@ -328,6 +329,18 @@ AnimaticPage::AnimaticPage(QWidget *parent)
     m_audioOutput->setVolume(1.0); // 100 %: the tracks' default (Part D)
     m_player = new QMediaPlayer(this);
     m_player->setAudioOutput(m_audioOutput);
+    // THE SOUND'S PEAKS (Phase 2D): the track is read once, off the UI
+    // thread, and the AUDIO row repaints when its peaks are in (or when the
+    // decoder could not read it: the row stays the plain bar).
+    m_peaks = new AudioPeaks(this);
+    connect(m_peaks, &AudioPeaks::ready, this, [this] {
+        if (m_timeline)
+            m_timeline->updatePlayhead(); // a repaint of the rows
+    });
+    connect(m_peaks, &AudioPeaks::failed, this, [this] {
+        if (m_timeline)
+            m_timeline->updatePlayhead();
+    });
     // The audio length is only known once the media metadata has loaded; feed
     // it to the timeline so the waveform can scale.
     connect(m_player, &QMediaPlayer::durationChanged, this, [this](qint64 d) {
@@ -2288,6 +2301,9 @@ void AnimaticPage::installAudio(const QString &path, bool linked)
 {
     if (m_player)
         m_player->stop();
+    // Another track, or none: the old one's peaks are dropped (Phase 2D).
+    if (m_peaks && !m_audioPath.isEmpty() && m_audioPath != path)
+        m_peaks->forget(m_audioPath);
     m_audioPath = path;
     m_audioLinked = linked && !path.isEmpty();
     m_audioUnplayable = false; // a new file: the player has not judged it yet
@@ -2348,6 +2364,10 @@ void AnimaticPage::updateAudioUi()
         m_timeline->setAudioUnplayable(m_audioUnplayable);
         m_timeline->setAudioLoaded(has, m_player ? m_player->duration() : 0);
     }
+    // A track that is there and not judged unplayable: read its peaks
+    // (once; a track already read is left as it is).
+    if (m_peaks && has && !m_audioMissing && !m_audioUnplayable)
+        m_peaks->request(m_audioPath);
     layoutHeader(); // the warning came or went
     emit audioStateChanged(); // the menus enable Remove and Locate from this
 }

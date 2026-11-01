@@ -17,6 +17,7 @@
 #include <functional>
 
 class AnimaticTimeline;
+class AudioPeaks;
 class QAction;
 class QMenu;
 class QToolButton;
@@ -143,6 +144,9 @@ public:
     //   which is why the track says "linked" where it can be seen.
     QString audioPath() const;
     bool audioLinked() const { return m_audioLinked; }
+    // THE SOUND'S PEAKS (Phase 2D): read once per track, off the UI thread;
+    // the timeline draws the waveform from them (AudioPeaks.h).
+    AudioPeaks *audioPeaks() const { return m_peaks; }
     void setAudioPath(const QString &path, bool linked = false); // silent: a load is not an edit
     bool audioMissing() const { return m_audioMissing; }
     // The file is THERE and the player cannot play it (it could not be
@@ -496,6 +500,7 @@ private:
     // Audio.
     QMediaPlayer *m_player = nullptr;
     QAudioOutput *m_audioOutput = nullptr;
+    AudioPeaks *m_peaks = nullptr; // the waveform's peaks (Phase 2D)
     QString m_audioPath;          // what the project says
     bool m_audioLinked = false;   // ...as an old project's outside file
     bool m_audioMissing = false;  // ...and its file is not there

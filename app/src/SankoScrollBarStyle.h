@@ -40,3 +40,26 @@ inline QString sankoScrollBarStyle(int bottomMargin = 2)
                " background: transparent; }")
         .arg(bottomMargin);
 }
+
+// THE one text-selection colour (2026-11-01, the user's rule after the 2B
+// and 2C hand tests: the Depth popover's field and the Layers rename field
+// selected in Windows' system red): every text field in the app selects in
+// the accent, white text on #7c6ef6, set ONCE here. Scoped to the editable
+// text widgets and the editor inside a spin box or an editable combo, so
+// nothing else is restyled. A widget's own sheet still wins where it sets
+// these properties - none does any more; the two that set the accent
+// themselves (the script editor, the Shot Info fields) agree with it.
+inline QString sankoSelectionStyle()
+{
+    return QStringLiteral(
+        "QLineEdit, QTextEdit, QPlainTextEdit, QAbstractSpinBox, QComboBox {"
+        " selection-background-color: #7c6ef6; selection-color: #ffffff; }");
+}
+
+// Everything main.cpp installs app-wide, in one string: the scrollbars and
+// the selection colour. (The checks apply this same function to the test
+// application, so what they measure is what the app installs.)
+inline QString sankoAppStyle()
+{
+    return sankoScrollBarStyle() + sankoSelectionStyle();
+}

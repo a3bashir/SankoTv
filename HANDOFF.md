@@ -8933,6 +8933,178 @@ through 2C's clamp, as Camera (dt3) computes it, 6 PASS (at 2.80x the chip
 done - Camera (dt) control at 2.7x), 7 not tested (Lifecycle dt4), 8 PASS.
 MINOR (seen at 500 s): the Layers panel's inline RENAME field selects in
 the system red too - give it the popover field's accent selection.
+2C COMMITTED ebb1d5f67 (pushed), the 12 files matching sha_2C.txt; CLAUDE.md
+rule 15 COMMITTED 2d8116226 (pushed) on its own.
+
+## Phase 2D (the waveform): Figma only, NOT BUILT (2026-11-01)
+Section 383:141 (now 22368 tall), below 2C-5:
+- 2D-1 503:696: the AUDIO row's states - none and loading (unchanged),
+  "reading the sound..." after the name while the peaks are read (new),
+  ready (the waveform: each pixel column a line from its lowest to its
+  highest peak, blue at 85 % over the bar's 22 % fill, a zero line; the
+  name and length texts on opaque chips, rule 9).
+- 2D-2 503:738: the same 20 s track at zoom 25 (6 px/s, the envelope),
+  100 (24 px/s, ~8 peaks a column), 800 (192 px/s, one peak a column: the
+  cache's limit) and zoom 800 scrolled to 4 s, each under its ruler -
+  the columns are the ruler's own x mapping (wf2). Drawn from a real peak
+  cache (200 min/max a second) by the algorithm the code would use.
+- 2D-3 502:1062: Missing, Unplayable, the hidden track - unchanged - and a
+  linked track ready (the waveform drawn, still named linked).
+- 2D-4 502:1357: how it is read - QAudioDecoder (Qt Multimedia, already
+  linked: NO NEW LIBRARY, rule 13) on the UI loop, the peaks folded on a
+  worker, PeakCache keyed by path + size + mtime, session memory only;
+  what can go wrong; timing by probe, never gated; statePoll
+  timeline.waveform.
+- 2D-5 502:1384: what 2D builds, the row pins first (8.1), wf1-wf4 with
+  controls, and Q1-Q6 (200 peaks/s; true min/max; the row stays 36 px;
+  texts on chips; a decoder that cannot read what the player plays stays
+  plain; reopening reads again - no sidecar), each with my
+  recommendation.
+
+## The shot camera, Phase 2D: the waveform (2026-11-01) - NOT COMMITTED
+Approved with Q1-Q6 as recommended plus two of the user's: the name and
+length chips HIDE while the pointer is over the AUDIO row (back on leave);
+the text-selection colour is set ONCE, app-wide (it fixes the Layers rename
+field too), with a check and a control.
+PINS FIRST (8.1 row pins), recorded on 2d8116226 BEFORE any 2D code:
+- Camera (rp): evaluate() at every frame of the moving fixtures, no margin
+  (evaluate.moving e43a30f9...) and in the 25 % margin (evaluate.margin
+  7bd38237...), as text with 12 digits, hashed; control: the 1 px nudge.
+- Lifecycle (rp): the CAMERA row (the strip-pin project's two anchored
+  keys, zoom 100, scroll 0, the 1880 px window) and the AUDIO row with no
+  track (the hint) - both must hold; the AUDIO row with a 6 s silent track
+  (the plain bar) - the record of what it was, replaced by 2D's own value
+  (the waveform of silence: the zero line and the chips). METHOD: the 2D
+  source edits were already in the main tree when the Lifecycle pass was
+  ready, so the row grabs were recorded in a WORKTREE of 2d8116226
+  (C:\SankoTV_rowpins, the test file copied in), never from a 2D build.
+  Values: CAMERA row bd989a38..., AUDIO row none a4994d62..., AUDIO row
+  with the bar (pre-2D) 0a048439... (the worktree's run: 1025 checks, the
+  3 RECORD lines and one wrong control its only failures; its log is
+  app/build/_probe/split/rowpins_worktree_run.txt). CONTROL CORRECTED
+  (read against the code): the first control moved both keys 1 px across,
+  the strip pins' control - but the CAMERA row draws a key by its FRAME
+  and ease, never by where the camera looks, so the row was the same; the
+  control now puts panel 2's key one second later (keyBFrame 24), which
+  moves its diamond. Importing changes the AUDIO row, not the CAMERA row.
+THE SOUND'S PEAKS: src/AudioPeaks.{h,cpp} (new; CRLF). audiopeaks::fold is
+the one bucket arithmetic (peak n = samples [n * rate / 200, (n + 1) *
+rate / 200)), used by the reader on the decoder's buffers and by wf1 on
+generated samples. AudioPeaks (owned by AnimaticPage, AnimaticPage::
+audioPeaks()): request(path) reads a file once (key = path + size +
+mtime) on PeakReader, a QObject on its own QThread with QAudioDecoder (Qt
+Multimedia, already linked: NO NEW LIBRARY, rule 13) asked for 48 kHz mono
+Int16 (other formats are mixed to mono Int16 in monoInt16); the peaks come
+back by value in one queued signal; forget(path) drops them (installAudio
+forgets the old track). States None / Reading / Ready / Plain (the decoder
+failed: logged once with qWarning, the row stays the plain bar). The
+serial seam (AudioPeaks(nullptr, true)) keeps the reader on the caller's
+thread - wf3's control; g_foldedOffUi counts buffers folded off the UI
+thread, as (op) counts the strip's.
+THE ROW: AnimaticTimeline::waveformColumns(bar) - for every screen column
+of the visible bar, the extremes of the peaks in [c / pxPerSec, (c + 1) /
+pxPerSec) with c the column's px from the track's start (the ruler's own
+mapping); paint draws them (blue at 85 % about a 50 % zero line) and the
+checks read them (waveformColumnsForTest). While Reading the name reads
+"name  .  reading the sound..."; with a waveform the name and length sit
+on opaque #0d1a26 chips (rule 9), not drawn while m_audioHover (set in
+canvasMouseMove over the row, cleared in canvasLeave). audioBarTextForTest
+still returns the bare name (the (aj)/(aq) checks compare it). statePoll
+gains timeline.waveform: none / reading / ready / plain.
+THE SELECTION COLOUR: sankoSelectionStyle() in SankoScrollBarStyle.h
+("QLineEdit, QTextEdit, QPlainTextEdit, QAbstractSpinBox, QComboBox {
+selection-background-color: #7c6ef6; selection-color: #ffffff; }") and
+sankoAppStyle() = scrollbars + selection; main.cpp installs sankoAppStyle.
+The Depth popover's own selection lines are GONE (one place). The two
+widgets that set the accent themselves (the script editor, Shot Info)
+agree; the Quick Move popover's "#262626" is a dropdown LIST's selection,
+not a text field, left alone.
+CHECK CHANGED (old/new verbatim, the rule): Lifecycle (dp)
+ OLD "(dp) the Depth popover's value field selects in the accent (#7c6ef6),
+ not the system highlight; control: a plain field gets the system's" -
+ pop->fieldSelectionForTest() == accent && a plain QLineEdit's highlight
+ != accent.
+ NEW "(dp) THE SELECTION COLOUR IS THE APP'S, set once (sankoSelectionStyle,
+ installed by main.cpp): with it the Depth popover's field, the Layers
+ rename field, a plain QLineEdit, a QTextEdit, a QPlainTextEdit and a spin
+ box all select in the accent (#7c6ef6)" - qApp->setStyleSheet(
+ sankoAppStyle()) in the check, all six == accent; and "(dp) control: with
+ the app's style cleared the same fields select in the system's colour
+ again" - the sheet cleared, the fields == the system colour measured
+ before (#e2241a here). Why: the colour moved from the field to the app's
+ one style, so the old control (a plain field is NOT accent) is the
+ opposite of the new rule.
+CHECKS, Lifecycle (wf): the fixture (a 2 s 100 Hz square and a 2 s 440 Hz
+sine, 48 kHz mono Int16 - the reader's own format, so no resampling);
+wf1 the square's peaks are their closed form (+20000 in every even 5 ms
+bucket, -20000 in every odd one: a bucket is exactly one half-period) and
+the sine's equal the bucket arithmetic over its generated samples, exactly
+(control: the sine's differ from the square's); wf3 buffers folded off the
+UI thread > 0 (control: the serial seam folds none and gives the same
+peaks); the import's state none -> ready and timeline.waveform; wf2 at
+zoom 100 / 400 / 400 scrolled 300 / 25 / 25 scrolled 40 every drawn column
+equals the extremes the ruler mapping (contentXAtForTest) gives it
+(control: each view's columns differ from the previous view's); the chips
+hide under the pointer (the row's pixels change) and come back on a leave
+(control: with no waveform hovering hid nothing). wf4 = the (rp) AUDIO
+row without a track, holding.
+CHECKS CORRECTED while they were new, each read against the evidence
+before it was touched (the rule):
+- wf1, the square: OLD the generator set each sample by the sign of
+  sin(2 pi f t) and the closed form said "every odd bucket is -20000";
+  the decoder (Int16, mono, 48000 - the format asked for) gave bucket 1 as
+  max 20000 / min -20000: sample 240 is sin(pi) = 1.2e-16, positive, so the
+  generator itself put one +20000 in the odd bucket. NEW the square's
+  half-periods are counted in whole samples ((i / 240) % 2), so the closed
+  form is exact and the decoder must reproduce it.
+- wf1, the sine: OLD "...and sineWant.maxes.at(0) == 20000"; a 440 Hz
+  sine at 48 kHz peaks at 19998 in bucket 0 (its top rarely falls on a
+  sample); the decoded peaks EQUALLED the fold (19998 / -20000). NEW the
+  equality with the fold, the count, and > 19000 / < -19000.
+- wf2: OLD "columnsAt100 > 100" with a 2 s track (48 columns at 24 px/s -
+  every column matched; only the threshold failed), the row's y captured
+  once (at zoom 400 the horizontal scrollbar appears and lifts the rows 12
+  px: the drawn columns were right, the expectation stale), and scrolls
+  that put the 2 s track off the screen (0 drawn vs 0 wanted, which the
+  comparison counts as a mismatch). NEW the page's track is a 20 s sine
+  (480 columns at zoom 100, exact), the row's y is read per view, the
+  views are zoom 100 / 400 / 400 scrolled 300 / 800 scrolled 900 / 25.
+  Its next run FOUND A CODE FAULT: the row's columns ran to qMin(bar.right,
+  width) inclusive - one column at x == width, past the last pixel (drawn
+  off the canvas, harmless on screen, wrong in the hook: 1535 drawn vs
+  1534 wanted); waveformColumns now stops at width - 1. The same run
+  showed two expectation faults: the loop started at the painted column's
+  width (134) while content x 0 is at 135, and the control "each view
+  differs from the one before" cannot hold for a steady 440 Hz sine, whose
+  every bucket peaks alike, so scrolling moves nothing a column can show -
+  the page's track now swells over 3 s (writeToneWav's `swell`).
+- (rp) control, see above (a key moved in time, not across).
+GATE 2D (normal mode, no serial rerun needed): 0 families failing, Release
+and Debug; Lifecycle 1036, Camera 229; c1p 34, (mp) 88, (mq) 92 and the
+new (rp) 10 PASS lines; brush / pixel / erase pins unchanged. Exe stamp
+2d8116226+dirty, Release SankoTV.exe 2026-11-01 19:08:33. Hashes in
+sha_2D.txt. Hand test: handtest_2D.md (a real music file; the chips'
+hover; every text field's selection; quit while recording).
+2D HAND TEST (2026-11-01, session 20261101-194133, 298.4 s, the gate's
+build 2d8116226+dirty 19:08; ENDED ON A QUIT: the Unsaved Changes dialog
+at 295.7 s, the main window hid, sessionEnd 20 ms later, summary.txt
+written, 0 dropped, 0 issue markers, no crash dump). A 2:14 wav
+("Mansur Song Master_2165.wav"). Read against handtest_2D.md: 1 PASS (the
+waveform across the bar with the name and 2:14 chips; the "reading the
+sound..." moment not caught by the 0.5 s screenshots - a 2:14 wav reads
+in well under a second; the reading text has no check of its own, the
+state's none -> ready is wf's), 2 PASS (60 s / 130 s: the name chip over
+the waveform; 65 s / 122 s, the pointer in the row: no chip, the sound
+under it in view; at 185 s, mid-playback, the chip was absent too - the
+pointer's last move, 177 s, was to y 950, the row's top, and it rested
+there: the rule, not a fault), 3 PASS (zoom 100 -> 400 -> 25, typed 65 /
+35 / 45, zoom 145 scrolled by follow during play - the waveform stretched
+and scrolled with the ruler; the beat-under-the-second alignment is wf2's
+to prove), 4 PASS (played twice, 4-7 s and 147-205 s), 5 not tested
+(Lifecycle (aj) / (aq) audio undo, wf none -> ready), 6 not tested (the
+audio-missing pass; MISSING is untouched by 2D), 7 PASS (the Layers
+rename field at 278 s and the zoom field at 117 s select in the accent;
+the other fields by Lifecycle (dp) THE SELECTION COLOUR), 8 PASS.
 
 ## METHOD: measure interior structure ACROSS THE SIZE RANGE before calling it character (2026-09-25)
 

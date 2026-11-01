@@ -5,6 +5,8 @@
 #include "SankoToggleControls.h"
 
 #include "AnimaticPage.h"
+
+#include <cmath>
 #include "StoryboardModel.h"
 #include "camera/ShotCamera.h"
 
@@ -1056,6 +1058,8 @@ QVariantMap AnimaticTimeline::devrecState() const
             {QStringLiteral("timeline.playing"), m_playing},
             {QStringLiteral("timeline.follow"), m_follow},
             {QStringLiteral("timeline.viewHeld"), m_viewHeld},
+            // The waveform (Phase 2D): none / reading / ready / plain.
+            {QStringLiteral("timeline.waveform"), audioWaveformStateForTest()},
             {QStringLiteral("timeline.followTimer"),
              m_followTimer && m_followTimer->isActive()},
             // The tracks' lock / visibility / mute (Part B).
@@ -1694,22 +1698,64 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
             p.drawRoundedRect(QRectF(bar.rect).adjusted(0.5, 0.5, -0.5, -0.5),
                               3, 3);
             p.setRenderHint(QPainter::Antialiasing, false);
+            // THE WAVEFORM (Phase 2D, Figma 2D-1 / 2D-2): once the track's
+            // peaks are in, each screen column of the visible bar is a line
+            // from its lowest peak to its highest, in the blue at 85 %,
+            // about a zero line - the columns are the ruler's own mapping
+            // (waveformColumns), so the sound zooms and scrolls with the
+            // clips and the CAMERA row. Before they are in, the plain bar.
+            const AudioPeaks::State wave = audioWaveformState();
+            const QVector<WaveColumn> columns = waveformColumns(bar);
+            if (!columns.isEmpty()) {
+                QColor ink(0x4d, 0x9f, 0xff);
+                ink.setAlphaF(0.5);
+                p.setPen(QPen(ink, 1.0));
+                const int cy = bar.rect.top() + bar.rect.height() / 2;
+                p.drawLine(qMax(bar.rect.left(), kLabelCol), cy,
+                           qMin(bar.rect.right(), contentRight), cy);
+                ink.setAlphaF(0.85);
+                p.setPen(QPen(ink, 1.0));
+                for (const WaveColumn &c : columns)
+                    p.drawLine(c.x, qRound(c.top), c.x, qRound(c.bottom));
+            }
             // The texts stay inside the VISIBLE part of the bar, so the
-            // name is readable however far the timeline is scrolled.
+            // name is readable however far the timeline is scrolled. Over a
+            // waveform they sit on OPAQUE chips (rule 9) - hidden while the
+            // pointer is over the row, so the sound under them can be seen
+            // (the user's addition, 2026-11-01). While the track is being
+            // read the name says so.
             const int left = qMax(bar.rect.left(), kLabelCol) + 8;
             const int right = qMin(bar.rect.right(), contentRight) - 8;
-            const int lengthW = fm.horizontalAdvance(bar.length);
-            const bool showLength = right - left > lengthW + 60;
-            p.setPen(QColor("#88a6c4"));
-            if (showLength)
-                p.drawText(QRect(right - lengthW, bar.rect.top(), lengthW,
-                                 bar.rect.height()),
-                           Qt::AlignVCenter | Qt::AlignRight, bar.length);
-            const int nameW = right - left - (showLength ? lengthW + 12 : 0);
-            if (nameW > 12)
-                p.drawText(QRect(left, bar.rect.top(), nameW, bar.rect.height()),
-                           Qt::AlignVCenter | Qt::AlignLeft,
-                           fm.elidedText(bar.name, Qt::ElideMiddle, nameW));
+            const bool chips = !columns.isEmpty();
+            if (!(chips && m_audioHover)) {
+                const QColor chipFill(0x0d, 0x1a, 0x26); // the row's own fill
+                const QString nameText = wave == AudioPeaks::Reading
+                    ? bar.name + QStringLiteral("  ") + QChar(0x00B7)
+                        + QStringLiteral("  reading the sound") + QChar(0x2026)
+                    : bar.name;
+                const int lengthW = fm.horizontalAdvance(bar.length);
+                const bool showLength = right - left > lengthW + 60;
+                if (showLength) {
+                    const QRect lengthR(right - lengthW, bar.rect.top(), lengthW,
+                                        bar.rect.height());
+                    if (chips)
+                        p.fillRect(lengthR.adjusted(-6, 3, 6, -3), chipFill);
+                    p.setPen(QColor("#88a6c4"));
+                    p.drawText(lengthR, Qt::AlignVCenter | Qt::AlignRight, bar.length);
+                }
+                const int nameW = right - left - (showLength ? lengthW + 12 : 0);
+                if (nameW > 12) {
+                    const QString shown = fm.elidedText(nameText, Qt::ElideMiddle, nameW);
+                    if (chips)
+                        p.fillRect(QRect(left - 6, bar.rect.top() + 3,
+                                         fm.horizontalAdvance(shown) + 12,
+                                         bar.rect.height() - 6),
+                                   chipFill);
+                    p.setPen(QColor("#88a6c4"));
+                    p.drawText(QRect(left, bar.rect.top(), nameW, bar.rect.height()),
+                               Qt::AlignVCenter | Qt::AlignLeft, shown);
+                }
+            }
         } else if (bar.state == AudioBar::Missing
                    || bar.state == AudioBar::Unplayable) {
             // The project names a file that is not there - or one that is
@@ -1957,6 +2003,83 @@ void AnimaticTimeline::setAudioMissing(bool missing)
 QRect AnimaticTimeline::audioRowForTest() const
 {
     return QRect(0, audioTrackY(), m_canvas ? m_canvas->width() : 0, kAudioH);
+}
+
+// --- The waveform (Phase 2D) ---------------------------------------------------
+
+AudioPeaks::State AnimaticTimeline::audioWaveformState() const
+{
+    const AudioPeaks *peaks = (m_audioLoaded && m_host) ? m_host->audioPeaks() : nullptr;
+    if (!peaks || m_audioMissing || m_audioUnplayable)
+        return AudioPeaks::None;
+    return peaks->state(m_host->audioPath());
+}
+
+QVector<AnimaticTimeline::WaveColumn> AnimaticTimeline::waveformColumns(const AudioBar &bar) const
+{
+    QVector<WaveColumn> out;
+    if (bar.state != AudioBar::Present || !m_canvas || !m_host || !m_host->audioPeaks())
+        return out;
+    const audiopeaks::PeakData *data = m_host->audioPeaks()->peaks(m_host->audioPath());
+    if (!data || data->count() == 0)
+        return out;
+    const double pxPerSec = pxPerFrame() * m_fps;
+    if (pxPerSec <= 0.0)
+        return out;
+    // The bar's left is the track's start (contentXToScreen(0)), on or off
+    // the screen; a column's time span is its distance from it, in the
+    // ruler's px - the same mapping the clips and the CAMERA row use.
+    const int x0 = bar.rect.left();
+    const int left = qMax(bar.rect.left(), kLabelCol);
+    const int right = qMin(bar.rect.right(), m_canvas->width() - 1); // the last pixel
+    const double cy = bar.rect.top() + bar.rect.height() / 2.0;
+    const double half = bar.rect.height() / 2.0 - 1.0;
+    for (int x = left; x <= right; ++x) {
+        const double t0 = (x - x0) / pxPerSec, t1 = (x + 1 - x0) / pxPerSec;
+        int i0 = int(std::floor(t0 * audiopeaks::kPerSecond));
+        int i1 = qMax(i0, int(std::ceil(t1 * audiopeaks::kPerSecond)) - 1);
+        if (i0 >= data->count())
+            break;
+        i0 = qMax(0, i0);
+        i1 = qMin(i1, data->count() - 1);
+        qint16 mx = -32768, mn = 32767;
+        for (int i = i0; i <= i1; ++i) {
+            mx = qMax(mx, data->maxes.at(i));
+            mn = qMin(mn, data->mins.at(i));
+        }
+        WaveColumn c;
+        c.x = x;
+        c.top = cy - mx / 32767.0 * half;
+        c.bottom = cy - mn / 32767.0 * half;
+        out.append(c);
+    }
+    return out;
+}
+
+QString AnimaticTimeline::audioWaveformStateForTest() const
+{
+    switch (audioWaveformState()) {
+    case AudioPeaks::Reading: return QStringLiteral("reading");
+    case AudioPeaks::Ready: return QStringLiteral("ready");
+    case AudioPeaks::Plain: return QStringLiteral("plain");
+    case AudioPeaks::None: break;
+    }
+    return QStringLiteral("none");
+}
+
+bool AnimaticTimeline::audioChipsHiddenForTest() const
+{
+    return m_audioHover && !waveformColumns(audioBar()).isEmpty();
+}
+
+QVariantList AnimaticTimeline::waveformColumnsForTest() const
+{
+    QVariantList out;
+    for (const WaveColumn &c : waveformColumns(audioBar()))
+        out << QVariantMap{{QStringLiteral("x"), c.x},
+                           {QStringLiteral("top"), c.top},
+                           {QStringLiteral("bottom"), c.bottom}};
+    return out;
 }
 
 // --- The CAMERA row (Phase 1C) ---------------------------------------------
@@ -2697,6 +2820,14 @@ void AnimaticTimeline::canvasMouseMove(QMouseEvent *e)
             QToolTip::hideText();
         m_canvas->update();
     }
+    // The AUDIO row under the pointer (Phase 2D): its name and length chips
+    // hide, so the waveform under them can be seen.
+    const bool overAudio = m_tracks.audioVisible
+        && QRect(kLabelCol, audioTrackY(), m_canvas->width() - kLabelCol, kAudioH).contains(pos);
+    if (overAudio != m_audioHover) {
+        m_audioHover = overAudio;
+        m_canvas->update();
+    }
 }
 
 void AnimaticTimeline::canvasMouseRelease(QMouseEvent *e)
@@ -2779,9 +2910,10 @@ void AnimaticTimeline::canvasMouseRelease(QMouseEvent *e)
 
 void AnimaticTimeline::canvasLeave()
 {
-    if (m_hoverIndex != -1 || m_camHoverKey != -1) {
+    if (m_hoverIndex != -1 || m_camHoverKey != -1 || m_audioHover) {
         m_hoverIndex = -1;
         m_camHoverScene = m_camHoverKey = -1;
+        m_audioHover = false; // the chips come back
         if (m_canvas)
             m_canvas->update();
     }

@@ -82,6 +82,10 @@ qt_add_executable(SankoTV
     # A picked audio file is asked "can you be read?" before it is copied in.
     src/AudioFileCheck.cpp
     src/AudioFileCheck.h
+    # The AUDIO row's waveform (Phase 2D): the track's peaks, read once off
+    # the UI thread by Qt Multimedia's decoder.
+    src/AudioPeaks.cpp
+    src/AudioPeaks.h
     src/NewProjectDialog.h
     src/RecentProjects.cpp
     src/RecentProjects.h
@@ -340,6 +344,10 @@ qt_add_executable(SankoCanvasSizeLock
     src/MediaCopyProgress.h
     src/AudioFileCheck.cpp
     src/AudioFileCheck.h
+    # The AUDIO row's waveform (Phase 2D): the track's peaks, read once off
+    # the UI thread by Qt Multimedia's decoder.
+    src/AudioPeaks.cpp
+    src/AudioPeaks.h
     src/ProjectResize.cpp
     src/ProjectResize.h
     src/DrawingCanvas.cpp

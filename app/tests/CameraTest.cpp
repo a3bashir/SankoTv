@@ -389,6 +389,47 @@ const QMap<QString, QString> kMarginPins = {
     {"preview.3840x2160.f50", "c9ad14cd60f502785bec5be4f81b6c1e3333f59cae6f088c3a6655036cdd821a"},
 };
 
+// THE ROW PINS' EVALUATION HALF (rp; the Phase 2 spec's 8.1, before 2D):
+// evaluate() at EVERY frame of the moving fixtures, with and without the
+// margin, as text with 12 significant digits, hashed. Recorded on
+// 2d8116226 before any 2D code; 2D (the waveform) and 2E (pinned keys,
+// which gain the scene's film start) must give these numbers for a
+// project without pinned keys.
+const QMap<QString, QString> kEvaluatePins = {
+    {"evaluate.moving", "e43a30f9fcc11db6550911a6d4aa20cedb4aa6fa17afc2ed15ca7723d9817007"},
+    {"evaluate.margin", "7bd38237a37a75794c03e0ad80232a85129c1e730dff60ba927e1bb8b9b0a846"},
+};
+
+void checkEvaluatePin(const QString &name, const QString &sha)
+{
+    const QString want = kEvaluatePins.value(name);
+    check(QStringLiteral("(rp) %1: evaluate() at every frame of the moving fixtures gives its "
+                         "pinned numbers").arg(name),
+          !want.isEmpty() && sha == want,
+          want.isEmpty() ? QStringLiteral("RECORD {\"%1\", \"%2\"},").arg(name, sha)
+                         : sha.left(16));
+}
+
+// The text the evaluate pin hashes: every scene, every frame of its 144.
+QString evaluateText(const QVector<Scene *> &list)
+{
+    QString g;
+    QTextStream gs(&g);
+    gs.setRealNumberPrecision(12);
+    for (int i = 0; i < list.size(); ++i) {
+        const Scene *s = list.at(i);
+        const QSize cs = s->panels.first()->canvasSize();
+        for (int f = 0; f < 144; ++f) {
+            const shotcam::CameraState st = shotcam::evaluate(*s, f, 24, cs);
+            gs << i << ' ' << f << ' ' << st.cx << ' ' << st.cy << ' ' << st.zoom << ' '
+               << st.rotation << '\n';
+        }
+    }
+    gs.flush();
+    return QString::fromLatin1(
+        QCryptographicHash::hash(g.toUtf8(), QCryptographicHash::Sha256).toHex());
+}
+
 void checkMarginPin(const QString &name, const QString &sha)
 {
     const QString want = kMarginPins.value(name);
@@ -1496,6 +1537,12 @@ int main(int argc, char **argv)
             checkMovingPin(it.key(), it.value());
         // Control: every key 1 px further across changes every pinned output.
         const QVector<Scene *> nudged = buildMoving(1.0);
+        // (rp) the evaluation at every frame, pinned (the Phase 2 spec's 8.1
+        // row pins, before 2D); control: the nudge changes it.
+        checkEvaluatePin(QStringLiteral("evaluate.moving"), evaluateText(moving));
+        check(QStringLiteral("(rp) control: every key moved 1 px across changes the evaluation "
+                             "text"),
+              evaluateText(nudged) != evaluateText(moving));
         const QMap<QString, QString> other = renderAll(nudged, QStringLiteral("b"));
         QStringList unchanged;
         for (auto it = got.cbegin(); it != got.cend(); ++it)
@@ -1516,6 +1563,7 @@ int main(int argc, char **argv)
             renderAll(inMargin, QStringLiteral("ma"), kMarginPinMargin);
         for (auto it = mgot.cbegin(); it != mgot.cend(); ++it)
             checkMarginPin(it.key(), it.value());
+        checkEvaluatePin(QStringLiteral("evaluate.margin"), evaluateText(inMargin));
         // Control: the same 1 px nudge changes every margin output too.
         const QVector<Scene *> mNudged = buildMoving(1.0, kMarginPinMargin);
         const QMap<QString, QString> mother =

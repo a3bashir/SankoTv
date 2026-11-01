@@ -277,11 +277,10 @@ LayerDepthPopover::LayerDepthPopover(const QString &layerName, double parallax, 
     m_field->setGeometry(222, 9, 64, 24);
     m_field->setAlignment(Qt::AlignCenter);
     m_field->setStyleSheet(QStringLiteral(
+        // (Its selection colour is the app's, sankoSelectionStyle - set once
+        // for every text field since 2026-11-01, no longer here.)
         "QLineEdit { background: #1c1c1c; border: 1px solid #333333; border-radius: 3px;"
-        " color: #e5e5ed; font-family: 'Inter'; font-size: 11px; font-weight: 500;"
-        // Selected text in the accent, never the system highlight (red on
-        // the user's PC: the 2B hand test).
-        " selection-background-color: #7c6ef6; selection-color: #ffffff; }"
+        " color: #e5e5ed; font-family: 'Inter'; font-size: 11px; font-weight: 500; }"
         "QLineEdit:focus { border: 1px solid #7c6ef6; }"));
     connect(m_field, &QLineEdit::returnPressed, this, &LayerDepthPopover::applyField);
 
