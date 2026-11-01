@@ -421,6 +421,11 @@ Learned from real defects. Follow them exactly.
     way — run the tests on the Cintiq ONLY, never pass a
     `SANKO_TEST_SCREEN` that sends them elsewhere, and put any probe that
     must show a window there too.
+15. **Every finished task ends with the line "ALL DONE", in capitals**
+    (the user's rule, 2026-11-01), so they know the work has finished.
+    It is the last line of the final message, after the report, every
+    time - and only when the task is really finished, never on a pause,
+    a question or a checkpoint.
 
 ## Finding bugs
 
