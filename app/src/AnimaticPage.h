@@ -211,6 +211,7 @@ public:
     // to the frame it falls in exactly as the timeline's playhead and the
     // MP4 count it. The preview draws with this; nothing else is asked.
     shotcam::CameraState cameraAtPlayhead() const;
+    int sceneFilmStart(const Scene *scene) const; // frames before the scene (Phase 2E)
     // For the Dev Recorder's statePoll: "shotCam." keys (the recorder's own
     // "camera" events are the canvas VIEW).
     QVariantMap shotCamDevrecState() const;

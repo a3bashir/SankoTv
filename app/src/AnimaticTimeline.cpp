@@ -713,7 +713,8 @@ bool AnimaticTimeline::selectedCameraKey(int *sceneIndex, int *keyIndex) const
         return false;
     const Scene *scene = m_scenes.at(m_camSelScene);
     if (m_camSelKey < 0 || m_camSelKey >= scene->camera.keys.size()
-        || shotcam::keyFrame(*scene, scene->camera.keys.at(m_camSelKey), m_fps) < 0.0)
+        || shotcam::keyFrame(*scene, scene->camera.keys.at(m_camSelKey), m_fps,
+                             qMax(0, sceneStartFrame(m_camSelScene))) < 0.0)
         return false; // gone (deleted, or its panel is)
     if (sceneIndex)
         *sceneIndex = m_camSelScene;
@@ -873,7 +874,8 @@ void AnimaticTimeline::setSelectedPanel(int flatIndex)
     if (selectedCameraKey(&si, &ki)) {
         const Scene *scene = m_scenes.at(si);
         const int start = sceneStartFrame(si);
-        const double f = start + shotcam::keyFrame(*scene, scene->camera.keys.at(ki), m_fps);
+        const double f = start + shotcam::keyFrame(*scene, scene->camera.keys.at(ki), m_fps,
+                                                   qMax(0, start));
         const bool onIt = flatIndex >= 0 && flatIndex < m_blocks.size()
             && f >= m_blocks.at(flatIndex).startFrame - 0.5
             && f <= m_blocks.at(flatIndex).startFrame + m_blocks.at(flatIndex).frames + 0.5;
@@ -1238,7 +1240,8 @@ shotcam::CameraState AnimaticTimeline::clipCameraForTest(int flatIndex) const
     const Scene *scene = m_scenes.at(b.sceneIndex);
     if (!m_tracks.cameraVisible && b.panelIndex < scene->panels.size())
         return shotcam::neutral(scene->panels.at(b.panelIndex)->canvasSize()); // the eye is off
-    return shotcam::evaluateAtPanel(*scene, b.panelIndex, 0, m_fps);
+    return shotcam::evaluateAtPanel(*scene, b.panelIndex, 0, m_fps,
+                                    qMax(0, sceneStartFrame(b.sceneIndex)));
 }
 
 int AnimaticTimeline::playheadFrame() const
@@ -1564,8 +1567,8 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
                         stage = shotcam::stageWithMargin(panel->canvasSize(), m_stageMargin);
                         // The CAMERA eye off (Phase 1C): the neutral camera.
                         if (!sc->camera.isEmpty() && m_tracks.cameraVisible) {
-                            shotCamera = shotcam::evaluateAtPanel(*sc, b.panelIndex, 0,
-                                                                  m_fps);
+                            shotCamera = shotcam::evaluateAtPanel(
+                                *sc, b.panelIndex, 0, m_fps, qMax(0, sceneStartFrame(b.sceneIndex)));
                             shot = !shotcam::isNeutral(shotCamera, stage.canvas);
                         }
                         // The cached 512px mip, not the full flatten: this
@@ -1718,6 +1721,7 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
                 for (const WaveColumn &c : columns)
                     p.drawLine(c.x, qRound(c.top), c.x, qRound(c.bottom));
             }
+            paintPinLines(p); // the pinned keys' lines (Phase 2E), under the chips
             // The texts stay inside the VISIBLE part of the bar, so the
             // name is readable however far the timeline is scrolled. Over a
             // waveform they sit on OPAQUE chips (rule 9) - hidden while the
@@ -1794,6 +1798,8 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
                        fm.elidedText(bar.name, Qt::ElideMiddle,
                                      W - kLabelCol - 16));
         }
+        if (bar.state != AudioBar::Present) // no bar to draw them under: now
+            paintPinLines(p);
     }
 
     p.restore(); // end content clip
@@ -2113,9 +2119,10 @@ QVector<AnimaticTimeline::CameraMark> AnimaticTimeline::cameraMarks() const
         QVector<CameraMark> sceneMarks;
         for (int k = 0; k < scene->camera.keys.size(); ++k) {
             const shotcam::CameraKey &key = scene->camera.keys.at(k);
-            double f = shotcam::keyFrame(*scene, key, m_fps);
+            double f = shotcam::keyFrame(*scene, key, m_fps, start);
             if (f < 0.0)
-                continue; // inert: its panel is gone (its delete still undoable)
+                continue; // inert: its panel is gone (its delete still undoable);
+                          // or stranded (Phase 2E): strandedMarks draws it
             if (m_drag == Drag::CameraKey && m_camDragActive && si == m_camDragScene
                 && k == m_camDragKey)
                 f = m_camDragFrame - start; // where the drag has it
@@ -2125,11 +2132,39 @@ QVector<AnimaticTimeline::CameraMark> AnimaticTimeline::cameraMarks() const
             m.frame = start + f;
             m.x = contentXToScreen(m.frame * ppf);
             m.ease = int(key.ease);
+            m.pinned = key.pinned;
             sceneMarks.append(m);
         }
         std::stable_sort(sceneMarks.begin(), sceneMarks.end(),
                          [](const CameraMark &a, const CameraMark &b) { return a.frame < b.frame; });
         marks += sceneMarks;
+    }
+    return marks;
+}
+
+QVector<AnimaticTimeline::CameraMark> AnimaticTimeline::strandedMarks() const
+{
+    QVector<CameraMark> marks;
+    const double ppf = pxPerFrame();
+    for (int si = 0; si < m_scenes.size(); ++si) {
+        const Scene *scene = m_scenes.at(si);
+        const int start = sceneStartFrame(si);
+        if (scene->camera.isEmpty() || start < 0)
+            continue;
+        for (int k = 0; k < scene->camera.keys.size(); ++k) {
+            const shotcam::CameraKey &key = scene->camera.keys.at(k);
+            if (!shotcam::isStranded(*scene, key, m_fps, start))
+                continue;
+            CameraMark m;
+            m.sceneIndex = si;
+            m.keyIndex = k;
+            m.frame = shotcam::keyFilmFrame(key, m_fps); // its time, outside its scene
+            m.x = contentXToScreen(m.frame * ppf);
+            m.ease = int(key.ease);
+            m.pinned = true;
+            m.stranded = true;
+            marks.append(m);
+        }
     }
     return marks;
 }
@@ -2173,7 +2208,9 @@ bool AnimaticTimeline::cameraKeyAt(const QPoint &pos, CameraMark *mark) const
         return false;
     int best = kKeyHit + 1;
     bool found = false;
-    for (const CameraMark &m : cameraMarks()) {
+    // The live keys first, so one wins a tie with a stranded key (Phase 2E)
+    // drawn at the same x.
+    for (const CameraMark &m : cameraMarks() + strandedMarks()) {
         const int d = qAbs(m.x - pos.x());
         if (d < best) { // the nearer of two close keys wins
             best = d;
@@ -2200,6 +2237,18 @@ QString AnimaticTimeline::cameraKeyTip(const CameraMark &mark) const
             number = inScene;
     }
     const int frame = int(std::lround(mark.frame));
+    // Phase 2E (Figma 2E-1): a stranded key says where it belongs and what
+    // brings it back; a pinned key names its time, not a clip.
+    if (mark.stranded && mark.sceneIndex < m_scenes.size())
+        return QString::fromUtf8("Pinned key of scene %1 \xC2\xB7 outside the scene \xC2\xB7 "
+                                 "lengthen the scene or move the key")
+            .arg(m_scenes.at(mark.sceneIndex)->number);
+    if (mark.pinned)
+        return QString::fromUtf8("Key %1 \xC2\xB7 pinned to %2 \xC2\xB7 %3")
+            .arg(number)
+            .arg(timecode(frame))
+            .arg(number == inScene ? QStringLiteral("last key")
+                                   : shotcam::easeLabel(shotcam::Ease(mark.ease)));
     const int clip = blockAtFrame(frame);
     return QString::fromUtf8("Key %1 \xC2\xB7 %2 \xC2\xB7 panel %3 \xC2\xB7 %4")
         .arg(number)
@@ -2248,6 +2297,20 @@ void AnimaticTimeline::paintCameraRow(QPainter &p)
     int selScene = -1, selKey = -1;
     const bool hasSel = selectedCameraKey(&selScene, &selKey);
     const int phFrame = playheadFrame();
+    // PINNED (Phase 2E, D16; Figma 2E-1): the diamond in the AUDIO row's
+    // blue, a 3 px stem below it (the dotted line through the AUDIO row is
+    // paintPinLines'); selected and at the playhead as any key, the stem
+    // kept. STRANDED: hollow grey, with its stem, at its time.
+    const QColor pinBlue(0x4d, 0x9f, 0xff);
+    const QColor strandGrey(0x6f, 0x6f, 0x80);
+    // The stem: 1 px wide, 3 px long, crisp in the key's own column - the
+    // column the dotted line (paintPinLines) carries on down from it.
+    auto stem = [&](int x, const QColor &ink) {
+        p.setRenderHint(QPainter::Antialiasing, false);
+        p.setPen(QPen(ink, 1.0));
+        p.drawLine(x, y0 + kCameraH / 2 + int(kKeyHalf) + 1, x, y0 + kCameraH / 2 + int(kKeyHalf) + 3);
+        p.setRenderHint(QPainter::Antialiasing, true);
+    };
     for (const CameraMark &m : marks) {
         const bool selected = hasSel && m.sceneIndex == selScene && m.keyIndex == selKey;
         const bool hover = m.sceneIndex == m_camHoverScene && m.keyIndex == m_camHoverKey;
@@ -2265,14 +2328,15 @@ void AnimaticTimeline::paintCameraRow(QPainter &p)
             p.setBrush(Qt::NoBrush);
             p.drawEllipse(c, 7.5, 7.5);
         }
-        QColor fill = kCameraKeyFill, edge = kCameraKeyEdge;
+        QColor fill = m.pinned ? pinBlue : kCameraKeyFill;
+        QColor edge = m.pinned ? pinBlue : kCameraKeyEdge;
         if (selected) {
             fill = kCameraAccent;
             edge = atPlayhead ? QColor(Qt::white) : kClipSelectedBorder;
         } else if (atPlayhead) {
             fill = kPlayhead;
             edge = Qt::white;
-        } else if (hover) {
+        } else if (hover && !m.pinned) {
             fill = kCameraAccent;
             fill.setAlphaF(0.35);
             edge = kCameraAccent;
@@ -2283,6 +2347,26 @@ void AnimaticTimeline::paintCameraRow(QPainter &p)
         p.setPen(QPen(edge, 1.5, Qt::SolidLine, Qt::FlatCap, Qt::RoundJoin));
         p.setBrush(fill);
         p.drawPolygon(diamond);
+        if (m.pinned)
+            stem(m.x, pinBlue);
+    }
+    for (const CameraMark &m : strandedMarks()) {
+        const bool hover = m.sceneIndex == m_camHoverScene && m.keyIndex == m_camHoverKey;
+        const QPointF c(m.x + 0.5, cy);
+        if (hover) {
+            QColor halo = kCameraAccent;
+            halo.setAlphaF(0.14);
+            p.setPen(Qt::NoPen);
+            p.setBrush(halo);
+            p.drawEllipse(c, 8.0, 8.0);
+        }
+        QPolygonF diamond;
+        diamond << QPointF(c.x(), c.y() - kKeyHalf) << QPointF(c.x() + kKeyHalf, c.y())
+                << QPointF(c.x(), c.y() + kKeyHalf) << QPointF(c.x() - kKeyHalf, c.y());
+        p.setPen(QPen(strandGrey, 1.5, Qt::SolidLine, Qt::FlatCap, Qt::RoundJoin));
+        p.setBrush(Qt::NoBrush);
+        p.drawPolygon(diamond);
+        stem(m.x, strandGrey);
     }
 
     // The Quick Move under the pointer (Figma 1D-2): the keys it would
@@ -2316,6 +2400,35 @@ void AnimaticTimeline::paintCameraRow(QPainter &p)
             p.drawPolygon(diamond);
         }
     }
+    p.restore();
+}
+
+// The 1 px dotted blue line from each pinned key down through the AUDIO row
+// (Phase 2E, D16): it ties the key to the sound. Drawn from the audio
+// paint, after the waveform and before the name and length chips (the
+// user's Q7: under the chips), at the CAMERA row's own dimming.
+void AnimaticTimeline::paintPinLines(QPainter &p)
+{
+    if (!m_canvas)
+        return;
+    const QVector<CameraMark> marks = cameraMarks();
+    bool any = false;
+    for (const CameraMark &m : marks)
+        any = any || m.pinned;
+    if (!any)
+        return;
+    p.save();
+    p.setClipRect(QRect(kLabelCol, cameraTrackY(), m_canvas->width() - kLabelCol,
+                        kCameraH + kAudioH),
+                  Qt::IntersectClip);
+    p.setOpacity(cameraRowOpacityForTest());
+    p.setRenderHint(QPainter::Antialiasing, false);
+    p.setPen(QPen(QColor(0x4d, 0x9f, 0xff), 1.0, Qt::DotLine));
+    const int top = cameraTrackY() + kCameraH / 2 + int(kKeyHalf) + 4; // under the stem
+    const int bottom = audioTrackY() + kAudioH - 1;
+    for (const CameraMark &m : marks)
+        if (m.pinned)
+            p.drawLine(m.x, top, m.x, bottom);
     p.restore();
 }
 
@@ -2364,7 +2477,7 @@ QVariantList AnimaticTimeline::cameraKeysForTest() const
     int selScene = -1, selKey = -1;
     const bool hasSel = selectedCameraKey(&selScene, &selKey);
     const int phFrame = playheadFrame();
-    for (const CameraMark &m : cameraMarks())
+    for (const CameraMark &m : cameraMarks() + strandedMarks())
         list.append(QVariantMap{
             {QStringLiteral("scene"), m.sceneIndex},
             {QStringLiteral("key"), m.keyIndex},
@@ -2373,6 +2486,8 @@ QVariantList AnimaticTimeline::cameraKeysForTest() const
             {QStringLiteral("selected"), hasSel && m.sceneIndex == selScene && m.keyIndex == selKey},
             {QStringLiteral("atPlayhead"), qAbs(m.frame - phFrame) < 0.5},
             {QStringLiteral("hover"), m.sceneIndex == m_camHoverScene && m.keyIndex == m_camHoverKey},
+            {QStringLiteral("pinned"), m.pinned},     // Phase 2E
+            {QStringLiteral("stranded"), m.stranded}, // Phase 2E
             {QStringLiteral("tip"), cameraKeyTip(m)}});
     return list;
 }
@@ -2481,6 +2596,8 @@ void AnimaticTimeline::canvasMousePress(QMouseEvent *e)
     if (inCameraRow(pos) && m_tracks.cameraVisible) {
         CameraMark mark;
         if (cameraKeyAt(pos, &mark)) {
+            if (mark.stranded) // Phase 2E: no selection, no drag; its menu is the right button's
+                return;
             m_camSelScene = mark.sceneIndex;
             m_camSelKey = mark.keyIndex;
             m_canvas->update();
@@ -2596,10 +2713,12 @@ void AnimaticTimeline::canvasContextMenu(QContextMenuEvent *e)
         if (m_tracks.cameraVisible) {
             CameraMark mark;
             if (cameraKeyAt(pos, &mark)) {
-                m_camSelScene = mark.sceneIndex;
-                m_camSelKey = mark.keyIndex;
-                m_canvas->update();
-                emit cameraKeyActivated(mark.sceneIndex, mark.keyIndex);
+                if (!mark.stranded) { // a stranded key (Phase 2E) is not selected
+                    m_camSelScene = mark.sceneIndex;
+                    m_camSelKey = mark.keyIndex;
+                    m_canvas->update();
+                    emit cameraKeyActivated(mark.sceneIndex, mark.keyIndex);
+                }
                 emit cameraKeyContextMenuRequested(mark.sceneIndex, mark.keyIndex,
                                                    e->globalPos());
             } else {

@@ -545,7 +545,23 @@ shotcam::CameraState AnimaticPage::cameraAtPlayhead() const
     const int frames = shotcam::panelFrames(*it.panel, fps);
     const int frame = qBound(
         0, shotcam::frameInPanelFromMs(liveElapsedMsInCurrentPanel(), fps), frames - 1);
-    return shotcam::evaluateAtPanel(*it.scene, it.panelInScene - 1, frame, fps);
+    return shotcam::evaluateAtPanel(*it.scene, it.panelInScene - 1, frame, fps,
+                                    sceneFilmStart(it.scene));
+}
+
+// The frames before a scene's first panel: what a pinned key's film time is
+// measured from (Phase 2E). The items are the film in order, so they are the
+// panels of every scene before it.
+int AnimaticPage::sceneFilmStart(const Scene *scene) const
+{
+    const int fps = m_timeline ? qMax(1, m_timeline->fps()) : 24;
+    int frames = 0;
+    for (const Item &item : m_items) {
+        if (item.scene == scene)
+            return frames;
+        frames += shotcam::panelFrames(*item.panel, fps);
+    }
+    return 0;
 }
 
 void AnimaticPage::updatePreviewCamera()
@@ -695,14 +711,26 @@ QVariantMap AnimaticPage::shotCamDevrecState() const
     const int sceneFrame =
         shotcam::panelStartFrame(*it.scene, it.panelInScene - 1, fps) + frameIn;
     const shotcam::CameraState camera = cameraAtPlayhead();
-    bool keyAtPlayhead = false;
+    bool keyAtPlayhead = false, keyPinned = false;
+    int pinnedKeys = 0; // Phase 2E: the pinned keys among the live ones
     for (const shotcam::CameraKey &key : it.scene->camera.keys) {
-        const double f = shotcam::keyFrame(*it.scene, key, fps);
-        if (f >= 0.0 && qAbs(f - sceneFrame) < 0.5)
+        const double f = shotcam::keyFrame(*it.scene, key, fps, sceneFilmStart(it.scene));
+        if (f < 0.0)
+            continue;
+        if (key.pinned)
+            ++pinnedKeys;
+        if (qAbs(f - sceneFrame) < 0.5) {
             keyAtPlayhead = true;
+            keyPinned = keyPinned || key.pinned;
+        }
     }
     m.insert(QStringLiteral("shotCam.scene"), it.sceneNumber);
-    m.insert(QStringLiteral("shotCam.keys"), shotcam::liveKeyCount(*it.scene));
+    m.insert(QStringLiteral("shotCam.keys"),
+             shotcam::liveKeyCount(*it.scene, fps, sceneFilmStart(it.scene)));
+    m.insert(QStringLiteral("shotCam.pinnedKeys"), pinnedKeys);
+    m.insert(QStringLiteral("shotCam.strandedKeys"),
+             shotcam::strandedCount(*it.scene, fps, sceneFilmStart(it.scene)));
+    m.insert(QStringLiteral("shotCam.keyPinned"), keyPinned);
     m.insert(QStringLiteral("shotCam.frame"), sceneFrame);
     m.insert(QStringLiteral("shotCam.x"), camera.cx);
     m.insert(QStringLiteral("shotCam.y"), camera.cy);

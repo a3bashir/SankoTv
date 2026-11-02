@@ -283,8 +283,13 @@ private:
         double frame = 0.0; // in the film
         int x = 0;          // on the canvas
         int ease = 0;       // shotcam::Ease
+        bool pinned = false;   // Phase 2E: pinned to the sound (the blue diamond)
+        bool stranded = false; // ...and outside its scene (hollow grey; strandedMarks)
     };
     QVector<CameraMark> cameraMarks() const;
+    // The STRANDED pinned keys (Phase 2E, D17): drawn hollow at their time,
+    // never a segment, never numbered among the live keys, never dragged.
+    QVector<CameraMark> strandedMarks() const;
     // The bars between consecutive keys of a scene, as drawn: what the
     // painter draws and the gate reads, from one place.
     struct CameraSegment
@@ -304,6 +309,7 @@ private:
     int sceneEndFrame(int sceneIndex) const;   // its last block's end
     QString cameraKeyTip(const CameraMark &mark) const;
     void paintCameraRow(QPainter &p);
+    void paintPinLines(QPainter &p); // the pinned keys' dotted lines through the AUDIO row
     QRect clipRect(int flatIndex) const; // on the canvas; empty if no such clip
     int moveGapAt(int screenX) const;
 

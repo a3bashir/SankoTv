@@ -133,8 +133,38 @@ int panelIndexOfUid(const Scene &scene, quint64 uid)
     return -1;
 }
 
-double keyFrame(const Scene &scene, const CameraKey &key, int fps)
+int sceneFrameCount(const Scene &scene, int fps)
 {
+    int frames = 0;
+    for (const Panel *panel : scene.panels)
+        if (panel)
+            frames += panelFrames(*panel, fps);
+    return frames;
+}
+
+double keyFilmFrame(const CameraKey &key, int fps)
+{
+    const double f = key.time * fps;
+    const double whole = std::round(f);
+    return qAbs(f - whole) < 1e-6 ? whole : f;
+}
+
+// Stranded (Phase 2E, D17): a pinned key outside the scene's span. The
+// scene's end frame itself counts as inside, as an anchored key at a
+// panel's end (at = 1) does.
+bool pinnedOutside(const CameraKey &key, int fps, int filmStart, int frameCount)
+{
+    const double f = keyFilmFrame(key, fps) - filmStart;
+    return f < 0.0 || f > frameCount;
+}
+
+double keyFrame(const Scene &scene, const CameraKey &key, int fps, int filmStart)
+{
+    if (key.pinned) {
+        if (pinnedOutside(key, fps, filmStart, sceneFrameCount(scene, fps)))
+            return -1.0;
+        return keyFilmFrame(key, fps) - filmStart;
+    }
     const int index = panelIndexOfUid(scene, key.panelUid);
     if (index < 0)
         return -1.0;
@@ -142,13 +172,49 @@ double keyFrame(const Scene &scene, const CameraKey &key, int fps)
         + key.at * panelFrames(*scene.panels.at(index), fps);
 }
 
-int liveKeyCount(const Scene &scene)
+bool isStranded(const Scene &scene, const CameraKey &key, int fps, int filmStart)
+{
+    return key.pinned && keyFrame(scene, key, fps, filmStart) < 0.0;
+}
+
+int strandedCount(const Scene &scene, int fps, int filmStart)
 {
     int n = 0;
     for (const CameraKey &key : scene.camera.keys)
-        if (panelIndexOfUid(scene, key.panelUid) >= 0)
+        if (isStranded(scene, key, fps, filmStart))
             ++n;
     return n;
+}
+
+int liveKeyCount(const Scene &scene, int fps, int filmStart)
+{
+    int n = 0;
+    for (const CameraKey &key : scene.camera.keys)
+        if (keyFrame(scene, key, fps, filmStart) >= 0.0)
+            ++n;
+    return n;
+}
+
+CameraKey makePinnedKey(double filmFrame, int fps, const CameraState &state, Ease e)
+{
+    CameraKey key;
+    key.pinned = true;
+    key.time = filmFrame / qMax(1, fps);
+    key.state = state;
+    key.ease = e;
+    return key;
+}
+
+QString strandingText(int strandedBefore, int strandedAfter, int sceneNumber)
+{
+    if (strandedAfter == strandedBefore)
+        return QString();
+    const int n = qAbs(strandedAfter - strandedBefore);
+    const QString keys = n == 1 ? QStringLiteral("1 pinned camera key")
+                                : QStringLiteral("%1 pinned camera keys").arg(n);
+    return strandedAfter > strandedBefore
+        ? QStringLiteral(" (%1 now outside scene %2)").arg(keys).arg(sceneNumber)
+        : QStringLiteral(" (%1 back inside scene %2)").arg(keys).arg(sceneNumber);
 }
 
 int liveKeysOnPanel(const Scene &scene, const Panel *panel)
@@ -178,7 +244,7 @@ CameraKey makeKey(const Scene &scene, int panelIndex, int frameInPanel,
 }
 
 CameraState evaluate(const Scene &scene, double sceneFrame, int fps,
-                     const QSize &canvas)
+                     const QSize &canvas, int filmStart)
 {
     struct Live
     {
@@ -189,17 +255,30 @@ CameraState evaluate(const Scene &scene, double sceneFrame, int fps,
     QVector<Live> live;
     live.reserve(scene.camera.keys.size());
     for (int i = 0; i < scene.camera.keys.size(); ++i) {
-        const double f = keyFrame(scene, scene.camera.keys.at(i), fps);
+        const double f = keyFrame(scene, scene.camera.keys.at(i), fps, filmStart);
         if (f >= 0.0)
             live.append({f, i, &scene.camera.keys.at(i)});
     }
     if (live.isEmpty())
         return neutral(canvas);
+    // By frame; at one frame the anchored key first, the pinned after (Phase
+    // 2E: they can only meet through a retime, and the pinned one's framing
+    // shows from that frame).
     std::stable_sort(live.begin(), live.end(), [](const Live &a, const Live &b) {
-        return a.frame < b.frame;
+        if (a.frame != b.frame)
+            return a.frame < b.frame;
+        return !a.key->pinned && b.key->pinned;
     });
-    if (sceneFrame <= live.first().frame)
-        return live.first().key->state;
+    if (sceneFrame <= live.first().frame) {
+        // Before the first key, its framing - and AT the first frame, the
+        // last key on that frame: a pinned key that met the anchored one
+        // there sorts after it (above) and shows from that frame. One key
+        // on the frame, the path every project took before 2E.
+        int j = 0;
+        while (j + 1 < live.size() && live.at(j + 1).frame == live.first().frame)
+            ++j;
+        return live.at(j).key->state;
+    }
     if (sceneFrame >= live.last().frame)
         return live.last().key->state;
     int i = live.size() - 2;
@@ -224,7 +303,7 @@ CameraState evaluate(const Scene &scene, double sceneFrame, int fps,
 }
 
 CameraState evaluateAtPanel(const Scene &scene, int panelIndex,
-                            int frameInPanel, int fps)
+                            int frameInPanel, int fps, int filmStart)
 {
     if (panelIndex < 0 || panelIndex >= scene.panels.size()
         || !scene.panels.at(panelIndex))
@@ -233,7 +312,7 @@ CameraState evaluateAtPanel(const Scene &scene, int panelIndex,
     if (scene.camera.isEmpty())
         return neutral(canvas);
     return evaluate(scene, panelStartFrame(scene, panelIndex, fps) + frameInPanel,
-                    fps, canvas);
+                    fps, canvas, filmStart);
 }
 
 QPolygonF frameQuad(const CameraState &state, const Stage &stage)
@@ -845,26 +924,37 @@ double normalisedAngle(double degrees)
     return a;
 }
 
-int keyIndexAtFrame(const Scene &scene, double sceneFrame, int fps)
+int keyIndexAtFrame(const Scene &scene, double sceneFrame, int fps, int filmStart)
 {
+    // At one frame the anchored key is the one (the pinned sorts after it).
+    int found = -1;
     for (int i = 0; i < scene.camera.keys.size(); ++i) {
-        const double f = keyFrame(scene, scene.camera.keys.at(i), fps);
-        if (f >= 0.0 && qAbs(f - sceneFrame) < 0.5)
-            return i;
+        const double f = keyFrame(scene, scene.camera.keys.at(i), fps, filmStart);
+        if (f >= 0.0 && qAbs(f - sceneFrame) < 0.5) {
+            if (!scene.camera.keys.at(i).pinned)
+                return i;
+            if (found < 0)
+                found = i;
+        }
     }
-    return -1;
+    return found;
 }
 
-int segmentKeyIndex(const Scene &scene, double sceneFrame, int fps)
+int segmentKeyIndex(const Scene &scene, double sceneFrame, int fps, int filmStart)
 {
-    const int at = keyIndexAtFrame(scene, sceneFrame, fps);
-    if (at >= 0)
-        return at;
+    // The key whose segment the frame is in: the last live key at or before
+    // it (within half a frame counts as at it). Two keys on one frame (Phase
+    // 2E, a pinned key met by a retime): the pinned one, which sorts after
+    // the anchored and starts the move from there.
     int best = -1;
     double bestFrame = -1.0;
     for (int i = 0; i < scene.camera.keys.size(); ++i) {
-        const double f = keyFrame(scene, scene.camera.keys.at(i), fps);
-        if (f >= 0.0 && f < sceneFrame && f > bestFrame) {
+        const double f = keyFrame(scene, scene.camera.keys.at(i), fps, filmStart);
+        if (f < 0.0 || f >= sceneFrame + 0.5)
+            continue;
+        const bool later = best < 0 || f > bestFrame + 0.5;
+        const bool same = best >= 0 && qAbs(f - bestFrame) < 0.5;
+        if (later || (same && scene.camera.keys.at(i).pinned && !scene.camera.keys.at(best).pinned)) {
             best = i;
             bestFrame = f;
         }
@@ -872,11 +962,11 @@ int segmentKeyIndex(const Scene &scene, double sceneFrame, int fps)
     return best;
 }
 
-QVector<double> liveKeyFrames(const Scene &scene, int fps)
+QVector<double> liveKeyFrames(const Scene &scene, int fps, int filmStart)
 {
     QVector<double> frames;
     for (const CameraKey &key : scene.camera.keys) {
-        const double f = keyFrame(scene, key, fps);
+        const double f = keyFrame(scene, key, fps, filmStart);
         if (f >= 0.0)
             frames.append(f);
     }
@@ -901,12 +991,17 @@ QJsonObject toJson(const Scene &scene)
 {
     QJsonArray keys;
     for (const CameraKey &key : scene.camera.keys) {
-        const int index = panelIndexOfUid(scene, key.panelUid);
-        if (index < 0)
-            continue; // inert: its panel is deleted
         QJsonObject k;
-        k[QStringLiteral("panel")] = index;
-        k[QStringLiteral("at")] = key.at;
+        if (key.pinned) { // Phase 2E: its time, stranded or not
+            k[QStringLiteral("pinned")] = true;
+            k[QStringLiteral("time")] = key.time;
+        } else {
+            const int index = panelIndexOfUid(scene, key.panelUid);
+            if (index < 0)
+                continue; // inert: its panel is deleted
+            k[QStringLiteral("panel")] = index;
+            k[QStringLiteral("at")] = key.at;
+        }
         k[QStringLiteral("x")] = key.state.cx;
         k[QStringLiteral("y")] = key.state.cy;
         k[QStringLiteral("zoom")] = key.state.zoom;
@@ -928,6 +1023,8 @@ void fromJson(const QJsonObject &obj, Scene &scene, int *dropped)
     const QJsonArray keys = obj.value(QStringLiteral("keys")).toArray();
     for (const QJsonValue &v : keys) {
         const QJsonObject k = v.toObject();
+        const bool pinned = k.value(QStringLiteral("pinned")).toBool(false);
+        const double time = k.value(QStringLiteral("time")).toDouble(-1.0);
         const int index = k.value(QStringLiteral("panel")).toInt(-1);
         const double at = k.value(QStringLiteral("at")).toDouble(-1.0);
         CameraState s;
@@ -935,8 +1032,11 @@ void fromJson(const QJsonObject &obj, Scene &scene, int *dropped)
         s.cy = k.value(QStringLiteral("y")).toDouble(qQNaN());
         s.zoom = k.value(QStringLiteral("zoom")).toDouble(qQNaN());
         s.rotation = k.value(QStringLiteral("rotation")).toDouble(qQNaN());
-        const bool ok = index >= 0 && index < scene.panels.size()
-            && std::isfinite(at) && at >= 0.0 && at <= 1.0
+        const bool where = pinned
+            ? std::isfinite(time) && time >= 0.0
+            : index >= 0 && index < scene.panels.size() && std::isfinite(at) && at >= 0.0
+                && at <= 1.0;
+        const bool ok = where
             && std::isfinite(s.cx) && std::isfinite(s.cy)
             && std::isfinite(s.zoom) && s.zoom >= 0.01 && s.zoom <= 100.0
             && std::isfinite(s.rotation);
@@ -945,8 +1045,13 @@ void fromJson(const QJsonObject &obj, Scene &scene, int *dropped)
             continue;
         }
         CameraKey key;
-        key.panelUid = scene.panels.at(index)->uid.value();
-        key.at = at;
+        if (pinned) {
+            key.pinned = true;
+            key.time = time;
+        } else {
+            key.panelUid = scene.panels.at(index)->uid.value();
+            key.at = at;
+        }
         key.state = s;
         key.ease = easeFromName(k.value(QStringLiteral("ease")).toString());
         scene.camera.keys.append(key);

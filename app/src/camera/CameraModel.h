@@ -90,6 +90,15 @@ struct CameraKey
     double at = 0.0;      // where in that panel: 0 = its first frame, 1 = its end
     CameraState state;
     Ease ease = Ease::EaseInOut;
+    // PINNED TO THE SOUND (Phase 2E, 2026-11-01; the Phase 2 spec's 5.2,
+    // decisions D16-D21): the key holds its TIME on the film instead of its
+    // panel, so a retime moves the drawings under it and it stays on its
+    // beat. panelUid / at are unused while pinned. A pinned key whose time
+    // falls outside its scene's span is STRANDED (derived, never stored):
+    // kept, saved, drawn, not evaluated, live again when the scene covers
+    // its time again.
+    bool pinned = false;
+    double time = 0.0; // seconds from the film's start; used only when pinned
 };
 
 struct SceneCamera

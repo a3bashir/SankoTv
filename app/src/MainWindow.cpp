@@ -1039,8 +1039,15 @@ QString MainWindow::mp4CameraWarning() const
     if (!exportCameraOff())
         return QString();
     bool moves = false;
-    for (const Scene *scene : m_scenes)
-        moves = moves || (scene && shotcam::liveKeyCount(*scene) > 0);
+    const int fps = qMax(1, m_projectFps);
+    int filmStart = 0; // a pinned key is a move only inside its scene (Phase 2E)
+    for (const Scene *scene : m_scenes) {
+        if (!scene)
+            continue;
+        moves = moves || shotcam::liveKeyCount(*scene, fps, filmStart) > 0;
+        for (const Panel *panel : scene->panels)
+            filmStart += shotcam::panelFrames(*panel, fps);
+    }
     if (!moves)
         return QString();
     return QStringLiteral(

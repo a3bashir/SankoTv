@@ -2568,6 +2568,270 @@ int main(int argc, char **argv)
             delete p;
     }
 
+    // ---- (pk) PINNED KEYS (Phase 2E) ----------------------------------------
+    // The model: a key pinned to the sound holds its film TIME (spec 5.2); its
+    // scene frame is time x fps - the scene's film start; STRANDED outside the
+    // span (D17): kept, saved, not evaluated; the file (5.5). pk1, pk2, pk3's
+    // model half and pk9, each with its control. The window halves (the row,
+    // the menus, the notes, the bar) are the Lifecycle family's (pk).
+    ts << "--- (pk) pinned keys ---\n";
+    {
+        using shotcam::CameraKey;
+        using shotcam::CameraState;
+        // Two scenes of 4 panels, 3 s each at 24 fps: 72 frames a panel, 288 a
+        // scene; scene 2 starts at film frame 288.
+        Scene a, b;
+        for (int i = 0; i < 4; ++i) {
+            a.panels.append(makeBlankPanel(QSize(64, 36)));
+            b.panels.append(makeBlankPanel(QSize(64, 36)));
+        }
+        auto startB = [&] { return shotcam::sceneFrameCount(a, 24); };
+        const CameraState pA = state(20, 10, 1.5, 0), pB = state(40, 20, 2.0, 0);
+        // Scene 2: an anchored key on panel 2 at frame 36 of it (scene frame
+        // 108) and a pinned key at film frame 288 + 230 = 518 (scene frame
+        // 230, over panel 4).
+        b.camera.keys = {shotcam::makeKey(b, 1, 36, 24, pA), shotcam::makePinnedKey(518, 24, pB)};
+        const CameraKey &anchored = b.camera.keys.at(0);
+        const CameraKey &pinned = b.camera.keys.at(1);
+        auto frames = [&] {
+            return QStringLiteral("%1/%2")
+                .arg(shotcam::keyFrame(b, anchored, 24, startB()))
+                .arg(shotcam::keyFrame(b, pinned, 24, startB()));
+        };
+        auto filmOf = [&](const CameraKey &k) {
+            const double f = shotcam::keyFrame(b, k, 24, startB());
+            return f < 0.0 ? -1.0 : startB() + f;
+        };
+        const bool base = frames() == QStringLiteral("108/230") && filmOf(pinned) == 518.0;
+        // (pk1) the matrix 5.3.
+        b.panels.at(0)->duration = 5; // an EARLIER panel in its scene +2 s
+        const QString earlierOwn = frames();
+        const double filmEarlierOwn = filmOf(pinned);
+        b.panels.at(0)->duration = 3;
+        b.panels.at(3)->duration = 4; // the panel the pinned key is OVER +1 s
+        const QString over = frames();
+        b.panels.at(3)->duration = 3;
+        a.panels.at(0)->duration = 5; // an EARLIER SCENE +2 s: scene 2 starts at 336
+        const QString earlierScene = frames();
+        const double filmEarlierScene = filmOf(pinned);
+        a.panels.at(0)->duration = 3;
+        Panel *ins = makeBlankPanel(QSize(64, 36));
+        b.panels.insert(1, ins); // a panel inserted before both
+        const QString inserted = frames();
+        b.panels.removeAt(1);
+        delete ins;
+        b.panels.move(3, 0); // the panel under the pinned key moved to the front
+        const QString reordered = frames();
+        b.panels.move(0, 3);
+        Panel *last = b.panels.takeAt(3); // the panel under it DELETED: the scene is 216 long
+        const QString deleted = frames();
+        const int liveAfterDelete = shotcam::liveKeyCount(b, 24, startB());
+        const int strandedAfterDelete = shotcam::strandedCount(b, 24, startB());
+        const bool strandedFlag = shotcam::isStranded(b, pinned, 24, startB());
+        const int keysKept = b.camera.keys.size();
+        const QJsonObject savedStranded = shotcam::toJson(b);
+        const CameraState atEnd = shotcam::evaluate(b, 216, 24, QSize(64, 36), startB());
+        b.panels.insert(3, last); // ...and the delete undone
+        const QString undone = frames();
+        Panel *earlier = a.panels.takeAt(0); // an earlier SCENE's panel deleted: start 216
+        const QString earlierSceneDeleted = frames();
+        a.panels.insert(0, earlier);
+        const QString fps60 = QStringLiteral("%1/%2")
+                                  .arg(shotcam::keyFrame(b, anchored, 60, shotcam::sceneFrameCount(a, 60)))
+                                  .arg(shotcam::keyFrame(b, pinned, 60, shotcam::sceneFrameCount(a, 60)));
+        check(QStringLiteral("(pk1) THE RETIMING MATRIX (5.3): an earlier panel +2 s ripples the "
+                             "anchored key to 156 and leaves the pinned at 230 (film 518); the "
+                             "panel under it +1 s changes neither (108/230); an earlier SCENE +2 s "
+                             "keeps the anchored at 108 and the pinned at film 518, now scene frame "
+                             "182; an insert before them ripples the anchored only (180/230); the "
+                             "panel under it moved to the front, the same (180/230); that panel "
+                             "deleted strands the pinned key (108/-1: 1 live, 1 stranded), its undo "
+                             "brings it back (108/230); an earlier scene's panel deleted strands it "
+                             "too; 60 fps keeps the seconds (270/575)"),
+              base && earlierOwn == QStringLiteral("156/230") && filmEarlierOwn == 518.0
+                  && over == QStringLiteral("108/230")
+                  && earlierScene == QStringLiteral("108/182") && filmEarlierScene == 518.0
+                  && inserted == QStringLiteral("180/230") && reordered == QStringLiteral("180/230")
+                  && deleted == QStringLiteral("108/-1") && liveAfterDelete == 1
+                  && strandedAfterDelete == 1 && strandedFlag
+                  && undone == QStringLiteral("108/230")
+                  && earlierSceneDeleted == QStringLiteral("108/-1")
+                  && fps60 == QStringLiteral("270/575"),
+              QStringList{frames(), earlierOwn, over, earlierScene, inserted, reordered, deleted,
+                          undone, earlierSceneDeleted, fps60}
+                  .join(QLatin1Char(' ')));
+        // Control: the anchored expectation for the same key - a twin
+        // anchored on panel 4 at frame 14 of it, scene frame 230 today - is
+        // another number under each of those edits.
+        const CameraKey twin = shotcam::makeKey(b, 3, 14, 24, pB);
+        b.panels.at(0)->duration = 5;
+        const double twinEarlier = shotcam::keyFrame(b, twin, 24, startB());
+        b.panels.at(0)->duration = 3;
+        a.panels.at(0)->duration = 5;
+        const double twinFilmEarlierScene = startB() + shotcam::keyFrame(b, twin, 24, startB());
+        a.panels.at(0)->duration = 3;
+        check(QStringLiteral("(pk1) control: an anchored key in the same place answers 278 to the "
+                             "earlier panel's +2 s and film 566 to the earlier scene's - the "
+                             "pinned key's 230 and 518 are the other rule"),
+              twinEarlier == 278.0 && twinFilmEarlierScene == 566.0,
+              QStringLiteral("%1 %2").arg(twinEarlier).arg(twinFilmEarlierScene));
+
+        // (pk2) EXACT FRAMES at 24 / 25 / 30 / 60 over a whole film: a key
+        // pinned at frame f evaluates at f exactly, and at f - 1 it does not.
+        {
+            int exact = 0, inexact = 0, total = 0, offByOne = 0;
+            QString first;
+            for (int fps : {24, 25, 30, 60}) {
+                const int filmStart = shotcam::sceneFrameCount(a, fps);
+                const int count = shotcam::sceneFrameCount(b, fps);
+                for (int f = 1; f <= count; ++f) {
+                    Scene t;
+                    t.panels = b.panels; // the same panels, not owned
+                    t.camera.keys = {shotcam::makeKey(t, 0, 0, fps, pA),
+                                     shotcam::makePinnedKey(filmStart + f, fps, pB, shotcam::Ease::Linear)};
+                    const double kf = shotcam::keyFrame(t, t.camera.keys.at(1), fps, filmStart);
+                    const bool atF = shotcam::evaluate(t, f, fps, QSize(64, 36), filmStart) == pB;
+                    const bool before = shotcam::evaluate(t, f - 1, fps, QSize(64, 36), filmStart) != pB;
+                    ++total;
+                    if (kf == double(f) && atF && before)
+                        ++exact;
+                    else {
+                        ++inexact;
+                        if (first.isEmpty())
+                            first = QStringLiteral("fps %1 f %2 -> %3 at %4 before %5")
+                                        .arg(fps).arg(f).arg(kf, 0, 'f', 9).arg(atF).arg(before);
+                    }
+                    // The control: the time of one frame later answers f + 1.
+                    const CameraKey next = shotcam::makePinnedKey(filmStart + f + 1, fps, pB);
+                    if (shotcam::keyFrame(t, next, fps, filmStart) == double(f + 1)
+                        || f + 1 > count)
+                        ++offByOne;
+                    t.panels.clear();
+                }
+            }
+            check(QStringLiteral("(pk2) EXACT FRAMES: at 24, 25, 30 and 60 fps a key pinned at every "
+                                 "frame f of scene 2 (its time f / fps from the film's start) has "
+                                 "scene frame f exactly and evaluates to its own framing at f and "
+                                 "not at f - 1"),
+                  total > 0 && inexact == 0, QStringLiteral("%1 of %2 exact; first miss: %3").arg(exact).arg(total).arg(first));
+            check(QStringLiteral("(pk2) control: the time one frame later answers f + 1 every time"),
+                  offByOne == total);
+        }
+
+        // (pk3) STRANDED: kept, saved, not evaluated (the model half).
+        check(QStringLiteral("(pk3) a stranded key is KEPT (2 keys), SAVED (the file holds its "
+                             "pinned time), and NOT EVALUATED (the scene's end shows the anchored "
+                             "key's framing); the stranding text names it"),
+              keysKept == 2 && savedStranded.value(QStringLiteral("keys")).toArray().size() == 2
+                  && savedStranded.value(QStringLiteral("keys")).toArray().at(1).toObject()
+                             .value(QStringLiteral("pinned")).toBool()
+                  && atEnd == pA
+                  && shotcam::strandingText(0, 1, 2) == QStringLiteral(" (1 pinned camera key now outside scene 2)")
+                  && shotcam::strandingText(2, 0, 3) == QStringLiteral(" (2 pinned camera keys back inside scene 3)"),
+              QStringLiteral("kept %1, saved %2, end zoom %3").arg(keysKept)
+                  .arg(savedStranded.value(QStringLiteral("keys")).toArray().size()).arg(atEnd.zoom));
+        check(QStringLiteral("(pk3) control: a retime that keeps it inside names nothing, and a "
+                             "live pinned key is evaluated (zoom 2 at its frame)"),
+              shotcam::strandingText(1, 1, 2).isEmpty()
+                  && shotcam::evaluate(b, 230, 24, QSize(64, 36), startB()) == pB);
+        // The sort (5.2): a pinned and an anchored key meeting at one frame -
+        // the pinned sorts after, so its framing shows from that frame.
+        {
+            Scene t;
+            t.panels = b.panels;
+            t.camera.keys = {shotcam::makePinnedKey(startB() + 108, 24, pB), shotcam::makeKey(t, 1, 36, 24, pA)};
+            const bool pinnedWins = shotcam::evaluate(t, 108, 24, QSize(64, 36), startB()) == pB
+                && shotcam::keyIndexAtFrame(t, 108, 24, startB()) == 1
+                && shotcam::segmentKeyIndex(t, 108, 24, startB()) == 0;
+            t.panels.clear();
+            check(QStringLiteral("(pk3) two keys on one frame after a retime: the pinned one sorts "
+                                 "after the anchored, its framing shows from the frame, keyIndexAtFrame "
+                                 "names the anchored and the segment is the pinned's"),
+                  pinnedWins);
+        }
+
+        // (pk9) THE FILE: pinned / time only for pinned keys; a project without
+        // them re-saves byte-identical; a bad time drops the key, counted.
+        {
+            Scene *s = new Scene;
+            s->number = 1;
+            s->timeOfDay = QStringLiteral("DAY");
+            for (int i = 0; i < 3; ++i)
+                s->panels.append(fixturePanel(QSize(320, 180)));
+            ProjectIO::SaveData data;
+            data.projectName = QStringLiteral("Pin");
+            data.fps = 24;
+            data.canvasSize = QSize(320, 180);
+            data.scenes = {s};
+            const QString file = scratch + QStringLiteral("/pin/Pin.sankotv");
+            QDir().mkpath(scratch + QStringLiteral("/pin"));
+            auto scenesJson = [](const QJsonObject &root) {
+                return QJsonDocument(root.value(QStringLiteral("scenes")).toArray())
+                    .toJson(QJsonDocument::Compact);
+            };
+            s->camera.keys = {shotcam::makeKey(*s, 0, 12, 24, pA, shotcam::Ease::EaseOut)};
+            const QByteArray anchoredOnly = scenesJson(ProjectIO::projectToJson(data, file).root);
+            s->camera.keys.append(shotcam::makePinnedKey(130, 24, pB, shotcam::Ease::Linear));
+            const ProjectIO::WriteResult withPin = ProjectIO::projectToJson(data, file);
+            const QByteArray pinnedJson = scenesJson(withPin.root);
+            const QJsonObject keyObj = withPin.root.value(QStringLiteral("scenes")).toArray().at(0)
+                                           .toObject().value(QStringLiteral("camera")).toObject()
+                                           .value(QStringLiteral("keys")).toArray().at(1).toObject();
+            const QJsonObject text = QJsonDocument::fromJson(QJsonDocument(withPin.root).toJson()).object();
+            ProjectIO::LoadedProject back = ProjectIO::projectFromJson(text, scratch + QStringLiteral("/pin"));
+            const bool loaded = back.scenes.size() == 1 && back.scenes.at(0)->camera.keys.size() == 2
+                && back.scenes.at(0)->camera.keys.at(1).pinned
+                && back.scenes.at(0)->camera.keys.at(1).time == 130.0 / 24.0
+                && back.scenes.at(0)->camera.keys.at(1).state == pB
+                && back.scenes.at(0)->camera.keys.at(1).ease == shotcam::Ease::Linear
+                && !back.scenes.at(0)->camera.keys.at(0).pinned
+                && shotcam::keyFrame(*back.scenes.at(0), back.scenes.at(0)->camera.keys.at(1), 24) == 130.0;
+            for (Scene *sc : back.scenes)
+                delete sc;
+            s->camera.keys.removeLast();
+            const QByteArray anchoredAgain = scenesJson(ProjectIO::projectToJson(data, file).root);
+            check(QStringLiteral("(pk9) THE FILE: a pinned key writes pinned and time and no panel / at, "
+                                 "loads back pinned at its time with its framing and ease, and the "
+                                 "anchored key beside it is written as before; with the pinned key "
+                                 "removed the project re-saves byte-identical to the one that never "
+                                 "had it"),
+                  keyObj.value(QStringLiteral("pinned")).toBool() && keyObj.contains(QStringLiteral("time"))
+                      && !keyObj.contains(QStringLiteral("panel")) && !keyObj.contains(QStringLiteral("at"))
+                      && loaded && anchoredAgain == anchoredOnly && pinnedJson != anchoredOnly,
+                  QString::fromUtf8(QJsonDocument(keyObj).toJson(QJsonDocument::Compact)));
+            // Control: pinning one adds the words; a negative time drops the
+            // key, counted as Phase 1's drops are.
+            QJsonObject broken = text;
+            {
+                QJsonArray scenes = broken.value(QStringLiteral("scenes")).toArray();
+                QJsonObject sc = scenes.at(0).toObject();
+                QJsonObject cam = sc.value(QStringLiteral("camera")).toObject();
+                QJsonArray keys = cam.value(QStringLiteral("keys")).toArray();
+                QJsonObject k = keys.at(1).toObject();
+                k[QStringLiteral("time")] = -1.0;
+                keys[1] = k;
+                cam[QStringLiteral("keys")] = keys;
+                sc[QStringLiteral("camera")] = cam;
+                scenes[0] = sc;
+                broken[QStringLiteral("scenes")] = scenes;
+            }
+            ProjectIO::LoadedProject dropped = ProjectIO::projectFromJson(broken, scratch + QStringLiteral("/pin"));
+            check(QStringLiteral("(pk9) control: the pinned key's words are in the file only while it "
+                                 "is there, and a pinned key with a negative time is dropped on load "
+                                 "and counted"),
+                  pinnedJson.contains("\"pinned\":true") && !anchoredOnly.contains("\"pinned\"")
+                      && dropped.scenes.size() == 1 && dropped.scenes.at(0)->camera.keys.size() == 1
+                      && dropped.cameraKeysDropped == 1,
+                  QStringLiteral("keys %1 dropped %2")
+                      .arg(dropped.scenes.isEmpty() ? -1 : dropped.scenes.at(0)->camera.keys.size())
+                      .arg(dropped.cameraKeysDropped));
+            for (Scene *sc : dropped.scenes)
+                delete sc;
+            delete s;
+        }
+        // a and b delete their own panels.
+    }
+
     delete scene;
     QDir(scratch).removeRecursively();
     ts << "\nRESULT " << (g_failures ? "FAIL" : "PASS") << " (checks=" << g_checks

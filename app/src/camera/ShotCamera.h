@@ -66,24 +66,46 @@ int panelStartFrame(const Scene &scene, int panelIndex, int fps);
 int panelIndexOfUid(const Scene &scene, quint64 uid); // -1: not in the scene
 
 // A key's derived frame in its scene; -1 when it is INERT (its panel is
-// not in the scene: deleted, its delete still in the undo history).
-double keyFrame(const Scene &scene, const CameraKey &key, int fps);
-int liveKeyCount(const Scene &scene);
+// not in the scene: deleted, its delete still in the undo history) or, for
+// a PINNED key (Phase 2E), STRANDED: its film time, less the scene's film
+// start `filmStart` (the frames before the scene; every caller knows its
+// scene's place), falls outside the scene's span. A pinned key's frame is
+// time x fps, snapped to the nearest whole frame when within 1e-6 of one,
+// so a key pinned at frame f evaluates at f exactly at the same fps.
+double keyFrame(const Scene &scene, const CameraKey &key, int fps, int filmStart = 0);
+int sceneFrameCount(const Scene &scene, int fps); // every panel's frames
+bool isStranded(const Scene &scene, const CameraKey &key, int fps, int filmStart);
+// The rule itself, for a scene that starts at filmStart and is frameCount
+// long: what a structural command asks of the film its redo will make.
+bool pinnedOutside(const CameraKey &key, int fps, int filmStart, int frameCount);
+int strandedCount(const Scene &scene, int fps, int filmStart);
+// A pinned key's frame on the FILM (for drawing it, stranded or not).
+double keyFilmFrame(const CameraKey &key, int fps);
+int liveKeyCount(const Scene &scene, int fps = 24, int filmStart = 0);
 int liveKeysOnPanel(const Scene &scene, const Panel *panel);
 // A key set at frame `frameInPanel` of panel `panelIndex`.
 CameraKey makeKey(const Scene &scene, int panelIndex, int frameInPanel,
                   int fps, const CameraState &state,
                   Ease ease = Ease::EaseInOut);
+// A key PINNED at film frame `filmFrame` (Phase 2E).
+CameraKey makePinnedKey(double filmFrame, int fps, const CameraState &state,
+                        Ease ease = Ease::EaseInOut);
+// The words an edit that strands or un-strands pinned keys adds to its
+// undo text: " (1 pinned camera key now outside scene 2)", " (2 pinned
+// camera keys back inside scene 2)"; empty when the count is unchanged.
+QString strandingText(int strandedBefore, int strandedAfter, int sceneNumber);
 
 // THE EVALUATION. `sceneFrame` counts from the scene's first frame. No
 // live keys: neutral for `canvas`. Before the first / after the last key:
 // that key's state. Between: centre and rotation linear in w, zoom
-// geometric (a push-in at a steady speed).
+// geometric (a push-in at a steady speed). Live keys are sorted by frame,
+// stably; a pinned key at an anchored key's frame sorts after it (they can
+// only meet through a retime), so its framing shows from that frame.
 CameraState evaluate(const Scene &scene, double sceneFrame, int fps,
-                     const QSize &canvas);
+                     const QSize &canvas, int filmStart = 0);
 // The camera at frame `frameInPanel` of a panel, for that panel's canvas.
 CameraState evaluateAtPanel(const Scene &scene, int panelIndex,
-                            int frameInPanel, int fps);
+                            int frameInPanel, int fps, int filmStart = 0);
 
 // The frame as a quad in canvas px (rotated about its centre). Its size is
 // the stage's FRAME over the zoom (Phase 2A); without a margin, the canvas.
@@ -190,9 +212,9 @@ double normalisedAngle(double degrees);
 // (within half a frame), or -1; the key whose segment the frame is in (the
 // key at it, else the last one before it), or -1; the live keys' frames in
 // order.
-int keyIndexAtFrame(const Scene &scene, double sceneFrame, int fps);
-int segmentKeyIndex(const Scene &scene, double sceneFrame, int fps);
-QVector<double> liveKeyFrames(const Scene &scene, int fps);
+int keyIndexAtFrame(const Scene &scene, double sceneFrame, int fps, int filmStart = 0);
+int segmentKeyIndex(const Scene &scene, double sceneFrame, int fps, int filmStart = 0);
+QVector<double> liveKeyFrames(const Scene &scene, int fps, int filmStart = 0);
 // HH:MM:SS:FF of a frame counted from the film's start (the header's own
 // format, AnimaticPage::updateTimecodeLabel).
 QString timecodeText(int filmFrame, int fps);
@@ -200,10 +222,14 @@ QString timecodeText(int filmFrame, int fps);
 // THE FILE. {"keys": [{"panel", "at", "x", "y", "zoom", "rotation",
 // "ease"}]}; an EMPTY object when the scene has no live keys (the caller
 // then writes no "camera" at all, so a project without camera moves saves
-// the JSON it saved before). Inert keys are not written.
+// the JSON it saved before). Inert keys are not written. A PINNED key
+// (Phase 2E) writes {"pinned": true, "time", "x", ...} and no panel / at;
+// stranded or not, it is written (the sound is still there). A project
+// without pinned keys writes exactly the JSON it wrote before.
 QJsonObject toJson(const Scene &scene);
 // Read after the scene's panels are in place. A key whose panel index,
-// numbers or zoom are out of range is dropped and counted.
+// numbers or zoom are out of range is dropped and counted; so is a pinned
+// key whose time is not a finite number at or after 0.
 void fromJson(const QJsonObject &obj, Scene &scene, int *dropped = nullptr);
 
 // Canvas resize (centre-anchored, nothing scaled): every key keeps its

@@ -8695,7 +8695,7 @@ COMMITTED 35ea9ab05 (pushed) on the gate's evidence (fixbatch: 0 families
 failing, Release and Debug); the user hand-tests it with 2B (handtest_2B
 steps 11-12).
 
-## The shot camera, Phase 2B: depth, the core (2026-11-01) - NOT COMMITTED
+## The shot camera, Phase 2B: depth, the core (2026-11-01) - COMMITTED 879893ab3
 
 Built as drawn in Figma 2B-1 .. 2B-5 with Q1-Q6 as recommended. NOT
 committed: the user's word comes after the hand test (handtest_2B.md).
@@ -8866,7 +8866,7 @@ Section 383:141 (now 20252 tall), below 2B-5:
 evidence. CLAUDE.md gained hard rule 15 ("ALL DONE" ends every finished
 task) - left uncommitted, for the user's word.
 
-## The shot camera, Phase 2C: depth tools (2026-11-01) - NOT COMMITTED
+## The shot camera, Phase 2C: depth tools (2026-11-01) - COMMITTED ebb1d5f67
 Built as drawn (Figma 2C-1 .. 2C-5) with Q1-Q7 as recommended.
 - STAY INSIDE WITH DEPTH (D12): shotcam::depthEdges(panel) - the drawn
   layers off the plane and not at 0 % whose art has a pixel at alpha >= 26
@@ -8961,7 +8961,7 @@ Section 383:141 (now 22368 tall), below 2C-5:
   plain; reopening reads again - no sidecar), each with my
   recommendation.
 
-## The shot camera, Phase 2D: the waveform (2026-11-01) - NOT COMMITTED
+## The shot camera, Phase 2D: the waveform (2026-11-01) - COMMITTED 3875d78ae
 Approved with Q1-Q6 as recommended plus two of the user's: the name and
 length chips HIDE while the pointer is over the AUDIO row (back on leave);
 the text-selection colour is set ONCE, app-wide (it fixes the Layers rename
@@ -9105,6 +9105,275 @@ to prove), 4 PASS (played twice, 4-7 s and 147-205 s), 5 not tested
 audio-missing pass; MISSING is untouched by 2D), 7 PASS (the Layers
 rename field at 278 s and the zoom field at 117 s select in the accent;
 the other fields by Lifecycle (dp) THE SELECTION COLOUR), 8 PASS.
+2D COMMITTED 3875d78ae (pushed), the 13 files matching sha_2D.txt.
+
+## Phase 2E (pinned keys): the Figma screens (2026-11-01; built - see the next section)
+The last part of Phase 2. Section 383:141 (now 24964 tall), below 2D-5:
+- 2E-1 507:696: the pinned key on the CAMERA row - the AUDIO-blue
+  diamond, a 3 px stem, a 1 px dotted blue line down through the AUDIO
+  row (D16) - in each 1C-1 state beside an anchored key, and STRANDED
+  (D17: hollow grey at its time); the tooltips.
+- 2E-2 507:791: the key menu with "Pin to Sound (00:00:05:12)" / "Unpin
+  (follow panel 3)"; the lock's variant; a stranded key's menu (Unpin to
+  the scene's last panel, Delete).
+- 2E-3 509:696: the Camera bar's Pin toggle (camPinKey, after Delete Key)
+  in four states - on an anchored key, on a pinned key (blue, on), no key
+  at the playhead (disabled, "Put the playhead on a key to pin it"), the
+  track locked - and Mark while playing: the M key (free; Space, O, Home,
+  End, the arrows and Delete are taken) adds one pinned key per press at
+  the playing frame, nothing when paused.
+- 2E-4 508:696: table 5.3 drawn - a panel lengthened under an anchored
+  key (rides) and a pinned key (stays on its hit, the two meeting at one
+  frame, named in the note); a panel deleted stranding the pinned key,
+  with the undo text "Delete Panel (1 pinned camera key now outside scene
+  1)"; the Quick Move span text and undo text naming the pinned key they
+  replace (D20); the model (5.2, 5.5).
+- 2E-5 509:832: what 2E builds, the row pins that must hold (the CAMERA
+  row and evaluate.* of 2D's rp), pk1-pk10 with controls, the recorder's
+  fields, the release-checklist note (old builds drop pinned keys), and
+  Q1-Q7 with my recommendations (M; Pin after Delete Key; a retime may
+  make a pinned and an anchored key meet; the stranded tooltip and menu;
+  a drag refused at the scene's edge; a mark takes the evaluated framing;
+  the dotted line under the chips).
+
+## Phase 2E (pinned keys): BUILT AND COMMITTED (2026-11-01 / 02) - CAMERA PHASE 2 COMPLETE
+The last part of Phase 2, built as approved (Q1-Q7 as recommended; the
+user's three additions: Figma 2E-3's tooltips moved to their rows, the
+Camera bar built as it is - the Animate switch - and the bar's fit at
+1366 checked with a control). Hand-test list:
+Documents\SankoTV-Design\camera\handtest_2E.md (a project with music).
+Row pins recorded first (spec 8.1): the Camera family on committed
+3875d78ae (229 PASS, rp evaluate.* hold) before the first 2E edit; the
+Lifecycle rp (CAMERA row, AUDIO rows) are 2D's and must hold.
+
+THE MODEL (CameraModel.h, ShotCamera.*): CameraKey gains `pinned` and
+`time` (seconds from the film's start; used only while pinned).
+keyFrame / liveKeyCount / evaluate / evaluateAtPanel / keyIndexAtFrame /
+segmentKeyIndex / liveKeyFrames take the scene's FILM START as a trailing
+parameter (default 0: every pre-2E call and test unchanged). A pinned
+key's scene frame is keyFilmFrame (time x fps, snapped to a whole frame
+within 1e-6) minus the film start; outside [0, sceneFrameCount] it is
+STRANDED (pinnedOutside: the one rule; the end frame counts as inside,
+as an anchored key at at = 1 does): keyFrame -1, kept, saved, drawn, not
+evaluated. New: sceneFrameCount, keyFilmFrame, isStranded, strandedCount,
+makePinnedKey, strandingText, pinnedOutside. toJson writes
+{"pinned":true,"time":...} and no panel / at; fromJson reads them (a
+non-finite or negative time drops the key, counted with Phase 1's drops).
+EVERY CALLER PASSES THE REAL FILM START: StoryboardPage::filmStartOf
+(const Scene*) -> sceneFilmStart (44 sites), the timeline's
+sceneStartFrame (its blocks), AnimaticPage::sceneFilmStart (the items
+before the scene), ProjectExport's ExportPanel::sceneFilmStart (summed
+rows), MainWindow's mp4 warning (summed panels at m_projectFps).
+
+THE SORT, AND A FAULT THE NEW CHECK FOUND: evaluate sorts live keys by
+frame, a pinned key AFTER an anchored one on the same frame (they meet
+only through a retime), so the pinned framing shows from that frame.
+Camera (pk3) "two keys on one frame" FAILED on the first build: with the
+pair as the scene's FIRST keys, evaluate's early return
+`sceneFrame <= first.frame -> first.key->state` answered the anchored
+key. Read the code, not the check: the return now takes the LAST key on
+the first frame (one key there: the path every project took, byte for
+byte - the rp evaluate pins hold, 238 PASS). segmentKeyIndex was
+rewritten the same way (the last live key at or before the frame, the
+pinned one of a pair) instead of deferring to keyIndexAtFrame (which
+prefers the anchored one of a pair, for Add / Delete Key at the
+playhead). cameraPinKey refuses to pin or unpin one key of a meeting
+pair ("Another camera key is at this frame."): it would make two of a
+kind on one frame, a move with no length, as the drag onto a key would.
+
+THE WORKSPACE (StoryboardPage): the Camera bar's PIN toggle (CamBarButton
+Pin glyph, objectName camPinKey, after Delete Key; blue #4d9fff while
+the key at the playhead is pinned; disabled off any key: "Put the
+playhead on a key to pin it"; cameraTogglePin -> cameraPinKey). Pin
+holds the key's film time (framing and ease kept: the scene evaluates
+the same at every frame, pk4); Unpin anchors to the panel under it NOW
+at the frame inside it (after a retime, the new panel: the point). The
+key menu: "Pin to Sound (hh:mm:ss:ff)" / "Unpin (follow panel N)"
+(objectNames cameraPinKey / cameraUnpinKey), disabled under the lock. A
+pinned key's header: "Key N · pinned to tc". A STRANDED key's menu
+(onStrandedKeyMenu, objectName cameraStrandedMenu): header "Pinned key
+of scene N · outside the scene", "Unpin (to the scene's last panel)"
+(its last panel's last frame; a key stranded BEFORE the scene: "...first
+panel", its first frame; refused if a key is there) and "Delete Key".
+cameraMoveKey on a pinned key moves its TIME (stays pinned; the timeline
+clamps the drag to the scene; onto a key refused as before). M
+(QShortcut, WindowShortcut, no auto-repeat, NOT one of the timeline's
+pointer-gated keys: the artist taps beats in while watching the preview
+wherever the pointer rests; a text field with the focus keeps its own M)
+-> cameraMarkKey: while the film plays, one pinned key at the playing
+frame with the framing evaluated there ("Mark Camera Key", the note
+"Camera key marked at tc"); paused, nothing; a frame with a key, nothing;
+locked, refused. Under the lock the Pin button stays enabled and refuses
+on the click, as Add / Delete Key do (Phase 1's pattern; the 2E-3
+"locked" variant reads the same note).
+STRANDING IS NEVER SILENT (5.3): filmLayout() (frames per panel, per
+scene) + strandedIn(layout, scene) decide a structural command's text
+from the layout its redo WILL make, before anything changes:
+PanelDurationCommand and MovePanelCommand take a suffix; every panel
+insert (Add, Duplicate, Paste) and reorder goes through pushInsertPanel /
+pushMovePanel; removeSelectedPanel appends it to its text. The suffix is
+shotcam::strandingText per scene whose stranded count changed, e.g.
+"Delete Panel (1 pinned camera key now outside scene 2)", and the note
+at the pointer says it ("...the scene no longer reaches its time.
+Lengthen the scene or move the key; Undo brings it back." / "...back
+inside scene N."). Scenes are only ever appended at load (no scene
+commands exist), so panel edits are the whole set.
+applyPanelDurationForUndo redraws the canvas scene's views when it holds
+a pinned key (any earlier panel's timing moves it against its drawings).
+D20: quickSpanText and the Quick Move's undo text end " (replaces 1
+pinned key)" / " (replaces N pinned keys)" (pinnedReplacedText); Use Last
+Framing's entry reads "(replaces 1 pinned key)" when all its live keys
+are pinned, "(replaces N keys, M pinned)" when mixed, and its undo text
+"Use Last Framing (replaces N pinned keys)".
+THE TIMELINE: CameraMark gains pinned / stranded; strandedMarks() (hollow
+grey #6f6f80 diamond and stem at its time, never a segment, never
+numbered, never dragged - a press does nothing, the right button opens
+its menu); a pinned key is the AUDIO blue diamond with a 3 px stem,
+selected / at the playhead as any key (stem kept), hover halo only; the
+1 px dotted blue line (paintPinLines) from the stem through the AUDIO
+row is painted from the audio paint after the waveform and before the
+chips (Q7), at the CAMERA row's dimming, when the AUDIO row is shown.
+Tooltips: "Key N · pinned to tc · ease" / "Pinned key of scene N ·
+outside the scene · lengthen the scene or move the key". cameraKeyAt
+sees stranded marks (live first on a tie). cameraKeysForTest gains
+pinned / stranded and lists stranded marks; cameraBarStateForTest gains
+".tip" and the CamBarButtons' ".on".
+THE RECORDER: statePoll shotCam.pinnedKeys / strandedKeys / keyPinned;
+shotCamEdit carries pinned (the key at the edit's frame), pinnedKeys,
+strandedKeys; a mark is a shotCamEdit with what "Mark Camera Key".
+THE SEAM for the bar-fit control: setCameraBarExtraWidthForTest(px)
+widens the bar past its own width (m_cameraBarNaturalW) and places it
+again.
+
+CHECKS (all new, none changed; each with its control). Camera: (pk1) the
+retiming matrix 5.3 with a twin anchored key as the control, (pk2) exact
+frames at 24 / 25 / 30 / 60 over scene 2's every frame, (pk3) stranded
+kept / saved / not evaluated and the pair's sort, (pk9) the file.
+Lifecycle (pk): (pk4) Pin / Unpin from the bar and the menu, the
+disabled state, Unpin after a retime anchoring to the NEW panel; (pk5)
+the row drag of a pinned key (time, snap, refusal, the scene's end) with
+an anchored drag as the control; (pk7) D20's texts and Phase 1's as the
+control; (pk10) the row's colours by pixel (blue, the dotted line in the
+AUDIO row, the accent when selected, the anchored key's fill and no
+line) and (pk3) stranding through a real retime, Delete Panel (the
+panel under it; an earlier scene's), the stranded key's look, tooltip,
+menu and Unpin, Undo making it live, a retime that keeps it inside
+naming nothing; (pk6) M while playing - the film started and WAITING
+FOR THE SOUND (setAudioNeverBeginsForTest with a 600 s cap: playing,
+the clock frozen where it was put, so the frame is known, no timing
+assumed), a second press on the frame adds nothing, paused adds nothing,
+and with the film's own clock running the mark lands between the frames
+read before and after the press (order, not timing); (pk8) the lock
+refuses Pin, the menu, the drag and M, undo / redo byte for byte,
+unlocked accepts. (pf) THE CAMERA BAR FITS AT 1366: a Rig at 1366 x 900
+(grown to the window's minimum if wider), the Camera tool on, the bar's
+frame inside the canvas's global rect; the control widens the bar by the
+canvas's width through the seam and the same measure fails.
+THE FIRST LIFECYCLE RUN (quick check, 1063 checks, 2 FAIL, both new
+checks; the code read before either was touched):
+- (pk10) "selected at the playhead ... keeps its blue stem" read
+  #9185f7 at 3 px in from the centre and the playhead's #d5cbff in the
+  stem's column. The code: the white 1.5 px outline of a selected key at
+  the playhead reaches, antialiased, into the pixel 3 px in on the
+  centre row (the diamond narrows by a pixel per row), and the
+  playhead's 1.5 px line is painted AFTER the row, over the key's
+  column - Phase 1C's look, kept. The stem was 1.5 px wide at a
+  half-pixel x, antialiased into two columns: made 1 px wide, 3 px
+  long, crisp in the key's column (AA off), the column the dotted line
+  carries on down - D16's "3 px stem, 1 px dotted line". The check now
+  reads the fill 2 px in (as the passing normal-state read does), under
+  the playhead and with it scrubbed away, and the stem and line with
+  the playhead away. The second run read the plain blue there: a scrub
+  SELECTS NOTHING (Phase 1C's rule, setSelectedPanel(-1) ends the key's
+  selection), so the check selects the key again through
+  AnimaticPage::setSelectedCameraKey after the scrub - the state
+  playback leaves it in (the key selected, the playhead running on).
+- (pk3) "an earlier scene's panel deleted" expected "Delete Panel (1
+  pinned camera key now outside scene 2)" and got "Delete Panel and 1
+  Camera Key (1 pinned camera key now outside scene 2)": the check
+  deleted scene 1's panel 1, which holds key 1, so Phase 1's "and 1
+  Camera Key" is right and the suffix follows it - the code is correct.
+  The check now deletes panel 3 of scene 1 (4 s, no key on it; scene 2
+  then starts at 168) and expects the plain suffix.
+THE 2E HAND TEST (Dev Recorder 20261102-192609, 408 s, Release; the
+user did steps 1, 3, 5, 6, 9, 10 of handtest_2E.md): 1 PASS (92 s: "Pin
+Camera Key" on key 2, pinned, the bar's Pin on); 2 not tested (Lifecycle
+pk4 / pk5 / pk10 cover the menu texts and tooltips); 3 PASS (two
+duration changes at 236-249 s: the pinned key at film frame 64 stayed
+under the same ruler second while panel 1 lengthened under it; the
+anchored key sat at frame 0, so its ripple is pk1's); 4 not tested
+(pk5); 5 PASS (seven M presses at 296-310 s with timeline.playing true,
+seven "Mark Camera Key" edits, pinnedKeys 1 -> 8, the note "Camera key
+marked at 00:00:10:23"; paused M is pk6's control); 6 PASS (349-374 s:
+"Change Panel Duration (1 pinned camera key now outside scene 1)" twice,
+"(... back inside scene 1)" once, strandedKeys 1 -> 2 -> 1, the hollow
+grey diamond on the row, three undos back to 0 stranded; the stranded
+menu and Unpin are pk3's); 7, 8 not tested (pk7, pk8); 9 PASS (Ctrl+S at
+383 s, Close Project, reopened at 390 s with 9 keys, 8 pinned, 0
+stranded, the blue diamonds back); 10 PASS (sessionEnd at 407.97 s,
+summary.txt complete, 0 dropped records, 0 issue markers, worst stall
+147 ms). One oddity, not 2E's: 36 shotCamEdit records at t = 0 before
+sessionStart, with their own seq 1-36 and another scene's counts - the
+recorder flushed camera edits queued before Start Recording as t = 0.
+THE USER'S TWO CORRECTIONS, BUILT (2026-11-02): (1) the Pin glyph is
+Figma 2E-3's own vector (node 509:707), icons/camera/pin.svg - the
+Figma export byte for byte but for CRLF (export sha256 6821837b2b70
+76f96ebf8d506da50242f498afa002585fb170add813a0daca04; the committed
+file 55db31a8...), rendered by SankoIcons::renderSvg at 13 x 15, tinted
+the ink, where the drawn glyphs sit; (2) the Pin button's ON state is
+the accent SankoTheme::kPurple (#7c6ef6), not the AUDIO blue; the
+CAMERA row's pinned diamonds keep the blue. Checks (Lifecycle, in
+pk4): (pi) the resource loads and is the export (sha), the button's
+glyph box ink-mask overlaps the SVG at Dice >= 0.85 off and on
+(control: Add Key's diamond read the same way is another shape, Dice
+< 0.6; a wrong path is a null icon); (pi) on = purple pixels, no blue;
+off = #dddddd, no purple; the row's pinned diamond pixel blue (its
+control is pk10's anchored key). Measured on the first run: the pin's
+mask Dice 0.986 off and on, the diamond's 0.613 - the diamond is a
+centred blob like the pin's head, so the control's first "< 0.6" was
+a guess, replaced by the gap (< 0.7 and at least 0.25 under the
+pin's) after the numbers were read; the colour counts 56 purple / 0
+blue on, 56 #dddddd / 0 purple off, the row #4d9fff.
+PIN.SVG'S LICENCE (BEFORE SELLING 12, the same method and sets, re-run
+2026-11-02 on the scratch copies; evidence
+Documents\SankoTV-Design\icon-check\pin-2026-11-02\): drawn in this
+project in Figma (2E-3). Scores above the 0.69 line: Bootstrap
+pin-fill 0.904 (mirrored), Font Awesome solid thumbtack 0.836,
+Material keep-fill 0.790, Tabler filled pinned 0.771 - every one a
+solid pushpin, the standard symbol every set draws, read by eye: ours
+is straight-edged (a trapezoid head over a rectangle, a plain stem),
+theirs rounded (Bootstrap, FA, Tabler: round cap and cup-shaped base)
+or Material's rectangle-over-angled-base; no identical path data,
+whole or element (pathcheck). Controls as before: the copied magnet
+1.000 and path-identical, the two negatives 0.380 / 0.291. Permissive
+licences throughout (MIT, CC BY 4.0, Apache-2.0); nothing copied.
+
+GATE 2E (fullgate_2E.log, normal mode, 1826 s): Release and Debug, 0
+failing families; per config Camera 238, Lifecycle 1063, DevRecorder
+46, CanvasEdgeLock 74, CanvasSizeLock 170, QuickShapeGeometryLock 19,
+BrushLibrary 187, PaintPixelLock 13, CanvasBrushLock 3, all 0 FAIL.
+Every pin line count equals the 2D gate's in both configs (c1p 17, mp
+43, mq 44, Camera rp 3, Lifecycle rp 5, strip mp / mq 3 / 5); the
+Lifecycle row pins print their recorded bytes (bd989a38, a4994d62,
+a3e7f938). Quick checks on the way: camera_2E_quick1-3 and
+lifecycle_2E_quick1-3 in _probe/split. Exe stamp 3875d78ae+dirty,
+Release SankoTV.exe 2026-11-01 21:31:13 - the build the hand test ran.
+GATE 2Eb (fullgate_2Eb.log, normal mode, 1823 s; after the two
+corrections): Release and Debug, 0 failing families; Lifecycle 1066
+(the three (pi) checks added), Camera 238, the other seven families as
+in 2E; every pin line count equal to 2D's and 2E's in both configs.
+Exe stamp 3875d78ae+dirty, Release SankoTV.exe 2026-11-02 20:03:25.
+Hashes of the 17 files (16 changed + icons/camera/pin.svg) in
+sha_2E.txt. COMMITTED on the user's word (2026-11-02) as ONE commit on
+master, pushed; the files were confirmed against sha_2E.txt after the
+commit. With 2E in, CAMERA PHASE 2 IS COMPLETE: 2A the stage margin,
+2B depth, 2C depth tools, 2D the waveform, 2E pinned keys - each
+hand-tested, gated and committed (879893ab3, ebb1d5f67, 3875d78ae and
+this commit; 2A in its own commit before them). Open from Phase 2's
+spec: the release-checklist note that builds before 2E drop pinned
+keys (they need a panel) - BEFORE SELLING; and the fps-independent
+seconds of a pinned key are film time, so an audio offset, if ever
+added, must move pinned keys with the sound (spec 5.2).
 
 ## METHOD: measure interior structure ACROSS THE SIZE RANGE before calling it character (2026-09-25)
 

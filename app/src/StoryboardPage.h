@@ -206,6 +206,9 @@ public:
     // they read ("addKey" "Add Key" / "Key set", "ease" text, ...).
     QVariantMap cameraBarStateForTest() const;
     QWidget *cameraBarForTest() const { return m_cameraPanel; }
+    // The Camera bar widened by `px` (0: its own width), placed again: the
+    // control of the fit check at the narrowest window (Phase 2E).
+    void setCameraBarExtraWidthForTest(int px);
 
     // THE QUICK MOVES (Phase 1D, 2026-10-29; Figma 1D-1 to 1D-5). The
     // Camera bar's Quick Move popover, the CAMERA row's and the SHOTS clip's
@@ -663,6 +666,29 @@ private:
     void cameraCopyFraming(int sceneIndex, int keyIndex);
     void cameraPasteFraming(int sceneIndex, int keyIndex);
     void cameraAddKeyAtPlayhead(bool paste);
+    // PINNED KEYS (Phase 2E, 2026-11-01; the Phase 2 spec's 5, D16-D21).
+    // A key pinned to the sound holds its film TIME, not its panel: the
+    // Camera bar's Pin toggle (the key at the playhead), the key menu's
+    // Pin to Sound / Unpin, M while the film plays (a pinned key at the
+    // playing frame). A STRANDED key - pinned where its scene no longer
+    // reaches - is kept and drawn, has its own menu, and is live again
+    // when the scene covers its time. A structural panel edit names the
+    // keys it strands or brings back in its undo text and a note (5.3).
+    void cameraTogglePin();
+    void cameraPinKey(int sceneIndex, int keyIndex, bool pin);
+    void cameraMarkKey();
+    bool cameraKeyStranded(int sceneIndex, int keyIndex) const;
+    void onStrandedKeyMenu(int sceneIndex, int keyIndex, const QPoint &globalPos);
+    void cameraUnpinStranded(int sceneIndex, int keyIndex);
+    void cameraDeleteStranded(int sceneIndex, int keyIndex);
+    int pinnedAmong(const Scene *scene, const QVector<int> &keys) const;
+    static QString pinnedReplacedText(int pinned); // D20: " (replaces 1 pinned key)"
+    QVector<QVector<int>> filmLayout() const;      // frames per panel, per scene
+    int strandedIn(const QVector<QVector<int>> &layout, int sceneIndex) const;
+    QString strandingSuffix(const QVector<QVector<int>> &after, QString *note) const;
+    void pushInsertPanel(Scene *scene, int index, Panel *panel, const QString &text);
+    void pushMovePanel(Scene *scene, int from, int to);
+    int m_cameraBarNaturalW = 0; // the bar's own width (the fit check's seam adds to it)
     bool cameraKeyAtPlayhead() const; // the row menu's "Key Set at Playhead"
     bool deleteSelectedCameraKey(); // false: no key selected (Delete is the panel's)
     QString cameraKeyHeader(int sceneIndex, int keyIndex, bool *last) const;
@@ -694,6 +720,7 @@ private:
     void onSceneMenu(int sceneIndex, const QPoint &globalPos);
     shotcam::CameraState lastFramingOf(int sceneIndex, bool *whole) const;
     int sceneFilmStart(int sceneIndex) const; // frames before the scene
+    int filmStartOf(const Scene *scene) const; // the same, for a scene pointer (0 if not ours)
     shotcam::QuickAmounts m_quickAmounts;      // loaded with the guides
     QuickSpan m_quickSpan = QuickSpan::ThisPanel;
     shotcam::Ease m_quickEase = shotcam::Ease::EaseInOut;

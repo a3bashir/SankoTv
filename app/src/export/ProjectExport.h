@@ -55,6 +55,7 @@ struct ExportPanel
     // scene has no camera move, and then the still is today's picture.
     const Scene *scene = nullptr;
     int panelIndex = 0; // 0-based, in its scene
+    int sceneFilmStart = 0; // frames before the scene (Phase 2E: pinned keys)
     shotcam::CameraState still;
     bool stillNeutral = true;
     // THE STAGE (Phase 2A): the panel's canvas and the frame the shot is.

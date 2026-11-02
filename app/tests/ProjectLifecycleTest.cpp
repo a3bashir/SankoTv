@@ -12930,6 +12930,837 @@ void runRowPinPass(const QString &scratch)
     }
 }
 
+// ---- (pk) PINNED KEYS through the real window (Phase 2E) ----------------------
+// The window halves of the spec's pk3-pk8 and pk10 and the stranding notes
+// (5.3), through the real paths: the Camera bar's Pin, the key menus, the
+// row's drag and grabs, M while the film plays, the lock. The model halves
+// (pk1, pk2, pk9) are the Camera family's (pk). Each check has its control.
+void runPinnedKeysPass(const QString &scratch)
+{
+    using namespace workspace;
+    using namespace camtool;
+    out() << "--- (pk) pinned keys through the real window (Phase 2E) ---" << Qt::endl;
+    const QSize cs(1920, 1080);
+    // 2 scenes x 4 panels of 2, 3, 4, 2 s at 24 fps (48, 72, 96, 48 frames):
+    // the panels start at scene frames 0, 48, 120, 216; a scene is 264 long;
+    // scene 2 starts at film frame 264.
+    const QString project = writeProject(scratch + QStringLiteral("/pinkeys"),
+                                         QStringLiteral("PinKeys"), cs, 24, 2, 4);
+    auto rig = std::make_unique<Rig>(project);
+    Rig &r = *rig;
+    check(QStringLiteral("(pk) the workspace opened"), r.ok);
+    if (!r.ok)
+        return;
+    Scene *s0 = r.window.scenesForTest().value(0);
+    Scene *s1 = r.window.scenesForTest().value(1);
+    QUndoStack *stack = r.window.undoStackForTest();
+    QWidget *bar = r.storyboard->cameraBarForTest();
+    auto *camBtn = r.storyboard->findChild<QPushButton *>(QStringLiteral("toolCamera"));
+    if (!s0 || !s1 || s0->panels.size() < 4 || s1->panels.size() < 4 || !stack || !bar || !camBtn) {
+        check(QStringLiteral("(pk) found the two scenes, the history, the Camera bar and the tool"), false);
+        return;
+    }
+    using shotcam::CameraState;
+    using shotcam::Ease;
+    const CameraState kA{960, 540, 1.2, 0}, kB{900, 500, 1.5, 0}, kC{1000, 560, 2.0, 10};
+    // Scene 1: three anchored keys at scene frames 12, 100 and 240.
+    auto resetKeys = [&] {
+        shotcam::SceneCamera c0;
+        c0.keys << shotcam::makeKey(*s0, 0, 12, 24, kA, Ease::EaseInOut)
+                << shotcam::makeKey(*s0, 1, 52, 24, kB, Ease::Linear)
+                << shotcam::makeKey(*s0, 3, 24, 24, kC, Ease::EaseOut);
+        r.storyboard->applyCameraForUndo(s0, c0);
+        r.storyboard->applyCameraForUndo(s1, shotcam::SceneCamera());
+    };
+    resetKeys();
+    r.timeline->setZoomForTest(100); // 1 px a frame: content x = film frame
+    pump(150);
+    const int rowY = r.timeline->cameraRowForTest().y() + 14;
+    auto keys = [&] { return r.timeline->cameraKeysForTest(); };
+    auto keyMap = [&](int s, int k) {
+        for (const QVariant &v : keys())
+            if (v.toMap().value(QStringLiteral("scene")).toInt() == s
+                && v.toMap().value(QStringLiteral("key")).toInt() == k)
+                return v.toMap();
+        return QVariantMap();
+    };
+    auto keyX = [&](int s, int k) {
+        const QVariantMap m = keyMap(s, k);
+        return m.isEmpty() ? -1000 : m.value(QStringLiteral("x")).toInt();
+    };
+    auto screenX = [&](double filmFrame) {
+        return 135 + qRound(filmFrame * r.timeline->pxPerFrameForTest() - r.timeline->scrollXForTest());
+    };
+    auto dragKey = [&](int fromX, int toX) {
+        drag(r.surface, QPointF(fromX, rowY), QPointF(toX, rowY));
+        pump(80);
+    };
+    auto menuAt = [&](int x, const std::function<void(QMenu *)> &fn) {
+        r.storyboard->setClipMenuHookForTest(fn);
+        QContextMenuEvent ev(QContextMenuEvent::Mouse, QPoint(x, rowY),
+                             r.surface->mapToGlobal(QPoint(x, rowY)));
+        QCoreApplication::sendEvent(r.surface, &ev);
+        r.storyboard->setClipMenuHookForTest({});
+        pump(80);
+    };
+    auto unhover = [&] { // the pointer off the row: no halo in a grab
+        mouse(r.surface, QEvent::MouseMove, QPointF(60, rowY), Qt::NoButton, Qt::NoButton);
+        pump(60);
+    };
+    auto lastText = [&] { return stack->index() > 0 ? stack->text(stack->index() - 1) : QString(); };
+    auto bars = [&] { return r.storyboard->cameraBarStateForTest(); };
+    auto findAction = [](QMenu *m, const QString &name) {
+        return m ? m->findChild<QAction *>(name) : nullptr;
+    };
+    auto camJson = [](const Scene *s) {
+        return QJsonDocument(shotcam::toJson(*s)).toJson(QJsonDocument::Compact);
+    };
+    // The evaluation of a whole scene, frame by frame, as text.
+    auto evalText = [&](const Scene *s, int filmStart) {
+        QString g;
+        QTextStream gs(&g);
+        gs.setRealNumberPrecision(12);
+        for (int f = 0; f <= shotcam::sceneFrameCount(*s, 24); ++f) {
+            const CameraState st = shotcam::evaluate(*s, f, 24, cs, filmStart);
+            gs << f << ' ' << st.cx << ' ' << st.cy << ' ' << st.zoom << ' ' << st.rotation << '\n';
+        }
+        gs.flush();
+        return g;
+    };
+    QVector<QVariantMap> recorded;
+    QObject::connect(r.storyboard, &StoryboardPage::shotCameraEdited, r.storyboard,
+                     [&recorded](const QVariantMap &e) { recorded.append(e); });
+    const QString dot = QString::fromUtf8(" \xC2\xB7 ");
+
+    // --- (pk4) Pin / Unpin from the bar and the menu ---------------------------
+    clickThumb(r, 1);     // panel 2 on the canvas
+    camBtn->click();      // the Camera bar
+    pump(200);
+    r.animatic->scrubToForTest(1, 52); // the playhead on key 2 (scene frame 100)
+    pump(100);
+    {
+        const QString before = evalText(s0, 0);
+        const int count = stack->index();
+        const QVariantMap b0 = bars();
+        recorded.clear();
+        clickBar(bar, QStringLiteral("camPinKey"));
+        const QVariantMap b1 = bars();
+        auto *pinBtn = bar->findChild<QAbstractButton *>(QStringLiteral("camPinKey"));
+        auto *addBtn = bar->findChild<QAbstractButton *>(QStringLiteral("camAddKey"));
+        auto grabBtn = [](QAbstractButton *b) {
+            return b ? b->grab().toImage().convertToFormat(QImage::Format_ARGB32) : QImage();
+        };
+        const QImage pinOnImg = grabBtn(pinBtn);
+        // The row's pinned diamond with the playhead off it (under the
+        // playhead every key wears the playhead's colour).
+        r.animatic->scrubToForTest(0, 0);
+        unhover();
+        pump(100);
+        const QColor rowPinnedPx = r.surface->grab().toImage().pixelColor(keyX(0, 1) - 2, rowY);
+        r.animatic->scrubToForTest(1, 52);
+        pump(100);
+        const shotcam::CameraKey &k = s0->camera.keys.at(1);
+        check(QStringLiteral("(pk4) PIN from the bar: on key 2 (scene frame 100) the Pin button is "
+                             "enabled and off; one click is \"Pin Camera Key\", the key now holds "
+                             "the time 100 / 24 s and is still at frame 100, the scene evaluates the "
+                             "same at every frame, the button shows blue, and the recorder's event "
+                             "says pinned"),
+              b0.value(QStringLiteral("camPinKey.enabled")).toBool()
+                  && !b0.value(QStringLiteral("camPinKey.on")).toBool()
+                  && stack->index() == count + 1 && lastText() == QStringLiteral("Pin Camera Key")
+                  && k.pinned && k.time == 100.0 / 24.0
+                  && shotcam::keyFrame(*s0, k, 24) == 100.0 && evalText(s0, 0) == before
+                  && b1.value(QStringLiteral("camPinKey.on")).toBool()
+                  && b1.value(QStringLiteral("camPinKey.tip")).toString().startsWith(QStringLiteral("Unpin"))
+                  && recorded.size() == 1 && recorded.last().value(QStringLiteral("pinned")).toBool()
+                  && recorded.last().value(QStringLiteral("pinnedKeys")).toInt() == 1,
+              QStringLiteral("%1 +%2 pinned %3 time %4 on %5 tip '%6'").arg(lastText())
+                  .arg(stack->index() - count).arg(k.pinned).arg(k.time)
+                  .arg(b1.value(QStringLiteral("camPinKey.on")).toBool())
+                  .arg(b1.value(QStringLiteral("camPinKey.tip")).toString()));
+        clickBar(bar, QStringLiteral("camPinKey"));
+        const QImage pinOffImg = grabBtn(pinBtn);
+        const QImage addImg = grabBtn(addBtn);
+        const shotcam::CameraKey &u = s0->camera.keys.at(1);
+        check(QStringLiteral("(pk4) UNPIN from the bar: \"Unpin Camera Key\" anchors it to the panel "
+                             "under it (panel 2, 52 / 72 through it) with the same framing; the "
+                             "evaluation is unchanged; the button is off again"),
+              stack->index() == count + 2 && lastText() == QStringLiteral("Unpin Camera Key")
+                  && !u.pinned && u.panelUid == s0->panels.at(1)->uid.value()
+                  && qAbs(u.at - 52.0 / 72.0) < 1e-9 && u.state == kB
+                  && evalText(s0, 0) == before
+                  && !bars().value(QStringLiteral("camPinKey.on")).toBool());
+        // THE PIN BUTTON'S LOOK (the user's two corrections after the 2E
+        // hand test): Figma 2E-3's own pin glyph, and the accent purple when
+        // on - while the CAMERA row's pinned diamond stays the AUDIO blue.
+        {
+            const QColor purple = SankoTheme::kPurple, blue(0x4d, 0x9f, 0xff), plain(0xdd, 0xdd, 0xdd);
+            auto count = [](const QImage &im, const QColor &c) {
+                int n = 0;
+                for (int y = 0; y < im.height(); ++y)
+                    for (int x = 0; x < im.width(); ++x)
+                        if (im.pixelColor(x, y) == c)
+                            ++n;
+                return n;
+            };
+            // The glyph box (x 9..21, y 8..22 of the 30 px button): its
+            // ink-like pixels as a mask, against the SVG rendered at the
+            // same 13 x 15 (antialiasing and the background fall out).
+            const QRect box(9, 8, 13, 15);
+            auto inkMask = [&](const QImage &im, const QColor &ink) {
+                QVector<bool> m(box.width() * box.height(), false);
+                if (im.width() < box.right() + 1 || im.height() < box.bottom() + 1)
+                    return m;
+                for (int y = 0; y < box.height(); ++y)
+                    for (int x = 0; x < box.width(); ++x) {
+                        const QColor c = im.pixelColor(box.x() + x, box.y() + y);
+                        const int d = qAbs(c.red() - ink.red()) + qAbs(c.green() - ink.green())
+                            + qAbs(c.blue() - ink.blue());
+                        m[y * box.width() + x] = c.alpha() > 0 && d < 150;
+                    }
+                return m;
+            };
+            auto dice = [](const QVector<bool> &a, const QVector<bool> &b) {
+                int both = 0, na = 0, nb = 0;
+                for (int i = 0; i < a.size() && i < b.size(); ++i) {
+                    both += a.at(i) && b.at(i);
+                    na += a.at(i);
+                    nb += b.at(i);
+                }
+                return (na + nb) ? 2.0 * both / (na + nb) : 0.0;
+            };
+            const QImage svg = SankoIcons::renderSvg(QStringLiteral(":/icons/camera/pin.svg"),
+                                                     box.size(), 1.0, plain)
+                                   .toImage().convertToFormat(QImage::Format_ARGB32);
+            QVector<bool> svgMask(box.width() * box.height(), false);
+            for (int y = 0; y < svg.height() && y < box.height(); ++y)
+                for (int x = 0; x < svg.width() && x < box.width(); ++x)
+                    svgMask[y * box.width() + x] = svg.pixelColor(x, y).alpha() > 100;
+            const double diceOff = dice(inkMask(pinOffImg, plain), svgMask);
+            const double diceOn = dice(inkMask(pinOnImg, purple), svgMask);
+            const double diceDiamond = dice(inkMask(addImg, plain), svgMask);
+            // The resource is Figma's export, byte for byte but for the line
+            // endings (the file is CRLF like its neighbours).
+            QFile res(QStringLiteral(":/icons/camera/pin.svg"));
+            QByteArray bytes;
+            if (res.open(QIODevice::ReadOnly))
+                bytes = res.readAll();
+            bytes.replace("\r", "");
+            const QString sha = QString::fromLatin1(
+                QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex());
+            check(QStringLiteral("(pi) THE PIN GLYPH IS FIGMA 2E-3's: icons/camera/pin.svg loads, is the "
+                                 "Figma export byte for byte (sha256 6821837b..., CRs aside), and the "
+                                 "button paints its shape - the ink mask of its glyph box against the "
+                                 "SVG rendered at 13 x 15 overlaps at Dice 0.85 or more, off and on"),
+                  !SankoIcons::icon(QStringLiteral(":/icons/camera/pin.svg"), box.size()).isNull()
+                      && sha == QStringLiteral("6821837b2b7076f96ebf8d506da50242f498afa002585fb170add813a0daca04")
+                      && diceOff >= 0.85 && diceOn >= 0.85,
+                  QStringLiteral("sha %1 dice off %2 on %3").arg(sha.left(16)).arg(diceOff, 0, 'f', 3).arg(diceOn, 0, 'f', 3));
+            // The diamond is a centred blob like the pin's head, so the masks
+            // still overlap at about 0.61 (measured) against the pin's own
+            // 0.99: the control is the gap, not a low absolute.
+            check(QStringLiteral("(pi) control: the Add Key button's diamond, read the same way, is "
+                                 "another shape (Dice below 0.7 and at least 0.25 under the pin's), "
+                                 "and a wrong path gives a null icon"),
+                  diceDiamond < 0.7 && diceDiamond < diceOff - 0.25
+                      && SankoIcons::icon(QStringLiteral(":/icons/camera/no_such.svg"), box.size()).isNull(),
+                  QStringLiteral("diamond dice %1 vs pin %2").arg(diceDiamond, 0, 'f', 3).arg(diceOff, 0, 'f', 3));
+            check(QStringLiteral("(pi) THE PIN BUTTON'S ON-STATE IS THE ACCENT PURPLE #7c6ef6 (glyph "
+                                 "and text) with no AUDIO blue in it; off it is the bar's #dddddd with "
+                                 "no purple; and the pinned key on the CAMERA row stays the AUDIO "
+                                 "blue #4d9fff"),
+                  count(pinOnImg, purple) >= 10 && count(pinOnImg, blue) == 0
+                      && count(pinOffImg, plain) >= 10 && count(pinOffImg, purple) == 0
+                      && rowPinnedPx == blue,
+                  QStringLiteral("on: purple %1 blue %2; off: plain %3 purple %4; row %5")
+                      .arg(count(pinOnImg, purple)).arg(count(pinOnImg, blue))
+                      .arg(count(pinOffImg, plain)).arg(count(pinOffImg, purple)).arg(rowPinnedPx.name()));
+        }
+        // No key at the playhead: disabled, and says why.
+        r.animatic->scrubToForTest(1, 10); // scene frame 58: no key
+        pump(60);
+        check(QStringLiteral("(pk4) off any key the Pin button is disabled: \"Put the playhead on a "
+                             "key to pin it\""),
+              !bars().value(QStringLiteral("camPinKey.enabled")).toBool()
+                  && bars().value(QStringLiteral("camPinKey.tip")).toString()
+                         == QStringLiteral("Put the playhead on a key to pin it"),
+              bars().value(QStringLiteral("camPinKey.tip")).toString());
+        // Control: Unpin after a retime anchors to the NEW panel under it.
+        r.animatic->scrubToForTest(1, 52);
+        pump(60);
+        clickBar(bar, QStringLiteral("camPinKey")); // pinned at film 100 again
+        r.animatic->setPanelDurationForTest(0, 0, 5); // panel 1: 2 s -> 5 s (120 frames)
+        pump(150);
+        const bool overPanel1 = shotcam::keyFrame(*s0, s0->camera.keys.at(1), 24) == 100.0;
+        QString unpinText;
+        menuAt(keyX(0, 1), [&](QMenu *m) {
+            if (QAction *a = findAction(m, QStringLiteral("cameraUnpinKey"))) {
+                unpinText = a->text();
+                a->trigger();
+            }
+        });
+        const shotcam::CameraKey &n = s0->camera.keys.at(1);
+        check(QStringLiteral("(pk4) control: panel 1 lengthened to 5 s slides under the pinned key "
+                             "(still film frame 100, now over panel 1); the menu's \"Unpin (follow "
+                             "panel 1)\" anchors it to panel 1 at 100 / 120 - the OLD panel (2) "
+                             "would be the anchored rule"),
+              overPanel1 && unpinText == QStringLiteral("Unpin (follow panel 1)")
+                  && lastText() == QStringLiteral("Unpin Camera Key") && !n.pinned
+                  && n.panelUid == s0->panels.at(0)->uid.value() && qAbs(n.at - 100.0 / 120.0) < 1e-9
+                  && n.panelUid != s0->panels.at(1)->uid.value(),
+              QStringLiteral("'%1' over1 %2 at %3").arg(unpinText).arg(overPanel1).arg(n.at));
+        stack->setIndex(count); // back to the three anchored keys
+        pump(150);
+    }
+
+    // --- (pk5) the row drag of a pinned key -------------------------------------
+    {
+        const int count = stack->index();
+        QString pinText;
+        menuAt(keyX(0, 1), [&](QMenu *m) {
+            if (QAction *a = findAction(m, QStringLiteral("cameraPinKey"))) {
+                pinText = a->text();
+                a->trigger();
+            }
+        });
+        const bool pinned = lastText() == QStringLiteral("Pin Camera Key") && s0->camera.keys.at(1).pinned;
+        dragKey(keyX(0, 1), screenX(130)); // into panel 3 (120-216)
+        const shotcam::CameraKey k1 = s0->camera.keys.at(1);
+        const bool moved = lastText() == QStringLiteral("Move Camera Key") && k1.pinned
+            && shotcam::keyFrame(*s0, k1, 24) == 130.0 && k1.time == 130.0 / 24.0 && k1.state == kB;
+        dragKey(keyX(0, 1), screenX(117)); // 3 px before the cut at 120: snaps
+        const double snapped = shotcam::keyFrame(*s0, s0->camera.keys.at(1), 24);
+        const int count2 = stack->index();
+        r.storyboard->clearNoteForTest();
+        dragKey(keyX(0, 1), keyX(0, 2)); // onto key 3
+        const bool refused = stack->index() == count2
+            && r.storyboard->lastNoteForTest() == QStringLiteral("Another camera key is at this frame.")
+            && shotcam::keyFrame(*s0, s0->camera.keys.at(1), 24) == 120.0;
+        dragKey(keyX(0, 1), screenX(300)); // past the scene's end (264)
+        const double clamped = shotcam::keyFrame(*s0, s0->camera.keys.at(1), 24);
+        check(QStringLiteral("(pk5) the menu's \"Pin to Sound (00:00:04:04)\" pins key 2; dragged on "
+                             "the row its TIME moves (130 / 24 s, \"Move Camera Key\", still pinned, "
+                             "framing kept); it snaps to the cut (117 -> 120); onto key 3 it is "
+                             "refused with the note; past the scene's end it stops at the end (264)"),
+              pinText == QStringLiteral("Pin to Sound (00:00:04:04)") && pinned && moved
+                  && snapped == 120.0 && refused && clamped == 264.0 && s0->camera.keys.at(1).pinned,
+              QStringLiteral("'%1' pinned %2 moved %3 snapped %4 refused %5 clamped %6")
+                  .arg(pinText).arg(pinned).arg(moved).arg(snapped).arg(refused).arg(clamped));
+        // Control: an anchored key's drag re-anchors (Phase 1).
+        dragKey(keyX(0, 0), screenX(60)); // key 1 (anchored, frame 12) into panel 2
+        const shotcam::CameraKey k0 = s0->camera.keys.at(0);
+        check(QStringLiteral("(pk5) control: the same drag on an anchored key re-anchors it to the "
+                             "panel it lands in (panel 2) - the pinned key's time is the other rule"),
+              lastText() == QStringLiteral("Move Camera Key") && !k0.pinned
+                  && k0.panelUid == s0->panels.at(1)->uid.value()
+                  && shotcam::keyFrame(*s0, k0, 24) == 60.0);
+        stack->setIndex(count);
+        pump(150);
+    }
+
+    // --- (pk7) D20: the pinned keys a Quick Move / Use Last Framing replaces ----
+    {
+        const int count = stack->index();
+        // Key 2 pinned (scene frame 100, in panel 2: 48-120); the span text
+        // and the undo text name it.
+        menuAt(keyX(0, 1), [&](QMenu *m) {
+            if (QAction *a = findAction(m, QStringLiteral("cameraPinKey")))
+                a->trigger();
+        });
+        clickThumb(r, 1);
+        pump(100);
+        clickBar(bar, QStringLiteral("camQuickMove")); // the popover, with its span text
+        auto *spanL = r.storyboard->findChild<QLabel *>(QStringLiteral("camQuickSpanText"));
+        const QString span = spanL ? spanL->text() : QString();
+        if (QWidget *pop = r.storyboard->findChild<QWidget *>(QStringLiteral("camQuickPopover")))
+            pop->hide();
+        pump(60);
+        const QRect clip2 = r.timeline->clipRectForTest(1);
+        menuAt(clip2.center().x(), [&](QMenu *m) {
+            if (QMenu *q = m->findChild<QMenu *>(QStringLiteral("cameraQuickMenu")))
+                if (QAction *a = q->findChild<QAction *>(QStringLiteral("quickPanRight")))
+                    a->trigger();
+        });
+        const QString quickText = lastText();
+        check(QStringLiteral("(pk7) D20: with a pinned key in the span, the Quick Move popover's "
+                             "span text ends \"(replaces 1 pinned key)\" and the move's undo text "
+                             "is \"Quick Camera Move (replaces 1 pinned key)\""),
+              span.endsWith(QStringLiteral(" (replaces 1 pinned key)"))
+                  && span.startsWith(QStringLiteral("over panel 2") + dot)
+                  && quickText == QStringLiteral("Quick Camera Move (replaces 1 pinned key)"),
+              QStringLiteral("'%1' | '%2'").arg(span, quickText));
+        stack->setIndex(count);
+        pump(100);
+        // Use Last Framing of Scene 1 on scene 2, which holds one pinned key.
+        shotcam::SceneCamera c1;
+        c1.keys << shotcam::makePinnedKey(264 + 50, 24, kC);
+        r.storyboard->applyCameraForUndo(s1, c1);
+        pump(100);
+        const QRect clip5 = r.timeline->clipRectForTest(4);
+        QString useText;
+        menuAt(clip5.center().x(), [&](QMenu *m) {
+            if (QAction *a = findAction(m, QStringLiteral("cameraUseLastFraming"))) {
+                useText = a->text();
+                a->trigger();
+            }
+        });
+        const QString useUndo = lastText();
+        check(QStringLiteral("(pk7) D20: Use Last Framing over scene 2's one pinned key reads "
+                             "\"(replaces 1 pinned key)\" in the menu and the undo text"),
+              useText == QStringLiteral("Use Last Framing of Scene 1 (replaces 1 pinned key)")
+                  && useUndo == QStringLiteral("Use Last Framing (replaces 1 pinned key)"),
+              QStringLiteral("'%1' | '%2'").arg(useText, useUndo));
+        stack->setIndex(count);
+        // Control: no pinned key - Phase 1's texts.
+        shotcam::SceneCamera c1a;
+        c1a.keys << shotcam::makeKey(*s1, 0, 50, 24, kC);
+        r.storyboard->applyCameraForUndo(s1, c1a);
+        pump(100);
+        clickBar(bar, QStringLiteral("camQuickMove"));
+        const QString spanPlain = spanL ? spanL->text() : QString();
+        if (QWidget *pop = r.storyboard->findChild<QWidget *>(QStringLiteral("camQuickPopover")))
+            pop->hide();
+        pump(60);
+        QString usePlain;
+        menuAt(clip5.center().x(), [&](QMenu *m) {
+            if (QAction *a = findAction(m, QStringLiteral("cameraUseLastFraming"))) {
+                usePlain = a->text();
+                a->trigger();
+            }
+        });
+        check(QStringLiteral("(pk7) control: without a pinned key the span text names none and Use "
+                             "Last Framing reads \"(replaces 1 key)\" / \"Use Last Framing\""),
+              !spanPlain.contains(QStringLiteral("pinned"))
+                  && usePlain == QStringLiteral("Use Last Framing of Scene 1 (replaces 1 key)")
+                  && lastText() == QStringLiteral("Use Last Framing"),
+              QStringLiteral("'%1' | '%2' | '%3'").arg(spanPlain, usePlain, lastText()));
+        stack->setIndex(count);
+        r.storyboard->applyCameraForUndo(s1, shotcam::SceneCamera());
+        pump(100);
+    }
+
+    // --- (pk3, pk10) stranding through the real edits; the row's look ------------
+    {
+        const int count = stack->index();
+        // Scene 2: a pinned key at film frame 264 + 250 = 514, over its panel 4
+        // (216-264); scene 1's key 2 pinned at 100 for the look.
+        shotcam::SceneCamera c1;
+        c1.keys << shotcam::makePinnedKey(514, 24, kC);
+        r.storyboard->applyCameraForUndo(s1, c1);
+        menuAt(keyX(0, 1), [&](QMenu *m) {
+            if (QAction *a = findAction(m, QStringLiteral("cameraPinKey")))
+                a->trigger();
+        });
+        unhover();
+        r.animatic->scrubToForTest(0, 0); // the playhead away from the keys
+        pump(100);
+        // The look (pk10): a pinned key's blue, an anchored key's fill, the
+        // dotted line in the AUDIO row under the pinned key only.
+        auto grab = [&] { return r.surface->grab().toImage(); };
+        QImage img = grab();
+        const int cy = rowY;
+        const QRect audio = r.timeline->audioRowForTest();
+        auto blueInColumn = [&](const QImage &im, int x) {
+            int n = 0;
+            for (int y = audio.top(); y <= audio.bottom(); ++y)
+                if (im.pixelColor(x, y) == QColor(0x4d, 0x9f, 0xff))
+                    ++n;
+            return n;
+        };
+        const QColor pinnedPx = img.pixelColor(keyX(0, 1) - 2, cy);
+        const QColor anchoredPx = img.pixelColor(keyX(0, 0) - 2, cy);
+        const int linePinned = blueInColumn(img, keyX(0, 1));
+        const int lineAnchored = blueInColumn(img, keyX(0, 0));
+        const QString tipPinned = keyMap(0, 1).value(QStringLiteral("tip")).toString();
+        check(QStringLiteral("(pk10) THE ROW'S LOOK: the pinned key is the AUDIO blue #4d9fff with a "
+                             "dotted blue line down the AUDIO row under it; its tooltip reads "
+                             "\"Key 2 · pinned to 00:00:04:04 · Linear\""),
+              pinnedPx == QColor(0x4d, 0x9f, 0xff) && linePinned >= 4
+                  && tipPinned == QStringLiteral("Key 2") + dot + QStringLiteral("pinned to 00:00:04:04") + dot
+                                      + QStringLiteral("Linear")
+                  && keyMap(0, 1).value(QStringLiteral("pinned")).toBool(),
+              QStringLiteral("%1 line %2 tip '%3'").arg(pinnedPx.name()).arg(linePinned).arg(tipPinned));
+        check(QStringLiteral("(pk10) control: the anchored key beside it is the key fill #252330 "
+                             "with no line under it, and its tooltip names its panel"),
+              anchoredPx == SankoTimelineTheme::kCameraKeyFill && lineAnchored == 0
+                  && keyMap(0, 0).value(QStringLiteral("tip")).toString().contains(QStringLiteral("panel 1"))
+                  && !keyMap(0, 0).value(QStringLiteral("pinned")).toBool(),
+              QStringLiteral("%1 line %2").arg(anchoredPx.name()).arg(lineAnchored));
+        // Selected: the accent fill, the stem and the line still blue. A
+        // click puts the playhead on it (the playhead's 1.5 px line then
+        // owns the stem's column), and a scrub selects nothing (Phase 1C),
+        // so the stem is read with the playhead scrubbed away and the key
+        // selected again through the page's own seam - the state playback
+        // leaves it in (the key selected, the playhead running on). Read
+        // 2 px in from the centre: the 1.5 px outline reaches a pixel
+        // further in than that.
+        mouse(r.surface, QEvent::MouseButtonPress, QPointF(keyX(0, 1), rowY), Qt::LeftButton, Qt::LeftButton);
+        mouse(r.surface, QEvent::MouseButtonRelease, QPointF(keyX(0, 1), rowY), Qt::LeftButton, Qt::NoButton);
+        unhover();
+        pump(120);
+        img = grab();
+        const QColor selAtPx = img.pixelColor(keyX(0, 1) - 2, cy);
+        const bool selAt = keyMap(0, 1).value(QStringLiteral("selected")).toBool()
+            && keyMap(0, 1).value(QStringLiteral("atPlayhead")).toBool();
+        r.animatic->scrubToForTest(0, 0);
+        r.animatic->setSelectedCameraKey(0, 1);
+        unhover();
+        pump(120);
+        img = grab();
+        const QColor selPx = img.pixelColor(keyX(0, 1) - 2, cy);
+        const QColor stemPx = img.pixelColor(keyX(0, 1), cy + 7);
+        const int lineSel = blueInColumn(img, keyX(0, 1));
+        check(QStringLiteral("(pk10) SELECTED the pinned key takes the accent fill - under the "
+                             "playhead and away from it - and keeps its blue stem and dotted line"),
+              selAt && selAtPx == SankoTimelineTheme::kCameraAccent
+                  && keyMap(0, 1).value(QStringLiteral("selected")).toBool()
+                  && !keyMap(0, 1).value(QStringLiteral("atPlayhead")).toBool()
+                  && selPx == SankoTimelineTheme::kCameraAccent && stemPx == QColor(0x4d, 0x9f, 0xff)
+                  && lineSel >= 4,
+              QStringLiteral("at playhead %1 %2; away %3 stem %4 line %5").arg(selAt).arg(selAtPx.name())
+                  .arg(selPx.name(), stemPx.name()).arg(lineSel));
+        r.animatic->setSelectedCameraKey(-1, -1);
+        r.animatic->scrubToForTest(0, 0);
+        unhover();
+        pump(100);
+
+        // (pk3) STRANDING: scene 2's panel 4 from 2 s to 1 s - the scene is 240
+        // long, the key at 250 is outside it.
+        const int count2 = stack->index();
+        const QByteArray saved = camJson(s1);
+        r.storyboard->clearNoteForTest();
+        r.animatic->setPanelDurationForTest(1, 3, 1);
+        pump(200);
+        unhover();
+        img = grab();
+        const QVariantMap stranded = keyMap(1, 0);
+        const int sx = stranded.value(QStringLiteral("x")).toInt();
+        const QColor centre = sx > 0 ? img.pixelColor(sx, cy) : QColor();
+        int greyish = 0;
+        if (sx > 0)
+            for (int dx = -6; dx <= 6; ++dx)
+                for (int dy = -6; dy <= 6; ++dy) {
+                    const QColor c = img.pixelColor(sx + dx, cy + dy);
+                    if (qAbs(c.red() - 0x6f) < 24 && qAbs(c.green() - 0x6f) < 24 && qAbs(c.blue() - 0x80) < 24
+                        && c != SankoTimelineTheme::kCameraRowBg)
+                        ++greyish;
+                }
+        QString header, unpinText;
+        bool delOn = false;
+        menuAt(sx, [&](QMenu *m) {
+            header = findAction(m, QStringLiteral("cameraStrandedHeader"))
+                ? findAction(m, QStringLiteral("cameraStrandedHeader"))->text() : QString();
+            if (QAction *a = findAction(m, QStringLiteral("cameraUnpinStranded")))
+                unpinText = a->text();
+            delOn = findAction(m, QStringLiteral("cameraDeleteStranded"))
+                && findAction(m, QStringLiteral("cameraDeleteStranded"))->isEnabled();
+        });
+        check(QStringLiteral("(pk3) STRANDED through a real retime: scene 2's panel 4 shortened to "
+                             "1 s puts its pinned key (film 514) outside the scene - the undo text "
+                             "is \"Change Panel Duration (1 pinned camera key now outside scene 2)\", "
+                             "the note says so, the key is KEPT and SAVED, NOT evaluated (0 live), "
+                             "drawn HOLLOW GREY at its time (x of frame 514) with the stranded "
+                             "tooltip, and its menu offers Unpin (to the scene's last panel) and "
+                             "Delete Key"),
+              lastText() == QStringLiteral("Change Panel Duration (1 pinned camera key now outside scene 2)")
+                  && r.storyboard->lastNoteForTest().contains(QStringLiteral("now outside scene 2"))
+                  && s1->camera.keys.size() == 1 && camJson(s1) == saved
+                  && shotcam::liveKeyCount(*s1, 24, 264) == 0 && shotcam::strandedCount(*s1, 24, 264) == 1
+                  && stranded.value(QStringLiteral("stranded")).toBool() && sx == screenX(514)
+                  && centre == SankoTimelineTheme::kCameraRowBg && greyish >= 4
+                  && stranded.value(QStringLiteral("tip")).toString()
+                         == QStringLiteral("Pinned key of scene 2") + dot + QStringLiteral("outside the scene") + dot
+                             + QStringLiteral("lengthen the scene or move the key")
+                  && header == QStringLiteral("Pinned key of scene 2") + dot + QStringLiteral("outside the scene")
+                  && unpinText == QStringLiteral("Unpin (to the scene's last panel)") && delOn,
+              QStringLiteral("'%1' | note '%2' | x %3 (%4) centre %5 grey %6 | '%7' | '%8'")
+                  .arg(lastText(), r.storyboard->lastNoteForTest()).arg(sx).arg(screenX(514))
+                  .arg(centre.name()).arg(greyish).arg(header, unpinText));
+        stack->undo();
+        pump(150);
+        check(QStringLiteral("(pk3) Undo makes it live again (1 live, 0 stranded, drawn blue)"),
+              shotcam::liveKeyCount(*s1, 24, 264) == 1 && shotcam::strandedCount(*s1, 24, 264) == 0
+                  && !keyMap(1, 0).value(QStringLiteral("stranded")).toBool());
+        // Control: a retime that keeps it inside names nothing.
+        r.storyboard->clearNoteForTest();
+        r.animatic->setPanelDurationForTest(1, 3, 3); // 2 s -> 3 s: the scene grows
+        pump(150);
+        check(QStringLiteral("(pk3) control: panel 4 lengthened keeps the key inside - the plain "
+                             "\"Change Panel Duration\" and no note"),
+              lastText() == QStringLiteral("Change Panel Duration") && r.storyboard->lastNoteForTest().isEmpty()
+                  && shotcam::strandedCount(*s1, 24, 264) == 0,
+              QStringLiteral("'%1' note '%2'").arg(lastText(), r.storyboard->lastNoteForTest()));
+        stack->setIndex(count2);
+        pump(100);
+        // Delete Panel: scene 2's panel 4 deleted strands it (the scene is 216).
+        clickClip(r, 7);
+        r.storyboard->clearNoteForTest();
+        r.storyboard->deleteSelectedPanelConfirmedForTest();
+        pump(200);
+        check(QStringLiteral("(pk3) \"Delete Panel (1 pinned camera key now outside scene 2)\": the "
+                             "panel under the pinned key deleted strands it, named in the text and "
+                             "the note; the key is kept"),
+              lastText() == QStringLiteral("Delete Panel (1 pinned camera key now outside scene 2)")
+                  && r.storyboard->lastNoteForTest().contains(QStringLiteral("now outside scene 2"))
+                  && s1->panels.size() == 3 && s1->camera.keys.size() == 1
+                  && shotcam::strandedCount(*s1, 24, 264) == 1,
+              QStringLiteral("'%1' panels %2").arg(lastText()).arg(s1->panels.size()));
+        stack->undo();
+        pump(200);
+        // An EARLIER scene's panel deleted - panel 3 of scene 1 (4 s, no key
+        // on it): scene 2 starts at 168, the key (at film 514) is past its
+        // end (168 + 264 = 432).
+        clickClip(r, 2);
+        r.storyboard->clearNoteForTest();
+        r.storyboard->deleteSelectedPanelConfirmedForTest();
+        pump(200);
+        const QString earlierText = lastText();
+        const bool earlierStranded = shotcam::strandedCount(*s1, 24, 168) == 1
+            && keyMap(1, 0).value(QStringLiteral("stranded")).toBool();
+        stack->undo();
+        pump(200);
+        // Unpin a stranded key: to the scene's last panel's last frame.
+        r.animatic->setPanelDurationForTest(1, 3, 1);
+        pump(150);
+        menuAt(screenX(514), [&](QMenu *m) {
+            if (QAction *a = findAction(m, QStringLiteral("cameraUnpinStranded")))
+                a->trigger();
+        });
+        const shotcam::CameraKey &un = s1->camera.keys.at(0);
+        check(QStringLiteral("(pk3) an earlier scene's panel deleted strands it too (\"Delete Panel "
+                             "(1 pinned camera key now outside scene 2)\", drawn hollow); a stranded "
+                             "key's Unpin anchors it to the scene's last panel's last frame "
+                             "(\"Unpin Camera Key\", panel 4, 23 / 24) - live again"),
+              earlierText == QStringLiteral("Delete Panel (1 pinned camera key now outside scene 2)")
+                  && earlierStranded && lastText() == QStringLiteral("Unpin Camera Key") && !un.pinned
+                  && un.panelUid == s1->panels.at(3)->uid.value() && qAbs(un.at - 23.0 / 24.0) < 1e-9
+                  && shotcam::liveKeyCount(*s1, 24, 264) == 1,
+              QStringLiteral("'%1' stranded %2 | '%3' at %4").arg(earlierText).arg(earlierStranded)
+                  .arg(lastText()).arg(un.at));
+        stack->setIndex(count);
+        r.storyboard->applyCameraForUndo(s1, shotcam::SceneCamera());
+        pump(150);
+    }
+
+    // --- (pk6) M marks a pinned key while the film plays -------------------------
+    {
+        const int count = stack->index();
+        resetKeys();
+        pump(100);
+        // The film started and WAITING FOR THE SOUND (the picture waits for
+        // the player, never-begins with a long cap): playing, its clock
+        // frozen where it was put, so the frame M lands on is known.
+        const QString wav = scratch + QStringLiteral("/pinkeys/beat.wav");
+        audio::writeWav(wav, 30.0);
+        r.animatic->setAudioPath(wav);
+        pump(400);
+        r.animatic->setAudioNeverBeginsForTest(true);
+        r.animatic->setAudioStartCapForTest(600000);
+        r.animatic->setPlayheadForTest(1, 500); // panel 2, 500 ms: frame 12 of it, scene frame 60
+        pump(100);
+        const CameraState at60 = shotcam::evaluate(*s0, 60, 24, cs, 0);
+        r.animatic->togglePlay();
+        pump(200);
+        const bool playingFrozen = r.animatic->isPlaying() && r.animatic->waitingForAudioForTest();
+        r.storyboard->clearNoteForTest();
+        recorded.clear();
+        const bool claimed = startWindowKeys::press(&r.window, Qt::Key_M, Qt::NoModifier);
+        pump(100);
+        const int keysAfter = s0->camera.keys.size();
+        const shotcam::CameraKey mk = keysAfter == 4 ? s0->camera.keys.at(3) : shotcam::CameraKey();
+        const QString note = r.storyboard->lastNoteForTest();
+        const QVariantMap st = r.animatic->shotCamDevrecState();
+        startWindowKeys::press(&r.window, Qt::Key_M, Qt::NoModifier); // the same frame: nothing
+        pump(100);
+        check(QStringLiteral("(pk6) M WHILE PLAYING (the film started, waiting for the sound at scene "
+                             "frame 60): one press is \"Mark Camera Key\" - a pinned key at 60 / 24 s "
+                             "holding the framing evaluated there, the note \"Camera key marked at "
+                             "00:00:02:12\", the recorder's keyPinned; a second press on the same "
+                             "frame adds nothing"),
+              playingFrozen && claimed && keysAfter == 4 && lastText() == QStringLiteral("Mark Camera Key")
+                  && mk.pinned && mk.time == 60.0 / 24.0 && mk.state == at60
+                  && note == QStringLiteral("Camera key marked at 00:00:02:12")
+                  && st.value(QStringLiteral("shotCam.keyPinned")).toBool()
+                  && st.value(QStringLiteral("shotCam.pinnedKeys")).toInt() == 1
+                  && recorded.size() == 1 && recorded.last().value(QStringLiteral("what")).toString()
+                         == QStringLiteral("Mark Camera Key")
+                  && s0->camera.keys.size() == 4 && stack->index() == count + 1,
+              QStringLiteral("frozen %1 claimed %2 keys %3 '%4' time %5 note '%6' +%7")
+                  .arg(playingFrozen).arg(claimed).arg(keysAfter).arg(lastText()).arg(mk.time)
+                  .arg(note).arg(stack->index() - count));
+        // Control: paused, M does nothing.
+        r.animatic->togglePlay(); // paused
+        pump(100);
+        startWindowKeys::press(&r.window, Qt::Key_M, Qt::NoModifier);
+        pump(100);
+        check(QStringLiteral("(pk6) control: paused, M adds no key and no command"),
+              !r.animatic->isPlaying() && s0->camera.keys.size() == 4 && stack->index() == count + 1);
+        // The real clock: without a sound the film runs; the mark lands on a
+        // frame between the two the film was seen at around the press (no
+        // timing assumed, only order).
+        r.animatic->setAudioNeverBeginsForTest(false);
+        r.animatic->setAudioStartCapForTest(-1);
+        r.animatic->setAudioPath(QString());
+        pump(300);
+        r.animatic->setPlayheadForTest(2, 0); // panel 3's start (scene frame 120)
+        pump(100);
+        r.animatic->togglePlay();
+        pump(150);
+        auto filmFrameNow = [&] {
+            const int pi = int(s0->panels.indexOf(r.animatic->playheadPanel()));
+            return pi < 0 ? -1 : shotcam::panelStartFrame(*s0, pi, 24) + r.animatic->playheadFrameInPanel();
+        };
+        const int before = filmFrameNow();
+        startWindowKeys::press(&r.window, Qt::Key_M, Qt::NoModifier);
+        const int after = filmFrameNow();
+        pump(100);
+        const bool running = r.animatic->isPlaying() && before >= 120 && after >= before;
+        const shotcam::CameraKey rk = s0->camera.keys.size() == 5 ? s0->camera.keys.at(4) : shotcam::CameraKey();
+        const double rf = rk.pinned ? shotcam::keyFrame(*s0, rk, 24) : -1.0;
+        check(QStringLiteral("(pk6) with the film's own clock running, M pins a key at the frame the "
+                             "film was at - between the frames read just before and just after "
+                             "the press"),
+              running && s0->camera.keys.size() == 5 && rk.pinned && rf >= before && rf <= after
+                  && lastText() == QStringLiteral("Mark Camera Key"),
+              QStringLiteral("running %1 before %2 key %3 after %4").arg(running).arg(before).arg(rf).arg(after));
+        r.animatic->leavePreview();
+        pump(200);
+        stack->setIndex(count);
+        pump(100);
+    }
+
+    // --- (pk8) the CAMERA lock refuses Pin / Unpin / drag / mark; undo, redo -------
+    {
+        resetKeys();
+        clickThumb(r, 1);
+        r.animatic->scrubToForTest(1, 52); // on key 2
+        pump(100);
+        const int count = stack->index();
+        const QByteArray before = camJson(s0);
+        clickBar(bar, QStringLiteral("camPinKey"));
+        const QByteArray pinnedJson = camJson(s0);
+        stack->undo();
+        pump(60);
+        const bool undone = camJson(s0) == before;
+        stack->redo();
+        pump(60);
+        const bool redone = camJson(s0) == pinnedJson;
+        check(QStringLiteral("(pk8) Pin undoes and redoes byte for byte"),
+              stack->index() == count + 1 && pinnedJson != before && undone && redone);
+        stack->undo(); // anchored again
+        pump(60);
+        r.animatic->setTrackLocked(TimelineTrack::Camera, true);
+        pump(100);
+        r.storyboard->clearLockRefusalForTest();
+        clickBar(bar, QStringLiteral("camPinKey"));
+        const bool pinRefused = stack->index() == count && !s0->camera.keys.at(1).pinned
+            && r.storyboard->lastLockRefusalForTest() == QStringLiteral("CAMERA track is locked");
+        QString header;
+        bool pinOn = true;
+        menuAt(keyX(0, 1), [&](QMenu *m) {
+            header = findAction(m, QStringLiteral("cameraKeyHeader"))
+                ? findAction(m, QStringLiteral("cameraKeyHeader"))->text() : QString();
+            if (QAction *a = findAction(m, QStringLiteral("cameraPinKey")))
+                pinOn = a->isEnabled();
+        });
+        r.timeline->clearRefusalForTest();
+        dragKey(keyX(0, 1), screenX(130));
+        const bool dragRefused = stack->index() == count
+            && r.timeline->lastRefusalForTest() == QStringLiteral("CAMERA track is locked");
+        // Mark under the lock: playing (waiting for the sound), M is refused.
+        const QString wav = scratch + QStringLiteral("/pinkeys/beat.wav");
+        r.animatic->setAudioPath(wav);
+        pump(400);
+        r.animatic->setAudioNeverBeginsForTest(true);
+        r.animatic->setAudioStartCapForTest(600000);
+        r.animatic->setPlayheadForTest(2, 0);
+        pump(100);
+        r.animatic->togglePlay();
+        pump(200);
+        r.storyboard->clearLockRefusalForTest();
+        startWindowKeys::press(&r.window, Qt::Key_M, Qt::NoModifier);
+        pump(100);
+        const bool markRefused = r.animatic->isPlaying() && stack->index() == count
+            && s0->camera.keys.size() == 3
+            && r.storyboard->lastLockRefusalForTest() == QStringLiteral("CAMERA track is locked");
+        r.animatic->leavePreview();
+        r.animatic->setAudioNeverBeginsForTest(false);
+        r.animatic->setAudioStartCapForTest(-1);
+        r.animatic->setAudioPath(QString());
+        pump(300);
+        check(QStringLiteral("(pk8) CAMERA LOCKED: the bar's Pin is refused (\"CAMERA track is "
+                             "locked\", nothing changes), the key menu says it is locked with Pin to "
+                             "Sound disabled, the drag is refused at the pointer, and M while playing "
+                             "is refused"),
+              pinRefused && header == QStringLiteral("The CAMERA track is locked") && !pinOn && dragRefused
+                  && markRefused,
+              QStringLiteral("pin %1 header '%2' pinOn %3 drag %4 mark %5").arg(pinRefused).arg(header)
+                  .arg(pinOn).arg(dragRefused).arg(markRefused));
+        r.animatic->setTrackLocked(TimelineTrack::Camera, false);
+        pump(100);
+        clickThumb(r, 1);
+        r.animatic->scrubToForTest(1, 52);
+        pump(100);
+        clickBar(bar, QStringLiteral("camPinKey"));
+        check(QStringLiteral("(pk8) control: unlocked, the same Pin is accepted"),
+              stack->index() == count + 1 && s0->camera.keys.at(1).pinned
+                  && lastText() == QStringLiteral("Pin Camera Key"));
+        stack->setIndex(count);
+        pump(100);
+    }
+    r.window.markCleanForTest();
+}
+
+// ---- (pf) THE CAMERA BAR FITS AT THE NARROWEST WINDOW (Phase 2E) --------------
+// The user's addition: with Pin on the bar, the Camera bar still sits inside
+// the canvas at the 1366 px laptop minimum (BEFORE SELLING 13), every dock
+// open. The control widens the bar by the canvas's width through the test
+// seam and sees the same measure fail.
+void runCameraBarFitPass(const QString &scratch)
+{
+    using namespace workspace;
+    out() << "--- (pf) the Camera bar fits at the narrowest window (Phase 2E) ---" << Qt::endl;
+    const QString project = writeProject(scratch + QStringLiteral("/barfit"),
+                                         QStringLiteral("BarFit"), QSize(1920, 1080), 24, 1, 3);
+    Rig r(project, QSize(1366, 900)); // grown to the window's minimum if that is wider
+    check(QStringLiteral("(pf) the workspace opened"), r.ok);
+    if (!r.ok)
+        return;
+    auto *camBtn = r.storyboard->findChild<QPushButton *>(QStringLiteral("toolCamera"));
+    QWidget *bar = r.storyboard->cameraBarForTest();
+    if (!camBtn || !bar) {
+        check(QStringLiteral("(pf) found the Camera tool and its bar"), false);
+        return;
+    }
+    clickThumb(r, 0);
+    camBtn->click();
+    pump(400);
+    auto canvasRect = [&] { return QRect(r.canvas->mapToGlobal(QPoint(0, 0)), r.canvas->size()); };
+    const QRect canvas = canvasRect();
+    const QRect barRect = bar->frameGeometry();
+    const bool pinThere = bar->findChild<QAbstractButton *>(QStringLiteral("camPinKey")) != nullptr;
+    check(QStringLiteral("(pf) AT THE NARROWEST WINDOW (1366 px, or the window's minimum if wider) "
+                         "the Camera bar, with its Pin button, is visible and lies inside the "
+                         "canvas, left and right"),
+          bar->isVisible() && pinThere && r.window.width() >= 1366
+              && barRect.left() >= canvas.left() && barRect.right() <= canvas.right()
+              && barRect.top() >= canvas.top() && barRect.bottom() <= canvas.bottom(),
+          QStringLiteral("window %1 wide (minimum %2), canvas %3-%4, bar %5-%6 (%7 wide)")
+              .arg(r.window.width()).arg(r.window.minimumWidth()).arg(canvas.left()).arg(canvas.right())
+              .arg(barRect.left()).arg(barRect.right()).arg(barRect.width()));
+    r.storyboard->setCameraBarExtraWidthForTest(r.canvas->width());
+    pump(200);
+    const QRect wide = bar->frameGeometry();
+    check(QStringLiteral("(pf) control: the bar widened by the canvas's width through the seam no "
+                         "longer fits (the measure can fail)"),
+          wide.width() > barRect.width() && !(wide.left() >= canvas.left() && wide.right() <= canvas.right()),
+          QStringLiteral("bar %1-%2 against canvas %3-%4").arg(wide.left()).arg(wide.right())
+              .arg(canvas.left()).arg(canvas.right()));
+    r.storyboard->setCameraBarExtraWidthForTest(0);
+    pump(100);
+    r.window.markCleanForTest();
+}
+
 // ---- (wf) THE WAVEFORM (Phase 2D) ----------------------------------------------
 // The spec's wf1-wf4 plus the chips' hover (the user's addition). wf4 - no
 // audio, the AUDIO grab equals today's - is the (rp) pin above, which holds
@@ -16421,6 +17252,8 @@ int main(int argc, char **argv)
     runRecentMenuPass(scratch);
     runDepthPass(scratch);
     runDepthToolsPass(scratch);
+    runPinnedKeysPass(scratch);
+    runCameraBarFitPass(scratch);
 
     // ---- (aa) a test that cannot start says why and exits ----------------
     // An unattended gate must FAIL, not wait. Measured 2026-10-02: with its

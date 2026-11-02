@@ -33,9 +33,11 @@ QVector<ExportPanel> collectPanels(const QVector<Scene *> &scenes, int fps,
                                    const QSize &stageMargin)
 {
     QVector<ExportPanel> list;
+    int filmStart = 0; // frames before the row, the same count the movie walks
     for (const Scene *scene : scenes) {
         if (!scene)
             continue;
+        const int sceneStart = filmStart;
         for (int i = 0; i < scene->panels.size(); ++i) {
             const Panel *panel = scene->panels.at(i);
             if (!panel)
@@ -48,14 +50,16 @@ QVector<ExportPanel> collectPanels(const QVector<Scene *> &scenes, int fps,
             row.seconds = qMax(1, panel->duration);
             row.scene = cameraOff ? nullptr : scene;
             row.panelIndex = i;
+            row.sceneFilmStart = sceneStart;
             const QSize canvas = panel->canvasSize();
             row.still = (fullArtwork || cameraOff || scene->camera.isEmpty())
                 ? shotcam::neutral(canvas)
-                : shotcam::evaluateAtPanel(*scene, i, 0, fps);
+                : shotcam::evaluateAtPanel(*scene, i, 0, fps, sceneStart);
             row.stillNeutral = shotcam::isNeutral(row.still, canvas);
             row.stage = shotcam::stageWithMargin(canvas, stageMargin);
             row.fullArtwork = fullArtwork;
             list.append(row);
+            filmStart += row.seconds * qMax(1, fps);
         }
     }
     return list;
@@ -89,7 +93,7 @@ shotcam::CameraState movieFrameCamera(const QVector<ExportPanel> &panels,
             if (!row.scene)
                 return shotcam::neutral(row.panel->canvasSize());
             return shotcam::evaluateAtPanel(*row.scene, row.panelIndex,
-                                            qMax(0, frame - start), fps);
+                                            qMax(0, frame - start), fps, row.sceneFilmStart);
         }
         start += frames;
     }
@@ -687,7 +691,8 @@ void MovieExportJob::pumpVideo()
             // image, and the flatten is made once per panel.
             const int start = panel > 0 ? m_endFrame.at(panel - 1) : 0;
             const shotcam::CameraState camera = shotcam::evaluateAtPanel(
-                *row.scene, row.panelIndex, m_frame - start, qMax(1, m_request.fps));
+                *row.scene, row.panelIndex, m_frame - start, qMax(1, m_request.fps),
+                row.sceneFilmStart);
             if (panel != m_panelOfImage)
                 m_flat = row.panel->flattenedPixmap().toImage();
             if (panel != m_panelOfImage || !m_imageMoving || camera != m_imageCamera) {
