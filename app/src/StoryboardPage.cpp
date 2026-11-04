@@ -11,6 +11,7 @@
 
 #include "DrawingCanvas.h"
 #include "FloatingToolWindow.h"
+#include "StageClear.h"
 #include "SankoSlider.h"
 #include "ZoomToolbar.h"
 #include "brushlib/BrushLibraryModel.h"
@@ -4899,6 +4900,124 @@ QWidget *StoryboardPage::createCameraPanel()
     return bar;
 }
 
+// --- Clear the stage while the film plays ---------------------------------------
+
+const QString StoryboardPage::kClearStageKey = QStringLiteral("storyboard/clearStageOnPlay");
+
+void StoryboardPage::setClearStageOnPlay(bool on)
+{
+    sankoSettings().setValue(kClearStageKey, on);
+    if (m_stageClear)
+        m_stageClear->setEnabled(on);
+}
+
+bool StoryboardPage::clearStageOnPlay() const
+{
+    return m_stageClear ? m_stageClear->isEnabled()
+                        : sankoSettings().value(kClearStageKey, true).toBool();
+}
+
+bool StoryboardPage::stageClearedForTest() const
+{
+    return m_stageClear && m_stageClear->cleared();
+}
+
+QVector<QWidget *> StoryboardPage::stageFadedBarsForTest() const
+{
+    return m_stageClear ? m_stageClear->fadedBars() : QVector<QWidget *>();
+}
+
+void StoryboardPage::setStageFadeMsForTest(int ms)
+{
+    if (m_stageClear)
+        m_stageClear->setFadeMsForTest(ms);
+}
+
+void StoryboardPage::fireStageIdleForTest()
+{
+    if (m_stageClear)
+        m_stageClear->fireIdleForTest();
+}
+
+bool StoryboardPage::stageIdleArmedForTest() const
+{
+    return m_stageClear && m_stageClear->idleArmedForTest();
+}
+
+void StoryboardPage::applyCompact(bool on)
+{
+    if (on == m_compactActive || !m_animatic || !m_workSplitter)
+        return;
+    m_compactActive = on;
+    if (on) {
+        // The height to come back to: the expanded one is remembered as a
+        // collapse remembers it; collapsed, the section is its header.
+        if (!m_animatic->isCollapsed() && !m_timelineHeightPending
+            && m_animatic->height() > AnimaticPage::kHeaderHeight)
+            m_timelineHeight = m_animatic->height();
+        m_animatic->setCompact(true);
+        m_animatic->setFixedHeight(AnimaticPage::kCompactHeight);
+        if (QSplitterHandle *handle = m_workSplitter->handle(1))
+            handle->setEnabled(false);
+        stripStepAside(true);
+    } else {
+        stripStepAside(false);
+        m_animatic->setCompact(false);
+        if (m_animatic->isCollapsed()) {
+            m_animatic->setFixedHeight(AnimaticPage::kHeaderHeight);
+        } else {
+            m_animatic->setMinimumHeight(m_animatic->minimumExpandedHeight());
+            m_animatic->setMaximumHeight(QWIDGETSIZE_MAX);
+        }
+        if (QSplitterHandle *handle = m_workSplitter->handle(1))
+            handle->setEnabled(!m_animatic->isCollapsed());
+    }
+    m_timelineHeightPending = true;
+    applyTimelineHeight();
+}
+
+// The panel strip steps aside while the film plays (Figma PB-3): its bar's
+// children hidden and the bar held at 8 px, so the dock host gives the
+// canvas the height; back exactly afterwards. A strip the user hid, or
+// floated, is left alone.
+void StoryboardPage::stripStepAside(bool on)
+{
+    if (!m_panelStripDock || !m_panelStripBar)
+        return;
+    if (on) {
+        if (m_stripSteppedAside || !m_panelStripDock->isVisible() || m_panelStripDock->isFloating())
+            return;
+        m_stripSteppedAside = true;
+        m_stripMinH = m_panelStripBar->minimumHeight();
+        m_stripMaxH = m_panelStripBar->maximumHeight();
+        m_stripSavedDockH = m_panelStripDock->height();
+        m_stripHidden.clear();
+        for (QObject *child : m_panelStripBar->children())
+            if (auto *w = qobject_cast<QWidget *>(child))
+                if (w->isVisible() && !w->isWindow()) {
+                    m_stripHidden.append(w);
+                    w->hide();
+                }
+        m_panelStripBar->setFixedHeight(8);
+    } else {
+        if (!m_stripSteppedAside)
+            return;
+        m_stripSteppedAside = false;
+        m_panelStripBar->setMinimumHeight(m_stripMinH);
+        m_panelStripBar->setMaximumHeight(m_stripMaxH);
+        for (const QPointer<QWidget> &w : m_stripHidden)
+            if (w)
+                w->show();
+        m_stripHidden.clear();
+        // The dock host is TOLD the height, as every other strip sizing
+        // is: left to the constraints alone it came back a pixel short
+        // (158 for 159, measured 2026-11-03), which moved every bar
+        // snapped to the canvas by that pixel.
+        if (m_dockHost && m_stripSavedDockH > 0)
+            m_dockHost->resizeDocks({m_panelStripDock}, {m_stripSavedDockH}, Qt::Vertical);
+    }
+}
+
 void StoryboardPage::setCameraBarExtraWidthForTest(int px)
 {
     if (!m_cameraPanel)
@@ -6432,7 +6551,13 @@ QVariantMap StoryboardPage::shotCamToolDevrecState() const
 {
     return {{QStringLiteral("shotCam.animate"), m_cameraAnimate},
             {QStringLiteral("shotCam.toolActive"),
-             m_canvas && m_canvas->tool() == DrawingCanvas::Camera}};
+             m_canvas && m_canvas->tool() == DrawingCanvas::Camera},
+            // The stage cleared while the film plays (StageClear); the
+            // compact bar and the canvas area's size (2026-11-03).
+            {QStringLiteral("preview.stageClear"), m_stageClear && m_stageClear->cleared()},
+            {QStringLiteral("preview.compactBar"), m_animatic && m_animatic->isCompact()},
+            {QStringLiteral("preview.areaW"), m_canvas ? m_canvas->width() : 0},
+            {QStringLiteral("preview.areaH"), m_canvas ? m_canvas->height() : 0}};
 }
 
 // Floating overlay shown only while the Shapes tool is active: shape
@@ -7243,6 +7368,34 @@ void StoryboardPage::setupAnimaticSection(QWidget *centerColumn,
         if (m_syncCameraBar)
             m_syncCameraBar();
     });
+    // CLEAR THE STAGE while the film plays (2026-11-02, Figma PLAYBACK-2):
+    // every bar over the canvas and the preview's caption chip fade out on
+    // Play and come back on a pointer move, on pause, or when the preview
+    // goes. The setting is remembered; off is the old behaviour.
+    m_stageClear = new StageClear(m_canvas, this);
+    m_stageClear->setEnabled(sankoSettings().value(kClearStageKey, true).toBool());
+    m_stageClear->onChromeShown = [this](bool shown) {
+        if (m_animatic)
+            m_animatic->setPreviewChromeShown(shown);
+    };
+    connect(m_animatic, &AnimaticPage::playingChanged, this,
+            [this](bool playing) { m_stageClear->setPlaying(playing); });
+    connect(m_animatic, &AnimaticPage::previewShownChanged, this,
+            [this](bool shown) { m_stageClear->setPreviewShown(shown); });
+    connect(m_animatic, &AnimaticPage::previewPointerMoved, this,
+            [this] { m_stageClear->pointerActivity(false); });
+    // THE COMPACT BAR and THE STRIP STEPPING ASIDE (2026-11-03): with the
+    // stage playing, the timeline section is its compact bar and the strip
+    // an 8 px handle; the chevron opens the timeline until the film stops.
+    connect(m_stageClear, &StageClear::stageActiveChanged, this, [this](bool active) {
+        if (!active)
+            m_compactSuppressed = false;
+        applyCompact(active && !m_compactSuppressed);
+    });
+    connect(m_animatic, &AnimaticPage::compactExpandRequested, this, [this] {
+        m_compactSuppressed = true;
+        applyCompact(false);
+    });
     // With the Camera tool a ruler scrub stays on the canvas at the exact
     // frame (AnimaticPage::setScrubShowsCanvas); every other tool previews.
     m_animatic->setScrubShowsCanvas(m_canvas->tool() == DrawingCanvas::Camera);
@@ -7588,6 +7741,13 @@ void StoryboardPage::applyTimelineHeight()
     if (!m_workSplitter->isVisible() || total <= 0)
         return;
     const int handle = m_workSplitter->handleWidth();
+    if (m_animatic->isCompact()) {
+        // The compact bar (the film playing), and everything else to the canvas.
+        m_workSplitter->setSizes({total - handle - AnimaticPage::kCompactHeight,
+                                  AnimaticPage::kCompactHeight});
+        m_timelineHeightPending = false;
+        return;
+    }
     if (m_animatic->isCollapsed()) {
         // The header row, and everything else to the canvas.
         m_workSplitter->setSizes({total - handle - AnimaticPage::kHeaderHeight,

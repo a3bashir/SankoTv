@@ -81,6 +81,22 @@ public:
     // Collapsed = the header row only.
     bool isCollapsed() const { return m_collapsed; }
     void setCollapsed(bool collapsed);
+    // COMPACT (2026-11-03, Figma PB-1): while the film plays the header and
+    // the rows give way to one 36 px bar - the transport, the timecode and
+    // the total, a progress line (click or drag seeks, the film keeps
+    // running), the speed, mute, and a chevron that opens the timeline
+    // without pausing - so the canvas area takes the height. The workspace
+    // drives it from the clear-stage state and restores the section exactly
+    // (open or collapsed, its height) on pause.
+    static constexpr int kCompactHeight = 36;
+    bool isCompact() const { return m_compact; }
+    void setCompact(bool compact);
+    // Seek to a time on the film: playing, it keeps playing from there.
+    void seekToFilmMs(qint64 ms);
+    qint64 filmLengthMs() const;
+    QWidget *compactBarForTest() const { return m_compactBar; }
+    QRect compactProgressRectForTest() const; // on the page
+    qint64 filmPositionMsForTest() const { return filmPositionMs(); }
     int minimumExpandedHeight() const;
     int defaultExpandedHeight() const;
 
@@ -215,6 +231,12 @@ public:
     // For the Dev Recorder's statePoll: "shotCam." keys (the recorder's own
     // "camera" events are the canvas VIEW).
     QVariantMap shotCamDevrecState() const;
+    // The preview's caption chip shown or not (StageClear: off while the
+    // stage is clear), and its rect for the gate (empty when not shown).
+    void setPreviewChromeShown(bool shown);
+    QRect previewCaptionRectForTest() const;
+    QWidget *previewDisplayForTest() const; // the preview widget over the canvas
+    QRect previewPictureRectForTest() const; // where it paints the picture (its coordinates)
 
     // THE PLAYHEAD, FOR THE CANVAS'S CAMERA TOOL (Phase 1B). Which panel it
     // is in (null: none), the frame inside that panel (the same rounding as
@@ -290,6 +312,13 @@ signals:
     // The preview came over the canvas (true) or went (false). The Camera
     // bar is disabled while it covers the canvas (Phase 1B follow-up).
     void previewShownChanged(bool shown);
+    // The film started or stopped (play / pause); a pointer move over the
+    // preview. Both feed StageClear (the stage clears while the film plays).
+    void playingChanged(bool playing);
+    void previewPointerMoved();
+    // The compact bar (see setCompact): its state, and its chevron pressed.
+    void compactChanged(bool compact);
+    void compactExpandRequested();
     // The CAMERA row's requests (Phase 1C; AnimaticTimeline's signals of
     // the same names), relayed to the workspace, which owns the edits.
     void cameraKeyActivated(int sceneIndex, int keyIndex);
@@ -447,6 +476,18 @@ private:
     QWidget *m_body = nullptr;          // everything below the header row
     QPushButton *m_collapseButton = nullptr;
     bool m_collapsed = false;
+    // The compact bar (setCompact) and its parts.
+    QWidget *createCompactBar();
+    void syncCompactBar();
+    QWidget *m_compactBar = nullptr;
+    QPushButton *m_compactPlay = nullptr;
+    QLabel *m_compactTimecode = nullptr;
+    QLabel *m_compactTotal = nullptr;
+    QWidget *m_compactProgress = nullptr;
+    QToolButton *m_compactSpeed = nullptr;
+    QPushButton *m_compactMute = nullptr;
+    bool m_compact = false;
+    int m_volumeBeforeMute = 100;
     // The header row's parts (see createHeader / layoutHeader).
     QWidget *m_header = nullptr;
     QWidget *m_leftGroup = nullptr;     // collapse + the timeline's zoom controls

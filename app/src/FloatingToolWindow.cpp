@@ -145,6 +145,17 @@ FloatingToolWindow::~FloatingToolWindow()
     FloatingToolWindowManager::instance()->unregisterWindow(this);
 }
 
+QVector<FloatingToolWindow *> FloatingToolWindow::windowsOver(QWidget *anchor)
+{
+    QVector<FloatingToolWindow *> list;
+    if (!anchor)
+        return list;
+    for (FloatingToolWindow *w : FloatingToolWindowManager::instance()->windows())
+        if (w->m_anchor == anchor)
+            list.append(w);
+    return list;
+}
+
 void FloatingToolWindow::setVisible(bool visible)
 {
     m_wantVisible = visible;

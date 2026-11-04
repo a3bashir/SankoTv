@@ -9375,6 +9375,221 @@ keys (they need a panel) - BEFORE SELLING; and the fps-independent
 seconds of a pinned key are film time, so an audio offset, if ever
 added, must move pinned keys with the sound (spec 5.2).
 
+## Playback batch 1: the stage clears while the film plays (2026-11-02) - BUILT, NOT COMMITTED
+The user approved the three proposals of 2026-11-02 (Documents\
+SankoTV-Design\proposals-2026-11-02.md; Figma PLAYBACK-1..5, section
+383:141, nodes 514:696 / 717 / 741 / 752 / 767), one batch each in the
+order playback, stable image ids, auto-save; each with its own hash list,
+hand-test list and commit. Batch 1 is Option A as drawn, plus the user's
+rule: while a bar is faded, a click on it must not press a control - the
+first click or pointer move only brings the bars back.
+BUILT: src/StageClear.{h,cpp} (new, CRLF), owned by StoryboardPage. On
+Play (AnimaticPage::playingChanged, new signal from play() / pause())
+with the preview shown, every FloatingToolWindow over the canvas that is
+effectively visible and not a modal surface (FloatingToolWindow::
+windowsOver(anchor), new static over the manager's registry) fades to
+window opacity 0 (QVariantAnimation, 150 ms) and the preview's caption
+chip is hidden (PanelDisplay::setChromeShown; the chip rect is one
+function, captionChipRect). A pointer move over the preview
+(AnimaticPage::previewPointerMoved, PanelDisplay with mouse tracking,
+tablet moves too) or over a bar (the application event filter in
+StageClear) restores (120 ms) and arms the 1.5 s idle timer; at idle the
+stage clears again unless the pointer rests on a bar (Enter / HoverMove
+/ MouseMove on a bar's child set pointerOnBar, the bar's own Leave
+clears it). Pause / Stop (pause()), the preview going (previewShown
+false) and the setting turned off restore AT ONCE, no fade. THE USER'S
+RULE: the filter consumes MouseButtonPress / DblClick / Release /
+TabletPress / TabletRelease whose receiver is in a faded bar and
+restores instead. The bars are never hidden, moved or disabled: opacity
+only, so managed placement, suppression and every bar's own enabled
+logic are untouched. Setting: storyboard/clearStageOnPlay (default on);
+View > "Clear the Stage While the Film Plays" (checkable, objectName
+viewClearStage) and Preferences > Playback (QCheckBox prefsClearStage),
+each following the other; StoryboardPage::setClearStageOnPlay. Dev
+Recorder statePoll: preview.stageClear. Seams: stageClearedForTest,
+stageFadedBarsForTest, setStageFadeMsForTest(0: opacity at once),
+fireStageIdleForTest, stageIdleArmedForTest,
+AnimaticPage::previewCaptionRectForTest / previewDisplayForTest.
+CHECKS (Lifecycle (ps), each with its control, no clock): (ps1) Play
+clears every bar (opacity 0, still shown, in place), the chip, the
+state and the recorder's field, the preview's geometry unchanged; (ps2)
+a move over the preview restores and arms the idle; fired, it clears
+again; control: a move over the timeline leaves it clear; (ps7) the
+user's rule - a click on the faded Brush bar's Brush button leaves the
+tool Camera and wakes the stage; control: visible, the same click
+selects the Brush; (ps5) a move over a bar restores, the idle fired
+with the pointer on the bar clears nothing and re-arms, the bar's Leave
+then the idle clears; (ps4) M marks a pinned key while clear and the
+stage stays clear; (ps3) pause restores at once with no idle running,
+leaving the preview from a clear stage restores, the setting off leaves
+Play as before (the control), the setting is remembered and View's
+action is checkable. Hand-test list:
+Documents\SankoTV-Design\camera\handtest_playback.md.
+THE FIRST LIFECYCLE RUN (1078 checks, 1 FAIL, a new check): (ps5)
+"cleared 0 back 1 stayed 1 then 1" - its first idle did not clear.
+The code read: ps7's clicks on the Brush bar had set pointerOnBar
+(a press on a bar is pointer activity on it) and nothing had moved the
+pointer off since - no Leave was sent - so the idle re-armed, which is
+the rule. The check now moves the pointer onto the preview before its
+first idle; the three later sub-steps had passed. Not a code change.
+NOT a bar: the Size CTL preset pill (a 1 s transient top-level QWidget,
+not a FloatingToolWindow) and the Layer Depth popover (a popup that
+closes on its own).
+GATE ps (fullgate_ps.log, normal mode, 1828 s): Release and Debug, 0
+failing families; Lifecycle 1078 (the 12 (ps) checks), Camera 238, the
+other seven families as in 2Eb; every pin line count equal to 2E's in
+both configs. Exe stamp 92e3811db+dirty, Release SankoTV.exe 2026-11-02
+21:23:25. Hashes of the 13 files (11 changed + src/StageClear.{h,cpp})
+in sha_playback.txt; the commit message drafted in msg_playback.txt.
+NOT COMMITTED: waits for the user's word after the hand test
+(handtest_playback.md). Batches 2 (stable image ids) and 3 (auto-save)
+follow, each its own batch.
+THE HAND TEST (Dev Recorder 20261103-180048, 211 s, Release; read
+2026-11-03): 1 PASS (18.5-36.5 s playing, preview.stageClear true the
+whole time, no pointer move, the screenshot shows the picture alone);
+2 the wake PASS (six times a move brought the bars back within a
+poll), the fade-again-after-stillness NOT SHOWN - after every wake the
+pointer kept moving until the pause (111-259 moves per window) -
+covered by (ps2); 3 not tested (ps5); 4 not tested - no press landed
+on a faded bar (the one press while clear, at 1192,103, was on the
+preview) - covered by (ps7); 5 Space PASS (five presses, pause / play
+alternating with restore / clear), M not pressed (ps4); 6 PASS by the
+click on the preview (press at 115.4 s while clear, back to drawing at
+116.1 s with the bars in place), Esc not pressed (ps3); 7 PASS for the
+View menu (toggled off at 178.3 s: Play at 180 s left the bars, the
+chip and stageClear false; toggled on at 184.1 s: Play at 185.5 s
+cleared), Preferences > Playback and the relaunch not tested (ps3's
+stored setting); 8 PASS (sessionEnd at 210.9 s, summary complete, 0
+dropped, 0 markers, worst stall 151 ms at 2 s). No failures.
+THE USER'S ADDITIONS TO BATCH 1 (2026-11-03; report and Figma only,
+not built): (1) compact playback controls on Play, (2) the picture
+fitted to the space they free, (3) the other areas listed with a
+recommendation. Figma: the user's design area on the "SankoTV App"
+page (rectangle 510:697 "Claude Code please Start new design here",
+title 510:696) - the user had moved 2D-3..2E-5 and PLAYBACK-1..5 onto
+it as a column at x 11651 from y 196; the new frames continue that
+column under PLAYBACK-5: PB-1 playing (the compact bar at 1:1, the
+window at half size), PB-2 paused, PB-3 the areas table, PB-4 rules
+and checks. The proposal's text: proposals-2026-11-02.md section 3b.
+Recommendation: the compact bar (36 px: transport, timecode / total,
+the progress line, speed, mute, a chevron) in the timeline's place,
+the section restored exactly on pause; the strip (120 px) steps aside
+too if approved (the picture 632 -> 940 px tall at 1920 x 1040); the
+docks, the tool column, the bottom bar and the menu kept.
+APPROVED AND BUILT INTO BATCH 1 (2026-11-03): the compact bar (PB-1/2)
+and the strip stepping aside (PB-3); the docks, the tool column, the
+bottom bar and the menu bar unchanged (the user's decision).
+- AnimaticPage: setCompact / isCompact / kCompactHeight 36;
+  createCompactBar (objectName animaticCompact; the transport again as
+  compactFirst / Prev / Play / Next / Last through transportButton;
+  compactTimecode in the accent, compactTotal "/ total"; the
+  ProgressLine class (compactProgress: a 2 px track, the played part in
+  the accent, the playhead dot, the loop points as ticks; a press or
+  drag seeks to that fraction); compactSpeed, a SpeedButton sharing the
+  header's m_speedMenu; compactMute (setAudioVolume 0 / the level before
+  the mute); compactExpand, the chevron -> compactExpandRequested).
+  setCompact hides the header and the body (the body also respects the
+  collapse) and shows the bar; syncCompactBar from play / pause /
+  setPlaybackSpeed / setAudioVolume / the total; the timecode and the
+  line follow updateTimecodeLabel (text and a repaint only). New
+  signals compactChanged, compactExpandRequested. seekToFilmMs(ms): a
+  seek that KEEPS PLAYING (the panel clock re-armed by scheduleTick, the
+  sound sought and restarted) - paused, onScrubbedTo's path.
+  filmLengthMs. Seams: compactBarForTest, compactProgressRectForTest,
+  filmPositionMsForTest.
+- StageClear gains stageActiveChanged(bool): the playing stage (enabled
+  && playing && preview), emitted before the clear so the layout moves
+  first. StoryboardPage::applyCompact(on): on - the expanded height
+  remembered as a collapse remembers it (m_timelineHeight), the section
+  setCompact + fixed 36, the splitter handle off, stripStepAside(true);
+  off - stripStepAside(false), setCompact(false), collapsed -> fixed 40
+  else the expanded limits, the handle back, then applyTimelineHeight
+  (which has a compact branch: the bar's 36 to the section, the rest to
+  the canvas). The chevron sets m_compactSuppressed until the stage
+  stops. stripStepAside: a visible, docked strip's bar has its child
+  widgets hidden and is held at 8 px (the dock host gives the canvas the
+  height); back exactly after (minimum / maximum restored, the children
+  shown); a hidden or floating strip is left alone. The preview follows
+  the canvas's size through its resize filter (attachPreview), so the
+  picture refits by itself. Recorder: preview.compactBar, areaW, areaH.
+- CHECKS (Lifecycle (pc), each with its control): (pc1) Play - the
+  section 36, the strip's dock <= 14, the canvas taller by the two
+  gains, the preview the whole canvas, the picture the largest 16:9
+  inside it, the bar's global rect clear of it, the recorder; (pc2)
+  next / previous move a panel, a press at the line's middle seeks to
+  5500 ms (panel 3) still playing, the chevron opens the section (and
+  the strip) while playing and the next Play compacts again; (pc3) a
+  window 90 px taller during play - refitted, still the largest 16:9,
+  still clear of the bar; (pc4) pause - the height, zoom, scroll,
+  selection, strip and canvas area as before, the preview refitted;
+  control: 60 px dragged before Play comes back as dragged; (pc5)
+  collapsed before Play is collapsed after (40 px); (pc6) the timeline
+  surface's grab equals the one before (the playhead put back); (pc7)
+  the setting off folds nothing. Hand-test steps 8-11 added to
+  handtest_playback.md.
+- THE QUICK RUNS (the code read before any check moved): run 1, 9 FAIL
+  - three (ai) checks (an EXISTING pass: it plays the film collapsed,
+  which now compacts the section and steps the strip aside) and
+  pc1-4, pc7, all one pixel: the strip came back 158 for 159 when its
+  bar's minimum and maximum were restored and the dock host left to
+  them, and every bar snapped to the canvas moved by that pixel. Fixed
+  in the code: stripStepAside saves the dock's height and gives it back
+  through resizeDocks, as every other strip sizing does. (pc2)'s seek
+  read 5511 for 5500: the check read after a pump, by which time the
+  film's clock had ticked on - it reads right after the press now (the
+  seek's own value, not the clock's). Run 2, 3 FAIL (pc1, pc3, pc4) on
+  the picture rect: the check mapped the panel through
+  previewTransformForTest, which a NEUTRAL preview does not paint with
+  (its camera is then the default state, so the mapped rect sat centred
+  on the widget's centre: picG y 454 for a display at 74). Added
+  PanelDisplay::pictureRect (the neutral fit as paintEvent places it,
+  else the transform's image of the stage) and
+  AnimaticPage::previewPictureRectForTest; the checks read that.
+  Run 4 CRASHED (0xC0000005 in QWidget::palette) right after (dp)'s
+  selection-colour check - the log's TESTWINDOW line says another
+  program ("YouTube - Google Chrome") took the foreground 439 s into
+  the run, i.e. during (dp): a popup under test closes on deactivation
+  and the check then touches a dead widget. Not this batch's (the
+  three runs before passed (dp)); rerun. NOTE for later: a (dp) check
+  that holds a popup pointer across pumps should re-find it, so a lost
+  foreground is a FAIL, not a crash.
+  Run 5: 1088 checks, every (pc) PASS; the one FAIL (aw) "while the
+  zoom field is being edited every key is the field's" ("shortcut took
+  a key 1") - keyClaimed activates the real window first, which the
+  machine's foreground can refuse while the user works; it passed in
+  runs 1-3 of this batch and in every gate (the 2Bfix normal-mode flake
+  of the same check). Not this batch's; the gate decides, serial if it
+  fails only in normal mode.
+GATE pc (fullgate_pc.log, normal mode, 1879 s; batch 1 with the compact
+bar and the strip): Release and Debug, 0 failing families; Lifecycle
+1088 (the 12 (ps) and 10 (pc) checks), Camera 238, the other seven
+families as before; every pin line count equal to 2E's in both configs;
+(aw)'s zoom-field check passed in both. Exe stamp 92e3811db+dirty,
+Release SankoTV.exe 2026-11-03 20:02:23. Hashes of the batch's files in
+sha_playback.txt (refreshed); the commit message in msg_playback.txt
+(extended).
+THE COMPACT-BAR HAND TEST (Dev Recorder 20261103-203416, 512 s,
+Release; read 2026-11-04, steps 8-11): 8 PASS (every Play:
+preview.compactBar true, the canvas area 529 -> 869 px, the strip a
+line, the picture whole - screenshots at 3, 45 and 386 s); 9 PASS for
+what was pressed - the progress line dragged while playing (28.7,
+134.0, 137.3, 322.2 s, the film kept playing), pause / play on the bar,
+first panel (205, 207 s), mute and unmute (197.9, 199.7 s), the speed
+menu 2x / 0.5x / 1x while playing (331-340 s), the chevron (287.4 s:
+the full timeline and the strip back with the film playing, compact
+again at the next Play) - next / previous not pressed (pc2); 10 PASS
+(386.1 s: the window to 1292 x 720 during play, the area 1083 x 580
+and the picture refitted; back to 1920 x 1009 at 389.5 s); 11 PASS for
+the plain pause (every pause: compactBar false, the area 529 again;
+Space at 410-415 s) - the dragged-height and collapsed-before-Play
+variants not tested (pc4's control, pc5); 12 PASS (the Unsaved Changes
+dialog at 510.3 s, Discard, sessionEnd at 511.6 s, 0 dropped, 0
+markers). One observation: after a pause the area read 530 for one
+poll then 529 (51.0 s) - the strip's resizeDocks settles over two
+layout passes; nothing visible. No failures. COMMITTED on the user's
+word (2026-11-04) as ONE commit on master, pushed; the files confirmed
+against the refreshed sha_playback.txt after the commit.
+
 ## METHOD: measure interior structure ACROSS THE SIZE RANGE before calling it character (2026-09-25)
 
 The Painting census measured Acrylic at size 20 only and found "one

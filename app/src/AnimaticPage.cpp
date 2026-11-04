@@ -77,6 +77,36 @@ public:
     }
 
     std::function<void()> onDismissed; // a click anywhere on the preview
+    std::function<void()> onPointerMoved; // a pointer move over it (StageClear)
+
+    // The caption chip shown or not: while the stage is clear (StageClear,
+    // the film playing) the picture is the whole preview.
+    void setChromeShown(bool shown)
+    {
+        if (m_chrome == shown)
+            return;
+        m_chrome = shown;
+        update();
+    }
+    bool chromeShown() const { return m_chrome; }
+    // Bottom-right: the corner the floating toolbars leave free by default
+    // (Layers top-left, Brush top-right, Zoom bottom-left). At top-left it
+    // sat underneath the Layers toolbar, unreadable.
+    QRect captionChipRect() const
+    {
+        QFont f = font();
+        f.setPixelSize(11);
+        const int chipW = QFontMetrics(f).horizontalAdvance(captionText()) + 20;
+        return QRect(qMax(12, width() - chipW - 12), qMax(12, height() - 36), chipW, 24);
+    }
+    // Says what this is and how to leave it.
+    QString captionText() const
+    {
+        return m_caption.isEmpty()
+            ? QStringLiteral("PREVIEW")
+            : QStringLiteral("PREVIEW  \xC2\xB7  %1  \xC2\xB7  click to return to "
+                             "drawing").arg(m_caption);
+    }
 
     // `stageMargin` (Phase 2A): px each side of the frame; 0 x 0 is none.
     void setPixmap(const QPixmap &pixmap, const QString &caption,
@@ -122,6 +152,24 @@ public:
 
     QString captionForTest() const { return m_caption; }
     bool hasPixmapForTest() const { return !m_pixmap.isNull(); }
+    // The rect the picture is painted in, as paintEvent places it: the
+    // neutral fit (the frame scaled to the widget, centred) or the shot
+    // transform's image of the stage.
+    QRect pictureRect() const
+    {
+        if (m_pixmap.isNull())
+            return QRect();
+        if (m_neutral || !m_panel) {
+            QSize target = m_framePixmap.size();
+            target.scale(size(), Qt::KeepAspectRatio);
+            QRect r(QPoint(0, 0), target);
+            r.moveCenter(rect().center());
+            return r;
+        }
+        return shotcam::shotTransform(m_camera, m_stage, QRectF(rect()))
+            .mapRect(QRectF(QPointF(0, 0), QSizeF(m_stage.canvas)))
+            .toRect();
+    }
     shotcam::CameraState cameraForTest() const { return m_camera; }
     bool neutralForTest() const { return m_neutral; }
     QTransform transformForTest() const
@@ -152,22 +200,15 @@ protected:
             r.moveCenter(rect().center());
             painter.drawPixmap(r, m_framePixmap);
         }
-        // Says what this is and how to leave it. An OPAQUE chip: it sits
-        // over artwork of any colour and cannot borrow contrast from it.
-        const QString text = m_caption.isEmpty()
-            ? QStringLiteral("PREVIEW")
-            : QStringLiteral("PREVIEW  \xC2\xB7  %1  \xC2\xB7  click to return to "
-                             "drawing").arg(m_caption);
+        // An OPAQUE chip: it sits over artwork of any colour and cannot
+        // borrow contrast from it. Not while the stage is clear.
+        if (!m_chrome)
+            return;
+        const QString text = captionText();
         QFont f = font();
         f.setPixelSize(11);
         painter.setFont(f);
-        const QFontMetrics fm(f);
-        // Bottom-right: the corner the floating toolbars leave free by
-        // default (Layers top-left, Brush top-right, Zoom bottom-left). At
-        // top-left it sat underneath the Layers toolbar, unreadable.
-        const int chipW = fm.horizontalAdvance(text) + 20;
-        const QRect chip(qMax(12, width() - chipW - 12), qMax(12, height() - 36),
-                         chipW, 24);
+        const QRect chip = captionChipRect();
         painter.setRenderHint(QPainter::Antialiasing, true);
         painter.setPen(QPen(QColor(0x2a, 0x2a, 0x2a), 1));
         painter.setBrush(QColor(0x16, 0x16, 0x16));
@@ -185,7 +226,12 @@ protected:
         event->accept();
         m_pressed = event->button() == Qt::LeftButton;
     }
-    void mouseMoveEvent(QMouseEvent *event) override { event->accept(); }
+    void mouseMoveEvent(QMouseEvent *event) override
+    {
+        event->accept();
+        if (onPointerMoved)
+            onPointerMoved();
+    }
     void mouseReleaseEvent(QMouseEvent *event) override
     {
         event->accept();
@@ -199,6 +245,8 @@ protected:
             m_pressed = true;
         else if (event->type() == QEvent::TabletRelease)
             finishPress();
+        else if (event->type() == QEvent::TabletMove && onPointerMoved)
+            onPointerMoved();
     }
 
 private:
@@ -217,6 +265,7 @@ private:
     shotcam::Stage m_stage;
     QString m_caption;
     bool m_pressed = false;
+    bool m_chrome = true; // the caption chip; off while the stage is clear
     shotcam::CameraState m_camera;
     bool m_neutral = true;
 };
@@ -268,6 +317,70 @@ QPushButton *transportButton(const QString &iconFile, const QSize &iconSize,
     return button;
 }
 
+
+// THE PROGRESS LINE of the compact bar (2026-11-03, Figma PB-1): a 2 px
+// track, the played part in the accent, the playhead a dot, the loop
+// points two ticks; a press or drag seeks to that fraction of the film.
+// The whole 36 px row is its hit area.
+class ProgressLine : public QWidget
+{
+public:
+    explicit ProgressLine(QWidget *parent = nullptr) : QWidget(parent)
+    {
+        setCursor(Qt::PointingHandCursor);
+        setMinimumWidth(80);
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+        setAttribute(Qt::WA_StyledBackground, false);
+    }
+    std::function<double()> fraction;                  // played, 0..1
+    std::function<QPair<double, double>()> loop;       // the loop points, -1 for none
+    std::function<void(double)> seek;                  // to a fraction
+
+    QRect lineRect() const { return QRect(0, height() / 2 - 1, width(), 2); }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        const QRect line = lineRect();
+        p.fillRect(line, QColor(0x3a, 0x3a, 0x40));
+        const double f = fraction ? qBound(0.0, fraction(), 1.0) : 0.0;
+        const int px = qRound(line.width() * f);
+        p.fillRect(QRect(line.left(), line.top(), px, line.height()), SankoTheme::kPurple);
+        if (loop) {
+            const QPair<double, double> l = loop();
+            p.setPen(Qt::NoPen);
+            p.setBrush(QColor(0x4d, 0xff, 0x91));
+            for (double at : {l.first, l.second})
+                if (at >= 0.0)
+                    p.drawRect(QRect(line.left() + qRound(line.width() * at), line.top() - 4, 1, 10));
+        }
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setPen(Qt::NoPen);
+        p.setBrush(SankoTimelineTheme::kPlayhead);
+        p.drawEllipse(QPointF(line.left() + px, line.top() + 1), 4.0, 4.0);
+    }
+    void mousePressEvent(QMouseEvent *e) override
+    {
+        if (e->button() != Qt::LeftButton)
+            return;
+        seekAt(e->position().x());
+        e->accept();
+    }
+    void mouseMoveEvent(QMouseEvent *e) override
+    {
+        if (e->buttons() & Qt::LeftButton)
+            seekAt(e->position().x());
+        e->accept();
+    }
+
+private:
+    void seekAt(qreal x)
+    {
+        if (seek && width() > 0)
+            seek(qBound(0.0, double(x) / width(), 1.0));
+    }
+};
 
 // The header row: a plain widget that tells the page when its width
 // changes, so the give-way rule and the pill's place are redone.
@@ -393,7 +506,9 @@ AnimaticPage::AnimaticPage(QWidget *parent)
     // the drawing canvas (attachPreview).
     m_display = new PanelDisplay;
     m_display->hide();
+    m_display->setMouseTracking(true); // its moves wake the cleared stage
     m_display->onDismissed = [this] { leavePreview(); };
+    m_display->onPointerMoved = [this] { emit previewPointerMoved(); };
     // It is re-parented out of this widget (onto the canvas), so it may be
     // destroyed before this object is: never keep a pointer to a dead one.
     connect(m_display, &QObject::destroyed, this, [this] { m_display = nullptr; });
@@ -401,6 +516,7 @@ AnimaticPage::AnimaticPage(QWidget *parent)
     // controls, so the timeline must exist when the header is built.
     QWidget *body = createTimingStrip();
     root->addWidget(createHeader());
+    root->addWidget(createCompactBar()); // hidden until the film plays (setCompact)
     root->addWidget(body, 1);
     layoutHeader();
 
@@ -501,6 +617,29 @@ void AnimaticPage::leavePreview()
     if (m_selected >= 0 && m_selected < m_items.size() && m_selected != m_current)
         seekTo(m_selected);
     emit previewShownChanged(false);
+}
+
+void AnimaticPage::setPreviewChromeShown(bool shown)
+{
+    if (m_display)
+        m_display->setChromeShown(shown);
+}
+
+QWidget *AnimaticPage::previewDisplayForTest() const
+{
+    return m_display;
+}
+
+QRect AnimaticPage::previewPictureRectForTest() const
+{
+    return m_display && m_previewShown ? m_display->pictureRect() : QRect();
+}
+
+QRect AnimaticPage::previewCaptionRectForTest() const
+{
+    if (!m_display || !m_previewShown || !m_display->chromeShown())
+        return QRect();
+    return m_display->captionChipRect();
 }
 
 void AnimaticPage::showPreviewFrame()
@@ -810,7 +949,7 @@ void AnimaticPage::setCollapsed(bool collapsed)
         return;
     m_collapsed = collapsed;
     if (m_body)
-        m_body->setVisible(!collapsed);
+        m_body->setVisible(!collapsed && !m_compact); // compact: the bar stands in
     if (m_collapseButton) {
         // Down-pointing while open (click to fold away), up while collapsed.
         m_collapseButton->setIcon(SankoIcons::icon(
@@ -832,6 +971,218 @@ void AnimaticPage::setCollapsed(bool collapsed)
     }
     layoutHeader();
     emit collapsedChanged(collapsed);
+}
+
+// --- The compact bar (2026-11-03, Figma PB-1) --------------------------------------
+
+QWidget *AnimaticPage::createCompactBar()
+{
+    using namespace SankoTimelineTheme;
+    auto *bar = new QWidget;
+    m_compactBar = bar;
+    bar->setObjectName(QStringLiteral("animaticCompact"));
+    bar->setAttribute(Qt::WA_StyledBackground, true);
+    bar->setFixedHeight(kCompactHeight);
+    bar->setStyleSheet(QStringLiteral("QWidget#animaticCompact { background-color: %1;"
+                                      " border-top: 1px solid %2; }")
+                           .arg(kHeaderBg.name(), kHairline.name()));
+    QHBoxLayout *layout = new QHBoxLayout(bar);
+    layout->setContentsMargins(10, 0, 12, 0);
+    layout->setSpacing(4);
+    auto add = [&](QPushButton *b) { layout->addWidget(b, 0, Qt::AlignVCenter); return b; };
+    // The transport, the header's own buttons again.
+    connect(add(transportButton(QStringLiteral("tr_first"), QSize(13, 13),
+                                QStringLiteral("First panel"), QStringLiteral("compactFirst"))),
+            &QPushButton::clicked, this, &AnimaticPage::goFirst);
+    connect(add(transportButton(QStringLiteral("tr_prev"), QSize(10, 13),
+                                QStringLiteral("Previous panel"), QStringLiteral("compactPrev"))),
+            &QPushButton::clicked, this, &AnimaticPage::goPrev);
+    m_compactPlay = add(transportButton(QStringLiteral("tr_pause"), QSize(11, 13),
+                                        QStringLiteral("Play / Pause"), QStringLiteral("compactPlay")));
+    m_compactPlay->setStyleSheet(kPlaySheet);
+    connect(m_compactPlay, &QPushButton::clicked, this, &AnimaticPage::togglePlay);
+    connect(add(transportButton(QStringLiteral("tr_next"), QSize(10, 13),
+                                QStringLiteral("Next panel"), QStringLiteral("compactNext"))),
+            &QPushButton::clicked, this, &AnimaticPage::goNext);
+    connect(add(transportButton(QStringLiteral("tr_last"), QSize(13, 13),
+                                QStringLiteral("Last panel"), QStringLiteral("compactLast"))),
+            &QPushButton::clicked, this, &AnimaticPage::goLast);
+    layout->addSpacing(10);
+    // The timecode in the accent, the total dimmed.
+    m_compactTimecode = new QLabel(QStringLiteral("00:00:00:00"));
+    m_compactTimecode->setObjectName(QStringLiteral("compactTimecode"));
+    m_compactTimecode->setStyleSheet(
+        QStringLiteral("color: %1; font-size: 13px; font-weight: 600; background: transparent;")
+            .arg(SankoTheme::kPurpleHex));
+    layout->addWidget(m_compactTimecode, 0, Qt::AlignVCenter);
+    m_compactTotal = new QLabel(QStringLiteral("/ 00:00:00:00"));
+    m_compactTotal->setObjectName(QStringLiteral("compactTotal"));
+    m_compactTotal->setStyleSheet(
+        QStringLiteral("color: %1; font-size: 13px; background: transparent;").arg(kTotal.name()));
+    layout->addSpacing(6);
+    layout->addWidget(m_compactTotal, 0, Qt::AlignVCenter);
+    layout->addSpacing(14);
+    // The progress line takes the rest.
+    auto *line = new ProgressLine;
+    line->setObjectName(QStringLiteral("compactProgress"));
+    line->fraction = [this]() -> double {
+        const qint64 length = filmLengthMs();
+        if (length <= 0 || m_current < 0 || m_current >= m_items.size())
+            return 0.0;
+        // The film's own clock, live while it runs (the preview's camera
+        // reads the same value).
+        const qint64 at = offsetForPanel(m_current) + liveElapsedMsInCurrentPanel();
+        return qBound(0.0, double(at) / double(length), 1.0);
+    };
+    line->loop = [this] {
+        int a = -1, b = -1;
+        const qint64 length = filmLengthMs();
+        if (!loopRegion(&a, &b) || length <= 0)
+            return QPair<double, double>(-1.0, -1.0);
+        return QPair<double, double>(double(offsetForPanel(a)) / length,
+                                     double(offsetForPanel(b + 1)) / length);
+    };
+    line->seek = [this](double f) { seekToFilmMs(qRound64(f * filmLengthMs())); };
+    m_compactProgress = line;
+    layout->addWidget(line, 1);
+    layout->addSpacing(14);
+    // The speed, the header's menu; mute; the chevron.
+    m_compactSpeed = new SpeedButton;
+    m_compactSpeed->setObjectName(QStringLiteral("compactSpeed"));
+    m_compactSpeed->setCursor(Qt::PointingHandCursor);
+    m_compactSpeed->setFocusPolicy(Qt::NoFocus);
+    m_compactSpeed->setToolTip(QStringLiteral("Playback speed (takes effect on the next panel)"));
+    m_compactSpeed->setFixedSize(60, 28);
+    m_compactSpeed->setPopupMode(QToolButton::InstantPopup);
+    m_compactSpeed->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    m_compactSpeed->setStyleSheet(kSpeedDropdownSheet);
+    m_compactSpeed->setText(QStringLiteral("1x"));
+    layout->addWidget(m_compactSpeed, 0, Qt::AlignVCenter);
+    m_compactMute = new QPushButton;
+    m_compactMute->setObjectName(QStringLiteral("compactMute"));
+    m_compactMute->setToolTip(QStringLiteral("Mute / unmute the sound"));
+    m_compactMute->setCursor(Qt::PointingHandCursor);
+    m_compactMute->setFocusPolicy(Qt::NoFocus);
+    m_compactMute->setFixedSize(28, 28);
+    m_compactMute->setIconSize(QSize(16, 16));
+    m_compactMute->setStyleSheet(kTransportSheet);
+    connect(m_compactMute, &QPushButton::clicked, this, [this] {
+        if (m_tracks.audioMuted()) {
+            setAudioVolume(m_volumeBeforeMute > 0 ? m_volumeBeforeMute : 100);
+        } else {
+            m_volumeBeforeMute = m_tracks.audioVolume;
+            setAudioVolume(0);
+        }
+        syncCompactBar();
+    });
+    layout->addWidget(m_compactMute, 0, Qt::AlignVCenter);
+    auto *expand = new QPushButton;
+    expand->setObjectName(QStringLiteral("compactExpand"));
+    expand->setToolTip(QStringLiteral("Show the timeline (the film keeps playing)"));
+    expand->setCursor(Qt::PointingHandCursor);
+    expand->setFocusPolicy(Qt::NoFocus);
+    expand->setFixedSize(26, 26);
+    expand->setIconSize(QSize(10, 9));
+    expand->setIcon(SankoIcons::icon(QStringLiteral(":/icons/timeline/collapse_up.svg"), QSize(10, 9)));
+    expand->setStyleSheet(kTransportSheet);
+    connect(expand, &QPushButton::clicked, this, [this] { emit compactExpandRequested(); });
+    layout->addWidget(expand, 0, Qt::AlignVCenter);
+    bar->hide();
+    return bar;
+}
+
+void AnimaticPage::setCompact(bool compact)
+{
+    if (m_compact == compact || !m_compactBar)
+        return;
+    m_compact = compact;
+    if (m_compactSpeed && m_speedMenu && !m_compactSpeed->menu())
+        m_compactSpeed->setMenu(m_speedMenu); // one menu, two buttons
+    if (m_header)
+        m_header->setVisible(!compact);
+    if (m_body)
+        m_body->setVisible(!compact && !m_collapsed);
+    m_compactBar->setVisible(compact);
+    if (compact)
+        syncCompactBar();
+    emit compactChanged(compact);
+}
+
+// The bar's parts from the page's state: the play icon, the timecode and
+// the total, the speed, the mute icon, the line.
+void AnimaticPage::syncCompactBar()
+{
+    if (!m_compactBar || !m_compact)
+        return;
+    if (m_compactPlay)
+        m_compactPlay->setIcon(SankoIcons::icon(
+            m_playing ? QStringLiteral(":/icons/timeline/tr_pause.svg")
+                      : QStringLiteral(":/icons/timeline/tr_play.svg"),
+            QSize(11, 13)));
+    if (m_compactTimecode && m_timecodeLabel)
+        m_compactTimecode->setText(m_timecodeLabel->text());
+    if (m_compactTotal)
+        m_compactTotal->setText(QStringLiteral("/ ") + m_totalTime);
+    if (m_compactSpeed)
+        m_compactSpeed->setText(m_playbackSpeed < 0.99f ? QStringLiteral("0.5x")
+                                : m_playbackSpeed > 1.01f ? QStringLiteral("2x")
+                                                          : QStringLiteral("1x"));
+    if (m_compactMute)
+        m_compactMute->setIcon(SankoIcons::icon(
+            m_tracks.audioMuted() ? QStringLiteral(":/icons/timeline/speaker_muted.svg")
+                                  : QStringLiteral(":/icons/timeline/track_speaker.svg"),
+            QSize(16, 16)));
+    if (m_compactProgress)
+        m_compactProgress->update();
+}
+
+qint64 AnimaticPage::filmLengthMs() const
+{
+    return offsetForPanel(int(m_items.size()));
+}
+
+// A seek to a time on the film. Playing, the film keeps running from there
+// (the panel clock re-armed, the sound sought); paused, the frame-accurate
+// scrub's path (onScrubbedTo).
+void AnimaticPage::seekToFilmMs(qint64 ms)
+{
+    if (m_items.isEmpty())
+        return;
+    const qint64 length = filmLengthMs();
+    ms = qBound<qint64>(0, ms, qMax<qint64>(0, length - 1));
+    int index = 0;
+    while (index + 1 < m_items.size() && offsetForPanel(index + 1) <= ms)
+        ++index;
+    const int elapsed = int(ms - offsetForPanel(index));
+    const int fps = m_timeline ? qMax(1, m_timeline->fps()) : 24;
+    if (!m_playing) {
+        onScrubbedTo(index, shotcam::frameInPanelFromMs(elapsed, fps));
+        return;
+    }
+    m_current = index;
+    m_elapsedMsInCurrentPanel = elapsed;
+    if (m_timeline)
+        m_timeline->setCurrentPanel(index);
+    updateTimecodeLabel();
+    showPreviewFrame();
+    if (!m_waitingForAudio)
+        scheduleTick();
+    if (hasAudio()) {
+        seekAudio(ms);
+        if (m_player->playbackState() != QMediaPlayer::PlayingState
+            && (m_player->duration() <= 0 || ms < m_player->duration()))
+            m_player->play();
+    }
+    updatePreviewCamera();
+    if (m_timeline)
+        m_timeline->updatePlayhead();
+}
+
+QRect AnimaticPage::compactProgressRectForTest() const
+{
+    if (!m_compactProgress || !m_compact)
+        return QRect();
+    return QRect(m_compactProgress->mapTo(this, QPoint(0, 0)), m_compactProgress->size());
 }
 
 int AnimaticPage::minimumExpandedHeight() const
@@ -1477,6 +1828,7 @@ void AnimaticPage::setAudioVolume(int percent)
         return;
     m_tracks.audioVolume = percent;
     applyTracks();
+    syncCompactBar(); // its mute icon
     emit tracksChanged();
 }
 
@@ -1736,6 +2088,11 @@ void AnimaticPage::updateTimecodeLabel()
                                  .arg(mm, 2, 10, QChar('0'))
                                  .arg(ss, 2, 10, QChar('0'))
                                  .arg(ff, 2, 10, QChar('0')));
+    if (m_compact && m_compactTimecode) { // the compact bar follows (cheap: text and a repaint)
+        m_compactTimecode->setText(m_timecodeLabel->text());
+        if (m_compactProgress)
+            m_compactProgress->update();
+    }
 }
 
 void AnimaticPage::updateTotalLabel()
@@ -1763,6 +2120,8 @@ void AnimaticPage::updateTotalLabel()
     // tooltip (BEFORE SELLING 13).
     m_totalTime = text;
     m_totalLabel->setText(m_headerCompact ? text : QStringLiteral("Total: ") + text);
+    if (m_compactTotal)
+        m_compactTotal->setText(QStringLiteral("/ ") + text);
     m_totalLabel->setToolTip(QStringLiteral("Total: ") + text);
 }
 
@@ -1788,12 +2147,14 @@ void AnimaticPage::play()
     }
     m_playing = true;
     enterPreview(); // playback is watched over the canvas, not on it
+    emit playingChanged(true);
     // NOT reset here: a Play after a pause continues the panel from where
     // it was paused (movePlayheadTo resets it for every fresh start).
     m_playButton->setIcon(SankoIcons::icon( // the pause bars
         QStringLiteral(":/icons/timeline/tr_pause.svg"), QSize(11, 13)));
     if (m_timeline)
         m_timeline->setPlaying(true);
+    syncCompactBar();
     // Asked again at every Play, not only when Windows reports a change:
     // the cost of being wrong is a film that plays in silence with nothing
     // to say why.
@@ -1903,6 +2264,7 @@ qreal AnimaticPage::audioRateForTest() const
 void AnimaticPage::pause()
 {
     m_playing = false;
+    emit playingChanged(false);
     // The panel's clock FREEZES where it is; Play continues from here.
     if (m_waitingForAudio) {
         m_waitingForAudio = false; // the sound never began: nothing elapsed
@@ -1922,6 +2284,7 @@ void AnimaticPage::pause()
     if (m_playButton)
         m_playButton->setIcon(SankoIcons::icon( // the play triangle
             QStringLiteral(":/icons/timeline/tr_play.svg"), QSize(11, 13)));
+    syncCompactBar();
     if (hasAudio())
         m_player->pause();
     emit playheadMoved(); // the frame it stopped on
@@ -1989,6 +2352,7 @@ void AnimaticPage::updateSpeedControl()
             m_speedActions[i]->setChecked(i == which);
     if (m_speedButton && m_speedActions[which])
         m_speedButton->setText(m_speedActions[which]->text());
+    syncCompactBar();
 }
 
 void AnimaticPage::scheduleTick()

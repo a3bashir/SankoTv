@@ -399,6 +399,7 @@ private:
     int m_discardPromptCount = 0;
 
     QAction *m_saveAct = nullptr;
+    QAction *m_clearStageAct = nullptr; // View > Clear the Stage While the Film Plays
     QAction *m_saveAsAct = nullptr;
     QAction *m_projectSettingsAct = nullptr;
     QAction *m_closeProjectAct = nullptr;

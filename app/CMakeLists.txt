@@ -137,6 +137,9 @@ qt_add_executable(SankoTV
     src/ConsistencyBoard.h
     src/FloatingToolWindow.cpp
     src/FloatingToolWindow.h
+    # The bars fade while the film plays (2026-11-02, Figma PLAYBACK-2).
+    src/StageClear.cpp
+    src/StageClear.h
     src/SankoScrollBarStyle.h
     src/SankoNoteStyle.h
     src/SankoTheme.h

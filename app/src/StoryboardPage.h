@@ -12,6 +12,7 @@
 #include <QWidget>
 
 class ZoomToolbar;
+class StageClear;
 class LayerDepthPopover;
 namespace brushlib {
 class BrushLibraryModel;
@@ -242,8 +243,20 @@ public:
     void cameraContinue(int sceneIndex);
     // The SCENES track's menu, handed to the menu hook in the gate.
     void sceneMenuForTest(int sceneIndex) { onSceneMenu(sceneIndex, QPoint()); }
-    // For the Dev Recorder's statePoll: shotCam.animate, shotCam.toolActive.
+    // For the Dev Recorder's statePoll: shotCam.animate, shotCam.toolActive,
+    // preview.stageClear.
     QVariantMap shotCamToolDevrecState() const;
+    // CLEAR THE STAGE while the film plays (StageClear.h): the setting, and
+    // the gate's seams - the state, the faded bars, no fade, the idle timer
+    // fired by hand.
+    void setClearStageOnPlay(bool on);
+    bool clearStageOnPlay() const;
+    bool stageClearedForTest() const;
+    QVector<QWidget *> stageFadedBarsForTest() const;
+    void setStageFadeMsForTest(int ms);
+    void fireStageIdleForTest();
+    bool stageIdleArmedForTest() const;
+    bool stripSteppedAsideForTest() const { return m_stripSteppedAside; }
     // DEPTH (Phase 2B): the Depth popover for layer `index` of the current
     // panel, as its badge or Depth... opens it (the paper and a folder's
     // member open nothing); the popover open now, or null.
@@ -689,6 +702,22 @@ private:
     void pushInsertPanel(Scene *scene, int index, Panel *panel, const QString &text);
     void pushMovePanel(Scene *scene, int from, int to);
     int m_cameraBarNaturalW = 0; // the bar's own width (the fit check's seam adds to it)
+    StageClear *m_stageClear = nullptr; // the bars fade while the film plays
+    static const QString kClearStageKey;
+    // THE COMPACT BAR AND THE STRIP STEPPING ASIDE (2026-11-03, Figma PB-1
+    // / PB-3): while the stage is playing the timeline section is its 36 px
+    // compact bar and the panel strip an 8 px handle; on pause both return
+    // exactly - the section to the height and state it had (open or
+    // collapsed), the strip to its size. The compact bar's chevron opens
+    // the timeline without pausing (suppressed until the film stops).
+    void applyCompact(bool on);
+    void stripStepAside(bool on);
+    bool m_compactActive = false;
+    bool m_compactSuppressed = false;
+    bool m_stripSteppedAside = false;
+    int m_stripMinH = 0, m_stripMaxH = 0;
+    int m_stripSavedDockH = 0; // the dock's height before stepping aside, given back exactly
+    QVector<QPointer<QWidget>> m_stripHidden;
     bool cameraKeyAtPlayhead() const; // the row menu's "Key Set at Playhead"
     bool deleteSelectedCameraKey(); // false: no key selected (Delete is the panel's)
     QString cameraKeyHeader(int sceneIndex, int keyIndex, bool *last) const;

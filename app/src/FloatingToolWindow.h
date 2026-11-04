@@ -145,6 +145,10 @@ public:
     virtual void reposition();
 
     QWidget *anchorWidget() const { return m_anchor; }
+    // Every registered window over `anchor`, in registration order (the
+    // manager's registry, not a widget-tree walk): what clears with the
+    // stage while the film plays (StageClear).
+    static QVector<FloatingToolWindow *> windowsOver(QWidget *anchor);
 
     // Convenience wiring so plain instances don't need a subclass: the grip
     // widget's geometry becomes the default gripRect() (its mouse events fall

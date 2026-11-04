@@ -13761,6 +13761,477 @@ void runCameraBarFitPass(const QString &scratch)
     r.window.markCleanForTest();
 }
 
+// ---- (ps) CLEAR THE STAGE while the film plays (2026-11-02, Figma PLAYBACK-2) ---
+// Option A as approved: on Play every bar over the canvas and the preview's
+// caption chip fade out; a pointer move over the stage brings them back and
+// the idle timer clears them again; pause brings everything back at once;
+// the setting off is the old behaviour. The user's rule: a click on a faded
+// bar never presses a control - it only wakes the stage. No fade in the
+// gate (opacity set at once) and the idle timer fired by hand: nothing
+// here waits on the clock.
+void runStageClearPass(const QString &scratch)
+{
+    using namespace workspace;
+    using namespace camtool;
+    out() << "--- (ps) clear the stage while the film plays ---" << Qt::endl;
+    const QString project = writeProject(scratch + QStringLiteral("/stage"),
+                                         QStringLiteral("Stage"), QSize(1920, 1080), 24, 1, 4);
+    Rig r(project);
+    check(QStringLiteral("(ps) the workspace opened"), r.ok);
+    if (!r.ok)
+        return;
+    auto *camBtn = r.storyboard->findChild<QPushButton *>(QStringLiteral("toolCamera"));
+    auto *brushBtn = r.storyboard->findChild<QPushButton *>(QStringLiteral("toolBrush"));
+    Scene *s0 = r.window.scenesForTest().value(0);
+    QUndoStack *stack = r.window.undoStackForTest();
+    if (!camBtn || !brushBtn || !s0 || !stack) {
+        check(QStringLiteral("(ps) found the tool buttons, the scene and the history"), false);
+        return;
+    }
+    r.storyboard->setStageFadeMsForTest(0); // the opacity at once: no clock
+    r.storyboard->setClearStageOnPlay(true);
+    auto bars = [&] {
+        QVector<FloatingToolWindow *> v;
+        for (FloatingToolWindow *w : FloatingToolWindow::windowsOver(r.canvas))
+            if (w->isVisible() && !w->isModalSurface())
+                v.append(w);
+        return v;
+    };
+    auto opacities = [&] {
+        QStringList s;
+        for (FloatingToolWindow *w : bars())
+            s << QStringLiteral("%1=%2").arg(w->objectName().isEmpty()
+                                                 ? QString::fromLatin1(w->metaObject()->className())
+                                                 : w->objectName())
+                                            .arg(w->windowOpacity(), 0, 'f', 2);
+        return s.join(QLatin1Char(' '));
+    };
+    auto allAt = [&](qreal o) {
+        const QVector<FloatingToolWindow *> v = bars();
+        for (FloatingToolWindow *w : v)
+            if (qAbs(w->windowOpacity() - o) > 0.01)
+                return false;
+        return !v.isEmpty();
+    };
+    auto cleared = [&] { return r.storyboard->stageClearedForTest(); };
+    auto polled = [&] {
+        return r.storyboard->shotCamToolDevrecState().value(QStringLiteral("preview.stageClear")).toBool();
+    };
+    auto chipRect = [&] { return r.animatic->previewCaptionRectForTest(); };
+    clickThumb(r, 0);
+    camBtn->click(); // the Camera bar is up too
+    pump(200);
+    const int barCount = bars().size();
+
+    // --- (ps1) Play clears -------------------------------------------------------
+    r.animatic->togglePlay();
+    pump(200);
+    QWidget *display = r.animatic->previewDisplayForTest();
+    const bool playing = r.animatic->isPlaying() && r.animatic->previewVisible() && display
+        && display->isVisible();
+    const QRect previewGeom = display ? display->geometry() : QRect();
+    check(QStringLiteral("(ps1) PLAY CLEARS THE STAGE: every bar over the canvas (%1 of them: the "
+                         "Brush bar, Layers, Zoom / Rotate, the Camera bar...) at opacity 0, the "
+                         "preview's caption chip gone, the stage reported clear, the recorder's "
+                         "preview.stageClear true; nothing moved - the bars are still shown at "
+                         "their places and the preview keeps its geometry").arg(barCount),
+          playing && barCount >= 3 && allAt(0.0) && chipRect().isEmpty() && cleared() && polled()
+              && r.storyboard->stageFadedBarsForTest().size() == barCount
+              && [&] {
+                     for (FloatingToolWindow *w : bars())
+                         if (!w->isVisible())
+                             return false;
+                     return true;
+                 }(),
+          QStringLiteral("playing %1 bars %2 cleared %3 chip %4x%5 | %6").arg(playing).arg(barCount)
+              .arg(cleared()).arg(chipRect().width()).arg(chipRect().height()).arg(opacities()));
+
+    // --- (ps2) a pointer move over the preview brings them back; idle clears ---
+    if (display)
+        mouse(display, QEvent::MouseMove, QPointF(display->width() / 2.0, display->height() / 2.0),
+              Qt::NoButton, Qt::NoButton);
+    pump(60);
+    const bool back = !cleared() && allAt(1.0) && !chipRect().isEmpty() && !polled()
+        && r.storyboard->stageIdleArmedForTest();
+    const QRect geomAfter = display ? display->geometry() : QRect();
+    r.storyboard->fireStageIdleForTest();
+    pump(60);
+    check(QStringLiteral("(ps2) A POINTER MOVE over the preview brings every bar back to opacity 1 "
+                         "and the chip with them, and arms the idle timer; the timer fired, the "
+                         "stage clears again; the preview's geometry is unchanged throughout"),
+          back && cleared() && allAt(0.0) && chipRect().isEmpty() && geomAfter == previewGeom
+              && !previewGeom.isEmpty(),
+          QStringLiteral("back %1 then cleared %2 | %3").arg(back).arg(cleared()).arg(opacities()));
+    // Control: a move elsewhere (the timeline) wakes nothing.
+    mouse(r.surface, QEvent::MouseMove, QPointF(300, 20), Qt::NoButton, Qt::NoButton);
+    pump(60);
+    check(QStringLiteral("(ps2) control: a pointer move over the timeline, not the stage, leaves "
+                         "it clear"),
+          cleared() && allAt(0.0));
+
+    // --- (ps7) THE USER'S RULE: a click on a faded bar presses nothing ---------
+    {
+        const DrawingCanvas::Tool before = r.canvas->tool();
+        const QPointF c(brushBtn->width() / 2.0, brushBtn->height() / 2.0);
+        mouse(brushBtn, QEvent::MouseButtonPress, c, Qt::LeftButton, Qt::LeftButton);
+        mouse(brushBtn, QEvent::MouseButtonRelease, c, Qt::LeftButton, Qt::NoButton);
+        pump(60);
+        const bool woke = !cleared() && allAt(1.0) && !chipRect().isEmpty();
+        check(QStringLiteral("(ps7) THE USER'S RULE: with the stage clear, a click on the Brush "
+                             "button of the faded Brush bar does NOT select the Brush tool (the "
+                             "tool stays Camera) - it only brings the bars back"),
+              woke && r.canvas->tool() == before && before == DrawingCanvas::Camera,
+              QStringLiteral("woke %1 tool %2 -> %3").arg(woke).arg(int(before)).arg(int(r.canvas->tool())));
+        // Control: the bars visible, the same click selects the Brush.
+        mouse(brushBtn, QEvent::MouseButtonPress, c, Qt::LeftButton, Qt::LeftButton);
+        mouse(brushBtn, QEvent::MouseButtonRelease, c, Qt::LeftButton, Qt::NoButton);
+        pump(60);
+        check(QStringLiteral("(ps7) control: the bars visible, the same click selects the Brush tool"),
+              r.canvas->tool() == DrawingCanvas::Brush && !cleared(),
+              QStringLiteral("tool %1").arg(int(r.canvas->tool())));
+        camBtn->click();
+        pump(100);
+    }
+
+    // --- (ps5) the bar under the pointer stays ---------------------------------
+    {
+        // The pointer is still on the Brush bar as far as the stage knows
+        // (ps7's clicks; no Leave was sent): off it, onto the preview, first.
+        if (display)
+            mouse(display, QEvent::MouseMove, QPointF(display->width() / 2.0, display->height() / 2.0),
+                  Qt::NoButton, Qt::NoButton);
+        pump(30);
+        r.storyboard->fireStageIdleForTest();
+        pump(60);
+        const bool clearedAgain = cleared();
+        // A move over the Brush bar: back, and the pointer is on a bar.
+        mouse(brushBtn, QEvent::MouseMove, QPointF(2, 2), Qt::NoButton, Qt::NoButton);
+        pump(60);
+        const bool backOnBar = !cleared() && allAt(1.0);
+        r.storyboard->fireStageIdleForTest(); // the pointer rests on the bar: no clear
+        pump(60);
+        const bool stayed = !cleared() && allAt(1.0) && r.storyboard->stageIdleArmedForTest();
+        // The pointer leaves the bar: the next idle clears.
+        if (FloatingToolWindow *bar = qobject_cast<FloatingToolWindow *>(brushBtn->window())) {
+            QEvent leave(QEvent::Leave);
+            QCoreApplication::sendEvent(bar, &leave);
+        }
+        pump(30);
+        r.storyboard->fireStageIdleForTest();
+        pump(60);
+        check(QStringLiteral("(ps5) THE BAR UNDER THE POINTER STAYS: with the stage clear a move "
+                             "over the Brush bar brings the bars back; the idle timer fired while "
+                             "the pointer rests on the bar clears nothing and re-arms; the pointer "
+                             "leaving the bar, the next idle clears"),
+              clearedAgain && backOnBar && stayed && cleared() && allAt(0.0),
+              QStringLiteral("cleared %1 back %2 stayed %3 then %4").arg(clearedAgain).arg(backOnBar)
+                  .arg(stayed).arg(cleared()));
+    }
+
+    // --- (ps4) keys work while the stage is clear --------------------------------
+    {
+        const int keys = s0->camera.keys.size();
+        const int count = stack->index();
+        startWindowKeys::press(&r.window, Qt::Key_M, Qt::NoModifier);
+        pump(100);
+        check(QStringLiteral("(ps4) KEYS WORK WHILE CLEAR: M marks a pinned camera key (\"Mark Camera "
+                             "Key\") and the stage stays clear - a key is not a pointer"),
+              s0->camera.keys.size() == keys + 1 && stack->index() == count + 1
+                  && stack->text(count) == QStringLiteral("Mark Camera Key") && cleared() && allAt(0.0),
+              QStringLiteral("keys %1 -> %2, +%3, cleared %4").arg(keys).arg(s0->camera.keys.size())
+                  .arg(stack->index() - count).arg(cleared()));
+    }
+
+    // --- (ps3) pause restores at once ---------------------------------------------
+    r.animatic->togglePlay(); // paused
+    pump(60);
+    check(QStringLiteral("(ps3) PAUSE brings everything back at once: every bar at 1, the chip back, "
+                         "the stage not clear, no idle timer running, the recorder false"),
+          !r.animatic->isPlaying() && !cleared() && allAt(1.0) && !chipRect().isEmpty()
+              && !r.storyboard->stageIdleArmedForTest() && !polled(),
+          opacities());
+    // Esc (leaving the preview) from a cleared stage.
+    r.animatic->togglePlay();
+    pump(100);
+    const bool clearedOnPlay = cleared();
+    r.animatic->leavePreview();
+    pump(60);
+    check(QStringLiteral("(ps3) leaving the preview from a clear stage restores every bar and "
+                         "ends the preview"),
+          clearedOnPlay && !cleared() && allAt(1.0) && !r.animatic->previewVisible()
+              && !r.storyboard->stageIdleArmedForTest());
+    // Control: the setting off, Play clears nothing (the old behaviour).
+    r.storyboard->setClearStageOnPlay(false);
+    r.animatic->togglePlay();
+    pump(150);
+    check(QStringLiteral("(ps3) control: with \"Clear the stage while the film plays\" off, Play "
+                         "leaves every bar at 1 and the chip shown"),
+          r.animatic->isPlaying() && !cleared() && allAt(1.0) && !chipRect().isEmpty() && !polled(),
+          opacities());
+    r.animatic->leavePreview();
+    pump(60);
+    // The setting is remembered, and the View menu's action follows it.
+    const bool stored = !sankoSettings().value(QStringLiteral("storyboard/clearStageOnPlay"), true).toBool();
+    auto *viewAct = r.window.findChild<QAction *>(QStringLiteral("viewClearStage"));
+    r.storyboard->setClearStageOnPlay(true);
+    check(QStringLiteral("(ps3) the setting is remembered (storyboard/clearStageOnPlay) and View's "
+                         "\"Clear the Stage While the Film Plays\" is the checkable action"),
+          stored && viewAct && viewAct->isCheckable()
+              && sankoSettings().value(QStringLiteral("storyboard/clearStageOnPlay"), false).toBool());
+    r.window.markCleanForTest();
+}
+
+// ---- (pc) THE COMPACT BAR and the strip stepping aside (2026-11-03, Figma PB-1/3) ---
+// While the stage plays, the timeline section is its 36 px compact bar and
+// the panel strip an 8 px handle; the canvas area takes the height and the
+// preview refits to it; on pause both return exactly. pc1-pc7 as approved,
+// each with its control; the animations are the layout's own (no fade), so
+// nothing waits on the clock.
+void runCompactBarPass(const QString &scratch)
+{
+    using namespace workspace;
+    using namespace camtool;
+    out() << "--- (pc) the compact bar and the strip stepping aside ---" << Qt::endl;
+    const QSize cs(1920, 1080);
+    const QString project = writeProject(scratch + QStringLiteral("/compact"),
+                                         QStringLiteral("Compact"), cs, 24, 1, 4);
+    Rig r(project);
+    check(QStringLiteral("(pc) the workspace opened"), r.ok);
+    if (!r.ok)
+        return;
+    auto *splitter = r.storyboard->findChild<QSplitter *>(QStringLiteral("workspaceSplitter"));
+    auto *stripDock = r.storyboard->findChild<QDockWidget *>(QStringLiteral("dockPanelStrip"));
+    QWidget *display = r.animatic->previewDisplayForTest();
+    if (!splitter || !stripDock || !display) {
+        check(QStringLiteral("(pc) found the work splitter, the strip dock and the preview"), false);
+        return;
+    }
+    r.storyboard->setStageFadeMsForTest(0);
+    r.storyboard->setClearStageOnPlay(true);
+    auto polled = [&](const char *key) {
+        return r.storyboard->shotCamToolDevrecState().value(QLatin1String(key));
+    };
+    // The picture as the preview paints it (the neutral fit here: the frame
+    // scaled to the widget and centred), in the display's coordinates. The
+    // first run read it through the shot transform, which a neutral preview
+    // does not paint with (its camera is then the default, not the neutral
+    // framing): the rect came out centred on the widget's centre.
+    auto pictureRect = [&] { return r.animatic->previewPictureRectForTest(); };
+    auto largest16by9Inside = [&](const QRect &pic, const QRect &area) {
+        const bool inside = pic.left() >= area.left() - 1 && pic.top() >= area.top() - 1
+            && pic.right() <= area.right() + 1 && pic.bottom() <= area.bottom() + 1;
+        const bool touches = qAbs(pic.width() - area.width()) <= 1 || qAbs(pic.height() - area.height()) <= 1;
+        const bool aspect = qAbs(pic.width() * 9 - pic.height() * 16) <= 32;
+        return inside && touches && aspect;
+    };
+    auto globalRect = [](QWidget *w) { return QRect(w->mapToGlobal(QPoint(0, 0)), w->size()); };
+    clickThumb(r, 0);
+    pump(100);
+    const int hBefore = r.animatic->height();
+    const int stripBefore = stripDock->height();
+    const QSize areaBefore = r.canvas->size();
+    const double ppfBefore = r.timeline->pxPerFrameForTest();
+    const int scrollBefore = r.timeline->scrollXForTest();
+    const int selBefore = r.animatic->selectedPanelForTest();
+    r.animatic->setPlayheadForTest(0, 0);
+    pump(100);
+    const QString surfaceBefore = mppins::shaOfImage(r.surface->grab().toImage());
+
+    // --- (pc1) Play: the compact bar, the strip aside, the picture fitted --------
+    r.animatic->togglePlay();
+    pump(300);
+    QWidget *bar = r.animatic->compactBarForTest();
+    const QRect pic1 = pictureRect();
+    const QRect area1 = display->rect();
+    const bool fitted1 = display->isVisible() && display->geometry() == r.canvas->rect()
+        && largest16by9Inside(pic1, area1);
+    const QRect picGlobal = QRect(display->mapToGlobal(pic1.topLeft()), pic1.size());
+    const bool barClear = bar && bar->isVisible() && !globalRect(bar).intersects(picGlobal);
+    const int gained = r.canvas->height() - areaBefore.height();
+    const int expected = (hBefore - AnimaticPage::kCompactHeight) + (stripBefore - stripDock->height());
+    check(QStringLiteral("(pc1) PLAY: the timeline section is the 36 px compact bar, the strip an "
+                         "8 px handle, the canvas area %1 px taller (the section's %2 + the strip's "
+                         "%3), the preview the whole area and the picture the largest 16:9 inside "
+                         "it, the bar not over it; the recorder's preview.compactBar")
+              .arg(gained).arg(hBefore - AnimaticPage::kCompactHeight).arg(stripBefore - stripDock->height()),
+          r.animatic->isPlaying() && r.animatic->isCompact() && r.animatic->height() == AnimaticPage::kCompactHeight
+              && r.storyboard->stripSteppedAsideForTest() && stripDock->height() <= 14
+              && qAbs(gained - expected) <= 6 && gained > 150 && fitted1 && barClear
+              && polled("preview.compactBar").toBool()
+              && polled("preview.areaH").toInt() == r.canvas->height(),
+          QStringLiteral("compact %1 h %2 strip %3->%4 gained %5 (expected %6) fitted %7 pic %8x%9 "
+                         "area %10x%11 barClear %12 | display %13 canvas %14 bar %15 vis %16 picG %17")
+              .arg(r.animatic->isCompact()).arg(r.animatic->height()).arg(stripBefore).arg(stripDock->height())
+              .arg(gained).arg(expected).arg(fitted1).arg(pic1.width()).arg(pic1.height())
+              .arg(area1.width()).arg(area1.height()).arg(barClear)
+              .arg(QStringLiteral("%1,%2 %3x%4").arg(display->x()).arg(display->y()).arg(display->width()).arg(display->height()),
+                   QStringLiteral("%1x%2").arg(r.canvas->width()).arg(r.canvas->height()),
+                   bar ? QStringLiteral("%1,%2 %3x%4").arg(globalRect(bar).x()).arg(globalRect(bar).y())
+                             .arg(globalRect(bar).width()).arg(globalRect(bar).height())
+                       : QStringLiteral("none"))
+              .arg(bar ? bar->isVisible() : false)
+              .arg(QStringLiteral("%1,%2 %3x%4").arg(picGlobal.x()).arg(picGlobal.y()).arg(picGlobal.width()).arg(picGlobal.height())));
+
+    // --- (pc2) the compact bar's controls act ----------------------------------
+    {
+        auto btn = [&](const char *name) {
+            return bar ? bar->findChild<QPushButton *>(QLatin1String(name)) : nullptr;
+        };
+        const int at = r.animatic->currentFlatIndex();
+        if (btn("compactNext"))
+            btn("compactNext")->click();
+        pump(60);
+        const int next = r.animatic->currentFlatIndex();
+        if (btn("compactPrev"))
+            btn("compactPrev")->click();
+        pump(60);
+        const int prev = r.animatic->currentFlatIndex();
+        QWidget *line = bar ? bar->findChild<QWidget *>(QStringLiteral("compactProgress")) : nullptr;
+        qint64 sought = -1;
+        int soughtPanel = -1;
+        bool stillPlaying = false;
+        if (line) {
+            const QPointF mid(line->width() / 2.0, line->height() / 2.0);
+            mouse(line, QEvent::MouseButtonPress, mid, Qt::LeftButton, Qt::LeftButton);
+            mouse(line, QEvent::MouseButtonRelease, mid, Qt::LeftButton, Qt::NoButton);
+            // Read before the film's clock ticks on (no pump between): the
+            // seek's own value, not the clock's.
+            sought = r.animatic->filmPositionMsForTest();
+            soughtPanel = r.animatic->currentFlatIndex();
+            stillPlaying = r.animatic->isPlaying();
+            pump(60);
+        }
+        // The film: 2, 3, 4, 2 s = 11 s; the middle is 5500 ms, 500 ms into panel 3.
+        check(QStringLiteral("(pc2) THE COMPACT BAR'S CONTROLS ACT: next and previous move the "
+                             "playhead a panel; a press at the middle of the progress line seeks "
+                             "to 00:00:05:12 (5500 ms, panel 3) with the film still playing"),
+              next == at + 1 && prev == at && qAbs(sought - 5500) <= int(line ? 11000.0 / line->width() + 1 : 0)
+                  && soughtPanel == 2 && stillPlaying,
+              QStringLiteral("at %1 next %2 prev %3 sought %4 ms panel %5 playing %6").arg(at).arg(next)
+                  .arg(prev).arg(sought).arg(soughtPanel).arg(stillPlaying));
+        // The chevron: the full timeline back while the film keeps playing;
+        // the next Play compacts again.
+        if (btn("compactExpand"))
+            btn("compactExpand")->click();
+        pump(200);
+        const bool opened = r.animatic->isPlaying() && !r.animatic->isCompact()
+            && r.animatic->height() == hBefore && !r.storyboard->stripSteppedAsideForTest()
+            && stripDock->height() == stripBefore;
+        r.animatic->togglePlay(); // paused
+        pump(100);
+        r.animatic->togglePlay(); // playing again
+        pump(200);
+        check(QStringLiteral("(pc2) THE CHEVRON opens the full timeline (its height back, the strip "
+                             "back) while the film keeps playing; the next Play compacts again"),
+              opened && r.animatic->isPlaying() && r.animatic->isCompact()
+                  && r.animatic->height() == AnimaticPage::kCompactHeight,
+              QStringLiteral("opened %1 then compact %2").arg(opened).arg(r.animatic->isCompact()));
+    }
+
+    // --- (pc3) a window resize during play refits --------------------------------
+    {
+        const QSize before = r.window.size();
+        r.window.resize(before.width(), before.height() + 90);
+        pump(300);
+        const QRect pic = pictureRect();
+        const bool fitted = display->geometry() == r.canvas->rect() && largest16by9Inside(pic, display->rect())
+            && r.canvas->height() > area1.height();
+        const bool clear = bar && !globalRect(bar).intersects(QRect(display->mapToGlobal(pic.topLeft()), pic.size()));
+        check(QStringLiteral("(pc3) A WINDOW RESIZE DURING PLAY refits: the preview the new area, the "
+                             "picture the largest 16:9 inside it, the compact bar still clear of it"),
+              fitted && clear && r.animatic->height() == AnimaticPage::kCompactHeight,
+              QStringLiteral("area %1x%2 pic %3x%4").arg(display->width()).arg(display->height())
+                  .arg(pic.width()).arg(pic.height()));
+        r.window.resize(before);
+        pump(300);
+    }
+
+    // --- (pc4) pause: everything back exactly -------------------------------------
+    r.animatic->togglePlay();
+    pump(300);
+    const QRect picPaused = pictureRect();
+    check(QStringLiteral("(pc4) PAUSE: the section back to its height (%1), open, the same zoom, "
+                         "scroll and selection; the strip back to %2; the canvas area its old size; "
+                         "the preview refitted to it; the recorder false").arg(hBefore).arg(stripBefore),
+          !r.animatic->isPlaying() && !r.animatic->isCompact() && r.animatic->height() == hBefore
+              && !r.animatic->isCollapsed() && qFuzzyCompare(r.timeline->pxPerFrameForTest(), ppfBefore)
+              && r.timeline->scrollXForTest() == scrollBefore
+              && r.animatic->selectedPanelForTest() == selBefore
+              && !r.storyboard->stripSteppedAsideForTest() && stripDock->height() == stripBefore
+              && r.canvas->size() == areaBefore && display->geometry() == r.canvas->rect()
+              && largest16by9Inside(picPaused, display->rect())
+              && !polled("preview.compactBar").toBool(),
+          QStringLiteral("h %1 strip %2 area %3x%4 ppf %5 scroll %6 sel %7").arg(r.animatic->height())
+              .arg(stripDock->height()).arg(r.canvas->width()).arg(r.canvas->height())
+              .arg(r.timeline->pxPerFrameForTest()).arg(r.timeline->scrollXForTest())
+              .arg(r.animatic->selectedPanelForTest()));
+    // Control: another height before Play comes back as that height.
+    {
+        const int handle = splitter->handleWidth();
+        const int total = splitter->height();
+        const int h2 = hBefore + 60;
+        splitter->setSizes({total - handle - h2, h2});
+        pump(150);
+        const int set = r.animatic->height();
+        r.animatic->togglePlay();
+        pump(200);
+        const bool compact = r.animatic->height() == AnimaticPage::kCompactHeight;
+        r.animatic->togglePlay();
+        pump(200);
+        check(QStringLiteral("(pc4) control: the section dragged 60 px taller before Play comes back "
+                             "at that height, not the earlier one"),
+              set == h2 && compact && r.animatic->height() == h2 && h2 != hBefore,
+              QStringLiteral("set %1 back %2").arg(set).arg(r.animatic->height()));
+        splitter->setSizes({total - handle - hBefore, hBefore});
+        pump(150);
+    }
+
+    // --- (pc5) the artist's collapse is restored ----------------------------------
+    {
+        r.animatic->setCollapsed(true);
+        pump(150);
+        const int collapsedH = r.animatic->height();
+        r.animatic->togglePlay();
+        pump(200);
+        const bool compact = r.animatic->isCompact() && r.animatic->height() == AnimaticPage::kCompactHeight;
+        r.animatic->togglePlay();
+        pump(200);
+        check(QStringLiteral("(pc5) THE ARTIST'S COLLAPSE IS RESTORED: collapsed before Play (the 40 px "
+                             "header), compact while playing, collapsed again after - not opened"),
+              collapsedH == AnimaticPage::kHeaderHeight && compact && r.animatic->isCollapsed()
+                  && r.animatic->height() == AnimaticPage::kHeaderHeight,
+              QStringLiteral("collapsed %1 compact %2 after %3 (%4)").arg(collapsedH).arg(compact)
+                  .arg(r.animatic->isCollapsed()).arg(r.animatic->height()));
+        r.animatic->setCollapsed(false);
+        pump(150);
+    }
+
+    // --- (pc6) the rows paint as before --------------------------------------------
+    r.animatic->leavePreview();
+    r.animatic->setPlayheadForTest(0, 0);
+    pump(150);
+    const QString surfaceAfter = mppins::shaOfImage(r.surface->grab().toImage());
+    check(QStringLiteral("(pc6) THE ROWS PAINT AS BEFORE: the timeline surface's grab after a play, a "
+                         "resize and a pause equals the grab before (the playhead put back)"),
+          surfaceAfter == surfaceBefore && r.animatic->height() == hBefore,
+          QStringLiteral("%1 vs %2, h %3").arg(surfaceBefore.left(12), surfaceAfter.left(12)).arg(r.animatic->height()));
+
+    // --- (pc7) the setting off: nothing compacts (the control of the whole) ------
+    r.storyboard->setClearStageOnPlay(false);
+    r.animatic->togglePlay();
+    pump(200);
+    check(QStringLiteral("(pc7) control: with the setting off, Play leaves the section at its height, "
+                         "the strip in place and the recorder's preview.compactBar false"),
+          r.animatic->isPlaying() && !r.animatic->isCompact() && r.animatic->height() == hBefore
+              && !r.storyboard->stripSteppedAsideForTest() && stripDock->height() == stripBefore
+              && !polled("preview.compactBar").toBool(),
+          QStringLiteral("h %1 strip %2").arg(r.animatic->height()).arg(stripDock->height()));
+    r.animatic->leavePreview();
+    r.storyboard->setClearStageOnPlay(true);
+    pump(100);
+    r.window.markCleanForTest();
+}
+
 // ---- (wf) THE WAVEFORM (Phase 2D) ----------------------------------------------
 // The spec's wf1-wf4 plus the chips' hover (the user's addition). wf4 - no
 // audio, the AUDIO grab equals today's - is the (rp) pin above, which holds
@@ -17254,6 +17725,8 @@ int main(int argc, char **argv)
     runDepthToolsPass(scratch);
     runPinnedKeysPass(scratch);
     runCameraBarFitPass(scratch);
+    runStageClearPass(scratch);
+    runCompactBarPass(scratch);
 
     // ---- (aa) a test that cannot start says why and exits ----------------
     // An unattended gate must FAIL, not wait. Measured 2026-10-02: with its

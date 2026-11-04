@@ -68,6 +68,7 @@ this fence."
 #include <QKeySequence>
 #include <QLabel>
 #include <QListWidget>
+#include <QCheckBox>
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
@@ -637,7 +638,19 @@ void MainWindow::setupMenuBar()
     prefsAct->setShortcut(QKeySequence::Preferences);
     connect(prefsAct, &QAction::triggered, this, &MainWindow::onPreferences);
 
-    menuBar()->addMenu(QStringLiteral("View"));
+    QMenu *viewMenu = menuBar()->addMenu(QStringLiteral("View"));
+    // CLEAR THE STAGE while the film plays (2026-11-02): the bars over the
+    // canvas and the preview's caption fade out on Play. Remembered; the
+    // same switch sits in Preferences > Playback.
+    m_clearStageAct = viewMenu->addAction(QStringLiteral("Clear the Stage While the Film Plays"));
+    m_clearStageAct->setObjectName(QStringLiteral("viewClearStage"));
+    m_clearStageAct->setCheckable(true);
+    m_clearStageAct->setChecked(
+        sankoSettings().value(QStringLiteral("storyboard/clearStageOnPlay"), true).toBool());
+    connect(m_clearStageAct, &QAction::toggled, this, [this](bool on) {
+        if (m_storyboard)
+            m_storyboard->setClearStageOnPlay(on);
+    });
 }
 
 // Modal Preferences dialog: category list on the left, settings pane on the
@@ -665,6 +678,7 @@ void MainWindow::onPreferences()
     QListWidget *categories = new QListWidget;
     categories->setFixedWidth(130);
     categories->addItem(QStringLiteral("Camera"));
+    categories->addItem(QStringLiteral("Playback"));
     categories->setCurrentRow(0);
     split->addWidget(categories);
 
@@ -714,6 +728,39 @@ void MainWindow::onPreferences()
     cameraLayout->addLayout(buttonRow);
 
     pages->addWidget(cameraPage);
+
+    // --- Playback page (2026-11-02) ------------------------------------------
+    // The one switch of the stage clear, the same as View's; each follows
+    // the other.
+    QWidget *playbackPage = new QWidget;
+    QVBoxLayout *playbackLayout = new QVBoxLayout(playbackPage);
+    playbackLayout->setContentsMargins(16, 16, 16, 12);
+    playbackLayout->setSpacing(6);
+    QCheckBox *clearStage = new QCheckBox(QStringLiteral("Clear the stage while the film plays"));
+    clearStage->setObjectName(QStringLiteral("prefsClearStage"));
+    clearStage->setStyleSheet(QStringLiteral("QCheckBox { color: #cccccc; font-size: 11px; }"));
+    clearStage->setChecked(
+        settings.value(QStringLiteral("storyboard/clearStageOnPlay"), true).toBool());
+    connect(clearStage, &QCheckBox::toggled, this, [this](bool on) {
+        if (m_storyboard)
+            m_storyboard->setClearStageOnPlay(on);
+        if (m_clearStageAct && m_clearStageAct->isChecked() != on)
+            m_clearStageAct->setChecked(on);
+    });
+    playbackLayout->addWidget(clearStage);
+    QLabel *clearNote = new QLabel(QStringLiteral(
+        "On Play the floating bars and the preview's caption fade out so the whole picture "
+        "shows; a pointer move brings them back, and pause brings everything back at once."));
+    clearNote->setWordWrap(true);
+    playbackLayout->addWidget(clearNote);
+    playbackLayout->addStretch(1);
+    QHBoxLayout *playbackButtons = new QHBoxLayout;
+    playbackButtons->addStretch(1);
+    QPushButton *closePlayback = new QPushButton(QStringLiteral("Close"));
+    connect(closePlayback, &QPushButton::clicked, &dialog, &QDialog::accept);
+    playbackButtons->addWidget(closePlayback);
+    playbackLayout->addLayout(playbackButtons);
+    pages->addWidget(playbackPage);
 
     dialog.exec();
 }
