@@ -106,6 +106,14 @@ struct Panel
     // The shot camera's name for this panel (camera/CameraModel.h): a key
     // is anchored to it. Minted per object, never copied, never saved.
     shotcam::PanelUid uid;
+    // THE PANEL'S STABLE ID (2026-11-04, batch 2 of the proposals of
+    // 2026-11-02): a UUID minted when the panel is made, saved in the
+    // manifest as "id", and the name of its image files
+    // (p_<id12>.png, p_<id12>_l_<layer id12>.png - ProjectIO), so an
+    // insert, move or delete changes the manifest and no file. A clone
+    // (StoryboardPage::clonePanel) is a new Panel: its own id. A loaded
+    // panel without one is given one and saved with it.
+    QString id = QUuid::createUuid().toString(QUuid::WithoutBraces);
 
     // AI video generation. KEPT DATA WITH NO UI: the Generation screen that
     // wrote these was removed (HANDOFF "Pass 3"), and nothing in the app

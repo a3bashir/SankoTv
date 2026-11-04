@@ -724,9 +724,12 @@ void runPersistencePass(const QSize &S, const QString &projRoot)
                      scene->panels.at(0)->layers.at(1).image.pixel(W / 2, H / 2));
     }
 
+    // The flattens by the panels' id names (2026-11-04), read off the model.
     check(QStringLiteral("(d) flatten PNGs on disk are %1x%2").arg(W).arg(H),
-          QImage(folder1 + QStringLiteral("/proj_assets/panel_s0_p0.png")).size() == S
-              && QImage(folder1 + QStringLiteral("/proj_assets/panel_s0_p1.png")).size() == S);
+          QImage(folder1 + QStringLiteral("/proj_assets/p_%1.png")
+                               .arg(ProjectIO::imageIdStem(scene->panels.at(0)->id))).size() == S
+              && QImage(folder1 + QStringLiteral("/proj_assets/p_%1.png")
+                                      .arg(ProjectIO::imageIdStem(scene->panels.at(1)->id))).size() == S);
 
     ProjectIO::SaveData d2;
     d2.projectName = L.projectName;
@@ -883,11 +886,27 @@ void runMigrationPass(const QString &projRoot)
               hadContent);
         freeScenes(pre.scenes);
     }
-    QFile::remove(folderTall + QStringLiteral("/panel_s0_p0_layer1.png"));
+    // The layer's file by its id name in the assets folder (2026-11-04).
+    // (Before the id names this removed "panel_s0_p0_layer1.png" flat in
+    // the folder - a path the save had not written to since the assets
+    // subfolder, so nothing was removed; the refill below now really runs.)
+    QFile::remove(folderTall + QStringLiteral("/")
+                  + ProjectIO::assetSubdirFor(folderTall + QStringLiteral("/proj.sankotv"))
+                  + QStringLiteral("/p_%1_l_%2.png")
+                        .arg(ProjectIO::imageIdStem(tall->id),
+                             ProjectIO::imageIdStem(tall->layers.at(1).id)));
     ProjectIO::LoadedProject Lt = ProjectIO::projectFromJson(tallRoot, folderTall);
     const QImage &refilled = Lt.scenes.at(0)->panels.at(0)->layers.at(1).image;
-    check(QStringLiteral("(e) missing PNG refilled transparent at 777x1013"),
-          refilled.size() == QSize(777, 1013)
+    // The whole sampled grid empty, not two corners (the control above
+    // samples the same grid and found content): a layer loaded from a
+    // file that was never removed has transparent corners too.
+    bool anyContent = false;
+    for (int y = 0; y < refilled.height() && !anyContent; y += 16)
+        for (int x = 0; x < refilled.width() && !anyContent; x += 16)
+            anyContent = qAlpha(refilled.pixel(x, y)) != 0;
+    check(QStringLiteral("(e) missing PNG refilled transparent at 777x1013 (no content "
+                         "anywhere on the sampled grid)"),
+          refilled.size() == QSize(777, 1013) && !anyContent
               && qAlpha(refilled.pixel(0, 0)) == 0
               && qAlpha(refilled.pixel(776, 1012)) == 0);
     freeScenes(Lt.scenes);

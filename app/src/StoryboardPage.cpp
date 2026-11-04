@@ -1913,6 +1913,7 @@ public:
         m_page->applyPanelRemoveForUndo(m_scene, m_index);
         m_owns = true;
     }
+    QString panelId() const { return m_panel ? m_panel->id : QString(); } // Clean Up keeps its files
 
 private:
     StoryboardPage *m_page;
@@ -1948,6 +1949,7 @@ public:
         m_page->applyPanelInsertForUndo(m_scene, m_index, m_panel);
         m_owns = false;
     }
+    QString panelId() const { return m_panel ? m_panel->id : QString(); } // Clean Up keeps its files
 
 private:
     StoryboardPage *m_page;
@@ -4974,6 +4976,25 @@ void StoryboardPage::applyCompact(bool on)
     }
     m_timelineHeightPending = true;
     applyTimelineHeight();
+}
+
+// The ids of every panel the undo history still holds (a deleted panel's,
+// an insert's undone): Clean Up Project Folder (2026-11-04) keeps their
+// files, because Undo can bring the panel back.
+QSet<QString> StoryboardPage::panelIdsHeldByHistory() const
+{
+    QSet<QString> ids;
+    if (!m_undoStack)
+        return ids;
+    for (int i = 0; i < m_undoStack->count(); ++i) {
+        const QUndoCommand *command = m_undoStack->command(i);
+        if (auto *remove = dynamic_cast<const RemovePanelCommand *>(command))
+            ids.insert(remove->panelId());
+        else if (auto *insert = dynamic_cast<const InsertPanelCommand *>(command))
+            ids.insert(insert->panelId());
+    }
+    ids.remove(QString());
+    return ids;
 }
 
 // The panel strip steps aside while the film plays (Figma PB-3): its bar's

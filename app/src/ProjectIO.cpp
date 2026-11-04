@@ -70,6 +70,110 @@ void ImageLedger::merge(const ImageLedger &other)
         m_entries.insert(it.key(), it.value());
 }
 
+QString ImageLedger::fileHolding(const QByteArray &content, const QString &folder) const
+{
+    const QString prefix = QDir::cleanPath(QFileInfo(folder).absoluteFilePath()) + QLatin1Char('/');
+    for (auto it = m_entries.cbegin(); it != m_entries.cend(); ++it) {
+        if (it->content != content || !it.key().startsWith(prefix, Qt::CaseInsensitive))
+            continue;
+        const QFileInfo now(it.key());
+        if (now.isFile() && now.size() == it->bytes && now.lastModified() == it->modified)
+            return it.key();
+    }
+    return QString();
+}
+
+// --- The image names (2026-11-04) ----------------------------------------------
+
+QString imageIdStem(const QString &id)
+{
+    QString hex;
+    for (const QChar c : id)
+        if (c.isLetterOrNumber())
+            hex += c.toLower();
+    return hex.left(12);
+}
+
+namespace {
+QString fullIdHex(const QString &id)
+{
+    QString hex;
+    for (const QChar c : id)
+        if (c.isLetterOrNumber())
+            hex += c.toLower();
+    return hex.isEmpty() ? QStringLiteral("0") : hex;
+}
+
+// The names for one save, panel by panel: the flatten first, then one per
+// raster layer (a folder owns no pixels). A stem that twelve digits cannot
+// keep apart within the save takes the whole id.
+struct PanelNames
+{
+    QString flatten;
+    QHash<QString, QString> layers; // layer id -> file name
+};
+
+QVector<PanelNames> namesFor(const QVector<Scene *> &scenes)
+{
+    QVector<PanelNames> out;
+    QSet<QString> used;
+    for (const Scene *scene : scenes) {
+        if (!scene)
+            continue;
+        for (const Panel *panel : scene->panels) {
+            if (!panel)
+                continue;
+            PanelNames names;
+            QString stem = imageIdStem(panel->id);
+            if (stem.isEmpty() || used.contains(QStringLiteral("p_") + stem))
+                stem = fullIdHex(panel->id);
+            used.insert(QStringLiteral("p_") + stem);
+            names.flatten = QStringLiteral("p_%1.png").arg(stem);
+            for (const Layer &layer : panel->layers) {
+                if (layer.type == QLatin1String("group"))
+                    continue;
+                QString lstem = imageIdStem(layer.id);
+                if (lstem.isEmpty()
+                    || used.contains(QStringLiteral("p_%1_l_%2").arg(stem, lstem)))
+                    lstem = fullIdHex(layer.id);
+                used.insert(QStringLiteral("p_%1_l_%2").arg(stem, lstem));
+                names.layers.insert(layer.id, QStringLiteral("p_%1_l_%2.png").arg(stem, lstem));
+            }
+            out.append(names);
+        }
+    }
+    return out;
+}
+} // namespace
+
+QStringList projectImageNames(const QVector<Scene *> &scenes)
+{
+    QStringList list;
+    for (const PanelNames &names : namesFor(scenes)) {
+        list.append(names.flatten);
+        for (auto it = names.layers.cbegin(); it != names.layers.cend(); ++it)
+            list.append(it.value());
+    }
+    return list;
+}
+
+bool isIdImageName(const QString &fileName)
+{
+    static const QRegularExpression rx(
+        QStringLiteral("^p_[0-9a-f]{12,32}(_l_[0-9a-f]{12,32})?\\.png$"),
+        QRegularExpression::CaseInsensitiveOption);
+    return rx.match(fileName).hasMatch();
+}
+
+QString panelStemOfImageName(const QString &fileName)
+{
+    if (!isIdImageName(fileName))
+        return QString();
+    const QString body = fileName.mid(2, fileName.size() - 6); // between "p_" and ".png"
+    const int l = body.indexOf(QStringLiteral("_l_"));
+    return (l < 0 ? body : body.left(l)).toLower();
+}
+
 QByteArray layerContent(const QImage &image)
 {
     QByteArray id;
@@ -121,9 +225,17 @@ QByteArray thumbnailContent(const QPixmap &pixmap)
 class ImageSaver
 {
 public:
-    ImageSaver(const QString &folder, ImageLedger *ledger, WriteResult *res)
-        : m_folder(folder), m_ledger(ledger), m_res(res)
+    // `assets`: this project's own image folder, the only one adopt() may
+    // rename from; `keep`: every image name this save uses, relative to
+    // `folder` - the files adopt() must leave where they are.
+    ImageSaver(const QString &folder, const QString &assets, ImageLedger *ledger,
+               WriteResult *res, const QStringList &keep)
+        : m_folder(folder), m_assets(assets), m_ledger(ledger), m_res(res)
     {
+        for (const QString &name : keep)
+            m_keep.insert(QDir::cleanPath(QFileInfo(folder + QStringLiteral("/") + name)
+                                              .absoluteFilePath())
+                              .toLower());
         // Enough to finish a full 4K save in about two seconds, few enough
         // that the encoders' working copies (one image each) stay bounded.
         const int threads = qBound(1, QThread::idealThreadCount(), 8);
@@ -137,14 +249,14 @@ public:
     void layer(const QImage &image, const QString &relName)
     {
         const QByteArray content = layerContent(image);
-        if (!skip(relName, content))
+        if (!skip(relName, content) && !adopt(relName, content))
             push(relName, image, content);
     }
 
     void flatten(const Panel &panel, const QString &relName)
     {
         const QByteArray content = flattenContent(panel);
-        if (!skip(relName, content))
+        if (!skip(relName, content) && !adopt(relName, content))
             push(relName, panel.flattenedPixmap().toImage(), content);
     }
 
@@ -204,6 +316,39 @@ private:
         return true;
     }
 
+    // THE RENAME (2026-11-04): the image's pixels are already on disk under
+    // another name in this project's OWN assets folder - the position name
+    // the project was saved with before the id names - and that file is as
+    // the ledger left it: it is MOVED to its id name, nothing re-encoded.
+    // Only from that folder, which is this project's alone (named from its
+    // file): a Save As into the folder of the original must COPY, not take
+    // the original's files, and an old flat-named project's files beside
+    // its manifest may be another manifest's too, so they are left where
+    // they are and written afresh (the (h) checks). Never over a file that
+    // exists (that file is some other panel's, or an orphan the artist
+    // keeps), and never FROM a file this save names: a duplicated panel's
+    // layers hold the same pixels as its source's, and the three white
+    // backgrounds of three panels are one content - taking the source's
+    // file would leave the source without one. A rename that fails falls
+    // back to the encoder.
+    bool adopt(const QString &relName, const QByteArray &content)
+    {
+        if (!m_ledger)
+            return false;
+        const QString full = m_folder + QStringLiteral("/") + relName;
+        const QString have = m_ledger->fileHolding(content, m_assets);
+        if (have.isEmpty() || QFileInfo(have) == QFileInfo(full) || QFileInfo::exists(full)
+            || m_keep.contains(QDir::cleanPath(QFileInfo(have).absoluteFilePath()).toLower()))
+            return false;
+        if (!QFile::rename(have, full))
+            return false;
+        m_ledger->forget(have);
+        m_ledger->record(full, content);
+        ++m_res->imagesRenamed;
+        m_res->renamedFiles.append(full);
+        return true;
+    }
+
     void push(const QString &relName, const QImage &image, const QByteArray &content)
     {
         if (m_failed.load())
@@ -225,8 +370,10 @@ private:
     }
 
     const QString m_folder;
+    const QString m_assets;
     ImageLedger *const m_ledger;
     WriteResult *const m_res;
+    QSet<QString> m_keep; // lower-cased absolute paths
     int m_next = 0;
     std::atomic<bool> m_failed{false};
     QSemaphore m_slots;
@@ -311,7 +458,18 @@ WriteResult projectToJson(const SaveData &data, const QString &projectFilePath,
         }
     }
 
-    ImageSaver saver(folder, data.ledger, &res);
+    // THE IMAGE NAMES (2026-11-04): by the panels' stable ids, never their
+    // positions, so an insert, move or delete rewrites no file; the same
+    // list Clean Up Project Folder reads.
+    const QVector<PanelNames> names = namesFor(data.scenes);
+    QStringList keep;
+    for (const PanelNames &n : names) {
+        keep << rel + n.flatten;
+        for (const QString &layerName : n.layers)
+            keep << rel + layerName;
+    }
+    ImageSaver saver(folder, assetsPath, data.ledger, &res, keep);
+    int named = 0;
 
     QJsonArray scenesArray;
     for (int i = 0; i < data.scenes.size() && !saver.failed(); ++i) {
@@ -327,12 +485,14 @@ WriteResult projectToJson(const SaveData &data, const QString &projectFilePath,
         QJsonArray panelsArray;
         for (int j = 0; j < scene->panels.size() && !saver.failed(); ++j) {
             Panel *panel = scene->panels.at(j);
+            if (!panel)
+                continue;
+            const PanelNames &panelNames = names.at(named++);
 
             // Flattened composite — kept for forward-compat (older builds and any
             // external tool reading pixmapFile still see the merged drawing).
             // flattenedPixmap() is panel-sized, so this PNG matches the layers.
-            const QString pngName =
-                rel + QStringLiteral("panel_s%1_p%2.png").arg(i).arg(j);
+            const QString pngName = rel + panelNames.flatten;
             saver.flatten(*panel, pngName);
 
             // Layer stack: one PNG per layer + a JSON descriptor array.
@@ -360,9 +520,7 @@ WriteResult projectToJson(const SaveData &data, const QString &projectFilePath,
                     layerObj[QStringLiteral("parallax")] = layer.parallax;
 
                 if (layer.type != QLatin1String("group")) { // folders own no pixels
-                    const QString layerPng =
-                        rel + QStringLiteral("panel_s%1_p%2_layer%3.png")
-                                  .arg(i).arg(j).arg(k);
+                    const QString layerPng = rel + panelNames.layers.value(layer.id);
                     saver.layer(layer.image, layerPng);
                     layerObj[QStringLiteral("imageFile")] = layerPng;
                 }
@@ -370,6 +528,7 @@ WriteResult projectToJson(const SaveData &data, const QString &projectFilePath,
             }
 
             QJsonObject panelObj;
+            panelObj[QStringLiteral("id")] = panel->id; // the stable id (2026-11-04)
             panelObj[QStringLiteral("duration")] = panel->duration;
             panelObj[QStringLiteral("shotType")] = panel->shotType;
             panelObj[QStringLiteral("camera")] = panel->cameraAngle;
@@ -632,6 +791,18 @@ LoadedProject projectFromJson(const QJsonObject &root, const QString &folder,
         for (const QJsonValue &pv : panelsArray) {
             const QJsonObject panelObj = pv.toObject();
             Panel *panel = new Panel;
+            // The stable id (2026-11-04): the file's, when it is one (a UUID
+            // without braces, as written); otherwise the fresh one the Panel
+            // was made with, counted, saved on the next save.
+            {
+                static const QRegularExpression uuid(
+                    QStringLiteral("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"));
+                const QString id = panelObj.value(QStringLiteral("id")).toString();
+                if (uuid.match(id).hasMatch())
+                    panel->id = id.toLower();
+                else
+                    ++out.panelIdsMinted;
+            }
             panel->duration = panelObj.value(QStringLiteral("duration")).toInt(3);
             if (panel->duration < 1)
                 panel->duration = 3;

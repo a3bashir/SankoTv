@@ -257,6 +257,9 @@ public:
     void fireStageIdleForTest();
     bool stageIdleArmedForTest() const;
     bool stripSteppedAsideForTest() const { return m_stripSteppedAside; }
+    // The panels the undo history still holds, by id (Clean Up Project
+    // Folder keeps their files; 2026-11-04).
+    QSet<QString> panelIdsHeldByHistory() const;
     // DEPTH (Phase 2B): the Depth popover for layer `index` of the current
     // panel, as its badge or Depth... opens it (the paper and a folder's
     // member open nothing); the popover open now, or null.

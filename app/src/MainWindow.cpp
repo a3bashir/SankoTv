@@ -70,6 +70,7 @@ this fence."
 #include <QListWidget>
 #include <QCheckBox>
 #include <QMenu>
+#include <QSet>
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QPixmap>
@@ -514,6 +515,13 @@ void MainWindow::setupMenuBar()
     m_projectSettingsAct = fileMenu->addAction(QStringLiteral("Project Settings..."));
     connect(m_projectSettingsAct, &QAction::triggered, this,
             &MainWindow::onProjectSettings);
+    // CLEAN UP PROJECT FOLDER (2026-11-04): the id-named image files the
+    // saved project no longer references, removed on the artist's word -
+    // never by a save (the orphan rule), never a legacy name, never a file
+    // of a panel the undo history can still bring back.
+    m_cleanUpAct = fileMenu->addAction(QStringLiteral("Clean Up Project Folder..."));
+    m_cleanUpAct->setObjectName(QStringLiteral("fileCleanUp"));
+    connect(m_cleanUpAct, &QAction::triggered, this, &MainWindow::onCleanUpProjectFolder);
 
     // EXPORT: the film, the panels, the board. This is where the old
     // Animatic screen's "Export MP4" button went (it sat in the workspace's
@@ -765,6 +773,102 @@ void MainWindow::onPreferences()
     dialog.exec();
 }
 
+// --- Clean Up Project Folder (2026-11-04) -------------------------------------
+// The files in the project's assets folder that carry an id name
+// (ProjectIO::isIdImageName) and that the project, as saved, no longer
+// references - a deleted panel's, a removed layer's - are listed and, on
+// the artist's word, removed. Kept: every legacy (position-named or flat)
+// file, which the rule leaves to the artist; and every file of a panel the
+// undo history still holds, since Undo can bring it back. Refused with a
+// reason while the project is unsaved (the folder must match the model) or
+// has no file yet.
+int MainWindow::cleanUpProjectFolder(std::function<bool(int, qint64)> confirm, QString *why)
+{
+    if (m_currentProjectPath.isEmpty()) {
+        if (why)
+            *why = QStringLiteral("Save the project first: there is no project folder to clean up yet.");
+        return -1;
+    }
+    if (m_dirty) {
+        if (why)
+            *why = QStringLiteral("Save the project first, so the folder can be compared with "
+                                  "what the project uses.");
+        return -1;
+    }
+    const QString folder = QFileInfo(m_currentProjectPath).absolutePath();
+    const QString assets = folder + QStringLiteral("/") + ProjectIO::assetSubdirFor(m_currentProjectPath);
+    QSet<QString> used;
+    for (const QString &name : ProjectIO::projectImageNames(m_scenes))
+        used.insert(name.toLower());
+    QSet<QString> kept;
+    if (m_storyboard)
+        for (const QString &id : m_storyboard->panelIdsHeldByHistory())
+            kept.insert(ProjectIO::imageIdStem(id));
+    QStringList remove;
+    qint64 bytes = 0;
+    for (const QFileInfo &fi : QDir(assets).entryInfoList({QStringLiteral("*.png")}, QDir::Files, QDir::Name)) {
+        const QString name = fi.fileName();
+        if (!ProjectIO::isIdImageName(name) || used.contains(name.toLower()))
+            continue;
+        const QString stem = ProjectIO::panelStemOfImageName(name);
+        bool held = false;
+        for (const QString &k : kept)
+            held = held || stem.startsWith(k) || k.startsWith(stem);
+        if (held)
+            continue;
+        remove.append(fi.absoluteFilePath());
+        bytes += fi.size();
+    }
+    if (remove.isEmpty()) {
+        if (why)
+            *why = QStringLiteral("Nothing to remove: every image file in the project folder is in use.");
+        return 0;
+    }
+    if (!confirm(int(remove.size()), bytes))
+        return 0;
+    int removed = 0;
+    for (const QString &file : remove)
+        if (QFile::remove(file)) {
+            ++removed;
+            if (m_imageLedger)
+                m_imageLedger->forget(file);
+        }
+    return removed;
+}
+
+void MainWindow::onCleanUpProjectFolder()
+{
+    QString why;
+    const int removed = cleanUpProjectFolder(
+        [this](int count, qint64 bytes) {
+            return QMessageBox::question(
+                       this, QStringLiteral("Clean Up Project Folder"),
+                       QStringLiteral("%1 image file%2 (%3 KB) in the project folder %4 no longer "
+                                      "used by this project.\n\nRemove %5? This cannot be undone.")
+                           .arg(count).arg(count == 1 ? QString() : QStringLiteral("s"))
+                           .arg((bytes + 1023) / 1024)
+                           .arg(count == 1 ? QStringLiteral("is") : QStringLiteral("are"))
+                           .arg(count == 1 ? QStringLiteral("it") : QStringLiteral("them")),
+                       QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel)
+                == QMessageBox::Yes;
+        },
+        &why);
+    if (removed < 0 || (removed == 0 && !why.isEmpty())) {
+        QMessageBox::information(this, QStringLiteral("Clean Up Project Folder"), why);
+        return;
+    }
+    if (removed > 0)
+        QMessageBox::information(this, QStringLiteral("Clean Up Project Folder"),
+                                 QStringLiteral("Removed %1 file%2.").arg(removed)
+                                     .arg(removed == 1 ? QString() : QStringLiteral("s")));
+}
+
+int MainWindow::cleanUpProjectFolderForTest(bool confirm)
+{
+    QString why;
+    return cleanUpProjectFolder([confirm](int, qint64) { return confirm; }, &why);
+}
+
 void MainWindow::updateSaveActions()
 {
     const bool hasScenes = !m_scenes.isEmpty();
@@ -781,6 +885,8 @@ void MainWindow::updateSaveActions()
     if (m_closeProjectAct)
         m_closeProjectAct->setEnabled(hasScenes
                                       || !m_currentProjectPath.isEmpty());
+    if (m_cleanUpAct) // needs a project file on disk to compare against
+        m_cleanUpAct->setEnabled(!m_currentProjectPath.isEmpty());
     updateAudioActions();
     updateExportActions();
 }
@@ -2207,6 +2313,7 @@ bool MainWindow::saveToPath(const QString &path)
     }();
     m_lastSaveWritten = written.writtenFiles;
     m_lastSaveSkipped = written.imagesSkipped;
+    m_lastSaveRenamed = written.renamedFiles;
     m_lastSaveEncodeThreads = written.encodeThreads;
     if (!written.ok && written.cancelled)
         return false; // the artist pressed Cancel: nothing to tell them

@@ -78,6 +78,11 @@ public:
     // many it skipped because their files already held them.
     QStringList lastSaveWrittenForTest() const { return m_lastSaveWritten; }
     int lastSaveSkippedForTest() const { return m_lastSaveSkipped; }
+    QStringList lastSaveRenamedForTest() const { return m_lastSaveRenamed; }
+    // Clean Up Project Folder (2026-11-04) driven by the gate: `confirm`
+    // answers its question; the count of files removed, -1 when it refused
+    // (no project, or unsaved changes).
+    int cleanUpProjectFolderForTest(bool confirm);
     int lastSaveEncodeThreadsForTest() const { return m_lastSaveEncodeThreads; }
     // The real slot the Project Settings dialog's applied() signal reaches.
     void applyProjectSettingsForTest(const QString &name, int fps)
@@ -284,6 +289,8 @@ private:
     void rebuildRecentMenuLater();
 
     void onProjectSettings();
+    void onCleanUpProjectFolder();
+    int cleanUpProjectFolder(std::function<bool(int, qint64)> confirm, QString *why);
     // Resize Project...: the whole confirmed, non-undoable canvas-only
     // resize workflow — in-flight refusal, size prompt, memory precheck,
     // save prompt, confirm, per-panel swap, state reset.
@@ -366,6 +373,8 @@ private:
     std::unique_ptr<ProjectIO::ImageLedger> m_imageLedger;
     QStringList m_lastSaveWritten;
     int m_lastSaveSkipped = 0;
+    QStringList m_lastSaveRenamed; // images only renamed to their id names
+    QAction *m_cleanUpAct = nullptr; // File > Clean Up Project Folder...
     int m_lastSaveEncodeThreads = 0;
     QString m_projectName = QStringLiteral("Untitled Project");
     // Project properties. fps drives the animatic timeline; canvasWidth/

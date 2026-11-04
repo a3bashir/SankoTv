@@ -966,9 +966,12 @@ void runRecentThumbnailSourcePass(const QString &scratch)
                          "the reason new projects showed no thumbnail"),
           !QFileInfo::exists(QFileInfo(fresh).absolutePath()
                              + QStringLiteral("/panel_s0_p0.png")));
+    // Named by the panel's id since 2026-11-04 (batch 2): the file is
+    // "<project>_assets/p_<12 hex>.png", whatever its position.
     check(QStringLiteral("(u) the thumbnail is the file its manifest names, "
-                         "inside its own assets folder"),
-          freshThumb.endsWith(QStringLiteral("/Fresh_assets/panel_s0_p0.png"))
+                         "inside its own assets folder (an id name)"),
+          freshThumb.contains(QStringLiteral("/Fresh_assets/p_"))
+              && ProjectIO::isIdImageName(QFileInfo(freshThumb).fileName())
               && QFileInfo::exists(freshThumb),
           freshThumb);
     check(QStringLiteral("(u) ...and it is that project's picture"),
@@ -4260,9 +4263,17 @@ void runIncrementalSavePass(const QString &scratch)
               && panelAt(0)->layers.at(strokeK).image != preStroke,
           QStringLiteral("%1 layer(s) changed; panel %2 layer %3")
               .arg(changedLayers).arg(strokeP).arg(strokeK));
-    const QString strokeFile =
-        QStringLiteral("panel_s0_p%1_layer%2.png").arg(strokeP).arg(strokeK);
-    const QString flatFile = QStringLiteral("panel_s0_p%1.png").arg(strokeP);
+    // The files are named by the panel's and the layer's ids (2026-11-04),
+    // so the names are read off the model, not computed from positions.
+    auto nameOf = [&panelAt](int p, int k) { // k < 0: the panel's flatten
+        const Panel *panel = panelAt(p);
+        const QString stem = ProjectIO::imageIdStem(panel->id);
+        return k < 0 ? QStringLiteral("p_%1.png").arg(stem)
+                     : QStringLiteral("p_%1_l_%2.png")
+                           .arg(stem, ProjectIO::imageIdStem(panel->layers.at(k).id));
+    };
+    const QString strokeFile = nameOf(strokeP, strokeK);
+    const QString flatFile = nameOf(strokeP, -1);
     QStringList expected{strokeFile, flatFile};
     expected.sort();
     const QImage onDiskBefore = decoded(assets + QStringLiteral("/") + strokeFile);
@@ -4306,7 +4317,7 @@ void runIncrementalSavePass(const QString &scratch)
           decoded(assets + QStringLiteral("/") + strokeFile) == preStroke);
 
     // --- (sv.4) a PNG deleted behind the app's back is written again -----
-    const QString victim = QStringLiteral("panel_s0_p2_layer1.png");
+    const QString victim = nameOf(2, 1);
     QFile::remove(assets + QStringLiteral("/") + victim);
     check(QStringLiteral("(sv.4) control: the PNG is gone"),
           !QFileInfo::exists(assets + QStringLiteral("/") + victim));
@@ -4323,7 +4334,7 @@ void runIncrementalSavePass(const QString &scratch)
               == panelAt(2)->layers.at(1).image);
 
     // --- (sv.5) a PNG replaced by another program is written again -------
-    const QString replaced = QStringLiteral("panel_s0_p1_layer1.png");
+    const QString replaced = nameOf(1, 1);
     {
         QImage other(960, 540, QImage::Format_ARGB32);
         other.fill(QColor(200, 30, 30));
@@ -4366,11 +4377,9 @@ void runIncrementalSavePass(const QString &scratch)
         QStringList differ;
         for (int p = 0; p < 3; ++p) {
             QVector<QPair<QString, QImage>> images;
-            images.append({QStringLiteral("panel_s0_p%1.png").arg(p),
-                           panelAt(p)->flattenedPixmap().toImage()});
+            images.append({nameOf(p, -1), panelAt(p)->flattenedPixmap().toImage()});
             for (int k = 0; k < panelAt(p)->layers.size(); ++k)
-                images.append({QStringLiteral("panel_s0_p%1_layer%2.png").arg(p).arg(k),
-                               panelAt(p)->layers.at(k).image});
+                images.append({nameOf(p, k), panelAt(p)->layers.at(k).image});
             for (const auto &[name, image] : images) {
                 image.save(ref + QStringLiteral("/") + name, "PNG");
                 ++compared;
@@ -4390,7 +4399,7 @@ void runIncrementalSavePass(const QString &scratch)
         panelAt(0)->layers.at(1).image.save(probe, "PNG", 80);
         check(QStringLiteral("(sv.6) CONTROL: the byte comparison sees a "
                              "different encoding of the same image"),
-              bytes(probe) != bytes(asAssets + QStringLiteral("/panel_s0_p0_layer1.png"))
+              bytes(probe) != bytes(asAssets + QStringLiteral("/") + nameOf(0, 1))
                   && !bytes(probe).isEmpty());
     }
     before = stamps(asAssets);
@@ -4594,7 +4603,13 @@ void runSaveFailurePass(const QString &scratch)
     check(QStringLiteral("(i) a good save in between restores the baseline"),
           window.saveProjectForTest(proj));
     pump(300);
-    const QString onePng = assetsDir + QStringLiteral("/panel_s0_p0_layer1.png");
+    // Panel 1's layer 2, by the id name the save gives it (2026-11-04).
+    const QString onePng = [&] {
+        const Panel *p0 = window.scenesForTest().at(0)->panels.at(0);
+        return assetsDir + QStringLiteral("/p_%1_l_%2.png")
+                               .arg(ProjectIO::imageIdStem(p0->id),
+                                    ProjectIO::imageIdStem(p0->layers.at(1).id));
+    }();
     QFile::remove(onePng);
     QDir().mkpath(onePng); // a DIRECTORY where the image belongs
     check(QStringLiteral("(i) control: one image path is now a directory"),
@@ -14232,6 +14247,364 @@ void runCompactBarPass(const QString &scratch)
     r.window.markCleanForTest();
 }
 
+// ---- (n) STABLE IMAGE IDS (2026-11-04, batch 2 of the proposals) ---------------
+// A panel's files are named by its id, never its position: an insert, move
+// or delete changes the manifest and no file (n1); a project saved by
+// position migrates on its first save by RENAMING its files, nothing
+// re-encoded (n2); two projects in one folder share no name (n3); Save As
+// copies under the same names (n4); a panel without an id is given one
+// (n5); Clean Up Project Folder removes only unreferenced id-named files,
+// never a legacy name, never a panel Undo can bring back (n6); the pixels
+// are the pixels whatever the name (n7; the pin families are the rest).
+void runStableIdsPass(const QString &scratch)
+{
+    using namespace workspace;
+    out() << "--- (n) stable image ids ---" << Qt::endl;
+    const QString dir = scratch + QStringLiteral("/ids");
+    QDir(dir).removeRecursively();
+    QDir().mkpath(dir);
+    const QString proj = writeProject(dir, QStringLiteral("Ids"), QSize(960, 540), 24, 1, 3);
+    const QString assets = QFileInfo(proj).absolutePath() + QStringLiteral("/Ids_assets");
+    Rig r(proj);
+    MainWindow &window = r.window;
+    StoryboardPage *page = r.storyboard;
+    QUndoStack *stack = window.undoStackForTest();
+    check(QStringLiteral("(n) fixture opens"), r.ok && stack);
+    if (!r.ok || !stack)
+        return;
+    using Stamps = QMap<QString, QPair<qint64, QDateTime>>;
+    auto stamps = [](const QString &folder) {
+        Stamps m;
+        for (const QFileInfo &fi : QDir(folder).entryInfoList({QStringLiteral("*.png")}, QDir::Files, QDir::Name))
+            m.insert(fi.fileName(), {fi.size(), fi.lastModified()});
+        return m;
+    };
+    auto touched = [&stamps](const Stamps &before, const QString &folder) {
+        QStringList names;
+        const Stamps now = stamps(folder);
+        for (auto it = now.cbegin(); it != now.cend(); ++it)
+            if (!before.contains(it.key()) || before.value(it.key()) != it.value())
+                names << it.key();
+        return names;
+    };
+    auto save = [&window](const QString &path) {
+        const bool ok = window.saveProjectForTest(path);
+        pump(200);
+        return ok;
+    };
+    auto manifest = [](const QString &path) {
+        QFile f(path);
+        return f.open(QIODevice::ReadOnly) ? QJsonDocument::fromJson(f.readAll()).object() : QJsonObject();
+    };
+    auto namesIn = [](const QJsonObject &root) { // every image name, in the manifest's order
+        QStringList names;
+        for (const QJsonValue &sv : root.value(QStringLiteral("scenes")).toArray())
+            for (const QJsonValue &pv : sv.toObject().value(QStringLiteral("panels")).toArray()) {
+                const QJsonObject p = pv.toObject();
+                names << p.value(QStringLiteral("pixmapFile")).toString();
+                for (const QJsonValue &lv : p.value(QStringLiteral("layers")).toArray())
+                    if (lv.toObject().contains(QStringLiteral("imageFile")))
+                        names << lv.toObject().value(QStringLiteral("imageFile")).toString();
+            }
+        return names;
+    };
+    auto idsIn = [](const QJsonObject &root) {
+        QStringList ids;
+        for (const QJsonValue &sv : root.value(QStringLiteral("scenes")).toArray())
+            for (const QJsonValue &pv : sv.toObject().value(QStringLiteral("panels")).toArray())
+                ids << pv.toObject().value(QStringLiteral("id")).toString();
+        return ids;
+    };
+    auto bare = [](const QStringList &names) {
+        QStringList b;
+        for (const QString &n : names)
+            b << QFileInfo(n).fileName();
+        b.sort();
+        return b;
+    };
+    auto allIdNames = [](const QStringList &names) {
+        for (const QString &n : names)
+            if (!ProjectIO::isIdImageName(QFileInfo(n).fileName()))
+                return false;
+        return !names.isEmpty();
+    };
+    auto sha = [](const QString &file) {
+        QFile f(file);
+        return f.open(QIODevice::ReadOnly)
+            ? QString::fromLatin1(QCryptographicHash::hash(f.readAll(), QCryptographicHash::Sha256).toHex())
+            : QString();
+    };
+    auto paint = [&window] {
+        auto *canvas = window.findChild<DrawingCanvas *>();
+        if (!canvas)
+            return;
+        const QTransform t = canvas->viewTransformForTest();
+        sendMouse(canvas, QEvent::MouseButtonPress, t.map(QPointF(150, 130)), Qt::LeftButton);
+        for (int i = 1; i <= 8; ++i)
+            sendMouse(canvas, QEvent::MouseMove, t.map(QPointF(150 + i * 24, 130 + i * 17)), Qt::LeftButton);
+        sendMouse(canvas, QEvent::MouseButtonRelease, t.map(QPointF(342, 266)), Qt::LeftButton);
+        pump(700);
+    };
+    auto panels = [&window] { return window.scenesForTest().at(0)->panels; };
+
+    // --- (n1) structural edits rewrite no file ------------------------------------
+    const Stamps base = stamps(assets);
+    const QStringList names0 = namesIn(manifest(proj));
+    const QStringList ids0 = idsIn(manifest(proj));
+    check(QStringLiteral("(n) control: the fixture's 9 files carry id names, and the manifest an id "
+                         "per panel"),
+          base.size() == 9 && allIdNames(names0) && ids0.size() == 3 && !ids0.contains(QString()),
+          QStringLiteral("%1 files; %2").arg(base.size()).arg(names0.join(QLatin1Char(' '))));
+    // Duplicate Panel from the clip's menu: panel 1's clone goes in after
+    // it, an INSERT. Its layers hold the SAME pixels as panel 1's, so this
+    // is also the case where the rename must not take the source's files.
+    page->setClipMenuHookForTest([&](QMenu *menu) {
+        for (QAction *a : menu->actions())
+            if (a->text() == QLatin1String("Duplicate Panel"))
+                a->trigger();
+    });
+    rightClickClip(r, 0);
+    page->setClipMenuHookForTest({});
+    pump(300);
+    save(proj);
+    const QStringList afterInsert = touched(base, assets);
+    const QStringList names1 = namesIn(manifest(proj));
+    const QStringList idsInserted = idsIn(manifest(proj));
+    const Stamps afterInsertStamps = stamps(assets);
+    const bool moved = keyClaimed(&r.window, Qt::Key_Right, Qt::ControlModifier); // Ctrl+Right: a MOVE
+    pump(300);
+    save(proj);
+    const QStringList afterMove = touched(afterInsertStamps, assets);
+    const QStringList ids1 = idsIn(manifest(proj));
+    const Stamps afterMoveStamps = stamps(assets);
+    clickClip(r, 2);
+    page->deleteSelectedPanelConfirmedForTest(); // the clone: a DELETE
+    pump(300);
+    save(proj);
+    const QStringList afterDelete = touched(afterMoveStamps, assets);
+    const QStringList names3 = namesIn(manifest(proj));
+    const QStringList ids3 = idsIn(manifest(proj));
+    const bool orderMoved = idsInserted.size() == 4 && ids1.size() == 4
+        && ids1 == QStringList({idsInserted.at(0), idsInserted.at(2), idsInserted.at(1), idsInserted.at(3)});
+    check(QStringLiteral("(n1) INSERT, MOVE, DELETE REWRITE NO FILE: duplicating a panel writes only "
+                         "the clone's own 3 files (the 9 untouched and still named, 12 named), "
+                         "moving it writes nothing and only the manifest's order changes, deleting "
+                         "it writes nothing (its files stay on disk, the manifest names the first 9 "
+                         "again)"),
+          afterInsert.size() == 3 && names1.size() == 12 && allIdNames(names1)
+              && [&] { for (const QString &n : names0) if (!names1.contains(n)) return false; return true; }()
+              && moved && afterMove.isEmpty() && orderMoved
+              && afterDelete.isEmpty() && names3 == names0 && ids3 == ids0 && stamps(assets).size() == 12,
+          QStringLiteral("insert wrote %1 [%2]; moved %3 wrote %4 order %5; delete wrote %6; names %7 -> %8 -> %9; files %10")
+              .arg(afterInsert.size()).arg(afterInsert.join(QLatin1Char(' '))).arg(moved).arg(afterMove.size())
+              .arg(orderMoved).arg(afterDelete.size()).arg(names0.size()).arg(names1.size()).arg(names3.size())
+              .arg(stamps(assets).size()));
+    // Control: the measure sees a rewrite - a stroke rewrites that layer and
+    // its flatten and nothing else; and the move really changed the order
+    // the manifest lists the panels in, which a position name follows.
+    clickClip(r, 0);
+    const Stamps beforeStroke = stamps(assets);
+    paint();
+    save(proj);
+    const QStringList afterStroke = touched(beforeStroke, assets);
+    check(QStringLiteral("(n1) control: a stroke rewrites exactly its layer's file and the "
+                         "flatten (the measure sees writes); the move changed the manifest's "
+                         "panel order, which a position name would have followed"),
+          afterStroke.size() == 2 && idsInserted != ids1 && orderMoved,
+          QStringLiteral("stroke wrote %1 [%2]").arg(afterStroke.size())
+              .arg(afterStroke.join(QLatin1Char(' '))));
+    window.undoActionForTest()->trigger();
+    pump(300);
+    save(proj);
+
+    // --- (n2 / n5) a project saved by position migrates by renaming ---------------
+    const QString oldProj = writeProject(dir, QStringLiteral("Old"), QSize(960, 540), 24, 1, 3);
+    const QString oldAssets = QFileInfo(oldProj).absolutePath() + QStringLiteral("/Old_assets");
+    QMap<QString, QString> legacySha; // position name -> sha of the bytes
+    {
+        QJsonObject root = manifest(oldProj);
+        QJsonArray scenes = root.value(QStringLiteral("scenes")).toArray();
+        QJsonObject scene = scenes.at(0).toObject();
+        QJsonArray ps = scene.value(QStringLiteral("panels")).toArray();
+        for (int j = 0; j < ps.size(); ++j) {
+            QJsonObject p = ps.at(j).toObject();
+            p.remove(QStringLiteral("id"));
+            auto rename = [&](const QString &idName, const QString &posName) {
+                QFile::rename(QFileInfo(oldProj).absolutePath() + QStringLiteral("/") + idName,
+                              oldAssets + QStringLiteral("/") + posName);
+                legacySha.insert(posName, sha(oldAssets + QStringLiteral("/") + posName));
+            };
+            const QString flat = QStringLiteral("panel_s0_p%1.png").arg(j);
+            rename(p.value(QStringLiteral("pixmapFile")).toString(), flat);
+            p[QStringLiteral("pixmapFile")] = QStringLiteral("Old_assets/") + flat;
+            QJsonArray layers = p.value(QStringLiteral("layers")).toArray();
+            for (int k = 0; k < layers.size(); ++k) {
+                QJsonObject l = layers.at(k).toObject();
+                if (!l.contains(QStringLiteral("imageFile")))
+                    continue;
+                const QString lp = QStringLiteral("panel_s0_p%1_layer%2.png").arg(j).arg(k);
+                rename(l.value(QStringLiteral("imageFile")).toString(), lp);
+                l[QStringLiteral("imageFile")] = QStringLiteral("Old_assets/") + lp;
+                layers[k] = l;
+            }
+            p[QStringLiteral("layers")] = layers;
+            ps[j] = p;
+        }
+        scene[QStringLiteral("panels")] = ps;
+        scenes[0] = scene;
+        root[QStringLiteral("scenes")] = scenes;
+        QFile f(oldProj);
+        if (f.open(QIODevice::WriteOnly | QIODevice::Truncate))
+            f.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+        f.close();
+    }
+    const QStringList legacyNames = bare(namesIn(manifest(oldProj)));
+    check(QStringLiteral("(n2) control: the legacy fixture names its 9 files by position and "
+                         "carries no ids"),
+          legacyNames.size() == 9 && legacyNames.first().startsWith(QStringLiteral("panel_s0_"))
+              && idsIn(manifest(oldProj)) == QStringList({QString(), QString(), QString()})
+              && stamps(oldAssets).size() == 9,
+          legacyNames.join(QLatin1Char(' ')));
+    check(QStringLiteral("(n2) the legacy project opens"), window.loadProjectForTest(oldProj));
+    pump(500);
+    QStringList mintedIds;
+    for (const Panel *p : panels())
+        mintedIds << p->id;
+    const bool minted = mintedIds.size() == 3 && !mintedIds.contains(QString())
+        && QSet<QString>(mintedIds.cbegin(), mintedIds.cend()).size() == 3 && mintedIds.first().size() == 36;
+    const QImage pixelsBefore = panels().at(0)->flattenedPixmap().toImage();
+    const Stamps legacyStamps = stamps(oldAssets);
+    save(oldProj);
+    const QStringList newNames = namesIn(manifest(oldProj));
+    // The bytes under the new names are the legacy files' bytes, as a
+    // multiset (the three white backgrounds are one content).
+    QStringList legacyShas = legacySha.values(), newShas;
+    for (const QString &n : newNames)
+        newShas << sha(QFileInfo(oldProj).absolutePath() + QStringLiteral("/") + n);
+    legacyShas.sort();
+    newShas.sort();
+    const int sameBytes = legacyShas == newShas ? newShas.size() : 0;
+    int legacyLeft = 0;
+    for (const QString &n : legacyNames)
+        legacyLeft += QFileInfo::exists(oldAssets + QStringLiteral("/") + n) ? 1 : 0;
+    check(QStringLiteral("(n2) THE FIRST SAVE RENAMES: 9 files moved to their id names with the same "
+                         "bytes (none re-encoded: 9 renamed, 0 written), the position names gone, "
+                         "the manifest naming the new ones; (n5) every panel got an id on load, "
+                         "saved now"),
+          minted && window.lastSaveRenamedForTest().size() == 9 && window.lastSaveWrittenForTest().isEmpty()
+              && newNames.size() == 9 && allIdNames(newNames) && sameBytes == 9 && legacyLeft == 0
+              && idsIn(manifest(oldProj)) == mintedIds && stamps(oldAssets).size() == 9,
+          QStringLiteral("minted %1 renamed %2 written %3 same bytes %4 legacy left %5")
+              .arg(minted).arg(window.lastSaveRenamedForTest().size()).arg(window.lastSaveWrittenForTest().size())
+              .arg(sameBytes).arg(legacyLeft));
+    // Control: a second save renames and writes nothing; the pixels are the
+    // same picture under the new names (n7).
+    save(oldProj);
+    check(QStringLiteral("(n2) control: the next save renames and writes nothing; (n7) the panel's "
+                         "picture is the one it was before the rename"),
+          window.lastSaveRenamedForTest().isEmpty() && window.lastSaveWrittenForTest().isEmpty()
+              && panels().at(0)->flattenedPixmap().toImage() == pixelsBefore);
+    check(QStringLiteral("(n7) ...and reopening the migrated project gives the same picture"),
+          window.loadProjectForTest(oldProj) && [&] { pump(400); return true; }()
+              && panels().at(0)->flattenedPixmap().toImage() == pixelsBefore);
+
+    // --- (n3) two projects in one folder share no name ----------------------------
+    const QString other = writeProject(dir, QStringLiteral("Other"), QSize(960, 540), 24, 1, 3);
+    const QStringList a = bare(namesIn(manifest(proj))), b = bare(namesIn(manifest(other)));
+    int shared = 0;
+    for (const QString &n : a)
+        shared += b.contains(n) ? 1 : 0;
+    check(QStringLiteral("(n3) two projects saved into one folder share no file name (their ids "
+                         "differ) and no folder"),
+          shared == 0 && !a.isEmpty() && !b.isEmpty()
+              && namesIn(manifest(proj)).first().startsWith(QStringLiteral("Ids_assets/"))
+              && namesIn(manifest(other)).first().startsWith(QStringLiteral("Other_assets/")),
+          QStringLiteral("shared %1").arg(shared));
+
+    // --- (n4) Save As copies under the same names ---------------------------------
+    check(QStringLiteral("(n4) fixture reopens"), window.loadProjectForTest(proj));
+    pump(500);
+    const QString asPath = dir + QStringLiteral("/as/IdsCopy.sankotv");
+    QDir().mkpath(dir + QStringLiteral("/as"));
+    save(asPath);
+    const QStringList copyNames = namesIn(manifest(asPath));
+    int present = 0;
+    for (const QString &n : copyNames)
+        present += QFileInfo::exists(dir + QStringLiteral("/as/") + n) ? 1 : 0;
+    check(QStringLiteral("(n4) SAVE AS copies every image under the same id names into the new "
+                         "project's folder"),
+          bare(copyNames) == bare(namesIn(manifest(proj))) && present == copyNames.size()
+              && copyNames.first().startsWith(QStringLiteral("IdsCopy_assets/")),
+          QStringLiteral("%1 of %2 present").arg(present).arg(copyNames.size()));
+
+    // --- (n6) Clean Up Project Folder ------------------------------------------------
+    check(QStringLiteral("(n6) fixture reopens"), window.loadProjectForTest(proj));
+    pump(500);
+    {
+        const QString legacyDummy = assets + QStringLiteral("/panel_s9_p9.png");
+        {
+            QImage img(8, 8, QImage::Format_ARGB32);
+            img.fill(Qt::red);
+            img.save(legacyDummy, "PNG");
+        }
+        const QStringList doomed = [&] { // the files of panel 3, deleted below
+            const Panel *p = panels().at(2);
+            QStringList l{QStringLiteral("p_%1.png").arg(ProjectIO::imageIdStem(p->id))};
+            for (const Layer &layer : p->layers)
+                if (layer.type != QLatin1String("group"))
+                    l << QStringLiteral("p_%1_l_%2.png").arg(ProjectIO::imageIdStem(p->id), ProjectIO::imageIdStem(layer.id));
+            return l;
+        }();
+        auto exist = [&](const QStringList &l) {
+            int n = 0;
+            for (const QString &f : l)
+                n += QFileInfo::exists(assets + QStringLiteral("/") + f) ? 1 : 0;
+            return n;
+        };
+        // Delete the last panel (panel 3) and save. The folder now holds 13
+        // files: the 9 in use, the 3 of the clone deleted in (n1) (nothing
+        // can bring it back: the history went with the reload), and the
+        // legacy-named dummy.
+        clickClip(r, 2);
+        page->deleteSelectedPanelConfirmedForTest();
+        pump(300);
+        save(proj);
+        const int beforeClean = stamps(assets).size();
+        const int heldRemoved = window.cleanUpProjectFolderForTest(true);
+        const int stillThere = exist(doomed);
+        stack->clear(); // the delete can no longer be undone
+        const int removed = window.cleanUpProjectFolderForTest(true);
+        const int gone = doomed.size() - exist(doomed);
+        check(QStringLiteral("(n6) CLEAN UP PROJECT FOLDER: with the deleted panel still undoable it "
+                             "removes only the 3 orphan files of (n1)'s clone and keeps the deleted "
+                             "panel's 3; once the history is cleared it removes exactly those 3; the "
+                             "legacy-named file is left alone both times"),
+              beforeClean == 13 && heldRemoved == 3 && stillThere == 3 && removed == 3 && gone == 3
+                  && QFileInfo::exists(legacyDummy) && stamps(assets).size() == 7,
+              QStringLiteral("before %1 held %2 (still %3) removed %4 gone %5 legacy %6 after %7")
+                  .arg(beforeClean).arg(heldRemoved).arg(stillThere).arg(removed).arg(gone)
+                  .arg(QFileInfo::exists(legacyDummy)).arg(stamps(assets).size()));
+        // Controls: unsaved changes refuse it; a No removes nothing.
+        paint();
+        const int refused = window.cleanUpProjectFolderForTest(true);
+        window.undoActionForTest()->trigger();
+        pump(200);
+        save(proj);
+        page->deleteSelectedPanelConfirmedForTest();
+        pump(300);
+        save(proj);
+        stack->clear();
+        const int before2 = stamps(assets).size();
+        const int declined = window.cleanUpProjectFolderForTest(false);
+        check(QStringLiteral("(n6) control: with unsaved changes Clean Up refuses (-1); answered No it "
+                             "removes nothing"),
+              refused == -1 && declined == 0 && stamps(assets).size() == before2 && before2 == 7,
+              QStringLiteral("refused %1 declined %2 files %3").arg(refused).arg(declined).arg(before2));
+        QFile::remove(legacyDummy);
+    }
+    window.markCleanForTest();
+}
+
 // ---- (wf) THE WAVEFORM (Phase 2D) ----------------------------------------------
 // The spec's wf1-wf4 plus the chips' hover (the user's addition). wf4 - no
 // audio, the AUDIO grab equals today's - is the (rp) pin above, which holds
@@ -17727,6 +18100,7 @@ int main(int argc, char **argv)
     runCameraBarFitPass(scratch);
     runStageClearPass(scratch);
     runCompactBarPass(scratch);
+    runStableIdsPass(scratch);
 
     // ---- (aa) a test that cannot start says why and exits ----------------
     // An unattended gate must FAIL, not wait. Measured 2026-10-02: with its

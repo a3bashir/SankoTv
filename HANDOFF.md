@@ -9375,7 +9375,7 @@ keys (they need a panel) - BEFORE SELLING; and the fps-independent
 seconds of a pinned key are film time, so an audio offset, if ever
 added, must move pinned keys with the sound (spec 5.2).
 
-## Playback batch 1: the stage clears while the film plays (2026-11-02) - BUILT, NOT COMMITTED
+## Playback batch 1: the stage clears while the film plays (2026-11-02) - COMMITTED ebf3fd6a4 (2026-11-04)
 The user approved the three proposals of 2026-11-02 (Documents\
 SankoTV-Design\proposals-2026-11-02.md; Figma PLAYBACK-1..5, section
 383:141, nodes 514:696 / 717 / 741 / 752 / 767), one batch each in the
@@ -9441,9 +9441,9 @@ other seven families as in 2Eb; every pin line count equal to 2E's in
 both configs. Exe stamp 92e3811db+dirty, Release SankoTV.exe 2026-11-02
 21:23:25. Hashes of the 13 files (11 changed + src/StageClear.{h,cpp})
 in sha_playback.txt; the commit message drafted in msg_playback.txt.
-NOT COMMITTED: waits for the user's word after the hand test
-(handtest_playback.md). Batches 2 (stable image ids) and 3 (auto-save)
-follow, each its own batch.
+COMMITTED ebf3fd6a4 on the user's word (2026-11-04) after the hand tests
+(handtest_playback.md; the records at the end of this section). Batches
+2 (stable image ids) and 3 (auto-save) follow, each its own batch.
 THE HAND TEST (Dev Recorder 20261103-180048, 211 s, Release; read
 2026-11-03): 1 PASS (18.5-36.5 s playing, preview.stageClear true the
 whole time, no pointer move, the screenshot shows the picture alone);
@@ -9589,6 +9589,151 @@ poll then 529 (51.0 s) - the strip's resizeDocks settles over two
 layout passes; nothing visible. No failures. COMMITTED on the user's
 word (2026-11-04) as ONE commit on master, pushed; the files confirmed
 against the refreshed sha_playback.txt after the commit.
+
+## Batch 2: stable image ids (2026-11-04) - BUILT AND COMMITTED (2026-11-04)
+Proposal 5 of proposals-2026-11-02.md, approved "as proposed" (n1-n7).
+THE DEFECT: images were named by the panel's position (panel_s0_p3.png,
+panel_s0_p3_layer1.png), so an insert, move or delete renamed every
+panel after it and the next save re-encoded all of them (the
+incremental save could skip none); a file's name said nothing reliable
+about its panel.
+BUILT: Panel::id (StoryboardModel.h, LF) - a UUID minted at
+construction (QUuid, without braces), so a clone (clonePanel makes a
+new Panel) and a paste get their own; saved as "id"; the loader takes a
+valid UUID (regex, lower-cased) and otherwise mints one and counts it
+(LoadedProject::panelIdsMinted). Names (ProjectIO.cpp, anonymous
+namesFor): the flatten "p_<12 hex>.png", each layer
+"p_<panel 12 hex>_l_<layer 12 hex>.png" (imageIdStem: the id's letters
+and digits lower-cased, first 12), in the project's own assets folder
+as before; a 12-digit collision within one save uses the whole id;
+groups own no file. Free functions: imageIdStem, projectImageNames(the
+scenes), isIdImageName (regex ^p_[0-9a-f]{12,32}(_l_[0-9a-f]{12,32})?
+\.png$), panelStemOfImageName. ImageLedger::fileHolding(content,
+folder): a recorded, unchanged file under `folder` holding the content.
+ImageSaver: layer() / flatten() are "skip, else adopt, else encode";
+adopt() RENAMES the file the ledger knows in the project's OWN assets
+folder (ImageSaver's `assets`) to the id name and counts it
+(WriteResult::imagesRenamed, renamedFiles; MainWindow::m_lastSaveRenamed,
+lastSaveRenamedForTest) - never over an existing file, never FROM a
+file this save names (the `keep` set built from namesFor), never from
+outside the assets folder. So: a position-named project migrates on
+its first save with nothing re-encoded; an old FLAT project (files
+beside the manifest) is written afresh into _assets as before and its
+flat files are left alone ((h) unchanged). File > "Clean Up Project
+Folder..." (objectName fileCleanUp, after Project Settings; enabled
+with a project path): MainWindow::cleanUpProjectFolder(confirm(count,
+bytes), why) returns -1 with no path or with unsaved changes (why says
+save first), else lists the id-named *.png in the assets folder that
+projectImageNames does not name and whose panel stem is not in
+StoryboardPage::panelIdsHeldByHistory() (RemovePanelCommand /
+InsertPanelCommand::panelId over the undo stack), 0 with nothing or on
+No, else removes them (and forgets them in the ledger); the menu asks
+with the count and KB; cleanUpProjectFolderForTest(bool confirm).
+TWO DEFECTS THE DRAFT (n) CHECKS CAUGHT, both in adopt(), fixed before
+the second quick run: (1) the first draft searched the whole project
+folder for a file holding the content, so a Save As INTO THE
+ORIGINAL'S FOLDER moved the original's files into the copy's assets
+folder ((h) "SB_001 has images to compare" fell to 0 files) and an old
+flat project's migration moved its flat files ((h) "...leaves the old
+flat images UNTOUCHED" failed) - now only the project's own assets
+folder is searched; (2) a duplicated panel's layers hold its source's
+pixels and three panels' white backgrounds are one content, so the
+rename would have taken the source's file and left the source without
+one (seen in the ledger's iteration before the first run) - now a
+file this save names is never adopted; n1's Duplicate Panel case is
+the check (3 files written for the clone, the 9 untouched and still
+named).
+CHANGED CHECKS (position names -> id names; each read off the model):
+Lifecycle (u) old `freshThumb.endsWith("/Fresh_assets/panel_s0_p0.png")`
+-> new `freshThumb.contains("/Fresh_assets/p_") && ProjectIO::
+isIdImageName(QFileInfo(freshThumb).fileName())`, exists unchanged;
+(sv) old `strokeFile = "panel_s0_p%1_layer%2.png".arg(strokeP).arg(
+strokeK)`, `flatFile = "panel_s0_p%1.png".arg(strokeP)`, victim
+"panel_s0_p2_layer1.png", replaced "panel_s0_p1_layer1.png", the (sv.6)
+reference names and the probe control "panel_s0_p0_layer1.png" -> new
+nameOf(p, k) = "p_<stem(panel id)>.png" / "p_<stem>_l_<stem(layer
+id)>.png" with the same p / k (the stroke's layer is still found by its
+pixels changing, the control); (i) old `onePng = assetsDir +
+"/panel_s0_p0_layer1.png"` -> new panel 0 / layer 1's id name;
+CanvasSizeLock (d) old `panel_s0_p0.png` / `panel_s0_p1.png` flatten
+sizes -> new `p_<stem(panels.at(i)->id)>.png`; (e) old `QFile::remove(
+folderTall + "/panel_s0_p0_layer1.png")` - a FLAT path beside the
+manifest the save had not written since the assets subfolder, so
+nothing was removed and the "refilled transparent at 777x1013" check
+passed on the two transparent corners of a LOADED layer (vacuous) ->
+new removes `<proj_assets>/p_<stem(tall->id)>_l_<stem(layers.at(1).id)>
+.png` and the check also requires no content anywhere on the 16-px
+sampled grid (the control "layer HAS content before deletion" samples
+the same grid: the positive control). The new (n) checks' controls:
+the fixture's 9 id names and ids (n), a stroke's two writes and the
+manifest's changed order (n1), the legacy fixture's position names and
+missing ids (n2), the next save renaming and writing nothing (n2), the
+refusal when unsaved and the No (n6).
+QUICK RUN 1 (before the adopt fix): Lifecycle 1103 checks, 2 failures -
+the (h) pair above; the 15 (n) checks PASS; CanvasSizeLock 170 PASS;
+Camera 238 PASS lines, exit 0 (the camera family writes its RESULT
+line to its own output file, not stdout: the exit code is its verdict,
+as the gate counts it).
+QUICK RUN 2 (after the fix): Lifecycle 1103 checks, 0 failures, 492 s
+(the (h) pair PASS again: SB_001 keeps its 6 files, the 6 flat files
+untouched; the 15 (n) checks PASS; n2 "9 renamed, 0 written");
+CanvasSizeLock 170, 0 failures, rebuilt and rerun with the strengthened
+(e) check: "(e) missing PNG refilled transparent at 777x1013 (no
+content anywhere on the sampled grid)" PASS beside its control; Camera
+238 PASS lines, exit 0.
+GATE ids (fullgate_ids.log, normal mode, 1885 s): clean Release and
+Debug builds (0 errors), 0 failing families in both; Lifecycle 1103
+(the 15 (n) checks), Camera 238, CanvasSizeLock 170, CanvasEdgeLock
+74, BrushLibrary 187, DevRecorder 46, QuickShapeGeometry 19,
+PaintPixel 13, CanvasBrush 3; every pin line count equal to the pc
+gate's in both configs (Camera c1p 17, mp 43, mq 44, rp 3; Lifecycle
+rp 5, strip mp 3 / mq 5); the row pins CAMERA bd989a38, AUDIO none
+a4994d62, AUDIO bar a3e7f938 reproduced; the evaluate pins
+e43a30f9fcc11db6 / 7bd38237a37a7579 in the camera family's own
+camera_test.txt (RESULT PASS checks=238). Exe stamp ebf3fd6a4+dirty,
+Release SankoTV.exe 2026-11-04 18:27:16 (Debug 18:29:17).
+THE HAND TEST (Dev Recorder 20261104-195025, 137 s, Release built
+18:26:58; read 2026-11-04; the user did steps 1, 2, 3, 6, 7 of
+handtest_ids.md on a copy): the project Test_SB_audioWave_002 in
+Downloads\SankoTV_Save _test_Files\Test_SB_010\Test_SB_audioWave_001\,
+beside Test_SB_audioWave_001 in the SAME folder. 1 PASS: opened from
+the Start window at 0.7 s, Ctrl+S at 16.1 s with no UI-thread stall
+(the worst gaps 150 ms at the load, nothing at 16 s); on disk its 30
+files (10 flattens, 20 layers) are id-named and all still dated
+2026-11-02 19:13 (renamed, none written), no panel_s0 name left, the
+manifest (19:52:21) names the 30, no orphan; the sibling 001's 36
+position-named files untouched (the rename never left 002's folder);
+reopened at 129.5 s with its pictures. 2 PARTIAL: Add Panel twice
+(44.3 s, a press and a double-click on +: P11 and P12), a stroke on
+P12 (54 s), both deleted (dialogs 63.3 and 69.6 s, Yes), Ctrl+S at
+75.5 s wrote nothing (no file dated today, the 10 panels' files
+untouched); Duplicate P10 (91.2 s), deleted (98.4 s, Yes at 103.7),
+Ctrl+S at 104.8 s wrote nothing; NOT TESTED: a save with the duplicate
+still present (its 3 new files) and the Ctrl+Right move (no key event;
+the order at 75, 105 and 136 s the original) - n1 covers both. 3
+PASS: Undo at 110.7 s ("Undo Delete Panel") after the 104.8 s save
+brought P11 back with its picture (111.5 s); deleted again (113.7 s,
+Yes at 114.8), Ctrl+S at 115.8. 4 not tested (n4, and the (h)
+same-folder checks). 5 not tested (n6 and its controls). 6 not tested
+in the recording: timeline.playing never true, shotCam.toolActive
+never true, the tool 0 throughout (n7 for the pixels; the ps / pc
+checks and the pin families for play and the camera). 7 PASS: File >
+Close Project at 127.2 s (the Start window), the project reopened from
+its card at 129.4 s, the app closed at 137.2 s with the project clean
+(no dialog): sessionEnd at 137.24 s, summary.txt complete, 0 issue
+markers, 0 warnings, 280 screenshots. Observation: a double-click on
++ adds two panels (two clicks) - not a defect. No failures.
+COMMITTED on the user's word (2026-11-04) as ONE commit on master,
+pushed; the files confirmed against sha_ids.txt (refreshed after this
+record) after the commit; the commit message in msg_ids.txt. Batch 3
+(auto-save and crash recovery, r1-r8, every 2 minutes by default)
+follows as its own batch.
+NOTES: the loader records a flatten in the ledger only when its file is
+not newer than the manifest, so a flatten whose file is newer is
+encoded (not renamed) at migration - the layers, which are what the
+artist drew, are renamed; HANDOFF's batch 1 heading and its "NOT
+COMMITTED" line were stale (the section's end said COMMITTED) and are
+corrected in this batch.
 
 ## METHOD: measure interior structure ACROSS THE SIZE RANGE before calling it character (2026-09-25)
 

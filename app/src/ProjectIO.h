@@ -61,6 +61,10 @@ public:
     void forget(const QString &file);
     void merge(const ImageLedger &other);
     int size() const { return int(m_entries.size()); }
+    // A file under `folder` (any depth) recorded as holding `content` and
+    // still as it was left: the old name of an image that is only being
+    // renamed (the id names, 2026-11-04). Empty when none.
+    QString fileHolding(const QByteArray &content, const QString &folder) const;
 
 private:
     struct Entry
@@ -126,6 +130,10 @@ struct [[nodiscard]] WriteResult
     int imagesWritten = 0;  // before the failure, if any
     int imagesSkipped = 0;  // unchanged: their files already hold them
     QStringList writtenFiles; // every image this save wrote (absolute)
+    // Images only RENAMED to their id name (the first save of a project
+    // named by position, 2026-11-04): the file moved, nothing re-encoded.
+    int imagesRenamed = 0;
+    QStringList renamedFiles; // their new names (absolute)
     int encodeThreads = 0;  // distinct threads that encoded them
     // The audio copy was CANCELLED by the artist (Save As with a large
     // track): ok is false, and there is nothing to warn about.
@@ -224,10 +232,27 @@ struct LoadedProject
     // Layers whose "parallax" (Phase 2B) could not be a depth - not a
     // number, or outside 0 .. 2: loaded on the picture plane, counted here.
     int parallaxRepaired = 0;
+    // Panels the file gave no usable "id" (every project before 2026-11-04):
+    // each got a fresh one, saved on the next save.
+    int panelIdsMinted = 0;
     // Every image file this load read, recorded as what it now holds, so
     // the first save after opening writes only what has changed since.
     ImageLedger images;
 };
+
+// THE IMAGE NAMES (2026-11-04): a panel's files are named by its stable
+// id, never its position - "p_<12 hex>.png" for the flatten and
+// "p_<12 hex>_l_<12 hex>.png" for a layer (the ids' first twelve hex
+// digits; the whole id when twelve collide within one save). The one
+// function the writer, the loader's migration and Clean Up Project Folder
+// share: every image name the scenes would be saved under, in order, in
+// the assets folder (relative to it).
+QString imageIdStem(const QString &id);
+QStringList projectImageNames(const QVector<Scene *> &scenes);
+// Whether a file name is one the id scheme makes (so Clean Up may touch
+// it), and the panel stem it names.
+bool isIdImageName(const QString &fileName);
+QString panelStemOfImageName(const QString &fileName);
 
 // Rebuild the model from a parsed root + its folder. Applies every
 // migration (legacy single-PNG panels, legacy shared layers, background
