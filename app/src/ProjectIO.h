@@ -106,6 +106,11 @@ struct SaveData
     // every image whose file holds it, and records each one it writes.
     // Null (the seam, the fixtures) writes every image, as before.
     ImageLedger *ledger = nullptr;
+    // THE RECOVERY COPY (2026-11-04): each image is written to "<name>.part"
+    // and renamed over its name, so a crash mid-write never leaves a half
+    // file under a name the copy's manifest trusts. A Save leaves this off:
+    // its manifest is written only after every image, as before.
+    bool atomicImages = false;
 };
 
 // The outcome of a save's IMAGE pass.

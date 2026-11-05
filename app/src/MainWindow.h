@@ -2,6 +2,7 @@
 
 #include "ProjectResize.h" // Outcome, returned by the resize helper
 
+#include <QDateTime>
 #include <QMainWindow>
 #include <QSize>
 #include <QString>
@@ -23,12 +24,17 @@ class QAction;
 class QCloseEvent;
 class QMenu;
 class QJsonArray;
+class QTimer;
 
 struct Scene;
 struct ConsistencyEntry;
 
 namespace ProjectIO {
 class ImageLedger;
+}
+
+namespace ProjectRecovery {
+struct Pending;
 }
 
 namespace sankoexport {
@@ -202,6 +208,44 @@ public:
     // kind: the plain "Windows blocked" one or the write's own).
     QString lastWriteFailureForTest() const { return m_lastWriteFailure; }
 
+    // AUTO-SAVE AND CRASH RECOVERY (2026-11-04, batch 3), driven by the gate
+    // without its timer or its dialog: the interval (minutes, 0 = off), one
+    // tick of the timer (true when a copy was written), whether a tick found
+    // the artist mid-action and is waiting, what the last copy wrote and
+    // when, the manifest step made to fail (the previous copy must stay
+    // whole), the crash prompt's answer in place of its dialog, and the real
+    // File > Open path that asks it.
+    enum class RecoveryAnswer { OpenCopy, OpenSaved, ShowFolder, Cancel };
+    void setRecoveryMinutesForTest(int minutes) { setRecoveryMinutes(minutes); }
+    int recoveryMinutesForTest() const { return m_recoveryMinutes; }
+    int recoveryTimerIntervalForTest() const; // ms; 0 when not armed
+    bool fireRecoveryTickForTest() { return onRecoveryTick(); }
+    bool recoveryPendingForTest() const { return m_recoveryPending; }
+    QStringList lastRecoveryWrittenForTest() const { return m_lastRecoveryWritten; }
+    QDateTime lastRecoveryAtForTest() const { return m_lastRecoveryAt; }
+    void setRecoveryFailAtManifestForTest(bool fail) { m_recoveryFailAtManifestForTest = fail; }
+    void setRecoveryPromptForTest(std::function<RecoveryAnswer()> answer)
+    {
+        m_recoveryPromptForTest = std::move(answer);
+        m_recoveryPromptCount = 0;
+    }
+    int recoveryPromptCountForTest() const { return m_recoveryPromptCount; }
+    void openProjectForTest(const QString &path) { openProject(path); }
+    QString recoveredFromForTest() const { return m_recoveredFrom; }
+    QString savedIndicatorForTest() const;  // the Script Editor's words
+    QString recoveryStatusForTest() const;  // the bottom bar's words
+    int discardRecoveryCopyForTest(bool confirm); // 1 removed, 0 not
+    QString sessionIdForTest() const { return m_sessionId; }
+    // The recovered document's replace question (2026-11-05) answered in
+    // place of its box: given the file and whether it is the project the
+    // work was recovered from, true to replace. Counted.
+    void setReplacePromptForTest(std::function<bool(const QString &, bool)> answer)
+    {
+        m_replacePromptForTest = std::move(answer);
+        m_replacePromptCount = 0;
+    }
+    int replacePromptCountForTest() const { return m_replacePromptCount; }
+
 protected:
     // THE single unsaved-changes gate. Every way of closing this window —
     // the X button, Alt+F4, the taskbar, a Windows shutdown, and File > Exit
@@ -291,6 +335,27 @@ private:
     void onProjectSettings();
     void onCleanUpProjectFolder();
     int cleanUpProjectFolder(std::function<bool(int, qint64)> confirm, QString *why);
+
+    // --- Auto-save and crash recovery (2026-11-04) ---------------------------
+    // Every m_recoveryMinutes, while the project has unsaved changes and the
+    // artist is between actions, a full copy goes to the project's recovery
+    // folder (ProjectRecovery) through the same ProjectIO path as a Save -
+    // never to the project's own files. The session lock marks the project
+    // open; a lock left behind plus a copy newer than the file is a crash,
+    // and openProject offers the copy.
+    void setRecoveryMinutes(int minutes);
+    void armRecoveryTimer();
+    bool onRecoveryTick();       // a copy when due; waits for a held action
+    bool writeRecoveryCopy();
+    bool actionInProgress() const;
+    QString recoveryBasePath() const; // the project, or the one recovered from
+    RecoveryAnswer askRecovery(const QString &path, const ProjectRecovery::Pending &pending);
+    void openRecoveryCopy(const QString &original, const QString &copyPath);
+    bool confirmReplaceForRecovered(const QString &path); // true: replace
+    void onDiscardRecoveryCopy();
+    int discardRecoveryCopy(std::function<bool()> confirm, QString *why);
+    void updateSavedIndicator(); // the Script Editor's dot and words
+    QString buildStamp() const;
     // Resize Project...: the whole confirmed, non-undoable canvas-only
     // resize workflow — in-flight refusal, size prompt, memory precheck,
     // save prompt, confirm, per-panel swap, state reset.
@@ -351,7 +416,10 @@ private:
     };
     void markSavedTo(const QString &path, SaveCompleted);
 
-    bool loadFromPath(const QString &path);
+    // asRecoveryCopy: the file is a crash's recovery copy of m_recoveredFrom
+    // - loaded as an UNSAVED document with no file of its own, not recorded
+    // in the recents.
+    bool loadFromPath(const QString &path, bool asRecoveryCopy = false);
 
     QStackedWidget *m_stack = nullptr;
     QUndoStack *m_undoStack = nullptr; // ONE app-wide chronological history
@@ -376,6 +444,22 @@ private:
     QStringList m_lastSaveRenamed; // images only renamed to their id names
     QAction *m_cleanUpAct = nullptr; // File > Clean Up Project Folder...
     int m_lastSaveEncodeThreads = 0;
+    // Auto-save and crash recovery (2026-11-04).
+    QTimer *m_recoveryTimer = nullptr;  // every m_recoveryMinutes
+    QTimer *m_recoveryRetry = nullptr;  // while a tick waits for a held action
+    int m_recoveryMinutes = 2;          // 0 = off; the setting recovery/minutes
+    bool m_recoveryPending = false;
+    std::unique_ptr<ProjectIO::ImageLedger> m_recoveryLedger; // the copy's files
+    QString m_sessionId;                // this process's, in the lock and the header
+    QString m_recoveredFrom;            // the project a recovered document came from
+    QStringList m_lastRecoveryWritten;
+    QDateTime m_lastRecoveryAt;
+    bool m_recoveryFailAtManifestForTest = false;
+    std::function<RecoveryAnswer()> m_recoveryPromptForTest;
+    int m_recoveryPromptCount = 0;
+    std::function<bool(const QString &, bool)> m_replacePromptForTest;
+    int m_replacePromptCount = 0;
+    QAction *m_discardRecoveryAct = nullptr; // File > Discard Recovery Copy
     QString m_projectName = QStringLiteral("Untitled Project");
     // Project properties. fps drives the animatic timeline; canvasWidth/
     // Height are the project's REAL canvas resolution — the single source

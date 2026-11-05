@@ -22,6 +22,13 @@ class ScriptEditorPage : public QWidget
 public:
     explicit ScriptEditorPage(QWidget *parent = nullptr);
 
+    // THE SAVED INDICATOR IS REAL (2026-11-04): the window sets what it rests
+    // on - the text, and whether the dot is lit - from the project's saved
+    // state and its recovery copy; the editor's own typing flash settles
+    // back to it.
+    void setSavedState(const QString &text, bool lit);
+    QString savedStateForTest() const;
+
 signals:
     void backRequested();
     void scenesReady(const QJsonArray &scenes); // emitted after each parse / skip
@@ -42,10 +49,14 @@ private:
     QWidget *createSceneCard(const QJsonObject &scene);
     void setContinueEnabled(bool enabled);
 
+    void applyRestingSavedState();
+
     CodeEditor *m_editor = nullptr;
     QLabel *m_savedDot = nullptr;
     QLabel *m_savedText = nullptr;
     QTimer *m_savedTimer = nullptr;
+    QString m_restingText = QStringLiteral("Saved");
+    bool m_restingLit = false;
 
     QVBoxLayout *m_scenesLayout = nullptr; // holds scene cards / status messages
 

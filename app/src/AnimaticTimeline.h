@@ -54,6 +54,9 @@ public:
     }
     int selectedPanelForTest() const { return m_selected; }
     int playheadPanelForTest() const { return m_current; }
+    // A clip, the playhead or a camera key under the pointer right now: the
+    // recovery copy (2026-11-04) waits for the drag to end.
+    bool dragInProgress() const { return m_drag != Drag::None || m_camDragActive; }
     int shotsTrackHeightForTest() const { return panelTrackH(); }
     // What the audio track is showing: "none", "loading", "present",
     // "missing" or "unplayable"; its text (the hint, "name | m:ss", or the

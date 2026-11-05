@@ -427,6 +427,14 @@ public slots:
         }
         return false;
     }
+    // Is the pointer holding something - an edit (above), a selection or
+    // camera drag, a pan, a floating bar - or is a stroke's commit still in
+    // flight? The recovery copy (2026-11-04) waits for the hold to end.
+    bool inputHeld() const
+    {
+        return hasActiveEdit() || m_camDrag >= 0 || m_selDrag || m_selOutlineDrag
+            || m_panning || m_floatDragging || m_paintCommitPending;
+    }
     bool hasCanvasClipboard() const { return !m_clipImg.isNull(); }
     // Closing a project drops the copied pixels with it: they belong to the
     // project that was closed, and would otherwise be pasteable into the

@@ -14247,6 +14247,587 @@ void runCompactBarPass(const QString &scratch)
     r.window.markCleanForTest();
 }
 
+// ---- (r) AUTO-SAVE AND CRASH RECOVERY (2026-11-04, batch 3 of the proposals) ---
+// A crash used to lose everything since the last Ctrl+S: the project was
+// written by Save alone. Now, every N minutes (2 by default) while the
+// project has unsaved changes and the artist is between actions, a full
+// copy goes to "<name>.recovery/" beside the project - never to the
+// project's own files - and a session lock marks the project open. A lock
+// left behind with a copy newer than the file is a crash: the next open
+// offers the copy. r1 the copy and the untouched project file; r2 a writer
+// failing at the last step leaves the previous copy whole; r3 the lock;
+// r4 the crash prompt and both answers, the Start window's badge; r5 a
+// clean Save removes the copy; r6 nothing during a held stroke; r7 the
+// Script Editor's indicator; r8 the second copy rewrites only what changed.
+#include "ProjectRecovery.h"
+
+void runRecoveryPass(const QString &scratch)
+{
+    using namespace workspace;
+    out() << "--- (r) auto-save and crash recovery ---" << Qt::endl;
+    const QString dir = scratch + QStringLiteral("/recovery");
+    QDir(dir).removeRecursively();
+    QDir().mkpath(dir);
+    const QString proj = writeProject(dir, QStringLiteral("Rec"), QSize(960, 540), 24, 1, 3);
+    const QString assets = QFileInfo(proj).absolutePath() + QStringLiteral("/Rec_assets");
+    const QString folder = ProjectRecovery::folderFor(proj);
+    const QString copy = ProjectRecovery::copyPathFor(proj);
+    const QString copyAssets = folder + QStringLiteral("/") + ProjectIO::assetSubdirFor(copy);
+    Rig r(proj);
+    MainWindow &window = r.window;
+    check(QStringLiteral("(r) fixture opens"), r.ok);
+    if (!r.ok)
+        return;
+    // A known brush: the working brush is kept in the (scratch) settings,
+    // and the passes before this one leave theirs - in the full family it
+    // inked 1296 px for a stroke that inks 17309 px with the default, too
+    // little for a later stroke to be sure of changing a pixel, so the
+    // copies under test were never made. Measured 2026-11-04.
+    {
+        ::Brush known;
+        known.setSize(24);
+        r.canvas->setTool(DrawingCanvas::Brush);
+        r.canvas->setPaintBrush(known);
+        pump(200);
+    }
+    auto manifest = [](const QString &path) {
+        QFile f(path);
+        return f.open(QIODevice::ReadOnly) ? QJsonDocument::fromJson(f.readAll()).object() : QJsonObject();
+    };
+    auto bytesOf = [](const QString &path) {
+        QFile f(path);
+        return f.open(QIODevice::ReadOnly) ? f.readAll() : QByteArray();
+    };
+    auto mtime = [](const QString &path) { return QFileInfo(path).lastModified(); };
+    using Stamps = QMap<QString, QPair<qint64, QDateTime>>;
+    auto stamps = [](const QString &folder) {
+        Stamps m;
+        for (const QFileInfo &fi : QDir(folder).entryInfoList({QStringLiteral("*.png")}, QDir::Files, QDir::Name))
+            m.insert(fi.fileName(), {fi.size(), fi.lastModified()});
+        return m;
+    };
+    auto touched = [&stamps](const Stamps &before, const QString &folder) {
+        QStringList names;
+        const Stamps now = stamps(folder);
+        for (auto it = now.cbegin(); it != now.cend(); ++it)
+            if (!before.contains(it.key()) || before.value(it.key()) != it.value())
+                names << it.key();
+        return names;
+    };
+    auto parts = [](const QString &folder) {
+        return QDir(folder).entryList({QStringLiteral("*.part")}, QDir::Files).size();
+    };
+    auto bare = [](const QStringList &files) {
+        QStringList b;
+        for (const QString &f : files)
+            b << QFileInfo(f).fileName();
+        b.sort();
+        return b;
+    };
+    auto namesIn = [](const QJsonObject &root) {
+        QStringList names;
+        for (const QJsonValue &sv : root.value(QStringLiteral("scenes")).toArray())
+            for (const QJsonValue &pv : sv.toObject().value(QStringLiteral("panels")).toArray()) {
+                const QJsonObject p = pv.toObject();
+                names << QFileInfo(p.value(QStringLiteral("pixmapFile")).toString()).fileName();
+                for (const QJsonValue &lv : p.value(QStringLiteral("layers")).toArray())
+                    if (lv.toObject().contains(QStringLiteral("imageFile")))
+                        names << QFileInfo(lv.toObject().value(QStringLiteral("imageFile")).toString()).fileName();
+            }
+        return names;
+    };
+    // A manifest for comparison: no header, and one spelling for the image
+    // folder (the copy's is "Rec.recovery_assets", the project's "Rec_assets").
+    auto normalised = [](QJsonObject root) {
+        root.remove(QStringLiteral("recovery"));
+        QByteArray json = QJsonDocument(root).toJson(QJsonDocument::Indented);
+        json.replace("Rec.recovery_assets/", "ASSETS/");
+        json.replace("Rec_assets/", "ASSETS/");
+        return json;
+    };
+    // Each stroke runs along its own row, 65 px below the last: a stroke drawn
+    // inside one the layer already holds changes no pixel, so nothing is
+    // unsaved and no copy is due. (The first drafts drew one diagonal, then
+    // shifted it nearly along itself - a few pixels sideways, inside the
+    // brush's width - and (r8) and the crash state read copies never made.)
+    int strokes = 0;
+    QString strokeNote; // what the canvas did with the last stroke
+    auto paint = [&window, &strokes, &strokeNote, &r] {
+        auto *canvas = window.findChild<DrawingCanvas *>();
+        if (!canvas)
+            return;
+        const bool pendingBefore = canvas->paintCommitPendingForTest();
+        const bool previewUp = r.animatic && r.animatic->previewVisible();
+        const qreal y = 70 + 65 * (strokes++ % 7); // 70 .. 460, inside 540
+        const QTransform t = canvas->viewTransformForTest();
+        sendMouse(canvas, QEvent::MouseButtonPress, t.map(QPointF(100, y)), Qt::LeftButton);
+        QString what;
+        const bool editing = canvas->hasActiveEdit(&what);
+        for (int i = 1; i <= 8; ++i)
+            sendMouse(canvas, QEvent::MouseMove, t.map(QPointF(100 + i * 90, y + i * 2)), Qt::LeftButton);
+        const int ink = canvas->previewInkPixelsForTest();
+        sendMouse(canvas, QEvent::MouseButtonRelease, t.map(QPointF(820, y + 16)), Qt::LeftButton);
+        pump(700);
+        strokeNote = QStringLiteral("stroke %1 at y %2: commit pending before %3, preview up %4, after the "
+                                    "press editing %5 '%6', inked %7 px, tool %8")
+                         .arg(strokes).arg(y).arg(pendingBefore).arg(previewUp).arg(editing).arg(what)
+                         .arg(ink).arg(int(canvas->tool()));
+    };
+    auto save = [&window](const QString &path) {
+        const bool ok = window.saveProjectForTest(path);
+        pump(200);
+        return ok;
+    };
+    auto panelAt = [&window](int p) { return window.scenesForTest().at(0)->panels.at(p); };
+    auto layerOf = [&panelAt](int p) { return panelAt(p)->layers.at(1).image; };
+    auto nameOf = [&panelAt](int p, int k) { // k < 0: the flatten
+        const QString stem = ProjectIO::imageIdStem(panelAt(p)->id);
+        return k < 0 ? QStringLiteral("p_%1.png").arg(stem)
+                     : QStringLiteral("p_%1_l_%2.png").arg(stem, ProjectIO::imageIdStem(panelAt(p)->layers.at(k).id));
+    };
+    auto decoded = [](const QString &file) {
+        return QImage(file).convertToFormat(QImage::Format_ARGB32_Premultiplied);
+    };
+    auto same = [](const QImage &a, const QImage &b) {
+        return !a.isNull() && a.convertToFormat(QImage::Format_ARGB32_Premultiplied) == b.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+    };
+
+    // --- the setting, the timer, and a saved project ---------------------------
+    check(QStringLiteral("(r) control: the interval defaults to 2 minutes and the timer is armed at "
+                         "120000 ms with the project open; 0 disarms it, 2 arms it again"),
+          window.recoveryMinutesForTest() == 2 && window.recoveryTimerIntervalForTest() == 120000
+              && [&] { window.setRecoveryMinutesForTest(0); return window.recoveryTimerIntervalForTest() == 0; }()
+              && [&] { window.setRecoveryMinutesForTest(2); return window.recoveryTimerIntervalForTest() == 120000; }(),
+          QStringLiteral("minutes %1 interval %2").arg(window.recoveryMinutesForTest()).arg(window.recoveryTimerIntervalForTest()));
+    const QString indicatorSaved = window.savedIndicatorForTest();
+    check(QStringLiteral("(r1) control: a tick on a SAVED project writes no copy"),
+          !window.fireRecoveryTickForTest() && !ProjectRecovery::hasCopy(proj));
+
+    // --- (r1) a dirty project gets a copy; the project file is untouched ----------
+    const QByteArray fileBefore = bytesOf(proj);
+    const QDateTime fileTimeBefore = mtime(proj);
+    const Stamps assetsBefore = stamps(assets);
+    paint();
+    const QString indicatorDirty = window.savedIndicatorForTest();
+    check(QStringLiteral("(r1) control: the stroke made the project unsaved"), window.isDirty());
+    window.setRecoveryMinutesForTest(0);
+    check(QStringLiteral("(r1) control: with the interval at 0 (off) a tick on the dirty project writes nothing"),
+          !window.fireRecoveryTickForTest() && !ProjectRecovery::hasCopy(proj));
+    window.setRecoveryMinutesForTest(2);
+    const bool wrote = window.fireRecoveryTickForTest();
+    const QJsonObject copyRoot = manifest(copy);
+    const QJsonObject header = copyRoot.value(QStringLiteral("recovery")).toObject();
+    const QString indicatorCopied = window.savedIndicatorForTest();
+    const QString statusCopied = window.recoveryStatusForTest();
+    // The copy's time as the indicator was read: the Save below clears it.
+    const QString copyHHmm = window.lastRecoveryAtForTest().toString(QStringLiteral("HH:mm"));
+    check(QStringLiteral("(r1) A DIRTY PROJECT GETS A COPY WHEN THE INTERVAL FIRES: the manifest and its "
+                         "9 images in the recovery folder, the header naming the project, the "
+                         "time, this session and the build; the project file's bytes and time and "
+                         "its 9 images untouched"),
+          wrote && QFileInfo::exists(copy) && window.lastRecoveryWrittenForTest().size() == 9
+              && stamps(copyAssets).size() == 9 && parts(copyAssets) == 0
+              && header.value(QStringLiteral("savedFrom")).toString().compare(QFileInfo(proj).absoluteFilePath(), Qt::CaseInsensitive) == 0
+              && QDateTime::fromString(header.value(QStringLiteral("savedAt")).toString(), Qt::ISODateWithMs).isValid()
+              && header.value(QStringLiteral("sessionId")).toString() == window.sessionIdForTest()
+              && window.sessionIdForTest().size() == 36
+              && !header.value(QStringLiteral("buildStamp")).toString().isEmpty()
+              && header.value(QStringLiteral("editCount")).toInt() >= 1
+              && bytesOf(proj) == fileBefore && mtime(proj) == fileTimeBefore && stamps(assets) == assetsBefore,
+          QStringLiteral("wrote %1 files %2 copy images %3 parts %4 header [%5] file same %6 time same %7")
+              .arg(wrote).arg(window.lastRecoveryWrittenForTest().size()).arg(stamps(copyAssets).size())
+              .arg(parts(copyAssets)).arg(QString::fromUtf8(QJsonDocument(header).toJson(QJsonDocument::Compact)).left(160))
+              .arg(bytesOf(proj) == fileBefore).arg(mtime(proj) == fileTimeBefore));
+    check(QStringLiteral("(r1) THE WRITER'S PLACE: the copy's path is a safe target; the project file, "
+                         "a file in its assets folder, a manifest outside the recovery folder and a "
+                         "non-manifest inside it are refused"),
+          ProjectRecovery::isSafeTarget(proj, copy) && !ProjectRecovery::isSafeTarget(proj, proj)
+              && !ProjectRecovery::isSafeTarget(proj, assets + QStringLiteral("/p_x.png"))
+              && !ProjectRecovery::isSafeTarget(proj, dir + QStringLiteral("/elsewhere.sankotv"))
+              && !ProjectRecovery::isSafeTarget(proj, folder + QStringLiteral("/notes.txt")));
+    const QByteArray copyNorm = normalised(copyRoot);
+    save(proj);
+    const QString indicatorAfterSave = window.savedIndicatorForTest();
+    check(QStringLiteral("(r1) control: a Save changes the project file's bytes and time (the measure "
+                         "sees a write)"),
+          bytesOf(proj) != fileBefore && mtime(proj) != fileTimeBefore);
+    check(QStringLiteral("(r1) ...and the copy's manifest was the Save's, but for the header and the "
+                         "image folder's name"),
+          !copyNorm.isEmpty() && copyNorm == normalised(manifest(proj)),
+          QStringLiteral("%1 vs %2 bytes").arg(copyNorm.size()).arg(normalised(manifest(proj)).size()));
+    // --- (r5) a clean Save removes the copy --------------------------------------
+    check(QStringLiteral("(r5) A CLEAN SAVE REMOVES THE RECOVERY COPY, its manifest and images, keeps "
+                         "the lock (the project is still open) and clears the bottom bar's word"),
+          !ProjectRecovery::hasCopy(proj) && !QDir(copyAssets).exists() && ProjectRecovery::hasLock(proj)
+              && window.recoveryStatusForTest().isEmpty(),
+          QStringLiteral("copy %1 images %2 lock %3 status '%4'").arg(ProjectRecovery::hasCopy(proj))
+              .arg(QDir(copyAssets).exists()).arg(ProjectRecovery::hasLock(proj), 0).arg(window.recoveryStatusForTest()));
+    // --- (r7) the Script Editor's indicator --------------------------------------
+    check(QStringLiteral("(r7) THE SCRIPT EDITOR'S INDICATOR IS REAL: 'Saved' with the project saved, "
+                         "'Unsaved changes' after the stroke, 'Unsaved - recovery copy HH:MM' after "
+                         "the copy (the bottom bar says 'Recovery copy saved HH:MM'), 'Saved' after "
+                         "the Save"),
+          indicatorSaved == QStringLiteral("Saved") && indicatorDirty == QStringLiteral("Unsaved changes")
+              && indicatorCopied.startsWith(QStringLiteral("Unsaved")) && indicatorCopied.contains(QStringLiteral("recovery copy "))
+              && copyHHmm.size() == 5 && indicatorCopied.endsWith(copyHHmm)
+              && statusCopied == QStringLiteral("Recovery copy saved ") + copyHHmm
+              && indicatorAfterSave == QStringLiteral("Saved"),
+          QStringLiteral("'%1' / '%2' / '%3' / '%4' / '%5'").arg(indicatorSaved, indicatorDirty, indicatorCopied, statusCopied, indicatorAfterSave));
+
+    // --- (r8) the second copy rewrites only the changed layer ---------------------
+    // Panels are selected on the strip. A click on the timeline clip that is
+    // already selected can leave its paused preview over the canvas, and then
+    // the next press only returns to drawing (batch 1's rule): the stroke
+    // never lands, nothing is unsaved, and no copy is written - which is how
+    // the first draft of this check misread a copy that never ran.
+    clickThumb(r, 0);
+    paint();
+    const QString noteA = strokeNote;
+    const bool dirtyA = window.isDirty();
+    const bool wroteA = window.fireRecoveryTickForTest();
+    const int countA = window.lastRecoveryWrittenForTest().size();
+    const Stamps afterA = stamps(copyAssets);
+    clickThumb(r, 1);
+    paint();
+    const bool wroteB = window.fireRecoveryTickForTest();
+    const QStringList writtenB = bare(window.lastRecoveryWrittenForTest());
+    const QStringList touchedB = touched(afterA, copyAssets);
+    const Stamps afterB = stamps(copyAssets);
+    // Control: nothing changed since the second copy, so a third writes no image.
+    const bool wroteC = window.fireRecoveryTickForTest();
+    const int countC = window.lastRecoveryWrittenForTest().size();
+    const QStringList touchedC = touched(afterB, copyAssets);
+    QStringList expectedB{nameOf(1, 1), nameOf(1, -1)};
+    expectedB.sort();
+    check(QStringLiteral("(r8) THE SECOND COPY REWRITES ONLY THE CHANGED LAYER'S FILE AND ITS FLATTEN: "
+                         "the first copy after a Save wrote all 9, the second exactly panel 2's layer "
+                         "and flatten (the other 7 files' times unchanged), and no .part file is left"),
+          dirtyA && wroteA && countA == 9 && afterA.size() == 9 && wroteB && writtenB == expectedB
+              && touchedB == expectedB && parts(copyAssets) == 0,
+          QStringLiteral("dirty %1 first wrote %2 (%3 images, %4 on disk) second [%5] touched [%6]; %7")
+              .arg(dirtyA).arg(wroteA).arg(countA).arg(afterA.size())
+              .arg(writtenB.join(QLatin1Char(' ')), touchedB.join(QLatin1Char(' ')), noteA));
+    check(QStringLiteral("(r8) control: a third copy with nothing changed since the second writes its "
+                         "manifest and no image, and touches no image file"),
+          wroteC && countC == 0 && touchedC.isEmpty(),
+          QStringLiteral("wrote %1 images %2 touched [%3]").arg(wroteC).arg(countC)
+              .arg(touchedC.join(QLatin1Char(' '))));
+
+    // --- (r2) a writer that fails at the last step ---------------------------------
+    const QByteArray manifestBefore = bytesOf(copy);
+    const QStringList namedBefore = namesIn(manifest(copy));
+    window.setRecoveryFailAtManifestForTest(true);
+    clickThumb(r, 2);
+    paint();
+    const bool failed = !window.fireRecoveryTickForTest();
+    window.setRecoveryFailAtManifestForTest(false);
+    int present = 0;
+    for (const QString &n : namedBefore)
+        present += QFileInfo::exists(copyAssets + QStringLiteral("/") + n) ? 1 : 0;
+    ProjectIO::LoadedProject reloaded = ProjectIO::projectFromJson(manifest(copy), folder);
+    const bool loads = reloaded.scenes.size() == 1 && reloaded.scenes.at(0)->panels.size() == 3;
+    for (Scene *s : reloaded.scenes)
+        delete s;
+    check(QStringLiteral("(r2) A WRITER THAT FAILS AT THE LAST STEP LEAVES THE PREVIOUS COPY WHOLE: its "
+                         "manifest byte-identical, every file it names present, no .part left, and "
+                         "it loads with its 3 panels"),
+          failed && bytesOf(copy) == manifestBefore && present == namedBefore.size() && namedBefore.size() == 9
+              && parts(copyAssets) == 0 && loads,
+          QStringLiteral("failed %1 same %2 present %3 of %4 parts %5 loads %6").arg(failed)
+              .arg(bytesOf(copy) == manifestBefore).arg(present).arg(namedBefore.size()).arg(parts(copyAssets)).arg(loads));
+    check(QStringLiteral("(r2) control: with the step working again the next tick writes a new manifest"),
+          window.fireRecoveryTickForTest() && bytesOf(copy) != manifestBefore);
+
+    // --- (r6) nothing during a held stroke -----------------------------------------
+    DrawingCanvas *canvas = r.canvas;
+    const QTransform t = canvas->viewTransformForTest();
+    const bool freeBefore = !canvas->inputHeld();
+    clickThumb(r, 2);
+    const Stamps beforeHold = stamps(copyAssets);
+    const QByteArray manifestHold = bytesOf(copy);
+    sendMouse(canvas, QEvent::MouseButtonPress, t.map(QPointF(400, 300)), Qt::LeftButton);
+    for (int i = 1; i <= 6; ++i)
+        sendMouse(canvas, QEvent::MouseMove, t.map(QPointF(400 + i * 20, 300 + i * 12)), Qt::LeftButton);
+    pump(100);
+    const bool heldSeen = canvas->inputHeld();
+    const bool duringHold = window.fireRecoveryTickForTest();
+    const bool pending = window.recoveryPendingForTest();
+    const bool untouched = touched(beforeHold, copyAssets).isEmpty() && bytesOf(copy) == manifestHold;
+    sendMouse(canvas, QEvent::MouseButtonRelease, t.map(QPointF(520, 372)), Qt::LeftButton);
+    pump(700);
+    const bool freeAfter = !canvas->inputHeld();
+    const bool afterHold = window.fireRecoveryTickForTest();
+    check(QStringLiteral("(r6) NOTHING IS WRITTEN DURING A HELD STROKE: the canvas reports the hold, the "
+                         "tick writes nothing and waits; after the release the next tick writes the "
+                         "copy with the held stroke's pixels in panel 3's layer"),
+          freeBefore && heldSeen && !duringHold && pending && untouched && freeAfter && afterHold
+              && !window.recoveryPendingForTest() && bytesOf(copy) != manifestHold
+              && same(decoded(copyAssets + QStringLiteral("/") + nameOf(2, 1)), layerOf(2)),
+          QStringLiteral("free %1 held %2 during %3 pending %4 untouched %5 free after %6 after %7")
+              .arg(freeBefore).arg(heldSeen).arg(duringHold).arg(pending).arg(untouched).arg(freeAfter).arg(afterHold));
+
+    // --- (r3) the lock -------------------------------------------------------------
+    const QJsonObject lock = manifest(ProjectRecovery::lockPathFor(proj));
+    check(QStringLiteral("(r3) THE LOCK EXISTS WHILE THE PROJECT IS OPEN and names this process and "
+                         "session"),
+          ProjectRecovery::hasLock(proj)
+              && qint64(lock.value(QStringLiteral("pid")).toDouble()) == QCoreApplication::applicationPid()
+              && lock.value(QStringLiteral("sessionId")).toString() == window.sessionIdForTest());
+    save(proj); // removes the copy (r5)
+    window.closeProjectForTest();
+    pump(300);
+    check(QStringLiteral("(r3) ...and is gone after a clean close, with the recovery folder (nothing "
+                         "left in it)"),
+          !ProjectRecovery::hasLock(proj) && !QDir(folder).exists() && window.onDashboardForTest(),
+          QStringLiteral("lock %1 folder %2").arg(ProjectRecovery::hasLock(proj)).arg(QDir(folder).exists()));
+
+    // --- (r4) the crash ------------------------------------------------------------
+    // The copy a crash leaves: open, stroke, tick; then close without saving
+    // (a clean close takes the lock) and put the lock back by the real
+    // function, as a crash would have left it.
+    // The file's name for panel 1's layer is read while the project is open
+    // (the scenes are gone after the close), with what each step did.
+    QString crashNote;
+    auto makeCrashState = [&](QImage *copyPixels, QString *fileLayer) {
+        const bool loaded = window.loadProjectForTest(proj);
+        pump(400);
+        clickThumb(r, 0); // the strip, not the timeline (see (r8))
+        const qint64 keyBefore = layerOf(0).cacheKey();
+        const int undoBefore = window.undoStackForTest()->count();
+        paint();
+        const bool stroked = layerOf(0).cacheKey() != keyBefore;
+        const int undoAfter = window.undoStackForTest()->count();
+        const bool dirty = window.isDirty();
+        const bool held = r.canvas->inputHeld();
+        const bool busy = r.storyboard->actionInProgress();
+        const bool wrote = window.fireRecoveryTickForTest();
+        const bool copied = ProjectRecovery::hasCopy(proj);
+        if (copyPixels)
+            *copyPixels = layerOf(0).copy();
+        if (fileLayer)
+            *fileLayer = assets + QStringLiteral("/") + nameOf(0, 1);
+        window.markCleanForTest();
+        window.closeProjectForTest();
+        pump(200);
+        const bool keptAfterClose = ProjectRecovery::hasCopy(proj);
+        ProjectRecovery::writeLock(proj, QStringLiteral("crashed-session"), QStringLiteral("test"));
+        crashNote = QStringLiteral("loaded %1 dirty %2 held %3 busy %4 wrote %5 copy %6 kept after close %7 "
+                                   "lock %8 copy time %9 file time %10")
+                        .arg(loaded).arg(dirty).arg(held).arg(busy).arg(wrote).arg(copied).arg(keptAfterClose)
+                        .arg(ProjectRecovery::hasLock(proj))
+                        .arg(ProjectRecovery::copyTime(proj).toString(Qt::ISODateWithMs),
+                             mtime(proj).toString(Qt::ISODateWithMs))
+            + QStringLiteral("; stroked %1 undo %2 -> %3; %4").arg(stroked).arg(undoBefore).arg(undoAfter)
+                  .arg(strokeNote);
+    };
+    QImage copyPixels;
+    QString fileLayer;
+    makeCrashState(&copyPixels, &fileLayer);
+    const QImage filePixels = decoded(fileLayer);
+    check(QStringLiteral("(r4) control: the crash state - a lock and a copy newer than the project "
+                         "file - and the copy's panel 1 differs from the file's"),
+          ProjectRecovery::pendingFor(proj).crashed && !filePixels.isNull() && !same(filePixels, copyPixels),
+          crashNote);
+    // The Start window's badge.
+    auto *dash = window.findChild<DashboardPage *>();
+    RecentProjectsView *view = dash ? dash->recentsView() : nullptr;
+    int idx = -1, others = 0, badgedOthers = 0;
+    if (view) {
+        dash->reloadRecents();
+        for (int i = 0; i < view->count(); ++i) {
+            if (view->pathAt(i).compare(proj, Qt::CaseInsensitive) == 0)
+                idx = i;
+            else {
+                ++others;
+                badgedOthers += view->recoverAt(i) ? 1 : 0;
+            }
+        }
+    }
+    check(QStringLiteral("(r4) THE START WINDOW'S CARD WEARS THE RECOVER BADGE for that project and "
+                         "for no other"),
+          view && idx >= 0 && view->recoverAt(idx) && badgedOthers == 0,
+          QStringLiteral("index %1 others %2 badged %3").arg(idx).arg(others).arg(badgedOthers));
+    // Control: no lock -> no prompt, the file opens, the copy stays.
+    ProjectRecovery::removeLock(proj);
+    window.setRecoveryPromptForTest([] { return MainWindow::RecoveryAnswer::Cancel; });
+    window.openProjectForTest(proj);
+    pump(400);
+    check(QStringLiteral("(r4) control: with NO lock (a clean close) opening the project asks nothing "
+                         "and opens the file; the copy stays for the next clean Save"),
+          window.recoveryPromptCountForTest() == 0 && window.projectPathForTest() == proj && !window.isDirty()
+              && ProjectRecovery::hasCopy(proj) && same(layerOf(0), filePixels));
+    window.closeProjectForTest();
+    pump(200);
+    // Control: a copy OLDER than the file -> no prompt.
+    ProjectRecovery::writeLock(proj, QStringLiteral("crashed-session"), QStringLiteral("test"));
+    const QDateTime realTime = mtime(proj);
+    {
+        QFile f(proj);
+        if (f.open(QIODevice::ReadWrite))
+            f.setFileTime(QDateTime::currentDateTime().addSecs(3600), QFileDevice::FileModificationTime);
+    }
+    window.setRecoveryPromptForTest([] { return MainWindow::RecoveryAnswer::Cancel; });
+    window.openProjectForTest(proj);
+    pump(400);
+    check(QStringLiteral("(r4) control: a lock with a copy OLDER than the project file asks nothing "
+                         "(the file is the newer work) and opens the file"),
+          window.recoveryPromptCountForTest() == 0 && window.projectPathForTest() == proj);
+    window.closeProjectForTest();
+    pump(200);
+    {
+        QFile f(proj);
+        if (f.open(QIODevice::ReadWrite))
+            f.setFileTime(realTime, QFileDevice::FileModificationTime);
+    }
+    // THE PROMPT, 'Open the recovery copy'.
+    ProjectRecovery::writeLock(proj, QStringLiteral("crashed-session"), QStringLiteral("test"));
+    window.setRecoveryPromptForTest([] { return MainWindow::RecoveryAnswer::OpenCopy; });
+    window.openProjectForTest(proj);
+    pump(500);
+    check(QStringLiteral("(r4) A LOCK AND A NEWER COPY SHOW THE PROMPT; 'Open the recovery copy' loads "
+                         "the copy as 'Rec (recovered)': unsaved, no file of its own, from the "
+                         "project, 3 panels, panel 1's layer holding the stroke the copy saved and "
+                         "the file does not; the copy and the lock stay"),
+          window.recoveryPromptCountForTest() == 1 && window.windowTitle().contains(QStringLiteral("Rec (recovered)"))
+              && window.isDirty() && window.projectPathForTest().isEmpty() && window.recoveredFromForTest() == proj
+              && window.scenesForTest().size() == 1 && panelAt(0) && window.scenesForTest().at(0)->panels.size() == 3
+              && same(layerOf(0), copyPixels) && !same(layerOf(0), filePixels)
+              && ProjectRecovery::hasCopy(proj) && ProjectRecovery::hasLock(proj),
+          QStringLiteral("prompts %1 title '%2' dirty %3 path '%4' from '%5'").arg(window.recoveryPromptCountForTest())
+              .arg(window.windowTitle()).arg(window.isDirty()).arg(window.projectPathForTest(), window.recoveredFromForTest()));
+    // Its Save: File > Save goes through Save As, defaulting to the project.
+    // THE REPLACE QUESTION (2026-11-05): saving the recovered work over the
+    // project it came from asks first. Answered Cancel, nothing is written.
+    window.setSaveAsPathForTest([proj] { return proj; });
+    QAction *saveAct = nullptr;
+    for (QAction *a : window.findChildren<QAction *>())
+        if (a->text() == QLatin1String("Save Project"))
+            saveAct = a;
+    QStringList asked; // "<file name>|<original?>" per question
+    window.setReplacePromptForTest([&asked](const QString &path, bool original) {
+        asked << QStringLiteral("%1|%2").arg(QFileInfo(path).fileName()).arg(original);
+        return false;
+    });
+    const QByteArray fileBeforeReplace = bytesOf(proj);
+    const QDateTime timeBeforeReplace = mtime(proj);
+    const QByteArray copyBeforeReplace = bytesOf(copy);
+    if (saveAct)
+        saveAct->trigger();
+    pump(300);
+    check(QStringLiteral("(r4) SAVING THE RECOVERED WORK OVER THE ORIGINAL ASKS FIRST: one question, "
+                         "naming the project it was recovered from; answered Cancel, the project file "
+                         "keeps its bytes and time, the document stays 'Rec (recovered)', unsaved, with "
+                         "no file, and the copy and the lock stay"),
+          saveAct && asked == QStringList({QStringLiteral("Rec.sankotv|1")})
+              && bytesOf(proj) == fileBeforeReplace && mtime(proj) == timeBeforeReplace
+              && window.windowTitle().contains(QStringLiteral("Rec (recovered)")) && window.isDirty()
+              && window.projectPathForTest().isEmpty() && window.recoveredFromForTest() == proj
+              && bytesOf(copy) == copyBeforeReplace && ProjectRecovery::hasLock(proj),
+          QStringLiteral("asked [%1] file same %2 time same %3 title '%4' dirty %5 path '%6'")
+              .arg(asked.join(QLatin1Char(' '))).arg(bytesOf(proj) == fileBeforeReplace)
+              .arg(mtime(proj) == timeBeforeReplace).arg(window.windowTitle()).arg(window.isDirty())
+              .arg(window.projectPathForTest()));
+    // Answered Replace, the save goes ahead.
+    asked.clear();
+    window.setReplacePromptForTest([&asked](const QString &path, bool original) {
+        asked << QStringLiteral("%1|%2").arg(QFileInfo(path).fileName()).arg(original);
+        return true;
+    });
+    if (saveAct)
+        saveAct->trigger();
+    pump(300);
+    window.setSaveAsPathForTest({});
+    const QJsonObject lockAfter = manifest(ProjectRecovery::lockPathFor(proj));
+    check(QStringLiteral("(r4) ...answered Replace, its Save goes through Save As to the project and the "
+                         "saved file now holds the recovered stroke; the document is 'Rec' again, clean, "
+                         "with its file; the copy is gone (r5) and the lock is this session's"),
+          saveAct && asked == QStringList({QStringLiteral("Rec.sankotv|1")})
+              && window.projectPathForTest() == proj && !window.isDirty()
+              && !window.windowTitle().contains(QStringLiteral("(recovered)")) && window.recoveredFromForTest().isEmpty()
+              && same(decoded(assets + QStringLiteral("/") + nameOf(0, 1)), copyPixels)
+              && !ProjectRecovery::hasCopy(proj) && ProjectRecovery::hasLock(proj)
+              && lockAfter.value(QStringLiteral("sessionId")).toString() == window.sessionIdForTest(),
+          QStringLiteral("asked [%1] act %2 path '%3' dirty %4 title '%5' copy %6 lock %7")
+              .arg(asked.join(QLatin1Char(' '))).arg(saveAct != nullptr)
+              .arg(window.projectPathForTest()).arg(window.isDirty()).arg(window.windowTitle())
+              .arg(ProjectRecovery::hasCopy(proj)).arg(ProjectRecovery::hasLock(proj)));
+    // Controls: the question is the recovered document's, and only for a file
+    // that exists. Saved under a NEW name it asks nothing (the user's hand
+    // test, 2026-11-05); an ordinary project saved over an existing file
+    // asks nothing of SankoTV's either (the file dialog's own question
+    // stands for it, which the seam does not show).
+    window.closeProjectForTest();
+    pump(200);
+    makeCrashState(nullptr, nullptr);
+    window.setRecoveryPromptForTest([] { return MainWindow::RecoveryAnswer::OpenCopy; });
+    window.openProjectForTest(proj);
+    pump(500);
+    asked.clear();
+    const QString newName = dir + QStringLiteral("/RecNew.sankotv");
+    window.setSaveAsPathForTest([newName] { return newName; });
+    if (saveAct)
+        saveAct->trigger();
+    pump(300);
+    const int askedForNew = asked.size();
+    const bool savedNew = window.projectPathForTest() == newName && !window.isDirty() && QFileInfo::exists(newName);
+    window.setSaveAsPathForTest([newName] { return newName; }); // the open, ordinary project's own file
+    paint();
+    QAction *saveAsAct = nullptr;
+    for (QAction *a : window.findChildren<QAction *>())
+        if (a->text().startsWith(QLatin1String("Save Project As")))
+            saveAsAct = a;
+    if (saveAsAct)
+        saveAsAct->trigger();
+    pump(300);
+    window.setSaveAsPathForTest({});
+    window.setReplacePromptForTest({});
+    check(QStringLiteral("(r4) control: the recovered work saved under a NEW name asks nothing and saves "
+                         "there; an ordinary project's Save As over an existing file asks nothing of "
+                         "SankoTV's (the question is the recovered document's alone)"),
+          askedForNew == 0 && savedNew && saveAsAct && asked.isEmpty() && !window.isDirty()
+              && window.projectPathForTest() == newName,
+          QStringLiteral("asked for new %1 saved new %2 save-as act %3 asked after [%4] dirty %5")
+              .arg(askedForNew).arg(savedNew).arg(saveAsAct != nullptr)
+              .arg(asked.join(QLatin1Char(' '))).arg(window.isDirty()));
+    // 'Open the last saved version'.
+    window.closeProjectForTest();
+    pump(200);
+    QImage copyPixels2;
+    QString fileLayer2;
+    makeCrashState(&copyPixels2, &fileLayer2);
+    const QImage filePixels2 = decoded(fileLayer2);
+    window.setRecoveryPromptForTest([] { return MainWindow::RecoveryAnswer::OpenSaved; });
+    window.openProjectForTest(proj);
+    pump(500);
+    const bool openedSaved = window.recoveryPromptCountForTest() == 1 && window.projectPathForTest() == proj
+        && !window.isDirty() && window.recoveredFromForTest().isEmpty()
+        && same(layerOf(0), filePixels2) && !same(layerOf(0), copyPixels2) && ProjectRecovery::hasCopy(proj);
+    const int declined = window.discardRecoveryCopyForTest(false);
+    const bool stillThere = ProjectRecovery::hasCopy(proj);
+    const int discarded = window.discardRecoveryCopyForTest(true);
+    check(QStringLiteral("(r4) 'Open the last saved version' opens the file (its pixels, not the "
+                         "copy's), by its own name and file, and the copy stays; Discard Recovery "
+                         "Copy answered No keeps it, answered Yes removes it"),
+          openedSaved && declined == 0 && stillThere && discarded == 1 && !ProjectRecovery::hasCopy(proj),
+          QStringLiteral("opened %1 declined %2 still %3 discarded %4 copy %5").arg(openedSaved).arg(declined)
+              .arg(stillThere).arg(discarded).arg(ProjectRecovery::hasCopy(proj)));
+    // Cancel: nothing opens.
+    window.closeProjectForTest();
+    pump(200);
+    makeCrashState(nullptr, nullptr);
+    window.setRecoveryPromptForTest([] { return MainWindow::RecoveryAnswer::Cancel; });
+    window.openProjectForTest(proj);
+    pump(300);
+    check(QStringLiteral("(r4) Cancel opens nothing: the Start window stays, the copy and the lock "
+                         "stay for next time"),
+          window.recoveryPromptCountForTest() == 1 && window.onDashboardForTest() && ProjectRecovery::hasCopy(proj)
+              && ProjectRecovery::hasLock(proj));
+    window.setRecoveryPromptForTest({});
+    ProjectRecovery::discardCopy(proj);
+    ProjectRecovery::removeLock(proj);
+    window.markCleanForTest();
+}
+
 // ---- (n) STABLE IMAGE IDS (2026-11-04, batch 2 of the proposals) ---------------
 // A panel's files are named by its id, never its position: an insert, move
 // or delete changes the manifest and no file (n1); a project saved by
@@ -18101,6 +18682,7 @@ int main(int argc, char **argv)
     runStageClearPass(scratch);
     runCompactBarPass(scratch);
     runStableIdsPass(scratch);
+    runRecoveryPass(scratch);
 
     // ---- (aa) a test that cannot start says why and exits ----------------
     // An unattended gate must FAIL, not wait. Measured 2026-10-02: with its

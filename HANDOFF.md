@@ -1,5 +1,58 @@
 # SankoTV — Session Handoff Brief
 
+## STATUS 2026-11-05 (evening): ALL THREE APPROVED BATCHES COMMITTED.
+Batch 3 (auto-save and crash recovery) was hand-tested (no step
+failed), gained the replace question the proposal asked for (SankoTV
+asks before the recovered work replaces the original; checks in (r4)),
+passed the "rep" gate in Release and Debug, and was committed and
+pushed as one commit. Open for the user to decide, nothing started:
+(1) a recovery copy that writes every image holds the UI thread while
+its encoders run - 0.45 s on the 10-panel test project, ~2 s for a full
+4K copy - where the proposal said "off the UI thread"; (2) the test
+project _002 still holds a recovery copy and lock (its work was saved
+as _003), so its card wears RECOVER until it is discarded; (3) "Show
+both in the folder" is covered by no check. Details in the batch 3
+section. The note below (from 2026-11-04) is history.
+
+## WHERE I STOPPED (2026-11-04, evening; stopped on the user's word)
+
+DONE:
+- Batch 1 (playback: clear stage, compact bar, strip stepping aside):
+  committed ebf3fd6a4, pushed.
+- Batch 2 (stable image ids, n1-n7): hand test read (Dev Recorder
+  20261104-195025; steps 1, 3, 7 pass, 2 partial, 4-6 not tested and
+  gate-covered; no failures); committed 326f47f44, pushed; files match
+  sha_ids.txt; tree was clean after it.
+
+HALF-DONE - Batch 3 (auto-save and crash recovery, r1-r8, every 2 min):
+- Built; NOT committed. 15 changed files + new src/ProjectRecovery.{h,cpp}
+  (see "Batch 3: auto-save and crash recovery" below for the design).
+- Quick check GREEN (quick_rec9_*): Lifecycle 1129 / 0 failures (all 26
+  (r) checks), Camera 238 PASS, CanvasSizeLock 170 / 0.
+- Full gate "rec" was STOPPED part-way on the user's word: Release
+  complete with 0 failing families (Lifecycle 1129, Camera 238, the rest
+  as before; exe 22:30:26); Debug ran to SankoCanvasBrushLock, all
+  passing, and was stopped during Debug SankoProjectLifecycle - Debug
+  Lifecycle and Debug Camera never ran. That is NOT a gate; rerun it.
+- Not written yet: the GATE line in the batch 3 section ("GATE rec: [to
+  fill]"), sha_recovery.txt, the final line-ending / diff-stat checks.
+- Ready: hand-test list Documents\SankoTV-Design\camera\
+  handtest_recovery.md; commit message app/build/_probe/split/
+  msg_recovery.txt.
+- Exe now: SankoGitHead 326f47f44+dirty, Release SankoTV.exe
+  2026-11-04 22:30:26 (batch 3 code, as gated in Release).
+
+EXACT NEXT STEP for tomorrow:
+  cd /c/SankoTV && bash app/tools/fullgate.sh rec
+  (serial rerun only if something fails in normal mode only). Then fill
+  "GATE rec" in the batch 3 section (counts, pins vs the ids gate, exe
+  stamp), hash the 17 batch files to app/build/_probe/split/
+  sha_recovery.txt, check `git diff --stat` == `--ignore-cr-at-eol
+  --stat` and CR counts (LF: HANDOFF.md, MainWindow.h,
+  ScriptEditorPage.{h,cpp}; new ProjectRecovery.* CRLF), and give the
+  user the exe stamp and handtest_recovery.md. Do NOT commit batch 3
+  until the user says so after the hand test.
+
 Paste this into a new chat to continue without losing context.
 
 ## Project
@@ -9734,6 +9787,291 @@ encoded (not renamed) at migration - the layers, which are what the
 artist drew, are renamed; HANDOFF's batch 1 heading and its "NOT
 COMMITTED" line were stale (the section's end said COMMITTED) and are
 corrected in this batch.
+
+## Batch 3: auto-save and crash recovery (2026-11-04) - BUILT AND COMMITTED (2026-11-05)
+Proposal 4 of proposals-2026-11-02.md, approved "as proposed" (r1-r8,
+every 2 minutes by default). THE DEFECT: the project was written by
+Save alone - no timer, no recovery copy; a crash lost everything since
+the last Ctrl+S, and the Script Editor's "Saved" dot was a label.
+BUILT: src/ProjectRecovery.{h,cpp} (new, CRLF; namespace
+ProjectRecovery, no widgets): folderFor "<dir>/<base>.recovery",
+copyPathFor "<folder>/<base>.recovery.sankotv", lockPathFor
+"<folder>/session.lock"; isSafeTarget(project, target) - only a
+manifest inside the project's recovery folder, never the project file,
+never inside its assets folder (ProjectIO::assetSubdirFor), never
+elsewhere; writeLock (JSON: pid, sessionId, build, openedAt, project;
+QSaveFile) / removeLock (and the folder when empty) / hasLock; hasCopy,
+copyTime (the header's savedAt, else the file time), discardCopy (the
+manifest and its images folder; the lock stays), pendingFor (lock AND
+copy newer than the project file = crashed). MainWindow: m_sessionId
+(a UUID per process), m_recoveryLedger (the copy's own ImageLedger, so
+an unchanged layer is not re-encoded), m_recoveryTimer (minutes *
+60000, armed while a project - or the project a recovered document came
+from - is open and minutes > 0), m_recoveryRetry (250 ms while a tick
+waits for a held action); the setting "recovery/minutes" (default 2,
+0-10; Preferences > Recovery, QSpinBox prefsRecoveryMinutes, 0 shows
+"never"). onRecoveryTick: nothing unless dirty, on, and a project;
+actionInProgress() (m_exporting, or StoryboardPage::actionInProgress:
+DrawingCanvas::inputHeld - hasActiveEdit + a camera, selection or
+outline drag, a pan, a floating-bar drag, a paint commit in flight -,
+the strip's panel drag, AnimaticTimeline::dragInProgress, the film
+playing) -> pending + retry; else writeRecoveryCopy: isSafeTarget
+checked, ensureBrushPixelsForSave (no commitQuickShape: a held shape
+is a hold), SaveData as a Save's but ledger = the recovery ledger,
+atomicImages = true (ImageSaver writes "<name>.part" and renames over
+the name; SaveData::atomicImages, off for a Save), audio written as a
+LINKED reference to the project's file (never copied); then
+root["recovery"] = {savedFrom, savedAt (ISO ms), sessionId, buildStamp
+(SANKOTV_GIT_HEAD), editCount (the undo index)} and the manifest
+through QSaveFile (the seam m_recoveryFailAtManifestForTest cancels
+it). After: the bottom bar's dimmed label "Recovery copy saved HH:MM"
+(StoryboardPage::setRecoveryStatus, objectName recoveryStatus), the
+Script Editor's indicator (ScriptEditorPage::setSavedState: "Saved" /
+"Unsaved changes" / "Unsaved - recovery copy HH:MM", the dot lit when
+unsaved; the typing flash settles back to it), the recorder event
+recoverySaved {ms, bytes, files} when recording. The lock: written on
+load, on New Project's create and in markSavedTo; removed by
+resetProjectState (New / Open / Close), by closeEvent once accepted, and
+for the previous path by a Save As elsewhere. A clean Save
+(markSavedTo) discards the copy (r5). openProject (File > Open, Open
+Recent, the Start window): pendingFor(path).crashed -> askRecovery
+(QMessageBox: Open the recovery copy / Open the last saved version /
+Show both in the folder / Cancel; the hook m_recoveryPromptForTest
+answers it in the gate): the copy opens through loadFromPath(copy,
+asRecoveryCopy = true) - not recorded in the recents, then
+m_currentProjectPath cleared, m_recoveredFrom = the project, the audio
+reference made the original's own when inside its assets folder,
+markDirty, title "X (recovered)"; its Save goes through Save As
+defaulting to m_recoveredFrom, and over an existing file SankoTV asks
+first (confirmReplaceForRecovered, added 2026-11-05 - see "THE REPLACE
+QUESTION" at the end of this section); "Open the last saved" loads the file and
+leaves the copy for the next clean Save; "Show both" opens the folder
+(QDesktopServices) and opens nothing. File > "Discard Recovery Copy"
+(objectName fileDiscardRecovery, enabled with a copy present; asks).
+RecentProjectsView: Item.recover (pendingFor at reload), a "RECOVER"
+pill at the thumbnail's top-right on cards and rows, recoverAt(i).
+SEAMS: setRecoveryMinutesForTest, recoveryMinutesForTest,
+recoveryTimerIntervalForTest, fireRecoveryTickForTest,
+recoveryPendingForTest, lastRecoveryWrittenForTest,
+lastRecoveryAtForTest, setRecoveryFailAtManifestForTest,
+setRecoveryPromptForTest / recoveryPromptCountForTest,
+openProjectForTest (the real openProject), recoveredFromForTest,
+savedIndicatorForTest, recoveryStatusForTest,
+discardRecoveryCopyForTest, sessionIdForTest; DrawingCanvas::inputHeld,
+AnimaticTimeline::dragInProgress, StoryboardPage::actionInProgress.
+DEVIATIONS FROM THE PROPOSAL'S WORDING (same behaviour): the copy's
+images folder is "<base>.recovery_assets/" (ProjectIO's naming for the
+copy's manifest), not "recovery_assets/"; the film playing counts as an
+action in progress (a copy mid-
+playback would stall the picture); the audio track is a reference, not
+a copy. NOT GATE-COVERED: the recoverySaved recorder event (no
+recorder in the families); the 250 ms retry (the gate ticks by hand).
+CHECKS (Lifecycle (r), each with its control): the default 2 minutes
+and the timer at 120000 ms, 0 disarming it; a tick on a saved project
+writes nothing; r1 a dirty project's tick writes the copy (9 images,
+the header's five fields, no .part left) with the project file's
+bytes, time and images untouched, the writer's refusals (the project
+file, its assets folder, a manifest elsewhere, a non-manifest in the
+folder), a Save changing the file as the control, and the copy's
+manifest equal to the Save's but for the header and the folder name;
+r5 the Save removing the copy and its images, keeping the lock; r7 the
+indicator's four readings and the bottom bar's word; r8 the first copy
+after a Save writing 9, the second exactly the stroked layer and its
+flatten; r2 the manifest step made to fail leaving the previous
+manifest byte-identical, its files present, loadable, then working
+again; r6 a held stroke (press and moves, no release): inputHeld true,
+the tick writing nothing and pending, the release and the next tick
+writing the stroke's pixels; r3 the lock naming this pid and session,
+gone with the folder after a clean close; r4 the crash state (lock +
+newer copy) with the Start window's badge on that card alone, no
+prompt without the lock, no prompt with the copy older than the file
+(the file's time moved by setFileTime, restored), Open the recovery
+copy ("Rec (recovered)", dirty, no path, the copy's pixels) and its
+Save through File > Save -> Save As to the project (the saved file
+holds the stroke, the copy gone, the lock this session's), Open the
+last saved (the file's pixels, the copy kept; Discard No keeps it, Yes
+removes it), Cancel (nothing opens, both stay).
+QUICK RUNS (all the failures were the new pass's own harness; the
+recovery code was changed only by removing the diagnosis seam it
+gained in between): run 1, Lifecycle 1128 checks, 8 failures, all in
+(r). (r7) compared the indicator with lastRecoveryAtForTest() AFTER the
+Save had cleared it - now the HH:MM is captured with the indicator.
+(r4) read the file's layer through the scenes after the project was
+closed (an empty vector) - now the name is taken while it is open.
+(r8) and the rest of (r4): the strokes before the first copy and in
+the crash state never landed, so no copy was made - the written list
+and its count were left over from (r1)'s copy, and a copy after a Save
+writing all 9 looked like a ledger that skipped nothing. Diagnosed
+with temporary probes (a ledger read-out seam, the disk read right
+after the copy, a stroke report, a stroke probe run alone): the
+ledger and the copy were sound (a third tick with nothing changed
+skipped all 9 - kept as (r8)'s control); on this disk a deleted and
+recreated folder keeps its files (PowerShell, ruled out); a second
+stroke on the same layer lands after nothing, a wait, a Save, a
+recovery copy, the save-time sync, a reselect or a switch (the probe
+alone: all 7 landed); the (r) pass ALONE passed all 26 checks. In the
+full family the same stroke inked 1296 px instead of 17309: the
+working brush lives in the (scratch) settings and the passes before
+(r) leave a faint one, with which a later stroke may change no pixel
+- no undo step, nothing unsaved, no copy due. Two changes made on
+theories that turned out wrong are KEPT, being harmless and making the
+pass less sensitive: panels are selected on the strip instead of the
+timeline, and each stroke runs on its own row, 65 px apart. FIX: (r)
+sets a known brush first (the
+default ::Brush at 24 px, the Brush tool). The probes are removed
+(ProjectIO::ImageLedger::describe, MainWindow::
+recoveryLedgerEntryForTest, runStrokeProbe and its environment
+switch); (r)'s detail strings keep the crash state's account and the
+last stroke's report. Final quick run (quick_rec9_*): Lifecycle 1129
+checks, 0 failures, 511 s (the 26 (r) checks; (r8) 9 then exactly the
+stroked layer and flatten; the crash state copy 22:25:47.221 vs file
+22:25:45.329); Camera 238 PASS lines, exit 0; CanvasSizeLock 170, 0
+failures. ScriptEditorPage.{h,cpp} are LF files (LF in HEAD, kept LF).
+GATE rec, FIRST RUN (2026-11-04): stopped part-way on the user's word -
+Release complete and green, Debug stopped during Lifecycle. Not a gate;
+discarded and rerun from the start.
+GATE rec (fullgate_rec.log, 2026-11-05, normal mode, 2198 s): clean
+Release and Debug builds (0 errors), 0 failing families in both;
+Lifecycle 1129 (the 26 (r) checks), Camera 238, CanvasSizeLock 170,
+CanvasEdgeLock 74, BrushLibrary 187, DevRecorder 46, QuickShapeGeometry
+19, PaintPixel 13, CanvasBrush 3; every pin line count equal to the ids
+gate's in both configs (Camera c1p 17, mp 43, mq 44, rp 3; Lifecycle rp
+5, strip mp 3 / mq 5); the row pins CAMERA bd989a38, AUDIO none
+a4994d62, AUDIO bar a3e7f938 reproduced in both; the evaluate pins
+e43a30f9fcc11db6 / 7bd38237a37a7579 in camera_test.txt (RESULT PASS
+checks=238). Exe stamp 326f47f44+dirty, Release SankoTV.exe 2026-11-05
+16:55:32 (Debug 16:57:34). The two diff stats agree (15 changed files
+plus the 2 new ones); every file wholly CRLF or wholly LF as before, LF
+in the index.
+THE HAND TEST (read 2026-11-05; the user did steps 1, 2, 4, 6, 7, 10 on
+Test_SB_audioWave_002 in Downloads\SankoTV_Save _test_Files\
+Test_SB_010\Test_SB_audioWave_001\; Release built 16:55:15). Three Dev
+Recorder sessions: 20261105-174230 (158 s), 20261105-174539 (471 s),
+20261105-175345 (26 s). The first two end with no sessionEnd and no
+summary: Task Manager's End task first asked the window to close
+("Save changes ... before exiting?" at 157.7 s and 471.2 s), then ended
+the process - the user's intended crash, twice (the second made the
+17:52 copy step 7 used).
+1 PASS (indirect): the lock written on open is what made session 2's
+prompt possible (pendingFor needs it); the lock on disk now
+(openedAt 17:46:20.856, pid 44924) is session 2's, rewritten by its
+save. The Script Editor's "Saved" not looked at (no click on it) - r7.
+2 PASS: session 1 opened _002 from its card (0.7 s), added Layer 2
+(52.0 s) and drew a circle; recoverySaved at 121.3 s (415 ms, 31
+files, 1.49 MB); the 122.0 s screenshot shows "Recovery copy saved
+17:44" dimmed at the bottom bar's right, the title "_002*"; no image
+in _002_assets carries a copy's time (29 still 2026-11-02, the other 2
+written by the Ctrl+S at 17:46). The Script Editor part not looked at
+- r7. FINDING (not a failure of the step as experienced - the app was
+idle): the copy held the UI thread - perf gap 451 ms at 122.0 s, and
+445 ms at 282.0 s in session 2 (31 files again), each the worst stall
+of its session; a copy with nothing changed took 18 ms (401.4 s, 0
+files). The proposal said the copy runs "off the UI thread, and the
+UI-thread stall stays under the recorder's threshold": the encoders do
+run on worker threads, but the UI thread waits for them; the recorder
+has no fixed stall threshold. A full 4K copy (the first after an open
+or a save) would hold the UI for about the length of a full 4K save,
+~2 s. NOT changed in this batch; reported to the user to decide.
+3 NOT TESTED - r6 (nothing written during a held stroke, then written).
+4 PASS: session 2's Ctrl+S at 37.1 s removed the 17:44 copy - its
+images folder was deleted and re-created by the next copy (the folder
+dated 17:50:21; that copy wrote all 31), and at 38.0 s the bottom bar
+shows no word and the title is clean.
+5 NOT TESTED - the (r) control (2 minutes by default, the timer at
+120000 ms, 0 disarms it) and (r1)'s control (0 writes nothing); the
+Preferences page itself and the setting surviving a relaunch are
+covered by no check.
+6 PASS: session 2's Start window (0.5 s) shows RECOVER on
+Test_SB_audioWave_002's card and no other; the click (0.8 s) raised
+"SankoTV closed without saving 'Test_SB_audioWave_002'. A recovery copy
+from 17:44 (22 hours after your last save) is available." with Open the
+recovery copy / Open the last saved version / Show both in the folder /
+Cancel.
+7 PASS for what was done: session 3's prompt ("copy from 17:52 (6
+minutes after your last save)") -> Open the recovery copy (2.3 s); the
+title "Test_SB_audioWave_002 (recovered)*" with Layer 2 and the circle
+the saved file lacks (10.5 s); Ctrl+S (11.2 s) opened Save Project As;
+saved under a NEW name, Test_SB_audioWave_003 (title clean at 19.6 s;
+003.sankotv and 32 files at 17:54:04). NOT TESTED: saving over the
+original, so the replace question was never reached - see THE REPLACE
+QUESTION below. OBSERVATION: _002 still holds the 17:52 copy and
+session 2's lock, so its card still wears RECOVER and opening it offers
+that copy again (its work is now in _003). That is the proposal's rule
+- a copy goes only with a save over the original or Discard; to clear
+it: open _002, "Open the last saved version", File > Discard Recovery
+Copy.
+8 not in the user's list, but exercised: session 2 chose "Open the last
+saved version" (22.3 s); the file opened as saved (Layer 1 only); the
+copy stayed until the Ctrl+S at 37.1 s removed it; Discard not tried -
+r4.
+9 NOT TESTED, and NO check covers "Show both in the folder" (r4 covers
+Open the copy, Open the last saved and Cancel).
+10 PASS: session 3 closed with the window's X at 25.96 s, the project
+clean so no prompt; sessionEnd 25.98 s, summary.txt complete, 0 issue
+markers, 0 warnings, 39 screenshots; no Test_SB_audioWave_003.recovery
+folder left (the lock and its empty folder removed). Its worst stall,
+558 ms at 20.0 s, is the Save As writing 32 files and copying the
+audio, not a recovery copy.
+No step failed.
+THE REPLACE QUESTION (2026-11-05, the user's check against the
+proposal: "its Save asks where (Save As, defaulting to the original
+path with a plain confirmation that it replaces the saved version)").
+FOUND: SankoTV did not ask. The only question was Windows' generic
+"already exists" inside the native file dialog: not the plain
+confirmation the proposal names, unreachable by the gate (the Save As
+seam never shows the dialog), and asked about the name as typed,
+before SankoTV appends ".sankotv". BUILT: MainWindow::
+confirmReplaceForRecovered(path) - for a recovered document only, after
+the final path is known and only when that file exists: "Replace the
+saved version of 'X' with the recovered work?" (informative: the date
+of the version replaced, "This cannot be undone."; for another existing
+file "'Y' already exists. Replace it with the recovered work?"),
+buttons Replace / Cancel, Cancel the default; Cancel returns before
+anything is written. For a recovered document the file dialog's own
+question is turned off (QFileDialog::DontConfirmOverwrite), so it is
+asked once. The unsaved-changes prompt's Save goes through the same
+Save As, so a Cancel there cancels the close too. Seam
+setReplacePromptForTest(fn(path, isOriginal)) /
+replacePromptCountForTest. CHECKS (Lifecycle (r4)): NEW "SAVING THE
+RECOVERED WORK OVER THE ORIGINAL ASKS FIRST" - one question naming
+Rec.sankotv as the original; answered Cancel the project file keeps its
+bytes and time, the document stays "Rec (recovered)", unsaved, with no
+file, the copy and lock unchanged. CHANGED (old/new verbatim): OLD label
+"(r4) ...its Save goes through Save As to the project and the saved
+file now holds the recovered stroke; the document is 'Rec' again,
+clean, with its file; the copy is gone (r5) and the lock is this
+session's", condition beginning `saveAct && window.projectPathForTest()
+== proj && !window.isDirty()`; NEW label "(r4) ...answered Replace, its
+Save goes through Save As to the project and the saved file now holds
+the recovered stroke; ..." (the rest unchanged), condition beginning
+`saveAct && asked == QStringList({QStringLiteral("Rec.sankotv|1")}) &&
+window.projectPathForTest() == proj && ...` - one question again, then
+the same assertions. The pair is each other's positive control: the
+same measure reads "not written" after Cancel and "written" after
+Replace. NEW CONTROL "the recovered work saved under a NEW name asks
+nothing and saves there; an ordinary project's Save As over an existing
+file asks nothing of SankoTV's" - the hand test's _003 case, and the
+question shown to be the recovered document's alone.
+QUICK RUN (replace question, quick_rep1_lifecycle.log): Lifecycle 1131
+checks, 0 failures, 514 s - the 28 (r) checks, among them the two
+replace checks and their control.
+GATE rep (fullgate_rep.log, 2026-11-05, normal mode, 1920 s; with the
+replace question): clean Release and Debug builds (0 errors), 0 failing
+families in both; Lifecycle 1131 (the 28 (r) checks), Camera 238,
+CanvasSizeLock 170, CanvasEdgeLock 74, BrushLibrary 187, DevRecorder 46,
+QuickShapeGeometry 19, PaintPixel 13, CanvasBrush 3; every pin line
+count equal to the rec gate's in both configs (Camera c1p 17, mp 43, mq
+44, rp 3; Lifecycle rp 5, strip mp 3 / mq 5); the row pins bd989a38 /
+a4994d62 / a3e7f938 reproduced in both; the evaluate pins
+e43a30f9fcc11db6 / 7bd38237a37a7579 in camera_test.txt (RESULT PASS
+checks=238). Exe stamp 326f47f44+dirty, Release SankoTV.exe 2026-11-05
+18:12:10 (Debug 18:14:07).
+COMMITTED on the user's word (2026-11-05: "If nothing failed, commit
+and push batch 3 as one commit") as ONE commit on master, pushed; the
+files confirmed against sha_recovery.txt (refreshed after this record)
+after the commit; the commit message in msg_recovery.txt. OPEN for the
+user: the copy's UI-thread stall (step 2's finding), _002's leftover
+copy (step 7's observation), and step 9 having no check.
 
 ## METHOD: measure interior structure ACROSS THE SIZE RANGE before calling it character (2026-09-25)
 

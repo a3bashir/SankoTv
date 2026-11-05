@@ -221,15 +221,13 @@ QWidget *ScriptEditorPage::createWritingPanel()
         "}"));
     layout->addWidget(m_editor, 1);
 
-    // Simple autosave simulation: while typing show "Saving…", settle to "Saved".
+    // While typing the indicator flashes "Saving…" and settles back to what
+    // the window last set (setSavedState: the project's real saved state
+    // and its recovery copy, 2026-11-04).
     m_savedTimer = new QTimer(this);
     m_savedTimer->setSingleShot(true);
     m_savedTimer->setInterval(800);
-    connect(m_savedTimer, &QTimer::timeout, this, [this] {
-        m_savedDot->setStyleSheet(QStringLiteral("background-color: #666666; border-radius: 4px;"));
-        m_savedText->setText(QStringLiteral("Saved"));
-        m_savedText->setStyleSheet(QStringLiteral("color: #666666; font-size: 12px;"));
-    });
+    connect(m_savedTimer, &QTimer::timeout, this, &ScriptEditorPage::applyRestingSavedState);
     connect(m_editor, &CodeEditor::textChanged, this, [this] {
         m_savedDot->setStyleSheet(SankoTheme::themed("background-color: %ACCENT%; border-radius: 4px;"));
         m_savedText->setText(QStringLiteral("Saving\xE2\x80\xA6"));
@@ -238,6 +236,33 @@ QWidget *ScriptEditorPage::createWritingPanel()
     });
 
     return panel;
+}
+
+void ScriptEditorPage::setSavedState(const QString &text, bool lit)
+{
+    m_restingText = text;
+    m_restingLit = lit;
+    if (m_savedTimer && m_savedTimer->isActive())
+        return; // the typing flash settles to it
+    applyRestingSavedState();
+}
+
+void ScriptEditorPage::applyRestingSavedState()
+{
+    if (!m_savedDot || !m_savedText)
+        return;
+    m_savedDot->setStyleSheet(
+        m_restingLit ? SankoTheme::themed("background-color: %ACCENT%; border-radius: 4px;")
+                     : QStringLiteral("background-color: #666666; border-radius: 4px;"));
+    m_savedText->setText(m_restingText);
+    m_savedText->setStyleSheet(m_restingLit
+                                   ? QStringLiteral("color: #999999; font-size: 12px;")
+                                   : QStringLiteral("color: #666666; font-size: 12px;"));
+}
+
+QString ScriptEditorPage::savedStateForTest() const
+{
+    return m_savedText ? m_savedText->text() : QString();
 }
 
 QWidget *ScriptEditorPage::createBreakdownPanel()

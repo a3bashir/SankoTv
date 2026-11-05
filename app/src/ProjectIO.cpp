@@ -229,8 +229,8 @@ public:
     // rename from; `keep`: every image name this save uses, relative to
     // `folder` - the files adopt() must leave where they are.
     ImageSaver(const QString &folder, const QString &assets, ImageLedger *ledger,
-               WriteResult *res, const QStringList &keep)
-        : m_folder(folder), m_assets(assets), m_ledger(ledger), m_res(res)
+               WriteResult *res, const QStringList &keep, bool atomic)
+        : m_folder(folder), m_assets(assets), m_ledger(ledger), m_res(res), m_atomic(atomic)
     {
         for (const QString &name : keep)
             m_keep.insert(QDir::cleanPath(QFileInfo(folder + QStringLiteral("/") + name)
@@ -356,10 +356,20 @@ private:
         const int order = m_next++;
         const QString full = m_folder + QStringLiteral("/") + relName;
         m_slots.acquire(); // bounds the images waiting to be encoded
-        m_pool.start([this, order, full, image, content] {
+        const bool atomic = m_atomic;
+        m_pool.start([this, order, full, image, content, atomic] {
             Done d{order, full, content, false, QThread::currentThreadId()};
             if (!m_failed.load()) {
-                d.ok = image.save(full, "PNG");
+                // The recovery copy's images land whole or not at all: encoded
+                // to "<name>.part", then renamed over the name.
+                const QString target = atomic ? full + QStringLiteral(".part") : full;
+                d.ok = image.save(target, "PNG");
+                if (d.ok && atomic) {
+                    QFile::remove(full);
+                    d.ok = QFile::rename(target, full);
+                    if (!d.ok)
+                        QFile::remove(target);
+                }
                 if (!d.ok)
                     m_failed.store(true);
                 QMutexLocker lock(&m_mutex);
@@ -373,6 +383,7 @@ private:
     const QString m_assets;
     ImageLedger *const m_ledger;
     WriteResult *const m_res;
+    const bool m_atomic;  // ".part" then rename (the recovery copy)
     QSet<QString> m_keep; // lower-cased absolute paths
     int m_next = 0;
     std::atomic<bool> m_failed{false};
@@ -468,7 +479,7 @@ WriteResult projectToJson(const SaveData &data, const QString &projectFilePath,
         for (const QString &layerName : n.layers)
             keep << rel + layerName;
     }
-    ImageSaver saver(folder, assetsPath, data.ledger, &res, keep);
+    ImageSaver saver(folder, assetsPath, data.ledger, &res, keep, data.atomicImages);
     int named = 0;
 
     QJsonArray scenesArray;

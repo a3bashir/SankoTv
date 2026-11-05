@@ -83,6 +83,13 @@ this fence."
 #include <QUuid>
 #include <QVBoxLayout>
 #include <Qt>
+#include <QDesktopServices>
+#include <QElapsedTimer>
+#include <QSpinBox>
+#include <QUrl>
+
+#include "ProjectMedia.h"    // isInAssets: a recovered document's audio
+#include "ProjectRecovery.h" // auto-save and crash recovery (2026-11-04)
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent), m_imageLedger(std::make_unique<ProjectIO::ImageLedger>())
@@ -249,6 +256,25 @@ MainWindow::MainWindow(QWidget *parent)
     updateSaveActions();
     updateTitle();
 
+    // AUTO-SAVE AND CRASH RECOVERY (2026-11-04): a recovery copy every N
+    // minutes while the project has unsaved changes, between actions; a
+    // tick that finds the artist holding something retries every 250 ms
+    // until the hold ends.
+    m_sessionId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    m_recoveryLedger = std::make_unique<ProjectIO::ImageLedger>();
+    m_recoveryTimer = new QTimer(this);
+    connect(m_recoveryTimer, &QTimer::timeout, this, [this] { onRecoveryTick(); });
+    m_recoveryRetry = new QTimer(this);
+    m_recoveryRetry->setInterval(250);
+    connect(m_recoveryRetry, &QTimer::timeout, this, [this] {
+        if (!m_recoveryPending)
+            m_recoveryRetry->stop();
+        else if (!actionInProgress())
+            onRecoveryTick();
+    });
+    m_recoveryMinutes =
+        qBound(0, sankoSettings().value(QStringLiteral("recovery/minutes"), 2).toInt(), 10);
+    updateSavedIndicator();
 
 #ifdef SANKOTV_DEV_RECORDER
     // TEMP developer recorder — remove with app/src/devrecorder/ and the
@@ -522,6 +548,11 @@ void MainWindow::setupMenuBar()
     m_cleanUpAct = fileMenu->addAction(QStringLiteral("Clean Up Project Folder..."));
     m_cleanUpAct->setObjectName(QStringLiteral("fileCleanUp"));
     connect(m_cleanUpAct, &QAction::triggered, this, &MainWindow::onCleanUpProjectFolder);
+    // DISCARD RECOVERY COPY (2026-11-04): the copy left for the open project,
+    // removed on the artist's word (a clean Save removes it too).
+    m_discardRecoveryAct = fileMenu->addAction(QStringLiteral("Discard Recovery Copy"));
+    m_discardRecoveryAct->setObjectName(QStringLiteral("fileDiscardRecovery"));
+    connect(m_discardRecoveryAct, &QAction::triggered, this, &MainWindow::onDiscardRecoveryCopy);
 
     // EXPORT: the film, the panels, the board. This is where the old
     // Animatic screen's "Export MP4" button went (it sat in the workspace's
@@ -687,6 +718,7 @@ void MainWindow::onPreferences()
     categories->setFixedWidth(130);
     categories->addItem(QStringLiteral("Camera"));
     categories->addItem(QStringLiteral("Playback"));
+    categories->addItem(QStringLiteral("Recovery"));
     categories->setCurrentRow(0);
     split->addWidget(categories);
 
@@ -770,7 +802,332 @@ void MainWindow::onPreferences()
     playbackLayout->addLayout(playbackButtons);
     pages->addWidget(playbackPage);
 
+    // --- Recovery page (2026-11-04) ------------------------------------------
+    // How often the recovery copy is written; 0 turns it off.
+    QWidget *recoveryPage = new QWidget;
+    QVBoxLayout *recoveryLayout = new QVBoxLayout(recoveryPage);
+    recoveryLayout->setContentsMargins(16, 16, 16, 12);
+    recoveryLayout->setSpacing(6);
+    QHBoxLayout *minutesRow = new QHBoxLayout;
+    minutesRow->addWidget(new QLabel(QStringLiteral("Write a recovery copy every")));
+    QSpinBox *minutes = new QSpinBox;
+    minutes->setObjectName(QStringLiteral("prefsRecoveryMinutes"));
+    minutes->setRange(0, 10);
+    minutes->setValue(m_recoveryMinutes);
+    minutes->setSpecialValueText(QStringLiteral("never"));
+    minutes->setStyleSheet(QStringLiteral(
+        "QSpinBox { background-color: #1c1c1c; color: #cccccc; border: 1px solid #2a2a2a;"
+        " border-radius: 4px; padding: 2px 6px; font-size: 11px; }"));
+    connect(minutes, &QSpinBox::valueChanged, this, [this](int v) { setRecoveryMinutes(v); });
+    minutesRow->addWidget(minutes);
+    minutesRow->addWidget(new QLabel(QStringLiteral("minutes while the project has unsaved changes")));
+    minutesRow->addStretch(1);
+    recoveryLayout->addLayout(minutesRow);
+    QLabel *recoveryNote = new QLabel(QStringLiteral(
+        "The copy is written beside the project in its own folder, never over the project "
+        "file, and only between actions. If SankoTV closes without saving, the next open of "
+        "the project offers the copy. A Save removes it."));
+    recoveryNote->setWordWrap(true);
+    recoveryLayout->addWidget(recoveryNote);
+    recoveryLayout->addStretch(1);
+    QHBoxLayout *recoveryButtons = new QHBoxLayout;
+    recoveryButtons->addStretch(1);
+    QPushButton *closeRecovery = new QPushButton(QStringLiteral("Close"));
+    connect(closeRecovery, &QPushButton::clicked, &dialog, &QDialog::accept);
+    recoveryButtons->addWidget(closeRecovery);
+    recoveryLayout->addLayout(recoveryButtons);
+    pages->addWidget(recoveryPage);
+
     dialog.exec();
+}
+
+// --- Auto-save and crash recovery (2026-11-04) ----------------------------------
+
+QString MainWindow::buildStamp() const
+{
+#ifdef SANKOTV_GIT_HEAD
+    return QStringLiteral(SANKOTV_GIT_HEAD);
+#else
+    return QString();
+#endif
+}
+
+// The project the recovery copy belongs to: the open file, or - for a
+// document recovered from a crash, which has no file yet - the one it came
+// from (its copy is this document's copy).
+QString MainWindow::recoveryBasePath() const
+{
+    return m_currentProjectPath.isEmpty() ? m_recoveredFrom : m_currentProjectPath;
+}
+
+void MainWindow::setRecoveryMinutes(int minutes)
+{
+    m_recoveryMinutes = qBound(0, minutes, 10);
+    sankoSettings().setValue(QStringLiteral("recovery/minutes"), m_recoveryMinutes);
+    armRecoveryTimer();
+}
+
+void MainWindow::armRecoveryTimer()
+{
+    if (!m_recoveryTimer)
+        return;
+    if (m_recoveryMinutes > 0 && !recoveryBasePath().isEmpty())
+        m_recoveryTimer->start(m_recoveryMinutes * 60000);
+    else
+        m_recoveryTimer->stop();
+}
+
+int MainWindow::recoveryTimerIntervalForTest() const
+{
+    return m_recoveryTimer && m_recoveryTimer->isActive() ? m_recoveryTimer->interval() : 0;
+}
+
+bool MainWindow::actionInProgress() const
+{
+    return m_exporting || (m_storyboard && m_storyboard->actionInProgress());
+}
+
+// One tick of the timer. Nothing to do while the project is saved, the
+// copies are off or there is no project; a tick that finds the artist
+// mid-action waits (the retry timer) and writes when the hold ends.
+bool MainWindow::onRecoveryTick()
+{
+    if (!m_dirty || m_recoveryMinutes <= 0 || recoveryBasePath().isEmpty())
+        return false;
+    if (actionInProgress()) {
+        m_recoveryPending = true;
+        if (m_recoveryRetry)
+            m_recoveryRetry->start();
+        return false;
+    }
+    return writeRecoveryCopy();
+}
+
+// THE COPY: the same ProjectIO path as a Save, into the project's recovery
+// folder - never the project's own files (isSafeTarget, checked here, not
+// assumed). Its ledger is its own, so a layer unchanged since the previous
+// copy is not re-encoded; each image lands whole (.part, then renamed); the
+// manifest last, atomically, with a "recovery" header saying where it came
+// from and when. The audio track is written as a reference to the project's
+// file, never copied. No dialog, ever: a copy that cannot be written is
+// tried again at the next tick.
+bool MainWindow::writeRecoveryCopy()
+{
+    const QString base = recoveryBasePath();
+    const QString target = ProjectRecovery::copyPathFor(base);
+    if (base.isEmpty() || !m_storyboard || !m_animatic
+        || !ProjectRecovery::isSafeTarget(base, target))
+        return false;
+    QElapsedTimer clock;
+    clock.start();
+    m_storyboard->ensureBrushPixelsForSave();
+    ProjectIO::SaveData data;
+    data.projectName = m_projectName;
+    data.fps = m_projectFps;
+    data.canvasSize = QSize(m_canvasWidth, m_canvasHeight);
+    data.stageMargin = m_stageMargin;
+    data.scenes = m_scenes;
+    data.consistency = m_consistencyEntries;
+    data.audioPath = m_animatic->audioPath();
+    data.audioLinked = true; // a reference, written back as given: never copied
+    data.tracks = m_animatic->tracks();
+    data.perspective = m_storyboard->perspectiveToJson();
+    data.ledger = m_recoveryLedger.get();
+    data.atomicImages = true;
+    const ProjectIO::WriteResult written = ProjectIO::projectToJson(data, target);
+    if (!written.ok)
+        return false;
+    QJsonObject root = written.root;
+    QJsonObject header;
+    header[QStringLiteral("savedFrom")] = QFileInfo(base).absoluteFilePath();
+    header[QStringLiteral("savedAt")] =
+        QDateTime::currentDateTime().toString(Qt::ISODateWithMs);
+    header[QStringLiteral("sessionId")] = m_sessionId;
+    header[QStringLiteral("buildStamp")] = buildStamp();
+    header[QStringLiteral("editCount")] = m_undoStack ? m_undoStack->index() : 0;
+    root[QStringLiteral("recovery")] = header;
+    const QByteArray json = QJsonDocument(root).toJson(QJsonDocument::Indented);
+    QSaveFile file(target);
+    if (!file.open(QIODevice::WriteOnly))
+        return false;
+    if (file.write(json) != json.size() || m_recoveryFailAtManifestForTest) {
+        file.cancelWriting(); // the previous copy's manifest stays whole
+        return false;
+    }
+    if (!file.commit())
+        return false;
+    qint64 bytes = json.size();
+    for (const QString &f : written.writtenFiles)
+        bytes += QFileInfo(f).size();
+    m_lastRecoveryWritten = written.writtenFiles;
+    m_lastRecoveryAt = QDateTime::currentDateTime();
+    m_recoveryPending = false;
+    if (m_recoveryRetry)
+        m_recoveryRetry->stop();
+    m_storyboard->setRecoveryStatus(QStringLiteral("Recovery copy saved %1")
+                                        .arg(m_lastRecoveryAt.toString(QStringLiteral("HH:mm"))));
+    updateSavedIndicator();
+    updateSaveActions(); // Discard Recovery Copy
+#ifdef SANKOTV_DEV_RECORDER
+    if (auto *rec = devrec::Recorder::instance(); rec && rec->isRecording()) {
+        QVariantMap event;
+        event.insert(QStringLiteral("ms"), qint64(clock.elapsed()));
+        event.insert(QStringLiteral("bytes"), bytes);
+        event.insert(QStringLiteral("files"), written.writtenFiles.size());
+        rec->logEvent(QStringLiteral("recoverySaved"), event);
+    }
+#endif
+    return true;
+}
+
+// The crash prompt: the copy, the file, the folder, or nothing. The gate
+// answers it through the hook instead of the box.
+MainWindow::RecoveryAnswer MainWindow::askRecovery(const QString &path,
+                                                   const ProjectRecovery::Pending &pending)
+{
+    ++m_recoveryPromptCount;
+    if (m_recoveryPromptForTest)
+        return m_recoveryPromptForTest();
+    const QString name = QFileInfo(path).completeBaseName();
+    QString when = pending.copyTime.toString(QStringLiteral("HH:mm"));
+    if (pending.projectTime.isValid()) {
+        const qint64 secs = pending.projectTime.secsTo(pending.copyTime);
+        const QString span = secs < 90
+            ? QStringLiteral("%1 seconds").arg(secs)
+            : secs < 5400 ? QStringLiteral("%1 minutes").arg((secs + 30) / 60)
+                          : QStringLiteral("%1 hours").arg((secs + 1800) / 3600);
+        when += QStringLiteral(" (%1 after your last save)").arg(span);
+    }
+    QMessageBox box(this);
+    box.setIcon(QMessageBox::Warning);
+    box.setWindowTitle(QStringLiteral("Recover Project"));
+    box.setText(QString::fromUtf8("SankoTV closed without saving \xE2\x80\x9C%1\xE2\x80\x9D.").arg(name));
+    box.setInformativeText(QStringLiteral("A recovery copy from %1 is available.").arg(when));
+    QPushButton *openCopy =
+        box.addButton(QStringLiteral("Open the recovery copy"), QMessageBox::AcceptRole);
+    QPushButton *openSaved =
+        box.addButton(QStringLiteral("Open the last saved version"), QMessageBox::ActionRole);
+    QPushButton *show =
+        box.addButton(QStringLiteral("Show both in the folder"), QMessageBox::ActionRole);
+    box.addButton(QMessageBox::Cancel);
+    box.setDefaultButton(openCopy);
+    box.exec();
+    if (box.clickedButton() == openCopy)
+        return RecoveryAnswer::OpenCopy;
+    if (box.clickedButton() == openSaved)
+        return RecoveryAnswer::OpenSaved;
+    if (box.clickedButton() == show)
+        return RecoveryAnswer::ShowFolder;
+    return RecoveryAnswer::Cancel;
+}
+
+// The recovered document is about to be saved over an existing file: the
+// project it was recovered from (the usual case - Save As starts there) or
+// another one. Cancel is the default; true only for Replace.
+bool MainWindow::confirmReplaceForRecovered(const QString &path)
+{
+    const bool original = QFileInfo(path) == QFileInfo(m_recoveredFrom);
+    ++m_replacePromptCount;
+    if (m_replacePromptForTest)
+        return m_replacePromptForTest(path, original);
+    const QString name = QFileInfo(path).completeBaseName();
+    QMessageBox box(this);
+    box.setIcon(QMessageBox::Warning);
+    box.setWindowTitle(QStringLiteral("Replace Saved Version"));
+    if (original) {
+        box.setText(QString::fromUtf8("Replace the saved version of \xE2\x80\x9C%1\xE2\x80\x9D "
+                                      "with the recovered work?")
+                        .arg(name));
+        box.setInformativeText(
+            QStringLiteral("The version saved on %1 will be replaced. This cannot be undone.")
+                .arg(QFileInfo(path).lastModified().toString(QStringLiteral("d MMM yyyy 'at' HH:mm"))));
+    } else {
+        box.setText(QString::fromUtf8("\xE2\x80\x9C%1\xE2\x80\x9D already exists. Replace it with "
+                                      "the recovered work?")
+                        .arg(name));
+        box.setInformativeText(QStringLiteral("This cannot be undone."));
+    }
+    QPushButton *replace = box.addButton(QStringLiteral("Replace"), QMessageBox::DestructiveRole);
+    box.addButton(QMessageBox::Cancel);
+    box.setDefaultButton(QMessageBox::Cancel);
+    box.exec();
+    return box.clickedButton() == replace;
+}
+
+void MainWindow::openRecoveryCopy(const QString &original, const QString &copyPath)
+{
+    m_recoveredFrom = original;
+    if (!loadFromPath(copyPath, true)) {
+        m_recoveredFrom.clear();
+        updateTitle();
+    }
+}
+
+void MainWindow::updateSavedIndicator()
+{
+    if (!m_scriptEditor)
+        return;
+    if (!m_dirty)
+        m_scriptEditor->setSavedState(QStringLiteral("Saved"), false);
+    else if (m_lastRecoveryAt.isValid())
+        m_scriptEditor->setSavedState(
+            QString::fromUtf8("Unsaved \xC2\xB7 recovery copy %1")
+                .arg(m_lastRecoveryAt.toString(QStringLiteral("HH:mm"))),
+            true);
+    else
+        m_scriptEditor->setSavedState(QStringLiteral("Unsaved changes"), true);
+}
+
+QString MainWindow::savedIndicatorForTest() const
+{
+    return m_scriptEditor ? m_scriptEditor->savedStateForTest() : QString();
+}
+
+QString MainWindow::recoveryStatusForTest() const
+{
+    return m_storyboard ? m_storyboard->recoveryStatusForTest() : QString();
+}
+
+int MainWindow::discardRecoveryCopy(std::function<bool()> confirm, QString *why)
+{
+    const QString base = recoveryBasePath();
+    if (base.isEmpty() || !ProjectRecovery::hasCopy(base)) {
+        if (why)
+            *why = QStringLiteral("There is no recovery copy for this project.");
+        return 0;
+    }
+    if (!confirm())
+        return 0;
+    ProjectRecovery::discardCopy(base);
+    m_lastRecoveryAt = QDateTime();
+    if (m_storyboard)
+        m_storyboard->setRecoveryStatus(QString());
+    updateSavedIndicator();
+    updateSaveActions();
+    return 1;
+}
+
+void MainWindow::onDiscardRecoveryCopy()
+{
+    QString why;
+    const int removed = discardRecoveryCopy(
+        [this] {
+            return QMessageBox::question(
+                       this, QStringLiteral("Discard Recovery Copy"),
+                       QStringLiteral("Remove the recovery copy of this project? Only the "
+                                      "saved project file remains. This cannot be undone."),
+                       QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel)
+                == QMessageBox::Yes;
+        },
+        &why);
+    if (removed == 0 && !why.isEmpty())
+        QMessageBox::information(this, QStringLiteral("Discard Recovery Copy"), why);
+}
+
+int MainWindow::discardRecoveryCopyForTest(bool confirm)
+{
+    QString why;
+    return discardRecoveryCopy([confirm] { return confirm; }, &why);
 }
 
 // --- Clean Up Project Folder (2026-11-04) -------------------------------------
@@ -887,6 +1244,9 @@ void MainWindow::updateSaveActions()
                                       || !m_currentProjectPath.isEmpty());
     if (m_cleanUpAct) // needs a project file on disk to compare against
         m_cleanUpAct->setEnabled(!m_currentProjectPath.isEmpty());
+    if (m_discardRecoveryAct)
+        m_discardRecoveryAct->setEnabled(!recoveryBasePath().isEmpty()
+                                         && ProjectRecovery::hasCopy(recoveryBasePath()));
     updateAudioActions();
     updateExportActions();
 }
@@ -1770,8 +2130,10 @@ void MainWindow::updateTitle()
 {
     // [*] is Qt's modified marker: it renders as an asterisk while
     // windowModified is true and disappears when it is not.
-    setWindowTitle(
-        QString::fromUtf8("SANKO TV \xE2\x80\x94 %1[*]").arg(m_projectName));
+    setWindowTitle(QString::fromUtf8("SANKO TV \xE2\x80\x94 %1%2[*]")
+                       .arg(m_projectName, m_recoveredFrom.isEmpty()
+                                               ? QString()
+                                               : QStringLiteral(" (recovered)")));
     setWindowModified(m_dirty);
 }
 
@@ -1781,12 +2143,19 @@ void MainWindow::markDirty()
         return; // idempotent: this is called from very many places
     m_dirty = true;
     setWindowModified(true);
+    updateSavedIndicator();
 }
 
 void MainWindow::setClean()
 {
     m_dirty = false;
     setWindowModified(false);
+    // Nothing unsaved: a tick that was waiting for a held action has
+    // nothing to write any more (2026-11-04).
+    m_recoveryPending = false;
+    if (m_recoveryRetry)
+        m_recoveryRetry->stop();
+    updateSavedIndicator();
 }
 
 // --- Scene ownership ------------------------------------------------------
@@ -1900,6 +2269,20 @@ void MainWindow::buildScenesFromJson(const QJsonArray &scenes)
 // the VPs, loadScenes clears the stack), which is why only New showed it.
 void MainWindow::resetProjectState(ClipboardPolicy clipboards)
 {
+    // A clean teardown takes the session lock with it (a crash leaves it,
+    // 2026-11-04); the recovery copy stays until a clean Save of that
+    // project removes it. A waiting tick has nothing to write any more.
+    ProjectRecovery::removeLock(m_currentProjectPath);
+    m_recoveredFrom.clear();
+    m_recoveryPending = false;
+    if (m_recoveryRetry)
+        m_recoveryRetry->stop();
+    if (m_recoveryTimer)
+        m_recoveryTimer->stop();
+    m_lastRecoveryAt = QDateTime();
+    if (m_storyboard)
+        m_storyboard->setRecoveryStatus(QString());
+
     freeScenes(); // detaches every page BEFORE deleting the scenes
 
     m_currentProjectPath.clear();
@@ -1993,6 +2376,9 @@ void MainWindow::runNewProjectDialog()
     m_animatic->setProjectFile(m_currentProjectPath);
     updateSaveActions();
     updateTitle();
+    // Open from this moment: its lock, and its recovery copies (2026-11-04).
+    ProjectRecovery::writeLock(m_currentProjectPath, m_sessionId, buildStamp());
+    armRecoveryTimer();
     m_stack->setCurrentWidget(m_scriptEditor);
 }
 
@@ -2077,6 +2463,12 @@ void MainWindow::closeEvent(QCloseEvent *event)
         return;
     }
     event->accept();
+    // A clean exit: the lock goes (2026-11-04). The recovery copy of an
+    // unsaved document the artist chose to discard goes with it - there is
+    // nothing left to recover from it.
+    if (m_recoveryTimer)
+        m_recoveryTimer->stop();
+    ProjectRecovery::removeLock(m_currentProjectPath);
 }
 
 // Where the Open Project picker starts. It used to start in the home
@@ -2134,6 +2526,25 @@ void MainWindow::openProject(const QString &path)
                 .arg(path));
         return;
     }
+    // A CRASH LEFT A COPY (2026-11-04): the session lock is still there and
+    // the recovery copy is newer than the file. Offer it; never open
+    // either silently.
+    const ProjectRecovery::Pending pending = ProjectRecovery::pendingFor(path);
+    if (pending.crashed) {
+        switch (askRecovery(path, pending)) {
+        case RecoveryAnswer::OpenCopy:
+            openRecoveryCopy(path, pending.copyPath);
+            rebuildRecentMenuLater();
+            return;
+        case RecoveryAnswer::OpenSaved:
+            break; // the file, below; the copy stays until a clean Save
+        case RecoveryAnswer::ShowFolder:
+            QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(path).absolutePath()));
+            return;
+        case RecoveryAnswer::Cancel:
+            return;
+        }
+    }
     loadFromPath(path);
     rebuildRecentMenuLater(); // the just-opened project moves to the top
 }
@@ -2190,18 +2601,32 @@ void MainWindow::onSaveProjectAs()
     if (m_scenes.isEmpty())
         return;
 
-    const QString start = m_currentProjectPath.isEmpty()
-        ? QDir::homePath() + QStringLiteral("/") + m_projectName + QStringLiteral(".sankotv")
-        : m_currentProjectPath;
+    // A recovered document's Save As defaults to the project it came from
+    // (2026-11-04). For it the file dialog's own "already exists" question is
+    // turned off: SankoTV asks below instead, once, after the final name is
+    // known (see confirmReplaceForRecovered).
+    const bool recovered = !m_recoveredFrom.isEmpty();
+    const QString start = !m_currentProjectPath.isEmpty() ? m_currentProjectPath
+        : recovered                                       ? m_recoveredFrom
+        : QDir::homePath() + QStringLiteral("/") + m_projectName + QStringLiteral(".sankotv");
 
     QString path = m_saveAsPathForTest
         ? m_saveAsPathForTest()
         : QFileDialog::getSaveFileName(this, QStringLiteral("Save Project As"), start,
-                                       QStringLiteral("SankoTV Project (*.sankotv)"));
+                                       QStringLiteral("SankoTV Project (*.sankotv)"), nullptr,
+                                       recovered ? QFileDialog::DontConfirmOverwrite
+                                                 : QFileDialog::Options());
     if (path.isEmpty())
         return;
     if (!path.endsWith(QStringLiteral(".sankotv"), Qt::CaseInsensitive))
         path += QStringLiteral(".sankotv");
+    // THE RECOVERED WORK REPLACES NOTHING UNASKED (2026-11-05, the approved
+    // proposal's "plain confirmation that it replaces the saved version").
+    // Asked here, on the name the save will really use: the file dialog's
+    // question checks the name as typed, before ".sankotv" is added, and the
+    // gate's Save As seam never shows that dialog at all.
+    if (recovered && QFileInfo::exists(path) && !confirmReplaceForRecovered(path))
+        return;
 
     // There used to be a guard here warning that saving into a folder which
     // already held a project would make the two share their artwork files.
@@ -2379,14 +2804,31 @@ bool MainWindow::saveToPath(const QString &path)
 // only the tail of saveToPath can construct — see the declaration.
 void MainWindow::markSavedTo(const QString &path, SaveCompleted)
 {
+    const QString previous = m_currentProjectPath;
     m_currentProjectPath = path;
     if (m_animatic)
         m_animatic->setProjectFile(path);
     RecentProjects::record(path);
     setClean(); // what is on disk now matches what is in memory
+    // THE SAVED FILE IS THE TRUTH AGAIN (2026-11-04): its recovery copy goes
+    // (r5) and its lock marks this session; a Save As leaves the previous
+    // file's lock behind it; a document recovered from a crash is an
+    // ordinary open project from here.
+    if (!previous.isEmpty() && previous.compare(path, Qt::CaseInsensitive) != 0)
+        ProjectRecovery::removeLock(previous);
+    m_recoveredFrom.clear();
+    ProjectRecovery::discardCopy(path);
+    ProjectRecovery::writeLock(path, m_sessionId, buildStamp());
+    m_lastRecoveryAt = QDateTime();
+    if (m_storyboard)
+        m_storyboard->setRecoveryStatus(QString());
+    updateSavedIndicator();
+    updateSaveActions();
+    updateTitle();
+    armRecoveryTimer();
 }
 
-bool MainWindow::loadFromPath(const QString &path)
+bool MainWindow::loadFromPath(const QString &path, bool asRecoveryCopy)
 {
     m_storyboard->commitQuickShape(); // resolve before panels are replaced
     QFile file(path);
@@ -2477,7 +2919,8 @@ bool MainWindow::loadFromPath(const QString &path)
     m_storyboard->setProjectCanvasSize(QSize(m_canvasWidth, m_canvasHeight));
     pushStageMargin();
     m_animatic->setFps(m_projectFps);
-    RecentProjects::record(path);
+    if (!asRecoveryCopy)
+        RecentProjects::record(path);
 
     // Skip the Script Editor: go straight to the Storyboard.
     m_storyboard->loadScenes(m_scenes);
@@ -2489,5 +2932,28 @@ bool MainWindow::loadFromPath(const QString &path)
     // be born modified and prompt to save work nobody did. Anything added
     // below this line that touches the model must clear the flag again.
     setClean();
+    if (asRecoveryCopy) {
+        // THE RECOVERED DOCUMENT (2026-11-04): the copy's contents, UNSAVED,
+        // named for the project it came from - "X (recovered)" - with no
+        // file of its own: its Save asks where, defaulting to the original.
+        // The copy wrote the audio track as a reference to the original's
+        // file; inside the original's assets folder it is the original's own.
+        m_currentProjectPath.clear();
+        m_animatic->setProjectFile(m_recoveredFrom);
+        if (m_animatic->audioLinked()
+            && ProjectMedia::isInAssets(m_animatic->audioPath(), m_recoveredFrom))
+            m_animatic->setAudioPath(m_animatic->audioPath(), false);
+        markDirty();
+        updateSaveActions();
+    } else {
+        m_recoveredFrom.clear();
+        ProjectRecovery::writeLock(path, m_sessionId, buildStamp());
+    }
+    m_lastRecoveryAt = QDateTime();
+    if (m_storyboard)
+        m_storyboard->setRecoveryStatus(QString());
+    updateSavedIndicator();
+    updateTitle();
+    armRecoveryTimer();
     return true;
 }

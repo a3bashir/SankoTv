@@ -260,6 +260,15 @@ public:
     // The panels the undo history still holds, by id (Clean Up Project
     // Folder keeps their files; 2026-11-04).
     QSet<QString> panelIdsHeldByHistory() const;
+    // THE RECOVERY COPY (2026-11-04): is the artist in the middle of
+    // something - a stroke or Quick Shape, a selection, transform or camera
+    // drag on the canvas, a panel drag on the strip, a drag on the timeline,
+    // the film playing? The copy waits for it to end.
+    bool actionInProgress() const;
+    // "Recovery copy saved 19:42", dimmed at the right of the bottom bar;
+    // empty clears it.
+    void setRecoveryStatus(const QString &text);
+    QString recoveryStatusForTest() const;
     // DEPTH (Phase 2B): the Depth popover for layer `index` of the current
     // panel, as its badge or Depth... opens it (the paper and a folder's
     // member open nothing); the popover open now, or null.
@@ -643,6 +652,7 @@ private:
     void refreshBrushDirtyState();       // white dot + Reset chip on the row
     QScrollArea *m_panelScroll = nullptr;
     QPushButton *m_importButton = nullptr;
+    QLabel *m_recoveryStatus = nullptr; // the recovery copy's word (2026-11-04)
     // Floating Size CTL toolbar (Figma 209:42): size + opacity sliders and
     // Flip, snapping to the left/right canvas edge. (Brush Options is gone;
     // its pressure toggles were removed deliberately, and hardness is

@@ -1,4 +1,5 @@
 #include "RecentProjectsView.h"
+#include "ProjectRecovery.h"
 #include "RecentThumbnails.h"
 #include "SankoTheme.h"
 #include "brushlib/StudioControls.h"
@@ -100,6 +101,7 @@ void RecentProjectsView::reload()
         Item item;
         item.entry = entry;
         item.missing = !QFileInfo::exists(entry.path);
+        item.recover = !item.missing && ProjectRecovery::pendingFor(entry.path).crashed;
         m_items.append(item);
     }
     for (int i = 0; i < m_items.size(); ++i)
@@ -321,6 +323,8 @@ void RecentProjectsView::paintCard(QPainter &p, int index) const
     p.setBrush(kThumbWell);
     p.drawRoundedRect(well, 6, 6);
     paintThumb(p, index, well, 6, 32);
+    if (item.recover)
+        paintRecoverBadge(p, well, 8);
 
     p.setFont(cardTitleFont());
     p.setPen(kCardTitle);
@@ -353,6 +357,8 @@ void RecentProjectsView::paintRow(QPainter &p, int index) const
     p.setBrush(studio::kFieldBg);
     p.drawRoundedRect(thumb.adjusted(0.5, 0.5, -0.5, -0.5), 2, 2);
     paintThumb(p, index, thumb.adjusted(1, 1, -1, -1), 2, 16);
+    if (item.recover)
+        paintRecoverBadge(p, QRectF(row), 8);
 
     p.setFont(rowTitleFont());
     p.setPen(studio::kFieldText);
@@ -363,6 +369,34 @@ void RecentProjectsView::paintRow(QPainter &p, int index) const
     p.drawText(QRect(row.left() + 64, row.top() + 23, row.width() - 70, 13),
                Qt::AlignVCenter | Qt::AlignLeft, shownDateAt(index));
     p.setOpacity(1.0);
+}
+
+// The "RECOVER" pill (2026-11-04) at the top-right of `area`: SankoTV closed
+// without saving this project and a recovery copy is waiting; opening the
+// project offers it.
+void RecentProjectsView::paintRecoverBadge(QPainter &p, const QRectF &area, qreal pad) const
+{
+    QFont font = rowDateFont();
+    font.setBold(true);
+    const QFontMetrics fm(font);
+    const QString text = QStringLiteral("RECOVER");
+    const qreal w = fm.horizontalAdvance(text) + 12;
+    const qreal h = fm.height() + 4;
+    const QRectF badge(area.right() - pad - w, area.top() + pad, w, h);
+    p.save();
+    p.setOpacity(1.0);
+    p.setFont(font);
+    p.setPen(Qt::NoPen);
+    p.setBrush(SankoTheme::kAccentLight);
+    p.drawRoundedRect(badge, h / 2, h / 2);
+    p.setPen(QColor(0x0a, 0x0a, 0x0a));
+    p.drawText(badge, Qt::AlignCenter, text);
+    p.restore();
+}
+
+bool RecentProjectsView::recoverAt(int index) const
+{
+    return index >= 0 && index < m_items.size() && m_items.at(index).recover;
 }
 
 // Thumbnails are decoded for one device pixel ratio. Dragged to a monitor

@@ -76,6 +76,9 @@ public:
     QString shownNameAt(int index) const; // elided exactly as painted
     QString shownDateAt(int index) const;
     bool missingAt(int index) const;
+    // The "RECOVER" badge (2026-11-04): SankoTV closed without saving this
+    // project and a recovery copy is waiting (ProjectRecovery::pendingFor).
+    bool recoverAt(int index) const;
     bool hasThumbnailAt(int index) const;
     // Is the "no picture" film glyph drawn in this item's well? Only for a
     // project known to have none - not for one still waiting to be decoded.
@@ -111,10 +114,12 @@ private:
     {
         RecentProjects::Entry entry;
         bool missing = false;
+        bool recover = false; // a crash's recovery copy waits for it
     };
     int indexAt(const QPoint &pos) const;
     void paintCard(QPainter &p, int index) const;
     void paintRow(QPainter &p, int index) const;
+    void paintRecoverBadge(QPainter &p, const QRectF &area, qreal pad) const;
     void paintThumb(QPainter &p, int index, const QRectF &well,
                     qreal radius, qreal glyph) const;
     QRect nameRectAt(int index) const;
