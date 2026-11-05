@@ -6,6 +6,7 @@
 #include <QCoreApplication>
 #include <QDataStream>
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonValue>
@@ -227,10 +228,11 @@ class ImageSaver
 public:
     // `assets`: this project's own image folder, the only one adopt() may
     // rename from; `keep`: every image name this save uses, relative to
-    // `folder` - the files adopt() must leave where they are.
+    // `folder` - the files adopt() must leave where they are; `plan`: when
+    // set, the images to write go there instead of to the encoders.
     ImageSaver(const QString &folder, const QString &assets, ImageLedger *ledger,
-               WriteResult *res, const QStringList &keep, bool atomic)
-        : m_folder(folder), m_assets(assets), m_ledger(ledger), m_res(res), m_atomic(atomic)
+               WriteResult *res, const QStringList &keep, ImagePlan *plan)
+        : m_folder(folder), m_assets(assets), m_ledger(ledger), m_res(res), m_plan(plan)
     {
         for (const QString &name : keep)
             m_keep.insert(QDir::cleanPath(QFileInfo(folder + QStringLiteral("/") + name)
@@ -256,8 +258,22 @@ public:
     void flatten(const Panel &panel, const QString &relName)
     {
         const QByteArray content = flattenContent(panel);
-        if (!skip(relName, content) && !adopt(relName, content))
-            push(relName, panel.flattenedPixmap().toImage(), content);
+        if (skip(relName, content) || adopt(relName, content))
+            return;
+        if (m_plan) {
+            // The panel's layers as shared copies; runImagePlan composites
+            // them where it runs.
+            auto snapshot = std::make_shared<Panel>();
+            snapshot->layers = panel.layers;
+            ImageJob job;
+            job.file = m_folder + QStringLiteral("/") + relName;
+            job.content = content;
+            job.flatten = std::move(snapshot);
+            m_plan->jobs.append(std::move(job));
+            return;
+        }
+        m_res->composeThreadIds.append(QThread::currentThreadId());
+        push(relName, panel.flattenedPixmap().toImage(), content);
     }
 
     void thumbnail(const QPixmap &pixmap, const QString &relName)
@@ -278,6 +294,7 @@ public:
             if (d.ok) {
                 ++m_res->imagesWritten;
                 m_res->writtenFiles.append(d.file);
+                m_res->encodeThreadIds.append(d.thread);
                 threads.insert(d.thread);
                 if (m_ledger)
                     m_ledger->record(d.file, d.content);
@@ -353,23 +370,21 @@ private:
     {
         if (m_failed.load())
             return; // already failed; do not pile more writes on
-        const int order = m_next++;
         const QString full = m_folder + QStringLiteral("/") + relName;
+        if (m_plan) { // a shared copy, written by runImagePlan
+            ImageJob job;
+            job.file = full;
+            job.content = content;
+            job.image = image;
+            m_plan->jobs.append(std::move(job));
+            return;
+        }
+        const int order = m_next++;
         m_slots.acquire(); // bounds the images waiting to be encoded
-        const bool atomic = m_atomic;
-        m_pool.start([this, order, full, image, content, atomic] {
+        m_pool.start([this, order, full, image, content] {
             Done d{order, full, content, false, QThread::currentThreadId()};
             if (!m_failed.load()) {
-                // The recovery copy's images land whole or not at all: encoded
-                // to "<name>.part", then renamed over the name.
-                const QString target = atomic ? full + QStringLiteral(".part") : full;
-                d.ok = image.save(target, "PNG");
-                if (d.ok && atomic) {
-                    QFile::remove(full);
-                    d.ok = QFile::rename(target, full);
-                    if (!d.ok)
-                        QFile::remove(target);
-                }
+                d.ok = image.save(full, "PNG");
                 if (!d.ok)
                     m_failed.store(true);
                 QMutexLocker lock(&m_mutex);
@@ -383,8 +398,8 @@ private:
     const QString m_assets;
     ImageLedger *const m_ledger;
     WriteResult *const m_res;
-    const bool m_atomic;  // ".part" then rename (the recovery copy)
-    QSet<QString> m_keep; // lower-cased absolute paths
+    ImagePlan *const m_plan; // the recovery copy's: nothing encoded here
+    QSet<QString> m_keep;    // lower-cased absolute paths
     int m_next = 0;
     std::atomic<bool> m_failed{false};
     QSemaphore m_slots;
@@ -394,6 +409,46 @@ private:
 };
 
 } // namespace
+
+bool runImagePlan(ImagePlan &plan, const std::atomic<bool> &cancel)
+{
+    // As many at once as a Save encodes; each task composites at most one
+    // flatten, so the working images stay bounded by the thread count.
+    QThreadPool pool;
+    pool.setMaxThreadCount(qBound(1, QThread::idealThreadCount(), 8));
+    std::atomic<bool> failed{false};
+    for (ImageJob &job : plan.jobs) {
+        ImageJob *j = &job; // the vector is not touched while the pool runs
+        pool.start([j, &cancel, &failed] {
+            if (cancel.load() || failed.load())
+                return;
+            QImage image = j->image;
+            if (j->flatten) {
+                image = j->flatten->flattenedImage();
+                j->composeThread = QThread::currentThreadId();
+            }
+            const QString part = j->file + QStringLiteral(".part");
+            bool ok = !image.isNull() && image.save(part, "PNG");
+            if (ok) {
+                QFile::remove(j->file);
+                ok = QFile::rename(part, j->file);
+            }
+            if (!ok) {
+                QFile::remove(part);
+                failed.store(true);
+            }
+            j->encodeThread = QThread::currentThreadId();
+            j->ok = ok;
+        });
+    }
+    pool.waitForDone(); // the results are read after this, on this thread
+    if (cancel.load() || failed.load())
+        return false;
+    for (const ImageJob &job : plan.jobs)
+        if (!job.ok)
+            return false;
+    return true;
+}
 
 WriteResult projectToJson(const SaveData &data, const QString &projectFilePath,
                           const std::function<bool(qint64, qint64)> &audioProgress)
@@ -479,7 +534,7 @@ WriteResult projectToJson(const SaveData &data, const QString &projectFilePath,
         for (const QString &layerName : n.layers)
             keep << rel + layerName;
     }
-    ImageSaver saver(folder, assetsPath, data.ledger, &res, keep, data.atomicImages);
+    ImageSaver saver(folder, assetsPath, data.ledger, &res, keep, data.plan);
     int named = 0;
 
     QJsonArray scenesArray;

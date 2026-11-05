@@ -14580,6 +14580,32 @@ void runRecoveryPass(const QString &scratch)
                          "left in it)"),
           !ProjectRecovery::hasLock(proj) && !QDir(folder).exists() && window.onDashboardForTest(),
           QStringLiteral("lock %1 folder %2").arg(ProjectRecovery::hasLock(proj)).arg(QDir(folder).exists()));
+    // LEAVING A PROJECT BY OPENING ANOTHER (2026-11-05): batch 3 left the
+    // first project's lock behind, so after its changes were discarded at
+    // File > Open it was offered as "closed without saving" next time.
+    {
+        const QString other = writeProject(dir, QStringLiteral("Rec2"), QSize(960, 540), 24, 1, 2);
+        window.loadProjectForTest(proj);
+        pump(400);
+        const bool lockedBefore = ProjectRecovery::hasLock(proj) && !ProjectRecovery::hasLock(other);
+        window.openProjectForTest(other);
+        pump(400);
+        check(QStringLiteral("(r3) ...and OPENING ANOTHER PROJECT releases it too: the first project's lock "
+                             "goes and the second's is written"),
+              lockedBefore && window.projectPathForTest() == other && !ProjectRecovery::hasLock(proj)
+                  && ProjectRecovery::hasLock(other),
+              QStringLiteral("before %1 path '%2' first lock %3 second lock %4").arg(lockedBefore)
+                  .arg(window.projectPathForTest()).arg(ProjectRecovery::hasLock(proj))
+                  .arg(ProjectRecovery::hasLock(other)));
+        // Control: the measure sees a lock that should stay - reopening the
+        // project already open keeps its own.
+        window.openProjectForTest(other);
+        pump(400);
+        check(QStringLiteral("(r3) control: reopening the project already open keeps its lock"),
+              window.projectPathForTest() == other && ProjectRecovery::hasLock(other));
+        window.closeProjectForTest();
+        pump(200);
+    }
 
     // --- (r4) the crash ------------------------------------------------------------
     // The copy a crash leaves: open, stroke, tick; then close without saving
@@ -14822,10 +14848,294 @@ void runRecoveryPass(const QString &scratch)
                          "stay for next time"),
           window.recoveryPromptCountForTest() == 1 && window.onDashboardForTest() && ProjectRecovery::hasCopy(proj)
               && ProjectRecovery::hasLock(proj));
+    // "SHOW BOTH IN THE FOLDER" (2026-11-05; no check covered it): the
+    // project's folder, through the seam in place of the desktop's browser,
+    // and nothing opened or changed.
+    {
+        QList<QUrl> folders;
+        window.setOpenFolderForTest([&folders](const QUrl &url) { folders << url; });
+        const QString lockPath = ProjectRecovery::lockPathFor(proj);
+        const QByteArray fileBefore = bytesOf(proj), copyBefore = bytesOf(copy), lockBefore = bytesOf(lockPath);
+        const QDateTime timeBefore = mtime(proj);
+        auto recents = [] {
+            QStringList l;
+            for (const RecentProjects::Entry &e : RecentProjects::entries())
+                l << e.path + QLatin1Char('|') + e.lastOpened.toString(Qt::ISODateWithMs);
+            return l;
+        };
+        const QStringList recentsBefore = recents();
+        window.setRecoveryPromptForTest([] { return MainWindow::RecoveryAnswer::ShowFolder; });
+        window.openProjectForTest(proj);
+        pump(300);
+        const QList<QUrl> expected{QUrl::fromLocalFile(QFileInfo(proj).absolutePath())};
+        check(QStringLiteral("(r4) 'SHOW BOTH IN THE FOLDER' opens the project's folder and nothing else: "
+                             "one call, with that folder; no project opened (the Start window stays, no "
+                             "scenes, nothing unsaved); the project file, the copy, the lock and the "
+                             "recent list unchanged; the crash still offered next time"),
+              window.recoveryPromptCountForTest() == 1 && folders == expected && window.onDashboardForTest()
+                  && window.projectPathForTest().isEmpty() && window.scenesForTest().isEmpty() && !window.isDirty()
+                  && bytesOf(proj) == fileBefore && mtime(proj) == timeBefore && bytesOf(copy) == copyBefore
+                  && bytesOf(lockPath) == lockBefore && recents() == recentsBefore
+                  && ProjectRecovery::pendingFor(proj).crashed,
+              QStringLiteral("prompts %1 folders %2 [%3] dashboard %4 path '%5' scenes %6 file same %7 copy same "
+                             "%8 lock same %9 recents same %10")
+                  .arg(window.recoveryPromptCountForTest()).arg(folders.size())
+                  .arg(folders.isEmpty() ? QString() : folders.first().toLocalFile())
+                  .arg(window.onDashboardForTest()).arg(window.projectPathForTest())
+                  .arg(window.scenesForTest().size()).arg(bytesOf(proj) == fileBefore)
+                  .arg(bytesOf(copy) == copyBefore).arg(bytesOf(lockPath) == lockBefore)
+                  .arg(recents() == recentsBefore));
+        // Control: answered 'Open the last saved version' instead, the same
+        // measures see a project open and no folder shown.
+        folders.clear();
+        window.setRecoveryPromptForTest([] { return MainWindow::RecoveryAnswer::OpenSaved; });
+        window.openProjectForTest(proj);
+        pump(500);
+        check(QStringLiteral("(r4) control: answered 'Open the last saved version' instead, the same measures "
+                             "see the project open and no folder shown"),
+              window.recoveryPromptCountForTest() == 1 && folders.isEmpty() && window.projectPathForTest() == proj
+                  && !window.onDashboardForTest() && !window.scenesForTest().isEmpty(),
+              QStringLiteral("folders %1 path '%2'").arg(folders.size()).arg(window.projectPathForTest()));
+        window.setOpenFolderForTest({});
+        window.closeProjectForTest();
+        pump(200);
+    }
     window.setRecoveryPromptForTest({});
     ProjectRecovery::discardCopy(proj);
     ProjectRecovery::removeLock(proj);
     window.markCleanForTest();
+}
+
+// ---- (r9) THE RECOVERY COPY RUNS OFF THE UI THREAD (2026-11-05) -----------------
+// Batch 3's hand test measured a full copy holding the UI thread 0.45 s: its
+// encoders ran on workers, but the UI thread waited for them. Now the UI
+// thread takes the images as shared copies and every composite, encode and
+// write runs on a worker. Checked by THREAD IDENTITY, not time: a copy held
+// at its start leaves the UI thread free and nothing on disk; released, none
+// of its steps ran on the UI thread. Control: a Save, counted the same way,
+// shows its UI-thread steps (its flatten composite and its manifest). The
+// stall on a 4K project is MEASURED and printed, never checked - no check
+// may depend on timing.
+void runRecoveryOffThreadPass(const QString &scratch)
+{
+    using namespace workspace;
+    out() << "--- (r9) the recovery copy runs off the UI thread (4K) ---" << Qt::endl;
+    const QString dir = scratch + QStringLiteral("/recovery4k");
+    QDir(dir).removeRecursively();
+    QDir().mkpath(dir);
+    const QSize k4(3840, 2160);
+    const QString proj = writeProject(dir, QStringLiteral("Big"), k4, 24, 1, 6);
+    const QString copy = ProjectRecovery::copyPathFor(proj);
+    const QString copyAssets = ProjectRecovery::folderFor(proj) + QStringLiteral("/")
+        + ProjectIO::assetSubdirFor(copy);
+    Rig r(proj);
+    MainWindow &window = r.window;
+    check(QStringLiteral("(r9) the 4K fixture opens"), r.ok && window.activePanelSizeForTest() == k4);
+    if (!r.ok)
+        return;
+    {
+        ::Brush known; // see (r): a known brush, so every stroke changes pixels
+        known.setSize(24);
+        r.canvas->setTool(DrawingCanvas::Brush);
+        r.canvas->setPaintBrush(known);
+        pump(200);
+    }
+    int strokes = 0;
+    auto paint = [&window, &strokes] {
+        auto *canvas = window.findChild<DrawingCanvas *>();
+        if (!canvas)
+            return;
+        const qreal y = 300 + 260 * (strokes++ % 6); // 300 .. 1600, inside 2160
+        const QTransform t = canvas->viewTransformForTest();
+        sendMouse(canvas, QEvent::MouseButtonPress, t.map(QPointF(400, y)), Qt::LeftButton);
+        for (int i = 1; i <= 8; ++i)
+            sendMouse(canvas, QEvent::MouseMove, t.map(QPointF(400 + i * 360, y + i * 8)), Qt::LeftButton);
+        sendMouse(canvas, QEvent::MouseButtonRelease, t.map(QPointF(3280, y + 64)), Qt::LeftButton);
+        pump(900);
+    };
+    auto count = [](const QString &folder, const QString &pattern) {
+        return int(QDir(folder).entryList({pattern}, QDir::Files).size());
+    };
+
+    // --- the held copy -----------------------------------------------------------
+    clickThumb(r, 0);
+    paint();
+    const bool dirty = window.isDirty();
+    window.setRecoveryHoldForTest(true);
+    const bool started = window.startRecoveryTickForTest();
+    bool uiRan = false;
+    QTimer::singleShot(0, &window, [&uiRan] { uiRan = true; });
+    pump(300);
+    const bool inFlight = window.recoveryInFlightForTest();
+    const int onDiskWhileHeld = count(copyAssets, QStringLiteral("*.png")) + count(copyAssets, QStringLiteral("*.part"));
+    const bool manifestWhileHeld = QFileInfo::exists(copy);
+    window.setRecoveryHoldForTest(false);
+    const bool finished = window.waitForRecoveryCopyForTest();
+    const int images = count(copyAssets, QStringLiteral("*.png"));
+    const int steps = window.lastRecoveryStepsForTest();
+    const int uiSteps = window.lastRecoveryUiStepsForTest();
+    check(QStringLiteral("(r9) THE COPY RUNS OFF THE UI THREAD: held at its start, the tick returns with the "
+                         "copy in flight, nothing of it on disk and the UI thread free (a posted event ran); "
+                         "released, it writes the 18 images and the manifest, and none of its 25 steps - 6 "
+                         "flatten composites, 18 encodes, the manifest - ran on the UI thread"),
+          dirty && started && uiRan && inFlight && onDiskWhileHeld == 0 && !manifestWhileHeld && finished
+              && images == 18 && QFileInfo::exists(copy) && steps == 25 && uiSteps == 0,
+          QStringLiteral("dirty %1 started %2 ui ran %3 in flight %4 on disk while held %5 manifest while held %6 "
+                         "finished %7 images %8 steps %9 on the UI thread %10")
+              .arg(dirty).arg(started).arg(uiRan).arg(inFlight).arg(onDiskWhileHeld).arg(manifestWhileHeld)
+              .arg(finished).arg(images).arg(steps).arg(uiSteps));
+    // Control: a Save, counted the same way, has UI-thread steps - its
+    // flatten composite and its manifest - so the count sees them when they
+    // are there.
+    clickThumb(r, 1);
+    paint();
+    window.saveProjectForTest(proj);
+    pump(200);
+    check(QStringLiteral("(r9) control: a Save, counted the same way, ran steps on the UI thread (its flatten "
+                         "composite and its manifest), so the count sees UI-thread work when there is some"),
+          window.lastSaveUiStepsForTest() >= 2 && window.lastSaveStepsForTest() >= 4,
+          QStringLiteral("save steps %1, on the UI thread %2").arg(window.lastSaveStepsForTest())
+              .arg(window.lastSaveUiStepsForTest()));
+
+    // --- the measurement: the UI thread's worst gap during a full 4K copy ---------
+    // The Save removed the copy, so the next one writes all 18 images. A
+    // 4 ms probe timer on the UI thread records its worst gap - the stall -
+    // from the tick to the copy's report; then the same for a Save As writing
+    // the same images, which is what the copy held the UI thread for before.
+    clickThumb(r, 2);
+    paint();
+    QElapsedTimer probeClock;
+    probeClock.start();
+    qint64 last = 0, worst = 0;
+    QTimer probe;
+    probe.setTimerType(Qt::PreciseTimer);
+    probe.setInterval(4);
+    QObject::connect(&probe, &QTimer::timeout, [&] {
+        const qint64 now = probeClock.elapsed();
+        worst = qMax(worst, now - last);
+        last = now;
+    });
+    probe.start();
+    pump(400);
+    const qint64 idleWorst = worst;
+    worst = 0;
+    last = probeClock.elapsed();
+    QElapsedTimer copyClock;
+    copyClock.start();
+    const bool startedM = window.startRecoveryTickForTest();
+    const bool doneM = window.waitForRecoveryCopyForTest();
+    const qint64 copyMs = copyClock.elapsed();
+    pump(50);
+    const qint64 copyWorst = worst;
+    const int imagesM = window.lastRecoveryWrittenForTest().size();
+    const int uiStepsM = window.lastRecoveryUiStepsForTest();
+    worst = 0;
+    last = probeClock.elapsed();
+    QElapsedTimer saveClock;
+    saveClock.start();
+    const bool savedRef = window.saveProjectForTest(dir + QStringLiteral("/BigRef.sankotv"));
+    const qint64 saveMs = saveClock.elapsed();
+    pump(50);
+    const qint64 saveWorst = worst;
+    const int saveImages = window.lastSaveWrittenForTest().size();
+    probe.stop();
+    out() << QStringLiteral("  NOTE (r9) MEASURED on a 4K project (3840x2160, 6 panels, 18 images): a full "
+                            "recovery copy held the UI thread at most %1 ms (the tick itself %2 ms; the copy took "
+                            "%3 ms on its worker; %4 images written). For reference, a Save As writing the same %5 "
+                            "images held it %6 ms (the call took %7 ms). The idle loop's own worst gap: %8 ms.")
+                 .arg(copyWorst).arg(window.lastRecoveryUiMsForTest()).arg(copyMs).arg(imagesM).arg(saveImages)
+                 .arg(saveWorst).arg(saveMs).arg(idleWorst)
+          << Qt::endl;
+    check(QStringLiteral("(r9) the measured copy was a full one, off the UI thread: it started, finished and "
+                         "wrote all 18 images with no step on the UI thread; the reference Save As wrote 18"),
+          startedM && doneM && imagesM == 18 && uiStepsM == 0 && savedRef && saveImages == 18,
+          QStringLiteral("started %1 done %2 images %3 ui steps %4 save %5 images %6").arg(startedM).arg(doneM)
+              .arg(imagesM).arg(uiStepsM).arg(savedRef).arg(saveImages));
+}
+
+// ---- (r10) THE RECOVERY INTERVAL SURVIVES A RELAUNCH (2026-11-05) ---------------
+// Set on Edit > Preferences... > Recovery through the real dialog (a timer
+// answers the modal, as elsewhere in this family), read by a NEW window.
+void runRecoveryPrefsPass(const QString &scratch)
+{
+    out() << "--- (r10) the recovery interval survives a relaunch ---" << Qt::endl;
+    const QString dir = scratch + QStringLiteral("/recoveryprefs");
+    QDir(dir).removeRecursively();
+    QDir().mkpath(dir);
+    const QString proj = writeProject(dir, QStringLiteral("Prefs"), QSize(960, 540), 24, 1, 2);
+    // Opens the Preferences dialog, reads the Recovery page's interval, sets
+    // it (value < 0: leaves it) and closes the dialog. Returns what the page
+    // showed; -1 when the dialog or the field was not found.
+    auto viaPreferences = [](MainWindow &w, int value) {
+        QAction *prefs = nullptr;
+        for (QAction *a : w.findChildren<QAction *>())
+            if (a->text() == QLatin1String("Preferences..."))
+                prefs = a;
+        auto shown = std::make_shared<int>(-1);
+        if (!prefs)
+            return -1;
+        QTimer::singleShot(400, [shown, value] {
+            QWidget *m = QApplication::activeModalWidget();
+            if (!m)
+                return;
+            if (auto *spin = m->findChild<QSpinBox *>(QStringLiteral("prefsRecoveryMinutes"))) {
+                *shown = spin->value();
+                if (value >= 0)
+                    spin->setValue(value);
+            }
+            m->close();
+        });
+        prefs->trigger();
+        pump(700);
+        return *shown;
+    };
+    int shownFirst = -1, afterSet = -1;
+    {
+        MainWindow w;
+        w.resize(1300, 850);
+        w.show();
+        pump(800);
+        shownFirst = viaPreferences(w, 5);
+        afterSet = w.recoveryMinutesForTest();
+        w.markCleanForTest();
+        w.close();
+        pump(300);
+    }
+    int relaunched = -1, interval = -1, shownRelaunched = -1;
+    {
+        MainWindow w;
+        w.resize(1300, 850);
+        w.show();
+        pump(800);
+        relaunched = w.recoveryMinutesForTest();
+        w.loadProjectForTest(proj);
+        pump(400);
+        interval = w.recoveryTimerIntervalForTest();
+        shownRelaunched = viaPreferences(w, 2); // and back to 2, the same way
+        w.markCleanForTest();
+        w.closeProjectForTest();
+        w.close();
+        pump(300);
+    }
+    int relaunchedAgain = -1;
+    {
+        MainWindow w;
+        w.resize(1300, 850);
+        w.show();
+        pump(800);
+        relaunchedAgain = w.recoveryMinutesForTest();
+        w.close();
+        pump(300);
+    }
+    check(QStringLiteral("(r10) THE PREFERENCES > RECOVERY INTERVAL SURVIVES A RELAUNCH: set to 5 on the page "
+                         "(it showed 2), a NEW window reads 5, arms its timer at 300000 ms with a project open, "
+                         "and its page shows 5"),
+          shownFirst == 2 && afterSet == 5 && relaunched == 5 && interval == 300000 && shownRelaunched == 5,
+          QStringLiteral("page showed %1, then %2; new window %3, timer %4 ms, its page %5").arg(shownFirst)
+              .arg(afterSet).arg(relaunched).arg(interval).arg(shownRelaunched));
+    check(QStringLiteral("(r10) control: set back to 2 the same way, the next new window reads 2 - it reads "
+                         "the stored value, not a default"),
+          relaunchedAgain == 2, QStringLiteral("new window %1").arg(relaunchedAgain));
 }
 
 // ---- (n) STABLE IMAGE IDS (2026-11-04, batch 2 of the proposals) ---------------
@@ -18683,6 +18993,8 @@ int main(int argc, char **argv)
     runCompactBarPass(scratch);
     runStableIdsPass(scratch);
     runRecoveryPass(scratch);
+    runRecoveryOffThreadPass(scratch);
+    runRecoveryPrefsPass(scratch);
 
     // ---- (aa) a test that cannot start says why and exits ----------------
     // An unattended gate must FAIL, not wait. Measured 2026-10-02: with its

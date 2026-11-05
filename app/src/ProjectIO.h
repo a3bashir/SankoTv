@@ -12,7 +12,9 @@
 #include <QStringList>
 #include <QVector>
 
+#include <atomic>
 #include <functional>
+#include <memory>
 
 // File-level project serialization, extracted from MainWindow with the
 // resolution epic. Two reasons, both structural:
@@ -82,6 +84,35 @@ private:
 QByteArray layerContent(const QImage &image);
 QByteArray flattenContent(const Panel &panel);
 
+// THE RECOVERY COPY'S IMAGES, OFF THE UI THREAD (2026-11-05). With a plan in
+// SaveData, projectToJson composites and encodes nothing: each image that
+// must be written goes into the plan - a layer or a thumbnail as a shared
+// copy of its QImage, a flatten as a snapshot of its panel's layers (shared
+// copies too) - and runImagePlan writes them, on whatever thread calls it.
+// The JSON, the names, the ledger's skips and renames are still decided on
+// the caller's thread; recording what landed in the ledger is the caller's,
+// after runImagePlan, back on its own thread. The snapshots must be released
+// on the UI thread (a Panel holds QPixmap caches), so the plan's owner keeps
+// it until then.
+struct ImageJob
+{
+    QString file;                         // absolute
+    QByteArray content;                   // the ledger's identity
+    QImage image;                         // a layer or a thumbnail
+    std::shared_ptr<const Panel> flatten; // a flatten: its panel's layers
+    bool ok = false;
+    Qt::HANDLE composeThread = nullptr;   // where a flatten was composited
+    Qt::HANDLE encodeThread = nullptr;    // where it was encoded and written
+};
+struct ImagePlan
+{
+    QVector<ImageJob> jobs;
+};
+// Writes every job - "<name>.part", then renamed over its name, so a file
+// under its name is always whole - several at once, and starts no new one
+// once `cancel` is set. True when every job was written.
+bool runImagePlan(ImagePlan &plan, const std::atomic<bool> &cancel);
+
 struct SaveData
 {
     QString projectName;
@@ -106,11 +137,9 @@ struct SaveData
     // every image whose file holds it, and records each one it writes.
     // Null (the seam, the fixtures) writes every image, as before.
     ImageLedger *ledger = nullptr;
-    // THE RECOVERY COPY (2026-11-04): each image is written to "<name>.part"
-    // and renamed over its name, so a crash mid-write never leaves a half
-    // file under a name the copy's manifest trusts. A Save leaves this off:
-    // its manifest is written only after every image, as before.
-    bool atomicImages = false;
+    // THE RECOVERY COPY (2026-11-05): images go into this plan instead of
+    // being written here (see ImagePlan). A Save leaves it null.
+    ImagePlan *plan = nullptr;
 };
 
 // The outcome of a save's IMAGE pass.
@@ -140,6 +169,10 @@ struct [[nodiscard]] WriteResult
     int imagesRenamed = 0;
     QStringList renamedFiles; // their new names (absolute)
     int encodeThreads = 0;  // distinct threads that encoded them
+    // Where the work ran (2026-11-05), one entry per step: each flatten this
+    // call composited (on the caller's thread) and each image it encoded.
+    QVector<Qt::HANDLE> composeThreadIds;
+    QVector<Qt::HANDLE> encodeThreadIds;
     // The audio copy was CANCELLED by the artist (Save As with a large
     // track): ok is false, and there is nothing to warn about.
     bool cancelled = false;

@@ -1,18 +1,17 @@
 # SankoTV — Session Handoff Brief
 
-## STATUS 2026-11-05 (evening): ALL THREE APPROVED BATCHES COMMITTED.
-Batch 3 (auto-save and crash recovery) was hand-tested (no step
-failed), gained the replace question the proposal asked for (SankoTV
-asks before the recovered work replaces the original; checks in (r4)),
-passed the "rep" gate in Release and Debug, and was committed and
-pushed as one commit. Open for the user to decide, nothing started:
-(1) a recovery copy that writes every image holds the UI thread while
-its encoders run - 0.45 s on the 10-panel test project, ~2 s for a full
-4K copy - where the proposal said "off the UI thread"; (2) the test
-project _002 still holds a recovery copy and lock (its work was saved
-as _003), so its card wears RECOVER until it is discarded; (3) "Show
-both in the folder" is covered by no check. Details in the batch 3
-section. The note below (from 2026-11-04) is history.
+## STATUS 2026-11-05 (late evening): ALL THREE APPROVED BATCHES AND THE
+FOLLOW-UP (3b) COMMITTED. Batch 3 (auto-save and crash recovery,
+538b93e85) was followed by batch 3b: the recovery copy now runs off the
+UI thread (a full 4K copy held it 5 ms in Release, 17 ms in Debug, where
+a Save As of the same images holds it ~0.5 s / 1.4 s), the two checks
+batch 3 lacked (the interval surviving a relaunch, "Show both in the
+folder"), and a fix for a batch 3 defect found on the way (opening
+another project left the first one's lock). Gate "off" green; committed
+on the gate's evidence, not hand-tested. Still open, for the user: the
+hand-test project _002 holds a recovery copy and lock (its work was
+saved as _003), so its card wears RECOVER until discarded. Details in
+the batch 3 and 3b sections. The note below (from 2026-11-04) is history.
 
 ## WHERE I STOPPED (2026-11-04, evening; stopped on the user's word)
 
@@ -10072,6 +10071,111 @@ files confirmed against sha_recovery.txt (refreshed after this record)
 after the commit; the commit message in msg_recovery.txt. OPEN for the
 user: the copy's UI-thread stall (step 2's finding), _002's leftover
 copy (step 7's observation), and step 9 having no check.
+
+## Batch 3b: the recovery copy off the UI thread, and batch 3's missing checks (2026-11-05) - COMMITTED
+The user's follow-up to batch 3: (1) the copy must not freeze the app -
+images taken on the UI thread only as cheap shared copies, all encoding
+and writing on worker threads, as the approved proposal said; measure
+the stall on a 4K project (target under 100 ms) and check that the
+encoding runs off the UI thread, with a control; (2) the two missing
+checks - the Preferences > Recovery interval surviving a relaunch, and
+"Show both in the folder" opening the folder without opening or
+changing anything (through a seam) - each with a control. Commit on
+the gate's evidence if green and under 100 ms. The pushed 538b93e85
+stays as it is (its trailer is not rewritten); commits from here use
+the current attribution, Claude Opus 5.5.
+BUILT: ProjectIO - ImageJob {file, content, image (a shared QImage),
+flatten (shared_ptr<const Panel> holding the panel's layers, shared),
+ok, composeThread, encodeThread}, ImagePlan {jobs}; SaveData::plan
+(replaces batch 3's atomicImages): with it, ImageSaver puts each image
+to write into the plan instead of the encoders (skips and renames still
+decided on the caller's thread); runImagePlan(plan, cancel) composites
+each flatten (Panel::flattenedImage, QImage only) and encodes each image
+to "<name>.part", renamed over the name, on a local pool (up to 8), and
+starts nothing once cancel is set. WriteResult::composeThreadIds /
+encodeThreadIds (one per step) for the Save's count. MainWindow -
+RecoveryCopyRun (in MainWindow.cpp): serial, base, target, plan, the
+manifest JSON with its header, cancel, hold (the gate's), future, the
+tick's UI time, and the worker's report; startRecoveryCopy (was
+writeRecoveryCopy): the plan and JSON on the UI thread, then
+QtConcurrent::run on m_recoveryPool (one thread): wait while held,
+runImagePlan, then the manifest through QSaveFile on the worker, then a
+queued finishRecoveryRun(serial) back on the UI thread, which records
+what landed in the copy's ledger (forgets the rest), counts the steps
+by thread against m_uiThread, and - only when the manifest was written
+and the copy is still of the open project - sets the bottom bar's word,
+the indicator and the recorder event (now with uiMs). One copy at a
+time (a tick finding one in flight does nothing). finishRecoveryCopy(
+cancel) stops and waits for the copy in flight before markSavedTo's
+discard, resetProjectState, closeEvent (accepted), the Discard action,
+loadFromPath and ~MainWindow. The copy no longer runs
+ensureBrushPixelsForSave: the canvas publishes each stroke into the
+layer's own QImage (SankoPaintHostAdapter::publish), the coherence pass
+only re-seeds the engine's mirror from the host, and a tick already
+waits while a commit is in flight (inputHeld). QFuture::waitForFinished
+may run a task that has not started on the waiting thread; it is only
+called with cancel set (the task then does nothing) or after the task
+posted its report. Seams: fireRecoveryTickForTest now WAITS for the
+copy (true when its manifest was written - what the existing (r)
+checks expect; their assertions unchanged), startRecoveryTickForTest
+(does not wait), waitForRecoveryCopyForTest, recoveryInFlightForTest,
+setRecoveryHoldForTest, lastRecoveryStepsForTest /
+lastRecoveryUiStepsForTest, lastSaveStepsForTest /
+lastSaveUiStepsForTest, lastRecoveryUiMsForTest, setOpenFolderForTest
+(in place of QDesktopServices::openUrl for "Show both in the folder").
+FOUND AND FIXED (a batch 3 defect, flagged to the user): loadFromPath
+did not release the project being left, so a project left through File
+> Open / Open Recent with its changes discarded kept its lock and, its
+copy being newer than its file, was offered as "closed without saving"
+next time. Now loadFromPath, at its point of no return, stops the copy
+in flight and removes the previous project's lock unless it reopens the
+same file (a recovered document has no file; its crash keeps its lock).
+CHECKS (Lifecycle), each with its control: (r3) "...and OPENING ANOTHER
+PROJECT releases it too" / control "reopening the project already open
+keeps its lock"; (r4) "'SHOW BOTH IN THE FOLDER' opens the project's
+folder and nothing else" (one seam call with the folder; Start window,
+no scenes, nothing unsaved; the file, copy, lock and recents unchanged;
+the crash still pending) / control "answered 'Open the last saved
+version' instead, the same measures see the project open and no folder
+shown"; (r9, a new pass on a 3840x2160 project, 6 panels, 18 images)
+"THE COPY RUNS OFF THE UI THREAD" (held at its start: the tick returns,
+in flight, nothing on disk, a posted event ran; released: 18 images and
+the manifest, 25 steps, 0 on the UI thread) / control "a Save, counted
+the same way, ran steps on the UI thread" (7 steps, 3 on it: 2 flatten
+composites and the manifest), and "the measured copy was a full one,
+off the UI thread"; (r10, a new pass) "THE PREFERENCES > RECOVERY
+INTERVAL SURVIVES A RELAUNCH" (set to 5 through the real dialog, a new
+MainWindow reads 5 and arms 300000 ms, its page shows 5) / control "set
+back to 2 the same way, the next new window reads 2". No existing check
+changed.
+MEASURED (printed as "NOTE (r9)", never a check - timing; quick run,
+Release): a full 4K recovery copy held the UI thread at most 5 ms - the
+idle loop's own worst gap was also 5 ms - the tick itself 1 ms, the copy
+549 ms on its worker; for reference a Save As writing the same 18 images
+held it 540 ms. Batch 3's hand test had measured 451 ms on a 10-panel
+960x540 project. Target (under 100 ms) met.
+QUICK RUN (quick_off1_*): Lifecycle 1141 checks, 0 failures, 534 s (10
+new: r3 2, r4 2, r9 4, r10 2); Camera 238 PASS, RESULT PASS.
+GATE off (fullgate_off.log, 2026-11-05, normal mode, 2002 s): clean
+Release and Debug builds (0 errors), 0 failing families in both;
+Lifecycle 1141 (Release 534 s, Debug 766 s), Camera 238, CanvasSizeLock
+170, CanvasEdgeLock 74, BrushLibrary 187, DevRecorder 46,
+QuickShapeGeometry 19, PaintPixel 13, CanvasBrush 3; every pin line
+count equal to the rep gate's in both configs (Camera c1p 17, mp 43, mq
+44, rp 3; Lifecycle rp 5, strip mp 3 / mq 5); the row pins bd989a38 /
+a4994d62 / a3e7f938 reproduced in both; the evaluate pins
+e43a30f9fcc11db6 / 7bd38237a37a7579 in camera_test.txt (RESULT PASS
+checks=238). THE 4K STALL IN THE GATE: Release - the copy held the UI
+thread 5 ms (tick 1 ms, worker 531 ms; Save As reference 534 ms; idle
+5 ms); Debug - 17 ms (tick 3 ms, worker 1517 ms; Save As reference 1373
+ms; idle 5 ms). Under 100 ms in both. Exe stamp 538b93e85+dirty,
+Release SankoTV.exe 2026-11-05 19:15:56 (Debug 19:17:56).
+COMMITTED on the gate's evidence (the user's instruction of 2026-11-05:
+"If the gate is green and the stall is under 100 ms, commit and push"),
+as ONE commit on master, pushed, with the Co-Authored-By the current
+instructions give (Claude Opus 5.5); the files confirmed against
+sha_recovery2.txt after the commit; the message in msg_recovery2.txt.
+Not hand-tested.
 
 ## METHOD: measure interior structure ACROSS THE SIZE RANGE before calling it character (2026-09-25)
 

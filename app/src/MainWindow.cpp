@@ -85,11 +85,41 @@ this fence."
 #include <Qt>
 #include <QDesktopServices>
 #include <QElapsedTimer>
+#include <QFuture>
 #include <QSpinBox>
+#include <QThread>
+#include <QThreadPool>
 #include <QUrl>
+#include <QtConcurrent/QtConcurrentRun>
+
+#include <atomic>
 
 #include "ProjectMedia.h"    // isInAssets: a recovered document's audio
 #include "ProjectRecovery.h" // auto-save and crash recovery (2026-11-04)
+
+// A RECOVERY COPY IN FLIGHT (2026-11-05). Everything its worker needs was
+// taken on the UI thread as shared copies (the plan's images, the panels'
+// layer snapshots, the manifest's JSON); the worker writes and reports back
+// here; the UI thread releases it (the snapshots hold QPixmap caches).
+struct RecoveryCopyRun
+{
+    quint64 serial = 0;
+    QString base;   // the project the copy is of
+    QString target; // its manifest
+    ProjectIO::ImagePlan plan;
+    QJsonObject root; // the manifest, header included
+    bool failAtManifest = false;
+    std::atomic<bool> cancel{false};
+    std::atomic<bool> hold{false}; // the gate's: the worker waits at its start
+    QFuture<void> future;
+    QElapsedTimer clock; // from the tick
+    qint64 uiMs = 0;     // the tick's own time on the UI thread
+    // The worker's report, read after the future finishes.
+    bool imagesOk = false;
+    bool committed = false;
+    Qt::HANDLE manifestThread = nullptr;
+    qint64 bytes = 0;
+};
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent), m_imageLedger(std::make_unique<ProjectIO::ImageLedger>())
@@ -262,6 +292,11 @@ MainWindow::MainWindow(QWidget *parent)
     // until the hold ends.
     m_sessionId = QUuid::createUuid().toString(QUuid::WithoutBraces);
     m_recoveryLedger = std::make_unique<ProjectIO::ImageLedger>();
+    // The copy's writing runs here, off the UI thread (2026-11-05); one at a
+    // time - the next tick takes whatever changed since.
+    m_uiThread = QThread::currentThreadId();
+    m_recoveryPool = new QThreadPool(this);
+    m_recoveryPool->setMaxThreadCount(1);
     m_recoveryTimer = new QTimer(this);
     connect(m_recoveryTimer, &QTimer::timeout, this, [this] { onRecoveryTick(); });
     m_recoveryRetry = new QTimer(this);
@@ -494,6 +529,7 @@ void MainWindow::updateChromeForPage()
 
 MainWindow::~MainWindow()
 {
+    finishRecoveryCopy(true); // no worker may outlive what it reports to
     freeScenes();
 }
 
@@ -894,13 +930,40 @@ bool MainWindow::onRecoveryTick()
 {
     if (!m_dirty || m_recoveryMinutes <= 0 || recoveryBasePath().isEmpty())
         return false;
+    if (m_recoveryRun)
+        return false; // one copy at a time: the next tick takes what changed since
     if (actionInProgress()) {
         m_recoveryPending = true;
         if (m_recoveryRetry)
             m_recoveryRetry->start();
         return false;
     }
-    return writeRecoveryCopy();
+    return startRecoveryCopy();
+}
+
+bool MainWindow::fireRecoveryTickForTest()
+{
+    m_lastRecoveryCommitted = false;
+    if (!onRecoveryTick())
+        return false;
+    waitForRecoveryCopyForTest();
+    return m_lastRecoveryCommitted;
+}
+
+bool MainWindow::waitForRecoveryCopyForTest(int maxMs)
+{
+    QElapsedTimer clock;
+    clock.start();
+    while (m_recoveryRun && clock.elapsed() < maxMs)
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 5);
+    return !m_recoveryRun;
+}
+
+void MainWindow::setRecoveryHoldForTest(bool hold)
+{
+    m_recoveryHoldForTest = hold;
+    if (!hold && m_recoveryRun)
+        m_recoveryRun->hold.store(false);
 }
 
 // THE COPY: the same ProjectIO path as a Save, into the project's recovery
@@ -911,16 +974,25 @@ bool MainWindow::onRecoveryTick()
 // from and when. The audio track is written as a reference to the project's
 // file, never copied. No dialog, ever: a copy that cannot be written is
 // tried again at the next tick.
-bool MainWindow::writeRecoveryCopy()
+//
+// OFF THE UI THREAD (2026-11-05; the hand test measured 0.45 s held on the
+// UI thread when the encoders ran under it). Here, on the UI thread: the
+// names, the manifest's JSON, the ledger's skips, and the images as SHARED
+// copies - a layer's QImage, a flatten's panel layers - into a plan. On the
+// worker: every composite, every encode, every write, the manifest. The
+// ledger learns what landed when the worker reports back (finishRecoveryRun).
+// No save-time pixel sync is needed: the canvas publishes each stroke into
+// the layer's own image, and a tick waits while a commit is in flight
+// (DrawingCanvas::inputHeld).
+bool MainWindow::startRecoveryCopy()
 {
     const QString base = recoveryBasePath();
     const QString target = ProjectRecovery::copyPathFor(base);
     if (base.isEmpty() || !m_storyboard || !m_animatic
         || !ProjectRecovery::isSafeTarget(base, target))
         return false;
-    QElapsedTimer clock;
-    clock.start();
-    m_storyboard->ensureBrushPixelsForSave();
+    auto run = std::make_unique<RecoveryCopyRun>();
+    run->clock.start();
     ProjectIO::SaveData data;
     data.projectName = m_projectName;
     data.fps = m_projectFps;
@@ -933,7 +1005,7 @@ bool MainWindow::writeRecoveryCopy()
     data.tracks = m_animatic->tracks();
     data.perspective = m_storyboard->perspectiveToJson();
     data.ledger = m_recoveryLedger.get();
-    data.atomicImages = true;
+    data.plan = &run->plan;
     const ProjectIO::WriteResult written = ProjectIO::projectToJson(data, target);
     if (!written.ok)
         return false;
@@ -946,24 +1018,87 @@ bool MainWindow::writeRecoveryCopy()
     header[QStringLiteral("buildStamp")] = buildStamp();
     header[QStringLiteral("editCount")] = m_undoStack ? m_undoStack->index() : 0;
     root[QStringLiteral("recovery")] = header;
-    const QByteArray json = QJsonDocument(root).toJson(QJsonDocument::Indented);
-    QSaveFile file(target);
-    if (!file.open(QIODevice::WriteOnly))
-        return false;
-    if (file.write(json) != json.size() || m_recoveryFailAtManifestForTest) {
-        file.cancelWriting(); // the previous copy's manifest stays whole
-        return false;
-    }
-    if (!file.commit())
-        return false;
-    qint64 bytes = json.size();
-    for (const QString &f : written.writtenFiles)
-        bytes += QFileInfo(f).size();
-    m_lastRecoveryWritten = written.writtenFiles;
-    m_lastRecoveryAt = QDateTime::currentDateTime();
+    run->serial = ++m_recoverySerial;
+    run->base = base;
+    run->target = target;
+    run->root = root;
+    run->failAtManifest = m_recoveryFailAtManifestForTest;
+    run->hold.store(m_recoveryHoldForTest);
+    m_lastRecoveryCommitted = false;
     m_recoveryPending = false;
     if (m_recoveryRetry)
         m_recoveryRetry->stop();
+    RecoveryCopyRun *r = run.get();
+    m_recoveryRun = std::move(run);
+    const quint64 serial = r->serial;
+    r->uiMs = r->clock.elapsed();
+    r->future = QtConcurrent::run(m_recoveryPool, [this, r, serial] {
+        while (r->hold.load() && !r->cancel.load())
+            QThread::msleep(2);
+        r->imagesOk = ProjectIO::runImagePlan(r->plan, r->cancel);
+        if (r->imagesOk && !r->cancel.load()) {
+            const QByteArray json = QJsonDocument(r->root).toJson(QJsonDocument::Indented);
+            r->manifestThread = QThread::currentThreadId();
+            QSaveFile file(r->target);
+            if (file.open(QIODevice::WriteOnly)) {
+                if (file.write(json) != json.size() || r->failAtManifest)
+                    file.cancelWriting(); // the previous copy's manifest stays whole
+                else
+                    r->committed = file.commit();
+            }
+            r->bytes = json.size();
+            for (const ProjectIO::ImageJob &job : r->plan.jobs)
+                r->bytes += QFileInfo(job.file).size();
+        }
+        // Back on the UI thread; dropped if the window is gone (it waits
+        // for this worker before it goes).
+        QMetaObject::invokeMethod(
+            this, [this, serial] { finishRecoveryRun(serial); }, Qt::QueuedConnection);
+    });
+    return true;
+}
+
+// The copy's result, on the UI thread: the ledger learns what landed, the
+// steps are counted by thread, and - when the manifest was written and the
+// copy is still this window's project's - the artist is told.
+void MainWindow::finishRecoveryRun(quint64 serial)
+{
+    if (!m_recoveryRun || m_recoveryRun->serial != serial)
+        return; // already finished (waited for), or another copy's report
+    std::unique_ptr<RecoveryCopyRun> run = std::move(m_recoveryRun);
+    run->future.waitForFinished(); // the report is posted as its last act
+    QStringList written;
+    int steps = 0, uiSteps = 0;
+    for (const ProjectIO::ImageJob &job : run->plan.jobs) {
+        if (job.ok) {
+            m_recoveryLedger->record(job.file, job.content);
+            written << job.file;
+        } else {
+            m_recoveryLedger->forget(job.file);
+        }
+        if (job.composeThread) {
+            ++steps;
+            uiSteps += job.composeThread == m_uiThread ? 1 : 0;
+        }
+        if (job.encodeThread) {
+            ++steps;
+            uiSteps += job.encodeThread == m_uiThread ? 1 : 0;
+        }
+    }
+    if (run->manifestThread) {
+        ++steps;
+        uiSteps += run->manifestThread == m_uiThread ? 1 : 0;
+    }
+    m_lastRecoverySteps = steps;
+    m_lastRecoveryUiSteps = uiSteps;
+    m_lastRecoveryUiMs = run->uiMs;
+    m_lastRecoveryCommitted = run->committed;
+    if (!run->committed)
+        return; // no new manifest: the previous copy stands; the next tick tries again
+    if (run->base.compare(recoveryBasePath(), Qt::CaseInsensitive) != 0)
+        return; // another project is open now: this one's word is not its
+    m_lastRecoveryWritten = written;
+    m_lastRecoveryAt = QDateTime::currentDateTime();
     m_storyboard->setRecoveryStatus(QStringLiteral("Recovery copy saved %1")
                                         .arg(m_lastRecoveryAt.toString(QStringLiteral("HH:mm"))));
     updateSavedIndicator();
@@ -971,13 +1106,24 @@ bool MainWindow::writeRecoveryCopy()
 #ifdef SANKOTV_DEV_RECORDER
     if (auto *rec = devrec::Recorder::instance(); rec && rec->isRecording()) {
         QVariantMap event;
-        event.insert(QStringLiteral("ms"), qint64(clock.elapsed()));
-        event.insert(QStringLiteral("bytes"), bytes);
-        event.insert(QStringLiteral("files"), written.writtenFiles.size());
+        event.insert(QStringLiteral("ms"), qint64(run->clock.elapsed()));
+        event.insert(QStringLiteral("uiMs"), run->uiMs);
+        event.insert(QStringLiteral("bytes"), run->bytes);
+        event.insert(QStringLiteral("files"), written.size());
         rec->logEvent(QStringLiteral("recoverySaved"), event);
     }
 #endif
-    return true;
+}
+
+void MainWindow::finishRecoveryCopy(bool cancel)
+{
+    if (!m_recoveryRun)
+        return;
+    if (cancel)
+        m_recoveryRun->cancel.store(true);
+    m_recoveryRun->hold.store(false);
+    m_recoveryRun->future.waitForFinished();
+    finishRecoveryRun(m_recoveryRun->serial);
 }
 
 // The crash prompt: the copy, the file, the folder, or nothing. The gate
@@ -1098,6 +1244,7 @@ int MainWindow::discardRecoveryCopy(std::function<bool()> confirm, QString *why)
     }
     if (!confirm())
         return 0;
+    finishRecoveryCopy(true); // nothing may write into what is being removed
     ProjectRecovery::discardCopy(base);
     m_lastRecoveryAt = QDateTime();
     if (m_storyboard)
@@ -2271,7 +2418,9 @@ void MainWindow::resetProjectState(ClipboardPolicy clipboards)
 {
     // A clean teardown takes the session lock with it (a crash leaves it,
     // 2026-11-04); the recovery copy stays until a clean Save of that
-    // project removes it. A waiting tick has nothing to write any more.
+    // project removes it. A waiting tick has nothing to write any more, and
+    // a copy in flight is stopped before the scenes it copied go.
+    finishRecoveryCopy(true);
     ProjectRecovery::removeLock(m_currentProjectPath);
     m_recoveredFrom.clear();
     m_recoveryPending = false;
@@ -2468,6 +2617,7 @@ void MainWindow::closeEvent(QCloseEvent *event)
     // nothing left to recover from it.
     if (m_recoveryTimer)
         m_recoveryTimer->stop();
+    finishRecoveryCopy(true);
     ProjectRecovery::removeLock(m_currentProjectPath);
 }
 
@@ -2539,7 +2689,10 @@ void MainWindow::openProject(const QString &path)
         case RecoveryAnswer::OpenSaved:
             break; // the file, below; the copy stays until a clean Save
         case RecoveryAnswer::ShowFolder:
-            QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(path).absolutePath()));
+            if (m_openFolderForTest)
+                m_openFolderForTest(QUrl::fromLocalFile(QFileInfo(path).absolutePath()));
+            else
+                QDesktopServices::openUrl(QUrl::fromLocalFile(QFileInfo(path).absolutePath()));
             return;
         case RecoveryAnswer::Cancel:
             return;
@@ -2740,6 +2893,15 @@ bool MainWindow::saveToPath(const QString &path)
     m_lastSaveSkipped = written.imagesSkipped;
     m_lastSaveRenamed = written.renamedFiles;
     m_lastSaveEncodeThreads = written.encodeThreads;
+    // Where the Save's work runs (2026-11-05), counted as the recovery copy's
+    // is: each flatten composite, each encode, and the manifest below - which
+    // a Save writes on this, the UI thread.
+    m_lastSaveSteps = int(written.composeThreadIds.size() + written.encodeThreadIds.size()) + 1;
+    m_lastSaveUiSteps = (QThread::currentThreadId() == m_uiThread ? 1 : 0);
+    for (Qt::HANDLE t : written.composeThreadIds)
+        m_lastSaveUiSteps += t == m_uiThread ? 1 : 0;
+    for (Qt::HANDLE t : written.encodeThreadIds)
+        m_lastSaveUiSteps += t == m_uiThread ? 1 : 0;
     if (!written.ok && written.cancelled)
         return false; // the artist pressed Cancel: nothing to tell them
     if (!written.ok) {
@@ -2817,6 +2979,7 @@ void MainWindow::markSavedTo(const QString &path, SaveCompleted)
     if (!previous.isEmpty() && previous.compare(path, Qt::CaseInsensitive) != 0)
         ProjectRecovery::removeLock(previous);
     m_recoveredFrom.clear();
+    finishRecoveryCopy(true); // a copy in flight is of work now saved
     ProjectRecovery::discardCopy(path);
     ProjectRecovery::writeLock(path, m_sessionId, buildStamp());
     m_lastRecoveryAt = QDateTime();
@@ -2850,6 +3013,17 @@ bool MainWindow::loadFromPath(const QString &path, bool asRecoveryCopy)
 
     const QJsonObject root = doc.object();
     const QString folder = QFileInfo(path).absolutePath();
+
+    // LEAVING THE OPEN PROJECT (2026-11-05): its copy in flight is stopped,
+    // and its session lock goes - opening another project is a clean close
+    // of this one. (Batch 3 left the lock, so a project left by File > Open
+    // with its changes discarded was offered as "closed without saving" next
+    // time.) Reopening the same file keeps it; a recovered document has no
+    // file, and the crash it came from keeps its lock until it is resolved.
+    finishRecoveryCopy(true);
+    if (!m_currentProjectPath.isEmpty()
+        && m_currentProjectPath.compare(path, Qt::CaseInsensitive) != 0)
+        ProjectRecovery::removeLock(m_currentProjectPath);
 
     freeScenes();
 

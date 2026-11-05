@@ -37,6 +37,10 @@ namespace ProjectRecovery {
 struct Pending;
 }
 
+struct RecoveryCopyRun; // a recovery copy in flight (MainWindow.cpp)
+class QThreadPool;
+class QUrl;
+
 namespace sankoexport {
 struct MovieResult;
 struct FilesResult;
@@ -219,7 +223,31 @@ public:
     void setRecoveryMinutesForTest(int minutes) { setRecoveryMinutes(minutes); }
     int recoveryMinutesForTest() const { return m_recoveryMinutes; }
     int recoveryTimerIntervalForTest() const; // ms; 0 when not armed
-    bool fireRecoveryTickForTest() { return onRecoveryTick(); }
+    // One tick, and the copy it starts waited for (2026-11-05: the copy runs
+    // on worker threads): true when a copy's manifest was written.
+    bool fireRecoveryTickForTest();
+    // One tick, NOT waited for: true when a copy started.
+    bool startRecoveryTickForTest() { return onRecoveryTick(); }
+    // Events processed until no copy is in flight (at most maxMs).
+    bool waitForRecoveryCopyForTest(int maxMs = 180000);
+    bool recoveryInFlightForTest() const { return m_recoveryRun != nullptr; }
+    // While set, a copy that starts waits at its beginning on its worker;
+    // clearing it releases the one in flight.
+    void setRecoveryHoldForTest(bool hold);
+    // Where the last copy's work ran: its steps (each flatten composited,
+    // each image encoded, the manifest written) and how many of them ran on
+    // the UI thread; the same for the last Save; the tick's own time on the
+    // UI thread.
+    int lastRecoveryStepsForTest() const { return m_lastRecoverySteps; }
+    int lastRecoveryUiStepsForTest() const { return m_lastRecoveryUiSteps; }
+    int lastSaveStepsForTest() const { return m_lastSaveSteps; }
+    int lastSaveUiStepsForTest() const { return m_lastSaveUiSteps; }
+    qint64 lastRecoveryUiMsForTest() const { return m_lastRecoveryUiMs; }
+    // "Show both in the folder" in place of the desktop's file browser.
+    void setOpenFolderForTest(std::function<void(const QUrl &)> open)
+    {
+        m_openFolderForTest = std::move(open);
+    }
     bool recoveryPendingForTest() const { return m_recoveryPending; }
     QStringList lastRecoveryWrittenForTest() const { return m_lastRecoveryWritten; }
     QDateTime lastRecoveryAtForTest() const { return m_lastRecoveryAt; }
@@ -346,7 +374,12 @@ private:
     void setRecoveryMinutes(int minutes);
     void armRecoveryTimer();
     bool onRecoveryTick();       // a copy when due; waits for a held action
-    bool writeRecoveryCopy();
+    bool startRecoveryCopy();    // true: a copy is now in flight
+    void finishRecoveryRun(quint64 serial); // its result, on the UI thread
+    // Before anything that ends what the copy is a copy of (a Save, a close,
+    // an open, a discard, the window going): the copy in flight is stopped
+    // (cancel) or allowed to finish, and waited for.
+    void finishRecoveryCopy(bool cancel);
     bool actionInProgress() const;
     QString recoveryBasePath() const; // the project, or the one recovered from
     RecoveryAnswer askRecovery(const QString &path, const ProjectRecovery::Pending &pending);
@@ -460,6 +493,19 @@ private:
     std::function<bool(const QString &, bool)> m_replacePromptForTest;
     int m_replacePromptCount = 0;
     QAction *m_discardRecoveryAct = nullptr; // File > Discard Recovery Copy
+    // The copy off the UI thread (2026-11-05).
+    std::unique_ptr<RecoveryCopyRun> m_recoveryRun; // the copy in flight
+    QThreadPool *m_recoveryPool = nullptr;          // its worker (one)
+    quint64 m_recoverySerial = 0;
+    bool m_lastRecoveryCommitted = false;
+    bool m_recoveryHoldForTest = false;
+    int m_lastRecoverySteps = 0;
+    int m_lastRecoveryUiSteps = 0;
+    int m_lastSaveSteps = 0;
+    int m_lastSaveUiSteps = 0;
+    qint64 m_lastRecoveryUiMs = 0;
+    Qt::HANDLE m_uiThread = nullptr; // the thread this window lives on
+    std::function<void(const QUrl &)> m_openFolderForTest;
     QString m_projectName = QStringLiteral("Untitled Project");
     // Project properties. fps drives the animatic timeline; canvasWidth/
     // Height are the project's REAL canvas resolution — the single source
