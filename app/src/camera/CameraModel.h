@@ -12,6 +12,7 @@
 // drawing without any command touching a key (the spec's section 2, the
 // user's decision 1).
 
+#include <QPointF>
 #include <QRect>
 #include <QSize>
 #include <QString>
@@ -83,6 +84,18 @@ struct CameraState
 
 // The ease of the segment that STARTS at a key.
 enum class Ease { Linear, EaseIn, EaseOut, EaseInOut, Hold };
+
+// WHAT A MOVE DOES (2026-11-06, Figma CAM-2): a segment's end key against
+// its start key, for the canvas's movement glyphs - editing guides only,
+// never drawn by anything that renders the shot. shotcam::motionBetween /
+// segmentMotion (ShotCamera.h) work it out.
+struct Motion
+{
+    int zoom = 0;   // +1 pushes in, -1 pulls out, 0 neither
+    QPointF pan;    // the centre's travel in canvas px; null: no pan
+    int rotate = 0; // +1 clockwise, -1 anticlockwise, 0 neither
+    bool any() const { return zoom != 0 || !pan.isNull() || rotate != 0; }
+};
 
 struct CameraKey
 {

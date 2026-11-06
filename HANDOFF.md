@@ -10177,6 +10177,177 @@ instructions give (Claude Opus 5.5); the files confirmed against
 sha_recovery2.txt after the commit; the message in msg_recovery2.txt.
 Not hand-tested.
 
+## Batch 4: the camera guides - the original canvas border and the movement glyphs (2026-11-06) - COMMITTED
+Items 1 and 2 of the proposals of 2026-11-06
+(Documents\SankoTV-Design\proposals-2026-11-06.md, Figma CAM-1 / CAM-2),
+approved with Q1 (option A: the base-framing line, dashed white 55 %; the
+stage edge stays the paper's edge) and Q2 (a curved arrow for Rotate, and
+the glyphs with drawing tools too, smaller). Canvas overlays only: no
+file, model, preview or export change. Built together with batch 5 at
+the user's word, each its own commit and hash list (sha_guides.txt here),
+one shared hand-test list (camera\handtest_guides_frames.md).
+BUILT: CameraModel.h - shotcam::Motion {zoom +1 / -1 / 0, pan (the
+centre's travel in canvas px, null for none), rotate +1 / -1 / 0, any()}.
+ShotCamera - motionBetween(from, to, stage): zoom by a ratio beyond 1 %,
+pan by a travel beyond 2 % of the frame's width, rotate by a turn beyond
+0.5 deg (normalisedAngle); segmentMotion(scene, sceneFrame, fps, stage,
+filmStart): the live keys sorted as evaluate sorts them (anchored before
+pinned at one frame), the segment's key the last one at or before the
+frame (frame < at + 0.5), nothing after the last key or across a Hold.
+DrawingCanvas - ShotCameraView::motion (StoryboardPage::shotCameraView
+fills it from segmentMotion at the playhead); shotCameraFrameShown (the
+frame's own rule: the Camera tool, or keys, or a margin);
+shotCameraBaseQuad (the base framing, neutral(stage canvas), mapped;
+empty while the frame sits on it within 0.5 px, where it would hide
+under the frame's own outline); shotCameraGlyphMotion (a Quick Move
+under the pointer: its move, on its END; none while the frame is
+dragged; else the segment's); paintMotionGlyphs strokes
+shotcam::motionGlyphPath 1 px wide in purple #7c6ef6 only.
+THE ARROWS AS ADJUSTED IN FIGMA (the user's word before the commit,
+2026-11-06: CAM-2, node 530:696, the top row redrawn - all arrows thinner
+and lighter, nothing in the centre). shotcam::motionGlyphPath(quad,
+motion, screenPanDir, scale), a pure function in the frame's own axes (x
+along its top edge, y down its left edge, mapped onto the quad, so a
+turned or mirrored frame carries its glyphs): Push In / Pull Out - at
+each corner a 14 px arrow on the 45 degree line from 6 px in from both
+edges (the frame's 9.9 x 9.9), head inwards / at the corner; a pan
+within 22.5 degrees of the frame's horizontal - a chevron 5 deep and 8
+wide on the top and on the bottom edge, centred on the edge's line, 3 to
+8 px past its middle the way the frame travels; a tilt the same on the
+two sides; a diagonal pan - at each corner a 15 px arrow along the
+travel, its tip 7 px short of the corner (the frame's four hand-placed
+arrows sit within 3.2 px of that rule); a turn - a half circle of radius
+12 above the top edge, its centre 3.6 px out from the edge's middle,
+the head at the end the frame turns to, pointing down at the frame;
+several at once all of them (Push In + Pan: the corner arrows and the
+edge chevrons). Arrowheads: two 6.3 px barbs at 35 degrees (the arc's
+in the frame measure 6.1; one head for all). The Camera tool scale 1, a
+drawing tool 10/14 (as before: a 10 px arrow), strokes 1 px at both
+(the frame's Drawing-tools card still shows the old 1.5 px; the user's
+"all arrows are thinner" covers it). The 22.5 degree split is mine (the
+frame's diagonal is at 24.4 degrees); the right-side tilt chevron in the
+frame is 7.2 x 5.2 against 8 x 5 for the other three - 8 x 5 used.
+paintShotCamera draws the base line after the dim and the veil (1 px,
+dash 4 / 3, white alpha 140 = 55 %) and the glyphs after the Quick Move
+preview. Seams: shotCameraBaseQuadForTest, shotCameraGuidesForTest
+(drawn, zoom, rotate, panX / panY on screen, onEnd, big),
+shotCameraGlyphPathForTest (the strokes as painted, and the pen's
+width), setMotionGlyphsHiddenForTest (the paint without the glyphs
+only, so a check can tell their pixels).
+CHECKS, each with its control. Camera (mv, pure functions): (mv1) each
+kind of move gives its glyph / control the thresholds (0.9 %, 38 px,
+0.4 deg nothing; 1.1 %, 39 px, 0.6 deg the glyph); (mv2) the segment at
+the playhead / control the same segment as a Hold; (mv2) a pinned key
+ends a segment as an anchored one does; THE ARROWS' NUMBERS (on a 480 x
+270 frame at (100, 100)): (mv3) Push In and Pull Out - the four 14 px
+arrows from 6 px in, heads 6.3 px at 35 degrees, nothing else / control
+a drawing tool's 10/14, and a Hold no stroke; (mv4) a pan and a tilt -
+the chevrons on the edges along the move, each way, nothing else; a
+diagonal pan (25 degrees) the corner arrows / control 20 degrees is
+still a pan's chevrons; NOTHING IN THE MIDDLE - every point of every
+glyph within 23 px of the outline / control the earlier glyph's double
+arrow measures 135 px; (mv5) Push In + Pan both sets; a turn - the half
+circle above the top edge, clockwise head right, anticlockwise left /
+control turned 30 degrees the glyphs turn with the frame, mirrored the
+clockwise head is on the screen's left. Lifecycle (cg, a new pass, the
+real window, a 1920 x 1080 project with a 480 x 270 margin and four
+keys): (cg1) the base line stays put mid push-in, mid pan and mid
+pull-out while the frame moves / control on the first key's frame the
+frame IS the base framing and no line is drawn; (cg2) the glyphs, Camera
+tool size / control the same segment as a Hold shows none; (cg4) a
+Quick Move under the pointer shows its move on its END / control off
+the tiles the segment's again; (cg6) THE ARROWS AS PAINTED - mid panel
+2 (a pan right) the canvas strokes motionGlyphPath's two chevrons for
+the frame on screen with a 1 px pen, and every pixel the glyphs change
+(the grab with them against the grab without, so the panels' art cannot
+pass for a glyph) is within 2.5 px of a chevron, by the top or the
+bottom edge, none in the middle / control mid panel 1 (a push in) the
+four corner arrows, each corner found, their ink 0.6 .. 1.35 px per px
+of stroke (a 1 px pen) while the same strokes painted at 2 px read 1.6
+or more. (The bound was 1.5 px until the second quick run showed two
+changed pixels at 1.85 px, 6 % tints just past the right-hand corner
+arrows' starts: Qt draws a 1 px pen with its thin-line stroker, whose
+antialiased ends reach that far. The middle is 20 px and more from any
+stroke, and the ink measure tells 1 px from 2 px: 0.88 against 2.00.)
+(cg5) NEVER IN THE PREVIEW: playing from
+mid push-in, the preview's picture holds no pixel of the accent / control
+the canvas at the same point holds them / control with no frame drawn
+(no margin, no keys) the canvas holds none. CHANGED WITH THE ADJUSTED
+ARROWS (before the commit): the first control was
+  guidesUp && onCanvas > 50   "(cg5) control: the canvas at the same point, the guides drawn, holds them"
+and is now
+  guidesUp && onCanvas > 0    "(cg5) control: the canvas at the same point, the guides drawn, holds them - pixels of the accent itself, from the frame (the 1 px glyphs blend into their ground; the 2 px ones of the first build gave 112)"
+because the 112 the first build counted were nearly all the 2 px
+arrows' (a 2 px stroke covers whole pixels in the accent itself); the 1
+px arrows of the adjusted design blend into their ground and leave 5,
+the frame's own (the code was read first: the arrows are 1 px as the
+Figma frame draws them; the control measured the old width). Positive
+control, in the same run: the second control, new - where no frame is
+drawn the same count is 0, so the 5 are the guides'. The glyphs' own
+pixels are (cg6)'s; (cg3) with a drawing
+tool the same line and the glyph at the smaller size / control no margin
+and no keys, nothing. The exports draw no canvas overlay; the gate's
+neutral and moving pins are the proof that nothing that renders the shot
+changed. No existing check changed.
+QUICK RUN: Camera 243 PASS (238 + 5); Lifecycle 1152, 0 failures,
+541.7 s (quick_g2_lifecycle.log; 11 new: cg 1 + cg1-cg5 10).
+HAND TEST (Dev Recorder 20261106-174027, Release c5076abcc+dirty built
+16:29, the first arrows; the user did steps 1, 2, 5, 6, 7, 8, 10, 13 and
+16 of handtest_guides_frames.md, on a copy made that day -
+Test_SB_StageMargin_01, 2880 x 1620 with a 480 x 270 margin, one panel).
+Step 1 PASS for what the recording holds: with the Camera tool on each
+move's end key (23.5 s, 129.5 s) and with the Move tool (133.5 s) the
+dashed white line stays on the base framing while the frame is zoomed
+and panned. The scrub through a two-key move with the Camera tool and
+the first key's no-line control are not in it (the Camera tool's
+scrubs had one key; 27 camera edits logged with no time before the
+recorder started say they were tried before it) - cg1. Step 2 NOT SHOWN:
+the playhead never sat inside a two-key move while the Camera tool was
+on, and the Move tool's scrub showed the shot preview - cg2, mv1, mv2;
+the arrows were redrawn after the test anyway (above). Step 5: the
+playing preview PASS (12 plays, e.g. 170.5 s and 276.5 s: no line, no
+glyph); the MP4 (exported 17:35:54, before the recorder started) has 73
+frames, and frames 0, 12 .. 72 show no line or glyph; no PDF was made -
+cg5 and the PDF pins. No failure.
+GATE guides - ON BATCH 4 ALONE: tree T4 (144123ea, tree_T4.txt, nine
+files) checked out in the scratch worktree C:\SankoTV_split, its own
+configure and clean builds, the gate script copied with A= the worktree
+(fullgate_guides.log there; 2026-11-06, normal mode, 2009 s): clean
+Release and Debug builds (0 errors), 0 failing families in both;
+Lifecycle 1152 (Release 543 s, Debug 748 s), Camera 243, CanvasSizeLock
+170, CanvasEdgeLock 74, BrushLibrary 187, DevRecorder 46,
+QuickShapeGeometry 19, PaintPixel 13, CanvasBrush 3; every pin line
+count equal to gate off's in both configs (Camera c1p 17, mp 43, mq 44,
+rp 3; the Lifecycle pin lines likewise); the row pins bd989a38 /
+a4994d62 / a3e7f938 reproduced in both; the evaluate pins
+e43a30f9fcc11db6 / 7bd38237a37a7579 in camera_test.txt (RESULT PASS
+checks=243). Worktree exe Release 15:56:20, Debug 15:58:36. (That gate
+was on the first arrows; the one below is on the arrows as committed.)
+QUICK RUNS ON THE ADJUSTED ARROWS (the main tree, with batch 5): Camera
+263 PASS (253 + 10); Lifecycle 1025 PASS then a crash in (dp) just after
+a test window lost the foreground (the pass holds the Depth popover by
+a raw pointer - test fragility, not batch 4; a task was suggested);
+1173 / 2 failures (the cg5 and cg6 controls, above); 1174 / 2 ((cg6) at
+1.85 px, above; (af) after a test window was minimised, not by the
+test).
+GATE guides2 - THE ADJUSTED ARROWS, BATCH 4 ALONE (the same worktree,
+its nine files as committed; fullgate_guides2.log there; 2026-11-06,
+normal mode, 2107 s): clean Release and Debug builds (0 errors);
+Release 0 failing families - Lifecycle 1155, Camera 253, CanvasSizeLock
+170, CanvasEdgeLock 74, BrushLibrary 187, DevRecorder 46,
+QuickShapeGeometry 19, PaintPixel 13, CanvasBrush 3; Debug Lifecycle
+1155, Camera 253 and the rest green, but QuickShapeGeometry (16) and
+CanvasEdgeLock (49) failed in their first seconds, a test window losing
+the foreground to the Claude app (and one minimised, not by the test)
+as the Debug families began. Rerun alone at once (the rule for a
+failure only the normal mode shows): QuickShapeGeometry 19 / 0,
+CanvasEdgeLock 74 / 0, no foreground lost. Every pin line count equal
+to the first gate's in both configs (Camera c1p 17, mp 43, mq 44, rp 3;
+Lifecycle "pin" 40, (rp 6, (mp 4); the row pins bd989a38 / a4994d62 /
+a3e7f938 in both; the evaluate pins e43a30f9fcc11db6 / 7bd38237a37a7579
+in camera_test.txt, RESULT PASS checks=253). Worktree exe Release
+19:09:54, Debug 19:12:03.
+
 ## METHOD: measure interior structure ACROSS THE SIZE RANGE before calling it character (2026-09-25)
 
 The Painting census measured Acrylic at size 20 only and found "one

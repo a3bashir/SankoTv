@@ -936,6 +936,8 @@ constexpr double kCamHandleTol = 8.0;        // grab reach about a handle centre
 constexpr double kCamRotateZone = 22.0;      // outside a corner: turn
 constexpr double kCamSmallSide = 40.0;       // a side below this: handles step out
 constexpr double kCamStepOut = 8.0;
+constexpr double kGlyphPen = 1.0;           // CAM-2's glyph strokes (as adjusted 2026-11-06)
+constexpr double kGlyphSmall = 10.0 / 14.0; // a drawing tool's glyphs against the Camera tool's
 
 // The canvas chips, in the PREVIEW chip's own style (AnimaticPage's
 // PanelDisplay): 24 px tall, radius 6, 11 px text, 10 px padding.
@@ -992,6 +994,124 @@ shotcam::CameraState DrawingCanvas::shotCameraShownState(const ShotCameraView &v
 QPolygonF DrawingCanvas::shotCameraWidgetQuad(const shotcam::CameraState &s) const
 {
     return viewTransform().map(shotcam::frameQuad(s, stage()));
+}
+
+// --- The camera guides (2026-11-06, Figma CAM-1 / CAM-2) ----------------------
+// Editing guides on the canvas only: nothing that renders the shot (the
+// preview, the strip, the clips, the MP4, PNG and PDF exports) draws them.
+
+bool DrawingCanvas::shotCameraFrameShown(const ShotCameraView &v) const
+{
+    // The frame's own rule (paintShotCamera): with the Camera tool; with a
+    // drawing tool when the scene has keys or the stage a margin.
+    return v.valid && (m_tool == Camera || v.sceneHasKeys || stage().hasMargin());
+}
+
+QPolygonF DrawingCanvas::shotCameraBaseQuad(const QPolygonF &frameQuad) const
+{
+    // THE ORIGINAL CANVAS BORDER (CAM-1 option A): the base framing - the
+    // project's own canvas at 1x, centred on the stage - fixed to the stage,
+    // never moving with the camera. Not drawn while the frame sits on it
+    // (it would hide under the frame's own outline).
+    const QPolygonF base = shotCameraWidgetQuad(shotcam::neutral(stage().canvas));
+    if (base.size() < 4 || frameQuad.size() < 4)
+        return base;
+    double apart = 0.0;
+    for (int i = 0; i < 4; ++i)
+        apart = qMax(apart, QLineF(base.at(i), frameQuad.at(i)).length());
+    return apart < 0.5 ? QPolygonF() : base;
+}
+
+shotcam::Motion DrawingCanvas::shotCameraGlyphMotion(const ShotCameraView &v, bool *onEnd) const
+{
+    if (onEnd)
+        *onEnd = false;
+    if (!shotCameraFrameShown(v))
+        return shotcam::Motion();
+    if (v.previewValid) { // a Quick Move under the pointer: the move it would make
+        if (onEnd)
+            *onEnd = true;
+        return shotcam::motionBetween(v.previewStart, v.previewEnd, stage());
+    }
+    if (m_camDrag >= 0) // the frame is being dragged: the keys are about to change
+        return shotcam::Motion();
+    return v.motion;
+}
+
+QPointF DrawingCanvas::motionWidgetDir(const QPointF &canvasTravel) const
+{
+    const QTransform t = viewTransform();
+    const QPointF d = t.map(canvasTravel) - t.map(QPointF(0.0, 0.0));
+    const double len = std::hypot(d.x(), d.y());
+    return len < 1e-9 ? QPointF() : d / len;
+}
+
+// CAM-2's glyphs on a frame, in widget px, purple only, as adjusted in
+// Figma on 2026-11-06: thin (1 px) corner arrows for a push or a pull,
+// chevrons on the edges along a pan or a tilt, arrows behind the corners for
+// a diagonal pan, a curved arrow above the top edge for a turn, nothing in
+// the middle (shotcam::motionGlyphPath has the numbers). The Camera tool's
+// size, or a drawing tool's (10/14 of it).
+QPainterPath DrawingCanvas::motionGlyphStrokes(const QPolygonF &quad, const shotcam::Motion &m,
+                                               bool big) const
+{
+    return shotcam::motionGlyphPath(quad, m, m.pan.isNull() ? QPointF() : motionWidgetDir(m.pan),
+                                    big ? 1.0 : kGlyphSmall);
+}
+
+void DrawingCanvas::paintMotionGlyphs(QPainter &painter, const QPolygonF &quad,
+                                      const shotcam::Motion &m, bool big) const
+{
+    const QPainterPath strokes = motionGlyphStrokes(quad, m, big);
+    if (strokes.isEmpty())
+        return;
+    painter.save();
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    painter.setPen(QPen(kCamAccent, kGlyphPen, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    painter.setBrush(Qt::NoBrush);
+    painter.drawPath(strokes);
+    painter.restore();
+}
+
+QPolygonF DrawingCanvas::shotCameraBaseQuadForTest() const
+{
+    const ShotCameraView v = shotCameraView();
+    if (!shotCameraFrameShown(v))
+        return QPolygonF();
+    return shotCameraBaseQuad(shotCameraWidgetQuad(shotCameraShownState(v)));
+}
+
+QVariantMap DrawingCanvas::shotCameraGuidesForTest() const
+{
+    const ShotCameraView v = shotCameraView();
+    bool onEnd = false;
+    const shotcam::Motion m = shotCameraGlyphMotion(v, &onEnd);
+    const QPointF d = m.pan.isNull() ? QPointF() : motionWidgetDir(m.pan);
+    QVariantMap out;
+    out.insert(QStringLiteral("drawn"), m.any());
+    out.insert(QStringLiteral("zoom"), m.zoom);
+    out.insert(QStringLiteral("rotate"), m.rotate);
+    out.insert(QStringLiteral("panX"), d.x());
+    out.insert(QStringLiteral("panY"), d.y());
+    out.insert(QStringLiteral("onEnd"), onEnd);
+    out.insert(QStringLiteral("big"), m_tool == Camera);
+    return out;
+}
+
+QPainterPath DrawingCanvas::shotCameraGlyphPathForTest(double *penWidth) const
+{
+    // The paint's own choice (paintShotCamera): the frame, or the Quick
+    // Move's END, at the Camera tool's size there or a drawing tool's.
+    if (penWidth)
+        *penWidth = kGlyphPen;
+    const ShotCameraView v = shotCameraView();
+    bool onEnd = false;
+    const shotcam::Motion m = shotCameraGlyphMotion(v, &onEnd);
+    if (!m.any())
+        return QPainterPath();
+    const QPolygonF quad = onEnd ? shotCameraWidgetQuad(v.previewEnd)
+                                 : shotCameraWidgetQuad(shotCameraShownState(v));
+    return motionGlyphStrokes(quad, m, m_tool == Camera || onEnd);
 }
 
 QVector<QPointF> DrawingCanvas::shotCameraHandles(const QPolygonF &quad) const
@@ -1290,6 +1410,18 @@ void DrawingCanvas::paintShotCamera(QPainter &painter)
         outside.addRect(QRectF(rect()));
         painter.fillPath(outside.subtracted(inside), shotcam::kStageVeil);
     }
+    // THE ORIGINAL CANVAS BORDER (2026-11-06, Figma CAM-1 option A): the
+    // base framing, fixed to the stage, 1 px dashed 4 / 3 in white at 55 %,
+    // over the dim and the veil - where every move starts from.
+    const QPolygonF base = shotCameraBaseQuad(quad);
+    if (base.size() == 4) {
+        QPen dashed(QColor(255, 255, 255, 140), 1.0, Qt::CustomDashLine);
+        dashed.setDashPattern({4.0, 3.0});
+        dashed.setJoinStyle(Qt::MiterJoin);
+        painter.setPen(dashed);
+        painter.setBrush(Qt::NoBrush);
+        painter.drawPolygon(base);
+    }
     // 1 px with a drawing tool in a margin project (Q5): never the Camera
     // tool's 1.5 px frame with handles.
     QPen outline(accent, (!tool && margin) ? 1.0 : 1.5);
@@ -1324,6 +1456,17 @@ void DrawingCanvas::paintShotCamera(QPainter &painter)
                 painter.drawLine(cb, cb - u * 8.0 - n * 5.0);
             }
         }
+    }
+
+    // THE MOVEMENT GLYPHS (2026-11-06, Figma CAM-2): what the segment at the
+    // playhead does, on the frame - or, while a Quick Move is hovered, what
+    // it would do, on its END.
+    {
+        bool onEnd = false;
+        const shotcam::Motion motion = shotCameraGlyphMotion(v, &onEnd);
+        if (!m_glyphsHiddenForTest)
+            paintMotionGlyphs(painter, onEnd ? shotCameraWidgetQuad(v.previewEnd) : quad, motion,
+                              tool || onEnd);
     }
 
     if (tool) {

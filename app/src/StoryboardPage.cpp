@@ -5108,6 +5108,8 @@ DrawingCanvas::ShotCameraView StoryboardPage::shotCameraView() const
     v.editable = !cameraLocked() && (m_cameraAnimate || live <= 1);
     v.stayInside = m_cameraStayInside;
     v.sharpLimit = shotcam::sharpLimit(stageFor(panel));
+    // The segment's move, for the frame's glyphs (2026-11-06, Figma CAM-2).
+    v.motion = shotcam::segmentMotion(*scene, at, fps, stageFor(panel), filmStartOf(scene));
     // The film frame: every panel before this one, in every scene.
     int film = 0;
     for (const Scene *s : m_scenes) {

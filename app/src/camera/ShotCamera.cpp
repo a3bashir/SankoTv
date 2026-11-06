@@ -7,6 +7,7 @@
 #include <QMutex>
 #include <QMutexLocker>
 #include <QPainter>
+#include <QPainterPath>
 #include <QPixmap>
 #include <QtMath>
 
@@ -962,6 +963,59 @@ int segmentKeyIndex(const Scene &scene, double sceneFrame, int fps, int filmStar
     return best;
 }
 
+Motion motionBetween(const CameraState &from, const CameraState &to, const Stage &stage)
+{
+    Motion m;
+    if (from.zoom > 0.0 && to.zoom > 0.0) {
+        const double ratio = to.zoom / from.zoom;
+        if (ratio > 1.01)
+            m.zoom = 1;
+        else if (ratio < 1.0 / 1.01)
+            m.zoom = -1;
+    }
+    const QPointF travel(to.cx - from.cx, to.cy - from.cy);
+    if (std::hypot(travel.x(), travel.y()) > 0.02 * stage.frame.width())
+        m.pan = travel;
+    const double turn = normalisedAngle(to.rotation - from.rotation);
+    if (turn > 0.5)
+        m.rotate = 1;
+    else if (turn < -0.5)
+        m.rotate = -1;
+    return m;
+}
+
+Motion segmentMotion(const Scene &scene, double sceneFrame, int fps, const Stage &stage,
+                     int filmStart)
+{
+    // The live keys in evaluate()'s order: by frame, and at one frame the
+    // anchored key before the pinned one.
+    struct Live
+    {
+        double frame;
+        const CameraKey *key;
+    };
+    QVector<Live> live;
+    for (const CameraKey &key : scene.camera.keys) {
+        const double f = keyFrame(scene, key, fps, filmStart);
+        if (f >= 0.0)
+            live.append({f, &key});
+    }
+    std::stable_sort(live.begin(), live.end(), [](const Live &a, const Live &b) {
+        if (a.frame != b.frame)
+            return a.frame < b.frame;
+        return !a.key->pinned && b.key->pinned;
+    });
+    // The segment: the last live key at or before the frame (within half a
+    // frame counts as at it, as segmentKeyIndex has it), and the next one.
+    int at = -1;
+    for (int i = 0; i < live.size(); ++i)
+        if (live.at(i).frame < sceneFrame + 0.5)
+            at = i;
+    if (at < 0 || at + 1 >= live.size() || live.at(at).key->ease == Ease::Hold)
+        return Motion();
+    return motionBetween(live.at(at).key->state, live.at(at + 1).key->state, stage);
+}
+
 QVector<double> liveKeyFrames(const Scene &scene, int fps, int filmStart)
 {
     QVector<double> frames;
@@ -972,6 +1026,98 @@ QVector<double> liveKeyFrames(const Scene &scene, int fps, int filmStart)
     }
     std::sort(frames.begin(), frames.end());
     return frames;
+}
+
+QPainterPath motionGlyphPath(const QPolygonF &quad, const Motion &motion,
+                             const QPointF &screenPanDir, double scale)
+{
+    QPainterPath path;
+    if (quad.size() < 4 || !motion.any() || !(scale > 0.0))
+        return path;
+    // Built in the frame's own axes - x along its top edge, y down its left
+    // edge, the origin at its first corner - and mapped onto the quad, so a
+    // turned or mirrored frame carries its glyphs with it.
+    const double w = QLineF(quad.at(0), quad.at(1)).length();
+    const double h = QLineF(quad.at(0), quad.at(3)).length();
+    if (w < 1e-6 || h < 1e-6)
+        return path;
+    const QPointF ex = (quad.at(1) - quad.at(0)) / w, ey = (quad.at(3) - quad.at(0)) / h;
+    const QTransform toQuad(ex.x(), ex.y(), ey.x(), ey.y(), quad.at(0).x(), quad.at(0).y());
+    const double s = scale;
+    QPainterPath local;
+    auto head = [&](const QPointF &tip, const QPointF &u) { // u: the unit way it points
+        const QPointF n(-u.y(), u.x());
+        const QPointF back = tip - u * (5.16 * s); // 6.3 px barbs at 35 degrees
+        local.moveTo(tip);
+        local.lineTo(back + n * (3.61 * s));
+        local.moveTo(tip);
+        local.lineTo(back - n * (3.61 * s));
+    };
+    auto arrow = [&](const QPointF &from, const QPointF &to) {
+        const QPointF d = to - from;
+        const double l = std::hypot(d.x(), d.y());
+        if (l < 1e-9)
+            return;
+        local.moveTo(from);
+        local.lineTo(to);
+        head(to, d / l);
+    };
+    const QPointF corner[4] = {QPointF(0, 0), QPointF(w, 0), QPointF(w, h), QPointF(0, h)};
+    const QPointF inward[4] = {QPointF(1, 1), QPointF(-1, 1), QPointF(-1, -1), QPointF(1, -1)};
+    if (motion.zoom != 0) {
+        for (int i = 0; i < 4; ++i) {
+            const QPointF a = corner[i] + inward[i] * (6.0 * s);         // 6 px in from both edges
+            const QPointF b = corner[i] + inward[i] * ((6.0 + 9.9) * s); // 14 px on the 45 degree line
+            if (motion.zoom > 0)
+                arrow(a, b); // Push In: pointing in
+            else
+                arrow(b, a); // Pull Out: pointing at the corner
+        }
+    }
+    const double travel = std::hypot(screenPanDir.x(), screenPanDir.y());
+    if (!motion.pan.isNull() && travel > 1e-9) {
+        // The way the frame travels, in its own axes.
+        const QPointF u(QPointF::dotProduct(screenPanDir, ex) / travel,
+                        QPointF::dotProduct(screenPanDir, ey) / travel);
+        const double slope = std::tan(qDegreesToRadians(22.5));
+        auto chevron = [&](const QPointF &mid, const QPointF &t) {
+            const QPointF n(-t.y(), t.x());
+            local.moveTo(mid + t * (3.0 * s) + n * (4.0 * s));
+            local.lineTo(mid + t * (8.0 * s));
+            local.lineTo(mid + t * (3.0 * s) - n * (4.0 * s));
+        };
+        if (qAbs(u.y()) <= qAbs(u.x()) * slope) { // a pan: on the top and the bottom edge
+            const QPointF t(u.x() > 0.0 ? 1.0 : -1.0, 0.0);
+            chevron(QPointF(w / 2.0, 0.0), t);
+            chevron(QPointF(w / 2.0, h), t);
+        } else if (qAbs(u.x()) <= qAbs(u.y()) * slope) { // a tilt: on the two sides
+            const QPointF t(0.0, u.y() > 0.0 ? 1.0 : -1.0);
+            chevron(QPointF(0.0, h / 2.0), t);
+            chevron(QPointF(w, h / 2.0), t);
+        } else { // diagonal: an arrow behind each corner, along the travel
+            for (const QPointF &c : corner) {
+                const QPointF tip = c - u * (7.0 * s);
+                arrow(tip - u * (15.0 * s), tip);
+            }
+        }
+    }
+    if (motion.rotate != 0) {
+        // Over the top edge, outside the frame: clockwise runs from the
+        // left end over to the right one and turns down at it.
+        const double r = 12.0 * s;
+        const QPointF centre(w / 2.0, -3.6 * s);
+        const QRectF box(centre.x() - r, centre.y() - r, 2.0 * r, 2.0 * r);
+        if (motion.rotate > 0) {
+            local.moveTo(centre.x() - r, centre.y());
+            local.arcTo(box, 180.0, -180.0);
+            head(QPointF(centre.x() + r, centre.y()), QPointF(0.0, 1.0));
+        } else {
+            local.moveTo(centre.x() + r, centre.y());
+            local.arcTo(box, 0.0, 180.0);
+            head(QPointF(centre.x() - r, centre.y()), QPointF(0.0, 1.0));
+        }
+    }
+    return toQuad.map(local);
 }
 
 QString timecodeText(int filmFrame, int fps)

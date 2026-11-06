@@ -161,6 +161,9 @@ public:
         bool previewValid = false;
         shotcam::CameraState previewStart;
         shotcam::CameraState previewEnd;
+        // What the segment at the playhead does (2026-11-06, Figma CAM-2):
+        // drawn as glyphs on the frame, an editing guide only.
+        shotcam::Motion motion;
     };
     enum ShotCameraEditKind { ShotCameraMove = 0, ShotCameraZoom = 1,
                               ShotCameraRotate = 2 };
@@ -175,6 +178,20 @@ public:
     // The Quick Move preview as drawn (empty: none): START and END, widget px.
     QPolygonF shotCameraPreviewStartForTest() const;
     QPolygonF shotCameraPreviewEndForTest() const;
+    // THE CAMERA GUIDES (2026-11-06, Figma CAM-1 / CAM-2), as drawn: the
+    // base framing's fixed dashed line in widget px (empty: not drawn), and
+    // the movement glyphs - drawn (bool), zoom (+1 / -1), rotate (+1 / -1),
+    // panX / panY (the pan arrow's widget-space unit direction), onEnd (on
+    // the Quick Move preview's END rather than the frame), big (the Camera
+    // tool's size).
+    QPolygonF shotCameraBaseQuadForTest() const;
+    QVariantMap shotCameraGuidesForTest() const;
+    // The glyphs' strokes exactly as the canvas paints them (widget px), and
+    // their pen's width; empty when no glyph is drawn.
+    QPainterPath shotCameraGlyphPathForTest(double *penWidth = nullptr) const;
+    // Leaves the glyphs out of the paint (and only them), so the gate can
+    // tell their pixels from everything else's.
+    void setMotionGlyphsHiddenForTest(bool hidden) { m_glyphsHiddenForTest = hidden; update(); }
     int shotCameraHitForTest(const QPointF &widgetPos) const;
     QVector<QPointF> shotCameraHandlesForTest() const;
     QString shotCameraChipForTest() const;
@@ -1134,6 +1151,17 @@ private:
     ShotCameraView shotCameraView() const;
     shotcam::CameraState shotCameraShownState(const ShotCameraView &v) const;
     QPolygonF shotCameraWidgetQuad(const shotcam::CameraState &s) const;
+    // The camera guides (CAM-1 / CAM-2): is the frame drawn at all; the base
+    // framing's quad unless the frame sits on it; the glyphs to draw and
+    // where; a canvas-px travel as a widget-space unit direction.
+    bool shotCameraFrameShown(const ShotCameraView &v) const;
+    QPolygonF shotCameraBaseQuad(const QPolygonF &frameQuad) const;
+    shotcam::Motion shotCameraGlyphMotion(const ShotCameraView &v, bool *onEnd) const;
+    QPointF motionWidgetDir(const QPointF &canvasTravel) const;
+    QPainterPath motionGlyphStrokes(const QPolygonF &quad, const shotcam::Motion &motion,
+                                    bool big) const;
+    void paintMotionGlyphs(QPainter &painter, const QPolygonF &quad,
+                           const shotcam::Motion &motion, bool big) const;
     QVector<QPointF> shotCameraHandles(const QPolygonF &quad) const;
     int shotCameraHitTest(const QPointF &widgetPos) const;
     void shotCameraUpdateCursor(int hit);
@@ -1157,6 +1185,7 @@ private:
     void paintShotCamera(QPainter &painter);
     int m_camHover = -1;          // hit under the idle pointer
     int m_camDrag = -1;           // hit at the press; -1 = no drag
+    bool m_glyphsHiddenForTest = false;
     bool m_camShift = false;
     shotcam::CameraState m_camStart; // at the press
     shotcam::CameraState m_camLive;  // during the drag

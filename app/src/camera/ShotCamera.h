@@ -27,6 +27,7 @@
 #include <QVector>
 
 class QPainter;
+class QPainterPath;
 class QPixmap;
 struct Panel;
 struct Scene;
@@ -214,7 +215,33 @@ double normalisedAngle(double degrees);
 // order.
 int keyIndexAtFrame(const Scene &scene, double sceneFrame, int fps, int filmStart = 0);
 int segmentKeyIndex(const Scene &scene, double sceneFrame, int fps, int filmStart = 0);
+// THE MOVEMENT GLYPHS (2026-11-06, Figma CAM-2). What `to` does against
+// `from`: a zoom by more than 1 % (in / out), the centre by more than 2 %
+// of the frame's width (a pan, its travel in canvas px), a turn by more
+// than 0.5 degrees. And the move of the segment a scene frame is in: none
+// before the first live key, after the last, or on a Hold segment.
+Motion motionBetween(const CameraState &from, const CameraState &to, const Stage &stage);
+Motion segmentMotion(const Scene &scene, double sceneFrame, int fps, const Stage &stage,
+                     int filmStart = 0);
 QVector<double> liveKeyFrames(const Scene &scene, int fps, int filmStart = 0);
+// THE GLYPHS' STROKES (CAM-2 as adjusted in Figma, 2026-11-06): every stroke
+// of a move's glyph on a frame drawn as `quad` (widget px, its corners in
+// frameQuad's order), the pan's way on screen given as a unit vector.
+// Measured in the frame's own axes; `scale` 1 for the Camera tool, 10/14 for
+// a drawing tool; the painter strokes them 1 px wide.
+//   Push In / Pull Out: at each corner a 14 px arrow at 45 degrees, 6 px in
+//     from both edges, its head inwards / at the corner.
+//   A pan within 22.5 degrees of the frame's horizontal: a chevron (5 deep,
+//     8 wide) on the top and on the bottom edge, 3 to 8 px past each edge's
+//     middle the way the frame travels. A tilt: the same on the two sides.
+//   A diagonal pan: at each corner a 15 px arrow along the travel, its tip
+//     7 px short of the corner.
+//   A turn: a half circle (radius 12) above the top edge, its centre 3.6 px
+//     out from the edge's middle, the head at the end the frame turns to.
+// Nothing in the middle of the frame. Arrowheads: two 6.3 px barbs at 35
+// degrees. A pure function: the gate checks the numbers.
+QPainterPath motionGlyphPath(const QPolygonF &quad, const Motion &motion,
+                             const QPointF &screenPanDir, double scale);
 // HH:MM:SS:FF of a frame counted from the film's start (the header's own
 // format, AnimaticPage::updateTimecodeLabel).
 QString timecodeText(int filmFrame, int fps);

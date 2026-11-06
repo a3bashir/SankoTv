@@ -2832,6 +2832,271 @@ int main(int argc, char **argv)
         // a and b delete their own panels.
     }
 
+    // ---- (mv) THE MOVEMENT GLYPHS (2026-11-06, Figma CAM-2) ----------------
+    // What a move does, by its end key against its start key: the canvas
+    // draws it as glyphs on the frame (an editing guide; nothing that renders
+    // the shot does - the neutral and moving pins above prove those
+    // unchanged). Pure functions, so every kind of move is checked here,
+    // with the thresholds and a Hold as the controls.
+    ts << "--- (mv) the movement glyphs ---\n";
+    {
+        using shotcam::CameraState;
+        using shotcam::Motion;
+        const shotcam::Stage stage = shotcam::stageWithMargin(QSize(2880, 1620), QSize(480, 270));
+        const CameraState base{1440, 810, 1.0, 0.0};
+        auto mo = [&](const CameraState &to) { return shotcam::motionBetween(base, to, stage); };
+        auto says = [](const Motion &m) {
+            return QStringLiteral("zoom %1 pan (%2, %3) rotate %4").arg(m.zoom).arg(m.pan.x())
+                .arg(m.pan.y()).arg(m.rotate);
+        };
+        const Motion in = mo({1440, 810, 1.5, 0.0}), out = mo({1440, 810, 0.8, 0.0});
+        const Motion right = mo({1640, 810, 1.0, 0.0}), up = mo({1440, 700, 1.0, 0.0});
+        const Motion both = mo({1640, 810, 1.5, 0.0}), cw = mo({1440, 810, 1.0, 5.0}),
+                     ccw = mo({1440, 810, 1.0, -5.0}), none = mo(base);
+        check(QStringLiteral("(mv1) EACH KIND OF MOVE gives its glyph: Push In zoom +1, Pull Out -1, "
+                             "a pan right its travel (+200, 0), a tilt up (0, -110), push in and pan "
+                             "both, a turn +1 / -1, and the same framing nothing"),
+              in.zoom == 1 && in.pan.isNull() && in.rotate == 0 && out.zoom == -1 && out.pan.isNull()
+                  && right.zoom == 0 && right.pan == QPointF(200, 0) && up.pan == QPointF(0, -110)
+                  && both.zoom == 1 && both.pan == QPointF(200, 0) && cw.rotate == 1 && ccw.rotate == -1
+                  && cw.zoom == 0 && cw.pan.isNull() && !none.any(),
+              QStringLiteral("in [%1] out [%2] right [%3] both [%4] cw [%5]").arg(says(in), says(out),
+                                                                             says(right), says(both), says(cw)));
+        // The thresholds (zoom 1 %, travel 2 % of the 1920 frame = 38.4 px,
+        // turn 0.5 deg): just under shows nothing, just over the glyph.
+        const bool under = !mo({1440, 810, 1.009, 0.0}).any() && !mo({1440 + 38.0, 810, 1.0, 0.0}).any()
+            && !mo({1440, 810, 1.0, 0.4}).any();
+        const bool over = mo({1440, 810, 1.011, 0.0}).zoom == 1 && !mo({1440 + 39.0, 810, 1.0, 0.0}).pan.isNull()
+            && mo({1440, 810, 1.0, 0.6}).rotate == 1;
+        check(QStringLiteral("(mv1) control: the thresholds - a 0.9 % zoom, a 38 px travel (under 2 % "
+                             "of the frame) and a 0.4 deg turn show nothing; 1.1 %, 39 px and 0.6 deg "
+                             "show their glyphs"),
+              under && over, QStringLiteral("under %1 over %2").arg(under).arg(over));
+
+        // The segment at a scene frame: three panels, keys at the start of
+        // each (a push in, then a pan) and at the end of the last (a pull
+        // out). Placed by frames of each panel, whatever its length.
+        Scene *s = new Scene;
+        for (int p = 0; p < 3; ++p)
+            s->panels.append(makeBlankPanel(QSize(2880, 1620)));
+        const int fps = 24;
+        const int f0 = shotcam::panelFrames(*s->panels.at(0), fps), f1 = shotcam::panelFrames(*s->panels.at(1), fps),
+                  f2 = shotcam::panelFrames(*s->panels.at(2), fps);
+        const CameraState pushed{1440, 810, 1.5, 0.0}, panned{1740, 810, 1.5, 0.0}, pulled{1740, 810, 0.9, 0.0};
+        s->camera.keys = {shotcam::makeKey(*s, 0, 0, fps, base), shotcam::makeKey(*s, 1, 0, fps, pushed),
+                          shotcam::makeKey(*s, 2, 0, fps, panned), shotcam::makeKey(*s, 2, f2, fps, pulled)};
+        auto at = [&](double frame) { return shotcam::segmentMotion(*s, frame, fps, stage); };
+        const Motion m1 = at(f0 / 2.0), m2 = at(f0 + f1 / 2.0), m3 = at(f0 + f1 + f2 / 2.0),
+                     mStart = at(0.0), mAfter = at(f0 + f1 + f2 + 10.0);
+        check(QStringLiteral("(mv2) THE SEGMENT AT THE PLAYHEAD: the push in mid panel 1, the pan mid "
+                             "panel 2, the pull out mid panel 3; on the first key's own frame its move "
+                             "already shows; after the last key nothing"),
+              m1.zoom == 1 && m1.pan.isNull() && m2.zoom == 0 && m2.pan == QPointF(300, 0) && m3.zoom == -1
+                  && m3.pan.isNull() && mStart.zoom == 1 && !mAfter.any(),
+              QStringLiteral("p1 [%1] p2 [%2] p3 [%3] after [%4]").arg(says(m1), says(m2), says(m3), says(mAfter)));
+        s->camera.keys[1].ease = shotcam::Ease::Hold;
+        const Motion held = at(f0 + f1 / 2.0);
+        s->camera.keys[1].ease = shotcam::Ease::EaseInOut;
+        const Motion unheld = at(f0 + f1 / 2.0);
+        check(QStringLiteral("(mv2) control: the same segment as a HOLD shows nothing; eased again, "
+                             "its pan"),
+              !held.any() && unheld.pan == QPointF(300, 0),
+              QStringLiteral("held [%1] eased [%2]").arg(says(held), says(unheld)));
+        // A pinned key ends a segment like any other (2E): pinned at panel
+        // 3's start, the pan into it is still drawn.
+        s->camera.keys[2] = shotcam::makePinnedKey(double(f0 + f1), fps, panned);
+        const Motion toPinned = at(f0 + f1 / 2.0);
+        check(QStringLiteral("(mv2) a PINNED key ends a segment as an anchored one does: the pan into "
+                             "it is drawn"),
+              toPinned.pan == QPointF(300, 0) && toPinned.zoom == 0, says(toPinned));
+        delete s;
+
+        // THE GLYPHS' STROKES (CAM-2 as adjusted in Figma, 2026-11-06):
+        // shotcam::motionGlyphPath - what the canvas strokes, 1 px wide - on
+        // a 480 x 270 frame at (100, 100), at the Camera tool's scale. The
+        // numbers are the Figma frame's.
+        const QPolygonF frame({QPointF(100, 100), QPointF(580, 100), QPointF(580, 370), QPointF(100, 370)});
+        auto glyph = [&](const Motion &m, const QPointF &dir, double scale = 1.0,
+                         const QPolygonF &q = QPolygonF()) {
+            return shotcam::motionGlyphPath(q.isEmpty() ? frame : q, m, dir, scale).toSubpathPolygons();
+        };
+        auto same2 = [](const QPointF &a, const QPointF &b) { return QLineF(a, b).length() < 0.02; };
+        auto has = [&](const QList<QPolygonF> &subs, const QPointF &a, const QPointF &b) { // a stroke a -> b
+            for (const QPolygonF &p : subs)
+                if (p.size() >= 2 && same2(p.first(), a) && same2(p.last(), b))
+                    return true;
+            return false;
+        };
+        auto chev = [&](const QList<QPolygonF> &subs, const QPointF &a, const QPointF &tip, const QPointF &b) {
+            for (const QPolygonF &p : subs)
+                if (p.size() == 3 && same2(p.at(0), a) && same2(p.at(1), tip) && same2(p.at(2), b))
+                    return true;
+            return false;
+        };
+        auto pts = [](const QList<QPolygonF> &subs) {
+            QStringList t;
+            for (const QPolygonF &p : subs) {
+                QStringList q;
+                for (const QPointF &pt : p)
+                    q << QStringLiteral("%1,%2").arg(pt.x(), 0, 'f', 2).arg(pt.y(), 0, 'f', 2);
+                t << (p.size() > 4 ? QStringLiteral("%1 points %2 .. %3").arg(p.size()).arg(q.first(), q.last())
+                                   : q.join(QLatin1Char(' ')));
+            }
+            return t.join(QStringLiteral(" | "));
+        };
+        Motion zin, zout, pan, cwTurn, ccwTurn, inPan;
+        zin.zoom = 1;
+        zout.zoom = -1;
+        pan.pan = QPointF(200, 0); // the travel's size and way: the direction comes from the screen
+        cwTurn.rotate = 1;
+        ccwTurn.rotate = -1;
+        inPan.zoom = 1;
+        inPan.pan = QPointF(200, 0);
+        const QPointF corners[4] = {QPointF(100, 100), QPointF(580, 100), QPointF(580, 370), QPointF(100, 370)};
+        const QPointF inward[4] = {QPointF(1, 1), QPointF(-1, 1), QPointF(-1, -1), QPointF(1, -1)};
+        auto cornerArrows = [&](const QList<QPolygonF> &subs, bool pointingIn, double from, double to) {
+            for (int i = 0; i < 4; ++i) {
+                const QPointF a = corners[i] + inward[i] * from, b = corners[i] + inward[i] * to;
+                if (!(pointingIn ? has(subs, a, b) : has(subs, b, a)))
+                    return false;
+            }
+            return true;
+        };
+
+        const QList<QPolygonF> pIn = glyph(zin, QPointF()), pOut = glyph(zout, QPointF());
+        double shaft = 0.0, barb1 = 0.0, barb2 = 0.0, angle1 = 0.0, angle2 = 0.0;
+        if (pIn.size() == 12 && pIn.at(0).size() == 2 && pIn.at(1).size() == 2 && pIn.at(2).size() == 2) {
+            const QLineF s0(pIn.at(0).first(), pIn.at(0).last());
+            const QLineF back(s0.p2(), s0.p1()), b1(pIn.at(1).first(), pIn.at(1).last()),
+                b2(pIn.at(2).first(), pIn.at(2).last());
+            shaft = s0.length();
+            barb1 = b1.length();
+            barb2 = b2.length();
+            angle1 = back.angleTo(b1);
+            angle2 = back.angleTo(b2);
+            angle1 = qMin(angle1, 360.0 - angle1);
+            angle2 = qMin(angle2, 360.0 - angle2);
+        }
+        check(QStringLiteral("(mv3) PUSH IN AND PULL OUT AS CAM-2 DRAWS THEM: at each corner a 14 px arrow on "
+                             "the 45 degree line from 6 px in from both edges, pointing in (Push In) or at "
+                             "the corner (Pull Out); its head two 6.3 px barbs at 35 degrees; nothing else"),
+              pIn.size() == 12 && pOut.size() == 12 && cornerArrows(pIn, true, 6.0, 15.9)
+                  && cornerArrows(pOut, false, 6.0, 15.9) && qAbs(shaft - 14.0) < 0.01 && qAbs(barb1 - 6.3) < 0.01
+                  && qAbs(barb2 - 6.3) < 0.01 && qAbs(angle1 - 35.0) < 0.1 && qAbs(angle2 - 35.0) < 0.1,
+              QStringLiteral("shaft %1 barbs %2 / %3 at %4 / %5 deg; in: %6").arg(shaft).arg(barb1).arg(barb2)
+                  .arg(angle1).arg(angle2).arg(pts(pIn)));
+        const double k = 10.0 / 14.0;
+        const QList<QPolygonF> pSmall = glyph(zin, QPointF(), k);
+        check(QStringLiteral("(mv3) control: a drawing tool's glyphs are 10/14 of the Camera tool's (a 10 px "
+                             "arrow from 4.3 px in), and no move - a Hold - gives no stroke at all"),
+              pSmall.size() == 12 && cornerArrows(pSmall, true, 6.0 * k, 15.9 * k)
+                  && glyph(Motion(), QPointF(1, 0)).isEmpty(),
+              pts(pSmall));
+
+        const QList<QPolygonF> pRight = glyph(pan, QPointF(1, 0)), pLeft = glyph(pan, QPointF(-1, 0)),
+                               pUp = glyph(pan, QPointF(0, -1)), pDown = glyph(pan, QPointF(0, 1));
+        const bool goesRight = pRight.size() == 2 && chev(pRight, {343, 104}, {348, 100}, {343, 96})
+            && chev(pRight, {343, 374}, {348, 370}, {343, 366});
+        const bool goesLeft = pLeft.size() == 2 && chev(pLeft, {337, 96}, {332, 100}, {337, 104})
+            && chev(pLeft, {337, 366}, {332, 370}, {337, 374});
+        const bool goesUp = pUp.size() == 2 && chev(pUp, {104, 232}, {100, 227}, {96, 232})
+            && chev(pUp, {584, 232}, {580, 227}, {576, 232});
+        const bool goesDown = pDown.size() == 2 && chev(pDown, {96, 238}, {100, 243}, {104, 238})
+            && chev(pDown, {576, 238}, {580, 243}, {584, 238});
+        check(QStringLiteral("(mv4) A PAN AND A TILT: a chevron (5 deep, 8 wide) on each edge along the move, "
+                             "3 to 8 px past the edge's middle the way it goes - a pan right on the top and "
+                             "bottom edges pointing right, left pointing left, a tilt up / down on the two "
+                             "sides - and no other stroke"),
+              goesRight && goesLeft && goesUp && goesDown,
+              QStringLiteral("right [%1] up [%2]").arg(pts(pRight), pts(pUp)));
+        auto way = [](double deg) {
+            return QPointF(std::cos(qDegreesToRadians(deg)), std::sin(qDegreesToRadians(deg)));
+        };
+        const QList<QPolygonF> p20 = glyph(pan, way(20.0)), p25 = glyph(pan, way(25.0));
+        bool diagonal = p25.size() == 12;
+        for (const QPointF &c : corners)
+            diagonal = diagonal && has(p25, c - way(25.0) * 22.0, c - way(25.0) * 7.0);
+        check(QStringLiteral("(mv4) A DIAGONAL PAN (25 degrees, the Figma frame's own): at each corner a 15 px "
+                             "arrow along the travel, its tip 7 px short of the corner"),
+              diagonal, pts(p25));
+        check(QStringLiteral("(mv4) control: within 22.5 degrees of level (20) it is still a pan's chevrons, "
+                             "not the corner arrows"),
+              p20.size() == 2 && chev(p20, {343, 104}, {348, 100}, {343, 96}), pts(p20));
+        // NOTHING IN THE MIDDLE: every point of every glyph lies within 23 px of
+        // the frame's outline (a point's distance to the nearest edge line).
+        auto fromOutline = [](const QPointF &p) {
+            return qMin(qMin(qAbs(p.x() - 100.0), qAbs(p.x() - 580.0)), qMin(qAbs(p.y() - 100.0), qAbs(p.y() - 370.0)));
+        };
+        double farthest = 0.0;
+        for (const QList<QPolygonF> &subs : {pIn, pOut, pRight, pUp, p25, glyph(inPan, QPointF(1, 0)),
+                                             glyph(cwTurn, QPointF())})
+            for (const QPolygonF &p : subs)
+                for (const QPointF &pt : p)
+                    farthest = qMax(farthest, fromOutline(pt));
+        // The control: the earlier glyph's double arrow, 30 px through the
+        // middle, measured the same way.
+        const double oldMiddle = qMin(fromOutline(QPointF(340 - 15, 235)), fromOutline(QPointF(340 + 15, 235)));
+        check(QStringLiteral("(mv4) NOTHING IN THE MIDDLE: every point of every glyph (push, pull, pan, tilt, "
+                             "diagonal, push and pan, turn) is within 23 px of the frame's outline"),
+              farthest <= 23.0, QStringLiteral("farthest %1 px").arg(farthest));
+        check(QStringLiteral("(mv4) control: the earlier glyph's double arrow through the middle measures 135 px "
+                             "from the outline - the measure finds it"),
+              oldMiddle > 100.0, QStringLiteral("%1 px").arg(oldMiddle));
+
+        const QList<QPolygonF> pBoth = glyph(inPan, QPointF(1, 0));
+        check(QStringLiteral("(mv5) PUSH IN + PAN: the four corner arrows and the two edge chevrons, nothing "
+                             "else"),
+              pBoth.size() == 14 && cornerArrows(pBoth, true, 6.0, 15.9)
+                  && chev(pBoth, {343, 104}, {348, 100}, {343, 96}) && chev(pBoth, {343, 374}, {348, 370}, {343, 366}),
+              pts(pBoth));
+        // A TURN: a half circle of radius 12 centred 3.6 px above the top
+        // edge's middle (340, 96.4), wholly above the edge, the head at the
+        // end it turns to, pointing down at the frame.
+        auto arcFrom = [&](const QList<QPolygonF> &subs, const QPointF &from, const QPointF &to) {
+            if (subs.size() != 3 || subs.at(0).size() < 8 || !same2(subs.at(0).first(), from)
+                || !same2(subs.at(0).last(), to))
+                return false;
+            double top = 1e9;
+            for (const QPointF &p : subs.at(0)) {
+                if (p.y() > 96.4 + 0.02 || qAbs(QLineF(p, QPointF(340, 96.4)).length() - 12.0) > 0.05)
+                    return false;
+                top = qMin(top, p.y());
+            }
+            return qAbs(top - 84.4) < 0.05;
+        };
+        const QPointF lEnd(328, 96.4), rEnd(352, 96.4);
+        const QList<QPolygonF> pCw = glyph(cwTurn, QPointF()), pCcw = glyph(ccwTurn, QPointF());
+        const bool turnsCw = arcFrom(pCw, lEnd, rEnd) && has(pCw, rEnd, QPointF(348.39, 91.24))
+            && has(pCw, rEnd, QPointF(355.61, 91.24));
+        const bool turnsCcw = arcFrom(pCcw, rEnd, lEnd) && has(pCcw, lEnd, QPointF(331.61, 91.24))
+            && has(pCcw, lEnd, QPointF(324.39, 91.24));
+        check(QStringLiteral("(mv5) A TURN: a half circle (radius 12) above the top edge, outside the frame, its "
+                             "centre 3.6 px out from the edge's middle; clockwise the head at the right end, "
+                             "anticlockwise at the left, pointing down at the frame"),
+              turnsCw && turnsCcw, QStringLiteral("cw [%1] ccw [%2]").arg(pts(pCw), pts(pCcw)));
+        // The frame's own axes: turned 30 degrees about its centre the glyphs
+        // turn with it; mirrored (a flipped view) the clockwise head is at
+        // the frame's own right end - on screen, the left.
+        QTransform turn;
+        turn.translate(340, 235);
+        turn.rotate(30.0);
+        turn.translate(-340, -235);
+        const QPolygonF turned = turn.map(frame);
+        const QPointF ex = (turned.at(1) - turned.at(0)) / 480.0, ey = (turned.at(3) - turned.at(0)) / 270.0;
+        const QList<QPolygonF> tIn = glyph(zin, QPointF(), 1.0, turned), tCw = glyph(cwTurn, QPointF(), 1.0, turned);
+        const QPointF tTop = (turned.at(0) + turned.at(1)) / 2.0 - ey * 3.6;
+        const bool turnedOk = has(tIn, turned.at(0) + (ex + ey) * 6.0, turned.at(0) + (ex + ey) * 15.9)
+            && tCw.size() == 3 && same2(tCw.at(0).first(), tTop - ex * 12.0) && same2(tCw.at(0).last(), tTop + ex * 12.0);
+        const QPolygonF mirrored({QPointF(580, 100), QPointF(100, 100), QPointF(100, 370), QPointF(580, 370)});
+        const QList<QPolygonF> mCw = glyph(cwTurn, QPointF(), 1.0, mirrored);
+        const bool mirroredOk = mCw.size() == 3 && same2(mCw.at(0).last(), lEnd) && has(mCw, lEnd, QPointF(331.61, 91.24));
+        check(QStringLiteral("(mv5) control: the glyphs are in the frame's own axes - turned 30 degrees they "
+                             "turn with it (the push-in arrow 6 px in along the turned edges, the arc over the "
+                             "turned top edge); mirrored, the clockwise head is at the screen's left end"),
+              turnedOk && mirroredOk,
+              QStringLiteral("turned in [%1] cw [%2]; mirrored cw [%3]").arg(pts(tIn.mid(0, 3)), pts(tCw), pts(mCw)));
+    }
+
     delete scene;
     QDir(scratch).removeRecursively();
     ts << "\nRESULT " << (g_failures ? "FAIL" : "PASS") << " (checks=" << g_checks

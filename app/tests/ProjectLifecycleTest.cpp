@@ -15138,6 +15138,407 @@ void runRecoveryPrefsPass(const QString &scratch)
           relaunchedAgain == 2, QStringLiteral("new window %1").arg(relaunchedAgain));
 }
 
+// ---- (cg) THE CAMERA GUIDES (2026-11-06, batch 4; Figma CAM-1 / CAM-2) ----------
+// While the camera moves, the base framing - the original canvas border - is
+// a fixed dashed line and only the frame moves (cg1); the frame carries a
+// glyph for what the segment at the playhead does (cg2), with drawing tools
+// too (cg3), and a Quick Move under the pointer shows the move it would make
+// on its END (cg4). Read through the canvas's own drawing state, with
+// controls. The playing preview shows none of them (cg5, counted in its
+// picture); nothing else that renders the shot draws them either: the
+// gate's neutral and moving pins (preview grabs, MP4, PNG, PDF) are the proof.
+void runCameraGuidesPass(const QString &scratch)
+{
+    using namespace workspace;
+    using namespace camtool;
+    out() << "--- (cg) the camera guides: the fixed border and the movement glyphs ---" << Qt::endl;
+    const QString project = writeProject(scratch + QStringLiteral("/cameraguides"),
+                                         QStringLiteral("Guides"), QSize(1920, 1080), 24, 1, 3);
+    auto rig = std::make_unique<Rig>(project);
+    Rig &r = *rig;
+    check(QStringLiteral("(cg) the workspace opened"), r.ok);
+    if (!r.ok)
+        return;
+    auto *camBtn = r.storyboard->findChild<QPushButton *>(QStringLiteral("toolCamera"));
+    auto *brushBtn = r.storyboard->findChild<QPushButton *>(QStringLiteral("toolBrush"));
+    QWidget *bar = r.storyboard->cameraBarForTest();
+    QWidget *pop = r.storyboard->cameraQuickPopoverForTest();
+    r.window.setStageMarginForTest(QSize(480, 270)); // a 2880 x 1620 stage
+    pump(300);
+    Scene *scene = r.window.scenesForTest().value(0);
+    if (!scene || scene->panels.size() < 3 || !camBtn || !brushBtn || !bar || !pop) {
+        check(QStringLiteral("(cg) found the scene, the tool buttons, the Camera bar and its popover"), false);
+        return;
+    }
+    using shotcam::CameraState;
+    const int fps = 24;
+    const int f0 = shotcam::panelFrames(*scene->panels.at(0), fps), f1 = shotcam::panelFrames(*scene->panels.at(1), fps),
+              f2 = shotcam::panelFrames(*scene->panels.at(2), fps);
+    const CameraState base{1440, 810, 1.0, 0.0}, pushed{1440, 810, 1.5, 0.0},
+        panned{1740, 810, 1.5, 0.0}, pulled{1740, 810, 0.9, 0.0};
+    shotcam::SceneCamera cam;
+    cam.keys = {shotcam::makeKey(*scene, 0, 0, fps, base), shotcam::makeKey(*scene, 1, 0, fps, pushed),
+                shotcam::makeKey(*scene, 2, 0, fps, panned), shotcam::makeKey(*scene, 2, f2, fps, pulled)};
+    r.storyboard->applyCameraForUndo(scene, cam);
+    pump(50);
+    camBtn->click();
+    pump(200);
+    r.canvas->placeViewForTest(0.25, QPointF(1440, 810), QPointF(r.canvas->width() / 2.0, r.canvas->height() / 2.0));
+    pump(30);
+    auto at = [&](int panel, int frames) { // the playhead mid-panel (or at its start)
+        clickThumb(r, panel);
+        r.animatic->setPlayheadForTest(panel, frames * 1000 / fps);
+        pump(80);
+    };
+    struct Read { QPolygonF base, frame; QVariantMap g; };
+    auto read = [&] { return Read{r.canvas->shotCameraBaseQuadForTest(), r.canvas->shotCameraQuadForTest(),
+                                  r.canvas->shotCameraGuidesForTest()}; };
+    auto same = [](const QPolygonF &a, const QPolygonF &b) {
+        if (a.size() != 4 || b.size() != 4)
+            return false;
+        for (int i = 0; i < 4; ++i)
+            if (QLineF(a.at(i), b.at(i)).length() > 0.5)
+                return false;
+        return true;
+    };
+    auto says = [](const QVariantMap &g) {
+        return QStringLiteral("drawn %1 zoom %2 pan (%3, %4) rotate %5 onEnd %6 big %7")
+            .arg(g.value(QStringLiteral("drawn")).toBool()).arg(g.value(QStringLiteral("zoom")).toInt())
+            .arg(g.value(QStringLiteral("panX")).toDouble(), 0, 'f', 2).arg(g.value(QStringLiteral("panY")).toDouble(), 0, 'f', 2)
+            .arg(g.value(QStringLiteral("rotate")).toInt()).arg(g.value(QStringLiteral("onEnd")).toBool())
+            .arg(g.value(QStringLiteral("big")).toBool());
+    };
+    const QPointF mid(r.canvas->width() / 2.0, r.canvas->height() / 2.0);
+
+    // --- (cg1) the base framing stays put ---------------------------------------
+    at(0, f0 / 2);
+    const Read pIn = read();
+    at(1, f1 / 2);
+    const Read pPan = read();
+    at(2, f2 / 2);
+    const Read pOut = read();
+    const QRectF bb = pIn.base.boundingRect();
+    check(QStringLiteral("(cg1) THE ORIGINAL CANVAS BORDER STAYS PUT: mid push-in, mid pan and mid pull-out "
+                         "the base framing's dashed line is the same 480 x 270 rect centred on the stage, "
+                         "while the camera's frame is a different quad each time"),
+          pIn.base.size() == 4 && same(pIn.base, pPan.base) && same(pIn.base, pOut.base)
+              && qAbs(bb.width() - 480.0) < 1.0 && qAbs(bb.height() - 270.0) < 1.0
+              && QLineF(bb.center(), mid).length() < 1.0 && !same(pIn.frame, pPan.frame)
+              && !same(pPan.frame, pOut.frame) && !same(pIn.frame, pIn.base),
+          QStringLiteral("base %1 x %2 at (%3, %4); frames %5 / %6 / %7 wide").arg(bb.width()).arg(bb.height())
+              .arg(bb.center().x()).arg(bb.center().y()).arg(pIn.frame.boundingRect().width())
+              .arg(pPan.frame.boundingRect().width()).arg(pOut.frame.boundingRect().width()));
+    at(0, 0);
+    const Read onBase = read();
+    check(QStringLiteral("(cg1) control: on the first key's frame the camera IS the base framing - the "
+                         "frame is that rect and no separate line is drawn under it"),
+          onBase.base.isEmpty() && same(onBase.frame, pIn.base),
+          QStringLiteral("line %1 corners; frame %2 wide").arg(onBase.base.size())
+              .arg(onBase.frame.boundingRect().width()));
+
+    // --- (cg2) the glyphs, with the Camera tool ---------------------------------
+    const QVariantMap gIn = pIn.g, gPan = pPan.g, gOut = pOut.g;
+    check(QStringLiteral("(cg2) THE MOVEMENT GLYPHS on the frame, Camera tool size: mid panel 1 Push In "
+                         "(zoom +1, no pan), mid panel 2 a pan pointing right on screen, mid panel 3 Pull "
+                         "Out (zoom -1)"),
+          gIn.value(QStringLiteral("drawn")).toBool() && gIn.value(QStringLiteral("zoom")).toInt() == 1
+              && gIn.value(QStringLiteral("panX")).toDouble() == 0.0 && gIn.value(QStringLiteral("big")).toBool()
+              && gPan.value(QStringLiteral("zoom")).toInt() == 0 && gPan.value(QStringLiteral("panX")).toDouble() > 0.99
+              && gOut.value(QStringLiteral("zoom")).toInt() == -1 && gOut.value(QStringLiteral("panX")).toDouble() == 0.0
+              && !gIn.value(QStringLiteral("onEnd")).toBool(),
+          QStringLiteral("in [%1] pan [%2] out [%3]").arg(says(gIn), says(gPan), says(gOut)));
+    {
+        shotcam::SceneCamera held = scene->camera;
+        held.keys[1].ease = shotcam::Ease::Hold;
+        r.storyboard->applyCameraForUndo(scene, held);
+        at(1, f1 / 2);
+        const QVariantMap gHeld = r.canvas->shotCameraGuidesForTest();
+        r.storyboard->applyCameraForUndo(scene, cam);
+        at(1, f1 / 2);
+        const QVariantMap gBack = r.canvas->shotCameraGuidesForTest();
+        check(QStringLiteral("(cg2) control: the same segment as a Hold shows no glyph; eased again, its pan"),
+              !gHeld.value(QStringLiteral("drawn")).toBool() && gBack.value(QStringLiteral("panX")).toDouble() > 0.99,
+              QStringLiteral("held [%1] back [%2]").arg(says(gHeld), says(gBack)));
+    }
+
+    // --- (cg6) the glyphs as the canvas paints them (CAM-2 as adjusted in Figma) --
+    // The strokes are shotcam::motionGlyphPath's for the frame on screen (the
+    // Camera family checks its numbers, mv3-mv5), stroked 1 px wide. Found in
+    // the canvas's own pixels - the grab with the glyphs against the grab
+    // without them, so the panels' art cannot pass for a glyph: mid panel 2
+    // (a pan right) every changed pixel is on a chevron on the top or the
+    // bottom edge, none in the middle; mid panel 1 (a push in) the corner
+    // arrows, with a 1 px pen's ink.
+    {
+        // What the glyphs change: the pixels, the farthest of them from a
+        // stroke, and the ink - how much of the accent each changed pixel
+        // holds, summed, per px of stroke (a 1 px pen: about 1).
+        struct Ink
+        {
+            QVector<QPointF> changed;
+            int offStroke = 0;
+            double farthest = 0.0, perPx = 0.0;
+            QStringList off; // the first few off a stroke: where, how far, the colour before / after
+        };
+        auto measure = [](const QImage &with, const QImage &without, const QList<QPolygonF> &strokes) {
+            Ink k;
+            QVector<QLineF> segs;
+            double length = 0.0;
+            for (const QPolygonF &p : strokes)
+                for (int i = 1; i < p.size(); ++i) {
+                    segs.append(QLineF(p.at(i - 1), p.at(i)));
+                    length += segs.last().length();
+                }
+            auto distTo = [&](const QPointF &q) {
+                double best = 1e9;
+                for (const QLineF &s : segs) {
+                    const QPointF d = s.p2() - s.p1();
+                    const double l2 = QPointF::dotProduct(d, d);
+                    const double t = l2 > 0.0 ? qBound(0.0, QPointF::dotProduct(q - s.p1(), d) / l2, 1.0) : 0.0;
+                    best = qMin(best, QLineF(q, s.p1() + d * t).length());
+                }
+                return best;
+            };
+            const int ar = 0x7c, ag = 0x6e, ab = 0xf6;
+            double ink = 0.0;
+            int measured = 0;
+            for (int y = 0; y < with.height() && y < without.height(); ++y)
+                for (int x = 0; x < with.width() && x < without.width(); ++x) {
+                    const QRgb a = with.pixel(x, y), b = without.pixel(x, y);
+                    if (a == b)
+                        continue;
+                    const QPointF c(x + 0.5, y + 0.5);
+                    k.changed.append(c);
+                    const double dd = distTo(c);
+                    k.farthest = qMax(k.farthest, dd);
+                    // 2.5 px: a 1 px line's faint antialiased ends reach 1.85
+                    // px off its geometry (Qt's thin-line stroker; the first
+                    // quick run's two 6 % pixels past the corner arrows'
+                    // starts); the frame's middle is 20 px and more away.
+                    if (dd > 2.5) {
+                        ++k.offStroke;
+                        if (k.off.size() < 6)
+                            k.off << QStringLiteral("(%1,%2) %3 px %4->%5").arg(x).arg(y).arg(dd, 0, 'f', 2)
+                                         .arg(QColor(b).name(), QColor(a).name());
+                    }
+                    // Along the channel where the accent and the ground differ most.
+                    int den = ar - qRed(b), num = qRed(a) - qRed(b);
+                    if (qAbs(ag - qGreen(b)) > qAbs(den)) {
+                        den = ag - qGreen(b);
+                        num = qGreen(a) - qGreen(b);
+                    }
+                    if (qAbs(ab - qBlue(b)) > qAbs(den)) {
+                        den = ab - qBlue(b);
+                        num = qBlue(a) - qBlue(b);
+                    }
+                    if (qAbs(den) < 40)
+                        continue;
+                    ++measured;
+                    ink += qBound(0.0, double(num) / den, 1.0);
+                }
+            if (measured > 0 && length > 0.0)
+                k.perPx = ink * k.changed.size() / measured / length;
+            return k;
+        };
+        auto grabs = [&](QImage &with, QImage &without) {
+            r.canvas->setMotionGlyphsHiddenForTest(true);
+            pump(30);
+            without = r.canvas->grab().toImage();
+            r.canvas->setMotionGlyphsHiddenForTest(false);
+            pump(30);
+            with = r.canvas->grab().toImage();
+        };
+        auto sameStrokes = [](const QList<QPolygonF> &a, const QList<QPolygonF> &b) {
+            if (a.isEmpty() || a.size() != b.size())
+                return false;
+            for (int i = 0; i < a.size(); ++i) {
+                if (a.at(i).size() != b.at(i).size())
+                    return false;
+                for (int j = 0; j < a.at(i).size(); ++j)
+                    if (QLineF(a.at(i).at(j), b.at(i).at(j)).length() > 0.01)
+                        return false;
+            }
+            return true;
+        };
+        struct Axes { QPointF o, ex, ey; double w = 0, h = 0; };
+        auto axesOf = [](const QPolygonF &q) {
+            Axes a;
+            if (q.size() < 4)
+                return a;
+            a.o = q.at(0);
+            a.w = QLineF(q.at(0), q.at(1)).length();
+            a.h = QLineF(q.at(0), q.at(3)).length();
+            if (a.w > 0 && a.h > 0) {
+                a.ex = (q.at(1) - q.at(0)) / a.w;
+                a.ey = (q.at(3) - q.at(0)) / a.h;
+            }
+            return a;
+        };
+        at(1, f1 / 2);
+        double pen = 0.0;
+        const QList<QPolygonF> painted = r.canvas->shotCameraGlyphPathForTest(&pen).toSubpathPolygons();
+        const QPolygonF fq = r.canvas->shotCameraQuadForTest();
+        shotcam::Motion panRight;
+        panRight.pan = QPointF(300, 0);
+        const QList<QPolygonF> want = shotcam::motionGlyphPath(fq, panRight, QPointF(1, 0), 1.0).toSubpathPolygons();
+        QImage with, without;
+        grabs(with, without);
+        const Ink pan = measure(with, without, painted);
+        const Axes a = axesOf(fq);
+        int onTop = 0, onBottom = 0; // in the frame's own axes: by the top edge, by the bottom one
+        for (const QPointF &c : pan.changed) {
+            const double ly = QPointF::dotProduct(c - a.o, a.ey);
+            onTop += qAbs(ly) < 6.0 ? 1 : 0;
+            onBottom += qAbs(ly - a.h) < 6.0 ? 1 : 0;
+        }
+        check(QStringLiteral("(cg6) THE GLYPHS AS PAINTED (CAM-2 as adjusted in Figma): mid panel 2, a pan right, "
+                             "the canvas strokes motionGlyphPath's two chevrons for the frame on screen with a 1 px "
+                             "pen; every pixel they change is on a chevron (within 2.5 px), on the top and the "
+                             "bottom edge - none in the frame's middle"),
+              sameStrokes(painted, want) && painted.size() == 2 && pen == 1.0 && !pan.changed.isEmpty()
+                  && pan.offStroke == 0 && onTop > 0 && onBottom > 0 && onTop + onBottom == pan.changed.size(),
+              QStringLiteral("%1 strokes (want %2), pen %3; %4 pixels changed, %5 off a stroke (farthest %6 px), "
+                             "%7 by the top edge, %8 by the bottom").arg(painted.size()).arg(want.size()).arg(pen)
+                  .arg(pan.changed.size()).arg(pan.offStroke).arg(pan.farthest, 0, 'f', 2).arg(onTop).arg(onBottom));
+        at(0, f0 / 2);
+        const QPainterPath pushedPath = r.canvas->shotCameraGlyphPathForTest();
+        const QList<QPolygonF> pushed = pushedPath.toSubpathPolygons();
+        grabs(with, without);
+        const Ink push = measure(with, without, pushed);
+        const Axes a0 = axesOf(r.canvas->shotCameraQuadForTest());
+        int cornersHit = 0;
+        const QPointF cornerAt[4] = {QPointF(0, 0), QPointF(a0.w, 0), QPointF(a0.w, a0.h), QPointF(0, a0.h)};
+        for (const QPointF &corner : cornerAt) {
+            bool hit = false;
+            for (const QPointF &c : push.changed) {
+                const QPointF l(QPointF::dotProduct(c - a0.o, a0.ex), QPointF::dotProduct(c - a0.o, a0.ey));
+                hit = hit || QLineF(l, corner).length() < 25.0;
+            }
+            cornersHit += hit ? 1 : 0;
+        }
+        // The ink measure's own control: the same strokes painted here with a
+        // 2 px pen (the earlier glyphs' width) read about 2.
+        QImage twoPx = without.copy();
+        {
+            QPainter p(&twoPx);
+            p.setRenderHint(QPainter::Antialiasing, true);
+            p.setPen(QPen(QColor(0x7c, 0x6e, 0xf6), 2.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+            p.drawPath(pushedPath);
+        }
+        const Ink wide = measure(twoPx, without, pushed);
+        check(QStringLiteral("(cg6) control: mid panel 1, a push in, the strokes are the four corner arrows, every "
+                             "changed pixel on one of them and each corner's found; their ink is a 1 px pen's "
+                             "(0.6 .. 1.35 px per px of stroke) - the same strokes at 2 px read 1.6 or more"),
+              pushed.size() == 12 && push.offStroke == 0 && cornersHit == 4 && push.perPx >= 0.6
+                  && push.perPx <= 1.35 && wide.perPx >= 1.6,
+              QStringLiteral("%1 strokes, %2 pixels changed, %3 off a stroke (farthest %7 px: %8), corners %4 "
+                             "of 4, ink %5 px per px (at 2 px: %6)").arg(pushed.size()).arg(push.changed.size())
+                  .arg(push.offStroke).arg(cornersHit).arg(push.perPx, 0, 'f', 2).arg(wide.perPx, 0, 'f', 2)
+                  .arg(push.farthest, 0, 'f', 2).arg(push.off.join(QStringLiteral("; "))));
+    }
+
+    // --- (cg4) a Quick Move under the pointer -------------------------------------
+    at(0, 0);
+    if (QToolButton *quickBtn = bar->findChild<QToolButton *>(QStringLiteral("camQuickMove")))
+        quickBtn->click();
+    pump(150);
+    auto hover = [&](const char *tile) {
+        QVariantMap g;
+        if (QToolButton *t = pop->findChild<QToolButton *>(QLatin1String(tile))) {
+            QEnterEvent ev(QPointF(5, 5), QPointF(5, 5), t->mapToGlobal(QPoint(5, 5)));
+            QCoreApplication::sendEvent(t, &ev);
+            pump(80);
+            g = r.canvas->shotCameraGuidesForTest();
+            QEvent leave(QEvent::Leave);
+            QCoreApplication::sendEvent(t, &leave);
+            pump(60);
+        }
+        return g;
+    };
+    const QVariantMap qIn = hover("camQuickPushIn"), qRight = hover("camQuickPanRight");
+    const QVariantMap qLeft = r.canvas->shotCameraGuidesForTest();
+    if (pop->isVisible())
+        pop->hide();
+    pump(60);
+    check(QStringLiteral("(cg4) A QUICK MOVE UNDER THE POINTER shows the move it would make on its END: "
+                         "Push In zoom +1, Pan Right a pan pointing right"),
+          qIn.value(QStringLiteral("onEnd")).toBool() && qIn.value(QStringLiteral("zoom")).toInt() == 1
+              && qRight.value(QStringLiteral("onEnd")).toBool() && qRight.value(QStringLiteral("panX")).toDouble() > 0.99,
+          QStringLiteral("push in [%1] pan right [%2]").arg(says(qIn), says(qRight)));
+    check(QStringLiteral("(cg4) control: with the pointer off the tiles the glyphs are the segment's again, "
+                         "on the frame"),
+          !qLeft.value(QStringLiteral("onEnd")).toBool() && qLeft.value(QStringLiteral("zoom")).toInt() == 1,
+          says(qLeft));
+
+    // --- (cg5) never in the preview ------------------------------------------------
+    // The frame's outline and its glyphs are the accent's own colour (#7c6ef6),
+    // drawn at full strength over the dim. Count those pixels in the canvas as
+    // painted (the control: the guides are there) and in the preview's picture
+    // while the film plays from the same point.
+    auto accentPixels = [](const QImage &img) {
+        int n = 0;
+        for (int y = 0; y < img.height(); ++y)
+            for (int x = 0; x < img.width(); ++x) {
+                const QColor c = img.pixelColor(x, y);
+                if (qAbs(c.red() - 0x7c) <= 6 && qAbs(c.green() - 0x6e) <= 6 && qAbs(c.blue() - 0xf6) <= 6)
+                    ++n;
+            }
+        return n;
+    };
+    at(0, f0 / 2);
+    const bool guidesUp = r.canvas->shotCameraGuidesForTest().value(QStringLiteral("drawn")).toBool();
+    const int onCanvas = accentPixels(r.canvas->grab().toImage());
+    r.storyboard->setStageFadeMsForTest(0);
+    r.animatic->togglePlay();
+    pump(200);
+    QWidget *display = r.animatic->previewDisplayForTest();
+    const QRect picRect = r.animatic->previewPictureRectForTest();
+    const bool playing = r.animatic->isPlaying() && display && display->isVisible() && !picRect.isEmpty();
+    const int inPreview = playing ? accentPixels(display->grab(picRect).toImage()) : -1;
+    r.animatic->leavePreview();
+    pump(100);
+    check(QStringLiteral("(cg5) NEVER IN THE PREVIEW: playing from mid push-in, the preview's picture "
+                         "holds no pixel of the frame's or the glyphs' accent colour"),
+          playing && inPreview == 0,
+          QStringLiteral("playing %1 picture %2 x %3, %4 accent pixels").arg(playing).arg(picRect.width())
+              .arg(picRect.height()).arg(inPreview));
+    // CHANGED 2026-11-06 with the adjusted arrows (was: onCanvas > 50). The
+    // 112 the first build counted were nearly all the 2 px arrows' - a 2 px
+    // stroke covers whole pixels in the accent itself. The 1 px arrows of
+    // the adjusted CAM-2 blend into their ground and leave almost none, so
+    // the pure accent left is the frame's own; the glyphs' pixels are
+    // (cg6)'s. The second control, where no frame is drawn, is below.
+    check(QStringLiteral("(cg5) control: the canvas at the same point, the guides drawn, holds them - "
+                         "pixels of the accent itself, from the frame (the 1 px glyphs blend into their "
+                         "ground; the 2 px ones of the first build gave 112)"),
+          guidesUp && onCanvas > 0, QStringLiteral("guides %1, %2 accent pixels").arg(guidesUp).arg(onCanvas));
+
+    // --- (cg3) with a drawing tool ------------------------------------------------
+    brushBtn->click();
+    pump(150);
+    at(0, f0 / 2);
+    const Read dIn = read();
+    check(QStringLiteral("(cg3) WITH A DRAWING TOOL (the frame outlined, a margin project): the same fixed "
+                         "line and the Push In glyph, at the drawing tools' smaller size"),
+          same(dIn.base, pIn.base) && dIn.g.value(QStringLiteral("zoom")).toInt() == 1
+              && !dIn.g.value(QStringLiteral("big")).toBool(),
+          says(dIn.g));
+    // Control: no margin and no keys - no frame is drawn, so neither guide.
+    r.storyboard->applyCameraForUndo(scene, shotcam::SceneCamera());
+    r.window.setStageMarginForTest(QSize(0, 0));
+    pump(300);
+    at(0, f0 / 2);
+    const Read bare = read();
+    check(QStringLiteral("(cg3) control: no margin and no keys - no frame, no line, no glyph"),
+          bare.frame.isEmpty() && bare.base.isEmpty() && !bare.g.value(QStringLiteral("drawn")).toBool(),
+          QStringLiteral("frame %1 line %2 [%3]").arg(bare.frame.size()).arg(bare.base.size()).arg(says(bare.g)));
+    const int bareAccent = accentPixels(r.canvas->grab().toImage());
+    check(QStringLiteral("(cg5) control: with no frame drawn (no margin, no keys) the canvas holds no "
+                         "pixel of the accent - those counted with the guides were theirs"),
+          bareAccent == 0, QStringLiteral("%1 accent pixels").arg(bareAccent));
+    r.window.markCleanForTest();
+}
+
 // ---- (n) STABLE IMAGE IDS (2026-11-04, batch 2 of the proposals) ---------------
 // A panel's files are named by its id, never its position: an insert, move
 // or delete changes the manifest and no file (n1); a project saved by
@@ -18995,6 +19396,7 @@ int main(int argc, char **argv)
     runRecoveryPass(scratch);
     runRecoveryOffThreadPass(scratch);
     runRecoveryPrefsPass(scratch);
+    runCameraGuidesPass(scratch);
 
     // ---- (aa) a test that cannot start says why and exits ----------------
     // An unattended gate must FAIL, not wait. Measured 2026-10-02: with its
