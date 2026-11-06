@@ -1397,7 +1397,7 @@ void runProjectSettingsPass()
     sc->number = 1;
     for (int dur : {2, 3, 5}) {
         Panel *p = makeBlankPanel(QSize(960, 540));
-        p->duration = dur;
+        p->setLength(dur * 24, 24); // dur seconds (2026-11-06: frames at a rate)
         sc->panels.append(p);
     }
     {

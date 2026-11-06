@@ -113,9 +113,38 @@ int msForFrameInPanel(int frame, int fps)
     return int(std::ceil(frame * (1000.0 / qMax(1, fps))));
 }
 
+int framesAtRate(int frames, int fromFps, int toFps)
+{
+    frames = qMax(1, frames);
+    fromFps = qMax(1, fromFps);
+    toFps = qMax(1, toFps);
+    if (fromFps == toFps)
+        return frames;
+    // Integers only: frames * to / from, to the nearest frame, a half up.
+    const qint64 twice = qint64(frames) * toFps * 2 + fromFps;
+    return int(qMax<qint64>(1, twice / (2 * qint64(fromFps))));
+}
+
 int panelFrames(const Panel &panel, int fps)
 {
-    return qMax(1, panel.duration) * qMax(1, fps);
+    return framesAtRate(panel.frames, panel.rate, fps);
+}
+
+QString lengthText(int frames, int fps)
+{
+    fps = qMax(1, fps);
+    frames = qMax(0, frames);
+    const int s = frames / fps, f = frames % fps;
+    if (s == 0)
+        return QStringLiteral("%1f").arg(f);
+    if (f == 0)
+        return QStringLiteral("%1s").arg(s);
+    return QStringLiteral("%1s %2f").arg(s).arg(f);
+}
+
+QString framesText(int frames)
+{
+    return QStringLiteral("%1f").arg(frames);
 }
 
 int panelStartFrame(const Scene &scene, int panelIndex, int fps)

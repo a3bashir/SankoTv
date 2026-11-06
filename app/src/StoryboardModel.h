@@ -100,7 +100,24 @@ struct Panel
     QString lens = QStringLiteral("Normal (35-50mm)");
     QString mood;
     QString notes;
-    int duration = 3; // seconds on screen in the animatic
+    // THE PANEL'S LENGTH (2026-11-06, batch 5 of the proposals of
+    // 2026-11-06; it was whole seconds, 1 to 30): `frames` counted at
+    // `rate` frames per second - the project's rate when the length was
+    // last set. Read it ONLY through shotcam::panelFrames(panel, fps),
+    // which counts it at the rate asked for (rounded to the nearest frame,
+    // at least 1). So a frame-rate change keeps every panel's TIME and
+    // rewrites no panel, and whatever holds a panel or a length (the undo
+    // history, the panel clipboard) stays right at any rate. At least 1
+    // frame, no maximum. 72 at 24 is the old default, 3 s, for a panel
+    // made without a length; the app's own new panels get 1 s
+    // (StoryboardPage::makeProjectPanel, MainWindow::buildScenesFromJson).
+    int frames = 72;
+    int rate = 24;
+    void setLength(int frameCount, int fps)
+    {
+        frames = frameCount < 1 ? 1 : frameCount;
+        rate = fps < 1 ? 1 : fps;
+    }
     // Undo/redo lives in the app-wide QUndoStack (MainWindow), not per panel.
 
     // The shot camera's name for this panel (camera/CameraModel.h): a key

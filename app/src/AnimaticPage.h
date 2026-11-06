@@ -77,6 +77,8 @@ public:
     bool previewVisible() const;
     void leavePreview(); // also stops playback
     QWidget *previewSurface() const; // the widget laid over the canvas
+    // The clip's typing field (the clip menu's "Set Duration...", 2026-11-06).
+    void openDurationField(int flatIndex);
 
     // Collapsed = the header row only.
     bool isCollapsed() const { return m_collapsed; }
@@ -299,7 +301,12 @@ signals:
     void audioChangeRequested(const QString &newPath, bool linked,
                               const QString &commandText);
     void panelSelectRequested(int flatIndex);
-    void durationChangeRequested(int sceneIndex, int panelIndex, int seconds);
+    // A panel's length in FRAMES at the project's rate (2026-11-06; it was
+    // whole seconds), from an edge drag or the typing field.
+    void durationChangeRequested(int sceneIndex, int panelIndex, int frames);
+    // An Alt-drag on the cut between two clips (a roll): both lengths, one
+    // edit; nothing after them moves.
+    void panelRollRequested(int sceneA, int panelA, int framesA, int sceneB, int panelB, int framesB);
     void panelMoveRequested(int flatIndex, int flatGap);
     void clipContextMenuRequested(int flatIndex, const QPoint &globalPos);
     void collapsedChanged(bool collapsed);
@@ -333,9 +340,15 @@ public:
     // Test hooks. The duration one is the REAL request the timeline drag
     // makes; the rest read state, or stand in for a timer that would
     // otherwise take a panel's whole duration to fire.
-    void setPanelDurationForTest(int sceneIndex, int panelIndex, int duration)
+    // In whole SECONDS, as every check written before 2026-11-06 asks: the
+    // project's rate x seconds, through the same request. Frames: the next.
+    void setPanelDurationForTest(int sceneIndex, int panelIndex, int seconds)
     {
-        onDurationChanged(sceneIndex, panelIndex, duration);
+        onDurationChanged(sceneIndex, panelIndex, seconds * projectFps());
+    }
+    void setPanelFramesForTest(int sceneIndex, int panelIndex, int frames)
+    {
+        onDurationChanged(sceneIndex, panelIndex, frames);
     }
     AnimaticTimeline *timelineForTest() const { return m_timeline; }
     int selectedPanelForTest() const { return m_selected; }
@@ -426,7 +439,7 @@ private:
     void updateTotalLabel();
     QString formatTime(int seconds) const;
 
-    void onDurationChanged(int sceneIndex, int panelIndex, int newDuration);
+    void onDurationChanged(int sceneIndex, int panelIndex, int newFrames);
     void onPlayheadTick();
 
     void play();
@@ -457,6 +470,14 @@ private:
     void applyTracks(); // push m_tracks to the timeline and the player
     bool hasAudio() const;
     qint64 offsetForPanel(int index) const; // ms before this panel
+    // Panel lengths in frames at the project's rate (2026-11-06, batch 5):
+    // the item's frames, the frames before it, and a frame count as film
+    // ms (whole ms, rounded down). A panel's ms are the difference of two
+    // offsets, so no rounding accumulates along the film.
+    int itemFrames(int index) const;
+    qint64 framesBefore(int index) const;
+    qint64 framesToMs(qint64 frames) const;
+    qint64 itemMs(int index) const;
 
     void setLoopStart();
     void setLoopEnd();

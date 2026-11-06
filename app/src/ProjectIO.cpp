@@ -595,7 +595,10 @@ WriteResult projectToJson(const SaveData &data, const QString &projectFilePath,
 
             QJsonObject panelObj;
             panelObj[QStringLiteral("id")] = panel->id; // the stable id (2026-11-04)
-            panelObj[QStringLiteral("duration")] = panel->duration;
+            // THE LENGTH IN FRAMES at the project's rate (2026-11-06, batch
+            // 5). "duration" (whole seconds) is read from older files and no
+            // longer written.
+            panelObj[QStringLiteral("frames")] = shotcam::panelFrames(*panel, data.fps);
             panelObj[QStringLiteral("shotType")] = panel->shotType;
             panelObj[QStringLiteral("camera")] = panel->cameraAngle;
             panelObj[QStringLiteral("lens")] = panel->lens;
@@ -869,9 +872,21 @@ LoadedProject projectFromJson(const QJsonObject &root, const QString &folder,
                 else
                     ++out.panelIdsMinted;
             }
-            panel->duration = panelObj.value(QStringLiteral("duration")).toInt(3);
-            if (panel->duration < 1)
-                panel->duration = 3;
+            // THE LENGTH (2026-11-06, batch 5): "frames" at the file's rate;
+            // a file from before it has "duration" in whole seconds, which
+            // keeps its time exactly (seconds x fps). Neither, or a length
+            // below 1, is the old default: 3 s.
+            {
+                const int fileFps = qMax(1, out.fps);
+                int frames = 0;
+                if (panelObj.contains(QStringLiteral("frames")))
+                    frames = panelObj.value(QStringLiteral("frames")).toInt(0);
+                else if (panelObj.contains(QStringLiteral("duration")))
+                    frames = panelObj.value(QStringLiteral("duration")).toInt(0) * fileFps;
+                if (frames < 1)
+                    frames = 3 * fileFps;
+                panel->setLength(frames, fileFps);
+            }
             // Only override defaults when a non-empty value is stored.
             const QString shotType = panelObj.value(QStringLiteral("shotType")).toString();
             if (!shotType.isEmpty())

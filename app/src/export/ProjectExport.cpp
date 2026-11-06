@@ -46,8 +46,10 @@ QVector<ExportPanel> collectPanels(const QVector<Scene *> &scenes, int fps,
             row.panel = panel;
             row.sceneNumber = scene->number;
             row.panelInScene = i + 1;
-            // The same floor the timeline and playback apply.
-            row.seconds = qMax(1, panel->duration);
+            // The length the timeline and playback use: frames at the
+            // export's rate (2026-11-06).
+            row.frames = shotcam::panelFrames(*panel, qMax(1, fps));
+            row.fps = qMax(1, fps);
             row.scene = cameraOff ? nullptr : scene;
             row.panelIndex = i;
             row.sceneFilmStart = sceneStart;
@@ -59,7 +61,7 @@ QVector<ExportPanel> collectPanels(const QVector<Scene *> &scenes, int fps,
             row.stage = shotcam::stageWithMargin(canvas, stageMargin);
             row.fullArtwork = fullArtwork;
             list.append(row);
-            filmStart += row.seconds * qMax(1, fps);
+            filmStart += row.frames;
         }
     }
     return list;
@@ -86,7 +88,7 @@ shotcam::CameraState movieFrameCamera(const QVector<ExportPanel> &panels,
     fps = qMax(1, fps);
     int start = 0;
     for (const ExportPanel &row : panels) {
-        const int frames = row.seconds * fps;
+        const int frames = qMax(1, row.frames);
         if (frame < start + frames || &row == &panels.last()) {
             if (!row.panel)
                 return shotcam::CameraState();
@@ -102,10 +104,23 @@ shotcam::CameraState movieFrameCamera(const QVector<ExportPanel> &panels,
 
 int movieFrameCount(const QVector<ExportPanel> &panels, int fps)
 {
+    Q_UNUSED(fps);
     int frames = 0;
     for (const ExportPanel &row : panels)
-        frames += row.seconds * qMax(1, fps);
+        frames += qMax(1, row.frames);
     return frames;
+}
+
+QString pdfLengthText(int frames, int fps)
+{
+    fps = qMax(1, fps);
+    frames = qMax(1, frames);
+    const int s = frames / fps, f = frames % fps;
+    if (f == 0)
+        return QStringLiteral("%1 s").arg(s);
+    if (s == 0)
+        return QStringLiteral("%1 f").arg(f);
+    return QStringLiteral("%1 s %2 f").arg(s).arg(f);
 }
 
 namespace {
@@ -276,9 +291,14 @@ void paintBoardPage(QPainter &painter, const QSize &pageSize, int dpi,
     const int cellW = (pageW - gap * (kColumns - 1)) / kColumns;
     const int cellH = (pageH - headH - gap * (kRows - 1)) / kRows;
 
-    int totalSeconds = 0;
-    for (const ExportPanel &row : panels)
-        totalSeconds += row.seconds;
+    // The film's whole seconds (m:ss, as it always wrote), from its frames.
+    qint64 totalFrames = 0;
+    int rate = 24;
+    for (const ExportPanel &row : panels) {
+        totalFrames += qMax(1, row.frames);
+        rate = qMax(1, row.fps);
+    }
+    const int totalSeconds = int(totalFrames / rate);
 
     painter.setFont(headFont);
     painter.setPen(Qt::black);
@@ -331,7 +351,7 @@ void paintBoardPage(QPainter &painter, const QSize &pageSize, int dpi,
                              .arg(row.sceneNumber).arg(row.panelInScene));
         painter.drawText(QRect(cell.left(), y, cellW, labelH),
                          Qt::AlignRight | Qt::AlignVCenter,
-                         QStringLiteral("%1 s").arg(row.seconds));
+                         pdfLengthText(row.frames, row.fps));
         y += labelH;
         painter.setFont(textFont);
         const QFontMetrics textMetrics(textFont, device);
@@ -503,7 +523,7 @@ void MovieExportJob::start()
     m_endFrame.clear();
     m_totalFrames = 0;
     for (const ExportPanel &row : m_request.panels) {
-        m_totalFrames += row.seconds * fps;
+        m_totalFrames += qMax(1, row.frames);
         m_endFrame.append(m_totalFrames);
     }
     m_result = MovieResult();

@@ -127,7 +127,7 @@ Panel *fixturePanel(const QSize &size)
     }
     tone.opacity = 0.6;
     panel->layers.append(tone);
-    panel->duration = 3;
+    panel->setLength(3 * 24, 24); // 3 s (2026-11-06: lengths are frames at a rate)
     return panel;
 }
 
@@ -168,7 +168,7 @@ Panel *depthPanel(const QSize &size = QSize(1920, 1080), const QPoint &offset = 
         panel->layers.append(layer);
     }
     panel->activeLayerIndex = 1;
-    panel->duration = 3;
+    panel->setLength(3 * 24, 24); // 3 s
     return panel;
 }
 
@@ -200,7 +200,7 @@ Panel *marginPanel(const QSize &frame, const QSize &margin)
     Panel *src = fixturePanel(frame);
     const QSize stage(frame.width() + 2 * margin.width(), frame.height() + 2 * margin.height());
     Panel *panel = new Panel;
-    panel->duration = src->duration;
+    panel->setLength(src->frames, src->rate);
     for (int i = 0; i < src->layers.size(); ++i) {
         Layer copy = src->layers.at(i);
         QImage big(stage, QImage::Format_ARGB32_Premultiplied);
@@ -979,12 +979,12 @@ int main(int argc, char **argv)
                 .arg(shotcam::keyFrame(s, k2, 24));
         };
         const bool base = frames() == QStringLiteral("108/216");
-        s.panels.at(0)->duration = 5; // an EARLIER panel lengthens
+        s.panels.at(0)->setLength(5 * 24, 24); // an EARLIER panel lengthens
         const QString earlier = frames();
-        s.panels.at(0)->duration = 3;
-        s.panels.at(1)->duration = 4; // the key's OWN panel lengthens
+        s.panels.at(0)->setLength(3 * 24, 24);
+        s.panels.at(1)->setLength(4 * 24, 24); // the key's OWN panel lengthens
         const QString own = frames();
-        s.panels.at(1)->duration = 3;
+        s.panels.at(1)->setLength(3 * 24, 24);
         Panel *inserted = makeBlankPanel(QSize(64, 36));
         s.panels.insert(1, inserted); // a panel inserted before K1
         const QString insert = frames();
@@ -1027,6 +1027,198 @@ int main(int argc, char **argv)
                              "identity: no key follows it"),
               copy.uid.value() != s.panels.at(1)->uid.value()
                   && shotcam::liveKeysOnPanel(s, s.panels.at(1)) == 1);
+    }
+
+    // ---- (fr) LENGTHS IN FRAMES (2026-11-06, batch 5; Figma DUR-1) --------
+    // A panel's length is frames at a rate (Panel::frames / rate), read at
+    // any rate through panelFrames - the conversion, the labels, the keys
+    // by the frame, the export rows and the file, as pure functions, each
+    // with its control. The real window's half is Lifecycle (du).
+    ts << "--- (fr) lengths in frames ---\n";
+    {
+        using shotcam::framesAtRate;
+        // (fr1) the conversion: the same time, to the nearest frame.
+        const bool exactSeconds = [&] {
+            for (int to : {24, 25, 30, 60, 12})
+                for (int s : {1, 2, 3, 7})
+                    if (framesAtRate(s * 24, 24, to) != s * to)
+                        return false;
+            return true;
+        }();
+        const bool rounded = framesAtRate(36, 24, 25) == 38 && framesAtRate(36, 24, 30) == 45
+            && framesAtRate(36, 24, 60) == 90 && framesAtRate(36, 24, 12) == 18
+            && framesAtRate(1, 60, 24) == 1 && framesAtRate(48, 24, 25) == 50;
+        Panel *p = makeBlankPanel(QSize(64, 36));
+        p->setLength(36, 24);
+        const bool viaPanel = shotcam::panelFrames(*p, 24) == 36 && shotcam::panelFrames(*p, 25) == 38
+            && shotcam::panelFrames(*p, 48) == 72;
+        check(QStringLiteral("(fr1) A LENGTH IS FRAMES AT A RATE, read at any rate: whole seconds exact at "
+                             "12 / 24 / 25 / 30 / 60; 1s 12f at 24 is 38 at 25 (37.5, a half up), 45 at 30, "
+                             "90 at 60, 18 at 12; 1 frame at 60 is still 1 at 24; panelFrames reads the "
+                             "panel's own rate"),
+              exactSeconds && rounded && viaPanel,
+              QStringLiteral("seconds %1 rounded %2 panel %3 (36@24 -> 25: %4)").arg(exactSeconds).arg(rounded)
+                  .arg(viaPanel).arg(framesAtRate(36, 24, 25)));
+        // Control: at its own rate a length is never rounded, odd or not.
+        const bool ownRate = framesAtRate(37, 24, 24) == 37 && framesAtRate(1, 24, 24) == 1
+            && framesAtRate(1001, 30, 30) == 1001;
+        p->setLength(0, 0); // and the floor: at least 1 frame at a rate of at least 1
+        check(QStringLiteral("(fr1) control: at its own rate a length is kept exactly (37, 1, 1001); "
+                             "set to 0 frames at 0 fps it is 1 frame at 1 fps"),
+              ownRate && p->frames == 1 && p->rate == 1,
+              QStringLiteral("own %1, set 0/0 -> %2 at %3").arg(ownRate).arg(p->frames).arg(p->rate));
+        delete p;
+
+        // (fr2) the labels.
+        const bool labels = shotcam::lengthText(36, 24) == QStringLiteral("1s 12f")
+            && shotcam::lengthText(48, 24) == QStringLiteral("2s")
+            && shotcam::lengthText(12, 24) == QStringLiteral("12f")
+            && shotcam::lengthText(24, 24) == QStringLiteral("1s")
+            && shotcam::lengthText(1, 60) == QStringLiteral("1f")
+            && shotcam::lengthText(54, 24) == QStringLiteral("2s 6f")
+            && shotcam::framesText(36) == QStringLiteral("36f");
+        check(QStringLiteral("(fr2) THE LABELS: \"1s 12f\", \"2s\", \"12f\", \"1s\", \"1f\" at 60, \"2s 6f\"; "
+                             "the Frames view \"36f\""),
+              labels, shotcam::lengthText(36, 24) + QStringLiteral(" | ") + shotcam::lengthText(54, 24));
+        // Control: the PDF board keeps the text it always wrote for whole
+        // seconds ("3 s" - the pinned page), and spells the rest its way.
+        const bool pdf = sankoexport::pdfLengthText(72, 24) == QStringLiteral("3 s")
+            && sankoexport::pdfLengthText(36, 24) == QStringLiteral("1 s 12 f")
+            && sankoexport::pdfLengthText(12, 24) == QStringLiteral("12 f");
+        check(QStringLiteral("(fr2) control: the PDF board writes \"3 s\" for whole seconds, as before, "
+                             "and \"1 s 12 f\" / \"12 f\" for the rest"),
+              pdf, sankoexport::pdfLengthText(72, 24) + QStringLiteral(" | ")
+                       + sankoexport::pdfLengthText(36, 24));
+
+        // (fr3) the keys, by the frame: three panels of 1s 12f; anchored
+        // keys at panel 2's start and middle, a pinned key at film 90.
+        Scene s;
+        for (int i = 0; i < 3; ++i) {
+            Panel *q = makeBlankPanel(QSize(64, 36));
+            q->setLength(36, 24);
+            s.panels.append(q);
+        }
+        const shotcam::CameraState n = shotcam::neutral(QSize(64, 36));
+        shotcam::CameraState m = n;
+        m.zoom = 1.5;
+        s.camera.keys = {shotcam::makeKey(s, 1, 0, 24, n), shotcam::makeKey(s, 1, 18, 24, m),
+                         shotcam::makePinnedKey(90.0, 24, n)};
+        auto at = [&] {
+            return QStringLiteral("%1/%2/%3").arg(shotcam::keyFrame(s, s.camera.keys.at(0), 24))
+                .arg(shotcam::keyFrame(s, s.camera.keys.at(1), 24))
+                .arg(shotcam::keyFrame(s, s.camera.keys.at(2), 24));
+        };
+        const QString before = at();
+        s.panels.at(1)->setLength(54, 24); // panel 2: 36 -> 54 frames (2s 6f)
+        const QString longer = at();
+        s.panels.at(0)->setLength(37, 24); // panel 1 one frame longer
+        const QString earlier = at();
+        check(QStringLiteral("(fr3) KEYS STAY IN SYNC BY THE FRAME: panel 2 from 36 to 54 frames keeps "
+                             "its keys at its start and middle (36/54 -> 36/63) and the pinned key on "
+                             "its time (90); panel 1 one frame longer moves both anchored keys one "
+                             "frame (37/64) and not the pinned one"),
+              before == QStringLiteral("36/54/90") && longer == QStringLiteral("36/63/90")
+                  && earlier == QStringLiteral("37/64/90"),
+              QStringList{before, longer, earlier}.join(QLatin1Char(' ')));
+        // Control: a key at a fixed frame (pinned at 54, where the middle
+        // key was) does not follow the panel - the anchored rule is real.
+        Scene t;
+        t.panels = s.panels; // the same panels, not owned (cleared before t goes)
+        t.camera.keys = {shotcam::makePinnedKey(54.0, 24, m)};
+        check(QStringLiteral("(fr3) control: a key pinned where the middle key began stays at 54 "
+                             "through the same edits"),
+              shotcam::keyFrame(t, t.camera.keys.at(0), 24) == 54.0,
+              QString::number(shotcam::keyFrame(t, t.camera.keys.at(0), 24)));
+        t.panels.clear();
+
+        // (fr4) the export rows: the movie has exactly the frames.
+        s.camera.keys.clear();
+        s.panels.at(0)->setLength(37, 24);
+        s.panels.at(1)->setLength(24, 24);
+        s.panels.at(2)->setLength(50, 24);
+        QVector<Scene *> film{&s};
+        const QVector<sankoexport::ExportPanel> rows = sankoexport::collectPanels(film, 24);
+        const QVector<sankoexport::ExportPanel> rows30 = sankoexport::collectPanels(film, 30);
+        check(QStringLiteral("(fr4) THE EXPORTS COUNT FRAMES: rows of 37, 24 and 50 frames, a movie of "
+                             "111; at 30 fps the same times are 46, 30 and 63 frames (139)"),
+              rows.size() == 3 && rows.at(0).frames == 37 && rows.at(1).frames == 24 && rows.at(2).frames == 50
+                  && sankoexport::movieFrameCount(rows, 24) == 111 && rows30.size() == 3
+                  && rows30.at(0).frames == 46 && rows30.at(2).frames == 63
+                  && sankoexport::movieFrameCount(rows30, 30) == 139,
+              QStringLiteral("%1 frames; at 30: %2").arg(sankoexport::movieFrameCount(rows, 24))
+                  .arg(sankoexport::movieFrameCount(rows30, 30)));
+        for (Panel *q : s.panels)
+            q->setLength(2 * 24, 24);
+        const QVector<sankoexport::ExportPanel> whole = sankoexport::collectPanels(film, 24);
+        check(QStringLiteral("(fr4) control: whole seconds (3 x 2 s) are the 144 frames seconds x fps "
+                             "always gave"),
+              sankoexport::movieFrameCount(whole, 24) == 144,
+              QString::number(sankoexport::movieFrameCount(whole, 24)));
+
+        // (fr5) the file: "frames" written, "duration" read.
+        ProjectIO::SaveData data;
+        data.projectName = QStringLiteral("Frames");
+        data.fps = 30;
+        data.canvasSize = QSize(64, 36);
+        s.panels.at(0)->setLength(37, 30);
+        s.panels.at(1)->setLength(60, 30);
+        s.panels.at(2)->setLength(2, 24); // at another rate: written at the project's (3 at 30, 2.5 up)
+        data.scenes = {&s};
+        const QString folder = scratch + QStringLiteral("/frames");
+        QDir().mkpath(folder);
+        const ProjectIO::WriteResult w = ProjectIO::projectToJson(data, folder + QStringLiteral("/Frames.sankotv"));
+        QJsonObject root = w.root;
+        QJsonArray scenesArr = root.value(QStringLiteral("scenes")).toArray();
+        QJsonObject scene0 = scenesArr.at(0).toObject();
+        QJsonArray panelsArr = scene0.value(QStringLiteral("panels")).toArray();
+        QStringList written;
+        bool anyDuration = false;
+        for (const QJsonValue &v : panelsArr) {
+            written << QString::number(v.toObject().value(QStringLiteral("frames")).toInt(-1));
+            anyDuration = anyDuration || v.toObject().contains(QStringLiteral("duration"));
+        }
+        ProjectIO::LoadedProject back = ProjectIO::projectFromJson(root, folder);
+        QStringList loaded;
+        if (back.scenes.size() == 1)
+            for (const Panel *q : back.scenes.at(0)->panels)
+                loaded << QStringLiteral("%1@%2").arg(q->frames).arg(q->rate);
+        // An older file: "duration" in seconds and no "frames"; one panel
+        // with neither, one with a length below 1.
+        QJsonArray old;
+        for (int i = 0; i < panelsArr.size(); ++i) {
+            QJsonObject po = panelsArr.at(i).toObject();
+            po.remove(QStringLiteral("frames"));
+            if (i == 0)
+                po.insert(QStringLiteral("duration"), 2);
+            else if (i == 2)
+                po.insert(QStringLiteral("duration"), 0);
+            old.append(po);
+        }
+        scene0.insert(QStringLiteral("panels"), old);
+        scenesArr.replace(0, scene0);
+        root.insert(QStringLiteral("scenes"), scenesArr);
+        ProjectIO::LoadedProject oldBack = ProjectIO::projectFromJson(root, folder);
+        QStringList oldLoaded;
+        if (oldBack.scenes.size() == 1)
+            for (const Panel *q : oldBack.scenes.at(0)->panels)
+                oldLoaded << QString::number(shotcam::panelFrames(*q, 30));
+        check(QStringLiteral("(fr5) THE FILE: \"frames\" at the project's rate is written (37, 60, and "
+                             "a 2-frame length at 24 as 3 at 30) and no \"duration\"; read back, each "
+                             "is that many frames at 30"),
+              w.ok && written.join(QLatin1Char(',')) == QStringLiteral("37,60,3") && !anyDuration
+                  && loaded.join(QLatin1Char(',')) == QStringLiteral("37@30,60@30,3@30"),
+              QStringLiteral("written %1 loaded %2").arg(written.join(QLatin1Char(',')), loaded.join(QLatin1Char(','))));
+        check(QStringLiteral("(fr5) AN OLDER FILE keeps its time: \"duration\" 2 s opens as 60 frames at "
+                             "30; no length at all, or 0, opens as the old default 3 s (90)"),
+              oldLoaded.join(QLatin1Char(',')) == QStringLiteral("60,90,90"),
+              oldLoaded.join(QLatin1Char(',')));
+        for (Scene *sc : back.scenes)
+            delete sc;
+        for (Scene *sc : oldBack.scenes)
+            delete sc;
+        for (Panel *q : s.panels)
+            delete q;
+        s.panels.clear();
     }
 
     // ---- (c8) the file ----------------------------------------------------
@@ -1199,7 +1391,7 @@ int main(int argc, char **argv)
         Scene *k = new Scene;
         for (int i = 0; i < 3; ++i) {
             Panel *p = new Panel;
-            p->duration = 2;
+            p->setLength(2 * 24, 24);
             k->panels.append(p);
         }
         const shotcam::CameraState n = shotcam::neutral(cs);
@@ -2604,17 +2796,17 @@ int main(int argc, char **argv)
         };
         const bool base = frames() == QStringLiteral("108/230") && filmOf(pinned) == 518.0;
         // (pk1) the matrix 5.3.
-        b.panels.at(0)->duration = 5; // an EARLIER panel in its scene +2 s
+        b.panels.at(0)->setLength(5 * 24, 24); // an EARLIER panel in its scene +2 s
         const QString earlierOwn = frames();
         const double filmEarlierOwn = filmOf(pinned);
-        b.panels.at(0)->duration = 3;
-        b.panels.at(3)->duration = 4; // the panel the pinned key is OVER +1 s
+        b.panels.at(0)->setLength(3 * 24, 24);
+        b.panels.at(3)->setLength(4 * 24, 24); // the panel the pinned key is OVER +1 s
         const QString over = frames();
-        b.panels.at(3)->duration = 3;
-        a.panels.at(0)->duration = 5; // an EARLIER SCENE +2 s: scene 2 starts at 336
+        b.panels.at(3)->setLength(3 * 24, 24);
+        a.panels.at(0)->setLength(5 * 24, 24); // an EARLIER SCENE +2 s: scene 2 starts at 336
         const QString earlierScene = frames();
         const double filmEarlierScene = filmOf(pinned);
-        a.panels.at(0)->duration = 3;
+        a.panels.at(0)->setLength(3 * 24, 24);
         Panel *ins = makeBlankPanel(QSize(64, 36));
         b.panels.insert(1, ins); // a panel inserted before both
         const QString inserted = frames();
@@ -2664,12 +2856,12 @@ int main(int argc, char **argv)
         // anchored on panel 4 at frame 14 of it, scene frame 230 today - is
         // another number under each of those edits.
         const CameraKey twin = shotcam::makeKey(b, 3, 14, 24, pB);
-        b.panels.at(0)->duration = 5;
+        b.panels.at(0)->setLength(5 * 24, 24);
         const double twinEarlier = shotcam::keyFrame(b, twin, 24, startB());
-        b.panels.at(0)->duration = 3;
-        a.panels.at(0)->duration = 5;
+        b.panels.at(0)->setLength(3 * 24, 24);
+        a.panels.at(0)->setLength(5 * 24, 24);
         const double twinFilmEarlierScene = startB() + shotcam::keyFrame(b, twin, 24, startB());
-        a.panels.at(0)->duration = 3;
+        a.panels.at(0)->setLength(3 * 24, 24);
         check(QStringLiteral("(pk1) control: an anchored key in the same place answers 278 to the "
                              "earlier panel's +2 s and film 566 to the earlier scene's - the "
                              "pinned key's 230 and 518 are the other rule"),

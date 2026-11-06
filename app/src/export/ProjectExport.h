@@ -47,7 +47,8 @@ struct ExportPanel
     const Panel *panel = nullptr;
     int sceneNumber = 0;
     int panelInScene = 0; // 1-based
-    int seconds = 1;      // on screen; never less than 1
+    int frames = 24;      // on screen, at the export's rate; never less than 1 (2026-11-06: was seconds)
+    int fps = 24;         // ...that rate (the PDF writes the length as time)
     // THE SHOT CAMERA (Phase 1A, 2026-10-25). Where the panel sits, so the
     // movie evaluates the camera at every frame of it; and the camera at
     // its FIRST frame, which is what a PNG / PDF still shows (the user's
@@ -76,9 +77,13 @@ QVector<ExportPanel> collectPanels(const QVector<Scene *> &scenes,
                                    bool cameraOff = false,
                                    const QSize &stageMargin = QSize(0, 0));
 
-// seconds x fps, summed. A panel's duration is whole seconds and the frame
-// rate a whole number, so this is exact: no frame is ever rounded away.
+// Every row's frames, summed (2026-11-06: a row holds its panel's length in
+// frames at the export's rate, shotcam::panelFrames; the movie has exactly
+// these frames). fps is kept for the callers; the rows are already at it.
 int movieFrameCount(const QVector<ExportPanel> &panels, int fps);
+// The PDF board's length label: "3 s" for whole seconds (the page it always
+// wrote), "1 s 12 f" or "12 f" for the rest.
+QString pdfLengthText(int frames, int fps);
 
 // The panel fitted into the movie frame, smooth-scaled, on black.
 QImage renderMovieFrame(const Panel *panel, const QSize &frameSize);

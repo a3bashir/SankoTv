@@ -2262,13 +2262,19 @@ void MainWindow::pushStageMargin()
 void MainWindow::applyProjectSettings(const QString &projectName, int fps)
 {
     m_projectName = projectName;
+    const int oldFps = m_projectFps;
     m_projectFps = fps;
     // FPS drives TIMING only: the animatic's per-block frame counts
     // re-derive from it (AnimaticTimeline::setFps -> rebuildBlocks). No
     // layer pixel is touched — the frame rate is metadata about playback,
-    // not about the artwork.
+    // not about the artwork. A panel's length is frames AT ITS OWN RATE
+    // (2026-11-06, batch 5), so no panel is rewritten either: each keeps
+    // its time, counted at the new rate to the nearest frame, and the note
+    // names any panel that rounding changed (Q3).
     if (m_animatic)
         m_animatic->setFps(m_projectFps);
+    if (m_storyboard && oldFps != fps)
+        m_storyboard->sayFrameRateNote(oldFps, fps);
     markDirty(); // name and frame rate are saved, and neither is undoable
     updateTitle();
 }
@@ -2393,9 +2399,11 @@ void MainWindow::buildScenesFromJson(const QJsonArray &scenes)
         scene->timeOfDay = obj.value(QStringLiteral("time_of_day")).toString();
         scene->action = obj.value(QStringLiteral("action")).toString();
         // One blank panel per scene, at the PROJECT's canvas size (set by
-        // the New Project dialog before the Script Editor can run).
-        scene->panels.append(
-            makeBlankPanel(QSize(m_canvasWidth, m_canvasHeight)));
+        // the New Project dialog before the Script Editor can run), 1 s
+        // long at the project's rate (2026-11-06, batch 5; it was 3 s).
+        Panel *panel = makeBlankPanel(QSize(m_canvasWidth, m_canvasHeight));
+        panel->setLength(m_projectFps, m_projectFps);
+        scene->panels.append(panel);
         m_scenes.append(scene);
     }
 }

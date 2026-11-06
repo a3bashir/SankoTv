@@ -1988,21 +1988,57 @@ class PanelDurationCommand : public QUndoCommand
 {
 public:
     // `suffix`: the pinned keys the new timing strands or brings back
-    // (Phase 2E, spec 5.3), already worded.
-    PanelDurationCommand(StoryboardPage *page, Panel *panel, int before,
-                         int after, const QString &suffix = QString())
+    // (Phase 2E, spec 5.3), already worded. A length is FRAMES AT A RATE
+    // (2026-11-06): both ends are kept whole, so an undo after a frame-rate
+    // change puts back the same time, not a frame count at the wrong rate.
+    struct Length
+    {
+        int frames = 1;
+        int rate = 24;
+    };
+    PanelDurationCommand(StoryboardPage *page, Panel *panel, Length before, Length after,
+                         const QString &suffix = QString())
         : QUndoCommand(QStringLiteral("Change Panel Duration") + suffix), m_page(page),
           m_panel(panel), m_before(before), m_after(after)
     {
     }
-    void redo() override { m_page->applyPanelDurationForUndo(m_panel, m_after); }
-    void undo() override { m_page->applyPanelDurationForUndo(m_panel, m_before); }
+    void redo() override { m_page->applyPanelDurationForUndo(m_panel, m_after.frames, m_after.rate); }
+    void undo() override { m_page->applyPanelDurationForUndo(m_panel, m_before.frames, m_before.rate); }
 
 private:
     StoryboardPage *m_page;
     Panel *m_panel;
-    int m_before;
-    int m_after;
+    Length m_before;
+    Length m_after;
+};
+
+// A ROLL (2026-11-06, Figma DUR-1, Q4): an Alt-drag on the cut between two
+// clips changes both lengths and nothing after them moves - one step.
+class PanelRollCommand : public QUndoCommand
+{
+public:
+    using Length = PanelDurationCommand::Length;
+    PanelRollCommand(StoryboardPage *page, Panel *a, Length beforeA, Length afterA, Panel *b,
+                     Length beforeB, Length afterB, const QString &suffix = QString())
+        : QUndoCommand(QStringLiteral("Roll Panel Cut") + suffix), m_page(page), m_a(a), m_b(b),
+          m_beforeA(beforeA), m_afterA(afterA), m_beforeB(beforeB), m_afterB(afterB)
+    {
+    }
+    void redo() override
+    {
+        m_page->applyPanelDurationForUndo(m_a, m_afterA.frames, m_afterA.rate);
+        m_page->applyPanelDurationForUndo(m_b, m_afterB.frames, m_afterB.rate);
+    }
+    void undo() override
+    {
+        m_page->applyPanelDurationForUndo(m_b, m_beforeB.frames, m_beforeB.rate);
+        m_page->applyPanelDurationForUndo(m_a, m_beforeA.frames, m_beforeA.rate);
+    }
+
+private:
+    StoryboardPage *m_page;
+    Panel *m_a, *m_b;
+    Length m_beforeA, m_afterA, m_beforeB, m_afterB;
 };
 
 // The scratch audio track, imported or removed. The document holds only
@@ -7428,6 +7464,8 @@ void StoryboardPage::setupAnimaticSection(QWidget *centerColumn,
     });
     connect(m_animatic, &AnimaticPage::durationChangeRequested, this,
             &StoryboardPage::onDurationChangeRequested);
+    connect(m_animatic, &AnimaticPage::panelRollRequested, this,
+            &StoryboardPage::onRollRequested);
     connect(m_animatic, &AnimaticPage::panelMoveRequested, this,
             &StoryboardPage::onTimelineMoveRequested);
     connect(m_animatic, &AnimaticPage::clipContextMenuRequested, this,
@@ -7601,7 +7639,7 @@ void StoryboardPage::selectFlatPanel(int flat)
 }
 
 void StoryboardPage::onDurationChangeRequested(int sceneIndex, int panelIndex,
-                                               int seconds)
+                                               int frames)
 {
     if (sceneIndex < 0 || sceneIndex >= m_scenes.size())
         return;
@@ -7609,7 +7647,10 @@ void StoryboardPage::onDurationChangeRequested(int sceneIndex, int panelIndex,
     if (panelIndex < 0 || panelIndex >= scene->panels.size())
         return;
     Panel *panel = scene->panels.at(panelIndex);
-    const int bounded = qBound(1, seconds, 30);
+    // FRAMES at the project's rate (2026-11-06, batch 5): at least 1, no
+    // maximum (it was whole seconds, 1 to 30).
+    const int fps = cameraFps();
+    const int bounded = qMax(1, frames);
     if (refuseShotsEdit()) {
         // The timeline refuses the drag itself; should a request still
         // arrive, the clip snaps back to the duration it has.
@@ -7617,26 +7658,61 @@ void StoryboardPage::onDurationChangeRequested(int sceneIndex, int panelIndex,
             m_animatic->refreshTiming();
         return;
     }
-    if (panel->duration == bounded) {
+    if (shotcam::panelFrames(*panel, fps) == bounded) {
         if (m_animatic)
             m_animatic->refreshTiming();
+        loadShotInfo(); // the Duration row shows the length it has
         return;
     }
     if (!m_undoStack) {
         // No history to put it in (never the case inside the app): apply it
         // and say so the old way, rather than lose the edit.
-        applyPanelDurationForUndo(panel, bounded);
+        applyPanelDurationForUndo(panel, bounded, fps);
         emit documentChanged();
         return;
     }
     // Phase 2E: the pinned keys the new timing strands or brings back, in
     // the command's text and a note - in this scene and every later one.
     QVector<QVector<int>> after = filmLayout();
-    after[sceneIndex][panelIndex] = bounded * cameraFps();
+    after[sceneIndex][panelIndex] = bounded;
     QString note;
     const QString suffix = strandingSuffix(after, &note);
-    m_undoStack->push(
-        new PanelDurationCommand(this, panel, panel->duration, bounded, suffix));
+    m_undoStack->push(new PanelDurationCommand(this, panel, {panel->frames, panel->rate},
+                                               {bounded, fps}, suffix));
+    if (!note.isEmpty())
+        sayNote(note);
+}
+
+// THE ROLL (2026-11-06, Q4): two neighbouring panels, one step. Refused by
+// the SHOTS lock like any length edit.
+void StoryboardPage::onRollRequested(int sceneA, int panelA, int framesA, int sceneB, int panelB,
+                                     int framesB)
+{
+    if (sceneA < 0 || sceneA >= m_scenes.size() || sceneB < 0 || sceneB >= m_scenes.size())
+        return;
+    Scene *sa = m_scenes.at(sceneA), *sb = m_scenes.at(sceneB);
+    if (panelA < 0 || panelA >= sa->panels.size() || panelB < 0 || panelB >= sb->panels.size())
+        return;
+    Panel *a = sa->panels.at(panelA), *b = sb->panels.at(panelB);
+    const int fps = cameraFps();
+    const int fa = qMax(1, framesA), fb = qMax(1, framesB);
+    if (refuseShotsEdit() || !m_undoStack) {
+        if (m_animatic)
+            m_animatic->refreshTiming();
+        return;
+    }
+    if (shotcam::panelFrames(*a, fps) == fa && shotcam::panelFrames(*b, fps) == fb) {
+        if (m_animatic)
+            m_animatic->refreshTiming();
+        return;
+    }
+    QVector<QVector<int>> after = filmLayout();
+    after[sceneA][panelA] = fa;
+    after[sceneB][panelB] = fb;
+    QString note;
+    const QString suffix = strandingSuffix(after, &note);
+    m_undoStack->push(new PanelRollCommand(this, a, {a->frames, a->rate}, {fa, fps}, b,
+                                           {b->frames, b->rate}, {fb, fps}, suffix));
     if (!note.isEmpty())
         sayNote(note);
 }
@@ -7703,15 +7779,21 @@ void StoryboardPage::onClipContextMenu(int flat, const QPoint &globalPos)
             [this] { addPanelAfterSelected(); });
     QAction *duplicate = menu.addAction(QStringLiteral("Duplicate Panel"));
     connect(duplicate, &QAction::triggered, this, [this] { duplicatePanel(); });
+    // The typing field for this clip's length (2026-11-06, Figma DUR-1).
+    QAction *setDuration = menu.addAction(QStringLiteral("Set Duration..."));
+    connect(setDuration, &QAction::triggered, this, [this] {
+        if (m_animatic)
+            m_animatic->openDurationField(currentFlatIndex());
+    });
     menu.addSeparator();
     QAction *remove = menu.addAction(QStringLiteral("Delete Panel"));
     remove->setEnabled(scene->panels.size() > 1); // a scene keeps one panel
     connect(remove, &QAction::triggered, this,
             [this] { deleteSelectedPanel(); });
-    // A LOCKED SHOTS track (Part B): the three entries stay, disabled and
+    // A LOCKED SHOTS track (Part B): the entries stay, disabled and
     // suffixed, so the lock is seen where the edit was tried.
     if (shotsLocked()) {
-        for (QAction *a : {add, duplicate, remove}) {
+        for (QAction *a : {add, duplicate, setDuration, remove}) {
             a->setEnabled(false);
             a->setText(a->text() + QStringLiteral(" (locked)"));
         }
@@ -7895,6 +7977,30 @@ QWidget *StoryboardPage::createRightColumn()
                       QStringLiteral("Telephoto (85mm+)")});
     m_lens->setStyleSheet(fieldStyle);
     layout->addWidget(m_lens);
+
+    // DURATION, in frames (2026-11-06, Figma DUR-1): the number, and its
+    // time beside it. Enter or leaving the field applies it, as the
+    // timeline's typing field does (one "Change Panel Duration" step; the
+    // SHOTS lock refuses it); a number that is not a length puts back the
+    // panel's own.
+    addLabel(QStringLiteral("Duration"));
+    {
+        auto *row = new QHBoxLayout;
+        row->setSpacing(8);
+        m_shotFrames = new QLineEdit;
+        m_shotFrames->setObjectName(QStringLiteral("shotInfoFrames"));
+        m_shotFrames->setStyleSheet(fieldStyle);
+        m_shotFrames->setFixedWidth(72);
+        row->addWidget(m_shotFrames);
+        auto *unit = new QLabel(QStringLiteral("frames"));
+        unit->setStyleSheet(labelStyle);
+        row->addWidget(unit);
+        m_shotFramesEquals = new QLabel;
+        m_shotFramesEquals->setStyleSheet(labelStyle);
+        row->addWidget(m_shotFramesEquals, 1);
+        layout->addLayout(row);
+        connect(m_shotFrames, &QLineEdit::editingFinished, this, [this] { applyShotInfoFrames(); });
+    }
 
     addLabel(QStringLiteral("Mood"));
     m_mood = new QLineEdit;
@@ -8254,13 +8360,15 @@ void StoryboardPage::applyPanelMoveForUndo(Scene *scene, int from, int to)
 // after a timing drag takes back the timing - not the last stroke - in the
 // same chronological history as everything else. The command's two ends
 // both land here.
-void StoryboardPage::applyPanelDurationForUndo(Panel *panel, int seconds)
+void StoryboardPage::applyPanelDurationForUndo(Panel *panel, int frames, int rate)
 {
     if (!panel)
         return;
-    panel->duration = qBound(1, seconds, 30);
+    panel->setLength(frames, rate);
     if (m_animatic)
         m_animatic->refreshTiming();
+    if (panel == currentPanel())
+        loadShotInfo(); // the Duration row follows the edit, its undo and its redo
     // A camera move across panels is re-timed with them: the strip's frame
     // outlines (the camera at each panel's first frame) are redrawn. A
     // pinned key (Phase 2E) in the scene on the canvas moves against its
@@ -8304,7 +8412,12 @@ Panel *StoryboardPage::makeProjectPanel() const
                   "panel creation refused");
         return nullptr;
     }
-    return makeBlankPanel(m_projectCanvasSize);
+    Panel *panel = makeBlankPanel(m_projectCanvasSize);
+    // A NEW PANEL LASTS 1 SECOND at the project's rate (2026-11-06, batch
+    // 5; it was 3 s). Duplicate and Paste keep their source's length.
+    const int fps = cameraFps();
+    panel->setLength(fps, fps);
+    return panel;
 }
 
 // --- Shot info ------------------------------------------------------------
@@ -8320,7 +8433,67 @@ void StoryboardPage::loadShotInfo()
     m_lens->setCurrentText(panel->lens);
     m_mood->setText(panel->mood);
     m_notes->setPlainText(panel->notes);
+    if (m_shotFrames) {
+        const int fps = cameraFps(), frames = shotcam::panelFrames(*panel, fps);
+        m_shotFrames->setText(QString::number(frames));
+        m_shotFramesEquals->setText(
+            QStringLiteral("= %1 at %2 fps").arg(shotcam::lengthText(frames, fps)).arg(fps));
+    }
     m_loadingShotInfo = false;
+}
+
+void StoryboardPage::applyShotInfoFrames()
+{
+    if (m_loadingShotInfo || !m_shotFrames)
+        return;
+    const int flat = currentFlatIndex();
+    int sceneIndex = -1, panelIndex = -1;
+    bool ok = false;
+    const int frames = m_shotFrames->text().trimmed().toInt(&ok);
+    if (ok && frames >= 1 && flatToScenePanel(flat, &sceneIndex, &panelIndex))
+        onDurationChangeRequested(sceneIndex, panelIndex, frames);
+    loadShotInfo(); // what the panel now has: the new length, or its own
+}
+
+QString StoryboardPage::shotInfoFramesEqualsForTest() const
+{
+    return m_shotFramesEquals ? m_shotFramesEquals->text() : QString();
+}
+
+QString StoryboardPage::frameRateNote(int oldFps, int newFps) const
+{
+    if (oldFps == newFps || oldFps < 1 || newFps < 1)
+        return QString();
+    QStringList rounded;
+    int count = 0;
+    for (const Scene *scene : m_scenes) {
+        for (int i = 0; i < scene->panels.size(); ++i) {
+            const Panel *p = scene->panels.at(i);
+            const int at = shotcam::panelFrames(*p, newFps);
+            // Exact when the new count is the same time: at / new == frames / rate.
+            if (qint64(at) * p->rate == qint64(p->frames) * newFps)
+                continue;
+            ++count;
+            if (rounded.size() < 6)
+                rounded << QStringLiteral("scene %1 panel %2 (%3)")
+                               .arg(scene->number).arg(i + 1).arg(shotcam::lengthText(at, newFps));
+        }
+    }
+    if (count == 0)
+        return QString();
+    QString text = QStringLiteral("%1 fps: every panel keeps its time. Rounded to the nearest frame: %2")
+                       .arg(newFps).arg(rounded.join(QStringLiteral(", ")));
+    if (count > rounded.size())
+        text += QStringLiteral(" and %1 more").arg(count - rounded.size());
+    return text + QLatin1Char('.');
+}
+
+void StoryboardPage::sayFrameRateNote(int oldFps, int newFps)
+{
+    const QString note = frameRateNote(oldFps, newFps);
+    if (!note.isEmpty())
+        sayNote(note);
+    loadShotInfo(); // its "= ... at N fps"
 }
 
 void StoryboardPage::saveShotInfo()
@@ -8756,7 +8929,8 @@ Panel *StoryboardPage::clonePanel(const Panel *source)
         if (!layer.groupId.isEmpty())
             layer.groupId = newIds.value(layer.groupId, layer.groupId);
     copy->activeLayerIndex = source->activeLayerIndex;
-    copy->duration = source->duration;
+    copy->frames = source->frames; // the source's length, at its own rate
+    copy->rate = source->rate;
     copy->shotType = source->shotType;
     copy->cameraAngle = source->cameraAngle;
     copy->lens = source->lens;

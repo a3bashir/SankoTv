@@ -1,5 +1,25 @@
 # SankoTV — Session Handoff Brief
 
+## STATUS 2026-11-06 (evening): BATCHES 4 AND 5 COMMITTED
+The hand test of batches 4 and 5 (Dev Recorder 20261106-174027) was
+read: no failure; the steps not shown are named, with their gate
+checks, in the batch 4 and 5 sections. Before the commit the user
+redrew the movement arrows in Figma (CAM-2, node 530:696: thinner,
+nothing in the centre, chevrons on the edges along a pan or a tilt,
+arrows behind the corners for a diagonal, the turn's arc above the top
+edge); batch 4 was changed to match, with new checks (Camera mv3-mv5,
+Lifecycle cg6) and one changed control (cg5, old and new text in the
+batch 4 section), and both gates were run again: GATE guides2 (batch 4
+alone, the scratch worktree) and GATE frames2 (both, the main tree).
+Committed: 4875f8e9e (batch 4, sha_guides.txt) and the commit after it
+(batch 5, sha_frames.txt), pushed. The stage-space answers: Q12 V, Q13
+hidden art kept with "Trim Hidden Art", Q14 each panel's stage, Q15
+measure first - done: Documents\SankoTV-Design\
+stage-space-measurement-2026-11-06.md (6b-V waits for the user's
+approval of it). Batch 6a (frame space and the per-panel model) is
+being built - see its section when it lands. The note below
+(2026-11-05) is history.
+
 ## STATUS 2026-11-05 (late evening): ALL THREE APPROVED BATCHES AND THE
 FOLLOW-UP (3b) COMMITTED. Batch 3 (auto-save and crash recovery,
 538b93e85) was followed by batch 3b: the recovery copy now runs off the
@@ -10071,6 +10091,206 @@ files confirmed against sha_recovery.txt (refreshed after this record)
 after the commit; the commit message in msg_recovery.txt. OPEN for the
 user: the copy's UI-thread stall (step 2's finding), _002's leftover
 copy (step 7's observation), and step 9 having no check.
+
+## Batch 5: panel durations in frames (2026-11-06) - COMMITTED
+Item 3 of the proposals of 2026-11-06 (Figma DUR-1), approved with Q3 (a
+frame-rate change keeps each panel's TIME, rounded, at least 1 frame,
+with a note), Q4 (both edges ripple; Alt-drag on the cut rolls) and Q5
+("1s 12f" in the Seconds view, "36f" in the Frames view). Built with
+batch 4 at the user's word, its own commit and hash list (sha_frames.txt),
+the shared hand-test list camera\handtest_guides_frames.md.
+THE MODEL: Panel::duration (whole seconds, 1-30) is gone. A length is
+Panel::frames counted at Panel::rate (setLength(frames, fps); at least
+1, no maximum; 72 at 24 = the old 3 s default for a panel made without
+one). Every reader goes through shotcam::panelFrames(panel, fps) =
+framesAtRate(frames, rate, fps): exact for equal rates and whole seconds,
+else to the nearest frame, a half up (integers only). WHY A RATE IN THE
+PANEL, not frames at the project's rate rewritten on a rate change: then
+nothing that HOLDS a length goes wrong at another rate - an undo of an
+old duration step (PanelDurationCommand keeps {frames, rate} both ends),
+a deleted panel brought back by Undo, a panel on the clipboard pasted
+into a project at another rate - and a rate change rewrites no panel
+(24 -> 25 -> 24 gives back the same counts). New panels get 1 s at the
+project's rate: makeProjectPanel (Add Panel, Add Panel After) and
+MainWindow::buildScenesFromJson (the script breakdown, a new project's
+panels). clonePanel (Duplicate, Paste) copies frames and rate.
+shotcam::lengthText ("2s", "1s 12f", "12f") and framesText ("36f").
+THE FILE: ProjectIO writes "frames" = panelFrames at the project's rate,
+and no "duration"; reads "frames" at the file's rate, else "duration" x
+fps (an older file keeps its time exactly), else (or below 1) 3 s.
+TIMING: AnimaticPage itemFrames / framesBefore / framesToMs (frames x
+1000 / fps, whole ms) / itemMs (the difference of two offsets, so no
+rounding accumulates): offsetForPanel, the timecode, the Total, the film
+clock and scheduleTick. Whole seconds give exactly the ms they always
+did. setFps also updates the Total.
+THE TIMELINE (AnimaticTimeline): Block holds frames only (kMinDur /
+kMaxDur gone; kMinFrames 1). The RIGHT EDGE lands on the frame under the
+pointer (absolute, so a drag to the 4 s mark is 4 s); back within 1 px
+of the press is where it began (nothing changes). The LEFT EDGE (was a
+stub) trims the start: the clip keeps its start and loses the frames the
+edge moved in; a ripple, so the drag shows the result. ALT on the
+selected clip's edge drags the CUT with that neighbour: a ROLL, both
+change, nothing after them moves (rollRequested -> AnimaticPage::
+panelRollRequested -> StoryboardPage::onRollRequested, PanelRollCommand
+"Roll Panel Cut", one step, the stranding suffix and note as 2E). While
+a drag runs, m_dragFramesFor holds the lengths reached (rebuildBlocks
+draws them), a dashed line marks where the moving edge started, and the
+chip reads "1s 19f · 43 f (+7 f)" / "start −6 f · 1s 18f" / "Alt · roll:
+P2 +6 f, P3 −6 f". The PILL reads lengthText in the Seconds view and
+framesText in the Frames view, and widens to fit ("2s" stays the
+design's 28 px, so every whole-second clip is drawn as before). A clip
+narrower than 4 px (a 1-frame clip at a low zoom) is drawn 4 px wide,
+last, over its neighbour; blockAtScreenX finds it first, and a press on
+it selects it rather than the selected clip's edge beside it.
+FOUND BY (du4) AND FIXED: the playhead took any press within 5 px of
+its line on every track, and selecting a clip puts the playhead on its
+start - its LEFT EDGE - so the new left-edge trim could never be
+pressed (the edge was a stub before, so nothing had competed for it).
+On the SHOTS track the selected clip's edges now win; the playhead is
+still grabbed in the ruler and along its line on the other tracks (no
+existing check grabs it on the SHOTS track: they scrub in the ruler).
+TYPING: a double-click on the pill (canvasMouseDoubleClick; anything else
+goes on to the press handler, as Qt's default did) or the clip menu's new
+"Set Duration..." (between Duplicate Panel and Delete Panel; locked with
+them) opens a field (a child of the window, over the clip): "Panel N ·
+Duration", the frames, "= 1s 12f at 24 fps", Cancel / Set; Enter sets,
+Esc cancels, a press on the timeline cancels, below 1 says "at least 1
+frame" and sets nothing. It sends durationChanged like a drag, so the
+SHOTS lock and the history treat it alike (the lock also refuses to open
+it). SHOT INFO has a Duration row (frames, "= ... at N fps"): Enter or
+leaving it requests the change; it follows the edit, Undo and Redo.
+THE FRAME RATE (MainWindow::applyProjectSettings): no panel is changed;
+StoryboardPage::sayFrameRateNote names, through the note, every panel
+whose length the new rate rounds ("25 fps: every panel keeps its time.
+Rounded to the nearest frame: scene 1 panel 1 (1s 13f), ...").
+EXPORTS: ExportPanel::seconds -> frames (+ fps); the movie has exactly
+the frames (movieFrameCount sums them); the PDF board writes "3 s" for
+whole seconds (the pinned page, unchanged) and "1 s 12 f" / "12 f" for
+the rest - the PDF's own spaced style rather than DUR-1's "1s 12f", so
+the pinned page stays byte-identical; the header's m:ss from the frames.
+NOT BUILT from DUR-1: the 1-frame clip's label above it (the pill hides
+on any clip under 42 px, as before); snapping a length edge to the
+playhead (Snap still applies to camera keys only).
+TEST SEAMS: setPanelDurationForTest stays in SECONDS (x the project's
+rate) and blockDurationForTest returns whole seconds or -1, so every
+earlier check reads as it did; new: setPanelFramesForTest,
+blockFramesForTest, blockStartForTest, pillTextForTest, pillRectForTest,
+dragChipForTest, openDurationField / durationFieldPanelForTest /
+durationFieldForTest / durationFieldEqualsForTest,
+shotInfoFramesForTest / shotInfoFramesEqualsForTest.
+FIXTURES (not checks): every test line that set Panel::duration = N now
+sets setLength(N x 24, 24) - the same time at any rate (Camera 10 lines,
+CanvasSizeLock 1, Lifecycle 5; writeProject: (2 + p % 3) x fps at fps).
+CHANGED CHECKS (old and new text in build\_probe\split\changed_checks\),
+each failed on the first batch 5 run for the reason given and passes
+now:
+ - (ad) "right-clicking a clip ... offers Add Panel After, Duplicate
+   Panel, Delete Panel, Quick Camera Move" -> "... Duplicate Panel, Set
+   Duration..., Delete Panel, Quick Camera Move" (the menu gained the
+   approved entry). Positive control: the same hook's (du6) control
+   triggers it and the field opens.
+ - (ad) "Add Panel After ... in both views" with blockDurationForTest(5)
+   == 3 -> "... (1 s long)" with == 1 (new panels last 1 s, approved).
+   Positive control: (du2) - 30 frames at 30 fps; the script breakdown
+   30, where 3 s would be 90.
+ - (ax) locked clip menu: items.size() == 4 (Add / Duplicate / Delete
+   locked, Quick Camera Move enabled) -> 5, "Set Duration... (locked)[0]"
+   third. Positive control: (du6)'s lock check - the field does not open.
+ - (ax) CONTROL "unlocked, the same trim lengthens the clip": read
+   blockDurationForTest(0) > d0 -> blockFramesForTest(0) > f0 (90 px at
+   zoom 100 is 90 frames, 3s 18f, which the seconds reader gives as -1);
+   the detail says frames. Positive control: the locked half of the same
+   check still sees the length unchanged and the refusal.
+NEW CHECKS: Camera (fr), pure, 10: (fr1) a length is frames at a rate,
+read at any rate / control at its own rate exact, and the floor; (fr2)
+the labels / control the PDF's "3 s" kept; (fr3) keys in sync by the
+frame / control a pinned key stays; (fr4) the exports count frames /
+control whole seconds 144; (fr5) the file writes "frames" / an older
+file keeps its time. Lifecycle (du), the real window, a fixture of blank
+panels (not writeProject: no later pass's art moves), registered after
+the takes round trip: (du1) an older file opens in frames and saves
+"frames" / control the fixture was the old form; (du8) the label follows
+the switch / control "2s" is 28 px; (du3) the right edge by the frame /
+control Undo, and a drag back to its start adds nothing; (du4) the left
+edge trims the start and ripples / control the right edge to the same
+length is the same; (du5) Alt rolls the cut / control Undo is one step,
+without Alt it ripples; (du6) typing on the pill / control Esc, 0 and
+the clip menu; (du6) Shot Info's row, with Undo; (du6) the SHOTS lock
+refuses typing; (du7) no maximum and a 1-frame clip 4 px wide and
+clickable / control its 6 px neighbour exact; (du9) a frame-rate change
+keeps each panel's time and names the rounded ones / control no panel
+rewritten; (du2) new panels 1 s, Duplicate keeps its time / control the
+script breakdown 1 s. On their first run (quick_f2) (du4) found the
+playhead defect above, and (du5) / (du6) failed only on the way they
+counted history steps: stack->count(), which does not move when a push
+replaces the redo step an earlier Undo left (the code had pushed exactly
+one "Roll Panel Cut" / "Change Panel Duration"); they count by
+stack->index() now, as (dt4) does, and the Shot Info check gained the
+one-step test its label claimed.
+QUICK RUNS (Release; app\build\_probe\split\quick_f*): Camera 243 PASS
+with the fixtures moved to frames (f1), then 253 PASS with (fr) (f2);
+CanvasSizeLock 170 PASS (f1). Lifecycle f1 (before (du), 1152 checks): 6
+failures - the four changed checks above, and (dt4) twice, printed
+right after "a test window LOST THE FOREGROUND ... ('... YouTube -
+Google Chrome')" (the depth popover closes when its window loses focus;
+batch 5 does not touch it; it passed in f2). f2 (1173): the four (du)
+failures above. f3 (1173, 560.7 s): 1 failure, (aw) "while the zoom
+field is being edited every key is the field's" ("typed '123%'"),
+printed right after a test window lost the foreground to the Claude app
+(350.7 s, four times in the run); it passed in g2, f1 and f2, and batch
+5 does not touch the zoom field (the new key filter acts only on the
+duration field, which that pass never opens). The gates below decide.
+HAND TEST (Dev Recorder 20261106-174027, with batch 4's; the copy
+Test_SB_StageMargin_01 had one panel). Step 6 NOT TESTED: the copy was
+made that day with this build (its file already in frames), and the
+window's hide / show at 453 s and 475 s is a minimise and restore (the
+same timeline before and after), not a close and reopen - du1, fr5; the
+saves wrote "frames" (120 for the 5 s clip). Step 7 PASS bar its Ctrl+Z:
+seven right-edge drags (308-343 s) with the chip at the pointer (a
+tooltip, shown and hidden with each drag; "2s 11f · 59 f (-3 f)" caught
+at 325 s), the dashed line where the edge began, the pill after
+("13f", "4s 1f") and playback the new length; no Ctrl+Z after a drag -
+du3. Step 8 NOT TESTED: no press on a left edge - du4. Step 10 PASS for
+the pill: the field "Panel 1 · Duration", "97 frames = 4s 1f at 24
+fps", Cancel / Set; Enter set 100, 150, 80 and 120, each matched by the
+pill and by playback, and the file holds 120; Set with the value
+unchanged left it; the clip menu's Set Duration... with Esc, Shot
+Info's row, Ctrl+Z and typing 0 were not done - du6. Step 13 PASS for
+the strip's +: a "1s" panel (24 frames), undone in one step; Add Panel
+After and Duplicate not done - du2. Step 16 PASS: quit by the window's
+X (the pointer to the title bar's top right, the window hidden,
+sessionEnd 17 ms later), summary written, 0 dropped, 0 warnings, no
+SankoTV process left and no Application Error or hang event after
+17:30. No failure.
+GATE frames - BATCHES 4 AND 5, the main tree (fullgate_frames.log,
+2026-11-06, normal mode, 2037 s): clean Release and Debug builds (0
+errors), 0 failing families in both; Lifecycle 1173 (Release 558 s,
+Debug 768 s; (aw) and (dt4) PASS in both), Camera 253, CanvasSizeLock
+170, CanvasEdgeLock 74, BrushLibrary 187, DevRecorder 46,
+QuickShapeGeometry 19, PaintPixel 13, CanvasBrush 3; every pin line
+count equal to gate off's and gate guides' in both configs (Camera c1p
+17, mp 43, mq 44, rp 3; the Lifecycle pin lines likewise); the row pins
+bd989a38 / a4994d62 / a3e7f938 reproduced in both; the evaluate pins
+e43a30f9fcc11db6 / 7bd38237a37a7579 in camera_test.txt (RESULT PASS
+checks=253) - every whole-second picture, film and board unchanged by
+lengths in frames. Exe stamp c5076abcc+dirty, Release SankoTV.exe
+2026-11-06 16:29:55 (Debug 16:32:00): the build for the hand test.
+(That gate was on the first arrows; the one below is on the two
+commits as made.)
+GATE frames2 - BATCHES 4 (THE ADJUSTED ARROWS) AND 5, the main tree
+(fullgate_frames2.log, 2026-11-06, normal mode, 2042 s): clean Release
+and Debug builds (0 errors), 0 failing families in both, no foreground
+lost; Lifecycle 1176 (1173 + cg6 x2 + the cg5 control; Release 559 s,
+Debug 765 s), Camera 263 (253 + mv3-mv5), CanvasSizeLock 170,
+CanvasEdgeLock 74, BrushLibrary 187, DevRecorder 46, QuickShapeGeometry
+19, PaintPixel 13, CanvasBrush 3; every pin line count equal to the
+first gate frames' in both configs (Camera c1p 17, mp 43, mq 44, rp 3;
+Lifecycle "pin" 42, (rp 6, (mp 4)); the row pins bd989a38 / a4994d62 /
+a3e7f938 in both; the evaluate pins e43a30f9fcc11db6 / 7bd38237a37a7579
+in camera_test.txt (RESULT PASS checks=263). Exe c5076abcc+dirty,
+Release SankoTV.exe 2026-11-06 19:47:07 (Debug 19:49:10). Committed on
+the user's word "if nothing failed, make the two commits" after the
+hand test (above) showed no failure.
 
 ## Batch 3b: the recovery copy off the UI thread, and batch 3's missing checks (2026-11-05) - COMMITTED
 The user's follow-up to batch 3: (1) the copy must not freeze the app -

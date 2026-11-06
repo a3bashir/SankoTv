@@ -287,7 +287,7 @@ QString writeProject(const QString &root, const QString &name, const QSize &size
                                            randIn(0, size.height())),
                                     randIn(8, 60), randIn(8, 60));
             }
-            panel->duration = 2 + (p % 3);
+            panel->setLength((2 + (p % 3)) * fps, fps); // 2, 3 or 4 s (2026-11-06: frames at a rate)
             scene->panels.append(panel);
         }
         scenes.append(scene);
@@ -5353,11 +5353,14 @@ void runWorkspaceSyncPass(const QString &project)
     });
     trigger = QStringLiteral("Duplicate Panel");
     rightClickClip(r, 3); // scene 2's first panel, which is NOT the selection
-    // Phase 1D (2026-10-29) added Quick Camera Move (a submenu) after them.
+    // Phase 1D (2026-10-29) added Quick Camera Move (a submenu) after them;
+    // batch 5 (2026-11-06) Set Duration... after Duplicate Panel.
     check(QStringLiteral("(ad) right-clicking a clip selects it and offers "
-                         "Add Panel After, Duplicate Panel, Delete Panel, Quick Camera Move"),
+                         "Add Panel After, Duplicate Panel, Set Duration..., Delete Panel, "
+                         "Quick Camera Move"),
           menuSaw == QStringList({QStringLiteral("Add Panel After"),
                                   QStringLiteral("Duplicate Panel"),
+                                  QStringLiteral("Set Duration..."),
                                   QStringLiteral("Delete Panel"),
                                   QStringLiteral("Quick Camera Move")}),
           menuSaw.join(QStringLiteral(" | ")));
@@ -5370,12 +5373,13 @@ void runWorkspaceSyncPass(const QString &project)
           state(r));
     trigger = QStringLiteral("Add Panel After");
     rightClickClip(r, 4);
+    // 2026-11-06 (batch 5): a new panel lasts 1 second (it was 3).
     check(QStringLiteral("(ad) Add Panel After from the timeline adds a new "
-                         "panel after that clip, in both views"),
+                         "panel after that clip, in both views (1 s long)"),
           r.timeline->blockCountForTest() == 9
               && thumbs(r.storyboard).size() == 6
               && r.storyboard->selectedFlatIndexForTest() == 5
-              && r.timeline->blockDurationForTest(5) == 3,
+              && r.timeline->blockDurationForTest(5) == 1,
           state(r));
     r.storyboard->cutSelectedPanel(); // the same removal Delete performs
     pump(250);
@@ -5975,6 +5979,494 @@ void runWorkspaceUndoPass(const QString &project)
           playing && !r.animatic->isPlaying()
               && r.timeline->blockDurationForTest(1) == 6);
     r.animatic->leavePreview();
+}
+
+// ---- (du) PANEL LENGTHS IN FRAMES, through the real window (2026-11-06) ----
+// Batch 5 of the proposals of 2026-11-06 (Figma DUR-1, Q3-Q5): a panel lasts
+// frames - at least 1, no maximum; new panels 1 second; either edge drags
+// frame by frame and ripples, Alt on the cut rolls; the number can be typed
+// (the pill, the clip menu, Shot Info); the label follows the ruler's
+// Frames / Seconds switch; a frame-rate change keeps each panel's time; an
+// older file keeps its own. The pure half is Camera (fr). Its fixtures are
+// blank panels written here - not writeProject, whose random art would
+// shift every later pass's.
+void runFrameLengthsPass(const QString &scratch)
+{
+    using namespace workspace;
+    out() << "--- (du) panel lengths in frames: the edges, the roll, typing, the rate ---" << Qt::endl;
+    const QString folder = scratch + QStringLiteral("/framelengths");
+    QDir(folder).removeRecursively();
+    QDir().mkpath(folder);
+    // A one-scene project of blank panels with these lengths at fps; with
+    // oldSeconds, written as a file from before batch 5 ("duration" in whole
+    // seconds, no "frames").
+    auto writeFixture = [&](const QString &name, int fps, const QVector<int> &lengths, bool oldSeconds) {
+        Scene *scene = new Scene;
+        scene->number = 1;
+        scene->location = QStringLiteral("INT. FRAMES");
+        scene->timeOfDay = QStringLiteral("DAY");
+        for (int f : lengths) {
+            Panel *p = makeBlankPanel(QSize(960, 540));
+            p->setLength(f, fps);
+            scene->panels.append(p);
+        }
+        ProjectIO::SaveData data;
+        data.projectName = name;
+        data.fps = fps;
+        data.canvasSize = QSize(960, 540);
+        data.scenes = {scene};
+        const QString path = folder + QStringLiteral("/") + name + QStringLiteral(".sankotv");
+        const ProjectIO::WriteResult w = ProjectIO::projectToJson(data, path);
+        QJsonObject root = w.root;
+        if (oldSeconds) {
+            QJsonArray scenes = root.value(QStringLiteral("scenes")).toArray();
+            QJsonObject s0 = scenes.at(0).toObject();
+            QJsonArray panels = s0.value(QStringLiteral("panels")).toArray();
+            for (int i = 0; i < panels.size(); ++i) {
+                QJsonObject po = panels.at(i).toObject();
+                po.insert(QStringLiteral("duration"), po.value(QStringLiteral("frames")).toInt() / fps);
+                po.remove(QStringLiteral("frames"));
+                panels.replace(i, po);
+            }
+            s0.insert(QStringLiteral("panels"), panels);
+            scenes.replace(0, s0);
+            root.insert(QStringLiteral("scenes"), scenes);
+        }
+        QFile f(path);
+        if (f.open(QIODevice::WriteOnly))
+            f.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+        f.close();
+        delete scene;
+        return w.ok ? path : QString();
+    };
+    auto fileLengths = [](const QString &path) { // what the file says: "frames" and "duration"
+        QFile f(path);
+        if (!f.open(QIODevice::ReadOnly))
+            return QString();
+        const QJsonObject root = QJsonDocument::fromJson(f.readAll()).object();
+        QStringList out;
+        for (const QJsonValue &sv : root.value(QStringLiteral("scenes")).toArray())
+            for (const QJsonValue &pv : sv.toObject().value(QStringLiteral("panels")).toArray()) {
+                const QJsonObject po = pv.toObject();
+                out << QStringLiteral("f%1/d%2")
+                           .arg(po.contains(QStringLiteral("frames")) ? po.value(QStringLiteral("frames")).toInt() : -1)
+                           .arg(po.contains(QStringLiteral("duration")) ? po.value(QStringLiteral("duration")).toInt() : -1);
+            }
+        return out.join(QLatin1Char(' '));
+    };
+
+    // ---- (du1) an older file keeps its time, and is saved in frames -----------
+    {
+        const QString old = writeFixture(QStringLiteral("OldSeconds"), 30, {60, 90}, true);
+        const QString before = fileLengths(old);
+        auto rig = std::make_unique<Rig>(old);
+        Rig &r = *rig;
+        const QString opened = r.ok ? QStringLiteral("%1 %2").arg(r.timeline->blockFramesForTest(0))
+                                          .arg(r.timeline->blockFramesForTest(1))
+                                    : QString();
+        const QString saved = folder + QStringLiteral("/OldSecondsSaved.sankotv");
+        const bool ok = r.ok && r.window.saveProjectForTest(saved);
+        const QString after = fileLengths(saved);
+        check(QStringLiteral("(du1) AN OLDER FILE (\"duration\" 2 s and 3 s at 30 fps) opens as 60 and 90 "
+                             "frames, and is saved as \"frames\" with no \"duration\""),
+              ok && opened == QStringLiteral("60 90") && after == QStringLiteral("f60/d-1 f90/d-1"),
+              QStringLiteral("opened %1; saved %2").arg(opened, after));
+        check(QStringLiteral("(du1) control: the fixture really was the old form (seconds, no frames)"),
+              before == QStringLiteral("f-1/d2 f-1/d3"), before);
+    }
+
+    // The main fixture: 1s 12f, 2s, 1s and 12f at 24 fps.
+    const QString project = writeFixture(QStringLiteral("Lengths"), 24, {36, 48, 24, 12}, false);
+    auto rig = std::make_unique<Rig>(project);
+    Rig &r = *rig;
+    check(QStringLiteral("(du) the workspace opened"), r.ok);
+    if (!r.ok)
+        return;
+    AnimaticTimeline *tl = r.timeline;
+    QUndoStack *stack = r.window.undoStackForTest();
+    auto lengths = [&] {
+        QStringList d;
+        for (int i = 0; i < tl->blockCountForTest(); ++i)
+            d << QString::number(tl->blockFramesForTest(i));
+        return d.join(QLatin1Char(' '));
+    };
+    auto starts = [&] {
+        QStringList d;
+        for (int i = 0; i < tl->blockCountForTest(); ++i)
+            d << QString::number(tl->blockStartForTest(i));
+        return d.join(QLatin1Char(' '));
+    };
+    auto pills = [&] {
+        QStringList d;
+        for (int i = 0; i < tl->blockCountForTest(); ++i)
+            d << tl->pillTextForTest(i);
+        return d.join(QStringLiteral(" | "));
+    };
+    tl->setZoomForTest(400.0f); // 4 px a frame: every frame a drag can reach
+    pump(150);
+    const QString opened = lengths();
+    // The screen x of a film frame, and the mouse with or without Alt.
+    auto xOf = [&](int frame) {
+        const int x0 = tl->clipRectForTest(0).left(); // frame 0
+        return x0 + (frame * tl->pxPerFrameForTest() - (tl->contentXAtForTest(x0)));
+    };
+    auto mouse = [&](QEvent::Type type, const QPointF &at, bool alt) {
+        QMouseEvent ev(type, at, r.surface->mapToGlobal(at.toPoint()), Qt::LeftButton,
+                       type == QEvent::MouseButtonRelease ? Qt::NoButton : Qt::LeftButton,
+                       alt ? Qt::AltModifier : Qt::NoModifier);
+        QCoreApplication::sendEvent(r.surface, &ev);
+    };
+    QString chip;
+    auto drag = [&](const QPointF &from, double toX, bool alt, bool andBack = false) {
+        mouse(QEvent::MouseButtonPress, from, alt);
+        mouse(QEvent::MouseMove, QPointF((from.x() + toX) / 2.0, from.y()), alt);
+        mouse(QEvent::MouseMove, QPointF(toX, from.y()), alt);
+        chip = tl->dragChipForTest();
+        if (andBack)
+            mouse(QEvent::MouseMove, from, alt);
+        mouse(QEvent::MouseButtonRelease, andBack ? from : QPointF(toX, from.y()), alt);
+        pump(200);
+    };
+    auto rightEdge = [&](int flat) {
+        const QRect c = tl->clipRectForTest(flat);
+        return QPointF(c.left() + c.width() - 2, c.center().y());
+    };
+    auto leftEdge = [&](int flat) {
+        const QRect c = tl->clipRectForTest(flat);
+        return QPointF(c.left() + 2, c.center().y());
+    };
+
+    // ---- (du8) the label --------------------------------------------------------
+    const QString secondsView = pills();
+    const QRect pill2s = tl->pillRectForTest(1), pillLong = tl->pillRectForTest(0);
+    auto *framesBtn = r.window.findChild<QPushButton *>(QStringLiteral("timelineFrames"));
+    auto *secondsBtn = r.window.findChild<QPushButton *>(QStringLiteral("timelineSeconds"));
+    if (framesBtn)
+        framesBtn->click();
+    pump(100);
+    const QString framesView = pills();
+    if (secondsBtn)
+        secondsBtn->click();
+    pump(100);
+    check(QStringLiteral("(du8) THE LABEL follows the ruler's switch: the Seconds view reads \"1s 12f\", "
+                         "\"2s\", \"1s\", \"12f\"; the Frames view \"36f\", \"48f\", \"24f\", \"12f\""),
+          opened == QStringLiteral("36 48 24 12")
+              && secondsView == QStringLiteral("1s 12f | 2s | 1s | 12f")
+              && framesView == QStringLiteral("36f | 48f | 24f | 12f") && pills() == secondsView,
+          QStringLiteral("lengths %1; seconds [%2]; frames [%3]").arg(opened, secondsView, framesView));
+    check(QStringLiteral("(du8) control: the \"2s\" pill is the design's 28 px, as before; \"1s 12f\" "
+                         "is wider, to fit its text"),
+          pill2s.width() == 28 && pillLong.width() > 28,
+          QStringLiteral("2s %1 px, 1s 12f %2 px").arg(pill2s.width()).arg(pillLong.width()));
+
+    // ---- (du3) the right edge, by the frame ---------------------------------------
+    // History steps are counted by the stack's INDEX: an Undo leaves a redo
+    // step that the next push replaces, so the count would not move.
+    clickClip(r, 0);
+    int n0 = stack->index();
+    drag(rightEdge(0), xOf(43), false);
+    const QString rChip = chip;
+    const QString rLengths = lengths(), rStarts = starts();
+    const QString rText = stack->undoText();
+    const int rCount = stack->index();
+    check(QStringLiteral("(du3) THE RIGHT EDGE BY THE FRAME: dragged to frame 43, panel 1 is 43 frames "
+                         "(was 36) and the clips after it move up 7 (a ripple); the chip read "
+                         "\"1s 19f \xC2\xB7 43 f (+7 f)\"; one \"Change Panel Duration\" step"),
+          rLengths == QStringLiteral("43 48 24 12") && rStarts == QStringLiteral("0 43 91 115")
+              && rChip == QString::fromUtf8("1s 19f \xC2\xB7 43 f (+7 f)") && rCount == n0 + 1
+              && rText == QStringLiteral("Change Panel Duration"),
+          QStringLiteral("lengths %1 starts %2 chip '%3' history %4 -> %5 '%6'").arg(rLengths, rStarts, rChip)
+              .arg(n0).arg(rCount).arg(rText));
+    stack->undo();
+    pump(200);
+    const QString undone = lengths();
+    n0 = stack->index();
+    const int countBefore = stack->count();
+    drag(rightEdge(0), xOf(43), false, true); // out and back to where it was pressed
+    check(QStringLiteral("(du3) control: Undo puts back 36; a drag that ends where it began changes "
+                         "nothing and adds nothing to the history"),
+          undone == QStringLiteral("36 48 24 12") && lengths() == undone && stack->index() == n0
+              && stack->count() == countBefore,
+          QStringLiteral("undone %1, after the round trip %2, history %3 -> %4").arg(undone, lengths())
+              .arg(n0).arg(stack->index()));
+
+    // ---- (du4) the left edge: trims the start, ripples ------------------------------
+    clickClip(r, 1);
+    n0 = stack->index();
+    drag(leftEdge(1), xOf(42), false); // its start dragged 6 frames right
+    const QString lChip = chip, lLengths = lengths(), lStarts = starts();
+    check(QStringLiteral("(du4) THE LEFT EDGE TRIMS THE START: dragged 6 frames in, panel 2 is 42 "
+                         "frames (was 48), it still starts at 36 where panel 1 ends, and the clips "
+                         "after it move up 6 (a ripple, like the right edge); the chip read "
+                         "\"start \xE2\x88\x92" "6 f \xC2\xB7 1s 18f\"; one step"),
+          lLengths == QStringLiteral("36 42 24 12") && lStarts == QStringLiteral("0 36 78 102")
+              && lChip == QString::fromUtf8("start \xE2\x88\x92" "6 f \xC2\xB7 1s 18f") && stack->index() == n0 + 1,
+          QStringLiteral("lengths %1 starts %2 chip '%3'").arg(lLengths, lStarts, lChip));
+    stack->undo();
+    pump(200);
+    drag(rightEdge(1), xOf(78), false); // the right edge to the same length
+    const QString rEquiv = lengths(), rEquivStarts = starts();
+    stack->undo();
+    pump(200);
+    check(QStringLiteral("(du4) control: the right edge dragged to the same length gives the same "
+                         "lengths and starts - trimming either end is the same ripple"),
+          rEquiv == lLengths && rEquivStarts == lStarts && lengths() == QStringLiteral("36 48 24 12"),
+          QStringLiteral("right edge: %1 / %2").arg(rEquiv, rEquivStarts));
+
+    // ---- (du5) Alt on the cut: a roll -------------------------------------------------
+    clickClip(r, 1);
+    n0 = stack->index();
+    drag(rightEdge(1), xOf(90), true); // the cut between panels 2 and 3, 6 frames later
+    const QString oChip = chip, oLengths = lengths(), oStarts = starts(), oText = stack->undoText();
+    check(QStringLiteral("(du5) ALT-DRAG ON THE CUT ROLLS IT: panel 2 +6 (54), panel 3 -6 (18), and "
+                         "panel 4 does not move (108); one \"Roll Panel Cut\" step; the chip read "
+                         "\"Alt \xC2\xB7 roll: P2 +6 f, P3 \xE2\x88\x92" "6 f\""),
+          oLengths == QStringLiteral("36 54 18 12") && oStarts == QStringLiteral("0 36 90 108")
+              && oText == QStringLiteral("Roll Panel Cut") && stack->index() == n0 + 1
+              && oChip == QString::fromUtf8("Alt \xC2\xB7 roll: P2 +6 f, P3 \xE2\x88\x92" "6 f"),
+          QStringLiteral("lengths %1 starts %2 '%3' chip '%4'").arg(oLengths, oStarts, oText, oChip));
+    stack->undo();
+    pump(200);
+    const QString rollUndone = lengths();
+    drag(rightEdge(1), xOf(90), false); // the same drag without Alt
+    const QString rippleLengths = lengths(), rippleStarts = starts();
+    stack->undo();
+    pump(200);
+    check(QStringLiteral("(du5) control: Undo puts both back in one step (48, 24); the same drag "
+                         "without Alt ripples - panel 3 keeps 24 and panel 4 moves to 114"),
+          rollUndone == QStringLiteral("36 48 24 12") && rippleLengths == QStringLiteral("36 54 24 12")
+              && rippleStarts == QStringLiteral("0 36 90 114"),
+          QStringLiteral("undone %1; without Alt %2 / %3").arg(rollUndone, rippleLengths, rippleStarts));
+
+    // ---- (du6) typing ---------------------------------------------------------------
+    auto fieldEdit = [&]() -> QLineEdit * {
+        QWidget *f = tl->durationFieldForTest();
+        return f ? f->findChild<QLineEdit *>(QStringLiteral("durFrames")) : nullptr;
+    };
+    auto key = [&](QWidget *w, int k) {
+        if (!w)
+            return;
+        QKeyEvent press(QEvent::KeyPress, k, Qt::NoModifier);
+        QCoreApplication::sendEvent(w, &press);
+        QKeyEvent release(QEvent::KeyRelease, k, Qt::NoModifier);
+        QCoreApplication::sendEvent(w, &release);
+        pump(150);
+    };
+    auto doubleClickPill = [&](int flat) {
+        const QPointF c = tl->pillRectForTest(flat).center();
+        sendMouse(r.surface, QEvent::MouseButtonPress, c, Qt::LeftButton);
+        sendMouse(r.surface, QEvent::MouseButtonRelease, c, Qt::LeftButton);
+        sendMouse(r.surface, QEvent::MouseButtonDblClick, c, Qt::LeftButton);
+        sendMouse(r.surface, QEvent::MouseButtonRelease, c, Qt::LeftButton);
+        pump(150);
+    };
+    n0 = stack->index();
+    doubleClickPill(0);
+    const int openFor = tl->durationFieldPanelForTest();
+    QLineEdit *edit = fieldEdit();
+    const QString shown = edit ? edit->text() : QString();
+    const QString equals = tl->durationFieldEqualsForTest();
+    if (edit)
+        edit->setText(QStringLiteral("45"));
+    const QString equals45 = tl->durationFieldEqualsForTest();
+    key(edit, Qt::Key_Return);
+    const QString typed = lengths();
+    const int typedCount = stack->index();
+    check(QStringLiteral("(du6) TYPING: a double-click on the pill opens the field for that panel with "
+                         "its 36 frames and \"= 1s 12f at 24 fps\"; 45 and Enter make it 45 frames "
+                         "(\"= 1s 21f at 24 fps\"), one step, and close it"),
+          openFor == 0 && shown == QStringLiteral("36") && equals == QStringLiteral("= 1s 12f at 24 fps")
+              && equals45 == QStringLiteral("= 1s 21f at 24 fps") && typed == QStringLiteral("45 48 24 12")
+              && typedCount == n0 + 1 && tl->durationFieldPanelForTest() == -1,
+          QStringLiteral("open %1 '%2' '%3' then '%4'; lengths %5; history %6 -> %7")
+              .arg(openFor).arg(shown, equals, equals45, typed).arg(n0).arg(typedCount));
+    // Esc cancels; 0 is not a length; the clip menu opens the same field.
+    doubleClickPill(0);
+    if (QLineEdit *e = fieldEdit())
+        e->setText(QStringLiteral("60"));
+    key(fieldEdit(), Qt::Key_Escape);
+    const QString afterEsc = lengths();
+    doubleClickPill(0);
+    if (QLineEdit *e = fieldEdit())
+        e->setText(QStringLiteral("0"));
+    const QString equalsZero = tl->durationFieldEqualsForTest();
+    key(fieldEdit(), Qt::Key_Return);
+    const QString afterZero = lengths();
+    QString trigger = QStringLiteral("Set Duration...");
+    QStringList menuSaw;
+    r.storyboard->setClipMenuHookForTest([&](QMenu *menu) {
+        menuSaw.clear();
+        for (QAction *a : menu->actions())
+            if (!a->isSeparator())
+                menuSaw << a->text();
+        for (QAction *a : menu->actions())
+            if (a->text() == trigger)
+                a->trigger();
+    });
+    rightClickClip(r, 2);
+    const int menuOpenFor = tl->durationFieldPanelForTest();
+    key(fieldEdit(), Qt::Key_Escape);
+    check(QStringLiteral("(du6) control: Esc cancels (60 typed, 45 kept); 0 is refused (\"at least 1 "
+                         "frame\", 45 kept); the clip menu's \"Set Duration...\" opens the same field "
+                         "for the clip clicked; no step from any of them"),
+          afterEsc == typed && afterZero == typed && equalsZero == QStringLiteral("at least 1 frame")
+              && menuOpenFor == 2 && menuSaw.contains(QStringLiteral("Set Duration...")) && stack->index() == typedCount,
+          QStringLiteral("esc %1 zero %2 '%3' menu field %4 [%5] history %6")
+              .arg(afterEsc, afterZero, equalsZero).arg(menuOpenFor).arg(menuSaw.join(QStringLiteral(" | ")))
+              .arg(stack->index()));
+    // Shot Info: the same number for the panel on the canvas.
+    clickClip(r, 3);
+    QLineEdit *info = r.storyboard->shotInfoFramesForTest();
+    const QString infoShown = info ? info->text() : QString();
+    const QString infoEquals = r.storyboard->shotInfoFramesEqualsForTest();
+    if (info)
+        info->setText(QStringLiteral("30"));
+    const int infoIndex = stack->index();
+    key(info, Qt::Key_Return);
+    const QString infoTyped = lengths();
+    const QString infoEquals30 = r.storyboard->shotInfoFramesEqualsForTest();
+    const bool infoOneStep = stack->index() == infoIndex + 1
+        && stack->undoText() == QStringLiteral("Change Panel Duration");
+    stack->undo();
+    pump(200);
+    const QString infoAfterUndo = info ? info->text() : QString();
+    check(QStringLiteral("(du6) SHOT INFO's Duration row: panel 4 shows 12 and \"= 12f at 24 fps\"; 30 "
+                         "and Enter make it 30 frames (\"= 1s 6f at 24 fps\"), one step; Undo puts back "
+                         "12, in the row too"),
+          infoShown == QStringLiteral("12") && infoEquals == QStringLiteral("= 12f at 24 fps")
+              && infoTyped == QStringLiteral("45 48 24 30") && infoEquals30 == QStringLiteral("= 1s 6f at 24 fps")
+              && infoOneStep && lengths() == QStringLiteral("45 48 24 12") && infoAfterUndo == QStringLiteral("12"),
+          QStringLiteral("shown %1 '%2'; typed %3 '%4' one step %5; undone %6 row %7")
+              .arg(infoShown, infoEquals, infoTyped, infoEquals30).arg(infoOneStep).arg(lengths(), infoAfterUndo));
+    // The SHOTS lock refuses typing as it refuses the drag.
+    QToolButton *lockShots = tl->trackControlForTest(QStringLiteral("trackLockShots"));
+    if (lockShots)
+        lockShots->click();
+    pump(150);
+    tl->clearRefusalForTest();
+    r.storyboard->clearLockRefusalForTest();
+    n0 = stack->index();
+    doubleClickPill(0); // the press selects panel 1 (a lock never blocks selecting)
+    const int lockedOpen = tl->durationFieldPanelForTest();
+    const QString lockedSays = tl->lastRefusalForTest();
+    if (info)
+        info->setText(QStringLiteral("50"));
+    key(info, Qt::Key_Return);
+    const QString lockedInfo = info ? info->text() : QString();
+    const QString infoSays = r.storyboard->lastLockRefusalForTest();
+    if (lockShots)
+        lockShots->click();
+    pump(150);
+    check(QStringLiteral("(du6) the SHOTS lock refuses typing: the pill's field does not open (\"SHOTS "
+                         "track is locked\") and Shot Info's 50 for panel 1 is refused the same way, "
+                         "the row back to its 45"),
+          lockedOpen == -1 && lockedSays == QStringLiteral("SHOTS track is locked")
+              && infoSays == QStringLiteral("SHOTS track is locked") && lockedInfo == QStringLiteral("45")
+              && lengths() == QStringLiteral("45 48 24 12") && stack->index() == n0 && lockShots,
+          QStringLiteral("field %1 '%2' row %3 '%4' lengths %5").arg(lockedOpen).arg(lockedSays, lockedInfo, infoSays,
+                                                                        lengths()));
+    r.storyboard->setClipMenuHookForTest(nullptr);
+
+    // ---- (du7) no maximum; a 1-frame clip ----------------------------------------------
+    r.animatic->setPanelFramesForTest(0, 0, 2400); // 100 s: the old limit was 30 s
+    pump(200);
+    const int hundred = tl->blockFramesForTest(0), hundredSeconds = tl->blockDurationForTest(0);
+    r.animatic->setPanelFramesForTest(0, 3, 1);
+    pump(200);
+    r.animatic->setPanelFramesForTest(0, 3, 0); // and below 1: stays 1
+    pump(200);
+    tl->setZoomForTest(25.0f); // a quarter px a frame: the 1-frame clip is 0.25 px
+    pump(200);
+    const QRect tiny = tl->clipRectForTest(3), before = tl->clipRectForTest(2);
+    clickClip(r, 2);
+    const int pickedBefore = tl->selectedPanelForTest();
+    clickClip(r, 3); // 2 px from the selected clip's edge: the 1-frame clip still wins
+    const int pickedTiny = tl->selectedPanelForTest();
+    check(QStringLiteral("(du7) NO MAXIMUM, AND ONE FRAME: 2400 frames (100 s) is kept; panel 4 set to 1 "
+                         "frame (and to 0: still 1) is drawn 4 px wide at a quarter px a frame, and a "
+                         "click on it selects it"),
+          hundred == 2400 && hundredSeconds == 100 && tl->blockFramesForTest(3) == 1 && tiny.width() == 4
+              && pickedTiny == 3,
+          QStringLiteral("%1 frames (%2 s); tiny %3 px, picked %4").arg(hundred).arg(hundredSeconds)
+              .arg(tiny.width()).arg(pickedTiny));
+    check(QStringLiteral("(du7) control: the clip before it (24 frames, 6 px) is exactly its span and a "
+                         "click on it selects it"),
+          before.width() == 6 && pickedBefore == 2,
+          QStringLiteral("%1 px, picked %2").arg(before.width()).arg(pickedBefore));
+    tl->setZoomForTest(400.0f);
+    pump(150);
+
+    // ---- (du9) a frame-rate change keeps each panel's time ----------------------------------
+    r.animatic->setPanelFramesForTest(0, 0, 36);
+    r.animatic->setPanelFramesForTest(0, 3, 12);
+    pump(200);
+    const QString at24 = lengths();
+    r.storyboard->clearNoteForTest();
+    const QString name = r.window.projectNameForTest();
+    r.window.applyProjectSettingsForTest(name, 25);
+    pump(200);
+    const QString at25 = lengths(), note = r.storyboard->lastNoteForTest();
+    Scene *scene = r.window.scenesForTest().value(0);
+    const bool untouched = scene && scene->panels.size() == 4 && scene->panels.at(0)->frames == 36
+        && scene->panels.at(0)->rate == 24 && scene->panels.at(3)->frames == 12;
+    r.window.applyProjectSettingsForTest(name, 24);
+    pump(200);
+    const QString back24 = lengths();
+    check(QStringLiteral("(du9) A FRAME-RATE CHANGE KEEPS EACH PANEL'S TIME: at 25 fps 36 / 48 / 24 / 12 "
+                         "are 38 / 50 / 25 / 13 (to the nearest frame, a half up), and the note names "
+                         "panels 1 and 4, the two the rounding changed; back at 24 they are 36 / 48 / "
+                         "24 / 12 exactly"),
+          at24 == QStringLiteral("36 48 24 12") && at25 == QStringLiteral("38 50 25 13")
+              && back24 == at24 && note.contains(QStringLiteral("panel 1 (1s 13f)"))
+              && note.contains(QStringLiteral("panel 4 (13f)")) && !note.contains(QStringLiteral("panel 2"))
+              && !note.contains(QStringLiteral("panel 3")),
+          QStringLiteral("24: %1; 25: %2; back: %3; note '%4'").arg(at24, at25, back24, note));
+    check(QStringLiteral("(du9) control: no panel was rewritten - panel 1 still holds 36 frames at 24 "
+                         "while the project ran at 25"),
+          untouched, QStringLiteral("untouched %1").arg(untouched));
+
+    // ---- (du2) new panels: 1 second; Duplicate keeps the source's ---------------------------
+    r.window.applyProjectSettingsForTest(name, 30);
+    pump(200);
+    trigger = QStringLiteral("Add Panel After");
+    r.storyboard->setClipMenuHookForTest([&](QMenu *menu) {
+        for (QAction *a : menu->actions())
+            if (a->text() == trigger)
+                a->trigger();
+    });
+    rightClickClip(r, 0);
+    pump(200);
+    const int added = tl->blockFramesForTest(1); // the new panel, after panel 1
+    trigger = QStringLiteral("Duplicate Panel");
+    rightClickClip(r, 0);
+    pump(200);
+    const int duplicated = tl->blockFramesForTest(1); // the copy of panel 1, after it
+    r.storyboard->setClipMenuHookForTest(nullptr);
+    check(QStringLiteral("(du2) NEW PANELS LAST 1 SECOND at the project's rate: Add Panel After at 30 fps "
+                         "gives 30 frames; Duplicate keeps its source's time (1s 12f at 24 = 45 at 30)"),
+          tl->blockCountForTest() == 6 && added == 30 && duplicated == 45,
+          QStringLiteral("%1 clips; added %2, duplicated %3: %4").arg(tl->blockCountForTest()).arg(added)
+              .arg(duplicated).arg(lengths()));
+    QJsonArray script;
+    for (int i = 1; i <= 2; ++i) {
+        QJsonObject s;
+        s.insert(QStringLiteral("scene_number"), i);
+        s.insert(QStringLiteral("location"), QStringLiteral("INT. SCRIPT %1").arg(i));
+        s.insert(QStringLiteral("time_of_day"), QStringLiteral("DAY"));
+        s.insert(QStringLiteral("action"), QStringLiteral("A breakdown."));
+        script.append(s);
+    }
+    const bool applied = r.window.applyScriptScenesForTest(script);
+    pump(300);
+    QStringList breakdown;
+    for (const Scene *s : r.window.scenesForTest())
+        for (const Panel *p : s->panels)
+            breakdown << QString::number(shotcam::panelFrames(*p, 30));
+    check(QStringLiteral("(du2) control: the script breakdown's panels get 1 second too (30 at 30 fps), "
+                         "where the old default was 3 s (90)"),
+          applied && breakdown.join(QLatin1Char(' ')) == QStringLiteral("30 30"),
+          breakdown.join(QLatin1Char(' ')));
+    r.window.markCleanForTest();
 }
 
 void runWorkspaceLayoutPass(const QString &project)
@@ -12775,7 +13267,7 @@ QString writeMovingProject(const QString &dir, double nudge,
         p.setBrush(i ? QColor(40, 90, 200) : QColor(200, 40, 40));
         p.drawEllipse(QPointF(1150, 480), 260, 200);
         p.end();
-        panel->duration = 3;
+        panel->setLength(3 * 24, 24); // 3 s (2026-11-06: frames at a rate)
         scene->panels.append(panel);
     }
     shotcam::CameraState a;
@@ -16477,10 +16969,10 @@ QString writeDepthProject(const QString &dir, bool depth, bool keys)
     panel->layers[5].groupId = folder.id; // Clouds, directly beneath its folder
     panel->layers.append(folder);
     panel->activeLayerIndex = 3;
-    panel->duration = 3;
+    panel->setLength(3 * 24, 24); // 3 s
     scene->panels.append(panel);
     Panel *second = makeBlankPanel(size);
-    second->duration = 3;
+    second->setLength(3 * 24, 24);
     scene->panels.append(second);
     if (keys) {
         shotcam::CameraState pan;
@@ -17037,7 +17529,7 @@ QString writeProject(const QString &dir, double groundDepth)
     p3->layers << m3 << folder;
     Panel *p4 = makeBlankPanel(size);
     for (Panel *p : {p1, p2, p3, p4}) {
-        p->duration = 2;
+        p->setLength(2 * 24, 24); // 2 s
         scene->panels.append(p);
     }
     ProjectIO::SaveData data;
@@ -18645,14 +19137,16 @@ void runTrackLocksPass(const QString &scratch)
         rightClickClip(r, 0);
         sb->setClipMenuHookForTest({});
         // Phase 1D: Quick Camera Move follows them, enabled - a camera
-        // edit is the CAMERA lock's, not the SHOTS lock's.
+        // edit is the CAMERA lock's, not the SHOTS lock's. Batch 5
+        // (2026-11-06): Set Duration..., a SHOTS edit, locked with them.
         check(QStringLiteral("(ax) locked: the clip's menu shows Add Panel After, Duplicate "
-                             "Panel and Delete Panel disabled and suffixed \"(locked)\"; Quick "
-                             "Camera Move (the CAMERA track's) stays enabled"),
-              items.size() == 4 && items.at(0) == QStringLiteral("Add Panel After (locked)[0]")
+                             "Panel, Set Duration... and Delete Panel disabled and suffixed "
+                             "\"(locked)\"; Quick Camera Move (the CAMERA track's) stays enabled"),
+              items.size() == 5 && items.at(0) == QStringLiteral("Add Panel After (locked)[0]")
                   && items.at(1) == QStringLiteral("Duplicate Panel (locked)[0]")
-                  && items.at(2) == QStringLiteral("Delete Panel (locked)[0]")
-                  && items.at(3) == QStringLiteral("Quick Camera Move[1]"),
+                  && items.at(2) == QStringLiteral("Set Duration... (locked)[0]")
+                  && items.at(3) == QStringLiteral("Delete Panel (locked)[0]")
+                  && items.at(4) == QStringLiteral("Quick Camera Move[1]"),
               items.join(QStringLiteral(" | ")));
     }
     // Cut, Paste (Copy allowed), the Delete key over the timeline, Ctrl+Right.
@@ -18731,16 +19225,20 @@ void runTrackLocksPass(const QString &scratch)
                   .arg(order).arg(durations()).arg(page->selectedPanelForTest()).arg(stack->count()));
         // CONTROL: unlocked, the same two drags change the track.
         clickControl("trackLockShots");
+        // In FRAMES (2026-11-06, batch 5): the edge now lands on the frame
+        // under the pointer, 90 px = 90 frames at this zoom (3s 18f more),
+        // which the whole-seconds reader cannot express (-1).
+        const int f0 = tl->blockFramesForTest(0);
         trim(0, 90);
-        const bool trimmed = tl->blockDurationForTest(0) > d0 && stack->count() == n0 + 1;
-        const int d0b = tl->blockDurationForTest(0);
+        const bool trimmed = tl->blockFramesForTest(0) > f0 && stack->count() == n0 + 1;
+        const int f0b = tl->blockFramesForTest(0);
         reorder(0, 1);
         const bool reordered = durations() != order && stack->count() == n0 + 2;
         check(QStringLiteral("(ax) CONTROL: unlocked, the same trim lengthens the clip and the "
                              "same drag reorders, one command each"),
               trimmed && reordered && !page->tracks().shotsLocked,
-              QStringLiteral("duration %1 -> %2, order %3 -> %4, stack %5 -> %6")
-                  .arg(d0).arg(d0b).arg(order).arg(durations()).arg(n0).arg(stack->count()));
+              QStringLiteral("frames %1 -> %2, order %3 -> %4, stack %5 -> %6")
+                  .arg(f0).arg(f0b).arg(order).arg(durations()).arg(n0).arg(stack->count()));
         // Back to the start through the history (unlocked: allowed).
         sb->editUndo();
         sb->editUndo();
@@ -19354,6 +19852,7 @@ int main(int argc, char **argv)
         runAudioMissingPass(scratch);
     }
     runTakesRoundTripPass(scratch);
+    runFrameLengthsPass(scratch);
     runTimecodeRatePass(writeProject(projects, QStringLiteral("Timecode"),
                                      QSize(960, 540), 30, 2, 2));
     {

@@ -62,7 +62,16 @@ int frameInPanelFromMs(qint64 ms, int fps);
 // The first millisecond of a frame inside a panel (its inverse).
 int msForFrameInPanel(int frame, int fps);
 
-int panelFrames(const Panel &panel, int fps); // duration (>= 1 s) * fps
+// A panel's length at `fps` (2026-11-06, batch 5): its frames counted at
+// its own rate, converted - exact when the rates agree or the length is
+// whole seconds, else rounded to the nearest frame (a half up), and never
+// less than 1. Every reader of a panel's length goes through this.
+int panelFrames(const Panel &panel, int fps);
+int framesAtRate(int frames, int fromFps, int toFps);
+// A length for the artist: "2s", "1s 12f", "12f" (the Seconds view, the
+// drag chip, the typing field's "= ..."); framesText: "36f" (the Frames view).
+QString lengthText(int frames, int fps);
+QString framesText(int frames);
 int panelStartFrame(const Scene &scene, int panelIndex, int fps);
 int panelIndexOfUid(const Scene &scene, quint64 uid); // -1: not in the scene
 

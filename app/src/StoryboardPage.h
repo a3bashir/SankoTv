@@ -164,9 +164,20 @@ public:
     void applyPanelInsertForUndo(Scene *scene, int index, Panel *panel);
     Panel *applyPanelRemoveForUndo(Scene *scene, int index);
     void applyPanelMoveForUndo(Scene *scene, int from, int to);
-    // A panel's duration, set by the undoable command a timeline drag
-    // pushes (and by its undo): writes the panel and re-times the timeline.
-    void applyPanelDurationForUndo(Panel *panel, int seconds);
+    // A panel's length, set by the undoable command a timeline drag or the
+    // typing field pushes (and by its undo): frames at a rate (2026-11-06:
+    // it was whole seconds), written to the panel; re-times the timeline.
+    void applyPanelDurationForUndo(Panel *panel, int frames, int rate);
+    // A frame-rate change (Project Settings) changed no panel - each keeps
+    // its time - but a length that is not a whole number of frames at the
+    // new rate is rounded: the note names those panels (Q3, 2026-11-06).
+    // Empty when none is.
+    QString frameRateNote(int oldFps, int newFps) const;
+    void sayFrameRateNote(int oldFps, int newFps);
+    // The Shot Info panel's Duration row (2026-11-06): the number, and the
+    // "= 1s 12f at 24 fps" beside it.
+    QLineEdit *shotInfoFramesForTest() const { return m_shotFrames; }
+    QString shotInfoFramesEqualsForTest() const;
     // The scratch audio track, set by the undoable command Import / Remove
     // Audio pushes (and by its undo): empty = no track; linked = an old
     // project's file outside the project (AnimaticPage::audioLinked).
@@ -504,7 +515,9 @@ private:
     int currentFlatIndex() const; // the selection over ALL scenes, or -1
     bool flatToScenePanel(int flat, int *sceneIndex, int *panelIndex) const;
     void selectFlatPanel(int flat);          // a timeline / transport request
-    void onDurationChangeRequested(int sceneIndex, int panelIndex, int seconds);
+    void onDurationChangeRequested(int sceneIndex, int panelIndex, int frames);
+    void onRollRequested(int sceneA, int panelA, int framesA, int sceneB, int panelB, int framesB);
+    void applyShotInfoFrames(); // the Duration row's number, as a request
     void onTimelineMoveRequested(int flat, int flatGap);
     void onAudioChangeRequested(const QString &newPath, bool linked,
                                 const QString &commandText);
@@ -882,6 +895,8 @@ private:
     QComboBox *m_lens = nullptr;
     QLineEdit *m_mood = nullptr;
     QPlainTextEdit *m_notes = nullptr;
+    QLineEdit *m_shotFrames = nullptr;  // Duration, in frames (2026-11-06)
+    QLabel *m_shotFramesEquals = nullptr;
     QLabel *m_actionLabel = nullptr;
 
     bool m_loadingShotInfo = false;

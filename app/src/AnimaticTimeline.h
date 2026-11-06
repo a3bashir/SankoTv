@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QHash>
 #include <QPoint>
 #include <QRect>
 #include <QString>
@@ -18,6 +19,7 @@ class QIcon;
 class QPushButton;
 class QScrollBar;
 class QTimer;
+class QLabel;
 class QLineEdit;
 class QSlider;
 class QToolButton;
@@ -46,12 +48,37 @@ public:
     QWidget *surfaceForTest() const;
     QRect clipRectForTest(int flatIndex) const { return clipRect(flatIndex); }
     int blockCountForTest() const { return int(m_blocks.size()); }
+    // In whole SECONDS, as every check written before 2026-11-06 reads it:
+    // -1 when the clip is not a whole number of seconds (or not there).
+    // Frames, the length itself: the next.
     int blockDurationForTest(int flatIndex) const
     {
-        return flatIndex >= 0 && flatIndex < m_blocks.size()
-            ? m_blocks.at(flatIndex).duration
-            : -1;
+        if (flatIndex < 0 || flatIndex >= m_blocks.size())
+            return -1;
+        const int f = m_blocks.at(flatIndex).frames, rate = qMax(1, m_fps);
+        return f % rate == 0 ? f / rate : -1;
     }
+    int blockFramesForTest(int flatIndex) const
+    {
+        return flatIndex >= 0 && flatIndex < m_blocks.size() ? m_blocks.at(flatIndex).frames : -1;
+    }
+    int blockStartForTest(int flatIndex) const
+    {
+        return flatIndex >= 0 && flatIndex < m_blocks.size() ? m_blocks.at(flatIndex).startFrame : -1;
+    }
+    // The clip's duration pill as drawn: its text and where it is (empty
+    // when the clip is too narrow to show one), and the chip a drag shows.
+    QString pillTextForTest(int flatIndex) const;
+    QRect pillRectForTest(int flatIndex) const;
+    QString dragChipForTest() const { return m_dragChip; }
+    // THE TYPING FIELD (2026-11-06, Figma DUR-1): opened by a double-click
+    // on a clip's duration pill or the clip menu's "Set Duration..."; the
+    // panel it is for (flat index; -1 = closed), the widget itself, and
+    // the "= 1s 12f at 24 fps" beside the number.
+    void openDurationField(int flatIndex);
+    int durationFieldPanelForTest() const;
+    QWidget *durationFieldForTest() const;
+    QString durationFieldEqualsForTest() const;
     int selectedPanelForTest() const { return m_selected; }
     int playheadPanelForTest() const { return m_current; }
     // A clip, the playhead or a camera key under the pointer right now: the
@@ -214,7 +241,13 @@ signals:
     // ...and the frame inside it, whenever that changes (Phase 1A: the
     // scrub is frame-accurate; the camera is seen frame by frame).
     void playheadScrubbedTo(int flatPanelIndex, int frameInPanel);
-    void durationChanged(int sceneIndex, int panelIndex, int newDurationSeconds);
+    // A panel's new length in FRAMES (2026-11-06; it was whole seconds):
+    // the right edge, the left edge (a ripple: the clip keeps its start and
+    // later clips move up) or the typing field.
+    void durationChanged(int sceneIndex, int panelIndex, int newFrames);
+    // Alt-drag on the cut between two clips: a ROLL - both change, nothing
+    // after them moves.
+    void rollRequested(int sceneA, int panelA, int framesA, int sceneB, int panelB, int framesB);
     // A clip was dragged to a new place in its scene. `flatGap` is the block
     // it should land in front of (one past the scene's last block = the end).
     void panelMoveRequested(int flatIndex, int flatGap);
@@ -246,17 +279,26 @@ private:
         int panelIndex = 0;
         int sceneNumber = 0;
         QString sceneName;
-        int duration = 1;   // seconds
         int startFrame = 0; // cumulative frames before this clip
-        int frames = 24;    // duration * fps
+        int frames = 24;    // its length at the timeline's rate (shotcam::panelFrames)
         bool sceneStart = false;
     };
+    // The duration pill's text for a clip: "1s 12f" in the Seconds view,
+    // "36f" in the Frames view (Q5).
+    QString pillText(const Block &b) const;
+    // The flat index of the clip drawn under a screen x: a clip narrower
+    // than its drawn minimum (kMinClipPx) wins over the clip it overlaps.
+    int blockAtScreenX(int screenX) const;
+    // The typing field's parts (a child of the window, over the timeline).
+    void closeDurationField(bool apply);
+    void positionDurationField();
 
     // Canvas hooks (called by TimelineCanvas).
     void renderCanvas(QPainter &p);
     void canvasMousePress(QMouseEvent *e);
     void canvasMouseMove(QMouseEvent *e);
     void canvasMouseRelease(QMouseEvent *e);
+    void canvasMouseDoubleClick(QMouseEvent *e); // on a clip's pill: the typing field
     void canvasLeave();
     void canvasResized();
     void canvasContextMenu(QContextMenuEvent *e);
@@ -404,7 +446,9 @@ private:
         QRect body, thumb, number, name, pill;
         bool thumbShown = false, nameShown = false, pillShown = false;
     };
-    ClipLayout clipLayout(const QRect &r) const;
+    // pillText sizes the pill: the design's 28 px, wider when its text
+    // ("1s 12f", "120f") needs it (2026-11-06).
+    ClipLayout clipLayout(const QRect &r, const QString &pillText = QString()) const;
 
     // Toolbar handlers.
     void styleToolbarButtons();
@@ -484,7 +528,7 @@ private:
 
     // Interaction.
     int m_hoverIndex = -1;
-    enum class Drag { None, ResizeRight, ResizeLeft, Playhead, Move, CameraKey };
+    enum class Drag { None, ResizeRight, ResizeLeft, Roll, Playhead, Move, CameraKey };
     Drag m_drag = Drag::None;
     int m_scrubIndex = -1;     // last panel announced during a playhead drag
     int m_scrubFrameSent = -1; // last frame announced (playheadScrubbedTo)
@@ -493,10 +537,26 @@ private:
     int m_moveGap = -1;        // gap it would drop into (flat index)
     bool m_moveActive = false; // the press has travelled far enough to drag
     QPoint m_movePress;
+    // A LENGTH DRAG (2026-11-06, batch 5): the clip (and for a roll the
+    // clip after it), the lengths it had, the lengths the drag has reached
+    // (drawn: rebuildBlocks reads m_dragFramesFor), where the pointer was
+    // pressed (content x) and where the moving edge started (a frame, drawn
+    // dashed), and the chip at the pointer.
     int m_resizeIndex = -1;
-    int m_dragDuration = 0;
-    int m_dragLeftFrames = -1;  // visual-only left trim preview
+    int m_rollNext = -1;
+    int m_dragFromFrames = 0, m_dragFromFramesNext = 0;
+    QHash<int, int> m_dragFramesFor;
+    double m_dragPressX = 0.0;
+    int m_dragOriginFrame = -1;
+    QString m_dragChip;
+    void showDragChip(const QPoint &globalPos);
     int m_dragPlayheadFrame = -1;
+    // The typing field (see openDurationField).
+    QWidget *m_durField = nullptr;
+    QLineEdit *m_durEdit = nullptr;
+    QLabel *m_durTitle = nullptr;
+    QLabel *m_durEquals = nullptr;
+    int m_durFlat = -1;
 
     // Widgets.
     TimelineCanvas *m_canvas = nullptr;

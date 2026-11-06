@@ -12,6 +12,7 @@
 
 #include <QContextMenuEvent>
 #include <QFontMetrics>
+#include <QFrame>
 #include <QIcon>
 #include <QPixmap>
 #include <QPolygonF>
@@ -83,7 +84,11 @@ constexpr int kKeySnapPx = 6;
 
 constexpr int kHandleW = 6;   // trim handle width
 constexpr int kGrab = 5;      // px grab tolerance
-constexpr int kMinDur = 1, kMaxDur = 30;
+// A panel lasts at least one frame and has no maximum (2026-11-06, batch 5;
+// it was 1 to 30 whole seconds). A clip is drawn at least 4 px wide at any
+// zoom, so a 1-frame clip stays visible and clickable (Figma DUR-1).
+constexpr int kMinFrames = 1;
+constexpr int kMinClipPx = 4;
 constexpr int kReorderThreshold = 8; // px before a clip press becomes a drag
 
 // The clip, as the design lays it out on a 76 px body (every number is the
@@ -162,6 +167,7 @@ protected:
     void mousePressEvent(QMouseEvent *e) override { m_owner->canvasMousePress(e); }
     void mouseMoveEvent(QMouseEvent *e) override { m_owner->canvasMouseMove(e); }
     void mouseReleaseEvent(QMouseEvent *e) override { m_owner->canvasMouseRelease(e); }
+    void mouseDoubleClickEvent(QMouseEvent *e) override { m_owner->canvasMouseDoubleClick(e); }
     void leaveEvent(QEvent *) override { m_owner->canvasLeave(); }
     void resizeEvent(QResizeEvent *) override { m_owner->canvasResized(); }
     void contextMenuEvent(QContextMenuEvent *e) override
@@ -774,7 +780,25 @@ QRect AnimaticTimeline::clipRect(int flatIndex) const
     const Block &b = m_blocks.at(flatIndex);
     const int x0 = contentXToScreen(b.startFrame * pxPerFrame());
     const int x1 = contentXToScreen((b.startFrame + b.frames) * pxPerFrame());
-    return QRect(x0, kPanelY + 2, x1 - x0, panelTrackH() - 4);
+    // At least kMinClipPx wide (a 1-frame clip at a low zoom), over the
+    // start of the clip after it; any clip of 4 px or more is exactly the
+    // rect it always was.
+    return QRect(x0, kPanelY + 2, qMax(kMinClipPx, x1 - x0), panelTrackH() - 4);
+}
+
+int AnimaticTimeline::blockAtScreenX(int screenX) const
+{
+    // A clip narrower than it is drawn (see clipRect) is found first: it is
+    // painted over its neighbour, so a click on what is seen reaches it.
+    for (int i = 0; i < m_blocks.size(); ++i) {
+        const Block &b = m_blocks.at(i);
+        if (b.frames * pxPerFrame() >= kMinClipPx)
+            continue;
+        const QRect r = clipRect(i);
+        if (screenX >= r.left() && screenX < r.left() + r.width())
+            return i;
+    }
+    return blockAtFrame(frameAtScreenX(screenX));
 }
 
 QWidget *AnimaticTimeline::surfaceForTest() const
@@ -817,6 +841,9 @@ void AnimaticTimeline::setScenes(const QVector<Scene *> &scenes)
         m_current = count - 1;
     if (m_selected >= count)
         m_selected = count - 1;
+    // The typing field is for a panel by its place: a new list closes it.
+    if (m_durFlat >= 0)
+        closeDurationField(false);
     // A reorder drag armed against the old block list means nothing now;
     // nor does a camera key drag.
     if (m_drag == Drag::Move) {
@@ -983,6 +1010,18 @@ void AnimaticTimeline::onScrollbarAction(int action)
 
 bool AnimaticTimeline::eventFilter(QObject *watched, QEvent *event)
 {
+    // The typing field: Enter sets, Esc cancels (Figma DUR-1).
+    if (m_durEdit && watched == m_durEdit && event->type() == QEvent::KeyPress) {
+        const int key = static_cast<QKeyEvent *>(event)->key();
+        if (key == Qt::Key_Return || key == Qt::Key_Enter) {
+            closeDurationField(true);
+            return true;
+        }
+        if (key == Qt::Key_Escape) {
+            closeDurationField(false);
+            return true;
+        }
+    }
     if (m_volumePopup && watched == m_volumePopup) {
         if (event->type() == QEvent::KeyPress
             && static_cast<QKeyEvent *>(event)->key() == Qt::Key_Escape) {
@@ -1129,9 +1168,11 @@ void AnimaticTimeline::rebuildBlocks()
         Scene *scene = m_scenes.at(si);
         for (int pi = 0; pi < scene->panels.size(); ++pi) {
             Panel *panel = scene->panels.at(pi);
-            int dur = qBound(kMinDur, panel->duration, kMaxDur);
-            if (m_drag == Drag::ResizeRight && flat == m_resizeIndex)
-                dur = qBound(kMinDur, m_dragDuration, kMaxDur);
+            // Its length at the timeline's rate - or, while a length drag
+            // holds it, the length the drag has reached.
+            int frames = qMax(kMinFrames, shotcam::panelFrames(*panel, m_fps));
+            if (m_drag != Drag::None && m_dragFramesFor.contains(flat))
+                frames = qMax(kMinFrames, m_dragFramesFor.value(flat));
 
             Block b;
             b.flatIndex = flat;
@@ -1141,8 +1182,7 @@ void AnimaticTimeline::rebuildBlocks()
             b.sceneName = scene->location.isEmpty()
                 ? QStringLiteral("Scene %1").arg(scene->number)
                 : scene->location;
-            b.duration = qBound(kMinDur, panel->duration, kMaxDur);
-            b.frames = dur * m_fps;
+            b.frames = frames;
             b.startFrame = frameCursor;
             b.sceneStart = (pi == 0);
             m_blocks.append(b);
@@ -1163,10 +1203,11 @@ int AnimaticTimeline::totalFrames() const
 
 int AnimaticTimeline::totalSeconds() const
 {
-    int s = 0;
+    // The whole seconds the clips fill (the ruler ticks up to here).
+    int f = 0;
     for (const Block &b : m_blocks)
-        s += b.duration;
-    return s;
+        f += b.frames;
+    return f / qMax(1, m_fps);
 }
 
 double AnimaticTimeline::pxPerFrame() const { return m_zoom / 100.0; }
@@ -1522,12 +1563,25 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
         QFont mono(QStringLiteral("Consolas"));
         mono.setPixelSize(10);
 
-        for (const Block &b : m_blocks) {
+        // A clip narrower than kMinClipPx at this zoom (a 1-frame clip) is
+        // drawn that wide, and LAST, over the start of the clip after it,
+        // so it stays visible (2026-11-06). At any zoom where every clip is
+        // wider, the order and every rect are what they always were.
+        QVector<int> order;
+        order.reserve(m_blocks.size());
+        for (int i = 0; i < m_blocks.size(); ++i)
+            if (m_blocks.at(i).frames * ppf >= kMinClipPx)
+                order.append(i);
+        for (int i = 0; i < m_blocks.size(); ++i)
+            if (m_blocks.at(i).frames * ppf < kMinClipPx)
+                order.append(i);
+        for (int oi : std::as_const(order)) {
+            const Block &b = m_blocks.at(oi);
             const int x0 = contentXToScreen(b.startFrame * ppf);
-            const int x1 = contentXToScreen((b.startFrame + b.frames) * ppf);
+            const int x1 = qMax(x0 + kMinClipPx, contentXToScreen((b.startFrame + b.frames) * ppf));
             if (x1 < kLabelCol || x0 > contentRight) continue;
             const QRect r(x0, kPanelY + 2, x1 - x0, panelTrackH() - 4);
-            const ClipLayout L = clipLayout(r);
+            const ClipLayout L = clipLayout(r, pillText(b));
             const QRectF bf(L.body);
 
             // "current" is the SELECTED panel - the one on the drawing
@@ -1641,10 +1695,18 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
                 p.setBrush(Qt::NoBrush);
                 p.setFont(mono);
                 p.setPen(kPillText);
-                p.drawText(L.pill, Qt::AlignCenter, QStringLiteral("%1s").arg(b.duration));
+                p.drawText(L.pill, Qt::AlignCenter, pillText(b));
             }
         }
         p.setRenderHint(QPainter::Antialiasing, false);
+        // A LENGTH DRAG (2026-11-06, Figma DUR-1): a dashed line where the
+        // moving edge started.
+        if (m_dragOriginFrame >= 0
+            && (m_drag == Drag::ResizeRight || m_drag == Drag::ResizeLeft || m_drag == Drag::Roll)) {
+            const int x = contentXToScreen(m_dragOriginFrame * ppf);
+            p.setPen(QPen(kClipSelectedBorder, 1, Qt::DashLine));
+            p.drawLine(x, kPanelY + 2, x, kPanelY + panelTrackH() - 3);
+        }
     }
 
     // ----- Loop region overlay (on the panel track) -----
@@ -1872,7 +1934,7 @@ int AnimaticTimeline::rulerLabelStep() const
 }
 
 // The design's clip layout for a clip rect r (see the constants at the top).
-AnimaticTimeline::ClipLayout AnimaticTimeline::clipLayout(const QRect &r) const
+AnimaticTimeline::ClipLayout AnimaticTimeline::clipLayout(const QRect &r, const QString &pillText) const
 {
     ClipLayout L;
     L.body = QRect(r.left(), r.top(), qMax(1, r.width() - kClipGap), r.height());
@@ -1881,8 +1943,16 @@ AnimaticTimeline::ClipLayout AnimaticTimeline::clipLayout(const QRect &r) const
     L.thumb = QRect(L.body.left() + kThumbInset, L.body.top() + kThumbInset,
                     bw - 2 * kThumbInset, kThumbH);
     L.number = QRect(L.body.left() + 10, L.body.top() + 9, qMax(1, bw - 14), 12);
-    L.pillShown = bw >= kPillMinBody;
-    L.pill = QRect(L.body.right() - kPillW - 5, L.body.bottom() - kPillH - 4, kPillW, kPillH);
+    // The pill fits its text (2026-11-06): 28 px for "3s", wider for
+    // "1s 12f"; shown while the body has room for it and 14 px more.
+    int pillW = kPillW;
+    if (!pillText.isEmpty()) {
+        QFont mono(QStringLiteral("Consolas"));
+        mono.setPixelSize(10);
+        pillW = qMax(kPillW, QFontMetrics(mono).horizontalAdvance(pillText) + 10);
+    }
+    L.pillShown = bw >= qMax(kPillMinBody, pillW + 14);
+    L.pill = QRect(L.body.right() - pillW - 5, L.body.bottom() - kPillH - 4, pillW, kPillH);
     const int nameRight = L.pillShown ? L.pill.left() - 4 : L.body.right() - 8;
     L.name = QRect(L.body.left() + 8, L.body.bottom() - 20,
                    qMax(0, nameRight - (L.body.left() + 8)), 15);
@@ -1895,7 +1965,7 @@ QVariantMap AnimaticTimeline::clipPartsForTest(int flatIndex) const
     const QRect r = clipRect(flatIndex);
     if (r.isEmpty())
         return {};
-    const ClipLayout L = clipLayout(r);
+    const ClipLayout L = clipLayout(r, pillText(m_blocks.at(flatIndex)));
     const auto rs = [](const QRect &q) {
         return QStringLiteral("%1,%2 %3x%4").arg(q.x()).arg(q.y()).arg(q.width()).arg(q.height());
     };
@@ -1910,6 +1980,165 @@ QVariantMap AnimaticTimeline::clipPartsForTest(int flatIndex) const
 int AnimaticTimeline::labelColumnWidthForTest()
 {
     return kLabelColW;
+}
+
+QString AnimaticTimeline::pillText(const Block &b) const
+{
+    return m_framesMode ? shotcam::framesText(b.frames) : shotcam::lengthText(b.frames, m_fps);
+}
+
+QString AnimaticTimeline::pillTextForTest(int flatIndex) const
+{
+    return flatIndex >= 0 && flatIndex < m_blocks.size() ? pillText(m_blocks.at(flatIndex)) : QString();
+}
+
+QRect AnimaticTimeline::pillRectForTest(int flatIndex) const
+{
+    const QRect r = clipRect(flatIndex);
+    if (r.isEmpty() || flatIndex >= m_blocks.size())
+        return QRect();
+    const ClipLayout L = clipLayout(r, pillText(m_blocks.at(flatIndex)));
+    return L.pillShown ? L.pill : QRect();
+}
+
+// --- THE TYPING FIELD (2026-11-06, Figma DUR-1) ----------------------------
+// "Panel 2 · Duration", the number in frames, "= 1s 12f at 24 fps" beside
+// it, Cancel and Set. A child of the window (so it is not cut off by the
+// timeline's height), over the clip. Enter sets, Esc cancels, Set and
+// Cancel do the same; the length goes out as the drag's does
+// (durationChanged), so the SHOTS lock and the history treat it alike.
+void AnimaticTimeline::openDurationField(int flatIndex)
+{
+    if (flatIndex < 0 || flatIndex >= m_blocks.size() || !m_canvas)
+        return;
+    if (m_tracks.shotsLocked) { // as the drag is refused (Part B)
+        refuse(QStringLiteral("SHOTS track is locked"), m_canvas->mapToGlobal(clipRect(flatIndex).center()));
+        return;
+    }
+    QWidget *host = window();
+    if (!m_durField) {
+        m_durField = new QFrame(host);
+        m_durField->setObjectName(QStringLiteral("timelineDurationField"));
+        m_durField->setAttribute(Qt::WA_StyledBackground, true);
+        m_durField->setStyleSheet(SankoTheme::themed(
+            "#timelineDurationField { background: #161616; border: 1px solid #2a2a2a; border-radius: 6px; }"
+            "QLabel { color: #888888; font-size: 11px; background: transparent; border: none; }"
+            "QLabel#durTitle { color: #dddddd; }"
+            "QLineEdit { background: #0f0f0f; color: #ffffff; border: 1px solid #3a3a3a; border-radius: 4px;"
+            "  padding: 2px 6px; font-size: 12px; }"
+            "QLineEdit:focus { border-color: %ACCENT%; }"
+            "QPushButton { background: #262626; color: #cccccc; border: none; border-radius: 4px;"
+            "  padding: 3px 12px; font-size: 11px; }"
+            "QPushButton:hover { color: #ffffff; }"
+            "QPushButton#durSet { background: %ACCENT%; color: #ffffff; }"));
+        auto *col = new QVBoxLayout(m_durField);
+        col->setContentsMargins(12, 10, 12, 10);
+        col->setSpacing(8);
+        m_durTitle = new QLabel;
+        m_durTitle->setObjectName(QStringLiteral("durTitle"));
+        col->addWidget(m_durTitle);
+        auto *row = new QHBoxLayout;
+        row->setSpacing(8);
+        m_durEdit = new QLineEdit;
+        m_durEdit->setObjectName(QStringLiteral("durFrames"));
+        m_durEdit->setFixedWidth(64);
+        m_durEdit->installEventFilter(this);
+        row->addWidget(m_durEdit);
+        row->addWidget(new QLabel(QStringLiteral("frames")));
+        m_durEquals = new QLabel;
+        m_durEquals->setObjectName(QStringLiteral("durEquals"));
+        row->addWidget(m_durEquals);
+        row->addStretch(1);
+        col->addLayout(row);
+        auto *buttons = new QHBoxLayout;
+        buttons->setSpacing(8);
+        auto *cancel = new QPushButton(QStringLiteral("Cancel"));
+        cancel->setObjectName(QStringLiteral("durCancel"));
+        auto *set = new QPushButton(QStringLiteral("Set"));
+        set->setObjectName(QStringLiteral("durSet"));
+        for (QPushButton *b : {cancel, set}) {
+            b->setCursor(Qt::PointingHandCursor);
+            b->setFocusPolicy(Qt::NoFocus);
+        }
+        buttons->addWidget(cancel);
+        buttons->addWidget(set);
+        buttons->addStretch(1);
+        col->addLayout(buttons);
+        connect(cancel, &QPushButton::clicked, this, [this] { closeDurationField(false); });
+        connect(set, &QPushButton::clicked, this, [this] { closeDurationField(true); });
+        connect(m_durEdit, &QLineEdit::textChanged, this, [this](const QString &text) {
+            bool ok = false;
+            const int f = text.trimmed().toInt(&ok);
+            m_durEquals->setText(ok && f >= kMinFrames
+                                     ? QStringLiteral("= %1 at %2 fps").arg(shotcam::lengthText(f, m_fps)).arg(m_fps)
+                                     : QStringLiteral("at least 1 frame"));
+        });
+    }
+    m_durFlat = flatIndex;
+    const Block &b = m_blocks.at(flatIndex);
+    m_durTitle->setText(QStringLiteral("Panel %1 \xC2\xB7 Duration").arg(b.panelIndex + 1));
+    m_durEdit->setText(QString::number(b.frames));
+    m_durEquals->setText(QStringLiteral("= %1 at %2 fps").arg(shotcam::lengthText(b.frames, m_fps)).arg(m_fps));
+    m_durField->adjustSize();
+    m_durField->setFixedWidth(qMax(m_durField->sizeHint().width(), 210));
+    positionDurationField();
+    m_durField->show();
+    m_durField->raise();
+    m_durEdit->setFocus(Qt::OtherFocusReason);
+    m_durEdit->selectAll();
+}
+
+void AnimaticTimeline::positionDurationField()
+{
+    if (!m_durField || m_durFlat < 0 || !m_canvas)
+        return;
+    QWidget *host = m_durField->parentWidget();
+    const QRect clip = clipRect(m_durFlat);
+    // Above the clip's right end, inside the window.
+    QPoint at = m_canvas->mapTo(host, QPoint(clip.right() - m_durField->width() + 8, clip.top() - m_durField->height() - 6));
+    at.setX(qBound(4, at.x(), qMax(4, host->width() - m_durField->width() - 4)));
+    at.setY(qBound(4, at.y(), qMax(4, host->height() - m_durField->height() - 4)));
+    m_durField->move(at);
+}
+
+void AnimaticTimeline::closeDurationField(bool apply)
+{
+    if (!m_durField || m_durFlat < 0)
+        return;
+    const int flat = m_durFlat;
+    m_durFlat = -1;
+    m_durField->hide();
+    if (m_canvas)
+        m_canvas->setFocus(Qt::OtherFocusReason);
+    if (!apply || flat >= m_blocks.size())
+        return;
+    bool ok = false;
+    const int frames = m_durEdit->text().trimmed().toInt(&ok);
+    if (!ok || frames < kMinFrames)
+        return; // not a length: nothing changes (the field said so)
+    const Block &b = m_blocks.at(flat);
+    if (frames != b.frames)
+        emit durationChanged(b.sceneIndex, b.panelIndex, frames);
+}
+
+int AnimaticTimeline::durationFieldPanelForTest() const
+{
+    return m_durField && m_durField->isVisible() ? m_durFlat : -1;
+}
+
+QWidget *AnimaticTimeline::durationFieldForTest() const
+{
+    return m_durField;
+}
+
+QString AnimaticTimeline::durationFieldEqualsForTest() const
+{
+    return m_durEquals ? m_durEquals->text() : QString();
+}
+
+void AnimaticTimeline::showDragChip(const QPoint &globalPos)
+{
+    QToolTip::showText(globalPos, m_dragChip, m_canvas);
 }
 
 // What the audio track shows, in one place: the painter draws exactly this
@@ -2581,6 +2810,8 @@ void AnimaticTimeline::canvasMousePress(QMouseEvent *e)
 {
     if (m_volumePopup && m_volumePopup->isVisible())
         m_volumePopup->hide(); // a press on the canvas is a press outside the popup
+    if (m_durFlat >= 0)
+        closeDurationField(false); // ...and outside the typing field: it cancels
     if (e->button() != Qt::LeftButton)
         return;
     const QPoint pos = e->position().toPoint();
@@ -2625,9 +2856,21 @@ void AnimaticTimeline::canvasMousePress(QMouseEvent *e)
         m_canvas->update();
     }
 
-    // Playhead: triangle in the ruler, or near the line anywhere.
+    // Playhead: triangle in the ruler, or near the line anywhere - except
+    // on the SELECTED CLIP'S EDGES on the SHOTS track (2026-11-06, batch
+    // 5): selecting a clip puts the playhead on its start, its left edge,
+    // and the edge is what a press there is for (the left edge was a stub
+    // before, so nothing used to compete for it).
     const int phx = contentXToScreen(playheadContentX());
-    if (pos.y() < kRulerY + kRulerH || qAbs(pos.x() - phx) <= kGrab) {
+    bool onSelectedEdge = false;
+    if (m_tracks.shotsVisible && m_selected >= 0 && m_selected < m_blocks.size()
+        && pos.y() >= kPanelY && pos.y() < kPanelY + panelTrackH()) {
+        const Block &sb = m_blocks.at(m_selected);
+        const int ex0 = contentXToScreen(sb.startFrame * pxPerFrame());
+        const int ex1 = contentXToScreen((sb.startFrame + sb.frames) * pxPerFrame());
+        onSelectedEdge = qAbs(pos.x() - ex0) <= kHandleW || qAbs(pos.x() - ex1) <= kHandleW;
+    }
+    if (pos.y() < kRulerY + kRulerH || (!onSelectedEdge && qAbs(pos.x() - phx) <= kGrab)) {
         m_drag = Drag::Playhead;
         m_dragPlayheadFrame = frameAtScreenX(pos.x());
         QToolTip::showText(e->globalPosition().toPoint(),
@@ -2651,27 +2894,51 @@ void AnimaticTimeline::canvasMousePress(QMouseEvent *e)
     // Trim handles on the selected clip (panel track only). A LOCKED SHOTS
     // track refuses the trim with the message at the pointer; the press
     // then goes on to select, which a lock never blocks.
-    if (m_selected >= 0 && m_selected < m_blocks.size()
+    // A clip drawn wider than it is (a 1-frame clip at a low zoom) under the
+    // pointer is selected, never the selected clip's edge beside it.
+    const int underPress = (pos.y() >= kPanelY && pos.y() < kPanelY + panelTrackH())
+        ? blockAtScreenX(pos.x()) : -1;
+    const bool tinyOther = underPress >= 0 && underPress != m_selected
+        && m_blocks.at(underPress).frames * pxPerFrame() < kMinClipPx;
+    if (!tinyOther && m_selected >= 0 && m_selected < m_blocks.size()
         && pos.y() >= kPanelY && pos.y() < kPanelY + panelTrackH()) {
         const Block &b = m_blocks.at(m_selected);
         const int x0 = contentXToScreen(b.startFrame * pxPerFrame());
         const int x1 = contentXToScreen((b.startFrame + b.frames) * pxPerFrame());
         const bool onHandle = qAbs(pos.x() - x1) <= kHandleW || qAbs(pos.x() - x0) <= kHandleW;
+        // LENGTHS BY THE FRAME (2026-11-06, batch 5; Figma DUR-1). The
+        // right edge trims the end, the left edge the start; both ripple
+        // (the clip keeps its start and later clips move up, so the left
+        // edge's drag shows its result: the clip shorter, the rest moved).
+        // With Alt, the edge is the CUT between this clip and its
+        // neighbour on that side, and the drag ROLLS it: both change,
+        // nothing after them moves. No neighbour: an ordinary trim.
+        const bool alt = e->modifiers().testFlag(Qt::AltModifier);
+        const bool right = qAbs(pos.x() - x1) <= kHandleW;
         if (onHandle && m_tracks.shotsLocked) {
             refuse(QStringLiteral("SHOTS track is locked"), e->globalPosition().toPoint());
-        } else if (qAbs(pos.x() - x1) <= kHandleW) {
-            m_drag = Drag::ResizeRight;
-            m_resizeIndex = m_selected;
-            m_dragDuration = b.duration;
+        } else if (onHandle) {
+            const int first = right ? m_selected : m_selected - 1; // the roll's left clip
+            const bool roll = alt && first >= 0 && first + 1 < m_blocks.size();
+            m_dragFramesFor.clear();
+            m_dragPressX = screenXToContent(pos.x());
+            m_dragChip.clear();
+            if (roll) {
+                m_drag = Drag::Roll;
+                m_resizeIndex = first;
+                m_rollNext = first + 1;
+                m_dragFromFrames = m_blocks.at(first).frames;
+                m_dragFromFramesNext = m_blocks.at(first + 1).frames;
+                m_dragOriginFrame = m_blocks.at(first + 1).startFrame;
+            } else {
+                m_drag = right ? Drag::ResizeRight : Drag::ResizeLeft;
+                m_resizeIndex = m_selected;
+                m_rollNext = -1;
+                m_dragFromFrames = b.frames;
+                m_dragOriginFrame = right ? b.startFrame + b.frames : b.startFrame;
+            }
             m_canvas->setCursor(Qt::SizeHorCursor);
-            QToolTip::showText(e->globalPosition().toPoint(),
-                               QStringLiteral("%1.0s").arg(m_dragDuration), m_canvas);
-            return;
-        } else if (qAbs(pos.x() - x0) <= kHandleW) {
-            m_drag = Drag::ResizeLeft; // visual only for now
-            m_resizeIndex = m_selected;
-            m_dragLeftFrames = 0;
-            m_canvas->setCursor(Qt::SizeHorCursor);
+            m_canvas->update();
             return;
         }
     }
@@ -2681,8 +2948,7 @@ void AnimaticTimeline::canvasMousePress(QMouseEvent *e)
     // and may turn into a reorder drag once it has moved far enough - not
     // on a locked SHOTS track, where the press selects and nothing more.
     if (pos.y() >= kPanelY && pos.y() < kPanelY + panelTrackH()) {
-        const int frame = frameAtScreenX(pos.x());
-        const int idx = blockAtFrame(frame);
+        const int idx = blockAtScreenX(pos.x()); // a 1-frame clip as drawn (2026-11-06)
         if (idx >= 0) {
             emit panelSeekRequested(idx);
             // The request may have rebuilt the blocks (it never does today,
@@ -2752,7 +3018,7 @@ void AnimaticTimeline::canvasContextMenu(QContextMenuEvent *e)
         return;
     }
     if (m_tracks.shotsVisible && pos.y() >= kPanelY && pos.y() < kPanelY + panelTrackH()) {
-        const int idx = blockAtFrame(frameAtScreenX(pos.x()));
+        const int idx = blockAtScreenX(pos.x());
         if (idx >= 0) {
             emit panelSeekRequested(idx);
             emit clipContextMenuRequested(idx, e->globalPos());
@@ -2873,26 +3139,49 @@ void AnimaticTimeline::canvasMouseMove(QMouseEvent *e)
         return;
     }
 
-    if (m_drag == Drag::ResizeRight && m_resizeIndex >= 0) {
+    if ((m_drag == Drag::ResizeRight || m_drag == Drag::ResizeLeft || m_drag == Drag::Roll)
+        && m_resizeIndex >= 0 && m_resizeIndex < m_blocks.size()) {
+        // The frame under the pointer decides, at any zoom (a frame may be
+        // less than a pixel: the nearest one). Back within a pixel of where
+        // it was pressed, the drag is where it began: nothing changes.
+        const double ppf = qMax(1e-6, pxPerFrame());
+        const double cx = screenXToContent(pos.x());
+        const bool home = qAbs(cx - m_dragPressX) <= 1.0;
+        const int at = static_cast<int>(std::lround(cx / ppf)); // the frame the edge would be on
         const Block &b = m_blocks.at(m_resizeIndex);
-        const double startX = b.startFrame * pxPerFrame();
-        const double widthPx = screenXToContent(pos.x()) - startX;
-        int newDur = static_cast<int>(std::lround(widthPx / qMax(1.0, pxPerSecond())));
-        newDur = qBound(kMinDur, newDur, kMaxDur);
-        if (newDur != m_dragDuration) {
-            m_dragDuration = newDur;
-            rebuildBlocks();
-            updateScrollRange();
+        const auto signedFrames = [](int d) {
+            return d > 0 ? QStringLiteral("+%1 f").arg(d) : QString::fromUtf8("\xE2\x88\x92%1 f").arg(-d);
+        };
+        if (m_drag == Drag::Roll && m_rollNext >= 0 && m_rollNext < m_blocks.size()) {
+            const int total = m_dragFromFrames + m_dragFromFramesNext;
+            const int left = home ? m_dragFromFrames : qBound(1, at - b.startFrame, total - 1);
+            m_dragFramesFor.insert(m_resizeIndex, left);
+            m_dragFramesFor.insert(m_rollNext, total - left);
+            const Block &n = m_blocks.at(m_rollNext);
+            const int d = left - m_dragFromFrames;
+            m_dragChip = QStringLiteral("Alt \xC2\xB7 roll: P%1 %2, P%3 %4")
+                             .arg(b.panelIndex + 1).arg(d == 0 ? QStringLiteral("0 f") : signedFrames(d))
+                             .arg(n.panelIndex + 1).arg(d == 0 ? QStringLiteral("0 f") : signedFrames(-d));
+        } else {
+            int frames = m_dragFromFrames;
+            if (!home) {
+                frames = m_drag == Drag::ResizeRight
+                    ? at - b.startFrame                               // the end follows the pointer
+                    : m_dragFromFrames - (at - m_dragOriginFrame);    // the start: trimmed off the head
+            }
+            frames = qMax(kMinFrames, frames);
+            m_dragFramesFor.insert(m_resizeIndex, frames);
+            const int d = frames - m_dragFromFrames;
+            const QString change = d == 0 ? QString() : QStringLiteral(" (%1)").arg(signedFrames(d));
+            m_dragChip = m_drag == Drag::ResizeRight
+                ? QStringLiteral("%1 \xC2\xB7 %2 f%3").arg(shotcam::lengthText(frames, m_fps)).arg(frames).arg(change)
+                : QStringLiteral("start %1 \xC2\xB7 %2").arg(d == 0 ? QStringLiteral("0 f") : signedFrames(d))
+                      .arg(shotcam::lengthText(frames, m_fps));
         }
-        QToolTip::showText(e->globalPosition().toPoint(),
-                           QStringLiteral("%1.0s").arg(m_dragDuration), m_canvas);
+        rebuildBlocks();
+        updateScrollRange();
+        showDragChip(e->globalPosition().toPoint());
         m_canvas->update();
-        return;
-    }
-
-    if (m_drag == Drag::ResizeLeft) {
-        QToolTip::showText(e->globalPosition().toPoint(),
-                           QStringLiteral("in/out — coming soon"), m_canvas);
         return;
     }
 
@@ -2902,8 +3191,7 @@ void AnimaticTimeline::canvasMouseMove(QMouseEvent *e)
     int hover = -1;
     if (m_tracks.shotsVisible && pos.x() >= kLabelCol && pos.y() >= kPanelY
         && pos.y() < kPanelY + panelTrackH()) {
-        const int frame = frameAtScreenX(pos.x());
-        hover = blockAtFrame(frame);
+        hover = blockAtScreenX(pos.x());
         cursor = (hover >= 0) ? Qt::PointingHandCursor : Qt::ArrowCursor;
         // Resize-handle cursor on the selected clip edges.
         if (!m_tracks.shotsLocked && m_selected >= 0 && m_selected < m_blocks.size()) {
@@ -2949,25 +3237,64 @@ void AnimaticTimeline::canvasMouseMove(QMouseEvent *e)
     }
 }
 
+// A double-click on a clip's duration pill opens the typing field (Figma
+// DUR-1). Anything else is what the second press always was: Qt sends it
+// here in place of a press, so it goes on to the press handler.
+void AnimaticTimeline::canvasMouseDoubleClick(QMouseEvent *e)
+{
+    const QPoint pos = e->position().toPoint();
+    if (e->button() == Qt::LeftButton && m_tracks.shotsVisible && pos.x() >= kLabelCol
+        && pos.y() >= kPanelY && pos.y() < kPanelY + panelTrackH()) {
+        const int idx = blockAtScreenX(pos.x());
+        if (idx >= 0 && idx < m_blocks.size()) {
+            const ClipLayout L = clipLayout(clipRect(idx), pillText(m_blocks.at(idx)));
+            if (L.pillShown && L.pill.contains(pos)) {
+                openDurationField(idx);
+                return;
+            }
+        }
+    }
+    canvasMousePress(e);
+}
+
 void AnimaticTimeline::canvasMouseRelease(QMouseEvent *e)
 {
     if (e->button() != Qt::LeftButton)
         return;
 
-    if (m_drag == Drag::ResizeRight && m_resizeIndex >= 0) {
-        const Block &b = m_blocks.at(m_resizeIndex);
-        emit durationChanged(b.sceneIndex, b.panelIndex, m_dragDuration);
+    if (m_drag == Drag::ResizeRight || m_drag == Drag::ResizeLeft || m_drag == Drag::Roll) {
+        // The lengths the drag reached go out as ONE request (a roll's two
+        // as one); a drag back where it began sends nothing. The blocks are
+        // rebuilt from the panels once the workspace has answered.
+        const Drag kind = m_drag;
+        const int first = m_resizeIndex, next = m_rollNext;
+        const int framesA = m_dragFramesFor.value(first, m_dragFromFrames);
+        const int framesB = m_dragFramesFor.value(next, m_dragFromFramesNext);
+        const int fromA = m_dragFromFrames;
         m_drag = Drag::None;
         m_resizeIndex = -1;
+        m_rollNext = -1;
+        m_dragFramesFor.clear();
+        m_dragOriginFrame = -1;
+        m_dragChip.clear();
         m_canvas->setCursor(Qt::ArrowCursor);
         QToolTip::hideText();
-        return;
-    }
-    if (m_drag == Drag::ResizeLeft) {
-        m_drag = Drag::None;
-        m_resizeIndex = -1;
-        m_dragLeftFrames = -1;
-        m_canvas->setCursor(Qt::ArrowCursor);
+        if (first >= 0 && first < m_blocks.size()) {
+            const Block a = m_blocks.at(first);
+            if (kind == Drag::Roll && next >= 0 && next < m_blocks.size()) {
+                const Block bb = m_blocks.at(next);
+                if (framesA != fromA)
+                    emit rollRequested(a.sceneIndex, a.panelIndex, framesA, bb.sceneIndex, bb.panelIndex,
+                                       framesB);
+            } else {
+                // durationChanged also answers a drag that ends where it
+                // began (the page redraws the clip from the panel).
+                emit durationChanged(a.sceneIndex, a.panelIndex, framesA);
+            }
+        }
+        rebuildBlocks();
+        updateScrollRange();
+        m_canvas->update();
         return;
     }
     if (m_drag == Drag::Playhead) {

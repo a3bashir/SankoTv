@@ -1225,6 +1225,8 @@ QWidget *AnimaticPage::createTimingStrip()
             this, &AnimaticPage::onScrubbedTo);
     connect(m_timeline, &AnimaticTimeline::durationChanged,
             this, &AnimaticPage::onDurationChanged);
+    connect(m_timeline, &AnimaticTimeline::rollRequested,
+            this, &AnimaticPage::panelRollRequested);
     connect(m_timeline, &AnimaticTimeline::panelMoveRequested,
             this, &AnimaticPage::panelMoveRequested);
     connect(m_timeline, &AnimaticTimeline::clipContextMenuRequested,
@@ -2074,9 +2076,7 @@ void AnimaticPage::updateTimecodeLabel()
     // project while the ruler beside it, which always used the project's
     // rate, counted 0-59.
     const int fps = m_timeline ? qMax(1, m_timeline->fps()) : 24;
-    int frame = 0;
-    for (int i = 0; i < m_current && i < m_items.size(); ++i)
-        frame += qMax(1, m_items.at(i).panel->duration) * fps;
+    int frame = int(framesBefore(m_current));
     frame += static_cast<int>(m_elapsedMsInCurrentPanel / (1000.0 / fps));
     const int ff = frame % fps;
     const int totalSec = frame / fps;
@@ -2097,15 +2097,15 @@ void AnimaticPage::updateTimecodeLabel()
 
 void AnimaticPage::updateTotalLabel()
 {
-    int total = 0;
-    for (const Item &it : m_items)
-        total += it.panel->duration;
+    // Every panel's frames at the project's rate (2026-11-06: they were
+    // whole seconds).
+    const qint64 total = framesBefore(int(m_items.size()));
 
     // Show the speed-adjusted duration as HH:MM:SS:FF in the project's rate
     // (the redesign's format, the user's decision 2026-10-18), with a suffix
     // when not at 1x.
     const int fps = m_timeline ? qMax(1, m_timeline->fps()) : 24;
-    const int frames = qRound(total * fps / static_cast<double>(m_playbackSpeed));
+    const int frames = qRound(total / static_cast<double>(m_playbackSpeed));
     const int ff = frames % fps, totalSec = frames / fps;
     QString text = QStringLiteral("%1:%2:%3:%4")
                        .arg(totalSec / 3600, 2, 10, QChar('0'))
@@ -2212,8 +2212,7 @@ void AnimaticPage::startFilmClock(qint64 audioMs)
     m_waitingForAudio = false;
     m_audioStartCap->stop();
     if (audioMs >= 0 && m_current >= 0 && m_current < m_items.size()) {
-        const qint64 duration =
-            qMax(1, m_items.at(m_current).panel->duration) * qint64(1000);
+        const qint64 duration = itemMs(m_current);
         m_elapsedMsInCurrentPanel =
             int(qBound<qint64>(0, audioMs - offsetForPanel(m_current), duration - 1));
     }
@@ -2311,15 +2310,17 @@ void AnimaticPage::onPlayheadTick()
     updateTimecodeLabel();
 }
 
-void AnimaticPage::onDurationChanged(int sceneIndex, int panelIndex, int newDuration)
+void AnimaticPage::onDurationChanged(int sceneIndex, int panelIndex, int newFrames)
 {
     if (sceneIndex < 0 || sceneIndex >= m_scenes.size())
         return;
     Scene *scene = m_scenes.at(sceneIndex);
     if (panelIndex < 0 || panelIndex >= scene->panels.size())
         return;
-    const int bounded = qBound(1, newDuration, 30);
-    if (scene->panels.at(panelIndex)->duration == bounded) {
+    // FRAMES at the project's rate (2026-11-06, batch 5): at least 1, no
+    // maximum (it was whole seconds, 1 to 30).
+    const int bounded = qMax(1, newFrames);
+    if (shotcam::panelFrames(*scene->panels.at(panelIndex), projectFps()) == bounded) {
         // A drag that ended where it began: nothing to change, nothing to
         // undo - but the clip is still drawn at its dragged width.
         if (m_timeline)
@@ -2363,8 +2364,8 @@ void AnimaticPage::scheduleTick()
     // whole panel for a fresh start (movePlayheadTo zeroes the elapsed
     // time) and what is left for a resume. The sound is given the same
     // speed, so a speed change reaches both at the next panel.
-    const int duration = qMax(1, m_items.at(m_current).panel->duration);
-    const int remaining = qMax(1, duration * 1000 - m_elapsedMsInCurrentPanel);
+    const qint64 duration = itemMs(m_current);
+    const int remaining = int(qMax<qint64>(1, duration - m_elapsedMsInCurrentPanel));
     m_panelSpeed = m_playbackSpeed;
     m_panelBaseMs = m_elapsedMsInCurrentPanel;
     m_panelClock.start();
@@ -2528,10 +2529,38 @@ void AnimaticPage::onPlayerProblem(const QString &reason)
 
 qint64 AnimaticPage::offsetForPanel(int index) const
 {
-    qint64 ms = 0;
+    return framesToMs(framesBefore(index));
+}
+
+void AnimaticPage::openDurationField(int flatIndex)
+{
+    if (m_timeline)
+        m_timeline->openDurationField(flatIndex);
+}
+
+int AnimaticPage::itemFrames(int index) const
+{
+    if (index < 0 || index >= m_items.size() || !m_items.at(index).panel)
+        return 1;
+    return shotcam::panelFrames(*m_items.at(index).panel, projectFps());
+}
+
+qint64 AnimaticPage::framesBefore(int index) const
+{
+    qint64 frames = 0;
     for (int i = 0; i < index && i < m_items.size(); ++i)
-        ms += static_cast<qint64>(qMax(1, m_items.at(i).panel->duration)) * 1000;
-    return ms;
+        frames += itemFrames(i);
+    return frames;
+}
+
+qint64 AnimaticPage::framesToMs(qint64 frames) const
+{
+    return frames * 1000 / projectFps();
+}
+
+qint64 AnimaticPage::itemMs(int index) const
+{
+    return qMax<qint64>(1, offsetForPanel(index + 1) - offsetForPanel(index));
 }
 
 // IMPORT AND REMOVE ARE REQUESTS. They used to write the track here and emit
@@ -2881,4 +2910,5 @@ void AnimaticPage::setFps(int fps)
     if (m_timeline)
         m_timeline->setFps(fps);
     updateTimecodeLabel(); // its frames field counts in the project's rate
+    updateTotalLabel();    // a panel's frames at a new rate are rounded (batch 5)
 }
