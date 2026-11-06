@@ -115,6 +115,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QPainter>
+#include <QPointer>
 #include <QSettings>
 #include <QTimer>
 #include <QStandardPaths>
@@ -17295,11 +17296,27 @@ void runDepthPass(const QString &scratch)
     const int stepsBefore = stack->count();
     r.storyboard->openLayerDepthForTest(3); // the House
     pump(100);
-    LayerDepthPopover *pop = r.storyboard->depthPopoverForTest();
+    // THE POPOVER CAN GO UNDER THE TEST (2026-11-06). It is a Qt::Popup that
+    // deletes itself on close (WA_DeleteOnClose), and Qt closes a popup when
+    // the application loses the foreground: another program activated
+    // mid-pass once left this pass touching a dead widget (0xC0000005 in
+    // QWidget::palette). Held by QPointer and asked for before each use, a
+    // popover gone is a FAIL with its reason, never a crash; the control is
+    // at the end of (dp9).
+    QPointer<LayerDepthPopover> pop = r.storyboard->depthPopoverForTest();
     if (!pop) {
         check(QStringLiteral("(dp9) the Depth popover opens for the House"), false);
         return;
     }
+    auto popStill = [&](const QString &forWhat) { // false, and a FAIL saying why, once it is gone
+        if (pop)
+            return true;
+        check(QStringLiteral("(dp9) the Depth popover is still open %1").arg(forWhat), false,
+              QStringLiteral("it closed under the test - a Qt::Popup closes, and this one deletes "
+                             "itself, when the application loses the foreground (see TESTWINDOW on "
+                             "stderr)"));
+        return false;
+    };
     {
         // THE SELECTION COLOUR IS THE APP'S (2026-11-01, the user's rule
         // after the 2B / 2C hand tests): set once, app-wide, by the style
@@ -17320,8 +17337,9 @@ void runDepthPass(const QString &scratch)
         const QColor systemBefore = highlight(&plain);
         qApp->setStyleSheet(sankoAppStyle());
         pump(50);
-        // The Layers rename field: a double-click on the House's name.
-        QLineEdit *rename = nullptr;
+        // The Layers rename field: a double-click on the House's name. (By
+        // QPointer too: losing the focus ends the rename and its field.)
+        QPointer<QLineEdit> rename;
         for (QLabel *name : r.storyboard->findChildren<QLabel *>(QStringLiteral("layerName")))
             if (name->isVisible() && name->text() == QStringLiteral("House") && name->parentWidget()) {
                 QWidget *row = name->parentWidget();
@@ -17331,7 +17349,8 @@ void runDepthPass(const QString &scratch)
                 rename = qobject_cast<QLineEdit *>(QApplication::focusWidget());
                 break;
             }
-        const QColor popField = pop->fieldSelectionForTest();
+        const QColor popField = popStill(QStringLiteral("to read its field's selection colour"))
+            ? pop->fieldSelectionForTest() : QColor();
         const QColor renameField = rename ? highlight(rename) : QColor();
         const QColor plainOn = highlight(&plain), textOn = highlight(&textEdit),
                      plainTextOn = highlight(&plainEdit), spinOn = highlight(&spin);
@@ -17351,7 +17370,8 @@ void runDepthPass(const QString &scratch)
                        plainTextOn.name(), spinOn.name()));
         qApp->setStyleSheet(QString());
         pump(50);
-        const QColor popOff = pop->fieldSelectionForTest();
+        const QColor popOff = popStill(QStringLiteral("to read it with the app's style cleared"))
+            ? pop->fieldSelectionForTest() : QColor();
         check(QStringLiteral("(dp) control: with the app's style cleared the same fields select in "
                              "the system's colour again - the accent came from that one style, "
                              "not from any field"),
@@ -17360,20 +17380,23 @@ void runDepthPass(const QString &scratch)
               QStringLiteral("system %1, popover now %2").arg(systemBefore.name(), popOff.name()));
     }
     const QVector<Layer> original = panel->layers;
-    pop->slideForTest(80, false);
-    pop->slideForTest(52, false); // within 3 % of Far: snapped to 50
+    if (popStill(QStringLiteral("for its slider")))
+        pop->slideForTest(80, false);
+    if (pop)
+        pop->slideForTest(52, false); // within 3 % of Far: snapped to 50
     pump(50);
     const double live = panel->layers.at(3).parallax;
     const bool liveView = r.canvas->shotCameraDepthViewForTest();
     const int stepsLive = stack->count();
     const int eventsLive = events.size();
-    pop->slideForTest(52, true);
+    if (popStill(QStringLiteral("to let its slider go")))
+        pop->slideForTest(52, true);
     pump(100);
     check(QStringLiteral("(dp9) THE SLIDER is live: the House follows it at once (52 snaps to "
                          "Far, 50 %), the readout says what it does, and nothing is a step "
                          "until it is let go"),
           live == 0.5 && liveView && stepsLive == stepsBefore && eventsLive == 0
-              && pop->activeStopForTest() == QStringLiteral("Far")
+              && pop && pop->activeStopForTest() == QStringLiteral("Far")
               && pop->readoutForTest().startsWith(QStringLiteral("Moves half as far")),
           QStringLiteral("live %1, steps %2 -> %3").arg(live).arg(stepsBefore).arg(stepsLive));
     check(QStringLiteral("(dp9) LETTING GO is ONE undo step, \"Layer Depth\", and one layerDepth "
@@ -17430,7 +17453,8 @@ void runDepthPass(const QString &scratch)
         pop->slideForTest(150, false);
         pump(30);
         const double during = panel->layers.at(3).parallax;
-        pop->close();
+        if (popStill(QStringLiteral("to close it under a live slide")))
+            pop->close();
         pump(80);
         check(QStringLiteral("(dp9) a slide never let go (the popover closed under it) is undone: "
                              "no step, the House back at 100 %"),
@@ -17446,6 +17470,28 @@ void runDepthPass(const QString &scratch)
     pump(50);
     check(QStringLiteral("(dp5) the paper and a folder's member open no Depth popover"),
           !paperOpened && !r.storyboard->depthPopoverForTest());
+    // Control for the guard: a popover closed under the test - as losing the
+    // foreground closes it - reads as gone once its deferred delete has run,
+    // so a guarded use is a FAIL with its reason, never a touch of a dead
+    // widget. (In a run where nothing takes the foreground, every guarded use
+    // above found it open: none of those FAILs appears.)
+    {
+        r.storyboard->openLayerDepthForTest(3);
+        pump(80);
+        QPointer<LayerDepthPopover> probe = r.storyboard->depthPopoverForTest();
+        const bool wasOpen = !probe.isNull();
+        if (probe)
+            probe->close();
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        pump(50);
+        check(QStringLiteral("(dp9) control: a Depth popover closed under the test (as losing the "
+                             "foreground closes it) reads as gone once deleted - the guard's pointer "
+                             "is null and the page holds none - so a lost popover is a FAIL with its "
+                             "reason, not a touch of a dead widget"),
+              wasOpen && probe.isNull() && !r.storyboard->depthPopoverForTest(),
+              QStringLiteral("open %1; after the close %2").arg(wasOpen)
+                  .arg(probe.isNull() ? QStringLiteral("gone") : QStringLiteral("still there")));
+    }
 
     // Q5 control: at the base framing (the key moved to it) there is no chip.
     Scene *scene = r.window.scenesForTest().first();
@@ -17667,7 +17713,17 @@ void runDepthToolsPass(const QString &scratch)
     };
     r.storyboard->openLayerDepthForTest(2); // panel 1's Mountains
     pump(80);
-    LayerDepthPopover *pop = r.storyboard->depthPopoverForTest();
+    // By QPointer (2026-11-06): the popover closes and deletes itself when
+    // the application loses the foreground (see runDepthPass), and a raw
+    // pointer would then read as open. Gone, the checks below fail and say
+    // why.
+    QPointer<LayerDepthPopover> pop = r.storyboard->depthPopoverForTest();
+    auto gone = [&]() {
+        return pop ? QString()
+                   : QStringLiteral(" - the Depth popover is gone: it closed under the test, as a "
+                                    "Qt::Popup does when the application loses the foreground (see "
+                                    "TESTWINDOW on stderr)");
+    };
     const bool offAtOpen = pop && !pop->everyPanel() && pop->everyPanelEnabledForTest();
     const QString line = pop ? pop->everyPanelLineForTest() : QString();
     const QString boxText = pop ? pop->everyPanelTextForTest() : QString();
@@ -17677,14 +17733,15 @@ void runDepthToolsPass(const QString &scratch)
                                       + QStringLiteral(" in every panel of scene 1")
               && line == QStringLiteral("3 panels have a layer named ") + L + "Mountains" + R
                              + QStringLiteral("; in 1 it is in a folder, whose depth applies there"),
-          boxText + QStringLiteral(" | ") + line);
+          boxText + QStringLiteral(" | ") + line + gone());
     // (By the stack's index: the earlier Undo left a redo step, which the
     // new push truncates.)
     const int indexBefore = stack->index();
-    if (pop) {
+    if (pop)
         pop->setEveryPanelForTest(true);
+    if (pop)
         pop->slideForTest(50, true);
-    }
+    const QString goneAtRelease = gone();
     pump(100);
     check(QStringLiteral("(dt4) ON: one release sets 50 % on every panel's Mountains (the folder's "
                          "member keeps its own 50 %, its folder's applies), ONE undo step \"Layer "
@@ -17693,7 +17750,7 @@ void runDepthToolsPass(const QString &scratch)
               && stack->index() == indexBefore + 1 && stack->count() == indexBefore + 1
               && stack->undoText() == QStringLiteral("Layer Depth (3 panels)"),
           QStringLiteral("%1 %2 %3, '%4'").arg(mountains(p1)).arg(mountains(p2)).arg(mountains(p3))
-              .arg(stack->undoText()));
+              .arg(stack->undoText()) + goneAtRelease);
     stack->undo();
     pump(80);
     check(QStringLiteral("(dt4) ...and one Undo puts all three back (50 %, 100 %, 100 %)"),
@@ -17711,7 +17768,7 @@ void runDepthToolsPass(const QString &scratch)
                          "only this panel"),
           pop && !pop->everyPanel() && mountains(p1) == 0.1 && mountains(p2) == 1.0
               && stack->undoText() == QStringLiteral("Layer Depth"),
-          QStringLiteral("%1 %2, '%3'").arg(mountains(p1)).arg(mountains(p2)).arg(stack->undoText()));
+          QStringLiteral("%1 %2, '%3'").arg(mountains(p1)).arg(mountains(p2)).arg(stack->undoText()) + gone());
     if (LayerDepthPopover *open = r.storyboard->depthPopoverForTest())
         open->close();
     pump(50);
@@ -17722,7 +17779,7 @@ void runDepthToolsPass(const QString &scratch)
           pop && !pop->everyPanelEnabledForTest()
               && pop->everyPanelLineForTest()
                      == QStringLiteral("No other panel in scene 1 has a layer named ") + L + "Ground" + R,
-          pop ? pop->everyPanelLineForTest() : QString());
+          pop ? pop->everyPanelLineForTest() : gone());
     if (pop)
         pop->close();
     pump(50);

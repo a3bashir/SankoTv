@@ -10092,6 +10092,44 @@ after the commit; the commit message in msg_recovery.txt. OPEN for the
 user: the copy's UI-thread stall (step 2's finding), _002's leftover
 copy (step 7's observation), and step 9 having no check.
 
+## Fix (2026-11-06): the Lifecycle depth passes survive focus loss - COMMITTED
+A quick run crashed (0xC0000005 in QWidget::palette) in the (dp) depth
+pass just after another program took the foreground. The Depth popover
+is a Qt::Popup with WA_DeleteOnClose; Qt closes a popup when the
+application loses the foreground; the pass held it by a raw pointer and
+touched it after it was deleted. The app holds it by QPointer
+(StoryboardPage::m_depthPopover) and was never at risk.
+FIX (tests only, ProjectLifecycleTest.cpp): runDepthPass and
+runDepthToolsPass hold the popover by QPointer, and the Layers rename
+field too, and ask before each use. A popover gone is a FAIL saying
+why: runDepthPass's popStill records "(dp9) the Depth popover is still
+open <for what>" with "it closed under the test - a Qt::Popup closes,
+and this one deletes itself, when the application loses the foreground
+(see TESTWINDOW on stderr)"; runDepthToolsPass's (dt4) checks append
+the same reason to their detail. No assertion changed (the slider
+check gained "pop &&" before its two reads, which only matters once the
+popover is gone).
+NEW CHECK, the guard's control: "(dp9) control: a Depth popover closed
+under the test (as losing the foreground closes it) reads as gone once
+deleted - the guard's pointer is null and the page holds none ..." -
+opened, closed, its deferred delete run. In a run where nothing takes
+the foreground none of the guard's FAILs appears and every check passes
+as before.
+QUICK RUN (the scratch worktree C:\SankoTV_dp on 0e97c0bbd): Lifecycle
+1177 PASS (1176 + 1), 0 failures; the foreground lost twice to the
+Claude app late in the run, no check failed.
+GATE dp (the fix alone, the worktree; fullgate_dp.log; 2026-11-06,
+normal mode, 2051 s): clean Release and Debug builds (0 errors), 0
+failing families in both, no foreground lost; Lifecycle 1177, Camera
+263, CanvasSizeLock 170, CanvasEdgeLock 74, BrushLibrary 187,
+DevRecorder 46, QuickShapeGeometry 19, PaintPixel 13, CanvasBrush 3;
+every pin line count equal to gate frames2's in both configs (Camera
+c1p 17, mp 43, mq 44, rp 3; Lifecycle "pin" 42, (rp 6, (mp 4); the row
+pins bd989a38 / a4994d62 / a3e7f938 in both; the evaluate pins
+e43a30f9fcc11db6 / 7bd38237a37a7579 in camera_test.txt, RESULT PASS
+checks=263). Committed and pushed on the gate's evidence, at the user's
+word.
+
 ## Batch 5: panel durations in frames (2026-11-06) - COMMITTED
 Item 3 of the proposals of 2026-11-06 (Figma DUR-1), approved with Q3 (a
 frame-rate change keeps each panel's TIME, rounded, at least 1 frame,
