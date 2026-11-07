@@ -1162,7 +1162,9 @@ QString timecodeText(int filmFrame, int fps)
         .arg(ff, 2, 10, QChar('0'));
 }
 
-QJsonObject toJson(const Scene &scene)
+namespace {
+
+QJsonObject keysJson(const Scene &scene, const QPointF &frameOrigin)
 {
     QJsonArray keys;
     for (const CameraKey &key : scene.camera.keys) {
@@ -1177,8 +1179,8 @@ QJsonObject toJson(const Scene &scene)
             k[QStringLiteral("panel")] = index;
             k[QStringLiteral("at")] = key.at;
         }
-        k[QStringLiteral("x")] = key.state.cx;
-        k[QStringLiteral("y")] = key.state.cy;
+        k[QStringLiteral("x")] = key.state.cx - frameOrigin.x();
+        k[QStringLiteral("y")] = key.state.cy - frameOrigin.y();
         k[QStringLiteral("zoom")] = key.state.zoom;
         k[QStringLiteral("rotation")] = key.state.rotation;
         k[QStringLiteral("ease")] = easeName(key.ease);
@@ -1189,6 +1191,26 @@ QJsonObject toJson(const Scene &scene)
     QJsonObject root;
     root[QStringLiteral("keys")] = keys;
     return root;
+}
+
+} // namespace
+
+QJsonObject toJson(const Scene &scene)
+{
+    return keysJson(scene, QPointF());
+}
+
+QJsonObject toFrameSpaceJson(const Scene &scene, const QPointF &frameOrigin)
+{
+    return keysJson(scene, frameOrigin);
+}
+
+void keysToStage(Scene &scene, const QPointF &frameOrigin)
+{
+    for (CameraKey &key : scene.camera.keys) {
+        key.state.cx += frameOrigin.x();
+        key.state.cy += frameOrigin.y();
+    }
 }
 
 void fromJson(const QJsonObject &obj, Scene &scene, int *dropped)

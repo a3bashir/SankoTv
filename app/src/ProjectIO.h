@@ -113,6 +113,19 @@ struct ImagePlan
 // once `cancel` is set. True when every job was written.
 bool runImagePlan(ImagePlan &plan, const std::atomic<bool> &cancel);
 
+// THE FILE'S VERSION (2026-11-06, batch 6a). 2: each panel says its stage
+// margin ("margin": [left, top, right, bottom], omitted when 0), and the
+// camera keys and the vanishing points are in FRAME SPACE - px from the
+// shot frame's top-left, the same numbers whatever a panel's margin. 1
+// (and none): stage px, the project's one margin. This build writes 2 and
+// reads 1 and 2; MainWindow refuses a later one rather than misread it.
+// A project without a margin has the same numbers in both.
+inline constexpr int kFileVersion = 2;
+// The vanishing points of a "perspective" object moved by (dx, dy): the
+// file's frame space and the stage's px (version 2). Nothing else in it
+// changes.
+QJsonObject perspectiveMoved(const QJsonObject &perspective, double dx, double dy);
+
 struct SaveData
 {
     QString projectName;
@@ -267,6 +280,9 @@ struct LoadedProject
     // stageMarginRepaired says so; the artwork is never cropped for it.
     QSize stageMargin = QSize(0, 0);
     bool stageMarginRepaired = false;
+    // Panels whose "margin" (version 2, batch 6a) is not the one their
+    // pixels and the frame give: opened with the pixels' margin, counted.
+    int panelMarginsRepaired = 0;
     // Layers whose "parallax" (Phase 2B) could not be a depth - not a
     // number, or outside 0 .. 2: loaded on the picture plane, counted here.
     int parallaxRepaired = 0;

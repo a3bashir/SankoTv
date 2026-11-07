@@ -263,6 +263,15 @@ QString timecodeText(int filmFrame, int fps);
 // stranded or not, it is written (the sound is still there). A project
 // without pinned keys writes exactly the JSON it wrote before.
 QJsonObject toJson(const Scene &scene);
+// THE FILE IN FRAME SPACE (2026-11-06, batch 6a; file version 2). The keys'
+// x and y measured from the shot frame's top-left - `frameOrigin` (where
+// the frame starts on the stage, the margin's left and top) taken off - and
+// added back by keysToStage on reading. Every panel shares the project's
+// stage until batch 6c, so one origin serves every key, anchored or pinned.
+// Without a margin the numbers are the same in both spaces. toJson above
+// writes stage px, as version 1 did.
+QJsonObject toFrameSpaceJson(const Scene &scene, const QPointF &frameOrigin);
+void keysToStage(Scene &scene, const QPointF &frameOrigin);
 // Read after the scene's panels are in place. A key whose panel index,
 // numbers or zoom are out of range is dropped and counted; so is a pinned
 // key whose time is not a finite number at or after 0.

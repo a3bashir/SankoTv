@@ -8417,6 +8417,11 @@ Panel *StoryboardPage::makeProjectPanel() const
     // 5; it was 3 s). Duplicate and Paste keep their source's length.
     const int fps = cameraFps();
     panel->setLength(fps, fps);
+    // ...and has the project's stage (batch 6a): its margin, each side.
+    const shotcam::Stage stage = shotcam::stageWithMargin(m_projectCanvasSize, m_stageMargin);
+    if (stage.hasMargin())
+        panel->margin = QMargins(stage.margin().width(), stage.margin().height(),
+                                 stage.margin().width(), stage.margin().height());
     return panel;
 }
 
@@ -8931,6 +8936,7 @@ Panel *StoryboardPage::clonePanel(const Panel *source)
     copy->activeLayerIndex = source->activeLayerIndex;
     copy->frames = source->frames; // the source's length, at its own rate
     copy->rate = source->rate;
+    copy->margin = source->margin; // its stage, with its pixels (batch 6a)
     copy->shotType = source->shotType;
     copy->cameraAngle = source->cameraAngle;
     copy->lens = source->lens;

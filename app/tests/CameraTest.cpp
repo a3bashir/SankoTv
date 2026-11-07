@@ -3289,6 +3289,223 @@ int main(int argc, char **argv)
               QStringLiteral("turned in [%1] cw [%2]; mirrored cw [%3]").arg(pts(tIn.mid(0, 3)), pts(tCw), pts(mCw)));
     }
 
+    // ---- (fs) THE FILE IN FRAME SPACE (2026-11-06, batch 6a) --------------------
+    // Version 2: each panel says its stage margin, and the camera keys and the
+    // vanishing points are px from the shot frame's top-left; a version-1
+    // file (stage px) opens exactly as it did. ProjectIO both ways, no window.
+    ts << "--- (fs) the file in frame space ---\n";
+    {
+        const int fps = 24;
+        const shotcam::CameraState k0{1440, 810, 1.0, 0.0}, k1{1700.25, 900.5, 1.5, 0.0},
+            kp{1000.125, 700.75, 2.0, 0.0};
+        auto makeScene = [&](bool withMargin) {
+            Scene *s = new Scene;
+            s->number = 1;
+            for (int p = 0; p < 2; ++p)
+                s->panels.append(withMargin ? marginPanel(QSize(1920, 1080), QSize(480, 270))
+                                            : makeBlankPanel(QSize(1920, 1080)));
+            s->camera.keys = {shotcam::makeKey(*s, 0, 0, fps, k0), shotcam::makeKey(*s, 1, 0, fps, k1),
+                              shotcam::makePinnedKey(30.0, fps, kp)};
+            return s;
+        };
+        QJsonObject vp;
+        vp.insert(QStringLiteral("x"), 1500.5);
+        vp.insert(QStringLiteral("y"), 600.25);
+        vp.insert(QStringLiteral("color"), QStringLiteral("#ff4d9fff"));
+        vp.insert(QStringLiteral("opacity"), 0.45);
+        QJsonObject perspective;
+        perspective.insert(QStringLiteral("vps"), QJsonArray{vp});
+        perspective.insert(QStringLiteral("density"), 40);
+        Scene *withMargin = makeScene(true);
+        ProjectIO::SaveData data;
+        data.projectName = QStringLiteral("FrameSpace");
+        data.fps = fps;
+        data.canvasSize = QSize(2880, 1620);
+        data.stageMargin = QSize(480, 270);
+        data.scenes = {withMargin};
+        data.perspective = perspective;
+        const QString dir = scratch + QStringLiteral("/fs");
+        QDir().mkpath(dir);
+        const QString file = dir + QStringLiteral("/fs.sankotv");
+        const ProjectIO::WriteResult w = ProjectIO::projectToJson(data, file);
+        auto keysOf = [](const QJsonObject &root) {
+            QStringList t;
+            for (const QJsonValue &sv : root.value(QStringLiteral("scenes")).toArray())
+                for (const QJsonValue &kv : sv.toObject().value(QStringLiteral("camera")).toObject()
+                                                 .value(QStringLiteral("keys")).toArray())
+                    t << QStringLiteral("%1,%2") // every digit (arg's default keeps 6)
+                             .arg(QString::number(kv.toObject().value(QStringLiteral("x")).toDouble(), 'g', 17),
+                                  QString::number(kv.toObject().value(QStringLiteral("y")).toDouble(), 'g', 17));
+            return t.join(QLatin1Char(' '));
+        };
+        auto vpsOf = [](const QJsonObject &perspectiveObj) {
+            QStringList t;
+            for (const QJsonValue &v : perspectiveObj.value(QStringLiteral("vps")).toArray())
+                t << QStringLiteral("%1,%2")
+                         .arg(QString::number(v.toObject().value(QStringLiteral("x")).toDouble(), 'g', 17),
+                              QString::number(v.toObject().value(QStringLiteral("y")).toDouble(), 'g', 17));
+            return t.join(QLatin1Char(' '));
+        };
+        auto marginsOf = [](const QJsonObject &root) {
+            QStringList t;
+            for (const QJsonValue &sv : root.value(QStringLiteral("scenes")).toArray())
+                for (const QJsonValue &pv : sv.toObject().value(QStringLiteral("panels")).toArray()) {
+                    const QJsonArray m = pv.toObject().value(QStringLiteral("margin")).toArray();
+                    QStringList v;
+                    for (const QJsonValue &n : m)
+                        v << QString::number(n.toInt());
+                    t << (m.isEmpty() ? QStringLiteral("-") : v.join(QLatin1Char(',')));
+                }
+            return t.join(QLatin1Char(' '));
+        };
+        const QString wroteKeys = keysOf(w.root), wroteVps = vpsOf(w.root.value(QStringLiteral("perspective")).toObject()),
+                      wroteMargins = marginsOf(w.root);
+        check(QStringLiteral("(fs1) THE FILE IN FRAME SPACE, VERSION 2: a 480 x 270 margin project writes "
+                             "\"version\": 2, each panel's margin [480, 270, 480, 270], its keys from the "
+                             "frame's top-left (1440, 810 -> 960, 540; 1700.25, 900.5 -> 1220.25, 630.5; the "
+                             "pinned 1000.125, 700.75 -> 520.125, 430.75) and its vanishing point the same "
+                             "way (1500.5, 600.25 -> 1020.5, 330.25)"),
+              w.ok && w.root.value(QStringLiteral("version")).toInt() == 2
+                  && wroteMargins == QStringLiteral("480,270,480,270 480,270,480,270")
+                  && wroteKeys == QStringLiteral("960,540 1220.25,630.5 520.125,430.75")
+                  && wroteVps == QStringLiteral("1020.5,330.25"),
+              QStringLiteral("version %1; margins %2; keys %3; points %4")
+                  .arg(w.root.value(QStringLiteral("version")).toInt()).arg(wroteMargins, wroteKeys, wroteVps));
+        check(QStringLiteral("(fs1) control: the keys in memory are still stage px after the save"),
+              withMargin->camera.keys.size() == 3 && withMargin->camera.keys.at(0).state == k0
+                  && withMargin->camera.keys.at(1).state == k1 && withMargin->camera.keys.at(2).state == kp);
+
+        ProjectIO::LoadedProject back = ProjectIO::projectFromJson(w.root, dir, file);
+        auto sameKeys = [&](const ProjectIO::LoadedProject &lp) {
+            if (lp.scenes.size() != 1 || lp.scenes.at(0)->camera.keys.size() != 3)
+                return false;
+            const QVector<shotcam::CameraKey> &k = lp.scenes.at(0)->camera.keys;
+            return k.at(0).state == k0 && k.at(1).state == k1 && k.at(2).state == kp && k.at(2).pinned;
+        };
+        auto allMargins = [](const ProjectIO::LoadedProject &lp, const QMargins &m) {
+            int n = 0;
+            for (const Scene *s : lp.scenes)
+                for (const Panel *p : s->panels) {
+                    if (p->margin != m)
+                        return -1;
+                    ++n;
+                }
+            return n;
+        };
+        check(QStringLiteral("(fs2) READ BACK: every panel's margin is (480, 270, 480, 270) and its stage "
+                             "2880 x 1620 around the 1920 x 1080 frame; the keys and the vanishing point are "
+                             "exactly the stage px they were, bit for bit; nothing is repaired"),
+              sameKeys(back) && allMargins(back, QMargins(480, 270, 480, 270)) == 2
+                  && back.scenes.at(0)->panels.at(0)->stage().frame == QSize(1920, 1080)
+                  && back.scenes.at(0)->panels.at(0)->stage().canvas == QSize(2880, 1620)
+                  && vpsOf(back.perspective) == QStringLiteral("1500.5,600.25") && !back.stageMarginRepaired,
+              QStringLiteral("keys %1, margins on %2 panels, points %3, repaired %4").arg(sameKeys(back))
+                  .arg(allMargins(back, QMargins(480, 270, 480, 270))).arg(vpsOf(back.perspective))
+                  .arg(back.stageMarginRepaired));
+        // Control: without a margin the numbers are the keys' own, and no
+        // panel says a margin.
+        Scene *plain = makeScene(false);
+        ProjectIO::SaveData plainData = data;
+        plainData.canvasSize = QSize(1920, 1080);
+        plainData.stageMargin = QSize(0, 0);
+        plainData.scenes = {plain};
+        const ProjectIO::WriteResult w0 = ProjectIO::projectToJson(plainData, dir + QStringLiteral("/plain.sankotv"));
+        check(QStringLiteral("(fs2) control: without a margin the file has the keys' and the point's own "
+                             "numbers (frame space is stage space) and no panel says a margin"),
+              w0.ok && w0.root.value(QStringLiteral("version")).toInt() == 2
+                  && keysOf(w0.root) == QStringLiteral("1440,810 1700.25,900.5 1000.125,700.75")
+                  && vpsOf(w0.root.value(QStringLiteral("perspective")).toObject()) == QStringLiteral("1500.5,600.25")
+                  && marginsOf(w0.root) == QStringLiteral("- -"),
+              QStringLiteral("keys %1; points %2; margins %3").arg(keysOf(w0.root),
+                  vpsOf(w0.root.value(QStringLiteral("perspective")).toObject()), marginsOf(w0.root)));
+
+        // (fs3) A VERSION-1 FILE: the same project as an older build wrote it -
+        // stage px, no per-panel margin.
+        QJsonObject v1 = w.root;
+        v1.insert(QStringLiteral("version"), 1);
+        {
+            QJsonArray scenes = v1.value(QStringLiteral("scenes")).toArray();
+            QJsonObject s0 = scenes.at(0).toObject();
+            QJsonArray panels = s0.value(QStringLiteral("panels")).toArray();
+            for (int i = 0; i < panels.size(); ++i) {
+                QJsonObject po = panels.at(i).toObject();
+                po.remove(QStringLiteral("margin"));
+                panels.replace(i, po);
+            }
+            s0.insert(QStringLiteral("panels"), panels);
+            QJsonObject cam = s0.value(QStringLiteral("camera")).toObject();
+            QJsonArray keys = cam.value(QStringLiteral("keys")).toArray();
+            for (int i = 0; i < keys.size(); ++i) {
+                QJsonObject k = keys.at(i).toObject();
+                k.insert(QStringLiteral("x"), k.value(QStringLiteral("x")).toDouble() + 480.0);
+                k.insert(QStringLiteral("y"), k.value(QStringLiteral("y")).toDouble() + 270.0);
+                keys.replace(i, k);
+            }
+            cam.insert(QStringLiteral("keys"), keys);
+            s0.insert(QStringLiteral("camera"), cam);
+            scenes.replace(0, s0);
+            v1.insert(QStringLiteral("scenes"), scenes);
+            v1.insert(QStringLiteral("perspective"), perspective);
+        }
+        ProjectIO::LoadedProject old = ProjectIO::projectFromJson(v1, dir, file);
+        check(QStringLiteral("(fs3) AN OLDER FILE (version 1, stage px, the project's one margin) opens with "
+                             "the same keys, point and panel margins as the version-2 one"),
+              sameKeys(old) && allMargins(old, QMargins(480, 270, 480, 270)) == 2
+                  && vpsOf(old.perspective) == QStringLiteral("1500.5,600.25") && !old.stageMarginRepaired,
+              QStringLiteral("keys %1, margins on %2 panels, points %3").arg(sameKeys(old))
+                  .arg(allMargins(old, QMargins(480, 270, 480, 270))).arg(vpsOf(old.perspective)));
+        check(QStringLiteral("(fs3) control: the fixture really was the older form - its first key at "
+                             "1440, 810 and no panel margin"),
+              keysOf(v1).startsWith(QStringLiteral("1440,810 ")) && marginsOf(v1) == QStringLiteral("- -"),
+              QStringLiteral("keys %1; margins %2").arg(keysOf(v1), marginsOf(v1)));
+
+        // (fs4) PIXELS WIN: a panel margin the file says that the pixels are not.
+        QJsonObject odd = w.root;
+        {
+            QJsonArray scenes = odd.value(QStringLiteral("scenes")).toArray();
+            QJsonObject s0 = scenes.at(0).toObject();
+            QJsonArray panels = s0.value(QStringLiteral("panels")).toArray();
+            QJsonObject po = panels.at(1).toObject();
+            po.insert(QStringLiteral("margin"), QJsonArray{240, 135, 240, 135});
+            panels.replace(1, po);
+            s0.insert(QStringLiteral("panels"), panels);
+            scenes.replace(0, s0);
+            odd.insert(QStringLiteral("scenes"), scenes);
+        }
+        ProjectIO::LoadedProject repaired = ProjectIO::projectFromJson(odd, dir, file);
+        check(QStringLiteral("(fs4) A PANEL MARGIN THE PIXELS ARE NOT (panel 2 says 240 x 135 on a 2880 x "
+                             "1620 stage of a 1920 x 1080 frame): every panel opens with the pixels' 480 x "
+                             "270, the project keeps its margin, and the load counts the one panel repaired"),
+              repaired.panelMarginsRepaired == 1 && !repaired.stageMarginRepaired
+                  && repaired.stageMargin == QSize(480, 270)
+                  && allMargins(repaired, QMargins(480, 270, 480, 270)) == 2 && sameKeys(repaired),
+              QStringLiteral("panels repaired %1, project repaired %2, margins on %3 panels")
+                  .arg(repaired.panelMarginsRepaired).arg(repaired.stageMarginRepaired)
+                  .arg(allMargins(repaired, QMargins(480, 270, 480, 270))));
+        check(QStringLiteral("(fs4) control: the file as written loads with nothing repaired (above, fs2)"),
+              !back.stageMarginRepaired && back.panelMarginsRepaired == 0);
+        // A version-2 file whose frame cannot be read: the stage opens without
+        // a margin (Phase 2A's repair), and the keys go back by the margin the
+        // file says they were saved from, onto their artwork.
+        QJsonObject unreadable = w.root;
+        unreadable.insert(QStringLiteral("frameWidth"), 1921); // not centred on whole pixels
+        ProjectIO::LoadedProject noFrame = ProjectIO::projectFromJson(unreadable, dir, file);
+        check(QStringLiteral("(fs4) A VERSION-2 FILE WHOSE FRAME CANNOT BE READ opens without a margin (the "
+                             "whole canvas the shot, as 2A repairs it), its keys and point still on their "
+                             "artwork - the stage px they were saved from"),
+              noFrame.stageMarginRepaired && noFrame.stageMargin == QSize(0, 0) && sameKeys(noFrame)
+                  && vpsOf(noFrame.perspective) == QStringLiteral("1500.5,600.25"),
+              QStringLiteral("repaired %1, margin %2x%3, keys %4, points %5").arg(noFrame.stageMarginRepaired)
+                  .arg(noFrame.stageMargin.width()).arg(noFrame.stageMargin.height()).arg(sameKeys(noFrame))
+                  .arg(vpsOf(noFrame.perspective)));
+        qDeleteAll(noFrame.scenes);
+        qDeleteAll(back.scenes);
+        qDeleteAll(old.scenes);
+        qDeleteAll(repaired.scenes);
+        delete withMargin;
+        delete plain;
+    }
+
     delete scene;
     QDir(scratch).removeRecursively();
     ts << "\nRESULT " << (g_failures ? "FAIL" : "PASS") << " (checks=" << g_checks

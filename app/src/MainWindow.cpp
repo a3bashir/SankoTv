@@ -2079,6 +2079,17 @@ ProjectResize::Outcome MainWindow::applyStageResizeInternal(const QSize &newSize
     m_canvasWidth = newSize.width();
     m_canvasHeight = newSize.height();
     m_stageMargin = newStage.hasMargin() ? newStage.margin() : QSize(0, 0);
+    // EVERY PANEL'S STAGE follows (batch 6a): the panels resized above are
+    // the frame plus the new margin. Only after a complete resize - a
+    // partial one leaves each panel the margin its pixels still have.
+    if (outcome.ok) {
+        const QMargins margin = projectMargin();
+        for (Scene *scene : std::as_const(m_scenes))
+            if (scene)
+                for (Panel *panel : scene->panels)
+                    if (panel)
+                        panel->margin = margin;
+    }
     pushStageMargin();
     if (m_storyboard)
         m_storyboard->applyProjectResize(newSize, offset);
@@ -2259,6 +2270,17 @@ void MainWindow::pushStageMargin()
         m_animatic->setStageMargin(m_stageMargin);
 }
 
+QMargins MainWindow::projectMargin() const
+{
+    // Phase 2A's one margin, as each side of a panel's stage (batch 6a).
+    const shotcam::Stage stage =
+        shotcam::stageWithMargin(QSize(m_canvasWidth, m_canvasHeight), m_stageMargin);
+    if (!stage.hasMargin())
+        return QMargins();
+    return QMargins(stage.margin().width(), stage.margin().height(), stage.margin().width(),
+                    stage.margin().height());
+}
+
 void MainWindow::applyProjectSettings(const QString &projectName, int fps)
 {
     m_projectName = projectName;
@@ -2403,6 +2425,7 @@ void MainWindow::buildScenesFromJson(const QJsonArray &scenes)
         // long at the project's rate (2026-11-06, batch 5; it was 3 s).
         Panel *panel = makeBlankPanel(QSize(m_canvasWidth, m_canvasHeight));
         panel->setLength(m_projectFps, m_projectFps);
+        panel->margin = projectMargin(); // the project's stage (batch 6a)
         scene->panels.append(panel);
         m_scenes.append(scene);
     }
@@ -3022,6 +3045,21 @@ bool MainWindow::loadFromPath(const QString &path, bool asRecoveryCopy)
     const QJsonObject root = doc.object();
     const QString folder = QFileInfo(path).absolutePath();
 
+    // A NEWER FILE (2026-11-06, batch 6a). This build writes version 2 and
+    // reads 1 and 2; a later version may mean its numbers in a way this one
+    // would misread (version 2 moved the camera keys into frame space), so
+    // it is refused, before anything open is left.
+    const int fileVersion = root.value(QStringLiteral("version")).toInt(1);
+    if (fileVersion > ProjectIO::kFileVersion) {
+        QMessageBox::warning(this, QStringLiteral("Open Project"),
+                             QStringLiteral("This project was saved by a newer version of SankoTV "
+                                            "(file version %1). This version opens files up to "
+                                            "version %2.\n\nNothing has been opened.")
+                                 .arg(fileVersion)
+                                 .arg(ProjectIO::kFileVersion));
+        return false;
+    }
+
     // LEAVING THE OPEN PROJECT (2026-11-05): its copy in flight is stopped,
     // and its session lock goes - opening another project is a clean close
     // of this one. (Batch 3 left the lock, so a project left by File > Open
@@ -3098,6 +3136,12 @@ bool MainWindow::loadFromPath(const QString &path, bool asRecoveryCopy)
             QStringLiteral("This project names a shot size that does not fit its "
                            "artwork, so it opens without a stage margin: the whole "
                            "canvas is the shot. No artwork was changed."));
+    else if (loaded.panelMarginsRepaired > 0) // batch 6a: a panel's own margin
+        QMessageBox::information(
+            this, QStringLiteral("Stage Margin"),
+            QStringLiteral("%1 panel(s) of this project name a stage margin their artwork "
+                           "does not have, so they open with the margin the artwork has. "
+                           "No artwork was changed.").arg(loaded.panelMarginsRepaired));
     m_storyboard->setProjectCanvasSize(QSize(m_canvasWidth, m_canvasHeight));
     pushStageMargin();
     m_animatic->setFps(m_projectFps);

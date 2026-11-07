@@ -4,6 +4,7 @@
 
 #include <QDateTime>
 #include <QMainWindow>
+#include <QMargins>
 #include <QSize>
 #include <QString>
 #include <QStringList>
@@ -410,6 +411,9 @@ private:
                                                     const QSize &newMargin);
     // The margin into every page that draws or measures the shot.
     void pushStageMargin();
+    // The project's margin as each side of a panel's stage (batch 6a): what
+    // a new panel gets, and every panel after a margin change.
+    QMargins projectMargin() const;
     void applyProjectSettings(const QString &projectName, int fps);
     bool saveToPath(const QString &path);
     // A save, export or recording that failed: when Windows blocked it in a

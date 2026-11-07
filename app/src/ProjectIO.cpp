@@ -450,6 +450,24 @@ bool runImagePlan(ImagePlan &plan, const std::atomic<bool> &cancel)
     return true;
 }
 
+QJsonObject perspectiveMoved(const QJsonObject &perspective, double dx, double dy)
+{
+    if ((dx == 0.0 && dy == 0.0) || !perspective.contains(QStringLiteral("vps")))
+        return perspective; // no margin, or no points: the object as it was
+    QJsonObject out = perspective;
+    QJsonArray vps;
+    for (const QJsonValue &v : perspective.value(QStringLiteral("vps")).toArray()) {
+        QJsonObject point = v.toObject();
+        if (point.contains(QStringLiteral("x")))
+            point[QStringLiteral("x")] = point.value(QStringLiteral("x")).toDouble() + dx;
+        if (point.contains(QStringLiteral("y")))
+            point[QStringLiteral("y")] = point.value(QStringLiteral("y")).toDouble() + dy;
+        vps.append(point);
+    }
+    out[QStringLiteral("vps")] = vps;
+    return out;
+}
+
 WriteResult projectToJson(const SaveData &data, const QString &projectFilePath,
                           const std::function<bool(qint64, qint64)> &audioProgress)
 {
@@ -537,6 +555,15 @@ WriteResult projectToJson(const SaveData &data, const QString &projectFilePath,
     ImageSaver saver(folder, assetsPath, data.ledger, &res, keep, data.plan);
     int named = 0;
 
+    // The project's margin on each side (Phase 2A): where the frame starts
+    // on every panel's stage - the origin of the camera keys and the
+    // vanishing points in the file (version 2, batch 6a).
+    const shotcam::Stage projectStage = shotcam::stageWithMargin(data.canvasSize, data.stageMargin);
+    const QMargins projectMargin = projectStage.hasMargin()
+        ? QMargins(projectStage.margin().width(), projectStage.margin().height(),
+                   projectStage.margin().width(), projectStage.margin().height())
+        : QMargins();
+
     QJsonArray scenesArray;
     for (int i = 0; i < data.scenes.size() && !saver.failed(); ++i) {
         Scene *scene = data.scenes.at(i);
@@ -599,6 +626,16 @@ WriteResult projectToJson(const SaveData &data, const QString &projectFilePath,
             // 5). "duration" (whole seconds) is read from older files and no
             // longer written.
             panelObj[QStringLiteral("frames")] = shotcam::panelFrames(*panel, data.fps);
+            // THE PANEL'S STAGE MARGIN (2026-11-06, batch 6a; version 2):
+            // only with one, so a panel without says what it always said.
+            // Every panel holds the project's until Stage mode (6c) can
+            // change one panel's, so the project's is what is written (a
+            // panel made without the app's own paths - a test fixture - is
+            // at the project's stage by its pixels all the same).
+            if (!projectMargin.isNull())
+                panelObj[QStringLiteral("margin")] =
+                    QJsonArray{projectMargin.left(), projectMargin.top(), projectMargin.right(),
+                               projectMargin.bottom()};
             panelObj[QStringLiteral("shotType")] = panel->shotType;
             panelObj[QStringLiteral("camera")] = panel->cameraAngle;
             panelObj[QStringLiteral("lens")] = panel->lens;
@@ -630,8 +667,9 @@ WriteResult projectToJson(const SaveData &data, const QString &projectFilePath,
         sceneObj[QStringLiteral("panels")] = panelsArray;
         // THE SHOT CAMERA (Phase 1A): written only when the scene has live
         // keys, so a project without camera moves saves the JSON it saved
-        // before the camera existed.
-        const QJsonObject camera = shotcam::toJson(*scene);
+        // before the camera existed. In frame space (version 2, batch 6a).
+        const QJsonObject camera = shotcam::toFrameSpaceJson(
+            *scene, QPointF(projectMargin.left(), projectMargin.top()));
         if (!camera.isEmpty())
             sceneObj[QStringLiteral("camera")] = camera;
         scenesArray.append(sceneObj);
@@ -671,7 +709,7 @@ WriteResult projectToJson(const SaveData &data, const QString &projectFilePath,
         return res; // no manifest is built from a half-written image set
 
     QJsonObject root;
-    root[QStringLiteral("version")] = 1;
+    root[QStringLiteral("version")] = kFileVersion;
     root[QStringLiteral("projectName")] = data.projectName;
     // fps drives the animatic; canvasWidth/Height are the project's real
     // canvas resolution, reconciled to the pixels on load — what is written
@@ -689,7 +727,9 @@ WriteResult projectToJson(const SaveData &data, const QString &projectFilePath,
     root[QStringLiteral("scenes")] = scenesArray;
     root[QStringLiteral("consistencyBoard")] = consistencyArray;
     root[QStringLiteral("audioPath")] = storedAudio;
-    root[QStringLiteral("perspective")] = data.perspective;
+    // The vanishing points in frame space (version 2, batch 6a).
+    root[QStringLiteral("perspective")] =
+        perspectiveMoved(data.perspective, -projectMargin.left(), -projectMargin.top());
     // The tracks' lock / visibility / mute flags (TimelineTracks.h). Always
     // written; a reader without the key gets the defaults.
     root[QStringLiteral("tracks")] = data.tracks.toJson();
@@ -817,6 +857,11 @@ LoadedProject projectFromJson(const QJsonObject &root, const QString &folder,
     const QDateTime manifestTime =
         manifestFile.isEmpty() ? QDateTime() : QFileInfo(manifestFile).lastModified();
     out.projectName = root.value(QStringLiteral("projectName")).toString();
+    // Version 2 (batch 6a): keys and vanishing points in frame space, a
+    // margin per panel. 1, or none: stage px. (A later one is refused before
+    // this is reached - MainWindow.)
+    const int fileVersion = root.value(QStringLiteral("version")).toInt(1);
+    QVector<QVector<QMargins>> fileMargins; // each panel's "margin", as the file says
     out.fps = root.value(QStringLiteral("fps")).toInt(24);
     out.manifestSize = QSize(root.value(QStringLiteral("canvasWidth")).toInt(0),
                              root.value(QStringLiteral("canvasHeight")).toInt(0));
@@ -857,9 +902,16 @@ LoadedProject projectFromJson(const QJsonObject &root, const QString &folder,
         scene->action = sceneObj.value(QStringLiteral("action")).toString();
 
         const QJsonArray panelsArray = sceneObj.value(QStringLiteral("panels")).toArray();
+        fileMargins.append(QVector<QMargins>());
         for (const QJsonValue &pv : panelsArray) {
             const QJsonObject panelObj = pv.toObject();
             Panel *panel = new Panel;
+            {
+                const QJsonArray m = panelObj.value(QStringLiteral("margin")).toArray();
+                fileMargins.last().append(m.size() == 4 ? QMargins(m.at(0).toInt(), m.at(1).toInt(),
+                                                                   m.at(2).toInt(), m.at(3).toInt())
+                                                        : QMargins());
+            }
             // The stable id (2026-11-04): the file's, when it is one (a UUID
             // without braces, as written); otherwise the fresh one the Panel
             // was made with, counted, saved on the next save.
@@ -1240,6 +1292,36 @@ LoadedProject projectFromJson(const QJsonObject &root, const QString &folder,
             out.stageMargin = QSize(dw / 2, dh / 2);
         else
             out.stageMarginRepaired = true;
+    }
+    // EACH PANEL'S STAGE (2026-11-06, batch 6a). Until Stage mode (6c) can
+    // change one panel's, every panel holds the project's margin - the one
+    // its pixels and the frame give, as above: the pixels win. A version-2
+    // file says each panel's margin as well; one that says otherwise is
+    // counted (panelMarginsRepaired) and never obeyed.
+    const QMargins projectMargin(out.stageMargin.width(), out.stageMargin.height(),
+                                 out.stageMargin.width(), out.stageMargin.height());
+    for (int s = 0; s < out.scenes.size(); ++s) {
+        Scene *scene = out.scenes.at(s);
+        for (int p = 0; p < scene->panels.size(); ++p) {
+            scene->panels.at(p)->margin = projectMargin;
+            if (fileVersion >= 2 && s < fileMargins.size() && p < fileMargins.at(s).size()
+                && fileMargins.at(s).at(p) != projectMargin)
+                ++out.panelMarginsRepaired;
+        }
+    }
+    // KEYS AND VANISHING POINTS: frame space in a version-2 file, back to
+    // the stage's px by the margin every panel holds (the project's, until
+    // 6c). A version-1 file has them in stage px already. When the frame
+    // could not be read and the stage opens without a margin, they are put
+    // back by the margin the file says they were saved from (its panels'),
+    // so they stay on their artwork as a version-1 file's do.
+    if (fileVersion >= 2) {
+        QMargins savedFrom = projectMargin;
+        if (out.stageMarginRepaired && !fileMargins.isEmpty() && !fileMargins.first().isEmpty())
+            savedFrom = fileMargins.first().first();
+        for (Scene *scene : out.scenes)
+            shotcam::keysToStage(*scene, QPointF(savedFrom.left(), savedFrom.top()));
+        out.perspective = perspectiveMoved(out.perspective, savedFrom.left(), savedFrom.top());
     }
     return out;
 }

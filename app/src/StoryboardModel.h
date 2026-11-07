@@ -5,6 +5,7 @@
 #include <QColor>
 #include <QHash>
 #include <QImage>
+#include <QMargins>
 #include <QPainter>
 #include <QPixmap>
 #include <QString>
@@ -119,6 +120,25 @@ struct Panel
         rate = fps < 1 ? 1 : fps;
     }
     // Undo/redo lives in the app-wide QUndoStack (MainWindow), not per panel.
+
+    // THE PANEL'S STAGE MARGIN (2026-11-06, batch 6a of the proposals of
+    // 2026-11-06): the px of stage around the shot's frame on each side -
+    // this panel's own, where it was the project's alone (Phase 2A). The
+    // layers are the frame plus this margin; pixels stay the truth for the
+    // size (canvasSize()). Until Stage mode (batch 6c) can change one
+    // panel's, every panel holds the project's margin: the loader gives it
+    // from the pixels, a new panel the project's, a margin change every
+    // panel the new one, and Duplicate and Paste the source's with its
+    // pixels. Saved per panel as "margin": [left, top, right, bottom]
+    // (omitted when 0, file version 2). stage() is the panel's stage. The
+    // pages and the exports still draw from the project's margin, which
+    // every panel holds; they move to the panel's own with batch 6b, when
+    // a panel's margin can first differ.
+    QMargins margin;
+    shotcam::Stage stage() const
+    {
+        return shotcam::stageWithMargin(canvasSize(), QSize(margin.left(), margin.top()));
+    }
 
     // The shot camera's name for this panel (camera/CameraModel.h): a key
     // is anchored to it. Minted per object, never copied, never saved.

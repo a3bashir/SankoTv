@@ -1,5 +1,14 @@
 # SankoTV — Session Handoff Brief
 
+## STATUS 2026-11-07: BATCH 6A COMMITTED
+The hand test of 6a (Dev Recorder 20261107-131345; the user did steps
+1, 3, 4 and 7) was read: no failure; the steps and what the recording
+does not show are in the 6a section. GATE 6a2 ran on 6a as it sits over
+the depth-pass fix (910efae6a): green, every pin line the same as GATE
+6a's. Committed by this commit (sha_6a.txt), pushed. NEXT, before 6b-V:
+the user's two playback problems of 2026-11-07, as their own batch. The
+note below (2026-11-06) is history.
+
 ## STATUS 2026-11-06 (evening): BATCHES 4 AND 5 COMMITTED
 The hand test of batches 4 and 5 (Dev Recorder 20261106-174027) was
 read: no failure; the steps not shown are named, with their gate
@@ -17,8 +26,143 @@ hidden art kept with "Trim Hidden Art", Q14 each panel's stage, Q15
 measure first - done: Documents\SankoTV-Design\
 stage-space-measurement-2026-11-06.md (6b-V waits for the user's
 approval of it). Batch 6a (frame space and the per-panel model) is
-being built - see its section when it lands. The note below
-(2026-11-05) is history.
+built and gated in the main tree, NOT COMMITTED - see its section
+below. The note below (2026-11-05) is history.
+
+## Batch 6a: frame space and the per-panel model (2026-11-06) - COMMITTED 2026-11-07
+Item 4 of the proposals of 2026-11-06, step 6a, approved with Q6
+(frame-space keys and vanishing points, a version-2 file) and, for the
+stage space, Q12 V (virtual: tiled layers at rest, the margin a
+rectangle - batch 6b-V), Q13 (hidden art kept, "Trim Hidden Art"), Q14
+(Full Artwork: each panel's stage), Q15 (measure first - done:
+Documents\SankoTV-Design\stage-space-measurement-2026-11-06.md, probe and
+raw output in app\build\_probe\stage_measure\). Nothing visible changes;
+every pin must hold. Commit message ready: msg_6a.txt; hand-test list:
+Documents\SankoTV-Design\handtest_6a_frame_space.md.
+BUILT: StoryboardModel.h - Panel::margin (QMargins, px each side) and
+Panel::stage() (stageWithMargin(canvasSize(), the margin's left / top)).
+Every panel holds the project's margin: ProjectIO's loader gives each
+the margin its pixels and the frame give (the pixels win);
+StoryboardPage::makeProjectPanel and MainWindow::buildScenesFromJson
+the project's; clonePanel (Duplicate, Paste) the source's;
+MainWindow::applyStageResizeInternal every panel the new one after a
+complete resize (MainWindow::projectMargin()).
+THE FILE, VERSION 2 (ProjectIO::kFileVersion): each panel "margin":
+[l, t, r, b] when the project has one - written from the project's
+margin, which every panel holds, so a panel made outside the app's own
+paths (a test fixture at the stage size without Panel::margin) is
+written by its pixels' stage all the same; the camera keys' x / y in
+frame space (shotcam::toFrameSpaceJson / keysToStage, one origin - the
+margin's left / top - for anchored and pinned keys alike until 6c);
+the vanishing points likewise (ProjectIO::perspectiveMoved). Version 1
+(or none) opens as it did - stage px. A version-2 panel margin its
+pixels are not is counted (LoadedProject::panelMarginsRepaired, a
+message on open) and the pixels win. A version-2 file whose frame
+cannot be read opens without a margin as 2A repairs it, its keys put
+back by the margin the file says they were saved from, so they stay on
+their artwork. MainWindow::loadFromPath refuses a file above
+kFileVersion ("saved by a newer version of SankoTV (file version N) ...
+Nothing has been opened.") before anything open is left. A project
+without a margin has the same numbers in both versions; its file
+differs from version 1 only in "version": 2.
+NOT IN 6a (6b's): the pages and the exports still draw from the
+project's margin (DrawingCanvas::stage, StoryboardPage / AnimaticPage::
+stageFor, the timeline's clips, sankoexport::collectPanels). I first
+moved them to Panel::stage() and took it back before building: the
+Camera family's margin pins build their panels at the stage size with
+no Panel::margin and pass the margin to the pages and the export, so
+that move changes those fixtures - changed checks, not "nothing
+changes". 6b moves them with those fixtures, when a panel's margin can
+first differ.
+COMPATIBILITY: builds before 6a ignore "version"; a 6a-saved MARGIN
+project opened by one has its keys and vanishing points off by the
+margin. Hand-test on copies only.
+CHECKS, each with its control. Camera (fs, ProjectIO both ways, no
+window): (fs1) a 480 x 270 margin project writes version 2, each
+panel's margin, the keys (a pinned one too) and the point from the
+frame's top-left / control the keys in memory still stage px; (fs2)
+read back bit for bit, each panel's stage 2880 x 1620 around 1920 x
+1080, nothing repaired / control without a margin the file has the
+keys' own numbers and no panel margin; (fs3) a version-1 file (stage
+px, no panel margin) opens the same / control the fixture really was
+the older form; (fs4) a panel margin the pixels are not - the pixels'
+margin on every panel, the project's kept, one panel counted / control
+the file as written repairs nothing; (fs4) a version-2 file whose frame
+cannot be read - no margin, the keys and point still on their artwork.
+Lifecycle (fs, a new pass through the real window, before (mg)): (fs6)
+a 240 x 135 margin on a three-panel 960 x 540 project gives every panel
+(240, 135, 240, 135) and the stage 1440 x 810 / control none before;
+(fs7) Add Panel After, Duplicate and Paste add panels holding it /
+control 3 -> 6 panels; (fs8) a change to 120 x 68 moves every panel's /
+control taken away none, set again 240 x 135; (fs9) saved: version 2,
+the six panels' margins, keys and point in frame space / control the
+keys in the window still stage px; (fs10) reopened with the same keys,
+point and stages / control the file said the frame-space numbers;
+(fs11) a version-3 file is refused with the message and the open
+project stays / control the same file at version 2 opens; (fs12) the
+script breakdown's panels hold the project's margin / control they are
+the stage's size. No existing check changed.
+QUICK RUN (the main tree): Camera 272 PASS (263 + 9); one run before
+it failed (fs2)'s control on the test's own formatting - QString::arg
+(double) keeps 6 significant digits, so the pinned key's 1000.125 read
+"1000.13"; the file had 1000.125 (fs1 shows it in frame space); the
+check prints every digit now. Lifecycle 1191 PASS, 0 failures (1176 +
+15), 564 s, no foreground lost.
+GATE 6a (fullgate_6a.log, 2026-11-06, normal mode, 2059 s): clean
+Release and Debug builds (0 errors), 0 failing families in both;
+Lifecycle 1191 (Release 565 s, Debug 774 s; one foreground lost to the
+Claude app 467 s into the Debug run, no check failed), Camera 272,
+CanvasSizeLock 170, CanvasEdgeLock 74, BrushLibrary 187, DevRecorder
+46, QuickShapeGeometry 19, PaintPixel 13, CanvasBrush 3; every pin line
+count equal to gate frames2's in both configs (Camera c1p 17, mp 43, mq
+44, rp 3; Lifecycle "pin" 42, (rp 6, (mp 4)); the row pins bd989a38 /
+a4994d62 / a3e7f938 in both; the evaluate pins e43a30f9fcc11db6 /
+7bd38237a37a7579 in camera_test.txt (RESULT PASS checks=272). Exe
+0e97c0bbd+dirty, Release SankoTV.exe 2026-11-06 20:38:51 (Debug
+20:40:51): the build for the 6a hand test. Hash list sha_6a.txt.
+Since this gate the depth-pass fix (910efae6a, tests only) went in under
+6a: 6a's Lifecycle now counts 1192 (1191 + that fix's control), and the
+6a exe is the same (the fix touches no app code).
+HAND TEST (Dev Recorder 20261107-131345, the only session of the day,
+228 s, the 6a exe; the user did steps 1, 3, 4 and 7). Step 1 passes for
+what is recorded: Test_SB_StageMargin_02 was already a version-2 file
+and was opened before the recording began, so opening an older-build
+file is not shown; the older file's keys (_01, version 1: 1440,810 and
+1836.06,902.90) are exactly the margin (480,270) from _02's (960,540 and
+1356.06,632.90); strip, frame, CAMERA row and the move played right;
+these projects have no vanishing points (fs1-fs3, fs9, fs10) and the
+dashed base line off the base is not seen (cg1). Step 3 passes: closed
+and reopened from recents (86-88 s), frame 177 the same before and
+after, the same CAMERA row, plays; the saved _03 is version 2 with the
+keys in frame space. Step 4 passes: Test_SB_006_A (10 panels, 3840 x
+2160, no margin) saved as version 2 with no "margin" and frames 180 each,
+no keys or points to compare (fs2's control has them), reopened with the
+same artwork. Step 7 passes: X at 228.27, sessionEnd 228.30, summary
+written, 0 dropped, 0 warnings, no crash event. Steps 2, 5, 6 not by
+hand: fs1 and fs9; fs7 and fs12; fs8. SEEN IN PASSING, NOT 6a's (its
+diff touches no dock): the Layers dock sits lower after each Close
+Project and reopen (its title at y 258, then 270, then 279 in the 960 px
+screenshots). Reported to the user, not changed.
+GATE 6a2 (fullgate_6a2.log, 2026-11-07, normal mode, 2066 s), in a
+scratch worktree (C:\SankoTV_gate6a, the tree of this tree's 11 files,
+every source equal) because the user's SankoTV was open on the main
+tree's exe; the script copy has no kill line, so that process was left
+alone: clean Release and Debug builds (0 errors), 0 failing families in
+both; Lifecycle 1192 (Release 567 s, Debug 768 s), Camera 272,
+CanvasSizeLock 170, CanvasEdgeLock 74, BrushLibrary 187, DevRecorder 46,
+QuickShapeGeometry 19, PaintPixel 13, CanvasBrush 3; the (c1p, (mp, (mq
+and (rp lines of Camera and the (rp and (mp lines of Lifecycle the same
+text as GATE 6a's in both configs; the Camera family's every line the
+same; the row pins and the evaluate pins as above. Only this note
+differs from the gated tree. sha_6a.txt redone over the files as
+committed.
+HOW IT GOT HERE: built in a scratch worktree (C:\SankoTV_6a, tree T5 =
+batches 4 + 5) while the gates of 4 and 5 ran, then brought into this
+tree after their commits: the eight CRLF files by git checkout of a
+tree made from the worktree's files (each then compared byte for byte
+with the worktree's), the two LF files (StoryboardModel.h,
+MainWindow.h) by the Edit tool (each then equal to the worktree's with
+CRs ignored, 0 CRs here). 10 files, +672 / -7 before the check fix.
 
 ## STATUS 2026-11-05 (late evening): ALL THREE APPROVED BATCHES AND THE
 FOLLOW-UP (3b) COMMITTED. Batch 3 (auto-save and crash recovery,

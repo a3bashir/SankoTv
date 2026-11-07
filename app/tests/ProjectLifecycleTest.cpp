@@ -16660,6 +16660,252 @@ void runWaveformPass(const QString &scratch)
     r.window.markCleanForTest();
 }
 
+// ---- (fs) FRAME SPACE AND THE PER-PANEL MODEL (2026-11-06, batch 6a) --------
+// Through the real window: every panel holds the project's stage margin -
+// once set, after a change, and on every new panel (Add Panel After,
+// Duplicate, Paste, the script breakdown); the saved file is version 2 in
+// frame space and reopens with the same numbers; a newer file is refused
+// with nothing changed. The Camera family checks the file both ways
+// headless (fs1-fs4).
+void runFrameSpacePass(const QString &scratch)
+{
+    using namespace workspace;
+    out() << "--- (fs) frame space and the per-panel model, through the real window ---" << Qt::endl;
+    const QString folder = scratch + QStringLiteral("/framespace");
+    QDir(folder).removeRecursively();
+    QDir().mkpath(folder);
+    const QString project = writeProject(folder, QStringLiteral("FrameSpace"), QSize(960, 540), 24, 1, 3);
+    auto rig = std::make_unique<Rig>(project);
+    Rig &r = *rig;
+    check(QStringLiteral("(fs) the workspace opened"), r.ok);
+    if (!r.ok)
+        return;
+    auto margins = [&] {
+        QStringList t;
+        for (const Scene *s : r.window.scenesForTest())
+            for (const Panel *p : s->panels)
+                t << QStringLiteral("%1,%2,%3,%4").arg(p->margin.left()).arg(p->margin.top())
+                         .arg(p->margin.right()).arg(p->margin.bottom());
+        return t.join(QLatin1Char(' '));
+    };
+    // Every panel holds `m`, and its stage is the 960 x 540 frame plus m: the
+    // panels counted, or -1 at the first that does not.
+    auto allHold = [&](const QMargins &m) {
+        int n = 0;
+        for (const Scene *s : r.window.scenesForTest())
+            for (const Panel *p : s->panels) {
+                const shotcam::Stage st = p->stage();
+                if (p->margin != m || st.frame != QSize(960, 540)
+                    || st.canvas != QSize(960 + m.left() + m.right(), 540 + m.top() + m.bottom()))
+                    return -1;
+                ++n;
+            }
+        return n;
+    };
+    auto panelCount = [&] {
+        int n = 0;
+        for (const Scene *s : r.window.scenesForTest())
+            n += s->panels.size();
+        return n;
+    };
+
+    // ---- (fs6) the project's margin, on every panel ------------------------------
+    const QString before = margins();
+    r.window.setStageMarginForTest(QSize(240, 135)); // a 1440 x 810 stage
+    pump(300);
+    const QMargins m240(240, 135, 240, 135);
+    check(QStringLiteral("(fs6) EVERY PANEL HOLDS THE PROJECT'S STAGE: a 240 x 135 margin set on a "
+                         "three-panel 960 x 540 project gives each panel the margin (240, 135, 240, 135) and "
+                         "the stage 1440 x 810 around its frame"),
+          allHold(m240) == 3, margins());
+    check(QStringLiteral("(fs6) control: before the margin each panel held none"),
+          before == QStringLiteral("0,0,0,0 0,0,0,0 0,0,0,0"), before);
+
+    // ---- (fs7) new panels ------------------------------------------------------
+    QString trigger;
+    r.storyboard->setClipMenuHookForTest([&](QMenu *menu) {
+        for (QAction *a : menu->actions())
+            if (a->text() == trigger)
+                a->trigger();
+    });
+    trigger = QStringLiteral("Add Panel After");
+    rightClickClip(r, 0);
+    pump(200);
+    trigger = QStringLiteral("Duplicate Panel");
+    rightClickClip(r, 0);
+    pump(200);
+    r.storyboard->setClipMenuHookForTest(nullptr);
+    r.storyboard->editCopy();
+    r.storyboard->editPaste();
+    pump(200);
+    check(QStringLiteral("(fs7) NEW PANELS GET THE PROJECT'S STAGE: Add Panel After, Duplicate Panel and "
+                         "Paste each add a panel holding (240, 135, 240, 135)"),
+          allHold(m240) == 6, margins());
+    check(QStringLiteral("(fs7) control: the three panels were really added (3 -> 6)"), panelCount() == 6,
+          QString::number(panelCount()));
+
+    // ---- (fs8) a margin change ---------------------------------------------------
+    r.window.setStageMarginForTest(QSize(120, 68));
+    pump(300);
+    const int moved = allHold(QMargins(120, 68, 120, 68));
+    const QString movedText = margins();
+    r.window.setStageMarginForTest(QSize(0, 0));
+    pump(300);
+    const int none = allHold(QMargins());
+    r.window.setStageMarginForTest(QSize(240, 135));
+    pump(300);
+    check(QStringLiteral("(fs8) A MARGIN CHANGE MOVES EVERY PANEL'S: 120 x 68 on all six panels (the stage "
+                         "1200 x 676)"),
+          moved == 6, movedText);
+    check(QStringLiteral("(fs8) control: the margin taken away, every panel holds none; set again, 240 x 135"),
+          none == 6 && allHold(m240) == 6, QStringLiteral("none %1; again %2").arg(none).arg(margins()));
+
+    // ---- (fs9) the file, in frame space ---------------------------------------------
+    Scene *scene = r.window.scenesForTest().value(0);
+    if (!scene || scene->panels.size() < 3) {
+        check(QStringLiteral("(fs9) the scene is there"), false);
+        return;
+    }
+    using shotcam::CameraState;
+    const CameraState k0{720, 405, 1.0, 0.0}, k1{800.5, 450.25, 1.25, 0.0};
+    shotcam::SceneCamera cam;
+    cam.keys = {shotcam::makeKey(*scene, 0, 0, 24, k0), shotcam::makeKey(*scene, 2, 0, 24, k1)};
+    r.storyboard->applyCameraForUndo(scene, cam);
+    QJsonObject vp;
+    vp.insert(QStringLiteral("x"), 1000.5);
+    vp.insert(QStringLiteral("y"), 300.25);
+    vp.insert(QStringLiteral("color"), QStringLiteral("#ff4d9fff"));
+    vp.insert(QStringLiteral("opacity"), 0.45);
+    QJsonObject persp;
+    persp.insert(QStringLiteral("vps"), QJsonArray{vp});
+    r.storyboard->perspectiveFromJson(persp);
+    pump(100);
+    auto readRoot = [](const QString &path) {
+        QFile f(path);
+        return f.open(QIODevice::ReadOnly) ? QJsonDocument::fromJson(f.readAll()).object() : QJsonObject();
+    };
+    auto keysIn = [](const QJsonObject &root) {
+        QStringList t;
+        for (const QJsonValue &sv : root.value(QStringLiteral("scenes")).toArray())
+            for (const QJsonValue &kv : sv.toObject().value(QStringLiteral("camera")).toObject()
+                                             .value(QStringLiteral("keys")).toArray())
+                t << QStringLiteral("%1,%2").arg(kv.toObject().value(QStringLiteral("x")).toDouble())
+                         .arg(kv.toObject().value(QStringLiteral("y")).toDouble());
+        return t.join(QLatin1Char(' '));
+    };
+    auto pointsIn = [](const QJsonObject &perspective) {
+        QStringList t;
+        for (const QJsonValue &v : perspective.value(QStringLiteral("vps")).toArray())
+            t << QStringLiteral("%1,%2").arg(v.toObject().value(QStringLiteral("x")).toDouble())
+                     .arg(v.toObject().value(QStringLiteral("y")).toDouble());
+        return t.join(QLatin1Char(' '));
+    };
+    auto marginsIn = [](const QJsonObject &root) {
+        QStringList t;
+        for (const QJsonValue &sv : root.value(QStringLiteral("scenes")).toArray())
+            for (const QJsonValue &pv : sv.toObject().value(QStringLiteral("panels")).toArray()) {
+                QStringList v;
+                for (const QJsonValue &n : pv.toObject().value(QStringLiteral("margin")).toArray())
+                    v << QString::number(n.toInt());
+                t << (v.isEmpty() ? QStringLiteral("-") : v.join(QLatin1Char(',')));
+            }
+        return t.join(QLatin1Char(' '));
+    };
+    const QString saved = folder + QStringLiteral("/FrameSpaceSaved.sankotv");
+    const bool savedOk = r.window.saveProjectForTest(saved);
+    const QJsonObject file = readRoot(saved);
+    const QString fileKeys = keysIn(file), filePoints = pointsIn(file.value(QStringLiteral("perspective")).toObject()),
+                  fileMargins = marginsIn(file);
+    check(QStringLiteral("(fs9) SAVED IN FRAME SPACE: version 2, each of the six panels [240, 135, 240, "
+                         "135], the keys 720, 405 -> 480, 270 and 800.5, 450.25 -> 560.5, 315.25, the "
+                         "vanishing point 1000.5, 300.25 -> 760.5, 165.25"),
+          savedOk && file.value(QStringLiteral("version")).toInt() == 2
+              && fileMargins == QStringLiteral("240,135,240,135 240,135,240,135 240,135,240,135 "
+                                               "240,135,240,135 240,135,240,135 240,135,240,135")
+              && fileKeys == QStringLiteral("480,270 560.5,315.25") && filePoints == QStringLiteral("760.5,165.25"),
+          QStringLiteral("saved %1, version %2; margins %3; keys %4; points %5").arg(savedOk)
+              .arg(file.value(QStringLiteral("version")).toInt()).arg(fileMargins, fileKeys, filePoints));
+    check(QStringLiteral("(fs9) control: in the window the keys are still stage px"),
+          scene->camera.keys.size() == 2 && scene->camera.keys.at(0).state == k0
+              && scene->camera.keys.at(1).state == k1);
+
+    // ---- (fs10) reopened ---------------------------------------------------------
+    const bool reopened = r.window.loadProjectForTest(saved);
+    pump(400);
+    Scene *again = r.window.scenesForTest().value(0);
+    const bool keysBack = again && again->camera.keys.size() == 2 && again->camera.keys.at(0).state == k0
+        && again->camera.keys.at(1).state == k1;
+    const QString pointsBack = pointsIn(r.storyboard->perspectiveToJson());
+    check(QStringLiteral("(fs10) REOPENED: the same keys (720, 405; 800.5, 450.25), the same vanishing "
+                         "point (1000.5, 300.25) and every panel's stage - the numbers come back exactly"),
+          reopened && keysBack && pointsBack == QStringLiteral("1000.5,300.25") && allHold(m240) == 6,
+          QStringLiteral("reopened %1, keys %2, points %3, margins %4").arg(reopened).arg(keysBack)
+              .arg(pointsBack, margins()));
+    check(QStringLiteral("(fs10) control: the file between said the frame-space numbers, not these"),
+          fileKeys.startsWith(QStringLiteral("480,270")) && filePoints == QStringLiteral("760.5,165.25"));
+
+    // ---- (fs11) a newer file -------------------------------------------------------
+    auto writeRoot = [](const QString &path, const QJsonObject &root) {
+        QFile f(path);
+        if (!f.open(QIODevice::WriteOnly))
+            return false;
+        f.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+        return true;
+    };
+    QJsonObject newerRoot = file;
+    newerRoot.insert(QStringLiteral("version"), 3);
+    const QString newer = folder + QStringLiteral("/FrameSpaceNewer.sankotv");
+    writeRoot(newer, newerRoot);
+    QString shown;
+    QTimer::singleShot(500, [&shown] {
+        if (auto *box = qobject_cast<QMessageBox *>(QApplication::activeModalWidget())) {
+            shown = box->text();
+            box->close();
+        }
+    });
+    const QString pathBefore = r.window.projectPathForTest();
+    const bool openedNewer = r.window.loadProjectForTest(newer);
+    pump(800);
+    check(QStringLiteral("(fs11) A NEWER FILE (version 3) IS REFUSED: Open says it was saved by a newer "
+                         "SankoTV and opens nothing; the open project stays"),
+          !openedNewer && shown.contains(QStringLiteral("file version 3"))
+              && r.window.projectPathForTest() == pathBefore && panelCount() == 6,
+          QStringLiteral("opened %1; said '%2'; project %3").arg(openedNewer).arg(shown,
+              QFileInfo(r.window.projectPathForTest()).fileName()));
+    QJsonObject twoRoot = file;
+    const QString two = folder + QStringLiteral("/FrameSpaceTwo.sankotv");
+    writeRoot(two, twoRoot);
+    const bool openedTwo = r.window.loadProjectForTest(two);
+    pump(400);
+    check(QStringLiteral("(fs11) control: the same file at version 2 opens"),
+          openedTwo && QFileInfo(r.window.projectPathForTest()).fileName() == QStringLiteral("FrameSpaceTwo.sankotv"),
+          QFileInfo(r.window.projectPathForTest()).fileName());
+
+    // ---- (fs12) the script breakdown -------------------------------------------------
+    QJsonArray script;
+    for (int i = 1; i <= 2; ++i) {
+        QJsonObject s;
+        s.insert(QStringLiteral("scene_number"), i);
+        s.insert(QStringLiteral("location"), QStringLiteral("INT. FRAME SPACE %1").arg(i));
+        s.insert(QStringLiteral("time_of_day"), QStringLiteral("DAY"));
+        s.insert(QStringLiteral("action"), QStringLiteral("A breakdown."));
+        script.append(s);
+    }
+    const bool applied = r.window.applyScriptScenesForTest(script);
+    pump(300);
+    bool stageSized = true;
+    for (const Scene *s : r.window.scenesForTest())
+        for (const Panel *p : s->panels)
+            stageSized = stageSized && p->canvasSize() == QSize(1440, 810);
+    check(QStringLiteral("(fs12) THE SCRIPT BREAKDOWN's panels get the project's stage: two scenes, each "
+                         "panel holding (240, 135, 240, 135)"),
+          applied && allHold(m240) == 2, margins());
+    check(QStringLiteral("(fs12) control: they are the stage's size (1440 x 810), so the margin is their "
+                         "pixels' own"),
+          stageSized && panelCount() == 2);
+    r.window.markCleanForTest();
+}
+
 // ---- (mg) the stage margin through the real window (Phase 2A) --------------
 // The Camera family proves the margin's pictures and numbers headless; this
 // pass drives the real window: the margin change (the resize's own swap,
@@ -19941,6 +20187,7 @@ int main(int argc, char **argv)
     runRowPinPass(scratch);
     runWaveformPass(scratch);
     runStageMarginPass(scratch);
+    runFrameSpacePass(scratch);
     runRecentMenuPass(scratch);
     runDepthPass(scratch);
     runDepthToolsPass(scratch);
