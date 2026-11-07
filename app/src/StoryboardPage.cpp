@@ -21,6 +21,7 @@
 #include "brushlib/BrushWidthRatio.h"
 #include "StoryboardModel.h"
 #include "LayerDepthPopover.h"
+#include "LayerFolder.h"
 #include "camera/ShotCamera.h"
 
 #include "docking/DockController.h"
@@ -1828,11 +1829,13 @@ bool layerHasContent(const Layer &layer)
         return false;
     if (layer.type == QLatin1String("image"))
         return true;
-    const QImage &img = layer.image;
-    if (img.isNull())
+    if (!layer.hasPixels())
         return false;
     if (layer.type == QLatin1String("background"))
         return false; // plain paper — deleting it is blocked elsewhere anyway
+    if (layer.atRest()) // tiles exist only where something is, and may be hidden
+        return !layertiles::drawnBounds(*layer.tiles, layer.stageRect).isEmpty();
+    const QImage &img = layer.image;
     for (int y = 0; y < img.height(); ++y) {
         const QRgb *line = reinterpret_cast<const QRgb *>(img.constScanLine(y));
         for (int x = 0; x < img.width(); ++x)
@@ -2549,6 +2552,8 @@ private:
 StoryboardPage::StoryboardPage(QWidget *parent)
     : QWidget(parent)
 {
+    m_layerFolder = new LayerFolder(this);
+    m_layerFolder->setScenes(&m_scenes);
     setAttribute(Qt::WA_StyledBackground, true);
     // SCOPED to this widget. A bare background-color declaration cascades
     // into every descendant; the Brush Library's scroll area inherited it
@@ -8163,6 +8168,7 @@ void StoryboardPage::detachScenes()
         m_animatic->loadScenes({});
     if (m_canvas)
         m_canvas->setActivePanel(nullptr);
+    m_layerFolder->forget(); // nothing on its way lands on a panel about to go
     m_layerSelPanel = nullptr; // compared by pointer; a recycled address
                                // would otherwise read as "same panel"
     m_scenes.clear();
@@ -8221,7 +8227,9 @@ void StoryboardPage::selectScene(int index, int panelIndex)
         selectPanel(qBound(0, panelIndex, int(scene->panels.size()) - 1));
     else {
         m_currentPanel = -1;
+        m_layerFolder->open(nullptr);
         m_canvas->setActivePanel(nullptr);
+        m_layerFolder->sweep();
         updateDuplicateButton();
         if (m_animatic)
             m_animatic->setSelectedPanel(-1);
@@ -8242,6 +8250,9 @@ void StoryboardPage::selectPanel(int index)
     ++m_selectPanelCalls;
     flushThumbRefresh(); // finalize the OLD panel's debounced thumbnail
     m_currentPanel = index;
+    // THE PANELS AT REST (batch 6b-V): the panel entered gets its full images,
+    // its layers unfolded in parallel; the panel left is folded on workers.
+    m_layerFolder->open(scene->panels.at(index));
     m_canvas->setActivePanel(scene->panels.at(index));
     updatePanelThumbStyles();
     loadShotInfo();
@@ -8251,6 +8262,12 @@ void StoryboardPage::selectPanel(int index)
     rebuildLayerPanel();
     if (m_animatic)
         m_animatic->setSelectedPanel(currentFlatIndex());
+    m_layerFolder->sweep();
+}
+
+void StoryboardPage::reopenCurrentPanel()
+{
+    m_layerFolder->open(currentPanel());
 }
 
 void StoryboardPage::updateOnionGhost()
@@ -8277,6 +8294,7 @@ void StoryboardPage::setUndoStack(QUndoStack *stack)
     // the Camera bar and the canvas's frame re-read after every step.
     if (stack)
         connect(stack, &QUndoStack::indexChanged, this, [this] {
+            m_layerFolder->sweep(); // a step can leave full images on a panel at rest
             if (m_syncCameraBar)
                 m_syncCameraBar();
             if (m_canvas && (m_canvas->tool() == DrawingCanvas::Camera
@@ -9400,6 +9418,8 @@ void StoryboardPage::applyProjectResize(const QSize &newSize,
         m_animatic->leavePreview();
         m_animatic->refreshThumbnails();
     }
+    // A new frame re-made every panel's full images: all but this one go to rest.
+    m_layerFolder->sweep();
 }
 
 bool StoryboardPage::refuseMismatchedPaste()
@@ -9754,8 +9774,8 @@ QPixmap layerThumb(const Layer &layer)
                               ((x / kCell + y / kCell) & 1) ? dark : light);
     QPainter painter(&out);
     painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
-    if (!layer.image.isNull())
-        painter.drawImage(QRect(0, 0, kW, kH), layer.image);
+    if (layer.hasPixels())
+        painter.drawImage(QRect(0, 0, kW, kH), layer.pixels());
     painter.end();
     return QPixmap::fromImage(out);
 }
@@ -11050,6 +11070,7 @@ void StoryboardPage::layerGroupSelected()
     group.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
     group.type = QStringLiteral("group");
     group.image = QImage(); // folders own no pixels
+    group.tiles.reset();
     int groupNumber = 1;
     for (const Layer &layer : panel->layers)
         if (isGroupLayer(layer))
@@ -11311,6 +11332,8 @@ void StoryboardPage::applyLayerStackForUndo(Panel *panel,
     panel->layers = layers;
     panel->activeLayerIndex =
         qBound(0, activeIndex, qMax(0, panel->layers.size() - 1));
+    if (panel == currentPanel())
+        panel->unfoldNow(); // a snapshot can hold layers at rest (batch 6b-V)
     if (panel == currentPanel()) {
         m_layerSelection.clear();
         m_layerSelection.insert(panel->activeLayerIndex);

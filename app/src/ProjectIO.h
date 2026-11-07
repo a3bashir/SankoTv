@@ -58,8 +58,11 @@ public:
     // modification time.
     bool holds(const QString &file, const QByteArray &content) const;
     // `file` now holds `content`: it was just written, or just read.
-    // Records nothing for a file that is not there.
-    void record(const QString &file, const QByteArray &content);
+    // Records nothing for a file that is not there. `origin`: for a layer's
+    // file, where its pixels lie in frame space (version 3): a file skipped
+    // or renamed is still named with the place it holds.
+    void record(const QString &file, const QByteArray &content, const QPoint &origin = QPoint());
+    QPoint originOf(const QString &file) const;
     void forget(const QString &file);
     void merge(const ImageLedger &other);
     int size() const { return int(m_entries.size()); }
@@ -74,6 +77,7 @@ private:
         QByteArray content;
         qint64 bytes = -1;
         QDateTime modified;
+        QPoint origin;
     };
     static QString keyFor(const QString &file);
     QHash<QString, Entry> m_entries;
@@ -81,7 +85,7 @@ private:
 
 // The identities the ledger compares: a layer is its image; a panel's
 // flatten is everything flattenedPixmap() reads.
-QByteArray layerContent(const QImage &image);
+QByteArray layerContent(const Layer &layer);
 QByteArray flattenContent(const Panel &panel);
 
 // THE RECOVERY COPY'S IMAGES, OFF THE UI THREAD (2026-11-05). With a plan in
@@ -99,6 +103,9 @@ struct ImageJob
     QString file;                         // absolute
     QByteArray content;                   // the ledger's identity
     QImage image;                         // a layer or a thumbnail
+    layertiles::TilesPtr tiles;           // a layer at rest: `rect` of these, made where it runs
+    QRect rect;
+    QPoint origin;                        // a layer's place in frame space (the ledger's)
     std::shared_ptr<const Panel> flatten; // a flatten: its panel's layers
     bool ok = false;
     Qt::HANDLE composeThread = nullptr;   // where a flatten was composited
@@ -117,10 +124,20 @@ bool runImagePlan(ImagePlan &plan, const std::atomic<bool> &cancel);
 // margin ("margin": [left, top, right, bottom], omitted when 0), and the
 // camera keys and the vanishing points are in FRAME SPACE - px from the
 // shot frame's top-left, the same numbers whatever a panel's margin. 1
-// (and none): stage px, the project's one margin. This build writes 2 and
-// reads 1 and 2; MainWindow refuses a later one rather than misread it.
-// A project without a margin has the same numbers in both.
-inline constexpr int kFileVersion = 2;
+// (and none): stage px, the project's one margin. MainWindow refuses a later
+// version than this build's rather than misread it. A project without a
+// margin has the same numbers in both.
+//
+// VERSION 3 (batch 6b-V, 2026-11-07): a layer's file holds only what is drawn,
+// placed in frame space: "origin": [x, y], its top-left from the frame's. Art
+// outside the stage is in it too, kept and hidden (Q13). A Background also says
+// "fill", the colour of the rest of it, and a plain one's file is one pixel. A
+// layer's file may still be the whole stage (the panel on the canvas, saved as it
+// is, with its place). Reads 1, 2 and 3. A 6a build refuses this file.
+inline constexpr int kFileVersion = 3;
+// The older form, for the checks' fixtures only: version 2, every layer's file the
+// whole stage, with no "origin" or "fill".
+void setWriteVersion2ForTest(bool on);
 // The vanishing points of a "perspective" object moved by (dx, dy): the
 // file's frame space and the stage's px (version 2). Nothing else in it
 // changes.

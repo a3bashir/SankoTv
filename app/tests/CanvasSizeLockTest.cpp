@@ -707,7 +707,7 @@ void runPersistencePass(const QSize &S, const QString &projRoot)
             const Panel *got = L.scenes.at(0)->panels.at(p);
             layersEqual = orig->layers.size() == got->layers.size();
             for (int k = 0; layersEqual && k < orig->layers.size(); ++k)
-                layersEqual = orig->layers.at(k).image == got->layers.at(k).image;
+                layersEqual = orig->layers.at(k).pixels() == got->layers.at(k).pixels();
         }
     }
     check(QStringLiteral("(d) every layer byte-identical after load"), layersEqual);
@@ -716,6 +716,7 @@ void runPersistencePass(const QSize &S, const QString &projRoot)
     // one pixel of a loaded layer and demand inequality — a comparator that
     // cannot see this would make the previous PASS decorative.
     if (L.scenes.size() == 1) {
+        L.scenes[0]->panels[0]->layers[1].unfoldNow(); // a project opens at rest (batch 6b-V)
         QImage &img = L.scenes[0]->panels[0]->layers[1].image;
         img.setPixel(W / 2, H / 2, qRgba(1, 2, 3, 255));
         check(QStringLiteral("(d) control: comparator detects a 1px change"),
@@ -796,7 +797,7 @@ void runMigrationPass(const QString &projRoot)
           Lk.pixelSize == QSize(960, 540) && !Lk.mismatch);
     check(QStringLiteral("(e) legacy artwork byte-identical"),
           Lk.scenes.size() == 1
-              && Lk.scenes.at(0)->panels.at(0)->layers.at(1).image
+              && Lk.scenes.at(0)->panels.at(0)->layers.at(1).pixels()
                   == panel->layers.at(1).image);
     freeScenes(Lk.scenes);
 
@@ -819,7 +820,7 @@ void runMigrationPass(const QString &projRoot)
     if (ancientOk)
         for (const Layer &l : La.scenes.at(0)->panels.at(0)->layers)
             ancientOk = ancientOk
-                && (isGroupLayer(l) || l.image.size() == QSize(960, 540));
+                && (isGroupLayer(l) || l.pixelSize() == QSize(960, 540));
     check(QStringLiteral("(e) single-PNG legacy migrates at 960x540"), ancientOk);
     freeScenes(La.scenes);
 
@@ -833,7 +834,7 @@ void runMigrationPass(const QString &projRoot)
               && Ll.manifestSize == QSize(1920, 1080));
     check(QStringLiteral("(e) artwork byte-identical (never rescaled)"),
           Ll.scenes.size() == 1
-              && Ll.scenes.at(0)->panels.at(0)->layers.at(1).image
+              && Ll.scenes.at(0)->panels.at(0)->layers.at(1).pixels()
                   == panel->layers.at(1).image);
     // The user-facing sentence, locked against an INDEPENDENT literal — the
     // shared function compared to itself would be the vacuous shape.
@@ -877,7 +878,7 @@ void runMigrationPass(const QString &projRoot)
         dt, folderTall + QStringLiteral("/proj.sankotv")).root;
     {
         ProjectIO::LoadedProject pre = ProjectIO::projectFromJson(tallRoot, folderTall);
-        const QImage &before = pre.scenes.at(0)->panels.at(0)->layers.at(1).image;
+        const QImage before = pre.scenes.at(0)->panels.at(0)->layers.at(1).pixels();
         bool hadContent = false;
         for (int y = 0; y < before.height() && !hadContent; y += 16)
             for (int x = 0; x < before.width() && !hadContent; x += 16)
@@ -896,7 +897,7 @@ void runMigrationPass(const QString &projRoot)
                         .arg(ProjectIO::imageIdStem(tall->id),
                              ProjectIO::imageIdStem(tall->layers.at(1).id)));
     ProjectIO::LoadedProject Lt = ProjectIO::projectFromJson(tallRoot, folderTall);
-    const QImage &refilled = Lt.scenes.at(0)->panels.at(0)->layers.at(1).image;
+    const QImage refilled = Lt.scenes.at(0)->panels.at(0)->layers.at(1).pixels();
     // The whole sampled grid empty, not two corners (the control above
     // samples the same grid and found content): a layer loaded from a
     // file that was never removed has transparent corners too.

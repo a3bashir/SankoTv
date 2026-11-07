@@ -820,6 +820,12 @@ void DrawingCanvas::setActivePanel(Panel *panel)
     if (m_xformActive)
         commitTransform(false);
 
+    // THE PANEL ON THE CANVAS HAS FULL IMAGES (batch 6b-V): every tool works on
+    // them as it always has. The host unfolds in parallel before this
+    // (LayerFolder::open); then this is nothing.
+    if (panel)
+        panel->unfoldNow();
+
     // DEFENCE IN DEPTH: nothing below may DEREFERENCE the panel we are
     // leaving. freeScenes() now detaches before it destroys, so this should
     // never see a dead panel — but this function used to invalidate the
@@ -2542,6 +2548,7 @@ void DrawingCanvas::applyLayerRegionForUndo(Panel *panel, const QString &layerId
     for (Layer &layer : panel->layers) {
         if (layer.id != layerId)
             continue;
+        layer.unfoldNow(); // an undo can reach a panel at rest (batch 6b-V)
         QPainter p(&layer.image);
         p.setCompositionMode(QPainter::CompositionMode_Source);
         p.drawImage(region.topLeft(), pixels);
@@ -2563,6 +2570,7 @@ void DrawingCanvas::applyBrushCommitForUndo(Panel *panel, const QString &layerId
     for (Layer &layer : panel->layers) {
         if (layer.id != layerId)
             continue;
+        layer.unfoldNow(); // an undo can reach a panel at rest (batch 6b-V)
         const QString key = QString::number(quintptr(panel), 16)
             + QLatin1Char(':') + layerId;
         if (!m_paintEngine.applyCommit(key, commit, after, layer.image,

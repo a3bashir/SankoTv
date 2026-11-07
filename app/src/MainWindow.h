@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ProjectResize.h" // Outcome, returned by the resize helper
+#include "camera/CameraModel.h" // SceneCamera, the margin step's
 
 #include <QDateTime>
 #include <QMainWindow>
@@ -110,6 +111,12 @@ public:
         QSize(m_canvasWidth - 2 * m_stageMargin.width() + 2 * margin.width(),
               m_canvasHeight - 2 * m_stageMargin.height() + 2 * margin.height()), margin); }
     QSize stageMarginForTest() const { return m_stageMargin; }
+    // The margin as a rectangle (batch 6b-V): the undo step's own two calls.
+    QVector<shotcam::SceneCamera> sceneCamerasForMargin() const;
+    void setMarginRect(const QSize &newMargin, const QVector<shotcam::SceneCamera> *cameras);
+    // Art outside the stage: how many panels hold some, and freeing it (one step).
+    int panelsWithHiddenArt() const;
+    void trimHiddenArt();
     QUndoStack *undoStackForTest() const { return m_undoStack; }
     // The locks (Part B): the Script Editor's re-parse, as its scenesReady
     // signal reaches this window - refused with a message while the SCENES
@@ -409,6 +416,7 @@ private:
     // refusal, the margin dialog, memory precheck, save prompt, confirm -
     // with the shot kept and the stage grown or shrunk around it.
     void onStageMargin();
+    void onTrimHiddenArt();
     // The swap for both: the canvas to newSize with newMargin px each side;
     // camera keys keep framing the same artwork (Stage remap).
     ProjectResize::Outcome applyStageResizeInternal(const QSize &newSize,
@@ -550,6 +558,7 @@ private:
     QAction *m_clearStageAct = nullptr; // View > Clear the Stage While the Film Plays
     QAction *m_saveAsAct = nullptr;
     QAction *m_projectSettingsAct = nullptr;
+    QAction *m_trimHiddenAct = nullptr;
     QAction *m_closeProjectAct = nullptr;
     QMenu *m_recentMenu = nullptr;
     // Edit-menu panel clipboard actions (enabled once a panel is copied).

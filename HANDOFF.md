@@ -1,5 +1,122 @@
 # SankoTV — Session Handoff Brief
 
+## STATUS 2026-11-07 (evening): 6B-V COMMITTED
+Built, gated (GATE 6bv), hand-tested on its own exe (Dev Recorder 20261107-192141),
+committed by this commit (sha_6bv.txt), pushed. See the section below. Next: 6c, Stage
+mode and the per-panel margin. THE USER'S REAL SONG, Downloads\Song\Mansour_Fast_song_001,
+was saved in that test: it is version 3 now, with a 960 x 540 margin and test strokes on
+panel 1. The file of 2026-10-05 is in app\build\_probe\stage_measure\copies; the user
+has been told, and nothing was restored. The note below is history.
+
+## Batch 6b-V: layers at rest, the margin as a rectangle (2026-11-07) - COMMITTED
+Q12 V, Q13, Q14, the measurement approved. Commit message msg_6bv.txt; hand-test
+list Documents\SankoTV-Design\handtest_6b_V_layers_at_rest.md.
+HAND TEST, READ (Dev Recorder 20261107-192141, 424 s; git 8176c8b34+dirty, built Nov 7
+19:14:28, the exe of 19:14:35; every poll has the layers.* fields; the user did steps 1, 2,
+4, 6, 7, 8, 13). Step 1 passes: the song and Test_SB_006_A open as they were; the song holds
+63 MB full and 35 MB of tiles, 560 MB working set. Test_SB_006_A with its 25 % margin: 1.5 GB
+against 3.9 GB on the older exe. Step 2 passes: 16 switches, unfold 8 to 12.5 ms, the worst
+gap in the event loop 48 ms; the worst unfold anywhere 28.8 ms, 7 layers at a 5760 x 3240
+stage. Step 4 passes: a stroke on panel 1, from panel 2, undone and redone (tiles 38 -> 35 ->
+38 MB, its thumbnail with them). Step 6 passes, with one line of my list wrong: version 3, the
+same art after Close and reopen; but my "the layer files are much smaller, a plain Background's
+file is one pixel" holds only for files written fresh. A layer unchanged since an older build is
+not rewritten (the ledger's skip, (sv)), so the song's whites stay 37 KB, placed at origin [0, 0],
+and its edited layer is in the new form at [-1024, 0]. Fresh writes are Camera (fv8). Step 7
+passes: no question asked, Undo Change Stage Margin, the worst gaps 307 ms the first time and 38 to
+66 ms after, against 1074 to 3762 ms on the older exe. Earlier strokes after the undo: not by hand,
+Lifecycle fv17. Step 8 passes: the dialog says the art is kept, hidden and comes back; shrunk, the
+tiles stay 44 MB; grown, the red stroke is back in the band. Step 13 passes: sessionEnd 424.3, summary
+written, 0 dropped, 0 warnings, no crash or hang event. Not by hand: step 3, Lifecycle fv11, fv12;
+step 5, Camera fv1; step 9, Lifecycle fv18, Camera fv8; step 10, Lifecycle fv18, Camera fv6; step 11,
+Camera fs3, CanvasSizeLock (e); step 12, Camera fv1.
+TIMED FIRST, as the measurement asked (probe app\build\_probe\stage_measure\probe2,
+results_parallel.txt, the same read-only copies): an 8-layer 4K panel unfolds in
+16 ms at worst with 8 workers, 31 ms at a 25 % margin, against 49 and 102 ms one
+after another; the estimate was 20 to 30. A lean row-copy fold and unfold beat the
+engine's TiledImage (31 against 36 ms; it paints through QPainter), so 6b-V has its
+own. Every layer came back the bytes it was.
+BUILT: LayerTiles.{h,cpp}: a layer's pixels as the 256 px tiles that hold something
+and one fill value, anchored to the FRAME's top-left, immutable and shared. Layer
+gains tiles, stageRect, tilesOf and hasPixels / pixelSize / contentKey / pixels /
+paintTo / unfoldNow; `image` is sure only on the panel on the canvas. contentKey
+stays put through a fold and an unfold (the tiles inherit the image's cacheKey), so
+a thumbnail, a mip and the save's ledger see the same pixels as the same.
+LayerFolder.{h,cpp}: open(panel) unfolds in parallel; sweep() folds every other panel
+on workers, its full images alive until a fold lands; a panel left unchanged is at
+rest at once; a result lands only if its layer still holds the image it was made from.
+Readers moved: Panel::canvasSize, flattenedImage, layerDrawn, flattenFingerprint;
+shotcam's layerMip (level 0 cached for a layer at rest) and edgeBitsOf; ProjectResize;
+the Stage dialog's art bounds; layerHasContent, layerThumb. DrawingCanvas: setActivePanel
+and the two undo callbacks unfold what they touch. The recorder's polls say
+layers.denseMB, tilesMB, dense, atRest, lastUnfoldMs, lastUnfoldLayers.
+THE FILE, VERSION 3: a layer's file holds its drawn tiles, "origin" [x, y] from the
+frame's top-left and "size" [w, h], the stage it is read at, so the pixels stay the
+authority for a panel's size. A Background also says "fill", and a plain one's file is
+one pixel. The recovery copy keeps the UI thread short: an edited full image is the
+whole stage there, with its place. The ledger remembers each file's origin, so a file
+skipped or renamed is still named with its place. Versions 1 and 2 open as they did,
+and are folded in parallel at the end of the load; a v3 file is folded as it is read.
+A 6a build refuses v3.
+THE MARGIN: StageMarginCommand, one undo step that stores two margins and the cameras;
+setMarginRect moves no pixel. A shrink cuts nothing (Q13): art outside the stage stays
+in its tiles, hidden, survives a save, and comes back. No memory precheck, save prompt or
+confirmation; the dialog's memory line says a margin costs nothing until drawn in. A new
+FRAME size is still ProjectResize, clears the history, and drops hidden art.
+TRIM HIDDEN ART: File menu, TrimHiddenCommand, one undo step holding the tiles it had.
+NOT IN 6b-V: the amber outline of hidden art belongs to Stage mode, so it comes with 6c;
+pages and exports still read the project's margin, which every panel holds, until 6c lets
+one panel's differ; the paint engine's per-layer mirrors stay as they were (only layers
+stroked in a session; a mirror re-seeds on the first stroke after an unfold).
+CHECKS, each with its control. Camera (fv): (fv1) every moving and margin output at rest,
+through the real MP4 job, PNG, PDF, preview, clips, the bytes the full images gave /
+control the nudged fixtures differ; (fv2) the round trip byte for byte wherever the frame
+is; (fv3) what is kept; (fv4) the tiles paint what the image paints, at any opacity over
+anything; (fv5) a smaller stage, an edit at it, an erase at it, in half-covered tiles; (fv6)
+trim; (fv7) the identity; (fv8) the file at rest, read back, saved again writing nothing,
+hidden art through a save. Lifecycle (fv), the real window: (fv9) opened; (fv10) a switch;
+(fv11) an edited panel's fold; (fv12) back before it landed; (fv13) an edit in flight; (fv14)
+undo and redo on a panel at rest; (fv15) serial and parallel the same; (fv16) the margin one
+step, the very same tiles; (fv17) hidden art, undo twice; (fv18) saved hidden, trim; (fv19)
+closed with a fold on its way.
+ON THE USER'S PROJECTS (read-only copies, a one-off, results_real_6bv.txt; 218 files, none
+changed): the song 474 MB -> 34 MB at rest, unfold worst 7 ms; Test_SB_009_A 1455 -> 532 MB,
+worst 16 ms; every layer and flatten against its original file the same, every one read back
+from a version 3 save the same. Files 0.85 -> 0.41 MB and 77.3 -> 76.2 MB (these were mostly
+already compressed).
+CHANGED CHECKS, read before changing, the same claim on the new form:
+- Camera (fs1), (fs2) control: "version" == 2 -> == 3; (fs1)'s label VERSION 2 -> 3. (fs3) label
+  "the version-2 one" -> "the version-3 one", and its fixture is written by
+  setWriteVersion2ForTest, whole-stage files, because v1 means whole-stage files.
+- Lifecycle (fs9): version 2 -> 3. (fs11): the newer file 3 -> 4, "file version 3" -> "file
+  version 4", its control's label "at version 2" -> "at version 3".
+- Camera (mg10), both checks. Old: "says the WHOLE project's memory at the chosen stage (layers x
+  stage) and what is free; with 16 GB free it is plain, with 2 GB free it is amber" and "at the
+  stage the project already has, the same 2 GB free is not amber". New: "says a margin costs no
+  memory until something is drawn in it, and what is free; with 2 GB free it does not warn either"
+  and "at the stage the project already has it says the same". A margin no longer costs what it
+  said. Positive control: (fv16), the same tiles after a margin, and the at-rest memory (fv9).
+- Lifecycle (sv.2)-(sv.6), (r4): the saved layer's file read by placedLayerFile (placed where the
+  manifest says) or layerFileForm, not as the whole stage. Tests reading another panel's pixels use
+  pixels() and contentKey(): (sv), (qm), paropen, CanvasSizeLock (d), (e). The same comparison.
+MISTAKES OF MINE, read before fixing: (fv4) failed: the non-opaque fill drew only one tile of a large
+area, a real bug in LayerTiles::paint, fixed. (fv13) failed only in the full family, and I first told
+the user it was the stroke landing off the canvas: wrong, a trace showed otherwise. Lifecycle (j) leaves
+the brush at 5000 px in the settings; one stroke then covers the layer, and a second changes no pixel, so
+commit.isValid() is false and there is no edit. No app bug; the pass now paints with a 25 px brush, and
+(fv12) gained a control that the stroke changed the layer.
+QUICK RUN (the worktree, Release): Camera 318, Lifecycle 1235, CanvasSizeLock 170, CanvasEdgeLock 74 PASS.
+GATE 6bv (fullgate_6bv.log, 2026-11-07, normal mode, 2351 s), in the scratch worktree C:\SankoTV_6b: clean
+Release and Debug builds (0 errors), 0 failing families in both; Lifecycle 1235 (Release 591 s, Debug 836
+s), Camera 318, CanvasSizeLock 170, CanvasEdgeLock 74, BrushLibrary 187, DevRecorder 46, QuickShapeGeometry
+19, PaintPixel 13, CanvasBrush 3; pin line counts and text as GATE small's in both configs; against its
+camera_test text, leaving out (fv), (fs) and (mg10), only (c8)'s printed JSON sizes differ. No pin changed.
+HOW IT GOT HERE: over the small batch, as before: the CRLF files by git checkout of a tree of the worktree's
+files (b316af145, each compared byte for byte), the two LF files (StoryboardModel.h, MainWindow.h) by the
+Edit tool. The gate's source and this tree's are the same; only this note differs. The first recording meant
+for this batch, 20261107-185530, ran this tree's older exe (built 15:52:31, the playback batch only), so it
+said nothing about 6b-V. Hash list sha_6bv.txt, redone over the files as committed.
+
 ## STATUS 2026-11-07 (evening): THE SMALL BATCH COMMITTED, ON ITS GATE
 The film's bars, the Layers dock and the Rotates' tooltips, committed on
 GATE small at the user's word. See the section below. Next: 6b-V, built and

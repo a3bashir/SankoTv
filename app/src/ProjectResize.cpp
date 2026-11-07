@@ -89,8 +89,8 @@ Plan plan(const QVector<Scene *> &scenes, const QSize &oldSize,
                 // Measure what is actually held rather than assuming every
                 // layer is oldSize — a project can arrive internally
                 // inconsistent, and the resize is what makes it uniform.
-                if (!layer.image.isNull())
-                    p.currentBytes += imageBytes(layer.image.size());
+                if (layer.hasPixels())
+                    p.currentBytes += imageBytes(layer.pixelSize());
                 p.resizedBytes += perLayerNew;
                 panelNew += perLayerNew;
             }
@@ -162,15 +162,20 @@ bool resizePanel(Panel *panel, const QSize &newSize, const QPoint &offset)
         // very visible on export or when the background is toggled.
         fresh.fill(layer.type == QLatin1String("background") ? Qt::white
                                                              : Qt::transparent);
-        if (!layer.image.isNull()) {
+        if (layer.hasPixels()) {
             QPainter painter(&fresh);
             // 1:1 blit at the centre offset: no scaling, no smoothing, no
             // resampling. Qt clips whatever falls outside, which is exactly
             // the symmetric crop a contraction should produce.
             painter.setRenderHint(QPainter::SmoothPixmapTransform, false);
-            painter.drawImage(offset, layer.image);
+            painter.drawImage(offset, layer.pixels());
         }
+        // A new frame is new pixels: the tiles were another stage's. (A margin
+        // alone never comes here; it moves no pixel, batch 6b-V.) The folder
+        // folds the panel again when it is next left.
         layer.image = fresh;
+        layer.tiles.reset();
+        layer.tilesOf = 0;
     }
 
     // SWAP. A vector move: no allocation, no I/O, nothing that can fail.

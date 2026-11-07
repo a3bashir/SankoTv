@@ -50,14 +50,20 @@ bool ImageLedger::holds(const QString &file, const QByteArray &content) const
         && now.lastModified() == it->modified;
 }
 
-void ImageLedger::record(const QString &file, const QByteArray &content)
+void ImageLedger::record(const QString &file, const QByteArray &content, const QPoint &origin)
 {
     const QFileInfo now(file);
     if (!now.isFile()) {
         forget(file);
         return;
     }
-    m_entries.insert(keyFor(file), Entry{content, now.size(), now.lastModified()});
+    m_entries.insert(keyFor(file), Entry{content, now.size(), now.lastModified(), origin});
+}
+
+QPoint ImageLedger::originOf(const QString &file) const
+{
+    const auto it = m_entries.constFind(keyFor(file));
+    return it == m_entries.cend() ? QPoint() : it->origin;
 }
 
 void ImageLedger::forget(const QString &file)
@@ -175,11 +181,11 @@ QString panelStemOfImageName(const QString &fileName)
     return (l < 0 ? body : body.left(l)).toLower();
 }
 
-QByteArray layerContent(const QImage &image)
+QByteArray layerContent(const Layer &layer)
 {
     QByteArray id;
     QDataStream s(&id, QIODevice::WriteOnly);
-    s << quint8('L') << image.cacheKey();
+    s << quint8('L') << layer.contentKey();
     return id;
 }
 
@@ -188,14 +194,26 @@ QByteArray flattenContent(const Panel &panel)
     // Everything Panel::flattenedPixmap() reads: each layer's pixels, its
     // opacity and visibility, whether it is a folder, and which folder it
     // is in (a folder's own visibility and opacity reach its members). The
-    // canvas size is the layers' own, so their images already carry it.
+    // canvas size and the frame's place: a margin moves no pixel of a layer
+    // (batch 6b-V), so they are said here, or the flatten would stay the old
+    // stage's.
     QByteArray id;
     QDataStream s(&id, QIODevice::WriteOnly);
-    s << quint8('F');
+    s << quint8('F') << panel.frameAt();
     for (const Layer &layer : panel.layers)
-        s << layer.image.cacheKey() << layer.opacity << layer.visible
+        s << layer.contentKey() << layer.pixelSize() << layer.opacity << layer.visible
           << layer.type << layer.groupId;
     return id;
+}
+
+namespace {
+// The older file form, for the checks' fixtures (ProjectIO.h).
+std::atomic<bool> g_writeVersion2ForTest{false};
+}
+
+void setWriteVersion2ForTest(bool on)
+{
+    g_writeVersion2ForTest.store(on);
 }
 
 namespace {
@@ -248,11 +266,57 @@ public:
 
     bool failed() const { return m_failed.load(); }
 
-    void layer(const QImage &image, const QString &relName)
+    // A layer's file (version 3): only what is drawn when the tiles say what the
+    // layer holds; the whole stage when they do not yet (the panel on the canvas,
+    // edited, needs no fold on the way out). Says in `layerObj` where it lies.
+    void layer(const Layer &layer, const QPoint &frameAt, const QString &relName, QJsonObject *layerObj)
     {
-        const QByteArray content = layerContent(image);
-        if (!skip(relName, content) && !adopt(relName, content))
-            push(relName, image, content);
+        const QByteArray content = layerContent(layer);
+        const QString full = m_folder + QStringLiteral("/") + relName;
+        const bool paper = layer.type == QLatin1String("background");
+        layertiles::TilesPtr tiles = layer.atRest() || layer.tilesCurrent() ? layer.tiles : nullptr;
+        const bool oldForm = g_writeVersion2ForTest.load();
+        QPoint origin;
+        if (oldForm) {
+            // The older form: never skipped, as a place cannot be said for it.
+            origin = -frameAt;
+            pushLayer(relName, layer.pixels(), nullptr, QRect(), content, origin);
+        } else if (skip(relName, content) || adopt(relName, content)) {
+            origin = m_ledger->originOf(full);
+        } else {
+            // A full image not yet folded folds here, so a project saved, opened
+            // and saved again writes the same bytes: only the layers edited since
+            // the panel was entered. The recovery copy keeps the UI thread short
+            // and takes the whole stage, unless the file has to hold art outside
+            // the stage.
+            const bool mustFold = layer.tiles
+                && layertiles::hasHidden(*layer.tiles, QRect(-frameAt, layer.pixelSize()));
+            if (!tiles && layertiles::foldable(layer.image) && (!m_plan || mustFold))
+                tiles = layertiles::fold(layer.image, frameAt,
+                                         paper ? layertiles::paperFill(layer.image, layer.tiles) : 0u,
+                                         layer.tiles);
+            if (tiles) {
+                // Nothing drawn: one pixel of the fill, for a file to name.
+                const QRect rect = tiles->drawn.isEmpty() ? QRect(0, 0, 1, 1) : tiles->drawn;
+                origin = rect.topLeft();
+                pushLayer(relName, QImage(), tiles, rect, content, origin);
+            } else {
+                origin = -frameAt;
+                pushLayer(relName, layer.image, nullptr, QRect(), content, origin);
+            }
+        }
+        if (!oldForm) {
+            (*layerObj)[QStringLiteral("origin")] = QJsonArray{origin.x(), origin.y()};
+            // The stage it is read at: the pixels stay the authority for a panel's
+            // size, as a whole file's size was.
+            (*layerObj)[QStringLiteral("size")] =
+                QJsonArray{layer.pixelSize().width(), layer.pixelSize().height()};
+            if (paper) {
+                const quint32 fill = tiles ? tiles->fill : layertiles::paperFill(layer.image, layer.tiles);
+                (*layerObj)[QStringLiteral("fill")] =
+                    QStringLiteral("%1").arg(fill, 8, 16, QLatin1Char('0'));
+            }
+        }
     }
 
     void flatten(const Panel &panel, const QString &relName)
@@ -297,7 +361,7 @@ public:
                 m_res->encodeThreadIds.append(d.thread);
                 threads.insert(d.thread);
                 if (m_ledger)
-                    m_ledger->record(d.file, d.content);
+                    m_ledger->record(d.file, d.content, d.origin);
                 continue;
             }
             if (m_ledger)
@@ -322,6 +386,7 @@ private:
         QByteArray content;
         bool ok = false;
         Qt::HANDLE thread = nullptr;
+        QPoint origin;
     };
 
     bool skip(const QString &relName, const QByteArray &content)
@@ -359,14 +424,22 @@ private:
             return false;
         if (!QFile::rename(have, full))
             return false;
+        const QPoint origin = m_ledger->originOf(have);
         m_ledger->forget(have);
-        m_ledger->record(full, content);
+        m_ledger->record(full, content, origin);
         ++m_res->imagesRenamed;
         m_res->renamedFiles.append(full);
         return true;
     }
 
     void push(const QString &relName, const QImage &image, const QByteArray &content)
+    {
+        pushLayer(relName, image, nullptr, QRect(), content, QPoint());
+    }
+
+    // `tiles`: the image is `rect` of these, made where it is encoded.
+    void pushLayer(const QString &relName, const QImage &image, const layertiles::TilesPtr &tiles,
+                   const QRect &rect, const QByteArray &content, const QPoint &origin)
     {
         if (m_failed.load())
             return; // already failed; do not pile more writes on
@@ -376,15 +449,18 @@ private:
             job.file = full;
             job.content = content;
             job.image = image;
+            job.tiles = tiles;
+            job.rect = rect;
+            job.origin = origin;
             m_plan->jobs.append(std::move(job));
             return;
         }
         const int order = m_next++;
         m_slots.acquire(); // bounds the images waiting to be encoded
-        m_pool.start([this, order, full, image, content] {
-            Done d{order, full, content, false, QThread::currentThreadId()};
+        m_pool.start([this, order, full, image, tiles, rect, content, origin] {
+            Done d{order, full, content, false, QThread::currentThreadId(), origin};
             if (!m_failed.load()) {
-                d.ok = image.save(full, "PNG");
+                d.ok = (tiles ? layertiles::unfold(*tiles, rect) : image).save(full, "PNG");
                 if (!d.ok)
                     m_failed.store(true);
                 QMutexLocker lock(&m_mutex);
@@ -422,7 +498,7 @@ bool runImagePlan(ImagePlan &plan, const std::atomic<bool> &cancel)
         pool.start([j, &cancel, &failed] {
             if (cancel.load() || failed.load())
                 return;
-            QImage image = j->image;
+            QImage image = j->tiles ? layertiles::unfold(*j->tiles, j->rect) : j->image;
             if (j->flatten) {
                 image = j->flatten->flattenedImage();
                 j->composeThread = QThread::currentThreadId();
@@ -614,7 +690,7 @@ WriteResult projectToJson(const SaveData &data, const QString &projectFilePath,
 
                 if (layer.type != QLatin1String("group")) { // folders own no pixels
                     const QString layerPng = rel + panelNames.layers.value(layer.id);
-                    saver.layer(layer.image, layerPng);
+                    saver.layer(layer, QPoint(projectMargin.left(), projectMargin.top()), layerPng, &layerObj);
                     layerObj[QStringLiteral("imageFile")] = layerPng;
                 }
                 layersArray.append(layerObj);
@@ -709,7 +785,7 @@ WriteResult projectToJson(const SaveData &data, const QString &projectFilePath,
         return res; // no manifest is built from a half-written image set
 
     QJsonObject root;
-    root[QStringLiteral("version")] = kFileVersion;
+    root[QStringLiteral("version")] = g_writeVersion2ForTest.load() ? 2 : kFileVersion;
     root[QStringLiteral("projectName")] = data.projectName;
     // fps drives the animatic; canvasWidth/Height are the project's real
     // canvas resolution, reconciled to the pixels on load — what is written
@@ -887,6 +963,27 @@ LoadedProject projectFromJson(const QJsonObject &root, const QString &folder,
     // reference becomes an INDEPENDENT real copy (own pixels, fresh id), so
     // old projects load with nothing missing. New saves drop sharedId.
     QHash<QString, QImage> legacySharedImages;
+    // A version-3 layer's file holds its drawn part, placed in frame space: the
+    // layer is at rest from the start, and these are folded in parallel at the
+    // end, when the panels' stages are final.
+    struct PlacedLayer
+    {
+        Panel *panel = nullptr;
+        int index = 0;
+        QImage crop;
+        QPoint origin;
+        quint32 fill = 0;
+    };
+    QVector<PlacedLayer> placed;
+    // The files read whole (versions 1 and 2): their place is the stage's, known
+    // only once the panels' margins are.
+    struct ReadWhole
+    {
+        QString file;
+        QByteArray content;
+        Panel *panel = nullptr;
+    };
+    QVector<ReadWhole> readWhole;
     const QJsonArray scenesArray = root.value(QStringLiteral("scenes")).toArray();
     // Every layer file below, decoded in parallel before the walk (see
     // LayerDecodes); the walk takes them in its own order.
@@ -1084,11 +1181,40 @@ LoadedProject projectFromJson(const QJsonObject &root, const QString &folder,
                         ? QImage()
                         : img.convertToFormat(
                               QImage::Format_ARGB32_Premultiplied);
+                    const QJsonArray originArray = layerObj.value(QStringLiteral("origin")).toArray();
+                    const bool isPlaced = fileVersion >= 3 && originArray.size() == 2 && !layer.image.isNull();
+                    QPoint origin;
+                    if (isPlaced) {
+                        origin = QPoint(originArray.at(0).toInt(), originArray.at(1).toInt());
+                        const QMargins fileMargin = fileMargins.last().last();
+                        PlacedLayer one;
+                        one.panel = panel;
+                        one.index = int(panel->layers.size());
+                        one.crop = layer.image;
+                        one.origin = origin;
+                        one.fill = layerObj.value(QStringLiteral("fill")).toString().toUInt(nullptr, 16);
+                        // Its stage for now: the sizes are read from it below. Its
+                        // pixels land at the end.
+                        layer.tiles = layertiles::empty(one.fill, one.crop.cacheKey());
+                        const QJsonArray sizeArray = layerObj.value(QStringLiteral("size")).toArray();
+                        const QSize saidSize(sizeArray.at(0).toInt(), sizeArray.at(1).toInt());
+                        layer.stageRect = QRect(QPoint(-fileMargin.left(), -fileMargin.top()),
+                                                saidSize.isValid() && !saidSize.isEmpty()
+                                                    ? saidSize
+                                                    : out.manifestSize.isValid() && !out.manifestSize.isEmpty()
+                                                        ? out.manifestSize
+                                                        : one.crop.size());
+                        layer.image = QImage();
+                        placed.append(std::move(one));
+                    }
                     panel->layers.append(layer);
-                    if (readOwnFile && !layer.image.isNull()) {
+                    if (readOwnFile && layer.hasPixels()) {
                         const QString file = folder + QStringLiteral("/") + layerPng;
-                        out.images.record(file, layerContent(layer.image));
-                        readKeys.insert(layer.image.cacheKey());
+                        if (isPlaced)
+                            out.images.record(file, layerContent(layer), origin);
+                        else
+                            readWhole.append({file, layerContent(layer), panel});
+                        readKeys.insert(layer.contentKey());
                         if (!manifestTime.isValid()
                             || QFileInfo(file).lastModified() > manifestTime)
                             readNewerThanManifest = true;
@@ -1144,7 +1270,7 @@ LoadedProject projectFromJson(const QJsonObject &root, const QString &folder,
                         ? out.manifestSize
                         : QSize(960, 540); // pre-versioned era: see above
                 for (Layer &layer : panel->layers)
-                    if (layer.image.isNull()
+                    if (!layer.hasPixels()
                         && layer.type != QLatin1String("group"))
                         layer.image = makeLayerImage(panelPx);
             }
@@ -1166,7 +1292,7 @@ LoadedProject projectFromJson(const QJsonObject &root, const QString &folder,
                 const QString flatFile = folder + QStringLiteral("/") + flatPng;
                 bool allRead = QFileInfo(flatFile).lastModified() <= manifestTime;
                 for (const Layer &layer : panel->layers)
-                    if (!isGroupLayer(layer) && !readKeys.contains(layer.image.cacheKey()))
+                    if (!isGroupLayer(layer) && !readKeys.contains(layer.contentKey()))
                         allRead = false;
                 if (allRead)
                     out.images.record(flatFile, flattenContent(*panel));
@@ -1322,6 +1448,74 @@ LoadedProject projectFromJson(const QJsonObject &root, const QString &folder,
         for (Scene *scene : out.scenes)
             shotcam::keysToStage(*scene, QPointF(savedFrom.left(), savedFrom.top()));
         out.perspective = perspectiveMoved(out.perspective, savedFrom.left(), savedFrom.top());
+    }
+    // WHERE EACH WHOLE FILE LIES, now that the stages are final: a later save
+    // that skips it still names its place.
+    for (const ReadWhole &r : std::as_const(readWhole))
+        out.images.record(r.file, r.content, -r.panel->frameAt());
+    // THE PROJECT AT REST (batch 6b-V): every layer as its tiles, in parallel. Only
+    // the panel put on the canvas is unfolded again, by the page. The file's frame
+    // when it could be read; when it could not and the stage opened without a
+    // margin, its place on the stage it was saved with, so the art stays put.
+    {
+        const QPoint shift = out.stageMarginRepaired && !fileMargins.isEmpty() && !fileMargins.first().isEmpty()
+            ? QPoint(fileMargins.first().first().left(), fileMargins.first().first().top())
+            : QPoint();
+        struct Job
+        {
+            Layer *layer = nullptr;
+            QImage image;
+            QPoint frameAt;
+            quint32 fill = 0;
+            bool paper = false;
+            qint64 key = 0;
+            QRect stage;
+        };
+        std::vector<Job> jobs;
+        for (const PlacedLayer &p : std::as_const(placed)) {
+            Layer &layer = p.panel->layers[p.index];
+            Job job;
+            job.layer = &layer;
+            job.image = p.crop;
+            job.frameAt = -(p.origin + shift);
+            job.fill = p.fill;
+            job.key = p.crop.cacheKey();
+            job.stage = QRect(-p.panel->frameAt(), layer.stageRect.size());
+            jobs.push_back(std::move(job));
+        }
+        for (Scene *scene : std::as_const(out.scenes))
+            for (Panel *panel : std::as_const(scene->panels))
+                for (Layer &layer : panel->layers) {
+                    if (isGroupLayer(layer) || layer.image.isNull() || !layertiles::foldable(layer.image))
+                        continue;
+                    Job job;
+                    job.layer = &layer;
+                    job.image = layer.image;
+                    job.frameAt = panel->frameAt();
+                    job.paper = layer.type == QLatin1String("background");
+                    job.key = layer.image.cacheKey();
+                    job.stage = QRect(-panel->frameAt(), layer.image.size());
+                    jobs.push_back(std::move(job));
+                }
+        auto foldOne = [&jobs](size_t i) {
+            Job &job = jobs[i];
+            const quint32 fill = job.paper ? layertiles::paperFill(job.image, nullptr) : job.fill;
+            job.layer->tiles = layertiles::fold(job.image, job.frameAt, fill, nullptr, job.key);
+            job.layer->stageRect = job.stage;
+            job.layer->image = QImage();
+            job.layer->tilesOf = 0;
+            job.image = QImage();
+        };
+        if (g_serialDecodeForTest || jobs.size() < 2) {
+            for (size_t i = 0; i < jobs.size(); ++i)
+                foldOne(i);
+        } else {
+            QThreadPool pool;
+            pool.setMaxThreadCount(qBound(1, QThread::idealThreadCount(), 8));
+            for (size_t i = 0; i < jobs.size(); ++i)
+                pool.start([&foldOne, i] { foldOne(i); });
+            pool.waitForDone();
+        }
     }
     return out;
 }

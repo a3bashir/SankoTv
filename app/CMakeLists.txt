@@ -109,11 +109,16 @@ qt_add_executable(SankoTV
     src/CodeEditor.h
     src/StoryboardPage.cpp
     src/StoryboardPage.h
+    # Batch 6b-V: the panels at rest (folded on workers, unfolded in parallel)
+    src/LayerFolder.cpp
+    src/LayerFolder.h
     # Phase 2B: the Layers panel's Depth popover (Figma 2B-2).
     src/LayerDepthPopover.cpp
     src/LayerDepthPopover.h
     src/StoryboardModel.h
     src/camera/CameraModel.h
+    src/LayerTiles.cpp
+    src/LayerTiles.h
     src/camera/ShotCamera.cpp
     src/camera/ShotCamera.h
     src/DrawingCanvas.cpp
@@ -273,6 +278,8 @@ qt_add_executable(SankoCanvasBrushLock
     tests/CanvasBrushLockTest.cpp
     src/DrawingCanvas.cpp
     src/DrawingCanvas.h
+    src/LayerTiles.cpp
+    src/LayerTiles.h
     src/camera/ShotCamera.cpp
     src/camera/ShotCamera.h
     src/PerspectiveTool.cpp
@@ -295,6 +302,8 @@ qt_add_executable(SankoQuickShapeGeometryLock
     tests/QuickShapeGeometryLockTest.cpp
     src/DrawingCanvas.cpp
     src/DrawingCanvas.h
+    src/LayerTiles.cpp
+    src/LayerTiles.h
     src/camera/ShotCamera.cpp
     src/camera/ShotCamera.h
     src/PerspectiveTool.cpp
@@ -317,6 +326,8 @@ qt_add_executable(SankoCanvasEdgeLock
     tests/CanvasEdgeLockTest.cpp
     src/DrawingCanvas.cpp
     src/DrawingCanvas.h
+    src/LayerTiles.cpp
+    src/LayerTiles.h
     src/camera/ShotCamera.cpp
     src/camera/ShotCamera.h
     src/PerspectiveTool.cpp
@@ -371,6 +382,8 @@ qt_add_executable(SankoCanvasSizeLock
     src/AnimaticPage.h
     src/brushlib/StudioControls.cpp
     src/brushlib/StudioControls.h
+    src/LayerTiles.cpp
+    src/LayerTiles.h
     src/camera/ShotCamera.cpp
     src/camera/ShotCamera.h
 )

@@ -21,6 +21,7 @@
 #include "StageMarginDialog.h"
 #include "brushlib/StudioControls.h"
 #include "StoryboardModel.h"
+#include "LayerTiles.h"
 #include "camera/ShotCamera.h"
 #include "export/MovieEncoder.h"
 #include "export/ProjectExport.h"
@@ -45,6 +46,7 @@
 #include <QVariantMap>
 
 #include <cstdio>
+#include <cstring>
 
 namespace {
 
@@ -1814,6 +1816,66 @@ int main(int argc, char **argv)
                              "art are the no-margin pins' bytes; only the geometry and the 4 "
                              "moving clips differ"),
               mDiffer == wantDiffer, mDiffer.join(' '));
+        // ---- (fv) THE PROJECT AT REST RENDERS WHAT IT ALWAYS RENDERED (batch 6b-V) --
+        // The moving and margin fixtures with every layer folded to its tiles, no
+        // full image anywhere: the real MP4 job, the PNGs, the PDF page, the preview,
+        // the clips, each output the bytes the full images gave.
+        ts << "--- (fv) the project at rest renders what it always rendered ---\n";
+        {
+            auto restAll = [](const QVector<Scene *> &scenes, const QPoint &frameAt) {
+                int atRest = 0, full = 0;
+                for (Scene *s : scenes)
+                    for (Panel *p : s->panels)
+                        for (Layer &l : p->layers) {
+                            if (isGroupLayer(l) || l.image.isNull())
+                                continue;
+                            const QSize size = l.image.size();
+                            const quint32 fill = l.type == QLatin1String("background")
+                                ? layertiles::paperFill(l.image, nullptr)
+                                : 0u;
+                            l.tiles = layertiles::fold(l.image, frameAt, fill);
+                            l.stageRect = QRect(-frameAt, size);
+                            l.image = QImage();
+                            ++atRest;
+                        }
+                for (const Scene *s : scenes)
+                    for (const Panel *p : s->panels)
+                        for (const Layer &l : p->layers)
+                            full += l.image.isNull() ? 0 : 1;
+                return qMakePair(atRest, full);
+            };
+            auto differing = [](const QMap<QString, QString> &a, const QMap<QString, QString> &b) {
+                QStringList off;
+                for (auto it = a.cbegin(); it != a.cend(); ++it)
+                    if (b.value(it.key()) != it.value())
+                        off << it.key();
+                return off;
+            };
+            const QVector<Scene *> rest = buildMoving(0.0);
+            const QPair<int, int> restCount = restAll(rest, QPoint(0, 0));
+            const QMap<QString, QString> restGot = renderAll(rest, QStringLiteral("ra"));
+            const QStringList restOff = differing(got, restGot);
+            check(QStringLiteral("(fv1) THE MOVING FIXTURES AT REST, every layer its tiles: every output (the "
+                                 "real MP4 job, PNG, PDF, preview, clips) is the bytes the full images gave"),
+                  restCount.first > 0 && restCount.second == 0 && restGot.size() == got.size() && restOff.isEmpty(),
+                  QStringLiteral("%1 layers at rest, %2 full, %3 outputs, differing: %4").arg(restCount.first)
+                      .arg(restCount.second).arg(restGot.size()).arg(restOff.join(QLatin1Char(' '))));
+            qDeleteAll(rest);
+            const QVector<Scene *> restM = buildMoving(0.0, kMarginPinMargin);
+            const QPair<int, int> restMCount =
+                restAll(restM, QPoint(kMarginPinMargin.width(), kMarginPinMargin.height()));
+            const QMap<QString, QString> restMGot = renderAll(restM, QStringLiteral("rm"), kMarginPinMargin);
+            const QStringList restMOff = differing(mgot, restMGot);
+            check(QStringLiteral("(fv1) THE MARGIN FIXTURES AT REST, with art in the margin: every output is the "
+                                 "bytes the full images gave"),
+                  restMCount.first > 0 && restMCount.second == 0 && restMGot.size() == mgot.size() && restMOff.isEmpty(),
+                  QStringLiteral("%1 layers at rest, %2 outputs, differing: %3").arg(restMCount.first)
+                      .arg(restMGot.size()).arg(restMOff.join(QLatin1Char(' '))));
+            check(QStringLiteral("(fv1) control: the nudged fixtures' outputs differ, so the comparison can fail"),
+                  !differing(mgot, mother).isEmpty());
+            qDeleteAll(restM);
+        }
+
         qDeleteAll(inMargin);
         qDeleteAll(mNudged);
 
@@ -2452,28 +2514,25 @@ int main(int argc, char **argv)
         sd.acrossField()->setText(QStringLiteral("4000"));
         // The dialog hears the field's own line edit, as Resize Project does.
         Q_EMIT sd.acrossField()->edit()->textEdited(QStringLiteral("4000"));
-        // The whole project's memory (the user's item, 2026-10-31): 46
-        // layers of a 4K project, 25 % around the shot = a 5760 x 3240
-        // stage, 74,649,600 bytes a layer, about 3.2 GB; amber when it
-        // passes 75 % of (free + held).
+        // The whole project's memory (the user's item, 2026-10-31). Since batch
+        // 6b-V a margin is a rectangle: the dialog says it costs nothing, and never
+        // warns, whatever the stage and however little is free.
         StageMarginDialog mem(QSize(3840, 2160), QSize(0, 0), {});
         const qint64 held = qint64(46) * 3840 * 2160 * 4; // about 1.4 GB held now
         mem.setProjectMemory(46, 11, held, qint64(16) * 1024 * 1024 * 1024, true);
         mem.presetDropdown()->choose(2); // 25 %
         const QString roomy = mem.memoryText();
-        const bool roomyOk = roomy.startsWith(QStringLiteral("Whole project: about 3.2 GB (46 layers "
-                                                             "in 11 panels)"))
+        const bool roomyOk = roomy.startsWith(QStringLiteral("A margin costs no memory until something is "
+                                                             "drawn in it"))
             && roomy.endsWith(QStringLiteral("16.0 GB free now")) && !mem.memoryWarns();
         mem.setProjectMemory(46, 11, held, qint64(2) * 1024 * 1024 * 1024, true);
-        const bool tight = mem.memoryWarns(); // 3.2 GB > 0.75 x (2 GB + 1.4 GB)
-        check(QStringLiteral("(mg10) the Stage Margin dialog says the WHOLE project's memory at the "
-                             "chosen stage (layers x stage) and what is free; with 16 GB free it is "
-                             "plain, with 2 GB free it is amber"),
-              roomyOk && tight, roomy);
-        mem.presetDropdown()->choose(0); // back to no margin: 1.5 GB
-        check(QStringLiteral("(mg10) control: at the stage the project already has, the same "
-                             "2 GB free is not amber (1.4 GB < 0.75 x 3.4 GB)"),
-              !mem.memoryWarns() && mem.memoryText().startsWith(QStringLiteral("Whole project: about 1.4 GB")),
+        const bool tight = mem.memoryWarns();
+        check(QStringLiteral("(mg10) the Stage Margin dialog says a margin costs no memory until something is "
+                             "drawn in it, and what is free; with 2 GB free it does not warn either"),
+              roomyOk && !tight && mem.memoryText().endsWith(QStringLiteral("2.0 GB free now")), roomy);
+        mem.presetDropdown()->choose(0); // back to no margin
+        check(QStringLiteral("(mg10) control: at the stage the project already has it says the same"),
+              !mem.memoryWarns() && mem.memoryText().startsWith(QStringLiteral("A margin costs no memory")),
               mem.memoryText());
 
         check(QStringLiteral("(mg10) control: past the cap Set Margin is off with the reason; "
@@ -3669,12 +3728,12 @@ int main(int argc, char **argv)
         };
         const QString wroteKeys = keysOf(w.root), wroteVps = vpsOf(w.root.value(QStringLiteral("perspective")).toObject()),
                       wroteMargins = marginsOf(w.root);
-        check(QStringLiteral("(fs1) THE FILE IN FRAME SPACE, VERSION 2: a 480 x 270 margin project writes "
-                             "\"version\": 2, each panel's margin [480, 270, 480, 270], its keys from the "
+        check(QStringLiteral("(fs1) THE FILE IN FRAME SPACE, VERSION 3: a 480 x 270 margin project writes "
+                             "\"version\": 3, each panel's margin [480, 270, 480, 270], its keys from the "
                              "frame's top-left (1440, 810 -> 960, 540; 1700.25, 900.5 -> 1220.25, 630.5; the "
                              "pinned 1000.125, 700.75 -> 520.125, 430.75) and its vanishing point the same "
                              "way (1500.5, 600.25 -> 1020.5, 330.25)"),
-              w.ok && w.root.value(QStringLiteral("version")).toInt() == 2
+              w.ok && w.root.value(QStringLiteral("version")).toInt() == 3
                   && wroteMargins == QStringLiteral("480,270,480,270 480,270,480,270")
                   && wroteKeys == QStringLiteral("960,540 1220.25,630.5 520.125,430.75")
                   && wroteVps == QStringLiteral("1020.5,330.25"),
@@ -3721,7 +3780,7 @@ int main(int argc, char **argv)
         const ProjectIO::WriteResult w0 = ProjectIO::projectToJson(plainData, dir + QStringLiteral("/plain.sankotv"));
         check(QStringLiteral("(fs2) control: without a margin the file has the keys' and the point's own "
                              "numbers (frame space is stage space) and no panel says a margin"),
-              w0.ok && w0.root.value(QStringLiteral("version")).toInt() == 2
+              w0.ok && w0.root.value(QStringLiteral("version")).toInt() == 3
                   && keysOf(w0.root) == QStringLiteral("1440,810 1700.25,900.5 1000.125,700.75")
                   && vpsOf(w0.root.value(QStringLiteral("perspective")).toObject()) == QStringLiteral("1500.5,600.25")
                   && marginsOf(w0.root) == QStringLiteral("- -"),
@@ -3729,8 +3788,13 @@ int main(int argc, char **argv)
                   vpsOf(w0.root.value(QStringLiteral("perspective")).toObject()), marginsOf(w0.root)));
 
         // (fs3) A VERSION-1 FILE: the same project as an older build wrote it -
-        // stage px, no per-panel margin.
-        QJsonObject v1 = w.root;
+        // stage px, no per-panel margin. (Each layer's file the whole stage, which
+        // version 3 no longer is: written in the older form, batch 6b-V.)
+        const QString oldFile = dir + QStringLiteral("/old.sankotv");
+        ProjectIO::setWriteVersion2ForTest(true);
+        const ProjectIO::WriteResult wOld = ProjectIO::projectToJson(data, oldFile);
+        ProjectIO::setWriteVersion2ForTest(false);
+        QJsonObject v1 = wOld.root;
         v1.insert(QStringLiteral("version"), 1);
         {
             QJsonArray scenes = v1.value(QStringLiteral("scenes")).toArray();
@@ -3756,9 +3820,9 @@ int main(int argc, char **argv)
             v1.insert(QStringLiteral("scenes"), scenes);
             v1.insert(QStringLiteral("perspective"), perspective);
         }
-        ProjectIO::LoadedProject old = ProjectIO::projectFromJson(v1, dir, file);
+        ProjectIO::LoadedProject old = ProjectIO::projectFromJson(v1, dir, oldFile);
         check(QStringLiteral("(fs3) AN OLDER FILE (version 1, stage px, the project's one margin) opens with "
-                             "the same keys, point and panel margins as the version-2 one"),
+                             "the same keys, point and panel margins as the version-3 one"),
               sameKeys(old) && allMargins(old, QMargins(480, 270, 480, 270)) == 2
                   && vpsOf(old.perspective) == QStringLiteral("1500.5,600.25") && !old.stageMarginRepaired,
               QStringLiteral("keys %1, margins on %2 panels, points %3").arg(sameKeys(old))
@@ -3807,12 +3871,294 @@ int main(int argc, char **argv)
               QStringLiteral("repaired %1, margin %2x%3, keys %4, points %5").arg(noFrame.stageMarginRepaired)
                   .arg(noFrame.stageMargin.width()).arg(noFrame.stageMargin.height()).arg(sameKeys(noFrame))
                   .arg(vpsOf(noFrame.perspective)));
+        // ---- (fv8) THE FILE AT REST, VERSION 3 (batch 6b-V) ----------------------
+        // A project opened is at rest; saved, each layer's file holds only what is
+        // drawn, placed in frame space.
+        {
+            auto bytesOf = [](const QImage &img) {
+                return shaOf(img.convertToFormat(QImage::Format_ARGB32_Premultiplied));
+            };
+            ProjectIO::LoadedProject rest = ProjectIO::projectFromJson(w.root, dir, file);
+            int atRest = 0, stillFull = 0;
+            for (const Scene *s : rest.scenes)
+                for (const Panel *p : s->panels)
+                    for (const Layer &l : p->layers) {
+                        atRest += l.atRest() ? 1 : 0;
+                        stillFull += l.image.isNull() ? 0 : 1;
+                    }
+            check(QStringLiteral("(fv8) A PROJECT OPENED IS AT REST: every layer its tiles, no full image"),
+                  atRest > 0 && stillFull == 0, QStringLiteral("%1 at rest, %2 full").arg(atRest).arg(stillFull));
+            const QImage want0 = withMargin->panels.at(0)->layers.at(1).image;
+            const QImage want0Paper = withMargin->panels.at(0)->layers.at(0).image;
+            check(QStringLiteral("(fv8) control: its pixels are the saved panel's, art in the margin included"),
+                  bytesOf(rest.scenes.at(0)->panels.at(0)->layers.at(1).pixels()) == bytesOf(want0)
+                      && bytesOf(rest.scenes.at(0)->panels.at(0)->layers.at(0).pixels()) == bytesOf(want0Paper));
+            ProjectIO::SaveData restData = data;
+            restData.scenes = rest.scenes;
+            ProjectIO::ImageLedger ledger;
+            restData.ledger = &ledger;
+            const QString restFile = dir + QStringLiteral("/rest.sankotv");
+            const ProjectIO::WriteResult wr = ProjectIO::projectToJson(restData, restFile);
+            const QJsonArray layersJson = wr.root.value(QStringLiteral("scenes")).toArray().at(0).toObject()
+                                              .value(QStringLiteral("panels")).toArray().at(0).toObject()
+                                              .value(QStringLiteral("layers")).toArray();
+            const QJsonObject paperJson = layersJson.at(0).toObject(), artJson = layersJson.at(1).toObject();
+            const QImage paperFile(dir + QStringLiteral("/") + paperJson.value(QStringLiteral("imageFile")).toString());
+            const QImage artFile(dir + QStringLiteral("/") + artJson.value(QStringLiteral("imageFile")).toString());
+            const QJsonArray artOrigin = artJson.value(QStringLiteral("origin")).toArray();
+            check(QStringLiteral("(fv8) SAVED AT REST, VERSION 3: a plain Background's file is one pixel and it says "
+                                 "its colour; a layer's file only its drawn tiles, placed from the frame's top-left, "
+                                 "on the 256 px grid"),
+                  wr.ok && wr.root.value(QStringLiteral("version")).toInt() == 3 && paperFile.size() == QSize(1, 1)
+                      && paperJson.value(QStringLiteral("fill")).toString() == QStringLiteral("ffffffff")
+                      && !artFile.isNull() && artOrigin.size() == 2 && artOrigin.at(0).toInt() % 256 == 0
+                      && artOrigin.at(1).toInt() % 256 == 0 && artFile.width() % 256 == 0 && artFile.height() % 256 == 0,
+                  QStringLiteral("paper %1x%2 fill %3; art %4x%5 at %6,%7").arg(paperFile.width()).arg(paperFile.height())
+                      .arg(paperJson.value(QStringLiteral("fill")).toString()).arg(artFile.width()).arg(artFile.height())
+                      .arg(artOrigin.at(0).toInt()).arg(artOrigin.at(1).toInt()));
+            ProjectIO::LoadedProject again = ProjectIO::projectFromJson(wr.root, dir, restFile);
+            check(QStringLiteral("(fv8) READ BACK: every layer of every panel the same bytes, the same keys and "
+                                 "point, nothing repaired"),
+                  bytesOf(again.scenes.at(0)->panels.at(0)->layers.at(1).pixels()) == bytesOf(want0)
+                      && bytesOf(again.scenes.at(0)->panels.at(1)->layers.at(1).pixels())
+                          == bytesOf(withMargin->panels.at(1)->layers.at(1).image)
+                      && bytesOf(again.scenes.at(0)->panels.at(0)->layers.at(0).pixels()) == bytesOf(want0Paper)
+                      && sameKeys(again) && vpsOf(again.perspective) == QStringLiteral("1500.5,600.25")
+                      && !again.stageMarginRepaired && again.panelMarginsRepaired == 0);
+            // Unchanged, the second save writes no layer, and says the same places.
+            const int wroteFirst = wr.imagesWritten;
+            const ProjectIO::WriteResult wr2 = ProjectIO::projectToJson(restData, restFile);
+            const QJsonArray layers2 = wr2.root.value(QStringLiteral("scenes")).toArray().at(0).toObject()
+                                           .value(QStringLiteral("panels")).toArray().at(0).toObject()
+                                           .value(QStringLiteral("layers")).toArray();
+            check(QStringLiteral("(fv8) SAVED AGAIN UNCHANGED: nothing written, and the manifest says the same places"),
+                  wroteFirst > 0 && wr2.ok && wr2.imagesWritten == 0
+                      && layers2.at(1).toObject().value(QStringLiteral("origin")).toArray() == artOrigin,
+                  QStringLiteral("first %1, second %2").arg(wroteFirst).arg(wr2.imagesWritten));
+            // HIDDEN ART (Q13): the stage shrunk, saved, opened: the art comes back
+            // with the stage.
+            const QSize smallMargin(100, 50), smallStage(1920 + 200, 1080 + 100);
+            for (Scene *s : std::as_const(rest.scenes))
+                for (Panel *p : std::as_const(s->panels)) {
+                    p->margin = QMargins(100, 50, 100, 50);
+                    for (Layer &l : p->layers)
+                        if (!isGroupLayer(l))
+                            l.stageRect = QRect(QPoint(-100, -50), smallStage);
+                }
+            ProjectIO::SaveData shrunkData = restData;
+            shrunkData.canvasSize = smallStage;
+            shrunkData.stageMargin = smallMargin;
+            const QString shrunkFile = dir + QStringLiteral("/shrunk.sankotv");
+            const ProjectIO::WriteResult ws = ProjectIO::projectToJson(shrunkData, shrunkFile);
+            ProjectIO::LoadedProject shrunk = ProjectIO::projectFromJson(ws.root, dir, shrunkFile);
+            Layer &shrunkArt = shrunk.scenes.at(0)->panels.at(0)->layers[1];
+            const QRect grown(QPoint(-480, -270), QSize(2880, 1620));
+            const bool hiddenThere = shrunkArt.tiles && layertiles::hasHidden(*shrunkArt.tiles, shrunkArt.stageRect);
+            const QSize openSize = shrunkArt.pixelSize();
+            const QString grownBytes = shrunkArt.tiles ? bytesOf(layertiles::unfold(*shrunkArt.tiles, grown)) : QString();
+            check(QStringLiteral("(fv8) ART OUTSIDE A SHRUNK STAGE, SAVED AND REOPENED, is still there, hidden, and "
+                                 "comes back when the stage grows"),
+                  ws.ok && shrunk.stageMargin == smallMargin && openSize == smallStage && hiddenThere
+                      && grownBytes == bytesOf(want0),
+                  QStringLiteral("margin %1x%2, stage %3x%4, hidden %5").arg(shrunk.stageMargin.width())
+                      .arg(shrunk.stageMargin.height()).arg(openSize.width()).arg(openSize.height()).arg(hiddenThere));
+            check(QStringLiteral("(fv8) control: the shrunk stage's own pixels are the art's there, not the whole"),
+                  bytesOf(shrunkArt.pixels()) == bytesOf(want0.copy(QRect(380, 220, 2120, 1180)))
+                      && bytesOf(shrunkArt.pixels()) != bytesOf(want0));
+            qDeleteAll(shrunk.scenes);
+            qDeleteAll(again.scenes);
+            qDeleteAll(rest.scenes);
+        }
         qDeleteAll(noFrame.scenes);
         qDeleteAll(back.scenes);
         qDeleteAll(old.scenes);
         qDeleteAll(repaired.scenes);
         delete withMargin;
         delete plain;
+    }
+
+    // ---- (fv) A LAYER'S TILES (batch 6b-V, Q12 V, Q13) ---------------------------
+    ts << "--- (fv) a layer's tiles ---\n";
+    {
+        const int kW = 1000, kH = 700;
+        QImage art(kW, kH, QImage::Format_ARGB32_Premultiplied);
+        art.fill(Qt::transparent);
+        {
+            QPainter p(&art);
+            p.setRenderHint(QPainter::Antialiasing, true);
+            p.setPen(QPen(QColor(20, 40, 200, 180), 7));
+            p.drawEllipse(QRectF(120.5, 90.25, 400, 300));
+            p.setBrush(QColor(200, 30, 90, 120));
+            p.setPen(Qt::NoPen);
+            p.drawEllipse(QRectF(640, 420, 240, 200));
+        }
+        auto sameBytes = [](const QImage &a, const QImage &b) {
+            if (a.size() != b.size() || a.format() != b.format())
+                return false;
+            for (int y = 0; y < a.height(); ++y)
+                if (std::memcmp(a.constScanLine(y), b.constScanLine(y), size_t(a.width()) * 4) != 0)
+                    return false;
+            return true;
+        };
+        QStringList trips;
+        bool tripsOk = true;
+        for (const QPoint &at : {QPoint(0, 0), QPoint(300, 170), QPoint(37, 19), QPoint(256, 512)}) {
+            const layertiles::TilesPtr t = layertiles::fold(art, at, 0u);
+            const bool same = sameBytes(layertiles::unfold(*t, QRect(-at, art.size())), art);
+            tripsOk = tripsOk && same && t->tiles.size() < 25;
+            trips << QStringLiteral("frame at %1,%2: %3 tiles %4").arg(at.x()).arg(at.y()).arg(t->tiles.size())
+                         .arg(same ? QStringLiteral("same") : QStringLiteral("DIFFER"));
+        }
+        check(QStringLiteral("(fv2) FOLD AND UNFOLD GIVE THE SAME BYTES, translucent edges included, wherever the "
+                             "frame is in the image, and only the tiles that hold something are kept"),
+              tripsOk, trips.join(QStringLiteral("; ")));
+        {
+            QImage nudged = art.copy();
+            nudged.setPixelColor(500, 350, QColor(1, 2, 3, 255));
+            const layertiles::TilesPtr t = layertiles::fold(nudged, QPoint(0, 0), 0u);
+            check(QStringLiteral("(fv2) control: one pixel changed comes back changed, and differs from the art"),
+                  sameBytes(layertiles::unfold(*t, nudged.rect()), nudged) && !sameBytes(nudged, art));
+        }
+        // What is kept.
+        QImage blank(kW, kH, QImage::Format_ARGB32_Premultiplied);
+        blank.fill(Qt::transparent);
+        QImage dot = blank.copy();
+        dot.setPixelColor(10, 10, QColor(0, 0, 0, 255));
+        QImage paper(kW, kH, QImage::Format_ARGB32_Premultiplied);
+        paper.fill(Qt::white);
+        QImage blue(kW, kH, QImage::Format_ARGB32_Premultiplied);
+        blue.fill(QColor(10, 20, 200));
+        QImage painted = paper.copy();
+        painted.setPixelColor(600, 300, QColor(1, 2, 3, 255));
+        const layertiles::TilesPtr tBlank = layertiles::fold(blank, QPoint(0, 0), 0u),
+                                   tDot = layertiles::fold(dot, QPoint(0, 0), 0u),
+                                   tPaper = layertiles::fold(paper, QPoint(0, 0), layertiles::paperFill(paper, nullptr)),
+                                   tBlue = layertiles::fold(blue, QPoint(0, 0), layertiles::paperFill(blue, nullptr)),
+                                   tPainted = layertiles::fold(painted, QPoint(0, 0), layertiles::paperFill(painted, nullptr));
+        check(QStringLiteral("(fv3) AN EMPTY LAYER HOLDS NO TILE, one dot one tile, a plain Background only its "
+                             "colour (white or blue), a painted one white and the tile that differs"),
+              tBlank->tiles.isEmpty() && tBlank->drawn.isEmpty() && tDot->tiles.size() == 1
+                  && tPaper->tiles.isEmpty() && tPaper->fill == 0xffffffffu && tBlue->tiles.isEmpty()
+                  && tBlue->fill == blue.pixel(0, 0) && tPainted->tiles.size() == 1 && tPainted->fill == 0xffffffffu,
+              QStringLiteral("%1, %2, %3 (%4), %5 (%6), %7 tiles").arg(tBlank->tiles.size()).arg(tDot->tiles.size())
+                  .arg(tPaper->tiles.size()).arg(tPaper->fill, 0, 16).arg(tBlue->tiles.size()).arg(tBlue->fill, 0, 16)
+                  .arg(tPainted->tiles.size()));
+        check(QStringLiteral("(fv3) control: each comes back the bytes it was, and a fully drawn layer holds every "
+                             "tile"),
+              sameBytes(layertiles::unfold(*tBlank, blank.rect()), blank)
+                  && sameBytes(layertiles::unfold(*tDot, dot.rect()), dot)
+                  && sameBytes(layertiles::unfold(*tPaper, paper.rect()), paper)
+                  && sameBytes(layertiles::unfold(*tBlue, blue.rect()), blue)
+                  && sameBytes(layertiles::unfold(*tPainted, painted.rect()), painted)
+                  && layertiles::fold(paper, QPoint(0, 0), 0u)->tiles.size() == 12);
+        // Painting.
+        QStringList paints;
+        bool paintsOk = true;
+        const struct { const char *what; QImage image; quint32 fill; } sources[] = {
+            {"translucent art", art, 0u}, {"plain paper", paper, 0xffffffffu}, {"painted paper", painted, 0xffffffffu}};
+        for (const auto &source : sources)
+            for (const double opacity : {1.0, 0.5, 0.33}) {
+                QImage under(kW, kH, QImage::Format_ARGB32_Premultiplied);
+                under.fill(QColor(40, 90, 160));
+                QImage a = under.copy(), b = under.copy();
+                {
+                    QPainter p(&a);
+                    p.setRenderHint(QPainter::SmoothPixmapTransform, true);
+                    p.setOpacity(opacity);
+                    p.drawImage(0, 0, source.image);
+                }
+                {
+                    const layertiles::TilesPtr t = layertiles::fold(source.image, QPoint(130, 77), source.fill);
+                    QPainter p(&b);
+                    p.setRenderHint(QPainter::SmoothPixmapTransform, true);
+                    p.setOpacity(opacity);
+                    layertiles::paint(p, *t, QRect(QPoint(-130, -77), source.image.size()));
+                }
+                const bool same = sameBytes(a, b);
+                paintsOk = paintsOk && same;
+                if (!same)
+                    paints << QStringLiteral("%1 at %2").arg(QLatin1String(source.what)).arg(opacity);
+            }
+        check(QStringLiteral("(fv4) THE TILES PAINT WHAT THE FULL IMAGE PAINTS, byte for byte, at any opacity, over "
+                             "anything: translucent art, plain paper, painted paper"),
+              paintsOk, paints.join(QStringLiteral("; ")));
+        {
+            QImage under(kW, kH, QImage::Format_ARGB32_Premultiplied);
+            under.fill(QColor(40, 90, 160));
+            QImage a = under.copy(), b = under.copy();
+            QPainter pa(&a);
+            pa.setOpacity(0.5);
+            layertiles::paint(pa, *layertiles::fold(art, QPoint(0, 0), 0u), art.rect());
+            pa.end();
+            QPainter pb(&b);
+            pb.setOpacity(0.6);
+            layertiles::paint(pb, *layertiles::fold(art, QPoint(0, 0), 0u), art.rect());
+            pb.end();
+            check(QStringLiteral("(fv4) control: another opacity paints other bytes"), !sameBytes(a, b));
+        }
+        // The stage's rectangle (Q13): the frame in the middle of a stage with art in
+        // the margin; a smaller stage hides the band, and nothing is lost.
+        const QPoint big(300, 170);
+        const QRect bigStage(-big, art.size());
+        const QRect smallStage(QPoint(-40, -20), QSize(kW - 2 * 260, kH - 2 * 150));
+        const layertiles::TilesPtr whole = layertiles::fold(art, big, 0u);
+        const QImage smallPixels = layertiles::unfold(*whole, smallStage);
+        check(QStringLiteral("(fv5) A SMALLER STAGE IS ONLY A RECTANGLE: its pixels are the art's there, and what "
+                             "lies outside is kept, hidden, and comes back when the stage grows"),
+              sameBytes(smallPixels, art.copy(smallStage.translated(big)))
+                  && layertiles::hasHidden(*whole, smallStage) && !layertiles::hasHidden(*whole, bigStage)
+                  && sameBytes(layertiles::unfold(*whole, bigStage), art));
+        // Edited at the small stage, then folded: the edit lands, the hidden art stays.
+        QImage edited = smallPixels.copy();
+        edited.setPixelColor(5, 5, QColor(9, 9, 9, 255));
+        const layertiles::TilesPtr refolded = layertiles::fold(edited, -smallStage.topLeft(), 0u, whole);
+        QImage expected = art.copy();
+        expected.setPixelColor(smallStage.topLeft() + QPoint(5, 5) + big, QColor(9, 9, 9, 255));
+        check(QStringLiteral("(fv5) AN EDIT AT THE SMALL STAGE, folded: the edit is in, the art outside the small "
+                             "stage is still there when it grows back, in tiles half in and half out too"),
+              sameBytes(layertiles::unfold(*refolded, bigStage), expected)
+                  && layertiles::hasHidden(*refolded, smallStage));
+        // An edit erasing inside the stage must not bring the old pixels back.
+        QImage erased = smallPixels.copy();
+        erased.fill(Qt::transparent);
+        const layertiles::TilesPtr clearedIn = layertiles::fold(erased, -smallStage.topLeft(), 0u, whole);
+        check(QStringLiteral("(fv5) control: what was erased inside the small stage stays erased; what is outside "
+                             "stays"),
+              layertiles::drawnBounds(*clearedIn, smallStage).isEmpty() && layertiles::hasHidden(*clearedIn, smallStage));
+        const layertiles::TilesPtr trim = layertiles::trimmed(*whole, smallStage);
+        check(QStringLiteral("(fv6) TRIM HIDDEN ART frees what is outside and keeps the stage's pixels; the stage "
+                             "grown back shows nothing where it was"),
+              !layertiles::hasHidden(*trim, smallStage) && sameBytes(layertiles::unfold(*trim, smallStage), smallPixels)
+                  && layertiles::drawnBounds(*trim, bigStage)
+                      == layertiles::drawnBounds(*trim, smallStage).translated(smallStage.topLeft() - bigStage.topLeft())
+                  && trim->tiles.size() < whole->tiles.size() + 1 && trim->key != whole->key,
+              QStringLiteral("%1 tiles -> %2").arg(whole->tiles.size()).arg(trim->tiles.size()));
+        check(QStringLiteral("(fv6) control: the untrimmed tiles still hold it"),
+              !layertiles::drawnBounds(*whole, bigStage).isEmpty()
+                  && layertiles::drawnBounds(*whole, bigStage)
+                      != layertiles::drawnBounds(*trim, bigStage));
+        // The identity.
+        Layer layer;
+        layer.type = QStringLiteral("raster");
+        layer.image = art.copy();
+        const qint64 k0 = layer.contentKey();
+        layer.tiles = layertiles::fold(layer.image, QPoint(0, 0), 0u);
+        layer.stageRect = layer.image.rect();
+        layer.tilesOf = layer.image.cacheKey();
+        const qint64 k1 = layer.contentKey();
+        layer.image = QImage();
+        const qint64 k2 = layer.contentKey();
+        const QSize restSize = layer.pixelSize();
+        layer.unfoldNow();
+        const qint64 k3 = layer.contentKey();
+        const bool current = layer.tilesCurrent();
+        layer.image.setPixelColor(0, 0, QColor(1, 1, 1, 255));
+        const qint64 k4 = layer.contentKey();
+        check(QStringLiteral("(fv7) THE PIXELS' IDENTITY stays put through a fold and an unfold, so a thumbnail, a "
+                             "mip and the save's ledger see the same pixels as the same"),
+              k0 == k1 && k1 == k2 && k2 == k3 && current && restSize == art.size());
+        check(QStringLiteral("(fv7) control: an edit moves it on, and the tiles no longer count as current"),
+              k4 != k3 && !layer.tilesCurrent());
     }
 
     delete scene;

@@ -38,6 +38,7 @@ class SankoSlider;
 class SankoTipPopup;
 
 class DockController;
+class LayerFolder;
 class QDockWidget;
 class QMainWindow;
 class AnimaticPage;
@@ -72,6 +73,9 @@ public:
     // showed 200 whenever a large library brush was active — a display lie
     // nothing could observe from outside. The slider class is file-local,
     // so this is the narrowest honest window into it.
+    LayerFolder *layerFolder() const { return m_layerFolder; }
+    // The panel on the canvas gets its full images again (a margin changed).
+    void reopenCurrentPanel();
     int sizeCtlDisplayedOpacityForTest() const
     {
         return m_sizeCtlOpacityForTest ? m_sizeCtlOpacityForTest() : -1;
@@ -582,6 +586,7 @@ private:
     // QDockWidgets around it.
     QMainWindow *m_dockHost = nullptr;
     DockController *m_dockController = nullptr;
+    LayerFolder *m_layerFolder = nullptr; // the panels at rest (batch 6b-V)
     QDockWidget *m_layersDock = nullptr;
     QDockWidget *m_scenesDock = nullptr;
     QDockWidget *m_shotInfoDock = nullptr;

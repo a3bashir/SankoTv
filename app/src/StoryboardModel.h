@@ -1,5 +1,6 @@
 #pragma once
 
+#include "LayerTiles.h"
 #include "camera/CameraModel.h"
 
 #include <QColor>
@@ -34,7 +35,18 @@ struct Layer
     QString id;             // UUID
     QString name;           // "Layer 1", "Reference", ...
     QString type;           // "raster" (drawn) or "image" (imported)
-    QImage image;           // ARGB32_Premultiplied, canvas-sized
+    // THE PIXELS (batch 6b-V, 2026-11-07). `image` is the full image, stage-sized,
+    // ARGB32_Premultiplied: only the panel on the canvas is sure to have it, so
+    // that every tool works as it always has. Any other panel's layer is at rest:
+    // a null image and `tiles`, read at `stageRect` (LayerTiles.h). A layer can
+    // hold both: then `tilesOf` is the cacheKey() of the image the tiles hold, and
+    // an edit shows by the key moving on. Whatever reads ANOTHER panel's pixels
+    // reads hasPixels, pixelSize, contentKey, pixels and paintTo below; only what
+    // works on the panel on the canvas may read `image`. Folding: LayerFolder.
+    QImage image;
+    layertiles::TilesPtr tiles;
+    QRect stageRect;        // frame space: where the stage lies, for `tiles`
+    qint64 tilesOf = 0;
     bool visible = true;
     double opacity = 1.0;   // 0.0 - 1.0
     bool locked = false;
@@ -54,6 +66,46 @@ struct Layer
     // far, 1.5 = a near layer; 0 .. 2. A folder's value is its members';
     // a member's own is kept for when it leaves (Panel::effectiveParallax).
     double parallax = 1.0;
+
+    bool atRest() const { return image.isNull() && tiles; }
+    bool hasPixels() const { return !image.isNull() || tiles; }
+    QSize pixelSize() const { return !image.isNull() ? image.size() : tiles ? stageRect.size() : QSize(); }
+    // The tiles still say what the image says.
+    bool tilesCurrent() const { return tiles && !image.isNull() && image.cacheKey() == tilesOf; }
+    // THE IDENTITY OF THE PIXELS, what cacheKey() was before there were tiles: it
+    // moves on with every edit and stays put through a fold and an unfold, so a
+    // thumbnail, a mip and the save's ledger see the same pixels as the same.
+    qint64 contentKey() const
+    {
+        if (image.isNull())
+            return tiles ? tiles->key : 0;
+        return tilesCurrent() ? tiles->key : image.cacheKey();
+    }
+    // The stage's pixels as a full image: the layer's own, or one made for the
+    // caller from the tiles. A copy of nothing when the layer holds the image.
+    QImage pixels() const
+    {
+        if (!image.isNull() || !tiles)
+            return image;
+        return layertiles::unfold(*tiles, stageRect);
+    }
+    // The full image back on this layer.
+    void unfoldNow()
+    {
+        if (atRest()) {
+            image = layertiles::unfold(*tiles, stageRect);
+            tilesOf = image.cacheKey();
+        }
+    }
+    // Paints the stage's pixels with the painter's opacity, the stage's top-left
+    // at the painter's origin (identity transform), as drawImage(0, 0, pixels()).
+    void paintTo(QPainter &painter) const
+    {
+        if (!image.isNull())
+            painter.drawImage(0, 0, image);
+        else if (tiles)
+            layertiles::paint(painter, *tiles, stageRect);
+    }
 };
 
 // The depth range and the picture plane (Phase 2B).
@@ -221,7 +273,7 @@ struct Panel
     // A layer that is drawn: not a folder, has pixels, visible and not clear.
     bool layerDrawn(const Layer &layer) const
     {
-        return !isGroupLayer(layer) && !layer.image.isNull() && layerEffectivelyVisible(layer)
+        return !isGroupLayer(layer) && layer.hasPixels() && layerEffectivelyVisible(layer)
             && layerEffectiveOpacity(layer) > 0.0;
     }
     // True when any drawn layer is off the picture plane: only then does
@@ -250,9 +302,19 @@ struct Panel
     QSize canvasSize() const
     {
         for (const Layer &layer : layers)
-            if (!layer.image.isNull())
-                return layer.image.size();
+            if (layer.hasPixels())
+                return layer.pixelSize();
         return QSize();
+    }
+
+    // Where the frame's top-left is in this panel's full images.
+    QPoint frameAt() const { return QPoint(margin.left(), margin.top()); }
+    // The full images back, one after another (LayerFolder::open does it in
+    // parallel, and this is then nothing). The panel on the canvas has them.
+    void unfoldNow()
+    {
+        for (Layer &layer : layers)
+            layer.unfoldNow();
     }
 
     // Composite all VISIBLE layers bottom-to-top with per-layer opacity onto
@@ -280,13 +342,13 @@ struct Panel
         for (const Layer &layer : layers) {
             if (layer.type == QLatin1String("group"))
                 continue;
-            if (!layerEffectivelyVisible(layer) || layer.image.isNull())
+            if (!layerEffectivelyVisible(layer) || !layer.hasPixels())
                 continue;
             const double opacity = layerEffectiveOpacity(layer);
             if (opacity <= 0.0)
                 continue;
             painter.setOpacity(opacity);
-            painter.drawImage(0, 0, layer.image);
+            layer.paintTo(painter);
         }
         painter.end();
         return out;
@@ -317,7 +379,7 @@ struct Panel
         QVector<quint64> fp;
         fp.reserve(layers.size() * 3);
         for (const Layer &layer : layers) {
-            fp.append(quint64(layer.image.cacheKey()));
+            fp.append(quint64(layer.contentKey()));
             quint64 opacityBits = 0;
             static_assert(sizeof(opacityBits) == sizeof(layer.opacity),
                           "opacity bits must fit the fingerprint word");

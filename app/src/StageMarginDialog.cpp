@@ -286,8 +286,9 @@ void StageMarginDialog::revalidate()
                     ? QStringLiteral(" 1 camera key frames part of it.")
                     : QStringLiteral(" %1 camera keys frame part of it.").arg(band.keysInBand);
             if (band.panelsWithArt > 0) {
-                m_effect = QStringLiteral("%1 Art on %2 lies in the part that will be cropped "
-                                          "away (%3), and cannot be recovered.%4")
+                // Nothing is cut (batch 6b-V, Q13): File > Trim Hidden Art frees it.
+                m_effect = QStringLiteral("%1 Art on %2 lies outside the new stage (%3). It is kept, "
+                                          "hidden, and comes back if the stage grows again.%4")
                                .arg(lead,
                                     band.panelsWithArt == 1
                                         ? QStringLiteral("1 panel")
@@ -305,21 +306,12 @@ void StageMarginDialog::revalidate()
     m_memText.clear();
     m_memWarn = false;
     if (m_layers > 0) {
-        const QSize stage = stagemargin::stageSize(m_frame, chosenMargin());
-        const qint64 projected =
-            qint64(m_layers) * qint64(qMax(0, stage.width())) * qint64(qMax(0, stage.height())) * 4;
-        m_memText = QStringLiteral("Whole project: about %1 (%2 layers in %3 panels)")
-                        .arg(ProjectResize::formatBytes(projected))
-                        .arg(m_layers)
-                        .arg(m_panels);
-        if (m_memKnown) {
+        // A margin is a rectangle (batch 6b-V): the layers hold only what is
+        // drawn, whatever the stage, so the choice here costs no memory.
+        m_memText = QStringLiteral("A margin costs no memory until something is drawn in it");
+        if (m_memKnown)
             m_memText += QStringLiteral(" · %1 free now")
                              .arg(ProjectResize::formatBytes(m_availableBytes));
-            // What the project could use is the free memory plus what it
-            // already holds (its images are swapped panel by panel).
-            m_memWarn = double(projected)
-                > 0.75 * double(m_availableBytes + m_currentBytes);
-        }
     }
     m_set->setEnabled(m_reason.isEmpty());
     update();

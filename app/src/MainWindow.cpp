@@ -36,6 +36,7 @@ this fence."
 #include "DashboardPage.h"
 #include "MediaCopyProgress.h"
 #include "NewProjectDialog.h"
+#include "LayerFolder.h"
 #include "ProjectResize.h"
 #include "ProjectSettingsDialog.h"
 #include "ResizeProjectDialog.h"
@@ -380,6 +381,17 @@ MainWindow::MainWindow(QWidget *parent)
             // ...and the Camera tool's own state (Phase 1B).
             if (m_storyboard)
                 m.insert(m_storyboard->shotCamToolDevrecState());
+            // The panels at rest (batch 6b-V): what is held, and the last wait.
+            if (m_storyboard && m_storyboard->layerFolder()) {
+                const LayerFolder *folder = m_storyboard->layerFolder();
+                const LayerFolder::Held held = folder->held();
+                m.insert(QStringLiteral("layers.denseMB"), qRound64(held.denseBytes / 1048576.0));
+                m.insert(QStringLiteral("layers.tilesMB"), qRound64(held.tileBytes / 1048576.0));
+                m.insert(QStringLiteral("layers.dense"), held.denseLayers);
+                m.insert(QStringLiteral("layers.atRest"), held.foldedLayers);
+                m.insert(QStringLiteral("layers.lastUnfoldMs"), qRound(folder->lastUnfoldMs() * 10.0) / 10.0);
+                m.insert(QStringLiteral("layers.lastUnfoldLayers"), folder->lastUnfoldLayers());
+            }
             return m;
         });
         // Undo / Redo name their step ("Undo Move Camera"), asked before
@@ -582,6 +594,11 @@ void MainWindow::setupMenuBar()
     m_projectSettingsAct = fileMenu->addAction(QStringLiteral("Project Settings..."));
     connect(m_projectSettingsAct, &QAction::triggered, this,
             &MainWindow::onProjectSettings);
+    // TRIM HIDDEN ART (batch 6b-V, Q13): art outside a shrunk stage is kept until
+    // the artist means otherwise.
+    m_trimHiddenAct = fileMenu->addAction(QStringLiteral("Trim Hidden Art..."));
+    m_trimHiddenAct->setObjectName(QStringLiteral("fileTrimHiddenArt"));
+    connect(m_trimHiddenAct, &QAction::triggered, this, &MainWindow::onTrimHiddenArt);
     // CLEAN UP PROJECT FOLDER (2026-11-04): the id-named image files the
     // saved project no longer references, removed on the artist's word -
     // never by a save (the orphan rule), never a legacy name, never a file
@@ -1076,7 +1093,7 @@ void MainWindow::finishRecoveryRun(quint64 serial)
     int steps = 0, uiSteps = 0;
     for (const ProjectIO::ImageJob &job : run->plan.jobs) {
         if (job.ok) {
-            m_recoveryLedger->record(job.file, job.content);
+            m_recoveryLedger->record(job.file, job.content, job.origin);
             written << job.file;
         } else {
             m_recoveryLedger->forget(job.file);
@@ -1396,6 +1413,8 @@ void MainWindow::updateSaveActions()
                                       || !m_currentProjectPath.isEmpty());
     if (m_cleanUpAct) // needs a project file on disk to compare against
         m_cleanUpAct->setEnabled(!m_currentProjectPath.isEmpty());
+    if (m_trimHiddenAct)
+        m_trimHiddenAct->setEnabled(hasScenes);
     if (m_discardRecoveryAct)
         m_discardRecoveryAct->setEnabled(!recoveryBasePath().isEmpty()
                                          && ProjectRecovery::hasCopy(recoveryBasePath()));
@@ -2059,12 +2078,225 @@ ProjectResize::Outcome MainWindow::applyCanvasResizeInternal(const QSize &newSiz
     return applyStageResizeInternal(newSize, m_stageMargin);
 }
 
+// THE MARGIN AS A RECTANGLE (batch 6b-V, Q12 V): one undo step that stores two
+// margins and the cameras it moved. No pixel moves: a shrink cuts nothing (the art
+// stays in its tiles, hidden, Q13), so nothing is stored for one.
+class StageMarginCommand : public QUndoCommand
+{
+public:
+    StageMarginCommand(MainWindow *window, const QSize &before, const QSize &after)
+        : QUndoCommand(QStringLiteral("Change Stage Margin")), m_window(window), m_before(before), m_after(after)
+    {
+    }
+    void redo() override
+    {
+        if (m_camerasBefore.isEmpty())
+            m_camerasBefore = m_window->sceneCamerasForMargin();
+        m_window->setMarginRect(m_after, m_camerasAfter.isEmpty() ? nullptr : &m_camerasAfter);
+        if (m_camerasAfter.isEmpty())
+            m_camerasAfter = m_window->sceneCamerasForMargin();
+    }
+    void undo() override { m_window->setMarginRect(m_before, &m_camerasBefore); }
+
+private:
+    MainWindow *m_window;
+    QSize m_before, m_after;
+    QVector<shotcam::SceneCamera> m_camerasBefore, m_camerasAfter;
+};
+
+// The art kept outside the stage, freed (Q13): one undo step that holds what it
+// trims, as the tiles it had.
+class TrimHiddenCommand : public QUndoCommand
+{
+public:
+    struct Step
+    {
+        Panel *panel = nullptr;
+        QString layerId;
+        layertiles::TilesPtr before, after;
+    };
+    explicit TrimHiddenCommand(const QVector<Step> &steps)
+        : QUndoCommand(QStringLiteral("Trim Hidden Art")), m_steps(steps)
+    {
+    }
+    void redo() override { apply(false); }
+    void undo() override { apply(true); }
+
+private:
+    void apply(bool back)
+    {
+        for (const Step &step : std::as_const(m_steps))
+            for (Layer &layer : step.panel->layers)
+                if (layer.id == step.layerId) {
+                    // The stage's pixels are the same before and after, so a
+                    // full image here still says what its tiles say.
+                    const bool current = layer.tilesCurrent();
+                    layer.tiles = back ? step.before : step.after;
+                    if (current)
+                        layer.tilesOf = layer.image.cacheKey();
+                }
+    }
+    QVector<Step> m_steps;
+};
+
+QVector<shotcam::SceneCamera> MainWindow::sceneCamerasForMargin() const
+{
+    QVector<shotcam::SceneCamera> cameras;
+    for (const Scene *scene : std::as_const(m_scenes))
+        cameras.append(scene ? scene->camera : shotcam::SceneCamera());
+    return cameras;
+}
+
+void MainWindow::setMarginRect(const QSize &newMargin, const QVector<shotcam::SceneCamera> *cameras)
+{
+    const QSize currentSize(m_canvasWidth, m_canvasHeight);
+    const shotcam::Stage oldStage = shotcam::stageWithMargin(currentSize, m_stageMargin);
+    const QSize newSize(oldStage.frame.width() + 2 * newMargin.width(),
+                        oldStage.frame.height() + 2 * newMargin.height());
+    const shotcam::Stage newStage = shotcam::stageWithMargin(newSize, newMargin);
+    const QPoint offset = ProjectResize::centreOffset(currentSize, newSize);
+    // The shot camera keeps each framing over the same artwork; an undo, the very
+    // keys it had.
+    for (int s = 0; s < m_scenes.size(); ++s) {
+        Scene *scene = m_scenes.at(s);
+        if (!scene)
+            continue;
+        if (cameras && s < cameras->size())
+            scene->camera = cameras->at(s);
+        else
+            shotcam::remapForResize(scene->camera, oldStage, newStage, offset);
+    }
+    // EVERY LAYER AT REST, then only its rectangle: nothing to copy. What a full
+    // image holds that its tiles do not yet is folded first, here: only the panel
+    // on the canvas, and a panel on its way.
+    m_canvasWidth = newSize.width();
+    m_canvasHeight = newSize.height();
+    m_stageMargin = newStage.hasMargin() ? newStage.margin() : QSize(0, 0);
+    const QMargins margin = projectMargin();
+    const QRect stageRect(QPoint(-margin.left(), -margin.top()), newSize);
+    for (Scene *scene : std::as_const(m_scenes)) {
+        if (!scene)
+            continue;
+        for (Panel *panel : std::as_const(scene->panels)) {
+            if (!panel)
+                continue;
+            for (Layer &layer : panel->layers) {
+                if (isGroupLayer(layer))
+                    continue;
+                if (!layer.image.isNull() && !layer.tilesCurrent()) {
+                    const QImage image = layertiles::foldable(layer.image)
+                        ? layer.image
+                        : layer.image.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+                    const quint32 fill = layer.type == QLatin1String("background")
+                        ? layertiles::paperFill(image, layer.tiles)
+                        : 0u;
+                    layer.tiles = layertiles::fold(image, panel->frameAt(), fill, layer.tiles,
+                                                   layer.image.cacheKey());
+                }
+                layer.image = QImage();
+                layer.tilesOf = 0;
+                layer.stageRect = stageRect;
+            }
+            panel->margin = margin;
+        }
+    }
+    pushStageMargin();
+    if (m_storyboard) {
+        m_storyboard->reopenCurrentPanel(); // its full images, at the new stage
+        m_storyboard->applyProjectResize(newSize, offset);
+    }
+    updateSaveActions();
+    updateTitle();
+}
+
+int MainWindow::panelsWithHiddenArt() const
+{
+    int panels = 0;
+    for (const Scene *scene : std::as_const(m_scenes)) {
+        if (!scene)
+            continue;
+        for (const Panel *panel : scene->panels) {
+            if (!panel)
+                continue;
+            bool hidden = false;
+            for (const Layer &layer : panel->layers)
+                hidden = hidden
+                    || (layer.tiles && !isGroupLayer(layer)
+                        && layertiles::hasHidden(*layer.tiles, QRect(-panel->frameAt(), layer.pixelSize())));
+            panels += hidden ? 1 : 0;
+        }
+    }
+    return panels;
+}
+
+// Trim Hidden Art (Q13): only what lies outside each panel's stage.
+void MainWindow::trimHiddenArt()
+{
+    QVector<TrimHiddenCommand::Step> steps;
+    for (Scene *scene : std::as_const(m_scenes)) {
+        if (!scene)
+            continue;
+        for (Panel *panel : std::as_const(scene->panels)) {
+            if (!panel)
+                continue;
+            for (Layer &layer : panel->layers) {
+                if (isGroupLayer(layer) || !layer.tiles)
+                    continue;
+                const QRect stage(-panel->frameAt(), layer.pixelSize());
+                if (!layertiles::hasHidden(*layer.tiles, stage))
+                    continue;
+                // An edited full image folds first: the step's "before" is the
+                // layer as it stands.
+                if (!layer.image.isNull() && !layer.tilesCurrent()) {
+                    const qint64 key = layer.image.cacheKey();
+                    layer.tiles = layertiles::fold(layer.image, panel->frameAt(), layer.tiles->fill, layer.tiles, key);
+                    layer.tilesOf = key;
+                }
+                steps.append({panel, layer.id, layer.tiles, layertiles::trimmed(*layer.tiles, stage)});
+            }
+        }
+    }
+    if (!steps.isEmpty() && m_undoStack)
+        m_undoStack->push(new TrimHiddenCommand(steps));
+}
+
+void MainWindow::onTrimHiddenArt()
+{
+    const int panels = panelsWithHiddenArt();
+    if (panels == 0) {
+        QMessageBox::information(this, QStringLiteral("Trim Hidden Art"),
+                                 QStringLiteral("No panel has art outside its stage."));
+        return;
+    }
+    QMessageBox confirm(QMessageBox::Question, QStringLiteral("Trim Hidden Art"),
+                        QStringLiteral("%1 has art outside the stage, kept and hidden.\n\nTrimming frees it: "
+                                       "it will not come back when the stage grows. You can undo this.")
+                            .arg(panels == 1 ? QStringLiteral("1 panel") : QStringLiteral("%1 panels").arg(panels)),
+                        QMessageBox::NoButton, this);
+    QPushButton *go = confirm.addButton(QStringLiteral("Trim"), QMessageBox::AcceptRole);
+    confirm.addButton(QMessageBox::Cancel);
+    confirm.setDefaultButton(QMessageBox::Cancel);
+    confirm.exec();
+    if (confirm.clickedButton() == go)
+        trimHiddenArt();
+}
+
 ProjectResize::Outcome MainWindow::applyStageResizeInternal(const QSize &newSize,
                                                             const QSize &newMargin)
 {
     const QSize currentSize(m_canvasWidth, m_canvasHeight);
     const shotcam::Stage oldStage = shotcam::stageWithMargin(currentSize, m_stageMargin);
     const shotcam::Stage newStage = shotcam::stageWithMargin(newSize, newMargin);
+    // Only the margin: a rectangle and one undo step (batch 6b-V). No pixel moves.
+    const QSize marginBefore = oldStage.hasMargin() ? oldStage.margin() : QSize(0, 0);
+    const QSize marginAfter = newStage.hasMargin() ? newStage.margin() : QSize(0, 0);
+    if (newStage.frame == oldStage.frame && marginAfter != marginBefore && m_undoStack) {
+        m_undoStack->push(new StageMarginCommand(this, marginBefore, marginAfter));
+        ProjectResize::Outcome done;
+        for (const Scene *scene : std::as_const(m_scenes))
+            done.panelsResized += scene ? int(scene->panels.size()) : 0;
+        return done;
+    }
     const QPoint offset = ProjectResize::centreOffset(currentSize, newSize);
     const ProjectResize::Outcome outcome =
         ProjectResize::apply(m_scenes, newSize, offset);
@@ -2142,10 +2374,9 @@ QRect drawnBounds(const QImage &image)
 }
 } // namespace
 
-// Stage Margin... (Phase 2A, Figma 2A-3). The order is the resize's, for
-// the resize's reasons: refuse while an edit is in flight, ask, PRECHECK
-// the memory, offer to save (the rollback), confirm the irreversible part,
-// then swap - the shot kept, the stage grown or shrunk around it.
+// Stage Margin... (Phase 2A, Figma 2A-3): refuse while an edit is in flight, ask,
+// and change the rectangle - the shot kept, the stage grown or shrunk around it, one
+// undo step (batch 6b-V). Nothing moves, so nothing is prechecked or confirmed.
 void MainWindow::onStageMargin()
 {
     QString active;
@@ -2181,8 +2412,10 @@ void MainWindow::onStageMargin()
                     QRect drawn;
                     for (const Layer &layer : panel->layers)
                         if (!isGroupLayer(layer) && layer.type != QLatin1String("background")
-                            && !layer.image.isNull())
-                            drawn |= drawnBounds(layer.image);
+                            && layer.hasPixels())
+                            drawn |= layer.atRest()
+                                ? layertiles::drawnBounds(*layer.tiles, layer.stageRect)
+                                : drawnBounds(layer.image);
                     art.append(drawn);
                 }
         }
@@ -2208,63 +2441,9 @@ void MainWindow::onStageMargin()
         return;
     const QSize newMargin = dialog.chosenMargin();
     const QSize newSize = stagemargin::stageSize(stageNow.frame, newMargin);
-
-    const ProjectResize::Plan plan = ProjectResize::plan(m_scenes, currentSize, newSize);
-    if (!plan.fits) {
-        QMessageBox::warning(this, QStringLiteral("Stage Margin"), plan.refusal);
-        return;
-    }
-    if (!m_currentProjectPath.isEmpty() || !m_scenes.isEmpty()) {
-        const QMessageBox::StandardButton save = QMessageBox::question(
-            this, QStringLiteral("Stage Margin"),
-            QStringLiteral("Save the project before changing the stage margin?\n\nIt "
-                           "cannot be undone. A saved copy is the only way back to the "
-                           "current stage."),
-            QMessageBox::Save | QMessageBox::No | QMessageBox::Cancel, QMessageBox::Save);
-        if (save == QMessageBox::Cancel)
-            return;
-        if (save == QMessageBox::Save) {
-            onSaveProject();
-            if (m_currentProjectPath.isEmpty())
-                return;
-        }
-    }
-    QString body = QStringLiteral("The stage changes from %1 × %2 to %3 × %4 around "
-                                  "the same shot (%5 × %6).\n\n")
-                       .arg(currentSize.width())
-                       .arg(currentSize.height())
-                       .arg(newSize.width())
-                       .arg(newSize.height())
-                       .arg(stageNow.frame.width())
-                       .arg(stageNow.frame.height());
-    body += plan.crops ? dialog.effectText() + QStringLiteral("\n\n")
-                       : QStringLiteral("Artwork keeps its size and place, and the shot and "
-                                        "every camera key are unchanged. Nothing is "
-                                        "scaled.\n\n");
-    body += QStringLiteral("This cannot be undone. Your undo history will be cleared.");
-    QMessageBox confirm(QMessageBox::Question,
-                        QStringLiteral("Set the stage margin to %1 / %2 px?")
-                            .arg(newMargin.width())
-                            .arg(newMargin.height()),
-                        body, QMessageBox::NoButton, this);
-    QPushButton *go = confirm.addButton(QStringLiteral("Set Margin"), QMessageBox::AcceptRole);
-    confirm.addButton(QMessageBox::Cancel);
-    confirm.setDefaultButton(QMessageBox::Cancel);
-    confirm.exec();
-    if (confirm.clickedButton() != go)
-        return;
-
-    const ProjectResize::Outcome outcome = applyStageResizeInternal(newSize, newMargin);
-    if (!outcome.ok)
-        QMessageBox::critical(
-            this, QStringLiteral("Stage Margin"),
-            QStringLiteral("The change ran out of memory at scene %1, panel %2, after %3 "
-                           "panel%4.\n\nThe project now holds panels of two sizes. Close it "
-                           "WITHOUT saving and reopen the version you saved a moment ago.")
-                .arg(outcome.failedSceneNumber)
-                .arg(outcome.failedPanelIndex)
-                .arg(outcome.panelsResized)
-                .arg(outcome.panelsResized == 1 ? "" : "s"));
+    // One undo step that moves no pixel (batch 6b-V): nothing to precheck, nothing
+    // to save first, nothing to confirm. The dialog said what the change does.
+    applyStageResizeInternal(newSize, newMargin);
 }
 
 void MainWindow::pushStageMargin()

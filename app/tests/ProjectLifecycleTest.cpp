@@ -43,6 +43,7 @@
 #include "DrawingCanvas.h"
 #include "FloatingToolWindow.h"
 #include "PerspectiveTool.h"
+#include "LayerFolder.h"
 #include "MainWindow.h"
 #include "StoryboardPage.h"
 #include "AudioPeaks.h"
@@ -265,6 +266,54 @@ int randIn(int lo, int hi)
 }
 
 // A project on disk with real artwork, at a chosen size and frame rate.
+// A saved layer's file as the stage's pixels: version 3 holds only the drawn part
+// (batch 6b-V), so the file is placed where the manifest beside it says. A file the
+// manifest does not place is the whole stage.
+QImage placedLayerFile(const QString &manifestPath, const QString &file)
+{
+    const QImage pixels = QImage(file).convertToFormat(QImage::Format_ARGB32_Premultiplied);
+    QFile f(manifestPath);
+    if (!f.open(QIODevice::ReadOnly))
+        return pixels;
+    const QJsonObject root = QJsonDocument::fromJson(f.readAll()).object();
+    const QString name = QFileInfo(file).fileName();
+    for (const QJsonValue &sv : root.value(QStringLiteral("scenes")).toArray())
+        for (const QJsonValue &pv : sv.toObject().value(QStringLiteral("panels")).toArray()) {
+            const QJsonArray margin = pv.toObject().value(QStringLiteral("margin")).toArray();
+            for (const QJsonValue &lv : pv.toObject().value(QStringLiteral("layers")).toArray()) {
+                const QJsonObject l = lv.toObject();
+                if (!l.value(QStringLiteral("imageFile")).toString().endsWith(name))
+                    continue;
+                const QJsonArray origin = l.value(QStringLiteral("origin")).toArray();
+                const QJsonArray size = l.value(QStringLiteral("size")).toArray();
+                if (origin.size() != 2 || size.size() != 2)
+                    return pixels;
+                QImage out(size.at(0).toInt(), size.at(1).toInt(), QImage::Format_ARGB32_Premultiplied);
+                out.fill(l.value(QStringLiteral("fill")).toString().toUInt(nullptr, 16));
+                QPainter p(&out);
+                p.setCompositionMode(QPainter::CompositionMode_Source);
+                p.drawImage(QPoint(origin.at(0).toInt() + (margin.size() == 4 ? margin.at(0).toInt() : 0),
+                                   origin.at(1).toInt() + (margin.size() == 4 ? margin.at(1).toInt() : 0)),
+                            pixels);
+                p.end();
+                return out;
+            }
+        }
+    return pixels;
+}
+
+// What a save writes for a layer: its drawn tiles, or one pixel when nothing is.
+QImage layerFileForm(const Layer &layer, const QPoint &frameAt)
+{
+    const layertiles::TilesPtr t = layer.atRest() || layer.tilesCurrent()
+        ? layer.tiles
+        : layertiles::fold(layer.image, frameAt,
+                           layer.type == QLatin1String("background") ? layertiles::paperFill(layer.image, layer.tiles)
+                                                                     : 0u,
+                           layer.tiles);
+    return layertiles::unfold(*t, t->drawn.isEmpty() ? QRect(0, 0, 1, 1) : t->drawn);
+}
+
 QString writeProject(const QString &root, const QString &name, const QSize &size,
                      int fps, int sceneCount, int panelsPerScene)
 {
@@ -4237,7 +4286,7 @@ void runIncrementalSavePass(const QString &scratch)
     for (int p = 0; p < 3; ++p) {
         keys.append(QVector<qint64>());
         for (const Layer &layer : panelAt(p)->layers)
-            keys.last().append(layer.image.cacheKey());
+            keys.last().append(layer.contentKey());
     }
     int strokeP = -1, strokeK = -1, changedLayers = 0;
     QImage preStroke;
@@ -4250,7 +4299,7 @@ void runIncrementalSavePass(const QString &scratch)
         paint();
         for (int p = 0; p < 3; ++p)
             for (int k = 0; k < panelAt(p)->layers.size(); ++k)
-                if (panelAt(p)->layers.at(k).image.cacheKey() != keys.at(p).at(k)) {
+                if (panelAt(p)->layers.at(k).contentKey() != keys.at(p).at(k)) {
                     ++changedLayers;
                     strokeP = p;
                     strokeK = k;
@@ -4261,7 +4310,7 @@ void runIncrementalSavePass(const QString &scratch)
     check(QStringLiteral("(sv.2) control: the stroke changed exactly one layer, "
                          "in memory"),
           changedLayers == 1 && strokeP == 0 && !preStroke.isNull()
-              && panelAt(0)->layers.at(strokeK).image != preStroke,
+              && panelAt(0)->layers.at(strokeK).pixels() != preStroke,
           QStringLiteral("%1 layer(s) changed; panel %2 layer %3")
               .arg(changedLayers).arg(strokeP).arg(strokeK));
     // The files are named by the panel's and the layer's ids (2026-11-04),
@@ -4277,7 +4326,7 @@ void runIncrementalSavePass(const QString &scratch)
     const QString flatFile = nameOf(strokeP, -1);
     QStringList expected{strokeFile, flatFile};
     expected.sort();
-    const QImage onDiskBefore = decoded(assets + QStringLiteral("/") + strokeFile);
+    const QImage onDiskBefore = placedLayerFile(proj, assets + QStringLiteral("/") + strokeFile);
     before = stamps(assets);
     save(proj);
     check(QStringLiteral("(sv.2) a stroke on one layer rewrites exactly that "
@@ -4289,9 +4338,9 @@ void runIncrementalSavePass(const QString &scratch)
                    touched(before, assets).join(QStringLiteral(", "))));
     check(QStringLiteral("(sv.2) CONTROL: the rewritten file really holds the "
                          "stroke now"),
-          decoded(assets + QStringLiteral("/") + strokeFile) != onDiskBefore
-              && decoded(assets + QStringLiteral("/") + strokeFile)
-                     == panelAt(strokeP)->layers.at(strokeK).image);
+          placedLayerFile(proj, assets + QStringLiteral("/") + strokeFile) != onDiskBefore
+              && placedLayerFile(proj, assets + QStringLiteral("/") + strokeFile)
+                     == panelAt(strokeP)->layers.at(strokeK).pixels());
 
     // --- (sv.3) Save, Undo, save again: the image is rewritten -----------
     before = stamps(assets);
@@ -4304,7 +4353,7 @@ void runIncrementalSavePass(const QString &scratch)
     pump(500);
     check(QStringLiteral("(sv.3) control: Undo put the pre-stroke pixels back "
                          "in memory"),
-          panelAt(strokeP)->layers.at(strokeK).image == preStroke);
+          panelAt(strokeP)->layers.at(strokeK).pixels() == preStroke);
     before = stamps(assets);
     save(proj);
     check(QStringLiteral("(sv.3) save, Undo, save again: the layer and its "
@@ -4315,7 +4364,7 @@ void runIncrementalSavePass(const QString &scratch)
                    touched(before, assets).join(QStringLiteral(", "))));
     check(QStringLiteral("(sv.3) ...and the file holds the pre-stroke pixels "
                          "again"),
-          decoded(assets + QStringLiteral("/") + strokeFile) == preStroke);
+          placedLayerFile(proj, assets + QStringLiteral("/") + strokeFile) == preStroke);
 
     // --- (sv.4) a PNG deleted behind the app's back is written again -----
     const QString victim = nameOf(2, 1);
@@ -4331,8 +4380,8 @@ void runIncrementalSavePass(const QString &scratch)
               .arg(written().join(QStringLiteral(", ")),
                    touched(before, assets).join(QStringLiteral(", "))));
     check(QStringLiteral("(sv.4) ...with the layer's pixels"),
-          decoded(assets + QStringLiteral("/") + victim)
-              == panelAt(2)->layers.at(1).image);
+          placedLayerFile(proj, assets + QStringLiteral("/") + victim)
+              == panelAt(2)->layers.at(1).pixels());
 
     // --- (sv.5) a PNG replaced by another program is written again -------
     const QString replaced = nameOf(1, 1);
@@ -4343,14 +4392,14 @@ void runIncrementalSavePass(const QString &scratch)
     }
     check(QStringLiteral("(sv.5) control: the file on disk is no longer the "
                          "layer"),
-          decoded(assets + QStringLiteral("/") + replaced)
-              != panelAt(1)->layers.at(1).image);
+          placedLayerFile(proj, assets + QStringLiteral("/") + replaced)
+              != panelAt(1)->layers.at(1).pixels());
     save(proj);
     check(QStringLiteral("(sv.5) a PNG another program wrote over is rewritten "
                          "with the layer"),
           written() == QStringList{replaced}
-              && decoded(assets + QStringLiteral("/") + replaced)
-                     == panelAt(1)->layers.at(1).image,
+              && placedLayerFile(proj, assets + QStringLiteral("/") + replaced)
+                     == panelAt(1)->layers.at(1).pixels(),
           written().join(QStringLiteral(", ")));
 
     // --- (sv.6) Save As to a new folder writes every image ---------------
@@ -4380,7 +4429,7 @@ void runIncrementalSavePass(const QString &scratch)
             QVector<QPair<QString, QImage>> images;
             images.append({nameOf(p, -1), panelAt(p)->flattenedPixmap().toImage()});
             for (int k = 0; k < panelAt(p)->layers.size(); ++k)
-                images.append({nameOf(p, k), panelAt(p)->layers.at(k).image});
+                images.append({nameOf(p, k), layerFileForm(panelAt(p)->layers.at(k), panelAt(p)->frameAt())});
             for (const auto &[name, image] : images) {
                 image.save(ref + QStringLiteral("/") + name, "PNG");
                 ++compared;
@@ -4397,7 +4446,7 @@ void runIncrementalSavePass(const QString &scratch)
               QStringLiteral("%1 of %2 identical; differ: %3")
                   .arg(same).arg(compared).arg(differ.join(QStringLiteral(", "))));
         const QString probe = ref + QStringLiteral("/control.png");
-        panelAt(0)->layers.at(1).image.save(probe, "PNG", 80);
+        panelAt(0)->layers.at(1).pixels().save(probe, "PNG", 80);
         check(QStringLiteral("(sv.6) CONTROL: the byte comparison sees a "
                              "different encoding of the same image"),
               bytes(probe) != bytes(asAssets + QStringLiteral("/") + nameOf(0, 1))
@@ -4417,7 +4466,7 @@ void runIncrementalSavePass(const QString &scratch)
     for (int p = 0; p < 3; ++p) {
         mem.append(QVector<QImage>());
         for (const Layer &layer : panelAt(p)->layers)
-            mem.last().append(layer.image.copy());
+            mem.last().append(layer.pixels().copy());
     }
     check(QStringLiteral("(sv.7) control: the save after the stroke succeeds"),
           save(asPath) && !written().isEmpty());
@@ -4429,7 +4478,7 @@ void runIncrementalSavePass(const QString &scratch)
     for (int p = 0; p < 3 && p < window.scenesForTest().at(0)->panels.size(); ++p)
         for (int k = 0; k < panelAt(p)->layers.size() && k < mem.at(p).size(); ++k) {
             ++layersCompared;
-            if (panelAt(p)->layers.at(k).image == mem.at(p).at(k))
+            if (panelAt(p)->layers.at(k).pixels() == mem.at(p).at(k))
                 ++layersSame;
         }
     check(QStringLiteral("(sv.7) save, then reload: every layer is "
@@ -4441,7 +4490,7 @@ void runIncrementalSavePass(const QString &scratch)
         nudged.setPixel(5, 5, nudged.pixel(5, 5) ^ 0x00010101u);
         check(QStringLiteral("(sv.7) CONTROL: the comparison sees a one-pixel "
                              "difference"),
-              nudged != panelAt(0)->layers.at(1).image);
+              nudged != panelAt(0)->layers.at(1).pixels());
     }
 
     window.markCleanForTest();
@@ -12828,7 +12877,7 @@ void runParallelOpenPass(const QString &scratch)
             shape = pa->layers.size() == pb->layers.size();
             for (int l = 0; shape && l < pa->layers.size(); ++l) {
                 ++layers;
-                same += paropen::sameBytes(pa->layers.at(l).image, pb->layers.at(l).image) ? 1 : 0;
+                same += paropen::sameBytes(pa->layers.at(l).pixels(), pb->layers.at(l).pixels()) ? 1 : 0;
             }
         }
     }
@@ -14905,7 +14954,7 @@ void runRecoveryPass(const QString &scratch)
         return ok;
     };
     auto panelAt = [&window](int p) { return window.scenesForTest().at(0)->panels.at(p); };
-    auto layerOf = [&panelAt](int p) { return panelAt(p)->layers.at(1).image; };
+    auto layerOf = [&panelAt](int p) { return panelAt(p)->layers.at(1).pixels(); };
     auto nameOf = [&panelAt](int p, int k) { // k < 0: the flatten
         const QString stem = ProjectIO::imageIdStem(panelAt(p)->id);
         return k < 0 ? QStringLiteral("p_%1.png").arg(stem)
@@ -15175,7 +15224,7 @@ void runRecoveryPass(const QString &scratch)
     QImage copyPixels;
     QString fileLayer;
     makeCrashState(&copyPixels, &fileLayer);
-    const QImage filePixels = decoded(fileLayer);
+    const QImage filePixels = placedLayerFile(proj, fileLayer);
     check(QStringLiteral("(r4) control: the crash state - a lock and a copy newer than the project "
                          "file - and the copy's panel 1 differs from the file's"),
           ProjectRecovery::pendingFor(proj).crashed && !filePixels.isNull() && !same(filePixels, copyPixels),
@@ -15296,7 +15345,7 @@ void runRecoveryPass(const QString &scratch)
           saveAct && asked == QStringList({QStringLiteral("Rec.sankotv|1")})
               && window.projectPathForTest() == proj && !window.isDirty()
               && !window.windowTitle().contains(QStringLiteral("(recovered)")) && window.recoveredFromForTest().isEmpty()
-              && same(decoded(assets + QStringLiteral("/") + nameOf(0, 1)), copyPixels)
+              && same(placedLayerFile(proj, assets + QStringLiteral("/") + nameOf(0, 1)), copyPixels)
               && !ProjectRecovery::hasCopy(proj) && ProjectRecovery::hasLock(proj)
               && lockAfter.value(QStringLiteral("sessionId")).toString() == window.sessionIdForTest(),
           QStringLiteral("asked [%1] act %2 path '%3' dirty %4 title '%5' copy %6 lock %7")
@@ -15347,7 +15396,7 @@ void runRecoveryPass(const QString &scratch)
     QImage copyPixels2;
     QString fileLayer2;
     makeCrashState(&copyPixels2, &fileLayer2);
-    const QImage filePixels2 = decoded(fileLayer2);
+    const QImage filePixels2 = placedLayerFile(proj, fileLayer2);
     window.setRecoveryPromptForTest([] { return MainWindow::RecoveryAnswer::OpenSaved; });
     window.openProjectForTest(proj);
     pump(500);
@@ -16849,10 +16898,10 @@ void runFrameSpacePass(const QString &scratch)
     const QJsonObject file = readRoot(saved);
     const QString fileKeys = keysIn(file), filePoints = pointsIn(file.value(QStringLiteral("perspective")).toObject()),
                   fileMargins = marginsIn(file);
-    check(QStringLiteral("(fs9) SAVED IN FRAME SPACE: version 2, each of the six panels [240, 135, 240, "
+    check(QStringLiteral("(fs9) SAVED IN FRAME SPACE: version 3, each of the six panels [240, 135, 240, "
                          "135], the keys 720, 405 -> 480, 270 and 800.5, 450.25 -> 560.5, 315.25, the "
                          "vanishing point 1000.5, 300.25 -> 760.5, 165.25"),
-          savedOk && file.value(QStringLiteral("version")).toInt() == 2
+          savedOk && file.value(QStringLiteral("version")).toInt() == 3
               && fileMargins == QStringLiteral("240,135,240,135 240,135,240,135 240,135,240,135 "
                                                "240,135,240,135 240,135,240,135 240,135,240,135")
               && fileKeys == QStringLiteral("480,270 560.5,315.25") && filePoints == QStringLiteral("760.5,165.25"),
@@ -16886,7 +16935,7 @@ void runFrameSpacePass(const QString &scratch)
         return true;
     };
     QJsonObject newerRoot = file;
-    newerRoot.insert(QStringLiteral("version"), 3);
+    newerRoot.insert(QStringLiteral("version"), 4);
     const QString newer = folder + QStringLiteral("/FrameSpaceNewer.sankotv");
     writeRoot(newer, newerRoot);
     QString shown;
@@ -16899,9 +16948,9 @@ void runFrameSpacePass(const QString &scratch)
     const QString pathBefore = r.window.projectPathForTest();
     const bool openedNewer = r.window.loadProjectForTest(newer);
     pump(800);
-    check(QStringLiteral("(fs11) A NEWER FILE (version 3) IS REFUSED: Open says it was saved by a newer "
+    check(QStringLiteral("(fs11) A NEWER FILE (version 4) IS REFUSED: Open says it was saved by a newer "
                          "SankoTV and opens nothing; the open project stays"),
-          !openedNewer && shown.contains(QStringLiteral("file version 3"))
+          !openedNewer && shown.contains(QStringLiteral("file version 4"))
               && r.window.projectPathForTest() == pathBefore && panelCount() == 6,
           QStringLiteral("opened %1; said '%2'; project %3").arg(openedNewer).arg(shown,
               QFileInfo(r.window.projectPathForTest()).fileName()));
@@ -16910,7 +16959,7 @@ void runFrameSpacePass(const QString &scratch)
     writeRoot(two, twoRoot);
     const bool openedTwo = r.window.loadProjectForTest(two);
     pump(400);
-    check(QStringLiteral("(fs11) control: the same file at version 2 opens"),
+    check(QStringLiteral("(fs11) control: the same file at version 3 opens"),
           openedTwo && QFileInfo(r.window.projectPathForTest()).fileName() == QStringLiteral("FrameSpaceTwo.sankotv"),
           QFileInfo(r.window.projectPathForTest()).fileName());
 
@@ -17702,7 +17751,7 @@ void runDepthPass(const QString &scratch)
     bool sameStack = panel->layers.size() == original.size();
     for (int i = 0; sameStack && i < original.size(); ++i)
         sameStack = panel->layers.at(i).parallax == original.at(i).parallax
-            && panel->layers.at(i).image.cacheKey() == original.at(i).image.cacheKey();
+            && panel->layers.at(i).contentKey() == original.at(i).contentKey();
     check(QStringLiteral("(dp9) UNDO twice puts the House back on the picture plane, the stack "
                          "exactly as it was"),
           sameStack && panel->layers.at(3).parallax == 1.0 && !badgeOf(r.storyboard, 3));
@@ -17804,6 +17853,321 @@ void runDepthPass(const QString &scratch)
             check(QStringLiteral("(dp) control: the no-depth fixture opens"), false);
         }
     }
+}
+
+// ---- (fv) THE PANELS AT REST (batch 6b-V, 2026-11-07) ---------------------------
+// Through the real window: only the panel on the canvas holds full images; entering
+// one unfolds it, leaving one folds it on a worker; what a fold holds is never lost
+// to an edit, an undo or a close; and a stage margin is a rectangle and one undo step
+// that moves no pixel, with art outside the stage kept until Trim Hidden Art.
+void runPanelsAtRestPass(const QString &scratch)
+{
+    using namespace workspace;
+    out() << "--- (fv) the panels at rest ---" << Qt::endl;
+    const QString dir = scratch + QStringLiteral("/atrest");
+    QDir().mkpath(dir);
+    const QString project = writeProject(dir, QStringLiteral("Rest"), QSize(1280, 720), 24, 1, 4);
+    auto rig = std::make_unique<Rig>(project);
+    Rig &r = *rig;
+    check(QStringLiteral("(fv) the workspace opened"), r.ok);
+    if (!r.ok)
+        return;
+    LayerFolder *folder = r.storyboard->layerFolder();
+    QUndoStack *stack = r.window.undoStackForTest();
+    Scene *scene = r.window.scenesForTest().value(0);
+    if (!folder || !stack || !scene || scene->panels.size() != 4) {
+        check(QStringLiteral("(fv) found the folder, the history and the four panels"), false);
+        return;
+    }
+    auto panelAt = [&](int i) { return scene->panels.at(i); };
+    auto counts = [&](int i, int *rest, int *full) {
+        *rest = 0;
+        *full = 0;
+        for (const Layer &l : panelAt(i)->layers) {
+            *rest += l.atRest() ? 1 : 0;
+            *full += l.image.isNull() ? 0 : 1;
+        }
+    };
+    auto isAtRest = [&](int i) {
+        int a = 0, b = 0;
+        counts(i, &a, &b);
+        return a > 0 && b == 0;
+    };
+    auto isFull = [&](int i) {
+        int a = 0, b = 0;
+        counts(i, &a, &b);
+        return a == 0 && b > 0;
+    };
+    auto settle = [&] {
+        folder->waitForFoldsForTest();
+        pump(60);
+        folder->waitForFoldsForTest();
+    };
+    auto paintAt = [&](const QPointF &from, const QPointF &to) {
+        // A small brush: the settings keep the size the passes before this one left
+        // (5000 px, Lifecycle (j)), at which one stroke covers the whole layer and a
+        // second changes no pixel, so it is no edit at all. The whole stage in view.
+        r.canvas->setBrushToolSize(25);
+        r.canvas->placeViewForTest(0.4, QPointF(r.canvas->canvasSize().width() / 2.0, r.canvas->canvasSize().height() / 2.0),
+                                   QPointF(r.canvas->width() / 2.0, r.canvas->height() / 2.0));
+        pump(30);
+        const QTransform t = r.canvas->viewTransformForTest();
+        sendMouse(r.canvas, QEvent::MouseButtonPress, t.map(from), Qt::LeftButton);
+        for (int i = 1; i <= 8; ++i)
+            sendMouse(r.canvas, QEvent::MouseMove, t.map(from + (to - from) * (i / 8.0)), Qt::LeftButton);
+        sendMouse(r.canvas, QEvent::MouseButtonRelease, t.map(to), Qt::LeftButton);
+        pump(500);
+    };
+    auto activeOf = [&](int i) -> Layer & { return panelAt(i)->layers[panelAt(i)->activeLayerIndex]; };
+    auto bytes = [](const QImage &image) {
+        return QCryptographicHash::hash(QByteArrayView(reinterpret_cast<const char *>(image.constBits()),
+                                                       image.sizeInBytes()),
+                                        QCryptographicHash::Sha256)
+            .toHex();
+    };
+
+    // --- (fv9) open ------------------------------------------------------------
+    settle();
+    const bool onlyFirst = isFull(0) && isAtRest(1) && isAtRest(2) && isAtRest(3);
+    const LayerFolder::Held held = folder->held();
+    qint64 denseWouldBe = 0;
+    for (int i = 0; i < 4; ++i)
+        for (const Layer &l : panelAt(i)->layers)
+            denseWouldBe += qint64(l.pixelSize().width()) * l.pixelSize().height() * 4;
+    check(QStringLiteral("(fv9) A PROJECT OPENED: only the panel on the canvas holds full images, the others are "
+                         "their tiles"),
+          onlyFirst && held.denseLayers == panelAt(0)->layers.size() && held.foldedLayers > 0,
+          QStringLiteral("%1 full, %2 at rest").arg(held.denseLayers).arg(held.foldedLayers));
+    check(QStringLiteral("(fv9) control: what it holds is less than the full images would be"),
+          held.denseBytes + held.tileBytes < denseWouldBe,
+          QStringLiteral("%1 + %2 bytes against %3").arg(held.denseBytes).arg(held.tileBytes).arg(denseWouldBe));
+    const QVector<quint64> printAtRest = panelAt(1)->flattenFingerprint();
+    const QByteArray bytesAtRest = bytes(panelAt(1)->layers.at(1).pixels());
+
+    // --- (fv10) a switch ---------------------------------------------------------
+    const QByteArray first = bytes(panelAt(0)->layers.at(1).image);
+    const int doneBefore = folder->foldsDoneForTest();
+    clickThumb(r, 1);
+    const bool swapped = isFull(1) && isAtRest(0);
+    check(QStringLiteral("(fv10) A SWITCH: the panel entered holds full images, its layers unfolded together, and a "
+                         "panel left unchanged is at rest at once, with no fold to wait for"),
+          swapped && folder->lastUnfoldLayers() == panelAt(1)->layers.size()
+              && folder->foldsDoneForTest() == doneBefore && folder->foldsPendingForTest() == 0,
+          QStringLiteral("unfolded %1 layers in %2 ms; folds %3").arg(folder->lastUnfoldLayers())
+              .arg(folder->lastUnfoldMs()).arg(folder->foldsDoneForTest() - doneBefore));
+    check(QStringLiteral("(fv10) control: both panels' pixels are the bytes they were, and the identity the thumbnails "
+                         "read did not move"),
+          bytes(panelAt(1)->layers.at(1).image) == bytesAtRest && bytes(panelAt(0)->layers.at(1).pixels()) == first
+              && panelAt(1)->flattenFingerprint() == printAtRest);
+
+    // --- (fv11) an edited panel folds on a worker ---------------------------------
+    clickThumb(r, 0);
+    const int k = panelAt(0)->activeLayerIndex;
+    const QImage preEdit = activeOf(0).image.copy();
+    paintAt(QPointF(150, 130), QPointF(342, 266));
+    const QImage postEdit = activeOf(0).image.copy();
+    folder->setHeldForTest(true);
+    clickThumb(r, 1);
+    const bool aliveUntilDone = !panelAt(0)->layers.at(k).image.isNull() && panelAt(0)->layers.at(k).tiles
+        && !panelAt(0)->layers.at(k).tilesCurrent();
+    check(QStringLiteral("(fv11) A PANEL LEFT EDITED keeps its full images until its fold has landed"),
+          aliveUntilDone && postEdit != preEdit);
+    const int done2 = folder->foldsDoneForTest();
+    folder->setHeldForTest(false);
+    settle();
+    check(QStringLiteral("(fv11) THE FOLD LANDS: at rest, the edit in its tiles, only the edited layer folded"),
+          isAtRest(0) && folder->foldsDoneForTest() == done2 + 1
+              && bytes(panelAt(0)->layers.at(k).pixels()) == bytes(postEdit),
+          QStringLiteral("%1 folded").arg(folder->foldsDoneForTest() - done2));
+    check(QStringLiteral("(fv11) control: the tiles are not what they were before the edit"),
+          bytes(panelAt(0)->layers.at(k).pixels()) != bytes(preEdit));
+
+    // --- (fv12) back before it landed ---------------------------------------------
+    clickThumb(r, 0);
+    const QImage preEdit2 = activeOf(0).image.copy();
+    paintAt(QPointF(200, 400), QPointF(500, 420));
+    const QImage edited2 = activeOf(0).image.copy();
+    {
+        int changed = 0;
+        for (int y = 0; y < edited2.height(); ++y)
+            for (int x = 0; x < edited2.width(); ++x)
+                changed += edited2.pixel(x, y) != preEdit2.pixel(x, y) ? 1 : 0;
+        check(QStringLiteral("(fv12) control: that stroke changed the layer it was drawn on"), changed > 0,
+              QStringLiteral("%1 pixels changed, tool %2, active layer %3 of %4, undo steps %5, canvas %6x%7")
+                  .arg(changed).arg(int(r.canvas->tool())).arg(panelAt(0)->activeLayerIndex)
+                  .arg(panelAt(0)->layers.size()).arg(stack->index()).arg(r.canvas->width()).arg(r.canvas->height()));
+    }
+    folder->setHeldForTest(true);
+    clickThumb(r, 1);
+    const qint64 keyHeld = panelAt(0)->layers.at(k).image.cacheKey();
+    clickThumb(r, 0);
+    check(QStringLiteral("(fv12) BACK BEFORE THE FOLD LANDED: the same full image, edit and all, with nothing unfolded"),
+          panelAt(0)->layers.at(k).image.cacheKey() == keyHeld && panelAt(0)->layers.at(k).image == edited2);
+    folder->setHeldForTest(false);
+    settle();
+    check(QStringLiteral("(fv12) control: the panel on the canvas is not folded away from under it"),
+          isFull(0) && panelAt(0)->layers.at(k).image == edited2);
+
+    // --- (fv13) an edit while a fold is in flight --------------------------------
+    folder->setHeldForTest(true);
+    clickThumb(r, 1);
+    const int dropped = folder->foldsDroppedForTest();
+    const bool staleBefore = !panelAt(0)->layers.at(k).image.isNull() && !panelAt(0)->layers.at(k).tilesCurrent();
+    folder->setHeldForTest(false); // the fold starts; nothing lands until the events run
+    const int flying = folder->foldsPendingForTest();
+    panelAt(0)->layers[k].image.setPixelColor(5, 5, QColor(1, 2, 3, 255));
+    const QImage edited3 = panelAt(0)->layers.at(k).image.copy();
+    settle();
+    check(QStringLiteral("(fv13) AN EDIT WHILE ITS FOLD IS ON THE WAY: that fold counts for nothing, the layer folds "
+                         "again, and the tiles hold the edit"),
+          staleBefore && flying >= 1 && folder->foldsDroppedForTest() == dropped + 1 && isAtRest(0)
+              && bytes(panelAt(0)->layers.at(k).pixels()) == bytes(edited3),
+          QStringLiteral("stale before %1, flying %2, dropped %3, at rest %4").arg(staleBefore).arg(flying)
+              .arg(folder->foldsDroppedForTest() - dropped).arg(isAtRest(0)));
+    check(QStringLiteral("(fv13) control: without the edit the bytes differ"), edited3 != edited2);
+
+    // --- (fv14) an undo reaching a panel at rest ---------------------------------
+    clickThumb(r, 2);
+    const QImage pre2 = activeOf(2).image.copy();
+    paintAt(QPointF(300, 200), QPointF(700, 500));
+    const QImage post2 = activeOf(2).image.copy();
+    clickThumb(r, 3);
+    settle();
+    const bool restBeforeUndo = isAtRest(2);
+    stack->undo();
+    pump(100);
+    settle();
+    const QByteArray undone = bytes(activeOf(2).pixels());
+    stack->redo();
+    pump(100);
+    settle();
+    const QByteArray redone = bytes(activeOf(2).pixels());
+    check(QStringLiteral("(fv14) UNDO AND REDO OF A STROKE ON A PANEL AT REST put back exactly its pixels"),
+          restBeforeUndo && undone == bytes(pre2) && redone == bytes(post2));
+    check(QStringLiteral("(fv14) control: the stroke did change them"), pre2 != post2);
+
+    // --- (fv15) one after another, the same -----------------------------------------
+    clickThumb(r, 1);
+    settle();
+    const QByteArray viaWorkers = bytes(panelAt(3)->layers.at(1).pixels());
+    folder->setSerialForTest(true);
+    clickThumb(r, 3);
+    const QByteArray viaSerial = bytes(panelAt(3)->layers.at(1).image);
+    clickThumb(r, 1);
+    folder->setSerialForTest(false);
+    clickThumb(r, 3);
+    check(QStringLiteral("(fv15) UNFOLDED TOGETHER OR ONE AFTER ANOTHER, the same bytes"),
+          viaSerial == viaWorkers && bytes(panelAt(3)->layers.at(1).image) == viaWorkers);
+    clickThumb(r, 0);
+    settle();
+
+    // --- (fv16) the margin is a rectangle -------------------------------------------
+    const QSize frame = panelAt(0)->canvasSize();
+    const int stepsBefore = stack->index();
+    const void *tilesBefore = panelAt(3)->layers.at(1).tiles.get();
+    const QByteArray restBytes = bytes(panelAt(3)->layers.at(1).pixels());
+    r.window.setStageMarginForTest(QSize(120, 68));
+    pump(200);
+    const QSize stage(frame.width() + 240, frame.height() + 136);
+    check(QStringLiteral("(fv16) A MARGIN IS ONE UNDO STEP THAT MOVES NO PIXEL: a panel at rest keeps the very tiles it "
+                         "had, only its rectangle changes; the panel on the canvas has full images at the new stage"),
+          panelAt(3)->layers.at(1).tiles.get() == tilesBefore && panelAt(3)->canvasSize() == stage
+              && activeOf(0).image.size() == stage && stack->index() == stepsBefore + 1
+              && stack->text(stack->index() - 1) == QStringLiteral("Change Stage Margin")
+              && panelAt(3)->margin == QMargins(120, 68, 120, 68),
+          QStringLiteral("stage %1x%2, steps %3").arg(panelAt(3)->canvasSize().width())
+              .arg(panelAt(3)->canvasSize().height()).arg(stack->index() - stepsBefore));
+    // Art in the margin, on the panel on the canvas.
+    const QImage withoutBand = activeOf(0).image.copy();
+    paintAt(QPointF(10, 10), QPointF(80, 40));
+    const QImage withBand = activeOf(0).image.copy();
+    check(QStringLiteral("(fv16) control: a stroke landed in the margin"), withBand != withoutBand);
+    const int stepsAtBand = stack->index();
+
+    // --- (fv17) hidden art ---------------------------------------------------------
+    r.window.setStageMarginForTest(QSize(0, 0));
+    pump(200);
+    settle();
+    check(QStringLiteral("(fv17) THE STAGE SHRUNK: the art in the band is kept and hidden, in that panel only, and the "
+                         "panel on the canvas is the frame again"),
+          r.window.panelsWithHiddenArt() == 1 && activeOf(0).image.size() == frame,
+          QStringLiteral("%1 panels, canvas %2x%3").arg(r.window.panelsWithHiddenArt())
+              .arg(activeOf(0).image.width()).arg(activeOf(0).image.height()));
+    r.window.setStageMarginForTest(QSize(120, 68));
+    pump(200);
+    check(QStringLiteral("(fv17) THE STAGE GROWN BACK: the art is there, every byte of the layer"),
+          bytes(activeOf(0).image) == bytes(withBand));
+    check(QStringLiteral("(fv17) control: the others' pixels never moved"),
+          panelAt(3)->layers.at(1).tiles.get() == tilesBefore);
+    stack->undo(); // back to the frame
+    pump(200);
+    stack->undo(); // back to the margin, with the band
+    pump(200);
+    check(QStringLiteral("(fv17) UNDO, TWICE: the margin and the art as they were, the history still one line"),
+          stack->index() == stepsAtBand && bytes(activeOf(0).image) == bytes(withBand)
+              && r.window.stageMarginForTest() == QSize(120, 68));
+
+    // --- (fv18) saved hidden, reopened, trimmed ---------------------------------------
+    r.window.setStageMarginForTest(QSize(0, 0));
+    pump(200);
+    settle();
+    const QString saved = dir + QStringLiteral("/Rest/Rest.sankotv");
+    const bool savedOk = r.window.saveProjectForTest(saved);
+    pump(200);
+    QFile manifest(saved);
+    manifest.open(QIODevice::ReadOnly);
+    const QJsonObject root = QJsonDocument::fromJson(manifest.readAll()).object();
+    manifest.close();
+    r.window.markCleanForTest();
+    r.window.closeProjectForTest();
+    pump(200);
+    const bool reopened = r.window.loadProjectForTest(saved);
+    pump(500);
+    settle();
+    Scene *sceneBack = r.window.scenesForTest().value(0);
+    scene = sceneBack;
+    check(QStringLiteral("(fv18) SAVED WITH ART HIDDEN (version 3) AND REOPENED: the art is still there, hidden"),
+          savedOk && reopened && root.value(QStringLiteral("version")).toInt() == 3
+              && r.window.panelsWithHiddenArt() == 1,
+          QStringLiteral("saved %1, version %2, %3 panel(s)").arg(savedOk)
+              .arg(root.value(QStringLiteral("version")).toInt()).arg(r.window.panelsWithHiddenArt()));
+    const int stepsTrim = r.window.undoStackForTest()->index();
+    r.window.trimHiddenArt();
+    pump(100);
+    const int afterTrim = r.window.panelsWithHiddenArt();
+    QUndoStack *stack2 = r.window.undoStackForTest();
+    stack2->undo();
+    pump(100);
+    const int afterUndo = r.window.panelsWithHiddenArt();
+    stack2->redo();
+    pump(100);
+    check(QStringLiteral("(fv18) TRIM HIDDEN ART frees it, as one undo step that brings it back"),
+          afterTrim == 0 && afterUndo == 1 && r.window.panelsWithHiddenArt() == 0 && stack2->index() == stepsTrim + 1,
+          QStringLiteral("%1, then %2, then %3").arg(afterTrim).arg(afterUndo).arg(r.window.panelsWithHiddenArt()));
+    r.window.setStageMarginForTest(QSize(120, 68));
+    pump(200);
+    QByteArray bandBytes;
+    if (Panel *p = scene->panels.value(0))
+        bandBytes = bytes(p->layers[p->activeLayerIndex].image);
+    check(QStringLiteral("(fv18) control: grown back after the trim, the band is empty: the art really went"),
+          bandBytes != bytes(withBand));
+
+    // --- (fv19) closed with a fold on its way ----------------------------------------
+    clickThumb(r, 0);
+    paintAt(QPointF(100, 300), QPointF(300, 300));
+    LayerFolder *folder2 = r.storyboard->layerFolder();
+    folder2->setHeldForTest(true);
+    clickThumb(r, 1);
+    folder2->setHeldForTest(false); // the fold starts; the project goes before it lands
+    r.window.markCleanForTest();
+    r.window.closeProjectForTest();
+    pump(200);
+    const bool openAgain = r.window.loadProjectForTest(saved);
+    pump(400);
+    check(QStringLiteral("(fv19) A PROJECT CLOSED WITH A FOLD ON ITS WAY: nothing lands on what has gone, and the next "
+                         "project opens"),
+          openAgain && r.window.scenesForTest().size() == 1 && folder2->foldsPendingForTest() == 0);
+    r.window.markCleanForTest();
 }
 
 // ---- (dk) THE DOCKS STAY WHERE THEY WERE (2026-11-07, seen in the user's hand test) --
@@ -20512,6 +20876,7 @@ int main(int argc, char **argv)
     runDepthToolsPass(scratch);
     runPlaybackShotPass(scratch);
     runDockSteadyPass(scratch);
+    runPanelsAtRestPass(scratch);
     runPinnedKeysPass(scratch);
     runCameraBarFitPass(scratch);
     runStageClearPass(scratch);

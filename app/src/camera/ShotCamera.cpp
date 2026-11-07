@@ -527,16 +527,18 @@ qint64 g_mipBytes = 0;
 quint64 g_mipClock = 0;
 constexpr qint64 kMipBudget = 256ll * 1024 * 1024;
 
-// `image` reduced for drawing at `scale` (target px per layer px): itself at
-// 1 and above, else area-averaged to 2^(-n/4) >= scale.
-QImage layerMip(const QImage &image, double scale)
+// `layer` reduced for drawing at `scale` (target px per layer px): itself at
+// 1 and above, else area-averaged to 2^(-n/4) >= scale. A layer at rest (batch
+// 6b-V) is unfolded when a level is first made; its level 0, the full image, is
+// cached like the others, so a shot held for many frames unfolds it once.
+QImage layerMip(const Layer &layer, double scale)
 {
-    if (scale >= 1.0 || image.isNull())
-        return image;
-    const int n = qMax(0, int(std::floor(-std::log2(qMax(scale, 1e-6)) * 4.0)));
-    if (n == 0)
-        return image;
-    const QPair<qint64, int> key(image.cacheKey(), n);
+    const int n = scale >= 1.0 ? 0 : qMax(0, int(std::floor(-std::log2(qMax(scale, 1e-6)) * 4.0)));
+    if (n == 0 && !layer.image.isNull())
+        return layer.image;
+    if (!layer.hasPixels())
+        return QImage();
+    const QPair<qint64, int> key(layer.contentKey(), n);
     {
         QMutexLocker lock(&g_depthMutex);
         auto it = g_mips.find(key);
@@ -545,10 +547,12 @@ QImage layerMip(const QImage &image, double scale)
             return it->image;
         }
     }
+    const QImage image = layer.pixels();
     const double level = std::pow(2.0, -n / 4.0);
-    const QImage mip = image.scaled(qMax(1, qRound(image.width() * level)),
-                                    qMax(1, qRound(image.height() * level)),
-                                    Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+    const QImage mip = n == 0 ? image
+                              : image.scaled(qMax(1, qRound(image.width() * level)),
+                                             qMax(1, qRound(image.height() * level)),
+                                             Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
     QMutexLocker lock(&g_depthMutex);
     if (!g_mips.contains(key)) {
         g_mips.insert(key, MipEntry{mip, ++g_mipClock});
@@ -585,12 +589,12 @@ void paintLayers(QPainter &painter, const Panel &panel, const CameraState &state
             continue;
         const QTransform toTarget = layerToStage(a, state, stage) * canvasToTarget;
         const double scale = std::sqrt(qAbs(toTarget.determinant()));
-        const QImage mip = layerMip(layer.image, scale);
+        const QImage mip = layerMip(layer, scale);
         if (mip.isNull())
             continue;
         const QTransform mipToTarget =
-            QTransform::fromScale(layer.image.width() / double(mip.width()),
-                                  layer.image.height() / double(mip.height()))
+            QTransform::fromScale(layer.pixelSize().width() / double(mip.width()),
+                                  layer.pixelSize().height() / double(mip.height()))
             * toTarget;
         const QRect src = mipToTarget.inverted()
                               .mapRect(visible)
@@ -837,16 +841,18 @@ bool depthRanges(double zoom, double rotation, const Stage &stage,
 // changes on every edit). Bits: 1 left, 2 top, 4 right, 8 bottom.
 QHash<qint64, quint8> g_edgeBits;
 
-quint8 edgeBitsOf(const QImage &image)
+quint8 edgeBitsOf(const Layer &layer)
 {
+    const qint64 key = layer.contentKey();
     {
         QMutexLocker lock(&g_depthMutex);
-        auto it = g_edgeBits.constFind(image.cacheKey());
+        auto it = g_edgeBits.constFind(key);
         if (it != g_edgeBits.constEnd())
             return it.value();
     }
     constexpr int kBand = 2;        // px from the edge
     constexpr int kVisible = 26;    // alpha: 10 % (the user's Q6)
+    const QImage image = layer.pixels();
     const QImage img = (image.format() == QImage::Format_ARGB32_Premultiplied
                         || image.format() == QImage::Format_ARGB32)
         ? image
@@ -876,7 +882,7 @@ quint8 edgeBitsOf(const QImage &image)
     QMutexLocker lock(&g_depthMutex);
     if (g_edgeBits.size() > 1024)
         g_edgeBits.clear(); // keys of images long since edited
-    g_edgeBits.insert(image.cacheKey(), bits);
+    g_edgeBits.insert(key, bits);
     return bits;
 }
 } // namespace
@@ -890,7 +896,7 @@ QVector<DepthEdge> depthEdges(const Panel &panel)
         const double a = panel.effectiveParallax(layer);
         if (a <= 0.0 || a == 1.0)
             continue;
-        const quint8 bits = edgeBitsOf(layer.image);
+        const quint8 bits = edgeBitsOf(layer);
         if (!bits)
             continue;
         DepthEdge e;
