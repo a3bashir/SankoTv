@@ -17773,6 +17773,178 @@ void runDepthPass(const QString &scratch)
     }
 }
 
+// ---- (pb) PLAYBACK SHOWS ONLY THE SHOT (2026-11-07, the user's hand test) ------
+// While the film plays, in the real window: everything outside the camera's
+// frame is black, the camera panned or turned (pb6); and the picture is exactly
+// what the frame holds on the canvas (pb7) - each marker the Camera tool shows
+// inside the frame is in the playing picture at the same place in the frame.
+// A frame turned clockwise so shows a picture turned the other way, as a real
+// camera's does. The camera holds still through the panel, so nothing here
+// depends on when a frame is read.
+void runPlaybackShotPass(const QString &scratch)
+{
+    using namespace workspace;
+    using namespace dppins;
+    out() << "--- (pb) playback shows only the shot, and exactly what the frame holds ---" << Qt::endl;
+    auto rig = std::make_unique<Rig>(writeDepthProject(scratch + QStringLiteral("/playshot"), true, false));
+    Rig &r = *rig;
+    check(QStringLiteral("(pb) the workspace opened"), r.ok);
+    if (!r.ok)
+        return;
+    Scene *scene = r.window.scenesForTest().value(0);
+    auto *camBtn = r.storyboard->findChild<QPushButton *>(QStringLiteral("toolCamera"));
+    if (!scene || scene->panels.isEmpty() || !camBtn) {
+        check(QStringLiteral("(pb) found the scene and the Camera tool"), false);
+        return;
+    }
+    r.storyboard->setStageFadeMsForTest(0);
+    const int fps = 24;
+    const int len = shotcam::panelFrames(*scene->panels.at(0), fps);
+    using shotcam::CameraState;
+    auto hold = [&](const CameraState &s) { // the camera still at s through the panel
+        shotcam::SceneCamera cam;
+        cam.keys = {shotcam::makeKey(*scene, 0, 0, fps, s), shotcam::makeKey(*scene, 0, len, fps, s)};
+        r.storyboard->applyCameraForUndo(scene, cam);
+        clickThumb(r, 0);
+        r.animatic->setPlayheadForTest(0, 0);
+        pump(80);
+    };
+    struct Played { bool playing = false; QRect frame, chip; QImage on, off; };
+    auto play = [&] {
+        Played p;
+        r.animatic->togglePlay();
+        pump(200);
+        QWidget *display = r.animatic->previewDisplayForTest();
+        p.playing = r.animatic->isPlaying() && display && display->isVisible();
+        if (p.playing) {
+            p.frame = r.animatic->previewPictureRectForTest();
+            // The chip's 1 px pen is centred on the rect's edge: it reaches one
+            // pixel past the rect.
+            p.chip = r.animatic->previewCaptionRectForTest().adjusted(-1, -1, 1, 1);
+            p.on = display->grab().toImage();
+            r.animatic->setPreviewBarsOpenForTest(true);
+            pump(30);
+            p.off = display->grab().toImage();
+            r.animatic->setPreviewBarsOpenForTest(false);
+        }
+        r.animatic->leavePreview();
+        pump(100);
+        return p;
+    };
+    auto lit = [](const QRgb c) { return qRed(c) != 0 || qGreen(c) != 0 || qBlue(c) != 0; };
+    auto litOutside = [&](const Played &p, const QImage &img) {
+        int n = 0;
+        for (int y = 0; y < img.height(); ++y)
+            for (int x = 0; x < img.width(); ++x)
+                if (!p.frame.contains(x, y) && !p.chip.contains(x, y) && lit(img.pixel(x, y)))
+                    ++n;
+        return n;
+    };
+
+    // --- (pb6) only the shot, while it plays -------------------------------------
+    const struct { const char *what; CameraState s; } cases[] = {
+        {"PANNED", {1250, 620, 1.6, 0.0}}, {"TURNED", {960, 540, 1.5, 20.0}}};
+    for (const auto &c : cases) {
+        hold(c.s);
+        const Played p = play();
+        const int bars = p.playing ? litOutside(p, p.on) : -1;
+        const int barsOff = p.playing ? litOutside(p, p.off) : -1;
+        int inside = 0;
+        if (p.playing)
+            for (int y = p.frame.top(); y <= p.frame.bottom(); ++y)
+                for (int x = p.frame.left(); x <= p.frame.right(); ++x)
+                    inside += lit(p.on.pixel(x, y)) ? 1 : 0;
+        const bool aspect = qAbs(p.frame.width() * 9 - p.frame.height() * 16) <= 32;
+        check(QStringLiteral("(pb6) THE CAMERA %1, THE FILM PLAYING: everything outside the frame's rect is black, "
+                             "and the rect is the 16:9 picture")
+                  .arg(QLatin1String(c.what)),
+              p.playing && bars == 0 && inside > 1000 && aspect,
+              QStringLiteral("playing %1, frame %2x%3 in %4x%5, %6 pixels lit outside, %7 inside").arg(p.playing)
+                  .arg(p.frame.width()).arg(p.frame.height()).arg(p.on.width()).arg(p.on.height()).arg(bars).arg(inside));
+        check(QStringLiteral("(pb6) control: without the black bars the same picture has art outside the frame - "
+                             "the bleed the user saw"),
+              p.playing && barsOff > 1000, QStringLiteral("%1 pixels").arg(barsOff));
+    }
+
+    // --- (pb7) the picture is what the frame holds --------------------------------
+    camBtn->click();
+    pump(200);
+    r.canvas->placeViewForTest(0.4, QPointF(960, 540), QPointF(r.canvas->width() / 2.0, r.canvas->height() / 2.0));
+    pump(30);
+    const shotcam::Stage stage(QSize(1920, 1080));
+    const double depthOf[] = {1.0, 0.0, 0.5, 1.0, 1.5};
+    struct Mark { QPointF uv; bool inFrame = false, onCanvas = false, inPicture = false; };
+    struct Look { QVector<Mark> marks; int inFrame = 0, matched = 0; QPolygonF quad; QRect frame; QImage picture; };
+    // Where each marker falls in the frame (u, v from its top-left, along its
+    // edges): found on the canvas there, and in the playing picture at (u, v).
+    auto lookAt = [&](const CameraState &s) {
+        Look l;
+        hold(s);
+        l.quad = shotcam::frameQuad(s, stage);
+        const QImage canvas = r.canvas->grab().toImage();
+        const QTransform view = r.canvas->viewTransformForTest();
+        const QPointF ex = (l.quad.at(1) - l.quad.at(0)) / QLineF(l.quad.at(0), l.quad.at(1)).length(),
+                      ey = (l.quad.at(3) - l.quad.at(0)) / QLineF(l.quad.at(0), l.quad.at(3)).length();
+        const double w = QLineF(l.quad.at(0), l.quad.at(1)).length(), h = QLineF(l.quad.at(0), l.quad.at(3)).length();
+        for (int i = 1; i <= 4; ++i) {
+            Mark m;
+            const QPointF at = shotcam::layerToStage(depthOf[i], s, stage).map(kMarker[i]);
+            const QPointF d = at - l.quad.at(0);
+            m.uv = QPointF(QPointF::dotProduct(d, ex) / w, QPointF::dotProduct(d, ey) / h);
+            m.inFrame = m.uv.x() > 0.03 && m.uv.x() < 0.97 && m.uv.y() > 0.03 && m.uv.y() < 0.97;
+            const QPoint onScreen = view.map(at).toPoint();
+            m.onCanvas = canvas.rect().contains(onScreen) && closeTo(canvas.pixelColor(onScreen), kColour[i]);
+            l.marks.append(m);
+        }
+        const Played p = play();
+        l.frame = p.frame;
+        l.picture = p.on;
+        for (int i = 1; i <= 4; ++i) {
+            Mark &m = l.marks[i - 1];
+            const QPoint in(qRound(p.frame.left() + m.uv.x() * p.frame.width()),
+                            qRound(p.frame.top() + m.uv.y() * p.frame.height()));
+            m.inPicture = p.playing && p.on.rect().contains(in) && closeTo(p.on.pixelColor(in), kColour[i]);
+            if (m.inFrame) {
+                ++l.inFrame;
+                l.matched += m.onCanvas && m.inPicture ? 1 : 0;
+            }
+        }
+        return l;
+    };
+    auto says = [](const Look &l) {
+        QStringList t;
+        for (const Mark &m : l.marks)
+            t << QStringLiteral("(%1, %2)%3%4%5").arg(m.uv.x(), 0, 'f', 2).arg(m.uv.y(), 0, 'f', 2)
+                     .arg(m.inFrame ? QStringLiteral(" in") : QStringLiteral(" out"))
+                     .arg(m.onCanvas ? QStringLiteral(" canvas") : QString())
+                     .arg(m.inPicture ? QStringLiteral(" picture") : QString());
+        return t.join(QStringLiteral("; "));
+    };
+    const Look cw = lookAt({1000, 560, 1.5, 20.0});
+    const Look ccw = lookAt({1000, 560, 1.3, -15.0});
+    const bool frameTurnedClockwise = cw.quad.at(1).y() > cw.quad.at(0).y(); // its top edge falls to the right
+    check(QStringLiteral("(pb7) THE PICTURE IS WHAT THE FRAME HOLDS, a frame turned 20 degrees clockwise on the "
+                         "canvas (layers at depth too): every marker inside the frame shows on the canvas and in "
+                         "the playing picture at the same place in the frame, and the one outside it does not"),
+          frameTurnedClockwise && cw.inFrame == 3 && cw.matched == 3 && !cw.marks.at(3).inFrame
+              && !cw.marks.at(3).inPicture,
+          says(cw));
+    // The House (index 2): below the frame's centre on the stage (620 against
+    // 560), above the picture's centre: the picture turned the other way.
+    check(QStringLiteral("(pb7) SO THE PICTURE TURNS THE OTHER WAY, as through a real camera: the House, below the "
+                         "frame's centre on the stage, is above the picture's centre with the frame turned clockwise"),
+          cw.marks.at(2).inPicture && cw.marks.at(2).uv.y() < 0.45, says(cw));
+    check(QStringLiteral("(pb7) control: a frame turned the other way (15 degrees) holds the House below the "
+                         "picture's centre, and all four markers match; the clockwise frame's House place holds "
+                         "something else in this picture"),
+          ccw.inFrame == 4 && ccw.matched == 4 && ccw.marks.at(2).uv.y() > 0.55
+              && !closeTo(ccw.picture.pixelColor(qRound(ccw.frame.left() + cw.marks.at(2).uv.x() * ccw.frame.width()),
+                                                 qRound(ccw.frame.top() + cw.marks.at(2).uv.y() * ccw.frame.height())),
+                          kColour[3]),
+          says(ccw));
+    r.window.markCleanForTest();
+}
+
 // ---- (dt) DEPTH TOOLS through the real window (Phase 2C) ----------------------
 // The Camera family proves the clamp, the Quick Moves and the passed layers
 // headless; this drives the real workspace: a frame drag the Ground holds in
@@ -20191,6 +20363,7 @@ int main(int argc, char **argv)
     runRecentMenuPass(scratch);
     runDepthPass(scratch);
     runDepthToolsPass(scratch);
+    runPlaybackShotPass(scratch);
     runPinnedKeysPass(scratch);
     runCameraBarFitPass(scratch);
     runStageClearPass(scratch);

@@ -237,6 +237,9 @@ public:
     // stage is clear), and its rect for the gate (empty when not shown).
     void setPreviewChromeShown(bool shown);
     QRect previewCaptionRectForTest() const;
+    // The paint without its black bars (the old bleed), so a check can show
+    // what they take away and that they take nothing else.
+    void setPreviewBarsOpenForTest(bool open);
     QWidget *previewDisplayForTest() const; // the preview widget over the canvas
     QRect previewPictureRectForTest() const; // where it paints the picture (its coordinates)
 

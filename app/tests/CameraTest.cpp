@@ -314,9 +314,15 @@ const Pin kMovingPins[] = {
     {"png.2048x1080.p2", "e850bb8385904be35d23b58170e7e5e15163139c451b0e0e1d42924afc37c23b"},
     {"png.3840x2160.p1", "2b933bb5f1842d088ba0220a78d5a9e1b80c7e3c18906be88f0712b5a992aad7"},
     {"png.3840x2160.p2", "958c12bf319fbf7ff8e976aa0d3b5e6e54d3e82b21f66e2effbbdf62efc63aad"},
-    {"preview.1001x777.f50", "78286c3d49e1acce4dfa1c0736acbc5332e39cf48ac46f32916aae6c14f3ee54"},
+    // CHANGED 2026-11-07, these two only, by the user's fix (the preview shows
+    // only the shot): grabbed at 960 x 540, these two frames are not that shape,
+    // and the old values pinned the art bleeding into the bars. (pb5) shows the
+    // new paint without its black bars is still the old bytes:
+    // 1001x777 was 78286c3d49e1acce4dfa1c0736acbc5332e39cf48ac46f32916aae6c14f3ee54,
+    // 2048x1080 was a913f1a95fc39bbb81388c4cb1c88242bf3c56610f4fee67363d13a5a2c5ee9a.
+    {"preview.1001x777.f50", "30b14e2d5ceaef8881f81232d9a764fb0f3722edd71f45ae571605fb9e58b141"},
     {"preview.1920x1080.f50", "ca07a614060b69d8bbc1ac7272872d245da9393ad5ae6d029d6cf0d3a3021ae6"},
-    {"preview.2048x1080.f50", "a913f1a95fc39bbb81388c4cb1c88242bf3c56610f4fee67363d13a5a2c5ee9a"},
+    {"preview.2048x1080.f50", "97a72b08a99eeaf550c09dac65c194692a7bc0430066b0d2d61933d87434b53e"},
     {"preview.3840x2160.f50", "c9ad14cd60f502785bec5be4f81b6c1e3333f59cae6f088c3a6655036cdd821a"},
 };
 
@@ -383,9 +389,10 @@ const QMap<QString, QString> kMarginPins = {
     {"png.2048x1080.p2", "e850bb8385904be35d23b58170e7e5e15163139c451b0e0e1d42924afc37c23b"},
     {"png.3840x2160.p1", "2b933bb5f1842d088ba0220a78d5a9e1b80c7e3c18906be88f0712b5a992aad7"},
     {"png.3840x2160.p2", "958c12bf319fbf7ff8e976aa0d3b5e6e54d3e82b21f66e2effbbdf62efc63aad"},
-    {"preview.1001x777.f50", "78286c3d49e1acce4dfa1c0736acbc5332e39cf48ac46f32916aae6c14f3ee54"},
+    // CHANGED 2026-11-07, as in kMovingPins and for the same reason.
+    {"preview.1001x777.f50", "30b14e2d5ceaef8881f81232d9a764fb0f3722edd71f45ae571605fb9e58b141"},
     {"preview.1920x1080.f50", "ca07a614060b69d8bbc1ac7272872d245da9393ad5ae6d029d6cf0d3a3021ae6"},
-    {"preview.2048x1080.f50", "a913f1a95fc39bbb81388c4cb1c88242bf3c56610f4fee67363d13a5a2c5ee9a"},
+    {"preview.2048x1080.f50", "97a72b08a99eeaf550c09dac65c194692a7bc0430066b0d2d61933d87434b53e"},
     {"preview.3840x2160.f50", "c9ad14cd60f502785bec5be4f81b6c1e3333f59cae6f088c3a6655036cdd821a"},
 };
 
@@ -1788,6 +1795,209 @@ int main(int argc, char **argv)
               mDiffer == wantDiffer, mDiffer.join(' '));
         qDeleteAll(inMargin);
         qDeleteAll(mNudged);
+
+        // ---- (pb) ONLY THE SHOT IN THE PREVIEW (2026-11-07, the user's hand test) --
+        // The moving shot is the whole stage through the camera, and a preview
+        // of another shape than the frame has bars beside or above it: the art
+        // outside the frame showed in them. The picture without the black bars
+        // is each check's control: what they take away, and that they take
+        // nothing else. (The real window while playing, and the frame against
+        // the picture: Lifecycle pb6, pb7.)
+        ts << "--- (pb) the preview shows only what the camera sees ---\n";
+        {
+            const shotcam::Stage s16(QSize(1920, 1080));
+            const QRect exact = shotcam::shotFrameRect(s16, QRect(0, 0, 960, 540));
+            const QRect wide = shotcam::shotFrameRect(s16, QRect(0, 0, 1200, 400));
+            const QRect tall = shotcam::shotFrameRect(s16, QRect(0, 0, 400, 600));
+            check(QStringLiteral("(pb0) THE FRAME'S RECT: a 16:9 frame fills a 960 x 540 target; in 1200 x "
+                                 "400 it is 711 x 400 with bars beside it, in 400 x 600 it is 400 x 225 with "
+                                 "bars above and below, centred"),
+                  exact == QRect(0, 0, 960, 540) && wide.height() == 400 && qAbs(wide.width() - 711) <= 1
+                      && qAbs(wide.center().x() - 600) <= 1 && tall.width() == 400
+                      && qAbs(tall.height() - 225) <= 1 && qAbs(tall.center().y() - 300) <= 1,
+                  QStringLiteral("exact %1x%2, wide %3x%4 at %5, tall %6x%7 at %8").arg(exact.width())
+                      .arg(exact.height()).arg(wide.width()).arg(wide.height()).arg(wide.left())
+                      .arg(tall.width()).arg(tall.height()).arg(tall.top()));
+
+            auto isBlack = [](const QImage &img, int x, int y) {
+                const QRgb c = img.pixel(x, y);
+                return qRed(c) == 0 && qGreen(c) == 0 && qBlue(c) == 0;
+            };
+            // Not black outside the frame (the caption chip left out), and
+            // different between two pictures inside it.
+            auto barsOf = [&](const QImage &img, const QRect &frame, const QRect &chip) {
+                int n = 0;
+                for (int y = 0; y < img.height(); ++y)
+                    for (int x = 0; x < img.width(); ++x)
+                        if (!frame.contains(x, y) && !chip.contains(x, y) && !isBlack(img, x, y))
+                            ++n;
+                return n;
+            };
+            auto differInside = [](const QImage &a, const QImage &b, const QRect &frame) {
+                int n = 0;
+                for (int y = frame.top(); y <= frame.bottom(); ++y)
+                    for (int x = frame.left(); x <= frame.right(); ++x)
+                        if (a.pixel(x, y) != b.pixel(x, y))
+                            ++n;
+                return n;
+            };
+            auto shownInside = [&](const QImage &img, const QRect &frame) {
+                int n = 0;
+                for (int y = frame.top(); y <= frame.bottom(); ++y)
+                    for (int x = frame.left(); x <= frame.right(); ++x)
+                        if (!isBlack(img, x, y))
+                            ++n;
+                return n;
+            };
+            struct Read { QRect frame, chip; QImage on, off; };
+            auto readPreview = [&](AnimaticPage &page, int flat, int frame) {
+                Read r;
+                page.setPlayheadForTest(flat, shotcam::msForFrameInPanel(frame, 24));
+                pump(50);
+                QWidget *surf = page.previewSurface();
+                r.frame = page.previewPictureRectForTest();
+                // The chip's 1 px pen is centred on the rect's edge: it reaches
+                // one pixel past the rect.
+                r.chip = page.previewCaptionRectForTest().adjusted(-1, -1, 1, 1);
+                r.on = surf->grab().toImage();
+                page.setPreviewBarsOpenForTest(true);
+                pump(20);
+                r.off = surf->grab().toImage();
+                page.setPreviewBarsOpenForTest(false);
+                pump(20);
+                return r;
+            };
+            // A margin project, as the hand test's: art in the margin, a wide
+            // preview. Each panel's camera holds still mid-panel: panned, turned,
+            // and panned and turned with a layer off the picture plane.
+            const QSize kF(1920, 1080), kM(480, 270);
+            const shotcam::CameraState panned{1440 + 300, 810 + 120, 1.3, 0.0}, turned{1440, 810, 1.25, 25.0},
+                both{1440 + 200, 810, 1.4, 15.0};
+            Scene *pb = new Scene;
+            pb->number = 1;
+            pb->panels << marginPanel(kF, kM) << marginPanel(kF, kM) << marginPanel(kF, kM);
+            pb->panels.at(2)->layers[1].parallax = 0.5;
+            const int len = shotcam::panelFrames(*pb->panels.at(0), 24);
+            pb->camera.keys = {shotcam::makeKey(*pb, 0, 0, 24, panned), shotcam::makeKey(*pb, 0, len, 24, panned),
+                               shotcam::makeKey(*pb, 1, 0, 24, turned), shotcam::makeKey(*pb, 1, len, 24, turned),
+                               shotcam::makeKey(*pb, 2, 0, 24, both), shotcam::makeKey(*pb, 2, len, 24, both)};
+            Scene *still = new Scene; // no camera: the neutral picture
+            still->number = 2;
+            still->panels << marginPanel(kF, kM);
+            {
+                QWidget host;
+                host.setAttribute(Qt::WA_DontShowOnScreen, true);
+                host.resize(1200, 400);
+                host.show();
+                AnimaticPage apage;
+                apage.setAttribute(Qt::WA_DontShowOnScreen, true);
+                apage.resize(1600, 320);
+                apage.setFps(24);
+                apage.setStageMargin(kM);
+                apage.show();
+                apage.loadScenes({pb, still});
+                apage.attachPreview(&host);
+                pump(200);
+                apage.scrubForTest(0);
+                pump(50);
+                const struct { const char *tag, *what; int flat; } cases[] = {
+                    {"pb1", "A PANNED CAMERA", 0}, {"pb2", "A TURNED CAMERA", 1},
+                    {"pb3", "A PANNED AND TURNED CAMERA WITH A LAYER AT DEPTH (the layered paint)", 2}};
+                QRect movingFrame;
+                for (const auto &c : cases) {
+                    const Read r = readPreview(apage, c.flat, len / 2);
+                    movingFrame = r.frame;
+                    const int bars = barsOf(r.on, r.frame, r.chip), inside = differInside(r.on, r.off, r.frame),
+                              shown = shownInside(r.on, r.frame), barsOff = barsOf(r.off, r.frame, r.chip);
+                    check(QStringLiteral("(%1) %2, in a preview wider than the frame: everything outside the "
+                                         "frame is black, and inside it the black bars change no pixel")
+                              .arg(QLatin1String(c.tag), QLatin1String(c.what)),
+                          bars == 0 && inside == 0 && shown > 1000 && r.frame.height() == 400
+                              && qAbs(r.frame.width() - 711) <= 1,
+                          QStringLiteral("frame %1x%2, %3 pixels lit outside it, %4 changed inside, %5 shown")
+                              .arg(r.frame.width()).arg(r.frame.height()).arg(bars).arg(inside).arg(shown));
+                    check(QStringLiteral("(%1) control: without the black bars the same camera has art there - "
+                                         "the bleed they remove").arg(QLatin1String(c.tag)),
+                          barsOff > 1000, QStringLiteral("%1 pixels").arg(barsOff));
+                }
+                const Read n = readPreview(apage, 3, len / 2);
+                check(QStringLiteral("(pb4) THE MOVING SHOT AND THE NEUTRAL PICTURE SIT IN ONE PLACE, to within a "
+                                     "pixel: the picture does not jump when the camera starts to move"),
+                      qAbs(n.frame.left() - movingFrame.left()) <= 1 && qAbs(n.frame.right() - movingFrame.right()) <= 1
+                          && qAbs(n.frame.top() - movingFrame.top()) <= 1
+                          && qAbs(n.frame.bottom() - movingFrame.bottom()) <= 1,
+                      QStringLiteral("neutral %1,%2 %3x%4; moving %5,%6 %7x%8").arg(n.frame.left()).arg(n.frame.top())
+                          .arg(n.frame.width()).arg(n.frame.height()).arg(movingFrame.left()).arg(movingFrame.top())
+                          .arg(movingFrame.width()).arg(movingFrame.height()));
+                check(QStringLiteral("(pb4) control: the neutral picture's bars were black already - only the "
+                                     "moving paint bled"),
+                      barsOf(n.on, n.frame, n.chip) == 0 && barsOf(n.off, n.frame, n.chip) == 0);
+                apage.leavePreview();
+                apage.loadScenes({});
+                pump(100);
+            }
+            delete pb;
+            delete still;
+
+            // (pb5) THE PINNED PREVIEWS. The moving and margin pins grab the
+            // preview at 960 x 540, so the two fixtures not 16:9 pinned the
+            // bleed. Without the black bars each is still the old bytes; with
+            // them they differ only outside the frame.
+            const QVector<Scene *> pinned = buildMoving(0.0);
+            {
+                const char *const oldPin[4] = {
+                    "ca07a614060b69d8bbc1ac7272872d245da9393ad5ae6d029d6cf0d3a3021ae6",
+                    "a913f1a95fc39bbb81388c4cb1c88242bf3c56610f4fee67363d13a5a2c5ee9a",
+                    "c9ad14cd60f502785bec5be4f81b6c1e3333f59cae6f088c3a6655036cdd821a",
+                    "78286c3d49e1acce4dfa1c0736acbc5332e39cf48ac46f32916aae6c14f3ee54"};
+                QWidget host;
+                host.setAttribute(Qt::WA_DontShowOnScreen, true);
+                host.resize(960, 540);
+                host.show();
+                AnimaticPage apage;
+                apage.setAttribute(Qt::WA_DontShowOnScreen, true);
+                apage.resize(1600, 320);
+                apage.setFps(24);
+                apage.show();
+                apage.loadScenes(pinned);
+                apage.attachPreview(&host);
+                pump(200);
+                apage.scrubForTest(0);
+                pump(50);
+                for (int i = 0; i < 4; ++i) {
+                    const Read r = readPreview(apage, 2 * i, 50);
+                    const bool sixteenNine = kSizes[i].width() * 9 == kSizes[i].height() * 16;
+                    const int bars = barsOf(r.on, r.frame, r.chip), inside = differInside(r.on, r.off, r.frame);
+                    const QString shaOff = shaOf(r.off), shaOn = shaOf(r.on);
+                    check(QStringLiteral("(pb5) %1 without the black bars is its bytes as pinned before this fix; "
+                                         "with them %2")
+                              .arg(tagOf(i), sixteenNine ? QStringLiteral("the same bytes (no bars at this size)")
+                                                         : QStringLiteral("only outside the frame differs, and that "
+                                                                          "is black")),
+                          shaOff == QLatin1String(oldPin[i]) && inside == 0 && bars == 0
+                              && (sixteenNine ? shaOn == shaOff : shaOn != shaOff),
+                          QStringLiteral("without %1, with %2, %3 lit outside, %4 changed inside")
+                              .arg(shaOff.left(16), shaOn.left(16)).arg(bars).arg(inside));
+                }
+                apage.leavePreview();
+                apage.loadScenes({});
+                pump(100);
+            }
+            // NOT CHANGED HERE, measured for the report: the film of a project
+            // not 16:9 draws a moving shot into its 1920 x 1080 frame the same
+            // way, so its letterbox can hold the same art.
+            {
+                const shotcam::Stage st(kSizes[1]);
+                const shotcam::CameraState cam = shotcam::evaluateAtPanel(*pinned.at(1), 0, 50, 24);
+                const QImage film = sankoexport::renderMovieFrame(pinned.at(1)->panels.at(0),
+                                                                  sankoexport::kMovieFrameSize, cam, st);
+                const QRect fr = shotcam::shotFrameRect(st, film.rect());
+                ts << "INFO (pb) the MP4 of a 2048x1080 project, not changed by this fix: frame " << fr.width() << 'x'
+                   << fr.height() << " in " << film.width() << 'x' << film.height() << ", "
+                   << barsOf(film, fr, QRect()) << " pixels lit outside the frame\n";
+            }
+            qDeleteAll(pinned);
+        }
     }
 
     // ---- (mg) THE STAGE MARGIN (Phase 2A) -------------------------------------

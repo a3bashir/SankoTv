@@ -1,5 +1,119 @@
 # SankoTV — Session Handoff Brief
 
+## STATUS 2026-11-07 (evening): THE PLAYBACK BATCH COMMITTED
+The user's two playback problems, as their own batch before 6b-V. The
+bleed is fixed; the rotation is not a bug and has not been changed: the
+user chose option A of Figma CAM-3 (node 545:696), keep it, with tooltips
+on Rotate Left / Right (the next batch). The note below is history.
+
+## Playback: only the shot in the preview (2026-11-07) - COMMITTED
+From the user's 6a hand test. Commit message msg_pb.txt; hand-test
+list: Documents\SankoTV-Design\handtest_playback.md.
+HAND TEST, READ: two recordings. 20261107-154214 ran the 6a exe (built Nov
+6, 20:38), so it did not test this batch, and nothing was committed on it.
+20261107-185530 (726 s) ran the main tree's exe, built Nov 7 15:52:31, git
+4037dc01f+dirty, which holds this batch and nothing newer. (The user meant
+to run the 6b-V worktree's exe; system.txt and the 1441 polls without a
+layers.* field say otherwise, so that recording says nothing about 6b-V.)
+Step 1 passes: panned, at 127 s, black beside the picture. Step 2 passes:
+rotated and zoomed, at 220 s, black bars and the art turned inside the frame.
+Step 6 passes: sessionEnd 726.2, summary written, 0 dropped, 0 warnings, no
+crash event. Steps 3, 4, 5 not by hand: Lifecycle pb7, Camera pb4, Camera pb5.
+PROBLEM 1, THE BLEED: FIXED. With the camera panned or turned, art outside
+the frame showed past the frame's edges in the preview (the recording
+20261107-131345 at 100 s: the picture spans 25 to 813 of a 960 px
+screenshot). CAUSE: AnimaticPage's preview paints a moving shot as the
+whole stage through the camera (shotcam::drawShot into the widget's rect),
+and a preview of another shape than the frame has bars beside or above
+the frame; the art filled them. The neutral paint draws only the frame's
+pixmap, which is why it began when the camera moved. FIX: after the shot
+is painted, everything outside shotcam::shotFrameRect (new: the frame
+fitted whole in a target, as the whole pixels inside it) is filled black.
+Not a clip beforehand: I built that first and (pb1)-(pb3) failed it, a
+clip changing 127, 1347 and 1211 pixels INSIDE a 712 x 400 picture and
+1279 of the 1001 x 777 pin's (Qt paints the scaled shot differently once
+clipped; how much was not measured, since the fill changes none).
+pictureRect, the seam the checks read, now gives the frame's rect for a
+moving shot too. The caption chip stays where it was, over the bars: it
+is not art.
+CHECKS, each with its control. Camera (pb, offscreen pages): (pb0) the
+frame's rect in an equal, a wide and a tall target; (pb1) panned, (pb2)
+turned, (pb3) panned and turned with a layer at depth (the layered
+paint), art in the margin, a 1200 x 400 preview: nothing lit outside the
+frame, no pixel changed inside / control the same paint without the black
+bars has 169782, 181854 and 189142 pixels of art there; (pb4) the moving
+and the neutral picture in one place to within a pixel / control the
+neutral picture's bars were black already; (pb5) the four pinned fixtures
+below. Lifecycle (pb, the real window, the film actually playing): (pb6)
+panned and turned: nothing lit outside the 16:9 frame in a 1669 x 760
+preview / control 180879 and 226350 pixels without the bars. Camera 285
+(272 + 13), Lifecycle 1200 (1192 + 8).
+A MISTAKE IN MY OWN NEW CHECK, read before it was changed: (pb1)-(pb5)
+also counted 472 pixels "lit outside" (248 and 314 for the pins), and so
+did the NEUTRAL picture, which has no bleed. They are the caption chip's
+edge: its 1 px pen is centred on the chip's rect, so it reaches one pixel
+past the rect the checks left out. Old: r.chip =
+page.previewCaptionRectForTest(). New: r.chip =
+page.previewCaptionRectForTest().adjusted(-1, -1, 1, 1). Never gated in
+the old form. Positive control: (pb1)-(pb3)'s controls still count over
+169000 pixels with the chip so left out.
+FOUR PIN LINES CHANGED, and only these, because they pinned the bleed:
+the previews are grabbed at 960 x 540, and these two frames are not that
+shape (the 16:9 fixtures have no bars: ca07a614..., c9ad14cd... hold).
+(mp) kMovingPins and (mq) kMarginPins, both:
+  preview.1001x777.f50  old 78286c3d49e1acce4dfa1c0736acbc5332e39cf48ac46f32916aae6c14f3ee54
+                        new 30b14e2d5ceaef8881f81232d9a764fb0f3722edd71f45ae571605fb9e58b141
+  preview.2048x1080.f50 old a913f1a95fc39bbb81388c4cb1c88242bf3c56610f4fee67363d13a5a2c5ee9a
+                        new 97a72b08a99eeaf550c09dac65c194692a7bc0430066b0d2d61933d87434b53e
+Positive control, (pb5), for all four fixtures: without the black bars the
+paint is still the OLD pin's bytes, so the old values really were this
+paint; with them nothing inside the frame changes and nothing is lit
+outside it; the two 16:9 fixtures are byte for byte the same either way.
+Every other pin is unchanged, MP4 and clips among them.
+PROBLEM 2, THE ROTATION: NOT A BUG, NOT CHANGED. (pb7), through the real
+window: a frame turned 20 degrees clockwise on the canvas, with layers at
+depth; every marker inside the frame shows on the canvas and in the
+playing picture at the same place in the frame, and the one outside it
+does not; so the picture turns the other way, as through a real camera /
+control a frame turned 15 degrees the other way, all four markers match
+there, and the House sits below the picture's centre rather than above.
+frameQuad turns the frame by +rotation and shotTransform the picture by
+-rotation, so frame corners land on picture corners. The Quick Move names
+describe the FRAME (RotateRight adds the turn: the frame clockwise), and
+so does the curved arrow (Motion::rotate +1, head at the right end: the
+frame clockwise). The two options, with the recommendation (A, keep it),
+are in the user's Figma area: PROPOSAL 2026-11-07 CAM-3, node 545:696;
+the area's rectangle (510:697) grew from 14965 to 15677 px tall to hold it.
+NOT CHANGED, A QUESTION FOR THE USER: the MP4 of a project not 16:9 draws
+a moving shot into its 1920 x 1080 frame the same way. Measured (Camera,
+INFO (pb)): a 2048 x 1080 project, frame 1920 x 1012 in 1920 x 1080,
+127673 pixels lit outside the frame. A 16:9 project has no bars there.
+Fixing it would change MP4 pins, so it was not done without asking.
+HOW IT GOT HERE: built with the Edit tool in a scratch worktree
+(C:\SankoTV_pb) while the 6a gate ran, then brought into this tree over
+the 6a commit: the six CRLF files by git checkout of a tree made from the
+worktree's files (138be058a, each then compared byte for byte; CRs equal
+lines in each), 6 files +442 / -10 before this note.
+QUICK RUN (the worktree, Release): Camera 285 PASS after the pin lines;
+Lifecycle 1200 PASS, 568 s.
+GATE pb (fullgate_pb.log, 2026-11-07, normal mode, 2048 s), in the scratch
+worktree C:\SankoTV_pb because the user's SankoTV was open on the main
+tree's exe; the script copy has no kill line, so that process was left
+alone. The six files equal this tree's, byte for byte. Clean Release and
+Debug builds (0 errors), 0 failing families in both; Lifecycle 1200
+(Release 571 s, Debug 781 s), Camera 285, CanvasSizeLock 170,
+CanvasEdgeLock 74, BrushLibrary 187, DevRecorder 46, QuickShapeGeometry
+19, PaintPixel 13, CanvasBrush 3; pin line counts as GATE 6a2's in both
+configs (Camera c1p 17, mp 43, mq 44, rp 3; Lifecycle (rp 6, (mp 4); the
+row pins bd989a38 / a4994d62 / a3e7f938; the evaluate pins
+e43a30f9fcc11db6 / 7bd38237a37a7579). Against GATE 6a2's camera_test
+text, leaving out the (pb) block, exactly the four changed pin lines
+differ; Lifecycle's other lines differ only in timings, the git hash and
+the fixtures' random ids. Exe: C:\SankoTV_pb\app\build\Release\SankoTV.exe,
+2026-11-07 14:40:52, git 4037dc01f+dirty: the build for the hand test.
+Hash list sha_pb.txt, redone over the files as committed. The main tree's
+own exe was rebuilt from this batch at 15:52 for the re-test.
+
 ## STATUS 2026-11-07: BATCH 6A COMMITTED
 The hand test of 6a (Dev Recorder 20261107-131345; the user did steps
 1, 3, 4 and 7) was read: no failure; the steps and what the recording

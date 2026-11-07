@@ -372,6 +372,20 @@ QTransform shotTransform(const CameraState &state, const Stage &stage,
     return t;
 }
 
+QRect shotFrameRect(const Stage &stage, const QRect &target)
+{
+    if (stage.frame.isEmpty() || target.isEmpty())
+        return QRect();
+    const double s = qMin(target.width() / double(stage.frame.width()),
+                          target.height() / double(stage.frame.height()));
+    const double w = stage.frame.width() * s, h = stage.frame.height() * s;
+    const QPointF c = QRectF(target).center();
+    // The pixels whose centres lie inside the frame: never one past its edge.
+    return QRect(QPoint(qCeil(c.x() - w / 2.0 - 0.5), qCeil(c.y() - h / 2.0 - 0.5)),
+                 QPoint(qFloor(c.x() + w / 2.0 - 0.5), qFloor(c.y() + h / 2.0 - 0.5)))
+        & target;
+}
+
 QImage renderShot(const QImage &flat, const CameraState &state,
                   const QSize &out)
 {

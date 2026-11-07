@@ -125,6 +125,13 @@ QPolygonF frameQuad(const CameraState &state, const Stage &stage);
 // (crop to fill, as the SHOTS clips are).
 QTransform shotTransform(const CameraState &state, const Stage &stage,
                          const QRectF &target, bool cover = false);
+// THE FRAME IN A TARGET (2026-11-07): where shotTransform(.., cover = false)
+// puts the frame - fitted whole and centred, whatever the camera does - as
+// the whole pixels inside it. A target of another shape has bars beside or
+// above it, and nothing of the stage belongs in them: the preview blacks
+// everything outside this, so only what the camera sees shows. Upright
+// always: the frame is what the output is; a turn moves the picture inside it.
+QRect shotFrameRect(const Stage &stage, const QRect &target);
 // The shot as a picture of `out` size (black beyond the artwork, as the
 // letterbox is). `flat` is the panel's full-resolution flatten - the whole
 // stage. Reduces with the same area-averaging filter the export uses before

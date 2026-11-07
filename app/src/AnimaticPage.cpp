@@ -153,22 +153,27 @@ public:
     QString captionForTest() const { return m_caption; }
     bool hasPixmapForTest() const { return !m_pixmap.isNull(); }
     // The rect the picture is painted in, as paintEvent places it: the
-    // neutral fit (the frame scaled to the widget, centred) or the shot
-    // transform's image of the stage.
+    // neutral fit (the frame scaled to the widget, centred) or the frame's
+    // rect the moving shot shows in - the same place to within a pixel.
     QRect pictureRect() const
     {
         if (m_pixmap.isNull())
             return QRect();
-        if (m_neutral || !m_panel) {
+        if (m_neutral) {
             QSize target = m_framePixmap.size();
             target.scale(size(), Qt::KeepAspectRatio);
             QRect r(QPoint(0, 0), target);
             r.moveCenter(rect().center());
             return r;
         }
-        return shotcam::shotTransform(m_camera, m_stage, QRectF(rect()))
-            .mapRect(QRectF(QPointF(0, 0), QSizeF(m_stage.canvas)))
-            .toRect();
+        return shotcam::shotFrameRect(m_stage, rect());
+    }
+    // The paint without its black bars, the old bleed: only so a check can
+    // show what they take away, and that they take nothing else.
+    void setBarsOpenForTest(bool open)
+    {
+        m_barsOpenForTest = open;
+        update();
     }
     shotcam::CameraState cameraForTest() const { return m_camera; }
     bool neutralForTest() const { return m_neutral; }
@@ -199,6 +204,19 @@ protected:
             QRect r(QPoint(0, 0), target);
             r.moveCenter(rect().center());
             painter.drawPixmap(r, m_framePixmap);
+        }
+        // ONLY WHAT THE CAMERA SEES (2026-11-07, the user's hand test). The
+        // moving shot is the whole stage through the camera, and a preview
+        // of another shape than the frame has bars beside or above it: past
+        // the frame, the art outside the shot showed in them, panned or
+        // turned. They are black, as the neutral paint's are. Painted over
+        // afterwards and not clipped beforehand: a clip changes the scaled
+        // paint inside the frame too (127 to 1347 pixels of a 712 x 400
+        // picture, Camera pb1-pb3), and this changes none of them.
+        if (!m_pixmap.isNull() && !m_neutral && !m_barsOpenForTest) {
+            const QRegion bars = QRegion(rect()).subtracted(shotcam::shotFrameRect(m_stage, rect()));
+            for (const QRect &bar : bars)
+                painter.fillRect(bar, Qt::black);
         }
         // An OPAQUE chip: it sits over artwork of any colour and cannot
         // borrow contrast from it. Not while the stage is clear.
@@ -266,6 +284,7 @@ private:
     QString m_caption;
     bool m_pressed = false;
     bool m_chrome = true; // the caption chip; off while the stage is clear
+    bool m_barsOpenForTest = false;
     shotcam::CameraState m_camera;
     bool m_neutral = true;
 };
@@ -633,6 +652,12 @@ QWidget *AnimaticPage::previewDisplayForTest() const
 QRect AnimaticPage::previewPictureRectForTest() const
 {
     return m_display && m_previewShown ? m_display->pictureRect() : QRect();
+}
+
+void AnimaticPage::setPreviewBarsOpenForTest(bool open)
+{
+    if (m_display)
+        m_display->setBarsOpenForTest(open);
 }
 
 QRect AnimaticPage::previewCaptionRectForTest() const
