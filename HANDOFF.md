@@ -1,5 +1,80 @@
 # SankoTV — Session Handoff Brief
 
+## STATUS 2026-11-07 (evening): THE SMALL BATCH COMMITTED, ON ITS GATE
+The film's bars, the Layers dock and the Rotates' tooltips, committed on
+GATE small at the user's word. See the section below. Next: 6b-V, built and
+gated, moved into this tree, not committed: its hand test has not run on it.
+
+## The film's bars, the Layers dock, the Rotates' tooltips (2026-11-07) - COMMITTED
+Three small items after the playback batch, at the user's word. Commit
+message msg_small.txt; hash list sha_small.txt. Built with the Edit tool in
+the scratch worktree C:\SankoTV_pb over the playback batch, and brought here
+as the others: the CRLF files by git checkout of a tree of the worktree's files
+(0c40fa3ef, each compared byte for byte), MainWindow.h (LF) by the Edit tool.
+1. THE FILM. A project not 16:9 has bars in the film's 1920 x 1080 frame, and
+a moving shot filled them with the stage's art, as the preview did. Both
+renderShot paths end with shotcam::fillOutsideFrame, which the preview now
+shares. CHECKS, Camera (fb), with shotcam::setFilmBarsOpenForTest as the
+control: (fb1) panned, (fb2) turned, (fb3) panned and turned with a layer at
+depth, a 2048 x 1080 project with art in its margin: nothing lit outside the
+1920 x 1012 frame, no pixel changed inside / control 11520, 128220 and 130560
+pixels of art there without the bars; (fb4) a 1001 x 777 project without a
+margin / control 4320; (fb5) a 16:9 project: the same bytes with and without;
+(fb6) the real export without the bars gives all 20 MP4 pins as they stood.
+TEN MP4 PIN VALUES CHANGED, each in kMovingPins and kMarginPins, because they
+pinned the art in the letterbox. Every other pin is unchanged:
+  mp4.1001x777.f102  old e822b3637cea41129d9f7b7d998cf5eb5c54f338c2fb81f6efa204b611b24e3c
+                     new 8bed895881128b484f061128763dede98e5c7ac39f78c562c613d7023fe9ab98
+  mp4.1001x777.f35   old a228adfa196dd487cd114cbbbb6035299acf766fa9bc1c158dc6f9cfcf184be4
+                     new d6c5c2abd98a639f0ea3a38d47414a26bfa0c49094c37c0b8cea612b20815e24
+  mp4.1001x777.f50   old 4cc088e8fde0de7f8643e14a98292a94eba9e9bc7c8051b537fc9cf1a4092f94
+                     new 70310577800332c2e41609e5adbbeb6042d856e077f3a9df314df30869ff5349
+  mp4.1001x777.f64   old 9aeb6c943dd904aad7a4049bdc726a8da9c8cdc2c72905e43cb5025829a54d86
+                     new 0cbdfc7b441808c10cd977d732cccffcea693c618211d68b6d0db38465c9c2a0
+  mp4.1001x777.f7    old 8ecedd5d24a8a52daa33d20046eeec31af3eaa2fe07c2d19cf64c69e9c69fbe3
+                     new 5835efd0d3934db110b8163290f66d7b64a1d92511a3caceb5ffd755edc4eb8a
+  mp4.2048x1080.f102 old 729316275cc03774407f6dddf69cba8e753c6ef4d829244ce07c1b79a12624f2
+                     new a9032dc28c0eb20f830e8d412f3ca66b603afb8ba7350356df00563563bc7c0a
+  mp4.2048x1080.f35  old a4343276036b04db7a721cd8100e901e87e50f976a21ce28bdf16ba70796b01b
+                     new bb0059e4cbb8cb60152709936207c60df83e6cb1d4babd8da094f704299a9df9
+  mp4.2048x1080.f50  old 31080745b39b6920fc12fb6d157ee4003a50f95d23906460a97e647f73fe5db3
+                     new ece587f420aa41b9d2b54dd9c78cb03ae6e6a0523f292c55a9cc10c0a9969efb
+  mp4.2048x1080.f64  old c153c77013f365c27eaa10fc4e759396dca4c89ac4bf71307483387804feec8b
+                     new fe10395e62ea4066f380e265d25e4a836414df7af2d8f47e5feddf89f4696cb2
+  mp4.2048x1080.f7   old 99fbd33c5a87a832a4078e0ca4a18114a19e6bbb90af47cc7d70ac120d58eb61
+                     new ae4b6410ecb8f9911a35079afefff51cf09edb8bc6ac0b72bda5b25cc9854d38
+Positive control: (fb6), above. One control's printed value moved with them:
+(c1) control "a 0.1 % push-in changes the MP4 frame (2048x1080)", 9d8bd79d45683ff4
+-> 3eebd667fb51d4c8; it still passes.
+2. THE LAYERS DOCK moved lower on every Close Project and reopen (the user's
+recording: its title at y 258, 270, 279 in the 960 px screenshots). Reproduced
+through the real window: Scenes over Layers, Layers 490 -> 468 -> 447 -> 427 px,
+about 4.5 % a time. CAUSE: the start window has no menu bar, so the stack is the
+bar's 33 px taller there; QStackedLayout::setCurrentIndex shows the page and
+activates the layouts above it, so the workspace came back 33 px taller, the
+dock host gave that growth to the upper dock, then the bar's return shrank both
+in proportion. FIX: MainWindow::loadFromPath takes the bar's room first
+(updateChromeFor, layout()->activate()), so the page returns at the height it
+left with. In the default layout Layers sits at its minimum, which hid it.
+CHECKS, Lifecycle (dk): (dk1) three reopens, the docks, the strip and the window
+to the pixel; (dk2) the page is never given another height; (dk3) the bar goes
+and comes back as before / control setLateChromeForTest, the old order: taller
+for a moment, Layers at 377, then 399, then 420, the drift the user saw.
+3. THE ROTATES (the user chose Figma CAM-3's option A, keep it): "Rotate Right:
+the frame turns clockwise, the picture the other way" and the matching one for
+Left, from shotcam::quickMoveTooltip, on the Quick Move tiles and in the CAMERA
+row's menu. CHECKS, Lifecycle (qm.tip): both places / controls the other moves
+have none.
+QUICK RUN (the worktree, Release): Camera 295, Lifecycle 1209 PASS.
+GATE small (fullgate_small.log, 2026-11-07, normal mode, 2135 s), in the scratch
+worktree: clean Release and Debug builds (0 errors), 0 failing families in both;
+Lifecycle 1209 (Release 579 s, Debug 796 s), Camera 295, CanvasSizeLock 170,
+CanvasEdgeLock 74, BrushLibrary 187, DevRecorder 46, QuickShapeGeometry 19,
+PaintPixel 13, CanvasBrush 3; pin line counts as GATE pb's in both configs;
+against GATE pb's camera_test text, leaving out (pb) and (fb), exactly the 20
+MP4 pin lines and the (c1) control's value differ. Not hand-tested: the user asked
+for this batch to go in on its gate.
+
 ## STATUS 2026-11-07 (evening): THE PLAYBACK BATCH COMMITTED
 The user's two playback problems, as their own batch before 6b-V. The
 bleed is fixed; the rotation is not a bug and has not been changed: the

@@ -506,7 +506,12 @@ void MainWindow::keepMenuShortcutsAlive()
 // it is the only way to start a recording with the mouse.
 void MainWindow::updateChromeForPage()
 {
-    const bool start = m_stack && m_stack->currentWidget() == m_dashboard;
+    updateChromeFor(m_stack ? m_stack->currentWidget() : nullptr);
+}
+
+void MainWindow::updateChromeFor(const QWidget *page)
+{
+    const bool start = page && page == m_dashboard;
     menuBar()->setVisible(!start);
 #ifdef SANKOTV_DEV_RECORDER
     auto *rec = devrec::Recorder::instance();
@@ -3151,6 +3156,18 @@ bool MainWindow::loadFromPath(const QString &path, bool asRecoveryCopy)
     // Skip the Script Editor: go straight to the Storyboard.
     m_storyboard->loadScenes(m_scenes);
     m_storyboard->perspectiveFromJson(loaded.perspective);
+    // THE BAR BEFORE THE PAGE (2026-11-07, seen in the user's hand test). The
+    // start window has no menu bar, so the stack is the bar's height taller
+    // there. Switched first, the workspace came back that much taller for a
+    // moment and then shrank; the dock host gives such growth to the upper
+    // dock and takes the shrink from both in proportion, so every reopen moved
+    // the Layers dock lower. With the bar's room taken first, the page returns
+    // at the height it left with, and the docks never hear of it.
+    if (!m_lateChromeForTest) {
+        updateChromeFor(m_storyboard);
+        if (layout())
+            layout()->activate();
+    }
     m_stack->setCurrentWidget(m_storyboard);
     // LAST, and it must stay last. Opening a project fires the very signals
     // that mark it dirty — panels are selected, the canvas repaints and

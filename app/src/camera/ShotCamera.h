@@ -132,6 +132,13 @@ QTransform shotTransform(const CameraState &state, const Stage &stage,
 // everything outside this, so only what the camera sees shows. Upright
 // always: the frame is what the output is; a turn moves the picture inside it.
 QRect shotFrameRect(const Stage &stage, const QRect &target);
+// Paints everything of `target` outside that rect black, after the shot: what
+// is inside it is the paint's own, untouched. The preview's picture and the
+// film's frames both end with it.
+void fillOutsideFrame(QPainter &painter, const Stage &stage, const QRect &target);
+// The film's frames without it, the old bleed: only so a check can show what
+// the black bars take away, and that they take nothing else.
+void setFilmBarsOpenForTest(bool open);
 // The shot as a picture of `out` size (black beyond the artwork, as the
 // letterbox is). `flat` is the panel's full-resolution flatten - the whole
 // stage. Reduces with the same area-averaging filter the export uses before
@@ -298,6 +305,9 @@ void remapForResize(SceneCamera &camera, const Stage &oldStage,
 // the Turn. Pure: the workspace puts START and END on the span's two keys.
 // (QuickMove, QuickAmounts and QuickFrames are in CameraModel.h.)
 QString quickMoveLabel(QuickMove move); // "Push In" .. "Rotate Right"
+// What a Rotate names (the user's choice, 2026-11-07, Figma CAM-3: the drag,
+// the names and the curved arrow all describe the FRAME). Empty for the rest.
+QString quickMoveTooltip(QuickMove move);
 // With STAY INSIDE ARTWORK on, END is clamped onto the artwork, and when
 // that would leave less than the whole move the START gives way just
 // enough (the user's decisions 3 and 4, 2026-10-29): a Pan or Tilt first

@@ -213,11 +213,8 @@ protected:
         // afterwards and not clipped beforehand: a clip changes the scaled
         // paint inside the frame too (127 to 1347 pixels of a 712 x 400
         // picture, Camera pb1-pb3), and this changes none of them.
-        if (!m_pixmap.isNull() && !m_neutral && !m_barsOpenForTest) {
-            const QRegion bars = QRegion(rect()).subtracted(shotcam::shotFrameRect(m_stage, rect()));
-            for (const QRect &bar : bars)
-                painter.fillRect(bar, Qt::black);
-        }
+        if (!m_pixmap.isNull() && !m_neutral && !m_barsOpenForTest)
+            shotcam::fillOutsideFrame(painter, m_stage, rect());
         // An OPAQUE chip: it sits over artwork of any colour and cannot
         // borrow contrast from it. Not while the stage is clear.
         if (!m_chrome)

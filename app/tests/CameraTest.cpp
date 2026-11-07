@@ -285,21 +285,25 @@ const Pin kMovingPins[] = {
     {"clip.3840x2160.p1", "f7c28c2bb02319805b8a434816ee13e2a4cc418cd0c5768285921ef7da35baf5"},
     {"clip.3840x2160.p2", "5ea62a720bfb6a8fea6323df780315c4c7fd7dabdcf1dcf9a04b00a85b202a51"},
     {"geometry", "7491456e39c08683270894b0e979b30f0f88e9d9c21a0469ca41fc55815323c6"},
-    {"mp4.1001x777.f102", "e822b3637cea41129d9f7b7d998cf5eb5c54f338c2fb81f6efa204b611b24e3c"},
-    {"mp4.1001x777.f35", "a228adfa196dd487cd114cbbbb6035299acf766fa9bc1c158dc6f9cfcf184be4"},
-    {"mp4.1001x777.f50", "4cc088e8fde0de7f8643e14a98292a94eba9e9bc7c8051b537fc9cf1a4092f94"},
-    {"mp4.1001x777.f64", "9aeb6c943dd904aad7a4049bdc726a8da9c8cdc2c72905e43cb5025829a54d86"},
-    {"mp4.1001x777.f7", "8ecedd5d24a8a52daa33d20046eeec31af3eaa2fe07c2d19cf64c69e9c69fbe3"},
+    // CHANGED 2026-11-07, the mp4 lines of the two sizes not 16:9, by the user's
+    // request (the film shows only the shot): the old values pinned the art in the
+    // letterbox. They are in kFilmOldPins, and (fb6) shows the real export without
+    // the black bars still gives them.
+    {"mp4.1001x777.f102", "8bed895881128b484f061128763dede98e5c7ac39f78c562c613d7023fe9ab98"},
+    {"mp4.1001x777.f35", "d6c5c2abd98a639f0ea3a38d47414a26bfa0c49094c37c0b8cea612b20815e24"},
+    {"mp4.1001x777.f50", "70310577800332c2e41609e5adbbeb6042d856e077f3a9df314df30869ff5349"},
+    {"mp4.1001x777.f64", "0cbdfc7b441808c10cd977d732cccffcea693c618211d68b6d0db38465c9c2a0"},
+    {"mp4.1001x777.f7", "5835efd0d3934db110b8163290f66d7b64a1d92511a3caceb5ffd755edc4eb8a"},
     {"mp4.1920x1080.f102", "e2f0d413726867a5bd3828f7aa22ae11597720a293857e4334da9ffad16654a6"},
     {"mp4.1920x1080.f35", "ca72016dbdc4d62fd26a3b2fb6da28d36e6360653323b1de33f2bb0fee817fb6"},
     {"mp4.1920x1080.f50", "abc98ad4503ddabe9d9c310c25ddec35342ea72567f0652db09f0a1caa8e4db5"},
     {"mp4.1920x1080.f64", "779b999217d6896de571edb96d0e4c0cb70a050c3b4b80bdf9624a239dab83a5"},
     {"mp4.1920x1080.f7", "791a7f39c948ae9db025b81e49372064437e448c03b004608a154113d7fb4460"},
-    {"mp4.2048x1080.f102", "729316275cc03774407f6dddf69cba8e753c6ef4d829244ce07c1b79a12624f2"},
-    {"mp4.2048x1080.f35", "a4343276036b04db7a721cd8100e901e87e50f976a21ce28bdf16ba70796b01b"},
-    {"mp4.2048x1080.f50", "31080745b39b6920fc12fb6d157ee4003a50f95d23906460a97e647f73fe5db3"},
-    {"mp4.2048x1080.f64", "c153c77013f365c27eaa10fc4e759396dca4c89ac4bf71307483387804feec8b"},
-    {"mp4.2048x1080.f7", "99fbd33c5a87a832a4078e0ca4a18114a19e6bbb90af47cc7d70ac120d58eb61"},
+    {"mp4.2048x1080.f102", "a9032dc28c0eb20f830e8d412f3ca66b603afb8ba7350356df00563563bc7c0a"},
+    {"mp4.2048x1080.f35", "bb0059e4cbb8cb60152709936207c60df83e6cb1d4babd8da094f704299a9df9"},
+    {"mp4.2048x1080.f50", "ece587f420aa41b9d2b54dd9c78cb03ae6e6a0523f292c55a9cc10c0a9969efb"},
+    {"mp4.2048x1080.f64", "fe10395e62ea4066f380e265d25e4a836414df7af2d8f47e5feddf89f4696cb2"},
+    {"mp4.2048x1080.f7", "ae4b6410ecb8f9911a35079afefff51cf09edb8bc6ac0b72bda5b25cc9854d38"},
     {"mp4.3840x2160.f102", "da08563f2b9a143dea8c21859a97ce58eccf942f031a78325ae3b74c5fbd0c8b"},
     {"mp4.3840x2160.f35", "65da98376bdc3d7b4f754a1e84ae4b50bc870e5b0f43cdc1329aa91bfe724941"},
     {"mp4.3840x2160.f50", "b9db097e61146dae3d582111ce378baf517dea149563fa34edf9649426d4f235"},
@@ -324,6 +328,22 @@ const Pin kMovingPins[] = {
     {"preview.1920x1080.f50", "ca07a614060b69d8bbc1ac7272872d245da9393ad5ae6d029d6cf0d3a3021ae6"},
     {"preview.2048x1080.f50", "97a72b08a99eeaf550c09dac65c194692a7bc0430066b0d2d61933d87434b53e"},
     {"preview.3840x2160.f50", "c9ad14cd60f502785bec5be4f81b6c1e3333f59cae6f088c3a6655036cdd821a"},
+};
+
+// THE FILM'S PINS BEFORE THE BLACK BARS (2026-11-07), the two sizes not 16:9:
+// (fb6) shows the real export without the bars still gives these bytes.
+struct FilmOldPin { const char *name, *sha; };
+const FilmOldPin kFilmOldPins[] = {
+    {"mp4.1001x777.f102", "e822b3637cea41129d9f7b7d998cf5eb5c54f338c2fb81f6efa204b611b24e3c"},
+    {"mp4.1001x777.f35", "a228adfa196dd487cd114cbbbb6035299acf766fa9bc1c158dc6f9cfcf184be4"},
+    {"mp4.1001x777.f50", "4cc088e8fde0de7f8643e14a98292a94eba9e9bc7c8051b537fc9cf1a4092f94"},
+    {"mp4.1001x777.f64", "9aeb6c943dd904aad7a4049bdc726a8da9c8cdc2c72905e43cb5025829a54d86"},
+    {"mp4.1001x777.f7", "8ecedd5d24a8a52daa33d20046eeec31af3eaa2fe07c2d19cf64c69e9c69fbe3"},
+    {"mp4.2048x1080.f102", "729316275cc03774407f6dddf69cba8e753c6ef4d829244ce07c1b79a12624f2"},
+    {"mp4.2048x1080.f35", "a4343276036b04db7a721cd8100e901e87e50f976a21ce28bdf16ba70796b01b"},
+    {"mp4.2048x1080.f50", "31080745b39b6920fc12fb6d157ee4003a50f95d23906460a97e647f73fe5db3"},
+    {"mp4.2048x1080.f64", "c153c77013f365c27eaa10fc4e759396dca4c89ac4bf71307483387804feec8b"},
+    {"mp4.2048x1080.f7", "99fbd33c5a87a832a4078e0ca4a18114a19e6bbb90af47cc7d70ac120d58eb61"},
 };
 
 QString movingPinned(const QString &name)
@@ -360,21 +380,22 @@ const QMap<QString, QString> kMarginPins = {
     {"clip.3840x2160.p1", "f7c28c2bb02319805b8a434816ee13e2a4cc418cd0c5768285921ef7da35baf5"},
     {"clip.3840x2160.p2", "39d701b46b7fb791bba9b37f35a1722088448d814bf807b7f1c545ccf796a15a"},
     {"geometry", "94c6580cedecbf1882cd30b5ad84ce346726a87ae0d5f8e0a6e966b9d2a51fa2"},
-    {"mp4.1001x777.f102", "e822b3637cea41129d9f7b7d998cf5eb5c54f338c2fb81f6efa204b611b24e3c"},
-    {"mp4.1001x777.f35", "a228adfa196dd487cd114cbbbb6035299acf766fa9bc1c158dc6f9cfcf184be4"},
-    {"mp4.1001x777.f50", "4cc088e8fde0de7f8643e14a98292a94eba9e9bc7c8051b537fc9cf1a4092f94"},
-    {"mp4.1001x777.f64", "9aeb6c943dd904aad7a4049bdc726a8da9c8cdc2c72905e43cb5025829a54d86"},
-    {"mp4.1001x777.f7", "8ecedd5d24a8a52daa33d20046eeec31af3eaa2fe07c2d19cf64c69e9c69fbe3"},
+    // CHANGED 2026-11-07, as in kMovingPins and for the same reason.
+    {"mp4.1001x777.f102", "8bed895881128b484f061128763dede98e5c7ac39f78c562c613d7023fe9ab98"},
+    {"mp4.1001x777.f35", "d6c5c2abd98a639f0ea3a38d47414a26bfa0c49094c37c0b8cea612b20815e24"},
+    {"mp4.1001x777.f50", "70310577800332c2e41609e5adbbeb6042d856e077f3a9df314df30869ff5349"},
+    {"mp4.1001x777.f64", "0cbdfc7b441808c10cd977d732cccffcea693c618211d68b6d0db38465c9c2a0"},
+    {"mp4.1001x777.f7", "5835efd0d3934db110b8163290f66d7b64a1d92511a3caceb5ffd755edc4eb8a"},
     {"mp4.1920x1080.f102", "e2f0d413726867a5bd3828f7aa22ae11597720a293857e4334da9ffad16654a6"},
     {"mp4.1920x1080.f35", "ca72016dbdc4d62fd26a3b2fb6da28d36e6360653323b1de33f2bb0fee817fb6"},
     {"mp4.1920x1080.f50", "abc98ad4503ddabe9d9c310c25ddec35342ea72567f0652db09f0a1caa8e4db5"},
     {"mp4.1920x1080.f64", "779b999217d6896de571edb96d0e4c0cb70a050c3b4b80bdf9624a239dab83a5"},
     {"mp4.1920x1080.f7", "791a7f39c948ae9db025b81e49372064437e448c03b004608a154113d7fb4460"},
-    {"mp4.2048x1080.f102", "729316275cc03774407f6dddf69cba8e753c6ef4d829244ce07c1b79a12624f2"},
-    {"mp4.2048x1080.f35", "a4343276036b04db7a721cd8100e901e87e50f976a21ce28bdf16ba70796b01b"},
-    {"mp4.2048x1080.f50", "31080745b39b6920fc12fb6d157ee4003a50f95d23906460a97e647f73fe5db3"},
-    {"mp4.2048x1080.f64", "c153c77013f365c27eaa10fc4e759396dca4c89ac4bf71307483387804feec8b"},
-    {"mp4.2048x1080.f7", "99fbd33c5a87a832a4078e0ca4a18114a19e6bbb90af47cc7d70ac120d58eb61"},
+    {"mp4.2048x1080.f102", "a9032dc28c0eb20f830e8d412f3ca66b603afb8ba7350356df00563563bc7c0a"},
+    {"mp4.2048x1080.f35", "bb0059e4cbb8cb60152709936207c60df83e6cb1d4babd8da094f704299a9df9"},
+    {"mp4.2048x1080.f50", "ece587f420aa41b9d2b54dd9c78cb03ae6e6a0523f292c55a9cc10c0a9969efb"},
+    {"mp4.2048x1080.f64", "fe10395e62ea4066f380e265d25e4a836414df7af2d8f47e5feddf89f4696cb2"},
+    {"mp4.2048x1080.f7", "ae4b6410ecb8f9911a35079afefff51cf09edb8bc6ac0b72bda5b25cc9854d38"},
     {"mp4.3840x2160.f102", "da08563f2b9a143dea8c21859a97ce58eccf942f031a78325ae3b74c5fbd0c8b"},
     {"mp4.3840x2160.f35", "65da98376bdc3d7b4f754a1e84ae4b50bc870e5b0f43cdc1329aa91bfe724941"},
     {"mp4.3840x2160.f50", "b9db097e61146dae3d582111ce378baf517dea149563fa34edf9649426d4f235"},
@@ -1983,18 +2004,96 @@ int main(int argc, char **argv)
                 apage.loadScenes({});
                 pump(100);
             }
-            // NOT CHANGED HERE, measured for the report: the film of a project
-            // not 16:9 draws a moving shot into its 1920 x 1080 frame the same
-            // way, so its letterbox can hold the same art.
+            // ---- (fb) ONLY THE SHOT IN THE FILM (2026-11-07, the user's request) --
+            // The film's frame is 16:9. A project of another shape has bars there,
+            // and a moving shot filled them with the stage's art, as the preview
+            // did. The frame without the black bars is each check's control.
+            ts << "--- (fb) the film shows only what the camera sees ---\n";
+            auto film = [](Panel *panel, const shotcam::CameraState &cam, const shotcam::Stage &st) {
+                return sankoexport::renderMovieFrame(panel, sankoexport::kMovieFrameSize, cam, st);
+            };
+            auto filmCase = [&](const QString &what, Panel *panel, const shotcam::CameraState &cam,
+                                const shotcam::Stage &st, const QSize &wantFrame) {
+                const QImage on = film(panel, cam, st);
+                shotcam::setFilmBarsOpenForTest(true);
+                const QImage off = film(panel, cam, st);
+                shotcam::setFilmBarsOpenForTest(false);
+                const QRect fr = shotcam::shotFrameRect(st, on.rect());
+                const int bars = barsOf(on, fr, QRect()), inside = differInside(on, off, fr),
+                          shown = shownInside(on, fr), barsOff = barsOf(off, fr, QRect());
+                check(QStringLiteral("%1: everything outside the frame is black, and inside it the black bars "
+                                     "change no pixel").arg(what),
+                      bars == 0 && inside == 0 && shown > 1000 && qAbs(fr.width() - wantFrame.width()) <= 1
+                          && qAbs(fr.height() - wantFrame.height()) <= 1,
+                      QStringLiteral("frame %1x%2 in %3x%4, %5 pixels lit outside it, %6 changed inside, %7 shown")
+                          .arg(fr.width()).arg(fr.height()).arg(on.width()).arg(on.height()).arg(bars).arg(inside)
+                          .arg(shown));
+                check(QStringLiteral("%1 control: without the black bars the same frame has art there")
+                          .arg(what.left(5)),
+                      barsOff > 1000, QStringLiteral("%1 pixels").arg(barsOff));
+            };
             {
-                const shotcam::Stage st(kSizes[1]);
-                const shotcam::CameraState cam = shotcam::evaluateAtPanel(*pinned.at(1), 0, 50, 24);
-                const QImage film = sankoexport::renderMovieFrame(pinned.at(1)->panels.at(0),
-                                                                  sankoexport::kMovieFrameSize, cam, st);
-                const QRect fr = shotcam::shotFrameRect(st, film.rect());
-                ts << "INFO (pb) the MP4 of a 2048x1080 project, not changed by this fix: frame " << fr.width() << 'x'
-                   << fr.height() << " in " << film.width() << 'x' << film.height() << ", "
-                   << barsOf(film, fr, QRect()) << " pixels lit outside the frame\n";
+                const QSize kWide(2048, 1080), kFilmMargin(480, 270);
+                Panel *wide = marginPanel(kWide, kFilmMargin);
+                Panel *wideDepth = marginPanel(kWide, kFilmMargin);
+                wideDepth->layers[1].parallax = 0.5;
+                const shotcam::Stage wideStage = shotcam::stageWithMargin(wide->canvasSize(), kFilmMargin);
+                const double wx = wideStage.canvas.width() / 2.0, wy = wideStage.canvas.height() / 2.0;
+                const QSize wideFrame(1920, 1012);
+                filmCase(QStringLiteral("(fb1) A PANNED CAMERA, a 2048 x 1080 project with art in its margin"), wide,
+                         {wx + 300, wy + 120, 1.3, 0.0}, wideStage, wideFrame);
+                filmCase(QStringLiteral("(fb2) A TURNED CAMERA, the same project"), wide, {wx, wy, 1.25, 25.0}, wideStage,
+                         wideFrame);
+                filmCase(QStringLiteral("(fb3) A PANNED AND TURNED CAMERA WITH A LAYER AT DEPTH (the layered paint), "
+                                        "the same project"),
+                         wideDepth, {wx + 200, wy, 1.4, 15.0}, wideStage, wideFrame);
+                delete wide;
+                delete wideDepth;
+                Panel *tall = fixturePanel(kSizes[3]); // no margin: bars beside the frame
+                const shotcam::Stage tallStage(kSizes[3]);
+                filmCase(QStringLiteral("(fb4) A PANNED CAMERA, a 1001 x 777 project without a margin"), tall,
+                         {500.5 + 150, 388.5 + 60, 1.4, 0.0}, tallStage, QSize(1391, 1080));
+                delete tall;
+                // A project of the film's own shape has no bars to fill.
+                Panel *same = marginPanel(kSizes[0], kFilmMargin);
+                const shotcam::Stage sameStage = shotcam::stageWithMargin(same->canvasSize(), kFilmMargin);
+                const shotcam::CameraState sameCam{sameStage.canvas.width() / 2.0 + 300,
+                                                   sameStage.canvas.height() / 2.0 + 120, 1.3, 20.0};
+                const QImage sameOn = film(same, sameCam, sameStage);
+                shotcam::setFilmBarsOpenForTest(true);
+                const QImage sameOff = film(same, sameCam, sameStage);
+                shotcam::setFilmBarsOpenForTest(false);
+                check(QStringLiteral("(fb5) A 16:9 PROJECT: the frame is the whole film frame, and the black bars "
+                                     "change no byte"),
+                      shotcam::shotFrameRect(sameStage, sameOn.rect()) == sameOn.rect() && shaOf(sameOn) == shaOf(sameOff));
+                delete same;
+            }
+            // (fb6) THE PINS. The real export job without the black bars gives the
+            // bytes pinned before this fix, every one of them; so those values
+            // really were this paint, and the fix takes away only what is outside
+            // the frame. Old values, in the order of the table: HANDOFF.
+            {
+                shotcam::setFilmBarsOpenForTest(true);
+                const QMap<QString, QString> oldPaint = renderAll(pinned, QStringLiteral("fb"));
+                shotcam::setFilmBarsOpenForTest(false);
+                QStringList wrong;
+                int compared = 0;
+                for (const FilmOldPin &o : kFilmOldPins) {
+                    ++compared;
+                    if (oldPaint.value(QLatin1String(o.name)) != QLatin1String(o.sha))
+                        wrong << QLatin1String(o.name);
+                }
+                for (auto it = oldPaint.cbegin(); it != oldPaint.cend(); ++it)
+                    if (it.key().startsWith(QStringLiteral("mp4.")) && !it.key().startsWith(QStringLiteral("mp4.1001"))
+                        && !it.key().startsWith(QStringLiteral("mp4.2048"))) {
+                        ++compared;
+                        if (it.value() != movingPinned(it.key()))
+                            wrong << it.key();
+                    }
+                check(QStringLiteral("(fb6) THE REAL EXPORT WITHOUT THE BLACK BARS gives every MP4 pin as it stood "
+                                     "before this fix: the 10 not 16:9 as recorded, the 10 at 16:9 unchanged"),
+                      wrong.isEmpty() && compared == 20,
+                      QStringLiteral("%1 compared; wrong: %2").arg(compared).arg(wrong.join(QLatin1Char(' '))));
             }
             qDeleteAll(pinned);
         }

@@ -124,6 +124,9 @@ public:
     // movie request is built from): empty for none, missing or MUTED.
     QString exportAudioPathForTest() const { return exportAudioPath(); }
     void closeProjectForTest() { onCloseProject(); }
+    // Opening with the menu bar's room taken only after the page is back (the
+    // old order): the check's control for the dock that moved on every reopen.
+    void setLateChromeForTest(bool late) { m_lateChromeForTest = late; }
     // The real answer-to-consequence mapping, without the modal in front.
     bool mayDiscardForTest(DiscardAnswer answer)
     {
@@ -292,6 +295,7 @@ private:
     // start window, and the recorder's indicator moved to where it can
     // still be seen.
     void updateChromeForPage();
+    void updateChromeFor(const QWidget *page);
     void updateSaveActions();
     void updateAudioActions(); // Edit > Import Audio / Remove Audio
     void updateExportActions(); // File > Export: needs at least one panel
@@ -534,6 +538,7 @@ private:
     // at all.
     bool m_dirty = false;
     std::function<DiscardAnswer()> m_discardPromptForTest;
+    bool m_lateChromeForTest = false;
     std::function<bool(const QString &, const QString &)> m_blockedPromptForTest;
     std::function<QString()> m_saveAsPathForTest;
     QString m_lastWriteFailure;

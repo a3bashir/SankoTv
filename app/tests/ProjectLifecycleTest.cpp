@@ -12126,6 +12126,21 @@ void runQuickMovePass(const QString &scratch)
     const auto *zoomField = pop->findChild<QDoubleSpinBox *>(QStringLiteral("camQuickZoom"));
     const auto *moveField = pop->findChild<QSpinBox *>(QStringLiteral("camQuickMoveAmount"));
     const auto *turnField = pop->findChild<QSpinBox *>(QStringLiteral("camQuickTurn"));
+    {
+        auto tip = [&](const char *name) {
+            const auto *t = pop->findChild<QToolButton *>(QLatin1String(name));
+            return t ? t->toolTip() : QStringLiteral("no tile");
+        };
+        check(QStringLiteral("(qm.tip) the Rotate tiles say what they turn: \"Rotate Right: the frame turns clockwise, "
+                             "the picture the other way\" and the matching one for Left"),
+              tip("camQuickRotateRight")
+                      == QStringLiteral("Rotate Right: the frame turns clockwise, the picture the other way")
+                  && tip("camQuickRotateLeft")
+                      == QStringLiteral("Rotate Left: the frame turns counterclockwise, the picture the other way"),
+              tip("camQuickRotateRight") + QStringLiteral(" / ") + tip("camQuickRotateLeft"));
+        check(QStringLiteral("(qm.tip) control: the other moves have no such tooltip"),
+              tip("camQuickPushIn").isEmpty() && tip("camQuickPanRight").isEmpty());
+    }
     check(QStringLiteral("(qm.1) Quick Move opens the popover: eight moves and the three amounts "
                          "Zoom 1.25x, Move 25 %, Turn 10 deg"),
           pop->isVisible() && tiles == 8 && zoomField && moveField && turnField
@@ -12296,6 +12311,8 @@ void runQuickMovePass(const QString &scratch)
         const QRect clip2 = r.timeline->clipRectForTest(1);
         QStringList entries;
         bool triggered = false;
+        QString tipRight, tipLeft, tipPush;
+        bool tipsShown = false;
         menuHooked([&] {
             const QPoint at(clip2.center().x(), rowY);
             QContextMenuEvent ev(QContextMenuEvent::Mouse, at, r.surface->mapToGlobal(at));
@@ -12305,6 +12322,14 @@ void runQuickMovePass(const QString &scratch)
                 entries << q->title();
                 for (QAction *a : q->actions())
                     entries << a->objectName();
+                tipsShown = q->toolTipsVisible();
+                auto tipOf = [q](const char *name) {
+                    const QAction *a = q->findChild<QAction *>(QLatin1String(name));
+                    return a ? a->toolTip() : QString();
+                };
+                tipRight = tipOf("quickRotateRight");
+                tipLeft = tipOf("quickRotateLeft");
+                tipPush = tipOf("quickPushIn");
                 if (QAction *a = q->findChild<QAction *>(QStringLiteral("quickPanRight"))) {
                     a->trigger();
                     triggered = true;
@@ -12313,6 +12338,14 @@ void runQuickMovePass(const QString &scratch)
         });
         const bool panned = triggered && lastText() == QStringLiteral("Quick Camera Move")
             && keyAt(s0, 48) >= 0 && keyAt(s0, 120) >= 0;
+        check(QStringLiteral("(qm.tip) the menu's two Rotates say the same, with tooltips on in that menu"),
+              tipsShown && tipRight == QStringLiteral("Rotate Right: the frame turns clockwise, the picture the other way")
+                  && tipLeft == QStringLiteral("Rotate Left: the frame turns counterclockwise, the picture the other way"),
+              tipRight + QStringLiteral(" / ") + tipLeft);
+        // QAction::toolTip() falls back to the action's text when none was set;
+        // the menu shows only one that was, so the control reads the fallback.
+        check(QStringLiteral("(qm.tip) control: the menu's other moves were given none (the action's own text)"),
+              !tipPush.contains(QStringLiteral("frame turns")), tipPush);
         check(QStringLiteral("(qm.6) the CAMERA row's menu off a key: Quick Move on Panel 2 with the "
                              "eight moves; Pan Right applies on that panel"),
               entries.value(0) == QStringLiteral("Quick Move on Panel 2") && entries.size() == 9 && panned,
@@ -17773,6 +17806,120 @@ void runDepthPass(const QString &scratch)
     }
 }
 
+// ---- (dk) THE DOCKS STAY WHERE THEY WERE (2026-11-07, seen in the user's hand test) --
+// The Layers dock moved lower on every Close Project and reopen. The start window
+// has no menu bar, so the stack is the bar's height taller there; the workspace came
+// back that much taller for a moment and then shrank, and the dock host gives such
+// growth to the upper dock and takes the shrink from both in proportion. It keeps its
+// height now: the bar's room is taken before the page is shown. In the layout the user
+// keeps, Scenes over Layers; in the default one Layers sits at its minimum and hides it.
+void runDockSteadyPass(const QString &scratch)
+{
+    using namespace workspace;
+    out() << "--- (dk) closing and reopening a project leaves the docks where they were ---" << Qt::endl;
+    const QString dir = scratch + QStringLiteral("/docksteady");
+    QDir().mkpath(dir);
+    const QString project = writeProject(dir, QStringLiteral("Steady"), QSize(960, 540), 24, 1, 2);
+    auto rig = std::make_unique<Rig>(project);
+    Rig &r = *rig;
+    check(QStringLiteral("(dk) the workspace opened"), r.ok);
+    if (!r.ok)
+        return;
+    auto *layers = r.storyboard->findChild<QDockWidget *>(QStringLiteral("dockLayers"));
+    auto *scenes = r.storyboard->findChild<QDockWidget *>(QStringLiteral("dockScenes"));
+    auto *info = r.storyboard->findChild<QDockWidget *>(QStringLiteral("dockShotInfo"));
+    auto *strip = r.storyboard->findChild<QDockWidget *>(QStringLiteral("dockPanelStrip"));
+    auto *host = layers ? qobject_cast<QMainWindow *>(layers->parentWidget()) : nullptr;
+    if (!layers || !scenes || !info || !strip || !host) {
+        check(QStringLiteral("(dk) found the docks"), false);
+        return;
+    }
+    host->removeDockWidget(layers);
+    host->removeDockWidget(scenes);
+    host->removeDockWidget(info);
+    host->addDockWidget(Qt::RightDockWidgetArea, scenes);
+    host->addDockWidget(Qt::RightDockWidgetArea, layers);
+    host->splitDockWidget(scenes, layers, Qt::Vertical);
+    host->tabifyDockWidget(scenes, info);
+    scenes->raise();
+    layers->show();
+    scenes->show();
+    host->resizeDocks({scenes, layers}, {200, 460}, Qt::Vertical);
+    pump(300);
+
+    // Every height the page is given while it is reopened.
+    struct PageHeights : QObject {
+        QVector<int> seen;
+        bool eventFilter(QObject *, QEvent *e) override
+        {
+            if (e->type() == QEvent::Resize)
+                seen << static_cast<QResizeEvent *>(e)->size().height();
+            return false;
+        }
+    } heights;
+    r.storyboard->installEventFilter(&heights);
+    struct Where { int layersY, layersH, scenesH, stripH, pageH; QSize window; };
+    auto where = [&] {
+        return Where{layers->y(), layers->height(), scenes->height(), strip->height(), r.storyboard->height(),
+                     r.window.size()};
+    };
+    auto says = [](const Where &w) {
+        return QStringLiteral("Layers at %1, %2 tall, Scenes %3, strip %4, page %5").arg(w.layersY).arg(w.layersH)
+            .arg(w.scenesH).arg(w.stripH).arg(w.pageH);
+    };
+    bool barGoneClosed = true, barBackOpen = true;
+    auto reopen = [&] {
+        heights.seen.clear();
+        r.window.closeProjectForTest();
+        pump(300);
+        barGoneClosed = barGoneClosed && r.window.onDashboardForTest() && r.window.menuBar()->isHidden();
+        r.window.loadProjectForTest(project);
+        pump(500);
+        barBackOpen = barBackOpen && !r.window.onDashboardForTest() && !r.window.menuBar()->isHidden();
+    };
+
+    const Where start = where();
+    QStringList steps;
+    bool steady = true, pageSteady = true;
+    for (int i = 0; i < 3; ++i) {
+        reopen();
+        const Where now = where();
+        steps << says(now);
+        steady = steady && now.layersY == start.layersY && now.layersH == start.layersH
+            && now.scenesH == start.scenesH && now.stripH == start.stripH && now.window == start.window;
+        for (int h : heights.seen)
+            pageSteady = pageSteady && h == start.pageH;
+    }
+    check(QStringLiteral("(dk1) THREE CLOSES AND REOPENS, Scenes over Layers: the Layers and Scenes docks keep their "
+                         "place and height to the pixel, as the strip and the window do"),
+          steady && start.layersH > 300,
+          says(start) + QStringLiteral(" -> ") + steps.join(QStringLiteral(" -> ")));
+    check(QStringLiteral("(dk2) the page never changes height on the way back: it returns at the height it left with"),
+          pageSteady, QStringLiteral("page %1, heights seen on the last reopen: %2").arg(start.pageH)
+              .arg(heights.seen.size()));
+    check(QStringLiteral("(dk3) the menu bar is gone on the start window and back with the project, as before"),
+          barGoneClosed && barBackOpen);
+
+    // Control: the old order, the bar's room taken after the page is back.
+    r.window.setLateChromeForTest(true);
+    const Where before = where();
+    reopen();
+    const Where late1 = where();
+    const QVector<int> lateHeights = heights.seen;
+    reopen();
+    const Where late2 = where();
+    r.window.setLateChromeForTest(false);
+    bool tallerForAMoment = false;
+    for (int h : lateHeights)
+        tallerForAMoment = tallerForAMoment || h > before.pageH;
+    check(QStringLiteral("(dk) control: in the old order the page comes back taller for a moment, and the Layers dock "
+                         "moves lower on each reopen: the drift the user saw"),
+          tallerForAMoment && late1.layersY > before.layersY + 5 && late2.layersY > late1.layersY + 5
+              && late1.layersH < before.layersH && late2.layersH < late1.layersH,
+          QStringLiteral("Layers at %1, then %2, then %3").arg(before.layersY).arg(late1.layersY).arg(late2.layersY));
+    r.storyboard->removeEventFilter(&heights);
+}
+
 // ---- (pb) PLAYBACK SHOWS ONLY THE SHOT (2026-11-07, the user's hand test) ------
 // While the film plays, in the real window: everything outside the camera's
 // frame is black, the camera panned or turned (pb6); and the picture is exactly
@@ -20364,6 +20511,7 @@ int main(int argc, char **argv)
     runDepthPass(scratch);
     runDepthToolsPass(scratch);
     runPlaybackShotPass(scratch);
+    runDockSteadyPass(scratch);
     runPinnedKeysPass(scratch);
     runCameraBarFitPass(scratch);
     runStageClearPass(scratch);

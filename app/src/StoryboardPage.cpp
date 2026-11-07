@@ -4714,6 +4714,7 @@ QWidget *StoryboardPage::createCameraPanel()
         auto *tile = new QuickTile(pop);
         tile->setObjectName(QStringLiteral("camQuick") + QLatin1String(info.name));
         tile->setText(shotcam::quickMoveLabel(info.move));
+        tile->setToolTip(shotcam::quickMoveTooltip(info.move));
         tile->setIcon(quickMoveIcon(info, 20, QColor(0xe5, 0xe5, 0xed)));
         tile->setIconSize(QSize(20, 20));
         tile->setToolButtonStyle(Qt::ToolButtonTextUnderIcon);
@@ -5841,11 +5842,13 @@ void StoryboardPage::addQuickMoveEntries(QMenu *menu, const QString &title, int 
     QMenu *sub = menu->addMenu(title);
     sub->setObjectName(QStringLiteral("cameraQuickMenu"));
     sub->setStyleSheet(menu->styleSheet());
+    sub->setToolTipsVisible(true); // shows only an item given one: the two Rotates
     for (const QuickMoveInfo &info : kQuickMoves) {
         QAction *a = sub->addAction(quickMoveIcon(info, 16, QColor(0xcc, 0xcc, 0xcc)),
                                     shotcam::quickMoveLabel(info.move) + QLatin1Char('\t')
                                         + quickAmountText(info.move, m_quickAmounts));
         a->setObjectName(QStringLiteral("quick") + QLatin1String(info.name));
+        a->setToolTip(shotcam::quickMoveTooltip(info.move));
         const shotcam::QuickMove move = info.move;
         connect(a, &QAction::triggered, this,
                 [this, move, flatPanel] { cameraQuickMoveOnPanel(move, flatPanel); });

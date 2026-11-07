@@ -386,6 +386,28 @@ QRect shotFrameRect(const Stage &stage, const QRect &target)
         & target;
 }
 
+namespace {
+bool g_filmBarsOpenForTest = false;
+}
+
+void setFilmBarsOpenForTest(bool open)
+{
+    g_filmBarsOpenForTest = open;
+}
+
+void fillOutsideFrame(QPainter &painter, const Stage &stage, const QRect &target)
+{
+    const QRect shown = shotFrameRect(stage, target);
+    if (shown == target)
+        return;
+    painter.save();
+    painter.resetTransform();
+    painter.setClipping(false);
+    for (const QRect &bar : QRegion(target).subtracted(shown))
+        painter.fillRect(bar, Qt::black);
+    painter.restore();
+}
+
 QImage renderShot(const QImage &flat, const CameraState &state,
                   const QSize &out)
 {
@@ -425,6 +447,10 @@ QImage renderShot(const QImage &flat, const CameraState &state, const Stage &sta
     p.setRenderHint(QPainter::SmoothPixmapTransform, true);
     p.setTransform(pieceToCanvas * toOut);
     p.drawImage(0, 0, piece);
+    // ONLY WHAT THE CAMERA SEES, as the preview (2026-11-07): the film's frame
+    // is 16:9, and a project of another shape has bars the stage's art filled.
+    if (!g_filmBarsOpenForTest)
+        fillOutsideFrame(p, stage, frame.rect());
     p.end();
     return frame;
 }
@@ -642,6 +668,8 @@ QImage renderShot(const Panel &panel, const CameraState &state, const Stage &sta
     const QRectF target(QPointF(0, 0), out);
     QPainter p(&frame);
     paintLayers(p, panel, state, stage, shotTransform(state, stage, target), target);
+    if (!g_filmBarsOpenForTest) // as the flat paint's
+        fillOutsideFrame(p, stage, frame.rect());
     p.end();
     return frame;
 }
@@ -1298,6 +1326,18 @@ QString quickMoveLabel(QuickMove move)
     case QuickMove::RotateRight: return QStringLiteral("Rotate Right");
     }
     return QString();
+}
+
+QString quickMoveTooltip(QuickMove move)
+{
+    switch (move) {
+    case QuickMove::RotateLeft:
+        return QStringLiteral("Rotate Left: the frame turns counterclockwise, the picture the other way");
+    case QuickMove::RotateRight:
+        return QStringLiteral("Rotate Right: the frame turns clockwise, the picture the other way");
+    default:
+        return QString();
+    }
 }
 
 namespace {
