@@ -1,6 +1,34 @@
 # SankoTV — Session Handoff Brief
 
-## STATUS 2026-11-08 (late): GROW-1 BUILT AND GATED INTO 6D; NOT COMMITTED, WAITING FOR THE USER'S RE-TEST
+## STATUS 2026-11-08 (close): PER-PANEL STAGE MARGINS COMPLETE (6a-6d); THE USER'S REAL-PROJECT TRIAL NEXT
+THE PER-PANEL STAGE MARGIN WORK IS COMPLETE, all committed and pushed: 6a frame space and the per-panel model
+(4037dc01f), 6b-V layers at rest and the margin as a rectangle (29feeed0f), 6c Stage mode and each panel's own
+margin (07d147dd1), 6d the camera across panels with GROW-1 (44dd6e304). The user starts a real-project trial next;
+nothing is pending in code. Work stops here until the user comes back with what the trial finds.
+THE 6D RE-TEST (Dev Recorder 20261108-184322, 480 s, the 18:34:49 build, git 77120674c+dirty): it ran on "TEST
+COPY - Test_SB_006_A, 6d" (reopened at launch as the last project; the window title and the exit prompt name it),
+not on the "6d retest" copy. The two are identical apart from the name (project file and assets compared), so the
+test is valid. Discarded at the end: no file saved. Steps of handtest_6d_retest_grow1.md:
+1 not tested ((cx5) control, the strip pins (ct) (mp) (mq) (dp)).
+2 PASS: before Apply the old wells, after it every thumbnail in the 80 % frame box. Its Ctrl+Z / Ctrl+Y not done
+((cx5) and its control: applyPanelMargin, the path undo and redo take).
+3 not tested ((cx4), (cx10)).
+4 PASS: the switch clicked off (grey at 3:01); the hover line "· leaves the art of Panel 10"; the note "The move
+leaves the art of Panel 10: Grow to fit is on the clip." up 9.9 s (it was 0.26 s); amber on the row and the clip; the
+camera ended 960 px past panel 10's stage.
+5 PASS: 100 % the sentence "leaves Panel 10's art for 179 f", 75 % and 25 % "179 f", 10 % the "!" marker over the
+clip, 35 % the count; the tooltip seen at 100, 75 and 35 %. The marker's press at 10 % not done ((cx8) presses at every
+zoom).
+6 PASS: Grow chosen twice from the CAMERA row's menu, one "Stage Margin (Panel 10)" step each, the amber gone and back
+on Ctrl+Z; the clip's menu showed the entry at 10 % and 35 %, above Quick Camera Move; the chip's menu (artExitMenu)
+showed it at 35 %. Choosing from the chip and Ctrl+Y not done ((cx3), (cx9)).
+7 PASS: Stay inside clicked back on (purple at 6:57); no camera edit after; the amber stayed; played across the cut
+four times, smooth (x 3673 -> 3896 over the cut at 1452).
+8 not tested ((cx6)); 9 not tested ((sm10) SAVED); 10 not tested ((cx7) and its two controls); 11 not tested ((sm10)
+REOPENED); 12 PASS (the window's X, Discard, sessionEnd).
+The one warning, "QFont::setPointSize: Point size <= 0 (-1)", is old: in recordings since 2026-07-29, not 6d's.
+
+## STATUS 2026-11-08 (late): GROW-1 BUILT AND GATED INTO 6D; COMMITTED AS 44dd6e304 AFTER THE RE-TEST
 The user approved GROW-1 as drawn (Figma 552:696). Built into 6d, uncommitted (the same 11 code files + HANDOFF). The
 user: do not commit 6d until their re-test passes. Re-test list Documents\SankoTV-Design\handtest_6d_retest_grow1.md,
 on fresh copies C:\SankoTV-TestCopies\TEST COPY - Test_SB_006_A, 6d retest and TEST COPY - Mansour song, 6d retest
@@ -75,7 +103,7 @@ Hand-test list Documents\SankoTV-Design\handtest_6d_camera_across_panels.md, on 
 Test_SB_006_A, 6d and TEST COPY - Mansour song, 6d (made by the copier with its root moved there, rule 16).
 The scratch worktree C:\SankoTV_6c is removed; its gate logs are in app\build\_probe\split\from_worktree_6c.
 
-## Batch 6d: the camera across panels with their own stages (2026-11-08) - BUILT, NOT COMMITTED
+## Batch 6d: the camera across panels with their own stages (2026-11-08) - COMMITTED (44dd6e304, with GROW-1)
 Figma MARGIN-2 and MARGIN-0; proposals-2026-11-06.md Q9 and Q11, as approved.
 NEVER CLAMPED, SAID IN AMBER (Q9). shotcam::artExit(scene, panel, fps, filmStart, stage): every frame of the
 panel as the camera plays it, its frame's box against the panel's stage, never clamped (so nothing jumps at a cut);
