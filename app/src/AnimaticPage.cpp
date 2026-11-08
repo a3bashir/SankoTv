@@ -13,6 +13,7 @@
 
 #include <QAbstractButton>
 #include <QAbstractSlider>
+#include <QRegion>
 #include <QAudioOutput>
 #include <QCoreApplication>
 #include <QFontMetrics>
@@ -151,21 +152,40 @@ public:
 
     QString captionForTest() const { return m_caption; }
     bool hasPixmapForTest() const { return !m_pixmap.isNull(); }
+    // The share of the widget the picture is fitted to (AnimaticPage::
+    // kStagePictureShare while the stage is clear; 1: the whole widget).
+    void setFitShare(double share)
+    {
+        if (qFuzzyCompare(m_fitShare, share))
+            return;
+        m_fitShare = share;
+        update();
+    }
+    // Where the picture is fitted: the widget, or that share of it, centred.
+    QRect pictureArea() const
+    {
+        if (m_fitShare >= 1.0)
+            return rect();
+        QRect area(QPoint(0, 0), QSize(qRound(width() * m_fitShare), qRound(height() * m_fitShare)));
+        area.moveCenter(rect().center());
+        return area;
+    }
     // The rect the picture is painted in, as paintEvent places it: the
-    // neutral fit (the frame scaled to the widget, centred) or the frame's
+    // neutral fit (the frame scaled to its area, centred) or the frame's
     // rect the moving shot shows in - the same place to within a pixel.
     QRect pictureRect() const
     {
         if (m_pixmap.isNull())
             return QRect();
+        const QRect area = pictureArea();
         if (m_neutral) {
             QSize target = m_framePixmap.size();
-            target.scale(size(), Qt::KeepAspectRatio);
+            target.scale(area.size(), Qt::KeepAspectRatio);
             QRect r(QPoint(0, 0), target);
-            r.moveCenter(rect().center());
+            r.moveCenter(area.center());
             return r;
         }
-        return shotcam::shotFrameRect(m_stage, rect());
+        return shotcam::shotFrameRect(m_stage, area);
     }
     // The paint without its black bars, the old bleed: only so a check can
     // show what they take away, and that they take nothing else.
@@ -180,7 +200,7 @@ public:
     {
         return m_pixmap.isNull()
             ? QTransform()
-            : shotcam::shotTransform(m_camera, m_stage, QRectF(rect()));
+            : shotcam::shotTransform(m_camera, m_stage, QRectF(pictureArea()));
     }
     shotcam::Stage stageForTest() const { return m_stage; }
 
@@ -189,19 +209,20 @@ protected:
     {
         QPainter painter(this);
         painter.fillRect(rect(), Qt::black);
+        const QRect area = pictureArea(); // the widget, or its share while the stage is clear
         if (!m_pixmap.isNull() && !m_neutral && m_panel
             && shotcam::layeredShot(*m_panel, m_camera, m_stage)) {
-            shotcam::drawShot(painter, *m_panel, m_stage, m_camera, QRectF(rect()), false);
+            shotcam::drawShot(painter, *m_panel, m_stage, m_camera, QRectF(area), false);
         } else if (!m_pixmap.isNull() && !m_neutral) {
             // The flatten is canvas-sized, so its size IS the stage.
             shotcam::drawShot(painter, m_pixmap, m_stage, m_camera,
-                              QRectF(rect()), false);
+                              QRectF(area), false);
         } else if (!m_framePixmap.isNull()) {
             painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
             QSize target = m_framePixmap.size();
-            target.scale(size(), Qt::KeepAspectRatio);
+            target.scale(area.size(), Qt::KeepAspectRatio);
             QRect r(QPoint(0, 0), target);
-            r.moveCenter(rect().center());
+            r.moveCenter(area.center());
             painter.drawPixmap(r, m_framePixmap);
         }
         // ONLY WHAT THE CAMERA SEES (2026-11-07, the user's hand test). The
@@ -213,7 +234,11 @@ protected:
         // paint inside the frame too (127 to 1347 pixels of a 712 x 400
         // picture, Camera pb1-pb3), and this changes none of them.
         if (!m_pixmap.isNull() && !m_neutral && !m_barsOpenForTest)
-            shotcam::fillOutsideFrame(painter, m_stage, rect());
+            shotcam::fillOutsideFrame(painter, m_stage, area);
+        // Around a fitted share, black too: the moving shot paints past it.
+        if (area != rect())
+            for (const QRect &band : QRegion(rect()).subtracted(QRegion(area)))
+                painter.fillRect(band, Qt::black);
         // An OPAQUE chip: it sits over artwork of any colour and cannot
         // borrow contrast from it. Not while the stage is clear.
         if (!m_chrome)
@@ -281,6 +306,7 @@ private:
     bool m_pressed = false;
     bool m_chrome = true; // the caption chip; off while the stage is clear
     bool m_barsOpenForTest = false;
+    double m_fitShare = 1.0; // the share of the widget the picture is fitted to
     shotcam::CameraState m_camera;
     bool m_neutral = true;
 };
@@ -1123,6 +1149,9 @@ void AnimaticPage::setCompact(bool compact)
     if (m_body)
         m_body->setVisible(!compact && !m_collapsed);
     m_compactBar->setVisible(compact);
+    // The picture fitted inside the viewport the preview now is, black around it.
+    if (m_display)
+        m_display->setFitShare(compact ? kStagePictureShare : 1.0);
     if (compact)
         syncCompactBar();
     emit compactChanged(compact);

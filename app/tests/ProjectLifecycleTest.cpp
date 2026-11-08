@@ -14713,6 +14713,16 @@ void runCompactBarPass(const QString &scratch)
         const bool aspect = qAbs(pic.width() * 9 - pic.height() * 16) <= 32;
         return inside && touches && aspect;
     };
+    // WHILE THE STAGE IS CLEAR (2026-11-08, the user's reference like_this.jpg): the
+    // largest 16:9 inside the area at AnimaticPage::kStagePictureShare, centred.
+    auto stageFitted = [&](const QRect &pic, const QRect &area) {
+        const double fit = qMin(area.width() / 16.0, area.height() / 9.0);
+        const double w = 16.0 * fit * AnimaticPage::kStagePictureShare;
+        const double h = 9.0 * fit * AnimaticPage::kStagePictureShare;
+        const QPointF c = QRectF(pic).center(), ac = QRectF(area).center();
+        return qAbs(pic.width() - w) <= 2.0 && qAbs(pic.height() - h) <= 2.0 && qAbs(c.x() - ac.x()) <= 1.0
+            && qAbs(c.y() - ac.y()) <= 1.0 && qAbs(pic.width() * 9 - pic.height() * 16) <= 32;
+    };
     auto globalRect = [](QWidget *w) { return QRect(w->mapToGlobal(QPoint(0, 0)), w->size()); };
     clickThumb(r, 0);
     pump(100);
@@ -14733,15 +14743,16 @@ void runCompactBarPass(const QString &scratch)
     const QRect pic1 = pictureRect();
     const QRect area1 = display->rect();
     const bool fitted1 = display->isVisible() && display->geometry() == r.canvas->rect()
-        && largest16by9Inside(pic1, area1);
+        && stageFitted(pic1, area1);
     const QRect picGlobal = QRect(display->mapToGlobal(pic1.topLeft()), pic1.size());
     const bool barClear = bar && bar->isVisible() && !globalRect(bar).intersects(picGlobal);
     const int gained = r.canvas->height() - areaBefore.height();
     const int expected = (hBefore - AnimaticPage::kCompactHeight) + (stripBefore - stripDock->height());
     check(QStringLiteral("(pc1) PLAY: the timeline section is the 36 px compact bar, the strip an "
                          "8 px handle, the canvas area %1 px taller (the section's %2 + the strip's "
-                         "%3), the preview the whole area and the picture the largest 16:9 inside "
-                         "it, the bar not over it; the recorder's preview.compactBar")
+                         "%3), the preview the whole area and the picture 80 % of the largest 16:9 "
+                         "inside it, centred (the user's reference, 2026-11-08), the bar not over it; "
+                         "the recorder's preview.compactBar")
               .arg(gained).arg(hBefore - AnimaticPage::kCompactHeight).arg(stripBefore - stripDock->height()),
           r.animatic->isPlaying() && r.animatic->isCompact() && r.animatic->height() == AnimaticPage::kCompactHeight
               && r.storyboard->stripSteppedAsideForTest() && stripDock->height() <= 14
@@ -14760,6 +14771,28 @@ void runCompactBarPass(const QString &scratch)
                        : QStringLiteral("none"))
               .arg(bar ? bar->isVisible() : false)
               .arg(QStringLiteral("%1,%2 %3x%4").arg(picGlobal.x()).arg(picGlobal.y()).arg(picGlobal.width()).arg(picGlobal.height())));
+    {
+        // Black around it, and the whole frame there: no crop, no stretch.
+        const QImage shot = display->grab().toImage();
+        const qreal dpr = shot.devicePixelRatio();
+        auto at = [&](int x, int y) { return shot.pixelColor(QPointF(x * dpr, y * dpr).toPoint()); };
+        const QPoint c = pic1.center();
+        const bool blackAround = at(c.x(), pic1.top() - 4) == QColor(Qt::black)
+            && at(c.x(), pic1.bottom() + 4) == QColor(Qt::black) && at(pic1.left() - 4, c.y()) == QColor(Qt::black)
+            && at(pic1.right() + 4, c.y()) == QColor(Qt::black);
+        int lit = 0;
+        for (int y = pic1.top() + 2; y < pic1.bottom() - 2; y += 7)
+            for (int x = pic1.left() + 2; x < pic1.right() - 2; x += 7)
+                lit += at(x, y) != QColor(Qt::black) ? 1 : 0;
+        const int above = pic1.top() - area1.top(), below = area1.bottom() - pic1.bottom();
+        check(QStringLiteral("(pc1) BLACK AROUND THE PICTURE: the preview is black above, below and beside it, and "
+                             "the picture is the frame's own picture, not black; the bands above and below are "
+                             "the same, a tenth of the area's height each (85 of 875 px in the reference)"),
+              blackAround && lit > 100 && qAbs(above - below) <= 2
+                  && qAbs(above - area1.height() * (1.0 - AnimaticPage::kStagePictureShare) / 2.0) <= 2.0,
+              QStringLiteral("black around %1, %2 lit samples, %3 px above, %4 below, area %5 high")
+                  .arg(blackAround).arg(lit).arg(above).arg(below).arg(area1.height()));
+    }
 
     // --- (pc2) the compact bar's controls act ----------------------------------
     {
@@ -14823,11 +14856,12 @@ void runCompactBarPass(const QString &scratch)
         r.window.resize(before.width(), before.height() + 90);
         pump(300);
         const QRect pic = pictureRect();
-        const bool fitted = display->geometry() == r.canvas->rect() && largest16by9Inside(pic, display->rect())
+        const bool fitted = display->geometry() == r.canvas->rect() && stageFitted(pic, display->rect())
             && r.canvas->height() > area1.height();
         const bool clear = bar && !globalRect(bar).intersects(QRect(display->mapToGlobal(pic.topLeft()), pic.size()));
         check(QStringLiteral("(pc3) A WINDOW RESIZE DURING PLAY refits: the preview the new area, the "
-                             "picture the largest 16:9 inside it, the compact bar still clear of it"),
+                             "picture 80 % of the largest 16:9 inside it, centred, the compact bar still "
+                             "clear of it"),
               fitted && clear && r.animatic->height() == AnimaticPage::kCompactHeight,
               QStringLiteral("area %1x%2 pic %3x%4").arg(display->width()).arg(display->height())
                   .arg(pic.width()).arg(pic.height()));
@@ -14910,9 +14944,11 @@ void runCompactBarPass(const QString &scratch)
     r.animatic->togglePlay();
     pump(200);
     check(QStringLiteral("(pc7) control: with the setting off, Play leaves the section at its height, "
-                         "the strip in place and the recorder's preview.compactBar false"),
+                         "the strip in place, the picture the largest 16:9 inside the preview as ever, "
+                         "and the recorder's preview.compactBar false"),
           r.animatic->isPlaying() && !r.animatic->isCompact() && r.animatic->height() == hBefore
               && !r.storyboard->stripSteppedAsideForTest() && stripDock->height() == stripBefore
+              && largest16by9Inside(pictureRect(), display->rect())
               && !polled("preview.compactBar").toBool(),
           QStringLiteral("h %1 strip %2").arg(r.animatic->height()).arg(stripDock->height()));
     r.animatic->leavePreview();
@@ -21788,10 +21824,17 @@ int main(int argc, char **argv)
     QDir().mkpath(projects);
     // One pass alone, for the quick check while working: the family's own setup
     // above, and nothing else. The gate never sets it.
-    if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("stagemode")) {
-        runStageModePass(scratch);
-        runCameraBarFitPass(scratch);
-        runBlockedWritePass(scratch);
+    if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("stagemode")
+        || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("playback")) {
+        if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("playback")) {
+            runCompactBarPass(scratch);
+            runStageClearPass(scratch);
+            runPlaybackShotPass(scratch);
+        } else {
+            runStageModePass(scratch);
+            runCameraBarFitPass(scratch);
+            runBlockedWritePass(scratch);
+        }
         out() << QStringLiteral("RESULT %1 (checks=%2 failures=%3) in %4 s")
                      .arg(g_failures == 0 ? "PASS" : "FAIL").arg(g_checks).arg(g_failures)
                      .arg(total.elapsed() / 1000.0, 0, 'f', 1)

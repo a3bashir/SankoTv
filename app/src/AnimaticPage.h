@@ -91,6 +91,12 @@ public:
     // drives it from the clear-stage state and restores the section exactly
     // (open or collapsed, its height) on pause.
     static constexpr int kCompactHeight = 36;
+    // THE PICTURE WHILE THE STAGE IS CLEAR (2026-11-08, the user's reference
+    // like_this.jpg): with the compact bar up the preview is the whole viewport,
+    // and the picture is fitted to this share of it, centred, black around it -
+    // 80 % of its height in the reference (705 of 875 px). Otherwise it fills the
+    // preview as it always has.
+    static constexpr double kStagePictureShare = 0.80;
     bool isCompact() const { return m_compact; }
     void setCompact(bool compact);
     // Seek to a time on the film: playing, it keeps playing from there.
