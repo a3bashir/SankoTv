@@ -4161,6 +4161,102 @@ int main(int argc, char **argv)
               k4 != k3 && !layer.tilesCurrent());
     }
 
+    // ---- (sm0) a stage with its own margins (batch 6c) ------------------------------
+    {
+        using shotcam::CameraState;
+        using shotcam::Stage;
+        const QMargins own(192, 270, 960, 100);
+        const Stage asym = shotcam::stageWithMargins(QSize(3072, 1450), own);
+        check(QStringLiteral("(sm0) MARGINS SIDE BY SIDE: the frame is the rest, where the left and top margins put it"),
+              asym.frame == QSize(1920, 1080) && asym.frameRect() == QRect(192, 270, 1920, 1080)
+                  && asym.frameCentre() == QPointF(192.0 + 960.0, 270.0 + 540.0) && asym.hasMargin());
+        const Stage sym = shotcam::stageWithMargin(QSize(2880, 1620), QSize(480, 270));
+        check(QStringLiteral("(sm0) control: the project's symmetric margin says what it always said"),
+              sym.frameRect() == QRect(480, 270, 1920, 1080) && sym.margin() == QSize(480, 270)
+                  && shotcam::neutral(sym) == shotcam::neutral(QSize(2880, 1620))
+                  && shotcam::isNeutral(shotcam::neutral(QSize(2880, 1620)), sym));
+        check(QStringLiteral("(sm0) control: margins leaving no frame, or less than 0, are no margin"),
+              !shotcam::stageWithMargins(QSize(100, 100), QMargins(60, 0, 60, 0)).hasMargin()
+                  && !shotcam::stageWithMargins(QSize(100, 100), QMargins(-1, 0, 1, 0)).hasMargin());
+        const CameraState base = shotcam::neutral(asym);
+        check(QStringLiteral("(sm0) THE BASE FRAMING is the frame, off the stage's centre: the frame's quad, no off-base"),
+              base.cx == 1152.0 && base.cy == 810.0 && !shotcam::offBaseFraming(base, asym)
+                  && shotcam::frameQuad(base, asym).boundingRect() == QRectF(asym.frameRect()));
+        check(QStringLiteral("(sm0) control: the stage's centre is off it"),
+              shotcam::offBaseFraming(shotcam::neutral(QSize(3072, 1450)), asym));
+        // The same shot read on two stages of one frame: depth places a layer the same on the art.
+        CameraState onSym;
+        onSym.cx = 1500.0;
+        onSym.cy = 700.0;
+        onSym.zoom = 1.3;
+        onSym.rotation = 7.0;
+        const QPoint d = asym.origin - sym.origin;
+        CameraState onAsym = onSym;
+        onAsym.cx += d.x();
+        onAsym.cy += d.y();
+        bool same = true;
+        for (double a : {0.5, 1.0, 1.7}) {
+            const QPointF p(900.0, 400.0);
+            const QPointF viaSym = shotcam::layerToStage(a, onSym, sym).map(p) + QPointF(d);
+            const QPointF viaAsym = shotcam::layerToStage(a, onAsym, asym).map(p + QPointF(d));
+            same = same && QLineF(viaSym, viaAsym).length() < 1e-9;
+        }
+        check(QStringLiteral("(sm0) DEPTH ON ANOTHER STAGE: a layer lands on the same art, at every depth"), same);
+        const QPointF far = shotcam::layerToStage(0.5, onAsym, sym).map(QPointF(900.0, 400.0));
+        const QPointF right = shotcam::layerToStage(0.5, onAsym, asym).map(QPointF(900.0, 400.0));
+        check(QStringLiteral("(sm0) control: measured from the wrong centre it does not"),
+              QLineF(far, right).length() > 1.0, QString::number(QLineF(far, right).length()));
+
+        // The space the keys live in.
+        Panel holding;
+        holding.layers.append(Layer());
+        holding.layers[0].image = QImage(3072, 1450, QImage::Format_ARGB32_Premultiplied);
+        holding.layers[0].image.fill(0);
+        holding.margin = own;
+        holding.settleMargin(QSize(480, 270));
+        check(QStringLiteral("(sm0) A PANEL AT ITS OWN MARGIN knows it, and what it adds to a key"),
+              holding.ownMargin && holding.keyShift == QPoint(-288, 0)
+                  && holding.cameraCanvas() == QSize(1920 + 960, 1080 + 540)
+                  && shotcam::panelStage(holding, QSize(480, 270)).frameRect() == asym.frameRect(),
+              QStringLiteral("shift %1, %2").arg(holding.keyShift.x()).arg(holding.cameraCanvas().width()));
+        const CameraState there = shotcam::toPanelSpace(holding, onSym);
+        check(QStringLiteral("(sm0) control: a key read on it and written back is the same key"),
+              shotcam::toCameraSpace(holding, there) == onSym && there.cx == onSym.cx - 288.0);
+        holding.margin = QMargins(480, 270, 480, 270);
+        holding.settleMargin(QSize(480, 270));
+        check(QStringLiteral("(sm0) control: at the project's margin it is not its own, and adds nothing"),
+              !holding.ownMargin && holding.keyShift.isNull()
+                  && shotcam::toPanelSpace(holding, onSym) == onSym);
+
+        // Where the art is: a layer's map, and the outline around it.
+        QImage art(1024, 512, QImage::Format_ARGB32_Premultiplied);
+        art.fill(0);
+        {
+            QPainter painter(&art);
+            painter.fillRect(QRect(100, 100, 64, 48), Qt::red);
+        }
+        const layertiles::TilesPtr tiles = layertiles::fold(art, QPoint(40, 20), 0u);
+        const layertiles::ArtCells cells = layertiles::artCells(*tiles);
+        check(QStringLiteral("(sm0) THE ART MAP: on where the art is, in frame space; a pixel at the rectangle's corner "
+                             "turns its cell on"),
+              cells.isOn(60 / layertiles::kArtCell, 80 / layertiles::kArtCell)
+                  && !cells.isOn((60 - 8) / layertiles::kArtCell, 80 / layertiles::kArtCell)
+                  && cells.anyIn(QRect(60, 80, 1, 1)) && cells.anyIn(QRect(123, 127, 1, 1)));
+        check(QStringLiteral("(sm0) control: off when empty, and nothing beside it"),
+              !cells.anyIn(QRect(200, 80, 50, 50)) && !cells.anyIn(QRect(60, 200, 10, 10)));
+        const QPainterPath edge = layertiles::artOutline({cells});
+        check(QStringLiteral("(sm0) THE OUTLINE runs around it exactly, to the cell"),
+              edge.boundingRect() == QRectF(56.0, 80.0, 72.0, 48.0),
+              QStringLiteral("%1,%2 %3 x %4").arg(edge.boundingRect().x()).arg(edge.boundingRect().y())
+                  .arg(edge.boundingRect().width()).arg(edge.boundingRect().height()));
+        QImage paper(512, 512, QImage::Format_ARGB32_Premultiplied);
+        paper.fill(0xffffffffu);
+        const layertiles::TilesPtr plain = layertiles::fold(paper, QPoint(0, 0), 0xffffffffu);
+        check(QStringLiteral("(sm0) control: a plain Background has no art on the map, and no outline"),
+              layertiles::artCells(*plain).cells.isEmpty()
+                  && layertiles::artOutline({layertiles::artCells(*plain)}).isEmpty());
+    }
+
     delete scene;
     QDir(scratch).removeRecursively();
     ts << "\nRESULT " << (g_failures ? "FAIL" : "PASS") << " (checks=" << g_checks

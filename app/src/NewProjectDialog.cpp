@@ -578,7 +578,7 @@ void NewProjectDialog::paintEvent(QPaintEvent *)
     p.setFont(studio::fieldLabelFont());
     p.setPen(studio::kFieldLabel);
     const char *labels[] = {"Project Name", "Save Location", "Canvas Preset",
-                            nullptr, "Stage Margin", nullptr, "Frame Rate"};
+                            nullptr, "Stage Margin (for new panels)", nullptr, "Frame Rate"};
     for (int i = 0; i < 7; ++i)
         if (labels[i])
             p.drawText(QRect(kLeftX, kFormY + i * kFieldPitch, kLeftW, 12),

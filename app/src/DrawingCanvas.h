@@ -1,5 +1,6 @@
 #pragma once
 
+#include "LayerTiles.h"
 #include "PerspectiveTool.h"
 #include "SankoPaintHostAdapter.h"
 #include "camera/CameraModel.h"
@@ -101,7 +102,9 @@ public:
     void setOnionSkinEnabled(bool enabled);
     bool isOnionSkinEnabled() const { return m_onionSkin; }
     // Pass the previous panel's flattened pixmap (or null to clear the ghost).
-    void setPreviousPixmap(const QPixmap &previous);
+    // `onStage` (batch 6c): the picture's place on this panel's stage, so panels with
+    // different stages overlay by the frame. Empty: the whole stage, as ever.
+    void setPreviousPixmap(const QPixmap &previous, const QRect &onStage = QRect());
 
     // Light table: fuller onion skin showing neighbouring panels behind the
     // current drawing — previous tinted red, next tinted green. Display-only
@@ -110,7 +113,9 @@ public:
     bool isLightTableEnabled() const { return m_lightTable; }
     // Raw flattened pixmaps of the previous / next panel (null = none). Tinted
     // ghosts are built internally.
-    void setLightTablePixmaps(const QPixmap &previous, const QPixmap &next);
+    void setLightTablePixmaps(const QPixmap &previous, const QPixmap &next,
+                              const QRect &previousOnStage = QRect(),
+                              const QRect &nextOnStage = QRect());
 
     // Import an image file as a NEW image-type layer above the active layer
     // (scaled to fit the canvas, transparent padding). Returns true on success.
@@ -164,11 +169,39 @@ public:
         // What the segment at the playhead does (2026-11-06, Figma CAM-2):
         // drawn as glyphs on the frame, an editing guide only.
         shotcam::Motion motion;
+        // Stage mode (batch 6c): this panel's key frames, on its stage.
+        QVector<shotcam::CameraState> panelKeys;
     };
     enum ShotCameraEditKind { ShotCameraMove = 0, ShotCameraZoom = 1,
                               ShotCameraRotate = 2 };
     void setShotCameraProvider(std::function<ShotCameraView()> provider);
     void refreshShotCamera() { update(); }
+    // STAGE MODE (batch 6c, Figma MARGIN-1): the Camera tool's other mode, the
+    // page's session. Eight white handles outside the stage's edge propose new
+    // margins for this panel; nothing changes until the page applies them.
+    void enterStageMode(const QMargins &margins);
+    void leaveStageMode();
+    bool stageModeOn() const { return m_stageMode; }
+    QMargins stageModeMargins() const { return m_stageLive; }
+    void setStageModeMargins(const QMargins &margins);
+    void setStageModeLinked(bool on) { m_stageLinked = on; }
+    void stageModeKey(bool enter); // Enter or Esc, wherever the main window's focus is
+    // The frame stays where it is on screen around a change of this panel's stage.
+    void stageWillChange() { viewHoldBegin(); }
+    void stageChanged();
+    QPointF clipPosForTest() const { return m_clipPos; }
+    QPointF floatPosForTest() const { return m_floatPos; }
+    void cancelFloatingPasteForTest() { cancelFloatingPaste(); }
+    QVector<QPolygonF> stageHandlesForTest() const { return m_stageMode ? stageHandles() : QVector<QPolygonF>(); }
+    int stageHandleAtForTest(const QPointF &widgetPos) const { return stageHandleAt(widgetPos); }
+    QString stageChipForTest(bool *warns = nullptr) const { return stageChipText(warns); }
+    QString stageKeysChipForTest() const
+    {
+        return m_stageMode ? stageKeysChipText(shotCameraView()) : QString();
+    }
+    QPainterPath stageArtOutlineForTest() const { return m_stageArtOutline; }
+    QRect stageLiveRectForTest() const { return stageLiveRect(); }
+    int stageLayersHidingForTest() const { return stageLayersHiding(); }
     // Test hooks (read state; no test-only behaviour). The frame as drawn,
     // in widget px (empty: nothing drawn); what a press here would grab
     // (-1 nothing, 0 body, 1-4 corners TL TR BR BL, 5-8 their rotate
@@ -243,6 +276,11 @@ public:
     // Perspective guides + snap (display-only overlay; the settings panel and
     // project save/load talk to the same instance). Call update() after edits.
     PerspectiveTool *perspective() { return &m_perspective; }
+    // Batch 6c: the tool holds them on the stage of the panel on the canvas; the
+    // file and the undo steps take the keys' one space.
+    QJsonObject perspectiveInKeySpace() const;
+    void perspectiveFollowPanel(); // that panel's stage changed, or the panel did
+    void perspectiveLoaded();      // the tool was just given the keys' space
 
     // QuickShape: hold-to-shape assist for the Brush tool. The session sees
     // the same canvas-space samples the brush engine paints; a recognized
@@ -558,6 +596,11 @@ signals:
     // A Camera-tool press the view says is not editable (Animate off with
     // two or more keys): nothing moves; the workspace says why.
     void shotCameraEditRefused();
+    // Stage mode (batch 6c): a handle moved the proposed margins; Enter or Esc on
+    // the canvas; the tool or the panel changed under the session.
+    void stageModeEdited(const QMargins &margins, int activeSide);
+    void stageModeFinished(bool apply);
+    void stageModeAbandoned();
 
 protected:
     bool eventFilter(QObject *object, QEvent *event) override; // toolbar grip drag
@@ -880,7 +923,7 @@ private:
 
     // Canvas clipboard (Edit menu Copy/Cut/Paste on the selection).
     QImage m_clipImg;              // copied pixels, tight bounding rect
-    QPointF m_clipPos;             // canvas position they came from
+    QPointF m_clipPos;             // where they came from, in frame space (batch 6c)
 
     // Stroke-level selection masking: while a selection is active, the live
     // brush/eraser stroke accumulates UNMASKED in a scratch buffer and the
@@ -967,6 +1010,9 @@ private:
 
     bool m_onionSkin = false;
     QPixmap m_ghost;         // precomputed blue-tinted ghost (display only)
+    QRect m_ghostRect;       // its place on this stage when it is not the whole of it
+    QRect m_ltPrevRect;
+    QRect m_ltNextRect;
 
     // Light table: red-tinted previous + green-tinted next ghosts, drawn on
     // the paper behind the current drawing layers (display only, session state).
@@ -1013,6 +1059,26 @@ private:
 
     // Perspective guides (display-only; geometry in canvas coords).
     PerspectiveTool m_perspective;
+    QPoint m_perspShift;    // the keyShift it holds them at (batch 6c)
+
+    // STAGE MODE (batch 6c): the drag is an overlay; nothing changes until Apply.
+    bool m_stageMode = false;
+    bool m_stageLinked = false;      // every side the same share of the frame
+    QMargins m_stageLive;            // the proposed margins, each side
+    QMargins m_stageDragStart;
+    int m_stageDrag = -1;            // the handle held, -1: none
+    int m_stageHover = -1;
+    QPointF m_stagePressCanvas;
+    QPointF m_stagePointer;
+    bool m_stageAlt = false;
+    bool m_stageShift = false;
+    QVector<layertiles::ArtCells> m_stageArt; // each visible layer's, as of entering
+    QPainterPath m_stageArtOutline;  // all of it, frame space
+    // A panel switch or a stage change keeps the frame in its place on screen.
+    bool m_viewHold = false;
+    QPointF m_viewHoldAt;
+    double m_viewHoldScale = 1.0;
+    shotcam::Stage m_viewHoldStage;
     int m_perspHandle = -1; // VP index being dragged (-1: none)
 
     // QuickShape session state (recognition math lives in the kit; the canvas
@@ -1183,6 +1249,21 @@ private:
     void paintShotCameraGuides(QPainter &painter, const shotcam::Stage &stage,
                                const shotcam::CameraState &s);
     void paintShotCamera(QPainter &painter);
+    // Stage mode (batch 6c, Figma MARGIN-1).
+    void paintStageMode(QPainter &painter, const ShotCameraView &view);
+    QRect stageLiveRect() const;     // the proposed stage, in this stage's px
+    QVector<QPolygonF> stageHandles() const; // TL T TR R BR B BL L, widget px
+    int stageHandleAt(const QPointF &widgetPos) const;
+    void stagePress(const QPointF &widgetPos);
+    void stageMove(const QPointF &widgetPos, Qt::MouseButtons buttons, Qt::KeyboardModifiers modifiers);
+    void stageRelease();
+    void stageUpdateCursor(int handle);
+    int stageLayersHiding() const;   // layers with art the proposed stage would hide
+    QString stageChipText(bool *warns) const;
+    QString stageKeysChipText(const ShotCameraView &view) const;
+    void viewHoldBegin();
+    QTransform viewTransformExact() const; // viewTransform without the display's whole px
+    void viewHoldEnd();
     int m_camHover = -1;          // hit under the idle pointer
     int m_camDrag = -1;           // hit at the press; -1 = no drag
     bool m_glyphsHiddenForTest = false;

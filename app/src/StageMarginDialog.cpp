@@ -75,7 +75,7 @@ bool heavy(const QSize &stage)
 namespace {
 // Resize Project's idiom and size (Figma 2A-3).
 constexpr int kDialogW = 380;
-constexpr int kDialogH = 358;
+constexpr int kDialogH = 376;
 constexpr int kX = 18;
 constexpr int kW = kDialogW - 2 * kX;
 constexpr int kHeaderY = 18;
@@ -84,7 +84,7 @@ constexpr int kFieldPitch = 51;
 constexpr int kBoxH = 25;
 constexpr int kHalfW = (kW - 10) / 2;
 constexpr int kEffectY = 214;
-constexpr int kFooterY = 307;
+constexpr int kFooterY = 325;
 constexpr int kFooterH = 33;
 constexpr int kFooterGap = 8;
 
@@ -153,9 +153,19 @@ StageMarginDialog::StageMarginDialog(const QSize &frame, const QSize &currentMar
     m_sameShare->setCheckable(true);
     m_sameShare->setChecked(true);
 
+    // Every panel too (batch 6c, Q10): the panels already made keep theirs otherwise.
+    m_applyAll = new QPushButton(QStringLiteral("Apply to All Panels..."), this);
+    m_applyAll->setObjectName(QStringLiteral("stageMarginApplyAll"));
+    m_applyAll->setGeometry(kX + 160, fieldY(1) + kBoxH + 10, kW - 160, 22);
+    m_applyAll->setStyleSheet(QLatin1String(kSecondaryButtonQss));
+    connect(m_applyAll, &QPushButton::clicked, this, [this] {
+        m_applyAllChosen = true;
+        accept();
+    });
+
     m_cancel = new QPushButton(QStringLiteral("Cancel"), this);
     m_cancel->setStyleSheet(QLatin1String(kSecondaryButtonQss));
-    m_set = new QPushButton(QStringLiteral("Set Margin"), this);
+    m_set = new QPushButton(QStringLiteral("Set for New Panels"), this);
     m_set->setObjectName(QStringLiteral("stageMarginSet"));
     m_set->setStyleSheet(QLatin1String(kPrimaryButtonQss));
     const int buttonW = (kW - kFooterGap) / 2;
@@ -314,6 +324,9 @@ void StageMarginDialog::revalidate()
                              .arg(ProjectResize::formatBytes(m_availableBytes));
     }
     m_set->setEnabled(m_reason.isEmpty());
+    // The project's margin as it is: nothing for new panels to change, and still
+    // something to give the panels with their own (batch 6c).
+    m_applyAll->setEnabled(m_reason.isEmpty() || chosenMargin() == m_current);
     update();
 }
 
@@ -366,7 +379,7 @@ void StageMarginDialog::paintEvent(QPaintEvent *)
 
     p.setFont(headerFont());
     p.setPen(kHeaderText);
-    p.drawText(QRect(kX, kHeaderY, kW, 14), Qt::AlignLeft, QStringLiteral("Stage Margin"));
+    p.drawText(QRect(kX, kHeaderY, kW, 14), Qt::AlignLeft, QStringLiteral("Stage Margin for New Panels"));
     p.setPen(QPen(studio::kFieldBorder, 1.0));
     p.drawLine(kX, kHeaderY + 20, kX + kW, kHeaderY + 20);
 
@@ -387,11 +400,19 @@ void StageMarginDialog::paintEvent(QPaintEvent *)
     }
     p.setPen(kInfoText);
     p.drawText(QRect(kX, kEffectY, kW, 12), Qt::AlignLeft, currentText());
-    const QString message = m_reason.isEmpty() ? m_effect : m_reason;
-    if (!message.isEmpty()) {
-        p.setPen(!m_reason.isEmpty() ? studio::kFieldLabel : (m_warn ? kWarnText : kInfoText));
-        p.drawText(QRect(kX, kEffectY + 20, kW, 70),
-                   Qt::TextWordWrap | Qt::AlignLeft | Qt::AlignTop, message);
+    if (!m_reason.isEmpty()) {
+        p.setPen(studio::kFieldLabel);
+        p.drawText(QRect(kX, kEffectY + 20, kW, 88), Qt::TextWordWrap | Qt::AlignLeft | Qt::AlignTop, m_reason);
+    } else {
+        // Set touches no panel made so far; what follows is what Apply to All does.
+        p.setPen(kInfoText);
+        p.drawText(QRect(kX, kEffectY + 18, kW, 12), Qt::AlignLeft,
+                   QStringLiteral("New panels get this stage; the panels already made keep theirs."));
+        if (!m_effect.isEmpty()) {
+            p.setPen(m_warn ? kWarnText : kInfoText);
+            p.drawText(QRect(kX, kEffectY + 36, kW, 72), Qt::TextWordWrap | Qt::AlignLeft | Qt::AlignTop,
+                       QStringLiteral("To all panels: ") + m_effect);
+        }
     }
 }
 

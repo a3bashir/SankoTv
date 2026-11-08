@@ -25,6 +25,13 @@ QString folderNameFor(const QString &path);
 // temporary file that is deleted at once.
 bool writeDenied(const QString &folder);
 
+// Windows (or an antivirus) refuses to overwrite the existing `file` with
+// access denied, though it is not read-only by its own attribute - when new
+// files in its folder are still allowed, as Norton 360's ransomware
+// protection does for an app it does not know (2026-11-08). Opens it for
+// writing as it stands and closes it: nothing is written.
+bool overwriteDenied(const QString &file);
+
 // Windows' own Controlled folder access is ON (block mode). Read from the
 // registry - group policy first, then Windows Security's own setting; a
 // value that is absent or unreadable is NOT on. With another antivirus in

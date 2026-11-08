@@ -33,9 +33,45 @@ bool isNeutral(const CameraState &state, const QSize &canvas)
     return state == neutral(canvas);
 }
 
+CameraState neutral(const Stage &stage)
+{
+    CameraState s;
+    s.cx = stage.frameCentre().x();
+    s.cy = stage.frameCentre().y();
+    s.zoom = 1.0;
+    s.rotation = 0.0;
+    return s;
+}
+
+bool isNeutral(const CameraState &state, const Stage &stage)
+{
+    return state == neutral(stage);
+}
+
 bool takesOldPath(const CameraState &state, const Stage &stage)
 {
     return !stage.hasMargin() && isNeutral(state, stage.canvas);
+}
+
+Stage panelStage(const Panel &panel, const QSize &projectMargin)
+{
+    return panel.ownMargin ? panel.stage() : stageWithMargin(panel.canvasSize(), projectMargin);
+}
+
+CameraState toPanelSpace(const Panel &panel, const CameraState &state)
+{
+    CameraState s = state;
+    s.cx += panel.keyShift.x();
+    s.cy += panel.keyShift.y();
+    return s;
+}
+
+CameraState toCameraSpace(const Panel &panel, const CameraState &state)
+{
+    CameraState s = state;
+    s.cx -= panel.keyShift.x();
+    s.cy -= panel.keyShift.y();
+    return s;
 }
 
 double ease(Ease e, double u)
@@ -338,11 +374,14 @@ CameraState evaluateAtPanel(const Scene &scene, int panelIndex,
     if (panelIndex < 0 || panelIndex >= scene.panels.size()
         || !scene.panels.at(panelIndex))
         return CameraState();
-    const QSize canvas = scene.panels.at(panelIndex)->canvasSize();
+    // Evaluated in the keys' one space, so a move across panels of different
+    // stages stays smooth (batch 6c), then read on this panel's stage.
+    const Panel &panel = *scene.panels.at(panelIndex);
+    const QSize canvas = panel.cameraCanvas();
     if (scene.camera.isEmpty())
-        return neutral(canvas);
-    return evaluate(scene, panelStartFrame(scene, panelIndex, fps) + frameInPanel,
-                    fps, canvas, filmStart);
+        return toPanelSpace(panel, neutral(canvas));
+    return toPanelSpace(panel, evaluate(scene, panelStartFrame(scene, panelIndex, fps) + frameInPanel,
+                                        fps, canvas, filmStart));
 }
 
 QPolygonF frameQuad(const CameraState &state, const Stage &stage)
@@ -491,7 +530,7 @@ QTransform layerToStage(double a, const CameraState &state, const Stage &stage)
     // q = k p + (c + a (c0 - c) k - c0 k), k = 1 / d.
     const double d = depthDivisor(a, state);
     const double k = d > 0.0 ? 1.0 / d : 0.0;
-    const double c0x = stage.canvas.width() / 2.0, c0y = stage.canvas.height() / 2.0;
+    const double c0x = stage.frameCentre().x(), c0y = stage.frameCentre().y();
     return QTransform(k, 0.0, 0.0, k, state.cx + a * (c0x - state.cx) * k - c0x * k,
                       state.cy + a * (c0y - state.cy) * k - c0y * k);
 }
@@ -503,8 +542,8 @@ bool layerShown(double a, const CameraState &state)
 
 bool offBaseFraming(const CameraState &state, const Stage &stage)
 {
-    return state.zoom != 1.0 || state.cx != stage.canvas.width() / 2.0
-        || state.cy != stage.canvas.height() / 2.0;
+    return state.zoom != 1.0 || state.cx != stage.frameCentre().x()
+        || state.cy != stage.frameCentre().y();
 }
 
 bool layeredShot(const Panel &panel, const CameraState &state, const Stage &stage)
@@ -538,7 +577,7 @@ QImage layerMip(const Layer &layer, double scale)
         return layer.image;
     if (!layer.hasPixels())
         return QImage();
-    const QPair<qint64, int> key(layer.contentKey(), n);
+    const QPair<qint64, int> key(layer.placedKey(), n);
     {
         QMutexLocker lock(&g_depthMutex);
         auto it = g_mips.find(key);
@@ -625,6 +664,7 @@ QVector<quint64> depthKey(const Panel &panel, const CameraState &state, const St
     key << bits(state.cx) << bits(state.cy) << bits(state.zoom) << bits(state.rotation)
         << quint64(stage.canvas.width()) << quint64(stage.canvas.height())
         << quint64(stage.frame.width()) << quint64(stage.frame.height())
+        << quint64(stage.origin.x()) << quint64(stage.origin.y())
         << quint64(size.width()) << quint64(size.height()) << quint64(kind)
         << panel.uid.value();
     return key;
@@ -806,7 +846,7 @@ bool depthRanges(double zoom, double rotation, const Stage &stage,
     const double fw = stage.frame.width() / zoom, fh = stage.frame.height() / zoom;
     const double bw = fw * c + fh * sn, bh = fw * sn + fh * c;
     const double W = stage.canvas.width(), H = stage.canvas.height();
-    const double c0x = W / 2.0, c0y = H / 2.0;
+    const double c0x = stage.frameCentre().x(), c0y = stage.frameCentre().y();
     *x = CentreRange{bw / 2.0, W - bw / 2.0, -1, -1};
     *y = CentreRange{bh / 2.0, H - bh / 2.0, -1, -1};
     for (int i = 0; i < edges.size(); ++i) {
@@ -843,7 +883,8 @@ QHash<qint64, quint8> g_edgeBits;
 
 quint8 edgeBitsOf(const Layer &layer)
 {
-    const qint64 key = layer.contentKey();
+    // The edges it reaches are its stage's (batch 6c).
+    const qint64 key = layer.placedKey();
     {
         QMutexLocker lock(&g_depthMutex);
         auto it = g_edgeBits.constFind(key);

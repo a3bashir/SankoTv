@@ -87,6 +87,31 @@ bool writeDenied(const QString &folder)
 #endif
 }
 
+bool overwriteDenied(const QString &file)
+{
+#ifdef Q_OS_WIN
+    // Not there, or read-only by its own attribute (the artist's, or a copy's):
+    // not a block.
+    const QFileInfo info(file);
+    if (!info.isFile() || !info.isWritable())
+        return false;
+    // Opened for writing as it stands - OPEN_EXISTING, nothing written, so its
+    // bytes and its time stay - and shared, so a file another program merely
+    // has open is not mistaken for a block either.
+    const QString native = QDir::toNativeSeparators(info.absoluteFilePath());
+    const HANDLE h = CreateFileW(reinterpret_cast<LPCWSTR>(native.utf16()), GENERIC_WRITE,
+                                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                                 OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE)
+        return GetLastError() == ERROR_ACCESS_DENIED;
+    CloseHandle(h);
+    return false;
+#else
+    Q_UNUSED(file);
+    return false;
+#endif
+}
+
 QString blockedMessage(const QString &target, const QString &doing)
 {
     const QString name = folderNameFor(target);
@@ -94,7 +119,10 @@ QString blockedMessage(const QString &target, const QString &doing)
         return QString();
     const QFileInfo info(target);
     const QString dir = info.isDir() ? info.absoluteFilePath() : info.absolutePath();
-    if (!writeDenied(dir))
+    // A new file refused, or this file refused though new ones are made: Norton
+    // 360's ransomware protection lets an unknown SankoTV create files in Documents
+    // and refuses it the overwrite (the user's hand test, 2026-11-08).
+    if (!writeDenied(dir) && !(info.isFile() && overwriteDenied(info.absoluteFilePath())))
         return QString();
     const QString instead = doing == QLatin1String("saving")
         ? QStringLiteral("save to another folder")

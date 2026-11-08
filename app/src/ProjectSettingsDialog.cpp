@@ -102,12 +102,13 @@ ProjectSettingsDialog::ProjectSettingsDialog(const QString &projectName,
     });
     // Stage Margin... (Phase 2A, Figma 2A-2): beside it, the same kind of
     // workflow - the stage grows or shrinks around the same shot.
-    m_stageMarginButton = new QPushButton(QStringLiteral("Stage Margin..."), this);
+    m_stageMarginButton = new QPushButton(QStringLiteral("Margin for New Panels..."), this);
     m_stageMarginButton->setObjectName(QStringLiteral("stageMarginButton"));
     m_stageMarginButton->setGeometry(kX + 160, kResizeY, 150, kBoxH);
     m_stageMarginButton->setStyleSheet(QLatin1String(kSecondaryButtonQss));
     m_stageMarginButton->setToolTip(
-        QStringLiteral("Room around the shot for camera moves. Artwork is not scaled."));
+        QStringLiteral("The room around the shot that new panels get, for camera moves; with "
+                       "Apply to All Panels... every panel. One panel's own: Stage on the Camera bar."));
     connect(m_stageMarginButton, &QPushButton::clicked, this, [this] {
         emit stageMarginRequested();
     });
@@ -334,7 +335,7 @@ void ProjectSettingsDialog::paintEvent(QPaintEvent *)
     p.drawText(QRect(kX, kCanvasInfoY, 120, 12), Qt::AlignLeft,
                QStringLiteral("Frame (the shot)"));
     p.drawText(QRect(kX, kCanvasInfoY + 20, 120, 12), Qt::AlignLeft,
-               QStringLiteral("Stage"));
+               QStringLiteral("Stage, new panels"));
     p.drawText(QRect(kX, kCanvasInfoY + 40, 120, 12), Qt::AlignLeft,
                QStringLiteral("Aspect ratio"));
     p.setFont(studio::fieldFont());

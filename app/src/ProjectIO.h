@@ -133,8 +133,15 @@ bool runImagePlan(ImagePlan &plan, const std::atomic<bool> &cancel);
 // outside the stage is in it too, kept and hidden (Q13). A Background also says
 // "fill", the colour of the rest of it, and a plain one's file is one pixel. A
 // layer's file may still be the whole stage (the panel on the canvas, saved as it
-// is, with its place). Reads 1, 2 and 3. A 6a build refuses this file.
-inline constexpr int kFileVersion = 3;
+// is, with its place). A 6a build refuses this file.
+//
+// VERSION 4 (batch 6c, 2026-11-07): a panel's "margin" is obeyed, when its layers
+// are the frame plus that margin; each of its layers' places follows it. Only a
+// project with a panel at its own margin is written so, and an older build refuses
+// it rather than give that panel the project's margin. A project without one stays
+// the version 3 it was. Reads 1 to 4.
+inline constexpr int kFileVersion = 4;
+inline constexpr int kFileVersionOneMargin = 3;
 // The older form, for the checks' fixtures only: version 2, every layer's file the
 // whole stage, with no "origin" or "fill".
 void setWriteVersion2ForTest(bool on);

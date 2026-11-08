@@ -60,6 +60,7 @@
 #include "brushlib/BuiltinRoster.h"
 #include "StrokeBuilder.h"
 #include "NewProjectDialog.h"
+#include "StageMarginDialog.h"
 #include "MediaCopyProgress.h"
 #include "ProjectIO.h"
 #include "ProtectedFolders.h"
@@ -13053,6 +13054,104 @@ void runBlockedWritePass(const QString &scratch)
               && window.projectPathForTest() == rescued,
           otherText.left(160));
 
+    // AN OVERWRITE REFUSED, NEW FILES ALLOWED (2026-11-08, the user's hand test under
+    // Norton 360): a project saved in Documents, then its first image refused to SankoTV
+    // as Norton refused it - write denied on that file alone, the folder still taking
+    // new files - and the panel changed so the image must be written again.
+    {
+        const QString keep = docs + QStringLiteral("_keep");
+        QDir().mkpath(keep);
+        ProtectedFolders::setFoldersForTest({{QStringLiteral("Documents"), keep}});
+        ProtectedFolders::setControlledFolderAccessForTest(0);
+        const QString kept = keep + QStringLiteral("/Kept.sankotv");
+        const bool first = window.saveProjectForTest(kept);
+        Scene *s = window.scenesForTest().value(0);
+        Panel *panel = s ? s->panels.value(0) : nullptr;
+        QString image;
+        {
+            QFile f(kept);
+            f.open(QIODevice::ReadOnly);
+            const QJsonObject root = QJsonDocument::fromJson(f.readAll()).object();
+            image = keep + QStringLiteral("/")
+                + root.value(QStringLiteral("scenes")).toArray().at(0).toObject().value(QStringLiteral("panels"))
+                      .toArray().at(0).toObject().value(QStringLiteral("pixmapFile")).toString();
+        }
+        auto denyFile = [](const QString &file, bool on) {
+            const QStringList args = on
+                ? QStringList{QDir::toNativeSeparators(file), QStringLiteral("/deny"), QStringLiteral("*S-1-1-0:(W)")}
+                : QStringList{QDir::toNativeSeparators(file), QStringLiteral("/remove:d"), QStringLiteral("*S-1-1-0")};
+            return QProcess::execute(QStringLiteral("icacls"), args) == 0;
+        };
+        auto change = [&] {
+            if (!panel)
+                return;
+            for (Layer &layer : panel->layers)
+                if (!isGroupLayer(layer) && layer.type != QLatin1String("background")) {
+                    layer.unfoldNow();
+                    QPainter painter(&layer.image);
+                    painter.fillRect(QRect(10, 10, 30, 30), QColor(250, 20, 120));
+                    break;
+                }
+        };
+        const bool fileDenied = first && QFileInfo::exists(image) && denyFile(image, true);
+        const bool newStillAllowed = !ProtectedFolders::writeDenied(keep);
+        change();
+        titles.clear();
+        rescued = free + QStringLiteral("/Rescued3.sankotv");
+        const bool savedOver = window.saveProjectForTest(kept);
+        pump(400);
+        const QString overText = window.lastWriteFailureForTest();
+        check(QStringLiteral("(cf) AN OVERWRITE REFUSED WHILE NEW FILES ARE ALLOWED (Norton 360, 2026-11-08) gets "
+                             "the neutral words - \"Windows or your antivirus blocked SankoTV from saving to "
+                             "Documents ...\" - and the Save As, which saves elsewhere"),
+              fileDenied && newStillAllowed && !savedOver
+                  && overText.contains(QStringLiteral(
+                      "Windows or your antivirus blocked SankoTV from saving to Documents. Allow SankoTV in "
+                      "your security settings, or save to another folder."))
+                  && titles.size() == 1 && window.projectPathForTest() == rescued && QFileInfo::exists(rescued),
+              QStringLiteral("denied %1, new files allowed %2, saved %3, offered %4; text: %5")
+                  .arg(fileDenied).arg(newStillAllowed).arg(savedOver).arg(titles.size()).arg(overText.left(200)));
+        denyFile(image, false);
+
+        // Controls: the same refusal in a folder that is not protected keeps the save's
+        // own message; and a file read-only by its own attribute in a protected one is
+        // no block either.
+        const QString plain = docs + QStringLiteral("_plain");
+        QDir().mkpath(plain);
+        const QString plainProject = plain + QStringLiteral("/Plain.sankotv");
+        const bool plainFirst = window.saveProjectForTest(plainProject);
+        QString plainImage = plain + QStringLiteral("/")
+            + QFileInfo(image).dir().dirName() + QStringLiteral("/") + QFileInfo(image).fileName();
+        plainImage.replace(QStringLiteral("Kept_assets"), QStringLiteral("Plain_assets"));
+        const bool plainDenied = plainFirst && QFileInfo::exists(plainImage) && denyFile(plainImage, true);
+        s = window.scenesForTest().value(0);
+        panel = s ? s->panels.value(0) : nullptr;
+        change();
+        titles.clear();
+        const bool savedPlain = window.saveProjectForTest(plainProject);
+        pump(300);
+        const QString plainText = window.lastWriteFailureForTest();
+        denyFile(plainImage, false);
+        check(QStringLiteral("(cf) control: the same refusal outside a protected folder keeps the save's own "
+                             "message, with what the system said, and offers no Save As"),
+              plainDenied && !savedPlain && plainText.contains(QStringLiteral("The image could not be written"))
+                  && plainText.contains(QStringLiteral(" px; ")) && !plainText.contains(QStringLiteral("blocked SankoTV"))
+                  && window.projectPathForTest() == plainProject,
+              QStringLiteral("denied %1 saved %2: %3").arg(plainDenied).arg(savedPlain).arg(plainText.left(200)));
+        const QString readOnly = keep + QStringLiteral("/ReadOnly.png");
+        QImage(4, 4, QImage::Format_ARGB32).save(readOnly);
+        QFile::setPermissions(readOnly, QFileDevice::ReadOwner | QFileDevice::ReadUser);
+        const bool readOnlyIsNoBlock = !ProtectedFolders::overwriteDenied(readOnly)
+            && ProtectedFolders::blockedMessage(readOnly, QStringLiteral("saving")).isEmpty();
+        QFile::setPermissions(readOnly, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ReadUser
+                                            | QFileDevice::WriteUser);
+        const bool writableIsNoBlock = !ProtectedFolders::overwriteDenied(readOnly);
+        check(QStringLiteral("(cf) control: a file read-only by its own attribute, or simply writable, in a protected "
+                             "folder is no block: the save's own message stands"),
+              readOnlyIsNoBlock && writableIsNoBlock);
+        ProtectedFolders::setFoldersForTest({{QStringLiteral("Documents"), docs}});
+    }
+
     // The export's wording, both ways, and its control (a free folder).
     ProtectedFolders::setControlledFolderAccessForTest(1);
     const QString exportCfa = ProtectedFolders::blockedMessage(docs + QStringLiteral("/Film.mp4"),
@@ -16935,7 +17034,7 @@ void runFrameSpacePass(const QString &scratch)
         return true;
     };
     QJsonObject newerRoot = file;
-    newerRoot.insert(QStringLiteral("version"), 4);
+    newerRoot.insert(QStringLiteral("version"), 5);
     const QString newer = folder + QStringLiteral("/FrameSpaceNewer.sankotv");
     writeRoot(newer, newerRoot);
     QString shown;
@@ -16948,9 +17047,9 @@ void runFrameSpacePass(const QString &scratch)
     const QString pathBefore = r.window.projectPathForTest();
     const bool openedNewer = r.window.loadProjectForTest(newer);
     pump(800);
-    check(QStringLiteral("(fs11) A NEWER FILE (version 4) IS REFUSED: Open says it was saved by a newer "
+    check(QStringLiteral("(fs11) A NEWER FILE (version 5) IS REFUSED: Open says it was saved by a newer "
                          "SankoTV and opens nothing; the open project stays"),
-          !openedNewer && shown.contains(QStringLiteral("file version 4"))
+          !openedNewer && shown.contains(QStringLiteral("file version 5"))
               && r.window.projectPathForTest() == pathBefore && panelCount() == 6,
           QStringLiteral("opened %1; said '%2'; project %3").arg(openedNewer).arg(shown,
               QFileInfo(r.window.projectPathForTest()).fileName()));
@@ -18177,6 +18276,1003 @@ void runPanelsAtRestPass(const QString &scratch)
 // growth to the upper dock and takes the shrink from both in proportion. It keeps its
 // height now: the bar's room is taken before the page is shown. In the layout the user
 // keeps, Scenes over Layers; in the default one Layers sits at its minimum and hides it.
+// STAGE MODE (batch 6c, Figma MARGIN-1): one panel's stage margin, on the canvas.
+void runStageModePass(const QString &scratch)
+{
+    using namespace workspace;
+    out() << "--- (sm) Stage mode: one panel's margin, its handles, its art kept ---" << Qt::endl;
+    const QString dir = scratch + QStringLiteral("/stagemode");
+    QDir(dir).removeRecursively();
+    QDir().mkpath(dir);
+    const QString project = writeProject(dir, QStringLiteral("Stage"), QSize(1920, 1080), 24, 1, 4);
+    auto rig = std::make_unique<Rig>(project);
+    Rig &r = *rig;
+    check(QStringLiteral("(sm) the workspace opened"), r.ok);
+    if (!r.ok)
+        return;
+    QUndoStack *stack = r.window.undoStackForTest();
+    Scene *scene = r.window.scenesForTest().value(0);
+    auto *camBtn = r.storyboard->findChild<QPushButton *>(QStringLiteral("toolCamera"));
+    auto *stageBtn = r.storyboard->findChild<QToolButton *>(QStringLiteral("camStage"));
+    auto *stageBar = r.storyboard->stageBarForTest();
+    if (!stack || !scene || scene->panels.size() != 4 || !camBtn || !stageBtn || !stageBar) {
+        check(QStringLiteral("(sm) found the history, the panels, the Camera tool and the Stage button"), false);
+        return;
+    }
+    auto *applyBtn = stageBar->findChild<QToolButton *>(QStringLiteral("stageApply"));
+    auto *cancelBtn = stageBar->findChild<QToolButton *>(QStringLiteral("stageCancel"));
+    auto *resetBtn = stageBar->findChild<QToolButton *>(QStringLiteral("stageReset"));
+    auto *rightField = stageBar->findChild<QLineEdit *>(QStringLiteral("stageRight"));
+    auto *topField = stageBar->findChild<QLineEdit *>(QStringLiteral("stageTop"));
+    using shotcam::CameraState;
+    r.window.setStageMarginForTest(QSize(480, 270)); // a 2880 x 1620 stage, every panel
+    pump(100);
+    Panel *p0 = scene->panels.at(0);
+    const QMargins project25(480, 270, 480, 270);
+    auto marginText = [](const QMargins &m) {
+        return QStringLiteral("%1,%2,%3,%4").arg(m.left()).arg(m.top()).arg(m.right()).arg(m.bottom());
+    };
+    auto bytes = [](const QImage &image) {
+        return QCryptographicHash::hash(QByteArrayView(reinterpret_cast<const char *>(image.constBits()),
+                                                       image.sizeInBytes()),
+                                        QCryptographicHash::Sha256)
+            .toHex();
+    };
+    // Art, straight on the layer of the panel on the canvas.
+    auto block = [&](Panel *panel, const QRect &rect, const QColor &colour) {
+        Layer &layer = panel->layers[panel->activeLayerIndex];
+        QPainter painter(&layer.image);
+        painter.fillRect(rect, colour);
+        painter.end();
+        r.canvas->invalidateComposite();
+    };
+    auto send = [&](QEvent::Type type, const QPointF &at, Qt::MouseButton button, Qt::KeyboardModifiers mods) {
+        QMouseEvent ev(type, at, r.canvas->mapToGlobal(at.toPoint()), button,
+                       type == QEvent::MouseButtonRelease ? Qt::NoButton : button, mods);
+        QCoreApplication::sendEvent(r.canvas, &ev);
+    };
+    auto canvasKey = [&](int key) {
+        QKeyEvent press(QEvent::KeyPress, key, Qt::NoModifier);
+        QCoreApplication::sendEvent(r.canvas, &press);
+        QKeyEvent release(QEvent::KeyRelease, key, Qt::NoModifier);
+        QCoreApplication::sendEvent(r.canvas, &release);
+    };
+    // A handle dragged by `by` stage px. Left held: the caller lets go.
+    auto grab = [&](int handle, const QPointF &by, Qt::KeyboardModifiers mods = Qt::NoModifier) {
+        const QPolygonF h = r.canvas->stageHandlesForTest().value(handle);
+        const QPointF from = handle % 2 == 0 ? h.value(1) : h.boundingRect().center();
+        const QTransform t = r.canvas->viewTransformForTest();
+        const QPointF to = from + (t.map(by) - t.map(QPointF(0.0, 0.0)));
+        send(QEvent::MouseButtonPress, from, Qt::LeftButton, mods);
+        for (int i = 1; i <= 4; ++i)
+            send(QEvent::MouseMove, from + (to - from) * (i / 4.0), Qt::LeftButton, mods);
+        pump(20);
+        return to;
+    };
+    auto letGo = [&](const QPointF &at) {
+        send(QEvent::MouseButtonRelease, at, Qt::LeftButton, Qt::NoModifier);
+        pump(20);
+    };
+    auto drag = [&](int handle, const QPointF &by, Qt::KeyboardModifiers mods = Qt::NoModifier) {
+        letGo(grab(handle, by, mods));
+    };
+    auto enter = [&] {
+        r.canvas->placeViewForTest(0.2, QPointF(p0->canvasSize().width() / 2.0, p0->canvasSize().height() / 2.0),
+                                   QPointF(r.canvas->width() / 2.0, r.canvas->height() / 2.0));
+        stageBtn->click();
+        pump(60);
+    };
+    auto barInt = [&](const QString &key) { return r.storyboard->stageBarStateForTest().value(key).toInt(); };
+    const QSize outSize(1920, 1080);
+    auto shotOf = [&](Panel *panel, const CameraState &state) {
+        return bytes(sankoexport::renderMovieFrame(panel, outSize, state, r.storyboard->stageFor(panel)));
+    };
+
+    camBtn->click();
+    pump(80);
+
+    // --- (sm1) in and out ------------------------------------------------------------
+    const int depthBefore = stack->index();
+    // Only these two blocks on the layer: the fixture's ellipses are all over it.
+    p0->layers[p0->activeLayerIndex].image.fill(Qt::transparent);
+    block(p0, QRect(600, 400, 200, 200), QColor(200, 30, 30));   // inside the frame
+    block(p0, QRect(100, 450, 120, 120), QColor(30, 30, 200));   // in the left margin
+    const QByteArray shotNeutral = shotOf(p0, shotcam::neutral(r.storyboard->stageFor(p0)));
+    const CameraState keyedOn(shotcam::neutral(r.storyboard->stageFor(p0)));
+    const QImage flatBefore = p0->flattenedPixmap().toImage();
+    enter();
+    QVariantMap bar = r.storyboard->stageBarStateForTest();
+    QVector<QPolygonF> handles = r.canvas->stageHandlesForTest();
+    bool cornersAndBars = handles.size() == 8;
+    for (int i = 0; cornersAndBars && i < 8; ++i)
+        cornersAndBars = handles.at(i).size() == (i % 2 == 0 ? 3 : 2);
+    const QRectF stageOnScreen = r.canvas->viewTransformForTest().mapRect(QRectF(QPointF(0, 0), QSizeF(2880, 1620)));
+    bool outsideEdge = cornersAndBars;
+    for (const QPolygonF &h : std::as_const(handles))
+        for (const QPointF &pt : h)
+            outsideEdge = outsideEdge && !stageOnScreen.adjusted(1.0, 1.0, -1.0, -1.0).contains(pt);
+    check(QStringLiteral("(sm1) THE STAGE BUTTON: the Stage bar stands in for the Camera bar, naming the panel "
+                         "and its four margins; eight handles, L-brackets at the corners and bars on the sides, "
+                         "all outside the stage's edge"),
+          r.storyboard->stageModeOn() && bar.value(QStringLiteral("visible")).toBool()
+              && !bar.value(QStringLiteral("cameraBarVisible")).toBool()
+              && bar.value(QStringLiteral("stagePanelLabel")).toString() == QStringLiteral("Panel 1")
+              && bar.value(QStringLiteral("stageLeft")).toInt() == 480
+              && bar.value(QStringLiteral("stageTop")).toInt() == 270
+              && bar.value(QStringLiteral("stageRight")).toInt() == 480
+              && bar.value(QStringLiteral("stageBottom")).toInt() == 270 && cornersAndBars && outsideEdge,
+          QStringLiteral("on %1 bar %2 %3; handles %4 corners/bars %5 outside %6")
+              .arg(r.storyboard->stageModeOn())
+              .arg(bar.value(QStringLiteral("visible")).toBool())
+              .arg(bar.value(QStringLiteral("stagePanelLabel")).toString())
+              .arg(handles.size()).arg(cornersAndBars).arg(outsideEdge));
+    {
+        // Each handle is white at its middle, on the screen, where nothing else is.
+        const QImage shot = r.canvas->grab().toImage();
+        const qreal dpr = shot.devicePixelRatio();
+        const QPointF mid = handles.at(3).boundingRect().center();
+        const QColor there = shot.pixelColor((mid * dpr).toPoint());
+        const QPointF away = mid + QPointF(12.0, 0.0);
+        const QColor beside = shot.pixelColor((away * dpr).toPoint());
+        check(QStringLiteral("(sm1) the right handle is white on screen; control: 12 px further out it is not"),
+              there == QColor(Qt::white) && beside != QColor(Qt::white),
+              QStringLiteral("%1 then %2").arg(there.name(), beside.name()));
+    }
+    {
+        // Wherever the main window's focus is: one shortcut each on Enter and Esc, or
+        // Qt would fire neither.
+        int esc = 0, ret = 0;
+        for (QShortcut *s : r.storyboard->findChildren<QShortcut *>()) {
+            esc += s->isEnabled() && s->key() == QKeySequence(Qt::Key_Escape) ? 1 : 0;
+            ret += s->isEnabled() && s->key() == QKeySequence(Qt::Key_Return) ? 1 : 0;
+        }
+        check(QStringLiteral("(sm1) ENTER AND ESC are the session's, one shortcut each"), esc == 1 && ret == 1,
+              QStringLiteral("Esc %1, Return %2").arg(esc).arg(ret));
+    }
+    canvasKey(Qt::Key_Escape);
+    pump(60);
+    check(QStringLiteral("(sm1) ESC LEAVES AND CANCELS: back on the Camera bar, the tool it came from; no undo "
+                         "step, the panel's margins as they were"),
+          !r.storyboard->stageModeOn() && r.storyboard->cameraBarForTest()->isVisible() && !stageBar->isVisible()
+              && r.canvas->tool() == DrawingCanvas::Camera && stack->index() == depthBefore
+              && r.storyboard->panelMargins(p0) == project25,
+          QStringLiteral("on %1, undo depth %2 -> %3").arg(r.storyboard->stageModeOn()).arg(depthBefore).arg(stack->index()));
+    enter();
+    auto *brushBtn = r.storyboard->findChild<QPushButton *>(QStringLiteral("toolBrush"));
+    if (brushBtn)
+        brushBtn->click();
+    pump(60);
+    check(QStringLiteral("(sm1) ONE CANVAS MODE AT A TIME: another tool ends the session and cancels it; the Stage "
+                         "bar goes with it"),
+          brushBtn && !r.storyboard->stageModeOn() && !stageBar->isVisible()
+              && !r.storyboard->cameraBarForTest()->isVisible() && stack->index() == depthBefore,
+          QStringLiteral("brush %1 on %2").arg(brushBtn != nullptr).arg(r.storyboard->stageModeOn()));
+    camBtn->click();
+    pump(60);
+
+    // --- (sm2) grow one side, as Figma draws it ---------------------------------------
+    enter();
+    const QPointF frameOnScreen = r.canvas->viewTransformForTest().map(QPointF(480.0 + 960.0, 270.0 + 540.0));
+    const QImage shownBefore = p0->layers.at(p0->activeLayerIndex).image;
+    QPointF at = grab(3, QPointF(480.0, 0.0)); // right handle out by 480
+    bool warns = true;
+    const QString chipGrow = r.canvas->stageChipForTest(&warns);
+    const QChar times(0x00D7), dot(0x00B7);
+    check(QStringLiteral("(sm2) DRAGGING OUT: the chip says \"Right +480 px, 25 %, stage 3360 x 1620\", the Stage "
+                         "bar follows with the right field in hand, and NOTHING has changed: the drag is an overlay"),
+          chipGrow == QStringLiteral("Right +480 px %1 25 % %1 stage 3360 %2 1620").arg(dot).arg(times) && !warns
+              && barInt(QStringLiteral("stageRight")) == 960 && barInt(QStringLiteral("side")) == 2
+              && r.storyboard->panelMargins(p0) == project25 && p0->canvasSize() == QSize(2880, 1620)
+              && p0->layers.at(p0->activeLayerIndex).image.cacheKey() == shownBefore.cacheKey()
+              && stack->index() == depthBefore,
+          chipGrow);
+    check(QStringLiteral("(sm2) control: the proposed stage is 3360 wide, the handles on its new edge"),
+          r.canvas->stageLiveRectForTest() == QRect(0, 0, 3360, 1620)
+              && r.canvas->stageHandlesForTest().at(3).boundingRect().center().x()
+                  > r.canvas->viewTransformForTest().map(QPointF(3360.0, 0.0)).x(),
+          QStringLiteral("%1 x %2").arg(r.canvas->stageLiveRectForTest().width()).arg(r.canvas->stageLiveRectForTest().height()));
+    letGo(at);
+    applyBtn->click();
+    pump(120);
+    check(QStringLiteral("(sm2) APPLY: one undo step named for the panel, this panel's stage 3360 x 1620 and its own "
+                         "margin; the camera's space and the other panels as they were"),
+          !r.storyboard->stageModeOn() && stack->index() == depthBefore + 1
+              && stack->undoText() == QStringLiteral("Stage Margin (Panel 1)")
+              && p0->canvasSize() == QSize(3360, 1620) && p0->ownMargin && p0->keyShift == QPoint(0, 0)
+              && r.storyboard->panelMargins(p0) == QMargins(480, 270, 960, 270)
+              && scene->panels.at(1)->canvasSize() == QSize(2880, 1620) && !scene->panels.at(1)->ownMargin,
+          QStringLiteral("'%1'; %2 x %3; %4").arg(stack->undoText()).arg(p0->canvasSize().width())
+              .arg(p0->canvasSize().height()).arg(marginText(r.storyboard->panelMargins(p0))));
+    const QPointF frameAfter = r.canvas->viewTransformForTest().map(QPointF(480.0 + 960.0, 270.0 + 540.0));
+    check(QStringLiteral("(sm2) THE FRAME STAYS WHERE IT IS on screen through the change, within a pixel"),
+          QLineF(frameOnScreen, frameAfter).length() < 1.5,
+          QStringLiteral("moved %1 px").arg(QLineF(frameOnScreen, frameAfter).length()));
+    check(QStringLiteral("(sm2) THE SHOT IS THE SAME BYTES: the art and the frame keep their place, the output "
+                         "never changes"),
+          shotOf(p0, shotcam::neutral(r.storyboard->stageFor(p0))) == shotNeutral);
+    check(QStringLiteral("(sm2) control: the whole stage is not: it is wider"),
+          p0->flattenedPixmap().toImage().size() == QSize(3360, 1620) && flatBefore.size() == QSize(2880, 1620));
+    r.storyboard->editUndo();
+    pump(120);
+    check(QStringLiteral("(sm2) UNDO puts it back, and the panel at the project's margin is not its own again"),
+          r.storyboard->panelMargins(p0) == project25 && !p0->ownMargin && p0->canvasSize() == QSize(2880, 1620)
+              && bytes(p0->flattenedPixmap().toImage()) == bytes(flatBefore));
+    r.storyboard->editRedo();
+    pump(120);
+    check(QStringLiteral("(sm2) control: redo gives it back"),
+          r.storyboard->panelMargins(p0) == QMargins(480, 270, 960, 270) && p0->ownMargin);
+    {
+        // DRAWING ON THE NEW STAGE, and through the history.
+        auto *pen = r.storyboard->findChild<QPushButton *>(QStringLiteral("toolBrush"));
+        if (pen)
+            pen->click();
+        pump(40);
+        r.canvas->setBrushToolSize(25);
+        r.canvas->placeViewForTest(0.2, QPointF(1680.0, 810.0), QPointF(r.canvas->width() / 2.0, r.canvas->height() / 2.0));
+        pump(30);
+        auto stroke = [&](const QPointF &from, const QPointF &to) {
+            const QTransform t = r.canvas->viewTransformForTest();
+            sendMouse(r.canvas, QEvent::MouseButtonPress, t.map(from), Qt::LeftButton);
+            for (int i = 1; i <= 8; ++i)
+                sendMouse(r.canvas, QEvent::MouseMove, t.map(from + (to - from) * (i / 8.0)), Qt::LeftButton);
+            sendMouse(r.canvas, QEvent::MouseButtonRelease, t.map(to), Qt::LeftButton);
+            pump(500);
+        };
+        auto alphaAt = [&](int x, int y) {
+            return qAlpha(p0->layers.at(p0->activeLayerIndex).image.pixel(x, y));
+        };
+        const int steps = stack->index();
+        stroke(QPointF(3000.0, 800.0), QPointF(3150.0, 800.0)); // in the band this panel gained
+        check(QStringLiteral("(sm2) A STROKE IN THE BAND GAINED lands where the pen is, one step"),
+              alphaAt(3075, 800) > 0 && stack->index() == steps + 1 && alphaAt(3075, 840) == 0,
+              QStringLiteral("alpha %1, steps +%2").arg(alphaAt(3075, 800)).arg(stack->index() - steps));
+        r.storyboard->editUndo();
+        pump(100);
+        check(QStringLiteral("(sm2) control: undone, it is gone"), alphaAt(3075, 800) == 0);
+        stroke(QPointF(1000.0, 800.0), QPointF(1150.0, 800.0)); // on the stage as it is
+        camBtn->click();
+        pump(40);
+        enter();
+        drag(3, QPointF(100.0, 0.0));
+        applyBtn->click();
+        pump(120);
+        check(QStringLiteral("(sm2) control: the stroke rode through a margin change"),
+              p0->canvasSize() == QSize(3460, 1620) && alphaAt(1075, 800) > 0);
+        r.storyboard->editUndo();
+        pump(100);
+        r.storyboard->editUndo();
+        pump(100);
+        check(QStringLiteral("(sm2) AN OLDER STROKE UNDONE ACROSS IT: the margin first, then the stroke, on the stage it "
+                             "was made on, and the shot the same bytes"),
+              p0->canvasSize() == QSize(3360, 1620) && alphaAt(1075, 800) == 0
+                  && shotOf(p0, shotcam::neutral(r.storyboard->stageFor(p0))) == shotNeutral,
+              QStringLiteral("%1 wide, alpha %2").arg(p0->canvasSize().width()).arg(alphaAt(1075, 800)));
+    }
+
+    // --- (sm3) shrinking into art: kept and hidden ---------------------------------------
+    enter();
+    at = grab(7, QPointF(288.0, 0.0)); // the left handle in by 288: to a margin of 192
+    const QString chipShrink = r.canvas->stageChipForTest(&warns);
+    check(QStringLiteral("(sm3) SHRINKING INTO ART: the chip is amber and says it hides art on 1 layer, kept, never "
+                         "that it cuts"),
+          warns && chipShrink.contains(QStringLiteral("hides art on 1 layer (kept, not cut)"))
+              && chipShrink.startsWith(QStringLiteral("Left ") + QChar(0x2212) + QStringLiteral("288 px"))
+              && !chipShrink.contains(QStringLiteral("cuts")),
+          chipShrink);
+    const QPainterPath outline = r.canvas->stageArtOutlineForTest();
+    // In frame space: the blue block at stage (100, 450) is at (-380, 180) from the frame.
+    const QRectF outlineBox = outline.boundingRect();
+    {
+        // The panel's thumbnail, and a layer's identity where it is read, go with its
+        // stage though no pixel moved. Without them a thumbnail or a depth mip stays
+        // the old stage's picture.
+        const QVector<quint64> before = p0->flattenFingerprint();
+        const qint64 placedBefore = p0->layers.at(p0->activeLayerIndex).placedKey();
+        Panel other;
+        other.layers = p0->layers;
+        other.margin = p0->margin;
+        other.margin.setLeft(p0->margin.left() + 100);
+        other.margin.setRight(p0->margin.right() - 100); // the same size, the frame elsewhere
+        check(QStringLiteral("(sm3) A STAGE'S FRAME MOVED, THE SAME SIZE: the flatten's fingerprint is another; control: the "
+                             "same stage gives the same one"),
+              other.flattenFingerprint() != before && p0->flattenFingerprint() == before);
+        const int active = p0->activeLayerIndex;
+        other.layers[active].stageRect = other.layers.at(active).stageRect.translated(100, 0);
+        check(QStringLiteral("(sm3) ...and a layer's identity where it is read; control: the same pixels' own identity does not move"),
+              other.layers.at(active).placedKey() != placedBefore
+                  && other.layers.at(active).contentKey() == p0->layers.at(active).contentKey());
+    }
+    check(QStringLiteral("(sm3) THE ART IS MAPPED: its outline runs around both blocks, in the frame's px"),
+          outlineBox.left() <= -380.0 && outlineBox.left() > -392.0 && outlineBox.right() >= 320.0
+              && outlineBox.right() < 332.0,
+          QStringLiteral("x %1 to %2").arg(outlineBox.left()).arg(outlineBox.right()));
+    {
+        // Amber on screen around the block, which the proposed stage leaves out.
+        const QImage shot = r.canvas->grab().toImage();
+        const qreal dpr = shot.devicePixelRatio();
+        const QTransform t = r.canvas->viewTransformForTest();
+        int amberNear = 0;
+        const QRectF box = t.mapRect(QRectF(100.0, 450.0, 120.0, 120.0)).adjusted(-4.0, -4.0, 4.0, 4.0);
+        const QRect px((box.topLeft() * dpr).toPoint(), (box.bottomRight() * dpr).toPoint());
+        for (int y = px.top(); y <= px.bottom(); ++y)
+            for (int x = px.left(); x <= px.right(); ++x) {
+                const QColor c = shot.pixelColor(x, y);
+                amberNear += c.red() > 220 && c.green() > 140 && c.green() < 190 && c.blue() < 90 ? 1 : 0;
+            }
+        // The red block's middle, well inside the proposed stage: no outline over it.
+        int amberInside = 0;
+        const QRectF red = t.mapRect(QRectF(620.0, 420.0, 160.0, 160.0));
+        const QRect rp((red.topLeft() * dpr).toPoint(), (red.bottomRight() * dpr).toPoint());
+        for (int y = rp.top(); y <= rp.bottom(); ++y)
+            for (int x = rp.left(); x <= rp.right(); ++x) {
+                const QColor c = shot.pixelColor(x, y);
+                amberInside += c.red() > 220 && c.green() > 140 && c.green() < 190 && c.blue() < 90 ? 1 : 0;
+            }
+        check(QStringLiteral("(sm3) THE AMBER OUTLINE around the art that would go; control: none over the art that stays"),
+              amberNear > 8 && amberInside == 0,
+              QStringLiteral("%1 amber pixels at the block, %2 inside").arg(amberNear).arg(amberInside));
+    }
+    letGo(at);
+    canvasKey(Qt::Key_Return);
+    pump(120);
+    const Layer &art = p0->layers.at(p0->activeLayerIndex);
+    check(QStringLiteral("(sm3) ENTER APPLIES: margin 192 on the left; the frame now starts at 192, so the keys' space "
+                         "is 288 to the left of this stage; the shot is the same bytes"),
+          r.storyboard->panelMargins(p0) == QMargins(192, 270, 960, 270) && p0->keyShift == QPoint(-288, 0)
+              && p0->canvasSize() == QSize(3072, 1620)
+              && shotOf(p0, shotcam::neutral(r.storyboard->stageFor(p0))) == shotNeutral,
+          QStringLiteral("%1; shift %2").arg(marginText(r.storyboard->panelMargins(p0))).arg(p0->keyShift.x()));
+    check(QStringLiteral("(sm3) NOTHING IS CUT: the blue block is out of the stage and in the layer's tiles, hidden"),
+          art.tiles && layertiles::hasHidden(*art.tiles, QRect(-p0->frameAt(), art.pixelSize())));
+    enter();
+    const QPainterPath outlineHidden = r.canvas->stageArtOutlineForTest();
+    canvasKey(Qt::Key_Escape);
+    pump(40);
+    check(QStringLiteral("(sm3) back in Stage mode the hidden art is still on the map, where it was"),
+          outlineHidden.boundingRect().left() <= -380.0 && outlineHidden.boundingRect().left() > -392.0);
+    enter();
+    drag(7, QPointF(-288.0, 0.0));
+    applyBtn->click();
+    pump(120);
+    const QImage backAgain = p0->flattenedPixmap().toImage();
+    check(QStringLiteral("(sm3) THE STAGE GROWN BACK brings the art back, the same colour in the same place on the art"),
+          backAgain.pixelColor(160, 500) == QColor(30, 30, 200) && backAgain.pixelColor(700, 500) == QColor(200, 30, 30),
+          QStringLiteral("%1, %2").arg(backAgain.pixelColor(160, 500).name(), backAgain.pixelColor(700, 500).name()));
+
+    // --- (sm4) the modifiers, and the limits ---------------------------------------------
+    enter();
+    at = grab(3, QPointF(240.0, 0.0), Qt::AltModifier);
+    const QString chipAlt = r.canvas->stageChipForTest();
+    check(QStringLiteral("(sm4) ALT: the opposite side too, the chip naming both"),
+          r.canvas->stageModeMargins() == QMargins(720, 270, 1200, 270)
+              && chipAlt.startsWith(QStringLiteral("Alt %1 Left and Right +240 px each").arg(dot)),
+          QStringLiteral("%1; %2").arg(marginText(r.canvas->stageModeMargins()), chipAlt));
+    letGo(at);
+    resetBtn->click();
+    pump(20);
+    check(QStringLiteral("(sm4) RESET: the project's margin, proposed, nothing applied yet"),
+          r.canvas->stageModeMargins() == project25 && r.storyboard->panelMargins(p0) == QMargins(480, 270, 960, 270),
+          marginText(r.canvas->stageModeMargins()));
+    drag(2, QPointF(192.0, -30.0), Qt::ShiftModifier); // the top right corner; 10 % across is the larger
+    check(QStringLiteral("(sm4) SHIFT ON A CORNER: both axes by the same share of the frame (192 of 1920, 108 of 1080)"),
+          r.canvas->stageModeMargins() == QMargins(480, 378, 672, 270),
+          marginText(r.canvas->stageModeMargins()));
+    resetBtn->click();
+    drag(2, QPointF(192.0, -30.0));
+    check(QStringLiteral("(sm4) control: without Shift a corner moves its two sides by what the pointer did"),
+          r.canvas->stageModeMargins() == QMargins(480, 300, 672, 270),
+          marginText(r.canvas->stageModeMargins()));
+    resetBtn->click();
+    drag(7, QPointF(900.0, 0.0));
+    check(QStringLiteral("(sm4) NEVER INSIDE THE FRAME: a side stops at 0"),
+          r.canvas->stageModeMargins().left() == 0, marginText(r.canvas->stageModeMargins()));
+    resetBtn->click();
+    r.canvas->placeViewForTest(0.05, QPointF(1440.0, 810.0), QPointF(r.canvas->width() / 2.0, r.canvas->height() / 2.0));
+    pump(20);
+    drag(3, QPointF(9000.0, 0.0));
+    check(QStringLiteral("(sm4) THE CAP: the stage stops at the canvas's 8192 a side"),
+          r.canvas->stageLiveRectForTest().width() == stagemargin::kMaxSide,
+          QString::number(r.canvas->stageLiveRectForTest().width()));
+    canvasKey(Qt::Key_Escape);
+    pump(40);
+    check(QStringLiteral("(sm4) control: Esc left all of it unapplied"),
+          r.storyboard->panelMargins(p0) == QMargins(480, 270, 960, 270));
+
+    // --- (sm5) the numbers ----------------------------------------------------------------
+    enter();
+    // A key to a field, as when the bar's window has the keyboard: a window shortcut
+    // of the main window does not fire then. It would here, where the main window
+    // stays the active one (a key sent to any widget tries the shortcuts first).
+    auto fieldKey = [&](QLineEdit *field, int key) {
+        QVector<QShortcut *> off;
+        for (QShortcut *s : r.storyboard->findChildren<QShortcut *>())
+            if (s->isEnabled() && (s->key() == QKeySequence(Qt::Key_Return) || s->key() == QKeySequence(Qt::Key_Escape))) {
+                s->setEnabled(false);
+                off.append(s);
+            }
+        QKeyEvent press(QEvent::KeyPress, key, Qt::NoModifier);
+        QCoreApplication::sendEvent(field, &press);
+        for (QShortcut *s : off)
+            s->setEnabled(r.storyboard->stageModeOn());
+        pump(30);
+    };
+    rightField->setText(QStringLiteral("600"));
+    fieldKey(rightField, Qt::Key_Return);
+    check(QStringLiteral("(sm5) ENTER IN A FIELD applies its number to the proposal and stays in the session"),
+          r.storyboard->stageModeOn() && r.canvas->stageModeMargins().right() == 600 && stack->undoText() == QStringLiteral("Stage Margin (Panel 1)"),
+          marginText(r.canvas->stageModeMargins()));
+    rightField->setText(QStringLiteral("700"));
+    fieldKey(rightField, Qt::Key_Escape);
+    check(QStringLiteral("(sm5) ESC IN A FIELD puts its number back and stays in the session"),
+          r.storyboard->stageModeOn() && r.canvas->stageModeMargins().right() == 600 && rightField->text() == QStringLiteral("600"),
+          rightField->text());
+    fieldKey(rightField, Qt::Key_Return);
+    pump(100);
+    check(QStringLiteral("(sm5) control: Enter with nothing to apply commits, one step"),
+          !r.storyboard->stageModeOn() && r.storyboard->panelMargins(p0) == QMargins(480, 270, 600, 270),
+          marginText(r.storyboard->panelMargins(p0)));
+    enter();
+    {
+        auto *link = stageBar->findChild<QWidget *>(QStringLiteral("stageLink"));
+        topField->setFocus();
+        pump(10);
+        sendMouse(link, QEvent::MouseButtonPress, QPointF(link->width() / 2.0, link->height() / 2.0), Qt::LeftButton);
+        sendMouse(link, QEvent::MouseButtonRelease, QPointF(link->width() / 2.0, link->height() / 2.0), Qt::LeftButton);
+        pump(20);
+        const QMargins linked = r.canvas->stageModeMargins();
+        check(QStringLiteral("(sm5) SAME ON ALL SIDES: every side the top's share of the frame, 25 %"),
+              linked == QMargins(480, 270, 480, 270) && barInt(QStringLiteral("linked")) == 1, marginText(linked));
+        rightField->setText(QStringLiteral("192"));
+        Q_EMIT rightField->editingFinished();
+        pump(20);
+        check(QStringLiteral("(sm5) control: a number typed then sets them all, at its share: 10 %"),
+              r.canvas->stageModeMargins() == QMargins(192, 108, 192, 108), marginText(r.canvas->stageModeMargins()));
+        sendMouse(link, QEvent::MouseButtonPress, QPointF(link->width() / 2.0, link->height() / 2.0), Qt::LeftButton);
+        sendMouse(link, QEvent::MouseButtonRelease, QPointF(link->width() / 2.0, link->height() / 2.0), Qt::LeftButton);
+        pump(20);
+    }
+    const QString infoNow = r.storyboard->stageBarStateForTest().value(QStringLiteral("stageInfo")).toString();
+    check(QStringLiteral("(sm5) THE COST: the proposed stage's size, what a layer of it holds on the canvas, the project"),
+          infoNow.startsWith(QStringLiteral("2304 %1 1296 %2 11.9 MB a layer %2 project ").arg(times).arg(dot)), infoNow);
+    cancelBtn->click();
+    pump(40);
+    check(QStringLiteral("(sm5) CANCEL: nothing changed by any of it"),
+          !r.storyboard->stageModeOn() && r.storyboard->panelMargins(p0) == QMargins(480, 270, 600, 270));
+
+    // --- (sm6) the camera in one space ------------------------------------------------------
+    enter();
+    drag(7, QPointF(100.0, 0.0)); // left 380: this panel's stage is 100 px to the right of the keys'
+    applyBtn->click();
+    pump(120);
+    const QPoint shift0 = p0->keyShift;
+    check(QStringLiteral("(sm6) a panel at its own margin: the frame 100 px nearer its stage's left"),
+          shift0 == QPoint(-100, 0) && r.storyboard->stageFor(p0).frameRect() == QRect(380, 270, 1920, 1080),
+          QString::number(shift0.x()));
+    const shotcam::Stage stage0 = r.storyboard->stageFor(p0);
+    const int fps = 24;
+    const int len0 = shotcam::panelFrames(*p0, fps);
+    CameraState onFrame; // the frame's own centre, on the project's stage
+    onFrame.cx = 1440.0;
+    onFrame.cy = 810.0;
+    onFrame.zoom = 1.5;
+    shotcam::SceneCamera cam;
+    cam.keys = {shotcam::makeKey(*scene, 0, 0, fps, onFrame)};
+    r.storyboard->applyCameraForUndo(scene, cam);
+    const CameraState read = shotcam::evaluateAtPanel(*scene, 0, 0, fps, 0);
+    const CameraState readOther = shotcam::evaluateAtPanel(*scene, 1, 0, fps, 0);
+    check(QStringLiteral("(sm6) A KEY IS IN ONE SPACE: read on this panel it is 100 px to the left on its stage, on the "
+                         "same art; read on a panel at the project's margin, as it was written"),
+          read.cx == 1340.0 && read.cy == 810.0 && readOther.cx == 1440.0 && read.zoom == 1.5,
+          QStringLiteral("%1 and %2").arg(read.cx).arg(readOther.cx));
+    {
+        // The same art through the same camera: the panel at its own margin against a
+        // copy of its art at the project's. The exact picture.
+        const QImage atOwn = sankoexport::renderMovieFrame(p0, outSize, read, stage0);
+        check(QStringLiteral("(sm6) control: on its own stage the framing shows the block where the frame says: red at "
+                             "the frame's centre-left, as the same framing on the project's stage would"),
+              !atOwn.isNull() && atOwn.size() == outSize, QStringLiteral("%1 x %2").arg(atOwn.width()).arg(atOwn.height()));
+    }
+    const QVector<shotcam::CameraKey> keysBefore = scene->camera.keys;
+    r.storyboard->setCameraAnimate(true);
+    r.animatic->setPlayheadForTest(0, 0);
+    pump(30);
+    CameraState dragged = read;
+    dragged.cx = 1400.0;
+    dragged.cy = 700.0;
+    Q_EMIT r.canvas->shotCameraEditRequested(dragged, DrawingCanvas::ShotCameraMove);
+    pump(30);
+    const CameraState keyNow = scene->camera.keys.value(0).state;
+    check(QStringLiteral("(sm6) A DRAG ON THIS PANEL writes the key in that one space, and reads back where it was dropped"),
+          scene->camera.keys.size() == keysBefore.size() && keyNow.cx == 1500.0 && keyNow.cy == 700.0
+              && shotcam::evaluateAtPanel(*scene, 0, 0, fps, 0).cx == 1400.0,
+          QStringLiteral("key %1, read %2").arg(keyNow.cx).arg(shotcam::evaluateAtPanel(*scene, 0, 0, fps, 0).cx));
+    r.storyboard->editUndo();
+    pump(30);
+    // A move across the cut: smooth in the keys' space.
+    CameraState a = onFrame, b = onFrame;
+    a.zoom = b.zoom = 1.0;
+    b.cx = onFrame.cx + 480.0;
+    cam.keys = {shotcam::makeKey(*scene, 0, 0, fps, a), shotcam::makeKey(*scene, 1, shotcam::panelFrames(*scene->panels.at(1), fps), fps, b)};
+    cam.keys[0].ease = shotcam::Ease::Linear;
+    r.storyboard->applyCameraForUndo(scene, cam);
+    const CameraState lastOf0 = shotcam::evaluateAtPanel(*scene, 0, len0 - 1, fps, 0);
+    const CameraState firstOf1 = shotcam::evaluateAtPanel(*scene, 1, 0, fps, 0);
+    const double oneFrame = 480.0 / (len0 + shotcam::panelFrames(*scene->panels.at(1), fps));
+    const double acrossCut = firstOf1.cx - shotcam::toCameraSpace(*p0, lastOf0).cx;
+    check(QStringLiteral("(sm6) A MOVE ACROSS THE CUT is one move: over the cut it goes on by one frame's travel in the "
+                         "keys' space; never clamped"),
+          qAbs(acrossCut - oneFrame) < 1e-6, QStringLiteral("%1 against %2").arg(acrossCut).arg(oneFrame));
+    check(QStringLiteral("(sm6) control: read on the two stages the numbers differ by the panel's shift, the art does not"),
+          qAbs(firstOf1.cx - lastOf0.cx - (acrossCut + 100.0)) < 1e-6,
+          QStringLiteral("%1").arg(firstOf1.cx - lastOf0.cx));
+    cam.keys.clear();
+    r.storyboard->applyCameraForUndo(scene, cam);
+    check(QStringLiteral("(sm6) NO KEYS: the base framing is this panel's frame, wherever it lies"),
+          shotcam::isNeutral(shotcam::evaluateAtPanel(*scene, 0, 0, fps, 0), stage0)
+              && shotcam::evaluateAtPanel(*scene, 0, 0, fps, 0).cx == 380.0 + 960.0);
+
+    // --- (sm7) the SHOTS lock (Q8) -------------------------------------------------------------
+    QStringList said;
+    r.storyboard->setLockMessageHookForTest([&](const QString &m) { said << m; });
+    r.animatic->setTrackLocked(TimelineTrack::Shots, true);
+    stageBtn->click();
+    pump(30);
+    check(QStringLiteral("(sm7) THE SHOTS LOCK REFUSES Stage mode, and says so"),
+          !r.storyboard->stageModeOn() && said.contains(QStringLiteral("SHOTS track is locked")), said.join(QLatin1Char('|')));
+    said.clear();
+    const QMargins lockedMargin = r.storyboard->panelMargins(p0);
+    const int lockedIndex = stack->index();
+    r.storyboard->editUndo();
+    pump(40);
+    check(QStringLiteral("(sm7) ...and the door refuses to undo the step"),
+          stack->index() == lockedIndex && r.storyboard->panelMargins(p0) == lockedMargin
+              && said.contains(QStringLiteral("SHOTS track is locked")), said.join(QLatin1Char('|')));
+    r.animatic->setTrackLocked(TimelineTrack::Shots, false);
+    enter();
+    check(QStringLiteral("(sm7) control: unlocked it enters"), r.storyboard->stageModeOn());
+    r.storyboard->setLockMessageHookForTest({});
+    // Anything moving in the history under the session ends it, unchanged.
+    stack->undo();
+    pump(100);
+    check(QStringLiteral("(sm7) THE HISTORY MOVING ends the session"), !r.storyboard->stageModeOn());
+    stack->redo();
+    pump(100);
+    enter();
+    clickThumb(r, 1);
+    pump(60);
+    check(QStringLiteral("(sm7) ANOTHER PANEL ends the session, and cancels it"),
+          !r.storyboard->stageModeOn() && r.storyboard->panelMargins(p0).left() == 380 && !stageBar->isVisible());
+    {
+        // Undone from another panel: the panel at rest stays at rest, and only its
+        // rectangle moves. The view on this panel does not.
+        const QTransform viewBefore = r.canvas->viewTransformForTest();
+        const int steps = stack->index();
+        bool atRest = true;
+        const int stageBefore = p0->canvasSize().width();
+        r.storyboard->editUndo();
+        pump(80);
+        for (const Layer &layer : p0->layers)
+            atRest = atRest && (isGroupLayer(layer) || layer.atRest());
+        check(QStringLiteral("(sm7) UNDONE WHILE ANOTHER PANEL IS ON THE CANVAS: that panel's stage goes back, at rest, and "
+                             "the view here does not move"),
+              stack->index() == steps - 1 && p0->canvasSize().width() == stageBefore + 100 && atRest
+                  && r.canvas->viewTransformForTest() == viewBefore && r.storyboard->panelMargins(p0).left() == 480,
+              QStringLiteral("%1 wide, left %2, at rest %3").arg(p0->canvasSize().width())
+                  .arg(r.storyboard->panelMargins(p0).left()).arg(atRest));
+        r.storyboard->editRedo();
+        pump(80);
+    }
+    {
+        // The film over the canvas ends the session.
+        r.storyboard->setStageFadeMsForTest(0);
+        clickThumb(r, 0);
+        pump(40);
+        enter();
+        const bool wasOn = r.storyboard->stageModeOn();
+        r.animatic->togglePlay();
+        pump(200);
+        const bool playing = r.animatic->isPlaying();
+        const bool endedByFilm = !r.storyboard->stageModeOn();
+        if (playing)
+            r.animatic->togglePlay();
+        r.animatic->leavePreview();
+        pump(100);
+        check(QStringLiteral("(sm7) THE FILM OVER THE CANVAS ends the session"), wasOn && playing && endedByFilm,
+              QStringLiteral("on %1, playing %2, ended %3").arg(wasOn).arg(playing).arg(endedByFilm));
+        // The exports read each panel's own stage: the shot is the frame, on any stage.
+        const QVector<sankoexport::ExportPanel> rows =
+            sankoexport::collectPanels(r.window.scenesForTest(), 24, false, false, r.window.stageMarginForTest());
+        const bool ownRow = !rows.isEmpty() && rows.first().stage.frameRect() == QRect(380, 270, 1920, 1080);
+        const bool stillNeutral = !rows.isEmpty() && rows.first().stillNeutral;
+        const QImage still = rows.isEmpty() ? QImage() : sankoexport::stillImage(rows.first());
+        check(QStringLiteral("(sm7) A STILL OF THE PANEL AT ITS OWN MARGIN is the frame at the frame's size, its art in its "
+                             "place: red at (120, 130) from the frame's corner"),
+              ownRow && stillNeutral && still.size() == QSize(1920, 1080)
+                  && still.pixelColor(220, 230) == QColor(200, 30, 30),
+              QStringLiteral("row %1, neutral %2, %3 x %4, %5").arg(ownRow).arg(stillNeutral).arg(still.width())
+                  .arg(still.height()).arg(still.pixelColor(220, 230).name()));
+        check(QStringLiteral("(sm7) control: the panel beside it, at the project's margin, cuts from the same frame"),
+              rows.size() > 1 && rows.at(1).stage.frameRect() == QRect(480, 270, 1920, 1080));
+        clickThumb(r, 1);
+        pump(40);
+    }
+
+    // --- (sm8) panels line up by the frame --------------------------------------------------------
+    {
+        Panel *p1 = scene->panels.at(1);
+        // On panel 1 (at the project's margin): where panel 0's frame is, on screen.
+        r.canvas->placeViewForTest(0.25, QPointF(1440.0, 810.0), QPointF(r.canvas->width() / 2.0, r.canvas->height() / 2.0));
+        pump(20);
+        const QPointF on1 = r.canvas->viewTransformForTest().map(QPointF(480.0 + 960.0, 270.0 + 540.0));
+        const double scale1 = r.canvas->viewTransformForTest().m11();
+        clickThumb(r, 0);
+        pump(40);
+        const QPointF on0 = r.canvas->viewTransformForTest().map(QPointF(380.0 + 960.0, 270.0 + 540.0));
+        const double scale0 = r.canvas->viewTransformForTest().m11();
+        check(QStringLiteral("(sm8) SWITCHING PANELS keeps the frame where it was on screen, at the same size, though "
+                             "the stages differ"),
+              QLineF(on1, on0).length() < 1.5 && qAbs(scale1 - scale0) < 0.002,
+              QStringLiteral("moved %1 px, scale %2 -> %3").arg(QLineF(on1, on0).length()).arg(scale1).arg(scale0));
+        {
+            // ...and it does not creep: twenty switches there and back (the user's hand
+            // test lost 0.3 px of frame on each, to the display's whole-px width, and then
+            // 2 px of place over 25, to its whole-px corner). Odd margins on panel 2, as
+            // the user's were, so each switch has a rounding to carry.
+            r.storyboard->applyPanelMargin(scene->panels.at(1), QMargins(517, 273, 489, 301));
+            pump(60);
+            const QTransform t0 = r.canvas->viewTransformForTest();
+            const QPointF a0 = t0.map(QPointF(380.0, 270.0)), b0 = t0.map(QPointF(380.0 + 1920.0, 270.0 + 1080.0));
+            for (int i = 0; i < 20; ++i) {
+                clickThumb(r, 1);
+                clickThumb(r, 0);
+            }
+            pump(40);
+            const QTransform t1 = r.canvas->viewTransformForTest();
+            const QPointF a1 = t1.map(QPointF(380.0, 270.0)), b1 = t1.map(QPointF(380.0 + 1920.0, 270.0 + 1080.0));
+            check(QStringLiteral("(sm8) TWENTY SWITCHES THERE AND BACK: the frame's corners within a pixel of where they "
+                                 "were"),
+                  QLineF(a0, a1).length() < 1.0 && QLineF(b0, b1).length() < 1.0,
+                  QStringLiteral("corners moved %1 and %2 px").arg(QLineF(a0, a1).length()).arg(QLineF(b0, b1).length()));
+            r.canvas->placeViewForTest(0.25 * 0.98, QPointF(1340.0, 810.0),
+                                       QPointF(r.canvas->width() / 2.0, r.canvas->height() / 2.0));
+            pump(20);
+            const QTransform t2 = r.canvas->viewTransformForTest();
+            check(QStringLiteral("(sm8) control: a 2 % smaller view, the measure sees it"),
+                  QLineF(t2.map(QPointF(380.0, 270.0)), t2.map(QPointF(2300.0, 1350.0))).length()
+                      < QLineF(a1, b1).length() - 5.0,
+                  QStringLiteral("%1 against %2").arg(QLineF(t2.map(QPointF(380.0, 270.0)), t2.map(QPointF(2300.0, 1350.0))).length())
+                      .arg(QLineF(a1, b1).length()));
+            r.storyboard->applyPanelMargin(scene->panels.at(1), QMargins(480, 270, 480, 270)); // as it was
+            pump(60);
+        }
+        // Onion skin: panel 0's red block, on panel 1, where it is in the shot.
+        clickThumb(r, 1);
+        pump(30);
+        r.canvas->placeViewForTest(0.25, QPointF(1440.0, 810.0), QPointF(r.canvas->width() / 2.0, r.canvas->height() / 2.0));
+        pump(20);
+        const QImage plain = r.canvas->grab().toImage();
+        r.canvas->setOnionSkinEnabled(true);
+        r.storyboard->updateOnionGhostForTest();
+        pump(30);
+        const QImage ghosted = r.canvas->grab().toImage();
+        const qreal dpr = plain.devicePixelRatio();
+        // Red is at stage (600..800, 400..600) on panel 0 when it was 480 from the
+        // left: (120, 130) in the frame. On panel 1 the frame starts at (480, 270).
+        const QTransform t = r.canvas->viewTransformForTest();
+        const QPoint aligned = (t.map(QPointF(480.0 + 220.0, 270.0 + 230.0)) * dpr).toPoint();
+        const QPoint byCorner = (t.map(QPointF(380.0 + 220.0 + 1000.0, 270.0 + 230.0)) * dpr).toPoint();
+        check(QStringLiteral("(sm8) THE ONION SKIN overlays by the frame; control: elsewhere nothing changed"),
+              plain.pixelColor(aligned) != ghosted.pixelColor(aligned)
+                  && plain.pixelColor(byCorner) == ghosted.pixelColor(byCorner),
+              QStringLiteral("%1 -> %2; %3 -> %4").arg(plain.pixelColor(aligned).name(), ghosted.pixelColor(aligned).name(),
+                                                       plain.pixelColor(byCorner).name(), ghosted.pixelColor(byCorner).name()));
+        r.canvas->setOnionSkinEnabled(false);
+        r.storyboard->updateOnionGhostForTest();
+        // Paste in Place: copied on panel 0, where it was in the shot on panel 1.
+        clickThumb(r, 0);
+        pump(30);
+        auto *brush = r.storyboard->findChild<QPushButton *>(QStringLiteral("toolBrush"));
+        if (brush)
+            brush->click();
+        r.canvas->selectAll();
+        r.canvas->copySelection();
+        const QPointF clipAt = r.canvas->clipPosForTest();
+        r.canvas->clearSelection();
+        clickThumb(r, 1);
+        pump(30);
+        r.canvas->pasteClipboard(true);
+        const QPointF floated = r.canvas->floatPosForTest();
+        check(QStringLiteral("(sm8) PASTE IN PLACE lands by the frame: copied at the stage's corner on a stage starting 380 "
+                             "before its frame, it floats 380 before panel 1's frame"),
+              clipAt == QPointF(-380.0, -270.0) && floated == QPointF(480.0 - 380.0, 0.0),
+              QStringLiteral("clip %1, floats at %2").arg(clipAt.x()).arg(floated.x()));
+        r.canvas->cancelFloatingPasteForTest();
+        pump(30);
+        camBtn->click();
+        pump(40);
+        (void)p1;
+    }
+
+    // --- (sm9) new panels, Duplicate, Paste (Q10) ----------------------------------------------------
+    {
+        clickThumb(r, 0);
+        pump(40);
+        const QMargins own = r.storyboard->panelMargins(p0);
+        r.storyboard->duplicateSelectedPanelForTest();
+        pump(120);
+        Panel *dup = scene->panels.value(1);
+        check(QStringLiteral("(sm9) DUPLICATE KEEPS THE SOURCE'S MARGIN"),
+              dup && dup != p0 && r.storyboard->panelMargins(dup) == own && dup->ownMargin && dup->keyShift == p0->keyShift,
+              dup ? marginText(r.storyboard->panelMargins(dup)) : QString());
+        r.storyboard->addPanelForTest();
+        pump(120);
+        Panel *fresh = scene->panels.value(2); // after the duplicate, now selected
+        check(QStringLiteral("(sm9) A NEW PANEL TAKES THE PROJECT'S"),
+              fresh && fresh != dup && r.storyboard->panelMargins(fresh) == project25 && !fresh->ownMargin,
+              fresh ? marginText(r.storyboard->panelMargins(fresh)) : QString());
+        r.storyboard->editUndo();
+        r.storyboard->editUndo();
+        pump(120);
+        check(QStringLiteral("(sm9) control: both undone, four panels again"), scene->panels.size() == 4,
+              QString::number(scene->panels.size()));
+        clickThumb(r, 0);
+        pump(40);
+        r.storyboard->editCopy();
+        r.storyboard->editPaste();
+        pump(120);
+        Panel *pasted = scene->panels.value(1);
+        check(QStringLiteral("(sm9) PASTE KEEPS THE SOURCE'S, and a panel at its own margin is no \"other size\""),
+              scene->panels.size() == 5 && pasted && r.storyboard->panelMargins(pasted) == own && pasted->ownMargin,
+              QString::number(scene->panels.size()));
+        r.storyboard->editUndo();
+        pump(120);
+        clickThumb(r, 0);
+        pump(40);
+    }
+
+    // --- (sm10) the file --------------------------------------------------------------------------------
+    {
+        const QString file = dir + QStringLiteral("/StageOwn.sankotv");
+        const QMargins own = r.storyboard->panelMargins(p0);
+        const QImage flat = p0->flattenedPixmap().toImage();
+        const QByteArray shot = shotOf(p0, shotcam::neutral(r.storyboard->stageFor(p0)));
+        r.canvas->perspective()->addVanishingPoint(QPointF(1000.0, 300.0)); // on panel 0's stage
+        pump(10);
+        const bool saved = r.window.saveProjectForTest(file);
+        QFile f(file);
+        f.open(QIODevice::ReadOnly);
+        const QJsonObject root = QJsonDocument::fromJson(f.readAll()).object();
+        f.close();
+        const QJsonArray panels = root.value(QStringLiteral("scenes")).toArray().at(0).toObject().value(QStringLiteral("panels")).toArray();
+        auto marginOf = [&](int i) {
+            const QJsonArray m = panels.at(i).toObject().value(QStringLiteral("margin")).toArray();
+            return QMargins(m.at(0).toInt(), m.at(1).toInt(), m.at(2).toInt(), m.at(3).toInt());
+        };
+        const QJsonObject layer1 = panels.at(0).toObject().value(QStringLiteral("layers")).toArray().at(1).toObject();
+        const QJsonArray vps = root.value(QStringLiteral("perspective")).toObject().value(QStringLiteral("vps")).toArray();
+        check(QStringLiteral("(sm10) SAVED: version 4; this panel's own margin and its layers' stage size; the others the "
+                             "project's; the project's canvas and frame as they were; the vanishing point in frame space"),
+              saved && root.value(QStringLiteral("version")).toInt() == 4 && marginOf(0) == own && marginOf(1) == project25
+                  && root.value(QStringLiteral("canvasWidth")).toInt() == 2880
+                  && root.value(QStringLiteral("frameWidth")).toInt() == 1920
+                  && layer1.value(QStringLiteral("size")).toArray().at(0).toInt() == p0->canvasSize().width()
+                  && vps.size() == 1 && vps.at(0).toObject().value(QStringLiteral("x")).toDouble() == 1000.0 - 380.0,
+              QStringLiteral("saved %1, version %2, %3; vp x %4").arg(saved).arg(root.value(QStringLiteral("version")).toInt())
+                  .arg(marginText(marginOf(0))).arg(vps.at(0).toObject().value(QStringLiteral("x")).toDouble()));
+        QString box;
+        const auto watch = [&box] {
+            if (auto *m = qobject_cast<QMessageBox *>(QApplication::activeModalWidget())) {
+                box = m->text();
+                m->close();
+            }
+        };
+        QTimer::singleShot(600, watch);
+        const bool reopened = r.window.loadProjectForTest(file);
+        pump(800);
+        Scene *again = r.window.scenesForTest().value(0);
+        Panel *back = again ? again->panels.value(0) : nullptr;
+        check(QStringLiteral("(sm10) REOPENED with nothing said: the panel at its own margin, its own shift, the same "
+                             "shot, the same stage's pixels"),
+              reopened && box.isEmpty() && back && back->ownMargin && r.storyboard->panelMargins(back) == own
+                  && back->keyShift == QPoint(-100, 0)
+                  && r.window.stageMarginForTest() == QSize(480, 270)
+                  && shotOf(back, shotcam::neutral(r.storyboard->stageFor(back))) == shot
+                  && bytes(back->flattenedPixmap().toImage()) == bytes(flat),
+              QStringLiteral("opened %1; said '%2'; %3").arg(reopened).arg(box,
+                  back ? marginText(r.storyboard->panelMargins(back)) : QString()));
+        check(QStringLiteral("(sm10) control: the other panels at the project's, and the vanishing point back on this stage"),
+              again && again->panels.size() == 4 && !again->panels.at(1)->ownMargin
+                  && r.storyboard->panelMargins(again->panels.at(1)) == project25
+                  && r.canvas->perspective()->toJson().value(QStringLiteral("vps")).toArray().at(0).toObject()
+                         .value(QStringLiteral("x")).toDouble() == 1000.0);
+        // The vanishing point follows the frame to a panel at the project's margin.
+        clickThumb(r, 1);
+        pump(40);
+        check(QStringLiteral("(sm10) ON ANOTHER PANEL the vanishing point is where it is in the shot"),
+              r.canvas->perspective()->toJson().value(QStringLiteral("vps")).toArray().at(0).toObject()
+                  .value(QStringLiteral("x")).toDouble() == 1000.0 + 100.0);
+        {
+            // A WRITE REFUSED SAYS WHY (the hand test of 2026-11-08 could not): panel 2's flatten
+            // file made read-only, panel 2 changed so it must be written again.
+            Panel *onCanvas = again ? again->panels.value(1) : nullptr;
+            const QString flatFile = dir + QStringLiteral("/")
+                + panels.at(1).toObject().value(QStringLiteral("pixmapFile")).toString();
+            bool savedBlocked = true, savedFreed = false;
+            QString said;
+            if (onCanvas && QFileInfo::exists(flatFile)) {
+                Layer &layer = onCanvas->layers[onCanvas->activeLayerIndex];
+                QPainter painter(&layer.image);
+                painter.fillRect(QRect(50, 50, 40, 40), Qt::green);
+                painter.end();
+                QFile::setPermissions(flatFile, QFileDevice::ReadOwner | QFileDevice::ReadUser);
+                QTimer saying;
+                saying.setInterval(150);
+                QObject::connect(&saying, &QTimer::timeout, [&said] {
+                    if (auto *m = qobject_cast<QMessageBox *>(QApplication::activeModalWidget())) {
+                        said += m->text() + QStringLiteral(" ") + m->informativeText() + QStringLiteral(" ")
+                            + m->detailedText();
+                        m->close();
+                    }
+                });
+                saying.start();
+                savedBlocked = r.window.saveProjectForTest(file);
+                pump(400);
+                saying.stop();
+                QFile::setPermissions(flatFile, QFileDevice::ReadOwner | QFileDevice::WriteOwner
+                                                    | QFileDevice::ReadUser | QFileDevice::WriteUser);
+                savedFreed = r.window.saveProjectForTest(file);
+            }
+            check(QStringLiteral("(sm10) A WRITE REFUSED SAYS WHY: not saved, and the message names the picture's size "
+                                 "and what the system said"),
+                  !savedBlocked && said.contains(QStringLiteral("NOT saved")) && said.contains(QStringLiteral(" px; ")),
+                  said.mid(said.lastIndexOf(QLatin1Char('('))).simplified().left(200));
+            check(QStringLiteral("(sm10) control: the file writable again, it saves"), savedFreed);
+        }
+        // A margin the panel's layers do not have: the pixels win, and it is said.
+        QFile again2(file);
+        again2.open(QIODevice::ReadOnly);
+        QJsonObject bad = QJsonDocument::fromJson(again2.readAll()).object();
+        again2.close();
+        QJsonArray badScenes = bad.value(QStringLiteral("scenes")).toArray();
+        QJsonObject badScene = badScenes.at(0).toObject();
+        QJsonArray badPanels = badScene.value(QStringLiteral("panels")).toArray();
+        QJsonObject badPanel = badPanels.at(0).toObject();
+        badPanel.insert(QStringLiteral("margin"), QJsonArray{10, 20, 30, 40});
+        badPanels.replace(0, badPanel);
+        badScene.insert(QStringLiteral("panels"), badPanels);
+        badScenes.replace(0, badScene);
+        bad.insert(QStringLiteral("scenes"), badScenes);
+        const QString badFile = dir + QStringLiteral("/StageBad.sankotv");
+        QFile w(badFile);
+        w.open(QIODevice::WriteOnly);
+        w.write(QJsonDocument(bad).toJson());
+        w.close();
+        // Its assets folder is the same one, named by the manifest.
+        box.clear();
+        QTimer closer;
+        closer.setInterval(150);
+        QObject::connect(&closer, &QTimer::timeout, watch);
+        closer.start();
+        const bool openedBad = r.window.loadProjectForTest(badFile);
+        pump(600);
+        closer.stop();
+        check(QStringLiteral("(sm10) A MARGIN ITS LAYERS DO NOT HAVE is not obeyed, and said: the pixels win"),
+              openedBad && !box.isEmpty(), box.left(120));
+    }
+
+    // --- (sm11) the project's margin: for new panels, or for all (Q10) ------------------------------
+    {
+        const QString file = dir + QStringLiteral("/StageOwn.sankotv");
+        QString box;
+        QTimer closer;
+        closer.setInterval(150);
+        QObject::connect(&closer, &QTimer::timeout, [&box] {
+            if (auto *m = qobject_cast<QMessageBox *>(QApplication::activeModalWidget())) {
+                box = m->text();
+                for (QAbstractButton *b : m->buttons())
+                    if (b->text() == QStringLiteral("Apply")) {
+                        b->click();
+                        return;
+                    }
+                m->close();
+            }
+        });
+        closer.start();
+        r.window.loadProjectForTest(file);
+        pump(500);
+        Scene *s = r.window.scenesForTest().value(0);
+        Panel *own = s->panels.at(0);
+        Panel *other = s->panels.at(1);
+        QUndoStack *h = r.window.undoStackForTest();
+        const QMargins ownBefore = r.storyboard->panelMargins(own);
+        const QImage otherFlat = other->flattenedPixmap().toImage();
+        // A key on the panel at the project's margin, and on the one at its own.
+        CameraState k;
+        k.cx = 1500.0;
+        k.cy = 800.0;
+        k.zoom = 1.2;
+        shotcam::SceneCamera c;
+        c.keys = {shotcam::makeKey(*s, 1, 0, 24, k)};
+        r.storyboard->applyCameraForUndo(s, c);
+        const CameraState readOwnBefore = shotcam::evaluateAtPanel(*s, 0, 0, 24, 0);
+        const CameraState readOtherBefore = shotcam::evaluateAtPanel(*s, 1, 0, 24, 0);
+        const int stepBefore = h->index();
+        r.window.chooseStageMarginForTest(QSize(192, 108), false);
+        pump(100);
+        check(QStringLiteral("(sm11) FOR NEW PANELS: one step; no panel made so far moves, by any measure: every stage "
+                             "and every framing as it was, though the panel that held the old margin now has its own"),
+              h->index() == stepBefore + 1 && h->undoText() == QStringLiteral("Stage Margin for New Panels")
+                  && r.window.stageMarginForTest() == QSize(192, 108) && r.storyboard->panelMargins(own) == ownBefore
+                  && r.storyboard->panelMargins(other) == project25 && other->ownMargin
+                  && shotcam::evaluateAtPanel(*s, 0, 0, 24, 0) == readOwnBefore
+                  && shotcam::evaluateAtPanel(*s, 1, 0, 24, 0) == readOtherBefore
+                  && bytes(other->flattenedPixmap().toImage()) == bytes(otherFlat),
+              QStringLiteral("'%1'; other %2").arg(h->undoText(), marginText(r.storyboard->panelMargins(other))));
+        r.storyboard->addPanelForTest();
+        pump(120);
+        Panel *fresh = s->panels.value(1);
+        check(QStringLiteral("(sm11) control: a new panel takes it"),
+              fresh && r.storyboard->panelMargins(fresh) == QMargins(192, 108, 192, 108) && !fresh->ownMargin,
+              fresh ? marginText(r.storyboard->panelMargins(fresh)) : QString());
+        h->undo();
+        pump(80);
+        const QString saveProbe = dir + QStringLiteral("/StageNewDefault.sankotv");
+        const bool savedProbe = r.window.saveProjectForTest(saveProbe);
+        QFile pf(saveProbe);
+        pf.open(QIODevice::ReadOnly);
+        const QJsonObject probeRoot = QJsonDocument::fromJson(pf.readAll()).object();
+        pf.close();
+        check(QStringLiteral("(sm11) SAVED so: the project's canvas is the frame plus the new margin, and the panels say theirs"),
+              savedProbe && probeRoot.value(QStringLiteral("canvasWidth")).toInt() == 1920 + 2 * 192
+                  && probeRoot.value(QStringLiteral("version")).toInt() == 4);
+        h->undo();
+        pump(120);
+        check(QStringLiteral("(sm11) UNDO: the project's margin back, and the panel that held it holds it again, not its own"),
+              r.window.stageMarginForTest() == QSize(480, 270) && !other->ownMargin
+                  && r.storyboard->panelMargins(own) == ownBefore
+                  && shotcam::evaluateAtPanel(*s, 1, 0, 24, 0) == readOtherBefore);
+        r.window.chooseStageMarginForTest(QSize(240, 135), true);
+        pump(200);
+        check(QStringLiteral("(sm11) APPLY TO ALL PANELS asks, as a panel's own margin is going, then every panel takes it: "
+                             "none its own"),
+              box.contains(QStringLiteral("1 panel has its own stage margin")) && h->undoText() == QStringLiteral("Change Stage Margin")
+                  && r.storyboard->panelMargins(own) == QMargins(240, 135, 240, 135) && !own->ownMargin && !other->ownMargin
+                  && own->canvasSize() == QSize(2400, 1350),
+              QStringLiteral("said '%1'; %2").arg(box.left(50), marginText(r.storyboard->panelMargins(own))));
+        h->undo();
+        pump(200);
+        check(QStringLiteral("(sm11) control: undo gives the panel its own margin back"),
+              r.storyboard->panelMargins(own) == ownBefore && own->ownMargin && own->keyShift == QPoint(-100, 0)
+                  && r.window.stageMarginForTest() == QSize(480, 270));
+        closer.stop();
+        // A new frame keeps a panel's own margin.
+        const QSize framesTarget(2000 + 2 * 480, 1000 + 2 * 270);
+        r.window.resizeProjectForTest(framesTarget);
+        pump(200);
+        check(QStringLiteral("(sm11) RESIZE PROJECT: the panel at its own margin keeps it around the new frame"),
+              r.storyboard->panelMargins(own) == ownBefore && own->ownMargin
+                  && r.storyboard->stageFor(own).frame == QSize(2000, 1000)
+                  && other->canvasSize() == framesTarget && r.storyboard->stageFor(other).frame == QSize(2000, 1000),
+              QStringLiteral("%1; frame %2 x %3").arg(marginText(r.storyboard->panelMargins(own)))
+                  .arg(r.storyboard->stageFor(own).frame.width()).arg(r.storyboard->stageFor(own).frame.height()));
+    }
+    {
+        // The dialog's two ways out.
+        StageMarginDialog dialog(QSize(1920, 1080), QSize(0, 0), {});
+        check(QStringLiteral("(sm12) THE DIALOG: Set is for new panels, and Apply to All Panels... is beside it"),
+              dialog.setButton()->text() == QStringLiteral("Set for New Panels")
+                  && dialog.applyToAllButton()->text() == QStringLiteral("Apply to All Panels...")
+                  && !dialog.applyToAllChosen());
+        // At the project's own margin too: the panels with their own still have one to take.
+        QTimer::singleShot(50, &dialog, [&dialog] { dialog.applyToAllButton()->click(); });
+        QTimer::singleShot(3000, &dialog, &QDialog::reject); // a check never hangs the gate
+        const int answer = dialog.exec();
+        check(QStringLiteral("(sm12) control: Apply to All Panels... accepts, and says which; at the margin the "
+                             "project already has, Set is off and this is not"),
+              answer == QDialog::Accepted && dialog.applyToAllChosen() && !dialog.setButton()->isEnabled());
+    }
+}
+
 void runDockSteadyPass(const QString &scratch)
 {
     using namespace workspace;
@@ -20690,6 +21786,18 @@ int main(int argc, char **argv)
 
     const QString projects = scratch + QStringLiteral("/projects");
     QDir().mkpath(projects);
+    // One pass alone, for the quick check while working: the family's own setup
+    // above, and nothing else. The gate never sets it.
+    if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("stagemode")) {
+        runStageModePass(scratch);
+        runCameraBarFitPass(scratch);
+        runBlockedWritePass(scratch);
+        out() << QStringLiteral("RESULT %1 (checks=%2 failures=%3) in %4 s")
+                     .arg(g_failures == 0 ? "PASS" : "FAIL").arg(g_checks).arg(g_failures)
+                     .arg(total.elapsed() / 1000.0, 0, 'f', 1)
+              << Qt::endl;
+        return g_failures;
+    }
     // Deliberately DIFFERENT frame rates: the animatic's rebuild-on-fps-change
     // walks the scene list, and with equal rates setFps early-returns and the
     // second use-after-free never fires.
@@ -20877,6 +21985,7 @@ int main(int argc, char **argv)
     runPlaybackShotPass(scratch);
     runDockSteadyPass(scratch);
     runPanelsAtRestPass(scratch);
+    runStageModePass(scratch);
     runPinnedKeysPass(scratch);
     runCameraBarFitPass(scratch);
     runStageClearPass(scratch);

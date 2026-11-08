@@ -1280,7 +1280,7 @@ shotcam::CameraState AnimaticTimeline::clipCameraForTest(int flatIndex) const
         return shotcam::CameraState();
     const Scene *scene = m_scenes.at(b.sceneIndex);
     if (!m_tracks.cameraVisible && b.panelIndex < scene->panels.size())
-        return shotcam::neutral(scene->panels.at(b.panelIndex)->canvasSize()); // the eye is off
+        return shotcam::neutral(shotcam::panelStage(*scene->panels.at(b.panelIndex), m_stageMargin)); // the eye is off
     return shotcam::evaluateAtPanel(*scene, b.panelIndex, 0, m_fps,
                                     qMax(0, sceneStartFrame(b.sceneIndex)));
 }
@@ -1618,12 +1618,12 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
                     if (b.panelIndex < sc->panels.size()) {
                         const Panel *panel = sc->panels.at(b.panelIndex);
                         shotPanel = panel;
-                        stage = shotcam::stageWithMargin(panel->canvasSize(), m_stageMargin);
+                        stage = shotcam::panelStage(*panel, m_stageMargin);
                         // The CAMERA eye off (Phase 1C): the neutral camera.
                         if (!sc->camera.isEmpty() && m_tracks.cameraVisible) {
                             shotCamera = shotcam::evaluateAtPanel(
                                 *sc, b.panelIndex, 0, m_fps, qMax(0, sceneStartFrame(b.sceneIndex)));
-                            shot = !shotcam::isNeutral(shotCamera, stage.canvas);
+                            shot = !shotcam::isNeutral(shotCamera, stage);
                         }
                         // The cached 512px mip, not the full flatten: this
                         // runs per visible clip on EVERY repaint (each scrub

@@ -8,6 +8,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QImageWriter>
 #include <QJsonArray>
 #include <QJsonValue>
 #include <QMutex>
@@ -373,6 +374,9 @@ public:
                     "The image could not be written. The disk may be full, "
                     "the file may be open in another program, or the folder "
                     "may be read-only.");
+                // What the system said, for the report and the recording.
+                if (!d.why.isEmpty())
+                    m_res->reason += QStringLiteral("\n\n(%1)").arg(d.why);
             }
         }
         m_res->encodeThreads = int(threads.size());
@@ -387,6 +391,7 @@ private:
         bool ok = false;
         Qt::HANDLE thread = nullptr;
         QPoint origin;
+        QString why; // a failure's reason, as the writer and the file gave it
     };
 
     bool skip(const QString &relName, const QByteArray &content)
@@ -460,9 +465,26 @@ private:
         m_pool.start([this, order, full, image, tiles, rect, content, origin] {
             Done d{order, full, content, false, QThread::currentThreadId(), origin};
             if (!m_failed.load()) {
-                d.ok = (tiles ? layertiles::unfold(*tiles, rect) : image).save(full, "PNG");
-                if (!d.ok)
+                // QImage::save's own writer, so the same bytes; kept here so a
+                // failure can say why (a hand test of 2026-11-08 could not, 6c).
+                const QImage picture = tiles ? layertiles::unfold(*tiles, rect) : image;
+                QImageWriter writer(full, "PNG");
+                d.ok = !picture.isNull() && writer.write(picture);
+                if (!d.ok) {
                     m_failed.store(true);
+                    // The writer's words hold the file's when it could not open it;
+                    // the file's are added only when they do not.
+                    const auto *file = qobject_cast<QFileDevice *>(writer.device());
+                    const QString fileSays = file && file->error() != QFileDevice::NoError
+                        ? file->errorString()
+                        : QString();
+                    QString says = writer.errorString();
+                    if (!fileSays.isEmpty() && !says.contains(fileSays))
+                        says += QStringLiteral(": ") + fileSays;
+                    d.why = picture.isNull()
+                        ? QStringLiteral("the picture to write was empty")
+                        : QStringLiteral("%1 x %2 px; %3").arg(picture.width()).arg(picture.height()).arg(says);
+                }
                 QMutexLocker lock(&m_mutex);
                 m_done.append(d);
             }
@@ -639,6 +661,7 @@ WriteResult projectToJson(const SaveData &data, const QString &projectFilePath,
         ? QMargins(projectStage.margin().width(), projectStage.margin().height(),
                    projectStage.margin().width(), projectStage.margin().height())
         : QMargins();
+    bool anyOwnMargin = false;
 
     QJsonArray scenesArray;
     for (int i = 0; i < data.scenes.size() && !saver.failed(); ++i) {
@@ -690,7 +713,10 @@ WriteResult projectToJson(const SaveData &data, const QString &projectFilePath,
 
                 if (layer.type != QLatin1String("group")) { // folders own no pixels
                     const QString layerPng = rel + panelNames.layers.value(layer.id);
-                    saver.layer(layer, QPoint(projectMargin.left(), projectMargin.top()), layerPng, &layerObj);
+                    saver.layer(layer,
+                                panel->ownMargin ? panel->frameAt()
+                                                 : QPoint(projectMargin.left(), projectMargin.top()),
+                                layerPng, &layerObj);
                     layerObj[QStringLiteral("imageFile")] = layerPng;
                 }
                 layersArray.append(layerObj);
@@ -704,14 +730,16 @@ WriteResult projectToJson(const SaveData &data, const QString &projectFilePath,
             panelObj[QStringLiteral("frames")] = shotcam::panelFrames(*panel, data.fps);
             // THE PANEL'S STAGE MARGIN (2026-11-06, batch 6a; version 2):
             // only with one, so a panel without says what it always said.
-            // Every panel holds the project's until Stage mode (6c) can
-            // change one panel's, so the project's is what is written (a
-            // panel made without the app's own paths - a test fixture - is
-            // at the project's stage by its pixels all the same).
-            if (!projectMargin.isNull())
+            // A panel at the project's margin writes the project's (a panel
+            // made without the app's own paths - a test fixture - is at the
+            // project's stage by its pixels all the same); one at its own
+            // (Stage mode, 6c) writes its own, and the file says version 4.
+            if (const QMargins panelMargin = panel->ownMargin ? panel->margin : projectMargin;
+                !panelMargin.isNull())
                 panelObj[QStringLiteral("margin")] =
-                    QJsonArray{projectMargin.left(), projectMargin.top(), projectMargin.right(),
-                               projectMargin.bottom()};
+                    QJsonArray{panelMargin.left(), panelMargin.top(), panelMargin.right(),
+                               panelMargin.bottom()};
+            anyOwnMargin = anyOwnMargin || panel->ownMargin;
             panelObj[QStringLiteral("shotType")] = panel->shotType;
             panelObj[QStringLiteral("camera")] = panel->cameraAngle;
             panelObj[QStringLiteral("lens")] = panel->lens;
@@ -785,7 +813,9 @@ WriteResult projectToJson(const SaveData &data, const QString &projectFilePath,
         return res; // no manifest is built from a half-written image set
 
     QJsonObject root;
-    root[QStringLiteral("version")] = g_writeVersion2ForTest.load() ? 2 : kFileVersion;
+    root[QStringLiteral("version")] = g_writeVersion2ForTest.load()
+        ? 2
+        : (anyOwnMargin ? kFileVersion : kFileVersionOneMargin);
     root[QStringLiteral("projectName")] = data.projectName;
     // fps drives the animatic; canvasWidth/Height are the project's real
     // canvas resolution, reconciled to the pixels on load — what is written
@@ -1356,10 +1386,28 @@ LoadedProject projectFromJson(const QJsonObject &root, const QString &folder,
     // silently at whichever size happened to come first and the rest were
     // never looked at. Order is preserved so ties resolve to the first
     // size encountered.
+    // A VERSION-4 FILE'S PANELS (batch 6c) differ in size by their own margins, which
+    // are no disagreement: each is counted at the size it would have at the project's
+    // margin, what the file's root says less what its own margin adds.
+    const QSize fileManifest(root.value(QStringLiteral("canvasWidth")).toInt(0),
+                             root.value(QStringLiteral("canvasHeight")).toInt(0));
+    const QSize fileFrame = root.contains(QStringLiteral("frameWidth"))
+        ? QSize(root.value(QStringLiteral("frameWidth")).toInt(0),
+                root.value(QStringLiteral("frameHeight")).toInt(0))
+        : fileManifest;
+    const auto censusSize = [&](int sceneIndex, int panelIndex) {
+        const QSize size = out.scenes.at(sceneIndex)->panels.at(panelIndex)->canvasSize();
+        if (fileVersion < kFileVersion || !size.isValid() || sceneIndex >= fileMargins.size()
+            || panelIndex >= fileMargins.at(sceneIndex).size())
+            return size;
+        const QMargins said = fileMargins.at(sceneIndex).at(panelIndex);
+        return QSize(size.width() - said.left() - said.right() + fileManifest.width() - fileFrame.width(),
+                     size.height() - said.top() - said.bottom() + fileManifest.height() - fileFrame.height());
+    };
     QVector<QPair<QSize, int>> census; // size -> count, in first-seen order
-    for (Scene *scene : out.scenes) {
-        for (Panel *panel : scene->panels) {
-            const QSize size = panel->canvasSize();
+    for (int s = 0; s < out.scenes.size(); ++s) {
+        for (int p = 0; p < out.scenes.at(s)->panels.size(); ++p) {
+            const QSize size = censusSize(s, p);
             if (!size.isValid())
                 continue;
             auto it = std::find_if(census.begin(), census.end(),
@@ -1384,9 +1432,10 @@ LoadedProject projectFromJson(const QJsonObject &root, const QString &folder,
     out.mixedSizes = census.size() > 1;
     if (out.mixedSizes) {
         // Locate the dissenters so the report can name them.
-        for (Scene *scene : out.scenes) {
+        for (int s = 0; s < out.scenes.size(); ++s) {
+            const Scene *scene = out.scenes.at(s);
             for (int i = 0; i < scene->panels.size(); ++i) {
-                const QSize size = scene->panels.at(i)->canvasSize();
+                const QSize size = censusSize(s, i);
                 if (size.isValid() && size != out.pixelSize)
                     out.offSizePanels.append({scene->number, i + 1, size});
             }
@@ -1419,20 +1468,36 @@ LoadedProject projectFromJson(const QJsonObject &root, const QString &folder,
         else
             out.stageMarginRepaired = true;
     }
-    // EACH PANEL'S STAGE (2026-11-06, batch 6a). Until Stage mode (6c) can
-    // change one panel's, every panel holds the project's margin - the one
-    // its pixels and the frame give, as above: the pixels win. A version-2
-    // file says each panel's margin as well; one that says otherwise is
-    // counted (panelMarginsRepaired) and never obeyed.
+    // EACH PANEL'S STAGE (2026-11-06, batch 6a). A panel holds the project's
+    // margin - the one its pixels and the frame give, as above: the pixels win
+    // - unless a version-4 file gives it its own (batch 6c), and then only when
+    // its layers are the frame plus that margin. A file that says otherwise is
+    // counted (panelMarginsRepaired) and not obeyed.
     const QMargins projectMargin(out.stageMargin.width(), out.stageMargin.height(),
                                  out.stageMargin.width(), out.stageMargin.height());
+    const QSize projectFrame(out.pixelSize.width() - 2 * out.stageMargin.width(),
+                             out.pixelSize.height() - 2 * out.stageMargin.height());
     for (int s = 0; s < out.scenes.size(); ++s) {
         Scene *scene = out.scenes.at(s);
         for (int p = 0; p < scene->panels.size(); ++p) {
-            scene->panels.at(p)->margin = projectMargin;
-            if (fileVersion >= 2 && s < fileMargins.size() && p < fileMargins.at(s).size()
-                && fileMargins.at(s).at(p) != projectMargin)
+            Panel *panel = scene->panels.at(p);
+            panel->margin = projectMargin;
+            if (fileVersion < 2 || s >= fileMargins.size() || p >= fileMargins.at(s).size())
+                continue;
+            const QMargins said = fileMargins.at(s).at(p);
+            if (said == projectMargin)
+                continue;
+            const bool fits = fileVersion >= kFileVersion && !out.stageMarginRepaired && said.left() >= 0
+                && said.top() >= 0 && said.right() >= 0 && said.bottom() >= 0
+                && panel->canvasSize()
+                    == QSize(projectFrame.width() + said.left() + said.right(),
+                             projectFrame.height() + said.top() + said.bottom());
+            if (fits) {
+                panel->margin = said;
+                panel->settleMargin(out.stageMargin);
+            } else {
                 ++out.panelMarginsRepaired;
+            }
         }
     }
     // KEYS AND VANISHING POINTS: frame space in a version-2 file, back to

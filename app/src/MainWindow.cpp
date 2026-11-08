@@ -1899,7 +1899,7 @@ void MainWindow::onProjectSettings()
     QSize canvas(m_canvasWidth, m_canvasHeight);
     for (Scene *scene : m_scenes) {
         if (!scene->panels.isEmpty() && scene->panels.first()->canvasSize().isValid()) {
-            canvas = scene->panels.first()->canvasSize();
+            canvas = scene->panels.first()->cameraCanvas(); // not a panel's own margin (6c)
             break;
         }
     }
@@ -2081,27 +2081,39 @@ ProjectResize::Outcome MainWindow::applyCanvasResizeInternal(const QSize &newSiz
 // THE MARGIN AS A RECTANGLE (batch 6b-V, Q12 V): one undo step that stores two
 // margins and the cameras it moved. No pixel moves: a shrink cuts nothing (the art
 // stays in its tiles, hidden, Q13), so nothing is stored for one.
-class StageMarginCommand : public QUndoCommand
+//
+// `allPanels` (batch 6c, Q10): every panel takes the margin. Without it, only the
+// project's: what new panels get. No panel moves, and the keys' one space, measured
+// from the project's margin, goes with it, so nothing on any panel is anywhere else.
+class StageMarginCommand : public QUndoCommand, public ShotsTrackStep
 {
 public:
-    StageMarginCommand(MainWindow *window, const QSize &before, const QSize &after)
-        : QUndoCommand(QStringLiteral("Change Stage Margin")), m_window(window), m_before(before), m_after(after)
+    StageMarginCommand(MainWindow *window, const QSize &before, const QSize &after, bool allPanels)
+        : QUndoCommand(allPanels ? QStringLiteral("Change Stage Margin")
+                                 : QStringLiteral("Stage Margin for New Panels")),
+          m_window(window), m_before(before), m_after(after), m_allPanels(allPanels)
     {
     }
     void redo() override
     {
         if (m_camerasBefore.isEmpty())
             m_camerasBefore = m_window->sceneCamerasForMargin();
-        m_window->setMarginRect(m_after, m_camerasAfter.isEmpty() ? nullptr : &m_camerasAfter);
+        if (m_panelsBefore.isEmpty())
+            m_panelsBefore = m_window->panelMarginsForMargin();
+        m_window->setMarginRect(m_after, m_camerasAfter.isEmpty() ? nullptr : &m_camerasAfter,
+                                m_allPanels, nullptr);
         if (m_camerasAfter.isEmpty())
             m_camerasAfter = m_window->sceneCamerasForMargin();
     }
-    void undo() override { m_window->setMarginRect(m_before, &m_camerasBefore); }
+    void undo() override { m_window->setMarginRect(m_before, &m_camerasBefore, false, &m_panelsBefore); }
+    bool changesPanels() const override { return m_allPanels; }
 
 private:
     MainWindow *m_window;
     QSize m_before, m_after;
+    bool m_allPanels;
     QVector<shotcam::SceneCamera> m_camerasBefore, m_camerasAfter;
+    QVector<QMargins> m_panelsBefore;
 };
 
 // The art kept outside the stage, freed (Q13): one undo step that holds what it
@@ -2147,8 +2159,22 @@ QVector<shotcam::SceneCamera> MainWindow::sceneCamerasForMargin() const
     return cameras;
 }
 
-void MainWindow::setMarginRect(const QSize &newMargin, const QVector<shotcam::SceneCamera> *cameras)
+QVector<QMargins> MainWindow::panelMarginsForMargin() const
 {
+    const QMargins project = projectMargin();
+    QVector<QMargins> margins;
+    for (const Scene *scene : std::as_const(m_scenes))
+        if (scene)
+            for (const Panel *panel : scene->panels)
+                if (panel)
+                    margins.append(panel->ownMargin ? panel->margin : project);
+    return margins;
+}
+
+void MainWindow::setMarginRect(const QSize &newMargin, const QVector<shotcam::SceneCamera> *cameras,
+                               bool allPanels, const QVector<QMargins> *panelMargins)
+{
+    const QMargins projectBefore = projectMargin();
     const QSize currentSize(m_canvasWidth, m_canvasHeight);
     const shotcam::Stage oldStage = shotcam::stageWithMargin(currentSize, m_stageMargin);
     const QSize newSize(oldStage.frame.width() + 2 * newMargin.width(),
@@ -2166,44 +2192,44 @@ void MainWindow::setMarginRect(const QSize &newMargin, const QVector<shotcam::Sc
         else
             shotcam::remapForResize(scene->camera, oldStage, newStage, offset);
     }
-    // EVERY LAYER AT REST, then only its rectangle: nothing to copy. What a full
-    // image holds that its tiles do not yet is folded first, here: only the panel
-    // on the canvas, and a panel on its way.
+    // EVERY LAYER AT REST, then only its rectangle: nothing to copy (Panel::marginTo).
+    // Only the panels whose margin this changes: all of them, as every panel held
+    // the project's until 6c; an undo, what each had; for new panels, none.
     m_canvasWidth = newSize.width();
     m_canvasHeight = newSize.height();
     m_stageMargin = newStage.hasMargin() ? newStage.margin() : QSize(0, 0);
     const QMargins margin = projectMargin();
-    const QRect stageRect(QPoint(-margin.left(), -margin.top()), newSize);
+    const QSize frame = newStage.frame;
+    bool panelsMoved = false;
+    int index = 0;
     for (Scene *scene : std::as_const(m_scenes)) {
         if (!scene)
             continue;
         for (Panel *panel : std::as_const(scene->panels)) {
             if (!panel)
                 continue;
-            for (Layer &layer : panel->layers) {
-                if (isGroupLayer(layer))
-                    continue;
-                if (!layer.image.isNull() && !layer.tilesCurrent()) {
-                    const QImage image = layertiles::foldable(layer.image)
-                        ? layer.image
-                        : layer.image.convertToFormat(QImage::Format_ARGB32_Premultiplied);
-                    const quint32 fill = layer.type == QLatin1String("background")
-                        ? layertiles::paperFill(image, layer.tiles)
-                        : 0u;
-                    layer.tiles = layertiles::fold(image, panel->frameAt(), fill, layer.tiles,
-                                                   layer.image.cacheKey());
-                }
-                layer.image = QImage();
-                layer.tilesOf = 0;
-                layer.stageRect = stageRect;
+            const QMargins held = panel->ownMargin ? panel->margin : projectBefore;
+            const QMargins target = panelMargins && index < panelMargins->size()
+                ? panelMargins->at(index)
+                : (allPanels ? margin : held);
+            ++index;
+            if (target != held) {
+                panel->marginTo(target, QSize(frame.width() + target.left() + target.right(),
+                                              frame.height() + target.top() + target.bottom()));
+                panelsMoved = true;
             }
-            panel->margin = margin;
+            panel->margin = target;
+            panel->settleMargin(m_stageMargin);
         }
     }
     pushStageMargin();
     if (m_storyboard) {
-        m_storyboard->reopenCurrentPanel(); // its full images, at the new stage
-        m_storyboard->applyProjectResize(newSize, offset);
+        if (panelsMoved) {
+            m_storyboard->reopenCurrentPanel(); // its full images, at the new stage
+            m_storyboard->applyProjectResize(newSize, offset);
+        } else {
+            m_storyboard->projectMarginMoved(newSize, offset);
+        }
     }
     updateSaveActions();
     updateTitle();
@@ -2291,7 +2317,7 @@ ProjectResize::Outcome MainWindow::applyStageResizeInternal(const QSize &newSize
     const QSize marginBefore = oldStage.hasMargin() ? oldStage.margin() : QSize(0, 0);
     const QSize marginAfter = newStage.hasMargin() ? newStage.margin() : QSize(0, 0);
     if (newStage.frame == oldStage.frame && marginAfter != marginBefore && m_undoStack) {
-        m_undoStack->push(new StageMarginCommand(this, marginBefore, marginAfter));
+        m_undoStack->push(new StageMarginCommand(this, marginBefore, marginAfter, true));
         ProjectResize::Outcome done;
         for (const Scene *scene : std::as_const(m_scenes))
             done.panelsResized += scene ? int(scene->panels.size()) : 0;
@@ -2317,15 +2343,18 @@ ProjectResize::Outcome MainWindow::applyStageResizeInternal(const QSize &newSize
     m_canvasHeight = newSize.height();
     m_stageMargin = newStage.hasMargin() ? newStage.margin() : QSize(0, 0);
     // EVERY PANEL'S STAGE follows (batch 6a): the panels resized above are
-    // the frame plus the new margin. Only after a complete resize - a
-    // partial one leaves each panel the margin its pixels still have.
+    // the frame plus the new margin, or its own (batch 6c). Only after a complete
+    // resize - a partial one leaves each panel the margin its pixels still have.
     if (outcome.ok) {
         const QMargins margin = projectMargin();
         for (Scene *scene : std::as_const(m_scenes))
             if (scene)
                 for (Panel *panel : scene->panels)
-                    if (panel)
-                        panel->margin = margin;
+                    if (panel) {
+                        if (!panel->ownMargin)
+                            panel->margin = margin;
+                        panel->settleMargin(m_stageMargin);
+                    }
     }
     pushStageMargin();
     if (m_storyboard)
@@ -2416,7 +2445,7 @@ void MainWindow::onStageMargin()
                             drawn |= layer.atRest()
                                 ? layertiles::drawnBounds(*layer.tiles, layer.stageRect)
                                 : drawnBounds(layer.image);
-                    art.append(drawn);
+                    art.append(drawn.translated(-panel->keyShift)); // a panel's own stage (6c)
                 }
         }
         for (const QRect &drawn : std::as_const(art))
@@ -2439,11 +2468,50 @@ void MainWindow::onStageMargin()
                             held.availableBytes, held.memoryKnown);
     if (dialog.exec() != QDialog::Accepted)
         return;
-    const QSize newMargin = dialog.chosenMargin();
-    const QSize newSize = stagemargin::stageSize(stageNow.frame, newMargin);
-    // One undo step that moves no pixel (batch 6b-V): nothing to precheck, nothing
-    // to save first, nothing to confirm. The dialog said what the change does.
-    applyStageResizeInternal(newSize, newMargin);
+    chooseStageMargin(dialog.chosenMargin(), dialog.applyToAllChosen());
+}
+
+// One undo step that moves no pixel (batch 6b-V): nothing to precheck, nothing to
+// save first. The dialog said what the change does.
+void MainWindow::chooseStageMargin(const QSize &newMargin, bool allPanels)
+{
+    if (!m_undoStack)
+        return;
+    const shotcam::Stage stageNow =
+        shotcam::stageWithMargin(QSize(m_canvasWidth, m_canvasHeight), m_stageMargin);
+    const QSize marginNow = stageNow.hasMargin() ? m_stageMargin : QSize(0, 0);
+    if (!allPanels) {
+        // FOR NEW PANELS (batch 6c, Q10): the panels already made keep theirs.
+        if (newMargin != marginNow)
+            m_undoStack->push(new StageMarginCommand(this, marginNow, newMargin, false));
+        return;
+    }
+    if (m_storyboard && m_storyboard->refuseMarginChange()) // Q8
+        return;
+    int differing = 0, own = 0;
+    const QMargins wanted(newMargin.width(), newMargin.height(), newMargin.width(), newMargin.height());
+    for (const QMargins &held : panelMarginsForMargin())
+        differing += held == wanted ? 0 : 1;
+    for (const Scene *scene : std::as_const(m_scenes))
+        for (const Panel *panel : scene->panels)
+            own += panel->ownMargin ? 1 : 0;
+    // A panel's own margin was the artist's choice: said before it goes.
+    if (own > 0) {
+        QMessageBox confirm(QMessageBox::Question, QStringLiteral("Apply to All Panels"),
+                            QStringLiteral("%1 its own stage margin, and will take this one. Art outside "
+                                           "a new stage is kept, hidden. You can undo this.")
+                                .arg(own == 1 ? QStringLiteral("1 panel has")
+                                              : QStringLiteral("%1 panels have").arg(own)),
+                            QMessageBox::NoButton, this);
+        QPushButton *go = confirm.addButton(QStringLiteral("Apply"), QMessageBox::AcceptRole);
+        confirm.addButton(QMessageBox::Cancel);
+        confirm.setDefaultButton(QMessageBox::Cancel);
+        confirm.exec();
+        if (confirm.clickedButton() != go)
+            return;
+    }
+    if (differing > 0 || newMargin != marginNow)
+        m_undoStack->push(new StageMarginCommand(this, marginNow, newMargin, true));
 }
 
 void MainWindow::pushStageMargin()

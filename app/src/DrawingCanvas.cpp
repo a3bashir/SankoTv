@@ -2,6 +2,7 @@
 #include "SankoSettings.h"
 #include "DrawingCanvas.h"
 
+#include "StageMarginDialog.h" // stagemargin::kMaxSide
 #include "StoryboardModel.h"
 #include "camera/ShotCamera.h"
 
@@ -37,6 +38,7 @@
 #include <QPainter>
 #include <QPaintEvent>
 #include <QPushButton>
+#include <QRegion>
 #include <QResizeEvent>
 #include <QSettings>
 #include <QSlider>
@@ -826,6 +828,14 @@ void DrawingCanvas::setActivePanel(Panel *panel)
     if (panel)
         panel->unfoldNow();
 
+    // THE VIEW STAYS ON THE FRAME (batch 6c): panels with different stages line up
+    // by the shot, so a switch keeps the frame where it was on screen, at the same
+    // size. The same stage: nothing to do, as every panel always was.
+    viewHoldBegin();
+    // One canvas mode at a time: Stage mode is this panel's session.
+    if (m_stageMode && panel != m_panel)
+        emit stageModeAbandoned();
+
     // DEFENCE IN DEPTH: nothing below may DEREFERENCE the panel we are
     // leaving. freeScenes() now detaches before it destroys, so this should
     // never see a dead panel — but this function used to invalidate the
@@ -837,6 +847,8 @@ void DrawingCanvas::setActivePanel(Panel *panel)
     m_compValid = false;
     m_compPanel = nullptr; // never compare against a pointer that may be dead
     m_panel = panel;
+    viewHoldEnd();
+    perspectiveFollowPanel();
     invalidateComposite();
     m_brushStroke = false;
     m_strokeMask = StrokeMaskNone;
@@ -863,9 +875,10 @@ void DrawingCanvas::setOnionSkinEnabled(bool enabled)
     update();
 }
 
-void DrawingCanvas::setPreviousPixmap(const QPixmap &previous)
+void DrawingCanvas::setPreviousPixmap(const QPixmap &previous, const QRect &onStage)
 {
     m_ghost = buildGhost(previous); // null pixmap -> empty ghost
+    m_ghostRect = onStage;
     update();
 }
 
@@ -875,22 +888,29 @@ void DrawingCanvas::setLightTableEnabled(bool enabled)
     update();
 }
 
-void DrawingCanvas::setLightTablePixmaps(const QPixmap &previous, const QPixmap &next)
+void DrawingCanvas::setLightTablePixmaps(const QPixmap &previous, const QPixmap &next,
+                                         const QRect &previousOnStage, const QRect &nextOnStage)
 {
     m_ltPrevGhost = buildTintedGhost(previous, QColor(0xff, 0x4d, 0x4d)); // red = previous
     m_ltNextGhost = buildTintedGhost(next, QColor(0x4d, 0xff, 0x91));     // green = next
+    m_ltPrevRect = previousOnStage;
+    m_ltNextRect = nextOnStage;
     update();
 }
 
-// Draw the neighbour ghosts at 35% each (previous red under next green).
+// Draw the neighbour ghosts at 35% each (previous red under next green), by the
+// frame on a panel with another stage and no further than this stage (batch 6c).
 void DrawingCanvas::drawLightTable(QPainter &painter, const QRect &d) const
 {
+    painter.save();
+    painter.setClipRect(d, Qt::IntersectClip);
     painter.setOpacity(0.35);
     if (!m_ltPrevGhost.isNull())
-        painter.drawPixmap(d, m_ltPrevGhost);
+        painter.drawPixmap(m_ltPrevRect.isEmpty() ? d : m_ltPrevRect.translated(d.topLeft()), m_ltPrevGhost);
     if (!m_ltNextGhost.isNull())
-        painter.drawPixmap(d, m_ltNextGhost);
+        painter.drawPixmap(m_ltNextRect.isEmpty() ? d : m_ltNextRect.translated(d.topLeft()), m_ltNextGhost);
     painter.setOpacity(1.0);
+    painter.restore();
 }
 
 void DrawingCanvas::setCameraFrameEnabled(bool enabled)
@@ -1019,7 +1039,7 @@ QPolygonF DrawingCanvas::shotCameraBaseQuad(const QPolygonF &frameQuad) const
     // project's own canvas at 1x, centred on the stage - fixed to the stage,
     // never moving with the camera. Not drawn while the frame sits on it
     // (it would hide under the frame's own outline).
-    const QPolygonF base = shotCameraWidgetQuad(shotcam::neutral(stage().canvas));
+    const QPolygonF base = shotCameraWidgetQuad(shotcam::neutral(stage()));
     if (base.size() < 4 || frameQuad.size() < 4)
         return base;
     double apart = 0.0;
@@ -1378,6 +1398,10 @@ void DrawingCanvas::paintShotCameraGuides(QPainter &painter, const shotcam::Stag
 void DrawingCanvas::paintShotCamera(QPainter &painter)
 {
     const ShotCameraView v = shotCameraView();
+    if (m_stageMode) {
+        paintStageMode(painter, v);
+        return;
+    }
     if (!v.valid)
         return;
     const bool tool = m_tool == Camera;
@@ -1744,6 +1768,9 @@ void DrawingCanvas::setTool(Tool tool)
     // Leaving the Camera tool mid-drag lands the drag (one request).
     if (m_camDrag >= 0 && tool != Camera)
         shotCameraFinishDrag();
+    // One canvas mode at a time: another tool ends Stage mode, and cancels it.
+    if (m_stageMode && tool != Camera)
+        emit stageModeAbandoned();
     // Perspective hover feedback (handles grow under the cursor) needs
     // buttonless move events, as does the Camera tool's (the body tints,
     // the cursor names the handle); SelectPoly manages its own tracking.
@@ -2162,8 +2189,8 @@ void DrawingCanvas::fitToScreen()
     constexpr double kFitMargin = 0.96; // 4% breathing room around the canvas
     // With a stage margin the SHOT fills the view: m_zoom is relative to the
     // canvas's own fit, so the frame's fit is that fit times how much
-    // smaller the frame is. The frame is centred on the canvas, so the pan
-    // stays zero.
+    // smaller the frame is. A frame centred on the canvas keeps the pan at
+    // zero; one off centre (a panel's own margins, batch 6c) is brought there.
     const shotcam::Stage st = stage();
     double zoom = kFitMargin;
     if (st.hasMargin() && width() > 0 && height() > 0) {
@@ -2175,6 +2202,8 @@ void DrawingCanvas::fitToScreen()
     }
     m_zoom = zoom;
     m_panOffset = QPointF(0, 0);
+    if (m_panel && st.frameCentre() != QPointF(st.canvas.width() / 2.0, st.canvas.height() / 2.0))
+        m_panOffset = QPointF(width() / 2.0, height() / 2.0) - viewTransform().map(st.frameCentre());
     syncViewToolbar();
     emit viewZoomChanged(m_zoom);
     update();
@@ -2200,8 +2229,7 @@ void DrawingCanvas::setStageMargin(const QSize &margin)
 
 shotcam::Stage DrawingCanvas::stage() const
 {
-    return m_panel ? shotcam::stageWithMargin(canvasSize(), m_stageMargin)
-                   : shotcam::Stage();
+    return m_panel ? shotcam::panelStage(*m_panel, m_stageMargin) : shotcam::Stage();
 }
 
 void DrawingCanvas::resizeEvent(QResizeEvent *event)
@@ -2452,6 +2480,30 @@ void DrawingCanvas::setWorkspaceForTest(const QColor &gutter, bool gridVisible,
 // horizontal flip about the view centre. Every draw and every mouse mapping
 // goes through this (or its inverse), so strokes land under the cursor at any
 // zoom / rotation / flip. Display only — layer pixels never change.
+// The same mapping before the display rect is rounded to whole px: what the view
+// hold measures with, so a run of panel switches cannot walk the frame across the
+// screen a rounding at a time (2 px over 25 switches in the hand test of 2026-11-08).
+QTransform DrawingCanvas::viewTransformExact() const
+{
+    const QSize cs = canvasSize();
+    if (cs.isEmpty() || width() <= 0 || height() <= 0)
+        return viewTransform();
+    const double s = qMin(width() / double(cs.width()), height() / double(cs.height())) * m_zoom;
+    const double w = cs.width() * s, h = cs.height() * s;
+    const QRectF d((width() - w) / 2.0 + m_panOffset.x(), (height() - h) / 2.0 + m_panOffset.y(), w, h);
+    const QPointF c = d.center();
+    QTransform base;
+    base.translate(d.left(), d.top());
+    base.scale(s, s);
+    QTransform rf;
+    rf.translate(c.x(), c.y());
+    rf.rotate(m_viewRotation);
+    if (m_viewFlipH)
+        rf.scale(-1.0, 1.0);
+    rf.translate(-c.x(), -c.y());
+    return base * rf;
+}
+
 QTransform DrawingCanvas::viewTransform() const
 {
     const QRect d = displayRect();
@@ -2662,8 +2714,562 @@ QVariantMap DrawingCanvas::devCameraState() const
 void DrawingCanvas::applyPerspectiveForUndo(const QJsonObject &state)
 {
     m_perspective.fromJson(state);
+    m_perspective.translateAll(QPointF(m_perspShift)); // a step holds the keys' space
     emit perspectiveEdited(); // the Modifier bar re-syncs its sliders
     update();
+}
+
+// THE VANISHING POINTS AND A PANEL'S OWN STAGE (batch 6c). They belong to the
+// project, as the camera's keys do, in the same one space; the tool holds them in
+// the stage px of the panel on the canvas, so a stroke snaps where the pen is. The
+// undo steps and the file take the one space.
+QJsonObject DrawingCanvas::perspectiveInKeySpace() const
+{
+    if (m_perspShift.isNull())
+        return m_perspective.toJson();
+    PerspectiveTool moved = m_perspective;
+    moved.translateAll(-QPointF(m_perspShift));
+    return moved.toJson();
+}
+
+void DrawingCanvas::perspectiveFollowPanel()
+{
+    const QPoint shift = m_panel ? m_panel->keyShift : QPoint();
+    if (shift == m_perspShift)
+        return;
+    m_perspective.translateAll(QPointF(shift - m_perspShift));
+    m_perspShift = shift;
+    update();
+}
+
+void DrawingCanvas::perspectiveLoaded()
+{
+    m_perspShift = QPoint();
+    perspectiveFollowPanel();
+}
+
+// --- The frame in its place on screen (batch 6c) ---------------------------------
+
+void DrawingCanvas::viewHoldBegin()
+{
+    m_viewHold = m_panel && width() > 0 && height() > 0 && !canvasSize().isEmpty();
+    if (!m_viewHold)
+        return;
+    m_viewHoldStage = stage();
+    m_viewHoldAt = viewTransformExact().map(m_viewHoldStage.frameCentre());
+    // Exact, not scale(): that reads the display's whole-px width, and every switch
+    // shrank the view by its rounding (the user's hand test, 2026-11-08: 474.7 to
+    // 467.9 px of frame over 20 switches).
+    m_viewHoldScale = m_zoom
+        * qMin(width() / double(m_viewHoldStage.canvas.width()),
+               height() / double(m_viewHoldStage.canvas.height()));
+}
+
+void DrawingCanvas::viewHoldEnd()
+{
+    if (!m_viewHold)
+        return;
+    m_viewHold = false;
+    if (!m_panel || canvasSize().isEmpty())
+        return;
+    const shotcam::Stage now = stage();
+    if (now.canvas == m_viewHoldStage.canvas && now.origin == m_viewHoldStage.origin)
+        return;
+    const double fit = qMin(width() / double(now.canvas.width()), height() / double(now.canvas.height()));
+    m_zoom = qBound(0.25, m_viewHoldScale / fit, 4.0);
+    m_panOffset += m_viewHoldAt - viewTransformExact().map(now.frameCentre());
+    syncViewToolbar();
+    emit viewZoomChanged(m_zoom);
+}
+
+void DrawingCanvas::stageChanged()
+{
+    viewHoldEnd();
+    perspectiveFollowPanel();
+    clearSelection(); // a selection drawn on the old stage's px means nothing now
+    invalidateComposite();
+    update();
+}
+
+// --- Stage mode (batch 6c, Figma MARGIN-1) ---------------------------------------
+// Purple is the camera, white and grey the stage, amber a warning. The art and the
+// camera keep their place throughout; only this panel's rectangle is proposed.
+
+namespace {
+const QColor kStageAmber(0xf5, 0xa6, 0x23);
+constexpr double kStageHandleOut = 1.5;  // the stroke's centre, outside the edge
+constexpr double kStageHandleArm = 13.5;
+constexpr double kStageHandleBar = 11.0; // half a side's bar
+constexpr double kStageHandleGrab = 9.0;
+
+double segmentDistance(const QPointF &p, const QPointF &a, const QPointF &b)
+{
+    const QPointF ab = b - a;
+    const double len = QPointF::dotProduct(ab, ab);
+    const double t = len <= 0.0 ? 0.0 : qBound(0.0, QPointF::dotProduct(p - a, ab) / len, 1.0);
+    const QPointF d = p - (a + ab * t);
+    return std::hypot(d.x(), d.y());
+}
+} // namespace
+
+void DrawingCanvas::enterStageMode(const QMargins &margins)
+{
+    if (!m_panel)
+        return;
+    m_stageMode = true;
+    m_stageLive = margins;
+    m_stageDrag = -1;
+    m_stageHover = -1;
+    // Where the art is, hidden or not, once: nothing can be drawn until this ends.
+    m_stageArt.clear();
+    const QPoint frameAt = stage().origin;
+    for (const Layer &layer : m_panel->layers) {
+        if (isGroupLayer(layer) || !m_panel->layerEffectivelyVisible(layer))
+            continue;
+        layertiles::TilesPtr tiles = layer.tiles;
+        if (!layer.image.isNull() && !layer.tilesCurrent()) {
+            const QImage image = layertiles::foldable(layer.image)
+                ? layer.image
+                : layer.image.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+            const quint32 fill = layer.type == QLatin1String("background")
+                ? layertiles::paperFill(image, layer.tiles)
+                : 0u;
+            tiles = layertiles::fold(image, frameAt, fill, layer.tiles, layer.image.cacheKey());
+        }
+        m_stageArt.append(tiles ? layertiles::artCells(*tiles) : layertiles::ArtCells());
+    }
+    m_stageArtOutline = layertiles::artOutline(m_stageArt);
+    setMouseTracking(true);
+    update();
+}
+
+void DrawingCanvas::leaveStageMode()
+{
+    m_stageMode = false;
+    m_stageDrag = -1;
+    m_stageHover = -1;
+    m_stageArt.clear();
+    m_stageArtOutline = QPainterPath();
+    if (!m_panning)
+        setCursor(Qt::ArrowCursor);
+    update();
+}
+
+void DrawingCanvas::setStageModeMargins(const QMargins &margins)
+{
+    m_stageLive = margins;
+    update();
+}
+
+QRect DrawingCanvas::stageLiveRect() const
+{
+    const shotcam::Stage st = stage();
+    return QRect(st.origin.x() - m_stageLive.left(), st.origin.y() - m_stageLive.top(),
+                 st.frame.width() + m_stageLive.left() + m_stageLive.right(),
+                 st.frame.height() + m_stageLive.top() + m_stageLive.bottom());
+}
+
+QVector<QPolygonF> DrawingCanvas::stageHandles() const
+{
+    const QTransform t = viewTransform();
+    const QRectF r(stageLiveRect());
+    const QPointF tl = t.map(r.topLeft()), tr = t.map(r.topRight());
+    const QPointF br = t.map(r.bottomRight()), bl = t.map(r.bottomLeft());
+    const auto unit = [](const QPointF &v) {
+        const double len = std::hypot(v.x(), v.y());
+        return len > 1e-9 ? v / len : QPointF(1.0, 0.0);
+    };
+    const QPointF ex = unit(tr - tl), ey = unit(bl - tl);
+    const QPointF ox = ex * kStageHandleOut, oy = ey * kStageHandleOut;
+    const QPointF ax = ex * kStageHandleArm, ay = ey * kStageHandleArm;
+    const QPointF bx = ex * kStageHandleBar, by = ey * kStageHandleBar;
+    const QPointF cTL = tl - ox - oy, cTR = tr + ox - oy, cBR = br + ox + oy, cBL = bl - ox + oy;
+    const QPointF mT = (tl + tr) / 2.0 - oy, mR = (tr + br) / 2.0 + ox;
+    const QPointF mB = (bl + br) / 2.0 + oy, mL = (tl + bl) / 2.0 - ox;
+    return {QPolygonF({cTL + ay, cTL, cTL + ax}),
+            QPolygonF({mT - bx, mT + bx}),
+            QPolygonF({cTR - ax, cTR, cTR + ay}),
+            QPolygonF({mR - by, mR + by}),
+            QPolygonF({cBR - ay, cBR, cBR - ax}),
+            QPolygonF({mB - bx, mB + bx}),
+            QPolygonF({cBL + ax, cBL, cBL - ay}),
+            QPolygonF({mL - by, mL + by})};
+}
+
+int DrawingCanvas::stageHandleAt(const QPointF &widgetPos) const
+{
+    if (!m_stageMode || !m_panel)
+        return -1;
+    const QVector<QPolygonF> handles = stageHandles();
+    // A corner before a side, where the stage is small on screen.
+    for (int pass = 0; pass < 2; ++pass)
+        for (int i = pass; i < handles.size(); i += 2) {
+            const QPolygonF &h = handles.at(i);
+            for (int s = 0; s + 1 < h.size(); ++s)
+                if (segmentDistance(widgetPos, h.at(s), h.at(s + 1)) <= kStageHandleGrab)
+                    return i;
+        }
+    return -1;
+}
+
+void DrawingCanvas::stageUpdateCursor(int handle)
+{
+    if (m_panning)
+        return;
+    if (handle < 0) {
+        setCursor(Qt::ArrowCursor);
+        return;
+    }
+    // The handle's way out on screen, whatever the view's turn.
+    const QVector<QPolygonF> handles = stageHandles();
+    const QPointF c = viewTransform().map(QRectF(stageLiveRect()).center());
+    const QRectF box = handles.at(handle).boundingRect();
+    const double angle = qRadiansToDegrees(std::atan2(box.center().y() - c.y(), box.center().x() - c.x()));
+    const int step = qRound((handle % 2 == 0
+                                 ? angle
+                                 : qRound(angle / 90.0) * 90.0)
+                            / 45.0);
+    switch (((step % 4) + 4) % 4) {
+    case 0: setCursor(Qt::SizeHorCursor); break;
+    case 1: setCursor(Qt::SizeFDiagCursor); break;
+    case 2: setCursor(Qt::SizeVerCursor); break;
+    default: setCursor(Qt::SizeBDiagCursor); break;
+    }
+}
+
+void DrawingCanvas::stagePress(const QPointF &widgetPos)
+{
+    const int hit = stageHandleAt(widgetPos);
+    if (hit < 0)
+        return;
+    m_stageDrag = hit;
+    m_stageDragStart = m_stageLive;
+    m_stagePressCanvas = toCanvasF(widgetPos);
+    m_stagePointer = widgetPos;
+    m_stageAlt = false;
+    m_stageShift = false;
+    update();
+}
+
+void DrawingCanvas::stageMove(const QPointF &widgetPos, Qt::MouseButtons buttons,
+                              Qt::KeyboardModifiers modifiers)
+{
+    if (m_stageDrag < 0 || !(buttons & Qt::LeftButton)) {
+        const int hover = stageHandleAt(widgetPos);
+        if (hover != m_stageHover) {
+            m_stageHover = hover;
+            update();
+        }
+        stageUpdateCursor(hover);
+        return;
+    }
+    m_stagePointer = widgetPos;
+    m_stageAlt = modifiers & Qt::AltModifier;
+    m_stageShift = modifiers & Qt::ShiftModifier;
+    const QPointF d = toCanvasF(widgetPos) - m_stagePressCanvas;
+    const shotcam::Stage st = stage();
+    const double fw = st.frame.width(), fh = st.frame.height();
+    const int h = m_stageDrag;
+    const bool left = h == 0 || h == 6 || h == 7, right = h == 2 || h == 3 || h == 4;
+    const bool top = h == 0 || h == 1 || h == 2, bottom = h == 4 || h == 5 || h == 6;
+    // What each axis grows by: outward is more margin, inward less.
+    double gx = left ? -d.x() : (right ? d.x() : 0.0);
+    double gy = top ? -d.y() : (bottom ? d.y() : 0.0);
+    const bool corner = h % 2 == 0;
+    if (m_stageLinked) {
+        // Every side the same share of the frame, by the axis moved most.
+        const double share = qAbs(gx / fw) >= qAbs(gy / fh) ? gx / fw : gy / fh;
+        gx = share * fw;
+        gy = share * fh;
+    } else if (m_stageShift && corner) {
+        // Both axes by the same share of the frame.
+        const double share = qAbs(gx / fw) >= qAbs(gy / fh) ? gx / fw : gy / fh;
+        gx = share * fw;
+        gy = share * fh;
+    }
+    const bool bothX = m_stageLinked || m_stageAlt, bothY = bothX;
+    const int dx = qRound(gx), dy = qRound(gy);
+    int l = m_stageDragStart.left(), r = m_stageDragStart.right();
+    int t = m_stageDragStart.top(), b = m_stageDragStart.bottom();
+    if (left || bothX && right || m_stageLinked)
+        l += dx;
+    if (right || bothX && left || m_stageLinked)
+        r += dx;
+    if (top || bothY && bottom || m_stageLinked)
+        t += dy;
+    if (bottom || bothY && top || m_stageLinked)
+        b += dy;
+    // Whole px, never inside the frame, and the stage at most the canvas's cap.
+    l = qMax(0, l);
+    r = qMax(0, r);
+    t = qMax(0, t);
+    b = qMax(0, b);
+    const int roomX = qMax(0, stagemargin::kMaxSide - st.frame.width());
+    const int roomY = qMax(0, stagemargin::kMaxSide - st.frame.height());
+    if (l + r > roomX) {
+        const int over = l + r - roomX;
+        if (left && right) {
+            l -= over / 2;
+            r -= over - over / 2;
+        } else if (left) {
+            l -= over;
+        } else {
+            r -= over;
+        }
+    }
+    if (t + b > roomY) {
+        const int over = t + b - roomY;
+        if (top && bottom) {
+            t -= over / 2;
+            b -= over - over / 2;
+        } else if (top) {
+            t -= over;
+        } else {
+            b -= over;
+        }
+    }
+    m_stageLive = QMargins(qMax(0, l), qMax(0, t), qMax(0, r), qMax(0, b));
+    // The field outlined: the side the pointer moved most.
+    const int side = (corner ? qAbs(gx / fw) >= qAbs(gy / fh) : (left || right))
+        ? (left ? 0 : 2)
+        : (top ? 1 : 3);
+    emit stageModeEdited(m_stageLive, side);
+    update();
+}
+
+void DrawingCanvas::stageRelease()
+{
+    m_stageDrag = -1;
+    update();
+}
+
+void DrawingCanvas::stageModeKey(bool enter)
+{
+    if (!m_stageMode)
+        return;
+    if (enter) {
+        stageRelease();
+        emit stageModeFinished(true);
+    } else if (m_stageDrag >= 0) {
+        m_stageLive = m_stageDragStart;
+        stageRelease();
+        emit stageModeEdited(m_stageLive, -1);
+    } else {
+        emit stageModeFinished(false);
+    }
+}
+
+int DrawingCanvas::stageLayersHiding() const
+{
+    if (!m_stageMode || !m_panel)
+        return 0;
+    const shotcam::Stage st = stage();
+    const QRegion going = QRegion(QRect(-st.origin, st.canvas))
+                              .subtracted(QRegion(stageLiveRect().translated(-st.origin)));
+    if (going.isEmpty())
+        return 0;
+    int layers = 0;
+    for (const layertiles::ArtCells &art : m_stageArt)
+        for (const QRect &band : going)
+            if (art.anyIn(band)) {
+                ++layers;
+                break;
+            }
+    return layers;
+}
+
+QString DrawingCanvas::stageChipText(bool *warns) const
+{
+    if (warns)
+        *warns = false;
+    if (!m_stageMode || m_stageDrag < 0 || !m_panel)
+        return QString();
+    const shotcam::Stage st = stage();
+    const int dl = m_stageLive.left() - m_stageDragStart.left();
+    const int dt = m_stageLive.top() - m_stageDragStart.top();
+    const int dr = m_stageLive.right() - m_stageDragStart.right();
+    const int db = m_stageLive.bottom() - m_stageDragStart.bottom();
+    const QString dot = QStringLiteral(" ") + QChar(0x00B7) + QStringLiteral(" ");
+    const auto signedPx = [](int v) {
+        return (v > 0 ? QStringLiteral("+") : (v < 0 ? QString(QChar(0x2212)) : QString()))
+            + QString::number(qAbs(v)) + QStringLiteral(" px");
+    };
+    const auto share = [](int v, int of) {
+        return QString::number(qRound(100.0 * qAbs(v) / qMax(1, of))) + QStringLiteral(" %");
+    };
+    QStringList parts;
+    if (m_stageAlt && dl == dr && dl != 0) {
+        parts << QStringLiteral("Alt") << QStringLiteral("Left and Right %1 each").arg(signedPx(dl));
+    } else if (m_stageAlt && dt == db && dt != 0) {
+        parts << QStringLiteral("Alt") << QStringLiteral("Top and Bottom %1 each").arg(signedPx(dt));
+    } else {
+        QStringList moved;
+        if (dl != 0)
+            moved << QStringLiteral("Left ") + signedPx(dl);
+        if (dt != 0)
+            moved << QStringLiteral("Top ") + signedPx(dt);
+        if (dr != 0)
+            moved << QStringLiteral("Right ") + signedPx(dr);
+        if (db != 0)
+            moved << QStringLiteral("Bottom ") + signedPx(db);
+        if (moved.isEmpty())
+            moved << QStringLiteral("No change");
+        parts += moved;
+        if (moved.size() == 1 && (dl != 0 || dr != 0))
+            parts << share(dl != 0 ? dl : dr, st.frame.width());
+        else if (moved.size() == 1 && (dt != 0 || db != 0))
+            parts << share(dt != 0 ? dt : db, st.frame.height());
+    }
+    const QRect live = stageLiveRect();
+    parts << QStringLiteral("stage %1 %2 %3").arg(live.width()).arg(QChar(0x00D7)).arg(live.height());
+    // NOTHING IS CUT (Q13): what goes is kept, hidden, and said so.
+    const int hiding = stageLayersHiding();
+    if (hiding > 0) {
+        parts << QStringLiteral("hides art on %1 (kept, not cut)")
+                     .arg(hiding == 1 ? QStringLiteral("1 layer") : QStringLiteral("%1 layers").arg(hiding));
+        if (warns)
+            *warns = true;
+    }
+    return parts.join(dot);
+}
+
+// Room given to the move: this panel's keys that left the stage and now fit.
+QString DrawingCanvas::stageKeysChipText(const ShotCameraView &view) const
+{
+    if (m_stageDrag < 0 || !view.valid)
+        return QString();
+    const shotcam::Stage st = stage();
+    const auto outside = [&](const QMargins &margins) {
+        const QRectF room(st.origin.x() - margins.left() - 0.5, st.origin.y() - margins.top() - 0.5,
+                          st.frame.width() + margins.left() + margins.right() + 1.0,
+                          st.frame.height() + margins.top() + margins.bottom() + 1.0);
+        int out = 0;
+        for (const shotcam::CameraState &key : view.panelKeys)
+            out += room.contains(shotcam::frameQuad(key, st).boundingRect()) ? 0 : 1;
+        return out;
+    };
+    const int before = outside(m_stageDragStart);
+    if (before == 0 || outside(m_stageLive) != 0)
+        return QString();
+    return before == 1 ? QStringLiteral("this panel's key now fits")
+                       : QStringLiteral("this panel's keys now fit");
+}
+
+void DrawingCanvas::paintStageMode(QPainter &painter, const ShotCameraView &view)
+{
+    const shotcam::Stage st = stage();
+    const QTransform t = viewTransform();
+    const QRect live = stageLiveRect();
+    const QRect now(QPoint(0, 0), st.canvas);
+    const auto mapped = [&t](const QRectF &r) {
+        QPainterPath path;
+        path.addPolygon(t.map(QPolygonF(r)));
+        path.closeSubpath();
+        return path;
+    };
+    painter.save();
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    // The stage a little down, so the white handles and the guides read on paper.
+    painter.fillPath(mapped(QRectF(now)), QColor(0, 0, 0, 38)); // 15 %
+    // A gained band: empty, nothing drawn there yet.
+    QPen bandEdge(QColor(255, 255, 255, 46), 1.0);
+    for (const QRect &band : QRegion(live).subtracted(QRegion(now))) {
+        const QPainterPath path = mapped(QRectF(band));
+        painter.fillPath(path, QColor(0x2c, 0x2c, 0x31));
+        painter.fillPath(path, QBrush(QColor(255, 255, 255, 46), Qt::BDiagPattern));
+        painter.strokePath(path, bandEdge);
+    }
+    // A band that would go: amber, its art outlined below. Kept and hidden (Q13).
+    for (const QRect &band : QRegion(now).subtracted(QRegion(live))) {
+        QColor amber = kStageAmber;
+        amber.setAlpha(71); // 28 %
+        painter.fillPath(mapped(QRectF(band)), amber);
+    }
+    // THE CAMERA STAYS IN VIEW: the base framing, this panel's key frames, the frame
+    // at the playhead.
+    if (view.valid) {
+        QPen base(QColor(255, 255, 255, 191), 1.0, Qt::CustomDashLine);
+        base.setDashPattern({4.0, 3.0});
+        painter.setPen(base);
+        painter.setBrush(Qt::NoBrush);
+        painter.drawPolygon(shotCameraWidgetQuad(shotcam::neutral(st)));
+        QColor faint = kCamAccent;
+        faint.setAlpha(140); // 55 %
+        QPen keyPen(faint, 1.2, Qt::CustomDashLine);
+        keyPen.setDashPattern({3.0, 2.0});
+        painter.setPen(keyPen);
+        for (const shotcam::CameraState &key : view.panelKeys)
+            painter.drawPolygon(shotCameraWidgetQuad(key));
+        QPen frame(kCamAccent, 1.5);
+        frame.setJoinStyle(Qt::MiterJoin);
+        painter.setPen(frame);
+        painter.drawPolygon(shotCameraWidgetQuad(view.state));
+    }
+    // THE ART OUTSIDE THE PROPOSED STAGE, hidden or about to be (Q13): outlined in
+    // amber, wherever it lies.
+    if (!m_stageArtOutline.isEmpty()) {
+        QPainterPath outside;
+        outside.addRect(QRectF(rect()));
+        painter.save();
+        painter.setClipPath(outside.subtracted(mapped(QRectF(live))));
+        painter.setTransform(QTransform::fromTranslate(st.origin.x(), st.origin.y()) * t);
+        QPen outline(kStageAmber, 1.5);
+        outline.setCosmetic(true);
+        painter.setPen(outline);
+        painter.setBrush(Qt::NoBrush);
+        painter.drawPath(m_stageArtOutline);
+        painter.restore();
+    }
+    // The old edge, once it is no longer the edge; the new one, dashed.
+    if (live != now) {
+        painter.setPen(QPen(QColor(0x9a, 0x9a, 0xa2), 1.0));
+        painter.setBrush(Qt::NoBrush);
+        painter.drawPath(mapped(QRectF(now)));
+        QPen dashed(Qt::white, 1.0, Qt::CustomDashLine);
+        dashed.setDashPattern({6.0, 4.0});
+        painter.setPen(dashed);
+        painter.drawPath(mapped(QRectF(live)));
+    }
+    // EIGHT HANDLES, WHITE, OUTSIDE THE EDGE: L-brackets and bars, never the camera's
+    // purple-edged squares, even where the frame touches the stage's edge.
+    QPen handlePen(Qt::white, 3.0, Qt::SolidLine, Qt::SquareCap, Qt::MiterJoin);
+    const QVector<QPolygonF> handles = stageHandles();
+    for (int i = 0; i < handles.size(); ++i) {
+        // The one under the pointer or held: thickened a touch, as the camera's are.
+        handlePen.setWidthF(i == m_stageDrag || i == m_stageHover ? 4.0 : 3.0);
+        painter.setPen(handlePen);
+        painter.setBrush(Qt::NoBrush);
+        painter.drawPolyline(handles.at(i));
+    }
+    // The chips at the pointer.
+    bool warns = false;
+    const QString chip = stageChipText(&warns);
+    if (!chip.isEmpty()) {
+        const QFontMetricsF fm(camChipFont(font()));
+        painter.setFont(camChipFont(font()));
+        QPointF at = m_stagePointer + QPointF(14.0, 18.0);
+        const auto drawChip = [&](const QString &text, const QColor &fill, const QColor &edge,
+                                  const QColor &ink) {
+            const double w = qCeil(fm.horizontalAdvance(text)) + 16.0;
+            QRectF box(at, QSizeF(w, 20.0));
+            box.moveLeft(qBound(4.0, box.left(), qMax(4.0, width() - w - 4.0)));
+            box.moveTop(qBound(4.0, box.top(), qMax(4.0, height() - 24.0)));
+            painter.setPen(QPen(edge, 1.0));
+            painter.setBrush(fill);
+            painter.drawRoundedRect(box, 3.0, 3.0);
+            painter.setPen(ink);
+            painter.drawText(box, Qt::AlignCenter, text);
+            at.setY(box.bottom() + 2.0);
+        };
+        if (warns)
+            drawChip(chip, kStageAmber, kStageAmber, QColor(0x1c, 0x1e, 0x25));
+        else
+            drawChip(chip, QColor(0x16, 0x16, 0x16), QColor(0x2a, 0x2a, 0x2a), QColor(0xdd, 0xdd, 0xdd));
+        const QString keys = stageKeysChipText(view);
+        if (!keys.isEmpty())
+            drawChip(keys, QColor(0x16, 0x16, 0x16), QColor(0x2a, 0x2a, 0x2a), QColor(0xd5, 0xcb, 0xff));
+    }
+    painter.restore();
 }
 
 void DrawingCanvas::pushPerspectiveCommand(const QJsonObject &before,
@@ -2671,7 +3277,7 @@ void DrawingCanvas::pushPerspectiveCommand(const QJsonObject &before,
 {
     if (!m_undoStack)
         return;
-    const QJsonObject after = m_perspective.toJson();
+    const QJsonObject after = perspectiveInKeySpace();
     if (after == before)
         return; // no-op gesture (e.g. a rejected 4th tap): nothing to undo
     m_undoStack->push(new PerspectiveCommand(this, before, after, text));
@@ -2679,7 +3285,7 @@ void DrawingCanvas::pushPerspectiveCommand(const QJsonObject &before,
 
 void DrawingCanvas::beginPerspectiveEdit()
 {
-    m_perspBefore = m_perspective.toJson();
+    m_perspBefore = perspectiveInKeySpace();
     m_perspGesture = true;
     m_perspGestureText = QStringLiteral("Perspective Settings");
 }
@@ -3061,7 +3667,9 @@ void DrawingCanvas::copySelection()
     p.drawImage(0, 0, selectionMask(r)); // only pixels inside the mask survive
     p.end();
     m_clipImg = img;
-    m_clipPos = r.topLeft(); // for Paste in Place
+    // For Paste in Place: by the frame, so it lands on the same spot of the shot
+    // on a panel with another stage (batch 6c).
+    m_clipPos = QPointF(r.topLeft() - stage().origin);
 }
 
 void DrawingCanvas::cutSelection()
@@ -3097,7 +3705,7 @@ void DrawingCanvas::pasteClipboard(bool atOriginalPos)
     m_floatFromPaste = true;
     m_floatImg = m_clipImg;
     if (atOriginalPos) {
-        m_floatPos = m_clipPos; // integral: captured from an aligned rect
+        m_floatPos = m_clipPos + QPointF(stage().origin); // integral: captured from an aligned rect
     } else {
         const QPointF viewCentre = toCanvasF(QPointF(width() / 2.0, height() / 2.0));
         const QPointF raw = viewCentre - QPointF(m_clipImg.width() / 2.0, m_clipImg.height() / 2.0);
@@ -6355,7 +6963,8 @@ void DrawingCanvas::paintEvent(QPaintEvent *event)
     // placement (shotcam::layerToStage), live through a drag. Inside the
     // frame that is the shot. Every other tool draws the layers as drawn,
     // below, so a stroke lands where the pen is.
-    const ShotCameraView depthCam = m_tool == Camera ? shotCameraView() : ShotCameraView();
+    const ShotCameraView depthCam =
+        m_tool == Camera && !m_stageMode ? shotCameraView() : ShotCameraView();
     const bool depthView = depthCam.valid
         && shotcam::layeredShot(*m_panel, shotCameraShownState(depthCam), stage());
     const int activeIdx = m_panel->activeLayerIndex;
@@ -6404,9 +7013,13 @@ void DrawingCanvas::paintEvent(QPaintEvent *event)
 
     // Onion skin: faint blue ghost of the previous panel (display only).
     if (m_onionSkin && !m_ghost.isNull()) {
+        painter.save();
+        painter.setClipRect(canvasRi, Qt::IntersectClip); // by the frame (batch 6c)
         painter.setOpacity(0.30);
-        painter.drawPixmap(canvasRi, m_ghost);
+        painter.drawPixmap(m_ghostRect.isEmpty() ? canvasRi : m_ghostRect.translated(canvasRi.topLeft()),
+                           m_ghost);
         painter.setOpacity(1.0);
+        painter.restore();
     }
 
     // Document content is done; overlays below are outlines and guides, which
@@ -6459,8 +7072,8 @@ void DrawingCanvas::paintEvent(QPaintEvent *event)
         ? shotCameraView() : ShotCameraView();
     const shotcam::Stage guideStage = stage();
     const shotcam::CameraState guideState = guideCam.valid
-        ? shotCameraShownState(guideCam) : shotcam::neutral(cs);
-    const bool guidesFromCamera = (guideCam.valid && !shotcam::isNeutral(guideState, cs))
+        ? shotCameraShownState(guideCam) : shotcam::neutral(guideStage);
+    const bool guidesFromCamera = (guideCam.valid && !shotcam::isNeutral(guideState, guideStage))
         || ((m_safeArea || m_titleSafe) && guideStage.hasMargin());
     if (guidesFromCamera)
         paintShotCameraGuides(painter, guideStage, guideState);
@@ -6918,6 +7531,13 @@ void DrawingCanvas::keyPressEvent(QKeyEvent *event)
             return;
         }
     }
+    // Stage mode (batch 6c): Enter or Apply commits, Esc leaves and cancels. Esc in
+    // a drag puts that drag back first.
+    if (m_stageMode && (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter
+                        || event->key() == Qt::Key_Escape)) {
+        stageModeKey(event->key() != Qt::Key_Escape);
+        return;
+    }
     // Floating paste: Enter commits, Esc discards. A plain selection: Esc
     // clears it.
     if ((event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter)
@@ -6960,7 +7580,7 @@ void DrawingCanvas::keyReleaseEvent(QKeyEvent *event)
 bool DrawingCanvas::event(QEvent *event)
 {
     // The mode chip's "Passed 3 layers" (Phase 2C, Q1): its hover names them.
-    if (event->type() == QEvent::ToolTip && m_tool == Camera && m_panel) {
+    if (event->type() == QEvent::ToolTip && m_tool == Camera && !m_stageMode && m_panel) {
         const ShotCameraView v = shotCameraView();
         if (v.valid) {
             const shotcam::CameraState s = shotCameraShownState(v);
@@ -7032,7 +7652,10 @@ void DrawingCanvas::mousePressEvent(QMouseEvent *event)
     // The shot camera's tool takes every left press (after the pan above:
     // Space and the middle button are the view's, never the camera's).
     if (m_tool == Camera) {
-        shotCameraPress(event->position());
+        if (m_stageMode)
+            stagePress(event->position());
+        else
+            shotCameraPress(event->position());
         return;
     }
 
@@ -7145,7 +7768,7 @@ void DrawingCanvas::mousePressEvent(QMouseEvent *event)
     if (m_tool == Perspective) {
         // Snapshot BEFORE the gesture mutates anything; the matching command
         // is pushed on release (create+place or move = one undo entry).
-        m_perspBefore = m_perspective.toJson();
+        m_perspBefore = perspectiveInKeySpace();
         m_perspHandle = m_perspective.hitTest(event->position(), viewTransform());
         if (m_perspHandle >= 0) {
             m_perspGesture = true;
@@ -7308,7 +7931,10 @@ void DrawingCanvas::mouseMoveEvent(QMouseEvent *event)
         return;
     }
     if (m_tool == Camera) {
-        shotCameraMove(event->position(), event->buttons(), event->modifiers());
+        if (m_stageMode)
+            stageMove(event->position(), event->buttons(), event->modifiers());
+        else
+            shotCameraMove(event->position(), event->buttons(), event->modifiers());
         return;
     }
     if (m_tool == Perspective) {
@@ -7420,6 +8046,11 @@ void DrawingCanvas::mouseReleaseEvent(QMouseEvent *event)
         return;
     }
     if (m_tool == Camera && event->button() == Qt::LeftButton) {
+        if (m_stageMode) {
+            stageRelease();
+            stageUpdateCursor(stageHandleAt(event->position()));
+            return;
+        }
         if (m_camDrag >= 0) {
             m_camShift = event->modifiers() & Qt::ShiftModifier;
             m_camPointer = event->position();

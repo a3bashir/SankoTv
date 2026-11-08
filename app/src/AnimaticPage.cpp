@@ -108,12 +108,11 @@ public:
                              "drawing").arg(m_caption);
     }
 
-    // `stageMargin` (Phase 2A): px each side of the frame; 0 x 0 is none.
-    void setPixmap(const QPixmap &pixmap, const QString &caption,
-                   const QSize &stageMargin = QSize(0, 0))
+    // `stage` (Phase 2A): the panel's, its frame and its margins.
+    void setPixmap(const QPixmap &pixmap, const QString &caption, const shotcam::Stage &stage)
     {
         m_pixmap = pixmap; // implicitly shared — no deep copy
-        m_stage = shotcam::stageWithMargin(pixmap.size(), stageMargin);
+        m_stage = stage;
         // The base framing's picture: the frame cut out once per panel, then
         // painted exactly as a frame-sized panel is.
         m_framePixmap = m_stage.hasMargin() ? pixmap.copy(m_stage.frameRect()) : pixmap;
@@ -674,7 +673,7 @@ void AnimaticPage::showPreviewFrame()
                          QString::fromUtf8("Scene %1 \xE2\x80\x94 Panel %2")
                              .arg(it.sceneNumber)
                              .arg(it.panelInScene),
-                         m_stageMargin);
+                         stageFor(it.panel));
     m_display->setPanel(it.panel);
     updatePreviewCamera();
 }
@@ -691,8 +690,7 @@ void AnimaticPage::setStageMargin(const QSize &margin)
 
 shotcam::Stage AnimaticPage::stageFor(const Panel *panel) const
 {
-    return panel ? shotcam::stageWithMargin(panel->canvasSize(), m_stageMargin)
-                 : shotcam::Stage();
+    return panel ? shotcam::panelStage(*panel, m_stageMargin) : shotcam::Stage();
 }
 
 // --- The shot camera (Phase 1A) ----------------------------------------------
@@ -737,7 +735,7 @@ void AnimaticPage::updatePreviewCamera()
         return;
     }
     const shotcam::CameraState camera = cameraAtPlayhead();
-    m_display->setCamera(camera, shotcam::isNeutral(camera, it.panel->canvasSize()));
+    m_display->setCamera(camera, shotcam::isNeutral(camera, stageFor(it.panel)));
 }
 
 void AnimaticPage::onCameraTick()

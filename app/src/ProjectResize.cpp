@@ -191,7 +191,13 @@ Outcome apply(const QVector<Scene *> &scenes, const QSize &newSize,
         if (!scene)
             continue;
         for (int i = 0; i < scene->panels.size(); ++i) {
-            if (resizePanel(scene->panels.at(i), newSize, offset)) {
+            // A panel at its own margin keeps it (batch 6c): the new size plus what
+            // its own margin adds.
+            const Panel *panel = scene->panels.at(i);
+            const QSize target = panel && panel->ownMargin
+                ? newSize + panel->canvasSize() - panel->cameraCanvas()
+                : newSize;
+            if (resizePanel(scene->panels.at(i), target, offset)) {
                 ++outcome.panelsResized;
                 continue;
             }

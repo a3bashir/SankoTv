@@ -59,6 +59,15 @@ struct ConsistencyEntry;
 // owns the one selection and the one undo history; both views ask it to
 // change things and are told the result (see selectPanel and the
 // apply...ForUndo callbacks).
+// A step from outside the page that the SHOTS lock also holds (Q8, batch 6c): giving
+// every panel a stage margin.
+class ShotsTrackStep
+{
+public:
+    virtual ~ShotsTrackStep() = default;
+    virtual bool changesPanels() const = 0;
+};
+
 class StoryboardPage : public QWidget
 {
     Q_OBJECT
@@ -222,6 +231,25 @@ public:
     // they read ("addKey" "Add Key" / "Key set", "ease" text, ...).
     QVariantMap cameraBarStateForTest() const;
     QWidget *cameraBarForTest() const { return m_cameraPanel; }
+    // STAGE MODE (batch 6c, Figma MARGIN-1): this panel's stage margin, edited on
+    // the canvas. The Camera bar's Stage button enters it and the Stage bar stands
+    // in for the Camera bar. Esc leaves and cancels; Enter or Apply commits ONE
+    // undo step, "Stage Margin (Panel 3)". Nothing changes until then.
+    void enterStageMode();
+    void leaveStageMode(bool apply);
+    bool stageModeOn() const { return m_stageModeOn; }
+    // The panel's margins, each side, and what the undo step does: no pixel moves.
+    QMargins panelMargins(const Panel *panel) const;
+    void applyPanelMargin(Panel *panel, const QMargins &margin);
+    QWidget *stageBarForTest() const { return m_stagePanel; }
+    void updateOnionGhostForTest() { updateOnionGhost(); }
+    void addPanelForTest() { addPanelAfterSelected(); }
+    void duplicateSelectedPanelForTest() { duplicatePanel(); }
+    QVariantMap stageBarStateForTest() const;
+    // The project's margin (for new panels) moved, and no panel with it.
+    void projectMarginMoved(const QSize &newSize, const QPoint &offset);
+    // Giving every panel a margin (Q8): true, and says so, when the SHOTS track is locked.
+    bool refuseMarginChange() { return refuseShotsEdit(); }
     // The Camera bar widened by `px` (0: its own width), placed again: the
     // control of the fit check at the narrowest window (Phase 2E).
     void setCameraBarExtraWidthForTest(int px);
@@ -406,6 +434,10 @@ private:
     // draggable by the header, child of the canvas.
     QWidget *createFloatingPanel(const QString &title, QWidget *body);
     QWidget *createCameraPanel();   // floating panel shown while Camera is active
+    QWidget *createStagePanel();    // the Stage bar, in its place during Stage mode
+    void setStageLive(const QMargins &margins, int activeSide);
+    void applyStageField(int side, int value);
+    QRect neighbourOnStage(const Panel *here, const Panel *neighbour) const;
     QWidget *createPerspectiveModifier(); // shown while Perspective is active
     QWidget *createShapesPanel();   // floating panel shown while Shapes is active
     QWidget *createBottomBar();
@@ -679,6 +711,17 @@ private:
     QWidget *m_sizeCtlBar = nullptr;
     // The Camera bar (visible only while the Camera tool is active).
     QWidget *m_cameraPanel = nullptr;
+    int m_cameraBarExtraW = 0;       // the fit check's seam
+    QWidget *m_stagePanel = nullptr;
+    std::function<void()> m_syncStageBar;
+    bool m_stageModeOn = false;
+    bool m_stageLinked = false;
+    QMargins m_stageStart;           // the panel's margins as the session began
+    QMargins m_stageLive;            // what is proposed
+    int m_stageSide = -1;            // 0 left, 1 top, 2 right, 3 bottom: the outlined field
+    qint64 m_stageRestBytes = 0;     // every other panel's layers, as they rest
+    QMetaObject::Connection m_stageUndoWatch;
+    QVector<QShortcut *> m_stageKeys;
     std::function<void()> m_syncCameraBar; // bar controls <- scene / playhead
     bool m_cameraAnimate = false;    // session; off at every launch
     bool m_cameraStayInside = true;  // session; on at every launch

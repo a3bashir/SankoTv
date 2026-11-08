@@ -2,6 +2,7 @@
 
 #include <QColor>
 #include <QPainter>
+#include <QPainterPath>
 
 #include <algorithm>
 #include <atomic>
@@ -277,6 +278,110 @@ TilesPtr trimmed(const Tiles &tiles, const QRect &stage)
     }
     finish(*out);
     return out;
+}
+
+bool ArtCells::anyIn(const QRect &rect) const
+{
+    if (cells.isEmpty() || rect.isEmpty())
+        return false;
+    const QRect span = QRect(QPoint(floorDiv(rect.left(), kArtCell), floorDiv(rect.top(), kArtCell)),
+                             QPoint(floorDiv(rect.right(), kArtCell), floorDiv(rect.bottom(), kArtCell)))
+                           .intersected(cells);
+    for (int y = span.top(); y <= span.bottom(); ++y)
+        for (int x = span.left(); x <= span.right(); ++x)
+            if (isOn(x, y))
+                return true;
+    return false;
+}
+
+ArtCells artCells(const Tiles &tiles)
+{
+    ArtCells out;
+    if (tiles.tiles.isEmpty())
+        return out;
+    constexpr int kPerTile = kTile / kArtCell;
+    int left = tiles.tiles.first().x, right = left, top = tiles.tiles.first().y, bottom = top;
+    for (const Tile &t : tiles.tiles) {
+        left = qMin(left, t.x);
+        right = qMax(right, t.x);
+        top = qMin(top, t.y);
+        bottom = qMax(bottom, t.y);
+    }
+    out.cells = QRect(left * kPerTile, top * kPerTile, (right - left + 1) * kPerTile,
+                      (bottom - top + 1) * kPerTile);
+    out.on.resize(out.cells.width() * out.cells.height());
+    out.on.fill(0);
+    const QRgb fill = tiles.fill;
+    for (const Tile &t : tiles.tiles) {
+        for (int cy = 0; cy < kPerTile; ++cy) {
+            const int row = ((t.y - top) * kPerTile + cy) * out.cells.width();
+            for (int py = cy * kArtCell; py < (cy + 1) * kArtCell; ++py) {
+                const QRgb *line = reinterpret_cast<const QRgb *>(t.pixels.constScanLine(py));
+                for (int cx = 0; cx < kPerTile; ++cx) {
+                    uchar &cell = out.on[row + (t.x - left) * kPerTile + cx];
+                    if (cell)
+                        continue;
+                    const QRgb *from = line + cx * kArtCell;
+                    for (int i = 0; i < kArtCell; ++i)
+                        if (from[i] != fill) {
+                            cell = 1;
+                            break;
+                        }
+                }
+            }
+        }
+    }
+    return out;
+}
+
+QPainterPath artOutline(const QVector<ArtCells> &layers)
+{
+    QPainterPath path;
+    QRect all;
+    for (const ArtCells &layer : layers)
+        all |= layer.cells;
+    if (all.isEmpty())
+        return path;
+    // One map of them all, with a clear row and column around it.
+    const int w = all.width() + 2, h = all.height() + 2;
+    QVector<uchar> on(w * h, 0);
+    for (const ArtCells &layer : layers)
+        for (int y = layer.cells.top(); y <= layer.cells.bottom(); ++y)
+            for (int x = layer.cells.left(); x <= layer.cells.right(); ++x)
+                if (layer.isOn(x, y))
+                    on[(y - all.top() + 1) * w + x - all.left() + 1] = 1;
+    const auto cell = [&](int x, int y) { return on.at(y * w + x); };
+    const auto place = [&](int x, int y) {
+        return QPointF((all.left() + x - 1) * kArtCell, (all.top() + y - 1) * kArtCell);
+    };
+    // Each run of edge between a full cell and an empty one, as one line.
+    for (int y = 1; y < h; ++y) {
+        int from = -1;
+        for (int x = 0; x < w; ++x) {
+            const bool edge = cell(x, y - 1) != cell(x, y);
+            if (edge && from < 0)
+                from = x;
+            if (!edge && from >= 0) {
+                path.moveTo(place(from, y));
+                path.lineTo(place(x, y));
+                from = -1;
+            }
+        }
+    }
+    for (int x = 1; x < w; ++x) {
+        int from = -1;
+        for (int y = 0; y < h; ++y) {
+            const bool edge = cell(x - 1, y) != cell(x, y);
+            if (edge && from < 0)
+                from = y;
+            if (!edge && from >= 0) {
+                path.moveTo(place(x, from));
+                path.lineTo(place(x, y));
+                from = -1;
+            }
+        }
+    }
+    return path;
 }
 
 } // namespace layertiles

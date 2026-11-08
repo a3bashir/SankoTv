@@ -81,6 +81,13 @@ struct Layer
             return tiles ? tiles->key : 0;
         return tilesCurrent() ? tiles->key : image.cacheKey();
     }
+    // The same, where they are read: the same pixels on another stage are another
+    // picture, and a margin change moves no pixel, so the identity stays put through
+    // it (batch 6c). What a cache of the stage's image asks by.
+    qint64 placedKey() const
+    {
+        return contentKey() ^ qint64(qHash(stageRect.topLeft(), qHash(pixelSize())));
+    }
     // The stage's pixels as a full image: the layer's own, or one made for the
     // caller from the tiles. A copy of nothing when the layer holds the image.
     QImage pixels() const
@@ -182,14 +189,65 @@ struct Panel
     // from the pixels, a new panel the project's, a margin change every
     // panel the new one, and Duplicate and Paste the source's with its
     // pixels. Saved per panel as "margin": [left, top, right, bottom]
-    // (omitted when 0, file version 2). stage() is the panel's stage. The
-    // pages and the exports still draw from the project's margin, which
-    // every panel holds; they move to the panel's own with batch 6b, when
-    // a panel's margin can first differ.
+    // (omitted when 0, file version 2). stage() is the panel's stage.
+    //
+    // ITS OWN MARGIN (batch 6c, Stage mode): `ownMargin` when this panel's
+    // differs from the project's, side by side if it likes. The camera's keys
+    // stay in one space across the scene's panels - the stage px of the
+    // project's margin, which is frame space plus that margin - so a move
+    // between panels of different stages is smooth and every panel at the
+    // project's margin reads them as it always has. `keyShift` is what this
+    // panel adds to read a key on its own stage (shotcam::toPanelSpace), zero
+    // unless ownMargin. The pages and the exports ask shotcam::panelStage.
     QMargins margin;
-    shotcam::Stage stage() const
+    bool ownMargin = false;
+    QPoint keyShift;
+    shotcam::Stage stage() const { return shotcam::stageWithMargins(canvasSize(), margin); }
+    // A new margin and the stage size it makes: EVERY LAYER AT REST, then only its
+    // rectangle, nothing to copy (batch 6b-V). What a full image holds that its
+    // tiles do not yet is folded first. The caller reopens the panel on the canvas.
+    void marginTo(const QMargins &newMargin, const QSize &newSize)
     {
-        return shotcam::stageWithMargin(canvasSize(), QSize(margin.left(), margin.top()));
+        const QRect stageRect(QPoint(-newMargin.left(), -newMargin.top()), newSize);
+        for (Layer &layer : layers) {
+            if (layer.type == QLatin1String("group"))
+                continue;
+            if (!layer.image.isNull() && !layer.tilesCurrent()) {
+                const QImage image = layertiles::foldable(layer.image)
+                    ? layer.image
+                    : layer.image.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+                const quint32 fill = layer.type == QLatin1String("background")
+                    ? layertiles::paperFill(image, layer.tiles)
+                    : 0u;
+                layer.tiles = layertiles::fold(image, frameAt(), fill, layer.tiles, layer.image.cacheKey());
+            }
+            layer.image = QImage();
+            layer.tilesOf = 0;
+            layer.stageRect = stageRect;
+        }
+        margin = newMargin;
+    }
+    // Whether this panel holds the project's margin or its own, after the
+    // project's or the panel's changed.
+    void settleMargin(const QSize &projectMargin)
+    {
+        const QMargins project(projectMargin.width(), projectMargin.height(), projectMargin.width(),
+                               projectMargin.height());
+        ownMargin = margin != project;
+        keyShift = ownMargin
+            ? QPoint(margin.left() - projectMargin.width(), margin.top() - projectMargin.height())
+            : QPoint();
+    }
+    // The stage this panel would have at the project's margin: what the keys'
+    // space measures. Its own size unless it has its own margin.
+    QSize cameraCanvas() const
+    {
+        const QSize size = canvasSize();
+        if (!ownMargin)
+            return size;
+        const QSize frame = stage().frame;
+        return QSize(frame.width() + 2 * (margin.left() - keyShift.x()),
+                     frame.height() + 2 * (margin.top() - keyShift.y()));
     }
 
     // The shot camera's name for this panel (camera/CameraModel.h): a key
@@ -389,6 +447,11 @@ struct Panel
                       | (quint64(isGroupLayer(layer)) << 1)
                       | (quint64(qHash(layer.groupId)) << 2));
         }
+        // The stage they are read at (batch 6c): a margin moves no pixel, and the
+        // flatten is another picture.
+        const QSize stageSize = canvasSize();
+        fp.append((quint64(quint32(stageSize.width())) << 32) | quint32(stageSize.height()));
+        fp.append((quint64(quint32(margin.left())) << 32) | quint32(margin.top()));
         return fp;
     }
     QPixmap flattenedThumb() const
@@ -593,7 +656,8 @@ inline bool pasteWouldMixSizes(const Panel *clipboard, const QSize &projectSize)
 {
     if (!clipboard)
         return false;
-    const QSize source = clipboard->canvasSize();
+    // A panel's own margin (batch 6c) is no other size: the frame is what must agree.
+    const QSize source = clipboard->cameraCanvas();
     return source.isValid() && projectSize.isValid() && source != projectSize;
 }
 

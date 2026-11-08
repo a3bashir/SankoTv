@@ -23,6 +23,8 @@
 #include "LayerDepthPopover.h"
 #include "LayerFolder.h"
 #include "camera/ShotCamera.h"
+#include "ProjectResize.h"
+#include "StageMarginDialog.h"
 
 #include "docking/DockController.h"
 
@@ -61,6 +63,8 @@
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QLabel>
+#include <QBoxLayout>
+#include <QIntValidator>
 #include <QLineEdit>
 #include <QMainWindow>
 #include <QMenu>
@@ -547,6 +551,20 @@ protected:
 
 private:
     bool m_solid = false;
+};
+
+// The Camera bar's window: it fits itself to the canvas whenever it is placed.
+class CameraBarWindow : public SelModBar
+{
+public:
+    using SelModBar::SelModBar;
+    std::function<void()> onFit;
+    void reposition() override
+    {
+        if (onFit)
+            onFit();
+        SelModBar::reposition();
+    }
 };
 
 // Like SelModBar, but with a SOLID #212121 body — the Perspective Modifier
@@ -2104,6 +2122,26 @@ private:
     shotcam::SceneCamera m_after;
 };
 
+// ONE PANEL'S STAGE MARGIN, one undo step (batch 6c, Q7). Holds no pixel: its art and
+// the camera's keys keep their place, and only the rectangle changes. Held by the
+// panel the way the panel commands hold theirs: history order keeps it alive.
+class PanelStageCommand : public QUndoCommand
+{
+public:
+    PanelStageCommand(StoryboardPage *page, Panel *panel, const QMargins &before,
+                      const QMargins &after, const QString &text)
+        : QUndoCommand(text), m_page(page), m_panel(panel), m_before(before), m_after(after)
+    {
+    }
+    void redo() override { m_page->applyPanelMargin(m_panel, m_after); }
+    void undo() override { m_page->applyPanelMargin(m_panel, m_before); }
+
+private:
+    StoryboardPage *m_page;
+    Panel *m_panel;
+    QMargins m_before, m_after;
+};
+
 // --- The Camera bar's controls (Phase 1B, Figma 1B-4) ---------------------------
 // Drawn in the Perspective Modifier's language: 12 px #cccccc labels, the
 // purple switch, flat buttons that take a #333 fill on hover.
@@ -3052,6 +3090,7 @@ QWidget *StoryboardPage::createCenterColumn()
 
     createFloatingToolbar(); // FloatingToolWindows anchored to the canvas
     createCameraPanel();     // floating over the canvas, shown with the Camera tool
+    createStagePanel();      // in its place during Stage mode (batch 6c)
     createPerspectiveModifier(); // shown with the Perspective tool
     createShapesPanel();     // floating over the canvas, shown with the Shapes tool
 
@@ -3440,7 +3479,7 @@ void StoryboardPage::createFloatingToolbar()
             if (!win.contains(r))
                 return false;
             const QWidget *floats[] = {m_zoomToolbar,
-                                       m_cameraPanel, m_shapesPanel};
+                                       m_cameraPanel, m_stagePanel, m_shapesPanel};
             for (const QWidget *fl : floats)
                 if (fl && fl->isVisible() && r.intersects(fl->frameGeometry()))
                     return false;
@@ -3842,7 +3881,7 @@ void StoryboardPage::createFloatingToolbar()
     bindTool(cameraBtn, DrawingCanvas::Camera);
     connect(cameraBtn, &QPushButton::toggled, this, [this](bool on) {
         if (m_cameraPanel)
-            m_cameraPanel->setVisible(on);
+            m_cameraPanel->setVisible(on && !m_stageModeOn);
         if (on && m_syncCameraBar)
             m_syncCameraBar();
         if (m_canvas)
@@ -4525,7 +4564,7 @@ QWidget *StoryboardPage::createPerspectiveModifier()
 // tool. Every button is one undoable command; the switches are not.
 QWidget *StoryboardPage::createCameraPanel()
 {
-    SelModBar *bar = new SelModBar(m_canvas, this);
+    auto *bar = new CameraBarWindow(m_canvas, this);
     bar->setObjectName(QStringLiteral("cameraBar"));
     m_cameraPanel = bar;
 
@@ -4602,6 +4641,17 @@ QWidget *StoryboardPage::createCameraPanel()
         "QToolButton:pressed{background:rgba(124,110,246,0.26);color:#7c6ef6;}"
         "QToolButton:disabled{color:#666666;}"));
     row->addWidget(quick, 0, Qt::AlignVCenter);
+    // STAGE (batch 6c, Figma MARGIN-1): this panel's margin, on the canvas.
+    auto *stageMode = new QToolButton(bar);
+    stageMode->setObjectName(QStringLiteral("camStage"));
+    stageMode->setText(QStringLiteral("Stage"));
+    stageMode->setFont(quick->font());
+    stageMode->setCursor(Qt::PointingHandCursor);
+    stageMode->setFixedHeight(30);
+    stageMode->setToolTip(QStringLiteral("This panel's stage margin: drag its edges on the canvas"));
+    stageMode->setStyleSheet(quick->styleSheet());
+    row->addWidget(stageMode, 0, Qt::AlignVCenter);
+    connect(stageMode, &QToolButton::clicked, this, [this] { enterStageMode(); });
     divider();
     QLabel *easeLabelW = label(QStringLiteral("Ease"), true);
     row->addWidget(easeLabelW, 0, Qt::AlignVCenter);
@@ -4614,8 +4664,21 @@ QWidget *StoryboardPage::createCameraPanel()
     divider();
     CamSwitch *safe = addSwitch(QStringLiteral("Safe Area"), QStringLiteral("camSafeArea"));
     CamSwitch *title = addSwitch(QStringLiteral("Title Safe"), QStringLiteral("camTitleSafe"));
-    bar->setFixedSize(row->sizeHint().width(), 52);
-    m_cameraBarNaturalW = bar->width();
+    // ITS WIDTH (batch 6c): Figma's spacing when the canvas has the room; tighter when
+    // not, so the bar with its Stage button still fits the narrowest window (pf).
+    bar->onFit = [this, bar, row] {
+        int w = 0;
+        for (const QPoint &step : {QPoint(14, 10), QPoint(10, 7), QPoint(8, 5)}) { // edge, spacing
+            row->setContentsMargins(step.x(), 11, step.x(), 11);
+            row->setSpacing(step.y());
+            w = row->sizeHint().width();
+            if (w <= m_canvas->width() - 12)
+                break;
+        }
+        m_cameraBarNaturalW = w;
+        bar->setFixedSize(w + m_cameraBarExtraW, 52);
+    };
+    bar->onFit();
 
     // The ease menu: the five eases, the current one checked in the accent.
     auto *menu = new QMenu(bar);
@@ -4839,7 +4902,7 @@ QWidget *StoryboardPage::createCameraPanel()
 
     // The hover notes: each control's own tooltip is kept in "camTip" so a
     // note can stand in for it and the original come back.
-    const QList<QWidget *> controls{animate, prev, addKey, delKey, pinKey, next, quick, ease,
+    const QList<QWidget *> controls{animate, prev, addKey, delKey, pinKey, next, quick, stageMode, ease,
                                     inside, safe, title};
     for (QWidget *w : controls)
         w->setProperty("camTip", w->toolTip());
@@ -5085,7 +5148,7 @@ void StoryboardPage::setCameraBarExtraWidthForTest(int px)
 {
     if (!m_cameraPanel)
         return;
-    m_cameraPanel->setFixedWidth(m_cameraBarNaturalW + qMax(0, px));
+    m_cameraBarExtraW = qMax(0, px);
     static_cast<FloatingToolWindow *>(m_cameraPanel)->reposition();
 }
 
@@ -5152,6 +5215,16 @@ DrawingCanvas::ShotCameraView StoryboardPage::shotCameraView() const
     v.sharpLimit = shotcam::sharpLimit(stageFor(panel));
     // The segment's move, for the frame's glyphs (2026-11-06, Figma CAM-2).
     v.motion = shotcam::segmentMotion(*scene, at, fps, stageFor(panel), filmStartOf(scene));
+    // Stage mode (batch 6c): this panel's key frames stay in view.
+    if (m_stageModeOn) {
+        const double from = shotcam::panelStartFrame(*scene, pi, fps);
+        const double to = from + shotcam::panelFrames(*panel, fps);
+        for (const shotcam::CameraKey &key : scene->camera.keys) {
+            const double f = shotcam::keyFrame(*scene, key, fps, filmStartOf(scene));
+            if (f >= from && f <= to)
+                v.panelKeys.append(shotcam::toPanelSpace(*panel, key.state));
+        }
+    }
     // The film frame: every panel before this one, in every scene.
     int film = 0;
     for (const Scene *s : m_scenes) {
@@ -5165,10 +5238,569 @@ DrawingCanvas::ShotCameraView StoryboardPage::shotCameraView() const
     if (m_quickPreviewValid && m_quickPreviewScene >= 0 && m_quickPreviewScene < m_scenes.size()
         && m_scenes.at(m_quickPreviewScene) == scene) {
         v.previewValid = true;
-        v.previewStart = m_quickPreviewStart;
-        v.previewEnd = m_quickPreviewEnd;
+        // Held in the keys' space: the panel under the preview may have its own stage.
+        v.previewStart = shotcam::toPanelSpace(*panel, m_quickPreviewStart);
+        v.previewEnd = shotcam::toPanelSpace(*panel, m_quickPreviewEnd);
     }
     return v;
+}
+
+// --- Stage mode (batch 6c, Figma MARGIN-1) ---------------------------------------
+
+namespace {
+// The Stage bar: solid, as Figma has it, the one floating bar whose fields take the
+// keyboard, so it accepts focus.
+class StageBar : public SelModBar
+{
+public:
+    StageBar(QWidget *anchor, QWidget *parent) : SelModBar(anchor, parent)
+    {
+        setWindowFlag(Qt::WindowDoesNotAcceptFocus, false);
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setCompositionMode(QPainter::CompositionMode_Source);
+        p.fillRect(rect(), Qt::transparent);
+        p.setCompositionMode(QPainter::CompositionMode_SourceOver);
+        p.setPen(QPen(QColor(0x2a, 0x2a, 0x2a), 1.0));
+        p.setBrush(QColor(0x16, 0x16, 0x16));
+        p.drawRoundedRect(QRectF(0.5, 0.5, width() - 1.0, height() - 1.0), 8, 8);
+    }
+};
+
+// A side's number. Enter applies it, or commits when there is nothing to apply; Esc
+// puts it back, or cancels when there is nothing to put back; Tab moves on.
+class StageField : public QLineEdit
+{
+public:
+    using QLineEdit::QLineEdit;
+    std::function<void()> onEnter, onEscape, onFocus;
+
+protected:
+    void keyPressEvent(QKeyEvent *event) override
+    {
+        if ((event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) && onEnter) {
+            onEnter();
+            return;
+        }
+        if (event->key() == Qt::Key_Escape && onEscape) {
+            onEscape();
+            return;
+        }
+        QLineEdit::keyPressEvent(event);
+    }
+    void focusInEvent(QFocusEvent *event) override
+    {
+        QLineEdit::focusInEvent(event);
+        if (onFocus)
+            onFocus();
+    }
+};
+
+int sideOf(const QMargins &m, int side)
+{
+    return side == 0 ? m.left() : side == 1 ? m.top() : side == 2 ? m.right() : m.bottom();
+}
+
+QMargins withSide(QMargins m, int side, int value)
+{
+    if (side == 0)
+        m.setLeft(value);
+    else if (side == 1)
+        m.setTop(value);
+    else if (side == 2)
+        m.setRight(value);
+    else
+        m.setBottom(value);
+    return m;
+}
+} // namespace
+
+QWidget *StoryboardPage::createStagePanel()
+{
+    auto *bar = new StageBar(m_canvas, this);
+    bar->setObjectName(QStringLiteral("stageBar"));
+    m_stagePanel = bar;
+    auto *outer = new QBoxLayout(QBoxLayout::LeftToRight, bar);
+    outer->setContentsMargins(14, 8, 14, 8);
+    outer->setSpacing(10);
+    auto *rowA = new QHBoxLayout;
+    rowA->setSpacing(6);
+    auto *rowB = new QHBoxLayout;
+    rowB->setSpacing(8);
+    outer->addLayout(rowA);
+    outer->addLayout(rowB);
+    auto label = [bar](const QString &text, const char *colour) {
+        auto *l = new QLabel(text, bar);
+        l->setFont(cameraBarFont());
+        l->setStyleSheet(QStringLiteral("color:%1;background:transparent;").arg(QLatin1String(colour)));
+        return l;
+    };
+    auto *title = label(QStringLiteral("STAGE"), "#e8e8e8");
+    {
+        QFont f = title->font();
+        f.setWeight(QFont::DemiBold);
+        title->setFont(f);
+    }
+    auto *panelLabel = label(QString(), "#9a9aa2");
+    panelLabel->setObjectName(QStringLiteral("stagePanelLabel"));
+    rowA->addWidget(title, 0, Qt::AlignVCenter);
+    rowA->addWidget(panelLabel, 0, Qt::AlignVCenter);
+    rowA->addSpacing(6);
+
+    const QStringList names{QStringLiteral("Left"), QStringLiteral("Top"), QStringLiteral("Right"),
+                            QStringLiteral("Bottom")};
+    QVector<StageField *> fields;
+    QVector<QLabel *> shares;
+    for (int side = 0; side < 4; ++side) {
+        rowA->addWidget(label(names.at(side), "#cccccc"), 0, Qt::AlignVCenter);
+        auto *field = new StageField(bar);
+        field->setObjectName(QStringLiteral("stage") + names.at(side));
+        field->setFont(cameraBarFont());
+        field->setFixedSize(46, 24);
+        field->setAlignment(Qt::AlignCenter);
+        field->setValidator(new QIntValidator(0, stagemargin::kMaxSide, field));
+        field->setToolTip(QStringLiteral("%1 margin in whole px").arg(names.at(side)));
+        rowA->addWidget(field, 0, Qt::AlignVCenter);
+        auto *share = label(QString(), "#8a8a90");
+        share->setFixedWidth(QFontMetrics(cameraBarFont()).horizontalAdvance(QStringLiteral("100 %")) + 2);
+        rowA->addWidget(share, 0, Qt::AlignVCenter);
+        rowA->addSpacing(4);
+        fields.append(field);
+        shares.append(share);
+        // The keyboard goes back to the main window, and with it Enter and Esc.
+        auto backToCanvas = [this] {
+            if (m_canvas) {
+                m_canvas->window()->activateWindow();
+                m_canvas->setFocus();
+            }
+        };
+        field->onFocus = [this, side] {
+            m_stageSide = side;
+            if (m_syncStageBar)
+                m_syncStageBar();
+        };
+        field->onEnter = [this, field, side, backToCanvas] {
+            if (field->text().toInt() != sideOf(m_stageLive, side)) {
+                applyStageField(side, field->text().toInt());
+                backToCanvas();
+            } else {
+                backToCanvas();
+                leaveStageMode(true);
+            }
+        };
+        field->onEscape = [this, field, side, backToCanvas] {
+            if (field->text().toInt() != sideOf(m_stageLive, side)) {
+                field->setText(QString::number(sideOf(m_stageLive, side)));
+                backToCanvas();
+            } else {
+                backToCanvas();
+                leaveStageMode(false);
+            }
+        };
+        connect(field, &QLineEdit::editingFinished, this, [this, field, side] {
+            if (m_stageModeOn && field->text().toInt() != sideOf(m_stageLive, side))
+                applyStageField(side, field->text().toInt());
+        });
+    }
+    QWidget::setTabOrder(fields.at(0), fields.at(1));
+    QWidget::setTabOrder(fields.at(1), fields.at(2));
+    QWidget::setTabOrder(fields.at(2), fields.at(3));
+
+    rowA->addWidget(label(QStringLiteral("Same on all sides"), "#cccccc"), 0, Qt::AlignVCenter);
+    auto *link = new CamSwitch(bar);
+    link->setObjectName(QStringLiteral("stageLink"));
+    link->setToolTip(QStringLiteral("Every side the same share of the frame"));
+    rowA->addWidget(link, 0, Qt::AlignVCenter);
+    link->onToggled = [this](bool on) {
+        m_stageLinked = on;
+        m_canvas->setStageModeLinked(on);
+        // The side in hand sets the share for them all.
+        if (on) {
+            const int side = m_stageSide >= 0 ? m_stageSide : 0;
+            applyStageField(side, sideOf(m_stageLive, side));
+        } else if (m_syncStageBar) {
+            m_syncStageBar();
+        }
+    };
+    rowA->addSpacing(6);
+
+    const QString buttonStyle = QStringLiteral(
+        "QToolButton{color:#ffffff;background:%1;border:none;border-radius:4px;padding:0 10px;}"
+        "QToolButton:hover{background:%2;}"
+        "QToolButton:disabled{color:#666666;background:#222226;}");
+    auto button = [bar, &buttonStyle](const QString &text, const QString &name, const char *fill,
+                                      const char *hover) {
+        auto *b = new QToolButton(bar);
+        b->setObjectName(name);
+        b->setText(text);
+        QFont f = cameraBarFont();
+        f.setPointSizeF(9.0); // in points: a tool button's font must have a point size
+        b->setFont(f);
+        b->setFixedHeight(26);
+        b->setCursor(Qt::PointingHandCursor);
+        b->setFocusPolicy(Qt::NoFocus);
+        b->setStyleSheet(buttonStyle.arg(QLatin1String(fill), QLatin1String(hover)));
+        return b;
+    };
+    auto *presets = button(QStringLiteral("Presets"), QStringLiteral("stagePresets"), "#2a2a2e", "#37373c");
+    presets->setToolTip(QStringLiteral("A share of the frame on each side"));
+    rowA->addWidget(presets, 0, Qt::AlignVCenter);
+    auto *presetMenu = new QMenu(bar);
+    presetMenu->setObjectName(QStringLiteral("stagePresetMenu"));
+    presetMenu->setStyleSheet(QStringLiteral(
+        "QMenu{background:#212121;border:1px solid #2a2a2a;border-radius:6px;padding:4px;color:#dddddd;}"
+        "QMenu::item{padding:6px 18px;border-radius:4px;}"
+        "QMenu::item:selected{background:#333333;}"));
+    presetMenu->setFont(cameraBarFont());
+    for (int i = 0; i < stagemargin::kCustom; ++i) {
+        QAction *a = presetMenu->addAction(stagemargin::presetLabel(i));
+        connect(a, &QAction::triggered, this, [this, i] {
+            const QSize frame = stageFor(currentPanel()).frame;
+            const QSize m = stagemargin::presetMargin(i, frame);
+            setStageLive(QMargins(m.width(), m.height(), m.width(), m.height()), -1);
+        });
+    }
+    connect(presets, &QToolButton::clicked, this, [presets, presetMenu] {
+        presetMenu->exec(presets->mapToGlobal(QPoint(0, presets->height() + 4)));
+    });
+
+    auto *info = label(QString(), "#8a8a90");
+    info->setObjectName(QStringLiteral("stageInfo"));
+    // Room for its largest, so the bar keeps still while the numbers change.
+    info->setMinimumWidth(QFontMetrics(cameraBarFont()).horizontalAdvance(
+        QStringLiteral("8192 %1 8192 %2 268.4 MB a layer %2 project 99.99 GB").arg(QChar(0x00D7)).arg(QChar(0x00B7))));
+    info->setToolTip(QStringLiteral("A layer on the canvas holds its whole stage. At rest a panel "
+                                    "holds only what is drawn, so a margin costs nothing until "
+                                    "something is drawn in it."));
+    rowB->addWidget(info, 1, Qt::AlignVCenter);
+    auto *reset = button(QStringLiteral("Reset"), QStringLiteral("stageReset"), "#2a2a2e", "#37373c");
+    reset->setToolTip(QStringLiteral("Back to the project's margin"));
+    auto *cancel = button(QStringLiteral("Cancel"), QStringLiteral("stageCancel"), "#2a2a2e", "#37373c");
+    cancel->setToolTip(QStringLiteral("Leave without changing anything (Esc)"));
+    auto *apply = button(QStringLiteral("Apply"), QStringLiteral("stageApply"), "#7c6ef6", "#8b7ef8");
+    apply->setToolTip(QStringLiteral("One undo step (Enter)"));
+    rowB->addWidget(reset, 0, Qt::AlignVCenter);
+    rowB->addWidget(cancel, 0, Qt::AlignVCenter);
+    rowB->addWidget(apply, 0, Qt::AlignVCenter);
+    connect(reset, &QToolButton::clicked, this, [this] {
+        setStageLive(QMargins(m_stageMargin.width(), m_stageMargin.height(), m_stageMargin.width(),
+                              m_stageMargin.height()),
+                     -1);
+    });
+    connect(cancel, &QToolButton::clicked, this, [this] { leaveStageMode(false); });
+    connect(apply, &QToolButton::clicked, this, [this] { leaveStageMode(true); });
+
+    m_syncStageBar = [this, bar, outer, panelLabel, fields, shares, link, info, apply] {
+        Panel *panel = currentPanel();
+        if (!panel)
+            return;
+        const shotcam::Stage stage = stageFor(panel);
+        panelLabel->setText(QStringLiteral("Panel %1").arg(m_currentPanel + 1));
+        for (int side = 0; side < 4; ++side) {
+            StageField *field = fields.at(side);
+            const int value = sideOf(m_stageLive, side);
+            if (!field->hasFocus() || field->text().toInt() != value)
+                field->setText(QString::number(value));
+            const int of = side % 2 == 0 ? stage.frame.width() : stage.frame.height();
+            shares.at(side)->setText(QStringLiteral("%1 %").arg(qRound(100.0 * value / qMax(1, of))));
+            field->setStyleSheet(QStringLiteral("QLineEdit{color:#dddddd;background:#111111;"
+                                                "border:1px solid %1;border-radius:3px;}")
+                                     .arg(side == m_stageSide ? QStringLiteral("#7c6ef6")
+                                                              : QStringLiteral("#2a2a2a")));
+        }
+        link->setOn(m_stageLinked);
+        // THE COST, AS V HAS IT: the panel on the canvas holds its whole stage; every
+        // other panel holds what is drawn.
+        const QSize size(stage.frame.width() + m_stageLive.left() + m_stageLive.right(),
+                         stage.frame.height() + m_stageLive.top() + m_stageLive.bottom());
+        int layers = 0;
+        for (const Layer &layer : panel->layers)
+            layers += isGroupLayer(layer) ? 0 : 1;
+        const qint64 oneLayer = qint64(size.width()) * size.height() * 4;
+        info->setText(QStringLiteral("%1 %2 %3 %4 %5 MB a layer %4 project %6")
+                          .arg(size.width())
+                          .arg(QChar(0x00D7))
+                          .arg(size.height())
+                          .arg(QChar(0x00B7))
+                          .arg(stagemargin::layerMegabytes(size), 0, 'f', 1)
+                          .arg(ProjectResize::formatBytes(m_stageRestBytes + layers * oneLayer)));
+        apply->setEnabled(true);
+        // One row when the canvas has the room, as Figma draws it; two when not.
+        outer->setDirection(QBoxLayout::LeftToRight);
+        if (outer->sizeHint().width() > m_canvas->width() - 12)
+            outer->setDirection(QBoxLayout::TopToBottom);
+        bar->setFixedSize(outer->sizeHint());
+        static_cast<FloatingToolWindow *>(bar)->reposition();
+    };
+
+    bar->setDefaultOffsetProvider([this, bar] {
+        int statusTop = m_canvas->height();
+        if (m_bottomBar && m_bottomBar->isVisible())
+            statusTop = m_canvas->mapFromGlobal(m_bottomBar->mapToGlobal(QPoint(0, 0))).y();
+        return QPoint(qMax(6, (m_canvas->width() - bar->width()) / 2),
+                      qMax(6, statusTop - bar->height() - 10));
+    });
+
+    connect(m_canvas, &DrawingCanvas::stageModeEdited, this,
+            [this](const QMargins &margins, int side) {
+                m_stageLive = margins;
+                if (side >= 0)
+                    m_stageSide = side;
+                if (m_syncStageBar)
+                    m_syncStageBar();
+            });
+    connect(m_canvas, &DrawingCanvas::stageModeFinished, this, [this](bool apply) { leaveStageMode(apply); });
+    connect(m_canvas, &DrawingCanvas::stageModeAbandoned, this, [this] { leaveStageMode(false); });
+    // Enter and Esc wherever the main window's focus is: nothing else there has them
+    // during the session. In the fields they are the field's (another window).
+    for (const QKeySequence &key : {QKeySequence(Qt::Key_Return), QKeySequence(Qt::Key_Enter),
+                                    QKeySequence(Qt::Key_Escape)}) {
+        auto *shortcut = new QShortcut(key, this);
+        shortcut->setContext(Qt::WindowShortcut);
+        shortcut->setAutoRepeat(false);
+        shortcut->setEnabled(false);
+        const bool enter = key != QKeySequence(Qt::Key_Escape);
+        connect(shortcut, &QShortcut::activated, this, [this, enter] {
+            // A field with the keyboard has them first: a side's number, or another
+            // field in the main window (a dock's), whose Enter only finishes its edit.
+            QWidget *focus = QApplication::focusWidget();
+            if (auto *field = dynamic_cast<StageField *>(focus)) {
+                if (enter)
+                    field->onEnter();
+                else
+                    field->onEscape();
+                return;
+            }
+            if (qobject_cast<QLineEdit *>(focus) || qobject_cast<QPlainTextEdit *>(focus)
+                || qobject_cast<QTextEdit *>(focus)) {
+                focus->clearFocus();
+                m_canvas->setFocus();
+                return;
+            }
+            m_canvas->stageModeKey(enter);
+        });
+        m_stageKeys.append(shortcut);
+    }
+    bar->setVisible(false);
+    return bar;
+}
+
+QMargins StoryboardPage::panelMargins(const Panel *panel) const
+{
+    if (!panel)
+        return QMargins();
+    const shotcam::Stage stage = stageFor(panel);
+    return QMargins(stage.origin.x(), stage.origin.y(),
+                    stage.canvas.width() - stage.frame.width() - stage.origin.x(),
+                    stage.canvas.height() - stage.frame.height() - stage.origin.y());
+}
+
+void StoryboardPage::enterStageMode()
+{
+    Panel *panel = currentPanel();
+    if (m_stageModeOn || !panel || !m_canvas || cameraCovered()
+        || m_canvas->tool() != DrawingCanvas::Camera)
+        return;
+    if (refuseShotsEdit()) // Q8: the SHOTS lock refuses margin changes
+        return;
+    QString active;
+    if (hasActiveEdit(&active)) {
+        sayNote(QStringLiteral("Finish %1 before changing the stage.").arg(active));
+        return;
+    }
+    m_stageModeOn = true;
+    m_stageStart = panelMargins(panel);
+    m_stageLive = m_stageStart;
+    m_stageSide = -1;
+    m_canvas->setStageModeLinked(m_stageLinked);
+    m_canvas->enterStageMode(m_stageStart);
+    // Every other panel, as it rests: the bar's project figure.
+    m_stageRestBytes = 0;
+    for (const Scene *scene : std::as_const(m_scenes))
+        for (const Panel *other : scene->panels) {
+            if (other == panel)
+                continue;
+            for (const Layer &layer : other->layers) {
+                if (isGroupLayer(layer))
+                    continue;
+                m_stageRestBytes += layer.atRest() && layer.tiles ? layer.tiles->bytes()
+                                                                  : qint64(layer.image.sizeInBytes());
+            }
+        }
+    if (m_cameraPanel)
+        m_cameraPanel->setVisible(false);
+    m_stagePanel->setVisible(true);
+    if (m_syncStageBar)
+        m_syncStageBar();
+    updateTimelineKeys(); // Enter and Esc are the session's now
+    // Anything in the history moving under the session ends it, unchanged: the
+    // proposed rectangle was drawn on a panel that may no longer be as it was.
+    if (m_undoStack)
+        m_stageUndoWatch = connect(m_undoStack, &QUndoStack::indexChanged, this,
+                                   [this] { leaveStageMode(false); });
+    m_canvas->setFocus();
+    QVariantMap ev{{QStringLiteral("what"), QStringLiteral("Stage mode on")}};
+    emit shotCameraEdited(ev);
+}
+
+void StoryboardPage::leaveStageMode(bool apply)
+{
+    if (!m_stageModeOn)
+        return;
+    disconnect(m_stageUndoWatch);
+    m_stageModeOn = false;
+    Panel *panel = currentPanel();
+    const QMargins after = m_canvas->stageModeMargins();
+    const int panelNumber = m_currentPanel + 1;
+    m_canvas->leaveStageMode();
+    m_stagePanel->setVisible(false);
+    if (m_cameraPanel)
+        m_cameraPanel->setVisible(m_canvas->tool() == DrawingCanvas::Camera);
+    if (m_syncCameraBar)
+        m_syncCameraBar();
+    updateTimelineKeys();
+    QVariantMap ev{{QStringLiteral("what"),
+                    apply ? QStringLiteral("Stage mode: apply") : QStringLiteral("Stage mode: cancel")}};
+    if (apply && panel && after != m_stageStart && m_undoStack && !refuseShotsEdit()) {
+        const QString text = QStringLiteral("Stage Margin (Panel %1)").arg(panelNumber);
+        m_undoStack->push(new PanelStageCommand(this, panel, m_stageStart, after, text));
+        ev.insert(QStringLiteral("what"), text);
+    }
+    ev.insert(QStringLiteral("left"), panelMargins(panel).left());
+    ev.insert(QStringLiteral("top"), panelMargins(panel).top());
+    ev.insert(QStringLiteral("right"), panelMargins(panel).right());
+    ev.insert(QStringLiteral("bottom"), panelMargins(panel).bottom());
+    emit shotCameraEdited(ev);
+    m_canvas->setFocus();
+}
+
+void StoryboardPage::setStageLive(const QMargins &margins, int activeSide)
+{
+    const shotcam::Stage stage = stageFor(currentPanel());
+    // Whole px, never inside the frame, the stage at most the canvas's cap.
+    const int roomX = qMax(0, stagemargin::kMaxSide - stage.frame.width());
+    const int roomY = qMax(0, stagemargin::kMaxSide - stage.frame.height());
+    QMargins m(qMax(0, margins.left()), qMax(0, margins.top()), qMax(0, margins.right()),
+               qMax(0, margins.bottom()));
+    if (m.left() + m.right() > roomX) {
+        if (activeSide == 0) {
+            m.setLeft(roomX - m.right());
+        } else if (activeSide == 2) {
+            m.setRight(roomX - m.left());
+        } else {
+            m.setLeft(roomX / 2);
+            m.setRight(roomX - roomX / 2);
+        }
+    }
+    if (m.top() + m.bottom() > roomY) {
+        if (activeSide == 1) {
+            m.setTop(roomY - m.bottom());
+        } else if (activeSide == 3) {
+            m.setBottom(roomY - m.top());
+        } else {
+            m.setTop(roomY / 2);
+            m.setBottom(roomY - roomY / 2);
+        }
+    }
+    m_stageLive = QMargins(qMax(0, m.left()), qMax(0, m.top()), qMax(0, m.right()), qMax(0, m.bottom()));
+    if (activeSide >= 0)
+        m_stageSide = activeSide;
+    m_canvas->setStageModeMargins(m_stageLive);
+    if (m_syncStageBar)
+        m_syncStageBar();
+}
+
+void StoryboardPage::applyStageField(int side, int value)
+{
+    if (!m_stageLinked) {
+        setStageLive(withSide(m_stageLive, side, value), side);
+        return;
+    }
+    // The same share of the frame on every side.
+    const QSize frame = stageFor(currentPanel()).frame;
+    const double share = value / double(qMax(1, side % 2 == 0 ? frame.width() : frame.height()));
+    const int across = qRound(share * frame.width()), down = qRound(share * frame.height());
+    setStageLive(QMargins(across, down, across, down), side);
+}
+
+// The undo step's work: this panel's rectangle, and everything drawn from it.
+void StoryboardPage::applyPanelMargin(Panel *panel, const QMargins &margin)
+{
+    if (!panel)
+        return;
+    const bool onCanvas = panel == currentPanel();
+    if (onCanvas && m_canvas)
+        m_canvas->stageWillChange();
+    // A fixture's panel, at the project's stage by its pixels, says so first; a real
+    // panel already holds this.
+    const QMargins before = panelMargins(panel);
+    if (!panel->ownMargin)
+        panel->margin = before;
+    const QSize frame = stageFor(panel).frame;
+    panel->marginTo(margin, QSize(frame.width() + margin.left() + margin.right(),
+                                  frame.height() + margin.top() + margin.bottom()));
+    panel->settleMargin(m_stageMargin);
+    if (onCanvas) {
+        reopenCurrentPanel(); // its full images, at the new stage
+        if (m_canvas)
+            m_canvas->stageChanged();
+    }
+    if (m_animatic) {
+        m_animatic->leavePreview();
+        m_animatic->refreshThumbnails();
+    }
+    updateOnionGhost();
+    updateLightTable();
+    Scene *scene = nullptr;
+    for (Scene *s : std::as_const(m_scenes))
+        if (s->panels.contains(panel))
+            scene = s;
+    refreshCameraViews(scene);
+    refreshCurrentThumbNow();
+}
+
+QVariantMap StoryboardPage::stageBarStateForTest() const
+{
+    QVariantMap m;
+    m.insert(QStringLiteral("on"), m_stageModeOn);
+    m.insert(QStringLiteral("visible"), m_stagePanel && m_stagePanel->isVisible());
+    m.insert(QStringLiteral("cameraBarVisible"), m_cameraPanel && m_cameraPanel->isVisible());
+    m.insert(QStringLiteral("left"), m_stageLive.left());
+    m.insert(QStringLiteral("top"), m_stageLive.top());
+    m.insert(QStringLiteral("right"), m_stageLive.right());
+    m.insert(QStringLiteral("bottom"), m_stageLive.bottom());
+    m.insert(QStringLiteral("side"), m_stageSide);
+    m.insert(QStringLiteral("linked"), m_stageLinked);
+    if (m_stagePanel) {
+        for (QLabel *l : m_stagePanel->findChildren<QLabel *>())
+            if (!l->objectName().isEmpty())
+                m.insert(l->objectName(), l->text());
+        for (QLineEdit *e : m_stagePanel->findChildren<QLineEdit *>())
+            m.insert(e->objectName(), e->text());
+        m.insert(QStringLiteral("width"), m_stagePanel->width());
+        m.insert(QStringLiteral("height"), m_stagePanel->height());
+    }
+    return m;
+}
+
+void StoryboardPage::projectMarginMoved(const QSize &newSize, const QPoint &offset)
+{
+    m_projectCanvasSize = newSize;
+    // The keys' space moved with it, and every panel's own shift the other way: on
+    // the canvas nothing is anywhere else.
+    if (m_panelClipboard)
+        m_panelClipboard->settleMargin(m_stageMargin);
+    if (m_canvas) {
+        m_canvas->perspective()->translateAll(QPointF(offset));
+        m_canvas->perspectiveFollowPanel();
+        m_canvas->update();
+    }
+    refreshCameraViews(currentScene());
 }
 
 void StoryboardPage::onShotCameraEdit(const shotcam::CameraState &state, int kind)
@@ -5181,6 +5813,8 @@ void StoryboardPage::onShotCameraEdit(const shotcam::CameraState &state, int kin
     const int live = shotcam::liveKeyCount(*scene, cameraFps(), filmStartOf(scene));
     const shotcam::SceneCamera before = scene->camera;
     shotcam::SceneCamera after = before;
+    // Dragged on this panel's stage; the keys are in their one space (batch 6c).
+    const shotcam::CameraState keyState = shotcam::toCameraSpace(*scene->panels.at(pi), state);
     if (!m_cameraAnimate) {
         if (live >= 2) { // the canvas refuses first; this is the backstop
             sayNote(QStringLiteral("Turn on Animate to change the camera at this point."));
@@ -5196,14 +5830,14 @@ void StoryboardPage::onShotCameraEdit(const shotcam::CameraState &state, int kin
             else
                 ease = key.ease;
         }
-        after.keys.append(shotcam::makeKey(*scene, 0, 0, fps, state, ease));
+        after.keys.append(shotcam::makeKey(*scene, 0, 0, fps, keyState, ease));
     } else {
         const int at = shotcam::keyIndexAtFrame(
             *scene, cameraSceneFrame(scene, pi, frame), fps, filmStartOf(scene));
         if (at >= 0)
-            after.keys[at].state = state;
+            after.keys[at].state = keyState;
         else
-            after.keys.append(shotcam::makeKey(*scene, pi, frame, fps, state));
+            after.keys.append(shotcam::makeKey(*scene, pi, frame, fps, keyState));
     }
     const QString text = kind == DrawingCanvas::ShotCameraZoom
         ? QStringLiteral("Zoom Camera")
@@ -5331,7 +5965,8 @@ void StoryboardPage::cameraAddKey()
     // The camera as it is at this frame: adding a key never moves the shot.
     after.keys.append(shotcam::makeKey(
         *scene, pi, frame, fps,
-        shotcam::evaluateAtPanel(*scene, pi, frame, fps, filmStartOf(scene))));
+        shotcam::toCameraSpace(*scene->panels.at(pi),
+                               shotcam::evaluateAtPanel(*scene, pi, frame, fps, filmStartOf(scene)))));
     pushCameraEdit(scene, scene->camera, after, QStringLiteral("Add Camera Key"));
 }
 
@@ -5590,7 +6225,9 @@ void StoryboardPage::cameraAddKeyAtPlayhead(bool paste)
             after.keys.append(shotcam::makeKey(
                 *scene, pi, frame, fps,
                 paste ? m_cameraFraming
-                      : shotcam::evaluateAtPanel(*scene, pi, frame, fps, filmStartOf(scene))));
+                      : shotcam::toCameraSpace(*scene->panels.at(pi),
+                                               shotcam::evaluateAtPanel(*scene, pi, frame, fps,
+                                                                        filmStartOf(scene)))));
         }
         pushCameraEdit(scene, scene->camera, after,
                        paste ? QStringLiteral("Paste Camera Framing")
@@ -5689,8 +6326,14 @@ bool StoryboardPage::quickMovePlan(shotcam::QuickMove move, int sceneIndex, int 
         else
             plan->after.keys.append(scene->camera.keys.at(k));
     }
-    plan->after.keys.append(shotcam::makeKey(*scene, sp, 0, fps, plan->frames.start, m_quickEase));
-    plan->after.keys.append(shotcam::makeKey(*scene, ep, endFrames, fps, plan->frames.end, endEase));
+    // Worked out on the START panel's stage; the keys are in their one space (batch 6c).
+    const Panel &startPanel = *scene->panels.at(sp);
+    plan->after.keys.append(shotcam::makeKey(*scene, sp, 0, fps,
+                                             shotcam::toCameraSpace(startPanel, plan->frames.start),
+                                             m_quickEase));
+    plan->after.keys.append(shotcam::makeKey(*scene, ep, endFrames, fps,
+                                             shotcam::toCameraSpace(startPanel, plan->frames.end),
+                                             endEase));
     return true;
 }
 
@@ -5799,8 +6442,9 @@ void StoryboardPage::showQuickPreview(shotcam::QuickMove move)
     }
     m_quickPreviewValid = true;
     m_quickPreviewScene = plan.sceneIndex;
-    m_quickPreviewStart = plan.frames.start;
-    m_quickPreviewEnd = plan.frames.end;
+    const Panel &startPanel = *m_scenes.at(plan.sceneIndex)->panels.at(plan.startPanel);
+    m_quickPreviewStart = shotcam::toCameraSpace(startPanel, plan.frames.start);
+    m_quickPreviewEnd = shotcam::toCameraSpace(startPanel, plan.frames.end);
     if (m_canvas)
         m_canvas->refreshShotCamera();
     if (m_animatic) {
@@ -5872,11 +6516,13 @@ shotcam::CameraState StoryboardPage::lastFramingOf(int sceneIndex, bool *whole) 
     const int last = scene->panels.size() - 1;
     const int fps = cameraFps();
     if (shotcam::liveKeyCount(*scene, fps, sceneFilmStart(sceneIndex)) == 0)
-        return shotcam::neutral(scene->panels.at(last)->canvasSize());
+        return shotcam::neutral(scene->panels.at(last)->cameraCanvas());
     *whole = false;
-    return shotcam::evaluateAtPanel(*scene, last,
-                                    shotcam::panelFrames(*scene->panels.at(last), fps) - 1, fps,
-                                    sceneFilmStart(sceneIndex));
+    // A framing to copy onto keys: in their one space (batch 6c).
+    return shotcam::toCameraSpace(
+        *scene->panels.at(last),
+        shotcam::evaluateAtPanel(*scene, last, shotcam::panelFrames(*scene->panels.at(last), fps) - 1,
+                                 fps, sceneFilmStart(sceneIndex)));
 }
 
 void StoryboardPage::cameraUseLastFraming(int sceneIndex)
@@ -6110,7 +6756,8 @@ void StoryboardPage::cameraMarkKey()
         shotcam::SceneCamera after = scene->camera;
         after.keys.append(shotcam::makePinnedKey(
             filmStart + sceneFrame, fps,
-            shotcam::evaluateAtPanel(*scene, pi, frame, fps, filmStart)));
+            shotcam::toCameraSpace(*scene->panels.at(pi),
+                                   shotcam::evaluateAtPanel(*scene, pi, frame, fps, filmStart))));
         pushCameraEdit(scene, scene->camera, after, QStringLiteral("Mark Camera Key"));
         sayNote(QStringLiteral("Camera key marked at %1")
                     .arg(shotcam::timecodeText(filmStart + int(sceneFrame), fps)));
@@ -6616,7 +7263,19 @@ QVariantMap StoryboardPage::cameraBarStateForTest() const
 
 QVariantMap StoryboardPage::shotCamToolDevrecState() const
 {
-    return {{QStringLiteral("shotCam.animate"), m_cameraAnimate},
+    // Stage mode (batch 6c): the panel's margins as they are, and what is proposed.
+    const Panel *stagePanel = currentPanel();
+    const QMargins held = panelMargins(stagePanel);
+    const QMargins proposed = m_stageModeOn ? m_stageLive : held;
+    return {{QStringLiteral("stage.modeOn"), m_stageModeOn},
+            {QStringLiteral("stage.ownMargin"), stagePanel && stagePanel->ownMargin},
+            {QStringLiteral("stage.margins"),
+             QStringLiteral("%1,%2,%3,%4").arg(held.left()).arg(held.top()).arg(held.right()).arg(held.bottom())},
+            {QStringLiteral("stage.proposed"),
+             QStringLiteral("%1,%2,%3,%4").arg(proposed.left()).arg(proposed.top()).arg(proposed.right()).arg(proposed.bottom())},
+            {QStringLiteral("stage.projectMargin"),
+             QStringLiteral("%1,%2").arg(m_stageMargin.width()).arg(m_stageMargin.height())},
+            {QStringLiteral("shotCam.animate"), m_cameraAnimate},
             {QStringLiteral("shotCam.toolActive"),
              m_canvas && m_canvas->tool() == DrawingCanvas::Camera},
             // The stage cleared while the film plays (StageClear); the
@@ -7506,6 +8165,11 @@ void StoryboardPage::setupAnimaticSection(QWidget *centerColumn,
             m_syncCameraBar();
     });
     m_animatic->setCameraAnimate(m_cameraAnimate);
+    // The film over the canvas ends Stage mode (batch 6c): nothing edits what it hides.
+    connect(m_animatic, &AnimaticPage::previewShownChanged, this, [this](bool shown) {
+        if (shown)
+            leaveStageMode(false);
+    });
     connect(m_animatic, &AnimaticPage::audioChangeRequested, this,
             &StoryboardPage::onAudioChangeRequested);
     connect(m_workSplitter, &QSplitter::splitterMoved, this, [this] {
@@ -7542,8 +8206,12 @@ void StoryboardPage::setupAnimaticSection(QWidget *centerColumn,
     addKey(QKeySequence(Qt::Key_Right), true, [this] { m_animatic->goNext(); });
     addKey(QKeySequence(Qt::Key_Home), true, [this] { m_animatic->goFirst(); });
     addKey(QKeySequence(Qt::Key_End), true, [this] { m_animatic->goLast(); });
-    addKey(QKeySequence(Qt::Key_Escape), true,
-           [this] { m_animatic->leavePreview(); });
+    addKey(QKeySequence(Qt::Key_Escape), true, [this] {
+        if (m_stageModeOn) // Stage mode's (batch 6c), wherever the pointer rests
+            m_canvas->stageModeKey(false);
+        else
+            m_animatic->leavePreview();
+    });
     // Delete only over the timeline itself: over the preview it would be
     // deleting a panel the artist is not looking at. A selected camera key
     // (Phase 1C) is what it deletes first.
@@ -7594,6 +8262,12 @@ void StoryboardPage::updateTimelineKeys()
     for (const TimelineKey &key : std::as_const(m_timelineKeys))
         key.shortcut->setEnabled(m_pointerOverTimeline
                                  || (overPreview && key.overPreviewToo));
+    // Stage mode's Esc is on the timeline's, while that one is armed: two enabled
+    // shortcuts on one key would fire neither.
+    for (QShortcut *key : std::as_const(m_stageKeys))
+        key->setEnabled(m_stageModeOn
+                        && !(key->key() == QKeySequence(Qt::Key_Escape)
+                             && (m_pointerOverTimeline || overPreview)));
 }
 
 int StoryboardPage::currentFlatIndex() const
@@ -8270,6 +8944,16 @@ void StoryboardPage::reopenCurrentPanel()
     m_layerFolder->open(currentPanel());
 }
 
+// Where a neighbour's picture lies on this panel's stage, by the frame (batch 6c).
+// Empty when neither has its own margin: the whole stage, as ever.
+QRect StoryboardPage::neighbourOnStage(const Panel *here, const Panel *neighbour) const
+{
+    if (!here || !neighbour || (!here->ownMargin && !neighbour->ownMargin))
+        return QRect();
+    const shotcam::Stage other = stageFor(neighbour);
+    return QRect(stageFor(here).origin - other.origin, other.canvas);
+}
+
 void StoryboardPage::updateOnionGhost()
 {
     if (!m_canvas)
@@ -8278,7 +8962,9 @@ void StoryboardPage::updateOnionGhost()
     const bool show = m_canvas->isOnionSkinEnabled() && scene
         && m_currentPanel > 0 && m_currentPanel < scene->panels.size();
     if (show)
-        m_canvas->setPreviousPixmap(scene->panels.at(m_currentPanel - 1)->flattenedPixmap());
+        m_canvas->setPreviousPixmap(scene->panels.at(m_currentPanel - 1)->flattenedPixmap(),
+                                    neighbourOnStage(scene->panels.at(m_currentPanel),
+                                                     scene->panels.at(m_currentPanel - 1)));
     else
         m_canvas->setPreviousPixmap(QPixmap()); // clears the ghost
 }
@@ -8958,6 +9644,8 @@ Panel *StoryboardPage::clonePanel(const Panel *source)
     copy->frames = source->frames; // the source's length, at its own rate
     copy->rate = source->rate;
     copy->margin = source->margin; // its stage, with its pixels (batch 6a)
+    copy->ownMargin = source->ownMargin; // Q10: Duplicate and Paste keep the source's (batch 6c)
+    copy->keyShift = source->keyShift;
     copy->shotType = source->shotType;
     copy->cameraAngle = source->cameraAngle;
     copy->lens = source->lens;
@@ -8998,7 +9686,7 @@ void StoryboardPage::commitQuickShape()
 
 QJsonObject StoryboardPage::perspectiveToJson() const
 {
-    return m_canvas->perspective()->toJson();
+    return m_canvas->perspectiveInKeySpace();
 }
 
 void StoryboardPage::perspectiveFromJson(const QJsonObject &object)
@@ -9006,6 +9694,7 @@ void StoryboardPage::perspectiveFromJson(const QJsonObject &object)
     // The canvas size feeds the legacy branch's proportional defaults; the
     // active panel is set before perspectiveFromJson runs on every load.
     m_canvas->perspective()->fromJson(object, m_canvas->canvasSize());
+    m_canvas->perspectiveLoaded(); // on the stage of the panel on the canvas (batch 6c)
     if (m_syncPerspective)
         m_syncPerspective();
     m_canvas->update();
@@ -9235,7 +9924,10 @@ bool StoryboardPage::refuseLockedHistory(const QUndoCommand *command)
     const bool shots = dynamic_cast<const InsertPanelCommand *>(command)
         || dynamic_cast<const RemovePanelCommand *>(command)
         || dynamic_cast<const MovePanelCommand *>(command)
-        || dynamic_cast<const PanelDurationCommand *>(command);
+        || dynamic_cast<const PanelDurationCommand *>(command)
+        || dynamic_cast<const PanelStageCommand *>(command) // Q8 (batch 6c)
+        || (dynamic_cast<const ShotsTrackStep *>(command)
+            && dynamic_cast<const ShotsTrackStep *>(command)->changesPanels());
     const bool audio = dynamic_cast<const AudioTrackCommand *>(command) != nullptr;
     const bool camera = dynamic_cast<const CameraEditCommand *>(command) != nullptr;
     if (shots && t.shotsLocked) {
@@ -9376,8 +10068,7 @@ void StoryboardPage::setStageMargin(const QSize &margin)
 
 shotcam::Stage StoryboardPage::stageFor(const Panel *panel) const
 {
-    return panel ? shotcam::stageWithMargin(panel->canvasSize(), m_stageMargin)
-                 : shotcam::Stage();
+    return panel ? shotcam::panelStage(*panel, m_stageMargin) : shotcam::Stage();
 }
 
 void StoryboardPage::applyProjectResize(const QSize &newSize,
@@ -9404,6 +10095,7 @@ void StoryboardPage::applyProjectResize(const QSize &newSize,
         // exact centre offset. Translating keeps the user's construction
         // where they drew it relative to the artwork.
         m_canvas->perspective()->translateAll(QPointF(offset));
+        m_canvas->perspectiveFollowPanel(); // a panel at its own margin (batch 6c)
         m_canvas->invalidateComposite();
         m_canvas->resetViewAfterResize(); // re-fit and re-centre
         m_canvas->update();
@@ -9649,13 +10341,19 @@ void StoryboardPage::updateLightTable()
     Scene *scene = currentScene();
     const bool on = m_lightTableButton && m_lightTableButton->isChecked();
     QPixmap prev, next;
-    if (on && scene) {
-        if (m_currentPanel > 0 && m_currentPanel < scene->panels.size())
+    QRect prevRect, nextRect; // by the frame (batch 6c)
+    if (on && scene && m_currentPanel >= 0 && m_currentPanel < scene->panels.size()) {
+        const Panel *here = scene->panels.at(m_currentPanel);
+        if (m_currentPanel > 0) {
             prev = scene->panels.at(m_currentPanel - 1)->flattenedPixmap();
-        if (m_currentPanel >= 0 && m_currentPanel + 1 < scene->panels.size())
+            prevRect = neighbourOnStage(here, scene->panels.at(m_currentPanel - 1));
+        }
+        if (m_currentPanel + 1 < scene->panels.size()) {
             next = scene->panels.at(m_currentPanel + 1)->flattenedPixmap();
+            nextRect = neighbourOnStage(here, scene->panels.at(m_currentPanel + 1));
+        }
     }
-    m_canvas->setLightTablePixmaps(prev, next); // null pixmaps clear a side
+    m_canvas->setLightTablePixmaps(prev, next, prevRect, nextRect); // null pixmaps clear a side
 }
 
 void StoryboardPage::addPanelAfterSelected()

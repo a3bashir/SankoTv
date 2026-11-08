@@ -12,6 +12,7 @@
 // drawing without any command touching a key (the spec's section 2, the
 // user's decision 1).
 
+#include <QMargins>
 #include <QPointF>
 #include <QRect>
 #include <QSize>
@@ -28,17 +29,24 @@ namespace shotcam {
 // the FRAME is the shot at 1x, what the MP4 and the stills show. Without a
 // margin they are the same size (every project made before 2A), and every
 // camera function reduces, term for term, to the Phase 1 expression it
-// replaced. The margins are symmetric whole pixels, so the base framing
-// (zoom 1, centred) is the frame centred on the stage.
+// replaced. The base framing (zoom 1) is the frame, wherever it lies on the
+// stage: centred with the project's symmetric margin (Phase 2A), anywhere
+// with a panel's own margins, which differ side by side (batch 6c).
 struct Stage
 {
     QSize canvas;
     QSize frame;
+    QPoint origin; // the frame's top-left on the stage
     Stage() = default;
     // Implicit on purpose: a size alone is a stage without a margin.
     Stage(const QSize &size) : canvas(size), frame(size) {}
     Stage(const QSize &canvasSize, const QSize &frameSize)
-        : canvas(canvasSize), frame(frameSize.isEmpty() ? canvasSize : frameSize)
+        : canvas(canvasSize), frame(frameSize.isEmpty() ? canvasSize : frameSize),
+          origin((canvas.width() - frame.width()) / 2, (canvas.height() - frame.height()) / 2)
+    {
+    }
+    Stage(const QSize &canvasSize, const QSize &frameSize, const QPoint &frameOrigin)
+        : canvas(canvasSize), frame(frameSize), origin(frameOrigin)
     {
     }
     bool hasMargin() const { return frame != canvas; }
@@ -48,7 +56,11 @@ struct Stage
                      (canvas.height() - frame.height()) / 2);
     }
     // The base framing in canvas px.
-    QRect frameRect() const { return QRect(QPoint(margin().width(), margin().height()), frame); }
+    QRect frameRect() const { return QRect(origin, frame); }
+    QPointF frameCentre() const
+    {
+        return QPointF(origin.x() + frame.width() / 2.0, origin.y() + frame.height() / 2.0);
+    }
 };
 
 // A stage of `canvas` with `margin` px on each side (0 x 0: none). An
@@ -61,6 +73,18 @@ inline Stage stageWithMargin(const QSize &canvas, const QSize &margin)
         || frame.height() < 1)
         return Stage(canvas);
     return Stage(canvas, frame);
+}
+
+// A stage of `canvas` with each side's own margin (batch 6c). Invalid margins,
+// the same: no margin.
+inline Stage stageWithMargins(const QSize &canvas, const QMargins &margins)
+{
+    const QSize frame(canvas.width() - margins.left() - margins.right(),
+                      canvas.height() - margins.top() - margins.bottom());
+    if (margins.left() < 0 || margins.top() < 0 || margins.right() < 0 || margins.bottom() < 0
+        || frame.width() < 1 || frame.height() < 1)
+        return Stage(canvas);
+    return Stage(canvas, frame, QPoint(margins.left(), margins.top()));
 }
 
 // One framing. The frame has the CANVAS's aspect: width = canvasW / zoom,

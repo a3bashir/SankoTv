@@ -24,6 +24,7 @@
 #include <memory>
 
 class QPainter;
+class QPainterPath;
 
 namespace layertiles {
 
@@ -70,5 +71,23 @@ bool hasHidden(const Tiles &tiles, const QRect &stage);
 TilesPtr trimmed(const Tiles &tiles, const QRect &stage);
 // The identities: unique, and never one of QImage::cacheKey().
 qint64 freshKey();
+
+// WHERE THE ART IS (batch 6c, Stage mode): a map of cells of kArtCell px on the
+// frame's grid, on when one holds a pixel other than the fill. Fine enough to
+// outline art on screen, cheap enough to ask of a whole layer once.
+inline constexpr int kArtCell = 8;
+struct ArtCells
+{
+    QRect cells;       // in cells, frame space; empty: nothing drawn
+    QVector<uchar> on; // cells.width() x cells.height(), by row
+    bool isOn(int x, int y) const
+    {
+        return cells.contains(x, y) && on.at((y - cells.top()) * cells.width() + x - cells.left());
+    }
+    bool anyIn(const QRect &rect) const; // frame space
+};
+ArtCells artCells(const Tiles &tiles);
+// The edge of all of them together, frame space: closed, stair-stepped by the cell.
+QPainterPath artOutline(const QVector<ArtCells> &layers);
 
 } // namespace layertiles

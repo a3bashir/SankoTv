@@ -31,7 +31,8 @@ double layerMegabytes(const QSize &stage); // stage x 4 bytes, MB of 10^6
 bool heavy(const QSize &stage);            // larger than a 4K layer
 } // namespace stagemargin
 
-// Project Settings > Stage Margin... (Figma 2A-3): the margin PROMPT. Like
+// Project Settings > Stage Margin... (Figma 2A-3): the margin PROMPT, since batch 6c
+// the margin NEW panels get, with Apply to All Panels... for the rest (Q10). Like
 // Resize Project it only collects a margin and tells the truth about it,
 // live; MainWindow owns the workflow (the memory precheck, the save
 // prompt, the confirm, the swap). Growing cannot lose anything and says so
@@ -77,6 +78,9 @@ public:
     QPushButton *sameShareButton() const { return m_sameShare; }
     QPushButton *cancelButton() const { return m_cancel; }
     QPushButton *setButton() const { return m_set; }
+    // Batch 6c (Q10): Set is for new panels; this gives every panel the margin too.
+    QPushButton *applyToAllButton() const { return m_applyAll; }
+    bool applyToAllChosen() const { return m_applyAllChosen; }
     QRect dragHeaderBand() const;
 
     Q_INVOKABLE QVariantMap devrecState() const;
@@ -106,6 +110,8 @@ private:
     QPushButton *m_sameShare = nullptr;
     QPushButton *m_cancel = nullptr;
     QPushButton *m_set = nullptr;
+    QPushButton *m_applyAll = nullptr;
+    bool m_applyAllChosen = false;
     QString m_reason;
     QString m_effect;
     bool m_warn = false;

@@ -53,12 +53,11 @@ QVector<ExportPanel> collectPanels(const QVector<Scene *> &scenes, int fps,
             row.scene = cameraOff ? nullptr : scene;
             row.panelIndex = i;
             row.sceneFilmStart = sceneStart;
-            const QSize canvas = panel->canvasSize();
+            row.stage = shotcam::panelStage(*panel, stageMargin);
             row.still = (fullArtwork || cameraOff || scene->camera.isEmpty())
-                ? shotcam::neutral(canvas)
+                ? shotcam::neutral(row.stage)
                 : shotcam::evaluateAtPanel(*scene, i, 0, fps, sceneStart);
-            row.stillNeutral = shotcam::isNeutral(row.still, canvas);
-            row.stage = shotcam::stageWithMargin(canvas, stageMargin);
+            row.stillNeutral = shotcam::isNeutral(row.still, row.stage);
             row.fullArtwork = fullArtwork;
             list.append(row);
             filmStart += row.frames;
@@ -93,7 +92,8 @@ shotcam::CameraState movieFrameCamera(const QVector<ExportPanel> &panels,
             if (!row.panel)
                 return shotcam::CameraState();
             if (!row.scene)
-                return shotcam::neutral(row.panel->canvasSize());
+                return row.stage.canvas.isEmpty() ? shotcam::neutral(row.panel->canvasSize())
+                                                  : shotcam::neutral(row.stage);
             return shotcam::evaluateAtPanel(*row.scene, row.panelIndex,
                                             qMax(0, frame - start), fps, row.sceneFilmStart);
         }
@@ -170,7 +170,7 @@ QImage renderMovieFrame(const Panel *panel, const QSize &frameSize,
     if (!stage.hasMargin())
         return renderMovieFrame(panel, frameSize, camera);
     const QImage flat = panel ? panel->flattenedPixmap().toImage() : QImage();
-    if (flat.isNull() || shotcam::isNeutral(camera, stage.canvas))
+    if (flat.isNull() || shotcam::isNeutral(camera, stage))
         return fitMovieFrame(flat.isNull() ? flat : flat.copy(stage.frameRect()), frameSize);
     if (shotcam::layeredShot(*panel, camera, stage)) // depth (Phase 2B)
         return shotcam::renderShot(*panel, camera, stage, frameSize);
@@ -700,7 +700,7 @@ void MovieExportJob::pumpVideo()
             if (panel != m_panelOfImage || m_imageMoving) {
                 m_image = row.stage.hasMargin()
                     ? renderMovieFrame(row.panel, m_request.frameSize,
-                                       shotcam::neutral(row.stage.canvas), row.stage)
+                                       shotcam::neutral(row.stage), row.stage)
                     : renderMovieFrame(row.panel, m_request.frameSize);
                 m_panelOfImage = panel;
                 m_imageMoving = false;
@@ -720,7 +720,7 @@ void MovieExportJob::pumpVideo()
                     row.stage.canvas.isEmpty() ? shotcam::Stage(m_flat.size()) : row.stage;
                 // Depth (Phase 2B): each layer placed for its depth, the
                 // same placement every consumer draws.
-                m_image = shotcam::isNeutral(camera, m_flat.size())
+                m_image = shotcam::isNeutral(camera, stage)
                     ? (stage.hasMargin()
                            ? renderMovieFrame(row.panel, m_request.frameSize, camera, stage)
                            : renderMovieFrame(row.panel, m_request.frameSize))

@@ -45,8 +45,19 @@ inline const QColor kStageVeil(0, 0, 0, 51);
 // BASE FRAMING (the frame centred), not the whole canvas - the same numbers.
 CameraState neutral(const QSize &canvas);
 bool isNeutral(const CameraState &state, const QSize &canvas);
+// The same on a stage that may have its own margins (batch 6c): the frame's
+// centre, wherever the frame lies.
+CameraState neutral(const Stage &stage);
+bool isNeutral(const CameraState &state, const Stage &stage);
 // The pre-camera code may draw it: no margin, and the neutral camera.
 bool takesOldPath(const CameraState &state, const Stage &stage);
+// A panel's stage (batch 6c): its own margins when it has them, else the
+// project's `projectMargin` around its pixels.
+Stage panelStage(const Panel &panel, const QSize &projectMargin);
+// The keys' space and a panel's stage (Panel::keyShift): a state read on the
+// panel, written to a key; a key, read on the panel. Nothing without an own margin.
+CameraState toPanelSpace(const Panel &panel, const CameraState &state);
+CameraState toCameraSpace(const Panel &panel, const CameraState &state);
 
 // w(u) for u in [0, 1]: Linear u; Ease In u^2; Ease Out 1-(1-u)^2;
 // Ease In/Out 3u^2-2u^3; Hold 0 until the next key.
@@ -113,7 +124,7 @@ QString strandingText(int strandedBefore, int strandedAfter, int sceneNumber);
 // only meet through a retime), so its framing shows from that frame.
 CameraState evaluate(const Scene &scene, double sceneFrame, int fps,
                      const QSize &canvas, int filmStart = 0);
-// The camera at frame `frameInPanel` of a panel, for that panel's canvas.
+// The camera at frame `frameInPanel` of a panel, in that panel's stage px.
 CameraState evaluateAtPanel(const Scene &scene, int panelIndex,
                             int frameInPanel, int fps, int filmStart = 0);
 
