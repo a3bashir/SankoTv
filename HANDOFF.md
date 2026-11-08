@@ -1,5 +1,150 @@
 # SankoTV — Session Handoff Brief
 
+## STATUS 2026-11-08 (late): GROW-1 BUILT AND GATED INTO 6D; NOT COMMITTED, WAITING FOR THE USER'S RE-TEST
+The user approved GROW-1 as drawn (Figma 552:696). Built into 6d, uncommitted (the same 11 code files + HANDOFF). The
+user: do not commit 6d until their re-test passes. Re-test list Documents\SankoTV-Design\handtest_6d_retest_grow1.md,
+on fresh copies C:\SankoTV-TestCopies\TEST COPY - Test_SB_006_A, 6d retest and TEST COPY - Mansour song, 6d retest
+(the song's originals checked unchanged after the copy: 24 of 24). THE EXE at the main path: built Nov 8 2026
+18:34:49 (file 18:34:54), git 77120674c+dirty.
+WHAT GROW-1 IS IN THE CODE. (1) AnimaticTimeline::artExitChipRect(flat, &label, &over): the sentence while
+text + 20 px fits the clip's body, then the count ("72 f"), then a 14 px "!" marker (kArtExitMarker) in the corner,
+then the marker centred over the clip ("over"); empty only when the clip leaves no art. The chips are painted in
+their own pass after every clip (the "over" marker with a kPageBg ring), and artExitChipAt hits from the last clip
+back, so the marker on top wins. Hover: the hand and the tooltip "<sentence> · click for Grow to fit"
+(m_chipHover, cleared in canvasLeave). The amber outline stays a picture. (2) onClipContextMenu: the Grow entry
+(objectName cameraGrowToFit) after Delete Panel, before Quick Camera Move; under the SHOTS lock disabled with
+" (locked)" like the others. (3) sayNote: when the widget under the pointer has no WA_UnderMouse (a popup or menu
+just closed over it and Qt has not entered it yet), the note waits in AfterNextEnter (a one-shot app event filter)
+for the next Enter, then shows on the next turn of the loop, or after 400 ms. Otherwise at once, as before. One
+mechanism for the popover's tiles and every menu's Quick Move (any sayNote). Test seam setNotePointForTest.
+WHY THE USER'S RETRY SHOWED AMBER (not recorded: no Dev Recorder session after 17:03; the app ran 17:28 to ~18:30).
+The 17:34:24 recovery copy of TEST COPY - Test_SB_006_A, 6d: keys x 1920 (panel 9's start) and x 2880 (panel 10's
+end); panel 9 margin [960,540,2491,540], panel 10 [960,540,314,540] (own). The live registry (read-only, WMI
+StdRegProv) has storyboard/cameraQuickMove = 0.5: a 50 % pan from 1920 ends at 3840 with Stay inside off. 2880 is
+exactly where Stay inside on stops it on a 960 margin. So the move was most likely made with Stay inside ON, and
+panel 10's right margin was then cut to 314, which put that key 646 px past its art: the amber. The file cannot
+say when the switch was touched. setCameraStayInside only sets the flag and the bar; no key moves ((cx11)).
+THE CHECKS (runGrowAnyZoomPass, main order after runCameraAcrossPanelsPass, and in SANKO_LIFECYCLE_ONLY=stagemode):
+(cx8) at 400/100/75/40/25/10 %: sentence, 72 f, 72 f, !, over, over; each >= 14 px, painted (amber share 0.79 to
+0.92), hand, tooltip, press offers Grow; control: none on the kept clip (and no amber where its chip would be).
+(cx8) the marker over a 7 px clip is hit over the clip beside it (amber over it 0.96); control: a press on that clip
+off the marker and off any length handle selects it. (cx9) the clip menu's Grow (one Stage Margin step); controls:
+none on the kept clip, disabled "(locked)" under the SHOTS lock; the CAMERA row menu's Grow (it had no check);
+control: none over the kept clip. (cx10) the popover's note waits for the Enter and is up 0.5 s after the close's
+Leave events; control: shown before them (the old order) it is gone; the clip menu's Quick Move the same. (cx11)
+Stay inside switched on by the switch's press: keys identical, no step, cx 1912 as keyed, exit still 72; control:
+the press really turned it on.
+TWO NEW CHECKS FAILED ON THEIR FIRST RUN, read before changing: (cx8)'s tooltip read in the same event as the
+hover (Qt rolls a tooltip in, about 50 ms, before isVisible), the hand and the menu passing at every zoom. Old:
+read at once. New: pump(150) first. (cx8)'s control pressed panel 1 within 6 px of the selected panel 2's left
+edge, its DUR-1 length handle, so it started a length drag. Old: clickThumb(r, 1) left selected. New: scene 2's
+second clip selected at 300 % first, and the press is asserted off any handle. Quick check after: stagemode 124
+checks, 0 failures; the amber-pixel reading added after, still 124 / 0.
+GATE 6d3 (fullgate_6d3.log, 2456 s, in a scratch worktree C:\SankoTV_6d at 77120674c with the 11 files copied and
+hash-checked, sha_6d3_gate.txt, because the user's SankoTV was open; logs in _probe\split\from_worktree_6d3; the
+worktree removed): Release and Debug exit 0 in every family. Lifecycle 1352 (was 1338), Camera 335, CanvasSizeLock
+170, CanvasEdgeLock 74, BrushLibrary 187, DevRecorder 46, QuickShapeGeometry 19, PaintPixel 13, CanvasBrush 3.
+Camera's 126 pin lines and Lifecycle's 9 pinned lines the same as gate 6d2. Files unchanged at the end in both trees.
+
+## STATUS 2026-11-08 (night): 6D HAND TEST READ; GROW-1 PROPOSED, WAITING FOR THE USER'S WORD
+The user's 6d hand test: Dev Recorder sessions 20261108-164339 (120 s, ended with Discard) and 20261108-164553
+(1026 s), both the 15:17:33 build (git 77120674c+dirty). It ran on the OLDER copies in Documents\SankoTV-TestCopies
+("TEST COPY - Test_SB_006_A with margin", which already had panels 1 and 2 at their own margins, and "TEST COPY -
+Mansour song"), not on the 6d copies in C:\SankoTV-TestCopies (untouched since 13:08). Saves to Documents worked
+(17:01:05, 17:03:00): Norton allows the exe now.
+WHY NO AMBER CHIP AT STEP 5 - NOT A BUG: Stay inside artwork was ON at both Quick Moves (5:36.8 and 13:42.4; never
+pressed, only hovered at 4:11 and 11:15; on in the screenshots), so the END gave way on Panel 10 at its stage's edge
+(camera x 3839.98 at frame 1631: the frame's right edge on the stage's 5760). Nothing left the art; no band, outline or
+chip in the 13:43 screenshot, rightly. THE DESIGN GAP, confirmed in the code: artExitChipRect returns nothing when
+the sentence + 20 px is wider than the clip's body (about 160 px); the user's timeline was at 75 % (a 3 s clip 135 px).
+FOUND: THE QUICK MOVE'S NOTE SHOWS FOR 0.26 s (both moves). The tile's click hides the popover, then
+cameraQuickMove -> sayNote -> QToolTip::showText; the closing popover's Leave events (5:36.848) make QTipLabel's
+app-wide filter hide the tip 300 ms later (5:37.150). Since Phase 1D (c731c3105). Not fixed: in the proposal.
+PROPOSAL 2026-11-08 GROW-1 (Figma, the user's area, frame 552:696 under CAM-3; area 510:697 grown 15677 -> 16530):
+the chip steps down (sentence -> "180 f" -> 14 px "!" marker -> the marker centred over a clip too narrow for it), the
+SHOTS clip's right-click menu gets the Grow entry, the outline is not made a button (its edges are DUR-1's length
+handles), the note shown after the popover has closed; checks (cx8), (cx9), (cx10) with controls. NOTHING BUILT.
+THE STRIP DECISION, APPROVED (2026-11-08): the frame-anchored strip only when a panel of the scene has its own margin.
+
+## STATUS 2026-11-08 (evening): 6D BUILT AND GATED, NOT COMMITTED
+6d is in the main tree on 77120674c, uncommitted, waiting for the user's hand test and word (11 files:
+AnimaticPage.cpp/.h, AnimaticTimeline.cpp/.h, StoryboardPage.cpp/.h, camera/ShotCamera.cpp/.h,
+export/ProjectExport.cpp, tests/CameraTest.cpp, tests/ProjectLifecycleTest.cpp). GATE 6d2 green (the first, 6d, found
+the strip re-laid in every project: fixed in the code, no check changed); the exe of Nov 8 15:17:33. See the batch below.
+Hand-test list Documents\SankoTV-Design\handtest_6d_camera_across_panels.md, on C:\SankoTV-TestCopies\TEST COPY -
+Test_SB_006_A, 6d and TEST COPY - Mansour song, 6d (made by the copier with its root moved there, rule 16).
+The scratch worktree C:\SankoTV_6c is removed; its gate logs are in app\build\_probe\split\from_worktree_6c.
+
+## Batch 6d: the camera across panels with their own stages (2026-11-08) - BUILT, NOT COMMITTED
+Figma MARGIN-2 and MARGIN-0; proposals-2026-11-06.md Q9 and Q11, as approved.
+NEVER CLAMPED, SAID IN AMBER (Q9). shotcam::artExit(scene, panel, fps, filmStart, stage): every frame of the
+panel as the camera plays it, its frame's box against the panel's stage, never clamped (so nothing jumps at a cut);
+a depth layer that reaches an edge holds the frame further in (Stay inside with depth, 2C), counted as the
+difference between clampInside with the layers and without. Past by half a pixel or more counts; the margin each
+side would need is the most past, rounded up. The CAMERA row: a pale amber band over those frames, the move dashed
+amber there (in place of its line, under the keys); the clip outlined amber, and the chip "leaves Panel N's art for
+F f" at its bottom right; since GROW-1 the chip steps down when the clip is narrow (the count, the "!" marker, the
+marker over the clip) and never goes (the 6d build drew the outline alone below about 160 px). The timeline keeps each scene's exits
+while a fingerprint of what shapes them is the same (the camera's file form, the rate, where the scene starts, each
+panel's length, margin, own margin, flatten fingerprint and depths), checked once a paint and once a hit test.
+GROW TO FIT. The chip's menu and the CAMERA row's menu over a leaving clip offer "Grow Panel N's right margin by X px
+to fit this move" (several sides: "Grow Panel N's margins to fit this move (left .. px, ...)"):
+StoryboardPage::growPanelToFit, one PanelStageCommand, "Stage Margin (Panel N)", capped at the canvas's 8192;
+refused under the SHOTS lock (Q8) and while an edit is active; leaves Stage mode first.
+STAY INSIDE PER PANEL. A Quick Move over a span: its END is held inside the panel it lands on, that panel's stage and
+layers' depths, and the note says "The end gave way on Panel N: its stage ends there." (or names the layer). With Stay
+inside off, or a panel in the middle of the span, the panels it would leave are named: the popover's span line while a
+move is hovered ("· leaves the art of Panel N"), and the note "The move leaves the art of Panel N: Grow to fit is on the
+clip." Use Last Framing and Continue Camera: a framing on the art where it came from that would leave the art of the
+scene's first panel is held in, and "The framing was held inside Panel 1 of Scene N: its stage has less margin. Grow its
+margin to keep the framing as it was."; a framing already off the art is the user's, copied as it is.
+THE STRIP, FRAME-ANCHORED (Q11) ONCE A PANEL OF THE SCENE HAS ITS OWN MARGIN. Then every well's frame box is the same:
+the frame scaled into 80 % of the well, centred; the panel's stage drawn around it at that scale, cut at the well's
+edge, so a glance shows which panels carry a margin, and on which side. While every panel of the scene has the
+project's stage, every well already has the frame in one size and place, and the thumbnail is the bytes it always was
+(the old calls, kept as they were: the strip pins hold). applyPanelMargin redraws the scene's every thumbnail, so the
+switch flips on Apply, undo and redo. The veil and the camera's quad as before. APPROVED BY THE USER (2026-11-08):
+the anchored layout only where stages differ (Q11's own problem), not in every project.
+FULL ARTWORK PER STAGE (PDF). With Stills Show Full Artwork, a cell is its panel's whole stage, and a panel with a margin
+gets its frame outlined in purple (#7c6ef6, 0.35 mm).
+FOUND ON THE WAY, FIXED BEFORE THE GATE: (1) the amber dashes were drawn before the move's line, which covered them
+(first run of (cx2): 0 amber px; now the dashes after the segments). (2) The exits' fingerprint was taken several
+times a clip a paint, a cost on long scenes while playing: now once a paint. (3) The note had a double space ("The
+move  leaves"). (4) 6c's Stage mode pass had been put between the (dk) comment and the function it describes; the
+comment is back over runDockSteadyPass.
+THE CHECKS (all new in 6d): Camera (cx0), 3: no keys no exit, a pan past the stage (48 frames, right 475 px), and the
+controls. Lifecycle runCameraAcrossPanelsPass, (cx) to (cx7), in the main order after runStageModePass and in the
+SANKO_LIFECYCLE_ONLY=stagemode slice. THREE FAILED ON THEIR FIRST RUN, read before anything changed:
+(cx2), the code (above). (cx6), the check: its control counted "purple" pixels with the margin panel's row removed and
+found 102, from the fixture's random-coloured ellipses; old: counts of blue > 200, red < 160, green < 150 over the page,
+"withFrame > 50 && none == 0", "(cx6) FULL ARTWORK: each panel's own stage in its cell, the frame outlined on the panel
+with a margin; control: none on the panels without one". New: the page painted twice, with panel 1's stage and with it
+as no margin (Full Artwork is the same picture either way), and only what changes counted: "(cx6) FULL ARTWORK: ... what
+the outline changes is a 16:9 rectangle, drawn in purple" (1492 px changed, all purple, 264 x 150, 1.760:1) and
+"(cx6) control: nothing changes in any other panel's cell, and the outline is the frame's, not the whole picture's (8:3)".
+(cx7), the check: its framing, cx 2300, was already off the art where it came from (x 1340 to 3260 on a 2880 px
+stage), which the code rightly keeps; old byTheEdge.cx = 2300.0 and the control's 2300.0, new 1700.0 (x 740 to 2660,
+on that art, past scene 2's first panel), held to 960 with the note. The old case is kept as a new control: "(cx7)
+control: a framing already off the art where it came from is copied as it is, Stay inside on, and nothing is said".
+(cx4)'s control now reads the whole sentence, "The move leaves the art of Panel 2: Grow to fit is on the clip." (it read
+"Grow to fit"), which the double space failed. Quick check after the fixes: stagemode 109 checks, 0 failures; Camera 335.
+THE FIRST GATE, 6d (fullgate_6d.log, 2403 s): every family green but Lifecycle, 8 failures in both configs, all the
+strip's: (ct) "the strip thumbnail draws the whole artwork with the camera's frame outlined" [at 90,14.5833]; (mp)
+strip thumbnails 1 and 2 [4e6f3ca84e577fcc, 6aacf426c5bf95c2]; (mq) thumbnails 1 and 2 in a 25 % margin, keyed and
+keyless [070ea222dbf8a0c4, 1cca3fce1df99f0b, f19e2ebb34c5b1bc, 9411dd38e5b89804]; (dp) "THE STRIP draws the stage as
+the camera at the panel's first frame sees it" [#ffffff at 58.3333,21.6667]. Read: the code, not the checks - the 80 %
+box was applied in every project, re-laying every strip where no stage differs. Fixed as above; no check and no pin
+changed: the same eight pass on the pins as they were ((mp) 8a9b72ae4452f0ca, dda9ef45b96e461b; (mq) cd95a588ee9e99d6,
+36d160939238b0d2, ad2258ecdb6c504e, eb84862b981cbf07). New control: "(cx5) control: with no panel at its own margin
+the wells are as they always were - panel 2's art fills its well, right of where the 80 % box would end". New slice
+SANKO_LIFECYCLE_ONLY=strip (runMovingStripPinPass, runCameraToolPass, runDepthPass: 108 checks, 0 failures).
+GATE 6d2 (fullgate_6d2.log, normal mode, 2408 s, on the main tree with a copy of the script without the kill line,
+the files hashed before it started and unchanged at its end, sha_6d2_gate.txt): Release and Debug exit 0 in every
+family. Lifecycle 1338 (was 1321), Camera 335 (332), CanvasSizeLock 170, CanvasEdgeLock 74, BrushLibrary 187,
+DevRecorder 46, QuickShapeGeometry 19, PaintPixel 13, CanvasBrush 3. No pin changed: Camera's 126 pin lines and
+Lifecycle's 9 pinned-bytes lines as the fit's gate (pvfinal) had them. THE EXE at the main path: built Nov 8 2026
+15:17:33 (file 15:17:51), git 77120674c+dirty.
+
 ## STATUS 2026-11-08 (afternoon): 6C AND THE PLAYBACK FIT COMMITTED; THE SAVE WAS NORTON 360
 THE SAVE THAT FAILED WAS NORTON 360 (the user found it): its history said "SankoTV.exe prevented from
 accessing your undefined file - Detected". Its ransomware protection refused an unknown SankoTV.exe the
@@ -96,7 +241,7 @@ THE USER'S WORD ON SAVES: a layer file unchanged since an older build is not con
 skip-unchanged rule stays as it is. RULE 16, new: every hand test on fresh copies I prepare, in
 Documents\SankoTV-TestCopies, each "TEST COPY - ...", and the list names which.
 
-## Batch 6c: Stage mode and each panel's own margin (2026-11-07) - BUILT, NOT COMMITTED
+## Batch 6c: Stage mode and each panel's own margin (2026-11-07) - COMMITTED (07d147dd1, 2026-11-08)
 Figma MARGIN-1 (533:696), MARGIN-0, MARGIN-2, PLAN; proposals-2026-11-06.md sections 4 and 5, and
 proposals-2026-11-06-stage-space.md. Q7, Q8, Q10, Q13 as approved.
 THE ONE SPACE. A Stage has an origin now (stageWithMargins, frameCentre, neutral(Stage)). A Panel has

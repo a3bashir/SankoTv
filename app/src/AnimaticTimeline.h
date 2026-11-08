@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QHash>
+#include <QMargins>
 #include <QPoint>
 #include <QRect>
 #include <QString>
@@ -217,6 +218,15 @@ public:
     // "hover"); each segment ("scene", "from", "to", "ease", "dashed",
     // "glyph", "accent", "x0", "x1"); the row's dimming.
     QRect cameraRowForTest() const;
+    // THE PART OF A MOVE THAT LEAVES A CLIP'S ART (batch 6d, Figma MARGIN-2): the
+    // clip's frames past its stage, in amber on the CAMERA row, and its chip.
+    int artExitFramesForTest(int flatIndex) const;
+    QMargins artExitGrowForTest(int flatIndex) const;
+    QRect artExitChipRectForTest(int flatIndex) const;
+    QString artExitChipTextForTest(int flatIndex) const;
+    // GROW-1: what the chip shows at this zoom - the sentence, the count ("72 f") or
+    // the marker ("!"); "over" when the marker is centred over a clip too narrow for it.
+    QString artExitChipLabelForTest(int flatIndex) const;
     QVariantList cameraKeysForTest() const;
     QVariantList cameraSegmentsForTest() const;
     double cameraRowOpacityForTest() const;
@@ -264,6 +274,8 @@ signals:
     void cameraKeyContextMenuRequested(int sceneIndex, int keyIndex,
                                        const QPoint &globalPos);
     void cameraRowContextMenuRequested(int flatPanelIndex, const QPoint &globalPos);
+    // Batch 6d: the amber chip of a clip whose art the camera leaves, pressed.
+    void artExitChipClicked(int flatPanelIndex, const QPoint &globalPos);
     void cameraAnimateToggled(bool on);
     // Right-click on the SCENES track (Phase 1D): that scene's menu.
     void sceneContextMenuRequested(int sceneIndex, const QPoint &globalPos);
@@ -475,6 +487,25 @@ private:
     QVector<Block> m_blocks;
     int m_fps = 24; // project frame rate; every frame count derives from it
     QSize m_stageMargin = QSize(0, 0); // Phase 2A: px each side; none
+    // Batch 6d: each scene's clips' art exits, kept while what shapes them is the
+    // same (its camera, its panels' lengths, stages and art, the rate).
+    struct ArtExits
+    {
+        QByteArray shape;
+        QVector<int> frames, first, last; // per panel of the scene
+        QVector<QMargins> grow;
+    };
+    mutable QHash<const Scene *, ArtExits> m_artExits;
+    mutable bool m_artExitsTrusted = false; // true only inside a paint or a hit test, after its check
+    int artExitChipAt(const QPoint &pos) const; // the clip whose chip is there, or -1
+    const ArtExits *artExitsOf(int sceneIndex) const;
+    bool artExitOf(int flatIndex, int *frames, int *first, int *last, QMargins *grow) const;
+    QString artExitChipText(int flatIndex) const;
+    // Empty only when the clip leaves no art (or SHOTS is hidden): at any zoom the chip
+    // steps down rather than going (GROW-1). `label` gets what it shows; `over` is
+    // set when the marker is centred over a clip too narrow to hold it.
+    QRect artExitChipRect(int flatIndex, QString *label = nullptr, bool *over = nullptr) const;
+    int m_chipHover = -1; // the clip whose chip the pointer is over (its tooltip shown), or -1
     int m_current = -1;  // playhead panel (flat index)
     int m_selected = -1; // selected panel (flat index): accent + trim handles
     bool m_playing = false;

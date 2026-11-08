@@ -11,7 +11,9 @@
 #include "camera/ShotCamera.h"
 
 #include <QContextMenuEvent>
+#include <QDataStream>
 #include <QFontMetrics>
+#include <QJsonDocument>
 #include <QFrame>
 #include <QIcon>
 #include <QPixmap>
@@ -27,6 +29,7 @@
 #include <QPolygon>
 #include <QPushButton>
 #include <QEvent>
+#include <QScopeGuard>
 #include <QScrollBar>
 #include <QSignalBlocker>
 #include <QWheelEvent>
@@ -89,6 +92,9 @@ constexpr int kGrab = 5;      // px grab tolerance
 // zoom, so a 1-frame clip stays visible and clickable (Figma DUR-1).
 constexpr int kMinFrames = 1;
 constexpr int kMinClipPx = 4;
+// The amber chip's last size (GROW-1, Figma 552:696): a 14 px "!" marker, in the clip's
+// corner while it fits, centred over the clip when not.
+constexpr int kArtExitMarker = 14;
 constexpr int kReorderThreshold = 8; // px before a clip press becomes a drag
 
 // The clip, as the design lays it out on a 76 px body (every number is the
@@ -1446,6 +1452,13 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
     // shots track in the page colour. A row with a file named keeps the
     // blue it had (the design shows no track).
     using namespace SankoTimelineTheme;
+    // The clips' art exits (batch 6d) checked once a paint, scene by scene; the
+    // clips, the chips and the CAMERA row then read what this found.
+    m_artExitsTrusted = false;
+    for (int s = 0; s < m_scenes.size(); ++s)
+        artExitsOf(s);
+    m_artExitsTrusted = true;
+    const auto untrustArtExits = qScopeGuard([this] { m_artExitsTrusted = false; });
     p.fillRect(QRect(0, kRulerY, W, kRulerH), kRulerBg);
     p.fillRect(QRect(0, kSceneY, W, kSceneH), kHeaderBg);
     p.fillRect(QRect(0, kPanelY, W, panelTrackH()), kPageBg);
@@ -1697,6 +1710,40 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
                 p.setPen(kPillText);
                 p.drawText(L.pill, Qt::AlignCenter, pillText(b));
             }
+            // A MOVE THAT LEAVES THIS PANEL'S ART (batch 6d, Figma MARGIN-2): the clip
+            // outlined amber - a picture, not a button (GROW-1); its chip, below.
+            if (artExitOf(b.flatIndex, nullptr, nullptr, nullptr, nullptr)) {
+                p.setRenderHint(QPainter::Antialiasing, true);
+                p.setPen(QPen(QColor(0xf5, 0xa6, 0x23), 2));
+                p.setBrush(Qt::NoBrush);
+                p.drawRoundedRect(bf.adjusted(1, 1, -1, -1), kClipR, kClipR);
+            }
+        }
+        // THE AMBER CHIPS (GROW-1), after every clip: a marker centred over a clip too
+        // narrow for it reaches over its neighbours, and is drawn above them, as it is
+        // hit before them (artExitChipAt). Pressed: Grow to fit.
+        for (const Block &b : std::as_const(m_blocks)) {
+            QString label;
+            bool over = false;
+            const QRect chip = artExitChipRect(b.flatIndex, &label, &over);
+            if (chip.isEmpty() || chip.right() < kLabelCol || chip.left() > contentRight)
+                continue;
+            const QColor amber(0xf5, 0xa6, 0x23);
+            p.setRenderHint(QPainter::Antialiasing, true);
+            if (over) { // a ring of the shots track's ground parts it from the clips under it
+                p.setPen(Qt::NoPen);
+                p.setBrush(kPageBg);
+                p.drawRoundedRect(QRectF(chip).adjusted(-1.5, -1.5, 1.5, 1.5), 4, 4);
+            }
+            QFont f = font();
+            f.setPixelSize(10);
+            f.setBold(label == QStringLiteral("!"));
+            p.setFont(f);
+            p.setPen(Qt::NoPen);
+            p.setBrush(amber);
+            p.drawRoundedRect(QRectF(chip), 3, 3);
+            p.setPen(QColor(0x1c, 0x1e, 0x25));
+            p.drawText(chip, Qt::AlignCenter, label);
         }
         p.setRenderHint(QPainter::Antialiasing, false);
         // A LENGTH DRAG (2026-11-06, Figma DUR-1): a dashed line where the
@@ -2487,6 +2534,168 @@ QString AnimaticTimeline::cameraKeyTip(const CameraMark &mark) const
                                : shotcam::easeLabel(shotcam::Ease(mark.ease)));
 }
 
+// --- The part of a move that leaves a clip's art (batch 6d, Q9, Figma MARGIN-2) ---
+// Never clamped: the camera plays as keyed, and the CAMERA row says where its shot
+// goes past a panel's stage, in amber, with the clip outlined and a chip naming it.
+
+const AnimaticTimeline::ArtExits *AnimaticTimeline::artExitsOf(int sceneIndex) const
+{
+    const Scene *scene = m_scenes.value(sceneIndex);
+    if (!scene || scene->camera.isEmpty())
+        return nullptr;
+    if (m_artExitsTrusted) { // inside a paint, already checked at its start
+        const auto it = m_artExits.constFind(scene);
+        if (it != m_artExits.constEnd() && it->frames.size() == scene->panels.size())
+            return &it.value();
+    }
+    const int filmStart = qMax(0, sceneStartFrame(sceneIndex));
+    // What shapes them: the camera (its file form), the rate, where the scene
+    // starts, and each panel's length, stage and art.
+    QByteArray shape;
+    {
+        QDataStream s(&shape, QIODevice::WriteOnly);
+        s << m_fps << filmStart << m_stageMargin
+          << QJsonDocument(shotcam::toJson(*scene)).toJson(QJsonDocument::Compact);
+        for (const Panel *panel : scene->panels) {
+            s << quint64(quintptr(panel)) << shotcam::panelFrames(*panel, m_fps) << panel->margin
+              << panel->ownMargin << panel->flattenFingerprint();
+            for (const Layer &layer : panel->layers)
+                s << panel->effectiveParallax(layer);
+        }
+    }
+    ArtExits &cached = m_artExits[scene];
+    if (cached.shape == shape && cached.frames.size() == scene->panels.size())
+        return &cached;
+    cached = ArtExits();
+    cached.shape = shape;
+    for (int p = 0; p < scene->panels.size(); ++p) {
+        const Panel *panel = scene->panels.at(p);
+        const shotcam::ArtExit exit = panel
+            ? shotcam::artExit(*scene, p, m_fps, filmStart, shotcam::panelStage(*panel, m_stageMargin))
+            : shotcam::ArtExit();
+        cached.frames.append(exit.frames);
+        cached.first.append(exit.first);
+        cached.last.append(exit.last);
+        cached.grow.append(exit.grow);
+    }
+    return &cached;
+}
+
+bool AnimaticTimeline::artExitOf(int flatIndex, int *frames, int *first, int *last, QMargins *grow) const
+{
+    if (flatIndex < 0 || flatIndex >= m_blocks.size() || !m_tracks.cameraVisible)
+        return false;
+    const Block &b = m_blocks.at(flatIndex);
+    const ArtExits *exits = artExitsOf(b.sceneIndex);
+    if (!exits || b.panelIndex >= exits->frames.size() || exits->frames.at(b.panelIndex) <= 0)
+        return false;
+    if (frames)
+        *frames = exits->frames.at(b.panelIndex);
+    if (first)
+        *first = exits->first.at(b.panelIndex);
+    if (last)
+        *last = exits->last.at(b.panelIndex);
+    if (grow)
+        *grow = exits->grow.at(b.panelIndex);
+    return true;
+}
+
+QString AnimaticTimeline::artExitChipText(int flatIndex) const
+{
+    int frames = 0;
+    if (!artExitOf(flatIndex, &frames, nullptr, nullptr, nullptr))
+        return QString();
+    return QStringLiteral("leaves Panel %1's art for %2 f").arg(m_blocks.at(flatIndex).panelIndex + 1).arg(frames);
+}
+
+// THE CHIP STEPS DOWN, IT NEVER GOES (GROW-1, the user's approval of Figma 552:696): at
+// the clip's bottom right, the sentence while it fits, then the count ("72 f"), then a
+// 14 px "!" marker; on a clip too narrow even for that, the marker centred over the clip
+// and over its edges. So a leaving clip has its button at any zoom.
+QRect AnimaticTimeline::artExitChipRect(int flatIndex, QString *label, bool *over) const
+{
+    const QString text = artExitChipText(flatIndex);
+    if (over)
+        *over = false;
+    if (text.isEmpty() || !m_tracks.shotsVisible)
+        return QRect();
+    const Block &b = m_blocks.at(flatIndex);
+    const double ppf = pxPerFrame();
+    const int x0 = contentXToScreen(b.startFrame * ppf);
+    const int x1 = qMax(x0 + kMinClipPx, contentXToScreen((b.startFrame + b.frames) * ppf));
+    const QRect body = clipLayout(QRect(x0, kPanelY + 2, x1 - x0, panelTrackH() - 4), pillText(b)).body;
+    QFont f = font();
+    f.setPixelSize(10);
+    const QFontMetrics fm(f);
+    int frames = 0;
+    artExitOf(flatIndex, &frames, nullptr, nullptr, nullptr);
+    for (const QString &t : {text, QStringLiteral("%1 f").arg(frames)}) {
+        const int w = fm.horizontalAdvance(t) + 12;
+        if (w + 8 <= body.width()) {
+            if (label)
+                *label = t;
+            return QRect(body.right() - 4 - w, body.bottom() - 4 - 16, w, 16);
+        }
+    }
+    if (label)
+        *label = QStringLiteral("!");
+    const int top = body.bottom() - 4 - kArtExitMarker;
+    if (kArtExitMarker + 8 <= body.width())
+        return QRect(body.right() - 4 - kArtExitMarker, top, kArtExitMarker, kArtExitMarker);
+    if (over)
+        *over = true;
+    return QRect(body.left() + (body.width() - kArtExitMarker) / 2, top, kArtExitMarker, kArtExitMarker);
+}
+
+int AnimaticTimeline::artExitChipAt(const QPoint &pos) const
+{
+    const bool wasTrusted = m_artExitsTrusted;
+    if (!wasTrusted) { // checked once, scene by scene, not once a clip
+        for (int s = 0; s < m_scenes.size(); ++s)
+            artExitsOf(s);
+        m_artExitsTrusted = true;
+    }
+    // From the last clip back: the chips are painted in clip order, so where two
+    // markers over narrow clips overlap, the one on top is hit (GROW-1).
+    int hit = -1;
+    for (int i = m_blocks.size() - 1; i >= 0 && hit < 0; --i)
+        if (artExitChipRect(i).contains(pos))
+            hit = i;
+    m_artExitsTrusted = wasTrusted;
+    return hit;
+}
+
+QString AnimaticTimeline::artExitChipLabelForTest(int flatIndex) const
+{
+    QString label;
+    bool over = false;
+    if (artExitChipRect(flatIndex, &label, &over).isEmpty())
+        return QString();
+    return over ? QStringLiteral("over") : label;
+}
+
+int AnimaticTimeline::artExitFramesForTest(int flatIndex) const
+{
+    int frames = 0;
+    return artExitOf(flatIndex, &frames, nullptr, nullptr, nullptr) ? frames : 0;
+}
+
+QMargins AnimaticTimeline::artExitGrowForTest(int flatIndex) const
+{
+    QMargins grow;
+    return artExitOf(flatIndex, nullptr, nullptr, nullptr, &grow) ? grow : QMargins();
+}
+
+QRect AnimaticTimeline::artExitChipRectForTest(int flatIndex) const
+{
+    return artExitChipRect(flatIndex);
+}
+
+QString AnimaticTimeline::artExitChipTextForTest(int flatIndex) const
+{
+    return artExitChipText(flatIndex);
+}
+
 double AnimaticTimeline::cameraRowOpacityForTest() const
 {
     return (!m_tracks.cameraVisible || m_tracks.cameraLocked) ? 0.4 : 1.0;
@@ -2507,6 +2716,27 @@ void AnimaticTimeline::paintCameraRow(QPainter &p)
     p.setOpacity(cameraRowOpacityForTest());
     p.setRenderHint(QPainter::Antialiasing, true);
 
+    // THE PART OFF A PANEL'S ART (batch 6d, Figma MARGIN-2): the frames of each clip
+    // whose shot leaves its stage, amber under the move, the move dashed amber there.
+    // The band first, under the move; the dashes after it, in its place (below).
+    const QColor amber(0xf5, 0xa6, 0x23);
+    QColor amberBand = amber;
+    amberBand.setAlphaF(0.28);
+    QVector<QPair<qreal, qreal>> offArt; // screen x from, to
+    {
+        const double ppf = pxPerFrame();
+        for (int i = 0; i < m_blocks.size(); ++i) {
+            int frames = 0, first = -1, last = -1;
+            if (!artExitOf(i, &frames, &first, &last, nullptr))
+                continue;
+            const Block &b = m_blocks.at(i);
+            const qreal xa = contentXToScreen((b.startFrame + first) * ppf);
+            const qreal xb = qMax(xa + 1.0, qreal(contentXToScreen((b.startFrame + last + 1) * ppf)));
+            offArt.append({xa, xb});
+            p.fillRect(QRectF(xa, y0 + 3, xb - xa, kCameraH - 6), amberBand);
+        }
+    }
+
     for (const CameraSegment &s : cameraSegments(marks)) {
         const QColor c = s.accent ? kCameraAccent : kCameraSegment;
         if (s.dashed) {
@@ -2521,6 +2751,17 @@ void AnimaticTimeline::paintCameraRow(QPainter &p)
             paintEaseGlyph(p, QRectF((s.x0 + s.x1) / 2.0 - kGlyphW / 2.0, cy - kGlyphH / 2.0,
                                      kGlyphW, kGlyphH),
                            shotcam::Ease(s.ease));
+    }
+    // Where the shot is off the art, the move dashed amber in place of its line;
+    // the keys are painted after, over it.
+    for (const QPair<qreal, qreal> &span : offArt) {
+        const QRectF under(span.first, cy - 1.5, span.second - span.first, 3.0);
+        p.fillRect(under, kCameraRowBg);
+        p.fillRect(under, amberBand);
+        QPen dash(amber, 2.0, Qt::CustomDashLine, Qt::FlatCap);
+        dash.setDashPattern({2.5, 2.0});
+        p.setPen(dash);
+        p.drawLine(QPointF(span.first, cy), QPointF(span.second, cy));
     }
 
     int selScene = -1, selKey = -1;
@@ -2817,6 +3058,13 @@ void AnimaticTimeline::canvasMousePress(QMouseEvent *e)
     const QPoint pos = e->position().toPoint();
     if (pos.x() < kLabelCol)
         return;
+
+    // A clip's amber chip (batch 6d): its Grow to fit, offered.
+    if (const int chipClip = artExitChipAt(pos); chipClip >= 0) {
+        emit artExitChipClicked(chipClip, e->globalPosition().toPoint());
+        e->accept();
+        return;
+    }
 
     // THE CAMERA ROW (Phase 1C), BEFORE the playhead: a key often sits under
     // the playhead (a click on a key puts it there), and the key must win.
@@ -3213,6 +3461,11 @@ void AnimaticTimeline::canvasMouseMove(QMouseEvent *e)
         camKey = mark.keyIndex;
         cursor = Qt::PointingHandCursor;
     }
+    // An amber chip at any of its sizes (batch 6d, GROW-1): the hand, and as its
+    // tooltip the whole sentence and what a press does.
+    const int chipHover = artExitChipAt(pos);
+    if (chipHover >= 0)
+        cursor = Qt::PointingHandCursor;
     m_canvas->setCursor(cursor);
     if (hover != m_hoverIndex) {
         m_hoverIndex = hover;
@@ -3226,6 +3479,16 @@ void AnimaticTimeline::canvasMouseMove(QMouseEvent *e)
         else
             QToolTip::hideText();
         m_canvas->update();
+    }
+    if (chipHover != m_chipHover) {
+        m_chipHover = chipHover;
+        if (chipHover >= 0)
+            QToolTip::showText(e->globalPosition().toPoint(),
+                               artExitChipText(chipHover) + QStringLiteral(" ") + QChar(0x00B7)
+                                   + QStringLiteral(" click for Grow to fit"),
+                               m_canvas);
+        else if (camKey < 0)
+            QToolTip::hideText();
     }
     // The AUDIO row under the pointer (Phase 2D): its name and length chips
     // hide, so the waveform under them can be seen.
@@ -3356,6 +3619,7 @@ void AnimaticTimeline::canvasMouseRelease(QMouseEvent *e)
 
 void AnimaticTimeline::canvasLeave()
 {
+    m_chipHover = -1; // its tooltip goes with the pointer's next crossing, as any tooltip
     if (m_hoverIndex != -1 || m_camHoverKey != -1 || m_audioHover) {
         m_hoverIndex = -1;
         m_camHoverScene = m_camHoverKey = -1;

@@ -54,6 +54,21 @@ bool takesOldPath(const CameraState &state, const Stage &stage);
 // A panel's stage (batch 6c): its own margins when it has them, else the
 // project's `projectMargin` around its pixels.
 Stage panelStage(const Panel &panel, const QSize &projectMargin);
+// THE PART OF A MOVE THAT LEAVES A PANEL'S ART (batch 6d, Q9, Figma MARGIN-2):
+// the panel's frames whose shot goes past its stage, as the camera plays them -
+// never clamped, so it cannot jump at a cut - and the margin each side would need
+// to hold the whole move. Past the stage's edge by half a pixel or more, or held in
+// by a depth layer that reaches it (Phase 2C).
+struct ArtExit
+{
+    int frames = 0;   // how many of the panel's frames leave its art
+    int first = -1;   // the first and last of them, from the panel's start
+    int last = -1;
+    QMargins grow;    // whole px each side, to fit every frame of the move
+    bool leaves() const { return frames > 0; }
+};
+ArtExit artExit(const Scene &scene, int panelIndex, int fps, int filmStart, const Stage &stage);
+
 // The keys' space and a panel's stage (Panel::keyShift): a state read on the
 // panel, written to a key; a key, read on the panel. Nothing without an own margin.
 CameraState toPanelSpace(const Panel &panel, const CameraState &state);

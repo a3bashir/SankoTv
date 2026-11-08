@@ -5764,6 +5764,80 @@ void StoryboardPage::applyPanelMargin(Panel *panel, const QMargins &margin)
     refreshCurrentThumbNow();
 }
 
+// --- Grow to fit this move (batch 6d, Q9, Figma MARGIN-2) ---------------------------
+// The camera plays as keyed; where its shot leaves a panel's art, the band each
+// side needs is worked out from the frames over that panel and its layers' depths,
+// and given in one undo step, the Stage Margin step.
+
+QString StoryboardPage::growToFitText(int sceneIndex, int panelIndex, QMargins *grow) const
+{
+    const Scene *scene = m_scenes.value(sceneIndex);
+    const Panel *panel = scene ? scene->panels.value(panelIndex) : nullptr;
+    if (!panel)
+        return QString();
+    const shotcam::ArtExit exit =
+        shotcam::artExit(*scene, panelIndex, cameraFps(), sceneFilmStart(sceneIndex), stageFor(panel));
+    if (!exit.leaves() || exit.grow.isNull())
+        return QString();
+    if (grow)
+        *grow = exit.grow;
+    QStringList sides;
+    const QStringList names{QStringLiteral("left"), QStringLiteral("top"), QStringLiteral("right"),
+                            QStringLiteral("bottom")};
+    const int px[4] = {exit.grow.left(), exit.grow.top(), exit.grow.right(), exit.grow.bottom()};
+    QVector<int> which;
+    for (int i = 0; i < 4; ++i)
+        if (px[i] > 0)
+            which.append(i);
+    const QString panelName = QStringLiteral("Panel %1").arg(panelIndex + 1);
+    if (which.size() == 1)
+        return QStringLiteral("Grow %1's %2 margin by %3 px to fit this move")
+            .arg(panelName, names.at(which.first()))
+            .arg(px[which.first()]);
+    for (int i : which)
+        sides << QStringLiteral("%1 %2 px").arg(names.at(i)).arg(px[i]);
+    return QStringLiteral("Grow %1's margins to fit this move (%2)").arg(panelName, sides.join(QStringLiteral(", ")));
+}
+
+void StoryboardPage::growPanelToFit(int sceneIndex, int panelIndex)
+{
+    Scene *scene = m_scenes.value(sceneIndex);
+    Panel *panel = scene ? scene->panels.value(panelIndex) : nullptr;
+    QMargins grow;
+    if (!panel || !m_undoStack || growToFitText(sceneIndex, panelIndex, &grow).isEmpty())
+        return;
+    if (refuseShotsEdit()) // Q8: a margin is the SHOTS track's
+        return;
+    if (panel == currentPanel()) {
+        QString active;
+        if (hasActiveEdit(&active)) {
+            sayNote(QStringLiteral("Finish %1 before changing the stage.").arg(active));
+            return;
+        }
+        leaveStageMode(false);
+    }
+    const QMargins before = panelMargins(panel);
+    const QSize frame = stageFor(panel).frame;
+    QMargins after = before + grow;
+    // The stage at most the canvas's cap, as Stage mode keeps it.
+    const int roomX = qMax(0, stagemargin::kMaxSide - frame.width());
+    const int roomY = qMax(0, stagemargin::kMaxSide - frame.height());
+    if (after.left() + after.right() > roomX)
+        after.setRight(qMax(0, roomX - after.left()));
+    if (after.top() + after.bottom() > roomY)
+        after.setBottom(qMax(0, roomY - after.top()));
+    if (after == before)
+        return;
+    const QString text = QStringLiteral("Stage Margin (Panel %1)").arg(panelIndex + 1);
+    m_undoStack->push(new PanelStageCommand(this, panel, before, after, text));
+    QVariantMap ev{{QStringLiteral("what"), QStringLiteral("Grow to Fit: ") + text},
+                   {QStringLiteral("left"), after.left()},
+                   {QStringLiteral("top"), after.top()},
+                   {QStringLiteral("right"), after.right()},
+                   {QStringLiteral("bottom"), after.bottom()}};
+    emit shotCameraEdited(ev);
+}
+
 QVariantMap StoryboardPage::stageBarStateForTest() const
 {
     QVariantMap m;
@@ -6311,6 +6385,30 @@ bool StoryboardPage::quickMovePlan(shotcam::QuickMove move, int sceneIndex, int 
         return false;
     }
     plan->note = quickGiveWayNote(move, plan->frames, stage);
+    // THE END GIVES WAY ON ITS OWN PANEL (batch 6d, MARGIN-0): over a span it lands on
+    // another panel, whose stage, and whose layers' depths, may hold less. With Stay
+    // inside it is held inside them, and the note says so, naming the panel.
+    if (ep != sp && m_cameraStayInside) {
+        const Panel &from = *scene->panels.at(sp);
+        const Panel &endPanel = *scene->panels.at(ep);
+        const shotcam::CameraState onEnd =
+            shotcam::toPanelSpace(endPanel, shotcam::toCameraSpace(from, plan->frames.end));
+        int stoppedBy = -1;
+        const QVector<shotcam::DepthEdge> endEdges = shotcam::depthEdges(endPanel);
+        const shotcam::CameraState held =
+            shotcam::clampInside(onEnd, stageFor(&endPanel), endEdges, &stoppedBy);
+        if (std::hypot(held.cx - onEnd.cx, held.cy - onEnd.cy) >= 0.5
+            || held.zoom > onEnd.zoom * (1.0 + 1e-6)) {
+            plan->frames.end = shotcam::toPanelSpace(from, shotcam::toCameraSpace(endPanel, held));
+            const QString what = stoppedBy >= 0 && stoppedBy < endEdges.size()
+                ? QChar(0x2018) + endEdges.at(stoppedBy).name + QChar(0x2019)
+                    + QStringLiteral(" (%1 %) reaches its edge")
+                          .arg(qRound(endEdges.at(stoppedBy).parallax * 100))
+                : QStringLiteral("its stage ends there");
+            plan->note += (plan->note.isEmpty() ? QString() : QStringLiteral(" "))
+                + QStringLiteral("The end gave way on Panel %1: %2.").arg(ep + 1).arg(what);
+        }
+    }
     // The END key keeps the ease the move through its frame had.
     shotcam::Ease endEase = shotcam::Ease::EaseInOut;
     const int through = shotcam::segmentKeyIndex(*scene, plan->endFrame, fps, sceneFilmStart(si));
@@ -6334,6 +6432,12 @@ bool StoryboardPage::quickMovePlan(shotcam::QuickMove move, int sceneIndex, int 
     plan->after.keys.append(shotcam::makeKey(*scene, ep, endFrames, fps,
                                              shotcam::toCameraSpace(startPanel, plan->frames.end),
                                              endEase));
+    // Any panel the move would still leave the art of (Stay inside off, or a panel in
+    // the middle of the span): said, and where the offer to grow it is (batch 6d).
+    const QString leaves = quickLeavesText(*plan);
+    if (!leaves.isEmpty())
+        plan->note += (plan->note.isEmpty() ? QString() : QStringLiteral(" "))
+            + QStringLiteral("The move%1: Grow to fit is on the clip.").arg(leaves.mid(2)); // " leaves the art of ..."
     return true;
 }
 
@@ -6440,6 +6544,9 @@ void StoryboardPage::showQuickPreview(shotcam::QuickMove move)
         clearQuickPreview();
         return;
     }
+    // The span line names the panels this move would leave the art of (batch 6d).
+    if (auto *spanL = findChild<QLabel *>(QStringLiteral("camQuickSpanText")))
+        spanL->setText(quickSpanText(m_currentScene, pi) + quickLeavesText(plan));
     m_quickPreviewValid = true;
     m_quickPreviewScene = plan.sceneIndex;
     const Panel &startPanel = *m_scenes.at(plan.sceneIndex)->panels.at(plan.startPanel);
@@ -6456,6 +6563,9 @@ void StoryboardPage::showQuickPreview(shotcam::QuickMove move)
 
 void StoryboardPage::clearQuickPreview()
 {
+    if (m_quickPreviewValid)
+        if (auto *spanL = findChild<QLabel *>(QStringLiteral("camQuickSpanText")))
+            spanL->setText(quickSpanText(m_currentScene, m_currentPanel));
     m_quickPreviewValid = false;
     if (m_canvas)
         m_canvas->refreshShotCamera();
@@ -6484,6 +6594,29 @@ QString StoryboardPage::quickSpanText(int sceneIndex, int panelIndex) const
                .arg(panels, shotcam::timecodeText(film + int(plan.startFrame), fps),
                     shotcam::timecodeText(film + int(plan.endFrame), fps))
         + pinnedReplacedText(pinnedAmong(m_scenes.value(plan.sceneIndex), plan.replaced)); // D20
+}
+
+// EVERY PANEL A SPAN CROSSES, CHECKED (batch 6d, MARGIN-0): the move as it would be,
+// played over each of them; those whose art it would leave are named.
+QString StoryboardPage::quickLeavesText(const QuickPlan &plan) const
+{
+    const Scene *scene = m_scenes.value(plan.sceneIndex);
+    if (!scene || plan.after.keys.isEmpty())
+        return QString();
+    Scene trial = *scene; // the panels shared, the camera the plan's
+    trial.camera = plan.after;
+    const int fps = cameraFps();
+    const int film = sceneFilmStart(plan.sceneIndex);
+    QStringList leaving;
+    for (int p = plan.startPanel; p <= plan.endPanel && p < trial.panels.size(); ++p)
+        if (shotcam::artExit(trial, p, fps, film, stageFor(trial.panels.at(p))).leaves())
+            leaving << QString::number(p + 1);
+    trial.panels.clear(); // not the trial's to free
+    if (leaving.isEmpty())
+        return QString();
+    return QString::fromUtf8(" \xC2\xB7 leaves the art of %1 %2")
+        .arg(leaving.size() == 1 ? QStringLiteral("Panel") : QStringLiteral("Panels"),
+             leaving.join(QStringLiteral(", ")));
 }
 
 void StoryboardPage::addQuickMoveEntries(QMenu *menu, const QString &title, int flatPanel)
@@ -6531,7 +6664,10 @@ void StoryboardPage::cameraUseLastFraming(int sceneIndex)
         return;
     Scene *scene = m_scenes.at(sceneIndex);
     bool whole = true;
-    const shotcam::CameraState framing = lastFramingOf(sceneIndex - 1, &whole);
+    shotcam::CameraState framing = lastFramingOf(sceneIndex - 1, &whole);
+    QString heldNote;
+    if (!whole)
+        framing = heldOnFirstPanel(sceneIndex, framing, &heldNote);
     const int fps = cameraFps();
     shotcam::SceneCamera after;
     for (const shotcam::CameraKey &key : scene->camera.keys)
@@ -6565,6 +6701,8 @@ void StoryboardPage::cameraUseLastFraming(int sceneIndex)
             ++pinned;
     pushCameraEdit(scene, scene->camera, after,
                    QStringLiteral("Use Last Framing") + pinnedReplacedText(pinned));
+    if (!heldNote.isEmpty())
+        sayNote(heldNote);
 }
 
 void StoryboardPage::cameraContinue(int sceneIndex)
@@ -6573,7 +6711,9 @@ void StoryboardPage::cameraContinue(int sceneIndex)
         return;
     Scene *scene = m_scenes.at(sceneIndex);
     bool whole = true;
-    const shotcam::CameraState framing = lastFramingOf(sceneIndex - 1, &whole);
+    QString heldNote;
+    const shotcam::CameraState framing =
+        heldOnFirstPanel(sceneIndex, lastFramingOf(sceneIndex - 1, &whole), &heldNote);
     const int fps = cameraFps();
     shotcam::SceneCamera after = scene->camera;
     const int first = shotcam::keyIndexAtFrame(*scene, 0, fps, filmStartOf(scene));
@@ -6589,6 +6729,39 @@ void StoryboardPage::cameraContinue(int sceneIndex)
         after.keys.append(shotcam::makeKey(*scene, 0, 0, fps, framing));
     }
     pushCameraEdit(scene, scene->camera, after, QStringLiteral("Continue Camera"));
+    if (!heldNote.isEmpty())
+        sayNote(heldNote);
+}
+
+// A FRAMING COPIED ONTO A PANEL WITH LESS MARGIN (batch 6d, MARGIN-0): Use Last Framing
+// and Continue Camera copy it in the keys' one space, exactly. When it stays on the art
+// of the panel it came from and would leave the art of the scene's first panel, Stay
+// inside holds it in, and the note says so. Anything else is the framing as it was.
+shotcam::CameraState StoryboardPage::heldOnFirstPanel(int sceneIndex, const shotcam::CameraState &framing,
+                                                      QString *note) const
+{
+    const Scene *scene = m_scenes.value(sceneIndex);
+    const Scene *before = m_scenes.value(sceneIndex - 1);
+    if (!m_cameraStayInside || !scene || !before || scene->panels.isEmpty() || before->panels.isEmpty())
+        return framing;
+    const Panel &from = *before->panels.last();
+    const Panel &to = *scene->panels.first();
+    const shotcam::Stage fromStage = stageFor(&from), toStage = stageFor(&to);
+    const shotcam::CameraState onFrom = shotcam::toPanelSpace(from, framing);
+    const shotcam::CameraState onTo = shotcam::toPanelSpace(to, framing);
+    auto same = [](const shotcam::CameraState &a, const shotcam::CameraState &b) {
+        return std::hypot(a.cx - b.cx, a.cy - b.cy) < 0.5 && qAbs(a.zoom - b.zoom) < 1e-6;
+    };
+    if (!same(shotcam::clampInside(onFrom, fromStage, shotcam::depthEdges(from)), onFrom))
+        return framing; // it was off the art where it came from: kept as it is
+    const shotcam::CameraState held = shotcam::clampInside(onTo, toStage, shotcam::depthEdges(to));
+    if (same(held, onTo))
+        return framing;
+    if (note)
+        *note = QStringLiteral("The framing was held inside Panel 1 of Scene %1: its stage has less margin. "
+                               "Grow its margin to keep the framing as it was.")
+                    .arg(scene->number);
+    return shotcam::toCameraSpace(to, held);
 }
 
 // "Use Last Framing of Scene 1 (replaces 2 keys)" / "Continue Camera from
@@ -7229,6 +7402,14 @@ void StoryboardPage::onCameraRowMenu(int flatPanel, const QPoint &globalPos)
     // framing entries (Figma 1D-3).
     int si = -1, pi = -1;
     if (flatToScenePanel(flatPanel, &si, &pi)) {
+        // The move leaves this panel's art (batch 6d, Figma MARGIN-2): grow it to fit.
+        const QString grow = growToFitText(si, pi);
+        if (!grow.isEmpty()) {
+            menu.addSeparator();
+            QAction *g = menu.addAction(grow);
+            g->setObjectName(QStringLiteral("cameraGrowToFit"));
+            connect(g, &QAction::triggered, this, [this, si, pi] { growPanelToFit(si, pi); });
+        }
         menu.addSeparator();
         addQuickMoveEntries(&menu, QStringLiteral("Quick Move on Panel %1").arg(flatPanel + 1),
                             flatPanel);
@@ -7499,13 +7680,51 @@ QPixmap StoryboardPage::stripThumbPixmap(Panel *panel, qreal dprOverride) const
     // 512px long edge covers the well's ~480 device px at DPR 2 without
     // upscaling, and it self-validates against layer edits.
     const QPixmap art = panel->flattenedThumb();
+    const QSize cs = panel->canvasSize();
+    const shotcam::Stage stage = stageFor(panel);
+    const Scene *scene = nullptr;
+    for (const Scene *sc : m_scenes)
+        if (sc && sc->panels.contains(panel)) {
+            scene = sc;
+            break;
+        }
+    // FRAME-ANCHORED (batch 6d, Q11, Figma MARGIN-2) once a panel of the strip's scene
+    // has its own margin: the frame the same size and place in every well - 80 % of
+    // it each way, centred - and each panel's stage around it as far as the well
+    // allows, so a glance shows which panels carry a margin, and on which side. While
+    // every panel has the project's stage, every well already has the frame in the
+    // same size and place, and the thumbnail is the bytes it always was (the pins).
+    bool anchored = false;
+    if (scene && !cs.isEmpty() && !stage.frame.isEmpty())
+        for (const Panel *other : scene->panels)
+            anchored = anchored || (other && other->ownMargin);
     if (!art.isNull()) {
-        const QPixmap fit = art.scaled(well, Qt::KeepAspectRatio,
-                                       Qt::SmoothTransformation);
         QPainter p(&out); // DEVICE pixels: the DPR tag comes after painting
-        const QPoint at((well.width() - fit.width()) / 2,
-                        (well.height() - fit.height()) / 2);
-        p.drawPixmap(at, fit);
+        QRectF stageOnWell; // where the panel's whole stage is painted
+        double sx = 1.0, sy = 1.0;
+        if (anchored) {
+            constexpr double kFrameShare = 0.80;
+            const QSizeF box = QSizeF(stage.frame).scaled(QSizeF(well) * kFrameShare, Qt::KeepAspectRatio);
+            sx = sy = box.width() / stage.frame.width();
+            const QPointF frameAt((well.width() - box.width()) / 2.0, (well.height() - box.height()) / 2.0);
+            stageOnWell = QRectF(frameAt - QPointF(stage.origin) * sx, QSizeF(cs) * sx);
+            p.setClipRect(QRect(QPoint(0, 0), well));
+            p.setRenderHint(QPainter::SmoothPixmapTransform, true);
+            p.drawPixmap(stageOnWell, art, QRectF(art.rect()));
+        } else {
+            const QPixmap fitted = art.scaled(well, Qt::KeepAspectRatio,
+                                              Qt::SmoothTransformation);
+            const QPoint atWell((well.width() - fitted.width()) / 2,
+                                (well.height() - fitted.height()) / 2);
+            p.drawPixmap(atWell, fitted);
+            stageOnWell = QRectF(QRect(atWell, fitted.size()));
+            if (!cs.isEmpty()) {
+                sx = double(fitted.width()) / cs.width();
+                sy = double(fitted.height()) / cs.height();
+            }
+        }
+        const QPointF at = stageOnWell.topLeft();
+        const QSize fit = stageOnWell.size().toSize();
         // THE SHOT CAMERA'S FRAME (the user's decision 2, Phase 1B): the
         // whole artwork stays, with the camera at the panel's first frame
         // outlined over it - accent, amber past the sharp limit. Only in a
@@ -7514,14 +7733,6 @@ QPixmap StoryboardPage::stripThumbPixmap(Panel *panel, qreal dprOverride) const
         // D6) the whole artwork is the stage and the shot is never all of
         // it: the frame is always outlined and the margin under it veiled
         // 20 %, as on the canvas.
-        const Scene *scene = nullptr;
-        for (const Scene *s : m_scenes)
-            if (s && s->panels.contains(panel)) {
-                scene = s;
-                break;
-            }
-        const QSize cs = panel->canvasSize();
-        const shotcam::Stage stage = stageFor(panel);
         if (scene && (shotcam::liveKeyCount(*scene, cameraFps(), filmStartOf(scene)) > 0
                       || stage.hasMargin())
             && !cs.isEmpty()) {
@@ -7530,23 +7741,31 @@ QPixmap StoryboardPage::stripThumbPixmap(Panel *panel, qreal dprOverride) const
                 *scene, int(scene->panels.indexOf(panel)), 0, fps, filmStartOf(scene));
             QTransform t;
             t.translate(at.x(), at.y());
-            t.scale(double(fit.width()) / cs.width(),
-                    double(fit.height()) / cs.height());
+            t.scale(sx, sy);
             const bool soft = state.zoom > shotcam::sharpLimit(stage) + 1e-9;
             QPen pen(soft ? QColor(0xf5, 0xa6, 0x23) : SankoTheme::kPurple,
                      1.5 * dpr);
             pen.setJoinStyle(Qt::MiterJoin);
             p.setRenderHint(QPainter::Antialiasing, true);
-            p.setClipRect(QRect(at, fit.size()));
+            const QRectF shown = stageOnWell.intersected(QRectF(QPoint(0, 0), well));
+            if (anchored)
+                p.setClipRect(shown);
+            else
+                p.setClipRect(QRect(at.toPoint(), fit)); // as it always was
             // DEPTH (Phase 2B, Figma 2B-4): the whole stage as the camera
             // at the panel's first frame sees it - each layer placed for
             // its depth - in place of the drawing as drawn.
-            if (shotcam::layeredShot(*panel, state, stage))
-                p.drawImage(at, shotcam::stageThumb(*panel, state, stage, fit.size()));
+            if (shotcam::layeredShot(*panel, state, stage)) {
+                if (anchored)
+                    p.drawImage(stageOnWell, shotcam::stageThumb(*panel, state, stage, fit));
+                else
+                    p.drawImage(at.toPoint(), shotcam::stageThumb(*panel, state, stage, fit));
+            }
             const QPolygonF quad = t.map(shotcam::frameQuad(state, stage));
             if (stage.hasMargin()) {
+                // The margin veiled, as far as the well shows it.
                 QPainterPath outside;
-                outside.addRect(QRectF(at, fit.size()));
+                outside.addRect(shown);
                 QPainterPath inside;
                 inside.addPolygon(quad);
                 inside.closeSubpath();
@@ -8154,6 +8373,22 @@ void StoryboardPage::setupAnimaticSection(QWidget *centerColumn,
             &StoryboardPage::onCameraKeyMenu);
     connect(m_animatic, &AnimaticPage::cameraRowContextMenuRequested, this,
             &StoryboardPage::onCameraRowMenu);
+    // A clip's amber chip (batch 6d): the one thing to do about it.
+    connect(m_animatic, &AnimaticPage::artExitChipClicked, this, [this](int flat, const QPoint &at) {
+        int si = -1, pi = -1;
+        if (!flatToScenePanel(flat, &si, &pi))
+            return;
+        const QString grow = growToFitText(si, pi);
+        if (grow.isEmpty())
+            return;
+        QMenu menu(this);
+        menu.setObjectName(QStringLiteral("artExitMenu"));
+        menu.setStyleSheet(SankoTimelineTheme::kSpeedMenuSheet);
+        QAction *g = menu.addAction(grow);
+        g->setObjectName(QStringLiteral("cameraGrowToFit"));
+        connect(g, &QAction::triggered, this, [this, si, pi] { growPanelToFit(si, pi); });
+        menu.exec(at);
+    });
     connect(m_animatic, &AnimaticPage::cameraAnimateToggled, this,
             &StoryboardPage::setCameraAnimate);
     connect(m_animatic, &AnimaticPage::sceneContextMenuRequested, this,
@@ -8472,10 +8707,28 @@ void StoryboardPage::onClipContextMenu(int flat, const QPoint &globalPos)
     remove->setEnabled(scene->panels.size() > 1); // a scene keeps one panel
     connect(remove, &QAction::triggered, this,
             [this] { deleteSelectedPanel(); });
+    // A move that leaves this clip's art (GROW-1, Figma 552:696): Grow to fit here too,
+    // a right-click on the clip itself at any zoom, as the chip's and the CAMERA row's
+    // menus offer it.
+    QAction *grow = nullptr;
+    int growScene = -1, growPanel = -1;
+    if (flatToScenePanel(currentFlatIndex(), &growScene, &growPanel)) {
+        const QString growText = growToFitText(growScene, growPanel);
+        if (!growText.isEmpty()) {
+            menu.addSeparator();
+            grow = menu.addAction(growText);
+            grow->setObjectName(QStringLiteral("cameraGrowToFit"));
+            connect(grow, &QAction::triggered, this,
+                    [this, growScene, growPanel] { growPanelToFit(growScene, growPanel); });
+        }
+    }
     // A LOCKED SHOTS track (Part B): the entries stay, disabled and
-    // suffixed, so the lock is seen where the edit was tried.
+    // suffixed, so the lock is seen where the edit was tried. A margin is the
+    // SHOTS track's (Q8), so Grow to fit with them.
     if (shotsLocked()) {
-        for (QAction *a : {add, duplicate, setDuration, remove}) {
+        for (QAction *a : {add, duplicate, setDuration, remove, grow}) {
+            if (!a)
+                continue;
             a->setEnabled(false);
             a->setText(a->text() + QStringLiteral(" (locked)"));
         }
@@ -9854,11 +10107,73 @@ void StoryboardPage::sayLocked(const QString &message, bool asBox)
         QToolTip::showText(QCursor::pos(), message, this);
 }
 
+namespace {
+// Runs `then` once: just after the pointer's next Enter anywhere in the application
+// has been dispatched (with the Leaves that come with it), or after `fallbackMs` if
+// none comes.
+class AfterNextEnter : public QObject
+{
+public:
+    AfterNextEnter(QObject *owner, int fallbackMs, std::function<void()> then)
+        : QObject(owner), m_then(std::move(then))
+    {
+        qApp->installEventFilter(this);
+        QTimer::singleShot(fallbackMs, this, [this] { run(); });
+    }
+
+protected:
+    bool eventFilter(QObject *, QEvent *e) override
+    {
+        if (e->type() == QEvent::Enter && !m_entered) {
+            m_entered = true;
+            QTimer::singleShot(0, this, [this] { run(); }); // after the rest of that dispatch
+        }
+        return false;
+    }
+
+private:
+    void run()
+    {
+        if (m_ran)
+            return;
+        m_ran = true;
+        qApp->removeEventFilter(this);
+        if (m_then)
+            m_then();
+        deleteLater();
+    }
+    std::function<void()> m_then;
+    bool m_entered = false;
+    bool m_ran = false;
+};
+} // namespace
+
+QPoint StoryboardPage::notePoint() const
+{
+    return m_notePointForTest.isNull() ? QCursor::pos() : m_notePointForTest;
+}
+
+// A NOTE THAT CAN BE READ (GROW-1). A popover or a menu that closed for the press that
+// made the note leaves the pointer over a widget Qt has not entered yet, and the Leave
+// events of that close, still to come, hide any tooltip 300 ms later: the Quick Move's
+// note was up 0.26 s in the user's 6d hand test (Pan Right's click closes the popover,
+// then the move says its note). So the note waits for that Enter, then shows for the
+// tooltip's usual time. With nothing closing, it shows at once, as before.
 void StoryboardPage::sayNote(const QString &message)
 {
     m_lastNote = message;
-    if (!m_ignoreRealPointerForTest)
-        QToolTip::showText(QCursor::pos(), message, this);
+    if (m_ignoreRealPointerForTest && m_notePointForTest.isNull())
+        return;
+    const int serial = ++m_noteSerial;
+    const auto show = [this, serial, message] {
+        if (serial == m_noteSerial) // a later note replaces this one
+            QToolTip::showText(notePoint(), message, this);
+    };
+    QWidget *under = QApplication::widgetAt(notePoint());
+    if (!under || under->testAttribute(Qt::WA_UnderMouse))
+        show();
+    else
+        new AfterNextEnter(this, 400, show);
 }
 
 void StoryboardPage::removeSelectedPanel(const QString &baseText)

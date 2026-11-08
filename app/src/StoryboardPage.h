@@ -248,6 +248,13 @@ public:
     QVariantMap stageBarStateForTest() const;
     // The project's margin (for new panels) moved, and no panel with it.
     void projectMarginMoved(const QSize &newSize, const QPoint &offset);
+    // GROW TO FIT THIS MOVE (batch 6d, Figma MARGIN-2): the offer's words for a panel
+    // whose art the camera leaves (empty: it does not), and the step that gives it.
+    QString growToFitText(int sceneIndex, int panelIndex, QMargins *grow = nullptr) const;
+    void showQuickPreviewForTest(shotcam::QuickMove move) { showQuickPreview(move); }
+    QPixmap stripThumbForTest(Panel *panel, qreal dpr) const { return stripThumbPixmap(panel, dpr); }
+    void clearQuickPreviewForTest() { clearQuickPreview(); }
+    void growPanelToFit(int sceneIndex, int panelIndex);
     // Giving every panel a margin (Q8): true, and says so, when the SHOTS track is locked.
     bool refuseMarginChange() { return refuseShotsEdit(); }
     // The Camera bar widened by `px` (0: its own width), placed again: the
@@ -367,6 +374,9 @@ public:
     // the one a panel removal shows when it took camera keys with it.
     QString lastNoteForTest() const { return m_lastNote; }
     void clearNoteForTest() { m_lastNote.clear(); }
+    // GROW-1's (cx10): a note's tooltip shown at this global point (on the test's own
+    // window) instead of the real pointer's; a null point gives the pointer back.
+    void setNotePointForTest(const QPoint &global) { m_notePointForTest = global; }
     Panel *currentPanelForTest() const { return currentPanel(); }
     // The strip's parallel thumbnails (2026-10-31): how many were built off
     // the UI thread since the last reset.
@@ -818,10 +828,13 @@ private:
     QString quickGiveWayNote(shotcam::QuickMove move, const shotcam::QuickFrames &f,
                              const shotcam::Stage &stage) const;
     QString quickSpanText(int sceneIndex, int panelIndex) const; // the popover's title
+    QString quickLeavesText(const QuickPlan &plan) const;       // batch 6d: the panels it would leave
     void addQuickMoveEntries(QMenu *menu, const QString &title, int flatPanel);
     void addSceneCameraEntries(QMenu *menu, int sceneIndex);
     void onSceneMenu(int sceneIndex, const QPoint &globalPos);
     shotcam::CameraState lastFramingOf(int sceneIndex, bool *whole) const;
+    shotcam::CameraState heldOnFirstPanel(int sceneIndex, const shotcam::CameraState &framing,
+                                          QString *note) const; // batch 6d
     int sceneFilmStart(int sceneIndex) const; // frames before the scene
     int filmStartOf(const Scene *scene) const; // the same, for a scene pointer (0 if not ours)
     shotcam::QuickAmounts m_quickAmounts;      // loaded with the guides
@@ -899,8 +912,12 @@ private:
     bool refuseShotsEdit();
     bool refuseLockedHistory(const QUndoCommand *command);
     void sayLocked(const QString &message, bool asBox);
-    // The same non-modal tooltip for a note that is not a refusal.
+    // The same non-modal tooltip for a note that is not a refusal; after a popover's or
+    // a menu's close, once the pointer has entered what is under it (GROW-1).
     void sayNote(const QString &message);
+    QPoint notePoint() const; // the pointer, or the test's point
+    int m_noteSerial = 0;
+    QPoint m_notePointForTest;
     // Remove the selected panel with this history text ("Delete Panel",
     // "Cut Panel"); when the panel held camera keys the text names them
     // and a note says the scene's camera move changes (the user's rule,

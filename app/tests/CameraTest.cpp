@@ -4257,6 +4257,43 @@ int main(int argc, char **argv)
                   && layertiles::artOutline({layertiles::artCells(*plain)}).isEmpty());
     }
 
+    // ---- (cx0) the part of a move that leaves a panel's art (batch 6d) -------------------
+    {
+        using shotcam::CameraState;
+        Scene across;
+        for (int i = 0; i < 2; ++i) {
+            Panel *panel = makeBlankPanel(QSize(1920, 1080));
+            panel->setLength(48, 24);
+            across.panels.append(panel);
+        }
+        const shotcam::Stage plain(QSize(1920, 1080));
+        check(QStringLiteral("(cx0) NO KEYS, NO EXIT: the neutral camera is the frame"),
+              !shotcam::artExit(across, 1, 24, 0, plain).leaves());
+        CameraState a;
+        a.cx = 960.0;
+        a.cy = 540.0;
+        CameraState b = a;
+        b.cx = 960.0 + 480.0;
+        across.camera.keys = {shotcam::makeKey(across, 0, 0, 24, a), shotcam::makeKey(across, 1, 48, 24, b)};
+        across.camera.keys[0].ease = shotcam::Ease::Linear;
+        // Panel 2: from 960 + 240 to 960 + 480 x 95 / 96: its frame's right edge 1920 + 240 ... 1915 + 960.
+        const shotcam::ArtExit exit = shotcam::artExit(across, 1, 24, 0, plain);
+        const double lastCx = 960.0 + 480.0 * 95.0 / 96.0;
+        check(QStringLiteral("(cx0) A PAN PAST THE STAGE: every frame of the panel it crosses, and the right margin the "
+                             "last frame needs, rounded up to the pixel"),
+              exit.frames == 48 && exit.first == 0 && exit.last == 47
+                  && exit.grow == QMargins(0, 0, int(std::ceil(lastCx + 960.0 - 1920.0)), 0),
+              QStringLiteral("%1 frames %2-%3 grow right %4").arg(exit.frames).arg(exit.first).arg(exit.last)
+                  .arg(exit.grow.right()));
+        const shotcam::ArtExit first = shotcam::artExit(across, 0, 24, 0, plain);
+        check(QStringLiteral("(cx0) control: the first panel's frames, half the pan, already leave from frame 1 on - and "
+                             "on a stage 480 px wider on the right, none do"),
+              first.frames == 47 && first.first == 1
+                  && !shotcam::artExit(across, 1, 24, 0,
+                                       shotcam::stageWithMargins(QSize(2400, 1080), QMargins(0, 0, 480, 0)))
+                          .leaves());
+    }
+
     delete scene;
     QDir(scratch).removeRecursively();
     ts << "\nRESULT " << (g_failures ? "FAIL" : "PASS") << " (checks=" << g_checks

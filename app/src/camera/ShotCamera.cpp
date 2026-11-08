@@ -58,6 +58,53 @@ Stage panelStage(const Panel &panel, const QSize &projectMargin)
     return panel.ownMargin ? panel.stage() : stageWithMargin(panel.canvasSize(), projectMargin);
 }
 
+ArtExit artExit(const Scene &scene, int panelIndex, int fps, int filmStart, const Stage &stage)
+{
+    ArtExit out;
+    if (panelIndex < 0 || panelIndex >= scene.panels.size() || !scene.panels.at(panelIndex)
+        || stage.canvas.isEmpty() || liveKeyCount(scene, fps, filmStart) == 0)
+        return out;
+    const Panel &panel = *scene.panels.at(panelIndex);
+    const QVector<DepthEdge> edges = depthEdges(panel);
+    const double W = stage.canvas.width(), H = stage.canvas.height();
+    double needL = 0.0, needT = 0.0, needR = 0.0, needB = 0.0;
+    const int frames = panelFrames(panel, fps);
+    for (int f = 0; f < frames; ++f) {
+        const CameraState s = evaluateAtPanel(scene, panelIndex, f, fps, filmStart);
+        const QRectF box = frameQuad(s, stage).boundingRect();
+        double l = qMax(0.0, -box.left()), t = qMax(0.0, -box.top());
+        double r = qMax(0.0, box.right() - W), b = qMax(0.0, box.bottom() - H);
+        // A depth layer reaching the edge holds the frame in further (2C): what the
+        // stage's clamp with the layers moves it by, beyond the stage's own.
+        if (!edges.isEmpty()) {
+            const CameraState held = clampInside(s, stage, edges);
+            const CameraState plain = clampInside(s, stage);
+            const double dx = held.cx - plain.cx, dy = held.cy - plain.cy;
+            if (dx > 0.5)
+                l += dx;
+            else if (dx < -0.5)
+                r += -dx;
+            if (dy > 0.5)
+                t += dy;
+            else if (dy < -0.5)
+                b += -dy;
+        }
+        if (l < 0.5 && t < 0.5 && r < 0.5 && b < 0.5)
+            continue;
+        ++out.frames;
+        if (out.first < 0)
+            out.first = f;
+        out.last = f;
+        needL = qMax(needL, l);
+        needT = qMax(needT, t);
+        needR = qMax(needR, r);
+        needB = qMax(needB, b);
+    }
+    auto px = [](double v) { return v < 0.5 ? 0 : int(std::ceil(v - 1e-9)); };
+    out.grow = QMargins(px(needL), px(needT), px(needR), px(needB));
+    return out;
+}
+
 CameraState toPanelSpace(const Panel &panel, const CameraState &state)
 {
     CameraState s = state;

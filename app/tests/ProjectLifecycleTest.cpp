@@ -18305,13 +18305,665 @@ void runPanelsAtRestPass(const QString &scratch)
     r.window.markCleanForTest();
 }
 
-// ---- (dk) THE DOCKS STAY WHERE THEY WERE (2026-11-07, seen in the user's hand test) --
-// The Layers dock moved lower on every Close Project and reopen. The start window
-// has no menu bar, so the stack is the bar's height taller there; the workspace came
-// back that much taller for a moment and then shrank, and the dock host gives such
-// growth to the upper dock and takes the shrink from both in proportion. It keeps its
-// height now: the bar's room is taken before the page is shown. In the layout the user
-// keeps, Scenes over Layers; in the default one Layers sits at its minimum and hides it.
+// THE CAMERA ACROSS PANELS (batch 6d, Figma MARGIN-2, MARGIN-0): a move that leaves a
+// panel's art is warned in amber and never clamped; Grow to fit; a Quick Move's END on
+// its own panel; the frame-anchored strip; Full Artwork per stage.
+void runCameraAcrossPanelsPass(const QString &scratch)
+{
+    using namespace workspace;
+    out() << "--- (cx) the camera across panels with their own stages ---" << Qt::endl;
+    const QString dir = scratch + QStringLiteral("/across");
+    QDir(dir).removeRecursively();
+    QDir().mkpath(dir);
+    const QString project = writeProject(dir, QStringLiteral("Across"), QSize(1920, 1080), 24, 2, 2);
+    auto rig = std::make_unique<Rig>(project);
+    Rig &r = *rig;
+    check(QStringLiteral("(cx) the workspace opened"), r.ok);
+    if (!r.ok)
+        return;
+    QUndoStack *stack = r.window.undoStackForTest();
+    Scene *scene = r.window.scenesForTest().value(0);
+    Scene *scene2 = r.window.scenesForTest().value(1);
+    if (!stack || !scene || !scene2 || scene->panels.size() != 2) {
+        check(QStringLiteral("(cx) found the history and the two scenes"), false);
+        return;
+    }
+    using shotcam::CameraState;
+    const int fps = 24;
+    Panel *p0 = scene->panels.at(0); // 48 frames, its own right margin of 50 %
+    Panel *p1 = scene->panels.at(1); // 72 frames, no margin
+    r.storyboard->applyPanelMargin(p0, QMargins(0, 0, 960, 0));
+    pump(60);
+    // A pan from panel 1's base framing to 960 px right at panel 2's end: on panel 1's
+    // wide stage it stays on the art, on panel 2's it leaves from its first frame.
+    CameraState a;
+    a.cx = 960.0;
+    a.cy = 540.0;
+    CameraState b = a;
+    b.cx = 1920.0;
+    shotcam::SceneCamera cam;
+    cam.keys = {shotcam::makeKey(*scene, 0, 0, fps, a), shotcam::makeKey(*scene, 1, 72, fps, b)};
+    cam.keys[0].ease = shotcam::Ease::Linear;
+    r.storyboard->applyCameraForUndo(scene, cam);
+    r.timeline->setZoomForTest(300);
+    pump(80);
+
+    // --- (cx1) where a move leaves a panel's art -------------------------------------
+    // Panel 2's last frame: 960 + 960 x 119 / 120 = 1912, its frame's right edge 2872.
+    const int frames1 = r.timeline->artExitFramesForTest(1);
+    const QMargins grow1 = r.timeline->artExitGrowForTest(1);
+    check(QStringLiteral("(cx1) A MOVE THAT LEAVES A PANEL'S ART: all 72 of panel 2's frames, and the band to hold it, "
+                         "952 px on the right, worked out from the frames"),
+          frames1 == 72 && grow1 == QMargins(0, 0, 952, 0),
+          QStringLiteral("%1 frames, grow %2,%3,%4,%5").arg(frames1).arg(grow1.left()).arg(grow1.top())
+              .arg(grow1.right()).arg(grow1.bottom()));
+    check(QStringLiteral("(cx1) control: on panel 1's own wider stage the same move stays on the art"),
+          r.timeline->artExitFramesForTest(0) == 0 && r.timeline->artExitChipRectForTest(0).isEmpty());
+    {
+        const CameraState last = shotcam::evaluateAtPanel(*scene, 1, 71, fps, 0);
+        check(QStringLiteral("(cx1) NEVER CLAMPED: the camera plays as keyed over the cut (1912 at panel 2's last frame)"),
+              qAbs(last.cx - 1912.0) < 1e-6, QString::number(last.cx));
+    }
+
+    // --- (cx2) the CAMERA row and the clip say so ------------------------------------
+    {
+        const QImage shot = r.surface->grab().toImage();
+        const qreal dpr = shot.devicePixelRatio();
+        const QRect row = r.timeline->cameraRowForTest();
+        auto amberIn = [&](const QRect &clip) {
+            int n = 0;
+            for (int y = row.top() + 2; y < row.bottom() - 1; ++y)
+                for (int x = clip.left() + 6; x < clip.right() - 6; x += 2) {
+                    const QColor c = shot.pixelColor(QPointF(x * dpr, y * dpr).toPoint());
+                    n += c.red() > 150 && c.green() > 90 && c.blue() < 90 && c.red() > c.blue() + 60 ? 1 : 0;
+                }
+            return n;
+        };
+        const int onLeaving = amberIn(r.timeline->clipRectForTest(1));
+        const int onKept = amberIn(r.timeline->clipRectForTest(0));
+        const QString chip = r.timeline->artExitChipTextForTest(1);
+        check(QStringLiteral("(cx2) THE CAMERA ROW IS AMBER over panel 2's frames, and its clip has the chip \"leaves "
+                             "Panel 2's art for 72 f\"; control: none over panel 1"),
+              onLeaving > 20 && onKept == 0 && chip == QStringLiteral("leaves Panel 2's art for 72 f")
+                  && !r.timeline->artExitChipRectForTest(1).isEmpty(),
+              QStringLiteral("%1 amber px over panel 2, %2 over panel 1; '%3'").arg(onLeaving).arg(onKept).arg(chip));
+    }
+
+    // --- (cx3) Grow to fit ------------------------------------------------------------
+    {
+        QString offered;
+        QTimer::singleShot(250, [&offered] {
+            if (auto *menu = qobject_cast<QMenu *>(QApplication::activePopupWidget())) {
+                for (QAction *a : menu->actions())
+                    if (a->objectName() == QStringLiteral("cameraGrowToFit")) {
+                        offered = a->text();
+                        a->trigger();
+                    }
+                menu->close();
+            }
+        });
+        const QRect chipRect = r.timeline->artExitChipRectForTest(1);
+        const int before = stack->index();
+        sendMouse(r.surface, QEvent::MouseButtonPress, QPointF(chipRect.center()), Qt::LeftButton);
+        sendMouse(r.surface, QEvent::MouseButtonRelease, QPointF(chipRect.center()), Qt::LeftButton);
+        pump(300);
+        check(QStringLiteral("(cx3) THE CHIP OFFERS \"Grow Panel 2's right margin by 952 px to fit this move\", one undo "
+                             "step, the Stage Margin step; the panel's own margin then holds the move and the warning goes"),
+              offered == QStringLiteral("Grow Panel 2's right margin by 952 px to fit this move")
+                  && stack->index() == before + 1 && stack->undoText() == QStringLiteral("Stage Margin (Panel 2)")
+                  && r.storyboard->panelMargins(p1) == QMargins(0, 0, 952, 0) && p1->ownMargin
+                  && r.timeline->artExitFramesForTest(1) == 0,
+              QStringLiteral("offered '%1', steps +%2, '%3', exit %4").arg(offered).arg(stack->index() - before)
+                  .arg(stack->undoText()).arg(r.timeline->artExitFramesForTest(1)));
+        r.storyboard->editUndo();
+        pump(150);
+        check(QStringLiteral("(cx3) control: undone, the warning is back"),
+              r.timeline->artExitFramesForTest(1) == 72 && r.storyboard->panelMargins(p1) == QMargins());
+        QStringList said;
+        r.storyboard->setLockMessageHookForTest([&](const QString &m) { said << m; });
+        r.animatic->setTrackLocked(TimelineTrack::Shots, true);
+        r.storyboard->growPanelToFit(0, 1);
+        r.animatic->setTrackLocked(TimelineTrack::Shots, false);
+        r.storyboard->setLockMessageHookForTest({});
+        check(QStringLiteral("(cx3) THE SHOTS LOCK REFUSES it, as it refuses any margin (Q8)"),
+              said.contains(QStringLiteral("SHOTS track is locked")) && r.storyboard->panelMargins(p1) == QMargins(),
+              said.join(QLatin1Char('|')));
+    }
+
+    // --- (cx4) a Quick Move's END on its own panel -------------------------------------
+    {
+        r.storyboard->applyCameraForUndo(scene, shotcam::SceneCamera());
+        clickThumb(r, 0);
+        pump(60);
+        r.storyboard->setQuickSpan(StoryboardPage::QuickSpan::ToSceneEnd);
+        r.storyboard->setCameraStayInside(true);
+        r.storyboard->showQuickPreviewForTest(shotcam::QuickMove::PanRight);
+        pump(30);
+        auto *spanL = r.storyboard->findChild<QLabel *>(QStringLiteral("camQuickSpanText"));
+        const QString spanHeld = spanL ? spanL->text() : QString();
+        r.storyboard->clearQuickPreviewForTest();
+        r.storyboard->clearNoteForTest();
+        r.storyboard->cameraQuickMove(shotcam::QuickMove::PanRight);
+        pump(80);
+        const QString noteHeld = r.storyboard->lastNoteForTest();
+        const int exitHeld = r.timeline->artExitFramesForTest(1);
+        check(QStringLiteral("(cx4) A PAN OVER THE SPAN, STAY INSIDE ON: its END gives way on panel 2, whose stage holds "
+                             "less, and says so; the move then leaves no panel's art"),
+              noteHeld.contains(QStringLiteral("The end gave way on Panel 2")) && exitHeld == 0
+                  && !spanHeld.contains(QStringLiteral("leaves the art")),
+              QStringLiteral("note '%1'; exit %2; span '%3'").arg(noteHeld, QString::number(exitHeld), spanHeld));
+        r.window.undoActionForTest()->trigger();
+        pump(60);
+        r.storyboard->setCameraStayInside(false);
+        r.storyboard->showQuickPreviewForTest(shotcam::QuickMove::PanRight);
+        pump(30);
+        const QString spanFree = spanL ? spanL->text() : QString();
+        r.storyboard->clearQuickPreviewForTest();
+        r.storyboard->clearNoteForTest();
+        r.storyboard->cameraQuickMove(shotcam::QuickMove::PanRight);
+        pump(80);
+        const QString noteFree = r.storyboard->lastNoteForTest();
+        check(QStringLiteral("(cx4) control: Stay inside off, nothing gives way; the span line names the panel the move "
+                             "would leave while it is hovered, and the note says where Grow to fit is"),
+              !noteFree.contains(QStringLiteral("gave way")) && r.timeline->artExitFramesForTest(1) > 0
+                  && spanFree.contains(QStringLiteral("leaves the art of Panel 2"))
+                  && noteFree.contains(QStringLiteral("The move leaves the art of Panel 2: Grow to fit is on the clip.")),
+              QStringLiteral("note '%1'; exit %2; span '%3'").arg(noteFree).arg(r.timeline->artExitFramesForTest(1)).arg(spanFree));
+        r.window.undoActionForTest()->trigger();
+        pump(60);
+        r.storyboard->setCameraStayInside(true);
+        r.storyboard->setQuickSpan(StoryboardPage::QuickSpan::ThisPanel);
+    }
+
+    // --- (cx5) the strip, frame-anchored (Q11) ------------------------------------------
+    {
+        const QPixmap withMargin = r.storyboard->stripThumbForTest(p0, 1.0);
+        const QPixmap without = r.storyboard->stripThumbForTest(p1, 1.0);
+        const QImage wm = withMargin.toImage(), wo = without.toImage();
+        const QColor strip(0x1a, 0x1a, 0x1a);
+        // The frame's box: 80 % of the well, centred. Just right of it, inside the well.
+        const int w = wm.width(), h = wm.height();
+        const QPoint rightOfFrame(qRound(w * 0.9 + 2), h / 2);
+        const QPoint leftOfFrame(qRound(w * 0.1 - 3), h / 2);
+        const QPoint inFrame(w / 2, h / 2);
+        check(QStringLiteral("(cx5) FRAME-ANCHORED WELLS: the frame the same 80 % box in both; right of it, panel 1's own "
+                             "margin shows (veiled art), panel 2's well is the strip's ground; left of it, both are"),
+              wm.size() == wo.size() && wm.pixelColor(rightOfFrame) != strip && wo.pixelColor(rightOfFrame) == strip
+                  && wm.pixelColor(leftOfFrame) == strip && wo.pixelColor(leftOfFrame) == strip
+                  && wm.pixelColor(inFrame) != strip && wo.pixelColor(inFrame) != strip,
+              QStringLiteral("right %1 / %2, left %3 / %4").arg(wm.pixelColor(rightOfFrame).name(),
+                  wo.pixelColor(rightOfFrame).name(), wm.pixelColor(leftOfFrame).name(), wo.pixelColor(leftOfFrame).name()));
+        // With no panel at its own margin every well already has the frame in one size and
+        // place, and the strip is as it always was: panel 2's art fills its well again.
+        r.storyboard->applyPanelMargin(p0, QMargins());
+        pump(60);
+        const QImage plainWell = r.storyboard->stripThumbForTest(p1, 1.0).toImage();
+        const bool noOwn = !p0->ownMargin && !p1->ownMargin;
+        r.storyboard->applyPanelMargin(p0, QMargins(0, 0, 960, 0)); // back, for what follows
+        pump(60);
+        check(QStringLiteral("(cx5) control: with no panel at its own margin the wells are as they always were - "
+                             "panel 2's art fills its well, right of where the 80 % box would end"),
+              noOwn && plainWell.size() == wo.size() && plainWell.pixelColor(rightOfFrame) != strip
+                  && plainWell.pixelColor(leftOfFrame) != strip && p0->ownMargin,
+              QStringLiteral("own %1; right %2, left %3").arg(noOwn).arg(plainWell.pixelColor(rightOfFrame).name(),
+                  plainWell.pixelColor(leftOfFrame).name()));
+    }
+
+    // --- (cx6) Full Artwork per stage in the PDF ------------------------------------------
+    {
+        const QVector<sankoexport::ExportPanel> rows =
+            sankoexport::collectPanels(r.window.scenesForTest(), fps, true, false, r.window.stageMarginForTest());
+        auto render = [&](const QVector<sankoexport::ExportPanel> &list) {
+            QImage page(QSize(1240, 1754), QImage::Format_RGB32);
+            page.fill(Qt::white);
+            QPainter painter(&page);
+            sankoexport::paintBoardPage(painter, page.size(), 150, list, 0, QStringLiteral("Across"));
+            painter.end();
+            return page;
+        };
+        // The outline alone: the same page with panel 1's stage as no margin. Full Artwork
+        // is the whole panel either way, so the picture is the same and what changes is the
+        // outline. (The art is random-coloured ellipses: a colour count cannot tell them.)
+        QVector<sankoexport::ExportPanel> plainRows = rows;
+        if (!plainRows.isEmpty())
+            plainRows[0].stage = shotcam::Stage(plainRows[0].stage.canvas);
+        const QImage withFrame = render(rows), plain = render(plainRows);
+        int changed = 0, purple = 0;
+        QRect where;
+        for (int y = 0; y < withFrame.height(); ++y)
+            for (int x = 0; x < withFrame.width(); ++x) {
+                const QRgb px = withFrame.pixel(x, y);
+                if (px == plain.pixel(x, y))
+                    continue;
+                ++changed;
+                where |= QRect(x, y, 1, 1);
+                const QColor c(px);
+                purple += qAbs(c.red() - 0x7c) < 40 && qAbs(c.green() - 0x6e) < 40 && c.blue() > 180 ? 1 : 0;
+            }
+        const double aspect = where.height() > 0 ? double(where.width()) / where.height() : 0.0;
+        const QString got = QStringLiteral("%1 px changed, %2 purple, at %3,%4 %5 x %6 (%7:1)")
+                                .arg(changed).arg(purple).arg(where.x()).arg(where.y()).arg(where.width())
+                                .arg(where.height()).arg(aspect, 0, 'f', 3);
+        check(QStringLiteral("(cx6) FULL ARTWORK: each panel's own stage in its cell, and on the panel with a margin "
+                             "the frame outlined - what the outline changes is a 16:9 rectangle, drawn in purple"),
+              !rows.isEmpty() && rows.first().stage.canvas == QSize(2880, 1080) && changed > 50
+                  && purple * 2 >= changed && qAbs(aspect - 16.0 / 9.0) < 0.06,
+              got);
+        check(QStringLiteral("(cx6) control: nothing changes in any other panel's cell, and the outline is the "
+                             "frame's, not the whole picture's (8:3)"),
+              changed > 0 && where.right() < withFrame.width() / 3 && qAbs(aspect - 8.0 / 3.0) > 0.3, got);
+    }
+
+    // --- (cx7) a framing copied onto a panel with less margin ------------------------------
+    {
+        // Scene 1's last panel at its own wide margin (a 2880 px stage), its framing on that
+        // art but past the right edge of scene 2's first panel, which has none: x 740 to 2660.
+        r.storyboard->applyPanelMargin(p1, QMargins(0, 0, 960, 0));
+        pump(60);
+        CameraState byTheEdge = a; // ("near" is a Windows macro)
+        byTheEdge.cx = 1700.0;
+        shotcam::SceneCamera hold;
+        hold.keys = {shotcam::makeKey(*scene, 1, 0, fps, byTheEdge)};
+        r.storyboard->applyCameraForUndo(scene, hold);
+        r.storyboard->setCameraStayInside(true);
+        r.storyboard->clearNoteForTest();
+        r.storyboard->cameraContinue(1);
+        pump(60);
+        const CameraState kept = shotcam::evaluateAtPanel(*scene2, 0, 0, fps, 120);
+        const QString note = r.storyboard->lastNoteForTest();
+        check(QStringLiteral("(cx7) CONTINUE CAMERA onto a panel with less margin: Stay inside holds the framing in "
+                             "(right edge at 1920), and says so"),
+              qAbs(kept.cx + 960.0 - 1920.0) < 0.5 && note.contains(QStringLiteral("held inside Panel 1 of Scene 2")),
+              QStringLiteral("cx %1; '%2'").arg(kept.cx).arg(note));
+        r.window.undoActionForTest()->trigger();
+        pump(40);
+        r.storyboard->setCameraStayInside(false);
+        r.storyboard->clearNoteForTest();
+        r.storyboard->cameraContinue(1);
+        pump(60);
+        const CameraState copied = shotcam::evaluateAtPanel(*scene2, 0, 0, fps, 120);
+        check(QStringLiteral("(cx7) control: Stay inside off, the framing is copied exactly"),
+              qAbs(copied.cx - 1700.0) < 1e-6 && r.storyboard->lastNoteForTest().isEmpty(),
+              QString::number(copied.cx));
+        r.window.undoActionForTest()->trigger();
+        pump(40);
+        r.storyboard->setCameraStayInside(true);
+        // A framing already off the art where it came from (x 1340 to 3260 on a 2880 px
+        // stage) is the user's: Stay inside on, it is copied as it is, and nothing is said.
+        CameraState pastIt = a;
+        pastIt.cx = 2300.0;
+        shotcam::SceneCamera past;
+        past.keys = {shotcam::makeKey(*scene, 1, 0, fps, pastIt)};
+        r.storyboard->applyCameraForUndo(scene, past);
+        r.storyboard->clearNoteForTest();
+        r.storyboard->cameraContinue(1);
+        pump(60);
+        const CameraState asItWas = shotcam::evaluateAtPanel(*scene2, 0, 0, fps, 120);
+        check(QStringLiteral("(cx7) control: a framing already off the art where it came from is copied as it is, "
+                             "Stay inside on, and nothing is said"),
+              qAbs(asItWas.cx - 2300.0) < 1e-6 && r.storyboard->lastNoteForTest().isEmpty(),
+              QStringLiteral("cx %1; '%2'").arg(asItWas.cx).arg(r.storyboard->lastNoteForTest()));
+        r.window.undoActionForTest()->trigger();
+        pump(40);
+    }
+    r.window.markCleanForTest();
+}
+
+// GROW TO FIT AT ANY TIMELINE ZOOM (GROW-1, Figma 552:696, approved 2026-11-08): the chip
+// steps down and never goes; the clip's own menu and the CAMERA row's offer Grow to fit;
+// a Quick Move's note outlives the popover's or the menu's close; Stay inside turned on
+// moves no key. The user's 6d hand test: no chip at 75 % (the clip too narrow), the note
+// up 0.26 s.
+void runGrowAnyZoomPass(const QString &scratch)
+{
+    using namespace workspace;
+    out() << "--- (cx8) Grow to fit at any zoom, its menus, the note, Stay inside ---" << Qt::endl;
+    const QString dir = scratch + QStringLiteral("/growzoom");
+    QDir(dir).removeRecursively();
+    QDir().mkpath(dir);
+    const QString project = writeProject(dir, QStringLiteral("Grow"), QSize(1920, 1080), 24, 2, 2);
+    auto rig = std::make_unique<Rig>(project);
+    Rig &r = *rig;
+    check(QStringLiteral("(cx8) the workspace opened"), r.ok);
+    if (!r.ok)
+        return;
+    QUndoStack *stack = r.window.undoStackForTest();
+    Scene *scene = r.window.scenesForTest().value(0);
+    if (!stack || !scene || scene->panels.size() != 2) {
+        check(QStringLiteral("(cx8) found the history and the scene"), false);
+        return;
+    }
+    using shotcam::CameraState;
+    const int fps = 24;
+    Panel *p0 = scene->panels.at(0); // 48 frames, its own right margin of 50 %
+    Panel *p1 = scene->panels.at(1); // 72 frames, no margin
+    r.storyboard->applyPanelMargin(p0, QMargins(0, 0, 960, 0));
+    pump(60);
+    // (cx)'s move: on panel 1's wide stage it stays on the art; it leaves panel 2's
+    // from its first frame, all 72, and Grow to fit offers 952 px on the right.
+    CameraState a;
+    a.cx = 960.0;
+    a.cy = 540.0;
+    CameraState b = a;
+    b.cx = 1920.0;
+    shotcam::SceneCamera cam;
+    cam.keys = {shotcam::makeKey(*scene, 0, 0, fps, a), shotcam::makeKey(*scene, 1, 72, fps, b)};
+    cam.keys[0].ease = shotcam::Ease::Linear;
+    r.storyboard->applyCameraForUndo(scene, cam);
+    const QString growText = QStringLiteral("Grow Panel 2's right margin by 952 px to fit this move");
+    const QString sentence = QStringLiteral("leaves Panel 2's art for 72 f");
+    // The chip's menu, opened for real: what it offers, read and closed untouched.
+    auto offeredByPressAt = [&](const QPoint &at) {
+        QString offered;
+        QTimer::singleShot(250, [&offered] {
+            if (auto *menu = qobject_cast<QMenu *>(QApplication::activePopupWidget())) {
+                for (QAction *act : menu->actions())
+                    if (act->objectName() == QStringLiteral("cameraGrowToFit"))
+                        offered = act->text();
+                menu->close();
+            }
+        });
+        sendMouse(r.surface, QEvent::MouseButtonPress, QPointF(at), Qt::LeftButton);
+        sendMouse(r.surface, QEvent::MouseButtonRelease, QPointF(at), Qt::LeftButton);
+        pump(320);
+        return offered;
+    };
+
+    // --- (cx8) the chip at every zoom -------------------------------------------------
+    {
+        struct Step { float zoom; QString kind; };
+        const QVector<Step> steps{{400.0f, sentence},       {100.0f, QStringLiteral("72 f")},
+                                  {75.0f, QStringLiteral("72 f")}, {40.0f, QStringLiteral("!")},
+                                  {25.0f, QStringLiteral("over")}, {10.0f, QStringLiteral("over")}};
+        QStringList seen, wrong;
+        int noneOnKept = 0;
+        // The chip as painted: the share of its rect in the chip's amber (the label's
+        // dark text is the rest).
+        auto amberShare = [&](const QRect &area) {
+            const QImage shot = r.surface->grab().toImage();
+            const qreal dpr = shot.devicePixelRatio();
+            int n = 0, all = 0;
+            for (int y = area.top(); y <= area.bottom(); ++y)
+                for (int x = area.left(); x <= area.right(); ++x) {
+                    const QColor c = shot.pixelColor(QPointF(x * dpr, y * dpr).toPoint());
+                    ++all;
+                    n += c.red() > 220 && c.green() > 140 && c.green() < 190 && c.blue() < 70 ? 1 : 0;
+                }
+            return all ? double(n) / all : 0.0;
+        };
+        for (const Step &s : steps) {
+            r.timeline->setZoomForTest(s.zoom);
+            pump(60);
+            const QRect chip = r.timeline->artExitChipRectForTest(1);
+            const QString kind = r.timeline->artExitChipLabelForTest(1);
+            const double painted = amberShare(chip.adjusted(1, 1, -1, -1));
+            sendMouse(r.surface, QEvent::MouseMove, QPointF(chip.center()), Qt::NoButton);
+            const bool hand = r.surface->cursor().shape() == Qt::PointingHandCursor;
+            pump(150); // the tooltip rolls in before it is visible (about 50 ms in the hand test)
+            const QString tip = QToolTip::isVisible() ? QToolTip::text() : QString();
+            sendMouse(r.surface, QEvent::MouseMove, QPointF(chip.center().x(), 2), Qt::NoButton);
+            const QString offered = offeredByPressAt(chip.center());
+            seen << QStringLiteral("%1 %: '%2' %3x%4 amber %5%6%7 -> '%8'").arg(s.zoom).arg(kind).arg(chip.width())
+                        .arg(chip.height()).arg(painted, 0, 'f', 2).arg(hand ? QStringLiteral(" hand") : QString())
+                        .arg(tip.isEmpty() ? QString() : QStringLiteral(" tip")).arg(offered);
+            if (kind != s.kind || chip.width() < 14 || chip.height() < 14 || !hand || painted < 0.5
+                || tip != sentence + QStringLiteral(" ") + QChar(0x00B7) + QStringLiteral(" click for Grow to fit")
+                || offered != growText)
+                wrong << QString::number(s.zoom);
+            noneOnKept += r.timeline->artExitChipRectForTest(0).isEmpty() ? 0 : 1;
+            if (s.zoom == 400.0f) // the same reading over the kept clip's bottom right, where a chip would be
+                noneOnKept += amberShare(r.timeline->clipRectForTest(0).adjusted(60, 40, -8, -6)) > 0.05 ? 1 : 0;
+        }
+        check(QStringLiteral("(cx8) AT EVERY ZOOM, 400 / 100 / 75 / 40 / 25 / 10 %: the leaving clip has its chip - the "
+                             "sentence, the count, the \"!\" marker, the marker over the clip - at least 14 px, the hand "
+                             "and the tooltip over it, and a press offers Grow to fit"),
+              wrong.isEmpty(), seen.join(QStringLiteral("; ")));
+        check(QStringLiteral("(cx8) control: the clip the move keeps on the art has no chip at any zoom"),
+              noneOnKept == 0, QString::number(noneOnKept));
+
+        // At 10 % panel 2's clip is 7 px; its marker reaches over panel 1's clip.
+        r.timeline->setZoomForTest(10.0f);
+        pump(60);
+        const QRect chip = r.timeline->artExitChipRectForTest(1);
+        const QRect clip1 = r.timeline->clipRectForTest(1), clip0 = r.timeline->clipRectForTest(0);
+        const QPoint onNeighbour(chip.left() + 1, chip.center().y());
+        // Drawn above the clip beside it: amber where the marker covers that clip.
+        const double paintedOver = amberShare(chip.intersected(clip0).adjusted(0, 1, 0, -1));
+        const bool overNeighbour = clip0.contains(onNeighbour) && chip.width() > clip1.width() && paintedOver > 0.5;
+        clickThumb(r, 1);
+        pump(60);
+        const QString offered = offeredByPressAt(onNeighbour);
+        check(QStringLiteral("(cx8) THE MARKER OVER A 7 PX CLIP reaches over the clip beside it and is hit before it: "
+                             "a press there offers Grow to fit for panel 2"),
+              overNeighbour && offered == growText,
+              QStringLiteral("chip %1,%2 %3x%4; clip 2 %5 px; amber over clip 1 %6; press on clip 1: %7; '%8'")
+                  .arg(chip.x()).arg(chip.y()).arg(chip.width()).arg(chip.height()).arg(clip1.width())
+                  .arg(paintedOver, 0, 'f', 2).arg(clip0.contains(onNeighbour)).arg(offered));
+        // Scene 2's second panel selected (at 300 %, where its clip is wide), so no selected
+        // clip's length handle (DUR-1: 6 px either side of its edges) is under the press.
+        r.timeline->setZoomForTest(300.0f);
+        pump(60);
+        clickClip(r, 3);
+        pump(60);
+        r.timeline->setZoomForTest(10.0f);
+        pump(60);
+        const QPoint offMarker(r.timeline->clipRectForTest(0).center().x(), r.timeline->clipRectForTest(0).top() + 6);
+        const QRect sel = r.timeline->clipRectForTest(3);
+        const bool offHandles = r.storyboard->selectedFlatIndexForTest() == 3
+            && qAbs(offMarker.x() - sel.left()) > 6 && qAbs(offMarker.x() - sel.right()) > 6;
+        const QRect chipNow = r.timeline->artExitChipRectForTest(1);
+        sendMouse(r.surface, QEvent::MouseButtonPress, QPointF(offMarker), Qt::LeftButton);
+        sendMouse(r.surface, QEvent::MouseButtonRelease, QPointF(offMarker), Qt::LeftButton);
+        pump(120);
+        check(QStringLiteral("(cx8) control: a press on that clip off the marker (and off any length handle) still "
+                             "selects it"),
+              !chipNow.isEmpty() && !chipNow.contains(offMarker) && offHandles
+                  && r.storyboard->selectedFlatIndexForTest() == 0,
+              QStringLiteral("press %1,%2; chip %3,%4 %5x%6; off handles %7; selected %8").arg(offMarker.x())
+                  .arg(offMarker.y()).arg(chipNow.x()).arg(chipNow.y()).arg(chipNow.width()).arg(chipNow.height())
+                  .arg(offHandles).arg(r.storyboard->selectedFlatIndexForTest()));
+        r.timeline->setZoomForTest(300.0f);
+        pump(60);
+    }
+
+    // --- (cx9) the clip's right-click menu and the CAMERA row's --------------------------
+    {
+        QAction *seenGrow = nullptr;
+        QString seenText;
+        bool seenEnabled = false;
+        bool triggerIt = false;
+        r.storyboard->setClipMenuHookForTest([&](QMenu *m) {
+            seenGrow = nullptr;
+            seenText.clear();
+            seenEnabled = false;
+            for (QAction *act : m->actions())
+                if (act->objectName() == QStringLiteral("cameraGrowToFit")) {
+                    seenGrow = act;
+                    seenText = act->text();
+                    seenEnabled = act->isEnabled();
+                    if (triggerIt)
+                        act->trigger();
+                }
+        });
+        triggerIt = true;
+        const int before = stack->index();
+        rightClickClip(r, 1);
+        check(QStringLiteral("(cx9) THE CLIP'S RIGHT-CLICK MENU offers the chip's Grow to fit, enabled; chosen, one undo "
+                             "step, the Stage Margin step, and the move then stays on the art"),
+              seenGrow && seenText == growText && seenEnabled && stack->index() == before + 1
+                  && stack->undoText() == QStringLiteral("Stage Margin (Panel 2)")
+                  && r.storyboard->panelMargins(p1) == QMargins(0, 0, 952, 0) && r.timeline->artExitFramesForTest(1) == 0,
+              QStringLiteral("'%1' %2; steps +%3 '%4'; exit %5").arg(seenText).arg(seenEnabled)
+                  .arg(stack->index() - before).arg(stack->undoText()).arg(r.timeline->artExitFramesForTest(1)));
+        r.window.undoActionForTest()->trigger();
+        pump(80);
+        triggerIt = false;
+        rightClickClip(r, 0);
+        const bool noneOnKept = !seenGrow;
+        r.animatic->setTrackLocked(TimelineTrack::Shots, true);
+        pump(30);
+        rightClickClip(r, 1);
+        const bool lockedShown = seenGrow && !seenEnabled && seenText == growText + QStringLiteral(" (locked)");
+        r.animatic->setTrackLocked(TimelineTrack::Shots, false);
+        pump(30);
+        check(QStringLiteral("(cx9) controls: no Grow entry on the clip the move keeps on the art; under the SHOTS lock "
+                             "it is there, disabled, \"(locked)\""),
+              noneOnKept && lockedShown && r.timeline->artExitFramesForTest(1) == 72,
+              QStringLiteral("on clip 1: %1; locked: '%2' %3").arg(noneOnKept ? QStringLiteral("none") : QStringLiteral("one"))
+                  .arg(seenText).arg(seenEnabled));
+        // The CAMERA row's menu (batch 6d) had no check of its own.
+        const int rowY = r.timeline->cameraRowForTest().y() + 14;
+        auto rowMenuAt = [&](int flat) {
+            const QPoint at(r.timeline->clipRectForTest(flat).center().x(), rowY);
+            QContextMenuEvent ev(QContextMenuEvent::Mouse, at, r.surface->mapToGlobal(at));
+            QCoreApplication::sendEvent(r.surface, &ev);
+            pump(150);
+        };
+        triggerIt = true;
+        const int beforeRow = stack->index();
+        rowMenuAt(1);
+        check(QStringLiteral("(cx9) THE CAMERA ROW'S MENU over the leaving clip offers the same Grow to fit; chosen, the "
+                             "same one Stage Margin step"),
+              seenGrow && seenText == growText && seenEnabled && stack->index() == beforeRow + 1
+                  && stack->undoText() == QStringLiteral("Stage Margin (Panel 2)")
+                  && r.storyboard->panelMargins(p1) == QMargins(0, 0, 952, 0),
+              QStringLiteral("'%1'; steps +%2 '%3'").arg(seenText).arg(stack->index() - beforeRow).arg(stack->undoText()));
+        r.window.undoActionForTest()->trigger();
+        pump(80);
+        triggerIt = false;
+        rowMenuAt(0);
+        check(QStringLiteral("(cx9) control: over the clip the move keeps on the art the CAMERA row's menu has none"),
+              !seenGrow && r.timeline->artExitFramesForTest(1) == 72);
+        r.storyboard->setClipMenuHookForTest({});
+    }
+
+    // --- (cx10) the Quick Move's note outlives the popover's close and the menu's -------
+    {
+        const QPoint notePt = r.surface->mapToGlobal(r.timeline->clipRectForTest(1).center());
+        const bool pointOnSurface = QApplication::widgetAt(notePt) == r.surface;
+        r.storyboard->setNotePointForTest(notePt);
+        r.surface->setAttribute(Qt::WA_UnderMouse, false); // as when a popup closed over it
+        auto deliverCloseEvents = [&](const QList<QWidget *> &left) {
+            // What Windows sends after a popup closes under the pointer: a Leave for each
+            // widget the pointer was in, then an Enter for the widget now under it.
+            for (QWidget *w : left) {
+                QEvent leave(QEvent::Leave);
+                QCoreApplication::sendEvent(w, &leave);
+            }
+            const QPointF local(r.timeline->clipRectForTest(1).center());
+            QEnterEvent enter(local, local, QPointF(notePt));
+            QCoreApplication::sendEvent(r.surface, &enter);
+        };
+        clickThumb(r, 0);
+        pump(60);
+        r.storyboard->setQuickSpan(StoryboardPage::QuickSpan::ToSceneEnd);
+        r.storyboard->setCameraStayInside(false);
+        auto *quickBtn = r.storyboard->findChild<QToolButton *>(QStringLiteral("camQuickMove"));
+        QWidget *pop = r.storyboard->cameraQuickPopoverForTest();
+        auto *tile = pop ? pop->findChild<QToolButton *>(QStringLiteral("camQuickPanRight")) : nullptr;
+        const QString expected = QStringLiteral("The move leaves the art of Panel 2: Grow to fit is on the clip.");
+        bool popShown = false, waitedForEnter = false, upAfter = false;
+        QString note;
+        if (quickBtn && pop && tile) {
+            QToolTip::hideText();
+            pump(400);
+            r.storyboard->clearNoteForTest();
+            quickBtn->click();
+            pump(60);
+            popShown = pop->isVisible();
+            tile->click(); // closes the popover, then the move says its note
+            note = r.storyboard->lastNoteForTest();
+            waitedForEnter = !QToolTip::isVisible();
+            deliverCloseEvents({tile, pop});
+            pump(500);
+            upAfter = QToolTip::isVisible() && QToolTip::text() == expected;
+        }
+        check(QStringLiteral("(cx10) THE QUICK MOVE'S NOTE, POPOVER CLOSED BY THE CLICK: it waits for the pointer's Enter "
+                             "and is still up 0.5 s after the close's Leave events"),
+              pointOnSurface && popShown && !pop->isVisible() && note == expected && waitedForEnter && upAfter,
+              QStringLiteral("on surface %1; popover shown %2; note '%3'; waited %4; up %5 '%6'").arg(pointOnSurface)
+                  .arg(popShown).arg(note).arg(waitedForEnter).arg(upAfter)
+                  .arg(QToolTip::isVisible() ? QToolTip::text() : QString()));
+        r.window.undoActionForTest()->trigger();
+        pump(60);
+        // The old order: shown at once, then the close's events - it goes.
+        QToolTip::hideText();
+        pump(400);
+        QToolTip::showText(notePt, expected, r.storyboard);
+        pump(150); // its roll-in done
+        const bool upAtFirst = QToolTip::isVisible();
+        if (tile && pop)
+            deliverCloseEvents({tile, pop});
+        pump(500);
+        check(QStringLiteral("(cx10) control: a note shown before the close's events, the old order, is gone 0.5 s later "
+                             "(it was up 0.26 s in the hand test)"),
+              upAtFirst && !QToolTip::isVisible());
+        // The menus' Quick Moves: the clip menu's, on panel 2 alone.
+        QToolTip::hideText();
+        pump(400);
+        r.surface->setAttribute(Qt::WA_UnderMouse, false);
+        r.storyboard->clearNoteForTest();
+        bool menuMoved = false, menuWaited = false;
+        r.storyboard->setClipMenuHookForTest([&](QMenu *m) {
+            for (QMenu *q : m->findChildren<QMenu *>(QStringLiteral("cameraQuickMenu")))
+                if (QAction *act = q->findChild<QAction *>(QStringLiteral("quickPanRight"))) {
+                    act->trigger();
+                    menuMoved = true;
+                    menuWaited = !QToolTip::isVisible();
+                    QEvent leave(QEvent::Leave);
+                    QCoreApplication::sendEvent(q, &leave);
+                    QCoreApplication::sendEvent(m, &leave);
+                }
+        });
+        rightClickClip(r, 1);
+        r.storyboard->setClipMenuHookForTest({});
+        const QString menuNote = r.storyboard->lastNoteForTest();
+        deliverCloseEvents({});
+        pump(500);
+        check(QStringLiteral("(cx10) THE CLIP MENU'S QUICK MOVE: its note too waits for the Enter after the menu's close, "
+                             "and is up 0.5 s after"),
+              menuMoved && menuWaited && menuNote.contains(QStringLiteral("leaves the art of Panel 2"))
+                  && QToolTip::isVisible() && QToolTip::text() == menuNote,
+              QStringLiteral("moved %1; waited %2; note '%3'; up '%4'").arg(menuMoved).arg(menuWaited).arg(menuNote)
+                  .arg(QToolTip::isVisible() ? QToolTip::text() : QString()));
+        if (menuMoved) {
+            r.window.undoActionForTest()->trigger();
+            pump(60);
+        }
+        QToolTip::hideText();
+        r.storyboard->setNotePointForTest(QPoint());
+        r.storyboard->setQuickSpan(StoryboardPage::QuickSpan::ThisPanel);
+        pump(400);
+    }
+
+    // --- (cx11) Stay inside turned on moves no key ----------------------------------------
+    {
+        r.storyboard->setCameraStayInside(false);
+        pump(30);
+        const QByteArray keysBefore = QJsonDocument(shotcam::toJson(*scene)).toJson(QJsonDocument::Compact);
+        const int exitBefore = r.timeline->artExitFramesForTest(1);
+        const int stepsBefore = stack->index();
+        QWidget *sw = r.storyboard->findChild<QWidget *>(QStringLiteral("camStayInside"));
+        if (sw)
+            sendMouse(sw, QEvent::MouseButtonPress, QPointF(sw->rect().center()), Qt::LeftButton);
+        pump(60);
+        const bool turnedOn = r.storyboard->cameraStayInside();
+        const QByteArray keysAfter = QJsonDocument(shotcam::toJson(*scene)).toJson(QJsonDocument::Compact);
+        const CameraState last = shotcam::evaluateAtPanel(*scene, 1, 71, fps, 0);
+        check(QStringLiteral("(cx11) STAY INSIDE TURNED ON with panel 2's key past its art moves no key and makes no "
+                             "step; the camera plays as keyed, and the amber stays as the warning"),
+              exitBefore == 72 && keysAfter == keysBefore && stack->index() == stepsBefore
+                  && qAbs(last.cx - 1912.0) < 1e-6 && r.timeline->artExitFramesForTest(1) == 72,
+              QStringLiteral("exit %1 -> %2; keys %3; steps +%4; cx %5").arg(exitBefore)
+                  .arg(r.timeline->artExitFramesForTest(1))
+                  .arg(keysAfter == keysBefore ? QStringLiteral("same") : QStringLiteral("CHANGED"))
+                  .arg(stack->index() - stepsBefore).arg(last.cx));
+        check(QStringLiteral("(cx11) control: the switch's press really turned Stay inside on"),
+              sw && turnedOn, QStringLiteral("switch %1, on %2").arg(sw != nullptr).arg(turnedOn));
+    }
+    r.window.markCleanForTest();
+}
+
 // STAGE MODE (batch 6c, Figma MARGIN-1): one panel's stage margin, on the canvas.
 void runStageModePass(const QString &scratch)
 {
@@ -19309,6 +19961,13 @@ void runStageModePass(const QString &scratch)
     }
 }
 
+// ---- (dk) THE DOCKS STAY WHERE THEY WERE (2026-11-07, seen in the user's hand test) --
+// The Layers dock moved lower on every Close Project and reopen. The start window
+// has no menu bar, so the stack is the bar's height taller there; the workspace came
+// back that much taller for a moment and then shrank, and the dock host gives such
+// growth to the upper dock and takes the shrink from both in proportion. It keeps its
+// height now: the bar's room is taken before the page is shown. In the layout the user
+// keeps, Scenes over Layers; in the default one Layers sits at its minimum and hides it.
 void runDockSteadyPass(const QString &scratch)
 {
     using namespace workspace;
@@ -21825,13 +22484,21 @@ int main(int argc, char **argv)
     // One pass alone, for the quick check while working: the family's own setup
     // above, and nothing else. The gate never sets it.
     if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("stagemode")
-        || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("playback")) {
-        if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("playback")) {
+        || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("playback")
+        || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("strip")) {
+        if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("strip")) {
+            // The strip's thumbnails (batch 6d): its pins, (ct)'s outline, (dp)'s depth.
+            runMovingStripPinPass(scratch);
+            runCameraToolPass(scratch);
+            runDepthPass(scratch);
+        } else if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("playback")) {
             runCompactBarPass(scratch);
             runStageClearPass(scratch);
             runPlaybackShotPass(scratch);
         } else {
             runStageModePass(scratch);
+            runCameraAcrossPanelsPass(scratch);
+            runGrowAnyZoomPass(scratch);
             runCameraBarFitPass(scratch);
             runBlockedWritePass(scratch);
         }
@@ -22029,6 +22696,8 @@ int main(int argc, char **argv)
     runDockSteadyPass(scratch);
     runPanelsAtRestPass(scratch);
     runStageModePass(scratch);
+    runCameraAcrossPanelsPass(scratch);
+    runGrowAnyZoomPass(scratch);
     runPinnedKeysPass(scratch);
     runCameraBarFitPass(scratch);
     runStageClearPass(scratch);

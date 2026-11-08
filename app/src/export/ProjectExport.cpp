@@ -339,6 +339,16 @@ void paintBoardPage(QPainter &painter, const QSize &pageSize, int dpi,
         painter.setPen(QPen(QColor(0x60, 0x60, 0x60), 0.25 * mm));
         painter.setBrush(Qt::NoBrush);
         painter.drawRect(pictureRect);
+        // FULL ARTWORK (batch 6d, MARGIN-0): each panel's own stage in the cell, and the
+        // frame outlined on it, so the shot shows within whatever margin the panel has.
+        if (row.fullArtwork && !image.isNull() && !row.stage.canvas.isEmpty() && row.stage.hasMargin()) {
+            const double k = double(pictureRect.width()) / row.stage.canvas.width();
+            const QRectF frame(pictureRect.left() + row.stage.origin.x() * k,
+                               pictureRect.top() + row.stage.origin.y() * k,
+                               row.stage.frame.width() * k, row.stage.frame.height() * k);
+            painter.setPen(QPen(QColor(0x7c, 0x6e, 0xf6), 0.35 * mm));
+            painter.drawRect(frame);
+        }
 
         // Under it: which panel, how long, the shot, the notes.
         int y = pictureRect.bottom() + int(1.5 * mm);
