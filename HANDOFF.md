@@ -1,5 +1,168 @@
 # SankoTV — Session Handoff Brief
 
+## STATUS 2026-11-08 (afternoon): 6C AND THE PLAYBACK FIT COMMITTED; THE SAVE WAS NORTON 360
+THE SAVE THAT FAILED WAS NORTON 360 (the user found it): its history said "SankoTV.exe prevented from
+accessing your undefined file - Detected". Its ransomware protection refused an unknown SankoTV.exe the
+overwrite of an existing image in Documents, while new files still saved - why the recovery copy and a
+fresh throwaway copy saved, and why nothing in Windows logged a block. The user allowed both exes
+(C:\SankoTV_6c\... and C:\SankoTV\...) in Norton and the retry saved: TEST COPY - Test_SB_006_A with
+margin at 12:45:50, version 4, panel 1 margin [503,540,517,540], panel 2 [1669,540,1691,540], and panel
+1's flatten p_4ce90a723c42.png, the image refused before, rewritten at 12:45:47. Not recorded: the newest
+Dev Recorder session, 20261108-121919, ended at 12:25 with Close Project, so the reopen is not seen.
+THE MESSAGE GAP, FIXED IN 6C: an overwrite refused inside a protected folder ("Access is denied" on an
+existing file, while new files may be made) counts as a block now - ProtectedFolders::overwriteDenied
+(CreateFileW, GENERIC_WRITE, OPEN_EXISTING, shared; a read-only attribute is no block) - so blockedMessage
+gives "Windows or your antivirus blocked SankoTV..." with Save As. Check (cf) "AN OVERWRITE REFUSED WHILE
+NEW FILES ARE ALLOWED" (icacls denies Everyone the write of the image); controls: outside a protected
+folder the generic message stands, and a read-only file or a writable one is no block. The reason's
+doubled words are tidied: the file's error is added only when the writer's does not hold it already.
+THE PLAYBACK HAND TEST (20261108-121919, 356 s; built Nov 8 11:32:18, the gated exe in C:\SankoTV_6c).
+1 pass: the picture centred at 80 % with black around it (screenshot t00034027), played three times.
+2 not tested: the main window never resized, only its floating bars, menus and tooltips (Lifecycle pc3).
+3: the three pauses pass (the compact bar down and the preview's area back each time); the setting off
+not tested (pc7). Nothing failed. The session before, 20261108-121548 (60 s), ran the old exe of Nov 7.
+COMMITS, pushed: 6c 07d147dd1 (26 files, made in the scratch worktree C:\SankoTV_6c with only 6c in it;
+GATE 6cfinal: Release and Debug exit 0 in every family, Lifecycle 1320, Camera 332, 2404 s; hash list
+sha_6c.txt). The playback fit 124e652bf (AnimaticPage.cpp/.h and ProjectLifecycleTest.cpp on 6c; GATE
+pvfinal: every family exit 0, Lifecycle 1321, Camera 332, 2392 s; sha_pv.txt). Both hash lists check
+against those commits' files (sha256sum -c in the worktree at each commit). Then this file and CLAUDE.md
+rule 16, their own commit. RULE 16 CHANGED: the copies go in C:\SankoTV-TestCopies, outside protected
+folders; one deliberate antivirus test stays in BEFORE SELLING 14, which now records Norton for real.
+
+## STATUS 2026-11-08: 6C NOT COMMITTED (ITS SAVE FAILED IN THE HAND TEST); THE PLAYBACK FIT BUILT
+THE 6C HAND TEST, READ (Dev Recorder 20261108-105253, 586 s; git 29feeed0f+dirty, built Nov 7 21:18:44, the
+exe of 21:19:02, the right one; the user did steps 1, 2, 3, 4, 5, 8, 9, 10 on the TEST COPY projects). STEP 8
+FAILED: Ctrl+S on TEST COPY - Test_SB_006_A with margin said "This project was NOT saved ... p_4ce90a723c42.png
+... The image could not be written" three times (370 s, 404 s, and the Save of Close Project), panel 1's
+flatten, the first image a save writes. Not found: nothing in the copy is read-only, nothing was written, the
+recovery writer wrote into the same folder, Windows' controlled folder access is off and logged no block, the
+disk had 36 GB free, and the same margins on a throwaway copy of the project (panel 1 387,218,387,218 at rest,
+panel 2 1412,794,419,794 on the canvas, as at the save) saved at once. So the save now SAYS WHY: the writer's and
+the file's own error after the picture's size, in the message and so in the recording (ProjectIO's ImageSaver,
+QImageWriter, the same bytes as QImage::save). Check (sm10) "A WRITE REFUSED SAYS WHY", with its control.
+Cosmetic, to fix with the next change: the reason gives the system's words twice ("Access is denied.: Access
+is denied."), as the writer's string already holds the file's.
+PER STEP: 1 pass, but Esc was never pressed (Lifecycle sm1). 2 pass: hatched band, chip "Right +138 px · 4 % ·
+stage 5898 × 3240", Apply, the frame held (0.1 px), "Undo Stage Margin (Panel 1)"; Ctrl+Y not pressed (sm2).
+3 not tested: the user shrank only into empty margins, so the amber band showed but no art was hidden (sm3).
+4 pass for typed numbers (Enter applies and stays, the last Enter commits, 970 / 850), Presets 25 %, Reset,
+Same on all sides; Alt and Shift never held (mods 0 on every press and move; sm4); Esc in a field not pressed
+(sm5). 5: the frame stayed put through all 27 panel switches and stage changes (0.4 px at most), BUT IT CREPT
+SMALLER, 0.3 px a switch, 474.7 to 467.9 px of frame over 20: viewHoldBegin read scale(), the display's
+whole-px width. Fixed (the exact fit times the zoom); check (sm8) "TWENTY SWITCHES THERE AND BACK", with its
+control. Onion skin, light table and a stroke not tested (sm8, sm2; the light table has no pixel check).
+8 FAILED (the save, above); the SHOTS lock not tested (sm7). 9: Stage on the song's panel 1 (right 630) and
+the film played; not saved, so not reopened (sm10). 10 pass: Discard at the exit, sessionEnd, 0 warnings.
+FOUND IN PASSING: the Stage bar's window does become active when a field is clicked, and Enter still reaches
+the main window's shortcut (Qt lets a Tool window's keys through to its parent's shortcuts); the field's
+fallback in that shortcut is what applied the numbers. The recorder polls nothing while the bar is active.
+THE PLAYBACK FIT (the user's batch of 2026-11-08, reference Documents\SankoTV-Design\reference\like_this.jpg,
+1890 x 1009: the black viewport y 37-912, the picture x 216-1470, y 121-826, 705 of 875 px high, 84 / 86 px
+above and below). While the compact bar is up (the stage clear, the film playing), the preview's picture is
+fitted to AnimaticPage::kStagePictureShare = 0.80 of the preview, centred, black around it (PanelDisplay::
+pictureArea, setFitShare from setCompact). Otherwise 1.0: the paint as it was, byte for byte. No crop, no
+stretch, refits on every paint.
+CHECKS CHANGED, old and new: (pc1) "...the preview the whole area and the picture the largest 16:9 inside it,
+the bar not over it; the recorder's preview.compactBar" with largest16by9Inside(pic1, area1), now "...the
+picture 80 % of the largest 16:9 inside it, centred (the user's reference, 2026-11-08), the bar not over it;
+..." with stageFitted(pic1, area1). (pc3) "...the picture the largest 16:9 inside it, the compact bar still
+clear of it" with largest16by9Inside(pic, display->rect()), now "...the picture 80 % of the largest 16:9 inside
+it, centred, ..." with stageFitted. (pc7) gained "the picture the largest 16:9 inside the preview as ever"
+(largest16by9Inside), its control. New: (pc1) BLACK AROUND THE PICTURE (76 px above and below an area 760
+high). Controls: (pc4) pause gives the largest fit back, (pc7) the setting off.
+GATE pv, in the scratch worktree C:\SankoTV_6c (the user's SankoTV was open: a copy of the script without the
+kill line; the worktree's changed files compared with this tree's byte for byte, 0 differing): 2431 s,
+Release and Debug exit 0 in every family; Lifecycle 1318, Camera 332, the rest as before; pins and the pin
+file as 6c's. Outputs fullgate_pv.log and fullgate_pv\, camera_test_pv.txt; hash list sha_pv.txt (25 files:
+6c with its two fixes, and the playback fit). The exe under test: C:\SankoTV_6c\app\build\Release\SankoTV.exe,
+Nov 8 11:32:37; this tree's own exe is still 6c's of 21:19:02, as SankoTV held it.
+COMMITS, WHEN THE USER SAYS: by concern, 6c first, its own gate. Its files and the playback fit share
+AnimaticPage.cpp and ProjectLifecycleTest.cpp: take the fit out of a copy (setFitShare, pictureArea and their
+uses, kStagePictureShare, the (pc) changes and the "playback" seam) for 6c's commit, then the fit on top.
+Hand-test list Documents\SankoTV-Design\handtest_playback_fit_and_6c_save.md, on TEST COPY - Mansour song,
+playback and TEST COPY - Test_SB_006_A, save retry.
+
+## STATUS 2026-11-07 (night): 6C BUILT AND GATED, NOT COMMITTED; THE SONG RESTORED
+6c is in the main tree, uncommitted, waiting for the user's hand test and word. GATE 6c green, the
+exe of Nov 7 21:19:02 at the main path. Commit message app\build\_probe\split\msg_6c.txt, hash list
+sha_6c.txt (24 files; run sha256sum -c from C:\SankoTV). Hand-test list
+Documents\SankoTV-Design\handtest_6c_stage_mode.md, on two fresh TEST COPY projects. CLAUDE.md's
+rule 16 and this file are also uncommitted, and are not in that list: a separate commit, by concern.
+THE USER'S SONG IS RESTORED (their word, 2026-11-07): Downloads\Song\Mansour_Fast_song_001 is the file of
+Oct 5 again, 24 of 24 files byte-identical to the hashes of Nov 6, times too; it opens (loader read-only:
+version 1, 6 scenes, 7 panels, 15 layers, margin 0, mismatch 0, audio there; a real window on an identical
+temp copy: not dirty). The tested one moved, not deleted, to Downloads\Song\_tested_2026-11-07 (32 files).
+THE USER'S WORD ON SAVES: a layer file unchanged since an older build is not converted on save; the
+skip-unchanged rule stays as it is. RULE 16, new: every hand test on fresh copies I prepare, in
+Documents\SankoTV-TestCopies, each "TEST COPY - ...", and the list names which.
+
+## Batch 6c: Stage mode and each panel's own margin (2026-11-07) - BUILT, NOT COMMITTED
+Figma MARGIN-1 (533:696), MARGIN-0, MARGIN-2, PLAN; proposals-2026-11-06.md sections 4 and 5, and
+proposals-2026-11-06-stage-space.md. Q7, Q8, Q10, Q13 as approved.
+THE ONE SPACE. A Stage has an origin now (stageWithMargins, frameCentre, neutral(Stage)). A Panel has
+ownMargin and keyShift, set by settleMargin(projectMargin): own when its margin differs from the project's.
+The keys stay in the stage px of the project's margin, frame space plus that margin, so a panel at the
+project's margin reads them with nothing added and every old pin holds. evaluateAtPanel adds the panel's shift;
+every place that writes a key from a state read on a panel subtracts it (onShotCameraEdit, Add Key, the pinned
+key, Quick Move, last framing). A key moved or copied stays as it is. A panel without ownMargin is at the
+project's stage by its pixels, as a test fixture always was: shotcam::panelStage is the one question, and the
+pages, the clips, the preview and the exports all ask it. A depth layer's centre is the frame's (layerToStage,
+offBaseFraming, depthRanges). Vanishing points are the same: the tool holds them on the stage of the panel on
+the canvas (perspectiveFollowPanel), the file and the undo steps take the one space.
+THE PROJECT'S MARGIN IS FOR NEW PANELS (Q10). StageMarginCommand(allPanels): false moves no panel, and the keys'
+space moves with the margin, so nothing on any panel is anywhere else; a panel that held the old margin now has
+its own. true is Apply to All Panels...: asks when a panel's own margin would go, and undo gives each panel what
+it had. The dialog's Set is "Set for New Panels"; Apply to All stays on at the project's own margin, where Set is
+off (a project at 25 % with one panel at its own must be able to give it 25 %). Resize Project keeps a panel's own
+margin around the new frame.
+THE FILE: kFileVersion 4, read 1 to 4. A project with a panel at its own margin writes version 4; any other stays
+version 3 and the JSON it was, kFileVersionOneMargin. An older build refuses the first, rather than give that panel
+the project's margin. A v4 panel's "margin" is obeyed when its layers are the frame plus it; else counted and said
+(panelMarginsRepaired), the pixels win. The census counts a v4 panel at the size it would have at the project's margin.
+STAGE MODE. DrawingCanvas: enterStageMode, paintStageMode, stagePress/Move/Release, stageChipText. The Camera tool's
+other mode; m_tool stays Camera, so Esc needs no way back. StoryboardPage: enterStageMode, leaveStageMode,
+createStagePanel, applyPanelMargin, PanelStageCommand (holds no pixel; Panel::marginTo). Ends, cancelled: another tool,
+another panel, the history moving, the film over the canvas. Handles: Figma's numbers, 3 px white, 13.5 arm, 11 half-bar,
+1.5 outside the edge. THE AMBER: LayerTiles::artCells, an 8 px map of each visible layer's art, made once on entering
+(nothing can be drawn in the mode), and artOutline; stroked with the proposed stage clipped out, so it shows what is
+hidden now and what would be. A layer's map is what the chip counts.
+THE VIEW: viewHoldBegin/End keep the frame in its place and size on screen through a panel switch or a stage change;
+with the same stage they do nothing. Fit Screen brings an off-centre frame to the centre. Onion skin and light table
+take a place on the stage when either panel has its own margin; empty, the whole stage, as ever. Paste in Place's
+position is held by the frame.
+THREE THINGS FOUND ON THE WAY, FIXED, ALL FROM 6B-V: a margin moves no pixel, so at rest a layer keeps its identity,
+and three caches asked by that alone: the flatten's fingerprint (a thumbnail stayed the old stage's picture), the depth
+mips and the edge bits. Layer::placedKey, and the fingerprint now says the stage. Check (sm3).
+THE CAMERA BAR GREW BY THE STAGE BUTTON and no longer fitted the narrowest window: (pf) failed, 1204 wide on a canvas of
+1155, and on 1103 with the default docks. The check held; the bar fits itself now: Figma's spacing when the canvas has
+the room, tighter steps when not (CameraBarWindow::onFit). At the test's width nothing changes.
+INTERPRETED, THE USER TO SAY IF WRONG: Reset is "back to the project's margin", the one way back that is not typing, as
+Cancel already undoes the session. "Same on all sides" is the same SHARE of the frame on each, as the presets and 2A's
+"Same share both ways" are, not the same px. A field's Enter applies its number and stays; Enter with nothing to apply
+commits, and Esc likewise. The Stage bar is one row when the canvas has the room, as Figma draws it, two when not.
+The cost line keeps Figma's words with V's numbers: a layer's size on the canvas, and the project as it would be held
+now: this panel's whole stages plus every other panel's tiles. Figma's "cuts art on 2 layers" says "hides art on 2
+layers (kept, not cut)" (Q13). Its "the panel's last key now fits" says "this panel's key now fits" or "keys": it fits
+whichever key it is.
+ONE CHECK CHANGED, as the version moved on. (fs11), old: newerRoot.insert(QStringLiteral("version"), 4); "(fs11) A NEWER
+FILE (version 4) IS REFUSED: ..."; shown.contains(QStringLiteral("file version 4")). New: the same with 5. Its control
+stands: "(fs11) control: the same file at version 3 opens". And (sm10) adds: version 4 opens. No pin changed.
+NEW CHECKS: Lifecycle (sm1) to (sm12), 78 with their controls, runStageModePass, real mouse events on the handles,
+exact shot bytes through each margin, amber pixels on screen; Camera (sm0), 14. SANKO_LIFECYCLE_ONLY=stagemode runs only
+that pass and (pf), for the quick check: the gate never sets it.
+GATE 6c: app\build\_probe\split\fullgate_6c.log, normal mode, 2383 s. Release and Debug both, exit 0: Lifecycle 1313 (was
+1235), Camera 332 (318), CanvasSizeLock 170, CanvasEdgeLock 74, BrushLibrary 187, DevRecorder 46, QuickShapeGeometry 19,
+PaintPixel 13, CanvasBrush 3. Camera's pin file is the baseline's, every line but the timings; pins by count (c1p 17, mp 43,
+mq 44, rp 3; Lifecycle rp 6, mp 4), row pins and evaluate pins unchanged.
+A FIRST GATE WAS STOPPED and went on regardless: TaskStop leaves fullgate's children running, and force-killing them was
+refused by the permission check. It ran to its end, over edited sources, its verdict void; its logs found (pf). Only the
+second, started after it ended and after every edit, counts.
+NOT IN 6C (6d): per-panel Stay inside across moves, the CAMERA row's amber parts, Grow to fit this move, frame-anchored
+strip thumbnails, Full Artwork per stage.
+NOT BY HAND YET: the Stage bar's fields with the bar's window really active. A test cannot make the bar the active window on
+this machine dependably, and in a test the main window's Enter shortcut comes first, so (sm5) sends the field its keys with
+the shortcuts off. Step 4 of the list is what proves it.
+
 ## STATUS 2026-11-07 (evening): 6B-V COMMITTED
 Built, gated (GATE 6bv), hand-tested on its own exe (Dev Recorder 20261107-192141),
 committed by this commit (sha_6bv.txt), pushed. See the section below. Next: 6c, Stage
@@ -974,6 +1137,18 @@ may ship in a closed-source commercial product, flag it - do not decide.
     NOTE: SankoTV has no auto-recovery yet (nothing autosaves; the Script
     Editor's "Saving..." is a display only) - test it if one is built.
     Not licensing; a product requirement.
+    SEEN FOR REAL (2026-11-08, the user's 6c hand test; the user's words):
+    Norton 360's ransomware protection blocks an unknown SankoTV.exe from
+    OVERWRITING existing images in Documents while NEW files still save
+    there. Norton's history: "SankoTV.exe prevented from accessing your
+    undefined file - Detected"; allowing both exes in Norton cured it. The
+    app now says so in the neutral words with Save As (an overwrite refused
+    counts as a block, ProtectedFolders::overwriteDenied; Lifecycle (cf)).
+    THE INSTALLER AND THE DOCUMENTATION MUST TELL USERS HOW TO ALLOW
+    SANKOTV in Norton (and in Windows' Controlled folder access), and code
+    signing (item 15) may help Norton trust it. Development hand tests now
+    run on copies in C:\SankoTV-TestCopies (CLAUDE.md rule 16); this item
+    keeps the one deliberate antivirus test, in a protected folder.
 
 15. OPEN - CODE-SIGN THE RELEASE (opened 2026-10-31, the user's words:
     "code-sign the release"). An unsigned SankoTV.exe meets SmartScreen

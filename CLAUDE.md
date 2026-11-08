@@ -426,6 +426,21 @@ Learned from real defects. Follow them exactly.
     It is the last line of the final message, after the report, every
     time - and only when the task is really finished, never on a pause,
     a question or a checkpoint.
+16. **Every hand test runs on fresh test copies, prepared before it** (the
+    user's rule, 2026-11-07). Before each hand test, make fresh copies in
+    `C:\SankoTV-TestCopies` - OUTSIDE the folders Windows and antivirus
+    protect (Documents, Pictures, Desktop and the like), so a security
+    product cannot interfere with a hand test (the user's rule, 2026-11-08:
+    Norton 360 refused SankoTV the overwrite of an image in Documents and a
+    save failed; one deliberate antivirus test stays, BEFORE SELLING 14) -
+    each named "TEST COPY - <what it is>"
+    (for example "TEST COPY - Mansour song"), project file and folder alike,
+    so the name shows in the title bar. Copy from the project's real files
+    without changing them, and verify the copy. The hand-test list names
+    exactly which copy each step opens; it never says "a copy of". It
+    happened on 2026-11-07: a list that said "use copies" was followed by a
+    test that saved over the user's real song. It had to be restored from a
+    copy that happened to exist.
 
 ## Finding bugs
 
