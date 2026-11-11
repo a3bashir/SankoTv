@@ -1,5 +1,31 @@
 # SankoTV — Session Handoff Brief
 
+## STATUS 2026-11-11 (evening): BATCH A COMMITTED (7f98bb24b) AFTER THE RE-TEST; BATCH B WAITS FOR THE USER
+THE RE-TEST (Dev Recorder 20261111-174216, 331 s, the 16:58:49 build, git c4ae8526f+dirty, on "TEST COPY - small
+pirate, A retest" - the title bar and the exit prompt name it; closed with the window's X and Discard, nothing
+saved). Steps of handtest_batch_A_retest_step1.md:
+1 PASS: Space with the Layers list focused, three times with the Brush and once with the Eraser - every pen drag
+went the pan way (the tablet press passed on, a mouse press made of it) and the view moved; nothing painted.
+2 PASS: Space with the Panel Strip focused (QScrollArea), five times: pans. 3 PASS: the pen over the floating
+Layers toolbar before and as Space went down (178.2 s, 264.5 s): pans. 4 PASS: Space pressed while the pen was
+still over a strip thumbnail (243.6 s), the strip's frame (250.1 s) and the floating toolbar (264.5 s), the pen
+then on the canvas: pans - the hand-over of a Space pressed on the way. 5 not tested ((ta1)'s control: "let go
+there it is not held when the pen comes onto the canvas"). 6 PASS with the Brush: three side-button drags
+(btns=2) taken and dropped, nothing painted (screenshots 297 s, 302.5 s clean), the tip's strokes painted and were
+undone; the Eraser, the Move tool and the mouse's right click not tested ((ta8) and its control). 7 PASS.
+Over the whole session: 34 pen drags with Space held, 34 pans, 0 strokes; the strokes painted came with Space up
+(193.8 s: no Space repeat for 1.2 s before it, so the key was up).
+NOTED, NOT A FAILURE: at 255.6 s Space went down while the pen crossed the timeline's header on its way to the
+canvas; the pointer was over the animatic section, whose keys are the timeline's (since Phase 1), so Space played
+the film from frame 83 to 100 and the pen's press on the preview stopped it. Nothing painted; the user's next try
+panned. A possible later change: Space over the timeline's header (not its rows) could be left to the canvas.
+COMMITTED and pushed: 7f98bb24b "The trial's fixes (batch A): the canvas's keys follow the pen" (the 12 code files
+and this file as gated: sha_A2_gate.txt, sha_A2_docs.txt; the staged stat equal with --ignore-cr-at-eol; the 13
+committed files equal to the working files, CR-stripped), then this note. One commit for the batch, as 6d was:
+each split state would need its own 41-minute gate.
+NEXT: the batch B report only (1.9 and the three 1.7 causes reproduced on TEST COPY projects with screenshots, the
+proposal, anything new-looking in Figma). Nothing of B is built until the user approves.
+
 ## STATUS 2026-11-11: BATCH A'S STEP 1 FIXED, WITH THE SIDE BUTTON; WAITING FOR THE USER'S RE-TEST, NOT COMMITTED
 The user (2026-11-11): build the step 1 fix (the pointer's place from the pen and mouse moves themselves, (ta1)
 hovering with real pen events, with a control); the pen's lower side button does nothing on the canvas for now;
