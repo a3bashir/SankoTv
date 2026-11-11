@@ -67,6 +67,9 @@ void paint(QPainter &painter, const Tiles &tiles, const QRect &stage);
 QRect drawnBounds(const Tiles &tiles, const QRect &stage);
 // Any pixel other than the fill outside `stage`: art kept and hidden.
 bool hasHidden(const Tiles &tiles, const QRect &stage);
+// The tight bounds of every pixel other than the fill OUTSIDE `stage`, in frame
+// space (batch B1: the art the Move tool lifts with the rest); empty: none.
+QRect hiddenBounds(const Tiles &tiles, const QRect &stage);
 // The same tiles without what lies outside `stage`, a new identity.
 TilesPtr trimmed(const Tiles &tiles, const QRect &stage);
 // The identities: unique, and never one of QImage::cacheKey().

@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <climits>
 #include <cstring>
 
 namespace layertiles {
@@ -233,6 +234,35 @@ QRect drawnBounds(const Tiles &tiles, const QRect &stage)
     if (right < left)
         return QRect();
     return QRect(QPoint(left, top), QPoint(right, bottom)).translated(-stage.topLeft());
+}
+
+QRect hiddenBounds(const Tiles &tiles, const QRect &stage)
+{
+    int left = INT_MAX, top = INT_MAX, right = INT_MIN, bottom = INT_MIN;
+    for (const Tile &t : tiles.tiles) {
+        const QRect tile = tileRect(t.x, t.y);
+        if (stage.contains(tile))
+            continue;
+        for (int y = 0; y < kTile; ++y) {
+            const quint32 *row = reinterpret_cast<const quint32 *>(t.pixels.constScanLine(y));
+            const int fy = tile.top() + y;
+            const bool rowInStage = fy >= stage.top() && fy <= stage.bottom();
+            for (int x = 0; x < kTile; ++x) {
+                if (row[x] == tiles.fill)
+                    continue;
+                const int fx = tile.left() + x;
+                if (rowInStage && fx >= stage.left() && fx <= stage.right())
+                    continue; // the stage's own pixels: the full image's, not kept art
+                left = qMin(left, fx);
+                right = qMax(right, fx);
+                top = qMin(top, fy);
+                bottom = qMax(bottom, fy);
+            }
+        }
+    }
+    if (right < left)
+        return QRect();
+    return QRect(QPoint(left, top), QPoint(right, bottom));
 }
 
 bool hasHidden(const Tiles &tiles, const QRect &stage)

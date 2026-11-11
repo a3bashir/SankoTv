@@ -4979,6 +4979,11 @@ QWidget *StoryboardPage::createCameraPanel()
             return;
         sayNote(QStringLiteral("Turn on Animate to change the camera at this point."));
     });
+    // Kept art (batch B1, Figma B-1): a landing past what a layer may hold.
+    connect(m_canvas, &DrawingCanvas::keptArtLimitReached, this, [this] {
+        sayNote(QStringLiteral("The layer reaches the 8,192 px limit: art past it is not kept. "
+                               "Undo brings it back."));
+    });
 
     loadCameraGuides();
     m_syncCameraBar();

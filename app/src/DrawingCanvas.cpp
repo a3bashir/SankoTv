@@ -484,9 +484,18 @@ public:
           m_layerId(layerId), m_region(region), m_before(before), m_after(after)
     {
     }
+    // KEPT ART (batch B1): the layer's tiles before and after as well - they hold
+    // what the edit kept past the stage. Immutable and shared, so two pointers.
+    void setTiles(const layertiles::TilesPtr &before, const layertiles::TilesPtr &after)
+    {
+        m_withTiles = true;
+        m_tilesBefore = before;
+        m_tilesAfter = after;
+    }
     void undo() override
     {
-        m_canvas->applyLayerRegionForUndo(m_panel, m_layerId, m_region, m_before);
+        m_canvas->applyLayerRegionForUndo(m_panel, m_layerId, m_region, m_before,
+                                          m_withTiles ? &m_tilesBefore : nullptr);
     }
     void redo() override
     {
@@ -494,7 +503,8 @@ public:
             m_firstRedo = false; // already applied interactively
             return;
         }
-        m_canvas->applyLayerRegionForUndo(m_panel, m_layerId, m_region, m_after);
+        m_canvas->applyLayerRegionForUndo(m_panel, m_layerId, m_region, m_after,
+                                          m_withTiles ? &m_tilesAfter : nullptr);
     }
 
 private:
@@ -504,6 +514,9 @@ private:
     QRect m_region;
     QImage m_before;
     QImage m_after;
+    bool m_withTiles = false;
+    layertiles::TilesPtr m_tilesBefore;
+    layertiles::TilesPtr m_tilesAfter;
     bool m_firstRedo = true;
 };
 
@@ -1751,6 +1764,150 @@ static QRect opaquePixelBounds(const QImage &image)
     return QRect(QPoint(minX, minY), QPoint(maxX, maxY));
 }
 
+// KEPT ART (batch B1, 2026-11-11; Figma B-1; the user's notes 1.2 and 1.9). Until now a
+// move, scale, rotate, warp or paste that landed past the stage was cut there: the
+// layer's full image is the stage, nothing more (in the reproduction, 67,938 px of the
+// waves moved 250 px past the edge were gone, and moving them back did not bring them
+// back). Batch 6c already keeps art outside the stage, in the layer's tiles, when a
+// stage shrinks; a landing now writes there too. The full image stays the stage, so
+// every tool works as it did; the Move tool lifts the kept part with the rest.
+static constexpr int kKeptArtMax = 8192;      // across and down: the canvas's own cap
+static constexpr qreal kKeptArtShown = 0.35;  // kept art with the Move tool (Q-B2)
+
+bool DrawingCanvas::keepsArt(const Layer &layer) const
+{
+    return m_panel && !isGroupLayer(layer) && layer.type != QLatin1String("background");
+}
+
+QRect DrawingCanvas::layerArtBounds(const Layer &layer) const
+{
+    QRect art = opaquePixelBounds(layer.image);
+    if (keepsArt(layer) && layer.tiles) {
+        const QPoint at = m_panel->frameAt(); // canvas px = frame px + at
+        const QRect hidden = layertiles::hiddenBounds(*layer.tiles, QRect(-at, layer.image.size()));
+        if (!hidden.isEmpty())
+            art = art.isEmpty() ? hidden.translated(at) : art.united(hidden.translated(at));
+    }
+    return art;
+}
+
+QImage DrawingCanvas::layerArtImage(const Layer &layer, const QRect &rect) const
+{
+    QImage out;
+    if (keepsArt(layer) && layer.tiles)
+        out = layertiles::unfold(*layer.tiles, rect.translated(-m_panel->frameAt()));
+    if (out.isNull() || out.size() != rect.size() || out.format() != QImage::Format_ARGB32_Premultiplied) {
+        out = QImage(rect.size(), QImage::Format_ARGB32_Premultiplied);
+        out.fill(Qt::transparent);
+    }
+    // The stage from the full image: the tiles' part of it may be older.
+    const QRect inStage = rect.intersected(QRect(QPoint(0, 0), layer.image.size()));
+    if (!inStage.isEmpty()) {
+        QPainter p(&out);
+        p.setCompositionMode(QPainter::CompositionMode_Source);
+        p.drawImage(inStage.topLeft() - rect.topLeft(), layer.image, inStage);
+    }
+    return out;
+}
+
+// What of `wanted` a layer may hold: at most kKeptArtMax px across and down, the
+// stage always inside it, and on each axis placed toward the side the art goes
+// further past the stage.
+QRect DrawingCanvas::keptArtWindow(const QRect &wanted) const
+{
+    const QRect stage(QPoint(0, 0), canvasSize());
+    const QRect all = wanted.united(stage);
+    auto axis = [](int s0, int s1, int a0, int a1, int *w0, int *w1) {
+        if (a1 - a0 + 1 <= kKeptArtMax) {
+            *w0 = a0;
+            *w1 = a1;
+            return;
+        }
+        const int minStart = s1 - kKeptArtMax + 1, maxStart = s0; // the stage stays inside
+        const int start = (s0 - a0) >= (a1 - s1) ? qMax(minStart, a0)
+                                                 : qMin(maxStart, a1 - kKeptArtMax + 1);
+        *w0 = start;
+        *w1 = start + kKeptArtMax - 1;
+    };
+    int x0, x1, y0, y1;
+    axis(stage.left(), stage.right(), all.left(), all.right(), &x0, &x1);
+    axis(stage.top(), stage.bottom(), all.top(), all.bottom(), &y0, &y1);
+    return QRect(QPoint(x0, y0), QPoint(x1, y1)).intersected(all);
+}
+
+DrawingCanvas::KeptLanding DrawingCanvas::landKeptArt(const Layer &layer, const QRect &reach,
+                                                      const std::function<void(QPainter &)> &paint,
+                                                      const QRect &lifted) const
+{
+    KeptLanding out;
+    const QRect stage(QPoint(0, 0), layer.image.size());
+    const QRect wanted = reach.united(stage);
+    const QRect window = keptArtWindow(wanted);
+    out.limited = !window.contains(wanted);
+    QImage big = layerArtImage(layer, window);
+    {
+        QPainter p(&big);
+        p.translate(-window.topLeft()); // `paint` draws in canvas px
+        paint(p);
+    }
+    out.image = big.copy(stage.translated(-window.topLeft()));
+    // The whole window into the tiles; what they hold outside it stays as it was.
+    out.tiles = layertiles::fold(big, m_panel->frameAt() - window.topLeft(), 0u, layer.tiles,
+                                 out.image.cacheKey());
+    // A lift far on one side landed far on the other: the window holds the landing,
+    // and what was lifted from outside it is emptied here (a lift past the stage is
+    // the whole rectangle - beginTransform).
+    if (!lifted.isEmpty() && !window.contains(lifted)) {
+        const QRegion behind = QRegion(lifted).subtracted(QRegion(window));
+        for (const QRect &part : behind) {
+            QImage blank(part.size(), QImage::Format_ARGB32_Premultiplied);
+            blank.fill(Qt::transparent);
+            out.tiles = layertiles::fold(blank, m_panel->frameAt() - part.topLeft(), 0u, out.tiles,
+                                         out.image.cacheKey());
+        }
+    }
+    return out;
+}
+
+// Where a lifted buffer lands with the box (or the warp) as it is now, canvas px,
+// padded for the antialiased rim.
+QRect DrawingCanvas::landedBounds(const QImage &buffer) const
+{
+    if (!m_warpDirty || !m_tpsValid)
+        return boxTransform().mapRect(QRectF(buffer.rect())).toAlignedRect().adjusted(-2, -2, 2, 2);
+    QRectF bounds;
+    const int n = 16;
+    for (int j = 0; j <= n; ++j)
+        for (int i = 0; i <= n; ++i) {
+            const QPointF p = warpMap(QPointF(m_moveSrcRect.width() * i / qreal(n),
+                                              m_moveSrcRect.height() * j / qreal(n)));
+            bounds = bounds.isNull() ? QRectF(p, QSizeF(0.01, 0.01)) : bounds.united(QRectF(p, QSizeF(0.01, 0.01)));
+        }
+    return bounds.toAlignedRect().adjusted(-8, -8, 8, 8);
+}
+
+void DrawingCanvas::paintStageAndKept(QPainter &painter, const QRectF &bounds,
+                                      const std::function<void()> &draw) const
+{
+    const QRectF stage(QPointF(0, 0), QSizeF(canvasSize()));
+    if (stage.contains(bounds)) {
+        draw(); // the common case, exactly as before
+        return;
+    }
+    painter.save();
+    painter.setClipRect(stage, Qt::IntersectClip);
+    draw();
+    painter.restore();
+    painter.save();
+    QPainterPath outside;
+    outside.addRect(bounds.united(stage).adjusted(-4, -4, 4, 4));
+    outside.addRect(stage); // odd-even: the ring around the stage
+    painter.setClipPath(outside, Qt::IntersectClip);
+    painter.setOpacity(painter.opacity() * kKeptArtShown);
+    draw();
+    painter.restore();
+}
+
 void DrawingCanvas::setTool(Tool tool)
 {
     clearPenUiLatch(); // a latched pen tap does not survive a tool change
@@ -1838,7 +1995,8 @@ void DrawingCanvas::liftDefaultTransformBox()
     }
     if (m_selectionPath.isEmpty()) {
         if (Layer *layer = editableActiveLayer()) {
-            const QRect art = opaquePixelBounds(layer->image);
+            // The layer's whole art, the part kept past the stage included (batch B1).
+            const QRect art = layerArtBounds(*layer);
             if (!art.isEmpty()) {
                 QPainterPath path;
                 path.addRect(QRectF(art)); // QRect(P,P) width already spans maxX+1
@@ -2607,7 +2765,8 @@ void DrawingCanvas::finalizeLayerEdit(const QString &text, const QImage &beforeO
 // Command callback: write back one region of one layer (Source mode replaces
 // pixels exactly, alpha included), then refresh.
 void DrawingCanvas::applyLayerRegionForUndo(Panel *panel, const QString &layerId,
-                                            const QRect &region, const QImage &pixels)
+                                            const QRect &region, const QImage &pixels,
+                                            const layertiles::TilesPtr *tiles)
 {
     if (!panel)
         return;
@@ -2615,10 +2774,19 @@ void DrawingCanvas::applyLayerRegionForUndo(Panel *panel, const QString &layerId
         if (layer.id != layerId)
             continue;
         layer.unfoldNow(); // an undo can reach a panel at rest (batch 6b-V)
-        QPainter p(&layer.image);
-        p.setCompositionMode(QPainter::CompositionMode_Source);
-        p.drawImage(region.topLeft(), pixels);
-        p.end();
+        if (!pixels.isNull()) {
+            QPainter p(&layer.image);
+            p.setCompositionMode(QPainter::CompositionMode_Source);
+            p.drawImage(region.topLeft(), pixels);
+            p.end();
+        }
+        if (tiles) {
+            // The kept art as it was then (batch B1). The stage's part of these
+            // tiles may be older than the image: marked so, they are folded from
+            // the image (and keep only their art outside the stage) when next read.
+            layer.tiles = *tiles;
+            layer.tilesOf = 0;
+        }
         break;
     }
     invalidateComposite(); // undo/redo can rewrite a non-active layer
@@ -3871,10 +4039,33 @@ void DrawingCanvas::commitFloating()
     m_floatActive = false;
     m_floatDragging = false;
     Layer *layer = editableActiveLayer();
-    if (layer) {
+    const QPointF target = m_floatPos + m_floatDelta;
+    const QPoint aligned(qRound(target.x()), qRound(target.y()));
+    const QRect landing(aligned, m_floatImg.size());
+    if (layer && keepsArt(*layer) && m_undoStack && !layer->image.rect().contains(landing)) {
+        // A paste is no longer stopped at the stage's edge (batch B1): what lands
+        // past it is kept, as a move's is.
+        const QImage before = layer->image;
+        const KeptLanding landed = landKeptArt(*layer, landing, [&](QPainter &p) {
+            p.drawImage(aligned, m_floatImg);
+        });
+        const QRect region = diffRegion(before, landed.image);
+        const layertiles::TilesPtr tilesBefore = layer->tiles;
+        layer->image = landed.image;
+        layer->tiles = landed.tiles;
+        layer->tilesOf = landed.image.cacheKey();
+        auto *command = new DrawingCommand(this, m_panel, layer->id, region,
+                                           region.isEmpty() ? QImage() : before.copy(region),
+                                           region.isEmpty() ? QImage() : landed.image.copy(region),
+                                           QStringLiteral("Paste"));
+        command->setTiles(tilesBefore, landed.tiles);
+        m_undoStack->push(command);
+        invalidateComposite();
+        emit contentChanged();
+        if (landed.limited)
+            emit keptArtLimitReached();
+    } else if (layer) {
         beginLayerEdit();
-        const QPointF target = m_floatPos + m_floatDelta;
-        const QPoint aligned(qRound(target.x()), qRound(target.y()));
         QPainter p(&layer->image);
         p.drawImage(aligned, m_floatImg); // limited only by the canvas bounds
         p.end();
@@ -4070,16 +4261,31 @@ void DrawingCanvas::beginTransform()
     Layer *layer = editableActiveLayer();
     if (!layer || m_selectionPath.isEmpty())
         return;
-    const QRect r = m_selectionPath.boundingRect().toAlignedRect().intersected(layer->image.rect());
+    // The box around the layer's whole art (no selection made) may reach past the
+    // stage, where its kept art is (batch B1); a selection the artist made is the
+    // stage's, as before.
+    const QRect selected = m_selectionPath.boundingRect().toAlignedRect();
+    const QRect r = m_xformAutoSel && keepsArt(*layer)
+        ? selected.intersected(layerArtBounds(*layer))
+        : selected.intersected(layer->image.rect());
     if (r.isEmpty())
         return;
+    const bool pastStage = !layer->image.rect().contains(r);
 
     // Antialiased mask (from the cache): the lift carries a soft coverage
     // falloff, so the committed result has smooth edges, never jagged stairs.
-    m_moveMask = selectionMask(r);
+    // (The cache is the stage's: a lift past it is the whole rectangle, which is
+    // what the synthesized selection's mask holds inside the stage too.)
+    if (pastStage) {
+        m_moveMask = QImage(r.size(), QImage::Format_ARGB32_Premultiplied);
+        m_moveMask.fill(QColor(255, 255, 255, 255));
+    } else {
+        m_moveMask = selectionMask(r);
+    }
     m_moveSrcRect = r;
 
-    m_transformBuf = layer->image.copy(r); // PRISTINE lifted pixels (never re-transformed)
+    // PRISTINE lifted pixels (never re-transformed)
+    m_transformBuf = pastStage ? layerArtImage(*layer, r) : layer->image.copy(r);
     {
         QPainter p(&m_transformBuf);
         p.setCompositionMode(QPainter::CompositionMode_DestinationIn);
@@ -4160,7 +4366,7 @@ void DrawingCanvas::beginLayersTransform(const QStringList &candidateIds)
             || member.type == QLatin1String("background")
             || !m_panel->layerEffectivelyVisible(member))
             continue;
-        const QRect art = opaquePixelBounds(member.image);
+        const QRect art = layerArtBounds(member); // kept art included (batch B1)
         if (art.isEmpty())
             continue;
         r = r.isNull() ? art : r.united(art);
@@ -4182,7 +4388,8 @@ void DrawingCanvas::beginLayersTransform(const QStringList &candidateIds)
         for (const QString &id : ids)
             for (const Layer &member : m_panel->layers)
                 if (member.id == id) {
-                    const QImage buf = member.image.copy(r);
+                    const QImage buf = member.image.rect().contains(r) ? member.image.copy(r)
+                                                                       : layerArtImage(member, r);
                     m_xformBufs.append(buf);
                     p.setOpacity(qBound(0.0, member.opacity, 1.0));
                     p.drawImage(0, 0, buf);
@@ -4324,8 +4531,10 @@ void DrawingCanvas::paintWarpedBuffer(QPainter &p, qreal cellPx,
     }
     QRectF bboxF(QPointF(minX, minY), QPointF(maxX, maxY));
     bboxF.adjust(-2, -2, 2, 2);
-    bboxF = bboxF.intersected(QRectF(-256, -256, canvasSize().width() + 512,
-                                     canvasSize().height() + 512));
+    // (4096 px around the stage, was 256: a warp may land past the stage now, where
+    // its art is kept - batch B1. The size check below still refuses a blow-up.)
+    bboxF = bboxF.intersected(QRectF(-4096, -4096, canvasSize().width() + 8192,
+                                     canvasSize().height() + 8192));
     const QRect bbox = bboxF.toAlignedRect();
     if (bbox.isEmpty())
         return;
@@ -4796,6 +5005,9 @@ void DrawingCanvas::commitTransform(bool relift)
 {
     if (!m_xformActive)
         return;
+    const QRectF lifted(m_moveSrcRect);
+    const bool untouched = !m_warpDirty
+        && m_quad == QPolygonF({lifted.topLeft(), lifted.topRight(), lifted.bottomRight(), lifted.bottomLeft()});
     m_xformActive = false;
     m_xformMode = XNone;
     setMouseTracking(false);
@@ -4820,8 +5032,11 @@ void DrawingCanvas::commitTransform(bool relift)
             QImage before;
             QImage result;
             QRect region;
+            bool withTiles = false; // kept art past the stage (batch B1)
+            layertiles::TilesPtr tilesBefore, tilesAfter;
         };
         QVector<Baked> baked;
+        bool limited = false;
         for (int k = 0; k < m_xformLayerIds.size(); ++k) {
             Layer *layer = nullptr;
             for (Layer &candidate : m_panel->layers)
@@ -4833,6 +5048,35 @@ void DrawingCanvas::commitTransform(bool relift)
                 continue; // deleted/locked mid-session: skip safely
 
             const QImage before = layer->image;
+            // KEPT ART (batch B1): a lift or a landing past the stage keeps what is
+            // past it, in the layer's tiles. An untouched box changes nothing.
+            const QRect lands = landedBounds(m_xformBufs.at(k));
+            if (keepsArt(*layer) && !layer->image.rect().contains(m_moveSrcRect.united(lands))) {
+                if (untouched)
+                    continue;
+                const QImage &buffer = m_xformBufs.at(k);
+                const KeptLanding landed = landKeptArt(*layer, lands, [&](QPainter &p) {
+                    p.save();
+                    p.setCompositionMode(QPainter::CompositionMode_DestinationOut);
+                    p.drawImage(m_moveSrcRect.topLeft(), m_moveMask); // clear source
+                    p.restore();
+                    p.setRenderHint(QPainter::SmoothPixmapTransform, true);
+                    p.setRenderHint(QPainter::Antialiasing, true);
+                    if (m_warpDirty) {
+                        paintWarpedBuffer(p, 4.0, buffer);
+                    } else {
+                        p.setTransform(boxTransform(), true); // buffer -> canvas
+                        p.drawImage(0, 0, buffer);
+                    }
+                }, m_moveSrcRect);
+                limited = limited || landed.limited;
+                Baked b{layer, before, landed.image, diffRegion(before, landed.image)};
+                b.withTiles = true;
+                b.tilesBefore = layer->tiles;
+                b.tilesAfter = landed.tiles;
+                baked.append(b);
+                continue;
+            }
             QImage result = layer->image;
             {
                 QPainter c(&result);
@@ -4867,9 +5111,20 @@ void DrawingCanvas::commitTransform(bool relift)
             m_undoStack->beginMacro(QStringLiteral("Transform Group"));
         for (const Baked &b : baked) {
             b.layer->image = b.result; // IN PLACE: no new layer, no merging
-            m_undoStack->push(new DrawingCommand(
-                this, m_panel, b.layer->id, b.region, b.before.copy(b.region),
-                b.result.copy(b.region), QStringLiteral("Transform")));
+            if (!b.withTiles) {
+                m_undoStack->push(new DrawingCommand(
+                    this, m_panel, b.layer->id, b.region, b.before.copy(b.region),
+                    b.result.copy(b.region), QStringLiteral("Transform")));
+                continue;
+            }
+            b.layer->tiles = b.tilesAfter; // they say what the image says, and more
+            b.layer->tilesOf = b.result.cacheKey();
+            auto *command = new DrawingCommand(
+                this, m_panel, b.layer->id, b.region,
+                b.region.isEmpty() ? QImage() : b.before.copy(b.region),
+                b.region.isEmpty() ? QImage() : b.result.copy(b.region), QStringLiteral("Transform"));
+            command->setTiles(b.tilesBefore, b.tilesAfter);
+            m_undoStack->push(command);
         }
         if (macro)
             m_undoStack->endMacro();
@@ -4877,6 +5132,8 @@ void DrawingCanvas::commitTransform(bool relift)
             invalidateComposite(); // non-active members may sit in the caches
             emit contentChanged();
         }
+        if (limited)
+            emit keptArtLimitReached();
     }
 
     m_transformBuf = QImage();
@@ -4940,7 +5197,7 @@ void DrawingCanvas::cancelTransform(bool relift)
     if (relift && m_tool == Move) {
         if (Layer *l = editableActiveLayer()) {
             if (m_selectionPath.isEmpty()) {
-                const QRect art = opaquePixelBounds(l->image);
+                const QRect art = layerArtBounds(*l); // kept art included (batch B1)
                 if (!art.isEmpty()) {
                     QPainterPath path;
                     path.addRect(QRectF(art));
@@ -6796,14 +7053,19 @@ void DrawingCanvas::paintEvent(QPaintEvent *event)
             if (bi >= 0 && bi < m_xformHoles.size())
                 painter.drawImage(0, 0, m_xformHoles.at(bi));
             if (bi >= 0 && bi < m_xformBufs.size()) {
-                painter.save();
-                if (m_warpDirty) {
-                    paintWarpedBuffer(painter, 4.0, m_xformBufs.at(bi));
-                } else {
-                    painter.setWorldTransform(boxTransform(), true);
-                    painter.drawImage(0, 0, m_xformBufs.at(bi));
-                }
-                painter.restore();
+                // Past the stage, faint: the layer's kept art, or where this move
+                // would keep it (batch B1, Q-B2).
+                const QImage &buffer = m_xformBufs.at(bi);
+                paintStageAndKept(painter, QRectF(landedBounds(buffer)), [&] {
+                    painter.save();
+                    if (m_warpDirty) {
+                        paintWarpedBuffer(painter, 4.0, buffer);
+                    } else {
+                        painter.setWorldTransform(boxTransform(), true);
+                        painter.drawImage(0, 0, buffer);
+                    }
+                    painter.restore();
+                });
             }
             return;
         }
@@ -7246,9 +7508,11 @@ void DrawingCanvas::paintEvent(QPaintEvent *event)
     if (m_shapeDrag || (m_tool == Shapes && !m_polygonPts.isEmpty()))
         paintShapeGeometry(painter, false);
 
-    // Floating pixels (mid-move or un-committed paste).
+    // Floating pixels (mid-move or un-committed paste); past the stage, faint, as kept
+    // art shows (batch B1).
     if (m_floatActive && !m_floatImg.isNull())
-        painter.drawImage(m_floatPos + m_floatDelta, m_floatImg);
+        paintStageAndKept(painter, QRectF(m_floatPos + m_floatDelta, QSizeF(m_floatImg.size())),
+                          [&] { painter.drawImage(m_floatPos + m_floatDelta, m_floatImg); });
 
     // (The live transform preview is drawn INSIDE the layer loop above, at
     // each lifted layer's own z-position and effective opacity — stacking
@@ -7779,6 +8043,12 @@ void DrawingCanvas::mousePressEvent(QMouseEvent *event)
         }
 
         m_xformMode = hitTestBox(event->position());
+        // A PRESS ANYWHERE ELSE MOVES THE LAYER (Q-B1, the user's decision of
+        // 2026-11-11), as Photoshop's Move tool does: in the trial, three presses
+        // below the paper moved nothing before one on it did. The handles and the
+        // rotate zones just outside the corners keep theirs (hitTestBox, first).
+        if (m_xformMode == XNone)
+            m_xformMode = XMove;
         if (m_xformMode != XNone) {
             m_dragStartCanvas = toCanvasF(event->position());
             m_quad0 = m_quad;
@@ -8015,7 +8285,9 @@ void DrawingCanvas::mouseMoveEvent(QMouseEvent *event)
             applyXformDrag(toCanvasF(event->position()),
                            event->modifiers() & Qt::ShiftModifier);
         else {
-            updateXformCursor(hitTestBox(event->position())); // hover feedback
+            // Hover feedback; anywhere off the box is a move too (Q-B1).
+            const XformMode hover = hitTestBox(event->position());
+            updateXformCursor(hover == XNone && m_xformUiMode != XformWarp ? XMove : hover);
             if (m_xformUiMode == XformWarp) { // enlarge the hovered point
                 const int h = warpPointAt(event->position());
                 if (h != m_warpHoverIdx) {
@@ -8034,7 +8306,11 @@ void DrawingCanvas::mouseMoveEvent(QMouseEvent *event)
         // flush against the edge instead, so it survives a round trip. The
         // preview uses the SAME clamp, so preview == commit.
         const QPointF raw = m_floatGrabDelta + (toCanvasF(event->position()) - m_floatGrabC);
-        m_floatDelta = clampFloatDelta(QPointF(qRound(raw.x()), qRound(raw.y())));
+        const QPointF whole(qRound(raw.x()), qRound(raw.y()));
+        // A layer that keeps art past the stage takes a paste anywhere (batch B1);
+        // a Background still keeps its paste on the stage.
+        const Layer *target = m_panel ? m_panel->activeLayer() : nullptr;
+        m_floatDelta = m_floatFromPaste && target && keepsArt(*target) ? whole : clampFloatDelta(whole);
         update(); // display-only: the layer is untouched until commit
         return;
     }

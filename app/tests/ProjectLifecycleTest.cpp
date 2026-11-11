@@ -19006,6 +19006,363 @@ void runGrowAnyZoomPass(const QString &scratch)
     r.window.markCleanForTest();
 }
 
+// KEPT ART (batch B1, 2026-11-11; Figma B-1; the user's notes 1.2 and 1.9, the report of
+// 2026-11-11): a move, scale or paste that lands past the stage keeps what is past it, in
+// the layer's tiles, up to 8,192 px; the Move tool lifts it with the rest and shows it
+// faint (35 %) outside the stage; a press off the box moves the layer (Q-B1). One solid
+// 400 x 200 px block on the drawing layer, so every count is exact.
+void runKeptArtPass(const QString &scratch)
+{
+    using namespace workspace;
+    out() << "--- (ka) kept art: past the stage is kept, the Move tool lifts it, Q-B1, the limit ---"
+          << Qt::endl;
+    const QString dir = scratch + QStringLiteral("/keptart");
+    QDir(dir).removeRecursively();
+    QDir().mkpath(dir);
+    const QString project = writeProject(dir, QStringLiteral("Kept"), QSize(1920, 1080), 24, 1, 2);
+    auto rig = std::make_unique<Rig>(project);
+    Rig &r = *rig;
+    check(QStringLiteral("(ka) the workspace opened"), r.ok);
+    if (!r.ok)
+        return;
+    QUndoStack *stack = r.window.undoStackForTest();
+    Scene *scene = r.window.scenesForTest().value(0);
+    if (!stack || !scene || scene->panels.size() != 2) {
+        check(QStringLiteral("(ka) found the history and the scene"), false);
+        return;
+    }
+    Panel *p0 = scene->panels.at(0);
+    Panel *p1 = scene->panels.at(1);
+    clickThumb(r, 0);
+    pump(80);
+    const QSize st = r.canvas->canvasSize();
+    const QRect block(100, 400, 400, 200);
+    {
+        Layer &art = p0->layers[1];
+        art.image.fill(Qt::transparent);
+        QPainter p(&art.image);
+        p.fillRect(block, QColor(255, 0, 0));
+    }
+    p0->activeLayerIndex = 1;
+    r.canvas->update();
+    pump(60);
+    // The art's opaque pixels in `rect`, the kept part included; and the stage image's alone.
+    auto count = [&](Panel *panel, const QRect &rect) {
+        const QImage img = r.canvas->layerArtImageForTest(panel->layers.at(1), rect);
+        int n = 0;
+        for (int y = 0; y < img.height(); ++y) {
+            const QRgb *line = reinterpret_cast<const QRgb *>(img.constScanLine(y));
+            for (int x = 0; x < img.width(); ++x)
+                n += qAlpha(line[x]) > 128 ? 1 : 0;
+        }
+        return n;
+    };
+    auto stageCount = [&](Panel *panel) { return count(panel, QRect(QPoint(0, 0), st)); };
+    const QRect wide(-7000, -400, st.width() + 14000, st.height() + 800);
+    auto bounds = [&](Panel *panel) { return r.canvas->layerArtBoundsForTest(panel->layers.at(1)); };
+    auto rectText = [](const QRect &q) {
+        return QStringLiteral("x %1..%2 y %3..%4").arg(q.left()).arg(q.right()).arg(q.top()).arg(q.bottom());
+    };
+    auto toW = [&](const QPointF &c) { return r.canvas->viewTransformForTest().map(c); };
+    auto moveBox = [&](const QPointF &byCanvas) {
+        const QRectF q = r.canvas->transformQuadForTest().boundingRect();
+        camtool::drag(r.canvas, toW(q.center()), toW(q.center() + byCanvas));
+        pump(40);
+    };
+    auto enter = [&] {
+        camtool::key(r.canvas, QEvent::KeyPress, Qt::Key_Return);
+        pump(120);
+    };
+    auto within = [](int a, int b, int tol) { return qAbs(a - b) <= tol; }; // ("near" is a Windows macro)
+    const int n0 = count(p0, wide);
+    r.canvas->setTool(DrawingCanvas::Move);
+    pump(80);
+    const QRect box0 = r.canvas->transformQuadForTest().boundingRect().toAlignedRect();
+    const int base = stack->index();
+
+    // --- (ka1) a move past the stage's edge keeps every pixel -------------------------
+    moveBox(QPointF(-250, 0));
+    enter();
+    const int n1 = count(p0, wide), s1 = stageCount(p0);
+    const QRect b1 = bounds(p0);
+    const QRect box1 = r.canvas->transformQuadForTest().boundingRect().toAlignedRect();
+    check(QStringLiteral("(ka1) A MOVE PAST THE STAGE'S EDGE KEEPS EVERY PIXEL: the block moved 250 px past the "
+                         "left edge and Enter - one \"Transform\" step, all 80,000 px still the layer's (x -150..249), "
+                         "and the Move tool's box, up again, holds all of it, the part past the stage included"),
+          n0 == 80000 && box0 == block && stack->index() == base + 1
+              && stack->undoText() == QStringLiteral("Transform") && within(n1, n0, 160)
+              && within(b1.left(), -150, 1) && within(b1.right(), 249, 1) && b1.top() == 400 && b1.bottom() == 599
+              && within(box1.left(), -150, 1) && within(box1.right(), 249, 1),
+          QStringLiteral("before %1 px, box %2; steps +%3 '%4'; after %5 px, the art %6; the box %7")
+              .arg(n0).arg(rectText(box0)).arg(stack->index() - base).arg(stack->undoText()).arg(n1)
+              .arg(rectText(b1)).arg(rectText(box1)));
+    check(QStringLiteral("(ka1) control: the stage's image alone holds 50,000 of them - what the landing kept "
+                         "until now; the other 30,000 are only in the layer's tiles, past the stage"),
+          within(s1, 50000, 100) && within(n1 - s1, 30000, 100),
+          QStringLiteral("the stage's image %1 px; past it %2 px").arg(s1).arg(n1 - s1));
+
+    // --- (ka2) moved back, it all comes back ----------------------------------------------
+    moveBox(QPointF(250, 0));
+    enter();
+    const int n2 = count(p0, wide), s2 = stageCount(p0);
+    const QRect b2 = bounds(p0);
+    check(QStringLiteral("(ka2) MOVED BACK, IT ALL COMES BACK: 250 px to the right and Enter - every pixel in the "
+                         "stage again (x 100..499), nothing left past it"),
+          within(n2, n0, 160) && within(s2, n0, 160) && within(b2.left(), 100, 1) && within(b2.right(), 499, 1)
+              && stack->index() == base + 2,
+          QStringLiteral("%1 px, in the stage %2; the art %3; steps +%4").arg(n2).arg(s2).arg(rectText(b2))
+              .arg(stack->index() - base));
+    // --- (ka3) undo and redo carry the kept art -------------------------------------------
+    r.storyboard->editUndo();
+    pump(80);
+    const QRect bu = bounds(p0);
+    const int nu = count(p0, wide), su = stageCount(p0);
+    r.storyboard->editUndo();
+    pump(80);
+    const QRect bu2 = bounds(p0);
+    const int nu2 = count(p0, wide);
+    r.storyboard->editRedo();
+    pump(80);
+    const QRect br = bounds(p0);
+    const int nr = count(p0, wide);
+    check(QStringLiteral("(ka3) UNDO AND REDO CARRY THE KEPT ART: undoing the move back puts the block past the edge "
+                         "again (30,000 px kept), undoing the first move puts it where it was, and Redo keeps it past "
+                         "the edge again"),
+          within(bu.left(), -150, 1) && within(nu, n0, 160) && within(su, 50000, 100) && bu2 == block && nu2 == n0
+              && within(br.left(), -150, 1) && within(nr, n0, 160),
+          QStringLiteral("undo: %1 (%2 px, stage %3); undo: %4 (%5 px); redo: %6 (%7 px)").arg(rectText(bu)).arg(nu)
+              .arg(su).arg(rectText(bu2)).arg(nu2).arg(rectText(br)).arg(nr));
+    // Control: a move inside the stage writes no tiles, as before - the same pixels, one step.
+    r.storyboard->editUndo();
+    pump(80);
+    r.canvas->setTool(DrawingCanvas::Brush);
+    r.canvas->setTool(DrawingCanvas::Move);
+    pump(60);
+    const layertiles::TilesPtr tilesBefore = p0->layers.at(1).tiles;
+    moveBox(QPointF(300, 100));
+    enter();
+    const QRect bi = bounds(p0);
+    check(QStringLiteral("(ka3) control: a move inside the stage changes the stage's image alone and leaves the "
+                         "layer's tiles as they were, one \"Transform\" step"),
+          p0->layers.at(1).tiles == tilesBefore && bi.left() == 400 && bi.top() == 500
+              && stack->undoText() == QStringLiteral("Transform") && within(stageCount(p0), n0, 160),
+          QStringLiteral("tiles the same %1; the art %2").arg(p0->layers.at(1).tiles == tilesBefore).arg(rectText(bi)));
+    r.storyboard->editUndo();
+    pump(80);
+    r.canvas->setTool(DrawingCanvas::Brush);
+    r.canvas->setTool(DrawingCanvas::Move);
+    pump(60);
+
+    // --- (ka4) the kept art shows faint with the Move tool, and nowhere else ----------------
+    moveBox(QPointF(-250, 0));
+    enter();
+    const QPointF keptAt = toW(QPointF(-75, 500)), stageAt = toW(QPointF(175, 500));
+    const bool visible = r.canvas->rect().contains(keptAt.toPoint());
+    pump(80);
+    const QImage withMove = r.canvas->grab().toImage();
+    r.canvas->setTool(DrawingCanvas::Brush);
+    pump(80);
+    const QImage withBrush = r.canvas->grab().toImage();
+    const QColor mk = withMove.pixelColor(keptAt.toPoint()), bk = withBrush.pixelColor(keptAt.toPoint());
+    const QColor ms = withMove.pixelColor(stageAt.toPoint()), bs = withBrush.pixelColor(stageAt.toPoint());
+    check(QStringLiteral("(ka4) THE KEPT ART SHOWS FAINT WITH THE MOVE TOOL: past the stage the block reads at about "
+                         "35 % over the surround, and inside the stage at full strength"),
+          visible && mk.red() - bk.red() >= 60 && mk.red() <= 140 && ms.red() >= 230 && ms.green() <= 30,
+          QStringLiteral("past the stage: Move %1, Brush %2; in the stage: Move %3 (on the canvas %4)")
+              .arg(mk.name()).arg(bk.name()).arg(ms.name()).arg(visible));
+    check(QStringLiteral("(ka4) control: with the Brush the kept art is not drawn - the surround there is as it "
+                         "always was - and the block inside the stage is"),
+          qAbs(bk.red() - bk.green()) <= 12 && bs.red() >= 230 && bs.green() <= 30,
+          QStringLiteral("past the stage %1; in the stage %2").arg(bk.name()).arg(bs.name()));
+    r.storyboard->editUndo();
+    pump(80);
+
+    // --- (ka5) a press off the box moves the layer (Q-B1) ------------------------------------
+    r.canvas->setTool(DrawingCanvas::Move);
+    pump(60);
+    const QRectF q5 = r.canvas->transformQuadForTest().boundingRect();
+    const QPointF offBox = toW(QPointF(300, st.height() + 40.0)); // below the paper, off the box
+    sendMouse(r.canvas, QEvent::MouseMove, offBox, Qt::NoButton);
+    const bool moveCursor = r.canvas->cursor().shape() == Qt::SizeAllCursor;
+    camtool::drag(r.canvas, offBox, offBox + (toW(QPointF(100, 0)) - toW(QPointF(0, 0))));
+    pump(40);
+    const QRectF q5b = r.canvas->transformQuadForTest().boundingRect();
+    check(QStringLiteral("(ka5) A PRESS OFF THE BOX MOVES THE LAYER (Q-B1): pressed 40 px below the paper, off the box, "
+                         "and dragged 100 px right, the box goes 100 px right; the pointer there shows the move "
+                         "arrows"),
+          r.canvas->rect().contains(offBox.toPoint()) && moveCursor && qAbs(q5b.left() - q5.left() - 100.0) <= 1.0
+              && qAbs(q5b.top() - q5.top()) <= 1.0,
+          QStringLiteral("box %1,%2 -> %3,%4; move cursor %5").arg(q5.left()).arg(q5.top()).arg(q5b.left())
+              .arg(q5b.top()).arg(moveCursor));
+    camtool::key(r.canvas, QEvent::KeyPress, Qt::Key_Escape);
+    pump(60);
+    // Control: just outside a corner is still the rotate zone.
+    const QPolygonF q6 = r.canvas->transformQuadForTest();
+    const QPointF corner = toW(q6.at(0)) + QPointF(-12, -12);
+    camtool::drag(r.canvas, corner, corner + QPointF(0, 60));
+    pump(40);
+    const QPolygonF q6b = r.canvas->transformQuadForTest();
+    const bool turned = q6b.size() == 4 && qAbs(q6b.at(0).y() - q6b.at(1).y()) > 5.0;
+    check(QStringLiteral("(ka5) control: a press 12 px outside the box's corner still turns it - the rotate zone "
+                         "keeps its job"),
+          turned, QStringLiteral("top edge from y %1 to %2").arg(q6b.value(0).y()).arg(q6b.value(1).y()));
+    camtool::key(r.canvas, QEvent::KeyPress, Qt::Key_Escape);
+    pump(60);
+
+    // --- (ka6) the 8,192 px limit is said, and only what is past it is not kept ---------------
+    r.storyboard->clearNoteForTest();
+    moveBox(QPointF(-6500, 0));
+    enter();
+    const int n6 = count(p0, wide);
+    const QRect b6 = bounds(p0);
+    const QString note6 = r.storyboard->lastNoteForTest();
+    check(QStringLiteral("(ka6) THE 8,192 PX LIMIT IS SAID: the block moved 6,500 px past the left edge - the layer "
+                         "may reach 6,272 px past it on a 1,920 px stage - keeps the 272 px inside the limit, and the "
+                         "note says so"),
+          note6 == QStringLiteral("The layer reaches the 8,192 px limit: art past it is not kept. Undo brings it back.")
+              && within(b6.left(), -6272, 1) && within(n6, 272 * 200, 400),
+          QStringLiteral("note '%1'; the art %2, %3 px").arg(note6).arg(rectText(b6)).arg(n6));
+    r.storyboard->editUndo();
+    pump(80);
+    const int n6u = count(p0, wide);
+    r.canvas->setTool(DrawingCanvas::Brush);
+    r.canvas->setTool(DrawingCanvas::Move);
+    pump(60);
+    r.storyboard->clearNoteForTest();
+    moveBox(QPointF(-2000, 0));
+    enter();
+    const int n6b = count(p0, wide);
+    check(QStringLiteral("(ka6) control: Undo brings all 80,000 px back; a move 2,000 px past the edge, inside the "
+                         "limit, keeps them all and says nothing"),
+          n6u == n0 && within(n6b, n0, 160) && r.storyboard->lastNoteForTest().isEmpty()
+              && within(bounds(p0).left(), -1900, 1),
+          QStringLiteral("undone %1 px; 2,000 px: %2 px, %3, note '%4'").arg(n6u).arg(n6b).arg(rectText(bounds(p0)))
+              .arg(r.storyboard->lastNoteForTest()));
+    r.storyboard->editUndo();
+    pump(80);
+    // Kept far on one side, moved far to the other: the two places are more than 8,192 px
+    // apart, so the window that takes the landing cannot hold where it was lifted from.
+    r.canvas->setTool(DrawingCanvas::Brush);
+    r.canvas->setTool(DrawingCanvas::Move);
+    pump(60);
+    moveBox(QPointF(2400, 0)); // kept at x 2500..2899
+    enter();
+    const QRect was(2400, 300, 700, 400);
+    const int thereBefore = count(p0, was);
+    r.storyboard->clearNoteForTest();
+    moveBox(QPointF(-8500, 0)); // to x -6000..-5601
+    enter();
+    const QRect bFar = bounds(p0);
+    const int nFar = count(p0, wide), thereAfter = count(p0, was);
+    check(QStringLiteral("(ka6) A BLOCK KEPT 980 PX PAST THE RIGHT EDGE AND MOVED 8,500 PX LEFT lands whole, 6,000 px "
+                         "past the left edge, and nothing is left where it was - it was all there before the move - "
+                         "with nothing said: none of the landing was past the limit"),
+          thereBefore == n0 && within(bFar.left(), -6000, 1) && within(bFar.right(), -5601, 1)
+              && within(nFar, n0, 160) && thereAfter == 0 && r.storyboard->lastNoteForTest().isEmpty(),
+          QStringLiteral("where it was: %1 px before, %2 after; the art %3, %4 px; note '%5'").arg(thereBefore)
+              .arg(thereAfter).arg(rectText(bFar)).arg(nFar).arg(r.storyboard->lastNoteForTest()));
+    r.storyboard->editUndo();
+    pump(80);
+    r.storyboard->editUndo();
+    pump(80);
+    r.canvas->setTool(DrawingCanvas::Brush);
+    pump(60);
+
+    // --- (ka7) a paste is no longer stopped at the stage's edge --------------------------------
+    r.canvas->setTool(DrawingCanvas::SelectRect);
+    camtool::drag(r.canvas, toW(QPointF(block.topLeft()) - QPointF(10, 10)),
+                  toW(QPointF(block.bottomRight()) + QPointF(11, 11)));
+    r.canvas->copySelection();
+    r.canvas->clearSelection();
+    clickThumb(r, 1);
+    pump(80);
+    p1->layers[1].image.fill(Qt::transparent);
+    p1->activeLayerIndex = 1;
+    r.canvas->setTool(DrawingCanvas::Move); // an empty layer: no box
+    pump(60);
+    r.canvas->pasteClipboard(false);
+    pump(40);
+    const QRectF f0 = r.canvas->floatBoundsForTest();
+    camtool::drag(r.canvas, toW(f0.center()), toW(f0.center() + QPointF(1500, 0)));
+    pump(40);
+    const QRectF f1 = r.canvas->floatBoundsForTest();
+    const int s7 = stack->index();
+    enter();
+    const int n7 = count(p1, wide);
+    const QRect b7 = bounds(p1);
+    check(QStringLiteral("(ka7) A PASTE IS NOT STOPPED AT THE EDGE: the pasted block dragged 1,500 px right goes past "
+                         "the stage, and landing it keeps all of it - one \"Paste\" step"),
+          !f0.isEmpty() && f1.right() > st.width() + 100 && stack->index() == s7 + 1
+              && stack->undoText() == QStringLiteral("Paste") && within(n7, n0, 160) && b7.right() >= st.width(),
+          QStringLiteral("float %1..%2 -> %3..%4; steps +%5 '%6'; %7 px, the art %8").arg(f0.left()).arg(f0.right())
+              .arg(f1.left()).arg(f1.right()).arg(stack->index() - s7).arg(stack->undoText()).arg(n7)
+              .arg(rectText(b7)));
+    r.storyboard->editUndo();
+    pump(80);
+    check(QStringLiteral("(ka7) control: undone, the layer is empty again, past the stage too"),
+          count(p1, wide) == 0 && bounds(p1).isEmpty(),
+          QStringLiteral("%1 px").arg(count(p1, wide)));
+    r.canvas->setTool(DrawingCanvas::Brush);
+    clickThumb(r, 0);
+    pump(80);
+
+    // --- (ka8) kept art survives a panel switch, a save and a reopen ---------------------------
+    r.canvas->setTool(DrawingCanvas::Move);
+    pump(60);
+    moveBox(QPointF(-250, 0));
+    enter();
+    r.canvas->setTool(DrawingCanvas::Brush);
+    clickThumb(r, 1);
+    pump(120);
+    clickThumb(r, 0);
+    pump(120);
+    const QRect b8 = bounds(p0);
+    const int n8 = count(p0, wide);
+    const QString saved = dir + QStringLiteral("/Saved/Saved.sankotv");
+    QDir().mkpath(dir + QStringLiteral("/Saved"));
+    const bool wrote = r.window.saveProjectForTest(saved);
+    rig.reset();
+    pump(200);
+    auto again = std::make_unique<Rig>(saved);
+    bool reopened = again->ok;
+    QRect b8r;
+    int n8r = -1, s8r = -1;
+    if (reopened) {
+        Rig &a = *again;
+        clickThumb(a, 0);
+        pump(120);
+        Panel *q0 = a.window.scenesForTest().value(0) ? a.window.scenesForTest().value(0)->panels.value(0) : nullptr;
+        if (q0) {
+            b8r = a.canvas->layerArtBoundsForTest(q0->layers.at(1));
+            const QImage img = a.canvas->layerArtImageForTest(q0->layers.at(1), wide);
+            n8r = 0;
+            for (int y = 0; y < img.height(); ++y) {
+                const QRgb *line = reinterpret_cast<const QRgb *>(img.constScanLine(y));
+                for (int x = 0; x < img.width(); ++x)
+                    n8r += qAlpha(line[x]) > 128 ? 1 : 0;
+            }
+            const QImage stagePixels = q0->layers.at(1).pixels();
+            s8r = 0;
+            for (int y = 0; y < stagePixels.height(); ++y) {
+                const QRgb *line = reinterpret_cast<const QRgb *>(stagePixels.constScanLine(y));
+                for (int x = 0; x < stagePixels.width(); ++x)
+                    s8r += qAlpha(line[x]) > 128 ? 1 : 0;
+            }
+        }
+    }
+    check(QStringLiteral("(ka8) KEPT ART SURVIVES A PANEL SWITCH, A SAVE AND A REOPEN: after panel 2 and back, and "
+                         "in the project saved and opened again, the block is still at x -150..249 with all its pixels"),
+          within(b8.left(), -150, 1) && within(n8, n0, 160) && wrote && reopened && within(b8r.left(), -150, 1)
+              && within(n8r, n0, 160),
+          QStringLiteral("after the switch %1 (%2 px); saved %3, reopened %4: %5 (%6 px)").arg(rectText(b8)).arg(n8)
+              .arg(wrote).arg(reopened).arg(rectText(b8r)).arg(n8r));
+    check(QStringLiteral("(ka8) control: what the reopened panel shows - its stage's pixels - is the 50,000 px inside "
+                         "the stage, as the shot, the strip and the exports read it"),
+          within(s8r, 50000, 100), QStringLiteral("%1 px").arg(s8r));
+    if (again)
+        again->window.markCleanForTest();
+}
+
 // THE TRIAL'S FIXES (batch A, 2026-11-10; the user's real-project trial of 2026-11-09,
 // Documents\SankoTV-Design\trial-report-2026-11-10.md): the canvas's keys go where the
 // pointer is and Space pans with the pen; a selection starts off the paper; a drag's
@@ -23418,8 +23775,13 @@ int main(int argc, char **argv)
     if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("stagemode")
         || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("playback")
         || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("strip")
-        || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("trial")) {
-        if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("trial")) {
+        || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("trial")
+        || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("keptart")) {
+        if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("keptart")) {
+            // Kept art (batch B1), and the trial's fixes that share the Move tool.
+            runKeptArtPass(scratch);
+            runTrialFixesPass(scratch);
+        } else if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("trial")) {
             // The trial's fixes (batch A): its own pass, the lengths' (the roll under the
             // lock, (du5)) and the Camera tool's (the drop-downs' fonts, (pz5)).
             runTrialFixesPass(scratch);
@@ -23638,6 +24000,7 @@ int main(int argc, char **argv)
     runCameraAcrossPanelsPass(scratch);
     runGrowAnyZoomPass(scratch);
     runTrialFixesPass(scratch);
+    runKeptArtPass(scratch);
     runPinnedKeysPass(scratch);
     runCameraBarFitPass(scratch);
     runStageClearPass(scratch);

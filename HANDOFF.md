@@ -1,5 +1,77 @@
 # SankoTV — Session Handoff Brief
 
+## STATUS 2026-11-11 (night): B1 (KEPT ART) BUILT, NOT COMMITTED; WAITING FOR THE USER'S HAND TEST; B2 WAITS
+The user approved the batch B report (Documents\SankoTV-Design\batchB-report-2026-11-11.md, Figma B-1 = node
+561:696) with Q-B1 to Q-B4 as recommended: a press off the Move box moves the layer except within 22 px of a corner
+(rotate); kept art at 35 % with the Move tool; the depth outline whenever the Move tool is on a depth layer (B2);
+no change to the floating toolbars; Space over the timeline header stays the timeline's. Build B1 now; do not
+commit B1 until the user's hand test passes; then stop - B2 waits.
+B1 IS IN THE MAIN TREE ON ba1e50d68, UNCOMMITTED (DrawingCanvas.cpp/.h, LayerTiles.cpp/.h, StoryboardPage.cpp,
+tests/ProjectLifecycleTest.cpp, and this file).
+WHAT B1 IS. A move, scale, rotate, warp or paste that lands past the stage keeps what is past it in the layer's
+tiles - batch 6c's store of art outside the stage (LayerTiles: the grid anchored to the frame, art outside the
+stage kept and hidden; saving and LayerFolder already keep it).
+(1) DrawingCanvas::landKeptArt(layer, reach, paint, lifted): the layer's art over the stage and `reach`
+(layerArtImage: the tiles unfolded, the stage from the full image) on one image, `paint` drawn on it in canvas
+px, the stage part back as the full image, the whole folded into new tiles (fold keeps what the old tiles hold
+outside the window). keptArtWindow: at most 8,192 px across and down (kKeptArtMax, the canvas's own cap), the
+stage always inside, placed toward the side the art goes further past; a landing past it sets `limited`, and
+the canvas emits keptArtLimitReached -> the page's note "The layer reaches the 8,192 px limit: art past it is
+not kept. Undo brings it back." `lifted`: what of the lifted rectangle lies outside the window is emptied in the
+tiles too, so art moved from far on one side to far on the other leaves nothing behind.
+(2) commitTransform: a layer that keeps art (not a Background, not a folder) whose lift or landing reaches past
+the stage takes landKeptArt; anything inside the stage takes the old path, byte for byte (no tiles touched). An
+untouched box changes nothing. DrawingCommand::setTiles carries the tiles before and after:
+applyLayerRegionForUndo sets them and marks them not current (tilesOf = 0), so the next fold takes the stage
+from the image and keeps their outside part. commitFloating (a paste) the same, as "Paste".
+(3) The lift: liftDefaultTransformBox, cancelTransform's relift and beginLayersTransform use layerArtBounds (the
+image's opaque bounds united with LayerTiles::hiddenBounds, new: the tight bounds of the tiles' pixels outside
+the stage); beginTransform, for the synthesized whole-art selection, lifts the whole rectangle from
+layerArtImage when it reaches past the stage (a full mask). A selection the artist made is the stage's, as before.
+(4) Seen faint: paintStageAndKept draws the lifted buffer (and a floating paste) at full strength inside the
+stage and at kKeptArtShown = 0.35 of the layer's opacity outside it; only the Move tool's session draws kept art,
+so no other tool, the shot, the strip or an export shows it.
+(5) Q-B1: a Move press that hits nothing of the box (XNone, not Warp) is XMove; the hover cursor too. The handles
+and the 22 px rotate zones are tested first, as before.
+(6) A paste on a layer that keeps art is no longer clamped to the stage while dragged (a Background still is).
+(7) paintWarpedBuffer's clip around the stage widened from 256 to 4,096 px (its size guard still refuses a
+blow-up), so a warp landing past the stage is kept too.
+NOT CHANGED, KNOWN: a paste with the Move tool while the box is up around the active layer's art still goes to
+the box (the box's press handling comes first) - pasting onto an empty layer works; a selection the artist makes
+is still trimmed to the stage. Batch B2 (the depth outline, Q-B3, and depth edges from the real art) is not built.
+THE CHECKS (runKeptArtPass, new, after runTrialFixesPass in the main order; slice SANKO_LIFECYCLE_ONLY=keptart,
+which runs it and runTrialFixesPass). Project "Kept", 1920 x 1080, one solid 400 x 200 px block, so the counts
+are exact: (ka1) a move 250 px past the left edge keeps all 80,000 px (x -150..249) and the box after Enter holds
+them; control: the stage's image alone holds 50,000 - what the landing kept before - and 30,000 are only in the
+tiles. (ka2) moved back, all 80,000 in the stage, nothing past it. (ka3) Undo and Redo carry the kept art;
+control: a move inside the stage leaves the tiles as they were. (ka4) with the Move tool the kept art reads
+#5f0707 (35 % red over #0a0a0a) and the stage part #ff0000; control: with the Brush the surround is #0a0a0a.
+(ka5) Q-B1: a press 40 px below the paper moves the box 100 px, the move cursor shows; control: 12 px outside a
+corner still turns it. (ka6) 6,500 px past the edge: the note, 272 px kept up to -6272 (54,400 px); control: Undo
+brings all back, 2,000 px keeps all with no note; and a block kept 980 px past the right edge moved 8,500 px left
+lands whole with nothing left where it was (it was all there before). (ka7) a paste dragged 1,500 px right is not
+stopped and is kept, one "Paste" step; control: undone, the layer is empty. (ka8) kept art survives a panel switch
+and a save and reopen; control: the reopened stage's pixels are the 50,000 inside.
+RED RUNS (Edit tool, restored; no "RED RUN" left): (a) the kept landing, Q-B1 and the paste change switched off -
+10 failures, the old behaviour exactly (30,000 px lost at Enter, the paste stopped at x 1920, the box not moved
+by a press off it), the controls passing (qc_B1_keptart_red.txt); (b) the clearing of what was lifted outside the
+window switched off - 2 failures: moving the waves back left a 30,000 px copy behind (110,000 px) and the far move
+duplicated the block (160,000 px) (qc_B1_keptart_red2.txt). That clearing was found in self-review, before the
+gate, and (ka6)'s far move added for it.
+QUICK CHECKS (Release): keptart 39 / 0, trial 125 / 0, stagemode 124 / 0, strip 111 / 0, playback 31 / 0.
+GATE B1 (fullgate_B1.log, 2492 s, main tree, the user's SankoTV closed; the 6 code files hashed before it,
+sha_B1_gate.txt, and unchanged after): Release and Debug exit 0 in every family. Lifecycle 1396 (was 1379: the 17
+(ka) checks; no other check name gone or changed), Camera 335, CanvasSizeLock 170, CanvasEdgeLock 74, BrushLibrary
+187, DevRecorder 46, QuickShapeGeometry 19, PaintPixel 13, CanvasBrush 3; the other families' check names the same
+as gate A2's. Camera's 126 and Lifecycle's 47 pin lines identical to gate A2's in both configurations.
+THE EXE at the main path is the gate's clean Release build: built Nov 11 2026 18:36:29 (file 18:36:48), git
+ba1e50d68+dirty. HAND TEST: Documents\SankoTV-Design\handtest_B1_kept_art.md (the waves past the edge, Enter and
+back; only the Move tool shows it; Q-B1; a panel switch and a save; optional: a paste, the limit), on the fresh
+copy C:\SankoTV-TestCopies\TEST COPY - small pirate, B1 (the original hashed before and after, unchanged).
+AFTER THE HAND TEST: read the recording (system.txt first, the title bar's copy, each step); commit B1 only on the
+user's word; then stop - B2 waits.
+REPRODUCTION PROBE: C:\SankoTV_probeB, a scratch worktree at ba1e50d68, never committed (report only).
+
 ## STATUS 2026-11-11 (evening): BATCH A COMMITTED (7f98bb24b) AFTER THE RE-TEST; BATCH B WAITS FOR THE USER
 THE RE-TEST (Dev Recorder 20261111-174216, 331 s, the 16:58:49 build, git c4ae8526f+dirty, on "TEST COPY - small
 pirate, A retest" - the title bar and the exit prompt name it; closed with the window's X and Discard, nothing

@@ -504,10 +504,14 @@ public slots:
     bool spaceHeld() const { return m_spaceHeld; }
     bool spaceHeldForTest() const { return m_spaceHeld; }
     bool penSideButtonHeldForTest() const { return m_penSideButtonHeld; }
+    // Batch B1: the active layer's art, kept art included, in canvas px.
+    QRect layerArtBoundsForTest(const Layer &layer) const { return layerArtBounds(layer); }
+    QImage layerArtImageForTest(const Layer &layer, const QRect &rect) const { return layerArtImage(layer, rect); }
     // The Move tool's box as it stands (empty: none), a pasted drawing still
     // floating, and the press gate's "on the paper as shown".
     QPolygonF transformQuadForTest() const { return m_xformActive ? m_quad : QPolygonF(); }
     bool floatingPasteForTest() const { return m_floatActive && m_floatFromPaste; }
+    QRectF floatBoundsForTest() const { return m_floatActive ? floatBounds() : QRectF(); }
     bool onPaperForTest(const QPointF &widgetPos) const { return onPaper(widgetPos); }
     bool panningForTest() const { return m_panning; }
     bool hasCanvasClipboard() const { return !m_clipImg.isNull(); }
@@ -528,8 +532,11 @@ public slots:
     // receives every mutating action as a QUndoCommand; the commands call
     // back into these apply methods.
     void setUndoStack(QUndoStack *stack) { m_undoStack = stack; }
+    // `tiles`: the layer's tiles to set as well (batch B1: an edit that kept art
+    // past the stage); null: the tiles are not touched.
     void applyLayerRegionForUndo(Panel *panel, const QString &layerId,
-                                 const QRect &region, const QImage &pixels);
+                                 const QRect &region, const QImage &pixels,
+                                 const layertiles::TilesPtr *tiles = nullptr);
     void applyBrushCommitForUndo(Panel *panel, const QString &layerId,
                                  const BrushStrokeCommit &commit, bool after);
     bool flushPaintCommit(int timeoutMs = 5000);
@@ -616,6 +623,9 @@ signals:
     // A Camera-tool press the view says is not editable (Animate off with
     // two or more keys): nothing moves; the workspace says why.
     void shotCameraEditRefused();
+    // A move or a paste landed past the 8,192 px a layer may hold (batch B1):
+    // the part past it is not kept; the workspace says so at the pointer.
+    void keptArtLimitReached();
     // Stage mode (batch 6c): a handle moved the proposed margins; Enter or Esc on
     // the canvas; the tool or the panel changed under the session.
     void stageModeEdited(const QMargins &margins, int activeSide);
@@ -922,6 +932,31 @@ private:
     // Restore m_layerBackup exactly. relift (Esc): keep a fresh default box
     // up while the Move tool remains active.
     void cancelTransform(bool relift = false);
+    // KEPT ART (batch B1, 2026-11-11; Figma B-1). What a move, scale, rotate, warp
+    // or paste lands past the stage is kept in the layer's tiles - batch 6c's store
+    // of art outside the stage - up to 8,192 px across and down, and the Move tool
+    // lifts it with the rest. Not for a Background or a folder. Canvas px throughout.
+    bool keepsArt(const Layer &layer) const;
+    QRect layerArtBounds(const Layer &layer) const;                 // kept art included
+    QImage layerArtImage(const Layer &layer, const QRect &rect) const;
+    QRect keptArtWindow(const QRect &wanted) const;  // what of `wanted` a layer may hold
+    struct KeptLanding
+    {
+        QImage image;                 // the new stage image
+        layertiles::TilesPtr tiles;   // the new tiles, kept art included
+        bool limited = false;         // part of `reach` was past the 8,192 px
+    };
+    // The layer's art over the stage and `reach`, `paint` drawn on it in canvas px.
+    // `lifted`: where the art was lifted from; what of it lies past the 8,192 px
+    // window `paint` could reach is emptied in the tiles too, so it is not left behind.
+    KeptLanding landKeptArt(const Layer &layer, const QRect &reach,
+                            const std::function<void(QPainter &)> &paint,
+                            const QRect &lifted = QRect()) const;
+    QRect landedBounds(const QImage &buffer) const; // where a lifted buffer lands now
+    // Draws `draw` (canvas px) at full strength inside the stage and faint outside
+    // it, where only kept art can be: what the Move tool shows of it (Q-B2).
+    void paintStageAndKept(QPainter &painter, const QRectF &bounds,
+                           const std::function<void()> &draw) const;
     QTransform boxTransform() const;                 // buffer -> canvas placement
     QVector<QPointF> boxHandlesCanvas() const;       // 8 handles, canvas coords
     XformMode hitTestBox(const QPointF &widgetPos) const;
