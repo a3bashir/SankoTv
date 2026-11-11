@@ -1,5 +1,23 @@
 # SankoTV — Session Handoff Brief
 
+## STATUS 2026-11-11 (late): B1 COMMITTED (f762637fa) AFTER THE USER'S HAND TEST; B2 BEING BUILT
+THE B1 HAND TEST (Dev Recorder 20261111-193330, 470 s, the 18:36:29 build, git ba1e50d68+dirty, on "TEST COPY -
+small pirate, B1", opened by File > Open; saved at the end, it is a copy). Steps of handtest_B1_kept_art.md:
+1 PASS: the waves dragged past the left edge read faint over the surround while dragging (screenshot 100.0 s), and
+after Enter the box holds them all, the part past the edge faint (107.0 s); moved far out and back over several
+moves (mostly with the mouse), they are whole in the stage (256.0 s); Undo and Redo of "Transform" twice.
+2 PASS: with the Brush nothing shows past the stage (296.6 s); the Move tool again shows the faint part (303.0 s).
+The Camera tool and playback not tested ((ka4)'s control, (ka8)'s control).
+3 PASS: a press right of the stage and below the box moved the layer down (342.3 s; 341.6 / 345.0 s). The corner's
+rotate and Esc not tested - Ctrl+Z was used ((ka5) and its control).
+4 PASS: saved, closed and reopened three times; each time the Move tool showed the kept part faint (425.6, 435.6,
+465.1 s). The panel switch not tested ((ka8)).
+5, 6 not tested ((ka7), (ka6)). 7 PASS: the window's X (pointer to the top right, deactivate, hide, sessionEnd).
+No warning in the log; the stalls are the project's opening.
+COMMITTED and pushed: f762637fa (the 6 code files and this file as gated: sha_B1_gate.txt, sha_B1_docs.txt; the
+staged stat equal with --ignore-cr-at-eol; the 7 committed files equal to the working files, CR-stripped), then
+this note. NEXT: B2 (depth while moving), then stop for the user's B2 hand test.
+
 ## STATUS 2026-11-11 (night): B1 (KEPT ART) BUILT, NOT COMMITTED; WAITING FOR THE USER'S HAND TEST; B2 WAITS
 The user approved the batch B report (Documents\SankoTV-Design\batchB-report-2026-11-11.md, Figma B-1 = node
 561:696) with Q-B1 to Q-B4 as recommended: a press off the Move box moves the layer except within 22 px of a corner
