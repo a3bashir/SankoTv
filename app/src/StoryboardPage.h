@@ -24,6 +24,8 @@ class QComboBox;
 class QHBoxLayout;
 class QJsonArray;
 class QJsonObject;
+class QKeyEvent;
+class QPointerEvent;
 class QLabel;
 class QLineEdit;
 class QPlainTextEdit;
@@ -346,6 +348,18 @@ public:
     // Whether Space / arrows / Home / End / Delete currently belong to the
     // timeline (the pointer is over it) rather than to the canvas.
     bool timelineKeysArmedForTest() const { return m_timelineKeysArmed; }
+    // The canvas's keys go where the pointer is (the trial of 2026-11-09): Space,
+    // Enter and Esc pressed while the pointer is over the canvas are the canvas's,
+    // whatever holds the keyboard. Called for every key press and release in the
+    // application (CanvasKeyRouter); true when the canvas took the key.
+    bool routeCanvasKey(QObject *receiver, QKeyEvent *event);
+    // ...and where the pointer is comes from every pen and mouse move and press as
+    // well as the canvas's Enter / Leave (CanvasKeyRouter again; never takes the event).
+    void notePointerAt(QObject *receiver, QPointerEvent *event);
+    bool pointerOverCanvasForTest() const { return m_pointerOverCanvas; }
+    // Under the gate the real pointer is not heard; the moves of the pen with this
+    // unique id are (sent at the window-system level, as a real pen's). -1: none.
+    void setPointerDeviceForTest(qint64 uniqueId);
     // The gate's pointer (see the .cpp): hear only the Enter / Leave events
     // the test delivers through sendPointerEventForTest, never the real
     // mouse, so the result cannot depend on where the pointer was left.
@@ -501,9 +515,6 @@ private:
     // taken BEFORE the mutation, current state captured as "after".
     void pushLayerCommand(Panel *panel, const QVector<Layer> &before,
                           int beforeActive, const QString &text);
-    // Delete confirmation (item: Delete/Cancel + "don't ask again" for
-    // EMPTY layers only). True = go ahead.
-    bool confirmLayerDelete(const QVector<int> &indices);
     void updateActiveLayerThumb(); // live row-thumbnail refresh while drawing
     // Selection-only refresh: restyle the EXISTING rows in place (slider,
     // buttons, canvas mirror included) — no widget teardown, so clicking
@@ -900,6 +911,10 @@ private:
     QVector<TimelineKey> m_timelineKeys;
     bool m_pointerOverTimeline = false;
     bool m_pointerOverPreview = false;
+    bool m_pointerOverCanvas = false;        // the canvas's keys are the canvas's (routeCanvasKey)
+    bool m_spaceDownAway = false;            // a Space pressed off the canvas, still down
+    qint64 m_testPointerDevice = -1;         // the gate's pen (setPointerDeviceForTest)
+    void pointerArrivedOverCanvas();         // ...is the canvas's once the pointer comes
     bool m_timelineKeysArmed = false;
     bool m_ignoreRealPointerForTest = false; // the gate: test events only
     bool m_inTestPointerEvent = false;       // ...and this is one of them

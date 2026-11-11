@@ -2117,6 +2117,20 @@ QRect DrawingCanvas::displayRect() const
                  qRound((height() - h) / 2.0 + m_panOffset.y()), w, h);
 }
 
+// Is this widget point on the paper as it is SHOWN? displayRect() is the paper before
+// the view's rotation, and the press gate asked it whatever the rotation: under a
+// turned view a press on the paper's corner was refused and one beside it accepted.
+// Unturned, this is the same test as before, to the pixel; turned, the point is asked
+// in the paper's own pixels.
+bool DrawingCanvas::onPaper(const QPointF &widgetPos) const
+{
+    if (!m_panel)
+        return false;
+    if (qFuzzyIsNull(m_viewRotation))
+        return displayRect().contains(widgetPos.toPoint());
+    return QRectF(QPointF(0, 0), QSizeF(canvasSize())).contains(toCanvasF(widgetPos));
+}
+
 void DrawingCanvas::setZoom(double zoom, const QPointF &anchorScreen)
 {
     zoom = qBound(0.25, zoom, 4.0);
@@ -7575,6 +7589,39 @@ void DrawingCanvas::keyReleaseEvent(QKeyEvent *event)
     QWidget::keyReleaseEvent(event);
 }
 
+// A key the page hands over because the pointer is over the canvas (see the header).
+// The same handlers as a key that came by focus. A held Space's repeats are the
+// canvas's too: left to the widget with the keyboard, a focused button would take
+// them as its own press.
+bool DrawingCanvas::routedKey(QKeyEvent *event)
+{
+    if (event->key() == Qt::Key_Space && event->isAutoRepeat())
+        return m_spaceHeld;
+    event->accept();
+    if (event->type() == QEvent::KeyRelease)
+        keyReleaseEvent(event);
+    else
+        keyPressEvent(event);
+    return event->isAccepted();
+}
+
+void DrawingCanvas::dropSpaceHold()
+{
+    if (!m_spaceHeld)
+        return;
+    m_spaceHeld = false;
+    if (!m_panning)
+        setCursor(defaultCursorShape());
+}
+
+bool DrawingCanvas::transformUntouched() const
+{
+    if (!m_xformActive || m_warpDirty || m_xformMode != XNone)
+        return false;
+    const QRectF rf(m_moveSrcRect);
+    return m_quad == QPolygonF({rf.topLeft(), rf.topRight(), rf.bottomRight(), rf.bottomLeft()});
+}
+
 // A broken mouse grab (another widget grabbing, popup, system steal) ends
 // the stroke exactly like focus loss: commit, never orphan.
 bool DrawingCanvas::event(QEvent *event)
@@ -7798,9 +7845,14 @@ void DrawingCanvas::mousePressEvent(QMouseEvent *event)
     // a Brush or Eraser stroke may begin in the gutter — out-of-paper points
     // flow to the engine, which clips PIXELS to the document while keeping
     // the path for smoothing/spacing/scatter. Document-anchored tools
-    // (shapes, selections, fill, move) keep the paper gate.
-    if (!displayRect().contains(event->pos())
-        && m_tool != Brush && m_tool != Eraser)
+    // (shapes, fill, move) keep the paper gate.
+    // A SELECTION MAY START OFF THE PAPER TOO (the user's note 1.10, 2026-11-10): a
+    // drag begun on the paper could always run off it, and what a selection takes is
+    // trimmed to the layer when it is used, so the gate only stopped a marquee being
+    // started from outside the art's corner.
+    const bool selecting = m_tool == SelectRect || m_tool == SelectEllipse || m_tool == Lasso
+        || m_tool == SelectPoly;
+    if (!onPaper(event->position()) && m_tool != Brush && m_tool != Eraser && !selecting)
         return;
     if (!editableActiveLayer())
         return; // locked / hidden / missing layer: ignore strokes, no cursor change
@@ -8258,6 +8310,32 @@ void DrawingCanvas::clearPenUiLatch()
 
 void DrawingCanvas::tabletEvent(QTabletEvent *event)
 {
+    // THE PEN'S SIDE BUTTONS DO NOTHING ON THE CANVAS (the user, 2026-11-11). Windows
+    // reports a press made with a side button held as Qt's right (or middle) button, and
+    // with the Brush or the Eraser every press below started a stroke whatever its button:
+    // the batch A hand test painted with the lower side button. With the other tools Qt
+    // made a right click of it, and a right click opens the grid menu. Now a side button
+    // starts nothing and ends nothing, and pressed with the tip up the pen does nothing
+    // until its last button is up. Every event of it is accepted, so Qt makes no mouse
+    // click of it either; the mouse's own right click still opens the grid menu. (It
+    // could become an option later: an eyedropper, or a pan.)
+    if (m_penSideButtonHeld) {
+        if (event->buttons() != Qt::NoButton || event->type() == QEvent::TabletRelease) {
+            if (event->type() == QEvent::TabletRelease && event->buttons() == Qt::NoButton)
+                m_penSideButtonHeld = false;
+            event->accept();
+            return;
+        }
+        m_penSideButtonHeld = false; // nothing is held: its release was lost
+    }
+    if ((event->type() == QEvent::TabletPress || event->type() == QEvent::TabletRelease)
+        && event->button() != Qt::NoButton && event->button() != Qt::LeftButton) {
+        if (event->type() == QEvent::TabletPress && !(event->buttons() & Qt::LeftButton))
+            m_penSideButtonHeld = true;
+        event->accept(); // with the tip down: the stroke under way goes on as it was
+        return;
+    }
+
     if (m_tool != Brush && m_tool != Eraser) {
         // The Eraser passes: it is an engine brush now, and the pressure
         // curves it gained are exactly why (a pressure-blind eraser on a
@@ -8314,6 +8392,17 @@ void DrawingCanvas::tabletEvent(QTabletEvent *event)
             event->ignore();
             return;
         }
+    }
+
+    // NAVIGATION BEFORE THE TOOL (the trial of 2026-11-09): with Space held, the pen
+    // pans, as the mouse does. Until now a pen press with the Brush or the Eraser
+    // started a stroke without looking at Space - twice in the trial a stroke was
+    // painted where a pan was meant. The press, the moves and the release are left to
+    // Qt's mouse synthesis, so there is one pan path (mousePressEvent) and the tool
+    // never sees them. A stroke already under way keeps the pen.
+    if (!midCanvasInteraction && (m_spaceHeld || m_panning)) {
+        event->ignore();
+        return;
     }
 
     // Edit Shape mode: the pen edits nodes — accept() consumes the event so

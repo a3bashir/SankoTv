@@ -88,6 +88,7 @@
 #include <QSplitter>
 #include <QStyle>
 #include <QTabletEvent>
+#include <QPointingDevice>
 #include <QPropertyAnimation>
 #include <QAbstractButton>
 #include <QScrollBar>
@@ -1837,31 +1838,6 @@ private:
     }
     int m_value = 100;
 };
-
-// True when the layer carries any artwork the user could lose: imported
-// images always count; raster layers count once any pixel has alpha. The
-// Background (paper) and group folders never block the empty-delete skip.
-bool layerHasContent(const Layer &layer)
-{
-    if (isGroupLayer(layer))
-        return false;
-    if (layer.type == QLatin1String("image"))
-        return true;
-    if (!layer.hasPixels())
-        return false;
-    if (layer.type == QLatin1String("background"))
-        return false; // plain paper — deleting it is blocked elsewhere anyway
-    if (layer.atRest()) // tiles exist only where something is, and may be hidden
-        return !layertiles::drawnBounds(*layer.tiles, layer.stageRect).isEmpty();
-    const QImage &img = layer.image;
-    for (int y = 0; y < img.height(); ++y) {
-        const QRgb *line = reinterpret_cast<const QRgb *>(img.constScanLine(y));
-        for (int x = 0; x < img.width(); ++x)
-            if (qAlpha(line[x]) != 0)
-                return true;
-    }
-    return false;
-}
 
 // One layer-STACK edit (add / delete / duplicate / merge / group / reorder /
 // rename / colour / visibility / lock / opacity): before/after snapshots of
@@ -4759,8 +4735,11 @@ QWidget *StoryboardPage::createCameraPanel()
         "color:#cccccc;font-size:8.25pt;padding:4px 0 2px 0;}" // points: see PresetPill
         "QToolButton:hover{background:rgba(124,110,246,0.14);border-color:#7c6ef6;color:#ffffff;}"
         "QToolButton:disabled{color:#555555;}"
+        // Points here too (the trial batch, 2026-11-10): the "Over" drop-down logged
+        // "QFont::setPointSize: Point size <= 0 (-1)" as its list opened - the same
+        // cause as the tool buttons', which (pz5) had not looked for on a drop-down.
         "QDoubleSpinBox,QSpinBox,QComboBox{background:#333333;color:#e5e5ed;border:none;"
-        "border-radius:5px;padding:3px 6px;font-size:11px;min-height:18px;}"
+        "border-radius:5px;padding:3px 6px;font-size:8.25pt;min-height:18px;}"
         "QComboBox QAbstractItemView{background:#161616;color:#cccccc;"
         "selection-background-color:#262626;border:1px solid #2a2a2a;}"));
     auto *pv = new QVBoxLayout(pop);
@@ -5808,11 +5787,21 @@ void StoryboardPage::growPanelToFit(int sceneIndex, int panelIndex)
         return;
     if (refuseShotsEdit()) // Q8: a margin is the SHOTS track's
         return;
+    // The Move tool keeps its box up all the time, and a box is "an edit": at 2:21 of
+    // the trial Grow to fit was refused for a box nobody had touched, the note was up
+    // 1.5 s, and the Ctrl+Z that followed undid a layer depth instead. A box that has
+    // not been changed holds nothing (the user's decision, 2026-11-10): it is dropped,
+    // the stage grows, and the box is lifted again below. One that HAS been changed
+    // is still refused: growing would drop the transform.
+    bool reliftBox = false;
     if (panel == currentPanel()) {
         QString active;
         if (hasActiveEdit(&active)) {
-            sayNote(QStringLiteral("Finish %1 before changing the stage.").arg(active));
-            return;
+            if (!m_canvas || !m_canvas->transformUntouched()) {
+                sayNote(QStringLiteral("Finish %1 before changing the stage.").arg(active));
+                return;
+            }
+            reliftBox = true;
         }
         leaveStageMode(false);
     }
@@ -5830,6 +5819,8 @@ void StoryboardPage::growPanelToFit(int sceneIndex, int panelIndex)
         return;
     const QString text = QStringLiteral("Stage Margin (Panel %1)").arg(panelIndex + 1);
     m_undoStack->push(new PanelStageCommand(this, panel, before, after, text));
+    if (reliftBox) // the stage's change dropped the untouched box: around the art again
+        m_canvas->resetTransformBox();
     QVariantMap ev{{QStringLiteral("what"), QStringLiteral("Grow to Fit: ") + text},
                    {QStringLiteral("left"), after.left()},
                    {QStringLiteral("top"), after.top()},
@@ -8263,6 +8254,32 @@ void StoryboardPage::resetPanelStripToDefault()
 namespace {
 // Versioned, like the strip's: bump it if the stored meaning ever changes.
 const QString kTimelineSettings = QStringLiteral("storyboard/timeline/v1/");
+
+// Every key press and release in the application passes here first: the page
+// decides whether it is the canvas's (routeCanvasKey). So does every pen and mouse
+// move and press, which says where the pointer is (notePointerAt); those are never
+// taken.
+class CanvasKeyRouter : public QObject
+{
+public:
+    explicit CanvasKeyRouter(StoryboardPage *page) : QObject(page), m_page(page) {}
+
+protected:
+    bool eventFilter(QObject *receiver, QEvent *event) override
+    {
+        if (event->type() == QEvent::MouseMove || event->type() == QEvent::TabletMove
+            || event->type() == QEvent::MouseButtonPress || event->type() == QEvent::TabletPress) {
+            m_page->notePointerAt(receiver, static_cast<QPointerEvent *>(event));
+            return false;
+        }
+        if (event->type() != QEvent::KeyPress && event->type() != QEvent::KeyRelease)
+            return false;
+        return m_page->routeCanvasKey(receiver, static_cast<QKeyEvent *>(event));
+    }
+
+private:
+    StoryboardPage *m_page;
+};
 } // namespace
 
 // The canvas column and the animatic share a vertical splitter; the bottom
@@ -8461,6 +8478,129 @@ void StoryboardPage::setupAnimaticSection(QWidget *centerColumn,
     mark->setContext(Qt::WindowShortcut);
     mark->setAutoRepeat(false);
     connect(mark, &QShortcut::activated, this, [this] { cameraMarkKey(); });
+
+    // ...and the canvas's keys go to the canvas while the pointer is over IT
+    // (routeCanvasKey, below).
+    m_canvas->installEventFilter(this);
+    qApp->installEventFilter(new CanvasKeyRouter(this));
+}
+
+// THE CANVAS'S KEYS FOLLOW THE POINTER TOO (the trial of 2026-11-09). Space on the
+// canvas is the pan modifier, Enter lands a transform or a paste, Esc cancels one -
+// and all three went to whichever widget held the keyboard. A tap in the Layers list
+// gives that list the keyboard, and a pen stroke on the canvas never takes it back
+// (a tablet press is not a mouse click), so twice in the trial a held Space went to
+// the Layers list and the pen painted where a pan was meant; an Enter went the same
+// way. So: a Space, Enter or Esc pressed while the pointer is over the canvas is
+// handed to the canvas first, whatever has the keyboard. A field being typed in
+// keeps its keys; so does a dialog, a menu or a popover (another window's); a
+// shortcut on the key (the timeline's Space, Stage mode's Enter) has already been
+// taken by then. What the canvas does not use goes on to where it was going.
+bool StoryboardPage::routeCanvasKey(QObject *receiver, QKeyEvent *event)
+{
+    const int key = event->key();
+    const bool space = key == Qt::Key_Space;
+    if (space && event->type() == QEvent::KeyRelease && !event->isAutoRepeat())
+        m_spaceDownAway = false; // the Space is up, wherever its release went
+    if (!m_canvas || receiver == m_canvas || !receiver->isWidgetType())
+        return false;
+    if (!space && key != Qt::Key_Return && key != Qt::Key_Enter && key != Qt::Key_Escape)
+        return false;
+    if (event->modifiers() & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier))
+        return false;
+    auto *widget = static_cast<QWidget *>(receiver);
+    // Only where the key was SENT - the widget with its window's keyboard - never where
+    // an unused key is passed on to afterwards. A line edit lets Enter go on to its
+    // parents once it has taken it (and Esc always): handed on from there, an Enter
+    // typed into a field would also have landed a paste on the canvas.
+    const QWidget *focus = widget->window()->focusWidget();
+    if (focus ? focus != widget : widget != widget->window())
+        return false;
+    const bool ours = widget->window() == m_canvas->window();
+    const bool release = event->type() == QEvent::KeyRelease;
+    // The release of a Space the canvas holds is the canvas's wherever it lands -
+    // another window's widget included - so the pan modifier can never stay on.
+    if (space && release && !event->isAutoRepeat() && m_canvas->spaceHeld()) {
+        m_canvas->routedKey(event);
+        return ours;
+    }
+    if (!ours)
+        return false; // a dialog's, a menu's, a popover's own key
+    for (const char *typing : {"QLineEdit", "QTextEdit", "QPlainTextEdit", "QAbstractSpinBox", "QComboBox",
+                               "QAbstractItemView", "QMenuBar"})
+        if (widget->inherits(typing))
+            return false; // a field being typed in keeps its keys (a list or the menu bar being walked, too)
+    // While the canvas holds Space its repeats are the canvas's too, wherever the
+    // pointer has gone by then (a pan drag runs off the canvas).
+    if (space && m_canvas->spaceHeld())
+        return m_canvas->routedKey(event);
+    if (release)
+        return false;
+    const bool overPreview = m_pointerOverPreview && m_animatic && m_animatic->previewVisible();
+    if (!m_pointerOverCanvas || overPreview || !m_canvas->isVisible()) {
+        // A SPACE PRESSED ON THE WAY (the batch A hand test, at 108 s: Space went down while
+        // the pen was crossing a floating toolbar towards the canvas, 22 ms before it got
+        // there, and the pen touched down 240 ms after). Still down when the pointer comes
+        // over the canvas, it is the canvas's from then (pointerArrivedOverCanvas). Not when
+        // a button has the keyboard: a button takes Space as its own press.
+        if (space && !event->isAutoRepeat() && !overPreview && m_canvas->isVisible()
+            && !widget->inherits("QAbstractButton"))
+            m_spaceDownAway = true;
+        return false;
+    }
+    return m_canvas->routedKey(event);
+}
+
+// WHERE THE POINTER IS, FROM ITS MOVES (the batch A hand test, 2026-11-10). The canvas's
+// Enter and Leave said it, and a pen does not send them reliably: with the Brush or the
+// Eraser the canvas takes the pen's moves itself, so Qt makes no mouse move of them and
+// no Enter - a pen coming from the Layers dock or the Panel Strip arrived with none, and
+// one coming from a floating toolbar got its Enter and a Leave in the same instant. So
+// twelve times out of thirteen the canvas was "left" while the pen was over it, a Space
+// went to the list, and the pen painted. Every pen and mouse move and press now says it
+// too: the widget a real one is sent to first is the one under the pointer (Qt passes it
+// on to the parents as a copy that is not spontaneous, so those are skipped). The canvas
+// or anything on it: over the canvas; anything else, in any window: not. A drag's moves go
+// to the widget it began on, wherever the pointer is, so during one the answer is that
+// widget's. Enter and Leave still count too; the latest word wins. A press is seen here
+// before the widget gets it, so a Space handed over on arrival is there for that press.
+void StoryboardPage::notePointerAt(QObject *receiver, QPointerEvent *event)
+{
+    if (!m_canvas || !event->spontaneous() || !receiver->isWidgetType())
+        return;
+    if (m_ignoreRealPointerForTest) { // the gate: only the test's own pen speaks
+        const QPointingDevice *device = event->pointingDevice();
+        if (m_testPointerDevice < 0 || !device
+            || device->uniqueId().numericId() != m_testPointerDevice)
+            return;
+    }
+    const auto *widget = static_cast<const QWidget *>(receiver);
+    const bool over = widget == m_canvas || m_canvas->isAncestorOf(widget);
+    const bool arrived = over && !m_pointerOverCanvas;
+    m_pointerOverCanvas = over;
+    if (arrived)
+        pointerArrivedOverCanvas();
+}
+
+// The pointer has come over the canvas: a Space pressed on the way and still down is
+// the canvas's from here, as if it had been pressed now.
+void StoryboardPage::pointerArrivedOverCanvas()
+{
+    if (!m_spaceDownAway || !m_canvas)
+        return;
+    m_spaceDownAway = false;
+    if (m_canvas->spaceHeld() || !m_canvas->isVisible()
+        || (m_pointerOverPreview && m_animatic && m_animatic->previewVisible()))
+        return;
+    QKeyEvent press(QEvent::KeyPress, Qt::Key_Space, Qt::NoModifier);
+    m_canvas->routedKey(&press);
+}
+
+void StoryboardPage::setPointerDeviceForTest(qint64 uniqueId)
+{
+    m_testPointerDevice = uniqueId;
+    m_pointerOverCanvas = false;
+    m_spaceDownAway = false;
 }
 
 // THE GATE'S POINTER. Whose keys these are depends on Enter / Leave, and the
@@ -8479,6 +8619,7 @@ void StoryboardPage::setRealPointerIgnoredForTest(bool ignored)
         m_animatic->setNotesAtPointerForTest(!ignored);
     m_pointerOverTimeline = false;
     m_pointerOverPreview = false;
+    m_pointerOverCanvas = false;
     updateTimelineKeys();
 }
 
@@ -8876,9 +9017,11 @@ QWidget *StoryboardPage::createRightColumn()
     // (No inner heading: the ADS dock tab already names the panel.)
 
     const QString labelStyle = QStringLiteral("color: #888888; font-size: 11px;");
+    // 9pt, not 12px: a drop-down with a pixel font logs a Qt warning as its list
+    // opens (see the Quick Move popover's sheet). The same size at 96 dpi.
     const QString fieldStyle = SankoTheme::themed("QComboBox, QLineEdit, QPlainTextEdit {"
         "  background-color: #1a1a1a; color: #ffffff; border: 1px solid #2a2a2a;"
-        "  border-radius: 4px; padding: 5px; font-size: 12px;"
+        "  border-radius: 4px; padding: 5px; font-size: 9pt;"
         "}"
         "QComboBox::drop-down { border: none; }"
         "QComboBox QAbstractItemView { background-color: #1a1a1a; color: #ffffff;"
@@ -9573,6 +9716,12 @@ bool StoryboardPage::eventFilter(QObject *object, QEvent *event)
             m_pointerOverPreview = false;
             updateTimelineKeys();
         }
+        // A Space the canvas was handed and holds: its release will not come to a
+        // window that is no longer the active one.
+        if (event->type() == QEvent::WindowDeactivate && !m_ignoreRealPointerForTest) {
+            m_canvas->dropSpaceHold();
+            m_spaceDownAway = false; // ...nor a Space's still on its way
+        }
     }
 
     // WHOSE KEYS: the timeline's while the pointer is over the animatic
@@ -9583,6 +9732,18 @@ bool StoryboardPage::eventFilter(QObject *object, QEvent *event)
     // machine sends real ones, and they are not part of the test.
     const bool pointerSpeaks =
         !m_ignoreRealPointerForTest || m_inTestPointerEvent;
+    // ...and the canvas's while it is over the canvas (routeCanvasKey). Nothing below
+    // is about the canvas, and every pen move it gets passes here: no further.
+    if (m_canvas && object == m_canvas) {
+        if (event->type() == QEvent::Enter && pointerSpeaks) {
+            const bool arrived = !m_pointerOverCanvas;
+            m_pointerOverCanvas = true;
+            if (arrived)
+                pointerArrivedOverCanvas();
+        } else if ((event->type() == QEvent::Leave && pointerSpeaks) || event->type() == QEvent::Hide)
+            m_pointerOverCanvas = false;
+        return QWidget::eventFilter(object, event);
+    }
     if (m_animatic && object == m_animatic) {
         if (event->type() == QEvent::Enter && pointerSpeaks) {
             m_pointerOverTimeline = true;
@@ -10228,7 +10389,8 @@ bool StoryboardPage::refuseShotsEdit()
 }
 
 // The command the history door is about to undo or redo: a panel command
-// (insert, remove, move, duration) is the SHOTS track's, the audio command
+// (insert, remove, move, duration, and the roll of a cut - left out until the trial
+// batch of 2026-11-10, so a locked track let a roll be undone) is the SHOTS track's, the audio command
 // the AUDIO track's, a camera edit the CAMERA track's (Phase 1C); drawing
 // and the rest are never refused.
 bool StoryboardPage::refuseLockedHistory(const QUndoCommand *command)
@@ -10240,6 +10402,7 @@ bool StoryboardPage::refuseLockedHistory(const QUndoCommand *command)
         || dynamic_cast<const RemovePanelCommand *>(command)
         || dynamic_cast<const MovePanelCommand *>(command)
         || dynamic_cast<const PanelDurationCommand *>(command)
+        || dynamic_cast<const PanelRollCommand *>(command) // two lengths, the same track
         || dynamic_cast<const PanelStageCommand *>(command) // Q8 (batch 6c)
         || (dynamic_cast<const ShotsTrackStep *>(command)
             && dynamic_cast<const ShotsTrackStep *>(command)->changesPanels());
@@ -11797,8 +11960,9 @@ void StoryboardPage::layerDeleteSelected()
     const QVector<int> sel = expandGroupBlocks(selectedLayers());
     if (!panel || sel.isEmpty())
         return;
-    if (!confirmLayerDelete(sel))
-        return;
+    // NO QUESTION (the user's decision, 2026-11-10). It asked "Permanently delete the
+    // selected layer?" - seven times in the trial, each answered Delete within a
+    // second - and the deletion is one undo step, so "permanently" was not true.
     m_canvas->commitQuickShape();
     const QVector<Layer> before = panel->layers;
     const int beforeActive = panel->activeLayerIndex;
@@ -12398,55 +12562,4 @@ QVector<int> StoryboardPage::expandGroupBlocks(const QVector<int> &indices) cons
     return sorted;
 }
 
-// Delete / Cancel confirmation. EMPTY layers (no artwork anywhere in the
-// selection) offer a "don't ask again" checkbox persisted in QSettings; any
-// layer WITH content always asks.
-bool StoryboardPage::confirmLayerDelete(const QVector<int> &indices)
-{
-    Panel *panel = currentPanel();
-    if (!panel || indices.isEmpty())
-        return false;
-    bool allEmpty = true;
-    for (int idx : indices)
-        if (idx >= 0 && idx < panel->layers.size()
-            && layerHasContent(panel->layers.at(idx))) {
-            allEmpty = false;
-            break;
-        }
-
-    QSettings settings = sankoSettings();
-    const bool skipEmpty =
-        settings.value(QStringLiteral("storyboard/skipEmptyLayerDeleteConfirm"),
-                       false).toBool();
-    if (allEmpty && skipEmpty)
-        return true;
-
-    QMessageBox box(this);
-    box.setIcon(QMessageBox::Question);
-    box.setWindowTitle(QStringLiteral("Delete Layer(s)"));
-    box.setText(indices.size() == 1
-                    ? QStringLiteral("Permanently delete the selected layer?")
-                    : QStringLiteral("Permanently delete the %1 selected layers?")
-                          .arg(indices.size()));
-    if (!allEmpty)
-        box.setInformativeText(
-            QStringLiteral("The selection contains artwork."));
-    QPushButton *deleteButton =
-        box.addButton(QStringLiteral("Delete"), QMessageBox::DestructiveRole);
-    box.addButton(QMessageBox::Cancel);
-    QCheckBox *dontAsk = nullptr;
-    if (allEmpty) {
-        // The skip only ever applies to EMPTY layers.
-        dontAsk = new QCheckBox(
-            QStringLiteral("Don't ask again for empty layers"), &box);
-        box.setCheckBox(dontAsk);
-    }
-    box.exec();
-    if (box.clickedButton() != deleteButton)
-        return false;
-    if (dontAsk && dontAsk->isChecked())
-        settings.setValue(
-            QStringLiteral("storyboard/skipEmptyLayerDeleteConfirm"), true);
-    return true;
-}
 

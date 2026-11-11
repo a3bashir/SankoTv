@@ -102,13 +102,16 @@ ProjectSettingsDialog::ProjectSettingsDialog(const QString &projectName,
     });
     // Stage Margin... (Phase 2A, Figma 2A-2): beside it, the same kind of
     // workflow - the stage grows or shrinks around the same shot.
-    m_stageMarginButton = new QPushButton(QStringLiteral("Margin for New Panels..."), this);
+    // "Stage Margin..." again (it read "Margin for New Panels..." in batch 6c): while
+    // no panel has its own margin it is every panel's (the user's decision, 2026-11-10).
+    m_stageMarginButton = new QPushButton(QStringLiteral("Stage Margin..."), this);
     m_stageMarginButton->setObjectName(QStringLiteral("stageMarginButton"));
     m_stageMarginButton->setGeometry(kX + 160, kResizeY, 150, kBoxH);
     m_stageMarginButton->setStyleSheet(QLatin1String(kSecondaryButtonQss));
     m_stageMarginButton->setToolTip(
-        QStringLiteral("The room around the shot that new panels get, for camera moves; with "
-                       "Apply to All Panels... every panel. One panel's own: Stage on the Camera bar."));
+        QStringLiteral("The room around the shot, for camera moves. Every panel's while none has "
+                       "its own margin; after that, new panels', with Apply to All Panels... for "
+                       "the rest. One panel's own: Stage on the Camera bar."));
     connect(m_stageMarginButton, &QPushButton::clicked, this, [this] {
         emit stageMarginRequested();
     });

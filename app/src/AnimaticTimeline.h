@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QElapsedTimer>
 #include <QHash>
 #include <QMargins>
 #include <QPoint>
@@ -581,6 +582,14 @@ private:
     int m_dragOriginFrame = -1;
     QString m_dragChip;
     void showDragChip(const QPoint &globalPos);
+    // A CHIP THAT FOLLOWS THE POINTER through a drag - the playhead's timecode, a
+    // clip's length, a camera key's time (see followChip): one tooltip, kept.
+    void followChip(const QPoint &globalPos, const QString &text);
+    void hideChip();
+    QElapsedTimer m_chipRoll;   // since the chip's tip was last asked for anew
+    QString m_chipWaitingText;  // the newest text and place, asked for while it appeared
+    QPoint m_chipWaitingPos;
+    QTimer *m_chipFlush = nullptr;
     int m_dragPlayheadFrame = -1;
     // The typing field (see openDurationField).
     QWidget *m_durField = nullptr;

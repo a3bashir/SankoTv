@@ -490,6 +490,26 @@ public slots:
         return hasActiveEdit() || m_camDrag >= 0 || m_selDrag || m_selOutlineDrag
             || m_panning || m_floatDragging || m_paintCommitPending;
     }
+    // The Move tool keeps its box up all the time. One nobody has changed holds no
+    // edit: committing it writes nothing, dropping it loses nothing (the trial of
+    // 2026-11-09: Grow to fit was refused for a box that had never been touched).
+    bool transformUntouched() const;
+    // THE CANVAS'S KEYS GO WHERE THE POINTER IS (the trial of 2026-11-09): Space,
+    // Enter and Esc pressed while the pointer is over the canvas are handed here by
+    // the page, whatever widget holds the keyboard. True when the canvas used the key.
+    bool routedKey(QKeyEvent *event);
+    // A Space held through the page and never released here (the window lost
+    // activation): the pan modifier does not stay on.
+    void dropSpaceHold();
+    bool spaceHeld() const { return m_spaceHeld; }
+    bool spaceHeldForTest() const { return m_spaceHeld; }
+    bool penSideButtonHeldForTest() const { return m_penSideButtonHeld; }
+    // The Move tool's box as it stands (empty: none), a pasted drawing still
+    // floating, and the press gate's "on the paper as shown".
+    QPolygonF transformQuadForTest() const { return m_xformActive ? m_quad : QPolygonF(); }
+    bool floatingPasteForTest() const { return m_floatActive && m_floatFromPaste; }
+    bool onPaperForTest(const QPointF &widgetPos) const { return onPaper(widgetPos); }
+    bool panningForTest() const { return m_panning; }
     bool hasCanvasClipboard() const { return !m_clipImg.isNull(); }
     // Closing a project drops the copied pixels with it: they belong to the
     // project that was closed, and would otherwise be pasteable into the
@@ -635,6 +655,7 @@ private:
     bool m_gridTileDirty = true;
 
     QRect displayRect() const;          // axis-aligned zoom+pan rect (pre-rotation)
+    bool onPaper(const QPointF &widgetPos) const; // on the paper AS SHOWN, the view turned or not
     double scale() const;               // display px per canvas px (includes zoom)
     QTransform viewTransform() const;   // canvas -> widget (zoom+pan+rotate+flip)
     QPoint toCanvas(const QPoint &widgetPoint) const;
@@ -1143,6 +1164,9 @@ private:
     // owns.
     QPointer<QAbstractButton> m_penUiTarget;
     bool m_penUiDeadZone = false;
+    // A press made with a pen's side button (Qt's right or middle button) with
+    // the tip up: the pen does nothing until its last button is up (tabletEvent).
+    bool m_penSideButtonHeld = false;
     QAbstractButton *penUiButtonAt(const QPointF &widgetPos) const;
     void clearPenUiLatch();
 

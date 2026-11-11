@@ -158,8 +158,10 @@ StageMarginDialog::StageMarginDialog(const QSize &frame, const QSize &currentMar
     m_applyAll->setObjectName(QStringLiteral("stageMarginApplyAll"));
     m_applyAll->setGeometry(kX + 160, fieldY(1) + kBoxH + 10, kW - 160, 22);
     m_applyAll->setStyleSheet(QLatin1String(kSecondaryButtonQss));
+    // The other way out than the primary button's: all panels, or (while no panel has
+    // its own margin and all is the primary's) new panels only.
     connect(m_applyAll, &QPushButton::clicked, this, [this] {
-        m_applyAllChosen = true;
+        m_applyAllChosen = !m_allIsDefault;
         accept();
     });
 
@@ -192,10 +194,45 @@ StageMarginDialog::StageMarginDialog(const QSize &frame, const QSize &currentMar
     connect(m_sameShare, &QPushButton::toggled, this, [this] { revalidate(); });
     connect(m_cancel, &QPushButton::clicked, this, &QDialog::reject);
     connect(m_set, &QPushButton::clicked, this, [this] {
-        if (m_reason.isEmpty())
+        if (m_reason.isEmpty()) {
+            m_applyAllChosen = m_allIsDefault;
             accept();
+        }
     });
     revalidate();
+}
+
+void StageMarginDialog::setPanelScope(int panels, int withOwnMargin)
+{
+    m_scopeKnown = true;
+    m_scopePanels = qMax(0, panels);
+    m_scopeOwn = qBound(0, withOwnMargin, m_scopePanels);
+    m_allIsDefault = m_scopePanels > 0 && m_scopeOwn == 0;
+    m_set->setText(m_allIsDefault ? QStringLiteral("Set for All Panels")
+                                  : QStringLiteral("Set for New Panels"));
+    m_applyAll->setText(m_allIsDefault ? QStringLiteral("Set for New Panels Only")
+                                       : QStringLiteral("Apply to All Panels..."));
+    revalidate();
+}
+
+QString StageMarginDialog::headerText() const
+{
+    return m_allIsDefault ? QStringLiteral("Stage Margin")
+                          : QStringLiteral("Stage Margin for New Panels");
+}
+
+QString StageMarginDialog::scopeText() const
+{
+    if (!m_scopeKnown)
+        return QStringLiteral("New panels get this stage; the panels already made keep theirs.");
+    const QString panels = m_scopePanels == 1 ? QStringLiteral("1 panel")
+                                              : QStringLiteral("%1 panels").arg(m_scopePanels);
+    if (m_allIsDefault)
+        return m_scopePanels == 1
+            ? QStringLiteral("The panel takes this stage: it has no margin of its own.")
+            : QStringLiteral("All %1 take this stage: none has its own margin.").arg(panels);
+    return QStringLiteral("New panels get this stage; the %1 already made keep %2.")
+        .arg(panels, m_scopePanels == 1 ? QStringLiteral("its own") : QStringLiteral("theirs"));
 }
 
 QSize StageMarginDialog::chosenMargin() const
@@ -325,8 +362,9 @@ void StageMarginDialog::revalidate()
     }
     m_set->setEnabled(m_reason.isEmpty());
     // The project's margin as it is: nothing for new panels to change, and still
-    // something to give the panels with their own (batch 6c).
-    m_applyAll->setEnabled(m_reason.isEmpty() || chosenMargin() == m_current);
+    // something to give the panels with their own (batch 6c). While Set is for all
+    // panels, the button beside it is "new panels only", and has nothing to do then.
+    m_applyAll->setEnabled(m_reason.isEmpty() || (!m_allIsDefault && chosenMargin() == m_current));
     update();
 }
 
@@ -359,6 +397,8 @@ QVariantMap StageMarginDialog::devrecState() const
     s.insert(QStringLiteral("sameShare"), m_sameShare->isChecked());
     s.insert(QStringLiteral("validationReason"), m_reason);
     s.insert(QStringLiteral("effectText"), m_effect);
+    s.insert(QStringLiteral("scopeText"), scopeText());
+    s.insert(QStringLiteral("setForAllPanels"), m_allIsDefault);
     s.insert(QStringLiteral("warns"), m_warn);
     s.insert(QStringLiteral("memoryText"), m_memText);
     s.insert(QStringLiteral("memoryWarns"), m_memWarn);
@@ -379,7 +419,7 @@ void StageMarginDialog::paintEvent(QPaintEvent *)
 
     p.setFont(headerFont());
     p.setPen(kHeaderText);
-    p.drawText(QRect(kX, kHeaderY, kW, 14), Qt::AlignLeft, QStringLiteral("Stage Margin for New Panels"));
+    p.drawText(QRect(kX, kHeaderY, kW, 14), Qt::AlignLeft, headerText());
     p.setPen(QPen(studio::kFieldBorder, 1.0));
     p.drawLine(kX, kHeaderY + 20, kX + kW, kHeaderY + 20);
 
@@ -404,14 +444,14 @@ void StageMarginDialog::paintEvent(QPaintEvent *)
         p.setPen(studio::kFieldLabel);
         p.drawText(QRect(kX, kEffectY + 20, kW, 88), Qt::TextWordWrap | Qt::AlignLeft | Qt::AlignTop, m_reason);
     } else {
-        // Set touches no panel made so far; what follows is what Apply to All does.
+        // What Set applies to, then what the change does: to every panel when Set is
+        // for all of them, else what Apply to All Panels... would do.
         p.setPen(kInfoText);
-        p.drawText(QRect(kX, kEffectY + 18, kW, 12), Qt::AlignLeft,
-                   QStringLiteral("New panels get this stage; the panels already made keep theirs."));
+        p.drawText(QRect(kX, kEffectY + 18, kW, 12), Qt::AlignLeft, scopeText());
         if (!m_effect.isEmpty()) {
             p.setPen(m_warn ? kWarnText : kInfoText);
             p.drawText(QRect(kX, kEffectY + 36, kW, 72), Qt::TextWordWrap | Qt::AlignLeft | Qt::AlignTop,
-                       QStringLiteral("To all panels: ") + m_effect);
+                       m_allIsDefault ? m_effect : QStringLiteral("To all panels: ") + m_effect);
         }
     }
 }
@@ -419,8 +459,10 @@ void StageMarginDialog::paintEvent(QPaintEvent *)
 void StageMarginDialog::keyPressEvent(QKeyEvent *event)
 {
     if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) {
-        if (m_reason.isEmpty())
+        if (m_reason.isEmpty()) {
+            m_applyAllChosen = m_allIsDefault; // Enter is the primary button
             accept();
+        }
         event->accept();
         return;
     }

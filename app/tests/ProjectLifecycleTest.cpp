@@ -90,6 +90,7 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QAbstractItemView>
 #include <QContextMenuEvent>
 #include <QComboBox>
 #include <QDoubleSpinBox>
@@ -6288,6 +6289,47 @@ void runFrameLengthsPass(const QString &scratch)
           rollUndone == QStringLiteral("36 48 24 12") && rippleLengths == QStringLiteral("36 54 24 12")
               && rippleStarts == QStringLiteral("0 36 90 114"),
           QStringLiteral("undone %1; without Alt %2 / %3").arg(rollUndone, rippleLengths, rippleStarts));
+    // The history door (the trial batch, 2026-11-10): a roll is two lengths, the SHOTS
+    // track's like any length - PanelRollCommand was missing from refuseLockedHistory's
+    // list, so a locked track let a roll be undone and redone.
+    {
+        drag(rightEdge(1), xOf(90), true); // the roll again
+        const QString rolled = lengths();
+        r.animatic->setTrackLocked(TimelineTrack::Shots, true);
+        pump(60);
+        r.storyboard->clearLockRefusalForTest();
+        r.storyboard->editUndo();
+        pump(150);
+        const QString lockedUndo = lengths();
+        const QString undoSaid = r.storyboard->lastLockRefusalForTest();
+        r.animatic->setTrackLocked(TimelineTrack::Shots, false);
+        pump(60);
+        check(QStringLiteral("(du5) THE SHOTS LOCK REFUSES THE UNDO OF A ROLL, as it refuses the undo of any length: "
+                             "the two clips stay 54 and 18, and it says \"SHOTS track is locked\""),
+              rolled == QStringLiteral("36 54 18 12") && lockedUndo == rolled
+                  && undoSaid == QStringLiteral("SHOTS track is locked"),
+              QStringLiteral("rolled %1; after the locked Undo %2; said '%3'").arg(rolled, lockedUndo, undoSaid));
+        r.storyboard->clearLockRefusalForTest();
+        r.storyboard->editUndo();
+        pump(200);
+        const QString unlockedUndo = lengths();
+        const QString unlockedSaid = r.storyboard->lastLockRefusalForTest();
+        r.animatic->setTrackLocked(TimelineTrack::Shots, true);
+        pump(60);
+        r.storyboard->editRedo();
+        pump(150);
+        const QString lockedRedo = lengths();
+        const QString redoSaid = r.storyboard->lastLockRefusalForTest();
+        r.animatic->setTrackLocked(TimelineTrack::Shots, false);
+        pump(60);
+        r.storyboard->clearLockRefusalForTest();
+        check(QStringLiteral("(du5) control: unlocked, the same Undo puts 48 and 24 back and nothing is said; locked "
+                             "again, the Redo of the roll is refused too"),
+              unlockedUndo == QStringLiteral("36 48 24 12") && unlockedSaid.isEmpty()
+                  && lockedRedo == unlockedUndo && redoSaid == QStringLiteral("SHOTS track is locked"),
+              QStringLiteral("unlocked Undo %1 '%2'; locked Redo %3 '%4'").arg(unlockedUndo, unlockedSaid, lockedRedo,
+                                                                            redoSaid));
+    }
 
     // ---- (du6) typing ---------------------------------------------------------------
     auto fieldEdit = [&]() -> QLineEdit * {
@@ -18964,6 +19006,827 @@ void runGrowAnyZoomPass(const QString &scratch)
     r.window.markCleanForTest();
 }
 
+// THE TRIAL'S FIXES (batch A, 2026-11-10; the user's real-project trial of 2026-11-09,
+// Documents\SankoTV-Design\trial-report-2026-11-10.md): the canvas's keys go where the
+// pointer is and Space pans with the pen; a selection starts off the paper; a drag's
+// chip is one tooltip; Delete Layer asks nothing; Grow to fit with the Move tool's box
+// untouched; what Stage Margin's Set applies to. (The roll under the SHOTS lock is in
+// (du5), the drop-downs' fonts in (pz5).)
+void runTrialFixesPass(const QString &scratch)
+{
+    using namespace workspace;
+    out() << "--- (ta) the trial's fixes: the canvas's keys, the pen's pan, selections, chips, the box, Set ---"
+          << Qt::endl;
+    const QString dir = scratch + QStringLiteral("/trialfixes");
+    QDir(dir).removeRecursively();
+    QDir().mkpath(dir);
+    const QString project = writeProject(dir, QStringLiteral("Trial"), QSize(1920, 1080), 24, 2, 2);
+    auto rig = std::make_unique<Rig>(project);
+    Rig &r = *rig;
+    check(QStringLiteral("(ta) the workspace opened"), r.ok);
+    if (!r.ok)
+        return;
+    QUndoStack *stack = r.window.undoStackForTest();
+    Scene *scene = r.window.scenesForTest().value(0);
+    auto *layersDock = r.storyboard->findChild<QDockWidget *>(QStringLiteral("dockLayers"));
+    QScrollArea *list = layersDock ? layersDock->findChild<QScrollArea *>() : nullptr;
+    QWindow *win = r.window.windowHandle();
+    if (!stack || !scene || scene->panels.size() != 2 || !list || !win) {
+        check(QStringLiteral("(ta) found the history, the scene, the Layers list and the window"), false);
+        return;
+    }
+    Panel *p0 = scene->panels.at(0);
+    Panel *p1 = scene->panels.at(1);
+    // What reaches a widget as Qt would deliver it: a key the canvas was handed never
+    // gets this far.
+    struct Reached : QObject
+    {
+        int presses = 0;
+        bool eventFilter(QObject *, QEvent *e) override
+        {
+            presses += e->type() == QEvent::KeyPress ? 1 : 0;
+            return false;
+        }
+    };
+    // ...and the Enter events a widget is sent.
+    struct Entered : QObject
+    {
+        int enters = 0;
+        bool eventFilter(QObject *, QEvent *e) override
+        {
+            enters += e->type() == QEvent::Enter ? 1 : 0;
+            return false;
+        }
+    };
+    // The pen, at the window-system level: a tablet event the canvas does not take is
+    // turned into the mouse's by Qt, as a real one is. Over any widget, sent to that
+    // widget's own window (a floating toolbar is a window of its own), with the buttons a
+    // pen reports: the tip is the left button, a side button the right.
+    constexpr qint64 kPen = 7011;
+    auto penAt = [&](QWidget *over, const QPointF &at, Qt::MouseButtons buttons, qreal pressure) {
+        QWindow *target = over->window()->windowHandle();
+        if (!target)
+            return;
+        const QPointF global = over->mapToGlobal(at);
+        const QPointF local = global - QPointF(target->mapToGlobal(QPoint(0, 0)));
+        QWindowSystemInterface::handleTabletEvent(target, local, global, int(QInputDevice::DeviceType::Stylus),
+                                                  int(QPointingDevice::PointerType::Pen), buttons, pressure,
+                                                  0, 0, 0, 0, 0, kPen);
+        QCoreApplication::processEvents();
+    };
+    auto pen = [&](const QPointF &onCanvas, bool down, qreal pressure) {
+        penAt(r.canvas, onCanvas, down ? Qt::LeftButton : Qt::NoButton, pressure);
+    };
+    auto penDrag = [&](const QPointF &from, const QPointF &by) {
+        pen(from, true, 0.6);
+        for (int i = 1; i <= 6; ++i)
+            pen(from + by * (i / 6.0), true, 0.6);
+        pen(from + by, false, 0.0);
+        pump(350); // a stroke's commit, if there was one
+    };
+    clickThumb(r, 0);
+    pump(60);
+    r.canvas->setTool(DrawingCanvas::Brush);
+    const QPointF mid(r.canvas->width() / 2.0, r.canvas->height() / 2.0);
+
+    // --- (ta1) Space, with the pen, whatever has the keyboard ---------------------------
+    // THE PEN ALONE SAYS WHERE IT IS (the batch A hand test, 2026-11-10). This check used to
+    // tell the page "the pointer is over the canvas" with an Enter it sent itself (hover),
+    // and passed, while in the hand test the pen painted 12 times out of 13: a pen with the
+    // Brush sends the canvas no Enter. Now nothing is said but the pen's own moves, sent at
+    // the window-system level as a real pen's are, from the docked Layers list and from a
+    // floating toolbar; and the page hears this pen and no other (setPointerDeviceForTest),
+    // never the real pointer.
+    {
+        QScrollArea *strip = nullptr;
+        if (auto *stripDock = r.storyboard->findChild<QDockWidget *>(QStringLiteral("dockPanelStrip")))
+            strip = stripDock->findChild<QScrollArea *>();
+        FloatingToolWindow *bar = nullptr;
+        for (FloatingToolWindow *w : r.window.findChildren<FloatingToolWindow *>())
+            if (w->objectName() == QLatin1String("layersToolbar") && w->isVisible() && w->windowHandle())
+                bar = w;
+        Reached reached, reachedStrip;
+        Entered entered;
+        list->installEventFilter(&reached);
+        if (strip)
+            strip->installEventFilter(&reachedStrip);
+        r.canvas->installEventFilter(&entered);
+        r.storyboard->setPointerDeviceForTest(kPen);
+        const QPointF listAt(list->viewport()->width() / 2.0, list->viewport()->height() / 2.0);
+        const QPointF barAt = bar ? QPointF(bar->width() / 2.0, bar->height() / 2.0) : QPointF();
+
+        // From the docked Layers list, the list holding the keyboard.
+        list->setFocus(); // a tap in the Layers list: it has the window's keyboard
+        const bool listFocused = r.window.focusWidget() == list;
+        penAt(list->viewport(), listAt, Qt::NoButton, 0.0);
+        const bool overAtList = r.storyboard->pointerOverCanvasForTest();
+        for (int i = 3; i >= 0; --i)
+            pen(mid - QPointF(20.0 * i, 0.0), false, 0.0); // the pen comes onto the canvas
+        const bool overOnCanvas = r.storyboard->pointerOverCanvasForTest();
+        const int enters = entered.enters;
+        const QPointF pan0 = r.canvas->viewPanOffset();
+        const int steps0 = stack->index();
+        camtool::key(list, QEvent::KeyPress, Qt::Key_Space);
+        const bool held = listFocused && r.canvas->spaceHeldForTest();
+        const bool hand = r.canvas->cursor().shape() == Qt::OpenHandCursor;
+        pen(mid, true, 0.6);
+        const bool panning = r.canvas->panningForTest();
+        for (int i = 1; i <= 6; ++i)
+            pen(mid + QPointF(10 * i, 5 * i), true, 0.6);
+        pen(mid + QPointF(60, 30), false, 0.0);
+        pump(350);
+        const QPointF pan1 = r.canvas->viewPanOffset();
+        // The release goes where Qt sends a key: to the window's focus widget. The pan's
+        // press was the mouse's by then (Qt's, from the pen), and a click gives the canvas
+        // the keyboard - so that is the canvas now, not the list.
+        QWidget *focusAtRelease = r.window.focusWidget();
+        camtool::key(focusAtRelease ? focusAtRelease : list, QEvent::KeyRelease, Qt::Key_Space);
+        const QPointF moved = pan1 - pan0;
+        check(QStringLiteral("(ta1) SPACE PANS WITH THE PEN, AND THE PEN ALONE SAYS IT IS OVER THE CANVAS: the Layers list "
+                             "focused, the pen hovers over the list and then onto the canvas (window-system pen moves; "
+                             "no Enter reaches the canvas) and the Space is the canvas's (the hand); a pen drag with the "
+                             "Brush then pans 60 x 30 px and paints nothing; released, the hold is over"),
+              listFocused && !overAtList && overOnCanvas && enters == 0 && held && hand && panning
+                  && qAbs(moved.x() - 60.0) <= 1.0 && qAbs(moved.y() - 30.0) <= 1.0 && stack->index() == steps0
+                  && reached.presses == 0 && !r.canvas->spaceHeldForTest() && !r.canvas->panningForTest(),
+              QStringLiteral("focused %1; over the canvas: at the list %2, on it %3; Enters at the canvas %4; held %5 "
+                             "hand %6 panning %7; panned %8,%9; steps +%10; reached the list %11; the keyboard at the "
+                             "release: %12; held after %13")
+                  .arg(listFocused).arg(overAtList).arg(overOnCanvas).arg(enters).arg(held).arg(hand).arg(panning)
+                  .arg(moved.x()).arg(moved.y()).arg(stack->index() - steps0).arg(reached.presses)
+                  .arg(focusAtRelease == r.canvas ? QStringLiteral("the canvas")
+                           : focusAtRelease == list ? QStringLiteral("the list") : QStringLiteral("other"))
+                  .arg(r.canvas->spaceHeldForTest()));
+        // No pen press, so the list keeps the keyboard: its release is handed over too.
+        list->setFocus();
+        camtool::key(list, QEvent::KeyPress, Qt::Key_Space);
+        const bool heldAgain = r.canvas->spaceHeldForTest();
+        camtool::key(list, QEvent::KeyRelease, Qt::Key_Space);
+        check(QStringLiteral("(ta1) held and let go with no press between, the list still focused: both are the "
+                             "canvas's, and the list hears neither"),
+              r.window.focusWidget() == list && heldAgain && !r.canvas->spaceHeldForTest() && reached.presses == 0,
+              QStringLiteral("held %1, after %2; reached the list %3").arg(heldAgain)
+                  .arg(r.canvas->spaceHeldForTest()).arg(reached.presses));
+
+        // From a floating toolbar (a window of its own), the Panel Strip holding the keyboard.
+        bool stripFocused = false, overAtBar = true, overBack = false, heldB = false, panningB = false;
+        QPointF movedB;
+        int stepsB = -1, entersB = -1;
+        if (strip && bar) {
+            strip->setFocus(); // a tap on the strip
+            stripFocused = r.window.focusWidget() == strip;
+            // Enters counted over the pen's arrival only: the pan above was a press Qt made
+            // of the pen, and a mouse press sends the canvas an Enter, as it should.
+            const int enters0 = entered.enters;
+            penAt(bar, barAt, Qt::NoButton, 0.0);
+            overAtBar = r.storyboard->pointerOverCanvasForTest();
+            for (int i = 3; i >= 0; --i)
+                pen(mid - QPointF(0.0, 20.0 * i), false, 0.0);
+            overBack = r.storyboard->pointerOverCanvasForTest();
+            entersB = entered.enters - enters0;
+            const QPointF b0 = r.canvas->viewPanOffset();
+            const int s0 = stack->index();
+            camtool::key(strip, QEvent::KeyPress, Qt::Key_Space);
+            heldB = stripFocused && r.canvas->spaceHeldForTest();
+            pen(mid, true, 0.6);
+            panningB = r.canvas->panningForTest();
+            for (int i = 1; i <= 6; ++i)
+                pen(mid + QPointF(-8 * i, 4 * i), true, 0.6);
+            pen(mid + QPointF(-48, 24), false, 0.0);
+            pump(350);
+            movedB = r.canvas->viewPanOffset() - b0;
+            QWidget *f = r.window.focusWidget();
+            camtool::key(f ? f : strip, QEvent::KeyRelease, Qt::Key_Space);
+            stepsB = stack->index() - s0;
+        }
+        check(QStringLiteral("(ta1) THE SAME FROM A FLOATING TOOLBAR, the Panel Strip focused: the pen hovers over the "
+                             "Layers toolbar (its own window) and then onto the canvas (no Enter reaches the canvas as it "
+                             "arrives), the Space is the canvas's, and the pen drag pans 48 x 24 px and paints nothing"),
+              strip && bar && stripFocused && !overAtBar && overBack && entersB == 0 && heldB && panningB
+                  && qAbs(movedB.x() + 48.0) <= 1.0 && qAbs(movedB.y() - 24.0) <= 1.0 && stepsB == 0
+                  && reachedStrip.presses == 0 && !r.canvas->spaceHeldForTest(),
+              QStringLiteral("strip %1 toolbar %2; focused %3; over the canvas: at the toolbar %4, back on it %5; Enters "
+                             "at the canvas as it arrived %6; held %7 panning %8; panned %9,%10; steps +%11; reached the "
+                             "strip %12")
+                  .arg(strip != nullptr).arg(bar != nullptr).arg(stripFocused).arg(overAtBar).arg(overBack).arg(entersB)
+                  .arg(heldB).arg(panningB).arg(movedB.x()).arg(movedB.y()).arg(stepsB).arg(reachedStrip.presses));
+
+        // A Space pressed on the way (the hand test at 108 s): the strip focused, Space goes
+        // down while the pen is over the floating toolbar, and the pen comes onto the canvas
+        // with it still down.
+        bool heldAtBarW = true, heldOnArrival = false, panningW = false;
+        QPointF movedW;
+        int stepsW = -1, reachedW = -1;
+        if (strip && bar) {
+            strip->setFocus();
+            penAt(bar, barAt, Qt::NoButton, 0.0);
+            const int rs0 = reachedStrip.presses;
+            camtool::key(strip, QEvent::KeyPress, Qt::Key_Space);
+            heldAtBarW = r.canvas->spaceHeldForTest();
+            reachedW = reachedStrip.presses - rs0; // the strip had it
+            pen(mid - QPointF(0.0, 40.0), false, 0.0);
+            pen(mid, false, 0.0);
+            heldOnArrival = r.canvas->spaceHeldForTest();
+            const QPointF w0 = r.canvas->viewPanOffset();
+            const int s0 = stack->index();
+            pen(mid, true, 0.6);
+            panningW = r.canvas->panningForTest();
+            for (int i = 1; i <= 6; ++i)
+                pen(mid + QPointF(5 * i, -5 * i), true, 0.6);
+            pen(mid + QPointF(30, -30), false, 0.0);
+            pump(350);
+            movedW = r.canvas->viewPanOffset() - w0;
+            QWidget *f = r.window.focusWidget();
+            camtool::key(f ? f : strip, QEvent::KeyRelease, Qt::Key_Space);
+            stepsW = stack->index() - s0;
+        }
+        check(QStringLiteral("(ta1) A SPACE PRESSED ON THE WAY: the Panel Strip focused, Space goes down while the pen is "
+                             "over the floating toolbar (the strip has it, the canvas holds nothing yet) and the pen "
+                             "comes onto the canvas with it still down: the hold is the canvas's as the pen arrives, and "
+                             "the pen drag pans 30 x -30 px and paints nothing"),
+              strip && bar && !heldAtBarW && reachedW == 1 && heldOnArrival && panningW
+                  && qAbs(movedW.x() - 30.0) <= 1.0 && qAbs(movedW.y() + 30.0) <= 1.0 && stepsW == 0
+                  && !r.canvas->spaceHeldForTest(),
+              QStringLiteral("held at the toolbar %1 (the strip heard %2); held on arrival %3; panning %4; panned %5,%6; "
+                             "steps +%7; held after %8")
+                  .arg(heldAtBarW).arg(reachedW).arg(heldOnArrival).arg(panningW).arg(movedW.x()).arg(movedW.y())
+                  .arg(stepsW).arg(r.canvas->spaceHeldForTest()));
+
+        // Controls: the pen last over the Layers list - the Space is the list's, the canvas
+        // holds nothing, and the same pen drag without Space paints one stroke (so the pen
+        // reaches the canvas and a stroke shows here); the pen last over the floating
+        // toolbar - the Space is the strip's.
+        list->setFocus();
+        penAt(list->viewport(), listAt, Qt::NoButton, 0.0);
+        const bool overAway = r.storyboard->pointerOverCanvasForTest();
+        const int reached0 = reached.presses;
+        camtool::key(list, QEvent::KeyPress, Qt::Key_Space);
+        const bool heldAway = r.canvas->spaceHeldForTest();
+        const int reachedAway = reached.presses - reached0;
+        camtool::key(list, QEvent::KeyRelease, Qt::Key_Space);
+        const QPointF pan2a = r.canvas->viewPanOffset();
+        const int steps1 = stack->index();
+        penDrag(mid, QPointF(60, 30));
+        const QPointF pan2 = r.canvas->viewPanOffset();
+        const int strokeSteps = stack->index() - steps1;
+        const QString strokeText = stack->undoText();
+        bool overAtBarAway = true, heldAtBar = true, heldAfterLetGo = true;
+        int reachedAtBar = -1;
+        if (strip && bar) {
+            strip->setFocus();
+            penAt(bar, barAt, Qt::NoButton, 0.0);
+            overAtBarAway = r.storyboard->pointerOverCanvasForTest();
+            const int rs0 = reachedStrip.presses;
+            camtool::key(strip, QEvent::KeyPress, Qt::Key_Space);
+            heldAtBar = r.canvas->spaceHeldForTest();
+            reachedAtBar = reachedStrip.presses - rs0;
+            camtool::key(strip, QEvent::KeyRelease, Qt::Key_Space);
+            // ...and a Space let go on the way is nobody's when the pen arrives.
+            pen(mid - QPointF(0.0, 40.0), false, 0.0);
+            pen(mid, false, 0.0);
+            heldAfterLetGo = r.canvas->spaceHeldForTest();
+        }
+        check(QStringLiteral("(ta1) control: with the pen last over the Layers list the Space went to the list and the "
+                             "canvas did not hold it, and the same pen drag without Space paints one stroke and pans "
+                             "nothing; with the pen last over the floating toolbar the Space went to the Panel Strip, and "
+                             "let go there it is not held when the pen comes onto the canvas"),
+              !overAway && !heldAway && reachedAway == 1 && pan2 == pan2a && strokeSteps == 1
+                  && strokeText == QStringLiteral("Brush Stroke") && strip && bar && !overAtBarAway && !heldAtBar
+                  && reachedAtBar == 1 && !heldAfterLetGo,
+              QStringLiteral("list: over %1, held %2, reached %3; panned %4,%5; steps +%6 '%7'; toolbar: over %8, held "
+                             "%9, reached the strip %10; held on arrival after letting go %11")
+                  .arg(overAway).arg(heldAway).arg(reachedAway).arg(pan2.x() - pan2a.x()).arg(pan2.y() - pan2a.y())
+                  .arg(strokeSteps).arg(strokeText).arg(overAtBarAway).arg(heldAtBar).arg(reachedAtBar)
+                  .arg(heldAfterLetGo));
+        if (strokeSteps == 1)
+            stack->undo();
+        pump(80);
+        list->removeEventFilter(&reached);
+        if (strip)
+            strip->removeEventFilter(&reachedStrip);
+        r.canvas->removeEventFilter(&entered);
+        r.storyboard->setPointerDeviceForTest(-1);
+        r.canvas->resetViewAfterResize();
+        pump(40);
+    }
+
+    // --- (ta8) the pen's side button does nothing on the canvas ------------------------------
+    // The batch A hand test: with the Brush the pen's lower side button painted (Windows
+    // reports a press with it as the right button, and every press started a stroke). The
+    // user, 2026-11-11: it does nothing on the canvas for now. With the other tools Qt made a
+    // right click of it; that is what the mouse presses and context menus counted here show.
+    {
+        struct RightClicks : QObject
+        {
+            int presses = 0, menus = 0;
+            bool eventFilter(QObject *, QEvent *e) override
+            {
+                if (e->type() == QEvent::MouseButtonPress
+                    && static_cast<QMouseEvent *>(e)->button() == Qt::RightButton)
+                    ++presses;
+                if (e->type() != QEvent::ContextMenu)
+                    return false;
+                ++menus;
+                return true; // counted, never shown
+            }
+        } rightClicks;
+        r.canvas->installEventFilter(&rightClicks);
+        r.canvas->setTool(DrawingCanvas::Brush);
+        pump(60);
+        const QPointF a = mid + QPointF(-40, -20);
+        const int s0 = stack->index();
+        const QPointF v0 = r.canvas->viewPanOffset();
+        // With the Brush: the side button pressed with the tip up and dragged...
+        pen(a, false, 0.0);
+        penAt(r.canvas, a, Qt::RightButton, 0.0);
+        const bool latched = r.canvas->penSideButtonHeldForTest();
+        for (int i = 1; i <= 6; ++i)
+            penAt(r.canvas, a + QPointF(10 * i, 5 * i), Qt::RightButton, 0.0);
+        // ...then the tip put down while it is held, and dragged again: still nothing.
+        penAt(r.canvas, a + QPointF(60, 30), Qt::RightButton | Qt::LeftButton, 0.6);
+        for (int i = 1; i <= 4; ++i)
+            penAt(r.canvas, a + QPointF(60 + 10 * i, 30), Qt::RightButton | Qt::LeftButton, 0.6);
+        penAt(r.canvas, a + QPointF(100, 30), Qt::RightButton, 0.0); // the tip up
+        penAt(r.canvas, a + QPointF(100, 30), Qt::NoButton, 0.0);    // the side button up
+        pump(350);
+        const int brushSteps = stack->index() - s0;
+        const bool released = !r.canvas->penSideButtonHeldForTest();
+        const bool viewStill = r.canvas->viewPanOffset() == v0;
+        const int brushPresses = rightClicks.presses;
+        const int brushMenus = rightClicks.menus;
+        // With the Move tool, where Qt used to make a right click of it.
+        r.canvas->setTool(DrawingCanvas::Move);
+        pump(60);
+        const int movePresses0 = rightClicks.presses, moveMenus0 = rightClicks.menus;
+        const int moveSteps0 = stack->index();
+        penAt(r.canvas, a, Qt::NoButton, 0.0);
+        penAt(r.canvas, a, Qt::RightButton, 0.0);
+        penAt(r.canvas, a + QPointF(30, 10), Qt::RightButton, 0.0);
+        penAt(r.canvas, a + QPointF(30, 10), Qt::NoButton, 0.0);
+        pump(150);
+        const int movePresses = rightClicks.presses - movePresses0;
+        const int moveMenus = rightClicks.menus - moveMenus0;
+        const int moveSteps = stack->index() - moveSteps0;
+        check(QStringLiteral("(ta8) THE PEN'S SIDE BUTTON DOES NOTHING ON THE CANVAS: with the Brush, pressed with the tip "
+                             "up and dragged, then the tip put down while it is held and dragged again, it paints nothing "
+                             "and moves no view, and once let go the pen is free; with the Move tool no right click and "
+                             "no menu reach the canvas, and nothing moves"),
+              latched && brushSteps == 0 && released && viewStill && brushPresses == 0 && brushMenus == 0
+                  && movePresses == 0 && moveMenus == 0 && moveSteps == 0,
+              QStringLiteral("Brush: held %1, steps +%2, free after %3, view still %4, right presses %5, menus %6; Move: "
+                             "right presses %7, menus %8, steps +%9")
+                  .arg(latched).arg(brushSteps).arg(released).arg(viewStill).arg(brushPresses).arg(brushMenus)
+                  .arg(movePresses).arg(moveMenus).arg(moveSteps));
+        // Controls: the mouse's own right click, at the window-system level, still reaches the
+        // canvas as a right press (the grid menu's way in); and the tip's press and drag with
+        // the Brush paints one stroke.
+        const int mousePresses0 = rightClicks.presses, mouseMenus0 = rightClicks.menus;
+        {
+            const QPointF global = r.canvas->mapToGlobal(a);
+            const QPointF local = global - QPointF(win->mapToGlobal(QPoint(0, 0)));
+            QWindowSystemInterface::handleMouseEvent<QWindowSystemInterface::SynchronousDelivery>(
+                win, local, global, Qt::RightButton, Qt::RightButton, QEvent::MouseButtonPress);
+            QWindowSystemInterface::handleMouseEvent<QWindowSystemInterface::SynchronousDelivery>(
+                win, local, global, Qt::NoButton, Qt::RightButton, QEvent::MouseButtonRelease);
+            pump(150);
+        }
+        const int mousePresses = rightClicks.presses - mousePresses0;
+        const int mouseMenus = rightClicks.menus - mouseMenus0;
+        r.canvas->setTool(DrawingCanvas::Brush);
+        pump(60);
+        const int s1 = stack->index();
+        penDrag(a, QPointF(60, 30));
+        const int tipSteps = stack->index() - s1;
+        const QString tipText = stack->undoText();
+        check(QStringLiteral("(ta8) control: the mouse's own right click reaches the canvas as a right press, and the "
+                             "tip's press and drag with the Brush paints one stroke"),
+              mousePresses == 1 && tipSteps == 1 && tipText == QStringLiteral("Brush Stroke"),
+              QStringLiteral("mouse: right presses %1 (menus %2); tip: steps +%3 '%4'").arg(mousePresses).arg(mouseMenus)
+                  .arg(tipSteps).arg(tipText));
+        if (tipSteps == 1)
+            stack->undo();
+        pump(80);
+        r.canvas->removeEventFilter(&rightClicks);
+        r.canvas->resetViewAfterResize();
+        pump(40);
+    }
+
+    // --- (ta2) Enter lands a paste; a field being typed in keeps its keys -----------------
+    {
+        Reached reached;
+        list->installEventFilter(&reached);
+        r.canvas->selectAll();
+        r.canvas->copySelection();
+        r.canvas->clearSelection();
+        r.canvas->pasteClipboard(true);
+        pump(40);
+        const bool floating = r.canvas->floatingPasteForTest();
+        hover(r, r.canvas, true);
+        // A FIELD BEING TYPED IN, the pointer over the canvas. A line edit takes a Space
+        // as a character; it takes Enter too, and then passes it on to its parents - from
+        // where it must not be handed to the canvas.
+        auto *field = new QLineEdit(&r.window);
+        field->setObjectName(QStringLiteral("taFieldBeingTypedIn"));
+        field->setGeometry(8, 8, 140, 22);
+        field->show();
+        field->setFocus();
+        const bool fieldFocused = r.window.focusWidget() == field;
+        int entered = 0;
+        QObject::connect(field, &QLineEdit::returnPressed, field, [&entered] { ++entered; });
+        camtool::key(field, QEvent::KeyPress, Qt::Key_Space);
+        const bool heldTyping = r.canvas->spaceHeldForTest();
+        camtool::key(field, QEvent::KeyRelease, Qt::Key_Space);
+        camtool::key(field, QEvent::KeyPress, Qt::Key_Return);
+        const QString typedText = field->text();
+        const bool floatingAfterField = r.canvas->floatingPasteForTest();
+        check(QStringLiteral("(ta2) A FIELD BEING TYPED IN KEEPS ITS KEYS, the pointer over the canvas: a Space is "
+                             "typed into it and the canvas does not hold it; an Enter is the field's, and though a "
+                             "line edit passes it on to its parents it does not land the paste floating on the canvas"),
+              floating && fieldFocused && typedText == QStringLiteral(" ") && !heldTyping && entered == 1
+                  && floatingAfterField,
+              QStringLiteral("focused %1; typed '%2'; the canvas held %3; the field's Enter %4; the paste still floats %5")
+                  .arg(fieldFocused).arg(typedText).arg(heldTyping).arg(entered).arg(floatingAfterField));
+        delete field;
+        // The Layers list focused: the same Enter is the canvas's while the pointer is over it.
+        list->setFocus();
+        const bool listFocused = r.window.focusWidget() == list;
+        hover(r, r.canvas, false);
+        camtool::key(list, QEvent::KeyPress, Qt::Key_Return);
+        const bool stillFloating = r.canvas->floatingPasteForTest();
+        const int reachedAway = reached.presses;
+        hover(r, r.canvas, true);
+        camtool::key(list, QEvent::KeyPress, Qt::Key_Return);
+        pump(60);
+        check(QStringLiteral("(ta2) ENTER LANDS A PASTE with the pointer over the canvas and the Layers list focused"),
+              listFocused && floating && !r.canvas->floatingPasteForTest() && reached.presses == reachedAway,
+              QStringLiteral("focused %1; floating %2 -> %3; reached the list %4").arg(listFocused).arg(floating)
+                  .arg(r.canvas->floatingPasteForTest()).arg(reached.presses - reachedAway));
+        camtool::key(list, QEvent::KeyPress, Qt::Key_Return); // nothing left to land: it goes on
+        const int reachedOnward = reached.presses;
+        check(QStringLiteral("(ta2) control: with the pointer elsewhere the same Enter went to the list, and the "
+                             "paste stayed floating; and an Enter the canvas has no use for goes on to the list"),
+              stillFloating && reachedAway == 1 && reachedOnward == reachedAway + 1,
+              QStringLiteral("floating %1; reached the list %2, then %3").arg(stillFloating).arg(reachedAway)
+                  .arg(reachedOnward));
+        list->removeEventFilter(&reached);
+        hover(r, r.canvas, false);
+        while (stack->canUndo() && stack->undoText() == QStringLiteral("Paste"))
+            stack->undo();
+        pump(60);
+    }
+
+    // --- (ta3) a selection starts off the paper; the gate under a turned view -----------
+    {
+        const QSizeF cs(r.canvas->canvasSize());
+        r.canvas->setViewZoom(0.5); // room around the paper, turned or not
+        pump(40);
+        const QRectF paper = r.canvas->viewTransformForTest().mapRect(QRectF(QPointF(0, 0), cs));
+        const QPointF off(paper.left() - 14, paper.top() - 14);
+        const QPointF in(paper.left() + 90, paper.top() + 70);
+        r.canvas->setTool(DrawingCanvas::SelectRect);
+        r.canvas->clearSelection();
+        camtool::drag(r.canvas, off, in);
+        const bool selected = r.canvas->hasSelection();
+        check(QStringLiteral("(ta3) A SELECTION STARTS OFF THE PAPER: a marquee pressed 14 px outside the paper's "
+                             "corner and dragged onto it selects"),
+              r.canvas->rect().contains(off.toPoint()) && !r.canvas->onPaperForTest(off) && selected,
+              QStringLiteral("off the paper %1; selected %2").arg(!r.canvas->onPaperForTest(off)).arg(selected));
+        r.canvas->clearSelection();
+        r.canvas->setTool(DrawingCanvas::Fill);
+        const int steps0 = stack->index();
+        camtool::drag(r.canvas, off, off);
+        const int afterOff = stack->index();
+        camtool::drag(r.canvas, in, in);
+        pump(60);
+        const int afterIn = stack->index();
+        const QString inText = stack->undoText();
+        check(QStringLiteral("(ta3) control: the Fill keeps the paper gate - pressed at the same point off the paper it "
+                             "does nothing, and on the paper it fills"),
+              afterOff == steps0 && afterIn == steps0 + 1 && inText == QStringLiteral("Fill"),
+              QStringLiteral("off +%1, on +%2 '%3'").arg(afterOff - steps0).arg(afterIn - steps0).arg(inText));
+        if (afterIn == steps0 + 1)
+            stack->undo();
+        pump(60);
+        // Turned 30 degrees: the unturned rectangle's corner is off the paper now, and the
+        // paper's own corner lies outside that rectangle. The gate asked the unturned one.
+        r.canvas->setViewRotation(30.0);
+        pump(40);
+        const QTransform turned = r.canvas->viewTransformForTest();
+        const QPointF oldCorner(paper.right() - 5, paper.bottom() - 5);
+        const QPointF newCorner = turned.map(QPointF(cs.width() - 40, cs.height() - 40));
+        const QRectF sheet(QPointF(0, 0), cs);
+        const bool geometry = !sheet.contains(turned.inverted().map(oldCorner)) && !paper.contains(newCorner)
+            && r.canvas->rect().contains(newCorner.toPoint()) && r.canvas->rect().contains(oldCorner.toPoint());
+        const int t0 = stack->index();
+        camtool::drag(r.canvas, oldCorner, oldCorner);
+        pump(60);
+        const int tOld = stack->index();
+        camtool::drag(r.canvas, newCorner, newCorner);
+        pump(60);
+        const int tNew = stack->index();
+        check(QStringLiteral("(ta3) UNDER A TURNED VIEW THE GATE IS THE PAPER AS SHOWN: a Fill pressed where the "
+                             "unturned paper's corner was, off the paper now, does nothing; pressed on the turned "
+                             "paper's own corner, outside the unturned rectangle, it fills"),
+              geometry && tOld == t0 && tNew == t0 + 1 && stack->undoText() == QStringLiteral("Fill"),
+              QStringLiteral("geometry %1; old corner +%2, new corner +%3").arg(geometry).arg(tOld - t0)
+                  .arg(tNew - tOld));
+        while (stack->index() > t0)
+            stack->undo();
+        pump(60);
+        r.canvas->resetViewRotation();
+        r.canvas->resetViewAfterResize();
+        r.canvas->setTool(DrawingCanvas::Brush);
+        pump(40);
+    }
+
+    // --- (ta4) a drag's chip is one tooltip, and it shows while the pointer moves ---------
+    {
+        struct Tips : QObject
+        {
+            int built = 0;
+            bool eventFilter(QObject *o, QEvent *e) override
+            {
+                if (e->type() == QEvent::Show && (o->inherits("QRollEffect") || o->inherits("QAlphaWidget")))
+                    ++built;
+                return false;
+            }
+        } tips;
+        const bool general = QApplication::isEffectEnabled(Qt::UI_General);
+        const bool roll = QApplication::isEffectEnabled(Qt::UI_AnimateTooltip);
+        const bool fade = QApplication::isEffectEnabled(Qt::UI_FadeTooltip);
+        QApplication::setEffectEnabled(Qt::UI_AnimateTooltip, true); // tooltips roll in, as on the user's PC
+        QApplication::setEffectEnabled(Qt::UI_FadeTooltip, false);
+        QToolTip::hideText();
+        pump(350);
+        qApp->installEventFilter(&tips);
+        const QPointF press(r.timeline->clipRectForTest(0).left() + 24, 4); // the ruler
+        const QRegularExpression timecode(QStringLiteral("^\\d\\d:\\d\\d:\\d\\d:\\d\\d$"));
+        sendMouse(r.surface, QEvent::MouseButtonPress, press, Qt::LeftButton);
+        int seenUp = 0;
+        QString firstText;
+        for (int i = 1; i <= 40; ++i) {
+            sendMouse(r.surface, QEvent::MouseMove, press + QPointF(4 * i, 0), Qt::LeftButton);
+            pump(5);
+            if (QToolTip::isVisible()) {
+                ++seenUp;
+                if (firstText.isEmpty())
+                    firstText = QToolTip::text();
+            }
+        }
+        pump(260);
+        const int scrubBuilt = tips.built;
+        const QString lastText = QToolTip::isVisible() ? QToolTip::text() : QString();
+        sendMouse(r.surface, QEvent::MouseButtonRelease, press + QPointF(160, 0), Qt::LeftButton);
+        pump(120);
+        const bool goneAfter = !QToolTip::isVisible();
+        check(QStringLiteral("(ta4) THE SCRUB'S TIMECODE CHIP IS ONE TOOLTIP: 40 pointer moves 5 ms apart build one, "
+                             "it is up while the pointer moves, it follows (its timecode changes), and it goes at the "
+                             "release"),
+              scrubBuilt == 1 && seenUp >= 20 && timecode.match(lastText).hasMatch() && lastText != firstText
+                  && goneAfter,
+              QStringLiteral("%1 built; up at %2 of 40 moves; '%3' -> '%4'; gone after %5").arg(scrubBuilt)
+                  .arg(seenUp).arg(firstText, lastText).arg(goneAfter));
+        // Control: the old way - a tooltip asked for at every move - on the same counter.
+        tips.built = 0;
+        int oldUp = 0;
+        const QPoint base = r.surface->mapToGlobal(press.toPoint());
+        for (int i = 1; i <= 40; ++i) {
+            QToolTip::showText(base + QPoint(4 * i, 0),
+                               QStringLiteral("00:00:00:%1").arg(i, 2, 10, QLatin1Char('0')), r.surface);
+            pump(5);
+            oldUp += QToolTip::isVisible() ? 1 : 0;
+        }
+        const int oldBuilt = tips.built;
+        QToolTip::hideText();
+        pump(350);
+        QToolTip::hideText();
+        check(QStringLiteral("(ta4) control: asked for at every move, as it was, a tooltip is built again and again "
+                             "on the same counter (36,318 of them in the trial), and is up at fewer of the moves"),
+              oldBuilt >= 10 && oldUp < seenUp,
+              QStringLiteral("%1 built; up at %2 of 40 (the chip: %3)").arg(oldBuilt).arg(oldUp).arg(seenUp));
+        qApp->removeEventFilter(&tips);
+        QApplication::setEffectEnabled(Qt::UI_AnimateTooltip, roll);
+        QApplication::setEffectEnabled(Qt::UI_FadeTooltip, fade);
+        QApplication::setEffectEnabled(Qt::UI_General, general);
+        r.animatic->leavePreview();
+        pump(120);
+    }
+
+    // --- (ta5) Delete Layer asks nothing, and is one undo step -----------------------------
+    {
+        clickThumb(r, 1);
+        pump(80);
+        QPushButton *deleteLayer = nullptr;
+        if (layersDock)
+            for (QPushButton *b : layersDock->findChildren<QPushButton *>())
+                if (b->toolTip().startsWith(QStringLiteral("Delete selected layer")))
+                    deleteLayer = b;
+        // The sampler: a modal window up 200 ms after the click, closed if there is one.
+        auto modalAfter = [&](const std::function<void()> &action) {
+            QString seen;
+            QTimer::singleShot(200, [&seen] {
+                if (QWidget *modal = QApplication::activeModalWidget()) {
+                    seen = QString::fromLatin1(modal->metaObject()->className());
+                    modal->close();
+                }
+            });
+            action();
+            pump(320);
+            return seen;
+        };
+        const int layers0 = int(p1->layers.size());
+        const int steps0 = stack->index();
+        const QImage art = p1->layers.value(1).image.copy();
+        const QString asked = modalAfter([&] {
+            if (deleteLayer)
+                deleteLayer->click();
+        });
+        const int layers1 = int(p1->layers.size());
+        const QString text = stack->undoText();
+        stack->undo();
+        pump(120);
+        check(QStringLiteral("(ta5) DELETE LAYER ASKS NOTHING: a layer with artwork goes at the click, as one \"Delete "
+                             "Layer\" step, and Undo brings it back with its art"),
+              deleteLayer && asked.isEmpty() && layers1 == layers0 - 1 && stack->index() == steps0
+                  && text == QStringLiteral("Delete Layer") && int(p1->layers.size()) == layers0
+                  && p1->layers.value(1).image == art,
+              QStringLiteral("asked '%1'; layers %2 -> %3 -> %4; '%5'").arg(asked).arg(layers0).arg(layers1)
+                  .arg(p1->layers.size()).arg(text));
+        const QString control = modalAfter([&] {
+            QMessageBox box(QMessageBox::Question, QStringLiteral("Delete Layer(s)"),
+                            QStringLiteral("Permanently delete the selected layer?"), QMessageBox::Cancel, &r.window);
+            box.exec();
+        });
+        check(QStringLiteral("(ta5) control: the same sampler sees a question when there is one (the old one, shown "
+                             "by the check itself)"),
+              control == QStringLiteral("QMessageBox"), control);
+        clickThumb(r, 0);
+        pump(80);
+    }
+
+    // --- (ta6) Grow to fit with the Move tool's box up -----------------------------------
+    {
+        using shotcam::CameraState;
+        const int fps = 24;
+        r.storyboard->applyPanelMargin(p0, QMargins(0, 0, 960, 0));
+        pump(60);
+        CameraState a;
+        a.cx = 960.0;
+        a.cy = 540.0;
+        CameraState b = a;
+        b.cx = 1920.0;
+        shotcam::SceneCamera cam; // (cx)'s move: it leaves panel 2's art for all 72 frames
+        cam.keys = {shotcam::makeKey(*scene, 0, 0, fps, a), shotcam::makeKey(*scene, 1, 72, fps, b)};
+        cam.keys[0].ease = shotcam::Ease::Linear;
+        r.storyboard->applyCameraForUndo(scene, cam);
+        clickThumb(r, 1);
+        pump(80);
+        r.canvas->setTool(DrawingCanvas::Move);
+        pump(60);
+        QString what;
+        const bool boxUp = !r.canvas->transformQuadForTest().isEmpty() && r.storyboard->hasActiveEdit(&what);
+        const bool untouched = r.canvas->transformUntouched();
+        const int steps0 = stack->index();
+        r.storyboard->clearNoteForTest();
+        r.storyboard->growPanelToFit(0, 1);
+        pump(150);
+        check(QStringLiteral("(ta6) GROW TO FIT WITH THE MOVE TOOL'S BOX UP AND UNTOUCHED: the stage grows 952 px on "
+                             "the right in one \"Stage Margin (Panel 2)\" step, nothing is said, and the box is up "
+                             "again, untouched"),
+              boxUp && what == QStringLiteral("a transform") && untouched && stack->index() == steps0 + 1
+                  && stack->undoText() == QStringLiteral("Stage Margin (Panel 2)")
+                  && r.storyboard->panelMargins(p1) == QMargins(0, 0, 952, 0) && r.timeline->artExitFramesForTest(1) == 0
+                  && r.storyboard->lastNoteForTest().isEmpty() && !r.canvas->transformQuadForTest().isEmpty()
+                  && r.canvas->transformUntouched(),
+              QStringLiteral("box %1 '%2' untouched %3; steps +%4 '%5'; exit %6; note '%7'; box after %8").arg(boxUp)
+                  .arg(what).arg(untouched).arg(stack->index() - steps0).arg(stack->undoText())
+                  .arg(r.timeline->artExitFramesForTest(1)).arg(r.storyboard->lastNoteForTest())
+                  .arg(!r.canvas->transformQuadForTest().isEmpty()));
+        r.storyboard->editUndo();
+        pump(150);
+        // Control: the box moved 40 px - a transform under way is still refused, with its note.
+        r.canvas->setTool(DrawingCanvas::Brush);
+        r.canvas->setTool(DrawingCanvas::Move);
+        pump(60);
+        const QPolygonF box = r.canvas->transformQuadForTest();
+        const QPointF grab = r.canvas->viewTransformForTest().map(box.boundingRect().center());
+        camtool::drag(r.canvas, grab, grab + QPointF(40, 0));
+        const bool touched = !r.canvas->transformUntouched() && r.canvas->transformQuadForTest() != box;
+        const int steps1 = stack->index();
+        r.storyboard->clearNoteForTest();
+        r.storyboard->growPanelToFit(0, 1);
+        pump(100);
+        check(QStringLiteral("(ta6) control: with the box moved 40 px the same Grow is refused - \"Finish a transform "
+                             "before changing the stage.\" - nothing changes, and the box keeps its move"),
+              !box.isEmpty() && touched && stack->index() == steps1 && r.storyboard->panelMargins(p1) == QMargins()
+                  && r.storyboard->lastNoteForTest() == QStringLiteral("Finish a transform before changing the stage.")
+                  && r.timeline->artExitFramesForTest(1) == 72 && !r.canvas->transformUntouched(),
+              QStringLiteral("touched %1; steps +%2; note '%3'; exit %4").arg(touched).arg(stack->index() - steps1)
+                  .arg(r.storyboard->lastNoteForTest()).arg(r.timeline->artExitFramesForTest(1)));
+        camtool::key(r.canvas, QEvent::KeyPress, Qt::Key_Escape); // the move put back
+        r.canvas->setTool(DrawingCanvas::Brush);
+        pump(60);
+        r.storyboard->applyCameraForUndo(scene, shotcam::SceneCamera());
+        r.storyboard->applyPanelMargin(p0, QMargins());
+        clickThumb(r, 0);
+        pump(80);
+    }
+
+    // --- (ta7) what Stage Margin's Set applies to ----------------------------------------
+    {
+        const QMargins quarter(480, 270, 480, 270);
+        auto allPanels = [&] {
+            QVector<Panel *> panels;
+            for (Scene *s : r.window.scenesForTest())
+                for (Panel *p : s->panels)
+                    panels.append(p);
+            return panels;
+        };
+        auto own = [&] {
+            int n = 0;
+            for (Panel *p : allPanels())
+                n += p->ownMargin ? 1 : 0;
+            return n;
+        };
+        // The dialog as Project Settings opens it, answered from a timer: a preset, then
+        // the primary button.
+        struct Said
+        {
+            QString header, set, other, scope;
+            bool otherShown = false;
+        };
+        auto setThrough = [&](int preset) {
+            Said said;
+            QTimer answer, guard; // gone with this call: neither can fire on a later check's window
+            answer.setSingleShot(true);
+            guard.setSingleShot(true);
+            QObject::connect(&answer, &QTimer::timeout, &answer, [&said, preset] {
+                auto *d = qobject_cast<StageMarginDialog *>(QApplication::activeModalWidget());
+                if (!d)
+                    return;
+                d->presetDropdown()->choose(preset);
+                said.header = d->headerText();
+                said.set = d->setButton()->text();
+                said.other = d->applyToAllButton()->text();
+                said.otherShown = d->applyToAllButton()->isVisibleTo(d);
+                said.scope = d->scopeText();
+                d->setButton()->click();
+            });
+            QObject::connect(&guard, &QTimer::timeout, &guard, [] { // a check never hangs the gate
+                if (QWidget *modal = QApplication::activeModalWidget())
+                    modal->close();
+            });
+            answer.start(250);
+            guard.start(4000);
+            r.window.openStageMarginForTest();
+            answer.stop();
+            guard.stop();
+            pump(200);
+            return said;
+        };
+        const int own0 = own();
+        const int steps0 = stack->index();
+        const Said first = setThrough(2); // 25 %
+        int taken = 0;
+        for (Panel *p : allPanels())
+            taken += r.storyboard->panelMargins(p) == quarter ? 1 : 0;
+        check(QStringLiteral("(ta7) WHILE NO PANEL HAS ITS OWN MARGIN, SET IS FOR ALL PANELS: the dialog is \"Stage "
+                             "Margin\", its button \"Set for All Panels\", it says \"All 4 panels take this stage: none "
+                             "has its own margin.\", and all four take 25 % in one \"Change Stage Margin\" step"),
+              own0 == 0 && first.header == QStringLiteral("Stage Margin")
+                  && first.set == QStringLiteral("Set for All Panels")
+                  && first.other == QStringLiteral("Set for New Panels Only") && first.otherShown
+                  && first.scope == QStringLiteral("All 4 panels take this stage: none has its own margin.")
+                  && taken == 4 && own() == 0 && stack->index() == steps0 + 1
+                  && stack->undoText() == QStringLiteral("Change Stage Margin"),
+              QStringLiteral("own %1; '%2' / '%3' / '%4' / '%5'; %6 of 4 took it; steps +%7 '%8'").arg(own0)
+                  .arg(first.header, first.set, first.other, first.scope).arg(taken).arg(stack->index() - steps0)
+                  .arg(stack->undoText()));
+        // Control: one panel at its own margin - Set is for new panels again, as batch 6c made it.
+        Panel *q0 = allPanels().value(0);
+        r.storyboard->applyPanelMargin(q0, QMargins(480, 270, 900, 270));
+        pump(80);
+        const int steps1 = stack->index();
+        const Said second = setThrough(1); // 10 %
+        int kept = 0;
+        for (Panel *p : allPanels())
+            kept += r.storyboard->panelMargins(p) == (p == q0 ? QMargins(480, 270, 900, 270) : quarter) ? 1 : 0;
+        check(QStringLiteral("(ta7) control: with one panel at its own margin the dialog is \"Stage Margin for New "
+                             "Panels\", \"Set for New Panels\" with \"Apply to All Panels...\" beside it, it says \"New "
+                             "panels get this stage; the 4 panels already made keep theirs.\", and all four keep theirs"),
+              own() >= 1 && second.header == QStringLiteral("Stage Margin for New Panels")
+                  && second.set == QStringLiteral("Set for New Panels")
+                  && second.other == QStringLiteral("Apply to All Panels...")
+                  && second.scope == QStringLiteral("New panels get this stage; the 4 panels already made keep theirs.")
+                  && kept == 4 && stack->index() == steps1 + 1
+                  && stack->undoText() == QStringLiteral("Stage Margin for New Panels"),
+              QStringLiteral("'%1' / '%2' / '%3' / '%4'; %5 of 4 kept theirs; steps +%6 '%7'")
+                  .arg(second.header, second.set, second.other, second.scope).arg(kept).arg(stack->index() - steps1)
+                  .arg(stack->undoText()));
+    }
+    r.window.markCleanForTest();
+}
+
 // STAGE MODE (batch 6c, Figma MARGIN-1): one panel's stage margin, on the canvas.
 void runStageModePass(const QString &scratch)
 {
@@ -20979,6 +21842,75 @@ void runCameraToolPass(const QString &scratch)
                              "\"QFont::setPointSize\" warning (that it could: (pz4)'s control below)"),
               tileWarnings == 0, QStringLiteral("%1 warning(s)").arg(tileWarnings));
     }
+    // (pz5) DROP-DOWNS TOO (the trial batch, 2026-11-10). The 6d hand tests logged the
+    // warning once more: 0.35 ms after the press on the Quick Move popover's "Over"
+    // drop-down, as its list opened (recordings 20261108-164553 at 292.2 s and
+    // 20261108-184322 at 128.7 s). (pz5) had looked at tool buttons only; the popover's
+    // drop-downs and number fields, and Shot Info's three drop-downs, still had a pixel
+    // font. All give it in points now. Placed BEFORE (pz4) like the tiles' sweep: the
+    // style caches its answer per launch, so (pz4)'s control still warning below also
+    // proves these lists opened without asking it.
+    {
+        auto pixelCombos = [](int *seen) {
+            QStringList bad;
+            int n = 0;
+            for (QWidget *w : QApplication::allWidgets())
+                if (auto *cb = qobject_cast<QComboBox *>(w)) {
+                    ++n;
+                    cb->ensurePolished();
+                    if (cb->font().pointSize() <= 0)
+                        bad << QStringLiteral("%1/%2 (%3 px)")
+                                   .arg(cb->parentWidget() ? cb->parentWidget()->objectName() : QString(),
+                                        cb->objectName())
+                                   .arg(cb->font().pixelSize());
+                }
+            if (seen)
+                *seen = n;
+            return bad;
+        };
+        int combos = 0;
+        const QStringList bad = pixelCombos(&combos);
+        check(QStringLiteral("(pz5) NO DROP-DOWN ANYWHERE IN THE APP has a font without a point size - the Quick "
+                             "Move popover's Over and Ease, and Shot Info's three"),
+              bad.isEmpty() && combos >= 5,
+              QStringLiteral("%1 drop-down(s); %2").arg(combos).arg(bad.join(QStringLiteral("; "))));
+        QStringList withOld;
+        {
+            auto *old = new QComboBox(&r.window);
+            old->setObjectName(QStringLiteral("pz5OldPixelCombo"));
+            old->setStyleSheet(QStringLiteral("QComboBox { background:#333333; border:none; font-size:11px; }"));
+            withOld = pixelCombos(nullptr);
+            delete old;
+        }
+        check(QStringLiteral("(pz5) control: a drop-down given the old pixel font is found by the same census"),
+              withOld.size() == bad.size() + 1 && withOld.filter(QStringLiteral("pz5OldPixelCombo")).size() == 1,
+              withOld.join(QStringLiteral("; ")));
+        // Live: each of the popover's lists opened, as the press in the recordings did.
+        int listWarnings = -1, opened = 0;
+        QWidget *pop = r.storyboard->cameraQuickPopoverForTest();
+        QToolButton *quick = r.storyboard->findChild<QToolButton *>(QStringLiteral("camQuickMove"));
+        if (pop && quick) {
+            quick->click();
+            pump(150);
+            if (pop->isVisible()) {
+                WarningCapture warnings;
+                for (QComboBox *cb : pop->findChildren<QComboBox *>()) {
+                    cb->showPopup();
+                    pump(150);
+                    opened += cb->view() && cb->view()->isVisible() ? 1 : 0;
+                    cb->hidePopup();
+                    pump(80);
+                }
+                listWarnings = warnings.count(QStringLiteral("setPointSize"));
+            }
+            pop->hide();
+            pump(60);
+        }
+        check(QStringLiteral("(pz5) the Quick Move popover's two lists open and log no \"QFont::setPointSize\" "
+                             "warning (that it could: (pz4)'s control below)"),
+              listWarnings == 0 && opened == 2,
+              QStringLiteral("%1 warning(s), %2 list(s) opened").arg(listWarnings).arg(opened));
+    }
 
     // (pz4) No Qt warning when the pointer leaves the timeline's speed
     // button. The cause (probe build/_probe/polish/warnprobe): Qt 6.11's
@@ -22485,8 +23417,15 @@ int main(int argc, char **argv)
     // above, and nothing else. The gate never sets it.
     if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("stagemode")
         || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("playback")
-        || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("strip")) {
-        if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("strip")) {
+        || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("strip")
+        || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("trial")) {
+        if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("trial")) {
+            // The trial's fixes (batch A): its own pass, the lengths' (the roll under the
+            // lock, (du5)) and the Camera tool's (the drop-downs' fonts, (pz5)).
+            runTrialFixesPass(scratch);
+            runFrameLengthsPass(scratch);
+            runCameraToolPass(scratch);
+        } else if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("strip")) {
             // The strip's thumbnails (batch 6d): its pins, (ct)'s outline, (dp)'s depth.
             runMovingStripPinPass(scratch);
             runCameraToolPass(scratch);
@@ -22698,6 +23637,7 @@ int main(int argc, char **argv)
     runStageModePass(scratch);
     runCameraAcrossPanelsPass(scratch);
     runGrowAnyZoomPass(scratch);
+    runTrialFixesPass(scratch);
     runPinnedKeysPass(scratch);
     runCameraBarFitPass(scratch);
     runStageClearPass(scratch);

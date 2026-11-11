@@ -1,5 +1,246 @@
 # SankoTV — Session Handoff Brief
 
+## STATUS 2026-11-11: BATCH A'S STEP 1 FIXED, WITH THE SIDE BUTTON; WAITING FOR THE USER'S RE-TEST, NOT COMMITTED
+The user (2026-11-11): build the step 1 fix (the pointer's place from the pen and mouse moves themselves, (ta1)
+hovering with real pen events, with a control); the pen's lower side button does nothing on the canvas for now;
+correct step 10 of the list; quick check, full gate; a short re-test list on a fresh TEST COPY; do not commit
+batch A until the re-test passes; then stop - batch B waits for the user's word.
+WHAT WAS BUILT (StoryboardPage.cpp/.h, DrawingCanvas.cpp/.h, tests/ProjectLifecycleTest.cpp):
+(1) THE POINTER'S PLACE FROM ITS MOVES. CanvasKeyRouter now also hands every MouseMove, TabletMove,
+MouseButtonPress and TabletPress to StoryboardPage::notePointerAt (never takes them). The widget a real
+(spontaneous) one is sent to first is the one under the pointer: Qt's QApplication::notify passes mouse and
+tablet events on to the parents as copies and clears the original's spontaneous flag after the first delivery,
+so only the first receiver is read. The canvas or a widget on it: over; anything else, in any window (a docked
+panel, a floating toolbar): not. During a drag the grabber's. Enter / Leave still count; the latest word wins.
+Presses are read before the widget gets them, so a hold handed over on arrival is there for that press.
+(2) A SPACE PRESSED ON THE WAY. The recording at 108.11 s: Space went down while the pen crossed the floating
+Layers toolbar towards the canvas (22 ms before it got there; the pen touched down 240 ms after). routeCanvasKey
+now remembers a Space pressed (not a repeat) in the canvas's window, not taken because the pointer was elsewhere,
+by a widget that is not a typing widget and not a button (a button takes Space as its own press):
+m_spaceDownAway. It is cleared by any Space release (not a repeat), by the window's deactivation, and by
+setPointerDeviceForTest. When the pointer comes over the canvas (notePointerAt or the canvas's Enter) while it is
+set, pointerArrivedOverCanvas gives the canvas a Space press (routedKey): the hold starts there. The release is
+the canvas's by the existing rule. This replaces the "KNOWN" limitation in the batch A notes below.
+(3) THE PEN'S SIDE BUTTON DOES NOTHING ON THE CANVAS (DrawingCanvas::tabletEvent, first thing). A TabletPress or
+TabletRelease whose button is neither none nor left is accepted and dropped; pressed with the tip up it latches
+m_penSideButtonHeld and every tablet event is accepted and dropped until a TabletRelease with no button left (a
+move with no button clears a latch whose release was lost). Accepted, so Qt makes no mouse click of it: before,
+with any tool but the Brush and Eraser, Qt made a right click of it and the canvas's right click opens the grid
+menu. The mouse's own right click still does. LATER, AN OPTION: the side button could become an eyedropper or a
+pan (the user, 2026-11-11: "do nothing for now").
+TEST SEAMS: StoryboardPage::setPointerDeviceForTest(uid) - under the gate the real pointer is not heard; the
+moves of the pen with this unique id are (sent by QWindowSystemInterface::handleTabletEvent, as a real pen's are);
+-1: none. DrawingCanvas::penSideButtonHeldForTest.
+THE CHECKS ((ta1) rewritten, (ta8) new; runTrialFixesPass):
+(ta1) no longer uses hover(): the pen alone, at the window-system level (penAt: any widget, in its own window).
+OLD first check: "(ta1) SPACE PANS WITH THE PEN, WHATEVER HAS THE KEYBOARD: held with the pointer over the canvas
+and the Layers list focused, it is the canvas's (the hand); a pen drag with the Brush then pans 60 x 30 px and
+paints nothing; released, the hold is over" (with hover(r, r.canvas, true) before the Space). NEW: "(ta1) SPACE
+PANS WITH THE PEN, AND THE PEN ALONE SAYS IT IS OVER THE CANVAS: the Layers list focused, the pen hovers over the
+list and then onto the canvas (window-system pen moves; no Enter reaches the canvas) and the Space is the
+canvas's (the hand); a pen drag with the Brush then pans 60 x 30 px and paints nothing; released, the hold is
+over". "(ta1) held and let go with no press between..." unchanged. NEW: "(ta1) THE SAME FROM A FLOATING TOOLBAR,
+the Panel Strip focused..." (pans 48 x 24); "(ta1) A SPACE PRESSED ON THE WAY..." (Space down with the pen over
+the floating toolbar, the pen then onto the canvas: held on arrival, pans 30 x -30). OLD control: "(ta1) control:
+with the pointer elsewhere the Space went to the Layers list and the canvas did not hold it; the same pen drag
+without Space paints one stroke and pans nothing" (with hover(r, r.canvas, false)). NEW control: "(ta1) control:
+with the pen last over the Layers list the Space went to the list and the canvas did not hold it, and the same
+pen drag without Space paints one stroke and pans nothing; with the pen last over the floating toolbar the Space
+went to the Panel Strip, and let go there it is not held when the pen comes onto the canvas".
+(ta8) "THE PEN'S SIDE BUTTON DOES NOTHING ON THE CANVAS" (Brush: side button down with the tip up and dragged,
+then the tip down while it is held and dragged: no step, no pan, free after; Move tool: no right press and no
+context menu reach the canvas, no step). Control: the mouse's own window-system right click reaches the canvas
+as a right press (and its context menu is counted, swallowed, never shown); the tip's drag paints one stroke.
+ONE NEW CHECK FAILED ON ITS FIRST RUN, the code read first: the floating-toolbar check counted the canvas's Enters
+over the whole block and read 2. THE CODE WAS RIGHT: the pans are mouse presses Qt makes of the pen, and a mouse
+press sends the canvas an Enter. OLD condition: "... && entered.enters == 0" (cumulative). NEW: Enters counted
+from the toolbar hover to the pen's arrival on the canvas (entersB == 0), as the first check counts them; the
+first check's 0 is its positive counterpart.
+RED RUNS (Edit tool, restored, "RED RUN" absent after): (a) notePointerAt switched off and the side-button guard
+switched off: 4 failures - the three (ta1) checks that need the pen's word (the Space went to the list or the
+strip and the pen painted, steps +1, exactly the hand test) and (ta8) (the side button painted one step; with the
+Move tool a right press and a menu reached the canvas); both controls passed (qc_A5_trial_red.txt). (b) the
+on-the-way hand-over switched off: 1 failure, "A SPACE PRESSED ON THE WAY" (held on arrival 0, steps +1), the
+108 s case (qc_A7_trial_red.txt).
+THE HAND TEST REPLAYED against the new rule (scratchpad batchA\spacecheck.awk): of the 21 Space presses, the last
+pen move before 20 had the canvas as its first receiver; the other (108.11 s) is the on-the-way case of (2).
+STEP 10 OF THE LIST CORRECTED: at the project's own margin both buttons are disabled and the line reads "This is
+already the project's stage margin."; the "All 10 panels..." line shows once another margin is picked.
+QUICK CHECKS (Release, qc_A8_*.txt): trial 125 / 0, stagemode 124 / 0, strip 111 / 0, playback 31 / 0.
+GATE A2 (fullgate_A2.log, 2480 s, main tree, the user's SankoTV closed; the 12 code files hashed before it,
+sha_A2_gate.txt - 5 differ from sha_A_gate.txt - and unchanged after): Release and Debug exit 0 in every family.
+Lifecycle 1379 (was 1375: (ta1) two new, (ta8) two new; the old (ta1) first check and control renamed as above, no
+other check name gone or changed), Camera 335, CanvasSizeLock 170, CanvasEdgeLock 74, BrushLibrary 187,
+DevRecorder 46, QuickShapeGeometry 19, PaintPixel 13, CanvasBrush 3. Camera's 126 and Lifecycle's 47 pin lines
+identical to gate A's in both configurations. No "QFont::setPointSize" in the stderr.
+THE EXE at the main path is the gate's clean Release build: built Nov 11 2026 16:58:49 (file 16:59:08), git
+c4ae8526f+dirty. RE-TEST LIST: Documents\SankoTV-Design\handtest_batch_A_retest_step1.md (step 1 from the docked
+Layers list, the Panel Strip and a floating toolbar; a Space pressed on the way; one let go before; the side
+button with the Brush, Eraser and Move tool), on the fresh copy C:\SankoTV-TestCopies\TEST COPY - small pirate,
+A retest (the original hashed before and after, unchanged). AFTER THE RE-TEST: read the recording (system.txt
+first, the title bar's copy, each step); commit batch A by concern only on the user's word; then stop - batch B
+waits for the user.
+
+## STATUS 2026-11-10: THE TRIAL READ AND ANSWERED; BATCH A (THE TRIAL'S FIXES) BUILT, NOT COMMITTED
+THE BATCH A HAND TEST FAILED AT STEP 1 (Dev Recorder 20261110-202212, 665 s, the 19:34:56 build, on the two
+"batch A" copies, both closed with Discard). NOT COMMITTED. With the Brush, Space held and the keyboard on the
+Panel Strip or the Layers list, the pen PAINTED 12 times and panned once. CAUSE, proven in the recording:
+m_pointerOverCanvas follows the canvas's Enter / Leave, and a pen with the Brush or Eraser never gives a lasting
+Enter - tabletEvent accepts the hover moves, so Qt makes no mouse move and no Enter (pen arriving from a docked
+panel), or sends Enter and at once Leave (pen arriving from a floating toolbar's window; 46.106 s). Every stroke
+had the canvas "left", the one pan had it "entered". (ta1) passed because workspace::hover sends the Enter itself.
+FIX BUILT 2026-11-11 (the status above): take the pointer's place from the pointer events themselves (the
+first receiver of each pen / mouse move, seen by the application filter), and make (ta1) hover with window-system
+pen moves instead of the Enter seam. Steps 2 (Esc only), 4 (three selections begun off the paper), 5 (four scrubs,
+one tooltip each), 8, 10, 14 passed; 3, 6, 7, 11-13 not done. Step 9: the pen's lower side button PAINTS (Qt
+reports btns=2; tabletEvent does not look at the button). No font warning in the log, but no drop-down was opened.
+BATCH B'S INVESTIGATION IS STARTED, NOT REPORTED: 1.9 - in all 80 recordings 8 canvas drags crossed a floating
+window and every move stayed with the canvas; the trial's 91 Move drags lost none; nothing in the code stops the
+Move box. The 1.7 reproductions and the screenshots are not made yet (scratch notes in the session's scratchpad,
+batchB\).
+BATCH A IS IN THE MAIN TREE ON c4ae8526f, UNCOMMITTED, waiting for the user's hand test and word. 12 code files:
+AnimaticTimeline.cpp/.h, DrawingCanvas.cpp/.h, MainWindow.cpp/.h, ProjectSettingsDialog.cpp,
+StageMarginDialog.cpp/.h, StoryboardPage.cpp/.h, tests/ProjectLifecycleTest.cpp; and this file. Their hashes:
+app\build\_probe\split\sha_A_gate.txt. The batch below has the mechanisms, the checks and the gate.
+THE TRIAL (the user's first real project, 2026-11-09): Dev Recorder 20261109-183313, 4 h 05, the 18:34:49 build
+(= 44dd6e304), project small_pirate_001 (Downloads\SankoTV_Save _test_Files\Animated Short Film_ small pirate).
+Read on 2026-11-10, report only: Documents\SankoTV-Design\trial-report-2026-11-10.md (stalls and warnings, where
+the user struggled, the 25 notes each analysed, the scene length lock proposal, the ranked plan A to I). Start
+from the report, not the 736 MB recording. No crash. The one loss: art cut by the Move tool's commit (1.2).
+THE USER'S ANSWERS (2026-11-10), not to be asked again. ORDER: A, then B (with 1.9 and 1.7), then F (the scene
+length lock), then C, D, E, then G, H, and I's proposal; Save off the main thread and the memory measurement
+alongside when convenient. EVERY BATCH: quick check while working, full gate before commit, fresh TEST COPY
+projects, the exe stamp, a short hand-test list, NO COMMIT UNTIL THE HAND TEST PASSES; anything with a new look
+is shown in Figma first (the user's area, node 510:697).
+- A: Delete Layer's question dropped (it can be undone); Stage Margin's Set is for all panels while none has its
+  own margin, and says what it applies to; Grow to fit allowed with the Move box untouched.
+- B: art kept outside the stage up to the 8192 px limit, with a message there; kept art shows faintly outside the
+  stage with the Move tool. 1.9 was a NORMAL layer, not a pasted drawing: investigate (the user's idea: the
+  floating toolbars are separate windows, and a pen passing over one during a drag may lose the canvas the drag;
+  that and any other cause). 1.7: reproduce all three depth causes on a TEST COPY and show screenshots of each.
+- F: all six recommendations; Lock All as a menu command only.
+- C: tool letter keys B, E, V, L, G, I; M is the marquee while paused and the mark key while playing; [ ] step as
+  Photoshop's; View > Toolbars, where "Brush toolbar" is the tools bar and the size/opacity sliders are a fourth
+  entry; View > Camera Move Arrows kept, off by default (Quick Move's hover still previews start and end); the
+  timeline's zoom to 1600 %.
+- D: the eyedropper samples what is seen. E: scene colours automatic; a tap on the line opens the five eases.
+  4.2 is the STAGE BACKGROUND's colour itself, not the area around the stage: darker, lighter or any colour with
+  a picker, independent of the artwork, no drawing layer changed. Show two options (on screen only, exports as
+  today; or in exports too) and recommend one.
+- G: the cursor an outline circle. H: symmetry, vertical first. I (animated layers): BOTH a layer moving over
+  time with keys and eases (move, scale, turn, fade) AND frame-by-frame drawings inside one layer; proposal first.
+
+## Batch A: the trial's fixes (2026-11-10) - BUILT AND GATED, NOT COMMITTED
+(1) THE CANVAS'S KEYS FOLLOW THE POINTER (note 1.8). Space, Enter and Esc went to whichever widget held the
+keyboard: a tap in the Layers list gives it the keyboard and a pen stroke never takes it back (a tablet press is
+not a mouse click), so twice in the trial a held Space went to the list and the pen painted where a pan was meant.
+Now an application event filter (CanvasKeyRouter, installed at the end of setupAnimaticSection) asks
+StoryboardPage::routeCanvasKey for every key press and release: a Space, Enter, Return or Esc without Ctrl, Alt or
+Meta, sent to a widget of the canvas's window while the pointer is over the canvas (m_pointerOverCanvas, kept from
+the canvas's Enter / Leave / Hide in eventFilter, under the same pointerSpeaks rule as the timeline's), is given
+to DrawingCanvas::routedKey first; what the canvas does not use goes on where it was going. IT ACTS ONLY WHERE THE
+KEY WAS SENT (the receiver must be its window's focusWidget), never where an unused key is passed on to: a line
+edit lets Enter go on to its parents after taking it, and handed on from there an Enter typed into a field would
+also have landed a paste. Left alone: a QLineEdit, QTextEdit, QPlainTextEdit, QAbstractSpinBox, QComboBox,
+QAbstractItemView or QMenuBar with the keyboard; another window's widget (a dialog, a menu, a popover); the
+pointer over the playing preview. A shortcut on the key (the timeline's Space, Stage mode's Enter) has been taken
+before the filter sees it. The release of a Space the canvas holds is the canvas's wherever it lands, another
+window included; the repeats of a held Space too; and the window's WindowDeactivate drops the hold
+(DrawingCanvas::dropSpaceHold), so the pan modifier cannot stay on. (Was KNOWN: a Space pressed elsewhere and
+carried onto the canvas while held was not picked up. Fixed 2026-11-11, "A SPACE PRESSED ON THE WAY", above; and
+m_pointerOverCanvas is now kept from the pointer's moves and presses too, notePointerAt.)
+(2) SPACE PANS WITH THE PEN. DrawingCanvas::tabletEvent started a Brush or Eraser stroke without looking at Space.
+Now, with Space held or a pan under way (and no stroke, hold or node drag in progress), the tablet event is
+ignored, Qt makes the mouse's events from it, and the one pan path (mousePressEvent) runs. That synthesized press
+gives the canvas the keyboard (ClickFocus), so the Space's release then goes to the canvas itself.
+(3) A SELECTION STARTS OFF THE PAPER (note 1.10). mousePressEvent's paper gate let only Brush and Eraser through;
+the four selection tools pass it now (the selection is trimmed to the layer when it is used). The gate itself is
+DrawingCanvas::onPaper: displayRect() when the view is not turned (the same pixels as before), the canvas-space
+test through toCanvasF when it is (the old test ignored a turned view).
+(4) ONE CHIP PER DRAG. QToolTip builds a NEW tooltip for every showText made while the last is still rolling in
+(it "is not visible" until the roll ends, so it cannot be reused): 36,318 tips for the playhead's timecode in the
+trial, up to 190 a second, none seen while the pointer moved. AnimaticTimeline::followChip asks for one tip; while
+it rolls in (kChipRollMs 200) the newest text and place wait, and m_chipFlush (30 ms) gives them once it is up;
+after that Qt reuses the tip at every move. hideChip at the three drag ends. Used by showDragChip, the playhead's
+scrub (press and move) and the camera key's drag.
+(5) DROP-DOWNS IN POINTS. The "QFont::setPointSize: Point size <= 0 (-1)" warning of the 6d hand tests was the
+Quick Move popover's drop-downs (a pixel font; the Windows 11 style asks the font's point size as the list opens,
+once a launch). The popover's rule is 8.25pt (was 11px) and Shot Info's fieldStyle 9pt (was 12px): the same sizes
+at 96 dpi.
+(6) THE ROLL UNDER THE SHOTS LOCK. refuseLockedHistory did not list PanelRollCommand, so a locked SHOTS track let
+an Alt-roll be undone and redone. Listed now.
+(7) DELETE LAYER ASKS NOTHING (it can be undone; it asked "Permanently delete...?" seven times in the trial).
+confirmLayerDelete and layerHasContent are gone.
+(8) GROW TO FIT WITH THE MOVE BOX UNTOUCHED. The Move tool always holds a lifted box, and a box is "an edit": at
+2:21 of the trial Grow to fit was refused for a box nobody had touched. growPanelToFit now goes ahead when
+DrawingCanvas::transformUntouched() (the quad is still the lift's rectangle, no warp, no drag), and calls
+resetTransformBox() after the PanelStageCommand so the box is around the art again. A box that HAS been changed
+is refused as before ("Finish a transform before changing the stage.").
+(9) WHAT STAGE MARGIN'S SET APPLIES TO (Figma, the user's area: frame 556:696 "BUILT 2026-11-10 A-1", under
+GROW-1; the area 510:697 grown 16530 -> 17199). MainWindow::onStageMargin counts the panels and those with their
+own margin and tells the dialog (StageMarginDialog::setPanelScope). None with its own: the header is "Stage
+Margin", the primary button "Set for All Panels" (Set and Enter apply to all), the other "Set for New Panels
+Only", the line "All N panels take this stage: none has its own margin.", and the effect line loses its "To all
+panels: " prefix. One or more with its own: batch 6c's dialog, the line now "New panels get this stage; the N
+panels already made keep theirs." Scope never set: 6c's exact wording ((sm12) unchanged). Project Settings'
+button reads "Stage Margin..." again (it read "Margin for New Panels..." since 6c). Test seam
+MainWindow::openStageMarginForTest.
+THE CHECKS. New pass runTrialFixesPass (the main order after runGrowAnyZoomPass; and the new slice
+SANKO_LIFECYCLE_ONLY=trial, with runFrameLengthsPass and runCameraToolPass), on "Trial", 1920 x 1080, 24 fps, 2
+scenes of 2 panels; the pen is sent at the window-system level (QWindowSystemInterface::handleTabletEvent), so Qt's
+own mouse synthesis runs:
+(ta1) Space pans with the pen whatever has the keyboard (the Layers list focused: the hand, a 60 x 30 px pan, no
+stroke, the list hears nothing); held and let go with no press between; control: the pointer elsewhere, the list
+gets the Space and the same pen drag paints one stroke. (ta2) a field being typed in keeps its keys; Enter lands
+a paste with the list focused; control: the pointer elsewhere, the Enter goes to the list and the paste floats.
+(ta3) a marquee pressed 14 px off the paper's corner selects; control: the Fill keeps the gate; under a turned
+view the gate is the paper as shown. (ta4) the scrub's chip is one tooltip over 40 moves 5 ms apart (QRollEffect /
+QAlphaWidget shows counted); control: asked at every move, as it was, many are built. (ta5) Delete Layer asks
+nothing, one "Delete Layer" step; control: the same sampler sees a QMessageBox when there is one. (ta6) Grow to
+fit with the box up and untouched (952 px, the box back around the art); control: the box moved 40 px, refused
+with the note. (ta7) Set is for all panels while none has its own margin; control: one own margin, 6c's dialog.
+In runFrameLengthsPass: (du5) the SHOTS lock refuses the undo of a roll; control: unlocked the same Undo works,
+locked again the Redo is refused. In runCameraToolPass: (pz5) no drop-down anywhere in the app has a font without
+a point size; control: one given the old pixel font is found by the same census; the popover's two lists open
+and log no warning.
+TWO NEW CHECKS FAILED ON THEIR FIRST RUN, the code read before either was changed.
+(ta2) "the canvas held 1": the check typed its Space into the timeline's zoom field, which is read-only until
+double-clicked, so it ignored the key, Qt passed it on to the field's parent, and the router took it from there.
+A REAL FAULT IN THE CODE (see (1): an Enter passed on by a line edit would have landed a paste): the router now
+acts only where the key was sent. The check changed with it. OLD: "(ta2) A FIELD BEING TYPED IN KEEPS ITS KEYS (a
+Space in the timeline's zoom field, the pointer over the canvas), and an Enter the canvas has no use for goes on
+to the list". NEW: "(ta2) A FIELD BEING TYPED IN KEEPS ITS KEYS, the pointer over the canvas: a Space is typed
+into it and the canvas does not hold it; an Enter is the field's, and though a line edit passes it on to its
+parents it does not land the paste floating on the canvas" (its own focused QLineEdit). Positive control: the
+same Enter with the Layers list focused lands the paste ((ta2) ENTER LANDS A PASTE).
+(ta1) "held after 1": the check sent the Space's release to the list, but the pan's synthesized press had given
+the canvas the keyboard, and a key is sent to the focus widget. THE CODE WAS RIGHT. OLD delivery:
+camtool::key(list, QEvent::KeyRelease, Qt::Key_Space). NEW: the release goes to r.window.focusWidget(), and the
+check says which widget that was. Added beside it: held and let go with no press between (the list keeps the
+keyboard, so its release is handed over too).
+THE RED RUN for (pz5): the popover's font put back to 11px (Edit tool): 3 failures - the census found camQuickEase
+and camQuickOver, 1 warning as the lists opened, and (pz4)'s control read 0 warnings (the style's cache is one a
+launch, shared with the tool buttons'). 8.25pt back: green (qc_A_trial_red_pxfont.txt).
+QUICK CHECKS (Release, app\build\_probe\split\qc_A2_*.txt, after the last edit): trial 121 / 0, stagemode 124 / 0,
+strip 111 / 0 (108 before (pz5)'s three); playback 31 / 0 before the last two edits (qc_A_playback.txt).
+GATE A (fullgate_A.log, 2478 s, in the main tree, the user's SankoTV closed; the 12 files hashed before it,
+sha_A_gate.txt, and unchanged after): Release and Debug exit 0 in every family. Lifecycle 1375 (was 1352: the 23
+new checks above, and no other check name gone or changed in either configuration), Camera 335, CanvasSizeLock
+170, CanvasEdgeLock 74, BrushLibrary 187, DevRecorder 46, QuickShapeGeometry 19, PaintPixel 13, CanvasBrush 3.
+Camera's 126 pin lines the same as gate 6d3's in both configurations; Lifecycle's the same but one detail in
+Debug, (pf)'s "canvas 277-1431, bar 288-1420", which is every earlier gate's value (6d3's Debug run alone read
+278-1432). No "QFont::setPointSize" line in Lifecycle's or Camera's stderr.
+THE EXE at the main path is the gate's own clean Release build of these files: built Nov 10 2026 19:34:56 (file
+19:35:15), git c4ae8526f+dirty. HAND TEST: Documents\SankoTV-Design\handtest_batch_A_trial_fixes.md (14 steps),
+on fresh copies C:\SankoTV-TestCopies\TEST COPY - small pirate, batch A (the trial project as saved 2026-11-09
+22:38, with its sound; 16 panels, 8 with their own margin) and TEST COPY - Test_SB_006_A, batch A (10 panels,
+none with its own margin). Both made by the copier, nothing missing or differing; the originals hashed before
+and after, unchanged. AFTER THE HAND TEST: read the recording (the exe line, the copy's name in the title, each
+step, and the log for the font warning), and commit only on the user's word, by concern.
+LEFT OUT OF A: "M does nothing while paused" (M becomes the marquee's key while paused in batch C). The pen's side
+button, which may paint with the Brush, was only read in the code: step 9 of the hand test asks what it does.
+(It painted; since 2026-11-11 it does nothing on the canvas - the status at the top.)
+
 ## STATUS 2026-11-08 (close): PER-PANEL STAGE MARGINS COMPLETE (6a-6d); THE USER'S REAL-PROJECT TRIAL NEXT
 THE PER-PANEL STAGE MARGIN WORK IS COMPLETE, all committed and pushed: 6a frame space and the per-panel model
 (4037dc01f), 6b-V layers at rest and the margin as a rectangle (29feeed0f), 6c Stage mode and each panel's own

@@ -81,6 +81,16 @@ public:
     // Batch 6c (Q10): Set is for new panels; this gives every panel the margin too.
     QPushButton *applyToAllButton() const { return m_applyAll; }
     bool applyToAllChosen() const { return m_applyAllChosen; }
+    // WHAT SET APPLIES TO (the user's decision, 2026-11-10; the trial of 2026-11-09:
+    // Set changed nothing on screen, and a margin was then made by hand). While no
+    // panel has its own margin, Set is for ALL panels - the primary button, and Enter -
+    // and the button beside it is "Set for New Panels Only". Once a panel has its own,
+    // it is as batch 6c made it: Set for new panels, Apply to All Panels... beside it.
+    // The dialog says which, with the numbers. Never called: batch 6c's wording.
+    void setPanelScope(int panels, int withOwnMargin);
+    bool setIsForAllPanels() const { return m_allIsDefault; }
+    QString headerText() const;
+    QString scopeText() const; // the line that says what Set applies to
     QRect dragHeaderBand() const;
 
     Q_INVOKABLE QVariantMap devrecState() const;
@@ -112,6 +122,10 @@ private:
     QPushButton *m_set = nullptr;
     QPushButton *m_applyAll = nullptr;
     bool m_applyAllChosen = false;
+    bool m_scopeKnown = false;
+    bool m_allIsDefault = false;
+    int m_scopePanels = 0;
+    int m_scopeOwn = 0;
     QString m_reason;
     QString m_effect;
     bool m_warn = false;

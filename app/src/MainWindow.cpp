@@ -2460,6 +2460,15 @@ void MainWindow::onStageMargin()
         return band;
     };
     StageMarginDialog dialog(stageNow.frame, marginNow, probe, this);
+    // What Set applies to (the user's decision, 2026-11-10): every panel, while none
+    // has its own margin; new panels, once one has. The dialog says which.
+    int panelCount = 0, ownCount = 0;
+    for (const Scene *scene : std::as_const(m_scenes))
+        for (const Panel *panel : scene->panels) {
+            ++panelCount;
+            ownCount += panel->ownMargin ? 1 : 0;
+        }
+    dialog.setPanelScope(panelCount, ownCount);
     // The whole project's estimate at each margin offered, against the
     // PC's free memory (the user's item, 2026-10-31): measured by the
     // resize precheck's own count, at the size the project is now.

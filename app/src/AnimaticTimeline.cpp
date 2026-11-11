@@ -95,6 +95,9 @@ constexpr int kMinClipPx = 4;
 // The amber chip's last size (GROW-1, Figma 552:696): a 14 px "!" marker, in the clip's
 // corner while it fits, centred over the clip when not.
 constexpr int kArtExitMarker = 14;
+// How long a tooltip may take to appear (Qt rolls one in over 50 to 120 ms, or fades
+// it in over 150): while it does, a drag's chip waits rather than ask for a new one.
+constexpr int kChipRollMs = 200;
 constexpr int kReorderThreshold = 8; // px before a clip press becomes a drag
 
 // The clip, as the design lays it out on a 76 px body (every number is the
@@ -331,6 +334,22 @@ AnimaticTimeline::AnimaticTimeline(QWidget *parent)
     m_followTimer->setInterval(16);
     m_followTimer->setTimerType(Qt::PreciseTimer);
     connect(m_followTimer, &QTimer::timeout, this, &AnimaticTimeline::followTick);
+
+    // What a drag's chip was asked while its tooltip was still appearing: given to
+    // it once it is up (followChip, hideChip).
+    m_chipFlush = new QTimer(this);
+    m_chipFlush->setInterval(30);
+    connect(m_chipFlush, &QTimer::timeout, this, [this] {
+        const bool up = QToolTip::isVisible();
+        if (!up && m_chipRoll.isValid() && m_chipRoll.elapsed() < kChipRollMs)
+            return; // still appearing
+        m_chipFlush->stop();
+        if (!m_chipWaitingText.isEmpty()) {
+            const QString text = m_chipWaitingText;
+            m_chipWaitingText.clear();
+            QToolTip::showText(m_chipWaitingPos, text, m_canvas);
+        }
+    });
 }
 
 void AnimaticTimeline::setHost(AnimaticPage *host)
@@ -2185,7 +2204,39 @@ QString AnimaticTimeline::durationFieldEqualsForTest() const
 
 void AnimaticTimeline::showDragChip(const QPoint &globalPos)
 {
-    QToolTip::showText(globalPos, m_dragChip, m_canvas);
+    followChip(globalPos, m_dragChip);
+}
+
+// A CHIP THAT FOLLOWS THE POINTER (the trial of 2026-11-09). QToolTip builds a NEW
+// tooltip for every showText made while the last one is still appearing - until its
+// roll or fade ends the tip "is not visible", so it cannot be reused - and a chip
+// asked for on every pointer move was thrown away and begun again on every move:
+// 36,318 tips for the playhead's timecode in one session, up to 190 a second, none of
+// them seen while the pointer moved. So one tip is asked for, and while it appears the
+// newest text and place wait; once it is up Qt reuses it for each move, and it follows.
+void AnimaticTimeline::followChip(const QPoint &globalPos, const QString &text)
+{
+    if (!QToolTip::isVisible() && m_chipRoll.isValid() && m_chipRoll.elapsed() < kChipRollMs) {
+        m_chipWaitingText = text;
+        m_chipWaitingPos = globalPos;
+        if (!m_chipFlush->isActive())
+            m_chipFlush->start();
+        return;
+    }
+    m_chipWaitingText.clear();
+    m_chipFlush->stop();
+    if (!QToolTip::isVisible())
+        m_chipRoll.start();
+    QToolTip::showText(globalPos, text, m_canvas);
+}
+
+// The drag ended: nothing is left waiting to be shown.
+void AnimaticTimeline::hideChip()
+{
+    m_chipWaitingText.clear();
+    m_chipFlush->stop();
+    m_chipRoll.invalidate(); // the next drag's first chip is asked for at once
+    QToolTip::hideText();
 }
 
 // What the audio track shows, in one place: the painter draws exactly this
@@ -3121,8 +3172,7 @@ void AnimaticTimeline::canvasMousePress(QMouseEvent *e)
     if (pos.y() < kRulerY + kRulerH || (!onSelectedEdge && qAbs(pos.x() - phx) <= kGrab)) {
         m_drag = Drag::Playhead;
         m_dragPlayheadFrame = frameAtScreenX(pos.x());
-        QToolTip::showText(e->globalPosition().toPoint(),
-                           timecode(m_dragPlayheadFrame), m_canvas);
+        followChip(e->globalPosition().toPoint(), timecode(m_dragPlayheadFrame));
         m_canvas->update();
         // Scrubbing LOOKS without selecting: the host previews the panel
         // under the playhead and the drawing canvas stays where it is.
@@ -3302,8 +3352,7 @@ void AnimaticTimeline::canvasMouseMove(QMouseEvent *e)
 
     if (m_drag == Drag::Playhead) {
         m_dragPlayheadFrame = frameAtScreenX(pos.x());
-        QToolTip::showText(e->globalPosition().toPoint(),
-                           timecode(m_dragPlayheadFrame), m_canvas);
+        followChip(e->globalPosition().toPoint(), timecode(m_dragPlayheadFrame));
         m_canvas->update();
         const int idx = blockAtFrame(m_dragPlayheadFrame);
         if (idx >= 0 && idx != m_scrubIndex) {
@@ -3361,7 +3410,7 @@ void AnimaticTimeline::canvasMouseMove(QMouseEvent *e)
             m_camDragFrame = frame;
             m_canvas->update();
         }
-        QToolTip::showText(e->globalPosition().toPoint(), timecode(m_camDragFrame), m_canvas);
+        followChip(e->globalPosition().toPoint(), timecode(m_camDragFrame));
         return;
     }
 
@@ -3541,7 +3590,7 @@ void AnimaticTimeline::canvasMouseRelease(QMouseEvent *e)
         m_dragOriginFrame = -1;
         m_dragChip.clear();
         m_canvas->setCursor(Qt::ArrowCursor);
-        QToolTip::hideText();
+        hideChip();
         if (first >= 0 && first < m_blocks.size()) {
             const Block a = m_blocks.at(first);
             if (kind == Drag::Roll && next >= 0 && next < m_blocks.size()) {
@@ -3580,7 +3629,7 @@ void AnimaticTimeline::canvasMouseRelease(QMouseEvent *e)
         m_viewHeld = false;
         jumpIfOffScreen();
         m_canvas->update();
-        QToolTip::hideText();
+        hideChip();
         return;
     }
     if (m_drag == Drag::CameraKey) {
@@ -3592,7 +3641,7 @@ void AnimaticTimeline::canvasMouseRelease(QMouseEvent *e)
         m_camDragScene = m_camDragKey = -1;
         m_canvas->setCursor(Qt::ArrowCursor);
         m_canvas->update();
-        QToolTip::hideText();
+        hideChip();
         // ONE request on release: the workspace re-anchors the key to the
         // panel it landed in, as one undo step.
         if (moved)

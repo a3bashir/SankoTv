@@ -114,6 +114,9 @@ public:
     // The margin as a rectangle (batch 6b-V): the undo step's own two calls.
     QVector<shotcam::SceneCamera> sceneCamerasForMargin() const;
     void chooseStageMarginForTest(const QSize &newMargin, bool allPanels) { chooseStageMargin(newMargin, allPanels); }
+    // Project Settings > Stage Margin... as the button opens it (its dialog is modal:
+    // the check answers it from a timer).
+    void openStageMarginForTest() { onStageMargin(); }
     QVector<QMargins> panelMarginsForMargin() const;
     void chooseStageMargin(const QSize &newMargin, bool allPanels); // Set, or Apply to All
     void setMarginRect(const QSize &newMargin, const QVector<shotcam::SceneCamera> *cameras,
