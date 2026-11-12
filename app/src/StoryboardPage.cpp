@@ -1900,15 +1900,38 @@ public:
         if (m_owns)
             delete m_panel;
     }
+    // IN A LOCKED SCENE (batch F1): the panel whose time the new one takes - its length
+    // before and after, frames at a rate - and the scene's camera before and after (its
+    // keys kept on their frames). Both put back by undo, in the same step.
+    void setDonor(Panel *donor, int framesBefore, int rateBefore, int framesAfter, int rateAfter)
+    {
+        m_donor = donor;
+        m_donorBefore = {framesBefore, rateBefore};
+        m_donorAfter = {framesAfter, rateAfter};
+    }
+    void setCamera(const shotcam::SceneCamera &before, const shotcam::SceneCamera &after)
+    {
+        m_hasCamera = true;
+        m_cameraBefore = before;
+        m_cameraAfter = after;
+    }
     void redo() override
     {
+        if (m_donor)
+            m_page->applyPanelDurationForUndo(m_donor, m_donorAfter.first, m_donorAfter.second);
         m_page->applyPanelInsertForUndo(m_scene, m_index, m_panel);
         m_owns = false;
+        if (m_hasCamera)
+            m_page->applyCameraForUndo(m_scene, m_cameraAfter);
     }
     void undo() override
     {
         m_page->applyPanelRemoveForUndo(m_scene, m_index);
         m_owns = true;
+        if (m_donor)
+            m_page->applyPanelDurationForUndo(m_donor, m_donorBefore.first, m_donorBefore.second);
+        if (m_hasCamera)
+            m_page->applyCameraForUndo(m_scene, m_cameraBefore);
     }
     QString panelId() const { return m_panel ? m_panel->id : QString(); } // Clean Up keeps its files
 
@@ -1918,6 +1941,10 @@ private:
     int m_index;
     Panel *m_panel;
     bool m_owns = true;
+    Panel *m_donor = nullptr;
+    QPair<int, int> m_donorBefore, m_donorAfter;
+    bool m_hasCamera = false;
+    shotcam::SceneCamera m_cameraBefore, m_cameraAfter;
 };
 
 // Delete / Cut a panel. The command captures the panel and owns it while it
@@ -1936,15 +1963,38 @@ public:
         if (m_owns)
             delete m_panel;
     }
+    // IN A LOCKED SCENE (batch F1): the panel that takes the removed one's time - its
+    // length before and after - and the scene's camera before and after (its keys kept
+    // on their frames, those on the removed panel included).
+    void setReceiver(Panel *receiver, int framesBefore, int rateBefore, int framesAfter, int rateAfter)
+    {
+        m_receiver = receiver;
+        m_receiverBefore = {framesBefore, rateBefore};
+        m_receiverAfter = {framesAfter, rateAfter};
+    }
+    void setCamera(const shotcam::SceneCamera &before, const shotcam::SceneCamera &after)
+    {
+        m_hasCamera = true;
+        m_cameraBefore = before;
+        m_cameraAfter = after;
+    }
     void redo() override
     {
         m_page->applyPanelRemoveForUndo(m_scene, m_index);
         m_owns = true;
+        if (m_receiver)
+            m_page->applyPanelDurationForUndo(m_receiver, m_receiverAfter.first, m_receiverAfter.second);
+        if (m_hasCamera)
+            m_page->applyCameraForUndo(m_scene, m_cameraAfter);
     }
     void undo() override
     {
+        if (m_receiver)
+            m_page->applyPanelDurationForUndo(m_receiver, m_receiverBefore.first, m_receiverBefore.second);
         m_page->applyPanelInsertForUndo(m_scene, m_index, m_panel);
         m_owns = false;
+        if (m_hasCamera)
+            m_page->applyCameraForUndo(m_scene, m_cameraBefore);
     }
     QString panelId() const { return m_panel ? m_panel->id : QString(); } // Clean Up keeps its files
 
@@ -1954,6 +2004,30 @@ private:
     int m_index;
     Panel *m_panel;
     bool m_owns = false;
+    Panel *m_receiver = nullptr;
+    QPair<int, int> m_receiverBefore, m_receiverAfter;
+    bool m_hasCamera = false;
+    shotcam::SceneCamera m_cameraBefore, m_cameraAfter;
+};
+
+// THE SCENE LENGTH LOCK (batch F1, 2026-11-12; Figma F-1): locking and unlocking a
+// scene's length are undo steps, so Ctrl+Z walks back through a lock before it reaches
+// any length change made before it, and the history needs no refusal of its own.
+class SceneLengthLockCommand : public QUndoCommand
+{
+public:
+    SceneLengthLockCommand(StoryboardPage *page, Scene *scene, bool lock)
+        : QUndoCommand(lock ? QStringLiteral("Lock Scene Length") : QStringLiteral("Unlock Scene Length")),
+          m_page(page), m_scene(scene), m_lock(lock)
+    {
+    }
+    void redo() override { m_page->applySceneLengthLockForUndo(m_scene, m_lock); }
+    void undo() override { m_page->applySceneLengthLockForUndo(m_scene, !m_lock); }
+
+private:
+    StoryboardPage *m_page;
+    Scene *m_scene;
+    bool m_lock;
 };
 
 // Reorder a panel within its scene (both indices are FINAL positions).
@@ -2021,21 +2095,35 @@ public:
           m_beforeA(beforeA), m_afterA(afterA), m_beforeB(beforeB), m_afterB(afterB)
     {
     }
+    // IN A LOCKED SCENE (batch F1): the scene's camera before and after, its keys kept
+    // on their frames.
+    void setCamera(Scene *scene, const shotcam::SceneCamera &before, const shotcam::SceneCamera &after)
+    {
+        m_scene = scene;
+        m_cameraBefore = before;
+        m_cameraAfter = after;
+    }
     void redo() override
     {
         m_page->applyPanelDurationForUndo(m_a, m_afterA.frames, m_afterA.rate);
         m_page->applyPanelDurationForUndo(m_b, m_afterB.frames, m_afterB.rate);
+        if (m_scene)
+            m_page->applyCameraForUndo(m_scene, m_cameraAfter);
     }
     void undo() override
     {
         m_page->applyPanelDurationForUndo(m_b, m_beforeB.frames, m_beforeB.rate);
         m_page->applyPanelDurationForUndo(m_a, m_beforeA.frames, m_beforeA.rate);
+        if (m_scene)
+            m_page->applyCameraForUndo(m_scene, m_cameraBefore);
     }
 
 private:
     StoryboardPage *m_page;
     Panel *m_a, *m_b;
     Length m_beforeA, m_afterA, m_beforeB, m_afterB;
+    Scene *m_scene = nullptr;
+    shotcam::SceneCamera m_cameraBefore, m_cameraAfter;
 };
 
 // The scratch audio track, imported or removed. The document holds only
@@ -3316,6 +3404,7 @@ void StoryboardPage::createFloatingToolbar()
         QStringLiteral("<b>Move</b> | Move the selected pixels."), true);
     brushTool->setChecked(true); // Brush is the default drawing tool
     brushTool->setObjectName(QStringLiteral("toolBrush"));
+    move->setObjectName(QStringLiteral("toolMove")); // (batch F1's check presses it)
 
     tools->addButton(brushTool);
     tools->addButton(eraser);
@@ -3680,6 +3769,9 @@ void StoryboardPage::createFloatingToolbar()
             b->setChecked(false);
     });
 
+    // The canvas's drawing-view chip keeps clear of both modifier bars (batch F1).
+    if (m_canvas)
+        m_canvas->setChipObstacles({m_selModToolbar, m_moveModToolbar});
     moveBar->setDefaultOffsetProvider([this, moveBar] {
         // Bottom-centre, 10px above the status bar — identical to the
         // Selection Modifier bar's placement rule.
@@ -6825,6 +6917,17 @@ void StoryboardPage::onSceneMenu(int sceneIndex, const QPoint &globalPos)
     title->setObjectName(QStringLiteral("sceneMenuHeader"));
     title->setEnabled(false);
     menu.addSeparator();
+    { // THE SCENE LENGTH LOCK (batch F1, Figma F-1): one undo step, either way
+        const int fps = cameraFps();
+        const int frames = shotcam::sceneFrameCount(*scene, fps);
+        QAction *lock = menu.addAction(
+            (scene->lengthLocked ? QStringLiteral("Unlock Scene Length (%1 %2 %3 f)")
+                                 : QStringLiteral("Lock Scene Length (%1 %2 %3 f)"))
+                .arg(shotcam::lengthText(frames, fps)).arg(QChar(0x00B7)).arg(frames));
+        lock->setObjectName(QStringLiteral("sceneLengthLock"));
+        connect(lock, &QAction::triggered, this, [this, sceneIndex] { toggleSceneLengthLock(sceneIndex); });
+        menu.addSeparator();
+    }
     addSceneCameraEntries(&menu, sceneIndex);
     if (m_clipMenuHookForTest) {
         m_clipMenuHookForTest(&menu);
@@ -7112,8 +7215,67 @@ QString StoryboardPage::strandingSuffix(const QVector<QVector<int>> &after, QStr
 // Every panel insert (Add, Duplicate, Paste) and reorder goes through
 // these: the command's text names the pinned keys the new layout strands or
 // brings back, and the note says it.
-void StoryboardPage::pushInsertPanel(Scene *scene, int index, Panel *panel, const QString &text)
+bool StoryboardPage::pushInsertPanel(Scene *scene, int index, Panel *panel, const QString &text,
+                                     InsertKind kind)
 {
+    if (scene && panel && scene->lengthLocked && !scene->panels.isEmpty() && m_undoStack) {
+        // THE SCENE LENGTH LOCK (batch F1, Figma F-1; the user's decisions 1, 3 and 4):
+        // the new panel takes its time from the panel before its place (the one after,
+        // when it goes first) - from the playhead when the playhead is inside that panel,
+        // else half, the earlier half keeping the odd frame - so no other cut moves, and
+        // the scene's camera keys stay on their frames. A 1-frame panel has none to give:
+        // the insert is refused, with a note.
+        const int fps = cameraFps();
+        const int number = scene->number;
+        index = qBound(0, index, int(scene->panels.size()));
+        const bool donorFirst = index > 0; // the donor comes before the new panel
+        const int donorIndex = donorFirst ? index - 1 : index;
+        Panel *donor = scene->panels.at(donorIndex);
+        const int n = shotcam::panelFrames(*donor, fps);
+        if (n <= 1) {
+            sayNote(QStringLiteral("Panel %1 is 1 frame long, so it has no time to give a new panel: "
+                                   "scene %2's length is locked. Lengthen panel %1 first, or unlock the scene.")
+                        .arg(donorIndex + 1).arg(number));
+            delete panel;
+            if (m_animatic)
+                m_animatic->refreshTiming();
+            return false;
+        }
+        const int inDonor = (m_animatic && m_animatic->playheadPanel() == donor)
+            ? m_animatic->playheadFrameInPanel() : 0;
+        const bool atPlayhead = inDonor > 0 && inDonor < n;
+        const int earlier = atPlayhead ? inDonor : (n + 1) / 2;
+        const int newFrames = donorFirst ? n - earlier : earlier;
+        const int donorFrames = n - newFrames;
+        const int ownFrames = shotcam::panelFrames(*panel, fps);
+        panel->setLength(newFrames, fps);
+        QVector<shotcam::PanelSpan> after;
+        for (const Panel *p : scene->panels)
+            after.append({p->uid.value(), p == donor ? donorFrames : shotcam::panelFrames(*p, fps)});
+        after.insert(index, {panel->uid.value(), newFrames});
+        auto *command = new InsertPanelCommand(this, scene, index, panel, text);
+        command->setDonor(donor, donor->frames, donor->rate, donorFrames, fps);
+        command->setCamera(scene->camera, lockedSceneCamera(scene, after));
+        m_undoStack->push(command);
+        const int donorNumber = donorFirst ? donorIndex + 1 : index + 2;
+        const QString given = shotcam::lengthText(newFrames, fps);
+        const QString locked = QStringLiteral("scene %1's length is locked.").arg(number);
+        if (kind == InsertKind::Duplicate)
+            sayNote(QStringLiteral("The copy takes %1 from panel %2, not its own %3: %4")
+                        .arg(given).arg(donorNumber).arg(shotcam::lengthText(ownFrames, fps), locked));
+        else if (kind == InsertKind::Paste)
+            sayNote(QStringLiteral("The pasted panel takes %1 from panel %2, not its own %3: %4")
+                        .arg(given).arg(donorNumber).arg(shotcam::lengthText(ownFrames, fps), locked));
+        else if (atPlayhead)
+            sayNote(QStringLiteral("Panel %1 %2 at the playhead and takes %3 from panel %4: %5")
+                        .arg(index + 1)
+                        .arg(donorFirst ? QStringLiteral("starts") : QStringLiteral("ends"), given)
+                        .arg(donorNumber).arg(locked));
+        else
+            sayNote(QStringLiteral("Panel %1 takes half of panel %2 (%3): %4")
+                        .arg(index + 1).arg(donorNumber).arg(given, locked));
+        return true;
+    }
     const int si = int(m_scenes.indexOf(scene));
     QVector<QVector<int>> after = filmLayout();
     if (si >= 0)
@@ -7124,6 +7286,16 @@ void StoryboardPage::pushInsertPanel(Scene *scene, int index, Panel *panel, cons
     m_undoStack->push(new InsertPanelCommand(this, scene, index, panel, text + suffix));
     if (!note.isEmpty())
         sayNote(note);
+    return true;
+}
+
+shotcam::SceneCamera StoryboardPage::lockedSceneCamera(const Scene *scene,
+                                                       const QVector<shotcam::PanelSpan> &after) const
+{
+    shotcam::SceneCamera camera;
+    if (scene)
+        camera.keys = shotcam::keysKeepingFrames(*scene, cameraFps(), after);
+    return camera;
 }
 
 void StoryboardPage::pushMovePanel(Scene *scene, int from, int to)
@@ -8415,6 +8587,8 @@ void StoryboardPage::setupAnimaticSection(QWidget *centerColumn,
             &StoryboardPage::setCameraAnimate);
     connect(m_animatic, &AnimaticPage::sceneContextMenuRequested, this,
             &StoryboardPage::onSceneMenu);
+    connect(m_animatic, &AnimaticPage::sceneLengthLockToggleRequested, this,
+            &StoryboardPage::toggleSceneLengthLock); // the lock on the SCENES row (batch F1)
     connect(m_animatic, &AnimaticPage::tracksChanged, this, [this] {
         if (m_canvas)
             m_canvas->refreshShotCamera();
@@ -8727,6 +8901,10 @@ void StoryboardPage::onDurationChangeRequested(int sceneIndex, int panelIndex,
         loadShotInfo(); // the Duration row shows the length it has
         return;
     }
+    if (scene->lengthLocked && m_undoStack) { // batch F1: from its neighbour, as far as it can give
+        lockedDurationChange(sceneIndex, panelIndex, bounded);
+        return;
+    }
     if (!m_undoStack) {
         // No history to put it in (never the case inside the app): apply it
         // and say so the old way, rather than lose the edit.
@@ -8769,15 +8947,111 @@ void StoryboardPage::onRollRequested(int sceneA, int panelA, int framesA, int sc
             m_animatic->refreshTiming();
         return;
     }
+    // THE SCENE LENGTH LOCK (batch F1): a roll across the cut to a locked scene is
+    // refused - the timeline refuses it at the press; this is the backstop.
+    if (sceneA != sceneB && (sa->lengthLocked || sb->lengthLocked)) {
+        sayNote(QStringLiteral("Scene %1's length is locked: the cut between scenes %2 and %3 stays.")
+                    .arg((sa->lengthLocked ? sa : sb)->number).arg(sa->number).arg(sb->number));
+        if (m_animatic)
+            m_animatic->refreshTiming();
+        return;
+    }
     QVector<QVector<int>> after = filmLayout();
     after[sceneA][panelA] = fa;
     after[sceneB][panelB] = fb;
     QString note;
     const QString suffix = strandingSuffix(after, &note);
-    m_undoStack->push(new PanelRollCommand(this, a, {a->frames, a->rate}, {fa, fps}, b,
-                                           {b->frames, b->rate}, {fb, fps}, suffix));
+    auto *command = new PanelRollCommand(this, a, {a->frames, a->rate}, {fa, fps}, b,
+                                         {b->frames, b->rate}, {fb, fps}, suffix);
+    if (sa->lengthLocked && sceneA == sceneB) { // its camera keys keep their frames (decision 4)
+        QVector<shotcam::PanelSpan> spans;
+        for (const Panel *p : sa->panels)
+            spans.append({p->uid.value(), p == a ? fa : p == b ? fb : shotcam::panelFrames(*p, fps)});
+        command->setCamera(sa, sa->camera, lockedSceneCamera(sa, spans));
+    }
+    m_undoStack->push(command);
     if (!note.isEmpty())
         sayNote(note);
+}
+
+void StoryboardPage::lockedDurationChange(int sceneIndex, int panelIndex, int frames)
+{
+    Scene *scene = m_scenes.value(sceneIndex);
+    if (!scene || panelIndex < 0 || panelIndex >= scene->panels.size() || !m_undoStack)
+        return;
+    // THE SCENE LENGTH LOCK (batch F1, Figma F-1; decisions 4 and 6): a typed length takes
+    // from the next panel (the previous one, for the last), which keeps 1 frame; asked for
+    // more, it stops there and says so - it never reaches the panels beyond. Shorter, the
+    // neighbour takes the frames. One step; the camera keys stay on their frames.
+    const int fps = cameraFps();
+    const int number = scene->number;
+    Panel *panel = scene->panels.at(panelIndex);
+    const auto snapBack = [this] {
+        if (m_animatic)
+            m_animatic->refreshTiming();
+        loadShotInfo();
+    };
+    if (scene->panels.size() < 2) {
+        sayNote(QStringLiteral("Scene %1's length is locked, and panel %2 is its only panel: its length "
+                               "cannot change.").arg(number).arg(panelIndex + 1));
+        snapBack();
+        return;
+    }
+    const int nbIndex = panelIndex + 1 < scene->panels.size() ? panelIndex + 1 : panelIndex - 1;
+    Panel *nb = scene->panels.at(nbIndex);
+    const int cur = shotcam::panelFrames(*panel, fps), nbFrames = shotcam::panelFrames(*nb, fps);
+    const int wanted = qMax(1, frames);
+    const int got = qMin(wanted, cur + nbFrames - 1);
+    const int give = got - cur; // what the neighbour gives (negative: what it takes)
+    const QString limit = QStringLiteral("Panel %1 could give only %2: panel %3 is %4, not %5 (scene %6's "
+                                         "length is locked).")
+                              .arg(nbIndex + 1).arg(shotcam::lengthText(nbFrames - 1, fps)).arg(panelIndex + 1)
+                              .arg(shotcam::lengthText(got, fps), shotcam::lengthText(wanted, fps)).arg(number);
+    if (give == 0) { // a 1-frame neighbour has nothing to give
+        sayNote(limit);
+        snapBack();
+        return;
+    }
+    QVector<shotcam::PanelSpan> spans;
+    for (const Panel *p : scene->panels)
+        spans.append({p->uid.value(), p == panel ? got : p == nb ? nbFrames - give : shotcam::panelFrames(*p, fps)});
+    auto *command = new PanelRollCommand(this, panel, {panel->frames, panel->rate}, {got, fps}, nb,
+                                         {nb->frames, nb->rate}, {nbFrames - give, fps});
+    command->setText(QStringLiteral("Change Panel Duration"));
+    command->setCamera(scene, scene->camera, lockedSceneCamera(scene, spans));
+    m_undoStack->push(command);
+    if (got != wanted)
+        sayNote(limit);
+    else if (give > 0)
+        sayNote(QStringLiteral("Panel %1 gave %2 to panel %3: scene %4's length is locked.")
+                    .arg(nbIndex + 1).arg(shotcam::lengthText(give, fps)).arg(panelIndex + 1).arg(number));
+    else
+        sayNote(QStringLiteral("Panel %1 took the %2: scene %3's length is locked.")
+                    .arg(nbIndex + 1).arg(shotcam::lengthText(-give, fps)).arg(number));
+    loadShotInfo();
+}
+
+void StoryboardPage::toggleSceneLengthLock(int sceneIndex)
+{
+    Scene *scene = m_scenes.value(sceneIndex);
+    if (!scene || !m_undoStack)
+        return;
+    const bool lock = !scene->lengthLocked;
+    m_undoStack->push(new SceneLengthLockCommand(this, scene, lock));
+    const int fps = cameraFps();
+    const int frames = shotcam::sceneFrameCount(*scene, fps);
+    sayNote(lock ? QStringLiteral("Scene %1's length is locked at %2 (%3 f).")
+                       .arg(scene->number).arg(shotcam::lengthText(frames, fps)).arg(frames)
+                 : QStringLiteral("Scene %1's length is unlocked.").arg(scene->number));
+}
+
+void StoryboardPage::applySceneLengthLockForUndo(Scene *scene, bool locked)
+{
+    if (!scene || !m_scenes.contains(scene))
+        return;
+    scene->lengthLocked = locked;
+    if (m_animatic)
+        m_animatic->refreshTiming();
 }
 
 // Import Audio and Remove Audio, from the Edit menu or the audio track's own
@@ -10084,7 +10358,9 @@ void StoryboardPage::insertPanelClone(const Panel *panel, int insertAt,
     if (refuseShotsEdit()) // Duplicate, Paste, Paste in Place
         return;
     insertAt = qBound(0, insertAt, int(scene->panels.size()));
-    pushInsertPanel(scene, insertAt, clonePanel(panel), text);
+    // A locked scene's note names a copy as Duplicate's or Paste's (batch F1).
+    pushInsertPanel(scene, insertAt, clonePanel(panel), text,
+                    text == QLatin1String("Duplicate Panel") ? InsertKind::Duplicate : InsertKind::Paste);
 }
 
 void StoryboardPage::duplicatePanel()
@@ -10348,6 +10624,10 @@ void StoryboardPage::removeSelectedPanel(const QString &baseText)
     Panel *panel = currentPanel();
     if (!scene || !panel || m_currentPanel < 0 || !m_undoStack)
         return;
+    if (scene->lengthLocked && scene->panels.size() > 1) {
+        removeSelectedPanelLocked(baseText);
+        return;
+    }
     const int keys = shotcam::liveKeysOnPanel(*scene, panel);
     QString text = baseText;
     if (keys > 0) {
@@ -10374,6 +10654,46 @@ void StoryboardPage::removeSelectedPanel(const QString &baseText)
         note += (note.isEmpty() ? QString() : QStringLiteral(" ")) + strandNote;
     if (!note.isEmpty())
         sayNote(note);
+}
+
+void StoryboardPage::removeSelectedPanelLocked(const QString &baseText)
+{
+    Scene *scene = currentScene();
+    Panel *panel = currentPanel();
+    if (!scene || !panel || m_currentPanel < 0 || !m_undoStack || scene->panels.size() < 2)
+        return;
+    // THE SCENE LENGTH LOCK (batch F1, Figma F-1; decisions 2 and 4): the time goes to
+    // the panel before (to the next, when it is the first), so no other cut moves and Add
+    // then Delete is where it began; the keys on it stay on their frames, now that one's.
+    const int fps = cameraFps();
+    const int index = m_currentPanel;
+    const int receiverIndex = index > 0 ? index - 1 : index + 1;
+    Panel *receiver = scene->panels.at(receiverIndex);
+    const int frames = shotcam::panelFrames(*panel, fps);
+    const int receiverFrames = shotcam::panelFrames(*receiver, fps) + frames;
+    const int keys = shotcam::liveKeysOnPanel(*scene, panel);
+    QVector<shotcam::PanelSpan> after;
+    for (const Panel *p : scene->panels)
+        if (p != panel)
+            after.append({p->uid.value(), p == receiver ? receiverFrames : shotcam::panelFrames(*p, fps)});
+    auto *command = new RemovePanelCommand(this, scene, index, baseText);
+    command->setReceiver(receiver, receiver->frames, receiver->rate, receiverFrames, fps);
+    command->setCamera(scene->camera, lockedSceneCamera(scene, after));
+    m_undoStack->push(command);
+    const int number = scene->number;
+    const QString given = shotcam::lengthText(frames, fps);
+    const int receiverNumber = index > 0 ? receiverIndex + 1 : 1; // the next one is panel 1 now
+    QString note = index > 0
+        ? QStringLiteral("Panel %1's %2 went to panel %3: scene %4's length is locked.")
+              .arg(index + 1).arg(given).arg(receiverNumber).arg(number)
+        : QStringLiteral("Panel 1's %1 went to the next panel, now panel 1: scene %2's length is locked.")
+              .arg(given).arg(number);
+    if (keys == 1)
+        note += QStringLiteral(" Its camera key stays on its frame, now on panel %1.").arg(receiverNumber);
+    else if (keys > 1)
+        note += QStringLiteral(" Its %1 camera keys stay on their frames, now on panel %2.")
+                    .arg(keys).arg(receiverNumber);
+    sayNote(note);
 }
 
 void StoryboardPage::deleteSelectedPanelConfirmedForTest()

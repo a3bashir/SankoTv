@@ -2663,6 +2663,27 @@ bool MainWindow::onScenesReady(const QJsonArray &scenes)
             QMessageBox::information(this, QStringLiteral("Locked track"), m_lastLockRefusal);
         return false;
     }
+    // THE SCENE LENGTH LOCK (batch F1): applying the script replaces every scene, so a
+    // scene whose length is locked refuses it too.
+    int lockedScenes = 0, lockedNumber = 0;
+    for (const Scene *scene : m_scenes)
+        if (scene && scene->lengthLocked && ++lockedScenes == 1)
+            lockedNumber = scene->number;
+    if (lockedScenes > 0) {
+        m_lastLockRefusal = lockedScenes == 1
+            ? QStringLiteral("The script was not applied: scene %1's length is locked, and applying the "
+                             "script replaces every scene and panel. Unlock it (right-click the scene on "
+                             "the timeline) and apply the script again.").arg(lockedNumber)
+            : QStringLiteral("The script was not applied: %1 scenes have their lengths locked, and "
+                             "applying the script replaces every scene and panel. Unlock them "
+                             "(right-click each scene on the timeline) and apply the script again.")
+                  .arg(lockedScenes);
+        if (m_lockMessageHookForTest)
+            m_lockMessageHookForTest(m_lastLockRefusal);
+        else
+            QMessageBox::information(this, QStringLiteral("Locked scene length"), m_lastLockRefusal);
+        return false;
+    }
     buildScenesFromJson(scenes);
     updateSaveActions();
     return true;
@@ -3306,18 +3327,19 @@ bool MainWindow::loadFromPath(const QString &path, bool asRecoveryCopy)
     const QJsonObject root = doc.object();
     const QString folder = QFileInfo(path).absolutePath();
 
-    // A NEWER FILE (2026-11-06, batch 6a). This build writes version 2 and
-    // reads 1 and 2; a later version may mean its numbers in a way this one
-    // would misread (version 2 moved the camera keys into frame space), so
-    // it is refused, before anything open is left.
+    // A NEWER FILE (2026-11-06, batch 6a). This build reads up to
+    // ProjectIO::kFileVersionNewest (5 since batch F1: a locked scene); a later
+    // version may mean its numbers in a way this one would misread (version 2
+    // moved the camera keys into frame space), so it is refused, before
+    // anything open is left.
     const int fileVersion = root.value(QStringLiteral("version")).toInt(1);
-    if (fileVersion > ProjectIO::kFileVersion) {
+    if (fileVersion > ProjectIO::kFileVersionNewest) {
         QMessageBox::warning(this, QStringLiteral("Open Project"),
                              QStringLiteral("This project was saved by a newer version of SankoTV "
                                             "(file version %1). This version opens files up to "
                                             "version %2.\n\nNothing has been opened.")
                                  .arg(fileVersion)
-                                 .arg(ProjectIO::kFileVersion));
+                                 .arg(ProjectIO::kFileVersionNewest));
         return false;
     }
 

@@ -1564,14 +1564,31 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
             // ordinal is kept for when a second colour is given.
             Q_UNUSED(sceneOrdinal);
             p.fillRect(r, kSceneBlock);
-            p.setPen(kSceneBaseline);
-            p.drawLine(r.left(), kSceneY + kSceneH - 1, r.right(), kSceneY + kSceneH - 1);
+            // A LOCKED SCENE (batch F1, Figma F-1): its baseline in the accent, 2 px.
+            const bool locked = sceneLocked(si);
+            if (locked) {
+                p.fillRect(QRect(r.left(), kSceneY + kSceneH - 2, r.width(), 2), kTrackControlActive);
+            } else {
+                p.setPen(kSceneBaseline);
+                p.drawLine(r.left(), kSceneY + kSceneH - 1, r.right(), kSceneY + kSceneH - 1);
+            }
             // Scene separator.
             p.setPen(kSceneSeparator);
             p.drawLine(x0, kSceneY, x0, kSceneY + kSceneH);
             p.setFont(f);
             p.setPen(kSceneName);
-            p.drawText(r, Qt::AlignCenter, name);
+            // Its lock before the name: always on a locked scene, faint on hover on
+            // another (a click locks it); the two centred together. Otherwise as before.
+            if (locked || si == m_sceneHover) {
+                const QRect g = sceneLockGlyphRect(si);
+                const QColor faint = m_sceneLockHover ? kTrackControl : QColor(0x6f, 0x6f, 0x80);
+                paintSceneLock(p, g, locked ? kTrackControlActive : faint);
+                p.setPen(kSceneName);
+                p.drawText(QRect(g.right() + 5, kSceneY, qMax(0, r.right() - g.right() - 4), kSceneH),
+                           Qt::AlignVCenter | Qt::AlignLeft, name);
+            } else {
+                p.drawText(r, Qt::AlignCenter, name);
+            }
             i = j;
             ++sceneOrdinal;
         }
@@ -1929,6 +1946,31 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
         if (bar.state != AudioBar::Present) // no bar to draw them under: now
             paintPinLines(p);
     }
+
+    // THE LOCKED SCENES' ENDS (batch F1, Figma F-1; Q-F2): a 2 px accent line across
+    // SCENES and SHOTS with a flag at its top pointing into the scene, and 1 px at 45 %
+    // through CAMERA and AUDIO - the end against the sound.
+    if (m_tracks.scenesVisible)
+        for (int si = 0; si < m_scenes.size(); ++si) {
+            if (!sceneLocked(si))
+                continue;
+            const int end = sceneEndFrame(si);
+            if (end < 0)
+                continue;
+            const int x = contentXToScreen(end * ppf);
+            const int shotsBottom = kPanelY + panelTrackH();
+            p.fillRect(QRect(x - 1, kSceneY, 2, shotsBottom - kSceneY), kTrackControlActive);
+            QColor faint = kTrackControlActive;
+            faint.setAlphaF(0.45);
+            p.fillRect(QRect(x - 1, shotsBottom, 1, qMax(0, tracksH() - shotsBottom)), faint);
+            p.save();
+            p.setRenderHint(QPainter::Antialiasing, true);
+            p.setPen(Qt::NoPen);
+            p.setBrush(kTrackControlActive);
+            p.drawPolygon(QPolygonF({QPointF(x - 1, kSceneY + 2), QPointF(x - 9, kSceneY + 5.5),
+                                     QPointF(x - 1, kSceneY + 9)}));
+            p.restore();
+        }
 
     p.restore(); // end content clip
 
@@ -2432,6 +2474,113 @@ int AnimaticTimeline::sceneEndFrame(int sceneIndex) const
         if (b.sceneIndex == sceneIndex)
             end = b.startFrame + b.frames;
     return end;
+}
+
+// --- THE SCENE LENGTH LOCK (batch F1, 2026-11-12; Figma F-1) -----------------------
+bool AnimaticTimeline::sceneLocked(int sceneIndex) const
+{
+    return sceneIndex >= 0 && sceneIndex < m_scenes.size() && m_scenes.at(sceneIndex)
+        && m_scenes.at(sceneIndex)->lengthLocked;
+}
+
+QRect AnimaticTimeline::sceneRectOnScreen(int sceneIndex) const
+{
+    const int s = sceneStartFrame(sceneIndex), e = sceneEndFrame(sceneIndex);
+    if (s < 0 || e < 0)
+        return QRect();
+    const double ppf = pxPerFrame();
+    const int x0 = contentXToScreen(s * ppf), x1 = contentXToScreen(e * ppf);
+    return QRect(x0, kSceneY, x1 - x0, kSceneH);
+}
+
+int AnimaticTimeline::sceneAtScreenX(int x) const
+{
+    if (x < kLabelCol)
+        return -1;
+    const double ppf = pxPerFrame();
+    for (const Block &b : m_blocks) { // one pass: the block under x is its scene's
+        const int x0 = contentXToScreen(b.startFrame * ppf);
+        const int x1 = contentXToScreen((b.startFrame + b.frames) * ppf);
+        if (x >= x0 && x < x1)
+            return b.sceneIndex;
+    }
+    return -1;
+}
+
+QFont AnimaticTimeline::sceneNameFont() const
+{
+    QFont f = font(); // as renderCanvas draws the names
+    f.setPointSize(7);
+    f.setBold(true);
+    return f;
+}
+
+QString AnimaticTimeline::sceneNameOf(int sceneIndex) const
+{
+    for (const Block &b : m_blocks)
+        if (b.sceneIndex == sceneIndex)
+            return b.sceneName;
+    return QString();
+}
+
+QRect AnimaticTimeline::sceneLockGlyphRect(int sceneIndex) const
+{
+    const QRect r = sceneRectOnScreen(sceneIndex);
+    if (r.isEmpty())
+        return QRect();
+    constexpr int kLockW = 8, kLockH = 9, kLockGap = 4;
+    const int nameW = QFontMetrics(sceneNameFont()).horizontalAdvance(sceneNameOf(sceneIndex));
+    const int left = r.left() + (r.width() - (kLockW + kLockGap + nameW)) / 2;
+    return QRect(qMax(r.left() + 3, left), kSceneY + (kSceneH - kLockH) / 2, kLockW, kLockH);
+}
+
+QString AnimaticTimeline::sceneEndTip(int sceneIndex) const
+{
+    const int s = sceneStartFrame(sceneIndex), e = sceneEndFrame(sceneIndex);
+    if (s < 0 || e < 0 || sceneIndex >= m_scenes.size())
+        return QString();
+    const QChar dot(0x00B7);
+    return QStringLiteral("Scene %1 ends %2 %3 %4 %3 %5 f%6")
+        .arg(m_scenes.at(sceneIndex)->number)
+        .arg(shotcam::timecodeText(e, m_fps))
+        .arg(dot)
+        .arg(shotcam::lengthText(e - s, m_fps))
+        .arg(e - s)
+        .arg(sceneLocked(sceneIndex) ? QStringLiteral(" %1 locked").arg(dot) : QString());
+}
+
+QString AnimaticTimeline::sceneLockTip(int sceneIndex) const
+{
+    const int s = sceneStartFrame(sceneIndex), e = sceneEndFrame(sceneIndex);
+    if (s < 0 || e < 0 || sceneIndex >= m_scenes.size())
+        return QString();
+    const int number = m_scenes.at(sceneIndex)->number;
+    if (sceneLocked(sceneIndex))
+        return QStringLiteral("Unlock scene %1's length").arg(number);
+    return QStringLiteral("Lock scene %1's length (%2 %3 %4 f)")
+        .arg(number).arg(shotcam::lengthText(e - s, m_fps)).arg(QChar(0x00B7)).arg(e - s);
+}
+
+int AnimaticTimeline::sceneEndLineXForTest(int sceneIndex) const
+{
+    if (!sceneLocked(sceneIndex) || !m_tracks.scenesVisible)
+        return -1;
+    const int e = sceneEndFrame(sceneIndex);
+    return e < 0 ? -1 : contentXToScreen(e * pxPerFrame());
+}
+
+// The lock: its shackle, 5 x 6 px with round ends, behind an 8 x 5.5 px body.
+void AnimaticTimeline::paintSceneLock(QPainter &p, const QRect &glyph, const QColor &colour)
+{
+    p.save();
+    p.setRenderHint(QPainter::Antialiasing, true);
+    p.setBrush(Qt::NoBrush);
+    p.setPen(QPen(colour, 1.2));
+    p.drawRoundedRect(QRectF(glyph.left() + 1.5, glyph.top() + 0.6, 5.0, 6.0), 2.5, 2.5);
+    p.setPen(Qt::NoPen);
+    p.setBrush(colour);
+    p.drawRoundedRect(QRectF(glyph.left(), glyph.top() + 3.5, 8.0, 5.5), 1.0, 1.0);
+    p.restore();
 }
 
 QVector<AnimaticTimeline::CameraMark> AnimaticTimeline::cameraMarks() const
@@ -3155,6 +3304,18 @@ void AnimaticTimeline::canvasMousePress(QMouseEvent *e)
         m_canvas->update();
     }
 
+    // THE SCENE LENGTH LOCK (batch F1, Q-F3): a press on a scene's lock - drawn on a
+    // locked scene, faint on hover on another - locks or unlocks its length. Before the
+    // playhead, as a key is: the lock may sit under its line.
+    if (m_tracks.scenesVisible && pos.y() >= kSceneY && pos.y() < kSceneY + kSceneH) {
+        const int si = sceneAtScreenX(pos.x());
+        if (si >= 0 && sceneLockGlyphRect(si).adjusted(-3, -3, 3, 3).contains(pos)) {
+            emit sceneLengthLockToggleRequested(si);
+            e->accept();
+            return;
+        }
+    }
+
     // Playhead: triangle in the ruler, or near the line anywhere - except
     // on the SELECTED CLIP'S EDGES on the SHOTS track (2026-11-06, batch
     // 5): selecting a clip puts the playhead on its start, its left edge,
@@ -3213,11 +3374,35 @@ void AnimaticTimeline::canvasMousePress(QMouseEvent *e)
         // nothing after them moves. No neighbour: an ordinary trim.
         const bool alt = e->modifiers().testFlag(Qt::AltModifier);
         const bool right = qAbs(pos.x() - x1) <= kHandleW;
+        // THE SCENE LENGTH LOCK (batch F1, Figma F-1): inside a locked scene an edge rolls
+        // its cut with the neighbour on that side, Alt or not; the scene's own ends hold;
+        // and a roll across the cut to a locked scene is refused.
+        const int first = right ? m_selected : m_selected - 1; // the roll's left clip
+        const bool hasNext = first >= 0 && first + 1 < m_blocks.size();
+        const bool acrossScenes = hasNext && m_blocks.at(first).sceneIndex != m_blocks.at(first + 1).sceneIndex;
+        const bool lockedHere = sceneLocked(b.sceneIndex);
+        QString lockRefusal;
+        if (lockedHere && (!hasNext || acrossScenes) && !(alt && acrossScenes)) {
+            lockRefusal = QStringLiteral("Scene %1's length is locked: its ends stay where they are.")
+                              .arg(b.sceneNumber);
+        } else if (alt && acrossScenes) {
+            const Block &l = m_blocks.at(first), &n = m_blocks.at(first + 1);
+            if (sceneLocked(l.sceneIndex) || sceneLocked(n.sceneIndex))
+                lockRefusal = QStringLiteral("Scene %1's length is locked: the cut between scenes %2 and %3 stays.")
+                                  .arg(sceneLocked(l.sceneIndex) ? l.sceneNumber : n.sceneNumber)
+                                  .arg(l.sceneNumber).arg(n.sceneNumber);
+        }
         if (onHandle && m_tracks.shotsLocked) {
             refuse(QStringLiteral("SHOTS track is locked"), e->globalPosition().toPoint());
+        } else if (onHandle && !lockRefusal.isEmpty()) {
+            // The press ends here: on a scene's very end the frame under it is the next
+            // scene's, and selecting that clip would change what is on the canvas.
+            refuse(lockRefusal, e->globalPosition().toPoint());
+            e->accept();
+            return;
         } else if (onHandle) {
-            const int first = right ? m_selected : m_selected - 1; // the roll's left clip
-            const bool roll = alt && first >= 0 && first + 1 < m_blocks.size();
+            const bool roll = (alt || lockedHere) && hasNext;
+            m_lockedRoll = lockedHere && roll;
             m_dragFramesFor.clear();
             m_dragPressX = screenXToContent(pos.x());
             m_dragChip.clear();
@@ -3456,9 +3641,15 @@ void AnimaticTimeline::canvasMouseMove(QMouseEvent *e)
             m_dragFramesFor.insert(m_rollNext, total - left);
             const Block &n = m_blocks.at(m_rollNext);
             const int d = left - m_dragFromFrames;
-            m_dragChip = QStringLiteral("Alt \xC2\xB7 roll: P%1 %2, P%3 %4")
-                             .arg(b.panelIndex + 1).arg(d == 0 ? QStringLiteral("0 f") : signedFrames(d))
-                             .arg(n.panelIndex + 1).arg(d == 0 ? QStringLiteral("0 f") : signedFrames(-d));
+            // A locked scene's roll says so; one across a cut between scenes names them
+            // (batch F1: "P5 +6 f, P1 -6 f" named no scene).
+            const QString lead = m_lockedRoll ? QStringLiteral("locked") : QStringLiteral("Alt");
+            const QString sceneOfB = b.sceneIndex != n.sceneIndex ? QStringLiteral("S%1 ").arg(b.sceneNumber) : QString();
+            const QString sceneOfN = b.sceneIndex != n.sceneIndex ? QStringLiteral("S%1 ").arg(n.sceneNumber) : QString();
+            m_dragChip = QStringLiteral("%1 \xC2\xB7 roll: %2P%3 %4, %5P%6 %7")
+                             .arg(lead, sceneOfB).arg(b.panelIndex + 1)
+                             .arg(d == 0 ? QStringLiteral("0 f") : signedFrames(d), sceneOfN).arg(n.panelIndex + 1)
+                             .arg(d == 0 ? QStringLiteral("0 f") : signedFrames(-d));
         } else {
             int frames = m_dragFromFrames;
             if (!home) {
@@ -3495,11 +3686,31 @@ void AnimaticTimeline::canvasMouseMove(QMouseEvent *e)
             const Block &b = m_blocks.at(m_selected);
             const int x0 = contentXToScreen(b.startFrame * pxPerFrame());
             const int x1 = contentXToScreen((b.startFrame + b.frames) * pxPerFrame());
-            if (qAbs(pos.x() - x0) <= kHandleW || qAbs(pos.x() - x1) <= kHandleW)
+            if (qAbs(pos.x() - x0) <= kHandleW || qAbs(pos.x() - x1) <= kHandleW) {
                 cursor = Qt::SizeHorCursor;
+                // A locked scene's own ends hold (batch F1): "not allowed" there.
+                if (sceneLocked(b.sceneIndex)) {
+                    const int first = qAbs(pos.x() - x1) <= kHandleW ? m_selected : m_selected - 1;
+                    const bool inner = first >= 0 && first + 1 < m_blocks.size()
+                        && m_blocks.at(first).sceneIndex == m_blocks.at(first + 1).sceneIndex;
+                    if (!inner)
+                        cursor = Qt::ForbiddenCursor;
+                }
+            }
         }
     } else if (pos.y() < kRulerY + kRulerH) {
         cursor = Qt::PointingHandCursor;
+    }
+    // THE SCENES ROW (batch F1): the scene under the pointer - its lock shows, faint, on
+    // an unlocked one - and whether the pointer is on that lock (the hand: a click
+    // toggles it).
+    int sceneHover = -1;
+    bool lockHover = false;
+    if (m_tracks.scenesVisible && pos.y() >= kSceneY && pos.y() < kSceneY + kSceneH) {
+        sceneHover = sceneAtScreenX(pos.x());
+        lockHover = sceneHover >= 0 && sceneLockGlyphRect(sceneHover).adjusted(-3, -3, 3, 3).contains(pos);
+        if (lockHover)
+            cursor = Qt::PointingHandCursor;
     }
     // The CAMERA row: the key under the pointer is lit (the accent halo)
     // and named in a tooltip (Figma 1C-1).
@@ -3538,6 +3749,18 @@ void AnimaticTimeline::canvasMouseMove(QMouseEvent *e)
                                m_canvas);
         else if (camKey < 0)
             QToolTip::hideText();
+    }
+    // Its tooltip: over the lock, what a click does; over the block, where the scene
+    // ends and how long it is (batch F1).
+    if (sceneHover != m_sceneHover || lockHover != m_sceneLockHover) {
+        m_sceneHover = sceneHover;
+        m_sceneLockHover = lockHover;
+        if (sceneHover >= 0)
+            QToolTip::showText(e->globalPosition().toPoint(),
+                               lockHover ? sceneLockTip(sceneHover) : sceneEndTip(sceneHover), m_canvas);
+        else if (camKey < 0 && chipHover < 0)
+            QToolTip::hideText();
+        m_canvas->update();
     }
     // The AUDIO row under the pointer (Phase 2D): its name and length chips
     // hide, so the waveform under them can be seen.
@@ -3586,6 +3809,7 @@ void AnimaticTimeline::canvasMouseRelease(QMouseEvent *e)
         m_drag = Drag::None;
         m_resizeIndex = -1;
         m_rollNext = -1;
+        m_lockedRoll = false;
         m_dragFramesFor.clear();
         m_dragOriginFrame = -1;
         m_dragChip.clear();
@@ -3669,9 +3893,11 @@ void AnimaticTimeline::canvasMouseRelease(QMouseEvent *e)
 void AnimaticTimeline::canvasLeave()
 {
     m_chipHover = -1; // its tooltip goes with the pointer's next crossing, as any tooltip
-    if (m_hoverIndex != -1 || m_camHoverKey != -1 || m_audioHover) {
+    if (m_hoverIndex != -1 || m_camHoverKey != -1 || m_audioHover || m_sceneHover != -1) {
         m_hoverIndex = -1;
         m_camHoverScene = m_camHoverKey = -1;
+        m_sceneHover = -1; // an unlocked scene's faint lock goes (batch F1)
+        m_sceneLockHover = false;
         m_audioHover = false; // the chips come back
         if (m_canvas)
             m_canvas->update();

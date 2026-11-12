@@ -201,6 +201,12 @@ public:
     // pushes (a canvas drag, Add / Delete Key, the ease) and by its undo:
     // the keys, then the canvas, the preview, the SHOTS clips, the strip.
     void applyCameraForUndo(Scene *scene, const shotcam::SceneCamera &camera);
+    // THE SCENE LENGTH LOCK (batch F1, Figma F-1): set by the lock's command and its
+    // undo; the timeline redraws the scene's lock, baseline and end line.
+    void applySceneLengthLockForUndo(Scene *scene, bool locked);
+    // Lock or unlock a scene's length (the scene's menu, the lock on the SCENES row):
+    // one undo step, and a note.
+    void toggleSceneLengthLock(int sceneIndex);
 
     // THE SHOT CAMERA BAR (Phase 1B, Figma 1B-4): the Camera tool's
     // Modifier bar. Animate (session), previous key / Add Key / Delete Key /
@@ -246,6 +252,7 @@ public:
     QWidget *stageBarForTest() const { return m_stagePanel; }
     void updateOnionGhostForTest() { updateOnionGhost(); }
     void addPanelForTest() { addPanelAfterSelected(); }
+    QWidget *moveModToolbarForTest() const { return m_moveModToolbar; } // batch F1's chip check
     void duplicateSelectedPanelForTest() { duplicatePanel(); }
     QVariantMap stageBarStateForTest() const;
     // The project's margin (for new panels) moved, and no panel with it.
@@ -794,8 +801,18 @@ private:
     QVector<QVector<int>> filmLayout() const;      // frames per panel, per scene
     int strandedIn(const QVector<QVector<int>> &layout, int sceneIndex) const;
     QString strandingSuffix(const QVector<QVector<int>> &after, QString *note) const;
-    void pushInsertPanel(Scene *scene, int index, Panel *panel, const QString &text);
+    // What kind of insert (batch F1: a locked scene's note says which).
+    enum class InsertKind { Add, Duplicate, Paste };
+    // False when a locked scene refused it (the panel is then deleted, and a note says why).
+    bool pushInsertPanel(Scene *scene, int index, Panel *panel, const QString &text,
+                         InsertKind kind = InsertKind::Add);
     void pushMovePanel(Scene *scene, int from, int to);
+    // A locked scene's keys once its panels are `after` (uid, frames at the project's
+    // rate), each kept on its frame (batch F1, the user's decision 4).
+    shotcam::SceneCamera lockedSceneCamera(const Scene *scene, const QVector<shotcam::PanelSpan> &after) const;
+    // A locked scene's typed duration (batch F1, decision 6): it takes from the next
+    // panel (the previous one for the last), and stops at what that one can give.
+    void lockedDurationChange(int sceneIndex, int panelIndex, int frames);
     int m_cameraBarNaturalW = 0; // the bar's own width (the fit check's seam adds to it)
     StageClear *m_stageClear = nullptr; // the bars fade while the film plays
     static const QString kClearStageKey;
@@ -938,6 +955,9 @@ private:
     // and a note says the scene's camera move changes (the user's rule,
     // 2026-10-25: a deletion must not change a move silently).
     void removeSelectedPanel(const QString &baseText);
+    // The same in a locked scene (batch F1, decision 2): its time goes to the panel
+    // before it (the next, if it was the first), and its keys stay on their frames.
+    void removeSelectedPanelLocked(const QString &baseText);
     QString m_lastNote;
     std::function<void(const QString &)> m_lockMessageHookForTest;
     QString m_lastLockRefusal;

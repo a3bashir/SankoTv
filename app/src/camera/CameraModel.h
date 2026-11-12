@@ -144,6 +144,14 @@ struct SceneCamera
     bool isEmpty() const { return keys.isEmpty(); }
 };
 
+// One panel of a scene's layout as an edit will leave it (batch F1): its camera uid
+// and its frames at the project's rate (shotcam::keysKeepingFrames).
+struct PanelSpan
+{
+    quint64 uid = 0;
+    int frames = 1;
+};
+
 // THE QUICK MOVES (Phase 1D): the data; shotcam::quickMove (ShotCamera.h)
 // works them out.
 enum class QuickMove { PushIn, PullOut, PanLeft, PanRight, TiltUp, TiltDown,

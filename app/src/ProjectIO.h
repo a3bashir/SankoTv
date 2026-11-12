@@ -140,8 +140,16 @@ bool runImagePlan(ImagePlan &plan, const std::atomic<bool> &cancel);
 // project with a panel at its own margin is written so, and an older build refuses
 // it rather than give that panel the project's margin. A project without one stays
 // the version 3 it was. Reads 1 to 4.
+//
+// VERSION 5 (batch F1, 2026-11-12): a scene may say "lengthLocked": true. Only a
+// project with a locked scene is written so - an older build refuses it rather than
+// drop the lock silently - and one without stays the version 3 or 4 it was. Its
+// panels' margins are read as version 4's. Reads 1 to 5.
 inline constexpr int kFileVersion = 4;
 inline constexpr int kFileVersionOneMargin = 3;
+inline constexpr int kFileVersionLockedScene = 5;
+// The newest version this build reads (MainWindow refuses a later one).
+inline constexpr int kFileVersionNewest = kFileVersionLockedScene;
 // The older form, for the checks' fixtures only: version 2, every layer's file the
 // whole stage, with no "origin" or "fill".
 void setWriteVersion2ForTest(bool on);

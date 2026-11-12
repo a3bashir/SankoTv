@@ -49,6 +49,15 @@ public:
     // a clip is on it, and what the view currently holds.
     QWidget *surfaceForTest() const;
     QRect clipRectForTest(int flatIndex) const { return clipRect(flatIndex); }
+    // Batch F1: a scene's block, the lock before its name (drawn or not), its end line's
+    // x (-1: not drawn), and the hover text of the block and of the lock.
+    QRect sceneRectForTest(int sceneIndex) const { return sceneRectOnScreen(sceneIndex); }
+    QRect sceneLockRectForTest(int sceneIndex) const { return sceneLockGlyphRect(sceneIndex); }
+    int sceneEndLineXForTest(int sceneIndex) const;
+    QString sceneTipForTest(int sceneIndex, bool overLock) const
+    {
+        return overLock ? sceneLockTip(sceneIndex) : sceneEndTip(sceneIndex);
+    }
     int blockCountForTest() const { return int(m_blocks.size()); }
     // In whole SECONDS, as every check written before 2026-11-06 reads it:
     // -1 when the clip is not a whole number of seconds (or not there).
@@ -280,6 +289,8 @@ signals:
     void cameraAnimateToggled(bool on);
     // Right-click on the SCENES track (Phase 1D): that scene's menu.
     void sceneContextMenuRequested(int sceneIndex, const QPoint &globalPos);
+    // A press on a scene's lock on the SCENES row (batch F1): lock or unlock its length.
+    void sceneLengthLockToggleRequested(int sceneIndex);
     void zoomChanged(float zoomLevel); // internal use
 
 private:
@@ -365,6 +376,19 @@ private:
     bool inCameraRow(const QPoint &pos) const;
     int sceneStartFrame(int sceneIndex) const; // its first block's start
     int sceneEndFrame(int sceneIndex) const;   // its last block's end
+    // THE SCENE LENGTH LOCK (batch F1, Figma F-1). Whether a scene's length is locked;
+    // its block on screen; the scene under a screen x on the SCENES row (-1: none); the
+    // lock before its name, 8 x 9 px, the lock and the name centred together; the
+    // hover texts; and the lock itself, painted.
+    bool sceneLocked(int sceneIndex) const;
+    QRect sceneRectOnScreen(int sceneIndex) const;
+    int sceneAtScreenX(int x) const;
+    QFont sceneNameFont() const;
+    QString sceneNameOf(int sceneIndex) const;
+    QRect sceneLockGlyphRect(int sceneIndex) const;
+    QString sceneEndTip(int sceneIndex) const;
+    QString sceneLockTip(int sceneIndex) const;
+    static void paintSceneLock(QPainter &p, const QRect &glyph, const QColor &colour);
     QString cameraKeyTip(const CameraMark &mark) const;
     void paintCameraRow(QPainter &p);
     void paintPinLines(QPainter &p); // the pinned keys' dotted lines through the AUDIO row
@@ -397,6 +421,12 @@ private:
     QVector<WaveColumn> waveformColumns(const AudioBar &bar) const;
     AudioPeaks::State audioWaveformState() const;
     bool m_audioHover = false; // the pointer is over the AUDIO row: the chips hide
+    // Batch F1: the scene under the pointer on the SCENES row (its lock shows, faint, on
+    // an unlocked one), whether it is over that lock, and whether a length drag is a
+    // locked scene's roll (its chip says so).
+    int m_sceneHover = -1;
+    bool m_sceneLockHover = false;
+    bool m_lockedRoll = false;
 
     // Geometry / model helpers.
     void rebuildBlocks();

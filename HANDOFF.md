@@ -1,5 +1,118 @@
 # SankoTV — Session Handoff Brief
 
+## STATUS 2026-11-12 (evening): F1 (THE SCENE LENGTH LOCK) BUILT, NOT COMMITTED; WAITING FOR THE USER'S F1 HAND TEST; F2 WAITS
+The user approved batch F as drawn in Figma F-1 (node 566:696; Documents\SankoTV-Design\batchF-report-2026-11-12.md)
+with Q-F1 (camera keys keep their film frames, in F1), Q-F2 (the end line faint through CAMERA and AUDIO) and Q-F3
+(the lock faint on hover over an unlocked scene; a click locks it), plus: make the "Drawing view" chip readable
+above the Move tool's mode bar. Build F1; do not commit until the user's hand test passes; F2 (Lock All, End Scene
+at Playhead) waits.
+ON 7c6711472, UNCOMMITTED (16 files): AnimaticPage.cpp/.h, AnimaticTimeline.cpp/.h, DrawingCanvas.cpp/.h,
+MainWindow.cpp, ProjectIO.cpp/.h, StoryboardModel.h (LF), StoryboardPage.cpp/.h, camera/CameraModel.h,
+camera/ShotCamera.cpp/.h, tests/ProjectLifecycleTest.cpp; hashes app/build/_probe/split/sha_F1_gate.txt.
+WHAT F1 IS.
+(1) THE LOCK. Scene::lengthLocked (StoryboardModel.h). SceneLengthLockCommand ("Lock Scene Length" / "Unlock Scene
+Length") is an undo step, so Ctrl+Z walks back through it before any older length change; the SHOTS track lock
+does not block it. StoryboardPage::toggleSceneLengthLock (the scene menu's "Lock Scene Length (6s 1f · 145 f)" /
+"Unlock Scene Length (...)", object name sceneLengthLock, above the camera entries; and the lock on the SCENES
+row via AnimaticTimeline::sceneLengthLockToggleRequested -> AnimaticPage -> the page) and its note "Scene N's
+length is locked at 6s 1f (145 f)." / "Scene N's length is unlocked.".
+(2) THE FILE. A locked scene writes "lengthLocked": true; ProjectIO writes version 5 (kFileVersionLockedScene)
+only when a scene is locked, else 3 or 4 as before; reads it back. kFileVersionNewest = 5 is the reader's limit
+(MainWindow's newer-file refusal now compares against it; kFileVersion stays 4, the own-margin rule, which a v5
+file also passes).
+(3) THE SCENES ROW (AnimaticTimeline). A locked scene: a 2 px accent (#7c6ef6) baseline in place of the 1 px
+#2a2766, the lock (paintSceneLock: an 8 x 9 px shackle and body) before its name, the two centred together
+(sceneLockGlyphRect); its end a 2 px accent line across SCENES and SHOTS with a flag pointing into the scene, and 1 px
+at 45 % through CAMERA and AUDIO (drawn after the rows, under the playhead). An unlocked scene paints exactly as
+before unless hovered: then its lock shows faint (#6f6f80; #a4a7ae over the lock itself). Hover texts:
+"Scene N ends 00:00:11:17 · 6s 1f · 145 f" (+ " · locked"); over the lock "Lock scene N's length (6s 1f · 145 f)" /
+"Unlock scene N's length"; the hand over the lock; a press on it toggles (before the playhead's grab).
+(4) THE EDGES (the timeline's press). In a locked scene an inner edge of the selected clip ROLLS with the neighbour
+on that side, Alt or not (chip "locked · roll: P3 +6 f, P4 −6 f"); its outer edges are refused ("Scene N's length is
+locked: its ends stay where they are."; the "not allowed" pointer on hover); an Alt-roll across a cut to a locked
+scene is refused ("... the cut between scenes N and M stays."; the page refuses it too, as a backstop). A refused
+press ENDS there (found by (sl9): at a scene's very end the frame under the pointer is the next scene's, and the
+fall-through to "select" chose that clip). An Alt-roll across a cut between unlocked scenes names them: "Alt · roll:
+S1 P4 +6 f, S2 P1 −6 f" (the report's finding).
+(5) ADDING (pushInsertPanel, now bool, with InsertKind Add / Duplicate / Paste). In a locked scene the new panel
+takes its time from the panel before its place (the one after when it goes first): from the playhead when the
+playhead is inside that panel after its first frame, else half, the earlier half keeping the odd frame; a 1-frame
+donor refuses the insert (the panel deleted, a note). InsertPanelCommand::setDonor/setCamera carry the donor's
+length and the scene's camera in the same step. Notes: "Panel 4 starts at the playhead and takes 1s 4f from panel
+3: ..." ("ends" when the donor is after), "Panel 3 takes half of panel 2 (17f): ...", "The copy takes ... not its own
+...", "The pasted panel takes ... not its own ...", "Panel 4 is 1 frame long, so it has no time to give a new panel:
+... Lengthen panel 4 first, or unlock the scene.".
+(6) DELETING (removeSelectedPanelLocked; Cut too): the time to the panel before (the next for the first);
+RemovePanelCommand::setReceiver/setCamera; the keys on it stay on their frames (not deleted: the text stays
+"Delete Panel"). Notes: "Panel 3's 2s went to panel 2: ...", "Panel 1's 1s 6f went to the next panel, now panel 1:
+...", + " Its camera key stays on its frame, now on panel 2." / " Its 2 camera keys stay on their frames, ...".
+(7) TYPED LENGTHS (lockedDurationChange, from onDurationChangeRequested: the typing field and Shot Info): from the
+next panel (the previous for the last), which keeps 1 frame; past that it stops and says so; one PanelRollCommand
+("Change Panel Duration"). Notes: "Panel 3 gave 1s 1f to panel 2: ...", "Panel 4 took the 12f: ...", "Panel 3 could
+give only 1s 23f: panel 2 is 3s 10f, not 3s 18f (scene 1's length is locked).", "Scene 2's length is locked, and
+panel 1 is its only panel: its length cannot change.".
+(8) CAMERA KEYS (Q-F1): shotcam::keysKeepingFrames(scene, fps, after) - each anchored key stays on the scene frame it
+has: on its own panel while that still holds the frame, else on the panel that does (PanelSpan, CameraModel.h).
+StoryboardPage::lockedSceneCamera feeds it to the insert, remove and roll commands (setCamera), applied after the
+panels change; pinned keys untouched. Unlocked scenes as before.
+(9) THE SCRIPT EDITOR (MainWindow::onScenesReady): refused while a scene's length is locked (after the track-lock
+check), box "Locked scene length": "The script was not applied: scene 1's length is locked, ... Unlock it
+(right-click the scene on the timeline) and apply the script again." / "... 2 scenes have their lengths locked ...".
+(10) THE DRAWING-VIEW CHIP (B2's hand test): DrawingCanvas::setChipObstacles({selection bar, Move bar}) - the page
+hands it the two modifier bars (separate windows over the canvas's bottom centre); drawingViewChipRect moves the
+chip to 8 px above any visible one. The Move tool's button got the object name "toolMove".
+A CHANGED CHECK: (fs11) wrote version 5 to prove a newer file is refused; 5 is now a real version. OLD: label
+"(fs11) A NEWER FILE (version 5) IS REFUSED: Open says it was saved by a newer SankoTV and opens nothing; the open
+project stays", newerRoot version 5, shown.contains("file version 5"). NEW: newerVersion =
+ProjectIO::kFileVersionNewest + 1 (6), label "(fs11) A NEWER FILE (version 6) IS REFUSED: ...", shown.contains("file
+version 6"). Positive control: (sl2) - a version 5 file with a lock opens, locked.
+THE CHECKS (runSceneLockPass, new, after runDepthWhileMovingPass in the main order; slice
+SANKO_LIFECYCLE_ONLY=scenelock runs it and runFrameLengthsPass). Fixture "Locks", 960 x 540, 24 fps: scene 1 SHORE
+30/35/48/32 f (145) with keys at frames 0, 85 (panel 3's 20) and 129 (panel 4's 16); scene 2 CAVE 24/24.
+(sl1) the menu entry, one "Lock Scene Length" step, the note, Unlock in the menu, Undo/Redo; control: scene 2's
+entry. (sl3) grabs before and after the lock: the lock 10+ accent px, the end line 70+ of 80, faint in CAMERA,
+the baseline; control: scene 2's block and clips not one pixel changed, no end line; the hover texts, the faint
+lock and the hand; a click on the lock locks (one step), Undo unlocks. (sl4) Add at the playhead (panel 3 at its
+frame 20): 30 35 20 28 32, starts unchanged, one step, the note; keys still 0, 85, 129 (the 85 one on panel 3);
+control: Undo; unlocked scene 2 adds 24 f. (sl5) halved 18/17. (sl6) Duplicate (16/16, keys kept) and Paste
+(15/15) with "not its own"; Paste in Place first in the scene takes from the panel after (note "from panel 2").
+(sl7) typed 1 for the last panel (panel 3 takes 31) then Add after the 1-frame panel refused; control: Add after
+the 79-frame panel 3 splits 40/39. (sl8) Add then Delete is where it began; Delete panel 3 -> panel 2 83, key on
+85 now panel 2's, Undo back on panel 3; the first panel's time to the next; control: unlocked scene 2's Delete
+shortens it, no note. (sl9) an inner edge without Alt rolls (41/42, chip, key kept); control: unlocked, the Alt
+roll moves the key to 88.5; the ends refused (both texts), "not allowed", the cut to scene 2 refused, inner edge
+keeps the resize pointer; control: unlocked scene 2's end ripples, and the cut between unlocked scenes rolls with
+the S1/S2 chip. (sl10) typed 60 (panel 3 gives 25, key kept) and 90 (stops: 82 / 1); control: unlocked typed
+ripples; one panel refused. (sl11) the Script Editor refused (one / two scenes); control: unlocked it applies.
+(sl2) saved v5 with "lengthLocked" only on scene 1, reopened locked; control: unlocked -> v3, no key. (sl12) the
+chip 8 px above the Move bar; control: its old place meets the bar, and with the Brush it is back at -36.
+WHILE WRITING THEM: (sl9) first saw a refused press select scene 2's first clip (fixed in the code, see (4)); two
+expected strings had "%2" "6 f" -> "%26" (Qt's placeholder 26) - the chips were right, the strings were fixed;
+(sl10)'s "control" held the one-panel refusal (a lock behaviour) - split into its own check; (sl2)'s control
+toggled the lock, which locked a lock that a red run had lost - it now unlocks only a locked scene.
+RED RUNS (RED RUN markers, restored; none left outside the ignored _backups). Batch 1 (the insert path, the
+timeline's edge rule, the painting, the file flag, the Script Editor refusal, the chip clearance): (sl3), (sl4) x2,
+(sl5), (sl6), (sl7) room, (sl8) add-then-delete, (sl9) x2, (sl11), (sl2) x2 (the script, applied, had replaced the
+project - so the file flag ran again in batch 2), (sl12) failed; every control passed. Batch 2 (the delete path,
+the typed path, the key rule, the file flag): (sl4) keys (73.33 for 85), (sl6), (sl7) x2, (sl8) x2, (sl9) inner
+(key 88.5), (sl10) x2, (sl2) failed; every control passed. Paste in Place's check, added after: the insert path
+off -> it fails (30 30 ..., keys moved).
+QUICK CHECKS: scenelock 55, keptart 49, trial 125 (one run: (pz5) "1 list(s) opened" of 2 - the Quick Move popover's
+drop-down list visible 150 ms after showPopup; passed twice on rerun; F1 does not touch it), stagemode 124, strip
+111, playback 31, SankoCameraTest 335.
+GATE F1 (app/build/_probe/split/fullgate_F1.log, 2,852 s, the main tree, sha_F1_gate.txt): clean builds, nine
+families in Release and Debug, 0 failing. Lifecycle 1438 (1406 + the 32 (sl) checks), Camera 335, CanvasSizeLock
+170, CanvasEdgeLock 74, BrushLibrary 187, DevRecorder 46, QuickShapeGeometry 19, PaintPixel 13, CanvasBrush 3. Check
+names against gate B2: the (sl) checks new, (fs11)'s "version 5" -> "version 6" (above), nothing else. Camera's 126
+pin lines identical in both configurations, its pin values (camera_test_F1_debug.txt) identical to B1fix's;
+Lifecycle's 47 pin lines identical (one more line matches "pin": the (sl) header's "typing"). (pz5) passed in both.
+THE EXE at the main path is the gate's clean Release build: built Nov 12 2026 18:11:39 (file 18:11:58), git
+7c6711472+dirty. HAND TEST: Documents\SankoTV-Design\handtest_F1_scene_length_lock.md on "TEST COPY - small
+pirate, F1" (C:\SankoTV-TestCopies, with its sound; the original's hashes unchanged, origB_after6 = origB_after):
+scene 2 ISLAND BEACH (6s 1f, 7 panels, keys on 6 and 7) - the lock and its look, Add at the playhead and Delete,
+the edges, a typed length past the limit, saved and reopened; optionally Delete with a key and the chip above the
+Move bar.
+
 ## STATUS 2026-11-12: THE B1 FIX (01603ed07) AND B2 (893a30223) COMMITTED AFTER THE USER'S HAND TEST; F NEXT, AS A REPORT
 THE B2 HAND TEST (Dev Recorder 20261111-214009, 307 s, the 20:50:02 build, git 56d558b9e+dirty, on "TEST COPY -
 small pirate, B2" - the title bar and the exit prompt name it). The user did steps 1, 2, 3 and 5 of

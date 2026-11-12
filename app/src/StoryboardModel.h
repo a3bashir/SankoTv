@@ -538,6 +538,12 @@ struct Scene
     // to panels (camera/ShotCamera.h evaluates it). Empty = the neutral
     // camera, the whole canvas: the shot every project had before.
     shotcam::SceneCamera camera;
+    // THE SCENE LENGTH LOCK (batch F1, 2026-11-12; Figma F-1): its length - the sum
+    // of its panels - holds. Inside it a new panel splits the one it follows, a
+    // deleted panel's time goes to the one before, an edge rolls, a typed duration
+    // takes from its neighbour, and its camera keys keep their film frames.
+    // Locking is an undo step; saved as "lengthLocked" (file version 5).
+    bool lengthLocked = false;
 
     ~Scene()
     {

@@ -126,6 +126,14 @@ CameraKey makeKey(const Scene &scene, int panelIndex, int frameInPanel,
 // A key PINNED at film frame `filmFrame` (Phase 2E).
 CameraKey makePinnedKey(double filmFrame, int fps, const CameraState &state,
                         Ease ease = Ease::EaseInOut);
+// THE LOCKED SCENE'S KEYS (batch F1, 2026-11-12; the user's decision 4): `scene`'s
+// keys once its panels are `after` - each panel's uid and frames at `fps`, in order -
+// with every anchored key kept on the scene frame it has now: on its own panel while
+// that panel still holds the frame, else on the panel that does, at the matching
+// place. So a split, a delete, a roll or a typed duration inside a locked scene (whose
+// length does not change) leaves the camera move playing as before. A pinned key, or
+// one whose panel is not in the scene, is kept as it is. (PanelSpan: CameraModel.h.)
+QVector<CameraKey> keysKeepingFrames(const Scene &scene, int fps, const QVector<PanelSpan> &after);
 // The words an edit that strands or un-strands pinned keys adds to its
 // undo text: " (1 pinned camera key now outside scene 2)", " (2 pinned
 // camera keys back inside scene 2)"; empty when the count is unchanged.

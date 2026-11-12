@@ -1658,7 +1658,31 @@ QRectF DrawingCanvas::drawingViewChipRect(const QString &text) const
 {
     const QFontMetricsF fm(camChipFont(font()));
     const double w = qCeil(fm.horizontalAdvance(text) + 20.0);
-    return QRectF(qRound((width() - w) / 2.0), height() - 36.0, w, 24.0);
+    QRectF r(qRound((width() - w) / 2.0), height() - 36.0, w, 24.0);
+    // Clear of the Move and Selection tools' modifier bars, which float over the
+    // canvas's bottom centre: under them it could not be read (B2's hand test; batch F1).
+    for (int pass = 0; pass < 3; ++pass) {
+        bool moved = false;
+        for (const QPointer<QWidget> &bar : m_chipObstacles)
+            if (bar && bar->isVisible()) {
+                const QRectF on(QPointF(mapFromGlobal(bar->mapToGlobal(QPoint(0, 0)))), QSizeF(bar->size()));
+                if (on.intersects(r)) {
+                    r.moveBottom(on.top() - 8.0);
+                    moved = true;
+                }
+            }
+        if (!moved)
+            break;
+    }
+    return r;
+}
+
+void DrawingCanvas::setChipObstacles(const QVector<QWidget *> &bars)
+{
+    m_chipObstacles.clear();
+    for (QWidget *bar : bars)
+        m_chipObstacles.append(bar);
+    update();
 }
 
 bool DrawingCanvas::shotCameraDrawingViewChip() const

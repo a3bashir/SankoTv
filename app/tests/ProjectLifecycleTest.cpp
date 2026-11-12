@@ -17111,8 +17111,11 @@ void runFrameSpacePass(const QString &scratch)
         f.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
         return true;
     };
+    // One past the newest this build reads: 5 until batch F1 made 5 the locked
+    // scene's version.
+    const int newerVersion = ProjectIO::kFileVersionNewest + 1;
     QJsonObject newerRoot = file;
-    newerRoot.insert(QStringLiteral("version"), 5);
+    newerRoot.insert(QStringLiteral("version"), newerVersion);
     const QString newer = folder + QStringLiteral("/FrameSpaceNewer.sankotv");
     writeRoot(newer, newerRoot);
     QString shown;
@@ -17125,9 +17128,9 @@ void runFrameSpacePass(const QString &scratch)
     const QString pathBefore = r.window.projectPathForTest();
     const bool openedNewer = r.window.loadProjectForTest(newer);
     pump(800);
-    check(QStringLiteral("(fs11) A NEWER FILE (version 5) IS REFUSED: Open says it was saved by a newer "
-                         "SankoTV and opens nothing; the open project stays"),
-          !openedNewer && shown.contains(QStringLiteral("file version 5"))
+    check(QStringLiteral("(fs11) A NEWER FILE (version %1) IS REFUSED: Open says it was saved by a newer "
+                         "SankoTV and opens nothing; the open project stays").arg(newerVersion),
+          !openedNewer && shown.contains(QStringLiteral("file version %1").arg(newerVersion))
               && r.window.projectPathForTest() == pathBefore && panelCount() == 6,
           QStringLiteral("opened %1; said '%2'; project %3").arg(openedNewer).arg(shown,
               QFileInfo(r.window.projectPathForTest()).fileName()));
@@ -19414,6 +19417,704 @@ void runKeptArtPass(const QString &scratch)
           within(s8r, 50000, 100), QStringLiteral("%1 px").arg(s8r));
     if (again)
         again->window.markCleanForTest();
+}
+
+// THE SCENE LENGTH LOCK (batch F1, 2026-11-12; Figma F-1; the user's decisions of 2026-11-10
+// and Q-F1 to Q-F3): a scene's length locked, undoable and saved (file version 5 only then);
+// its lock, accent baseline and end line on the SCENES row; inside it a new panel splits the
+// one it follows, a deleted panel's time goes to the one before, an edge rolls, a typed
+// length takes from its neighbour, and the camera keys keep their frames; the Script Editor
+// refused. And the drawing-view chip clear of the Move tool's mode bar (B2's hand test).
+void runSceneLockPass(const QString &scratch)
+{
+    using namespace workspace;
+    out() << "--- (sl) the scene length lock: the lock, the SCENES row, adding, deleting, the edges, typing ---"
+          << Qt::endl;
+    const QString folder = scratch + QStringLiteral("/scenelock");
+    QDir(folder).removeRecursively();
+    QDir().mkpath(folder);
+    const QSize size(960, 540);
+    // Scene 1 (SHORE): 30, 35, 48 and 32 frames at 24 fps (145 f), camera keys at its frames
+    // 0 (panel 1), 85 (panel 3's frame 20) and 129 (panel 4's frame 16). Scene 2 (CAVE): 24, 24.
+    const QString project = folder + QStringLiteral("/Locks.sankotv");
+    {
+        Scene *a = new Scene;
+        a->number = 1;
+        a->location = QStringLiteral("SHORE");
+        a->timeOfDay = QStringLiteral("DAY");
+        for (int f : {30, 35, 48, 32}) {
+            Panel *p = makeBlankPanel(size);
+            p->setLength(f, 24);
+            a->panels.append(p);
+        }
+        shotcam::CameraState s1, s2, s3;
+        s1.cx = 480; s1.cy = 270; s1.zoom = 1.0;
+        s2 = s1; s2.cx = 520; s2.zoom = 1.2;
+        s3 = s1; s3.cx = 440; s3.zoom = 1.4;
+        a->camera.keys = {shotcam::makeKey(*a, 0, 0, 24, s1), shotcam::makeKey(*a, 2, 20, 24, s2),
+                          shotcam::makeKey(*a, 3, 16, 24, s3)};
+        Scene *b = new Scene;
+        b->number = 2;
+        b->location = QStringLiteral("CAVE");
+        b->timeOfDay = QStringLiteral("NIGHT");
+        for (int f : {24, 24}) {
+            Panel *p = makeBlankPanel(size);
+            p->setLength(f, 24);
+            b->panels.append(p);
+        }
+        ProjectIO::SaveData data;
+        data.projectName = QStringLiteral("Locks");
+        data.fps = 24;
+        data.canvasSize = size;
+        data.scenes = {a, b};
+        const ProjectIO::WriteResult w = ProjectIO::projectToJson(data, project);
+        QFile f(project);
+        if (w.ok && f.open(QIODevice::WriteOnly))
+            f.write(QJsonDocument(w.root).toJson(QJsonDocument::Indented));
+        f.close();
+        delete a;
+        delete b;
+    }
+    auto rig = std::make_unique<Rig>(project);
+    Rig &r = *rig;
+    check(QStringLiteral("(sl) the workspace opened"), r.ok);
+    if (!r.ok)
+        return;
+    AnimaticTimeline *tl = r.timeline;
+    QUndoStack *stack = r.window.undoStackForTest();
+    const QChar dot(0x00B7);
+    auto scene = [&](int i) { return r.window.scenesForTest().value(i); };
+    auto lengths = [&] {
+        QStringList d;
+        for (int i = 0; i < tl->blockCountForTest(); ++i)
+            d << QString::number(tl->blockFramesForTest(i));
+        return d.join(QLatin1Char(' '));
+    };
+    auto starts = [&] {
+        QStringList d;
+        for (int i = 0; i < tl->blockCountForTest(); ++i)
+            d << QString::number(tl->blockStartForTest(i));
+        return d.join(QLatin1Char(' '));
+    };
+    auto keyFrames = [&] { // scene 1's keys: their scene frames
+        QStringList d;
+        if (Scene *s = scene(0))
+            for (const shotcam::CameraKey &k : s->camera.keys)
+                d << QString::number(shotcam::keyFrame(*s, k, 24), 'f', 2);
+        return d.join(QLatin1Char(' '));
+    };
+    auto keyPanels = [&] { // ...and the panel each is on
+        QStringList d;
+        if (Scene *s = scene(0))
+            for (const shotcam::CameraKey &k : s->camera.keys)
+                d << QString::number(shotcam::panelIndexOfUid(*s, k.panelUid) + 1);
+        return d.join(QLatin1Char(' '));
+    };
+    auto note = [&] { return r.storyboard->lastNoteForTest(); };
+    auto sceneMenuLock = [&](int si) { // the scene menu's lock entry, as it reads
+        QString text;
+        r.storyboard->setClipMenuHookForTest([&text](QMenu *menu) {
+            for (QAction *a : menu->actions())
+                if (a->objectName() == QLatin1String("sceneLengthLock"))
+                    text = a->text();
+        });
+        r.storyboard->sceneMenuForTest(si);
+        r.storyboard->setClipMenuHookForTest(nullptr);
+        return text;
+    };
+    auto mouse = [&](QEvent::Type type, const QPointF &at, bool alt) {
+        QMouseEvent ev(type, at, r.surface->mapToGlobal(at.toPoint()), Qt::LeftButton,
+                       type == QEvent::MouseButtonRelease ? Qt::NoButton : Qt::LeftButton,
+                       alt ? Qt::AltModifier : Qt::NoModifier);
+        QCoreApplication::sendEvent(r.surface, &ev);
+    };
+    auto hover = [&](const QPointF &at) {
+        QMouseEvent ev(QEvent::MouseMove, at, r.surface->mapToGlobal(at.toPoint()), Qt::NoButton, Qt::NoButton,
+                       Qt::NoModifier);
+        QCoreApplication::sendEvent(r.surface, &ev);
+        pump(60);
+    };
+    auto accent = [](const QImage &img, const QRect &rect) { // #7c6ef6, near enough
+        int n = 0;
+        const QRect in = rect & img.rect();
+        for (int y = in.top(); y <= in.bottom(); ++y)
+            for (int x = in.left(); x <= in.right(); ++x) {
+                const QColor c = img.pixelColor(x, y);
+                n += qAbs(c.red() - 0x7c) <= 30 && qAbs(c.green() - 0x6e) <= 30 && qAbs(c.blue() - 0xf6) <= 30 ? 1 : 0;
+            }
+        return n;
+    };
+    auto changed = [](const QImage &a, const QImage &b, const QRect &rect) {
+        int n = 0;
+        const QRect in = rect & a.rect() & b.rect();
+        for (int y = in.top(); y <= in.bottom(); ++y)
+            for (int x = in.left(); x <= in.right(); ++x)
+                n += a.pixel(x, y) != b.pixel(x, y) ? 1 : 0;
+        return n;
+    };
+    const QString opened = lengths(), openedStarts = starts(), openedKeys = keyFrames();
+    check(QStringLiteral("(sl) the fixture: scene 1 of 30, 35, 48, 32 frames with keys at 0, 85 and 129; scene 2 of 24, 24"),
+          opened == QStringLiteral("30 35 48 32 24 24") && openedStarts == QStringLiteral("0 30 65 113 145 169")
+              && openedKeys == QStringLiteral("0.00 85.00 129.00") && keyPanels() == QStringLiteral("1 3 4"),
+          QStringLiteral("%1 | %2 | %3 | %4").arg(opened, openedStarts, openedKeys, keyPanels()));
+
+    // ---- (sl1) the lock ----------------------------------------------------------------
+    const QImage before = r.surface->grab().toImage();
+    const QString menuBefore = sceneMenuLock(0);
+    int n0 = stack->index();
+    r.storyboard->clearNoteForTest();
+    r.storyboard->toggleSceneLengthLock(0);
+    pump(120);
+    const QString lockNote = note(), lockText = stack->undoText();
+    const bool lockedNow = scene(0) && scene(0)->lengthLocked;
+    const int lockSteps = stack->index() - n0;
+    const QString menuAfter = sceneMenuLock(0);
+    stack->undo();
+    pump(80);
+    const bool afterUndo = scene(0)->lengthLocked;
+    stack->redo();
+    pump(120);
+    const bool afterRedo = scene(0)->lengthLocked;
+    check(QStringLiteral("(sl1) THE LOCK: the scene's menu offers \"Lock Scene Length (6s 1f %1 145 f)\"; it locks scene 1 "
+                         "as one \"Lock Scene Length\" step and says \"Scene 1's length is locked at 6s 1f (145 f).\"; the "
+                         "menu then offers \"Unlock Scene Length (6s 1f %1 145 f)\"; Undo unlocks it, Redo locks it again").arg(dot),
+          menuBefore == QStringLiteral("Lock Scene Length (6s 1f %1 145 f)").arg(dot) && lockedNow && lockSteps == 1
+              && lockText == QStringLiteral("Lock Scene Length")
+              && lockNote == QStringLiteral("Scene 1's length is locked at 6s 1f (145 f).")
+              && menuAfter == QStringLiteral("Unlock Scene Length (6s 1f %1 145 f)").arg(dot) && !afterUndo && afterRedo,
+          QStringLiteral("menu '%1' -> '%2'; locked %3, +%4 '%5'; note '%6'; undo %7 redo %8")
+              .arg(menuBefore, menuAfter).arg(lockedNow).arg(lockSteps).arg(lockText, lockNote).arg(afterUndo).arg(afterRedo));
+    const QString menu2 = sceneMenuLock(1);
+    check(QStringLiteral("(sl1) control: scene 2 is not locked, and its menu offers to lock it at its own 2s (48 f)"),
+          scene(1) && !scene(1)->lengthLocked && menu2 == QStringLiteral("Lock Scene Length (2s %1 48 f)").arg(dot), menu2);
+
+    // ---- (sl3) the SCENES row -----------------------------------------------------------
+    const QImage locked = r.surface->grab().toImage();
+    const QRect lock1 = tl->sceneLockRectForTest(0), scene1 = tl->sceneRectForTest(0), scene2 = tl->sceneRectForTest(1);
+    const int endX = tl->sceneEndLineXForTest(0);
+    const QRect camRow = tl->cameraRowForTest();
+    const int lockPx = accent(locked, lock1), lockPxBefore = accent(before, lock1);
+    const int linePx = accent(locked, QRect(endX - 1, 30, 2, 40));
+    const int faintPx = changed(before, locked, QRect(endX - 1, camRow.top() + 2, 1, camRow.height() - 4));
+    const int basePx = accent(locked, QRect(scene1.left() + 20, 46, scene1.width() - 40, 2));
+    const int scene2Px = changed(before, locked, QRect(endX + 2, 24, scene2.right() - endX - 2, 100));
+    check(QStringLiteral("(sl3) THE SCENES ROW: the locked scene shows its lock before its name, a 2 px accent baseline, and "
+                         "its end as a 2 px accent line across SCENES and SHOTS (with its flag), faint through CAMERA"),
+          endX == scene1.left() + scene1.width() && lockPx >= 10 && lockPxBefore == 0 && linePx >= 70 && faintPx >= 10
+              && basePx >= (scene1.width() - 40) * 2 * 9 / 10,
+          QStringLiteral("end x %1 (scene ends %2); lock %3 px (before %4); line %5 of 80; faint %6; baseline %7")
+              .arg(endX).arg(scene1.left() + scene1.width()).arg(lockPx).arg(lockPxBefore).arg(linePx).arg(faintPx)
+              .arg(basePx));
+    check(QStringLiteral("(sl3) control: scene 2 (unlocked) paints as before - not one pixel of its block or its clips "
+                         "changed - and has no end line"),
+          scene2Px == 0 && tl->sceneEndLineXForTest(1) == -1,
+          QStringLiteral("%1 px changed; end line %2").arg(scene2Px).arg(tl->sceneEndLineXForTest(1)));
+    const QString tip1 = tl->sceneTipForTest(0, false), tip2 = tl->sceneTipForTest(1, false);
+    const QString lockTip1 = tl->sceneTipForTest(0, true), lockTip2 = tl->sceneTipForTest(1, true);
+    hover(tl->sceneLockRectForTest(1).center());
+    const QImage hovered = r.surface->grab().toImage();
+    const QString shownOverLock = QToolTip::text();
+    const int faintLockPx = changed(locked, hovered, tl->sceneLockRectForTest(1));
+    const bool handOverLock = r.surface->cursor().shape() == Qt::PointingHandCursor;
+    hover(QPointF(scene2.left() + scene2.width() - 6, scene2.center().y()));
+    const QString shownOverBlock = QToolTip::text();
+    check(QStringLiteral("(sl3) THE HOVERS: over a scene, \"Scene 2 ends 00:00:08:01 %1 2s %1 48 f\" (the locked one adds "
+                         "\"%1 locked\"); over an unlocked scene's name its lock shows, faint, with the hand and \"Lock "
+                         "scene 2's length (2s %1 48 f)\"; a locked one's says \"Unlock scene 1's length\"").arg(dot),
+          tip1 == QStringLiteral("Scene 1 ends 00:00:06:01 %1 6s 1f %1 145 f %1 locked").arg(dot)
+              && tip2 == QStringLiteral("Scene 2 ends 00:00:08:01 %1 2s %1 48 f").arg(dot)
+              && lockTip2 == QStringLiteral("Lock scene 2's length (2s %1 48 f)").arg(dot)
+              && lockTip1 == QStringLiteral("Unlock scene 1's length") && shownOverLock == lockTip2
+              && shownOverBlock == tip2 && faintLockPx > 0 && handOverLock,
+          QStringLiteral("'%1' '%2' '%3' '%4'; shown '%5' / '%6'; faint lock %7 px; hand %8")
+              .arg(tip1, tip2, lockTip1, lockTip2, shownOverLock, shownOverBlock).arg(faintLockPx).arg(handOverLock));
+    n0 = stack->index();
+    const QPointF lock2 = tl->sceneLockRectForTest(1).center();
+    mouse(QEvent::MouseButtonPress, lock2, false);
+    mouse(QEvent::MouseButtonRelease, lock2, false);
+    pump(120);
+    const bool clickLocked = scene(1)->lengthLocked;
+    const int clickSteps = stack->index() - n0;
+    stack->undo();
+    pump(80);
+    QEvent leave(QEvent::Leave);
+    QCoreApplication::sendEvent(r.surface, &leave);
+    pump(60);
+    check(QStringLiteral("(sl3) A CLICK ON THE LOCK locks the scene (one step); control: Undo unlocks it"),
+          clickLocked && clickSteps == 1 && !scene(1)->lengthLocked,
+          QStringLiteral("locked %1, +%2, after Undo %3").arg(clickLocked).arg(clickSteps).arg(scene(1)->lengthLocked));
+
+    tl->setZoomForTest(400.0f); // 4 px a frame: every frame a drag can reach
+    pump(150);
+    auto xOf = [&](int frame) {
+        const int x0 = tl->clipRectForTest(0).left(); // frame 0
+        return x0 + (frame * tl->pxPerFrameForTest() - (tl->contentXAtForTest(x0)));
+    };
+    QString chip;
+    auto drag = [&](const QPointF &from, double toX, bool alt) {
+        mouse(QEvent::MouseButtonPress, from, alt);
+        mouse(QEvent::MouseMove, QPointF((from.x() + toX) / 2.0, from.y()), alt);
+        mouse(QEvent::MouseMove, QPointF(toX, from.y()), alt);
+        chip = tl->dragChipForTest();
+        mouse(QEvent::MouseButtonRelease, QPointF(toX, from.y()), alt);
+        pump(200);
+    };
+    auto press = [&](const QPointF &at, bool alt) { // pressed and let go where it was
+        tl->clearRefusalForTest();
+        mouse(QEvent::MouseButtonPress, at, alt);
+        mouse(QEvent::MouseButtonRelease, at, alt);
+        pump(150);
+        return tl->lastRefusalForTest();
+    };
+    auto rightEdge = [&](int flat) {
+        const QRect c = tl->clipRectForTest(flat);
+        return QPointF(c.left() + c.width() - 2, c.center().y());
+    };
+    auto leftEdge = [&](int flat) {
+        const QRect c = tl->clipRectForTest(flat);
+        return QPointF(c.left() + 2, c.center().y());
+    };
+    auto undoTo = [&](int index) {
+        while (stack->index() > index)
+            stack->undo();
+        pump(150);
+    };
+
+    // ---- (sl4) Add splits the panel it follows ---------------------------------------------
+    clickClip(r, 2); // panel 3: the playhead goes to its start...
+    r.animatic->setPlayheadFrameInPanel(2, 20); // ...and 20 frames in
+    pump(80);
+    n0 = stack->index();
+    r.storyboard->clearNoteForTest();
+    r.storyboard->addPanelForTest();
+    pump(150);
+    const QString addL = lengths(), addS = starts(), addK = keyFrames(), addKP = keyPanels(), addNote = note(),
+                  addText = stack->undoText();
+    const int addSteps = stack->index() - n0;
+    check(QStringLiteral("(sl4) ADD PANEL IN A LOCKED SCENE SPLITS THE PANEL IT FOLLOWS at the playhead: panel 3 keeps "
+                         "its 20 frames to the playhead, the new panel 4 takes the other 28, and no other cut moves (scene "
+                         "2 still starts at 145); one \"Add Panel\" step; \"Panel 4 starts at the playhead and takes 1s 4f "
+                         "from panel 3: scene 1's length is locked.\""),
+          addL == QStringLiteral("30 35 20 28 32 24 24") && addS == QStringLiteral("0 30 65 85 113 145 169")
+              && addSteps == 1 && addText == QStringLiteral("Add Panel")
+              && addNote == QStringLiteral("Panel 4 starts at the playhead and takes 1s 4f from panel 3: scene 1's length is locked."),
+          QStringLiteral("%1 | %2; +%3 '%4'; '%5'").arg(addL, addS).arg(addSteps).arg(addText, addNote));
+    check(QStringLiteral("(sl4) THE CAMERA KEYS KEEP THEIR FRAMES (Q-F1): still at 0, 85 and 129 - the one at 85, panel "
+                         "3's end now, stays on panel 3"),
+          addK == QStringLiteral("0.00 85.00 129.00") && addKP == QStringLiteral("1 3 5"),
+          QStringLiteral("frames %1, panels %2").arg(addK, addKP));
+    // ---- (sl8, first) Add then Delete is where it began ------------------------------------
+    r.storyboard->clearNoteForTest();
+    r.storyboard->deleteSelectedPanelConfirmedForTest(); // the new panel, selected
+    pump(150);
+    const QString backL = lengths(), backK = keyFrames(), backKP = keyPanels(), backNote = note();
+    check(QStringLiteral("(sl8) ADD THEN DELETE IS WHERE IT BEGAN: the new panel's 28 frames go back to panel 3, the "
+                         "keys on their frames and panels; \"Panel 4's 1s 4f went to panel 3: scene 1's length is locked.\""),
+          backL == opened && backK == openedKeys && backKP == QStringLiteral("1 3 4")
+              && backNote == QStringLiteral("Panel 4's 1s 4f went to panel 3: scene 1's length is locked."),
+          QStringLiteral("%1; keys %2 on %3; '%4'").arg(backL, backK, backKP, backNote));
+    undoTo(n0);
+    const QString undoneL = lengths(), undoneK = keyFrames();
+    clickClip(r, 4); // control: scene 2, unlocked
+    n0 = stack->index();
+    r.storyboard->clearNoteForTest();
+    r.storyboard->addPanelForTest();
+    pump(150);
+    const QString freeL = lengths(), freeNote = note();
+    undoTo(n0);
+    check(QStringLiteral("(sl4) control: Undo puts it all back; in unlocked scene 2 Add Panel adds 1 s (24 frames) and "
+                         "says nothing - the film is longer"),
+          undoneL == opened && undoneK == openedKeys && freeL == QStringLiteral("30 35 48 32 24 24 24") && freeNote.isEmpty()
+              && lengths() == opened,
+          QStringLiteral("undone %1 keys %2; scene 2: %3 '%4'").arg(undoneL, undoneK, freeL, freeNote));
+
+    // ---- (sl5) halved, when the playhead is not inside it ----------------------------------
+    clickClip(r, 1); // panel 2 (35 f), the playhead on its first frame
+    n0 = stack->index();
+    r.storyboard->clearNoteForTest();
+    r.storyboard->addPanelForTest();
+    pump(150);
+    const QString halfL = lengths(), halfNote = note();
+    undoTo(n0);
+    check(QStringLiteral("(sl5) HALVED: with the playhead on panel 2's first frame, its 35 frames are split 18 and 17 "
+                         "(the earlier half keeps the odd frame): \"Panel 3 takes half of panel 2 (17f): scene 1's length "
+                         "is locked.\""),
+          halfL == QStringLiteral("30 18 17 48 32 24 24")
+              && halfNote == QStringLiteral("Panel 3 takes half of panel 2 (17f): scene 1's length is locked."),
+          QStringLiteral("%1 '%2'").arg(halfL, halfNote));
+
+    // ---- (sl6) Duplicate and Paste take their time from the panel before ------------------
+    clickClip(r, 3); // panel 4 (32 f)
+    n0 = stack->index();
+    r.storyboard->clearNoteForTest();
+    r.storyboard->duplicateSelectedPanelForTest();
+    pump(150);
+    const QString dupL = lengths(), dupK = keyFrames(), dupNote = note();
+    undoTo(n0);
+    clickClip(r, 0); // panel 1 (30 f), copied and pasted after itself
+    r.storyboard->editCopy();
+    n0 = stack->index();
+    r.storyboard->clearNoteForTest();
+    r.storyboard->editPaste();
+    pump(150);
+    const QString pasteL = lengths(), pasteNote = note();
+    undoTo(n0);
+    r.storyboard->clearNoteForTest();
+    r.storyboard->editPasteInPlace(); // at the copied place: first in the scene, so from the panel after
+    pump(150);
+    const QString inPlaceL = lengths(), inPlaceK = keyFrames(), inPlaceNote = note();
+    undoTo(n0);
+    check(QStringLiteral("(sl6) DUPLICATE AND PASTE split the same way, not at their own length: the copy of panel 4 "
+                         "takes half of it (16 of 32 frames), the pasted panel 1 half of panel 1 (15 of 30); the keys "
+                         "keep their frames; the notes say \"not its own\""),
+          dupL == QStringLiteral("30 35 48 16 16 24 24") && dupK == openedKeys
+              && dupNote == QStringLiteral("The copy takes 16f from panel 4, not its own 1s 8f: scene 1's length is locked.")
+              && pasteL == QStringLiteral("15 15 35 48 32 24 24")
+              && pasteNote == QStringLiteral("The pasted panel takes 15f from panel 1, not its own 1s 6f: scene 1's length is locked."),
+          QStringLiteral("duplicate %1 keys %2 '%3'; paste %4 '%5'").arg(dupL, dupK, dupNote, pasteL, pasteNote));
+    check(QStringLiteral("(sl6) PASTE IN PLACE, first in the scene: it takes its time from the panel after it (15 of panel "
+                         "1's 30, the earlier half its own), and the key on frame 0 stays there"),
+          inPlaceL == QStringLiteral("15 15 35 48 32 24 24") && inPlaceK == openedKeys
+              && inPlaceNote == QStringLiteral("The pasted panel takes 15f from panel 2, not its own 1s 6f: scene 1's length is locked."),
+          QStringLiteral("%1 keys %2 '%3'").arg(inPlaceL, inPlaceK, inPlaceNote));
+
+    // ---- (sl7) typed shorter, then no room ------------------------------------------------
+    auto fieldEdit = [&]() -> QLineEdit * {
+        QWidget *f = tl->durationFieldForTest();
+        return f ? f->findChild<QLineEdit *>(QStringLiteral("durFrames")) : nullptr;
+    };
+    auto typeLength = [&](int flat, int frames) {
+        const QPointF c = tl->pillRectForTest(flat).center();
+        sendMouse(r.surface, QEvent::MouseButtonPress, c, Qt::LeftButton);
+        sendMouse(r.surface, QEvent::MouseButtonRelease, c, Qt::LeftButton);
+        sendMouse(r.surface, QEvent::MouseButtonDblClick, c, Qt::LeftButton);
+        sendMouse(r.surface, QEvent::MouseButtonRelease, c, Qt::LeftButton);
+        pump(150);
+        QLineEdit *edit = fieldEdit();
+        if (!edit)
+            return false;
+        edit->setText(QString::number(frames));
+        QKeyEvent press(QEvent::KeyPress, Qt::Key_Return, Qt::NoModifier);
+        QCoreApplication::sendEvent(edit, &press);
+        QKeyEvent release(QEvent::KeyRelease, Qt::Key_Return, Qt::NoModifier);
+        QCoreApplication::sendEvent(edit, &release);
+        pump(200);
+        return true;
+    };
+    const int typedBase = stack->index();
+    r.storyboard->clearNoteForTest();
+    const bool typedShort = typeLength(3, 1); // the scene's last panel: the one before takes the rest
+    const QString shortL = lengths(), shortK = keyFrames(), shortNote = note(), shortText = stack->undoText();
+    clickClip(r, 3);
+    n0 = stack->index();
+    r.storyboard->clearNoteForTest();
+    r.storyboard->addPanelForTest();
+    pump(150);
+    const QString roomL = lengths(), roomNote = note();
+    const int roomSteps = stack->index() - n0;
+    clickClip(r, 2); // control: after the 79-frame panel 3, the same Add splits it
+    r.storyboard->addPanelForTest();
+    pump(150);
+    const QString roomyL = lengths();
+    undoTo(typedBase);
+    check(QStringLiteral("(sl7) TYPED SHORTER, THE LAST PANEL: 1 frame for panel 4, and panel 3 takes the other 31 "
+                         "(\"Panel 3 took the 1s 7f: scene 1's length is locked.\"), one \"Change Panel Duration\" step; "
+                         "the key on panel 4 stays on frame 129, now panel 3's"),
+          typedShort && shortL == QStringLiteral("30 35 79 1 24 24") && shortK == openedKeys
+              && shortNote == QStringLiteral("Panel 3 took the 1s 7f: scene 1's length is locked.")
+              && shortText == QStringLiteral("Change Panel Duration"),
+          QStringLiteral("%1 keys %2 '%3' '%4'").arg(shortL, shortK, shortNote, shortText));
+    check(QStringLiteral("(sl7) NO ROOM: Add Panel after the 1-frame panel 4 is refused, nothing changes, and it says "
+                         "why; control: the same Add after the 79-frame panel 3 splits it (40 and 39)"),
+          roomL == QStringLiteral("30 35 79 1 24 24") && roomSteps == 0
+              && roomNote == QStringLiteral("Panel 4 is 1 frame long, so it has no time to give a new panel: scene 1's "
+                                            "length is locked. Lengthen panel 4 first, or unlock the scene.")
+              && roomyL == QStringLiteral("30 35 40 39 1 24 24") && lengths() == opened,
+          QStringLiteral("%1, +%2, '%3'; after panel 3 %4; after the undo %5").arg(roomL).arg(roomSteps)
+              .arg(roomNote, roomyL, lengths()));
+
+    // ---- (sl8) Delete gives the time to the panel before -----------------------------------
+    clickClip(r, 2); // panel 3 (48 f), the key at 85 on it
+    n0 = stack->index();
+    r.storyboard->clearNoteForTest();
+    r.storyboard->deleteSelectedPanelConfirmedForTest();
+    pump(150);
+    const QString delL = lengths(), delS = starts(), delK = keyFrames(), delKP = keyPanels(), delNote = note(),
+                  delText = stack->undoText();
+    undoTo(n0);
+    const QString delUndoKP = keyPanels();
+    clickClip(r, 0); // the first panel: its time goes to the next
+    n0 = stack->index();
+    r.storyboard->clearNoteForTest();
+    r.storyboard->deleteSelectedPanelConfirmedForTest();
+    pump(150);
+    const QString firstL = lengths(), firstK = keyFrames(), firstNote = note();
+    undoTo(n0);
+    check(QStringLiteral("(sl8) DELETE IN A LOCKED SCENE: panel 3's 48 frames go to panel 2 (83), no other cut moves, "
+                         "one \"Delete Panel\" step, and its key stays on frame 85, now on panel 2 (\"... Its camera key "
+                         "stays on its frame, now on panel 2.\"); Undo puts it back on panel 3. The first panel's time goes "
+                         "to the next"),
+          delL == QStringLiteral("30 83 32 24 24") && delS == QStringLiteral("0 30 113 145 169") && delK == openedKeys
+              && delKP == QStringLiteral("1 2 3") && delText == QStringLiteral("Delete Panel")
+              && delNote == QStringLiteral("Panel 3's 2s went to panel 2: scene 1's length is locked. Its camera key "
+                                           "stays on its frame, now on panel 2.")
+              && delUndoKP == QStringLiteral("1 3 4") && firstL == QStringLiteral("65 48 32 24 24") && firstK == openedKeys
+              && firstNote == QStringLiteral("Panel 1's 1s 6f went to the next panel, now panel 1: scene 1's length is "
+                                             "locked. Its camera key stays on its frame, now on panel 1."),
+          QStringLiteral("%1 | %2 keys %3 on %4 '%5' '%6'; undone on %7; first %8 keys %9 '%10'")
+              .arg(delL, delS, delK, delKP, delText, delNote, delUndoKP, firstL).arg(firstK, firstNote));
+    clickClip(r, 5); // control: scene 2's last panel, unlocked
+    n0 = stack->index();
+    r.storyboard->clearNoteForTest();
+    r.storyboard->deleteSelectedPanelConfirmedForTest();
+    pump(150);
+    const QString freeDel = lengths(), freeDelNote = note();
+    undoTo(n0);
+    check(QStringLiteral("(sl8) control: in unlocked scene 2 Delete takes the time out (the film is 24 frames shorter) "
+                         "and says nothing"),
+          freeDel == QStringLiteral("30 35 48 32 24") && freeDelNote.isEmpty() && lengths() == opened,
+          QStringLiteral("%1 '%2'").arg(freeDel, freeDelNote));
+
+    // ---- (sl9) the edges ------------------------------------------------------------------
+    const QString minus6 = QString(QChar(0x2212)) + QStringLiteral("6 f"); // as the chips write it
+    clickClip(r, 1);
+    n0 = stack->index();
+    drag(rightEdge(1), xOf(71), false); // the cut between panels 2 and 3, 6 frames later, no Alt
+    const QString rollL = lengths(), rollS = starts(), rollK = keyFrames(), rollChip = chip, rollText = stack->undoText();
+    undoTo(n0);
+    check(QStringLiteral("(sl9) AN INNER EDGE ROLLS, without Alt: panel 2 +6 (41), panel 3 -6 (42), nothing else moves; "
+                         "one \"Roll Panel Cut\" step; the chip read \"locked %1 roll: P2 +6 f, P3 %2\"; the key at "
+                         "85 stays there").arg(dot).arg(minus6),
+          rollL == QStringLiteral("30 41 42 32 24 24") && rollS == QStringLiteral("0 30 71 113 145 169")
+              && rollText == QStringLiteral("Roll Panel Cut") && rollK == openedKeys
+              && rollChip == QStringLiteral("locked %1 roll: P2 +6 f, P3 %2").arg(dot).arg(minus6),
+          QStringLiteral("%1 | %2 keys %3 '%4' '%5'").arg(rollL, rollS, rollK, rollChip, rollText));
+    r.storyboard->toggleSceneLengthLock(0); // control: unlocked, the same cut rolled with Alt
+    pump(80);
+    const int unlockedAt = stack->index();
+    clickClip(r, 1);
+    drag(rightEdge(1), xOf(71), true);
+    const QString freeRollK = keyFrames();
+    undoTo(unlockedAt);
+    stack->undo(); // locked again
+    pump(120);
+    check(QStringLiteral("(sl9) control: unlocked, the same roll (with Alt) moves the key on panel 3 with its panel "
+                         "(85 to 88.5) - the lock is what keeps it"),
+          freeRollK == QStringLiteral("0.00 88.50 129.00") && scene(0)->lengthLocked && keyFrames() == openedKeys,
+          QStringLiteral("unlocked %1; locked again %2, keys %3").arg(freeRollK).arg(scene(0)->lengthLocked).arg(keyFrames()));
+    clickClip(r, 3); // the scene's last panel
+    const QString endsSaid = press(rightEdge(3), false);
+    hover(rightEdge(3));
+    const int shapeFirst = int(r.surface->cursor().shape());
+    hover(rightEdge(3) + QPointF(-1, 0));
+    const int shapeSecond = int(r.surface->cursor().shape());
+    const int selAtHover = tl->selectedPanelForTest();
+    const bool forbidden = r.surface->cursor().shape() == Qt::ForbiddenCursor;
+    clickClip(r, 0);
+    const QString startSaid = press(leftEdge(0), false);
+    clickClip(r, 4); // scene 2's first panel: Alt on its left edge rolls the cut into scene 1
+    const QString cutSaid = press(leftEdge(4), true);
+    clickClip(r, 1);
+    hover(rightEdge(1));
+    const bool sizeInner = r.surface->cursor().shape() == Qt::SizeHorCursor;
+    check(QStringLiteral("(sl9) THE SCENE'S ENDS HOLD: a press on the last panel's right edge or the first panel's left "
+                         "edge says \"Scene 1's length is locked: its ends stay where they are.\" (the \"not allowed\" "
+                         "pointer there); an Alt-roll of the cut to scene 2 says \"Scene 1's length is locked: the cut "
+                         "between scenes 1 and 2 stays.\"; nothing changes; an inner edge keeps the resize pointer"),
+          endsSaid == QStringLiteral("Scene 1's length is locked: its ends stay where they are.") && startSaid == endsSaid
+              && cutSaid == QStringLiteral("Scene 1's length is locked: the cut between scenes 1 and 2 stays.")
+              && forbidden && sizeInner && lengths() == opened,
+          QStringLiteral("'%1' '%2' '%3'; forbidden %4 (shapes %7, %8; selected %9), inner resize %5; %6")
+              .arg(endsSaid, startSaid, cutSaid).arg(forbidden).arg(sizeInner).arg(lengths()).arg(shapeFirst)
+              .arg(shapeSecond).arg(selAtHover));
+    clickClip(r, 5); // control: unlocked scene 2's last panel ripples, as before
+    n0 = stack->index();
+    drag(rightEdge(5), xOf(199), false);
+    const QString rippleL = lengths();
+    undoTo(n0);
+    r.storyboard->toggleSceneLengthLock(0); // and with scene 1 unlocked, the cut between scenes rolls
+    pump(80);
+    const int unlocked2 = stack->index();
+    clickClip(r, 4);
+    drag(leftEdge(4), xOf(151), true);
+    const QString crossL = lengths(), crossChip = chip;
+    undoTo(unlocked2);
+    stack->undo(); // locked again
+    pump(120);
+    check(QStringLiteral("(sl9) control: unlocked scene 2's end ripples (+6, the film longer); with scene 1 unlocked the "
+                         "cut between the scenes rolls, and its chip names the scenes: \"Alt %1 roll: S1 P4 +6 f, S2 P1 %2"
+                         "\"").arg(dot).arg(minus6),
+          rippleL == QStringLiteral("30 35 48 32 24 30") && crossL == QStringLiteral("30 35 48 38 18 24")
+              && crossChip == QStringLiteral("Alt %1 roll: S1 P4 +6 f, S2 P1 %2").arg(dot).arg(minus6)
+              && scene(0)->lengthLocked && lengths() == opened,
+          QStringLiteral("ripple %1; across %2 '%3'; %4").arg(rippleL, crossL, crossChip, lengths()));
+
+    // ---- (sl10) typed lengths take from the next panel ------------------------------------
+    n0 = stack->index();
+    r.storyboard->clearNoteForTest();
+    const bool typedLong = typeLength(1, 60);
+    const QString longL = lengths(), longK = keyFrames(), longNote = note();
+    undoTo(n0);
+    r.storyboard->clearNoteForTest();
+    typeLength(1, 90); // more than panel 3 can give
+    const QString limitL = lengths(), limitNote = note();
+    undoTo(n0);
+    check(QStringLiteral("(sl10) TYPED LONGER: 60 frames for panel 2 - panel 3 gives 25 (\"Panel 3 gave 1s 1f to panel 2: "
+                         "scene 1's length is locked.\"), the key at 85 stays; 90 asks more than panel 3 has: it keeps 1 "
+                         "frame and the edit stops there (\"Panel 3 could give only 1s 23f: panel 2 is 3s 10f, not 3s 18f "
+                         "(scene 1's length is locked).\") - panel 4 is not touched"),
+          typedLong && longL == QStringLiteral("30 60 23 32 24 24") && longK == openedKeys
+              && longNote == QStringLiteral("Panel 3 gave 1s 1f to panel 2: scene 1's length is locked.")
+              && limitL == QStringLiteral("30 82 1 32 24 24")
+              && limitNote == QStringLiteral("Panel 3 could give only 1s 23f: panel 2 is 3s 10f, not 3s 18f (scene 1's "
+                                             "length is locked).")
+              && lengths() == opened,
+          QStringLiteral("%1 keys %2 '%3'; %4 '%5'").arg(longL, longK, longNote, limitL, limitNote));
+    n0 = stack->index();
+    typeLength(4, 60); // control: scene 2's first panel, unlocked
+    const QString freeTyped = lengths();
+    undoTo(n0);
+    clickClip(r, 5); // scene 2 down to one panel, then locked: its one panel cannot change
+    r.storyboard->deleteSelectedPanelConfirmedForTest();
+    pump(120);
+    r.storyboard->toggleSceneLengthLock(1);
+    pump(80);
+    const int onlyBase = stack->index();
+    r.storyboard->clearNoteForTest();
+    typeLength(4, 30);
+    const QString onlyL = lengths(), onlyNote = note();
+    const int onlySteps = stack->index() - onlyBase;
+    undoTo(n0);
+    check(QStringLiteral("(sl10) control: unlocked scene 2's first panel typed to 60 ripples (the film longer)"),
+          freeTyped == QStringLiteral("30 35 48 32 60 24"), freeTyped);
+    check(QStringLiteral("(sl10) ONE PANEL: a locked scene whose only panel is typed to another length refuses it, "
+                         "nothing changes: \"Scene 2's length is locked, and panel 1 is its only panel: its length cannot "
+                         "change.\""),
+          onlyL == QStringLiteral("30 35 48 32 24") && onlySteps == 0
+              && onlyNote == QStringLiteral("Scene 2's length is locked, and panel 1 is its only panel: its length cannot change.")
+              && lengths() == opened && !scene(1)->lengthLocked,
+          QStringLiteral("only %1 +%2 '%3'; back %4").arg(onlyL).arg(onlySteps).arg(onlyNote, lengths()));
+
+    // ---- (sl11) the Script Editor -----------------------------------------------------------
+    QString scriptSaid;
+    r.window.setLockMessageHookForTest([&scriptSaid](const QString &m) { scriptSaid = m; });
+    QJsonArray script;
+    {
+        QJsonObject s;
+        s.insert(QStringLiteral("scene_number"), 1);
+        s.insert(QStringLiteral("location"), QStringLiteral("INT. A NEW SCRIPT"));
+        s.insert(QStringLiteral("time_of_day"), QStringLiteral("DAY"));
+        s.insert(QStringLiteral("action"), QStringLiteral("Everything replaced."));
+        script.append(s);
+    }
+    const bool appliedLocked = r.window.applyScriptScenesForTest(script);
+    const QString oneSaid = scriptSaid;
+    r.storyboard->toggleSceneLengthLock(1);
+    pump(60);
+    r.window.applyScriptScenesForTest(script);
+    const QString twoSaid = scriptSaid;
+    stack->undo();
+    pump(60);
+    check(QStringLiteral("(sl11) THE SCRIPT EDITOR IS REFUSED while a scene's length is locked - nothing replaced - "
+                         "naming the scene, or how many"),
+          !appliedLocked && lengths() == opened
+              && oneSaid == QStringLiteral("The script was not applied: scene 1's length is locked, and applying the "
+                                           "script replaces every scene and panel. Unlock it (right-click the scene on "
+                                           "the timeline) and apply the script again.")
+              && twoSaid == QStringLiteral("The script was not applied: 2 scenes have their lengths locked, and applying "
+                                           "the script replaces every scene and panel. Unlock them (right-click each scene "
+                                           "on the timeline) and apply the script again."),
+          QStringLiteral("applied %1; '%2' / '%3'").arg(appliedLocked).arg(oneSaid, twoSaid));
+
+    // ---- (sl2) the file ---------------------------------------------------------------------
+    auto fileOf = [](const QString &path) {
+        QFile f(path);
+        return f.open(QIODevice::ReadOnly) ? QJsonDocument::fromJson(f.readAll()).object() : QJsonObject();
+    };
+    auto lockedInFile = [](const QJsonObject &root) {
+        QStringList d;
+        for (const QJsonValue &sv : root.value(QStringLiteral("scenes")).toArray())
+            d << (sv.toObject().contains(QStringLiteral("lengthLocked"))
+                      ? (sv.toObject().value(QStringLiteral("lengthLocked")).toBool() ? QStringLiteral("locked")
+                                                                                       : QStringLiteral("false"))
+                      : QStringLiteral("-"));
+        return d.join(QLatin1Char(' '));
+    };
+    const QString savedLocked = folder + QStringLiteral("/LocksSaved.sankotv");
+    const bool saved = r.window.saveProjectForTest(savedLocked);
+    const QJsonObject lockedRoot = fileOf(savedLocked);
+    const bool reopened = r.window.loadProjectForTest(savedLocked);
+    pump(500);
+    const bool reopenedLocked = scene(0) && scene(0)->lengthLocked && scene(1) && !scene(1)->lengthLocked;
+    const QString reopenedL = lengths(), reopenedK = keyFrames();
+    check(QStringLiteral("(sl2) THE FILE: a project with a locked scene is written as version 5, the scene saying "
+                         "\"lengthLocked\": true (scene 2 says nothing); opened again, scene 1 is locked, scene 2 is not, "
+                         "the lengths and keys as they were"),
+          saved && lockedRoot.value(QStringLiteral("version")).toInt() == 5 && lockedInFile(lockedRoot) == QStringLiteral("locked -")
+              && reopened && reopenedLocked && reopenedL == opened && reopenedK == openedKeys,
+          QStringLiteral("saved %1, version %2, scenes %3; reopened %4, locked %5, %6 keys %7")
+              .arg(saved).arg(lockedRoot.value(QStringLiteral("version")).toInt()).arg(lockedInFile(lockedRoot))
+              .arg(reopened).arg(reopenedLocked).arg(reopenedL, reopenedK));
+    if (scene(0) && scene(0)->lengthLocked) // unlocked by its own toggle (a lost lock stays unlocked)
+        r.storyboard->toggleSceneLengthLock(0);
+    pump(60);
+    const QString savedFree = folder + QStringLiteral("/LocksUnlocked.sankotv");
+    const bool savedF = r.window.saveProjectForTest(savedFree);
+    const QJsonObject freeRoot = fileOf(savedFree);
+    check(QStringLiteral("(sl2) control: unlocked, the same project is written as version 3, with no \"lengthLocked\" at all"),
+          savedF && freeRoot.value(QStringLiteral("version")).toInt() == 3 && lockedInFile(freeRoot) == QStringLiteral("- -"),
+          QStringLiteral("version %1, scenes %2").arg(freeRoot.value(QStringLiteral("version")).toInt()).arg(lockedInFile(freeRoot)));
+    scriptSaid.clear();
+    const bool appliedFree = r.window.applyScriptScenesForTest(script);
+    pump(300);
+    check(QStringLiteral("(sl11) control: with no scene locked the same script is applied (one scene now)"),
+          appliedFree && scriptSaid.isEmpty() && r.window.scenesForTest().size() == 1,
+          QStringLiteral("applied %1 '%2', %3 scenes").arg(appliedFree).arg(scriptSaid).arg(r.window.scenesForTest().size()));
+    r.window.setLockMessageHookForTest(nullptr);
+    r.window.markCleanForTest();
+    rig.reset();
+
+    // ---- (sl12) the drawing-view chip clear of the Move tool's mode bar --------------------
+    {
+        auto chipRig = std::make_unique<Rig>(dppins::writeDepthProject(folder + QStringLiteral("/chip"), true, true));
+        Rig &c = *chipRig;
+        if (!c.ok) {
+            check(QStringLiteral("(sl12) the depth workspace opened"), false);
+            return;
+        }
+        clickThumb(c, 0);
+        auto *moveTool = c.window.findChild<QPushButton *>(QStringLiteral("toolMove"));
+        if (moveTool)
+            moveTool->click();
+        pump(200);
+        QWidget *bar = c.storyboard->moveModToolbarForTest();
+        const bool barShown = bar && bar->isVisible();
+        const QRectF barRect = bar ? QRectF(QPointF(c.canvas->mapFromGlobal(bar->mapToGlobal(QPoint(0, 0)))), QSizeF(bar->size()))
+                                   : QRectF();
+        const QRectF chipRect = c.canvas->drawingViewChipRectForTest();
+        const QString chipText = c.canvas->drawingViewChipForTest();
+        const QRectF where(chipRect.left(), c.canvas->height() - 36.0, chipRect.width(), 24.0); // its place before
+        check(QStringLiteral("(sl12) THE DRAWING-VIEW CHIP CLEARS THE MOVE TOOL'S MODE BAR: with the Move tool on, the "
+                             "chip sits 8 px above the bar instead of under it"),
+              moveTool && barShown && !chipText.isEmpty() && !chipRect.intersects(barRect)
+                  && qAbs(chipRect.bottom() - (barRect.top() - 8.0)) < 0.5,
+              QStringLiteral("bar shown %1 at %2,%3 %4x%5; chip '%6' at %7,%8 %9x%10").arg(barShown).arg(barRect.left())
+                  .arg(barRect.top()).arg(barRect.width()).arg(barRect.height()).arg(chipText).arg(chipRect.left())
+                  .arg(chipRect.top()).arg(chipRect.width()).arg(chipRect.height()));
+        auto *brushTool = c.window.findChild<QPushButton *>(QStringLiteral("toolBrush"));
+        if (brushTool)
+            brushTool->click();
+        pump(200);
+        const QRectF brushChip = c.canvas->drawingViewChipRectForTest();
+        check(QStringLiteral("(sl12) control: where it used to be, the bar covers it; with the Brush (no bar) it is back "
+                             "at its place, 36 px from the canvas's bottom"),
+              where.intersects(barRect) && bar && !bar->isVisible()
+                  && qAbs(brushChip.top() - (c.canvas->height() - 36.0)) < 0.5,
+              QStringLiteral("old place %1,%2 meets the bar %3; bar now shown %4; Brush chip top %5 (canvas %6)")
+                  .arg(where.left()).arg(where.top()).arg(where.intersects(barRect)).arg(bar && bar->isVisible())
+                  .arg(brushChip.top()).arg(c.canvas->height()));
+        c.window.markCleanForTest();
+    }
 }
 
 // DEPTH WHILE MOVING (batch B2, 2026-11-11; Figma B-1; the user's note 1.7 and Q-B3): with
@@ -24062,8 +24763,14 @@ int main(int argc, char **argv)
         || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("playback")
         || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("strip")
         || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("trial")
-        || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("keptart")) {
-        if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("keptart")) {
+        || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("keptart")
+        || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("scenelock")) {
+        if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("scenelock")) {
+            // The scene length lock (batch F1), and the panel lengths' own pass (the edges,
+            // the roll, typing) it changes inside a locked scene only.
+            runSceneLockPass(scratch);
+            runFrameLengthsPass(scratch);
+        } else if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("keptart")) {
             // Kept art (batch B1), depth while moving (B2), and the trial's fixes that
             // share the Move tool.
             runKeptArtPass(scratch);
@@ -24290,6 +24997,7 @@ int main(int argc, char **argv)
     runTrialFixesPass(scratch);
     runKeptArtPass(scratch);
     runDepthWhileMovingPass(scratch);
+    runSceneLockPass(scratch);
     runPinnedKeysPass(scratch);
     runCameraBarFitPass(scratch);
     runStageClearPass(scratch);

@@ -345,6 +345,7 @@ signals:
     void artExitChipClicked(int flatPanelIndex, const QPoint &globalPos); // batch 6d
     void cameraAnimateToggled(bool on);
     void sceneContextMenuRequested(int sceneIndex, const QPoint &globalPos); // Phase 1D
+    void sceneLengthLockToggleRequested(int sceneIndex); // the lock on the SCENES row (batch F1)
 
 public:
     // Test hooks. The duration one is the REAL request the timeline drag

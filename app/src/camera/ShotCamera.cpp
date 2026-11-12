@@ -285,6 +285,38 @@ double keyFrame(const Scene &scene, const CameraKey &key, int fps, int filmStart
         + key.at * panelFrames(*scene.panels.at(index), fps);
 }
 
+QVector<CameraKey> keysKeepingFrames(const Scene &scene, int fps, const QVector<PanelSpan> &after)
+{
+    QVector<CameraKey> out = scene.camera.keys;
+    if (after.isEmpty())
+        return out;
+    QVector<int> starts;
+    int total = 0;
+    for (const PanelSpan &p : after) {
+        starts.append(total);
+        total += qMax(1, p.frames);
+    }
+    for (CameraKey &key : out) {
+        if (key.pinned)
+            continue;
+        const double f = keyFrame(scene, key, fps); // where it is now
+        if (f < 0.0)
+            continue; // inert: its panel is not in the scene
+        int target = -1;
+        for (int i = 0; i < after.size() && target < 0; ++i) // its own panel, if it still holds f
+            if (after.at(i).uid == key.panelUid && f >= starts.at(i) - 1e-9
+                && f <= starts.at(i) + qMax(1, after.at(i).frames) + 1e-9)
+                target = i;
+        for (int i = 0; i < after.size() && target < 0; ++i) // else the panel that does
+            if (f < starts.at(i) + qMax(1, after.at(i).frames) || i == after.size() - 1)
+                target = i;
+        const PanelSpan &p = after.at(target);
+        key.panelUid = p.uid;
+        key.at = qBound(0.0, (f - starts.at(target)) / double(qMax(1, p.frames)), 1.0);
+    }
+    return out;
+}
+
 bool isStranded(const Scene &scene, const CameraKey &key, int fps, int filmStart)
 {
     return key.pinned && keyFrame(scene, key, fps, filmStart) < 0.0;

@@ -231,6 +231,10 @@ public:
     // DEPTH (Phase 2B): the drawing-view chip's text (empty: not drawn), and
     // whether the Camera tool is showing the layers placed for their depth.
     QString drawingViewChipForTest() const;
+    // The windows over the canvas that its bottom chip keeps clear of: the Move and
+    // Selection tools' modifier bars (batch F1). And where the chip is now, for the checks.
+    void setChipObstacles(const QVector<QWidget *> &bars);
+    QRectF drawingViewChipRectForTest() const { return drawingViewChipRect(drawingViewChipText()); }
     // Batch B2: the depth outline (canvas px; empty: none) and whether the last
     // paint drew it.
     QPolygonF depthOutlineForTest() const
@@ -1316,6 +1320,7 @@ private:
     bool depthOutline(QPolygonF *quad, double *depth, QString *name) const;
     mutable bool m_depthOutlinePainted = false; // the last paint drew it (the checks)
     QRectF drawingViewChipRect(const QString &text) const;
+    QVector<QPointer<QWidget>> m_chipObstacles; // setChipObstacles
     void shotCameraPress(const QPointF &widgetPos);
     void shotCameraMove(const QPointF &widgetPos, Qt::MouseButtons buttons,
                         Qt::KeyboardModifiers mods);

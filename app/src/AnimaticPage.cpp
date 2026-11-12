@@ -1297,6 +1297,8 @@ QWidget *AnimaticPage::createTimingStrip()
             this, &AnimaticPage::cameraAnimateToggled);
     connect(m_timeline, &AnimaticTimeline::sceneContextMenuRequested,
             this, &AnimaticPage::sceneContextMenuRequested);
+    connect(m_timeline, &AnimaticTimeline::sceneLengthLockToggleRequested,
+            this, &AnimaticPage::sceneLengthLockToggleRequested);
     wrapLayout->addWidget(m_timeline, 1);
 
     return wrap;

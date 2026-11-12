@@ -662,6 +662,7 @@ WriteResult projectToJson(const SaveData &data, const QString &projectFilePath,
                    projectStage.margin().width(), projectStage.margin().height())
         : QMargins();
     bool anyOwnMargin = false;
+    bool anyLocked = false;
 
     QJsonArray scenesArray;
     for (int i = 0; i < data.scenes.size() && !saver.failed(); ++i) {
@@ -673,6 +674,12 @@ WriteResult projectToJson(const SaveData &data, const QString &projectFilePath,
         sceneObj[QStringLiteral("location")] = scene->location;
         sceneObj[QStringLiteral("timeOfDay")] = scene->timeOfDay; // preserved
         sceneObj[QStringLiteral("action")] = scene->action;
+        // The length lock (batch F1): written only when set, and then the file is
+        // version 5.
+        if (scene->lengthLocked) {
+            sceneObj[QStringLiteral("lengthLocked")] = true;
+            anyLocked = true;
+        }
 
         QJsonArray panelsArray;
         for (int j = 0; j < scene->panels.size() && !saver.failed(); ++j) {
@@ -815,7 +822,7 @@ WriteResult projectToJson(const SaveData &data, const QString &projectFilePath,
     QJsonObject root;
     root[QStringLiteral("version")] = g_writeVersion2ForTest.load()
         ? 2
-        : (anyOwnMargin ? kFileVersion : kFileVersionOneMargin);
+        : (anyLocked ? kFileVersionLockedScene : (anyOwnMargin ? kFileVersion : kFileVersionOneMargin));
     root[QStringLiteral("projectName")] = data.projectName;
     // fps drives the animatic; canvasWidth/Height are the project's real
     // canvas resolution, reconciled to the pixels on load — what is written
@@ -1027,6 +1034,7 @@ LoadedProject projectFromJson(const QJsonObject &root, const QString &folder,
         if (scene->timeOfDay.isEmpty())
             scene->timeOfDay = QStringLiteral("UNSPECIFIED");
         scene->action = sceneObj.value(QStringLiteral("action")).toString();
+        scene->lengthLocked = sceneObj.value(QStringLiteral("lengthLocked")).toBool(false); // F1
 
         const QJsonArray panelsArray = sceneObj.value(QStringLiteral("panels")).toArray();
         fileMargins.append(QVector<QMargins>());
