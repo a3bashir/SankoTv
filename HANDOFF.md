@@ -1,5 +1,28 @@
 # SankoTV — Session Handoff Brief
 
+## STATUS 2026-11-12 (night): F1 COMMITTED (d66adde9e) AFTER THE USER'S HAND TEST; F2 BEING BUILT
+THE F1 HAND TEST (Dev Recorder 20261112-191317, 1,288 s, the 18:11:39 build, git 7c6711472+dirty, on "TEST COPY -
+small pirate, F1", on the Cintiq). Steps of handtest_F1_scene_length_lock.md the user did: 1, 2, 3, 5 and 8.
+1 PASS: ISLAND BEACH locked from its menu ("Lock Scene Length (6s 1f · 145 f)", 859.6 s); before it, hovering showed the
+faint lock and "Scene 2 ends 00:00:11:17 · 6s 1f · 145 f" (856 s); after, the lock, the purple baseline, the end line
+with its flag across SCENES and SHOTS and faint through CAMERA and AUDIO (861 s). After the reopen a click on OCEAN's
+lock locked it (1268 s), undone with Ctrl+Z at the end.
+2 PASS: Add Panel after ISLAND BEACH's panel 5 (12 f) split it in half - "Panel 6 takes half of panel 5 (6f): scene
+2's length is locked." (1001 s); panel 6, the end line and JUNGLE ENTRANCE did not move; the new panel deleted
+(Yes) gave its 6 frames back ("Panel 6's 6f went to panel 5: ...", 1071 s), P1..P7 as before. Not tested: the split
+AT THE PLAYHEAD (the playhead was on the panel's first frame both times, and in OCEAN after the reopen: "Panel 3
+takes half of panel 2 (2s 1f)") and playing the scene - (sl4) and its keys check.
+3 PASS: panel 3's right edge rolled ("locked · roll: P3 +4 f, P4 −4 f", 1103 s), Ctrl+Z; panel 7's left edge rolled
+("locked · roll: P6 +61 f, P7 −61 f", 1163 s), the end line still. Not tested: a press on the scene's end - (sl9).
+Also seen, all undone: two panel reorders inside the locked scene (allowed), Grow to fit from the CAMERA row.
+5 PASS: Ctrl+S (1203.9 s; the copy's file at 19:33:21 is version 5, ISLAND BEACH "lengthLocked": true, its 7
+panels and 5 keys as they were), Close Project, reopened from Recent Projects: ISLAND BEACH still locked (1212 s).
+4, 6, 7 not tested ((sl10), (sl8), (sl12)). 8 PASS: the window's X (pointer to the top right), Discard.
+No warning in the log. COMMITTED and pushed: d66adde9e (the 16 code files and this file as gated: sha_F1_gate.txt,
+sha_F1_docs.txt; the staged stat equal with --ignore-cr-at-eol; the 17 committed files equal to the working files,
+the two LF files byte for byte), then this note. NEXT: F2 (Lock All Scene Lengths, End Scene at Playhead), then stop
+for the user's F2 hand test.
+
 ## STATUS 2026-11-12 (evening): F1 (THE SCENE LENGTH LOCK) BUILT, NOT COMMITTED; WAITING FOR THE USER'S F1 HAND TEST; F2 WAITS
 The user approved batch F as drawn in Figma F-1 (node 566:696; Documents\SankoTV-Design\batchF-report-2026-11-12.md)
 with Q-F1 (camera keys keep their film frames, in F1), Q-F2 (the end line faint through CAMERA and AUDIO) and Q-F3
