@@ -2786,6 +2786,7 @@ void DrawingCanvas::applyLayerRegionForUndo(Panel *panel, const QString &layerId
             // the image (and keep only their art outside the stage) when next read.
             layer.tiles = *tiles;
             layer.tilesOf = 0;
+            layer.stageRect = QRect(-panel->frameAt(), layer.image.size());
         }
         break;
     }
@@ -4054,6 +4055,7 @@ void DrawingCanvas::commitFloating()
         layer->image = landed.image;
         layer->tiles = landed.tiles;
         layer->tilesOf = landed.image.cacheKey();
+        layer->stageRect = QRect(-m_panel->frameAt(), landed.image.size()); // as commitTransform
         auto *command = new DrawingCommand(this, m_panel, layer->id, region,
                                            region.isEmpty() ? QImage() : before.copy(region),
                                            region.isEmpty() ? QImage() : landed.image.copy(region),
@@ -5119,6 +5121,9 @@ void DrawingCanvas::commitTransform(bool relift)
             }
             b.layer->tiles = b.tilesAfter; // they say what the image says, and more
             b.layer->tilesOf = b.result.cacheKey();
+            // Where the tiles' stage lies, set with them: a layer made in this
+            // session has none until a fold, and at rest it is read there.
+            b.layer->stageRect = QRect(-m_panel->frameAt(), b.result.size());
             auto *command = new DrawingCommand(
                 this, m_panel, b.layer->id, b.region,
                 b.region.isEmpty() ? QImage() : b.before.copy(b.region),

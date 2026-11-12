@@ -19306,6 +19306,59 @@ void runKeptArtPass(const QString &scratch)
     clickThumb(r, 0);
     pump(80);
 
+    // --- (ka9) a layer made in this session keeps its art through a panel switch -------------
+    // Found in B2's reading (2026-11-11): B1 gave such a layer tiles marked current without
+    // the stage's place, and a panel at rest reads its layers' stage from the tiles there.
+    {
+        Layer fresh = makeRasterLayer(QStringLiteral("Made here"), st);
+        {
+            QPainter p(&fresh.image);
+            p.fillRect(block, QColor(0, 0, 255));
+        }
+        const bool noStageYet = fresh.stageRect.isEmpty() && !fresh.tiles;
+        p0->layers.insert(2, fresh);
+        p0->activeLayerIndex = 2;
+        r.storyboard->rebuildLayerPanelForTest();
+        r.canvas->setTool(DrawingCanvas::Brush);
+        r.canvas->setTool(DrawingCanvas::Move);
+        pump(60);
+        moveBox(QPointF(-250, 0));
+        enter();
+        r.canvas->setTool(DrawingCanvas::Brush);
+        clickThumb(r, 1);
+        pump(150);
+        const QImage atRest = p0->layers.at(2).pixels(); // what the strip and the shot read
+        int restCount = 0;
+        for (int y = 0; y < atRest.height(); ++y) {
+            const QRgb *line = reinterpret_cast<const QRgb *>(atRest.constScanLine(y));
+            for (int x = 0; x < atRest.width(); ++x)
+                restCount += qAlpha(line[x]) > 128 ? 1 : 0;
+        }
+        clickThumb(r, 0);
+        pump(150);
+        const QImage back = r.canvas->layerArtImageForTest(p0->layers.at(2), wide);
+        int backCount = 0;
+        for (int y = 0; y < back.height(); ++y) {
+            const QRgb *line = reinterpret_cast<const QRgb *>(back.constScanLine(y));
+            for (int x = 0; x < back.width(); ++x)
+                backCount += qAlpha(line[x]) > 128 ? 1 : 0;
+        }
+        const QRect backBounds = r.canvas->layerArtBoundsForTest(p0->layers.at(2));
+        check(QStringLiteral("(ka9) A LAYER MADE IN THIS SESSION KEEPS ITS ART THROUGH A PANEL SWITCH: made with no "
+                             "stage place and no tiles, its block moved 250 px past the edge, then panel 2 and back - "
+                             "at rest its stage reads the 50,000 px inside, and back on the canvas all 80,000 are there"),
+              noStageYet && atRest.size() == st && within(restCount, 50000, 100) && within(backCount, n0, 160)
+                  && within(backBounds.left(), -150, 1),
+              QStringLiteral("no stage yet %1; at rest %2x%3, %4 px; back %5 px, %6").arg(noStageYet)
+                  .arg(atRest.width()).arg(atRest.height()).arg(restCount).arg(backCount).arg(rectText(backBounds)));
+        r.storyboard->editUndo();
+        pump(80);
+        p0->layers.removeAt(2);
+        p0->activeLayerIndex = 1;
+        r.storyboard->rebuildLayerPanelForTest();
+        pump(60);
+    }
+
     // --- (ka8) kept art survives a panel switch, a save and a reopen ---------------------------
     r.canvas->setTool(DrawingCanvas::Move);
     pump(60);
