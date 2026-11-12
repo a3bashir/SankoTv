@@ -1601,10 +1601,57 @@ void DrawingCanvas::paintShotCamera(QPainter &painter)
     painter.restore();
 }
 
-QString DrawingCanvas::drawingViewChipText()
+QString DrawingCanvas::drawingViewChipText() const
 {
+    // With the Move tool on a depth layer the chip names the dashed outline (B2).
+    QPolygonF quad;
+    double depth = 1.0;
+    QString name;
+    if (depthOutline(&quad, &depth, &name))
+        return QStringLiteral("Drawing view  ") + QChar(0x00B7) + QStringLiteral("  dashed: ") + name
+            + QStringLiteral(" in the shot");
     return QStringLiteral("Drawing view  ") + QChar(0x00B7)
         + QStringLiteral("  depth shows with the Camera tool");
+}
+
+// DEPTH WHILE MOVING (batch B2, 2026-11-11; Figma B-1; the user's note 1.7, cause 1,
+// and Q-B3). The Move tool shows every layer as drawn, so a stroke lands where the pen
+// is - and art lined up with the frame there lands elsewhere in the shot when its
+// layer has depth. With the box up on such a layer, the box is drawn once more, dashed,
+// where the shot at the playhead puts it (the one placement, layerToStage); it follows
+// the box while it moves, scales or turns. Lifted rows of different depths show none.
+bool DrawingCanvas::depthOutline(QPolygonF *quad, double *depth, QString *name) const
+{
+    if (m_tool != Move || !m_xformActive || !m_panel || m_xformLayerIds.isEmpty() || m_quad.size() != 4)
+        return false;
+    const ShotCameraView v = shotCameraView();
+    if (!v.valid)
+        return false;
+    double a = -1.0;
+    QString which;
+    for (const QString &id : m_xformLayerIds)
+        for (const Layer &layer : m_panel->layers)
+            if (layer.id == id) {
+                const double here = m_panel->effectiveParallax(layer);
+                if (a < 0.0) {
+                    a = here;
+                    which = layer.name;
+                } else if (here != a) {
+                    return false;
+                }
+            }
+    if (a < 0.0 || a == 1.0)
+        return false;
+    if (m_xformLayerIds.size() > 1)
+        if (const Layer *active = m_panel->activeLayer())
+            which = active->name; // a folder: its own name
+    const shotcam::CameraState state = shotCameraShownState(v);
+    if (!shotcam::layerShown(a, state))
+        return false; // the camera has passed it: not in the shot
+    *quad = shotcam::layerToStage(a, state, stage()).map(m_quad);
+    *depth = a;
+    *name = which;
+    return true;
 }
 
 QRectF DrawingCanvas::drawingViewChipRect(const QString &text) const
@@ -7523,7 +7570,48 @@ void DrawingCanvas::paintEvent(QPaintEvent *event)
     // each lifted layer's own z-position and effective opacity — stacking
     // order never changes during a Move session.)
 
+    // Depth while moving (batch B2, Q-B3): the box, dashed, where the shot puts it.
+    QPolygonF depthQuad;
+    double depthA = 1.0;
+    QString depthName;
+    m_depthOutlinePainted = depthOutline(&depthQuad, &depthA, &depthName);
+    if (m_depthOutlinePainted) {
+        painter.save();
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        QPen dashed(QColor(0x7c, 0x6e, 0xf6), 1.5);
+        dashed.setCosmetic(true);
+        dashed.setDashPattern({5.0, 4.0});
+        painter.setPen(dashed);
+        painter.setBrush(Qt::NoBrush);
+        painter.drawPolygon(depthQuad);
+        painter.restore();
+    }
+
     painter.restore(); // leave canvas space; overlays below are widget space
+
+    if (m_depthOutlinePainted) { // its label, in screen px above its top-left
+        // Figma B-1's light purple, on a dark backing as the canvas's chips: the outline
+        // can lie on the paper as well as on the surround.
+        const QPolygonF onScreen = T.map(depthQuad);
+        const QPointF at = onScreen.boundingRect().topLeft();
+        painter.save();
+        QFont labelFont = font();
+        labelFont.setPointSizeF(7.5);
+        labelFont.setWeight(QFont::Medium);
+        painter.setFont(labelFont);
+        const QString label = QStringLiteral("in the shot (depth %1 %)").arg(qRound(depthA * 100.0));
+        const QFontMetricsF fm(labelFont);
+        QRectF back(at.x(), at.y() - fm.height() - 6.0, fm.horizontalAdvance(label) + 8.0, fm.height() + 2.0);
+        back.moveLeft(qBound(2.0, back.left(), qMax(2.0, width() - back.width() - 2.0)));
+        back.moveTop(qBound(2.0, back.top(), qMax(2.0, height() - back.height() - 2.0)));
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(QColor(0x16, 0x16, 0x16, 217));
+        painter.drawRoundedRect(back, 3, 3);
+        painter.setPen(QColor(0xb9, 0xb0, 0xff));
+        painter.drawText(back.adjusted(4, 0, -4, 0), Qt::AlignVCenter | Qt::AlignLeft, label);
+        painter.restore();
+    }
 
     // Camera-frame dim: the whole widget minus the rotated 16:9 quad.
     if (m_cameraFrame) {

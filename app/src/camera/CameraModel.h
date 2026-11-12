@@ -161,6 +161,10 @@ struct DepthEdge
 {
     double parallax = 1.0; // the layer's depth (Panel::effectiveParallax)
     bool left = false, top = false, right = false, bottom = false;
+    // How far the layer's art goes past each of those edges, its art kept outside
+    // the stage included (batch B2: it holds the frame at its real art's edge), in
+    // stage px; 0: to the stage's edge, as before kept art.
+    double leftPast = 0.0, topPast = 0.0, rightPast = 0.0, bottomPast = 0.0;
     QString name;
 };
 

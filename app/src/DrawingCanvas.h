@@ -231,6 +231,16 @@ public:
     // DEPTH (Phase 2B): the drawing-view chip's text (empty: not drawn), and
     // whether the Camera tool is showing the layers placed for their depth.
     QString drawingViewChipForTest() const;
+    // Batch B2: the depth outline (canvas px; empty: none) and whether the last
+    // paint drew it.
+    QPolygonF depthOutlineForTest() const
+    {
+        QPolygonF quad;
+        double depth = 1.0;
+        QString name;
+        return depthOutline(&quad, &depth, &name) ? quad : QPolygonF();
+    }
+    bool depthOutlinePaintedForTest() const { return m_depthOutlinePainted; }
     bool shotCameraDepthViewForTest() const;
     // Phase 2C: the drag chip naming the depth layer that holds a frame
     // drag in ("Edge of 'Ground'"; empty: none shown).
@@ -1299,7 +1309,12 @@ private:
     QRectF shotCameraChipRect(const QString &text) const;
     // Phase 2B, Q5: a drawing tool, a panel with depth, the camera elsewhere.
     bool shotCameraDrawingViewChip() const;
-    static QString drawingViewChipText();
+    QString drawingViewChipText() const;
+    // DEPTH WHILE MOVING (batch B2, Figma B-1, the user's Q-B3): with the Move tool's
+    // box up on a layer at another depth than 100 %, where that box is in the shot at
+    // the playhead (layerToStage), canvas px; false when there is none to show.
+    bool depthOutline(QPolygonF *quad, double *depth, QString *name) const;
+    mutable bool m_depthOutlinePainted = false; // the last paint drew it (the checks)
     QRectF drawingViewChipRect(const QString &text) const;
     void shotCameraPress(const QPointF &widgetPos);
     void shotCameraMove(const QPointF &widgetPos, Qt::MouseButtons buttons,

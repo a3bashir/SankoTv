@@ -19416,6 +19416,239 @@ void runKeptArtPass(const QString &scratch)
         again->window.markCleanForTest();
 }
 
+// DEPTH WHILE MOVING (batch B2, 2026-11-11; Figma B-1; the user's note 1.7 and Q-B3): with
+// the Move tool's box up on a layer at another depth, a dashed outline shows where the box
+// is in the shot at the playhead; a depth layer holds the frame at its real art's edge,
+// its kept art included; and the shot draws that kept art.
+void runDepthWhileMovingPass(const QString &scratch)
+{
+    using namespace workspace;
+    out() << "--- (kb) depth while moving: the dashed outline, the real art's edge, kept art in the shot ---"
+          << Qt::endl;
+    // --- (kb1) the dashed outline ---------------------------------------------------------
+    {
+        const QString project = dppins::writeDepthProject(scratch + QStringLiteral("/depthmove"), true, true);
+        auto rig = std::make_unique<Rig>(project);
+        Rig &r = *rig;
+        check(QStringLiteral("(kb) the depth workspace opened"), r.ok);
+        if (!r.ok)
+            return;
+        Panel *panel = r.window.scenesForTest().value(0) ? r.window.scenesForTest().value(0)->panels.value(0) : nullptr;
+        if (!panel || panel->layers.size() < 6) {
+            check(QStringLiteral("(kb) found the depth panel"), false);
+            return;
+        }
+        clickThumb(r, 0);
+        pump(100);
+        auto toW = [&](const QPointF &c) { return r.canvas->viewTransformForTest().map(c); };
+        // Purple pixels (the outline's #7c6ef6) along a canvas-px segment, as drawn; the
+        // first one's place and colour in *where (for a failing check).
+        QString firstPurple;
+        auto purpleAlong = [&](const QImage &grab, const QPointF &a, const QPointF &b) {
+            const QPointF wa = toW(a), wb = toW(b);
+            const int steps = qMax(1, int(QLineF(wa, wb).length()));
+            int n = 0;
+            firstPurple.clear();
+            for (int i = 0; i <= steps; ++i) {
+                const QPoint p = (wa + (wb - wa) * (i / double(steps))).toPoint();
+                bool hit = false;
+                for (int dy = -1; dy <= 1 && !hit; ++dy) {
+                    const QPoint q = p + QPoint(0, dy);
+                    if (!grab.rect().contains(q))
+                        continue;
+                    const QColor c = grab.pixelColor(q);
+                    hit = qAbs(c.red() - 0x7c) <= 45 && qAbs(c.green() - 0x6e) <= 45 && c.blue() >= 0xb0;
+                    if (hit && firstPurple.isEmpty())
+                        firstPurple = QStringLiteral("%1,%2 %3 (from %4,%5)").arg(q.x()).arg(q.y())
+                                          .arg(c.name()).arg(wa.x()).arg(wa.y());
+                }
+                n += hit ? 1 : 0;
+            }
+            return n;
+        };
+        shotcam::CameraState cam; // the fixture's one key: 400 px right of the base framing
+        cam.cx = 960 + 400;
+        cam.cy = 540;
+        cam.zoom = 1.0;
+        const shotcam::Stage stage(QSize(1920, 1080));
+        // Bush (150 %) gets a 300 x 200 block for the box: the fixture's 40 px marker is 13 px
+        // on this screen, inside the reach of the box's handles (8 px), and its outline's left
+        // edge would lie on the camera frame's own (x 400).
+        {
+            Layer &bush = panel->layers[4];
+            bush.image.fill(Qt::transparent);
+            QPainter p(&bush.image);
+            p.fillRect(QRect(700, 560, 300, 200), dppins::kColour[4]);
+        }
+        panel->activeLayerIndex = 4;
+        r.storyboard->rebuildLayerPanelForTest();
+        r.canvas->setTool(DrawingCanvas::Brush);
+        r.canvas->setTool(DrawingCanvas::Move);
+        pump(120);
+        const QPolygonF box = r.canvas->transformQuadForTest();
+        const QPolygonF outline = r.canvas->depthOutlineForTest();
+        const QPolygonF expected = shotcam::layerToStage(1.5, cam, stage).map(box);
+        const QImage grab = r.canvas->grab().toImage();
+        grab.save(scratch + QStringLiteral("/depthmove/kb1_bush.png")); // to look at, beside the project
+        const bool painted = r.canvas->depthOutlinePaintedForTest();
+        // Sampled where the outline's top edge is not the box's own (it shares the box's line
+        // from x 700 on): from its corner to 40 px before the box, clear of its corner handle.
+        const QPointF sampleFrom = expected.value(0), sampleTo(box.boundingRect().left() - 40.0, sampleFrom.y());
+        const int purple = expected.size() == 4 ? purpleAlong(grab, sampleFrom, sampleTo) : -1;
+        const int samples = qMax(1, int(QLineF(toW(sampleFrom), toW(sampleTo)).length())) + 1;
+        const QString chip = r.canvas->drawingViewChipForTest();
+        double off = expected.size() == 4 && outline.size() == 4 ? 0.0 : 1e9;
+        for (int i = 0; i < qMin(4, int(outline.size())) && off < 1e9; ++i)
+            off = qMax(off, QLineF(outline.at(i), expected.at(i)).length());
+        const QString wanted = QStringLiteral("Drawing view  ") + QChar(0x00B7) + QStringLiteral("  dashed: Bush in the shot");
+        check(QStringLiteral("(kb1) THE DEPTH OUTLINE: with the Move tool's box up on Bush (150 %) and the camera 400 px "
+                             "right of its base framing, the box is drawn again, dashed, where the shot puts it - 200 px "
+                             "left of the box - and the chip names it"),
+              box.size() == 4 && box.boundingRect() == QRectF(700, 560, 300, 200) && off <= 0.5 && painted
+                  && purple >= samples / 5 && purple <= samples * 85 / 100 && chip == wanted
+                  && qAbs(outline.boundingRect().left() - (box.boundingRect().left() - 200.0)) <= 0.5,
+              QStringLiteral("box %1,%2; outline %3,%4 (off the placement by %5 px); painted %6, purple on its top "
+                             "edge left of the box %7 of %9 px (dashed: some, not all); chip '%8'")
+                  .arg(box.boundingRect().left()).arg(box.boundingRect().top()).arg(outline.boundingRect().left())
+                  .arg(outline.boundingRect().top()).arg(off).arg(painted).arg(purple).arg(chip).arg(samples));
+        // It follows the box.
+        const QPointF grip = toW(box.boundingRect().center());
+        camtool::drag(r.canvas, grip, grip + (toW(QPointF(100, 0)) - toW(QPointF(0, 0))));
+        pump(60);
+        const QPolygonF moved = r.canvas->depthOutlineForTest();
+        const double followed = moved.boundingRect().left() - outline.boundingRect().left();
+        const QRectF boxMoved = r.canvas->transformQuadForTest().boundingRect();
+        check(QStringLiteral("(kb1) the outline follows the box: the box moved 100 px, the outline 100 px (at zoom 1 a "
+                             "layer at any depth moves as the box does on the canvas)"),
+              qAbs(followed - 100.0) <= 1.0,
+              QStringLiteral("the outline moved %1 px; the box %2,%3 %4x%5 -> %6,%7 %8x%9; view scale %10")
+                  .arg(followed).arg(box.boundingRect().left()).arg(box.boundingRect().top())
+                  .arg(box.boundingRect().width()).arg(box.boundingRect().height()).arg(boxMoved.left())
+                  .arg(boxMoved.top()).arg(boxMoved.width()).arg(boxMoved.height())
+                  .arg(QLineF(toW(QPointF(0, 0)), toW(QPointF(100, 0))).length() / 100.0));
+        camtool::key(r.canvas, QEvent::KeyPress, Qt::Key_Escape);
+        pump(60);
+        // Control: on the House (100 %) - and on Bush with the Brush - there is none.
+        panel->activeLayerIndex = 3;
+        r.storyboard->rebuildLayerPanelForTest();
+        r.canvas->setTool(DrawingCanvas::Brush);
+        r.canvas->setTool(DrawingCanvas::Move);
+        pump(120);
+        const QImage houseGrab = r.canvas->grab().toImage();
+        houseGrab.save(scratch + QStringLiteral("/depthmove/kb1_house.png"));
+        const bool housePainted = r.canvas->depthOutlinePaintedForTest();
+        const int housePurple = expected.size() == 4 ? purpleAlong(houseGrab, sampleFrom, sampleTo) : -1;
+        const QString houseFirstPurple = firstPurple;
+        const QPolygonF houseOutline = r.canvas->depthOutlineForTest();
+        const QString houseChip = r.canvas->drawingViewChipForTest();
+        panel->activeLayerIndex = 4;
+        r.storyboard->rebuildLayerPanelForTest();
+        r.canvas->setTool(DrawingCanvas::Brush);
+        pump(80);
+        const QPolygonF brushOutline = r.canvas->depthOutlineForTest();
+        const QString oldChip = QStringLiteral("Drawing view  ") + QChar(0x00B7)
+            + QStringLiteral("  depth shows with the Camera tool");
+        check(QStringLiteral("(kb1) control: on the House (100 %) no outline is drawn - nothing purple where Bush's was - "
+                             "and the chip is as before; on Bush with the Brush there is none either"),
+              houseOutline.isEmpty() && !housePainted && housePurple == 0 && houseChip == oldChip
+                  && brushOutline.isEmpty(),
+              QStringLiteral("House: outline %1, painted %2, purple px %3 (first %6), chip '%4'; Bush with the Brush: "
+                             "outline %5")
+                  .arg(houseOutline.size()).arg(housePainted).arg(housePurple).arg(houseChip).arg(brushOutline.size())
+                  .arg(houseFirstPurple));
+        r.window.markCleanForTest();
+    }
+
+    // --- (kb2) a depth layer holds the frame at its real art's edge, kept art included -------
+    // (kb3) and the shot draws that kept art. A near layer (125 %) that covers a 2,720 x 1,080
+    // stage (a 1,920 frame and 400 px margins), blue; kept or not, 500 px of red past its
+    // left and right edges.
+    auto nearPanel = [](bool kept) {
+        Panel *p = makeBlankPanel(QSize(2720, 1080));
+        p->margin = QMargins(400, 0, 400, 0);
+        Layer layer = makeRasterLayer(QStringLiteral("Near"), QSize(2720, 1080));
+        layer.image.fill(QColor(0, 0, 255));
+        layer.parallax = 1.25;
+        if (kept) {
+            QImage whole(QSize(2720 + 1000, 1080), QImage::Format_ARGB32_Premultiplied);
+            whole.fill(QColor(255, 0, 0));
+            {
+                QPainter q(&whole);
+                q.fillRect(QRect(500, 0, 2720, 1080), QColor(0, 0, 255));
+            }
+            layer.stageRect = QRect(-p->frameAt(), QSize(2720, 1080));
+            layer.tiles = layertiles::fold(whole, p->frameAt() + QPoint(500, 0), 0u, nullptr, layer.image.cacheKey());
+            layer.tilesOf = layer.image.cacheKey();
+        }
+        p->layers.append(layer);
+        return p;
+    };
+    Panel *cut = nearPanel(false);
+    Panel *kept = nearPanel(true);
+    const shotcam::Stage stage = cut->stage();
+    shotcam::CameraState farLeft;
+    farLeft.cx = 0.0;
+    farLeft.cy = 540.0;
+    farLeft.zoom = 1.0;
+    const QVector<shotcam::DepthEdge> cutEdges = shotcam::depthEdges(*cut);
+    const QVector<shotcam::DepthEdge> keptEdges = shotcam::depthEdges(*kept);
+    int cutBy = -2, keptBy = -2;
+    const shotcam::CameraState plain = shotcam::clampInside(farLeft, stage);
+    const shotcam::CameraState cutHeld = shotcam::clampInside(farLeft, stage, cutEdges, &cutBy);
+    const shotcam::CameraState keptHeld = shotcam::clampInside(farLeft, stage, keptEdges, &keptBy);
+    check(QStringLiteral("(kb2) A DEPTH LAYER HOLDS THE FRAME AT ITS REAL ART'S EDGE: the near layer with 500 px kept "
+                         "past its left and right edges lets the frame dragged far left go to the stage's edge (x 960, "
+                         "the paper's own limit), held by nothing"),
+          keptEdges.size() == 1 && keptEdges.at(0).leftPast == 500.0 && keptEdges.at(0).rightPast == 500.0
+              && keptEdges.at(0).topPast == 0.0 && qAbs(keptHeld.cx - plain.cx) < 0.01 && qAbs(plain.cx - 960.0) < 0.01
+              && keptBy == -1,
+          QStringLiteral("past %1 / %2; the frame's centre %3 (the paper's limit %4), held by %5")
+              .arg(keptEdges.value(0).leftPast).arg(keptEdges.value(0).rightPast).arg(keptHeld.cx).arg(plain.cx)
+              .arg(keptBy));
+    check(QStringLiteral("(kb2) control: the same layer ending at the stage's edges holds the frame 80 px in (x 1040), "
+                         "as before kept art"),
+          cutEdges.size() == 1 && cutEdges.at(0).leftPast == 0.0 && qAbs(cutHeld.cx - 1040.0) < 0.5 && cutBy == 0,
+          QStringLiteral("the frame's centre %1, held by %2").arg(cutHeld.cx).arg(cutBy));
+    // The amber (the trial's scene 3): a pan from the stage's left edge to its right
+    // edge leaves the near layer's art only where there is no kept art.
+    auto exitOf = [&](bool withKept) {
+        Scene scene;
+        Panel *p = nearPanel(withKept);
+        p->setLength(3 * 24, 24);
+        scene.panels.append(p);
+        shotcam::CameraState from = farLeft, to = farLeft;
+        from.cx = 960.0;
+        to.cx = 1760.0;
+        scene.camera.keys = {shotcam::makeKey(scene, 0, 0, 24, from, shotcam::Ease::Linear),
+                             shotcam::makeKey(scene, 0, 71, 24, to, shotcam::Ease::Linear)};
+        return shotcam::artExit(scene, 0, 24, 0, p->stage());
+    };
+    const shotcam::ArtExit keptExit = exitOf(true), cutExit = exitOf(false);
+    check(QStringLiteral("(kb2) the amber goes: a pan from the stage's left edge to its right edge stays on the near "
+                         "layer's art when it keeps 500 px past each edge; control: cut at the edges, the same pan "
+                         "leaves it at both ends"),
+          !keptExit.leaves() && cutExit.leaves() && cutExit.first == 0 && cutExit.last == 71,
+          QStringLiteral("kept: %1 frames; cut: %2 frames (%3..%4)").arg(keptExit.frames).arg(cutExit.frames)
+              .arg(cutExit.first).arg(cutExit.last));
+    shotcam::CameraState atEdge = farLeft;
+    atEdge.cx = 960.0; // the frame at the stage's left edge: the near layer's edge shows 100 px in
+    shotcam::clearDepthCachesForTest();
+    const QImage keptShot = shotcam::stageImage(*kept, atEdge, stage, stage.canvas);
+    const QImage cutShot = shotcam::stageImage(*cut, atEdge, stage, stage.canvas);
+    const QColor keptAt = keptShot.pixelColor(50, 540), cutAt = cutShot.pixelColor(50, 540);
+    const QColor keptIn = keptShot.pixelColor(300, 540), cutIn = cutShot.pixelColor(300, 540);
+    check(QStringLiteral("(kb3) THE SHOT DRAWS A DEPTH LAYER'S KEPT ART: with the frame at the stage's left edge the near "
+                         "layer's own edge comes 100 px in, and the 100 px left of it show its kept art (red)"),
+          keptAt.red() >= 240 && keptAt.blue() <= 15 && keptIn.blue() >= 240 && keptIn.red() <= 15,
+          QStringLiteral("at x 50 %1, at x 300 %2").arg(keptAt.name()).arg(keptIn.name()));
+    check(QStringLiteral("(kb3) control: the layer without kept art shows the paper there (white), and its own blue "
+                         "past its edge as before"),
+          cutAt == QColor(Qt::white) && cutIn.blue() >= 240 && cutIn.red() <= 15,
+          QStringLiteral("at x 50 %1, at x 300 %2").arg(cutAt.name()).arg(cutIn.name()));
+    delete cut;
+    delete kept;
+}
+
 // THE TRIAL'S FIXES (batch A, 2026-11-10; the user's real-project trial of 2026-11-09,
 // Documents\SankoTV-Design\trial-report-2026-11-10.md): the canvas's keys go where the
 // pointer is and Space pans with the pen; a selection starts off the paper; a drag's
@@ -23831,8 +24064,10 @@ int main(int argc, char **argv)
         || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("trial")
         || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("keptart")) {
         if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("keptart")) {
-            // Kept art (batch B1), and the trial's fixes that share the Move tool.
+            // Kept art (batch B1), depth while moving (B2), and the trial's fixes that
+            // share the Move tool.
             runKeptArtPass(scratch);
+            runDepthWhileMovingPass(scratch);
             runTrialFixesPass(scratch);
         } else if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("trial")) {
             // The trial's fixes (batch A): its own pass, the lengths' (the roll under the
@@ -24054,6 +24289,7 @@ int main(int argc, char **argv)
     runGrowAnyZoomPass(scratch);
     runTrialFixesPass(scratch);
     runKeptArtPass(scratch);
+    runDepthWhileMovingPass(scratch);
     runPinnedKeysPass(scratch);
     runCameraBarFitPass(scratch);
     runStageClearPass(scratch);

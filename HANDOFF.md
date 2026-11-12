@@ -1,5 +1,87 @@
 # SankoTV — Session Handoff Brief
 
+## STATUS 2026-11-11 (night 2): A B1 FIX AND B2 (DEPTH WHILE MOVING) BUILT, NOT COMMITTED; WAITING FOR THE USER'S B2 HAND TEST
+ON 56d558b9e, UNCOMMITTED: app/src/DrawingCanvas.cpp/.h, app/src/camera/CameraModel.h, app/src/camera/ShotCamera.cpp,
+app/tests/ProjectLifecycleTest.cpp, and this file. Do not commit until the user's B2 hand test passes; then two
+commits by concern - the B1 fix first (gated alone), then B2 - and this note.
+THE B1 FIX (its own concern; found in self-review while starting B2). B1 set a layer's tiles as current without
+setting `stageRect`, the place of the tiles' stage. A layer made in this session (Add Layer) has an empty one
+until a fold, so at rest (another panel) it read as an empty 0 x 0 image: its art would be lost. Now
+commitTransform's kept path, commitFloating's kept path and applyLayerRegionForUndo's tiles branch set
+stageRect = QRect(-frameAt, image size) with the tiles. Check (ka9), in runKeptArtPass before (ka8): a layer made
+in the test ("Made here", no stage place, no tiles), its block moved 250 px past the edge and Enter, panel 2 and
+back - at rest its stage reads the 50,000 px inside, and back on the canvas all 80,000 are there (x -150..249).
+Red run without the commitTransform line: at rest 0 x 0, 0 px. GATED ALONE in the scratch worktree C:\SankoTV_fix
+(detached at 56d558b9e, the two fix-only files, sha_B1fix_files.txt: DrawingCanvas.cpp 1e16e5e2...,
+ProjectLifecycleTest.cpp b3c96d64...): fullgate B1fix, the kill-less copy, nine families Release and Debug, 0
+failing; Lifecycle 1397 (1396 + ka9), Camera 335, the rest as gate B1; the pin lines (Camera 126, Lifecycle 47)
+identical to gate B1's in both configurations; the only check-name changes are (ka9) and the Dev Recorder's
+timestamps. Commit the fix from those gated copies (git hash-object -w + update-index), not from the main tree.
+WHAT B2 IS (Figma B-1 = node 561:696, the 4th panel; the user's note 1.7 and Q-B3).
+(1) THE DEPTH OUTLINE. DrawingCanvas::depthOutline: with the Move tool's box up (m_xformActive) on lifted layers
+that share one depth a != 1 (Panel::effectiveParallax; lifted rows of different depths show none), the box's quad
+through shotcam::layerToStage(a, the camera at the playhead (shotCameraShownState), stage()) - the one placement
+every shot uses. paintEvent draws it in canvas space, a cosmetic 1.5 px #7c6ef6 pen dashed {5,4}, and above its
+top-left (screen px) the label "in the shot (depth N %)" in #b9b0ff on a #161616 backing at 85 % (Figma's colour;
+the backing because the outline can lie on the paper; added to Figma B-1 as rect 563:696 behind its label 561:778),
+kept inside the widget. Figma puts the label left of the outline on two lines; the app puts it on one line above
+its top-left corner. None when the camera has passed the
+layer (layerShown). The drawing-view chip (shown when the camera is off its base on a panel with depth) reads
+"Drawing view  ·  dashed: <layer> in the shot" while there is one (drawingViewChipText is no longer static); a
+folder lift names the folder. It follows the box while it moves, scales or turns; refreshShotCamera repaints on
+playhead changes as before.
+(2) THE REAL ART'S EDGE. DepthEdge (CameraModel.h) gains leftPast/topPast/rightPast/bottomPast: how far the
+layer's art goes past each edge it reaches, its kept art included. depthEdges sets them from hiddenArtOf(layer)
+(LayerTiles::hiddenBounds over the tiles outside stageRect, cached by the tiles' key and the stage's place under
+g_depthMutex; empty for no tiles, no stage place or the paper). depthRanges puts the bound that far out:
+lo = c0 - (c0 - h + past) / a, hi = c0 + (W + past - c0 - h) / a. clampInside, quickMove and artExit (the amber
+"leaves Panel 1's art") all take it from there. With no kept art every past is 0 and every expression is the old.
+(3) THE SHOT DRAWS A DEPTH LAYER'S KEPT ART. Relaxing the hold to the art's edge would show a gap if the shot drew
+only the stage, so paintLayers - the one layered paint for the Camera tool's canvas, the preview, the MP4, stills
+and the strip - takes layerKeptMip for a layer with a != 1: its tiles unfolded over stageRect united with the
+hidden bounds, the dense image painted over the stage part (Source), reduced as layerMip, cached in g_mips (key:
+placedKey ^ tiles key * golden ratio, level + 1000) and placed through `extent` (stage px). With no hidden art it
+is layerMip exactly. keepMip, new, is the one insertion with the 256 MB eviction, for both.
+BEHAVIOUR TO KNOW: a depth layer now shows ANY art kept past its stage wherever its depth brings it into the frame -
+art a B1 move kept and art a stage shrink kept (batch 6c) alike. A 100 % layer stays stage-only (its kept art can
+only enter the frame past the stage, where the amber and Grow to fit already speak). KNOWN LIMIT: a past is the
+farthest kept pixel on that side, so kept art that is not joined to the edge (a far blob, a gap) still counts.
+THE CHECKS (runDepthWhileMovingPass, new, after runKeptArtPass in the main order and in the keptart slice):
+(kb1) on writeDepthProject (camera key 400 px right), Bush (150 %) given a 300 x 200 block at (700, 560): the
+outline equals layerToStage(1.5, ...) of the box, 200 px left (500, 560), painted, and the chip "Drawing view  ·
+dashed: Bush in the shot"; the pixels on its top edge left of the box are some but not all #7c6ef6 (dashed: 33 of
+53); it follows a 100 px drag 100 px. Control: on the House (100 %) none - no outline, nothing purple on that
+segment, the old chip text; and none with the Brush. (kb2) a near layer (125 %) filling a 2,720 x 1,080 stage
+(400 px margins): with 500 px kept past its left and right edges its pasts are 500 / 500 and the frame dragged
+far left goes to the stage's edge (960), held by nothing; control: cut at the edges it holds the frame at 1040
+(stoppedBy 0). And a pan from cx 960 to 1760 (Linear keys, 72 frames) leaves its art in 0 frames with kept art;
+control: 16 frames (0..71) cut. (kb3) stageImage at cx 960: x 50 reads the kept red (the layer's edge comes 100 px
+in), x 300 its blue; control: the cut layer shows white paper at x 50.
+WHILE WRITING THEM: the fixture's 40 px marker is 13 px on the test screen (view scale 0.33), within the box
+handles' 8 px, so a drag at its centre scaled it (40x40 -> 40x20) - hence the block; and the outline's left edge
+lay on the camera frame's own guide (x 400), one purple px in the control - also the block. The first pixel test
+sampled the whole top edge, which the box's own line shares from x 700: with the outline disabled it still read 31
+purple px, so it now samples from the outline's corner to 40 px before the box (clear of the corner handle): 0 of
+53 with the outline disabled.
+RED RUNS (all three disabled at once - they touch disjoint checks - then restored; no RED RUN left outside the
+ignored _backups): pasts off -> (kb2) held at 1040 by 0, the pan leaves 16 frames; the kept mip off -> (kb3) x 50
+white; the outline off -> (kb1) outline 0, painted 0, 0 of 53 purple, the old chip, and it does not follow; every
+control passed.
+QUICK CHECKS: keptart 49, trial 125, stagemode 124, strip 111, playback 31, all pass; SankoCameraTest Release 335,
+its pin values (app/camera_test.txt) identical to the B1fix gate's.
+GATE B2 (app/build/_probe/split/fullgate_B2.log, 2,517 s, the main tree, sha_B2_gate.txt): clean builds, nine
+families in Release and Debug, 0 failing. Lifecycle 1406 (1397 + the 9 (kb) checks), Camera 335, CanvasSizeLock
+170, CanvasEdgeLock 74, BrushLibrary 187, DevRecorder 46, QuickShapeGeometry 19, PaintPixel 13, CanvasBrush 3; no
+other check name changed against gate B1fix. Camera's 126 and Lifecycle's 47 pin lines identical to gate B1fix's
+in both configurations, and the camera pin values (app/camera_test.txt; Release copy camera_test_B2_release.txt)
+identical too: a project with no kept art on a depth layer renders as before.
+THE EXE at the main path is the gate's clean Release build: built Nov 11 2026 20:50:02 (file 20:50:20), git
+56d558b9e+dirty. HAND TEST: Documents\SankoTV-Design\handtest_B2_depth_while_moving.md on "TEST COPY - small
+pirate, B2" (C:\SankoTV-TestCopies; the original's hashes unchanged, origB_after5 = origB_after): the outline,
+its label and the chip on scene 3's Layer 2 (125 %), following the box and the playhead; Layer 2 stretched 500 px
+past both edges and Enter - no amber, the frame to the stage's edge with no "Edge of 'Layer 2'" stop, no gap;
+playback; optionally the waves (166 %).
+
 ## STATUS 2026-11-11 (late): B1 COMMITTED (f762637fa) AFTER THE USER'S HAND TEST; B2 BEING BUILT
 THE B1 HAND TEST (Dev Recorder 20261111-193330, 470 s, the 18:36:29 build, git ba1e50d68+dirty, on "TEST COPY -
 small pirate, B1", opened by File > Open; saved at the end, it is a copy). Steps of handtest_B1_kept_art.md:

@@ -613,6 +613,24 @@ qint64 g_mipBytes = 0;
 quint64 g_mipClock = 0;
 constexpr qint64 kMipBudget = 256ll * 1024 * 1024;
 
+// Keeps `mip` under `key`, the oldest entries going past the budget.
+void keepMip(const QPair<qint64, int> &key, const QImage &mip)
+{
+    QMutexLocker lock(&g_depthMutex);
+    if (g_mips.contains(key))
+        return;
+    g_mips.insert(key, MipEntry{mip, ++g_mipClock});
+    g_mipBytes += mip.sizeInBytes();
+    while (g_mipBytes > kMipBudget && g_mips.size() > 1) {
+        auto oldest = g_mips.begin();
+        for (auto it = g_mips.begin(); it != g_mips.end(); ++it)
+            if (it->used < oldest->used)
+                oldest = it;
+        g_mipBytes -= oldest->image.sizeInBytes();
+        g_mips.erase(oldest);
+    }
+}
+
 // `layer` reduced for drawing at `scale` (target px per layer px): itself at
 // 1 and above, else area-averaged to 2^(-n/4) >= scale. A layer at rest (batch
 // 6b-V) is unfolded when a level is first made; its level 0, the full image, is
@@ -639,19 +657,49 @@ QImage layerMip(const Layer &layer, double scale)
                               : image.scaled(qMax(1, qRound(image.width() * level)),
                                              qMax(1, qRound(image.height() * level)),
                                              Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
-    QMutexLocker lock(&g_depthMutex);
-    if (!g_mips.contains(key)) {
-        g_mips.insert(key, MipEntry{mip, ++g_mipClock});
-        g_mipBytes += mip.sizeInBytes();
-        while (g_mipBytes > kMipBudget && g_mips.size() > 1) {
-            auto oldest = g_mips.begin();
-            for (auto it = g_mips.begin(); it != g_mips.end(); ++it)
-                if (it->used < oldest->used)
-                    oldest = it;
-            g_mipBytes -= oldest->image.sizeInBytes();
-            g_mips.erase(oldest);
+    keepMip(key, mip);
+    return mip;
+}
+
+QRect hiddenArtOf(const Layer &layer); // below, with the depth edges
+
+// A DEPTH LAYER'S ART PAST THE STAGE (batch B2). A layer at another depth than the
+// picture plane's moves against the frame, so what it keeps outside the stage (batch
+// B1) can come into the shot - and the frame may now go as far as that art goes
+// (depthEdges). Its art, the stage and the kept part, as one image covering
+// `*extent` (stage px), reduced as layerMip reduces; the stage's image alone when
+// it keeps nothing.
+QImage layerKeptMip(const Layer &layer, double scale, QRect *extent)
+{
+    *extent = QRect(QPoint(0, 0), layer.pixelSize());
+    const QRect hidden = hiddenArtOf(layer);
+    if (hidden.isEmpty())
+        return layerMip(layer, scale);
+    const QRect whole = layer.stageRect.united(hidden); // frame space
+    *extent = whole.translated(-layer.stageRect.topLeft());
+    const int n = scale >= 1.0 ? 0 : qMax(0, int(std::floor(-std::log2(qMax(scale, 1e-6)) * 4.0)));
+    const QPair<qint64, int> key(
+        layer.placedKey() ^ qint64(quint64(layer.tiles->key) * 0x9E3779B97F4A7C15ull), n + 1000);
+    {
+        QMutexLocker lock(&g_depthMutex);
+        auto it = g_mips.find(key);
+        if (it != g_mips.end()) {
+            it->used = ++g_mipClock;
+            return it->image;
         }
     }
+    QImage image = layertiles::unfold(*layer.tiles, whole);
+    if (!layer.image.isNull()) { // the stage from the full image: the tiles' may be older
+        QPainter p(&image);
+        p.setCompositionMode(QPainter::CompositionMode_Source);
+        p.drawImage(layer.stageRect.topLeft() - whole.topLeft(), layer.image);
+    }
+    const double level = std::pow(2.0, -n / 4.0);
+    const QImage mip = n == 0 ? image
+                              : image.scaled(qMax(1, qRound(image.width() * level)),
+                                             qMax(1, qRound(image.height() * level)),
+                                             Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+    keepMip(key, mip);
     return mip;
 }
 
@@ -675,13 +723,16 @@ void paintLayers(QPainter &painter, const Panel &panel, const CameraState &state
             continue;
         const QTransform toTarget = layerToStage(a, state, stage) * canvasToTarget;
         const double scale = std::sqrt(qAbs(toTarget.determinant()));
-        const QImage mip = layerMip(layer, scale);
+        // Off the picture plane, with its kept art (batch B2); on it, the stage's
+        // image as always (its kept art lies outside the frame).
+        QRect extent(QPoint(0, 0), layer.pixelSize());
+        const QImage mip = a != 1.0 ? layerKeptMip(layer, scale, &extent) : layerMip(layer, scale);
         if (mip.isNull())
             continue;
         const QTransform mipToTarget =
-            QTransform::fromScale(layer.pixelSize().width() / double(mip.width()),
-                                  layer.pixelSize().height() / double(mip.height()))
-            * toTarget;
+            QTransform::fromScale(extent.width() / double(mip.width()),
+                                  extent.height() / double(mip.height()))
+            * QTransform::fromTranslate(extent.x(), extent.y()) * toTarget;
         const QRect src = mipToTarget.inverted()
                               .mapRect(visible)
                               .adjusted(-2, -2, 2, 2)
@@ -902,26 +953,52 @@ bool depthRanges(double zoom, double rotation, const Stage &stage,
         const double d = zoom * (1.0 - a) + a;
         if (a <= 0.0 || d < kNearCut)
             continue; // fixed to the camera, or passed: no bound
-        // The footprint: centre c0 + a (c - c0), half extents d * box / 2.
+        // The footprint: centre c0 + a (c - c0), half extents d * box / 2. It stays
+        // inside the layer's art: the stage's edge, or as far past it as the art
+        // goes (its kept art, batch B2; 0 before kept art).
         const double hx = d * bw / 2.0, hy = d * bh / 2.0;
         if (e.left) {
-            const double lo = c0x - (c0x - hx) / a;
+            const double lo = c0x - (c0x - hx + e.leftPast) / a;
             if (lo > x->lo) { x->lo = lo; x->loBy = i; }
         }
         if (e.right) {
-            const double hi = c0x + (W - c0x - hx) / a;
+            const double hi = c0x + (W + e.rightPast - c0x - hx) / a;
             if (hi < x->hi) { x->hi = hi; x->hiBy = i; }
         }
         if (e.top) {
-            const double lo = c0y - (c0y - hy) / a;
+            const double lo = c0y - (c0y - hy + e.topPast) / a;
             if (lo > y->lo) { y->lo = lo; y->loBy = i; }
         }
         if (e.bottom) {
-            const double hi = c0y + (H - c0y - hy) / a;
+            const double hi = c0y + (H + e.bottomPast - c0y - hy) / a;
             if (hi < y->hi) { y->hi = hi; y->hiBy = i; }
         }
     }
     return x->lo <= x->hi + 1e-9 && y->lo <= y->hi + 1e-9;
+}
+
+// THE ART PAST THE STAGE (batch B2): the tight bounds, frame space, of what a layer
+// keeps outside its stage (LayerTiles::hiddenBounds), by the tiles' identity and the
+// stage's place - worked out once per change, as the edge bits are.
+QHash<qint64, QRect> g_hiddenBounds;
+
+QRect hiddenArtOf(const Layer &layer)
+{
+    if (!layer.tiles || layer.stageRect.isEmpty() || layer.type == QLatin1String("background"))
+        return QRect();
+    const qint64 key = layer.tiles->key ^ qint64(qHash(layer.stageRect.topLeft(), qHash(layer.stageRect.size())));
+    {
+        QMutexLocker lock(&g_depthMutex);
+        auto it = g_hiddenBounds.constFind(key);
+        if (it != g_hiddenBounds.constEnd())
+            return it.value();
+    }
+    const QRect hidden = layertiles::hiddenBounds(*layer.tiles, layer.stageRect);
+    QMutexLocker lock(&g_depthMutex);
+    if (g_hiddenBounds.size() > 1024)
+        g_hiddenBounds.clear(); // tiles long since replaced
+    g_hiddenBounds.insert(key, hidden);
+    return hidden;
 }
 
 // THE EDGE CACHE: which edges a layer's art reaches, by its cacheKey (which
@@ -994,6 +1071,16 @@ QVector<DepthEdge> depthEdges(const Panel &panel)
         e.right = bits & 4;
         e.bottom = bits & 8;
         e.name = layer.name;
+        // Its real art's edge (batch B2): a layer scaled past the stage keeps what is
+        // past it (batch B1), and the frame may go as far as that art goes.
+        const QRect hidden = hiddenArtOf(layer);
+        if (!hidden.isEmpty()) {
+            const QRect stage = layer.stageRect;
+            e.leftPast = e.left ? qMax(0, stage.left() - hidden.left()) : 0.0;
+            e.topPast = e.top ? qMax(0, stage.top() - hidden.top()) : 0.0;
+            e.rightPast = e.right ? qMax(0, hidden.right() - stage.right()) : 0.0;
+            e.bottomPast = e.bottom ? qMax(0, hidden.bottom() - stage.bottom()) : 0.0;
+        }
         out.append(e);
     }
     return out;
