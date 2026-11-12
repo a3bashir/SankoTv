@@ -1,5 +1,29 @@
 # SankoTV — Session Handoff Brief
 
+## STATUS 2026-11-12: THE B1 FIX (01603ed07) AND B2 (893a30223) COMMITTED AFTER THE USER'S HAND TEST; F NEXT, AS A REPORT
+THE B2 HAND TEST (Dev Recorder 20261111-214009, 307 s, the 20:50:02 build, git 56d558b9e+dirty, on "TEST COPY -
+small pirate, B2" - the title bar and the exit prompt name it). The user did steps 1, 2, 3 and 5 of
+handtest_B2_depth_while_moving.md, on scene 1 (OCEAN) with Layer 4 (118 %) rather than scene 3's Layer 2:
+1 PASS: with the Move tool on Layer 4 the dashed outline and its tag "in the shot (depth 118 %)" on the dark
+backing (60.0 s); the outline followed a box drag (66.0 s), Esc. The chip reads "Drawing view · dashed: Layer 4 in
+the shot" but lies under the Move tool's mode bar (Pivot Point ... Warp), hard to read - as the old chip did in
+the B1 recording (107.0 s), so its place is Phase 2B's, not B2's: a FINDING for later (the chip above the bar while
+the bar shows). Not tested: the playhead moved with the box up (no check moves the playhead with the box up;
+(kb1) checks the placement at one camera state) and a 100 % layer ((kb1)'s control).
+2 PASS: Layer 4 stretched past both edges (102 s), Enter (108.2 s), the kept part faint. The Camera tool: no amber
+(126.5 s) - though scene 1's pan never nears the edges, so (kb2)'s amber check is what covers it. Stay inside on,
+Animate on, the frame dragged far left went to cx 510.6 = the paper's own limit at zoom 1.88, no "Edge of" stop
+(the old bound for this layer would have held it near 577); Ctrl+Z undid the key. Layer 4's art was not inside the
+frame there, so "not cut along a straight line" is (kb3)'s.
+3 PASS: playback from the start through scenes 1 to 3 (235.5-249.5 s): the stretched waves edge to edge (238.5 s),
+nothing cut along a straight line; the kept part never enters scene 1's frame, so (kb3) covers its drawing. Scene
+3's two boys are the user's art (the boy is drawn three times across the stage; repro 17-1b before B2 shows it).
+4 not tested (optional; (kb1)). 5 PASS: the window's X, "Save changes to ...?" -> Discard; nothing saved.
+No warning in the log. COMMITTED and pushed: 01603ed07 the B1 fix (the two files staged from the gated copies in
+C:\SankoTV_fix, equal to sha_B1fix_files.txt CR-stripped), 893a30223 B2 with this file as gated (sha_B2_gate.txt,
+sha_B2_docs.txt; the staged stat equal with --ignore-cr-at-eol; the 6 committed files equal to the working files),
+then this note. NEXT: F (the scene length lock) as a report and Figma only; do not build F until the user approves.
+
 ## STATUS 2026-11-11 (night 2): A B1 FIX AND B2 (DEPTH WHILE MOVING) BUILT, NOT COMMITTED; WAITING FOR THE USER'S B2 HAND TEST
 ON 56d558b9e, UNCOMMITTED: app/src/DrawingCanvas.cpp/.h, app/src/camera/CameraModel.h, app/src/camera/ShotCamera.cpp,
 app/tests/ProjectLifecycleTest.cpp, and this file. Do not commit until the user's B2 hand test passes; then two
