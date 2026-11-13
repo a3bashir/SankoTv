@@ -207,6 +207,17 @@ public:
     // Lock or unlock a scene's length (the scene's menu, the lock on the SCENES row):
     // one undo step, and a note.
     void toggleSceneLengthLock(int sceneIndex);
+    // BATCH F2. Lock / unlock every scene's length (the Edit menu and the scene's menu):
+    // one step for the scenes it changes. Whether any scene is (un)locked, for the menus.
+    void setAllSceneLengthsLocked(bool lock);
+    bool anySceneLengthLocked(bool locked) const;
+    // End the scene at the playhead: its last panel trimmed or lengthened, one step, the
+    // scenes after it moving (as a drag of that panel's right edge). The blocker: empty
+    // when it can, else why not ("the scene's length is locked", "the playhead is before
+    // its last panel", "it ends there"); *lastFrames: the last panel's new length.
+    void endSceneAtPlayhead(int sceneIndex);
+    QString endSceneAtPlayheadBlocker(int sceneIndex, int *lastFrames = nullptr) const;
+    int playheadFilmFrame() const; // -1: none
 
     // THE SHOT CAMERA BAR (Phase 1B, Figma 1B-4): the Camera tool's
     // Modifier bar. Animate (session), previous key / Add Key / Delete Key /

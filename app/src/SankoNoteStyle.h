@@ -1,6 +1,8 @@
 #pragma once
 
+#include <QAction>
 #include <QApplication>
+#include <QMenu>
 #include <QString>
 
 // THE NOTE STYLE (Phase 1B, the user's decision 2026-10-25: option B of
@@ -32,4 +34,18 @@ inline void applySankoNoteStyle()
     const QString style = sankoNoteStyle();
     if (!app->styleSheet().contains(style))
         app->setStyleSheet(app->styleSheet() + style);
+}
+
+// A GREYED-OUT MENU ENTRY (the user's rule, 2026-11-13): its label stays short - the
+// entry's own name - and why it is off is its tooltip, shown when hovered. The menu is
+// told to show tooltips; it shows only those set this way (an action's own tooltip,
+// never its text), so no other entry gains one. An empty `why` takes it away again.
+inline void sankoGreyWithReason(QMenu *menu, QAction *action, const QString &why, bool off = true)
+{
+    if (!action)
+        return;
+    action->setEnabled(!off);
+    action->setToolTip(off ? why : QString());
+    if (menu)
+        menu->setToolTipsVisible(true);
 }

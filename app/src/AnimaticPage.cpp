@@ -1,5 +1,6 @@
 #include "AnimaticPage.h"
 #include "SankoIcons.h"
+#include "SankoNoteStyle.h" // sankoGreyWithReason
 #include "SankoTheme.h"
 #include "SankoTimelineTheme.h"
 
@@ -2941,15 +2942,13 @@ void AnimaticPage::showAudioMenu(const QPoint &globalPos)
     QAction *removeAction = menu.addAction(QStringLiteral("Remove Audio"));
     removeAction->setEnabled(!m_audioPath.isEmpty());
     connect(removeAction, &QAction::triggered, this, [this] { removeAudio(); });
-    // A LOCKED AUDIO track (Part B): every entry stays, disabled and saying
-    // why, so the lock is seen rather than guessed at.
+    // A LOCKED AUDIO track (Part B): every entry stays, greyed and saying why - in its
+    // tooltip, its label just its name (the user's rule, 2026-11-13; " (locked)" before)
+    // - so the lock is seen rather than guessed at.
     if (m_tracks.audioLocked) {
-        for (QAction *a : menu.actions()) {
-            if (a->isSeparator())
-                continue;
-            a->setEnabled(false);
-            a->setText(a->text() + QStringLiteral(" (locked)"));
-        }
+        for (QAction *a : menu.actions())
+            if (!a->isSeparator())
+                sankoGreyWithReason(&menu, a, QStringLiteral("The AUDIO track is locked."));
     }
     if (m_audioMenuHookForTest) {
         m_audioMenuHookForTest(&menu);

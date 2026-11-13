@@ -11842,22 +11842,40 @@ void runCameraRowPass(const QString &scratch)
                   && s0->camera.keys.at(2).state == s0->camera.keys.at(1).state
                   && lastText() == QStringLiteral("Paste Camera Framing"),
               pasteText);
-        // The last key: no move after it, so no ease.
-        QString lastHeader, lastEase;
-        bool lastEaseOn = true;
+        // The last key: no move after it, so no ease. Its label just "Ease", greyed, and
+        // why as its tooltip (the user's rule, 2026-11-13; it read "Ease - no move after
+        // this key").
+        QString lastHeader, lastEase, lastEaseTip;
+        bool lastEaseOn = true, lastTips = false;
         menuAt(keyX(0, 3), [&](QMenu *m) {
             if (QAction *a = findAction(m, QStringLiteral("cameraKeyHeader")))
                 lastHeader = a->text();
             if (QMenu *ease = m->findChild<QMenu *>(QStringLiteral("cameraKeyEase"))) {
                 lastEaseOn = ease->menuAction()->isEnabled();
                 lastEase = ease->menuAction()->text();
+                lastEaseTip = ease->menuAction()->toolTip();
+            }
+            lastTips = m->toolTipsVisible();
+        });
+        QString midEase, midEaseTip;
+        bool midEaseOn = false;
+        menuAt(keyX(0, 1), [&](QMenu *m) {
+            if (QMenu *ease = m->findChild<QMenu *>(QStringLiteral("cameraKeyEase"))) {
+                midEaseOn = ease->menuAction()->isEnabled();
+                midEase = ease->menuAction()->text();
+                midEaseTip = ease->menuAction()->toolTip();
             }
         });
-        check(QStringLiteral("(cr.6) on the scene's last key Ease is disabled (\"no move after this "
-                             "key\") and the header says \"last key\""),
-              !lastEaseOn && lastEase == QString::fromUtf8("Ease \xE2\x80\x94 no move after this key")
-                  && lastHeader.endsWith(QStringLiteral("last key")),
-              lastHeader + QStringLiteral(" | ") + lastEase);
+        check(QStringLiteral("(cr.6) on the scene's last key Ease is disabled - its label just \"Ease\", and "
+                             "\"No move after this key.\" its tooltip, in a menu that shows tooltips - and the "
+                             "header says \"last key\""),
+              !lastEaseOn && lastEase == QStringLiteral("Ease") && lastEaseTip == QStringLiteral("No move after this key.")
+                  && lastTips && lastHeader.endsWith(QStringLiteral("last key")),
+              lastHeader + QStringLiteral(" | ") + lastEase + QStringLiteral(" | ") + lastEaseTip);
+        check(QStringLiteral("(cr.6) control: on key 2, with a move after it, Ease is on, with the same label and no "
+                             "tooltip of its own (an action's tooltip is its text when none is set)"),
+              midEaseOn && midEase == QStringLiteral("Ease") && midEaseTip == midEase,
+              midEase + QStringLiteral(" | ") + midEaseTip);
         // Delete Key, and Undo.
         const QByteArray beforeDelete = json(s0);
         menuAt(keyX(0, 2), [&](QMenu *m) {
@@ -12495,14 +12513,25 @@ void runQuickMovePass(const QString &scratch)
             && keyAt(s1, 48) >= 0 && keyAt(s1, 168) >= 0 && lastText() == QStringLiteral("Continue Camera");
         r.window.undoActionForTest()->trigger();
         pump(60);
+        QString s0UseTip, s0ContTip, s1UseTip, s1UseLabel;
+        bool s0Tips = false;
         sceneMenu(0, [&](QMenu *m) {
             if (QAction *a = m->findChild<QAction *>(QStringLiteral("cameraUseLastFraming"))) {
                 s0Use = a->text();
                 s0UseOn = a->isEnabled();
+                s0UseTip = a->toolTip();
             }
             if (QAction *a = m->findChild<QAction *>(QStringLiteral("cameraContinue"))) {
                 s0Cont = a->text();
                 s0ContOn = a->isEnabled();
+                s0ContTip = a->toolTip();
+            }
+            s0Tips = m->toolTipsVisible();
+        });
+        sceneMenu(1, [&](QMenu *m) { // control: on scene 2 it is on, with no tooltip of its own
+            if (QAction *a = m->findChild<QAction *>(QStringLiteral("cameraUseLastFraming"))) {
+                s1UseLabel = a->text();
+                s1UseTip = a->toolTip();
             }
         });
         check(QStringLiteral("(qm.7) \"Use Last Framing of Scene 1 (replaces 2 keys)\": scene 2 "
@@ -12513,11 +12542,17 @@ void runQuickMovePass(const QString &scratch)
         check(QStringLiteral("(qm.7) \"Continue Camera from Scene 1\": scene 2 starts on that "
                              "framing and keeps its own keys"),
               contText == QStringLiteral("Continue Camera from Scene 1") && continued, contText);
-        check(QStringLiteral("(qm.7) on scene 1 both are disabled: no scene before it"),
-              !s0UseOn && !s0ContOn
-                  && s0Use == QString::fromUtf8("Use Last Framing \xE2\x80\x94 no scene before this one")
-                  && s0Cont == QString::fromUtf8("Continue Camera \xE2\x80\x94 no scene before this one"),
-              s0Use);
+        check(QStringLiteral("(qm.7) on scene 1 both are disabled: just \"Use Last Framing\" and \"Continue Camera\", "
+                             "\"No scene before this one.\" their tooltip, in a menu that shows tooltips"),
+              !s0UseOn && !s0ContOn && s0Use == QStringLiteral("Use Last Framing")
+                  && s0Cont == QStringLiteral("Continue Camera")
+                  && s0UseTip == QStringLiteral("No scene before this one.")
+                  && s0ContTip == QStringLiteral("No scene before this one.") && s0Tips,
+              s0Use + QStringLiteral(" / ") + s0UseTip + QStringLiteral(" | ") + s0Cont + QStringLiteral(" / ") + s0ContTip);
+        check(QStringLiteral("(qm.7) control: on scene 2 Use Last Framing names its scene and has no tooltip of its "
+                             "own (its tooltip is its text)"),
+              s1UseLabel.startsWith(QStringLiteral("Use Last Framing of Scene 1")) && s1UseTip == s1UseLabel,
+              s1UseLabel + QStringLiteral(" / ") + s1UseTip);
         setCam(s0, {});
         QString wholeText;
         sceneMenu(1, [&](QMenu *m) {
@@ -12695,10 +12730,12 @@ void runQuickMovePass(const QString &scratch)
         r.window.undoActionForTest()->trigger();
         pump(60);
         const bool undone = json(s1) == before;
+        QString s0UseTip;
         cardMenu(0, [&](QMenu *m) {
             if (QAction *a = m->findChild<QAction *>(QStringLiteral("cameraUseLastFraming"))) {
                 s0Use = a->text();
                 s0UseOn = a->isEnabled();
+                s0UseTip = a->toolTip();
             }
         });
         check(QStringLiteral("(qm.11) right-clicking scene 2's card in the Scenes dock offers \"Use "
@@ -12706,9 +12743,11 @@ void runQuickMovePass(const QString &scratch)
               cards[0] && cards[1] && useText == QStringLiteral("Use Last Framing of Scene 1 (replaces 1 key)")
                   && used && undone,
               useText);
-        check(QStringLiteral("(qm.11) control: scene 1's card has it disabled - no scene before it"),
-              !s0UseOn && s0Use == QString::fromUtf8("Use Last Framing \xE2\x80\x94 no scene before this one"),
-              s0Use);
+        check(QStringLiteral("(qm.11) control: scene 1's card has it disabled - \"Use Last Framing\", \"No scene "
+                             "before this one.\" its tooltip"),
+              !s0UseOn && s0Use == QStringLiteral("Use Last Framing")
+                  && s0UseTip == QStringLiteral("No scene before this one."),
+              s0Use + QStringLiteral(" / ") + s0UseTip);
     }
 
     // --- (qm.12) every 1D menu entry is greyed while the CAMERA track is locked --
@@ -18814,17 +18853,19 @@ void runGrowAnyZoomPass(const QString &scratch)
     // --- (cx9) the clip's right-click menu and the CAMERA row's --------------------------
     {
         QAction *seenGrow = nullptr;
-        QString seenText;
+        QString seenText, seenTip;
         bool seenEnabled = false;
         bool triggerIt = false;
         r.storyboard->setClipMenuHookForTest([&](QMenu *m) {
             seenGrow = nullptr;
             seenText.clear();
+            seenTip.clear();
             seenEnabled = false;
             for (QAction *act : m->actions())
                 if (act->objectName() == QStringLiteral("cameraGrowToFit")) {
                     seenGrow = act;
                     seenText = act->text();
+                    seenTip = act->toolTip();
                     seenEnabled = act->isEnabled();
                     if (triggerIt)
                         act->trigger();
@@ -18833,9 +18874,10 @@ void runGrowAnyZoomPass(const QString &scratch)
         triggerIt = true;
         const int before = stack->index();
         rightClickClip(r, 1);
+        const QString unlockedTip = seenTip; // no tooltip of its own: its text
         check(QStringLiteral("(cx9) THE CLIP'S RIGHT-CLICK MENU offers the chip's Grow to fit, enabled; chosen, one undo "
                              "step, the Stage Margin step, and the move then stays on the art"),
-              seenGrow && seenText == growText && seenEnabled && stack->index() == before + 1
+              seenGrow && seenText == growText && seenEnabled && unlockedTip == growText && stack->index() == before + 1
                   && stack->undoText() == QStringLiteral("Stage Margin (Panel 2)")
                   && r.storyboard->panelMargins(p1) == QMargins(0, 0, 952, 0) && r.timeline->artExitFramesForTest(1) == 0,
               QStringLiteral("'%1' %2; steps +%3 '%4'; exit %5").arg(seenText).arg(seenEnabled)
@@ -18848,14 +18890,15 @@ void runGrowAnyZoomPass(const QString &scratch)
         r.animatic->setTrackLocked(TimelineTrack::Shots, true);
         pump(30);
         rightClickClip(r, 1);
-        const bool lockedShown = seenGrow && !seenEnabled && seenText == growText + QStringLiteral(" (locked)");
+        const bool lockedShown = seenGrow && !seenEnabled && seenText == growText
+            && seenTip == QStringLiteral("The SHOTS track is locked.");
         r.animatic->setTrackLocked(TimelineTrack::Shots, false);
         pump(30);
         check(QStringLiteral("(cx9) controls: no Grow entry on the clip the move keeps on the art; under the SHOTS lock "
-                             "it is there, disabled, \"(locked)\""),
+                             "it is there, disabled, its label as before and \"The SHOTS track is locked.\" its tooltip"),
               noneOnKept && lockedShown && r.timeline->artExitFramesForTest(1) == 72,
-              QStringLiteral("on clip 1: %1; locked: '%2' %3").arg(noneOnKept ? QStringLiteral("none") : QStringLiteral("one"))
-                  .arg(seenText).arg(seenEnabled));
+              QStringLiteral("on clip 1: %1; locked: '%2' %3 '%4'").arg(noneOnKept ? QStringLiteral("none") : QStringLiteral("one"))
+                  .arg(seenText).arg(seenEnabled).arg(seenTip));
         // The CAMERA row's menu (batch 6d) had no check of its own.
         const int rowY = r.timeline->cameraRowForTest().y() + 14;
         auto rowMenuAt = [&](int flat) {
@@ -19994,6 +20037,179 @@ void runSceneLockPass(const QString &scratch)
               && onlyNote == QStringLiteral("Scene 2's length is locked, and panel 1 is its only panel: its length cannot change.")
               && lengths() == opened && !scene(1)->lengthLocked,
           QStringLiteral("only %1 +%2 '%3'; back %4").arg(onlyL).arg(onlySteps).arg(onlyNote, lengths()));
+
+    // ---- (sl13) Lock All / Unlock All (batch F2) ---------------------------------------------
+    auto sceneMenuEntry = [&](int si, const QString &name, bool trigger) { // text, enabled
+        QString text;
+        bool enabled = false;
+        r.storyboard->setClipMenuHookForTest([&](QMenu *menu) {
+            for (QAction *a : menu->actions())
+                if (a->objectName() == name) {
+                    text = a->text();
+                    enabled = a->isEnabled();
+                    if (trigger && enabled)
+                        a->trigger();
+                }
+        });
+        r.storyboard->sceneMenuForTest(si);
+        r.storyboard->setClipMenuHookForTest(nullptr);
+        pump(120);
+        return qMakePair(text, enabled);
+    };
+    QAction *editLockAll = r.window.findChild<QAction *>(QStringLiteral("editLockAllScenes"));
+    QAction *editUnlockAll = r.window.findChild<QAction *>(QStringLiteral("editUnlockAllScenes"));
+    auto editStates = [&] { // the Edit menu's two, as it opens: "lock/unlock"
+        if (auto *menu = editLockAll ? qobject_cast<QMenu *>(editLockAll->parent()) : nullptr)
+            emit menu->aboutToShow();
+        return QStringLiteral("%1/%2").arg(editLockAll && editLockAll->isEnabled() ? 1 : 0)
+            .arg(editUnlockAll && editUnlockAll->isEnabled() ? 1 : 0);
+    };
+    const QString editMixed = editStates(); // scene 1 locked, scene 2 not
+    n0 = stack->index();
+    r.storyboard->clearNoteForTest();
+    const auto lockAllEntry = sceneMenuEntry(1, QStringLiteral("sceneLockAll"), true);
+    const bool allLocked = scene(0)->lengthLocked && scene(1)->lengthLocked;
+    const QString allNote = note(), allText = stack->undoText();
+    const int allSteps = stack->index() - n0;
+    const QString editAll = editStates();
+    const auto lockAllWhenAll = sceneMenuEntry(0, QStringLiteral("sceneLockAll"), false);
+    undoTo(n0); // (not a bare undo: when nothing was pushed it would take an older step)
+    const bool undoneMixed = scene(0)->lengthLocked && !scene(1)->lengthLocked;
+    check(QStringLiteral("(sl13) LOCK ALL SCENE LENGTHS, from a scene's menu: every scene locked in one \"Lock All Scene "
+                         "Lengths\" step (\"All 2 scenes' lengths are locked: nothing in the film can move against the "
+                         "sound.\"); the Edit menu then offers Unlock All only and the scene menu's Lock All is off; Undo "
+                         "puts back each scene's own lock - scene 1 still locked, scene 2 not"),
+          lockAllEntry.second && lockAllEntry.first == QStringLiteral("Lock All Scene Lengths") && allLocked
+              && allSteps == 1 && allText == QStringLiteral("Lock All Scene Lengths")
+              && allNote == QStringLiteral("All 2 scenes' lengths are locked: nothing in the film can move against the sound.")
+              && editMixed == QStringLiteral("1/1") && editAll == QStringLiteral("0/1") && !lockAllWhenAll.second
+              && undoneMixed,
+          QStringLiteral("entry '%1' %2; locked %3, +%4 '%5' '%6'; Edit %7 -> %8; Lock All when all %9; undone %10")
+              .arg(lockAllEntry.first).arg(lockAllEntry.second).arg(allLocked).arg(allSteps).arg(allText, allNote)
+              .arg(editMixed, editAll).arg(lockAllWhenAll.second).arg(undoneMixed));
+    n0 = stack->index();
+    r.storyboard->clearNoteForTest();
+    editStates();
+    if (editUnlockAll)
+        editUnlockAll->trigger();
+    pump(120);
+    const bool noneLocked = !scene(0)->lengthLocked && !scene(1)->lengthLocked;
+    const QString noneNote = note();
+    const int noneSteps = stack->index() - n0;
+    const QString editNone = editStates();
+    undoTo(n0);
+    check(QStringLiteral("(sl13) UNLOCK ALL, from the Edit menu: no scene locked, one step, \"All 2 scenes' lengths are "
+                         "unlocked.\"; the Edit menu then offers Lock All only; control: Undo locks scene 1 again"),
+          editUnlockAll && noneLocked && noneSteps == 1
+              && noneNote == QStringLiteral("All 2 scenes' lengths are unlocked.") && editNone == QStringLiteral("1/0")
+              && scene(0)->lengthLocked && !scene(1)->lengthLocked,
+          QStringLiteral("none locked %1, +%2 '%3'; Edit %4; after Undo scene 1 %5")
+              .arg(noneLocked).arg(noneSteps).arg(noneNote, editNone).arg(scene(0)->lengthLocked));
+
+    // ---- (sl14) End Scene at Playhead (batch F2) ---------------------------------------------
+    // A greyed entry's label is its name alone and why it is off its tooltip (the user's rule,
+    // 2026-11-13): read as set, and as the open menu shows it under the pointer.
+    auto sceneMenuTip = [&](int si, const QString &name) {
+        QString tip;
+        r.storyboard->setClipMenuHookForTest([&](QMenu *menu) {
+            for (QAction *a : menu->actions())
+                if (a->objectName() == name)
+                    tip = a->toolTip();
+        });
+        r.storyboard->sceneMenuForTest(si);
+        r.storyboard->setClipMenuHookForTest(nullptr);
+        return tip;
+    };
+    auto sceneMenuHover = [&](int si, const QString &name) { // the tooltip shown over it, open
+        QString shown = QStringLiteral("<none>");
+        r.storyboard->setClipMenuHookForTest([&](QMenu *menu) {
+            menu->popup(r.surface->mapToGlobal(QPoint(300, 40)));
+            pump(150);
+            QToolTip::hideText();
+            pump(60);
+            for (QAction *a : menu->actions())
+                if (a->objectName() == name) {
+                    const QPoint at = menu->actionGeometry(a).center();
+                    QHelpEvent help(QEvent::ToolTip, at, menu->mapToGlobal(at));
+                    QCoreApplication::sendEvent(menu, &help);
+                    pump(60);
+                    shown = QToolTip::isVisible() ? QToolTip::text() : QString();
+                }
+            QToolTip::hideText();
+            menu->hide();
+            pump(60);
+        });
+        r.storyboard->sceneMenuForTest(si);
+        r.storyboard->setClipMenuHookForTest(nullptr);
+        return shown;
+    };
+    r.animatic->setPlayheadFrameInPanel(5, 12); // scene 2's panel 2, its frame 12: film frame 181
+    pump(80);
+    const auto trimEntry = sceneMenuEntry(1, QStringLiteral("sceneEndAtPlayhead"), false);
+    const QString trimTip = sceneMenuTip(1, QStringLiteral("sceneEndAtPlayhead"));
+    const auto lockedEntry = sceneMenuEntry(0, QStringLiteral("sceneEndAtPlayhead"), false);
+    const QString lockedTip = sceneMenuTip(0, QStringLiteral("sceneEndAtPlayhead"));
+    const QString lockedShown = sceneMenuHover(0, QStringLiteral("sceneEndAtPlayhead"));
+    const QString onShown = sceneMenuHover(0, QStringLiteral("sceneLockAll")); // on: no tooltip of its own
+    n0 = stack->index();
+    r.storyboard->clearNoteForTest();
+    sceneMenuEntry(1, QStringLiteral("sceneEndAtPlayhead"), true);
+    const QString trimL = lengths(), trimNote = note(), trimText = stack->undoText();
+    const int trimSteps = stack->index() - n0;
+    undoTo(n0);
+    check(QStringLiteral("(sl14) END SCENE AT PLAYHEAD, trimmed: with the playhead at 00:00:07:13 the scene's menu offers "
+                         "\"End Scene at Playhead (00:00:07:13)\" (no tooltip of its own); it trims scene 2's last panel to "
+                         "12 frames, one \"End Scene at Playhead\" step: \"Scene 2 now ends at the playhead, 00:00:07:13: "
+                         "panel 2 is 12f (was 1s).\""),
+          trimEntry.first == QStringLiteral("End Scene at Playhead (00:00:07:13)") && trimEntry.second
+              && trimTip == trimEntry.first && trimL == QStringLiteral("30 35 48 32 24 12") && trimSteps == 1
+              && trimText == QStringLiteral("End Scene at Playhead")
+              && trimNote == QStringLiteral("Scene 2 now ends at the playhead, 00:00:07:13: panel 2 is 12f (was 1s).")
+              && lengths() == opened,
+          QStringLiteral("'%1' %2 tip '%3'; %4 +%5 '%6' '%7'")
+              .arg(trimEntry.first).arg(trimEntry.second).arg(trimTip).arg(trimL).arg(trimSteps).arg(trimText, trimNote));
+    check(QStringLiteral("(sl14) A GREYED ENTRY'S LABEL IS ITS NAME, ITS REASON A TOOLTIP: on locked scene 1 the entry reads "
+                         "just \"End Scene at Playhead\", off, and the open menu shows \"The scene's length is locked.\" over "
+                         "it; control: over Lock All Scene Lengths, which is on, no tooltip shows"),
+          lockedEntry.first == QStringLiteral("End Scene at Playhead") && !lockedEntry.second
+              && lockedTip == QStringLiteral("The scene's length is locked.") && lockedShown == lockedTip
+              && onShown.isEmpty(),
+          QStringLiteral("'%1' %2 tip '%3'; shown '%4'; over Lock All '%5'").arg(lockedEntry.first).arg(lockedEntry.second)
+              .arg(lockedTip, lockedShown, onShown));
+    const int unlockBase = stack->index();
+    r.storyboard->toggleSceneLengthLock(0); // scene 1 unlocked, to lengthen it into scene 2's time
+    pump(80);
+    const int extendBase = stack->index();
+    r.animatic->setPlayheadFrameInPanel(4, 0); // scene 1's very end
+    pump(80);
+    const auto thereEntry = sceneMenuEntry(0, QStringLiteral("sceneEndAtPlayhead"), false);
+    const QString thereTip = sceneMenuTip(0, QStringLiteral("sceneEndAtPlayhead"));
+    r.animatic->setPlayheadFrameInPanel(4, 12); // 12 frames into scene 2: film frame 157
+    pump(80);
+    r.storyboard->clearNoteForTest();
+    sceneMenuEntry(0, QStringLiteral("sceneEndAtPlayhead"), true);
+    const QString extendL = lengths(), extendS = starts(), extendNote = note();
+    undoTo(extendBase);
+    r.animatic->setPlayheadFrameInPanel(4, 6); // control: before scene 2's last panel
+    pump(80);
+    const auto beforeEntry = sceneMenuEntry(1, QStringLiteral("sceneEndAtPlayhead"), false);
+    const QString beforeTip = sceneMenuTip(1, QStringLiteral("sceneEndAtPlayhead"));
+    undoTo(unlockBase); // scene 1 locked again
+    check(QStringLiteral("(sl14) LENGTHENED: unlocked, scene 1 ended at the playhead 12 frames into scene 2 - its last "
+                         "panel 32 -> 44 frames and scene 2 moving with it (\"Scene 1 now ends at the playhead, 00:00:06:13: "
+                         "panel 4 is 1s 20f (was 1s 8f).\"); control: where it already ends the entry is off (its tooltip "
+                         "\"The scene already ends at the playhead.\"), and so for scene 2 while the playhead is before its last "
+                         "panel (\"The playhead is before its last panel.\") - both labelled just \"End Scene at Playhead\""),
+          extendL == QStringLiteral("30 35 48 44 24 24") && extendS == QStringLiteral("0 30 65 113 157 181")
+              && extendNote == QStringLiteral("Scene 1 now ends at the playhead, 00:00:06:13: panel 4 is 1s 20f (was 1s 8f).")
+              && thereEntry.first == QStringLiteral("End Scene at Playhead") && !thereEntry.second
+              && thereTip == QStringLiteral("The scene already ends at the playhead.")
+              && beforeEntry.first == QStringLiteral("End Scene at Playhead") && !beforeEntry.second
+              && beforeTip == QStringLiteral("The playhead is before its last panel.") && scene(0)->lengthLocked
+              && lengths() == opened,
+          QStringLiteral("%1 | %2 '%3'; there '%4' %5 '%6'; before '%7' %8 '%9'; scene 1 locked %10")
+              .arg(extendL, extendS, extendNote, thereEntry.first).arg(thereEntry.second).arg(thereTip, beforeEntry.first)
+              .arg(beforeEntry.second).arg(beforeTip).arg(scene(0)->lengthLocked));
 
     // ---- (sl11) the Script Editor -----------------------------------------------------------
     QString scriptSaid;
@@ -24179,27 +24395,32 @@ void runTrackLocksPass(const QString &scratch)
               .arg(addBtn != nullptr).arg(dupBtn != nullptr).arg(delBtn != nullptr)
               .arg(addBtn && addBtn->isEnabled()).arg(dupBtn && dupBtn->isEnabled())
               .arg(delBtn && delBtn->isEnabled()));
-    // The clip menu: the three entries disabled and suffixed.
+    // The clip menu: the entries disabled, their labels their names and why as their
+    // tooltip (the user's rule, 2026-11-13; they said " (locked)" before).
     {
         QStringList items;
+        bool tips = false;
         sb->setClipMenuHookForTest([&](QMenu *menu) {
             for (QAction *a : menu->actions())
-                if (!a->isSeparator())
-                    items << QStringLiteral("%1[%2]").arg(a->text()).arg(a->isEnabled());
+                if (!a->isSeparator()) // its own tooltip, if it has one (else toolTip() is its text)
+                    items << QStringLiteral("%1[%2]<%3>").arg(a->text()).arg(a->isEnabled())
+                                 .arg(a->toolTip() == a->text() ? QString() : a->toolTip());
+            tips = menu->toolTipsVisible();
         });
         rightClickClip(r, 0);
         sb->setClipMenuHookForTest({});
         // Phase 1D: Quick Camera Move follows them, enabled - a camera
         // edit is the CAMERA lock's, not the SHOTS lock's. Batch 5
         // (2026-11-06): Set Duration..., a SHOTS edit, locked with them.
-        check(QStringLiteral("(ax) locked: the clip's menu shows Add Panel After, Duplicate "
-                             "Panel, Set Duration... and Delete Panel disabled and suffixed "
-                             "\"(locked)\"; Quick Camera Move (the CAMERA track's) stays enabled"),
-              items.size() == 5 && items.at(0) == QStringLiteral("Add Panel After (locked)[0]")
-                  && items.at(1) == QStringLiteral("Duplicate Panel (locked)[0]")
-                  && items.at(2) == QStringLiteral("Set Duration... (locked)[0]")
-                  && items.at(3) == QStringLiteral("Delete Panel (locked)[0]")
-                  && items.at(4) == QStringLiteral("Quick Camera Move[1]"),
+        const QString why = QStringLiteral("The SHOTS track is locked.");
+        check(QStringLiteral("(ax) locked: the clip's menu shows Add Panel After, Duplicate Panel, Set Duration... and "
+                             "Delete Panel disabled, each \"The SHOTS track is locked.\" as its tooltip (in a menu that "
+                             "shows tooltips); control: Quick Camera Move (the CAMERA track's) stays enabled, no tooltip"),
+              items.size() == 5 && items.at(0) == QStringLiteral("Add Panel After[0]<%1>").arg(why)
+                  && items.at(1) == QStringLiteral("Duplicate Panel[0]<%1>").arg(why)
+                  && items.at(2) == QStringLiteral("Set Duration...[0]<%1>").arg(why)
+                  && items.at(3) == QStringLiteral("Delete Panel[0]<%1>").arg(why)
+                  && items.at(4) == QStringLiteral("Quick Camera Move[1]<>") && tips,
               items.join(QStringLiteral(" | ")));
     }
     // Cut, Paste (Copy allowed), the Delete key over the timeline, Ctrl+Right.
@@ -24401,8 +24622,9 @@ void runTrackLocksPass(const QString &scratch)
         QStringList items;
         page->setAudioMenuHookForTest([&](QMenu *menu) {
             for (QAction *a : menu->actions())
-                if (!a->isSeparator())
-                    items << QStringLiteral("%1[%2]").arg(a->text()).arg(a->isEnabled());
+                if (!a->isSeparator()) // its own tooltip, if it has one (else toolTip() is its text)
+                    items << QStringLiteral("%1[%2]<%3>").arg(a->text()).arg(a->isEnabled())
+                                 .arg(a->toolTip() == a->text() ? QString() : a->toolTip());
         });
         const QRect row = tl->audioRowForTest();
         const QPoint at(AnimaticTimeline::labelColumnWidthForTest() + 40, row.center().y());
@@ -24410,9 +24632,13 @@ void runTrackLocksPass(const QString &scratch)
         QCoreApplication::sendEvent(r.surface, &ev);
         pump(200);
         page->setAudioMenuHookForTest({});
+        // Greyed, their labels their names and why as their tooltip (the user's rule,
+        // 2026-11-13; they said " (locked)" before).
+        const QString audioWhy = QStringLiteral("The AUDIO track is locked.");
         bool menuLocked = !items.isEmpty();
         for (const QString &i : items)
-            menuLocked = menuLocked && i.endsWith(QStringLiteral(" (locked)[0]"));
+            menuLocked = menuLocked && i.endsWith(QStringLiteral("[0]<%1>").arg(audioWhy))
+                && !i.contains(QStringLiteral("(locked)"));
         QAction *importAct = nullptr, *removeAct = nullptr;
         for (QAction *a : r.window.findChildren<QAction *>()) {
             if (a->text().startsWith(QStringLiteral("Import Audio")))
@@ -24422,8 +24648,9 @@ void runTrackLocksPass(const QString &scratch)
         }
         const bool editMenuLocked = importAct && removeAct && !importAct->isEnabled()
             && !removeAct->isEnabled()
-            && importAct->text() == QStringLiteral("Import Audio... (locked)")
-            && removeAct->text() == QStringLiteral("Remove Audio (locked)");
+            && importAct->text() == QStringLiteral("Import Audio...") && importAct->toolTip() == audioWhy
+            && removeAct->text() == QStringLiteral("Remove Audio") && removeAct->toolTip() == audioWhy
+            && qobject_cast<QMenu *>(importAct->parent()) && qobject_cast<QMenu *>(importAct->parent())->toolTipsVisible();
         page->removeAudio();
         pump(200);
         const bool removeRefused = isWav() && stack->index() == before + 1;
@@ -24433,10 +24660,9 @@ void runTrackLocksPass(const QString &scratch)
         pump(200);
         const bool undoRefused = stack->index() == index && isWav()
             && messages.size() == 1 && messages.first() == QStringLiteral("AUDIO track is locked");
-        check(QStringLiteral("(ax) THE AUDIO LOCK: the track's menu and the Edit menu show "
-                             "Import / Remove Audio disabled and suffixed \"(locked)\", Remove "
-                             "Audio does nothing, and Undo of the import is refused with a "
-                             "message"),
+        check(QStringLiteral("(ax) THE AUDIO LOCK: the track's menu and the Edit menu show Import / Remove Audio "
+                             "disabled, \"The AUDIO track is locked.\" their tooltip, Remove Audio does nothing, and "
+                             "Undo of the import is refused with a message"),
               imported && menuLocked && editMenuLocked && removeRefused && undoRefused,
               QStringLiteral("imported %1 menu [%2] edit menu %3 (%4 / %5) remove %6 undo %7 | %8")
                   .arg(imported).arg(items.join(QStringLiteral(", "))).arg(editMenuLocked)
@@ -24447,7 +24673,9 @@ void runTrackLocksPass(const QString &scratch)
         clickControl("trackLockAudio");
         const bool entriesBack = importAct && importAct->isEnabled()
             && importAct->text() == QStringLiteral("Import Audio...") && removeAct
-            && removeAct->isEnabled() && removeAct->text() == QStringLiteral("Remove Audio");
+            && removeAct->isEnabled() && removeAct->text() == QStringLiteral("Remove Audio")
+            && importAct->toolTip() != audioWhy && removeAct->toolTip() != audioWhy; // the reason gone (with none
+            // of its own an action's tooltip is its text less a trailing "...", so not compared to the text)
         sb->editUndo();
         pump(300);
         const bool undone = page->audioPath().isEmpty() && stack->index() == index - 1;

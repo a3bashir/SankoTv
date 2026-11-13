@@ -729,6 +729,25 @@ void MainWindow::setupMenuBar()
     m_locateAudioAct->setEnabled(false);
     m_copyAudioAct->setEnabled(false);
 
+    // EVERY SCENE'S LENGTH, locked or unlocked in one step (batch F2; the user's
+    // decision 5: here and in a scene's menu only). Enabled as the menu opens, when a
+    // scene would change.
+    editMenu->addSeparator();
+    m_lockAllScenesAct = editMenu->addAction(QStringLiteral("Lock All Scene Lengths"));
+    m_lockAllScenesAct->setObjectName(QStringLiteral("editLockAllScenes"));
+    connect(m_lockAllScenesAct, &QAction::triggered, this, [this] {
+        if (m_stack && m_stack->currentWidget() == m_storyboard && m_storyboard)
+            m_storyboard->setAllSceneLengthsLocked(true);
+    });
+    m_unlockAllScenesAct = editMenu->addAction(QStringLiteral("Unlock All Scene Lengths"));
+    m_unlockAllScenesAct->setObjectName(QStringLiteral("editUnlockAllScenes"));
+    connect(m_unlockAllScenesAct, &QAction::triggered, this, [this] {
+        if (m_stack && m_stack->currentWidget() == m_storyboard && m_storyboard)
+            m_storyboard->setAllSceneLengthsLocked(false);
+    });
+    connect(editMenu, &QMenu::aboutToShow, this, &MainWindow::updateSceneLockActions);
+    updateSceneLockActions();
+
 
     editMenu->addSeparator();
     QAction *prefsAct = editMenu->addAction(QStringLiteral("Preferences..."));
@@ -1430,18 +1449,17 @@ void MainWindow::updateAudioActions()
 {
     const bool inWorkspace = m_stack && m_storyboard
         && m_stack->currentWidget() == m_storyboard && !m_scenes.isEmpty();
-    // A LOCKED AUDIO track (Part B): the four entries stay, disabled and
-    // suffixed "(locked)"; the suffix comes off again with the lock.
+    // A LOCKED AUDIO track (Part B): the four entries stay, greyed, their labels just
+    // their names and why as their tooltip (the user's rule, 2026-11-13; they said
+    // " (locked)" before); the tooltip goes again with the lock.
     const bool locked = m_animatic && m_animatic->tracks().audioLocked;
-    const QString suffix = QStringLiteral(" (locked)");
     auto apply = [&](QAction *act, bool enabled) {
         if (!act)
             return;
-        QString text = act->text();
-        if (text.endsWith(suffix))
-            text.chop(suffix.size());
-        act->setText(locked ? text + suffix : text);
-        act->setEnabled(enabled && !locked);
+        sankoGreyWithReason(qobject_cast<QMenu *>(act->parent()), act,
+                            locked ? QStringLiteral("The AUDIO track is locked.") : QString(), locked);
+        if (!locked)
+            act->setEnabled(enabled);
     };
     apply(m_importAudioAct, inWorkspace);
     apply(m_removeAudioAct, inWorkspace && m_animatic && !m_animatic->audioPath().isEmpty());
@@ -1449,6 +1467,16 @@ void MainWindow::updateAudioActions()
     apply(m_copyAudioAct, inWorkspace && m_animatic && m_animatic->audioLinked()
                               && !m_animatic->audioMissing()
                               && !m_currentProjectPath.isEmpty());
+}
+
+void MainWindow::updateSceneLockActions()
+{
+    const bool inWorkspace = m_stack && m_storyboard && m_stack->currentWidget() == m_storyboard
+        && !m_scenes.isEmpty();
+    if (m_lockAllScenesAct)
+        m_lockAllScenesAct->setEnabled(inWorkspace && m_storyboard->anySceneLengthLocked(false));
+    if (m_unlockAllScenesAct)
+        m_unlockAllScenesAct->setEnabled(inWorkspace && m_storyboard->anySceneLengthLocked(true));
 }
 
 // --- File > Export ----------------------------------------------------------

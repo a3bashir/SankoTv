@@ -6,6 +6,7 @@
 #include "AnimaticTimeline.h"
 #include "ColorPanel.h"
 #include "SankoIcons.h"
+#include "SankoNoteStyle.h" // sankoGreyWithReason
 #include "SankoTimelineTheme.h"
 #include "SankoToggleControls.h"
 
@@ -2008,6 +2009,33 @@ private:
     QPair<int, int> m_receiverBefore, m_receiverAfter;
     bool m_hasCamera = false;
     shotcam::SceneCamera m_cameraBefore, m_cameraAfter;
+};
+
+// LOCK ALL / UNLOCK ALL SCENE LENGTHS (batch F2, the user's decision 5: menus only): one
+// step for every scene whose lock it changes, and its undo puts back each one's own.
+class ScenesLengthLockCommand : public QUndoCommand
+{
+public:
+    ScenesLengthLockCommand(StoryboardPage *page, const QVector<Scene *> &scenes, bool lock)
+        : QUndoCommand(lock ? QStringLiteral("Lock All Scene Lengths") : QStringLiteral("Unlock All Scene Lengths")),
+          m_page(page), m_scenes(scenes), m_lock(lock)
+    {
+    }
+    void redo() override
+    {
+        for (Scene *scene : m_scenes)
+            m_page->applySceneLengthLockForUndo(scene, m_lock);
+    }
+    void undo() override
+    {
+        for (Scene *scene : m_scenes)
+            m_page->applySceneLengthLockForUndo(scene, !m_lock);
+    }
+
+private:
+    StoryboardPage *m_page;
+    QVector<Scene *> m_scenes; // only those it changes
+    bool m_lock;
 };
 
 // THE SCENE LENGTH LOCK (batch F1, 2026-11-12; Figma F-1): locking and unlocking a
@@ -6861,11 +6889,11 @@ void StoryboardPage::addSceneCameraEntries(QMenu *menu, int sceneIndex)
         return;
     QAction *use = nullptr;
     QAction *cont = nullptr;
-    if (sceneIndex == 0) {
-        use = menu->addAction(QString::fromUtf8("Use Last Framing \xE2\x80\x94 no scene before this one"));
-        cont = menu->addAction(QString::fromUtf8("Continue Camera \xE2\x80\x94 no scene before this one"));
-        use->setEnabled(false);
-        cont->setEnabled(false);
+    if (sceneIndex == 0) { // short labels, greyed; why is their tooltip (2026-11-13)
+        use = menu->addAction(QStringLiteral("Use Last Framing"));
+        cont = menu->addAction(QStringLiteral("Continue Camera"));
+        sankoGreyWithReason(menu, use, QStringLiteral("No scene before this one."));
+        sankoGreyWithReason(menu, cont, QStringLiteral("No scene before this one."));
     } else {
         const int prev = m_scenes.at(sceneIndex - 1)->number;
         bool whole = true;
@@ -6926,6 +6954,26 @@ void StoryboardPage::onSceneMenu(int sceneIndex, const QPoint &globalPos)
                 .arg(shotcam::lengthText(frames, fps)).arg(QChar(0x00B7)).arg(frames));
         lock->setObjectName(QStringLiteral("sceneLengthLock"));
         connect(lock, &QAction::triggered, this, [this, sceneIndex] { toggleSceneLengthLock(sceneIndex); });
+        // LOCK ALL / UNLOCK ALL (batch F2, decision 5: here and in the Edit menu only).
+        QAction *lockAll = menu.addAction(QStringLiteral("Lock All Scene Lengths"));
+        lockAll->setObjectName(QStringLiteral("sceneLockAll"));
+        lockAll->setEnabled(anySceneLengthLocked(false));
+        connect(lockAll, &QAction::triggered, this, [this] { setAllSceneLengthsLocked(true); });
+        QAction *unlockAll = menu.addAction(QStringLiteral("Unlock All Scene Lengths"));
+        unlockAll->setObjectName(QStringLiteral("sceneUnlockAll"));
+        unlockAll->setEnabled(anySceneLengthLocked(true));
+        connect(unlockAll, &QAction::triggered, this, [this] { setAllSceneLengthsLocked(false); });
+        // END SCENE AT PLAYHEAD (batch F2): with the time it would end at; when it cannot,
+        // just its name, greyed, and why as its tooltip (the user's rule, 2026-11-13).
+        const QString blocker = shotsLocked() ? QStringLiteral("The SHOTS track is locked.")
+                                              : endSceneAtPlayheadBlocker(sceneIndex);
+        const int playhead = playheadFilmFrame();
+        QAction *endAt = menu.addAction(
+            blocker.isEmpty() ? QStringLiteral("End Scene at Playhead (%1)").arg(shotcam::timecodeText(playhead, fps))
+                              : QStringLiteral("End Scene at Playhead"));
+        endAt->setObjectName(QStringLiteral("sceneEndAtPlayhead"));
+        sankoGreyWithReason(&menu, endAt, blocker, !blocker.isEmpty());
+        connect(endAt, &QAction::triggered, this, [this, sceneIndex] { endSceneAtPlayhead(sceneIndex); });
         menu.addSeparator();
     }
     addSceneCameraEntries(&menu, sceneIndex);
@@ -7475,11 +7523,14 @@ void StoryboardPage::onCameraKeyMenu(int sceneIndex, int keyIndex, const QPoint 
     title->setObjectName(QStringLiteral("cameraKeyHeader"));
     title->setEnabled(false);
     menu.addSeparator();
-    QMenu *easeMenu = menu.addMenu(last ? QString::fromUtf8("Ease \xE2\x80\x94 no move after this key")
-                                        : QStringLiteral("Ease"));
+    QMenu *easeMenu = menu.addMenu(QStringLiteral("Ease"));
     easeMenu->setObjectName(QStringLiteral("cameraKeyEase"));
     easeMenu->setStyleSheet(sheet);
-    easeMenu->menuAction()->setEnabled(!last && !locked);
+    // Off on the last key or a locked track: just "Ease", greyed, and why as its tooltip
+    // (the user's rule, 2026-11-13).
+    sankoGreyWithReason(&menu, easeMenu->menuAction(),
+                        last ? QStringLiteral("No move after this key.") : QStringLiteral("The CAMERA track is locked."),
+                        last || locked);
     const shotcam::Ease current = scene->camera.keys.at(keyIndex).ease;
     for (shotcam::Ease e : {shotcam::Ease::Linear, shotcam::Ease::EaseIn, shotcam::Ease::EaseOut,
                             shotcam::Ease::EaseInOut, shotcam::Ease::Hold}) {
@@ -9054,6 +9105,118 @@ void StoryboardPage::applySceneLengthLockForUndo(Scene *scene, bool locked)
         m_animatic->refreshTiming();
 }
 
+void StoryboardPage::setAllSceneLengthsLocked(bool lock)
+{
+    // LOCK ALL (batch F2, decision 5): with every scene locked, nothing in the film can
+    // move against the sound. One step for the scenes it changes.
+    if (!m_undoStack || m_scenes.isEmpty())
+        return;
+    QVector<Scene *> changing;
+    for (Scene *scene : std::as_const(m_scenes))
+        if (scene && scene->lengthLocked != lock)
+            changing.append(scene);
+    if (changing.isEmpty()) {
+        sayNote(lock ? QStringLiteral("Every scene's length is already locked.")
+                     : QStringLiteral("No scene's length is locked."));
+        return;
+    }
+    m_undoStack->push(new ScenesLengthLockCommand(this, changing, lock));
+    const int n = int(m_scenes.size());
+    if (lock)
+        sayNote(n == 1 ? QStringLiteral("Scene %1's length is locked: nothing in the film can move against the "
+                                        "sound.").arg(m_scenes.first()->number)
+                       : QStringLiteral("All %1 scenes' lengths are locked: nothing in the film can move against "
+                                        "the sound.").arg(n));
+    else
+        sayNote(n == 1 ? QStringLiteral("Scene %1's length is unlocked.").arg(m_scenes.first()->number)
+                       : QStringLiteral("All %1 scenes' lengths are unlocked.").arg(n));
+}
+
+bool StoryboardPage::anySceneLengthLocked(bool locked) const
+{
+    for (const Scene *scene : m_scenes)
+        if (scene && scene->lengthLocked == locked)
+            return true;
+    return false;
+}
+
+int StoryboardPage::playheadFilmFrame() const
+{
+    const Panel *panel = m_animatic ? m_animatic->playheadPanel() : nullptr;
+    if (!panel)
+        return -1;
+    const int fps = cameraFps();
+    for (int si = 0; si < m_scenes.size(); ++si) {
+        const int pi = int(m_scenes.at(si)->panels.indexOf(const_cast<Panel *>(panel)));
+        if (pi >= 0)
+            return sceneFilmStart(si) + shotcam::panelStartFrame(*m_scenes.at(si), pi, fps)
+                + m_animatic->playheadFrameInPanel();
+    }
+    return -1;
+}
+
+QString StoryboardPage::endSceneAtPlayheadBlocker(int sceneIndex, int *lastFrames) const
+{
+    // END SCENE AT PLAYHEAD (batch F2): the scene's last panel trimmed or lengthened so
+    // the scene ends where the playhead is - its next scene starting on the playhead's
+    // frame. Empty: it can; else why not, as the menu entry says it.
+    const Scene *scene = m_scenes.value(sceneIndex);
+    if (!scene || scene->panels.isEmpty())
+        return QStringLiteral("No scene.");
+    if (scene->lengthLocked)
+        return QStringLiteral("The scene's length is locked.");
+    const int fps = cameraFps();
+    const int playhead = playheadFilmFrame();
+    const int last = int(scene->panels.size()) - 1;
+    const int lastStart = sceneFilmStart(sceneIndex) + shotcam::panelStartFrame(*scene, last, fps);
+    const int frames = playhead - lastStart;
+    if (playhead < 0 || frames < 1)
+        return QStringLiteral("The playhead is before its last panel.");
+    if (frames == shotcam::panelFrames(*scene->panels.at(last), fps))
+        return QStringLiteral("The scene already ends at the playhead.");
+    if (lastFrames)
+        *lastFrames = frames;
+    return QString();
+}
+
+void StoryboardPage::endSceneAtPlayhead(int sceneIndex)
+{
+    Scene *scene = m_scenes.value(sceneIndex);
+    if (!scene || scene->panels.isEmpty() || !m_undoStack)
+        return;
+    if (refuseShotsEdit()) // it retimes a panel
+        return;
+    int frames = 0;
+    const QString blocker = endSceneAtPlayheadBlocker(sceneIndex, &frames);
+    if (!blocker.isEmpty()) {
+        if (scene->lengthLocked)
+            sayNote(QStringLiteral("Scene %1's length is locked: unlock it to end it at the playhead.")
+                        .arg(scene->number));
+        return;
+    }
+    const int fps = cameraFps();
+    const int last = int(scene->panels.size()) - 1;
+    Panel *panel = scene->panels.at(last);
+    const int was = shotcam::panelFrames(*panel, fps);
+    // As a drag of the last panel's right edge to the playhead: one step, the scenes
+    // after it moving with it, and the pinned keys it strands named.
+    QVector<QVector<int>> after = filmLayout();
+    after[sceneIndex][last] = frames;
+    QString strandNote;
+    const QString suffix = strandingSuffix(after, &strandNote);
+    auto *command = new PanelDurationCommand(this, panel, {panel->frames, panel->rate}, {frames, fps}, suffix);
+    command->setText(QStringLiteral("End Scene at Playhead") + suffix);
+    m_undoStack->push(command);
+    QString note = QStringLiteral("Scene %1 now ends at the playhead, %2: panel %3 is %4 (was %5).")
+                       .arg(scene->number)
+                       .arg(shotcam::timecodeText(sceneFilmStart(sceneIndex) + shotcam::sceneFrameCount(*scene, fps), fps))
+                       .arg(last + 1)
+                       .arg(shotcam::lengthText(frames, fps), shotcam::lengthText(was, fps));
+    if (!strandNote.isEmpty())
+        note += QStringLiteral(" ") + strandNote;
+    sayNote(note);
+}
+
 // Import Audio and Remove Audio, from the Edit menu or the audio track's own
 // menu. On the SAME history as drawing: Ctrl+Z right after importing audio
 // takes back the import, not the stroke before it. The undo-stack backstop
@@ -9142,16 +9305,13 @@ void StoryboardPage::onClipContextMenu(int flat, const QPoint &globalPos)
                     [this, growScene, growPanel] { growPanelToFit(growScene, growPanel); });
         }
     }
-    // A LOCKED SHOTS track (Part B): the entries stay, disabled and
-    // suffixed, so the lock is seen where the edit was tried. A margin is the
-    // SHOTS track's (Q8), so Grow to fit with them.
+    // A LOCKED SHOTS track (Part B): the entries stay, greyed, so the lock is seen
+    // where the edit was tried - their names alone, and why as their tooltip (the
+    // user's rule, 2026-11-13; they said " (locked)" before). A margin is the SHOTS
+    // track's (Q8), so Grow to fit with them.
     if (shotsLocked()) {
-        for (QAction *a : {add, duplicate, setDuration, remove, grow}) {
-            if (!a)
-                continue;
-            a->setEnabled(false);
-            a->setText(a->text() + QStringLiteral(" (locked)"));
-        }
+        for (QAction *a : {add, duplicate, setDuration, remove, grow})
+            sankoGreyWithReason(&menu, a, QStringLiteral("The SHOTS track is locked."));
     }
     // Phase 1D: a Quick Move on this clip (Figma 1D-3).
     menu.addSeparator();

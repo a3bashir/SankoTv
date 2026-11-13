@@ -312,6 +312,7 @@ private:
     void updateChromeFor(const QWidget *page);
     void updateSaveActions();
     void updateAudioActions(); // Edit > Import Audio / Remove Audio
+    void updateSceneLockActions(); // Edit > Lock All / Unlock All Scene Lengths (batch F2)
     void updateExportActions(); // File > Export: needs at least one panel
     void updateTitle();
 
@@ -576,6 +577,8 @@ private:
     QAction *m_removeAudioAct = nullptr;
     QAction *m_locateAudioAct = nullptr; // only while the track is missing
     QAction *m_copyAudioAct = nullptr;   // only for a linked track that is there
+    QAction *m_lockAllScenesAct = nullptr;   // batch F2: enabled while a scene is unlocked
+    QAction *m_unlockAllScenesAct = nullptr; // ...and while one is locked
     // File > Export.
     QMenu *m_exportMenu = nullptr;
     QAction *m_exportMp4Act = nullptr;

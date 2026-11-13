@@ -1,5 +1,128 @@
 # SankoTV — Session Handoff Brief
 
+## STATUS 2026-11-13: F2 AND THE SHORT GREYED LABELS COMMITTED AFTER THE USER'S HAND TEST; THE SCENE LENGTH LOCK (F1, F2) IS COMPLETE; BATCH C NEXT
+THE F2 HAND TEST (Dev Recorder 20261113-075255, 436 s, the 20:09:34 build, git 97685278e+dirty, on "TEST COPY - small
+pirate, F2", on the Dell). Steps of handtest_F2_lock_all_end_scene.md the user did: 1, 3, 4, 5 and 7.
+1 PASS: Edit > Lock All Scene Lengths (20.5 s): all five scenes locked (22.5 s), the note "All 5 scenes' lengths are
+locked: nothing in the film can move against the sound."; Ctrl+Z: none locked (25 s). Not tested: the Edit menu
+opened again ((sl13)).
+2 not tested ((sl13)).
+3 PASS: the playhead at 00:00:06:00, OCEAN's menu "End Scene at Playhead (00:00:06:00)" (Unlock All greyed, none
+locked); chosen: "Scene 1 now ends at the playhead, 00:00:06:00: panel 2 is 2s 13f (was 2s 5f).", the film 8 frames
+longer; Ctrl+Z. Also tried from 00:00:15:02, 00:00:13:14 and 00:00:16:11 (OCEAN lengthened across later scenes),
+each undone.
+4 PASS: at 00:00:04:12: "Scene 1 now ends at the playhead, 00:00:04:12: panel 2 is 1s 1f (was 2s 5f).", the scenes
+after moving earlier; Ctrl+Z.
+5 PASS for "before its last panel": OCEAN's and ISLAND BEACH's menus showed "End Scene at Playhead — the playhead is
+before its last panel", greyed (360 s, 395-418 s). Not tested: on a locked scene ((sl14)). The user found that label
+too long - the change below.
+6 not tested (optional). 7 PASS: the window's X, Discard; the copy not saved. No warning in the log. Also: Use Last
+Framing of Scene 4 tried and undone.
+THE SHORT GREYED LABELS (the user's rule after the F2 hand test, 2026-11-13): every greyed-out menu entry that carried
+a reason keeps its short label, greyed, and shows the reason only as its tooltip when hovered. sankoGreyWithReason(menu,
+action, why, off) (SankoNoteStyle.h): setEnabled(!off), setToolTip(why or empty), menu->setToolTipsVisible(true) (QMenu
+then shows only tooltips set this way - an action's own, never its text). CHANGED ENTRIES:
+- "Use Last Framing — no scene before this one" -> "Use Last Framing", tooltip "No scene before this one." (the scene
+  menu, the CAMERA row's menu and the Scenes dock card's menu - addSceneCameraEntries).
+- "Continue Camera — no scene before this one" -> "Continue Camera", the same tooltip.
+- "Ease — no move after this key" -> "Ease" (the camera key's menu), tooltip "No move after this key."; under a locked
+  CAMERA track (it was greyed with no reason, the header saying so) also "The CAMERA track is locked.".
+- "End Scene at Playhead — the scene's length is locked / the playhead is before its last panel / it ends there" ->
+  "End Scene at Playhead", tooltip "The scene's length is locked." / "The playhead is before its last panel." / "The
+  scene already ends at the playhead."; F2's " (locked)" under a locked SHOTS track -> "The SHOTS track is locked.".
+- The clip menu under a locked SHOTS track: "Add Panel After (locked)", "Duplicate Panel (locked)", "Set Duration...
+  (locked)", "Delete Panel (locked)", "Grow Panel N's ... (locked)" -> the names alone, tooltip "The SHOTS track is
+  locked.".
+- The AUDIO track's own menu under its lock: every entry's " (locked)" -> the name alone, tooltip "The AUDIO track is
+  locked.".
+- The Edit menu's Import Audio... / Remove Audio / Locate Audio File... / Copy Audio Into Project under the AUDIO lock:
+  the same (MainWindow::updateAudioActions; the tooltip goes again with the lock).
+Not changed: the camera menus' greyed header "The CAMERA track is locked" (a title row, not an entry), entries greyed
+with no reason in their label (Delete Panel on a one-panel scene, Unlock All with none locked, Remove Audio with no
+track).
+CHANGED CHECKS (old -> new; each with a control):
+(cr.6) last key: OLD lastEase == "Ease — no move after this key". NEW lastEase == "Ease", its toolTip() == "No move after
+this key.", the menu toolTipsVisible. NEW control: key 2's Ease on, label "Ease", no tooltip of its own.
+(qm.7) scene 1: OLD s0Use == "Use Last Framing — no scene before this one", s0Cont == "Continue Camera — no scene before
+this one". NEW "Use Last Framing" / "Continue Camera", both tooltips "No scene before this one.", toolTipsVisible. NEW
+control: scene 2's entry names its scene, no tooltip of its own.
+(qm.11) control: OLD s0Use == "Use Last Framing — no scene before this one". NEW "Use Last Framing", tooltip "No scene
+before this one.".
+(cx9) controls: OLD seenText == growText + " (locked)". NEW seenText == growText, tooltip "The SHOTS track is locked.";
+the main (cx9) check also requires no tooltip of its own unlocked.
+(ax) clip menu: OLD items "Add Panel After (locked)[0]", "Duplicate Panel (locked)[0]", "Set Duration... (locked)[0]",
+"Delete Panel (locked)[0]", "Quick Camera Move[1]". NEW "<name>[0]<The SHOTS track is locked.>" x4 and "Quick Camera
+Move[1]<>" (its control), toolTipsVisible.
+(ax) THE AUDIO LOCK: OLD every track-menu item ends " (locked)[0]", Edit "Import Audio... (locked)", "Remove Audio
+(locked)". NEW items "[0]<The AUDIO track is locked.>" with no "(locked)", Edit menu names alone with that tooltip, its
+menu toolTipsVisible. (ax) CONTROL (unlocked): also the reason gone from both tooltips - first written as "tooltip ==
+text", which failed: with none of its own Qt gives an action's text less a trailing "..." ("Import Audio"), so it
+compares with the reason.
+(sl14): the three greyed entries "End Scene at Playhead" with their tooltips; NEW check "A GREYED ENTRY'S LABEL IS ITS
+NAME, ITS REASON A TOOLTIP": the menu popped up, a ToolTip help event over the entry shows "The scene's length is
+locked." (as Qt shows it); control: over Lock All (on) no tooltip shows.
+RED RUN: sankoGreyWithReason setting no tooltip -> (sl14) x2 failed (tooltip none, nothing shown); controls passed.
+QUICK CHECKS: scenelock 60, stagemode 124, the whole Lifecycle family (1445; the (ax) control failure above, fixed).
+GATE F2b (in the scratch worktree C:\SankoTV_F2 - the user's SankoTV was open - with the kill-less script; 2643 s;
+logs copied to app/build/_probe/split/fullgate_F2b*): every family green in both builds - Lifecycle 1445 in Debug
+(gate F2's 1442 plus the (cr.6) and (qm.7) controls and the new (sl14) check), Camera 335, Brush Library 187, Size
+Lock 170, Edge Lock 74, Dev Recorder 46, Quick Shape 19, Pixel Lock 13, Brush Lock 3, the same names as gate F2 but for
+the changed checks above (and the random ids in (am), (n1), (r1), (r8), (sv.2-4)) - except ONE check in Release:
+(pz5) "the Quick Move popover's two lists open ..." [0 warning(s), 1 list(s) opened]. Not F2's: the check opens the
+popover (a Qt popup), then each of its two lists in turn, and Windows closes every popup when the app loses the
+foreground, so the check depends on the active window, against the rule (its second failure; the first was in F1's
+quick checks). It passed in the same gate's Debug run, and the Release Lifecycle family run again alone passed
+1445/1445 ([0 warning(s), 2 list(s) opened]; fullgate_F2b_rerun). Batch C makes the check independent of the
+foreground (a closed popover is opened again before a list), as its own change.
+
+## STATUS 2026-11-12 (late night): F2 (LOCK ALL, END SCENE AT PLAYHEAD) BUILT, NOT COMMITTED; WAITING FOR THE USER'S F2 HAND TEST
+As approved in the batch F report (section 4; Figma F-1's decisions: Lock All a menu command only). Do not commit
+until the user's hand test passes; then stop.
+ON 97685278e, UNCOMMITTED (5 files): MainWindow.cpp/.h (LF), StoryboardPage.cpp/.h, tests/ProjectLifecycleTest.cpp;
+hashes app/build/_probe/split/sha_F2_gate.txt.
+WHAT F2 IS.
+(1) LOCK ALL / UNLOCK ALL SCENE LENGTHS. StoryboardPage::setAllSceneLengthsLocked(lock): one ScenesLengthLockCommand
+("Lock All Scene Lengths" / "Unlock All Scene Lengths") over the scenes it changes only, so Undo puts back each
+scene's own lock. Notes: "All 5 scenes' lengths are locked: nothing in the film can move against the sound." / "All 5
+scenes' lengths are unlocked." (one scene: "Scene N's length is ..."); nothing to change: "Every scene's length is
+already locked." / "No scene's length is locked.". In the Edit menu (editLockAllScenes / editUnlockAllScenes, after
+the audio entries; MainWindow::updateSceneLockActions enables them as the menu opens, when a scene would change) and
+in a scene's menu (sceneLockAll / sceneUnlockAll, after its own lock; enabled the same way). Not on the SCENES
+track's lock button (decision 5).
+(2) END SCENE AT PLAYHEAD (the scene's menu, sceneEndAtPlayhead): the scene's last panel trimmed or lengthened so the
+scene ends where the playhead is (the next scene starting on its frame; StoryboardPage::playheadFilmFrame), one
+PanelDurationCommand "End Scene at Playhead" (+ the stranding suffix), the scenes after it moving - as a drag of that
+panel's right edge, so the keys on that panel scale with it as they do there. The entry reads "End Scene at Playhead
+(00:00:07:13)"; when it cannot, greyed with why (endSceneAtPlayheadBlocker): "— the scene's length is locked", "— the
+playhead is before its last panel", "— it ends there"; " (locked)" added under a locked SHOTS track. Note: "Scene 2
+now ends at the playhead, 00:00:07:13: panel 2 is 12f (was 1s)." (+ any stranding note).
+THE CHECKS (in runSceneLockPass, after (sl10)). (sl13) Lock All from scene 2's menu: both locked, one step, the note,
+the Edit menu "0/1" (from "1/1"), the scene menu's Lock All off; Undo -> scene 1 still locked, scene 2 not. Unlock All
+from the Edit menu: none, one step, the note, Edit "1/0"; control: Undo locks scene 1 again. (sl14) the playhead at
+film frame 181: "End Scene at Playhead (00:00:07:13)" trims scene 2's last panel to 12 (one step, the note); locked
+scene 1's entry greyed with its reason. Scene 1 unlocked: at its very end "— it ends there"; 12 frames into scene 2
+it lengthens panel 4 32 -> 44 and scene 2 moves to 157 (the note); control: scene 2 with the playhead before its last
+panel greyed with its reason.
+WHILE WRITING THEM: the first red run spread to (sl11) and (sl2): (sl13) undid with a bare stack->undo(), which, when
+the switched-off Lock All pushed nothing, took scene 1's own lock from (sl1). (sl13) and (sl14) now undo back to the
+index taken before each action (undoTo).
+RED RUNS (RED RUN markers, restored; none left outside the ignored _backups). A: Lock All changing nothing and End
+Scene doing nothing -> exactly (sl13) x2 and (sl14) x2 failed. B: the Edit menu's enabling off -> (sl13) x2 failed
+(Edit "0/0"); every other check passed.
+QUICK CHECKS: scenelock 59, keptart 49, trial 125, stagemode 124, strip 111, playback 31, SankoCameraTest 335.
+GATE F2 (app/build/_probe/split/fullgate_F2.log, 2,581 s, the main tree, sha_F2_gate.txt): clean builds, nine
+families in Release and Debug, 0 failing. Lifecycle 1442 (1438 + (sl13) x2 and (sl14) x2), Camera 335, the rest as
+gate F1; no other check name changed. Camera's 126 pin lines and its pin values (camera_test_F2_debug.txt) identical
+to gate F1's. Lifecycle's pin lines identical but one, which is not a pin: (pf)'s detail (it says "Pin button") read
+"canvas 278-1432, bar 289-1421" where every gate since B1, both configurations, read "277-1431, 288-1420" - the
+check measures in screen px, and the canvas (1154 wide), the bar (1133 wide, 11 px in) are the same: the window
+opened 1 px further right on the screen.
+THE EXE at the main path is the gate's clean Release build: built Nov 12 2026 20:09:34 (file 20:09:52), git
+97685278e+dirty. HAND TEST: Documents\SankoTV-Design\handtest_F2_lock_all_end_scene.md on "TEST COPY - small
+pirate, F2" (C:\SankoTV-TestCopies, with its sound; the original's hashes unchanged, origB_after7 = origB_after):
+Edit > Lock All and its Undo, Lock All from a scene's menu and Unlock All from Edit, End Scene at Playhead on OCEAN
+lengthened and trimmed, and the entry greyed with its reasons.
+
 ## STATUS 2026-11-12 (night): F1 COMMITTED (d66adde9e) AFTER THE USER'S HAND TEST; F2 BEING BUILT
 THE F1 HAND TEST (Dev Recorder 20261112-191317, 1,288 s, the 18:11:39 build, git 7c6711472+dirty, on "TEST COPY -
 small pirate, F1", on the Cintiq). Steps of handtest_F1_scene_length_lock.md the user did: 1, 2, 3, 5 and 8.
