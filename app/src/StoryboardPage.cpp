@@ -7,6 +7,7 @@
 #include "ColorPanel.h"
 #include "SankoIcons.h"
 #include "SankoNoteStyle.h" // sankoGreyWithReason
+#include "SankoTip.h"       // the Brush bar's tip look, shared by every tooltip
 #include "SankoTimelineTheme.h"
 #include "SankoToggleControls.h"
 
@@ -2574,33 +2575,21 @@ protected:
 // covers a button. A short hover delay plus a fade-in keeps the appearance
 // smooth; when the pointer chains from one button to the next, the SAME
 // widget just moves and re-texts (no hide/show cycle, so no flicker).
-class SankoTipPopup : public QWidget
+// Its look - and the delay, the fade and the grace - are SankoTipFrame's, the
+// one every other tooltip is drawn with too (batch C, SankoTip.h).
+class SankoTipPopup : public SankoTipFrame
 {
 public:
     explicit SankoTipPopup(QWidget *parent = nullptr)
-        : QWidget(parent, Qt::ToolTip | Qt::FramelessWindowHint
-                              | Qt::NoDropShadowWindowHint)
+        : SankoTipFrame(parent)
     {
         setObjectName(QStringLiteral("sankoToolbarTip"));
-        setAttribute(Qt::WA_TranslucentBackground);
-        setAttribute(Qt::WA_ShowWithoutActivating);
-        setAttribute(Qt::WA_TransparentForMouseEvents);
-        m_label = new QLabel(this);
-        m_label->setTextFormat(Qt::RichText);
-        m_label->setStyleSheet(QStringLiteral(
-            "color: #cccccc; font-size: 11px; background: transparent;"));
-        auto *layout = new QHBoxLayout(this);
-        layout->setContentsMargins(10, 6, 10, 6);
-        layout->addWidget(m_label);
-
         m_showTimer.setSingleShot(true);
-        m_showTimer.setInterval(350); // brief, stable hover delay
+        m_showTimer.setInterval(kShowDelayMs); // brief, stable hover delay
         connect(&m_showTimer, &QTimer::timeout, this, [this] { reveal(); });
         m_hideTimer.setSingleShot(true);
-        m_hideTimer.setInterval(120); // survives the gap between buttons
+        m_hideTimer.setInterval(kHideDelayMs); // survives the gap between buttons
         connect(&m_hideTimer, &QTimer::timeout, this, [this] { hide(); });
-        m_fade = new QPropertyAnimation(this, "windowOpacity", this);
-        m_fade->setDuration(120);
     }
 
     // Pointer entered `button` (a child of `bar`).
@@ -2628,23 +2617,12 @@ public:
         hide();
     }
 
-protected:
-    void paintEvent(QPaintEvent *) override
-    {
-        QPainter p(this);
-        p.setRenderHint(QPainter::Antialiasing, true);
-        p.setPen(QPen(QColor(0x2a, 0x2a, 0x2a), 1));
-        p.setBrush(QColor(0x1a, 0x1a, 0x1a));
-        p.drawRoundedRect(QRectF(0.5, 0.5, width() - 1, height() - 1), 6, 6);
-    }
-
 private:
     void reveal()
     {
         if (!m_button || !m_bar || !m_bar->isVisible())
             return;
-        m_label->setText(m_button->toolTip());
-        adjustSize();
+        setTipText(m_button->toolTip(), Qt::RichText); // sized to it
         // Below the TOOLBAR with a constant 4px gap (frame bottom edge is
         // inclusive, hence the +1), centred on the button, kept on-screen.
         const QRect barRect(m_bar->mapToGlobal(QPoint(0, 0)), m_bar->size());
@@ -2655,23 +2633,10 @@ private:
             const QRect avail = screen->availableGeometry();
             x = qBound(avail.left() + 4, x, avail.right() - width() - 3);
         }
-        const bool wasVisible = isVisible();
         move(x, barRect.bottom() + 1 + 4);
-        if (wasVisible) {
-            setWindowOpacity(1.0); // steady while retargeting
-            update();
-        } else {
-            m_fade->stop();
-            setWindowOpacity(0.0);
-            show();
-            m_fade->setStartValue(0.0);
-            m_fade->setEndValue(1.0);
-            m_fade->start();
-        }
+        showFaded(); // fades in; already up, it stays opaque while retargeting
     }
 
-    QLabel *m_label = nullptr;
-    QPropertyAnimation *m_fade = nullptr;
     QTimer m_showTimer;
     QTimer m_hideTimer;
     QWidget *m_button = nullptr;
@@ -2807,6 +2772,27 @@ StoryboardPage::StoryboardPage(QWidget *parent)
         updateOnionGhost();
     });
 
+    // THE TOOL AND SIZE KEYS (batch C, Photoshop's; the user's choice of 2026-11-10):
+    // B E G V L, and [ ] for the size. M is made with the timeline's keys (it also marks
+    // a camera key while the film plays). A text field with the keyboard keeps its
+    // letters (it takes them before any shortcut); R and Tab go through the key router.
+    auto pageKey = [this](const QKeySequence &key, std::function<void()> act) {
+        auto *shortcut = new QShortcut(key, this);
+        shortcut->setContext(Qt::WindowShortcut);
+        shortcut->setAutoRepeat(false);
+        connect(shortcut, &QShortcut::activated, this, std::move(act));
+    };
+    pageKey(QKeySequence(Qt::Key_B), [this] { toolKey(DrawingCanvas::Brush); });
+    pageKey(QKeySequence(Qt::Key_E), [this] { toolKey(DrawingCanvas::Eraser); });
+    pageKey(QKeySequence(Qt::Key_G), [this] { toolKey(DrawingCanvas::Fill); });
+    pageKey(QKeySequence(Qt::Key_V), [this] { toolKey(DrawingCanvas::Move); });
+    pageKey(QKeySequence(Qt::Key_L), [this] { toolKey(DrawingCanvas::Lasso); });
+    for (const auto &[key, direction] : {std::pair{Qt::Key_BracketLeft, -1}, std::pair{Qt::Key_BracketRight, 1}}) {
+        auto *shortcut = new QShortcut(QKeySequence(key), this);
+        shortcut->setContext(Qt::WindowShortcut); // held, it repeats: the size runs on
+        connect(shortcut, &QShortcut::activated, this, [this, direction = direction] { stepToolSize(direction); });
+    }
+
     // Ctrl+Left / Ctrl+Right move the current panel within its scene.
     QShortcut *movePanelLeft =
         new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_Left), this);
@@ -2884,6 +2870,37 @@ void StoryboardPage::installDockViewActions()
         viewMenu = bar->addMenu(QStringLiteral("View"));
 
     viewMenu->addSeparator();
+    // THE VIEW'S KEYS (batch C, Photoshop's; Figma C-2): Ctrl+= and Ctrl+- zoom, Ctrl+0
+    // is Fit Stage, Ctrl+1 one drawing pixel a screen pixel, Shift+R resets the turn.
+    // With the pointer over the timeline the zoom keys are the timeline's: its - and +,
+    // its Fit, its 100 %. On only while the page shows (showEvent), so the keys stay
+    // free on the other pages.
+    AnimaticTimeline *timeline = m_animatic ? m_animatic->timeline() : nullptr;
+    auto overTimeline = [this, timeline] { return timeline && m_pointerOverTimeline; };
+    auto canvasAct = [this, viewMenu](const QString &text, const QString &name,
+                                      const QList<QKeySequence> &keys, std::function<void()> act) {
+        QAction *a = viewMenu->addAction(text);
+        a->setObjectName(name);
+        a->setShortcuts(keys);
+        connect(a, &QAction::triggered, this, std::move(act));
+        m_canvasViewActs.append(a);
+        return a;
+    };
+    canvasAct(QStringLiteral("Zoom In"), QStringLiteral("viewZoomIn"),
+              {QKeySequence(Qt::CTRL | Qt::Key_Equal), QKeySequence(Qt::CTRL | Qt::Key_Plus)},
+              [this, timeline, overTimeline] {
+                  if (overTimeline())
+                      timeline->stepZoom(1);
+                  else if (m_canvas)
+                      m_canvas->zoomStepBy(1.25);
+              });
+    canvasAct(QStringLiteral("Zoom Out"), QStringLiteral("viewZoomOut"),
+              {QKeySequence(Qt::CTRL | Qt::Key_Minus)}, [this, timeline, overTimeline] {
+                  if (overTimeline())
+                      timeline->stepZoom(-1);
+                  else if (m_canvas)
+                      m_canvas->zoomStepBy(1.0 / 1.25);
+              });
     // FIT (Phase 2A, the user's word): Fit Shot is the zoom bar's Fit Screen
     // - the shot fills the view, the whole canvas without a stage margin -
     // and Fit Stage shows the whole stage, margin included.
@@ -2897,17 +2914,72 @@ void StoryboardPage::installDockViewActions()
         if (m_zoomToolbar)
             m_zoomToolbar->setRotation(0.0);
     });
-    QAction *fitStage = viewMenu->addAction(QStringLiteral("Fit Stage"));
-    fitStage->setObjectName(QStringLiteral("viewFitStage"));
-    connect(fitStage, &QAction::triggered, this, [this] {
-        if (!m_canvas)
-            return;
-        m_canvas->fitStageToScreen();
-        m_canvas->resetViewRotation();
-        if (m_zoomToolbar)
-            m_zoomToolbar->setRotation(0.0);
-    });
+    canvasAct(QStringLiteral("Fit Stage"), QStringLiteral("viewFitStage"),
+              {QKeySequence(Qt::CTRL | Qt::Key_0)}, [this, timeline, overTimeline] {
+                  if (overTimeline()) {
+                      timeline->fitZoomToView();
+                      return;
+                  }
+                  if (!m_canvas)
+                      return;
+                  m_canvas->fitStageToScreen();
+                  m_canvas->resetViewRotation();
+                  if (m_zoomToolbar)
+                      m_zoomToolbar->setRotation(0.0);
+              });
+    canvasAct(QStringLiteral("Actual Pixels"), QStringLiteral("viewActualPixels"),
+              {QKeySequence(Qt::CTRL | Qt::Key_1)}, [this, timeline, overTimeline] {
+                  if (overTimeline())
+                      timeline->zoomToActual();
+                  else if (m_canvas)
+                      m_canvas->zoomToActualPixels();
+              });
+    canvasAct(QStringLiteral("Reset Rotation"), QStringLiteral("viewResetRotation"),
+              {QKeySequence(Qt::SHIFT | Qt::Key_R)}, [this] {
+                  if (m_canvas)
+                      m_canvas->resetViewRotation(); // the zoom bar's dial follows (viewRotationChanged)
+              });
+    for (QAction *a : std::as_const(m_canvasViewActs))
+        a->setEnabled(isVisible());
     viewMenu->addSeparator();
+
+    // TOOLBARS (batch C; Figma C-2): a tick for each floating toolbar, remembered, and
+    // Hide All / Show All, which is Tab.
+    QMenu *toolbarsMenu = viewMenu->addMenu(QStringLiteral("Toolbars"));
+    toolbarsMenu->menuAction()->setObjectName(QStringLiteral("viewToolbars"));
+    const struct { Toolbar bar; const char *text; const char *name; } entries[] = {
+        {Toolbar::Tools, "Tools", "viewToolbarTools"},
+        {Toolbar::Layers, "Layers", "viewToolbarLayers"},
+        {Toolbar::Zoom, "Zoom", "viewToolbarZoom"},
+        {Toolbar::SizeSliders, "Size Sliders", "viewToolbarSizeSliders"},
+    };
+    for (const auto &entry : entries) {
+        QAction *a = toolbarsMenu->addAction(QString::fromLatin1(entry.text));
+        a->setObjectName(QString::fromLatin1(entry.name));
+        a->setCheckable(true);
+        a->setChecked(toolbarShown(entry.bar));
+        const Toolbar bar = entry.bar;
+        connect(a, &QAction::triggered, this, [this, bar](bool on) { setToolbarShown(bar, on); });
+        m_toolbarActs[int(entry.bar)] = a;
+    }
+    toolbarsMenu->addSeparator();
+    // Tab is shown, not bound: it is the router's (routeToolbarsKey), which keeps a text
+    // field's Tab and never lets it walk the focus.
+    m_hideAllToolbarsAct = toolbarsMenu->addAction(QStringLiteral("Hide All Toolbars\tTab"));
+    m_hideAllToolbarsAct->setObjectName(QStringLiteral("viewHideAllToolbars"));
+    connect(m_hideAllToolbarsAct, &QAction::triggered, this,
+            [this] { setToolbarsHiddenByTab(!m_toolbarsTabHidden); });
+
+    // CAMERA MOVE ARROWS (batch C, the user's choice): off by default, remembered.
+    m_cameraArrowsAct = viewMenu->addAction(QStringLiteral("Camera Move Arrows"));
+    m_cameraArrowsAct->setObjectName(QStringLiteral("viewCameraMoveArrows"));
+    m_cameraArrowsAct->setCheckable(true);
+    m_cameraArrowsAct->setChecked(m_canvas && m_canvas->cameraMoveArrowsShown());
+    connect(m_cameraArrowsAct, &QAction::triggered, this, [this](bool on) {
+        if (m_canvas)
+            m_canvas->setCameraMoveArrowsShown(on);
+        sankoSettings().setValue(kCameraMoveArrowsKey, on);
+    });
     // Floating toolbars: restore the Figma default corners (Brush top-right,
     // Layers top-left, Zoom bottom-left) and clear their saved placement.
     QAction *resetToolbars =
@@ -3148,6 +3220,8 @@ QWidget *StoryboardPage::createCenterColumn()
     drawLayout->setSpacing(0);
 
     m_canvas = new DrawingCanvas;
+    // View > Camera Move Arrows, as last chosen (batch C: off until ticked).
+    m_canvas->setCameraMoveArrowsShown(sankoSettings().value(kCameraMoveArrowsKey, false).toBool());
     connect(m_canvas, &DrawingCanvas::contentChanged, this, [this] {
         refreshCurrentThumb(); // debounced; also refreshes the row preview
     });
@@ -3204,7 +3278,11 @@ QWidget *StoryboardPage::createCenterColumn()
     });
     // Wheel/pan zoom on the canvas syncs the zoom dragger back.
     connect(m_canvas, &DrawingCanvas::viewZoomChanged, m_zoomToolbar, &ZoomToolbar::setZoom);
-    m_zoomToolbar->show(); // records intent; effective when the canvas shows
+    // Records intent; effective when the canvas shows. Ticked in View > Toolbars unless
+    // the user took it off (batch C).
+    m_zoomToolbar->setVisible(toolbarShown(Toolbar::Zoom));
+    // The dial follows a turn made on the canvas: R held + drag, Shift+R (batch C).
+    connect(m_canvas, &DrawingCanvas::viewRotationChanged, m_zoomToolbar, &ZoomToolbar::setRotation);
 
     // ---- Brush Library (Figma 245:23) --------------------------------
     // Unmanaged floating panel over the canvas; selecting a brush applies
@@ -3415,23 +3493,27 @@ void StoryboardPage::createFloatingToolbar()
 
     // Exact Figma icons (original SVGs) rendered at their Figma sizes; the
     // "select" glyph is the Figma dashed marquee + cursor arrow. Tooltips use
-    // the "<b>Name</b> | description" rich-text format.
+    // the "<b>Name</b> | description" rich-text format. The name says the tool's key
+    // (batch C, Figma C-2): with the bar hidden the keys are the way to a tool.
     QPushButton *brushTool = toolButton(
         figIconPixmap(QStringLiteral(":/icons/brush.svg"), QSizeF(24.1, 21.18)),
-        QStringLiteral("<b>Brush</b> | Paint strokes on the canvas."), true);
+        QStringLiteral("<b>Brush (B)</b> | Paint strokes on the canvas."), true);
     QPushButton *eraser = toolButton(
         figIconPixmap(QStringLiteral(":/icons/erase.svg"), QSizeF(17.83, 20.03)),
-        QStringLiteral("<b>Erase</b> | Remove parts of the drawing."), true);
+        QStringLiteral("<b>Erase (E)</b> | Remove parts of the drawing."), true);
     QPushButton *fill = toolButton(
         figIconPixmap(QStringLiteral(":/icons/fill.svg"), QSizeF(18.67, 17.43)),
-        QStringLiteral("<b>Fill</b> | Fill an area with color."), true);
+        QStringLiteral("<b>Fill (G)</b> | Fill an area with color."), true);
     ToolButton *selection = toolButton(selectGlyphPixmap(),
-        QStringLiteral("<b>Select</b> | Select part of the canvas."), true);
+        QStringLiteral("<b>Select (M, L)</b> | Select part of the canvas."), true);
     QPushButton *move = toolButton(
         figIconPixmap(QStringLiteral(":/icons/move.svg"), QSizeF(20.4, 20.4)),
-        QStringLiteral("<b>Move</b> | Move the selected pixels."), true);
+        QStringLiteral("<b>Move (V)</b> | Move the selected pixels."), true);
     brushTool->setChecked(true); // Brush is the default drawing tool
     brushTool->setObjectName(QStringLiteral("toolBrush"));
+    eraser->setObjectName(QStringLiteral("toolEraser")); // the tool keys find them (batch C)
+    fill->setObjectName(QStringLiteral("toolFill"));
+    selection->setObjectName(QStringLiteral("toolSelect"));
     move->setObjectName(QStringLiteral("toolMove")); // (batch F1's check presses it)
 
     tools->addButton(brushTool);
@@ -3520,6 +3602,7 @@ void StoryboardPage::createFloatingToolbar()
         if (m_canvas)
             m_canvas->setTool(mode); // also covers "already checked, mode changed"
     };
+    m_pickSelectionMode = pickSelectionMode; // M and L (batch C, toolKey)
 
     // The popup: an icon-only, 4-button flyout matching the Figma exactly
     // (container #212121 r4, pt3/pr3/pb4/pl6, gap 11; buttons 30x30 r6, hover
@@ -3894,7 +3977,7 @@ void StoryboardPage::createFloatingToolbar()
         return QPoint(qMax(6, (m_canvas->width() - brushBar->width()) / 2),
                       qMax(6, m_canvas->height() - brushBar->height() - 46 - 12 - 12));
     });
-    brushBar->show(); // records intent; effective when the canvas shows
+    brushBar->setVisible(toolbarShown(Toolbar::Tools)); // intent; effective when the canvas shows
 
 
     // ---- Floating Toolbar Layers (Figma node 173:36) ----------------------
@@ -4067,7 +4150,7 @@ void StoryboardPage::createFloatingToolbar()
     layersBar->setDefaultOffsetProvider([this, layersBar] {
         return QPoint(qMax(6, (m_canvas->width() - layersBar->width()) / 2), 12);
     });
-    layersBar->show(); // records intent; effective when the canvas shows
+    layersBar->setVisible(toolbarShown(Toolbar::Layers)); // intent; effective when the canvas shows
 
     // ---- Floating Size CTL (Figma 209:42 + grab 209:53) -------------------
     // Replaces the old extras-bar brush-size slider: Brush Size, Fit Screen,
@@ -4333,6 +4416,26 @@ void StoryboardPage::createFloatingToolbar()
         tc->active().size = engine;
         refreshPill(sizeSlider, v);
     };
+    // [ AND ] (batch C): a Photoshop step along the same path a drag of the slider takes -
+    // the engine size, the pill showing the number (beside the bar while the bar shows),
+    // the size remembered as at a release.
+    m_stepToolSize = [this, sizeBar, sizeSlider, showPillFor, pillHide, saveToolCtl](int direction) {
+        if (!m_canvas
+            || (m_canvas->tool() != DrawingCanvas::Brush && m_canvas->tool() != DrawingCanvas::Eraser))
+            return false;
+        const int v = qBound(sizeSlider->minimum(), bracketSizeStep(sizeSlider->value(), direction),
+                             sizeSlider->maximum());
+        if (v == sizeSlider->value())
+            return false;
+        if (sizeBar->isVisible())
+            showPillFor(sizeSlider);
+        sizeSlider->setValue(v);
+        if (sizeSlider->onChanged)
+            sizeSlider->onChanged(v);
+        pillHide->start();
+        saveToolCtl();
+        return true;
+    };
 
     opacitySlider->onAdjustBegin = [showPillFor, opacitySlider] {
         showPillFor(opacitySlider);
@@ -4452,7 +4555,7 @@ void StoryboardPage::createFloatingToolbar()
             sizeSlider->setValue(displayedSize(true));
     };
 
-    sizeBar->show(); // records intent; effective when the canvas shows
+    sizeBar->setVisible(toolbarShown(Toolbar::SizeSliders)); // intent; effective when the canvas shows
 }
 
 // Floating overlay panel over the canvas, styled after the dock headers:
@@ -5126,6 +5229,79 @@ bool StoryboardPage::clearStageOnPlay() const
 {
     return m_stageClear ? m_stageClear->isEnabled()
                         : sankoSettings().value(kClearStageKey, true).toBool();
+}
+
+// --- The floating toolbars shown or hidden; the camera's arrows (batch C) ------------
+
+const QString StoryboardPage::kCameraMoveArrowsKey = QStringLiteral("storyboard/view/cameraMoveArrows");
+
+QString StoryboardPage::toolbarKey(Toolbar bar)
+{
+    static const char *const names[] = {"tools", "layers", "zoom", "sizeSliders"};
+    return QStringLiteral("storyboard/toolbars/v1/") + QLatin1String(names[int(bar)]);
+}
+
+QWidget *StoryboardPage::toolbarWindow(Toolbar bar) const
+{
+    switch (bar) {
+    case Toolbar::Tools: return m_floatToolbar;
+    case Toolbar::Layers: return m_layersToolbar;
+    case Toolbar::Zoom: return m_zoomToolbar;
+    case Toolbar::SizeSliders: return m_sizeCtlBar;
+    }
+    return nullptr;
+}
+
+bool StoryboardPage::toolbarShown(Toolbar bar) const
+{
+    return sankoSettings().value(toolbarKey(bar), true).toBool();
+}
+
+void StoryboardPage::setToolbarShown(Toolbar bar, bool shown)
+{
+    sankoSettings().setValue(toolbarKey(bar), shown);
+    if (m_toolbarActs[int(bar)])
+        m_toolbarActs[int(bar)]->setChecked(shown);
+    // A tick while Tab has them hidden brings them back: the entry acts at once.
+    if (m_toolbarsTabHidden)
+        setToolbarsHiddenByTab(false);
+    else
+        applyToolbarVisibility();
+}
+
+void StoryboardPage::setToolbarsHiddenByTab(bool hidden)
+{
+    m_toolbarsTabHidden = hidden;
+    if (m_hideAllToolbarsAct)
+        m_hideAllToolbarsAct->setText(hidden ? QStringLiteral("Show All Toolbars\tTab")
+                                             : QStringLiteral("Hide All Toolbars\tTab"));
+    applyToolbarVisibility();
+    if (hidden)
+        sayNote(QStringLiteral("Toolbars hidden: Tab shows them."));
+}
+
+// Each bar shows when ticked and Tab has not hidden them - the user's choice, made
+// through setUserVisible so that a holder (the Brush Settings studio, a dialog) keeps the
+// bars down until it lets go and then restores this choice, not its own capture.
+void StoryboardPage::applyToolbarVisibility()
+{
+    for (Toolbar bar : {Toolbar::Tools, Toolbar::Layers, Toolbar::Zoom, Toolbar::SizeSliders})
+        if (auto *w = dynamic_cast<FloatingToolWindow *>(toolbarWindow(bar)))
+            w->setUserVisible(toolbarShown(bar) && !m_toolbarsTabHidden);
+}
+
+void StoryboardPage::showEvent(QShowEvent *event)
+{
+    QWidget::showEvent(event);
+    for (QAction *a : std::as_const(m_canvasViewActs))
+        a->setEnabled(true);
+}
+
+void StoryboardPage::hideEvent(QHideEvent *event)
+{
+    QWidget::hideEvent(event);
+    for (QAction *a : std::as_const(m_canvasViewActs))
+        a->setEnabled(false);
 }
 
 bool StoryboardPage::stageClearedForTest() const
@@ -8502,7 +8678,8 @@ protected:
         }
         if (event->type() != QEvent::KeyPress && event->type() != QEvent::KeyRelease)
             return false;
-        return m_page->routeCanvasKey(receiver, static_cast<QKeyEvent *>(event));
+        auto *key = static_cast<QKeyEvent *>(event);
+        return m_page->routeToolbarsKey(receiver, key) || m_page->routeCanvasKey(receiver, key);
     }
 
 private:
@@ -8701,13 +8878,19 @@ void StoryboardPage::setupAnimaticSection(QWidget *centerColumn,
            [this] { timelineDelete(); });
     // M (Phase 2E, D19; the user's Q1): a pinned camera key at the PLAYING
     // frame. Not one of the pointer-gated keys above: the artist taps the
-    // beats in while watching the preview, wherever the pointer rests. It
-    // does nothing while the film is paused (cameraMarkKey), and a text
+    // beats in while watching the preview, wherever the pointer rests. While
+    // the film is paused it is Photoshop's M, the rectangle selection (batch C,
+    // the user's choice of 2026-11-10; it did nothing paused before). A text
     // field with the focus keeps its own M.
     QShortcut *mark = new QShortcut(QKeySequence(Qt::Key_M), this);
     mark->setContext(Qt::WindowShortcut);
     mark->setAutoRepeat(false);
-    connect(mark, &QShortcut::activated, this, [this] { cameraMarkKey(); });
+    connect(mark, &QShortcut::activated, this, [this] {
+        if (m_animatic && m_animatic->isPlaying())
+            cameraMarkKey();
+        else
+            toolKey(DrawingCanvas::SelectRect);
+    });
 
     // ...and the canvas's keys go to the canvas while the pointer is over IT
     // (routeCanvasKey, below).
@@ -8730,11 +8913,13 @@ bool StoryboardPage::routeCanvasKey(QObject *receiver, QKeyEvent *event)
 {
     const int key = event->key();
     const bool space = key == Qt::Key_Space;
+    // R held turns the view (batch C): a Space-like hold, with no Shift (Shift+R resets).
+    const bool turn = key == Qt::Key_R && !(event->modifiers() & Qt::ShiftModifier);
     if (space && event->type() == QEvent::KeyRelease && !event->isAutoRepeat())
         m_spaceDownAway = false; // the Space is up, wherever its release went
     if (!m_canvas || receiver == m_canvas || !receiver->isWidgetType())
         return false;
-    if (!space && key != Qt::Key_Return && key != Qt::Key_Enter && key != Qt::Key_Escape)
+    if (!space && !turn && key != Qt::Key_Return && key != Qt::Key_Enter && key != Qt::Key_Escape)
         return false;
     if (event->modifiers() & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier))
         return false;
@@ -8754,6 +8939,10 @@ bool StoryboardPage::routeCanvasKey(QObject *receiver, QKeyEvent *event)
         m_canvas->routedKey(event);
         return ours;
     }
+    if (turn && release && !event->isAutoRepeat() && m_canvas->rotateHeld()) {
+        m_canvas->routedKey(event); // ...and so is R's (batch C)
+        return ours;
+    }
     if (!ours)
         return false; // a dialog's, a menu's, a popover's own key
     for (const char *typing : {"QLineEdit", "QTextEdit", "QPlainTextEdit", "QAbstractSpinBox", "QComboBox",
@@ -8763,6 +8952,8 @@ bool StoryboardPage::routeCanvasKey(QObject *receiver, QKeyEvent *event)
     // While the canvas holds Space its repeats are the canvas's too, wherever the
     // pointer has gone by then (a pan drag runs off the canvas).
     if (space && m_canvas->spaceHeld())
+        return m_canvas->routedKey(event);
+    if (turn && m_canvas->rotateHeld())
         return m_canvas->routedKey(event);
     if (release)
         return false;
@@ -8779,6 +8970,77 @@ bool StoryboardPage::routeCanvasKey(QObject *receiver, QKeyEvent *event)
         return false;
     }
     return m_canvas->routedKey(event);
+}
+
+// TAB (batch C): see the header. Only where the key was sent (the widget with its window's
+// keyboard), only in this page's window and while the page shows; a text being typed in
+// keeps its Tab. Everything else in the window - a button, the Layers list, the canvas -
+// gives Tab to the toolbars, as Photoshop's panels do.
+bool StoryboardPage::routeToolbarsKey(QObject *receiver, QKeyEvent *event)
+{
+    if (event->key() != Qt::Key_Tab || !receiver->isWidgetType() || !isVisible())
+        return false;
+    if (event->modifiers() & (Qt::ShiftModifier | Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier))
+        return false;
+    auto *widget = static_cast<QWidget *>(receiver);
+    const QWidget *focus = widget->window()->focusWidget();
+    if (focus ? focus != widget : widget != widget->window())
+        return false;
+    if (widget->window() != window())
+        return false; // a dialog's, a menu's, a popover's own Tab
+    for (const char *typing : {"QLineEdit", "QTextEdit", "QPlainTextEdit", "QAbstractSpinBox"})
+        if (widget->inherits(typing))
+            return false;
+    if (event->type() == QEvent::KeyPress && !event->isAutoRepeat())
+        setToolbarsHiddenByTab(!m_toolbarsTabHidden);
+    return true;
+}
+
+// THE TOOL KEYS (batch C): see the header. Not in Stage mode (it has its own tool) nor
+// while the Brush Settings studio holds the bars down - a press on the bar could not
+// reach the tool there either.
+void StoryboardPage::toolKey(DrawingCanvas::Tool tool)
+{
+    if (!m_canvas || !m_floatToolbar || m_stageModeOn || (m_brushStudio && m_brushStudio->isVisible()))
+        return;
+    if (tool == DrawingCanvas::SelectRect || tool == DrawingCanvas::Lasso) {
+        if (m_pickSelectionMode)
+            m_pickSelectionMode(tool); // the Select button, in that mode
+        return;
+    }
+    const char *name = tool == DrawingCanvas::Brush    ? "toolBrush"
+                       : tool == DrawingCanvas::Eraser ? "toolEraser"
+                       : tool == DrawingCanvas::Fill   ? "toolFill"
+                                                       : "toolMove";
+    // Checked as a press checks it - the exclusive group unchecks the old tool and the
+    // button's toggled() sets the canvas's tool - but no click: a click on Brush or
+    // Eraser also opens the Library.
+    if (auto *button = m_floatToolbar->findChild<QPushButton *>(QLatin1String(name)))
+        button->setChecked(true);
+}
+
+// Photoshop's [ and ] (CS6 on): the step is 1 under 10, 10 under 100, 25 under 200, 50
+// under 300, 100 under 1000 and 250 above, and a size between steps goes to the step's
+// next multiple (15 -> 20 up, -> 10 down). Down takes the step of the range below, so
+// 100 goes to 90 and 10 to 9. Never under 1.
+int StoryboardPage::bracketSizeStep(int size, int direction)
+{
+    auto stepAt = [](int s) {
+        return s < 10 ? 1 : s < 100 ? 10 : s < 200 ? 25 : s < 300 ? 50 : s < 1000 ? 100 : 250;
+    };
+    if (direction > 0) {
+        const int step = stepAt(size);
+        return (size / step + 1) * step;
+    }
+    if (size <= 1)
+        return 1;
+    const int step = stepAt(size - 1);
+    return qMax(1, ((size - 1) / step) * step);
+}
+
+bool StoryboardPage::stepToolSize(int direction)
+{
+    return m_stepToolSize && m_stepToolSize(direction);
 }
 
 // WHERE THE POINTER IS, FROM ITS MOVES (the batch A hand test, 2026-11-10). The canvas's
@@ -10159,6 +10421,7 @@ bool StoryboardPage::eventFilter(QObject *object, QEvent *event)
         // window that is no longer the active one.
         if (event->type() == QEvent::WindowDeactivate && !m_ignoreRealPointerForTest) {
             m_canvas->dropSpaceHold();
+            m_canvas->dropRotateHold(); // ...nor R's (batch C)
             m_spaceDownAway = false; // ...nor a Space's still on its way
         }
     }

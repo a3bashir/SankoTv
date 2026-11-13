@@ -78,6 +78,8 @@
 
 #include "AnimaticTimeline.h"
 #include "SankoNoteStyle.h"
+#include "SankoTip.h"
+#include "ZoomToolbar.h"
 
 #include <QAbstractButton>
 #include <QHelpEvent>
@@ -10585,10 +10587,11 @@ void runTimelineWheelPass(const QString &scratch)
               .arg(tl->contentXAtForTest(ax), 0, 'f', 1).arg(expectedAfter2, 0, 'f', 1));
     for (int i = 0; i < 40; ++i)
         wheelOnCanvas(canvas, anchor, 120, Qt::ControlModifier);
-    const bool capped = qFuzzyCompare(tl->zoomForTest(), 400.0) && zoom->value() == 400;
+    // The top is 1600 % since batch C (400 % before); forty notches of 1.15 pass it either way.
+    const bool capped = qFuzzyCompare(tl->zoomForTest(), 1600.0) && zoom->value() == 1600;
     for (int i = 0; i < 60; ++i)
         wheelOnCanvas(canvas, anchor, -120, Qt::ControlModifier);
-    check(QStringLiteral("(av) Ctrl+wheel respects the zoom limits: 400 % at the "
+    check(QStringLiteral("(av) Ctrl+wheel respects the zoom limits: 1600 % at the "
                          "top, 10 % at the bottom, the slider with it"),
           capped && qFuzzyCompare(tl->zoomForTest(), 10.0) && zoom->value() == 10
               && !tl->viewHeldForTest(),
@@ -10820,10 +10823,12 @@ void runTimelineLookPass(const QString &scratch)
             qobject_cast<QPushButton *>(widget("timelineFit"))->click();
             pump(50);
             const QString afterFit = textNow(), fitWant = QStringLiteral("%1%").arg(qRound(tl->zoomForTest()));
+            // Batch C: - and + step along the sqrt(2) ladder (100 -> 141.42, back to 100, on to
+            // 70.71); they stepped by 25 points before (125 %, then 75 %).
             check(QStringLiteral("(aw) THE ZOOM FIELD shows the real zoom in whole percent: 100% at "
-                                 "rest (read-only, no focus); + gives 125%, two - give 75%; a zoom of "
+                                 "rest (read-only, no focus); + gives 141%, two - give 71%; a zoom of "
                                  "133.4 reads 133%; Fit reads Fit's own value rounded"),
-                  rest && afterPlus == QStringLiteral("125%") && afterMinus == QStringLiteral("75%")
+                  rest && afterPlus == QStringLiteral("141%") && afterMinus == QStringLiteral("71%")
                       && afterSet == QStringLiteral("133%") && afterFit == fitWant,
                   QStringLiteral("rest %1 '%2' + '%3' -- '%4' set '%5' fit '%6' (want %7)")
                       .arg(rest).arg(textNow()).arg(afterPlus).arg(afterMinus).arg(afterSet).arg(afterFit).arg(fitWant));
@@ -10848,8 +10853,9 @@ void runTimelineLookPass(const QString &scratch)
                 && textNow() == QStringLiteral("150%") && field->isReadOnly();
             tl->beginZoomEditForTest(); field->setText(QStringLiteral(" 80 ")); pressKey(field, Qt::Key_Return);
             const bool applied80 = qFuzzyCompare(tl->zoomForTest(), 80.0) && textNow() == QStringLiteral("80%");
-            tl->beginZoomEditForTest(); field->setText(QStringLiteral("900")); pressKey(field, Qt::Key_Return);
-            const bool clampedHigh = qFuzzyCompare(tl->zoomForTest(), 400.0) && textNow() == QStringLiteral("400%");
+            // Batch C: the top is 1600 % (900 now applies as typed; 2000 is past the top).
+            tl->beginZoomEditForTest(); field->setText(QStringLiteral("2000")); pressKey(field, Qt::Key_Return);
+            const bool clampedHigh = qFuzzyCompare(tl->zoomForTest(), 1600.0) && textNow() == QStringLiteral("1600%");
             tl->beginZoomEditForTest(); field->setText(QStringLiteral("3%")); pressKey(field, Qt::Key_Return);
             const bool clampedLow = qFuzzyCompare(tl->zoomForTest(), 10.0) && textNow() == QStringLiteral("10%");
             tl->beginZoomEditForTest(); field->setText(QStringLiteral("abc")); pressKey(field, Qt::Key_Return);
@@ -10861,7 +10867,7 @@ void runTimelineLookPass(const QString &scratch)
             const bool clickAway = !tl->zoomEditingForTest() && qFuzzyCompare(tl->zoomForTest(), 60.0)
                 && textNow() == QStringLiteral("60%");
             check(QStringLiteral("(aw) EDITING THE ZOOM FIELD: double-click opens it with the text "
-                                 "selected; Enter applies \"150%\" and \" 80 \"; 900 clamps to 400% and "
+                                 "selected; Enter applies \"150%\" and \" 80 \"; 2000 clamps to 1600% and "
                                  "3% to 10%; \"abc\" restores the value; Escape cancels; a lost focus "
                                  "applies"),
                   editing && applied150 && applied80 && clampedHigh && clampedLow && invalidRestored
@@ -15950,6 +15956,9 @@ void runCameraGuidesPass(const QString &scratch)
     check(QStringLiteral("(cg) the workspace opened"), r.ok);
     if (!r.ok)
         return;
+    // The movement glyphs are View > Camera Move Arrows since batch C, off by default. This
+    // family is about them, so it shows them; (cg7) and (kc6) read them off.
+    r.canvas->setCameraMoveArrowsShown(true);
     auto *camBtn = r.storyboard->findChild<QPushButton *>(QStringLiteral("toolCamera"));
     auto *brushBtn = r.storyboard->findChild<QPushButton *>(QStringLiteral("toolBrush"));
     QWidget *bar = r.storyboard->cameraBarForTest();
@@ -16260,6 +16269,33 @@ void runCameraGuidesPass(const QString &scratch)
                          "on the frame"),
           !qLeft.value(QStringLiteral("onEnd")).toBool() && qLeft.value(QStringLiteral("zoom")).toInt() == 1,
           says(qLeft));
+
+    // --- (cg7) the arrows off (batch C: View > Camera Move Arrows, off by default) --
+    // A hovered Quick Move still shows its move on its end - a move not yet made (the
+    // user's choice); the segment at the playhead shows none.
+    r.canvas->setCameraMoveArrowsShown(false);
+    pump(60);
+    if (QToolButton *quickBtn = bar->findChild<QToolButton *>(QStringLiteral("camQuickMove")))
+        quickBtn->click();
+    pump(150);
+    const QVariantMap offIn = hover("camQuickPushIn");
+    const QVariantMap offLeft = r.canvas->shotCameraGuidesForTest();
+    const bool offLeftPath = r.canvas->shotCameraGlyphPathForTest().isEmpty();
+    if (pop->isVisible())
+        pop->hide();
+    pump(60);
+    r.canvas->setCameraMoveArrowsShown(true);
+    pump(60);
+    check(QStringLiteral("(cg7) WITH THE ARROWS OFF A HOVERED QUICK MOVE STILL SHOWS ITS MOVE, on its end: Push In "
+                         "drawn, zoom +1"),
+          offIn.value(QStringLiteral("drawn")).toBool() && offIn.value(QStringLiteral("onEnd")).toBool()
+              && offIn.value(QStringLiteral("zoom")).toInt() == 1,
+          says(offIn));
+    check(QStringLiteral("(cg7) control: the arrows off, the pointer off the tiles, the segment's move (zoom +1, "
+                         "there to draw) is not drawn"),
+          !offLeft.value(QStringLiteral("drawn")).toBool() && offLeft.value(QStringLiteral("motion")).toBool()
+              && offLeft.value(QStringLiteral("zoom")).toInt() == 1 && offLeftPath,
+          says(offLeft) + QStringLiteral("; path empty %1").arg(offLeftPath));
 
     // --- (cg5) never in the preview ------------------------------------------------
     // The frame's outline and its glyphs are the accent's own colour (#7c6ef6),
@@ -18783,7 +18819,13 @@ void runGrowAnyZoomPass(const QString &scratch)
             const double painted = amberShare(chip.adjusted(1, 1, -1, -1));
             sendMouse(r.surface, QEvent::MouseMove, QPointF(chip.center()), Qt::NoButton);
             const bool hand = r.surface->cursor().shape() == Qt::PointingHandCursor;
-            pump(150); // the tooltip rolls in before it is visible (about 50 ms in the hand test)
+            // Batch C: the chip's tooltip comes when Qt's tooltip is due (0.35 s after the
+            // pointer stops), asked here as Qt asks; it no longer rolls in.
+            {
+                QHelpEvent help(QEvent::ToolTip, chip.center(), r.surface->mapToGlobal(chip.center()));
+                QCoreApplication::sendEvent(r.surface, &help);
+            }
+            pump(150);
             const QString tip = QToolTip::isVisible() ? QToolTip::text() : QString();
             sendMouse(r.surface, QEvent::MouseMove, QPointF(chip.center().x(), 2), Qt::NoButton);
             const QString offered = offeredByPressAt(chip.center());
@@ -19462,6 +19504,1086 @@ void runKeptArtPass(const QString &scratch)
         again->window.markCleanForTest();
 }
 
+// BATCH C (2026-11-13; Figma C-1, C-2; the user's choices of 2026-11-10 and 2026-11-13):
+// (tt) every tooltip drawn as the floating Brush bar's - Qt still decides when, what and
+// where, its own label is made transparent and the Brush bar's frame drawn in its place;
+// (kc) the keys and the view - B E G V L M, [ ], R held, Shift+R, Ctrl+= / - / 0 / 1, Tab,
+// View > Toolbars, View > Camera Move Arrows; (tz) the timeline to 1600 %, with a tick at
+// every frame from 800 %.
+void runKeysAndViewPass(const QString &scratch)
+{
+    using namespace workspace;
+    out() << "--- (tt) one tooltip style, (kc) the keys and the view, (tz) the timeline to 1600 % ---" << Qt::endl;
+    const QString folder = scratch + QStringLiteral("/keysview");
+    QDir(folder).removeRecursively();
+    QDir().mkpath(folder);
+    const QSize size(960, 540);
+    // Scene 1 (SHORE): 30, 35, 48 and 32 frames at 24 fps, a camera move between keys at its
+    // frames 0, 85 and 129. Scene 2 (CAVE): 24, 24.
+    const QString project = folder + QStringLiteral("/Keys.sankotv");
+    {
+        Scene *a = new Scene;
+        a->number = 1;
+        a->location = QStringLiteral("SHORE");
+        a->timeOfDay = QStringLiteral("DAY");
+        for (int f : {30, 35, 48, 32}) {
+            Panel *p = makeBlankPanel(size);
+            p->setLength(f, 24);
+            a->panels.append(p);
+        }
+        shotcam::CameraState s1, s2, s3;
+        s1.cx = 480; s1.cy = 270; s1.zoom = 1.0;
+        s2 = s1; s2.cx = 520; s2.zoom = 1.2;
+        s3 = s1; s3.cx = 440; s3.zoom = 1.4;
+        a->camera.keys = {shotcam::makeKey(*a, 0, 0, 24, s1), shotcam::makeKey(*a, 2, 20, 24, s2),
+                          shotcam::makeKey(*a, 3, 16, 24, s3)};
+        Scene *b = new Scene;
+        b->number = 2;
+        b->location = QStringLiteral("CAVE");
+        b->timeOfDay = QStringLiteral("NIGHT");
+        for (int f : {24, 24}) {
+            Panel *p = makeBlankPanel(size);
+            p->setLength(f, 24);
+            b->panels.append(p);
+        }
+        ProjectIO::SaveData data;
+        data.projectName = QStringLiteral("Keys");
+        data.fps = 24;
+        data.canvasSize = size;
+        data.scenes = {a, b};
+        const ProjectIO::WriteResult w = ProjectIO::projectToJson(data, project);
+        QFile f(project);
+        if (w.ok && f.open(QIODevice::WriteOnly))
+            f.write(QJsonDocument(w.root).toJson(QJsonDocument::Indented));
+        f.close();
+        delete a;
+        delete b;
+    }
+    auto rig = std::make_unique<Rig>(project);
+    Rig &r = *rig;
+    check(QStringLiteral("(tt) the workspace opened"), r.ok);
+    if (!r.ok)
+        return;
+    AnimaticTimeline *tl = r.timeline;
+    QUndoStack *stack = r.window.undoStackForTest();
+    SankoTipFrame *frame = sankoTipFrameForTest();
+    auto *reference = dynamic_cast<SankoTipFrame *>(r.storyboard->findChild<QWidget *>(QStringLiteral("sankoToolbarTip")));
+    auto *zoomBar = r.window.findChild<ZoomToolbar *>();
+    auto *layersDock = r.storyboard->findChild<QDockWidget *>(QStringLiteral("dockLayers"));
+    QScrollArea *list = layersDock ? layersDock->findChild<QScrollArea *>() : nullptr;
+    auto findTip = [&](const QString &prefix) -> QWidget * {
+        for (QWidget *w : r.window.findChildren<QWidget *>())
+            if (w->isVisible() && w->toolTip().startsWith(prefix))
+                return w;
+        return nullptr;
+    };
+    // The panel first: choosing it rebuilds the Layers rows (their old widgets deleted on the
+    // next pass), so a row's eye is looked for after (the first run held a dying one).
+    clickThumb(r, 0);
+    pump(100);
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    const QPointer<QWidget> eye = findTip(QStringLiteral("Show / hide layer"));
+    if (!stack || !frame || !reference || !zoomBar || !list || !eye) {
+        check(QStringLiteral("(tt) found the history, the tip frame, the Brush bar's tip, the zoom bar, the Layers list "
+                             "and a layer's eye"),
+              false);
+        return;
+    }
+    auto tipUp = [] { return QToolTip::isVisible() ? QToolTip::text() : QString(); };
+    // QToolTip::hideText() only starts Qt's 0.3 s hide (the first run asked again within it
+    // and was given the old tooltip back, reused): wait it out.
+    auto hideTip = [] {
+        QToolTip::hideText();
+        pump(400);
+    };
+    // A widget asked for its tooltip as Qt asks when it is due (the hover delay itself is
+    // the style's, read in (tt3)): Qt's own handling, the menu's and the timeline's included.
+    auto ask = [](QWidget *w, const QPoint &local) {
+        QHelpEvent help(QEvent::ToolTip, local, w->mapToGlobal(local));
+        QCoreApplication::sendEvent(w, &help);
+    };
+    auto middle = [](QWidget *w) { return QPoint(w->width() / 2, w->height() / 2); };
+    // The Brush bar's own tip (the reference: drawn as before batch C) with a text, grabbed.
+    auto referenceImage = [&](const QString &text) {
+        reference->setTipText(text, Qt::AutoText);
+        return reference->grab().toImage();
+    };
+    // The window Qt's tooltip is drawn in, if any (none while the mirror stands in for it).
+    auto visibleQtLabel = []() -> QWidget * {
+        for (QWidget *w : QApplication::topLevelWidgets())
+            if (w->inherits("QTipLabel") && w->isVisible())
+                return w;
+        return nullptr;
+    };
+
+    // --- (tt1) one look, in every area ------------------------------------------------------
+    {
+        struct Source { QString area; QWidget *widget; };
+        const QList<Source> sources = {
+            {QStringLiteral("a layer's eye"), eye},
+            {QStringLiteral("the Layers bar (rich text)"), findTip(QStringLiteral("<b>Layers</b>"))},
+            {QStringLiteral("the timeline's zoom field"), tl->zoomField()},
+            {QStringLiteral("the total time"), findTip(QStringLiteral("Total: "))},
+            {QStringLiteral("Import Image"), findTip(QStringLiteral("Import a reference image"))},
+            {QStringLiteral("the Panel Strip's Add"), findTip(QStringLiteral("<b>Add Panel</b>"))},
+        };
+        QStringList seen, bad;
+        for (const Source &s : sources) {
+            if (!s.widget || !s.widget->isVisible()) {
+                bad << s.area + QStringLiteral(": not found");
+                continue;
+            }
+            hideTip();
+            ask(s.widget, middle(s.widget));
+            pump(250); // the fade done
+            QWidget *label = sankoQtTipLabelForTest();
+            const QString shown = tipUp();
+            const bool same = frame->isVisible() && frame->grab().toImage() == referenceImage(shown);
+            const bool ok = !shown.isEmpty() && shown == s.widget->toolTip() && label && label->isVisible()
+                && label->windowOpacity() == 0.0 && visibleQtLabel() == label && frame->isVisible()
+                && frame->tipText() == shown && frame->windowOpacity() == 1.0 && same;
+            seen << QStringLiteral("%1 '%2' qt opacity %3, frame %4 %5").arg(s.area, shown.left(30))
+                        .arg(label ? label->windowOpacity() : -1).arg(frame->isVisible()).arg(same ? "same" : "DIFFERENT");
+            if (!ok)
+                bad << s.area;
+        }
+        hideTip();
+        check(QStringLiteral("(tt1) EVERY TOOLTIP IS THE BRUSH BAR'S: a layer's eye, the Layers bar, the timeline's zoom "
+                             "field, the total time, Import Image and the Panel Strip each show their tooltip through Qt "
+                             "(its label there, fully transparent) in a frame drawn pixel for pixel as the Brush bar's "
+                             "own tip with that text"),
+              bad.isEmpty(), (bad.isEmpty() ? QString() : QStringLiteral("BAD: ") + bad.join(QStringLiteral(", ")) + QStringLiteral("; "))
+                                 + seen.join(QStringLiteral("; ")));
+        // Control: Qt's tooltip as it was (the mirror bypassed) - its own label shown, opaque,
+        // the frame not - is not the Brush bar's look on the same comparison. On the Layers
+        // bar, whose page sheet changes nothing (a layer's eye had no fill at all: its rows'
+        // sheet made it transparent, as Figma C-1 lists).
+        QWidget *plain = findTip(QStringLiteral("<b>Layers</b>"));
+        setSankoTipsBypassedForTest(true);
+        if (plain)
+            ask(plain, middle(plain));
+        pump(250);
+        QWidget *qtLabel = visibleQtLabel();
+        const QImage before = qtLabel ? qtLabel->grab().toImage() : QImage();
+        const QImage after = referenceImage(plain ? plain->toolTip() : QString());
+        const qreal d = before.isNull() ? 1.0 : before.devicePixelRatio();
+        const QColor beforeFill = before.isNull() ? QColor()
+                                                  : before.pixelColor(before.width() - qRound(4 * d), before.height() / 2);
+        hideTip();
+        setSankoTipsBypassedForTest(false);
+        check(QStringLiteral("(tt1) control: bypassed, Qt draws its own label (opaque, the frame hidden) in the old note "
+                             "style, #161616 - and it is not the Brush bar's tip on the same comparison"),
+              qtLabel && !before.isNull() && before != after && beforeFill == QColor(0x16, 0x16, 0x16),
+              QStringLiteral("label %1, fill %2, %3x%4 vs %5x%6").arg(qtLabel != nullptr).arg(beforeFill.name())
+                  .arg(before.width()).arg(before.height()).arg(after.width()).arg(after.height()));
+
+        // --- (tt2) the look's numbers, on the Brush bar's own tip ---------------------------
+        const QImage ref = referenceImage(QStringLiteral("Show / hide layer"));
+        const qreal rd = ref.devicePixelRatio();
+        auto px = [&](qreal x, qreal y) { return ref.pixelColor(qMin(ref.width() - 1, qRound(x * rd)),
+                                                                qMin(ref.height() - 1, qRound(y * rd))); };
+        const qreal W = ref.width() / rd, H = ref.height() / rd;
+        int partial = 0;
+        for (int y = 0; y < qRound(4 * rd); ++y)
+            for (int x = 0; x < qRound(4 * rd); ++x) {
+                const int a = ref.pixelColor(x, y).alpha();
+                partial += a > 0 && a < 255 ? 1 : 0;
+            }
+        QLabel *text = reference->findChild<QLabel *>();
+        const QMargins margins = reference->layout() ? reference->layout()->contentsMargins() : QMargins();
+        const bool numbers = px(4, H / 2) == QColor(0x1a, 0x1a, 0x1a) && px(W / 2, 0) == QColor(0x2a, 0x2a, 0x2a)
+            && px(0, 0).alpha() == 0 && partial >= 2 && text && text->font().pixelSize() == 11
+            && text->palette().color(QPalette::WindowText) == QColor(0xcc, 0xcc, 0xcc)
+            && margins == QMargins(10, 6, 10, 6);
+        check(QStringLiteral("(tt2) THE LOOK: fill #1a1a1a, a 1 px #2a2a2a border, corners clear and drawn smooth (part-"
+                             "covered pixels), the text #cccccc at 11 px, 10 x 6 px of padding"),
+              numbers,
+              QStringLiteral("fill %1 border %2 corner alpha %3 smooth px %4 font %5 colour %6 margins %7,%8,%9,%10")
+                  .arg(px(4, H / 2).name(), px(W / 2, 0).name()).arg(px(0, 0).alpha()).arg(partial)
+                  .arg(text ? text->font().pixelSize() : -1)
+                  .arg(text ? text->palette().color(QPalette::WindowText).name() : QString())
+                  .arg(margins.left()).arg(margins.top()).arg(margins.right()).arg(margins.bottom()));
+    }
+
+    // --- (tt3) the delay: 0.35 s everywhere -----------------------------------------------------
+    {
+        QMenu probeMenu(&r.window);
+        const QList<QWidget *> areas = {eye, tl->zoomField(), r.surface, &probeMenu, r.canvas, &r.window, list};
+        auto delays = [&] {
+            QStringList d;
+            for (QWidget *w : areas)
+                d << QString::number(w->style()->styleHint(QStyle::SH_ToolTip_WakeUpDelay, nullptr, w));
+            return d.join(QLatin1Char(','));
+        };
+        const QString now = delays();
+        setSankoTipsBypassedForTest(true);
+        const QString qtOwn = delays();
+        setSankoTipsBypassedForTest(false);
+        check(QStringLiteral("(tt3) THE DELAY IS THE BRUSH BAR'S, 0.35 s, for a layer's eye, the zoom field, the timeline, "
+                             "a menu, the canvas, the window and the Layers list"),
+              now == QStringLiteral("350,350,350,350,350,350,350"), now);
+        check(QStringLiteral("(tt3) control: bypassed, Qt's own delay (0.7 s) on the same widgets"),
+              qtOwn == QStringLiteral("700,700,700,700,700,700,700"), qtOwn);
+    }
+
+    // --- (tt4) the fade, (tt5) the leave ---------------------------------------------------------
+    {
+        hideTip();
+        ask(eye, middle(eye));
+        const double atOnce = frame->windowOpacity();
+        pump(250);
+        const double faded = frame->windowOpacity();
+        ask(tl->zoomField(), middle(tl->zoomField())); // the next one while it is up
+        const double retarget = frame->windowOpacity();
+        const QString retText = frame->tipText();
+        check(QStringLiteral("(tt4) IT FADES IN AS THE BRUSH BAR'S: transparent as it appears, opaque 0.25 s later; the "
+                             "next tooltip while one is up is taken at once, opaque"),
+              atOnce < 0.5 && faded == 1.0 && retarget == 1.0 && retText == tl->zoomField()->toolTip(),
+              QStringLiteral("at once %1, after %2, retarget %3 '%4'").arg(atOnce).arg(faded).arg(retarget).arg(retText));
+        hideTip();
+        ask(eye, middle(eye));
+        pump(60); // whose tip it is, known on the next pass
+        QEvent leave(QEvent::Leave);
+        QCoreApplication::sendEvent(eye, &leave);
+        pump(60);
+        const bool upAt60 = QToolTip::isVisible() && frame->isVisible();
+        pump(140);
+        const bool goneAt200 = !QToolTip::isVisible() && !frame->isVisible();
+        check(QStringLiteral("(tt5) A HOVERED TOOLTIP LEAVES 0.12 s AFTER THE POINTER (Qt's after 0.3 s): still up 0.06 s "
+                             "after the Leave, gone by 0.2 s"),
+              upAt60 && goneAt200, QStringLiteral("up at 0.06 s %1, gone at 0.2 s %2").arg(upAt60).arg(goneAt200));
+        hideTip();
+        QToolTip::showText(eye->mapToGlobal(middle(eye)), QStringLiteral("A note"), eye); // no hover asked for it
+        pump(60);
+        QCoreApplication::sendEvent(eye, &leave);
+        pump(150);
+        const bool noteUp = tipUp() == QStringLiteral("A note") && frame->isVisible();
+        hideTip();
+        check(QStringLiteral("(tt5) control: a note (shown with showText, as the refusals are) keeps Qt's timing - still "
+                             "up 0.15 s after a Leave"),
+              noteUp);
+    }
+
+    // --- (tt6) no roll, no fade of Qt's own ---------------------------------------------------
+    {
+        struct Effects : QObject
+        {
+            int built = 0;
+            bool eventFilter(QObject *o, QEvent *e) override
+            {
+                if (e->type() == QEvent::Show && (o->inherits("QRollEffect") || o->inherits("QAlphaWidget")))
+                    ++built;
+                return false;
+            }
+        } effects;
+        const bool general = QApplication::isEffectEnabled(Qt::UI_General);
+        QApplication::setEffectEnabled(Qt::UI_General, true);
+        qApp->installEventFilter(&effects);
+        hideTip();
+        QApplication::setEffectEnabled(Qt::UI_AnimateTooltip, true); // tooltips roll in, as on the user's PC
+        ask(eye, middle(eye));
+        pump(250);
+        const int ours = effects.built;
+        const bool up = tipUp() == eye->toolTip() && frame->isVisible();
+        const bool rollAfter = QApplication::isEffectEnabled(Qt::UI_AnimateTooltip);
+        hideTip();
+        setSankoTipsBypassedForTest(true);
+        QApplication::setEffectEnabled(Qt::UI_AnimateTooltip, true);
+        effects.built = 0;
+        ask(eye, middle(eye));
+        pump(350);
+        const int qtOwn = effects.built;
+        hideTip();
+        setSankoTipsBypassedForTest(false);
+        QApplication::setEffectEnabled(Qt::UI_AnimateTooltip, false);
+        QApplication::setEffectEnabled(Qt::UI_General, general);
+        qApp->removeEventFilter(&effects);
+        check(QStringLiteral("(tt6) NO ROLL, NO FADE OF QT'S OWN: with the roll on (as on the user's PC) a tooltip builds "
+                             "no roll or fade window - it would draw Qt's label's own pixels - and is up; the roll is "
+                             "off after"),
+              ours == 0 && up && !rollAfter, QStringLiteral("%1 built, up %2, roll after %3").arg(ours).arg(up).arg(rollAfter));
+        check(QStringLiteral("(tt6) control: bypassed, the same tooltip rolls in (the counter counts)"), qtOwn >= 1,
+              QStringLiteral("%1 built").arg(qtOwn));
+    }
+
+    // --- (tt7) the timeline's hovers wait ---------------------------------------------------------
+    {
+        tl->setZoomForTest(100);
+        tl->setFollowForTest(false);
+        tl->userScrollForTest(0);
+        r.animatic->scrubToForTest(5, 0); // the playhead away from the keys
+        pump(150);
+        const int rowY = tl->cameraRowForTest().y() + 14;
+        auto keyMap = [&](int s, int k) {
+            for (const QVariant &v : tl->cameraKeysForTest())
+                if (v.toMap().value(QStringLiteral("scene")).toInt() == s
+                    && v.toMap().value(QStringLiteral("key")).toInt() == k)
+                    return v.toMap();
+            return QVariantMap();
+        };
+        const QPoint keyAt(keyMap(0, 1).value(QStringLiteral("x")).toInt(), rowY);
+        const QString keyTip = keyMap(0, 1).value(QStringLiteral("tip")).toString();
+        const QRect s2 = tl->sceneRectForTest(1);
+        const QPoint sceneAt(s2.right() - 6, s2.center().y());
+        const QString sceneTip = tl->sceneTipForTest(1, false);
+        const QPoint offAt(s2.center().x(), tl->audioRowForTest().center().y());
+        hideTip();
+        sendMouse(r.surface, QEvent::MouseMove, keyAt, Qt::NoButton);
+        const bool noneAtOnce = !QToolTip::isVisible();
+        pump(200);
+        const bool none200 = !QToolTip::isVisible();
+        ask(r.surface, keyAt);
+        pump(60);
+        const QString asked = tipUp();
+        sendMouse(r.surface, QEvent::MouseMove, sceneAt, Qt::NoButton); // the next, while one is up
+        const QString chained = tipUp();
+        sendMouse(r.surface, QEvent::MouseMove, offAt, Qt::NoButton);
+        pump(60);
+        const bool upInGrace = QToolTip::isVisible();
+        pump(140);
+        const bool goneOff = upInGrace && !QToolTip::isVisible() && !frame->isVisible();
+        check(QStringLiteral("(tt7) THE TIMELINE'S HOVERS WAIT FOR THE TOOLTIP'S DELAY: a move onto a camera key shows "
+                             "nothing at once nor 0.2 s later; Qt's tooltip event then shows the key's; moving onto a "
+                             "scene while it is up shows the scene's at once; off them it goes after the Brush bar's "
+                             "0.12 s (up at 0.06 s, gone by 0.2 s)"),
+              !keyTip.isEmpty() && noneAtOnce && none200 && asked == keyTip && chained == sceneTip && goneOff,
+              QStringLiteral("at once %1, 0.2 s %2; asked '%3' (want '%4'); chained '%5' (want '%6'); gone %7")
+                  .arg(!noneAtOnce).arg(!none200).arg(asked, keyTip, chained, sceneTip).arg(goneOff));
+        hideTip();
+        ask(r.surface, sceneAt);
+        pump(60);
+        sendMouse(r.surface, QEvent::MouseMove, keyAt, Qt::NoButton);
+        const QString controlTip = tipUp();
+        sendMouse(r.surface, QEvent::MouseMove, offAt, Qt::NoButton);
+        hideTip();
+        check(QStringLiteral("(tt7) control: with the scene's tooltip up, the same move onto the key shows the key's at "
+                             "once (the read sees a tooltip there is one)"),
+              controlTip == keyTip, controlTip);
+    }
+
+    // --- (tt8) the menus' tooltips that were never shown ---------------------------------------
+    {
+        QAction *full = r.window.findChild<QAction *>(QStringLiteral("exportFullArtwork"));
+        auto *exportMenu = full ? qobject_cast<QMenu *>(full->parent()) : nullptr;
+        QString overFull, overFirst;
+        if (exportMenu) {
+            exportMenu->popup(r.window.mapToGlobal(QPoint(300, 200)));
+            pump(200);
+            hideTip();
+            ask(exportMenu, exportMenu->actionGeometry(full).center());
+            pump(60);
+            overFull = tipUp();
+            hideTip();
+            ask(exportMenu, exportMenu->actionGeometry(exportMenu->actions().first()).center());
+            pump(60);
+            overFirst = tipUp();
+            exportMenu->hide();
+            pump(100);
+        }
+        QMenu *recent = nullptr;
+        for (QMenu *m : r.window.findChildren<QMenu *>())
+            if (m->title() == QLatin1String("Open Recent"))
+                recent = m;
+        QString overRecent, recentPath;
+        if (recent) {
+            recent->popup(r.window.mapToGlobal(QPoint(300, 200)));
+            pump(200);
+            QAction *entry = recent->actions().value(0);
+            recentPath = entry ? entry->toolTip() : QString();
+            hideTip();
+            if (entry)
+                ask(recent, recent->actionGeometry(entry).center());
+            pump(60);
+            overRecent = tipUp();
+            recent->hide();
+            pump(100);
+        }
+        hideTip();
+        check(QStringLiteral("(tt8) THE MENUS' TOOLTIPS SET AND NEVER SHOWN NOW SHOW: File > Export > Stills Show Full "
+                             "Artwork says what it does, an Open Recent entry its project's path"),
+              full && overFull == full->toolTip() && !overFull.isEmpty() && !recentPath.isEmpty()
+                  && overRecent == recentPath,
+              QStringLiteral("export '%1'; recent '%2' (path '%3')").arg(overFull, overRecent, recentPath));
+        check(QStringLiteral("(tt8) control: Export's first entry, which sets no tooltip of its own, shows none"),
+              exportMenu && overFirst.isEmpty(), overFirst);
+    }
+
+    // --- (kc1) the tool keys ------------------------------------------------------------------
+    {
+        QWidget *libraryHeader = r.storyboard->findChild<QWidget *>(QStringLiteral("brushLibHeader"));
+        if (libraryHeader)
+            libraryHeader->window()->hide();
+        pump(60);
+        const struct { int key; DrawingCanvas::Tool tool; const char *button; const char *name; } letters[] = {
+            {Qt::Key_E, DrawingCanvas::Eraser, "toolEraser", "E"}, {Qt::Key_G, DrawingCanvas::Fill, "toolFill", "G"},
+            {Qt::Key_V, DrawingCanvas::Move, "toolMove", "V"}, {Qt::Key_L, DrawingCanvas::Lasso, "toolSelect", "L"},
+            {Qt::Key_M, DrawingCanvas::SelectRect, "toolSelect", "M"}, {Qt::Key_B, DrawingCanvas::Brush, "toolBrush", "B"},
+        };
+        QStringList seen, bad;
+        for (const auto &l : letters) {
+            const bool claimed = keyClaimed(&r.window, l.key);
+            auto *button = r.storyboard->findChild<QPushButton *>(QLatin1String(l.button));
+            const bool ok = claimed && r.canvas->tool() == l.tool && button && button->isChecked();
+            seen << QStringLiteral("%1: claimed %2 tool %3 button %4").arg(QLatin1String(l.name)).arg(claimed)
+                        .arg(int(r.canvas->tool())).arg(button && button->isChecked());
+            if (!ok)
+                bad << QLatin1String(l.name);
+        }
+        const bool libraryOpened = libraryHeader && libraryHeader->window()->isVisible();
+        check(QStringLiteral("(kc1) THE TOOL KEYS: E Eraser, G Fill, V Move, L the freehand selection, M (paused) the "
+                             "rectangle selection, B Brush - each checks its button; B opens no Library (a press on "
+                             "the button would)"),
+              bad.isEmpty() && !r.animatic->isPlaying() && !libraryOpened,
+              QStringLiteral("bad [%1]; library opened %2; %3").arg(bad.join(QLatin1Char(','))).arg(libraryOpened)
+                  .arg(seen.join(QStringLiteral("; "))));
+        // Controls: a text field with the keyboard keeps its letter; I is nobody's yet. A
+        // typed letter carries its text, which is what a field takes it by (the first run
+        // sent the key with none, and the field let it go to the shortcut).
+        auto typed = [&](int key, const QString &text) {
+            r.window.activateWindow(); // the window active, as press() makes it (press() would send the key)
+            r.window.raise();
+            pump(100);
+            if (QApplication::activeWindow() != &r.window) {
+                QT_WARNING_PUSH
+                QT_WARNING_DISABLE_DEPRECATED
+                QApplication::setActiveWindow(&r.window);
+                QT_WARNING_POP
+                pump(50);
+            }
+            // To the keyboard's widget, as a real key's "does anyone claim this?" goes (Qt's
+            // entry point asks the object it is given - the window, in the second run).
+            QObject *focus = QApplication::focusWidget() ? static_cast<QObject *>(QApplication::focusWidget())
+                                                         : static_cast<QObject *>(&r.window);
+            const bool claimed = qt_sendShortcutOverrideEvent(focus, 0, key, Qt::NoModifier, text, false, 1);
+            pump(200);
+            return claimed;
+        };
+        keyClaimed(&r.window, Qt::Key_B);
+        auto *field = new QLineEdit(&r.window);
+        field->setGeometry(20, 60, 120, 24);
+        field->show();
+        field->setFocus();
+        pump(60);
+        const bool fieldKeeps = !typed(Qt::Key_E, QStringLiteral("e")) && r.canvas->tool() == DrawingCanvas::Brush;
+        delete field;
+        pump(60);
+        const bool iFree = !typed(Qt::Key_I, QStringLiteral("i")) && r.canvas->tool() == DrawingCanvas::Brush;
+        check(QStringLiteral("(kc1) controls: with a text field holding the keyboard E is the field's (the tool stays "
+                             "the Brush); I is no tool's yet (the eyedropper comes in batch D)"),
+              fieldKeeps && iFree, QStringLiteral("field keeps %1, I free %2").arg(fieldKeeps).arg(iFree));
+    }
+
+    // --- (kc2) [ and ] ---------------------------------------------------------------------------
+    {
+        QStringList table;
+        bool tableOk = true;
+        const int steps[][3] = {{1, 1, 2}, {9, 1, 10}, {10, 1, 20}, {15, 1, 20}, {95, 1, 100}, {100, 1, 125},
+                                {199, 1, 200}, {200, 1, 250}, {300, 1, 400}, {1000, 1, 1250}, {15, -1, 10},
+                                {10, -1, 9}, {2, -1, 1}, {1, -1, 1}, {100, -1, 90}, {125, -1, 100}, {200, -1, 175},
+                                {300, -1, 250}, {1000, -1, 900}, {1250, -1, 1000}};
+        for (const auto &s : steps) {
+            const int got = StoryboardPage::bracketSizeStep(s[0], s[1]);
+            table << QStringLiteral("%1%2%3").arg(s[0]).arg(s[1] > 0 ? QStringLiteral("->") : QStringLiteral("<-")).arg(got);
+            tableOk = tableOk && got == s[2];
+        }
+        check(QStringLiteral("(kc2) PHOTOSHOP'S STEPS: 1 under 10, 10 under 100, 25 under 200, 50 under 300, 100 under "
+                             "1000, then 250; between steps to the next multiple; down by the range below"),
+              tableOk, table.join(QLatin1Char(' ')));
+        keyClaimed(&r.window, Qt::Key_B);
+        auto size = [&] { return r.storyboard->sizeCtlDisplayedSizeForTest(); };
+        r.storyboard->sizeCtlUserSetSizeForTest(15);
+        pump(60);
+        const QVariant storedBefore = sankoSettings().value(QStringLiteral("storyboard/toolCtl/brush/size"));
+        QStringList seen;
+        auto press = [&](int key) {
+            keyClaimed(&r.window, key);
+            seen << QString::number(size());
+        };
+        press(Qt::Key_BracketRight); // 20
+        press(Qt::Key_BracketLeft);  // 10
+        press(Qt::Key_BracketLeft);  // 9
+        const QVariant storedAfter = sankoSettings().value(QStringLiteral("storyboard/toolCtl/brush/size"));
+        r.storyboard->sizeCtlUserSetSizeForTest(5000);
+        pump(60);
+        press(Qt::Key_BracketRight); // the limit
+        keyClaimed(&r.window, Qt::Key_E);
+        r.storyboard->sizeCtlUserSetSizeForTest(100);
+        pump(60);
+        press(Qt::Key_BracketRight); // the Eraser: 125
+        check(QStringLiteral("(kc2) [ AND ] STEP THE ACTIVE TOOL'S SIZE: the Brush at 15 -> 20 -> 10 -> 9, remembered as "
+                             "a slider's release; at 5000 ] stays; the Eraser at 100 -> 125"),
+              seen == QStringList({QStringLiteral("20"), QStringLiteral("10"), QStringLiteral("9"), QStringLiteral("5000"),
+                                   QStringLiteral("125")})
+                  && storedAfter != storedBefore,
+              QStringLiteral("%1; stored %2 -> %3").arg(seen.join(QStringLiteral(" "))).arg(storedBefore.toString(),
+                                                                                             storedAfter.toString()));
+        keyClaimed(&r.window, Qt::Key_G);
+        const int fillBefore = size();
+        keyClaimed(&r.window, Qt::Key_BracketRight);
+        const int fillAfter = size();
+        keyClaimed(&r.window, Qt::Key_B);
+        check(QStringLiteral("(kc2) control: with the Fill tool ] changes no size"), fillAfter == fillBefore,
+              QStringLiteral("%1 -> %2").arg(fillBefore).arg(fillAfter));
+    }
+
+    // --- (kc3) R held turns the view; Shift+R -----------------------------------------------------
+    {
+        keyClaimed(&r.window, Qt::Key_0, Qt::ControlModifier); // Fit Stage: no turn, no pan
+        const QPointF c = r.canvas->viewTransformForTest().map(QPointF(size.width() / 2.0, size.height() / 2.0));
+        hover(r, r.canvas, true); // the pointer over the canvas, as the test delivers it
+        list->setFocus();         // ...and the Layers list holding the keyboard
+        pump(60);
+        const double rot0 = r.canvas->viewRotation();
+        const int steps0 = stack->index();
+        camtool::key(list, QEvent::KeyPress, Qt::Key_R);
+        const bool held = r.canvas->rotateHeld();
+        sendMouse(r.canvas, QEvent::MouseButtonPress, c + QPointF(100, 0), Qt::LeftButton);
+        for (int i = 1; i <= 6; ++i) {
+            const double a = qDegreesToRadians(15.0 * i);
+            sendMouse(r.canvas, QEvent::MouseMove, c + QPointF(100 * std::cos(a), 100 * std::sin(a)), Qt::LeftButton);
+        }
+        sendMouse(r.canvas, QEvent::MouseButtonRelease, c + QPointF(0, 100), Qt::LeftButton);
+        pump(100);
+        const double turned = r.canvas->viewRotation() - rot0;
+        const double dial = zoomBar->rotationForTest();
+        camtool::key(list, QEvent::KeyRelease, Qt::Key_R);
+        const bool letGo = !r.canvas->rotateHeld();
+        check(QStringLiteral("(kc3) R HELD TURNS THE VIEW: the pointer over the canvas, the Layers list holding the "
+                             "keyboard, R down, a drag a quarter round the drawing's centre turns the view 90 degrees "
+                             "(the zoom bar's dial with it) and paints nothing; R up, the hold ends"),
+              held && qAbs(turned - 90.0) < 1.0 && qAbs(dial - r.canvas->viewRotation()) < 0.01
+                  && stack->index() == steps0 && letGo,
+              QStringLiteral("held %1, turned %2, dial %3, steps +%4, let go %5").arg(held).arg(turned).arg(dial)
+                  .arg(stack->index() - steps0).arg(letGo));
+        const bool reset = keyClaimed(&r.window, Qt::Key_R, Qt::ShiftModifier);
+        check(QStringLiteral("(kc3) SHIFT+R resets the turn, the dial with it"),
+              reset && r.canvas->viewRotation() == 0.0 && zoomBar->rotationForTest() == 0.0,
+              QStringLiteral("claimed %1, rotation %2, dial %3").arg(reset).arg(r.canvas->viewRotation())
+                  .arg(zoomBar->rotationForTest()));
+        // Control: without R the same drag paints with the Brush and turns nothing.
+        sendMouse(r.canvas, QEvent::MouseButtonPress, c + QPointF(100, 0), Qt::LeftButton);
+        for (int i = 1; i <= 6; ++i) {
+            const double a = qDegreesToRadians(15.0 * i);
+            sendMouse(r.canvas, QEvent::MouseMove, c + QPointF(100 * std::cos(a), 100 * std::sin(a)), Qt::LeftButton);
+        }
+        sendMouse(r.canvas, QEvent::MouseButtonRelease, c + QPointF(0, 100), Qt::LeftButton);
+        pump(400);
+        const int painted = stack->index() - steps0;
+        const double still = r.canvas->viewRotation();
+        if (painted > 0)
+            stack->undo();
+        pump(200);
+        hover(r, r.canvas, false);
+        check(QStringLiteral("(kc3) control: without R the same drag paints (a step) and turns nothing"),
+              painted == 1 && still == 0.0, QStringLiteral("steps +%1, rotation %2").arg(painted).arg(still));
+    }
+
+    // --- (ri) the rotation indicator while R is held (the user's design, Figma 576:731) ---------
+    // Its arcs are the design's own vectors (icons/view/rotation_arcs.svg) at half the design's
+    // size, turning with the canvas at 80 %; the angle in the middle upright at 100 %.
+    {
+        auto isPurple = [](const QColor &c) {
+            return c.alpha() > 0 && c.blue() > 180 && c.green() < 140 && c.blue() - c.green() > 90;
+        };
+        // The purple's centroid about the square's centre, in degrees (0 right, -90 up): the
+        // top arc is the larger, so it points the way the top arc does.
+        auto purpleAngle = [&](const QImage &img) {
+            double sx = 0, sy = 0;
+            int n = 0;
+            for (int y = 0; y < img.height(); ++y)
+                for (int x = 0; x < img.width(); ++x)
+                    if (isPurple(img.pixelColor(x, y))) {
+                        sx += x - 150;
+                        sy += y - 150;
+                        ++n;
+                    }
+            return n ? qRadiansToDegrees(std::atan2(sy / n, sx / n)) : 999.0;
+        };
+        auto turnDiff = [](double a, double b) { return qAbs(std::remainder(a - b, 360.0)); };
+        auto maxAlpha = [&](const QImage &img, bool purpleOnly) {
+            int m = 0;
+            for (int y = 0; y < img.height(); ++y)
+                for (int x = 0; x < img.width(); ++x) {
+                    const QColor c = img.pixelColor(x, y);
+                    if (!purpleOnly || isPurple(c))
+                        m = qMax(m, c.alpha());
+                }
+            return m;
+        };
+        auto inkBox = [](const QImage &img) {
+            QRect box;
+            for (int y = 0; y < img.height(); ++y)
+                for (int x = 0; x < img.width(); ++x)
+                    if (img.pixelColor(x, y).alpha() > 8)
+                        box |= QRect(x, y, 1, 1);
+            return box;
+        };
+
+        // (ri1) shown while R is held, where the view turns, the pointer an arrow. The canvas
+        // itself, not the timeline's preview over it ((tt7) left the playhead on another
+        // panel: the first run grabbed the preview, the indicator drawn under it).
+        r.animatic->leavePreview();
+        pump(120);
+        keyClaimed(&r.window, Qt::Key_0, Qt::ControlModifier); // Fit Stage: no turn, no pan
+        hover(r, r.canvas, true);
+        list->setFocus();
+        pump(80);
+        const bool before = r.canvas->rotationIndicatorShownForTest();
+        const QImage plain = r.canvas->grab().toImage();
+        camtool::key(list, QEvent::KeyPress, Qt::Key_R);
+        pump(80);
+        const bool shown = r.canvas->rotationIndicatorShownForTest();
+        const QPointF centre = r.canvas->rotationIndicatorCentreForTest();
+        const QPointF pivot = r.canvas->viewTransformForTest().map(QPointF(size.width() / 2.0, size.height() / 2.0));
+        const bool arrow = r.canvas->cursor().shape() == Qt::ArrowCursor;
+        const QImage withIt = r.canvas->grab().toImage();
+        camtool::key(list, QEvent::KeyRelease, Qt::Key_R);
+        pump(80);
+        const bool gone = !r.canvas->rotationIndicatorShownForTest();
+        hover(r, r.canvas, false);
+        const qreal d = withIt.devicePixelRatio();
+        const QRectF square(centre - QPointF(110, 110), QSizeF(220, 220));
+        int inside = 0, outside = 0;
+        if (plain.size() == withIt.size())
+            for (int y = 0; y < withIt.height(); ++y)
+                for (int x = 0; x < withIt.width(); ++x)
+                    if (plain.pixel(x, y) != withIt.pixel(x, y))
+                        ++(square.contains(QPointF(x / d, y / d)) ? inside : outside);
+        check(QStringLiteral("(ri1) THE ROTATION INDICATOR SHOWS WHILE R IS HELD: centred on the point the view turns "
+                             "about, the pointer a plain arrow; R up, it goes"),
+              !before && shown && QLineF(centre, pivot).length() < 1.0 && arrow && gone && inside > 1000,
+              QStringLiteral("before %1, shown %2 at %3,%4 (pivot %5,%6), arrow %7, gone %8, %9 px changed")
+                  .arg(before).arg(shown).arg(centre.x()).arg(centre.y()).arg(pivot.x()).arg(pivot.y()).arg(arrow)
+                  .arg(gone).arg(inside));
+        check(QStringLiteral("(ri1) control: what R changes on the canvas is inside the indicator's square - nothing "
+                             "else"),
+              outside == 0 && inside > 0, QStringLiteral("%1 inside, %2 outside").arg(inside).arg(outside));
+
+        // (ri2) the number upright at every angle; (ri3) the arcs turning with the canvas: the
+        // arcs drawn at an angle are the arcs drawn at 0 turned by it in a painter, but for
+        // their smoothed edges. (The first run read the purple's centroid instead: the top and
+        // bottom arcs nearly balance about the centre, so a few edge pixels swung it 6-7
+        // degrees at -135 and 180.)
+        auto turnedCopy = [](const QImage &img, double a) {
+            QImage out(img.size(), QImage::Format_ARGB32_Premultiplied);
+            out.fill(Qt::transparent);
+            QPainter p(&out);
+            p.setRenderHint(QPainter::SmoothPixmapTransform, true);
+            p.translate(150, 150);
+            p.rotate(a);
+            p.translate(-150, -150);
+            p.drawImage(0, 0, img);
+            p.end();
+            return out;
+        };
+        // The share of inked pixels (alpha over 64 in either) whose alpha differs by over 64.
+        auto apart = [](const QImage &a, const QImage &b) {
+            int ink = 0, off = 0;
+            for (int y = 0; y < a.height(); ++y)
+                for (int x = 0; x < a.width(); ++x) {
+                    const int aa = qAlpha(a.pixel(x, y)), bb = qAlpha(b.pixel(x, y));
+                    if (aa > 64 || bb > 64) {
+                        ++ink;
+                        off += qAbs(aa - bb) > 64 ? 1 : 0;
+                    }
+                }
+            return ink ? double(off) / ink : 1.0;
+        };
+        // The arcs themselves (their shadow, which turns with them, has its own check, (ri6)).
+        QStringList seen;
+        bool upright = true, arcsDiffer = true, turning = true, unturnedFar = true;
+        const QImage arcs0 = r.canvas->rotationIndicatorImageForTest(0.0, true, false, QString(), 0);
+        const double up = purpleAngle(arcs0);
+        for (double a : {45.0, 90.0, -135.0, 180.0, -30.0}) {
+            const QString text = DrawingCanvas::rotationIndicatorText(a);
+            const bool same = r.canvas->rotationIndicatorImageForTest(a, false, true)
+                == r.canvas->rotationIndicatorImageForTest(0.0, false, true, text);
+            const QImage arcs = r.canvas->rotationIndicatorImageForTest(a, true, false, QString(), 0);
+            const double share = apart(arcs, turnedCopy(arcs0, a)), unturned = apart(arcs, arcs0);
+            upright = upright && same;
+            arcsDiffer = arcsDiffer && arcs != arcs0;
+            turning = turning && share < 0.05;
+            unturnedFar = unturnedFar && unturned > 0.2; // measured 0.30-0.35; a turned copy 0.000
+            seen << QStringLiteral("%1: number %2, arcs %3 off the turned copy (%4 off unturned)")
+                        .arg(text, same ? QStringLiteral("upright") : QStringLiteral("TURNED"))
+                        .arg(share, 0, 'f', 3).arg(unturned, 0, 'f', 3);
+        }
+        check(QStringLiteral("(ri2) THE ANGLE STAYS UPRIGHT: at 45, 90, -135, 180 and -30 degrees the number is pixel for "
+                             "pixel the same text drawn at 0"),
+              upright, seen.join(QStringLiteral("; ")));
+        check(QStringLiteral("(ri2) control: the arcs, compared the same way, differ at every one of those angles (the "
+                             "comparison sees a turn)"),
+              arcsDiffer);
+        check(QStringLiteral("(ri3) THE ARCS TURN WITH THE CANVAS: at 0 their purple points straight up; at each of the "
+                             "five angles they are the 0-degree arcs turned by it (under 5 % of their inked pixels "
+                             "apart: the smoothed edges)"),
+              turnDiff(up, -90.0) < 2.0 && turning,
+              QStringLiteral("up %1; %2").arg(up, 0, 'f', 1).arg(seen.join(QStringLiteral("; "))));
+        check(QStringLiteral("(ri3) controls: the unturned arcs are far from each (over 20 % apart); the number alone "
+                             "has no purple for the 'up' measure to find"),
+              unturnedFar && purpleAngle(r.canvas->rotationIndicatorImageForTest(45.0, false, true)) == 999.0);
+
+        // (ri4) opacities; (ri5) the size - of the shapes themselves, their shadow left out
+        // (the shadow under the arcs raises their pixels' cover and widens their ink).
+        const int arcsAlpha = maxAlpha(r.canvas->rotationIndicatorImageForTest(0.0, true, false, QString(), 0), true);
+        const int numberAlpha = maxAlpha(r.canvas->rotationIndicatorImageForTest(0.0, false, true, QString(), 0), false);
+        check(QStringLiteral("(ri4) THE ARCS AT 80 %, THE NUMBER AT 100 % (without the shadow under them): the arcs' "
+                             "purple at most 204 of 255, the number's glyphs 255"),
+              qAbs(arcsAlpha - 204) <= 1 && numberAlpha == 255,
+              QStringLiteral("arcs %1, number %2").arg(arcsAlpha).arg(numberAlpha));
+        const QRect ink = inkBox(r.canvas->rotationIndicatorImageForTest(0.0, true, false, QString(), 0));
+        const double scale = DrawingCanvas::rotationIndicatorScaleForTest();
+        check(QStringLiteral("(ri5) THE SIZE: half the design's (the user's screenshot: the top arc 151 px for the "
+                             "design's 301.5) - the arcs 181 x 183 px on screen"),
+              qAbs(scale - 151.0 / 301.52) < 0.01 && qAbs(ink.width() - 361.6 * scale) <= 2.0
+                  && qAbs(ink.height() - 365.1 * scale) <= 2.0,
+              QStringLiteral("scale %1; arcs %2 x %3 px").arg(scale).arg(ink.width()).arg(ink.height()));
+
+        // (ri6) THE SOFT SHADOW (the user's fix, Figma 581:696): black at 50 %, a 4 px blur on
+        // screen, under the arcs and the number - nothing else changes.
+        const QImage shadowAlone = r.canvas->rotationIndicatorImageForTest(0.0, true, true, QString(), 2);
+        bool black = true;
+        for (int y = 0; y < shadowAlone.height(); ++y)
+            for (int x = 0; x < shadowAlone.width(); ++x) {
+                const QColor c = shadowAlone.pixelColor(x, y);
+                if (c.alpha() > 0)
+                    black = black && c.red() <= 2 && c.green() <= 2 && c.blue() <= 2;
+            }
+        const QImage bare = r.canvas->rotationIndicatorImageForTest(0.0, true, true, QString(), 0);
+        const QImage withShadow = r.canvas->rotationIndicatorImageForTest(0.0, true, true, QString(), 1);
+        // What the fix says, computed here on its own: the shapes' cover (the arcs at 80 %, the
+        // number at 100 %) blurred by a Gaussian - Figma's "blur 4" is a CSS-style radius,
+        // sigma 2 px - at half its alpha. The largest difference from the shadow drawn, in
+        // levels of 255. (The first run guessed instead: "3 to 8 px past the shapes" and "100+
+        // under the number's strokes"; sigma 2 fades under 8/255 2 px past an edge, and the
+        // number's 5 px strokes peak at 93.)
+        auto expectedDiff = [&](double sigma) {
+            const int w = bare.width(), h = bare.height(), rad = int(std::ceil(3.0 * sigma));
+            QVector<double> k(2 * rad + 1), a(w * h), t(w * h);
+            double sum = 0.0;
+            for (int i = -rad; i <= rad; ++i)
+                sum += (k[i + rad] = std::exp(-(i * i) / (2.0 * sigma * sigma)));
+            for (double &v : k)
+                v /= sum;
+            for (int y = 0; y < h; ++y)
+                for (int x = 0; x < w; ++x)
+                    a[y * w + x] = qAlpha(bare.pixel(x, y)) / 255.0;
+            for (int y = 0; y < h; ++y)
+                for (int x = 0; x < w; ++x) {
+                    double s = 0.0;
+                    for (int i = -rad; i <= rad; ++i)
+                        s += k[i + rad] * a[y * w + qBound(0, x + i, w - 1)];
+                    t[y * w + x] = s;
+                }
+            int worst = 0;
+            for (int y = 0; y < h; ++y)
+                for (int x = 0; x < w; ++x) {
+                    double s = 0.0;
+                    for (int i = -rad; i <= rad; ++i)
+                        s += k[i + rad] * t[qBound(0, y + i, h - 1) * w + x];
+                    worst = qMax(worst, qAbs(qAlpha(shadowAlone.pixel(x, y)) - qRound(s * 0.5 * 255.0)));
+                }
+            return worst;
+        };
+        const int at2 = expectedDiff(2.0), at1 = expectedDiff(1.0), at4 = expectedDiff(4.0);
+        check(QStringLiteral("(ri6) THE SOFT SHADOW IS THE APPROVED ONE: black, and pixel for pixel (within 2 of 255) the "
+                             "shapes' own cover blurred 4 px on screen (Gaussian sigma 2) at 50 % - so the arcs' at "
+                             "80 % of that, as in Figma"),
+              black && at2 <= 2, QStringLiteral("black %1; largest difference %2").arg(black).arg(at2));
+        check(QStringLiteral("(ri6) control: a blur of 1 px or of 4 px sigma is not it (the comparison tells the size)"),
+              at1 > 10 && at4 > 10, QStringLiteral("sigma 1: %1, sigma 4: %2").arg(at1).arg(at4));
+        // Nothing else changes: wherever the shapes cover fully, the pixel is the same with the
+        // shadow as without (it lies under them).
+        int solid = 0, changedSolid = 0;
+        for (int y = 0; y < bare.height(); ++y)
+            for (int x = 0; x < bare.width(); ++x)
+                if (qAlpha(bare.pixel(x, y)) == 255) {
+                    ++solid;
+                    changedSolid += bare.pixel(x, y) != withShadow.pixel(x, y) ? 1 : 0;
+                }
+        check(QStringLiteral("(ri6) control: the shadow is UNDER the shapes - every fully covered pixel (the number's) "
+                             "is the same with it as without"),
+              solid > 50 && changedSolid == 0, QStringLiteral("%1 solid px, %2 changed").arg(solid).arg(changedSolid));
+
+        // (ri7) on white paper it now has an edge: over white, around the number and the arcs
+        // (where they themselves are not) the darkest pixel is well below white; without the
+        // shadow everything there is white.
+        auto darkestAround = [&](const QImage &img, const QImage &shapesOnly) {
+            double darkest = 1.0;
+            for (int y = 0; y < img.height(); ++y)
+                for (int x = 0; x < img.width(); ++x) {
+                    if (qAlpha(shapesOnly.pixel(x, y)) != 0)
+                        continue;
+                    const QRgb p = img.pixel(x, y); // premultiplied, over white
+                    const int inv = 255 - qAlpha(p);
+                    const QColor over(qRed(p) + inv, qGreen(p) + inv, qBlue(p) + inv);
+                    auto lin = [](double c) { c /= 255.0; return c <= 0.04045 ? c / 12.92 : std::pow((c + 0.055) / 1.055, 2.4); };
+                    darkest = qMin(darkest, 0.2126 * lin(over.red()) + 0.7152 * lin(over.green()) + 0.0722 * lin(over.blue()));
+                }
+            return darkest;
+        };
+        const QImage numberShown = r.canvas->rotationIndicatorImageForTest(0.0, false, true, QString(), 1);
+        const QImage numberBare = r.canvas->rotationIndicatorImageForTest(0.0, false, true, QString(), 0);
+        const QImage arcsShown = r.canvas->rotationIndicatorImageForTest(0.0, true, false, QString(), 1);
+        const QImage arcsBare = r.canvas->rotationIndicatorImageForTest(0.0, true, false, QString(), 0);
+        const double numberEdge = darkestAround(numberShown, numberBare), arcsEdge = darkestAround(arcsShown, arcsBare);
+        const double numberNone = darkestAround(numberBare, numberBare), arcsNone = darkestAround(arcsBare, arcsBare);
+        check(QStringLiteral("(ri7) ON WHITE PAPER THE NUMBER AND THE ARCS HAVE A DARK EDGE: around them the darkest pixel "
+                             "over white has a luminance under 0.6 (white is 1)"),
+              numberEdge < 0.6 && arcsEdge < 0.6,
+              QStringLiteral("around the number %1, around the arcs %2").arg(numberEdge, 0, 'f', 3).arg(arcsEdge, 0, 'f', 3));
+        check(QStringLiteral("(ri7) control: without the shadow, around them is white (1.0) - the white number had no "
+                             "edge on white paper"),
+              numberNone > 0.999 && arcsNone > 0.999,
+              QStringLiteral("number %1, arcs %2").arg(numberNone, 0, 'f', 3).arg(arcsNone, 0, 'f', 3));
+    }
+
+    // --- (kc4) Ctrl+= / Ctrl+- / Ctrl+0 / Ctrl+1 -------------------------------------------------
+    {
+        hover(r, r.animatic, false);
+        hover(r, r.canvas, true);
+        keyClaimed(&r.window, Qt::Key_0, Qt::ControlModifier);
+        const double fitted = r.canvas->viewZoom();
+        keyClaimed(&r.window, Qt::Key_Equal, Qt::ControlModifier);
+        const double in = r.canvas->viewZoom();
+        keyClaimed(&r.window, Qt::Key_Minus, Qt::ControlModifier);
+        const double out2 = r.canvas->viewZoom();
+        keyClaimed(&r.window, Qt::Key_1, Qt::ControlModifier);
+        const double actual = r.canvas->viewZoom();
+        const qreal dpr = r.canvas->devicePixelRatioF();
+        const double onScreen = r.canvas->viewTransformForTest().m11() * dpr; // drawing px to device px
+        const bool within = r.canvas->actualPixelsZoom() > 0.25 && r.canvas->actualPixelsZoom() < 4.0;
+        check(QStringLiteral("(kc4) THE CANVAS'S ZOOM KEYS: Ctrl+0 fits the stage (0.96), Ctrl+= zooms in by 1.25, Ctrl+- "
+                             "back, Ctrl+1 shows one drawing pixel a screen pixel"),
+              qAbs(fitted - 0.96) < 1e-9 && qAbs(in - fitted * 1.25) < 1e-9 && qAbs(out2 - fitted) < 1e-9
+                  && qAbs(actual - r.canvas->actualPixelsZoom()) < 1e-9 && (!within || qAbs(onScreen - 1.0) < 0.002),
+              QStringLiteral("fit %1, in %2, out %3, actual %4 (on screen %5 drawing px per device px)").arg(fitted)
+                  .arg(in).arg(out2).arg(actual).arg(onScreen));
+        // Over the timeline they are the timeline's.
+        hover(r, r.canvas, false);
+        hover(r, r.animatic, true);
+        tl->setZoomForTest(100);
+        pump(60);
+        const double canvasBefore = r.canvas->viewZoom();
+        QStringList seen;
+        keyClaimed(&r.window, Qt::Key_Equal, Qt::ControlModifier);
+        seen << QString::number(tl->zoomForTest(), 'f', 2);
+        keyClaimed(&r.window, Qt::Key_Minus, Qt::ControlModifier);
+        seen << QString::number(tl->zoomForTest(), 'f', 2);
+        keyClaimed(&r.window, Qt::Key_0, Qt::ControlModifier);
+        const double fit = tl->zoomForTest();
+        const double fitWant = qBound(10.0, double(tl->visibleWidthForTest()) * 100.0 / tl->totalFramesForTest(), 1600.0);
+        keyClaimed(&r.window, Qt::Key_1, Qt::ControlModifier);
+        seen << QString::number(tl->zoomForTest(), 'f', 2);
+        hover(r, r.animatic, false);
+        check(QStringLiteral("(kc4) OVER THE TIMELINE THE ZOOM KEYS ARE ITS OWN: Ctrl+= 100 -> 141.42 % (as its +), "
+                             "Ctrl+- back to 100, Ctrl+0 its Fit, Ctrl+1 100 %; the canvas's zoom untouched"),
+              seen == QStringList({QStringLiteral("141.42"), QStringLiteral("100.00"), QStringLiteral("100.00")})
+                  && qAbs(fit - fitWant) < 0.01 && r.canvas->viewZoom() == canvasBefore,
+              QStringLiteral("%1; fit %2 (want %3); canvas %4 -> %5").arg(seen.join(QLatin1Char(' '))).arg(fit)
+                  .arg(fitWant).arg(canvasBefore).arg(r.canvas->viewZoom()));
+        // Control: on another page the keys are not the storyboard's.
+        auto *pages = r.window.findChild<QStackedWidget *>();
+        QWidget *storyboardPage = pages ? pages->currentWidget() : nullptr;
+        bool claimedElsewhere = true;
+        if (pages) {
+            pages->setCurrentIndex(1); // the Script Editor
+            pump(150);
+            claimedElsewhere = keyClaimed(&r.window, Qt::Key_Equal, Qt::ControlModifier);
+            pages->setCurrentWidget(storyboardPage);
+            pump(200);
+        }
+        check(QStringLiteral("(kc4) control: on the Script Editor's page Ctrl+= is not the storyboard's (left to the "
+                             "page)"),
+              pages && !claimedElsewhere);
+    }
+
+    // --- (kc5) Tab and View > Toolbars ------------------------------------------------------------
+    {
+        auto bars = [&] {
+            QString on;
+            for (auto bar : {StoryboardPage::Toolbar::Tools, StoryboardPage::Toolbar::Layers,
+                             StoryboardPage::Toolbar::Zoom, StoryboardPage::Toolbar::SizeSliders}) {
+                auto *w = dynamic_cast<FloatingToolWindow *>(r.storyboard->toolbarWindowForTest(bar));
+                on += w && w->visibleIntent() ? QLatin1Char('1') : QLatin1Char('0');
+            }
+            return on;
+        };
+        QAction *hideAll = r.window.findChild<QAction *>(QStringLiteral("viewHideAllToolbars"));
+        const QString start = bars();
+        list->setFocus();
+        pump(60);
+        r.storyboard->clearNoteForTest();
+        camtool::key(list, QEvent::KeyPress, Qt::Key_Tab);
+        camtool::key(list, QEvent::KeyRelease, Qt::Key_Tab);
+        pump(60);
+        const QString tabbed = bars();
+        const QString note = r.storyboard->lastNoteForTest();
+        const QString entry = hideAll ? hideAll->text() : QString();
+        const bool focusStayed = r.window.focusWidget() == list;
+        camtool::key(list, QEvent::KeyPress, Qt::Key_Tab);
+        camtool::key(list, QEvent::KeyRelease, Qt::Key_Tab);
+        pump(60);
+        const QString back = bars();
+        check(QStringLiteral("(kc5) TAB HIDES THE FOUR TOOLBARS AND SHOWS THEM AGAIN: from the Layers list, which keeps "
+                             "the keyboard; the note says how to get them back; View > Toolbars' entry reads Show All"),
+              start == QStringLiteral("1111") && tabbed == QStringLiteral("0000") && back == QStringLiteral("1111")
+                  && note == QStringLiteral("Toolbars hidden: Tab shows them.")
+                  && entry == QStringLiteral("Show All Toolbars\tTab") && focusStayed,
+              QStringLiteral("%1 -> %2 -> %3; note '%4'; entry '%5'; focus stayed %6").arg(start, tabbed, back, note, entry)
+                  .arg(focusStayed));
+        QAction *layersTick = r.window.findChild<QAction *>(QStringLiteral("viewToolbarLayers"));
+        QAction *zoomTick = r.window.findChild<QAction *>(QStringLiteral("viewToolbarZoom"));
+        QString untick, stored, retick, whileTabbed;
+        if (layersTick && zoomTick) {
+            layersTick->trigger();
+            pump(60);
+            untick = bars();
+            stored = sankoSettings().value(StoryboardPage::toolbarKey(StoryboardPage::Toolbar::Layers)).toString();
+            layersTick->trigger();
+            pump(60);
+            retick = bars();
+            camtool::key(list, QEvent::KeyPress, Qt::Key_Tab); // hidden by Tab...
+            pump(60);
+            zoomTick->trigger(); // ...then Zoom unticked: all back but Zoom
+            pump(60);
+            whileTabbed = bars();
+            zoomTick->trigger();
+            pump(60);
+        }
+        check(QStringLiteral("(kc5) VIEW > TOOLBARS: Layers unticked hides it alone and is remembered, ticked shows it; "
+                             "an entry picked while Tab has them hidden brings them back"),
+              untick == QStringLiteral("1011") && stored == QStringLiteral("false") && retick == QStringLiteral("1111")
+                  && whileTabbed == QStringLiteral("1101") && bars() == QStringLiteral("1111")
+                  && !r.storyboard->toolbarsHiddenByTab(),
+              QStringLiteral("untick %1 (stored %2), retick %3, while tabbed %4, end %5").arg(untick, stored, retick,
+                                                                                            whileTabbed, bars()));
+        auto *field = new QLineEdit(&r.window);
+        field->setGeometry(20, 60, 120, 24);
+        field->show();
+        field->setFocus();
+        pump(60);
+        camtool::key(field, QEvent::KeyPress, Qt::Key_Tab);
+        camtool::key(field, QEvent::KeyRelease, Qt::Key_Tab);
+        pump(60);
+        const QString inField = bars();
+        delete field;
+        pump(60);
+        check(QStringLiteral("(kc5) control: in a text field Tab is the field's - the toolbars stay"),
+              inField == QStringLiteral("1111"), inField);
+    }
+
+    // --- (kc6) View > Camera Move Arrows -----------------------------------------------------------
+    {
+        QAction *arrows = r.window.findChild<QAction *>(QStringLiteral("viewCameraMoveArrows"));
+        if (auto *camera = r.storyboard->findChild<QPushButton *>(QStringLiteral("toolCamera")))
+            camera->setChecked(true);
+        r.animatic->scrubToForTest(1, 20); // panel 2: mid move (scene frame 50 of 0 -> 85)
+        pump(200);
+        const QVariantMap off = r.canvas->shotCameraGuidesForTest();
+        const bool offPath = r.canvas->shotCameraGlyphPathForTest().isEmpty();
+        const bool defaultOff = arrows && !arrows->isChecked() && !r.canvas->cameraMoveArrowsShown();
+        if (arrows)
+            arrows->trigger();
+        pump(100);
+        const QVariantMap on = r.canvas->shotCameraGuidesForTest();
+        const bool onPath = !r.canvas->shotCameraGlyphPathForTest().isEmpty();
+        const bool storedOn = sankoSettings().value(StoryboardPage::kCameraMoveArrowsKey).toBool();
+        if (arrows)
+            arrows->trigger();
+        pump(100);
+        const bool storedOff = !sankoSettings().value(StoryboardPage::kCameraMoveArrowsKey).toBool();
+        keyClaimed(&r.window, Qt::Key_B);
+        check(QStringLiteral("(kc6) VIEW > CAMERA MOVE ARROWS, OFF BY DEFAULT: mid move, with the Camera tool, no arrow "
+                             "is drawn; ticked they are (and remembered), unticked gone again"),
+              defaultOff && off.value(QStringLiteral("motion")).toBool() && !off.value(QStringLiteral("drawn")).toBool()
+                  && offPath && on.value(QStringLiteral("drawn")).toBool() && onPath && storedOn && storedOff,
+              QStringLiteral("default off %1; off: motion %2 drawn %3 path empty %4; on: drawn %5 path %6; stored on %7 off %8")
+                  .arg(defaultOff).arg(off.value(QStringLiteral("motion")).toBool())
+                  .arg(off.value(QStringLiteral("drawn")).toBool()).arg(offPath)
+                  .arg(on.value(QStringLiteral("drawn")).toBool()).arg(onPath).arg(storedOn).arg(storedOff));
+    }
+
+    // --- (tz) the timeline to 1600 % -------------------------------------------------------------
+    {
+        const double ladder[][3] = {{100, 1, 141.421}, {141.421, 1, 200}, {1131.37, 1, 1600}, {1600, 1, 1600},
+                                    {100, -1, 70.711}, {12.5, -1, 10}, {10, -1, 10}, {10, 1, 12.5},
+                                    {133, 1, 141.421}, {133, -1, 100}};
+        QStringList seen;
+        bool ladderOk = true;
+        for (const auto &l : ladder) {
+            const double got = AnimaticTimeline::zoomStepFrom(float(l[0]), int(l[1]));
+            seen << QStringLiteral("%1%2%3").arg(l[0]).arg(l[1] > 0 ? QStringLiteral("->") : QStringLiteral("<-"))
+                        .arg(got, 0, 'f', 3);
+            ladderOk = ladderOk && qAbs(got - l[2]) < 0.01;
+        }
+        tl->setZoomForTest(800);
+        pump(60);
+        auto *plus = qobject_cast<QPushButton *>(r.window.findChild<QWidget *>(QStringLiteral("timelineZoomIn")));
+        QStringList fields;
+        for (int i = 0; i < 3 && plus; ++i) {
+            plus->click();
+            pump(60);
+            fields << tl->zoomFieldTextForTest();
+        }
+        check(QStringLiteral("(tz1) THE ZOOM'S LADDER, BY SQRT(2) TO 1600 %: + from 800 % gives 1131 %, 1600 %, and stays"),
+              ladderOk && fields == QStringList({QStringLiteral("1131%"), QStringLiteral("1600%"), QStringLiteral("1600%")}),
+              seen.join(QLatin1Char(' ')) + QStringLiteral("; + gives ") + fields.join(QLatin1Char(' ')));
+
+        // Frame ticks: at 800 % a 2 px tick under every frame that is no second or half
+        // second; under 800 % none.
+        auto ticks = [&](float zoom) {
+            tl->setZoomForTest(zoom);
+            tl->setFollowForTest(false);
+            tl->userScrollForTest(0);
+            pump(120);
+            const QImage img = r.surface->grab().toImage();
+            const qreal d = img.devicePixelRatio();
+            const int bottom = tl->rulerBottomForTest();
+            auto at = [&](int x, int y) { return img.pixelColor(qRound(x * d), qRound(y * d)); };
+            // A tick of `rows` px at frame f: lit there, the background 3 px right of it.
+            auto lit = [&](int f, int rows) {
+                const int x = tl->frameScreenXForTest(f);
+                return at(x, bottom - rows) != at(x + 3, bottom - rows);
+            };
+            // Frame 24's second tick is 7 px when labelled and 5 px when not (at 400 % only
+            // every second second is labelled): read at 5 px, there in both.
+            return QStringLiteral("%1%2%3%4").arg(lit(5, 1) ? 1 : 0).arg(lit(5, 3) ? 1 : 0).arg(lit(12, 3) ? 1 : 0)
+                .arg(lit(24, 5) ? 1 : 0);
+        };
+        const QString at800 = ticks(800), at1600 = ticks(1600), at400 = ticks(400);
+        check(QStringLiteral("(tz2) A TICK AT EVERY FRAME FROM 800 %: frame 5 has a 2 px tick (not 3), frame 12 the half "
+                             "second's 3 px, frame 24 the second's - at 800 % and at 1600 %"),
+              at800 == QStringLiteral("1011") && at1600 == QStringLiteral("1011"),
+              QStringLiteral("800 %: %1, 1600 %: %2 (frame 5 2px, frame 5 3px, frame 12 3px, frame 24 5px)").arg(at800, at1600));
+        check(QStringLiteral("(tz2) control: at 400 % frame 5 has no tick; the half second and the second keep theirs"),
+              at400 == QStringLiteral("0011"), at400);
+
+        // The clip wider than its picture (panel 3, 48 frames: 768 px at 1600 %) draws the
+        // picture, cropped to fill as below 512 px: the blank panel's white, not the
+        // placeholder.
+        auto thumbCentre = [&](float zoom) {
+            tl->setZoomForTest(zoom);
+            tl->setFollowForTest(false);
+            const QRect clip = tl->clipRectForTest(2);
+            tl->userScrollForTest(qMax(0, tl->scrollXForTest() + clip.left() - 200));
+            pump(150);
+            const QRect moved = tl->clipRectForTest(2);
+            const QImage img = r.surface->grab().toImage();
+            const qreal d = img.devicePixelRatio();
+            const QPoint p(moved.left() + qMin(60, moved.width() / 2), moved.top() + 30);
+            return QStringLiteral("%1@%2").arg(img.pixelColor(qRound(p.x() * d), qRound(p.y() * d)).name()).arg(moved.width());
+        };
+        const QString wide = thumbCentre(1600), narrow = thumbCentre(300);
+        check(QStringLiteral("(tz3) A CLIP WIDER THAN ITS PICTURE (768 px at 1600 %) STILL SHOWS IT, cropped to fill - the "
+                             "same colour as at 300 % (144 px), where the old path draws it"),
+              wide.startsWith(narrow.section(QLatin1Char('@'), 0, 0)) && wide.section(QLatin1Char('@'), 1).toInt() > 512,
+              QStringLiteral("1600 %: %1; 100 %: %2").arg(wide, narrow));
+        tl->setZoomForTest(100);
+        pump(60);
+    }
+}
+
 // THE SCENE LENGTH LOCK (batch F1, 2026-11-12; Figma F-1; the user's decisions of 2026-11-10
 // and Q-F1 to Q-F3): a scene's length locked, undoable and saved (file version 5 only then);
 // its lock, accent baseline and end line on the SCENES row; inside it a new panel splits the
@@ -19654,12 +20776,21 @@ void runSceneLockPass(const QString &scratch)
           QStringLiteral("%1 px changed; end line %2").arg(scene2Px).arg(tl->sceneEndLineXForTest(1)));
     const QString tip1 = tl->sceneTipForTest(0, false), tip2 = tl->sceneTipForTest(1, false);
     const QString lockTip1 = tl->sceneTipForTest(0, true), lockTip2 = tl->sceneTipForTest(1, true);
+    // Batch C: the hover lights what is under the pointer at once, and its tooltip comes when
+    // Qt's tooltip is due (0.35 s later), as every tooltip's - asked here as Qt asks.
+    auto askTip = [&](const QPointF &at) {
+        QHelpEvent help(QEvent::ToolTip, at.toPoint(), r.surface->mapToGlobal(at.toPoint()));
+        QCoreApplication::sendEvent(r.surface, &help);
+        pump(60);
+    };
     hover(tl->sceneLockRectForTest(1).center());
     const QImage hovered = r.surface->grab().toImage();
+    askTip(tl->sceneLockRectForTest(1).center());
     const QString shownOverLock = QToolTip::text();
     const int faintLockPx = changed(locked, hovered, tl->sceneLockRectForTest(1));
     const bool handOverLock = r.surface->cursor().shape() == Qt::PointingHandCursor;
     hover(QPointF(scene2.left() + scene2.width() - 6, scene2.center().y()));
+    askTip(QPointF(scene2.left() + scene2.width() - 6, scene2.center().y()));
     const QString shownOverBlock = QToolTip::text();
     check(QStringLiteral("(sl3) THE HOVERS: over a scene, \"Scene 2 ends 00:00:08:01 %1 2s %1 48 f\" (the locked one adds "
                          "\"%1 locked\"); over an unlocked scene's name its lock shows, faint, with the hand and \"Lock "
@@ -21101,13 +22232,18 @@ void runTrialFixesPass(const QString &scratch)
 
     // --- (ta4) a drag's chip is one tooltip, and it shows while the pointer moves ---------
     {
+        // Batch C: a tooltip is shown at once now, never rolled in (SankoTip.h), so what is
+        // counted is Qt's tooltip LABELS made and shown - one per tooltip built - and, for the
+        // control, the roll windows Qt builds with the mirror bypassed (as it was).
         struct Tips : QObject
         {
-            int built = 0;
+            int built = 0, labels = 0;
             bool eventFilter(QObject *o, QEvent *e) override
             {
                 if (e->type() == QEvent::Show && (o->inherits("QRollEffect") || o->inherits("QAlphaWidget")))
                     ++built;
+                if (e->type() == QEvent::Show && o->inherits("QTipLabel"))
+                    ++labels;
                 return false;
             }
         } tips;
@@ -21134,19 +22270,24 @@ void runTrialFixesPass(const QString &scratch)
             }
         }
         pump(260);
-        const int scrubBuilt = tips.built;
+        const int scrubBuilt = tips.labels, scrubRolls = tips.built;
         const QString lastText = QToolTip::isVisible() ? QToolTip::text() : QString();
         sendMouse(r.surface, QEvent::MouseButtonRelease, press + QPointF(160, 0), Qt::LeftButton);
         pump(120);
         const bool goneAfter = !QToolTip::isVisible();
-        check(QStringLiteral("(ta4) THE SCRUB'S TIMECODE CHIP IS ONE TOOLTIP: 40 pointer moves 5 ms apart build one, "
-                             "it is up while the pointer moves, it follows (its timecode changes), and it goes at the "
-                             "release"),
-              scrubBuilt == 1 && seenUp >= 20 && timecode.match(lastText).hasMatch() && lastText != firstText
-                  && goneAfter,
-              QStringLiteral("%1 built; up at %2 of 40 moves; '%3' -> '%4'; gone after %5").arg(scrubBuilt)
-                  .arg(seenUp).arg(firstText, lastText).arg(goneAfter));
-        // Control: the old way - a tooltip asked for at every move - on the same counter.
+        check(QStringLiteral("(ta4) THE SCRUB'S TIMECODE CHIP IS ONE TOOLTIP: 40 pointer moves 5 ms apart build one "
+                             "(and, the roll on as on the user's PC, no roll), it is up while the pointer moves, it "
+                             "follows (its timecode changes), and it goes at the release"),
+              scrubBuilt == 1 && scrubRolls == 0 && seenUp >= 20 && timecode.match(lastText).hasMatch()
+                  && lastText != firstText && goneAfter,
+              QStringLiteral("%1 built, %2 rolled; up at %3 of 40 moves; '%4' -> '%5'; gone after %6").arg(scrubBuilt)
+                  .arg(scrubRolls).arg(seenUp).arg(firstText, lastText).arg(goneAfter));
+        // Control: the old way - a tooltip asked for at every move - with Qt's tooltip as it
+        // was (the mirror bypassed: it rolls in), on the same counter.
+        QToolTip::hideText();
+        pump(350);
+        setSankoTipsBypassedForTest(true);
+        QApplication::setEffectEnabled(Qt::UI_AnimateTooltip, true);
         tips.built = 0;
         int oldUp = 0;
         const QPoint base = r.surface->mapToGlobal(press.toPoint());
@@ -21160,6 +22301,7 @@ void runTrialFixesPass(const QString &scratch)
         QToolTip::hideText();
         pump(350);
         QToolTip::hideText();
+        setSankoTipsBypassedForTest(false);
         check(QStringLiteral("(ta4) control: asked for at every move, as it was, a tooltip is built again and again "
                              "on the same counter (36,318 of them in the trial), and is up at fewer of the moves"),
               oldBuilt >= 10 && oldUp < seenUp,
@@ -23945,12 +25087,14 @@ void runCameraToolPass(const QString &scratch)
         const bool fadeWas = QApplication::isEffectEnabled(Qt::UI_FadeTooltip);
         QApplication::setEffectEnabled(Qt::UI_AnimateTooltip, false);
         QApplication::setEffectEnabled(Qt::UI_FadeTooltip, false);
+        QWidget *label = nullptr; // Qt's, as the last tipImage found it
         auto tipImage = [&](const QString &text) {
             QToolTip::showText(r.canvas->mapToGlobal(QPoint(120, 120)), text, r.canvas);
             QWidget *tip = nullptr;
             for (QWidget *w : QApplication::topLevelWidgets())
                 if (w->inherits("QTipLabel") && w->isVisible())
                     tip = w;
+            label = tip;
             return tip ? tip->grab().toImage() : QImage();
         };
         const QImage dark = tipImage(QStringLiteral("Turn on Animate to change the "
@@ -23961,12 +25105,19 @@ void runCameraToolPass(const QString &scratch)
                                                  img.height() / 2);
         };
         const QColor fill = fillOf(dark);
+        // Batch C: what is SEEN is the one tooltip style (the Brush bar's, SankoTip.h), drawn
+        // over Qt's label, which keeps the note style - it sizes and places the tooltip -
+        // fully transparent.
+        SankoTipFrame *seen = sankoTipFrameForTest();
+        const QColor seenFill = seen && seen->isVisible() ? fillOf(seen->grab().toImage()) : QColor();
+        const double labelOpacity = label ? label->windowOpacity() : -1.0;
         const QString sheet = qApp->styleSheet();
-        check(QStringLiteral("(ct) notes and tooltips take the dark Sanko style "
-                             "(#161616), applied once"),
-              fill == QColor(0x16, 0x16, 0x16)
+        check(QStringLiteral("(ct) notes and tooltips are SEEN in the one tooltip style (#1a1a1a, the Brush bar's), "
+                             "drawn over Qt's label - which keeps the note style (#161616), fully transparent; the "
+                             "style applied once"),
+              seenFill == QColor(0x1a, 0x1a, 0x1a) && labelOpacity == 0.0 && fill == QColor(0x16, 0x16, 0x16)
                   && sheet.count(QStringLiteral("QToolTip{")) == 1,
-              fill.name());
+              QStringLiteral("seen %1, Qt's label %2 at opacity %3").arg(seenFill.name(), fill.name()).arg(labelOpacity));
         QString plain = sheet;
         plain.remove(sankoNoteStyle());
         qApp->setStyleSheet(plain);
@@ -25031,8 +26182,14 @@ int main(int argc, char **argv)
         || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("strip")
         || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("trial")
         || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("keptart")
-        || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("scenelock")) {
-        if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("scenelock")) {
+        || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("scenelock")
+        || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("keysview")) {
+        if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("keysview")) {
+            // Batch C: one tooltip style, the keys and the view, the timeline to 1600 %;
+            // and the camera guides (their arrows are a View entry now).
+            runKeysAndViewPass(scratch);
+            runCameraGuidesPass(scratch);
+        } else if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("scenelock")) {
             // The scene length lock (batch F1), and the panel lengths' own pass (the edges,
             // the roll, typing) it changes inside a locked scene only.
             runSceneLockPass(scratch);
@@ -25265,6 +26422,7 @@ int main(int argc, char **argv)
     runKeptArtPass(scratch);
     runDepthWhileMovingPass(scratch);
     runSceneLockPass(scratch);
+    runKeysAndViewPass(scratch);
     runPinnedKeysPass(scratch);
     runCameraBarFitPass(scratch);
     runStageClearPass(scratch);

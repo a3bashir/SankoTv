@@ -24,6 +24,7 @@ public:
     // Sync the toolbar to the canvas (updates the draggers; no signal).
     void setZoom(double zoom);        // 0.25 .. 4.0
     void setRotation(double degrees); // -180 .. 180
+    double rotationForTest() const { return m_rotation; } // the dial (batch C's R-drag)
 
 signals:
     void zoomChanged(double zoom);        // dragged the zoom track

@@ -371,6 +371,36 @@ public:
     // whatever holds the keyboard. Called for every key press and release in the
     // application (CanvasKeyRouter); true when the canvas took the key.
     bool routeCanvasKey(QObject *receiver, QKeyEvent *event);
+    // TAB HIDES OR SHOWS THE FLOATING TOOLBARS (batch C, Photoshop's Tab): wherever the
+    // pointer is, in this page's window, unless a text field has the keyboard. Called
+    // before routeCanvasKey; true when it took the key (its release and repeats too,
+    // so Tab never walks the keyboard focus here).
+    bool routeToolbarsKey(QObject *receiver, QKeyEvent *event);
+
+    // THE FOUR FLOATING TOOLBARS (batch C; Figma C-2): View > Toolbars ticks each one
+    // (remembered), and Tab hides all four for the session (not remembered); a toolbar
+    // shows when it is ticked and Tab has not hidden them.
+    enum class Toolbar { Tools, Layers, Zoom, SizeSliders };
+    bool toolbarShown(Toolbar bar) const;
+    void setToolbarShown(Toolbar bar, bool shown);
+    bool toolbarsHiddenByTab() const { return m_toolbarsTabHidden; }
+    void setToolbarsHiddenByTab(bool hidden);
+    QWidget *toolbarWindowForTest(Toolbar bar) const { return toolbarWindow(bar); }
+    static QString toolbarKey(Toolbar bar);    // the ticks' settings
+    static const QString kCameraMoveArrowsKey; // View > Camera Move Arrows' setting
+
+    // THE TOOL KEYS (batch C, the user's choice): B Brush, E Eraser, G Fill, V Move, L the
+    // freehand selection, M the rectangle selection while the film is paused (M marks a
+    // camera key while it plays, as before). As a press on the tool's button, less what
+    // the press also opens (the Brush and Eraser buttons open the Library). I waits for
+    // the eyedropper (batch D).
+    void toolKey(DrawingCanvas::Tool tool);
+    // [ AND ] (batch C): the active Brush's or Eraser's size one step down or up, as
+    // Photoshop steps it - 1 px under 10, 10 under 100, 25 under 200, 50 under 300, 100
+    // under 1000, then 250 - through the size slider's own path (the pill shows it, the
+    // size is remembered). False when nothing changed (another tool, at a limit).
+    bool stepToolSize(int direction);
+    static int bracketSizeStep(int size, int direction);
     // ...and where the pointer is comes from every pen and mouse move and press as
     // well as the canvas's Enter / Leave (CanvasKeyRouter again; never takes the event).
     void notePointerAt(QObject *receiver, QPointerEvent *event);
@@ -464,6 +494,9 @@ signals:
 
 protected:
     bool eventFilter(QObject *object, QEvent *event) override;
+    // The View entries that act on the canvas are on only while the page shows (batch C).
+    void showEvent(QShowEvent *event) override;
+    void hideEvent(QHideEvent *event) override;
 
 private:
     QWidget *createLeftColumn();
@@ -735,6 +768,19 @@ private:
     QPushButton *m_brushToolButton = nullptr; // Library anchor + open toggle
     QPushButton *m_eraserToolButton = nullptr; // eraser-scope anchor
     QAction *m_brushLibViewAction = nullptr; // View menu toggle
+    // Batch C: the toolbars' View entries and Tab's state; the View entries that act on
+    // the canvas (on only while this page shows, so their keys stay free elsewhere -
+    // the Script Editor's text); the selection-mode picker and the size step, made
+    // where their buttons and slider are.
+    QWidget *toolbarWindow(Toolbar bar) const;
+    void applyToolbarVisibility();
+    bool m_toolbarsTabHidden = false;
+    QAction *m_toolbarActs[4] = {};
+    QAction *m_hideAllToolbarsAct = nullptr;
+    QAction *m_cameraArrowsAct = nullptr;
+    QList<QAction *> m_canvasViewActs;
+    std::function<void(DrawingCanvas::Tool)> m_pickSelectionMode;
+    std::function<bool(int)> m_stepToolSize;
     bool brushStudioUnderCursor() const; // Ctrl+Z routing (studio-local undo)
     void undoDocument(); // Edit > Undo AND the toolbar's Undo button
     void redoDocument();

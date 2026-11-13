@@ -74,5 +74,8 @@
         <file>icons/fig_shotinfo.svg</file>
         <file>icons/fig_setting.svg</file>
         <file>icons/fig_fitscreen.svg</file>
+        <!-- The rotation indicator's arcs while R is held (batch C; the user's design,
+             Figma 576:731, exported as is). -->
+        <file>icons/view/rotation_arcs.svg</file>
     </qresource>
 </RCC>

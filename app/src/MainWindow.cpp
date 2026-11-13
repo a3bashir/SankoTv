@@ -30,6 +30,7 @@ this fence."
 #endif
 
 #include "SankoNoteStyle.h"
+#include "SankoTip.h"
 #include "AnimaticPage.h"
 #include "AnimaticTimeline.h"
 #include "ConsistencyBoard.h"
@@ -138,7 +139,10 @@ MainWindow::MainWindow(QWidget *parent)
     // group at the edge.
     setMinimumHeight(720);
 
-    // Every note and hover tooltip in the dark Sanko style (Phase 1B).
+    // Every note and hover tooltip drawn as the Brush bar's tip (batch C; SankoTip.h),
+    // installed before any child exists. Qt's own label, which it mirrors unseen, keeps
+    // the note style (Phase 1B) that sizes and places it.
+    installSankoTips();
     applySankoNoteStyle();
 
     setupMenuBar();
@@ -567,6 +571,9 @@ void MainWindow::setupMenuBar()
     connect(openAct, &QAction::triggered, this, &MainWindow::onOpenProject);
 
     m_recentMenu = fileMenu->addMenu(QStringLiteral("Open Recent"));
+    // Each entry's tooltip is its project's path: set since the menu was made, shown
+    // since batch C (a QMenu shows only tooltips set on purpose, never an entry's text).
+    m_recentMenu->setToolTipsVisible(true);
     // Rebuilt each time it opens: the list changes as projects are opened
     // and saved, including from the New Project window.
     connect(m_recentMenu, &QMenu::aboutToShow, this,
@@ -618,6 +625,7 @@ void MainWindow::setupMenuBar()
     // Enabled once the project has a panel (updateExportActions).
     fileMenu->addSeparator();
     m_exportMenu = fileMenu->addMenu(QStringLiteral("Export"));
+    m_exportMenu->setToolTipsVisible(true); // Stills Show Full Artwork's, below (batch C)
     m_exportMp4Act = m_exportMenu->addAction(QStringLiteral("MP4 Video..."));
     connect(m_exportMp4Act, &QAction::triggered, this, &MainWindow::onExportMp4);
     m_exportPngAct = m_exportMenu->addAction(QStringLiteral("PNG Images..."));

@@ -101,6 +101,12 @@ public:
     // showing. This is what suppression captures and restores: reading
     // isVisible() instead would mis-capture during a minimize or page switch.
     bool visibleIntent() const { return m_wantVisible; }
+    // THE USER showing or hiding the bar (View > Toolbars, Tab; batch C). While a holder
+    // suppresses the bars over this anchor (the Brush Settings studio, a modal dialog),
+    // the choice goes into the OUTERMOST capture - what is restored when the last
+    // holder lets go - so the bar neither shows over the holder nor has the restore undo
+    // the choice. Otherwise it is setVisible.
+    void setUserVisible(bool visible);
 
     // --- Modal-surface suppression (the Brush Settings studio) ------------
     // Hide every registered floating window over `anchor` except the ones in

@@ -261,6 +261,19 @@ void FloatingToolWindow::restoreFloatingBars(QWidget *anchor)
     g_suppressionWalking = false;
 }
 
+void FloatingToolWindow::setUserVisible(bool visible)
+{
+    auto it = suppressedBars().find(m_anchor);
+    if (it != suppressedBars().end() && !it->isEmpty()) {
+        for (SuppressedBar &bar : it->first()) // the outermost holder's: the true intents
+            if (bar.window == this) {
+                bar.intent = visible;
+                return;
+            }
+    }
+    setVisible(visible);
+}
+
 void FloatingToolWindow::applyEffectiveVisibility()
 {
     QWidget *win = m_anchor ? m_anchor->window() : nullptr;

@@ -151,6 +151,9 @@ qt_add_executable(SankoTV
     src/ProjectRecovery.h
     src/SankoScrollBarStyle.h
     src/SankoNoteStyle.h
+    # One tooltip look everywhere, the Brush bar's (batch C, 2026-11-13).
+    src/SankoTip.cpp
+    src/SankoTip.h
     src/SankoTheme.h
     # SankoDockOverlay.cpp/.h stay on disk but are ADS-specific and left out
     # of the build since the native docking migration (src/docking/).
@@ -378,6 +381,9 @@ qt_add_executable(SankoCanvasSizeLock
     src/ProjectSettingsDialog.h
     src/AnimaticTimeline.cpp
     src/AnimaticTimeline.h
+    # The timeline's hovers end through the one tooltip style's grace (batch C).
+    src/SankoTip.cpp
+    src/SankoTip.h
     src/AnimaticPage.cpp
     src/AnimaticPage.h
     src/brushlib/StudioControls.cpp

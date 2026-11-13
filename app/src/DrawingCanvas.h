@@ -517,6 +517,36 @@ public slots:
     void dropSpaceHold();
     bool spaceHeld() const { return m_spaceHeld; }
     bool spaceHeldForTest() const { return m_spaceHeld; }
+    // R HELD (batch C, Photoshop's rotate-view key): a left drag turns the view around the
+    // drawing's centre, the angle under the pointer kept; let go of R and the tool is
+    // back. Routed like Space (the page hands it over while the pointer is over the
+    // canvas), and dropped the same way when the window loses activation.
+    bool rotateHeld() const { return m_rotateHeld; }
+    void dropRotateHold();
+    bool rotatingForTest() const { return m_rotating; }
+    // THE ROTATION INDICATOR while R is held (the user's design, Figma 576:731): its arcs
+    // turn with the canvas at 80 %, the angle in the middle stays upright at 100 %, half the
+    // design's size, on the point the view turns about. For the gate: shown, where, its
+    // text, its scale, and the indicator alone at an angle (arcs, number or both) on a
+    // transparent 300 x 300 square with its centre in the middle.
+    bool rotationIndicatorShownForTest() const { return m_rotateHeld || m_rotating; }
+    QPointF rotationIndicatorCentreForTest() const { return rotationIndicatorCentre(); }
+    static QString rotationIndicatorText(double degrees);
+    static double rotationIndicatorScaleForTest();
+    // shadow: 1 as shown (with the soft shadow), 0 without it, 2 the shadow alone.
+    QImage rotationIndicatorImageForTest(double degrees, bool arcs, bool number,
+                                         const QString &text = QString(), int shadow = 1) const;
+    // THE KEYS' ZOOM (batch C): Ctrl+= / Ctrl+- multiply the zoom (1.25) about the view's
+    // centre; Ctrl+1 shows one drawing pixel per screen pixel (within the zoom's 0.25 to
+    // 4 times the fit).
+    void zoomStepBy(double factor);
+    void zoomToActualPixels();
+    double actualPixelsZoom() const;
+    // View > Camera Move Arrows (batch C, the user's choice: off by default): the glyphs
+    // for the move at the playhead on the camera frame. A hovered Quick Move's, on its
+    // end, shows whatever this says.
+    void setCameraMoveArrowsShown(bool shown);
+    bool cameraMoveArrowsShown() const { return m_moveArrowsShown; }
     bool penSideButtonHeldForTest() const { return m_penSideButtonHeld; }
     // Batch B1: the active layer's art, kept art included, in canvas px.
     QRect layerArtBoundsForTest(const Layer &layer) const { return layerArtBounds(layer); }
@@ -608,6 +638,7 @@ signals:
     // the cursor — the Layers panel selects/highlights that row.
     void layerPickRequested(const QString &layerId);
     void viewZoomChanged(double zoom); // wheel/pan zoom -> sync the zoom slider
+    void viewRotationChanged(double degrees); // R-drag, Shift+R (batch C) -> the zoom bar's dial
     // Committing a Warp resets the box to the default move/scale/rotate mode;
     // the Move Modifier toolbar listens and unchecks its mode buttons.
     void xformUiModeReset();
@@ -1107,6 +1138,18 @@ private:
     bool m_panning = false;      // mid-drag (space+left or middle button)
     QPoint m_panStartScreen;
     QPointF m_panStartOffset;
+    bool m_rotateHeld = false;   // R down: a drag turns the view (batch C)
+    bool m_rotating = false;     // mid-drag with R
+    double m_viewRotStartAngle = 0.0; // the press's angle around the drawing's centre
+    double m_viewRotStartView = 0.0;  // the view's rotation at the press
+    double viewAngleAt(const QPointF &widgetPos) const;
+    QPointF rotationIndicatorCentre() const;
+    void paintRotationIndicator(QPainter &p, const QPointF &centre, double degrees, bool arcs,
+                                bool number, const QString &text, int shadow) const;
+    void paintRotationShapes(QPainter &p, const QPointF &centre, double degrees, bool arcs,
+                             bool number, const QString &text) const;
+    mutable class QSvgRenderer *m_rotationArcs = nullptr; // made on first use
+    bool m_moveArrowsShown = false; // View > Camera Move Arrows, off by default
 
     // Canvas VIEW transforms (display only — the layer pixels, flattenedPixmap,
     // save, and export are never rotated/flipped/zoomed). Applied as one

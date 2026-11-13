@@ -362,6 +362,9 @@ public:
         onDurationChanged(sceneIndex, panelIndex, frames);
     }
     AnimaticTimeline *timelineForTest() const { return m_timeline; }
+    // The timeline itself: the View menu's zoom keys act on it while the pointer is over
+    // it (batch C).
+    AnimaticTimeline *timeline() const { return m_timeline; }
     int selectedPanelForTest() const { return m_selected; }
     int itemCountForTest() const { return int(m_items.size()); }
     void advanceForTest() { advance(); }

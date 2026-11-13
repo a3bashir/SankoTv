@@ -36,6 +36,7 @@
 #include <QMouseEvent>
 #include <QPolygonF>
 #include <QPainter>
+#include <QSvgRenderer> // the rotation indicator's arcs (batch C)
 #include <QPaintEvent>
 #include <QPushButton>
 #include <QRegion>
@@ -1127,7 +1128,8 @@ QVariantMap DrawingCanvas::shotCameraGuidesForTest() const
     const shotcam::Motion m = shotCameraGlyphMotion(v, &onEnd);
     const QPointF d = m.pan.isNull() ? QPointF() : motionWidgetDir(m.pan);
     QVariantMap out;
-    out.insert(QStringLiteral("drawn"), m.any());
+    out.insert(QStringLiteral("drawn"), m.any() && (m_moveArrowsShown || onEnd)); // as the paint decides
+    out.insert(QStringLiteral("motion"), m.any()); // what the segment does, shown or not
     out.insert(QStringLiteral("zoom"), m.zoom);
     out.insert(QStringLiteral("rotate"), m.rotate);
     out.insert(QStringLiteral("panX"), d.x());
@@ -1146,7 +1148,7 @@ QPainterPath DrawingCanvas::shotCameraGlyphPathForTest(double *penWidth) const
     const ShotCameraView v = shotCameraView();
     bool onEnd = false;
     const shotcam::Motion m = shotCameraGlyphMotion(v, &onEnd);
-    if (!m.any())
+    if (!m.any() || !(m_moveArrowsShown || onEnd))
         return QPainterPath();
     const QPolygonF quad = onEnd ? shotCameraWidgetQuad(v.previewEnd)
                                  : shotCameraWidgetQuad(shotCameraShownState(v));
@@ -1200,7 +1202,7 @@ int DrawingCanvas::shotCameraHitTest(const QPointF &p) const
 
 void DrawingCanvas::shotCameraUpdateCursor(int hit)
 {
-    if (m_panning || m_spaceHeld)
+    if (m_panning || m_spaceHeld || m_rotateHeld || m_rotating)
         return;
     if (hit < 0) {
         setCursor(defaultCursorShape());
@@ -1505,9 +1507,11 @@ void DrawingCanvas::paintShotCamera(QPainter &painter)
     // playhead does, on the frame - or, while a Quick Move is hovered, what
     // it would do, on its END.
     {
+        // View > Camera Move Arrows (batch C, the user's choice): off by default. A hovered
+        // Quick Move's, on its END, shows a move not yet made and stays.
         bool onEnd = false;
         const shotcam::Motion motion = shotCameraGlyphMotion(v, &onEnd);
-        if (!m_glyphsHiddenForTest)
+        if (!m_glyphsHiddenForTest && (m_moveArrowsShown || onEnd))
             paintMotionGlyphs(painter, onEnd ? shotCameraWidgetQuad(v.previewEnd) : quad, motion,
                               tool || onEnd);
     }
@@ -2514,6 +2518,7 @@ void DrawingCanvas::resetViewRotation()
         m_rotateSlider->setValue(0);
     }
     update();
+    emit viewRotationChanged(0.0); // the zoom bar's dial too (batch C: Shift+R)
 }
 
 namespace {
@@ -7839,6 +7844,181 @@ void DrawingCanvas::paintEvent(QPaintEvent *event)
         painter.drawPath(ants);
         painter.restore();
     }
+
+    // THE ROTATION INDICATOR while R is held (batch C; the user's design, Figma 576:731),
+    // over everything.
+    if (m_rotateHeld || m_rotating)
+        paintRotationIndicator(painter, rotationIndicatorCentre(), m_viewRotation, true, true, QString(), 1);
+}
+
+// --- The rotation indicator (batch C) ---------------------------------------------------
+// The user's design "Arcs and Percentage Rotation Tile 2" (Figma 576:731): its four arcs are
+// its own vectors, exported as they are to icons/view/rotation_arcs.svg; the numbers below
+// are the design's, in its 388 x 395 units - the arcs' centre (the middle of their bounds)
+// and the angle's text box (Arial Bold 64, #f7f7ff, centred). On screen at half that: the
+// user's screenshot (reference/rotation-indicator-size.png) measures the top arc 151 px for
+// the design's 301.5 and the bottom 127 for 254.1, so 194 x 198 px, the arcs about 181 px
+// across. The arcs turn with the canvas at 80 % opacity; the number never turns, at 100 %.
+namespace {
+constexpr double kRotTileW = 388.0, kRotTileH = 395.0;
+constexpr double kRotScale = 0.5;
+constexpr double kRotArcsCx = 194.09, kRotArcsCy = 196.67;
+constexpr double kRotTextX = 152.5625, kRotTextY = 163.2224, kRotTextW = 99.0, kRotTextH = 65.0;
+constexpr int kRotTextPx = 64;
+constexpr double kRotArcsOpacity = 0.8, kRotTextOpacity = 1.0;
+} // namespace
+
+QString DrawingCanvas::rotationIndicatorText(double degrees)
+{
+    return QString::number(qRound(degrees)) + QChar(0x00B0);
+}
+
+// Where it sits: on the point the view turns about (the drawing's centre on screen), kept
+// whole inside the canvas when that point is near or past an edge.
+QPointF DrawingCanvas::rotationIndicatorCentre() const
+{
+    const QPointF pivot = QRectF(displayRect()).center();
+    const double hw = kRotTileW * kRotScale / 2.0, hh = kRotTileH * kRotScale / 2.0;
+    return QPointF(qBound(hw, pivot.x(), qMax(hw, width() - hw)),
+                   qBound(hh, pivot.y(), qMax(hh, height() - hh)));
+}
+
+// THE SOFT SHADOW (the user's fix after the hand test, 2026-11-13; Figma 581:696): black at
+// 50 %, a 4 px blur on screen, under the arcs and the number - nothing else changes. The
+// white number and the lavender arcs failed on white paper (1.07 : 1 and 1.35 : 1). Figma's
+// blur is a CSS-style radius, twice the Gaussian's sigma: sigma 2 px. The shadow is the
+// shapes' own coverage blurred, so under the arcs (drawn at 80 %) it is 80 % of 50 %, as
+// in Figma, where the arcs' opacity holds their shadow too.
+namespace {
+constexpr double kRotShadowAlpha = 0.5;
+constexpr double kRotShadowSigma = 2.0; // screen px
+
+QImage rotationSoftShadow(const QImage &layer, qreal dpr)
+{
+    const int w = layer.width(), h = layer.height();
+    const double sigma = kRotShadowSigma * dpr;
+    const int r = int(std::ceil(3.0 * sigma));
+    QVector<double> k(2 * r + 1);
+    double sum = 0.0;
+    for (int i = -r; i <= r; ++i)
+        sum += (k[i + r] = std::exp(-(i * i) / (2.0 * sigma * sigma)));
+    for (double &v : k)
+        v /= sum;
+    QVector<float> a(w * h), t(w * h);
+    for (int y = 0; y < h; ++y) {
+        const QRgb *line = reinterpret_cast<const QRgb *>(layer.constScanLine(y));
+        for (int x = 0; x < w; ++x)
+            a[y * w + x] = qAlpha(line[x]) / 255.0f;
+    }
+    for (int y = 0; y < h; ++y)
+        for (int x = 0; x < w; ++x) {
+            double s = 0.0;
+            for (int i = -r; i <= r; ++i)
+                s += k[i + r] * a[y * w + qBound(0, x + i, w - 1)];
+            t[y * w + x] = float(s);
+        }
+    QImage out(w, h, QImage::Format_ARGB32_Premultiplied);
+    out.setDevicePixelRatio(dpr);
+    for (int y = 0; y < h; ++y) {
+        QRgb *line = reinterpret_cast<QRgb *>(out.scanLine(y));
+        for (int x = 0; x < w; ++x) {
+            double s = 0.0;
+            for (int i = -r; i <= r; ++i)
+                s += k[i + r] * t[qBound(0, y + i, h - 1) * w + x];
+            line[x] = qRgba(0, 0, 0, qBound(0, qRound(s * kRotShadowAlpha * 255.0), 255)); // black: premultiplied as is
+        }
+    }
+    return out;
+}
+} // namespace
+
+// The indicator: its shapes drawn on a layer of their own, the soft shadow of that layer
+// under it. `shadow`: 1 the indicator as shown, 0 without its shadow, 2 the shadow alone
+// (the last two for the gate).
+void DrawingCanvas::paintRotationIndicator(QPainter &p, const QPointF &centre, double degrees, bool arcs,
+                                           bool number, const QString &text, int shadow) const
+{
+    const qreal dpr = (p.device() && p.device()->devicePixelRatioF() > 0) ? p.device()->devicePixelRatioF() : 1.0;
+    constexpr int kSide = 300; // logical px: the tile turned any way, with its blur
+    QPointF topLeft = centre - QPointF(kSide / 2.0, kSide / 2.0);
+    topLeft = QPointF(std::round(topLeft.x() * dpr) / dpr, std::round(topLeft.y() * dpr) / dpr); // whole pixels
+    QImage layer(QSize(qRound(kSide * dpr), qRound(kSide * dpr)), QImage::Format_ARGB32_Premultiplied);
+    layer.setDevicePixelRatio(dpr);
+    layer.fill(Qt::transparent);
+    {
+        QPainter lp(&layer);
+        paintRotationShapes(lp, centre - topLeft, degrees, arcs, number, text);
+    }
+    p.save();
+    // In widget space, unclipped, whatever the canvas's paint before it left set.
+    p.resetTransform();
+    p.setClipping(false);
+    p.setOpacity(1.0);
+    if (shadow != 0)
+        p.drawImage(topLeft, rotationSoftShadow(layer, dpr));
+    if (shadow != 2)
+        p.drawImage(topLeft, layer);
+    p.restore();
+}
+
+// The arcs and the number themselves, centred at `centre` in the painter's space.
+void DrawingCanvas::paintRotationShapes(QPainter &p, const QPointF &centre, double degrees, bool arcs,
+                                        bool number, const QString &text) const
+{
+    if (!m_rotationArcs)
+        m_rotationArcs = new QSvgRenderer(QStringLiteral(":/icons/view/rotation_arcs.svg"),
+                                          const_cast<DrawingCanvas *>(this));
+    p.save();
+    p.setRenderHint(QPainter::Antialiasing, true);
+    p.setRenderHint(QPainter::TextAntialiasing, true);
+    p.setRenderHint(QPainter::SmoothPixmapTransform, true);
+    if (arcs && m_rotationArcs->isValid()) {
+        p.save();
+        p.setOpacity(kRotArcsOpacity);
+        p.translate(centre);
+        p.rotate(degrees); // the arcs turn with the canvas (as viewTransform turns it)
+        p.scale(kRotScale, kRotScale);
+        p.translate(-kRotArcsCx, -kRotArcsCy);
+        m_rotationArcs->render(&p, QRectF(0, 0, kRotTileW, kRotTileH));
+        p.restore();
+    }
+    if (number) {
+        p.save();
+        p.setOpacity(kRotTextOpacity);
+        p.translate(centre); // never turned: the number stays upright
+        p.scale(kRotScale, kRotScale);
+        p.translate(-kRotArcsCx, -kRotArcsCy);
+        QFont font(QStringLiteral("Arial"));
+        font.setBold(true);
+        font.setPixelSize(kRotTextPx);
+        p.setFont(font);
+        p.setPen(QColor(0xf7, 0xf7, 0xff));
+        // The design's box, widened evenly about its centre for a longer number ("-135°").
+        const QRectF box(kRotTextX - 80.0, kRotTextY, kRotTextW + 160.0, kRotTextH);
+        p.drawText(box, Qt::AlignCenter, text.isNull() ? rotationIndicatorText(degrees) : text);
+        p.restore();
+    }
+    p.restore();
+}
+
+// The indicator alone at an angle, on a transparent square with its centre in the middle:
+// the arcs, the number, or both - what the gate reads (upright, turning, opacities, size,
+// the shadow). `text` (when given) is shown in place of the angle's own, so the gate can
+// draw "45°" at 0 degrees and at 45 and compare; `shadow` as paintRotationIndicator's.
+QImage DrawingCanvas::rotationIndicatorImageForTest(double degrees, bool arcs, bool number,
+                                                    const QString &text, int shadow) const
+{
+    QImage img(300, 300, QImage::Format_ARGB32_Premultiplied);
+    img.fill(Qt::transparent);
+    QPainter p(&img);
+    paintRotationIndicator(p, QPointF(150, 150), degrees, arcs, number, text, shadow);
+    p.end();
+    return img;
+}
+
+double DrawingCanvas::rotationIndicatorScaleForTest()
+{
+    return kRotScale;
 }
 
 void DrawingCanvas::wheelEvent(QWheelEvent *event)
@@ -7956,6 +8136,21 @@ void DrawingCanvas::keyPressEvent(QKeyEvent *event)
             setCursor(Qt::OpenHandCursor);
         return;
     }
+    // R HELD TURNS THE VIEW (batch C, Photoshop's rotate-view key held): while R is down a
+    // drag turns the view around the drawing's centre; let go of R and the tool is back.
+    if (event->key() == Qt::Key_R
+        && !(event->modifiers() & (Qt::ShiftModifier | Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier))) {
+        if (!event->isAutoRepeat()) {
+            m_rotateHeld = true;
+            // The rotation indicator says what R does (paintRotationIndicator, the user's
+            // design); the pointer is a plain arrow meanwhile (the corner-arrow cursor it
+            // replaces was the transform box's).
+            if (!m_panning && !m_rotating)
+                setCursor(Qt::ArrowCursor);
+            update();
+        }
+        return;
+    }
     QWidget::keyPressEvent(event);
 }
 
@@ -7967,7 +8162,60 @@ void DrawingCanvas::keyReleaseEvent(QKeyEvent *event)
             setCursor(defaultCursorShape());
         return;
     }
+    if (event->key() == Qt::Key_R && !event->isAutoRepeat() && m_rotateHeld) {
+        dropRotateHold();
+        return;
+    }
     QWidget::keyReleaseEvent(event);
+}
+
+void DrawingCanvas::dropRotateHold()
+{
+    if (!m_rotateHeld)
+        return;
+    m_rotateHeld = false;
+    if (!m_panning && !m_rotating)
+        setCursor(defaultCursorShape());
+    update(); // the indicator goes
+}
+
+// The angle of a widget point around the drawing's centre on screen - the point the view
+// turns about (viewTransform) - in degrees, clockwise on screen.
+double DrawingCanvas::viewAngleAt(const QPointF &widgetPos) const
+{
+    const QPointF c = QRectF(displayRect()).center();
+    return qRadiansToDegrees(std::atan2(widgetPos.y() - c.y(), widgetPos.x() - c.x()));
+}
+
+void DrawingCanvas::zoomStepBy(double factor)
+{
+    setViewZoom(m_zoom * factor);
+}
+
+// One drawing pixel to one screen pixel (Photoshop's 100 %): m_zoom is relative to the
+// fit, so the zoom that cancels it. Bounded by the view's own limits (0.25 to 4 times the
+// fit) - a small drawing in a big view cannot be shown that large.
+double DrawingCanvas::actualPixelsZoom() const
+{
+    const QSize cs = canvasSize();
+    if (cs.isEmpty() || width() <= 0 || height() <= 0)
+        return m_zoom;
+    const double fit = qMin(width() / double(cs.width()), height() / double(cs.height()));
+    const double dpr = devicePixelRatioF() > 0.0 ? devicePixelRatioF() : 1.0;
+    return qBound(0.25, 1.0 / (fit * dpr), 4.0);
+}
+
+void DrawingCanvas::zoomToActualPixels()
+{
+    setViewZoom(actualPixelsZoom());
+}
+
+void DrawingCanvas::setCameraMoveArrowsShown(bool shown)
+{
+    if (m_moveArrowsShown == shown)
+        return;
+    m_moveArrowsShown = shown;
+    update();
 }
 
 // A key the page hands over because the pointer is over the canvas (see the header).
@@ -7978,6 +8226,8 @@ bool DrawingCanvas::routedKey(QKeyEvent *event)
 {
     if (event->key() == Qt::Key_Space && event->isAutoRepeat())
         return m_spaceHeld;
+    if (event->key() == Qt::Key_R && event->isAutoRepeat())
+        return m_rotateHeld;
     event->accept();
     if (event->type() == QEvent::KeyRelease)
         keyReleaseEvent(event);
@@ -8071,6 +8321,14 @@ void DrawingCanvas::mousePressEvent(QMouseEvent *event)
         m_panStartScreen = event->pos();
         m_panStartOffset = m_panOffset;
         setCursor(Qt::ClosedHandCursor);
+        return;
+    }
+    // Turn: R held + left drag (batch C). The angle the press makes with the drawing's
+    // centre is held under the pointer as it goes round.
+    if (m_rotateHeld && event->button() == Qt::LeftButton) {
+        m_rotating = true;
+        m_viewRotStartAngle = viewAngleAt(event->position());
+        m_viewRotStartView = m_viewRotation;
         return;
     }
 
@@ -8369,6 +8627,12 @@ void DrawingCanvas::mouseMoveEvent(QMouseEvent *event)
         update();
         return;
     }
+    if (m_rotating) {
+        const double turned = m_viewRotStartView + viewAngleAt(event->position()) - m_viewRotStartAngle;
+        setViewRotation(std::remainder(turned, 360.0)); // -180 .. 180, as the zoom bar's dial
+        emit viewRotationChanged(m_viewRotation);
+        return;
+    }
     if (m_tool == Camera) {
         if (m_stageMode)
             stageMove(event->position(), event->buttons(), event->modifiers());
@@ -8488,6 +8752,15 @@ void DrawingCanvas::mouseReleaseEvent(QMouseEvent *event)
         && (event->button() == Qt::MiddleButton || event->button() == Qt::LeftButton)) {
         m_panning = false;
         setCursor(m_spaceHeld ? Qt::OpenHandCursor : defaultCursorShape());
+        return;
+    }
+    if (m_rotating && event->button() == Qt::LeftButton) {
+        m_rotating = false;
+        if (m_rotateHeld)
+            setCursor(Qt::ArrowCursor);
+        else
+            setCursor(defaultCursorShape());
+        update(); // R let go during the drag: the indicator goes with it
         return;
     }
     if (m_tool == Camera && event->button() == Qt::LeftButton) {
@@ -8793,8 +9066,8 @@ void DrawingCanvas::tabletEvent(QTabletEvent *event)
     // painted where a pan was meant. The press, the moves and the release are left to
     // Qt's mouse synthesis, so there is one pan path (mousePressEvent) and the tool
     // never sees them. A stroke already under way keeps the pen.
-    if (!midCanvasInteraction && (m_spaceHeld || m_panning)) {
-        event->ignore();
+    if (!midCanvasInteraction && (m_spaceHeld || m_panning || m_rotateHeld || m_rotating)) {
+        event->ignore(); // R held turns the view with the pen too (batch C), the same way
         return;
     }
 

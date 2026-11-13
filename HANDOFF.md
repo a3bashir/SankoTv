@@ -1,5 +1,226 @@
 # SankoTV — Session Handoff Brief
 
+## STATUS 2026-11-13 (night): THE ROTATION RE-TEST PASSED; (pz5) AND BATCH C COMMITTED SEPARATELY; BATCH D NEXT - FIGMA FIRST, THEN THE USER'S APPROVAL BEFORE ANY BUILDING
+THE ROTATION RE-TEST (Dev Recorder 20261113-161043, 386 s, the 14:12:08 build, git 8d708a982+dirty; the title bar
+"SANKO TV — TEST COPY - small pirate, rotation"; ended by the window's X). Steps of
+handtest_C_rotation_indicator_retest.md:
+1 PASS: the tile in the middle over white paper (the pirate panel at 31-36 s, "The End" at 147-199 s), the number with
+its soft edge, readable even in the 960 px screenshots. (The pointer's arrow is not in screenshots: (ri1).)
+2 PASS: turns of -23, 16 to 93, 173, -89, -81 and 74 degrees - the arcs turned (upside down at 173), the number upright
+showing the angle, the zoom bar's Rotate field following (42, 28); Shift+R reset nine times.
+3 PASS on grey ARTWORK rather than a painted patch: the temple panel's mid-grey at 54 s ("16°") and 330 s ("74°"), both
+clear. (The colour stayed #000000 all session: no grey was painted.)
+4 PASS as far as the recording shows: over the black lettering of "The End" and the temple's darker grey the number and
+the arcs read; a full black patch over the middle is not in the recording (one Undo at 72 s).
+5 PASS: closed with the window's X; the copy not saved (its file still 14:10:43).
+The user: "all steps looked right". COMMITS, separate by concern:
+(1) 8c6dd0df2 "Make check (pz5) independent of the foreground" - ONLY its hunk of ProjectLifecycleTest.cpp: taken from
+the file's own diff (one hunk, in runCameraToolPass) and staged with git apply --cached, the working file untouched;
+gate-proven first in the scratch worktree C:\SankoTV_pz5 (HEAD + that hunk, kill-less script): every family green in
+both builds, Lifecycle 1446 (1445 + its new control); the staged blob equal to the gated file (CR-stripped,
+37e69833f919e09c; sha_pz5_gate.txt).
+(2) Batch C with the rotation indicator and this HANDOFF: the commit carrying this note - the 17 files of
+sha_C3_gate.txt (gate C3) and HANDOFF.md. Not staged: CanvasEdgeLockTest.cpp, QuickShapeGeometryLockTest.cpp.
+
+## STATUS 2026-11-13 (evening): THE ROTATION INDICATOR'S SOFT SHADOW (APPROVED) BUILT; WAITING FOR THE USER'S ROTATION RE-TEST; NOTHING COMMITTED
+The user approved the soft shadow as shown in Figma 581:696 ("black 50 %, 4 px blur on screen, under the arcs and the
+number; nothing else changes"). DrawingCanvas::paintRotationIndicator now draws the arcs and the number
+(paintRotationShapes, unchanged) on a layer of their own - 300 x 300 logical px, at whole device pixels so nothing is
+resampled - and under it rotationSoftShadow: the layer's cover blurred by a Gaussian of sigma 2 px on screen (Figma's
+"blur 4" is a CSS-style radius, twice the sigma), black at half of it, so under the arcs (drawn at 80 %) it is 80 % of
+50 %, as Figma treats the arcs' opacity. Test hook: rotationIndicatorImageForTest(..., shadow) - 1 as shown, 0 without
+the shadow, 2 the shadow alone.
+CHECKS: NEW (ri6) the shadow is black and pixel for pixel (within 2 of 255; measured 0) the shapes' cover blurred at
+sigma 2 at 50 %, computed in the test on its own + controls (sigma 1 and 4 are 47 and 37 off; every fully covered pixel
+the same with the shadow as without: it is under them); NEW (ri7) on white paper a dark edge round the number (darkest
+luminance 0.497) and the arcs (0.597) + control (without the shadow 1.000). CHANGED (all three written today, before
+any commit): (ri3) OLD the arcs drawn as shown, the unturned control "over 30 % apart". NEW the arcs without their shadow
+(it turns with them; (ri6) checks it), the control "over 20 % apart" - with the shadow's shared ink the 90-degree case
+read 0.299 against the old 0.301 (a turned copy is 0.000). (ri4) OLD the arcs' alpha 204 and the number's 255 as shown.
+NEW without the shadow (under the arcs it raises their pixels' cover). (ri5) OLD the arcs' ink box as shown. NEW
+without the shadow (it widens the ink by its blur). FIRST-RUN CORRECTION: (ri6) was first written as guesses ("3 to 8 px
+past the shapes", "100+ under the number's strokes"); sigma 2 fades below 8/255 2 px past an edge and the number's 5 px
+strokes peak at 93 - replaced by the computed Gaussian. RED RUN S: the shadow not drawn -> (ri6), (ri7) failed; restored,
+no markers left. QUICK CHECK: keysview 63/63; every Release target built.
+GATE C3 (the main tree, 2650 s; logs fullgate_C3*): Release every family green - Lifecycle 1495 (C2's 1482 + the 13
+(ri) checks, no name dropped), Camera 335, Brush Library 187, Size Lock 170, Edge Lock 74, Dev Recorder 46, Quick Shape
+19, Pixel Lock 13, Brush Lock 3; Debug every family green but Lifecycle: 7 failures, all from ONE window state - (aw)
+THE FLOOR + its control + BEFORE SELLING 13, (ax) THE VOLUME POPUP, (rp) three timeline-row pins: the window did not
+shrink to the header's floor (the section stayed 1583 px; Release 1048). NOT a check change: the Debug family run again
+alone (fullgate_C3_rerun) passed those seven and failed four OTHER window-state checks - (q) opening the studio
+suppresses the bars, ...the bars are STILL suppressed, pin setup, ...anchor return re-suppresses: every (q) check that
+needs the studio ON screen (hostAllows: the window shown, not minimized) failed, every one that needs it hidden passed.
+Run a third time with a read-only watcher (scratchpad watch_windows.ps1: each test window's IsIconic and the foreground
+process every 0.5 s; fullgate_C3_rerun2): 1495/1495, no window minimized, the foreground switching between the tests
+and Edge (msedge) 243 times - the PC in use during the gate. All eleven failures are window-state checks, a different
+set each run, each passing at every earlier gate and in this build's Release run and third Debug run. Read as the
+machine's state during those two runs (NOT proven: the watcher was not running then); recorded, not explained away.
+HASHES: sha_C3_gate.txt (17 files) verified after the gate. RE-TEST EXE: app/build/Release/SankoTV.exe built Nov 13
+2026 14:12:08 (file 14:12:28), git 8d708a982+dirty, sha256 3baf728cd22dcab2...; copy "TEST COPY - small pirate,
+rotation" (C:\SankoTV-TestCopies, with its sound; the original's hash unchanged); list
+Documents\SankoTV-Design\handtest_C_rotation_indicator_retest.md.
+COMMIT PLAN after the re-test passes: (1) the (pz5) fix alone - HEAD + only its hunks of ProjectLifecycleTest.cpp,
+staged with git apply --cached from the file's own diff and gate-proven in a scratch worktree; (2) batch C with the
+indicator and this HANDOFF - the 17 files of sha_C3_gate.txt. Then batch D.
+
+## STATUS 2026-11-13 (late afternoon): BATCH C HAND TEST READ; THE ROTATION INDICATOR BUILT AS DESIGNED; ITS VISIBILITY FIX WAITS FOR THE USER'S OK; NOTHING COMMITTED
+THE C HAND TEST (Dev Recorder 20261113-115812, the 10:28:56 build, git 8d708a982+dirty, on "TEST COPY - small pirate, C";
+SankoTV still open and the session still recording at 13:39 - perf lines only after 2577 s). Steps the user did: 1, 3, 4,
+5, 6, 7, 9, 11.
+1 PASS for what was hovered: the Brush bar's tips (0.9, 4.4 s), the Move bar's Perspective, the size slider, the zoom
+field ("... 10 to 1600"), all in the one style (sankoTip frames over transparent QTipLabels in the log). Not hovered: a
+layer's eye, the Layers bar, the total time ((tt1)); the delay and fade are below the recording's 0.5 s ((tt3), (tt4)).
+3 PASS: E G V L M B, M while paused the rectangle selection (tool 4), B never opening the Library (it opened once, at
+6.8 s, from a CLICK on the Eraser button, as a click does). Not tested: M while playing ((pk6)), letters typed in a
+layer's name ((kc1) control).
+4 PASS: ] and [ stepping (engine sizes 294 -> 300 ... down to 1 and back up), the size pill shown.
+5 PASS: R + drag turned the view (134-139 s, 280-290 s), the dial followed (screenshot: Rotate -18), Shift+R reset (149,
+2556 s). Drawing after letting go of R is not in the log ((kc3) control). The user then asked for their own indicator
+(below).
+6 PASS on the canvas: Ctrl+- 0.85 -> 0.68, Ctrl+= x1.25, Ctrl+0 0.96 (158-169 s; 271-276 s, the pointer over the
+canvas). Not tested: Ctrl+1, and the keys over the timeline ((kc4)).
+7 PASS: Tab hid and showed the four bars eleven times (175-185 s, 261-264 s), the note shown. Not tested: View >
+Toolbars' ticks ((kc5)).
+9 PASS: + to 1131, 1600 (216 s), - back, the field typed 500 and 10; clips keep their pictures at 1600 %. The 2 px frame
+ticks are below the recording's 960 px screenshots ((tz2)).
+11 NOT YET: no quit in the session - SankoTV was still open with the copy at 13:39 (the copy unsaved: its file still
+10:25:51). Not done: 2, 8, 10.
+THE ROTATION INDICATOR (the user's instruction after the hand test): their Figma design "Arcs and Percentage Rotation Tile
+2" (node 576:731, a 388 x 395 frame: purple top arc #A44DFB with arrowheads, purple bottom arc #9746FA, lavender side
+arcs #D2D4EC, the angle "45°" Arial Bold 64 #F7F7FF) replaces the corner-arrow cursor while R is held. The arcs are its
+own vectors, exported as is (a temporary clone without the text; the node untouched) to app/icons/view/rotation_arcs.svg
+(new, LF; resources.qrc). DrawingCanvas::paintRotationIndicator: drawn last in paintEvent while R is held (or the drag
+lasts), on the point the view turns about (the drawing's centre on screen) kept whole inside the canvas; the arcs turned
+by the view's rotation about their centre (194.09, 196.67 in design units) at opacity 0.8; the number
+(rotationIndicatorText: the rounded angle and a degree sign) never turned, centred on the design's text box (152.56,
+163.22, 99 x 65 - widened evenly for longer numbers), at 1.0. SIZE: half the design's, measured on the user's
+screenshot reference/rotation-indicator-size.png (the top arc 151 px for 301.5, the bottom 127 for 254.1): 194 x 198 px
+on screen, the arcs 181 x 183. The pointer is a plain arrow while R is held.
+NEW CHECKS (in runKeysAndViewPass, slice keysview): (ri1) shown while R is held, on the pivot, the arrow, gone after +
+control (all the pixels R changes are inside its square: 10,003 in, 0 out); (ri2) the number pixel-identical to the same
+text drawn at 0, at 45 / 90 / -135 / 180 / -30 + control (the arcs differ at each); (ri3) the arcs at each angle are the
+0-degree arcs turned by it (0.000 of inked pixels apart) and point up at 0 + controls (unturned 30-35 % apart; the
+number has no purple); (ri4) arcs alpha 203 (80 %), number 255; (ri5) the scale 0.5 from the screenshot, the arcs 182 x
+184 px. FIRST-RUN CORRECTIONS (after reading the code): (ri1) grabbed the timeline's PREVIEW over the canvas ((tt7) had
+left the playhead on another panel; the saved grabs showed it) - the check leaves the preview first; (ri3) first read the
+purple's centroid, which the near-balanced top and bottom arcs let edge pixels swing 6-7 degrees - now compares with the
+0-degree arcs turned in a painter. QUICK CHECK: keysview 58/58.
+VISIBILITY (the user's condition): from the design's colours (WCAG ratio, the arcs at 80 % over the background): ON WHITE
+the number 1.07 : 1 and the side arcs 1.35 : 1 - it FAILS; the purple 3.1 / 3.4. On the canvas grey #cccccc: the number
+1.51, the side arcs 1.08, the purple 2.2 / 2.4. ON DARK #1e1e1e: the number 15.6, the side arcs 7.8, the purple 3.0 /
+2.8 (at the 3 : 1 floor). As the user asked, NOT changed: the smallest fix - a soft dark shadow (black 50 %, blur 8
+design units = 4 px on screen, no offset) under the four arcs and the number - is shown beside the original in Figma
+(node 581:696: the tile on white, grey and dark, as designed and with the shadow). WAITING FOR THE USER'S OK.
+NEXT, after the OK: draw the shadow in paintRotationIndicator (the arcs and the number rendered to an offscreen image,
+its alpha blurred and drawn black at 50 % under them), a check of it with a control; quick check; full gate (in a scratch
+worktree with the kill-less script while SankoTV is open); exe stamp; a short re-test list for the rotation only. Do not
+commit batch C or the (pz5) fix until the re-test passes. Batch D waits.
+ICON LICENCE: the user's own design; checked as the timeline icons (BEFORE SELLING 12's addendum, below): no near-copy.
+
+## STATUS 2026-11-13 (afternoon): BATCH C (KEYS AND VIEW, ONE TOOLTIP STYLE) BUILT, NOT COMMITTED; WAITING FOR THE USER'S C HAND TEST
+The user's words: batch C as approved in the trial report (keys, toolbars, camera arrows, timeline to 1600 %) plus ONE
+TOOLTIP STYLE: every tooltip must match the floating Brush toolbar's (look, font, colours, padding, border, delay).
+Figma: C-1 (574:696, every tooltip that differed, before/after) and C-2 (575:696, the View menu, the keys, the arrows,
+the timeline at 800/1600 %), below F-1; the user's area (510:697) grown to 21938 tall. Hand test:
+Documents\SankoTV-Design\handtest_C_keys_view_tooltips.md. Hashes: app/build/_probe/split/sha_C_gate.txt.
+Commit by concern after the hand test: (1) the (pz5) fix (test only, below), (2) batch C with this HANDOFF.
+ONE TOOLTIP STYLE (SankoTip.h/.cpp, new, LF): SankoTipFrame is the Brush bar's look (#1a1a1a, 1 px #2a2a2a, radius 6
+antialiased, #cccccc 11 px app font, padding 10 x 6, fade-in 120 ms; one line, wrapped past 480 px); the Brush bar's
+SankoTipPopup now derives from it (same paint and label code, moved). installSankoTips() (MainWindow ctor, before any
+child; idempotent) sets SankoTipStyle (a QProxyStyle) as the app style: SH_ToolTip_WakeUpDelay 350 (Qt's 700) and
+SH_ToolTipLabel_Opacity 0, and installs an app event filter that MIRRORS Qt's QTipLabel - Qt still decides when, what
+and where (every QToolTip caller and every check reading QToolTip unchanged); the label is fully transparent (the style
+at creation, plus a backstop at its Show) and one parentless SankoTipFrame ("sankoTip") is shown at its place with its
+text (follows Show/Move/Resize/Paint/Hide); Qt's roll/fade turned off as each label is polished (they would draw the
+label's own pixels); a HOVERED tip (its owner known from the QEvent::ToolTip that brought it) is hidden 0.12 s after a
+Leave of its widget (the label hidden directly: QToolTip::hideText only starts Qt's 0.3 s); a note (showText with no
+ToolTip event) keeps Qt's timing. sankoHideTipSoon(): the same grace for the timeline's tracks (one widget, many items).
+Qt's label keeps sankoNoteStyle (unseen; it sizes and places the tooltip). The timeline's camera-key, amber-chip and
+scene hovers now answer TimelineCanvas::event(QEvent::ToolTip) (hoverTipAt) - 0.35 s like every tooltip - and a move
+onto the next item while a tip is up retargets at once. File > Export and File > Open Recent now show their tooltips
+(setToolTipsVisible: "Stills Show Full Artwork", each project's path). Painted chips (canvas, timeline, preset pill,
+preview caption) are status, not tooltips: unchanged. Test hooks: sankoTipFrameForTest, sankoQtTipLabelForTest,
+setSankoTipsBypassedForTest (Qt's tooltip as it was: the "before").
+KEYS AND VIEW: View menu (StoryboardPage::installDockViewActions): Zoom In Ctrl+= (and Ctrl++), Zoom Out Ctrl+-, Fit
+Shot, Fit Stage Ctrl+0, Actual Pixels Ctrl+1 (DrawingCanvas::actualPixelsZoom: 1/(fit*dpr), within 0.25..4), Reset
+Rotation Shift+R; with the pointer over the timeline the zoom keys are the timeline's (stepZoom, Fit, 100 %). These are
+enabled only while the storyboard page shows (show/hideEvent), so the keys stay free elsewhere. View > Toolbars: Tools,
+Layers, Zoom, Size Sliders (storyboard/toolbars/v1/<name>, default on; the four unconditional show() calls now
+setVisible(toolbarShown)), and "Hide All Toolbars\tTab" / "Show All Toolbars\tTab". Tab (routeToolbarsKey, before
+routeCanvasKey in the CanvasKeyRouter): in this page's window, not in a text field (QLineEdit, QTextEdit,
+QPlainTextEdit, QAbstractSpinBox), hides/shows the four for the session with the note "Toolbars hidden: Tab shows
+them."; a tick picked while hidden brings them back. FloatingToolWindow::setUserVisible (new): under a suppression the
+choice goes into the outermost capture. View > Camera Move Arrows: off by default (storyboard/view/cameraMoveArrows);
+DrawingCanvas::setCameraMoveArrowsShown gates the paint, shotCameraGuidesForTest's "drawn" (new "motion" key: the
+move, shown or not) and shotCameraGlyphPathForTest; a hovered Quick Move's end glyphs stay (the user's choice). Tool
+keys (QShortcuts on the page): B E G V L, M = rectangle selection while paused (marks a key while playing, as before);
+toolKey checks the button (no click: no Library); not in Stage mode or with the Brush Settings studio open; I left for
+the eyedropper (batch D). Tool tooltips name their keys ("<b>Brush (B)</b> | ..."). [ ] (bracketSizeStep, Photoshop:
+1 <10, 10 <100, 25 <200, 50 <300, 100 <1000, then 250; to the next multiple; down by the range below) through the size
+slider's own path (onChanged, the pill while the bar shows, saved as at a release); Brush/Eraser only. R held (routed
+like Space while the pointer is over the canvas; release anywhere; dropped on deactivate): a left drag turns the view
+around the drawing's centre (viewAngleAt), the pen too (tabletEvent ignores it to the mouse path); the new signal
+viewRotationChanged keeps the zoom bar's dial in step (also from resetViewRotation). TIMELINE: kZoomMin/kZoomMax 10/1600
+in all four clamps; - and + (and the keys) step along a sqrt(2) ladder (zoomStepFrom: 100 * 2^(k/2)); frame ticks (2 px,
+14 %) from 800 % for frames in view; a clip wider than its 512 px picture draws the same crop-to-fill straight from it
+(no clip-wide copy per repaint; the user's crop-to-fill of 2026-10-18 kept - the report's "natural size" wording was
+not built, C-2 corrected); the zoom field's tooltip says 10 to 1600.
+NEW CHECKS (runKeysAndViewPass, slice "keysview" = it + runCameraGuidesPass): (tt1) every tooltip the Brush bar's (six
+areas: frame pixel-equal to the Brush bar's tip with the same text, Qt's label at opacity 0) + control (bypassed: Qt's
+own opaque label, #161616, differs); (tt2) the numbers; (tt3) 350 everywhere + control 700 bypassed; (tt4) fade;
+(tt5) hovered tip gone 0.12 s after a Leave + control (a note stays); (tt6) no roll + control (bypassed it rolls);
+(tt7) the timeline's hovers wait, chain, go after 0.12 s + control; (tt8) Export / Open Recent tooltips + control;
+(kc1) tool keys + controls (a text field keeps a typed letter; I free); (kc2) the steps table, [ ] on Brush and Eraser +
+control (Fill); (kc3) R-drag 90 degrees, the dial, Shift+R + control (no R: it paints); (kc4) the canvas's zoom keys,
+the timeline's + control (Script Editor page: not claimed); (kc5) Tab, View > Toolbars + control (a text field's Tab);
+(kc6) Camera Move Arrows; (tz1) the ladder and +; (tz2) frame ticks + control (400 %); (tz3) a 768 px clip's picture;
+(cg7) arrows off: a hovered Quick Move still shows its end + control.
+FIRST-RUN CORRECTIONS (new checks, each after reading the code): the eye looked up before clickThumb rebuilt the Layers
+rows (no tooltip, then a crash on the deleted widget) - looked up after, held in a QPointer; hideTip waited 80 ms but
+QToolTip::hideText only starts Qt's 0.3 s (asks reused the old tip) - waits 400 ms; that also showed the mirror's
+0.12 s hide calling hideText (so 0.42 s) - CODE FIXED to hide the label itself, and the timeline's move-off to use
+sankoHideTipSoon; (tt1) control expected #161616 from a layer's eye, which never had a fill (the rows' sheet) - reads
+the Layers bar; (kc1) control sent E with no text through the window (Qt's entry point asks the object given; a field
+keeps keys that type) - sends "e" to the focus widget; (tz2) control expected a 7 px tick for frame 24 at 400 %, where
+second 1 is unlabelled (5 px) - reads 5 px.
+CHANGED CHECKS (old -> new; each with a control):
+(aw) OLD "+ gives 125%, two - give 75%" (afterPlus == "125%", afterMinus == "75%"); "900 clamps to 400%" (900 -> 400,
+"400%"). NEW "141%", "71%"; "2000 clamps to 1600%". Control: (tz1).
+(av) OLD capped == 400, "400 % at the top". NEW 1600. Control: its own 10 % floor.
+(sl3) THE HOVERS and (cx8) AT EVERY ZOOM: OLD the tooltip read right after the mouse move (cx8 after 150 ms "the tooltip
+rolls in"). NEW after the move, the ToolTip help event Qt sends when the tooltip is due, then read; texts unchanged.
+Control: (tt7) (nothing at once nor at 0.2 s).
+(ct) OLD "(ct) notes and tooltips take the dark Sanko style (#161616), applied once": Qt's label fill == #161616, one
+QToolTip{ rule. NEW "(ct) notes and tooltips are SEEN in the one tooltip style (#1a1a1a, the Brush bar's), drawn over
+Qt's label - which keeps the note style (#161616), fully transparent; the style applied once": the frame #1a1a1a, the
+label at opacity 0 and #161616, one rule. Control unchanged (no style: not #161616).
+(ta4) OLD counted roll/fade windows: the chip built 1; control (the old way) built >= 10. NEW counts Qt's labels shown:
+the chip 1 label and 0 rolls (roll forced on as on the user's PC); control bypassed (Qt's roll back): >= 10 rolls and up
+at fewer moves.
+(cg) family SETUP: OLD the glyphs always drawn. NEW the family turns View > Camera Move Arrows on first; (cg7) and (kc6)
+read it off.
+(pz5) live, its own concern: OLD one pass over the two lists, opened == 2 (failed twice when the foreground changed:
+F1's quick check, gate F2b Release). NEW a list whose popover is gone opens it again (up to 3 tries); the check closes
+the popover between the lists on purpose and requires opened == 2 and reopened >= 1; NEW control: an empty drop-down
+is not counted.
+RED RUNS (markers removed after, none left outside _backups): B frame ticks off -> (tz2); C toolKey's setChecked off ->
+(kc1), (kc2); D Tab routing off -> (kc5); E R hold off -> (kc3); F the Leave grace off -> (tt5); G (pz5)'s reopening
+off -> (pz5); A the style's opacity 0 off alone -> nothing (the Show backstop covers it), A2 with the backstop off too
+-> (tt1), (ct). Controls passed throughout.
+QUICK CHECKS: keysview 50/50 (after the corrections), trial 126 (with (pz5)'s new control), the whole Lifecycle family
+1481/1481 (before (pz5)'s rewrite).
+GATE C (first try): stopped at the Release build - SankoCanvasSizeLock lists its own sources, AnimaticTimeline.cpp
+among them, and did not link sankoHideTipSoon (the quick builds had built the Lifecycle target only). SankoTip.cpp/.h
+added to its list in CMakeLists.txt; every Release target then built. Logs: fullgate_C_failedlink*.
+GATE C2 (the main tree, 2644 s; logs fullgate_C2*): every family green in both builds - Lifecycle 1482 (gate F2b's
+1445 plus the 37 new; the six changed checks renamed: (av), (aw) x2, (ct), (pz5), (ta4)), Camera 335, Brush Library
+187, Size Lock 170, Edge Lock 74, Dev Recorder 46 (two names differ by a timestamp and a session folder), Quick Shape
+19, Pixel Lock 13, Brush Lock 3; files as sha_C_gate.txt. HAND-TEST EXE: app/build/Release/SankoTV.exe, built Nov 13
+2026 10:28:56 (file 10:29:15), git 8d708a982+dirty, sha256 2d7f14938227dd9b...; copy "TEST COPY - small pirate, C"
+(C:\SankoTV-TestCopies, with its sound; the original's hash unchanged, as origB_after).
+FOUND, NOT CHANGED: View > Library's tick is never wired (m_brushLibViewAction is null when the panel's visibility is
+connected).
+
 ## STATUS 2026-11-13: F2 AND THE SHORT GREYED LABELS COMMITTED AFTER THE USER'S HAND TEST; THE SCENE LENGTH LOCK (F1, F2) IS COMPLETE; BATCH C NEXT
 THE F2 HAND TEST (Dev Recorder 20261113-075255, 436 s, the 20:09:34 build, git 97685278e+dirty, on "TEST COPY - small
 pirate, F2", on the Dell). Steps of handtest_F2_lock_all_end_scene.md the user did: 1, 3, 4, 5 and 7.
@@ -1967,6 +2188,18 @@ may ship in a closed-source commercial product, flag it - do not decide.
       open padlock already cleared (0.817 / 0.735 / 0.731). Controls
       unchanged: 1.000, 0.380, 0.291. Evidence:
       Documents\SankoTV-Design\icon-check\closed-lock-2026-10-30\.
+    - ADDED 2026-11-13: icons/view/rotation_arcs.svg, the rotation indicator's four arcs -
+      the USER'S OWN DESIGN ("Arcs and Percentage Rotation Tile 2", Dasktop_UI_test node
+      576:731, their words 2026-11-13), exported from Figma as is (the angle is drawn by the
+      app in Arial Bold, the system font - no font shipped). Checked the same way against the
+      same eight sets (23,357 icons, unpacked OFFLINE from npm's local cache - nothing
+      downloaded): no identical path data, whole or by element; the closest are plain circles
+      and rings (Material fiber_manual_record 0.868; Bootstrap record, Tabler circle /
+      percentage-0 / wash-dryclean 0.865 - four arcs round a centre read as a ring), and the
+      rotation symbols score lower (Tabler rotate-clockwise 0.768, Lucide refresh-cw 0.685).
+      Controls as before: 1.000 (path-identical), 0.380, 0.291. No logo resemblance. Evidence:
+      Documents\SankoTV-Design\icon-check\rotation-arcs-2026-11-13\. Recorded here; item 12
+      stays as the user closed it.
     - EVIDENCE: Documents\SankoTV-Design\icon-check\ - icon-check.html
       (each icon beside its three closest matches with set, name, licence
       and score; the above-threshold table with a reading of each; the

@@ -1,5 +1,6 @@
 #include "AnimaticTimeline.h"
 #include "SankoIcons.h"
+#include "SankoTip.h" // sankoHideTipSoon: the hovers' grace (batch C)
 #include "SankoTheme.h"
 #include "SankoTimelineTheme.h"
 #include "SankoToggleControls.h"
@@ -99,6 +100,11 @@ constexpr int kArtExitMarker = 14;
 // it in over 150): while it does, a drag's chip waits rather than ask for a new one.
 constexpr int kChipRollMs = 200;
 constexpr int kReorderThreshold = 8; // px before a clip press becomes a drag
+// THE ZOOM'S LIMITS (batch C, the user's choice: 1600 %): 100 is 1 px a frame, so 1600 is
+// 16 px a frame. One pair for every clamp - applyZoom, the field, Fit, Ctrl+wheel.
+constexpr float kZoomMin = 10.0f, kZoomMax = 1600.0f;
+// From 800 % (8 px a frame) a tick marks every frame on the ruler.
+constexpr double kFrameTicksPpf = 8.0;
 
 // The clip, as the design lays it out on a 76 px body (every number is the
 // design's; see HANDOFF "The timeline redesign, Part A"): the body is the
@@ -184,6 +190,23 @@ protected:
         m_owner->canvasContextMenu(e);
     }
     void wheelEvent(QWheelEvent *e) override { m_owner->canvasWheel(e); }
+    // Qt's tooltip, due 0.35 s after the pointer stops (batch C): the camera key's, the
+    // amber chip's or the scene's under it. Nothing there: on to the parents, as a
+    // widget without a tooltip does.
+    bool event(QEvent *e) override
+    {
+        if (e->type() == QEvent::ToolTip) {
+            auto *help = static_cast<QHelpEvent *>(e);
+            const QString tip = m_owner->hoverTipAt(help->pos());
+            if (tip.isEmpty()) {
+                e->ignore();
+                return false;
+            }
+            QToolTip::showText(help->globalPos(), tip, this);
+            return true;
+        }
+        return QWidget::event(e);
+    }
 
 private:
     AnimaticTimeline *m_owner;
@@ -243,7 +266,7 @@ AnimaticTimeline::AnimaticTimeline(QWidget *parent)
     m_zoomField->setReadOnly(true);
     m_zoomField->setFocusPolicy(Qt::NoFocus);
     m_zoomField->setContextMenuPolicy(Qt::NoContextMenu);
-    m_zoomField->setToolTip(QStringLiteral("Zoom (double-click to type a percentage, 10 to 400)"));
+    m_zoomField->setToolTip(QStringLiteral("Zoom (double-click to type a percentage, 10 to 1600)"));
     m_zoomField->setStyleSheet(SankoTimelineTheme::kZoomFieldSheet);
     field->onDoubleClick = [this] { beginZoomEdit(); };
     field->onEscape = [this] { endZoomEdit(false); };
@@ -299,11 +322,10 @@ AnimaticTimeline::AnimaticTimeline(QWidget *parent)
 
     styleToolbarButtons();
 
-    // - and +: the same 25-point steps the slider had, clamped by applyZoom.
-    connect(m_zoomInButton, &QPushButton::clicked, this,
-            [this] { applyZoom(m_zoom + 25.0f); });
-    connect(m_zoomOutButton, &QPushButton::clicked, this,
-            [this] { applyZoom(m_zoom - 25.0f); });
+    // - and +: a step along the sqrt(2) ladder (batch C; 25 points until then, which at
+    // 1600 % would take sixty presses), clamped by applyZoom.
+    connect(m_zoomInButton, &QPushButton::clicked, this, [this] { stepZoom(1); });
+    connect(m_zoomOutButton, &QPushButton::clicked, this, [this] { stepZoom(-1); });
     connect(m_fitButton, &QPushButton::clicked, this, [this] { fitZoom(); });
     connect(m_framesButton, &QPushButton::clicked, this, [this] {
         m_framesMode = true;
@@ -1362,9 +1384,32 @@ void AnimaticTimeline::updateScrollRange()
         setScrollX(qRound(playheadContentX()) - (followPoint() - kLabelCol));
 }
 
+// The next rung of the ladder above (direction > 0) or below the zoom: 100 * 2^(k/2), so
+// every second rung is 100 times a power of two (200, 400, 800, 1600; 50, 25, 12.5);
+// a zoom on a rung (within 0.5 %) moves a whole rung. Clamped to 10..1600: below 12.5 the
+// next rung down is the minimum, 10.
+float AnimaticTimeline::zoomStepFrom(float zoom, int direction)
+{
+    const double k = 2.0 * std::log2(double(zoom) / 100.0); // the zoom's place on the ladder
+    const double nearest = std::round(k);
+    const bool onRung = std::abs(k - nearest) < 2.0 * std::log2(1.005);
+    double next;
+    if (direction > 0)
+        next = onRung ? nearest + 1.0 : std::ceil(k);
+    else
+        next = onRung ? nearest - 1.0 : std::floor(k);
+    const double z = 100.0 * std::pow(2.0, next / 2.0);
+    return float(qBound(double(kZoomMin), z, double(kZoomMax)));
+}
+
+void AnimaticTimeline::stepZoom(int direction)
+{
+    applyZoom(zoomStepFrom(m_zoom, direction));
+}
+
 void AnimaticTimeline::applyZoom(float z)
 {
-    m_zoom = qBound(10.0f, z, 400.0f);
+    m_zoom = qBound(kZoomMin, z, kZoomMax);
     updateScrollRange();
     if (m_canvas)
         m_canvas->update();
@@ -1379,6 +1424,11 @@ void AnimaticTimeline::updateZoomField()
     if (!m_zoomField || m_zoomEditing)
         return;
     m_zoomField->setText(QStringLiteral("%1%").arg(qRound(m_zoom)));
+}
+
+int AnimaticTimeline::rulerBottomForTest() const
+{
+    return kRulerY + kRulerH;
 }
 
 QString AnimaticTimeline::zoomFieldTextForTest() const
@@ -1401,7 +1451,7 @@ void AnimaticTimeline::beginZoomEdit()
 
 // Enter and a click elsewhere apply (editingFinished); Escape cancels. The
 // text may be "150" or "150%" with spaces; out of range clamps to 10 or
-// 400; anything else restores the value the field showed before.
+// 1600; anything else restores the value the field showed before.
 void AnimaticTimeline::endZoomEdit(bool apply)
 {
     if (!m_zoomField || !m_zoomEditing)
@@ -1415,7 +1465,7 @@ void AnimaticTimeline::endZoomEdit(bool apply)
         bool ok = false;
         const double v = t.toDouble(&ok);
         if (ok)
-            applyZoom(static_cast<float>(qBound(10.0, v, 400.0)));
+            applyZoom(static_cast<float>(qBound(double(kZoomMin), v, double(kZoomMax))));
     }
     m_zoomField->setReadOnly(true);
     m_zoomField->setFocusPolicy(Qt::NoFocus);
@@ -1432,7 +1482,7 @@ void AnimaticTimeline::fitZoom()
         return;
     // contentWidth == vw  =>  totalFrames * (zoom/100) == vw
     float z = static_cast<float>(vw) * 100.0f / static_cast<float>(totalFrames());
-    z = qBound(10.0f, z, 400.0f);
+    z = qBound(kZoomMin, z, kZoomMax);
     m_scrollX = 0;
     if (m_hScroll)
         m_hScroll->setValue(0); // Fit: valueChanged, no action
@@ -1518,6 +1568,21 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
                 const int x = contentXToScreen((s2 * m_fps / 2.0) * ppf);
                 if (x < kLabelCol - 2 || x > contentRight) continue;
                 p.fillRect(QRect(x, bottom - 3, 1, 3), half);
+            }
+        }
+        // EVERY FRAME from 800 % (batch C, Figma C-2): 2 px at 14 %, under the half
+        // seconds' and the seconds', where none of those stands; only the frames in view.
+        if (ppf >= kFrameTicksPpf) {
+            QColor frameTick = kHairline;
+            frameTick.setAlphaF(0.14);
+            const int first = qMax(1, int(std::floor(screenXToContent(kLabelCol) / ppf)));
+            const int last = qMin(totalFrames(), int(std::ceil(screenXToContent(contentRight) / ppf)));
+            for (int f = first; f <= last; ++f) {
+                if (f % m_fps == 0 || (halfTicks && (2 * f) % m_fps == 0))
+                    continue; // a second's tick, or a half second's
+                const int x = contentXToScreen(f * ppf);
+                if (x < kLabelCol || x > contentRight) continue;
+                p.fillRect(QRect(x, bottom - 2, 1, 2), frameTick);
             }
         }
         for (int s = 0; s <= tSecs; ++s) {
@@ -1704,6 +1769,18 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
                     // The shot, cropped to fill like the plain thumbnail.
                     p.fillRect(L.thumb, Qt::black);
                     shotcam::drawShot(p, pix, stage, shotCamera, QRectF(L.thumb), true);
+                } else if (!pix.isNull() && L.thumb.width() > pix.width()) {
+                    // WIDER THAN ITS PICTURE (batch C: a clip at 1600 % is thousands of
+                    // px wide): the same crop to fill, drawn straight from the 512 px
+                    // picture - no copy as wide as the clip made on every repaint, and
+                    // only what the clip's visible part covers is drawn.
+                    const double s = qMax(double(L.thumb.width()) / pix.width(),
+                                          double(L.thumb.height()) / pix.height());
+                    const QSizeF src(L.thumb.width() / s, L.thumb.height() / s);
+                    p.setRenderHint(QPainter::SmoothPixmapTransform, true);
+                    p.drawPixmap(QRectF(L.thumb), pix,
+                                 QRectF(QPointF((pix.width() - src.width()) / 2.0,
+                                                (pix.height() - src.height()) / 2.0), src));
                 } else if (!pix.isNull()) {
                     // Crop to fill, centred (one setting; "fit with bars" is
                     // the other, not built - the user's choice 2026-10-18).
@@ -3216,7 +3293,7 @@ void AnimaticTimeline::canvasWheel(QWheelEvent *e)
         double z = m_zoom;
         for (int i = 0; i < qAbs(notches); ++i)
             z = notches > 0 ? z * kWheelZoomStep : z / kWheelZoomStep;
-        z = qBound(10.0, z, 400.0);
+        z = qBound(double(kZoomMin), z, double(kZoomMax));
         applyZoom(float(z));
         const double contentAfter = contentBefore * (pxPerFrame() / ppfBefore);
         if (m_hScroll && m_hScroll->maximum() > 0)
@@ -3731,24 +3808,30 @@ void AnimaticTimeline::canvasMouseMove(QMouseEvent *e)
         m_hoverIndex = hover;
         m_canvas->update();
     }
+    // THE HOVERS' TOOLTIPS WAIT (batch C): each is given when Qt's tooltip is due, 0.35 s
+    // after the pointer stops, as every tooltip in the app (TimelineCanvas::event,
+    // hoverTipAt) - not at once from the move. Moving onto the next one while a tooltip
+    // is up shows its own at once, as Qt's next tooltip comes at once; moving off hides it.
+    const QPoint globalPos = e->globalPosition().toPoint();
+    auto retarget = [&](const QString &tip) {
+        if (QToolTip::isVisible())
+            QToolTip::showText(globalPos, tip, m_canvas);
+    };
     if (camScene != m_camHoverScene || camKey != m_camHoverKey) {
         m_camHoverScene = camScene;
         m_camHoverKey = camKey;
         if (camKey >= 0)
-            QToolTip::showText(e->globalPosition().toPoint(), cameraKeyTip(mark), m_canvas);
+            retarget(cameraKeyTip(mark));
         else
-            QToolTip::hideText();
+            sankoHideTipSoon(); // the Brush bar's 0.12 s grace (Qt's hideText waits 0.3 s)
         m_canvas->update();
     }
     if (chipHover != m_chipHover) {
         m_chipHover = chipHover;
         if (chipHover >= 0)
-            QToolTip::showText(e->globalPosition().toPoint(),
-                               artExitChipText(chipHover) + QStringLiteral(" ") + QChar(0x00B7)
-                                   + QStringLiteral(" click for Grow to fit"),
-                               m_canvas);
+            retarget(artExitChipHoverText(chipHover));
         else if (camKey < 0)
-            QToolTip::hideText();
+            sankoHideTipSoon();
     }
     // Its tooltip: over the lock, what a click does; over the block, where the scene
     // ends and how long it is (batch F1).
@@ -3756,10 +3839,9 @@ void AnimaticTimeline::canvasMouseMove(QMouseEvent *e)
         m_sceneHover = sceneHover;
         m_sceneLockHover = lockHover;
         if (sceneHover >= 0)
-            QToolTip::showText(e->globalPosition().toPoint(),
-                               lockHover ? sceneLockTip(sceneHover) : sceneEndTip(sceneHover), m_canvas);
+            retarget(lockHover ? sceneLockTip(sceneHover) : sceneEndTip(sceneHover));
         else if (camKey < 0 && chipHover < 0)
-            QToolTip::hideText();
+            sankoHideTipSoon();
         m_canvas->update();
     }
     // The AUDIO row under the pointer (Phase 2D): its name and length chips
@@ -3770,6 +3852,31 @@ void AnimaticTimeline::canvasMouseMove(QMouseEvent *e)
         m_audioHover = overAudio;
         m_canvas->update();
     }
+}
+
+// The tooltip of what is under a point of the canvas: a camera key's, an amber chip's, or
+// the SCENES row's (the lock's or the block's) - what the hover lights up; empty
+// elsewhere. Asked by Qt's tooltip event (TimelineCanvas::event).
+QString AnimaticTimeline::hoverTipAt(const QPoint &pos) const
+{
+    CameraMark mark;
+    if (m_tracks.cameraVisible && cameraKeyAt(pos, &mark))
+        return cameraKeyTip(mark);
+    const int chip = artExitChipAt(pos);
+    if (chip >= 0)
+        return artExitChipHoverText(chip);
+    if (m_tracks.scenesVisible && pos.y() >= kSceneY && pos.y() < kSceneY + kSceneH) {
+        const int scene = sceneAtScreenX(pos.x());
+        if (scene >= 0)
+            return sceneLockGlyphRect(scene).adjusted(-3, -3, 3, 3).contains(pos) ? sceneLockTip(scene)
+                                                                                 : sceneEndTip(scene);
+    }
+    return QString();
+}
+
+QString AnimaticTimeline::artExitChipHoverText(int flatIndex) const
+{
+    return artExitChipText(flatIndex) + QStringLiteral(" ") + QChar(0x00B7) + QStringLiteral(" click for Grow to fit");
 }
 
 // A double-click on a clip's duration pill opens the typing field (Figma
@@ -3892,6 +3999,10 @@ void AnimaticTimeline::canvasMouseRelease(QMouseEvent *e)
 
 void AnimaticTimeline::canvasLeave()
 {
+    // A hovered key's, chip's or scene's tooltip goes after the Brush bar's 0.12 s grace, as
+    // when the pointer moves off it on the canvas (batch C).
+    if (m_chipHover != -1 || m_camHoverKey != -1 || m_sceneHover != -1)
+        sankoHideTipSoon();
     m_chipHover = -1; // its tooltip goes with the pointer's next crossing, as any tooltip
     if (m_hoverIndex != -1 || m_camHoverKey != -1 || m_audioHover || m_sceneHover != -1) {
         m_hoverIndex = -1;

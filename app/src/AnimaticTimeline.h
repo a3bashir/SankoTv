@@ -162,8 +162,16 @@ public:
     // THE ZOOM FIELD (Part D, 2026-10-23; the user's design: [ - ] [ 100% ]
     // [ + ]): the current zoom in whole percent; double-click to edit, Enter
     // applies, Escape cancels, a click elsewhere applies; "150" or "150%",
-    // clamped to the zoom's 10..400; invalid text restores the value.
+    // clamped to the zoom's 10..1600 (400 until batch C); invalid text restores the value.
     QLineEdit *zoomField() const { return m_zoomField; }
+    // THE ZOOM FROM THE BUTTONS AND THE KEYS (batch C). - and + step along a ladder of
+    // sqrt(2) whose rungs are 100 times a power of two every second step (..., 50, 71, 100,
+    // 141, 200, 283, 400, 566, 800, 1131, 1600; 10 below 12.5); Ctrl+= and Ctrl+- over the
+    // timeline do the same, Ctrl+0 is Fit, Ctrl+1 is 100 % (1 px a frame).
+    void stepZoom(int direction);
+    static float zoomStepFrom(float zoom, int direction);
+    void fitZoomToView() { fitZoom(); }
+    void zoomToActual() { applyZoom(100.0f); }
     void setZoomForTest(float zoom) { applyZoom(zoom); }
     QString zoomFieldTextForTest() const;
     bool zoomEditingForTest() const { return m_zoomEditing; }
@@ -176,6 +184,10 @@ public:
     // thumbnail, number, name, pill - with which of them are shown), as
     // "x,y,wxh" strings in canvas coordinates.
     int rulerLabelStepForTest() const { return rulerLabelStep(); }
+    // Where a film frame is on screen, and the ruler's bottom edge (its ticks hang
+    // from it): the gate reads the frame ticks of batch C there.
+    int frameScreenXForTest(int frame) const { return contentXToScreen(frame * pxPerFrame()); }
+    int rulerBottomForTest() const;
     QVariantMap clipPartsForTest(int flatIndex) const;
     // The camera a SHOTS clip's thumbnail is drawn with (Phase 1A): the
     // shot camera at the panel's first frame.
@@ -390,6 +402,10 @@ private:
     QString sceneLockTip(int sceneIndex) const;
     static void paintSceneLock(QPainter &p, const QRect &glyph, const QColor &colour);
     QString cameraKeyTip(const CameraMark &mark) const;
+    // What Qt's tooltip says over a point of the canvas (batch C): a camera key's, an
+    // amber chip's, the SCENES row's; empty elsewhere. And the amber chip's own.
+    QString hoverTipAt(const QPoint &pos) const;
+    QString artExitChipHoverText(int flatIndex) const;
     void paintCameraRow(QPainter &p);
     void paintPinLines(QPainter &p); // the pinned keys' dotted lines through the AUDIO row
     QRect clipRect(int flatIndex) const; // on the canvas; empty if no such clip
