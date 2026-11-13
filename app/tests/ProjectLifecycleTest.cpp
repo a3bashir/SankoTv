@@ -23445,31 +23445,70 @@ void runCameraToolPass(const QString &scratch)
         check(QStringLiteral("(pz5) control: a drop-down given the old pixel font is found by the same census"),
               withOld.size() == bad.size() + 1 && withOld.filter(QStringLiteral("pz5OldPixelCombo")).size() == 1,
               withOld.join(QStringLiteral("; ")));
-        // Live: each of the popover's lists opened, as the press in the recordings did.
-        int listWarnings = -1, opened = 0;
+        // Live: each of the popover's lists opened, as the press in the recordings did. The
+        // popover is a Qt popup, and Windows closes every popup when the app loses the
+        // foreground (a click in another program): the F1 quick check and the F2 gate each
+        // once found it gone before the second list ("1 list(s) opened"). A list whose
+        // popover is gone has it opened again first, up to three tries, so the count says
+        // whether the lists open, not whether the machine's foreground held still.
+        int listWarnings = -1, opened = 0, reopened = 0;
         QWidget *pop = r.storyboard->cameraQuickPopoverForTest();
         QToolButton *quick = r.storyboard->findChild<QToolButton *>(QStringLiteral("camQuickMove"));
-        if (pop && quick) {
-            quick->click();
-            pump(150);
-            if (pop->isVisible()) {
-                WarningCapture warnings;
-                for (QComboBox *cb : pop->findChildren<QComboBox *>()) {
-                    cb->showPopup();
+        auto listOpens = [&](QComboBox *cb) {
+            for (int attempt = 0; attempt < 3; ++attempt) {
+                if (!pop->isVisible()) {
+                    reopened += attempt > 0 || opened > 0 ? 1 : 0;
+                    quick->click();
                     pump(150);
-                    opened += cb->view() && cb->view()->isVisible() ? 1 : 0;
-                    cb->hidePopup();
-                    pump(80);
                 }
-                listWarnings = warnings.count(QStringLiteral("setPointSize"));
+                if (!pop->isVisible())
+                    continue;
+                cb->showPopup();
+                pump(150);
+                const bool open = cb->view() && cb->view()->isVisible();
+                cb->hidePopup();
+                pump(80);
+                if (open)
+                    return true;
             }
+            return false;
+        };
+        if (pop && quick) {
+            WarningCapture warnings;
+            for (QComboBox *cb : pop->findChildren<QComboBox *>()) {
+                opened += listOpens(cb) ? 1 : 0;
+                // The foreground lost between the lists, as in the F2 gate - here on purpose,
+                // so the opening again is seen to work.
+                if (opened == 1) {
+                    pop->hide();
+                    pump(60);
+                }
+            }
+            listWarnings = warnings.count(QStringLiteral("setPointSize"));
             pop->hide();
             pump(60);
         }
         check(QStringLiteral("(pz5) the Quick Move popover's two lists open and log no \"QFont::setPointSize\" "
-                             "warning (that it could: (pz4)'s control below)"),
-              listWarnings == 0 && opened == 2,
-              QStringLiteral("%1 warning(s), %2 list(s) opened").arg(listWarnings).arg(opened));
+                             "warning (that it could: (pz4)'s control below) - the popover closed between them, as a "
+                             "lost foreground closes it, and opened again"),
+              listWarnings == 0 && opened == 2 && reopened >= 1,
+              QStringLiteral("%1 warning(s), %2 list(s) opened (the popover opened again %3 time(s))")
+                  .arg(listWarnings).arg(opened).arg(reopened));
+        // Control for the count: a drop-down with nothing in it has no list to open - the
+        // same opening finds it shut (Qt opens no popup for an empty list).
+        bool emptyOpened = true;
+        if (pop && quick) {
+            auto *empty = new QComboBox(pop);
+            quick->click();
+            pump(150);
+            emptyOpened = listOpens(empty);
+            delete empty;
+            pop->hide();
+            pump(60);
+        }
+        check(QStringLiteral("(pz5) control: the same opening counts a list only when it opens - an empty drop-down's "
+                             "does not"),
+              !emptyOpened);
     }
 
     // (pz4) No Qt warning when the pointer leaves the timeline's speed
