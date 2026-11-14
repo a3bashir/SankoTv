@@ -80,6 +80,14 @@ public:
 
     std::function<void()> onDismissed; // a click anywhere on the preview
     std::function<void()> onPointerMoved; // a pointer move over it (StageClear)
+    // The gate (AnimaticPage::setRealPointerIgnoredForTest): a REAL pointer move - the
+    // machine's own pointer resting where the preview opens - is not the test's and wakes
+    // nothing; the moves a check sends itself still do. Off outside the tests.
+    bool realPointerIgnoredForTest = false;
+    bool pointerMoveCounts(const QEvent *event) const
+    {
+        return !(realPointerIgnoredForTest && event->spontaneous());
+    }
 
     // The caption chip shown or not: while the stage is clear (StageClear,
     // the film playing) the picture is the whole preview.
@@ -269,7 +277,7 @@ protected:
     void mouseMoveEvent(QMouseEvent *event) override
     {
         event->accept();
-        if (onPointerMoved)
+        if (onPointerMoved && pointerMoveCounts(event))
             onPointerMoved();
     }
     void mouseReleaseEvent(QMouseEvent *event) override
@@ -285,7 +293,7 @@ protected:
             m_pressed = true;
         else if (event->type() == QEvent::TabletRelease)
             finishPress();
-        else if (event->type() == QEvent::TabletMove && onPointerMoved)
+        else if (event->type() == QEvent::TabletMove && onPointerMoved && pointerMoveCounts(event))
             onPointerMoved();
     }
 
@@ -1827,6 +1835,12 @@ QRect AnimaticPage::transportPillRectForTest() const
 bool AnimaticPage::audioMutedForTest() const
 {
     return m_audioOutput && m_audioOutput->isMuted();
+}
+
+void AnimaticPage::setRealPointerIgnoredForTest(bool ignored)
+{
+    if (m_display)
+        m_display->realPointerIgnoredForTest = ignored;
 }
 
 

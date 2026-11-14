@@ -9107,8 +9107,14 @@ void StoryboardPage::setPointerDeviceForTest(qint64 uniqueId)
 void StoryboardPage::setRealPointerIgnoredForTest(bool ignored)
 {
     m_ignoreRealPointerForTest = ignored;
-    if (m_animatic) // its notes (the loop hint) are said at the real pointer too
+    if (m_animatic) { // its notes (the loop hint) are said at the real pointer too
         m_animatic->setNotesAtPointerForTest(!ignored);
+        // ...and a real move over its preview, or over a bar, would wake a clear stage
+        // ((ps1) failed with the machine's pointer resting over the preview, 2026-11-13).
+        m_animatic->setRealPointerIgnoredForTest(ignored);
+    }
+    if (m_stageClear)
+        m_stageClear->setRealPointerIgnoredForTest(ignored);
     m_pointerOverTimeline = false;
     m_pointerOverPreview = false;
     m_pointerOverCanvas = false;

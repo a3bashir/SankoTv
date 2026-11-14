@@ -137,6 +137,9 @@ public:
     QString lastNoteForTest() const { return m_lastNote; }
     void clearNoteForTest() { m_lastNote.clear(); }
     void setNotesAtPointerForTest(bool shown) { m_notesAtPointer = shown; }
+    // The gate's pointer (StoryboardPage::setRealPointerIgnoredForTest): the preview's REAL
+    // pointer moves wake no stage (StageClear) - only the moves a check sends.
+    void setRealPointerIgnoredForTest(bool ignored);
     QRect transportPillRectForTest() const;
     bool audioMutedForTest() const; // what the player itself reports
     int audioVolumeForTest() const { return m_tracks.audioVolume; }

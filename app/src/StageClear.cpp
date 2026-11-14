@@ -4,6 +4,7 @@
 
 #include <QApplication>
 #include <QEvent>
+#include <QInputEvent>
 #include <QVariantAnimation>
 #include <QWidget>
 
@@ -185,11 +186,29 @@ bool StageClear::eventFilter(QObject *watched, QEvent *event)
     case QEvent::TabletMove:
     case QEvent::Enter:
     case QEvent::HoverEnter:
+        // The gate: the machine's own pointer is not the test's. Its moves come from the window
+        // system (spontaneous); when a child does not take one, Qt passes a COPY up to the
+        // parent with the same timestamp but not marked so (the Brush button's move reached the
+        // bar that way, (ps8)'s first run); and the Enter and Hover events Qt derives are not
+        // marked either. The checks send moves of their own, timestamp 0.
+        if (m_realPointerIgnoredForTest) {
+            const auto *input = static_cast<const QInputEvent *>(event);
+            if (event->spontaneous()) {
+                m_realPointerStamp = input->timestamp();
+                break;
+            }
+            if ((m_realPointerStamp != 0 && input->timestamp() == m_realPointerStamp)
+                || event->type() == QEvent::Enter || event->type() == QEvent::HoverEnter
+                || event->type() == QEvent::HoverMove)
+                break;
+        }
         if (barOf(watched))
             pointerActivity(true);
         break;
     case QEvent::Leave:
     case QEvent::HoverLeave:
+        if (m_realPointerIgnoredForTest && event->spontaneous())
+            break;
         // The bar itself is left (a child handing over to a sibling is
         // not): the pointer is off the bars, the idle count starts.
         if (FloatingToolWindow *bar = barOf(watched))

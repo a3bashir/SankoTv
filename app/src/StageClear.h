@@ -72,6 +72,10 @@ public:
     void setFadeMsForTest(int ms) { m_fadeMs = ms; }
     void fireIdleForTest() { onIdle(); }
     bool idleArmedForTest() const { return m_idle.isActive(); }
+    // The gate's pointer (StoryboardPage::setRealPointerIgnoredForTest): a REAL pointer
+    // move over a bar - the machine's own pointer resting where a bar shows - wakes
+    // nothing; the moves a check sends itself still do. Presses are not touched.
+    void setRealPointerIgnoredForTest(bool ignored) { m_realPointerIgnoredForTest = ignored; }
 
 signals:
     void clearedChanged(bool cleared);
@@ -99,6 +103,8 @@ private:
     bool m_cleared = false;
     bool m_pointerOnBar = false;
     int m_fadeMs = -1; // -1: the constants above; >= 0: the gate's duration
+    bool m_realPointerIgnoredForTest = false; // off outside the tests
+    quint64 m_realPointerStamp = 0;           // the gate: the last real pointer event's time
     QTimer m_idle;
     QVector<QPointer<FloatingToolWindow>> m_faded;
     QHash<FloatingToolWindow *, QPointer<QVariantAnimation>> m_fades;

@@ -14645,6 +14645,49 @@ void runStageClearPass(const QString &scratch)
                          "it clear"),
           cleared() && allAt(0.0));
 
+    // --- (ps8) the machine's own pointer is not the test's ---------------------------
+    // Gate D1 (2026-11-13): (ps1) and (ps3) failed in both builds, and on the committed build
+    // too, with the machine's pointer resting where the preview opens - a REAL move there
+    // woke the stage the moment Play cleared it. The Rig's setRealPointerIgnoredForTest now
+    // reaches the preview and the bars: a move at the WINDOW-SYSTEM level (as the real
+    // pointer's arrives) over the preview and over the Brush bar leaves the stage clear,
+    // while the moves a check sends itself ((ps2), (ps5)) still wake it.
+    {
+        const bool clearBefore = cleared();
+        bool wokeByPreview = true, wokeByBar = true;
+        if (display && display->window()->windowHandle()) {
+            const QPointF g(display->mapToGlobal(display->rect().center()));
+            wsMouse(display->window()->windowHandle(), g, QEvent::MouseMove, Qt::NoButton);
+            pump(60);
+            wokeByPreview = !cleared();
+        }
+        if (brushBtn->window()->windowHandle()) {
+            const QPointF g(brushBtn->mapToGlobal(brushBtn->rect().center()));
+            wsMouse(brushBtn->window()->windowHandle(), g, QEvent::MouseMove, Qt::NoButton);
+            pump(60);
+            wokeByBar = !cleared();
+        }
+        check(QStringLiteral("(ps8) THE MACHINE'S POINTER IS NOT THE TEST'S: a real (window-system) pointer move "
+                             "over the preview, and one over the Brush bar, leave the clear stage clear"),
+              clearBefore && !wokeByPreview && !wokeByBar && cleared() && allAt(0.0),
+              QStringLiteral("clear %1; woke by the preview %2, by the bar %3; playing %4, preview %5 | %6")
+                  .arg(clearBefore).arg(wokeByPreview).arg(wokeByBar).arg(r.animatic->isPlaying())
+                  .arg(r.animatic->previewVisible()).arg(opacities()));
+        // Control: the same move sent by the check (not the window system) still wakes it - the
+        // switch tells the two apart, it does not deafen the preview.
+        if (display)
+            mouse(display, QEvent::MouseMove, QPointF(display->width() / 2.0, display->height() / 2.0),
+                  Qt::NoButton, Qt::NoButton);
+        pump(60);
+        const bool wokeBySent = !cleared() && allAt(1.0);
+        r.storyboard->fireStageIdleForTest(); // clear again, as the checks below start
+        pump(60);
+        check(QStringLiteral("(ps8) control: the same move sent by the check wakes the stage, and the idle "
+                             "timer clears it again"),
+              wokeBySent && cleared() && allAt(0.0),
+              QStringLiteral("woke %1, cleared again %2").arg(wokeBySent).arg(cleared()));
+    }
+
     // --- (ps7) THE USER'S RULE: a click on a faded bar presses nothing ---------
     {
         const DrawingCanvas::Tool before = r.canvas->tool();
