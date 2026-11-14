@@ -533,6 +533,8 @@ private:
     void layerRowClicked(int index, Qt::KeyboardModifiers modifiers);
     QVector<int> selectedLayers() const; // ascending, valid, non-background
     void layerAdd();              // blank raster layer above the active one
+    int insertLayerAboveActive(Panel *panel); // Add Layer's insertion (no history)
+    void pasteCanvasOnNewLayer(bool atOriginalPos); // Edit > Paste: a new layer, one step
     void layerAddImage();         // file dialog -> new image-type layer
     void layerDeleteSelected();   // never deletes Background / the last layer
     void layerDuplicateSelected();

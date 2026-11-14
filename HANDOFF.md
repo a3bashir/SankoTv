@@ -1,5 +1,75 @@
 # SankoTV — Session Handoff Brief
 
+## STATUS 2026-11-14: THE NEW PASTE (THE USER'S RULES) AND VIEW > LIBRARY'S TICK BUILT, NOT COMMITTED - WAITING FOR THE USER'S RE-TEST; THE POINTER FIX COMMITTED ALONE (fc5d56775)
+WHY ONLY THESE OF BATCH D: the Figma connector failed (2026-11-13; the user: "it's the connector service"). The parts
+with no new look were built meanwhile; the EYEDROPPER, FLIP H/V and the COLORS PANEL wait for the D-1 frame (script:
+Documents\SankoTV-Design\figma_D1_batchD.js, its paste part to be updated to the new Paste) and the user's approval.
+C-1/C-2/581:696 still to be renamed BUILT.
+THE FIRST HAND TEST (Dev Recorder 20261113-204348, 2464 s, the Nov 13 19:13:24 build, git 7f059ead7+dirty; title bar
+"SANKO TV — TEST COPY - small pirate, D paste"; closed by the X, Discard; the copy's file unsaved). handtest_D_paste_
+library.md: 1 PASS (Ctrl+V at 35.6 s and 82.3 s: "Layer 7" right above the copied layer, chosen; Enter landed it; the
+user hid the copied-from layer rather than the new one - the paste stood alone on Layer 7); 2 PASS (one Ctrl+Z at 106.4 s
+removed paste and layer; Ctrl+Y at 138 s brought Layer 7 back with its drawing); 3 PASS (Paste in Place's outline exactly
+on the copied rectangle, 123 s); 4 PASS (Layer 7 locked, Ctrl+V made unlocked Layer 8 above it, landed there); 5 PASS (Esc
+at 321 s removed Layer 9 and the float; Edit > Redo: nothing to redo); 6 PASS (three times); 7 PASS (dragged left, Enter,
+landed on Layer 9; no box after); 8 PASS for what was tried - no tick while closed (1066.6 s, 1108 s), a tick while open
+(1089.1 s, opened from the menu); NOT TESTED: the menu after the Brush button opened it, and the entry closing it; 9 PASS.
+The user's note: Paste should be ready to move straight away - THEIR RULES (2026-11-14), now built:
+THE NEW PASTE. Ctrl+V / Ctrl+Shift+V (StoryboardPage::pasteCanvasOnNewLayer): settle the canvas (DrawingCanvas::
+settleForLayerChange: a pending stroke commit, a QuickShape and a floating paste land, a live Move box commits - an
+untouched one makes no step); insert "Layer N" above the active row as Add Layer does (insertLayerAboveActive, split out
+of layerAdd unchanged: same name rule, joins the row's folder, chosen and selected); PLACE the copied drawing on it at
+once (DrawingCanvas::placeClipboardOnActiveLayer: Paste in the view's centre, never hanging off the stage when it fits,
+as the float used to spawn; Paste in Place exactly where it was copied - NOT clamped now, as the rule says "exactly"; a
+part past the stage kept as any landing keeps it, landKeptArt); push ONE LayerStackCommand "Paste" (the layer and its
+drawing); then the Move tool, as the V key picks it (toolKey), its box lifted round the new layer's drawing - or, if it
+was on already, resetTransformBox round the new layer. Everything after is the Move tool's own, unchanged: a move or
+transform is its own step ("Transform"; Undo commits a live one first and undoes it - DrawingCanvas::undo), Esc cancels
+a move in progress (cancelTransform(true)). No merge, no float: last night's merge (kPasteLandingUndoId, mergeWith), Esc
+removal (floatingPasteDiscarded, setObsolete) and float-by-layer-id (floatLayer) are REMOVED; the canvas's floating
+pasteClipboard is exactly as at HEAD (only checks call it now). Refused only if the new layer joins a hidden folder.
+VIEW > LIBRARY'S TICK (unchanged since last night). Its connection to the panel's visibilityChanged was made in
+createCenterColumn, before installDockViewActions (a queued call) creates the action: m_brushLibViewAction was null.
+Now wired where the action is made, starting from the panel's visibility.
+CHECKS (runPasteLayerPass, slice "batchd" = it + runKeptArtPass), REWRITTEN for the new Paste (last night's (pl1)-(pl8)
+tested the float and are gone; nothing committed carried them): (pl1) Ctrl+V: "Layer 2" above "Layer 1", chosen, no
+float, the Move tool on with its button, its box the drawing's 200 x 100 on the view's centre (within 2 px), one "Paste"
+step, at rest the 20,000 px on the new layer where the box was, "Layer 1" unchanged; (pl2) Ctrl+Shift+V: box exactly on
+the block (100, 100, 200 x 100); (pl3) move 300, 200 + Enter = "Transform"; one Ctrl+Z back where pasted, layer kept; the
+next removes both, "Layer 1" chosen; Redo brings them back; + a move not landed yet is undone first the same way;
+(pl4) Esc after a drag: back where pasted, still on its layer, no step; a second Esc changes nothing; (pl5) on a locked
+layer + control (the canvas's own paste refused there); (pl6) the Move tool already on: its box round "Layer 1" lands
+untouched (no step), the box moves to the paste; (lt1), (lt2) as before. FIRST-RUN CORRECTION (my new check, read
+against the code first): (pl4) wanted the box being dragged on whole pixels; the Move tool's live drag translates the
+quad by the pointer's exact canvas delta (DrawingCanvas.cpp XMove: quad.translate(delta)) and only Enter lands on whole
+pixels - the dragged box is now measured by its centre (500, 350 within 1 px). RED RUNS (marked, removed, grep clean): no
+Move tool after a paste -> every (pl) fails (8); nothing placed -> every paste check fails (7; box empty, 0 px); the
+"Paste" step recorded AFTER the box is lifted -> NOTHING fails (29/29): the order is not shown to matter, kept before the
+lift as the safer one and the comment says what is done, not why it must be. QUICK CHECK: batchd 29/29, trial 126/126,
+stagemode 124/124, keysview 63/63, playback 33/33; all Release targets built.
+THE POINTER FIX, ITS OWN COMMIT fc5d56775 "Keep the machine's own pointer out of the stage-clear checks" (pushed). Gate D1
+(2026-11-13) failed (ps1)/(ps3) in both builds, and the committed build failed them the same, with the machine's pointer
+resting at (468, 549) where the preview opens. Now StoryboardPage::setRealPointerIgnoredForTest also reaches
+AnimaticPage::setRealPointerIgnoredForTest (the preview's display passes on only non-spontaneous moves) and
+StageClear::setRealPointerIgnoredForTest (it ignores spontaneous pointer moves over bars, the copies Qt passes up to a
+parent with the SAME TIMESTAMP but not marked spontaneous - proven by a temporary trace: the Brush button's real move
+ts 9939 spont 1, the bar's copy ts 9939 spont 0 - and the derived Enter/Hover events; presses untouched). Only the tests'
+Rig calls it (grep), so the app is unchanged outside tests. NEW CHECK (ps8) a window-system move over the preview and
+over the Brush bar leave the clear stage clear + control (the check's own move still wakes it). FIRST RUN: the bar half
+failed (the propagated copy) - fixed in StageClear, not in the check. RED RUN: the switch not passed on -> (ps8) fails
+("woke by the preview 1, by the bar 1"). Proven ALONE in the scratch worktree C:\SankoTV_gap (HEAD + its 11 hunks via git
+apply --cached; kill-less script copy): GATE G1 every family green in both builds, Lifecycle 1497 (1495 + 2); staged
+blobs == the gated worktree's index blobs; committed blobs == the gated files CR-stripped; sha_G1_gate.txt (6 files);
+worktree removed. Not staged: CanvasEdgeLockTest.cpp, QuickShapeGeometryLockTest.cpp.
+GATE D2 (the main tree, on fc5d56775 + the new Paste, 2666 s; logs fullgate_D2*): EVERY family green in BOTH builds -
+Lifecycle 1508 (G1's 1497 + the 11 (pl)/(lt) checks), Camera 335, Brush Library 187, Size Lock 170, Edge Lock 74, Dev
+Recorder 46, Quick Shape 19, Pixel Lock 13, Brush Lock 3; (ps1)/(ps3) green. HASHES: sha_D2_gate.txt (the 5 files),
+written after the gate, no source file newer than its log.
+HAND TEST: exe app/build/Release/SankoTV.exe built Nov 14 2026 14:36:46 (file 14:37:04), git fc5d56775+dirty, sha256
+98c0803f18a65ac0...; copy "TEST COPY - small pirate, D paste 2" (C:\SankoTV-TestCopies; the original's hash unchanged
+before and after); list Documents\SankoTV-Design\handtest_D_paste_retest.md (the new Paste, and the two Library-tick
+parts not tried before). Commit D only after the user's re-test passes.
+
 ## STATUS 2026-11-13 (night): THE ROTATION RE-TEST PASSED; (pz5) AND BATCH C COMMITTED SEPARATELY; BATCH D NEXT - FIGMA FIRST, THEN THE USER'S APPROVAL BEFORE ANY BUILDING
 THE ROTATION RE-TEST (Dev Recorder 20261113-161043, 386 s, the 14:12:08 build, git 8d708a982+dirty; the title bar
 "SANKO TV — TEST COPY - small pirate, rotation"; ended by the window's X). Steps of

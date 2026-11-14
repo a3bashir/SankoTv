@@ -19547,6 +19547,357 @@ void runKeptArtPass(const QString &scratch)
         again->window.markCleanForTest();
 }
 
+// BATCH D, its parts with no new look (2026-11-13; the trial report's 7.3; the user's message of
+// 2026-11-13 and their rules for Paste of 2026-11-14, after the first hand test): (pl) Edit >
+// Paste and Paste in Place make a new layer above the current one with the drawing already on it
+// (the view's middle / where it was copied), as ONE "Paste" step, and switch the Move tool on,
+// its box round the paste; a move after it is the Move tool's own step (undone first), Esc
+// cancels only a move in progress; it works on a locked layer; (lt) View > Library's tick
+// follows the Library.
+void runPasteLayerPass(const QString &scratch)
+{
+    using namespace workspace;
+    out() << "--- (pl) paste on a new layer, (lt) View > Library's tick ---" << Qt::endl;
+    const QString dir = scratch + QStringLiteral("/pastelayer");
+    QDir(dir).removeRecursively();
+    QDir().mkpath(dir);
+    const QString project = writeProject(dir, QStringLiteral("PasteLayer"), QSize(960, 540), 24, 1, 2);
+    // (lt) opens the Library, which records "visible" and its size in the settings: both are put
+    // back at the end, or every later pass's page would open with it.
+    const QString visibleKey = QStringLiteral("storyboard/brushLibrary/v1/visible");
+    const QString geoKey = QStringLiteral("storyboard/brushLibrary/v1/geo");
+    const QVariant visibleBefore = sankoSettings().value(visibleKey);
+    const QVariant geoBefore = sankoSettings().value(geoKey);
+    auto restoreLibraryKeys = [&] {
+        QSettings s = sankoSettings();
+        if (visibleBefore.isValid())
+            s.setValue(visibleKey, visibleBefore);
+        else
+            s.remove(visibleKey);
+        if (geoBefore.isValid())
+            s.setValue(geoKey, geoBefore);
+        else
+            s.remove(geoKey);
+    };
+    auto viewAction = [](MainWindow &window, const QString &text) -> QAction * {
+        for (QAction *top : window.menuBar()->actions()) {
+            QString title = top->text();
+            title.remove(QLatin1Char('&'));
+            if (top->menu() && title == QStringLiteral("View"))
+                for (QAction *a : top->menu()->actions())
+                    if (a->text() == text)
+                        return a;
+        }
+        return nullptr;
+    };
+    {
+        auto rig = std::make_unique<Rig>(project);
+        Rig &r = *rig;
+        check(QStringLiteral("(pl) the workspace opened"), r.ok);
+        if (!r.ok)
+            return;
+        QUndoStack *stack = r.window.undoStackForTest();
+        Scene *scene = r.window.scenesForTest().value(0);
+        if (!stack || !scene || scene->panels.size() != 2) {
+            check(QStringLiteral("(pl) found the history and the scene"), false);
+            return;
+        }
+        Panel *p0 = scene->panels.at(0);
+        clickThumb(r, 0);
+        pump(80);
+        const QRect block(100, 100, 200, 100); // 20,000 px of blue on "Layer 1"
+        {
+            Layer &art = p0->layers[1];
+            art.image.fill(Qt::transparent);
+            QPainter p(&art.image);
+            p.fillRect(block, QColor(0, 0, 255));
+        }
+        p0->activeLayerIndex = 1;
+        r.storyboard->rebuildLayerPanelForTest();
+        r.canvas->update();
+        pump(60);
+        auto opaque = [](const QImage &img) {
+            int n = 0;
+            for (int y = 0; y < img.height(); ++y) {
+                const QRgb *line = reinterpret_cast<const QRgb *>(img.constScanLine(y));
+                for (int x = 0; x < img.width(); ++x)
+                    n += qAlpha(line[x]) > 128 ? 1 : 0;
+            }
+            return n;
+        };
+        auto px = [&](int index) { return index < p0->layers.size() ? opaque(p0->layers.at(index).image) : -1; };
+        auto names = [&] {
+            QStringList n;
+            for (const Layer &l : p0->layers)
+                n << l.name + (l.locked ? QStringLiteral(" (locked)") : QString());
+            return n.join(QStringLiteral(", "));
+        };
+        auto enter = [&] {
+            camtool::key(r.canvas, QEvent::KeyPress, Qt::Key_Return);
+            pump(120);
+        };
+        auto esc = [&] {
+            camtool::key(r.canvas, QEvent::KeyPress, Qt::Key_Escape);
+            pump(120);
+        };
+        auto toW = [&](const QPointF &c) { return r.canvas->viewTransformForTest().map(c); };
+        // A tool picked as the page picks it: its button checked, no click (a click on the Brush
+        // also opens the Library).
+        auto pickTool = [&](const char *name) {
+            if (auto *b = r.storyboard->findChild<QPushButton *>(QLatin1String(name)))
+                b->setChecked(true);
+            pump(60);
+        };
+        auto box = [&] { return r.canvas->transformQuadForTest().boundingRect().toAlignedRect(); };
+        auto moveBox = [&](const QPointF &byCanvas) {
+            const QRectF q = r.canvas->transformQuadForTest().boundingRect();
+            camtool::drag(r.canvas, toW(q.center()), toW(q.center() + byCanvas));
+            pump(40);
+        };
+        auto rectText = [](const QRect &q) {
+            return QStringLiteral("%1,%2 %3x%4").arg(q.left()).arg(q.top()).arg(q.width()).arg(q.height());
+        };
+        // A layer's pixels at rest: the Move tool's box holds what it lifted until it lands, so
+        // they are counted with the Brush picked (a box left untouched lands as nothing).
+        auto atRest = [&](int index) {
+            pickTool("toolBrush");
+            return px(index);
+        };
+        auto *brushButton0 = r.storyboard->findChild<QPushButton *>(QStringLiteral("toolBrush"));
+        auto *moveButton = r.storyboard->findChild<QPushButton *>(QStringLiteral("toolMove"));
+        if (!brushButton0 || !moveButton) {
+            check(QStringLiteral("(pl) found the Brush and Move buttons"), false);
+            return;
+        }
+        pickTool("toolBrush");
+        // The block copied with a rectangle selection 10 px round it.
+        r.canvas->setTool(DrawingCanvas::SelectRect);
+        camtool::drag(r.canvas, toW(QPointF(block.topLeft()) - QPointF(10, 10)),
+                      toW(QPointF(block.bottomRight()) + QPointF(11, 11)));
+        pump(40);
+        r.storyboard->editCopy();
+        r.canvas->clearSelection();
+        r.canvas->setTool(DrawingCanvas::Brush); // as its button, still checked, says
+        pump(40);
+        const int layers0 = p0->layers.size();
+        const QString id1 = p0->layers.at(1).id;
+        const int s0 = stack->index();
+        const QString before = names();
+        const QPointF viewCentre = r.canvas->viewTransformForTest().inverted().map(
+            QPointF(r.canvas->width() / 2.0, r.canvas->height() / 2.0));
+        auto nearCentre = [&](const QRect &q) {
+            const QPointF c = QRectF(q).center();
+            return qAbs(c.x() - viewCentre.x()) <= 2.0 && qAbs(c.y() - viewCentre.y()) <= 2.0;
+        };
+
+        // --- (pl1) Ctrl+V: a new layer with the drawing on it, the Move tool's box round it -------
+        r.storyboard->editPaste();
+        pump(80);
+        const int layers1 = p0->layers.size(), active1 = p0->activeLayerIndex, steps1 = stack->index() - s0;
+        const QString name1 = p0->layers.value(2).name, text1 = stack->undoText(), names1 = names();
+        const bool floating1 = r.canvas->floatingPasteForTest();
+        const bool moveOn1 = r.canvas->tool() == DrawingCanvas::Move && moveButton->isChecked();
+        const QRect box1 = box();
+        const int px1New = atRest(2), px1Old = px(1);
+        const QRect art1 = r.canvas->layerArtBoundsForTest(p0->layers.value(2));
+        check(QStringLiteral("(pl1) CTRL+V: A NEW LAYER WITH THE DRAWING ALREADY ON IT, IN THE MIDDLE OF THE VIEW, AND "
+                             "THE MOVE TOOL'S BOX ROUND IT: \"Layer 2\" right above \"Layer 1\" and chosen, nothing "
+                             "floating (no Enter needed), the Move tool on with its button, its box the drawing's 200 x "
+                             "100 on the view's centre - one \"Paste\" step; at rest the 20,000 px are the new "
+                             "layer's, where the box was, and \"Layer 1\" is unchanged"),
+              layers0 == 2 && layers1 == 3 && active1 == 2 && p0->layers.at(1).id == id1
+                  && name1 == QStringLiteral("Layer 2") && !floating1 && moveOn1 && box1.size() == QSize(200, 100)
+                  && nearCentre(box1) && steps1 == 1 && text1 == QStringLiteral("Paste") && px1New == 20000
+                  && px1Old == 20000 && art1 == box1,
+              QStringLiteral("layers [%1] -> [%2]; chosen %3; floating %4; Move %5; box %6 (view centre %7,%8); "
+                             "steps +%9 '%10'; at rest new %11 px at %12, Layer 1 %13 px")
+                  .arg(before, names1).arg(active1).arg(floating1).arg(moveOn1).arg(rectText(box1))
+                  .arg(viewCentre.x()).arg(viewCentre.y()).arg(steps1).arg(text1).arg(px1New).arg(rectText(art1))
+                  .arg(px1Old));
+        r.storyboard->editUndo();
+        pump(80);
+        const bool undone1 = p0->layers.size() == 2 && stack->index() == s0;
+
+        // --- (pl2) Ctrl+Shift+V: the same, exactly where it was copied from ---------------------
+        r.storyboard->editPasteInPlace();
+        pump(80);
+        const QRect box2 = box();
+        const bool moveOn2 = r.canvas->tool() == DrawingCanvas::Move;
+        const int layers2 = p0->layers.size(), steps2 = stack->index() - s0;
+        check(QStringLiteral("(pl2) CTRL+SHIFT+V: THE SAME, EXACTLY WHERE IT WAS COPIED FROM: the new layer, the Move "
+                             "tool, its box on the block's own place (100, 100, 200 x 100) - one step"),
+              undone1 && layers2 == 3 && moveOn2 && box2 == block && steps2 == 1,
+              QStringLiteral("undone first %1; %2 layers; Move %3; box %4; steps +%5").arg(undone1).arg(layers2)
+                  .arg(moveOn2).arg(rectText(box2)).arg(steps2));
+
+        // --- (pl3) Ctrl+Z: first the move made after the paste, then the paste with its layer ------
+        moveBox(QPointF(300, 200));
+        enter(); // the move lands, as the Move tool lands any: "Transform", a step of its own
+        const QRect moved3 = box();
+        const int steps3 = stack->index() - s0;
+        const QString text3 = stack->undoText();
+        r.storyboard->editUndo();
+        pump(80);
+        const QRect back3 = box();
+        const int layersUndo1 = p0->layers.size(), stepsUndo1 = stack->index() - s0;
+        r.storyboard->editUndo();
+        pump(80);
+        const int layersUndo2 = p0->layers.size(), stepsUndo2 = stack->index() - s0, active3 = p0->activeLayerIndex;
+        r.storyboard->editRedo();
+        pump(80);
+        const bool redone3 = p0->layers.size() == 3 && box() == block && stack->index() == s0 + 1;
+        check(QStringLiteral("(pl3) CTRL+Z UNDOES THE MOVE FIRST, THEN THE PASTE WITH ITS LAYER: the box moved 300, "
+                             "200 and Enter - \"Transform\", its own step; one Ctrl+Z puts the drawing back where it "
+                             "was pasted, its layer kept; the next takes the paste and its layer away together, "
+                             "\"Layer 1\" chosen; Redo brings them back"),
+              moved3 == block.translated(300, 200) && steps3 == 2 && text3 == QStringLiteral("Transform")
+                  && back3 == block && layersUndo1 == 3 && stepsUndo1 == 1 && layersUndo2 == 2 && stepsUndo2 == 0
+                  && active3 == 1 && redone3,
+              QStringLiteral("moved %1, steps +%2 '%3'; one Undo: box %4, %5 layers, +%6; two: %7 layers, +%8, "
+                             "chosen %9; redone %10")
+                  .arg(rectText(moved3)).arg(steps3).arg(text3).arg(rectText(back3)).arg(layersUndo1)
+                  .arg(stepsUndo1).arg(layersUndo2).arg(stepsUndo2).arg(active3).arg(redone3));
+        // A move still being made (not landed) is undone first the same way.
+        moveBox(QPointF(300, 200));
+        r.storyboard->editUndo();
+        pump(80);
+        const QRect back3b = box();
+        const int layers3b = p0->layers.size(), steps3b = stack->index() - s0;
+        r.storyboard->editUndo();
+        pump(80);
+        check(QStringLiteral("(pl3) A MOVE NOT LANDED YET is undone first too: one Ctrl+Z puts the drawing back where "
+                             "it was pasted, the layer kept; the next removes both"),
+              back3b == block && layers3b == 3 && steps3b == 1 && p0->layers.size() == 2 && stack->index() == s0,
+              QStringLiteral("box %1, %2 layers, +%3; then %4 layers, +%5").arg(rectText(back3b)).arg(layers3b)
+                  .arg(steps3b).arg(p0->layers.size()).arg(stack->index() - s0));
+
+        // --- (pl4) Esc cancels only a move in progress; the drawing stays on its layer ---------------
+        r.storyboard->editPasteInPlace();
+        pump(80);
+        moveBox(QPointF(300, 200));
+        // A box being dragged sits where the pointer put it, not on whole pixels (the Move tool's
+        // live drag; Enter lands it on them): its centre is what moved.
+        const QRect moving4 = box();
+        const QPointF movingCentre4 = r.canvas->transformQuadForTest().boundingRect().center();
+        const QPointF wantCentre4 = QRectF(block).center() + QPointF(300, 200);
+        const bool dragged4 = qAbs(movingCentre4.x() - wantCentre4.x()) <= 1.0
+                              && qAbs(movingCentre4.y() - wantCentre4.y()) <= 1.0;
+        esc();
+        const QRect after4 = box();
+        const int layers4 = p0->layers.size(), steps4 = stack->index() - s0;
+        esc(); // nothing in progress now: the drawing still stays
+        const QRect again4 = box();
+        const int px4 = atRest(2);
+        check(QStringLiteral("(pl4) ESC CANCELS ONLY THE MOVE IN PROGRESS: the box dragged 300, 200 and Esc - back "
+                             "where it was pasted, the drawing still on its layer, no step; a second Esc changes "
+                             "nothing; at rest the 20,000 px on the new layer"),
+              dragged4 && after4 == block && layers4 == 3 && steps4 == 1
+                  && again4 == block && px4 == 20000 && p0->layers.size() == 3,
+              QStringLiteral("dragged %1 (centre %2,%3); Esc %4, %5 layers, +%6; again %7; at rest %8 px")
+                  .arg(rectText(moving4)).arg(movingCentre4.x()).arg(movingCentre4.y())
+                  .arg(rectText(after4)).arg(layers4).arg(steps4).arg(rectText(again4)).arg(px4));
+        r.storyboard->editUndo();
+        pump(80);
+
+        // --- (pl5) a locked current layer: the paste goes on the new, unlocked one -----------------
+        p0->layers[1].locked = true;
+        r.storyboard->rebuildLayerPanelForTest();
+        pump(40);
+        r.canvas->pasteClipboard(true); // the canvas's own floating paste, on the locked layer
+        pump(40);
+        const bool refused = !r.canvas->floatingPasteForTest() && p0->layers.size() == 2;
+        r.storyboard->editPasteInPlace();
+        pump(80);
+        const bool newUnlocked = p0->layers.size() == 3 && !p0->layers.at(2).locked && p0->activeLayerIndex == 2
+                                 && p0->layers.at(2).name == QStringLiteral("Layer 2");
+        const QRect box5 = box();
+        const int steps5 = stack->index() - s0;
+        const int px5New = atRest(2), px5Locked = px(1);
+        check(QStringLiteral("(pl5) ON A LOCKED LAYER IT WORKS: \"Layer 1\" locked, Ctrl+Shift+V makes the unlocked "
+                             "\"Layer 2\" above it with the drawing, the box round it; the locked layer untouched - one "
+                             "step"),
+              newUnlocked && box5 == block && steps5 == 1 && px5New == 20000 && px5Locked == 20000,
+              QStringLiteral("[%1]; new unlocked %2; box %3; steps +%4; new %5 px, locked %6 px").arg(names())
+                  .arg(newUnlocked).arg(rectText(box5)).arg(steps5).arg(px5New).arg(px5Locked));
+        check(QStringLiteral("(pl5) control: the lock is real - the canvas's own paste, with no new layer, is "
+                             "refused on it"),
+              refused, QStringLiteral("refused %1").arg(refused));
+        r.storyboard->editUndo();
+        pump(80);
+        p0->layers[1].locked = false;
+        r.storyboard->rebuildLayerPanelForTest();
+        pump(40);
+
+        // --- (pl6) the Move tool already on ---------------------------------------------------------
+        pickTool("toolMove"); // its box round "Layer 1"'s block
+        const QRect box6a = box();
+        r.storyboard->editPaste();
+        pump(80);
+        const QRect box6 = box();
+        const int steps6 = stack->index() - s0, active6 = p0->activeLayerIndex;
+        const int px6New = atRest(2), px6Old = px(1);
+        check(QStringLiteral("(pl6) THE MOVE TOOL ALREADY ON: its box round \"Layer 1\"'s block lands untouched (no "
+                             "step of its own), and the box is now round the pasted drawing on the new layer, in the "
+                             "middle of the view - one step; \"Layer 1\" unchanged"),
+              box6a == block && box6.size() == QSize(200, 100) && nearCentre(box6) && box6 != block && steps6 == 1
+                  && active6 == 2 && px6New == 20000 && px6Old == 20000,
+              QStringLiteral("box before %1, after %2; steps +%3; chosen %4; new %5 px, Layer 1 %6 px")
+                  .arg(rectText(box6a)).arg(rectText(box6)).arg(steps6).arg(active6).arg(px6New).arg(px6Old));
+        r.storyboard->editUndo();
+        pump(80);
+
+        pickTool("toolBrush");
+
+        // --- (lt1) View > Library's tick follows the Library ---------------------------------------
+        auto *library = r.window.findChild<brushlib::BrushLibraryPanel *>();
+        QAction *libraryEntry = viewAction(r.window, QStringLiteral("Library"));
+        auto *brushButton = r.storyboard->findChild<QPushButton *>(QStringLiteral("toolBrush"));
+        if (!library || !libraryEntry || !brushButton) {
+            check(QStringLiteral("(lt) found the Library, View > Library and the Brush button"), false);
+            restoreLibraryKeys();
+            return;
+        }
+        const bool shown0 = library->isVisible(), tick0 = libraryEntry->isChecked();
+        brushButton->click(); // the Library's door
+        pump(200);
+        const bool shown1 = library->isVisible(), tick1 = libraryEntry->isChecked();
+        library->autoHide(); // the first stroke's hide
+        pump(200);
+        const bool shown2 = library->isVisible(), tick2 = libraryEntry->isChecked();
+        libraryEntry->trigger(); // View > Library
+        pump(200);
+        const bool shown3 = library->isVisible(), tick3 = libraryEntry->isChecked();
+        libraryEntry->trigger();
+        pump(200);
+        const bool shown4 = library->isVisible(), tick4 = libraryEntry->isChecked();
+        check(QStringLiteral("(lt1) VIEW > LIBRARY'S TICK FOLLOWS THE LIBRARY: off while it is closed, on when the "
+                             "Brush button opens it, off when the first stroke hides it, and the entry itself opens "
+                             "and closes it with its tick"),
+              libraryEntry->isCheckable() && !shown0 && !tick0 && shown1 && tick1 && !shown2 && !tick2 && shown3
+                  && tick3 && !shown4 && !tick4,
+              QStringLiteral("shown/ticked: %1/%2, button %3/%4, stroke %5/%6, entry %7/%8, entry %9/%10")
+                  .arg(shown0).arg(tick0).arg(shown1).arg(tick1).arg(shown2).arg(tick2).arg(shown3).arg(tick3)
+                  .arg(shown4).arg(tick4));
+        r.window.markCleanForTest();
+    }
+    // --- (lt2) restored open from the last session, it starts ticked -------------------------------
+    sankoSettings().setValue(visibleKey, true);
+    {
+        auto rig = std::make_unique<Rig>(project);
+        Rig &r = *rig;
+        auto *library = r.window.findChild<brushlib::BrushLibraryPanel *>();
+        QAction *libraryEntry = viewAction(r.window, QStringLiteral("Library"));
+        clickThumb(r, 0);
+        pump(200);
+        const bool shown = library && library->isVisible();
+        const bool ticked = libraryEntry && libraryEntry->isChecked();
+        check(QStringLiteral("(lt2) OPEN FROM THE LAST SESSION, the Library starts with its tick on"),
+              r.ok && shown && ticked, QStringLiteral("shown %1, ticked %2").arg(shown).arg(ticked));
+        r.window.markCleanForTest();
+    }
+    restoreLibraryKeys();
+}
+
 // BATCH C (2026-11-13; Figma C-1, C-2; the user's choices of 2026-11-10 and 2026-11-13):
 // (tt) every tooltip drawn as the floating Brush bar's - Qt still decides when, what and
 // where, its own label is made transparent and the Brush bar's frame drawn in its place;
@@ -26226,8 +26577,14 @@ int main(int argc, char **argv)
         || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("trial")
         || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("keptart")
         || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("scenelock")
-        || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("keysview")) {
-        if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("keysview")) {
+        || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("keysview")
+        || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("batchd")) {
+        if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("batchd")) {
+            // Batch D's parts with no new look: paste on a new layer, View > Library's tick; and
+            // the kept-art pass, whose (ka7) pastes on the canvas.
+            runPasteLayerPass(scratch);
+            runKeptArtPass(scratch);
+        } else if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("keysview")) {
             // Batch C: one tooltip style, the keys and the view, the timeline to 1600 %;
             // and the camera guides (their arrows are a View entry now).
             runKeysAndViewPass(scratch);
@@ -26466,6 +26823,7 @@ int main(int argc, char **argv)
     runDepthWhileMovingPass(scratch);
     runSceneLockPass(scratch);
     runKeysAndViewPass(scratch);
+    runPasteLayerPass(scratch);
     runPinnedKeysPass(scratch);
     runCameraBarFitPass(scratch);
     runStageClearPass(scratch);

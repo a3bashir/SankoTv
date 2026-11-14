@@ -2996,9 +2996,17 @@ void StoryboardPage::installDockViewActions()
     }
     // Library: ONE entry for the one panel; it opens at the active tool's
     // scope (the toolChanged wiring keeps the scope current anyway).
-    // Checked state follows the panel's visibility (wired at creation).
     m_brushLibViewAction = viewMenu->addAction(QStringLiteral("Library"));
     m_brushLibViewAction->setCheckable(true);
+    // The tick follows the panel's visibility, both ways - wired HERE, where the action is
+    // made. It used to be wired where the panel is made (createCenterColumn), which runs
+    // before this queued call: the action did not exist yet, so the tick never moved
+    // (batch D). The panel may already be open (restored from the last session).
+    if (m_brushLibPanel) {
+        m_brushLibViewAction->setChecked(m_brushLibPanel->isVisible());
+        connect(m_brushLibPanel, &brushlib::BrushLibraryPanel::visibilityChanged,
+                m_brushLibViewAction, &QAction::setChecked);
+    }
     connect(m_brushLibViewAction, &QAction::triggered, this, [this](bool on) {
         if (!m_brushLibPanel)
             return;
@@ -3425,11 +3433,8 @@ QWidget *StoryboardPage::createCenterColumn()
         if (m_brushLibPanel && m_brushLibPanel->isVisible())
             m_brushLibPanel->autoHide();
     });
-    if (m_brushLibViewAction) {
-        connect(m_brushLibPanel,
-                &brushlib::BrushLibraryPanel::visibilityChanged,
-                m_brushLibViewAction, &QAction::setChecked);
-    }
+    // (View > Library's tick follows the panel: wired in installDockViewActions, where the
+    // action is made - it does not exist yet here.)
     // (The Brush Options panel is gone — its Opacity/Hardness quick controls
     // live on the Size CTL bar, which paintBrushChanged already keeps in
     // step; the pressure toggles were removed deliberately, see HANDOFF.md.)
@@ -11216,7 +11221,7 @@ void StoryboardPage::editCut()
 void StoryboardPage::editPaste()
 {
     if (m_lastClipSource == ClipSource::Canvas && m_canvas)
-        m_canvas->pasteClipboard(false); // floating, view centre
+        pasteCanvasOnNewLayer(false); // a new layer, the drawing in the view's centre
     else if (m_lastClipSource == ClipSource::PanelLevel)
         pastePanelAfterSelected();
 }
@@ -11224,9 +11229,52 @@ void StoryboardPage::editPaste()
 void StoryboardPage::editPasteInPlace()
 {
     if (m_lastClipSource == ClipSource::Canvas && m_canvas)
-        m_canvas->pasteClipboard(true); // exact copied coordinates
+        pasteCanvasOnNewLayer(true); // a new layer, the drawing where it was copied
     else if (m_lastClipSource == ClipSource::PanelLevel)
         pastePanelInPlace();
+}
+
+// PASTE ALWAYS MAKES A NEW LAYER, READY TO MOVE (batch D; the trial report's 7.3 and the
+// user's rules of 2026-11-14): a new "Layer N" right above the current layer with the copied
+// drawing already on it - in the middle of the view, or (Paste in Place) exactly where it was
+// copied from - as ONE "Paste" step; then the Move tool, its box around the pasted drawing,
+// ready to move, scale or rotate. What follows is the Move tool's own, as on any layer: a move
+// or transform is a step of its own (Ctrl+Z undoes it first, the next Ctrl+Z the paste and its
+// layer together), and Esc cancels only a move or transform in progress. It works when the
+// current layer is locked: the new one is not.
+void StoryboardPage::pasteCanvasOnNewLayer(bool atOriginalPos)
+{
+    Panel *panel = currentPanel();
+    if (!panel || !m_canvas || !m_canvas->hasCanvasClipboard())
+        return;
+    // Whatever is live lands first, so the step below starts from the layers as they are.
+    m_canvas->settleForLayerChange();
+    const QVector<Layer> before = panel->layers;
+    const int beforeActive = panel->activeLayerIndex;
+    const QSet<int> beforeSelection = m_layerSelection;
+    const int beforeAnchor = m_layerAnchor;
+    insertLayerAboveActive(panel);
+    if (!m_canvas->placeClipboardOnActiveLayer(atOriginalPos)) {
+        // Refused - the new layer joined a hidden folder, as the row it went above: nothing
+        // changes.
+        panel->layers = before;
+        panel->activeLayerIndex = beforeActive;
+        m_layerSelection = beforeSelection;
+        m_layerAnchor = beforeAnchor;
+        refreshLayerCanvas();
+        return;
+    }
+    // The step ends with the layers as they are now - the drawing on its new layer - recorded
+    // before the Move tool's box is lifted below.
+    pushLayerCommand(panel, before, beforeActive, QStringLiteral("Paste"));
+    refreshLayerCanvas();
+    rebuildLayerPanel(); // the canvas's chosen rows: the new layer alone, for the box
+    // The Move tool switched on as the V key does it, its box lifted round the new layer's
+    // drawing; already on, its box is lifted again round the new layer.
+    if (m_canvas->tool() == DrawingCanvas::Move)
+        m_canvas->resetTransformBox();
+    else
+        toolKey(DrawingCanvas::Move);
 }
 
 // --- Panel-level clipboard ----------------------------------------------------
@@ -12658,6 +12706,16 @@ void StoryboardPage::layerAdd()
     m_canvas->commitQuickShape();
     const QVector<Layer> before = panel->layers;
     const int beforeActive = panel->activeLayerIndex;
+    insertLayerAboveActive(panel);
+    pushLayerCommand(panel, before, beforeActive, QStringLiteral("Add Layer"));
+    refreshLayerCanvas();
+    rebuildLayerPanel();
+}
+
+// A new empty "Layer N" above the active row, made active and the only row selected (Add
+// Layer, Edit > Paste). No history and no refresh: the caller's.
+int StoryboardPage::insertLayerAboveActive(Panel *panel)
+{
     // Next free "Layer N": one past the highest number in use — Background +
     // "Layer 1" yields "Layer 2" (the plain size+1 skipped numbers).
     int highest = 0;
@@ -12683,9 +12741,7 @@ void StoryboardPage::layerAdd()
     m_layerSelection.clear();
     m_layerSelection.insert(insertAt);
     m_layerAnchor = insertAt;
-    pushLayerCommand(panel, before, beforeActive, QStringLiteral("Add Layer"));
-    refreshLayerCanvas();
-    rebuildLayerPanel();
+    return insertAt;
 }
 
 void StoryboardPage::layerAddImage()

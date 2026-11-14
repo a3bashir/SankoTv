@@ -567,6 +567,14 @@ public slots:
     void copySelection();                 // selected pixels -> internal clipboard
     void cutSelection();                  // copy, then clear to transparent (undoable)
     void pasteClipboard(bool atOriginalPos); // floating paste; commit on click-away/Enter
+    // Edit > Paste (batch D): the copied drawing placed at once on the active layer - the view's
+    // centre, or (atOriginalPos) exactly where it was copied from - no float, no history (the
+    // page's "Paste" step holds it). False: nothing copied, or the layer cannot take it.
+    bool placeClipboardOnActiveLayer(bool atOriginalPos);
+    // Before the layer stack changes under the canvas (Edit > Paste's new layer): a pending
+    // stroke commit, a QuickShape and a floating paste land, a live transform commits - as
+    // Undo resolves them first.
+    void settleForLayerChange();
     void clearSelection();                // Esc equivalent
     void deselect();                      // clearSelection + selection-history entry
     void selectAll();                     // select the whole canvas

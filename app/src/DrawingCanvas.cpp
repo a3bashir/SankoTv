@@ -4108,6 +4108,67 @@ void DrawingCanvas::commitMoveDrag()
     update();
 }
 
+void DrawingCanvas::settleForLayerChange()
+{
+    flushPaintCommit();
+    commitQuickShape();
+    commitFloating();
+    if (m_xformActive)
+        commitTransform(false);
+}
+
+// EDIT > PASTE (batch D; the user's rules of 2026-11-14): the copied drawing PLACED at once
+// on the active layer - the new layer Edit > Paste has just made for it - with no floating
+// stage: where a paste used to start floating (the view's centre, never hanging off the stage
+// when it fits; Paste in Place exactly where it was copied from), a part past the stage kept
+// as any landing keeps it (batch B1). No history: the page's one "Paste" step holds the layer
+// and the drawing together.
+bool DrawingCanvas::placeClipboardOnActiveLayer(bool atOriginalPos)
+{
+    if (m_clipImg.isNull() || !m_panel)
+        return false;
+    Layer *layer = editableActiveLayer();
+    if (!layer)
+        return false;
+    QPointF pos;
+    if (atOriginalPos) {
+        pos = m_clipPos + QPointF(stage().origin); // integral: captured from an aligned rect
+    } else {
+        const QPointF viewCentre = toCanvasF(QPointF(width() / 2.0, height() / 2.0));
+        const QPointF raw = viewCentre - QPointF(m_clipImg.width() / 2.0, m_clipImg.height() / 2.0);
+        const QSize cs = canvasSize();
+        const qreal maxX = qMax<qreal>(0.0, cs.width() - m_clipImg.width());
+        const qreal maxY = qMax<qreal>(0.0, cs.height() - m_clipImg.height());
+        pos = QPointF(qBound<qreal>(0.0, qRound(raw.x()), maxX), qBound<qreal>(0.0, qRound(raw.y()), maxY));
+    }
+    const QPoint aligned(qRound(pos.x()), qRound(pos.y()));
+    const QRect landing(aligned, m_clipImg.size());
+    if (keepsArt(*layer) && !layer->image.rect().contains(landing)) {
+        const KeptLanding landed = landKeptArt(*layer, landing, [&](QPainter &p) {
+            p.drawImage(aligned, m_clipImg);
+        });
+        layer->image = landed.image;
+        layer->tiles = landed.tiles;
+        layer->tilesOf = landed.image.cacheKey();
+        layer->stageRect = QRect(-m_panel->frameAt(), landed.image.size()); // as commitTransform
+        if (landed.limited)
+            emit keptArtLimitReached();
+    } else {
+        QPainter p(&layer->image);
+        p.drawImage(aligned, m_clipImg); // limited only by the canvas bounds
+    }
+    // The selection goes, as a floating paste's outline replaced it: the Move tool's box then
+    // wraps the layer's whole drawing - the paste.
+    m_selectionPath = QPainterPath();
+    m_selDrag = false;
+    m_lassoPts.clear();
+    updateAntsTimer();
+    invalidateComposite();
+    update();
+    emit contentChanged();
+    return true;
+}
+
 // Commit of a floating PASTE (click-away / Enter / tool switch).
 void DrawingCanvas::commitFloating()
 {
