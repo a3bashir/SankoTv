@@ -143,6 +143,7 @@
 #include <QStyle>
 #include <QStyleOptionSlider>
 #include <QLineEdit>
+#include <QListWidget>
 #include <QHBoxLayout>
 #include <QKeyEvent>
 #include <QPlainTextEdit>
@@ -20743,6 +20744,240 @@ void runEyedropperFlipPass(const QString &scratch)
     restoreColorsKey(); // the launch keys with it
 }
 
+// ENTER LANDS AN OPEN MOVE BOX WHEREVER THE POINTER IS (the user's answer of 2026-11-15, after
+// the D-2 hand test: both Enters missed the canvas - the pen on the Move bar, then out of range).
+// (en) The pointer away from the canvas and the keyboard on a widget that does not take Enter:
+// the box lands; the keyboard owners routeCanvasKey has kept since 2026-11-09 - a text field, a
+// number field, a list, the menu bar - keep it; with no box Enter does nothing; Esc still follows
+// the pointer.
+void runEnterMoveBoxPass(const QString &scratch)
+{
+    using namespace workspace;
+    out() << "--- (en) Enter lands an open Move box wherever the pointer is ---" << Qt::endl;
+    const QString dir = scratch + QStringLiteral("/entermovebox");
+    QDir(dir).removeRecursively();
+    QDir().mkpath(dir);
+    const QString project = writeProject(dir, QStringLiteral("EnterBox"), QSize(960, 540), 24, 1, 2);
+    auto rig = std::make_unique<Rig>(project);
+    Rig &r = *rig;
+    check(QStringLiteral("(en) the workspace opened"), r.ok);
+    if (!r.ok)
+        return;
+    QUndoStack *stack = r.window.undoStackForTest();
+    Scene *scene = r.window.scenesForTest().value(0);
+    auto *flipH = r.storyboard->findChild<QPushButton *>(QStringLiteral("moveFlipH"));
+    QScrollArea *strip = nullptr;
+    if (auto *stripDock = r.storyboard->findChild<QDockWidget *>(QStringLiteral("dockPanelStrip")))
+        strip = stripDock->findChild<QScrollArea *>();
+    if (!stack || !scene || scene->panels.size() != 2 || !flipH || !strip) {
+        check(QStringLiteral("(en) found the history, the scene, Flip H and the Panel Strip"), false);
+        return;
+    }
+    Panel *p0 = scene->panels.at(0);
+    clickThumb(r, 0);
+    pump(80);
+    // "Layer 1": a red block on the left and a small blue one at the right edge - the box is
+    // 100,100 410 x 100, and a flip H puts the red on the right (410 to 510).
+    {
+        Layer &art = p0->layers[1];
+        art.image.fill(Qt::transparent);
+        QPainter p(&art.image);
+        p.fillRect(QRect(100, 100, 100, 100), QColor(255, 0, 0));
+        p.fillRect(QRect(500, 100, 10, 10), QColor(0, 0, 255));
+    }
+    p0->activeLayerIndex = 1;
+    r.storyboard->rebuildLayerPanelForTest();
+    r.canvas->invalidateComposite();
+    pump(60);
+    auto pickTool = [&](const char *name) {
+        if (auto *b = r.storyboard->findChild<QPushButton *>(QLatin1String(name)))
+            b->setChecked(true);
+        pump(60);
+    };
+    // The pen on the Move bar, over a panel or out of range: the canvas told the pointer left
+    // (through the page's test door, as a pen's own Leave).
+    auto pointerAway = [&] {
+        QEvent leave(QEvent::Leave);
+        r.storyboard->sendPointerEventForTest(r.canvas, &leave);
+        pump(20);
+    };
+    auto pointerOver = [&] {
+        const QPointF at(r.canvas->width() / 2.0, r.canvas->height() / 2.0);
+        QEnterEvent enter(at, at, r.canvas->mapToGlobal(at));
+        r.storyboard->sendPointerEventForTest(r.canvas, &enter);
+        pump(20);
+    };
+    // A key typed with the keyboard on w (sent to it, through the application, as a real one).
+    auto keyTo = [&](QWidget *w, int k) {
+        w->setFocus();
+        pump(20);
+        camtool::key(w, QEvent::KeyPress, k);
+        camtool::key(w, QEvent::KeyRelease, k);
+        pump(100);
+    };
+    auto redAt = [&](int x, int y) { return p0->layers.at(1).image.pixelColor(x, y) == QColor(255, 0, 0); };
+    auto rectText = [](const QRect &q) {
+        return QStringLiteral("%1,%2 %3x%4").arg(q.left()).arg(q.top()).arg(q.width()).arg(q.height());
+    };
+    pickTool("toolMove");
+    const QRect box0 = r.canvas->transformQuadForTest().boundingRect().toAlignedRect();
+    const int s0 = stack->index();
+
+    // --- (en1) away from the canvas, Enter lands the flip - one step, Ctrl+Z takes it back ------
+    flipH->click();
+    pump(60);
+    pointerAway();
+    const bool away1 = !r.storyboard->pointerOverCanvasForTest();
+    keyTo(strip, Qt::Key_Return);
+    const bool focus1 = r.window.focusWidget() == strip;
+    const int steps1 = stack->index() - s0;
+    const QString text1 = stack->undoText();
+    const bool mirrored1 = !redAt(150, 150) && redAt(460, 150);
+    r.storyboard->editUndo();
+    pump(120);
+    const bool back1 = redAt(150, 150) && !redAt(460, 150) && stack->index() == s0;
+    check(QStringLiteral("(en1) ENTER LANDS AN OPEN MOVE BOX WHEREVER THE POINTER IS: the box flipped, the pointer "
+                         "away from the canvas (on the Move bar, over a panel, out of range) and the keyboard on the "
+                         "Panel Strip - Enter lands the flip: one \"Transform\" step, the drawing mirrored; Ctrl+Z puts "
+                         "it back"),
+          box0 == QRect(100, 100, 410, 100) && away1 && focus1 && steps1 == 1 && text1 == QStringLiteral("Transform")
+              && mirrored1 && back1,
+          QStringLiteral("box %1; away %2, keyboard on the strip %3; steps +%4 '%5', mirrored %6; undone %7")
+              .arg(rectText(box0)).arg(away1).arg(focus1).arg(steps1).arg(text1).arg(mirrored1).arg(back1));
+
+    // --- (en2) the keyboard owners keep their Enter -------------------------------------------
+    auto *field = new QLineEdit(&r.window);
+    auto *number = new QSpinBox(&r.window);
+    auto *list = new QListWidget(&r.window);
+    list->addItems({QStringLiteral("one"), QStringLiteral("two")});
+    field->setGeometry(20, 60, 120, 24);
+    number->setGeometry(20, 90, 120, 24);
+    list->setGeometry(20, 120, 120, 60);
+    for (QWidget *w : {static_cast<QWidget *>(field), static_cast<QWidget *>(number), static_cast<QWidget *>(list)})
+        w->show();
+    pump(60);
+    QStringList kept;
+    const QList<QPair<QString, QWidget *>> owners = {{QStringLiteral("text field"), field},
+                                                     {QStringLiteral("number field"), number},
+                                                     {QStringLiteral("list"), list},
+                                                     {QStringLiteral("menu bar"), r.window.menuBar()}};
+    for (const auto &owner : owners) {
+        if (!r.canvas->moveBoxOpen())
+            pickTool("toolMove");
+        flipH->click();
+        pump(60);
+        pointerAway();
+        const int before = stack->index();
+        keyTo(owner.second, Qt::Key_Return);
+        const bool keeps = stack->index() == before && redAt(150, 150) && r.canvas->moveBoxOpen();
+        kept << QStringLiteral("%1 %2").arg(owner.first, keeps ? QStringLiteral("keeps it") : QStringLiteral("LOST it"));
+        // The flip taken back with Esc over the canvas (Esc still follows the pointer).
+        pointerOver();
+        camtool::key(r.canvas, QEvent::KeyPress, Qt::Key_Escape);
+        pump(100);
+        if (stack->index() != before) { // landed after all: back to where it was
+            r.storyboard->editUndo();
+            pump(120);
+        }
+    }
+    delete field;
+    delete number;
+    delete list;
+    pump(40);
+    const QString wantKept = QStringLiteral("text field keeps it, number field keeps it, list keeps it, menu bar keeps it");
+    check(QStringLiteral("(en2) THE KEYBOARD OWNERS KEEP THEIR ENTER (routeCanvasKey's since 2026-11-09): a text field, a "
+                         "number field, a list and the menu bar with the keyboard - the open, flipped box does not land"),
+          kept.join(QStringLiteral(", ")) == wantKept && stack->index() == s0 && redAt(150, 150),
+          QStringLiteral("[%1]; steps +%2").arg(kept.join(QStringLiteral(", "))).arg(stack->index() - s0));
+
+    // --- (en3) with no box Enter does nothing to the canvas ------------------------------------
+    pickTool("toolBrush");
+    pointerAway();
+    const QImage layer3 = p0->layers.at(1).image;
+    keyTo(strip, Qt::Key_Return);
+    check(QStringLiteral("(en3) WITH NO MOVE BOX (the Brush), Enter away from the canvas does nothing to it - no step, "
+                         "the layer as it was"),
+          !r.canvas->moveBoxOpen() && stack->index() == s0 && p0->layers.at(1).image == layer3,
+          QStringLiteral("box %1; steps +%2; layer unchanged %3").arg(r.canvas->moveBoxOpen()).arg(stack->index() - s0)
+              .arg(p0->layers.at(1).image == layer3));
+
+    // --- (en4) Esc still follows the pointer ----------------------------------------------------
+    pickTool("toolMove");
+    flipH->click();
+    pump(60);
+    pointerAway();
+    keyTo(strip, Qt::Key_Escape); // away: not the canvas's
+    keyTo(strip, Qt::Key_Return); // so the flip is still there to land
+    const bool flipSurvived = !redAt(150, 150) && redAt(460, 150) && stack->index() == s0 + 1;
+    r.storyboard->editUndo();
+    pump(120);
+    check(QStringLiteral("(en4) ESC STILL FOLLOWS THE POINTER: away from the canvas it leaves the flipped box alone - "
+                         "the Enter after it lands the flip"),
+          flipSurvived && stack->index() == s0 && redAt(150, 150),
+          QStringLiteral("flip survived the Esc %1; undone %2").arg(flipSurvived).arg(stack->index() == s0));
+
+    // --- (en5) Enter with Alt still down - the Enter hand test of 2026-11-15 -------------------
+    // What the user did (Dev Recorder 20261115-133012, 254-295 s): the box flipped, the pen off
+    // the canvas, the keyboard on the Layers list, and Alt held as Enter was pressed - twenty-odd
+    // "Alt+Return", and the box never landed (the router let no Enter with a modifier through).
+    QScrollArea *layersList = nullptr;
+    if (auto *layersDock = r.storyboard->findChild<QDockWidget *>(QStringLiteral("dockLayers")))
+        layersList = layersDock->findChild<QScrollArea *>();
+    auto keyWith = [&](QWidget *w, int k, Qt::KeyboardModifiers mods) {
+        w->setFocus();
+        pump(20);
+        QKeyEvent press(QEvent::KeyPress, k, mods);
+        QCoreApplication::sendEvent(w, &press);
+        QKeyEvent release(QEvent::KeyRelease, k, mods);
+        QCoreApplication::sendEvent(w, &release);
+        pump(100);
+    };
+    bool altLands = false, ctrlKept = false, fieldKeepsAlt = false;
+    QString altText;
+    if (layersList) {
+        pickTool("toolMove");
+        flipH->click();
+        pump(60);
+        pointerAway();
+        keyWith(layersList, Qt::Key_Return, Qt::ControlModifier); // control: Ctrl+Enter is a shortcut's
+        ctrlKept = stack->index() == s0 && redAt(150, 150) && r.canvas->moveBoxOpen();
+        keyWith(layersList, Qt::Key_Return, Qt::AltModifier);
+        altLands = stack->index() == s0 + 1 && !redAt(150, 150) && redAt(460, 150);
+        altText = stack->undoText();
+        r.storyboard->editUndo();
+        pump(120);
+        // control: a text field keeps an Alt+Enter too
+        auto *field5 = new QLineEdit(&r.window);
+        field5->setGeometry(20, 60, 120, 24);
+        field5->show();
+        pump(40);
+        if (!r.canvas->moveBoxOpen())
+            pickTool("toolMove");
+        flipH->click();
+        pump(60);
+        pointerAway();
+        keyWith(field5, Qt::Key_Return, Qt::AltModifier);
+        fieldKeepsAlt = stack->index() == s0 && redAt(150, 150) && r.canvas->moveBoxOpen();
+        pointerOver();
+        camtool::key(r.canvas, QEvent::KeyPress, Qt::Key_Escape);
+        pump(100);
+        delete field5;
+        pump(40);
+    }
+    check(QStringLiteral("(en5) ALT STILL DOWN, ENTER STILL LANDS THE BOX (the Enter hand test of 2026-11-15): the box "
+                         "flipped, the pen away, the keyboard on the Layers list, Alt held - Alt+Enter lands the flip, "
+                         "one \"Transform\" step"),
+          layersList && altLands && altText == QStringLiteral("Transform") && stack->index() == s0,
+          QStringLiteral("Layers list %1; landed %2 '%3'; undone %4").arg(layersList != nullptr).arg(altLands)
+              .arg(altText).arg(stack->index() == s0));
+    check(QStringLiteral("(en5) controls: Ctrl+Enter stays a shortcut's (the box not landed), and a text field keeps an "
+                         "Alt+Enter"),
+          ctrlKept && fieldKeepsAlt,
+          QStringLiteral("Ctrl+Enter left the box %1; the field kept Alt+Enter %2").arg(ctrlKept).arg(fieldKeepsAlt));
+    pickTool("toolBrush");
+    r.window.markCleanForTest();
+}
+
 // BATCH C (2026-11-13; Figma C-1, C-2; the user's choices of 2026-11-10 and 2026-11-13):
 // (tt) every tooltip drawn as the floating Brush bar's - Qt still decides when, what and
 // where, its own label is made transparent and the Brush bar's frame drawn in its place;
@@ -27437,6 +27672,7 @@ int main(int argc, char **argv)
             // panel and Flip H / V; and the kept-art pass, whose (ka7) pastes on the canvas.
             runPasteLayerPass(scratch);
             runEyedropperFlipPass(scratch);
+            runEnterMoveBoxPass(scratch);
             runKeptArtPass(scratch);
         } else if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("keysview")) {
             // Batch C: one tooltip style, the keys and the view, the timeline to 1600 %;
@@ -27679,6 +27915,7 @@ int main(int argc, char **argv)
     runKeysAndViewPass(scratch);
     runPasteLayerPass(scratch);
     runEyedropperFlipPass(scratch);
+    runEnterMoveBoxPass(scratch);
     runPinnedKeysPass(scratch);
     runCameraBarFitPass(scratch);
     runStageClearPass(scratch);

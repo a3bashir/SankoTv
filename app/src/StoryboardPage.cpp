@@ -9111,7 +9111,9 @@ void StoryboardPage::setupAnimaticSection(QWidget *centerColumn,
 // handed to the canvas first, whatever has the keyboard. A field being typed in
 // keeps its keys; so does a dialog, a menu or a popover (another window's); a
 // shortcut on the key (the timeline's Space, Stage mode's Enter) has already been
-// taken by then. What the canvas does not use goes on to where it was going.
+// taken by then. What the canvas does not use goes on to where it was going. One
+// exception (2026-11-15): Enter with the Move tool's box open is the canvas's wherever
+// the pointer is - the same keyboard owners keep it.
 bool StoryboardPage::routeCanvasKey(QObject *receiver, QKeyEvent *event)
 {
     const int key = event->key();
@@ -9124,7 +9126,14 @@ bool StoryboardPage::routeCanvasKey(QObject *receiver, QKeyEvent *event)
         return false;
     if (!space && !turn && key != Qt::Key_Return && key != Qt::Key_Enter && key != Qt::Key_Escape)
         return false;
-    if (event->modifiers() & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier))
+    // Alt still down with Enter is Enter for an open Move box (the Enter hand test of
+    // 2026-11-15: Alt+Enter twenty-odd times, the box never landed) - the menu bar is walked
+    // only once Alt is let go, and then it has the keyboard and keeps its Enter (below). Ctrl
+    // and Meta stay the shortcuts'; every other key with Alt too.
+    const bool enterForBox = (key == Qt::Key_Return || key == Qt::Key_Enter) && m_canvas->moveBoxOpen();
+    const Qt::KeyboardModifiers shortcutMods = enterForBox ? (Qt::ControlModifier | Qt::MetaModifier)
+                                                           : (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier);
+    if (event->modifiers() & shortcutMods)
         return false;
     auto *widget = static_cast<QWidget *>(receiver);
     // Only where the key was SENT - the widget with its window's keyboard - never where
@@ -9160,6 +9169,13 @@ bool StoryboardPage::routeCanvasKey(QObject *receiver, QKeyEvent *event)
         return m_canvas->routedKey(event);
     if (release)
         return false;
+    // ENTER LANDS AN OPEN MOVE BOX WHEREVER THE POINTER IS (the user's answer of 2026-11-15, as
+    // Photoshop): with the pen on the Move bar, over a panel or out of range, not only over the
+    // canvas. The keyboard owners above keep their Enter - a text or number field, a combo, a
+    // list, the menu bar being walked - and a dialog's, a menu's or a popover's is another
+    // window's. Nothing else changes: Space, R and Esc still follow the pointer.
+    if ((key == Qt::Key_Return || key == Qt::Key_Enter) && m_canvas->isVisible() && m_canvas->moveBoxOpen())
+        return m_canvas->routedKey(event);
     const bool overPreview = m_pointerOverPreview && m_animatic && m_animatic->previewVisible();
     if (!m_pointerOverCanvas || overPreview || !m_canvas->isVisible()) {
         // A SPACE PRESSED ON THE WAY (the batch A hand test, at 108 s: Space went down while

@@ -598,6 +598,7 @@ public slots:
     // the box (outline and handles stay), shown at once; Enter lands it with the rest, Esc
     // takes it back with the rest. False with no box open.
     bool canFlipTransform() const { return m_xformActive && !m_transformBuf.isNull(); }
+    bool moveBoxOpen() const { return m_xformActive; } // the Move tool's box is up: Enter lands it
     bool flipTransform(bool horizontal);
     void clearSelection();                // Esc equivalent
     void deselect();                      // clearSelection + selection-history entry

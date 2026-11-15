@@ -1,5 +1,100 @@
 # SankoTV — Session Handoff Brief
 
+## STATUS 2026-11-15 (afternoon): THE ENTER HAND TEST FAILED (ALT WAS HELD); ALT+ENTER NOW LANDS AN OPEN BOX - BUILT, NOT COMMITTED, WAITING FOR THE USER'S E2 HAND TEST; ROTATION TILE 3 STOPPED (ITS VALUES DIFFER FROM THE USER'S WORDS)
+THE ENTER HAND TEST (Dev Recorder 20261115-133012, 868 s, the only session after 12:38; system.txt git e697a2288+dirty,
+built Nov 15 2026 12:38:52 - the E1 exe; the copy "TEST COPY - small pirate, Enter" - the exit dialog "Save changes to
+"TEST COPY - small pirate, Enter" before exiting?" - closed with Discard). The user: their steps 3-8 (= the list's 1-6)
+"didn't work as expected". handtest_E_enter_lands.md, read from the events (keys_where.py: the pointer's last receiver
+per Enter / Esc):
+1 PASS BY THE RECORD, NOTHING ON SCREEN - no Flip H before 83.6 s, so the Enters at 44.2-82.0 s (pen on the Move bar)
+had nothing to land; Flip H was tapped twice at 83.6/84.4, 90.7/91.3, 103.0/103.8, 108.4/109.3 (mirror + back, nothing
+to land); the single taps at 110.2, 111.3, 112.3 were each landed by an Enter with the pen on moveFlipH (110.8, 111.9,
+112.9) and Ctrl+Z x3 at 147.7-149.5 undid three "Transform" steps. A landed box re-forms around the same art: no sign.
+2 PASS BY THE RECORD - the pen lifted, Enter landed (192-206 s), Ctrl+Z x3 "Undo Transform" at 208.6-209.7.
+3 FAIL, THE CAUSE - Alt was held for these Enters (mouseMove mods Alt 245-259, 265-283, 291+ s; the keys logged as
+"Alt+Return" 254-295 s): routeCanvasKey returned false on any Alt, so nothing landed.
+4 FAIL, THE SAME CAUSE - Alt held, never released, so the menu bar never entered its keyboard mode (it needs Alt let go)
+and no menu opened; the Enters were the canvas's refused Alt+Return.
+5 NOT TESTED AS WRITTEN - the rename worked (Layer 4 -> "Pirate" by 338 s) but Flip H was tapped twice (322.5/323.2):
+no flip was waiting, so "the rename's Enter does not land it" was not shown.
+6 HALF TESTED - every Esc at 390-405 s had the pen on the Move bar (correct: nothing happened); the over-the-canvas Esc
+was not done (the one at 285.1 s over the canvas was inconclusive).
+THE FIX (StoryboardPage.cpp routeCanvasKey only): when the key is Enter / Return and the canvas's Move box is open, only
+Ctrl and Meta count as a shortcut - Alt+Enter is Enter for the box. The menu bar is walked only once Alt is let go, and
+then it has the keyboard and keeps its Enter (the keyboard owners' exclusion, unchanged). Every other key with Alt stays
+the shortcuts'.
+CHECK (en5) in runEnterMoveBoxPass (as the hand test: the keyboard on the Layers list - dockLayers' QScrollArea - the
+pointer away, the box flipped, Return with Qt::AltModifier): lands one "Transform", mirrored; controls: Ctrl+Enter does
+not land; a QLineEdit with the keyboard keeps Alt+Enter. RED RUN 8 (marked "RED RUN 8: Alt+Enter refused", removed, grep
+0): Alt counted as a shortcut again -> RESULT FAIL (checks=68 failures=1) "(en5) ALT STILL DOWN, ENTER STILL LANDS THE
+BOX ... [Layers list 1; landed 0 ''; undone 1]". QUICK CHECK: batchd 68/68, trial 126/126, stagemode 124/124, keysview
+63/63, playback 33/33; all Release targets 0 errors.
+GATE E2 (the main tree - the user's app closed - on e697a2288 + the Alt fix, 2735 s; logs fullgate_E2*): RELEASE every
+family green - Lifecycle 1547 (E1's 1545 + (en5) and its controls), Camera 335, Brush Library 187, Size Lock 170, Edge
+Lock 74, Dev Recorder 46, Quick Shape 19, Pixel Lock 13, Brush Lock 3. DEBUG every family green but Lifecycle 1541/1547:
+(ad) "repaints once the edit settles" [0 repaint(s)], (ag) x3 (the text field focused; the pointer leaves; over the
+preview), (aw) "while the zoom field is being edited" [shortcut took a key 1], (ax) "the volume popup" [placed 0]. Read,
+not relaxed: the run's own TESTWINDOW lines say the test window LOST THE FOREGROUND 11 times to Google Chrome (140-238 s,
+the (ad) / (ag) stretch; 494.8 s just before (aw)'s look/sound; 508.0 / 512.2 s between (aw) and (ax)), "not by the
+test"; (ag) needs r.window.focusWidget() == the notes field and the router reads the app's focus widget (none while
+another program is in front); (ax) needs popup->hasFocus() (an active window only). The Release run had no foreground
+loss. None of the six touches Enter: enterForBox is true only for Return / Enter with a box open. RE-RUN of Debug
+Lifecycle alone, the same exe (fullgate_E2_rerunDebug, 1048 s): RESULT PASS (checks=1547 failures=0) - 3 foreground
+losses (179.0, 213.0, 653.1 s), none in a focus check. (en1)-(en5): 6 PASS, 0 FAIL in all three runs. Markers: 0 in the
+gated files (the hits are the untracked _backups copies). HASHES: sha_E2_gate.txt (the 3 files), written after the gate,
+no source newer than the Release exe (14:12:16); sha_E2_docs.txt (HANDOFF.md).
+EXE: app/build/Release/SankoTV.exe built Nov 15 2026 14:11:56 (file 14:12:16, 29848064 bytes), git e697a2288+dirty
+(build/SankoGitHead.h), sha256 fc9a120e906d536f...
+HAND TEST: list Documents\SankoTV-Design\handtest_E2_enter_lands.md (one flip tap per step; Esc over the canvas after
+each Enter proves a landing - a landed flip stays mirrored); copy "TEST COPY - small pirate, Enter 2"
+(C:\SankoTV-TestCopies; the original's hash equal to origB_after.txt before and after). Commit only after it passes.
+ROTATION TILE 3 (Figma 608:702 "Arcs and Percentage Rotation Tile 3", read with the plugin API): STOPPED BEFORE ANY
+PREVIEW OR BUILD - the number "45°" (Arial Bold 64, #F7F7FF, box 131,135 102 x 56) is at 100 % (fill and layer), not
+70 %, and has no outline; the arcs' fills are 70 % (#A3A7D9 top / bottom, #D2D4EC left / right) with a white 1.5 px
+INSIDE outline at 70 %, except the top arc's at 80 %; the frame is 332 x 339 - and "the same scale as before" was half
+(kRotScale 0.5: Tile 2's 388 x 395 drew at 194 x 198), not 1 Figma px = 1 screen px. Waiting for the user's answer.
+
+## STATUS 2026-11-15: BATCH D (D-2 + D-3) COMMITTED (e697a2288); ENTER LANDS AN OPEN MOVE BOX WHEREVER THE POINTER IS - BUILT; ITS HAND TEST FAILED (SEE ABOVE)
+THE D-3 HAND TEST (Dev Recorder 20261115-121236 222 s, -121628 67 s, -121748 33 s, -121832 34 s, -121911 81 s; all the
+Nov 14 20:53:22 build, git 381cf77e0+dirty - the worktree exe; title bar "SANKO TV — TEST COPY - small pirate, D-3" in
+each; sessions 1, 2, 5 closed with the X and Discard, 3 and 4 with nothing to save; the copy unsaved).
+handtest_D3_colors_dropper.md: 1 PASS (Alt picks with the pen, the ring held 6.5 s at 29 s; the pointer is not in
+screenshots); 2 PASS (I picks); 3 PASS (the panel at 254 x 625, the Library's header; the Brush button swaps them); 4 PASS
+(button picks; purple while waiting at 35.0 and 38.0 s, plain after); 5 PASS (button -> Esc -> plain at 36.0 s; button
+-> I -> plain at 39.0 s; session 1 the same at 164-173 s); 6 PASS (Classic hides the button at 55.5 s; the Wheel brought it
+back at the next launch, not by a click); 7 PASS (closed with the swatch, the next launch kept it closed - the Library,
+the only one left open, reopened); 8 PASS (Brush button then swatch -> the next launch only the Colors panel; then swatch
+closed it, Brush button -> the next launch only the Library - the both-open, Library-last case by check (cp8) only);
+9 NOT TESTED AS WRITTEN (the Enter at 50.2 s reached the canvas, but Flip H had been clicked twice - 48.3, 49.0 s - so the
+box was unflipped and nothing landed; no Ctrl+Z in any session); 10 PASS (Flip V upside down at 65.0 s, Esc back at 66.0 s,
+three more pairs); 11 PASS. The user's word: "all steps looked right".
+COMMITTED AND PUSHED e697a2288 "Batch D, second part: the Eyedropper, Flip H and V, and the Colors panel in the Brush
+Library's style" - the 14 files of sha_D4_gate.txt + sha_D4_docs.txt (HANDOFF as gated; the hand-test results above are
+not in it); staged blobs == the gated files CR-stripped; --stat == --ignore-cr-at-eol --stat (14 files, +1812 -22); git
+status clean. The scratch worktree C:\SankoTV_d3 removed; main rebuilt (all targets): SankoTV.exe Nov 15 2026 12:26:49,
+git e697a2288. Figma: D-1 593:696, D-2 599:700, D-3 604:702 renamed "BUILT 2026-11-15 D-n — ... (batch D)", as the C
+frames.
+ENTER (the user's yes of 2026-11-15 to the proposal): routeCanvasKey - after the keyboard owners' exclusion (a text or
+number field, a combo, a list, the menu bar being walked) and the release check - hands Enter / Return to the canvas
+whenever the canvas is visible and its Move box is open (DrawingCanvas::moveBoxOpen, new: m_xformActive), wherever the
+pointer is. Space, R and Esc still follow the pointer. 3 files: DrawingCanvas.h (the accessor), StoryboardPage.cpp (the
+rule + the router's comment), ProjectLifecycleTest.cpp (the checks).
+CHECKS (runEnterMoveBoxPass, in "batchd" and the full run; the pointer moved with the page's test door - a Leave / Enter
+through sendPointerEventForTest): (en1) the box flipped, the pointer away, the keyboard on the Panel Strip: Enter lands -
+one "Transform", mirrored; Ctrl+Z back; (en2) a QLineEdit, a QSpinBox, a QListWidget and the menu bar with the keyboard
+keep their Enter (the box not landed); (en3) no box (the Brush): Enter away changes nothing; (en4) Esc away leaves the
+flipped box (the Enter after it lands the flip). RED RUNS (marked, removed, grep 0): 7a the rule off -> (en1) "steps +0"
+and (en4); 7b the rule before the keyboard owners -> (en2) "text field LOST it, number field LOST it, list LOST it, menu
+bar LOST it". QUICK CHECK: batchd 66/66, trial 126/126, stagemode 124/124, keysview 63/63, playback 33/33; all 12 targets.
+GATE E1 (the main tree - the user's app closed - on e697a2288 + the Enter change, 2724 s; logs fullgate_E1*): EVERY
+family green in BOTH builds - Lifecycle 1545 (D4's 1540 + the 5 (en)), Camera 335, Brush Library 187, Size Lock 170,
+Edge Lock 74, Dev Recorder 46, Quick Shape 19, Pixel Lock 13, Brush Lock 3. HASHES: sha_E1_gate.txt (the 3 files),
+written after the gate, no source file newer than its build (latest 12:33:03); sha_E1_docs.txt (HANDOFF.md).
+HAND TEST: exe app/build/Release/SankoTV.exe (the user's shortcut) built Nov 15 2026 12:38:52 (file 12:39:12), git
+e697a2288+dirty, sha256 941ac040b8282522...; copy "TEST COPY - small pirate, Enter" (C:\SankoTV-TestCopies; the
+original's hash unchanged before and after); list Documents\SankoTV-Design\handtest_E_enter_lands.md (its step 1 is also
+D-3's step 9). Commit the Enter change only after the user's hand test passes.
+
 ## STATUS 2026-11-14 (late night): D-2 HAND-TESTED; D-3 (THE BLACK DROPPER, THE COLORS PANEL IN THE LIBRARY'S STYLE, ONE PANEL AT LAUNCH) BUILT ON TOP, NOT COMMITTED - WAITING FOR THE USER'S D-3 HAND TEST; ENTER NOT CHANGED (A CONFLICT, REPORTED)
 THE D-2 HAND TEST (Dev Recorder 20261114-192419, 388 s, and -193055, 546 s; both the Nov 14 18:21:06 build, git
 381cf77e0+dirty; title bar "SANKO TV — TEST COPY - small pirate, D eyedropper"; both closed with the X and Discard; the
