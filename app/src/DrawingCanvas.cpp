@@ -37,6 +37,7 @@
 #include <QPolygonF>
 #include <QPainter>
 #include <QSvgRenderer> // the rotation indicator's arcs (batch C)
+#include <QFile>        // the eyedropper's drawing, read to make its white outline (D-3)
 #include <QPaintEvent>
 #include <QPushButton>
 #include <QRegion>
@@ -1987,6 +1988,18 @@ void DrawingCanvas::setTool(Tool tool)
 {
     clearPenUiLatch(); // a latched pen tap does not survive a tool change
 
+    // A pick waiting or under way ends with a tool change, taking nothing (batch D).
+    if (tool != m_tool) {
+        if (m_picking) {
+            m_picking = false;
+            update();
+        }
+        if (m_pickArmed) {
+            m_pickArmed = false;
+            emit colorPickArmedChanged(false);
+        }
+    }
+
     const Tool previous = m_tool;
     commitQuickShape(); // a pending QuickShape bakes before the tool changes
     commitFloating(); // an un-committed paste lands before the tool changes
@@ -2018,6 +2031,9 @@ void DrawingCanvas::setTool(Tool tool)
         liftDefaultTransformBox();
     if (!m_panning)
         setCursor(m_spaceHeld ? Qt::OpenHandCursor : defaultCursorShape());
+    m_pickCursorOn = false; // the tool's own pointer and tracking were just set above
+    if (m_pickArmed || (m_altHeld && m_tool == Brush)) // the same tool again with a pick
+        refreshPickCursor(); // waiting, or Alt still held: the dropper
     update(); // the selection itself DOES survive (Select -> Move flow)
     if (m_tool != previous)
         emit toolChanged(m_tool); // per-tool Size CTL sliders re-sync
@@ -4169,6 +4185,199 @@ bool DrawingCanvas::placeClipboardOnActiveLayer(bool atOriginalPos)
     return true;
 }
 
+// --- The eyedropper (batch D; the user's D-2, approved 2026-11-14) -----------------------
+namespace {
+// THE DROPPER (the user's D-3, approved 2026-11-14): always their black dropper
+// (icons/eyedropper_dark.svg, exported from their Figma as it is), never switching to white,
+// with a very thin white outline so it reads on dark artwork as on white paper. The outline
+// is the same drawing with its paths filled and stroked white, 2 px wide - 1 px round the
+// shape - drawn under it, as D-3 draws it; the black drawing over it is exactly theirs.
+QPixmap outlinedDropper(qreal dpr)
+{
+    static QHash<int, QPixmap> made; // by the screen's scale
+    const int key = qRound(dpr * 100);
+    if (made.contains(key))
+        return made.value(key);
+    QFile file(QStringLiteral(":/icons/eyedropper_dark.svg"));
+    const QByteArray dark = file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray();
+    QByteArray outline = dark;
+    const QByteArray white("fill=\"white\" stroke=\"white\" stroke-width=\"2\" stroke-linejoin=\"round\"");
+    outline.replace("fill=\"black\"", white);
+    outline.replace("fill=\"#D9D9D9\"", white);
+    QPixmap pm(QSize(qCeil(21 * dpr), qCeil(21 * dpr)));
+    pm.setDevicePixelRatio(dpr);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    QSvgRenderer(outline).render(&p, QRectF(0, 0, 21, 21));
+    QSvgRenderer(dark).render(&p, QRectF(0, 0, 21, 21));
+    p.end();
+    made.insert(key, pm);
+    return pm;
+}
+
+// The pointer: its tip - (3, 17) in its 21 x 21 - on the hot spot.
+QCursor dropperCursor(qreal dpr)
+{
+    return QCursor(outlinedDropper(dpr), 3, 17);
+}
+} // namespace
+
+bool DrawingCanvas::colorSeenAt(const QPointF &widgetPos, QColor *out)
+{
+    if (!m_panel)
+        return false;
+    const QPointF c = toCanvasF(widgetPos);
+    const QPoint cp(qFloor(c.x()), qFloor(c.y()));
+    if (!QRect(QPoint(0, 0), canvasSize()).contains(cp))
+        return false;
+    ensurePanelCpuCoherent(m_panel, BrushCoherenceTrigger::ExplicitDemand);
+    // As ensureComposite stacks them: the paper, then every layer bottom to top at its
+    // effective (group-aware) opacity, SourceOver - the pixels only, no overlay.
+    double r = 1.0, g = 1.0, b = 1.0;
+    for (const Layer &layer : m_panel->layers) {
+        if (isGroupLayer(layer))
+            continue;
+        const double opacity = m_panel->layerEffectiveOpacity(layer);
+        if (!m_panel->layerEffectivelyVisible(layer) || layer.image.isNull() || opacity <= 0.0
+            || !layer.image.rect().contains(cp))
+            continue;
+        const QColor px = layer.image.pixelColor(cp); // unpremultiplied
+        const double a = px.alphaF() * opacity;
+        r = r * (1.0 - a) + px.redF() * a;
+        g = g * (1.0 - a) + px.greenF() * a;
+        b = b * (1.0 - a) + px.blueF() * a;
+    }
+    if (out)
+        *out = QColor::fromRgbF(float(r), float(g), float(b));
+    return true;
+}
+
+void DrawingCanvas::armColorPick(bool on)
+{
+    if (m_pickArmed == on)
+        return;
+    m_pickArmed = on;
+    if (!on && m_picking) {
+        m_picking = false; // a pick under way goes with it, taking nothing
+        update();
+    }
+    refreshPickCursor();
+    emit colorPickArmedChanged(on);
+}
+
+void DrawingCanvas::setAltHeld(bool held)
+{
+    if (m_altHeld == held)
+        return;
+    m_altHeld = held;
+    refreshPickCursor();
+}
+
+void DrawingCanvas::refreshPickCursor()
+{
+    if (m_picking)
+        return; // the ring's dropper is the pointer while it shows
+    const bool want = m_pickArmed || (m_altHeld && m_tool == Brush);
+    if (!want) {
+        if (m_pickCursorOn) {
+            m_pickCursorOn = false;
+            if (!m_pickTrackingWas && !toolTracksHover() && !m_xformActive && m_lassoPts.isEmpty())
+                setMouseTracking(false);
+            setCursor(m_spaceHeld ? Qt::OpenHandCursor : defaultCursorShape());
+        }
+        return;
+    }
+    if (!m_pickCursorOn) {
+        m_pickCursorOn = true;
+        m_pickTrackingWas = hasMouseTracking();
+        setMouseTracking(true); // a hover without Alt reaches the canvas and takes it down
+    }
+    setCursor(dropperCursor(devicePixelRatioF())); // always the black one (D-3)
+}
+
+void DrawingCanvas::beginColorPick(const QPointF &widgetPos)
+{
+    // A pick with no dropper up yet - Alt held before the window had the keyboard (Alt+Tab):
+    // up now, still up after the release while Alt is held, and taken down by a hover without
+    // Alt (a hover reaches the canvas only with tracking on); the end of it puts the tool's own
+    // pointer back.
+    if (!m_pickCursorOn) {
+        m_pickCursorOn = true;
+        m_pickTrackingWas = hasMouseTracking();
+        setMouseTracking(true);
+    }
+    m_picking = true;
+    m_pickBefore = m_color;
+    moveColorPick(widgetPos);
+    setCursor(Qt::BlankCursor); // the ring's dropper is the pointer while it shows
+}
+
+void DrawingCanvas::moveColorPick(const QPointF &widgetPos)
+{
+    m_pickPos = widgetPos;
+    QColor under;
+    m_pickOnStage = colorSeenAt(widgetPos, &under);
+    m_pickColor = m_pickOnStage ? under : m_pickBefore; // off the stage: nothing to take
+    update();
+}
+
+void DrawingCanvas::endColorPick()
+{
+    m_picking = false;
+    update();
+    const bool took = m_pickOnStage;
+    const QColor color = m_pickColor;
+    // ONE pick: armed, it is over once a colour is taken - the tool you had never changed.
+    // Let go off the stage, nothing was taken and the pick still waits.
+    if (took && m_pickArmed) {
+        m_pickArmed = false;
+        emit colorPickArmedChanged(false);
+    }
+    refreshPickCursor();
+    if (took)
+        emit colorPicked(color);
+}
+
+void DrawingCanvas::paintSamplingRing(QPainter &p) const
+{
+    p.save();
+    p.resetTransform();
+    p.setOpacity(1.0);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    const QPointF c = m_pickPos;
+    const qreal outer = 54.0, mid = 46.0, inner = 33.1; // D-2's ring, logical px
+    // The neutral grey ring round both halves (as Photoshop's), with a thin dark edge:
+    // the ring reads on white paper, a mid tone and dark artwork alike.
+    QPainterPath grey;
+    grey.addEllipse(c, outer, outer);
+    grey.addEllipse(c, mid, mid); // odd-even: the band between
+    p.fillPath(grey, QColor(0x8a, 0x8a, 0x8a));
+    // The two halves: above, the colour under the pointer; below, the colour you had.
+    const QRectF midBox(c.x() - mid, c.y() - mid, 2 * mid, 2 * mid);
+    const QRectF innerBox(c.x() - inner, c.y() - inner, 2 * inner, 2 * inner);
+    auto half = [&](qreal start) {
+        QPainterPath path;
+        path.arcMoveTo(midBox, start);
+        path.arcTo(midBox, start, 180.0);
+        path.arcTo(innerBox, start + 180.0, -180.0);
+        path.closeSubpath();
+        return path;
+    };
+    p.fillPath(half(0.0), m_pickColor);
+    p.fillPath(half(180.0), m_pickBefore);
+    p.setBrush(Qt::NoBrush);
+    p.setPen(QPen(QColor(0, 0, 0, 115), 1.0));
+    p.drawEllipse(c, outer, outer);
+    p.setPen(QPen(QColor(0, 0, 0, 77), 1.0));
+    p.drawEllipse(c, mid, mid);
+    p.drawEllipse(c, inner, inner);
+    // The user's dropper at the centre, its tip on the point: always the black one with its
+    // thin white outline, as the pointer (D-3, 2026-11-14).
+    p.drawPixmap(QPointF(c.x() - 3.0, c.y() - 17.0), outlinedDropper(devicePixelRatioF()));
+    p.restore();
+}
+
 // Commit of a floating PASTE (click-away / Enter / tool switch).
 void DrawingCanvas::commitFloating()
 {
@@ -4465,6 +4674,7 @@ void DrawingCanvas::beginTransform()
     solveWarpTps();
     m_warpSel.clear();
     m_warpDirty = false;
+    m_xformFlipH = m_xformFlipV = false; // a fresh box is not flipped (batch D)
     m_warpIdx = -1;
     m_warpHoverIdx = -1;
     m_warpMarquee = false;
@@ -4571,6 +4781,7 @@ void DrawingCanvas::beginLayersTransform(const QStringList &candidateIds)
     solveWarpTps();
     m_warpSel.clear();
     m_warpDirty = false;
+    m_xformFlipH = m_xformFlipV = false; // a fresh box is not flipped (batch D)
     m_warpIdx = -1;
     m_warpHoverIdx = -1;
     m_warpMarquee = false;
@@ -5140,12 +5351,33 @@ void DrawingCanvas::updateXformCursor(XformMode mode)
 // pre-transform layer. relift: while the Move tool remains active the box
 // does not vanish — it resets to a fresh default axis-aligned box around the
 // committed artwork (Photoshop behaviour).
+// FLIP H / V (batch D; the user's D-2): part of the open box - the PRISTINE lifted pixels
+// (m_transformBuf, and each member's own in m_xformBufs) are mirrored inside the box, so its
+// outline, handles, warp mesh and pivot stay where they are and the view shows it at once.
+// Enter lands it with the rest (commitTransform reads the buffers); Esc takes it back with the
+// rest (cancel drops them; the layers were never touched).
+bool DrawingCanvas::flipTransform(bool horizontal)
+{
+    if (!canFlipTransform())
+        return false;
+    const Qt::Orientations way = horizontal ? Qt::Horizontal : Qt::Vertical;
+    m_transformBuf = m_transformBuf.flipped(way);
+    for (QImage &buffer : m_xformBufs)
+        buffer = buffer.flipped(way);
+    if (horizontal)
+        m_xformFlipH = !m_xformFlipH;
+    else
+        m_xformFlipV = !m_xformFlipV;
+    update();
+    return true;
+}
+
 void DrawingCanvas::commitTransform(bool relift)
 {
     if (!m_xformActive)
         return;
     const QRectF lifted(m_moveSrcRect);
-    const bool untouched = !m_warpDirty
+    const bool untouched = !m_warpDirty && !m_xformFlipH && !m_xformFlipV
         && m_quad == QPolygonF({lifted.topLeft(), lifted.topRight(), lifted.bottomRight(), lifted.bottomLeft()});
     m_xformActive = false;
     m_xformMode = XNone;
@@ -5285,6 +5517,7 @@ void DrawingCanvas::commitTransform(bool relift)
     m_layerBackup = QImage();
     m_moveMask = QImage();
     m_warpDirty = false;
+    m_xformFlipH = m_xformFlipV = false;
     m_warpSel.clear();
     m_warpMarquee = false;
     m_warpHoverIdx = -1;
@@ -5324,6 +5557,7 @@ void DrawingCanvas::cancelTransform(bool relift)
     m_xformHoles.clear();
     m_moveMask = QImage();
     m_warpDirty = false;
+    m_xformFlipH = m_xformFlipV = false;
     m_warpSel.clear();
     m_warpMarquee = false;
     m_warpHoverIdx = -1;
@@ -7906,6 +8140,10 @@ void DrawingCanvas::paintEvent(QPaintEvent *event)
         painter.restore();
     }
 
+    // THE EYEDROPPER'S SAMPLING RING while a pick is under way (batch D; D-2).
+    if (m_picking)
+        paintSamplingRing(painter);
+
     // THE ROTATION INDICATOR while R is held (batch C; the user's design, Figma 576:731),
     // over everything.
     if (m_rotateHeld || m_rotating)
@@ -8114,6 +8352,18 @@ void DrawingCanvas::keyPressEvent(QKeyEvent *event)
             m_quickShape.requestCommit();
             return;
         }
+    }
+    // Esc: a pick waiting or under way goes, taking nothing (batch D).
+    if (event->key() == Qt::Key_Escape && (m_pickArmed || m_picking)) {
+        const bool wasPicking = m_picking;
+        m_picking = false;
+        if (m_pickArmed) {
+            armColorPick(false);
+        } else if (wasPicking) {
+            update();
+            refreshPickCursor();
+        }
+        return;
     }
 
     // Transform box: Enter commits (bakes once), Esc cancels (restores). In
@@ -8395,6 +8645,15 @@ void DrawingCanvas::mousePressEvent(QMouseEvent *event)
 
     if (!m_panel || event->button() != Qt::LeftButton)
         return;
+
+    // THE EYEDROPPER (batch D) before every tool - after the view's Space and R: a pick never
+    // draws, never moves a box or the camera. Armed (the Colors panel's button, I), or Alt
+    // held with the Brush.
+    if (pickWanted(event->modifiers())) {
+        m_altHeld = event->modifiers() & Qt::AltModifier;
+        beginColorPick(event->position());
+        return;
+    }
 
     // The shot camera's tool takes every left press (after the pan above:
     // Space and the middle button are the view's, never the camera's).
@@ -8694,6 +8953,21 @@ void DrawingCanvas::mouseMoveEvent(QMouseEvent *event)
         emit viewRotationChanged(m_viewRotation);
         return;
     }
+    if (m_picking) { // the eyedropper's ring follows, sampling (batch D)
+        moveColorPick(event->position());
+        return;
+    }
+    if (!(event->buttons() & Qt::LeftButton)) {
+        // Hover: Alt with the Brush, or a pick waiting, shows the dropper (always the black one,
+        // D-3); nothing else follows the hover meanwhile.
+        const bool alt = event->modifiers() & Qt::AltModifier;
+        if (alt != m_altHeld || m_pickCursorOn || m_pickArmed) {
+            m_altHeld = alt;
+            refreshPickCursor();
+            if (m_pickCursorOn)
+                return;
+        }
+    }
     if (m_tool == Camera) {
         if (m_stageMode)
             stageMove(event->position(), event->buttons(), event->modifiers());
@@ -8822,6 +9096,11 @@ void DrawingCanvas::mouseReleaseEvent(QMouseEvent *event)
         else
             setCursor(defaultCursorShape());
         update(); // R let go during the drag: the indicator goes with it
+        return;
+    }
+    if (m_picking && event->button() == Qt::LeftButton) { // the eyedropper lands (batch D)
+        m_altHeld = event->modifiers() & Qt::AltModifier;
+        endColorPick();
         return;
     }
     if (m_tool == Camera && event->button() == Qt::LeftButton) {
@@ -9130,6 +9409,21 @@ void DrawingCanvas::tabletEvent(QTabletEvent *event)
     if (!midCanvasInteraction && (m_spaceHeld || m_panning || m_rotateHeld || m_rotating)) {
         event->ignore(); // R held turns the view with the pen too (batch C), the same way
         return;
+    }
+    // THE EYEDROPPER (batch D): a pick with the pen is made by the mouse path - its press,
+    // moves and release are left to Qt's mouse synthesis, as a pan's are, so there is one
+    // pick path (mousePressEvent) and the Brush never sees them.
+    if (m_picking
+        || (!midCanvasInteraction && event->type() == QEvent::TabletPress && pickWanted(event->modifiers()))) {
+        event->ignore();
+        return;
+    }
+    if (event->type() == QEvent::TabletMove && event->buttons() == Qt::NoButton) {
+        const bool alt = event->modifiers() & Qt::AltModifier; // the pen hovering with Alt
+        if (alt != m_altHeld || m_pickCursorOn) {
+            m_altHeld = alt;
+            refreshPickCursor();
+        }
     }
 
     // Edit Shape mode: the pen edits nodes — accept() consumes the event so

@@ -697,6 +697,23 @@ void MainWindow::setupMenuBar()
     m_pastePanelInPlaceAct = editAction(QStringLiteral("Paste in Place"),
                                         QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_V),
                                         &StoryboardPage::editPasteInPlace);
+    // FLIP H / V (batch D; the user's D-2): the Move bar's two buttons, here too - part of the
+    // open Move box. Greyed, with why as the tooltip, while no box is open (checked as the
+    // menu opens).
+    editMenu->addSeparator();
+    m_flipHAct = editAction(QStringLiteral("Flip Horizontal"), QKeySequence(),
+                            &StoryboardPage::editFlipHorizontal);
+    m_flipHAct->setObjectName(QStringLiteral("editFlipHorizontal"));
+    m_flipVAct = editAction(QStringLiteral("Flip Vertical"), QKeySequence(),
+                            &StoryboardPage::editFlipVertical);
+    m_flipVAct->setObjectName(QStringLiteral("editFlipVertical"));
+    connect(editMenu, &QMenu::aboutToShow, this, [this, editMenu] {
+        const bool can = m_stack && m_storyboard && m_stack->currentWidget() == m_storyboard
+                         && m_storyboard->canFlipTransform();
+        const QString why = QStringLiteral("Works on the Move tool's box: pick the Move tool (V) first.");
+        sankoGreyWithReason(editMenu, m_flipHAct, why, !can);
+        sankoGreyWithReason(editMenu, m_flipVAct, why, !can);
+    });
     m_pastePanelAct->setEnabled(false);        // until something is copied
     m_pastePanelInPlaceAct->setEnabled(false); // (wired after m_storyboard exists)
 

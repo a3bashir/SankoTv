@@ -149,6 +149,13 @@ public:
     // surface it is legitimately larger than the canvas viewport at small
     // windows, and the canvas clamp would drag it out of centre.
     virtual void reposition();
+    // Back on the default offset (a drag while it was open forgotten) and placed there: a
+    // window that is re-anchored every time it opens (the Colors panel, batch D).
+    void placeAtDefault()
+    {
+        m_userPlaced = false;
+        reposition();
+    }
 
     QWidget *anchorWidget() const { return m_anchor; }
     // Every registered window over `anchor`, in registration order (the

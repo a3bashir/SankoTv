@@ -42,6 +42,7 @@
 #include "DashboardPage.h"
 #include "DrawingCanvas.h"
 #include "FloatingToolWindow.h"
+#include "ColorPanel.h"
 #include "PerspectiveTool.h"
 #include "LayerFolder.h"
 #include "MainWindow.h"
@@ -19898,6 +19899,850 @@ void runPasteLayerPass(const QString &scratch)
     restoreLibraryKeys();
 }
 
+// BATCH D, D-2 (Figma 599:700; approved 2026-11-14 with the user's two decisions: purple only
+// marks "new" in Figma - the new buttons look like those round them; the ring's dropper is
+// white on a dark colour, black otherwise). (ep) THE EYEDROPPER: the Colors panel's button and
+// I - one pick, then back to the tool you had - and Alt held with the Brush; what you see is
+// taken (the layers as they stack on the paper), never an overlay; the sampling ring with its
+// grey outer ring; a pick never hides the panel. (cp) THE COLORS PANEL'S RULES (D-1, no pin):
+// under the swatch, hidden by another tool, another button of the two bars and the first
+// stroke, the swatch its switch, View > Colors' tick, remembered between launches. (fl) FLIP H
+// / V on the Move bar and in the Edit menu. D-3 (Figma 604:702, approved 2026-11-14): the dropper
+// always the user's black one with a thin white outline; the Colors panel in the Brush Library's
+// container and header, no close button, the Eyedropper button beside the Color Wheel with its
+// four states; at launch at most one of the Library and the Colors panel - the one opened last.
+void runEyedropperFlipPass(const QString &scratch)
+{
+    using namespace workspace;
+    using camtool::grabCanvas;
+    out() << "--- (ep) the Eyedropper, (cp) the Colors panel's rules, (fl) Flip H / V ---" << Qt::endl;
+    const QString dir = scratch + QStringLiteral("/eyedropper");
+    QDir(dir).removeRecursively();
+    QDir().mkpath(dir);
+    const QString project = writeProject(dir, QStringLiteral("Eyedropper"), QSize(960, 540), 24, 1, 2);
+    // The panel's "open" is remembered in the settings: put back at the end; every rig here
+    // starts with it closed unless a check says otherwise.
+    const QString colorsKey = StoryboardPage::kColorsPanelKey;
+    const QVariant colorsBefore = sankoSettings().value(colorsKey);
+    // The Library's "open" and size, and which of the two was opened last, are put back too
+    // (cp7 opens the Library; cp8 sets them).
+    QMap<QString, QVariant> launchBefore;
+    for (const QString &k : {QStringLiteral("storyboard/brushLibrary/v1/visible"),
+                             QStringLiteral("storyboard/brushLibrary/v1/geo"), StoryboardPage::kLastPanelKey})
+        launchBefore.insert(k, sankoSettings().value(k));
+    auto restoreLaunchKeys = [&] {
+        QSettings s = sankoSettings();
+        for (auto it = launchBefore.cbegin(); it != launchBefore.cend(); ++it) {
+            if (it.value().isValid())
+                s.setValue(it.key(), it.value());
+            else
+                s.remove(it.key());
+        }
+    };
+    auto restoreColorsKey = [&] {
+        QSettings s = sankoSettings();
+        if (colorsBefore.isValid())
+            s.setValue(colorsKey, colorsBefore);
+        else
+            s.remove(colorsKey);
+        s.sync();
+        restoreLaunchKeys();
+    };
+    sankoSettings().setValue(colorsKey, false);
+    sankoSettings().setValue(QStringLiteral("storyboard/brushLibrary/v1/visible"), false);
+    sankoSettings().remove(StoryboardPage::kLastPanelKey);
+    auto pixAt = [](const QImage &img, const QPointF &w) {
+        const double dpr = img.devicePixelRatio();
+        const QPoint q(qFloor(w.x() * dpr), qFloor(w.y() * dpr));
+        return img.rect().contains(q) ? img.pixelColor(q) : QColor();
+    };
+    auto nearColor = [](const QColor &a, const QColor &b, int tol = 3) {
+        return a.isValid() && b.isValid() && qAbs(a.red() - b.red()) <= tol && qAbs(a.green() - b.green()) <= tol
+               && qAbs(a.blue() - b.blue()) <= tol;
+    };
+    auto hex = [](const QColor &c) { return c.isValid() ? c.name() : QStringLiteral("none"); };
+    auto rectText = [](const QRect &q) {
+        return QStringLiteral("%1,%2 %3x%4").arg(q.left()).arg(q.top()).arg(q.width()).arg(q.height());
+    };
+    // The ring at c: the grey band (radius 46 to 54) left, right, above and below it; above,
+    // between 33 and 46, the colour under the pointer; below, the colour you had.
+    const QColor ringGrey(0x8a, 0x8a, 0x8a);
+    auto ringOk = [&](const QImage &img, const QPointF &c, const QColor &top, const QColor &bottom) {
+        return nearColor(pixAt(img, c + QPointF(-50, 0)), ringGrey) && nearColor(pixAt(img, c + QPointF(50, 0)), ringGrey)
+               && nearColor(pixAt(img, c + QPointF(0, -50)), ringGrey) && nearColor(pixAt(img, c + QPointF(0, 50)), ringGrey)
+               && nearColor(pixAt(img, c + QPointF(0, -40)), top) && nearColor(pixAt(img, c + QPointF(0, 40)), bottom);
+    };
+    auto ringText = [&](const QImage &img, const QPointF &c) {
+        return QStringLiteral("grey band L %1 R %2 T %3 B %4; above %5, below %6")
+            .arg(hex(pixAt(img, c + QPointF(-50, 0))), hex(pixAt(img, c + QPointF(50, 0))),
+                 hex(pixAt(img, c + QPointF(0, -50))), hex(pixAt(img, c + QPointF(0, 50))),
+                 hex(pixAt(img, c + QPointF(0, -40))), hex(pixAt(img, c + QPointF(0, 40))));
+    };
+    // The ring's dropper: of the pixels in its 21 x 21 (its tip on the point) that the ring
+    // changed, how many are light and how many black. Light, not pure white: the white outline
+    // is 1 px, antialiased - on the navy only 11 of its pixels reach pure white while the whole
+    // outline shows (the first D-3 run, its picture read before this was changed).
+    auto dropperInk = [](const QImage &before, const QImage &during, const QPointF &c) {
+        const double dpr = during.devicePixelRatio();
+        int white = 0, black = 0;
+        for (int y = qFloor((c.y() - 17) * dpr); y < qCeil((c.y() + 4) * dpr); ++y)
+            for (int x = qFloor((c.x() - 3) * dpr); x < qCeil((c.x() + 18) * dpr); ++x) {
+                if (!during.rect().contains(x, y) || !before.rect().contains(x, y)
+                    || during.pixel(x, y) == before.pixel(x, y))
+                    continue;
+                const QColor p = during.pixelColor(x, y);
+                white += qMin(p.red(), qMin(p.green(), p.blue())) >= 160 ? 1 : 0;
+                black += qMax(p.red(), qMax(p.green(), p.blue())) <= 40 ? 1 : 0;
+            }
+        return qMakePair(white, black);
+    };
+    // A picture's opaque white and black pixels: the pointer's dropper (D-3: black, outlined
+    // in white, whatever is under it).
+    auto imageInk = [](const QImage &img) {
+        int white = 0, black = 0;
+        for (int y = 0; y < img.height(); ++y)
+            for (int x = 0; x < img.width(); ++x) {
+                const QColor p = img.pixelColor(x, y);
+                if (p.alpha() < 230)
+                    continue;
+                white += qMin(p.red(), qMin(p.green(), p.blue())) >= 235 ? 1 : 0;
+                black += qMax(p.red(), qMax(p.green(), p.blue())) <= 40 ? 1 : 0;
+            }
+        return qMakePair(white, black);
+    };
+    {
+        auto rig = std::make_unique<Rig>(project);
+        Rig &r = *rig;
+        check(QStringLiteral("(ep) the workspace opened"), r.ok);
+        if (!r.ok) {
+            restoreColorsKey();
+            return;
+        }
+        QUndoStack *stack = r.window.undoStackForTest();
+        Scene *scene = r.window.scenesForTest().value(0);
+        QWidget *panel = r.storyboard->colorsPanelForTest();
+        QAbstractButton *pickButton = r.storyboard->colorPickButtonForTest();
+        QAbstractButton *swatch = r.storyboard->colorSwatchForTest();
+        QAction *viewColors = r.window.findChild<QAction *>(QStringLiteral("viewColors"));
+        auto *body = panel ? panel->findChild<ColorPanel *>() : nullptr;
+        QWidget *header = panel ? panel->findChild<QWidget *>(QStringLiteral("colorsHeader")) : nullptr;
+        QWidget *wheel = body ? body->findChild<QWidget *>(QStringLiteral("colorWheel")) : nullptr;
+        auto *eraserButton = r.storyboard->findChild<QPushButton *>(QStringLiteral("toolEraser"));
+        if (!stack || !scene || scene->panels.size() != 2 || !panel || !pickButton || !swatch || !viewColors
+            || !body || !header || !wheel || !eraserButton) {
+            check(QStringLiteral("(ep) found the history, the scene, the Colors panel with its Eyedropper, header, body "
+                                 "and wheel, the swatch, the Eraser and View > Colors"),
+                  false);
+            restoreColorsKey();
+            return;
+        }
+        Panel *p0 = scene->panels.at(0);
+        clickThumb(r, 0);
+        pump(80);
+        // "Layer 1": half see-through red and an opaque navy, the navy in the lower half only
+        // (the Flip checks read which way the art faces). Under the red, on the Background, a
+        // yellow: what you see there is orange - the red alone on the paper would be pink.
+        const QRect pinkBlock(100, 100, 200, 200), navyBlock(400, 200, 200, 100);
+        {
+            Layer &art = p0->layers[1];
+            art.image.fill(Qt::transparent);
+            QPainter p(&art.image);
+            p.setCompositionMode(QPainter::CompositionMode_Source);
+            p.fillRect(pinkBlock, QColor(255, 0, 0, 128));
+            p.fillRect(navyBlock, QColor(0, 0, 64));
+            QPainter b(&p0->layers[0].image);
+            b.fillRect(pinkBlock, QColor(255, 255, 0));
+        }
+        p0->activeLayerIndex = 1;
+        r.storyboard->rebuildLayerPanelForTest();
+        r.canvas->invalidateComposite();
+        r.canvas->update();
+        pump(60);
+        auto toW = [&](const QPointF &c) { return r.canvas->viewTransformForTest().map(c); };
+        // A tool picked as the page picks it: its button checked, no click (a click on the Brush
+        // also opens the Library).
+        auto pickTool = [&](const char *name) {
+            if (auto *b = r.storyboard->findChild<QPushButton *>(QLatin1String(name)))
+                b->setChecked(true);
+            pump(60);
+        };
+        auto swatchShows = [&] {
+            const QImage s = swatch->grab().toImage();
+            const double d = s.devicePixelRatio();
+            return s.pixelColor(QPoint(qFloor(15 * d), qFloor(15 * d)));
+        };
+        auto mouseAt = [&](QEvent::Type type, const QPointF &at, Qt::KeyboardModifiers mods = Qt::NoModifier) {
+            const Qt::MouseButton b = type == QEvent::MouseMove ? Qt::NoButton : Qt::LeftButton;
+            const Qt::MouseButtons held = type == QEvent::MouseButtonRelease ? Qt::NoButton : Qt::MouseButtons(b);
+            camtool::mouse(r.canvas, type, at, b, held, mods);
+            pump(20);
+        };
+        const QColor pinkSeen(255, 127, 127); // 128/255 of red on the white paper
+        const QColor orangeSeen(255, 127, 0); // ...on the Background's yellow
+        const QColor navy(0, 0, 64), paper(255, 255, 255);
+        const QPointF pinkAt = toW(QPointF(200, 200)), navyAt = toW(QPointF(500, 250));
+        const QPointF paperAt = toW(QPointF(800, 420));
+        pickTool("toolBrush");
+        const int s0 = stack->index();
+
+        // --- (cp1) the swatch opens the panel under it; View > Colors ticks with it -------------
+        const bool closed0 = !panel->isVisible() && !viewColors->isChecked();
+        const QRect barBefore = swatch->window()->frameGeometry();
+        swatch->click();
+        pump(200);
+        const QRect bar = swatch->window()->frameGeometry(), geo1 = panel->frameGeometry();
+        const int swatchLeft = swatch->mapToGlobal(QPoint(0, 0)).x();
+        const QPoint canvasAt = r.canvas->mapToGlobal(QPoint(0, 0));
+        const bool barOnTop = bar.center().y() < canvasAt.y() + r.canvas->height() / 2;
+        const int k = FloatingToolWindow::kMargin;
+        const QRect margin = QRect(canvasAt, r.canvas->size()).adjusted(k, k, -k, -k);
+        // Its left edge on the swatch's - the window's clamp moving it in at the canvas's right
+        // margin rather than past it, as the Library's.
+        const int wantLeft = qMin(swatchLeft, margin.right() + 1 - geo1.width());
+        const bool anchored1 = geo1.left() == wantLeft
+                               && (barOnTop ? geo1.top() == bar.bottom() + 1 + k : geo1.bottom() + 1 == bar.top() - k);
+        check(QStringLiteral("(cp1) THE SWATCH OPENS THE COLORS PANEL UNDER IT (over it with the bar in the canvas's "
+                             "lower half), its left edge on the swatch's (moved in at the canvas's right margin), 4 px "
+                             "from the bar - as the Library under the Brush button; View > Colors ticks with it; "
+                             "\"open\" remembered"),
+              closed0 && panel->isVisible() && viewColors->isChecked() && anchored1
+                  && sankoSettings().value(colorsKey).toBool(),
+              QStringLiteral("closed first %1; open %2, ticked %3; bar %4 (on top %5), panel %6, swatch left %7 (want "
+                             "%8); remembered %9")
+                  .arg(closed0).arg(panel->isVisible()).arg(viewColors->isChecked()).arg(rectText(bar)).arg(barOnTop)
+                  .arg(rectText(geo1)).arg(swatchLeft).arg(wantLeft).arg(sankoSettings().value(colorsKey).toBool()));
+        // This canvas is shorter than the panel's colours: as the Library, the panel is cut to
+        // the room on its side - never over the bar, which never steps aside for it - and its
+        // colours scroll to their end.
+        QScrollArea *colorsScroll = r.storyboard->colorsScrollForTest();
+        QScrollBar *colorsBar = colorsScroll ? colorsScroll->verticalScrollBar() : nullptr;
+        const int bodyHeight = body->sizeHint().height();
+        const int roomBelow = margin.bottom() - (bar.bottom() + 1 + k) + 1;
+        const bool cutToRoom = colorsScroll && barOnTop && colorsScroll->height() < bodyHeight
+                               && geo1.height() == roomBelow && geo1.bottom() == margin.bottom();
+        const bool scrolls = colorsBar && colorsBar->isVisible() && colorsBar->maximum() > 0
+                             && colorsBar->maximum() == bodyHeight - colorsScroll->viewport()->height();
+        check(QStringLiteral("(cp1) CUT SHORT, NEVER OVER THE BAR: on this short canvas the colours do not fit under the "
+                             "bar, so the panel ends on the canvas's margin and its colours scroll to their last row "
+                             "(the app's scroll bar); it never covers the bar, and the bar never steps aside for it"),
+              cutToRoom && scrolls && !geo1.intersects(bar) && bar == barBefore,
+              QStringLiteral("room under the bar %1, panel %2 (margin bottom %3), colours %4 px in %5; scroll bar "
+                             "shown %6, to %7; over the bar %8; bar %9 -> %10")
+                  .arg(roomBelow).arg(rectText(geo1)).arg(margin.bottom()).arg(bodyHeight)
+                  .arg(colorsScroll ? colorsScroll->height() : -1).arg(colorsBar && colorsBar->isVisible())
+                  .arg(colorsBar ? colorsBar->maximum() : -1).arg(geo1.intersects(bar))
+                  .arg(rectText(barBefore), rectText(bar)));
+
+        // --- (cp0) the Brush Library's container and header (D-3, approved 2026-11-14) -------------
+        auto grabPx = [&](const QPoint &inPanel) {
+            const QImage img = panel->grab().toImage();
+            const double d = img.devicePixelRatio();
+            const QPoint q(qFloor(inPanel.x() * d), qFloor(inPanel.y() * d));
+            return img.rect().contains(q) ? img.pixelColor(q) : QColor();
+        };
+        const int pw = panel->width(), ph = panel->height();
+        const QColor cornerTL = grabPx(QPoint(0, 0)), cornerBL = grabPx(QPoint(1, ph - 2));
+        const QColor cornerBR = grabPx(QPoint(pw - 2, ph - 2)), edge = grabPx(QPoint(0, ph / 2));
+        const QColor ground = grabPx(QPoint(8, 34)), divider = grabPx(QPoint(pw / 2, 1 + 68));
+        const QList<QLabel *> headerLabels = header->findChildren<QLabel *>();
+        QLabel *title = headerLabels.size() == 1 ? headerLabels.first() : nullptr;
+        const QMargins hm = header->layout() ? header->layout()->contentsMargins() : QMargins();
+        int closeButtons = 0;
+        for (QAbstractButton *b : panel->findChildren<QAbstractButton *>())
+            closeButtons += b->text() == QString::fromUtf8("\xE2\x9C\x95") || b->toolTip() == QStringLiteral("Close") ? 1 : 0;
+        const bool titleOk = title && title->text() == QStringLiteral("Colors") && title->font().pixelSize() == 22
+                             && title->font().weight() == QFont::ExtraBold
+                             && title->font().family() == QStringLiteral("Inter");
+        check(QStringLiteral("(cp0) THE BRUSH LIBRARY'S CONTAINER AND HEADER (D-3): rounded corners with nothing painted "
+                             "outside them (the colours' own square ground gone), a 1 px #2D2D35 border, the #1E1E20 "
+                             "ground, a header 69 px tall with the Library's padding (24, 20, 24, 16), the title "
+                             "\"Colors\" alone in Inter Extra Bold 22 and a #2D2D35 divider under it; no close button "
+                             "anywhere, no button in the header"),
+              cornerTL.alpha() == 0 && cornerBL.alpha() == 0 && cornerBR.alpha() == 0
+                  && nearColor(edge, QColor(0x2d, 0x2d, 0x35), 2) && nearColor(ground, QColor(0x1e, 0x1e, 0x20), 1)
+                  && nearColor(divider, QColor(0x2d, 0x2d, 0x35), 2) && header->height() == 69
+                  && hm == QMargins(24, 20, 24, 16) && titleOk && header->findChildren<QAbstractButton *>().isEmpty()
+                  && closeButtons == 0,
+              QStringLiteral("corners alpha %1 / %2 / %3; border %4, ground %5, divider %6; header %7 px, padding "
+                             "%8,%9,%10,%11; title ok %12 ('%13' %14 px, weight %15, '%16'); header buttons %17, close "
+                             "buttons %18")
+                  .arg(cornerTL.alpha()).arg(cornerBL.alpha()).arg(cornerBR.alpha())
+                  .arg(hex(edge), hex(ground), hex(divider)).arg(header->height())
+                  .arg(hm.left()).arg(hm.top()).arg(hm.right()).arg(hm.bottom()).arg(titleOk)
+                  .arg(title ? title->text() : QString()).arg(title ? title->font().pixelSize() : -1)
+                  .arg(title ? title->font().weight() : -1).arg(title ? title->font().family() : QString())
+                  .arg(header->findChildren<QAbstractButton *>().size()).arg(closeButtons));
+
+        // --- (ep0) the Eyedropper button beside the Color Wheel, as the user's image places it ----
+        const QImage mine = QIcon(QStringLiteral(":/icons/eyedropper.svg")).pixmap(QSize(21, 21)).toImage();
+        const QImage shown = pickButton->icon().pixmap(QSize(21, 21)).toImage();
+        check(QStringLiteral("(ep0) THE EYEDROPPER BUTTON BESIDE THE COLOR WHEEL (D-3): a child of the wheel, 32 x 32 at "
+                             "194, 196 in its 228 x 228 - the corner right of the ring - the user's own dropper as "
+                             "exported; not a toggle"),
+              pickButton->parentWidget() == wheel && pickButton->geometry() == QRect(194, 196, 32, 32)
+                  && wheel->size() == QSize(228, 228) && pickButton->isVisible() && !mine.isNull() && shown == mine
+                  && !pickButton->isCheckable(),
+              QStringLiteral("parent the wheel %1, at %2 in %3x%4; shown %5; icon the user's %6; checkable %7")
+                  .arg(pickButton->parentWidget() == wheel).arg(rectText(pickButton->geometry()))
+                  .arg(wheel->width()).arg(wheel->height()).arg(pickButton->isVisible())
+                  .arg(!mine.isNull() && shown == mine).arg(pickButton->isCheckable()));
+        // Its states, read from the panel as shown: the ground at the button's left middle.
+        auto buttonGround = [&] {
+            pickButton->update();
+            return grabPx(pickButton->mapTo(panel, QPoint(3, 16)));
+        };
+        const QColor stDefault = buttonGround();
+        pickButton->setAttribute(Qt::WA_UnderMouse, true);
+        const QColor stHover = buttonGround();
+        pickButton->setDown(true);
+        const QColor stPressed = buttonGround();
+        pickButton->setDown(false);
+        pickButton->setAttribute(Qt::WA_UnderMouse, false);
+        r.canvas->armColorPick(true);
+        pump(30);
+        const QColor stActive = buttonGround();
+        pickButton->setAttribute(Qt::WA_UnderMouse, true);
+        const QColor stActiveHover = buttonGround();
+        pickButton->setDown(true);
+        const QColor stActivePressed = buttonGround();
+        pickButton->setDown(false);
+        pickButton->setAttribute(Qt::WA_UnderMouse, false);
+        r.canvas->armColorPick(false);
+        pump(30);
+        const QColor stAfter = buttonGround();
+        const QColor groundC(0x1e, 0x1e, 0x20), hoverC(0x2a, 0x2a, 0x33), pressedC(0x3a, 0x3a, 0x45);
+        const QColor activeC(0x7c, 0x6e, 0xf6);
+        check(QStringLiteral("(ep0) ITS STATES, AS SANKOTV'S OTHER BUTTONS (D-3): no ground when not in use, #2A2A33 on "
+                             "hover, #3A3A45 while pressed; the active look #7C6EF6 only while a pick waits - kept under "
+                             "the pointer, the pressed look while pressed - and back to no ground when the pick is off"),
+              nearColor(stDefault, groundC, 1) && nearColor(stHover, hoverC, 1) && nearColor(stPressed, pressedC, 1)
+                  && nearColor(stActive, activeC, 1) && nearColor(stActiveHover, activeC, 1)
+                  && nearColor(stActivePressed, pressedC, 1) && nearColor(stAfter, groundC, 1),
+              QStringLiteral("default %1, hover %2, pressed %3; waiting %4, + hover %5, + pressed %6; after %7")
+                  .arg(hex(stDefault), hex(stHover), hex(stPressed), hex(stActive), hex(stActiveHover),
+                       hex(stActivePressed), hex(stAfter)));
+        // In Classic that corner is the hue strip: the button shows with the Wheel only.
+        QWidget *tabs = body->findChild<QWidget *>(QStringLiteral("colorTabs"));
+        auto pressTab = [&](bool classic) {
+            if (!tabs)
+                return;
+            const QPointF at(tabs->width() * (classic ? 0.75 : 0.25), tabs->height() / 2.0);
+            QMouseEvent press(QEvent::MouseButtonPress, at, tabs->mapToGlobal(at), Qt::LeftButton, Qt::LeftButton,
+                              Qt::NoModifier);
+            QCoreApplication::sendEvent(tabs, &press);
+            QMouseEvent release(QEvent::MouseButtonRelease, at, tabs->mapToGlobal(at), Qt::LeftButton, Qt::NoButton,
+                                Qt::NoModifier);
+            QCoreApplication::sendEvent(tabs, &release);
+            pump(40);
+        };
+        pressTab(true);
+        const bool hiddenInClassic = !pickButton->isVisible();
+        pressTab(false);
+        const bool backWithWheel = pickButton->isVisible();
+        check(QStringLiteral("(ep0) THE BUTTON SHOWS WITH THE WHEEL: Classic hides it (its corner is the hue strip there), "
+                             "the Wheel brings it back"),
+              tabs && hiddenInClassic && backWithWheel,
+              QStringLiteral("tabs %1; hidden in Classic %2, back with the Wheel %3").arg(tabs != nullptr)
+                  .arg(hiddenInClassic).arg(backWithWheel));
+
+        // --- (ep1) the button: ONE pick of what you see, then back to the tool you had ---------
+        const QImage layer1Before = p0->layers.at(1).image;
+        const QColor own1 = p0->layers.at(1).image.pixelColor(200, 200);
+        pickButton->click();
+        pump(60);
+        const bool armed1 = r.canvas->colorPickArmed();
+        mouseAt(QEvent::MouseMove, pinkAt); // the dropper pointer over the orange
+        const bool cursorOn1 = r.canvas->pickCursorShownForTest();
+        const QImage pointer1 = r.canvas->cursor().pixmap().toImage();
+        const QImage before1 = grabCanvas(r.canvas);
+        mouseAt(QEvent::MouseButtonPress, pinkAt);
+        const bool picking1 = r.canvas->pickingForTest();
+        const QColor top1 = r.canvas->pickRingTopForTest(), bottom1 = r.canvas->pickRingBottomForTest();
+        const QImage ring1 = grabCanvas(r.canvas);
+        mouseAt(QEvent::MouseButtonRelease, pinkAt);
+        pump(60);
+        const QImage after1 = grabCanvas(r.canvas);
+        const QColor got1 = r.canvas->currentColorForTest(), swatch1 = swatchShows(), body1 = body->color();
+        const bool brush1 = r.canvas->tool() == DrawingCanvas::Brush;
+        const int steps1 = stack->index() - s0;
+        const bool untouched1 = p0->layers.at(1).image == layer1Before;
+        check(QStringLiteral("(ep1) THE COLORS PANEL'S EYEDROPPER: ONE PICK OF WHAT YOU SEE, THEN BACK TO YOUR TOOL - "
+                             "its button arms one pick (the dropper pointer); a click on the half see-through red over "
+                             "the Background's yellow takes the orange you see; the pick is over (disarmed), the tool "
+                             "still the Brush, the brush, the swatch and the panel all hold the orange; the panel stays "
+                             "open; nothing drawn, no step"),
+              armed1 && cursorOn1 && picking1 && nearColor(got1, orangeSeen, 1) && !r.canvas->colorPickArmed() && brush1
+                  && nearColor(swatch1, orangeSeen, 1) && nearColor(body1, orangeSeen, 1) && panel->isVisible()
+                  && steps1 == 0 && untouched1 && !r.canvas->pickingForTest(),
+              QStringLiteral("armed %1, pointer %2; picking %3; took %4, then armed %5, Brush %6; swatch %7, panel "
+                             "body %8, open %9; steps +%10, layer untouched %11")
+                  .arg(armed1).arg(cursorOn1).arg(picking1).arg(hex(got1)).arg(r.canvas->colorPickArmed()).arg(brush1)
+                  .arg(hex(swatch1)).arg(hex(body1)).arg(panel->isVisible()).arg(steps1).arg(untouched1));
+        check(QStringLiteral("(ep1) controls: the layer's own pixel there is the pure red, half see-through, and that red "
+                             "alone on the paper would be pink - neither is what was taken"),
+              own1.red() == 255 && own1.green() == 0 && own1.alpha() < 200 && !nearColor(own1, got1, 20)
+                  && !nearColor(pinkSeen, got1, 20),
+              QStringLiteral("the layer's %1 alpha %2; alone on the paper %3; taken %4")
+                  .arg(hex(own1)).arg(own1.alpha()).arg(hex(pinkSeen), hex(got1)));
+        const std::pair<int, int> ink1 = dropperInk(before1, ring1, pinkAt);
+        const std::pair<int, int> pointerInk1 = imageInk(pointer1);
+        check(QStringLiteral("(ep2) THE SAMPLING RING, while the button is held: the neutral grey outer ring round both "
+                             "halves; above, the colour under the pointer (the orange); below, the colour you had "
+                             "(black); at its centre the user's BLACK dropper with its thin WHITE outline (D-3), as the "
+                             "pointer before the press; gone at the release"),
+              nearColor(top1, orangeSeen, 1) && nearColor(bottom1, QColor(0, 0, 0), 0)
+                  && ringOk(ring1, pinkAt, orangeSeen, Qt::black)
+                  && ink1.second >= 20 && ink1.first >= 5 && pointerInk1.second >= 20 && pointerInk1.first >= 5
+                  && nearColor(pixAt(after1, pinkAt + QPointF(-50, 0)), pixAt(before1, pinkAt + QPointF(-50, 0)), 0)
+                  && nearColor(pixAt(after1, pinkAt + QPointF(0, -40)), pixAt(before1, pinkAt + QPointF(0, -40)), 0),
+              QStringLiteral("above %1, below %2; %3; dropper %4 black px, %5 white (pointer %6 black, %7 white); after "
+                             "the release %8 / %9 at the band, as before %10 / %11")
+                  .arg(hex(top1), hex(bottom1), ringText(ring1, pinkAt)).arg(ink1.second).arg(ink1.first)
+                  .arg(pointerInk1.second).arg(pointerInk1.first).arg(hex(pixAt(after1, pinkAt + QPointF(-50, 0))))
+                  .arg(hex(pixAt(after1, pinkAt + QPointF(0, -40))))
+                  .arg(hex(pixAt(before1, pinkAt + QPointF(-50, 0))))
+                  .arg(hex(pixAt(before1, pinkAt + QPointF(0, -40)))));
+
+        // --- (ep3) Alt held with the Brush picks, never paints; the ring white on the navy -----
+        // Alt pressed as a real key arrives: through the application, where the page's key
+        // router sees it (a hover reaches the canvas only once Alt has put the dropper up - Qt
+        // drops a buttonless move to a widget not tracking the mouse).
+        auto altKey = [&](bool down) {
+            QKeyEvent ev(down ? QEvent::KeyPress : QEvent::KeyRelease, Qt::Key_Alt,
+                         down ? Qt::AltModifier : Qt::NoModifier);
+            QCoreApplication::sendEvent(r.canvas, &ev);
+            pump(20);
+        };
+        const QImage layer3Before = p0->layers.at(1).image;
+        altKey(true);
+        mouseAt(QEvent::MouseMove, navyAt, Qt::AltModifier); // Alt down: the dropper pointer
+        const bool cursorOn3 = r.canvas->pickCursorShownForTest();
+        const QImage pointerNavy3 = r.canvas->cursor().pixmap().toImage();
+        mouseAt(QEvent::MouseMove, pinkAt, Qt::AltModifier);
+        const QImage pointerOrange3 = r.canvas->cursor().pixmap().toImage();
+        mouseAt(QEvent::MouseMove, navyAt, Qt::AltModifier);
+        const QImage before3 = grabCanvas(r.canvas);
+        mouseAt(QEvent::MouseButtonPress, navyAt, Qt::AltModifier);
+        const QImage ring3 = grabCanvas(r.canvas);
+        const QColor top3 = r.canvas->pickRingTopForTest(), bottom3 = r.canvas->pickRingBottomForTest();
+        mouseAt(QEvent::MouseMove, navyAt + QPointF(6, 4), Qt::AltModifier);
+        mouseAt(QEvent::MouseButtonRelease, navyAt + QPointF(6, 4), Qt::AltModifier);
+        pump(120);
+        const QColor got3 = r.canvas->currentColorForTest();
+        const int steps3 = stack->index() - s0;
+        const bool untouched3 = p0->layers.at(1).image == layer3Before;
+        altKey(false);
+        mouseAt(QEvent::MouseMove, paperAt);
+        const bool cursorOff3 = !r.canvas->pickCursorShownForTest();
+        const std::pair<int, int> ink3 = dropperInk(before3, ring3, navyAt);
+        const std::pair<int, int> pointerInk3 = imageInk(pointerNavy3);
+        const bool samePointer3 = !pointerNavy3.isNull() && pointerNavy3 == pointerOrange3;
+        check(QStringLiteral("(ep3) ALT HELD WITH THE BRUSH: the dropper pointer - the same black one, outlined in white, "
+                             "over the navy as over the orange (D-3: it never switches); a drag takes the navy and "
+                             "paints nothing - no step, the layer untouched, the panel still open, nothing armed after; "
+                             "Alt let go, the Brush's own pointer is back"),
+              cursorOn3 && samePointer3 && pointerInk3.second >= 20 && pointerInk3.first >= 5
+                  && nearColor(got3, navy, 1) && steps3 == 0 && untouched3 && panel->isVisible()
+                  && !r.canvas->colorPickArmed() && cursorOff3 && r.canvas->tool() == DrawingCanvas::Brush,
+              QStringLiteral("pointer %1, the same over both %2 (%3 black px, %4 white); took %5; steps +%6, untouched "
+                             "%7; open %8, armed %9; pointer gone after %10")
+                  .arg(cursorOn3).arg(samePointer3).arg(pointerInk3.second).arg(pointerInk3.first).arg(hex(got3))
+                  .arg(steps3).arg(untouched3).arg(panel->isVisible()).arg(r.canvas->colorPickArmed())
+                  .arg(cursorOff3));
+        check(QStringLiteral("(ep3) THE RING ON A DARK COLOUR: above the navy, below the orange you had, and the user's "
+                             "BLACK dropper at the centre, its thin WHITE outline keeping it readable (D-3)"),
+              nearColor(top3, navy, 1) && nearColor(bottom3, orangeSeen, 1) && ringOk(ring3, navyAt, navy, orangeSeen)
+                  && ink3.second >= 20 && ink3.first >= 20,
+              QStringLiteral("above %1, below %2; %3; dropper %4 black px, %5 white")
+                  .arg(hex(top3), hex(bottom3), ringText(ring3, navyAt)).arg(ink3.second).arg(ink3.first));
+        // Alt held before the window had the keyboard (Alt+Tab): its press was never seen, the
+        // press itself says Alt. The pick puts the dropper up; it stays up while Alt is held, and
+        // a move without Alt takes it down (the move reaches the canvas: tracking is on).
+        const QColor had3b = r.canvas->currentColorForTest();
+        mouseAt(QEvent::MouseButtonPress, pinkAt, Qt::AltModifier);
+        mouseAt(QEvent::MouseButtonRelease, pinkAt, Qt::AltModifier);
+        const bool tookOrange3b = nearColor(r.canvas->currentColorForTest(), orangeSeen, 1);
+        const bool up3b = r.canvas->pickCursorShownForTest();
+        mouseAt(QEvent::MouseMove, navyAt, Qt::AltModifier);
+        const bool stillUp3b = r.canvas->pickCursorShownForTest();
+        mouseAt(QEvent::MouseMove, paperAt);
+        const bool down3b = !r.canvas->pickCursorShownForTest();
+        r.canvas->setColor(had3b); // back to the navy for the control below
+        check(QStringLiteral("(ep3) ALT HELD BEFORE THE WINDOW HAD THE KEYBOARD (Alt+Tab, its press never seen): a press "
+                             "with Alt still picks; after it the dropper stays up while Alt is held and a move without "
+                             "Alt takes it down"),
+              tookOrange3b && up3b && stillUp3b && down3b,
+              QStringLiteral("took the orange %1; dropper up %2, still up with Alt %3; down without Alt %4")
+                  .arg(tookOrange3b).arg(up3b).arg(stillUp3b).arg(down3b));
+        // Control: the same drag with no Alt paints - a step - and the first stroke hides the
+        // panel (cp4).
+        camtool::drag(r.canvas, paperAt, paperAt + QPointF(40, 20));
+        pump(300);
+        const int steps3c = stack->index() - s0;
+        const bool painted3c = p0->layers.at(1).image != layer3Before;
+        const bool hidden3c = !panel->isVisible() && !viewColors->isChecked();
+        const bool stillRemembered3c = sankoSettings().value(colorsKey).toBool();
+        check(QStringLiteral("(ep3) control: the same drag with no Alt paints with the picked navy - one step"),
+              steps3c == 1 && painted3c && nearColor(r.canvas->currentColorForTest(), navy, 1),
+              QStringLiteral("steps +%1, painted %2").arg(steps3c).arg(painted3c));
+        check(QStringLiteral("(cp4) THE FIRST STROKE HIDES THE COLORS PANEL (a pick did not): its tick off; \"open\" "
+                             "still remembered - a rule closing it is not the user choosing \"hidden\""),
+              hidden3c && stillRemembered3c,
+              QStringLiteral("hidden %1, remembered %2").arg(hidden3c).arg(stillRemembered3c));
+        r.storyboard->editUndo();
+        pump(120);
+
+        // --- (ep4) overlays are not taken: the onion skin's ghost is seen, never picked --------
+        QPixmap ghost(QSize(960, 540));
+        ghost.fill(Qt::transparent);
+        {
+            QPainter g(&ghost);
+            g.fillRect(QRect(700, 320, 200, 200), QColor(0, 160, 0));
+        }
+        r.canvas->setPreviousPixmap(ghost, QRect(0, 0, 960, 540));
+        const QImage noGhost = grabCanvas(r.canvas);
+        r.canvas->setOnionSkinEnabled(true);
+        pump(60);
+        const QImage withGhost = grabCanvas(r.canvas);
+        const QColor seenOff = pixAt(noGhost, paperAt), seenOn = pixAt(withGhost, paperAt);
+        keyClaimed(&r.window, Qt::Key_I); // (ep5) checks the key; here it arms the pick
+        const bool armed4 = r.canvas->colorPickArmed();
+        mouseAt(QEvent::MouseButtonPress, paperAt);
+        mouseAt(QEvent::MouseButtonRelease, paperAt);
+        pump(60);
+        const QColor got4 = r.canvas->currentColorForTest();
+        r.canvas->setOnionSkinEnabled(false);
+        r.canvas->setPreviousPixmap(QPixmap(), QRect());
+        pump(40);
+        check(QStringLiteral("(ep4) OVERLAYS ARE NOT TAKEN: over the onion skin's ghost the pick takes the paper - "
+                             "the drawing's own colour there"),
+              armed4 && nearColor(got4, paper, 1), QStringLiteral("armed %1; took %2").arg(armed4).arg(hex(got4)));
+        check(QStringLiteral("(ep4) control: the ghost is really shown there - the view's pixel changes with the onion "
+                             "skin on"),
+              !nearColor(seenOff, seenOn, 10), QStringLiteral("off %1, on %2").arg(hex(seenOff), hex(seenOn)));
+
+        // --- (ep5) I arms as the button does; I again, Esc or another tool disarms -------------
+        keyClaimed(&r.window, Qt::Key_I);
+        const bool armedI = r.canvas->colorPickArmed() && r.canvas->tool() == DrawingCanvas::Brush;
+        keyClaimed(&r.window, Qt::Key_I);
+        const bool offI = !r.canvas->colorPickArmed();
+        pickButton->click();
+        pump(40);
+        const bool armedB = r.canvas->colorPickArmed();
+        pickButton->click();
+        pump(40);
+        const bool offB = !r.canvas->colorPickArmed();
+        keyClaimed(&r.window, Qt::Key_I);
+        camtool::key(r.canvas, QEvent::KeyPress, Qt::Key_Escape);
+        pump(40);
+        const bool offEsc = !r.canvas->colorPickArmed();
+        keyClaimed(&r.window, Qt::Key_I);
+        r.canvas->setTool(DrawingCanvas::Brush); // the same tool said again: the pick still waits
+        const bool sameToolKeeps = r.canvas->colorPickArmed() && r.canvas->pickCursorShownForTest();
+        pickTool("toolEraser");
+        const bool offTool = !r.canvas->colorPickArmed() && r.canvas->tool() == DrawingCanvas::Eraser;
+        pickTool("toolBrush");
+        // Let go off the stage, nothing is taken and the pick still waits.
+        keyClaimed(&r.window, Qt::Key_I);
+        const QColor had5 = r.canvas->currentColorForTest();
+        mouseAt(QEvent::MouseButtonPress, toW(QPointF(-200, -200)));
+        mouseAt(QEvent::MouseButtonRelease, toW(QPointF(-200, -200)));
+        const bool offStage = r.canvas->colorPickArmed() && r.canvas->currentColorForTest() == had5;
+        r.canvas->armColorPick(false);
+        pump(40);
+        check(QStringLiteral("(ep5) I ARMS ONE PICK AS THE BUTTON DOES, the tool kept; I again (or the button again), "
+                             "Esc and another tool each disarm it - the same tool again does not, its dropper pointer "
+                             "kept; a click off the stage takes nothing and the pick still waits"),
+              armedI && offI && armedB && offB && offEsc && sameToolKeeps && offTool && offStage,
+              QStringLiteral("I %1, again %2; button %3, again %4; Esc %5; the same tool again keeps it %6; another "
+                             "tool %7; off the stage %8")
+                  .arg(armedI).arg(offI).arg(armedB).arg(offB).arg(offEsc).arg(sameToolKeeps).arg(offTool)
+                  .arg(offStage));
+
+        // --- (cp2) another tool hides the panel; (cp3) so does a press on another bar button --
+        swatch->click();
+        pump(200);
+        const bool open2 = panel->isVisible();
+        pickTool("toolEraser");
+        const bool hidden2 = !panel->isVisible() && !viewColors->isChecked();
+        pickTool("toolBrush");
+        swatch->click();
+        pump(200);
+        const bool open3 = panel->isVisible();
+        const QPointF eraserMid(eraserButton->width() / 2.0, eraserButton->height() / 2.0);
+        // Pressed, let go off the button: no click, so the tool stays the Brush.
+        camtool::mouse(eraserButton, QEvent::MouseButtonPress, eraserMid, Qt::LeftButton, Qt::LeftButton);
+        camtool::mouse(eraserButton, QEvent::MouseButtonRelease, QPointF(-60, -60), Qt::LeftButton, Qt::NoButton);
+        pump(120);
+        const bool hidden3 = !panel->isVisible() && r.canvas->tool() == DrawingCanvas::Brush;
+        swatch->click();
+        pump(200);
+        const QPointF swatchMid(swatch->width() / 2.0, swatch->height() / 2.0);
+        camtool::mouse(swatch, QEvent::MouseButtonPress, swatchMid, Qt::LeftButton, Qt::LeftButton);
+        camtool::mouse(swatch, QEvent::MouseButtonRelease, QPointF(-60, -60), Qt::LeftButton, Qt::NoButton);
+        pump(120);
+        const bool swatchSpares = panel->isVisible();
+        check(QStringLiteral("(cp2) ANOTHER TOOL HIDES THE COLORS PANEL, its tick off"), open2 && hidden2,
+              QStringLiteral("open %1, hidden %2").arg(open2).arg(hidden2));
+        check(QStringLiteral("(cp3) A PRESS ON ANOTHER BUTTON OF THE BARS HIDES IT (the Eraser pressed and let go off "
+                             "it: no tool change)"),
+              open3 && hidden3, QStringLiteral("open %1, hidden %2").arg(open3).arg(hidden3));
+        check(QStringLiteral("(cp3) control: the same press on the swatch, its own switch, leaves it open"),
+              swatchSpares, QStringLiteral("open %1").arg(swatchSpares));
+
+        // --- (cp5) the swatch closes it; (cp6) View > Colors both ways; (cp7) the last opened -----
+        swatch->click(); // open -> closed, the user's choice
+        pump(200);
+        const bool swatchCloses = !panel->isVisible() && !sankoSettings().value(colorsKey).toBool();
+        viewColors->trigger();
+        pump(200);
+        const bool viewOpens = panel->isVisible() && viewColors->isChecked() && sankoSettings().value(colorsKey).toBool();
+        const QRect geo6 = panel->frameGeometry();
+        viewColors->trigger();
+        pump(200);
+        const bool viewCloses = !panel->isVisible() && !viewColors->isChecked()
+                                && !sankoSettings().value(colorsKey).toBool();
+        check(QStringLiteral("(cp5) THE SWATCH CLOSES IT AGAIN - remembered as closed"), swatchCloses,
+              QStringLiteral("closed %1").arg(swatchCloses));
+        check(QStringLiteral("(cp6) VIEW > COLORS OPENS AND CLOSES IT WITH ITS TICK, at the same place under the swatch "
+                             "- remembered each way"),
+              viewOpens && viewCloses && geo6.topLeft() == geo1.topLeft(),
+              QStringLiteral("opens %1 at %2, closes %3").arg(viewOpens).arg(rectText(geo6)).arg(viewCloses));
+        // ONE PANEL AT LAUNCH (the user's answer to D-3): which of the Library and the Colors
+        // panel was opened last is recorded as each shows.
+        auto *library = r.window.findChild<brushlib::BrushLibraryPanel *>();
+        auto *brushButton = r.storyboard->findChild<QPushButton *>(QStringLiteral("toolBrush"));
+        if (brushButton)
+            brushButton->click(); // the Library's door
+        pump(200);
+        const bool libraryOpen7 = library && library->isVisible();
+        const QString lastAfterLibrary = sankoSettings().value(StoryboardPage::kLastPanelKey).toString();
+        swatch->click(); // the Colors panel's (its press hides the Library)
+        pump(200);
+        const bool swap7 = panel->isVisible() && library && !library->isVisible();
+        const QString lastAfterColors = sankoSettings().value(StoryboardPage::kLastPanelKey).toString();
+        swatch->click();
+        pump(200);
+        check(QStringLiteral("(cp7) THE ONE OPENED LAST IS RECORDED: the Brush button opens the Library - \"library\"; the "
+                             "swatch then opens the Colors panel, hiding the Library - \"colors\""),
+              libraryOpen7 && lastAfterLibrary == QStringLiteral("library") && swap7
+                  && lastAfterColors == QStringLiteral("colors"),
+              QStringLiteral("Library open %1, recorded '%2'; swapped %3, recorded '%4'").arg(libraryOpen7)
+                  .arg(lastAfterLibrary).arg(swap7).arg(lastAfterColors));
+
+        // --- (fl0) the Move bar: Flip H and Flip V after Warp, like it -------------------------
+        pickTool("toolMove");
+        pump(120);
+        auto *flipH = r.storyboard->findChild<QPushButton *>(QStringLiteral("moveFlipH"));
+        auto *flipV = r.storyboard->findChild<QPushButton *>(QStringLiteral("moveFlipV"));
+        QWidget *moveBar = flipH ? flipH->parentWidget() : nullptr;
+        QPushButton *warp = nullptr;
+        if (moveBar)
+            for (QPushButton *b : moveBar->findChildren<QPushButton *>())
+                if (b->toolTip() == QStringLiteral("Warp"))
+                    warp = b;
+        QAction *editFlipH = r.window.findChild<QAction *>(QStringLiteral("editFlipHorizontal"));
+        QAction *editFlipV = r.window.findChild<QAction *>(QStringLiteral("editFlipVertical"));
+        auto *editMenu = editFlipH ? qobject_cast<QMenu *>(editFlipH->parent()) : nullptr;
+        if (!flipH || !flipV || !moveBar || !warp || !editFlipH || !editFlipV || !editMenu) {
+            check(QStringLiteral("(fl) found the Move bar's Flip H, Flip V and Warp, and the Edit menu's two Flips"), false);
+            r.window.markCleanForTest();
+            restoreColorsKey();
+            return;
+        }
+        // Each caption placed under its button by the bar's own rule, as Warp's is under Warp:
+        // centred on the button's middle (its width halved), on the caption row (y 49).
+        auto captionOf = [&](const QString &text) -> QLabel * {
+            for (QLabel *l : moveBar->findChildren<QLabel *>())
+                if (l->text() == text)
+                    return l;
+            return nullptr;
+        };
+        QStringList captions;
+        for (const auto &pair : {std::make_pair(QStringLiteral("Warp"), static_cast<QWidget *>(warp)),
+                                 std::make_pair(QStringLiteral("Flip H"), static_cast<QWidget *>(flipH)),
+                                 std::make_pair(QStringLiteral("Flip V"), static_cast<QWidget *>(flipV))}) {
+            QLabel *l = captionOf(pair.first);
+            const QWidget *b = pair.second;
+            const bool placed = l && l->pos() == QPoint(b->x() + b->width() / 2 - l->width() / 2, 8 + 41);
+            captions << QStringLiteral("%1 %2").arg(pair.first, placed ? QStringLiteral("under it") : QStringLiteral("off"));
+        }
+        const QImage barImg = moveBar->grab().toImage();
+        const double bd = barImg.devicePixelRatio();
+        auto barPx = [&](QWidget *w) {
+            const QPoint p = w->mapTo(moveBar, QPoint(2, 2));
+            return barImg.pixelColor(QPoint(qFloor(p.x() * bd), qFloor(p.y() * bd)));
+        };
+        const QColor warpGround = barPx(warp), flipHGround = barPx(flipH), flipVGround = barPx(flipV);
+        const QString wantCaptions = QStringLiteral("Warp under it, Flip H under it, Flip V under it");
+        check(QStringLiteral("(fl0) THE MOVE BAR: 668 px wide, Flip H and Flip V after Warp at the bar's own step, 36 "
+                             "px buttons captioned \"Flip H\" and \"Flip V\" under them, the same ground as Warp's - no "
+                             "purple; not modes (not toggles)"),
+              moveBar->size() == QSize(668, 66) && moveBar->isVisible() && flipH->geometry() == QRect(509, 8, 36, 36)
+                  && flipV->geometry() == QRect(608, 8, 36, 36) && warp->geometry() == QRect(410, 8, 36, 36)
+                  && captions.join(QStringLiteral(", ")) == wantCaptions && nearColor(flipHGround, warpGround, 0)
+                  && nearColor(flipVGround, warpGround, 0) && !flipH->isCheckable() && !flipV->isCheckable(),
+              QStringLiteral("bar %1x%2 shown %3; Flip H %4, Flip V %5, Warp %6; captions [%7]; ground %8 / %9, Warp's "
+                             "%10; checkable %11 / %12")
+                  .arg(moveBar->width()).arg(moveBar->height()).arg(moveBar->isVisible())
+                  .arg(rectText(flipH->geometry()), rectText(flipV->geometry()), rectText(warp->geometry()),
+                       captions.join(QStringLiteral(", ")))
+                  .arg(hex(flipHGround), hex(flipVGround), hex(warpGround)).arg(flipH->isCheckable())
+                  .arg(flipV->isCheckable()));
+
+        // --- (fl1) Flip H mirrors the box's art at once; Enter lands it as one step ------------
+        // The box is round "Layer 1"'s art (100,100 to 600,300): pink on the left, the navy on
+        // the right, low. Mirrored, the navy is on the left (low), the pink on the right.
+        const QRect box0 = r.canvas->transformQuadForTest().boundingRect().toAlignedRect();
+        const QPointF leftLow = toW(QPointF(200, 250)), rightHigh = toW(QPointF(500, 150));
+        auto artAt = [&](int x, int y) { return p0->layers.at(1).image.pixelColor(x, y); };
+        const int sF = stack->index();
+        const QImage view1a = grabCanvas(r.canvas);
+        flipH->click();
+        pump(80);
+        const QImage view1b = grabCanvas(r.canvas);
+        const QRect box1 = r.canvas->transformQuadForTest().boundingRect().toAlignedRect();
+        const bool layerKept1 = artAt(200, 250).red() == 255 && artAt(500, 150).alpha() == 0;
+        camtool::key(r.canvas, QEvent::KeyPress, Qt::Key_Return);
+        pump(120);
+        const int stepsF1 = stack->index() - sF;
+        const QString textF1 = stack->undoText();
+        const QColor landedLeft = artAt(200, 250), landedRight = artAt(500, 150);
+        check(QStringLiteral("(fl1) FLIP H MIRRORS THE MOVE BOX'S ART AT ONCE (the box itself stays): the navy now low "
+                             "on the left, the pink on the right; the layer is changed only when Enter lands it - one "
+                             "\"Transform\" step"),
+              box0 == QRect(100, 100, 500, 200) && box1 == box0 && nearColor(pixAt(view1a, leftLow), orangeSeen, 2)
+                  && nearColor(pixAt(view1b, leftLow), navy, 2) && nearColor(pixAt(view1b, rightHigh), pinkSeen, 2)
+                  && layerKept1 && stepsF1 == 1 && textF1 == QStringLiteral("Transform") && nearColor(landedLeft, navy, 0)
+                  && landedRight.red() == 255 && landedRight.alpha() > 100,
+              QStringLiteral("box %1 -> %2; view left-low %3 -> %4, right-high %5; layer kept till Enter %6; steps "
+                             "+%7 '%8'; landed left-low %9, right-high %10 a%11")
+                  .arg(rectText(box0), rectText(box1), hex(pixAt(view1a, leftLow)), hex(pixAt(view1b, leftLow)),
+                       hex(pixAt(view1b, rightHigh)))
+                  .arg(layerKept1).arg(stepsF1).arg(textF1).arg(hex(landedLeft)).arg(hex(landedRight))
+                  .arg(landedRight.alpha()));
+        r.storyboard->editUndo();
+        pump(120);
+        const bool undoneF1 = artAt(200, 250).red() == 255 && artAt(500, 250).blue() == 64 && stack->index() == sF;
+
+        // --- (fl2) Flip V, then Esc: the art as it was, no step --------------------------------
+        flipV->click();
+        pump(80);
+        const QImage view2 = grabCanvas(r.canvas);
+        const QPointF rightLow = toW(QPointF(500, 250));
+        camtool::key(r.canvas, QEvent::KeyPress, Qt::Key_Escape);
+        pump(120);
+        const QImage view2b = grabCanvas(r.canvas);
+        check(QStringLiteral("(fl2) FLIP V turns the art upside down in the box (the navy now high on the right); Esc "
+                             "takes it back - no step, the layer as it was; Ctrl+Z took (fl1)'s flip away first"),
+              undoneF1 && nearColor(pixAt(view2, rightHigh), navy, 2) && nearColor(pixAt(view2, rightLow), paper, 2)
+                  && nearColor(pixAt(view2b, rightLow), navy, 2) && stack->index() == sF && artAt(500, 250).blue() == 64,
+              QStringLiteral("undone %1; flipped: right-high %2, right-low %3; Esc: right-low %4; steps +%5")
+                  .arg(undoneF1).arg(hex(pixAt(view2, rightHigh)), hex(pixAt(view2, rightLow)),
+                                     hex(pixAt(view2b, rightLow)))
+                  .arg(stack->index() - sF));
+
+        // --- (fl3) flipped twice is as it was: Enter lands nothing ------------------------------
+        flipH->click();
+        flipH->click();
+        pump(80);
+        camtool::key(r.canvas, QEvent::KeyPress, Qt::Key_Return);
+        pump(120);
+        check(QStringLiteral("(fl3) FLIPPED TWICE IS AS IT WAS: Enter lands nothing - no step"),
+              stack->index() == sF && artAt(200, 250).red() == 255,
+              QStringLiteral("steps +%1").arg(stack->index() - sF));
+
+        // --- (fl4) the Edit menu's Flips: greyed with why without a box, the buttons' own with one --
+        emit editMenu->aboutToShow();
+        // On, the reason is gone (Qt then shows the entry's own text as its tooltip).
+        const QString why = QStringLiteral("Works on the Move tool's box: pick the Move tool (V) first.");
+        const bool onWithBox = editFlipH->isEnabled() && editFlipV->isEnabled() && editFlipH->toolTip() != why
+                               && editFlipV->toolTip() != why;
+        editFlipH->trigger();
+        pump(80);
+        const QImage view4 = grabCanvas(r.canvas);
+        const bool menuFlips = nearColor(pixAt(view4, leftLow), navy, 2);
+        camtool::key(r.canvas, QEvent::KeyPress, Qt::Key_Escape);
+        pump(120);
+        pickTool("toolBrush");
+        emit editMenu->aboutToShow();
+        const bool offWithout = !editFlipH->isEnabled() && !editFlipV->isEnabled() && editFlipH->toolTip() == why
+                                && editFlipV->toolTip() == why;
+        editFlipH->trigger(); // greyed: nothing
+        pump(60);
+        check(QStringLiteral("(fl4) EDIT > FLIP HORIZONTAL / VERTICAL: on with the Move box, and Flip Horizontal there "
+                             "does what the bar's button does; with no box both greyed, why as their tooltip (\"Works "
+                             "on the Move tool's box: pick the Move tool (V) first.\")"),
+              onWithBox && menuFlips && offWithout && stack->index() == sF && artAt(200, 250).red() == 255,
+              QStringLiteral("with the box on %1, flips %2; without: greyed with why %3 ('%4'); steps +%5")
+                  .arg(onWithBox).arg(menuFlips).arg(offWithout).arg(editFlipH->toolTip()).arg(stack->index() - sF));
+
+        // Left open for (cp8): the next launch opens it. The Library was left open too (cp7: the
+        // swatch's press hid it, which is not the user closing it) - the Colors panel was opened
+        // after it.
+        swatch->click();
+        pump(200);
+        r.window.markCleanForTest();
+    }
+    const QString libraryKey = QStringLiteral("storyboard/brushLibrary/v1/visible");
+    auto launchState = [&](const char *label) {
+        auto rig = std::make_unique<Rig>(project);
+        Rig &r = *rig;
+        clickThumb(r, 0);
+        pump(200);
+        QWidget *panel = r.storyboard->colorsPanelForTest();
+        auto *library = r.window.findChild<brushlib::BrushLibraryPanel *>();
+        QAction *viewColors = r.window.findChild<QAction *>(QStringLiteral("viewColors"));
+        QAbstractButton *swatch = r.storyboard->colorSwatchForTest();
+        struct State { bool ok, colors, ticked, library, under; } s{r.ok && panel && library && viewColors && swatch,
+                                                                      false, false, false, false};
+        if (!s.ok) {
+            check(QStringLiteral("(cp8) %1: the workspace and its panels").arg(QLatin1String(label)), false);
+            return s;
+        }
+        s.colors = panel->isVisible();
+        s.ticked = viewColors->isChecked();
+        s.library = library->isVisible();
+        if (s.colors) {
+            const int k = FloatingToolWindow::kMargin;
+            const QRect bar = swatch->window()->frameGeometry(), geo = panel->frameGeometry();
+            const QRect margin = QRect(r.canvas->mapToGlobal(QPoint(0, 0)), r.canvas->size()).adjusted(k, k, -k, -k);
+            s.under = geo.left() == qMin(swatch->mapToGlobal(QPoint(0, 0)).x(), margin.right() + 1 - geo.width())
+                      && geo.top() == bar.bottom() + 1 + k;
+            if (QLatin1String(label) == QLatin1String("2nd")) {
+                swatch->click(); // closed with the swatch: the user's choice
+                pump(200);
+            }
+        }
+        r.window.markCleanForTest();
+        return s;
+    };
+    // --- (cp8) remembered between launches, both ways; ONE PANEL AT LAUNCH ----------------------
+    const bool bothLeftOpen = sankoSettings().value(colorsKey).toBool() && sankoSettings().value(libraryKey).toBool()
+                              && sankoSettings().value(StoryboardPage::kLastPanelKey).toString() == QStringLiteral("colors");
+    const auto second = launchState("2nd");
+    check(QStringLiteral("(cp8) LEFT OPEN, THE NEXT LAUNCH OPENS IT, ticked, under the swatch - and ONLY it: the Brush "
+                         "Library, left open too but opened before it, does not reopen (one panel at launch, the one "
+                         "opened last; never on top of each other)"),
+          bothLeftOpen && second.colors && second.ticked && second.under && !second.library,
+          QStringLiteral("both left open, Colors last %1; Colors open %2, ticked %3, under the swatch %4; Library open %5")
+              .arg(bothLeftOpen).arg(second.colors).arg(second.ticked).arg(second.under).arg(second.library));
+    const auto third = launchState("3rd");
+    check(QStringLiteral("(cp8) CLOSED WITH THE SWATCH, THE NEXT LAUNCH KEEPS IT CLOSED; the Library, now the only one "
+                         "left open, reopens"),
+          !third.colors && !third.ticked && third.library,
+          QStringLiteral("Colors open %1, ticked %2; Library open %3").arg(third.colors).arg(third.ticked)
+              .arg(third.library));
+    sankoSettings().setValue(colorsKey, true);
+    sankoSettings().setValue(libraryKey, true);
+    sankoSettings().setValue(StoryboardPage::kLastPanelKey, QStringLiteral("library"));
+    const auto fourth = launchState("4th");
+    check(QStringLiteral("(cp8) BOTH LEFT OPEN, THE LIBRARY OPENED LAST: only the Library reopens"),
+          fourth.library && !fourth.colors,
+          QStringLiteral("Library open %1, Colors open %2").arg(fourth.library).arg(fourth.colors));
+    restoreColorsKey(); // the launch keys with it
+}
+
 // BATCH C (2026-11-13; Figma C-1, C-2; the user's choices of 2026-11-10 and 2026-11-13):
 // (tt) every tooltip drawn as the floating Brush bar's - Qt still decides when, what and
 // where, its own label is made transparent and the Brush bar's frame drawn in its place;
@@ -20330,9 +21175,10 @@ void runKeysAndViewPass(const QString &scratch)
               bad.isEmpty() && !r.animatic->isPlaying() && !libraryOpened,
               QStringLiteral("bad [%1]; library opened %2; %3").arg(bad.join(QLatin1Char(','))).arg(libraryOpened)
                   .arg(seen.join(QStringLiteral("; "))));
-        // Controls: a text field with the keyboard keeps its letter; I is nobody's yet. A
-        // typed letter carries its text, which is what a field takes it by (the first run
-        // sent the key with none, and the field let it go to the shortcut).
+        // Controls: a text field with the keyboard keeps its letter, I too; I is the
+        // Eyedropper's since batch D (D-2). A typed letter carries its text, which is what a
+        // field takes it by (the first run sent the key with none, and the field let it go to
+        // the shortcut).
         auto typed = [&](int key, const QString &text) {
             r.window.activateWindow(); // the window active, as press() makes it (press() would send the key)
             r.window.raise();
@@ -20359,12 +21205,19 @@ void runKeysAndViewPass(const QString &scratch)
         field->setFocus();
         pump(60);
         const bool fieldKeeps = !typed(Qt::Key_E, QStringLiteral("e")) && r.canvas->tool() == DrawingCanvas::Brush;
+        const bool fieldKeepsI = !typed(Qt::Key_I, QStringLiteral("i")) && !r.canvas->colorPickArmed();
         delete field;
         pump(60);
-        const bool iFree = !typed(Qt::Key_I, QStringLiteral("i")) && r.canvas->tool() == DrawingCanvas::Brush;
-        check(QStringLiteral("(kc1) controls: with a text field holding the keyboard E is the field's (the tool stays "
-                             "the Brush); I is no tool's yet (the eyedropper comes in batch D)"),
-              fieldKeeps && iFree, QStringLiteral("field keeps %1, I free %2").arg(fieldKeeps).arg(iFree));
+        // I since batch D (D-2): one pick armed, the tool you had kept ((ep4) checks the pick).
+        const bool iArms = typed(Qt::Key_I, QStringLiteral("i")) && r.canvas->colorPickArmed()
+                           && r.canvas->tool() == DrawingCanvas::Brush;
+        r.canvas->armColorPick(false);
+        pump(40);
+        check(QStringLiteral("(kc1) controls: with a text field holding the keyboard E and I are the field's (the tool "
+                             "stays the Brush, no pick armed); without it I is the Eyedropper's (batch D): one pick "
+                             "armed, the tool still the Brush"),
+              fieldKeeps && fieldKeepsI && iArms,
+              QStringLiteral("field keeps E %1, I %2; I arms %3").arg(fieldKeeps).arg(fieldKeepsI).arg(iArms));
     }
 
     // --- (kc2) [ and ] ---------------------------------------------------------------------------
@@ -26580,9 +27433,10 @@ int main(int argc, char **argv)
         || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("keysview")
         || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("batchd")) {
         if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("batchd")) {
-            // Batch D's parts with no new look: paste on a new layer, View > Library's tick; and
-            // the kept-art pass, whose (ka7) pastes on the canvas.
+            // Batch D: paste on a new layer, View > Library's tick; D-2's Eyedropper, Colors
+            // panel and Flip H / V; and the kept-art pass, whose (ka7) pastes on the canvas.
             runPasteLayerPass(scratch);
+            runEyedropperFlipPass(scratch);
             runKeptArtPass(scratch);
         } else if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("keysview")) {
             // Batch C: one tooltip style, the keys and the view, the timeline to 1600 %;
@@ -26824,6 +27678,7 @@ int main(int argc, char **argv)
     runSceneLockPass(scratch);
     runKeysAndViewPass(scratch);
     runPasteLayerPass(scratch);
+    runEyedropperFlipPass(scratch);
     runPinnedKeysPass(scratch);
     runCameraBarFitPass(scratch);
     runStageClearPass(scratch);

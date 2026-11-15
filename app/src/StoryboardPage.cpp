@@ -7,6 +7,7 @@
 #include "ColorPanel.h"
 #include "SankoIcons.h"
 #include "SankoNoteStyle.h" // sankoGreyWithReason
+#include "SankoScrollBarStyle.h"
 #include "SankoTip.h"       // the Brush bar's tip look, shared by every tooltip
 #include "SankoTimelineTheme.h"
 #include "SankoToggleControls.h"
@@ -334,7 +335,9 @@ QPixmap selModIconPixmap(const QString &svgPath, QSizeF svgSize)
 // Move Modifier icon (Figma 161:39): the asset is the full 36x36 button frame
 // with its background stripped (ToolButton paints the state background), so it
 // renders 1:1 into the 36 box. Colours are literal (#cccccc strokes).
-QPixmap moveModIconPixmap(const QString &svgPath)
+// inner: where in the 36 x 36 button the SVG goes - all of it for the Figma "Move" icons, the
+// middle 24 x 24 for the user's Flip H / V (batch D; their 24 x 24 Flip icon sits at 6, 6).
+QPixmap moveModIconPixmap(const QString &svgPath, const QRectF &inner = QRectF(0, 0, 36, 36))
 {
     constexpr qreal dpr = 2.0, box = 36.0;
     QPixmap pm(QSize(int(box * dpr), int(box * dpr)));
@@ -344,7 +347,7 @@ QPixmap moveModIconPixmap(const QString &svgPath)
     p.setRenderHint(QPainter::Antialiasing, true);
     p.setRenderHint(QPainter::SmoothPixmapTransform, true);
     QSvgRenderer r(svgPath);
-    r.render(&p, QRectF(0, 0, box, box));
+    r.render(&p, inner);
     return pm;
 }
 
@@ -619,6 +622,29 @@ protected:
         p.setPen(QPen(QColor(0x1a, 0x1a, 0x1a), bw));
         p.setBrush(QColor(0x21, 0x21, 0x21));
         p.drawRoundedRect(r, 12, 12);
+    }
+};
+
+// THE COLORS PANEL'S WINDOW (batch D; the user's D-3, approved 2026-11-14): the Brush
+// Library's container - a #1E1E20 ground, a 1 px #2D2D35 border, 10 px rounded corners -
+// painted as the Library paints its own (BrushLibraryPanel::paintEvent): antialiased corners,
+// nothing outside them on the translucent window. No saved spot (it is anchored every time).
+class ColorsPanelWindow : public FloatingToolWindow
+{
+public:
+    ColorsPanelWindow(QWidget *anchor, QWidget *parent) : FloatingToolWindow(anchor, QString(), parent) {}
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setCompositionMode(QPainter::CompositionMode_Source);
+        p.fillRect(rect(), Qt::transparent);
+        p.setCompositionMode(QPainter::CompositionMode_SourceOver);
+        p.setPen(QPen(QColor(0x2d, 0x2d, 0x35), 1));
+        p.setBrush(QColor(0x1e, 0x1e, 0x20));
+        p.drawRoundedRect(QRectF(0.5, 0.5, width() - 1, height() - 1), 10, 10);
     }
 };
 
@@ -2787,6 +2813,8 @@ StoryboardPage::StoryboardPage(QWidget *parent)
     pageKey(QKeySequence(Qt::Key_G), [this] { toolKey(DrawingCanvas::Fill); });
     pageKey(QKeySequence(Qt::Key_V), [this] { toolKey(DrawingCanvas::Move); });
     pageKey(QKeySequence(Qt::Key_L), [this] { toolKey(DrawingCanvas::Lasso); });
+    // I: the Colors panel's Eyedropper button (batch D) - one pick, then back to your tool.
+    pageKey(QKeySequence(Qt::Key_I), [this] { toggleColorPick(); });
     for (const auto &[key, direction] : {std::pair{Qt::Key_BracketLeft, -1}, std::pair{Qt::Key_BracketRight, 1}}) {
         auto *shortcut = new QShortcut(QKeySequence(key), this);
         shortcut->setContext(Qt::WindowShortcut); // held, it repeats: the size runs on
@@ -3007,6 +3035,13 @@ void StoryboardPage::installDockViewActions()
         connect(m_brushLibPanel, &brushlib::BrushLibraryPanel::visibilityChanged,
                 m_brushLibViewAction, &QAction::setChecked);
     }
+    // Colors (batch D; D-1): the Colors panel with the Library's rules. The entry opens and
+    // closes it (remembered, as the swatch); its tick follows the panel (eventFilter).
+    m_colorsViewAction = viewMenu->addAction(QStringLiteral("Colors"));
+    m_colorsViewAction->setObjectName(QStringLiteral("viewColors"));
+    m_colorsViewAction->setCheckable(true);
+    m_colorsViewAction->setChecked(m_colorsPanel && m_colorsPanel->isVisible());
+    connect(m_colorsViewAction, &QAction::triggered, this, [this](bool on) { setColorsPanelShown(on); });
     connect(m_brushLibViewAction, &QAction::triggered, this, [this](bool on) {
         if (!m_brushLibPanel)
             return;
@@ -3439,11 +3474,16 @@ QWidget *StoryboardPage::createCenterColumn()
     // live on the Size CTL bar, which paintBrushChanged already keeps in
     // step; the pressure toggles were removed deliberately, see HANDOFF.md.)
     // Restore last-session visibility (records intent; effective with the
-    // canvas, like every floating tool window).
-    if (sankoSettings()
-            .value(QStringLiteral("storyboard/brushLibrary/v1/visible"),
-                   false)
-            .toBool())
+    // canvas, like every floating tool window) - ONE PANEL AT LAUNCH (batch D;
+    // the user's answer to D-3, 2026-11-14): the Library and the Colors panel
+    // share the spot under the tools bar, so when both were left open only
+    // the one opened last reopens (panelToRestoreAtLaunch); each records
+    // itself as it shows.
+    connect(m_brushLibPanel, &brushlib::BrushLibraryPanel::visibilityChanged, this, [](bool shown) {
+        if (shown)
+            sankoSettings().setValue(kLastPanelKey, QStringLiteral("library"));
+    });
+    if (panelToRestoreAtLaunch() == QLatin1String("library"))
         m_brushLibPanel->openAtDefault();
 
     layout->addWidget(drawRow, 1);
@@ -3817,7 +3857,9 @@ void StoryboardPage::createFloatingToolbar()
     // Pivot Point / Skew / Distort / Perspective (see DrawingCanvas).
     SelModBar *moveBar = new SelModBar(m_canvas, this);
     m_moveModToolbar = moveBar;
-    moveBar->setFixedSize(470, 66); // rgba(33,33,33,0.65) r8, px17/py8 content
+    // rgba(33,33,33,0.65) r8, px17/py8 content; 668 wide since batch D's Flip H / V (470 with
+    // the five modes; the two buttons follow at the bar's own 99 px step).
+    moveBar->setFixedSize(668, 66);
     auto moveModButton = [moveBar](const QString &svg, const QString &tip, int x) {
         ToolButton *b = new ToolButton(moveModIconPixmap(svg), moveBar);
         b->setFixedSize(36, 36);
@@ -3839,6 +3881,23 @@ void StoryboardPage::createFloatingToolbar()
         QStringLiteral("Perspective"), 294);
     ToolButton *warpBtn = moveModButton(
         QStringLiteral(":/icons/movemod_warp.svg"), QStringLiteral("Warp"), 393);
+    // FLIP H / V (batch D; the user's D-2): their own Flip icon - the Size bar's Flip Page
+    // glyph, Flip V turned 90 degrees - as exported, in buttons like the modes beside them (no
+    // purple, the same hover and pressed shades). Not modes: a click flips the open box.
+    auto moveFlipButton = [moveBar](const QString &svg, const QString &tip, int x) {
+        ToolButton *b = new ToolButton(moveModIconPixmap(svg, QRectF(6, 6, 24, 24)), moveBar);
+        b->setFixedSize(36, 36);
+        b->setStateColors(QColor(0x4c, 0x4c, 0x4c), QColor(0x73, 0x73, 0x73));
+        b->setToolTip(tip);
+        b->move(17 + x, 8);
+        return b;
+    };
+    ToolButton *flipHBtn = moveFlipButton(QStringLiteral(":/icons/flip_h.svg"), QStringLiteral("Flip Horizontal"), 492);
+    flipHBtn->setObjectName(QStringLiteral("moveFlipH"));
+    ToolButton *flipVBtn = moveFlipButton(QStringLiteral(":/icons/flip_v.svg"), QStringLiteral("Flip Vertical"), 591);
+    flipVBtn->setObjectName(QStringLiteral("moveFlipV"));
+    connect(flipHBtn, &QPushButton::clicked, this, [this] { editFlipHorizontal(); });
+    connect(flipVBtn, &QPushButton::clicked, this, [this] { editFlipVertical(); });
 
     // Captions centred under each button (Inter Semi-Bold 9px #CCCCCC, y=41).
     const struct { ToolButton *btn; QString text; } moveCaps[] = {
@@ -3846,6 +3905,8 @@ void StoryboardPage::createFloatingToolbar()
         {distortBtn, QStringLiteral("Distort")},
         {perspBtn, QStringLiteral("Perspective")},
         {warpBtn, QStringLiteral("Warp")},
+        {flipHBtn, QStringLiteral("Flip H")},
+        {flipVBtn, QStringLiteral("Flip V")},
     };
     QFont moveCapFont(QStringLiteral("Inter"));
     moveCapFont.setPixelSize(9);
@@ -3922,6 +3983,7 @@ void StoryboardPage::createFloatingToolbar()
     // a 1.5px #808080 border and an inset 24x25 rounded-4 swatch that never
     // bleeds over the border (antialiased).
     ColorSwatchButton *color = new ColorSwatchButton;
+    color->setObjectName(QStringLiteral("colorSwatch"));
     color->setToolTip(QStringLiteral("<b>Color</b> | Choose the brush color."));
     color->setSwatchColor(Qt::black);
     // Procreate-style Colors panel (ColorPanel body inside the standard
@@ -3929,16 +3991,125 @@ void StoryboardPage::createFloatingToolbar()
     // panel drives the brush color and the swatch immediately.
     ColorPanel *colorBody = new ColorPanel;
     colorBody->setColor(Qt::black);
-    QWidget *colorsPanel = createFloatingPanel(QStringLiteral("Colors"), colorBody);
+    // The panel's window paints the ground (the Library's #1E1E20, D-3): the colours are drawn
+    // on it, their own #212121 ground gone - a square ground would show past the rounded
+    // corners. Everything on it is unchanged.
+    colorBody->setStyleSheet(QStringLiteral("background-color: transparent;"));
+    // THE COLORS PANEL'S RULES (batch D; D-1, as the Library's; no pin, the Library has
+    // none): no saved spot - it opens under (or over) the swatch every time, as the Library
+    // under the Brush button, and follows the bar while open (anchorColorsPanel). As the
+    // Library, it never covers the bar: on a canvas too short for it, it is cut to the room on
+    // its side and its colours scroll (fitColorsPanel) - otherwise its frame adds nothing.
+    auto *colorScroll = new QScrollArea;
+    colorScroll->setObjectName(QStringLiteral("colorsScroll"));
+    colorScroll->setFrameShape(QFrame::NoFrame);
+    colorScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    colorScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    colorScroll->setStyleSheet(QStringLiteral("QScrollArea#colorsScroll { background: transparent; }"));
+    colorScroll->viewport()->setAutoFillBackground(false);
+    // The Library's 12 px bottom margin keeps the bar off the rounded corner.
+    colorScroll->verticalScrollBar()->setStyleSheet(sankoScrollBarStyle(12));
+    colorScroll->setWidget(colorBody);
+    colorBody->setAutoFillBackground(false); // setWidget turned it on: the panel's own ground shows
+    // THE BRUSH LIBRARY'S CONTAINER AND HEADER (the user's D-3, approved 2026-11-14): the
+    // window above; the header 69 px, padding 24 / 20 / 24 / 16, the title alone in Inter
+    // Extra Bold 22, white, a 1 px #2D2D35 divider under it - no close button (the swatch,
+    // View > Colors and the hide rules open and close it). The header is the drag grip.
+    auto *colorsPanel = new ColorsPanelWindow(m_canvas, this);
+    colorsPanel->setObjectName(QStringLiteral("colorsPanel"));
+    auto *colorsHeader = new QWidget;
+    colorsHeader->setObjectName(QStringLiteral("colorsHeader"));
+    colorsHeader->setAttribute(Qt::WA_StyledBackground, true);
+    colorsHeader->setStyleSheet(QStringLiteral(
+        "QWidget#colorsHeader { background: transparent; border-bottom: 1px solid #2d2d35; }"));
+    colorsHeader->setFixedHeight(69);
+    colorsHeader->setCursor(Qt::OpenHandCursor);
+    auto *colorsHeaderRow = new QHBoxLayout(colorsHeader);
+    colorsHeaderRow->setContentsMargins(24, 20, 24, 16);
+    colorsHeaderRow->setSpacing(8);
+    auto *colorsTitle = new QLabel(QStringLiteral("Colors"), colorsHeader);
+    colorsTitle->setObjectName(QStringLiteral("colorsTitle"));
+    QFont colorsTitleFont(QStringLiteral("Inter"));
+    colorsTitleFont.setPixelSize(22);
+    colorsTitleFont.setWeight(QFont::ExtraBold);
+    colorsTitle->setFont(colorsTitleFont);
+    colorsTitle->setStyleSheet(QStringLiteral("color: white; background: transparent;"));
+    colorsHeaderRow->addWidget(colorsTitle);
+    colorsHeaderRow->addStretch(1);
+    auto *colorsLayout = new QVBoxLayout(colorsPanel);
+    colorsLayout->setContentsMargins(1, 1, 1, 1); // inside the 1 px painted border
+    colorsLayout->setSpacing(0);
+    colorsLayout->addWidget(colorsHeader);
+    colorsLayout->addWidget(colorScroll);
+    colorsPanel->setGripWidget(colorsHeader);
     colorsPanel->hide();
+    m_colorsPanel = colorsPanel;
+    m_colorPanelBody = colorBody;
+    m_colorsScroll = colorScroll;
+    m_colorSwatch = color;
+    colorsPanel->setDefaultOffsetProvider([this] {
+        // Under the swatch while the tools bar sits in the canvas's top half, over it in the
+        // bottom half; its left edge on the swatch's (the window's clamp keeps it inside).
+        const QPoint origin = m_canvas->mapToGlobal(QPoint(0, 0));
+        if (!m_colorSwatch || !m_floatToolbar || !m_floatToolbar->isVisible() || !m_colorsPanel)
+            return QPoint(84, 12);
+        const QRect swatch(m_colorSwatch->mapToGlobal(QPoint(0, 0)), m_colorSwatch->size());
+        const QRect toolbar = m_floatToolbar->frameGeometry();
+        const bool toolbarOnTop = toolbar.center().y() < origin.y() + m_canvas->height() / 2;
+        const int y = toolbarOnTop ? toolbar.bottom() + 1 + FloatingToolWindow::kMargin
+                                   : toolbar.top() - FloatingToolWindow::kMargin - m_colorsPanel->height();
+        return QPoint(swatch.left(), y) - origin;
+    });
+    // THE EYEDROPPER BUTTON (the user's D-3, approved 2026-11-14): beside the Color Wheel - the
+    // corner right of the ring, its top-left at 194, 196 in the wheel's 228 x 228, as their
+    // image places it - the user's own dropper (icons/eyedropper.svg, as exported). A child of
+    // the wheel, so it shows with the Wheel (in Classic that corner is the hue strip). Three
+    // states as SankoTV's other buttons - no ground, #2A2A33 on hover, #3A3A45 while pressed -
+    // and the active look, SankoTV's active-tool purple, only while a pick waits (pickArmed,
+    // set from colorPickArmedChanged). One pick, then back to the tool you had
+    // (toggleColorPick; the I key too).
+    if (QWidget *wheel = colorBody->findChild<QWidget *>(QStringLiteral("colorWheel"))) {
+        auto *pick = new QToolButton(wheel);
+        pick->setObjectName(QStringLiteral("colorEyedropper"));
+        pick->setIcon(QIcon(QStringLiteral(":/icons/eyedropper.svg")));
+        pick->setIconSize(QSize(21, 21));
+        pick->setFixedSize(32, 32);
+        pick->move(194, 196);
+        pick->setCursor(Qt::PointingHandCursor);
+        pick->setToolTip(QStringLiteral("<b>Eyedropper (I)</b> | Pick one colour from what you see, then back to your tool."));
+        pick->setProperty("pickArmed", false);
+        pick->setStyleSheet(QStringLiteral(
+            "QToolButton#colorEyedropper { background: transparent; border: none; border-radius: 6px; padding: 0px; }"
+            "QToolButton#colorEyedropper:hover { background: #2a2a33; }"
+            "QToolButton#colorEyedropper:pressed { background: #3a3a45; }"
+            "QToolButton#colorEyedropper[pickArmed=\"true\"] { background: #7c6ef6; }"
+            "QToolButton#colorEyedropper[pickArmed=\"true\"]:pressed { background: #3a3a45; }"));
+        pick->raise();
+        pick->show();
+        connect(pick, &QToolButton::clicked, this, [this] { toggleColorPick(); });
+        connect(m_canvas, &DrawingCanvas::colorPickArmedChanged, pick, [pick](bool armed) {
+            pick->setProperty("pickArmed", armed);
+            pick->style()->unpolish(pick); // the property's rule takes effect
+            pick->style()->polish(pick);
+            pick->update();
+        });
+        m_colorPickButton = pick;
+    }
+    fitColorsPanel(); // its full size until the bar is placed; its height places it over the bar
+    colorsPanel->installEventFilter(this); // View > Colors' tick follows it (eventFilter)
     connect(colorBody, &ColorPanel::colorChanged, this,
             [this, color](const QColor &chosen) {
         m_canvas->setColor(chosen);
         color->setSwatchColor(chosen);
     });
-    connect(color, &QPushButton::clicked, this, [colorsPanel] {
-        colorsPanel->setVisible(!colorsPanel->isVisible());
+    // A pick (the eyedropper, batch D) is the brush's colour, the swatch's and the panel's -
+    // and never hides the panel.
+    connect(m_canvas, &DrawingCanvas::colorPicked, this, [this, color, colorBody](const QColor &picked) {
+        m_canvas->setColor(picked);
+        color->setSwatchColor(picked);
+        colorBody->setColor(picked);
     });
+    connect(color, &QPushButton::clicked, this, [this] { setColorsPanelShown(!m_colorsPanel->isVisible()); });
     bar->addWidget(color, 0, Qt::AlignVCenter);
 
     // Divider.
@@ -4135,6 +4306,31 @@ void StoryboardPage::createFloatingToolbar()
         for (QAbstractButton *b : barHost->findChildren<QAbstractButton *>())
             if (b != m_brushToolButton)
                 connect(b, &QAbstractButton::pressed, this, autoCloseBrushLib);
+    // THE COLORS PANEL closes by the same rule (batch D; D-1): another tool picked, from any
+    // origin, or a press on any other button of the two bars - its own swatch exempt, the
+    // open / close switch - and the first stroke (below, with the canvas). A pick is none of
+    // these: the panel stays.
+    connect(tools, &QButtonGroup::buttonToggled, this, [this](QAbstractButton *, bool checked) {
+        if (checked)
+            autoHideColorsPanel();
+    });
+    for (QWidget *barHost : {static_cast<QWidget *>(m_floatToolbar),
+                             static_cast<QWidget *>(m_layersToolbar)})
+        for (QAbstractButton *b : barHost->findChildren<QAbstractButton *>())
+            if (b != m_colorSwatch)
+                connect(b, &QAbstractButton::pressed, this, [this] { autoHideColorsPanel(); });
+    connect(m_canvas, &DrawingCanvas::liveBrushStrokeStarted, this, [this] {
+        if (!(m_brushStudio && m_brushStudio->isVisible()))
+            autoHideColorsPanel();
+    });
+    // Open at the last launch's end: open now (effective with the canvas, as every floating
+    // window), at its anchor - unless the Library, opened after it, reopens instead (one panel
+    // at launch: panelToRestoreAtLaunch).
+    if (panelToRestoreAtLaunch() == QLatin1String("colors")) {
+        fitColorsPanel();
+        m_colorsPanel->placeAtDefault();
+        m_colorsPanel->setVisible(true);
+    }
     QTimer::singleShot(0, this, [this, layersBtn, scenesBtn, shotInfoBtn] {
         struct Pair { QDockWidget *dock; ToolButton *btn; };
         const Pair pairs[] = {{m_layersDock, layersBtn},
@@ -8684,6 +8880,8 @@ protected:
         if (event->type() != QEvent::KeyPress && event->type() != QEvent::KeyRelease)
             return false;
         auto *key = static_cast<QKeyEvent *>(event);
+        if (key->key() == Qt::Key_Alt && !key->isAutoRepeat()) // never taken: the menu bar's too
+            m_page->noteAltKey(receiver, event->type() == QEvent::KeyPress);
         return m_page->routeToolbarsKey(receiver, key) || m_page->routeCanvasKey(receiver, key);
     }
 
@@ -9022,6 +9220,129 @@ void StoryboardPage::toolKey(DrawingCanvas::Tool tool)
     // Eraser also opens the Library.
     if (auto *button = m_floatToolbar->findChild<QPushButton *>(QLatin1String(name)))
         button->setChecked(true);
+}
+
+// THE EYEDROPPER (batch D): see the header. Not in Stage mode (its tool is the camera's) nor
+// while the Brush Settings studio holds the bars down - as the tool keys.
+void StoryboardPage::toggleColorPick()
+{
+    if (!m_canvas || m_stageModeOn || (m_brushStudio && m_brushStudio->isVisible()))
+        return;
+    m_canvas->armColorPick(!m_canvas->colorPickArmed());
+}
+
+void StoryboardPage::noteAltKey(QObject *receiver, bool down)
+{
+    if (!m_canvas)
+        return;
+    if (!down) { // let go anywhere: never left held
+        m_canvas->setAltHeld(false);
+        return;
+    }
+    if (receiver->isWidgetType() && static_cast<QWidget *>(receiver)->window() == m_canvas->window())
+        m_canvas->setAltHeld(true);
+}
+
+void StoryboardPage::editFlipHorizontal()
+{
+    if (m_canvas)
+        m_canvas->flipTransform(true);
+}
+
+void StoryboardPage::editFlipVertical()
+{
+    if (m_canvas)
+        m_canvas->flipTransform(false);
+}
+
+bool StoryboardPage::canFlipTransform() const
+{
+    return m_canvas && m_canvas->canFlipTransform();
+}
+
+const QString StoryboardPage::kColorsPanelKey = QStringLiteral("storyboard/colorsPanel/v1/visible");
+const QString StoryboardPage::kLastPanelKey = QStringLiteral("storyboard/floatPanels/v1/lastOpened");
+
+// ONE PANEL AT LAUNCH (batch D; the user's answer to D-3, 2026-11-14): of the Library and the
+// Colors panel, which reopens - the one left open, or, both left open, the one opened last
+// (they share the spot under the tools bar and never reopen on top of each other).
+QString StoryboardPage::panelToRestoreAtLaunch()
+{
+    const QSettings s = sankoSettings();
+    const bool library = s.value(QStringLiteral("storyboard/brushLibrary/v1/visible"), false).toBool();
+    const bool colors = s.value(kColorsPanelKey, false).toBool();
+    if (library && colors)
+        return s.value(kLastPanelKey).toString() == QLatin1String("colors") ? QStringLiteral("colors")
+                                                                            : QStringLiteral("library");
+    return library ? QStringLiteral("library") : colors ? QStringLiteral("colors") : QString();
+}
+
+QWidget *StoryboardPage::colorsPanelForTest() const
+{
+    return m_colorsPanel;
+}
+
+void StoryboardPage::setColorsPanelShown(bool shown)
+{
+    if (!m_colorsPanel)
+        return;
+    sankoSettings().setValue(kColorsPanelKey, shown);
+    if (shown) {
+        fitColorsPanel();
+        m_colorsPanel->placeAtDefault();
+        m_colorsPanel->setVisible(true);
+        m_colorsPanel->raise();
+        m_colorsPanel->placeAtDefault(); // shown: its real height places it over the bar
+    } else {
+        m_colorsPanel->setVisible(false);
+    }
+}
+
+// The rule closing it (a stroke, another tool, another button) is not the user choosing
+// "hidden": what is remembered stays (as the Library's autoHide).
+void StoryboardPage::autoHideColorsPanel()
+{
+    if (m_colorsPanel && m_colorsPanel->isVisible())
+        m_colorsPanel->setVisible(false);
+}
+
+void StoryboardPage::anchorColorsPanel()
+{
+    if (m_colorsPanel && m_colorsPanel->isVisible()) {
+        fitColorsPanel();
+        m_colorsPanel->placeAtDefault();
+    }
+}
+
+// As the Library (BrushLibraryPanel::reanchor): the panel never covers the tools bar, so its
+// height is cut to the room on the side it opens (floored at a few rows - below that the
+// window's clamp takes over, as everywhere else); cut short, its colours scroll, the bar
+// beside them. With room, the body's own size and no bar: as it always was.
+void StoryboardPage::fitColorsPanel()
+{
+    if (!m_colorsPanel || !m_colorsScroll || !m_colorPanelBody)
+        return;
+    const QSize body = m_colorPanelBody->sizeHint();
+    int room = body.height();
+    if (m_canvas && m_floatToolbar && m_floatToolbar->isVisible()) {
+        const int k = FloatingToolWindow::kMargin;
+        const QPoint origin = m_canvas->mapToGlobal(QPoint(0, 0));
+        const QRect margin = QRect(origin, m_canvas->size()).adjusted(k, k, -k, -k);
+        const QRect toolbar = m_floatToolbar->frameGeometry();
+        const bool toolbarOnTop = toolbar.center().y() < origin.y() + m_canvas->height() / 2; // as the anchor's
+        const int available = toolbarOnTop ? margin.bottom() - (toolbar.bottom() + 1 + k) + 1
+                                           : (toolbar.top() - k) - margin.top();
+        // Less the title bar and the 1 px border round it.
+        const QWidget *header = m_colorsPanel->findChild<QWidget *>(QStringLiteral("colorsHeader"));
+        const QMargins edge = m_colorsPanel->layout() ? m_colorsPanel->layout()->contentsMargins() : QMargins();
+        room = available - (header ? header->height() : 0) - edge.top() - edge.bottom();
+    }
+    const int h = qBound(qMin(160, body.height()), room, body.height());
+    const bool cut = h < body.height();
+    m_colorsScroll->setVerticalScrollBarPolicy(cut ? Qt::ScrollBarAlwaysOn : Qt::ScrollBarAlwaysOff);
+    const int bar = cut ? m_colorsScroll->verticalScrollBar()->sizeHint().width() : 0;
+    m_colorsScroll->setFixedSize(body.width() + bar, h);
+    m_colorsPanel->adjustSize();
 }
 
 // Photoshop's [ and ] (CS6 on): the step is 1 under 10, 10 under 100, 25 under 200, 50
@@ -10503,6 +10824,16 @@ bool StoryboardPage::eventFilter(QObject *object, QEvent *event)
         && m_brushLibPanel && m_brushLibPanel->isVisible()) {
         m_brushLibPanel->reanchor();
     }
+    // ...and so does the Colors panel its swatch (batch D).
+    if (object == m_floatToolbar && (event->type() == QEvent::Move || event->type() == QEvent::Resize))
+        anchorColorsPanel();
+    // View > Colors ticks with the panel, both ways (batch D; as View > Library's).
+    if (object == m_colorsPanel && m_colorsViewAction
+        && (event->type() == QEvent::Show || event->type() == QEvent::Hide))
+        m_colorsViewAction->setChecked(event->type() == QEvent::Show);
+    // ...and the one panel to reopen at launch is the one shown last (panelToRestoreAtLaunch).
+    if (object == m_colorsPanel && event->type() == QEvent::Show)
+        sankoSettings().setValue(kLastPanelKey, QStringLiteral("colors"));
 
     // Floating Brush bar tooltips: one reused popup BELOW the bar (4px gap,
     // never covering a button), driven by Enter/Leave so chain-hovering

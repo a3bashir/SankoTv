@@ -1,6 +1,179 @@
 # SankoTV — Session Handoff Brief
 
-## STATUS 2026-11-14: THE NEW PASTE (THE USER'S RULES) AND VIEW > LIBRARY'S TICK BUILT, NOT COMMITTED - WAITING FOR THE USER'S RE-TEST; THE POINTER FIX COMMITTED ALONE (fc5d56775)
+## STATUS 2026-11-14 (late night): D-2 HAND-TESTED; D-3 (THE BLACK DROPPER, THE COLORS PANEL IN THE LIBRARY'S STYLE, ONE PANEL AT LAUNCH) BUILT ON TOP, NOT COMMITTED - WAITING FOR THE USER'S D-3 HAND TEST; ENTER NOT CHANGED (A CONFLICT, REPORTED)
+THE D-2 HAND TEST (Dev Recorder 20261114-192419, 388 s, and -193055, 546 s; both the Nov 14 18:21:06 build, git
+381cf77e0+dirty; title bar "SANKO TV — TEST COPY - small pirate, D eyedropper"; both closed with the X and Discard; the
+copy unsaved, its file still 18:20). handtest_D2_eyedropper_flip_colors.md: 1 PASS (swatch open / close, 4 px under the
+bar, View > Colors ticked while open - 26.5 s, 54.5 s); 2 PASS (E, a pen stroke, Fill / Brush / Eraser presses hide it;
+the Layers bar's buttons not tried); 3 PASS (View > Colors both ways, the close button); 4 first half PASS (left open, it
+reopened - but the Library, restored too, sat on top of it), second half NOT TESTED; 5 PASS (the button, the ring held
+29.7 s, black taken, panel open, still the Brush, nothing drawn); 6 I picks PASS (~11), I again / Esc cancelling NOT
+TESTED (the one Esc came with nothing waiting); 7 PASS (9 + ~20 Alt picks with the pen, double taps included, none
+painted); 8 PASS (all with the pen); 9 PASS (over panel 1's red ghost the paper was taken); 10 Flip H / V at once PASS,
+Enter landing NOT SHOWN (both Enters, 312.5 s and 365.3 s, went to the widget with the keyboard: the pen was on the Move
+bar, then out of range - Enter goes to the canvas only while the pointer is over it, the rule of 2026-11-09), Flip V +
+Esc NOT TESTED; 11 PASS (Edit > Flip both, greyed with the Brush); 12 PASS. The user then asked for three changes:
+D-3 (Figma 604:702 in area 571:698, below D-2; Documents\SankoTV-Design\figma-D3\D-3_604-702_approved.png), APPROVED
+2026-11-14 with one change (the Eyedropper button beside the Color Wheel, as their image reference\colors_dropper_
+position.png - measured there at 1:1: its centre 223, 329 in the panel, the button's top-left 194, 196 in the wheel's
+228 x 228) and their answers: the states and the #1E1E20 ground approved; margins 12; at launch at most one of the
+Library and the Colors panel, the one used last; Enter to land an open Move box wherever the pointer is (except while a
+text field has the keyboard) - "if this conflicts with what the 9 November change protects, stop and report".
+THE DROPPER (DrawingCanvas outlinedDropper / dropperCursor): always the user's black dropper (icons/eyedropper_dark.svg)
+with a 1 px white outline - the same SVG with its paths filled and stroked white, 2 px wide, drawn under it (the black
+drawing over it untouched) - for the pointer (hot spot 3, 17) and the ring's centre; cached per screen scale. The white
+dropper is no longer used on the canvas (it stays the panel button's icon). colorIsDark, m_pickCursorWhite and
+pickCursorWhiteForTest are gone; refreshPickCursor takes no point (the real pointer is no longer read for the colour).
+THE COLORS PANEL (StoryboardPage): its own window, ColorsPanelWindow (a FloatingToolWindow painting the Library's
+container as BrushLibraryPanel::paintEvent: #1E1E20, 1 px #2D2D35, radius 10); header "colorsHeader" 69 px, padding 24 /
+20 / 24 / 16, the title "Colors" alone (Inter 22 ExtraBold, white), a 1 px #2D2D35 divider; no close button; the header
+the grip. The colours' own #212121 ground made transparent (a square ground showed past the rounded corners); their
+layout and 12 px margins unchanged; the scroll bar sankoScrollBarStyle(12), the Library's. createFloatingPanel is back to
+HEAD (D-2's persistPosition and the close button's objectName reverted: the Shapes panel uses it). THE BUTTON
+("colorEyedropper"): a child of the wheel ("colorWheel") at 194, 196, 32 x 32, the user's white icon; QSS states: none /
+hover #2A2A33 / pressed #3A3A45 / [pickArmed="true"] #7C6EF6 / armed + pressed #3A3A45; pickArmed follows
+colorPickArmedChanged. In Classic the wheel is hidden and the button with it (that corner is the hue strip and the S/V
+field's edge there) - said in D-3 and the list.
+ONE PANEL AT LAUNCH: kLastPanelKey "storyboard/floatPanels/v1/lastOpened" = "library" / "colors", written as each shows
+(the Library's visibilityChanged(true), the Colors panel's Show); panelToRestoreAtLaunch(): one left open -> it; both ->
+the one last; the two launch restores ask it.
+ENTER NOT CHANGED - THE CONFLICT, REPORTED: routeCanvasKey (2026-11-09) never takes Space / Enter / Esc from a field, a
+number field, a combo, a list or THE MENU BAR BEING WALKED. The rule asked for has only the text-field exception, so with
+a Move box open an Enter on the menu bar (after Alt is pressed and let go, Windows walks it; Enter opens the highlighted
+menu) would land the box instead - and a lone Alt tap is likely now that Alt is the eyedropper's key. Nothing else in the
+main window uses Enter (the timeline's duration field and the Stage fields are text fields; Stage mode's Enter shortcut
+has no Move box; dialogs and popovers are other windows). Proposal: Enter lands an open Move box wherever the pointer is,
+except while a text or number field, a list or the menu bar has the keyboard (what 2026-11-09 protects); not built.
+CHECKS (runEyedropperFlipPass; batchd 61): NEW (cp0) the Library's container and header (corners clear, border, ground,
+divider, 69 px, padding, the title alone, no close button); (ep0) x3 rewritten - the button beside the wheel, its states,
+hidden in Classic. CHANGED, each old -> new: (ep2) "the user's dropper in BLACK on the light orange (their decision 2)"
+(black >= 20, white 0, pointer not white) -> "the user's BLACK dropper with its thin WHITE outline, as the pointer"
+(black >= 20, light >= 5, the pointer black >= 20 / white >= 5); (ep3) "the dropper pointer (white over the navy, black
+over the orange)" -> "the same black one, outlined in white, over the navy as over the orange" (the two pointer pictures
+equal); (ep3) ring "dropper in WHITE" (white >= 20, black 0) -> "BLACK dropper, its thin WHITE outline" (black >= 20,
+light >= 20); (ep3) Alt+Tab "the dropper follows the colour (white over the navy)" -> "stays up while Alt is held, a move
+without Alt takes it down"; (cp7) "ITS CLOSE BUTTON CLOSES IT" (the close button is gone) -> "THE ONE OPENED LAST IS
+RECORDED"; (cp8) "LEFT OPEN, THE NEXT LAUNCH OPENS IT" / "CLOSED WITH ITS CLOSE BUTTON, ... KEEPS IT CLOSED" -> "left open
+... and ONLY it" / "closed with the swatch ... the Library reopens" / "both left open, the Library last: only the Library".
+FIRST-RUN READING: (ep3) ring on dark failed (79 black, 11 white): the picture (a temporary grab, removed) showed the
+outline whole - a 1 px antialiased outline has few pure-white pixels - so the dropper's light pixels are counted (lowest
+channel >= 160), not pure white; the controls below still fail it.
+RED RUNS (marked RED RUN, removed, grep 0): 5 = no white outline (ep2, ep3 pointer, ep3 ring: 0 white) + the colours'
+square ground kept (cp0: corner alpha 255) + no active look ((ep0) states: waiting #212121) + both panels reopen ((cp8)
+4th: Library 1, Colors 1) + the button in the wrong corner ((ep0) at 2,196): 7 fail; 6 = D-2's white dropper on a dark
+colour: only the (ep3) ring (0 black, 87 white).
+QUICK CHECK: batchd 61/61, trial 126/126, stagemode 124/124, keysview 63/63, playback 33/33.
+GATE D4, IN A SCRATCH WORKTREE: the user's SankoTV was open (pid 55404, "TEST COPY - small pirate, D eyedropper"), and
+fullgate.sh begins by killing SankoTV.exe; so C:\SankoTV_d3 (git worktree, detached at 381cf77e0) with the 13 changed
+files copied in (cmp: identical to main, before and after the gate), its own CMake configure (VS 17 2022, x64, Qt
+6.11.1), and a scratchpad copy of fullgate.sh differing only in A=/c/SankoTV_d3/app and no taskkill line. EVERY family
+green in BOTH builds (2729 s): Lifecycle 1540 (D2/D3's 1536 + 4 net: (cp0), (ep0) states and Classic, (cp8) 4th),
+Camera 335, Brush Library 187, Size Lock 170, Edge Lock 74, Dev Recorder 46, Quick Shape 19, Pixel Lock 13, Brush Lock 3.
+Logs copied to app/build/_probe/split/fullgate_D4*. HASHES: sha_D4_gate.txt (the 13 files), written after the gate, no
+source file newer than its build (latest 20:46:40); sha_D4_docs.txt (HANDOFF.md).
+HAND TEST: main's exe is still the 18:21:06 build (locked while the app is open); the build to test is the gate's clean
+build C:\SankoTV_d3\app\build\Release\SankoTV.exe (its own Qt runtime): built Nov 14 2026 20:53:22 (file 20:53:41), git
+381cf77e0+dirty, sha256 43630905e1f5ac7e... Copy "TEST COPY - small pirate, D-3" (C:\SankoTV-TestCopies; the original's
+hash unchanged before and after). List Documents\SankoTV-Design\handtest_D3_colors_dropper.md (D-3, plus the D-2 parts
+not tested: closing with the swatch + relaunch, I and Esc cancelling a waiting pick, Flip + Enter + Ctrl+Z, Flip V + Esc).
+When the user's app is closed, rebuild main's SankoTV target before anything else. Remove the worktree after the hand
+test (git worktree remove C:/SankoTV_d3). Commit D-2 + D-3 only after the user's hand test passes.
+
+## STATUS 2026-11-14 (night): D'S FIRST PART COMMITTED (381cf77e0); D-2 - THE EYEDROPPER, FLIP H / V AND THE COLORS PANEL'S RULES - BUILT, NOT COMMITTED; HAND-TESTED (SEE ABOVE)
+D'S FIRST PART (the new Paste, View > Library's tick, their HANDOFF notes) COMMITTED AND PUSHED as 381cf77e0 after the
+user's re-test (Dev Recorder 20261114-152441): steps 1, 2, 3, 5, 6, 9 PASS; 4 PASS for "Esc keeps the drawing, Esc again
+changes nothing", drag-then-Esc NOT TESTED; 7 and 8 (the tick after the Brush button opened the Library; closing it by the
+entry) NOT TESTED. (Not in the committed section below, which was kept to its hash list.)
+D-2 (Figma 599:700 in area 571:698) APPROVED 2026-11-14 with the user's two decisions, added to D-2's notes (text nodes
+601:702 / 601:703; footer 599:879; the frame renamed "... APPROVED 2026-11-14, being built"): (1) purple only marks "new"
+in Figma - in the app Flip H, Flip V and the Colors panel's Eyedropper button look like the buttons round them, the same
+hover and pressed states, their icons exactly as drawn; (2) the ring's dropper is the user's white one on a dark colour,
+their black one otherwise. The Eyedropper button stays in the Colors panel's title bar, before the close button.
+ICONS, the user's own, exported from their Figma as they are (LF, byte-identical to Documents\SankoTV-Design\icons-D-
+2026-11-14): icons/eyedropper.svg (white), eyedropper_dark.svg (black), flip_h.svg, flip_v.svg; in resources.qrc after
+flip.svg. Licence check (2026-11-14): no path matches; evidence Documents\SankoTV-Design\icon-check\eyedropper-flip-2026-11-14.
+THE EYEDROPPER (DrawingCanvas: armColorPick, setAltHeld, colorSeenAt, colorIsDark, begin/move/endColorPick,
+refreshPickCursor, paintSamplingRing; signals colorPicked, colorPickArmedChanged):
+- ONE PICK: the Colors panel's button (StoryboardPage::toggleColorPick) or I (a pageKey; not in Stage mode nor with the
+  Brush Settings studio open) arms the next press; a colour taken ends it; let go off the stage it still waits; I or the
+  button again, Esc, or another tool cancels it; the same tool said again keeps it (and its pointer).
+- ALT HELD WITH THE BRUSH picks while held. The page's CanvasKeyRouter reports Alt (noteAltKey: down only from the canvas's
+  window, up from anywhere): the key puts the dropper up and turns mouse tracking on - Qt drops a buttonless move to a
+  widget not tracking the mouse, so the hover follows only after that. A press that says Alt with no key seen (Alt+Tab
+  into the app) picks too, and beginColorPick turns tracking on itself.
+- PEN: a press to pick ignores the tablet event, so Qt's synthesised mouse press picks (as a pan does).
+- WHAT YOU SEE: the paper, then every visible non-group layer at layerEffectiveOpacity, SourceOver, from image.pixelColor
+  (after ensurePanelCpuCoherent, ExplicitDemand) - never an overlay (onion skin, margin veil, guides, camera frame).
+- A pick never paints, never moves a box, is no undo step and never hides the Colors panel; the colour goes to the brush,
+  the swatch and the panel (colorPicked).
+- THE POINTER: the user's dropper at 21 x 21, hot spot (3, 17), white over a dark colour (0.299 R + 0.587 G + 0.114 B <
+  0.5), black otherwise. Its colour when armed or when Alt goes down reads the real pointer's place (appearance only);
+  every hover after uses the event's place.
+- THE RING (widget px): grey band 54 to 46 (#8a8a8a); the top half, 46 to 33.1, the colour under the pointer; the bottom
+  half the colour you had; black edges at alpha 115 / 77; the user's dropper with its tip on the point, white on a dark
+  colour, black otherwise.
+THE COLORS PANEL'S RULES (D-1; no pin - the Library has none): a FloatingToolWindow with no saved spot (createFloating
+Panel(..., persistPosition false)) placed at its default on every open (FloatingToolWindow::placeAtDefault): under the
+swatch with the tools bar in the canvas's top half, over it in the bottom half, its left edge on the swatch's (the
+window's clamp moves it in at the right margin, as the Library's), 4 px from the bar; it follows the bar's Move/Resize
+(eventFilter -> anchorColorsPanel). Hidden by another tool (the tools group's buttonToggled), a press on any other button
+of the two bars (the swatch exempt: it is the switch) and the first live stroke (liveBrushStrokeStarted; not with the
+studio open) - none remembered; the swatch, View > Colors (objectName viewColors, its tick following the panel's Show /
+Hide) and the close button are the user's choices, remembered in storyboard/colorsPanel/v1/visible, restored at launch.
+- NEW, MY CALL, FOR THE USER TO CONFIRM (first in the hand-test list): as the Library (BrushLibraryPanel::reanchor) the
+  panel never covers the bar - fitColorsPanel cuts it to the room on its side, its colours scrolling (a frameless,
+  transparent QScrollArea "colorsScroll", the app's sankoScrollBarStyle, the bar only when cut; floor 160 px). Why: the
+  test window's canvas is 414 px tall and the panel 582; without the cut the clamp pushed it over the bar, and the managed
+  bar then stepped aside ("a bar it now overlaps moves aside"), the panel chasing it (the bar ended 258 px off its corner).
+  Where it fits, the panel is pixel for pixel as before: the old full panel against the new cut one, body 88,044 px and
+  title area 4,077 px, 0 differ; the right border 0 differ (a temporary grab, removed).
+FLIP H / V: the Move bar 668 x 66 (470 before), Flip H at x 509 and Flip V at 608 (the bar's 99 px step), ToolButtons with
+Warp's state colours, not checkable, the user's icon in the middle 24 x 24 (moveModIconPixmap's new `inner`, its default
+the old whole 36 box, so the five modes draw as at HEAD); captions "Flip H" / "Flip V" by the bar's rule. Edit > Flip
+Horizontal / Flip Vertical (MainWindow, after Paste in Place), greyed with why ("Works on the Move tool's box: pick the Move
+tool (V) first.") as the menu opens with no box. DrawingCanvas::flipTransform mirrors the lifted buffers (m_transformBuf
+and every m_xformBufs) inside the box - its outline, handles, warp mesh and pivot stay; Enter lands it as one "Transform"
+step (commitTransform's "untouched" now also needs no flip; flips counted by parity, so twice is nothing), Esc takes it
+back; the flags reset at both lifts, at commit and at cancel.
+CHECKS (runEyedropperFlipPass, in slice "batchd" and the full run; 28 checks): (cp1) under the swatch + cut short, never
+over the bar, the bar never steps aside; (ep0) the button before the close button, the user's icon, the title bar's
+ground as the close button's, the same hover, not a toggle; (ep1) one pick of the orange seen (half red over the
+Background's yellow) + controls (the layer's own red; the red alone on the paper would be pink); (ep2) the ring (the grey
+band on four sides, both halves, the black dropper on the light orange, gone after); (ep3) Alt + Brush (the dropper
+pointer white / black, a drag takes the navy and paints nothing), the ring on the navy (white dropper), Alt+Tab (no key
+seen), control (no Alt paints); (cp4) the first stroke hides it, still remembered; (ep4) the onion skin's ghost not taken
++ control (it is shown); (ep5) I, the button, Esc, another tool, the same tool, off the stage; (cp2) another tool; (cp3) a
+bar button + control (the swatch's own press); (cp5) the swatch; (cp6) View > Colors; (cp7) the close button; (fl0) the
+Move bar; (fl1) Flip H + Enter; (fl2) Flip V + Esc; (fl3) twice is nothing; (fl4) Edit > Flip; (cp8) remembered both
+ways across launches. CHANGED CHECK (kc1) - old: "I is no tool's yet (the eyedropper comes in batch D)" (I not claimed);
+new: "with a text field holding the keyboard E and I are the field's (the tool stays the Brush, no pick armed); without it
+I is the Eyedropper's (batch D): one pick armed, the tool still the Brush" - positive control: the field keeps I.
+FIRST-RUN READINGS (each read against the code first): (cp1) the panel over the bar -> the cut above (code); (ep3) Alt
+sent only as a move's modifier never arrived (Qt drops untracked hovers) -> the check presses Alt as a real key arrives,
+and the Alt+Tab gap found there fixed in beginColorPick (code); review: the same tool said again dropped an armed pick's
+pointer -> setTool and the hover now refresh it (code, (ep5)); (fl0) caption centres differ by a pixel with their width ->
+the check uses the bar's own rule, Warp's caption its positive control; (fl4) QAction::toolTip() is the entry's text when
+none is set -> compared with the reason; red run 1a did NOT fail at first (the white Background is the paper) -> the
+yellow under the red added.
+RED RUNS (marked RED RUN, removed, grep 0): 1 = the active layer only (ep1 x2, ep2, the ep3 ring, Alt+Tab) + Flip a no-op
+(fl1, fl2, fl4) + another tool keeps the panel (cp2; cp3 knock-on) + the cut off (cp1 x2, cp8): 13 fail; 2 = the pick
+never ends (ep1 "then armed 1", knock-ons) + the ring's dropper inverted (ep2 "0 black px, 74 white", the ep3 ring): 11;
+2h alone = no tracking at an Alt+Tab pick: only the Alt+Tab check ("white over the navy 0"); 3 = Alt never picks: the
+ep3 checks (painted) + Flip knock-ons: 7; 4 = the same tool again drops the pointer: only (ep5).
+QUICK CHECK: batchd 57/57, trial 126/126, stagemode 124/124, keysview 63/63, playback 33/33; all 12 Release targets.
+GATE D3 (the main tree, on 381cf77e0 + D-2, 2719 s; logs app/build/_probe/split/fullgate_D3*): EVERY family green in
+BOTH builds - Lifecycle 1536 (D2's 1508 + the 28 new), Camera 335, Brush Library 187, Size Lock 170, Edge Lock 74, Dev
+Recorder 46, Quick Shape 19, Pixel Lock 13, Brush Lock 3. HASHES: sha_D3_gate.txt (the 13 files: 9 changed + the 4
+icons), written after the gate, no source file newer than its build; sha_D3_docs.txt (HANDOFF.md).
+HAND TEST: exe app/build/Release/SankoTV.exe built Nov 14 2026 18:21:06 (file 18:21:26, the gate's clean build), git
+381cf77e0+dirty, sha256 a9c6176da4c2cf5e...; copy "TEST COPY - small pirate, D eyedropper" (C:\SankoTV-TestCopies; the
+original's hash unchanged before and after); list Documents\SankoTV-Design\handtest_D2_eyedropper_flip_colors.md. Commit
+D-2 only after the user's hand test passes. Not staged then: CanvasEdgeLockTest.cpp, QuickShapeGeometryLockTest.cpp.
+OPEN NOTES: a pick with a Move box open samples the layers as they are (the box's moved preview is not in them yet);
+FloatingToolWindow's managed bars treat any visible floating window as an obstacle - a panel that overlaps a bar pushes
+it aside (why the cut matters).
+
+## STATUS 2026-11-14 (afternoon): THE NEW PASTE (THE USER'S RULES) AND VIEW > LIBRARY'S TICK - RE-TEST PASSED, COMMITTED AS 381cf77e0 (SEE ABOVE); THE POINTER FIX COMMITTED ALONE (fc5d56775)
 WHY ONLY THESE OF BATCH D: the Figma connector failed (2026-11-13; the user: "it's the connector service"). The parts
 with no new look were built meanwhile; the EYEDROPPER, FLIP H/V and the COLORS PANEL wait for the D-1 frame (script:
 Documents\SankoTV-Design\figma_D1_batchD.js, its paste part to be updated to the new Paste) and the user's approval.

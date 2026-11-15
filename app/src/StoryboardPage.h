@@ -13,6 +13,9 @@
 
 class ZoomToolbar;
 class StageClear;
+class FloatingToolWindow;
+class ColorPanel;
+class QAbstractButton;
 class LayerDepthPopover;
 namespace brushlib {
 class BrushLibraryModel;
@@ -395,6 +398,29 @@ public:
     // the press also opens (the Brush and Eraser buttons open the Library). I waits for
     // the eyedropper (batch D).
     void toolKey(DrawingCanvas::Tool tool);
+    // THE EYEDROPPER (batch D; the user's D-2): the Colors panel's button and the I key arm
+    // ONE pick (again: off); Alt held with the Brush picks while it is held (the Alt key,
+    // reported here by CanvasKeyRouter wherever it went). A pick gives its colour to the
+    // brush, the swatch and the Colors panel, and never hides the panel.
+    void toggleColorPick();
+    void noteAltKey(QObject *receiver, bool down);
+    // FLIP H / V (batch D): the Move bar's buttons and Edit > Flip Horizontal / Vertical -
+    // part of the open Move box (DrawingCanvas::flipTransform).
+    void editFlipHorizontal();
+    void editFlipVertical();
+    bool canFlipTransform() const;
+    // THE COLORS PANEL'S RULES (batch D; D-1's, as the Library's; no pin): anchored under
+    // (or over) the swatch each time it opens; a click on the swatch opens and closes it;
+    // it hides at the first stroke, when another tool is picked and at a press on another
+    // toolbar button; whether it was open is remembered; View > Colors ticks with it.
+    void setColorsPanelShown(bool shown); // the user's choice: remembered
+    QWidget *colorsPanelForTest() const;
+    QScrollArea *colorsScrollForTest() const { return m_colorsScroll; }
+    QAbstractButton *colorPickButtonForTest() const { return m_colorPickButton; }
+    QAbstractButton *colorSwatchForTest() const { return m_colorSwatch; }
+    static const QString kColorsPanelKey; // whether the Colors panel was open
+    static const QString kLastPanelKey;   // "library" or "colors": the one of the two shown last
+    static QString panelToRestoreAtLaunch(); // "library", "colors" or none (D-3: one at launch)
     // [ AND ] (batch C): the active Brush's or Eraser's size one step down or up, as
     // Photoshop steps it - 1 px under 10, 10 under 100, 25 under 200, 50 under 300, 100
     // under 1000, then 250 - through the size slider's own path (the pill shows it, the
@@ -507,6 +533,7 @@ private:
     void createFloatingToolbar();   // Brush bar + extras bar (FloatingToolWindows)
     // Floating overlay panel: dock-style header (title + Close only),
     // draggable by the header, child of the canvas.
+    // persistPosition false: no saved spot - the caller places it (the Colors panel, batch D).
     QWidget *createFloatingPanel(const QString &title, QWidget *body);
     QWidget *createCameraPanel();   // floating panel shown while Camera is active
     QWidget *createStagePanel();    // the Stage bar, in its place during Stage mode
@@ -770,6 +797,17 @@ private:
     QPushButton *m_brushToolButton = nullptr; // Library anchor + open toggle
     QPushButton *m_eraserToolButton = nullptr; // eraser-scope anchor
     QAction *m_brushLibViewAction = nullptr; // View menu toggle
+    // The Colors panel (batch D): the window, its body, the swatch that anchors and toggles
+    // it, its Eyedropper button, View > Colors.
+    FloatingToolWindow *m_colorsPanel = nullptr;
+    ColorPanel *m_colorPanelBody = nullptr;
+    QAbstractButton *m_colorSwatch = nullptr;
+    QAbstractButton *m_colorPickButton = nullptr;
+    QAction *m_colorsViewAction = nullptr;
+    QScrollArea *m_colorsScroll = nullptr; // the body's frame: scrolls only when cut short
+    void autoHideColorsPanel(); // a stroke, another tool, another button: not remembered
+    void anchorColorsPanel();   // under / over the swatch, as the Library under the Brush
+    void fitColorsPanel();      // never over the tools bar: cut to the room on its side
     // Batch C: the toolbars' View entries and Tab's state; the View entries that act on
     // the canvas (on only while this page shows, so their keys stay free elsewhere -
     // the Script Editor's text); the selection-mode picker and the size step, made

@@ -575,6 +575,30 @@ public slots:
     // stroke commit, a QuickShape and a floating paste land, a live transform commits - as
     // Undo resolves them first.
     void settleForLayerChange();
+    // THE EYEDROPPER (batch D; the user's D-2, approved 2026-11-14). armColorPick(true) - the
+    // Colors panel's button, the I key - takes the next press on the canvas as ONE pick and is
+    // off again after it: the tool never changes. Alt held with the Brush picks for as long as
+    // it is held. A press shows the sampling ring (the colour under the pointer above, the
+    // colour you had below, a neutral grey ring round both) until it is let go; the colour
+    // under the pointer is then colorPicked. A pick is not a stroke. The dropper - the pointer
+    // and the ring's centre - is always the user's black one with a thin white outline (D-3).
+    void armColorPick(bool on);
+    bool colorPickArmed() const { return m_pickArmed; }
+    void setAltHeld(bool held); // the page reports the Alt key, wherever it went
+    // The colour shown at a widget point - the paper and every visible layer at its
+    // effective opacity, as the canvas composites them; never an overlay (the margin veil,
+    // the onion skin, the camera frame, guides, the grid). False off the stage.
+    bool colorSeenAt(const QPointF &widgetPos, QColor *out);
+    bool pickingForTest() const { return m_picking; }
+    QColor pickRingTopForTest() const { return m_pickColor; }
+    QColor pickRingBottomForTest() const { return m_pickBefore; }
+    QPointF pickRingCentreForTest() const { return m_pickPos; }
+    bool pickCursorShownForTest() const { return m_pickCursorOn; }
+    // FLIP H / V (batch D): part of the open Move box - its lifted pixels are mirrored inside
+    // the box (outline and handles stay), shown at once; Enter lands it with the rest, Esc
+    // takes it back with the rest. False with no box open.
+    bool canFlipTransform() const { return m_xformActive && !m_transformBuf.isNull(); }
+    bool flipTransform(bool horizontal);
     void clearSelection();                // Esc equivalent
     void deselect();                      // clearSelection + selection-history entry
     void selectAll();                     // select the whole canvas
@@ -642,6 +666,10 @@ signals:
     void eraserBrushChanged();
     void contentChanged();
     void layersChanged(); // layer added/removed by the canvas (image import)
+    // The eyedropper (batch D): a pick landed (the page gives the colour to the brush, the
+    // swatch and the Colors panel); the one-pick mode went on or off.
+    void colorPicked(const QColor &color);
+    void colorPickArmedChanged(bool armed);
     // Ctrl+Left click: the topmost visible layer with opaque pixels under
     // the cursor — the Layers panel selects/highlights that row.
     void layerPickRequested(const QString &layerId);
@@ -849,6 +877,27 @@ private:
     // paste (commits on click-away/Enter). Display-only until committed.
     bool m_floatActive = false;
     bool m_floatFromPaste = false; // paste floats until click-away; move doesn't
+    // The eyedropper (batch D): see armColorPick.
+    bool m_pickArmed = false;      // one pick waiting (the Colors panel's button, I)
+    bool m_altHeld = false;        // Alt down (with the Brush: the eyedropper)
+    bool m_picking = false;        // a pick press under way: the ring shows
+    bool m_pickOnStage = false;    // the ring's point is on the stage (a colour to take)
+    QPointF m_pickPos;             // the ring's centre, widget coords
+    QColor m_pickColor;            // under the pointer (the ring's top half)
+    QColor m_pickBefore;           // the colour you had (its bottom half)
+    bool m_pickCursorOn = false;   // the dropper cursor is up
+    bool m_pickTrackingWas = false; // mouse tracking before the dropper cursor took it
+    bool pickWanted(Qt::KeyboardModifiers modifiers) const
+    {
+        return m_pickArmed || (m_tool == Brush && (modifiers & Qt::AltModifier));
+    }
+    void beginColorPick(const QPointF &widgetPos);
+    void moveColorPick(const QPointF &widgetPos);
+    void endColorPick();
+    void refreshPickCursor();
+    void paintSamplingRing(QPainter &p) const;
+    bool m_xformFlipH = false;     // Flip H / V applied to the open box (parity)
+    bool m_xformFlipV = false;
     bool m_floatDragging = false;
     QImage m_floatImg;             // complete masked pixels (never cropped)
     QPointF m_floatPos;            // top-left, canvas coords

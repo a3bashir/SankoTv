@@ -572,6 +572,8 @@ private:
     // Edit-menu panel clipboard actions (enabled once a panel is copied).
     QAction *m_pastePanelAct = nullptr;
     QAction *m_pastePanelInPlaceAct = nullptr;
+    QAction *m_flipHAct = nullptr; // batch D: Edit > Flip Horizontal / Vertical (the Move box)
+    QAction *m_flipVAct = nullptr;
     // Edit-menu audio actions (the workspace page, with a project open).
     QAction *m_importAudioAct = nullptr;
     QAction *m_removeAudioAct = nullptr;
