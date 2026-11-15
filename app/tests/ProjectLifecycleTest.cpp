@@ -21560,14 +21560,17 @@ void runKeysAndViewPass(const QString &scratch)
               painted == 1 && still == 0.0, QStringLiteral("steps +%1, rotation %2").arg(painted).arg(still));
     }
 
-    // --- (ri) the rotation indicator while R is held (the user's design, Figma 576:731) ---------
-    // Its arcs are the design's own vectors (icons/view/rotation_arcs.svg) at half the design's
-    // size, turning with the canvas at 80 %; the angle in the middle upright at 100 %.
+    // --- (ri) the rotation indicator while R is held (the user's design, Tile 3, Figma 608:702) --
+    // Its arcs are the design's own vectors (icons/view/rotation_arcs_tile3.svg) at half the
+    // design's size, turning with the canvas, at 70 % with a white outline inside them at 70 %;
+    // the angle in the middle upright at 100 %, a soft shadow under it and nothing under the arcs.
     {
+        // The top and bottom arcs' lavender, #A3A7D9 (Tile 2's purple test, green under 140,
+        // does not see it: green 167).
         auto isPurple = [](const QColor &c) {
-            return c.alpha() > 0 && c.blue() > 180 && c.green() < 140 && c.blue() - c.green() > 90;
+            return c.alpha() > 0 && c.blue() - c.red() > 40 && c.blue() - c.green() > 35;
         };
-        // The purple's centroid about the square's centre, in degrees (0 right, -90 up): the
+        // The lavender's centroid about the square's centre, in degrees (0 right, -90 up): the
         // top arc is the larger, so it points the way the top arc does.
         auto purpleAngle = [&](const QImage &img) {
             double sx = 0, sy = 0;
@@ -21671,7 +21674,7 @@ void runKeysAndViewPass(const QString &scratch)
                 }
             return ink ? double(off) / ink : 1.0;
         };
-        // The arcs themselves (their shadow, which turns with them, has its own check, (ri6)).
+        // The arcs themselves, without the number's shadow ((ri6): Tile 3 has none under the arcs).
         QStringList seen;
         bool upright = true, arcsDiffer = true, turning = true, unturnedFar = true;
         const QImage arcs0 = r.canvas->rotationIndicatorImageForTest(0.0, true, false, QString(), 0);
@@ -21696,33 +21699,153 @@ void runKeysAndViewPass(const QString &scratch)
         check(QStringLiteral("(ri2) control: the arcs, compared the same way, differ at every one of those angles (the "
                              "comparison sees a turn)"),
               arcsDiffer);
-        check(QStringLiteral("(ri3) THE ARCS TURN WITH THE CANVAS: at 0 their purple points straight up; at each of the "
-                             "five angles they are the 0-degree arcs turned by it (under 5 % of their inked pixels "
-                             "apart: the smoothed edges)"),
+        check(QStringLiteral("(ri3) THE ARCS TURN WITH THE CANVAS: at 0 their lavender (the top and bottom arcs' "
+                             "#A3A7D9) points straight up; at each of the five angles they are the 0-degree arcs "
+                             "turned by it (under 5 % of their inked pixels apart: the smoothed edges)"),
               turnDiff(up, -90.0) < 2.0 && turning,
               QStringLiteral("up %1; %2").arg(up, 0, 'f', 1).arg(seen.join(QStringLiteral("; "))));
         check(QStringLiteral("(ri3) controls: the unturned arcs are far from each (over 20 % apart); the number alone "
-                             "has no purple for the 'up' measure to find"),
+                             "has no lavender for the 'up' measure to find"),
               unturnedFar && purpleAngle(r.canvas->rotationIndicatorImageForTest(45.0, false, true)) == 999.0);
 
-        // (ri4) opacities; (ri5) the size - of the shapes themselves, their shadow left out
-        // (the shadow under the arcs raises their pixels' cover and widens their ink).
-        const int arcsAlpha = maxAlpha(r.canvas->rotationIndicatorImageForTest(0.0, true, false, QString(), 0), true);
+        // (ri4) opacities: each fill colour's most common alpha (its pixels away from the
+        // smoothed edges and the outline); (ri5) the size.
+        auto commonAlpha = [](const QImage &img, QRgb rgb) {
+            QVector<int> seenAt(256, 0);
+            for (int y = 0; y < img.height(); ++y)
+                for (int x = 0; x < img.width(); ++x) {
+                    const QColor c = img.pixelColor(x, y);
+                    if (c.alpha() > 0 && qAbs(c.red() - qRed(rgb)) <= 3 && qAbs(c.green() - qGreen(rgb)) <= 3
+                        && qAbs(c.blue() - qBlue(rgb)) <= 3)
+                        ++seenAt[c.alpha()];
+                }
+            return int(std::max_element(seenAt.begin(), seenAt.end()) - seenAt.begin());
+        };
+        const QImage arcsDrawn = r.canvas->rotationIndicatorImageForTest(0.0, true, false, QString(), 0);
+        const QImage arcsCover = r.canvas->rotationArcsPartForTest(0.0, 1);
+        const int topAlpha = commonAlpha(arcsDrawn, qRgb(0xA3, 0xA7, 0xD9));
+        const int sideAlpha = commonAlpha(arcsDrawn, qRgb(0xD2, 0xD4, 0xEC));
         const int numberAlpha = maxAlpha(r.canvas->rotationIndicatorImageForTest(0.0, false, true, QString(), 0), false);
-        check(QStringLiteral("(ri4) THE ARCS AT 80 %, THE NUMBER AT 100 % (without the shadow under them): the arcs' "
-                             "purple at most 204 of 255, the number's glyphs 255"),
-              qAbs(arcsAlpha - 204) <= 1 && numberAlpha == 255,
-              QStringLiteral("arcs %1, number %2").arg(arcsAlpha).arg(numberAlpha));
-        const QRect ink = inkBox(r.canvas->rotationIndicatorImageForTest(0.0, true, false, QString(), 0));
+        check(QStringLiteral("(ri4) THE ARCS' FILLS AT 70 %, THE NUMBER AT 100 % (Tile 3): the top and bottom arcs' "
+                             "#A3A7D9 and the sides' #D2D4EC are drawn at 178-179 of 255, the number's glyphs at 255"),
+              qAbs(topAlpha - 178.5) <= 1.0 && qAbs(sideAlpha - 178.5) <= 1.0 && numberAlpha == 255,
+              QStringLiteral("#A3A7D9 %1, #D2D4EC %2, number %3").arg(topAlpha).arg(sideAlpha).arg(numberAlpha));
+        check(QStringLiteral("(ri4) control: the same measure on the fills' cover alone reads 255 for both colours (it "
+                             "reads the opacity)"),
+              commonAlpha(arcsCover, qRgb(0xA3, 0xA7, 0xD9)) == 255 && commonAlpha(arcsCover, qRgb(0xD2, 0xD4, 0xEC)) == 255,
+              QStringLiteral("%1, %2").arg(commonAlpha(arcsCover, qRgb(0xA3, 0xA7, 0xD9)))
+                  .arg(commonAlpha(arcsCover, qRgb(0xD2, 0xD4, 0xEC))));
+        const QRect ink = inkBox(arcsCover);
         const double scale = DrawingCanvas::rotationIndicatorScaleForTest();
-        check(QStringLiteral("(ri5) THE SIZE: half the design's (the user's screenshot: the top arc 151 px for the "
-                             "design's 301.5) - the arcs 181 x 183 px on screen"),
-              qAbs(scale - 151.0 / 301.52) < 0.01 && qAbs(ink.width() - 361.6 * scale) <= 2.0
-                  && qAbs(ink.height() - 365.1 * scale) <= 2.0,
+        check(QStringLiteral("(ri5) THE SIZE: half the design's, as before (the user's answer for Tile 3) - the tile "
+                             "166 x 170 px, the arcs 154.7 x 156.7 px on screen"),
+              scale == 0.5 && qAbs(ink.width() - 309.42 * scale) <= 2.0 && qAbs(ink.height() - 313.35 * scale) <= 2.0,
               QStringLiteral("scale %1; arcs %2 x %3 px").arg(scale).arg(ink.width()).arg(ink.height()));
 
+        // (ri8) THE OUTLINE (Tile 3): white, 1.5 units INSIDE each arc, at 70 % - Figma's inside
+        // stroke, the path stroked 3 wide with only its inner half kept.
+        {
+            const QImage outline = r.canvas->rotationArcsPartForTest(0.0, 3);
+            const QImage stroke = r.canvas->rotationArcsPartForTest(0.0, 2);
+            bool white = true;
+            int maxA = 0, outsideFill = 0, strokeOutside = 0;
+            double outlineSum = 0.0, strokeSum = 0.0;
+            for (int y = 0; y < outline.height(); ++y)
+                for (int x = 0; x < outline.width(); ++x) {
+                    const QColor c = outline.pixelColor(x, y);
+                    const bool covered = qAlpha(arcsCover.pixel(x, y)) > 0;
+                    if (c.alpha() > 0) {
+                        white = white && c.red() >= 250 && c.green() >= 250 && c.blue() >= 250;
+                        maxA = qMax(maxA, c.alpha());
+                        outsideFill += covered ? 0 : 1;
+                    }
+                    if (qAlpha(stroke.pixel(x, y)) > 0 && !covered)
+                        ++strokeOutside;
+                    outlineSum += c.alpha() / 255.0;
+                    strokeSum += qAlpha(stroke.pixel(x, y)) / 255.0;
+                }
+            // Kept: the inner half of the 3-unit stroke, at 70 %.
+            const double half = strokeSum > 0 ? outlineSum / 0.7 / strokeSum : 0.0;
+            const QRect drawnInk = inkBox(arcsDrawn), strokeInk = inkBox(stroke);
+            check(QStringLiteral("(ri8) THE ARCS' OUTLINE: white, at 70 % (no pixel over 179), only where the arcs' own "
+                                 "fills are, half of the 3-unit stroke (1.5 inside); the arcs as drawn reach no further "
+                                 "than their fills"),
+                  white && maxA > 60 && maxA <= 179 && outsideFill == 0 && qAbs(half - 0.5) < 0.06 && drawnInk == ink,
+                  QStringLiteral("white %1, highest alpha %2, %3 px outside the fills, kept %4 of the stroke; arcs "
+                                 "%5,%6 %7x%8, fills %9,%10 %11x%12")
+                      .arg(white).arg(maxA).arg(outsideFill).arg(half, 0, 'f', 3).arg(drawnInk.x()).arg(drawnInk.y())
+                      .arg(drawnInk.width()).arg(drawnInk.height()).arg(ink.x()).arg(ink.y()).arg(ink.width())
+                      .arg(ink.height()));
+            check(QStringLiteral("(ri8) control: the whole 3-unit stroke does reach outside the fills (what the outline "
+                                 "keeps is a choice: the inside)"),
+                  strokeOutside > 200 && strokeInk.width() > ink.width(),
+                  QStringLiteral("%1 px outside; stroke %2 px wide, fills %3").arg(strokeOutside).arg(strokeInk.width())
+                      .arg(ink.width()));
+        }
+
+        // (ri9) THE NUMBER WHERE FIGMA PUTS IT: "45 degrees" at 0, its glyphs' ink where the
+        // frame renders them (608:702: x 134.75, y 147.41, 92.69 x 47.38 in its units) - the
+        // frame's own box, not re-centred on the arcs - in #F7F7FF.
+        {
+            const QImage num = r.canvas->rotationIndicatorImageForTest(0.0, false, true,
+                                                                       QStringLiteral("45") + QChar(0x00B0), 0);
+            const QRectF box = DrawingCanvas::rotationNumberBoxForTest();
+            const QRectF want(box.x() + 3.75 * scale, box.y() + 12.40625 * scale, 92.6875 * scale, 47.375 * scale);
+            double l = 1e9, t = 1e9, rr = -1e9, b = -1e9;
+            bool colour = true;
+            for (int y = 0; y < num.height(); ++y)
+                for (int x = 0; x < num.width(); ++x) {
+                    const QColor c = num.pixelColor(x, y);
+                    if (c.alpha() > 127) { // the glyphs' edges at half cover: their geometric outline
+                        l = qMin(l, double(x));
+                        t = qMin(t, double(y));
+                        rr = qMax(rr, x + 1.0);
+                        b = qMax(b, y + 1.0);
+                    }
+                    if (c.alpha() == 255)
+                        colour = colour && c.red() == 0xF7 && c.green() == 0xF7 && c.blue() == 0xFF;
+                }
+            const QRectF got(QPointF(l, t), QPointF(rr, b));
+            const double off = qMax(qMax(qAbs(got.left() - want.left()), qAbs(got.right() - want.right())),
+                                    qMax(qAbs(got.top() - want.top()), qAbs(got.bottom() - want.bottom())));
+            check(QStringLiteral("(ri9) THE NUMBER WHERE THE FRAME PUTS IT: \"45 degrees\" inked within 1 px of 608:702's "
+                                 "render (to the right of the arcs' centre, as drawn there), in #F7F7FF"),
+                  off <= 1.0 && colour,
+                  QStringLiteral("ink %1,%2 to %3,%4; want %5,%6 to %7,%8; off %9 px; colour %10")
+                      .arg(got.left()).arg(got.top()).arg(got.right()).arg(got.bottom()).arg(want.left(), 0, 'f', 2)
+                      .arg(want.top(), 0, 'f', 2).arg(want.right(), 0, 'f', 2).arg(want.bottom(), 0, 'f', 2)
+                      .arg(off, 0, 'f', 2).arg(colour));
+            const double shiftedOff = qAbs((got.center().x()) - (want.center().x() - (box.center().x() - 150.0)));
+            check(QStringLiteral("(ri9) control: re-centred on the arcs the ink would sit 8 px left - the measure tells "
+                                 "the frame's box from a centred one"),
+                  shiftedOff > 6.0, QStringLiteral("%1 px").arg(shiftedOff, 0, 'f', 2));
+            // The layout itself, finer than pixels: the glyphs' outline box in the frame's units
+            // against Figma's render of 608:702's text.
+            const QString n45 = QStringLiteral("45") + QChar(0x00B0);
+            const QRectF lay = DrawingCanvas::rotationNumberInkForTest(n45);
+            const QRectF figma(134.75, 147.40625, 92.6875, 47.375);
+            const double layOff = qMax(qMax(qAbs(lay.left() - figma.left()), qAbs(lay.right() - figma.right())),
+                                       qMax(qAbs(lay.top() - figma.top()), qAbs(lay.bottom() - figma.bottom())));
+            check(QStringLiteral("(ri9) THE NUMBER'S LINE AS FIGMA LAYS IT OUT: the glyphs' outline box within 0.3 of the "
+                                 "frame's units of Figma's render (x 134.75, y 147.41, 92.69 x 47.38) - centred by its "
+                                 "advance in the box, its baseline half the font's line gap and its ascent below the top"),
+                  layOff <= 0.3,
+                  QStringLiteral("%1,%2 %3 x %4; off %5").arg(lay.x(), 0, 'f', 2).arg(lay.y(), 0, 'f', 2)
+                      .arg(lay.width(), 0, 'f', 2).arg(lay.height(), 0, 'f', 2).arg(layOff, 0, 'f', 2));
+            QFont qtFont(QStringLiteral("Arial"));
+            qtFont.setBold(true);
+            qtFont.setPixelSize(64);
+            qtFont.setHintingPreference(QFont::PreferNoHinting);
+            const QFontMetricsF qtLine(qtFont);
+            const double qtTop = 135.0 + qtLine.leading() / 2.0 + qtLine.ascent() + qtLine.tightBoundingRect(n45).top();
+            check(QStringLiteral("(ri9) control: Qt's own line for Arial (leading %1) would put the glyphs over 0.9 units "
+                                 "high - the check sees the line gap")
+                      .arg(qtLine.leading()),
+                  figma.top() - qtTop > 0.9, QStringLiteral("top %1 against %2").arg(qtTop, 0, 'f', 2).arg(figma.top()));
+        }
+
         // (ri6) THE SOFT SHADOW (the user's fix, Figma 581:696): black at 50 %, a 4 px blur on
-        // screen, under the arcs and the number - nothing else changes.
+        // screen - under the number only since Tile 3; the arcs have none.
         const QImage shadowAlone = r.canvas->rotationIndicatorImageForTest(0.0, true, true, QString(), 2);
         bool black = true;
         for (int y = 0; y < shadowAlone.height(); ++y)
@@ -21733,14 +21856,15 @@ void runKeysAndViewPass(const QString &scratch)
             }
         const QImage bare = r.canvas->rotationIndicatorImageForTest(0.0, true, true, QString(), 0);
         const QImage withShadow = r.canvas->rotationIndicatorImageForTest(0.0, true, true, QString(), 1);
-        // What the fix says, computed here on its own: the shapes' cover (the arcs at 80 %, the
-        // number at 100 %) blurred by a Gaussian - Figma's "blur 4" is a CSS-style radius,
-        // sigma 2 px - at half its alpha. The largest difference from the shadow drawn, in
-        // levels of 255. (The first run guessed instead: "3 to 8 px past the shapes" and "100+
-        // under the number's strokes"; sigma 2 fades under 8/255 2 px past an edge, and the
-        // number's 5 px strokes peak at 93.)
+        const QImage numberOnly = r.canvas->rotationIndicatorImageForTest(0.0, false, true, QString(), 0);
+        // What the fix says, computed here on its own: the NUMBER's cover (at 100 %; Tile 3 has
+        // no shadow under the arcs) blurred by a Gaussian - Figma's "blur 4" is a CSS-style
+        // radius, sigma 2 px - at half its alpha. The largest difference from the shadow drawn
+        // (with the arcs asked for too), in levels of 255. (The first run guessed instead: "3 to
+        // 8 px past the shapes" and "100+ under the number's strokes"; sigma 2 fades under 8/255
+        // 2 px past an edge, and the number's 5 px strokes peak at 93.)
         auto expectedDiff = [&](double sigma) {
-            const int w = bare.width(), h = bare.height(), rad = int(std::ceil(3.0 * sigma));
+            const int w = numberOnly.width(), h = numberOnly.height(), rad = int(std::ceil(3.0 * sigma));
             QVector<double> k(2 * rad + 1), a(w * h), t(w * h);
             double sum = 0.0;
             for (int i = -rad; i <= rad; ++i)
@@ -21749,7 +21873,7 @@ void runKeysAndViewPass(const QString &scratch)
                 v /= sum;
             for (int y = 0; y < h; ++y)
                 for (int x = 0; x < w; ++x)
-                    a[y * w + x] = qAlpha(bare.pixel(x, y)) / 255.0;
+                    a[y * w + x] = qAlpha(numberOnly.pixel(x, y)) / 255.0;
             for (int y = 0; y < h; ++y)
                 for (int x = 0; x < w; ++x) {
                     double s = 0.0;
@@ -21768,12 +21892,19 @@ void runKeysAndViewPass(const QString &scratch)
             return worst;
         };
         const int at2 = expectedDiff(2.0), at1 = expectedDiff(1.0), at4 = expectedDiff(4.0);
-        check(QStringLiteral("(ri6) THE SOFT SHADOW IS THE APPROVED ONE: black, and pixel for pixel (within 2 of 255) the "
-                             "shapes' own cover blurred 4 px on screen (Gaussian sigma 2) at 50 % - so the arcs' at "
-                             "80 % of that, as in Figma"),
+        check(QStringLiteral("(ri6) THE SOFT SHADOW IS THE APPROVED ONE, UNDER THE NUMBER ONLY (Tile 3): black, and "
+                             "pixel for pixel (within 2 of 255) the number's own cover blurred 4 px on screen (Gaussian "
+                             "sigma 2) at 50 % - the arcs add nothing to it"),
               black && at2 <= 2, QStringLiteral("black %1; largest difference %2").arg(black).arg(at2));
         check(QStringLiteral("(ri6) control: a blur of 1 px or of 4 px sigma is not it (the comparison tells the size)"),
               at1 > 10 && at4 > 10, QStringLiteral("sigma 1: %1, sigma 4: %2").arg(at1).arg(at4));
+        const bool arcsSame = r.canvas->rotationIndicatorImageForTest(0.0, true, false, QString(), 1)
+            == r.canvas->rotationIndicatorImageForTest(0.0, true, false, QString(), 0);
+        const bool numberDiffers = r.canvas->rotationIndicatorImageForTest(0.0, false, true, QString(), 1) != numberOnly;
+        check(QStringLiteral("(ri6) THE ARCS HAVE NO SHADOW (Tile 3: only their outline): drawn alone, they are pixel for "
+                             "pixel the same with the shadow on as off"),
+              arcsSame);
+        check(QStringLiteral("(ri6) control: the number alone is not - the switch does draw a shadow"), numberDiffers);
         // Nothing else changes: wherever the shapes cover fully, the pixel is the same with the
         // shadow as without (it lies under them).
         int solid = 0, changedSolid = 0;
@@ -21787,9 +21918,9 @@ void runKeysAndViewPass(const QString &scratch)
                              "is the same with it as without"),
               solid > 50 && changedSolid == 0, QStringLiteral("%1 solid px, %2 changed").arg(solid).arg(changedSolid));
 
-        // (ri7) on white paper it now has an edge: over white, around the number and the arcs
-        // (where they themselves are not) the darkest pixel is well below white; without the
-        // shadow everything there is white.
+        // (ri7) on white paper the number has an edge: over white, around it (where it is not)
+        // the darkest pixel is well below white; around the arcs nothing is drawn (Tile 3: no
+        // shadow under them); without the shadow everything there is white.
         auto darkestAround = [&](const QImage &img, const QImage &shapesOnly) {
             double darkest = 1.0;
             for (int y = 0; y < img.height(); ++y)
@@ -21810,9 +21941,10 @@ void runKeysAndViewPass(const QString &scratch)
         const QImage arcsBare = r.canvas->rotationIndicatorImageForTest(0.0, true, false, QString(), 0);
         const double numberEdge = darkestAround(numberShown, numberBare), arcsEdge = darkestAround(arcsShown, arcsBare);
         const double numberNone = darkestAround(numberBare, numberBare), arcsNone = darkestAround(arcsBare, arcsBare);
-        check(QStringLiteral("(ri7) ON WHITE PAPER THE NUMBER AND THE ARCS HAVE A DARK EDGE: around them the darkest pixel "
-                             "over white has a luminance under 0.6 (white is 1)"),
-              numberEdge < 0.6 && arcsEdge < 0.6,
+        check(QStringLiteral("(ri7) ON WHITE PAPER THE NUMBER HAS A DARK EDGE, THE ARCS NONE (Tile 3): around the number "
+                             "the darkest pixel over white has a luminance under 0.6 (white is 1); around the arcs it "
+                             "stays white"),
+              numberEdge < 0.6 && arcsEdge > 0.999,
               QStringLiteral("around the number %1, around the arcs %2").arg(numberEdge, 0, 'f', 3).arg(arcsEdge, 0, 'f', 3));
         check(QStringLiteral("(ri7) control: without the shadow, around them is white (1.0) - the white number had no "
                              "edge on white paper"),

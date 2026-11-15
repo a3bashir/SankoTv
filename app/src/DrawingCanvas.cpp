@@ -37,6 +37,9 @@
 #include <QPolygonF>
 #include <QPainter>
 #include <QSvgRenderer> // the rotation indicator's arcs (batch C)
+#include <QFontMetricsF> // ...its number's line, laid out as Figma lays it (Tile 3)
+#include <QRawFont>      // ...with the font's own line gap, from its hhea table
+#include <QtEndian>
 #include <QFile>        // the eyedropper's drawing, read to make its white outline (D-3)
 #include <QPaintEvent>
 #include <QPushButton>
@@ -8144,27 +8147,30 @@ void DrawingCanvas::paintEvent(QPaintEvent *event)
     if (m_picking)
         paintSamplingRing(painter);
 
-    // THE ROTATION INDICATOR while R is held (batch C; the user's design, Figma 576:731),
-    // over everything.
+    // THE ROTATION INDICATOR while R is held (batch C; the user's design, Tile 3, Figma
+    // 608:702), over everything.
     if (m_rotateHeld || m_rotating)
         paintRotationIndicator(painter, rotationIndicatorCentre(), m_viewRotation, true, true, QString(), 1);
 }
 
 // --- The rotation indicator (batch C) ---------------------------------------------------
-// The user's design "Arcs and Percentage Rotation Tile 2" (Figma 576:731): its four arcs are
-// its own vectors, exported as they are to icons/view/rotation_arcs.svg; the numbers below
-// are the design's, in its 388 x 395 units - the arcs' centre (the middle of their bounds)
-// and the angle's text box (Arial Bold 64, #f7f7ff, centred). On screen at half that: the
-// user's screenshot (reference/rotation-indicator-size.png) measures the top arc 151 px for
-// the design's 301.5 and the bottom 127 for 254.1, so 194 x 198 px, the arcs about 181 px
-// across. The arcs turn with the canvas at 80 % opacity; the number never turns, at 100 %.
+// The user's design "Arcs and Percentage Rotation Tile 3" (Figma 608:702; the user's answers
+// of 2026-11-15): its four arcs are its own vectors, their path data and placement as in the
+// frame, in icons/view/rotation_arcs_tile3.svg (the fills, #A3A7D9 top and bottom, #D2D4EC
+// the sides) and rotation_arcs_tile3_outline.svg (the same paths stroked white, 3 wide). The
+// numbers below are the frame's, in its 332 x 339 units: the arcs' centre (the middle of
+// their bounds: x 11.364 to 320.781, y 12.111 to 325.459) and the angle's text box (Arial
+// Bold 64, #F7F7FF, centred, top-aligned). On screen at half that, as before: 166 x 170 px.
+// The arcs turn with the canvas, their fills at 70 % and a white 1.5 outline INSIDE each at
+// 70 % (the top arc's 80 % in the frame was a slip - the user); the number never turns, at
+// 100 %. The Figma preview on white, mid-grey and black: 615:702.
 namespace {
-constexpr double kRotTileW = 388.0, kRotTileH = 395.0;
+constexpr double kRotTileW = 332.0, kRotTileH = 339.0;
 constexpr double kRotScale = 0.5;
-constexpr double kRotArcsCx = 194.09, kRotArcsCy = 196.67;
-constexpr double kRotTextX = 152.5625, kRotTextY = 163.2224, kRotTextW = 99.0, kRotTextH = 65.0;
+constexpr double kRotArcsCx = 166.07275390625, kRotArcsCy = 168.78494262695312;
+constexpr double kRotTextX = 131.0, kRotTextY = 135.0, kRotTextW = 102.0, kRotTextH = 56.0;
 constexpr int kRotTextPx = 64;
-constexpr double kRotArcsOpacity = 0.8, kRotTextOpacity = 1.0;
+constexpr double kRotArcsOpacity = 0.7, kRotOutlineOpacity = 0.7, kRotTextOpacity = 1.0;
 } // namespace
 
 QString DrawingCanvas::rotationIndicatorText(double degrees)
@@ -8183,11 +8189,9 @@ QPointF DrawingCanvas::rotationIndicatorCentre() const
 }
 
 // THE SOFT SHADOW (the user's fix after the hand test, 2026-11-13; Figma 581:696): black at
-// 50 %, a 4 px blur on screen, under the arcs and the number - nothing else changes. The
-// white number and the lavender arcs failed on white paper (1.07 : 1 and 1.35 : 1). Figma's
-// blur is a CSS-style radius, twice the Gaussian's sigma: sigma 2 px. The shadow is the
-// shapes' own coverage blurred, so under the arcs (drawn at 80 %) it is 80 % of 50 %, as
-// in Figma, where the arcs' opacity holds their shadow too.
+// 50 %, a 4 px blur on screen. Since Tile 3 (2026-11-15) it lies under THE NUMBER ONLY - the
+// arcs have their white outline instead. Figma's blur is a CSS-style radius, twice the
+// Gaussian's sigma: sigma 2 px. The shadow is the number's own coverage blurred.
 namespace {
 constexpr double kRotShadowAlpha = 0.5;
 constexpr double kRotShadowSigma = 2.0; // screen px
@@ -8231,72 +8235,151 @@ QImage rotationSoftShadow(const QImage &layer, qreal dpr)
 }
 } // namespace
 
-// The indicator: its shapes drawn on a layer of their own, the soft shadow of that layer
-// under it. `shadow`: 1 the indicator as shown, 0 without its shadow, 2 the shadow alone
-// (the last two for the gate).
+namespace {
+constexpr int kRotSide = 300; // logical px: the tile turned any way, with the number's blur
+
+QImage rotationBlankLayer(qreal dpr)
+{
+    QImage img(QSize(qRound(kRotSide * dpr), qRound(kRotSide * dpr)), QImage::Format_ARGB32_Premultiplied);
+    img.setDevicePixelRatio(dpr);
+    img.fill(Qt::transparent);
+    return img;
+}
+} // namespace
+
+// The indicator: the arcs on a layer of their own, no shadow; the number on another, its soft
+// shadow under it. `shadow`: 1 the indicator as shown, 0 without the number's shadow, 2 that
+// shadow alone (the last two for the gate).
 void DrawingCanvas::paintRotationIndicator(QPainter &p, const QPointF &centre, double degrees, bool arcs,
                                            bool number, const QString &text, int shadow) const
 {
     const qreal dpr = (p.device() && p.device()->devicePixelRatioF() > 0) ? p.device()->devicePixelRatioF() : 1.0;
-    constexpr int kSide = 300; // logical px: the tile turned any way, with its blur
-    QPointF topLeft = centre - QPointF(kSide / 2.0, kSide / 2.0);
+    QPointF topLeft = centre - QPointF(kRotSide / 2.0, kRotSide / 2.0);
     topLeft = QPointF(std::round(topLeft.x() * dpr) / dpr, std::round(topLeft.y() * dpr) / dpr); // whole pixels
-    QImage layer(QSize(qRound(kSide * dpr), qRound(kSide * dpr)), QImage::Format_ARGB32_Premultiplied);
-    layer.setDevicePixelRatio(dpr);
-    layer.fill(Qt::transparent);
-    {
-        QPainter lp(&layer);
-        paintRotationShapes(lp, centre - topLeft, degrees, arcs, number, text);
+    QImage arcsLayer = rotationBlankLayer(dpr), numberLayer = rotationBlankLayer(dpr);
+    if (arcs && shadow != 2)
+        paintRotationArcs(arcsLayer, centre - topLeft, degrees, 0);
+    if (number) {
+        QPainter lp(&numberLayer);
+        paintRotationNumber(lp, centre - topLeft, degrees, text);
     }
     p.save();
     // In widget space, unclipped, whatever the canvas's paint before it left set.
     p.resetTransform();
     p.setClipping(false);
     p.setOpacity(1.0);
-    if (shadow != 0)
-        p.drawImage(topLeft, rotationSoftShadow(layer, dpr));
     if (shadow != 2)
-        p.drawImage(topLeft, layer);
+        p.drawImage(topLeft, arcsLayer);
+    if (number && shadow != 0)
+        p.drawImage(topLeft, rotationSoftShadow(numberLayer, dpr));
+    if (shadow != 2)
+        p.drawImage(topLeft, numberLayer);
     p.restore();
 }
 
-// The arcs and the number themselves, centred at `centre` in the painter's space.
-void DrawingCanvas::paintRotationShapes(QPainter &p, const QPointF &centre, double degrees, bool arcs,
-                                        bool number, const QString &text) const
+// Tile 3's arcs on `layer` (a blank square), turned by `degrees` about `centre`: the fills at
+// 70 %, and over them the white outline at 70 % - Figma's 1.5 INSIDE stroke, drawn the way
+// Figma draws one: the path stroked twice as wide (3) and kept only where its own fill
+// covers. Done on images, so the kept half's inner edge stays smooth (a clip path would be
+// stepped). The fills' cover drawn at 70 % is the fills at 70 %: the arcs never overlap.
+// `part` (for the gate): 0 as drawn, 1 the fills' cover alone (100 %), 2 the whole 3-unit
+// stroke (100 %), 3 the outline as drawn (the inside half, 70 %).
+void DrawingCanvas::paintRotationArcs(QImage &layer, const QPointF &centre, double degrees, int part) const
 {
+    auto *self = const_cast<DrawingCanvas *>(this);
     if (!m_rotationArcs)
-        m_rotationArcs = new QSvgRenderer(QStringLiteral(":/icons/view/rotation_arcs.svg"),
-                                          const_cast<DrawingCanvas *>(this));
+        m_rotationArcs = new QSvgRenderer(QStringLiteral(":/icons/view/rotation_arcs_tile3.svg"), self);
+    if (!m_rotationArcsOutline)
+        m_rotationArcsOutline = new QSvgRenderer(QStringLiteral(":/icons/view/rotation_arcs_tile3_outline.svg"), self);
+    if (!m_rotationArcs->isValid() || !m_rotationArcsOutline->isValid())
+        return;
+    const qreal dpr = layer.devicePixelRatio();
+    auto drawn = [&](QSvgRenderer *svg) {
+        QImage img = rotationBlankLayer(dpr);
+        QPainter q(&img);
+        q.setRenderHint(QPainter::Antialiasing, true);
+        q.setRenderHint(QPainter::SmoothPixmapTransform, true);
+        q.translate(centre);
+        q.rotate(degrees); // the arcs turn with the canvas (as viewTransform turns it)
+        q.scale(kRotScale, kRotScale);
+        q.translate(-kRotArcsCx, -kRotArcsCy);
+        svg->render(&q, QRectF(0, 0, kRotTileW, kRotTileH));
+        return img;
+    };
+    const QImage cover = drawn(m_rotationArcs);
+    QImage outline = drawn(m_rotationArcsOutline);
+    if (part != 2) { // the inside half: the stroke where the fills cover
+        QPainter q(&outline);
+        q.setCompositionMode(QPainter::CompositionMode_DestinationIn);
+        q.drawImage(QPointF(0, 0), cover);
+    }
+    QPainter lp(&layer);
+    if (part == 0 || part == 1) {
+        lp.setOpacity(part == 1 ? 1.0 : kRotArcsOpacity);
+        lp.drawImage(QPointF(0, 0), cover);
+    }
+    if (part == 0 || part == 2 || part == 3) {
+        lp.setOpacity(part == 2 ? 1.0 : kRotOutlineOpacity);
+        lp.drawImage(QPointF(0, 0), outline);
+    }
+}
+
+// The number's font and where its line starts, in the tile's units, as Figma lays out the
+// frame's text: the line centred in the design box (131, 135, 102 wide) by its advance; its
+// baseline where a top-aligned line of AUTO height puts it - half the font's line gap and its
+// ascent below the box's top. Figma's AUTO line is ascent + descent + the hhea line gap; Qt
+// reports no leading for Arial (0, measured 2026-11-15: the number sat 1.05 units high), so the
+// gap is read from the font's own hhea table. Unhinted, as Figma measures it.
+namespace {
+QFont rotationNumberFont()
+{
+    QFont font(QStringLiteral("Arial"));
+    font.setBold(true);
+    font.setPixelSize(kRotTextPx);
+    font.setHintingPreference(QFont::PreferNoHinting);
+    return font;
+}
+
+double rotationNumberLineGap()
+{
+    static const double gap = [] {
+        const QFont font = rotationNumberFont();
+        const QRawFont raw = QRawFont::fromFont(font);
+        const QByteArray hhea = raw.fontTable("hhea"), head = raw.fontTable("head");
+        if (hhea.size() >= 10 && head.size() >= 20) {
+            const qint16 units = qFromBigEndian<qint16>(hhea.constData() + 8); // hhea.lineGap
+            const quint16 perEm = qFromBigEndian<quint16>(head.constData() + 18); // head.unitsPerEm
+            if (perEm > 0)
+                return units * double(kRotTextPx) / perEm;
+        }
+        return QFontMetricsF(font).leading();
+    }();
+    return gap;
+}
+
+QPointF rotationNumberOrigin(const QString &shown)
+{
+    const QFontMetricsF fm(rotationNumberFont());
+    return QPointF(kRotTextX + (kRotTextW - fm.horizontalAdvance(shown)) / 2.0,
+                   kRotTextY + rotationNumberLineGap() / 2.0 + fm.ascent());
+}
+} // namespace
+
+// The number, upright about `centre` in the painter's space: Arial Bold 64, #F7F7FF, at 100 %.
+void DrawingCanvas::paintRotationNumber(QPainter &p, const QPointF &centre, double degrees,
+                                        const QString &text) const
+{
+    const QString shown = text.isNull() ? rotationIndicatorText(degrees) : text;
     p.save();
     p.setRenderHint(QPainter::Antialiasing, true);
     p.setRenderHint(QPainter::TextAntialiasing, true);
-    p.setRenderHint(QPainter::SmoothPixmapTransform, true);
-    if (arcs && m_rotationArcs->isValid()) {
-        p.save();
-        p.setOpacity(kRotArcsOpacity);
-        p.translate(centre);
-        p.rotate(degrees); // the arcs turn with the canvas (as viewTransform turns it)
-        p.scale(kRotScale, kRotScale);
-        p.translate(-kRotArcsCx, -kRotArcsCy);
-        m_rotationArcs->render(&p, QRectF(0, 0, kRotTileW, kRotTileH));
-        p.restore();
-    }
-    if (number) {
-        p.save();
-        p.setOpacity(kRotTextOpacity);
-        p.translate(centre); // never turned: the number stays upright
-        p.scale(kRotScale, kRotScale);
-        p.translate(-kRotArcsCx, -kRotArcsCy);
-        QFont font(QStringLiteral("Arial"));
-        font.setBold(true);
-        font.setPixelSize(kRotTextPx);
-        p.setFont(font);
-        p.setPen(QColor(0xf7, 0xf7, 0xff));
-        // The design's box, widened evenly about its centre for a longer number ("-135°").
-        const QRectF box(kRotTextX - 80.0, kRotTextY, kRotTextW + 160.0, kRotTextH);
-        p.drawText(box, Qt::AlignCenter, text.isNull() ? rotationIndicatorText(degrees) : text);
-        p.restore();
-    }
+    p.setOpacity(kRotTextOpacity);
+    p.translate(centre); // never turned: the number stays upright
+    p.scale(kRotScale, kRotScale);
+    p.translate(-kRotArcsCx, -kRotArcsCy);
+    p.setFont(rotationNumberFont());
+    p.setPen(QColor(0xf7, 0xf7, 0xff));
+    p.drawText(rotationNumberOrigin(shown), shown);
     p.restore();
 }
 
@@ -8318,6 +8401,24 @@ QImage DrawingCanvas::rotationIndicatorImageForTest(double degrees, bool arcs, b
 double DrawingCanvas::rotationIndicatorScaleForTest()
 {
     return kRotScale;
+}
+
+QImage DrawingCanvas::rotationArcsPartForTest(double degrees, int part) const
+{
+    QImage img = rotationBlankLayer(1.0);
+    paintRotationArcs(img, QPointF(150, 150), degrees, part);
+    return img;
+}
+
+QRectF DrawingCanvas::rotationNumberBoxForTest()
+{
+    return QRectF(150.0 + (kRotTextX - kRotArcsCx) * kRotScale, 150.0 + (kRotTextY - kRotArcsCy) * kRotScale,
+                  kRotTextW * kRotScale, kRotTextH * kRotScale);
+}
+
+QRectF DrawingCanvas::rotationNumberInkForTest(const QString &text)
+{
+    return QFontMetricsF(rotationNumberFont()).tightBoundingRect(text).translated(rotationNumberOrigin(text));
 }
 
 void DrawingCanvas::wheelEvent(QWheelEvent *event)

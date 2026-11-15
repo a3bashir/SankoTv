@@ -524,18 +524,27 @@ public slots:
     bool rotateHeld() const { return m_rotateHeld; }
     void dropRotateHold();
     bool rotatingForTest() const { return m_rotating; }
-    // THE ROTATION INDICATOR while R is held (the user's design, Figma 576:731): its arcs
-    // turn with the canvas at 80 %, the angle in the middle stays upright at 100 %, half the
-    // design's size, on the point the view turns about. For the gate: shown, where, its
-    // text, its scale, and the indicator alone at an angle (arcs, number or both) on a
-    // transparent 300 x 300 square with its centre in the middle.
+    // THE ROTATION INDICATOR while R is held (the user's design, Tile 3, Figma 608:702): its
+    // arcs turn with the canvas, at 70 % with a white outline inside them at 70 %; the angle
+    // in the middle stays upright at 100 % with a soft shadow under it; half the design's
+    // size, on the point the view turns about. For the gate: shown, where, its text, its
+    // scale, and the indicator alone at an angle (arcs, number or both) on a transparent
+    // 300 x 300 square with its centre in the middle.
     bool rotationIndicatorShownForTest() const { return m_rotateHeld || m_rotating; }
     QPointF rotationIndicatorCentreForTest() const { return rotationIndicatorCentre(); }
     static QString rotationIndicatorText(double degrees);
     static double rotationIndicatorScaleForTest();
-    // shadow: 1 as shown (with the soft shadow), 0 without it, 2 the shadow alone.
+    // shadow: 1 as shown (with the number's soft shadow), 0 without it, 2 the shadow alone.
     QImage rotationIndicatorImageForTest(double degrees, bool arcs, bool number,
                                          const QString &text = QString(), int shadow = 1) const;
+    // The arcs' parts at an angle, on the same square: 0 as drawn, 1 the fills' cover alone
+    // (100 %), 2 the outline's whole 3-unit stroke (100 %), 3 the outline as drawn (the inside
+    // half, 70 %).
+    QImage rotationArcsPartForTest(double degrees, int part) const;
+    // Where the number's design box (131, 135, 102 x 56 in the tile) lands on that square;
+    // and, in the tile's own units, the outline box of a number's glyphs as laid out.
+    static QRectF rotationNumberBoxForTest();
+    static QRectF rotationNumberInkForTest(const QString &text);
     // THE KEYS' ZOOM (batch C): Ctrl+= / Ctrl+- multiply the zoom (1.25) about the view's
     // centre; Ctrl+1 shows one drawing pixel per screen pixel (within the zoom's 0.25 to
     // 4 times the fit).
@@ -1204,9 +1213,10 @@ private:
     QPointF rotationIndicatorCentre() const;
     void paintRotationIndicator(QPainter &p, const QPointF &centre, double degrees, bool arcs,
                                 bool number, const QString &text, int shadow) const;
-    void paintRotationShapes(QPainter &p, const QPointF &centre, double degrees, bool arcs,
-                             bool number, const QString &text) const;
-    mutable class QSvgRenderer *m_rotationArcs = nullptr; // made on first use
+    void paintRotationArcs(QImage &layer, const QPointF &centre, double degrees, int part) const;
+    void paintRotationNumber(QPainter &p, const QPointF &centre, double degrees, const QString &text) const;
+    mutable class QSvgRenderer *m_rotationArcs = nullptr;        // the fills; made on first use
+    mutable class QSvgRenderer *m_rotationArcsOutline = nullptr; // the outline's stroke; the same
     bool m_moveArrowsShown = false; // View > Camera Move Arrows, off by default
 
     // Canvas VIEW transforms (display only — the layer pixels, flattenedPixmap,

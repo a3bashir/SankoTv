@@ -1,6 +1,91 @@
 # SankoTV — Session Handoff Brief
 
-## STATUS 2026-11-15 (afternoon): THE ENTER HAND TEST FAILED (ALT WAS HELD); ALT+ENTER NOW LANDS AN OPEN BOX - BUILT, NOT COMMITTED, WAITING FOR THE USER'S E2 HAND TEST; ROTATION TILE 3 STOPPED (ITS VALUES DIFFER FROM THE USER'S WORDS)
+## STATUS 2026-11-15 (evening): THE ENTER CHANGE COMMITTED (6308d6c1e) AFTER HAND TEST E2; ROTATION TILE 3 BUILT, NOT COMMITTED - WAITING FOR THE USER'S TILE 3 HAND TEST; BATCH E'S FIGMA FRAME E-1 NEXT (STOP FOR APPROVAL)
+HAND TEST E2 (Dev Recorder 20261115-153122, 751 s, the only session after 14:11; system.txt git e697a2288+dirty,
+built Nov 15 2026 14:11:56; title bar "SANKO TV — TEST COPY - small pirate, Enter 2"; closed with Discard). The user:
+"all steps looked right". Read from the events, the undo steps' names (the recorder reads "Undo <step>" from the
+stack BEFORE the action runs: DevRecorder's filter sees the QShortcutEvent first, so a name there was on the history
+already - though DrawingCanvas::undo() itself lands a waiting box before undoing) and the drawing's place measured
+in the screenshots (the hat's dark pixels on rows 250 / 270: 320..512 as drawn, 400..512 mirrored).
+handtest_E2_enter_lands.md: 1 PASS (one tap 72.9 s; Enter 75.7 s with the pen on moveFlipH; Ctrl+Z 159.6 s "Undo
+Transform" - one step back to as drawn; the Esc proof not done); 2 PASS (tap 167.0; Enter 168.5 with the pen lifted,
+none after over the canvas; "Undo Transform" at 257.8 - so landed by that Enter); 3 PASS BY ELIMINATION (tap 381.0;
+Alt held 386-388 s with the pen on the Layers panel's layerName; no key logged; Esc 392.6 over the Layers panel did
+nothing; Ctrl+Z 405.0 "Undo Transform" - nothing but an Enter can have landed it: no layer click, no tool change, the
+minimise at 397-403.6 lands nothing (StoryboardPage only drops held Space / R), setAltHeld only changes the Brush's
+pick cursor. The key is missing because the recorder's once-per-press guard (DevRecorder.cpp keyChain, ~1188-1192)
+is set by the lone Alt's press and cleared only by a release: the Enter pressed while Alt is still down can reuse
+the same event address and is skipped. Earlier tries without Alt also landed: 266.2 s pen last on the tools bar,
+317.3 s over the canvas with the Esc proof - it stayed mirrored); 4 PASS (Alt tapped - focusIn QMenuBar 448.9 -
+Enter 449.0 and 474.8 went to the QMenuBar and opened a menu; "Undo (nothing to undo)" at 499.6: neither Enter
+landed anything; the first Esc over the canvas at 497.1 went to the menu bar, which still had the keyboard after the
+window had been switched away, until a click on the canvas at 498.2; the redo 501.5 / 503.0: Esc over the canvas took
+the flip back); 5 NOT TESTED AS WRITTEN - THE LIST WAS WRONG: the double-click's first press on the layer row runs
+layerRowClicked -> refreshTransformBox -> commitTransform, which lands a waiting box even on the active layer (as it
+always has), so the flip was landed before the rename began (the undo order: "Rename Layer" then "Transform"), and
+the Esc over the canvas (554-559 s, 579-581 s) rightly had nothing to take back; the rename's own Enter is covered by
+(en2); 6 PASS with Flip V (Flip H tapped twice, nothing waiting; Flip V 610.1: Esc on layerName did nothing, Esc over
+the canvas 613.0 took it back); 7 PASS.
+COMMITTED AND PUSHED 6308d6c1e "Enter lands an open Move box wherever the pointer is, also with Alt held" - the 4
+files of sha_E2_gate.txt + sha_E2_docs.txt (HANDOFF as gated); staged blobs == the gated files CR-stripped; --stat
+== --ignore-cr-at-eol --stat (4 files, +351 -2); git status clean.
+ROTATION TILE 3 (the user's answers: the number 100 % with the soft shadow under it; the outline 70 % on all four
+arcs - the top arc's 80 % in 608:702 was a slip; half size as before, 166 x 170 on screen; everything else as in the
+frame). FIGMA: preview 615:702 under 608:702 - the tile on white, #808080 and black, at the frame's size, the top
+arc's outline 70 % in the copies (608:702 itself not changed), the number's DROP_SHADOW black 50 % blur 8, no offset;
+screenshot Documents\SankoTV-Design\figma-tile3\tile3_preview_615-702.png. BUILT: icons/view/rotation_arcs_tile3.svg
+(the four paths and transforms from the frame's vectorPaths, fills #A3A7D9 / #D2D4EC opaque) and
+rotation_arcs_tile3_outline.svg (the same paths, stroke #FFFFFF 3, mitre); rotation_arcs.svg (Tile 2) removed and
+resources.qrc updated. DrawingCanvas: kRotTile 332 x 339, scale 0.5, the arcs' centre the middle of their bounds
+(166.073, 168.785), the text box 131,135 102 x 56; paintRotationArcs draws the fills' cover at 70 % and the
+outline - the 3-wide stroke DestinationIn the cover (Figma's inside stroke; images, not a clip path, for a smooth
+inner edge) - at 70 %; paintRotationNumber lays the line out as Figma: centred by its advance, the baseline at the
+box's top + half the hhea line gap + the ascent - QFontMetricsF::leading() is 0 for Arial here (a TEMP DIAG
+measured it: ascent 57.94, leading 0, Figma's ink top 147.41 against Qt's line 146.34), so the gap is read once from
+the font's own hhea / head tables (QRawFont); unhinted. The soft shadow (sigma 2 px, black 50 %) under the number
+only. Test doors rotationArcsPartForTest(degrees, part) and rotationNumberBoxForTest / rotationNumberInkForTest.
+CHECKS (keysview): CHANGED - (ri3) "at 0 their purple points straight up" -> "at 0 their lavender (the top and
+bottom arcs' #A3A7D9) points straight up" and its control "has no purple" -> "has no lavender" (isPurple, green < 140,
+could not see #A3A7D9's green 167; now blue - red > 40 and blue - green > 35); (ri4) "THE ARCS AT 80 %, THE NUMBER AT
+100 % (without the shadow under them): the arcs' purple at most 204 of 255, the number's glyphs 255" -> "THE ARCS'
+FILLS AT 70 %, THE NUMBER AT 100 % (Tile 3): ... #A3A7D9 and ... #D2D4EC are drawn at 178-179 of 255" (each
+colour's most common alpha) + control (the fills' cover alone reads 255); (ri5) "half the design's (the user's
+screenshot: the top arc 151 px for the design's 301.5) - the arcs 181 x 183 px" -> "half the design's, as before
+(the user's answer for Tile 3) - the tile 166 x 170 px, the arcs 154.7 x 156.7 px"; (ri6) "THE SOFT SHADOW IS THE
+APPROVED ONE: ... the shapes' own cover ... so the arcs' at 80 % of that, as in Figma" -> "..., UNDER THE NUMBER ONLY
+(Tile 3): ... the number's own cover ... - the arcs add nothing to it"; (ri7) "ON WHITE PAPER THE NUMBER AND THE ARCS
+HAVE A DARK EDGE" -> "THE NUMBER HAS A DARK EDGE, THE ARCS NONE (Tile 3)" (arcs > 0.999). NEW - (ri6) the arcs have
+no shadow (+ control: the number's does); (ri8) the outline white, at most 179, only inside the fills, 0.495 of the
+3-unit stroke kept, the arcs' ink = the fills' (+ control: the whole stroke reaches 716 px outside); (ri9) "45°"
+inked within 1 px of Figma's render (+ control: re-centred it would sit 8 px left), and its layout within 0.3 units
+of Figma's glyph box (134.80,147.39 92.75 x 47.56 against 134.75,147.41 92.69 x 47.38) (+ control: Qt's own line puts
+it 1.07 high). RED RUN 9 (marked, reverted, grep 0): 9a arcs 80 % -> (ri4) 203; 9b the whole stroke kept -> (ri8) 716
+px outside, 0.997 kept; 9c a shadow under the arcs -> (ri6) arcs-no-shadow and (ri7) 0.521; 9d Qt's leading ->
+(ri9) layout off 1.06 (the pixel check alone still passed: why the layout check exists). One keysview run had (tt1)
+(tooltips) fail; the next run of the same exe passed 72/72 while the harness logged 7 foreground losses to Chrome
+and Weasis - tooltips show only in the active window; the failing run's stderr was not kept. QUICK CHECK: keysview
+72/72, batchd 68/68, trial 126/126, stagemode 124/124, playback 33/33; all Release targets 0 errors.
+GATE T3 (the main tree - the user's app closed - on 6308d6c1e + Tile 3, 2825 s; logs fullgate_T3*): RELEASE every
+family green - Lifecycle 1556 (E2's 1547 + the 9 new (ri) checks), Camera 335, Brush Library 187, Size Lock 170,
+Edge Lock 74, Dev Recorder 46, Quick Shape 19, Pixel Lock 13, Brush Lock 3. DEBUG green but three families, each a
+check that needs the keyboard or the active window, while the harness logged the test window losing the foreground
+(Weasis, Chrome; 30 times in Lifecycle): Quick Shape 3/19 ("button 'Triangle' missing" ...; its stderr: the window
+lost the foreground 4.9 s in, and a pending QuickShape needs focus), Dev Recorder 45/46 ("Ctrl+Shift+R stops the
+recording from inside the modal"), Lifecycle 1553/1556 ((aw) the zoom field's keys, (ax) the volume popup's focus -
+the two that failed in E2's Debug run too - and (cx10) the Quick Move note, a tooltip, shown only in the active
+window). None touches the indicator. RE-RUN of the three Debug families alone, the same exes
+(fullgate_T3_rerunDebug): Quick Shape 19/19, Dev Recorder 46/46, Lifecycle 1556/1556 (1 and 2 foreground losses,
+none in a focus check). HASHES: sha_T3_gate.txt (the 6 files: DrawingCanvas.h / .cpp, ProjectLifecycleTest.cpp,
+resources.qrc, the two SVGs; rotation_arcs.svg deleted), written after the gate, no source newer than the Release
+exe; sha_T3_docs.txt (HANDOFF.md).
+EXE: app/build/Release/SankoTV.exe built Nov 15 2026 16:21:52 (file 16:22:12, 29859840 bytes), git 6308d6c1e+dirty,
+sha256 d2407fa833cf24de...
+HAND TEST: Documents\SankoTV-Design\handtest_T3_rotation_tile3.md; copy "TEST COPY - small pirate, Tile 3"
+(C:\SankoTV-TestCopies; the original's hash equal to origB_after.txt before and after). Commit only after it passes.
+BATCH E: the Figma frame E-1 next (the trial report's E: ease on the line, Grow all / start the move here, scene
+colours, the stage background colour), then STOP for the user's approval - nothing of E is built.
+
+## STATUS 2026-11-15 (afternoon): THE ENTER HAND TEST FAILED (ALT WAS HELD); ALT+ENTER NOW LANDS AN OPEN BOX - BUILT; HAND TEST E2 PASSED, COMMITTED 6308d6c1e (SEE ABOVE); ROTATION TILE 3 STOPPED THEN, ANSWERED AND BUILT (SEE ABOVE)
 THE ENTER HAND TEST (Dev Recorder 20261115-133012, 868 s, the only session after 12:38; system.txt git e697a2288+dirty,
 built Nov 15 2026 12:38:52 - the E1 exe; the copy "TEST COPY - small pirate, Enter" - the exit dialog "Save changes to
 "TEST COPY - small pirate, Enter" before exiting?" - closed with Discard). The user: their steps 3-8 (= the list's 1-6)
