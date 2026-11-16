@@ -15103,6 +15103,30 @@ void runCompactBarPass(const QString &scratch)
 // Script Editor's indicator; r8 the second copy rewrites only what changed.
 #include "ProjectRecovery.h"
 
+// WAITING FOR A STROKE TO LAND, NOT FOR A FIXED TIME (2026-11-16). The
+// recovery checks waited a fixed 700 ms (900 ms at 4K) after a stroke's
+// release, then asked for a copy. A stroke's commit is asynchronous: the
+// canvas holds its input until the commit lands, and a copy asked for while
+// it holds is put off for the retry. In Debug the commit could still be
+// pending at 700 ms, so gate E5's (r8) read the previous copy's list - a
+// check that depended on timing. This waits, in 10 ms steps, until the
+// canvas and the page hold nothing, no copy is running and none is waiting
+// for its retry; after 30 s it gives up and returns false, and the pass's
+// "every wait settled" check names where.
+static bool settleForRecovery(MainWindow &window, StoryboardPage *page)
+{
+    auto quiet = [&window, page] {
+        auto *canvas = window.findChild<DrawingCanvas *>();
+        return !(canvas && canvas->inputHeld()) && !(page && page->actionInProgress())
+            && !window.recoveryInFlightForTest() && !window.recoveryPendingForTest();
+    };
+    QElapsedTimer clock;
+    clock.start();
+    while (!quiet() && clock.elapsed() < 30000)
+        pump(10);
+    return quiet();
+}
+
 void runRecoveryPass(const QString &scratch)
 {
     using namespace workspace;
@@ -15194,7 +15218,18 @@ void runRecoveryPass(const QString &scratch)
     // brush's width - and (r8) and the crash state read copies never made.)
     int strokes = 0;
     QString strokeNote; // what the canvas did with the last stroke
-    auto paint = [&window, &strokes, &strokeNote, &r] {
+    // Every wait for the page to settle (settleForRecovery), counted; the
+    // ones that never settled, by where - checked at the end of the pass.
+    int settles = 0;
+    QStringList unsettled;
+    auto settle = [&window, &r, &settles, &unsettled](const QString &where) {
+        ++settles;
+        const bool ok = settleForRecovery(window, r.storyboard);
+        if (!ok)
+            unsettled << where;
+        return ok;
+    };
+    auto paint = [&window, &strokes, &strokeNote, &r, &settle] {
         auto *canvas = window.findChild<DrawingCanvas *>();
         if (!canvas)
             return;
@@ -15209,11 +15244,39 @@ void runRecoveryPass(const QString &scratch)
             sendMouse(canvas, QEvent::MouseMove, t.map(QPointF(100 + i * 90, y + i * 2)), Qt::LeftButton);
         const int ink = canvas->previewInkPixelsForTest();
         sendMouse(canvas, QEvent::MouseButtonRelease, t.map(QPointF(820, y + 16)), Qt::LeftButton);
-        pump(700);
+        const bool settled = settle(QStringLiteral("after stroke %1").arg(strokes));
         strokeNote = QStringLiteral("stroke %1 at y %2: commit pending before %3, preview up %4, after the "
-                                    "press editing %5 '%6', inked %7 px, tool %8")
+                                    "press editing %5 '%6', inked %7 px, tool %8, settled %9")
                          .arg(strokes).arg(y).arg(pendingBefore).arg(previewUp).arg(editing).arg(what)
-                         .arg(ink).arg(int(canvas->tool()));
+                         .arg(ink).arg(int(canvas->tool())).arg(settled);
+    };
+    // A COPY REQUEST, RECORDED (2026-11-16): what the page was doing when the
+    // tick was asked for, and whether it was put off. fireRecoveryTickForTest()
+    // answers only "a copy was written"; a tick put off for the retry (input
+    // held, the page busy) or refused (a copy still running) answers false
+    // too, and leaves lastRecoveryWrittenForTest() at the copy before - which
+    // is how gate E5's (r8) read 9 files for its second copy.
+    struct Tick {
+        bool held = false, busy = false, running = false, putOff = false, wrote = false;
+    };
+    auto tick = [&window, &r] {
+        Tick k;
+        auto *canvas = window.findChild<DrawingCanvas *>();
+        k.held = canvas && canvas->inputHeld();
+        k.busy = r.storyboard && r.storyboard->actionInProgress();
+        k.running = window.recoveryInFlightForTest();
+        k.wrote = window.fireRecoveryTickForTest();
+        k.putOff = window.recoveryPendingForTest();
+        return k;
+    };
+    // The tick reached the writer at once: nothing held, the page free, no
+    // copy running, nothing put off.
+    auto reached = [](const Tick &k) { return !k.held && !k.busy && !k.running && !k.putOff; };
+    // ...and the copy it started was written.
+    auto straightAway = [&reached](const Tick &k) { return reached(k) && k.wrote; };
+    auto tickNote = [](const Tick &k) {
+        return QStringLiteral("held %1 busy %2 copy running %3 put off %4 wrote %5")
+            .arg(k.held).arg(k.busy).arg(k.running).arg(k.putOff).arg(k.wrote);
     };
     auto save = [&window](const QString &path) {
         const bool ok = window.saveProjectForTest(path);
@@ -15322,38 +15385,61 @@ void runRecoveryPass(const QString &scratch)
     // the next press only returns to drawing (batch 1's rule): the stroke
     // never lands, nothing is unsaved, and no copy is written - which is how
     // the first draft of this check misread a copy that never ran.
+    // Each copy request is recorded (tick): all three must reach the writer
+    // at once and write. A tick put off or refused writes nothing, and the
+    // list read after it is the copy before's (gate E5, Debug: 9 files).
     clickThumb(r, 0);
     paint();
     const QString noteA = strokeNote;
     const bool dirtyA = window.isDirty();
-    const bool wroteA = window.fireRecoveryTickForTest();
+    const Tick tickA = tick();
     const int countA = window.lastRecoveryWrittenForTest().size();
     const Stamps afterA = stamps(copyAssets);
     clickThumb(r, 1);
     paint();
-    const bool wroteB = window.fireRecoveryTickForTest();
+    const QString noteB = strokeNote;
+    const Tick tickB = tick();
     const QStringList writtenB = bare(window.lastRecoveryWrittenForTest());
     const QStringList touchedB = touched(afterA, copyAssets);
     const Stamps afterB = stamps(copyAssets);
     // Control: nothing changed since the second copy, so a third writes no image.
-    const bool wroteC = window.fireRecoveryTickForTest();
+    const bool settledC = settle(QStringLiteral("before (r8)'s third copy"));
+    const Tick tickC = tick();
     const int countC = window.lastRecoveryWrittenForTest().size();
     const QStringList touchedC = touched(afterB, copyAssets);
     QStringList expectedB{nameOf(1, 1), nameOf(1, -1)};
     expectedB.sort();
     check(QStringLiteral("(r8) THE SECOND COPY REWRITES ONLY THE CHANGED LAYER'S FILE AND ITS FLATTEN: "
+                         "each copy asked for ran straight away (not put off, not refused) and wrote; "
                          "the first copy after a Save wrote all 9, the second exactly panel 2's layer "
                          "and flatten (the other 7 files' times unchanged), and no .part file is left"),
-          dirtyA && wroteA && countA == 9 && afterA.size() == 9 && wroteB && writtenB == expectedB
-              && touchedB == expectedB && parts(copyAssets) == 0,
-          QStringLiteral("dirty %1 first wrote %2 (%3 images, %4 on disk) second [%5] touched [%6]; %7")
-              .arg(dirtyA).arg(wroteA).arg(countA).arg(afterA.size())
-              .arg(writtenB.join(QLatin1Char(' ')), touchedB.join(QLatin1Char(' ')), noteA));
-    check(QStringLiteral("(r8) control: a third copy with nothing changed since the second writes its "
-                         "manifest and no image, and touches no image file"),
-          wroteC && countC == 0 && touchedC.isEmpty(),
-          QStringLiteral("wrote %1 images %2 touched [%3]").arg(wroteC).arg(countC)
+          dirtyA && straightAway(tickA) && countA == 9 && afterA.size() == 9 && straightAway(tickB)
+              && writtenB == expectedB && touchedB == expectedB && parts(copyAssets) == 0,
+          QStringLiteral("dirty %1 first (%2) %3 images, %4 on disk; second (%5) [%6] touched [%7]; %8; %9")
+              .arg(dirtyA).arg(tickNote(tickA)).arg(countA).arg(afterA.size())
+              .arg(tickNote(tickB), writtenB.join(QLatin1Char(' ')), touchedB.join(QLatin1Char(' ')),
+                   noteA, noteB));
+    check(QStringLiteral("(r8) control: a third copy with nothing changed since the second, asked for "
+                         "once the page settled, runs straight away, writes its manifest and no image, "
+                         "and touches no image file"),
+          settledC && straightAway(tickC) && countC == 0 && touchedC.isEmpty(),
+          QStringLiteral("settled %1 (%2) images %3 touched [%4]").arg(settledC).arg(tickNote(tickC)).arg(countC)
               .arg(touchedC.join(QLatin1Char(' '))));
+    // Control of the record: a tick asked for while a copy is still running
+    // (held at its start) is recorded as refused, writes nothing, and (r8)'s
+    // measure does not count it as run.
+    {
+        window.setRecoveryHoldForTest(true);
+        const bool heldStarted = window.startRecoveryTickForTest();
+        const Tick refused = tick();
+        window.setRecoveryHoldForTest(false);
+        const bool finished = window.waitForRecoveryCopyForTest(30000);
+        check(QStringLiteral("(r8) control: a tick while a copy is still running is recorded as refused (a "
+                             "copy running, nothing written) and (r8)'s measure does not count it as run"),
+              heldStarted && refused.running && !refused.wrote && !straightAway(refused) && finished,
+              QStringLiteral("held copy started %1; the tick: %2; the held copy finished %3")
+                  .arg(heldStarted).arg(tickNote(refused)).arg(finished));
+    }
 
     // --- (r2) a writer that fails at the last step ---------------------------------
     const QByteArray manifestBefore = bytesOf(copy);
@@ -15361,7 +15447,10 @@ void runRecoveryPass(const QString &scratch)
     window.setRecoveryFailAtManifestForTest(true);
     clickThumb(r, 2);
     paint();
-    const bool failed = !window.fireRecoveryTickForTest();
+    // Recorded: a tick put off or refused writes nothing too, and would pass
+    // for the writer failing - so it must have reached the writer.
+    const Tick failing = tick();
+    const bool failed = !failing.wrote;
     window.setRecoveryFailAtManifestForTest(false);
     int present = 0;
     for (const QString &n : namedBefore)
@@ -15373,10 +15462,11 @@ void runRecoveryPass(const QString &scratch)
     check(QStringLiteral("(r2) A WRITER THAT FAILS AT THE LAST STEP LEAVES THE PREVIOUS COPY WHOLE: its "
                          "manifest byte-identical, every file it names present, no .part left, and "
                          "it loads with its 3 panels"),
-          failed && bytesOf(copy) == manifestBefore && present == namedBefore.size() && namedBefore.size() == 9
-              && parts(copyAssets) == 0 && loads,
-          QStringLiteral("failed %1 same %2 present %3 of %4 parts %5 loads %6").arg(failed)
-              .arg(bytesOf(copy) == manifestBefore).arg(present).arg(namedBefore.size()).arg(parts(copyAssets)).arg(loads));
+          reached(failing) && failed && bytesOf(copy) == manifestBefore && present == namedBefore.size()
+              && namedBefore.size() == 9 && parts(copyAssets) == 0 && loads,
+          QStringLiteral("the tick (%1) failed %2 same %3 present %4 of %5 parts %6 loads %7").arg(tickNote(failing))
+              .arg(failed).arg(bytesOf(copy) == manifestBefore).arg(present).arg(namedBefore.size())
+              .arg(parts(copyAssets)).arg(loads));
     check(QStringLiteral("(r2) control: with the step working again the next tick writes a new manifest"),
           window.fireRecoveryTickForTest() && bytesOf(copy) != manifestBefore);
 
@@ -15392,21 +15482,31 @@ void runRecoveryPass(const QString &scratch)
         sendMouse(canvas, QEvent::MouseMove, t.map(QPointF(400 + i * 20, 300 + i * 12)), Qt::LeftButton);
     pump(100);
     const bool heldSeen = canvas->inputHeld();
-    const bool duringHold = window.fireRecoveryTickForTest();
-    const bool pending = window.recoveryPendingForTest();
+    const Tick during = tick();
     const bool untouched = touched(beforeHold, copyAssets).isEmpty() && bytesOf(copy) == manifestHold;
     sendMouse(canvas, QEvent::MouseButtonRelease, t.map(QPointF(520, 372)), Qt::LeftButton);
-    pump(700);
+    // Not a fixed wait: until the stroke has landed and the put-off copy has
+    // had its retry (the retry timer's tick, once the page is free), which
+    // writes the copy.
+    const bool settledAfter = settle(QStringLiteral("after (r6)'s held stroke"));
     const bool freeAfter = !canvas->inputHeld();
-    const bool afterHold = window.fireRecoveryTickForTest();
+    const bool retried = bytesOf(copy) != manifestHold;
+    const bool strokeInCopy = same(decoded(copyAssets + QStringLiteral("/") + nameOf(2, 1)), layerOf(2));
+    const Tick after = tick();
     check(QStringLiteral("(r6) NOTHING IS WRITTEN DURING A HELD STROKE: the canvas reports the hold, the "
-                         "tick writes nothing and waits; after the release the next tick writes the "
-                         "copy with the held stroke's pixels in panel 3's layer"),
-          freeBefore && heldSeen && !duringHold && pending && untouched && freeAfter && afterHold
-              && !window.recoveryPendingForTest() && bytesOf(copy) != manifestHold
+                         "tick writes nothing and is put off; after the release, once the stroke has "
+                         "landed, the put-off copy's retry writes the copy with the held stroke's pixels "
+                         "in panel 3's layer, and the next tick runs straight away"),
+          freeBefore && heldSeen && during.held && during.putOff && !during.wrote && untouched && settledAfter
+              && freeAfter && retried && strokeInCopy && straightAway(after) && !window.recoveryPendingForTest()
               && same(decoded(copyAssets + QStringLiteral("/") + nameOf(2, 1)), layerOf(2)),
-          QStringLiteral("free %1 held %2 during %3 pending %4 untouched %5 free after %6 after %7")
-              .arg(freeBefore).arg(heldSeen).arg(duringHold).arg(pending).arg(untouched).arg(freeAfter).arg(afterHold));
+          QStringLiteral("free %1 held %2 during (%3) untouched %4 settled %5 free after %6 retried %7 stroke in "
+                         "copy %8 after (%9)")
+              .arg(freeBefore).arg(heldSeen).arg(tickNote(during)).arg(untouched).arg(settledAfter)
+              .arg(freeAfter).arg(retried).arg(strokeInCopy).arg(tickNote(after)));
+    check(QStringLiteral("(r8) control: the tick taken during (r6)'s held stroke is recorded as put off "
+                         "and (r8)'s measure does not count it as run"),
+          during.held && during.putOff && !straightAway(during), tickNote(during));
 
     // --- (r3) the lock -------------------------------------------------------------
     const QJsonObject lock = manifest(ProjectRecovery::lockPathFor(proj));
@@ -15746,6 +15846,11 @@ void runRecoveryPass(const QString &scratch)
     ProjectRecovery::discardCopy(proj);
     ProjectRecovery::removeLock(proj);
     window.markCleanForTest();
+    check(QStringLiteral("(r) EVERY WAIT FOR A STROKE TO LAND SETTLED within 30 s: the canvas and the page "
+                         "free, no copy running and none put off - all 11 (after each of the 9 strokes, "
+                         "before (r8)'s third copy and after (r6)'s held stroke)"),
+          settles == 11 && unsettled.isEmpty(),
+          QStringLiteral("%1 waits; never settled: [%2]").arg(settles).arg(unsettled.join(QStringLiteral(", "))));
 }
 
 // ---- (r9) THE RECOVERY COPY RUNS OFF THE UI THREAD (2026-11-05) -----------------
@@ -15783,7 +15888,8 @@ void runRecoveryOffThreadPass(const QString &scratch)
         pump(200);
     }
     int strokes = 0;
-    auto paint = [&window, &strokes] {
+    QStringList unsettled; // see settleForRecovery: not a fixed wait
+    auto paint = [&window, &strokes, &r, &unsettled] {
         auto *canvas = window.findChild<DrawingCanvas *>();
         if (!canvas)
             return;
@@ -15793,7 +15899,8 @@ void runRecoveryOffThreadPass(const QString &scratch)
         for (int i = 1; i <= 8; ++i)
             sendMouse(canvas, QEvent::MouseMove, t.map(QPointF(400 + i * 360, y + i * 8)), Qt::LeftButton);
         sendMouse(canvas, QEvent::MouseButtonRelease, t.map(QPointF(3280, y + 64)), Qt::LeftButton);
-        pump(900);
+        if (!settleForRecovery(window, r.storyboard))
+            unsettled << QStringLiteral("after stroke %1").arg(strokes);
     };
     auto count = [](const QString &folder, const QString &pattern) {
         return int(QDir(folder).entryList({pattern}, QDir::Files).size());
@@ -15893,6 +16000,10 @@ void runRecoveryOffThreadPass(const QString &scratch)
           startedM && doneM && imagesM == 18 && uiStepsM == 0 && savedRef && saveImages == 18,
           QStringLiteral("started %1 done %2 images %3 ui steps %4 save %5 images %6").arg(startedM).arg(doneM)
               .arg(imagesM).arg(uiStepsM).arg(savedRef).arg(saveImages));
+    check(QStringLiteral("(r9) EVERY WAIT FOR A STROKE TO LAND SETTLED within 30 s: after each of the 3 "
+                         "strokes, the canvas and the page free, no copy running and none put off"),
+          strokes == 3 && unsettled.isEmpty(),
+          QStringLiteral("%1 strokes; never settled: [%2]").arg(strokes).arg(unsettled.join(QStringLiteral(", "))));
 }
 
 // ---- (r10) THE RECOVERY INTERVAL SURVIVES A RELAUNCH (2026-11-05) ---------------
