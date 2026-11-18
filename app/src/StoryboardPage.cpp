@@ -7513,6 +7513,63 @@ void StoryboardPage::addSceneCameraEntries(QMenu *menu, int sceneIndex)
     cont->setObjectName(QStringLiteral("cameraContinue"));
 }
 
+namespace {
+// THE SCENE COLOUR MENU'S ROWS (2026-11-18, the user's Figma 619:851, drawn at 1.5x): the
+// tick in its own column at the left, as on every timeline menu; each swatch, 12 px, where
+// "Auto (...)" starts; its name 7 px after it; "Custom..." lined up with the swatches. Qt
+// draws an action's icon in the tick's column - where the swatches sat, against the
+// border - so these rows carry no icon: the menu draws each one's swatch and name itself,
+// from the action's "sceneSwatch" colour, over the row Qt drew (its ground, highlight and
+// tick kept). The colours are kSpeedMenuSheet's, which the menu wears.
+class SceneColourMenu : public QMenu
+{
+public:
+    using QMenu::QMenu;
+    // Where every row's text starts in the item: kSpeedMenuSheet's padding-left 24 and its
+    // 12 px indicator (the tick's column), which Qt keeps for a menu with checkable rows.
+    static constexpr int kTextX = 24 + 12;
+    static constexpr int kSwatch = 12; // 18 / 1.5
+    static constexpr int kNameGap = 7; // (64 - 54) / 1.5, the swatch to its name
+    // The width a row of this name needs (Qt sizes it by the name alone).
+    static int rowWidth(const QFontMetrics &fm, const QString &name)
+    {
+        return kTextX + kSwatch + kNameGap + fm.horizontalAdvance(name) + 18; // padding-right 18
+    }
+
+protected:
+    void paintEvent(QPaintEvent *event) override
+    {
+        QMenu::paintEvent(event);
+        QPainter p(this);
+        QFont f = font();
+        f.setPixelSize(11); // QMenu::item's font-size
+        p.setFont(f);
+        for (QAction *a : actions()) {
+            const QColor swatch = a->property("sceneSwatch").value<QColor>();
+            if (!swatch.isValid())
+                continue;
+            const QRect r = actionGeometry(a);
+            if (!r.intersects(event->rect()))
+                continue;
+            const bool hot = activeAction() == a && a->isEnabled();
+            // Qt's text, at kTextX, under the row's own ground; its tick (left of it) kept.
+            const int from = r.left() + kTextX - 2;
+            p.fillRect(QRect(from, r.top(), r.right() - from + 1, r.height()),
+                       hot ? QColor(0x26, 0x26, 0x26) : QColor(0x16, 0x16, 0x16));
+            const QRect sw(r.left() + kTextX, r.top() + (r.height() - kSwatch) / 2, kSwatch, kSwatch);
+            p.fillRect(sw, swatch);
+            p.setPen(!a->isEnabled() ? QColor(0x5c, 0x5c, 0x62)
+                     : a->isChecked() ? QColor(0x7c, 0x6e, 0xf6)
+                     : hot            ? QColor(Qt::white)
+                                      : QColor(0xcc, 0xcc, 0xcc));
+            const int nameX = sw.left() + kSwatch + kNameGap;
+            p.drawText(QRect(nameX, r.top(), qMax(0, r.right() - nameX), r.height()),
+                       Qt::AlignVCenter | Qt::AlignLeft, a->text());
+        }
+    }
+};
+} // namespace
+
 void StoryboardPage::onSceneMenu(int sceneIndex, const QPoint &globalPos)
 {
     const Scene *scene = m_scenes.value(sceneIndex);
@@ -7565,14 +7622,15 @@ void StoryboardPage::onSceneMenu(int sceneIndex, const QPoint &globalPos)
     }
     { // THE SCENE'S COLOUR (batch E, Figma E-1): Auto (the set's colour at its place), the
       // eight swatches, Custom... - as a layer's Change Layer Color; the choice ticked.
-        QMenu *colors = menu.addMenu(QStringLiteral("Scene Colour"));
+        // Its rows laid out as the user's Figma 619:851 (SceneColourMenu, above).
+        auto *colors = new SceneColourMenu(QStringLiteral("Scene Colour"), &menu);
+        menu.addMenu(colors);
         colors->setObjectName(QStringLiteral("sceneColorMenu"));
         colors->setStyleSheet(menu.styleSheet());
-        auto chip = [](const QColor &c) {
-            QPixmap pm(12, 12);
-            pm.fill(c);
-            return QIcon(pm);
-        };
+        QFont itemFont = colors->font();
+        itemFont.setPixelSize(11);
+        const QFontMetrics itemMetrics(itemFont);
+        int widest = 0;
         QAction *autoAct = colors->addAction(
             QStringLiteral("Auto (%1)").arg(QString::fromLatin1(scenecolor::autoSwatch(sceneIndex).name)));
         autoAct->setObjectName(QStringLiteral("sceneColorAuto"));
@@ -7581,13 +7639,17 @@ void StoryboardPage::onSceneMenu(int sceneIndex, const QPoint &globalPos)
         connect(autoAct, &QAction::triggered, this, [this, sceneIndex] { setSceneColor(sceneIndex, QString()); });
         for (const scenecolor::Swatch &s : scenecolor::kSet) {
             const QString tag = scenecolor::tagOf(QColor(s.rgb));
-            QAction *a = colors->addAction(chip(QColor(s.rgb)), QString::fromLatin1(s.name));
+            QAction *a = colors->addAction(QString::fromLatin1(s.name));
+            a->setProperty("sceneSwatch", QColor(s.rgb)); // drawn by SceneColourMenu, not as an icon
+            widest = qMax(widest, SceneColourMenu::rowWidth(itemMetrics, a->text()));
             a->setObjectName(QStringLiteral("sceneColorSwatch"));
             a->setCheckable(true);
             a->setChecked(scene->colorTag.compare(tag, Qt::CaseInsensitive) == 0);
             connect(a, &QAction::triggered, this, [this, sceneIndex, tag] { setSceneColor(sceneIndex, tag); });
         }
         colors->addSeparator();
+        // Qt sizes each row by its text alone: the swatch rows need their swatch's room too.
+        colors->setMinimumWidth(widest + 2); // + the menu's 1 px border each side
         QAction *custom = colors->addAction(QStringLiteral("Custom..."));
         custom->setObjectName(QStringLiteral("sceneColorCustom"));
         connect(custom, &QAction::triggered, this, [this, sceneIndex] {

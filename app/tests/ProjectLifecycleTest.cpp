@@ -22252,6 +22252,236 @@ void runScenesShotsPass(const QString &scratch)
     r.window.markCleanForTest();
 }
 
+// --- (sm) THE SCENE COLOUR MENU'S ROWS (2026-11-18, the user's Figma 619:851, drawn at 1.5x) -------
+// The tick in its own column at the left; each swatch, 12 px, where "Auto (...)" starts; each name
+// 7 px after its swatch; "Custom..." lined up with the swatches; the same left padding and alignment
+// on every row. Read from the submenu itself, rendered off screen from the menu the timeline opens
+// (and the scene's card).
+void runSceneColourMenuPass(const QString &scratch)
+{
+    using namespace workspace;
+    using dppins::closeTo;
+    out() << "--- (sm) the Scene Colour menu's rows (Figma 619:851) ---" << Qt::endl;
+    const QString dir = scratch + QStringLiteral("/scenecolourmenu");
+    QDir(dir).removeRecursively();
+    const QString project = writeProject(dir, QStringLiteral("Menu"), QSize(960, 540), 24, 2, 1);
+    Rig r(project);
+    check(QStringLiteral("(sm) the workspace opened"), r.ok);
+    if (!r.ok)
+        return;
+    struct Row
+    {
+        QString text;
+        QRect rect;
+        QColor swatch;
+        bool checked = false, icon = false;
+    };
+    QImage shot;
+    QVector<Row> rows;
+    QString trigger, sheet;
+    int menuW = 0;
+    r.storyboard->setClipMenuHookForTest([&](QMenu *m) {
+        rows.clear();
+        shot = QImage();
+        QMenu *colours = m->findChild<QMenu *>(QStringLiteral("sceneColorMenu"));
+        if (!colours)
+            return;
+        colours->ensurePolished();
+        colours->resize(colours->sizeHint().expandedTo(colours->minimumSize()));
+        menuW = colours->width();
+        sheet = colours->styleSheet();
+        shot = colours->grab().toImage();
+        QAction *pick = nullptr;
+        for (QAction *a : colours->actions()) {
+            if (a->isSeparator())
+                continue;
+            rows << Row{a->text(), colours->actionGeometry(a), a->property("sceneSwatch").value<QColor>(),
+                        a->isChecked(), !a->icon().isNull()};
+            if (!trigger.isEmpty() && a->text() == trigger)
+                pick = a;
+        }
+        if (pick)
+            pick->trigger();
+    });
+    const QColor ground(0x16, 0x16, 0x16);
+    auto px = [&](const QImage &img, int x, int y) {
+        const qreal d = img.devicePixelRatio();
+        return img.pixelColor(QPoint(qRound(x * d), qRound(y * d)));
+    };
+    auto inky = [&](const QColor &c) {
+        return qAbs(c.red() - ground.red()) + qAbs(c.green() - ground.green()) + qAbs(c.blue() - ground.blue()) > 90;
+    };
+    // The leftmost / rightmost column of a row band (its middle rows) with a pixel that passes.
+    auto leftmost = [&](const QImage &img, const QRect &row, int from, int to, const std::function<bool(const QColor &)> &ok) {
+        for (int x = from; x < to; ++x)
+            for (int y = row.top() + 2; y <= row.bottom() - 2; ++y)
+                if (ok(px(img, x, y)))
+                    return x;
+        return -1;
+    };
+    auto rightmost = [&](const QImage &img, const QRect &row, int from, int to, const std::function<bool(const QColor &)> &ok) {
+        for (int x = to - 1; x >= from; --x)
+            for (int y = row.top() + 2; y <= row.bottom() - 2; ++y)
+                if (ok(px(img, x, y)))
+                    return x;
+        return -1;
+    };
+    auto isColour = [](const QColor &want) {
+        return [want](const QColor &c) { return closeTo(c, want, 4); };
+    };
+    struct Measured
+    {
+        int autoText = -1, custom = -1;
+        QVector<int> swLeft, swW, swH, nameAt, nameEnd, tick;
+        int autoTick = -1;
+    };
+    auto measure = [&]() {
+        Measured m;
+        for (const Row &row : std::as_const(rows)) {
+            const int l = row.rect.left(), rgt = row.rect.left() + row.rect.width();
+            if (row.text.startsWith(QStringLiteral("Auto"))) {
+                m.autoText = leftmost(shot, row.rect, l + 20, rgt, inky);
+                m.autoTick = leftmost(shot, row.rect, l, l + 20, inky);
+            } else if (row.text == QStringLiteral("Custom...")) {
+                m.custom = leftmost(shot, row.rect, l + 20, rgt, inky);
+            } else if (row.swatch.isValid()) {
+                const int s0 = leftmost(shot, row.rect, l, rgt, isColour(row.swatch));
+                const int s1 = rightmost(shot, row.rect, l, rgt, isColour(row.swatch));
+                int top = -1, bottom = -1;
+                for (int y = row.rect.top(); y <= row.rect.bottom() && s0 >= 0; ++y)
+                    if (closeTo(px(shot, s0 + 6, y), row.swatch, 4)) {
+                        if (top < 0)
+                            top = y;
+                        bottom = y;
+                    }
+                m.swLeft << s0;
+                m.swW << (s0 >= 0 ? s1 - s0 + 1 : 0);
+                m.swH << (top >= 0 ? bottom - top + 1 : 0);
+                m.nameAt << (s1 >= 0 ? leftmost(shot, row.rect, s1 + 1, rgt, inky) : -1);
+                m.nameEnd << rightmost(shot, row.rect, l, rgt, inky);
+                m.tick << leftmost(shot, row.rect, l, l + 20, inky);
+            }
+        }
+        return m;
+    };
+    r.storyboard->openSceneMenuForTest(0);
+    const Measured first = measure();
+    const QVector<Row> firstRows = rows;
+    auto list = [](const QVector<int> &v) {
+        QStringList l;
+        for (int x : v)
+            l << QString::number(x);
+        return l.join(QLatin1Char(','));
+    };
+    bool sameLeft = first.swLeft.size() == 8, sized = first.swLeft.size() == 8, noIcons = true;
+    for (int i = 0; i < first.swLeft.size(); ++i) {
+        sameLeft = sameLeft && first.swLeft.at(i) == first.swLeft.at(0);
+        sized = sized && first.swW.at(i) == 12 && first.swH.at(i) == 12;
+    }
+    for (const Row &row : firstRows)
+        noIcons = noIcons && !row.icon;
+    const int swatchX = first.swLeft.value(0, -1);
+    check(QStringLiteral("(sm1) THE SWATCHES START WHERE \"Auto (Slate)\" STARTS: the eight swatches' left edge is the Auto "
+                         "row's text's (within 1 px), the same on every row, right of the tick's column; each 12 x 12; no "
+                         "row carries an icon (Qt would draw it in the tick's column)"),
+          sameLeft && sized && noIcons && swatchX >= 20 && first.autoText >= 0 && qAbs(swatchX - first.autoText) <= 1,
+          QStringLiteral("Auto's text at %1; swatches at [%2], %3 wide, %4 high; icons %5").arg(first.autoText)
+              .arg(list(first.swLeft), list(first.swW), list(first.swH)).arg(!noIcons));
+    QStringList gapBad;
+    for (int i = 0; i < first.nameAt.size(); ++i) {
+        const int gap = first.nameAt.at(i) - (first.swLeft.at(i) + 12);
+        if (gap < 7 || gap > 8 || first.nameEnd.at(i) >= menuW - 2)
+            gapBad << QStringLiteral("row %1: gap %2, name ends %3 of %4").arg(i + 1).arg(gap).arg(first.nameEnd.at(i)).arg(menuW);
+    }
+    check(QStringLiteral("(sm2) EACH NAME 7 PX AFTER ITS SWATCH: on every swatch row the name's first ink is 7 px after the "
+                         "swatch (8 with a letter's side bearing), and the name ends inside the menu"),
+          first.nameAt.size() == 8 && gapBad.isEmpty(),
+          QStringLiteral("names at [%1]; %2").arg(list(first.nameAt), gapBad.join(QStringLiteral("; "))));
+    check(QStringLiteral("(sm3) \"CUSTOM...\" LINED UP WITH THE SWATCHES: its text's first ink is the swatches' left edge "
+                         "(within 1 px) - the same left padding as Auto's"),
+          first.custom >= 0 && qAbs(first.custom - swatchX) <= 1,
+          QStringLiteral("Custom... at %1, swatches at %2").arg(first.custom).arg(swatchX));
+    // Chosen Teal: the tick moves to Teal's row; Teal's swatch stays put; its name in the accent.
+    trigger = QStringLiteral("Teal");
+    r.storyboard->openSceneMenuForTest(0);
+    trigger.clear();
+    pump(80);
+    r.storyboard->openSceneMenuForTest(0);
+    const Measured teal = measure();
+    int tealRow = -1;
+    for (int i = 0, k = 0; i < rows.size(); ++i)
+        if (rows.at(i).swatch.isValid()) {
+            if (rows.at(i).text == QStringLiteral("Teal"))
+                tealRow = k;
+            ++k;
+        }
+    bool accent = false;
+    if (tealRow >= 0) {
+        const Row &row = rows.at(tealRow + 1); // Auto is row 0
+        for (int x = teal.nameAt.value(tealRow); x >= 0 && x <= teal.nameEnd.value(tealRow) && !accent; ++x)
+            for (int y = row.rect.top(); y <= row.rect.bottom() && !accent; ++y)
+                accent = closeTo(px(shot, x, y), QColor(0x7c, 0x6e, 0xf6), 12);
+    }
+    const bool tickMoved = first.autoTick >= 0 && std::all_of(first.tick.cbegin(), first.tick.cend(), [](int t) { return t < 0; })
+        && teal.autoTick < 0 && tealRow >= 0 && teal.tick.value(tealRow) >= 0 && teal.swLeft.value(tealRow) == swatchX;
+    check(QStringLiteral("(sm4) THE TICK IN ITS OWN COLUMN: on an Auto scene it is in Auto's row, left of the text, and in "
+                         "no swatch row; chosen Teal, it is in Teal's row, Teal's swatch still where the swatches start and "
+                         "its name in the accent, and Auto's row has none"),
+          tickMoved && accent,
+          QStringLiteral("Auto tick %1, swatch rows' ticks [%2]; after Teal: Auto %3, Teal's tick %4 swatch %5, accent %6")
+              .arg(first.autoTick).arg(list(first.tick)).arg(teal.autoTick).arg(teal.tick.value(tealRow))
+              .arg(teal.swLeft.value(tealRow)).arg(accent));
+    r.window.undoActionForTest()->trigger();
+    pump(80);
+    // Control: the old way - a 12 px icon on a checkable action, in a menu with the same style sheet -
+    // puts the swatch in the tick's column, which (sm1) tells apart.
+    int oldSwatch = -1;
+    {
+        QMenu old;
+        old.setStyleSheet(sheet);
+        QPixmap pm(12, 12);
+        pm.fill(QColor(0x4f, 0x8a, 0x85));
+        QAction *a = old.addAction(QIcon(pm), QStringLiteral("Teal"));
+        a->setCheckable(true);
+        old.ensurePolished();
+        old.resize(old.sizeHint());
+        const QImage img = old.grab().toImage();
+        oldSwatch = leftmost(img, old.actionGeometry(a), 0, old.width(), isColour(QColor(0x4f, 0x8a, 0x85)));
+    }
+    check(QStringLiteral("(sm1) control: the old way - the swatch as a 12 px icon - draws it in the tick's column (left of "
+                         "x 20), not where the text starts: the measure tells the two apart"),
+          oldSwatch >= 0 && oldSwatch < 20 && qAbs(oldSwatch - first.autoText) > 1,
+          QStringLiteral("old swatch at %1, Auto's text at %2").arg(oldSwatch).arg(first.autoText));
+    // The scene's card opens the same menu.
+    rows.clear();
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    const QList<QFrame *> cards = r.storyboard->findChildren<QFrame *>(QStringLiteral("sceneCard"));
+    if (!cards.isEmpty()) {
+        const QPoint c = cards.first()->rect().center();
+        QContextMenuEvent ev(QContextMenuEvent::Mouse, c, cards.first()->mapToGlobal(c));
+        QCoreApplication::sendEvent(cards.first(), &ev);
+        pump(60);
+    }
+    int cardSwatches = 0;
+    bool cardIcons = false;
+    for (const Row &row : std::as_const(rows)) {
+        cardSwatches += row.swatch.isValid() ? 1 : 0;
+        cardIcons = cardIcons || row.icon;
+    }
+    const Measured card = measure();
+    check(QStringLiteral("(sm5) WHEREVER IT OPENS: the scene's card opens the same menu - its eight swatch rows drawn the "
+                         "same way, no icon, the swatches where Auto's text starts"),
+          !cards.isEmpty() && cardSwatches == 8 && !cardIcons && card.swLeft.value(0, -1) == swatchX,
+          QStringLiteral("cards %1, swatch rows %2, icons %3, swatches at %4").arg(cards.size()).arg(cardSwatches)
+              .arg(cardIcons).arg(card.swLeft.value(0, -1)));
+    out() << QStringLiteral("  NOTE (sm) the rows are %1 px apart (Figma 619:851: 33 / 1.5 = 22); the menu %2 px wide")
+                 .arg(firstRows.size() > 1 ? firstRows.at(1).rect.top() - firstRows.at(0).rect.top() : 0)
+                 .arg(menuW)
+          << Qt::endl;
+    r.storyboard->setClipMenuHookForTest({});
+    r.window.markCleanForTest();
+}
+
 void runEnterMoveBoxPass(const QString &scratch)
 {
     using namespace workspace;
@@ -29313,11 +29543,12 @@ int main(int argc, char **argv)
         || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("batche")
         || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("scenesshots")) {
         if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("scenesshots")) {
-            // SCENES + SHOTS (Figma 621:716), with the passes whose checks it changed: (aw)'s clip
-            // layout, (ec)'s strip.
+            // SCENES + SHOTS (Figma 621:716) and the Scene Colour menu's rows (619:851), with the
+            // passes whose checks they changed: (aw)'s clip layout, (ec)'s strip.
             runTimelineLookPass(scratch);
             runSceneColoursPass(scratch);
             runScenesShotsPass(scratch);
+            runSceneColourMenuPass(scratch);
         } else if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("batche")) {
             // Batch E (Figma E-1): the eases on the line (and the camera row's own pass, whose
             // key menu now has them in a row).
@@ -29575,6 +29806,7 @@ int main(int argc, char **argv)
     runStageBackgroundPass(scratch);
     runStageBackgroundDepthPass(scratch); // (ed5)
     runScenesShotsPass(scratch);          // (ss) Figma 621:716
+    runSceneColourMenuPass(scratch);      // (sm) Figma 619:851
     runGrowAnyZoomPass(scratch);
     runTrialFixesPass(scratch);
     runKeptArtPass(scratch);

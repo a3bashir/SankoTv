@@ -63,6 +63,19 @@ select by frame, the trim pointer at the cut + control; (ss9) zoom 10, a 7 px sc
 no scene gap) -> 11 of the run's 16 failures: (aw) x2, (ss1)-(ss4), (ss5) x2, (ss6), (ss7), (ss9); (ss8) passed (the
 spans are unchanged in both). FIRST-RUN FINDINGS (read, fixed): (ss5) the playhead (#d5cbff) at the selected clip's
 start - the check moves it into clip 6; (ss4) the stroked line's flat end (73 %) - the ring fill. HASHES: sha_SS_gate.txt.
+(b) THE SCENE COLOUR MENU'S ROWS (Figma 619:851 / 1.5): SceneColourMenu (StoryboardPage.cpp) - the swatch rows carry
+no icon (Qt drew it in the tick's column, against the border) and the menu draws each swatch (12 px) at the row's
+text start (item left + 24 padding + 12 indicator = x 37) and its name 7 px after; the tick in its column (x 7-19);
+Custom... lined up; the menu wide enough for swatch + name; the SCENES row and the card both open it (onSceneMenu).
+NOT the frame's: the text starts at x 37 in the app (24 in the frame - the app's menus keep the 12 px tick column after
+the 24 px padding) and the rows are 24 px apart (22 in the frame) - every timeline menu's; kept as built (the user's
+word, 2026-11-18).
+(b) NEW CHECKS (Lifecycle +7, runSceneColourMenuPass, in the slice "scenesshots"): (sm1) the swatches at Auto's text
+(37), 12 x 12, no icons + control (the old icon at x 1); (sm2) names 7-8 px after; (sm3) Custom... lined up; (sm4) the
+tick moves to Teal, its name accent; (sm5) the card opens the same menu; NOTE rows 24 px, menu 122. Their tags share
+"(sm)" with the stage mode pass's older (sm1)-(sm12) - to be renamed in the next change that touches them.
+(b) RED RUN (the same run): the swatch as an icon again -> 5 of its 16 failures: (sm1)-(sm5). FIRST-RUN FINDING (read,
+fixed): (sm1)/(sm3) Qt's text at 37, not 25 - kTextX 24 + 12. HASHES: sha_SM_gate.txt.
 QUICK CHECK (Release, both changes): scenesshots 58, batche 130, batchd 68, trial 126, stagemode 124, keysview 72, playback 33,
 Camera 336 (after the re-pin; it first failed the 14 pins + mg1).
 GATE SS1 (main tree, 2769 s): EVERY family green in BOTH builds - Lifecycle 1625, Camera 336, Brush Library 187, Size
