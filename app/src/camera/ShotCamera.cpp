@@ -739,15 +739,35 @@ QImage layerKeptMip(const Layer &layer, double scale, QRect *extent)
 // plane's stage, then each drawn layer through layerToStage and
 // `canvasToTarget` (stage px -> the painter's own coordinates), only what
 // falls inside `visible` (the painter's coordinates).
+// THE STAGE BACKGROUND (2026-11-17, batch E's hand test): `paper`, when it is
+// given and not white, is multiplied over the stage once the Background
+// layer is down - before the first other layer, or at the end if there is
+// none - as DrawingCanvas::tintPaper does in the Drawing view, so every
+// drawing stays as drawn. Only the Camera tool's canvas passes it (drawStage);
+// the film, the preview, the strip and every export pass none: white.
 void paintLayers(QPainter &painter, const Panel &panel, const CameraState &state,
-                 const Stage &stage, const QTransform &canvasToTarget, const QRectF &visible)
+                 const Stage &stage, const QTransform &canvasToTarget, const QRectF &visible,
+                 const QColor &paper = QColor())
 {
     painter.save();
     const QTransform base = painter.transform();
     painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
     painter.setTransform(canvasToTarget * base);
-    painter.fillRect(QRectF(QPointF(0, 0), QSizeF(stage.canvas)), Qt::white);
+    const QRectF stageRect(QPointF(0, 0), QSizeF(stage.canvas));
+    painter.fillRect(stageRect, Qt::white);
+    bool paperDone = !paper.isValid() || paper == QColor(Qt::white);
+    auto tintPaper = [&] {
+        painter.save();
+        painter.setTransform(canvasToTarget * base);
+        painter.setOpacity(1.0);
+        painter.setCompositionMode(QPainter::CompositionMode_Multiply);
+        painter.fillRect(stageRect, paper);
+        painter.restore();
+        paperDone = true;
+    };
     for (const Layer &layer : panel.layers) {
+        if (!paperDone && layer.type != QLatin1String("background"))
+            tintPaper();
         if (!panel.layerDrawn(layer))
             continue;
         const double a = panel.effectiveParallax(layer);
@@ -776,6 +796,8 @@ void paintLayers(QPainter &painter, const Panel &panel, const CameraState &state
         painter.setOpacity(panel.layerEffectiveOpacity(layer));
         painter.drawImage(QPointF(src.topLeft()), mip, src);
     }
+    if (!paperDone) // only the Background layer (or none)
+        tintPaper();
     painter.restore();
 }
 
@@ -877,11 +899,11 @@ QImage stageImage(const Panel &panel, const CameraState &state, const Stage &sta
 }
 
 void drawStage(QPainter &painter, const Panel &panel, const CameraState &state,
-               const Stage &stage, const QRectF &visible)
+               const Stage &stage, const QRectF &visible, const QColor &paper)
 {
     if (stage.canvas.isEmpty())
         return;
-    paintLayers(painter, panel, state, stage, QTransform(), visible);
+    paintLayers(painter, panel, state, stage, QTransform(), visible, paper);
 }
 
 QImage shotThumb(const Panel &panel, const CameraState &state, const Stage &stage,

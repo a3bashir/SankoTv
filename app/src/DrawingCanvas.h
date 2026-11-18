@@ -669,6 +669,15 @@ public:
     void setGridStyle(GridStyle style);
     void setGridColor(const QColor &color);
     void setGutterColor(const QColor &color);
+    // THE STAGE BACKGROUND (batch E, Figma E-1; the user's answer: on screen only): the
+    // paper's colour ON THE CANVAS - laid over the white Background layer by multiplying, so
+    // no layer's pixels change - while thumbnails, the strip, the film and every export keep
+    // white paper. A view setting the app keeps, like the gutter's: not in the project, no
+    // undo. The presets and Custom... in View > Stage Background and on the canvas's menu.
+    QColor paperColor() const { return m_paperColor; }
+    void setPaperColor(const QColor &color);
+    void addStageBackgroundMenu(QMenu *parent); // the submenu, wherever it is offered
+    void setPaperColorPickForTest(std::function<QColor(const QColor &)> pick) { m_paperPickForTest = std::move(pick); }
 
 signals:
     // The eraser preset changed (library selection): the Size CTL bar
@@ -752,6 +761,11 @@ private:
     GridStyle m_gridStyle = GridStyle::Square;
     QColor m_gridColor{0x2a, 0x2a, 0x2a};
     QColor m_gutterColor{0x0a, 0x0a, 0x0a};
+    QColor m_paperColor{Qt::white};     // the stage background on the canvas (batch E)
+    std::function<QColor(const QColor &)> m_paperPickForTest; // Custom...'s picker, in the gate
+    // The paper's colour over what is drawn so far in `rect` (the white Background layer and
+    // the paper under it): Multiply, so white becomes the colour. Nothing when it is white.
+    void tintPaper(QPainter &p, const QRectF &rect) const;
     QPixmap m_gridTile;                 // kGridSpacing^2 pattern, style+colour
     bool m_gridTileDirty = true;
 

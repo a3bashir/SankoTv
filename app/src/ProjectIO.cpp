@@ -3,6 +3,7 @@
 #include "ProjectMedia.h"
 #include "camera/ShotCamera.h"
 
+#include <QColor> // a scene's colour, read back (batch E)
 #include <QCoreApplication>
 #include <QDataStream>
 #include <QDir>
@@ -680,6 +681,10 @@ WriteResult projectToJson(const SaveData &data, const QString &projectFilePath,
             sceneObj[QStringLiteral("lengthLocked")] = true;
             anyLocked = true;
         }
+        // The scene's colour (batch E): written only once chosen - Auto is no key at all,
+        // so an older file and an Auto scene read alike.
+        if (!scene->colorTag.isEmpty())
+            sceneObj[QStringLiteral("colorTag")] = scene->colorTag;
 
         QJsonArray panelsArray;
         for (int j = 0; j < scene->panels.size() && !saver.failed(); ++j) {
@@ -1035,6 +1040,9 @@ LoadedProject projectFromJson(const QJsonObject &root, const QString &folder,
             scene->timeOfDay = QStringLiteral("UNSPECIFIED");
         scene->action = sceneObj.value(QStringLiteral("action")).toString();
         scene->lengthLocked = sceneObj.value(QStringLiteral("lengthLocked")).toBool(false); // F1
+        scene->colorTag = sceneObj.value(QStringLiteral("colorTag")).toString(); // batch E: empty = Auto
+        if (!scene->colorTag.isEmpty() && !QColor(scene->colorTag).isValid())
+            scene->colorTag.clear(); // a colour that cannot be read is Auto, not black
 
         const QJsonArray panelsArray = sceneObj.value(QStringLiteral("panels")).toArray();
         fileMargins.append(QVector<QMargins>());

@@ -1,6 +1,289 @@
 # SankoTV — Session Handoff Brief
 
-## STATUS 2026-11-15 (evening): THE ENTER CHANGE COMMITTED (6308d6c1e) AFTER HAND TEST E2; ROTATION TILE 3 BUILT, NOT COMMITTED - WAITING FOR THE USER'S TILE 3 HAND TEST; BATCH E'S FIGMA FRAME E-1 NEXT (STOP FOR APPROVAL)
+## STATUS 2026-11-17 (evening): THE DEPTH-VIEW FIX BUILT (APPROVED), GATE E6 GREEN IN BOTH BUILDS; WAITING FOR THE USER'S RE-TEST E2; NOTHING COMMITTED
+THE USER'S WORD: make the fix as proposed (the Camera tool's depth view applies the stage background after the
+Background layer, as the Drawing view; on the canvas only), a check with a control and a red run, quick check, full
+gate, fresh TEST COPY, exe stamp, a short re-test list (14-17 in both views, plus 5, 9, 15); commit nothing; after
+the re-test passes the user says go on: batch E's commit + E-1's BUILT rename, SCENES + SHOTS, the two Figma designs.
+THE FIX (3 files; +129 -7 with batch E's DrawingCanvas.cpp lines): shotcam::paintLayers takes an optional `paper`
+(default none): when given and not white it is multiplied over the stage (the white fill and the Background layer)
+before the first other layer, or at the end if there is none - as DrawingCanvas::tintPaper. drawStage passes it
+through (ShotCamera.h: `const QColor &paper = QColor()`); DrawingCanvas::paintEvent's depth branch passes
+m_paperColor; renderShot, drawShot, stageImage (the film, preview, strip, exports) pass none. The comment that said
+the depth view stays white is rewritten.
+NEW CHECKS (ed5), runStageBackgroundDepthPass (batche slice + the full run; +5): on dppins' depth panel, the camera
+panned 400 px, the Camera tool (DEPTH on): Dark Grey -> six paper points inside the frame read #4A4A4A and the House's
+and the Sky's markers are as with White; control: with White the six are white, each over 150 px from a marker
+(224), the measure fails White's paper against Dark Grey; ON THE CANVAS ONLY: the strip thumbnail (depth caches
+cleared), the preview's picture (paused on frame 0, grabbed Dark Grey / White / Dark Grey without leaving it, the
+stage-clearing on Play off) and both panels' PNG export are the same with Dark Grey as with White; control: the strip
+and the preview show the House's blue, the export wrote two different panels.
+RED RUN (marked RED RUN ed5, removed, grep 0): the depth branch passing no paper -> exactly (ed5)'s main check failed,
+paper [#ffffff x 6] - the hand test's failure. QUICK CHECK (Release): batche 130/130, batchd 68, trial 126, stagemode
+124, keysview 72, playback 33; Camera 335.
+GATE E6 (main tree, 2744 s): EVERY family green in BOTH builds - Lifecycle 1605 (1600 + 5), Camera 335, Brush
+Library 187, Size Lock 170, Edge Lock 74, Dev Recorder 46, Quick Shape 19, Pixel Lock 13, Brush Lock 3. HASHES:
+sha_E6_gate.txt (the 14 source files: batch E's 12 + ShotCamera.h/.cpp; none newer than the exes), sha_E6_exes.txt.
+HAND-TEST EXE: C:\SankoTv\app\build\Release\SankoTV.exe built Nov 17 2026 19:22:56 (file 19:23:14), git
+fb15b4089+dirty, sha256 30d446c4663f23859b62eb2293b8ea742385316100aea58ca82757c7ccb21172 (Debug 70a2149298626ebe...).
+COPY "TEST COPY - small pirate, E re-test" (C:\SankoTV-TestCopies, 19:15:30; from small_pirate_001, whose hash
+768789328a9e66c6... was unchanged before and after). LIST Documents\SankoTV-Design\handtest_E2_stage_background_depth.md
+(10 steps: White first - the app remembers last test's Custom; Dark Grey in the Drawing view then the depth view
+(JUNGLE ENTRANCE); the canvas menu (Warm White, Custom...) seen in both; strip / playback white, not a step; White
+again; short moves in ISLAND BEACH at ~150 % (small mark) and ~60 % (the line); Grow all + Ctrl+Z in one step; Discard).
+
+## STATUS 2026-11-17: BATCH E HAND TEST READ - STEP 14 FAILED (THE STAGE BACKGROUND IS NOT DRAWN IN THE CAMERA TOOL'S DEPTH VIEW); NOTHING COMMITTED (THE USER'S RULE); FIX PROPOSED (MADE - SEE ABOVE)
+RECORDING 20261117-180254 (the only one after 21:16 on 11-16; 1512 s): system.txt git fb15b4089+dirty, built Nov 16 2026
+21:16:07, Release - the right build; the title bar "SANKO TV — TEST COPY - small pirate, E". Closed by the X, Discard
+(the copy's file still 2026-11-15 19:14:52, no lock; its .recovery copy stays, as designed).
+PER STEP (handtest_E_batch_E.md): 1 not visible in a recording (hover light, hand pointer); 2 PASS ("The move after Key
+1", five eases, Linear marked, the hovered one's name); 3 PASS (Ease In; the mark's curve changed; Ctrl+Z x3 undid);
+4 PASS (Esc at 132 s, no change); 5 NOT TESTED (zoomed 10-707 %, but every tap was on a full-mark move: 752 s, ~52 px);
+6 PASS for the row applying (twice, undone), the last key's greyed row NOT TESTED; 7 PASS (scene 4, panels 1, 3, 4
+amber); 8 PARTLY - the clip's right-click offers "Grow all 2 panels to fit this move" (1118 s) and "Start the move at
+Panel 4 (Panels 2 to 3 keep the base framing)" (1068 s); the amber chip and the CAMERA row's right-click NOT TESTED;
+9 NOT TESTED (Grow all never chosen; the single Grow chosen and undone instead); 10 PASS (three times: 5 -> 6 keys,
+Ctrl+Z "Undo Start Move at Panel 4"); 11 PASS (Slate, Teal, Moss, Ochre, Rust in order; card swatches); 12 PASS (Auto
+(Ochre) ticked, Slate, Custom x2 from the SCENES row, Moss + Custom from the card, Ctrl+Z back to Auto); 13 PASS (the
+Panel Strip without scene colour; not played); 14 FAIL - see below; 15 NOT TESTED (no canvas right-click; Custom...
+tried from View instead: "Stage Background" dialog, OK, Custom ticked); 16 PASS (Ctrl+Z never touched it; thumbnails
+white); 17 NOT DONE (it ends on Custom..., remembered by the app for every project); 18 PASS.
+STEP 14: the View menu showed Light Grey ticked (set before the recording; the app remembers it) - not a fault. Dark
+Grey chosen at 1379.6 s left the canvas PIXEL-IDENTICAL (1377.5 vs 1380.6 s: mean difference 0.00 over 31,200 px;
+positive control, another frame: 37.5) - the whole stage-background part ran in the Camera tool (tool 9 from 904 s)
+with the DEPTH view on, and DrawingCanvas::paintEvent's depth branch (DrawingCanvas.cpp:7711-7716) draws the stage
+through shotcam::drawStage, which never calls tintPaper; only the Drawing-view paths do (7727, 7736, 7755). The first
+screenshot (Brush tool) shows the Light Grey paper, so the tint works there.
+PROPOSED FIX (not made): drawStage takes the stage background (default none) and multiplies it after the Background
+layer as the Drawing view does; only the canvas passes it - the shot preview, the strip, thumbnails and exports keep
+white. Check: in the Camera tool's depth view a paper pixel reads the tint and an art pixel is unchanged; the depth
+thumbnails / renderShot stay white; red run without it. Then a quick check, the gate, a TEST COPY and a short re-test
+of steps 14-17 (plus the untested 5, 9 and 15 if the user wants).
+WAITING (the user's order): batch E's commit + Figma E-1's BUILT rename, then SCENES + SHOTS, then the two Figma
+designs (the SankoTV colour picker; the Panel Strip background) - all after batch E is committed.
+
+## STATUS 2026-11-16 (evening): THE (r8) CHECK FIX COMMITTED ALONE (fb15b4089) AFTER ITS OWN GATE; LIFECYCLE WITH BATCH E 1600/1600 IN BOTH BUILDS - BATCH E WAITS FOR THE USER'S HAND TEST; SCENES + SHOTS PLAN APPROVED, TO BUILD AFTER BATCH E'S COMMIT
+THE USER'S WORD (2026-11-16): (r8)'s fix approved as proposed, its own change, tested first in a scratch copy as for
+(pz5), committed and pushed alone with its own hash list, before batch E; then Lifecycle in both builds with batch E.
+THE FIX (tests only, ProjectLifecycleTest.cpp, 11 hunks, +144 -33): settleForRecovery() - 10 ms steps until the
+canvas and the page hold nothing, no copy is running and none is put off for its retry, up to 30 s - in place of the
+fixed pump(700) after each stroke in runRecoveryPass and pump(900) in runRecoveryOffThreadPass. A tick() record per
+copy request (input held, page busy, a copy running, put off, written): (r8) now requires all three requests to run
+straight away and write; (r2) requires its failing request to have reached the writer (a put-off one would pass for
+the writer failing); (r6) waits for its held stroke to land AND the put-off copy's retry (which writes the copy), then
+requires the next request to run straight away. NEW CHECKS (+4): (r8) control - a request while a copy is held
+running is recorded refused and (r8)'s measure refuses it; (r8) control - (r6)'s request during the held stroke is
+recorded put off and refused by the measure; (r) every wait settled (all 11); (r9) every wait settled (all 3).
+CHANGED TEXTS: (r8) adds "each copy asked for ran straight away (not put off, not refused) and wrote"; its control
+"asked for once the page settled, runs straight away"; (r6) OLD "...the tick writes nothing and waits; after the
+release the next tick writes the copy with the held stroke's pixels in panel 3's layer" NEW "...the tick writes
+nothing and is put off; after the release, once the stroke has landed, the put-off copy's retry writes the copy with
+the held stroke's pixels in panel 3's layer, and the next tick runs straight away"; (r2) text unchanged, condition
+adds reached(). Fixed waits LEFT, read and not leaned on: (r6)'s pump(100) inside a held press; (r4)'s after
+open / save / close (synchronous paths); (r10)'s (the dialog is answered inside its own exec()); (r9)'s during a copy
+held on purpose and in its printed (unchecked) measurement.
+RED RUN (worktree, marked RED RUN, removed, grep 0): a press held over (r8)'s second request -> (r8) FAILED naming it
+"second (held 1 busy 1 copy running 0 put off 1 wrote 0) [the 9 names of copy A]" - gate E5's signature - and its
+control failed too (the retry rewrote panel 2's two files before the third request). Log app/build/_probe/r8/.
+GATE r8 IN THE SCRATCH WORKTREE C:\SankoTV_r8 (detached at 5e349b7a9 + the fix's hunks only, put in with git apply
+--cached + checkout; own CMake configure; the scratchpad fullgate copy differing only in A= and no taskkill line):
+EVERY family green in BOTH builds (2721 s): Lifecycle 1560 (HEAD's 1556 + 4), Camera 335, Brush Library 187, Size
+Lock 170, Edge Lock 74, Dev Recorder 46, Quick Shape 19, Pixel Lock 13, Brush Lock 3. Logs copied to
+app/build/_probe/split/fullgate_r8*. HASHES: sha_r8_gate.txt (the gated file, CRLF and CR-stripped = blob 99d2380d1).
+COMMIT fb15b4089 "Make the recovery checks wait for a stroke to land, not for a fixed time" - ONLY those hunks,
+staged with git apply --cached (the working file untouched), the staged blob = the gated one, stat = ignore-cr stat;
+pushed (origin/master fb15b4089). The worktree removed.
+LIFECYCLE WITH BATCH E (main tree, every target rebuilt in both configs, stamp fb15b4089+dirty): Release 1600/1600
+(762 s), Debug 1600/1600 (1063 s); app/build/_probe/r8/E_Lifecycle_*.txt. Against E5's lists only
+ProjectLifecycleTest.cpp differs (the fix); the 12 batch E files now in sha_E_r8_lifecycle.txt.
+HAND-TEST EXE: C:\SankoTv\app\build\Release\SankoTV.exe built Nov 16 2026 21:16:07 (file 21:16:11), git
+fb15b4089+dirty, sha256 1ab46a84abcb166c1e1ee00f79805130ba2b09802251ac4bef9d8e38a36c8c91 (Debug 94a059dff46b6796...).
+List Documents\SankoTV-Design\handtest_E_batch_E.md on "TEST COPY - small pirate, E" (unchanged since 2026-11-15
+19:14:52). Batch E is committed only after that hand test passes (the user's word).
+NEXT, AFTER BATCH E'S COMMIT: SCENES + SHOTS (621:716) as approved - the app's clip insides kept; the grouping, gaps,
+corners and strip from the design, lined up per the plan (Documents\SankoTV-Design\scenes-shots-plan.md); its own
+change with checks + controls + a red run, the (aw) changes reported old/new, quick check, full gate, fresh TEST COPY,
+exe stamp, short hand-test list; not committed until its hand test passes. Batch E's strip 3 px down: left as is, the
+user judges it in the hand test.
+
+## STATUS 2026-11-16: GATE E5 RESUMED - NOT GREEN: (r8) IS A TIMING-DEPENDENT CHECK; ITS FIX PROPOSED, WAITING FOR THE USER'S APPROVAL; THE SCENES + SHOTS PLAN (621:716) WRITTEN, NOTHING OF IT BUILT
+RESUME: sha_E5_tree.txt (224 files, none added or removed), sha_E5_exes.txt and sha_E5_docs.txt all unchanged;
+resume_E5.sh (18:21:47) ran only the 11 families that had not passed: Release Lifecycle 1596/1596, Camera 335 -
+FAMILIES FAILING (Release): 0; Debug Quick Shape 19, Dev Recorder 46, Edge Lock 74, Size Lock 170, Brush Library 187,
+Pixel Lock 13, Brush Lock 3, Camera 335 green, Lifecycle 1594/1596: (r8) "THE SECOND COPY REWRITES ONLY THE CHANGED
+LAYER'S FILE AND ITS FLATTEN" (second [the 9 names of copy A] touched [panel 2's flatten and layer]) and its control
+"a third copy ... writes its manifest and no image" (wrote 0 images 9 touched []); no foreground loss.
+READ (the user's order: is it batch E?): NOT BATCH E. The ledger's identities (ProjectIO::layerContent - a layer's
+contentKey; flattenContent - the panel's frame and each layer's key, size, opacity, visibility, type, folder) read
+nothing of a scene: the colour lives in Scene::colorTag, Auto is worked out only when painting, ProjectIO's one
+change writes "colorTag" into the manifest; the stage background tints the canvas's own cache, never a layer. THE
+CAUSE IS TIMING, IN THE CHECK: runRecoveryPass's paint() releases a stroke and waits a FIXED pump(700) before the
+tick; the stroke's commit is asynchronous (DrawingCanvas m_paintCommitPending, set at release, cleared when it lands)
+and inputHeld() -> StoryboardPage::actionInProgress() includes it, so in the slower Debug build tick B found the
+commit in flight, returned false and armed the retry (MainWindow::onRecoveryTick); the check then read copy A's
+stale list (lastRecoveryWritten), the retry wrote panel 2's two files a moment later (the "touched" pair), and tick
+C met that retry still running ("one copy at a time" - false). Lifecycle Debug run alone again on the same exe
+(fullgate_E5_rerunDebugLifecycle): 1596/1596, (r8) passing - a pass by luck under the user's rule, NOT counted green.
+PROPOSED FIX (the check only, its own change, NOT MADE - waiting for the user's approval): in runRecoveryPass (and
+the off-thread / prefs passes that share the pattern) paint() waits for the stroke to SETTLE - pump(10) until
+!canvas->inputHeld() && !storyboard->actionInProgress(), a 30 s ceiling that fails the check with "never settled"
+instead of reading on - in place of pump(700); a tick() helper settles, fires and reports whether the tick was
+deferred (recoveryPendingForTest); (r8) asserts its three ticks ran then and there; (r6)'s fixed pump(700) after its
+release the same. Positive control: a tick taken while a press is held is reported deferred and (r8)'s measure
+refuses it. Red run: settle skipped with a held press before tick B -> (r8) fails naming the deferral. Then
+Lifecycle in both builds.
+BATCH E: built, gate E5 green but for (r8); its hand test waits for the gate (the user's word). Found while planning:
+E-1 shows the clip's scene strip 1 px under the top, inset 3; batch E draws it 3 px down, inset 4 (under a selected
+clip's 2 px edge) - reported, not changed.
+SCENES + SHOTS (Figma 621:716, read only; screenshot Documents\SankoTV-Design\figma-scenes-shots\621-716.png): the
+plan, its conflicts and the frame's 1-5 px misalignments in Documents\SankoTV-Design\scenes-shots-plan.md; the open
+question: keep the app's clip insides (number at the top-left, name, pill) - recommended - or the mock's (number under
+the thumbnail, no name, no pill). Nothing of it built (the user's word: after batch E's commit and the plan's
+approval).
+
+## STATUS 2026-11-15 (night): TILE 3 COMMITTED (5e349b7a9) AFTER ITS HAND TEST; BATCH E (E-1 APPROVED) BUILT, NOT COMMITTED - WAITING FOR THE USER'S E HAND TEST
+TILE 3'S HAND TEST (Dev Recorder 20261115-181715, 291 s, the only session after 16:21; system.txt git 6308d6c1e+dirty,
+built Nov 15 2026 16:21:52; title bar "SANKO TV — TEST COPY - small pirate, Tile 3"; closed with Discard; a Ctrl+S at
+112.7 s saved the disposable copy). The user: "all steps looked right". handtest_T3_rotation_tile3.md: 1 PASS ("0°" with
+R held at 37.0 s, gone at 36.0 and after); 2 PASS (12°, 44°, 88°, -25°, 76°, 161° upright, the arcs turning;
+straightened with Shift+R - Reset Rotation - not Ctrl+0); 3 PASS on white paper (193.5-196 s) and mid-grey artwork
+(89, 113, 157 s); the dark case only over the black ink lines (the outline reads on them) - no dark patch painted
+(the strokes at 97-110 s were undone at once, R not yet held at their presses); 4 PASS. COMMITTED AND PUSHED 5e349b7a9
+"The rotation indicator as the user's Tile 3: arcs with an inside outline, the number's shadow alone" - the 7 files
+of sha_T3_gate.txt + sha_T3_docs.txt and the removal of rotation_arcs.svg; staged blobs == the gated files
+CR-stripped; --stat == --ignore-cr-at-eol --stat (8 files, +472 -123); git status clean.
+BATCH E, E-1 (Figma 617:702) APPROVED with the user's answers: 1. the five eases in a popover on the line and in a
+row in the key's menu; a small mark from 16 to 40 px, the line itself under 16 px; 2. Grow all and Start the move here,
+both, in the chip's, the CAMERA row's and the clip's menus; 3. the eight muted scene colours in order, automatic, in
+the three places, Auto / the swatches / Custom... in the scene's menu; 4. the stage background A, on screen only,
+presets White, Warm White, Light Grey, Mid Grey, Dark Grey, Charcoal and Custom..., in View > Stage Background and on
+the canvas's right-click. ICON LICENCE: no icon file added - the ease curves, the swatches and the chips are painted
+(the check has nothing to scan).
+E-a EASES ON THE LINE (AnimaticTimeline, AnimaticPage, StoryboardPage): CameraSegment gains smallMark (16-40 px, a
+12 x 10 pill - not `small`: windows.h's macro) and lineOnly (under 16); easeMarkRect / easeMarkAt; a press on a mark
+(keys win) emits cameraEaseMarkClicked(scene, key, the mark's global rect), relayed by AnimaticPage; hover lights the
+mark's edge (#9787FF at 50 %, the clips' hover) with the hand. StoryboardPage::onCameraEaseMark opens EasePopover
+(Qt::Popup, #161616, #2A2A2A edge, radius 6; Esc closes; title "The move after Key N", or "The CAMERA track is
+locked." with the buttons greyed) above the mark (below at the screen's top). EaseChoiceRow / EaseChoiceButton (shared
+with the key's menu; curves by AnimaticTimeline::paintEaseCurve; the move's own #302A48 with a #9787FF edge, curve
+white; the popover names the hovered or own ease): one tap applies through cameraSetKeyEase ("Camera Ease", as
+before) and closes. The key's menu: QWidgetAction "cameraKeyEase" - "The move after this key" and the five, outlined -
+in place of the Ease submenu (EaseMenuRow removed); greyed with the reason (the entry's and the row's tooltip).
+E-b GROW ALL / START THE MOVE HERE (StoryboardPage): moveExitsAt - the live keys around the panel's first off-art
+frame (a held framing's open end -1) and the scene's panels whose off-art frames fall in that span;
+growAllToFitText "Grow all N panels to fit this move" (N >= 2); startMoveHereText "Start the move at Panel N (Panels A
+to B keep the base framing)" - N the first panel after the last one left, starting inside the move; growAllToFit: one
+macro "Stage Margin (N panels)", each panel by its own Grow, capped as Grow (grownMargins, now shared with
+growPanelToFit), the box rule as Grow's; startMoveHere: a key at Panel N's first frame with the move's first key's
+framing and ease, "Start Move at Panel N". addMoveFitEntries after the Grow entry in the chip's menu (it now honours
+the menu hook), the CAMERA row's and the clip's; greyed with the reason on a locked SHOTS (Grow all) or CAMERA (Start).
+E-c SCENE COLOURS: Scene::colorTag (StoryboardModel.h; empty = Auto); SceneColors.h (new: the set Slate #5B6E9C, Teal
+#4F8A85, Moss #6E8B52, Ochre #A88B4C, Rust #A3654F, Plum #8C5D88, Steel #6C7D8E, Sand #98856A; autoSwatch by the
+scene's place; colorOf); ProjectIO writes "colorTag" only when chosen and reads an unreadable one as Auto; the SCENES
+row: the block under the colour at 40 %, a 2 px baseline in it (a locked scene keeps its accent); a 3 px strip at
+3-6 px down each clip (under a selected clip's edge, over its thumbnail); the card: a 10 x 10 swatch before "SCENE N";
+the scene's menu (the row's and the card's - the card already opened it): "Scene Colour" - "Auto (Slate)", the eight
+with chips, Custom... (QColorDialog "Scene Color"), the choice ticked; SceneColorCommand "Change Scene Color".
+E-d THE STAGE BACKGROUND (DrawingCanvas; option A): m_paperColor, kept in QSettings canvas/stage/v1/paperColor (no
+undo, not in the project); tintPaper multiplies it over the paper right after the Background layer - in the
+composite cache (or after the live Background layer when that is the active one) and in the direct loop - so white
+becomes the colour and every drawing is drawn over it unchanged; addStageBackgroundMenu (filled as it opens, the
+choice ticked, chips with a #3A3A45 edge) on the canvas's right-click after Gutter Background and in View after
+Camera Move Arrows. LEFT ON WHITE, on purpose: thumbnails, the strip, the film, every export (flattenedImage), the
+Camera tool's depth view (the shot as the camera sees it) and the Eyedropper (the artwork's own colours).
+CHECKS ("batche" slice: runCameraRowPass, runEaseOnLinePass, runCameraAcrossPanelsPass, runGrowAllPass,
+runSceneColoursPass, runTrackLocksPass, runStageBackgroundPass; the new passes in the full run too). CHANGED - (cr.4)
+control's click `click(255); // the row between key 2 and key 3, away from the playhead` -> `click(230)` (255 is the
+move's middle - its ease mark, a button now; the text unchanged); (cr.6) "the key's menu names it (Key 2, 00:00:03:00,
+panel 2) and offers the five eases, its own checked; choosing Ease In is one command" -> "... and shows the five eases
+in a row under \"The move after this key\" (batch E), its own marked; choosing Ease In is one command"; (cr.6) "on the
+scene's last key Ease is disabled - its label just \"Ease\", and \"No move after this key.\" its tooltip, in a menu that
+shows tooltips - and the header says \"last key\"" -> "... the eases' row is disabled - its label just \"The move after
+this key\", and \"No move after this key.\" its tooltip (the entry's and the row's) ..."; its control "... Ease is on,
+with the same label and no tooltip of its own (an action's tooltip is its text when none is set)" -> "... the row is on,
+... (...; the row's none)"; (cr.6) control "choosing the ease the key already has makes no command" and (cr.8) "...the
+key's menu says it is locked and every edit in it is disabled (Copy stays)" - texts unchanged, they read the row; (ax)
+"HIDDEN TRACKS paint nothing ... - and each returns when shown" -> "... (the scene block shown under its colour, batch
+E)": sceneShown == kSceneBlock -> the block under Slate at 40 % within 2 levels. NEW - (ea1)-(ea7) (marks by length +
+drawn; the tap opens the five above the mark; one tap applies and closes; Esc; short moves + the long line's control;
+hover; the lock), (eb1)-(eb4) (offered in the three menus + the single-panel control; Grow all one step each by its
+own + Undo; Start the move at Panel 7 + Undo; the locks), (ec1)-(ec4) (Auto in order in the three places; the menu,
+Teal, Undo, Custom..., cancel; saved / one key; the PNG export byte-identical + the timeline's control), (ed1)-(ed4)
+(the two menus; paper under art in both paths + control; nothing else - layer, picture, PNG, undo, dirty + White's
+control; Custom..., kept + White). RED RUNS (marked, reverted, grep 0): 10a no small mark -> (ea1) and its control;
+10b the tap opens nothing -> (ea2)-(ea5), (ea7) (8 failures); 11a Grow all only the first panel -> (eb2) "Stage Margin
+(1 panels)"; 11b the key a panel early -> (eb3) Panel 6 still leaving; 12a Auto one late -> (ec1), (ec2), its control,
+(ec4)'s control, (ax); 12b not saved -> (ec3) and its control (7); 13a no paper in the cache -> (ed2) cached 0; 13b
+the paper over the art -> (ed2) under the box 0 (ink changed). Found while writing them, the checks' own mistakes,
+fixed: (ec)'s swatches read before the rebuilt cards' deleteLater ran (sendPostedEvents DeferredDelete first); (ed2)
+first expected every pixel multiplied - the design lays the colour UNDER the art, so it now sorts the samples by the
+drawing layer's own alpha (paper / ink / edge skipped). A look at the popover, the key menu's row and the timeline
+(TEMP DIAG, removed) matched E-1.
+QUICK CHECK: all Release targets 0 errors; batche 124/124, keysview 72/72, batchd 68/68, trial 126/126, playback
+33/33, scenelock 60/60; stagemode 124/124 twice running - two earlier runs failed one check each, (cx10) the note's
+tooltip, then (sm7) "THE FILM OVER THE CANVAS ends the session" at its start (Stage mode not on after the button: on 0),
+the second with a foreground loss to Chrome logged at 12.6 s; neither touches batch E; the two clean runs had none.
+GATE E3 (2785 s; logs fullgate_E3*): every family green in both builds BUT Lifecycle 1594/1595 in BOTH - (ed2)
+"under the box 0 (paper 4, ink 0)", the Release run with no foreground loss. Read, not relaxed: the fixture's
+ellipses come from a fixed-seed generator (randIn), so the full run draws other art than the slice; a TEMP DIAG
+(removed) in the full run printed the Move box 879,0 to 1749,950 (centre 1314,475) and every off sample on its left
+edge (x 878, #645DA3 - the accent over the dark paper) or its middle handle (866-890 x 462-486, purple and white),
+the cached path #4A4A4A at all of them - the Move tool's own drawing, the paper right. CHANGED (ed2): "(ed2) ON THE
+CANVAS: Dark Grey #4A4A4A - the paper shows it wherever nothing is drawn, and every drawing is exactly as drawn over it
+(the black and the red block unchanged); so in the Brush's cached path and under the Move tool's box" -> "... and
+under the Move tool's box (the box's own edge, handles and pivot, drawn over everything, left out within 14 px)" - the
+samples within 14 screen px of the box's outline or centre (transformQuadForTest) left out of the Move measure, which
+now also needs over 50 paper and 20 ink samples of its own; NEW control: "the samples left out under the box are,
+without the box (the Brush), the paper and the ink as everywhere else - only the box's own drawing is left out, never
+a wrong paper" (and under a quarter of them). POSITIVE CONTROL: red run 13b again (the paper over the art in the
+direct loop) -> the changed (ed2) still fails; reverted, grep 0. batche 125/125.
+GATE E4 (2775 s; logs fullgate_E4*): every family green in both builds BUT Lifecycle 1595/1596 in BOTH - the changed
+(ed2) passed; its NEW control failed on its own extra bound: "220 left out (156 paper, 42 ink) of 680" against "under
+a quarter" (170). Read: in the full run the box's left edge (x 878) runs down the whole sampled area and at the gate's
+zoom (about 0.45) 14 screen px each side covers some 11 sample columns x 20 rows; the bound was arbitrary - the main
+check's own minimum (over 50 paper and 20 ink samples measured outside the box) is what guarantees the measure.
+CHANGED (the new control): `leftOutIsPaper && leftOut < kindOf.size() / 4`, "... never a wrong paper" -> `leftOutIsPaper`,
+"... never a wrong paper (how many is the box's: the check above measures over 50 paper and 20 ink samples outside
+it)". POSITIVE CONTROL: RED RUN 14 (no paper in the cache) -> the changed control fails (and the main check);
+reverted, grep 0.
+GATE E5 - STOPPED FOR THE NIGHT AT THE USER'S REQUEST (2026-11-15), TO BE FINISHED - NOT RUN AGAIN - TOMORROW.
+Started 21:15:37 (after a full Release rebuild, batche 125/125, markers 0). BUILT: Release 21:17:44 and Debug
+21:19:43, 0 errors each. STOP: at 21:23 only the gate's scheduler (bash fullgate.sh, pid 824) was ended with a TERM
+while Lifecycle Release ran - no test process was killed; that family ran to its end (21:32:34), no further family
+started, nothing was left running. Its log line was written afterwards from its own output (the scheduler could not
+take its exit code: "exit=?"), and a "STOPPED ..." line follows it in fullgate_E5.log. Nothing of the gate writes the
+sources, HANDOFF, C:\SankoTV-TestCopies or the user's projects (scratch under TEMP; settings in a scratch INI - the
+real store is asserted unchanged by Lifecycle).
+RESULTS (logs fullgate_E5.log, fullgate_E5/, fullgate_E5_build_*.log; all kept) - the exes of this build:
+  Release SankoTV.exe built Nov 15 2026 21:17:25 (file 21:17:44, 29899776 bytes), git 5e349b7a9+dirty, sha256
+  de1c38a2af130774b93fd4421046524022269f0aa5a47484fb4ff549cda9e780; Debug SankoTV.exe built 21:19:20 (file
+  21:19:43), sha256 6d4f1842150781d136718f50cca2bb3eab5be0a256ff6fd13b5086d65f896c30; every exe's sha256 in
+  sha_E5_exes.txt (Release SankoProjectLifecycle.exe 773f69218a0afebb...).
+  PASSED (Release): Quick Shape 19/19, Dev Recorder 46/46, Edge Lock 74/74, Size Lock 170/170, Brush Library
+  187/187, Pixel Lock 13/13, Brush Lock 3/3.
+  RAN, DID NOT PASS (Release): Lifecycle 1592/1596 - the four (q) "suppression lock" checks (opening the Brush
+  Settings studio suppresses the floating bars, ...) while its stderr logged 5 foreground losses to "Claude" at 92-164
+  s into the run (21:21-21:22: the user writing the stop request), where (q) runs (line 372 of 1737); in E3 and E4
+  (q) passed in both builds. (ed2), changed for E4, passed. To be run again.
+  DID NOT RUN: Release Camera; all nine Debug families.
+HASHES (written at the stop; the gate's build is newer than every source): sha_E5_tree.txt - all 224 source files
+(app/src, app/tests, app/icons, app/tools, app/CMakeLists.txt, app/resources.qrc; tracked and new; _backups left
+out); sha_E5_gate.txt - batch E's 12 files (AnimaticPage.cpp/.h, AnimaticTimeline.cpp/.h, DrawingCanvas.cpp/.h,
+ProjectIO.cpp, SceneColors.h (new), StoryboardModel.h, StoryboardPage.cpp/.h, ProjectLifecycleTest.cpp);
+sha_E5_exes.txt - every exe in build/Release and build/Debug; sha_E5_docs.txt - HANDOFF.md as at the stop.
+RESUME (tomorrow, from C:\SankoTV, the user's app closed):
+  1. Check, before running anything:  sha256sum -c --quiet app/build/_probe/split/sha_E5_tree.txt  and
+     sha256sum -c --quiet app/build/_probe/split/sha_E5_exes.txt  - both silent; and no source file added or
+     removed. IF ANYTHING CHANGED: tell the user before running anything (their rule).
+  2. Then:  bash app/build/_probe/split/resume_E5.sh  - it does step 1 itself (exit 2 sources, 3 exes, 4 SankoTV.exe
+     open: nothing run), builds nothing, skips every family whose last line is exit=0 (the 7 above), runs Lifecycle
+     and Camera Release and the nine Debug families as the gate does (the window-free beside the windowed), appends
+     to fullgate_E5.log after a "RESUMED" line, and sums each build by each family's LAST line. About 40 minutes.
+  3. Every family green in both builds -> the exe stamp above stands, sha_E5_gate.txt / sha_E5_docs.txt for the commit
+     after the user's hand test (handtest_E_batch_E.md; copy "TEST COPY - small pirate, E", made 2026-11-15, the
+     original's hash unchanged). Commit nothing before it.
+
+## STATUS 2026-11-15 (evening): THE ENTER CHANGE COMMITTED (6308d6c1e) AFTER HAND TEST E2; ROTATION TILE 3 BUILT; ITS HAND TEST PASSED, COMMITTED 5e349b7a9 (SEE ABOVE); BATCH E'S FIGMA FRAME E-1 MADE (617:702) AND APPROVED (SEE ABOVE)
 HAND TEST E2 (Dev Recorder 20261115-153122, 751 s, the only session after 14:11; system.txt git e697a2288+dirty,
 built Nov 15 2026 14:11:56; title bar "SANKO TV — TEST COPY - small pirate, Enter 2"; closed with Discard). The user:
 "all steps looked right". Read from the events, the undo steps' names (the recorder reads "Undo <step>" from the

@@ -23,6 +23,7 @@
 #include "brushlib/BrushSettingsStudio.h"
 #include "brushlib/BrushWidthRatio.h"
 #include "StoryboardModel.h"
+#include "SceneColors.h" // the scenes' colours: their menu and cards (batch E)
 #include "LayerDepthPopover.h"
 #include "LayerFolder.h"
 #include "camera/ShotCamera.h"
@@ -2085,6 +2086,25 @@ private:
     bool m_lock;
 };
 
+// THE SCENE'S COLOUR (batch E, Figma E-1): one undo step, "Change Scene Color", either way
+// (a colour chosen, Auto again).
+class SceneColorCommand : public QUndoCommand
+{
+public:
+    SceneColorCommand(StoryboardPage *page, Scene *scene, const QString &before, const QString &after)
+        : QUndoCommand(QStringLiteral("Change Scene Color")), m_page(page), m_scene(scene), m_before(before),
+          m_after(after)
+    {
+    }
+    void redo() override { m_page->applySceneColorForUndo(m_scene, m_after); }
+    void undo() override { m_page->applySceneColorForUndo(m_scene, m_before); }
+
+private:
+    StoryboardPage *m_page;
+    Scene *m_scene;
+    QString m_before, m_after;
+};
+
 // Reorder a panel within its scene (both indices are FINAL positions).
 class MovePanelCommand : public QUndoCommand
 {
@@ -3008,6 +3028,10 @@ void StoryboardPage::installDockViewActions()
             m_canvas->setCameraMoveArrowsShown(on);
         sankoSettings().setValue(kCameraMoveArrowsKey, on);
     });
+    // THE STAGE BACKGROUND (batch E, Figma E-1; the user's answer A): the paper's colour on
+    // the canvas only - the same submenu as on the canvas's right-click.
+    if (m_canvas)
+        m_canvas->addStageBackgroundMenu(viewMenu);
     // Floating toolbars: restore the Figma default corners (Brush top-right,
     // Layers top-left, Zoom bottom-left) and clear their saved placement.
     QAction *resetToolbars =
@@ -3164,9 +3188,20 @@ void StoryboardPage::rebuildSceneList()
         cardLayout->setContentsMargins(10, 8, 10, 8);
         cardLayout->setSpacing(6);
 
+        // The scene's colour (batch E, Figma E-1): a 10 x 10 swatch before "SCENE N".
+        auto *head = new QHBoxLayout;
+        head->setContentsMargins(0, 0, 0, 0);
+        head->setSpacing(6);
+        QFrame *swatch = new QFrame;
+        swatch->setObjectName(QStringLiteral("sceneCardSwatch"));
+        swatch->setFixedSize(10, 10);
+        swatch->setStyleSheet(QStringLiteral("QFrame#sceneCardSwatch { background: %1; border: none; border-radius: 2px; }")
+                                  .arg(scenecolor::colorOf(*scene, i).name()));
+        head->addWidget(swatch, 0, Qt::AlignVCenter);
         QLabel *number = new QLabel(QStringLiteral("SCENE %1").arg(scene->number));
         number->setStyleSheet(SankoTheme::themed("color: %ACCENT%; font-size: 11px; font-weight: 700; border: none; background: transparent;"));
-        cardLayout->addWidget(number);
+        head->addWidget(number, 1);
+        cardLayout->addLayout(head);
 
         QLabel *location = new QLabel(scene->location);
         location->setWordWrap(true);
@@ -6308,15 +6343,7 @@ void StoryboardPage::growPanelToFit(int sceneIndex, int panelIndex)
         leaveStageMode(false);
     }
     const QMargins before = panelMargins(panel);
-    const QSize frame = stageFor(panel).frame;
-    QMargins after = before + grow;
-    // The stage at most the canvas's cap, as Stage mode keeps it.
-    const int roomX = qMax(0, stagemargin::kMaxSide - frame.width());
-    const int roomY = qMax(0, stagemargin::kMaxSide - frame.height());
-    if (after.left() + after.right() > roomX)
-        after.setRight(qMax(0, roomX - after.left()));
-    if (after.top() + after.bottom() > roomY)
-        after.setBottom(qMax(0, roomY - after.top()));
+    const QMargins after = grownMargins(panel, grow);
     if (after == before)
         return;
     const QString text = QStringLiteral("Stage Margin (Panel %1)").arg(panelIndex + 1);
@@ -6329,6 +6356,189 @@ void StoryboardPage::growPanelToFit(int sceneIndex, int panelIndex)
                    {QStringLiteral("right"), after.right()},
                    {QStringLiteral("bottom"), after.bottom()}};
     emit shotCameraEdited(ev);
+}
+
+// A panel's margins grown by `grow`, the stage at most the canvas's cap, as Stage mode
+// keeps it.
+QMargins StoryboardPage::grownMargins(const Panel *panel, const QMargins &grow) const
+{
+    const QMargins before = panelMargins(panel);
+    const QSize frame = stageFor(panel).frame;
+    QMargins after = before + grow;
+    const int roomX = qMax(0, stagemargin::kMaxSide - frame.width());
+    const int roomY = qMax(0, stagemargin::kMaxSide - frame.height());
+    if (after.left() + after.right() > roomX)
+        after.setRight(qMax(0, roomX - after.left()));
+    if (after.top() + after.bottom() > roomY)
+        after.setBottom(qMax(0, roomY - after.top()));
+    return after;
+}
+
+// --- Grow all / start the move here (batch E, Figma E-1; the trial's "a framing held over
+// panels with no margin has to be grown one panel at a time") ----------------------------
+
+bool StoryboardPage::moveExitsAt(int sceneIndex, int panelIndex, MoveExits *out) const
+{
+    const Scene *scene = m_scenes.value(sceneIndex);
+    if (!scene || panelIndex < 0 || panelIndex >= scene->panels.size())
+        return false;
+    const int fps = cameraFps();
+    const int film = sceneFilmStart(sceneIndex);
+    const shotcam::ArtExit exit = shotcam::artExit(*scene, panelIndex, fps, film, stageFor(scene->panels.at(panelIndex)));
+    if (!exit.leaves())
+        return false;
+    // The live keys by their frames; the span around the panel's first frame off the art.
+    QVector<QPair<double, int>> keys;
+    for (int k = 0; k < scene->camera.keys.size(); ++k) {
+        const double f = shotcam::keyFrame(*scene, scene->camera.keys.at(k), fps, film);
+        if (f >= 0)
+            keys.append({f, k});
+    }
+    std::sort(keys.begin(), keys.end());
+    const double at = shotcam::panelStartFrame(*scene, panelIndex, fps) + exit.first;
+    MoveExits m;
+    m.fromFrame = 0;
+    m.toFrame = shotcam::sceneFrameCount(*scene, fps);
+    for (const auto &k : keys) {
+        if (k.first <= at + 0.5) {
+            m.fromKey = k.second;
+            m.fromFrame = k.first;
+        } else {
+            m.toKey = k.second;
+            m.toFrame = k.first;
+            break;
+        }
+    }
+    for (int j = 0; j < scene->panels.size(); ++j) {
+        const shotcam::ArtExit e = shotcam::artExit(*scene, j, fps, film, stageFor(scene->panels.at(j)));
+        if (!e.leaves() || e.grow.isNull())
+            continue;
+        const int start = shotcam::panelStartFrame(*scene, j, fps);
+        if (start + e.last >= m.fromFrame - 0.5 && start + e.first <= m.toFrame + 0.5)
+            m.panels.append(j);
+    }
+    if (m.panels.isEmpty())
+        return false;
+    *out = m;
+    return true;
+}
+
+QString StoryboardPage::growAllToFitText(int sceneIndex, int panelIndex) const
+{
+    MoveExits m;
+    if (!moveExitsAt(sceneIndex, panelIndex, &m) || m.panels.size() < 2)
+        return QString();
+    return QStringLiteral("Grow all %1 panels to fit this move").arg(m.panels.size());
+}
+
+// Offered when the move has panels after the last one it leaves, before its end: there a
+// key holding the move's first framing starts it, and the panels before keep that framing.
+QString StoryboardPage::startMoveHereText(int sceneIndex, int panelIndex, int *startPanel) const
+{
+    MoveExits m;
+    if (!moveExitsAt(sceneIndex, panelIndex, &m) || m.fromKey < 0 || m.toKey < 0)
+        return QString();
+    const Scene *scene = m_scenes.at(sceneIndex);
+    const int fps = cameraFps();
+    const int n = m.panels.last() + 1;
+    if (n >= scene->panels.size())
+        return QString();
+    const int nStart = shotcam::panelStartFrame(*scene, n, fps);
+    if (nStart <= m.fromFrame + 0.5 || nStart >= m.toFrame - 0.5)
+        return QString();
+    int first = 0; // the panel the move starts on
+    for (int j = 0; j < scene->panels.size(); ++j)
+        if (shotcam::panelStartFrame(*scene, j, fps) <= m.fromFrame + 0.5)
+            first = j;
+    if (startPanel)
+        *startPanel = n;
+    const QString keep = first == n - 1
+        ? QStringLiteral("Panel %1 keeps the base framing").arg(first + 1)
+        : QStringLiteral("Panels %1 to %2 keep the base framing").arg(first + 1).arg(n);
+    return QStringLiteral("Start the move at Panel %1 (%2)").arg(n + 1).arg(keep);
+}
+
+void StoryboardPage::growAllToFit(int sceneIndex, int panelIndex)
+{
+    MoveExits m;
+    if (!m_undoStack || growAllToFitText(sceneIndex, panelIndex).isEmpty()
+        || !moveExitsAt(sceneIndex, panelIndex, &m))
+        return;
+    if (refuseShotsEdit()) // Q8: a margin is the SHOTS track's
+        return;
+    Scene *scene = m_scenes.at(sceneIndex);
+    // The current panel among them: its box as for Grow (an untouched box is dropped and
+    // lifted again; a changed one refuses).
+    bool reliftBox = false;
+    for (int j : std::as_const(m.panels))
+        if (scene->panels.at(j) == currentPanel()) {
+            QString active;
+            if (hasActiveEdit(&active)) {
+                if (!m_canvas || !m_canvas->transformUntouched()) {
+                    sayNote(QStringLiteral("Finish %1 before changing the stage.").arg(active));
+                    return;
+                }
+                reliftBox = true;
+            }
+            leaveStageMode(false);
+        }
+    QVector<QPair<Panel *, QPair<QMargins, QMargins>>> steps;
+    for (int j : std::as_const(m.panels)) {
+        QMargins grow;
+        if (growToFitText(sceneIndex, j, &grow).isEmpty())
+            continue;
+        Panel *panel = scene->panels.at(j);
+        const QMargins before = panelMargins(panel), after = grownMargins(panel, grow);
+        if (after != before)
+            steps.append({panel, {before, after}});
+    }
+    if (steps.isEmpty())
+        return;
+    const QString text = QStringLiteral("Stage Margin (%1 panels)").arg(steps.size());
+    m_undoStack->beginMacro(text);
+    for (const auto &s : std::as_const(steps))
+        m_undoStack->push(new PanelStageCommand(this, s.first, s.second.first, s.second.second,
+                                                QStringLiteral("Stage Margin (Panel %1)")
+                                                    .arg(scene->panels.indexOf(s.first) + 1)));
+    m_undoStack->endMacro();
+    if (reliftBox)
+        m_canvas->resetTransformBox();
+    emit shotCameraEdited(QVariantMap{{QStringLiteral("what"), QStringLiteral("Grow All to Fit: ") + text}});
+}
+
+void StoryboardPage::startMoveHere(int sceneIndex, int panelIndex)
+{
+    int n = -1;
+    MoveExits m;
+    if (!m_undoStack || startMoveHereText(sceneIndex, panelIndex, &n).isEmpty()
+        || !moveExitsAt(sceneIndex, panelIndex, &m) || refuseCameraEdit())
+        return;
+    Scene *scene = m_scenes.at(sceneIndex);
+    const shotcam::CameraKey &from = scene->camera.keys.at(m.fromKey);
+    shotcam::SceneCamera after = scene->camera;
+    after.keys.append(shotcam::makeKey(*scene, n, 0, cameraFps(), from.state, from.ease));
+    pushCameraEdit(scene, scene->camera, after, QStringLiteral("Start Move at Panel %1").arg(n + 1));
+}
+
+void StoryboardPage::addMoveFitEntries(QMenu *menu, int sceneIndex, int panelIndex)
+{
+    const QString growAll = growAllToFitText(sceneIndex, panelIndex);
+    const QString start = startMoveHereText(sceneIndex, panelIndex);
+    if (!growAll.isEmpty()) {
+        QAction *a = menu->addAction(growAll);
+        a->setObjectName(QStringLiteral("cameraGrowAllToFit"));
+        connect(a, &QAction::triggered, this, [this, sceneIndex, panelIndex] { growAllToFit(sceneIndex, panelIndex); });
+        if (shotsLocked())
+            sankoGreyWithReason(menu, a, QStringLiteral("The SHOTS track is locked."));
+    }
+    if (!start.isEmpty()) {
+        menu->addSeparator();
+        QAction *a = menu->addAction(start);
+        a->setObjectName(QStringLiteral("cameraStartMoveHere"));
+        connect(a, &QAction::triggered, this, [this, sceneIndex, panelIndex] { startMoveHere(sceneIndex, panelIndex); });
+        if (cameraLocked())
+            sankoGreyWithReason(menu, a, QStringLiteral("The CAMERA track is locked."));
+    }
 }
 
 QVariantMap StoryboardPage::stageBarStateForTest() const
@@ -7353,6 +7563,45 @@ void StoryboardPage::onSceneMenu(int sceneIndex, const QPoint &globalPos)
         connect(endAt, &QAction::triggered, this, [this, sceneIndex] { endSceneAtPlayhead(sceneIndex); });
         menu.addSeparator();
     }
+    { // THE SCENE'S COLOUR (batch E, Figma E-1): Auto (the set's colour at its place), the
+      // eight swatches, Custom... - as a layer's Change Layer Color; the choice ticked.
+        QMenu *colors = menu.addMenu(QStringLiteral("Scene Colour"));
+        colors->setObjectName(QStringLiteral("sceneColorMenu"));
+        colors->setStyleSheet(menu.styleSheet());
+        auto chip = [](const QColor &c) {
+            QPixmap pm(12, 12);
+            pm.fill(c);
+            return QIcon(pm);
+        };
+        QAction *autoAct = colors->addAction(
+            QStringLiteral("Auto (%1)").arg(QString::fromLatin1(scenecolor::autoSwatch(sceneIndex).name)));
+        autoAct->setObjectName(QStringLiteral("sceneColorAuto"));
+        autoAct->setCheckable(true);
+        autoAct->setChecked(scene->colorTag.isEmpty());
+        connect(autoAct, &QAction::triggered, this, [this, sceneIndex] { setSceneColor(sceneIndex, QString()); });
+        for (const scenecolor::Swatch &s : scenecolor::kSet) {
+            const QString tag = scenecolor::tagOf(QColor(s.rgb));
+            QAction *a = colors->addAction(chip(QColor(s.rgb)), QString::fromLatin1(s.name));
+            a->setObjectName(QStringLiteral("sceneColorSwatch"));
+            a->setCheckable(true);
+            a->setChecked(scene->colorTag.compare(tag, Qt::CaseInsensitive) == 0);
+            connect(a, &QAction::triggered, this, [this, sceneIndex, tag] { setSceneColor(sceneIndex, tag); });
+        }
+        colors->addSeparator();
+        QAction *custom = colors->addAction(QStringLiteral("Custom..."));
+        custom->setObjectName(QStringLiteral("sceneColorCustom"));
+        connect(custom, &QAction::triggered, this, [this, sceneIndex] {
+            const Scene *s = m_scenes.value(sceneIndex);
+            if (!s)
+                return;
+            const QColor start = scenecolor::colorOf(*s, sceneIndex);
+            const QColor c = m_sceneColorPickForTest ? m_sceneColorPickForTest(start)
+                                                     : QColorDialog::getColor(start, this, QStringLiteral("Scene Color"));
+            if (c.isValid())
+                setSceneColor(sceneIndex, scenecolor::tagOf(c));
+        });
+        menu.addSeparator();
+    }
     addSceneCameraEntries(&menu, sceneIndex);
     if (m_clipMenuHookForTest) {
         m_clipMenuHookForTest(&menu);
@@ -7817,66 +8066,198 @@ QString StoryboardPage::cameraKeyHeader(int sceneIndex, int keyIndex, bool *last
 
 namespace {
 
-// One Ease entry of the key menu as the design draws it (Figma 1C-4): the
-// tick at the left when it is the key's ease (the text then in the accent),
-// the name, and the ease's glyph at the right. A QMenu entry with an icon
-// draws the icon where its tick goes, hence a row of its own; it triggers
-// its action and closes the menus as a normal entry does.
-class EaseMenuRow : public QWidget
+// THE FIVE EASES IN A ROW (batch E, Figma E-1): the popover a tap on a move's mark opens, and
+// the key's menu in place of its Ease submenu. One button per ease, its curve drawn as the
+// row's mark draws it; the move's own ease marked as a selected clip is (#302A48, a #9787FF
+// edge, the curve white). One tap applies and closes the menus. `outlined` (the menu): each
+// button keeps a faint edge, as the menu's own controls.
+class EaseChoiceButton : public QAbstractButton
 {
 public:
-    EaseMenuRow(QAction *action, int ease, QWidget *parent = nullptr)
-        : QWidget(parent), m_action(action), m_glyph(AnimaticTimeline::easeGlyphIcon(ease))
+    EaseChoiceButton(shotcam::Ease ease, bool outlined, const QSize &size, QWidget *parent)
+        : QAbstractButton(parent), m_ease(ease), m_outlined(outlined)
     {
-        setMouseTracking(true);
-        setFixedSize(176, 22);
+        setObjectName(QStringLiteral("easeChoice"));
+        setProperty("ease", int(ease));
+        setText(shotcam::easeLabel(ease));
+        setCheckable(true);
+        setFixedSize(size);
         setAttribute(Qt::WA_Hover, true);
+        setCursor(Qt::PointingHandCursor);
+    }
+    shotcam::Ease ease() const { return m_ease; }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        if (!isEnabled())
+            p.setOpacity(0.4);
+        const QRectF r = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
+        if (isChecked()) {
+            p.setPen(QPen(SankoTimelineTheme::kClipSelectedBorder, 1.0));
+            p.setBrush(QColor(0x30, 0x2a, 0x48));
+            p.drawRoundedRect(r, 4, 4);
+        } else if (underMouse() && isEnabled()) {
+            p.setPen(m_outlined ? QPen(QColor(0x2a, 0x2a, 0x2a), 1.0) : QPen(Qt::NoPen));
+            p.setBrush(QColor(0x26, 0x26, 0x26));
+            p.drawRoundedRect(r, 4, 4);
+        } else if (m_outlined) {
+            p.setPen(QPen(QColor(0x2a, 0x2a, 0x2a), 1.0));
+            p.setBrush(Qt::NoBrush);
+            p.drawRoundedRect(r, 4, 4);
+        }
+        const QRectF glyph(width() / 2.0 - 9.0, height() / 2.0 - 6.0, 18.0, 12.0);
+        AnimaticTimeline::paintEaseCurve(p, glyph, int(m_ease),
+                                         isChecked() ? QColor(Qt::white) : SankoTimelineTheme::kCameraGlyph, 1.2);
+    }
+
+private:
+    shotcam::Ease m_ease;
+    bool m_outlined;
+};
+
+class EaseChoiceRow : public QWidget
+{
+public:
+    // `title`: the line above the buttons; `named`: the hovered (else the move's own) ease's
+    // name under them (the popover's).
+    EaseChoiceRow(shotcam::Ease current, const QString &title, bool outlined, bool named, const QSize &button,
+                  int gap, const QMargins &margins, std::function<void(shotcam::Ease)> pick, QWidget *parent = nullptr)
+        : QWidget(parent), m_current(current), m_pick(std::move(pick))
+    {
+        setObjectName(QStringLiteral("easeChoiceRow"));
+        auto *v = new QVBoxLayout(this);
+        v->setContentsMargins(margins);
+        v->setSpacing(4);
+        m_title = new QLabel(title, this);
+        m_title->setObjectName(QStringLiteral("easeRowTitle"));
+        m_title->setStyleSheet(QStringLiteral("QLabel { color: #8a8a95; font-size: 10px; background: transparent; }"
+                                              "QLabel:disabled { color: #5c5c62; }"));
+        v->addWidget(m_title);
+        auto *h = new QHBoxLayout;
+        h->setContentsMargins(0, 0, 0, 0);
+        h->setSpacing(gap);
+        for (shotcam::Ease e : {shotcam::Ease::Linear, shotcam::Ease::EaseIn, shotcam::Ease::EaseOut,
+                                shotcam::Ease::EaseInOut, shotcam::Ease::Hold}) {
+            auto *b = new EaseChoiceButton(e, outlined, button, this);
+            b->setChecked(e == current);
+            b->installEventFilter(this);
+            connect(b, &QAbstractButton::clicked, this, [this, b](bool) {
+                b->setChecked(b->ease() == m_current); // the move's own stays marked until it changes
+                while (QWidget *popup = QApplication::activePopupWidget())
+                    popup->close();
+                // ...and its own popup (the popover, the menu) even when Qt has none active.
+                if (QWidget *own = window(); own != this && (own->windowFlags() & Qt::Popup) == Qt::Popup)
+                    own->close();
+                if (m_pick)
+                    m_pick(b->ease());
+            });
+            m_buttons.append(b);
+            h->addWidget(b);
+        }
+        h->addStretch(1);
+        v->addLayout(h);
+        if (named) {
+            m_name = new QLabel(shotcam::easeLabel(current), this);
+            m_name->setObjectName(QStringLiteral("easeRowName"));
+            m_name->setAlignment(Qt::AlignHCenter);
+            m_name->setStyleSheet(QStringLiteral("QLabel { color: #cccccc; font-size: 10px; background: transparent; }"));
+            v->addWidget(m_name);
+        }
+    }
+
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override
+    {
+        if (m_name && (event->type() == QEvent::Enter || event->type() == QEvent::Leave)) {
+            auto *b = static_cast<EaseChoiceButton *>(watched);
+            m_name->setText(shotcam::easeLabel(event->type() == QEvent::Enter ? b->ease() : m_current));
+        }
+        return QWidget::eventFilter(watched, event);
+    }
+
+private:
+    shotcam::Ease m_current;
+    std::function<void(shotcam::Ease)> m_pick;
+    QLabel *m_title = nullptr;
+    QLabel *m_name = nullptr;
+    QVector<EaseChoiceButton *> m_buttons;
+};
+
+// The popover itself: a rounded #161616 card with a #2A2A2A edge (the timeline's menus'
+// colours), closing on Esc, on a tap elsewhere (a popup's own rule) and after a pick.
+class EasePopover : public QWidget
+{
+public:
+    explicit EasePopover(QWidget *parent) : QWidget(parent, Qt::Popup | Qt::FramelessWindowHint)
+    {
+        setObjectName(QStringLiteral("easePopover"));
+        setAttribute(Qt::WA_TranslucentBackground, true);
+        setAttribute(Qt::WA_DeleteOnClose, true);
     }
 
 protected:
     void paintEvent(QPaintEvent *) override
     {
         QPainter p(this);
-        const bool hover = underMouse();
-        const bool on = m_action->isChecked();
-        if (hover)
-            p.fillRect(rect(), QColor(0x26, 0x26, 0x26));
         p.setRenderHint(QPainter::Antialiasing, true);
-        if (on) {
-            p.setPen(QPen(SankoTimelineTheme::kCameraAccent, 1.4, Qt::SolidLine,
-                          Qt::RoundCap, Qt::RoundJoin));
-            QPainterPath tick;
-            tick.moveTo(8.5, 11.2);
-            tick.lineTo(11, 13.6);
-            tick.lineTo(15.5, 8.6);
-            p.drawPath(tick);
-        }
-        QFont f = font();
-        f.setPixelSize(11);
-        p.setFont(f);
-        p.setPen(on ? SankoTimelineTheme::kCameraAccent
-                    : hover ? QColor(Qt::white) : QColor(0xcc, 0xcc, 0xcc));
-        p.drawText(QRect(24, 0, width() - 60, height()), Qt::AlignVCenter | Qt::AlignLeft,
-                   m_action->text());
-        m_glyph.paint(&p, QRect(width() - 30, 5, 18, 12));
+        p.setPen(QPen(QColor(0x2a, 0x2a, 0x2a), 1.0));
+        p.setBrush(QColor(0x16, 0x16, 0x16));
+        p.drawRoundedRect(QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5), 6, 6);
     }
-    void enterEvent(QEnterEvent *) override { update(); }
-    void leaveEvent(QEvent *) override { update(); }
-    void mouseReleaseEvent(QMouseEvent *e) override
+    void keyPressEvent(QKeyEvent *e) override
     {
-        if (e->button() != Qt::LeftButton || !rect().contains(e->position().toPoint()))
+        if (e->key() == Qt::Key_Escape) {
+            close();
             return;
-        while (QWidget *popup = QApplication::activePopupWidget())
-            popup->close();
-        m_action->trigger();
+        }
+        QWidget::keyPressEvent(e);
     }
-
-private:
-    QAction *m_action;
-    QIcon m_glyph;
 };
 
 } // namespace
+
+void StoryboardPage::onCameraEaseMark(int sceneIndex, int keyIndex, const QRect &globalMarkRect)
+{
+    if (!cameraKeyLive(sceneIndex, keyIndex))
+        return;
+    if (m_easePopover)
+        m_easePopover->close();
+    bool last = false;
+    const QString header = cameraKeyHeader(sceneIndex, keyIndex, &last);
+    if (last) // a mark is drawn only on a move; a last key starts none
+        return;
+    const bool locked = cameraLocked();
+    const QString key = header.left(header.indexOf(QString::fromUtf8(" \xC2\xB7")));
+    auto *popover = new EasePopover(this);
+    auto *v = new QVBoxLayout(popover);
+    v->setContentsMargins(0, 0, 0, 0);
+    auto *row = new EaseChoiceRow(m_scenes.at(sceneIndex)->camera.keys.at(keyIndex).ease,
+                                  locked ? QStringLiteral("The CAMERA track is locked.")
+                                         : QStringLiteral("The move after %1").arg(key),
+                                  false, true, QSize(36, 28), 4, QMargins(6, 6, 6, 6),
+                                  [this, sceneIndex, keyIndex](shotcam::Ease e) {
+                                      cameraSetKeyEase(sceneIndex, keyIndex, e);
+                                  },
+                                  popover);
+    v->addWidget(row);
+    for (QAbstractButton *b : row->findChildren<QAbstractButton *>())
+        b->setEnabled(!locked);
+    popover->adjustSize();
+    // Above the mark, centred on it; below it when the screen's top is too near.
+    const QRect area = (QGuiApplication::screenAt(globalMarkRect.center())
+                            ? QGuiApplication::screenAt(globalMarkRect.center())
+                            : QGuiApplication::primaryScreen())->availableGeometry();
+    QPoint at(globalMarkRect.center().x() - popover->width() / 2, globalMarkRect.top() - popover->height() - 4);
+    if (at.y() < area.top())
+        at.setY(globalMarkRect.bottom() + 5);
+    at.setX(qBound(area.left(), at.x(), qMax(area.left(), area.right() - popover->width())));
+    popover->move(at);
+    m_easePopover = popover;
+    popover->show();
+}
 
 void StoryboardPage::onCameraKeyMenu(int sceneIndex, int keyIndex, const QPoint &globalPos)
 {
@@ -7900,27 +8281,23 @@ void StoryboardPage::onCameraKeyMenu(int sceneIndex, int keyIndex, const QPoint 
     title->setObjectName(QStringLiteral("cameraKeyHeader"));
     title->setEnabled(false);
     menu.addSeparator();
-    QMenu *easeMenu = menu.addMenu(QStringLiteral("Ease"));
-    easeMenu->setObjectName(QStringLiteral("cameraKeyEase"));
-    easeMenu->setStyleSheet(sheet);
-    // Off on the last key or a locked track: just "Ease", greyed, and why as its tooltip
-    // (the user's rule, 2026-11-13).
-    sankoGreyWithReason(&menu, easeMenu->menuAction(),
-                        last ? QStringLiteral("No move after this key.") : QStringLiteral("The CAMERA track is locked."),
-                        last || locked);
-    const shotcam::Ease current = scene->camera.keys.at(keyIndex).ease;
-    for (shotcam::Ease e : {shotcam::Ease::Linear, shotcam::Ease::EaseIn, shotcam::Ease::EaseOut,
-                            shotcam::Ease::EaseInOut, shotcam::Ease::Hold}) {
-        auto *action = new QWidgetAction(easeMenu);
-        action->setText(shotcam::easeLabel(e));
-        action->setCheckable(true);
-        action->setChecked(e == current);
-        action->setDefaultWidget(new EaseMenuRow(action, int(e)));
-        connect(action, &QAction::triggered, this, [this, sceneIndex, keyIndex, e] {
-            cameraSetKeyEase(sceneIndex, keyIndex, e);
-        });
-        easeMenu->addAction(action);
-    }
+    // THE MOVE AFTER THIS KEY (batch E, Figma E-1): the five eases in a row, in place of the
+    // Ease submenu - one tap applies and closes. Off on the last key or a locked track:
+    // greyed, and why as its tooltip (the user's rule, 2026-11-13).
+    auto *easeRow = new QWidgetAction(&menu);
+    easeRow->setObjectName(QStringLiteral("cameraKeyEase"));
+    easeRow->setText(QStringLiteral("The move after this key"));
+    easeRow->setDefaultWidget(new EaseChoiceRow(scene->camera.keys.at(keyIndex).ease,
+                                                QStringLiteral("The move after this key"), true, false,
+                                                QSize(35, 24), 4, QMargins(24, 4, 12, 6),
+                                                [this, sceneIndex, keyIndex](shotcam::Ease e) {
+                                                    cameraSetKeyEase(sceneIndex, keyIndex, e);
+                                                }));
+    menu.addAction(easeRow);
+    const QString easeOff = last ? QStringLiteral("No move after this key.") : QStringLiteral("The CAMERA track is locked.");
+    sankoGreyWithReason(&menu, easeRow, easeOff, last || locked);
+    // Over a row of buttons the menu hands the hover to the row: the reason is its tooltip too.
+    easeRow->defaultWidget()->setToolTip(last || locked ? easeOff : QString());
     menu.addSeparator();
     QAction *copy = menu.addAction(QStringLiteral("Copy Framing"));
     copy->setObjectName(QStringLiteral("cameraCopyFraming"));
@@ -8005,6 +8382,7 @@ void StoryboardPage::onCameraRowMenu(int flatPanel, const QPoint &globalPos)
             QAction *g = menu.addAction(grow);
             g->setObjectName(QStringLiteral("cameraGrowToFit"));
             connect(g, &QAction::triggered, this, [this, si, pi] { growPanelToFit(si, pi); });
+            addMoveFitEntries(&menu, si, pi); // batch E: Grow all, Start the move here
         }
         menu.addSeparator();
         addQuickMoveEntries(&menu, QStringLiteral("Quick Move on Panel %1").arg(flatPanel + 1),
@@ -8998,6 +9376,8 @@ void StoryboardPage::setupAnimaticSection(QWidget *centerColumn,
             &StoryboardPage::onCameraKeyMenu);
     connect(m_animatic, &AnimaticPage::cameraRowContextMenuRequested, this,
             &StoryboardPage::onCameraRowMenu);
+    connect(m_animatic, &AnimaticPage::cameraEaseMarkClicked, this,
+            &StoryboardPage::onCameraEaseMark); // batch E: the five eases on a move's mark
     // A clip's amber chip (batch 6d): the one thing to do about it.
     connect(m_animatic, &AnimaticPage::artExitChipClicked, this, [this](int flat, const QPoint &at) {
         int si = -1, pi = -1;
@@ -9012,6 +9392,11 @@ void StoryboardPage::setupAnimaticSection(QWidget *centerColumn,
         QAction *g = menu.addAction(grow);
         g->setObjectName(QStringLiteral("cameraGrowToFit"));
         connect(g, &QAction::triggered, this, [this, si, pi] { growPanelToFit(si, pi); });
+        addMoveFitEntries(&menu, si, pi); // batch E: Grow all, Start the move here
+        if (m_clipMenuHookForTest) {
+            m_clipMenuHookForTest(&menu);
+            return;
+        }
         menu.exec(at);
     });
     connect(m_animatic, &AnimaticPage::cameraAnimateToggled, this,
@@ -9715,6 +10100,24 @@ void StoryboardPage::applySceneLengthLockForUndo(Scene *scene, bool locked)
         m_animatic->refreshTiming();
 }
 
+void StoryboardPage::applySceneColorForUndo(Scene *scene, const QString &tag)
+{
+    if (!scene || !m_scenes.contains(scene))
+        return;
+    scene->colorTag = tag; // unsaved through the history's clean state, as every step
+    if (m_animatic)
+        m_animatic->refreshTiming(); // the SCENES row and the clips redrawn
+    rebuildSceneList();              // the card's swatch
+}
+
+void StoryboardPage::setSceneColor(int sceneIndex, const QString &tag)
+{
+    Scene *scene = m_scenes.value(sceneIndex);
+    if (!scene || !m_undoStack || scene->colorTag == tag)
+        return;
+    m_undoStack->push(new SceneColorCommand(this, scene, scene->colorTag, tag));
+}
+
 void StoryboardPage::setAllSceneLengthsLocked(bool lock)
 {
     // LOCK ALL (batch F2, decision 5): with every scene locked, nothing in the film can
@@ -9913,6 +10316,7 @@ void StoryboardPage::onClipContextMenu(int flat, const QPoint &globalPos)
             grow->setObjectName(QStringLiteral("cameraGrowToFit"));
             connect(grow, &QAction::triggered, this,
                     [this, growScene, growPanel] { growPanelToFit(growScene, growPanel); });
+            addMoveFitEntries(&menu, growScene, growPanel); // batch E: Grow all, Start the move here
         }
     }
     // A LOCKED SHOTS track (Part B): the entries stay, greyed, so the lock is seen

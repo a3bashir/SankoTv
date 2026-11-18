@@ -7099,7 +7099,16 @@ void DrawingCanvas::ensureComposite()
         QPainter above(&m_compAbove);
         below.setRenderHint(QPainter::SmoothPixmapTransform, true);
         above.setRenderHint(QPainter::SmoothPixmapTransform, true);
+        // THE STAGE BACKGROUND (batch E): over the paper and the Background layer, before the
+        // first drawing layer - in this cache unless the Background layer itself is the
+        // live one (paintEvent tints after it).
+        bool paperDone = !m_panel->layers.isEmpty() && active == 0
+            && m_panel->layers.at(0).type == QLatin1String("background");
         for (int i = 0; i < m_panel->layers.size(); ++i) {
+            if (!paperDone && m_panel->layers.at(i).type != QLatin1String("background")) {
+                tintPaper(below, QRectF(QPointF(0, 0), QSizeF(cs)));
+                paperDone = true;
+            }
             if (i == active)
                 continue; // the live layer is drawn between the caches
             const Layer &layer = m_panel->layers.at(i);
@@ -7113,6 +7122,8 @@ void DrawingCanvas::ensureComposite()
             p.setOpacity(effOpacity);
             p.drawImage(0, 0, layer.image);
         }
+        if (!paperDone) // only the Background layer: the paper over it all the same
+            tintPaper(below, QRectF(QPointF(0, 0), QSizeF(cs)));
     }
     m_compValid = true;
     m_compPanel = m_panel;
@@ -7142,6 +7153,9 @@ void DrawingCanvas::loadGridSettings()
                       QStringLiteral("#0a0a0a")).toString());
     if (bg.isValid())
         m_gutterColor = bg;
+    // The stage background on the canvas (batch E): white until chosen.
+    const QColor paper(s.value(QStringLiteral("canvas/stage/v1/paperColor"), QStringLiteral("#ffffff")).toString());
+    m_paperColor = paper.isValid() ? paper : QColor(Qt::white);
     m_gridTileDirty = true;
 }
 
@@ -7191,6 +7205,77 @@ void DrawingCanvas::setGutterColor(const QColor &color)
     m_gutterColor = color;
     saveGridSettings();
     update();
+}
+
+// --- The stage background (batch E, Figma E-1; option A, on screen only) ---------------
+// The paper's colour on the canvas alone: multiplied over the white Background layer (and
+// the white under it) where the canvas draws them - the composite cache, the direct loop,
+// the live Background layer - so white becomes the colour and no layer changes. Thumbnails,
+// the strip, the film and every export are drawn elsewhere, on white, as before. The Camera
+// tool's depth view shows it too (2026-11-17: batch E's hand test chose Dark Grey there and
+// the canvas stayed white): shotcam::drawStage takes the colour from the canvas alone. The
+// Eyedropper stays on white: it reads the artwork's own colours.
+void DrawingCanvas::setPaperColor(const QColor &color)
+{
+    if (!color.isValid() || m_paperColor == color)
+        return;
+    m_paperColor = color;
+    sankoSettings().setValue(QStringLiteral("canvas/stage/v1/paperColor"), color.name());
+    m_compValid = false; // the cache holds the paper
+    update();
+}
+
+void DrawingCanvas::tintPaper(QPainter &p, const QRectF &rect) const
+{
+    if (!m_paperColor.isValid() || m_paperColor == QColor(Qt::white))
+        return;
+    p.save();
+    p.setOpacity(1.0);
+    p.setCompositionMode(QPainter::CompositionMode_Multiply);
+    p.fillRect(rect, m_paperColor);
+    p.restore();
+}
+
+void DrawingCanvas::addStageBackgroundMenu(QMenu *parent)
+{
+    QMenu *menu = parent->addMenu(tr("Stage Background"));
+    menu->setObjectName(QStringLiteral("stageBackgroundMenu"));
+    // Filled as it opens: ticked as chosen now, wherever it was chosen.
+    connect(menu, &QMenu::aboutToShow, this, [this, menu] {
+        menu->clear();
+        const struct { const char *name; const char *hex; } presets[] = {
+            {"White (default)", "#ffffff"}, {"Warm White", "#f4efe6"}, {"Light Grey", "#d6d6d6"},
+            {"Mid Grey", "#9a9a9a"},        {"Dark Grey", "#4a4a4a"},  {"Charcoal", "#262626"},
+        };
+        bool preset = false;
+        for (const auto &def : presets) {
+            const QColor c(def.hex);
+            QPixmap chip(12, 12);
+            chip.fill(c);
+            {
+                QPainter cp(&chip);
+                cp.setPen(QColor(0x3a, 0x3a, 0x45));
+                cp.drawRect(0, 0, 11, 11);
+            }
+            QAction *a = menu->addAction(QIcon(chip), tr(def.name));
+            a->setObjectName(QStringLiteral("stageBackgroundPreset"));
+            a->setCheckable(true);
+            a->setChecked(m_paperColor == c);
+            preset = preset || m_paperColor == c;
+            connect(a, &QAction::triggered, this, [this, c] { setPaperColor(c); });
+        }
+        menu->addSeparator();
+        QAction *custom = menu->addAction(tr("Custom..."));
+        custom->setObjectName(QStringLiteral("stageBackgroundCustom"));
+        custom->setCheckable(true);
+        custom->setChecked(!preset);
+        connect(custom, &QAction::triggered, this, [this] {
+            const QColor c = m_paperPickForTest ? m_paperPickForTest(m_paperColor)
+                                                : QColorDialog::getColor(m_paperColor, this, tr("Stage Background"));
+            if (c.isValid())
+                setPaperColor(c);
+        });
+    });
 }
 
 void DrawingCanvas::ensureGridTile()
@@ -7323,6 +7408,7 @@ QMenu *DrawingCanvas::buildGridMenu()
         const QColor c(def.hex);
         connect(a, &QAction::triggered, this, [this, c] { setGutterColor(c); });
     }
+    addStageBackgroundMenu(menu); // beside it (batch E): the stage's own colour
     return menu;
 }
 
@@ -7626,8 +7712,10 @@ void DrawingCanvas::paintEvent(QPaintEvent *event)
     if (depthView) {
         painter.save();
         painter.setClipRect(canvasR);
+        // The stage background too (2026-11-17, batch E's hand test: Dark Grey left this view
+        // white), after the Background layer as below; drawStage takes it from the canvas alone.
         shotcam::drawStage(painter, *m_panel, shotCameraShownState(depthCam), stage(),
-                           T.inverted().mapRect(QRectF(event->rect())) & canvasR);
+                           T.inverted().mapRect(QRectF(event->rect())) & canvasR, m_paperColor);
         painter.restore();
     } else if (!m_xformActive && !m_lightTable && activeIdx >= 0
         && activeIdx < m_panel->layers.size()) {
@@ -7638,12 +7726,19 @@ void DrawingCanvas::paintEvent(QPaintEvent *event)
         if (!isGroupLayer(active) && m_panel->layerEffectivelyVisible(active)
             && !active.image.isNull() && effOpacity > 0.0)
             paintLayerContent(active, effOpacity);
+        if (active.type == QLatin1String("background")) // the live Background layer (batch E)
+            tintPaper(painter, canvasR);
         painter.setOpacity(1.0);
         painter.drawImage(0, 0, m_compAbove); // layers above
     } else {
         painter.fillRect(canvasR, Qt::white);
         bool lightTableDrawn = false;
+        bool paperDone = false; // the stage background (batch E), after the Background layer
         for (const Layer &layer : m_panel->layers) {
+            if (!paperDone && layer.type != QLatin1String("background")) {
+                tintPaper(painter, canvasR);
+                paperDone = true;
+            }
             if (m_lightTable && !lightTableDrawn
                 && layer.type != QLatin1String("background")) {
                 drawLightTable(painter, canvasRi);
@@ -7659,6 +7754,8 @@ void DrawingCanvas::paintEvent(QPaintEvent *event)
                 continue;
             paintLayerContent(layer, effOpacity);
         }
+        if (!paperDone)
+            tintPaper(painter, canvasR);
         if (m_lightTable && !lightTableDrawn) { // only a background layer
             painter.setOpacity(1.0);
             drawLightTable(painter, canvasRi);

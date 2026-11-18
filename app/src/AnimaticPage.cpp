@@ -1300,6 +1300,8 @@ QWidget *AnimaticPage::createTimingStrip()
             this, &AnimaticPage::cameraKeyContextMenuRequested);
     connect(m_timeline, &AnimaticTimeline::cameraRowContextMenuRequested,
             this, &AnimaticPage::cameraRowContextMenuRequested);
+    connect(m_timeline, &AnimaticTimeline::cameraEaseMarkClicked,
+            this, &AnimaticPage::cameraEaseMarkClicked);
     connect(m_timeline, &AnimaticTimeline::artExitChipClicked,
             this, &AnimaticPage::artExitChipClicked);
     connect(m_timeline, &AnimaticTimeline::cameraAnimateToggled,

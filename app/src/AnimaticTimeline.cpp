@@ -9,6 +9,7 @@
 
 #include <cmath>
 #include "StoryboardModel.h"
+#include "SceneColors.h" // the scenes' colours on the SCENES row and the clips (batch E)
 #include "camera/ShotCamera.h"
 
 #include <QContextMenuEvent>
@@ -83,6 +84,9 @@ constexpr int kAudioH = 36;
 constexpr qreal kKeyHalf = 5.0;
 constexpr int kKeyHit = 8;
 constexpr int kGlyphW = 18, kGlyphH = 12, kGlyphMinSegment = 40;
+// Batch E (Figma E-1): a move of 16 to 40 px gets the small mark; under 16 px no mark is
+// drawn, and a tap on the line itself opens the five eases.
+constexpr int kSmallMarkW = 12, kSmallMarkH = 10, kSmallMarkMinSegment = 16;
 constexpr int kKeyDragThreshold = 4;
 constexpr int kKeySnapPx = 6;
 
@@ -453,18 +457,14 @@ QIcon recordDotIcon()
     return icon;
 }
 
-// The ease glyph (Figma 1C-2): the curve w(u) in an 18 x 12 pill - Linear
-// a diagonal, Ease In flat then rising, Ease Out rising then flat, Ease
-// In/Out both, Hold a step. Drawn in a box whose top-left is `r`.
-void paintEaseGlyph(QPainter &p, const QRectF &r, shotcam::Ease ease)
+// The ease glyph's curve (Figma 1C-2): w(u) drawn in the glyph's 18 x 12 units - Linear a
+// diagonal, Ease In flat then rising, Ease Out rising then flat, Ease In/Out both, Hold a
+// step - fitted to `box` (the pill's own 18 x 12, the small mark, a button's).
+QPainterPath easeCurvePath(const QRectF &box, shotcam::Ease ease)
 {
-    using namespace SankoTimelineTheme;
-    p.save();
-    p.setRenderHint(QPainter::Antialiasing, true);
-    p.setPen(QPen(kHairline, 1.0));
-    p.setBrush(kPillBg);
-    p.drawRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5), 3, 3);
-    const auto pt = [&](qreal x, qreal y) { return QPointF(r.left() + x, r.top() + y); };
+    const auto pt = [&](qreal x, qreal y) {
+        return QPointF(box.left() + x * box.width() / kGlyphW, box.top() + y * box.height() / kGlyphH);
+    };
     QPainterPath path;
     path.moveTo(pt(3, 9));
     switch (ease) {
@@ -488,9 +488,28 @@ void paintEaseGlyph(QPainter &p, const QRectF &r, shotcam::Ease ease)
         path.lineTo(pt(15, 3));
         break;
     }
+    return path;
+}
+
+// The ease glyph: the curve in an 18 x 12 pill whose top-left is `r` - or, `compact`, in a
+// 12 x 10 one (batch E: a move of 16 to 40 px). `hover`: the pill's edge the clips' hover
+// edge, the selected border at 50 % (batch E: the mark is a button).
+void paintEaseGlyph(QPainter &p, const QRectF &r, shotcam::Ease ease, bool hover = false, bool compact = false)
+{
+    using namespace SankoTimelineTheme;
+    p.save();
+    p.setRenderHint(QPainter::Antialiasing, true);
+    QColor edge = kHairline;
+    if (hover) {
+        edge = kClipSelectedBorder;
+        edge.setAlphaF(0.5);
+    }
+    p.setPen(QPen(edge, 1.0));
+    p.setBrush(kPillBg);
+    p.drawRoundedRect(r.adjusted(0.5, 0.5, -0.5, -0.5), 3, 3);
     p.setBrush(Qt::NoBrush);
-    p.setPen(QPen(kCameraGlyph, 1.2, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-    p.drawPath(path);
+    p.setPen(QPen(kCameraGlyph, compact ? 1.0 : 1.2, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    p.drawPath(easeCurvePath(compact ? r.adjusted(1, 1, -1, -1) : r, ease));
     p.restore();
 }
 
@@ -509,6 +528,16 @@ QIcon AnimaticTimeline::easeGlyphIcon(int ease)
         icon.addPixmap(pm);
     }
     return icon;
+}
+
+void AnimaticTimeline::paintEaseCurve(QPainter &p, const QRectF &box, int ease, const QColor &color, qreal width)
+{
+    p.save();
+    p.setRenderHint(QPainter::Antialiasing, true);
+    p.setBrush(Qt::NoBrush);
+    p.setPen(QPen(color, width, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    p.drawPath(easeCurvePath(box, shotcam::Ease(ease)));
+    p.restore();
 }
 
 void AnimaticTimeline::buildTrackControls()
@@ -748,8 +777,10 @@ void AnimaticTimeline::setTracks(const TimelineTracks &tracks)
         m_camDragActive = false;
         m_camDragScene = m_camDragKey = -1;
     }
-    if (!m_tracks.cameraVisible)
+    if (!m_tracks.cameraVisible) {
         m_camHoverScene = m_camHoverKey = -1;
+        m_easeHoverScene = m_easeHoverKey = -1;
+    }
     if (m_canvas)
         m_canvas->update();
 }
@@ -905,6 +936,7 @@ void AnimaticTimeline::setScenes(const QVector<Scene *> &scenes)
         m_camDragScene = m_camDragKey = -1;
     }
     m_camHoverScene = m_camHoverKey = -1;
+    m_easeHoverScene = m_easeHoverKey = -1; // the scenes changed: the keys may have
     rebuildBlocks();
     updateScrollRange();
     if (m_canvas)
@@ -1625,18 +1657,19 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
             const int x0 = contentXToScreen(startFrame * ppf);
             const int x1 = contentXToScreen(endFrame * ppf);
             QRect r(x0, kSceneY, x1 - x0, kSceneH);
-            // One block colour in the design (it shows one scene); the
-            // ordinal is kept for when a second colour is given.
             Q_UNUSED(sceneOrdinal);
             p.fillRect(r, kSceneBlock);
+            // THE SCENE'S COLOUR (batch E, Figma E-1): behind its name at 40 %, and as its
+            // baseline, 2 px - Auto the muted set's at its place (SceneColors.h).
+            const QColor sceneColor = si < m_scenes.size() ? scenecolor::colorOf(*m_scenes.at(si), si)
+                                                           : QColor(kSceneBaseline);
+            QColor tint = sceneColor;
+            tint.setAlphaF(0.4);
+            p.fillRect(r, tint);
             // A LOCKED SCENE (batch F1, Figma F-1): its baseline in the accent, 2 px.
             const bool locked = sceneLocked(si);
-            if (locked) {
-                p.fillRect(QRect(r.left(), kSceneY + kSceneH - 2, r.width(), 2), kTrackControlActive);
-            } else {
-                p.setPen(kSceneBaseline);
-                p.drawLine(r.left(), kSceneY + kSceneH - 1, r.right(), kSceneY + kSceneH - 1);
-            }
+            p.fillRect(QRect(r.left(), kSceneY + kSceneH - 2, r.width(), 2),
+                       locked ? kTrackControlActive : sceneColor);
             // Scene separator.
             p.setPen(kSceneSeparator);
             p.drawLine(x0, kSceneY, x0, kSceneY + kSceneH);
@@ -1716,6 +1749,14 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
                 if (hovered) { bord = kClipSelectedBorder; bord.setAlphaF(0.50); }
                 p.setPen(QPen(bord, 1));
                 p.drawRoundedRect(bf.adjusted(0.5, 0.5, -0.5, -0.5), kClipR, kClipR);
+            }
+            // THE SCENE'S COLOUR (batch E, Figma E-1): a thin strip along the clip's top, under
+            // a selected clip's 2 px edge and over its thumbnail (which starts 6 px down).
+            if (b.sceneIndex < m_scenes.size()) {
+                p.setPen(Qt::NoPen);
+                p.setBrush(scenecolor::colorOf(*m_scenes.at(b.sceneIndex), b.sceneIndex));
+                p.drawRoundedRect(QRectF(bf.left() + 4, bf.top() + 3, qMax(0.0, bf.width() - 8), 3), 1, 1);
+                p.setBrush(Qt::NoBrush);
             }
 
             if (L.thumbShown) {
@@ -2742,11 +2783,40 @@ AnimaticTimeline::cameraSegments(const QVector<CameraMark> &marks) const
         s.x1 = b.x - kKeyHalf - 1.0;
         s.dashed = shotcam::Ease(a.ease) == shotcam::Ease::Hold;
         s.glyph = s.x1 - s.x0 >= kGlyphMinSegment;
+        s.smallMark = !s.glyph && s.x1 - s.x0 >= kSmallMarkMinSegment;
+        s.lineOnly = !s.glyph && !s.smallMark;
         s.accent = hasSel && a.sceneIndex == selScene && a.keyIndex == selKey;
         if (s.x1 > s.x0)
             segments.append(s);
     }
     return segments;
+}
+
+// The ease mark's place (batch E, Figma E-1): the pill centred on the move, the small mark
+// on a move of 16 to 40 px, and under 16 px the line itself, a little taller than drawn.
+QRectF AnimaticTimeline::easeMarkRect(const CameraSegment &s) const
+{
+    const qreal cx = (s.x0 + s.x1) / 2.0, cy = cameraTrackY() + kCameraH / 2.0;
+    if (s.glyph)
+        return QRectF(cx - kGlyphW / 2.0, cy - kGlyphH / 2.0, kGlyphW, kGlyphH);
+    if (s.smallMark)
+        return QRectF(cx - kSmallMarkW / 2.0, cy - kSmallMarkH / 2.0, kSmallMarkW, kSmallMarkH);
+    return QRectF(s.x0, cy - 5.0, s.x1 - s.x0, 10.0);
+}
+
+bool AnimaticTimeline::easeMarkAt(const QPoint &pos, CameraSegment *segment, QRectF *markRect) const
+{
+    if (!inCameraRow(pos))
+        return false;
+    for (const CameraSegment &s : cameraSegments(cameraMarks())) {
+        const QRectF r = easeMarkRect(s);
+        if (r.adjusted(-1, -2, 1, 2).contains(QPointF(pos))) {
+            *segment = s;
+            *markRect = r;
+            return true;
+        }
+    }
+    return false;
 }
 
 bool AnimaticTimeline::inCameraRow(const QPoint &pos) const
@@ -3024,10 +3094,11 @@ void AnimaticTimeline::paintCameraRow(QPainter &p)
         } else {
             p.fillRect(QRectF(s.x0, cy - 1.0, s.x1 - s.x0, 2.0), c);
         }
-        if (s.glyph)
-            paintEaseGlyph(p, QRectF((s.x0 + s.x1) / 2.0 - kGlyphW / 2.0, cy - kGlyphH / 2.0,
-                                     kGlyphW, kGlyphH),
-                           shotcam::Ease(s.ease));
+        // The mark: the pill, or on a move of 16 to 40 px the small one (batch E); the one
+        // under the pointer with the clips' hover edge - it is a button.
+        const bool markHover = s.sceneIndex == m_easeHoverScene && s.fromKey == m_easeHoverKey;
+        if (s.glyph || s.smallMark)
+            paintEaseGlyph(p, easeMarkRect(s), shotcam::Ease(s.ease), markHover, s.smallMark);
     }
     // Where the shot is off the art, the move dashed amber in place of its line;
     // the keys are painted after, over it.
@@ -3250,6 +3321,10 @@ QVariantList AnimaticTimeline::cameraSegmentsForTest() const
             {QStringLiteral("ease"), shotcam::easeLabel(shotcam::Ease(s.ease))},
             {QStringLiteral("dashed"), s.dashed},
             {QStringLiteral("glyph"), s.glyph},
+            {QStringLiteral("small"), s.smallMark},
+            {QStringLiteral("lineOnly"), s.lineOnly},
+            {QStringLiteral("hover"), s.sceneIndex == m_easeHoverScene && s.fromKey == m_easeHoverKey},
+            {QStringLiteral("markRect"), easeMarkRect(s)},
             {QStringLiteral("accent"), s.accent},
             {QStringLiteral("x0"), s.x0},
             {QStringLiteral("x1"), s.x1}});
@@ -3365,6 +3440,17 @@ void AnimaticTimeline::canvasMousePress(QMouseEvent *e)
             m_camDragFrame = m_camDragFromFrame;
             m_camDragActive = false;
             m_camPress = pos;
+            return;
+        }
+        // A MOVE'S EASE MARK (batch E, Figma E-1): a tap asks for the five eases of that
+        // move; under 16 px, where no mark is drawn, the line itself does. A key wins (above).
+        CameraSegment segment;
+        QRectF markRect;
+        if (easeMarkAt(pos, &segment, &markRect)) {
+            const QRect onScreen(m_canvas->mapToGlobal(markRect.topLeft().toPoint()),
+                                 markRect.size().toSize());
+            emit cameraEaseMarkClicked(segment.sceneIndex, segment.fromKey, onScreen);
+            e->accept();
             return;
         }
         if (qAbs(pos.x() - contentXToScreen(playheadContentX())) > kGrab) {
@@ -3798,6 +3884,22 @@ void AnimaticTimeline::canvasMouseMove(QMouseEvent *e)
         camKey = mark.keyIndex;
         cursor = Qt::PointingHandCursor;
     }
+    // A move's ease mark (batch E): a button - the hand, and its edge lit. Not over a key.
+    int easeScene = -1, easeKey = -1;
+    {
+        CameraSegment segment;
+        QRectF markRect;
+        if (m_tracks.cameraVisible && camKey < 0 && easeMarkAt(pos, &segment, &markRect)) {
+            easeScene = segment.sceneIndex;
+            easeKey = segment.fromKey;
+            cursor = Qt::PointingHandCursor;
+        }
+    }
+    if (easeScene != m_easeHoverScene || easeKey != m_easeHoverKey) {
+        m_easeHoverScene = easeScene;
+        m_easeHoverKey = easeKey;
+        m_canvas->update();
+    }
     // An amber chip at any of its sizes (batch 6d, GROW-1): the hand, and as its
     // tooltip the whole sentence and what a press does.
     const int chipHover = artExitChipAt(pos);
@@ -4004,9 +4106,11 @@ void AnimaticTimeline::canvasLeave()
     if (m_chipHover != -1 || m_camHoverKey != -1 || m_sceneHover != -1)
         sankoHideTipSoon();
     m_chipHover = -1; // its tooltip goes with the pointer's next crossing, as any tooltip
-    if (m_hoverIndex != -1 || m_camHoverKey != -1 || m_audioHover || m_sceneHover != -1) {
+    if (m_hoverIndex != -1 || m_camHoverKey != -1 || m_easeHoverKey != -1 || m_audioHover
+        || m_sceneHover != -1) {
         m_hoverIndex = -1;
         m_camHoverScene = m_camHoverKey = -1;
+        m_easeHoverScene = m_easeHoverKey = -1; // a lit ease mark goes out (batch E)
         m_sceneHover = -1; // an unlocked scene's faint lock goes (batch F1)
         m_sceneLockHover = false;
         m_audioHover = false; // the chips come back

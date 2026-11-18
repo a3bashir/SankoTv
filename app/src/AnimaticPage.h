@@ -345,6 +345,7 @@ signals:
     void cameraKeyContextMenuRequested(int sceneIndex, int keyIndex,
                                        const QPoint &globalPos);
     void cameraRowContextMenuRequested(int flatPanelIndex, const QPoint &globalPos);
+    void cameraEaseMarkClicked(int sceneIndex, int keyIndex, const QRect &globalMarkRect); // batch E
     void artExitChipClicked(int flatPanelIndex, const QPoint &globalPos); // batch 6d
     void cameraAnimateToggled(bool on);
     void sceneContextMenuRequested(int sceneIndex, const QPoint &globalPos); // Phase 1D

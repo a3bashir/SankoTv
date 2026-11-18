@@ -18,6 +18,7 @@ class AnimaticPage;
 class TimelineCanvas; // inner painted surface, defined in the .cpp
 class QContextMenuEvent;
 class QIcon;
+class QPainter;
 class QPushButton;
 class QScrollBar;
 class QTimer;
@@ -227,6 +228,9 @@ public:
     void setSelectedCameraKey(int sceneIndex, int keyIndex); // -1, -1: none
     // The ease glyph (the row's pill and the key menu's Ease entries).
     static QIcon easeGlyphIcon(int ease);
+    // The glyph's curve alone, in `color` and `width`, fitted to `box` as the glyph's 18 x 12
+    // (batch E, Figma E-1: the five eases' buttons in the popover and the key's menu).
+    static void paintEaseCurve(QPainter &p, const QRectF &box, int ease, const QColor &color, qreal width);
     // A QUICK MOVE under the pointer (Phase 1D, Figma 1D-2): the two keys it
     // would add, hollow and dashed, joined by a dashed bar, and the keys it
     // would replace crossed out. Film frames; nothing is changed.
@@ -296,6 +300,9 @@ signals:
     void cameraKeyContextMenuRequested(int sceneIndex, int keyIndex,
                                        const QPoint &globalPos);
     void cameraRowContextMenuRequested(int flatPanelIndex, const QPoint &globalPos);
+    // Batch E (Figma E-1): a tap on a move's ease mark - or, under 16 px, on its line - asks
+    // for the five eases of that move (the key it starts from), by the mark's place on screen.
+    void cameraEaseMarkClicked(int sceneIndex, int keyIndex, const QRect &globalMarkRect);
     // Batch 6d: the amber chip of a clip whose art the camera leaves, pressed.
     void artExitChipClicked(int flatPanelIndex, const QPoint &globalPos);
     void cameraAnimateToggled(bool on);
@@ -380,10 +387,17 @@ private:
         int ease = 0;
         qreal x0 = 0, x1 = 0;       // the bar, between the diamonds
         bool dashed = false;        // Hold
-        bool glyph = false;         // long enough for the ease pill
+        bool glyph = false;         // long enough for the ease pill (40 px or more)
+        bool smallMark = false;     // 16 to 40 px: the small mark (batch E, Figma E-1; not
+                                    // `small`: windows.h makes that a macro)
+        bool lineOnly = false;      // under 16 px: no mark - a tap on the line itself
         bool accent = false;        // starts at the selected key
     };
     QVector<CameraSegment> cameraSegments(const QVector<CameraMark> &marks) const;
+    // The ease mark under a press (batch E): the pill, the small mark, or a short move's
+    // line; `markRect` gets what was pressed, in canvas coordinates.
+    bool easeMarkAt(const QPoint &pos, CameraSegment *segment, QRectF *markRect) const;
+    QRectF easeMarkRect(const CameraSegment &s) const;
     bool cameraKeyAt(const QPoint &pos, CameraMark *mark) const;
     bool inCameraRow(const QPoint &pos) const;
     int sceneStartFrame(int sceneIndex) const; // its first block's start
@@ -574,6 +588,7 @@ private:
     // The CAMERA row's selection, hover and drag (scene, key indices).
     int m_camSelScene = -1, m_camSelKey = -1;
     int m_camHoverScene = -1, m_camHoverKey = -1;
+    int m_easeHoverScene = -1, m_easeHoverKey = -1; // the ease mark under the pointer (batch E)
     int m_camDragScene = -1, m_camDragKey = -1;
     int m_camDragFrame = -1;     // film frame the drag has reached
     int m_camDragFromFrame = -1; // ...and where the key was

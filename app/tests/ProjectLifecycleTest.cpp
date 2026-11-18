@@ -135,6 +135,7 @@
 #include <QLabel>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QWidgetAction>
 #include <QProcess>
 #include <QProgressDialog>
 #include <QScrollArea>
@@ -11721,7 +11722,9 @@ void runCameraRowPass(const QString &scratch)
                   && rec.contains(QStringLiteral("timeline.cameraDrag"))
                   && rec.value(QStringLiteral("timeline.cameraKey")).toString() == QStringLiteral("0:1"),
               rec.value(QStringLiteral("timeline.cameraKey")).toString());
-        click(255); // the row between key 2 and key 3, away from the playhead
+        // The row between key 2 (x 207) and key 3 (x 303), away from the playhead - and off the
+        // move's ease mark at 246-264, a button since batch E (it was 255, the move's middle).
+        click(230);
         check(QStringLiteral("(cr.4) control: a click on the row off every key selects none"),
               !selected(nullptr, nullptr)
                   && r.timeline->devrecState().value(QStringLiteral("timeline.cameraKey")).toString().isEmpty());
@@ -11786,46 +11789,54 @@ void runCameraRowPass(const QString &scratch)
     // --- (cr.6) the key's menu and the row's --------------------------------
     {
         const int count = stack->index();
-        QString header;
+        QString header, rowTitle;
         bool easeOn = false;
         QStringList entries;
         QString checkedEase;
+        // Batch E (Figma E-1): the five eases are a row of buttons under "The move after this
+        // key" - a QWidgetAction "cameraKeyEase" - in place of the Ease submenu.
+        auto easeButtons = [&](QMenu *m) {
+            auto *row = qobject_cast<QWidgetAction *>(findAction(m, QStringLiteral("cameraKeyEase")));
+            return row && row->defaultWidget()
+                ? row->defaultWidget()->findChildren<QAbstractButton *>(QStringLiteral("easeChoice"))
+                : QList<QAbstractButton *>();
+        };
         menuAt(keyX(0, 1), [&](QMenu *m) {
             header = findAction(m, QStringLiteral("cameraKeyHeader"))
                 ? findAction(m, QStringLiteral("cameraKeyHeader"))->text() : QString();
-            QMenu *ease = m->findChild<QMenu *>(QStringLiteral("cameraKeyEase"));
-            easeOn = ease && ease->menuAction()->isEnabled();
-            if (ease)
-                for (QAction *a : ease->actions()) {
-                    entries << a->text();
-                    if (a->isChecked())
-                        checkedEase = a->text();
-                }
-            if (ease)
-                for (QAction *a : ease->actions())
-                    if (a->text() == QStringLiteral("Ease In"))
-                        a->trigger();
+            auto *row = qobject_cast<QWidgetAction *>(findAction(m, QStringLiteral("cameraKeyEase")));
+            easeOn = row && row->isEnabled() && row->defaultWidget() && row->defaultWidget()->isEnabled();
+            if (row && row->defaultWidget())
+                if (auto *t = row->defaultWidget()->findChild<QLabel *>(QStringLiteral("easeRowTitle")))
+                    rowTitle = t->text();
+            for (QAbstractButton *b : easeButtons(m)) {
+                entries << b->text();
+                if (b->isChecked())
+                    checkedEase = b->text();
+            }
+            for (QAbstractButton *b : easeButtons(m))
+                if (b->text() == QStringLiteral("Ease In"))
+                    b->click();
         });
-        check(QStringLiteral("(cr.6) the key's menu names it (Key 2, 00:00:03:00, panel 2) and "
-                             "offers the five eases, its own checked; choosing Ease In is one "
-                             "command"),
+        check(QStringLiteral("(cr.6) the key's menu names it (Key 2, 00:00:03:00, panel 2) and shows the five eases "
+                             "in a row under \"The move after this key\" (batch E), its own marked; choosing Ease In is "
+                             "one command"),
               header == QStringLiteral("Key 2") + dot + QStringLiteral("00:00:03:00") + dot
                             + QStringLiteral("panel 2")
-                  && easeOn
+                  && easeOn && rowTitle == QStringLiteral("The move after this key")
                   && entries == QStringList({QStringLiteral("Linear"), QStringLiteral("Ease In"),
                                              QStringLiteral("Ease Out"), QStringLiteral("Ease In/Out"),
                                              QStringLiteral("Hold")})
                   && checkedEase == QStringLiteral("Linear")
                   && s0->camera.keys.at(1).ease == Ease::EaseIn && stack->index() == count + 1
                   && lastText() == QStringLiteral("Camera Ease"),
-              QStringLiteral("%1 | %2 | checked %3 | +%4").arg(header, entries.join(QLatin1Char(',')),
-                                                               checkedEase).arg(stack->index() - count));
+              QStringLiteral("%1 | %2 | %3 | checked %4 | +%5").arg(header, rowTitle, entries.join(QLatin1Char(',')),
+                                                                    checkedEase).arg(stack->index() - count));
         const int count2 = stack->index();
         menuAt(keyX(0, 1), [&](QMenu *m) {
-            if (QMenu *ease = m->findChild<QMenu *>(QStringLiteral("cameraKeyEase")))
-                for (QAction *a : ease->actions())
-                    if (a->text() == QStringLiteral("Ease In"))
-                        a->trigger(); // the key's own ease already
+            for (QAbstractButton *b : easeButtons(m))
+                if (b->text() == QStringLiteral("Ease In"))
+                    b->click(); // the key's own ease already
         });
         check(QStringLiteral("(cr.6) control: choosing the ease the key already has makes no command"),
               stack->index() == count2);
@@ -11850,40 +11861,45 @@ void runCameraRowPass(const QString &scratch)
                   && s0->camera.keys.at(2).state == s0->camera.keys.at(1).state
                   && lastText() == QStringLiteral("Paste Camera Framing"),
               pasteText);
-        // The last key: no move after it, so no ease. Its label just "Ease", greyed, and
-        // why as its tooltip (the user's rule, 2026-11-13; it read "Ease - no move after
-        // this key").
-        QString lastHeader, lastEase, lastEaseTip;
+        // The last key: no move after it, so no ease. Its row greyed under its own label, and
+        // why as its tooltip (the user's rule, 2026-11-13; batch E's row in place of "Ease").
+        QString lastHeader, lastEase, lastEaseTip, lastRowTip;
         bool lastEaseOn = true, lastTips = false;
         menuAt(keyX(0, 3), [&](QMenu *m) {
             if (QAction *a = findAction(m, QStringLiteral("cameraKeyHeader")))
                 lastHeader = a->text();
-            if (QMenu *ease = m->findChild<QMenu *>(QStringLiteral("cameraKeyEase"))) {
-                lastEaseOn = ease->menuAction()->isEnabled();
-                lastEase = ease->menuAction()->text();
-                lastEaseTip = ease->menuAction()->toolTip();
+            if (auto *row = qobject_cast<QWidgetAction *>(findAction(m, QStringLiteral("cameraKeyEase")))) {
+                lastEaseOn = row->isEnabled() || (row->defaultWidget() && row->defaultWidget()->isEnabled());
+                lastEase = row->text();
+                lastEaseTip = row->toolTip();
+                lastRowTip = row->defaultWidget() ? row->defaultWidget()->toolTip() : QString();
             }
             lastTips = m->toolTipsVisible();
         });
-        QString midEase, midEaseTip;
+        QString midEase, midEaseTip, midRowTip;
         bool midEaseOn = false;
         menuAt(keyX(0, 1), [&](QMenu *m) {
-            if (QMenu *ease = m->findChild<QMenu *>(QStringLiteral("cameraKeyEase"))) {
-                midEaseOn = ease->menuAction()->isEnabled();
-                midEase = ease->menuAction()->text();
-                midEaseTip = ease->menuAction()->toolTip();
+            if (auto *row = qobject_cast<QWidgetAction *>(findAction(m, QStringLiteral("cameraKeyEase")))) {
+                midEaseOn = row->isEnabled() && row->defaultWidget() && row->defaultWidget()->isEnabled();
+                midEase = row->text();
+                midEaseTip = row->toolTip();
+                midRowTip = row->defaultWidget() ? row->defaultWidget()->toolTip() : QStringLiteral("?");
             }
         });
-        check(QStringLiteral("(cr.6) on the scene's last key Ease is disabled - its label just \"Ease\", and "
-                             "\"No move after this key.\" its tooltip, in a menu that shows tooltips - and the "
-                             "header says \"last key\""),
-              !lastEaseOn && lastEase == QStringLiteral("Ease") && lastEaseTip == QStringLiteral("No move after this key.")
-                  && lastTips && lastHeader.endsWith(QStringLiteral("last key")),
-              lastHeader + QStringLiteral(" | ") + lastEase + QStringLiteral(" | ") + lastEaseTip);
-        check(QStringLiteral("(cr.6) control: on key 2, with a move after it, Ease is on, with the same label and no "
-                             "tooltip of its own (an action's tooltip is its text when none is set)"),
-              midEaseOn && midEase == QStringLiteral("Ease") && midEaseTip == midEase,
-              midEase + QStringLiteral(" | ") + midEaseTip);
+        check(QStringLiteral("(cr.6) on the scene's last key the eases' row is disabled - its label just \"The move "
+                             "after this key\", and \"No move after this key.\" its tooltip (the entry's and the "
+                             "row's), in a menu that shows tooltips - and the header says \"last key\""),
+              !lastEaseOn && lastEase == QStringLiteral("The move after this key")
+                  && lastEaseTip == QStringLiteral("No move after this key.")
+                  && lastRowTip == QStringLiteral("No move after this key.") && lastTips
+                  && lastHeader.endsWith(QStringLiteral("last key")),
+              lastHeader + QStringLiteral(" | ") + lastEase + QStringLiteral(" | ") + lastEaseTip
+                  + QStringLiteral(" | ") + lastRowTip);
+        check(QStringLiteral("(cr.6) control: on key 2, with a move after it, the row is on, with the same label and "
+                             "no tooltip of its own (an action's tooltip is its text when none is set; the row's none)"),
+              midEaseOn && midEase == QStringLiteral("The move after this key") && midEaseTip == midEase
+                  && midRowTip.isEmpty(),
+              midEase + QStringLiteral(" | ") + midEaseTip + QStringLiteral(" | ") + midRowTip);
         // Delete Key, and Undo.
         const QByteArray beforeDelete = json(s0);
         menuAt(keyX(0, 2), [&](QMenu *m) {
@@ -12023,8 +12039,8 @@ void runCameraRowPass(const QString &scratch)
         menuAt(keyX(0, 1), [&](QMenu *m) {
             if (QAction *a = findAction(m, QStringLiteral("cameraKeyHeader")))
                 header = a->text();
-            if (QMenu *ease = m->findChild<QMenu *>(QStringLiteral("cameraKeyEase")))
-                easeOn = ease->menuAction()->isEnabled();
+            if (auto *row = qobject_cast<QWidgetAction *>(findAction(m, QStringLiteral("cameraKeyEase"))))
+                easeOn = row->isEnabled() || (row->defaultWidget() && row->defaultWidget()->isEnabled());
             if (QAction *a = findAction(m, QStringLiteral("cameraDeleteKey")))
                 delOn = a->isEnabled();
             if (QAction *a = findAction(m, QStringLiteral("cameraPasteFraming")))
@@ -20861,6 +20877,1127 @@ void runEyedropperFlipPass(const QString &scratch)
 // the box lands; the keyboard owners routeCanvasKey has kept since 2026-11-09 - a text field, a
 // number field, a list, the menu bar - keep it; with no box Enter does nothing; Esc still follows
 // the pointer.
+// --- (ea) BATCH E, EASES ON THE LINE (Figma E-1; the user's answers of 2026-11-15) ------------
+// A move's ease mark is a button: a tap opens the five eases there, in a popover over the mark;
+// one tap applies (one command) and closes; Esc closes with no change. Marks: the 18 x 12 pill on
+// a move of 40 px or more, a 12 x 10 one from 16 to 40 px, none under 16 px - where a tap on the
+// line itself opens the five. The camera row's own fixture: scene 1's keys at frames 12 (Ease
+// In/Out), 72 (Linear), 168 (Hold), 240; scene 2's at 0 and 72.
+void runEaseOnLinePass(const QString &scratch)
+{
+    using namespace workspace;
+    using namespace camtool;
+    out() << "--- (ea) batch E: the five eases on a move's mark ---" << Qt::endl;
+    const QString project = writeProject(scratch + QStringLiteral("/easeline"), QStringLiteral("EaseLine"),
+                                         QSize(1920, 1080), 24, 2, 4);
+    auto rig = std::make_unique<Rig>(project);
+    Rig &r = *rig;
+    check(QStringLiteral("(ea) the workspace opened"), r.ok);
+    if (!r.ok)
+        return;
+    Scene *s0 = r.window.scenesForTest().value(0);
+    Scene *s1 = r.window.scenesForTest().value(1);
+    QUndoStack *stack = r.window.undoStackForTest();
+    if (!s0 || !s1 || s0->panels.size() < 4 || s1->panels.size() < 2 || !stack) {
+        check(QStringLiteral("(ea) found the two scenes and the history"), false);
+        return;
+    }
+    using shotcam::CameraState;
+    using shotcam::Ease;
+    {
+        shotcam::SceneCamera c0, c1;
+        c0.keys << shotcam::makeKey(*s0, 0, 12, 24, CameraState{960, 540, 1.2, 0}, Ease::EaseInOut)
+                << shotcam::makeKey(*s0, 1, 24, 24, CameraState{900, 500, 1.5, 0}, Ease::Linear)
+                << shotcam::makeKey(*s0, 2, 48, 24, CameraState{1000, 560, 2.0, 10}, Ease::Hold)
+                << shotcam::makeKey(*s0, 3, 24, 24, CameraState{960, 540, 1.3, 0}, Ease::EaseOut);
+        c1.keys << shotcam::makeKey(*s1, 0, 0, 24, CameraState{960, 540, 1.4, 0}, Ease::EaseInOut)
+                << shotcam::makeKey(*s1, 1, 24, 24, CameraState{800, 450, 1.8, 0}, Ease::EaseInOut);
+        r.storyboard->applyCameraForUndo(s0, c0);
+        r.storyboard->applyCameraForUndo(s1, c1);
+    }
+    r.timeline->userScrollForTest(0);
+    const int rowY = r.timeline->cameraRowForTest().y() + 14;
+    auto lastText = [&] { return stack->index() > 0 ? stack->text(stack->index() - 1) : QString(); };
+    auto seg = [&](int scene, int from) {
+        for (const QVariant &v : r.timeline->cameraSegmentsForTest())
+            if (v.toMap().value(QStringLiteral("scene")).toInt() == scene
+                && v.toMap().value(QStringLiteral("from")).toInt() == from)
+                return v.toMap();
+        return QVariantMap();
+    };
+    auto kind = [&](const QVariantMap &m) {
+        return m.value(QStringLiteral("glyph")).toBool() ? QStringLiteral("pill")
+            : m.value(QStringLiteral("small")).toBool() ? QStringLiteral("small")
+            : m.value(QStringLiteral("lineOnly")).toBool() ? QStringLiteral("line") : QStringLiteral("?");
+    };
+    auto kinds = [&] {
+        return QStringList{kind(seg(0, 0)), kind(seg(0, 1)), kind(seg(0, 2)), kind(seg(1, 0))};
+    };
+    auto markCentre = [&](int scene, int from) {
+        return seg(scene, from).value(QStringLiteral("markRect")).toRectF().center();
+    };
+    auto tap = [&](const QPointF &at) {
+        mouse(r.surface, QEvent::MouseButtonPress, at, Qt::LeftButton, Qt::LeftButton);
+        mouse(r.surface, QEvent::MouseButtonRelease, at, Qt::LeftButton, Qt::NoButton);
+        pump(80);
+    };
+    auto popover = [&] { return r.storyboard->easePopoverForTest(); };
+    auto closePopover = [&] {
+        if (QWidget *p = popover())
+            p->close();
+        pump(60);
+    };
+    auto buttons = [&] {
+        return popover() ? popover()->findChildren<QAbstractButton *>(QStringLiteral("easeChoice"))
+                         : QList<QAbstractButton *>();
+    };
+    auto label = [&](const QString &name) {
+        QLabel *l = popover() ? popover()->findChild<QLabel *>(name) : nullptr;
+        return l ? l->text() : QString();
+    };
+    // The pill's ground (#17171F) inside a rect of the timeline's own drawing.
+    auto pillPixels = [&](const QRectF &rect) {
+        const QImage img = r.surface->grab().toImage();
+        const qreal d = img.devicePixelRatio();
+        int n = 0;
+        for (int y = int(rect.top() * d); y < int(rect.bottom() * d); ++y)
+            for (int x = int(rect.left() * d); x < int(rect.right() * d); ++x)
+                if (img.valid(x, y) && img.pixelColor(x, y) == QColor(0x17, 0x17, 0x1f))
+                    ++n;
+        return n;
+    };
+
+    // (ea1) the marks by the move's length on screen.
+    r.timeline->setZoomForTest(100);
+    pump(120);
+    const QStringList at100 = kinds();
+    const int pill100 = pillPixels(seg(0, 0).value(QStringLiteral("markRect")).toRectF());
+    r.timeline->setZoomForTest(50);
+    pump(120);
+    const QStringList at50 = kinds();
+    const int small50 = pillPixels(seg(0, 0).value(QStringLiteral("markRect")).toRectF());
+    r.timeline->setZoomForTest(30);
+    pump(120);
+    const QStringList at30 = kinds();
+    const QRectF line30 = seg(0, 0).value(QStringLiteral("markRect")).toRectF();
+    const int none30 = pillPixels(line30);
+    check(QStringLiteral("(ea1) THE MARKS BY LENGTH (Figma E-1): at 1 px a frame every move has the pill; at 0.5 the "
+                         "four moves (18, 36, 24, 24 px) the small mark; at 0.3 the 6 and 9.6 px moves none (the line) "
+                         "and the 16.8 px one the small mark"),
+          at100 == QStringList({QStringLiteral("pill"), QStringLiteral("pill"), QStringLiteral("pill"), QStringLiteral("pill")})
+              && at50 == QStringList({QStringLiteral("small"), QStringLiteral("small"), QStringLiteral("small"),
+                                      QStringLiteral("small")})
+              && at30 == QStringList({QStringLiteral("line"), QStringLiteral("small"), QStringLiteral("line"),
+                                      QStringLiteral("line")}),
+          QStringLiteral("100: %1 | 50: %2 | 30: %3").arg(at100.join(QLatin1Char(',')), at50.join(QLatin1Char(',')),
+                                                         at30.join(QLatin1Char(','))));
+    check(QStringLiteral("(ea1) control: drawn as said - the pill's ground fills its 18 x 12 and the small mark's its "
+                         "12 x 10; on a line-only move there is none"),
+          pill100 > 100 && small50 > 40 && small50 < pill100 && none30 == 0,
+          QStringLiteral("pill %1 px, small %2 px, line %3 px").arg(pill100).arg(small50).arg(none30));
+
+    // (ea2) a tap on the pill opens the five, the move's own marked, above the mark.
+    r.timeline->setZoomForTest(100);
+    pump(120);
+    const QRectF mark = seg(0, 0).value(QStringLiteral("markRect")).toRectF();
+    tap(mark.center());
+    QWidget *pop = popover();
+    QStringList names;
+    QString marked;
+    for (QAbstractButton *b : buttons()) {
+        names << b->text();
+        if (b->isChecked())
+            marked = b->text();
+    }
+    const QRect markOnScreen(r.surface->mapToGlobal(mark.topLeft().toPoint()), mark.size().toSize());
+    const bool above = pop && pop->geometry().bottom() < markOnScreen.top()
+        && qAbs(pop->geometry().center().x() - markOnScreen.center().x()) <= 2;
+    check(QStringLiteral("(ea2) A TAP ON THE MARK OPENS THE FIVE EASES: a popover over the mark, \"The move after Key 1\", "
+                         "Linear, Ease In, Ease Out, Ease In/Out, Hold - the move's own (Ease In/Out) marked and named"),
+          pop && pop->isVisible() && label(QStringLiteral("easeRowTitle")) == QStringLiteral("The move after Key 1")
+              && names == QStringList({QStringLiteral("Linear"), QStringLiteral("Ease In"), QStringLiteral("Ease Out"),
+                                       QStringLiteral("Ease In/Out"), QStringLiteral("Hold")})
+              && marked == QStringLiteral("Ease In/Out") && label(QStringLiteral("easeRowName")) == marked && above,
+          QStringLiteral("open %1, '%2', %3, marked %4, name '%5', above %6")
+              .arg(pop != nullptr).arg(label(QStringLiteral("easeRowTitle")), names.join(QLatin1Char(',')), marked,
+                                        label(QStringLiteral("easeRowName")))
+              .arg(above));
+
+    // (ea3) one tap applies - one command - and closes.
+    const int before3 = stack->index();
+    for (QAbstractButton *b : buttons())
+        if (b->text() == QStringLiteral("Ease Out"))
+            b->click();
+    pump(80);
+    const bool applied = s0->camera.keys.at(0).ease == Ease::EaseOut && stack->index() == before3 + 1
+        && lastText() == QStringLiteral("Camera Ease") && !popover()
+        && seg(0, 0).value(QStringLiteral("ease")).toString() == QStringLiteral("Ease Out");
+    check(QStringLiteral("(ea3) ONE TAP APPLIES AND CLOSES: Ease Out on the first move - one command (\"Camera Ease\"), "
+                         "the mark shows it, the popover gone"),
+          applied, QStringLiteral("ease %1, +%2 '%3', open %4").arg(int(s0->camera.keys.at(0).ease))
+                       .arg(stack->index() - before3).arg(lastText()).arg(popover() != nullptr));
+    tap(mark.center());
+    const int before3b = stack->index();
+    for (QAbstractButton *b : buttons())
+        if (b->text() == QStringLiteral("Ease Out"))
+            b->click(); // the move's own now
+    pump(80);
+    check(QStringLiteral("(ea3) control: a tap on the move's own ease makes no command, and still closes"),
+          stack->index() == before3b && !popover());
+    r.window.undoActionForTest()->trigger();
+    pump(60);
+
+    // (ea4) Esc closes with no change.
+    tap(mark.center());
+    const bool openedForEsc = popover() != nullptr;
+    const int before4 = stack->index();
+    if (QWidget *p = popover()) {
+        QKeyEvent esc(QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier);
+        QCoreApplication::sendEvent(p, &esc);
+    }
+    pump(80);
+    check(QStringLiteral("(ea4) ESC CLOSES THE FIVE WITH NO CHANGE"),
+          openedForEsc && !popover() && stack->index() == before4 && s0->camera.keys.at(0).ease == Ease::EaseInOut,
+          QStringLiteral("opened %1, open %2, +%3").arg(openedForEsc).arg(popover() != nullptr)
+              .arg(stack->index() - before4));
+
+    // (ea5) short moves: the small mark, and under 16 px the line.
+    r.timeline->setZoomForTest(50);
+    pump(120);
+    tap(markCentre(0, 1));
+    const QString smallTitle = label(QStringLiteral("easeRowTitle"));
+    QString smallMarked;
+    for (QAbstractButton *b : buttons())
+        if (b->isChecked())
+            smallMarked = b->text();
+    closePopover();
+    r.timeline->setZoomForTest(30);
+    pump(120);
+    const QRectF line = seg(0, 2).value(QStringLiteral("markRect")).toRectF();
+    tap(line.center());
+    const QString onLine = label(QStringLiteral("easeRowTitle"));
+    closePopover();
+    check(QStringLiteral("(ea5) SHORT MOVES: at 0.5 px a frame a tap on the small mark opens the five for its move (Key 2's, "
+                         "Linear marked); at 0.3 a tap on the 9.6 px line - no mark there - opens them for Key 3's move"),
+          smallTitle == QStringLiteral("The move after Key 2") && smallMarked == QStringLiteral("Linear")
+              && onLine == QStringLiteral("The move after Key 3"),
+          QStringLiteral("'%1' %2 | '%3'").arg(smallTitle, smallMarked, onLine));
+    r.timeline->setZoomForTest(100);
+    pump(120);
+    const QRectF longSeg(seg(0, 2).value(QStringLiteral("x0")).toDouble(), rowY - 2,
+                         seg(0, 2).value(QStringLiteral("x1")).toDouble() - seg(0, 2).value(QStringLiteral("x0")).toDouble(), 4);
+    tap(QPointF(longSeg.left() + 8, rowY)); // on the line, well off its pill
+    const bool lineQuiet = !popover();
+    closePopover();
+    check(QStringLiteral("(ea5) control: on a long move the line beside the pill opens nothing - only the mark does there"),
+          lineQuiet);
+
+    // (ea6) the mark is a button: the hand and its edge lit.
+    mouse(r.surface, QEvent::MouseMove, mark.center(), Qt::NoButton, Qt::NoButton);
+    pump(60);
+    const bool lit = seg(0, 0).value(QStringLiteral("hover")).toBool()
+        && r.surface->cursor().shape() == Qt::PointingHandCursor;
+    mouse(r.surface, QEvent::MouseMove, QPointF(longSeg.left() + 8, rowY), Qt::NoButton, Qt::NoButton);
+    pump(60);
+    const bool unlit = !seg(0, 0).value(QStringLiteral("hover")).toBool() && !seg(0, 2).value(QStringLiteral("hover")).toBool();
+    check(QStringLiteral("(ea6) THE MARK IS A BUTTON: over it the hand and its edge lit (the clips' hover edge)"), lit);
+    check(QStringLiteral("(ea6) control: off it, on the line, no mark is lit"), unlit);
+
+    // (ea7) a locked CAMERA track: the five shown, greyed, saying why; nothing changes.
+    QToolButton *lock = r.timeline->trackControlForTest(QStringLiteral("trackLockCamera"));
+    if (lock)
+        lock->click();
+    pump(60);
+    tap(mark.center());
+    const QString lockedTitle = label(QStringLiteral("easeRowTitle"));
+    bool allOff = !buttons().isEmpty();
+    for (QAbstractButton *b : buttons())
+        allOff = allOff && !b->isEnabled();
+    const int before7 = stack->index();
+    for (QAbstractButton *b : buttons())
+        if (b->text() == QStringLiteral("Hold"))
+            b->click();
+    pump(60);
+    closePopover();
+    if (lock)
+        lock->click();
+    pump(60);
+    check(QStringLiteral("(ea7) A LOCKED CAMERA TRACK: the five shown greyed under \"The CAMERA track is locked.\", and a "
+                         "click changes nothing"),
+          lockedTitle == QStringLiteral("The CAMERA track is locked.") && allOff && stack->index() == before7
+              && s0->camera.keys.at(0).ease == Ease::EaseInOut,
+          QStringLiteral("'%1' off %2 +%3").arg(lockedTitle).arg(allOff).arg(stack->index() - before7));
+    tap(mark.center());
+    bool allOn = !buttons().isEmpty();
+    for (QAbstractButton *b : buttons())
+        allOn = allOn && b->isEnabled();
+    closePopover();
+    check(QStringLiteral("(ea7) control: unlocked, the same five are on"), allOn);
+}
+
+// --- (eb) BATCH E, GROW ALL / START THE MOVE HERE (Figma E-1; the trial: "a framing held over
+// panels with no margin has to be grown one panel at a time") ---------------------------------
+// One scene of 8 panels (2, 3, 4, 2, 3, 4, 2, 3 s: frames 0, 48, 120, 216, 264, 336, 432, 480,
+// 552); a Linear pan from Panel 1's start (cx 960) to Panel 8's (cx 1920). Panels 7 and 8 have a
+// 960 px right margin, so the move leaves the art of Panels 1 to 6 only - E-1's own example.
+void runGrowAllPass(const QString &scratch)
+{
+    using namespace workspace;
+    out() << "--- (eb) batch E: Grow all, and Start the move here ---" << Qt::endl;
+    const QString dir = scratch + QStringLiteral("/growall");
+    QDir(dir).removeRecursively();
+    QDir().mkpath(dir);
+    const QString project = writeProject(dir, QStringLiteral("GrowAll"), QSize(1920, 1080), 24, 1, 8);
+    auto rig = std::make_unique<Rig>(project);
+    Rig &r = *rig;
+    check(QStringLiteral("(eb) the workspace opened"), r.ok);
+    if (!r.ok)
+        return;
+    QUndoStack *stack = r.window.undoStackForTest();
+    Scene *scene = r.window.scenesForTest().value(0);
+    if (!stack || !scene || scene->panels.size() != 8) {
+        check(QStringLiteral("(eb) found the history and the scene's 8 panels"), false);
+        return;
+    }
+    const int fps = 24;
+    r.storyboard->applyPanelMargin(scene->panels.at(6), QMargins(0, 0, 960, 0));
+    r.storyboard->applyPanelMargin(scene->panels.at(7), QMargins(0, 0, 960, 0));
+    shotcam::CameraState a;
+    a.cx = 960.0;
+    a.cy = 540.0;
+    shotcam::CameraState b = a;
+    b.cx = 1920.0;
+    shotcam::SceneCamera cam;
+    cam.keys = {shotcam::makeKey(*scene, 0, 0, fps, a, shotcam::Ease::Linear),
+                shotcam::makeKey(*scene, 7, 0, fps, b, shotcam::Ease::Linear)};
+    r.storyboard->applyCameraForUndo(scene, cam);
+    r.timeline->setZoomForTest(100);
+    pump(120);
+    auto leaving = [&] {
+        QStringList l;
+        for (int i = 0; i < 8; ++i)
+            if (r.timeline->artExitFramesForTest(i) > 0)
+                l << QString::number(i + 1);
+        return l.join(QLatin1Char(','));
+    };
+    // The entries a menu offers: Grow, Grow all, Start - their text, enabled, tooltip.
+    struct Seen
+    {
+        QString grow, growAll, start, growAllTip, startTip;
+        bool growAllOn = false, startOn = false;
+        QAction *growAllAct = nullptr, *startAct = nullptr;
+    };
+    Seen seen;
+    QString trigger; // the objectName to trigger, if any
+    r.storyboard->setClipMenuHookForTest([&](QMenu *m) {
+        seen = Seen();
+        for (QAction *act : m->actions()) {
+            if (act->objectName() == QStringLiteral("cameraGrowToFit"))
+                seen.grow = act->text();
+            if (act->objectName() == QStringLiteral("cameraGrowAllToFit")) {
+                seen.growAll = act->text();
+                seen.growAllOn = act->isEnabled();
+                seen.growAllTip = act->toolTip();
+            }
+            if (act->objectName() == QStringLiteral("cameraStartMoveHere")) {
+                seen.start = act->text();
+                seen.startOn = act->isEnabled();
+                seen.startTip = act->toolTip();
+            }
+            if (!trigger.isEmpty() && act->objectName() == trigger)
+                act->trigger();
+        }
+    });
+    const int rowY = r.timeline->cameraRowForTest().y() + 14;
+    auto chipMenu = [&](int flat) {
+        const QRect chip = r.timeline->artExitChipRectForTest(flat);
+        sendMouse(r.surface, QEvent::MouseButtonPress, QPointF(chip.center()), Qt::LeftButton);
+        sendMouse(r.surface, QEvent::MouseButtonRelease, QPointF(chip.center()), Qt::LeftButton);
+        pump(120);
+    };
+    auto rowMenu = [&](int flat) {
+        const QPoint at(r.timeline->clipRectForTest(flat).center().x(), rowY);
+        QContextMenuEvent ev(QContextMenuEvent::Mouse, at, r.surface->mapToGlobal(at));
+        QCoreApplication::sendEvent(r.surface, &ev);
+        pump(120);
+    };
+    const QString wantAll = QStringLiteral("Grow all 6 panels to fit this move");
+    const QString wantStart = QStringLiteral("Start the move at Panel 7 (Panels 1 to 6 keep the base framing)");
+
+    // (eb1) offered in the chip's, the CAMERA row's and the clip's menus alike.
+    const QString leavesFirst = leaving();
+    chipMenu(2);
+    const Seen onChip = seen;
+    rowMenu(2);
+    const Seen onRow = seen;
+    rightClickClip(r, 2);
+    const Seen onClip = seen;
+    auto offers = [&](const Seen &s) {
+        return s.grow.startsWith(QStringLiteral("Grow Panel 3")) && s.growAll == wantAll && s.growAllOn
+            && s.start == wantStart && s.startOn;
+    };
+    check(QStringLiteral("(eb1) THE MOVE LEAVES PANELS 1 TO 6, AND EVERY MENU THAT OFFERS GROW OFFERS BOTH: the chip's, the "
+                         "CAMERA row's and the clip's - \"Grow all 6 panels to fit this move\" and \"Start the move at Panel 7 "
+                         "(Panels 1 to 6 keep the base framing)\", after the panel's own Grow"),
+          leavesFirst == QStringLiteral("1,2,3,4,5,6") && offers(onChip) && offers(onRow) && offers(onClip),
+          QStringLiteral("leaving %1 | chip '%2' '%3' '%4' | row '%5' '%6' | clip '%7' '%8'")
+              .arg(leavesFirst, onChip.grow, onChip.growAll, onChip.start, onRow.growAll, onRow.start, onClip.growAll,
+                   onClip.start));
+    // Control: with only Panel 3 leaving, no "Grow all" - and the move starts after it.
+    for (int i : {0, 1, 3, 4, 5})
+        r.storyboard->applyPanelMargin(scene->panels.at(i), QMargins(0, 0, 960, 0));
+    pump(80);
+    rowMenu(2);
+    const Seen single = seen;
+    for (int i : {0, 1, 3, 4, 5})
+        r.storyboard->applyPanelMargin(scene->panels.at(i), QMargins());
+    pump(80);
+    check(QStringLiteral("(eb1) control: when only Panel 3 leaves, \"Grow all\" is not offered, and the start moves with the "
+                         "panels it leaves: \"Start the move at Panel 4 (Panels 1 to 3 keep the base framing)\""),
+          single.growAll.isEmpty() && single.start == QStringLiteral("Start the move at Panel 4 (Panels 1 to 3 keep the base framing)")
+              && leaving() == leavesFirst,
+          QStringLiteral("'%1' '%2'").arg(single.growAll, single.start));
+
+    // (eb2) Grow all: one step, each panel by what it needs.
+    QVector<QMargins> needs;
+    for (int i = 0; i < 6; ++i) {
+        QMargins g;
+        r.storyboard->growToFitText(0, i, &g);
+        needs << g;
+    }
+    const int before2 = stack->index();
+    trigger = QStringLiteral("cameraGrowAllToFit");
+    chipMenu(4);
+    trigger.clear();
+    bool eachOwn = true;
+    for (int i = 0; i < 6; ++i)
+        eachOwn = eachOwn && r.storyboard->panelMargins(scene->panels.at(i)) == needs.at(i);
+    const QString leavesAfter = leaving();
+    check(QStringLiteral("(eb2) GROW ALL: one undo step, \"Stage Margin (6 panels)\"; each of Panels 1 to 6 grown by what it "
+                         "needs (94 to 862 px, as its own Grow would), and the move then leaves none"),
+          stack->index() == before2 + 1 && stack->undoText() == QStringLiteral("Stage Margin (6 panels)") && eachOwn
+              && leavesAfter.isEmpty() && needs.first().right() < needs.last().right(),
+          QStringLiteral("steps +%1 '%2' own %3 leaving '%4' needs %5..%6").arg(stack->index() - before2)
+              .arg(stack->undoText()).arg(eachOwn).arg(leavesAfter).arg(needs.first().right()).arg(needs.last().right()));
+    r.window.undoActionForTest()->trigger();
+    pump(100);
+    bool allBack = true;
+    for (int i = 0; i < 6; ++i)
+        allBack = allBack && r.storyboard->panelMargins(scene->panels.at(i)).isNull();
+    check(QStringLiteral("(eb2) control: one Undo takes all six back - the move leaves Panels 1 to 6 again"),
+          allBack && leaving() == leavesFirst, leaving());
+
+    // (eb3) Start the move at Panel 7: a key there holding the first key's framing.
+    const int before3 = stack->index();
+    const int keysBefore = scene->camera.keys.size();
+    trigger = QStringLiteral("cameraStartMoveHere");
+    rowMenu(1);
+    trigger.clear();
+    bool newKey = false;
+    for (const shotcam::CameraKey &k : scene->camera.keys)
+        if (qAbs(shotcam::keyFrame(*scene, k, fps, 0) - 432.0) < 0.5)
+            newKey = k.state == a && k.ease == shotcam::Ease::Linear;
+    const shotcam::CameraState onPanel3 = shotcam::evaluateAtPanel(*scene, 2, 50, fps, 0);
+    const shotcam::CameraState onPanel7 = shotcam::evaluateAtPanel(*scene, 6, 24, fps, 0);
+    check(QStringLiteral("(eb3) START THE MOVE AT PANEL 7: one undo step (\"Start Move at Panel 7\"), a key at Panel 7's "
+                         "start with the first key's framing and ease; Panels 1 to 6 keep that framing (none leaves), the "
+                         "move runs over Panel 7"),
+          stack->index() == before3 + 1 && stack->undoText() == QStringLiteral("Start Move at Panel 7")
+              && scene->camera.keys.size() == keysBefore + 1 && newKey && leaving().isEmpty()
+              && qAbs(onPanel3.cx - 960.0) < 1e-6 && onPanel7.cx > 960.0 + 100.0,
+          QStringLiteral("steps +%1 '%2' keys %3 new %4 leaving '%5' cx %6 / %7").arg(stack->index() - before3)
+              .arg(stack->undoText()).arg(scene->camera.keys.size()).arg(newKey).arg(leaving())
+              .arg(onPanel3.cx).arg(onPanel7.cx));
+    r.window.undoActionForTest()->trigger();
+    pump(100);
+    check(QStringLiteral("(eb3) control: Undo takes the key away - the move leaves Panels 1 to 6 again"),
+          scene->camera.keys.size() == keysBefore && leaving() == leavesFirst, leaving());
+
+    // (eb4) the locks: greyed, saying why.
+    r.animatic->setTrackLocked(TimelineTrack::Shots, true);
+    pump(30);
+    rowMenu(2);
+    const Seen shotsLockedSeen = seen;
+    r.animatic->setTrackLocked(TimelineTrack::Shots, false);
+    r.animatic->setTrackLocked(TimelineTrack::Camera, true);
+    pump(30);
+    rightClickClip(r, 2);
+    const Seen cameraLockedSeen = seen;
+    r.animatic->setTrackLocked(TimelineTrack::Camera, false);
+    pump(30);
+    check(QStringLiteral("(eb4) LOCKS: on a locked SHOTS track \"Grow all\" is there, greyed, \"The SHOTS track is locked.\" "
+                         "its tooltip; on a locked CAMERA track \"Start the move\" the same, \"The CAMERA track is locked.\""),
+          shotsLockedSeen.growAll == wantAll && !shotsLockedSeen.growAllOn
+              && shotsLockedSeen.growAllTip == QStringLiteral("The SHOTS track is locked.")
+              && cameraLockedSeen.start == wantStart && !cameraLockedSeen.startOn
+              && cameraLockedSeen.startTip == QStringLiteral("The CAMERA track is locked."),
+          QStringLiteral("shots: '%1' %2 '%3' | camera: '%4' %5 '%6'").arg(shotsLockedSeen.growAll).arg(shotsLockedSeen.growAllOn)
+              .arg(shotsLockedSeen.growAllTip, cameraLockedSeen.start).arg(cameraLockedSeen.startOn).arg(cameraLockedSeen.startTip));
+    check(QStringLiteral("(eb4) control: unlocked, both are on (eb1) - and the other lock leaves each alone"),
+          shotsLockedSeen.startOn && cameraLockedSeen.growAllOn);
+    r.storyboard->setClipMenuHookForTest({});
+}
+
+// --- (ec) BATCH E, SCENE COLOURS (Figma E-1; the user's answer: automatic) ----------------------
+// Nine scenes of one panel: the muted set in order (the ninth starts again), on the SCENES row
+// (behind the name at 40 %, the baseline), along each clip's top and on the card; the scene's
+// menu - Auto, the eight, Custom...; one step; saved; never in the picture.
+void runSceneColoursPass(const QString &scratch)
+{
+    using namespace workspace;
+    out() << "--- (ec) batch E: scene colours ---" << Qt::endl;
+    const QString dir = scratch + QStringLiteral("/scenecolours");
+    QDir(dir).removeRecursively();
+    QDir().mkpath(dir);
+    const QString project = writeProject(dir, QStringLiteral("Colours"), QSize(1920, 1080), 24, 9, 1);
+    auto rig = std::make_unique<Rig>(project);
+    Rig &r = *rig;
+    check(QStringLiteral("(ec) the workspace opened"), r.ok);
+    if (!r.ok)
+        return;
+    QUndoStack *stack = r.window.undoStackForTest();
+    const QVector<Scene *> scenes = r.window.scenesForTest();
+    if (!stack || scenes.size() != 9) {
+        check(QStringLiteral("(ec) found the history and the nine scenes"), false);
+        return;
+    }
+    r.timeline->setZoomForTest(100);
+    r.timeline->userScrollForTest(0);
+    pump(150);
+    const QStringList setNames{QStringLiteral("Slate"), QStringLiteral("Teal"), QStringLiteral("Moss"),
+                               QStringLiteral("Ochre"), QStringLiteral("Rust"), QStringLiteral("Plum"),
+                               QStringLiteral("Steel"), QStringLiteral("Sand")};
+    const QVector<QColor> set{QColor(0x5b, 0x6e, 0x9c), QColor(0x4f, 0x8a, 0x85), QColor(0x6e, 0x8b, 0x52),
+                              QColor(0xa8, 0x8b, 0x4c), QColor(0xa3, 0x65, 0x4f), QColor(0x8c, 0x5d, 0x88),
+                              QColor(0x6c, 0x7d, 0x8e), QColor(0x98, 0x85, 0x6a)};
+    auto closeTo = [](const QColor &a, const QColor &b, int tol) { // not `near`: windows.h's macro
+        return qAbs(a.red() - b.red()) <= tol && qAbs(a.green() - b.green()) <= tol && qAbs(a.blue() - b.blue()) <= tol;
+    };
+    // The block's #202029 under the colour at 40 % (102 of 255), as a fill paints it.
+    auto tinted = [](const QColor &c) {
+        const QColor block(0x20, 0x20, 0x29);
+        auto mix = [](int over, int under) { return qRound((over * 102 + under * 153) / 255.0); };
+        return QColor(mix(c.red(), block.red()), mix(c.green(), block.green()), mix(c.blue(), block.blue()));
+    };
+    // What a scene shows: its block, its baseline, its clip's strip, its card's swatch.
+    struct Shown
+    {
+        QColor block, baseline, strip, swatch;
+    };
+    auto shownOf = [&](int si) {
+        const QImage img = r.surface->grab().toImage();
+        const QRect sr = r.timeline->sceneRectForTest(si);
+        const QRect cr = r.timeline->clipRectForTest(si); // one panel a scene: clip si
+        Shown s;
+        s.block = img.pixelColor(sr.left() + 3, sr.top() + 3);
+        s.baseline = img.pixelColor(sr.center().x(), sr.bottom());
+        s.strip = img.pixelColor(cr.center().x(), cr.top() + 4);
+        // The cards are rebuilt with deleteLater: the old ones go first, or they are found too.
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        const QList<QFrame *> swatches = r.storyboard->findChildren<QFrame *>(QStringLiteral("sceneCardSwatch"));
+        if (swatches.size() != 9)
+            return s; // any other count is a failure of its own: nothing shown
+        if (si < swatches.size() && swatches.at(si)) {
+            const QImage sw = swatches.at(si)->grab().toImage();
+            s.swatch = sw.pixelColor(sw.width() / 2, sw.height() / 2);
+        }
+        return s;
+    };
+    auto showsColour = [&](int si, const QColor &c) {
+        const Shown s = shownOf(si);
+        return closeTo(s.block, tinted(c), 2) && closeTo(s.baseline, c, 2) && closeTo(s.strip, c, 3)
+            && closeTo(s.swatch, c, 2);
+    };
+
+    // (ec1) Auto, in order, in the three places.
+    QStringList bad;
+    for (int si = 0; si < 9; ++si) {
+        const QColor want = set.at(si % 8);
+        if (!showsColour(si, want)) {
+            const Shown s = shownOf(si);
+            bad << QStringLiteral("scene %1: block %2 (want %3) baseline %4 strip %5 swatch %6 (want %7)")
+                       .arg(si + 1).arg(s.block.name(), tinted(want).name(), s.baseline.name(), s.strip.name(),
+                                        s.swatch.name(), want.name());
+        }
+    }
+    check(QStringLiteral("(ec1) AUTOMATIC, IN ORDER: scenes 1 to 9 show Slate, Teal, Moss, Ochre, Rust, Plum, Steel, Sand "
+                         "and Slate again - behind the name on the SCENES row (40 %), as its 2 px baseline, along the top of "
+                         "its clip and as the card's swatch"),
+          bad.isEmpty() && scenes.at(0)->colorTag.isEmpty(), bad.join(QStringLiteral("; ")));
+
+    // (ec2) the scene's menu: Auto, the eight, Custom...; Teal on scene 1, one step.
+    QStringList entries;
+    QString autoText;
+    bool autoTicked = false;
+    QString trigger;
+    r.storyboard->setClipMenuHookForTest([&](QMenu *m) {
+        entries.clear();
+        autoText.clear();
+        autoTicked = false;
+        QMenu *colours = m->findChild<QMenu *>(QStringLiteral("sceneColorMenu"));
+        if (!colours)
+            return;
+        for (QAction *a : colours->actions()) {
+            if (a->isSeparator())
+                continue;
+            entries << a->text() + (a->isChecked() ? QStringLiteral("*") : QString());
+            if (a->objectName() == QStringLiteral("sceneColorAuto")) {
+                autoText = a->text();
+                autoTicked = a->isChecked();
+            }
+            if (!trigger.isEmpty() && a->text() == trigger)
+                a->trigger();
+        }
+    });
+    r.storyboard->openSceneMenuForTest(0);
+    const QStringList firstMenu = entries;
+    const int before2 = stack->index();
+    trigger = QStringLiteral("Teal");
+    r.storyboard->openSceneMenuForTest(0);
+    trigger.clear();
+    pump(120);
+    const bool tealShown = showsColour(0, set.at(1)) && showsColour(1, set.at(1)) && showsColour(2, set.at(2));
+    r.storyboard->openSceneMenuForTest(0);
+    const QStringList tealMenu = entries;
+    QStringList wantFirst{QStringLiteral("Auto (Slate)*")};
+    for (const QString &n : setNames)
+        wantFirst << n;
+    wantFirst << QStringLiteral("Custom...");
+    check(QStringLiteral("(ec2) THE SCENE'S MENU > Scene Colour: \"Auto (Slate)\" ticked, the eight in order, Custom...; "
+                         "Teal on scene 1 is one step (\"Change Scene Color\"), shown in its three places - the other "
+                         "scenes as they were - and ticked next time"),
+          firstMenu == wantFirst && stack->index() == before2 + 1 && stack->undoText() == QStringLiteral("Change Scene Color")
+              && scenes.at(0)->colorTag == QStringLiteral("#4F8A85") && tealShown
+              && tealMenu.contains(QStringLiteral("Teal*")) && tealMenu.contains(QStringLiteral("Auto (Slate)")),
+          QStringLiteral("%1 | +%2 '%3' tag %4 shown %5 | %6").arg(firstMenu.join(QLatin1Char(',')))
+              .arg(stack->index() - before2).arg(stack->undoText(), scenes.at(0)->colorTag).arg(tealShown)
+              .arg(tealMenu.join(QLatin1Char(','))));
+    r.window.undoActionForTest()->trigger();
+    pump(120);
+    check(QStringLiteral("(ec2) control: Undo gives scene 1 back its Auto Slate, in all three places"),
+          scenes.at(0)->colorTag.isEmpty() && showsColour(0, set.at(0)));
+    // Custom...: the picker's colour, one step; cancelled, nothing.
+    r.storyboard->setSceneColorPickForTest([](const QColor &) { return QColor(0x12, 0x34, 0x56); });
+    const int beforeCustom = stack->index();
+    trigger = QStringLiteral("Custom...");
+    r.storyboard->openSceneMenuForTest(2);
+    pump(120);
+    const bool customSet = scenes.at(2)->colorTag == QStringLiteral("#123456") && stack->index() == beforeCustom + 1
+        && showsColour(2, QColor(0x12, 0x34, 0x56));
+    r.storyboard->setSceneColorPickForTest([](const QColor &) { return QColor(); });
+    const int beforeCancel = stack->index();
+    r.storyboard->openSceneMenuForTest(3);
+    trigger.clear();
+    pump(80);
+    r.storyboard->setSceneColorPickForTest({});
+    check(QStringLiteral("(ec2) CUSTOM...: the picker's colour (#123456) on scene 3, one step, shown; a cancelled picker "
+                         "changes nothing"),
+          customSet && stack->index() == beforeCancel && scenes.at(3)->colorTag.isEmpty(),
+          QStringLiteral("tag %1 +%2; cancel +%3").arg(scenes.at(2)->colorTag).arg(stack->index() - beforeCustom)
+              .arg(stack->index() - beforeCancel));
+
+    // (ec3) saved and read back; Auto writes no key.
+    const QString saved = dir + QStringLiteral("/saved/Colours.sankotv");
+    QDir().mkpath(dir + QStringLiteral("/saved"));
+    const bool savedOk = r.window.saveProjectForTest(saved);
+    QFile f(saved);
+    QByteArray json;
+    if (f.open(QIODevice::ReadOnly))
+        json = f.readAll();
+    f.close();
+    const int keys = int(json.count("\"colorTag\""));
+    r.window.openProjectForTest(saved);
+    pump(300);
+    const QVector<Scene *> reread = r.window.scenesForTest();
+    check(QStringLiteral("(ec3) SAVED: scene 3's #123456 is written (\"colorTag\") and read back; the Auto scenes write no "
+                         "key and read back Auto"),
+          savedOk && reread.size() == 9 && reread.at(2)->colorTag == QStringLiteral("#123456")
+              && reread.at(0)->colorTag.isEmpty() && reread.at(8)->colorTag.isEmpty(),
+          QStringLiteral("saved %1, read %2 scenes, scene 3 '%3'").arg(savedOk).arg(reread.size())
+              .arg(reread.value(2) ? reread.at(2)->colorTag : QString()));
+    check(QStringLiteral("(ec3) control: exactly one \"colorTag\" in the file - scene 3's - Auto is no key"), keys == 1,
+          QString::number(keys));
+
+    // (ec4) never in the picture: the PNG export byte for byte the same with a colour as with Auto.
+    auto exportHashes = [&](const QString &folder) {
+        QDir(folder).removeRecursively();
+        QDir().mkpath(folder);
+        r.window.exportPngForTest(folder);
+        QStringList hashes;
+        for (const QFileInfo &fi : QDir(folder).entryInfoList(QDir::Files, QDir::Name)) {
+            QFile file(fi.absoluteFilePath());
+            if (file.open(QIODevice::ReadOnly))
+                hashes << fi.fileName() + QLatin1Char(' ')
+                              + QString::fromLatin1(QCryptographicHash::hash(file.readAll(), QCryptographicHash::Sha256).toHex());
+        }
+        return hashes;
+    };
+    const QStringList withColour = exportHashes(dir + QStringLiteral("/png_colour"));
+    const QColor stripColour = shownOf(2).strip;
+    r.storyboard->setSceneColor(2, QString()); // Auto again
+    pump(120);
+    const QStringList withAuto = exportHashes(dir + QStringLiteral("/png_auto"));
+    const QColor stripAuto = shownOf(2).strip;
+    check(QStringLiteral("(ec4) NEVER IN THE PICTURE: the PNG export with scene 3 #123456 is byte for byte the export with "
+                         "it Auto (all nine files)"),
+          withColour.size() == 9 && withColour == withAuto,
+          QStringLiteral("%1 / %2 files").arg(withColour.size()).arg(withAuto.size()));
+    check(QStringLiteral("(ec4) control: the timeline does show the change - scene 3's strip #123456, then Moss"),
+          closeTo(stripColour, QColor(0x12, 0x34, 0x56), 3) && closeTo(stripAuto, set.at(2), 3),
+          stripColour.name() + QStringLiteral(" -> ") + stripAuto.name());
+    r.storyboard->setClipMenuHookForTest({});
+}
+
+// --- (ed) BATCH E, THE STAGE BACKGROUND (Figma E-1; the user's answer A: on screen only) -------
+// View > Stage Background and the canvas's right-click: White (default), Warm White, Light Grey,
+// Mid Grey, Dark Grey, Charcoal, Custom.... The canvas shows the paper in the colour - multiplied
+// over the white Background layer, so every drawing stays as drawn - and nothing else does: no
+// layer, no thumbnail, no export, no undo step, not the project.
+void runStageBackgroundPass(const QString &scratch)
+{
+    using namespace workspace;
+    out() << "--- (ed) batch E: the stage background on the canvas ---" << Qt::endl;
+    const QString dir = scratch + QStringLiteral("/paper");
+    QDir(dir).removeRecursively();
+    QDir().mkpath(dir);
+    const QString project = writeProject(dir, QStringLiteral("Paper"), QSize(1920, 1080), 24, 1, 2);
+    auto rig = std::make_unique<Rig>(project);
+    Rig &r = *rig;
+    check(QStringLiteral("(ed) the workspace opened"), r.ok);
+    if (!r.ok)
+        return;
+    QUndoStack *stack = r.window.undoStackForTest();
+    Scene *scene = r.window.scenesForTest().value(0);
+    if (!stack || !scene || scene->panels.isEmpty() || !r.canvas) {
+        check(QStringLiteral("(ed) found the history, the scene and the canvas"), false);
+        return;
+    }
+    r.canvas->setPaperColor(Qt::white); // whatever an earlier run left
+    // Known art in the sampled middle (the fixture's ellipses fall anywhere): a black block and
+    // a red one on the drawing layer, so "every drawing as drawn" is measured on ink too.
+    {
+        QPainter ink(&scene->panels.at(0)->layers[1].image);
+        ink.fillRect(QRect(880, 440, 60, 40), Qt::black);
+        ink.fillRect(QRect(980, 480, 60, 40), QColor(0xe0, 0x30, 0x30));
+    }
+    r.canvas->invalidateComposite();
+    r.canvas->update();
+    pump(120);
+    // The submenu where it is offered: its entries, the ticked one marked "*".
+    auto entriesOf = [](QMenu *m) {
+        QStringList l;
+        if (!m)
+            return l;
+        emit m->aboutToShow(); // filled as it opens
+        for (QAction *a : m->actions())
+            if (!a->isSeparator())
+                l << a->text() + (a->isChecked() ? QStringLiteral("*") : QString());
+        return l;
+    };
+    auto viewSubmenu = [&]() -> QMenu * {
+        for (QAction *a : r.window.menuBar()->actions())
+            if (a->menu() && a->text().remove(QLatin1Char('&')) == QStringLiteral("View"))
+                return a->menu()->findChild<QMenu *>(QStringLiteral("stageBackgroundMenu"));
+        return nullptr;
+    };
+    auto trigger = [](QMenu *m, const QString &text) {
+        if (!m)
+            return;
+        emit m->aboutToShow();
+        for (QAction *a : m->actions())
+            if (a->text() == text)
+                a->trigger();
+    };
+    // What the canvas shows of a canvas rect, as screen pixels.
+    const QRect sample(860, 420, 200, 120); // the stage's middle, art and paper both
+    auto shown = [&] {
+        pump(80);
+        const QImage img = r.canvas->grab().toImage();
+        const QTransform t = r.canvas->viewTransformForTest();
+        QVector<QColor> px;
+        for (int y = sample.top(); y < sample.bottom(); y += 6)
+            for (int x = sample.left(); x < sample.right(); x += 6) {
+                const QPoint at = t.map(QPointF(x + 0.5, y + 0.5)).toPoint() * img.devicePixelRatio();
+                px << (img.valid(at) ? img.pixelColor(at) : QColor());
+            }
+        return px;
+    };
+    // The samples by what is drawn there - the drawing layer's own alpha over the sample's
+    // 7 x 7 neighbourhood: 0 everywhere (the paper), 255 everywhere (ink), or an edge (skipped).
+    QVector<int> kindOf; // 0 paper, 1 ink, -1 edge
+    {
+        const QImage &art = scene->panels.at(0)->layers.at(1).image;
+        for (int y = sample.top(); y < sample.bottom(); y += 6)
+            for (int x = sample.left(); x < sample.right(); x += 6) {
+                int lo = 255, hi = 0;
+                for (int dy = -3; dy <= 3; ++dy)
+                    for (int dx = -3; dx <= 3; ++dx) {
+                        const int a = art.valid(x + dx, y + dy) ? qAlpha(art.pixel(x + dx, y + dy)) : 0;
+                        lo = qMin(lo, a);
+                        hi = qMax(hi, a);
+                    }
+                kindOf << (hi == 0 ? 0 : lo == 255 ? 1 : -1);
+            }
+    }
+    // The paper in the colour where nothing is drawn; the ink exactly as before (3 levels).
+    auto paperUnderArtOf = [&](const QVector<int> &kinds, const QVector<QColor> &before, const QVector<QColor> &after,
+                               const QColor &paper, int *paperPts, int *inkPts) {
+        *paperPts = *inkPts = 0;
+        if (before.size() != after.size() || before.size() != kinds.size())
+            return false;
+        auto near3 = [](const QColor &a, const QColor &b) {
+            return qAbs(a.red() - b.red()) <= 3 && qAbs(a.green() - b.green()) <= 3 && qAbs(a.blue() - b.blue()) <= 3;
+        };
+        for (int i = 0; i < before.size(); ++i) {
+            if (kinds.at(i) == 0) {
+                ++*paperPts;
+                if (!near3(after.at(i), paper))
+                    return false;
+            } else if (kinds.at(i) == 1) {
+                ++*inkPts;
+                if (!near3(after.at(i), before.at(i)))
+                    return false;
+            }
+        }
+        return true;
+    };
+    auto paperUnderArt = [&](const QVector<QColor> &before, const QVector<QColor> &after, const QColor &paper,
+                             int *paperPts, int *inkPts) {
+        return paperUnderArtOf(kindOf, before, after, paper, paperPts, inkPts);
+    };
+    auto whites = [](const QVector<QColor> &px) {
+        int n = 0;
+        for (const QColor &c : px)
+            n += c == QColor(Qt::white) ? 1 : 0;
+        return n;
+    };
+
+    // (ed1) the menus: View's, and the canvas's beside Gutter Background.
+    QMenu *view = viewSubmenu();
+    const QStringList viewEntries = entriesOf(view);
+    QContextMenuEvent ctx(QContextMenuEvent::Mouse, QPoint(40, 40), r.canvas->mapToGlobal(QPoint(40, 40)));
+    QCoreApplication::sendEvent(r.canvas, &ctx);
+    pump(80);
+    QMenu *canvasSub = nullptr;
+    QStringList canvasEntries;
+    const QList<QMenu *> subs = r.canvas->findChildren<QMenu *>(QStringLiteral("stageBackgroundMenu"));
+    if (!subs.isEmpty()) {
+        canvasSub = subs.last();
+        canvasEntries = entriesOf(canvasSub);
+        if (auto *top = qobject_cast<QMenu *>(canvasSub->parentWidget()))
+            top->close();
+    }
+    pump(60);
+    const QStringList want{QStringLiteral("White (default)*"), QStringLiteral("Warm White"), QStringLiteral("Light Grey"),
+                           QStringLiteral("Mid Grey"), QStringLiteral("Dark Grey"), QStringLiteral("Charcoal"),
+                           QStringLiteral("Custom...")};
+    check(QStringLiteral("(ed1) VIEW > STAGE BACKGROUND and the canvas's right-click (beside Gutter Background) offer White "
+                         "(default, ticked), Warm White, Light Grey, Mid Grey, Dark Grey, Charcoal and Custom..."),
+          viewEntries == want && canvasEntries == want,
+          QStringLiteral("view: %1 | canvas: %2").arg(viewEntries.join(QLatin1Char(',')), canvasEntries.join(QLatin1Char(','))));
+
+    // (ed2) on the canvas: the paper in the colour, every drawing as drawn - both ways the
+    // canvas paints (the cached fast path with the Brush, the direct loop under a Move box).
+    const QVector<QColor> white = shown();
+    QImage flatBefore = scene->panels.at(0)->flattenedImage();
+    const QImage bgBefore = scene->panels.at(0)->layers.value(0).image;
+    const int steps = stack->index();
+    trigger(view, QStringLiteral("Dark Grey"));
+    const QVector<QColor> dark = shown();
+    r.canvas->setTool(DrawingCanvas::Move);
+    pump(120);
+    const QVector<QColor> darkMove = shown();
+    // The Move tool draws its own box over everything - its edge, the handles, the pivot at
+    // its centre (the gate's full run, 2026-11-15: the box's left edge at x 879 and its middle
+    // handle crossed these samples, in purple and white, while the paper there was right).
+    // Those are left out: every sample within 14 screen px of the box's outline or its centre.
+    QVector<bool> boxOverlay(kindOf.size(), false);
+    {
+        const QPolygonF quad = r.canvas->transformQuadForTest();
+        const QTransform t = r.canvas->viewTransformForTest();
+        const QPolygonF onScreen = t.map(quad);
+        const QPointF centre = t.map(quad.boundingRect().center());
+        auto distToSegment = [](const QPointF &p, const QPointF &a, const QPointF &b) {
+            const QPointF ab = b - a;
+            const double len2 = QPointF::dotProduct(ab, ab);
+            const double u = len2 > 0 ? qBound(0.0, QPointF::dotProduct(p - a, ab) / len2, 1.0) : 0.0;
+            return QLineF(p, a + ab * u).length();
+        };
+        int i = 0;
+        for (int y = sample.top(); y < sample.bottom(); y += 6)
+            for (int x = sample.left(); x < sample.right(); x += 6, ++i) {
+                if (onScreen.size() < 4 || i >= boxOverlay.size())
+                    continue;
+                const QPointF p = t.map(QPointF(x + 0.5, y + 0.5));
+                double d = QLineF(p, centre).length();
+                for (int e = 0; e < onScreen.size(); ++e)
+                    d = qMin(d, distToSegment(p, onScreen.at(e), onScreen.at((e + 1) % onScreen.size())));
+                boxOverlay[i] = d < 14.0;
+            }
+    }
+    QVector<int> kindUnderBox = kindOf;
+    int leftOut = 0;
+    for (int i = 0; i < kindUnderBox.size(); ++i)
+        if (boxOverlay.at(i)) {
+            kindUnderBox[i] = -1;
+            ++leftOut;
+        }
+    r.canvas->setTool(DrawingCanvas::Brush);
+    pump(80);
+    const QColor darkGrey(0x4a, 0x4a, 0x4a);
+    int paperPts = 0, inkPts = 0, paperPtsMove = 0, inkPtsMove = 0;
+    const bool cached = paperUnderArt(white, dark, darkGrey, &paperPts, &inkPts);
+    const bool direct = paperUnderArtOf(kindUnderBox, white, darkMove, darkGrey, &paperPtsMove, &inkPtsMove);
+    check(QStringLiteral("(ed2) ON THE CANVAS: Dark Grey #4A4A4A - the paper shows it wherever nothing is drawn, and every "
+                         "drawing is exactly as drawn over it (the black and the red block unchanged); so in the Brush's "
+                         "cached path and under the Move tool's box (the box's own edge, handles and pivot, drawn over "
+                         "everything, left out within 14 px)"),
+          r.canvas->paperColor() == darkGrey && cached && direct && paperPts > 50 && inkPts > 20 && paperPtsMove > 50
+              && inkPtsMove > 20,
+          QStringLiteral("paper %1; cached %2 (paper %3, ink %4); under the box %5 (paper %6, ink %7; %8 left out)")
+              .arg(r.canvas->paperColor().name()).arg(cached).arg(paperPts).arg(inkPts).arg(direct).arg(paperPtsMove)
+              .arg(inkPtsMove).arg(leftOut));
+    // Control: what is left out is only the box's own drawing - in the Brush's view (no box)
+    // those same samples are the paper and the ink, measured the same way.
+    QVector<int> onlyLeftOut(kindOf.size(), -1);
+    for (int i = 0; i < kindOf.size(); ++i)
+        if (boxOverlay.at(i))
+            onlyLeftOut[i] = kindOf.at(i);
+    int paperLeft = 0, inkLeft = 0;
+    const bool leftOutIsPaper = paperUnderArtOf(onlyLeftOut, white, dark, darkGrey, &paperLeft, &inkLeft);
+    // How many the box covers is its own business (gate E4: its left edge ran down these
+    // samples - 220 of 680 at the gate's zoom); the check above keeps over 50 paper and 20 ink
+    // samples of its own outside it.
+    check(QStringLiteral("(ed2) control: the samples left out under the box are, without the box (the Brush), the paper and "
+                         "the ink as everywhere else - only the box's own drawing is left out, never a wrong paper (how many "
+                         "is the box's: the check above measures over 50 paper and 20 ink samples outside it)"),
+          leftOutIsPaper,
+          QStringLiteral("%1 left out (%2 paper, %3 ink) of %4").arg(leftOut).arg(paperLeft).arg(inkLeft).arg(kindOf.size()));
+    int paperWhite = 0, inkWhite = 0;
+    const bool failsGrey = !paperUnderArt(white, white, darkGrey, &paperWhite, &inkWhite);
+    const bool passesWhite = paperUnderArt(white, white, Qt::white, &paperWhite, &inkWhite);
+    check(QStringLiteral("(ed2) control: the same measure fails a dark grey paper against White - it tells the paper - and "
+                         "every paper sample was white before"),
+          failsGrey && passesWhite,
+          QStringLiteral("fails grey %1, white %2 (paper samples %3, ink %4)").arg(failsGrey).arg(passesWhite)
+              .arg(paperWhite).arg(inkWhite));
+
+    // (ed3) on screen only: no layer, no picture, no export, no step, not the project.
+    const QImage flatAfter = scene->panels.at(0)->flattenedImage();
+    const QImage bgAfter = scene->panels.at(0)->layers.value(0).image;
+    auto exportHashes = [&](const QString &folder) {
+        QDir(folder).removeRecursively();
+        QDir().mkpath(folder);
+        r.window.exportPngForTest(folder);
+        QStringList hashes;
+        for (const QFileInfo &fi : QDir(folder).entryInfoList(QDir::Files, QDir::Name)) {
+            QFile file(fi.absoluteFilePath());
+            if (file.open(QIODevice::ReadOnly))
+                hashes << QString::fromLatin1(QCryptographicHash::hash(file.readAll(), QCryptographicHash::Sha256).toHex());
+        }
+        return hashes;
+    };
+    const QStringList pngDark = exportHashes(dir + QStringLiteral("/png_dark"));
+    trigger(view, QStringLiteral("White (default)"));
+    pump(80);
+    const QStringList pngWhite = exportHashes(dir + QStringLiteral("/png_white"));
+    check(QStringLiteral("(ed3) ON SCREEN ONLY: the Background layer and the panel's picture are byte for byte as before, the "
+                         "PNG export with Dark Grey is the export with White, no undo step, and the project is not unsaved"),
+          bgAfter == bgBefore && flatAfter == flatBefore && pngDark.size() == 2 && pngDark == pngWhite
+              && stack->index() == steps && !r.window.isDirty(),
+          QStringLiteral("layer same %1, picture same %2, png %3/%4 same %5, steps +%6, dirty %7").arg(bgAfter == bgBefore)
+              .arg(flatAfter == flatBefore).arg(pngDark.size()).arg(pngWhite.size()).arg(pngDark == pngWhite)
+              .arg(stack->index() - steps).arg(r.window.isDirty()));
+    const QVector<QColor> whiteAgain = shown();
+    check(QStringLiteral("(ed3) control: White again shows the canvas exactly as before"), whiteAgain == white);
+
+    // (ed4) Custom... and remembered.
+    r.canvas->setPaperColorPickForTest([](const QColor &) { return QColor(0x12, 0x34, 0x56); });
+    trigger(view, QStringLiteral("Custom..."));
+    r.canvas->setPaperColorPickForTest({});
+    const QStringList afterCustom = entriesOf(view);
+    const QString kept = sankoSettings().value(QStringLiteral("canvas/stage/v1/paperColor")).toString();
+    check(QStringLiteral("(ed4) CUSTOM...: the picker's #123456 on the canvas, \"Custom...\" ticked next time, and kept by the "
+                         "app (canvas/stage/v1/paperColor) as the gutter's colour is"),
+          r.canvas->paperColor() == QColor(0x12, 0x34, 0x56) && afterCustom.last() == QStringLiteral("Custom...*")
+              && kept == QStringLiteral("#123456"),
+          QStringLiteral("paper %1 | %2 | kept %3").arg(r.canvas->paperColor().name(), afterCustom.join(QLatin1Char(',')), kept));
+    trigger(view, QStringLiteral("White (default)"));
+    pump(60);
+    check(QStringLiteral("(ed4) control: White again - ticked, and kept as #ffffff"),
+          entriesOf(view).first() == QStringLiteral("White (default)*")
+              && sankoSettings().value(QStringLiteral("canvas/stage/v1/paperColor")).toString() == QStringLiteral("#ffffff"));
+}
+
+// --- (ed5) THE STAGE BACKGROUND IN THE CAMERA TOOL'S DEPTH VIEW (2026-11-17) -------------------
+// Batch E's hand test (recording 20261117-180254) chose Dark Grey with the Camera tool on a panel
+// with depth, and the canvas did not change: the depth view drew the stage through
+// shotcam::drawStage, which had no stage background. Now the canvas passes it, multiplied after
+// the Background layer as the Drawing view does; the strip, the preview and the exports, which
+// draw the shot themselves, pass none and stay white. On dppins' depth panel (Sky 0 %, Mountains
+// 50 %, House on the picture plane, Bush 150 %, Clouds in a 40 % folder; the camera panned 400 px).
+void runStageBackgroundDepthPass(const QString &scratch)
+{
+    using namespace workspace;
+    using namespace dppins;
+    out() << "--- (ed5) batch E: the stage background in the Camera tool's depth view ---" << Qt::endl;
+    const QString dir = scratch + QStringLiteral("/paperdepth");
+    const QString project = writeDepthProject(dir, true, true);
+    auto rig = std::make_unique<Rig>(project);
+    Rig &r = *rig;
+    check(QStringLiteral("(ed5) the depth fixture opened"), r.ok);
+    if (!r.ok)
+        return;
+    Scene *scene = r.window.scenesForTest().value(0);
+    Panel *panel = scene ? scene->panels.value(0) : nullptr;
+    if (!panel || !r.canvas || !r.animatic) {
+        check(QStringLiteral("(ed5) found the panel, the canvas and the timeline"), false);
+        return;
+    }
+    const QColor darkGrey(0x4a, 0x4a, 0x4a);
+    r.canvas->setPaperColor(Qt::white); // whatever an earlier run left
+    r.canvas->setTool(DrawingCanvas::Camera);
+    pump(150);
+    // Where each marker is in this view: drawn at kMarker, placed for its layer's depth.
+    const shotcam::Stage stage(QSize(1920, 1080));
+    shotcam::CameraState pan;
+    pan.cx = 960 + 400;
+    pan.cy = 540;
+    QVector<QPointF> placed;
+    for (int i = 1; i <= 5; ++i)
+        placed << shotcam::layerToStage(panel->effectiveParallax(panel->layers.at(i)), pan, stage).map(kMarker[i]);
+    // The paper: six points inside the frame (x 400 to 2320) and the stage, clear of every placed
+    // marker, the frame's centre and the safe-area lines. The ink: the House's marker (the
+    // picture plane) and the Sky's (0 %, moved with the frame).
+    const QVector<QPointF> paperPts{{1000, 300}, {1250, 850}, {1650, 450}, {800, 650}, {1500, 900}, {1800, 700}};
+    const QVector<QPointF> inkPts{placed.at(2), placed.at(0)};
+    const QVector<QColor> inkColours{kColour[3], kColour[1]};
+    double nearestMarker = 1e9;
+    for (const QPointF &p : paperPts)
+        for (const QPointF &m : std::as_const(placed))
+            nearestMarker = qMin(nearestMarker, QLineF(p, m).length());
+    auto sampleAt = [&](const QVector<QPointF> &pts) {
+        pump(60);
+        const QImage grab = r.canvas->grab().toImage();
+        const QTransform t = r.canvas->viewTransformForTest();
+        QVector<QColor> c;
+        for (const QPointF &p : pts) {
+            const QPoint at = t.map(p).toPoint() * grab.devicePixelRatio();
+            c << (grab.valid(at) ? grab.pixelColor(at) : QColor());
+        }
+        return c;
+    };
+    auto all = [](const QVector<QColor> &c, const QColor &want, int tol) {
+        if (c.isEmpty())
+            return false;
+        for (const QColor &x : c)
+            if (!x.isValid() || !closeTo(x, want, tol))
+                return false;
+        return true;
+    };
+    auto names = [](const QVector<QColor> &c) {
+        QStringList l;
+        for (const QColor &x : c)
+            l << x.name();
+        return l.join(QLatin1Char(' '));
+    };
+    const bool depthOn = r.canvas->shotCameraDepthViewForTest();
+    const QVector<QColor> paperWhite = sampleAt(paperPts), inkWhite = sampleAt(inkPts);
+    r.canvas->setPaperColor(darkGrey);
+    const QVector<QColor> paperDark = sampleAt(paperPts), inkDark = sampleAt(inkPts);
+    bool inkAsDrawn = inkDark.size() == inkColours.size();
+    for (int i = 0; inkAsDrawn && i < inkDark.size(); ++i)
+        inkAsDrawn = closeTo(inkDark.at(i), inkWhite.at(i), 3) && closeTo(inkDark.at(i), inkColours.at(i));
+    check(QStringLiteral("(ed5) THE CAMERA TOOL'S DEPTH VIEW SHOWS THE STAGE BACKGROUND: with Dark Grey, on a panel with "
+                         "depth and the camera panned 400 px (DEPTH on), the paper reads #4A4A4A at all six points inside "
+                         "the frame, and the House's and the Sky's markers (placed for their depth) are exactly as with "
+                         "White"),
+          depthOn && all(paperDark, darkGrey, 3) && inkAsDrawn,
+          QStringLiteral("depth %1; paper [%2]; ink [%3] (White: [%4])").arg(depthOn).arg(names(paperDark), names(inkDark),
+                                                                               names(inkWhite)));
+    check(QStringLiteral("(ed5) control: with White the same six points are white and the same markers their colours - the "
+                         "points are the paper (each over 150 px from a marker) - and the measure fails White's paper "
+                         "against Dark Grey"),
+          all(paperWhite, Qt::white, 3) && !all(paperWhite, darkGrey, 3) && nearestMarker > 150
+              && closeTo(inkWhite.value(0), inkColours.at(0)) && closeTo(inkWhite.value(1), inkColours.at(1)),
+          QStringLiteral("paper [%1]; ink [%2]; nearest marker %3 px").arg(names(paperWhite), names(inkWhite))
+              .arg(nearestMarker, 0, 'f', 0));
+
+    // Nowhere else: the strip's thumbnail, the preview's picture and the PNG export are the same
+    // with Dark Grey as with White.
+    auto stripThumb = [&] {
+        shotcam::clearDepthCachesForTest();
+        return r.storyboard->stripThumbForTest(panel, 1.0).toImage();
+    };
+    auto exportHashes = [&](const QString &folder) {
+        QDir(folder).removeRecursively();
+        QDir().mkpath(folder);
+        r.window.exportPngForTest(folder);
+        QStringList hashes;
+        for (const QFileInfo &fi : QDir(folder).entryInfoList(QDir::Files, QDir::Name)) {
+            QFile file(fi.absoluteFilePath());
+            if (file.open(QIODevice::ReadOnly))
+                hashes << QString::fromLatin1(QCryptographicHash::hash(file.readAll(), QCryptographicHash::Sha256).toHex());
+        }
+        return hashes;
+    };
+    const QImage stripDark = stripThumb();
+    const QStringList pngDark = exportHashes(dir + QStringLiteral("/png_dark"));
+    r.canvas->setPaperColor(Qt::white);
+    const QImage stripWhite = stripThumb();
+    const QStringList pngWhite = exportHashes(dir + QStringLiteral("/png_white"));
+    // The preview, paused on the panel's first frame: grabbed with Dark Grey, White and Dark Grey
+    // again without leaving it (the same state each time; the stage-clearing on Play is off here,
+    // so nothing about it moves).
+    const bool clearOnPlay = r.storyboard->clearStageOnPlay();
+    r.storyboard->setClearStageOnPlay(false);
+    r.animatic->togglePlay();
+    pump(150);
+    if (r.animatic->isPlaying())
+        r.animatic->togglePlay();
+    r.animatic->scrubToForTest(0, 0);
+    pump(150);
+    QWidget *display = r.animatic->previewDisplayForTest();
+    const bool previewUp = r.animatic->previewVisible() && display;
+    auto previewPicture = [&] {
+        return previewUp ? display->grab().toImage().copy(r.animatic->previewPictureRectForTest()) : QImage();
+    };
+    r.canvas->setPaperColor(darkGrey);
+    const QImage previewDark = previewPicture();
+    r.canvas->setPaperColor(Qt::white);
+    const QImage previewWhite = previewPicture();
+    r.canvas->setPaperColor(darkGrey);
+    const QImage previewDarkAgain = previewPicture();
+    r.animatic->leavePreview();
+    r.storyboard->setClearStageOnPlay(clearOnPlay);
+    r.canvas->setPaperColor(Qt::white);
+    pump(100);
+    check(QStringLiteral("(ed5) ON THE CANVAS ONLY: the Panel Strip's thumbnail of the depth panel, the preview's picture "
+                         "(paused on its first frame) and both panels' PNG export are the same with Dark Grey as with "
+                         "White"),
+          !stripDark.isNull() && stripDark == stripWhite && previewUp && !previewDark.isNull()
+              && previewDark == previewWhite && previewDarkAgain == previewWhite && pngDark.size() == 2
+              && pngDark == pngWhite,
+          QStringLiteral("strip same %1; preview up %2, same %3/%4; png %5/%6 same %7").arg(stripDark == stripWhite)
+              .arg(previewUp).arg(previewDark == previewWhite).arg(previewDarkAgain == previewWhite)
+              .arg(pngDark.size()).arg(pngWhite.size()).arg(pngDark == pngWhite));
+    // Control: those three show the art - the House's blue is in the strip's thumbnail and the
+    // preview - so "the same" compares pictures, not two blanks.
+    auto hasBlue = [](const QImage &img) {
+        for (int y = 0; y < img.height(); ++y)
+            for (int x = 0; x < img.width(); ++x)
+                if (closeTo(img.pixelColor(x, y), kColour[3], 24))
+                    return true;
+        return false;
+    };
+    check(QStringLiteral("(ed5) control: the strip's thumbnail and the preview's picture show the art (the House's blue), "
+                         "and the export wrote both panels"),
+          hasBlue(stripWhite) && hasBlue(previewWhite) && pngWhite.size() == 2 && pngWhite.at(0) != pngWhite.at(1),
+          QStringLiteral("strip %1, preview %2, png %3").arg(hasBlue(stripWhite)).arg(hasBlue(previewWhite))
+              .arg(pngWhite.size()));
+    r.window.markCleanForTest();
+}
+
 void runEnterMoveBoxPass(const QString &scratch)
 {
     using namespace workspace;
@@ -27638,12 +28775,21 @@ void runTrackLocksPass(const QString &scratch)
         QCoreApplication::sendEvent(r.surface, &ev2);
         pump(150);
         page->setAudioMenuHookForTest({});
+        // Shown, the scene block is its #202029 under the scene's colour at 40 % (batch E: scene
+        // 1's Auto, Slate #5B6E9C), within 2 levels a channel.
+        const QColor slate(0x5b, 0x6e, 0x9c), block = kSceneBlock;
+        auto mix = [](int over, int under) { return (over * 102 + under * 153) / 255.0; };
+        const QColor shownColor(sceneShown);
+        const bool tinted = qAbs(shownColor.red() - mix(slate.red(), block.red())) <= 2
+            && qAbs(shownColor.green() - mix(slate.green(), block.green())) <= 2
+            && qAbs(shownColor.blue() - mix(slate.blue(), block.blue())) <= 2;
         check(QStringLiteral("(ax) HIDDEN TRACKS paint nothing: the clip's pixel is the shots "
                              "track's background and the scene block's pixel the scene "
                              "track's; a press on a hidden clip selects nothing; the hidden "
-                             "audio row opens no menu - and each returns when shown"),
+                             "audio row opens no menu - and each returns when shown (the scene block "
+                             "shown under its colour, batch E)"),
               clipShown != kPageBg.name() && clipHidden == kPageBg.name()
-                  && sceneShown == kSceneBlock.name() && sceneHidden == kHeaderBg.name()
+                  && tinted && sceneHidden == kHeaderBg.name()
                   && selectedWhileHidden == selectedBefore && !page->tracks().shotsVisible
                   && !page->tracks().scenesVisible && menusHidden == 0 && menus == 1,
               QStringLiteral("clip %1 -> %2, scene %3 -> %4, selected %5, audio menus hidden %6 shown %7")
@@ -27909,8 +29055,20 @@ int main(int argc, char **argv)
         || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("keptart")
         || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("scenelock")
         || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("keysview")
-        || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("batchd")) {
-        if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("batchd")) {
+        || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("batchd")
+        || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("batche")) {
+        if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("batche")) {
+            // Batch E (Figma E-1): the eases on the line (and the camera row's own pass, whose
+            // key menu now has them in a row).
+            runCameraRowPass(scratch);
+            runEaseOnLinePass(scratch);
+            runCameraAcrossPanelsPass(scratch); // Grow to fit's own checks, beside Grow all's
+            runGrowAllPass(scratch);
+            runSceneColoursPass(scratch);
+            runTrackLocksPass(scratch); // (ax): the scene block shown under its colour
+            runStageBackgroundPass(scratch);
+            runStageBackgroundDepthPass(scratch); // (ed5): the Camera tool's depth view too
+        } else if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("batchd")) {
             // Batch D: paste on a new layer, View > Library's tick; D-2's Eyedropper, Colors
             // panel and Flip H / V; and the kept-art pass, whose (ka7) pastes on the canvas.
             runPasteLayerPass(scratch);
@@ -28133,6 +29291,7 @@ int main(int argc, char **argv)
     runCameraPanelRemovalPass(scratch);
     runCameraToolPass(scratch);
     runCameraRowPass(scratch);
+    runEaseOnLinePass(scratch);
     runQuickMovePass(scratch);
     runParallelOpenPass(scratch);
     runBlockedWritePass(scratch);
@@ -28150,6 +29309,10 @@ int main(int argc, char **argv)
     runPanelsAtRestPass(scratch);
     runStageModePass(scratch);
     runCameraAcrossPanelsPass(scratch);
+    runGrowAllPass(scratch);
+    runSceneColoursPass(scratch);
+    runStageBackgroundPass(scratch);
+    runStageBackgroundDepthPass(scratch); // (ed5)
     runGrowAnyZoomPass(scratch);
     runTrialFixesPass(scratch);
     runKeptArtPass(scratch);

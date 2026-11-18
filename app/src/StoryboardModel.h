@@ -544,6 +544,11 @@ struct Scene
     // takes from its neighbour, and its camera keys keep their film frames.
     // Locking is an undo step; saved as "lengthLocked" (file version 5).
     bool lengthLocked = false;
+    // THE SCENE'S COLOUR (batch E, 2026-11-15; Figma E-1): "#RRGGBB" once chosen; empty is
+    // Auto - the colour of the muted set at the scene's place (SceneColors.h). Shown on the
+    // SCENES row, along its clips and on its card; never in the picture. Saved as "colorTag"
+    // only when chosen.
+    QString colorTag;
 
     ~Scene()
     {

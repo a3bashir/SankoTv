@@ -236,9 +236,12 @@ QImage stageImage(const Panel &panel, const CameraState &state, const Stage &sta
                   const QSize &target);
 // stageImage's painter twin, in STAGE px through the painter's own
 // transform (the Camera tool's canvas: the view transform); only what falls
-// inside `visible` (stage px) is drawn.
+// inside `visible` (stage px) is drawn. `paper` is the canvas's stage
+// background (batch E): multiplied over the white and the Background layer,
+// before the first other layer, as the Drawing view does. Only the canvas
+// passes one; none (or white) leaves the paper white.
 void drawStage(QPainter &painter, const Panel &panel, const CameraState &state,
-               const Stage &stage, const QRectF &visible);
+               const Stage &stage, const QRectF &visible, const QColor &paper = QColor());
 // The layered pictures the small, often-repainted consumers show, cached by
 // everything that shapes them (the layers' pixels, visibility, opacity and
 // depth, the camera, the stage and the size): the SHOTS clip (drawShot into

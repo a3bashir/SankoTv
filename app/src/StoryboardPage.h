@@ -207,6 +207,13 @@ public:
     // THE SCENE LENGTH LOCK (batch F1, Figma F-1): set by the lock's command and its
     // undo; the timeline redraws the scene's lock, baseline and end line.
     void applySceneLengthLockForUndo(Scene *scene, bool locked);
+    // THE SCENE'S COLOUR (batch E, Figma E-1): "#RRGGBB", or empty for Auto; one undo step
+    // ("Change Scene Color") from the scene's menu - on the SCENES row and on its card.
+    void applySceneColorForUndo(Scene *scene, const QString &tag);
+    void setSceneColor(int sceneIndex, const QString &tag);
+    // The test's answer to the colour picker Custom... opens (an invalid colour: cancelled).
+    void setSceneColorPickForTest(std::function<QColor(const QColor &)> pick) { m_sceneColorPickForTest = std::move(pick); }
+    void openSceneMenuForTest(int sceneIndex) { onSceneMenu(sceneIndex, QPoint()); }
     // Lock or unlock a scene's length (the scene's menu, the lock on the SCENES row):
     // one undo step, and a note.
     void toggleSceneLengthLock(int sceneIndex);
@@ -278,6 +285,21 @@ public:
     QPixmap stripThumbForTest(Panel *panel, qreal dpr) const { return stripThumbPixmap(panel, dpr); }
     void clearQuickPreviewForTest() { clearQuickPreview(); }
     void growPanelToFit(int sceneIndex, int panelIndex);
+    // GROW ALL / START THE MOVE HERE (batch E, Figma E-1): the move a panel's art exit
+    // belongs to - the live keys around its first frame off the art (-1 where the framing is
+    // held before the first key or after the last) - and the panels of it whose art it
+    // leaves. The offers' words (empty: not offered) and the steps that give them.
+    struct MoveExits
+    {
+        int fromKey = -1, toKey = -1;     // key indices; -1 at a held framing's open end
+        double fromFrame = 0, toFrame = 0; // scene frames of the span
+        QVector<int> panels;               // the scene's panels it leaves, in order
+    };
+    bool moveExitsAt(int sceneIndex, int panelIndex, MoveExits *out) const;
+    QString growAllToFitText(int sceneIndex, int panelIndex) const;
+    QString startMoveHereText(int sceneIndex, int panelIndex, int *startPanel = nullptr) const;
+    void growAllToFit(int sceneIndex, int panelIndex);
+    void startMoveHere(int sceneIndex, int panelIndex);
     // Giving every panel a margin (Q8): true, and says so, when the SHOTS track is locked.
     bool refuseMarginChange() { return refuseShotsEdit(); }
     // The Camera bar widened by `px` (0: its own width), placed again: the
@@ -462,6 +484,8 @@ public:
     // the one a panel removal shows when it took camera keys with it.
     QString lastNoteForTest() const { return m_lastNote; }
     void clearNoteForTest() { m_lastNote.clear(); }
+    // Batch E (Figma E-1): the five eases' popover a tap on a move's mark opens, while open.
+    QWidget *easePopoverForTest() const { return m_easePopover.data(); }
     // GROW-1's (cx10): a note's tooltip shown at this global point (on the test's own
     // window) instead of the real pointer's; a null point gives the pointer back.
     void setNotePointForTest(const QPoint &global) { m_notePointForTest = global; }
@@ -785,6 +809,8 @@ private:
     // Qt::Tool windows owned by it and would otherwise paint over the modal).
     QPointer<QWidget> m_modalWatchWindow;
     QPointer<LayerDepthPopover> m_depthPopover; // the open Depth popover (Phase 2B)
+    QPointer<QWidget> m_easePopover; // the five eases on a move's mark (batch E), while open
+    std::function<QColor(const QColor &)> m_sceneColorPickForTest; // Custom...'s picker, in the gate
     ZoomToolbar *m_zoomToolbar = nullptr; // custom-painted view controls
     brushlib::BrushLibraryModel *m_brushLibModel = nullptr;
     brushlib::BrushLibraryPanel *m_brushLibPanel = nullptr;
@@ -932,6 +958,8 @@ private:
     QString cameraKeyHeader(int sceneIndex, int keyIndex, bool *last) const;
     void onCameraKeyMenu(int sceneIndex, int keyIndex, const QPoint &globalPos);
     void onCameraRowMenu(int flatPanel, const QPoint &globalPos);
+    // Batch E (Figma E-1): a tap on a move's ease mark - the five eases there, in a popover.
+    void onCameraEaseMark(int sceneIndex, int keyIndex, const QRect &globalMarkRect);
     // Phase 1D. A quick move worked out (not applied): the span, START /
     // END, the camera after it, and the live keys it replaces. False (and
     // *why* set) when there is nothing to do.
@@ -956,6 +984,11 @@ private:
     QString quickLeavesText(const QuickPlan &plan) const;       // batch 6d: the panels it would leave
     void addQuickMoveEntries(QMenu *menu, const QString &title, int flatPanel);
     void addSceneCameraEntries(QMenu *menu, int sceneIndex);
+    // Batch E: "Grow all N panels to fit this move" and "Start the move at Panel N (...)"
+    // after a Grow entry, in the chip's, the CAMERA row's and the clip's menus alike; greyed
+    // with why on a locked SHOTS (Grow all) or CAMERA (Start) track.
+    void addMoveFitEntries(QMenu *menu, int sceneIndex, int panelIndex);
+    QMargins grownMargins(const Panel *panel, const QMargins &grow) const; // capped as Grow is
     void onSceneMenu(int sceneIndex, const QPoint &globalPos);
     shotcam::CameraState lastFramingOf(int sceneIndex, bool *whole) const;
     shotcam::CameraState heldOnFirstPanel(int sceneIndex, const shotcam::CameraState &framing,
