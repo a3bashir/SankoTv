@@ -251,10 +251,16 @@ const Pin kPins[] = {
     {"preview.2048x1080", "606927537aa6e0c6d3892709da1061d1b41858f5dbd148dda484391ede18ab1f"},
     {"preview.3840x2160", "919a13f3f8a94de2a3e9018634836b22d5e89cae8c258fe1c4a9e0ecdf505141"},
     {"preview.1001x777", "5ba3d9dd3b6391b058d63d701c561b19a13460e2efcb0311a26418d68295ed47"},
-    {"clip.1920x1080", "bd93c17d4a94a8c799bb32fd993e11bdbc935a3fd417e0e72b62c54b40a100f8"},
-    {"clip.2048x1080", "0a6e1eee1051b4aaeed423d50a78bb7c6924c8ed0d781a2cdb61eaeac9edb63b"},
-    {"clip.3840x2160", "19dd058ff9b61d8d9addb519fd132bcc1519c316c8cd0aaef5ff8e18ff2f16e5"},
-    {"clip.1001x777", "a1af50e90fe2fcd1ce4080a80cd8303aa8113bb1836d848aef9e2764ee0e6b41"},
+    // THE CLIPS RE-PINNED (2026-11-18, SCENES + SHOTS, Figma 621:716): a scene's clips touch, so
+    // a clip's body is its whole span (it was the span less 2 px) and its thumbnail - the body
+    // less 6 px each side - 2 px wider: new bytes for the same picture code. Before:
+    // 1920x1080 bd93c17d4a94a8c7..., 2048x1080 0a6e1eee1051b4aa..., 3840x2160 19dd058ff9b61d8d...,
+    // 1001x777 a1af50e90fe2fcd1... The clips whose thumbnail kept its width - a scene's first
+    // after a cut, its body 2 px in - still render the bytes pinned before it ((mp) / (mq) p1).
+    {"clip.1920x1080", "7235850401e82dde8397d17c5aecfbc6d042b3f4fb5762a27951ceae16f5821f"},
+    {"clip.2048x1080", "454d5f1ec4e932149c96195ff5683b52684f3e47a24790018c8c9b6a6ef24b49"},
+    {"clip.3840x2160", "55fc1f3c13954cfdc35c63c547b1cc44f09b0b441f1b3b3c4e49342dd279df9a"},
+    {"clip.1001x777", "32aaf32841aff7bfd6a764f9258190537d0bce44893a167c18ba1613023850f9"},
 };
 
 QString pinned(const QString &name)
@@ -278,14 +284,19 @@ void checkPin(const QString &name, const QString &sha)
 // (the Phase 2 spec, 8.1). What a project WITH camera moves rendered then:
 // a project without a margin must render these bytes for ever.
 const Pin kMovingPins[] = {
+    // Re-pinned 2026-11-18 (SCENES + SHOTS: the thumbnail 1 or 2 px wider, see kPins): the film's
+    // first clip and each scene's last (p2). Before: 1001x777.p2 c9c608dbd0eefb67...,
+    // 1920x1080.p1 152733aa11048019..., 1920x1080.p2 11241632deac9b25..., 2048x1080.p2
+    // faa8fa41434e3177..., 3840x2160.p2 5ea62a720bfb6a8f... The other p1s - a scene's first
+    // clip after a cut, the thumbnail its old width - keep the bytes recorded on 32763eb6b.
     {"clip.1001x777.p1", "2accf11ac555f4470e935a14207fb33102a3361d4186b25f959b189fc4ee2348"},
-    {"clip.1001x777.p2", "c9c608dbd0eefb67221a6d7f941c5fbcff18e5f1e3739a699d617b4f435c3683"},
-    {"clip.1920x1080.p1", "152733aa11048019c847cee7962ad3ab4e621f75d68530a45b4f98b8096b8263"},
-    {"clip.1920x1080.p2", "11241632deac9b256df1fedc25cd6074fe446eb83a94f84a7acfa5b4c265a970"},
+    {"clip.1001x777.p2", "d1c3688323541f8c7cdc73c032e3c315f5f7968c395b0356d8aca24b4e2d8bf8"},
+    {"clip.1920x1080.p1", "b085ca7a77f3564ce41483ec95330e7005e38a1df2804d577d06c819c7d05f25"},
+    {"clip.1920x1080.p2", "6d5dc5fbb949acf41b585322ac13fb51071361df67b64450f7bad7ec7caac175"},
     {"clip.2048x1080.p1", "865a0214de00157cee8e27fdb4cfd2729ab741dd553a86482dc60cdcaa881c1c"},
-    {"clip.2048x1080.p2", "faa8fa41434e3177a12dec533f9cf040e75d5cab36c659ce4b4a067cb4076607"},
+    {"clip.2048x1080.p2", "0717614fdcadf2268d7b9f71dfcf9df969a003c1c29bca8f9891c7d71bcb8615"},
     {"clip.3840x2160.p1", "f7c28c2bb02319805b8a434816ee13e2a4cc418cd0c5768285921ef7da35baf5"},
-    {"clip.3840x2160.p2", "5ea62a720bfb6a8fea6323df780315c4c7fd7dabdcf1dcf9a04b00a85b202a51"},
+    {"clip.3840x2160.p2", "c4a8722a739cd8be5ed364de17e16269944df3a0061be205f9bbd6e5748da7af"},
     {"geometry", "7491456e39c08683270894b0e979b30f0f88e9d9c21a0469ca41fc55815323c6"},
     // CHANGED 2026-11-07, the mp4 lines of the two sizes not 16:9, by the user's
     // request (the film shows only the shot): the old values pinned the art in the
@@ -373,14 +384,17 @@ void checkMovingPin(const QString &name, const QString &sha)
 // margin scene is pinned by (mg1): it renders the 17 neutral pins' bytes.)
 const QSize kMarginPinMargin(480, 270);
 const QMap<QString, QString> kMarginPins = {
+    // Re-pinned 2026-11-18 (SCENES + SHOTS, as kMovingPins): 1001x777.p2 was 4c601adadcffa1ac...,
+    // 1920x1080.p1 152733aa11048019..., 1920x1080.p2 326402d420a05a7c..., 2048x1080.p2
+    // 9294042f04f9f754..., 3840x2160.p2 39d701b46b7fb791...; the other p1s keep 35ea9ab05's.
     {"clip.1001x777.p1", "2accf11ac555f4470e935a14207fb33102a3361d4186b25f959b189fc4ee2348"},
-    {"clip.1001x777.p2", "4c601adadcffa1acf4e3575545f5db1c3db20547b6134de76b26f59d7d31ad39"},
-    {"clip.1920x1080.p1", "152733aa11048019c847cee7962ad3ab4e621f75d68530a45b4f98b8096b8263"},
-    {"clip.1920x1080.p2", "326402d420a05a7c1417e894a7e27a35359d1d541756f9505ad5438a2cdea45a"},
+    {"clip.1001x777.p2", "bf8d0952286f89eca4c345dcb834e988b184622c6e8a7a90962f657ad856fbb3"},
+    {"clip.1920x1080.p1", "b085ca7a77f3564ce41483ec95330e7005e38a1df2804d577d06c819c7d05f25"},
+    {"clip.1920x1080.p2", "4889ec4dd5af1232135322c88fea2a2463c61e5e90bbcc0e6993ff2d88eacf77"},
     {"clip.2048x1080.p1", "865a0214de00157cee8e27fdb4cfd2729ab741dd553a86482dc60cdcaa881c1c"},
-    {"clip.2048x1080.p2", "9294042f04f9f754bdcc8f03c93bc5153d9ba4cfce3a90487cd5cd873a26f6dc"},
+    {"clip.2048x1080.p2", "6cb0c3802622296fcad011d8ab6c636c8fd56054732a2b9ccb1de885335afed1"},
     {"clip.3840x2160.p1", "f7c28c2bb02319805b8a434816ee13e2a4cc418cd0c5768285921ef7da35baf5"},
-    {"clip.3840x2160.p2", "39d701b46b7fb791bba9b37f35a1722088448d814bf807b7f1c545ccf796a15a"},
+    {"clip.3840x2160.p2", "50fe3da67214619c0f06c7c917b83980082b38ed302bf50e7b1d7b6a6067fc06"},
     {"geometry", "94c6580cedecbf1882cd30b5ad84ce346726a87ae0d5f8e0a6e966b9d2a51fa2"},
     // CHANGED 2026-11-07, as in kMovingPins and for the same reason.
     {"mp4.1001x777.f102", "8bed895881128b484f061128763dede98e5c7ac39f78c562c613d7023fe9ab98"},
@@ -627,6 +641,24 @@ int main(int argc, char **argv)
             checkPin(QStringLiteral("clip.") + tag,
                      shown && thumb.isValid() ? shaOf(surface.copy(thumb))
                                               : QStringLiteral("no thumb"));
+        }
+        // Control of the re-pin (2026-11-18, SCENES + SHOTS): the four clips are one scene, so
+        // each body is its whole span and its thumbnail the body less 6 px each side - the 2 px
+        // the pinned thumbnails grew by, and nothing else.
+        {
+            QStringList sizes;
+            bool spanBodies = true;
+            for (int i = 0; i < 4; ++i) {
+                const QVariantMap parts = tl->clipPartsForTest(i);
+                const QRect body = rectOf(parts.value(QStringLiteral("body")).toString());
+                const QRect thumb = rectOf(parts.value(QStringLiteral("thumb")).toString());
+                spanBodies = spanBodies && body == tl->clipRectForTest(i) && thumb.left() == body.left() + 6
+                    && thumb.width() == body.width() - 12;
+                sizes << QStringLiteral("%1: body %2, thumbnail %3").arg(i).arg(body.width()).arg(thumb.width());
+            }
+            check(QStringLiteral("(c1p) control: the pinned clips are one scene - each body its whole span (a "
+                                 "scene's clips touch) and its thumbnail the body less 6 px each side"),
+                  spanBodies, sizes.join(QStringLiteral("; ")));
         }
         for (int i = 0; i < 4; ++i) {
             const QString tag = QStringLiteral("%1x%2").arg(kSizes[i].width())

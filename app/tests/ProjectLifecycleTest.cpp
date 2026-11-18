@@ -10971,30 +10971,34 @@ void runTimelineLookPass(const QString &scratch)
                   .arg(tl->rulerLabelStepForTest()));
         const QVariantMap c0 = tl->clipPartsForTest(0), c3 = tl->clipPartsForTest(3);
         const QRect clip0 = tl->clipRectForTest(0);
-        check(QStringLiteral("(aw) A 3 s CLIP at 42 px/s is 126 wide: body 124 (a 2 px gap), "
-                             "thumbnail at (6,6) 112x42, number at (10,9), name at (8, bottom-20) "
-                             "78 wide, pill 28x18 at (right-33, bottom-22); all shown"),
+        // SCENES + SHOTS (2026-11-18, Figma 621:716): a scene's clips touch - the body is the
+        // clip's whole span (it was the span less a 2 px gap on the right: body 124, thumbnail
+        // 112, name 78, the pill at right-2-33). Only at a cut between two scenes does a body
+        // give up its share of the gap there - (ss) measures that; this sample is one scene.
+        check(QStringLiteral("(aw) A 3 s CLIP at 42 px/s is 126 wide: its body the whole 126 (a scene's clips "
+                             "touch; it was 124, a 2 px gap), thumbnail at (6,6) 114x42, number at (10,9), "
+                             "name at (8, bottom-20) 80 wide, pill 28x18 at (right-33, bottom-22); all shown"),
               c0.value(QStringLiteral("body")).toString()
-                      == QStringLiteral("%1,%2 124x%3").arg(clip0.x()).arg(clip0.y()).arg(clip0.height())
+                      == QStringLiteral("%1,%2 126x%3").arg(clip0.x()).arg(clip0.y()).arg(clip0.height())
                   && c0.value(QStringLiteral("thumb")).toString()
-                      == QStringLiteral("%1,%2 112x42").arg(clip0.x() + 6).arg(clip0.y() + 6)
+                      == QStringLiteral("%1,%2 114x42").arg(clip0.x() + 6).arg(clip0.y() + 6)
                   && c0.value(QStringLiteral("number")).toString().startsWith(
                       QStringLiteral("%1,%2 ").arg(clip0.x() + 10).arg(clip0.y() + 9))
                   && c0.value(QStringLiteral("name")).toString()
-                      == QStringLiteral("%1,%2 78x15").arg(clip0.x() + 8).arg(clip0.bottom() - 20)
+                      == QStringLiteral("%1,%2 80x15").arg(clip0.x() + 8).arg(clip0.bottom() - 20)
                   && c0.value(QStringLiteral("pill")).toString()
-                      == QStringLiteral("%1,%2 28x18").arg(clip0.right() - 2 - 33).arg(clip0.bottom() - 22)
+                      == QStringLiteral("%1,%2 28x18").arg(clip0.right() - 33).arg(clip0.bottom() - 22)
                   && c0.value(QStringLiteral("thumbShown")).toBool()
                   && c0.value(QStringLiteral("nameShown")).toBool()
                   && c0.value(QStringLiteral("pillShown")).toBool(),
               QStringLiteral("clip %1,%2 %3x%4; %5").arg(clip0.x()).arg(clip0.y()).arg(clip0.width())
                   .arg(clip0.height()).arg(QJsonDocument(QJsonObject::fromVariantMap(c0)).toJson(QJsonDocument::Compact)));
-        check(QStringLiteral("(aw) the 2 s clip (84 px, body 82) hides its NAME and keeps the "
-                             "thumbnail (70 wide) and the pill, as the design draws it"),
-              c3.value(QStringLiteral("body")).toString().contains(QStringLiteral(" 82x"))
+        check(QStringLiteral("(aw) the 2 s clip (84 px, its body the whole 84; it was 82) hides its NAME and "
+                             "keeps the thumbnail (72 wide) and the pill, as the design draws it"),
+              c3.value(QStringLiteral("body")).toString().contains(QStringLiteral(" 84x"))
                   && !c3.value(QStringLiteral("nameShown")).toBool()
                   && c3.value(QStringLiteral("thumbShown")).toBool()
-                  && c3.value(QStringLiteral("thumb")).toString().contains(QStringLiteral(" 70x42"))
+                  && c3.value(QStringLiteral("thumb")).toString().contains(QStringLiteral(" 72x42"))
                   && c3.value(QStringLiteral("pillShown")).toBool(),
               QJsonDocument(QJsonObject::fromVariantMap(c3)).toJson(QJsonDocument::Compact));
         // The hide order as the zoom drops: name, then thumbnail, then pill.
@@ -21391,7 +21395,9 @@ void runSceneColoursPass(const QString &scratch)
         Shown s;
         s.block = img.pixelColor(sr.left() + 3, sr.top() + 3);
         s.baseline = img.pixelColor(sr.center().x(), sr.bottom());
-        s.strip = img.pixelColor(cr.center().x(), cr.top() + 4);
+        // The strip's middle row (SCENES + SHOTS, Figma 621:716: rows top+1..top+3; it was
+        // top+3..top+5, read at top+4).
+        s.strip = img.pixelColor(cr.center().x(), cr.top() + 2);
         // The cards are rebuilt with deleteLater: the old ones go first, or they are found too.
         QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
         const QList<QFrame *> swatches = r.storyboard->findChildren<QFrame *>(QStringLiteral("sceneCardSwatch"));
@@ -21995,6 +22001,254 @@ void runStageBackgroundDepthPass(const QString &scratch)
           hasBlue(stripWhite) && hasBlue(previewWhite) && pngWhite.size() == 2 && pngWhite.at(0) != pngWhite.at(1),
           QStringLiteral("strip %1, preview %2, png %3").arg(hasBlue(stripWhite)).arg(hasBlue(previewWhite))
               .arg(pngWhite.size()));
+    r.window.markCleanForTest();
+}
+
+// --- (ss) SCENES + SHOTS (2026-11-18, the user's Figma 621:716; the plan approved 2026-11-16) -----
+// A scene's clips touch, sharing one #3B374B line at each cut; the scene's outer corners are round;
+// between two scenes a 3 px gap is taken from inside their spans - the cut's own column and one each
+// side - so every clip keeps its exact frames; the SCENES block lines up with its group; the strip
+// sits 1 px under the clip's top, 3 px in from each side, under a selected or amber clip's whole
+// 2 px edge. Clicks and the trim edges keep the frame spans. The app's clip insides are kept (the
+// user's choice). Pixels from the timeline's own grab; three scenes of three panels (2 / 3 / 4 s).
+void runScenesShotsPass(const QString &scratch)
+{
+    using namespace workspace;
+    using dppins::closeTo;
+    out() << "--- (ss) SCENES + SHOTS: a scene's clips grouped, the gap between scenes ---" << Qt::endl;
+    const QString dir = scratch + QStringLiteral("/sceneshots");
+    QDir(dir).removeRecursively();
+    const QString project = writeProject(dir, QStringLiteral("Shots"), QSize(960, 540), 24, 3, 3);
+    Rig r(project, QSize(1800, 900));
+    check(QStringLiteral("(ss) the workspace opened"), r.ok);
+    if (!r.ok)
+        return;
+    AnimaticTimeline *tl = r.timeline;
+    const int n = 9, firstB = 3; // scenes of 3: clips 0-2, 3-5, 6-8
+    auto rectOf = [](const QString &s) { // "x,y wxh"
+        const QStringList a = s.split(QLatin1Char(' '));
+        const QStringList xy = a.value(0).split(QLatin1Char(',')), wh = a.value(1).split(QLatin1Char('x'));
+        return xy.size() == 2 && wh.size() == 2
+            ? QRect(xy.at(0).toInt(), xy.at(1).toInt(), wh.at(0).toInt(), wh.at(1).toInt()) : QRect();
+    };
+    auto bodyOf = [&](int i) { return rectOf(tl->clipPartsForTest(i).value(QStringLiteral("body")).toString()); };
+    auto end = [](const QRect &q) { return q.left() + q.width(); }; // one past its last column
+
+    // (ss1) frame-exact, at three zooms.
+    QStringList geomBad;
+    for (const float z : {200.0f, 100.0f, 40.0f}) {
+        tl->setZoomForTest(z);
+        pump(60);
+        for (int i = 0; i < n; ++i) {
+            const QRect span = tl->clipRectForTest(i), body = bodyOf(i);
+            if (!span.contains(body) || body.isEmpty())
+                geomBad << QStringLiteral("zoom %1: clip %2's body %3,%4 %5 outside its span %6..%7").arg(z).arg(i)
+                               .arg(body.x()).arg(body.width()).arg(body.height()).arg(span.left()).arg(end(span));
+            if (i + 1 == n)
+                continue;
+            const QRect nextSpan = tl->clipRectForTest(i + 1), next = bodyOf(i + 1);
+            if (end(span) != nextSpan.left())
+                geomBad << QStringLiteral("zoom %1: clip %2's span ends at %3, the next starts at %4").arg(z).arg(i)
+                               .arg(end(span)).arg(nextSpan.left());
+            const int c = nextSpan.left();
+            if ((i + 1) % 3 != 0 && end(body) != next.left())
+                geomBad << QStringLiteral("zoom %1: clips %2 and %3 do not touch (%4 / %5)").arg(z).arg(i).arg(i + 1)
+                               .arg(end(body)).arg(next.left());
+            if ((i + 1) % 3 == 0 && (end(body) != c - 1 || next.left() != c + 2))
+                geomBad << QStringLiteral("zoom %1: at the cut %2 the bodies end at %3 and start at %4").arg(z).arg(c)
+                               .arg(end(body)).arg(next.left());
+        }
+    }
+    check(QStringLiteral("(ss1) FRAME-EXACT at zoom 200, 100 and 40: every clip's span is its frames (the next starts "
+                         "where it ends) and its body lies inside it; within a scene the bodies touch; at each cut between "
+                         "scenes the bodies stop 1 px before the cut and start 2 px after it - a 3 px gap centred on the "
+                         "cut's own column"),
+          geomBad.isEmpty(), geomBad.join(QStringLiteral("; ")));
+
+    // The pixels, at zoom 100, clip 8 (scene 3's middle) selected; the playhead - which the
+    // selection brings to the clip's start, over its first columns - moved into clip 6, away
+    // from everything read.
+    tl->setZoomForTest(100.0f);
+    r.animatic->setSelectedPanel(7);
+    pump(80);
+    r.animatic->setPlayheadForTest(5, 1000);
+    pump(120);
+    const int selectedForPixels = r.animatic->selectedPanelForTest();
+    QImage img = r.surface->grab().toImage();
+    auto at = [&](int x, int y) {
+        const qreal d = img.devicePixelRatio();
+        return img.pixelColor(QPoint(qRound(x * d), qRound(y * d)));
+    };
+    auto near3 = [](const QColor &a, const QColor &b) { return closeTo(a, b, 3); };
+    const QColor line(0x3b, 0x37, 0x4b), body(0x25, 0x23, 0x30), ground(0x10, 0x11, 0x15), rowGround(0x1c, 0x1e, 0x25),
+        edge(0x97, 0x87, 0xff), selectedBody(0x30, 0x2a, 0x48);
+    const QColor teal(0x4f, 0x8a, 0x85), moss(0x6e, 0x8b, 0x52); // scenes 2 and 3, Auto
+    const QRect s0 = tl->clipRectForTest(0);
+    const int top = s0.top(), mid = s0.top() + 51; // under the thumbnail (6 + 42), over the name
+    const int sceneRowY = tl->sceneRectForTest(0).top() + 3;
+    const int inner = tl->clipRectForTest(1).left();      // a cut inside scene 1
+    const int cutAB = tl->clipRectForTest(firstB).left(); // scene 1 | scene 2
+    auto names = [&](int x0, int x1, int y) {
+        QStringList l;
+        for (int x = x0; x <= x1; ++x)
+            l << at(x, y).name();
+        return l.join(QLatin1Char(' '));
+    };
+    check(QStringLiteral("(ss2) ONE SHARED LINE AT A CUT INSIDE A SCENE: the cut's own column is the #3B374B line and the "
+                         "columns each side of it are the two clips' #252330 bodies"),
+          at(inner, mid) == line && at(inner - 1, mid) == body && at(inner + 1, mid) == body,
+          QStringLiteral("cut %1: %2").arg(inner).arg(names(inner - 2, inner + 2, mid)));
+    check(QStringLiteral("(ss2) control: 10 px inside each of the two clips the same measure reads the body, not a line"),
+          at(inner - 10, mid) == body && at(inner + 10, mid) == body,
+          QStringLiteral("%1 / %2").arg(at(inner - 10, mid).name(), at(inner + 10, mid).name()));
+    check(QStringLiteral("(ss3) THE GAP BETWEEN SCENES IS INSIDE THEIR SPANS: on the SHOTS row the cut's column and one each "
+                         "side are the track's #101115, with scene 1's closing line just before them and scene 2's opening "
+                         "line just after; on the SCENES row the same three columns are the row's #1C1E25, the two blocks "
+                         "either side"),
+          at(cutAB - 1, mid) == ground && at(cutAB, mid) == ground && at(cutAB + 1, mid) == ground
+              && at(cutAB - 2, mid) == line && at(cutAB + 2, mid) == line && at(cutAB - 1, sceneRowY) == rowGround
+              && at(cutAB, sceneRowY) == rowGround && at(cutAB + 1, sceneRowY) == rowGround
+              && at(cutAB - 2, sceneRowY) != rowGround && at(cutAB + 2, sceneRowY) != rowGround,
+          QStringLiteral("cut %1; shots %2; scenes %3").arg(cutAB).arg(names(cutAB - 2, cutAB + 2, mid),
+                                                                    names(cutAB - 2, cutAB + 2, sceneRowY)));
+    const QRect b0 = bodyOf(0), b2 = bodyOf(2);
+    check(QStringLiteral("(ss4) THE SCENE'S OUTER CORNERS ARE ROUND, ITS INNER ONES SQUARE: scene 1's first clip's top-left "
+                         "pixel and its last clip's top-right one are the track's (rounded away); at the cut inside the "
+                         "scene the top corners on both sides are the line"),
+          at(b0.left(), b0.top()) == ground && at(b2.right(), b2.top()) == ground && at(inner, b0.top()) == line
+              && at(inner - 1, b0.top()) == line,
+          QStringLiteral("%1 %2 | %3 %4").arg(at(b0.left(), b0.top()).name(), at(b2.right(), b2.top()).name(),
+                                               at(inner - 1, b0.top()).name(), at(inner, b0.top()).name()));
+    const QRect b4 = bodyOf(4), b7 = bodyOf(7);
+    const int cx4 = b4.center().x(), cx7 = b7.center().x();
+    check(QStringLiteral("(ss5) THE STRIP sits 1 px under the clip's top, 3 px high, 3 px in from each side: on a plain "
+                         "clip of scene 2 its rows top+1 to top+3 are Teal, the top row the line and top+4 the body; its "
+                         "first and last columns are 3 px in, the ones outside them the body"),
+          near3(at(cx4, top + 1), teal) && near3(at(cx4, top + 2), teal) && near3(at(cx4, top + 3), teal)
+              && at(cx4, top) == line && at(cx4, top + 4) == body && near3(at(b4.left() + 3, top + 2), teal)
+              && at(b4.left() + 2, top + 2) == body && near3(at(b4.right() - 3, top + 2), teal)
+              && at(b4.right() - 2, top + 2) == body,
+          QStringLiteral("rows %1 %2 %3 %4 %5; columns %6").arg(at(cx4, top).name(), at(cx4, top + 1).name(),
+                                                                  at(cx4, top + 2).name(), at(cx4, top + 3).name(),
+                                                                  at(cx4, top + 4).name(),
+                                                                  names(b4.left() + 1, b4.left() + 4, top + 2)));
+    check(QStringLiteral("(ss5) A SELECTED CLIP'S 2 px EDGE STAYS WHOLE over the strip, inside its own span: its top two "
+                         "rows #9787FF, then the strip's last two rows Moss, then its #302A48 body; its first and last "
+                         "columns the edge, the columns beyond them its neighbours' (the body before, the line after)"),
+          selectedForPixels == 7 && at(cx7, top) == edge && at(cx7, top + 1) == edge && near3(at(cx7, top + 2), moss)
+              && near3(at(cx7, top + 3), moss) && at(cx7, top + 4) == selectedBody && at(b7.left(), mid) == edge
+              && at(b7.left() - 1, mid) == body && at(b7.right(), mid) == edge && at(b7.right() + 1, mid) == line,
+          QStringLiteral("selected %8; rows %1 %2 %3 %4 %5; left %6; right %7").arg(at(cx7, top).name(), at(cx7, top + 1).name(),
+                                                                         at(cx7, top + 2).name(), at(cx7, top + 3).name(),
+                                                                         at(cx7, top + 4).name(),
+                                                                         names(b7.left() - 1, b7.left() + 1, mid),
+                                                                         names(b7.right() - 1, b7.right() + 1, mid))
+              .arg(selectedForPixels));
+    // (ss6) the SCENES block over its group.
+    QStringList blockBad;
+    for (int s = 0; s < 3; ++s) {
+        const QRect block = tl->sceneBlockRectForTest(s), span = tl->sceneRectForTest(s);
+        const QRect first = bodyOf(3 * s), last = bodyOf(3 * s + 2);
+        if (block.left() != first.left() || end(block) != end(last) || !span.contains(block))
+            blockBad << QStringLiteral("scene %1: block %2..%3, clips %4..%5, span %6..%7").arg(s + 1).arg(block.left())
+                            .arg(end(block)).arg(first.left()).arg(end(last)).arg(span.left()).arg(end(span));
+    }
+    check(QStringLiteral("(ss6) THE SCENES BLOCK LINES UP WITH ITS GROUP: each scene's block starts at its first clip's "
+                         "body and ends at its last clip's, inside its span"),
+          blockBad.isEmpty(), blockBad.join(QStringLiteral("; ")));
+
+    // (ss7) hover and amber, inside the clip's own span.
+    sendMouse(r.surface, QEvent::MouseMove, QPointF(cx4, mid), Qt::NoButton);
+    pump(80);
+    img = r.surface->grab().toImage();
+    const QColor hoverEdge(qRound((edge.red() + body.red()) / 2.0), qRound((edge.green() + body.green()) / 2.0),
+                           qRound((edge.blue() + body.blue()) / 2.0));
+    const bool hoverShown = near3(at(b4.left(), mid), hoverEdge) && near3(at(b4.right(), mid), hoverEdge)
+        && at(b4.left() - 1, mid) == body && at(b4.right() + 1, mid) == line;
+    const QString hoverSeen = QStringLiteral("%1 / %2").arg(names(b4.left() - 1, b4.left(), mid), names(b4.right(), b4.right() + 1, mid));
+    sendMouse(r.surface, QEvent::MouseMove, QPointF(tl->clipRectForTest(n - 1).center().x(), 4), Qt::NoButton);
+    {
+        Scene *sc = r.window.scenesForTest().value(1);
+        if (sc) {
+            shotcam::CameraState a;
+            a.cx = 480.0;
+            a.cy = 270.0;
+            shotcam::CameraState b = a;
+            b.cx = 1440.0; // a whole canvas to the right: the panels before the key leave their art
+            shotcam::SceneCamera cam;
+            cam.keys = {shotcam::makeKey(*sc, 0, 0, 24, a, shotcam::Ease::Linear),
+                        shotcam::makeKey(*sc, 2, 0, 24, b, shotcam::Ease::Linear)};
+            r.storyboard->applyCameraForUndo(sc, cam);
+        }
+    }
+    pump(150);
+    img = r.surface->grab().toImage();
+    const QColor amber(0xf5, 0xa6, 0x23);
+    const QRect b3 = bodyOf(3);
+    const bool amberLeaves = tl->artExitFramesForTest(3) > 0;
+    const bool amberShown = amberLeaves && at(b3.left(), mid) == amber && at(b3.left() + 1, mid) == amber
+        && at(b3.left() - 1, mid) == ground && at(b3.left(), b3.top()) == ground
+        && at(inner, mid) == line; // scene 1, which the move does not touch, keeps its plain line
+    check(QStringLiteral("(ss7) HOVER AND AMBER, INSIDE THE CLIP'S OWN SPAN: the hovered clip's 1 px edge at 50 % on its "
+                         "first and last columns (the body before it, the line after it); a clip whose art the camera "
+                         "leaves wears its 2 px amber edge on its own first two columns, the gap before it untouched and "
+                         "its outer corner round (the track's colour there)"),
+          hoverShown && amberShown,
+          QStringLiteral("hover %1 (want %2); amber: leaves %3, %4, corner %5").arg(hoverSeen, hoverEdge.name())
+              .arg(amberLeaves).arg(names(b3.left() - 1, b3.left() + 1, mid), at(b3.left(), b3.top()).name()));
+
+    // (ss8) clicks and the trim edges keep the frame spans.
+    auto press = [&](int x) {
+        sendMouse(r.surface, QEvent::MouseButtonPress, QPointF(x, mid), Qt::LeftButton);
+        sendMouse(r.surface, QEvent::MouseButtonRelease, QPointF(x, mid), Qt::LeftButton);
+        pump(150);
+        return r.animatic->selectedPanelForTest();
+    };
+    r.animatic->setSelectedPanel(7);
+    pump(80);
+    const int leftOfCut = press(cutAB - 1);
+    r.animatic->setSelectedPanel(7);
+    pump(80);
+    const int atCut = press(cutAB);
+    sendMouse(r.surface, QEvent::MouseMove, QPointF(cutAB, mid), Qt::NoButton);
+    pump(60);
+    const bool trimAtCut = r.surface->cursor().shape() == Qt::SizeHorCursor;
+    sendMouse(r.surface, QEvent::MouseMove, QPointF(bodyOf(firstB).center().x(), mid), Qt::NoButton);
+    pump(60);
+    const bool handInside = r.surface->cursor().shape() == Qt::PointingHandCursor;
+    check(QStringLiteral("(ss8) CLICKS AND TRIMS KEEP THE FRAME SPANS: a click in the gap's left column selects scene 1's "
+                         "last clip and one on the cut's column scene 2's first (the frame there is its); with it "
+                         "selected the pointer over the cut, in the gap, is the trim pointer"),
+          leftOfCut == 2 && atCut == firstB && trimAtCut,
+          QStringLiteral("left of the cut -> %1, the cut -> %2, trim pointer %3").arg(leftOfCut).arg(atCut).arg(trimAtCut));
+    check(QStringLiteral("(ss8) control: in the middle of that clip the pointer is the hand, not the trim pointer"),
+          handInside, QString::number(int(r.surface->cursor().shape())));
+
+    // (ss9) a narrow zoom: the gap and the corners shrink with the room.
+    for (int p = 0; p < 3; ++p)
+        r.animatic->setPanelFramesForTest(1, p, 24); // scene 2: three 1 s panels
+    tl->setZoomForTest(10.0f);                       // 0.1 px a frame: scene 2 is 7 px
+    pump(120);
+    const QRect blockB = tl->sceneBlockRectForTest(1), spanB = tl->sceneRectForTest(1);
+    QStringList narrowBad;
+    for (int i = 0; i < n; ++i) {
+        const QVariantMap parts = tl->clipPartsForTest(i);
+        const QRect drawn = tl->clipRectForTest(i), bd = rectOf(parts.value(QStringLiteral("body")).toString());
+        const double rad = parts.value(QStringLiteral("radius")).toDouble();
+        const int si = i / 3;
+        const int sceneW = tl->sceneBlockRectForTest(si).width();
+        if (bd.isEmpty() || !drawn.contains(bd) || rad > 5.0 || rad > sceneW / 2.0 + 1e-9)
+            narrowBad << QStringLiteral("clip %1: body %2 w %3 in %4 w %5, radius %6, scene %7 px").arg(i).arg(bd.x())
+                             .arg(bd.width()).arg(drawn.x()).arg(drawn.width()).arg(rad).arg(sceneW);
+    }
+    check(QStringLiteral("(ss9) AT A NARROW ZOOM THE GAP AND THE CORNERS SHRINK WITH THE ROOM: at zoom 10, scene 2 three "
+                         "1 s panels (7.2 px: 7 or 8 on screen), it gives up 1 px at each end - not 2: no more than a sixth "
+                         "of it - and every clip's body lies inside what is drawn, with its corners at most half its "
+                         "scene's width"),
+          spanB.width() >= 6 && spanB.width() < 12 && blockB.left() == spanB.left() + 1 && end(blockB) == end(spanB) - 1
+              && narrowBad.isEmpty(),
+          QStringLiteral("span %1..%2, block %3..%4; %5").arg(spanB.left()).arg(end(spanB)).arg(blockB.left())
+              .arg(end(blockB)).arg(narrowBad.join(QStringLiteral("; "))));
     r.window.markCleanForTest();
 }
 
@@ -29056,8 +29310,15 @@ int main(int argc, char **argv)
         || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("scenelock")
         || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("keysview")
         || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("batchd")
-        || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("batche")) {
-        if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("batche")) {
+        || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("batche")
+        || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("scenesshots")) {
+        if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("scenesshots")) {
+            // SCENES + SHOTS (Figma 621:716), with the passes whose checks it changed: (aw)'s clip
+            // layout, (ec)'s strip.
+            runTimelineLookPass(scratch);
+            runSceneColoursPass(scratch);
+            runScenesShotsPass(scratch);
+        } else if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("batche")) {
             // Batch E (Figma E-1): the eases on the line (and the camera row's own pass, whose
             // key menu now has them in a row).
             runCameraRowPass(scratch);
@@ -29313,6 +29574,7 @@ int main(int argc, char **argv)
     runSceneColoursPass(scratch);
     runStageBackgroundPass(scratch);
     runStageBackgroundDepthPass(scratch); // (ed5)
+    runScenesShotsPass(scratch);          // (ss) Figma 621:716
     runGrowAnyZoomPass(scratch);
     runTrialFixesPass(scratch);
     runKeptArtPass(scratch);

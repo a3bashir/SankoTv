@@ -112,11 +112,12 @@ constexpr double kFrameTicksPpf = 8.0;
 
 // The clip, as the design lays it out on a 76 px body (every number is the
 // design's; see HANDOFF "The timeline redesign, Part A"): the body is the
-// clip's rect less a 2 px gap on the right, radius 5; the thumbnail sits
-// at (6,6), body width - 12 wide, 42 tall, radius 3; the number at (10,9);
-// the name at (8, bottom - 20) up to the pill; the pill 28 x 18 at
-// (right - 33, bottom - 22).
-constexpr int kClipGap = 2;
+// clip's whole frame span - less, at a scene's two ends, its share of the
+// 3 px gap between scenes (SCENES + SHOTS, Figma 621:716; it was the rect
+// less a 2 px gap on the right) - its scene's outer corners radius 5; the
+// thumbnail sits at (6,6), body width - 12 wide, 42 tall, radius 3; the
+// number at (10,9); the name at (8, bottom - 20) up to the pill; the pill
+// 28 x 18 at (right - 33, bottom - 22).
 constexpr qreal kClipR = 5.0;
 constexpr int kThumbInset = 6, kThumbH = 42, kThumbR = 3;
 constexpr int kPillW = 28, kPillH = 18;
@@ -124,6 +125,29 @@ constexpr int kPillW = 28, kPillH = 18;
 // name (below 86 px of body), then the thumbnail (below 48), then the pill
 // (below 42); the number stays while the body is 20 px or more.
 constexpr int kNameMinBody = 86, kThumbMinBody = 48, kPillMinBody = 42, kNumberMinBody = 20;
+
+// SCENES + SHOTS (2026-11-18, Figma 621:716): a clip's shape, its corners round (radius
+// rad) only on the sides that are its scene's ends.
+QPainterPath clipShape(const QRectF &r, qreal rad, bool roundL, bool roundR)
+{
+    const qreal rl = roundL ? rad : 0.0, rr = roundR ? rad : 0.0;
+    QPainterPath path;
+    path.moveTo(r.left() + rl, r.top());
+    path.lineTo(r.right() - rr, r.top());
+    if (rr > 0)
+        path.arcTo(QRectF(r.right() - 2 * rr, r.top(), 2 * rr, 2 * rr), 90, -90);
+    path.lineTo(r.right(), r.bottom() - rr);
+    if (rr > 0)
+        path.arcTo(QRectF(r.right() - 2 * rr, r.bottom() - 2 * rr, 2 * rr, 2 * rr), 0, -90);
+    path.lineTo(r.left() + rl, r.bottom());
+    if (rl > 0)
+        path.arcTo(QRectF(r.left(), r.bottom() - 2 * rl, 2 * rl, 2 * rl), 270, -90);
+    path.lineTo(r.left(), r.top() + rl);
+    if (rl > 0)
+        path.arcTo(QRectF(r.left(), r.top(), 2 * rl, 2 * rl), 180, -90);
+    path.closeSubpath();
+    return path;
+}
 } // namespace
 
 // =====================================================================
@@ -1654,9 +1678,12 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
                 endFrame = m_blocks.at(j).startFrame + m_blocks.at(j).frames;
                 ++j;
             }
-            const int x0 = contentXToScreen(startFrame * ppf);
-            const int x1 = contentXToScreen(endFrame * ppf);
-            QRect r(x0, kSceneY, x1 - x0, kSceneH);
+            Q_UNUSED(startFrame);
+            Q_UNUSED(endFrame);
+            // SCENES + SHOTS (Figma 621:716): the block over its group of clips - its span less
+            // its share of the 3 px gaps (sceneBlockRect) - and no separator line: the gap,
+            // the row's own ground, is what parts two scenes.
+            const QRect r = sceneBlockRect(si);
             Q_UNUSED(sceneOrdinal);
             p.fillRect(r, kSceneBlock);
             // THE SCENE'S COLOUR (batch E, Figma E-1): behind its name at 40 %, and as its
@@ -1670,9 +1697,6 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
             const bool locked = sceneLocked(si);
             p.fillRect(QRect(r.left(), kSceneY + kSceneH - 2, r.width(), 2),
                        locked ? kTrackControlActive : sceneColor);
-            // Scene separator.
-            p.setPen(kSceneSeparator);
-            p.drawLine(x0, kSceneY, x0, kSceneY + kSceneH);
             p.setFont(f);
             p.setPen(kSceneName);
             // Its lock before the name: always on a locked scene, faint on hover on
@@ -1693,7 +1717,8 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
     }
 
     // ----- Panel / shot clips (the redesign) -----
-    // Flat bodies with a 2 px gap between neighbours, the thumbnail across
+    // Flat bodies, touching within a scene (SCENES + SHOTS, 2026-11-18; they
+    // had a 2 px gap between neighbours), the thumbnail across
     // the top with the number over it, the name bottom-left and the
     // duration pill bottom-right; the selected clip is a lighter body with
     // a 2 px border, nothing else (the design's glow and trim handles are
@@ -1728,7 +1753,7 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
             const int x1 = qMax(x0 + kMinClipPx, contentXToScreen((b.startFrame + b.frames) * ppf));
             if (x1 < kLabelCol || x0 > contentRight) continue;
             const QRect r(x0, kPanelY + 2, x1 - x0, panelTrackH() - 4);
-            const ClipLayout L = clipLayout(r, pillText(b));
+            const ClipLayout L = clipLayout(oi, r);
             const QRectF bf(L.body);
 
             // "current" is the SELECTED panel - the one on the drawing
@@ -1737,26 +1762,42 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
             const bool current = (b.flatIndex == m_selected);
             const bool hovered = (b.flatIndex == m_hoverIndex);
 
+            // SCENES + SHOTS (2026-11-18, Figma 621:716): a scene's clips touch. Each clip
+            // owns the line at its own cut (its left edge); only its scene's last clip - or
+            // one drawn wider than its frames, over its neighbour - closes its right side, so
+            // two neighbours share one line. The corners are round only at the scene's ends.
+            // The states are drawn inside the clip's own span, over the strip.
+            const bool roundL = L.edges.first, roundR = L.edges.last;
+            const bool closed = roundR || b.frames * ppf < kMinClipPx;
+            const qreal rad = L.edges.radius;
+            // A plain clip's 1 px line is the ring its body leaves: the shape in the line's
+            // colour, the body over it 1 px in (not on the open right side). Filled, not
+            // stroked - a stroke's flat end left the line's last column part-covered.
+            const bool plainLine = !current && !hovered;
             p.setPen(Qt::NoPen);
-            p.setBrush(current ? kClipSelectedBg : kClipBg);
-            p.drawRoundedRect(bf, kClipR, kClipR);
+            p.setBrush(plainLine ? kClipBorder : (current ? kClipSelectedBg : kClipBg));
+            p.drawPath(clipShape(bf, rad, roundL, roundR));
+            if (plainLine) {
+                p.setBrush(kClipBg);
+                p.drawPath(clipShape(bf.adjusted(1, 1, closed ? -1 : 0, -1), qMax(0.0, rad - 1), roundL, roundR));
+            }
             p.setBrush(Qt::NoBrush);
+            // THE SCENE'S COLOUR (batch E, Figma E-1; placed by 621:716): a strip 1 px under the
+            // clip's top, 3 px in from each side, 3 px high - under a selected or amber clip's
+            // 2 px edge, which stays whole, and over the thumbnail (6 px down).
+            if (b.sceneIndex < m_scenes.size()) {
+                p.setBrush(scenecolor::colorOf(*m_scenes.at(b.sceneIndex), b.sceneIndex));
+                p.drawRoundedRect(QRectF(bf.left() + 3, bf.top() + 1, qMax(0.0, bf.width() - 6), 3), 1, 1);
+                p.setBrush(Qt::NoBrush);
+            }
             if (current) {
                 p.setPen(QPen(kClipSelectedBorder, 2));
-                p.drawRoundedRect(bf.adjusted(1, 1, -1, -1), kClipR, kClipR);
-            } else {
-                QColor bord = kClipBorder;
-                if (hovered) { bord = kClipSelectedBorder; bord.setAlphaF(0.50); }
+                p.drawPath(clipShape(bf.adjusted(1, 1, -1, -1), rad, roundL, roundR));
+            } else if (hovered) {
+                QColor bord = kClipSelectedBorder;
+                bord.setAlphaF(0.50);
                 p.setPen(QPen(bord, 1));
-                p.drawRoundedRect(bf.adjusted(0.5, 0.5, -0.5, -0.5), kClipR, kClipR);
-            }
-            // THE SCENE'S COLOUR (batch E, Figma E-1): a thin strip along the clip's top, under
-            // a selected clip's 2 px edge and over its thumbnail (which starts 6 px down).
-            if (b.sceneIndex < m_scenes.size()) {
-                p.setPen(Qt::NoPen);
-                p.setBrush(scenecolor::colorOf(*m_scenes.at(b.sceneIndex), b.sceneIndex));
-                p.drawRoundedRect(QRectF(bf.left() + 4, bf.top() + 3, qMax(0.0, bf.width() - 8), 3), 1, 1);
-                p.setBrush(Qt::NoBrush);
+                p.drawPath(clipShape(bf.adjusted(0.5, 0.5, -0.5, -0.5), rad, roundL, roundR));
             }
 
             if (L.thumbShown) {
@@ -1870,7 +1911,7 @@ void AnimaticTimeline::renderCanvas(QPainter &p)
                 p.setRenderHint(QPainter::Antialiasing, true);
                 p.setPen(QPen(QColor(0xf5, 0xa6, 0x23), 2));
                 p.setBrush(Qt::NoBrush);
-                p.drawRoundedRect(bf.adjusted(1, 1, -1, -1), kClipR, kClipR);
+                p.drawPath(clipShape(bf.adjusted(1, 1, -1, -1), rad, roundL, roundR));
             }
         }
         // THE AMBER CHIPS (GROW-1), after every clip: a marker centred over a clip too
@@ -2159,12 +2200,69 @@ int AnimaticTimeline::rulerLabelStep() const
     return 60;
 }
 
-// The design's clip layout for a clip rect r (see the constants at the top).
-AnimaticTimeline::ClipLayout AnimaticTimeline::clipLayout(const QRect &r, const QString &pillText) const
+// SCENES + SHOTS (2026-11-18, Figma 621:716): where a clip sits in its scene. The gap
+// between two scenes is the cut's own column and one each side of it (the left scene
+// gives up 1 px, the right 2) - whole px, so every line stays one crisp pixel - and
+// shrinks with the room: none from a scene under 6 px, 1 px from one under 12; never at
+// the film's two ends. The outer corners' radius is the design's 5, at most half the
+// scene's drawn width.
+AnimaticTimeline::ClipEdges AnimaticTimeline::clipEdges(int flatIndex) const
+{
+    ClipEdges e;
+    if (flatIndex < 0 || flatIndex >= m_blocks.size())
+        return e;
+    const int si = m_blocks.at(flatIndex).sceneIndex;
+    int a = flatIndex, z = flatIndex;
+    while (a > 0 && m_blocks.at(a - 1).sceneIndex == si)
+        --a;
+    while (z + 1 < m_blocks.size() && m_blocks.at(z + 1).sceneIndex == si)
+        ++z;
+    e.first = a == flatIndex;
+    e.last = z == flatIndex;
+    const double ppf = pxPerFrame();
+    const int w = contentXToScreen((m_blocks.at(z).startFrame + m_blocks.at(z).frames) * ppf)
+        - contentXToScreen(m_blocks.at(a).startFrame * ppf);
+    const int startIn = a > 0 ? (w >= 12 ? 2 : w >= 6 ? 1 : 0) : 0;
+    const int endIn = z + 1 < m_blocks.size() ? (w >= 6 ? 1 : 0) : 0;
+    e.startInset = e.first ? startIn : 0;
+    e.endInset = e.last ? endIn : 0;
+    e.radius = qMax(0.0, qMin(kClipR, (w - startIn - endIn) / 2.0));
+    return e;
+}
+
+QRect AnimaticTimeline::sceneBlockRect(int sceneIndex) const
+{
+    const QRect span = sceneRectOnScreen(sceneIndex);
+    if (span.isEmpty())
+        return span;
+    int first = -1, last = -1;
+    for (int i = 0; i < m_blocks.size(); ++i)
+        if (m_blocks.at(i).sceneIndex == sceneIndex) {
+            if (first < 0)
+                first = i;
+            last = i;
+        }
+    if (first < 0)
+        return span;
+    const int startIn = clipEdges(first).startInset, endIn = clipEdges(last).endInset;
+    return QRect(span.left() + startIn, span.top(), qMax(1, span.width() - startIn - endIn), span.height());
+}
+
+// The design's clip layout for clip flatIndex drawn in rect r (see the constants at the
+// top): the body is r less its scene's gaps (SCENES + SHOTS: a clip inside its scene
+// keeps its whole span).
+AnimaticTimeline::ClipLayout AnimaticTimeline::clipLayout(int flatIndex, const QRect &r) const
 {
     ClipLayout L;
-    L.body = QRect(r.left(), r.top(), qMax(1, r.width() - kClipGap), r.height());
+    const QString pillText = flatIndex >= 0 && flatIndex < m_blocks.size() ? this->pillText(m_blocks.at(flatIndex))
+                                                                            : QString();
+    L.edges = clipEdges(flatIndex);
+    L.body = QRect(r.left() + L.edges.startInset, r.top(),
+                   qMax(1, r.width() - L.edges.startInset - L.edges.endInset), r.height());
     const int bw = L.body.width();
+    // A clip's own corners: round only at its scene's ends, no wider than it is.
+    const bool both = L.edges.first && L.edges.last;
+    L.edges.radius = (L.edges.first || L.edges.last) ? qMin(L.edges.radius, both ? bw / 2.0 : double(bw)) : 0.0;
     L.thumbShown = bw >= kThumbMinBody;
     L.thumb = QRect(L.body.left() + kThumbInset, L.body.top() + kThumbInset,
                     bw - 2 * kThumbInset, kThumbH);
@@ -2191,7 +2289,7 @@ QVariantMap AnimaticTimeline::clipPartsForTest(int flatIndex) const
     const QRect r = clipRect(flatIndex);
     if (r.isEmpty())
         return {};
-    const ClipLayout L = clipLayout(r, pillText(m_blocks.at(flatIndex)));
+    const ClipLayout L = clipLayout(flatIndex, r);
     const auto rs = [](const QRect &q) {
         return QStringLiteral("%1,%2 %3x%4").arg(q.x()).arg(q.y()).arg(q.width()).arg(q.height());
     };
@@ -2200,7 +2298,11 @@ QVariantMap AnimaticTimeline::clipPartsForTest(int flatIndex) const
             {QStringLiteral("name"), rs(L.name)},   {QStringLiteral("pill"), rs(L.pill)},
             {QStringLiteral("thumbShown"), L.thumbShown},
             {QStringLiteral("nameShown"), L.nameShown},
-            {QStringLiteral("pillShown"), L.pillShown}};
+            {QStringLiteral("pillShown"), L.pillShown},
+            // SCENES + SHOTS: the body's place in its scene
+            {QStringLiteral("first"), L.edges.first},
+            {QStringLiteral("last"), L.edges.last},
+            {QStringLiteral("radius"), L.edges.radius}};
 }
 
 int AnimaticTimeline::labelColumnWidthForTest()
@@ -2223,7 +2325,7 @@ QRect AnimaticTimeline::pillRectForTest(int flatIndex) const
     const QRect r = clipRect(flatIndex);
     if (r.isEmpty() || flatIndex >= m_blocks.size())
         return QRect();
-    const ClipLayout L = clipLayout(r, pillText(m_blocks.at(flatIndex)));
+    const ClipLayout L = clipLayout(flatIndex, r);
     return L.pillShown ? L.pill : QRect();
 }
 
@@ -2970,7 +3072,7 @@ QRect AnimaticTimeline::artExitChipRect(int flatIndex, QString *label, bool *ove
     const double ppf = pxPerFrame();
     const int x0 = contentXToScreen(b.startFrame * ppf);
     const int x1 = qMax(x0 + kMinClipPx, contentXToScreen((b.startFrame + b.frames) * ppf));
-    const QRect body = clipLayout(QRect(x0, kPanelY + 2, x1 - x0, panelTrackH() - 4), pillText(b)).body;
+    const QRect body = clipLayout(flatIndex, QRect(x0, kPanelY + 2, x1 - x0, panelTrackH() - 4)).body;
     QFont f = font();
     f.setPixelSize(10);
     const QFontMetrics fm(f);
@@ -3991,7 +4093,7 @@ void AnimaticTimeline::canvasMouseDoubleClick(QMouseEvent *e)
         && pos.y() >= kPanelY && pos.y() < kPanelY + panelTrackH()) {
         const int idx = blockAtScreenX(pos.x());
         if (idx >= 0 && idx < m_blocks.size()) {
-            const ClipLayout L = clipLayout(clipRect(idx), pillText(m_blocks.at(idx)));
+            const ClipLayout L = clipLayout(idx, clipRect(idx));
             if (L.pillShown && L.pill.contains(pos)) {
                 openDurationField(idx);
                 return;

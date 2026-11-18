@@ -1,5 +1,89 @@
 # SankoTV — Session Handoff Brief
 
+## STATUS 2026-11-18 (evening): SCENES + SHOTS AND THE SCENE COLOUR MENU'S ROWS COMMITTED AS TWO COMMITS AFTER HAND TEST SS; COLOUR-1 (WITHOUT HISTORY AND PALETTE) AND STRIP-1 APPROVED, BEING BUILT
+HAND TEST SS (recording 20261118-193833, the only session after 17:59; system.txt: git 4039eb507+dirty, built Nov 18
+2026 17:59:45; the title bar "SANKO TV — TEST COPY - small pirate, scenes shots"; the user: "all steps looked right"):
+1 the groups PASS; 2 the strip PASS; 3 the states PASS (clicks select; hover; a camera move in ANCIENT TEMPLE left
+Panel 1's art for 34 f - its amber edges whole, round only at the scene's ends - and the clip menu grew it twice);
+4 every zoom PARTLY: 64 % to 1600 % with Ctrl+wheel, never below 64 % ((ss9) checks zoom 10); 5 PASS for clicks,
+trims (a start edge at the OCEAN / ISLAND BEACH gap, an end edge 17f -> 10f), reorder drags (undone) and right-clicks
+on clips and on the SCENES block - the duration pill's double-click NOT TESTED (no two presses within the double-click
+time on the timeline; its field never had focus); 6 the menu's rows PASS; 7 Rust: the tick and the purple name moved
+to it, Ctrl+Z put it back PASS; 8 the card (Plum; Custom...) PASS; 9 Discard PASS.
+THE USER'S WORD: commit and push SCENES + SHOTS and the Scene Colour menu as two separate commits, each with its
+HANDOFF notes, matching sha_SS_gate.txt and sha_SM_gate.txt, status clean; keep the menu's 24 px rows and its text
+start as built. COLOUR-1 and STRIP-1 approved: the picker WITHOUT the History and Palette rows (picture 2, 634:793);
+Gutter Background gets Custom... too, opening the new picker; STRIP-1 as shown. Build both (checks with controls, a red
+run, quick check, full gate, a fresh TEST COPY, the exe stamp, a short hand-test list); not committed before the hand
+test; COLOUR-1 and STRIP-1 marked BUILT in Figma only after their commit.
+THE TWO COMMITS: (a) first, then (b). The test file is split by hunks - (a): the (aw) and (ec) changes,
+runScenesShotsPass and its two registrations; (b): runSceneColourMenuPass and its two registrations (and the slice's
+comment naming both). The (a)-only test file was made with the Edit tool on a scratch copy of the gated one (the (b)
+pass and lines cut out), staged by hash-object, and the (a)-only tree gated ALONE in the worktree C:\SankoTV_ssa
+(gate SSA, the gate script without its kill line) before either commit: EVERY family green in BOTH builds, 2781 s -
+Lifecycle 1618 (1625 less (b)'s 7), Camera 336, Brush Library 187, Size Lock 170, Edge Lock 74, Dev Recorder 46,
+Quick Shape 19, Pixel Lock 13, Brush Lock 3 (app/build/_probe/split/fullgate_SSA.log).
+RE-TEST E2 (recording 20261117-210222; git fb15b4089+dirty, built Nov 17 2026 19:22:56; title "TEST COPY - small
+pirate, E re-test"; the user: "all steps looked right"): 1-6 PASS (White first; Dark Grey in the Drawing view; in the
+depth view the paper inside the frame now grey; the canvas menu's Warm White seen in both views; Custom... from the
+canvas menu in the Camera tool, OK, ticked; White again); 5's playback NOT TESTED (not played), its Ctrl+Z part PASS;
+7 short moves PARTLY (at 61.5 % a tap between close keys opened the five; the mark's size not readable at 960 px);
+8-9 Grow all NOT TESTED - no menu offered it: the two amber clips (ANCIENT TEMPLE panels 2 and 4) were in two moves
+(keys between them), so each was grown alone; 10 PASS (Discard; the copy's file 19:15:30).
+COMMIT 4039eb507 "Batch E: eases on the camera line, Grow all and Start the move here, scene colours, the stage
+background" - the 14 files of sha_E6_gate.txt + HANDOFF.md as sha_E6_docs.txt (the re-test notes above were not in
+it, as the user's word said); staged blobs = files CR-stripped; --stat = --ignore-cr-at-eol --stat (15 files, +2360
+-161); pushed; status clean. Figma E-1 (617:702) renamed "BUILT 2026-11-18 E-1 — Ease on the line, Grow all / start
+the move here, scene colours, the stage background (batch E)".
+(a) SCENES + SHOTS (Figma 621:716, the plan approved; the app's clip insides kept). AnimaticTimeline: clipEdges() -
+a clip's place in its scene (first / last), the px its body gives up at the scene's ends and the outer radius: the
+gap between scenes is the cut's own column and one each side (the left scene gives up 1 px, the right 2 - whole px,
+crisp lines), none from a scene under 6 px, 1 px from one under 12, never at the film's ends; radius 5, at most half
+the scene's drawn width (and the clip's own width). clipLayout(flatIndex, r): the body is the span less those insets
+(was the span less 2 px). sceneBlockRect(): the SCENES block over its group; its separator line gone (the gap parts
+scenes). Paint: clipShape() with corners round only at the scene's ends; a plain clip's 1 px line is a filled ring
+(the shape in #3B374B, the body over it 1 px in, open on the right inside a scene - a stroked flat end left the last
+column 73 % covered); the strip at top+1, inset 3, 3 high, radius 1, drawn under the selected / hover / amber edges
+(inside the clip's own span, same radius as before). Clicks, trims and drags keep the spans.
+(a) CHANGED CHECKS (old -> new): (aw) "A 3 s CLIP at 42 px/s is 126 wide: body 124 (a 2 px gap), thumbnail ... 112x42 ...
+name ... 78 wide, pill ... (right-33...)" (pill at right-2-33) -> "...its body the whole 126 (a scene's clips touch; it
+was 124, a 2 px gap), thumbnail at (6,6) 114x42, ... name ... 80 wide, pill 28x18 at (right-33, bottom-22)"; (aw) "the
+2 s clip (84 px, body 82) ... thumbnail (70 wide)" -> "(84 px, its body the whole 84; it was 82) ... thumbnail (72
+wide)"; (ec) shownOf's strip sample top+4 -> top+2 (the strip's rows top+1..top+3; texts unchanged); CameraTest: 14
+clip pins re-pinned (old values in comments: c1p clip.* x4; mp and mq clip.*.p2 x4 each and clip.1920x1080.p1 - the
+thumbnail 1 or 2 px wider), the six p1 pins whose thumbnail kept its width unchanged and passing (the control: the
+picture code is the same); NEW (c1p) control "the pinned clips are one scene - each body its whole span and its
+thumbnail the body less 6 px each side". Positive control of the changed (aw): the red run below fails them.
+(a) NEW CHECKS (Lifecycle +13, runScenesShotsPass; slice "scenesshots" with (aw) and (ec)): (ss1) frame-exact at zoom
+200/100/40; (ss2) one shared line at an inner cut + control; (ss3) the gap's three columns inside the spans, SHOTS and
+SCENES rows; (ss4) outer corners round, inner square; (ss5) the strip's rows and columns; a selected clip's whole 2 px
+edge over the strip; (ss6) the SCENES block = its group; (ss7) hover and amber inside the span; (ss8) clicks in the gap
+select by frame, the trim pointer at the cut + control; (ss9) zoom 10, a 7 px scene gives up 1 px each end.
+(a) RED RUN (one run with (b)'s, marked, removed, grep 0): the old layout (every clip closed and round, the 2 px gap,
+no scene gap) -> 11 of the run's 16 failures: (aw) x2, (ss1)-(ss4), (ss5) x2, (ss6), (ss7), (ss9); (ss8) passed (the
+spans are unchanged in both). FIRST-RUN FINDINGS (read, fixed): (ss5) the playhead (#d5cbff) at the selected clip's
+start - the check moves it into clip 6; (ss4) the stroked line's flat end (73 %) - the ring fill. HASHES: sha_SS_gate.txt.
+QUICK CHECK (Release, both changes): scenesshots 58, batche 130, batchd 68, trial 126, stagemode 124, keysview 72, playback 33,
+Camera 336 (after the re-pin; it first failed the 14 pins + mg1).
+GATE SS1 (main tree, 2769 s): EVERY family green in BOTH builds - Lifecycle 1625, Camera 336, Brush Library 187, Size
+Lock 170, Edge Lock 74, Dev Recorder 46, Quick Shape 19, Pixel Lock 13, Brush Lock 3. HASHES: sha_SS_gate.txt
+(AnimaticTimeline.cpp/.h, CameraTest.cpp, ProjectLifecycleTest.cpp), sha_SM_gate.txt (StoryboardPage.cpp,
+ProjectLifecycleTest.cpp - shared: its (sm) hunk is (b)'s, (aw)/(ec)/(ss) hunks (a)'s), sha_SS1_exes.txt.
+HAND-TEST EXE: C:\SankoTv\app\build\Release\SankoTV.exe built Nov 18 2026 17:59:45 (file 18:00:05), git
+4039eb507+dirty, sha256 b2489142d52220cab9e8621bcefb2d81994a338d73af8dabf3084a21c2a814ab. COPY "TEST COPY - small
+pirate, scenes shots" (C:\SankoTV-TestCopies, 17:45:02; the original's hash unchanged before and after). LIST
+Documents\SankoTV-Design\handtest_SS_scenes_shots_colour_menu.md (9 steps). Not committed until the hand test passes.
+FIGMA (after the gate, area 002, for approval - nothing built): COLOUR-1 (634:702) "A SankoTV colour picker in place
+of the Windows one": the Colors panel cloned (header named for what it sets, OK / Cancel footer in the Stage bar's
+style), with (634:706, 677 px) and without (634:793, 545 px) History + Palette; the Eyedropper kept (a screen pick
+while the picker is open, like the Windows picker's Pick Screen Color); every QColorDialog it replaces: Scene Colour,
+Stage Background, Grid Colour, a layer's colour, Brush Settings Studio's Identity and Background Colour, and the new
+Panel Strip Background; Gutter Background has no Custom... today. STRIP-1 (635:702) "The Panel Strip's background":
+a new right-click menu on the strip's ground + View > Panel Strip Background (under Stage Background); presets Dark
+(default) #1A1A1A, Charcoal #242424, Dark Grey #333333, Mid Grey #4D4D4D, Light Grey #B3B3B3, Light #E8E8E8,
+Custom...; the strip dark and light (cells' edge #C4C4C4 on light; buttons, selection, chips unchanged); on screen
+only, app-wide, not a step. Screenshots: Documents\SankoTV-Design\figma-colour-strip\.
+
 ## STATUS 2026-11-17 (evening): THE DEPTH-VIEW FIX BUILT (APPROVED), GATE E6 GREEN IN BOTH BUILDS; WAITING FOR THE USER'S RE-TEST E2; NOTHING COMMITTED
 THE USER'S WORD: make the fix as proposed (the Camera tool's depth view applies the stage background after the
 Background layer, as the Drawing view; on the canvas only), a check with a control and a red run, quick check, full

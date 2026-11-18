@@ -53,6 +53,8 @@ public:
     // Batch F1: a scene's block, the lock before its name (drawn or not), its end line's
     // x (-1: not drawn), and the hover text of the block and of the lock.
     QRect sceneRectForTest(int sceneIndex) const { return sceneRectOnScreen(sceneIndex); }
+    // SCENES + SHOTS (Figma 621:716): the block as drawn, inside its span (above: the span).
+    QRect sceneBlockRectForTest(int sceneIndex) const { return sceneBlockRect(sceneIndex); }
     QRect sceneLockRectForTest(int sceneIndex) const { return sceneLockGlyphRect(sceneIndex); }
     int sceneEndLineXForTest(int sceneIndex) const;
     QString sceneTipForTest(int sceneIndex, bool overLock) const
@@ -514,14 +516,30 @@ private:
     // Where a clip's parts go for a body of this rect (the design's layout
     // and its hide order as the clip narrows: the name first, then the
     // thumbnail, then the pill; the number stays).
+    // SCENES + SHOTS (2026-11-18, Figma 621:716): a scene's clips touch, sharing one line
+    // at each cut; the scene's outer corners are round; between two scenes a 3 px gap is
+    // taken from inside their spans - the cut's own column and one each side of it - so no
+    // clip leaves its frames. first / last: the clip opens / closes its scene; startInset /
+    // endInset: the px its body gives up there; radius: the scene's outer corners.
+    struct ClipEdges
+    {
+        bool first = true, last = true;
+        int startInset = 0, endInset = 0;
+        qreal radius = 0;
+    };
+    ClipEdges clipEdges(int flatIndex) const;
     struct ClipLayout
     {
         QRect body, thumb, number, name, pill;
         bool thumbShown = false, nameShown = false, pillShown = false;
+        ClipEdges edges; // the body's place in its scene (above)
     };
-    // pillText sizes the pill: the design's 28 px, wider when its text
-    // ("1s 12f", "120f") needs it (2026-11-06).
-    ClipLayout clipLayout(const QRect &r, const QString &pillText = QString()) const;
+    // The layout of clip flatIndex drawn in rect r (its frame span, or kMinClipPx wide);
+    // its pill sized to its text: the design's 28 px, wider when its text ("1s 12f",
+    // "120f") needs it (2026-11-06).
+    ClipLayout clipLayout(int flatIndex, const QRect &r) const;
+    // A scene's block on the SCENES row as drawn: its span less its share of the gaps.
+    QRect sceneBlockRect(int sceneIndex) const;
 
     // Toolbar handlers.
     void styleToolbarButtons();
