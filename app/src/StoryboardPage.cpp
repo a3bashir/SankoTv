@@ -5,6 +5,7 @@
 #include "AnimaticPage.h"
 #include "AnimaticTimeline.h"
 #include "ColorPanel.h"
+#include "SankoColorPicker.h" // every Custom... colour (COLOUR-1)
 #include "SankoIcons.h"
 #include "SankoNoteStyle.h" // sankoGreyWithReason
 #include "SankoScrollBarStyle.h"
@@ -39,7 +40,6 @@
 #include <QActionGroup>
 #include <QApplication>
 #include <QButtonGroup>
-#include <QColorDialog>
 #include <QContextMenuEvent>
 #include <QDrag>
 #include <QDropEvent>
@@ -3032,6 +3032,8 @@ void StoryboardPage::installDockViewActions()
     // the canvas only - the same submenu as on the canvas's right-click.
     if (m_canvas)
         m_canvas->addStageBackgroundMenu(viewMenu);
+    // THE PANEL STRIP'S BACKGROUND (STRIP-1), under it - also on the strip's own right-click.
+    addPanelStripBackgroundMenu(viewMenu);
     // Floating toolbars: restore the Figma default corners (Brush top-right,
     // Layers top-left, Zoom bottom-left) and clear their saved placement.
     QAction *resetToolbars =
@@ -3260,7 +3262,13 @@ QWidget *StoryboardPage::createCenterColumn()
     stripBar->setAttribute(Qt::WA_StyledBackground, true);
     stripBar->setMinimumHeight(159);
     stripBar->setMaximumHeight(320);
-    stripBar->setStyleSheet(QStringLiteral("background-color: #1a1a1a;"));
+    // Its ground: the app's Panel Strip Background (STRIP-1), Dark #1A1A1A unless chosen.
+    {
+        const QColor kept(sankoSettings().value(kPanelStripBackgroundKey, QStringLiteral("#1a1a1a")).toString());
+        if (kept.isValid())
+            m_stripGround = kept;
+    }
+    stripBar->setStyleSheet(QStringLiteral("background-color: %1;").arg(m_stripGround.name()));
     QHBoxLayout *stripBarLayout = new QHBoxLayout(stripBar);
     m_stripBarLayout = stripBarLayout; // margins/spacing scale with the strip
     stripBarLayout->setContentsMargins(10, 12, 10, 12);
@@ -3273,7 +3281,7 @@ QWidget *StoryboardPage::createCenterColumn()
     strip->setFrameShape(QFrame::NoFrame);
     strip->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     strip->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    strip->setStyleSheet(QStringLiteral("QScrollArea { background-color: #1a1a1a; border: none; }"));
+    strip->setStyleSheet(QStringLiteral("QScrollArea { background-color: %1; border: none; }").arg(m_stripGround.name()));
 
     QWidget *stripContainer = new QWidget;
     m_stripContainer = stripContainer; // background drag hit target
@@ -3298,6 +3306,11 @@ QWidget *StoryboardPage::createCenterColumn()
     drawLayout->setSpacing(0);
 
     m_canvas = new DrawingCanvas;
+    // Its menus' Custom... (Stage Background, Grid Colour, Gutter Background) open the SankoTV
+    // picker (COLOUR-1).
+    m_canvas->setColorPicker([this](const QColor &initial, const QString &title) {
+        return SankoColorPicker::getColor(initial, this, title);
+    });
     // View > Camera Move Arrows, as last chosen (batch C: off until ticked).
     m_canvas->setCameraMoveArrowsShown(sankoSettings().value(kCameraMoveArrowsKey, false).toBool());
     connect(m_canvas, &DrawingCanvas::contentChanged, this, [this] {
@@ -7657,8 +7670,9 @@ void StoryboardPage::onSceneMenu(int sceneIndex, const QPoint &globalPos)
             if (!s)
                 return;
             const QColor start = scenecolor::colorOf(*s, sceneIndex);
-            const QColor c = m_sceneColorPickForTest ? m_sceneColorPickForTest(start)
-                                                     : QColorDialog::getColor(start, this, QStringLiteral("Scene Color"));
+            const QColor c = m_sceneColorPickForTest
+                ? m_sceneColorPickForTest(start)
+                : SankoColorPicker::getColor(start, this, QStringLiteral("Scene Colour"));
             if (c.isValid())
                 setSceneColor(sceneIndex, scenecolor::tagOf(c));
         });
@@ -8675,15 +8689,97 @@ void StoryboardPage::warmStripThumbs(const QVector<Panel *> &panels)
 
 void StoryboardPage::updatePanelThumbStyles()
 {
+    // The cells' ground is the strip's (STRIP-1); an unselected cell's edge stays #2A2A2A on a
+    // dark ground and is a shade darker than a light one; the selection's accent never changes.
+    const QString ground = m_stripGround.name();
+    const QString edge = stripCellEdge().name();
     for (int i = 0; i < m_panelThumbs.size(); ++i) {
         const bool selected = (i == m_currentPanel);
         m_panelThumbs.at(i)->setStyleSheet(
             selected
                 ? SankoTheme::themed("QLabel#panelThumb { border: 3px solid %ACCENT%; border-radius: 4px;"
-                                 " background-color: #1a1a1a; }")
-                : QStringLiteral("QLabel#panelThumb { border: 1px solid #2a2a2a; border-radius: 4px;"
-                                 " background-color: #1a1a1a; }"));
+                                     " background-color: %1; }").arg(ground)
+                : QStringLiteral("QLabel#panelThumb { border: 1px solid %1; border-radius: 4px;"
+                                 " background-color: %2; }").arg(edge, ground));
     }
+}
+
+// --- The Panel Strip's background (STRIP-1, Figma 635:702, approved 2026-11-18) -------------
+
+const QString StoryboardPage::kPanelStripBackgroundKey = QStringLiteral("storyboard/panelStrip/v1/background");
+
+QColor StoryboardPage::stripCellEdge() const
+{
+    // Light grounds (Light Grey, Light, a light Custom...): the ground a shade darker -
+    // #E8E8E8 gives #C4C4C4. Dark ones keep today's #2A2A2A.
+    return m_stripGround.lightness() >= 128 ? m_stripGround.darker(118) : QColor(0x2a, 0x2a, 0x2a);
+}
+
+void StoryboardPage::setPanelStripBackground(const QColor &color)
+{
+    if (!color.isValid() || color.toRgb() == m_stripGround)
+        return;
+    m_stripGround = color.toRgb();
+    sankoSettings().setValue(kPanelStripBackgroundKey, color.name());
+    applyPanelStripBackground();
+}
+
+void StoryboardPage::applyPanelStripBackground()
+{
+    const QString ground = m_stripGround.name();
+    if (m_panelStripBar)
+        m_panelStripBar->setStyleSheet(QStringLiteral("background-color: %1;").arg(ground));
+    if (m_panelScroll)
+        m_panelScroll->setStyleSheet(QStringLiteral("QScrollArea { background-color: %1; border: none; }").arg(ground));
+    updatePanelThumbStyles();
+    // The letterbox beside a picture is the cell's ground: the thumbnails again (not through
+    // regenerateStripThumbs, whose count the dock's checks read as resizes).
+    if (Scene *scene = currentScene()) {
+        const int n = qMin(m_panelThumbImages.size(), scene->panels.size());
+        for (int i = 0; i < n; ++i)
+            m_panelThumbImages.at(i)->setPixmap(stripThumbPixmap(scene->panels.at(i)));
+    }
+}
+
+void StoryboardPage::addPanelStripBackgroundMenu(QMenu *parent)
+{
+    QMenu *menu = parent->addMenu(QStringLiteral("Panel Strip Background"));
+    menu->setObjectName(QStringLiteral("panelStripBackgroundMenu"));
+    // Filled as it opens, as Stage Background's: ticked as chosen now, wherever it was chosen.
+    connect(menu, &QMenu::aboutToShow, this, [this, menu] {
+        menu->clear();
+        const struct { const char *name; const char *hex; } presets[] = {
+            {"Dark (default)", "#1a1a1a"}, {"Charcoal", "#242424"},   {"Dark Grey", "#333333"},
+            {"Mid Grey", "#4d4d4d"},       {"Light Grey", "#b3b3b3"}, {"Light", "#e8e8e8"},
+        };
+        bool preset = false;
+        for (const auto &def : presets) {
+            const QColor c(def.hex);
+            QPixmap chip(12, 12);
+            chip.fill(c);
+            {
+                QPainter cp(&chip);
+                cp.setPen(QColor(0x3a, 0x3a, 0x45));
+                cp.drawRect(0, 0, 11, 11);
+            }
+            QAction *a = menu->addAction(QIcon(chip), QString::fromLatin1(def.name));
+            a->setObjectName(QStringLiteral("panelStripBackgroundPreset"));
+            a->setCheckable(true);
+            a->setChecked(m_stripGround == c);
+            preset = preset || m_stripGround == c;
+            connect(a, &QAction::triggered, this, [this, c] { setPanelStripBackground(c); });
+        }
+        menu->addSeparator();
+        QAction *custom = menu->addAction(QStringLiteral("Custom..."));
+        custom->setObjectName(QStringLiteral("panelStripBackgroundCustom"));
+        custom->setCheckable(true);
+        custom->setChecked(!preset);
+        connect(custom, &QAction::triggered, this, [this] {
+            const QColor c = SankoColorPicker::getColor(m_stripGround, this, QStringLiteral("Panel Strip Background"));
+            if (c.isValid())
+                setPanelStripBackground(c);
+        });
+    });
 }
 
 // --- Panel Strip dock --------------------------------------------------------
@@ -8710,7 +8806,7 @@ QPixmap StoryboardPage::stripThumbPixmap(Panel *panel, qreal dprOverride) const
     // into the pixmap itself or the label would re-stretch the fit.
     const QSize well(qRound(m_thumbW * dpr), qRound(m_thumbH * dpr));
     QPixmap out(well);
-    out.fill(QColor(0x1a, 0x1a, 0x1a)); // strip background = letterbox bars
+    out.fill(m_stripGround); // strip background = letterbox bars (the Panel Strip Background, STRIP-1)
     // The cached 512px mip: a 50-panel rebuild paid 50 full flattens on the
     // GUI thread (834 ms of an 849 ms freeze at 4K, measured). The mip's
     // 512px long edge covers the well's ~480 device px at DPR 2 without
@@ -11354,6 +11450,26 @@ bool StoryboardPage::eventFilter(QObject *object, QEvent *event)
             if (stripBackgroundEvent(object, event))
                 return true;
             break;
+        case QEvent::ContextMenu: {
+            // THE STRIP'S EMPTY GROUND (STRIP-1): its own menu, Panel Strip Background. Not over
+            // a panel's thumbnail, a button or the scroll bar - their right-click passes up here
+            // and is left alone.
+            auto *ce = static_cast<QContextMenuEvent *>(event);
+            auto *host = static_cast<QWidget *>(object);
+            for (QWidget *w = host->childAt(ce->pos()); w && w != host; w = w->parentWidget())
+                if (w->property("panelIndex").isValid() || qobject_cast<QAbstractButton *>(w)
+                    || qobject_cast<QScrollBar *>(w))
+                    return false;
+            QMenu menu(this);
+            menu.setObjectName(QStringLiteral("panelStripMenu"));
+            addPanelStripBackgroundMenu(&menu);
+            if (m_clipMenuHookForTest) {
+                m_clipMenuHookForTest(&menu);
+                return true;
+            }
+            menu.exec(ce->globalPos());
+            return true;
+        }
         case QEvent::Resize:
             if (object == m_panelStripBar)
                 onPanelStripResized();
@@ -13322,6 +13438,10 @@ void StoryboardPage::layerContextMenu(int index, const QPoint &globalPos)
                 [this, index] { layerUngroup(index); });
     }
 
+    if (m_clipMenuHookForTest) { // the gate reads it, and its Custom... (COLOUR-1)
+        m_clipMenuHookForTest(&menu);
+        return;
+    }
     menu.exec(globalPos);
 }
 
@@ -13500,7 +13620,7 @@ void StoryboardPage::layerSetColorTag(int index)
         ? QColor(0xf5, 0xa6, 0x23)
         : QColor(panel->layers.at(index).colorTag);
     const QColor color =
-        QColorDialog::getColor(start, this, QStringLiteral("Layer Color"));
+        SankoColorPicker::getColor(start, this, QStringLiteral("Layer Color"));
     if (!color.isValid())
         return;
     const QVector<Layer> before = panel->layers;

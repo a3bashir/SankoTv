@@ -413,6 +413,18 @@ public:
     QWidget *toolbarWindowForTest(Toolbar bar) const { return toolbarWindow(bar); }
     static QString toolbarKey(Toolbar bar);    // the ticks' settings
     static const QString kCameraMoveArrowsKey; // View > Camera Move Arrows' setting
+    // THE PANEL STRIP'S BACKGROUND (STRIP-1, approved 2026-11-18): the colour behind the panels
+    // in the strip - its ground and the cells behind the thumbnails (on a light ground an
+    // unselected cell's edge a shade darker) - on screen only: never a panel, a thumbnail's
+    // picture, the film, an export or the project. Remembered by the app for every project, not
+    // an undo step. Presets and Custom... in View > Panel Strip Background and on a right-click
+    // on the strip's empty ground; floating, the strip's own window takes it too.
+    QColor panelStripBackground() const { return m_stripGround; }
+    void setPanelStripBackground(const QColor &color);
+    void addPanelStripBackgroundMenu(QMenu *parent); // the submenu, wherever it is offered
+    static const QString kPanelStripBackgroundKey;
+    QWidget *panelStripBarForTest() const { return m_panelStripBar; }
+    QWidget *panelStripGroundForTest() const { return m_stripContainer; }
 
     // THE TOOL KEYS (batch C, the user's choice): B Brush, E Eraser, G Fill, V Move, L the
     // freehand selection, M the rectangle selection while the film is paused (M marks a
@@ -762,6 +774,9 @@ private:
     // regenerates crisp ones ONCE through m_stripRegenTimer.
     QDockWidget *m_panelStripDock = nullptr;
     QWidget *m_panelStripBar = nullptr;
+    QColor m_stripGround{0x1a, 0x1a, 0x1a}; // the strip's background (STRIP-1)
+    QColor stripCellEdge() const;          // an unselected cell's 1 px edge on that ground
+    void applyPanelStripBackground();      // the ground, the cells, the letterbox
     Qt::DockWidgetArea m_stripLastArea = Qt::TopDockWidgetArea;
     // The strip's LOGICAL visibility — what the user last chose. Qt unchecks
     // a dock's toggleViewAction on ANY hide event, including the ancestor

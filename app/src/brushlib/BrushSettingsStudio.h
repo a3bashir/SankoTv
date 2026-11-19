@@ -100,6 +100,11 @@ public:
     int sessionEngineSizeForTest() const { return m_session.size(); }
     void sizeRowUserSetForTest(double displayValue);
     bool sizeRowPendingForTest() const { return m_sizeRowPending; }
+    // The colours its Identity Colour and Background Colour rows set (COLOUR-1's checks).
+    QColor sessionColorForTest(bool background) const
+    {
+        return background ? scopeBrushConst().backgroundColor() : scopeBrushConst().color();
+    }
 
 signals:
     void visibilityChanged(bool visible);

@@ -43,6 +43,10 @@
 #include "DrawingCanvas.h"
 #include "FloatingToolWindow.h"
 #include "ColorPanel.h"
+#include "SankoColorPicker.h"
+#include "SceneColors.h"
+#include <QColorDialog>
+#include <QScreen>
 #include "PerspectiveTool.h"
 #include "LayerFolder.h"
 #include "MainWindow.h"
@@ -22252,7 +22256,8 @@ void runScenesShotsPass(const QString &scratch)
     r.window.markCleanForTest();
 }
 
-// --- (sm) THE SCENE COLOUR MENU'S ROWS (2026-11-18, the user's Figma 619:851, drawn at 1.5x) -------
+// --- (scm) THE SCENE COLOUR MENU'S ROWS (2026-11-18, the user's Figma 619:851, drawn at 1.5x) ------
+// (Tagged (sm) when committed; renamed (scm) with COLOUR-1 - the stage mode pass's checks are (sm).)
 // The tick in its own column at the left; each swatch, 12 px, where "Auto (...)" starts; each name
 // 7 px after its swatch; "Custom..." lined up with the swatches; the same left padding and alignment
 // on every row. Read from the submenu itself, rendered off screen from the menu the timeline opens
@@ -22261,12 +22266,12 @@ void runSceneColourMenuPass(const QString &scratch)
 {
     using namespace workspace;
     using dppins::closeTo;
-    out() << "--- (sm) the Scene Colour menu's rows (Figma 619:851) ---" << Qt::endl;
+    out() << "--- (scm) the Scene Colour menu's rows (Figma 619:851) ---" << Qt::endl;
     const QString dir = scratch + QStringLiteral("/scenecolourmenu");
     QDir(dir).removeRecursively();
     const QString project = writeProject(dir, QStringLiteral("Menu"), QSize(960, 540), 24, 2, 1);
     Rig r(project);
-    check(QStringLiteral("(sm) the workspace opened"), r.ok);
+    check(QStringLiteral("(scm) the workspace opened"), r.ok);
     if (!r.ok)
         return;
     struct Row
@@ -22381,7 +22386,7 @@ void runSceneColourMenuPass(const QString &scratch)
     for (const Row &row : firstRows)
         noIcons = noIcons && !row.icon;
     const int swatchX = first.swLeft.value(0, -1);
-    check(QStringLiteral("(sm1) THE SWATCHES START WHERE \"Auto (Slate)\" STARTS: the eight swatches' left edge is the Auto "
+    check(QStringLiteral("(scm1) THE SWATCHES START WHERE \"Auto (Slate)\" STARTS: the eight swatches' left edge is the Auto "
                          "row's text's (within 1 px), the same on every row, right of the tick's column; each 12 x 12; no "
                          "row carries an icon (Qt would draw it in the tick's column)"),
           sameLeft && sized && noIcons && swatchX >= 20 && first.autoText >= 0 && qAbs(swatchX - first.autoText) <= 1,
@@ -22393,11 +22398,11 @@ void runSceneColourMenuPass(const QString &scratch)
         if (gap < 7 || gap > 8 || first.nameEnd.at(i) >= menuW - 2)
             gapBad << QStringLiteral("row %1: gap %2, name ends %3 of %4").arg(i + 1).arg(gap).arg(first.nameEnd.at(i)).arg(menuW);
     }
-    check(QStringLiteral("(sm2) EACH NAME 7 PX AFTER ITS SWATCH: on every swatch row the name's first ink is 7 px after the "
+    check(QStringLiteral("(scm2) EACH NAME 7 PX AFTER ITS SWATCH: on every swatch row the name's first ink is 7 px after the "
                          "swatch (8 with a letter's side bearing), and the name ends inside the menu"),
           first.nameAt.size() == 8 && gapBad.isEmpty(),
           QStringLiteral("names at [%1]; %2").arg(list(first.nameAt), gapBad.join(QStringLiteral("; "))));
-    check(QStringLiteral("(sm3) \"CUSTOM...\" LINED UP WITH THE SWATCHES: its text's first ink is the swatches' left edge "
+    check(QStringLiteral("(scm3) \"CUSTOM...\" LINED UP WITH THE SWATCHES: its text's first ink is the swatches' left edge "
                          "(within 1 px) - the same left padding as Auto's"),
           first.custom >= 0 && qAbs(first.custom - swatchX) <= 1,
           QStringLiteral("Custom... at %1, swatches at %2").arg(first.custom).arg(swatchX));
@@ -22424,7 +22429,7 @@ void runSceneColourMenuPass(const QString &scratch)
     }
     const bool tickMoved = first.autoTick >= 0 && std::all_of(first.tick.cbegin(), first.tick.cend(), [](int t) { return t < 0; })
         && teal.autoTick < 0 && tealRow >= 0 && teal.tick.value(tealRow) >= 0 && teal.swLeft.value(tealRow) == swatchX;
-    check(QStringLiteral("(sm4) THE TICK IN ITS OWN COLUMN: on an Auto scene it is in Auto's row, left of the text, and in "
+    check(QStringLiteral("(scm4) THE TICK IN ITS OWN COLUMN: on an Auto scene it is in Auto's row, left of the text, and in "
                          "no swatch row; chosen Teal, it is in Teal's row, Teal's swatch still where the swatches start and "
                          "its name in the accent, and Auto's row has none"),
           tickMoved && accent,
@@ -22434,7 +22439,7 @@ void runSceneColourMenuPass(const QString &scratch)
     r.window.undoActionForTest()->trigger();
     pump(80);
     // Control: the old way - a 12 px icon on a checkable action, in a menu with the same style sheet -
-    // puts the swatch in the tick's column, which (sm1) tells apart.
+    // puts the swatch in the tick's column, which (scm1) tells apart.
     int oldSwatch = -1;
     {
         QMenu old;
@@ -22448,7 +22453,7 @@ void runSceneColourMenuPass(const QString &scratch)
         const QImage img = old.grab().toImage();
         oldSwatch = leftmost(img, old.actionGeometry(a), 0, old.width(), isColour(QColor(0x4f, 0x8a, 0x85)));
     }
-    check(QStringLiteral("(sm1) control: the old way - the swatch as a 12 px icon - draws it in the tick's column (left of "
+    check(QStringLiteral("(scm1) control: the old way - the swatch as a 12 px icon - draws it in the tick's column (left of "
                          "x 20), not where the text starts: the measure tells the two apart"),
           oldSwatch >= 0 && oldSwatch < 20 && qAbs(oldSwatch - first.autoText) > 1,
           QStringLiteral("old swatch at %1, Auto's text at %2").arg(oldSwatch).arg(first.autoText));
@@ -22469,16 +22474,860 @@ void runSceneColourMenuPass(const QString &scratch)
         cardIcons = cardIcons || row.icon;
     }
     const Measured card = measure();
-    check(QStringLiteral("(sm5) WHEREVER IT OPENS: the scene's card opens the same menu - its eight swatch rows drawn the "
+    check(QStringLiteral("(scm5) WHEREVER IT OPENS: the scene's card opens the same menu - its eight swatch rows drawn the "
                          "same way, no icon, the swatches where Auto's text starts"),
           !cards.isEmpty() && cardSwatches == 8 && !cardIcons && card.swLeft.value(0, -1) == swatchX,
           QStringLiteral("cards %1, swatch rows %2, icons %3, swatches at %4").arg(cards.size()).arg(cardSwatches)
               .arg(cardIcons).arg(card.swLeft.value(0, -1)));
-    out() << QStringLiteral("  NOTE (sm) the rows are %1 px apart (Figma 619:851: 33 / 1.5 = 22); the menu %2 px wide")
+    out() << QStringLiteral("  NOTE (scm) the rows are %1 px apart (Figma 619:851: 33 / 1.5 = 22); the menu %2 px wide")
                  .arg(firstRows.size() > 1 ? firstRows.at(1).rect.top() - firstRows.at(0).rect.top() : 0)
                  .arg(menuW)
           << Qt::endl;
     r.storyboard->setClipMenuHookForTest({});
+    r.window.markCleanForTest();
+}
+
+// --- (cpk) THE SANKOTV COLOUR PICKER (2026-11-18, COLOUR-1: Figma 634:793, the user's picture 2) --
+// Every Custom... colour in the app opens the SankoTV picker in place of the Windows one: the
+// Colors panel's container, header and body without History and Palette, its Eyedropper, then
+// Cancel and OK under a divider; the colour in use as "previous"; OK and Enter set the colour,
+// Cancel and Esc leave it; the Eyedropper reads the screen; it opens beside the point that asked
+// for it - and no QColorDialog is shown anywhere in the pass.
+namespace colourpicker {
+// Counts every QColorDialog shown while it is installed on the application.
+class DialogWatch : public QObject
+{
+public:
+    int shown = 0;
+
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override
+    {
+        if (event->type() == QEvent::Show && watched->inherits("QColorDialog"))
+            ++shown;
+        return false;
+    }
+};
+
+QRect geometryIn(QWidget *top, const char *name)
+{
+    QWidget *w = top->findChild<QWidget *>(QLatin1String(name));
+    return w ? QRect(w->mapTo(top, QPoint(0, 0)), w->size()) : QRect();
+}
+
+QColor pixelOf(const QImage &img, int x, int y)
+{
+    const qreal d = img.devicePixelRatio();
+    const QPoint at(qRound(x * d), qRound(y * d));
+    return img.valid(at) ? img.pixelColor(at) : QColor();
+}
+
+void pressButton(SankoColorPicker *p, const char *name)
+{
+    if (auto *b = p->findChild<QPushButton *>(QLatin1String(name)))
+        b->click();
+}
+
+void sendKey(QWidget *w, int key)
+{
+    QKeyEvent press(QEvent::KeyPress, key, Qt::NoModifier);
+    QCoreApplication::sendEvent(w, &press);
+    QKeyEvent release(QEvent::KeyRelease, key, Qt::NoModifier);
+    QCoreApplication::sendEvent(w, &release);
+}
+
+// A plain window of one colour on the test screen, for the Eyedropper to read.
+class Patch : public QWidget
+{
+public:
+    explicit Patch(const QColor &c)
+        : QWidget(nullptr, Qt::Tool | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint | Qt::WindowDoesNotAcceptFocus)
+        , m_c(c)
+    {
+        setAttribute(Qt::WA_ShowWithoutActivating);
+        setFixedSize(60, 60);
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override { QPainter(this).fillRect(rect(), m_c); }
+
+private:
+    QColor m_c;
+};
+
+// What the screen shows at a global point, read until it is `want` (or 5 s): the window has to
+// reach the screen before a screen read can see it - the condition, not a time, ends the wait.
+bool screenShows(const QPoint &global, const QColor &want)
+{
+    QElapsedTimer t;
+    t.start();
+    while (t.elapsed() < 5000) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+        if (dppins::closeTo(SankoColorPicker::screenColorAt(global), want, 2))
+            return true;
+    }
+    return false;
+}
+} // namespace colourpicker
+
+void runColourPickerPass(const QString &scratch)
+{
+    using namespace workspace;
+    using namespace colourpicker;
+    using dppins::closeTo;
+    out() << "--- (cpk) the SankoTV colour picker (COLOUR-1) ---" << Qt::endl;
+    const QString dir = scratch + QStringLiteral("/colourpicker");
+    QDir(dir).removeRecursively();
+    const QString project = writeProject(dir, QStringLiteral("Picker"), QSize(960, 540), 24, 2, 1);
+    Rig r(project);
+    check(QStringLiteral("(cpk) the workspace opened"), r.ok);
+    if (!r.ok)
+        return;
+    QUndoStack *stack = r.window.undoStackForTest();
+    Scene *scene = r.window.scenesForTest().value(0);
+    if (!stack || !scene || scene->panels.isEmpty() || scene->panels.at(0)->layers.size() < 2) {
+        check(QStringLiteral("(cpk) found the history, the scene and its layers"), false);
+        return;
+    }
+    DialogWatch watch;
+    qApp->installEventFilter(&watch);
+
+    // Every picker opened: what it showed, then what the test does with it.
+    struct Opened
+    {
+        QString title;
+        QColor previous, current;
+        bool visible = false, modal = false;
+        QRect geometry;
+    };
+    QVector<Opened> opened;
+    std::function<void(SankoColorPicker *)> act;
+    SankoColorPicker::setOpenHookForTest([&](SankoColorPicker *p) {
+        QCoreApplication::processEvents();
+        opened << Opened{p->title(), p->previousColor(), p->color(), p->isVisible(), p->isModal(), p->geometry()};
+        if (act)
+            act(p);
+    });
+    auto okWith = [](const QColor &c) {
+        return [c](SankoColorPicker *p) {
+            p->setColor(c);
+            pressButton(p, "colorPickerOk");
+        };
+    };
+    // Custom... in the Scene Colour submenu of the menu the hook is handed.
+    auto sceneCustom = [&](QMenu *m) {
+        if (QMenu *colours = m->findChild<QMenu *>(QStringLiteral("sceneColorMenu")))
+            for (QAction *a : colours->actions())
+                if (a->text() == QStringLiteral("Custom..."))
+                    a->trigger();
+    };
+    r.storyboard->setClipMenuHookForTest(sceneCustom);
+    auto openSceneCustom = [&](std::function<void(SankoColorPicker *)> what) {
+        act = std::move(what);
+        r.storyboard->openSceneMenuForTest(0);
+        act = nullptr;
+        pump(40);
+    };
+
+    // (cpk1) the look.
+    struct Look
+    {
+        QSize size;
+        QString title;
+        int titlePx = 0;
+        bool extraBold = false, rowsHidden = false, pickShown = false;
+        QRect header, body, wheel, pick, divider, cancel, ok;
+        QColor ground, border, okFill, cancelFill;
+    } look;
+    openSceneCustom([&](SankoColorPicker *p) {
+        look.size = p->size();
+        look.header = geometryIn(p, "colorPickerHeader");
+        look.body = geometryIn(p, "colorPickerBody");
+        look.wheel = geometryIn(p, "colorWheel");
+        look.pick = geometryIn(p, "colorPickerEyedropper");
+        look.divider = geometryIn(p, "colorPickerDivider");
+        look.cancel = geometryIn(p, "colorPickerCancel");
+        look.ok = geometryIn(p, "colorPickerOk");
+        if (auto *t = p->findChild<QLabel *>(QStringLiteral("colorPickerTitle"))) {
+            look.title = t->text();
+            look.titlePx = t->font().pixelSize();
+            look.extraBold = t->font().weight() == QFont::ExtraBold;
+        }
+        if (QWidget *rows = p->findChild<QWidget *>(QStringLiteral("colorHistoryPalette")))
+            look.rowsHidden = rows->isHidden();
+        if (QWidget *e = p->findChild<QWidget *>(QStringLiteral("colorPickerEyedropper")))
+            look.pickShown = e->isVisible();
+        const QImage img = p->grab().toImage();
+        look.ground = pixelOf(img, 6, 300);
+        look.border = pixelOf(img, 0, 300);
+        look.okFill = pixelOf(img, look.ok.left() + 6, look.ok.top() + 4);
+        look.cancelFill = pixelOf(img, look.cancel.left() + 6, look.cancel.top() + 4);
+        pressButton(p, "colorPickerCancel");
+    });
+    auto rectText = [](const QRect &q) {
+        return QStringLiteral("%1,%2 %3x%4").arg(q.x()).arg(q.y()).arg(q.width()).arg(q.height());
+    };
+    check(QStringLiteral("(cpk1) THE LOOK: Scene Colour > Custom... opens the SankoTV picker, 254 x 546 - the Colors "
+                         "panel's: the header 69 px titled \"Scene Colour\" (22 px Extra Bold), the body 252 x 418 with "
+                         "its History and Palette rows hidden, the wheel 228 x 228 at (13, 118), the Eyedropper 32 x 32 "
+                         "beside it at the wheel's (194, 196); the divider 4 px under the body; Cancel and OK 76 x 28, "
+                         "8 px apart, 12 px under the divider, OK 12 px in from the right edge; the #1E1E20 ground, the "
+                         "#2D2D35 border, OK in the accent, Cancel #2A2A2E"),
+          opened.size() == 1 && look.size == QSize(254, 546) && look.title == QStringLiteral("Scene Colour")
+              && look.titlePx == 22 && look.extraBold && look.header == QRect(1, 1, 252, 69)
+              && look.body == QRect(1, 70, 252, 418) && look.rowsHidden && look.wheel == QRect(13, 118, 228, 228)
+              && look.pick == QRect(13 + 194, 118 + 196, 32, 32) && look.pickShown
+              && look.divider == QRect(1, 492, 252, 1) && look.cancel == QRect(82, 505, 76, 28)
+              && look.ok == QRect(166, 505, 76, 28) && closeTo(look.ground, QColor(0x1e, 0x1e, 0x20), 2)
+              && closeTo(look.border, QColor(0x2d, 0x2d, 0x35), 3) && closeTo(look.okFill, QColor(0x7c, 0x6e, 0xf6), 3)
+              && closeTo(look.cancelFill, QColor(0x2a, 0x2a, 0x2e), 3),
+          QStringLiteral("opened %1; %2x%3 \"%4\" %5px bold %6; header %7 body %8 rows hidden %9 wheel %10 pick %11 (%12) "
+                         "divider %13 cancel %14 ok %15; ground %16 border %17 ok %18 cancel %19")
+              .arg(opened.size()).arg(look.size.width()).arg(look.size.height()).arg(look.title).arg(look.titlePx)
+              .arg(look.extraBold).arg(rectText(look.header), rectText(look.body)).arg(look.rowsHidden)
+              .arg(rectText(look.wheel), rectText(look.pick)).arg(look.pickShown)
+              .arg(rectText(look.divider), rectText(look.cancel), rectText(look.ok))
+              .arg(look.ground.name(), look.border.name(), look.okFill.name(), look.cancelFill.name()));
+    // Control: the Colors panel's own body keeps its History and Palette, and is that much taller.
+    ColorPanel *colorsBody = nullptr;
+    for (ColorPanel *c : r.window.findChildren<ColorPanel *>())
+        if (c->objectName() != QStringLiteral("colorPickerBody"))
+            colorsBody = c;
+    QWidget *colorsRows = colorsBody ? colorsBody->findChild<QWidget *>(QStringLiteral("colorHistoryPalette")) : nullptr;
+    check(QStringLiteral("(cpk1) control: the Colors panel's own body has its History and Palette rows, and is taller "
+                         "than the picker's 418"),
+          colorsRows && !colorsRows->isHidden() && colorsBody->sizeHint().height() > 418 + 100,
+          QStringLiteral("rows %1, height %2").arg(colorsRows ? !colorsRows->isHidden() : false)
+              .arg(colorsBody ? colorsBody->sizeHint().height() : 0));
+
+    // (cpk2) the colour in use as "previous"; a pick on the wheel changes "current" only.
+    const QColor sceneWas = scenecolor::colorOf(*scene, 0);
+    const QString tagWas = scene->colorTag;
+    const int steps = stack->index();
+    QColor pairCurBefore, pairPrevBefore, pairCur, pairPrev, chosen;
+    openSceneCustom([&](SankoColorPicker *p) {
+        QWidget *pair = p->findChild<QWidget *>(QStringLiteral("colorCurrentPrevious"));
+        QWidget *wheel = p->findChild<QWidget *>(QStringLiteral("colorWheel"));
+        if (!pair || !wheel) {
+            pressButton(p, "colorPickerCancel");
+            return;
+        }
+        auto halves = [&](QColor *cur, QColor *prev) {
+            const QImage img = pair->grab().toImage();
+            *cur = pixelOf(img, pair->width() / 4, pair->height() / 2);
+            *prev = pixelOf(img, pair->width() * 3 / 4, pair->height() / 2);
+        };
+        halves(&pairCurBefore, &pairPrevBefore);
+        // A press and release on the disc, right of and above its middle.
+        sendMouse(wheel, QEvent::MouseButtonPress, QPointF(150, 90), Qt::LeftButton);
+        sendMouse(wheel, QEvent::MouseButtonRelease, QPointF(150, 90), Qt::LeftButton);
+        QCoreApplication::processEvents();
+        halves(&pairCur, &pairPrev);
+        chosen = p->color();
+        pressButton(p, "colorPickerCancel");
+    });
+    check(QStringLiteral("(cpk2) IT OPENS ON THE COLOUR IN USE: \"previous\" is the scene's colour and so is \"current\"; "
+                         "a pick on the wheel changes \"current\" (the colour it would set) and \"previous\" keeps the "
+                         "scene's"),
+          opened.size() == 2 && opened.last().previous == sceneWas && opened.last().current == sceneWas
+              && closeTo(pairCurBefore, sceneWas, 2) && closeTo(pairPrevBefore, sceneWas, 2)
+              && !closeTo(pairCur, sceneWas, 8) && closeTo(pairCur, chosen, 2) && closeTo(pairPrev, sceneWas, 2),
+          QStringLiteral("scene %1; opened prev %2 cur %3; pair before %4 | %5, after %6 | %7, chosen %8")
+              .arg(sceneWas.name(), opened.value(1).previous.name(), opened.value(1).current.name(),
+                   pairCurBefore.name(), pairPrevBefore.name(), pairCur.name(), pairPrev.name(), chosen.name()));
+    check(QStringLiteral("(cpk2) control: Cancel left the scene's colour as it was, no step"),
+          scene->colorTag == tagWas && stack->index() == steps);
+
+    // (cpk3) OK and Enter set it, one step each; Cancel and Esc do not.
+    const QColor c1(0x2e, 0x86, 0x5f), c2(0xa0, 0x52, 0x2d), c3(0x33, 0x66, 0x99);
+    openSceneCustom(okWith(c1));
+    const QString afterOk = scene->colorTag;
+    const int stepsOk = stack->index();
+    stack->undo();
+    pump(40);
+    const QString afterUndo = scene->colorTag;
+    openSceneCustom([&](SankoColorPicker *p) {
+        p->setColor(c2);
+        sendKey(p, Qt::Key_Return);
+    });
+    const QString afterEnter = scene->colorTag;
+    const int stepsEnter = stack->index();
+    stack->undo();
+    pump(40);
+    openSceneCustom([&](SankoColorPicker *p) {
+        p->setColor(c3);
+        pressButton(p, "colorPickerCancel");
+    });
+    const QString afterCancel = scene->colorTag;
+    openSceneCustom([&](SankoColorPicker *p) {
+        p->setColor(c3);
+        sendKey(p, Qt::Key_Escape);
+    });
+    const QString afterEsc = scene->colorTag;
+    check(QStringLiteral("(cpk3) OK SETS IT AS ONE STEP, AND SO DOES ENTER; Ctrl+Z puts it back"),
+          afterOk == scenecolor::tagOf(c1) && stepsOk == steps + 1 && afterUndo == tagWas
+              && afterEnter == scenecolor::tagOf(c2) && stepsEnter == steps + 1,
+          QStringLiteral("OK %1 (+%2), undone %3; Enter %4 (+%5)").arg(afterOk).arg(stepsOk - steps).arg(afterUndo)
+              .arg(afterEnter).arg(stepsEnter - steps));
+    check(QStringLiteral("(cpk3) CANCEL AND ESC LEAVE IT: the scene's colour as it was, no step"),
+          afterCancel == tagWas && afterEsc == tagWas && stack->index() == steps,
+          QStringLiteral("Cancel %1, Esc %2, steps +%3").arg(afterCancel, afterEsc).arg(stack->index() - steps));
+
+    // (cpk4) every Custom... opens it, titled with what it sets, on the colour in use.
+    struct Site
+    {
+        QString name, title;
+        QColor previous, set;
+        bool opened = false, took = false;
+    };
+    QVector<Site> sites;
+    auto runSite = [&](const QString &name, const QString &title, const QColor &inUse, const QColor &pick,
+                       const std::function<void()> &open, const std::function<QColor()> &readBack) {
+        const int before = opened.size();
+        act = okWith(pick);
+        open();
+        act = nullptr;
+        pump(40);
+        Site s{name, title, inUse, pick};
+        s.opened = opened.size() == before + 1 && opened.last().title == title && opened.last().previous == inUse
+            && opened.last().visible && opened.last().modal;
+        const QColor now = readBack();
+        s.took = now.isValid() && closeTo(now, pick, 1);
+        sites << s;
+    };
+    // The scene's card: the same menu.
+    {
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        const QList<QFrame *> cards = r.storyboard->findChildren<QFrame *>(QStringLiteral("sceneCard"));
+        const int before = stack->index();
+        runSite(QStringLiteral("the scene's card"), QStringLiteral("Scene Colour"), scenecolor::colorOf(*scene, 0),
+                QColor(0x55, 0x6b, 0x2f), [&] {
+                    if (cards.isEmpty())
+                        return;
+                    const QPoint c = cards.first()->rect().center();
+                    QContextMenuEvent ev(QContextMenuEvent::Mouse, c, cards.first()->mapToGlobal(c));
+                    QCoreApplication::sendEvent(cards.first(), &ev);
+                }, [&] { return scenecolor::colorOf(*scene, 0); });
+        if (stack->index() == before + 1)
+            stack->undo();
+        pump(40);
+    }
+    r.storyboard->setClipMenuHookForTest({});
+    // View > Stage Background.
+    auto trigger = [](QMenu *m, const QString &text) {
+        if (!m)
+            return;
+        emit m->aboutToShow(); // filled as it opens
+        for (QAction *a : m->actions())
+            if (a->text() == text)
+                a->trigger();
+    };
+    QMenu *viewMenu = nullptr;
+    for (QAction *a : r.window.menuBar()->actions())
+        if (a->menu() && a->text().remove(QLatin1Char('&')) == QStringLiteral("View"))
+            viewMenu = a->menu();
+    r.canvas->setPaperColor(Qt::white);
+    runSite(QStringLiteral("View > Stage Background"), QStringLiteral("Stage Background"), QColor(Qt::white),
+            QColor(0xd8, 0xcf, 0xb8), [&] {
+                trigger(viewMenu ? viewMenu->findChild<QMenu *>(QStringLiteral("stageBackgroundMenu")) : nullptr,
+                        QStringLiteral("Custom..."));
+            }, [&] { return r.canvas->paperColor(); });
+    // The canvas's right-click: Stage Background, Grid Colour, Gutter Background.
+    auto canvasSubmenu = [&](const QString &name) -> QMenu * {
+        QContextMenuEvent ctx(QContextMenuEvent::Mouse, QPoint(40, 40), r.canvas->mapToGlobal(QPoint(40, 40)));
+        QCoreApplication::sendEvent(r.canvas, &ctx);
+        pump(60);
+        const QList<QMenu *> subs = r.canvas->findChildren<QMenu *>(name);
+        return subs.isEmpty() ? nullptr : subs.last();
+    };
+    // Held by QPointer: the picker opening closes the canvas's popup menu, which deletes itself.
+    auto closeTop = [](const QPointer<QMenu> &sub) {
+        if (sub)
+            if (auto *top = qobject_cast<QMenu *>(sub->parentWidget()))
+                top->close();
+    };
+    {
+        const QColor was = r.canvas->paperColor();
+        QPointer<QMenu> sub = canvasSubmenu(QStringLiteral("stageBackgroundMenu"));
+        runSite(QStringLiteral("the canvas's Stage Background"), QStringLiteral("Stage Background"), was,
+                QColor(0x8a, 0x9a, 0xa8), [&] { trigger(sub, QStringLiteral("Custom...")); },
+                [&] { return r.canvas->paperColor(); });
+        closeTop(sub);
+        r.canvas->setPaperColor(Qt::white);
+    }
+    {
+        const QColor was = r.canvas->gridColor();
+        QPointer<QMenu> sub = canvasSubmenu(QStringLiteral("gridColourMenu"));
+        runSite(QStringLiteral("the canvas's Grid Colour"), QStringLiteral("Grid Colour"), was, QColor(0x46, 0x82, 0xb4),
+                [&] { trigger(sub, QStringLiteral("Custom...")); }, [&] { return r.canvas->gridColor(); });
+        closeTop(sub);
+        r.canvas->setGridColor(was);
+    }
+    QStringList gutterTicks;
+    const QColor gutterWas = r.canvas->gutterColor();
+    {
+        QPointer<QMenu> sub = canvasSubmenu(QStringLiteral("gutterBackgroundMenu"));
+        runSite(QStringLiteral("the canvas's Gutter Background (new)"), QStringLiteral("Gutter Background"), gutterWas,
+                QColor(0x2b, 0x1f, 0x3a), [&] { trigger(sub, QStringLiteral("Custom...")); },
+                [&] { return r.canvas->gutterColor(); });
+        closeTop(sub);
+        QPointer<QMenu> again = canvasSubmenu(QStringLiteral("gutterBackgroundMenu"));
+        if (again)
+            for (QAction *a : again->actions())
+                if (!a->isSeparator() && a->isChecked())
+                    gutterTicks << a->text();
+        closeTop(again);
+        r.canvas->setGutterColor(gutterWas);
+    }
+    // A layer's colour: the Layers panel's Change Layer Color > Custom...
+    {
+        Panel *panel = scene->panels.at(0);
+        r.storyboard->setClipMenuHookForTest([&](QMenu *m) {
+            for (QAction *a : m->actions())
+                if (a->menu() && a->text() == QStringLiteral("Change Layer Color"))
+                    for (QAction *b : a->menu()->actions())
+                        if (b->text() == QStringLiteral("Custom..."))
+                            b->trigger();
+        });
+        const int before = stack->index();
+        const QString tag = panel->layers.at(1).colorTag;
+        runSite(QStringLiteral("a layer's Change Layer Color"), QStringLiteral("Layer Color"),
+                tag.isEmpty() ? QColor(0xf5, 0xa6, 0x23) : QColor(tag), QColor(0x6a, 0x5a, 0xcd),
+                [&] { r.storyboard->layerContextMenuForTest(1); },
+                [&] { return QColor(panel->layers.at(1).colorTag); });
+        r.storyboard->setClipMenuHookForTest({});
+        if (stack->index() == before + 1)
+            stack->undo();
+        pump(40);
+    }
+    // Brush Settings Studio: Identity Colour and Background Colour.
+    auto *studio = r.window.findChild<brushlib::BrushSettingsStudio *>();
+    if (studio) {
+        studio->openForPreset(QStringLiteral("builtin/painting/gouache"));
+        pump(300);
+        for (const QString &row : {QStringLiteral("Identity Colour"), QStringLiteral("Background Colour")}) {
+            const bool background = row == QStringLiteral("Background Colour");
+            QWidget *w = studio->findChild<QWidget *>(background ? QStringLiteral("studioBackgroundColour")
+                                                                 : QStringLiteral("studioIdentityColour"));
+            runSite(QStringLiteral("Brush Settings Studio's ") + row, row, studio->sessionColorForTest(background),
+                    background ? QColor(0xee, 0xe8, 0xaa) : QColor(0x8b, 0x45, 0x13), [&] {
+                        if (w)
+                            sendMouse(w, QEvent::MouseButtonPress, QPointF(w->width() - 20, 10), Qt::LeftButton);
+                    }, [&] { return studio->sessionColorForTest(background); });
+        }
+        studio->hide();
+        pump(60);
+    }
+    QStringList siteBad;
+    for (const Site &s : std::as_const(sites))
+        if (!s.opened || !s.took)
+            siteBad << QStringLiteral("%1: opened %2 took %3").arg(s.name).arg(s.opened).arg(s.took);
+    check(QStringLiteral("(cpk4) EVERY CUSTOM... OPENS IT, titled with what it sets and on the colour in use, and OK sets "
+                         "that: the scene's card, View > Stage Background, the canvas's Stage Background, Grid Colour and "
+                         "Gutter Background, a layer's Change Layer Color, Brush Settings Studio's Identity Colour and "
+                         "Background Colour (Panel Strip Background: (sb4))"),
+          sites.size() == 8 && siteBad.isEmpty(),
+          QStringLiteral("%1 sites; %2").arg(sites.size()).arg(siteBad.join(QStringLiteral("; "))));
+    check(QStringLiteral("(cpk4) GUTTER BACKGROUND HAS CUSTOM... NOW: chosen, it is the one ticked, no preset"),
+          gutterTicks == QStringList{QStringLiteral("Custom...")}, gutterTicks.join(QLatin1Char(',')));
+
+    // (cpk5) the Eyedropper reads the screen.
+    Patch rose(QColor(0xc8, 0x3c, 0x64)), mint(QColor(0x3c, 0xc8, 0x64));
+    const QRect avail = r.window.screen() ? r.window.screen()->availableGeometry() : QRect(0, 0, 1920, 1040);
+    rose.move(avail.left() + 40, avail.top() + 200);
+    mint.move(avail.left() + 40, avail.top() + 300);
+    rose.show();
+    mint.show();
+    rose.raise();
+    mint.raise();
+    const QPoint roseAt = rose.geometry().center(), mintAt = mint.geometry().center();
+    const bool roseShown = screenShows(roseAt, QColor(0xc8, 0x3c, 0x64));
+    const bool mintShown = screenShows(mintAt, QColor(0x3c, 0xc8, 0x64));
+    struct Pick
+    {
+        bool armed = false, grabbed = false, stillOpen = false, endedEsc = false, endedClick = false, released = false;
+        QColor beforePick, afterEsc, afterClick, previous;
+    } pick;
+    const int stepsPick = stack->index();
+    r.storyboard->setClipMenuHookForTest(sceneCustom);
+    openSceneCustom([&](SankoColorPicker *p) {
+        QToolButton *dropper = p->findChild<QToolButton *>(QStringLiteral("colorPickerEyedropper"));
+        if (!dropper) {
+            pressButton(p, "colorPickerCancel");
+            return;
+        }
+        pick.beforePick = p->color();
+        // Esc first: the pick ends and the colour it had is back; the picker stays open.
+        dropper->click();
+        pick.armed = p->screenPickActive() && dropper->property("pickArmed").toBool();
+        pick.grabbed = QWidget::mouseGrabber() == p;
+        sendKey(p, Qt::Key_Escape);
+        pick.endedEsc = !p->screenPickActive() && !dropper->property("pickArmed").toBool();
+        pick.afterEsc = p->color();
+        pick.stillOpen = p->isVisible() && p->result() == 0;
+        // Then a click over the rose window: its colour is taken.
+        dropper->click();
+        sendMouse(p, QEvent::MouseButtonPress, QPointF(p->mapFromGlobal(roseAt)), Qt::LeftButton);
+        sendMouse(p, QEvent::MouseButtonRelease, QPointF(p->mapFromGlobal(roseAt)), Qt::LeftButton);
+        pick.endedClick = !p->screenPickActive();
+        pick.released = QWidget::mouseGrabber() == nullptr;
+        pick.afterClick = p->color();
+        pick.previous = p->previousColor();
+        pressButton(p, "colorPickerOk");
+    });
+    const QString afterPick = scene->colorTag;
+    if (stack->index() == stepsPick + 1)
+        stack->undo();
+    pump(40);
+    check(QStringLiteral("(cpk5) THE EYEDROPPER TAKES ONE COLOUR FROM THE SCREEN: armed (the button in the accent, the "
+                         "pointer held), a click over another window takes that window's colour as \"current\" - "
+                         "\"previous\" kept - the pick is over and the pointer let go; OK sets it"),
+          roseShown && pick.armed && pick.grabbed && pick.endedClick && pick.released
+              && closeTo(pick.afterClick, QColor(0xc8, 0x3c, 0x64), 2) && pick.previous == sceneWas
+              && closeTo(QColor(afterPick), QColor(0xc8, 0x3c, 0x64), 2),
+          QStringLiteral("rose on screen %1; armed %2 grabbed %3; after the click %4 (ended %5, released %6), previous "
+                         "%7; the scene %8")
+              .arg(roseShown).arg(pick.armed).arg(pick.grabbed).arg(pick.afterClick.name()).arg(pick.endedClick)
+              .arg(pick.released).arg(pick.previous.name(), afterPick));
+    check(QStringLiteral("(cpk5) ESC ENDS A PICK AND PUTS BACK THE COLOUR IT HAD; the picker stays open"),
+          pick.endedEsc && pick.afterEsc == pick.beforePick && pick.stillOpen,
+          QStringLiteral("ended %1, %2 -> %3, open %4").arg(pick.endedEsc).arg(pick.beforePick.name(), pick.afterEsc.name())
+              .arg(pick.stillOpen));
+    const QColor mintRead = SankoColorPicker::screenColorAt(mintAt);
+    check(QStringLiteral("(cpk5) control: the screen read tells two windows apart - the mint one reads mint, not rose"),
+          mintShown && closeTo(mintRead, QColor(0x3c, 0xc8, 0x64), 2) && !closeTo(mintRead, QColor(0xc8, 0x3c, 0x64), 30),
+          mintRead.name());
+    rose.hide();
+    mint.hide();
+    r.storyboard->setClipMenuHookForTest({});
+
+    // (cpk6) beside where it was asked for.
+    {
+        SankoColorPicker p(QColor(Qt::red), QStringLiteral("Test"), &r.window);
+        const QRect free = r.window.screen() ? r.window.screen()->availableGeometry() : QRect(0, 0, 1920, 1040);
+        const QRect left(free.left() + 300, free.top() + 400, 1, 1), right(free.right() - 20, free.top() + 400, 1, 1);
+        p.placeBeside(left);
+        const QRect atLeft = p.geometry();
+        p.placeBeside(right);
+        const QRect atRight = p.geometry();
+        check(QStringLiteral("(cpk6) IT OPENS BESIDE WHERE IT WAS ASKED FOR: 8 px right of the point, level with it, "
+                             "inside the screen, never over it"),
+              atLeft.left() == left.right() + 9 && !atLeft.contains(left.topLeft()) && free.contains(atLeft)
+                  && qAbs(atLeft.top() + 35 - left.center().y()) <= 1,
+              rectText(atLeft));
+        check(QStringLiteral("(cpk6) control: near the screen's right edge it opens on the point's left instead"),
+              atRight.right() == right.left() - 9 && !atRight.contains(right.topLeft()) && free.contains(atRight),
+              rectText(atRight));
+    }
+
+    // (cpk8) 254 wide for every title (2026-11-19, the user's word: "Background Colour" had opened
+    // it 263 wide and "Panel Strip Background" 310). Every title the app gives it: the picker 254 x
+    // 546, its body and buttons in place, the title inside the header's padding - 22 px when it fits,
+    // smaller when not - and no title ink right of it.
+    {
+        const QStringList titles{QStringLiteral("Scene Colour"),      QStringLiteral("Layer Color"),
+                                 QStringLiteral("Stage Background"),  QStringLiteral("Grid Colour"),
+                                 QStringLiteral("Gutter Background"), QStringLiteral("Identity Colour"),
+                                 QStringLiteral("Background Colour"), QStringLiteral("Panel Strip Background")};
+        QStringList bad, sizes;
+        int px22 = 0, smaller = 0;
+        for (const QString &t : titles) {
+            SankoColorPicker p(QColor(0x5b, 0x6e, 0x9c), t, &r.window);
+            p.ensurePolished();
+            if (p.layout())
+                p.layout()->activate();
+            auto *label = p.findChild<QLabel *>(QStringLiteral("colorPickerTitle"));
+            const QImage img = p.grab().toImage();
+            // Title ink (white on the #1E1E20 ground) right of the padding, x 229..252 of the header -
+            // none - and inside it, x 25..228 - the title is drawn.
+            int inkRight = 0, inkIn = 0;
+            for (int y = 10; y < 62; ++y) {
+                for (int x = 229; x < 253; ++x)
+                    inkRight += pixelOf(img, x, y).lightness() > 120 ? 1 : 0;
+                for (int x = 25; x < 229; ++x)
+                    inkIn += pixelOf(img, x, y).lightness() > 200 ? 1 : 0;
+            }
+            const int px = label ? label->font().pixelSize() : 0;
+            const int advance = label ? QFontMetrics(label->font()).horizontalAdvance(t) : 999;
+            const int shownW = label ? label->width() : 0;
+            px22 += px == 22 ? 1 : 0;
+            smaller += px < 22 ? 1 : 0;
+            sizes << QStringLiteral("%1 %2px %3").arg(t).arg(px).arg(advance);
+            if (p.size() != QSize(254, 546) || geometryIn(&p, "colorPickerBody") != QRect(1, 70, 252, 418)
+                || geometryIn(&p, "colorPickerOk") != QRect(166, 505, 76, 28) || advance > 204 || px < 12 || px > 22
+                || inkRight != 0 || inkIn < 40 || shownW < advance)
+                bad << QStringLiteral("%1: %2x%3, ink right %4, ink in %5, label %6 for %7").arg(t).arg(p.width())
+                           .arg(p.height()).arg(inkRight).arg(inkIn).arg(shownW).arg(advance);
+        }
+        check(QStringLiteral("(cpk8) 254 WIDE FOR EVERY TITLE: each of the eight titles opens it 254 x 546 with its body "
+                             "and buttons in place; the title is drawn whole inside the header's padding (204 px) - 22 px "
+                             "when it fits, smaller when not - and no title ink lies right of it"),
+              bad.isEmpty() && smaller >= 1, QStringLiteral("%1; %2").arg(bad.join(QStringLiteral("; ")),
+                                                                    sizes.join(QStringLiteral(", "))));
+        check(QStringLiteral("(cpk8) control: a title that fits keeps 22 px - only the long ones get smaller"),
+              px22 >= 1 && px22 + smaller == titles.size(), QStringLiteral("22 px: %1, smaller: %2").arg(px22).arg(smaller));
+    }
+
+    // (cpk7) no Windows picker anywhere in the pass; control: one shown is counted.
+    const int shownInPass = watch.shown;
+    {
+        QColorDialog probe;
+        probe.setAttribute(Qt::WA_DontShowOnScreen);
+        probe.show();
+        pump(30);
+        probe.hide();
+    }
+    check(QStringLiteral("(cpk7) NO WINDOWS PICKER: no QColorDialog was shown in the whole pass"), shownInPass == 0,
+          QString::number(shownInPass));
+    check(QStringLiteral("(cpk7) control: a QColorDialog shown is counted"), watch.shown == shownInPass + 1,
+          QString::number(watch.shown));
+    qApp->removeEventFilter(&watch);
+    SankoColorPicker::setOpenHookForTest({});
+    r.window.markCleanForTest();
+}
+
+// --- (sb) THE PANEL STRIP'S BACKGROUND (2026-11-18, STRIP-1: Figma 635:702, approved as shown) -----
+// The colour behind the panels in the strip: Dark (default) to Light and Custom..., in View >
+// Panel Strip Background (under Stage Background) and on a right-click on the strip's empty
+// ground; its ground and the cells behind the thumbnails take it (an unselected cell's edge a
+// shade darker on a light ground); the pictures, the selection and the numbers stay; on screen
+// only, remembered by the app for every project, not an undo step.
+void runPanelStripBackgroundPass(const QString &scratch)
+{
+    using namespace workspace;
+    using namespace colourpicker;
+    using dppins::closeTo;
+    out() << "--- (sb) the Panel Strip's background (STRIP-1) ---" << Qt::endl;
+    const QString dir = scratch + QStringLiteral("/stripground");
+    QDir(dir).removeRecursively();
+    QDir().mkpath(dir);
+    // 4:3 panels: the strip's 16:9 cells letterbox them, so each cell's own ground shows beside
+    // its picture.
+    const QString project = writeProject(dir, QStringLiteral("Strip"), QSize(800, 600), 24, 1, 3);
+    const QString other = writeProject(dir, QStringLiteral("Other"), QSize(960, 540), 24, 1, 2);
+    Rig r(project);
+    check(QStringLiteral("(sb) the workspace opened"), r.ok);
+    if (!r.ok)
+        return;
+    QUndoStack *stack = r.window.undoStackForTest();
+    Scene *scene = r.window.scenesForTest().value(0);
+    QWidget *bar = r.storyboard->panelStripBarForTest();
+    QWidget *ground = r.storyboard->panelStripGroundForTest();
+    QVector<QLabel *> cells = thumbs(r.storyboard);
+    if (!stack || !scene || !bar || !ground || cells.size() != 3) {
+        check(QStringLiteral("(sb) found the history, the strip and its three cells"), false);
+        return;
+    }
+    r.storyboard->setPanelStripBackground(QColor(0x1a, 0x1a, 0x1a)); // whatever an earlier run left
+    pump(120); // panel 1 is the selected one, as the project opens
+    QMenu *viewMenu = nullptr;
+    for (QAction *a : r.window.menuBar()->actions())
+        if (a->menu() && a->text().remove(QLatin1Char('&')) == QStringLiteral("View"))
+            viewMenu = a->menu();
+    QMenu *viewSub = viewMenu ? viewMenu->findChild<QMenu *>(QStringLiteral("panelStripBackgroundMenu")) : nullptr;
+    auto entriesOf = [](QMenu *m) {
+        QStringList l;
+        if (!m)
+            return l;
+        emit m->aboutToShow(); // filled as it opens
+        for (QAction *a : m->actions())
+            if (!a->isSeparator())
+                l << a->text() + (a->isChecked() ? QStringLiteral("*") : QString());
+        return l;
+    };
+    auto trigger = [](QMenu *m, const QString &text) {
+        if (!m)
+            return;
+        emit m->aboutToShow();
+        for (QAction *a : m->actions())
+            if (a->text() == text)
+                a->trigger();
+    };
+
+    // (sb1) where it is chosen.
+    const QStringList want{QStringLiteral("Dark (default)*"), QStringLiteral("Charcoal"), QStringLiteral("Dark Grey"),
+                           QStringLiteral("Mid Grey"), QStringLiteral("Light Grey"), QStringLiteral("Light"),
+                           QStringLiteral("Custom...")};
+    const QStringList viewEntries = entriesOf(viewSub);
+    // Under Stage Background in View; each preset with a 12 px chip of its colour.
+    bool underStage = false;
+    if (viewMenu && viewSub) {
+        const QList<QAction *> acts = viewMenu->actions();
+        for (int i = 1; i < acts.size(); ++i)
+            if (acts.at(i)->menu() == viewSub && acts.at(i - 1)->menu()
+                && acts.at(i - 1)->menu()->objectName() == QStringLiteral("stageBackgroundMenu"))
+                underStage = true;
+    }
+    const QStringList hexes{QStringLiteral("#1a1a1a"), QStringLiteral("#242424"), QStringLiteral("#333333"),
+                            QStringLiteral("#4d4d4d"), QStringLiteral("#b3b3b3"), QStringLiteral("#e8e8e8")};
+    QStringList chips;
+    if (viewSub)
+        for (QAction *a : viewSub->actions())
+            if (!a->isSeparator() && !a->icon().isNull()) {
+                const QImage chip = a->icon().pixmap(12, 12).toImage();
+                chips << chip.pixelColor(chip.width() / 2, chip.height() / 2).name();
+            }
+    check(QStringLiteral("(sb1) VIEW > PANEL STRIP BACKGROUND, under Stage Background: Dark (default) ticked, Charcoal, "
+                         "Dark Grey, Mid Grey, Light Grey, Light, Custom... - each preset with a chip of its colour"),
+          underStage && viewEntries == want && chips == hexes,
+          QStringLiteral("under Stage Background %1; %2; chips %3").arg(underStage)
+              .arg(viewEntries.join(QLatin1Char(',')), chips.join(QLatin1Char(','))));
+    // A right-click on the strip's empty ground (right of the last cell) opens the same entries.
+    QString groundMenu;
+    QStringList groundEntries;
+    int menus = 0;
+    r.storyboard->setClipMenuHookForTest([&](QMenu *m) {
+        ++menus;
+        groundMenu = m->objectName();
+        if (QMenu *sub = m->findChild<QMenu *>(QStringLiteral("panelStripBackgroundMenu")))
+            groundEntries = entriesOf(sub);
+    });
+    {
+        const QRect last(cells.last()->mapTo(ground, QPoint(0, 0)), cells.last()->size());
+        const QPoint at(last.right() + 40, last.center().y());
+        QContextMenuEvent ev(QContextMenuEvent::Mouse, at, ground->mapToGlobal(at));
+        QCoreApplication::sendEvent(ground, &ev);
+        pump(40);
+    }
+    const int groundMenus = menus;
+    {
+        const QPoint at = cells.at(1)->rect().center();
+        QContextMenuEvent ev(QContextMenuEvent::Mouse, at, cells.at(1)->mapToGlobal(at));
+        QCoreApplication::sendEvent(cells.at(1), &ev);
+        pump(40);
+    }
+    r.storyboard->setClipMenuHookForTest({});
+    check(QStringLiteral("(sb1) A RIGHT-CLICK ON THE STRIP'S EMPTY GROUND opens Panel Strip Background with the same "
+                         "entries"),
+          groundMenus == 1 && groundMenu == QStringLiteral("panelStripMenu") && groundEntries == want,
+          QStringLiteral("%1 menu(s) \"%2\": %3").arg(groundMenus).arg(groundMenu, groundEntries.join(QLatin1Char(','))));
+    check(QStringLiteral("(sb1) control: a right-click on a panel's thumbnail opens no ground menu"), menus == groundMenus,
+          QString::number(menus - groundMenus));
+
+    // (sb2) the ground and the cells take it.
+    struct Strip
+    {
+        QImage bar;
+        QColor ground, edge, letterbox, selected, chip;
+        QVector<QImage> pictures;
+    };
+    auto read = [&]() {
+        pump(80);
+        cells = thumbs(r.storyboard);
+        Strip s;
+        s.bar = bar->grab().toImage();
+        const QRect last(cells.last()->mapTo(bar, QPoint(0, 0)), cells.last()->size());
+        s.ground = pixelOf(s.bar, last.right() + 40, last.center().y());
+        const QImage plain = cells.at(1)->grab().toImage();
+        const int h = cells.at(1)->height(), w = cells.at(1)->width();
+        s.edge = pixelOf(plain, 0, h / 2);
+        s.letterbox = pixelOf(plain, 4, h / 2); // left of the 4:3 picture, inside the 16:9 cell
+        const QImage sel = cells.at(0)->grab().toImage();
+        s.selected = pixelOf(sel, 1, h / 2);
+        if (QLabel *num = cells.at(1)->findChild<QLabel *>(QStringLiteral("panelNum"))) {
+            const QImage n = num->grab().toImage();
+            s.chip = pixelOf(n, 2, n.height() / 2);
+        }
+        // The pictures: each cell's middle, well inside its letterbox bars.
+        for (QLabel *c : std::as_const(cells))
+            s.pictures << c->grab(QRect(w / 2 - 20, h / 2 - 15, 40, 30)).toImage();
+        return s;
+    };
+    const Strip dark = read();
+    trigger(viewSub, QStringLiteral("Light"));
+    const Strip light = read();
+    const QStringList lightTicks = entriesOf(viewSub);
+    check(QStringLiteral("(sb2) LIGHT: the strip's ground and the cells behind the thumbnails #E8E8E8 (the letterbox "
+                         "beside a 4:3 picture too), an unselected cell's 1 px edge a shade darker, #C4C4C4; Light "
+                         "ticked"),
+          r.storyboard->panelStripBackground() == QColor(0xe8, 0xe8, 0xe8) && closeTo(light.ground, QColor(0xe8, 0xe8, 0xe8), 1)
+              && closeTo(light.letterbox, QColor(0xe8, 0xe8, 0xe8), 2) && closeTo(light.edge, QColor(0xc4, 0xc4, 0xc4), 3)
+              && lightTicks.value(5) == QStringLiteral("Light*"),
+          QStringLiteral("ground %1, letterbox %2, edge %3; %4").arg(light.ground.name(), light.letterbox.name(),
+                                                                      light.edge.name(), lightTicks.join(QLatin1Char(','))));
+    check(QStringLiteral("(sb2) THE PICTURES, THE SELECTION AND THE NUMBERS STAY: each cell's picture byte for byte, the "
+                         "selected cell's accent edge and the panel number's chip unchanged"),
+          light.pictures == dark.pictures && light.selected == dark.selected && light.chip == dark.chip
+              && closeTo(dark.selected, SankoTheme::kPurple, 3),
+          QStringLiteral("pictures same %1; selected %2 -> %3; chip %4 -> %5").arg(light.pictures == dark.pictures)
+              .arg(dark.selected.name(), light.selected.name(), dark.chip.name(), light.chip.name()));
+    trigger(viewSub, QStringLiteral("Dark (default)"));
+    const Strip darkAgain = read();
+    check(QStringLiteral("(sb2) control: Dark (default) again - the ground #1A1A1A, the edge #2A2A2A, the strip exactly "
+                         "as it was"),
+          closeTo(dark.ground, QColor(0x1a, 0x1a, 0x1a), 1) && closeTo(dark.edge, QColor(0x2a, 0x2a, 0x2a), 3)
+              && darkAgain.bar == dark.bar,
+          QStringLiteral("ground %1, edge %2, same %3").arg(dark.ground.name(), dark.edge.name()).arg(darkAgain.bar == dark.bar));
+
+    // (sb3) on screen only.
+    const int steps = stack->index();
+    QVector<QImage> panelsBefore;
+    for (Panel *p : std::as_const(scene->panels))
+        panelsBefore << p->flattenedImage();
+    auto exportHashes = [&](const QString &folder) {
+        QDir(folder).removeRecursively();
+        QDir().mkpath(folder);
+        r.window.exportPngForTest(folder);
+        QStringList hashes;
+        for (const QFileInfo &fi : QDir(folder).entryInfoList(QDir::Files, QDir::Name)) {
+            QFile file(fi.absoluteFilePath());
+            if (file.open(QIODevice::ReadOnly))
+                hashes << QString::fromLatin1(QCryptographicHash::hash(file.readAll(), QCryptographicHash::Sha256).toHex());
+        }
+        return hashes;
+    };
+    const QStringList pngDark = exportHashes(dir + QStringLiteral("/png_dark"));
+    trigger(viewSub, QStringLiteral("Light"));
+    const QStringList pngLight = exportHashes(dir + QStringLiteral("/png_light"));
+    QVector<QImage> panelsAfter;
+    for (Panel *p : std::as_const(scene->panels))
+        panelsAfter << p->flattenedImage();
+    check(QStringLiteral("(sb3) ON SCREEN ONLY: the panels' pictures byte for byte, the PNG export with Light is the export "
+                         "with Dark, no undo step, the project not unsaved"),
+          panelsAfter == panelsBefore && pngDark.size() == 3 && pngLight == pngDark && stack->index() == steps
+              && !r.window.isDirty(),
+          QStringLiteral("pictures same %1, png %2/%3 same %4, steps +%5, dirty %6").arg(panelsAfter == panelsBefore)
+              .arg(pngDark.size()).arg(pngLight.size()).arg(pngLight == pngDark).arg(stack->index() - steps)
+              .arg(r.window.isDirty()));
+
+    // (sb4) Custom... opens the SankoTV picker; remembered for every project.
+    QString title;
+    QColor previous;
+    SankoColorPicker::setOpenHookForTest([&](SankoColorPicker *p) {
+        title = p->title();
+        previous = p->previousColor();
+        p->setColor(QColor(0x2f, 0x4f, 0x4f));
+        pressButton(p, "colorPickerOk");
+    });
+    trigger(viewSub, QStringLiteral("Custom..."));
+    SankoColorPicker::setOpenHookForTest({});
+    const Strip custom = read();
+    const QStringList customTicks = entriesOf(viewSub);
+    const QString kept = sankoSettings().value(StoryboardPage::kPanelStripBackgroundKey).toString();
+    check(QStringLiteral("(sb4) CUSTOM... opens the SankoTV picker, titled \"Panel Strip Background\", on the colour in "
+                         "use; OK's #2F4F4F is the strip's ground, Custom... ticked next time, kept by the app "
+                         "(storyboard/panelStrip/v1/background)"),
+          title == QStringLiteral("Panel Strip Background") && previous == QColor(0xe8, 0xe8, 0xe8)
+              && closeTo(custom.ground, QColor(0x2f, 0x4f, 0x4f), 1) && customTicks.value(6) == QStringLiteral("Custom...*")
+              && kept == QStringLiteral("#2f4f4f"),
+          QStringLiteral("\"%1\" on %2; ground %3; %4; kept %5").arg(title, previous.name(), custom.ground.name(),
+                                                                     customTicks.join(QLatin1Char(',')), kept));
+    r.window.markCleanForTest();
+    const bool opened = r.window.loadProjectForTest(other);
+    pump(500);
+    cells = thumbs(r.storyboard);
+    QColor otherGround;
+    if (!cells.isEmpty()) {
+        const QImage img = bar->grab().toImage();
+        const QRect last(cells.last()->mapTo(bar, QPoint(0, 0)), cells.last()->size());
+        otherGround = pixelOf(img, last.right() + 40, last.center().y());
+    }
+    check(QStringLiteral("(sb4) FOR EVERY PROJECT: another project opened, the strip keeps it"),
+          opened && r.storyboard->panelStripBackground() == QColor(0x2f, 0x4f, 0x4f)
+              && closeTo(otherGround, QColor(0x2f, 0x4f, 0x4f), 1),
+          QStringLiteral("opened %1, %2, ground %3").arg(opened).arg(r.storyboard->panelStripBackground().name(),
+                                                                     otherGround.name()));
+    r.storyboard->setPanelStripBackground(QColor(0x1a, 0x1a, 0x1a));
     r.window.markCleanForTest();
 }
 
@@ -29541,8 +30390,18 @@ int main(int argc, char **argv)
         || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("keysview")
         || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("batchd")
         || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("batche")
-        || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("scenesshots")) {
-        if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("scenesshots")) {
+        || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("scenesshots")
+        || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("colourstrip")) {
+        if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("colourstrip")) {
+            // COLOUR-1 (the SankoTV colour picker) and STRIP-1 (the Panel Strip's background), with
+            // the passes whose Custom... and strip they touch: the scene colours, the stage
+            // background, the Scene Colour menu.
+            runSceneColoursPass(scratch);
+            runStageBackgroundPass(scratch);
+            runSceneColourMenuPass(scratch);
+            runColourPickerPass(scratch);
+            runPanelStripBackgroundPass(scratch);
+        } else if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("scenesshots")) {
             // SCENES + SHOTS (Figma 621:716) and the Scene Colour menu's rows (619:851), with the
             // passes whose checks they changed: (aw)'s clip layout, (ec)'s strip.
             runTimelineLookPass(scratch);
@@ -29806,7 +30665,9 @@ int main(int argc, char **argv)
     runStageBackgroundPass(scratch);
     runStageBackgroundDepthPass(scratch); // (ed5)
     runScenesShotsPass(scratch);          // (ss) Figma 621:716
-    runSceneColourMenuPass(scratch);      // (sm) Figma 619:851
+    runSceneColourMenuPass(scratch);      // (scm) Figma 619:851
+    runColourPickerPass(scratch);         // (cpk) COLOUR-1
+    runPanelStripBackgroundPass(scratch); // (sb) STRIP-1
     runGrowAnyZoomPass(scratch);
     runTrialFixesPass(scratch);
     runKeptArtPass(scratch);

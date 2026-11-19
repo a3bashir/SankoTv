@@ -1,5 +1,155 @@
 # SankoTV — Session Handoff Brief
 
+## STATUS 2026-11-19 (evening): RE-TEST CS2 PASSED; COLOUR-1 + STRIP-1 WITH THE PICKER'S WIDTH FIX COMMITTED AS ONE COMMIT (THIS ONE); NEXT: FIGMA BUILT MARKS, BATCH G'S DESIGN (G-1)
+RE-TEST CS2 (recording 20261119-185937, 701 s, the only session after 15:16; system.txt: Release, git eb208ada5+dirty,
+built Nov 19 2026 15:16:14; the title bar "SANKO TV — TEST COPY - small pirate, picker re-test"; the user: "all steps
+looked right"):
+1 the width PASS - Scene Colour, Panel Strip Background, the Studio's Background Colour and Gutter Background each
+  opened 254 x 546; every title whole (Panel Strip Background visibly smaller).
+2 Enter PASS - keypad Enter on the picker (focus on OK) closed it; TEMPLE ENTRANCE took the chosen olive; Ctrl+Z ("Undo
+  Change Scene Color") put the brown back.
+3 the Eyedropper over another program PASS, twice (Scene Colour; Identity Colour) - the pointer on the Cintiq, where no
+  SankoTV window was: "current" followed it (dark, grey, blue), the click (491,1054) / (945,1054) went to the picker
+  (SankoTV never lost activation, so the other program had no click), the picker back with the colour, OK.
+4 the canvas's right-click PASS - Stage Background > Custom... opened "Stage Background"; Gutter Background > Custom...
+  opened "Gutter Background", OK made the gutter the picked purple, and the next Gutter Background menu had Custom...
+  ticked.
+5 Identity Colour PASS - "Identity Colour", 254 x 546, three times (OK each time; once via Classic, once the Eyedropper).
+6 Panel Strip Background > Light PASS - from the strip's ground and from View: the ground light, the + button, icons and
+  P1's purple selection as they were; Dark (default) set back, then Mid Grey, Dark Grey, Charcoal and Dark Grey tried
+  (the app's setting is left at Dark Grey, the gutter at Mid Grey - both settings, not the project).
+7 a right-click on a thumbnail PASS - two right presses and a right double-click on a panelThumb: no menu (the ground's
+  four right-clicks opened it).
+8 the duration pill PASS for opening - a double-click on TEMPLE ENTRANCE's "8s 18f" pill opened "Panel 1 - Duration"
+  with its frames field focused (210); 100 typed and set (Enter; keys in a text field are never recorded, and no click),
+  the clip 4s 4f, Ctrl+Z ("Undo Change Panel Duration") 8s 18f again. Esc NOT TESTED (the field was set, not escaped).
+9 Discard PASS - "Save changes to 'TEST COPY - small pirate, picker re-test' before exiting?", Discard.
+THE USER'S WORD: commit and push COLOUR-1 and STRIP-1 with the width fix and their HANDOFF notes, matching
+sha_CS2_gate.txt, status clean; then COLOUR-1 (634:702) and STRIP-1 (635:702) marked BUILT in Figma; then batch G as
+approved in the trial report (the brush cursor as an outline circle): Figma frame G-1 in area 002, a screenshot, and a
+stop for approval before anything of G is built.
+THE COMMIT: one commit, the twelve files exactly as sha_CS2_gate.txt (gate CS2 green in both builds) and this note.
+
+## STATUS 2026-11-19 (later): THE PICKER'S WIDTH FIX BUILT (254 FOR EVERY TITLE), GATE CS2 GREEN IN BOTH BUILDS; WAITING FOR THE USER'S RE-TEST CS2; NOTHING COMMITTED
+THE USER'S WORD: yes to the fix - 254 wide for every title, a long title's text smaller to fit - as its own small fix
+with a check, a red run, quick check, full gate, TEST COPY, exe stamp and a short re-test list that also covers what
+was not tested (Enter; the Eyedropper over another program; the canvas's Stage Background and Gutter Background and the
+Studio's Identity Colour; Panel Strip Background > Light; a right-click on a thumbnail; a duration pill's
+double-click). Commit nothing yet; after the re-test: commit, COLOUR-1 / STRIP-1 BUILT in Figma, batch G's design.
+THE FIX (SankoColorPicker.cpp only): the title 22 px when it fits the header's room (252 inside the border less the 24 px
+padding each side = 204), else a pixel smaller at a time (12 at least): Gutter Background and Background Colour 21,
+Panel Strip Background 17, the other five 22; the label's maximum width the room, so it can never widen the picker;
+the picker's width the body's 252 + 2 whatever the title (it was the layout's sizeHint, which the title drove).
+NEW CHECKS (Lifecycle +2, in (cpk)): (cpk8) every one of the eight titles opens it 254 x 546, body (1,70) 252 x 418, OK
+(166,505), the title drawn whole inside the padding (its label as wide as its text, white ink in x 25-228, none in x
+229-252), 22 px when it fits and smaller when not; control: the titles that fit keep 22 px (5 of 8). FIRST VERSION
+FOUND WANTING, BY LOOKING AT THE PICTURE (TEMP DIAG, removed): the label first set to QSizePolicy::Ignored was squeezed
+to 0 px by the header's stretch - no title at all - and (cpk8) as first written (only "no ink right of the padding")
+passed; the label now keeps its width (maximum = the room) and (cpk8) also asks for the title's ink and width.
+RED RUNS (marked, removed, grep 0 in the code): A - the old way (22 px always, the size from the layout): (cpk8) fails -
+Gutter Background 260, Background Colour 263, Panel Strip Background 310 wide, the same widths the recording showed;
+B - the label squeezed (Ignored): (cpk8) fails - every title's label 0 wide, no ink.
+QUICK CHECK (Release): colourstrip 53, scenesshots 58, batche 130, batchd 68, trial 126, stagemode 124, keysview 72,
+playback 33, Camera 336.
+GATE CS2 (main tree, 2774 s): EVERY family green in BOTH builds - Lifecycle 1653, Camera 336, Brush Library 187, Size
+Lock 170, Edge Lock 74, Dev Recorder 46, Quick Shape 19, Pixel Lock 13, Brush Lock 3. HASHES: sha_CW_gate.txt (the fix:
+SankoColorPicker.cpp, ProjectLifecycleTest.cpp), sha_CS2_gate.txt (all twelve files of COLOUR-1 + STRIP-1 with the
+fix; ten as in sha_CS_gate.txt), sha_CS2_exes.txt. Method: Edit tool only; CRLF/LF as before (SankoColorPicker.cpp LF,
+the test file CRLF on every line).
+RE-TEST EXE: C:\SankoTv\app\build\Release\SankoTV.exe built Nov 19 2026 15:16:14 (file 15:16:33), git eb208ada5+dirty,
+sha256 afcf103c938ff943bf397899ae03c06426f01e0b22a10f9912c90ca70bebfb7f. COPY "TEST COPY - small pirate, picker
+re-test" (C:\SankoTV-TestCopies, 16:01:05; the original's hash unchanged before and after). LIST
+Documents\SankoTV-Design\handtest_CS2_picker_width_retest.md (9 steps).
+
+## STATUS 2026-11-19: HAND TEST CS READ - NOTHING FAILED, BUT REPORTED BEFORE ANYTHING ELSE (THE USER'S WORD); NOTHING COMMITTED
+Recordings 20261119-133332 (852 s) and 20261119-134800 (91 s): both the Nov 18 2026 21:26:40 build, git
+eb208ada5+dirty; the title "SANKO TV — TEST COPY - small pirate, colour picker". THE DURATION PILL: its field did not
+open - none of the 17 timeline double-clicks of the second session touched a pill (the SCENES row, the ruler, the
+CAMERA / AUDIO rows and the space past the film's end, the nearest about 40 px right of "8s 18f"), 4 more were on the
+Panel Strip; Documents\SankoTV-Design\pill_doubleclicks_20261119-134800.png marks them. The pill's hit test is the
+painted rect (clipRect + clipLayout in both), and (du6) - a double-click on the pill opens the field - is green in
+gate CS1 in both builds. FOUND IN THE RECORDING: the picker grows with a long title - "Background Colour" opened 263
+wide, "Panel Strip Background" 310 (the header's sizeHint; the body stays 252 at the left, OK / Cancel on the right) -
+the design is 254 for every title. Waiting for the user: the pill re-tried, the width fix (proposed: 254 always, the
+title's font smaller to fit), then the commit.
+
+## STATUS 2026-11-18 (night): COLOUR-1 (THE SANKOTV COLOUR PICKER) AND STRIP-1 (THE PANEL STRIP'S BACKGROUND) BUILT, GATE CS1 GREEN IN BOTH BUILDS; WAITING FOR THE USER'S HAND TEST; NOTHING OF THEM COMMITTED
+COMMITS FIRST (the user's word): SCENES + SHOTS 0862271a7 and the Scene Colour menu's rows eb208ada5, pushed, status
+clean (notes in the section below). Then COLOUR-1 and STRIP-1, as approved: the picker WITHOUT History and Palette
+(634:793); Gutter Background gets Custom...; STRIP-1 as shown.
+COLOUR-1. SankoColorPicker (new, SankoColorPicker.h/.cpp, LF): a frameless modal QDialog painted as the Colors panel's
+window (#1E1E20, 1 px #2D2D35, 10 px corners), 254 x 546 - the header 69 px, title = what it sets (Inter Extra Bold
+22), the Colors panel's own body (ColorPanel, 252 x 418: Wheel / Classic, wheel, H / S / B, current | previous) with its
+History and Palette rows hidden, the Eyedropper button where the Colors panel has it (the wheel's 194, 196), a divider
+4 px under the body, Cancel (#2A2A2E) and OK (accent) 76 x 28, 8 apart, 12 under the divider, OK's edge 12 px from the
+picker's. The frame says 545: the app's Colors panel keeps a 1 px border row above its 69 px header, so the picker is
+1 px taller and everything under the header 1 px lower. getColor(initial, parent, title) replaces
+QColorDialog::getColor: it opens on the colour in use ("previous" held on it - ColorPanel::holdPrevious - while
+"current" shows the pick), beside the pointer (8 px right of it, or left near the screen's edge, its header level with
+it, inside the screen); OK / Enter return the colour (untouched: exactly the one it opened on; chosen: RGB), Cancel /
+Esc an invalid one; the header drags it (HeaderDrag). THE EYEDROPPER: grabMouse + grabKeyboard; "current" follows the
+colour under the pointer (QScreen::grabWindow 1 x 1; a 30 ms poll of QCursor::pos for other programs' windows, as
+QColorDialog does) and a 1 px catcher window kept under the pointer takes a click made over another program; a click
+takes the colour, Esc puts back the one it had (untouched again if it was). It reads the screen: a tinted stage reads
+tinted. ColorPanel: the History and Palette rows in one box (colorHistoryPalette, the same rows 10 px apart - the
+Colors panel laid out as before), setHistoryAndPaletteShown, holdPrevious, the swatch pair named colorCurrentPrevious.
+EVERY QColorDialog REPLACED (none left in src/): Scene Colour > Custom... (the SCENES row's menu and the card;
+"Scene Colour"), a layer's Change Layer Color > Custom... ("Layer Color"; the layer menu now hands itself to the
+gate's menu hook), Stage Background > Custom... (View and the canvas), Grid Colour > Custom..., the NEW Gutter Background
+> Custom... (ticked when the gutter is none of the presets), Brush Settings Studio's Identity Colour and Background
+Colour, and Panel Strip Background > Custom.... The canvas asks through DrawingCanvas::setColorPicker (the page sets
+the picker), so the lock tests' DrawingCanvas targets need no picker sources; unset, Custom... picks nothing.
+STRIP-1. StoryboardPage: m_stripGround (setting storyboard/panelStrip/v1/background, default #1A1A1A), on the strip bar
+and its scroll area (the same style sheets as before, the colour from the setting), the cells' ground, the letterbox
+in stripThumbPixmap, and an unselected cell's edge (#2A2A2A on a dark ground; on a light one - lightness >= 128 - the
+ground darker(118): #E8E8E8 gives #C4C4C4); the selection's accent, the buttons and the numbers unchanged.
+addPanelStripBackgroundMenu: Dark (default) #1A1A1A, Charcoal #242424, Dark Grey #333333, Mid Grey #4D4D4D, Light Grey
+#B3B3B3, Light #E8E8E8 (12 px chips, as Stage Background's), Custom... (the picker); in View under Stage Background and
+on a right-click on the strip's empty ground (a new native-styled menu "panelStripMenu"; not over a thumbnail, a
+button or the scroll bar). Not an undo step, not the project, never the pictures or exports. The menus draw the tick,
+the chip and the name in the Windows style's own columns, as Stage Background's does; the ticked name is not purple
+(the frame showed it purple; Stage Background's is not either).
+CHANGED CHECKS (old -> new, the tag only; the positive control: the red run fails (scm1)-(scm4)): the Scene Colour
+menu's "(sm) the workspace opened" -> "(scm) the workspace opened"; "(sm1) THE SWATCHES START WHERE..." -> "(scm1) THE
+SWATCHES START WHERE..."; "(sm2) EACH NAME 7 PX..." -> "(scm2) ..."; "(sm3) "CUSTOM..." LINED UP..." -> "(scm3) ...";
+"(sm4) THE TICK IN ITS OWN COLUMN..." -> "(scm4) ..."; "(sm1) control: the old way..." -> "(scm1) control: ...";
+"(sm5) WHEREVER IT OPENS..." -> "(scm5) ..."; NOTE "(sm)" -> "(scm)" - the stage mode pass's checks are (sm1)-(sm12).
+NEW CHECKS (Lifecycle +26, slice "colourstrip" = (ec) + (ed) + (scm) + (cpk) + (sb)): (cpk1) the look, every part's
+place and colour + control (the Colors panel's body keeps History and Palette, 554 tall); (cpk2) previous = the scene's
+colour, a wheel pick moves current only + control (Cancel: nothing); (cpk3) OK and Enter one step each, Cancel and Esc
+none; (cpk4) eight Custom... sites open it with their title and colour in use and OK sets that; Gutter's Custom...
+ticked; (cpk5) the Eyedropper armed, a click over a rose window takes rose, the grab let go, OK sets it; Esc puts the
+colour back, the picker open; control: a mint window reads mint (a screen read waits until the window is on screen,
+5 s ceiling - a condition, not a time); (cpk6) beside the point + control (left near the right edge); (cpk7) no
+QColorDialog shown in the pass + control (one shown is counted). (sb1) View > Panel Strip Background under Stage
+Background, the entries, the chips; the ground's right-click opens the same + control (a thumbnail's opens none);
+(sb2) Light: ground, letterbox #E8E8E8, edge #C4C4C4; the pictures, the selection, the numbers unchanged; control: Dark
+again, byte for byte; (sb3) on screen only (pictures, PNG export, no step, not unsaved); (sb4) Custom... through the
+picker, ticked, kept; another project opened keeps it.
+FIRST-RUN FINDINGS (read, fixed in the code): (cpk5) after an Esc'd pick the colour came back HSV-spec - equal in name,
+not as a QColor - so the picker now restores "untouched" exactly and returns RGB; (sb4) the strip took the picker's
+HSV-spec colour - setPanelStripBackground keeps it RGB. A TEST CRASH (Debug, every run; Release now and then): the
+canvas's popup menu closes and deletes itself when the picker opens, and the test then closed it through a dead
+pointer - the test holds those menus by QPointer now (the app's own path is a nested exec, where Qt defers the
+deletion).
+RED RUN (marked, removed; git diff and the new files grep 0): History/Palette shown, previous not held, Gutter's
+Custom... setting nothing, the screen read black, placement always right, the edge always #2A2A2A, the letterbox
+#1A1A1A, the ground menu over thumbnails too, the Scene Colour menu drawing no swatches -> 14 failures: (scm1)-(scm4),
+(cpk1), (cpk2), (cpk4) x2, (cpk5) and its control, (cpk6) and its control, (sb1) control, (sb2).
+QUICK CHECK (Release): colourstrip 51, scenesshots 58, batche 130, batchd 68, trial 126, stagemode 124, keysview 72,
+playback 33, Camera 336.
+GATE CS1 (main tree, 2785 s): EVERY family green in BOTH builds - Lifecycle 1651, Camera 336, Brush Library 187, Size
+Lock 170, Edge Lock 74, Dev Recorder 46, Quick Shape 19, Pixel Lock 13, Brush Lock 3. HASHES: sha_CS_gate.txt (12 files:
+CMakeLists.txt, ColorPanel.cpp/.h, SankoColorPicker.cpp/.h (new), DrawingCanvas.cpp/.h, StoryboardPage.cpp/.h,
+BrushSettingsStudio.cpp/.h, ProjectLifecycleTest.cpp), sha_CS1_exes.txt. LINE ENDINGS: the CRLF files keep CRLF on
+every line; ColorPanel.* and the new SankoColorPicker.* are LF. Method: Edit tool only; the two new files written
+with Write (drafted in the scratchpad during gate SSA, copied in).
+HAND-TEST EXE: C:\SankoTv\app\build\Release\SankoTV.exe built Nov 18 2026 21:26:40 (file 21:27:00), git
+eb208ada5+dirty, sha256 3bb5388b4351c66f7869cd9ebddeec1a7577e8b7b484eec897ac61903f9dc718. COPY "TEST COPY - small
+pirate, colour picker" (C:\SankoTV-TestCopies, 22:11:59; the original's hash unchanged before and after). LIST
+Documents\SankoTV-Design\handtest_CS_colour_picker_strip.md (10 steps). Not committed until the hand test passes; Figma
+COLOUR-1 and STRIP-1 marked BUILT only after the commit.
+
 ## STATUS 2026-11-18 (evening): SCENES + SHOTS AND THE SCENE COLOUR MENU'S ROWS COMMITTED AS TWO COMMITS AFTER HAND TEST SS; COLOUR-1 (WITHOUT HISTORY AND PALETTE) AND STRIP-1 APPROVED, BEING BUILT
 HAND TEST SS (recording 20261118-193833, the only session after 17:59; system.txt: git 4039eb507+dirty, built Nov 18
 2026 17:59:45; the title bar "SANKO TV — TEST COPY - small pirate, scenes shots"; the user: "all steps looked right"):

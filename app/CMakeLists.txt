@@ -169,6 +169,8 @@ qt_add_executable(SankoTV
     src/ZoomToolbar.h
     src/ColorPanel.cpp
     src/ColorPanel.h
+    src/SankoColorPicker.cpp
+    src/SankoColorPicker.h
     src/PerspectiveTool.cpp
     src/PerspectiveTool.h
     src/brushlib/BrushPreset.h

@@ -1,5 +1,6 @@
 #include "SankoTheme.h"
 #include "SankoSettings.h"
+#include "SankoColorPicker.h"
 #include "BrushSettingsStudio.h"
 
 #include "BrushPresetCodec.h"
@@ -7,7 +8,6 @@
 #include "ScratchCanvas.h"
 
 #include <QApplication>
-#include <QColorDialog>
 #include <QFileDialog>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -1538,7 +1538,7 @@ QWidget *BrushSettingsStudio::buildColorSection()
         QStringLiteral("Background Colour"),
         [this] {
             const QColor current = scopeBrushConst().backgroundColor();
-            const QColor picked = QColorDialog::getColor(
+            const QColor picked = SankoColorPicker::getColor(
                 current, this, tr("Background Colour"));
             if (!picked.isValid())
                 return;
@@ -1547,6 +1547,7 @@ QWidget *BrushSettingsStudio::buildColorSection()
                 false);
         },
         nullptr, /*appColourWhenBlack=*/false);
+    bgRow->setObjectName(QStringLiteral("studioBackgroundColour"));
     l->addWidget(bgRow);
     m_syncers.append([this, bgRow] {
         bgRow->setColor(scopeBrushConst().backgroundColor());
@@ -1668,13 +1669,14 @@ QWidget *BrushSettingsStudio::buildGeneralSection()
         QStringLiteral("Identity Colour"), [this] {
             const QColor current = scopeBrushConst().color();
             const QColor picked =
-                QColorDialog::getColor(current, this,
-                                       tr("Identity Colour"));
+                SankoColorPicker::getColor(current, this,
+                                           tr("Identity Colour"));
             if (!picked.isValid())
                 return;
             applyInstant([picked](::Brush &b) { b.setColor(picked); },
                          false);
         });
+    colorRow->setObjectName(QStringLiteral("studioIdentityColour"));
     l->addWidget(colorRow);
     m_syncers.append([this, colorRow] {
         colorRow->setColor(scopeBrushConst().color());

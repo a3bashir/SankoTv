@@ -647,7 +647,17 @@ ColorPanel::ColorPanel(QWidget *parent) : QWidget(parent)
     root->addWidget(m_bSlider);
 
     m_swatches = new SwatchPair;
+    m_swatches->setObjectName(QStringLiteral("colorCurrentPrevious"));
     root->addWidget(m_swatches);
+
+    // The History and Palette rows, in one box the picker can hide (COLOUR-1): the same rows,
+    // 10 px apart as before, so the Colors panel is laid out as it was.
+    m_historyPalette = new QWidget;
+    m_historyPalette->setObjectName(QStringLiteral("colorHistoryPalette"));
+    auto *rows = new QVBoxLayout(m_historyPalette);
+    rows->setContentsMargins(0, 0, 0, 0);
+    rows->setSpacing(10);
+    root->addWidget(m_historyPalette);
 
     auto *historyHeader = new QHBoxLayout;
     historyHeader->setContentsMargins(0, 2, 0, 0);
@@ -655,9 +665,9 @@ ColorPanel::ColorPanel(QWidget *parent) : QWidget(parent)
     historyHeader->addStretch(1);
     QPushButton *clearButton = miniButton(QStringLiteral("Clear"));
     historyHeader->addWidget(clearButton);
-    root->addLayout(historyHeader);
+    rows->addLayout(historyHeader);
     m_historyStrip = new SwatchStrip(1);
-    root->addWidget(m_historyStrip);
+    rows->addWidget(m_historyStrip);
 
     auto *paletteHeader = new QHBoxLayout;
     paletteHeader->setContentsMargins(0, 2, 0, 0);
@@ -665,10 +675,10 @@ ColorPanel::ColorPanel(QWidget *parent) : QWidget(parent)
     paletteHeader->addStretch(1);
     QPushButton *saveButton = miniButton(QStringLiteral("+ Save"));
     paletteHeader->addWidget(saveButton);
-    root->addLayout(paletteHeader);
+    rows->addLayout(paletteHeader);
     m_paletteStrip = new SwatchStrip(2);
     m_paletteStrip->setToolTip(QStringLiteral("Click: select | Right-click: remove"));
-    root->addWidget(m_paletteStrip);
+    rows->addWidget(m_paletteStrip);
 
     // --- wiring: every control feeds the single HSV state -------------------
     const auto liveChange = [this](qreal h, qreal s, qreal v) {
@@ -731,6 +741,18 @@ QColor ColorPanel::color() const
     return hsv(m_h, m_s, m_v);
 }
 
+void ColorPanel::setHistoryAndPaletteShown(bool shown)
+{
+    m_historyPalette->setVisible(shown);
+}
+
+void ColorPanel::holdPrevious(const QColor &color)
+{
+    m_previous = color;
+    m_previousHeld = true;
+    syncControls();
+}
+
 void ColorPanel::setColor(const QColor &c)
 {
     const qreal h = c.hsvHueF();
@@ -753,7 +775,7 @@ void ColorPanel::commitColor()
 {
     const QColor c = color();
     if (m_history.isEmpty() || m_history.first() != c) {
-        if (!m_history.isEmpty())
+        if (!m_history.isEmpty() && !m_previousHeld)
             m_previous = m_history.first();
         m_history.prepend(c);
         while (m_history.size() > 9)

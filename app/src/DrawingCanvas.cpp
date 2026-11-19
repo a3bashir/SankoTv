@@ -11,7 +11,6 @@
 #include <QToolTip>
 #include <QActionGroup>
 #include <QApplication>
-#include <QColorDialog>
 #include <QContextMenuEvent>
 #include <QCryptographicHash>
 #include <QCoreApplication>
@@ -7271,7 +7270,7 @@ void DrawingCanvas::addStageBackgroundMenu(QMenu *parent)
         custom->setChecked(!preset);
         connect(custom, &QAction::triggered, this, [this] {
             const QColor c = m_paperPickForTest ? m_paperPickForTest(m_paperColor)
-                                                : QColorDialog::getColor(m_paperColor, this, tr("Stage Background"));
+                                                : pickColor(m_paperColor, tr("Stage Background"));
             if (c.isValid())
                 setPaperColor(c);
         });
@@ -7375,6 +7374,7 @@ QMenu *DrawingCanvas::buildGridMenu()
 
     menu->addSeparator();
     QMenu *colorMenu = menu->addMenu(tr("Grid Colour"));
+    colorMenu->setObjectName(QStringLiteral("gridColourMenu"));
     const struct { const char *name; const char *hex; } gridColors[] = {
         {"Dim Grey (default)", "#2a2a2a"}, {"Grey", "#4d4d4d"},
         {"Light Grey", "#9a9a9a"},         {"White", "#ffffff"},
@@ -7389,25 +7389,39 @@ QMenu *DrawingCanvas::buildGridMenu()
     }
     QAction *custom = colorMenu->addAction(tr("Custom..."));
     connect(custom, &QAction::triggered, this, [this] {
-        const QColor c =
-            QColorDialog::getColor(m_gridColor, this, tr("Grid Colour"));
+        const QColor c = pickColor(m_gridColor, tr("Grid Colour"));
         if (c.isValid())
             setGridColor(c);
     });
 
     QMenu *bgMenu = menu->addMenu(tr("Gutter Background"));
+    bgMenu->setObjectName(QStringLiteral("gutterBackgroundMenu"));
     const struct { const char *name; const char *hex; } gutterColors[] = {
         {"Dark (default)", "#0a0a0a"}, {"Charcoal", "#1f1f1f"},
         {"Dark Grey", "#2b2b2b"},      {"Mid Grey", "#4d4d4d"},
         {"Silver", "#b3b3b3"},         {"Light", "#e8e8e8"},
     };
+    bool gutterPreset = false;
     for (const auto &def : gutterColors) {
         QAction *a = bgMenu->addAction(tr(def.name));
         a->setCheckable(true);
         a->setChecked(m_gutterColor == QColor(def.hex));
+        gutterPreset = gutterPreset || m_gutterColor == QColor(def.hex);
         const QColor c(def.hex);
         connect(a, &QAction::triggered, this, [this, c] { setGutterColor(c); });
     }
+    // Custom... (COLOUR-1, the user's word 2026-11-18: Gutter Background gets one too), ticked
+    // when the gutter is none of the presets - as Stage Background's.
+    bgMenu->addSeparator();
+    QAction *gutterCustom = bgMenu->addAction(tr("Custom..."));
+    gutterCustom->setObjectName(QStringLiteral("gutterBackgroundCustom"));
+    gutterCustom->setCheckable(true);
+    gutterCustom->setChecked(!gutterPreset);
+    connect(gutterCustom, &QAction::triggered, this, [this] {
+        const QColor c = pickColor(m_gutterColor, tr("Gutter Background"));
+        if (c.isValid())
+            setGutterColor(c);
+    });
     addStageBackgroundMenu(menu); // beside it (batch E): the stage's own colour
     return menu;
 }

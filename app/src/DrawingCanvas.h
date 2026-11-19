@@ -678,6 +678,11 @@ public:
     void setPaperColor(const QColor &color);
     void addStageBackgroundMenu(QMenu *parent); // the submenu, wherever it is offered
     void setPaperColorPickForTest(std::function<QColor(const QColor &)> pick) { m_paperPickForTest = std::move(pick); }
+    // THE COLOUR PICKER (COLOUR-1, 2026-11-18): every Custom... on the canvas's menus - Stage
+    // Background, Grid Colour, Gutter Background - asks this, titled with what it sets; the page
+    // gives it the SankoTV picker. Unset (the lock tests' canvases), Custom... picks nothing.
+    using ColorPicker = std::function<QColor(const QColor &initial, const QString &title)>;
+    void setColorPicker(ColorPicker picker) { m_colorPicker = std::move(picker); }
 
 signals:
     // The eraser preset changed (library selection): the Size CTL bar
@@ -763,6 +768,11 @@ private:
     QColor m_gutterColor{0x0a, 0x0a, 0x0a};
     QColor m_paperColor{Qt::white};     // the stage background on the canvas (batch E)
     std::function<QColor(const QColor &)> m_paperPickForTest; // Custom...'s picker, in the gate
+    ColorPicker m_colorPicker; // the SankoTV picker (COLOUR-1), from the page
+    QColor pickColor(const QColor &initial, const QString &title)
+    {
+        return m_colorPicker ? m_colorPicker(initial, title) : QColor();
+    }
     // The paper's colour over what is drawn so far in `rect` (the white Background layer and
     // the paper under it): Multiply, so white becomes the colour. Nothing when it is white.
     void tintPaper(QPainter &p, const QRectF &rect) const;

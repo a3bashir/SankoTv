@@ -32,6 +32,12 @@ public:
 
     QColor color() const;
 
+    // THE PICKER'S BODY (COLOUR-1, 2026-11-18): the SankoTV colour picker wears this panel without
+    // its History and Palette rows, and with "previous" held on the colour it opened with (a
+    // chosen colour no longer moves it). The Colors panel calls neither.
+    void setHistoryAndPaletteShown(bool shown);
+    void holdPrevious(const QColor &color);
+
 public slots:
     // External sync (e.g. panel opened with the brush's current color).
     // Does not emit colorChanged.
@@ -54,6 +60,7 @@ private:
     qreal m_s = 0.0; // 0..1
     qreal m_v = 0.0; // 0..1
     QColor m_previous;   // last committed color before the current one
+    bool m_previousHeld = false; // the picker's: previous stays the colour it opened with
     QVector<QColor> m_history;
     QVector<QColor> m_palette;
 
@@ -67,4 +74,5 @@ private:
     ColorPanelParts::SwatchPair *m_swatches = nullptr;
     ColorPanelParts::SwatchStrip *m_historyStrip = nullptr;
     ColorPanelParts::SwatchStrip *m_paletteStrip = nullptr;
+    QWidget *m_historyPalette = nullptr; // the History and Palette rows, one box
 };
