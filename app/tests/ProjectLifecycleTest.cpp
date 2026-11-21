@@ -23331,6 +23331,709 @@ void runPanelStripBackgroundPass(const QString &scratch)
     r.window.markCleanForTest();
 }
 
+// --- (cur) CONTEXTUAL CURSORS (batch G; Figma G-1 645:702, approved 2026-11-19) ---------------
+// The pen is sent as a real one is, at the window-system level (QWindowSystemInterface), with
+// a device of its own that the page and the canvas are told to hear (setPointerDeviceForTest):
+// the machine's own mouse, wherever it rests, is not part of these checks.
+void runContextualCursorsPass(const QString &scratch)
+{
+    using namespace workspace;
+    out() << "--- (cur) contextual cursors: the Brush's circle, the tools' cursors, a locked layer (batch G) ---"
+          << Qt::endl;
+    const QString dir = scratch + QStringLiteral("/cursors");
+    QDir(dir).removeRecursively();
+    QDir().mkpath(dir);
+    const QString project = writeProject(dir, QStringLiteral("Cursors"), QSize(1920, 1080), 24, 1, 2);
+    auto rig = std::make_unique<Rig>(project);
+    Rig &r = *rig;
+    check(QStringLiteral("(cur) the workspace opened"), r.ok);
+    if (!r.ok)
+        return;
+    QUndoStack *stack = r.window.undoStackForTest();
+    Scene *scene = r.window.scenesForTest().value(0);
+    auto *layersDock = r.storyboard->findChild<QDockWidget *>(QStringLiteral("dockLayers"));
+    QScrollArea *list = layersDock ? layersDock->findChild<QScrollArea *>() : nullptr;
+    QWindow *win = r.window.windowHandle();
+    QWidget *row = r.canvas->parentWidget();
+    if (!stack || !scene || scene->panels.size() != 2 || !list || !win || !row) {
+        check(QStringLiteral("(cur) found the history, the scene, the Layers list, the window and the "
+                             "canvas's row"), false);
+        return;
+    }
+    constexpr qint64 kPen = 7012;
+    // A pen event over any widget, sent to that widget's own window, as a real one is.
+    auto penAt = [&](QWidget *over, const QPointF &at, Qt::MouseButtons buttons, qreal pressure,
+                     qint64 device) {
+        QWindow *target = over->window()->windowHandle();
+        if (!target)
+            return;
+        const QPointF global = over->mapToGlobal(at);
+        const QPointF local = global - QPointF(target->mapToGlobal(QPoint(0, 0)));
+        QWindowSystemInterface::handleTabletEvent(target, local, global, int(QInputDevice::DeviceType::Stylus),
+                                                  int(QPointingDevice::PointerType::Pen), buttons, pressure,
+                                                  0, 0, 0, 0, 0, device);
+        QCoreApplication::processEvents();
+    };
+    auto pen = [&](const QPointF &onCanvas, bool down = false, qreal pressure = 0.6) {
+        penAt(r.canvas, onCanvas, down ? Qt::LeftButton : Qt::NoButton, down ? pressure : 0.0, kPen);
+    };
+    const QPointF listAt(list->viewport()->width() / 2.0, list->viewport()->height() / 2.0);
+    auto penAway = [&] { penAt(list->viewport(), listAt, Qt::NoButton, 0.0, kPen); };
+    // The real mouse, at the window-system level too (its release is what takes a QToolTip away).
+    auto mouseClick = [&](const QPointF &onCanvas) {
+        const QPointF global = r.canvas->mapToGlobal(onCanvas);
+        const QPointF local = global - QPointF(win->mapToGlobal(QPoint(0, 0)));
+        QWindowSystemInterface::handleMouseEvent<QWindowSystemInterface::SynchronousDelivery>(
+            win, local, global, Qt::LeftButton, Qt::LeftButton, QEvent::MouseButtonPress);
+        QWindowSystemInterface::handleMouseEvent<QWindowSystemInterface::SynchronousDelivery>(
+            win, local, global, Qt::NoButton, Qt::LeftButton, QEvent::MouseButtonRelease);
+        QCoreApplication::processEvents();
+    };
+    // (Not "near": windows.h defines it away.)
+    auto samePoint = [](const QPointF &a, const QPointF &b) { return QLineF(a, b).length() < 0.01; };
+    auto ptText = [](const QPointF &p) { return QStringLiteral("(%1, %2)").arg(p.x(), 0, 'f', 1).arg(p.y(), 0, 'f', 1); };
+    // The view's own scale, as its transform draws the drawing (placeViewForTest asks for a
+    // scale; the view lands it on whole pixels, 0.2297 for 0.23).
+    auto zoomNow = [&] {
+        const QTransform t = r.canvas->viewTransformForTest();
+        return QLineF(t.map(QPointF(0, 0)), t.map(QPointF(1, 0))).length();
+    };
+
+    clickThumb(r, 0);
+    pump(60);
+    r.storyboard->setPointerDeviceForTest(kPen);
+    r.canvas->setTool(DrawingCanvas::Brush);
+    pump(60);
+    // A known view: the drawing small enough that the gutter shows all round it.
+    const double s = qMin(0.25, qMin(0.6 * r.canvas->width() / 1920.0, 0.6 * r.canvas->height() / 1080.0));
+    const QPointF mid(r.canvas->width() / 2.0, r.canvas->height() / 2.0);
+    r.canvas->placeViewForTest(s, QPointF(960, 540), mid);
+    pump(80);
+    const QTransform T = r.canvas->viewTransformForTest();
+    const QPointF A = T.map(QPointF(560, 330)), B = T.map(QPointF(1320, 700)), C = T.map(QPointF(700, 800));
+    const QRectF paperW = T.mapRect(QRectF(0, 0, 1920, 1080));
+    const QPointF G(paperW.left() - 40.0, mid.y()); // on the gutter, left of the paper
+    const bool pointsClear = !r.canvas->childAt(A.toPoint()) && !r.canvas->childAt(B.toPoint())
+        && !r.canvas->childAt(C.toPoint()) && !r.canvas->childAt(G.toPoint()) && G.x() > 30.0
+        && r.canvas->onPaperForTest(A) && r.canvas->onPaperForTest(B) && !r.canvas->onPaperForTest(G);
+    check(QStringLiteral("(cur) the view: the drawing at a known size, three points on the paper and one "
+                         "on the gutter, nothing on the canvas over them"),
+          pointsClear, QStringLiteral("scale %1, A %2, B %3, G %4, canvas %5 x %6").arg(s).arg(ptText(A), ptText(B), ptText(G))
+              .arg(r.canvas->width()).arg(r.canvas->height()));
+    Panel *p0 = r.storyboard->currentPanelForTest();
+    if (!pointsClear || !p0 || !p0->activeLayer()) {
+        check(QStringLiteral("(cur) a panel with an active layer"), false);
+        return;
+    }
+
+    // --- (cur1) the circle follows the pen as it hovers (the Cintiq) -------------------------------
+    r.storyboard->sizeCtlUserSetSizeForTest(80);
+    pump(30);
+    const int shown80 = r.storyboard->sizeCtlDisplayedSizeForTest();
+    penAway();
+    const bool offAtList = !r.canvas->pointerOutlineShownForTest();
+    for (int i = 3; i >= 1; --i)
+        pen(A - QPointF(15.0 * i, 0.0)); // the pen comes onto the canvas, hovering
+    pen(A);
+    const bool onA = r.canvas->pointerOutlineShownForTest();
+    const QPointF cA = r.canvas->pointerOutlineCentreForTest();
+    pen(B);
+    const bool onB = r.canvas->pointerOutlineShownForTest();
+    const QPointF cB = r.canvas->pointerOutlineCentreForTest();
+    const double dB = r.canvas->pointerOutlineDiameterForTest();
+    const QString kindB = r.canvas->toolCursorKindForTest();
+    const bool blankB = r.canvas->cursor().shape() == Qt::BlankCursor;
+    QWidget *outline = r.canvas->pointerOutlineForTest();
+    const bool sibling = outline && outline->parentWidget() == row && outline->geometry() == r.canvas->geometry()
+        && outline->testAttribute(Qt::WA_TransparentForMouseEvents);
+    check(QStringLiteral("(cur1) THE CIRCLE FOLLOWS THE PEN AS IT HOVERS (G-1, 2; the Cintiq): pen moves "
+                         "without a touch, at the window-system level, carry it to each point; it is the "
+                         "Size bar's number times the zoom across; the system pointer is hidden (the "
+                         "circle is the pointer); it lies on a see-through widget beside the canvas, the "
+                         "canvas's size and place, taking no input"),
+          offAtList && onA && samePoint(cA, A) && onB && samePoint(cB, B) && qAbs(dB - shown80 * zoomNow()) < 0.01
+              && kindB == QLatin1String("outline") && blankB && sibling,
+          QStringLiteral("off at the list %1; at A %2 %3; at B %4 %5, %6 px (bar %7 x %8); kind %9, blank %10, "
+                         "sibling %11").arg(offAtList).arg(onA).arg(ptText(cA)).arg(onB).arg(ptText(cB))
+              .arg(dB, 0, 'f', 2).arg(shown80).arg(zoomNow(), 0, 'f', 5).arg(kindB).arg(blankB).arg(sibling));
+
+    // --- (cur2) the line: 1 px black inside 1 px white; nothing else; not in the canvas's picture ---
+    // The circle isolated by grabbing with it and without it (pen moved off) - the canvas's row
+    // renders the canvas and the circle's widget, the canvas alone renders the canvas.
+    auto ringPixels = [&](const QPointF &at, int *band, int *outside, int *darker, int *lighter) {
+        const double rr = r.canvas->pointerOutlineDiameterForTest() / 2.0;
+        const QRect boxC = QRectF(at.x() - rr - 8, at.y() - rr - 8, 2 * rr + 16, 2 * rr + 16).toAlignedRect();
+        const QRect boxRow(r.canvas->mapTo(row, boxC.topLeft()), boxC.size());
+        const QImage withIt = row->grab(boxRow).toImage().convertToFormat(QImage::Format_RGB32);
+        const QImage canvasWith = camtool::grabCanvas(r.canvas);
+        penAway();
+        const QImage without = row->grab(boxRow).toImage().convertToFormat(QImage::Format_RGB32);
+        const QImage canvasWithout = camtool::grabCanvas(r.canvas);
+        *band = *outside = *darker = *lighter = 0;
+        const qreal dpr = withIt.devicePixelRatio();
+        for (int y = 0; y < withIt.height() && y < without.height(); ++y)
+            for (int x = 0; x < withIt.width() && x < without.width(); ++x) {
+                const int a = qGray(withIt.pixel(x, y)), b = qGray(without.pixel(x, y));
+                if (qAbs(a - b) < 40)
+                    continue;
+                const QPointF pc = QPointF(boxC.topLeft()) + QPointF(x + 0.5, y + 0.5) / dpr;
+                if (qAbs(QLineF(pc, at).length() - rr) <= 2.0) {
+                    ++*band;
+                    (a < b ? *darker : *lighter) += 1;
+                } else {
+                    ++*outside;
+                }
+            }
+        return canvasWith == canvasWithout;
+    };
+    pen(B);
+    int band = 0, outside = 0, darker = 0, lighter = 0;
+    const bool canvasClean = ringPixels(B, &band, &outside, &darker, &lighter);
+    const double circ = 3.14159265358979 * shown80 * s;
+    pen(G);
+    const bool onGutter = r.canvas->pointerOutlineShownForTest();
+    int bandG = 0, outsideG = 0, darkerG = 0, lighterG = 0;
+    const bool canvasCleanG = ringPixels(G, &bandG, &outsideG, &darkerG, &lighterG);
+    check(QStringLiteral("(cur2) DRAWN JUST SO (G-1, 2): on the white paper the black line shows round "
+                         "the whole circle, on the dark gutter the white one; nothing is drawn but the "
+                         "circle; and the canvas's own picture holds none of it (its grab the same with "
+                         "the circle and without)"),
+          band >= 0.75 * circ && darker > lighter && outside == 0 && canvasClean && onGutter
+              && bandG >= 0.75 * circ && lighterG > darkerG && outsideG == 0 && canvasCleanG,
+          QStringLiteral("paper: %1 px on the circle (%2 darker, %3 lighter; circumference %4), %5 elsewhere, "
+                         "canvas clean %6; gutter: shown %7, %8 px (%9 darker, %10 lighter), %11 elsewhere, "
+                         "canvas clean %12").arg(band).arg(darker).arg(lighter).arg(circ, 0, 'f', 0).arg(outside)
+              .arg(canvasClean).arg(onGutter).arg(bandG).arg(darkerG).arg(lighterG).arg(outsideG).arg(canvasCleanG));
+
+    // --- (cur3) its size: the bar's number (the visible width) x the zoom, followed at once ----------
+    pen(B);
+    r.storyboard->sizeCtlUserSetSizeForTest(200);
+    pump(30);
+    const int shown200 = r.storyboard->sizeCtlDisplayedSizeForTest();
+    const double d200 = r.canvas->pointerOutlineDiameterForTest();
+    const int engine200 = r.canvas->paintBrush().size();
+    const double z1 = zoomNow();
+    // The zoom changed with the pen still: the circle follows the view (no pen event between).
+    const double s2 = s * 0.8;
+    r.canvas->placeViewForTest(s2, QPointF(960, 540), mid);
+    pump(80);
+    const double dZoom = r.canvas->pointerOutlineDiameterForTest();
+    const double z2 = zoomNow();
+    r.canvas->placeViewForTest(s, QPointF(960, 540), mid);
+    pump(80);
+    // The Eraser: its own number on the bar, its own circle.
+    r.canvas->setTool(DrawingCanvas::Eraser);
+    pump(40);
+    r.storyboard->sizeCtlUserSetSizeForTest(60);
+    pump(30);
+    pen(B);
+    const int shownEraser = r.storyboard->sizeCtlDisplayedSizeForTest();
+    const bool eraserOn = r.canvas->pointerOutlineShownForTest();
+    const double dEraser = r.canvas->pointerOutlineDiameterForTest();
+    r.canvas->setTool(DrawingCanvas::Brush);
+    pump(40);
+    pen(B);
+    const double dBack = r.canvas->pointerOutlineDiameterForTest();
+    check(QStringLiteral("(cur3) ITS SIZE IS THE SIZE BAR'S NUMBER TIMES THE ZOOM (G-1, 2): the bar at "
+                         "200 makes it 200 x the zoom across, the pen not moved; a zoom with the pen "
+                         "still resizes it; the Eraser shows its own number; back on the Brush, the "
+                         "Brush's"),
+          shown200 == 200 && qAbs(d200 - 200 * z1) < 0.01 && z2 < z1 * 0.85 && qAbs(dZoom - 200 * z2) < 0.01
+              && shownEraser == 60 && eraserOn && qAbs(dEraser - 60 * z1) < 0.01 && qAbs(dBack - 200 * z1) < 0.01,
+          QStringLiteral("zoom %1: bar %2 -> %3 px; zoom %4 -> %5 px; Eraser bar %6, shown %7, %8 px; Brush again %9 px")
+              .arg(z1, 0, 'f', 5).arg(shown200).arg(d200, 0, 'f', 2).arg(z2, 0, 'f', 5).arg(dZoom, 0, 'f', 2)
+              .arg(shownEraser).arg(eraserOn).arg(dEraser, 0, 'f', 2).arg(dBack, 0, 'f', 2));
+    // The number is the VISIBLE width (BrushWidthRatio), not the engine's tip frame: with the bar's
+    // number taken away (a canvas with no bar) the circle is the engine size - a different one
+    // whenever the brush's ratio is not 1.
+    r.canvas->setShownToolSize(false, 0);
+    const double dEngine = r.canvas->pointerOutlineDiameterForTest();
+    r.storyboard->sizeCtlUserSetSizeForTest(200);
+    pump(30);
+    const double dShownAgain = r.canvas->pointerOutlineDiameterForTest();
+    check(QStringLiteral("(cur3) control: the bar's number, not the engine's size - with no number the "
+                         "circle is the engine's %1 px tip frame (x the zoom), with it the bar's 200 again")
+              .arg(engine200),
+          engine200 != 200 && qAbs(dEngine - engine200 * z1) < 0.01 && qAbs(dShownAgain - 200 * z1) < 0.01,
+          QStringLiteral("engine %1 -> %2 px; the bar again %3 px").arg(engine200).arg(dEngine, 0, 'f', 2)
+              .arg(dShownAgain, 0, 'f', 2));
+
+    // --- (cur4) small and large: the crosshair under 6 px, the centre cross from 100 px ----------
+    auto setShownFor = [&](double diameter) { // the bar's number that makes this diameter
+        r.storyboard->sizeCtlUserSetSizeForTest(qMax(1, int(std::floor(diameter / zoomNow()))));
+        pump(30);
+        return r.storyboard->sizeCtlDisplayedSizeForTest() * zoomNow();
+    };
+    pen(B);
+    const double dTiny = setShownFor(5.9);
+    const bool tinyNone = !r.canvas->pointerOutlineShownForTest();
+    const QString tinyKind = r.canvas->toolCursorKindForTest();
+    const bool tinyCross = r.canvas->cursor().shape() == Qt::CrossCursor;
+    const double dSix = setShownFor(6.0 + 1.01 * s);
+    const bool sixShown = r.canvas->pointerOutlineShownForTest();
+    check(QStringLiteral("(cur4) SMALL (G-1, 2): under 6 px across, today's crosshair instead of the "
+                         "circle; from 6 px, the circle"),
+          dTiny < 6.0 && tinyNone && tinyKind == QLatin1String("cross") && tinyCross && dSix >= 6.0 && sixShown,
+          QStringLiteral("%1 px: circle %2, kind %3, crosshair %4; %5 px: circle %6").arg(dTiny, 0, 'f', 2)
+              .arg(!tinyNone).arg(tinyKind).arg(tinyCross).arg(dSix, 0, 'f', 2).arg(sixShown));
+    // The centre cross: black pixels on the centre and 3 px along each arm, the white edge beside.
+    auto centreCross = [&](bool *edgeLight) {
+        const QPoint c(qFloor(B.x()), qFloor(B.y()));
+        const QRect boxC(c - QPoint(8, 8), QSize(17, 17));
+        const QRect boxRow(r.canvas->mapTo(row, boxC.topLeft()), boxC.size());
+        const QImage withIt = row->grab(boxRow).toImage().convertToFormat(QImage::Format_RGB32);
+        const qreal dpr = withIt.devicePixelRatio();
+        auto at = [&](int dx, int dy) {
+            return qGray(withIt.pixel(qFloor((8 + dx + 0.5) * dpr), qFloor((8 + dy + 0.5) * dpr)));
+        };
+        *edgeLight = at(0, -4) > 200 && at(4, 0) > 200; // on white paper: white
+        return at(0, 0) < 60 && at(3, 0) < 60 && at(-3, 0) < 60 && at(0, 3) < 60 && at(0, -3) < 60
+            && at(5, 5) > 200;
+    };
+    pen(B);
+    const double d100 = setShownFor(100.0 + 1.01 * s);
+    pen(B);
+    bool edge100 = false;
+    const bool cross100 = centreCross(&edge100);
+    const double d99 = setShownFor(99.0);
+    pen(B);
+    bool edge99 = false;
+    const bool cross99 = centreCross(&edge99);
+    check(QStringLiteral("(cur4) LARGE (G-1, 2): from 100 px across a small cross marks the centre, where "
+                         "the pen is - black, 7 px, on whole pixels"),
+          d100 >= 100.0 && cross100 && edge100,
+          QStringLiteral("%1 px: cross %2, edge %3").arg(d100, 0, 'f', 2).arg(cross100).arg(edge100));
+    check(QStringLiteral("(cur4) control: under 100 px, nothing at the centre (the same pixels read white)"),
+          d99 < 100.0 && !cross99, QStringLiteral("%1 px: cross %2").arg(d99, 0, 'f', 2).arg(cross99));
+
+    // --- (cur5) while drawing it stays and follows the pen (the user's answer 1: A) ---------------
+    r.storyboard->sizeCtlUserSetSizeForTest(80);
+    pump(30);
+    Layer *drawn = p0->activeLayer();
+    const QImage before5 = drawn ? drawn->image : QImage();
+    const int steps5 = stack->index();
+    pen(C);
+    pen(C, true);
+    bool followed = true;
+    QString during;
+    for (int i = 1; i <= 6; ++i) {
+        const QPointF at = C + QPointF(10.0 * i, 4.0 * i);
+        pen(at, true);
+        const bool on = r.canvas->pointerOutlineShownForTest();
+        const QPointF c = r.canvas->pointerOutlineCentreForTest();
+        followed = followed && on && samePoint(c, at);
+        if (i == 3)
+            during = QStringLiteral("step 3: shown %1 at %2").arg(on).arg(ptText(c));
+    }
+    pen(C + QPointF(60, 24), false);
+    pump(350); // the stroke's commit
+    const bool afterLift = r.canvas->pointerOutlineShownForTest();
+    const bool strokeLanded = drawn && drawn->image != before5 && stack->index() == steps5 + 1;
+    check(QStringLiteral("(cur5) WHILE DRAWING IT STAYS (your answer 1: A): through a pen stroke the "
+                         "circle shows at every point the pen reaches; the stroke lands as ever (one step); "
+                         "the circle is there after the lift"),
+          followed && strokeLanded && afterLift,
+          QStringLiteral("followed %1 (%2); landed %3 (steps %4 -> %5); after the lift %6").arg(followed)
+              .arg(during).arg(strokeLanded).arg(steps5).arg(stack->index()).arg(afterLift));
+    r.storyboard->editUndo();
+    pump(120);
+
+    // --- (cur6) where the pointer is not: the Layers list, a control on the canvas, Space, Alt -------
+    pen(B);
+    const bool before6 = r.canvas->pointerOutlineShownForTest();
+    penAway();
+    const bool goneList = !r.canvas->pointerOutlineShownForTest();
+    const bool crossList = r.canvas->cursor().shape() == Qt::CrossCursor;
+    pen(B);
+    const bool backList = r.canvas->pointerOutlineShownForTest();
+    // A control on the canvas with no cursor of its own (as the canvas's chips and bars are
+    // until they set one): it shows the canvas's - which must not then be the circle's nothing.
+    auto *control = new QWidget(r.canvas);
+    control->setObjectName(QStringLiteral("curProbe"));
+    control->setGeometry(QRect(A.toPoint() + QPoint(-20, -12), QSize(40, 24)));
+    control->show();
+    pump(20);
+    const QString controlName = control->objectName();
+    pen(A);
+    const bool goneControl = !r.canvas->pointerOutlineShownForTest();
+    const bool crossControl = r.canvas->cursor().shape() == Qt::CrossCursor
+        && control->cursor().shape() == Qt::CrossCursor;
+    delete control;
+    control = nullptr;
+    pump(20);
+    pen(B);
+    camtool::key(r.canvas, QEvent::KeyPress, Qt::Key_Space);
+    const bool goneSpace = !r.canvas->pointerOutlineShownForTest();
+    const bool hand = r.canvas->cursor().shape() == Qt::OpenHandCursor;
+    camtool::key(r.canvas, QEvent::KeyRelease, Qt::Key_Space);
+    const bool backSpace = r.canvas->pointerOutlineShownForTest()
+        && r.canvas->cursor().shape() == Qt::BlankCursor;
+    r.canvas->setAltHeld(true);
+    const bool goneAlt = !r.canvas->pointerOutlineShownForTest() && r.canvas->pickCursorShownForTest();
+    r.canvas->setAltHeld(false);
+    const bool backAlt = r.canvas->pointerOutlineShownForTest();
+    check(QStringLiteral("(cur6) ONLY OVER THE CANVAS ITSELF: the pen over the Layers list takes the "
+                         "circle away (the crosshair is the canvas's cursor again), back on the canvas it "
+                         "returns; over a control on the canvas it goes and the crosshair is what the "
+                         "control shows; with Space the hand, with Alt the dropper - the circle back after"),
+          before6 && goneList && crossList && backList && goneControl && crossControl && goneSpace
+              && hand && backSpace && goneAlt && backAlt,
+          QStringLiteral("list: gone %1, crosshair %2, back %3; control %4: gone %5, crosshair %6; Space: gone %7, "
+                         "hand %8, back %9; Alt: gone %10, back %11").arg(goneList).arg(crossList).arg(backList)
+              .arg(controlName).arg(goneControl).arg(crossControl).arg(goneSpace).arg(hand).arg(backSpace)
+              .arg(goneAlt).arg(backAlt));
+
+    // --- (cur7) the other tools: Fill's bucket, the selections' + and -, the outline's arrows ---------
+    r.canvas->setTool(DrawingCanvas::Fill);
+    pump(40);
+    pen(B);
+    const QString fillKind = r.canvas->toolCursorKindForTest();
+    const QCursor fillCursor = r.canvas->cursor();
+    const QImage bucket = fillCursor.pixmap().toImage();
+    int blackPx = 0, whitePx = 0;
+    for (int y = 0; y < bucket.height(); ++y)
+        for (int x = 0; x < bucket.width(); ++x) {
+            const QColor c = bucket.pixelColor(x, y);
+            if (c.alpha() > 200 && qGray(c.rgb()) < 40)
+                ++blackPx;
+            else if (c.alpha() > 200 && qGray(c.rgb()) > 215)
+                ++whitePx;
+        }
+    const bool bucketOk = fillKind == QLatin1String("bucket") && fillCursor.shape() == Qt::BitmapCursor
+        && fillCursor.hotSpot() == QPoint(3, 16) && blackPx > 60 && whitePx > 30
+        && !r.canvas->pointerOutlineShownForTest();
+    QPushButton *selectTool = r.storyboard->findChild<QPushButton *>(QStringLiteral("toolSelect"));
+    if (selectTool && !selectTool->isChecked())
+        selectTool->click();
+    pump(60);
+    pen(B);
+    const QString addKind = r.canvas->toolCursorKindForTest();
+    const QCursor addCursor = r.canvas->cursor();
+    const QImage plus = addCursor.pixmap().toImage();
+    r.canvas->setSelectionOp(DrawingCanvas::SelSubtract);
+    const QString removeKind = r.canvas->toolCursorKindForTest();
+    const QImage minus = r.canvas->cursor().pixmap().toImage();
+    const qreal pdpr = plus.devicePixelRatio();
+    auto dark = [pdpr](const QImage &img, int x, int y) {
+        const QColor c = img.pixelColor(qFloor((x + 0.5) * pdpr), qFloor((y + 0.5) * pdpr));
+        return c.alpha() > 200 && qGray(c.rgb()) < 60;
+    };
+    const bool signsOk = addKind == QLatin1String("add") && removeKind == QLatin1String("remove")
+        && addCursor.shape() == Qt::BitmapCursor && addCursor.hotSpot() == QPoint(9, 9)
+        && dark(plus, 9, 9) && dark(plus, 20, 20) && dark(plus, 20, 17) && dark(minus, 20, 20) && !dark(minus, 20, 17);
+    r.canvas->setSelectionOp(DrawingCanvas::SelReplace);
+    r.canvas->setSelectionOutlineMove(true);
+    r.canvas->selectAll();
+    pump(40);
+    pen(B);
+    const bool arrowsWithSelection = r.canvas->toolCursorKindForTest() == QLatin1String("move")
+        && r.canvas->cursor().shape() == Qt::SizeAllCursor;
+    r.canvas->deselect();
+    pump(40);
+    pen(B);
+    const bool crossWithout = r.canvas->toolCursorKindForTest() == QLatin1String("cross");
+    r.canvas->setSelectionOutlineMove(false);
+    r.canvas->setTool(DrawingCanvas::Shapes);
+    pump(40);
+    pen(B);
+    const bool shapesCross = r.canvas->cursor().shape() == Qt::CrossCursor;
+    // The Shapes tool opens its kinds' popup; an open popup takes the next press (it closes
+    // it), so it is closed here, before the presses below.
+    r.canvas->setTool(DrawingCanvas::Brush);
+    pump(40);
+    while (QWidget *popup = QApplication::activePopupWidget()) {
+        popup->close();
+        pump(40);
+    }
+    check(QStringLiteral("(cur7) THE OTHER TOOLS (G-1, 4): Fill shows the toolbar's bucket, black on a "
+                         "white edge, the drop's lowest point on the hot spot; the selection tools a "
+                         "crosshair with + for Add and - for Remove; the four arrows while a drag moves "
+                         "the outline (a selection there), the crosshair without one; Shapes the crosshair, "
+                         "as before - and none of them the circle"),
+          bucketOk && signsOk && arrowsWithSelection && crossWithout && shapesCross,
+          QStringLiteral("Fill: %1, hot spot (%2, %3), %4 black / %5 white px; Add %6, Remove %7, + and - %8; "
+                         "outline Move %9, without a selection %10; Shapes crosshair %11").arg(fillKind)
+              .arg(fillCursor.hotSpot().x()).arg(fillCursor.hotSpot().y()).arg(blackPx).arg(whitePx).arg(addKind)
+              .arg(removeKind).arg(signsOk).arg(arrowsWithSelection).arg(crossWithout).arg(shapesCross));
+
+    // --- (cur8) a locked or hidden layer: "not allowed", and a press says why ---------------------
+    auto rowButton = [&](const char *name) -> QToolButton * {
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        Panel *p = r.storyboard->currentPanelForTest();
+        for (QToolButton *b : r.storyboard->findChildren<QToolButton *>(QLatin1String(name)))
+            if (p && b->parentWidget() && b->parentWidget()->property("layerIndex").toInt() == p->activeLayerIndex)
+                return b;
+        return nullptr;
+    };
+    r.canvas->setTool(DrawingCanvas::Brush);
+    pump(40);
+    pen(B);
+    const QString name = p0->activeLayer()->name;
+    const bool circleBefore = r.canvas->pointerOutlineShownForTest();
+    QToolButton *lock = rowButton("layerLock");
+    if (lock)
+        lock->click();
+    pump(80);
+    // The pen not moved since: the cursor changed because the layer did.
+    const QString lockedKind = r.canvas->toolCursorKindForTest();
+    const bool forbidden = r.canvas->cursor().shape() == Qt::ForbiddenCursor;
+    const bool circleGone = !r.canvas->pointerOutlineShownForTest();
+    const QString refusal = r.canvas->layerRefusalForTest();
+    Layer *locked = p0->activeLayer();
+    const QImage before8 = locked ? locked->image : QImage();
+    const int steps8 = stack->index();
+    pen(B, true);
+    auto *note = static_cast<SankoTipFrame *>(r.storyboard->refusalNoteForTest());
+    const bool noteAtPress = note && note->isVisible();
+    pen(B + QPointF(30, 0), true);
+    pen(B + QPointF(30, 0), false);
+    pump(200);
+    const bool noteAfterLift = note && note->isVisible();
+    const QString noteText = note ? note->tipText() : QString();
+    const QPoint notePos = note ? note->pos() : QPoint();
+    const QPoint expected = r.canvas->mapToGlobal(B).toPoint() + QPoint(14, 18);
+    const bool nothingChanged = locked && locked->image == before8 && stack->index() == steps8;
+    check(QStringLiteral("(cur8) A LOCKED LAYER (G-1, 5; your answer 3): locked with the pen hovering, "
+                         "the cursor is \"not allowed\" and the circle goes, the pen not moved; a pen "
+                         "press shows \"%1 is locked\" just below and to the right of it, in the tooltip "
+                         "look, still there after the pen lifts; the press changes nothing (the layer's "
+                         "pixels, the history)").arg(name),
+          circleBefore && lock && lockedKind == QLatin1String("forbidden") && forbidden && circleGone
+              && refusal == name + QStringLiteral(" is locked") && noteAtPress && noteAfterLift
+              && noteText == refusal && (notePos - expected).manhattanLength() <= 2 && nothingChanged,
+          QStringLiteral("lock %1; kind %2, forbidden %3, circle gone %4; \"%5\"; note at the press %6, after "
+                         "the lift %7, \"%8\" at (%9, %10) - expected (%11, %12); nothing changed %13")
+              .arg(lock != nullptr).arg(lockedKind).arg(forbidden).arg(circleGone).arg(refusal).arg(noteAtPress)
+              .arg(noteAfterLift).arg(noteText).arg(notePos.x()).arg(notePos.y()).arg(expected.x())
+              .arg(expected.y()).arg(nothingChanged));
+    // The mouse: its release takes a QToolTip away - not this note.
+    mouseClick(C);
+    pump(60);
+    const bool noteAfterMouse = note && note->isVisible()
+        && (note->pos() - (r.canvas->mapToGlobal(C).toPoint() + QPoint(14, 18))).manhattanLength() <= 2;
+    const bool nothingChangedMouse = locked && locked->image == before8 && stack->index() == steps8;
+    QElapsedTimer waited;
+    waited.start();
+    while (note && note->isVisible() && waited.elapsed() < 6000)
+        pump(50);
+    const bool noteWent = note && !note->isVisible();
+    check(QStringLiteral("(cur8) a mouse click says it too, and its release does not take the note away; "
+                         "the note goes by itself (2.5 s); nothing changed"),
+          noteAfterMouse && nothingChangedMouse && noteWent,
+          QStringLiteral("after the mouse's release %1; nothing changed %2; gone %3 (after %4 ms)").arg(noteAfterMouse)
+              .arg(nothingChangedMouse).arg(noteWent).arg(waited.elapsed()));
+    // Fill: over the paper "not allowed", over the gutter the bucket - its press there does nothing
+    // whatever the layer, so it says nothing.
+    r.canvas->setTool(DrawingCanvas::Fill);
+    pump(40);
+    pen(B);
+    const bool fillPaper = r.canvas->toolCursorKindForTest() == QLatin1String("forbidden");
+    pen(G);
+    const bool fillGutter = r.canvas->toolCursorKindForTest() == QLatin1String("bucket");
+    r.storyboard->clearNoteForTest();
+    mouseClick(G);
+    pump(40);
+    const bool silentGutter = r.storyboard->lastNoteForTest().isEmpty();
+    // A selection tool: anywhere (a selection may start off the paper).
+    r.canvas->setTool(DrawingCanvas::SelectRect);
+    pump(40);
+    pen(G);
+    const bool selectGutter = r.canvas->toolCursorKindForTest() == QLatin1String("forbidden");
+    r.canvas->setTool(DrawingCanvas::Brush);
+    pump(40);
+    // Unlocked, the pen still: the circle at once.
+    pen(B);
+    QToolButton *unlock = rowButton("layerLock");
+    if (unlock)
+        unlock->click();
+    pump(80);
+    const bool circleBack = r.canvas->pointerOutlineShownForTest()
+        && samePoint(r.canvas->pointerOutlineCentreForTest(), B) && r.canvas->cursor().shape() == Qt::BlankCursor;
+    // Hidden.
+    QToolButton *eye = rowButton("layerEye");
+    if (eye)
+        eye->click();
+    pump(80);
+    const bool hiddenForbidden = r.canvas->toolCursorKindForTest() == QLatin1String("forbidden");
+    pen(B, true);
+    pen(B, false);
+    pump(100);
+    const QString hiddenText = note ? note->tipText() : QString();
+    QToolButton *show = rowButton("layerEye");
+    if (show)
+        show->click();
+    pump(80);
+    const bool shownAgain = r.canvas->pointerOutlineShownForTest();
+    check(QStringLiteral("(cur8) Fill: \"not allowed\" over the paper, the bucket over the gutter (its press "
+                         "there does nothing, locked or not: it says nothing); a selection tool: \"not "
+                         "allowed\" off the paper too; unlocked with the pen still, the circle is back "
+                         "where the pen is; hidden: \"%1 is hidden\"; shown again, the circle").arg(name),
+          fillPaper && fillGutter && silentGutter && selectGutter && circleBack && eye && hiddenForbidden
+              && hiddenText == name + QStringLiteral(" is hidden") && shownAgain,
+          QStringLiteral("Fill paper %1, gutter %2, silent %3; select off the paper %4; unlocked: circle %5; hidden: %6, "
+                         "\"%7\"; shown: circle %8").arg(fillPaper).arg(fillGutter).arg(silentGutter).arg(selectGutter)
+              .arg(circleBack).arg(hiddenForbidden).arg(hiddenText).arg(shownAgain));
+    // Control: on the unlocked layer the same pen press draws.
+    Layer *open = p0->activeLayer();
+    const QImage before8c = open ? open->image : QImage();
+    const int steps8c = stack->index();
+    r.storyboard->clearNoteForTest();
+    pen(B, true);
+    pen(B + QPointF(30, 0), true);
+    pen(B + QPointF(30, 0), false);
+    pump(350);
+    const bool draws = open && open->image != before8c && stack->index() == steps8c + 1
+        && r.storyboard->lastNoteForTest().isEmpty();
+    check(QStringLiteral("(cur8) control: unlocked and shown, the same press draws (one step) and says nothing"),
+          draws, QStringLiteral("steps %1 -> %2, note \"%3\"").arg(steps8c).arg(stack->index())
+                     .arg(r.storyboard->lastNoteForTest()));
+    r.storyboard->editUndo();
+    pump(120);
+
+    // --- (cur9) the gate's pointer: only the test's pen moves the circle ----------------------------
+    pen(B);
+    const bool ownPen = r.canvas->pointerOutlineShownForTest();
+    penAt(r.canvas, A, Qt::NoButton, 0.0, kPen + 1); // another device
+    const bool otherIgnored = samePoint(r.canvas->pointerOutlineCentreForTest(), B);
+    r.storyboard->setPointerDeviceForTest(-1);
+    pen(A);
+    const bool noneHeard = !r.canvas->pointerOutlineShownForTest();
+    r.storyboard->setPointerDeviceForTest(kPen);
+    pen(A);
+    const bool heardAgain = r.canvas->pointerOutlineShownForTest() && samePoint(r.canvas->pointerOutlineCentreForTest(), A);
+    // A program's own event - the test pen's device, but sent to the canvas, not by the window
+    // system - is nobody's pointer (SankoCanvasEdgeLock sends its strokes so, and reads the
+    // screen): the circle stays where the pen is.
+    const QPointingDevice *penDevice = nullptr;
+    for (const QInputDevice *d : QInputDevice::devices())
+        if (const auto *pd = qobject_cast<const QPointingDevice *>(d); pd && pd->uniqueId().numericId() == kPen)
+            penDevice = pd;
+    bool sentIgnored = false;
+    if (penDevice) {
+        QTabletEvent sent(QEvent::TabletMove, penDevice, B, r.canvas->mapToGlobal(B), 0.0, 0.0f, 0.0f, 0.0f, 0.0,
+                          0.0f, Qt::NoModifier, Qt::NoButton, Qt::NoButton);
+        QCoreApplication::sendEvent(r.canvas, &sent);
+        pump(20);
+        sentIgnored = samePoint(r.canvas->pointerOutlineCentreForTest(), A);
+    }
+    check(QStringLiteral("(cur9) THE GATE'S POINTER: with the machine's own pointer ignored, only the "
+                         "test's pen moves the circle - another device's pen does not, and with no test "
+                         "pen named, none does"),
+          ownPen && otherIgnored && noneHeard && heardAgain,
+          QStringLiteral("own %1, other ignored %2, none heard %3, again %4").arg(ownPen).arg(otherIgnored)
+              .arg(noneHeard).arg(heardAgain));
+    check(QStringLiteral("(cur9) ONLY A REAL POINTER: an event a program sends the canvas - the test pen's "
+                         "own device, at another point - does not move the circle; the window system's do"),
+          penDevice && sentIgnored && heardAgain,
+          QStringLiteral("device %1, sent event ignored %2").arg(penDevice != nullptr).arg(sentIgnored));
+
+    // --- (cur10) the window's pointer after the timeline's splitter handle (hand test G) ----------
+    // The user's photos (Documents\SankoTV-Design\reference\cursor_stuck_1.jpg, _2.jpg): the
+    // splitter's double arrow on the paper, once inside the circle. Read here as Windows shows
+    // it: the WINDOW's cursor, not the canvas's own.
+    auto *workspaceSplit = r.window.findChild<QSplitter *>(QStringLiteral("workspaceSplitter"));
+    QSplitterHandle *splitHandle =
+        workspaceSplit && workspaceSplit->count() > 1 ? workspaceSplit->handle(1) : nullptr;
+    auto mouseMoveTo = [&](QWidget *over, const QPointF &at) {
+        const QPointF global = over->mapToGlobal(at);
+        const QPointF local = global - QPointF(win->mapToGlobal(QPoint(0, 0)));
+        QWindowSystemInterface::handleMouseEvent<QWindowSystemInterface::SynchronousDelivery>(
+            win, local, global, Qt::NoButton, Qt::NoButton, QEvent::MouseMove);
+        QCoreApplication::processEvents();
+    };
+    bool handleOwn = false, handleSplitV = false, canvasAfter = false, backToHandle = false,
+         lockedAfter = false, mouseHandle = false, mouseCanvas = false;
+    int shapeAfter = -1, shapeBack = -1, shapeLocked = -1, shapeMouse = -1, sepShape = -1, sepCanvas = -1,
+        sepBack = -1;
+    if (splitHandle && splitHandle->isVisible()) {
+        const QPointF h(splitHandle->width() / 2.0, splitHandle->height() / 2.0);
+        handleOwn = splitHandle->cursor().shape() == Qt::SplitVCursor;
+        r.canvas->setTool(DrawingCanvas::Brush);
+        pump(40);
+        {   // the pointer comes into the window first, as a real one does (Qt hands a window's
+            // widgets the mouse it makes of a pen only once it has)
+            const QPointF global = r.canvas->mapToGlobal(B);
+            QWindowSystemInterface::handleEnterEvent<QWindowSystemInterface::SynchronousDelivery>(
+                win, global - QPointF(win->mapToGlobal(QPoint(0, 0))), global);
+            QCoreApplication::processEvents();
+        }
+        pen(B);
+        penAt(splitHandle, h, Qt::NoButton, 0.0, kPen); // up from the timeline, over the handle
+        handleSplitV = win->cursor().shape() == Qt::SplitVCursor; // Qt: the mouse it made entered it
+        pen(B - QPointF(0, 30));                         // onto the paper, the Brush keeping the pen
+        pen(B);
+        shapeAfter = int(win->cursor().shape());
+        canvasAfter = shapeAfter == Qt::BlankCursor && r.canvas->cursor().shape() == Qt::BlankCursor
+            && r.canvas->pointerOutlineShownForTest();
+        penAt(splitHandle, h, Qt::NoButton, 0.0, kPen); // back over the handle: its own again
+        shapeBack = int(win->cursor().shape());
+        backToHandle = shapeBack == Qt::SplitVCursor;
+        QToolButton *lock10 = rowButton("layerLock");  // locked, the pen over the handle
+        if (lock10)
+            lock10->click();
+        pump(80);
+        pen(B - QPointF(0, 30));
+        pen(B);
+        shapeLocked = int(win->cursor().shape());
+        lockedAfter = lock10 && shapeLocked == Qt::ForbiddenCursor;
+        QToolButton *unlock10 = rowButton("layerLock");
+        if (unlock10)
+            unlock10->click();
+        pump(80);
+        // A dock's edge (the Layers panel's, between it and the canvas): QMainWindow names its
+        // separators itself, on its own hover - the pen, back from the canvas, gets it again.
+        auto *dockHost = r.storyboard->findChild<QMainWindow *>(QStringLiteral("storyboardDockHost"));
+        if (dockHost && dockHost->centralWidget() && layersDock && layersDock->isVisible()) {
+            const QRect central = dockHost->centralWidget()->geometry();
+            const QRect dockRect = layersDock->geometry();
+            const QPointF sep((central.right() + dockRect.left()) / 2.0 + 0.5, dockRect.center().y());
+            penAt(dockHost, sep, Qt::NoButton, 0.0, kPen);
+            sepShape = int(win->cursor().shape());
+            pen(B - QPointF(0, 30));
+            pen(B);
+            sepCanvas = int(win->cursor().shape());
+            penAt(dockHost, sep, Qt::NoButton, 0.0, kPen);
+            sepBack = int(win->cursor().shape());
+        }
+        // The mouse: its own moves make Qt's Enters - over the canvas the window's pointer was
+        // always the canvas's.
+        penAway();
+        mouseMoveTo(splitHandle, h);
+        mouseHandle = win->cursor().shape() == Qt::SplitVCursor;
+        mouseMoveTo(r.canvas, B);
+        shapeMouse = int(win->cursor().shape());
+        mouseCanvas = shapeMouse == int(r.canvas->cursor().shape()) && shapeMouse != Qt::SplitVCursor;
+    }
+    check(QStringLiteral("(cur10) THE WINDOW'S POINTER IS THE CANVAS'S (hand test G, your photos): the pen up "
+                         "over the timeline's splitter handle shows its double arrow; on to the paper with the "
+                         "Brush, the window shows the circle's (no arrow), not the handle's; back over the handle, "
+                         "its own again; locked, from the handle, \"not allowed\""),
+          splitHandle && handleOwn && handleSplitV && canvasAfter && backToHandle && lockedAfter,
+          QStringLiteral("handle %1 (its own split %2); over it %3; on the paper shape %4 (blank %5); back %6 (%7); "
+                         "locked %8 (%9)").arg(splitHandle != nullptr).arg(handleOwn).arg(handleSplitV)
+              .arg(shapeAfter).arg(canvasAfter).arg(shapeBack).arg(backToHandle).arg(shapeLocked).arg(lockedAfter));
+    check(QStringLiteral("(cur10) A DOCK'S EDGE TOO: the pen over the Layers panel's edge shows its double arrow; "
+                         "on to the paper, the circle's; back over the edge, its double arrow again"),
+          sepShape == Qt::SplitHCursor && sepCanvas == Qt::BlankCursor && sepBack == Qt::SplitHCursor,
+          QStringLiteral("edge %1, paper %2, edge again %3").arg(sepShape).arg(sepCanvas).arg(sepBack));
+    check(QStringLiteral("(cur10) control: the mouse, over the handle then the canvas - the window shows the "
+                         "handle's, then the canvas's own (its moves make Qt's Enters: never stuck)"),
+          mouseHandle && mouseCanvas,
+          QStringLiteral("handle %1, canvas shape %2 = the canvas's %3").arg(mouseHandle).arg(shapeMouse)
+              .arg(int(r.canvas->cursor().shape())));
+    QWidget *noteWindow = r.storyboard->refusalNoteForTest();
+    const bool noteThrough = noteWindow && noteWindow->windowFlags().testFlag(Qt::WindowTransparentForInput)
+        && noteWindow->windowHandle()
+        && noteWindow->windowHandle()->flags().testFlag(Qt::WindowTransparentForInput);
+    check(QStringLiteral("(cur10) THE NOTE LETS THE PEN THROUGH: its window takes no input (the hand test: it "
+                         "took the pen's moves 14 times, just below and to the right of the pen)"),
+          noteThrough, QStringLiteral("note %1, through %2").arg(noteWindow != nullptr).arg(noteThrough));
+
+    penAway();
+    r.storyboard->setPointerDeviceForTest(-1);
+    r.window.markCleanForTest();
+}
+
 void runEnterMoveBoxPass(const QString &scratch)
 {
     using namespace workspace;
@@ -30391,8 +31094,14 @@ int main(int argc, char **argv)
         || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("batchd")
         || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("batche")
         || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("scenesshots")
-        || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("colourstrip")) {
-        if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("colourstrip")) {
+        || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("colourstrip")
+        || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("batchg")) {
+        if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("batchg")) {
+            // Batch G (Figma G-1): the contextual cursors, with the passes whose pen, Space,
+            // eyedropper and Move box they live beside.
+            runContextualCursorsPass(scratch);
+            runTrialFixesPass(scratch);
+        } else if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("colourstrip")) {
             // COLOUR-1 (the SankoTV colour picker) and STRIP-1 (the Panel Strip's background), with
             // the passes whose Custom... and strip they touch: the scene colours, the stage
             // background, the Scene Colour menu.
@@ -30668,6 +31377,7 @@ int main(int argc, char **argv)
     runSceneColourMenuPass(scratch);      // (scm) Figma 619:851
     runColourPickerPass(scratch);         // (cpk) COLOUR-1
     runPanelStripBackgroundPass(scratch); // (sb) STRIP-1
+    runContextualCursorsPass(scratch);    // (cur) batch G
     runGrowAnyZoomPass(scratch);
     runTrialFixesPass(scratch);
     runKeptArtPass(scratch);

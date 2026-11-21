@@ -1,5 +1,183 @@
 # SankoTV — Session Handoff Brief
 
+## STATUS 2026-11-21: HAND TEST G2 PASSED FOR THE CURSOR STEPS; BATCH G COMMITTED ALONE (THIS COMMIT), GATED ALONE IN A SCRATCH WORKTREE (GATE GA); THE PANELS CHANGE WAS THE OPPOSITE OF WHAT THE USER WANTS - NOT COMMITTED, BEING REWORKED
+HAND TEST G2 (recording 20261121-130244, 1820 s, the only session after 19:57 on 20 November; system.txt: Release, git
+1dd0b6d06+dirty, built Nov 20 2026 19:57:08; the title bar and the closing question name "TEST COPY - small pirate,
+cursors 2"; the user: steps 1-4 and 9-12 "all looked right", 5-8 skipped on purpose). A recording holds no system
+pointer, so the pointer's own look is the user's word; what the recording shows:
+1 over an edge and back PASS - 36 Enters of the timeline's splitter handle and 28 of the Layers dock, the pen on to
+  the canvas after them; 2 locked / hidden from the edge PASS - locked 1179.6 s, the notes at 1185.1 and 1188.0,
+  hidden 1197.5, the notes at 1199.9 / 1203.4 / 1213.2, crossings of the handle between them; 3 the mouse PASS - mouse
+  moves over the handle then the canvas 1230-1244 s, clicks on a hidden then a locked layer with their notes;
+4 the note lets the pen through PASS - 0 Enters of editRefusedNote (14 in hand test G); 5-8 NOT TESTED (skipped on
+  purpose: the panels change is being reworked); 9 Alt with the Brush PASS - 14 picks with Alt held 1315-1363 s;
+10 the Move tool PASS (1490-1588 s); SHAPES NOT TESTED - THE APP HAS NO SHAPES BUTTON (the list asked for a tool that
+  cannot be chosen: the list's fault); 11 Fill on a locked layer over the paper PASS ("Layer 4 is locked" at 1686.0
+  and 1690.2 s; a lock press between them, 1688.7 s, was let go at x 20 of the 20 px button - slid off, no click, the
+  layer still locked, as its icon shows); over the gutter NOT TESTED (every Fill press was on the paper);
+12 small and large PASS ([ and ] in runs of up to 56, 1721-1800 s); 13 Discard PASS.
+THE USER'S WORD: commit and push batch G alone (the G-only state, sha_G3_gate.txt) after gating it in a scratch
+worktree, with its HANDOFF notes; mark G-1 BUILT in Figma. The panels change of 2026-11-20 was the opposite of what is
+wanted (the user's own words had been a request, read as a complaint): the Brush Library and the Colors panel are to
+CLOSE at any click outside them in SankoTV - to be reworked, its own change, not committed before its hand test. Two
+new issues (the depth outline with the Move tool; the camera's overlays with the drawing tools): report only.
+GATE GA (the G-only state ALONE, worktree C:\SankoTV_gonly at 1dd0b6d06 + the five files of sha_G3_gate.txt, a copy of
+fullgate.sh with A= the worktree, 2845 s): EVERY family green in BOTH builds - Lifecycle 1675, Camera 336, Brush
+Library 187, Size Lock 170, Edge Lock 74, Dev Recorder 46, Quick Shape 19, Pixel Lock 13, Brush Lock 3; the five
+files verified against sha_G3_gate.txt before and after.
+THIS COMMIT: batch G (Figma G-1 645:702) with the hand test's two fixes (the window's pointer; the note takes no
+input) - DrawingCanvas.cpp / .h and StoryboardPage.h as in the tree; StoryboardPage.cpp and ProjectLifecycleTest.cpp
+in their G-ONLY states (app/build/_probe/split/splitG/*.G), staged with git hash-object, the working tree untouched -
+and this note. What batch G is: the two sections below (2026-11-20 for the fixes, 2026-11-19 night for the batch).
+NOT IN THIS COMMIT: everything the 2026-11-20 section says of "problem 2 - the panels stay open" ((po)-(po4), the
+changed (cp2) / (cp3) / (cp4), the slice "panels"): that first version stays in the working tree, uncommitted, until
+its rework replaces it.
+
+## STATUS 2026-11-20: HAND TEST G READ (TWO PROBLEMS); BOTH FIXED - THE WINDOW'S POINTER (IN BATCH G) AND THE PANELS STAY OPEN (ITS OWN CHANGE); GATE GP GREEN IN BOTH BUILDS; WAITING FOR HAND TEST G2; NOTHING COMMITTED
+HAND TEST G (recording 20261120-083321, 1335 s, the only session after 21:24; system.txt: Release, git
+1dd0b6d06+dirty, built Nov 19 2026 21:24:01; the title bar "SANKO TV — TEST COPY - small pirate, cursors"): 1 hovering
+PASS (the circle in the screenshots, e.g. 300 s); 2 size PASS ([ / ] over 100 times, zoom in / out 30 times, the
+bar at 200); 3 small / large: sizes changed, the crosshair under 6 px and the centre cross not shown by the recording
+(the pointer is not in screenshots); 4 drawing PASS (31 strokes, undone); 5 Eraser PASS; 6 away: FAIL (problem 1, the
+split pointer after the timeline's splitter handle); Space PASS (pen pans 546-568 s); Alt NOT TESTED (no pick); 7 Fill
+PASS for the fills (9, undone), the bucket's look not in the recording; 8 Select / Ellipse / Lasso, the bar's Remove
+and Move PASS; Shapes and the Move tool NOT TESTED; 9 locked: "Layer 4 is locked" by the pen (1139 s), a mouse click's
+note stayed after its release (1169 s), unlock PASS - and problem 1 again (FAIL); Fill over the gutter NOT TESTED; 10
+hidden "Layer 6 is hidden" PASS; 11 Discard PASS.
+PROBLEM 1 (the user's photos Documents\SankoTV-Design\reference\cursor_stuck_1.jpg, _2.jpg: Windows' vertical-split
+pointer on the paper, once inside the circle). CAUSE: Windows has one pointer per window; Qt sets it when the MOUSE
+enters a widget (a widget's own setCursor reaches the window only for the widget the mouse last entered). With the
+Brush / Eraser the canvas keeps the pen's tablet events, so Qt makes no mouse of them - no Enter. The pen coming up
+from the timeline crossed workspaceSplitter's handle (not a pen widget: Qt made mouse of the pen there, it entered,
+the window got SplitV) and onto the canvas: the window kept SplitV; every cursor the canvas set after (the circle's
+blank, "not allowed") went to the handle's. The recording: 26 Enters of qt_splithandle_, then up to 1607 canvas tablet
+moves with no canvas Enter (405.8 s, 415.1 s, 446.0 s, 1061.8 s - the last right after the lock at 1060.5 s).
+BEFORE BATCH G: YES - proven on 1dd0b6d06 in a scratch worktree (C:\SankoTV_probeG, removed) with a probe check: the pen
+over the handle -> the window 11 (SplitV); onto the canvas with the Brush -> still 11, the canvas's own 2 (Cross).
+FIX (DrawingCanvas): syncWindowCursor() - while the pointer is over the canvas itself (m_pointerIn), the canvas's own
+cursor is put on its QWindow, whoever set it (QEvent::CursorChange + every noted pointer event). Off the canvas Qt gives
+the other widget its own again (checked: the handle, a dock's edge; a "give it back" step was built, red run 5 showed
+Qt does it - removed). Also the note: SankoTipFrame "editRefusedNote" now Qt::WindowTransparentForInput (the recording:
+14 Enters into it - shown just below-right of the pen, it took the pen's next moves).
+CHECKS (Lifecycle, in (cur)): (cur10) the window's pointer - pen over the handle (SplitV), onto the paper (blank, the
+circle), back over the handle (SplitV), locked from the handle ("not allowed"); a dock's edge (Layers: SplitH, the
+paper blank, SplitH again); control: the mouse (always the canvas's own); the note takes no input. The window enters
+first (QWindowSystemInterface::handleEnterEvent) - Qt hands a window's widgets the pen's mouse only once it has.
+RED RUN 4 (sync off + the note's flag off): (cur10) fails - on the paper the window shows 11 (the photos), locked 11;
+the note check fails. RED RUN 5 (no give-back): passes - the code removed.
+PROBLEM 2 - THE PANELS STAY OPEN (its own change; the user's rules: a click inside or in a window the panel opened never
+closes it; their own buttons open / close as now; an Eyedropper pick never closes the Colors panel; a click outside
+does its normal job; nothing else changes). Until now (batch D's rule for both) each closed on: another tool from any
+origin, a press on any other button of the two floating bars, the first live stroke (draw-to-dismiss). Now only their
+own buttons (Brush / Eraser for the Library, the swatch for Colors, View > Library / Colors) - and ONE PANEL AT A TIME
+as before (the same spot by the bar): when one OPENS the other goes (the Library's visibilityChanged(true) ->
+autoHideColorsPanel, made in createCenterColumn after the Library exists; the Colors panel's Show in eventFilter ->
+the Library's autoHide) - not at a press (a press let go off a button opens nothing, closes nothing). A side effect:
+View > Library / Colors also hides the other (they overlapped before). FOUND WHILE BUILDING: the first connection sat in
+createFloatingToolbar, which runs BEFORE the Library is made (createCenterColumn: 3357 vs 3392) - a null sender, silently
+nothing; moved.
+CHANGED CHECKS (old -> new, verbatim): "(cp2) ANOTHER TOOL HIDES THE COLORS PANEL, its tick off" (open2 && hidden2) ->
+"(cp2) ANOTHER TOOL LEAVES THE COLORS PANEL OPEN, its tick on (2026-11-20: only its own buttons close it)" (open2 &&
+stays2: visible, ticked, the tool the Eraser); "(cp3) A PRESS ON ANOTHER BUTTON OF THE BARS HIDES IT (the Eraser pressed
+and let go off it: no tool change)" (open3 && hidden3) -> "(cp3) A PRESS ON ANOTHER BUTTON OF THE BARS LEAVES IT OPEN
+(the Eraser pressed and let go off it: no tool change, no Library)" (open3 && stays3); "(cp4) THE FIRST STROKE HIDES THE
+COLORS PANEL (a pick did not): its tick off; "open" still remembered - a rule closing it is not the user choosing
+"hidden"" (hidden3c && remembered) -> "(cp4) THE FIRST STROKE LEAVES THE COLORS PANEL OPEN (2026-11-20: only its own
+buttons close it; a pick never did): its tick on, "open" remembered" (stays3c && remembered). (cp2) opens the panel only
+if shut (it stays open after (cp4) now). POSITIVE CONTROL (new): "(cp3) control: the Brush button's click opens the
+Library at the same place and the Colors panel goes (one panel at a time) - a hidden panel is seen hidden".
+NEW CHECKS: pass runPanelsStayOpenPass (po)-(po4), slice "panels" (with runEyedropperFlipPass); in the full run after
+runKeptArtPass. (po1) the Library through a pen stroke (draws, one step), the Fill button, another layer's row (selects
+it), the timeline (the press reaches it); (po2) the Studio opened from it, a click in it, closed - the Library back;
+(po3) the Colors panel: another tool, a stroke, the Select button, a layer row, a pick armed and with Alt (colour taken);
+(po4) their own buttons as before (swatch, Brush open / shut, Eraser opens, the swap). RED RUN 6 (the old rules back):
+(po1)-(po4), (cp2), (cp3), (cp4) fail (7).
+QUICK CHECK (Release): batchg 44, panels 38, trial 126, batchd 69, keysview 72, stagemode 124, playback 33,
+colourstrip 53, scenesshots 58, batche 130, Edge Lock 74, Camera 336.
+GATE GP (main tree, 2839 s): EVERY family green in BOTH builds - Lifecycle 1681, Camera 336, Brush Library 187, Size
+Lock 170, Edge Lock 74, Dev Recorder 46, Quick Shape 19, Pixel Lock 13, Brush Lock 3.
+HASHES (app/build/_probe/split): sha_G3_gate.txt = BATCH G ALONE (its 5 files; StoryboardPage.cpp and
+ProjectLifecycleTest.cpp as the G-only copies splitG\*.G, the panels hunks taken out with the Edit tool - each differs
+from HEAD only in G's hunks); sha_PO_gate.txt = the panels change on top (its 2 files as in the tree); sha_GP_gate.txt =
+the gated tree; sha_GP_exes.txt; the panels change as patches splitG\panels_*.diff. AT COMMIT: G first (the G-only
+state to be gated alone in a scratch worktree, as SSA), then the panels change.
+HAND-TEST EXE: C:\SankoTv\app\build\Release\SankoTV.exe built Nov 20 2026 19:57:08 (file 19:57:26), git 1dd0b6d06+dirty,
+sha256 83e8a56c68ababb07c204896ad4c9786dec7e2482d063c9ef4d0ce161f08af3a. COPY "TEST COPY - small pirate, cursors 2"
+(C:\SankoTV-TestCopies, 20:43:07; the original's hash unchanged before and after). LIST
+Documents\SankoTV-Design\handtest_G2_cursor_panels.md (13 steps: problem 1, problem 2, G's untested steps).
+
+## STATUS 2026-11-19 (night): BATCH G (CONTEXTUAL CURSORS, FIGMA G-1 645:702) BUILT, GATE G2 GREEN IN BOTH BUILDS; WAITING FOR THE USER'S HAND TEST G; NOTHING OF G COMMITTED
+THE USER'S WORD: G-1 approved with the answers - 1 the circle stays and follows the pen while drawing (A); 2 section 2
+as shown (1 px black inside 1 px white; today's crosshair under 6 px across; a small centre cross from 100 px); 3 on a
+locked or hidden layer the "not allowed" cursor AND a short note by the pointer when the pen presses ("Layer 2 is
+locked" / "... is hidden"), only on a press, the press still changing nothing. Build all of G-1; the circle must follow
+the pen hovering on the Cintiq; checks with controls and a red run, quick check, full gate, TEST COPY, exe stamp, a
+short hand-test list; no commit before the hand test. (COLOUR-1 + STRIP-1 committed 1dd0b6d06, Figma 634:702 / 635:702
+renamed BUILT 2026-11-19, earlier today - see the next section.)
+BUILT (DrawingCanvas.*, StoryboardPage.*; Edit tool only, CRLF kept on every line):
+- toolCursor() / toolCursorKind() replace defaultCursorShape() at all its 12 call sites. Kinds: "outline" (the Brush /
+  Eraser circle; Qt::BlankCursor), "cross", "bucket" (fill.svg black with a white 2 px edge, made as the D-3 dropper,
+  23 x 22, hot spot (3,16) = the drop's lowest point), "add" / "remove" (a 19 px two-tone crosshair with a 7 px + or -
+  at (20,20), hot spot (9,9)), "move" (SizeAll: the Move tool, and a selection tool in the bar's Move mode with a
+  selection), "forbidden" (Qt::ForbiddenCursor). Off the canvas surface (over a child control, or not known to be
+  over it) a tool shows what it showed before G (cross / Move's arrows), so no child inherits a blank pointer, a
+  bucket or a "not allowed". toolCursorInCharge(): nothing else owns the pointer (pick, Space, R, pan, turn, Move box,
+  Camera, Perspective, Edit Shape keep their own). refreshToolCursor() applies it (compares shape / pixmap cacheKey).
+- THE CIRCLE: a see-through sibling widget (PointerOutline, objectName "pointerOutline") in the canvas's parent,
+  the canvas's geometry, WA_TransparentForMouseEvents, raised; never drawn into the canvas, so grab() and every
+  canvas pixel check are untouched. Diameter = the Size bar's number (the VISIBLE width, BrushWidthRatio) x the
+  view transform's own scale (not scale(): its display rect is whole pixels, 0.2297 for 0.23); 0 = no bar (a bare
+  canvas) uses the engine size. The page feeds the number through a new SizeCtlSlider::onShown (setValue, setRange,
+  user moves) -> canvas->setShownToolSize(eraserMode, v). Repaint: only the band round the line (QRegion ellipse
+  annulus, 3 px each side; whole box under 48 px). Kept in step at every pointer event, setTool, size setters,
+  selection mode, Space, the pick cursor, the page's rebuildLayerPanel, and at the start of every canvas paint
+  (zoom, resize, R, Quick Shape modes).
+- WHERE THE POINTER IS: an application event filter (PointerWatch, beside PopupClickGuard) sees every pen and mouse
+  event at the widget it reaches first - even mouse moves the canvas does not track - and says over the canvas
+  (itself: m_pointerIn true; a child: false) or not; the canvas's Leave says the window was left. ONLY REAL EVENTS
+  COUNT (spontaneous, from the window system) - see GATE G1 below. Gate: setRealPointerIgnoredForTest (the Rig's) and
+  setPointerDeviceForTest (the page forwards both): then only the test device's window-system events count.
+- PRESSES: pressRefusedAt() mirrors mousePressEvent's editable-layer gate: Brush / Eraser / the 4 selection tools
+  anywhere, Fill / Shapes / Move over the paper only, never with the Move box or a floating paste or the Camera /
+  Perspective tools. layerRefusal(): "<name> is locked" / "is hidden" / "is locked and hidden" / "is in a hidden
+  folder" (a folder or no layer: empty, as before). At the gate (mouse) and at the Brush/Eraser TabletPress the canvas
+  emits editRefused(why, globalPos); the page shows it in a SankoTipFrame (objectName "editRefusedNote") at the press +
+  (14, 18), clamped to the screen, for 2.5 s (kRefusalNoteMs) - not a QToolTip, which Qt takes away at the mouse's
+  release. In the gate it shows only for a check that names its own pen. m_lastNote is set too.
+NEW CHECKS: Lifecycle +18, pass runContextualCursorsPass (cur)..(cur9), slice "batchg" (with runTrialFixesPass); in
+the full run after (sb). The pen is sent at the window-system level (QWindowSystemInterface::handleTabletEvent, device
+7012), the mouse likewise. (cur1) hover follows, size, blank pointer, sibling; (cur2) pixels with / without (black on
+paper, white on the gutter, nothing else, the canvas grab identical); (cur3) the bar's number x the view's zoom, zoom
+with the pen still, the Eraser's own + control (no number -> the engine's 214 px frame); (cur4) under 6 px the
+crosshair, from 100 px the centre cross + control at 99 px; (cur5) during a stroke (answer A); (cur6) away: Layers
+list, a control on the canvas (a probe widget), Space, Alt; (cur7) bucket, + / -, outline arrows, Shapes; (cur8)
+locked: forbidden with the pen still, pen press -> note text / place / after the lift, mouse click -> note after its
+release, gone by itself, nothing changed; Fill paper / gutter, a selection tool off the paper, unlock, hidden, +
+control (unlocked: draws, no note); (cur9) only the test's pen + control (an event a program sends is ignored).
+WHILE BUILDING: the first expected sizes used the asked-for scale 0.23; the view lands it at 0.2297 - the code and
+the checks now use the view transform's scale (new checks, never gated before). The first (cur8) press went to the
+Shapes tool's popup left open by (cur7) (an open popup takes the next press): (cur7) now closes popups (TEMP DIAG
+found it, removed, grep 0).
+RED RUNS (marked, removed, grep 0): 1 - the pen's events say nothing: (cur1)-(cur9) 12 failures; 2 - the circle
+drawn into the canvas + Fill "not allowed" off the paper + the engine's size: (cur2) canvas clean 0, (cur8) Fill
+gutter, (cur3) 214 vs 200 (7 failures); 3 - a program's events count: Edge Lock's 3 corners and (cur9) control fail
+((cur7)/(cur8) too: Qt's copies to the canvas's parents read as "left").
+GATE G1 (2825 s): every family green in both builds EXCEPT SankoCanvasEdgeLock 71/74 in both (corners (0,0),
+(960,0), (0,540) read 255 for ink 20). Cause: the lock test builds a bare canvas in a window, sends its strokes with
+sendEvent and reads the corners from the SCREEN; the first version counted those events, so the circle and its centre
+cross lay over the corner. The lock test is untouched (not ours to edit); the code now counts only real events.
+QUICK CHECK (Release, after the fix): batchg 40, trial 126, batchd 68, keysview 72, stagemode 124, playback 33,
+colourstrip 53, scenesshots 58, batche 130, Edge Lock 74, Camera 336.
+GATE G2 (main tree, 2807 s): EVERY family green in BOTH builds - Lifecycle 1671, Camera 336, Brush Library 187, Size
+Lock 170, Edge Lock 74, Dev Recorder 46, Quick Shape 19, Pixel Lock 13, Brush Lock 3. HASHES: sha_G2_gate.txt (the 5
+files), sha_G2_exes.txt (sha_G1_gate.txt: the first version).
+HAND-TEST EXE: C:\SankoTv\app\build\Release\SankoTV.exe built Nov 19 2026 21:24:01 (file 21:24:20), git
+1dd0b6d06+dirty, sha256 79769f3f4b10f84f9e60d6b7b2b07085a29bdd93aefe05a9c63d1ce41ff49716. COPY "TEST COPY - small
+pirate, cursors" (C:\SankoTV-TestCopies, 22:09:36; the original's hash 768789328a9e66c6... unchanged before and
+after). LIST Documents\SankoTV-Design\handtest_G_contextual_cursors.md (11 steps).
+KNOWN: the circle follows real pointer events; a real pointer moved over a bare-canvas lock test's window during a
+gate (Edge Lock reads the screen) would put it in that test's samples - the gate runs on the Cintiq, the Dell free.
+
 ## STATUS 2026-11-19 (evening): RE-TEST CS2 PASSED; COLOUR-1 + STRIP-1 WITH THE PICKER'S WIDTH FIX COMMITTED AS ONE COMMIT (THIS ONE); NEXT: FIGMA BUILT MARKS, BATCH G'S DESIGN (G-1)
 RE-TEST CS2 (recording 20261119-185937, 701 s, the only session after 15:16; system.txt: Release, git eb208ada5+dirty,
 built Nov 19 2026 15:16:14; the title bar "SANKO TV — TEST COPY - small pirate, picker re-test"; the user: "all steps

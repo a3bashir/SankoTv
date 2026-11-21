@@ -41,6 +41,7 @@ class QUndoStack;
 class QVBoxLayout;
 class SankoSlider;
 class SankoTipPopup;
+class SankoTipFrame;
 
 class DockController;
 class LayerFolder;
@@ -496,6 +497,9 @@ public:
     // the one a panel removal shows when it took camera keys with it.
     QString lastNoteForTest() const { return m_lastNote; }
     void clearNoteForTest() { m_lastNote.clear(); }
+    // Batch G: the note a press on a locked or hidden layer shows by the pointer ("Layer 2 is
+    // locked") - null before the first.
+    QWidget *refusalNoteForTest() const;
     // Batch E (Figma E-1): the five eases' popover a tap on a move's mark opens, while open.
     QWidget *easePopoverForTest() const { return m_easePopover.data(); }
     // GROW-1's (cx10): a note's tooltip shown at this global point (on the test's own
@@ -1095,6 +1099,13 @@ private:
     QPoint notePoint() const; // the pointer, or the test's point
     int m_noteSerial = 0;
     QPoint m_notePointForTest;
+    // A press on a locked or hidden layer (batch G, answer 3): why, shown by the pointer in the
+    // one tooltip look for kRefusalNoteMs - a window of its own, so the press's release does
+    // not take it away as it does a QToolTip's.
+    void sayEditRefused(const QString &why, const QPoint &globalPos);
+    QPointer<SankoTipFrame> m_refusalNote;
+    QTimer *m_refusalNoteTimer = nullptr;
+    static constexpr int kRefusalNoteMs = 2500;
     // Remove the selected panel with this history text ("Delete Panel",
     // "Cut Panel"); when the panel held camera keys the text names them
     // and a note says the scene's camera move changes (the user's rule,

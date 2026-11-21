@@ -684,6 +684,41 @@ public:
     using ColorPicker = std::function<QColor(const QColor &initial, const QString &title)>;
     void setColorPicker(ColorPicker picker) { m_colorPicker = std::move(picker); }
 
+    // CONTEXTUAL CURSORS (batch G; Figma G-1 645:702, approved 2026-11-19 with the user's
+    // answers). The cursor says what a press will do. The Brush and the Eraser: an outline
+    // circle the size of the tip - the Size bar's number times the zoom, 1 px black inside
+    // 1 px white - drawn while the pen hovers and while it draws (answer 1: A); under 6 px
+    // across today's crosshair instead, from 100 px a small cross at its centre (answer 2).
+    // Fill: the toolbar's bucket. The selection tools: a crosshair with + (Add) or - (Remove),
+    // the four arrows for the outline's Move. The others as before. Over a locked or hidden
+    // layer, wherever a press would do nothing because of it: Windows' "not allowed", and
+    // the press says why (editRefused; answer 3) - and still changes nothing.
+    // The Size bar's number for a tool - its VISIBLE width (BrushWidthRatio), what the circle
+    // is the size of. 0 (no bar: the lock tests' canvases): the engine size.
+    void setShownToolSize(bool eraser, int px);
+    // Something the cursor depends on changed away from the canvas (the page: a layer's
+    // lock or eye, the active layer): the cursor and the circle follow at once.
+    void refreshToolCursor();
+    // Called by the application-wide pointer watch (see PointerWatch) for every real pointer
+    // event, at the widget it reaches first: over the canvas or something on it, or not.
+    void notePointerEvent(QObject *receiver, QEvent *event);
+    // The circle is drawn on a see-through widget of its own just above the canvas (its
+    // sibling), never into the canvas: grab() and every check that reads the canvas's pixels
+    // see the picture as it always was. Null until first needed, and with no parent.
+    QWidget *pointerOutlineForTest() const;
+    bool pointerOutlineShownForTest() const;
+    QPointF pointerOutlineCentreForTest() const;   // canvas coordinates
+    double pointerOutlineDiameterForTest() const;  // screen px
+    // "outline" (no pointer, the circle), "cross", "bucket", "add", "remove", "move",
+    // "forbidden": the tool's own idle cursor where the pointer is.
+    QString toolCursorKindForTest() const { return toolCursorKind(); }
+    QString layerRefusalForTest() const { return layerRefusal(); }
+    bool pointerOverCanvasForTest() const { return m_pointerIn; }
+    // The gate's pointer: with real ones ignored, only events of the test's own device move
+    // the circle (the machine's mouse, wherever it rests, is not part of a check).
+    void setRealPointerIgnoredForTest(bool ignored);
+    void setPointerDeviceForTest(qint64 uniqueId);
+
 signals:
     // The eraser preset changed (library selection): the Size CTL bar
     // mirrors size/opacity the way paintBrushChanged mirrors the brush.
@@ -731,6 +766,9 @@ signals:
     // A move or a paste landed past the 8,192 px a layer may hold (batch B1):
     // the part past it is not kept; the workspace says so at the pointer.
     void keptArtLimitReached();
+    // A press that does nothing because the active layer is locked or hidden (batch G): why
+    // ("Layer 2 is locked"), and where (global): the workspace shows it by the pointer.
+    void editRefused(const QString &why, const QPointF &globalPos);
     // Stage mode (batch 6c): a handle moved the proposed margins; Enter or Esc on
     // the canvas; the tool or the panel changed under the session.
     void stageModeEdited(const QMargins &margins, int activeSide);
@@ -1098,12 +1136,31 @@ private:
     XformMode hitTestBox(const QPointF &widgetPos) const;
     void applyXformDrag(const QPointF &canvasPos, bool proportional);
     void updateXformCursor(XformMode mode);
-    // Idle cursor for the active tool: four-way move arrows for Move
-    // (Photoshop's Move cursor), crosshair for everything else.
-    Qt::CursorShape defaultCursorShape() const
-    {
-        return m_tool == Move ? Qt::SizeAllCursor : Qt::CrossCursor;
-    }
+    // Idle cursor for the active tool where the pointer is (batch G): see toolCursorKind.
+    // Before batch G: four-way move arrows for Move, the crosshair for everything else.
+    QCursor toolCursor() const;
+    QString toolCursorKind() const;
+    // True while nothing else owns the pointer: no pick, no Space or R, no pan or turn, no
+    // Move box (its handles name themselves), not the Camera or Perspective tool (their
+    // hover does), not Edit Shape.
+    bool toolCursorInCharge() const;
+    // "Layer 2 is locked" / "... is hidden" / "... is in a hidden folder" - or empty: the
+    // active layer takes edits, or it is not a lock or an eye that stops it (a folder, none).
+    QString layerRefusal() const;
+    // A press at this widget point would reach the editable-layer gate and stop there.
+    bool pressRefusedAt(const QPointF &widgetPos) const;
+    // The circle: its size on screen (the Size bar's number x the zoom) and whether it shows.
+    double pointerOutlineDiameter() const;
+    bool pointerOutlineWanted() const;
+    // Where the pointer is (canvas coordinates), from the events that say it.
+    bool pointerEventCounts(const QEvent *event) const;
+    void notePointerAt(const QPointF &widgetPos);
+    void notePointerAway();
+    void syncPointerOutline();
+    // While the pen is over the canvas, its cursor on the window too (see the .cpp).
+    void syncWindowCursor();
+    // Says why a press at widgetPos did nothing (editRefused), when it is a lock or an eye.
+    void sayEditRefused(const QPointF &widgetPos);
     // The tools whose hover needs buttonless moves (mouse tracking) for as
     // long as they are active: Camera and Perspective.
     bool toolTracksHover() const { return m_tool == Camera || m_tool == Perspective; }
@@ -1144,6 +1201,16 @@ private:
     QPointF stabilizeStrokePoint(const QPointF &raw, bool strokeBegin);
     double m_strokeStabilization = 0.0; // 0 = filter fully bypassed
     QPointF m_stabPoint;                // EMA state, reset at stroke begin
+
+    // CONTEXTUAL CURSORS (batch G): where the pointer is, the Size bar's numbers, the
+    // circle's widget (the canvas's sibling; see PointerOutline), the gate's pointer.
+    QPointF m_pointerPos;            // canvas coordinates
+    bool m_pointerIn = false;        // over the canvas itself (not a child, not elsewhere)
+    int m_shownBrushSize = 0;        // the Size bar's number (visible width); 0 = engine size
+    int m_shownEraserSize = 0;
+    QPointer<QWidget> m_pointerOutline;
+    bool m_realPointerIgnoredForTest = false;
+    qint64 m_pointerDeviceForTest = -1;
 
     // Brush engine state. Defaults mirror the initial settings-panel values.
     int m_brushToolSize = 25;        // dab diameter, canvas px

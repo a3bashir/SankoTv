@@ -887,13 +887,18 @@ public:
     std::function<void(int)> onChanged;   // value changed by the user
     std::function<void()> onAdjustBegin;  // press: user started adjusting
     std::function<void()> onAdjustEnd;    // release: user stopped adjusting
+    // The number the bar shows, whoever set it - the user, a tool switch, a preset, [ or ]
+    // (batch G: the Brush's and the Eraser's circle is this number's size).
+    std::function<void(int)> onShown;
 
     int minimum() const { return m_min; }
     int maximum() const { return m_max; }
     int value() const { return m_value; }
-    void setValue(int v) // programmatic sync: no callback
+    void setValue(int v) // programmatic sync: no onChanged
     {
         v = qBound(m_min, v, m_max);
+        if (onShown)
+            onShown(v); // said even when unchanged: the tool it is for may have changed
         if (v == m_value)
             return;
         m_value = v;
@@ -908,6 +913,8 @@ public:
         m_max = qMax(min + 1, max);
         m_value = qBound(m_min, m_value, m_max);
         update();
+        if (onShown)
+            onShown(m_value);
     }
     // Logarithmic track mapping (Brush size): every track pixel is the
     // same RELATIVE step (~+3.9%/px at 1..5000 over 189px of travel), so
@@ -1053,6 +1060,8 @@ private:
             return;
         m_value = v;
         update();
+        if (onShown)
+            onShown(m_value);
         if (onChanged)
             onChanged(m_value);
     }
@@ -4604,6 +4613,9 @@ void StoryboardPage::createFloatingToolbar()
     m_canvas->setBrushHardness(tc->brush.hardness); // persisted hardness
     m_canvas->setEraserSize(tc->eraser.size);       // restores with no bar
     m_canvas->setEraserOpacity(tc->eraser.opacity); // slider (Studio edits)
+    // CONTEXTUAL CURSORS (batch G): the Brush's and the Eraser's circle is the size of the
+    // number this bar shows - the visible width - for the tool it shows it for.
+    sizeSlider->onShown = [this, tc](int v) { m_canvas->setShownToolSize(tc->eraserMode, v); };
     sizeSlider->setValue(displayedSize(false));
     opacitySlider->setValue(tc->brush.opacity);
     sizeSlider->setPresets(tc->brush.sizeTicks);
@@ -5455,6 +5467,11 @@ QWidget *StoryboardPage::createCameraPanel()
     connect(m_canvas, &DrawingCanvas::keptArtLimitReached, this, [this] {
         sayNote(QStringLiteral("The layer reaches the 8,192 px limit: art past it is not kept. "
                                "Undo brings it back."));
+    });
+    // A press on a locked or hidden layer (batch G): why, by the pointer.
+    connect(m_canvas, &DrawingCanvas::editRefused, this,
+            [this](const QString &why, const QPointF &globalPos) {
+        sayEditRefused(why, globalPos.toPoint());
     });
 
     loadCameraGuides();
@@ -9978,6 +9995,8 @@ void StoryboardPage::setPointerDeviceForTest(qint64 uniqueId)
     m_testPointerDevice = uniqueId;
     m_pointerOverCanvas = false;
     m_spaceDownAway = false;
+    if (m_canvas)
+        m_canvas->setPointerDeviceForTest(uniqueId); // the circle hears this pen too (batch G)
 }
 
 // THE GATE'S POINTER. Whose keys these are depends on Enter / Leave, and the
@@ -10000,6 +10019,8 @@ void StoryboardPage::setRealPointerIgnoredForTest(bool ignored)
     }
     if (m_stageClear)
         m_stageClear->setRealPointerIgnoredForTest(ignored);
+    if (m_canvas) // the Brush's circle and the cursor follow the test's pointer only (batch G)
+        m_canvas->setRealPointerIgnoredForTest(ignored);
     m_pointerOverTimeline = false;
     m_pointerOverPreview = false;
     m_pointerOverCanvas = false;
@@ -11981,6 +12002,50 @@ void StoryboardPage::sayNote(const QString &message)
         new AfterNextEnter(this, 400, show);
 }
 
+// WHY A PRESS DID NOTHING (batch G; Figma G-1, the user's answer 3). The cursor already said
+// "not allowed"; the press says why - "Layer 2 is locked", "... is hidden" - just below and to
+// the right of where it was made, in the one tooltip look (SankoTipFrame), for 2.5 s; another
+// press moves it and starts its time again. Not a QToolTip: Qt takes one away at the mouse's
+// release, a moment after the press that showed it. The press changes nothing.
+void StoryboardPage::sayEditRefused(const QString &why, const QPoint &globalPos)
+{
+    m_lastNote = why;
+    // In the gate, only for a check that drives its own pointer (a window at the real
+    // pointer's place is not part of a check).
+    if (m_ignoreRealPointerForTest && m_testPointerDevice < 0)
+        return;
+    if (!m_refusalNote) {
+        m_refusalNote = new SankoTipFrame(this);
+        m_refusalNote->setObjectName(QStringLiteral("editRefusedNote"));
+        // The pen passes through it (the hand test of batch G: shown just below and to the
+        // right of the pen, it took the pen's next moves - a window of its own, which Qt's
+        // WA_TransparentForMouseEvents does not make click-through on Windows).
+        m_refusalNote->setWindowFlag(Qt::WindowTransparentForInput, true);
+        m_refusalNoteTimer = new QTimer(this);
+        m_refusalNoteTimer->setSingleShot(true);
+        connect(m_refusalNoteTimer, &QTimer::timeout, this, [this] {
+            if (m_refusalNote)
+                m_refusalNote->hide();
+        });
+    }
+    m_refusalNote->setTipText(why, Qt::PlainText); // a layer's name is shown as it is written
+    QPoint at = globalPos + QPoint(14, 18);
+    if (QScreen *screen = QGuiApplication::screenAt(globalPos)) {
+        const QRect room = screen->availableGeometry();
+        at.setX(qMin(at.x(), room.right() - m_refusalNote->width()));
+        at.setY(qMin(at.y(), room.bottom() - m_refusalNote->height()));
+    }
+    m_refusalNote->move(at);
+    m_refusalNote->showFaded();
+    m_refusalNote->raise();
+    m_refusalNoteTimer->start(kRefusalNoteMs);
+}
+
+QWidget *StoryboardPage::refusalNoteForTest() const
+{
+    return m_refusalNote.data();
+}
+
 void StoryboardPage::removeSelectedPanel(const QString &baseText)
 {
     Scene *scene = currentScene();
@@ -12904,8 +12969,12 @@ void StoryboardPage::rebuildLayerPanel()
 {
     if (!m_layerListLayout)
         return;
-    if (m_canvas)
+    if (m_canvas) {
         m_canvas->invalidateComposite(); // stack structure/state changed
+        // Batch G: a lock, an eye or another active layer - the canvas's cursor ("not
+        // allowed" or the tool's own) follows at once, the pen where it was.
+        m_canvas->refreshToolCursor();
+    }
 
     m_layerRows.clear();
     while (QLayoutItem *item = m_layerListLayout->takeAt(0)) {

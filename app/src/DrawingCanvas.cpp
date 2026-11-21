@@ -41,6 +41,8 @@
 #include <QtEndian>
 #include <QFile>        // the eyedropper's drawing, read to make its white outline (D-3)
 #include <QPaintEvent>
+#include <QPointingDevice> // whose pointer an event is (batch G: the gate hears its own)
+#include <QWindow>         // ...and the window's own pointer, which the pen leaves alone (batch G)
 #include <QPushButton>
 #include <QRegion>
 #include <QResizeEvent>
@@ -173,12 +175,196 @@ private:
     QWidget *m_canvas;
 };
 
+// THE BRUSH'S CIRCLE (batch G, Figma G-1): under 6 px across it would be lost, so today's
+// crosshair shows instead; from 100 px a small cross marks its centre, where the pen is.
+constexpr double kOutlineMinPx = 6.0;
+constexpr double kOutlineCrossFromPx = 100.0;
+
+// The circle, on a see-through widget of its own laid just above the canvas: the canvas's
+// sibling, the canvas's size and place, taking no input. Drawn there and not in the canvas
+// so that the canvas's own picture - grab(), what every pixel check reads - is never touched
+// by where the pointer happens to be. Only the band round the circle is repainted as it
+// moves (a ring, not its box: a 2,000 px brush must not redraw the whole view per move).
+class PointerOutline : public QWidget
+{
+public:
+    explicit PointerOutline(QWidget *parent) : QWidget(parent)
+    {
+        setObjectName(QStringLiteral("pointerOutline"));
+        setAttribute(Qt::WA_TransparentForMouseEvents);
+        setFocusPolicy(Qt::NoFocus);
+    }
+
+    void setOutline(bool shown, const QPointF &centre, double diameter)
+    {
+        if (shown == m_shown && (!shown || (centre == m_centre && diameter == m_diameter)))
+            return;
+        if (m_shown)
+            update(band(m_centre, m_diameter));
+        m_shown = shown;
+        m_centre = centre;
+        m_diameter = diameter;
+        if (m_shown)
+            update(band(m_centre, m_diameter));
+    }
+    bool outlineShown() const { return m_shown; }
+    QPointF centre() const { return m_centre; }
+    double diameter() const { return m_diameter; }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        if (!m_shown)
+            return;
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setBrush(Qt::NoBrush);
+        // 1 px black inside 1 px white: one of the two always shows - on white paper, on
+        // black ink, on the dark gutter, on grey (G-1, section 2).
+        const double r = m_diameter / 2.0;
+        p.setPen(QPen(QColor(255, 255, 255), 1.0));
+        p.drawEllipse(m_centre, r + 0.5, r + 0.5);
+        p.setPen(QPen(QColor(0, 0, 0), 1.0));
+        p.drawEllipse(m_centre, r - 0.5, r - 0.5);
+        if (m_diameter >= kOutlineCrossFromPx) {
+            // The centre: a 7 px cross, black on a white edge, on whole pixels.
+            p.setRenderHint(QPainter::Antialiasing, false);
+            const QPoint c(qFloor(m_centre.x()), qFloor(m_centre.y()));
+            p.fillRect(QRect(c.x() - 4, c.y() - 1, 9, 3), QColor(255, 255, 255));
+            p.fillRect(QRect(c.x() - 1, c.y() - 4, 3, 9), QColor(255, 255, 255));
+            p.fillRect(QRect(c.x() - 3, c.y(), 7, 1), QColor(0, 0, 0));
+            p.fillRect(QRect(c.x(), c.y() - 3, 1, 7), QColor(0, 0, 0));
+        }
+    }
+
+private:
+    // What a circle of this size covers on screen: its band (3 px each side of the line),
+    // and the centre cross; a small one, its whole box.
+    static QRegion band(const QPointF &c, double d)
+    {
+        const double r = d / 2.0;
+        const QRect outer = QRectF(c.x() - r - 3.0, c.y() - r - 3.0, d + 6.0, d + 6.0).toAlignedRect();
+        if (d < 48.0)
+            return QRegion(outer);
+        const QRect inner = QRectF(c.x() - r + 3.0, c.y() - r + 3.0, d - 6.0, d - 6.0).toRect();
+        QRegion region = QRegion(outer, QRegion::Ellipse).subtracted(QRegion(inner, QRegion::Ellipse));
+        if (d >= kOutlineCrossFromPx)
+            region += QRect(qFloor(c.x()) - 6, qFloor(c.y()) - 6, 13, 13);
+        return region;
+    }
+
+    bool m_shown = false;
+    QPointF m_centre;
+    double m_diameter = 0.0;
+};
+
+// WHERE THE POINTER IS, FROM ITS OWN EVENTS (the page's way for Space, batch A). A real pen or
+// mouse event goes first to the widget under the pointer, and passes this application filter
+// on its way - even a mouse move the canvas does not track, which Qt would drop. The canvas or
+// anything on it: over the canvas (the canvas itself, or a control on it); anything else, in
+// any window: not. The canvas's Leave cannot be relied on for this: with the Brush or the
+// Eraser the canvas keeps the pen's events, so Qt makes no mouse move of them. Only REAL
+// events count (spontaneous: from the window system): an event a program sends a widget is
+// nobody's pointer (SankoCanvasEdgeLock's strokes are sent so, and its corners are read
+// from the screen).
+class PointerWatch : public QObject
+{
+public:
+    explicit PointerWatch(DrawingCanvas *canvas) : QObject(canvas), m_canvas(canvas) {}
+
+protected:
+    bool eventFilter(QObject *object, QEvent *event) override
+    {
+        switch (event->type()) {
+        case QEvent::MouseMove:
+        case QEvent::MouseButtonPress:
+        case QEvent::MouseButtonRelease:
+        case QEvent::TabletMove:
+        case QEvent::TabletPress:
+        case QEvent::TabletRelease:
+            if (object->isWidgetType()) // which events count: pointerEventCounts, alone
+                m_canvas->notePointerEvent(object, event);
+            break;
+        default:
+            break;
+        }
+        return false;
+    }
+
+private:
+    DrawingCanvas *m_canvas;
+};
+
+// FILL: the toolbar's own bucket (fill.svg), black with a white edge - made as the dropper is
+// (outlinedDropper, D-3) - its drop's lowest point on the hot spot: it fills where the drop
+// points. No drawing (the lock tests have no resources): the crosshair.
+QCursor bucketCursor(qreal dpr)
+{
+    static QHash<int, QCursor> made;
+    const int key = qRound(dpr * 100);
+    if (made.contains(key))
+        return made.value(key);
+    QFile file(QStringLiteral(":/icons/fill.svg"));
+    const QByteArray grey = file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray();
+    if (grey.isEmpty())
+        return QCursor(Qt::CrossCursor);
+    QByteArray dark = grey;
+    dark.replace("fill=\"#CCCCCC\"", "fill=\"black\"");
+    QByteArray edge = grey;
+    edge.replace("fill=\"#CCCCCC\"",
+                 "fill=\"white\" stroke=\"white\" stroke-width=\"2\" stroke-linejoin=\"round\"");
+    // fill.svg's box is 18.67 x 17.43; laid at (2, 2) in 23 x 22 with room for the edge.
+    const QRectF at(2.0, 2.0, 18.6656, 17.4302);
+    QPixmap pm(QSize(qCeil(23 * dpr), qCeil(22 * dpr)));
+    pm.setDevicePixelRatio(dpr);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    QSvgRenderer(edge).render(&p, at);
+    QSvgRenderer(dark).render(&p, at);
+    p.end();
+    // The drop's lowest point: (1.46, 14.01) in fill.svg.
+    const QCursor cursor(pm, 3, 16);
+    made.insert(key, cursor);
+    return cursor;
+}
+
+// THE SELECTION TOOLS: a crosshair - black, 1 px, on a white edge, arms of 9 px - with the
+// mode's sign at its lower right: + for Add (the default), - for Remove.
+QCursor selectionCursor(bool add, qreal dpr)
+{
+    static QHash<int, QCursor> made;
+    const int key = qRound(dpr * 100) * 2 + (add ? 1 : 0);
+    if (made.contains(key))
+        return made.value(key);
+    QPixmap pm(QSize(qCeil(26 * dpr), qCeil(26 * dpr)));
+    pm.setDevicePixelRatio(dpr);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    const QColor white(255, 255, 255), black(0, 0, 0);
+    p.fillRect(QRectF(0, 8, 19, 3), white);
+    p.fillRect(QRectF(8, 0, 3, 19), white);
+    p.fillRect(QRectF(0, 9, 19, 1), black);
+    p.fillRect(QRectF(9, 0, 1, 19), black);
+    p.fillRect(QRectF(16, 19, 9, 3), white); // the sign, centred on (20, 20)
+    if (add)
+        p.fillRect(QRectF(19, 16, 3, 9), white);
+    p.fillRect(QRectF(17, 20, 7, 1), black);
+    if (add)
+        p.fillRect(QRectF(20, 17, 1, 7), black);
+    p.end();
+    const QCursor cursor(pm, 9, 9);
+    made.insert(key, cursor);
+    return cursor;
+}
+
 } // namespace
 
 DrawingCanvas::DrawingCanvas(QWidget *parent)
     : QWidget(parent)
 {
     qApp->installEventFilter(new PopupClickGuard(this)); // see the class
+    qApp->installEventFilter(new PointerWatch(this));    // where the pointer is (batch G)
     setMouseTracking(false);
     setTabletTracking(true); // deliver stylus events (with pressure) to tabletEvent
     setCursor(Qt::CrossCursor);
@@ -1208,7 +1394,7 @@ void DrawingCanvas::shotCameraUpdateCursor(int hit)
     if (m_panning || m_spaceHeld || m_rotateHeld || m_rotating)
         return;
     if (hit < 0) {
-        setCursor(defaultCursorShape());
+        setCursor(toolCursor());
         return;
     }
     if (hit == 0) {
@@ -2032,13 +2218,303 @@ void DrawingCanvas::setTool(Tool tool)
     if (tool == Move)
         liftDefaultTransformBox();
     if (!m_panning)
-        setCursor(m_spaceHeld ? Qt::OpenHandCursor : defaultCursorShape());
+        setCursor(m_spaceHeld ? QCursor(Qt::OpenHandCursor) : toolCursor());
     m_pickCursorOn = false; // the tool's own pointer and tracking were just set above
     if (m_pickArmed || (m_altHeld && m_tool == Brush)) // the same tool again with a pick
         refreshPickCursor(); // waiting, or Alt still held: the dropper
     update(); // the selection itself DOES survive (Select -> Move flow)
+    refreshToolCursor(); // the new tool's cursor and circle where the pointer already is
     if (m_tool != previous)
         emit toolChanged(m_tool); // per-tool Size CTL sliders re-sync
+}
+
+// ===== CONTEXTUAL CURSORS (batch G; Figma G-1 645:702, approved 2026-11-19) =================
+
+QString DrawingCanvas::layerRefusal() const
+{
+    const Layer *layer = m_panel ? m_panel->activeLayer() : nullptr;
+    if (!layer || isGroupLayer(*layer))
+        return QString(); // a folder, or none: not a lock or an eye - as before
+    const QString name = layer->name.isEmpty() ? QStringLiteral("The layer") : layer->name;
+    if (layer->locked && !layer->visible)
+        return name + QStringLiteral(" is locked and hidden");
+    if (layer->locked)
+        return name + QStringLiteral(" is locked");
+    if (!layer->visible)
+        return name + QStringLiteral(" is hidden");
+    if (!m_panel->layerEffectivelyVisible(*layer))
+        return name + QStringLiteral(" is in a hidden folder");
+    return QString();
+}
+
+// Exactly where mousePressEvent's editable-layer gate would stop a press: not the Camera or
+// Perspective tool (theirs come first), not with the Move box or a paste floating (theirs
+// too); Fill, Shapes and Move only over the paper (off it a press of theirs does nothing
+// anyway); the Brush, the Eraser and the selection tools anywhere - they may start off it.
+bool DrawingCanvas::pressRefusedAt(const QPointF &widgetPos) const
+{
+    if (!m_panel || m_tool == Camera || m_tool == Perspective || m_qsEditing
+        || (m_xformActive && m_tool == Move) || (m_floatActive && m_floatFromPaste)
+        || layerRefusal().isEmpty())
+        return false;
+    switch (m_tool) {
+    case Brush:
+    case Eraser:
+    case SelectRect:
+    case SelectEllipse:
+    case Lasso:
+    case SelectPoly:
+        return true;
+    case Fill:
+    case Shapes:
+    case Move:
+        return onPaper(widgetPos);
+    default:
+        return false;
+    }
+}
+
+bool DrawingCanvas::toolCursorInCharge() const
+{
+    return !m_pickCursorOn && !m_picking && !m_spaceHeld && !m_panning && !m_rotateHeld
+        && !m_rotating && !m_xformActive && !m_qsEditing && m_tool != Camera
+        && m_tool != Perspective;
+}
+
+double DrawingCanvas::pointerOutlineDiameter() const
+{
+    const bool eraser = m_tool == Eraser;
+    const int shown = eraser ? m_shownEraserSize : m_shownBrushSize;
+    const int engine = eraser ? m_eraserSize : m_brushToolSize;
+    // The view's own scale, as the mark is drawn through it - not scale(), whose display
+    // rect is whole pixels (0.2297 for 0.23 at 1920 px wide: the circle 0.1 % small).
+    const QTransform T = viewTransform();
+    const double viewScale = QLineF(T.map(QPointF(0, 0)), T.map(QPointF(1, 0))).length();
+    return (shown > 0 ? shown : engine) * viewScale;
+}
+
+bool DrawingCanvas::pointerOutlineWanted() const
+{
+    return (m_tool == Brush || m_tool == Eraser) && m_panel && m_pointerIn && isVisible()
+        && toolCursorInCharge() && !pressRefusedAt(m_pointerPos)
+        && pointerOutlineDiameter() >= kOutlineMinPx;
+}
+
+// Away from the canvas itself (over a child, or not known to be over it) a tool shows what it
+// showed before batch G - the crosshair, Move's arrows - so nothing on the canvas inherits a
+// circle's empty pointer, a bucket or a "not allowed".
+QString DrawingCanvas::toolCursorKind() const
+{
+    if (!m_pointerIn)
+        return m_tool == Move ? QStringLiteral("move") : QStringLiteral("cross");
+    if (pressRefusedAt(m_pointerPos))
+        return QStringLiteral("forbidden");
+    switch (m_tool) {
+    case Move:
+        return QStringLiteral("move");
+    case Brush:
+    case Eraser:
+        return pointerOutlineWanted() ? QStringLiteral("outline") : QStringLiteral("cross");
+    case Fill:
+        return QStringLiteral("bucket");
+    case SelectRect:
+    case SelectEllipse:
+    case Lasso:
+    case SelectPoly:
+        if (m_selOutlineMove && !m_selectionPath.isEmpty())
+            return QStringLiteral("move"); // a drag moves the outline (Selection's Move)
+        if (m_selOp == SelAdd)
+            return QStringLiteral("add");
+        if (m_selOp == SelSubtract)
+            return QStringLiteral("remove");
+        return QStringLiteral("cross");
+    default:
+        return QStringLiteral("cross");
+    }
+}
+
+QCursor DrawingCanvas::toolCursor() const
+{
+    const QString kind = toolCursorKind();
+    if (kind == QLatin1String("move"))
+        return QCursor(Qt::SizeAllCursor);
+    if (kind == QLatin1String("outline"))
+        return QCursor(Qt::BlankCursor); // the circle is the pointer
+    if (kind == QLatin1String("forbidden"))
+        return QCursor(Qt::ForbiddenCursor);
+    if (kind == QLatin1String("bucket"))
+        return bucketCursor(devicePixelRatioF());
+    if (kind == QLatin1String("add") || kind == QLatin1String("remove"))
+        return selectionCursor(kind == QLatin1String("add"), devicePixelRatioF());
+    return QCursor(Qt::CrossCursor);
+}
+
+namespace {
+bool sameCursor(const QCursor &a, const QCursor &b)
+{
+    return a.shape() == b.shape()
+        && (a.shape() != Qt::BitmapCursor || a.pixmap().cacheKey() == b.pixmap().cacheKey());
+}
+} // namespace
+
+void DrawingCanvas::refreshToolCursor()
+{
+    syncPointerOutline();
+    if (!toolCursorInCharge())
+        return;
+    const QCursor want = toolCursor();
+    if (sameCursor(cursor(), want))
+        return;
+    setCursor(want);
+}
+
+// THE WINDOW'S POINTER IS THE CANVAS'S WHILE THE PEN IS OVER IT (the hand test of batch G,
+// 2026-11-20: the timeline's resize cursor stayed on the canvas, inside the circle once).
+// Windows has one pointer per window; Qt sets it to a widget's cursor when the MOUSE enters
+// that widget, and a widget's own setCursor only reaches the window for the widget the mouse
+// last entered. With the Brush or the Eraser the canvas keeps the pen's events, so Qt makes no
+// mouse of them: no Enter, ever - and a pen that came up over the timeline's splitter handle
+// (or a dock's edge) left the window the handle's double arrow, which every cursor the canvas
+// set after it could not replace. So while the pen is over the canvas itself the canvas puts
+// its own cursor on the window, whoever set it (the tool, Space's hand, the dropper, the Move
+// box). Off the canvas, Qt's mouse made of the pen gives every other widget its own again
+// (checked: the splitter handle, a dock's edge). The mouse never needed this - its moves make
+// the Enters; doing it for the mouse too changes nothing.
+void DrawingCanvas::syncWindowCursor()
+{
+    if (!m_pointerIn)
+        return;
+    QWindow *handle = window()->windowHandle();
+    if (!handle)
+        return;
+    const QCursor want = cursor();
+    if (!sameCursor(handle->cursor(), want))
+        handle->setCursor(want);
+}
+
+void DrawingCanvas::syncPointerOutline()
+{
+    const bool want = pointerOutlineWanted();
+    if (!want && !m_pointerOutline)
+        return;
+    if (!m_pointerOutline) {
+        if (!parentWidget())
+            return; // a canvas on its own (the lock tests): no circle
+        auto *outline = new PointerOutline(parentWidget());
+        outline->setGeometry(geometry());
+        outline->setVisible(isVisible());
+        outline->raise();
+        m_pointerOutline = outline;
+    }
+    static_cast<PointerOutline *>(m_pointerOutline.data())
+        ->setOutline(want, m_pointerPos, pointerOutlineDiameter());
+}
+
+// The events that say where the pointer is: a real pen's or mouse's (spontaneous, from the
+// window system - never one a program sends), and the Leave of the pointer going off to
+// another program. In the gate, with the machine's own pointer ignored, only the test's
+// device's, sent at the window-system level as a real one is.
+bool DrawingCanvas::pointerEventCounts(const QEvent *event) const
+{
+    switch (event->type()) {
+    case QEvent::Leave:
+        return !m_realPointerIgnoredForTest;
+    case QEvent::MouseMove:
+    case QEvent::MouseButtonPress:
+    case QEvent::MouseButtonRelease:
+    case QEvent::TabletMove:
+    case QEvent::TabletPress:
+    case QEvent::TabletRelease: {
+        if (!event->spontaneous())
+            return false;
+        if (!m_realPointerIgnoredForTest)
+            return true;
+        const QPointingDevice *device = static_cast<const QPointerEvent *>(event)->pointingDevice();
+        return m_pointerDeviceForTest >= 0 && device
+            && device->uniqueId().numericId() == m_pointerDeviceForTest;
+    }
+    default:
+        return false;
+    }
+}
+
+// Over the canvas itself, or over something on it (a chip, a button): then not.
+void DrawingCanvas::notePointerAt(const QPointF &widgetPos)
+{
+    const QPoint at = widgetPos.toPoint();
+    m_pointerPos = widgetPos;
+    m_pointerIn = rect().contains(at) && !childAt(at);
+    refreshToolCursor();
+    syncWindowCursor();
+}
+
+void DrawingCanvas::notePointerAway()
+{
+    if (!m_pointerIn)
+        return;
+    m_pointerIn = false;
+    refreshToolCursor();
+}
+
+void DrawingCanvas::notePointerEvent(QObject *receiver, QEvent *event)
+{
+    if (!receiver->isWidgetType() || !pointerEventCounts(event))
+        return;
+    auto *widget = static_cast<QWidget *>(receiver);
+    if (widget == this || isAncestorOf(widget))
+        notePointerAt(mapFromGlobal(static_cast<const QSinglePointEvent *>(event)->globalPosition()));
+    else
+        notePointerAway(); // (its own pointer: Qt's, from the mouse it makes of the pen there)
+}
+
+void DrawingCanvas::sayEditRefused(const QPointF &widgetPos)
+{
+    const QString why = layerRefusal();
+    if (!why.isEmpty())
+        emit editRefused(why, mapToGlobal(widgetPos));
+}
+
+void DrawingCanvas::setShownToolSize(bool eraser, int px)
+{
+    (eraser ? m_shownEraserSize : m_shownBrushSize) = qMax(0, px);
+    refreshToolCursor();
+}
+
+QWidget *DrawingCanvas::pointerOutlineForTest() const
+{
+    return m_pointerOutline;
+}
+
+bool DrawingCanvas::pointerOutlineShownForTest() const
+{
+    const auto *outline = static_cast<const PointerOutline *>(m_pointerOutline.data());
+    return outline && outline->isVisible() && outline->outlineShown();
+}
+
+QPointF DrawingCanvas::pointerOutlineCentreForTest() const
+{
+    const auto *outline = static_cast<const PointerOutline *>(m_pointerOutline.data());
+    return outline ? outline->centre() : QPointF();
+}
+
+double DrawingCanvas::pointerOutlineDiameterForTest() const
+{
+    const auto *outline = static_cast<const PointerOutline *>(m_pointerOutline.data());
+    return outline ? outline->diameter() : 0.0;
+}
+
+void DrawingCanvas::setRealPointerIgnoredForTest(bool ignored)
+{
+    m_realPointerIgnoredForTest = ignored;
+    m_pointerIn = false;
+    refreshToolCursor();
+}
+
+void DrawingCanvas::setPointerDeviceForTest(qint64 uniqueId)
+{
+    m_pointerDeviceForTest = uniqueId;
+    m_pointerIn = false;
+    refreshToolCursor();
 }
 
 void DrawingCanvas::refreshTransformBox()
@@ -2150,6 +2626,7 @@ void DrawingCanvas::setBrushToolSize(int px)
                    / m_dualPresetPrimarySize),
             5000));
     emit paintBrushEdited();
+    refreshToolCursor(); // the circle's size (batch G)
 }
 
 void DrawingCanvas::setBrushOpacity(int percent)
@@ -2171,6 +2648,7 @@ void DrawingCanvas::setEraserSize(int px)
 {
     m_eraserSize = qBound(1, px, 5000);
     m_eraserBrush.setSize(m_eraserSize);
+    refreshToolCursor(); // the circle's size (batch G)
 }
 
 void DrawingCanvas::setEraserOpacity(int percent)
@@ -3780,6 +4258,7 @@ QPainterPath DrawingCanvas::combinedSelection(const QPainterPath &shape) const
 void DrawingCanvas::setSelectionOp(SelectionOp op)
 {
     m_selOp = op;
+    refreshToolCursor(); // + for Add, - for Remove (batch G)
 }
 
 // --- Selection history (separate from the drawing undo/redo) ---------------
@@ -4286,7 +4765,8 @@ void DrawingCanvas::refreshPickCursor()
             m_pickCursorOn = false;
             if (!m_pickTrackingWas && !toolTracksHover() && !m_xformActive && m_lassoPts.isEmpty())
                 setMouseTracking(false);
-            setCursor(m_spaceHeld ? Qt::OpenHandCursor : defaultCursorShape());
+            setCursor(m_spaceHeld ? QCursor(Qt::OpenHandCursor) : toolCursor());
+            syncPointerOutline(); // the Brush's circle again (batch G)
         }
         return;
     }
@@ -4296,6 +4776,7 @@ void DrawingCanvas::refreshPickCursor()
         setMouseTracking(true); // a hover without Alt reaches the canvas and takes it down
     }
     setCursor(dropperCursor(devicePixelRatioF())); // always the black one (D-3)
+    syncPointerOutline(); // the dropper, not the circle (batch G)
 }
 
 void DrawingCanvas::beginColorPick(const QPointF &widgetPos)
@@ -5343,7 +5824,7 @@ void DrawingCanvas::updateXformCursor(XformMode mode)
         setCursor(m_xformUiMode == XformSkew ? Qt::SizeVerCursor
                                              : Qt::SizeHorCursor);
         break;
-    default:       setCursor(defaultCursorShape()); break;
+    default:       setCursor(toolCursor()); break;
     }
 }
 
@@ -5526,7 +6007,7 @@ void DrawingCanvas::commitTransform(bool relift)
     m_tpsValid = false;
     m_xformAutoSel = false;
     clearSelection(); // the committed pixels are no longer "selected"
-    setCursor(defaultCursorShape());
+    setCursor(toolCursor());
 
     // Committing a Warp returns to the DEFAULT move/scale/rotate box (the
     // other modes already read as the default box after commit since they
@@ -5568,7 +6049,7 @@ void DrawingCanvas::cancelTransform(bool relift)
         m_xformAutoSel = false;
         m_selectionPath = QPainterPath();
     }
-    setCursor(defaultCursorShape());
+    setCursor(toolCursor());
 
     // Esc while the Move tool stays active: the box resets to the default
     // around the restored artwork instead of disappearing.
@@ -7444,6 +7925,9 @@ void DrawingCanvas::contextMenuEvent(QContextMenuEvent *event)
 
 void DrawingCanvas::paintEvent(QPaintEvent *event)
 {
+    // Batch G: anything that repaints the canvas - a zoom, a resize, the selection, R, the
+    // Quick Shape modes - may change the circle's size or the cursor: both follow here.
+    refreshToolCursor();
     QPainter painter(this);
     // Gutter background + optional workspace grid, both SCREEN-SPACE: painted
     // before the world transform so they are fixed to the viewport — they
@@ -8657,6 +9141,7 @@ void DrawingCanvas::keyPressEvent(QKeyEvent *event)
         m_spaceHeld = true;
         if (!m_panning)
             setCursor(Qt::OpenHandCursor);
+        syncPointerOutline(); // the hand, not the circle (batch G)
         return;
     }
     // R HELD TURNS THE VIEW (batch C, Photoshop's rotate-view key held): while R is down a
@@ -8682,7 +9167,8 @@ void DrawingCanvas::keyReleaseEvent(QKeyEvent *event)
     if (event->key() == Qt::Key_Space && !event->isAutoRepeat()) {
         m_spaceHeld = false;
         if (!m_panning)
-            setCursor(defaultCursorShape());
+            setCursor(toolCursor());
+        syncPointerOutline(); // the circle again (batch G)
         return;
     }
     if (event->key() == Qt::Key_R && !event->isAutoRepeat() && m_rotateHeld) {
@@ -8698,7 +9184,7 @@ void DrawingCanvas::dropRotateHold()
         return;
     m_rotateHeld = false;
     if (!m_panning && !m_rotating)
-        setCursor(defaultCursorShape());
+        setCursor(toolCursor());
     update(); // the indicator goes
 }
 
@@ -8765,7 +9251,7 @@ void DrawingCanvas::dropSpaceHold()
         return;
     m_spaceHeld = false;
     if (!m_panning)
-        setCursor(defaultCursorShape());
+        setCursor(toolCursor());
 }
 
 bool DrawingCanvas::transformUntouched() const
@@ -8801,6 +9287,42 @@ bool DrawingCanvas::event(QEvent *event)
         if (m_camDrag >= 0)
             shotCameraFinishDrag(); // a camera drag lands, like a stroke
     }
+    // WHERE THE POINTER IS (batch G): its moves say it (PointerWatch); its leaving the window
+    // altogether - for another program - only the Leave does.
+    switch (event->type()) {
+    case QEvent::Leave:
+        if (pointerEventCounts(event))
+            notePointerAway();
+        break;
+    // Whoever changed the canvas's cursor, the window shows it while the pen is over the
+    // canvas (syncWindowCursor).
+    case QEvent::CursorChange:
+        syncWindowCursor();
+        break;
+    // The circle's widget keeps the canvas's place and size, and shows with it.
+    case QEvent::Move:
+    case QEvent::Resize:
+        if (m_pointerOutline)
+            m_pointerOutline->setGeometry(geometry());
+        break;
+    case QEvent::Show:
+        if (m_pointerOutline) {
+            m_pointerOutline->setGeometry(geometry());
+            m_pointerOutline->show();
+            m_pointerOutline->raise();
+        }
+        break;
+    case QEvent::Hide:
+        m_pointerIn = false;
+        if (m_pointerOutline)
+            m_pointerOutline->hide();
+        break;
+    case QEvent::ParentChange:
+        delete m_pointerOutline.data(); // made again beside the canvas where it now is
+        break;
+    default:
+        break;
+    }
     return QWidget::event(event);
 }
 
@@ -8824,7 +9346,7 @@ void DrawingCanvas::focusOutEvent(QFocusEvent *event)
     // Losing focus mid-hold would otherwise leave the pan modifier stuck on.
     m_spaceHeld = false;
     if (!m_panning)
-        setCursor(defaultCursorShape());
+        setCursor(toolCursor());
     QWidget::focusOutEvent(event);
 }
 
@@ -9031,8 +9553,12 @@ void DrawingCanvas::mousePressEvent(QMouseEvent *event)
         || m_tool == SelectPoly;
     if (!onPaper(event->position()) && m_tool != Brush && m_tool != Eraser && !selecting)
         return;
-    if (!editableActiveLayer())
-        return; // locked / hidden / missing layer: ignore strokes, no cursor change
+    if (!editableActiveLayer()) {
+        // Locked / hidden / missing layer: the press changes nothing. Batch G: the cursor
+        // already said "not allowed" here; a lock or an eye says why, by the pointer.
+        sayEditRefused(event->position());
+        return;
+    }
 
     // Selection Modifier "Move" mode: with a live selection, dragging any
     // selection tool translates the OUTLINE only (never pixels).
@@ -9298,7 +9824,7 @@ void DrawingCanvas::mouseReleaseEvent(QMouseEvent *event)
     if (m_panning
         && (event->button() == Qt::MiddleButton || event->button() == Qt::LeftButton)) {
         m_panning = false;
-        setCursor(m_spaceHeld ? Qt::OpenHandCursor : defaultCursorShape());
+        setCursor(m_spaceHeld ? QCursor(Qt::OpenHandCursor) : toolCursor());
         return;
     }
     if (m_rotating && event->button() == Qt::LeftButton) {
@@ -9306,7 +9832,7 @@ void DrawingCanvas::mouseReleaseEvent(QMouseEvent *event)
         if (m_rotateHeld)
             setCursor(Qt::ArrowCursor);
         else
-            setCursor(defaultCursorShape());
+            setCursor(toolCursor());
         update(); // R let go during the drag: the indicator goes with it
         return;
     }
@@ -9528,6 +10054,8 @@ void DrawingCanvas::clearPenUiLatch()
 
 void DrawingCanvas::tabletEvent(QTabletEvent *event)
 {
+    // (Where the pen is - hovering above the Cintiq or drawing - PointerWatch has noted
+    // already, before this: batch G.)
     // THE PEN'S SIDE BUTTONS DO NOTHING ON THE CANVAS (the user, 2026-11-11). Windows
     // reports a press made with a side button held as Qt's right (or middle) button, and
     // with the Brush or the Eraser every press below started a stroke whatever its button:
@@ -9697,6 +10225,8 @@ void DrawingCanvas::tabletEvent(QTabletEvent *event)
             }
             beginBrushStroke(pt, event->pressure(), event->xTilt(), event->yTilt(),
                              event->rotation(), event->timestamp());
+        } else if (m_panel && !editableActiveLayer()) {
+            sayEditRefused(event->position()); // batch G: a lock or an eye says why
         }
         break;
     case QEvent::TabletMove:
