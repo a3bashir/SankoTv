@@ -1,5 +1,191 @@
 # SankoTV — Session Handoff Brief
 
+## STATUS 2026-11-22 (night): HAND TEST H READ (THREE RECORDINGS, THE RIGHT BUILD, NOTHING FAILED BESIDE THE USER'S OWN THREE POINTS); VIEW > DRAWING OVERLAYS WITH THE VEIL FIX COMMITTED ALONE (THIS COMMIT), PROVEN ALONE BY GATE P4; BATCH H AND THE EYEDROPPER'S POINTER ARE NOT COMMITTED
+THE USER (2026-11-22, after hand test H): "the veil as the margin's own outline is fine, and so is the grip waiting at
+the edge of the view when zoomed in. Two changes and one problem: 1. The Symmetry button sits BEFORE the colour on the
+tools bar, not after it. 2. The Symmetry icon: light grey when off, the same grey as its neighbours' icons, and white
+on the purple ground when on. 3. A glitch in step 32 (the Eyedropper with the Colors panel open and the Brush): while
+I picked a colour over the canvas, with the panel's dropper button, with I and with Alt, the dropper pointer kept
+flickering into the resize arrows of the Layers panel's or the timeline's edge, and sometimes into the normal arrow
+[...] During a pick, the dropper must be the only pointer over the canvas, steady, with the pen and with the mouse.
+Fix it with a check that reproduces it without depending on timing, and a red run. If every session ran the right
+build and nothing else failed: Commit and push View > Drawing Overlays with the veil fix and its HANDOFF notes,
+matching sha_P4_veil.txt. Make changes 1 and 2 in batch H, and fix 3 as its own change with its own hash list (or as
+part of batch H if the cause is in batch H; tell me which). [...] Don't commit batch H or the fix until my hand test
+passes."
+
+THE RECORDINGS (Documents\SankoTV-DevRecordings; every session made after 14:51 on 2026-11-22; system.txt of each
+says built Nov 22 2026 14:51:10, git ef23feef6+dirty, Release, Cintiq 22HD + DELL P2417H):
+- 20261122-191925, 1221 s: steps 1-25; ends at the quit that follows Ctrl+S (step 25).
+- 20261122-193955, 0 s, 6 lines: started and ended at once at the relaunch; nothing in it.
+- 20261122-193956, 585 s: steps 25-39; ends at Unsaved Changes > Discard (step 39).
+The title bar reads "SANKO TV — TEST COPY - small pirate, symmetry and veil" in both long sessions (screenshots at
+34 / 60 / 470 / 1218 s and at 3 / 57 / 300 / 580 s); from 40 to 51 s the third shows "TEST COPY - small pirate, panels
+and overlays", opened for step 26 and left again with Discard.
+
+HAND TEST H, STEP BY STEP (events and screenshots; the screenshots are 0.5 s apart and hold no mouse pointer, so a
+flicker between two of them, or a pointer's shape, cannot be read from them):
+- PART 1, THE VEIL (Scene 1 panel 1, margins 432 / 335; mouse first, then the pen): 1 PASS (R with the mouse to -55,
+  with the pen to 14; no full turn); 2 PASS (the slider to 31.5 and 94.5); 3 PASS (zoom by keys at 6.2, 15.3 and 24.9
+  degrees, by the slider at 31.5); 4 NOT AS WRITTEN (Space + pen pans at 262-269 s, but Ctrl+0 had put the turn back to
+  0 first); 5 PASS for the turn while flipped (no zoom while flipped); 6 PASS; 7 PASS in part (Scene 4 panel 1, top
+  margin 489: the zoom slider, the rotation slider to -94.5; not R, no zoom while turned). 32 sampled screenshots of
+  these stretches: both margins veiled, the frame clear, nothing else.
+- PART 2, SYMMETRY: 8 the tooltip read (36 s), the user's two changes; 9 PASS; 10 PASS (Shift+S six times; in the
+  layer's name editor "S" was typed - the layer is named "S" - and Symmetry did not change); 11 PASS (both sides live,
+  screenshot 556.2 s); 12 PASS (two circles); 13 PASS (612 s); 14 PASS (each Undo takes a mirrored pair, 729.7 /
+  730.7 / 731.7 s); 15 ten Eraser strokes, all ON the axis - the picture stays symmetric, a one-side erase is not in
+  the recording; 16 PASS (ellipses held out of a stroke on both sides,
+  592-599 s); 17 drawn with 206-1031 px brushes (37 strokes): the pen's samples reached the canvas every 7.0 ms in the
+  middle case with Symmetry on, as without; the slowest 5 % 16.5-19.3 ms (10.7-12.3 ms in the recordings of 2026-11-20
+  and -21, no Symmetry there), the longest 58 ms (51 ms) - how it FELT is in no recording, and the user did not say;
+  18 PASS; 19 PASS (six times); 20 PASS for zoom and turn (zoom 0.47, turned -69.75: the axis turns with the paper,
+  strokes mirrored across it; not panned or flipped with Symmetry on); 21 NOT IN THE RECORDINGS (never zoomed in past the paper's top with Symmetry on; the user's message
+  approves the behaviour); 22 Fill only (369-372 s: the button purple, no axis, no grip) - no selection tool, Move or
+  Camera tool picked in either session; 23 NOT TESTED (no selection made; Ctrl+D pressed many times with nothing
+  selected); 24 PASS ("Layer 1 is locked", nothing painted on either side); 25 PASS (axis 780 on Scene 5 and on Scene
+  1's wide stage alike; saved at axis 1194, on; after the restart on, purple, 1194); 26 PASS (the other project: off,
+  960; back: on, 1194); 27 thumbnails PASS; the preview was not played with Symmetry on.
+- PART 3, THE PANEL STEPS: 28 NOT AS WRITTEN (Ctrl+Z 15 times with the Library open - it stays open, as for any key;
+  the tools bar's Undo button was never clicked); 29 PASS (four times); 30 NOT TESTED; 31 PASS (Rename three times,
+  Import, the Studio: the Library is back each time); 32 picks with I (twice) and Alt (twice) took the colour and the
+  Colors panel stayed open - the panel's own dropper button was not pressed in the recording - and the pointer is the
+  user's point 3; 33 E PASS, G with the LIBRARY open PASS (four times), G with the Colors panel open not tested; 34
+  and 35: opening by the mouse PASS, closing a panel through its own entry not tested; 36 PASS (three times each way);
+  37 PASS (View > Grid); 38 PASS (557.7 s); 39 PASS (Discard).
+- SEEN BESIDE THE LIST: at 352.93 s one pen tap on the Brush button arrived as two presses 7 ms apart (the Colors
+  panel closed, the Library opened and closed again) - the pen's contact, not the panels' rule.
+
+THIS COMMIT: View > Drawing Overlays with the veil fix, exactly the five files of app/build/_probe/split/
+sha_P4_veil.txt (DrawingCanvas.h / .cpp, StoryboardPage.cpp / .h, ProjectLifecycleTest.cpp; staged from splitP4\*.P4
+by git hash-object, the tree itself keeps batch H on top), and these notes: this section, PART 1 of the section below,
+the section "2026-11-22 (later)" and the CHANGE 2 block of "2026-11-21 (evening)". Proof: gate P4 (scratch worktree at
+ef23feef6 + the five files; 2994 s, Release and Debug, 0 failing families; Lifecycle 1724, Camera 336, Brush Library
+187, Size Lock 170, Edge Lock 74, Dev Recorder 46, Quick Shape 19, Pixel Lock 13, Brush Lock 3) and hand test H's
+part 1. Batch H's notes (PART 2 of the section below) stay in the tree and come with its commit.
+
+NEXT (not in this commit): changes 1 and 2 in batch H; the eyedropper's pointer as its own change (its cause is not in
+batch H); checks with controls and red runs, a full gate each, a fresh TEST COPY and a short hand-test list.
+
+## STATUS 2026-11-22 (evening; IN THE TREE, NOT COMMITTED): THE USER'S ANSWERS BUILT - (1) THE VEIL FIX ON TOP OF VIEW > DRAWING OVERLAYS (POINT 4), (2) BATCH H, SYMMETRY (FIGMA H-1 657:735 APPROVED; THE USER'S OWN BUTTON 659:817), ON TOP OF THAT; ONE HAND TEST (H) COVERS THE VEIL, SYMMETRY AND THE PANEL STEPS LEFT OVER; NOTHING COMMITTED - WAITING FOR HAND TEST H
+THE USER'S WORDS (2026-11-22, after the report of the section below): "1. Drawing Overlays: fix first, then commit it
+with the fix. 2. Point 4: your plan is approved: the veil as one shape with a hole, filled odd-even, no subtraction; the
+check over stages with margins on two sides and on one side, every rotation in 0.5 degree steps at several zooms and
+flipped, in its area and in the canvas's picture; the red run with the old subtraction. 3. H-1 (657:735) is approved,
+with my answers: the Symmetry button on the tools bar, after the colour; the axis stays where I put it, for every panel,
+saved with the project; yes to the second, lighter circle where the mirrored stroke lands; a key: Shift+S toggles
+Symmetry - check that it's free first, and tell me if it isn't - add it to the button's tooltip; the button's design:
+use mine, Figma frame "Symmetry (new)", node 659:817 (the icon is 659:818) - export my icon exactly as drawn, keeping
+its proportions and colours, without redrawing it; 659:817 shows the button switched on, with its purple ground;
+switched off, it looks plain like its neighbours on the tools bar, with the same hover and pressed states; run the icon
+licence check on it. Everything else as shown in H-1. Build the veil fix on top of the Drawing Overlays change, with its
+own hash list, and batch H as its own change, with its own hash list. Checks with controls and red runs, quick check,
+full gate before stopping (every family green in both builds), a fresh TEST COPY, the exe stamp and one hand-test list
+[the veil while rotating and zooming on a stage with margins on two sides; batch H; the panel steps the last test did
+not cover]. Don't commit until my hand test passes."
+TWO CHANGES, TWO HASH LISTS (the commit split to come, in this order, on the user's word only):
+  A. View > Drawing Overlays WITH the veil fix: app/build/_probe/split/sha_P4_veil.txt (5 files: DrawingCanvas.h / .cpp,
+     StoryboardPage.cpp / .h, ProjectLifecycleTest.cpp), copies in splitP4\*.P4. Against sha_P3_gate.txt only
+     DrawingCanvas.cpp and the test differ. Its HANDOFF notes: PART 1 below, the section "2026-11-22 (later)" below
+     this one (the cause, the probes, the plan) and the CHANGE 2 block of "2026-11-21 (evening)".
+  B. Batch H on top: app/build/_probe/split/sha_H_gate.txt (the tree). Its HANDOFF notes: PART 2 below.
+
+PART 1 - THE VEIL FIX (DrawingCanvas.cpp only; the check in ProjectLifecycleTest.cpp):
+- drawingToolVeil no longer subtracts one path from another. The veil is THE MARGIN'S OWN OUTLINE, one path, one fill
+  (odd-even): stageMarginOutline(paper, frame) - a static function above it - cuts the paper into the grid the frame
+  makes (up to 3 x 3 cells; a side without a margin has no column or row), and walks the edges that have a margin cell
+  on one side only into closed loops, straight sides merged. A margin on every side: the paper's outline and the
+  frame's, the frame the hole - the approved shape. On two facing sides only: two strips. Otherwise an L, a U or one
+  strip. No edge is in it twice and none lies along a side where the frame is on the paper's own edge.
+- WHY NOT THE HOLE EVERYWHERE (the approved plan to the letter, built first and run): with the paper's outline and the
+  frame's as a hole where they share an edge, the veil's AREA was right in every view (0 of 7,210 per stage), but the
+  new check's picture measure read A HAIRLINE OF VEIL LEFT ALONG THE SHARED EDGE - up to 156 px in a picture, each
+  changed by 1 level of 255 (invisible; the two outlines on one line do not cancel exactly in the antialiased fill;
+  the frame's outline was already run the other way round) - in 125, 114, 71 and 58 of 204 pictures on the four
+  stages (p4_overlays_run1.txt / run2.txt in _probe/split; a failing new check, read before anything was changed: the
+  saved pictures do9_panelN_with_veil.png, and the measure of how much). The check asks that EVERY pixel the veil
+  changes lies on the margin, so the shape was made to have no shared edge at all rather than the measure loosened.
+  Reported to the user as the one departure from the approved wording.
+- NEW CHECK (do9), in runDrawingOverlaysPass (slice "overlays"), five checks - four stages and a control - on a
+  project "Turned" of five panels, each given its own margin (applyPanelMargin), flat paper: THE LEFT AND THE RIGHT
+  ONLY (432 and 335 px, the user's own panel), THE TOP AND THE BOTTOM ONLY (270), THE RIGHT ONLY (960), THE TOP ONLY
+  (300); control A MARGIN ON EVERY SIDE (480, 270). For each: (a) THE AREA at 721 rotations (-180 .. 180 in 0.5
+  degree steps) x five zooms (0.5, 0.85, 1, 1.37, 2) x plain and flipped = 7,210 views: marginVeilForTest() must hold
+  every place of a grid on each margin strip and none of a grid on the frame nor of a row off each side of the paper
+  (76 to 92 places, 24 px clear of every border); (b) THE PICTURE at 51 rotations (-180 .. 177.7 in 7.3 degree steps,
+  and 0) x two zooms (0.35, 0.5 - the stage whole in the canvas's short wide widget) x plain and flipped = 204
+  views, each grabbed with the veil and without it (setDrawingOverlayShown): the margin places darker, the frame and
+  gutter places the same, and every pixel that differs on a margin strip (1.5 screen px of grace for a strip's own
+  antialiased edge - a strip, not the frame: a hairline along a shared edge is on no strip). NO TIMING: a view is
+  set, the area and the picture are read at once (repaint + grab). The first wrong pair of pictures is saved beside
+  the project; the report line says how many views, pixels and levels.
+- RED RUN F (the old paper.subtracted(frame) back; p4_overlays_REDRUN_F.txt): the four stages FAIL - area wrong in
+  2,544 / 1,958 / 2,457 / 2,152 of 7,210 views (35 / 27 / 34 / 30 %), pictures wrong in 107 / 76 / 83 / 62 of 204, up
+  to 76,058 px off the margin by 51 levels (the veil's whole 20 %) - and the control PASSES (0 / 0). Marker removed,
+  grep "RED RUN" 0. Green: p4_overlays_green.txt, 59 checks, (do9) 0 wrong views, 0 px off the margin on all five.
+- THE OTHER PATH SUBTRACTIONS, read, unchanged: the Camera tool's dim (the widget's rect minus the camera's frame)
+  and m_cameraFrame's dim - no edge shared unless the frame lies exactly on the widget's edge (the stand-alone probe:
+  0 of 25,207 views); the Panel Strip thumbnail's veil (StoryboardPage.cpp, the well's rect minus the frame's quad) -
+  never turned with its rect, and right at every zoom when not turned (0 of 3,751); the two setClipPath subtractions
+  (the perspective's edge marks, Stage mode's art outline) - the widget's rect minus a shape inside it.
+- GATE P4 (this state alone, in the scratch worktree C:\SankoTV_p4 at ef23feef6 + the five files, the kill-less copy
+  of fullgate.sh): fullgate_P4.log, normal mode, 2994 s - Release and Debug, 0 FAILING FAMILIES; per build Lifecycle
+  1724 (1700 at gate PA + (do)'s and (do9)'s), Camera 336, Brush Library 187, Size Lock 170, Edge Lock 74, Dev
+  Recorder 46, Quick Shape 19, Pixel Lock 13, Brush Lock 3, all 0 FAIL. The five files equal sha_P4_veil.txt after
+  it (sha256sum -c, 5 OK). (The worktree was used once more afterwards, for the (po5) probe of PART 2; its test
+  file was put back from splitP4 and the five files verified again.)
+
+PART 2 - BATCH H, SYMMETRY: not in this commit. Its notes are in the tree's HANDOFF and come with batch H's commit.
+
+## STATUS 2026-11-22 (later; IN THE TREE, NOT COMMITTED): THE PANELS CHANGE IS ef23feef6, PUSHED; VIEW > DRAWING OVERLAYS STAYS UNCOMMITTED - POINT 4'S FLICKER IS ITS MARGIN VEIL, PROVEN ON THREE REAL BUILDS, REPORTED WITH A PLAN, NO CODE CHANGED; BATCH H: FIGMA FRAME H-1 (657:735) MADE - WAITING FOR THE USER ON ALL THREE
+COMMITTED: ef23feef6 "The Brush Library and the Colors panel close at a click outside them" (the section below is
+its note), pushed (origin/master = ef23feef6). The tree holds change 2 only: DrawingCanvas.h / .cpp,
+StoryboardPage.cpp / .h, ProjectLifecycleTest.cpp still equal sha_P3_gate.txt (sha256sum -c OK), plus this note and
+change 2's own notes in the section "2026-11-21 (evening)". The three scratch worktrees of today (C:\SankoTV_ponly,
+_pre_g, _p3) are removed; C:\SankoTV_probeB is an older one, left alone.
+POINT 4 - THE CAUSE, PROVEN (report only; nothing changed in the tree):
+- WHAT THE USER SAW (recording 20261121-201857, the right build): R held with the pen (4.2-11 s, 42-52 s), the Zoom
+  Toolbar's sliders, Ctrl+= / Ctrl+- x16 at 24.75 degrees. The recorder's numbers show no slowness: 120-130 paints
+  a second, the longest gap 54 ms. Its screenshots (a fresh render every 0.5 s) show the fault itself: t00005016
+  (15 degrees) and t00019017 (6 degrees) have the FRAME veiled grey and a MARGIN bright - the veil on the wrong area.
+- WHY: change 2's DrawingCanvas::drawingToolVeil = paper.subtracted(frame), both polygons through the view
+  transform. The user's panel has margins 432, 0, 335, 0 (left and right only): the frame's top and bottom edges lie
+  ON the paper's. Qt's path clipper does not hold with coincident edges once they are turned. The result flips
+  between right and wrong from one view to the next - the flicker and the "broken edges". Not turned, it is right
+  at every zoom; turned even 0.1 degree (a held R leaves 0.67, 1.2 ...) it is wrong at about a third of the zooms.
+- STAND-ALONE PROBE (app/build/_probe/split/veil_probe\, QtGui only, no window; results.txt): the user's stage,
+  every 0.1 degree at 7 zooms: wrong in 9,075 of 25,207 views (36 %), up to the whole paper. A margin on every side
+  (the fixture of (do4)): 0 - why no check saw it. The veil as it was before change 2 (the widget's rect minus the
+  camera's frame): 0 of 25,207, twice. An ODD-EVEN FILL of the two outlines (no path operation): 0 of 25,207.
+- REAL BUILDS (a temporary probe pass in scratch worktrees, never in the tree: a 2880 x 1080 stage - margins left
+  and right only - flat paper, the Brush, 181 rotations from -45 to 45 degrees at 3 zooms, 80 places read in the
+  canvas's picture: paper in the frame, veiled paper in the margin): the tree with change 2: WRONG VIEWS 162 of 543,
+  up to 80 of 80 places. ef23feef6 (batch G + the panels, before change 2): 0 of 543. 1dd0b6d06 (before batch G):
+  0 of 543. So: not batch G's circle on its own widget, not the panels - change 2's veil alone.
+- THE USER CAN SEE IT AT ONCE: View > Drawing Overlays > Margin Veil unticked - no veil, no flicker.
+THE PLAN (sent to the user; needs their OK before any code): 1 drawingToolVeil returns ONE path holding the paper's
+outline and the base framing's outline with Qt::OddEvenFill - no QPainterPath boolean operation (the frame lies
+inside the paper, so odd-even leaves it clear; exact at every turn and zoom). marginVeilForTest reads the same
+path. 2 A CHECK WITHOUT TIMING, (do9): stages with a margin on two sides only (left / right, and top / bottom) and
+on one side; every view rotation from -180 to 180 degrees in 0.5 degree steps at several zooms, and flipped: at a
+grid of places the veil's area must hold every margin place and no frame place, and at a spread of those views the
+canvas's picture must read paper in the frame and veiled paper in the margin. Positive control: a margin on every
+side. Red run: the path subtraction back - (do9) must fail at about a third of the views. 3 the other
+subtracted() calls read and noted (the Camera tool's dim and the Panel Strip's thumbnail veil: no shared edges
+turned; unchanged unless the user wants them alike). 4 quick check, full gate, a hand test of rotating and zooming
+on the Cintiq, then commit change 2 with the fix.
+WHY CHANGE 2 WAS NOT COMMITTED although the hand-test steps passed: the flicker the user reported in that same
+build is its defect; a push cannot be taken back; and the user answers anyway for H-1 and point 4. Their word
+decides: "commit it as gated" (then the fix is its own commit), or the fix first.
+BATCH H (the trial report's 7.1, the user's answer: vertical first): FIGMA FRAME H-1 = 657:735, "PROPOSAL 2026-11-22
+H-1 — Symmetry: a mirror axis for the Brush and the Eraser, vertical first (batch H, waits for your approval)",
+below G-1 in the area "Claude Code please Start new design here 002" (x 14670, y 12866, 1660 x 1806). Screenshot
+Documents\SankoTV-Design\figma-H1\H-1_657-735.png. It shows: the switch (A on the tools bar after the colour,
+recommended; B on the Size bar under Flip - both cloned from 33:110 and 209:42), the axis and its grip on the
+canvas with a stroke and its mirror, what a stroke does (both sides, one Undo, the Eraser too), the rules, and FOUR
+QUESTIONS: 1 where the switch goes, 2 the axis's place (one for every panel and saved with the project / each panel
+its own / the middle each time), 3 a second lighter circle for the pointer's mirror, 4 a key. NOTHING OF H IS BUILT.
+
 ## STATUS 2026-11-22: HAND TEST PO READ (SEVEN RECORDINGS, THE RIGHT BUILD, NOTHING FAILED); THE PANELS CHANGE - THE REWORK AND ITS FIXES - COMMITTED ALONE (THIS COMMIT), GATED ALONE IN A SCRATCH WORKTREE (GATE PA); VIEW > DRAWING OVERLAYS NOT COMMITTED: ITS MARGIN VEIL IS THE CAUSE OF THE FLICKER THE USER REPORTED (POINT 4) - WAITING FOR THE USER
 THE USER (2026-11-22): "Hand test PO done: all steps looked right"; my readings accepted (every close counts as
 closed, a keyboard menu entry closes nothing, a click that puts a menu away counts where it falls, the Panel Strip
@@ -177,8 +363,68 @@ The tree's difference from these copies is change 2 alone (diff checked: additio
 file the (do) pass, (cg3), (mg8), (kb1)'s setup, the slice). AT COMMIT TIME: gate this state alone in a scratch
 worktree first (as GA for batch G), commit it, then change 2.
 
-CHANGE 2 - POINT 3, VIEW > DRAWING OVERLAYS: built on top of change 1 and gated with it (gate P3, below); NOT in
-this commit - its own notes go with its own commit.
+CHANGE 2 - POINT 3, VIEW > DRAWING OVERLAYS (DrawingCanvas.h / .cpp, StoryboardPage.cpp / .h). No Figma frame: no
+new look - a submenu of tick entries like Camera Move Arrows, and overlays hidden; approved in words.
+- DrawingCanvas::DrawingOverlay { OverlayDepthOutline, OverlayCameraFrame, OverlayMarginVeil, OverlayStageBorder,
+  OverlayDepthNote } (in the public section - moc refuses an enum under "public slots"), m_drawingOverlays =
+  {false, false, true, true, true}, drawingOverlayDefault(), setDrawingOverlayShown(), drawingOverlayShown().
+- shotCameraFrameShown(v): the Camera tool always; a drawing tool only with OverlayCameraFrame (and then, as
+  before, with keys or a margin). paintShotCamera draws the frame's line only then. The move arrows lie on the
+  frame: shotCameraGlyphMotion returns none without it (a hovered Quick Move's, on its END, is unchanged - its
+  tiles are the Camera bar's).
+- drawingToolVeil(v): the paper (viewTransform of the canvas rect) minus the BASE framing - the stage margin only,
+  fixed; empty with the Camera tool, in Stage mode, without a margin, or with OverlayMarginVeil off. Until now:
+  rect() minus the camera's frame (the gutter veiled too, following the camera).
+- shotCameraBorderQuad(v, frameQuad): the Camera tool as before (shotCameraBaseQuad: not under the frame's own
+  line). A drawing tool, OverlayStageBorder on: the same while the frame shows; with the frame hidden the base
+  framing of a MARGIN project ALWAYS (also where the camera is on it - before, the frame's line was there), nothing
+  in a project without a margin (it would trace the paper's edge).
+- depthOutline(): false without OverlayDepthOutline - no dashed box, no tag, the chip's plain wording.
+  shotCameraDrawingViewChip(): false without OverlayDepthNote.
+- StoryboardPage: View > Drawing Overlays (QMenu "viewDrawingOverlays", after Camera Move Arrows), five checkable
+  actions "viewOverlayDepthOutline" ... "viewOverlayDepthNote"; settings storyboard/view/drawingOverlays/
+  depthOutline, cameraFrame, marginVeil, stageBorder, depthNote (app-wide - the same for every project), read when
+  the canvas is made. Statics drawingOverlayKey / Text / ActionName.
+- NOT TOUCHED: the Camera tool's own drawing; Stage mode; the safe-area guides (their own View entries); the Panel
+  Strip's thumbnails (they still outline the shot and veil outside it - told to the user).
+CHANGED CHECKS OF CHANGE 2 (found by a whole Lifecycle run on the new code, 3 failures, each read first - the
+behaviour they pinned is the one the user asked to change):
+- "(cg3) WITH A DRAWING TOOL (the frame outlined, a margin project): the same fixed line and the Push In glyph, at
+  the drawing tools' smaller size" -> "(cg3) WITH A DRAWING TOOL AND VIEW > DRAWING OVERLAYS > CAMERA FRAME TICKED
+  (the frame outlined, a margin project): the same fixed line and the Push In glyph, at the drawing tools' smaller
+  size" (the same condition; Camera Frame ticked on the canvas first). POSITIVE CONTROL (new): "(cg3) control
+  (2026-11-21): with Camera Frame unticked - the default - the drawing tool keeps the same fixed line and shows
+  no glyph and no frame".
+- (kb1)'s three checks keep their texts and conditions; the pass ticks Depth Outline on its canvas first (as (cg)
+  shows the arrows). Their control is (do6): unticked, none; ticked through the menu, back.
+- "(mg8) THE CANVAS with a drawing tool, no keys: the shot is outlined (16:9, 1 px) and the margin's white paper is
+  under the 20 % veil" (quad 4 corners, 16:9, the veil's grey) - it still PASSED, but its words were no longer
+  true (the camera's 1 px line is not drawn) -> "(mg8) THE CANVAS with a drawing tool, no keys: the shot (16:9) is
+  outlined by the dashed stage border - not by the camera's frame line, which is the Camera tool's (2026-11-21) -
+  and the margin's white paper is under the 20 % veil" (+ the border on the shot's quad, + no frame line).
+  POSITIVE CONTROL (new): "(mg8) control (2026-11-21): with View > Drawing Overlays > Camera Frame ticked the shot
+  is outlined by the camera's own line, as it was until then, and no separate border is drawn".
+NEW CHECKS: pass runDrawingOverlaysPass (do1)-(do8), slice "overlays" (with the camera guides, depth while moving
+and the stage margin passes); in the full run after runPanelsClickAwayPass. A margin project (480 x 270), three
+camera keys (base, 300 px right, pushed in 1.5), a layer at depth 150 %; state AND picture (an overlay isolated by
+a picture with it and one without). (do1) the submenu, its order and ticks, the canvas the same, nothing stored;
+(do2) no frame and no arrows with ten tools (Camera Move Arrows ticked) + control the Camera tool always + Camera
+Frame ticked / the arrows unticked / unticked again = the first picture pixel for pixel; (do3) seven tool switches
+and every entry ticked twice: keys, six evaluated frames, Animate, Stay Inside, the history and "changed" as they
+were; (do4) the veil at four places (right margin inside the camera's frame: veiled; base framing left by the
+camera: clear; left margin: veiled; gutter: clear) in its area and in the picture, and the very same area with
+the camera pushed in + control the Camera tool has none; (do5) the border on the base framing wherever the camera
+is, dashed, the pictures differing on its line only + control; (do6) no outline, no tag, the plain chip + control
+ticked + the Depth Note alone (the pictures differ in the chip's rect only); (do7) all five ticked the other way,
+the next launch on another project starts with them; (do8) a project without a margin: nothing + control.
+A NEW CHECK THAT FAILED FIRST, READ FIRST: (do2) counted purple pixels anywhere in the Brush's picture and found
+10. Looked at the picture (saved beside the project, do2_brush_default.png): the edge of a blue blob of the
+fixture's own art - not an overlay. The measure was wrong, not the code: it now counts purple within 2.5 px of the
+camera frame's own line (0 by default; 1508 with Camera Frame ticked; 2974 with the Camera tool).
+RED RUNS OF CHANGE 2 (overlays slice, 53 checks): D - the frame shown as before, the depth outline and the note
+ignoring their entries: 11 fail - (do2) x2, (do5) x2, (do6) x3, (do8), (cg3) control, (mg8) x2. E - the veil as
+before (outside the camera's frame), the border as before, the ticks not read at launch: 7 fail - (do4) x2, (do5)
+x2, (do7), (do8), (mg8). Markers removed, grep 0.
 QUICK CHECK (Release): Edge Lock 74, Camera 336, the whole Lifecycle family 1718 (1695 at gate PC; + 5 of change 1,
 + 18 of change 2) - all green, on the build before the date fix (texts only since); on the final files the slices
 panels 56, overlays 53, batchd 72, green.

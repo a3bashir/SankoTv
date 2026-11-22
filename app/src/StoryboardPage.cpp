@@ -3037,6 +3037,24 @@ void StoryboardPage::installDockViewActions()
             m_canvas->setCameraMoveArrowsShown(on);
         sankoSettings().setValue(kCameraMoveArrowsKey, on);
     });
+    // DRAWING OVERLAYS (the user's point 3, 2026-11-21): what a drawing tool shows of the
+    // camera and the stage, an entry each - Depth Outline and Camera Frame off until ticked,
+    // Margin Veil, Stage Border and Depth Note on. The ticks are the app's: remembered, the
+    // same for every project. The Camera tool always shows its own frame.
+    QMenu *overlaysMenu = viewMenu->addMenu(QStringLiteral("Drawing Overlays"));
+    overlaysMenu->setObjectName(QStringLiteral("viewDrawingOverlays"));
+    for (int i = 0; i < DrawingCanvas::DrawingOverlayCount; ++i) {
+        const auto which = DrawingCanvas::DrawingOverlay(i);
+        QAction *a = overlaysMenu->addAction(drawingOverlayText(which));
+        a->setObjectName(drawingOverlayActionName(which));
+        a->setCheckable(true);
+        a->setChecked(m_canvas ? m_canvas->drawingOverlayShown(which) : DrawingCanvas::drawingOverlayDefault(which));
+        connect(a, &QAction::triggered, this, [this, which](bool on) {
+            if (m_canvas)
+                m_canvas->setDrawingOverlayShown(which, on);
+            sankoSettings().setValue(drawingOverlayKey(which), on);
+        });
+    }
     // THE STAGE BACKGROUND (batch E, Figma E-1; the user's answer A): the paper's colour on
     // the canvas only - the same submenu as on the canvas's right-click.
     if (m_canvas)
@@ -3322,6 +3340,12 @@ QWidget *StoryboardPage::createCenterColumn()
     });
     // View > Camera Move Arrows, as last chosen (batch C: off until ticked).
     m_canvas->setCameraMoveArrowsShown(sankoSettings().value(kCameraMoveArrowsKey, false).toBool());
+    // View > Drawing Overlays, as last ticked (2026-11-21; each entry's own default until then).
+    for (int i = 0; i < DrawingCanvas::DrawingOverlayCount; ++i) {
+        const auto which = DrawingCanvas::DrawingOverlay(i);
+        m_canvas->setDrawingOverlayShown(
+            which, sankoSettings().value(drawingOverlayKey(which), DrawingCanvas::drawingOverlayDefault(which)).toBool());
+    }
     connect(m_canvas, &DrawingCanvas::contentChanged, this, [this] {
         refreshCurrentThumb(); // debounced; also refreshes the row preview
     });
@@ -5471,6 +5495,36 @@ bool StoryboardPage::clearStageOnPlay() const
 // --- The floating toolbars shown or hidden; the camera's arrows (batch C) ------------
 
 const QString StoryboardPage::kCameraMoveArrowsKey = QStringLiteral("storyboard/view/cameraMoveArrows");
+
+// View > Drawing Overlays (the user's point 3, 2026-11-21), in the submenu's order.
+namespace {
+struct DrawingOverlayEntry
+{
+    const char *text; // the entry
+    const char *name; // the setting's last part, and the action's after "viewOverlay"
+};
+const DrawingOverlayEntry kDrawingOverlays[DrawingCanvas::DrawingOverlayCount] = {
+    {"Depth Outline", "DepthOutline"}, {"Camera Frame", "CameraFrame"}, {"Margin Veil", "MarginVeil"},
+    {"Stage Border", "StageBorder"},   {"Depth Note", "DepthNote"},
+};
+} // namespace
+
+QString StoryboardPage::drawingOverlayText(DrawingCanvas::DrawingOverlay which)
+{
+    return QString::fromLatin1(kDrawingOverlays[which].text);
+}
+
+QString StoryboardPage::drawingOverlayActionName(DrawingCanvas::DrawingOverlay which)
+{
+    return QStringLiteral("viewOverlay") + QString::fromLatin1(kDrawingOverlays[which].name);
+}
+
+QString StoryboardPage::drawingOverlayKey(DrawingCanvas::DrawingOverlay which)
+{
+    QString name = QString::fromLatin1(kDrawingOverlays[which].name);
+    name[0] = name.at(0).toLower();
+    return QStringLiteral("storyboard/view/drawingOverlays/") + name;
+}
 
 QString StoryboardPage::toolbarKey(Toolbar bar)
 {

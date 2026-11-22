@@ -415,6 +415,12 @@ public:
     QWidget *toolbarWindowForTest(Toolbar bar) const { return toolbarWindow(bar); }
     static QString toolbarKey(Toolbar bar);    // the ticks' settings
     static const QString kCameraMoveArrowsKey; // View > Camera Move Arrows' setting
+    // VIEW > DRAWING OVERLAYS (the user's point 3, 2026-11-21; DrawingCanvas::DrawingOverlay):
+    // each entry's setting - the ticks are the app's, the same for every project - its text
+    // in the submenu, and its action's name ("viewOverlay...").
+    static QString drawingOverlayKey(DrawingCanvas::DrawingOverlay which);
+    static QString drawingOverlayText(DrawingCanvas::DrawingOverlay which);
+    static QString drawingOverlayActionName(DrawingCanvas::DrawingOverlay which);
     // THE PANEL STRIP'S BACKGROUND (STRIP-1, approved 2026-11-18): the colour behind the panels
     // in the strip - its ground and the cells behind the thumbnails (on a light ground an
     // unselected cell's edge a shade darker) - on screen only: never a panel, a thumbnail's

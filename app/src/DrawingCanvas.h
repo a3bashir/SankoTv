@@ -129,6 +129,37 @@ public:
     bool isCameraFrameEnabled() const { return m_cameraFrame; }
     bool isSafeAreaEnabled() const { return m_safeArea; }
     bool isTitleSafeEnabled() const { return m_titleSafe; }
+    // VIEW > DRAWING OVERLAYS (the user's point 3, 2026-11-21): what a DRAWING tool - every
+    // tool but the Camera - shows of the camera and the stage; each an entry of its own, the
+    // same for every project. The Camera tool always shows its own frame, whatever these
+    // say, and none of them changes the camera, its keys or its settings.
+    //  - OverlayDepthOutline (off): the Move tool's dashed box where the shot puts a layer
+    //    with depth, its tag, and the chip's "dashed: ..." wording.
+    //  - OverlayCameraFrame (off): the camera's frame - its purple or amber line - and, with
+    //    View > Camera Move Arrows, its arrows.
+    //  - OverlayMarginVeil (on): the light veil over the stage margin - the margin only,
+    //    fixed to the stage (until 2026-11-21 it lay outside the camera's frame, following it).
+    //  - OverlayStageBorder (on): the dashed white border of the base framing, in a project
+    //    with a stage margin.
+    //  - OverlayDepthNote (on): the chip "Drawing view · depth shows with the Camera tool".
+    enum DrawingOverlay {
+        OverlayDepthOutline,
+        OverlayCameraFrame,
+        OverlayMarginVeil,
+        OverlayStageBorder,
+        OverlayDepthNote,
+        DrawingOverlayCount
+    };
+    static bool drawingOverlayDefault(DrawingOverlay which)
+    {
+        return which == OverlayMarginVeil || which == OverlayStageBorder || which == OverlayDepthNote;
+    }
+    void setDrawingOverlayShown(DrawingOverlay which, bool shown);
+    bool drawingOverlayShown(DrawingOverlay which) const { return m_drawingOverlays[which]; }
+    // What the paint draws of them, widget px (the checks): the veil's area - empty when none
+    // is drawn; is the camera's frame line drawn.
+    QPainterPath marginVeilForTest() const { return drawingToolVeil(shotCameraView()); }
+    bool cameraFrameDrawnForTest() const { return shotCameraFrameShown(shotCameraView()); }
 
     // THE SHOT CAMERA ON THE CANVAS (Phase 1B, 2026-10-25). The workspace
     // tells the canvas, through this provider, what the scene's camera is
@@ -1316,6 +1347,8 @@ private:
     mutable class QSvgRenderer *m_rotationArcs = nullptr;        // the fills; made on first use
     mutable class QSvgRenderer *m_rotationArcsOutline = nullptr; // the outline's stroke; the same
     bool m_moveArrowsShown = false; // View > Camera Move Arrows, off by default
+    // View > Drawing Overlays, in DrawingOverlay's order (drawingOverlayDefault says the same).
+    bool m_drawingOverlays[DrawingOverlayCount] = {false, false, true, true, true};
 
     // Canvas VIEW transforms (display only — the layer pixels, flattenedPixmap,
     // save, and export are never rotated/flipped/zoomed). Applied as one
@@ -1504,6 +1537,11 @@ private:
     // where; a canvas-px travel as a widget-space unit direction.
     bool shotCameraFrameShown(const ShotCameraView &v) const;
     QPolygonF shotCameraBaseQuad(const QPolygonF &frameQuad) const;
+    // View > Drawing Overlays (2026-11-21): the dashed border the paint draws - the Camera
+    // tool's base framing, or a drawing tool's stage border; a drawing tool's veil over the
+    // stage margin, widget px (empty: none).
+    QPolygonF shotCameraBorderQuad(const ShotCameraView &v, const QPolygonF &frameQuad) const;
+    QPainterPath drawingToolVeil(const ShotCameraView &v) const;
     shotcam::Motion shotCameraGlyphMotion(const ShotCameraView &v, bool *onEnd) const;
     QPointF motionWidgetDir(const QPointF &canvasTravel) const;
     QPainterPath motionGlyphStrokes(const QPolygonF &quad, const shotcam::Motion &motion,

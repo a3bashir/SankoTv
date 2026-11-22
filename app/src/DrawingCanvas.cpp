@@ -1231,9 +1231,147 @@ QPolygonF DrawingCanvas::shotCameraWidgetQuad(const shotcam::CameraState &s) con
 
 bool DrawingCanvas::shotCameraFrameShown(const ShotCameraView &v) const
 {
-    // The frame's own rule (paintShotCamera): with the Camera tool; with a
-    // drawing tool when the scene has keys or the stage a margin.
-    return v.valid && (m_tool == Camera || v.sceneHasKeys || stage().hasMargin());
+    // The frame's own rule (paintShotCamera): with the Camera tool, always. With a drawing
+    // tool only when View > Drawing Overlays > Camera Frame is ticked (the user's point 3,
+    // 2026-11-21: off by default) - and then, as it always was, when the scene has keys or
+    // the stage a margin.
+    return v.valid
+        && (m_tool == Camera
+            || (m_drawingOverlays[OverlayCameraFrame] && (v.sceneHasKeys || stage().hasMargin())));
+}
+
+// The dashed white border the paint draws. The Camera tool: the base framing, unless the
+// frame sits on it (it would hide under the frame's own line). A drawing tool (View > Drawing
+// Overlays > Stage Border): the same while the camera's frame shows; with the frame hidden
+// - the default - the base framing of a margin project, always (there is no frame over it),
+// and nothing in a project without a margin (it would only trace the paper's edge).
+QPolygonF DrawingCanvas::shotCameraBorderQuad(const ShotCameraView &v, const QPolygonF &frameQuad) const
+{
+    if (!v.valid)
+        return QPolygonF();
+    if (m_tool == Camera)
+        return shotCameraBaseQuad(frameQuad);
+    if (!m_drawingOverlays[OverlayStageBorder])
+        return QPolygonF();
+    if (shotCameraFrameShown(v))
+        return shotCameraBaseQuad(frameQuad);
+    return stage().hasMargin() ? shotCameraWidgetQuad(shotcam::neutral(stage())) : QPolygonF();
+}
+
+// THE OUTLINE OF A STAGE'S MARGIN - the paper outside the base framing - in canvas px
+// (2026-11-22, the margin veil's shape): a closed loop for each piece of it, clockwise, a hole
+// the other way round; no edge twice, and none along a side where the frame lies on the
+// paper's own edge. A margin on every side: the paper's outline and the frame's, a hole. On
+// two facing sides only: two strips. Otherwise an L, a U, or one strip. (The frame cuts the
+// paper into a grid of up to 3 x 3 cells; a side without a margin has no column or row. An
+// edge of the outline is a cell's side with no margin cell beyond it.)
+static QVector<QPolygonF> stageMarginOutline(const QSize &paper, const QRect &frame)
+{
+    const int frameRight = frame.left() + frame.width(), frameBottom = frame.top() + frame.height();
+    QVector<int> xs{0}, ys{0};
+    for (int x : {frame.left(), frameRight, paper.width()})
+        if (x > xs.last())
+            xs.append(x);
+    for (int y : {frame.top(), frameBottom, paper.height()})
+        if (y > ys.last())
+            ys.append(y);
+    const int nx = xs.size() - 1, ny = ys.size() - 1;
+    auto margin = [&](int i, int j) { // a cell of the margin: on the paper, and not the frame
+        if (i < 0 || j < 0 || i >= nx || j >= ny)
+            return false;
+        return !(xs.at(i) == frame.left() && xs.at(i + 1) == frameRight && ys.at(j) == frame.top()
+                 && ys.at(j + 1) == frameBottom);
+    };
+    struct Edge
+    {
+        QPoint from, to;
+    };
+    QVector<Edge> edges;
+    for (int j = 0; j < ny; ++j)
+        for (int i = 0; i < nx; ++i) {
+            if (!margin(i, j))
+                continue;
+            const QPoint tl(xs.at(i), ys.at(j)), tr(xs.at(i + 1), ys.at(j)), br(xs.at(i + 1), ys.at(j + 1)),
+                bl(xs.at(i), ys.at(j + 1));
+            if (!margin(i, j - 1))
+                edges.append({tl, tr});
+            if (!margin(i + 1, j))
+                edges.append({tr, br});
+            if (!margin(i, j + 1))
+                edges.append({br, bl});
+            if (!margin(i - 1, j))
+                edges.append({bl, tl});
+        }
+    QVector<QPolygonF> loops;
+    QVector<bool> used(edges.size(), false);
+    for (int first = 0; first < edges.size(); ++first) {
+        if (used.at(first))
+            continue;
+        QVector<QPoint> corners;
+        for (int at = first; at >= 0;) {
+            used[at] = true;
+            corners.append(edges.at(at).from);
+            int next = -1;
+            for (int k = 0; k < edges.size() && next < 0; ++k)
+                if (!used.at(k) && edges.at(k).from == edges.at(at).to)
+                    next = k;
+            at = next;
+        }
+        // A straight side keeps its two ends only.
+        QPolygonF loop;
+        const int n = corners.size();
+        for (int k = 0; k < n; ++k) {
+            const QPoint before = corners.at((k + n - 1) % n), here = corners.at(k), after = corners.at((k + 1) % n);
+            const bool straight = (before.x() == here.x() && here.x() == after.x())
+                || (before.y() == here.y() && here.y() == after.y());
+            if (!straight)
+                loop << QPointF(here);
+        }
+        if (loop.size() >= 4)
+            loops.append(loop);
+    }
+    return loops;
+}
+
+// A drawing tool's veil (the user's decision D5: the margin reads as off camera and still
+// takes strokes) - over THE STAGE MARGIN ONLY, fixed: the paper outside the base framing,
+// wherever the camera is (the user's point 3, 2026-11-21; until then everything outside the
+// camera's frame, the gutter with it, following the camera). View > Drawing Overlays >
+// Margin Veil.
+QPainterPath DrawingCanvas::drawingToolVeil(const ShotCameraView &v) const
+{
+    QPainterPath veil;
+    if (!v.valid || m_tool == Camera || m_stageMode || !stage().hasMargin()
+        || !m_drawingOverlays[OverlayMarginVeil])
+        return veil;
+    // THE MARGIN'S OWN OUTLINE, ONE FILL, NO PATH SUBTRACTION (the user's point 4,
+    // 2026-11-22: the canvas flickered and its edges looked broken while the view was turned
+    // or zoomed). Until then this was paper.subtracted(frame). On a stage with a margin on
+    // two sides only, or on one, the frame's other edges lie exactly ON the paper's, and Qt's
+    // path clipper goes wrong with coincident edges once the view is turned by any amount:
+    // the veil came out as the wrong area - the frame veiled, a margin bright - in about a
+    // third of the views, right in one and wrong in the next (measured: 162 of 543 views in
+    // this build, 9,075 of 25,207 stand-alone; 0 with a margin on every side). So no boolean
+    // operation: with a margin on every side the paper's outline and the frame's inside it,
+    // filled odd-even - one shape, the frame its hole. Where the frame lies on the paper's
+    // edge the outline simply does not go along that edge (stageMarginOutline): the first
+    // build drew the hole there too, the two outlines on one line, and (do9) read a hairline
+    // of veil, 1 level of 255, left along it in the antialiased fill.
+    const QTransform view = viewTransform();
+    veil.setFillRule(Qt::OddEvenFill);
+    for (const QPolygonF &loop : stageMarginOutline(canvasSize(), stage().frameRect())) {
+        veil.addPolygon(view.map(loop));
+        veil.closeSubpath();
+    }
+    return veil;
+}
+
+void DrawingCanvas::setDrawingOverlayShown(DrawingOverlay which, bool shown)
+{
+    if (which < 0 || which >= DrawingOverlayCount || m_drawingOverlays[which] == shown)
+        return;
+    m_drawingOverlays[which] = shown;
+    update();
 }
 
 QPolygonF DrawingCanvas::shotCameraBaseQuad(const QPolygonF &frameQuad) const
@@ -1255,13 +1393,17 @@ shotcam::Motion DrawingCanvas::shotCameraGlyphMotion(const ShotCameraView &v, bo
 {
     if (onEnd)
         *onEnd = false;
-    if (!shotCameraFrameShown(v))
+    // Where the paint draws the camera at all: the Camera tool, or a scene with keys, or a
+    // stage with a margin.
+    if (!v.valid || !(m_tool == Camera || v.sceneHasKeys || stage().hasMargin()))
         return shotcam::Motion();
     if (v.previewValid) { // a Quick Move under the pointer: the move it would make
         if (onEnd)
             *onEnd = true;
         return shotcam::motionBetween(v.previewStart, v.previewEnd, stage());
     }
+    if (!shotCameraFrameShown(v)) // the arrows lie on the frame: none without it (2026-11-21)
+        return shotcam::Motion();
     if (m_camDrag >= 0) // the frame is being dragged: the keys are about to change
         return shotcam::Motion();
     return v.motion;
@@ -1304,10 +1446,11 @@ void DrawingCanvas::paintMotionGlyphs(QPainter &painter, const QPolygonF &quad,
 
 QPolygonF DrawingCanvas::shotCameraBaseQuadForTest() const
 {
+    // As the paint draws it: nowhere the paint draws no camera at all.
     const ShotCameraView v = shotCameraView();
-    if (!shotCameraFrameShown(v))
+    if (!v.valid || !(m_tool == Camera || v.sceneHasKeys || stage().hasMargin()))
         return QPolygonF();
-    return shotCameraBaseQuad(shotCameraWidgetQuad(shotCameraShownState(v)));
+    return shotCameraBorderQuad(v, shotCameraWidgetQuad(shotCameraShownState(v)));
 }
 
 QVariantMap DrawingCanvas::shotCameraGuidesForTest() const
@@ -1637,17 +1780,20 @@ void DrawingCanvas::paintShotCamera(QPainter &painter)
             tint.setAlpha(26); // 10 %
             painter.fillPath(inside, tint);
         }
-    } else if (margin) {
-        // A drawing tool: the margin under a light veil (the user's decision
-        // D5) - it reads as off camera and still takes strokes.
-        QPainterPath outside;
-        outside.addRect(QRectF(rect()));
-        painter.fillPath(outside.subtracted(inside), shotcam::kStageVeil);
+    } else if (const QPainterPath veil = drawingToolVeil(v); !veil.isEmpty()) {
+        // A drawing tool: the stage margin under a light veil (drawingToolVeil) - fixed to
+        // the stage, wherever the camera is.
+        painter.fillPath(veil, shotcam::kStageVeil);
     }
+    // A DRAWING TOOL (the user's point 3, 2026-11-21) shows the camera's frame - its purple
+    // or amber line - and its move arrows only with View > Drawing Overlays > Camera Frame;
+    // they are the Camera tool's. Switching tools changes nothing of the camera itself.
+    const bool frameShown = shotCameraFrameShown(v);
     // THE ORIGINAL CANVAS BORDER (2026-11-06, Figma CAM-1 option A): the
     // base framing, fixed to the stage, 1 px dashed 4 / 3 in white at 55 %,
-    // over the dim and the veil - where every move starts from.
-    const QPolygonF base = shotCameraBaseQuad(quad);
+    // over the dim and the veil - where every move starts from. A drawing tool's is View >
+    // Drawing Overlays > Stage Border (shotCameraBorderQuad).
+    const QPolygonF base = shotCameraBorderQuad(v, quad);
     if (base.size() == 4) {
         QPen dashed(QColor(255, 255, 255, 140), 1.0, Qt::CustomDashLine);
         dashed.setDashPattern({4.0, 3.0});
@@ -1658,11 +1804,13 @@ void DrawingCanvas::paintShotCamera(QPainter &painter)
     }
     // 1 px with a drawing tool in a margin project (Q5): never the Camera
     // tool's 1.5 px frame with handles.
-    QPen outline(accent, (!tool && margin) ? 1.0 : 1.5);
-    outline.setJoinStyle(Qt::MiterJoin);
-    painter.setPen(outline);
-    painter.setBrush(Qt::NoBrush);
-    painter.drawPolygon(quad);
+    if (frameShown) {
+        QPen outline(accent, (!tool && margin) ? 1.0 : 1.5);
+        outline.setJoinStyle(Qt::MiterJoin);
+        painter.setPen(outline);
+        painter.setBrush(Qt::NoBrush);
+        painter.drawPolygon(quad);
+    }
 
     // A QUICK MOVE under the pointer (Phase 1D): START solid, END dashed,
     // and an arrow from centre to centre when the frame travels.
@@ -1815,6 +1963,10 @@ QString DrawingCanvas::drawingViewChipText() const
 // the box while it moves, scales or turns. Lifted rows of different depths show none.
 bool DrawingCanvas::depthOutline(QPolygonF *quad, double *depth, QString *name) const
 {
+    // View > Drawing Overlays > Depth Outline (the user's point 3, 2026-11-21): off by
+    // default - no box, no tag, and the chip keeps its plain wording.
+    if (!m_drawingOverlays[OverlayDepthOutline])
+        return false;
     if (m_tool != Move || !m_xformActive || !m_panel || m_xformLayerIds.isEmpty() || m_quad.size() != 4)
         return false;
     const ShotCameraView v = shotCameraView();
@@ -1880,7 +2032,8 @@ void DrawingCanvas::setChipObstacles(const QVector<QWidget *> &bars)
 
 bool DrawingCanvas::shotCameraDrawingViewChip() const
 {
-    if (m_tool == Camera || !m_panel)
+    // View > Drawing Overlays > Depth Note (2026-11-21): on by default.
+    if (m_tool == Camera || !m_panel || !m_drawingOverlays[OverlayDepthNote])
         return false;
     const ShotCameraView v = shotCameraView();
     return v.valid && shotcam::layeredShot(*m_panel, shotCameraShownState(v), stage());

@@ -16521,15 +16521,30 @@ void runCameraGuidesPass(const QString &scratch)
           guidesUp && onCanvas > 0, QStringLiteral("guides %1, %2 accent pixels").arg(guidesUp).arg(onCanvas));
 
     // --- (cg3) with a drawing tool ------------------------------------------------
+    // The frame and its glyphs are the Camera tool's since 2026-11-21 (the user's point 3): a
+    // drawing tool shows them with View > Drawing Overlays > Camera Frame ticked - ticked on
+    // this canvas from here on (nothing stored). Unticked, the default, it keeps the fixed
+    // line - the stage border - and shows no glyph: the control.
     brushBtn->click();
     pump(150);
     at(0, f0 / 2);
+    const Read dPlain = read();
+    const bool plainFrame = r.canvas->cameraFrameDrawnForTest();
+    r.canvas->setDrawingOverlayShown(DrawingCanvas::OverlayCameraFrame, true);
+    pump(60);
     const Read dIn = read();
-    check(QStringLiteral("(cg3) WITH A DRAWING TOOL (the frame outlined, a margin project): the same fixed "
-                         "line and the Push In glyph, at the drawing tools' smaller size"),
+    const bool tickedFrame = r.canvas->cameraFrameDrawnForTest();
+    check(QStringLiteral("(cg3) WITH A DRAWING TOOL AND VIEW > DRAWING OVERLAYS > CAMERA FRAME TICKED (the frame "
+                         "outlined, a margin project): the same fixed line and the Push In glyph, at the drawing "
+                         "tools' smaller size"),
           same(dIn.base, pIn.base) && dIn.g.value(QStringLiteral("zoom")).toInt() == 1
               && !dIn.g.value(QStringLiteral("big")).toBool(),
           says(dIn.g));
+    check(QStringLiteral("(cg3) control (2026-11-21): with Camera Frame unticked - the default - the drawing tool "
+                         "keeps the same fixed line and shows no glyph and no frame"),
+          same(dPlain.base, pIn.base) && !dPlain.g.value(QStringLiteral("drawn")).toBool()
+              && dPlain.g.value(QStringLiteral("zoom")).toInt() == 0 && !plainFrame && tickedFrame,
+          QStringLiteral("frame unticked %1, ticked %2 [%3]").arg(plainFrame).arg(tickedFrame).arg(says(dPlain.g)));
     // Control: no margin and no keys - no frame is drawn, so neither guide.
     r.storyboard->applyCameraForUndo(scene, shotcam::SceneCamera());
     r.window.setStageMarginForTest(QSize(0, 0));
@@ -17490,19 +17505,36 @@ void runStageMarginPass(const QString &scratch)
     r.storyboard->setStageMargin(QSize(480, 270)); // repaints with the keys gone
     pump(150);
 
-    // The canvas with a drawing tool: the shot outlined, the margin veiled.
+    // The canvas with a drawing tool: the shot's base framing under the dashed stage border,
+    // the margin veiled. (Until 2026-11-21 the camera's own 1 px frame outlined it; a drawing
+    // tool shows that only with View > Drawing Overlays > Camera Frame - the control.)
     const QPolygonF quad = r.canvas->shotCameraQuadForTest();
+    const QPolygonF border = r.canvas->shotCameraBaseQuadForTest();
+    const bool frameLine = r.canvas->cameraFrameDrawnForTest();
+    bool borderOnShot = quad.size() == 4 && border.size() == 4;
+    for (int i = 0; i < 4 && borderOnShot; ++i)
+        borderOnShot = QLineF(quad.at(i), border.at(i)).length() <= 0.5;
     const QImage grab = r.canvas->grab().toImage();
     QColor veiled;
     if (quad.size() == 4) // the margin's paper, outside the frame's top-left corner
         veiled = grab.pixelColor((quad.boundingRect().topLeft() + QPointF(-20, -20)).toPoint());
-    check(QStringLiteral("(mg8) THE CANVAS with a drawing tool, no keys: the shot is outlined "
-                         "(16:9, 1 px) and the margin's white paper is under the 20 % veil"),
-          quad.size() == 4
+    check(QStringLiteral("(mg8) THE CANVAS with a drawing tool, no keys: the shot (16:9) is outlined by the dashed "
+                         "stage border - not by the camera's frame line, which is the Camera tool's (2026-11-21) "
+                         "- and the margin's white paper is under the 20 % veil"),
+          quad.size() == 4 && borderOnShot && !frameLine
               && qAbs(quad.boundingRect().width() / quad.boundingRect().height() - 16.0 / 9.0) < 0.01
               && veiled.red() >= 190 && veiled.red() <= 215,
-          QStringLiteral("quad %1x%2, margin paper %3").arg(quad.boundingRect().width())
-              .arg(quad.boundingRect().height()).arg(veiled.name()));
+          QStringLiteral("quad %1x%2, the border on it %3, the frame's line %4, margin paper %5")
+              .arg(quad.boundingRect().width()).arg(quad.boundingRect().height()).arg(borderOnShot).arg(frameLine)
+              .arg(veiled.name()));
+    r.canvas->setDrawingOverlayShown(DrawingCanvas::OverlayCameraFrame, true);
+    pump(60);
+    const bool framed = r.canvas->cameraFrameDrawnForTest() && r.canvas->shotCameraBaseQuadForTest().isEmpty();
+    r.canvas->setDrawingOverlayShown(DrawingCanvas::OverlayCameraFrame, false);
+    pump(60);
+    check(QStringLiteral("(mg8) control (2026-11-21): with View > Drawing Overlays > Camera Frame ticked the shot is "
+                         "outlined by the camera's own line, as it was until then, and no separate border is drawn"),
+          framed && !r.canvas->cameraFrameDrawnForTest());
     check(QStringLiteral("(mg8) control: without the margin (and no keys) nothing was outlined"),
           !quadBefore);
     r.canvas->setTool(DrawingCanvas::Camera);
@@ -26443,6 +26475,11 @@ void runDepthWhileMovingPass(const QString &scratch)
         }
         clickThumb(r, 0);
         pump(100);
+        // The outline is View > Drawing Overlays > Depth Outline since 2026-11-21 (the user's
+        // point 3), off by default. (kb1) is about the outline, so it ticks it on this canvas
+        // (nothing stored); (do6) reads it unticked, and ticked through the menu.
+        r.canvas->setDrawingOverlayShown(DrawingCanvas::OverlayDepthOutline, true);
+        pump(60);
         auto toW = [&](const QPointF &c) { return r.canvas->viewTransformForTest().map(c); };
         // Purple pixels (the outline's #7c6ef6) along a canvas-px segment, as drawn; the
         // first one's place and colour in *where (for a failing check).
@@ -27476,6 +27513,873 @@ void runPanelsClickAwayPass(const QString &scratch)
     }
     r.storyboard->setPointerDeviceForTest(-1);
     r.window.markCleanForTest();
+}
+
+// VIEW > DRAWING OVERLAYS (the user's point 3, approved 2026-11-21, from the hand test of
+// batch G). With a drawing tool - every tool but the Camera - the camera's frame, its purple
+// or amber line and its move arrows are hidden: they are the Camera tool's. The Move tool's
+// dashed depth outline, its tag and the chip's "dashed: ..." wording are hidden. The veil lies
+// over the stage margin only, fixed, no longer following the camera. The dashed white stage
+// border of a margin project and the chip "Drawing view · depth shows with the Camera tool"
+// stay. Each is an entry of View > Drawing Overlays, remembered for every project; switching
+// tools never changes the camera, its keys or its settings. Read through the canvas's own
+// drawing state AND in its picture - an overlay isolated by a picture with it and one without.
+void runDrawingOverlaysPass(const QString &scratch)
+{
+    using namespace workspace;
+    out() << "--- (do) View > Drawing Overlays: what a drawing tool shows of the camera and the stage ---"
+          << Qt::endl;
+    const QString dir = scratch + QStringLiteral("/overlays");
+    QDir(dir).removeRecursively();
+    QDir().mkpath(dir);
+    const QString project = writeProject(dir, QStringLiteral("Overlays"), QSize(1920, 1080), 24, 1, 3);
+    const QString flatProject = writeProject(dir, QStringLiteral("Flat"), QSize(1920, 1080), 24, 1, 2);
+    using Overlay = DrawingCanvas::DrawingOverlay;
+    constexpr int kOverlays = DrawingCanvas::DrawingOverlayCount;
+    // The ticks are settings of the app: all put back when the pass ends (after its windows
+    // have closed), or every later pass would draw with this one's.
+    struct KeptSettings
+    {
+        QStringList keys;
+        QVector<QVariant> values;
+        explicit KeptSettings(const QStringList &k) : keys(k)
+        {
+            const QSettings s = sankoSettings();
+            for (const QString &key : keys)
+                values.append(s.value(key));
+        }
+        ~KeptSettings()
+        {
+            QSettings s = sankoSettings();
+            for (int i = 0; i < keys.size(); ++i) {
+                if (values.at(i).isValid())
+                    s.setValue(keys.at(i), values.at(i));
+                else
+                    s.remove(keys.at(i));
+            }
+            s.sync();
+        }
+    };
+    QStringList settingsKeys{StoryboardPage::kCameraMoveArrowsKey};
+    for (int i = 0; i < kOverlays; ++i)
+        settingsKeys << StoryboardPage::drawingOverlayKey(Overlay(i));
+    KeptSettings keptSettings(settingsKeys);
+    const QString plainChip = QStringLiteral("Drawing view  ") + QChar(0x00B7)
+        + QStringLiteral("  depth shows with the Camera tool");
+    using shotcam::CameraState;
+    const int fps = 24;
+    auto sameQuad = [](const QPolygonF &a, const QPolygonF &b) {
+        if (a.size() != 4 || b.size() != 4)
+            return false;
+        for (int i = 0; i < 4; ++i)
+            if (QLineF(a.at(i), b.at(i)).length() > 0.5)
+                return false;
+        return true;
+    };
+    // Pixels that differ between two pictures of the canvas: all of them, and those in a rect.
+    auto differingIn = [](const QImage &a, const QImage &b, const QRect &where) {
+        if (a.size() != b.size())
+            return -1;
+        const QRect area = where.intersected(a.rect());
+        int n = 0;
+        for (int y = area.top(); y <= area.bottom(); ++y)
+            for (int x = area.left(); x <= area.right(); ++x)
+                n += a.pixel(x, y) != b.pixel(x, y) ? 1 : 0;
+        return n;
+    };
+    auto differing = [&](const QImage &a, const QImage &b) { return differingIn(a, b, a.rect()); };
+    // The frame's purple (#7c6ef6, as (kb1) reads the depth outline's) ON THE FRAME'S OWN LINE:
+    // pixels within 2.5 px of the quad's edges. (Anywhere in the picture would count the
+    // project's own art: the first run found 10 px of a blue blob's edge.)
+    auto purpleOnLine = [](const QImage &g, const QPolygonF &quad) {
+        if (quad.size() != 4)
+            return -1;
+        auto fromEdge = [&quad](const QPointF &p) {
+            double best = 1e9;
+            for (int i = 0; i < 4; ++i) {
+                const QPointF a = quad.at(i), b = quad.at((i + 1) % 4), ab = b - a;
+                const double len2 = QPointF::dotProduct(ab, ab);
+                const double t = len2 > 0.0 ? qBound(0.0, QPointF::dotProduct(p - a, ab) / len2, 1.0) : 0.0;
+                best = qMin(best, QLineF(p, a + ab * t).length());
+            }
+            return best;
+        };
+        const QRect area = quad.boundingRect().toAlignedRect().adjusted(-3, -3, 3, 3).intersected(g.rect());
+        int n = 0;
+        for (int y = area.top(); y <= area.bottom(); ++y)
+            for (int x = area.left(); x <= area.right(); ++x) {
+                const QColor c = g.pixelColor(x, y);
+                n += qAbs(c.red() - 0x7c) <= 45 && qAbs(c.green() - 0x6e) <= 45 && c.blue() >= 0xb0
+                        && fromEdge(QPointF(x + 0.5, y + 0.5)) <= 2.5
+                    ? 1 : 0;
+            }
+        return n;
+    };
+
+    {
+        auto rig = std::make_unique<Rig>(project);
+        Rig &r = *rig;
+        check(QStringLiteral("(do) the workspace opened"), r.ok);
+        if (!r.ok)
+            return;
+        QUndoStack *stack = r.window.undoStackForTest();
+        r.window.setStageMarginForTest(QSize(480, 270)); // a 2880 x 1620 stage; the frame its middle
+        pump(300);
+        Scene *scene = r.window.scenesForTest().value(0);
+        auto *overlaysMenu = r.window.findChild<QMenu *>(QStringLiteral("viewDrawingOverlays"));
+        QAction *entry[kOverlays] = {};
+        bool entriesFound = overlaysMenu != nullptr;
+        for (int i = 0; i < kOverlays; ++i) {
+            entry[i] = r.window.findChild<QAction *>(StoryboardPage::drawingOverlayActionName(Overlay(i)));
+            entriesFound = entriesFound && entry[i];
+        }
+        QAction *arrows = r.window.findChild<QAction *>(QStringLiteral("viewCameraMoveArrows"));
+        auto *cameraButton = r.storyboard->findChild<QPushButton *>(QStringLiteral("toolCamera"));
+        auto *brushButton = r.storyboard->findChild<QPushButton *>(QStringLiteral("toolBrush"));
+        auto *eraserButton = r.storyboard->findChild<QPushButton *>(QStringLiteral("toolEraser"));
+        auto *fillButton = r.storyboard->findChild<QPushButton *>(QStringLiteral("toolFill"));
+        auto *moveButton = r.storyboard->findChild<QPushButton *>(QStringLiteral("toolMove"));
+        if (!stack || !scene || scene->panels.size() < 3 || !entriesFound || !arrows || !cameraButton
+            || !brushButton || !eraserButton || !fillButton || !moveButton) {
+            check(QStringLiteral("(do) found the history, the scene, View > Drawing Overlays and its five entries, "
+                                 "Camera Move Arrows and the tools' buttons"), false);
+            return;
+        }
+        const shotcam::Stage stage(QSize(2880, 1620), QSize(1920, 1080));
+        // The camera: on its base framing at panel 1's start; 300 px to the right at panel 2's
+        // (reaching 300 px into the right margin, leaving 300 px of the frame on the left);
+        // pushed in to 1.5 on the middle at panel 3's.
+        const CameraState base{1440, 810, 1.0, 0.0}, right{1740, 810, 1.0, 0.0}, pushed{1440, 810, 1.5, 0.0};
+        shotcam::SceneCamera cam;
+        cam.keys = {shotcam::makeKey(*scene, 0, 0, fps, base), shotcam::makeKey(*scene, 1, 0, fps, right),
+                    shotcam::makeKey(*scene, 2, 0, fps, pushed)};
+        r.storyboard->applyCameraForUndo(scene, cam);
+        // Panel 2's first drawing layer at depth 150 %, a block on it for the Move tool's box.
+        Panel *deep = scene->panels.at(1);
+        int deepIndex = -1;
+        for (int i = 0; i < deep->layers.size() && deepIndex < 0; ++i)
+            if (deep->layers.at(i).type != QLatin1String("background"))
+                deepIndex = i;
+        if (deepIndex < 0) {
+            check(QStringLiteral("(do) panel 2 has a drawing layer"), false);
+            return;
+        }
+        {
+            Layer &layer = deep->layers[deepIndex];
+            layer.parallax = 1.5;
+            layer.image.fill(Qt::transparent);
+            QPainter p(&layer.image);
+            p.fillRect(QRect(1290, 710, 300, 200), QColor(40, 160, 90));
+        }
+        deep->activeLayerIndex = deepIndex;
+        const QString deepName = deep->layers.at(deepIndex).name;
+        const int f0 = shotcam::panelFrames(*scene->panels.at(0), fps);
+        r.canvas->setTool(DrawingCanvas::Brush);
+        pump(100);
+        const QPointF mid(r.canvas->width() / 2.0, r.canvas->height() / 2.0);
+        auto at = [&](int panel, int frames) { // the playhead in a panel, the stage whole in view
+            clickThumb(r, panel);
+            r.animatic->setPlayheadForTest(panel, frames * 1000 / fps);
+            pump(80);
+            r.canvas->placeViewForTest(0.25, QPointF(1440, 810), mid);
+            pump(40);
+        };
+        auto toW = [&](const QPointF &c) { return r.canvas->viewTransformForTest().map(c); };
+        auto picture = [&] {
+            pump(40);
+            return camtool::grabCanvas(r.canvas).convertToFormat(QImage::Format_ARGB32);
+        };
+        auto tick = [&](Overlay which, bool on) { // through its entry, as chosen from the menu
+            if (entry[which]->isChecked() != on)
+                entry[which]->trigger();
+            pump(60);
+        };
+        auto guidesDrawn = [&] {
+            return r.canvas->shotCameraGuidesForTest().value(QStringLiteral("drawn")).toBool();
+        };
+
+        // --- (do1) the submenu and its defaults ---------------------------------------------------
+        {
+            auto *viewMenu = qobject_cast<QMenu *>(overlaysMenu->parentWidget());
+            const bool inView = viewMenu && viewMenu->actions().contains(overlaysMenu->menuAction())
+                && viewMenu->title().remove(QLatin1Char('&')) == QStringLiteral("View")
+                && overlaysMenu->title() == QStringLiteral("Drawing Overlays");
+            QStringList texts;
+            for (QAction *a : overlaysMenu->actions())
+                texts << a->text() + (a->isCheckable() ? (a->isChecked() ? QStringLiteral(" [x]") : QStringLiteral(" [ ]"))
+                                                       : QStringLiteral(" (no tick)"));
+            const QStringList wanted{QStringLiteral("Depth Outline [ ]"), QStringLiteral("Camera Frame [ ]"),
+                                     QStringLiteral("Margin Veil [x]"), QStringLiteral("Stage Border [x]"),
+                                     QStringLiteral("Depth Note [x]")};
+            bool canvasSame = true, nothingStored = true;
+            for (int i = 0; i < kOverlays; ++i) {
+                canvasSame = canvasSame && r.canvas->drawingOverlayShown(Overlay(i)) == entry[i]->isChecked()
+                    && entry[i]->isChecked() == DrawingCanvas::drawingOverlayDefault(Overlay(i));
+                nothingStored = nothingStored && !sankoSettings().contains(StoryboardPage::drawingOverlayKey(Overlay(i)));
+            }
+            check(QStringLiteral("(do1) VIEW > DRAWING OVERLAYS: a submenu of View with five tick entries, in this "
+                                 "order and with these ticks when nothing was ever chosen - Depth Outline off, "
+                                 "Camera Frame off, Margin Veil on, Stage Border on, Depth Note on - and the canvas "
+                                 "draws by the same five"),
+                  inView && texts == wanted && canvasSame && nothingStored,
+                  QStringLiteral("in View %1; entries: %2; the canvas the same %3; nothing stored yet %4").arg(inView)
+                      .arg(texts.join(QStringLiteral(", "))).arg(canvasSame).arg(nothingStored));
+        }
+
+        // --- (do2) the camera's frame and its arrows are the Camera tool's --------------------------
+        if (!arrows->isChecked())
+            arrows->trigger(); // View > Camera Move Arrows on: the arrows would show, were the frame shown
+        pump(60);
+        at(0, f0 / 2); // mid the pan to the right: the camera off its base framing, a move under the playhead
+        const QPolygonF frameQuad = r.canvas->shotCameraQuadForTest();
+        const DrawingCanvas::Tool drawingTools[] = {DrawingCanvas::Brush, DrawingCanvas::Eraser, DrawingCanvas::Shapes,
+                                                    DrawingCanvas::Fill, DrawingCanvas::SelectRect,
+                                                    DrawingCanvas::SelectEllipse, DrawingCanvas::Lasso,
+                                                    DrawingCanvas::SelectPoly, DrawingCanvas::Move,
+                                                    DrawingCanvas::Perspective};
+        int hiddenWith = 0, toolsTried = 0;
+        QStringList shownWith;
+        for (DrawingCanvas::Tool tool : drawingTools) {
+            r.canvas->setTool(tool);
+            pump(60);
+            ++toolsTried;
+            const bool none = !r.canvas->cameraFrameDrawnForTest() && !guidesDrawn()
+                && r.canvas->shotCameraGlyphPathForTest().isEmpty();
+            hiddenWith += none ? 1 : 0;
+            if (!none)
+                shownWith << QString::number(int(tool));
+        }
+        r.canvas->setTool(DrawingCanvas::Brush);
+        pump(60);
+        const QImage brushDefault = picture();
+        brushDefault.save(dir + QStringLiteral("/do2_brush_default.png")); // to look at, beside the project
+        const int purpleDefault = purpleOnLine(brushDefault, frameQuad);
+        const bool cameraKnown = frameQuad.size() == 4 && sameQuad(frameQuad, r.canvas->shotCameraQuadForTest());
+        check(QStringLiteral("(do2) A DRAWING TOOL SHOWS NO CAMERA FRAME AND NO MOVE ARROWS (Camera Frame unticked, "
+                             "Camera Move Arrows ticked, mid a camera move): with the Brush, the Eraser, Shapes, "
+                             "Fill, the four selection tools, the Move tool and Perspective the frame's line is not "
+                             "drawn and no arrow is; the Brush's picture has no purple pixel where the frame's "
+                             "line would be; the camera itself is where it was"),
+              toolsTried == 10 && hiddenWith == 10 && purpleDefault == 0 && cameraKnown,
+              QStringLiteral("hidden with %1 of %2 tools (shown with: %3); purple px on the frame's line in the "
+                             "Brush's picture %4; the camera's quad known and the same %5")
+                  .arg(hiddenWith).arg(toolsTried).arg(shownWith.join(QLatin1Char(' '))).arg(purpleDefault)
+                  .arg(cameraKnown));
+        // Control: the Camera tool draws its frame and arrows whatever the entry says.
+        r.canvas->setTool(DrawingCanvas::Camera);
+        pump(80);
+        const bool cameraToolFrame = r.canvas->cameraFrameDrawnForTest();
+        const bool cameraToolArrows = guidesDrawn() && !r.canvas->shotCameraGlyphPathForTest().isEmpty();
+        const int purpleCameraTool = purpleOnLine(picture(), frameQuad);
+        check(QStringLiteral("(do2) control: THE CAMERA TOOL ALWAYS SHOWS ITS OWN FRAME - with Camera Frame unticked "
+                             "the Camera tool draws the frame and its arrows, purple on the frame's line in its "
+                             "picture"),
+              !entry[DrawingCanvas::OverlayCameraFrame]->isChecked() && cameraToolFrame && cameraToolArrows
+                  && purpleCameraTool > 500,
+              QStringLiteral("frame %1, arrows %2, purple px on the line %3").arg(cameraToolFrame)
+                  .arg(cameraToolArrows).arg(purpleCameraTool));
+        r.canvas->setTool(DrawingCanvas::Brush);
+        pump(60);
+        // Camera Frame ticked: a drawing tool shows the frame (and, with their own entry, the arrows).
+        tick(DrawingCanvas::OverlayCameraFrame, true);
+        const bool tickedFrame = r.canvas->cameraFrameDrawnForTest();
+        const bool tickedArrows = guidesDrawn() && !r.canvas->shotCameraGlyphPathForTest().isEmpty();
+        const QImage brushFramed = picture();
+        const int purpleFramed = purpleOnLine(brushFramed, frameQuad);
+        const int framedDiffers = differing(brushDefault, brushFramed);
+        arrows->trigger(); // Camera Move Arrows off: the frame alone
+        pump(60);
+        const bool frameWithoutArrows = r.canvas->cameraFrameDrawnForTest() && !guidesDrawn();
+        arrows->trigger();
+        pump(60);
+        tick(DrawingCanvas::OverlayCameraFrame, false);
+        const QImage brushAgain = picture();
+        const int backToDefault = differing(brushDefault, brushAgain);
+        check(QStringLiteral("(do2) VIEW > DRAWING OVERLAYS > CAMERA FRAME ticked: the Brush shows the frame's line "
+                             "and its arrows - the picture differs, purple on the frame's line; with Camera Move "
+                             "Arrows unticked, the frame without arrows; Camera Frame unticked again, the picture "
+                             "is the first one's, pixel for pixel"),
+              tickedFrame && tickedArrows && framedDiffers > 500 && purpleFramed > 500 && frameWithoutArrows
+                  && backToDefault == 0 && !r.canvas->cameraFrameDrawnForTest(),
+              QStringLiteral("ticked: frame %1, arrows %2, %3 px differ, purple px on the line %4; arrows unticked: "
+                             "frame alone %5; unticked again: %6 px differ from the first picture")
+                  .arg(tickedFrame).arg(tickedArrows).arg(framedDiffers).arg(purpleFramed).arg(frameWithoutArrows)
+                  .arg(backToDefault));
+
+        // --- (do3) switching tools, and ticking the entries, changes nothing of the camera ----------
+        {
+            auto cameraPrint = [&] {
+                QString s = QString::number(scene->camera.keys.size());
+                for (int p = 0; p < 3; ++p)
+                    for (int f : {0, 7}) {
+                        const CameraState st = shotcam::evaluateAtPanel(*scene, p, f, fps, 0);
+                        s += QStringLiteral(" | %1 %2 %3 %4").arg(st.cx).arg(st.cy).arg(st.zoom).arg(st.rotation);
+                    }
+                return s;
+            };
+            r.window.markCleanForTest();
+            const QString before = cameraPrint();
+            const int steps = stack->index();
+            const bool animate = r.storyboard->cameraAnimate(), inside = r.storyboard->cameraStayInside();
+            const bool arrowsWere = arrows->isChecked();
+            QPushButton *const order[] = {cameraButton, moveButton, eraserButton, cameraButton, fillButton, cameraButton};
+            int switched = 0;
+            DrawingCanvas::Tool last = r.canvas->tool();
+            for (QPushButton *b : order) {
+                b->click();
+                pump(80);
+                switched += r.canvas->tool() != last ? 1 : 0;
+                last = r.canvas->tool();
+            }
+            brushButton->setChecked(true); // the Brush again (no click: its click is the Library's door)
+            pump(80);
+            switched += r.canvas->tool() == DrawingCanvas::Brush && last != DrawingCanvas::Brush ? 1 : 0;
+            for (int i = 0; i < kOverlays; ++i) { // each entry ticked the other way and back
+                entry[i]->trigger();
+                pump(40);
+                entry[i]->trigger();
+                pump(40);
+            }
+            const QString after = cameraPrint();
+            const bool settingsSame = r.storyboard->cameraAnimate() == animate
+                && r.storyboard->cameraStayInside() == inside && arrows->isChecked() == arrowsWere;
+            check(QStringLiteral("(do3) SWITCHING TOOLS NEVER CHANGES THE CAMERA: the Camera, Move, Eraser, Camera, "
+                                 "Fill, Camera and Brush tools in turn, and each Drawing Overlays entry ticked the "
+                                 "other way and back - the camera's keys and what it shows at six frames are the "
+                                 "same, Animate, Stay Inside and Camera Move Arrows are as they were, nothing was "
+                                 "added to the history and the project is not marked changed"),
+                  switched == 7 && before == after && settingsSame && stack->index() == steps && !r.window.isDirty(),
+                  QStringLiteral("tools switched %1 of 7; camera the same %2; settings the same %3; steps %4 -> %5; "
+                                 "changed %6")
+                      .arg(switched).arg(before == after).arg(settingsSame).arg(steps).arg(stack->index())
+                      .arg(r.window.isDirty()));
+        }
+
+        // --- (do4) the veil: over the stage margin only, fixed ---------------------------------------
+        at(1, 0); // the camera 300 px right of its base framing
+        r.canvas->setTool(DrawingCanvas::Brush);
+        pump(80);
+        // Four places, canvas px: A in the right margin and inside the camera's frame; B inside
+        // the base framing and outside the camera's frame; C in the left margin; and G in the
+        // gutter, off the paper. (Until 2026-11-21 the veil lay outside the camera's frame: on
+        // B, C and G, not on A.)
+        const QPointF placeA(2550, 810), placeB(600, 810), placeC(200, 810);
+        const QPointF gutter = toW(QPointF(0, 810)) - QPointF(24, 0);
+        const QPainterPath veilRight = r.canvas->marginVeilForTest();
+        const QImage veiled = picture();
+        tick(DrawingCanvas::OverlayMarginVeil, false);
+        const QPainterPath veilUnticked = r.canvas->marginVeilForTest();
+        const QImage unveiled = picture();
+        tick(DrawingCanvas::OverlayMarginVeil, true);
+        auto darker = [&](const QImage &with, const QImage &without, const QPointF &widgetPt) {
+            const QPoint p = widgetPt.toPoint();
+            return with.rect().contains(p) && qGray(with.pixel(p)) < qGray(without.pixel(p));
+        };
+        auto same = [&](const QImage &with, const QImage &without, const QPointF &widgetPt) {
+            const QPoint p = widgetPt.toPoint();
+            return with.rect().contains(p) && with.pixel(p) == without.pixel(p);
+        };
+        const bool pathRight = veilRight.contains(toW(placeA)) && !veilRight.contains(toW(placeB))
+            && veilRight.contains(toW(placeC)) && !veilRight.contains(gutter);
+        const bool pixelsRight = darker(veiled, unveiled, toW(placeA)) && same(veiled, unveiled, toW(placeB))
+            && darker(veiled, unveiled, toW(placeC)) && same(veiled, unveiled, gutter);
+        check(QStringLiteral("(do4) THE VEIL LIES OVER THE STAGE MARGIN ONLY (the Brush, the camera 300 px right of "
+                             "its base framing): the right margin is veiled inside the camera's frame too; the "
+                             "base framing is clear where the camera's frame has left it; the left margin is "
+                             "veiled; the gutter off the paper is clear - in the veil's own area and in the "
+                             "picture, against the picture with Margin Veil unticked"),
+              pathRight && pixelsRight && veilUnticked.isEmpty(),
+              QStringLiteral("area: A %1 B %2 C %3 gutter %4; picture darker at A %5, same at B %6, darker at C %7, "
+                             "same in the gutter %8; unticked: no area %9")
+                  .arg(veilRight.contains(toW(placeA))).arg(veilRight.contains(toW(placeB)))
+                  .arg(veilRight.contains(toW(placeC))).arg(veilRight.contains(gutter))
+                  .arg(darker(veiled, unveiled, toW(placeA))).arg(same(veiled, unveiled, toW(placeB)))
+                  .arg(darker(veiled, unveiled, toW(placeC))).arg(same(veiled, unveiled, gutter))
+                  .arg(veilUnticked.isEmpty()));
+        at(2, 0); // the camera pushed in on the middle: another frame altogether
+        const QPainterPath veilPushed = r.canvas->marginVeilForTest();
+        const QImage veiledPushed = picture();
+        tick(DrawingCanvas::OverlayMarginVeil, false);
+        const QImage unveiledPushed = picture();
+        tick(DrawingCanvas::OverlayMarginVeil, true);
+        const QPointF placeD(1440, 360); // inside the base framing, above the pushed-in frame
+        const bool fixedPixels = darker(veiledPushed, unveiledPushed, toW(placeA))
+            && darker(veiledPushed, unveiledPushed, toW(placeC)) && same(veiledPushed, unveiledPushed, toW(placeD))
+            && same(veiledPushed, unveiledPushed, toW(placeB));
+        r.canvas->setTool(DrawingCanvas::Camera);
+        pump(80);
+        const bool cameraToolNoVeil = r.canvas->marginVeilForTest().isEmpty();
+        r.canvas->setTool(DrawingCanvas::Brush);
+        pump(80);
+        check(QStringLiteral("(do4) THE VEIL IS FIXED, IT NO LONGER FOLLOWS THE CAMERA: with the camera pushed in on "
+                             "the middle the veil's area is the very same; both margins are veiled, the base "
+                             "framing clear above the camera's frame and at its left; control: the Camera tool has "
+                             "no such veil (its own dim instead)"),
+              !veilPushed.isEmpty() && veilPushed == veilRight && fixedPixels && cameraToolNoVeil,
+              QStringLiteral("same area %1; picture: A darker %2, C darker %3, D same %4, B same %5; none with the "
+                             "Camera tool %6")
+                  .arg(veilPushed == veilRight).arg(darker(veiledPushed, unveiledPushed, toW(placeA)))
+                  .arg(darker(veiledPushed, unveiledPushed, toW(placeC)))
+                  .arg(same(veiledPushed, unveiledPushed, toW(placeD)))
+                  .arg(same(veiledPushed, unveiledPushed, toW(placeB))).arg(cameraToolNoVeil));
+
+        // --- (do5) the dashed white stage border stays -----------------------------------------------
+        {
+            auto borderAt = [&](int panel) {
+                at(panel, 0);
+                return r.canvas->shotCameraBaseQuadForTest();
+            };
+            const QPolygonF onBase = borderAt(0), awayRight = borderAt(1), awayPushed = borderAt(2);
+            const QRectF bb = awayRight.boundingRect();
+            const bool whereItWas = awayRight.size() == 4 && qAbs(bb.width() - 480.0) < 1.0
+                && qAbs(bb.height() - 270.0) < 1.0 && QLineF(bb.center(), mid).length() < 1.0;
+            at(1, 0);
+            const QImage bordered = picture();
+            tick(DrawingCanvas::OverlayStageBorder, false);
+            const bool untickedNone = r.canvas->shotCameraBaseQuadForTest().isEmpty();
+            const QImage unbordered = picture();
+            tick(DrawingCanvas::OverlayStageBorder, true);
+            // The pictures differ on the border's line and nowhere else; along its top edge on
+            // some px and not on all - it is dashed (4 / 3).
+            const QRect line = bb.toAlignedRect().adjusted(-2, -2, 2, 2);
+            const QRect within = bb.toAlignedRect().adjusted(3, 3, -3, -3);
+            const int onLine = differingIn(bordered, unbordered, line) - differingIn(bordered, unbordered, within);
+            const int elsewhere = differing(bordered, unbordered) - onLine;
+            int samples = 0, dashes = 0;
+            for (int x = int(bb.left()) + 6; x < int(bb.right()) - 6; ++x) {
+                bool hit = false;
+                for (int dy = -1; dy <= 1 && !hit; ++dy) {
+                    const QPoint q(x, qRound(bb.top()) + dy);
+                    hit = bordered.rect().contains(q) && bordered.pixel(q) != unbordered.pixel(q);
+                }
+                ++samples;
+                dashes += hit ? 1 : 0;
+            }
+            check(QStringLiteral("(do5) THE DASHED WHITE STAGE BORDER STAYS with a drawing tool, in a margin project: "
+                                 "the base framing's 480 x 270 rect in the middle, the same wherever the camera is "
+                                 "- also where the camera IS the base framing (no frame hides it now); the picture "
+                                 "differs from the one with Stage Border unticked on that line only, dashed; "
+                                 "unticked, none is drawn"),
+                  whereItWas && sameQuad(onBase, awayRight) && sameQuad(awayPushed, awayRight) && untickedNone
+                      && onLine > 0 && elsewhere == 0 && dashes >= samples * 3 / 10 && dashes <= samples * 9 / 10,
+                  QStringLiteral("border %1 x %2 at (%3, %4); on the base %5 corners, same %6; pushed same %7; "
+                                 "unticked none %8; px differing on the line %9, elsewhere %10; along its top edge "
+                                 "%11 of %12 px")
+                      .arg(bb.width()).arg(bb.height()).arg(bb.center().x()).arg(bb.center().y()).arg(onBase.size())
+                      .arg(sameQuad(onBase, awayRight)).arg(sameQuad(awayPushed, awayRight)).arg(untickedNone)
+                      .arg(onLine).arg(elsewhere).arg(dashes).arg(samples));
+            // Control: where the frame's own line lies on it - the Camera tool, or Camera Frame
+            // ticked, on the base framing - no separate border is drawn, as it always was.
+            at(0, 0);
+            r.canvas->setTool(DrawingCanvas::Camera);
+            pump(80);
+            const bool cameraToolNone = r.canvas->shotCameraBaseQuadForTest().isEmpty();
+            r.canvas->setTool(DrawingCanvas::Brush);
+            pump(80);
+            tick(DrawingCanvas::OverlayCameraFrame, true);
+            const bool framedNone = r.canvas->shotCameraBaseQuadForTest().isEmpty();
+            tick(DrawingCanvas::OverlayCameraFrame, false);
+            const bool brushAgain = r.canvas->shotCameraBaseQuadForTest().size() == 4;
+            check(QStringLiteral("(do5) control: on the base framing the Camera tool draws no separate border (its "
+                                 "frame is that rect), nor does the Brush with Camera Frame ticked; unticked "
+                                 "again, the Brush's border is back"),
+                  cameraToolNone && framedNone && brushAgain,
+                  QStringLiteral("Camera tool none %1; Brush with the frame none %2; Brush again %3")
+                      .arg(cameraToolNone).arg(framedNone).arg(brushAgain));
+        }
+
+        // --- (do6) the depth outline hidden, the depth note kept ---------------------------------------
+        at(1, 0);
+        deep->activeLayerIndex = deepIndex;
+        r.storyboard->rebuildLayerPanelForTest();
+        r.canvas->setTool(DrawingCanvas::Brush);
+        r.canvas->setTool(DrawingCanvas::Move);
+        pump(150);
+        const QPolygonF box = r.canvas->transformQuadForTest();
+        const QImage moveDefault = picture(); // (a paint: depthOutlinePaintedForTest is the last paint's)
+        const QPolygonF outlineDefault = r.canvas->depthOutlineForTest();
+        const bool paintedDefault = r.canvas->depthOutlinePaintedForTest();
+        const QString chipDefault = r.canvas->drawingViewChipForTest();
+        check(QStringLiteral("(do6) THE DEPTH OUTLINE IS HIDDEN (Depth Outline unticked): with the Move tool's box up "
+                             "on a layer at depth 150 % and the camera off its base framing, no dashed box is "
+                             "drawn where the shot puts it, no tag, and the chip keeps its plain wording - "
+                             "\"Drawing view · depth shows with the Camera tool\""),
+              box.size() == 4 && outlineDefault.isEmpty() && !paintedDefault && chipDefault == plainChip,
+              QStringLiteral("box %1 corners; outline %2 corners, painted %3; chip '%4'").arg(box.size())
+                  .arg(outlineDefault.size()).arg(paintedDefault).arg(chipDefault));
+        tick(DrawingCanvas::OverlayDepthOutline, true);
+        const QImage moveOutlined = picture();
+        const QPolygonF outlineTicked = r.canvas->depthOutlineForTest();
+        const bool paintedTicked = r.canvas->depthOutlinePaintedForTest();
+        const QString chipTicked = r.canvas->drawingViewChipForTest();
+        const QPolygonF expected = shotcam::layerToStage(1.5, right, stage).map(box);
+        const QString dashedChip = QStringLiteral("Drawing view  ") + QChar(0x00B7) + QStringLiteral("  dashed: ")
+            + deepName + QStringLiteral(" in the shot");
+        const int outlinePixels = differing(moveDefault, moveOutlined);
+        tick(DrawingCanvas::OverlayDepthNote, false); // the note off, the outline still ticked
+        const QImage moveNoNote = picture();
+        const bool outlineWithoutNote = r.canvas->depthOutlinePaintedForTest()
+            && r.canvas->drawingViewChipForTest().isEmpty();
+        tick(DrawingCanvas::OverlayDepthNote, true);
+        tick(DrawingCanvas::OverlayDepthOutline, false);
+        const int moveBack = differing(moveDefault, picture());
+        check(QStringLiteral("(do6) control: VIEW > DRAWING OVERLAYS > DEPTH OUTLINE ticked brings them back - the "
+                             "dashed box where the shot puts the layer, drawn (the picture differs), and the chip "
+                             "names it; with Depth Note unticked as well the outline is still drawn, without the "
+                             "chip; both as they were again, the picture is the first one's, pixel for pixel"),
+              sameQuad(outlineTicked, expected) && paintedTicked && chipTicked == dashedChip && outlinePixels > 50
+                  && outlineWithoutNote && differing(moveOutlined, moveNoNote) > 0 && moveBack == 0,
+              QStringLiteral("outline %1 corners, where the shot puts it %2, painted %3; chip '%4'; px differing %5; "
+                             "outline without the note %6; back to the first picture: %7 px differ")
+                  .arg(outlineTicked.size()).arg(sameQuad(outlineTicked, expected)).arg(paintedTicked).arg(chipTicked)
+                  .arg(outlinePixels).arg(outlineWithoutNote).arg(moveBack));
+        // The Depth Note: the chip, and nothing else.
+        r.canvas->setTool(DrawingCanvas::Brush);
+        pump(100);
+        const QRect chipRect = r.canvas->drawingViewChipRectForTest().toAlignedRect().adjusted(-2, -2, 2, 2);
+        const QString noteOn = r.canvas->drawingViewChipForTest();
+        const QImage noted = picture();
+        tick(DrawingCanvas::OverlayDepthNote, false);
+        const QString noteOff = r.canvas->drawingViewChipForTest();
+        const QImage unnoted = picture();
+        tick(DrawingCanvas::OverlayDepthNote, true);
+        const int inChip = differingIn(noted, unnoted, chipRect);
+        const int outsideChip = differing(noted, unnoted) - inChip;
+        check(QStringLiteral("(do6) THE DEPTH NOTE STAYS (Depth Note ticked): with the Brush on that panel the chip "
+                             "reads \"Drawing view · depth shows with the Camera tool\"; control: unticked, there "
+                             "is no chip - the two pictures differ inside the chip's rect and nowhere else"),
+              noteOn == plainChip && noteOff.isEmpty() && inChip > 100 && outsideChip == 0,
+              QStringLiteral("ticked '%1'; unticked '%2'; px differing in the chip %3, elsewhere %4").arg(noteOn)
+                  .arg(noteOff).arg(inChip).arg(outsideChip));
+
+        // --- (do7) the ticks are remembered: set here, read by the next launch on another project ---
+        tick(DrawingCanvas::OverlayDepthOutline, true);
+        tick(DrawingCanvas::OverlayCameraFrame, true);
+        tick(DrawingCanvas::OverlayMarginVeil, false);
+        tick(DrawingCanvas::OverlayStageBorder, false);
+        tick(DrawingCanvas::OverlayDepthNote, false);
+        r.window.markCleanForTest();
+    }
+    bool stored = true;
+    for (int i = 0; i < kOverlays; ++i) {
+        const QVariant v = sankoSettings().value(StoryboardPage::drawingOverlayKey(Overlay(i)));
+        stored = stored && v.isValid() && v.toBool() != DrawingCanvas::drawingOverlayDefault(Overlay(i));
+    }
+    {
+        auto rig = std::make_unique<Rig>(flatProject); // another project, without a stage margin
+        Rig &r = *rig;
+        check(QStringLiteral("(do) the second project opened"), r.ok);
+        if (!r.ok)
+            return;
+        Scene *scene = r.window.scenesForTest().value(0);
+        QAction *entry[kOverlays] = {};
+        bool entriesFound = true;
+        for (int i = 0; i < kOverlays; ++i) {
+            entry[i] = r.window.findChild<QAction *>(StoryboardPage::drawingOverlayActionName(Overlay(i)));
+            entriesFound = entriesFound && entry[i];
+        }
+        if (!scene || scene->panels.size() < 2 || !entriesFound) {
+            check(QStringLiteral("(do) found the second project's scene and the five entries"), false);
+            return;
+        }
+        bool remembered = true;
+        QStringList ticks;
+        for (int i = 0; i < kOverlays; ++i) {
+            const bool wanted = !DrawingCanvas::drawingOverlayDefault(Overlay(i));
+            remembered = remembered && entry[i]->isChecked() == wanted && r.canvas->drawingOverlayShown(Overlay(i)) == wanted;
+            ticks << (entry[i]->isChecked() ? QStringLiteral("on") : QStringLiteral("off"));
+        }
+        check(QStringLiteral("(do7) THE APP REMEMBERS THE TICKS, FOR EVERY PROJECT: all five ticked the other way in "
+                             "one project, the next launch - on another project - starts with those ticks, in the "
+                             "menu and on the canvas (control: (do1), where nothing was stored, started with the "
+                             "defaults)"),
+              stored && remembered,
+              QStringLiteral("stored %1; the next launch's ticks: %2").arg(stored).arg(ticks.join(QLatin1Char(' '))));
+        for (int i = 0; i < kOverlays; ++i) // the defaults again, through the entries
+            if (entry[i]->isChecked() != DrawingCanvas::drawingOverlayDefault(Overlay(i)))
+                entry[i]->trigger();
+        pump(80);
+
+        // --- (do8) a project without a stage margin -------------------------------------------------
+        const CameraState base{960, 540, 1.0, 0.0}, moved{1160, 540, 1.25, 0.0};
+        shotcam::SceneCamera cam;
+        cam.keys = {shotcam::makeKey(*scene, 0, 0, fps, base), shotcam::makeKey(*scene, 1, 0, fps, moved)};
+        r.storyboard->applyCameraForUndo(scene, cam);
+        clickThumb(r, 1);
+        r.animatic->setPlayheadForTest(1, 0);
+        pump(80);
+        r.canvas->setTool(DrawingCanvas::Brush);
+        pump(80);
+        const bool flatFrame = r.canvas->cameraFrameDrawnForTest();
+        const bool flatBorder = !r.canvas->shotCameraBaseQuadForTest().isEmpty();
+        const bool flatVeil = !r.canvas->marginVeilForTest().isEmpty();
+        pump(40);
+        const QImage flatDefault = camtool::grabCanvas(r.canvas).convertToFormat(QImage::Format_ARGB32);
+        entry[DrawingCanvas::OverlayCameraFrame]->trigger(); // ticked: the frame, and the paper's own border under it
+        pump(80);
+        const bool flatFramed = r.canvas->cameraFrameDrawnForTest();
+        const bool flatFramedBorder = r.canvas->shotCameraBaseQuadForTest().size() == 4;
+        const int flatFramedDiffers = differing(flatDefault, camtool::grabCanvas(r.canvas).convertToFormat(QImage::Format_ARGB32));
+        entry[DrawingCanvas::OverlayCameraFrame]->trigger();
+        pump(80);
+        const int flatBack = differing(flatDefault, camtool::grabCanvas(r.canvas).convertToFormat(QImage::Format_ARGB32));
+        check(QStringLiteral("(do8) A PROJECT WITHOUT A STAGE MARGIN, its camera moved, the Brush: no frame, no "
+                             "border, no veil; control: with Camera Frame ticked the frame and the base framing's "
+                             "dashed line show, as they did before - the picture differs - and unticked again it "
+                             "is the first picture, pixel for pixel"),
+              !flatFrame && !flatBorder && !flatVeil && flatFramed && flatFramedBorder && flatFramedDiffers > 100
+                  && flatBack == 0,
+              QStringLiteral("default: frame %1, border %2, veil %3; ticked: frame %4, border %5, px differing %6; "
+                             "unticked again: %7 px differ")
+                  .arg(flatFrame).arg(flatBorder).arg(flatVeil).arg(flatFramed).arg(flatFramedBorder)
+                  .arg(flatFramedDiffers).arg(flatBack));
+        r.window.markCleanForTest();
+    }
+
+    // --- (do9) the veil at every view rotation, where the margin leaves a side of the paper out ---
+    // The user's point 4 (2026-11-22): on their Cintiq the canvas flickered and its edges looked
+    // broken while the view was turned (R, the rotation slider) or zoomed. The veil was "the
+    // paper minus the frame" as a path subtraction. Their panel's margin is on the left and the
+    // right only, so the frame's top and bottom edges lay ON the paper's, and Qt's path clipper
+    // gives the wrong area with coincident edges once the view is turned: right in one view,
+    // wrong in the next. (do4) could not see it - its stage has a margin on every side and its
+    // view is never turned. NOTHING HERE WAITS OR TIMES: a view is set, and the veil's own area
+    // and the canvas's picture are read at once.
+    {
+        const QString turnedProject = writeProject(dir, QStringLiteral("Turned"), QSize(1920, 1080), 24, 1, 5);
+        auto rig = std::make_unique<Rig>(turnedProject);
+        Rig &r = *rig;
+        check(QStringLiteral("(do9) the workspace opened"), r.ok);
+        if (!r.ok)
+            return;
+        Scene *scene = r.window.scenesForTest().value(0);
+        if (!scene || scene->panels.size() < 5) {
+            check(QStringLiteral("(do9) found the scene and its five panels"), false);
+            return;
+        }
+        // Flat paper: every place read is paper, or paper under the veil.
+        for (Panel *p : std::as_const(scene->panels))
+            for (Layer &layer : p->layers)
+                if (layer.type != QLatin1String("background") && !layer.image.isNull())
+                    layer.image.fill(Qt::transparent);
+        struct Tally
+        {
+            int views = 0, wrongViews = 0;       // the veil's own area
+            int pictures = 0, wrongPictures = 0; // the canvas's picture
+            int mostStray = 0, mostLevels = 0, unread = 0; // px changed off the margin, and by how much
+            QString first;
+        };
+        constexpr int kTurns = 721;       // -180 .. 180 degrees in 0.5 degree steps
+        constexpr int kPictureTurns = 51; // -180 .. 177.7 in 7.3 degree steps, and 0
+        auto sweep = [&](int panel, const QMargins &m) {
+            Tally tally;
+            r.storyboard->applyPanelMargin(scene->panels.at(panel), m);
+            clickThumb(r, panel);
+            pump(150);
+            r.canvas->setTool(DrawingCanvas::Brush);
+            pump(80);
+            const QSizeF paper(r.canvas->canvasSize());
+            const QRectF frame(m.left(), m.top(), 1920.0, 1080.0);
+            if (paper != QSizeF(1920.0 + m.left() + m.right(), 1080.0 + m.top() + m.bottom())) {
+                tally.first = QStringLiteral("the stage on the canvas is %1 x %2, not the frame and this margin")
+                                  .arg(paper.width()).arg(paper.height());
+                return tally;
+            }
+            // The margin: a strip for each side that has one.
+            QVector<QRectF> strips;
+            if (m.left() > 0)
+                strips << QRectF(0.0, 0.0, m.left(), paper.height());
+            if (m.right() > 0)
+                strips << QRectF(frame.right(), 0.0, m.right(), paper.height());
+            if (m.top() > 0)
+                strips << QRectF(frame.left(), 0.0, frame.width(), m.top());
+            if (m.bottom() > 0)
+                strips << QRectF(frame.left(), frame.bottom(), frame.width(), m.bottom());
+            // Places, canvas px, 24 px clear of every border: a grid over the frame (clear), a
+            // grid on each strip (veiled), and a row off each side of the paper (clear).
+            struct Place
+            {
+                QPointF at;
+                bool veiled;
+            };
+            QVector<Place> places;
+            for (int gy = 0; gy < 5; ++gy)
+                for (int gx = 0; gx < 8; ++gx)
+                    places.append({QPointF(frame.left() + 24.0 + (frame.width() - 48.0) * gx / 7.0,
+                                           frame.top() + 24.0 + (frame.height() - 48.0) * gy / 4.0), false});
+            for (const QRectF &s : std::as_const(strips))
+                for (int gy = 0; gy < 4; ++gy)
+                    for (int gx = 0; gx < 4; ++gx)
+                        places.append({QPointF(s.left() + 24.0 + (s.width() - 48.0) * gx / 3.0,
+                                               s.top() + 24.0 + (s.height() - 48.0) * gy / 3.0), true});
+            for (int g = 0; g < 5; ++g) {
+                const double along = (g + 0.5) / 5.0;
+                places.append({QPointF(-40.0, paper.height() * along), false});
+                places.append({QPointF(paper.width() + 40.0, paper.height() * along), false});
+                places.append({QPointF(paper.width() * along, -40.0), false});
+                places.append({QPointF(paper.width() * along, paper.height() + 40.0), false});
+            }
+            auto flipTo = [&](bool flipped) {
+                if (r.canvas->viewFlipH() != flipped)
+                    r.canvas->toggleFlipH();
+            };
+            auto viewName = [](double turn, double zoom, bool flipped) {
+                return QStringLiteral("%1 degrees, zoom %2%3").arg(turn).arg(zoom)
+                    .arg(flipped ? QStringLiteral(", flipped") : QString());
+            };
+            // THE VEIL'S OWN AREA, at every rotation.
+            for (double zoom : {0.5, 0.85, 1.0, 1.37, 2.0}) {
+                r.canvas->setViewZoom(zoom);
+                for (int flipped = 0; flipped < 2; ++flipped) {
+                    flipTo(flipped == 1);
+                    for (int i = 0; i < kTurns; ++i) {
+                        const double turn = -180.0 + i * 0.5;
+                        r.canvas->setViewRotation(turn);
+                        const QPainterPath veil = r.canvas->marginVeilForTest();
+                        const QTransform t = r.canvas->viewTransformForTest();
+                        int wrong = 0;
+                        for (const Place &pl : std::as_const(places))
+                            wrong += veil.contains(t.map(pl.at)) != pl.veiled ? 1 : 0;
+                        ++tally.views;
+                        if (wrong) {
+                            ++tally.wrongViews;
+                            if (tally.first.isEmpty())
+                                tally.first = QStringLiteral("area: %1 of %2 places wrong at %3").arg(wrong)
+                                                  .arg(places.size()).arg(viewName(turn, zoom, flipped == 1));
+                        }
+                    }
+                }
+            }
+            // THE CANVAS'S PICTURE, with the veil and without it, at a spread of views.
+            // (Zooms that keep the whole stage in the canvas's short, wide widget when it stands
+            // on end: a first run at 0.65 found the margins out of the picture at 12 views.)
+            for (double zoom : {0.35, 0.5}) {
+                r.canvas->setViewZoom(zoom);
+                for (int flipped = 0; flipped < 2; ++flipped) {
+                    flipTo(flipped == 1);
+                    for (int i = 0; i < kPictureTurns; ++i) {
+                        const double turn = i + 1 < kPictureTurns ? -180.0 + i * 7.3 : 0.0;
+                        r.canvas->setViewRotation(turn);
+                        r.canvas->setDrawingOverlayShown(DrawingCanvas::OverlayMarginVeil, true);
+                        const QImage with = camtool::grabCanvas(r.canvas).convertToFormat(QImage::Format_ARGB32);
+                        r.canvas->setDrawingOverlayShown(DrawingCanvas::OverlayMarginVeil, false);
+                        const QImage without = camtool::grabCanvas(r.canvas).convertToFormat(QImage::Format_ARGB32);
+                        r.canvas->setDrawingOverlayShown(DrawingCanvas::OverlayMarginVeil, true);
+                        ++tally.pictures;
+                        if (with.isNull() || with.size() != r.canvas->size() || with.size() != without.size()) {
+                            ++tally.wrongPictures;
+                            if (tally.first.isEmpty())
+                                tally.first = QStringLiteral("no picture of the canvas at %1")
+                                                  .arg(viewName(turn, zoom, flipped == 1));
+                            continue;
+                        }
+                        const QTransform t = r.canvas->viewTransformForTest();
+                        int wrong = 0, readVeiled = 0, readClear = 0;
+                        for (const Place &pl : std::as_const(places)) {
+                            const QPoint w = t.map(pl.at).toPoint();
+                            if (!with.rect().adjusted(2, 2, -2, -2).contains(w))
+                                continue;
+                            if (pl.veiled) {
+                                ++readVeiled;
+                                wrong += qGray(with.pixel(w)) < qGray(without.pixel(w)) ? 0 : 1;
+                            } else {
+                                ++readClear;
+                                wrong += with.pixel(w) == without.pixel(w) ? 0 : 1;
+                            }
+                        }
+                        // Every pixel the veil changes lies on the margin: on a strip, with 1.5
+                        // screen px of grace for a strip's own antialiased edge. (A hairline of
+                        // veil along an edge the frame shares with the paper is on no strip.)
+                        const QTransform back = t.inverted();
+                        const double grace = 1.5 / std::sqrt(qAbs(t.determinant()));
+                        QVector<QRectF> grown;
+                        for (const QRectF &s : std::as_const(strips))
+                            grown << s.adjusted(-grace, -grace, grace, grace);
+                        int stray = 0;
+                        for (int y = 0; y < with.height(); ++y) {
+                            const QRgb *a = reinterpret_cast<const QRgb *>(with.constScanLine(y));
+                            const QRgb *b = reinterpret_cast<const QRgb *>(without.constScanLine(y));
+                            for (int x = 0; x < with.width(); ++x) {
+                                if (a[x] == b[x])
+                                    continue;
+                                const QPointF c = back.map(QPointF(x + 0.5, y + 0.5));
+                                bool onMargin = false;
+                                for (const QRectF &s : std::as_const(grown))
+                                    onMargin = onMargin || s.contains(c);
+                                if (onMargin)
+                                    continue;
+                                ++stray;
+                                tally.mostLevels = qMax(tally.mostLevels,
+                                                        qMax(qAbs(qRed(a[x]) - qRed(b[x])),
+                                                             qMax(qAbs(qGreen(a[x]) - qGreen(b[x])),
+                                                                  qAbs(qBlue(a[x]) - qBlue(b[x])))));
+                            }
+                        }
+                        tally.mostStray = qMax(tally.mostStray, stray);
+                        const bool nothingRead = readVeiled == 0 || readClear == 0;
+                        tally.unread += nothingRead ? 1 : 0;
+                        if (wrong || stray || nothingRead) {
+                            if (tally.wrongPictures == 0) { // the first wrong pair, kept beside the project
+                                with.save(dir + QStringLiteral("/do9_panel%1_with_veil.png").arg(panel + 1));
+                                without.save(dir + QStringLiteral("/do9_panel%1_without_veil.png").arg(panel + 1));
+                            }
+                            ++tally.wrongPictures;
+                            if (tally.wrongPictures == 1) // the first wrong picture, after the first wrong area
+                                tally.first += QStringLiteral("%1picture: %2 places wrong (%3 veiled and %4 clear "
+                                                              "read), %5 px changed off the margin, at %6")
+                                                   .arg(tally.first.isEmpty() ? QString() : QStringLiteral("; "))
+                                                   .arg(wrong).arg(readVeiled).arg(readClear).arg(stray)
+                                                   .arg(viewName(turn, zoom, flipped == 1));
+                        }
+                    }
+                }
+            }
+            flipTo(false);
+            r.canvas->resetViewRotation();
+            r.canvas->setViewZoom(1.0);
+            pump(40);
+            return tally;
+        };
+        auto report = [&](const Tally &tally) {
+            return QStringLiteral("area: %1 of %2 views wrong; picture: %3 of %4 views wrong, at most %5 px changed "
+                                  "off the margin (by at most %6 of 255 levels), %7 views with nothing to read%8")
+                .arg(tally.wrongViews).arg(tally.views).arg(tally.wrongPictures).arg(tally.pictures)
+                .arg(tally.mostStray).arg(tally.mostLevels).arg(tally.unread)
+                .arg(tally.first.isEmpty() ? QString() : QStringLiteral("; first: ") + tally.first);
+        };
+        auto right = [&](const Tally &tally) {
+            return tally.views == kTurns * 5 * 2 && tally.wrongViews == 0 && tally.pictures == kPictureTurns * 2 * 2
+                && tally.wrongPictures == 0;
+        };
+        struct MarginCase
+        {
+            QString what;
+            QMargins margin;
+        };
+        const QVector<MarginCase> cases = {
+            {QStringLiteral("THE LEFT AND THE RIGHT ONLY (the user's own panel: 432 and 335 px)"), QMargins(432, 0, 335, 0)},
+            {QStringLiteral("THE TOP AND THE BOTTOM ONLY (270 px each)"), QMargins(0, 270, 0, 270)},
+            {QStringLiteral("THE RIGHT ONLY (960 px)"), QMargins(0, 0, 960, 0)},
+            {QStringLiteral("THE TOP ONLY (300 px)"), QMargins(0, 300, 0, 0)},
+        };
+        for (int i = 0; i < cases.size(); ++i) {
+            const Tally tally = sweep(i, cases.at(i).margin);
+            check(QStringLiteral("(do9) THE VEIL IS RIGHT HOWEVER THE VIEW IS TURNED, A MARGIN ON %1: at each of 721 "
+                                 "rotations (-180 to 180 degrees in 0.5 degree steps), at five zooms, plain and "
+                                 "flipped, the veil's area holds every place of the margin and none of the frame "
+                                 "or off the paper; and in the canvas's picture, at 51 rotations, two zooms, plain "
+                                 "and flipped, the margin is darker than without the veil, the frame and the "
+                                 "gutter are as without it, and every pixel the veil changes lies on the margin")
+                      .arg(cases.at(i).what),
+                  right(tally), report(tally));
+        }
+        const Tally control = sweep(4, QMargins(480, 270, 480, 270));
+        check(QStringLiteral("(do9) control: A MARGIN ON EVERY SIDE (480 and 270 px: no edge of the frame lies on "
+                             "the paper's, where the path subtraction was right too) reads right by the same "
+                             "measures, at the same views"),
+              right(control), report(control));
+        r.window.markCleanForTest();
+    }
 }
 
 // THE TRIAL'S FIXES (batch A, 2026-11-10; the user's real-project trial of 2026-11-09,
@@ -31969,6 +32873,7 @@ int main(int argc, char **argv)
     // above, and nothing else. The gate never sets it.
     if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("stagemode")
         || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("panels")
+        || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("overlays")
         || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("playback")
         || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("strip")
         || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("trial")
@@ -32017,6 +32922,14 @@ int main(int argc, char **argv)
             // with batch D's pass, whose (cp3) it changed and whose picks it must leave alone.
             runPanelsClickAwayPass(scratch);
             runEyedropperFlipPass(scratch);
+        } else if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("overlays")) {
+            // View > Drawing Overlays (the user's point 3, 2026-11-21), with the passes whose
+            // checks read a drawing tool's camera overlays: the camera guides (cg3), depth while
+            // moving (kb1), the stage margin (mg8).
+            runDrawingOverlaysPass(scratch);
+            runCameraGuidesPass(scratch);
+            runDepthWhileMovingPass(scratch);
+            runStageMarginPass(scratch);
         } else if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("batchd")) {
             // Batch D: paste on a new layer, View > Library's tick; D-2's Eyedropper, Colors
             // panel and Flip H / V; and the kept-art pass, whose (ka7) pastes on the canvas.
@@ -32271,6 +33184,7 @@ int main(int argc, char **argv)
     runTrialFixesPass(scratch);
     runKeptArtPass(scratch);
     runPanelsClickAwayPass(scratch);      // (po) the panels close at a click outside them
+    runDrawingOverlaysPass(scratch);      // (do) View > Drawing Overlays: a drawing tool's camera overlays
     runDepthWhileMovingPass(scratch);
     runSceneLockPass(scratch);
     runKeysAndViewPass(scratch);
