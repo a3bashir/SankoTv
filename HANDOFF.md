@@ -1,5 +1,300 @@
 # SankoTV — Session Handoff Brief
 
+## STATUS 2026-11-22: HAND TEST PO READ (SEVEN RECORDINGS, THE RIGHT BUILD, NOTHING FAILED); THE PANELS CHANGE - THE REWORK AND ITS FIXES - COMMITTED ALONE (THIS COMMIT), GATED ALONE IN A SCRATCH WORKTREE (GATE PA); VIEW > DRAWING OVERLAYS NOT COMMITTED: ITS MARGIN VEIL IS THE CAUSE OF THE FLICKER THE USER REPORTED (POINT 4) - WAITING FOR THE USER
+THE USER (2026-11-22): "Hand test PO done: all steps looked right"; my readings accepted (every close counts as
+closed, a keyboard menu entry closes nothing, a click that puts a menu away counts where it falls, the Panel Strip
+thumbnails stay as they are, Stage Border draws nothing in a project without a margin). If every session ran the
+right build and nothing failed: 1 gate the panels change alone in a scratch worktree and commit it (sha_P2_panels.txt);
+2 commit View > Drawing Overlays on top (sha_P3_gate.txt); 3 start batch H (symmetry, vertical first) with its Figma
+frame H-1 and stop for approval; 4 A NEW PROBLEM, REPORT ONLY: rotating the canvas (R, the Zoom Toolbar's rotation
+slider) and zooming (keys, the Zoom Toolbar's slider) made the canvas flicker and its edges look broken - find the
+cause, say whether earlier builds have it, send a plan and a check that does not depend on timing; no code for point
+4 before their OK.
+THE RECORDINGS after 18:05 on 21 November, oldest first: 20261121-191838 (825 s), -193229 (7 s), -193244 (13 s),
+-193302 (5 s), -193313 (286 s), -193806 (1402 s), -201857 (80 s, the rotate / zoom session of point 4). EVERY
+system.txt: Release, built Nov 21 2026 18:05:37, git 4d8d30994+dirty. THE TITLE BAR named "TEST COPY - small pirate,
+panels and overlays" in each (read in a screenshot of every session; the Unsaved Changes box names it too in five).
+The recorder starts with the app, so each restart of steps 19, 20 and 30 is a session of its own.
+PER STEP of handtest_PO_panels_and_overlays.md (P = pass, NT = not tested in the recordings; no step failed):
+ 1 P  a stroke closes each panel and is drawn (Library 129.96 ..., Colors 177.30 ...; the strokes are in the Undos).
+ 2 P  another layer's row closes each (136.39, 182.27, 562.46).
+ 3 P  the timeline: its own surface (Colors 184.85), its header (186.97), its collapse button (Library 144.15).
+ 4 P / NT  the toolbar's own body (705.25) and the size bar's sliders (295.89, 304.66) close the Library; the Undo
+      BUTTON with a panel open and the zoom bar with a panel open: NT (Undo was always Ctrl+Z).
+ 5 P  the Panel Strip (thumbnails and ground), the Scenes panel, the Layers dock's ground; THE TITLE BAR (108.93: the
+      press that dragged the window from the Dell to the Cintiq closed the Colors panel).
+ 6 NT a press that slides off a button.
+ 7 P  inside clicks: the Library's brushes, categories and scroll bar; the Colors wheel, its tabs, the classic square.
+ 8 P / NT  Rename, Import and the Studio: NT. Instead the Library's right-click menu (Duplicate Brush twice: it
+      stayed) and Delete Brush with its Yes / No box (510.37: every floating bar and the Library hide while a modal
+      box is up - FloatingToolWindow's own, as before - and come back; the Library was there after).
+ 9 P  own buttons, one Show or one Hide per click (651-658): Brush closes and opens; the Eraser button with the
+      Library open keeps it (174.47, 703.93); the swatch closes and opens.
+10 NT the Eyedropper with the Colors panel open (its button was only hovered; three Alt picks at 592-602 were made
+      with the panel closed).
+11 P  one panel at a time: the swatch over the Library (176.01), the Brush button over the Colors panel (706.87).
+12 NT E was pressed with the Library closed; G never.
+13 P  the menu bar alone closes nothing: clicks on File, Edit, View, Developer and across them with the Library
+      open (736-756); Esc with a panel open closes nothing either. With the Colors panel: NT.
+14, 15, 16 NT  View > Library and View > Colors were never chosen, in any session.
+17 NT with a panel open (View > Toolbars > Zoom twice and the Drawing Overlays entries 17 times, no panel open).
+18 P  a click that only puts a menu away: on the window away from the menu the Library closed (748.94); on the menu
+      bar it stayed (741.18, 756.22). Not on the canvas itself, and not with the Colors panel.
+19 P  closed is closed: session 1 ended with the Library closed by a stroke -> session 2 opened with no panel;
+      session 3 ended with the Colors panel closed by a stroke -> session 4 opened with none.
+20 P  left open, it reopens: session 4 quit with the Colors panel open -> session 5 opened with it (0.81 s), and a
+      click outside (a layer's lock) closed it. Also session 2 quit with the Library open -> session 3 opened it.
+21 P  Brush, Eraser, Fill, Select, Move (session 5, 117-130; screenshots): no camera frame, no line, no arrows.
+22 P  the dashed border, the veil on the margins only and clear inside - and with Camera Frame ticked the veil
+      stayed on the margins while the amber frame sat inside (t00175031). Scrubbing through a camera move: NT.
+23 P  the Camera tool shows its frame, handles and bar (session 1, 236.60); the next tool does not (249).
+24 P  by the state: the scenes' key counts (2 and 5) and Animate (off) never changed through every tool switch.
+      Playing or scrubbing: NT.
+25 P  the Move tool on the depth layer: no dashed box, no tag, the plain chip (t00133035).
+26 P  the five entries and their ticks: each entry's first use shows how it started - Depth Outline off, Camera
+      Frame off, Margin Veil on, Stage Border on, Depth Note on. (The recorder's "checked" is the tick BEFORE the
+      click: View > Toolbars > Zoom logged checked=true and the Zoom bar hid.)
+27 P  Depth Outline ticked (164.49): the dashed box, its tag "in the shot (depth 118 %)", the chip "dashed: Layer 4
+      in the shot" (t00166035); unticked (184.15).
+28 P  Camera Frame ticked (173.75): the amber frame, with the Move tool (t00175031); unticked (179.34).
+29 P  Margin Veil off (189.54: the margins as bright as the paper) and on (232.23); Stage Border off (195.39) and on
+      (226.45); Depth Note off (202.14: no chip), on and off twice more, left ticked (222.96).
+30 P  Camera Frame ticked (282.80), quit; session 6 opened with the frame showing with the Brush (t00003033) and
+      the entry ticked; unticked (8.49).
+31 P  Discard at each quit that had changes (sessions 1, 3, 5, 6, 7).
+Told to the user as it is: steps 6, 10, 12, 14-17 and parts of 4, 8, 13, 18, 22, 24 do not appear in the recordings.
+THE COMMIT: the panels change alone = the four files of app/build/_probe/split/splitP\*.P (sha_P2_panels.txt:
+DrawingCanvas.h, StoryboardPage.cpp, StoryboardPage.h, ProjectLifecycleTest.cpp) - the rework of the section
+"2026-11-21 (later)" with the fixes of the section "2026-11-21 (evening)", change 1. Put in a scratch worktree
+(C:\SankoTV_ponly, HEAD 4d8d30994 + the four copies, sha256sum -c OK) and gated there with a copy of fullgate.sh
+(its app path changed; the kill line left out). GATE PA (2917 s): EVERY family green in BOTH builds - Lifecycle
+1700, Camera 336, Brush Library 187, Size Lock 170, Edge Lock 74, Dev Recorder 46, Quick Shape 19, Pixel Lock 13,
+Brush Lock 3; the four files sha256sum -c OK after it; its log kept as app/build/_probe/split/fullgate_PA.log.
+STAGED from the copies with git hash-object -w --path (the tree itself holds change 2 as well and is left as it
+is); git diff --cached --stat equals --ignore-cr-at-eol --stat; each staged blob equals its gated file with the CRs
+taken out. This note is committed without change 2's own notes, which stay in the tree for its commit.
+VIEW > DRAWING OVERLAYS (change 2) IS NOT COMMITTED, against the letter of the user's point 2 and for this reason:
+POINT 4's flicker is change 2's own defect. DrawingCanvas::drawingToolVeil builds the veil as
+paper.subtracted(frame) - two polygons through the view transform. With a margin on the left and right only (the
+user's panel: margins 432, 0, 335, 0) the frame's top and bottom edges lie ON the paper's, and Qt's path clipper
+does not hold with coincident edges once the view is turned: in two screenshots of the rotate session (t00005016 at
+15 degrees, t00019017 at 6) the frame is veiled and a margin is not. A stand-alone probe of the same geometry
+(scratchpad\veilprobe, no window): wrong in 9,075 of 25,207 views (36 %) for that stage, up to the whole paper;
+never wrong with a margin on every side - the fixture of (do4), which is why no check saw it; and an odd-even fill
+of the two outlines (no path operation at all) is never wrong in either. The veil flips between right and wrong
+from one frame to the next while the view turns or zooms: the flicker, and the "broken edges". Before change 2 the
+veil was the widget's rect minus the camera's frame - no shared edges. The plan and the check are in the report to
+the user; no code is changed for point 4 before their OK, and pushing a change known to flicker cannot be undone -
+so change 2 waits for their word: commit it as gated and fix after, or fix first.
+
+## STATUS 2026-11-21 (evening): THE PANELS FIXES (THE USER'S FOUR POINTS) AND POINT 3 (VIEW > DRAWING OVERLAYS) BUILT ON TOP OF THE PANELS REWORK - TWO CHANGES, TWO HASH LISTS; GATE P3 GREEN IN BOTH BUILDS; ONE HAND TEST (PO) COVERS BOTH; NOTHING COMMITTED
+THE USER (2026-11-21, after gate PC; hand test P was NOT run - "I'll test once, after these changes"), on the four
+points told with the panels rework: 1 the sliders and the zoom bar closing the panels - fine; 2 an Eyedropper pick
+closing the Library - fine; 3 View > Library and View > Colors must still TOGGLE WITH THE MOUSE: a click on the menu
+bar closes nothing by itself, choosing View > Library / View > Colors toggles it, choosing any other menu entry
+closes it; 4 a panel closed by a click outside COUNTS AS CLOSED - it does not reopen at the next launch. And point 3
+approved with answers: the depth outline, its tag and the "dashed: ..." wording hidden; in drawing tools the
+camera's frame and its amber or purple line go, Camera Move Arrows too - they show with the Camera tool; switching
+tools never changes the camera, its keys or its settings; the veil over the stage margin only, fixed, no longer
+following the camera; the dashed white stage border in margin projects stays; the chip "Drawing view · depth shows
+with the Camera tool" stays; NEW View > Drawing Overlays submenu - Depth Outline (off), Camera Frame (off), Margin
+Veil (on), Stage Border (on), Depth Note (on), remembered for every project; the Camera tool always shows its own
+frame. Two changes, each with its own hash list; one hand-test list; no commit before the hand test.
+METHOD: every source edit with the Edit tool (no script touched a source file); CRLF on every line of the five files
+(DrawingCanvas.h 1608 / 1608, DrawingCanvas.cpp 10352 / 10352, StoryboardPage.cpp 14555 / 14555, StoryboardPage.h
+1179 / 1179, ProjectLifecycleTest.cpp 33111 / 33111 - lines / CRs, counted with tr). A DATING SLIP OF MINE, FIXED: the
+comments and check names of both changes were first written "2026-11-22"; the user's message is of 2026-11-21
+(16:52 local). All 44 corrected with the Edit tool's replace-all, in the five files and in the panels-only copies.
+
+CHANGE 1 - THE PANELS FIXES (StoryboardPage.cpp / .h, on top of the rework of the section below; DrawingCanvas.h
+is as in gate PC):
+- CLOSED IS CLOSED. closeColorsPanel() = setColorsPanelShown(false) and closeBrushLibrary() =
+  m_brushLibPanel->setVisible(false) (both record "closed"; only an OPEN panel is closed; under the Studio the
+  Library stays put) replace every autoHide() / autoHideColorsPanel() of the page (autoHideColorsPanel is gone; the
+  panel's own autoHide() stays for FloatingToolWindow's hiding under the Studio / a minimised window - not closes).
+  So EVERY close is remembered as closed, whatever closed it: a click outside, a menu entry, a tool key, a tool
+  button, the other panel opening over it. (My reading of point 4, told to the user: the rule's words name the click
+  outside; one meaning of "closed" for all of them keeps "what I see at quit is what I get at launch".)
+- THE MENU BAR. notePanelClick: a press on the menu bar (inMenuBar) or inside one of its menus (menuBarMenuOf: the
+  QMenu whose parents lead to a QMenuBar - every menu of the bar is made with addMenu(title), a context menu's parents
+  do not lead there) decides nothing. A RELEASE over an entry of such a menu = the entry CHOSEN (pressed there, or
+  dragged down from the bar): enabled, not a separator, not a submenu's title -> closeBrushLibrary() unless it is
+  m_brushLibViewAction, closeColorsPanel() unless it is m_colorsViewAction (nothing while the Studio is up). The
+  filter runs before QMenu triggers the action, so View > Library with the Library open closes it ONCE (no close
+  and reopen). QMenuBar::triggered was not usable: it fires for shortcuts too. Chosen with the keyboard or by its
+  shortcut an entry closes nothing (keys never did, but the tool keys) - told to the user.
+- A CLICK THAT ONLY DISMISSES A POPUP: Qt hands the press to the popup wherever it falls, so `at` becomes
+  QApplication::widgetAt(global) - on the canvas it closes, on the menu bar or in the panel it does not; outside
+  SankoTV, nothing. (On Windows Qt then replays the press to that widget with the same timestamp and place: the
+  one-look-per-press key takes it as the same press.)
+CHANGED CHECKS OF CHANGE 1 (old -> new, verbatim):
+- "(cp4) THE FIRST STROKE HIDES THE COLORS PANEL (a pick did not): its tick off; "open" still remembered - a rule
+  closing it is not the user choosing "hidden"" (hidden3c && stillRemembered3c) -> "(cp4) THE FIRST STROKE HIDES
+  THE COLORS PANEL (a pick did not): its tick off, and it is remembered as CLOSED (2026-11-21: a panel closed by a
+  click outside counts as closed); control: through the picks before it "open" was what was remembered" (hidden3c
+  && closedRemembered3c && openRemembered3c - the control is in the check).
+- "(cp8) LEFT OPEN, THE NEXT LAUNCH OPENS IT, ticked, under the swatch - and ONLY it: the Brush Library, left open
+  too but opened before it, does not reopen (one panel at launch, the one opened last; never on top of each
+  other)" (bothLeftOpen: both keys true, last = colors) -> "(cp8) LEFT OPEN, THE NEXT LAUNCH OPENS IT, ticked, under
+  the swatch - and ONLY it: the Brush Library, closed as the Colors panel opened over it, is remembered closed and
+  stays closed (2026-11-21: closed is closed)" (colorsLeftOpen: the Colors key true, the Library key FALSE, last =
+  colors).
+- "(cp8) CLOSED WITH THE SWATCH, THE NEXT LAUNCH KEEPS IT CLOSED; the Library, now the only one left open, reopens"
+  (!third.colors && !third.ticked && third.library) -> "(cp8) CLOSED WITH THE SWATCH, THE NEXT LAUNCH KEEPS IT
+  CLOSED - and the Library, closed too, stays closed: nothing opens" (... && !third.library).
+- "(cp8) BOTH LEFT OPEN, THE LIBRARY OPENED LAST: only the Library reopens" - text and condition unchanged (both
+  keys are set by hand, as a version before this one could leave them).
+- "(cp8) control (2026-11-21): the first click outside it - on a thumbnail - closes the Library that launch opened,
+  and "open" stays remembered (a click elsewhere is not the user choosing "hidden")" (... && fourth.remembered) ->
+  "(cp8) control (2026-11-21): the first click outside it - on a thumbnail - closes the Library that launch opened,
+  and it is remembered as CLOSED (it was remembered open until the click)" (... && !fourth.remembered). NEW after
+  it: "(cp8) A PANEL CLOSED BY A CLICK OUTSIDE DOES NOT REOPEN AT THE NEXT LAUNCH (2026-11-21)" (a fifth launch).
+- "(lt2) control (2026-11-21): the first click outside it - on a thumbnail - closes it, its tick off" -> "(lt2)
+  control (2026-11-21): the first click outside it - on a thumbnail - closes it, its tick off - and it is
+  remembered as closed (2026-11-21)" (... && !rememberedAfter).
+- "(po5) THE MENU BAR: a click on it closes each panel; on the View title, the press closes each and opens the
+  menu" (onMenuBar.both() && onTitle.both() && menusOpened == 2, both "closed") -> FOUR checks: "(po5) THE MENU
+  BAR, BY ITSELF, CLOSES NOTHING (2026-11-21): a click on its empty part leaves each panel open; a click on the
+  View title opens the menu and leaves each open"; "(po5) VIEW > LIBRARY AND VIEW > COLORS TOGGLE WITH THE MOUSE
+  (2026-11-21): the open Library's entry closes it, once; again, it opens; View > Colors opens the Colors panel and
+  the Library goes; again, it closes, once; View > Library over the open Colors panel opens the Library and the
+  Colors panel goes - each with its tick" (Show / Hide counted: 1 hide, 0 show); "(po5) ANY OTHER MENU ENTRY CLOSES
+  EACH PANEL (2026-11-21): View > Camera Move Arrows chosen with the mouse - each panel still open with the menu
+  up, closed once the entry is chosen, and the entry does its job"; "(po5) A CLICK THAT ONLY PUTS A MENU AWAY COUNTS
+  WHERE IT FALLS (2026-11-21): on the canvas it closes each panel; on the menu bar it closes neither; in the panel
+  itself the panel stays". The mouse at the window-system level on the bar and in the popup's own window.
+NEW CHECK: "(po13) CLOSED IS CLOSED (2026-11-21): a panel closed by a click outside, by another menu entry, by a
+tool key or by the other panel opening over it is remembered as CLOSED; control: each time it was open and
+remembered open just before" (8 closes, the settings keys read).
+RED RUNS OF CHANGE 1 (panels slice, 56 checks): A - the menu-bar press rule off: 4 fail, the four (po5) (the own
+entry: "hides 1, shows 1" - the flicker). B - the chosen-entry rule and the popup rule off: 3 fail - (po5) any
+other entry, (po5) puts a menu away, (po13) (its two "entry" closes). C - the closes not recorded (the old
+autoHide): 6 fail - (po13) (all 8), (cp4), (cp8) x4; and in the batchd slice (lt2)'s control with them. Markers
+removed, grep 0.
+PANELS-ONLY STATE (change 1 without change 2): the four files as copies in app/build/_probe/split/splitP\*.P,
+hashes sha_P2_panels.txt; slices on it: panels 56, batchd 72, both green (before the date fix; texts only since).
+The tree's difference from these copies is change 2 alone (diff checked: additions in the app code; in the test
+file the (do) pass, (cg3), (mg8), (kb1)'s setup, the slice). AT COMMIT TIME: gate this state alone in a scratch
+worktree first (as GA for batch G), commit it, then change 2.
+
+CHANGE 2 - POINT 3, VIEW > DRAWING OVERLAYS: built on top of change 1 and gated with it (gate P3, below); NOT in
+this commit - its own notes go with its own commit.
+QUICK CHECK (Release): Edge Lock 74, Camera 336, the whole Lifecycle family 1718 (1695 at gate PC; + 5 of change 1,
++ 18 of change 2) - all green, on the build before the date fix (texts only since); on the final files the slices
+panels 56, overlays 53, batchd 72, green.
+GATE P3 (main tree, change 1 + change 2, 2924 s; log app/build/_probe/split/fullgate_P3.log): EVERY family green in
+BOTH builds - Lifecycle 1718, Camera 336, Brush Library 187, Size Lock 170, Edge Lock 74, Dev Recorder 46, Quick
+Shape 19, Pixel Lock 13, Brush Lock 3. Change 1 alone was NOT gated alone (only its slices): that is for commit
+time, in a scratch worktree.
+HASHES: change 1 alone sha_P2_panels.txt (4 files, the splitP copies); the gated tree (change 1 + change 2)
+sha_P3_gate.txt (5 files, verified OK after the gate), exes sha_P3_exes.txt.
+HAND-TEST EXE: C:\SankoTv\app\build\Release\SankoTV.exe built Nov 21 2026 18:05:37 (file 18:05:55) by the gate's
+clean build, git 4d8d30994+dirty, sha256 27c6e93ad4b7caa82404ae53fa97aa1427fed218b76bee7d5a8764e4e974f90c.
+COPY "TEST COPY - small pirate, panels and overlays" (C:\SankoTV-TestCopies, 17:47:26; the original's hash
+768789328a9e... / 92 files / 2026-11-09 22:38:12 unchanged before and after; a first copy made under a wrong name
+a minute earlier was removed). ONE LIST for both changes and the whole panels rework:
+Documents\SankoTV-Design\handtest_PO_panels_and_overlays.md (31 steps; it replaces
+handtest_P_panels_click_away.md).
+NEXT: the user's hand test PO. If it passes and they say so: gate change 1 alone in a scratch worktree (the splitP
+copies), commit it (prose message, the current attribution trailer), then commit change 2 (the tree as gated in
+P3), each with its part of this note; push; nothing in Figma to mark (no frame was made for either).
+
+## STATUS 2026-11-21 (later): BATCH G COMMITTED 4d8d30994 AND PUSHED, G-1 MARKED BUILT; THE PANELS CHANGE REWORKED TO THE USER'S RULES (THEY CLOSE AT A CLICK OUTSIDE), GATE PC GREEN IN BOTH BUILDS; WAITING FOR HAND TEST P; NOT COMMITTED. POINT 3 (THE DEPTH OUTLINE, THE CAMERA'S OVERLAYS): REPORTED ONLY, NOTHING BUILT, WAITING FOR THE USER'S OK
+BATCH G: commit 4d8d30994 (the section below is its note), pushed; the tree then held only the first panels
+version. Figma 645:702 renamed "BUILT 2026-11-21 G-1 — ... (batch G)". Worktree C:\SankoTV_gonly removed; gate GA's
+log kept as app/build/_probe/split/fullgate_GA.log.
+THE USER'S RULES FOR THE PANELS (2026-11-21; the first version was the opposite): the Brush Library and the Colors
+panel CLOSE at any click outside them in SankoTV - the canvas, the Layers panel, the timeline, a toolbar, the menu
+bar, any other part of the window. A click inside the panel never closes it; a click in a window or dialog the panel
+opened (the Studio, Import's file dialog) counts as inside; their own buttons (Brush, the swatch) count as inside and
+still open and close their panel with no close-and-reopen; an Eyedropper pick (the panel's button, I, Alt with the
+Brush) never closes the Colors panel; the click outside still does its normal job. KEPT from the first version: one
+panel at a time, the fixed toolbar connection, a press that slides off a button closes nothing, the View entries.
+BUILT (StoryboardPage.cpp / .h, DrawingCanvas.h; Edit tool only, CRLF on every line):
+- CanvasKeyRouter (the page's application filter) hands every MouseButtonPress / DblClick / Release, TabletPress /
+  Release and NonClientAreaMouseButtonPress / Release to StoryboardPage::notePanelClick; nothing is ever taken.
+  ONE LOOK PER PRESS: Qt passes an unaccepted press on to the widget's parents and makes a mouse press of a pen's -
+  copies with the press's own timestamp and global position, which is the key (cleared at each release).
+  A press ANYWHERE BUT A QAbstractButton decides at once; a press ON A BUTTON waits for its release over the same
+  button (rect().contains) - let go off it, nothing closes.
+- closePanelsClickedOutside(at, event): nothing while the Studio is visible (the Library lies hidden under it).
+  INSIDE a panel = the parent chain of `at` reaches it (parentWidget() crosses windows: the Library's menus and its
+  QInputDialog / QMessageBox / QFileDialog / QDialog are all made with the panel as parent - checked in
+  BrushLibraryPanel.cpp), or `at` is its own button (m_brushToolButton, m_eraserToolButton for the Library;
+  m_colorSwatch for the Colors panel), or - the Colors panel only - `at` is the canvas, the left button, and
+  DrawingCanvas::pressWouldPickColor(modifiers) (new, public: m_panel, not Edit Shape, not Space, not R, and
+  pickWanted). Closing is autoHide() / autoHideColorsPanel(): "open" stays remembered (D1), so a panel open at the last
+  own-button toggle reopens at the next launch and the first click anywhere closes it - as the first stroke did.
+- TOOL CHANGES WITHOUT A CLICK (the tool keys) as before 2026-11-20: the tools' buttonToggled closes the Colors panel
+  for any tool and the Library for any tool but its own two (Brush, Eraser). The Eraser used to close it on toggle and
+  its click reopened it (a blink): now the Eraser BUTTON's click re-scopes the open Library, and toolKey() closes it
+  for the E key explicitly. Gone: the `pressed` closers on every bar button and the two liveBrushStrokeStarted closers
+  (the click-away rule holds both).
+- One panel at a time, on SHOW (kept): the Library's visibilityChanged(true) -> autoHideColorsPanel (connected in
+  createCenterColumn, where the Library exists - createFloatingToolbar runs before it is made); the Colors panel's
+  Show (eventFilter) -> the Library's autoHide.
+WHAT FOLLOWS FROM THE LETTER OF THE RULE (told to the user, in the hand-test list): the Size bar and the zoom bar close
+the panels too (exempt before); a pick with the Library open closes the Library (the pick rule names the Colors panel
+only); by mouse View > Library / Colors can only open (the menu bar's click has closed the panel) - by keyboard they
+toggle.
+CHANGED CHECKS (old -> new, verbatim):
+- "(cp3) A PRESS ON ANOTHER BUTTON OF THE BARS HIDES IT (the Eraser pressed and let go off it: no tool change)"
+  (open3 && hidden3) -> "(cp3) A PRESS ON ANOTHER BUTTON OF THE BARS, LET GO OFF IT, CLOSES NOTHING (2026-11-21; the
+  Eraser: no click, no tool change, no Library)" (open3 && stays3). POSITIVE CONTROL (new): "(cp3) control: the same
+  press let go ON the button - a click outside the panel - hides it (and picks the Eraser)".
+- (cp8)'s three checks and (lt2) keep their texts; their helpers chose the first panel with clickThumb() BEFORE
+  reading what a launch opened - a thumbnail click is a click outside, which closes the panel now. They read AS
+  LAUNCHED, and the click follows as the control: "(cp8) control (2026-11-21): the first click outside it - on a
+  thumbnail - closes the Library that launch opened, and "open" stays remembered ..." and "(lt2) control
+  (2026-11-21): the first click outside it - on a thumbnail - closes it, its tick off".
+- (cp2) and (cp4) are as committed again (the first version had changed them).
+NEW CHECKS: pass runPanelsClickAwayPass (po)-(po12), slice "panels" (with runEyedropperFlipPass); in the full run
+after runKeptArtPass. Pen and mouse at the window-system level. OUTSIDE, each with the Library open then the Colors
+panel: (po1) a pen stroke (draws); (po2) another layer's row (selects it); (po3) the timeline (the press reaches it);
+(po4) the Undo button's click (undoes), the bar's own ground at the press, the Fill button's click - and Undo pressed
+and let go off it closes nothing; (po5) the menu bar's empty part and the View title (its menu opens); (po6) the
+Panel Strip's ground (the strip stays docked) and a non-client press on the window. INSIDE: (po7) the Library's
+header and edge, the Colors wheel (the colour changes); (po8) the Studio opened from the Library, a QDialog and a
+QMenu made with the panel as parent + control (the same dialog with the main window as parent closes each); (po9)
+own buttons ONCE - Show / Hide counted: Brush shuts (1 hide, 0 show) and opens (1 show, 0 hide), Eraser keeps it (0,
+0), slid off nothing; the swatch likewise and the swap once each; (po10) picks - the panel's button, I, Alt by mouse
+and by pen - + control (no pick: a stroke, and it closes); (po11) the keys E and G; (po12) the View entries.
+FOUND BY A FULL LIFECYCLE RUN BEFORE THE GATE (the slices were green): (en1), (en4), (pc1) failed. Read first: (po6)
+clicked ONE spot of the Panel Strip's ground twice (once per panel) - a DOUBLE-CLICK, which floats the strip
+(StoryboardPage.cpp, the ground's MouseButtonDblClick), and the app remembers a floating strip: the later passes
+opened with it floating. The check's fault, not the rule's: two spots 40 px apart, "the strip stays docked" asserted,
+and the pass puts back the four settings keys it touches (KeptKeys, restored after its window closes). The same in
+(po3) (two places on the timeline). The first title-bar check sent two presses with timestamp 0 - one press to the
+one-look rule; real ones have their own times, so the check gives them. (lt2) found by the quick check.
+RED RUN 7 (closePanelsClickedOutside returns at once): 10 fail - (po1)-(po6), the controls of (po8), (po10), (cp8),
+and (cp4). RED RUN 8 (own buttons not exempt + the pick not exempt + the panel's own window only + a button's press
+closes at once): 11 fail - (po4) slide-off, (po8), (po9) x2, (po10), (ep1), (ep3), (cp3) x2, (cp5), (cp6). Markers
+removed, grep 0.
+QUICK CHECK (Release): panels 51, batchg 44, batchd 71, trial 126, keysview 72, stagemode 124, playback 33,
+colourstrip 53, scenesshots 58, batche 130, Edge Lock 74, Camera 336; the whole Lifecycle family 1695.
+GATE PC (main tree, 2881 s): EVERY family green in BOTH builds - Lifecycle 1695, Camera 336, Brush Library 187, Size
+Lock 170, Edge Lock 74, Dev Recorder 46, Quick Shape 19, Pixel Lock 13, Brush Lock 3. HASHES: sha_PC_gate.txt (the
+four files: DrawingCanvas.h, StoryboardPage.cpp / .h, ProjectLifecycleTest.cpp), sha_PC_exes.txt. The first version's
+lists (sha_PO_gate.txt, sha_GP_gate.txt, splitG\panels_*.diff) are superseded.
+HAND-TEST EXE: C:\SankoTv\app\build\Release\SankoTV.exe built Nov 21 2026 15:54:45 (file 15:55:04), git
+4d8d30994+dirty, sha256 ba9e2710e1206c23f601a4bb2e6525c5000f392ce2c9221db6a92e22642f6c7b. COPY "TEST COPY - small
+pirate, panels" (C:\SankoTV-TestCopies, 16:41:15; the original's hash unchanged before and after). LIST
+Documents\SankoTV-Design\handtest_P_panels_click_away.md (17 steps).
+POINT 3, REPORT ONLY (the user's images Documents\SankoTV-Design\reference\overlay_dashed_outline.png and
+overlay_camera_frame_brush.png, both taken with the MOVE tool - the dashed outline shows with no other). What draws
+each thing (DrawingCanvas.cpp): the dashed purple box + its tag "in the shot (depth 118 %)" = depthOutline(), Move
+tool with the box up on a layer whose depth is not 100 % (batch B2); the chip's "dashed: <layer> in the shot" =
+drawingViewChipText(). paintShotCamera() with a tool that is not the Camera draws, when the scene has camera keys
+or the project a stage margin: the camera's frame at the playhead (1 px with a margin, 1.5 px without; purple
+#7C6EF6, or amber #F5A623 when the shot is zoomed past the sharp limit - the amber line in the images), the dashed
+white base framing (shotCameraBaseQuad: the stage's original border, 4 / 3 at 55 %), the View > Camera Move Arrows
+glyphs (off by default), and - margin projects only - kStageVeil (20 % black) over EVERYTHING OUTSIDE THE CAMERA'S
+FRAME (the grey of the paper, and the gutter darker than its own colour). The camera's handles, dim, centre cross and
+chips are drawn only with the Camera tool; the 8 squares in the images are the Move box's. Open questions put to the
+user: the veil (gone, or kept on the stage margin only, no longer cut to the camera's frame), the dashed base framing
+in a margin project (stage, so it stays?), the chip "Drawing view · depth shows with the Camera tool". NOTHING OF
+POINT 3 IS BUILT.
+
 ## STATUS 2026-11-21: HAND TEST G2 PASSED FOR THE CURSOR STEPS; BATCH G COMMITTED ALONE (THIS COMMIT), GATED ALONE IN A SCRATCH WORKTREE (GATE GA); THE PANELS CHANGE WAS THE OPPOSITE OF WHAT THE USER WANTS - NOT COMMITTED, BEING REWORKED
 HAND TEST G2 (recording 20261121-130244, 1820 s, the only session after 19:57 on 20 November; system.txt: Release, git
 1dd0b6d06+dirty, built Nov 20 2026 19:57:08; the title bar and the closing question name "TEST COPY - small pirate,

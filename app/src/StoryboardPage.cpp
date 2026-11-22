@@ -3509,22 +3509,8 @@ QWidget *StoryboardPage::createCenterColumn()
                            anchorButton->size());
         return {button, m_floatToolbar->frameGeometry()};
     });
-    // Draw-to-dismiss: the first LIVE brush press on the canvas hides the
-    // panel — selection made (or the canvas chosen over the panel either
-    // way). autoHide() bypasses the D1 intent recording, so a panel that
-    // was auto-hidden still restores visible at the next launch. Panning,
-    // zooming, other tools, docked panels and the Library itself cannot
-    // fire this: the signal exists only at the two live brush-input sites.
-    connect(m_canvas, &DrawingCanvas::liveBrushStrokeStarted, this, [this] {
-        // Suppressed while the studio is open: the Library must stay put
-        // underneath it, and a stray stroke on the main canvas (the only
-        // live-input source — the studio's scratch canvas and Sample
-        // Stroke never emit this signal) is not the user dismissing it.
-        if (m_brushStudio && m_brushStudio->isVisible())
-            return;
-        if (m_brushLibPanel && m_brushLibPanel->isVisible())
-            m_brushLibPanel->autoHide();
-    });
+    // (Draw-to-dismiss - the first live stroke hid the Library - is the click-away rule's now:
+    // any click outside the panel closes it, a stroke's press among them. See notePanelClick.)
     // (View > Library's tick follows the panel: wired in installDockViewActions, where the
     // action is made - it does not exist yet here.)
     // (The Brush Options panel is gone — its Opacity/Hardness quick controls
@@ -3539,6 +3525,13 @@ QWidget *StoryboardPage::createCenterColumn()
     connect(m_brushLibPanel, &brushlib::BrushLibraryPanel::visibilityChanged, this, [](bool shown) {
         if (shown)
             sankoSettings().setValue(kLastPanelKey, QStringLiteral("library"));
+    });
+    // One panel at a time (2026-11-20; see createFloatingToolbar): as the Library opens, the
+    // Colors panel, at the same place, goes. (Connected here, where the Library exists:
+    // createFloatingToolbar runs before it is made.)
+    connect(m_brushLibPanel, &brushlib::BrushLibraryPanel::visibilityChanged, this, [this](bool shown) {
+        if (shown)
+            closeColorsPanel();
     });
     if (panelToRestoreAtLaunch() == QLatin1String("library"))
         m_brushLibPanel->openAtDefault();
@@ -4320,65 +4313,43 @@ void StoryboardPage::createFloatingToolbar()
             m_shotInfoDock->toggleViewAction()->trigger();
     });
 
-    // ---- Brush Library auto-close -----------------------------------------
-    // THE RULE: the Library closes the moment the user moves on —
-    //  (1) any TOOL activation other than Brush, from any origin (bar click,
-    //      the selection-shapes popup, a programmatic switch): the exclusive
-    //      group's buttonToggled covers them all; and
-    //  (2) any PRESS on any other button of the two floating toolbars
-    //      (Eraser/Fill/Select/Move, Color, Undo, Redo, Layers, Perspective,
-    //      Scenes, Camera, Image Reference, Shot Info, Settings) — wired
-    //      mechanically over findChildren so future bar buttons inherit it.
-    // EXEMPT, and why:
-    //  - the Brush button: it is the documented open/toggle switch — closing
-    //    on its press would close the panel the instant it opens;
-    //  - the Library itself and the Studio opened from it: the triggers
-    //    above are enumerated POSITIVELY (toolbar presses + tool switches),
-    //    never "focus loss" or "click elsewhere", so working in the panel
-    //    can never fire them;
-    //  - the Size CTL bar: size/opacity/flip edit the working brush — that
-    //    IS brush workflow, not moving on;
-    //  - the zoom toolbar: view-only; panning/zooming has never dismissed
-    //    the Library (draw-to-dismiss spec) and the user is still choosing
-    //    a brush, just from a different vantage.
-    // Always autoHide(), never setVisible(false): a tool switch is not the
-    // user choosing "hidden" and must not overwrite the D1 intent — the
-    // panel still restores visible at the next launch.
-    auto autoCloseBrushLib = [this] {
-        // Suppressed while the studio is open (the toolbars are hidden
-        // then, so their buttons cannot be pressed — this guards the
-        // programmatic setChecked paths, which fire buttonToggled too).
-        if (m_brushStudio && m_brushStudio->isVisible())
+    // ---- The Brush Library and the Colors panel CLOSE AT A CLICK OUTSIDE THEM ----------------
+    // (the user's rules, 2026-11-21; their words after hand test G - "they close as soon as I
+    // click anywhere outside them in SankoTV" - were the wish, first read as a complaint).
+    //  - ANY CLICK OUTSIDE the panel in SankoTV closes it: the canvas, the Layers panel, the
+    //    timeline, a toolbar, any other part of the window (notePanelClick). The click still
+    //    does its own job - a stroke, a layer, the timeline: nothing is taken.
+    //  - THE MENU BAR (2026-11-21): a click on it closes nothing by itself; choosing View >
+    //    Library or View > Colors toggles that panel, with the mouse as with the keys; choosing
+    //    any other entry closes it.
+    //  - INSIDE, and so never closing it: the panel itself; a menu or a dialog it opened (Import's
+    //    file dialog, Rename, its menus - all made with the panel as their parent); the Studio,
+    //    opened from the Library (the Library lies hidden under it meanwhile); and its OWN
+    //    buttons - Brush and Eraser for the Library, the swatch for the Colors panel - which
+    //    open and close it as ever, once (no close-and-reopen).
+    //  - A PICK with the Eyedropper (the panel's button, I, Alt with the Brush) never closes the
+    //    Colors panel.
+    //  - A press on a button outside closes at the button's CLICK: let go off it, the press
+    //    closes nothing (kept from 2026-11-20).
+    //  - ONE PANEL AT A TIME (kept): they open at the same place by the bar, so as one opens
+    //    the other goes (the Library's side where it is made, createCenterColumn; the Colors
+    //    panel's in eventFilter, on its Show).
+    // Before 2026-11-21 (batch D's rule) they closed on another tool from any origin, a PRESS on
+    // any other button of the two bars, and the first stroke. The click-away rule holds the
+    // last two. ANOTHER TOOL FROM ANY ORIGIN stays as it was, for the tool keys (B, E, V, L, G:
+    // no click): any tool closes the Colors panel, and a tool that is not the Library's own
+    // closes the Library. The Eraser is the Library's own (its button re-scopes the open
+    // Library, no blink), so its toggle no longer closes it here; the E key still does, as
+    // before (toolKey).
+    // CLOSED IS CLOSED (2026-11-21; see closeColorsPanel): every one of these closes is
+    // remembered as closed - the panel does not reopen at the next launch. (Until then they
+    // were autoHide(): "not the user choosing hidden", and it reopened.)
+    connect(tools, &QButtonGroup::buttonToggled, this, [this](QAbstractButton *b, bool checked) {
+        if (!checked)
             return;
-        if (m_brushLibPanel && m_brushLibPanel->isVisible())
-            m_brushLibPanel->autoHide();
-    };
-    connect(tools, &QButtonGroup::buttonToggled, this,
-            [this, autoCloseBrushLib](QAbstractButton *b, bool checked) {
-                if (checked && b != m_brushToolButton)
-                    autoCloseBrushLib();
-            });
-    for (QWidget *barHost : {static_cast<QWidget *>(m_floatToolbar),
-                             static_cast<QWidget *>(m_layersToolbar)})
-        for (QAbstractButton *b : barHost->findChildren<QAbstractButton *>())
-            if (b != m_brushToolButton)
-                connect(b, &QAbstractButton::pressed, this, autoCloseBrushLib);
-    // THE COLORS PANEL closes by the same rule (batch D; D-1): another tool picked, from any
-    // origin, or a press on any other button of the two bars - its own swatch exempt, the
-    // open / close switch - and the first stroke (below, with the canvas). A pick is none of
-    // these: the panel stays.
-    connect(tools, &QButtonGroup::buttonToggled, this, [this](QAbstractButton *, bool checked) {
-        if (checked)
-            autoHideColorsPanel();
-    });
-    for (QWidget *barHost : {static_cast<QWidget *>(m_floatToolbar),
-                             static_cast<QWidget *>(m_layersToolbar)})
-        for (QAbstractButton *b : barHost->findChildren<QAbstractButton *>())
-            if (b != m_colorSwatch)
-                connect(b, &QAbstractButton::pressed, this, [this] { autoHideColorsPanel(); });
-    connect(m_canvas, &DrawingCanvas::liveBrushStrokeStarted, this, [this] {
-        if (!(m_brushStudio && m_brushStudio->isVisible()))
-            autoHideColorsPanel();
+        if (b != m_brushToolButton && b != m_eraserToolButton)
+            closeBrushLibrary();
+        closeColorsPanel();
     });
     // Open at the last launch's end: open now (effective with the canvas, as every floating
     // window), at its anchor - unless the Library, opened after it, reopens instead (one panel
@@ -9425,6 +9396,21 @@ public:
 protected:
     bool eventFilter(QObject *receiver, QEvent *event) override
     {
+        // A click outside the Brush Library or the Colors panel closes it (2026-11-21): every
+        // press and release says where it is. Never taken either.
+        switch (event->type()) {
+        case QEvent::MouseButtonPress:
+        case QEvent::MouseButtonDblClick:
+        case QEvent::MouseButtonRelease:
+        case QEvent::TabletPress:
+        case QEvent::TabletRelease:
+        case QEvent::NonClientAreaMouseButtonPress: // the window's title bar and frame
+        case QEvent::NonClientAreaMouseButtonRelease:
+            m_page->notePanelClick(receiver, static_cast<QSinglePointEvent *>(event));
+            break;
+        default:
+            break;
+        }
         if (event->type() == QEvent::MouseMove || event->type() == QEvent::TabletMove
             || event->type() == QEvent::MouseButtonPress || event->type() == QEvent::TabletPress) {
             m_page->notePointerAt(receiver, static_cast<QPointerEvent *>(event));
@@ -9794,8 +9780,14 @@ void StoryboardPage::toolKey(DrawingCanvas::Tool tool)
     // Checked as a press checks it - the exclusive group unchecks the old tool and the
     // button's toggled() sets the canvas's tool - but no click: a click on Brush or
     // Eraser also opens the Library.
+    const bool ontoEraser = tool == DrawingCanvas::Eraser && m_canvas->tool() != DrawingCanvas::Eraser;
     if (auto *button = m_floatToolbar->findChild<QPushButton *>(QLatin1String(name)))
         button->setChecked(true);
+    // The E key closes the Library as every tool key but B always has. (Until 2026-11-21 any
+    // toggle onto the Eraser did; the Eraser BUTTON's click no longer does - it is the
+    // Library's own button and re-scopes it without a close-and-reopen.)
+    if (ontoEraser)
+        closeBrushLibrary();
 }
 
 // THE EYEDROPPER (batch D): see the header. Not in Stage mode (its tool is the camera's) nor
@@ -9874,12 +9866,23 @@ void StoryboardPage::setColorsPanelShown(bool shown)
     }
 }
 
-// The rule closing it (a stroke, another tool, another button) is not the user choosing
-// "hidden": what is remembered stays (as the Library's autoHide).
-void StoryboardPage::autoHideColorsPanel()
+// CLOSED IS CLOSED (the user, 2026-11-21: "a panel closed by a click outside counts as closed,
+// so it doesn't reopen at the next launch"). Until then a rule closing a panel - a stroke,
+// another tool - was "not the user choosing hidden", and it reopened at the next launch. Now
+// every close is remembered as closed, whatever closed it: a click outside, a menu entry, a
+// tool key, the other panel opening over it. (The Studio's and a minimised window's hiding
+// are not closes: FloatingToolWindow's own, and they come back.) Only an open one is closed:
+// a panel that is not showing keeps what is remembered of it (the launch's one-panel rule).
+void StoryboardPage::closeColorsPanel()
 {
     if (m_colorsPanel && m_colorsPanel->isVisible())
-        m_colorsPanel->setVisible(false);
+        setColorsPanelShown(false);
+}
+
+void StoryboardPage::closeBrushLibrary()
+{
+    if (m_brushLibPanel && m_brushLibPanel->isVisible() && !(m_brushStudio && m_brushStudio->isVisible()))
+        m_brushLibPanel->setVisible(false); // (under the Studio the Library stays put)
 }
 
 void StoryboardPage::anchorColorsPanel()
@@ -9919,6 +9922,123 @@ void StoryboardPage::fitColorsPanel()
     const int bar = cut ? m_colorsScroll->verticalScrollBar()->sizeHint().width() : 0;
     m_colorsScroll->setFixedSize(body.width() + bar, h);
     m_colorsPanel->adjustSize();
+}
+
+// A CLICK OUTSIDE THE BRUSH LIBRARY OR THE COLORS PANEL CLOSES IT (the user's rules,
+// 2026-11-21; the list is in createFloatingToolbar). Every press and release in the
+// application passes here on its way to the widget it is for (CanvasKeyRouter), and is never
+// taken: the click still does its own job.
+//  - A press ANYWHERE BUT A BUTTON decides at once: outside a panel, that panel closes.
+//  - A press ON A BUTTON waits for the button's click - its release over the same button:
+//    let go off it, the press closes nothing.
+//  - THE MENU BAR AND ITS MENUS (the user, 2026-11-21): a click on the menu bar closes nothing
+//    by itself, nor does a press in one of its menus; CHOOSING an entry there does - a release
+//    over it - except the panel's own entry, View > Library or View > Colors, which toggles
+//    it. (Chosen with the keyboard, or by its shortcut, an entry closes nothing: keys never
+//    did, but the tool keys.)
+//  - A click that only DISMISSES a popup - Qt hands it to the popup, wherever it falls - is a
+//    click where it falls.
+// One look per press: Qt hands a press on to the parents of a widget that leaves it, and
+// makes a mouse press of a pen's - each a copy with the press's own time and place.
+namespace {
+// The menu of the menu bar this widget is, or is in - a menu, or a menu's submenu; null for
+// anything else. (Every menu of the bar is made with addMenu(title), on the bar or on a menu
+// of it, so its parents lead to the bar; a context menu's do not.)
+QMenu *menuBarMenuOf(QWidget *at)
+{
+    QMenu *menu = nullptr;
+    for (QWidget *w = at; w; w = w->parentWidget()) {
+        if (!menu)
+            menu = qobject_cast<QMenu *>(w);
+        if (qobject_cast<QMenuBar *>(w))
+            return menu;
+    }
+    return nullptr;
+}
+
+bool inMenuBar(QWidget *at)
+{
+    for (QWidget *w = at; w; w = w->parentWidget()) {
+        if (qobject_cast<QMenuBar *>(w))
+            return true;
+        if (w->isWindow())
+            break;
+    }
+    return false;
+}
+} // namespace
+
+void StoryboardPage::notePanelClick(QObject *receiver, QSinglePointEvent *event)
+{
+    if (!receiver->isWidgetType())
+        return; // the window's own copy: its widget's comes next
+    auto *at = static_cast<QWidget *>(receiver);
+    const QEvent::Type type = event->type();
+    const QPoint global = event->globalPosition().toPoint();
+    if (type == QEvent::MouseButtonRelease || type == QEvent::TabletRelease
+        || type == QEvent::NonClientAreaMouseButtonRelease) {
+        m_panelPressSeen = false;
+        const QPointer<QWidget> button = m_panelPressButton;
+        m_panelPressButton.clear();
+        if (button && button->rect().contains(button->mapFromGlobal(global))) {
+            closePanelsClickedOutside(button, event);
+            return;
+        }
+        // An entry of the menu bar's menus CHOSEN: let go over it - pressed there, or dragged
+        // down to it from the bar. (A release's copies come here again: closing twice closes
+        // once, and the panel's own entry is left alone each time.)
+        if (QMenu *menu = menuBarMenuOf(at)) {
+            QAction *chosen = menu->actionAt(menu->mapFromGlobal(global));
+            if (chosen && chosen->isEnabled() && !chosen->isSeparator() && !chosen->menu()
+                && !(m_brushStudio && m_brushStudio->isVisible())) {
+                if (chosen != m_brushLibViewAction)
+                    closeBrushLibrary();
+                if (chosen != m_colorsViewAction)
+                    closeColorsPanel();
+            }
+        }
+        return;
+    }
+    if (m_panelPressSeen && m_panelPressTime == event->timestamp() && m_panelPressAt == event->globalPosition())
+        return;
+    m_panelPressSeen = true;
+    m_panelPressTime = event->timestamp();
+    m_panelPressAt = event->globalPosition();
+    m_panelPressButton.clear();
+    // A press that dismisses a popup falls where it falls - outside SankoTV, nowhere.
+    if (QWidget *popup = at->window(); popup->windowType() == Qt::Popup
+        && !popup->rect().contains(popup->mapFromGlobal(global))) {
+        at = QApplication::widgetAt(global);
+        if (!at)
+            return;
+    }
+    if (inMenuBar(at) || menuBarMenuOf(at))
+        return; // the bar, or a press in one of its menus: the choosing is at the release
+    m_panelPressButton = qobject_cast<QAbstractButton *>(at);
+    if (!m_panelPressButton)
+        closePanelsClickedOutside(at, event);
+}
+
+// Closes each open panel the click at `at` is outside of. INSIDE a panel: the panel itself, a
+// menu or a dialog it opened (their parents lead to it), its own buttons, and - the Colors
+// panel's alone - a press on the canvas that picks a colour. While the Studio is up (opened
+// from the Library, which lies hidden under it) nothing closes.
+void StoryboardPage::closePanelsClickedOutside(QWidget *at, const QSinglePointEvent *event)
+{
+    if (m_brushStudio && m_brushStudio->isVisible())
+        return;
+    const auto within = [at](const QWidget *panel) {
+        for (const QWidget *w = at; w; w = w->parentWidget())
+            if (w == panel)
+                return true;
+        return false;
+    };
+    if (m_brushLibPanel && !within(m_brushLibPanel) && at != m_brushToolButton && at != m_eraserToolButton)
+        closeBrushLibrary();
+    const bool pick = at == m_canvas && event->button() == Qt::LeftButton
+        && m_canvas->pressWouldPickColor(event->modifiers());
+    if (m_colorsPanel && !within(m_colorsPanel) && at != m_colorSwatch && !pick)
+        closeColorsPanel();
 }
 
 // Photoshop's [ and ] (CS6 on): the step is 1 under 10, 10 under 100, 25 under 200, 50
@@ -11431,8 +11551,12 @@ bool StoryboardPage::eventFilter(QObject *object, QEvent *event)
         && (event->type() == QEvent::Show || event->type() == QEvent::Hide))
         m_colorsViewAction->setChecked(event->type() == QEvent::Show);
     // ...and the one panel to reopen at launch is the one shown last (panelToRestoreAtLaunch).
-    if (object == m_colorsPanel && event->type() == QEvent::Show)
+    // One panel at a time (2026-11-20, see the Library's twin above): as it opens, the Library,
+    // at the same place, goes - closed, and remembered so (2026-11-21).
+    if (object == m_colorsPanel && event->type() == QEvent::Show) {
         sankoSettings().setValue(kLastPanelKey, QStringLiteral("colors"));
+        closeBrushLibrary();
+    }
 
     // Floating Brush bar tooltips: one reused popup BELOW the bar (4px gap,
     // never covering a button), driven by Enter/Leave so chain-hovering

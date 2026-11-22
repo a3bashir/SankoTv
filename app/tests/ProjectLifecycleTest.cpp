@@ -20024,12 +20024,24 @@ void runPasteLayerPass(const QString &scratch)
         Rig &r = *rig;
         auto *library = r.window.findChild<brushlib::BrushLibraryPanel *>();
         QAction *libraryEntry = viewAction(r.window, QStringLiteral("Library"));
-        clickThumb(r, 0);
+        // Read AS STARTED, before any click (2026-11-21): until now the first panel was chosen
+        // with a click on its thumbnail first - a click outside the Library, which closes it
+        // now. That click comes after the reading, as the control.
         pump(200);
         const bool shown = library && library->isVisible();
         const bool ticked = libraryEntry && libraryEntry->isChecked();
         check(QStringLiteral("(lt2) OPEN FROM THE LAST SESSION, the Library starts with its tick on"),
               r.ok && shown && ticked, QStringLiteral("shown %1, ticked %2").arg(shown).arg(ticked));
+        clickThumb(r, 0);
+        pump(200);
+        const bool shownAfter = library && library->isVisible();
+        const bool tickedAfter = libraryEntry && libraryEntry->isChecked();
+        const bool rememberedAfter = sankoSettings().value(visibleKey).toBool();
+        check(QStringLiteral("(lt2) control (2026-11-21): the first click outside it - on a thumbnail - closes it, "
+                             "its tick off - and it is remembered as closed (2026-11-21)"),
+              shown && !shownAfter && !tickedAfter && !rememberedAfter,
+              QStringLiteral("shown %1, ticked %2, remembered open %3").arg(shownAfter).arg(tickedAfter)
+                  .arg(rememberedAfter));
         r.window.markCleanForTest();
     }
     restoreLibraryKeys();
@@ -20511,20 +20523,24 @@ void runEyedropperFlipPass(const QString &scratch)
               QStringLiteral("took the orange %1; dropper up %2, still up with Alt %3; down without Alt %4")
                   .arg(tookOrange3b).arg(up3b).arg(stillUp3b).arg(down3b));
         // Control: the same drag with no Alt paints - a step - and the first stroke hides the
-        // panel (cp4).
+        // panel (cp4). CLOSED IS CLOSED (the user, 2026-11-21): the stroke's close is remembered
+        // as closed - until then "open" stayed remembered, and the next launch reopened it.
+        const bool openRemembered3c = sankoSettings().value(colorsKey).toBool(); // open, through the picks
         camtool::drag(r.canvas, paperAt, paperAt + QPointF(40, 20));
         pump(300);
         const int steps3c = stack->index() - s0;
         const bool painted3c = p0->layers.at(1).image != layer3Before;
         const bool hidden3c = !panel->isVisible() && !viewColors->isChecked();
-        const bool stillRemembered3c = sankoSettings().value(colorsKey).toBool();
+        const bool closedRemembered3c = !sankoSettings().value(colorsKey).toBool();
         check(QStringLiteral("(ep3) control: the same drag with no Alt paints with the picked navy - one step"),
               steps3c == 1 && painted3c && nearColor(r.canvas->currentColorForTest(), navy, 1),
               QStringLiteral("steps +%1, painted %2").arg(steps3c).arg(painted3c));
-        check(QStringLiteral("(cp4) THE FIRST STROKE HIDES THE COLORS PANEL (a pick did not): its tick off; \"open\" "
-                             "still remembered - a rule closing it is not the user choosing \"hidden\""),
-              hidden3c && stillRemembered3c,
-              QStringLiteral("hidden %1, remembered %2").arg(hidden3c).arg(stillRemembered3c));
+        check(QStringLiteral("(cp4) THE FIRST STROKE HIDES THE COLORS PANEL (a pick did not): its tick off, and it is "
+                             "remembered as CLOSED (2026-11-21: a panel closed by a click outside counts as closed); "
+                             "control: through the picks before it \"open\" was what was remembered"),
+              hidden3c && closedRemembered3c && openRemembered3c,
+              QStringLiteral("hidden %1, remembered closed %2 (open before %3)").arg(hidden3c).arg(closedRemembered3c)
+                  .arg(openRemembered3c));
         r.storyboard->editUndo();
         pump(120);
 
@@ -20595,7 +20611,7 @@ void runEyedropperFlipPass(const QString &scratch)
                   .arg(armedI).arg(offI).arg(armedB).arg(offB).arg(offEsc).arg(sameToolKeeps).arg(offTool)
                   .arg(offStage));
 
-        // --- (cp2) another tool hides the panel; (cp3) so does a press on another bar button --
+        // --- (cp2) another tool hides the panel; (cp3) a press on another bar button: its click does --
         swatch->click();
         pump(200);
         const bool open2 = panel->isVisible();
@@ -20606,11 +20622,22 @@ void runEyedropperFlipPass(const QString &scratch)
         pump(200);
         const bool open3 = panel->isVisible();
         const QPointF eraserMid(eraserButton->width() / 2.0, eraserButton->height() / 2.0);
-        // Pressed, let go off the button: no click, so the tool stays the Brush.
+        // Pressed, let go off the button: no click, so the tool stays the Brush, no Library opens -
+        // and (the user's rule of 2026-11-21) the press closes nothing. Until then the PRESS hid it.
         camtool::mouse(eraserButton, QEvent::MouseButtonPress, eraserMid, Qt::LeftButton, Qt::LeftButton);
         camtool::mouse(eraserButton, QEvent::MouseButtonRelease, QPointF(-60, -60), Qt::LeftButton, Qt::NoButton);
         pump(120);
-        const bool hidden3 = !panel->isVisible() && r.canvas->tool() == DrawingCanvas::Brush;
+        auto *library3 = r.window.findChild<brushlib::BrushLibraryPanel *>();
+        const bool stays3 = panel->isVisible() && r.canvas->tool() == DrawingCanvas::Brush
+            && library3 && !library3->isVisible();
+        // Control: the same press let go ON the button is a click outside the panel - it closes.
+        camtool::mouse(eraserButton, QEvent::MouseButtonPress, eraserMid, Qt::LeftButton, Qt::LeftButton);
+        camtool::mouse(eraserButton, QEvent::MouseButtonRelease, eraserMid, Qt::LeftButton, Qt::NoButton);
+        pump(200);
+        const bool clicked3 = !panel->isVisible() && r.canvas->tool() == DrawingCanvas::Eraser;
+        pickTool("toolBrush"); // the Brush again, and the Library the Eraser's click opened shut
+        if (library3 && library3->isVisible())
+            library3->autoHide();
         swatch->click();
         pump(200);
         const QPointF swatchMid(swatch->width() / 2.0, swatch->height() / 2.0);
@@ -20620,9 +20647,12 @@ void runEyedropperFlipPass(const QString &scratch)
         const bool swatchSpares = panel->isVisible();
         check(QStringLiteral("(cp2) ANOTHER TOOL HIDES THE COLORS PANEL, its tick off"), open2 && hidden2,
               QStringLiteral("open %1, hidden %2").arg(open2).arg(hidden2));
-        check(QStringLiteral("(cp3) A PRESS ON ANOTHER BUTTON OF THE BARS HIDES IT (the Eraser pressed and let go off "
-                             "it: no tool change)"),
-              open3 && hidden3, QStringLiteral("open %1, hidden %2").arg(open3).arg(hidden3));
+        check(QStringLiteral("(cp3) A PRESS ON ANOTHER BUTTON OF THE BARS, LET GO OFF IT, CLOSES NOTHING (2026-11-21; the "
+                             "Eraser: no click, no tool change, no Library)"),
+              open3 && stays3, QStringLiteral("open %1, stays %2").arg(open3).arg(stays3));
+        check(QStringLiteral("(cp3) control: the same press let go ON the button - a click outside the panel - hides "
+                             "it (and picks the Eraser)"),
+              clicked3, QStringLiteral("hidden and the Eraser %1").arg(clicked3));
         check(QStringLiteral("(cp3) control: the same press on the swatch, its own switch, leaves it open"),
               swatchSpares, QStringLiteral("open %1").arg(swatchSpares));
 
@@ -20813,9 +20843,10 @@ void runEyedropperFlipPass(const QString &scratch)
               QStringLiteral("with the box on %1, flips %2; without: greyed with why %3 ('%4'); steps +%5")
                   .arg(onWithBox).arg(menuFlips).arg(offWithout).arg(editFlipH->toolTip()).arg(stack->index() - sF));
 
-        // Left open for (cp8): the next launch opens it. The Library was left open too (cp7: the
-        // swatch's press hid it, which is not the user closing it) - the Colors panel was opened
-        // after it.
+        // Left open for (cp8): the next launch opens it. The Library, opened before it in (cp7),
+        // was closed as the Colors panel opened over it - and closed is closed (2026-11-21;
+        // until then that hiding was "not the user closing it" and the Library stayed
+        // remembered open too).
         swatch->click();
         pump(200);
         r.window.markCleanForTest();
@@ -20824,14 +20855,16 @@ void runEyedropperFlipPass(const QString &scratch)
     auto launchState = [&](const char *label) {
         auto rig = std::make_unique<Rig>(project);
         Rig &r = *rig;
-        clickThumb(r, 0);
+        // Read AS LAUNCHED, before any click (2026-11-21): until now the first panel was chosen
+        // here with a click on its thumbnail first - a click outside the panel, which closes it
+        // now. That click comes after the reading, as the control.
         pump(200);
         QWidget *panel = r.storyboard->colorsPanelForTest();
         auto *library = r.window.findChild<brushlib::BrushLibraryPanel *>();
         QAction *viewColors = r.window.findChild<QAction *>(QStringLiteral("viewColors"));
         QAbstractButton *swatch = r.storyboard->colorSwatchForTest();
-        struct State { bool ok, colors, ticked, library, under; } s{r.ok && panel && library && viewColors && swatch,
-                                                                      false, false, false, false};
+        struct State { bool ok, colors, ticked, library, under, clickCloses, remembered; }
+            s{r.ok && panel && library && viewColors && swatch, false, false, false, false, false, false};
         if (!s.ok) {
             check(QStringLiteral("(cp8) %1: the workspace and its panels").arg(QLatin1String(label)), false);
             return s;
@@ -20850,25 +20883,37 @@ void runEyedropperFlipPass(const QString &scratch)
                 pump(200);
             }
         }
+        if (QLatin1String(label) == QLatin1String("4th")) {
+            // The control: the first click outside - on a thumbnail, as this helper always
+            // made - closes the panel the launch opened, and it is remembered as closed.
+            clickThumb(r, 0);
+            pump(200);
+            s.clickCloses = !library->isVisible() && !panel->isVisible();
+            s.remembered = sankoSettings().value(libraryKey).toBool();
+        }
         r.window.markCleanForTest();
         return s;
     };
     // --- (cp8) remembered between launches, both ways; ONE PANEL AT LAUNCH ----------------------
-    const bool bothLeftOpen = sankoSettings().value(colorsKey).toBool() && sankoSettings().value(libraryKey).toBool()
-                              && sankoSettings().value(StoryboardPage::kLastPanelKey).toString() == QStringLiteral("colors");
+    // CLOSED IS CLOSED (2026-11-21): the Colors panel was left open; the Library, opened before
+    // it, closed as it opened - so only the Colors panel is remembered open.
+    const bool colorsLeftOpen = sankoSettings().value(colorsKey).toBool() && !sankoSettings().value(libraryKey).toBool()
+                                && sankoSettings().value(StoryboardPage::kLastPanelKey).toString() == QStringLiteral("colors");
     const auto second = launchState("2nd");
     check(QStringLiteral("(cp8) LEFT OPEN, THE NEXT LAUNCH OPENS IT, ticked, under the swatch - and ONLY it: the Brush "
-                         "Library, left open too but opened before it, does not reopen (one panel at launch, the one "
-                         "opened last; never on top of each other)"),
-          bothLeftOpen && second.colors && second.ticked && second.under && !second.library,
-          QStringLiteral("both left open, Colors last %1; Colors open %2, ticked %3, under the swatch %4; Library open %5")
-              .arg(bothLeftOpen).arg(second.colors).arg(second.ticked).arg(second.under).arg(second.library));
+                         "Library, closed as the Colors panel opened over it, is remembered closed and stays closed "
+                         "(2026-11-21: closed is closed)"),
+          colorsLeftOpen && second.colors && second.ticked && second.under && !second.library,
+          QStringLiteral("Colors left open and the Library closed %1; Colors open %2, ticked %3, under the swatch %4; "
+                         "Library open %5")
+              .arg(colorsLeftOpen).arg(second.colors).arg(second.ticked).arg(second.under).arg(second.library));
     const auto third = launchState("3rd");
-    check(QStringLiteral("(cp8) CLOSED WITH THE SWATCH, THE NEXT LAUNCH KEEPS IT CLOSED; the Library, now the only one "
-                         "left open, reopens"),
-          !third.colors && !third.ticked && third.library,
+    check(QStringLiteral("(cp8) CLOSED WITH THE SWATCH, THE NEXT LAUNCH KEEPS IT CLOSED - and the Library, closed too, "
+                         "stays closed: nothing opens"),
+          !third.colors && !third.ticked && !third.library,
           QStringLiteral("Colors open %1, ticked %2; Library open %3").arg(third.colors).arg(third.ticked)
               .arg(third.library));
+    // Both remembered open, as a version before 2026-11-21 could leave them: one panel at launch.
     sankoSettings().setValue(colorsKey, true);
     sankoSettings().setValue(libraryKey, true);
     sankoSettings().setValue(StoryboardPage::kLastPanelKey, QStringLiteral("library"));
@@ -20876,6 +20921,18 @@ void runEyedropperFlipPass(const QString &scratch)
     check(QStringLiteral("(cp8) BOTH LEFT OPEN, THE LIBRARY OPENED LAST: only the Library reopens"),
           fourth.library && !fourth.colors,
           QStringLiteral("Library open %1, Colors open %2").arg(fourth.library).arg(fourth.colors));
+    check(QStringLiteral("(cp8) control (2026-11-21): the first click outside it - on a thumbnail - closes the Library "
+                         "that launch opened, and it is remembered as CLOSED (it was remembered open until the "
+                         "click)"),
+          fourth.library && fourth.clickCloses && !fourth.remembered,
+          QStringLiteral("open at launch %1, closed by the click %2, still remembered open %3").arg(fourth.library)
+              .arg(fourth.clickCloses).arg(fourth.remembered));
+    // ...so the launch after it opens nothing (the Colors panel's key, set by hand above, off).
+    sankoSettings().setValue(colorsKey, false);
+    const auto fifth = launchState("5th");
+    check(QStringLiteral("(cp8) A PANEL CLOSED BY A CLICK OUTSIDE DOES NOT REOPEN AT THE NEXT LAUNCH (2026-11-21)"),
+          !fifth.library && !fifth.colors,
+          QStringLiteral("Library open %1, Colors open %2").arg(fifth.library).arg(fifth.colors));
     restoreColorsKey(); // the launch keys with it
 }
 
@@ -26595,6 +26652,832 @@ void runDepthWhileMovingPass(const QString &scratch)
     delete kept;
 }
 
+// --- (po) THE BRUSH LIBRARY AND THE COLORS PANEL CLOSE AT A CLICK OUTSIDE THEM (2026-11-21) ----
+// The user's rules: any click outside the panel in SankoTV closes it - the canvas, the Layers
+// panel, the timeline, a toolbar, the menu bar, any other part of the window - and still does
+// its own job; a click in the panel, in a window it opened, on its own button, or (the Colors
+// panel) a pick with the Eyedropper never closes it. The pen and the mouse are sent at the
+// window-system level, as real ones are.
+void runPanelsClickAwayPass(const QString &scratch)
+{
+    using namespace workspace;
+    out() << "--- (po) the Brush Library and the Colors panel close at a click outside them ---" << Qt::endl;
+    const QString dir = scratch + QStringLiteral("/panelsaway");
+    QDir(dir).removeRecursively();
+    QDir().mkpath(dir);
+    const QString project = writeProject(dir, QStringLiteral("Panels"), QSize(1920, 1080), 24, 1, 2);
+    // The panels record "open", the Library its size and which was opened last, in the settings:
+    // all put back when the pass ends (after its window has closed), or every later pass's page
+    // would open with a panel over the canvas.
+    struct KeptKeys
+    {
+        QStringList keys;
+        QVector<QVariant> values;
+        explicit KeptKeys(const QStringList &k) : keys(k)
+        {
+            const QSettings s = sankoSettings();
+            for (const QString &key : keys)
+                values.append(s.value(key));
+        }
+        ~KeptKeys()
+        {
+            QSettings s = sankoSettings();
+            for (int i = 0; i < keys.size(); ++i) {
+                if (values.at(i).isValid())
+                    s.setValue(keys.at(i), values.at(i));
+                else
+                    s.remove(keys.at(i));
+            }
+            s.sync();
+        }
+    } keptKeys({QStringLiteral("storyboard/brushLibrary/v1/visible"), QStringLiteral("storyboard/brushLibrary/v1/geo"),
+                StoryboardPage::kColorsPanelKey, StoryboardPage::kLastPanelKey});
+    auto rig = std::make_unique<Rig>(project);
+    Rig &r = *rig;
+    check(QStringLiteral("(po) the workspace opened"), r.ok);
+    if (!r.ok)
+        return;
+    QUndoStack *stack = r.window.undoStackForTest();
+    QWindow *win = r.window.windowHandle();
+    auto *library = r.window.findChild<brushlib::BrushLibraryPanel *>();
+    QWidget *colors = r.storyboard->colorsPanelForTest();
+    auto *stripDock = r.storyboard->findChild<QDockWidget *>(QStringLiteral("dockPanelStrip"));
+    auto *brushButton = r.storyboard->findChild<QPushButton *>(QStringLiteral("toolBrush"));
+    auto *eraserButton = r.storyboard->findChild<QPushButton *>(QStringLiteral("toolEraser"));
+    auto *fillButton = r.storyboard->findChild<QPushButton *>(QStringLiteral("toolFill"));
+    auto *undoButton = r.storyboard->findChild<QPushButton *>(QStringLiteral("toolbarUndo"));
+    auto *swatch = r.storyboard->findChild<QPushButton *>(QStringLiteral("colorSwatch"));
+    auto *studio = r.window.findChild<brushlib::BrushSettingsStudio *>();
+    QWidget *ground = r.storyboard->panelStripGroundForTest();
+    QAbstractButton *pickButton = r.storyboard->colorPickButtonForTest();
+    auto viewEntry = [&](const QString &text) -> QAction * {
+        for (QAction *top : r.window.menuBar()->actions()) {
+            QString title = top->text();
+            title.remove(QLatin1Char('&'));
+            if (top->menu() && title == QStringLiteral("View"))
+                for (QAction *a : top->menu()->actions())
+                    if (a->text() == text)
+                        return a;
+        }
+        return nullptr;
+    };
+    QAction *viewLibrary = viewEntry(QStringLiteral("Library"));
+    QAction *viewColors = viewEntry(QStringLiteral("Colors"));
+    if (!stack || !win || !library || !colors || !stripDock || !brushButton || !eraserButton || !fillButton
+        || !undoButton || !swatch || !studio || !r.surface || !ground || !pickButton || !viewLibrary
+        || !viewColors) {
+        check(QStringLiteral("(po) found the history, the window, both panels, the bars' buttons, the Studio, the "
+                             "timeline, the Panel Strip and the View entries"), false);
+        return;
+    }
+    QWidget *bar = brushButton->window(); // the floating Brush bar
+    constexpr qint64 kPen = 7013;
+    auto penAt = [&](const QPointF &onCanvas, Qt::MouseButtons buttons, qreal pressure,
+                     Qt::KeyboardModifiers mods = Qt::NoModifier) {
+        const QPointF global = r.canvas->mapToGlobal(onCanvas);
+        const QPointF local = global - QPointF(win->mapToGlobal(QPoint(0, 0)));
+        QWindowSystemInterface::handleTabletEvent(win, local, global, int(QInputDevice::DeviceType::Stylus),
+                                                  int(QPointingDevice::PointerType::Pen), buttons, pressure,
+                                                  0, 0, 0, 0, 0, kPen, mods);
+        QCoreApplication::processEvents();
+    };
+    auto stroke = [&](const QPointF &from) { // a live pen stroke
+        penAt(from, Qt::NoButton, 0.0);
+        for (int i = 0; i <= 6; ++i)
+            penAt(from + QPointF(12.0 * i, 5.0 * i), Qt::LeftButton, 0.6);
+        penAt(from + QPointF(72, 30), Qt::NoButton, 0.0);
+        pump(350);
+    };
+    // The mouse on any widget of any window, as a real one arrives: a press, a release, a click.
+    auto mouseEvent = [&](QWidget *over, const QPointF &at, QEvent::Type type,
+                          Qt::KeyboardModifiers mods = Qt::NoModifier) {
+        QWindow *target = over->window()->windowHandle();
+        if (!target)
+            return;
+        const QPointF global = over->mapToGlobal(at);
+        const QPointF local = global - QPointF(target->mapToGlobal(QPoint(0, 0)));
+        const bool press = type == QEvent::MouseButtonPress;
+        QWindowSystemInterface::handleMouseEvent<QWindowSystemInterface::SynchronousDelivery>(
+            target, local, global, press ? Qt::LeftButton : Qt::NoButton, Qt::LeftButton, type, mods);
+        QCoreApplication::processEvents();
+    };
+    auto mouseClick = [&](QWidget *over, const QPointF &at, Qt::KeyboardModifiers mods = Qt::NoModifier) {
+        mouseEvent(over, at, QEvent::MouseButtonPress, mods);
+        mouseEvent(over, at, QEvent::MouseButtonRelease, mods);
+        pump(120);
+    };
+    auto middleOf = [](const QWidget *w) { return QPointF(w->width() / 2.0, w->height() / 2.0); };
+    // A point of a widget that is its own - no child there - at least `inset` px in from the side.
+    auto ownPoint = [](QWidget *w, bool fromRight, int inset = 2) {
+        for (int i = inset; i < w->width() - 2; ++i) {
+            const QPoint p(fromRight ? w->width() - 1 - i : i, w->height() / 2);
+            if (!w->childAt(p))
+                return QPointF(p);
+        }
+        return QPointF(-1, -1);
+    };
+    auto closePopups = [] {
+        while (QWidget *popup = QApplication::activePopupWidget()) {
+            popup->close();
+            pump(40);
+        }
+    };
+    // What reaches a widget: the click outside still does its own job there.
+    struct Presses : QObject
+    {
+        int count = 0;
+        bool eventFilter(QObject *, QEvent *e) override
+        {
+            count += e->type() == QEvent::MouseButtonPress ? 1 : 0;
+            return false;
+        }
+    };
+    // How often a panel shows and hides: an own button opens or closes it ONCE.
+    struct ShowHide : QObject
+    {
+        int shows = 0, hides = 0;
+        void reset() { shows = hides = 0; }
+        bool eventFilter(QObject *, QEvent *e) override
+        {
+            shows += e->type() == QEvent::Show ? 1 : 0;
+            hides += e->type() == QEvent::Hide ? 1 : 0;
+            return false;
+        }
+    };
+    // A click on a layer row where it is the row's own: its name (the middle of a row is its
+    // depth badge, a button of its own that opens the Depth popover).
+    auto clickRow = [&](QWidget *row) {
+        if (!row)
+            return;
+        for (QWidget *up = row->parentWidget(); up; up = up->parentWidget())
+            if (auto *scroll = qobject_cast<QScrollArea *>(up)) { // the list scrolled to it first
+                scroll->ensureWidgetVisible(row, 0, 0);
+                pump(40);
+                break;
+            }
+        QWidget *name = row->findChild<QWidget *>(QStringLiteral("layerName"));
+        QWidget *at = name ? name : row;
+        mouseClick(at, QPointF(qMin(12.0, at->width() / 2.0), at->height() / 2.0));
+        closePopups();
+    };
+    // A layer row other than the active one, by its index property - a drawing layer (the
+    // Background's row is not chosen by a click).
+    auto otherLayerRow = [&]() -> QWidget * {
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        Panel *p = r.storyboard->currentPanelForTest();
+        for (QWidget *w : r.storyboard->findChildren<QWidget *>(QStringLiteral("layerRow"))) {
+            const int idx = w->property("layerIndex").isValid() ? w->property("layerIndex").toInt() : -1;
+            if (p && w->isVisible() && idx >= 0 && idx < p->layers.size() && idx != p->activeLayerIndex
+                && p->layers.at(idx).type != QLatin1String("background"))
+                return w;
+        }
+        return nullptr;
+    };
+    // Each panel opened by its own button's click (no mouse: the door alone), the Brush the tool.
+    auto openLibrary = [&] {
+        if (!library->isVisible())
+            brushButton->click();
+        pump(200);
+        return library->isVisible();
+    };
+    auto openColors = [&] {
+        if (!colors->isVisible())
+            swatch->click();
+        pump(200);
+        return colors->isVisible();
+    };
+    // One kind of click outside, with each panel open in turn: did each close?
+    struct Closed
+    {
+        bool library = false, colors = false;
+        bool both() const { return library && colors; }
+    };
+    auto closesBoth = [&](const std::function<void()> &click) {
+        Closed c;
+        const bool libraryOpen = openLibrary();
+        click();
+        c.library = libraryOpen && !library->isVisible();
+        const bool colorsOpen = openColors();
+        click();
+        c.colors = colorsOpen && !colors->isVisible();
+        return c;
+    };
+    clickThumb(r, 0);
+    pump(60);
+    r.storyboard->setPointerDeviceForTest(kPen);
+    r.canvas->setTool(DrawingCanvas::Brush);
+    pump(60);
+    if (colors->isVisible())
+        swatch->click();
+    if (library->isVisible())
+        library->autoHide();
+    pump(120);
+    // A third layer (the panel has the Background and Layer 1): the Layers panel's own button.
+    for (QPushButton *b : r.storyboard->findChildren<QPushButton *>())
+        if (b->toolTip() == QStringLiteral("New layer above the active one")) {
+            b->click();
+            break;
+        }
+    pump(120);
+    const QPointF mid(r.canvas->width() / 2.0, r.canvas->height() / 2.0);
+    Panel *p0 = r.storyboard->currentPanelForTest();
+    if (!p0 || !p0->activeLayer()) {
+        check(QStringLiteral("(po) a panel with an active layer"), false);
+        return;
+    }
+
+    // ===== OUTSIDE: each kind of click closes the panel, and does its own job ===================
+    // --- (po1) the canvas ---------------------------------------------------------------------
+    int strokes = 0;
+    QPointF strokeAt = mid - QPointF(160, 60);
+    const int steps1 = stack->index();
+    const Closed onStroke = closesBoth([&] {
+        stroke(strokeAt);
+        strokeAt += QPointF(30, 40);
+        ++strokes;
+    });
+    const bool drew1 = strokes == 2 && stack->index() == steps1 + 2;
+    check(QStringLiteral("(po1) THE CANVAS: a pen stroke closes the Brush Library, and closes the Colors panel - and "
+                         "each stroke draws (one step each)"),
+          onStroke.both() && drew1,
+          QStringLiteral("Library closed %1, Colors closed %2; steps %3 -> %4").arg(onStroke.library)
+              .arg(onStroke.colors).arg(steps1).arg(stack->index()));
+
+    // --- (po2) the Layers panel -----------------------------------------------------------------
+    int selected = 0;
+    const Closed onLayer = closesBoth([&] {
+        const int before = p0->activeLayerIndex;
+        clickRow(otherLayerRow());
+        selected += p0->activeLayerIndex != before ? 1 : 0;
+    });
+    check(QStringLiteral("(po2) THE LAYERS PANEL: a click on another layer's row closes each panel, and selects "
+                         "that layer"),
+          onLayer.both() && selected == 2,
+          QStringLiteral("Library closed %1, Colors closed %2; selected %3 of 2").arg(onLayer.library)
+              .arg(onLayer.colors).arg(selected));
+
+    // --- (po3) the timeline -----------------------------------------------------------------------
+    Presses onTimeline;
+    r.surface->installEventFilter(&onTimeline);
+    double timelineAt = 0.6; // a different place each time: two clicks at one are a double-click
+    const Closed onSurface = closesBoth([&] {
+        mouseClick(r.surface, QPointF(r.surface->width() * timelineAt, 6.0));
+        timelineAt -= 0.2;
+        r.animatic->leavePreview(); // its click laid the preview on the canvas: back to drawing
+        pump(120);
+    });
+    r.surface->removeEventFilter(&onTimeline);
+    check(QStringLiteral("(po3) THE TIMELINE: a click on it closes each panel, and reaches the timeline"),
+          onSurface.both() && onTimeline.count == 2,
+          QStringLiteral("Library closed %1, Colors closed %2; presses there %3").arg(onSurface.library)
+              .arg(onSurface.colors).arg(onTimeline.count));
+
+    // --- (po4) a toolbar: a button's CLICK, not its press; the bar's own ground at the press -------
+    const int steps4 = stack->index();
+    const Closed onUndo = closesBoth([&] { mouseClick(undoButton, middleOf(undoButton)); });
+    const bool undid = stack->index() == steps4 - 2; // the two strokes of (po1), one a click
+    // Pressed and let go off the button: no click - nothing undone, nothing closed.
+    const int steps4b = stack->index();
+    bool slidLibrary = false, slidColors = false;
+    {
+        const bool open = openLibrary();
+        mouseEvent(undoButton, middleOf(undoButton), QEvent::MouseButtonPress);
+        const bool atPress = library->isVisible();
+        mouseEvent(undoButton, QPointF(-60, -60), QEvent::MouseButtonRelease);
+        pump(120);
+        slidLibrary = open && atPress && library->isVisible();
+        const bool openC = openColors();
+        mouseEvent(undoButton, middleOf(undoButton), QEvent::MouseButtonPress);
+        const bool atPressC = colors->isVisible();
+        mouseEvent(undoButton, QPointF(-60, -60), QEvent::MouseButtonRelease);
+        pump(120);
+        slidColors = openC && atPressC && colors->isVisible();
+    }
+    const bool nothingUndone = stack->index() == steps4b;
+    const QPointF barGround = ownPoint(bar, false);
+    bool groundAtPress = false;
+    const Closed onBar = closesBoth([&] {
+        mouseEvent(bar, barGround, QEvent::MouseButtonPress);
+        groundAtPress = !library->isVisible() && !colors->isVisible(); // gone at the press already
+        mouseEvent(bar, barGround, QEvent::MouseButtonRelease);
+        pump(120);
+    });
+    // A tool's button: the click picks the tool and closes.
+    const Closed onFill = closesBoth([&] {
+        mouseClick(fillButton, middleOf(fillButton));
+        brushButton->setChecked(true); // the Brush again (no click: no Library)
+        pump(60);
+    });
+    check(QStringLiteral("(po4) A TOOLBAR: the Undo button's click closes each panel and undoes a step; the bar's own "
+                         "ground closes each at the press; the Fill button's click closes each"),
+          onUndo.both() && undid && barGround.x() >= 0 && onBar.both() && groundAtPress && onFill.both(),
+          QStringLiteral("Undo: Library %1, Colors %2, steps %3 -> %4; ground (%5, %6): Library %7, Colors %8, at the "
+                         "press %9; Fill: Library %10, Colors %11")
+              .arg(onUndo.library).arg(onUndo.colors).arg(steps4).arg(steps4b).arg(barGround.x()).arg(barGround.y())
+              .arg(onBar.library).arg(onBar.colors).arg(groundAtPress).arg(onFill.library).arg(onFill.colors));
+    check(QStringLiteral("(po4) A PRESS THAT SLIDES OFF A BUTTON CLOSES NOTHING: the Undo button pressed, each panel "
+                         "still open at the press, let go off it - still open, nothing undone"),
+          slidLibrary && slidColors && nothingUndone,
+          QStringLiteral("Library stays %1, Colors stays %2, nothing undone %3").arg(slidLibrary).arg(slidColors)
+              .arg(nothingUndone));
+
+    // --- (po5) the menu bar (2026-11-21): a click on the bar closes nothing by itself; View >
+    // Library and View > Colors, chosen with the mouse, toggle their panel; any other entry closes ---
+    QMenuBar *menuBar = r.window.menuBar();
+    const QPointF barEmpty = ownPoint(menuBar, true);
+    const bool emptyThere = barEmpty.x() >= 0 && !menuBar->actionAt(barEmpty.toPoint());
+    QAction *viewTitle = nullptr;
+    for (QAction *top : menuBar->actions()) {
+        QString title = top->text();
+        title.remove(QLatin1Char('&'));
+        if (title == QStringLiteral("View"))
+            viewTitle = top;
+    }
+    QMenu *viewMenu = viewTitle ? viewTitle->menu() : nullptr;
+    QAction *viewArrows = r.window.findChild<QAction *>(QStringLiteral("viewCameraMoveArrows"));
+    if (!viewMenu || !viewArrows) {
+        check(QStringLiteral("(po5) found the View menu and its Camera Move Arrows entry"), false);
+        return;
+    }
+    // One kind of click, with each panel open in turn: did each STAY open?
+    struct Stayed
+    {
+        bool library = false, colors = false;
+        bool both() const { return library && colors; }
+    };
+    auto keepsBoth = [&](const std::function<void()> &click) {
+        Stayed s;
+        const bool libraryOpen = openLibrary();
+        click();
+        s.library = libraryOpen && library->isVisible();
+        const bool colorsOpen = openColors();
+        click();
+        s.colors = colorsOpen && colors->isVisible();
+        return s;
+    };
+    // The View menu opened with the mouse - a click on its title; an entry of it chosen with the
+    // mouse - a click on the entry.
+    const QPointF titleAt(menuBar->actionGeometry(viewTitle).center());
+    auto openViewMenu = [&] {
+        mouseEvent(menuBar, titleAt, QEvent::MouseButtonPress);
+        mouseEvent(menuBar, titleAt, QEvent::MouseButtonRelease);
+        pump(80);
+        return QApplication::activePopupWidget() == viewMenu;
+    };
+    auto chooseEntry = [&](QAction *entry) {
+        const QPointF at(viewMenu->actionGeometry(entry).center());
+        mouseEvent(viewMenu, at, QEvent::MouseButtonPress);
+        mouseEvent(viewMenu, at, QEvent::MouseButtonRelease);
+        pump(200);
+        closePopups();
+    };
+    // A place on the canvas that is the canvas's - no panel, no bar, no menu over it.
+    auto canvasSpot = [&] {
+        for (int y = r.canvas->height() - 40; y > 40; y -= 30)
+            for (int x = r.canvas->width() - 40; x > 40; x -= 30)
+                if (QApplication::widgetAt(r.canvas->mapToGlobal(QPoint(x, y))) == r.canvas)
+                    return QPointF(x, y);
+        return QPointF(-1, -1);
+    };
+    const Stayed onMenuBar = keepsBoth([&] {
+        mouseClick(menuBar, barEmpty);
+        closePopups();
+    });
+    int menusOpened = 0;
+    const Stayed onTitle = keepsBoth([&] {
+        menusOpened += openViewMenu() ? 1 : 0; // the press opened the menu
+        closePopups();                         // ...put away with no click
+        pump(80);
+    });
+    check(QStringLiteral("(po5) THE MENU BAR, BY ITSELF, CLOSES NOTHING (2026-11-21): a click on its empty part leaves "
+                         "each panel open; a click on the View title opens the menu and leaves each open"),
+          emptyThere && onMenuBar.both() && onTitle.both() && menusOpened == 2,
+          QStringLiteral("empty part %1: Library stays %2, Colors stays %3; View: Library stays %4, Colors stays %5, "
+                         "menus opened %6")
+              .arg(emptyThere).arg(onMenuBar.library).arg(onMenuBar.colors).arg(onTitle.library).arg(onTitle.colors)
+              .arg(menusOpened));
+    // Its own entry, with the mouse: open -> closed, ONCE (no close at the click and reopen by the
+    // entry); closed -> open; and the other panel goes.
+    {
+        ShowHide libraryTurns, colorsTurns;
+        library->installEventFilter(&libraryTurns);
+        colors->installEventFilter(&colorsTurns);
+        const bool open5 = openLibrary();
+        libraryTurns.reset();
+        const bool menuA = openViewMenu() && library->isVisible();
+        chooseEntry(viewLibrary);
+        const int hides5 = libraryTurns.hides, shows5 = libraryTurns.shows;
+        const bool libraryShut = open5 && menuA && !library->isVisible() && !viewLibrary->isChecked()
+            && hides5 == 1 && shows5 == 0;
+        libraryTurns.reset();
+        const bool menuB = openViewMenu();
+        chooseEntry(viewLibrary);
+        const bool libraryOpened = menuB && library->isVisible() && viewLibrary->isChecked()
+            && libraryTurns.shows == 1 && libraryTurns.hides == 0;
+        colorsTurns.reset();
+        const bool menuC = openViewMenu() && library->isVisible();
+        chooseEntry(viewColors); // with the Library open: the Colors panel opens, the Library goes
+        const bool colorsOver = menuC && colors->isVisible() && viewColors->isChecked() && !library->isVisible()
+            && !viewLibrary->isChecked() && colorsTurns.shows == 1 && colorsTurns.hides == 0;
+        colorsTurns.reset();
+        const bool menuD = openViewMenu() && colors->isVisible();
+        chooseEntry(viewColors);
+        const bool colorsShut = menuD && !colors->isVisible() && !viewColors->isChecked()
+            && colorsTurns.hides == 1 && colorsTurns.shows == 0;
+        libraryTurns.reset();
+        openColors();
+        const bool menuE = openViewMenu() && colors->isVisible();
+        chooseEntry(viewLibrary); // with the Colors panel open: the Library opens, the Colors panel goes
+        const bool libraryOver = menuE && library->isVisible() && viewLibrary->isChecked() && !colors->isVisible()
+            && !viewColors->isChecked() && libraryTurns.shows == 1 && libraryTurns.hides == 0;
+        library->removeEventFilter(&libraryTurns);
+        colors->removeEventFilter(&colorsTurns);
+        check(QStringLiteral("(po5) VIEW > LIBRARY AND VIEW > COLORS TOGGLE WITH THE MOUSE (2026-11-21): the open "
+                             "Library's entry closes it, once; again, it opens; View > Colors opens the Colors panel "
+                             "and the Library goes; again, it closes, once; View > Library over the open Colors "
+                             "panel opens the Library and the Colors panel goes - each with its tick"),
+              libraryShut && libraryOpened && colorsOver && colorsShut && libraryOver,
+              QStringLiteral("Library shut %1 (hides %2, shows %3), opened %4; Colors over it %5, shut %6; Library "
+                             "over Colors %7")
+                  .arg(libraryShut).arg(hides5).arg(shows5).arg(libraryOpened).arg(colorsOver).arg(colorsShut)
+                  .arg(libraryOver));
+    }
+    // Any other entry: it closes each panel, and does its own job (Camera Move Arrows flips - twice
+    // here, so it ends as it began).
+    const bool arrowsWere = viewArrows->isChecked();
+    int arrowsFlipped = 0, openAtTheMenu = 0;
+    const Closed onEntry = closesBoth([&] {
+        const bool before = viewArrows->isChecked();
+        const bool opened = openViewMenu();
+        openAtTheMenu += opened && (library->isVisible() || colors->isVisible()) ? 1 : 0;
+        chooseEntry(viewArrows);
+        arrowsFlipped += viewArrows->isChecked() != before ? 1 : 0;
+    });
+    check(QStringLiteral("(po5) ANY OTHER MENU ENTRY CLOSES EACH PANEL (2026-11-21): View > Camera Move Arrows chosen "
+                         "with the mouse - each panel still open with the menu up, closed once the entry is chosen, "
+                         "and the entry does its job"),
+          onEntry.both() && openAtTheMenu == 2 && arrowsFlipped == 2 && viewArrows->isChecked() == arrowsWere,
+          QStringLiteral("Library closed %1, Colors closed %2; open with the menu up %3 of 2; flipped %4 of 2")
+              .arg(onEntry.library).arg(onEntry.colors).arg(openAtTheMenu).arg(arrowsFlipped));
+    // A click that only puts a menu away counts where it falls: on the canvas it closes each
+    // panel; on the menu bar, or in the panel itself, it does not.
+    {
+        int spots = 0;
+        const Closed awayOnCanvas = closesBoth([&] {
+            const bool opened = openViewMenu();
+            const QPointF spot = canvasSpot();
+            spots += opened && spot.x() >= 0 ? 1 : 0;
+            mouseClick(r.canvas, spot);
+            closePopups();
+            pump(350);
+        });
+        const Stayed awayOnBar = keepsBoth([&] {
+            openViewMenu();
+            mouseClick(menuBar, barEmpty);
+            closePopups();
+            pump(80);
+        });
+        const bool openL = openLibrary();
+        const bool menuL = openViewMenu();
+        const QPointF libraryEdge = ownPoint(library, false, 0);
+        mouseClick(library, libraryEdge);
+        closePopups();
+        const bool awayInLibrary = openL && menuL && libraryEdge.x() >= 0 && library->isVisible();
+        const bool openC = openColors();
+        const bool menuC = openViewMenu();
+        const QPointF colorsEdge = ownPoint(colors, false, 0);
+        mouseClick(colors, colorsEdge);
+        closePopups();
+        const bool awayInColors = openC && menuC && colorsEdge.x() >= 0 && colors->isVisible();
+        check(QStringLiteral("(po5) A CLICK THAT ONLY PUTS A MENU AWAY COUNTS WHERE IT FALLS (2026-11-21): on the "
+                             "canvas it closes each panel; on the menu bar it closes neither; in the panel itself "
+                             "the panel stays"),
+              awayOnCanvas.both() && spots == 2 && awayOnBar.both() && awayInLibrary && awayInColors,
+              QStringLiteral("canvas: Library closed %1, Colors closed %2 (spots %3 of 2); bar: Library stays %4, "
+                             "Colors stays %5; in the Library %6, in the Colors panel %7")
+                  .arg(awayOnCanvas.library).arg(awayOnCanvas.colors).arg(spots).arg(awayOnBar.library)
+                  .arg(awayOnBar.colors).arg(awayInLibrary).arg(awayInColors));
+    }
+    brushButton->setChecked(true);
+    pump(60);
+
+    // --- (po6) any other part of the window: the Panel Strip's ground, the title bar -----------------
+    // Two places 40 px apart: two clicks at one are a double-click, which floats the strip (and
+    // the app remembers a floating strip - the first version of this check left it so).
+    const QPointF stripGround = ownPoint(ground, true);
+    const QPointF stripGround2 = ownPoint(ground, true, int(ground->width() - 1 - stripGround.x()) + 40);
+    bool second6 = false;
+    const Closed onStrip = closesBoth([&] {
+        mouseClick(ground, second6 ? stripGround2 : stripGround);
+        second6 = true;
+    });
+    const bool stripDocked = !stripDock->isFloating();
+    // The title bar and the frame: Qt reports a press there to the window as a non-client press,
+    // each with its own time, as a real one has.
+    quint64 frameTime = 900000;
+    const Closed onFrame = closesBoth([&] {
+        const QPointF at(60, -14);
+        QMouseEvent frame(QEvent::NonClientAreaMouseButtonPress, at, r.window.mapToGlobal(at), Qt::LeftButton,
+                          Qt::LeftButton, Qt::NoModifier);
+        frame.setTimestamp(frameTime += 1000);
+        QCoreApplication::sendEvent(&r.window, &frame);
+        pump(60);
+    });
+    check(QStringLiteral("(po6) ANY OTHER PART OF THE WINDOW: a click on the Panel Strip's ground closes each panel "
+                         "and does nothing else (the strip stays docked); so does a press Qt reports on the "
+                         "window's title bar"),
+          stripGround.x() >= 0 && stripGround2.x() >= 0 && onStrip.both() && stripDocked && onFrame.both(),
+          QStringLiteral("strip (%1 and %2): Library %3, Colors %4, docked %5; title bar: Library %6, Colors %7")
+              .arg(stripGround.x()).arg(stripGround2.x()).arg(onStrip.library).arg(onStrip.colors).arg(stripDocked)
+              .arg(onFrame.library).arg(onFrame.colors));
+
+    // ===== INSIDE: none of these closes the panel =================================================
+    // --- (po7) in the panel -------------------------------------------------------------------
+    openLibrary();
+    QWidget *header = library->findChild<QWidget *>(QStringLiteral("brushLibHeader"));
+    const QPointF headerAt = header ? ownPoint(header, false) : QPointF(-1, -1);
+    if (header)
+        mouseClick(header, headerAt);
+    const bool libraryHeader = header && headerAt.x() >= 0 && library->isVisible();
+    const QPointF libraryOwn = ownPoint(library, false, 0); // the panel's own edge, no control there
+    mouseClick(library, libraryOwn);
+    closePopups();
+    const bool libraryList = libraryOwn.x() >= 0 && library->isVisible();
+    openColors();
+    QWidget *wheel = colors->findChild<QWidget *>(QStringLiteral("colorWheel"));
+    const QColor before7 = r.canvas->currentColorForTest();
+    if (wheel)
+        mouseClick(wheel, QPointF(wheel->width() / 2.0, wheel->height() * 0.06)); // on the hue ring
+    const bool wheelPicked = wheel && r.canvas->currentColorForTest() != before7;
+    const bool colorsWheel = colors->isVisible();
+    check(QStringLiteral("(po7) IN THE PANEL: a click on the Library's header and on its own edge leaves it open; a "
+                         "click on the Colors panel's wheel changes the colour and leaves it open"),
+          libraryHeader && libraryList && wheelPicked && colorsWheel,
+          QStringLiteral("header %1, edge %2; wheel picked %3, open %4").arg(libraryHeader).arg(libraryList)
+              .arg(wheelPicked).arg(colorsWheel));
+
+    // --- (po8) a window the panel opened ------------------------------------------------------------
+    openLibrary();
+    emit library->brushSettingsRequested(QStringLiteral("builtin/painting/gouache"));
+    pump(400);
+    const bool studioOpen = studio->isVisible();
+    if (studioOpen)
+        mouseClick(studio, QPointF(24, 24)); // a click in the Studio, away from its controls
+    const bool studioStays = studio->isVisible();
+    studio->close();
+    pump(400);
+    const bool libraryAfterStudio = !studio->isVisible() && library->isVisible();
+    // A dialog made with the panel as its parent, as Import's, Rename's and its messages are.
+    auto clickInDialog = [&](QWidget *parent, const std::function<bool()> &stillOpen) {
+        QDialog dialog(parent);
+        dialog.resize(220, 120);
+        dialog.move(r.window.mapToGlobal(QPoint(80, 120)));
+        dialog.show();
+        pump(150);
+        mouseClick(&dialog, QPointF(110, 60));
+        const bool open = stillOpen();
+        dialog.close();
+        pump(80);
+        return open;
+    };
+    openLibrary();
+    const bool libraryDialog = clickInDialog(library, [&] { return library->isVisible(); });
+    // ...and a menu of the panel's, as its brush and chevron menus are.
+    openLibrary();
+    bool menuChosen = false, libraryMenu = false;
+    {
+        QMenu menu(library);
+        QAction *probe = menu.addAction(QStringLiteral("Probe"));
+        QObject::connect(probe, &QAction::triggered, &menu, [&menuChosen] { menuChosen = true; });
+        menu.popup(library->mapToGlobal(QPoint(30, 90)));
+        pump(150);
+        mouseClick(&menu, QPointF(menu.actionGeometry(probe).center()));
+        pump(80);
+        libraryMenu = library->isVisible();
+        menu.close();
+    }
+    openColors();
+    const bool colorsDialog = clickInDialog(colors, [&] { return colors->isVisible(); });
+    check(QStringLiteral("(po8) A WINDOW THE PANEL OPENED: the Studio opened from the Library, a click in it, the "
+                         "Studio closed - the Library is there; a click in a dialog made with the panel as its "
+                         "parent (as Import's and Rename's are) leaves each panel open; so does choosing from a "
+                         "menu of the Library's"),
+          studioOpen && studioStays && libraryAfterStudio && libraryDialog && menuChosen && libraryMenu
+              && colorsDialog,
+          QStringLiteral("Studio open %1, stays %2, Library after %3; Library's dialog %4, menu chosen %5 and open %6; "
+                         "Colors' dialog %7").arg(studioOpen).arg(studioStays).arg(libraryAfterStudio)
+              .arg(libraryDialog).arg(menuChosen).arg(libraryMenu).arg(colorsDialog));
+    // Control: the same dialog made with the main window as its parent is outside - it closes.
+    openLibrary();
+    const bool otherDialogCloses = !clickInDialog(&r.window, [&] { return library->isVisible(); });
+    openColors();
+    const bool otherDialogClosesColors = !clickInDialog(&r.window, [&] { return colors->isVisible(); });
+    check(QStringLiteral("(po8) control: a click in the same dialog made with the main window as its parent closes "
+                         "each panel"),
+          otherDialogCloses && otherDialogClosesColors,
+          QStringLiteral("Library closed %1, Colors closed %2").arg(otherDialogCloses).arg(otherDialogClosesColors));
+
+    // --- (po9) its own buttons: they open and close it, ONCE --------------------------------------
+    ShowHide libraryEvents, colorsEvents;
+    library->installEventFilter(&libraryEvents);
+    colors->installEventFilter(&colorsEvents);
+    if (colors->isVisible())
+        swatch->click();
+    openLibrary(); // the Brush the tool, the Library open
+    libraryEvents.reset();
+    mouseClick(brushButton, middleOf(brushButton));
+    pump(200);
+    const bool brushShuts = !library->isVisible() && libraryEvents.hides == 1 && libraryEvents.shows == 0;
+    libraryEvents.reset();
+    mouseClick(brushButton, middleOf(brushButton));
+    pump(200);
+    const bool brushOpens = library->isVisible() && libraryEvents.shows == 1 && libraryEvents.hides == 0;
+    libraryEvents.reset();
+    mouseClick(eraserButton, middleOf(eraserButton)); // the Library's other door: it stays, re-scoped
+    pump(200);
+    const bool eraserKeeps = library->isVisible() && libraryEvents.shows == 0 && libraryEvents.hides == 0
+        && r.canvas->tool() == DrawingCanvas::Eraser;
+    libraryEvents.reset();
+    mouseEvent(brushButton, middleOf(brushButton), QEvent::MouseButtonPress); // pressed, let go off it
+    mouseEvent(brushButton, QPointF(-60, -60), QEvent::MouseButtonRelease);
+    pump(120);
+    const bool brushSlid = library->isVisible() && libraryEvents.shows == 0 && libraryEvents.hides == 0
+        && r.canvas->tool() == DrawingCanvas::Eraser;
+    // The swatch: the Colors panel's door - and, with the Library open, a click outside the
+    // Library: one panel at a time, each once.
+    libraryEvents.reset();
+    colorsEvents.reset();
+    mouseClick(swatch, middleOf(swatch));
+    pump(200);
+    const bool swatchSwaps = colors->isVisible() && !library->isVisible() && colorsEvents.shows == 1
+        && colorsEvents.hides == 0 && libraryEvents.hides == 1 && libraryEvents.shows == 0;
+    colorsEvents.reset();
+    mouseClick(swatch, middleOf(swatch));
+    pump(200);
+    const bool swatchShuts = !colors->isVisible() && colorsEvents.hides == 1 && colorsEvents.shows == 0;
+    colorsEvents.reset();
+    mouseClick(swatch, middleOf(swatch));
+    pump(200);
+    const bool swatchOpens = colors->isVisible() && colorsEvents.shows == 1 && colorsEvents.hides == 0;
+    colorsEvents.reset();
+    mouseEvent(swatch, middleOf(swatch), QEvent::MouseButtonPress);
+    mouseEvent(swatch, QPointF(-60, -60), QEvent::MouseButtonRelease);
+    pump(120);
+    const bool swatchSlid = colors->isVisible() && colorsEvents.shows == 0 && colorsEvents.hides == 0;
+    library->removeEventFilter(&libraryEvents);
+    colors->removeEventFilter(&colorsEvents);
+    check(QStringLiteral("(po9) ITS OWN BUTTONS, ONCE (no close-and-reopen): a click on the Brush button closes the "
+                         "open Library - one hide, no show - and the next opens it - one show, no hide; the Eraser "
+                         "button's click leaves it open, not hidden once, the Eraser the tool; the Brush button "
+                         "pressed and let go off it: nothing"),
+          brushShuts && brushOpens && eraserKeeps && brushSlid,
+          QStringLiteral("Brush shuts %1, opens %2; Eraser keeps %3; slid off %4").arg(brushShuts).arg(brushOpens)
+              .arg(eraserKeeps).arg(brushSlid));
+    check(QStringLiteral("(po9) THE SWATCH LIKEWISE, AND ONE PANEL AT A TIME: with the Library open its click opens "
+                         "the Colors panel once and the Library goes once; the next click closes it once, the next "
+                         "opens it once; pressed and let go off it: nothing"),
+          swatchSwaps && swatchShuts && swatchOpens && swatchSlid,
+          QStringLiteral("swap %1, shuts %2, opens %3, slid off %4").arg(swatchSwaps).arg(swatchShuts)
+              .arg(swatchOpens).arg(swatchSlid));
+
+    // --- (po10) a pick with the Eyedropper never closes the Colors panel ---------------------------
+    brushButton->setChecked(true); // the Brush (any tool change closes the Colors panel: opened after)
+    pump(60);
+    openColors();
+    QColor picked;
+    const QMetaObject::Connection pickWatch =
+        QObject::connect(r.canvas, &DrawingCanvas::colorPicked, &r.window, [&picked](const QColor &c) { picked = c; });
+    mouseClick(pickButton, middleOf(pickButton)); // the panel's button: inside it, and it arms
+    const bool armedByButton = r.canvas->colorPickArmed() && colors->isVisible();
+    mouseClick(r.canvas, mid);
+    const bool pickButtonKeeps = armedByButton && picked.isValid() && colors->isVisible();
+    picked = QColor();
+    keyClaimed(&r.window, Qt::Key_I); // I arms it too
+    const bool armedByKey = r.canvas->colorPickArmed();
+    mouseClick(r.canvas, mid + QPointF(30, 10));
+    const bool pickKeyKeeps = armedByKey && picked.isValid() && colors->isVisible();
+    picked = QColor();
+    mouseClick(r.canvas, mid + QPointF(40, 20), Qt::AltModifier); // Alt with the Brush
+    const bool pickAltKeeps = picked.isValid() && colors->isVisible();
+    picked = QColor();
+    penAt(mid + QPointF(50, 30), Qt::NoButton, 0.0, Qt::AltModifier); // ...and with the pen
+    penAt(mid + QPointF(50, 30), Qt::LeftButton, 0.6, Qt::AltModifier);
+    penAt(mid + QPointF(50, 30), Qt::NoButton, 0.0, Qt::AltModifier);
+    pump(120);
+    const bool pickPenKeeps = picked.isValid() && colors->isVisible();
+    QObject::disconnect(pickWatch);
+    const int steps10 = stack->index();
+    check(QStringLiteral("(po10) A PICK NEVER CLOSES THE COLORS PANEL: armed by the panel's button, by I, and with "
+                         "Alt and the Brush - by the mouse and by the pen - each click on the canvas takes the "
+                         "colour and the panel stays"),
+          pickButtonKeeps && pickKeyKeeps && pickAltKeeps && pickPenKeeps,
+          QStringLiteral("button %1 (armed %2), I %3 (armed %4), Alt %5, Alt with the pen %6").arg(pickButtonKeeps)
+              .arg(armedByButton).arg(pickKeyKeeps).arg(armedByKey).arg(pickAltKeeps).arg(pickPenKeeps));
+    // Control: the same click with nothing armed and no Alt is a stroke - it draws, and closes.
+    mouseClick(r.canvas, mid + QPointF(40, 20));
+    pump(350);
+    const bool strokeCloses = !colors->isVisible() && stack->index() == steps10 + 1;
+    check(QStringLiteral("(po10) control: the same click with no pick waiting and no Alt draws (one step) and closes "
+                         "the panel"),
+          strokeCloses, QStringLiteral("closed %1, steps %2 -> %3").arg(!colors->isVisible()).arg(steps10)
+                            .arg(stack->index()));
+
+    // --- (po11) the tool keys, as before; (po12) the View entries, one panel at a time ---------------
+    openLibrary();
+    keyClaimed(&r.window, Qt::Key_E);
+    pump(80);
+    const bool keyShutsLibrary = !library->isVisible() && r.canvas->tool() == DrawingCanvas::Eraser;
+    openColors();
+    keyClaimed(&r.window, Qt::Key_G);
+    pump(80);
+    const bool keyShutsColors = !colors->isVisible() && r.canvas->tool() == DrawingCanvas::Fill;
+    brushButton->setChecked(true);
+    pump(60);
+    check(QStringLiteral("(po11) THE TOOL KEYS, AS BEFORE: E closes the open Library (the Eraser the tool), G the "
+                         "open Colors panel (Fill the tool)"),
+          keyShutsLibrary && keyShutsColors,
+          QStringLiteral("E: %1, G: %2").arg(keyShutsLibrary).arg(keyShutsColors));
+    openLibrary();
+    viewColors->trigger(); // View > Colors: it opens, the Library goes
+    pump(200);
+    const bool viewSwaps = colors->isVisible() && viewColors->isChecked() && !library->isVisible()
+        && !viewLibrary->isChecked();
+    viewLibrary->trigger(); // View > Library: it opens, the Colors panel goes
+    pump(200);
+    const bool viewSwapsBack = library->isVisible() && viewLibrary->isChecked() && !colors->isVisible()
+        && !viewColors->isChecked();
+    viewLibrary->trigger(); // ...and closes it
+    pump(200);
+    const bool viewShuts = !library->isVisible() && !viewLibrary->isChecked();
+    check(QStringLiteral("(po12) THE VIEW ENTRIES, ONE PANEL AT A TIME: with the Library open View > Colors opens the "
+                         "Colors panel and the Library goes; View > Library opens the Library and the Colors panel "
+                         "goes; View > Library again closes it - each with its tick"),
+          viewSwaps && viewSwapsBack && viewShuts,
+          QStringLiteral("Colors over the Library %1, the Library over Colors %2, shut %3").arg(viewSwaps)
+              .arg(viewSwapsBack).arg(viewShuts));
+
+    // --- (po13) CLOSED IS CLOSED (2026-11-21): however a panel closes, it is remembered as closed ----
+    {
+        const QString libraryKey = QStringLiteral("storyboard/brushLibrary/v1/visible");
+        const QString colorsKey = StoryboardPage::kColorsPanelKey;
+        auto remembersOpen = [](const QString &key) { return sankoSettings().value(key).toBool(); };
+        // Each starts open and remembered open - the control - with the Brush the tool, and must
+        // end closed and remembered closed.
+        int openBefore = 0;
+        auto libraryClosedBy = [&](const std::function<void()> &how) {
+            brushButton->setChecked(true);
+            pump(60);
+            const bool before = openLibrary() && remembersOpen(libraryKey);
+            openBefore += before ? 1 : 0;
+            how();
+            pump(120);
+            return before && !library->isVisible() && !remembersOpen(libraryKey);
+        };
+        auto colorsClosedBy = [&](const std::function<void()> &how) {
+            brushButton->setChecked(true);
+            pump(60);
+            const bool before = openColors() && remembersOpen(colorsKey);
+            openBefore += before ? 1 : 0;
+            how();
+            pump(120);
+            return before && !colors->isVisible() && !remembersOpen(colorsKey);
+        };
+        const QPointF ground13 = ownPoint(bar, false);
+        auto outside = [&] { mouseClick(bar, ground13); };
+        auto otherEntry = [&] {
+            if (openViewMenu())
+                chooseEntry(viewArrows); // twice for each panel in all: it ends as it began
+        };
+        const bool libraryOutside = libraryClosedBy(outside);
+        const bool libraryEntry = libraryClosedBy(otherEntry);
+        const bool libraryToolKey = libraryClosedBy([&] { keyClaimed(&r.window, Qt::Key_E); });
+        const bool librarySwap = libraryClosedBy([&] {
+            swatch->click(); // the Colors panel opens over it
+            pump(200);
+        });
+        const bool colorsOutside = colorsClosedBy(outside);
+        const bool colorsEntry = colorsClosedBy(otherEntry);
+        const bool colorsToolKey = colorsClosedBy([&] { keyClaimed(&r.window, Qt::Key_G); });
+        const bool colorsSwap = colorsClosedBy([&] {
+            brushButton->click(); // the Library opens over it
+            pump(200);
+        });
+        check(QStringLiteral("(po13) CLOSED IS CLOSED (2026-11-21): a panel closed by a click outside, by another menu "
+                             "entry, by a tool key or by the other panel opening over it is remembered as CLOSED; "
+                             "control: each time it was open and remembered open just before"),
+              ground13.x() >= 0 && openBefore == 8 && libraryOutside && libraryEntry && libraryToolKey && librarySwap
+                  && colorsOutside && colorsEntry && colorsToolKey && colorsSwap,
+              QStringLiteral("open and remembered open before %1 of 8; Library: outside %2, entry %3, E %4, Colors "
+                             "over it %5; Colors: outside %6, entry %7, G %8, the Library over it %9")
+                  .arg(openBefore).arg(libraryOutside).arg(libraryEntry).arg(libraryToolKey).arg(librarySwap)
+                  .arg(colorsOutside).arg(colorsEntry).arg(colorsToolKey).arg(colorsSwap));
+        brushButton->setChecked(true);
+        pump(60);
+    }
+    r.storyboard->setPointerDeviceForTest(-1);
+    r.window.markCleanForTest();
+}
+
 // THE TRIAL'S FIXES (batch A, 2026-11-10; the user's real-project trial of 2026-11-09,
 // Documents\SankoTV-Design\trial-report-2026-11-10.md): the canvas's keys go where the
 // pointer is and Space pans with the pen; a selection starts off the paper; a drag's
@@ -31085,6 +31968,7 @@ int main(int argc, char **argv)
     // One pass alone, for the quick check while working: the family's own setup
     // above, and nothing else. The gate never sets it.
     if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("stagemode")
+        || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("panels")
         || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("playback")
         || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("strip")
         || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("trial")
@@ -31128,6 +32012,11 @@ int main(int argc, char **argv)
             runTrackLocksPass(scratch); // (ax): the scene block shown under its colour
             runStageBackgroundPass(scratch);
             runStageBackgroundDepthPass(scratch); // (ed5): the Camera tool's depth view too
+        } else if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("panels")) {
+            // The Brush Library and the Colors panel close at a click outside them (2026-11-21),
+            // with batch D's pass, whose (cp3) it changed and whose picks it must leave alone.
+            runPanelsClickAwayPass(scratch);
+            runEyedropperFlipPass(scratch);
         } else if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("batchd")) {
             // Batch D: paste on a new layer, View > Library's tick; D-2's Eyedropper, Colors
             // panel and Flip H / V; and the kept-art pass, whose (ka7) pastes on the canvas.
@@ -31381,6 +32270,7 @@ int main(int argc, char **argv)
     runGrowAnyZoomPass(scratch);
     runTrialFixesPass(scratch);
     runKeptArtPass(scratch);
+    runPanelsClickAwayPass(scratch);      // (po) the panels close at a click outside them
     runDepthWhileMovingPass(scratch);
     runSceneLockPass(scratch);
     runKeysAndViewPass(scratch);

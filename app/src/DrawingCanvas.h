@@ -593,6 +593,13 @@ public slots:
     // and the ring's centre - is always the user's black one with a thin white outline (D-3).
     void armColorPick(bool on);
     bool colorPickArmed() const { return m_pickArmed; }
+    // A left press on the canvas now would be a pick - armed, or Alt with the Brush - and not
+    // a pan, a turn or an Edit Shape press: what mousePressEvent decides, for who must know
+    // before it (the page, 2026-11-21: a pick never closes the Colors panel).
+    bool pressWouldPickColor(Qt::KeyboardModifiers modifiers) const
+    {
+        return m_panel && !m_qsEditing && !m_spaceHeld && !m_rotateHeld && pickWanted(modifiers);
+    }
     void setAltHeld(bool held); // the page reports the Alt key, wherever it went
     // The colour shown at a widget point - the paper and every visible layer at its
     // effective opacity, as the canvas composites them; never an overlay (the margin veil,

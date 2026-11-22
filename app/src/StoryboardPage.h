@@ -29,6 +29,7 @@ class QJsonArray;
 class QJsonObject;
 class QKeyEvent;
 class QPointerEvent;
+class QSinglePointEvent;
 class QLabel;
 class QLineEdit;
 class QPlainTextEdit;
@@ -465,6 +466,9 @@ public:
     // ...and where the pointer is comes from every pen and mouse move and press as
     // well as the canvas's Enter / Leave (CanvasKeyRouter again; never takes the event).
     void notePointerAt(QObject *receiver, QPointerEvent *event);
+    // A click outside the Brush Library or the Colors panel closes it (2026-11-21): every
+    // press and release in the application, at the widget it is for (see the .cpp).
+    void notePanelClick(QObject *receiver, QSinglePointEvent *event);
     bool pointerOverCanvasForTest() const { return m_pointerOverCanvas; }
     // Under the gate the real pointer is not heard; the moves of the pen with this
     // unique id are (sent at the window-system level, as a real pen's). -1: none.
@@ -850,7 +854,17 @@ private:
     QAbstractButton *m_colorPickButton = nullptr;
     QAction *m_colorsViewAction = nullptr;
     QScrollArea *m_colorsScroll = nullptr; // the body's frame: scrolls only when cut short
-    void autoHideColorsPanel(); // a stroke, another tool, another button: not remembered
+    // A click outside, a menu entry, a tool key, the other panel opening: closed, and
+    // remembered as closed (2026-11-21).
+    void closeColorsPanel();
+    void closeBrushLibrary();
+    // The click-away rule's (notePanelClick): the press being looked at - its time and place,
+    // so its copies are looked at once - and the button it began on, if it did.
+    void closePanelsClickedOutside(QWidget *at, const QSinglePointEvent *event);
+    bool m_panelPressSeen = false;
+    quint64 m_panelPressTime = 0;
+    QPointF m_panelPressAt;
+    QPointer<QWidget> m_panelPressButton;
     void anchorColorsPanel();   // under / over the swatch, as the Library under the Brush
     void fitColorsPanel();      // never over the tools bar: cut to the room on its side
     // Batch C: the toolbars' View entries and Tab's state; the View entries that act on
