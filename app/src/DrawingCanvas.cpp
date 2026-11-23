@@ -201,15 +201,35 @@ public:
             return;
         if (m_shown)
             update(band(m_centre, m_diameter));
+        if (m_shown && m_mirrorShown) // the mirror's circle is this one's size, and goes with it
+            update(band(m_mirrorCentre, m_diameter));
         m_shown = shown;
         m_centre = centre;
         m_diameter = diameter;
         if (m_shown)
             update(band(m_centre, m_diameter));
+        if (m_shown && m_mirrorShown)
+            update(band(m_mirrorCentre, m_diameter));
     }
     bool outlineShown() const { return m_shown; }
     QPointF centre() const { return m_centre; }
     double diameter() const { return m_diameter; }
+
+    // SYMMETRY (batch H; H-1, the user's answer 3): a second, lighter circle of the same
+    // size where the mirrored stroke will land. Only beside the circle itself.
+    void setMirror(bool shown, const QPointF &centre)
+    {
+        if (shown == m_mirrorShown && (!shown || centre == m_mirrorCentre))
+            return;
+        if (m_mirrorShown)
+            update(band(m_mirrorCentre, m_diameter));
+        m_mirrorShown = shown;
+        m_mirrorCentre = centre;
+        if (m_mirrorShown)
+            update(band(m_mirrorCentre, m_diameter));
+    }
+    bool mirrorShown() const { return m_shown && m_mirrorShown; }
+    QPointF mirrorCentre() const { return m_mirrorCentre; }
 
 protected:
     void paintEvent(QPaintEvent *) override
@@ -222,6 +242,14 @@ protected:
         // 1 px black inside 1 px white: one of the two always shows - on white paper, on
         // black ink, on the dark gutter, on grey (G-1, section 2).
         const double r = m_diameter / 2.0;
+        if (m_mirrorShown) {
+            // The mirror's circle first, the same two lines at 45 %: lighter, and under the
+            // pointer's own where the two meet at the axis.
+            p.setPen(QPen(QColor(255, 255, 255, 115), 1.0));
+            p.drawEllipse(m_mirrorCentre, r + 0.5, r + 0.5);
+            p.setPen(QPen(QColor(0, 0, 0, 115), 1.0));
+            p.drawEllipse(m_mirrorCentre, r - 0.5, r - 0.5);
+        }
         p.setPen(QPen(QColor(255, 255, 255), 1.0));
         p.drawEllipse(m_centre, r + 0.5, r + 0.5);
         p.setPen(QPen(QColor(0, 0, 0), 1.0));
@@ -256,6 +284,8 @@ private:
     bool m_shown = false;
     QPointF m_centre;
     double m_diameter = 0.0;
+    bool m_mirrorShown = false;
+    QPointF m_mirrorCentre;
 };
 
 // WHERE THE POINTER IS, FROM ITS OWN EVENTS (the page's way for Space, batch A). A real pen or
@@ -1374,6 +1404,154 @@ void DrawingCanvas::setDrawingOverlayShown(DrawingOverlay which, bool shown)
     update();
 }
 
+// --- Symmetry (batch H, 2026-11-22; Figma H-1 657:735) -----------------------------------
+// The switch, the axis and its grip: see the header. The mirror image itself is made by the
+// engine's adapter in the stroke's own commit (SankoPaintHostAdapter::render), told the
+// axis as each stroke begins (beginBrushStroke); while the stroke is being drawn the canvas
+// shows its preview a second time, flipped (paintEvent).
+
+namespace {
+const QColor kSymmetryPurple(0x7c, 0x6e, 0xf6); // SankoTV's purple, the axis and its grip
+constexpr double kSymmetryGripRadius = 9.0;     // screen px (H-1's grip: an 18 px disc)
+constexpr double kSymmetryGripAbove = 24.0;     // the grip's centre, above the paper's top edge
+constexpr double kSymmetryPastFoot = 20.0;      // the line goes on past the paper's bottom edge
+constexpr double kSymmetryGripReach = 12.0;     // a press this near its centre takes the grip
+constexpr double kSymmetryGripInset = 18.0;     // where the grip waits, in from the view's edge
+} // namespace
+
+bool DrawingCanvas::symmetryLive() const
+{
+    return m_symmetry && m_panel && !m_stageMode && (m_tool == Brush || m_tool == Eraser);
+}
+
+int DrawingCanvas::symmetryAxis() const
+{
+    return m_symmetryAxisSet ? m_symmetryAxis : stage().frame.width() / 2;
+}
+
+int DrawingCanvas::symmetryAxisOnCanvas() const
+{
+    const shotcam::Stage s = stage();
+    return qBound(0, s.origin.x() + symmetryAxis(), qMax(0, s.canvas.width()));
+}
+
+void DrawingCanvas::setSymmetry(bool on)
+{
+    if (m_symmetry == on)
+        return;
+    m_symmetry = on;
+    m_symmetryDrag = false;
+    updateSymmetryOverlay();
+    emit symmetryChanged(on);
+}
+
+void DrawingCanvas::setSymmetryAxis(int framePx)
+{
+    if (m_symmetryAxisSet && m_symmetryAxis == framePx)
+        return;
+    m_symmetryAxisSet = true;
+    m_symmetryAxis = framePx;
+    updateSymmetryOverlay();
+}
+
+void DrawingCanvas::resetSymmetryAxis()
+{
+    if (!m_symmetryAxisSet)
+        return;
+    m_symmetryAxisSet = false;
+    m_symmetryAxis = 0;
+    updateSymmetryOverlay();
+}
+
+void DrawingCanvas::updateSymmetryOverlay()
+{
+    update();            // the axis and the grip, wherever they were and are
+    refreshToolCursor(); // the pointer's second circle, and the grip's own cursor
+}
+
+// The axis on screen: the paper's whole height at the axis, through the view, reaching up to
+// where the grip sits above the paper and a little past the paper's foot (H-1, section 2).
+QLineF DrawingCanvas::symmetryAxisLine() const
+{
+    const QTransform view = viewTransform();
+    const double x = symmetryAxisOnCanvas();
+    const QPointF top = view.map(QPointF(x, 0.0));
+    const QPointF foot = view.map(QPointF(x, double(canvasSize().height())));
+    const double length = QLineF(top, foot).length();
+    if (length < 1.0)
+        return QLineF(top, foot);
+    const QPointF down = (foot - top) / length;
+    return QLineF(top - down * kSymmetryGripAbove, foot + down * kSymmetryPastFoot);
+}
+
+// The grip: above the paper, at the top of the axis. When that place is out of the view -
+// zoomed in on a face, say - the grip waits where the axis comes into the view instead, so
+// the axis can always be moved without zooming out first.
+QPointF DrawingCanvas::symmetryGrip() const
+{
+    const QLineF axis = symmetryAxisLine();
+    const QRectF view = QRectF(rect()).adjusted(kSymmetryGripInset, kSymmetryGripInset, -kSymmetryGripInset,
+                                                -kSymmetryGripInset);
+    if (view.contains(axis.p1()) || axis.length() < 1.0 || view.isEmpty())
+        return axis.p1();
+    // Where the line from the grip's own place towards the foot first lies inside the view.
+    double enter = 0.0, leave = 1.0;
+    const double dx = axis.dx(), dy = axis.dy();
+    const double edges[4][2] = {{-dx, axis.x1() - view.left()},
+                                {dx, view.right() - axis.x1()},
+                                {-dy, axis.y1() - view.top()},
+                                {dy, view.bottom() - axis.y1()}};
+    for (const auto &edge : edges) {
+        if (qFuzzyIsNull(edge[0])) {
+            if (edge[1] < 0.0)
+                return axis.p1(); // beside the view all the way: the axis is not in it
+            continue;
+        }
+        const double t = edge[1] / edge[0];
+        if (edge[0] < 0.0)
+            enter = qMax(enter, t);
+        else
+            leave = qMin(leave, t);
+    }
+    return enter <= leave ? axis.pointAt(enter) : axis.p1();
+}
+
+bool DrawingCanvas::symmetryGripAt(const QPointF &widgetPos) const
+{
+    return symmetryLive() && QLineF(widgetPos, symmetryGrip()).length() <= kSymmetryGripReach;
+}
+
+void DrawingCanvas::paintSymmetry(QPainter &painter) const
+{
+    if (!symmetryLive())
+        return;
+    const QLineF axis = symmetryAxisLine();
+    const QPointF grip = symmetryGrip();
+    painter.save();
+    painter.resetTransform();
+    painter.setRenderHint(QPainter::Antialiasing, true);
+    painter.setPen(QPen(kSymmetryPurple, 1.0));
+    painter.drawLine(axis);
+    // The grip as H-1 draws it (Figma 657:901 / 657:902): an 18 px purple disc, a 1.5 px
+    // white edge inside it, and a small white left-right arrow (9 x 4, 1 px, round ends) -
+    // laid along the way the grip moves the axis, so it turns with a turned view.
+    painter.setPen(QPen(QColor(255, 255, 255), 1.5));
+    painter.setBrush(kSymmetryPurple);
+    painter.drawEllipse(grip, kSymmetryGripRadius - 0.75, kSymmetryGripRadius - 0.75);
+    const QPointF down = axis.length() >= 1.0 ? QPointF(axis.dx(), axis.dy()) / axis.length() : QPointF(0.0, 1.0);
+    const QPointF along(down.y(), -down.x()); // across the axis
+    auto at = [&](double a, double d) { return grip + along * a + down * d; };
+    QPen arrow(QColor(255, 255, 255), 1.0);
+    arrow.setCapStyle(Qt::RoundCap);
+    arrow.setJoinStyle(Qt::RoundJoin);
+    painter.setPen(arrow);
+    painter.setBrush(Qt::NoBrush);
+    painter.drawLine(at(-4.5, 0.0), at(4.5, 0.0));
+    painter.drawPolyline(QPolygonF({at(-2.5, -2.0), at(-4.5, 0.0), at(-2.5, 2.0)}));
+    painter.drawPolyline(QPolygonF({at(2.5, -2.0), at(4.5, 0.0), at(2.5, 2.0)}));
+    painter.restore();
+}
+
 QPolygonF DrawingCanvas::shotCameraBaseQuad(const QPolygonF &frameQuad) const
 {
     // THE ORIGINAL CANVAS BORDER (CAM-1 option A): the base framing - the
@@ -2450,6 +2628,7 @@ bool DrawingCanvas::pointerOutlineWanted() const
 {
     return (m_tool == Brush || m_tool == Eraser) && m_panel && m_pointerIn && isVisible()
         && toolCursorInCharge() && !pressRefusedAt(m_pointerPos)
+        && !(m_symmetryDrag || symmetryGripAt(m_pointerPos)) // the grip's own arrow (batch H)
         && pointerOutlineDiameter() >= kOutlineMinPx;
 }
 
@@ -2460,6 +2639,10 @@ QString DrawingCanvas::toolCursorKind() const
 {
     if (!m_pointerIn)
         return m_tool == Move ? QStringLiteral("move") : QStringLiteral("cross");
+    // Over the Symmetry axis's grip, or dragging it (batch H): the left-right arrow, before
+    // "not allowed" - the axis moves whatever the layer is.
+    if (m_symmetryDrag || symmetryGripAt(m_pointerPos))
+        return QStringLiteral("axis");
     if (pressRefusedAt(m_pointerPos))
         return QStringLiteral("forbidden");
     switch (m_tool) {
@@ -2491,6 +2674,8 @@ QCursor DrawingCanvas::toolCursor() const
     const QString kind = toolCursorKind();
     if (kind == QLatin1String("move"))
         return QCursor(Qt::SizeAllCursor);
+    if (kind == QLatin1String("axis"))
+        return QCursor(Qt::SizeHorCursor);
     if (kind == QLatin1String("outline"))
         return QCursor(Qt::BlankCursor); // the circle is the pointer
     if (kind == QLatin1String("forbidden"))
@@ -2559,8 +2744,32 @@ void DrawingCanvas::syncPointerOutline()
         outline->raise();
         m_pointerOutline = outline;
     }
-    static_cast<PointerOutline *>(m_pointerOutline.data())
-        ->setOutline(want, m_pointerPos, pointerOutlineDiameter());
+    auto *outline = static_cast<PointerOutline *>(m_pointerOutline.data());
+    // SYMMETRY (batch H): the second, lighter circle - the pointer's reflection across the
+    // axis, through the view. Set before the circle itself: a circle that hides or changes
+    // size repaints the mirror's band with its own (setOutline).
+    const bool mirror = want && symmetryLive();
+    QPointF mirrorCentre;
+    if (mirror) {
+        const QTransform view = viewTransform();
+        QPointF onCanvas = view.inverted().map(m_pointerPos);
+        onCanvas.setX(2.0 * symmetryAxisOnCanvas() - onCanvas.x());
+        mirrorCentre = view.map(onCanvas);
+    }
+    outline->setMirror(mirror, mirrorCentre);
+    outline->setOutline(want, m_pointerPos, pointerOutlineDiameter());
+}
+
+bool DrawingCanvas::pointerMirrorShownForTest() const
+{
+    const auto *outline = static_cast<const PointerOutline *>(m_pointerOutline.data());
+    return outline && outline->isVisible() && outline->mirrorShown();
+}
+
+QPointF DrawingCanvas::pointerMirrorCentreForTest() const
+{
+    const auto *outline = static_cast<const PointerOutline *>(m_pointerOutline.data());
+    return outline ? outline->mirrorCentre() : QPointF();
 }
 
 // The events that say where the pointer is: a real pen's or mouse's (spontaneous, from the
@@ -6363,15 +6572,25 @@ void DrawingCanvas::beginBrushStroke(const QPointF &canvasPt, qreal pressure,
     point.viewportRotation = m_viewRotation;
     point.timestamp = timestamp ? timestamp
                                 : quint64(QDateTime::currentMSecsSinceEpoch());
+    // SYMMETRY (batch H): this stroke's mirror, fixed here for the whole stroke - the axis
+    // as it is now with the Brush or the Eraser, or the one a held shape began with when
+    // this stroke is that shape's bake (replayQuickShape).
+    m_strokeMirrorAxis = m_qsBaking ? m_qsMirrorAxis : (symmetryLive() ? symmetryAxisOnCanvas() : -1);
+    if (m_strokeMirrorAxis >= 0)
+        m_paintEngine.setMirrorAxis(m_strokeMirrorAxis);
+    else
+        m_paintEngine.clearMirrorAxis();
     m_paintEngine.beginStroke(paintLayerKey(m_panel, layer->id), layer->image,
                               point, seed, rasterizePreview);
     m_lastBrushPt = canvasPt;
     m_lastBrushPressure = pressure;
     if (const TiledImage *preview = m_paintEngine.previewTiles();
         preview && preview->allocatedTileCount() > 0) {
-        updateBrushRegion(QRectF(
-            canvasPt - QPointF(m_brushToolSize / 2.0, m_brushToolSize / 2.0),
-            QSizeF(m_brushToolSize, m_brushToolSize)));
+        const QRectF first(canvasPt - QPointF(m_brushToolSize / 2.0, m_brushToolSize / 2.0),
+                           QSizeF(m_brushToolSize, m_brushToolSize));
+        updateBrushRegion(first);
+        if (m_strokeMirrorAxis >= 0)
+            updateBrushRegion(QRectF(mirroredRect(first.toAlignedRect(), m_strokeMirrorAxis)));
     }
 }
 
@@ -6394,6 +6613,8 @@ void DrawingCanvas::moveBrushStroke(const QPointF &canvasPt, qreal pressure,
                                     : quint64(QDateTime::currentMSecsSinceEpoch());
         const QRect dirty = m_paintEngine.appendPoint(point);
         updateBrushRegion(dirty);
+        if (m_strokeMirrorAxis >= 0 && !dirty.isEmpty()) // the mirror image, live (batch H)
+            updateBrushRegion(QRectF(mirroredRect(dirty, m_strokeMirrorAxis)));
     }
     // No engine stroke (e.g. the press landed on a locked/hidden layer):
     // nothing rasterizes, only the pointer bookkeeping advances.
@@ -6496,12 +6717,39 @@ void DrawingCanvas::endBrushStroke(const QString &undoText)
                                         QSizeF(boundsP.size()) * k),
                                  small);
                 }
-                if (!m_selectionPath.isEmpty()) {
-                    fp.setCompositionMode(
-                        QPainter::CompositionMode_DestinationIn);
-                    fp.drawImage(QPoint(), cachedSelectionMask(), bounds);
+                // SYMMETRY (batch H): the frozen bridge holds the stroke's mirror image as
+                // well - the stroke's preview flipped across the axis and laid over it, as
+                // the commit lays the mirror image over the stroke (an erase stroke's
+                // coverage the same way: either side's). One image over both; the
+                // selection's mask is then applied to the two together, each at its own
+                // place.
+                const QRect reflected = m_strokeMirrorAxis >= 0
+                    ? mirroredRect(bounds, m_strokeMirrorAxis).intersected(QRect(QPoint(), canvasSize()))
+                    : QRect();
+                if (!reflected.isEmpty()) {
+                    fp.end();
+                    const QRect whole = bounds.united(reflected);
+                    QImage both(whole.size(), QImage::Format_ARGB32_Premultiplied);
+                    both.fill(Qt::transparent);
+                    QPainter bp(&both);
+                    bp.drawImage(bounds.topLeft() - whole.topLeft(), frozen);
+                    bp.drawImage(mirroredRect(bounds, m_strokeMirrorAxis).topLeft() - whole.topLeft(),
+                                 frozen.flipped(Qt::Horizontal));
+                    if (!m_selectionPath.isEmpty()) {
+                        bp.setCompositionMode(QPainter::CompositionMode_DestinationIn);
+                        bp.drawImage(QPoint(), cachedSelectionMask(), whole);
+                    }
+                    bp.end();
+                    frozen = both;
+                    bounds = whole;
+                } else {
+                    if (!m_selectionPath.isEmpty()) {
+                        fp.setCompositionMode(
+                            QPainter::CompositionMode_DestinationIn);
+                        fp.drawImage(QPoint(), cachedSelectionMask(), bounds);
+                    }
+                    fp.end();
                 }
-                fp.end();
                 m_pendingPreview = frozen;
                 m_pendingPreviewRect = bounds;
             }
@@ -6696,6 +6944,9 @@ void DrawingCanvas::captureQuickShapeBrush()
         m_qsSeed = QRandomGenerator::global()->generate64();
     while (!m_qsSeed);
     m_qsViewRotation = m_viewRotation;
+    // Symmetry too (batch H): the shape held out of this stroke is mirrored as the stroke
+    // would have been - in its preview and in its bake - whatever is switched meanwhile.
+    m_qsMirrorAxis = symmetryLive() ? symmetryAxisOnCanvas() : -1;
 }
 
 // PERMANENT test surface: the geometry-lock test intercepts the exact
@@ -6825,10 +7076,12 @@ void DrawingCanvas::replayQuickShape(const quickshape::QuickShapeCommit &commit)
     const QVector<StrokePoint> stream = quickShapePointStream(commit);
     beginLayerEdit();
     m_brushStroke = true; // normal stroke path (selection scratch included)
+    m_qsBaking = true; // the stroke takes the shape's captured mirror (batch H)
     beginBrushStroke(stream.first().position, stream.first().pressure,
                      stream.first().tiltX, stream.first().tiltY,
                      stream.first().rotation, stream.first().timestamp,
                      m_qsSeed, /*rasterizePreview=*/bakePlaceholder.isNull());
+    m_qsBaking = false;
     for (qsizetype i = 1; i < stream.size(); ++i)
         moveBrushStroke(stream.at(i).position, stream.at(i).pressure,
                         stream.at(i).tiltX, stream.at(i).tiltY,
@@ -6931,6 +7184,7 @@ void DrawingCanvas::renderQuickShapePreview()
     const ::Brush brush = m_qsFullBrush;
     const quint64 seed = m_qsSeed;
     const QSize size = canvasSize();
+    const int mirrorAxis = m_qsMirrorAxis; // Symmetry as the stroke began with it (batch H)
 
     m_qsPreviewInFlight = true;
     const quint64 gen = ++m_qsPreviewGen;
@@ -6966,11 +7220,13 @@ void DrawingCanvas::renderQuickShapePreview()
     });
     watcher->setFuture(QtConcurrent::run(
         m_paintGpuPool.get(),
-        [stream, brush, seed, size, selectionMask]() -> QImage {
+        [stream, brush, seed, size, selectionMask, mirrorAxis]() -> QImage {
             QImage host(size, QImage::Format_ARGB32_Premultiplied);
             host.fill(Qt::transparent);
             SankoPaintHostAdapter adapter; // private: shares nothing live
             adapter.setBrush(brush);
+            if (mirrorAxis >= 0)
+                adapter.setMirrorAxis(mirrorAxis); // the preview shows both sides, as the bake will
             adapter.beginStroke(QStringLiteral("quickshape:preview"), host,
                                 stream.first(), seed,
                                 /*rasterizePreview=*/false);
@@ -8251,47 +8507,74 @@ void DrawingCanvas::paintEvent(QPaintEvent *event)
                     // tiles are then in PREVIEW space and are scaled back
                     // up here. k == 1 is the exact previous path.
                     const int k = m_paintEngine.previewScale();
-                    const QRect clipP = k == 1
-                        ? strokeClipC
-                        : QRect(strokeClipC.x() / k - 1,
-                                strokeClipC.y() / k - 1,
-                                strokeClipC.width() / k + 3,
-                                strokeClipC.height() / k + 3);
-                    QImage comp;
-                    for (auto it = preview->allocatedTiles().cbegin();
-                         it != preview->allocatedTiles().cend(); ++it) {
-                        const QRect tileRect =
-                            TiledImage::tileLayerRect(it.key());
-                        const QRect isect = tileRect.intersected(clipP);
-                        if (isect.isEmpty())
-                            continue;
-                        if (comp.isNull()) {
-                            comp = QImage(clipP.size(),
-                                          QImage::Format_ARGB32_Premultiplied);
-                            comp.fill(Qt::transparent);
+                    // The preview's tiles under a canvas rect, as one canvas-space image
+                    // of that rect (null when no tile lies under it). A function since
+                    // batch H: Symmetry composes a second rect, the clip's reflection.
+                    auto composePreview = [&](const QRect &clipC) {
+                        const QRect clipP = k == 1
+                            ? clipC
+                            : QRect(clipC.x() / k - 1,
+                                    clipC.y() / k - 1,
+                                    clipC.width() / k + 3,
+                                    clipC.height() / k + 3);
+                        QImage comp;
+                        for (auto it = preview->allocatedTiles().cbegin();
+                             it != preview->allocatedTiles().cend(); ++it) {
+                            const QRect tileRect =
+                                TiledImage::tileLayerRect(it.key());
+                            const QRect isect = tileRect.intersected(clipP);
+                            if (isect.isEmpty())
+                                continue;
+                            if (comp.isNull()) {
+                                comp = QImage(clipP.size(),
+                                              QImage::Format_ARGB32_Premultiplied);
+                                comp.fill(Qt::transparent);
+                            }
+                            QPainter cp(&comp);
+                            cp.drawImage(isect.topLeft() - clipP.topLeft(),
+                                         it.value(),
+                                         isect.translated(-tileRect.topLeft()));
                         }
-                        QPainter cp(&comp);
-                        cp.drawImage(isect.topLeft() - clipP.topLeft(),
-                                     it.value(),
-                                     isect.translated(-tileRect.topLeft()));
-                    }
-                    if (!comp.isNull() && k > 1) {
-                        // Bilinear upscale to canvas space, then cut to the
-                        // clip so the mask and draw below see exactly what
-                        // the k == 1 path would hand them.
-                        QImage up(strokeClipC.size(),
-                                  QImage::Format_ARGB32_Premultiplied);
-                        up.fill(Qt::transparent);
-                        QPainter upPainter(&up);
-                        upPainter.setRenderHint(
-                            QPainter::SmoothPixmapTransform, true);
-                        upPainter.drawImage(
-                            QRectF(QPointF(clipP.topLeft()) * k
-                                       - QPointF(strokeClipC.topLeft()),
-                                   QSizeF(clipP.size()) * k),
-                            comp);
-                        upPainter.end();
-                        comp = up;
+                        if (!comp.isNull() && k > 1) {
+                            // Bilinear upscale to canvas space, then cut to the
+                            // clip so the mask and draw below see exactly what
+                            // the k == 1 path would hand them.
+                            QImage up(clipC.size(),
+                                      QImage::Format_ARGB32_Premultiplied);
+                            up.fill(Qt::transparent);
+                            QPainter upPainter(&up);
+                            upPainter.setRenderHint(
+                                QPainter::SmoothPixmapTransform, true);
+                            upPainter.drawImage(
+                                QRectF(QPointF(clipP.topLeft()) * k
+                                           - QPointF(clipC.topLeft()),
+                                       QSizeF(clipP.size()) * k),
+                                comp);
+                            upPainter.end();
+                            comp = up;
+                        }
+                        return comp;
+                    };
+                    QImage comp = composePreview(strokeClipC);
+                    if (m_strokeMirrorAxis >= 0) {
+                        // SYMMETRY (batch H): THE MIRROR IMAGE, LIVE. What the preview
+                        // holds under this clip's reflection, flipped left-right, lands
+                        // exactly on the clip - laid over the stroke's own preview, as
+                        // the commit lays the mirror image over the stroke (an erase
+                        // stroke's coverage the same way: either side's carves). The
+                        // preview has tiles on the canvas only, so nothing is mirrored
+                        // from off the paper or onto it from there - the commit's rule.
+                        const QImage other =
+                            composePreview(mirroredRect(strokeClipC, m_strokeMirrorAxis));
+                        if (!other.isNull()) {
+                            const QImage flipped = other.flipped(Qt::Horizontal);
+                            if (comp.isNull()) {
+                                comp = flipped;
+                            } else {
+                                QPainter mp(&comp);
+                                mp.drawImage(0, 0, flipped);
+                            }
+                        }
                     }
                     if (!comp.isNull()) {
                         if (!m_selectionPath.isEmpty()) {
@@ -8718,6 +9001,11 @@ void DrawingCanvas::paintEvent(QPaintEvent *event)
     // The shot camera's frame (Phase 1B): with the Camera tool, the frame,
     // handles, dim and chips; otherwise the outline when the scene has keys.
     paintShotCamera(painter);
+
+    // The Symmetry axis and its grip (batch H), over the stage's veil and border: with the
+    // Brush or the Eraser while Symmetry is on. Here only - never in a thumbnail, the
+    // preview, an export or the camera's shot.
+    paintSymmetry(painter);
 
     // Perspective tool with no VPs yet: centred prompt chip over the canvas
     // (display-only, Sanko dark chip in the Modifier-bar language).
@@ -9557,6 +9845,17 @@ void DrawingCanvas::mousePressEvent(QMouseEvent *event)
         return;
     }
 
+    // THE SYMMETRY AXIS'S GRIP (batch H): a press on it takes the axis and never draws -
+    // whatever the layer is (the axis is not the layer's). The pen's press comes here too
+    // (tabletEvent leaves the grip to Qt's mouse, as it leaves a pan and a pick).
+    if (symmetryGripAt(event->position())) {
+        m_symmetryDrag = true;
+        m_symmetryDragFrom = symmetryAxis();
+        m_symmetryDragWasSet = m_symmetryAxisSet;
+        refreshToolCursor();
+        return;
+    }
+
     // The shot camera's tool takes every left press (after the pan above:
     // Space and the middle button are the view's, never the camera's).
     if (m_tool == Camera) {
@@ -9863,6 +10162,16 @@ void DrawingCanvas::mouseMoveEvent(QMouseEvent *event)
         moveColorPick(event->position());
         return;
     }
+    if (m_symmetryDrag) {
+        // The grip drags the axis left or right (batch H): to the pointer's place on the
+        // paper, a whole pixel column, never off the paper.
+        if (m_panel) {
+            const shotcam::Stage s = stage();
+            const int onCanvas = qBound(0, qRound(toCanvasF(event->position()).x()), s.canvas.width());
+            setSymmetryAxis(onCanvas - s.origin.x());
+        }
+        return;
+    }
     if (!(event->buttons() & Qt::LeftButton)) {
         // Hover: Alt with the Brush, or a pick waiting, shows the dropper (always the black one,
         // D-3); nothing else follows the hover meanwhile.
@@ -10009,6 +10318,17 @@ void DrawingCanvas::mouseReleaseEvent(QMouseEvent *event)
         endColorPick();
         return;
     }
+    if (m_symmetryDrag && event->button() == Qt::LeftButton) {
+        // The grip let go (batch H): the axis is where it was put - said once, if it moved.
+        m_symmetryDrag = false;
+        const bool moved = symmetryAxis() != m_symmetryDragFrom;
+        if (!moved && !m_symmetryDragWasSet)
+            resetSymmetryAxis(); // a press without a move leaves "the middle" the middle
+        refreshToolCursor();
+        if (moved)
+            emit symmetryAxisEdited();
+        return;
+    }
     if (m_tool == Camera && event->button() == Qt::LeftButton) {
         if (m_stageMode) {
             stageRelease();
@@ -10136,6 +10456,17 @@ void DrawingCanvas::mouseDoubleClickEvent(QMouseEvent *event)
     if (m_qsEditing && event->button() == Qt::LeftButton) {
         quickShapeEditDoubleClick(event->position());
         return; // an editing double-click never begins a brush stroke
+    }
+
+    // The Symmetry axis's grip (batch H): a double-click puts the axis back in the middle of
+    // the frame. Never a stroke.
+    if (event->button() == Qt::LeftButton && symmetryGripAt(event->position())) {
+        const bool moved = m_symmetryAxisSet && m_symmetryAxis != stage().frame.width() / 2;
+        m_symmetryDrag = false;
+        resetSymmetryAxis();
+        if (moved)
+            emit symmetryAxisEdited();
+        return;
     }
 
     // Perspective: double-clicking a VP handle removes that vanishing point
@@ -10323,6 +10654,14 @@ void DrawingCanvas::tabletEvent(QTabletEvent *event)
     // pick path (mousePressEvent) and the Brush never sees them.
     if (m_picking
         || (!midCanvasInteraction && event->type() == QEvent::TabletPress && pickWanted(event->modifiers()))) {
+        event->ignore();
+        return;
+    }
+    // THE SYMMETRY AXIS'S GRIP (batch H): the pen's drag of it is made by the mouse path as
+    // well - press, moves and release left to Qt's mouse synthesis - so the Brush never sees
+    // them and there is one drag path (mousePressEvent).
+    if (m_symmetryDrag
+        || (!midCanvasInteraction && event->type() == QEvent::TabletPress && symmetryGripAt(event->position()))) {
         event->ignore();
         return;
     }

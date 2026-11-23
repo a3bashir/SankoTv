@@ -356,6 +356,10 @@ MainWindow::MainWindow(QWidget *parent)
                           {QStringLiteral("zoom"), canvas->viewZoom()},
                           {QStringLiteral("rotation"),
                            canvas->viewRotation()}};
+            // Symmetry (batch H): the switch and where the axis is (px from the frame's left
+            // edge), so a recording says which strokes were mirrored, and across what.
+            m.insert(QStringLiteral("symmetry"), canvas->symmetry());
+            m.insert(QStringLiteral("symmetry.axis"), canvas->symmetryAxis());
             // Grab Control instrumentation: every floating toolbar's pill
             // state lands in each snapshot, so a stuck pill is visible in
             // the LOG even without pixels.
@@ -1070,6 +1074,7 @@ bool MainWindow::startRecoveryCopy()
     data.audioLinked = true; // a reference, written back as given: never copied
     data.tracks = m_animatic->tracks();
     data.perspective = m_storyboard->perspectiveToJson();
+    data.symmetry = m_storyboard->symmetryToJson(); // the switch and the axis (batch H)
     data.ledger = m_recoveryLedger.get();
     data.plan = &run->plan;
     const ProjectIO::WriteResult written = ProjectIO::projectToJson(data, target);
@@ -2830,6 +2835,9 @@ void MainWindow::resetProjectState(ClipboardPolicy clipboards)
         // Vanishing points are per project: reset() removes every VP and
         // keeps the density/thickness/snap defaults.
         canvas->perspective()->reset();
+        // Symmetry is per project too (batch H): off, the axis in the frame's middle.
+        canvas->resetSymmetryAxis();
+        canvas->setSymmetry(false);
         if (clipboards == ClipboardPolicy::Clear)
             canvas->clearCanvasClipboard();
         canvas->update();
@@ -3236,6 +3244,7 @@ bool MainWindow::saveToPath(const QString &path)
     data.audioLinked = m_animatic->audioLinked();
     data.tracks = m_animatic->tracks(); // lock / visibility / mute (Part B)
     data.perspective = m_storyboard->perspectiveToJson();
+    data.symmetry = m_storyboard->symmetryToJson(); // the switch and the axis (batch H)
     // Only the images whose files do not already hold them are written, and
     // those are encoded on several threads (the 25-second save, 2026-10-27).
     data.ledger = m_imageLedger.get();
@@ -3487,6 +3496,7 @@ bool MainWindow::loadFromPath(const QString &path, bool asRecoveryCopy)
     // Skip the Script Editor: go straight to the Storyboard.
     m_storyboard->loadScenes(m_scenes);
     m_storyboard->perspectiveFromJson(loaded.perspective);
+    m_storyboard->symmetryFromJson(loaded.symmetry); // this project's switch and axis (batch H)
     // THE BAR BEFORE THE PAGE (2026-11-07, seen in the user's hand test). The
     // start window has no menu bar, so the stack is the bar's height taller
     // there. Switched first, the workspace came back that much taller for a

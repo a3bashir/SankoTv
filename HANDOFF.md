@@ -1,5 +1,322 @@
 # SankoTV — Session Handoff Brief
 
+## STATUS 2026-11-23 (late afternoon): BATCH H (SYMMETRY) COMMITTED ON THE USER'S WORD (THIS COMMIT), H-1 MARKED BUILT; S-1 APPROVED WITH FOUR ANSWERS; SAVING STEP 1 - THE SAFE SAVE, THE PREVIOUS VERSION KEPT, PREFERENCES > SAVING, FILE > RESTORE PREVIOUS SAVED VERSION - TO BE BUILT NEXT, NOT COMMITTED UNTIL ITS HAND TEST
+THE USER (2026-11-23, about 14:55): "Batch H: commit it. I looked at the icon off and on in the app and it was right; I
+forgot to start the recorder. Commit and push batch H with its HANDOFF notes, matching sha_H4_gate.txt, git status
+clean, and mark H-1 BUILT in Figma. S-1 (675:755) is approved, with my answers: a) "Saving…" in both places: the Script
+Editor's indicator and the right of the workspace's bottom bar. b) "Restore Previous Saved Version…" under Save Project
+As…: yes. c) Restore opens the previous version in the window and changes nothing on disk until I save: yes. d) The
+warning's wording as shown, with Cancel as the default button. Build saving step 1 (the safe save, no threads yet),
+with the keep-previous-version rule, Preferences > Saving (keep by default, delete right away as the other choice) and
+File > Restore Previous Saved Version… with its warning, as shown in S-1. The previous version is replaced only after
+the new save has completed successfully. Use your checks (the writer stopped after each step and the project
+re-opened, all old or all new; a second process killed mid-save; the order of pushes to disk from the writer's log),
+with controls and a red run against today's writer. Measure only on a scratch copy of my 4K song project, never the
+original. Quick check, full gate before stopping (every family green in both builds), a fresh TEST COPY, the exe stamp
+and a short hand-test list. Don't commit until my hand test passes. Steps 2 and 3 (saving in the background, and Save
+As) come after, each with its own approval."
+
+THIS COMMIT: batch H, Symmetry - exactly the 12 files of app/build/_probe/split/sha_H4_gate.txt (resources.qrc,
+icons/symmetry.svg, DrawingCanvas.cpp / .h, MainWindow.cpp, ProjectIO.cpp / .h, SankoPaintHostAdapter.cpp / .h,
+StoryboardPage.cpp / .h, ProjectLifecycleTest.cpp) and this HANDOFF whole (so PART 2 of "2026-11-22 (night, later)"
+and PART 2 of "2026-11-22 (evening)", left out of the two commits before, are in it). Its proof: gate H3 (every
+family green in both builds but (cx10)), (cx10)'s own cure b325d04de, Lifecycle with batch H 1756 / 1756 in both
+builds (the section below); hand tests H and H2 from their recordings, H3 on the user's word (no recording: they
+forgot the recorder, and said so). Checked at 14:55 before staging: sha_H4_gate.txt 12 OK, sha_H4_exes.txt 20 OK.
+Not staged, because not modified: CanvasEdgeLockTest.cpp, QuickShapeGeometryLockTest.cpp.
+
+## STATUS 2026-11-23 (afternoon): (cx10) MADE DEAF TO THE MACHINE'S POINTER AND COMMITTED ALONE (b325d04de, PUSHED) AFTER ITS OWN GATE IN A SCRATCH COPY; LIFECYCLE WITH BATCH H GREEN IN BOTH BUILDS (1756 / 1756); BATCH H IS STILL NOT COMMITTED - THERE IS NO RECORDING OF HAND TEST H3 TO CONFIRM ITS BUILD FROM, SO ITS COMMIT WAITS FOR THE USER'S WORD; THE SAVING PLAN IS APPROVED WITH FOUR ANSWERS - FIGMA FRAME S-1 (675:755) MADE, NOTHING OF THE SAVING WORK BUILT, STOPPED FOR THE USER'S APPROVAL OF S-1
+THE USER (2026-11-23, after hand test H3): "Hand test H3 done: the heavier Symmetry icon looks right, off and on. Keep
+Move's 1.2 px for every line, the axis too, as you built it. Read the Dev Recorder session made after 11:38 on 23
+November and confirm from system.txt that it ran the Nov 23 2026 11:38:12 build (git 94b97c6a8+dirty) and that the
+title bar named "TEST COPY - small pirate, symmetry icon". The gate's red check (cx10): your option 3. Make (cx10)
+ignore the real pointer, as its own change with old and new texts, a control and a red run. Test it first in a scratch
+copy of the repository as you did for (pz5), then commit and push it on its own. Then run Lifecycle in both builds
+with batch H. When it's green, commit and push batch H with its HANDOFF notes, matching its hash list, git status
+clean, and mark H-1 BUILT in Figma. Saving: your plan is approved, in your three steps, each gated and hand-tested. My
+answers: 1. Edits made during a save stay unsaved until the next one: agreed. 2. Close, open and Save As wait for a
+running save and never cancel it: agreed. 3. "Saving…" where "Saved" shows today: agreed, Figma first. 4. Keep the
+previous saved version by default, and add Preferences > Saving with a choice to delete the previous pictures right
+away instead. The previous version is replaced only after the new save has completed successfully, never before.
+Before building, make a Figma frame S-1 in the area labelled "Claude Code please Start new design here 002" showing
+"Saving…", the Preferences > Saving page, and how an artist gets the previous saved version back (for example a File
+menu entry, with a clear warning before it replaces the current state). Screenshot it and stop for my approval before
+building any of the saving work. If anything failed or the build is wrong, commit nothing and report."
+
+THE CHECK BEFORE ANYTHING (12:59): git "## master...origin/master" at 94b97c6a8, the same 12 modified files and
+icons/symmetry.svg untracked, nothing staged; sha_H3_gate.txt 12 OK; sha_H3_exes.txt 20 OK.
+
+HAND TEST H3 - NO RECORDING EXISTS. Documents\SankoTV-DevRecordings holds nothing made after 11:38 on 2026-11-23: its
+newest session is 20261123-094223 (hand test H2's, ended 10:56:56). Looked at 12:59 and again at 14:43; SankoTV was not
+running either time. So the build (system.txt) and the title bar (screenshots) of the user's look COULD NOT BE
+CONFIRMED the way they asked. What there is instead, and no more than this: (1) the exe at the shortcut's path,
+C:\SankoTv\app\build\Release\SankoTV.exe, was the Nov 23 2026 11:38:12 build (sha256 bf193c55...) from 11:38:32 until
+14:05, when this afternoon's rebuild replaced it - its hash was read at 11:45, 12:27, 12:48 and 12:59; (2) the folder
+of "TEST COPY - small pirate, symmetry icon" was last changed at 12:57:09 (something made and removed in it, as
+opening and closing a project there does with its session lock - an inference, not a record), two minutes before the
+user's message; its project file is as made (11:44:00): nothing was saved into it. THE USER'S
+WORD IS THE RESULT ("looks right, off and on"; "keep Move's 1.2 px for every line, the axis too"). DECISION TAKEN AND
+TOLD TO THE USER: the precondition they set for the commits ("confirm from system.txt ...") cannot be met, so BATCH H
+IS NOT COMMITTED AND H-1 IS NOT MARKED BUILT - both wait for their word, or for the one step done again with the
+recorder on. The (cx10) change does not rest on the hand test and was committed as ordered.
+
+(cx10), ITS OWN CHANGE - COMMITTED b325d04de "Make check (cx10) deaf to the machine's own pointer", PUSHED
+(94b97c6a8..b325d04de). Tests only, app/tests/ProjectLifecycleTest.cpp, +124 -7:
+- RealPointerDeaf (after pump()): a QWindowSystemEventHandler put at QWindowSystemInterfacePrivate::eventHandler while
+  it lives (the one before it is called for everything else and put back at the end; <qpa/qwindowsysteminterface_p.h>,
+  Qt6::GuiPrivate was linked already). It drops, before Qt makes any event of them, the window system's Enter, Leave,
+  Mouse with no button down and of type MouseMove / NonClientAreaMouseMove, Tablet with no button down, and the two
+  tablet proximity events. Chosen over an application event filter BY READING: Qt's tip installs its own filter when
+  it is made - in front of any installed earlier - and the note is made from a zero timer after the Enter, so a filter
+  could not be kept in front without a gap; the window system's hook has no order to lose.
+- The (cx10) block: "RealPointerDeaf deaf;" for the whole of it (its four checks); pointerSpeaks() - a Leave and an
+  Enter for the app's window through QWindowSystemInterface, synchronous - speaks for the machine's pointer.
+- CHANGED CHECK: OLD "(cx10) THE QUICK MOVE'S NOTE, POPOVER CLOSED BY THE CLICK: it waits for the pointer's Enter and
+  is still up 0.5 s after the close's Leave events" (the close's events, pump(500), read).
+  NEW "(cx10) THE QUICK MOVE'S NOTE, POPOVER CLOSED BY THE CLICK: it waits for the pointer's Enter and is still up 0.5
+  s after the close's Leave events - and the machine's own pointer is not heard (2026-11-23): a Leave and an Enter
+  sent through the window system while the note is up, as a pointer at rest under the closing popover makes them,
+  reach nothing" (the close's events, pump(60), the note up, pointerSpeaks() with exactly 2 events unheard, pump(440),
+  read: the same 0.5 s).
+- NEW, ITS POSITIVE CONTROL: "(cx10) control (2026-11-23): the same click heard as before, the check not deaf - the
+  note comes up, the same Leave and Enter from the window system reach the app, and the note is gone 0.5 s later:
+  gate H3's reading ("up 0") with the machine's pointer at rest in the middle of the test screen".
+- The other two (cx10) checks ("control: a note shown before the close's events ..." and "THE CLIP MENU'S QUICK MOVE
+  ...") run inside the same deafness; their texts and conditions are unchanged.
+- FIRST RUN (scratch copy, slice "stagemode", all passed as written, nothing changed after): "up at once 1; the
+  window system's two events unheard 2; up 1"; the control "up at once 1; events unheard 0; up 0.5 s later 0".
+- RED RUN CX (marker in RealPointerDeaf::sendEvent - "if (false && ...)" - removed, grep 0): 1 fails, the first check,
+  "up at once 1; the window system's two events unheard 0; up 0 ''" - gate H3's reading; the control and the other two
+  pass (cx10_stagemode_REDRUN_CX.txt). Runs 1 and 2 without it: 125 / 0 (cx10_stagemode_run1.txt, _run2.txt).
+- GATE CX IN THE SCRATCH WORKTREE C:\SankoTV_cx10 (detached at 94b97c6a8 + this change alone, made there with the Edit
+  tool; own CMake configure; the scratchpad gate copy differing from app/tools/fullgate.sh only in A= and no taskkill
+  line; 13:11 to 14:01): TOTAL 2976 s, Release and Debug, 0 FAILING FAMILIES in both - Lifecycle 1730 (1729 + the
+  control), Camera 336, Brush Library 187, Size Lock 170, Edge Lock 74, Dev Recorder 46, Quick Shape 19, Pixel Lock 13,
+  Brush Lock 3. Logs copied to app/build/_probe/split/fullgate_CX.log and fullgate_CX\. The machine's pointer was at
+  (831, 962) before it and on the other screen (-424, 556) after it: the gate itself did not meet the pointer at rest
+  in the middle - the control and the red run are what show the change. HASH: sha_cx10_gate.txt (the gated file
+  8e8420c7..., copy splitCX\ProjectLifecycleTest.cpp.CX; CR-stripped 7b89d7a9... = the committed blob 5bed6f19d).
+  Staged from that copy by git hash-object + update-index; stat = ignore-cr stat (1 file, +124 -7). The worktree is
+  removed.
+- THE SAME CHANGE IN THE TREE (the same four Edits): against the scratch copy's file the tree's differs by batch H's
+  1,271 lines exactly as before, and the change's own 131 lines are the same in both (compared line for line).
+
+LIFECYCLE IN BOTH BUILDS WITH BATCH H (main tree on b325d04de, every target rebuilt clean in both configs as the gate
+builds them, then the family alone; scratchpad lifecycle_H4.sh; 14:03 to 14:42): RELEASE 1756 / 1756 (867 s), DEBUG
+1756 / 1756 (1218 s) - the 1755 of gate H3 + (cx10)'s control; all four (cx10) and all seven (sy2) pass in both. Five
+foreground losses logged in Debug (the user at work on the other screen), none in a failing check - there is none.
+Logs app/build/_probe/split/lifecycle_H4.log, lifecycle_H4\, lifecycle_H4_build_*.log. THE TREE: sha_H4_gate.txt (12
+files; against sha_H3_gate.txt only ProjectLifecycleTest.cpp differs - the (cx10) change), 12 OK after the runs.
+WITH GATE H3 (every other family green in both builds on batch H's app code, which is unchanged since) THIS IS BATCH
+H'S PROOF. THE EXES NOW (the rebuild's): Release built Nov 23 2026 14:05:17 (file 14:05:37), git b325d04de+dirty,
+sha256 be082039d9d1b0aab563383d5afec5ac9410293e4b1850e5fecea1c8edde95b5; Debug file 14:07:42, 2f433ac67adb0ff3...;
+these two and the nine families' exes of both builds: sha_H4_exes.txt (20 lines) -
+the app's sources are those of the 11:38:12 exe the user looked at (only the test file and the git stamp differ).
+
+SAVING - APPROVED, NOTHING BUILT. The plan of the report (Documents\SankoTV-Design\
+report_save_in_background_2026-11-23.md), in its three steps, each gated and hand-tested, with the user's four
+answers above. Answer 4 changes the plan: the PREVIOUS SAVED VERSION IS KEPT by default (the old project file and the
+pictures only it names), replaced only after the next save has completed; Preferences > Saving offers "delete the
+previous pictures right away"; File > Restore Previous Saved Version... brings it back.
+FIGMA S-1, MADE AND SHOWN, WAITING FOR APPROVAL BEFORE ANY BUILDING: frame 675:755 "S-1 — Saving in the background
+..." in the "002" column under H-1 (14670, 14832; 1660 x 1616; H-1's own look). In it: 1 the word - the Script
+Editor's indicator (Saving… / Saved / Unsaved changes / NOT saved), the workspace's bottom bar at the right where
+"Recovery copy saved 19:42" shows today (Saving… / Saved 14:32 / NOT saved), and the "Finishing the save…" box for
+close / open / Save As during a save; 2 the Preferences window as it is (520 x 300; Camera, Playback, Recovery) with
+the new Saving page - "After each save": Keep the previous saved version (chosen) / Delete the previous pictures
+right away; 3 the File menu with "Restore Previous Saved Version…" under Save Project As…, its warning (Cancel the
+default; an amber line when there are unsaved changes, and why saving them first would lose the version asked for),
+and what is on disk before and after. PROPOSED IN IT, THE USER'S TO SAY: the word in the workspace as well as in the
+Script Editor; the entry's name and place; Restore OPENS the previous version in the window and changes nothing on
+disk until a save (not a swap of files); the warning's wording. Screenshot:
+Documents\SankoTV-Design\figma-S-1-2026-11-23\S-1_v1.png. Nothing existing in the file was changed.
+
+NEXT, EACH ON THE USER'S WORD ONLY:
+  a. BATCH H'S COMMIT (held, above): the 12 files of sha_H4_gate.txt and HANDOFF.md whole - PART 2 of "2026-11-22
+     (night, later)" and PART 2 of "2026-11-22 (evening)" are in the tree's HANDOFF, so the whole file goes in; stat =
+     ignore-cr stat, the staged blobs = the files CR-stripped, never CanvasEdgeLockTest.cpp or
+     QuickShapeGeometryLockTest.cpp (they are not modified), push; git status must then be CLEAN; then H-1 (657:735)
+     marked BUILT in Figma and its two bar drawings' Symmetry icon made the heavier one (670:735 is its source).
+     If the user does the one step again with the recorder: system.txt must now say built Nov 23 2026 14:05:17, git
+     b325d04de+dirty; the copy "TEST COPY - small pirate, symmetry icon" is unsaved and can be used again.
+  b. THE SAVING WORK: only after S-1 is approved; step 1 first (the writer made safe, the previous version kept).
+
+## STATUS 2026-11-23 (later; IN THE TREE, NOT COMMITTED): THE EYEDROPPER'S POINTER FIX IS 94b97c6a8, PUSHED; BATCH H'S SYMMETRY ICON NOW HAS ITS NEIGHBOUR'S LINE WEIGHT (MOVE'S 1.2 PX; IT SHOWED AT 0.86), DRAWN IN FIGMA BESIDE THE USER'S FRAME, LICENCE-CHECKED, WITH A CHECK AND ITS CONTROL; GATE H3 GREEN BUT FOR ONE OLD CHECK, (cx10), IN LIFECYCLE IN BOTH BUILDS - THE MACHINE'S POINTER RESTS WHERE IT HIDES THE NOTE, AND THE COMMITTED BUILD FAILS IT THE SAME (THE USER'S TO CHOOSE HOW TO CLOSE IT); ONE-STEP HAND TEST H3 - BATCH H WAITS FOR THE USER'S LOOK; THE REPORT ON SAVING OFF THE MAIN THREAD GIVEN (REPORT ONLY, NOTHING BUILT)
+HEAD = origin/master = 94b97c6a8 "The Eyedropper's pointer stays the dropper while a pick waits" (exactly the two
+files of sha_PK_pick.txt + HANDOFF; git diff --cached --stat equal to --ignore-cr-at-eol --stat, 3 files, 522
+insertions, 1 deletion; the staged blobs equal to splitPK\*.PK and HANDOFF.PKcommit CR-stripped; pushed
+76481d1dc..94b97c6a8). The user's words are at the head of the section below ("One change: the Symmetry icon's outline
+is much thinner than the other toolbar icons ... Don't commit batch H until I've looked").
+
+THE MEASURE (the user's "measure the stroke weight of its neighbours ... at the size they're shown"): a scratch tool
+out of the tree (Documents\SankoTV-Design\icons-H-2026-11-23\strokeweight.cpp; Qt Gui + Svg, offscreen, no window)
+draws each icon as figIconPixmap does - its file centred in the 30 x 30 box at its size - 64 times larger, takes every
+ink pixel's exact distance to the nearest pixel that is not ink, and reads a line's weight on the ridge of that
+distance. Lines of a known weight through the same steps read back to 0.02 px (1.2 -> 1.18-1.20, 1.0 -> 0.99, 0.857
+-> 0.84-0.85, 0.714 -> 0.71). READ, in the bar's own pixels (stroke_weights_measured.tsv):
+  Brush 1.0 (its fine bristle lines 0.6) | Eraser 1.0 | Fill 1.0 | Select 1.2 (the dashed square; the Ellipse,
+  Freehand and Polygon modes' icons 1.2 too) | Move 1.2 | Undo, Redo 1.2 | SYMMETRY 0.86, its dashed axis 0.71.
+The design agrees to the digit: drawn at 1.4 times the app (a button is 42 there, 30 here), its components' strokes
+are 1.4 (Brush, Eraser, Fill; Brush's fine lines 0.84) and 1.68 (Select, Move, undo, redo); the user's Symmetry
+(659:817 / icon 659:818) has 1.2 and, for the axis, 1.0 with dashes 3.5 / 3.5.
+THE CHOICE, TOLD TO THE USER: the neighbours have TWO weights. Symmetry got Move's 1.2 px (1.68 in the design): Move is
+the neighbour beside it, the icon is a drawing of lines as Move, Select and Undo are (Brush, Eraser and Fill are
+outlined solids), and 1.2 is the number the user drew it with - it shrank with the design's scale. THE AXIS got the
+same 1.2 px (the user drew it a sixth lighter than the wings; the Select tool's dashed square is at its lines' full
+weight). Brush's 1.0 px instead, or a lighter axis, is one number in Figma and a new export.
+
+FIGMA (file 7phpfrMKNDEY4rgGORDhac, page "SankoTV App"; the user's 659:817 only read and cloned - a snapshot of the
+frame and everything in it, taken before and after, is equal):
+- 670:735 "Symmetry (heavier lines 1.68, as Move's - Claude's, 2026-11-23; ...)": a clone of 659:817 right beside it
+  (x 14557, the user's at 14495; y 13256), its three vectors' stroke weight 1.68, nothing else changed (the axis keeps
+  its dashes 3.5 / 3.5). Its icon is 670:736.
+- 670:743, the comparison frame under them (13762, 13322; 837 x 741): two bars - Brush, Move (instances of the
+  design's own components 107:24 and 107:191), a copy of the user's Symmetry, the heavier one - with Symmetry off (grey
+  #cccccc on #212121) and on (white on the purple), the same two three times larger, and the measured weights in
+  words. Screenshot: Documents\SankoTV-Design\icons-H-2026-11-23\figma_compare_670-743.png.
+- THE FILE: icons/symmetry.svg is 670:736 exported (exportAsync SVG_STRING) byte for byte - 2647 bytes, LF, SHA-256
+  912558ffa0303fae103dbb26a62741abc3a0a8720248acfb2474c5991c4fa70c, the hash Figma's own export gives (computed in the
+  plugin; the same way the user's 659:818 gives 38bcc501..., the file the app had until now). Against that file: the
+  two wings' paths are the same to the digit, their stroke-width 1.68 where it was 1.2; the axis's outline is drawn
+  again by Figma at 1.68 (the same five dashes, 0.84 each side of x = 17 where it was 0.5). Written with the Edit
+  tool (two edits); copies of both files in icons-H-2026-11-23\.
+
+THE LICENCE CHECK, AGAIN, ON THE NEW FILE (the tool of Documents\SankoTV-Design\icon-check\tool, the eight sets of
+2026-11-22 still unpacked in the scratch folder, the same versions; offline, no window): 23,357 icons, 0 failed to
+render; controls 1.000 / 0.380 / 0.291, the copied magnet path-identical; SYMMETRY: the highest score 0.603 (Font
+Awesome venus-double; it was 0.544 with the thin lines - heavier ink overlaps more), then Tabler shirt-sport 0.592,
+Lucide align-center-vertical 0.577, Tabler shirt 0.573, Tabler cell 0.559, Phosphor butterfly 0.553 - all under the
+0.69 line; the same-idea pairs: Phosphor butterfly 0.553, Lucide flip-horizontal 0.451, Tabler butterfly 0.380,
+Tabler flip-vertical 0.330; no identical path data, whole or by element. Evidence:
+Documents\SankoTV-Design\icon-check\symmetry-heavier-2026-11-23\.
+
+THE CODE (batch H, on top of sha_H2_gate.txt's tree; three files differ from it):
+- app/icons/symmetry.svg: the new file.
+- app/src/StoryboardPage.cpp: eight comment lines at the Symmetry button ("ITS LINES' WEIGHT ..."); no code changed -
+  the icon is still shown at 34 / 1.4 x 28 / 1.4, grey (figIconPixmap) off and as exported, white, on.
+- app/tests/ProjectLifecycleTest.cpp: #include <QPainterPath> and <QSvgRenderer>; in (sy2) the file is read once
+  (iconBytes); one check changed, three added.
+CHANGED CHECK:
+  OLD "(sy2) THE SYMMETRY BUTTON IS ON THE TOOLS BAR, BEFORE THE COLOUR (your change 1 of 2026-11-22) - after the
+  Move tool, then the colour, then Undo -, the size of the tools' buttons and on their line, the bar's own gap on
+  both sides; its tooltip names Shift+S; it starts switched off; its icon is the user's own, as exported from their
+  Figma frame 659:818 (the file's SHA-256)" [hash 38bcc501...]
+  NEW "(sy2) THE SYMMETRY BUTTON IS ON THE TOOLS BAR, BEFORE THE COLOUR (your change 1 of 2026-11-22) - after the
+  Move tool, then the colour, then Undo -, the size of the tools' buttons and on their line, the bar's own gap on
+  both sides; its tooltip names Shift+S; it starts switched off; its icon is your drawing with the heavier lines of
+  2026-11-23, as exported from the copy beside your frame (Figma 670:736; the file's SHA-256)" [hash 912558ff...]
+  ITS POSITIVE CONTROL is the third new check below (the file is still the user's drawing).
+NEW CHECKS:
+  "(sy2) ITS LINES ARE AS HEAVY AS ITS NEIGHBOUR'S (your change of 2026-11-23): measured at the size the bar shows
+  them, the Symmetry icon's lines weigh what Move's beside it weigh, 1.2 px - the wings and the dashed axis alike, 95 %
+  and more of their length within 0.12 px of it - where they weighed 0.86 px and the axis 0.71; the icon measured is
+  the one on the button (its ink lies in the same box there, and Move's too)" - the measure above inside the test, 32
+  times larger, no waiting in it; the icon drawn here is tied to the one shown by its ink's box (within 0.6 px of the
+  box read off the button's own look, four times its size).
+  "(sy2) control (2026-11-23): the measure reads a known line back - one drawn 1.2 px wide as 1.2 and one drawn 0.86
+  px wide as 0.86, so it tells the old weight from the new; curves as tight as the wings', drawn 1.2 px wide, read
+  within 0.12 px of it (the allowance above); and it does not call every icon equal - Brush's lines read 1.0 px, not
+  Move's 1.2".
+  "(sy2) THE SAME DRAWING, ONLY HEAVIER (2026-11-23): the file's two wings are your own paths to the digit (your frame
+  659:818), their stroke-width 1.68 where it was 1.2; the picture is still 34 x 28 with three paths; the axis is still
+  five dashes with a gap between each two".
+  FIRST RUN (all three passed as written; nothing was changed after it): Symmetry 1.172 px, 98.3 % of 1,662 readings
+  within 0.12 px of Move's 1.172 (lightest 1.047, heaviest 1.774 where the two lobes of a wing meet); its ink drawn
+  4.53,6.00 to 25.47,24.91, on the button 4.50,6.00 to 25.50,25.00; a 1.2 px line reads 1.172, a 0.857 px line 0.859;
+  tight curves at 1.2: 100 % within 0.12 px (lightest 1.090); Brush 1.002. (Why curves read up to 0.11 px light: Qt's
+  stroke of a tight curve at this size, the same for a line of known weight - hence the allowance and its control.)
+  The look check's count of full-ink pixels is now 116 off and 116 on (16 with the thin lines).
+RED RUN H4 (no marker in any source: the OLD icon file put back with the Edit tool, the test's resources built,
+the slice run, the new file put back and verified against Figma's hash again): 3 fail, as they should - the hash
+("icon 38bcc501ada2"), THE LINES ("Symmetry 0.797 px (0.0 % of 1615 readings within 0.12 px of Move's ...)"), THE
+SAME DRAWING ("wings kept 0; picture kept 0; dashes down the middle 5") - and the control passes
+(h3_symmetry_REDRUN_H4.txt).
+QUICK CHECKS (Release): slice "symmetry" 74 / 0 twice (h3_symmetry_run1.txt, h3_symmetry_run2.txt; it was 71),
+slice "batchg" 49 / 0 (h3_batchg_run1.txt). CR counts equal the line counts (StoryboardPage.cpp 14676,
+ProjectLifecycleTest.cpp 34893); "RED RUN" 0 in the sources.
+THE TREE GATED: app/build/_probe/split/sha_H3_gate.txt (12 files; against sha_H2_gate.txt only icons/symmetry.svg,
+StoryboardPage.cpp and ProjectLifecycleTest.cpp differ).
+GATE H3 (app/tools/fullgate.sh H3, the main path, 11:36:18 to 12:26:36, TOTAL 3018 s; fullgate_H3.log,
+fullgate_H3\): NOT GREEN - EVERY FAMILY BUT ONE CHECK OF LIFECYCLE, THE SAME ONE IN BOTH BUILDS. Release and Debug
+alike: Quick Shape 19, Dev Recorder 46, Edge Lock 74, Size Lock 170, Brush Library 187, Pixel Lock 13, Brush Lock 3,
+Camera 336 - all passing; LIFECYCLE 1754 OF 1755 (1752 + the three new (sy2); all seven (sy2) pass in both builds).
+THE ONE: "(cx10) THE QUICK MOVE'S NOTE, POPOVER CLOSED BY THE CLICK: it waits for the pointer's Enter and is still up
+0.5 s after the close's Leave events [on surface 1; popover shown 1; note 'The move leaves the art of Panel 2: Grow
+to fit is on the clip.'; waited 1; up 0 '']" - its control and the clip menu's (cx10) beside it pass. No test window
+lost the foreground in either run (no TESTWINDOW line; 152 windows placed, all on the Cintiq).
+READ BEFORE ANYTHING, NOTHING RELAXED, NO SOURCE TOUCHED:
+- (cx10) is in runGrowAnyZoomPass, which a full run runs BEFORE runSymmetryPass (34719 / 34724): the new (sy2) code
+  runs after it. What it checks - StoryboardPage::sayNote, the Quick Move popover - is not in today's change (an icon
+  file, eight comment lines, test code in (sy2)), and passed in gates PK and H2 the day before, both builds each.
+- The slice that holds it, alone, on the gate's own Release exe, right after the gate: "stagemode" 124 / 0
+  (h3_stagemode_tree_run1.txt), (cx10) passing.
+- THE COMMITTED BUILD FAILS THE SAME: a scratch worktree at HEAD 94b97c6a8 (no batch H in it; the code gate PK passed
+  with 1729 / 1729), its Lifecycle built in Release and run whole, 12:32 to 12:46: 1728 OF 1729, the one failure the
+  same (cx10) with the same reading, no foreground loss (h3_HEAD_lifecycle_Release_run1.txt). So it is not batch H.
+  The worktree is removed again.
+- WHAT DIFFERS FROM THE DAY BEFORE: the machine's own pointer. It rested at (939, 569), the middle of the Cintiq (the
+  test screen), at every reading - 12:27, 12:29, 12:32, 12:46 (PowerShell's Cursor.Position, read only; never moved:
+  the standing rule). The mechanism, BY READING, NOT YET SHOWN BY A PASSING FULL RUN WITH THE POINTER ELSEWHERE: the
+  note is a QToolTip, and Qt's tip hides itself 0.3 s after ANY Leave event in the app (QTipLabel's event filter). A
+  window that opens or closes under a resting pointer - the popover, or the tip itself - makes Windows send real
+  Enter / Leave events, which arrive after the check's own made-up ones: the tip goes, "up 0" at 0.5 s. In a full run
+  the pass's window lies where that happens; in the slice alone it does not. The app's own behaviour is right (with a
+  real click the real Leave comes before the real Enter the note waits for); the CHECK depends on the real pointer,
+  which the rule of this file forbids ("a check may not depend on the real pointer").
+- NOT DONE, THE USER'S TO CHOOSE: (1) the pointer moved off the Cintiq's middle (onto the Dell, say) and Lifecycle
+  run again in both builds on the same exes (about 35 minutes) - a hand test's last click, Discard, leaves the pointer
+  near there, so it will come back; (2) a standing word that the pointer may be parked before a gate; (3) (cx10) made
+  deaf to the real pointer (the check swallowing spontaneous Enter / Leave / move events while it runs), as its own
+  change with the old and new texts and a control - the lasting cure, and the same could serve (ps1) / (ps3).
+THE EXES OF GATE H3 (its clean builds; nothing built after them): Release C:\SankoTv\app\build\Release\SankoTV.exe -
+built Nov 23 2026 11:38:12 (file 11:38:32), git 94b97c6a8+dirty, sha256
+bf193c55edc8383a2e917268f5c5f0f567540f1d61cfc268684658ca4e3b41c2; Debug - file 11:40:40, sha256
+59ec303dc772f845d3b2786eef7fbf3d675700efa36ccb390407dd816a1a5572. These two and the nine families' exes of both
+builds: app/build/_probe/split/sha_H3_exes.txt (20 lines). After everything above: sha_H3_gate.txt 12 OK,
+sha_H3_exes.txt 20 OK.
+
+HAND TEST H3 (one step): Documents\SankoTV-Design\handtest_H3_symmetry_icon.md - the button off and on, beside its
+neighbours; it says the two weights and what to ask for instead. Copy "TEST COPY - small pirate, symmetry icon"
+(C:\SankoTV-TestCopies, 11:44; 93 files, 79 named, 0 missing or differing; the original's project file
+ad918e3882d3... the same before and after, modified 2026-11-09 22:38:12, 92 files beside it). The exe: the Release
+one above, at the user's shortcut.
+
+THE REPORT ON SAVING OFF THE MAIN THREAD (the user's item 3; REPORT ONLY, NOTHING BUILT, NO SOURCE CHANGED; waiting
+for approval): Documents\SankoTV-Design\report_save_in_background_2026-11-23.md. In short:
+- TODAY: MainWindow::saveToPath runs on the main thread from start to end - the fold of a changed layer and a changed
+  panel's flatten there, the PNG encoders on up to 8 pool threads while the main thread waits (ImageSaver::finish),
+  then the manifest through QSaveFile. Nothing is shown meanwhile. The recovery copy (2 min) is already off the main
+  thread (ImagePlan / runImagePlan, 2026-11-05).
+- MEASURED on a scratch copy of the user's song (Downloads\Song\Mansour_Fast_song_001, 3840 x 2160, 7 panels, 15
+  layers; copied to C:\SankoTV-TestCopies\MEASURE COPY - Mansour song, save timing; the original's 24 files hash the
+  same before and after, f65683f3...): by a scratch program out of the tree that compiles ProjectIO.cpp,
+  ProjectMedia.cpp, LayerTiles.cpp and camera/ShotCamera.cpp unchanged and calls projectToJson + QSaveFile as
+  saveToPath does (Documents\SankoTV-Design\save-timing-2026-11-23\: savetime.cpp, results_run1.txt). Three runs each,
+  within 20 ms: nothing changed 3 ms; one stroke on one panel 142 ms (1 layer + 1 flatten); a stroke on every panel
+  300 ms; the first save after opening 245 ms (15 files renamed to id names, 7 flattens); every picture 285 ms; Save As
+  with the 37 MB sound 315 ms. One 4K PNG: 122-132 ms to encode (a layer's drawn part 2304 x 1792: 81 ms); a fold 9
+  ms; a flatten 8 + 5 ms.
+- THE USER'S OWN RECORDINGS: 113 saves since 2026-10-27 - the main thread's longest gap after each: median 126 ms, 12
+  over 0.5 s, 5 over 1 s, the longest 3.66 s (20261107-185530 at 704.5 s, a 5760 x 3240 stage; the clicks made
+  meanwhile arrive together at its end). 237 recovery copies: main thread held 6 ms median, 25 ms for 9 in 10, 81 ms
+  at most, while the copy took 86 ms median and 16.6 s at most (54 files, 86 MB).
+- FOUND BY READING, NOT REPRODUCED: a Save writes a changed image straight over its own file (QImageWriter on the
+  final name in ImageSaver::pushLayer) - a crash or power cut mid-write cuts the file the manifest names, and the
+  loader opens a blank layer; images and manifest are not one step, and a layer's place ("origin") is in the manifest,
+  so new images under the old manifest can open shifted; only the manifest is flushed to the disk (QSaveFile); the
+  recovery copy's images are .part, then remove, then rename (a gap, and no flush).
+- THE PLAN PROPOSED: step 1, the writer made safe with no threads yet - a changed image to a NEW name, whole and
+  flushed, the manifest as the one switch, old files deleted after it; step 2, Save through the plan on a worker, the
+  snapshot on the main thread only, one save at a time, "Saving..." where "Saved" shows, close / open / Save As wait
+  for it; step 3, Save As and a recorder event. Checks: every step of the writer stopped in turn and the project
+  re-opened (old or new, never a mix), a real kill of a second process, the order of flushes read from the writer's own
+  log, steps counted by thread, a stroke during a held save. Four questions to the user are at the report's end.
+
+NEXT, ON THE USER'S WORD ONLY: the choice for (cx10) above; after their look (hand test H3), commit batch H (the
+tree: Symmetry, the button before the colour, its two looks, the heavier icon; PART 2 of "2026-11-22 (night, later)"
+and PART 2 of "2026-11-22 (evening)" come with it), push, mark H-1 built in Figma (and its bar drawings' Symmetry icon
+to the heavier one); their answers on the save report before anything of it is built.
+
 ## STATUS 2026-11-23: HAND TEST H2 READ (ONE RECORDING, THE RIGHT BUILD, NOTHING FAILED); THE EYEDROPPER'S POINTER FIX COMMITTED ALONE (THIS COMMIT), PROVEN ALONE BY GATE PK; BATCH H IS NOT COMMITTED - THE USER ASKS FOR A HEAVIER STROKE ON THE SYMMETRY ICON FIRST
 THE USER (2026-11-23, after hand test H2): "Hand test H2 done: all steps looked right, and I didn't see a flash at the
 moment of pressing I or Alt. I also tested three Symmetry steps the last recording missed: the Eraser on one side
@@ -167,7 +484,41 @@ PART 1 - THE EYEDROPPER'S POINTER (the user's point 3; DrawingCanvas.cpp, one fu
   syncWindowCursor off, as before batch G: the window stays on V / H / A through all 30 hovers; (cur10)'s two checks
   fail with it, as they should (pk_batchg_REDRUN_PREG.txt).
 
-PART 2 - BATCH H, THE USER'S TWO CHANGES: not in this commit. Its notes are in the tree's HANDOFF and come with batch H's commit.
+PART 2 - BATCH H, THE USER'S TWO CHANGES (StoryboardPage.cpp; the checks in the test):
+- THE PLACE: the Symmetry button is BEFORE the colour (bar->insertWidget(bar->indexOf(color), ...)): Brush, Eraser,
+  Fill, Select, Move, Symmetry, the colour | Undo, Redo. The bar's width, and so the panels' places, are unchanged.
+- THE ICON: ToolButton::setCheckedIconPixmap - an icon of its own for the checked state (none set: one icon in
+  every state, as every other button). Symmetry off: the user's drawing in the tools' #cccccc (figIconPixmap). On: as
+  exported, white (exportedIconPixmap). The file icons/symmetry.svg is untouched (same SHA-256); no new icon, so no
+  new licence check.
+- CHANGED CHECKS (batch H's own, not yet committed; the build of hand test H had the old ones):
+  OLD "(sy2) THE SYMMETRY BUTTON IS ON THE TOOLS BAR, AFTER THE COLOUR and before Undo, the size of the tools'
+  buttons and on their line, the bar's own gap from the colour; its tooltip names Shift+S; it starts switched off;
+  its icon is the user's own, as exported from their Figma frame 659:818 (the file's SHA-256)"
+  NEW "(sy2) THE SYMMETRY BUTTON IS ON THE TOOLS BAR, BEFORE THE COLOUR (your change 1 of 2026-11-22) - after the
+  Move tool, then the colour, then Undo -, the size of the tools' buttons and on their line, the bar's own gap on
+  both sides; its tooltip names Shift+S; it starts switched off; its icon is the user's own, as exported from their
+  Figma frame 659:818 (the file's SHA-256)" (Move < Symmetry < colour < Undo by x; both gaps = the gap between two
+  tools, 15 px). POSITIVE CONTROL (new): "(sy2) control (2026-11-22): the whole bar read left to right by its
+  buttons' names - Brush, Eraser, Fill, Select, Move, Symmetry, the colour, Undo, Redo; the colour is no longer
+  before Symmetry".
+  OLD "(sy2) ITS LOOK, as the user's frame 659:817: switched off it is plain, the ground of the unchecked tool
+  beside it; switched on, the bar's purple #7C6EF6 lies under the icon's white lines"
+  NEW "(sy2) ITS LOOK (your change 2 of 2026-11-22; switched on, your frame 659:817): switched off it is plain - the
+  ground of the unchecked tool beside it - and its icon is the light grey of its neighbours' icons, #CCCCCC, nothing
+  in it lighter; switched on, the bar's purple #7C6EF6 lies under the icon, now white as you drew it, no grey left;
+  the same drawing in both (as many pixels of full ink)" (each button rendered at four times its size, so a line
+  has pixels of full ink; the lightest pixel off #cccccc = Fill's, on #ffffff; 16 px of full ink in both).
+  POSITIVE CONTROL (new): "(sy2) control (2026-11-22): the same reading on a tool - Fill's icon is the grey #CCCCCC
+  switched off and picked alike, on the purple too (the tools' icons never change); only Symmetry's turns white".
+  FIRST RUN, READ FIRST: the new look check asked for 200 px of full ink and found 16 (the icon's lines are thin; 16
+  off = 16 on is what says "the same drawing") - now "more than none, and equal"; Fill's grey on the purple read
+  #cccccd (a near-solid pixel laid over the purple rounds one level up in blue) - "the grey" is #cccccc to 2 levels.
+- RED RUN H3 (marker removed, grep 0): the button after the colour and white in both states, as hand test H's
+  build: the three (sy2) checks fail - x: Move 210, Symmetry 300, colour 255; the bar read "..., toolMove,
+  colorSwatch, toolSymmetry, ..."; off lightest #ffffff (Fill's #cccccc) - and Fill's control passes
+  (h2_symmetry_REDRUN_H3.txt; one (po5) check failed in that run because the user's Chrome took the foreground
+  36.8 s in - the harness's own TESTWINDOW line says so).
 
 QUICK CHECKS (Release, the final tree): slice "batchg" 49 / 0 (pk_batchg_run2.txt), slice "symmetry" 71 / 0
 (h2_symmetry_run2.txt), the whole Lifecycle 1752 / 0 in 867 s (h2_lifecycle_whole_run1.txt; the user's Chrome took
@@ -369,7 +720,184 @@ PART 1 - THE VEIL FIX (DrawingCanvas.cpp only; the check in ProjectLifecycleTest
   it (sha256sum -c, 5 OK). (The worktree was used once more afterwards, for the (po5) probe of PART 2; its test
   file was put back from splitP4 and the five files verified again.)
 
-PART 2 - BATCH H, SYMMETRY: not in this commit. Its notes are in the tree's HANDOFF and come with batch H's commit.
+PART 2 - BATCH H, SYMMETRY (Figma H-1 657:735, approved 2026-11-22 with the answers above):
+- THE SWITCH (StoryboardPage::createFloatingToolbar): a ToolButton "toolSymmetry" on the tools bar after the colour,
+  before the divider and Undo (the bar is one button and one gap wider). The user's own button "Symmetry (new)"
+  659:817 is the bar's button at the design's 1.4x (42 px there, 30 here; radius 8.4 / 6; fill #7C6EF6 = the checked
+  look every tool has): icon icons/symmetry.svg drawn 34/1.4 x 28/1.4 = 24.29 x 20, IN ITS OWN COLOUR - white, as
+  the user drew it ("keeping its proportions and colours") - by exportedIconPixmap, a new helper beside
+  figIconPixmap, which tints every other icon of the bar #CCCCCC (the first build used it, and (sy2) read 0 white
+  px on the purple: h_symmetry_run1.txt). So switched off the icon is a little brighter than its neighbours' grey
+  ones - TOLD TO THE USER as the one thing about the look that is theirs to say (white always, or grey when off).
+  Switched off the ground is plain like its neighbours', the same ToolButton hover and pressed looks. Not in the
+  tools' exclusive group. Tooltip "<b>Symmetry
+  (Shift+S)</b> | Mirror Brush and Eraser strokes across the axis." (the bar's own tooltip style, as its neighbours).
+- THE ICON: the user's own (659:818), exported from Figma with exportAsync SVG_STRING and written as it came (LF,
+  2,633 bytes, sha256 38bcc501ada22f915a0af877851302890a4b03d08833b1d88d84f2f600ef8eef; a copy in
+  Documents\SankoTV-Design\icons-H-2026-11-22\); white, as drawn; in resources.qrc after eyedropper_dark.svg.
+  CHECKED AGAINST FIGMA after it was written: a second export of 659:818 has the file's length (2,633) and the
+  file's FNV-1a checksum over its characters (09766983). (sy2) pins the resource's SHA-256.
+  LICENCE CHECK (2026-11-22, the same tool and the same eight sets as BEFORE SELLING 12 - 23,357 icons, unpacked
+  OFFLINE from npm's local cache, nothing downloaded): no identical path data, whole or by element (pathcheck); the
+  closest shapes score far under the 0.69 line - Font Awesome venus-double 0.544, Tabler shirt-sport 0.534, shirt
+  0.522, Bootstrap suit-heart 0.520, Lucide align-center-vertical 0.516, Phosphor butterfly 0.501; the same-idea
+  pairs: Phosphor butterfly 0.501, Lucide flip-horizontal 0.397, Tabler butterfly 0.338, Tabler flip-vertical 0.304.
+  Controls as before: the copied magnet 1.000 and path-identical, the negatives 0.380 / 0.291. Evidence:
+  Documents\SankoTV-Design\icon-check\symmetry-2026-11-22\. No dependency, font or codec added.
+- SHIFT+S (a pageKey, StoryboardPage::symmetryKey): WAS FREE - no QShortcut, QAction shortcut, QKeySequence or key
+  handler of the app used it (searched: no Key_S anywhere in src; Save is QKeySequence::Save, Ctrl+S; the recorder's
+  keys are Ctrl+Shift+R / B). Not in Stage mode nor with the Brush Settings studio open, as the tool keys; a text
+  field with the keyboard keeps its capital S.
+- THE STATE (DrawingCanvas: setSymmetry, setSymmetryAxis, resetSymmetryAxis, symmetryAxis, symmetryAxisOnCanvas,
+  symmetryLive; signals symmetryChanged, symmetryAxisEdited): the axis is kept in FRAME px (whole px from the frame's
+  left edge), so it is the same place of the shot on every panel whatever a panel's own margin (canvas x = the
+  stage's origin + that, kept on the paper); "not moved" = the middle of the frame. symmetryLive(): switched on, a
+  panel, not Stage mode, the Brush or the Eraser - then the axis shows and a stroke begun is mirrored; with any other
+  tool the button stays lit, nothing shows, nothing mirrors.
+- THE AXIS AND THE GRIP (paintSymmetry, after paintShotCamera; the canvas's own paint only - never a thumbnail, the
+  preview, an export or the shot): a 1 px line in #7C6EF6 through the view transform, from the grip 24 px above the
+  paper's top edge to 20 px past its foot; the grip as H-1 draws it (Figma 657:901 / 657:902, read back
+  2026-11-22): an 18 px disc, #7C6EF6, a 1.5 px white edge inside it, and a white left-right arrow 9 x 4 px (1 px,
+  round ends) laid across the axis, so it turns with a turned view. A press
+  within 12 px of it (mousePressEvent, after the eyedropper, before every tool - whatever the layer is) drags the axis
+  to the pointer's pixel column on the paper; the pen's drag is the mouse path's too (tabletEvent ignores the press,
+  the moves and the release, as for a pan or a pick); released having moved: symmetryAxisEdited (the project has a
+  change to save); a double-click on it: the middle again. Over the grip the cursor kind is "axis"
+  (Qt::SizeHorCursor) and the Brush's circle is away (pointerOutlineWanted). ADDED, NOT IN H-1 (told to the user,
+  hand-test step 21): when the grip's place above the paper is out of the view, it waits where the axis comes into
+  the view (18 px in from the view's edge), so the axis can be moved while zoomed in.
+- THE MIRRORED STROKE, IN THE STROKE'S OWN COMMIT (SankoPaintHostAdapter - the app's boundary to the engine; the
+  engine under third_party is untouched): setMirrorAxis(x) / clearMirrorAxis() before beginStroke (beginBrushStroke
+  sets it from symmetryLive, or from the mirror a held shape began with); the stroke keeps what it began with.
+  finishStrokeWork: when part of the stroke's rect has room on the canvas for its reflection (mirrorRects), the
+  work's affectedRect is the stroke's rect united with that reflection, strokeRect the stroke's own, mirror /
+  mirrorAxis set. render: renderPass (what render always did, now a function) for a plain stroke; renderMirrored for
+  a mirrored one - (1) the stroke over its own rect, the very pass a stroke without Symmetry is; (2) the picture as it
+  now is under the stroke's reflection FLIPPED left-right, the same stroke rendered over it, the result flipped back
+  and laid in. So the second side is the pixel-for-pixel mirror of what the stroke does to the mirrored picture -
+  with every brush (grain, textured or tilted tips, wet edges, smudge, dual brushes) and the Eraser - and where the
+  sides overlap the mirror image lies over the stroke. One after-region, one BrushStrokeCommit, ONE UNDO STEP. Rows
+  are copied as bytes (ARGB32), so a pixel neither pass touched keeps its bytes; the selection's mask is applied to
+  the whole region after both passes, as before (a selection limits both sides). publish's mid-flight rebase calls
+  render again and so mirrors again. Only what has a place on the paper for its reflection is mirrored: nothing
+  from off the paper, nothing onto it from there; an axis on the paper's edge mirrors nothing.
+- LIVE (DrawingCanvas::paintEvent, paintLayerContent): the stroke's preview tiles under the update clip's
+  REFLECTION are composed and flipped onto the clip, over the stroke's own preview (composePreview, a lambda around
+  the code that was there); an erase stroke's coverage the same way, so the carve shows on both sides. Each move
+  also updates the reflected rect. At pen-up the frozen bridge image holds both (endBrushStroke), the selection's
+  mask applied to the two together. A shape held out of a stroke (QuickShape): captureQuickShapeBrush keeps the
+  mirror (m_qsMirrorAxis); its preview job's private adapter and its bake (m_qsBaking) use it.
+- THE POINTER'S SECOND CIRCLE (PointerOutline::setMirror, syncPointerOutline): the pointer's reflection across the
+  axis through the view, the circle's size, its two lines at 45 % (lighter), drawn under the circle's own; only
+  while the circle shows and symmetryLive.
+- WITH THE PROJECT (ProjectIO SaveData.symmetry / LoadedProject.symmetry; StoryboardPage::symmetryToJson /
+  symmetryFromJson; MainWindow: both saves, the load, the reset of a new project): the manifest's "symmetry":
+  {"on": true, "axis": N} - "on" only when on, "axis" only when moved off the middle, THE KEY ABSENT when neither, so
+  a project that never used Symmetry saves the manifest it always did; no file version change (a build before batch H
+  ignores the key). The button, Shift+S and a moved axis mark the project changed (documentChanged), as a track's
+  lock or mute does; loading does not.
+- NOT BUILT, as H-1 says "later": a horizontal axis, both at once, a turned axis. NOT MIRRORED, as H-1 says: Fill,
+  Shapes, the selection tools, Move, Paste.
+- KNOWN LIMITS (told to the user): a stroke that crosses the axis is mirrored whole, and where the two overlap the
+  mirror image lies over the stroke - with a see-through brush that overlap is not exactly its own mirror image
+  (as two strokes drawn one after the other are not); the mirrored side takes twice the commit's render (two
+  passes); the axis is whole pixels.
+CHECKS OF BATCH H: pass runSymmetryPass, 20 checks (sy1)-(sy13), slice "symmetry" (with the contextual cursors and the
+panels' click-away passes, 64 checks); in the full run after runDrawingOverlaysPass. State AND picture / pixels.
+- (sy1) x3, THE ENGINE, NO WINDOW (SankoPaintHostAdapter on the CPU, a fixed seed, a 480 x 240 picture that is not
+  its own mirror image): the stroke's own side byte for byte the stroke without Symmetry; the other side pixel for
+  pixel the mirror image made BY HAND (the same stroke over the picture flipped, flipped back); both sides one
+  commit - applied it is the mirrored picture, taken back the first one, byte for byte; control: an axis on the
+  paper's edge (x = 0, x = 480) is the stroke without Symmetry, byte for byte.
+- (sy2) x2 the button: after the colour, before Undo, the tools' size and line, the bar's own gap, the tooltip, off
+  at first, the icon resource's SHA-256; its look - off the ground of the unchecked tool beside it, on #7C6EF6 with
+  the icon's white lines on it (84 px). (sy3) a click and Shift+S switch it (the key taken by its shortcut, the
+  button following, the project changed each time, the Brush still the tool, on with the Eraser); control: S alone
+  is nobody's key. (sy4) the axis with the Brush and the Eraser only - its line's ends, purple along it in the
+  picture - none and no grip with Fill, Move, Camera, the button still lit, Fill's picture pixel for pixel the one
+  with Symmetry off; control: off, no purple. (sy5) a Brush stroke on both sides: ink at the pen and at its mirror
+  place, none between, the layer its own mirror image pixel for pixel, ONE step "Brush Stroke", Undo takes both,
+  Redo brings both; control: off, the mirror place empty. (sy6) LIVE: with the pen still down the picture is darker
+  at the mirror place too; control: off, at the pen's only. (sy7) the Eraser the same on a green band; control.
+  (sy8) x2 the grip: where it sits, the "axis" cursor kind and Qt::SizeHorCursor over it, the Brush's circle away
+  there and back 60 px beside it; dragged to 700 - the axis, its line, the project changed, nothing painted, no
+  step; a stroke then mirrored across 700 and not 960; the pen drags it too and paints nothing; a double-click
+  centres it; control: a press 40 px beside it leaves the axis. (sy9) a selection on the right limits both sides
+  (nothing at the pen outside it, ink at the mirror place inside it, one step); a locked layer takes nothing.
+  (sy10) the second circle: at the pointer's mirror place, its line fainter (alpha 104 against 191), none with Fill,
+  back with the Brush; control: off, one circle. (sy11) x2 on screen only (the thumbnail the same picture on and
+  off, no purple), the axis at 700 on the next panel and at canvas x 1100 on a panel with 400 px of its own left
+  margin; the manifest's "symmetry" {"axis":700,"on":true}. (sy12) the next launch: on, the button lit, 700,
+  nothing to save; control: a project that never used it, opened after it in the same window - off, centred, no
+  "symmetry" in its saved manifest. (sy13) the button is a click outside a panel: the open Colors panel closes
+  and Symmetry switches.
+- NEW CHECKS THAT FAILED FIRST, EACH READ FIRST (h_symmetry_run1.txt, 60 of 63): (sy2) ITS LOOK read 0 white px -
+  the bar's figIconPixmap tints every icon #CCCCCC; the code was changed (exportedIconPixmap), not the check.
+  (sy8) read "cross" beside the grip - right: the strokes' 24 px brush is 5.5 px on screen there, under the
+  circle's 6 px floor (batch G's rule); the check's SETUP was wrong, and now hovers with a 200 px brush (and asks
+  that the circle shows beside the grip). And an OLD check, (po5), below.
+- A CHANGED CHECK OF THE PANELS PASS, (po5) "A CLICK THAT ONLY PUTS A MENU AWAY COUNTS WHERE IT FALLS" - its text and
+  its condition unchanged, the SPOT it clicks in the panel changed. It failed on the batch H build, alone too
+  (h_panels_alone_run1.txt: "in the Library 0"). READ FIRST, with a temporary probe on both builds (removed, grep
+  "TEMP PROBE" 0; h_panels_probe.txt, p4_panels_probe.txt): the tools bar, one button wider, no longer fits where
+  the test window's saved place puts it beside its neighbours, and the placement moves it 90 px left (375 -> 285;
+  the Library, anchored to the Brush button, 405 -> 315); the open View menu covers x 114 .. 388, so the Library's
+  left edge spot (x 315) lay UNDER THE MENU and the click chose a menu entry - which closes the panel by the
+  panels' own rule. The code did what its rules say; the check no longer clicked "in the panel itself". OLD:
+      const QPointF libraryEdge = ownPoint(library, false, 0);
+      const QPointF colorsEdge = ownPoint(colors, false, 0);
+  NEW:
+      const QPointF libraryEdge = clearOwnPoint(library);
+      const QPointF colorsEdge = clearOwnPoint(colors);
+  where clearOwnPoint(panel) is the panel's own point at mid-height, from the left and then from the right, that
+  the open menu's frame (4 px round it) does not cover. POSITIVE CONTROL (new): "(po5) control (2026-11-22): the
+  click "in the panel itself" is one that only puts the menu away - with the View menu up, the spot is the panel's
+  own, clear of the menu (the pointer would find the panel there), and the click takes the menu away". And the
+  changed check still fails when the rule is broken: red run H2 below.
+- RED RUNS (symmetry slice, 64 checks; markers removed, grep "RED RUN" 0):
+  H1 (h_symmetry_REDRUN_H1.txt) - render ignores the mirror; the second circle put at the pointer: 7 FAIL - (sy1)
+  x2, (sy5), (sy7), (sy8) the stroke across 700, (sy9), (sy10); (sy6) passes (the live image is the canvas's).
+  H2 (h_symmetry_REDRUN_H2.txt) - no live mirror image; symmetryLive whatever the tool; the grip never under the
+  pointer; symmetryToJson empty; no Shift+S; the icon tinted like the bar's; a press that dismisses a popup counted
+  as on the canvas: 9 FAIL - (sy2) look, (sy3), (sy4), (sy6), (sy8) x2, (sy11) saved, (sy12), (po5) put-away.
+  NO RED RUN OF THEIR OWN: (sy11)'s first check (the thumbnail, the same place on every panel) and (sy13).
+- NOT CHECKED BY A CHECK, in the hand-test list: a shape held out of a stroke (QuickShape) with Symmetry on (its
+  mirror is carried by captureQuickShapeBrush / m_qsBaking / the preview job; holding the pen still needs time,
+  which a check may not depend on); a stroke across the axis (not exactly its own mirror image where the sides
+  overlap, by design); how drawing feels with Symmetry on.
+- THE DEV RECORDER's state now carries "symmetry" (the switch) and "symmetry.axis" (px from the frame's left edge),
+  so a recording says which strokes were mirrored and across what (MainWindow's state provider).
+QUICK CHECKS before the gate (the batch H tree, Release): the symmetry slice 64 / 0 (h_symmetry_run2.txt); the whole
+Lifecycle 1745 / 0 (h_lifecycle_whole_run1.txt, 865 s); Pixel Lock 13, Brush Lock 3, Size Lock 170, Quick Shape 19,
+Dev Recorder 46, Edge Lock 74, Camera 336, all 0 FAIL (h_pre_*.txt).
+GATE H (the tree: change A + batch H; fullgate_H.log, normal mode, 3017 s): Release and Debug, 0 FAILING FAMILIES; per
+build Lifecycle 1745 (1724 + (sy)'s 20 + the (po5) control), Camera 336, Brush Library 187, Size Lock 170, Edge Lock
+74, Dev Recorder 46, Quick Shape 19, Pixel Lock 13, Brush Lock 3, all 0 FAIL. The tree's twelve source files and
+the icon are app/build/_probe/split/sha_H_gate.txt (equal before and after the gate: sha_H_pregate.txt verified);
+exes sha_H_exes.txt.
+HAND-TEST EXE: C:\SankoTv\app\build\Release\SankoTV.exe built Nov 22 2026 14:51:10 (file 14:51:29) by the gate's clean
+build, git ef23feef6+dirty, sha256 f4b8d0dbc8f98f7e7175533451024acffd23b1a2ede1d194245cbd589c3bf5b5.
+COPY "TEST COPY - small pirate, symmetry and veil" (C:\SankoTV-TestCopies, 14:32; the original's hash 768789328a9e...
+/ 92 files / 2026-11-09 22:38:12 unchanged before and after). In it: Scene 1 panels 1-2 have margins on the left and
+right only (432 / 335 - where the user saw the flicker), Scene 3 panel 1 the same (795 / 874), Scene 4's panels a
+margin on the TOP only (489).
+ONE LIST: Documents\SankoTV-Design\handtest_H_symmetry_veil_panels.md, 39 steps - part 1 the veil while the view turns
+and zooms (steps 1-7, Scene 1 panel 1 and Scene 4 panel 1), part 2 Symmetry (8-27; step 25 saves the copy and
+restarts), part 3 the panel steps hand test PO did not cover (28-38: Undo and the zoom bar with a panel open, a press
+that slides off, Rename / Import / the Studio, the Eyedropper with the Colors panel open, E and G, View > Library
+and View > Colors by mouse, another menu entry; and the Symmetry button as a click outside).
+THREE THINGS TOLD TO THE USER AS THEIRS TO SAY: (1) the veil is the margin's own outline, not "paper with a hole"
+where the frame touches the paper's edge (PART 1); (2) the Symmetry icon is white in both states, brighter than its
+neighbours' grey when off; (3) the grip waits at the view's edge when the paper's top is out of view (not in H-1).
+NEXT, ON THE USER'S WORD ONLY: read the recordings of hand test H (system.txt first: Nov 22 2026 14:51:10,
+ef23feef6+dirty; the title bar "TEST COPY - small pirate, symmetry and veil"; the recorder's state now has
+"symmetry" and "symmetry.axis"); then commit A (View > Drawing Overlays with the veil fix - staged from splitP4 by
+git hash-object, its HANDOFF notes: PART 1, the section below and the CHANGE 2 block; gate P4 is its proof) and
+commit B (batch H, the rest; gate H is its proof), each with --cached --stat equal to --ignore-cr-at-eol; then
+Figma H-1 marked built. Batch I's proposal follows H.
+FIGMA: frame 657:735 renamed "H-1 — Symmetry: ... (batch H; APPROVED 2026-11-22 with your answers and your button
+659:817; built, waits for your hand test)"; nothing else in the file changed. The user's button "Symmetry (new)"
+659:817 / icon 659:818 were only read.
 
 ## STATUS 2026-11-22 (later; IN THE TREE, NOT COMMITTED): THE PANELS CHANGE IS ef23feef6, PUSHED; VIEW > DRAWING OVERLAYS STAYS UNCOMMITTED - POINT 4'S FLICKER IS ITS MARGIN VEIL, PROVEN ON THREE REAL BUILDS, REPORTED WITH A PLAN, NO CODE CHANGED; BATCH H: FIGMA FRAME H-1 (657:735) MADE - WAITING FOR THE USER ON ALL THREE
 COMMITTED: ef23feef6 "The Brush Library and the Colors panel close at a click outside them" (the section below is

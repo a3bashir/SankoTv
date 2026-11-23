@@ -7,6 +7,8 @@
 #include <QPainter>
 #include <QRandomGenerator>
 
+#include <cstring>
+
 namespace {
 thread_local GpuStampRenderer *g_workerRenderer = nullptr;
 
@@ -69,6 +71,109 @@ QImage cpuComposite(const SankoPaintHostAdapter::StrokeWork &work)
     }
     return rebuilt.compositeOnto(work.beforeRegion);
 }
+
+// ONE PASS of a stroke over work.beforeRegion, which lies at work.affectedRect: the GPU's
+// result when it gives one, the CPU's otherwise. (What render() always did; a function of
+// its own since batch H, whose mirrored stroke is a second pass.)
+QImage renderPass(const SankoPaintHostAdapter::StrokeWork &work,
+                  GpuStampRenderer::Result *renderer)
+{
+    GpuStampRenderer::Result result;
+    if (work.preferGpu) {
+        result = work.brush.dualBrushEnabled()
+            ? workerRenderer().renderDualStrokeForCommit(
+                work.canvasSize, work.brush, work.primaryStamps,
+                work.secondaryStamps, work.beforeRegion,
+                work.affectedRect.topLeft())
+            : workerRenderer().renderStrokeForCommit(
+                work.canvasSize, work.brush, work.primaryStamps,
+                work.beforeRegion, work.affectedRect.topLeft());
+    }
+    QImage after;
+    if (result.succeeded && !result.preparedLayer.isNull())
+        after = result.preparedLayer;
+    else {
+        after = cpuComposite(work);
+        result.usedCpuFallback = true;
+        result.cpuBackingCoherent = true;
+    }
+    if (after.size() != work.affectedRect.size())
+        after = after.copy(work.affectedRect);
+    *renderer = result;
+    return after;
+}
+
+// Rows copied as they are: both images Format_ARGB32, `from` laid at `at` in `into`.
+void blitArgb32(QImage &into, const QPoint &at, const QImage &from)
+{
+    if (into.format() != QImage::Format_ARGB32 || from.format() != QImage::Format_ARGB32)
+        return;
+    const QRect target = QRect(at, from.size()).intersected(into.rect());
+    if (target.isEmpty())
+        return;
+    for (int y = 0; y < target.height(); ++y)
+        std::memcpy(into.scanLine(target.top() + y) + target.left() * 4,
+                    from.constScanLine(target.top() - at.y() + y) + (target.left() - at.x()) * 4,
+                    size_t(target.width()) * 4);
+}
+
+// SYMMETRY (batch H, 2026-11-22; Figma H-1): THE STROKE, THEN ITS MIRROR IMAGE OVER IT, as
+// one after-region of work.affectedRect - one commit, so one Undo takes both sides away.
+//   1. The stroke over its own rect (work.strokeRect): the very pass a stroke without
+//      Symmetry is, from the same pixels - that side is what it would be without the mirror.
+//   2. The mirror image: the picture as it now is under the stroke's REFLECTION is flipped
+//      left-right, the same stroke is rendered over it, and the result flipped back. So the
+//      second side is the pixel-for-pixel mirror of what the stroke does to the mirrored
+//      picture - with every brush (grain, a tilted or textured tip, wet edges, smudge, a
+//      dual brush) and with the Eraser, and where the two sides overlap the mirror image
+//      lies over the stroke, as a stroke drawn second would. No stamp is rebuilt, no tip is
+//      flipped by hand: the engine draws the one stroke twice.
+// Only the part of the stroke whose reflection is on the canvas is mirrored (mirrorRects).
+// Rows are copied as they are (ARGB32, straight alpha - the engine's own formats convert to
+// it without loss), so a pixel neither pass touched keeps its bytes.
+QImage renderMirrored(const SankoPaintHostAdapter::StrokeWork &work,
+                      GpuStampRenderer::Result *renderer)
+{
+    const QRect whole = work.affectedRect;
+    const QRect canvas(QPoint(0, 0), work.canvasSize);
+    QImage current = work.beforeRegion.convertToFormat(QImage::Format_ARGB32);
+    SankoPaintHostAdapter::StrokeWork first = work;
+    first.mirror = false;
+    first.affectedRect = work.strokeRect;
+    first.beforeRegion = current.copy(work.strokeRect.translated(-whole.topLeft()));
+    const QImage afterStroke = renderPass(first, renderer).convertToFormat(QImage::Format_ARGB32);
+    blitArgb32(current, work.strokeRect.topLeft() - whole.topLeft(), afterStroke);
+
+    QRect mirrored, reflection;
+    SankoPaintHostAdapter::mirrorRects(work.strokeRect, work.mirrorAxis, canvas, &mirrored, &reflection);
+    if (reflection.isEmpty() || !whole.contains(reflection))
+        return current;
+    SankoPaintHostAdapter::StrokeWork second = first;
+    second.affectedRect = mirrored;
+    second.beforeRegion = current.copy(reflection.translated(-whole.topLeft())).flipped(Qt::Horizontal);
+    GpuStampRenderer::Result secondRenderer;
+    const QImage afterMirror = renderPass(second, &secondRenderer)
+                                   .convertToFormat(QImage::Format_ARGB32).flipped(Qt::Horizontal);
+    blitArgb32(current, reflection.topLeft() - whole.topLeft(), afterMirror);
+    if (secondRenderer.usedCpuFallback) // either pass on the CPU: the stroke was not all the GPU's
+        renderer->usedCpuFallback = true;
+    return current;
+}
+}
+
+void SankoPaintHostAdapter::mirrorRects(const QRect &strokeRect, int axis, const QRect &canvas,
+                                        QRect *mirrored, QRect *reflection)
+{
+    // What both sides of the axis have room for: a column further from the axis than that
+    // has no place on the canvas for its reflection.
+    const int room = qMin(axis - canvas.left(), canvas.left() + canvas.width() - axis);
+    const QRect part = room > 0
+        ? strokeRect.intersected(QRect(axis - room, canvas.top(), 2 * room, canvas.height()))
+        : QRect();
+    *mirrored = part;
+    *reflection = part.isEmpty()
+        ? QRect()
+        : QRect(2 * axis - (part.left() + part.width()), part.top(), part.width(), part.height());
 }
 
 SankoPaintHostAdapter::SankoPaintHostAdapter() = default;
@@ -143,6 +248,8 @@ void SankoPaintHostAdapter::beginStroke(const QString &key,
     // Either synchronizeLayer just recorded this, or it matched already;
     // publish() compares against it to detect mid-flight host edits.
     m_strokeHostCacheKey = hostPixels.cacheKey();
+    m_strokeMirror = m_mirror; // Symmetry as it is now, for the whole stroke (batch H)
+    m_strokeMirrorAxis = m_mirrorAxis;
     if (!seed)
         seed = QRandomGenerator::global()->generate64();
     // DECIMATED LIVE PREVIEW. The per-stamp CPU preview raster costs
@@ -247,6 +354,7 @@ void SankoPaintHostAdapter::cancelStroke()
     m_previewStroke.reset();
     m_previewScale = 1;
     m_activeLayerKey.clear();
+    m_strokeMirror = false;
 }
 
 SankoPaintHostAdapter::StrokeWork
@@ -268,6 +376,19 @@ SankoPaintHostAdapter::finishStrokeWork(bool preferGpu)
     const auto it = m_layers.constFind(work.layerKey);
     if (it != m_layers.cend()) {
         work.affectedRect = work.affectedRect.intersected(it->pixels.rect());
+        if (m_strokeMirror) {
+            // SYMMETRY (batch H): the commit's region also holds the stroke's mirror image
+            // (render). A stroke with no part to mirror - none of it on the canvas, or its
+            // reflection all off it - is an ordinary stroke.
+            QRect mirrored, reflection;
+            mirrorRects(work.affectedRect, m_strokeMirrorAxis, it->pixels.rect(), &mirrored, &reflection);
+            if (!reflection.isEmpty()) {
+                work.mirror = true;
+                work.mirrorAxis = m_strokeMirrorAxis;
+                work.strokeRect = work.affectedRect;
+                work.affectedRect = work.affectedRect.united(reflection);
+            }
+        }
         work.beforeRegion = it->pixels.read(work.affectedRect);
     }
     work.seed = m_primaryStroke->seed();
@@ -284,6 +405,7 @@ SankoPaintHostAdapter::finishStrokeWork(bool preferGpu)
     m_secondaryStroke.reset();
     m_previewStroke.reset();
     m_previewScale = 1;
+    m_strokeMirror = false;
     return work;
 }
 
@@ -298,25 +420,10 @@ SankoPaintHostAdapter::render(const StrokeWork &work)
         || work.primaryStamps.isEmpty())
         return out;
 
-    if (work.preferGpu) {
-        out.renderer = work.brush.dualBrushEnabled()
-            ? workerRenderer().renderDualStrokeForCommit(
-                work.canvasSize, work.brush, work.primaryStamps,
-                work.secondaryStamps, work.beforeRegion,
-                work.affectedRect.topLeft())
-            : workerRenderer().renderStrokeForCommit(
-                work.canvasSize, work.brush, work.primaryStamps,
-                work.beforeRegion, work.affectedRect.topLeft());
-    }
-    if (out.renderer.succeeded && !out.renderer.preparedLayer.isNull())
-        out.afterRegion = out.renderer.preparedLayer;
-    else {
-        out.afterRegion = cpuComposite(work);
-        out.renderer.usedCpuFallback = true;
-        out.renderer.cpuBackingCoherent = true;
-    }
-    if (out.afterRegion.size() != work.affectedRect.size())
-        out.afterRegion = out.afterRegion.copy(work.affectedRect);
+    // The stroke - and, with Symmetry, its mirror image over it (batch H) - as one region.
+    const bool mirrored = work.mirror && !work.strokeRect.isEmpty()
+        && work.affectedRect.contains(work.strokeRect);
+    out.afterRegion = mirrored ? renderMirrored(work, &out.renderer) : renderPass(work, &out.renderer);
     if (!work.selectionMask.isNull()) {
         const QImage coverage = work.selectionMask.copy(work.affectedRect)
             .convertToFormat(QImage::Format_Grayscale8);

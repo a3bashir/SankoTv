@@ -161,6 +161,37 @@ public:
     QPainterPath marginVeilForTest() const { return drawingToolVeil(shotCameraView()); }
     bool cameraFrameDrawnForTest() const { return shotCameraFrameShown(shotCameraView()); }
 
+    // SYMMETRY (batch H, 2026-11-22; Figma H-1 657:735, the user's answers of that day): a
+    // switch; while it is on, a Brush or Eraser stroke is painted a second time, mirrored
+    // across a vertical axis, live and as one undo step with the stroke.
+    //  - THE AXIS belongs to the paper (it turns, zooms, pans and flips with the view) and
+    //    to the SHOT: it is kept as whole px from the frame's left edge, so it is the same
+    //    place of the shot on every panel, whatever a panel's own margin. The middle of the
+    //    frame until it is moved, and again after a double-click on its grip. Saved with
+    //    the project (StoryboardPage::symmetryToJson), with the switch.
+    //  - THE GRIP, the round handle above the paper: a drag moves the axis left or right.
+    //  - ON SCREEN ONLY: the axis and the grip are drawn by the canvas's own paint, with the
+    //    Brush or the Eraser while the switch is on - never in a thumbnail, the preview, an
+    //    export or the camera's shot. With any other tool, in Stage mode and without a panel
+    //    nothing shows and nothing mirrors (symmetryLive); the switch stays as it is.
+    //  - A STROKE keeps the mirror it began with (the adapter's setMirrorAxis); a shape
+    //    held out of a stroke (QuickShape) keeps it until it is baked.
+    void setSymmetry(bool on);
+    bool symmetry() const { return m_symmetry; }
+    void setSymmetryAxis(int framePx); // whole px from the frame's left edge
+    void resetSymmetryAxis();          // the middle of the frame again
+    bool symmetryAxisMoved() const { return m_symmetryAxisSet; }
+    int symmetryAxis() const;          // px from the frame's left edge (the middle unless moved)
+    bool symmetryLive() const;         // the axis shows and a stroke begun now is mirrored
+    int symmetryAxisOnCanvas() const;  // canvas px on this panel's stage, kept on the paper
+    // The checks: the axis's line and the grip's centre, widget px (empty / null when not
+    // drawn); is the grip under a place; the second circle of the pointer.
+    QLineF symmetryAxisLineForTest() const { return symmetryLive() ? symmetryAxisLine() : QLineF(); }
+    QPointF symmetryGripForTest() const { return symmetryLive() ? symmetryGrip() : QPointF(); }
+    bool symmetryGripAtForTest(const QPointF &widgetPos) const { return symmetryGripAt(widgetPos); }
+    bool pointerMirrorShownForTest() const;
+    QPointF pointerMirrorCentreForTest() const;
+
     // THE SHOT CAMERA ON THE CANVAS (Phase 1B, 2026-10-25). The workspace
     // tells the canvas, through this provider, what the scene's camera is
     // at the playhead for the panel on the canvas; the canvas never holds a
@@ -795,6 +826,10 @@ signals:
     // A perspective VP was created, selected, or removed: the Perspective
     // Modifier toolbar re-syncs its per-VP sliders.
     void perspectiveEdited();
+    // SYMMETRY (batch H): the switch changed (whoever changed it); the axis was moved by
+    // its grip - a drag let go, or the double-click that centres it.
+    void symmetryChanged(bool on);
+    void symmetryAxisEdited();
     // A Camera-tool drag was released with the frame changed: the camera
     // the artist made (kind: ShotCameraEditKind). The workspace records it.
     void shotCameraEditRequested(const shotcam::CameraState &state, int kind);
@@ -1249,6 +1284,27 @@ private:
     QPointer<QWidget> m_pointerOutline;
     bool m_realPointerIgnoredForTest = false;
     qint64 m_pointerDeviceForTest = -1;
+
+    // SYMMETRY (batch H; see the public section).
+    bool m_symmetry = false;
+    bool m_symmetryAxisSet = false; // moved by its grip (else: the middle of the frame)
+    int m_symmetryAxis = 0;         // px from the frame's left edge, when moved
+    bool m_symmetryDrag = false;    // the grip is being dragged
+    int m_symmetryDragFrom = 0;     // the axis (frame px) when the drag began
+    bool m_symmetryDragWasSet = false;
+    int m_strokeMirrorAxis = -1;    // canvas px: the mirror of the stroke under way; -1 none
+    int m_qsMirrorAxis = -1;        // ...and of the shape held out of a stroke, until baked
+    bool m_qsBaking = false;        // replayQuickShape is feeding the bake's stroke
+    QLineF symmetryAxisLine() const;  // widget px: from the grip to past the paper's foot
+    QPointF symmetryGrip() const;     // widget px: the grip's centre
+    bool symmetryGripAt(const QPointF &widgetPos) const;
+    void paintSymmetry(QPainter &painter) const;
+    void updateSymmetryOverlay();     // repaint where the axis and the grip are
+    QRect mirroredRect(const QRect &canvasRect, int axis) const
+    {
+        return QRect(2 * axis - (canvasRect.left() + canvasRect.width()), canvasRect.top(),
+                     canvasRect.width(), canvasRect.height());
+    }
 
     // Brush engine state. Defaults mirror the initial settings-panel values.
     int m_brushToolSize = 25;        // dab diameter, canvas px

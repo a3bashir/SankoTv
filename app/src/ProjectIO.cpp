@@ -848,6 +848,10 @@ WriteResult projectToJson(const SaveData &data, const QString &projectFilePath,
     // The vanishing points in frame space (version 2, batch 6a).
     root[QStringLiteral("perspective")] =
         perspectiveMoved(data.perspective, -projectMargin.left(), -projectMargin.top());
+    // Symmetry's switch and axis (batch H), in frame space already. Only when there is
+    // something to say: without the key a reader gets "off, in the middle".
+    if (!data.symmetry.isEmpty())
+        root[QStringLiteral("symmetry")] = data.symmetry;
     // The tracks' lock / visibility / mute flags (TimelineTracks.h). Always
     // written; a reader without the key gets the defaults.
     root[QStringLiteral("tracks")] = data.tracks.toJson();
@@ -995,6 +999,7 @@ LoadedProject projectFromJson(const QJsonObject &root, const QString &folder,
         ? storedAudio
         : QDir::cleanPath(folder + QStringLiteral("/") + storedAudio);
     out.perspective = root.value(QStringLiteral("perspective")).toObject();
+    out.symmetry = root.value(QStringLiteral("symmetry")).toObject(); // batch H; absent: empty
     // No "tracks" key (every project saved before 2026-10-18): unlocked,
     // visible, unmuted - exactly what those projects were.
     out.tracks = TimelineTracks::fromJson(root.value(QStringLiteral("tracks")).toObject());

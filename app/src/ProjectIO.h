@@ -177,6 +177,10 @@ struct SaveData
     QString audioPath;
     bool audioLinked = false;
     QJsonObject perspective;
+    // SYMMETRY (batch H, 2026-11-22): the switch and the axis's place, as
+    // StoryboardPage::symmetryToJson gives them. Written as "symmetry" only when not
+    // empty - off, the axis in the frame's middle, is the manifest it always was.
+    QJsonObject symmetry;
     TimelineTracks tracks; // lock / visibility / mute, written under "tracks"
     // What the image files already hold (see ImageLedger): the save skips
     // every image whose file holds it, and records each one it writes.
@@ -301,6 +305,7 @@ struct LoadedProject
     QString audioPath;
     bool audioLinked = false;
     QJsonObject perspective;
+    QJsonObject symmetry; // "symmetry" as the file has it (batch H); empty when absent
     TimelineTracks tracks; // defaults (unlocked, visible, unmuted) when absent
     // Camera keys the file named that could not be read (a panel index or a
     // number out of range): left out, never guessed. 0 for every project

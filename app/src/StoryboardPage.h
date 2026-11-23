@@ -170,6 +170,13 @@ public:
     // to the canvas's PerspectiveTool; refreshes the settings panel on load).
     QJsonObject perspectiveToJson() const;
     void perspectiveFromJson(const QJsonObject &object);
+    // SYMMETRY (batch H, 2026-11-22): the switch and the axis's place, saved with the
+    // project as "symmetry" (empty - nothing written - when off and in the middle); and the
+    // switch as the artist sets it, from the tools bar's button or Shift+S.
+    QJsonObject symmetryToJson() const;
+    void symmetryFromJson(const QJsonObject &object);
+    void setSymmetryByUser(bool on);
+    void symmetryKey();
 
     // Bake any pending QuickShape vector (called before save/load, so the
     // temporary overlay is never silently dropped or left un-serialized).
@@ -858,6 +865,7 @@ private:
     ColorPanel *m_colorPanelBody = nullptr;
     QAbstractButton *m_colorSwatch = nullptr;
     QAbstractButton *m_colorPickButton = nullptr;
+    QAbstractButton *m_symmetryButton = nullptr; // the tools bar's Symmetry switch (batch H)
     QAction *m_colorsViewAction = nullptr;
     QScrollArea *m_colorsScroll = nullptr; // the body's frame: scrolls only when cut short
     // A click outside, a menu entry, a tool key, the other panel opening: closed, and

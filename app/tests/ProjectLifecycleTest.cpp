@@ -157,6 +157,8 @@
 #include <QtMath>
 #include <cstring>
 #include <QToolButton>
+#include <QPainterPath>
+#include <QSvgRenderer>
 #include <QtMath>
 #include <cmath>
 
@@ -27565,16 +27567,54 @@ void runPanelsClickAwayPass(const QString &scratch)
         });
         const bool openL = openLibrary();
         const bool menuL = openViewMenu();
-        const QPointF libraryEdge = ownPoint(library, false, 0);
+        // THE SPOT IN THE PANEL MUST BE CLEAR OF THE OPEN MENU (2026-11-22). Until then it was the
+        // panel's own leftmost point, whatever lay over it. Batch H made the tools bar one button
+        // wider; the bar, and the Library anchored to it, came to rest 90 px further left in this
+        // window, and the Library's left edge lay UNDER the open View menu: the click chose a menu
+        // entry, which closes the panel by its own rule - not the click this check is about.
+        // (Read first: h_panels_probe.txt, the spot under a QMenu; p4_panels_probe.txt, the same
+        // spot on the Library before batch H.)
+        auto clearOwnPoint = [&](QWidget *panel) {
+            const QWidget *menu = QApplication::activePopupWidget();
+            const QRect menuRect = menu ? menu->frameGeometry().adjusted(-4, -4, 4, 4) : QRect();
+            for (const bool fromRight : {false, true})
+                for (int inset = 0; inset < panel->width() - 2; inset += 4) {
+                    const QPointF spot = ownPoint(panel, fromRight, inset);
+                    if (spot.x() < 0)
+                        break;
+                    if (!menuRect.contains(panel->mapToGlobal(spot.toPoint())))
+                        return spot;
+                }
+            return QPointF(-1, -1);
+        };
+        auto onPanel = [](QWidget *panel, const QPointF &spot) { // what the pointer would find there
+            const QWidget *found = spot.x() >= 0 ? QApplication::widgetAt(panel->mapToGlobal(spot.toPoint())) : nullptr;
+            for (const QWidget *w = found; w; w = w->parentWidget())
+                if (w == panel)
+                    return true;
+            return false;
+        };
+        const QPointF libraryEdge = clearOwnPoint(library);
+        const bool libraryUnder = onPanel(library, libraryEdge) && QApplication::activePopupWidget();
         mouseClick(library, libraryEdge);
+        const bool libraryMenuGone = !QApplication::activePopupWidget();
         closePopups();
         const bool awayInLibrary = openL && menuL && libraryEdge.x() >= 0 && library->isVisible();
         const bool openC = openColors();
         const bool menuC = openViewMenu();
-        const QPointF colorsEdge = ownPoint(colors, false, 0);
+        const QPointF colorsEdge = clearOwnPoint(colors);
+        const bool colorsUnder = onPanel(colors, colorsEdge) && QApplication::activePopupWidget();
         mouseClick(colors, colorsEdge);
+        const bool colorsMenuGone = !QApplication::activePopupWidget();
         closePopups();
         const bool awayInColors = openC && menuC && colorsEdge.x() >= 0 && colors->isVisible();
+        check(QStringLiteral("(po5) control (2026-11-22): the click \"in the panel itself\" is one that only puts the "
+                             "menu away - with the View menu up, the spot is the panel's own, clear of the menu "
+                             "(the pointer would find the panel there), and the click takes the menu away"),
+              libraryUnder && libraryMenuGone && colorsUnder && colorsMenuGone,
+              QStringLiteral("Library: its own spot under the pointer, menu up %1, menu gone after %2; Colors panel: "
+                             "%3, %4")
+                  .arg(libraryUnder).arg(libraryMenuGone).arg(colorsUnder).arg(colorsMenuGone));
         check(QStringLiteral("(po5) A CLICK THAT ONLY PUTS A MENU AWAY COUNTS WHERE IT FALLS (2026-11-21): on the "
                              "canvas it closes each panel; on the menu bar it closes neither; in the panel itself "
                              "the panel stays"),
@@ -28767,6 +28807,1222 @@ void runDrawingOverlaysPass(const QString &scratch)
                              "the paper's, where the path subtraction was right too) reads right by the same "
                              "measures, at the same views"),
               right(control), report(control));
+        r.window.markCleanForTest();
+    }
+}
+
+// SYMMETRY (batch H, 2026-11-22; Figma H-1 657:735 with the user's answers of that day): a
+// switch on the tools bar after the colour, and Shift+S; a vertical axis that belongs to the
+// paper and to the shot, moved by its grip, saved with the project; a Brush or Eraser stroke
+// painted a second time, mirrored, live and in the stroke's own commit - one undo step; a
+// second, lighter circle where the mirrored stroke will land.
+void runSymmetryPass(const QString &scratch)
+{
+    using namespace workspace;
+    out() << "--- (sy) Symmetry: the switch, the axis and its grip, a mirrored stroke, one undo step (batch H) ---"
+          << Qt::endl;
+    const QString dir = scratch + QStringLiteral("/symmetry");
+    QDir(dir).removeRecursively();
+    QDir().mkpath(dir);
+
+    // --- (sy1) THE ENGINE, no window: the stroke, then its mirror image, in one commit -----------
+    {
+        const QSize size(480, 240);
+        // A picture that is NOT its own mirror image: solid red on the left half, see-through
+        // blue bars on the right.
+        QImage base(size, QImage::Format_ARGB32);
+        base.fill(Qt::transparent);
+        {
+            QPainter p(&base);
+            p.fillRect(QRect(0, 0, 240, 240), QColor(200, 40, 40));
+            for (int i = 0; i < 6; ++i)
+                p.fillRect(QRect(250 + 36 * i, 20, 18, 200), QColor(30, 60, 200, 160));
+        }
+        struct Drawn
+        {
+            bool ok = false;
+            QImage picture; // the whole picture after the stroke, ARGB32
+            SankoPaintHostAdapter::StrokeResult result;
+        };
+        // Rows copied as they are (no painter between the engine's bytes and the comparison).
+        auto pasted = [](const QImage &under, const QRect &at, const QImage &region) {
+            QImage whole = under.convertToFormat(QImage::Format_ARGB32);
+            const QImage piece = region.convertToFormat(QImage::Format_ARGB32);
+            const QRect target = at.intersected(whole.rect());
+            for (int y = 0; y < target.height(); ++y)
+                std::memcpy(whole.scanLine(target.top() + y) + target.left() * 4,
+                            piece.constScanLine(target.top() - at.top() + y) + (target.left() - at.left()) * 4,
+                            size_t(target.width()) * 4);
+            return whole;
+        };
+        // One stroke of a plain dark brush, down the left half; the same points, pressure and
+        // seed every time; on the CPU (no GPU on this thread).
+        auto draw = [&](const QImage &picture, int axis, SankoPaintHostAdapter *engine) {
+            Drawn drawn;
+            QImage host = picture.convertToFormat(QImage::Format_ARGB32);
+            ::Brush brush;
+            brush.setSize(18);
+            brush.setColor(QColor(10, 10, 10));
+            engine->setBrush(brush);
+            if (axis >= 0)
+                engine->setMirrorAxis(axis);
+            else
+                engine->clearMirrorAxis();
+            auto at = [](int i) {
+                StrokePoint point;
+                point.position = QPointF(60.0 + 9.0 * i, 70.0 + 6.0 * i);
+                point.pressure = 1.0;
+                point.timestamp = quint64(1 + 8 * i);
+                return point;
+            };
+            engine->beginStroke(QStringLiteral("symmetry:check"), host, at(0), 7, false);
+            for (int i = 1; i <= 10; ++i)
+                engine->appendPoint(at(i));
+            SankoPaintHostAdapter::StrokeWork work = engine->finishStrokeWork(false);
+            drawn.result = SankoPaintHostAdapter::render(work);
+            drawn.ok = drawn.result.succeeded;
+            drawn.picture = drawn.ok ? pasted(picture, drawn.result.affectedRect, drawn.result.afterRegion)
+                                     : picture.convertToFormat(QImage::Format_ARGB32);
+            return drawn;
+        };
+        auto differing = [](const QImage &a, const QImage &b, const QRect &where) {
+            if (a.size() != b.size())
+                return -1;
+            int n = 0;
+            for (int y = where.top(); y <= where.bottom(); ++y)
+                for (int x = where.left(); x <= where.right(); ++x)
+                    n += a.pixel(x, y) != b.pixel(x, y) ? 1 : 0;
+            return n;
+        };
+        const QRect leftHalf(0, 0, 240, 240), rightHalf(240, 0, 240, 240), all(0, 0, 480, 240);
+        const QImage base32 = base.convertToFormat(QImage::Format_ARGB32);
+        SankoPaintHostAdapter plainEngine, mirrorEngine, flippedEngine, edgeEngine;
+        const Drawn plain = draw(base, -1, &plainEngine);
+        const Drawn mirrored = draw(base, 240, &mirrorEngine);
+        // The mirror image by its definition, made with no Symmetry at all: the same stroke
+        // over the picture flipped left-right, flipped back.
+        const Drawn onFlipped = draw(base.flipped(Qt::Horizontal), -1, &flippedEngine);
+        const QImage byHand = onFlipped.picture.flipped(Qt::Horizontal);
+        const int inkLeft = differing(plain.picture, base32, leftHalf);
+        const int plainRight = differing(plain.picture, base32, rightHalf);
+        const int ownSide = differing(mirrored.picture, plain.picture, leftHalf);
+        const int inkRight = differing(mirrored.picture, base32, rightHalf);
+        const int mirrorSide = differing(mirrored.picture, byHand, rightHalf);
+        check(QStringLiteral("(sy1) THE ENGINE MIRRORS A STROKE IN ITS OWN COMMIT (a stroke down the left half of a "
+                             "480 x 240 picture that is not its own mirror image, the axis at 240): the stroke's "
+                             "own side is byte for byte the stroke without Symmetry; the other side is, pixel "
+                             "for pixel, the mirror image of what that stroke does to the mirrored picture (made "
+                             "by hand: the same stroke over the picture flipped, flipped back); control: without "
+                             "Symmetry the right half is untouched"),
+              plain.ok && mirrored.ok && onFlipped.ok && inkLeft > 200 && plainRight == 0 && ownSide == 0
+                  && inkRight > 200 && mirrorSide == 0,
+              QStringLiteral("without: %1 px changed on the left, %2 on the right; with: own side differs from "
+                             "that at %3 px, %4 px changed on the right, differing from the hand-made mirror at "
+                             "%5 px")
+                  .arg(inkLeft).arg(plainRight).arg(ownSide).arg(inkRight).arg(mirrorSide));
+        // One commit: its region holds both sides; undone, the picture is the first, byte for
+        // byte; redone, the mirrored one.
+        QImage host = base32.copy();
+        const bool appliedAfter = mirrored.ok
+            && mirrorEngine.applyCommit(QStringLiteral("symmetry:check"), mirrored.result.commit, true, host,
+                                        BrushCoherenceTrigger::UndoRedo);
+        const int afterDiffers = differing(host, mirrored.picture, all);
+        const bool appliedBefore = mirrored.ok
+            && mirrorEngine.applyCommit(QStringLiteral("symmetry:check"), mirrored.result.commit, false, host,
+                                        BrushCoherenceTrigger::UndoRedo);
+        const int beforeDiffers = differing(host, base32, all);
+        const QRect commitRect = mirrored.result.commit.affectedRect;
+        check(QStringLiteral("(sy1) BOTH SIDES ARE ONE COMMIT - one step to undo: the commit's region reaches both "
+                             "halves; applied, the picture is the mirrored one; taken back, it is the first "
+                             "picture, byte for byte"),
+              appliedAfter && appliedBefore && afterDiffers == 0 && beforeDiffers == 0
+                  && commitRect.left() < 200 && commitRect.right() > 280,
+              QStringLiteral("commit x %1 .. %2; applied: %3 px differ from the mirrored picture; taken back: %4 "
+                             "px differ from the first")
+                  .arg(commitRect.left()).arg(commitRect.right()).arg(afterDiffers).arg(beforeDiffers));
+        // An axis with no room on one side mirrors nothing: an ordinary stroke.
+        const Drawn atLeftEdge = draw(base, 0, &edgeEngine);
+        const Drawn atRightEdge = draw(base, 480, &edgeEngine);
+        check(QStringLiteral("(sy1) control: AN AXIS ON THE PAPER'S EDGE MIRRORS NOTHING (x = 0, x = 480): the "
+                             "picture is the stroke without Symmetry, byte for byte - only what has a place on "
+                             "the paper for its reflection is mirrored"),
+              atLeftEdge.ok && atRightEdge.ok && differing(atLeftEdge.picture, plain.picture, all) == 0
+                  && differing(atRightEdge.picture, plain.picture, all) == 0,
+              QStringLiteral("differing: %1 px at x = 0, %2 px at x = 480")
+                  .arg(differing(atLeftEdge.picture, plain.picture, all))
+                  .arg(differing(atRightEdge.picture, plain.picture, all)));
+    }
+
+    // --- the app -----------------------------------------------------------------------------------
+    const QString project = writeProject(dir, QStringLiteral("Mirror"), QSize(1920, 1080), 24, 1, 3);
+    const QString otherProject = writeProject(dir, QStringLiteral("Plain"), QSize(1920, 1080), 24, 1, 2);
+    auto ptText = [](const QPointF &p) { return QStringLiteral("(%1, %2)").arg(p.x(), 0, 'f', 1).arg(p.y(), 0, 'f', 1); };
+    {
+        auto rig = std::make_unique<Rig>(project);
+        Rig &r = *rig;
+        check(QStringLiteral("(sy) the workspace opened"), r.ok);
+        if (!r.ok)
+            return;
+        QUndoStack *stack = r.window.undoStackForTest();
+        Scene *scene = r.window.scenesForTest().value(0);
+        QWindow *win = r.window.windowHandle();
+        auto *symmetryButton = r.storyboard->findChild<QPushButton *>(QStringLiteral("toolSymmetry"));
+        auto *brushButton = r.storyboard->findChild<QPushButton *>(QStringLiteral("toolBrush"));
+        auto *eraserButton = r.storyboard->findChild<QPushButton *>(QStringLiteral("toolEraser"));
+        auto *fillButton = r.storyboard->findChild<QPushButton *>(QStringLiteral("toolFill"));
+        auto *moveButton = r.storyboard->findChild<QPushButton *>(QStringLiteral("toolMove"));
+        auto *swatch = r.storyboard->findChild<QAbstractButton *>(QStringLiteral("colorSwatch"));
+        auto *undoButton = r.storyboard->findChild<QPushButton *>(QStringLiteral("toolbarUndo"));
+        if (!stack || !scene || scene->panels.size() != 3 || !win || !symmetryButton || !brushButton
+            || !eraserButton || !fillButton || !moveButton || !swatch || !undoButton) {
+            check(QStringLiteral("(sy) found the history, the scene's three panels, the window, the Symmetry "
+                                 "button, the tools' buttons, the colour and Undo"), false);
+            return;
+        }
+        // Flat paper on every panel: what a stroke leaves is all the active layer holds.
+        for (Panel *p : std::as_const(scene->panels))
+            for (Layer &layer : p->layers)
+                if (layer.type != QLatin1String("background") && !layer.image.isNull())
+                    layer.image.fill(Qt::transparent);
+        clickThumb(r, 1);
+        pump(150);
+        clickThumb(r, 0);
+        pump(250);
+        constexpr qint64 kPen = 7014;
+        r.storyboard->setPointerDeviceForTest(kPen);
+        auto penAt = [&](const QPointF &onCanvas, Qt::MouseButtons buttons, qreal pressure) {
+            const QPointF global = r.canvas->mapToGlobal(onCanvas);
+            const QPointF local = global - QPointF(win->mapToGlobal(QPoint(0, 0)));
+            QWindowSystemInterface::handleTabletEvent(win, local, global, int(QInputDevice::DeviceType::Stylus),
+                                                      int(QPointingDevice::PointerType::Pen), buttons, pressure,
+                                                      0, 0, 0, 0, 0, kPen);
+            QCoreApplication::processEvents();
+        };
+        auto hover = [&](const QPointF &onCanvas) {
+            penAt(onCanvas - QPointF(6.0, 0.0), Qt::NoButton, 0.0);
+            penAt(onCanvas, Qt::NoButton, 0.0);
+        };
+        auto pick = [&](QPushButton *toolButton) { // as a tool key picks it: checked, no click
+            toolButton->setChecked(true);
+            pump(60);
+        };
+        pick(brushButton);
+        r.canvas->setBrushToolSize(24);
+        const double s = qMin(0.25, qMin(0.6 * r.canvas->width() / 1920.0, 0.6 * r.canvas->height() / 1080.0));
+        const QPointF mid(r.canvas->width() / 2.0, r.canvas->height() / 2.0);
+        r.canvas->placeViewForTest(s, QPointF(960, 540), mid);
+        pump(80);
+        const QTransform T = r.canvas->viewTransformForTest();
+        Panel *p0 = r.storyboard->currentPanelForTest();
+        if (!p0 || !p0->activeLayer() || p0 != scene->panels.at(0)) {
+            check(QStringLiteral("(sy) panel 1 is on the canvas, with an active layer"), false);
+            return;
+        }
+        auto alphaAt = [&](const Panel *panel, int x, int y) {
+            const Layer *layer = panel->activeLayer();
+            return layer && layer->image.rect().contains(x, y) ? qAlpha(layer->image.pixel(x, y)) : -1;
+        };
+        // Pixels of the active layer that are not their own mirror image across a column.
+        auto unmirrored = [&](const Panel *panel, int axis) {
+            const Layer *layer = panel->activeLayer();
+            if (!layer)
+                return -1;
+            const QImage &image = layer->image;
+            int n = 0;
+            for (int y = 0; y < image.height(); ++y)
+                for (int x = 0; x < axis; ++x) {
+                    const int other = 2 * axis - 1 - x;
+                    if (other < image.width())
+                        n += image.pixel(x, y) != image.pixel(other, y) ? 1 : 0;
+                }
+            return n;
+        };
+        auto inked = [&](const Panel *panel) {
+            const Layer *layer = panel->activeLayer();
+            int n = 0;
+            if (layer)
+                for (int y = 0; y < layer->image.height(); ++y) {
+                    const QRgb *row = reinterpret_cast<const QRgb *>(layer->image.constScanLine(y));
+                    for (int x = 0; x < layer->image.width(); ++x)
+                        n += qAlpha(row[x]) > 0 ? 1 : 0;
+                }
+            return n;
+        };
+        // Until the stroke's commit has landed (it is made on the paint thread).
+        auto settle = [&] {
+            for (int i = 0; i < 200 && r.canvas->paintCommitPendingForTest(); ++i)
+                pump(25);
+            pump(60);
+        };
+        auto strokeDown = [&](const QPointF &from, const QPointF &to) { // pressed and drawn, not let go
+            const QTransform t = r.canvas->viewTransformForTest();
+            sendMouse(r.canvas, QEvent::MouseButtonPress, t.map(from), Qt::LeftButton);
+            for (int i = 1; i <= 8; ++i)
+                sendMouse(r.canvas, QEvent::MouseMove, t.map(from + (to - from) * (i / 8.0)), Qt::LeftButton);
+        };
+        auto strokeUp = [&](const QPointF &to) {
+            sendMouse(r.canvas, QEvent::MouseButtonRelease, r.canvas->viewTransformForTest().map(to), Qt::LeftButton);
+            settle();
+        };
+        auto stroke = [&](const QPointF &from, const QPointF &to) {
+            strokeDown(from, to);
+            strokeUp(to);
+        };
+        auto picture = [&] {
+            pump(40);
+            return camtool::grabCanvas(r.canvas).convertToFormat(QImage::Format_ARGB32);
+        };
+        auto differing = [](const QImage &a, const QImage &b) {
+            if (a.size() != b.size())
+                return -1;
+            int n = 0;
+            for (int y = 0; y < a.height(); ++y)
+                for (int x = 0; x < a.width(); ++x)
+                    n += a.pixel(x, y) != b.pixel(x, y) ? 1 : 0;
+            return n;
+        };
+        // The axis's purple (#7c6ef6) as a 1 px antialiased line leaves it on white paper: bluer
+        // than it is red or green by a clear margin, whichever share of the pixel the line has.
+        auto isPurple = [](QRgb c) {
+            return qBlue(c) >= 0xc0 && qBlue(c) - qRed(c) >= 40 && qBlue(c) - qGreen(c) >= 40;
+        };
+        // The share of the axis's own line, on the paper, that the picture draws purple.
+        auto purpleOnAxis = [&](const QImage &g, double canvasX) {
+            const QTransform t = r.canvas->viewTransformForTest();
+            int hit = 0, read = 0;
+            for (int y = 20; y <= 1060; y += 8) {
+                const QPoint w = t.map(QPointF(canvasX, y)).toPoint();
+                bool purple = false;
+                for (int dx = -1; dx <= 1 && !purple; ++dx)
+                    purple = g.rect().contains(w + QPoint(dx, 0)) && isPurple(g.pixel(w + QPoint(dx, 0)));
+                ++read;
+                hit += purple ? 1 : 0;
+            }
+            return read ? 100 * hit / read : 0;
+        };
+        auto shortcut = [&](int key, Qt::KeyboardModifiers mods) {
+            const bool claimed = startWindowKeys::press(&r.window, key, mods);
+            pump(80);
+            return claimed;
+        };
+
+        // --- (sy2) the switch on the tools bar ------------------------------------------------------
+        {
+            const QString tip = QStringLiteral("<b>Symmetry (Shift+S)</b> | Mirror Brush and Eraser strokes across the axis.");
+            // (2026-11-22, the user's change 1 after hand test H: BEFORE the colour - it was after it.)
+            const bool placed = symmetryButton->parentWidget() == swatch->parentWidget()
+                && symmetryButton->parentWidget() == undoButton->parentWidget() && moveButton->x() < symmetryButton->x()
+                && symmetryButton->x() < swatch->x() && swatch->x() < undoButton->x()
+                && symmetryButton->size() == brushButton->size() && symmetryButton->y() == brushButton->y();
+            // Its gaps are the bar's own, the one between two tools: from the Move tool, and to the colour.
+            const int gapBefore = symmetryButton->x() - (moveButton->x() + moveButton->width());
+            const int gapAfter = swatch->x() - (symmetryButton->x() + symmetryButton->width());
+            const int barGap = eraserButton->x() - (brushButton->x() + brushButton->width());
+            // The whole bar, left to right, by its buttons' names.
+            QList<QAbstractButton *> onBar =
+                symmetryButton->parentWidget()->findChildren<QAbstractButton *>(QString(), Qt::FindDirectChildrenOnly);
+            std::sort(onBar.begin(), onBar.end(), [](QAbstractButton *a, QAbstractButton *b) { return a->x() < b->x(); });
+            QStringList order;
+            for (QAbstractButton *b : onBar)
+                if (b->isVisible() && !b->objectName().isEmpty())
+                    order.append(b->objectName());
+            const QString orderRead = order.join(QStringLiteral(", "));
+            QFile exported(QStringLiteral(":/icons/symmetry.svg"));
+            const QByteArray iconBytes = exported.open(QIODevice::ReadOnly) ? exported.readAll() : QByteArray();
+            const QByteArray iconHash = iconBytes.isEmpty()
+                ? QByteArray()
+                : QCryptographicHash::hash(iconBytes, QCryptographicHash::Sha256).toHex();
+            // A button's look four times its size, so that the icon's lines have pixels of full ink
+            // (at the bar's own size a line is all edge).
+            auto look4 = [](QWidget *w) {
+                QImage g(w->size() * 4, QImage::Format_ARGB32_Premultiplied);
+                g.setDevicePixelRatio(4.0);
+                g.fill(Qt::transparent);
+                w->render(&g);
+                return g.convertToFormat(QImage::Format_ARGB32);
+            };
+            auto lightest = [](const QImage &g) {
+                int best = -1;
+                QRgb at = 0;
+                for (int y = 0; y < g.height(); ++y)
+                    for (int x = 0; x < g.width(); ++x) {
+                        const QRgb c = g.pixel(x, y);
+                        const int light = qRed(c) + qGreen(c) + qBlue(c);
+                        if (qAlpha(c) == 255 && light > best) {
+                            best = light;
+                            at = c;
+                        }
+                    }
+                return QColor(at);
+            };
+            auto countOf = [](const QImage &g, const QColor &colour) {
+                int n = 0;
+                for (int y = 0; y < g.height(); ++y)
+                    for (int x = 0; x < g.width(); ++x)
+                        n += QColor(g.pixel(x, y)) == colour ? 1 : 0;
+                return n;
+            };
+            const QColor kGrey(0xcc, 0xcc, 0xcc), kWhite(0xff, 0xff, 0xff), kPurple(0x7c, 0x6e, 0xf6);
+            // The tools' grey, to the level or two that laying a near-solid pixel over the purple
+            // rounds it by (Fill's reads #cccccd there); white is three or more levels off it.
+            auto isGrey = [](const QColor &c) {
+                return qAbs(c.red() - 0xcc) <= 2 && qAbs(c.green() - 0xcc) <= 2 && qAbs(c.blue() - 0xcc) <= 2;
+            };
+            const QPoint ground(60, 8); // in the button's rounded ground, above the icon (4x)
+            // Off: plain, as the unchecked tool beside it, the icon in the tools' grey.
+            const QImage offLook = look4(symmetryButton);
+            const QImage fillOff = look4(fillButton);
+            const QColor offGround(offLook.pixel(ground)), neighbour(fillOff.pixel(ground));
+            const QColor offInk = lightest(offLook), fillInk = lightest(fillOff);
+            const int offFull = countOf(offLook, kGrey);
+            // On: the bar's purple under the icon, the icon white as the user drew it.
+            symmetryButton->setChecked(true);
+            pump(30);
+            const QImage onLook = look4(symmetryButton);
+            const QColor onGround(onLook.pixel(ground));
+            const QColor onInk = lightest(onLook);
+            const int onFull = countOf(onLook, kWhite), onGrey = countOf(onLook, kGrey);
+            symmetryButton->setChecked(false);
+            pump(30);
+            // Control: a tool's icon is the grey switched off AND picked - the tools' never change.
+            pick(fillButton);
+            const QImage fillOn = look4(fillButton);
+            const QColor fillOnInk = lightest(fillOn), fillOnGround(fillOn.pixel(ground));
+            pick(brushButton);
+            check(QStringLiteral("(sy2) THE SYMMETRY BUTTON IS ON THE TOOLS BAR, BEFORE THE COLOUR (your change 1 of "
+                                 "2026-11-22) - after the Move tool, then the colour, then Undo -, the size of the "
+                                 "tools' buttons and on their line, the bar's own gap on both sides; its tooltip names "
+                                 "Shift+S; it starts switched off; its icon is your drawing with the heavier lines "
+                                 "of 2026-11-23, as exported from the copy beside your frame (Figma 670:736; the "
+                                 "file's SHA-256)"),
+                  placed && gapBefore == barGap && gapAfter == barGap && symmetryButton->toolTip() == tip
+                      && symmetryButton->isCheckable() && !symmetryButton->isChecked() && !r.canvas->symmetry()
+                      && iconHash == QByteArray("912558ffa0303fae103dbb26a62741abc3a0a8720248acfb2474c5991c4fa70c"),
+                  QStringLiteral("x: Move %1, Symmetry %2, colour %3, Undo %4; gaps %5 and %6 (the bar's %7); size %8 x "
+                                 "%9; tip \"%10\"; icon %11")
+                      .arg(moveButton->x()).arg(symmetryButton->x()).arg(swatch->x()).arg(undoButton->x())
+                      .arg(gapBefore).arg(gapAfter).arg(barGap).arg(symmetryButton->width())
+                      .arg(symmetryButton->height()).arg(symmetryButton->toolTip(), QString::fromLatin1(iconHash.left(12))));
+            check(QStringLiteral("(sy2) control (2026-11-22): the whole bar read left to right by its buttons' names - "
+                                 "Brush, Eraser, Fill, Select, Move, Symmetry, the colour, Undo, Redo; the colour is "
+                                 "no longer before Symmetry"),
+                  orderRead == QStringLiteral("toolBrush, toolEraser, toolFill, toolSelect, toolMove, toolSymmetry, "
+                                              "colorSwatch, toolbarUndo, toolbarRedo"),
+                  orderRead);
+            check(QStringLiteral("(sy2) ITS LOOK (your change 2 of 2026-11-22; switched on, your frame 659:817): "
+                                 "switched off it is plain - the ground of the unchecked tool beside it - and its icon "
+                                 "is the light grey of its neighbours' icons, #CCCCCC, nothing in it lighter; switched "
+                                 "on, the bar's purple #7C6EF6 lies under the icon, now white as you drew it, no grey "
+                                 "left; the same drawing in both (as many pixels of full ink)"),
+                  offGround == neighbour && isGrey(offInk) && isGrey(fillInk) && onGround == kPurple && onInk == kWhite
+                      && offFull > 0 && onFull == offFull && onGrey == 0,
+                  QStringLiteral("off: ground %1 (Fill beside it %2), lightest %3 (Fill's %4), %5 px of it; on: ground "
+                                 "%6, lightest %7, %8 px of it, %9 px of the grey")
+                      .arg(offGround.name(), neighbour.name(), offInk.name(), fillInk.name()).arg(offFull)
+                      .arg(onGround.name(), onInk.name()).arg(onFull).arg(onGrey));
+            check(QStringLiteral("(sy2) control (2026-11-22): the same reading on a tool - Fill's icon is the grey "
+                                 "#CCCCCC switched off and picked alike, on the purple too (the tools' icons never "
+                                 "change); only Symmetry's turns white"),
+                  isGrey(fillInk) && isGrey(fillOnInk) && fillOnGround == kPurple && onInk == kWhite && !isGrey(onInk),
+                  QStringLiteral("Fill off %1, picked %2 on %3; Symmetry on %4")
+                      .arg(fillInk.name(), fillOnInk.name(), fillOnGround.name(), onInk.name()));
+
+            // --- ITS LINES' WEIGHT (after hand test H2, 2026-11-23) ---------------------------------
+            // "The Symmetry icon's outline is much thinner than the other toolbar icons. Measure the
+            // stroke weight of its neighbours on the tools bar (Brush, Eraser, Fill, Select, Move) at
+            // the size they're shown, and give the Symmetry icon the same stroke weight, keeping its
+            // shape, proportions and colours." Measured that day: Brush, Eraser and Fill 1.0 px;
+            // Select, Move, Undo and Redo 1.2 px; Symmetry 0.86 px, its dashed axis 0.71 px. It
+            // now has Move's 1.2 px, the neighbour beside it and a drawing of lines as it is.
+            // THE MEASURE, with no waiting in it: an icon is drawn the way the bar draws it - its
+            // file, centred in the button's 30 x 30 at its size - but 32 times larger, so that a line
+            // is some forty pixels across. Ink is what is at least half opaque. Every ink pixel's
+            // exact distance to the nearest pixel that is not ink is taken (two passes over the
+            // picture), and the ridge of that distance is the lines' middles: a line's weight there
+            // is (2 x distance - 0.5) / 32, in the bar's own pixels.
+            constexpr int kTimes = 32;
+            auto blankSheet = []() {
+                QImage g(30 * kTimes, 30 * kTimes, QImage::Format_ARGB32_Premultiplied);
+                g.fill(Qt::transparent);
+                return g;
+            };
+            auto drawnIcon = [&](const QString &file, QSizeF size) {
+                QImage g = blankSheet();
+                QPainter p(&g);
+                p.setRenderHint(QPainter::Antialiasing, true);
+                p.scale(kTimes, kTimes);
+                QSvgRenderer svg(file);
+                svg.render(&p, QRectF((30.0 - size.width()) / 2.0, (30.0 - size.height()) / 2.0, size.width(),
+                                      size.height()));
+                p.end();
+                return g;
+            };
+            // Lines of a KNOWN weight through the same steps: straight, slanted and a broad curve;
+            // or (tight) curves as tight as the wings'.
+            auto drawnLines = [&](qreal weight, bool tight) {
+                QImage g = blankSheet();
+                QPainter p(&g);
+                p.setRenderHint(QPainter::Antialiasing, true);
+                p.scale(kTimes, kTimes);
+                p.setPen(QPen(Qt::white, weight, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+                QPainterPath path;
+                if (tight) {
+                    path.addEllipse(QPointF(8, 8), 3.5, 3.5);
+                    path.addEllipse(QPointF(21, 9), 6.0, 4.0);
+                    path.moveTo(5, 22);
+                    path.cubicTo(9, 14, 13, 30, 16, 20);
+                } else {
+                    path.moveTo(4, 6);
+                    path.lineTo(26, 6);
+                    path.moveTo(4, 10);
+                    path.lineTo(24, 17);
+                    path.moveTo(5, 25);
+                    path.cubicTo(9, 14, 21, 30, 26, 20);
+                }
+                p.drawPath(path);
+                p.end();
+                return g;
+            };
+            // Every reading along the lines' middles, lightest first.
+            auto lineWeights = [&](const QImage &g) {
+                const int w = g.width(), h = g.height();
+                const double notYet = 1e12; // an ink pixel before its distance is known
+                QList<double> sheet(qsizetype(w) * h);
+                double *d = sheet.data();
+                for (int y = 0; y < h; ++y) {
+                    const QRgb *row = reinterpret_cast<const QRgb *>(g.constScanLine(y));
+                    for (int x = 0; x < w; ++x)
+                        d[qsizetype(y) * w + x] = qAlpha(row[x]) >= 128 ? notYet : 0.0;
+                }
+                // One row or column of the exact squared distance: the lower envelope of parabolas.
+                const int longest = qMax(w, h);
+                QList<double> fList(longest), outList(longest), zList(longest + 1);
+                QList<int> vList(longest);
+                double *f = fList.data(), *out = outList.data(), *z = zList.data();
+                int *v = vList.data();
+                auto pass = [&](int n) {
+                    int k = 0;
+                    v[0] = 0;
+                    z[0] = -1e20;
+                    z[1] = 1e20;
+                    for (int q = 1; q < n; ++q) {
+                        double s = 0.0;
+                        for (;;) {
+                            s = ((f[q] + double(q) * q) - (f[v[k]] + double(v[k]) * v[k])) / (2.0 * q - 2.0 * v[k]);
+                            if (s <= z[k] && k > 0)
+                                --k;
+                            else
+                                break;
+                        }
+                        ++k;
+                        v[k] = q;
+                        z[k] = s;
+                        z[k + 1] = 1e20;
+                    }
+                    k = 0;
+                    for (int q = 0; q < n; ++q) {
+                        while (z[k + 1] < q)
+                            ++k;
+                        out[q] = double(q - v[k]) * (q - v[k]) + f[v[k]];
+                    }
+                };
+                for (int x = 0; x < w; ++x) {
+                    for (int y = 0; y < h; ++y)
+                        f[y] = d[qsizetype(y) * w + x];
+                    pass(h);
+                    for (int y = 0; y < h; ++y)
+                        d[qsizetype(y) * w + x] = out[y];
+                }
+                for (int y = 0; y < h; ++y) {
+                    for (int x = 0; x < w; ++x)
+                        f[x] = d[qsizetype(y) * w + x];
+                    pass(w);
+                    for (int x = 0; x < w; ++x)
+                        d[qsizetype(y) * w + x] = std::sqrt(out[x]);
+                }
+                QList<double> readings;
+                for (int y = 1; y < h - 1; ++y)
+                    for (int x = 1; x < w - 1; ++x) {
+                        const double c = d[qsizetype(y) * w + x];
+                        if (c < 1.0)
+                            continue;
+                        bool top = true; // no pixel around it is farther from the edge: a middle
+                        for (int dy = -1; dy <= 1 && top; ++dy)
+                            for (int dx = -1; dx <= 1 && top; ++dx)
+                                top = d[qsizetype(y + dy) * w + (x + dx)] <= c + 1e-9;
+                        if (top)
+                            readings.append((2.0 * c - 0.5) / kTimes);
+                    }
+                std::sort(readings.begin(), readings.end());
+                return readings;
+            };
+            auto middleOf = [](const QList<double> &r) { return r.isEmpty() ? 0.0 : r[r.size() / 2]; };
+            auto shareWithin = [](const QList<double> &r, double weight, double by) {
+                int n = 0;
+                for (double reading : r)
+                    n += qAbs(reading - weight) <= by ? 1 : 0;
+                return r.isEmpty() ? 0.0 : double(n) / double(r.size());
+            };
+            // Where an icon's ink lies, in the bar's pixels: as drawn here, and on the button itself
+            // (its look four times its size; ink is what is nearer the icon's grey than the ground).
+            auto drawnBox = [&](const QImage &g) {
+                int x0 = g.width(), y0 = g.height(), x1 = -1, y1 = -1;
+                for (int y = 0; y < g.height(); ++y) {
+                    const QRgb *row = reinterpret_cast<const QRgb *>(g.constScanLine(y));
+                    for (int x = 0; x < g.width(); ++x)
+                        if (qAlpha(row[x]) >= 128) {
+                            x0 = qMin(x0, x);
+                            y0 = qMin(y0, y);
+                            x1 = qMax(x1, x);
+                            y1 = qMax(y1, y);
+                        }
+                }
+                return x1 < 0 ? QRectF()
+                              : QRectF(QPointF(x0, y0) / qreal(kTimes), QPointF(x1 + 1, y1 + 1) / qreal(kTimes));
+            };
+            auto shownBox = [&](const QImage &look) {
+                const QRgb under = look.pixel(ground);
+                const int half = (qRed(under) + qGreen(under) + qBlue(under) + 3 * 0xcc) / 2;
+                int x0 = look.width(), y0 = look.height(), x1 = -1, y1 = -1;
+                for (int y = 0; y < look.height(); ++y)
+                    for (int x = 0; x < look.width(); ++x) {
+                        const QRgb c = look.pixel(x, y);
+                        if (qAlpha(c) == 255 && qRed(c) + qGreen(c) + qBlue(c) >= half) {
+                            x0 = qMin(x0, x);
+                            y0 = qMin(y0, y);
+                            x1 = qMax(x1, x);
+                            y1 = qMax(y1, y);
+                        }
+                    }
+                return x1 < 0 ? QRectF() : QRectF(QPointF(x0, y0) / 4.0, QPointF(x1 + 1, y1 + 1) / 4.0);
+            };
+            auto boxesAgree = [](const QRectF &a, const QRectF &b, qreal by) {
+                return !a.isNull() && !b.isNull() && qAbs(a.left() - b.left()) <= by && qAbs(a.top() - b.top()) <= by
+                    && qAbs(a.right() - b.right()) <= by && qAbs(a.bottom() - b.bottom()) <= by;
+            };
+            auto boxText = [](const QRectF &b) {
+                return QStringLiteral("%1,%2 to %3,%4")
+                    .arg(b.left(), 0, 'f', 2).arg(b.top(), 0, 'f', 2).arg(b.right(), 0, 'f', 2).arg(b.bottom(), 0, 'f', 2);
+            };
+            const QSizeF symmetrySize(34.0 / 1.4, 28.0 / 1.4), moveSize(20.4, 20.4), brushSize(24.1, 21.18);
+            const QImage symmetryDrawn = drawnIcon(QStringLiteral(":/icons/symmetry.svg"), symmetrySize);
+            const QImage moveDrawn = drawnIcon(QStringLiteral(":/icons/move.svg"), moveSize);
+            const QList<double> symmetryLines = lineWeights(symmetryDrawn);
+            const QList<double> moveLines = lineWeights(moveDrawn);
+            const QList<double> brushLines = lineWeights(drawnIcon(QStringLiteral(":/icons/brush.svg"), brushSize));
+            const QList<double> ruler120 = lineWeights(drawnLines(1.2, false));
+            const QList<double> ruler086 = lineWeights(drawnLines(0.857, false));
+            const QList<double> tight120 = lineWeights(drawnLines(1.2, true));
+            const double symmetryWeight = middleOf(symmetryLines), moveWeight = middleOf(moveLines);
+            const double brushWeight = middleOf(brushLines);
+            const double read120 = middleOf(ruler120), read086 = middleOf(ruler086);
+            const double symmetryShare = shareWithin(symmetryLines, moveWeight, 0.12);
+            const double tightShare = shareWithin(tight120, 1.2, 0.12);
+            const QRectF symmetryAsDrawn = drawnBox(symmetryDrawn), symmetryAsShown = shownBox(offLook);
+            const QRectF moveAsDrawn = drawnBox(moveDrawn), moveAsShown = shownBox(look4(moveButton));
+            // The axis: runs of ink down the icon's middle column (x = 15 of the button's 30).
+            int dashes = 0;
+            {
+                bool inInk = false;
+                for (int y = 0; y < symmetryDrawn.height(); ++y) {
+                    const bool ink = qAlpha(symmetryDrawn.pixel(15 * kTimes, y)) >= 128;
+                    dashes += ink && !inInk ? 1 : 0;
+                    inInk = ink;
+                }
+            }
+            // The wings as the user drew them (their frame 659:818), to the digit.
+            const QByteArray wingRight("M19.8652 4.95223C26.7949 -1.92546 35.5645 8.83709 27.9242 14.92C26.2146 "
+                                       "16.2811 23.3572 17.3518 20.2853 17.2489C31.2261 21.9949 24.9275 30.7313 "
+                                       "19.0254 25.4669");
+            const QByteArray wingLeft("M14.1416 4.95223C7.2119 -1.92546 -1.55771 8.83709 6.08261 14.9199C7.79222 "
+                                      "16.2811 10.6496 17.3518 13.7215 17.2489C2.78076 21.9949 9.07931 30.7313 "
+                                      "14.9814 25.4669");
+            const bool wingsKept = iconBytes.contains("<path d=\"" + wingRight + "\" stroke-width=\"1.68\"")
+                && iconBytes.contains("<path d=\"" + wingLeft + "\" stroke-width=\"1.68\"");
+            const bool pictureKept = iconBytes.startsWith("<svg width=\"34\" height=\"28\" viewBox=\"0 0 34 28\"")
+                && iconBytes.count("<path ") == 3 && !iconBytes.contains("stroke-width=\"1.2\"");
+            check(QStringLiteral("(sy2) ITS LINES ARE AS HEAVY AS ITS NEIGHBOUR'S (your change of 2026-11-23): "
+                                 "measured at the size the bar shows them, the Symmetry icon's lines weigh what "
+                                 "Move's beside it weigh, 1.2 px - the wings and the dashed axis alike, 95 % and "
+                                 "more of their length within 0.12 px of it - where they weighed 0.86 px and the "
+                                 "axis 0.71; the icon measured is the one on the button (its ink lies in the same "
+                                 "box there, and Move's too)"),
+                  qAbs(symmetryWeight - moveWeight) <= 0.03 && qAbs(moveWeight - 1.2) <= 0.04 && symmetryShare >= 0.95
+                      && boxesAgree(symmetryAsDrawn, symmetryAsShown, 0.6) && boxesAgree(moveAsDrawn, moveAsShown, 0.6),
+                  QStringLiteral("Symmetry %1 px (%2 % of %3 readings within 0.12 px of Move's; lightest %4, "
+                                 "heaviest %5), Move %6 px; Symmetry's ink drawn %7, on the button %8; Move's drawn "
+                                 "%9, on the button %10")
+                      .arg(symmetryWeight, 0, 'f', 3).arg(100.0 * symmetryShare, 0, 'f', 1).arg(symmetryLines.size())
+                      .arg(symmetryLines.isEmpty() ? 0.0 : symmetryLines.first(), 0, 'f', 3)
+                      .arg(symmetryLines.isEmpty() ? 0.0 : symmetryLines.last(), 0, 'f', 3)
+                      .arg(moveWeight, 0, 'f', 3)
+                      .arg(boxText(symmetryAsDrawn), boxText(symmetryAsShown), boxText(moveAsDrawn),
+                           boxText(moveAsShown)));
+            check(QStringLiteral("(sy2) control (2026-11-23): the measure reads a known line back - one drawn 1.2 "
+                                 "px wide as 1.2 and one drawn 0.86 px wide as 0.86, so it tells the old weight from "
+                                 "the new; curves as tight as the wings', drawn 1.2 px wide, read within 0.12 px of "
+                                 "it (the allowance above); and it does not call every icon equal - Brush's lines "
+                                 "read 1.0 px, not Move's 1.2"),
+                  qAbs(read120 - 1.2) <= 0.04 && qAbs(read086 - 0.857) <= 0.04 && tightShare >= 0.95
+                      && qAbs(brushWeight - 1.0) <= 0.04 && moveWeight - brushWeight >= 0.15,
+                  QStringLiteral("a 1.2 px line reads %1, a 0.857 px line %2; tight curves at 1.2: %3 % within "
+                                 "0.12 px (lightest %4, heaviest %5); Brush %6 px, Move %7 px")
+                      .arg(read120, 0, 'f', 3).arg(read086, 0, 'f', 3).arg(100.0 * tightShare, 0, 'f', 1)
+                      .arg(tight120.isEmpty() ? 0.0 : tight120.first(), 0, 'f', 3)
+                      .arg(tight120.isEmpty() ? 0.0 : tight120.last(), 0, 'f', 3)
+                      .arg(brushWeight, 0, 'f', 3).arg(moveWeight, 0, 'f', 3));
+            check(QStringLiteral("(sy2) THE SAME DRAWING, ONLY HEAVIER (2026-11-23): the file's two wings are your "
+                                 "own paths to the digit (your frame 659:818), their stroke-width 1.68 where it was "
+                                 "1.2; the picture is still 34 x 28 with three paths; the axis is still five dashes "
+                                 "with a gap between each two"),
+                  wingsKept && pictureKept && dashes == 5,
+                  QStringLiteral("wings kept %1; picture kept %2; dashes down the middle %3; %4 bytes")
+                      .arg(wingsKept).arg(pictureKept).arg(dashes).arg(iconBytes.size()));
+        }
+
+        // --- (sy3) switching it: the button, Shift+S ------------------------------------------------
+        {
+            r.window.markCleanForTest();
+            symmetryButton->click();
+            pump(60);
+            const bool onByClick = r.canvas->symmetry() && symmetryButton->isChecked();
+            const bool changedByClick = r.window.isDirty();
+            const bool brushStays = brushButton->isChecked(); // not one of the tools
+            pick(eraserButton);
+            const bool staysWithEraser = symmetryButton->isChecked() && r.canvas->symmetry();
+            pick(brushButton);
+            r.window.markCleanForTest();
+            const bool claimedOff = shortcut(Qt::Key_S, Qt::ShiftModifier);
+            const bool offByKey = !r.canvas->symmetry() && !symmetryButton->isChecked();
+            const bool changedByKey = r.window.isDirty();
+            const bool claimedOn = shortcut(Qt::Key_S, Qt::ShiftModifier);
+            const bool onByKey = r.canvas->symmetry() && symmetryButton->isChecked();
+            const bool plainClaimed = shortcut(Qt::Key_S, Qt::NoModifier); // control: S alone is no key
+            const bool plainNothing = r.canvas->symmetry() && symmetryButton->isChecked();
+            check(QStringLiteral("(sy3) THE BUTTON AND SHIFT+S SWITCH SYMMETRY: a click switches it on - the button lit, "
+                                 "the Brush still the tool, the project with a change to save; it stays on when the "
+                                 "Eraser is picked; Shift+S switches it off and on again, the button following; "
+                                 "control: S alone is nobody's key and changes nothing"),
+                  onByClick && changedByClick && brushStays && staysWithEraser && claimedOff && offByKey && changedByKey
+                      && claimedOn && onByKey && !plainClaimed && plainNothing,
+                  QStringLiteral("click: on %1, changed %2, Brush checked %3; with the Eraser %4; Shift+S: taken %5, "
+                                 "off %6, changed %7; again: taken %8, on %9; S alone: taken %10, still on %11")
+                      .arg(onByClick).arg(changedByClick).arg(brushStays).arg(staysWithEraser).arg(claimedOff)
+                      .arg(offByKey).arg(changedByKey).arg(claimedOn).arg(onByKey).arg(plainClaimed).arg(plainNothing));
+        }
+
+        // --- (sy4) the axis: with the Brush and the Eraser only, in the frame's middle --------------
+        {
+            pick(brushButton);
+            const QLineF axis = r.canvas->symmetryAxisLineForTest();
+            const QPointF top = T.map(QPointF(960, 0)), foot = T.map(QPointF(960, 1080));
+            const bool placed = !axis.isNull() && QLineF(axis.p1(), top - QPointF(0, 24)).length() < 0.6
+                && QLineF(axis.p2(), foot + QPointF(0, 20)).length() < 0.6;
+            const QImage onBrush = picture();
+            const int purpleBrush = purpleOnAxis(onBrush, 960);
+            pick(eraserButton);
+            const bool withEraser = !r.canvas->symmetryAxisLineForTest().isNull();
+            const int purpleEraser = purpleOnAxis(picture(), 960);
+            int hidden = 0, stillLit = 0, tools = 0;
+            int otherPurple = 0;
+            for (QPushButton *other : {fillButton, moveButton}) {
+                pick(other);
+                ++tools;
+                hidden += r.canvas->symmetryAxisLineForTest().isNull() && r.canvas->symmetryGripForTest().isNull() ? 1 : 0;
+                stillLit += symmetryButton->isChecked() && r.canvas->symmetry() ? 1 : 0;
+                otherPurple = qMax(otherPurple, purpleOnAxis(picture(), 960));
+            }
+            r.canvas->setTool(DrawingCanvas::Camera);
+            pump(60);
+            ++tools;
+            hidden += r.canvas->symmetryAxisLineForTest().isNull() ? 1 : 0;
+            stillLit += symmetryButton->isChecked() ? 1 : 0;
+            pick(fillButton); // (leaves the Camera tool by a tool's own button)
+            const QImage fillOn = picture();
+            r.canvas->setSymmetry(false);
+            const QImage fillOff = picture();
+            pick(brushButton);
+            const QImage brushOff = picture();
+            const int purpleOff = purpleOnAxis(brushOff, 960);
+            r.canvas->setSymmetry(true);
+            pump(40);
+            check(QStringLiteral("(sy4) THE AXIS SHOWS WITH THE BRUSH AND THE ERASER ONLY: a line down the middle of the "
+                                 "frame (canvas x 960), from the grip 24 px above the paper to 20 px past its foot, "
+                                 "purple in the canvas's picture; with the Fill, Move and Camera tools no axis and no "
+                                 "grip, the button still lit - with Fill the picture is, pixel for pixel, the one "
+                                 "with Symmetry off; control: switched off, the Brush's picture has no purple line"),
+                  placed && purpleBrush >= 90 && withEraser && purpleEraser >= 90 && hidden == tools && stillLit == tools
+                      && otherPurple == 0 && differing(fillOn, fillOff) == 0 && purpleOff == 0,
+                  QStringLiteral("axis %1 -> %2 (paper %3 -> %4); purple along it: Brush %5 %, Eraser %6 %; other "
+                                 "tools: hidden %7 of %8, lit %9, purple %10 %; Fill on/off: %11 px differ; off: %12 %")
+                      .arg(ptText(axis.p1()), ptText(axis.p2()), ptText(top), ptText(foot)).arg(purpleBrush)
+                      .arg(purpleEraser).arg(hidden).arg(tools).arg(stillLit).arg(otherPurple)
+                      .arg(differing(fillOn, fillOff)).arg(purpleOff));
+        }
+
+        // --- (sy5) a stroke is mirrored, pixel for pixel, as one undo step ---------------------------
+        {
+            const int steps = stack->index();
+            stroke(QPointF(500, 400), QPointF(700, 420));
+            const int own = alphaAt(p0, 600, 410), other = alphaAt(p0, 1319, 410), between = alphaAt(p0, 960, 410);
+            const int stepsAfter = stack->index() - steps;
+            const QString undoText = stack->undoText();
+            const int notMirrored = unmirrored(p0, 960);
+            const int ink = inked(p0);
+            r.storyboard->editUndo();
+            settle();
+            const int undoneOwn = alphaAt(p0, 600, 410), undoneOther = alphaAt(p0, 1319, 410), undoneInk = inked(p0);
+            const int stepsUndone = stack->index() - steps;
+            r.storyboard->editRedo();
+            settle();
+            const int redoneOwn = alphaAt(p0, 600, 410), redoneOther = alphaAt(p0, 1319, 410);
+            const int redoneUnmirrored = unmirrored(p0, 960);
+            r.storyboard->editUndo(); // the paper clean again for the control
+            settle();
+            r.canvas->setSymmetry(false);
+            pump(40);
+            stroke(QPointF(500, 400), QPointF(700, 420));
+            const int plainOwn = alphaAt(p0, 600, 410), plainOther = alphaAt(p0, 1319, 410);
+            r.storyboard->editUndo();
+            settle();
+            r.canvas->setSymmetry(true);
+            pump(40);
+            check(QStringLiteral("(sy5) A BRUSH STROKE IS PAINTED ON BOTH SIDES (drawn left of the axis, 500 to 700): ink "
+                                 "where the pen went and at its mirror place, none between; the layer is its own "
+                                 "mirror image across the axis, pixel for pixel; ONE step in the history, \"Brush "
+                                 "Stroke\" - one Undo takes both sides away, Redo brings both back, mirrored still; "
+                                 "control: with Symmetry off the same stroke leaves its mirror place empty"),
+                  own > 0 && other > 0 && between == 0 && ink > 400 && notMirrored == 0 && stepsAfter == 1
+                      && undoText == QLatin1String("Brush Stroke") && undoneOwn == 0 && undoneOther == 0
+                      && undoneInk == 0 && stepsUndone == 0 && redoneOwn > 0 && redoneOther > 0
+                      && redoneUnmirrored == 0 && plainOwn > 0 && plainOther == 0,
+                  QStringLiteral("alpha: pen %1, mirror %2, between %3; %4 px inked, %5 not mirrored; steps +%6, \"%7\"; "
+                                 "undone: %8 / %9, %10 px left, steps +%11; redone: %12 / %13, %14 not mirrored; "
+                                 "off: pen %15, mirror %16")
+                      .arg(own).arg(other).arg(between).arg(ink).arg(notMirrored).arg(stepsAfter).arg(undoText)
+                      .arg(undoneOwn).arg(undoneOther).arg(undoneInk).arg(stepsUndone).arg(redoneOwn).arg(redoneOther)
+                      .arg(redoneUnmirrored).arg(plainOwn).arg(plainOther));
+        }
+
+        // --- (sy6) live: the mirror image is on the canvas while the stroke is being drawn -----------
+        {
+            auto midStroke = [&](bool symmetryOn) {
+                r.canvas->setSymmetry(symmetryOn);
+                pump(40);
+                const QImage before = picture();
+                strokeDown(QPointF(500, 700), QPointF(700, 700));
+                const int previewInk = r.canvas->previewInkPixelsForTest();
+                const bool pending = r.canvas->paintCommitPendingForTest();
+                const QImage during = picture();
+                strokeUp(QPointF(700, 700));
+                const QPoint penPlace = T.map(QPointF(600, 700)).toPoint(), mirrorPlace = T.map(QPointF(1320, 700)).toPoint();
+                struct Seen
+                {
+                    bool pen, mirror, live;
+                    int previewInk;
+                };
+                const Seen seen{qGray(during.pixel(penPlace)) < qGray(before.pixel(penPlace)) - 20,
+                                qGray(during.pixel(mirrorPlace)) < qGray(before.pixel(mirrorPlace)) - 20,
+                                previewInk > 0 && !pending, previewInk};
+                r.storyboard->editUndo();
+                settle();
+                return seen;
+            };
+            const auto on = midStroke(true);
+            const auto off = midStroke(false);
+            r.canvas->setSymmetry(true);
+            pump(40);
+            check(QStringLiteral("(sy6) THE MIRROR IMAGE IS PAINTED LIVE: with the pen still down (the stroke not yet "
+                                 "committed, only its preview) the canvas's picture is darker where the pen went AND "
+                                 "at the mirror place; control: with Symmetry off, darker where the pen went only"),
+                  on.live && on.pen && on.mirror && off.live && off.pen && !off.mirror,
+                  QStringLiteral("on: preview %1 px, pen place darker %2, mirror place darker %3; off: preview %4 px, "
+                                 "pen %5, mirror %6")
+                      .arg(on.previewInk).arg(on.pen).arg(on.mirror).arg(off.previewInk).arg(off.pen).arg(off.mirror));
+        }
+
+        // --- (sy7) the Eraser mirrors too ------------------------------------------------------------
+        {
+            Layer *layer = p0->activeLayer();
+            {
+                QPainter p(&layer->image);
+                p.fillRect(QRect(300, 300, 1320, 240), QColor(20, 120, 60));
+            }
+            r.canvas->update();
+            pick(eraserButton);
+            r.canvas->setEraserSize(40);
+            const int steps = stack->index();
+            stroke(QPointF(500, 420), QPointF(700, 420));
+            const int own = alphaAt(p0, 600, 420), other = alphaAt(p0, 1319, 420), between = alphaAt(p0, 960, 420);
+            const int stepsAfter = stack->index() - steps;
+            const QString undoText = stack->undoText();
+            const int notMirrored = unmirrored(p0, 960);
+            r.storyboard->editUndo();
+            settle();
+            const int undoneOwn = alphaAt(p0, 600, 420), undoneOther = alphaAt(p0, 1319, 420);
+            r.canvas->setSymmetry(false);
+            pump(40);
+            stroke(QPointF(500, 420), QPointF(700, 420));
+            const int plainOwn = alphaAt(p0, 600, 420), plainOther = alphaAt(p0, 1319, 420);
+            r.storyboard->editUndo();
+            settle();
+            r.canvas->setSymmetry(true);
+            layer->image.fill(Qt::transparent);
+            r.canvas->update();
+            pick(brushButton);
+            check(QStringLiteral("(sy7) THE ERASER MIRRORS TOO (a green band across both sides, erased left of the "
+                                 "axis): the band is erased where the pen went and exactly as much at the mirror "
+                                 "place, whole between; the layer is its own mirror image still; one step, \"Eraser "
+                                 "Stroke\", and one Undo gives both places back; control: with Symmetry off the "
+                                 "mirror place stays"),
+                  own >= 0 && own < 255 && other == own && between == 255 && notMirrored == 0 && stepsAfter == 1
+                      && undoText == QLatin1String("Eraser Stroke") && undoneOwn == 255 && undoneOther == 255
+                      && plainOwn < 255 && plainOther == 255,
+                  QStringLiteral("alpha: pen %1, mirror %2, between %3; %4 px not mirrored; steps +%5, \"%6\"; undone "
+                                 "%7 / %8; off: pen %9, mirror %10")
+                      .arg(own).arg(other).arg(between).arg(notMirrored).arg(stepsAfter).arg(undoText).arg(undoneOwn)
+                      .arg(undoneOther).arg(plainOwn).arg(plainOther));
+        }
+
+        // --- (sy8) the grip moves the axis; a double-click centres it --------------------------------
+        {
+            const QPointF grip = r.canvas->symmetryGripForTest();
+            const QPointF gripExpected = T.map(QPointF(960, 0)) - QPointF(0, 24);
+            // A brush whose circle shows at this zoom (200 px: 46 on screen; the 24 px one of the
+            // strokes is under the circle's 6 px floor and has the crosshair - the first run read
+            // "cross" beside the grip, rightly).
+            r.storyboard->sizeCtlUserSetSizeForTest(200);
+            pump(40);
+            hover(grip);
+            const QString kindOnGrip = r.canvas->toolCursorKindForTest();
+            const bool arrowOnGrip = r.canvas->cursor().shape() == Qt::SizeHorCursor;
+            const bool circleOffOnGrip = !r.canvas->pointerOutlineShownForTest();
+            hover(grip + QPointF(60, 0));
+            const QString kindBeside = r.canvas->toolCursorKindForTest();
+            const bool circleBeside = r.canvas->pointerOutlineShownForTest();
+            r.canvas->setBrushToolSize(24); // the strokes' brush again
+            pump(40);
+            const int steps = stack->index();
+            const int inkBefore = inked(p0);
+            r.window.markCleanForTest();
+            sendMouse(r.canvas, QEvent::MouseButtonPress, grip, Qt::LeftButton);
+            for (int i = 1; i <= 6; ++i)
+                sendMouse(r.canvas, QEvent::MouseMove, grip + (T.map(QPointF(700, 0)) - T.map(QPointF(960, 0))) * (i / 6.0),
+                          Qt::LeftButton);
+            const bool draggingKind = r.canvas->toolCursorKindForTest() == QLatin1String("axis");
+            sendMouse(r.canvas, QEvent::MouseButtonRelease, grip + (T.map(QPointF(700, 0)) - T.map(QPointF(960, 0))),
+                      Qt::LeftButton);
+            settle();
+            const int movedTo = r.canvas->symmetryAxis();
+            const bool movedFlag = r.canvas->symmetryAxisMoved();
+            const bool changed = r.window.isDirty();
+            const bool noStroke = stack->index() == steps && inked(p0) == inkBefore;
+            const QLineF movedLine = r.canvas->symmetryAxisLineForTest();
+            const bool lineFollows = QLineF(movedLine.p1(), T.map(QPointF(700, 0)) - QPointF(0, 24)).length() < 0.6;
+            const int purpleMoved = purpleOnAxis(picture(), 700);
+            stroke(QPointF(500, 600), QPointF(600, 600));
+            const int aboutNew = alphaAt(p0, 849, 600), aboutOld = alphaAt(p0, 1369, 600), pen = alphaAt(p0, 550, 600);
+            const int notMirrored = unmirrored(p0, 700);
+            r.storyboard->editUndo();
+            settle();
+            // A press beside the grip is not the grip's: the axis stays.
+            const QPointF beside = r.canvas->symmetryGripForTest() + QPointF(40, 0);
+            sendMouse(r.canvas, QEvent::MouseButtonPress, beside, Qt::LeftButton);
+            sendMouse(r.canvas, QEvent::MouseMove, beside + QPointF(30, 0), Qt::LeftButton);
+            sendMouse(r.canvas, QEvent::MouseButtonRelease, beside + QPointF(30, 0), Qt::LeftButton);
+            settle();
+            const bool besideLeaves = r.canvas->symmetryAxis() == movedTo;
+            if (stack->index() > steps) { // (a stroke in the gutter leaves nothing; were there one, it goes)
+                r.storyboard->editUndo();
+                settle();
+            }
+            // The pen drags it too - and paints nothing.
+            const QPointF gripNow = r.canvas->symmetryGripForTest();
+            const QPointF penTo = gripNow + (T.map(QPointF(1200, 0)) - T.map(QPointF(700, 0)));
+            hover(gripNow);
+            penAt(gripNow, Qt::LeftButton, 0.6);
+            for (int i = 1; i <= 6; ++i)
+                penAt(gripNow + (penTo - gripNow) * (i / 6.0), Qt::LeftButton, 0.6);
+            penAt(penTo, Qt::NoButton, 0.0);
+            settle();
+            const int penMovedTo = r.canvas->symmetryAxis();
+            const bool penNoStroke = stack->index() == steps && inked(p0) == inkBefore;
+            // A double-click on the grip: the middle of the frame again.
+            r.window.markCleanForTest();
+            const QPointF gripAgain = r.canvas->symmetryGripForTest();
+            sendMouse(r.canvas, QEvent::MouseButtonPress, gripAgain, Qt::LeftButton);
+            sendMouse(r.canvas, QEvent::MouseButtonRelease, gripAgain, Qt::LeftButton);
+            sendMouse(r.canvas, QEvent::MouseButtonDblClick, gripAgain, Qt::LeftButton);
+            sendMouse(r.canvas, QEvent::MouseButtonRelease, gripAgain, Qt::LeftButton);
+            settle();
+            const bool centred = r.canvas->symmetryAxis() == 960 && !r.canvas->symmetryAxisMoved();
+            const bool centredChanged = r.window.isDirty();
+            const bool centredNoStroke = stack->index() == steps && inked(p0) == inkBefore;
+            check(QStringLiteral("(sy8) THE GRIP MOVES THE AXIS: it sits 24 px above the paper on the axis; over it the "
+                                 "pointer is the left-right arrow and the Brush's circle is away (60 px beside it: the "
+                                 "circle again); dragged to canvas x 700 the axis is there - its line, purple in the "
+                                 "picture - the project has a change to save, and nothing was painted and no step "
+                                 "made; a stroke is then mirrored across 700, not 960"),
+                  QLineF(grip, gripExpected).length() < 0.6 && kindOnGrip == QLatin1String("axis") && arrowOnGrip
+                      && circleOffOnGrip && kindBeside == QLatin1String("outline") && circleBeside && draggingKind
+                      && movedTo == 700
+                      && movedFlag && changed && noStroke && lineFollows && purpleMoved >= 90 && pen > 0 && aboutNew > 0
+                      && aboutOld == 0 && notMirrored == 0,
+                  QStringLiteral("grip %1 (expected %2); over it: \"%3\", arrow %4, circle away %5; beside: \"%6\"; "
+                                 "dragged: \"axis\" %7, axis %8, moved %9, changed %10, no stroke %11, line %12, purple "
+                                 "%13 %; stroke: pen %14, mirror about 700 %15, about 960 %16, %17 px not mirrored")
+                      .arg(ptText(grip), ptText(gripExpected), kindOnGrip).arg(arrowOnGrip).arg(circleOffOnGrip)
+                      .arg(kindBeside).arg(draggingKind).arg(movedTo).arg(movedFlag).arg(changed).arg(noStroke)
+                      .arg(lineFollows).arg(purpleMoved).arg(pen).arg(aboutNew).arg(aboutOld).arg(notMirrored));
+            check(QStringLiteral("(sy8) THE PEN DRAGS THE GRIP TOO, and paints nothing (to canvas x 1200); A DOUBLE-CLICK "
+                                 "ON THE GRIP puts the axis back in the middle of the frame, a change to save, nothing "
+                                 "painted; control: a press 40 px beside the grip leaves the axis where it is"),
+                  penMovedTo == 1200 && penNoStroke && centred && centredChanged && centredNoStroke && besideLeaves,
+                  QStringLiteral("pen: axis %1, nothing painted %2; double-click: centred %3, changed %4, nothing "
+                                 "painted %5; beside the grip: axis kept %6")
+                      .arg(penMovedTo).arg(penNoStroke).arg(centred).arg(centredChanged).arg(centredNoStroke)
+                      .arg(besideLeaves));
+        }
+
+        // --- (sy9) a selection limits both sides; a locked layer takes nothing ----------------------
+        {
+            r.canvas->setTool(DrawingCanvas::SelectRect);
+            pump(60);
+            sendMouse(r.canvas, QEvent::MouseButtonPress, T.map(QPointF(1200, 300)), Qt::LeftButton);
+            sendMouse(r.canvas, QEvent::MouseMove, T.map(QPointF(1350, 400)), Qt::LeftButton);
+            sendMouse(r.canvas, QEvent::MouseMove, T.map(QPointF(1500, 500)), Qt::LeftButton);
+            sendMouse(r.canvas, QEvent::MouseButtonRelease, T.map(QPointF(1500, 500)), Qt::LeftButton);
+            pump(80);
+            pick(fillButton); // (off the selection tools by a tool's own button...)
+            pick(brushButton); // ...and to the Brush
+            const int steps = stack->index();
+            stroke(QPointF(500, 400), QPointF(700, 400));
+            const int ownOutside = alphaAt(p0, 600, 400), mirrorInside = alphaAt(p0, 1319, 400);
+            const int mirrorPastIt = alphaAt(p0, 1160, 400); // the mirror of 760 would be 1160: not drawn, and outside
+            const int selSteps = stack->index() - steps;
+            r.storyboard->editUndo();
+            settle();
+            r.canvas->deselect();
+            pump(60);
+            // A locked layer: as without Symmetry, nothing on either side.
+            Layer *layer = p0->activeLayer();
+            layer->locked = true;
+            r.canvas->update();
+            pump(40);
+            const int lockSteps = stack->index();
+            stroke(QPointF(500, 400), QPointF(700, 400));
+            const bool lockedNothing = stack->index() == lockSteps && inked(p0) == 0;
+            layer->locked = false;
+            r.canvas->update();
+            pump(40);
+            check(QStringLiteral("(sy9) A SELECTION LIMITS BOTH SIDES, as it limits any stroke (a rectangle selected on "
+                                 "the right, 1200 to 1500; the stroke drawn on the left, outside it): nothing where "
+                                 "the pen went, ink at the mirror place inside the selection, one step; A LOCKED "
+                                 "LAYER takes nothing on either side and makes no step"),
+                  ownOutside == 0 && mirrorInside > 0 && mirrorPastIt == 0 && selSteps == 1 && lockedNothing,
+                  QStringLiteral("selection: pen place %1, mirror place %2, left of the selection %3, steps +%4; "
+                                 "locked: nothing %5")
+                      .arg(ownOutside).arg(mirrorInside).arg(mirrorPastIt).arg(selSteps).arg(lockedNothing));
+        }
+
+        // --- (sy10) the pointer's second, lighter circle ---------------------------------------------
+        {
+            r.storyboard->sizeCtlUserSetSizeForTest(200);
+            pump(40);
+            const QPointF A = T.map(QPointF(560, 330));
+            hover(A);
+            const bool shown = r.canvas->pointerOutlineShownForTest() && r.canvas->pointerMirrorShownForTest();
+            const QPointF centre = r.canvas->pointerMirrorCentreForTest();
+            const QPointF expected = T.map(QPointF(1360, 330));
+            const double radius = r.canvas->pointerOutlineDiameterForTest() / 2.0;
+            int ownAlpha = -1, mirrorAlpha = -1;
+            if (QWidget *outline = r.canvas->pointerOutlineForTest()) {
+                QImage rings(outline->size(), QImage::Format_ARGB32_Premultiplied);
+                rings.fill(Qt::transparent);
+                outline->render(&rings, QPoint(), QRegion(), QWidget::RenderFlags());
+                // The strongest pixel on each circle's line, at its right-hand side.
+                auto strongest = [&](const QPointF &c) {
+                    int best = 0;
+                    for (int dx = -2; dx <= 2; ++dx) {
+                        const QPoint at = (c + QPointF(radius + dx, 0.0)).toPoint();
+                        if (rings.rect().contains(at))
+                            best = qMax(best, qAlpha(rings.pixel(at)));
+                    }
+                    return best;
+                };
+                ownAlpha = strongest(A);
+                mirrorAlpha = strongest(centre);
+            }
+            pick(fillButton);
+            hover(A);
+            const bool fillNone = !r.canvas->pointerMirrorShownForTest();
+            pick(brushButton);
+            hover(A);
+            const bool backWithBrush = r.canvas->pointerMirrorShownForTest();
+            r.canvas->setSymmetry(false);
+            pump(40);
+            hover(A);
+            const bool offNone = !r.canvas->pointerMirrorShownForTest() && r.canvas->pointerOutlineShownForTest();
+            r.canvas->setSymmetry(true);
+            pump(40);
+            r.storyboard->sizeCtlUserSetSizeForTest(24);
+            pump(40);
+            check(QStringLiteral("(sy10) A SECOND, LIGHTER CIRCLE WHERE THE MIRRORED STROKE WILL LAND: with the pen over "
+                                 "the paper the Brush's circle has a second one at the pointer's mirror place, the "
+                                 "same size, its line fainter than the circle's own; none with the Fill tool, back "
+                                 "with the Brush; control: with Symmetry off the Brush has its one circle"),
+                  shown && QLineF(centre, expected).length() < 0.6 && ownAlpha >= 180 && mirrorAlpha >= 40
+                      && mirrorAlpha * 4 <= ownAlpha * 3 && fillNone && backWithBrush && offNone,
+                  QStringLiteral("shown %1 at %2 (expected %3); line alpha: the circle %4, its mirror %5; Fill: none "
+                                 "%6; Brush again %7; off: one circle %8")
+                      .arg(shown).arg(ptText(centre), ptText(expected)).arg(ownAlpha).arg(mirrorAlpha).arg(fillNone)
+                      .arg(backWithBrush).arg(offNone));
+        }
+
+        // --- (sy11) on screen only; the same place of the shot on every panel; saved with the project -
+        {
+            // The thumbnail of the panel on the canvas, with Symmetry on and off: the same picture.
+            auto thumbPicture = [&](int index) {
+                const QVector<QLabel *> list = thumbs(r.storyboard);
+                return index < list.size() ? list.at(index)->pixmap().toImage() : QImage();
+            };
+            stroke(QPointF(500, 400), QPointF(700, 420)); // something for the thumbnail to show
+            pump(900); // the strip redraws a thumbnail a moment after a change: let that land first
+            const QImage thumbOn = thumbPicture(0);
+            r.canvas->setSymmetry(false);
+            pump(400);
+            const QImage thumbOff = thumbPicture(0);
+            r.canvas->setSymmetry(true);
+            pump(400);
+            const QImage thumbOnAgain = thumbPicture(0);
+            const bool thumbClean = !thumbOn.isNull() && thumbOn == thumbOff && thumbOff == thumbOnAgain;
+            bool thumbPurple = false; // no axis in it
+            for (int y = 0; y < thumbOn.height() && !thumbPurple; ++y)
+                for (int x = 0; x < thumbOn.width() && !thumbPurple; ++x)
+                    thumbPurple = isPurple(thumbOn.pixel(x, y));
+            // The axis moved to 700: the same on the next panel, and on a panel with its own
+            // margin the same place of the SHOT (400 px of margin on its left: canvas x 1100).
+            r.canvas->setSymmetryAxis(700);
+            clickThumb(r, 1);
+            pump(200);
+            const bool secondPanel = r.storyboard->currentPanelForTest() == scene->panels.at(1)
+                && r.canvas->symmetry() && r.canvas->symmetryAxis() == 700 && r.canvas->symmetryAxisOnCanvas() == 700;
+            r.storyboard->applyPanelMargin(scene->panels.at(2), QMargins(400, 0, 0, 0));
+            clickThumb(r, 2);
+            pump(250);
+            const int onWideCanvas = r.canvas->symmetryAxisOnCanvas();
+            const QLineF wideLine = r.canvas->symmetryAxisLineForTest();
+            const QTransform wideT = r.canvas->viewTransformForTest();
+            const bool widePlaced = r.canvas->canvasSize() == QSize(2320, 1080) && r.canvas->symmetryAxis() == 700
+                && onWideCanvas == 1100 && !wideLine.isNull()
+                && qAbs(wideLine.p1().x() - wideT.map(QPointF(1100, 0)).x()) < 0.6;
+            r.storyboard->applyPanelMargin(scene->panels.at(2), QMargins());
+            clickThumb(r, 0);
+            pump(200);
+            r.storyboard->editUndo(); // the stroke for the thumbnail
+            settle();
+            const bool saved = r.window.saveProjectForTest(project);
+            QFile manifest(project);
+            const QJsonObject root = manifest.open(QIODevice::ReadOnly)
+                ? QJsonDocument::fromJson(manifest.readAll()).object()
+                : QJsonObject();
+            const QJsonObject said = root.value(QStringLiteral("symmetry")).toObject();
+            check(QStringLiteral("(sy11) ON SCREEN ONLY, AND THE SAME PLACE OF THE SHOT ON EVERY PANEL: the panel's "
+                                 "thumbnail is the same picture with Symmetry on and off, with no purple in it; the "
+                                 "axis moved to 700 is at 700 on the next panel, and on a panel with 400 px of its "
+                                 "own margin on the left it is at canvas x 1100 - the same place of the frame"),
+                  thumbClean && !thumbPurple && secondPanel && widePlaced,
+                  QStringLiteral("thumbnail same %1, purple %2; panel 2 at 700 %3; own margin: canvas x %4, placed %5")
+                      .arg(thumbClean).arg(thumbPurple).arg(secondPanel).arg(onWideCanvas).arg(widePlaced));
+            check(QStringLiteral("(sy11) SAVED WITH THE PROJECT: the manifest's \"symmetry\" says the switch is on and "
+                                 "the axis is 700 px from the frame's left edge"),
+                  saved && said.value(QStringLiteral("on")).toBool() && said.value(QStringLiteral("axis")).toInt(-1) == 700
+                      && said.size() == 2,
+                  QString::fromUtf8(QJsonDocument(said).toJson(QJsonDocument::Compact)));
+        }
+
+        // --- (sy13) the button is "a click outside" for the panels (the rule of 2026-11-21) ---------
+        {
+            // The Colors panel records itself in the settings as it opens: put back after.
+            const QStringList keys{StoryboardPage::kColorsPanelKey, StoryboardPage::kLastPanelKey};
+            QVector<QVariant> kept;
+            {
+                const QSettings settings = sankoSettings();
+                for (const QString &key : keys)
+                    kept.append(settings.value(key));
+            }
+            QWidget *colors = r.storyboard->colorsPanelForTest();
+            swatch->click();
+            pump(200);
+            const bool opened = colors && colors->isVisible();
+            const bool before = r.canvas->symmetry();
+            if (QWindow *target = symmetryButton->window()->windowHandle()) { // a real click, as the mouse makes it
+                const QPointF at(symmetryButton->width() / 2.0, symmetryButton->height() / 2.0);
+                const QPointF global = symmetryButton->mapToGlobal(at);
+                const QPointF local = global - QPointF(target->mapToGlobal(QPoint(0, 0)));
+                QWindowSystemInterface::handleMouseEvent<QWindowSystemInterface::SynchronousDelivery>(
+                    target, local, global, Qt::LeftButton, Qt::LeftButton, QEvent::MouseButtonPress);
+                QCoreApplication::processEvents();
+                QWindowSystemInterface::handleMouseEvent<QWindowSystemInterface::SynchronousDelivery>(
+                    target, local, global, Qt::NoButton, Qt::LeftButton, QEvent::MouseButtonRelease);
+                QCoreApplication::processEvents();
+            }
+            pump(200);
+            const bool closed = colors && !colors->isVisible();
+            const bool switched = r.canvas->symmetry() != before;
+            if (colors && colors->isVisible())
+                swatch->click();
+            pump(100);
+            r.canvas->setSymmetry(before);
+            {
+                QSettings settings = sankoSettings();
+                for (int i = 0; i < keys.size(); ++i) {
+                    if (kept.at(i).isValid())
+                        settings.setValue(keys.at(i), kept.at(i));
+                    else
+                        settings.remove(keys.at(i));
+                }
+                settings.sync();
+            }
+            check(QStringLiteral("(sy13) THE SYMMETRY BUTTON IS A CLICK OUTSIDE A PANEL, like any button that is not "
+                                 "the panel's own: with the Colors panel open, a click on it closes the panel and "
+                                 "switches Symmetry"),
+                  opened && closed && switched,
+                  QStringLiteral("panel opened %1, closed by the click %2, Symmetry switched %3")
+                      .arg(opened).arg(closed).arg(switched));
+        }
+        r.window.markCleanForTest();
+    }
+    {
+        // The next launch: this project's switch and axis are back; another project has its own.
+        auto rig = std::make_unique<Rig>(project);
+        Rig &r = *rig;
+        check(QStringLiteral("(sy12) the project reopened"), r.ok);
+        if (!r.ok)
+            return;
+        auto *symmetryButton = r.storyboard->findChild<QPushButton *>(QStringLiteral("toolSymmetry"));
+        const bool back = r.canvas->symmetry() && r.canvas->symmetryAxisMoved() && r.canvas->symmetryAxis() == 700
+            && symmetryButton && symmetryButton->isChecked();
+        const bool clean = !r.window.isDirty();
+        const bool otherOpened = r.window.loadProjectForTest(otherProject);
+        pump(600);
+        const bool otherPlain = !r.canvas->symmetry() && !r.canvas->symmetryAxisMoved() && r.canvas->symmetryAxis() == 960
+            && symmetryButton && !symmetryButton->isChecked();
+        const bool otherSaved = r.window.saveProjectForTest(otherProject);
+        QFile manifest(otherProject);
+        const QJsonObject root = manifest.open(QIODevice::ReadOnly)
+            ? QJsonDocument::fromJson(manifest.readAll()).object()
+            : QJsonObject();
+        check(QStringLiteral("(sy12) THE NEXT LAUNCH: the project opens with Symmetry on, its button lit, the axis at "
+                             "700 - and nothing to save; control: a project that never used Symmetry, opened after "
+                             "it in the same window, has it off and the axis in the middle, and its saved manifest "
+                             "has no \"symmetry\" at all"),
+              back && clean && otherOpened && otherPlain && otherSaved && !root.isEmpty()
+                  && !root.contains(QStringLiteral("symmetry")),
+              QStringLiteral("reopened: back %1, clean %2; the other project: opened %3, off and centred %4, saved "
+                             "%5, \"symmetry\" in its manifest %6")
+                  .arg(back).arg(clean).arg(otherOpened).arg(otherPlain).arg(otherSaved)
+                  .arg(root.contains(QStringLiteral("symmetry"))));
         r.window.markCleanForTest();
     }
 }
@@ -33273,8 +34529,16 @@ int main(int argc, char **argv)
         || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("batche")
         || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("scenesshots")
         || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("colourstrip")
+        || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("symmetry")
         || qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("batchg")) {
-        if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("batchg")) {
+        if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("symmetry")) {
+            // Batch H (Figma H-1): Symmetry, with the passes it lives beside - the contextual
+            // cursors (the pointer's circle, the cursor kinds) and the panels' click-away (its
+            // pen strokes, the tools bar's buttons).
+            runSymmetryPass(scratch);
+            runContextualCursorsPass(scratch);
+            runPanelsClickAwayPass(scratch);
+        } else if (qEnvironmentVariable("SANKO_LIFECYCLE_ONLY") == QLatin1String("batchg")) {
             // Batch G (Figma G-1): the contextual cursors, with the passes whose pen, Space,
             // eyedropper and Move box they live beside.
             runContextualCursorsPass(scratch);
@@ -33574,6 +34838,7 @@ int main(int argc, char **argv)
     runKeptArtPass(scratch);
     runPanelsClickAwayPass(scratch);      // (po) the panels close at a click outside them
     runDrawingOverlaysPass(scratch);      // (do) View > Drawing Overlays: a drawing tool's camera overlays
+    runSymmetryPass(scratch);             // (sy) Symmetry: a mirror axis for the Brush and the Eraser (batch H)
     runDepthWhileMovingPass(scratch);
     runSceneLockPass(scratch);
     runKeysAndViewPass(scratch);

@@ -295,6 +295,27 @@ QPixmap figIconPixmap(const QString &svgPath, QSizeF iconSize, bool mirror = fal
     return pm;
 }
 
+// An icon of the user's own, AS EXPORTED - its own colours, never the bar's #cccccc tint
+// (figIconPixmap) - at its size, centred in the tools bar's 30 x 30 box. Batch H: the
+// Symmetry icon, white as drawn in their frame 659:817 ("keeping its proportions and
+// colours").
+QPixmap exportedIconPixmap(const QString &svgPath, QSizeF iconSize)
+{
+    constexpr qreal dpr = 2.0;
+    constexpr qreal box = 30.0;
+    QPixmap pm(QSize(int(box * dpr), int(box * dpr)));
+    pm.setDevicePixelRatio(dpr);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    p.setRenderHint(QPainter::SmoothPixmapTransform, true);
+    QSvgRenderer r(svgPath);
+    r.render(&p, QRectF((box - iconSize.width()) / 2.0, (box - iconSize.height()) / 2.0,
+                        iconSize.width(), iconSize.height()));
+    p.end();
+    return pm;
+}
+
 // Plain dashed marquee: a 17x17 rounded-4 dashed rect (1.2px #cccccc) centred
 // in the 30x30 box, no cursor arrow (the Selection Shapes popup's Rectangle
 // button, Figma node 125:326). Antialiased.
@@ -433,6 +454,13 @@ public:
         m_icon = pm;
         update();
     }
+    // An icon of its own for the checked state (batch H, the Symmetry switch: grey like its
+    // neighbours when off, white on the purple when on). None set: the one icon in every state.
+    void setCheckedIconPixmap(const QPixmap &pm)
+    {
+        m_checkedIcon = pm;
+        update();
+    }
     // Override the hover / pressed background colours (default: toolbar values;
     // the Selection Shapes popup uses hover #4C4C4C, pressed #737373).
     void setStateColors(const QColor &hover, const QColor &pressed)
@@ -472,14 +500,16 @@ protected:
         p.drawRoundedRect(QRectF(0, 0, width(), height()), 6, 6);
         // Icon centred (by its own logical size); dimmed only when disabled.
         p.setOpacity(isEnabled() ? 1.0 : 0.4);
-        const qreal dpr = m_icon.devicePixelRatio();
-        const QSizeF sz(m_icon.width() / dpr, m_icon.height() / dpr);
+        const QPixmap &icon = isChecked() && !m_checkedIcon.isNull() ? m_checkedIcon : m_icon;
+        const qreal dpr = icon.devicePixelRatio();
+        const QSizeF sz(icon.width() / dpr, icon.height() / dpr);
         p.drawPixmap(QPointF((width() - sz.width()) / 2.0, (height() - sz.height()) / 2.0),
-                     m_icon);
+                     icon);
     }
 
 private:
     QPixmap m_icon;
+    QPixmap m_checkedIcon;                // its own icon when checked, if one is set
     QColor m_hoverBg{0x4c, 0x4c, 0x4c};   // #4C4C4C
     QColor m_pressedBg{0x7c, 0x6e, 0xf6}; // #7C6EF6
 };
@@ -2844,6 +2874,10 @@ StoryboardPage::StoryboardPage(QWidget *parent)
     pageKey(QKeySequence(Qt::Key_L), [this] { toolKey(DrawingCanvas::Lasso); });
     // I: the Colors panel's Eyedropper button (batch D) - one pick, then back to your tool.
     pageKey(QKeySequence(Qt::Key_I), [this] { toggleColorPick(); });
+    // Shift+S: Symmetry on and off (batch H; the user's choice of 2026-11-22). Free before:
+    // no shortcut, action or key handler of the app had it (Ctrl+S saves; plain S is
+    // nothing; searched 2026-11-22). A text field with the keyboard keeps its capital S.
+    pageKey(QKeySequence(Qt::SHIFT | Qt::Key_S), [this] { symmetryKey(); });
     for (const auto &[key, direction] : {std::pair{Qt::Key_BracketLeft, -1}, std::pair{Qt::Key_BracketRight, 1}}) {
         auto *shortcut = new QShortcut(QKeySequence(key), this);
         shortcut->setContext(Qt::WindowShortcut); // held, it repeats: the size runs on
@@ -4185,6 +4219,42 @@ void StoryboardPage::createFloatingToolbar()
     });
     connect(color, &QPushButton::clicked, this, [this] { setColorsPanelShown(!m_colorsPanel->isVisible()); });
     bar->addWidget(color, 0, Qt::AlignVCenter);
+
+    // SYMMETRY (batch H, 2026-11-22; Figma H-1 657:735, the user's answers of that day): a
+    // switch on the tools bar, BEFORE the colour (after hand test H: "The Symmetry button sits
+    // BEFORE the colour on the tools bar, not after it" - it was built after it first). Their
+    // own button, "Symmetry (new)" 659:817: their icon exactly as exported (icons/symmetry.svg,
+    // 34 x 28 at the design's 1.4x - the bar's buttons are 42 px there, 30 here - so 24.29 x 20
+    // in the button). Switched on: the bar's active purple under it (#7C6EF6, the checked look
+    // every tool has) and the icon IN ITS OWN COLOUR, white as they drew it
+    // (exportedIconPixmap). Switched off: the plain ground of its neighbours, with their hover
+    // and pressed looks, and the icon in their icons' light grey, #cccccc (figIconPixmap) -
+    // after hand test H: "light grey when off, the same grey as its neighbours' icons, and
+    // white on the purple ground when on" (it was white in both states first). Not one of the
+    // tools: it stays as it is whichever tool is picked (the axis shows with the Brush and the
+    // Eraser only). Shift+S switches it too (symmetryKey).
+    // ITS LINES' WEIGHT (after hand test H2, 2026-11-23: "the Symmetry icon's outline is much
+    // thinner than the other toolbar icons ... give the Symmetry icon the same stroke weight,
+    // keeping its shape, proportions and colours"): drawn at 1.2 in the design, the icon showed
+    // at 0.86 px here (its dashed axis, drawn at 1.0, at 0.71 px). The file is now the same
+    // drawing with every line 1.68 in the design - 1.2 px here, the weight of Move beside it
+    // and of Select, Undo and Redo (Brush, Eraser and Fill are 1.0 px) - made in Figma beside
+    // their frame (670:735; theirs untouched) and exported from it. The wings' paths are theirs
+    // to the digit; the size and the two colours are as before.
+    ToolButton *symmetry = toolButton(
+        figIconPixmap(QStringLiteral(":/icons/symmetry.svg"), QSizeF(34.0 / 1.4, 28.0 / 1.4)),
+        QStringLiteral("<b>Symmetry (Shift+S)</b> | Mirror Brush and Eraser strokes across the axis."), true);
+    symmetry->setCheckedIconPixmap(
+        exportedIconPixmap(QStringLiteral(":/icons/symmetry.svg"), QSizeF(34.0 / 1.4, 28.0 / 1.4)));
+    symmetry->setObjectName(QStringLiteral("toolSymmetry"));
+    symmetry->setChecked(m_canvas->symmetry());
+    m_symmetryButton = symmetry;
+    connect(symmetry, &QPushButton::clicked, this, [this](bool on) { setSymmetryByUser(on); });
+    connect(m_canvas, &DrawingCanvas::symmetryChanged, symmetry, &QPushButton::setChecked);
+    // The axis moved by its grip: where it is is saved with the project, so the project has
+    // a change to save (as a track's lock or mute is).
+    connect(m_canvas, &DrawingCanvas::symmetryAxisEdited, this, [this] { emit documentChanged(); });
+    bar->insertWidget(bar->indexOf(color), symmetry, 0, Qt::AlignVCenter); // before the colour
 
     // Divider.
     QLabel *divider = new QLabel;
@@ -11955,6 +12025,57 @@ void StoryboardPage::perspectiveFromJson(const QJsonObject &object)
     if (m_syncPerspective)
         m_syncPerspective();
     m_canvas->update();
+}
+
+// SYMMETRY WITH THE PROJECT (batch H; the user's answer 2 of 2026-11-22: "the axis stays
+// where I put it, for every panel, saved with the project"). The manifest's "symmetry":
+// "on" when the switch is on, "axis" - whole px from the frame's left edge - when the axis
+// was moved off the frame's middle. An empty object is "off, in the middle" and is not
+// written at all (ProjectIO), so a project that never used Symmetry saves the manifest it
+// always did; a build before batch H ignores the key.
+QJsonObject StoryboardPage::symmetryToJson() const
+{
+    QJsonObject object;
+    if (!m_canvas)
+        return object;
+    if (m_canvas->symmetry())
+        object[QStringLiteral("on")] = true;
+    if (m_canvas->symmetryAxisMoved())
+        object[QStringLiteral("axis")] = m_canvas->symmetryAxis();
+    return object;
+}
+
+// A project opened, or a new one (an empty object): its own switch and axis - never the
+// project's before it. Not a change of the project's.
+void StoryboardPage::symmetryFromJson(const QJsonObject &object)
+{
+    if (!m_canvas)
+        return;
+    const QJsonValue axis = object.value(QStringLiteral("axis"));
+    if (axis.isDouble())
+        m_canvas->setSymmetryAxis(axis.toInt());
+    else
+        m_canvas->resetSymmetryAxis();
+    m_canvas->setSymmetry(object.value(QStringLiteral("on")).toBool(false));
+}
+
+// The switch as the artist sets it - the tools bar's button, Shift+S: the canvas's, and a
+// change of the project's to save (it is saved with the project, as a track's lock is).
+void StoryboardPage::setSymmetryByUser(bool on)
+{
+    if (!m_canvas || m_canvas->symmetry() == on)
+        return;
+    m_canvas->setSymmetry(on);
+    emit documentChanged();
+}
+
+// Shift+S. Not in Stage mode nor while the Brush Settings studio holds the bars down - as
+// the tool keys.
+void StoryboardPage::symmetryKey()
+{
+    if (!m_canvas || !m_floatToolbar || m_stageModeOn || (m_brushStudio && m_brushStudio->isVisible()))
+        return;
+    setSymmetryByUser(!m_canvas->symmetry());
 }
 
 // --- Edit-menu undo/redo routing -----------------------------------------------

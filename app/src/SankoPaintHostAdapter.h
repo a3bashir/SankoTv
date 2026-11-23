@@ -33,6 +33,14 @@ public:
         // no longer matches at publish time, a host-side edit landed while the
         // render was in flight and the stroke must be rebased over it.
         quint64 hostCacheKeyAtBegin = 0;
+        // SYMMETRY (batch H, 2026-11-22; Figma H-1): the stroke is painted a second time,
+        // mirrored across the vertical line x = mirrorAxis (canvas px, between two pixel
+        // columns), in THIS commit - one render result, one undo step for both sides.
+        // strokeRect is the stroke's own part of affectedRect, which then also holds the
+        // mirror image's part (see render). Without mirror, strokeRect is not read.
+        bool mirror = false;
+        int mirrorAxis = 0;
+        QRect strokeRect;
     };
 
     struct StrokeResult {
@@ -52,6 +60,20 @@ public:
     Brush &brush() { return m_brush; }
     const Brush &brush() const { return m_brush; }
     void setBrush(const Brush &brush) { m_brush = brush; }
+
+    // SYMMETRY (batch H): the next stroke begun is mirrored across x = axis (canvas px, a
+    // whole number: the line between two pixel columns), or not at all. Read by
+    // beginStroke; a stroke under way keeps what it began with.
+    void setMirrorAxis(int axis)
+    {
+        m_mirror = true;
+        m_mirrorAxis = axis;
+    }
+    void clearMirrorAxis() { m_mirror = false; }
+    // Where a stroke's mirror image lies: the part of `strokeRect` whose reflection across
+    // `axis` is still on `canvas`, and that reflection. Both empty when no part is.
+    static void mirrorRects(const QRect &strokeRect, int axis, const QRect &canvas,
+                            QRect *mirrored, QRect *reflection);
 
     void synchronizeLayer(const QString &key, const QImage &hostPixels);
     void forgetLayer(const QString &key);
@@ -115,6 +137,10 @@ private:
     Brush m_brush;
     QString m_activeLayerKey;
     quint64 m_strokeHostCacheKey = 0; // host identity at beginStroke
+    bool m_mirror = false;            // Symmetry for the next stroke (setMirrorAxis)
+    int m_mirrorAxis = 0;
+    bool m_strokeMirror = false;      // ...and what the stroke under way began with
+    int m_strokeMirrorAxis = 0;
     std::unique_ptr<StrokeBuilder> m_primaryStroke;
     std::unique_ptr<StrokeBuilder> m_secondaryStroke;
     // Display-only decimated preview rasterizer (see beginStroke). Never
