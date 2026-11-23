@@ -24118,6 +24118,278 @@ void runContextualCursorsPass(const QString &scratch)
                          "took the pen's moves 14 times, just below and to the right of the pen)"),
           noteThrough, QStringLiteral("note %1, through %2").arg(noteWindow != nullptr).arg(noteThrough));
 
+    // --- (cur11) a pick's pointer: the dropper alone, and steady (hand test H, 2026-11-22) --------
+    // The user's point 3: with the Brush and the Colors panel open, while a pick waited the dropper
+    // kept flickering into the timeline's or the Layers panel's double arrow, and into the plain
+    // arrow - with the panel's button, with I and with Alt. The window's pointer is read as
+    // (cur10) reads it, and EVERY pointer the window is given is written down (Qt tells a window
+    // with a CursorChange each time): the check counts them and waits for nothing.
+    {
+        struct PointerLog : QObject {
+            QWindow *window = nullptr;
+            QVector<QCursor> given;
+            bool eventFilter(QObject *watched, QEvent *event) override
+            {
+                if (watched == window && event->type() == QEvent::CursorChange)
+                    given.append(window->cursor());
+                return false;
+            }
+        };
+        PointerLog log11;
+        log11.window = win;
+        win->installEventFilter(&log11);
+        qint64 dropperKey = 0; // the dropper's picture, once a pick has put it up
+        // One letter a pointer: D the dropper, o none (the circle's, the ring's), V and H the
+        // double arrows (the timeline's handle, a dock's edge), A the plain arrow, + the cross.
+        auto letter = [&](const QCursor &c) -> QChar {
+            switch (c.shape()) {
+            case Qt::BitmapCursor:
+                return dropperKey && c.pixmap().cacheKey() == dropperKey ? QLatin1Char('D') : QLatin1Char('b');
+            case Qt::BlankCursor: return QLatin1Char('o');
+            case Qt::SplitVCursor: return QLatin1Char('V');
+            case Qt::SplitHCursor: return QLatin1Char('H');
+            case Qt::ArrowCursor: return QLatin1Char('A');
+            case Qt::CrossCursor: return QLatin1Char('+');
+            default: return QLatin1Char('?');
+            }
+        };
+        auto takeLog = [&]() -> QString {
+            QString text;
+            for (const QCursor &c : log11.given)
+                text += letter(c);
+            log11.given.clear();
+            return text;
+        };
+        auto shown = [&]() -> QChar { return letter(win->cursor()); };
+        auto onlyOf = [](const QString &text, const QString &allowed) {
+            for (const QChar ch : text)
+                if (!allowed.contains(ch))
+                    return false;
+            return true;
+        };
+        // The pen with a key held (Alt), at the window-system level as pen() sends it.
+        auto penMod = [&](const QPointF &onCanvas, bool down, Qt::KeyboardModifiers mods) {
+            const QPointF global = r.canvas->mapToGlobal(onCanvas);
+            const QPointF local = global - QPointF(win->mapToGlobal(QPoint(0, 0)));
+            QWindowSystemInterface::handleTabletEvent(win, local, global, int(QInputDevice::DeviceType::Stylus),
+                                                      int(QPointingDevice::PointerType::Pen),
+                                                      down ? Qt::LeftButton : Qt::NoButton, down ? 0.6 : 0.0,
+                                                      0, 0, 0, 0, 0, kPen, mods);
+            QCoreApplication::processEvents();
+        };
+        auto mouseEv = [&](QEvent::Type type, const QPointF &onCanvas, Qt::MouseButtons state, Qt::MouseButton button) {
+            const QPointF global = r.canvas->mapToGlobal(onCanvas);
+            const QPointF local = global - QPointF(win->mapToGlobal(QPoint(0, 0)));
+            QWindowSystemInterface::handleMouseEvent<QWindowSystemInterface::SynchronousDelivery>(
+                win, local, global, state, button, type);
+            QCoreApplication::processEvents();
+        };
+        // Alt as a real key arrives: through the application, where the page's key router sees it.
+        auto altKey11 = [&](bool down) {
+            QKeyEvent ev(down ? QEvent::KeyPress : QEvent::KeyRelease, Qt::Key_Alt,
+                         down ? Qt::AltModifier : Qt::NoModifier);
+            QCoreApplication::sendEvent(r.canvas, &ev);
+            pump(20);
+        };
+        QWidget *colors11 = r.storyboard->colorsPanelForTest();
+        QAbstractButton *pickButton11 = r.storyboard->colorPickButtonForTest();
+        QAction *viewColors11 = r.window.findChild<QAction *>(QStringLiteral("viewColors"));
+        auto *dockHost11 = r.storyboard->findChild<QMainWindow *>(QStringLiteral("storyboardDockHost"));
+        QVector<QPointF> hoverAt; // ten places on the paper, from A to B
+        bool hoverClear = true;
+        for (int i = 0; i < 10; ++i) {
+            const QPointF at = A + (B - A) * (i / 9.0);
+            hoverAt.append(at);
+            hoverClear = hoverClear && !r.canvas->childAt(at.toPoint()) && r.canvas->onPaperForTest(at);
+        }
+        const bool found11 = colors11 && pickButton11 && viewColors11 && dockHost11 && dockHost11->centralWidget()
+            && layersDock && layersDock->isVisible() && splitHandle && splitHandle->isVisible() && hoverClear
+            && !r.canvas->childAt(C.toPoint());
+        check(QStringLiteral("(cur11) found the Colors panel, its Eyedropper button, the timeline's handle and the "
+                             "Layers panel's edge; ten clear places on the paper"),
+              found11, QStringLiteral("panel %1, button %2, handle %3, clear %4").arg(colors11 != nullptr)
+                  .arg(pickButton11 != nullptr).arg(splitHandle != nullptr).arg(hoverClear));
+        if (found11) {
+            const bool openedColors = !colors11->isVisible();
+            if (openedColors)
+                viewColors11->trigger(); // the user's state: the Colors panel open
+            pump(160);
+            const QPointF handleAt(splitHandle->width() / 2.0, splitHandle->height() / 2.0);
+            const QRect central11 = dockHost11->centralWidget()->geometry();
+            const QRect dockRect11 = layersDock->geometry();
+            const QPointF edgeAt((central11.right() + dockRect11.left()) / 2.0 + 0.5, dockRect11.center().y());
+            constexpr int kHovers = 30, kDrags = 10;
+
+            // The controls first: the list hears what the window is given, and the Brush alone
+            // (no pick) is quiet.
+            r.canvas->setTool(DrawingCanvas::Brush);
+            pump(40);
+            pen(B);
+            takeLog();
+            penAt(splitHandle, handleAt, Qt::NoButton, 0.0, kPen);
+            const QString heardHandle = takeLog();
+            pen(B - QPointF(0, 30));
+            pen(B);
+            const QString heardPaper = takeLog();
+            for (int i = 0; i < kHovers; ++i)
+                pen(hoverAt.at(i % hoverAt.size()));
+            const QString brushAlone = takeLog();
+            check(QStringLiteral("(cur11) controls: the list hears what the window is given - the timeline's double "
+                                 "arrow with the pen over its handle, no pointer (the circle's) back on the paper - and "
+                                 "with the Brush alone, no pick, 30 hovers over the paper give the window nothing"),
+                  heardHandle.endsWith(QLatin1Char('V')) && heardPaper.endsWith(QLatin1Char('o')) && brushAlone.isEmpty(),
+                  QStringLiteral("over the handle \"%1\", back on the paper \"%2\", 30 hovers \"%3\"")
+                      .arg(heardHandle, heardPaper, brushAlone));
+
+            struct Pick11 {
+                QChar from, armedShown, pressShown, endShown;
+                QString armed, hover, press, drag, end;
+                int wrongAfterHover = 0;
+                bool stale = false, picking = false, over = false;
+            };
+            enum Way11 { ByKeyI, ByPanelButton, ByAlt };
+            auto penPick = [&](QWidget *other, const QPointF &otherAt, Way11 way) {
+                Pick11 got;
+                const Qt::KeyboardModifiers mods = way == ByAlt ? Qt::AltModifier : Qt::NoModifier;
+                r.canvas->setTool(DrawingCanvas::Brush);
+                pump(40);
+                pen(B);
+                penAt(other, otherAt, Qt::NoButton, 0.0, kPen); // over the other widget: Qt enters it
+                got.from = shown();
+                pen(B - QPointF(0, 30));                         // onto the paper, the Brush keeping the pen
+                pen(B);
+                got.stale = !r.canvas->underMouse(); // the user's case: Qt has not entered the canvas
+                takeLog();
+                switch (way) {                                    // the pick is asked for
+                case ByKeyI: keyClaimed(&r.window, Qt::Key_I); break;
+                case ByPanelButton: pickButton11->click(); pump(60); break;
+                case ByAlt: altKey11(true); break;
+                }
+                if (r.canvas->pickCursorShownForTest() && r.canvas->cursor().shape() == Qt::BitmapCursor)
+                    dropperKey = r.canvas->cursor().pixmap().cacheKey();
+                got.armed = takeLog();
+                got.armedShown = shown();
+                for (int i = 0; i < kHovers; ++i) {
+                    penMod(hoverAt.at(i % hoverAt.size()), false, mods);
+                    if (shown() != QLatin1Char('D'))
+                        ++got.wrongAfterHover;
+                }
+                got.hover = takeLog();
+                penMod(C, true, mods);                            // the pick itself
+                got.picking = r.canvas->pickingForTest();
+                got.press = takeLog();
+                got.pressShown = shown();
+                for (int i = 1; i <= kDrags; ++i)
+                    penMod(C + QPointF(2 * i, i), true, mods);
+                got.drag = takeLog();
+                penMod(C + QPointF(2 * kDrags, kDrags), false, mods);
+                pump(60);
+                if (way == ByAlt)
+                    altKey11(false);
+                got.end = takeLog();
+                got.endShown = shown();
+                got.over = !r.canvas->pickingForTest() && !r.canvas->colorPickArmed()
+                    && !r.canvas->pickCursorShownForTest();
+                return got;
+            };
+            auto told = [](const QString &name, const Pick11 &g) {
+                return QStringLiteral("%1: from \"%2\", Qt not on the canvas %3; asked \"%4\" shows \"%5\"; %6 hovers "
+                                      "\"%7\" (not the dropper after %8); press \"%9\" shows \"%10\"; %11 moves down "
+                                      "\"%12\"; end \"%13\" shows \"%14\"")
+                    .arg(name).arg(g.from).arg(g.stale).arg(g.armed).arg(g.armedShown).arg(kHovers).arg(g.hover)
+                    .arg(g.wrongAfterHover).arg(g.press).arg(g.pressShown).arg(kDrags).arg(g.drag).arg(g.end)
+                    .arg(g.endShown);
+            };
+            // From the first hover after the pick is asked for to its end: the dropper, or no
+            // pointer while the ring shows - nothing else.
+            auto alone = [&](const Pick11 &g) {
+                return g.armedShown == QLatin1Char('D') && g.wrongAfterHover == 0
+                    && onlyOf(g.hover + g.press + g.drag + g.end, QStringLiteral("Do"))
+                    && g.press.endsWith(QLatin1Char('o')) && g.pressShown == QLatin1Char('o') && g.picking
+                    && g.endShown == QLatin1Char('o') && g.over;
+            };
+            auto steady = [&](const Pick11 &g) {
+                return g.hover.isEmpty() && g.wrongAfterHover == 0 && g.drag.isEmpty();
+            };
+
+            const Pick11 byKey = penPick(splitHandle, handleAt, ByKeyI);
+            const Pick11 byButton = penPick(dockHost11, edgeAt, ByPanelButton);
+
+            // The mouse: its own moves make Qt's Enters, so the handle's pointer never stayed - but
+            // each of its hovers set the dropper again too.
+            Pick11 byMouse;
+            penAway();
+            mouseMoveTo(splitHandle, handleAt);
+            byMouse.from = shown();
+            mouseMoveTo(r.canvas, B);
+            byMouse.stale = !r.canvas->underMouse();
+            takeLog();
+            keyClaimed(&r.window, Qt::Key_I);
+            if (r.canvas->pickCursorShownForTest() && r.canvas->cursor().shape() == Qt::BitmapCursor)
+                dropperKey = r.canvas->cursor().pixmap().cacheKey();
+            byMouse.armed = takeLog();
+            byMouse.armedShown = shown();
+            for (int i = 0; i < kHovers; ++i) {
+                mouseEv(QEvent::MouseMove, hoverAt.at(i % hoverAt.size()), Qt::NoButton, Qt::NoButton);
+                if (shown() != QLatin1Char('D'))
+                    ++byMouse.wrongAfterHover;
+            }
+            byMouse.hover = takeLog();
+            mouseEv(QEvent::MouseButtonPress, C, Qt::LeftButton, Qt::LeftButton);
+            byMouse.picking = r.canvas->pickingForTest();
+            byMouse.press = takeLog();
+            byMouse.pressShown = shown();
+            for (int i = 1; i <= kDrags; ++i)
+                mouseEv(QEvent::MouseMove, C + QPointF(2 * i, i), Qt::LeftButton, Qt::NoButton);
+            byMouse.drag = takeLog();
+            mouseEv(QEvent::MouseButtonRelease, C + QPointF(2 * kDrags, kDrags), Qt::NoButton, Qt::LeftButton);
+            pump(60);
+            byMouse.end = takeLog();
+            byMouse.endShown = shown();
+            byMouse.over = !r.canvas->pickingForTest() && !r.canvas->colorPickArmed()
+                && !r.canvas->pickCursorShownForTest();
+
+            // Alt last: letting it go can leave the keyboard with the menu bar, as on a real one.
+            QWidget *menuBar11 = r.window.menuBar();
+            const Pick11 byAlt = penPick(menuBar11, QPointF(menuBar11->width() - 30.0, menuBar11->height() / 2.0), ByAlt);
+
+            check(QStringLiteral("(cur11) A PICK'S POINTER IS THE DROPPER ALONE (hand test H, your point 3): with the "
+                                 "Brush and the Colors panel open, the pen coming from the timeline's handle (the pick "
+                                 "by I), from the Layers panel's edge (by the panel's Eyedropper button) and from the "
+                                 "menu bar, which has the plain arrow (by Alt), Qt still on that other widget - asked "
+                                 "for, the window shows the dropper; through 30 hovers it is given nothing but the "
+                                 "dropper and shows it after every one; pressed, no pointer (the ring's dropper is "
+                                 "it); and from the first hover to the pick's end never a double arrow or the plain "
+                                 "arrow"),
+                  byKey.from == QLatin1Char('V') && byButton.from == QLatin1Char('H') && byAlt.from == QLatin1Char('A')
+                      && byKey.stale && byButton.stale && byAlt.stale && alone(byKey) && alone(byButton) && alone(byAlt),
+                  told(QStringLiteral("I"), byKey) + QStringLiteral(" | ") + told(QStringLiteral("button"), byButton)
+                      + QStringLiteral(" | ") + told(QStringLiteral("Alt"), byAlt));
+            check(QStringLiteral("(cur11) AND IT IS STEADY: 30 hovers of the pen with a pick waiting give the window no "
+                                 "pointer at all - the dropper, put up once, stays - and it shows the dropper after "
+                                 "every one; nor do 10 moves with the tip down; by I, by the button and by Alt"),
+                  steady(byKey) && steady(byButton) && steady(byAlt),
+                  QStringLiteral("I: hovers \"%1\" wrong %2, down \"%3\" | button: \"%4\" wrong %5, down \"%6\" | Alt: "
+                                 "\"%7\" wrong %8, down \"%9\"")
+                      .arg(byKey.hover).arg(byKey.wrongAfterHover).arg(byKey.drag)
+                      .arg(byButton.hover).arg(byButton.wrongAfterHover).arg(byButton.drag)
+                      .arg(byAlt.hover).arg(byAlt.wrongAfterHover).arg(byAlt.drag));
+            check(QStringLiteral("(cur11) THE MOUSE TOO: from the timeline's handle on to the paper, a pick by I - the "
+                                 "window is given the dropper once, 30 hovers and 10 moves with the button down give "
+                                 "it nothing more, pressed it shows no pointer, and at the end the tool's own"),
+                  byMouse.from == QLatin1Char('V') && !byMouse.stale
+                      && byMouse.armed == QStringLiteral("D") && steady(byMouse) && byMouse.press == QStringLiteral("o")
+                      && byMouse.pressShown == QLatin1Char('o') && byMouse.picking && byMouse.over
+                      && onlyOf(byMouse.end, QStringLiteral("+o")) && onlyOf(QString(byMouse.endShown), QStringLiteral("+o")),
+                  told(QStringLiteral("mouse, I"), byMouse));
+
+            if (openedColors && colors11->isVisible())
+                viewColors11->trigger();
+            pump(120);
+        }
+        win->removeEventFilter(&log11);
+    }
+
     penAway();
     r.storyboard->setPointerDeviceForTest(-1);
     r.window.markCleanForTest();

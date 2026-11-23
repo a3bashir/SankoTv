@@ -1,5 +1,239 @@
 # SankoTV — Session Handoff Brief
 
+## STATUS 2026-11-23: HAND TEST H2 READ (ONE RECORDING, THE RIGHT BUILD, NOTHING FAILED); THE EYEDROPPER'S POINTER FIX COMMITTED ALONE (THIS COMMIT), PROVEN ALONE BY GATE PK; BATCH H IS NOT COMMITTED - THE USER ASKS FOR A HEAVIER STROKE ON THE SYMMETRY ICON FIRST
+THE USER (2026-11-23, after hand test H2): "Hand test H2 done: all steps looked right, and I didn't see a flash at the
+moment of pressing I or Alt. I also tested three Symmetry steps the last recording missed: the Eraser on one side
+only, the axis hiding with a selection tool, Move and the Camera tool, and a selection limiting the mirrored stroke.
+[...] Your remaining instant of the other pointer when a pick starts: leave it as it is. One change: the Symmetry
+icon's outline is much thinner than the other toolbar icons. Measure the stroke weight of its neighbours on the tools
+bar (Brush, Eraser, Fill, Select, Move) at the size they're shown, and give the Symmetry icon the same stroke weight,
+keeping its shape, proportions and colours (grey when off, white on purple when on). Put the thicker version in Figma
+beside my frame "Symmetry (new)" (659:817), without changing my frame, and screenshot both next to a neighbour icon so
+I can compare. Run the icon licence check again on the new version. If it ran the right build and nothing failed: 1.
+Commit and push the Eyedropper pointer fix on its own, matching sha_PK_pick.txt. 2. Make the icon change in batch H,
+with a check and its control, then a quick check and the full gate (every family green in both builds), a fresh TEST
+COPY, the exe stamp and a one-step hand-test list (the button off and on, beside its neighbours). Don't commit batch H
+until I've looked. 3. Then the next item: saving without freezing (Save off the main thread). Report only, build
+nothing [...] Stop for my approval. If anything failed or the build is wrong, commit nothing and report."
+
+THE CHECK BEFORE ANYTHING (11:05): git "## master...origin/master", HEAD 76481d1dc, the same 12 modified files and
+icons/symmetry.svg untracked, nothing staged; sha_H2_gate.txt 12 OK; sha_H2_exes.txt 20 OK; splitPK\*.PK = the two
+hashes of sha_PK_pick.txt.
+
+THE RECORDING (every session made after 21:42 on 2026-11-22: there is one): 20261123-094223, 4,472.9 s, 3,493
+screenshots, 0 issue markers, 0 dropped records. system.txt: built Nov 22 2026 21:42:31, git 76481d1dc+dirty, Release,
+Cintiq 22HD + DELL P2417H. The project was opened by Open Project at 23 s; the title bar reads "SANKO TV — TEST COPY
+- small pirate, button and dropper*" in the screenshots at 77 / 150 / 900 / 2000 / 3800 / 4340 / 4470 s. The window
+started on the Dell and was on the Cintiq from 113 s; it was hidden or not the active window for long stretches
+(275-742, 925-1557, 2583-3790 s among others): the user did other things in between.
+
+HAND TEST H2, STEP BY STEP (events and screenshots; the recorder holds no pointer shape, so for part 2 the user's word
+is the result and the recording only says what was done):
+- PART 1, THE BUTTON: 1 PASS (screenshots: Brush, Eraser, Fill, Select, Move, Symmetry, the colour | Undo, Redo); 2
+  PASS (off: plain ground, grey icon as its neighbours'; the hover ground at 74-75.6 s, pressed at 75.8 s); 3 PASS for
+  the button (on at 76 s: purple ground, white icon; off again at 99 s) - Shift+S was pressed ONCE in the recording
+  (4086.5 s, off -> on); switching off by Shift+S is not in it; 4 the Colors panel opens where it did (1443,280, as
+  in hand test H's recording; ten times) and the Brush Library too (1260,280; eight times), the bar still 459 x 46 -
+  "click the colour again: it closes" is NOT IN THE RECORDING (the panel was closed by a click on the canvas each
+  time); 5 PASS (two mouse strokes mirrored at 78.5-79.3 s, Undo twice, off at 99.4 s).
+- PART 2, THE EYEDROPPER'S POINTER (Brush; 14 presses of I; 45 pen presses and 4 mouse presses with Alt held - a
+  pick's pen press reaches the canvas as a mouse press, and that carries Alt):
+  6 I WITH THE PEN FROM THE TIMELINE'S EDGE: twice - 252.6-253.7 s (156 pen moves over the canvas, a pick waiting, Qt's
+  last word the timeline's handle) and 258.7-260.1 s (205 moves; the handle is Qt's last word up to the pick's own
+  press). The exact state of the bug, in the fixed build. I with the Colors panel open at 136.4 and 140.1 s: the colour
+  is taken and the panel stays open after both.
+  7 FROM THE LAYERS PANEL'S EDGE: with I, once from the right-hand panels (252.1 s, 27 moves, Qt's last word a scene
+  card); from the Layers panel itself with Alt (765.0 s, 73 moves, Qt's last word a layer's eye button).
+  8 THE PANEL'S OWN EYEDROPPER BUTTON: NOT IN THE RECORDING - no press, not even an Enter, on colorEyedropper (the
+  recorder does log that button: 20261114-193055 has its presses). (cur11) covers it (the pen from the dock's edge,
+  the pick by the panel's button).
+  9 ALT WITH THE PEN FROM THE TIMELINE'S EDGE: four arrivals with Qt's last word the handle - 752.7 (149 moves), 756.1
+  (95), 763.5 (73), 777.9-781.6 s (395); the Brush's circle is absent in the screenshots of those moments (it is hidden
+  only while the dropper is up) - and picks with Alt at 753.7, 754.5, 764.1 and 775.4 s. 40 more Alt picks with the
+  Colors panel open (132-208 s): the panel stays open through all of them and closes at the next plain stroke.
+  10 THE MOUSE: I - hovers with a pick waiting from 825.7 s, the pick at 834.0 s; Alt - 204 mouse moves with Alt held
+  (865-901 s), the pick at 902.0 s.
+  11 NO PICK, THE TOOL'S CIRCLE: with the ERASER from the timeline (3802 s on; Qt's last word the timeline's header):
+  its circle shows in the screenshots. With the Brush and no pick, a crossing of the timeline's edge long enough to
+  catch a screenshot is not in the recording.
+  12 PASS (4471.9 s: Unsaved Changes -> Discard).
+  THE USER'S WORD: "all steps looked right, and I didn't see a flash at the moment of pressing I or Alt".
+- THE THREE SYMMETRY STEPS THE USER ADDED (hand test H's 15, 22 and 23):
+  15 THE ERASER ON ONE SIDE: PASS - seven Eraser strokes at 3803-3827 s, six of them wholly to the right of the axis
+  (x 924-1091 on the canvas, the axis at 877), the seventh across it: the same place is erased on the left each time
+  (screenshots 3811.3 / 3823.3 / 3827.3 s), and each Undo gives both sides back (3828.8-3832.3 s).
+  22 OTHER TOOLS: Fill (3975.4 s), a selection tool (3977.4 s) and Move (3980.4 s): the button stays purple, the axis
+  and the grip are hidden; back with the Eraser (3984.4 s) and the Brush (3987.9 s). Under Move the button was switched
+  off and on again (3981.4 / 3982.9 s). THE CAMERA TOOL was NOT picked in the recording (shotCam.toolActive never
+  true).
+  23 A SELECTION: PASS for what was done - a lasso on the right (4336 s; x 934-1202) and one on the left (4423 s; x
+  516-706), Symmetry on, twelve strokes and three: paint appears only inside the selection (red, yellow, then green) and the
+  mirrored half, which falls outside it, is not painted (screenshots 4358.4 / 4388.4 / 4436.4 s). Every stroke was
+  drawn on the selection's OWN side; drawing on the other side so that only the mirrored half lands inside is not in
+  the recording.
+- NOTHING FAILED. Not in the recording, said to the user: step 4's closing by the colour, step 8, switching off by
+  Shift+S, the Camera tool of step 22, step 23 from the other side, step 11 with the Brush.
+
+THE USER'S DECISION ON WHAT WAS LEFT (the one instant of the other widget's pointer when a pick is asked for - "VD",
+"HD", "AD" in (cur11)'s report line): "leave it as it is". Closed; the deeper change stays out.
+
+THIS COMMIT: the eyedropper's pointer fix alone, exactly the two files of app/build/_probe/split/sha_PK_pick.txt
+(DrawingCanvas.cpp: refreshPickCursor puts the dropper up once; ProjectLifecycleTest.cpp: the five (cur11) checks;
+staged from splitPK\*.PK by git hash-object - the tree itself keeps batch H on top), and these notes: this section,
+and in the section below PART 1, the quick checks' "batchg" line and GATE PK. Proof: gate PK (the fix alone on
+76481d1dc; 2993 s, Release and Debug, 0 failing families; Lifecycle 1729, Camera 336, Brush Library 187, Size Lock 170,
+Edge Lock 74, Dev Recorder 46, Quick Shape 19, Pixel Lock 13, Brush Lock 3), the red runs PK and PRE-G, and hand test
+H2's part 2 by the user's word. Batch H's notes (PART 2 below and PART 2 of "2026-11-22 (evening)") stay in the tree
+and come with its commit.
+
+NEXT (not in this commit): the Symmetry icon at its neighbours' stroke weight, in batch H (measure, redraw, Figma
+beside 659:817, the licence check again, a check with its control, quick check, full gate, a fresh TEST COPY, a
+one-step list); then the report on saving off the main thread (report only).
+
+## STATUS 2026-11-22 (night, later; IN THE TREE, NOT COMMITTED): AFTER HAND TEST H - (1) THE EYEDROPPER'S POINTER FIXED AS ITS OWN CHANGE (ITS CAUSE IS NOT IN BATCH H), (2) BATCH H WITH THE USER'S TWO CHANGES (THE BUTTON BEFORE THE COLOUR; THE ICON GREY WHEN OFF, WHITE ON THE PURPLE WHEN ON); TWO HASH LISTS; GATES PK AND H2; ONE SHORT HAND TEST (H2); NOTHING OF THEM COMMITTED - WAITING FOR HAND TEST H2
+HEAD = origin/master = 76481d1dc (View > Drawing Overlays with the veil fix; the section below). The user's words are
+at the head of the section below ("Two changes and one problem ... Don't commit batch H or the fix until my hand test
+passes").
+
+TWO CHANGES, TWO HASH LISTS (the commit split to come, in this order, on the user's word only):
+  A. The eyedropper's pointer: app/build/_probe/split/sha_PK_pick.txt (2 files: DrawingCanvas.cpp,
+     ProjectLifecycleTest.cpp), copies in splitPK\*.PK = the scratch worktree C:\SankoTV_pk (76481d1dc + the two
+     files, the same two Edits as in the tree: 16 + 1 lines of DrawingCanvas.cpp, the 272-line (cur11) block of the
+     test, compared line for line with the tree's). Proof: GATE PK. Its HANDOFF notes: PART 1 below.
+  B. Batch H on top, with the two changes: app/build/_probe/split/sha_H2_gate.txt (the tree). Proof: GATE H2. Its
+     HANDOFF notes: PART 2 below and PART 2 of the section "2026-11-22 (evening)".
+
+PART 1 - THE EYEDROPPER'S POINTER (the user's point 3; DrawingCanvas.cpp, one function; the check in the test):
+- WHAT THE USER SAW: with the Brush and the Colors panel open, while a pick waited (the panel's button, I, Alt) the
+  dropper "kept flickering into the resize arrows of the Layers panel's or the timeline's edge, and sometimes into
+  the normal arrow".
+- THE RECORDING (20261122-193956; it holds no pointer shapes, only who Qt thinks is under the mouse): the picks are I
+  at 288.6 s (press 291.0), Alt (293.7), I at 296.9 (press 310.3), Alt (press 325.8). At 289.83 s Qt ENTERS the canvas
+  (the pen came in from the Colors panel, another window) - nothing wrong there. At 296.22 s the pen crosses the
+  timeline's edge: Qt enters qt_splithandle_ of workspaceSplitter and hears NOTHING more until the pick's press at
+  310.29 s (leave handle, enter canvas, in the press's own millisecond) - 1,883 pen moves over the canvas in between,
+  a pick waiting from 296.9 s. From 312.7 to 324.3 s Qt's last word is the main window itself (the plain arrow):
+  1,334 pen moves with Alt held (the menu bar has the keyboard from 315.7 to 324.1 s, as Alt does on Windows).
+- THE CAUSE (read in the code, then reproduced): refreshPickCursor() ended in setCursor(dropperCursor(...)) every time
+  it ran, and BOTH hover paths run it at every move while a pick's dropper is up (tabletEvent: "alt != m_altHeld ||
+  m_pickCursorOn"; mouseMoveEvent: "... || m_pickCursorOn || m_pickArmed"). QWidget::setCursor reaches the window as
+  the cursor of the widget Qt last ENTERED (qt_qpa_set_cursor's lastUnderMouse), and with the Brush the canvas keeps
+  the pen's events, so Qt makes no mouse of them and never enters the canvas (batch G's finding): the window was
+  given the splitter handle's double arrow (or the dock host's, or the plain arrow of a widget with none), then - at
+  the CursorChange - batch G's syncWindowCursor put the dropper back. Two pointers a move, over a hundred moves a
+  second. A relative of batch G's stuck arrow indeed: the same root, and G's cure is what turns "stuck" into
+  "flicker".
+- EARLIER BUILDS (by reading the commits - git log -S - and by two red runs in today's tree; the old builds
+  themselves were not run): the per-move setCursor came with the Eyedropper, e697a2288 (batch D, 2026-11-15);
+  syncWindowCursor with batch G, 4d8d30994. So from batch D to before batch G (... 1dd0b6d06) a pick after the
+  timeline's edge showed the double arrow STEADILY until the press - stuck, no flicker (red run PRE-G: "asked ''
+  shows 'V'; 30 hovers '' (not the dropper after 30)"); from batch G on - the panels build ef23feef6 and the build
+  of hand test H alike - it flickers (red run PK). The panels change did not touch it. THE FIX IS ITS OWN CHANGE, NOT
+  BATCH H'S.
+- THE FIX: refreshPickCursor puts the dropper up only when the canvas's cursor is not the dropper already
+  (sameCursor: the dropper's picture is one per screen scale, outlinedDropper's cache). Nothing else changed.
+- WHAT IS LEFT, TOLD TO THE USER: the ONE setCursor that puts the dropper up (I, the button, Alt) still hands the
+  window the other widget's pointer first, inside the same call ("VD", "HD", "AD" in (cur11)'s report line) - not
+  visible, but not nothing. Taking it away means letting Qt enter the canvas with the pen: the pen's first hover
+  over a canvas not under the mouse left to Qt (event->ignore()), whose mouse move is the Enter. BUILT AND TAKEN OUT
+  AGAIN the same evening: it worked ((cur11) then read "D" alone), but (ta1) "THE SAME FROM A FLOATING TOOLBAR ... (no
+  Enter reaches the canvas as it arrives)" failed on "Enters at the canvas as it arrived 1" - the change makes that
+  premise false by design - and underMouse() in a test depends on where the machine's own pointer rests. It would be
+  a change to how the pen's hover reaches the canvas for every tool and to an existing check's premise: the user's
+  to ask for, not part of this fix.
+- THE CHECK, (cur11), in runContextualCursorsPass (slices "batchg" and "symmetry"), five checks. It reads the WINDOW's
+  pointer as (cur10) does and writes down every pointer the window is GIVEN (an event filter on the QWindow: its
+  CursorChange), one letter each - D the dropper, o none, V / H the double arrows, A the plain arrow, + the cross.
+  No waiting: N moves, N looks. The stale state is made as (cur10) makes it (a window-system pen hover over the
+  other widget, then onto the paper).
+  - "(cur11) found the Colors panel, its Eyedropper button, the timeline's handle and the Layers panel's edge; ten
+    clear places on the paper".
+  - "(cur11) controls: the list hears what the window is given - the timeline's double arrow with the pen over its
+    handle, no pointer (the circle's) back on the paper - and with the Brush alone, no pick, 30 hovers over the paper
+    give the window nothing" [over the handle "+V", back on the paper "o", 30 hovers ""].
+  - "(cur11) A PICK'S POINTER IS THE DROPPER ALONE (hand test H, your point 3): ..." - the pen from the timeline's
+    handle (pick by I), from the Layers panel's edge (by the panel's button), from the menu bar (by Alt), Qt still on
+    that other widget; asked for, the window shows the dropper; 30 hovers; the press; to the pick's end.
+  - "(cur11) AND IT IS STEADY: 30 hovers of the pen with a pick waiting give the window no pointer at all ..." .
+  - "(cur11) THE MOUSE TOO: ..." (the mouse never showed another pointer - its moves make the Enters - but each hover
+    set the dropper again: "DDDD..." in the red run).
+  FIRST RUNS, READ BEFORE ANYTHING WAS CHANGED: (1) with the deeper change in, the controls read "+V" over the handle,
+  not "V": a pen leaving the canvas gives the window the canvas's cross (the pointer no longer over it) and then the
+  handle's arrow, in one event - so with it out again; the control asks that the list END on V and on o. (2) The
+  third source was the Layers list first: its pointer is not the plain arrow ("?"); the menu bar's is.
+- RED RUNS (markers "RED RUN PK" / "RED RUN PRE-G" in DrawingCanvas.cpp, removed, grep 0): PK - setCursor at every
+  move again: 3 fail - ALONE (30 hovers "VDVD...VD" from the handle, "HDHD..." from the dock's edge, "ADAD..." from
+  the menu bar), STEADY, THE MOUSE ("DDDD..."); the controls pass (pk_batchg_REDRUN_PK.txt). PRE-G - also
+  syncWindowCursor off, as before batch G: the window stays on V / H / A through all 30 hovers; (cur10)'s two checks
+  fail with it, as they should (pk_batchg_REDRUN_PREG.txt).
+
+PART 2 - BATCH H, THE USER'S TWO CHANGES: not in this commit. Its notes are in the tree's HANDOFF and come with batch H's commit.
+
+QUICK CHECKS (Release, the final tree): slice "batchg" 49 / 0 (pk_batchg_run2.txt), slice "symmetry" 71 / 0
+(h2_symmetry_run2.txt), the whole Lifecycle 1752 / 0 in 867 s (h2_lifecycle_whole_run1.txt; the user's Chrome took
+the foreground three times during it, no check failed).
+
+GATE PK (the eyedropper's pointer ALONE: scratch worktree C:\SankoTV_pk at 76481d1dc + the two files of
+sha_PK_pick.txt; the kill-less script copy; 20:50 to 21:40): TOTAL 2993 s, Release and Debug, 0 FAILING FAMILIES in
+both - Lifecycle 1729 (= 1724 + the five (cur11)), Camera 336, Brush Library 187, Size Lock 170, Edge Lock 74, Dev
+Recorder 46, Quick Shape 19, Pixel Lock 13, Brush Lock 3. Log and outputs copied to app/build/_probe/split/
+fullgate_PK.log, fullgate_PK\, fullgate_PK_build_*.log. The worktree's two files were unchanged after it
+(sha256sum -c: 2 OK).
+GATE H2 (the final tree at the main path, app/tools/fullgate.sh H2; 21:40:39 to 22:30:53; RAN TO ITS OWN END - the
+user asked to stop for the night while its last family, Camera Debug, was running; it finished 20 s later, so
+nothing was stopped and no family is left to run): TOTAL 3013 s, Release and Debug, 0 FAILING FAMILIES in both -
+Lifecycle 1752, Camera 336, Brush Library 187, Size Lock 170, Edge Lock 74, Dev Recorder 46, Quick Shape 19, Pixel
+Lock 13, Brush Lock 3 (fullgate_H2.log, fullgate_H2\). The tree was unchanged after it (sha256sum -c
+sha_H2_gate.txt: 12 OK).
+THE EXES OF GATE H2 (its clean builds; nothing was built after them): Release C:\SankoTv\app\build\Release\
+SankoTV.exe - built Nov 22 2026 21:42:31 (file 21:42:51), git 76481d1dc+dirty, sha256
+7660fcf9c8bfff89034cb7743a0ae5d98b05d9715a749cfa022f38901815870b; Debug - file 21:44:58, sha256
+c469be80f6fde612d88784e7a036def70bded8396df393c415b7801ae20dc425. These two and the nine families' exes of both
+builds: app/build/_probe/split/sha_H2_exes.txt (20 lines).
+
+HAND TEST H2 IS READY (not yet given to the user in a report): the list C:\Users\User\Documents\SankoTV-Design\
+handtest_H2_button_dropper.md (12 steps: the button's place and look 1-5, the Eyedropper's pointer 6-11, end 12;
+the stamp above is in its header), the copy "TEST COPY - small pirate, button and dropper" in C:\SankoTV-TestCopies
+(93 files, 0 missing or differing; the original's hash unchanged, 768789328a9e..., 92 files), the exe above at the
+user's shortcut.
+
+STOPPED FOR THE NIGHT, 2026-11-22 22:32, ON THE USER'S WORD ("I need to stop for today and turn off the PC") - AT
+REST: no build, no test, no gate, no git operation running; master = origin/master = 76481d1dc; nothing staged;
+nothing new committed.
+RESUMED 2026-11-23 09:18 ON THE USER'S WORD ("Resume from HANDOFF. Check that the source files match the hash lists
+and the exe is the same one, then continue ... without repeating what already passed"): git status -sb "##
+master...origin/master", the same 12 modified files and icons/symmetry.svg untracked, nothing staged, HEAD
+76481d1dc; sha_H2_gate.txt 12 OK; sha_H2_exes.txt 20 OK (the hand-test exe still Nov 22 2026 21:42:31,
+76481d1dc+dirty); sha_PK_pick.txt 2 OK in the worktree and for splitPK\*.PK; the copy's 93 files and the original
+project untouched; no new recording (hand test H2 not run yet). NOTHING HAD CHANGED, SO NO GATE AND NO BUILD WAS
+RUN AGAIN. What was left that night, done that morning (none of it touches a source file):
+  1. The report to the user for the message of hand test H (the per-step table, the cause of point 3 and "earlier
+     builds", "its own change, not batch H's", the one thing left at the moment a pick is asked for and the deeper
+     change tried and taken out, the two gates, the exe stamp, the copy, the list).
+  2. Figma H-1 (657:735; file 7phpfrMKNDEY4rgGORDhac) made to match: in both tools-bar drawings (657:740 off,
+     657:774 on) "Symmetry (new)" is now before "color" (x 357, the colour 420); its icon was already drawn grey
+     #cccccc off and white on the purple on; the notes 657:739 ("OPTION A (chosen) ... BEFORE the colour"), 657:773
+     (grey when off; the tooltip with Shift+S) and 657:807 (white on the purple when on) say so; the frame's name
+     ends "... after hand test H: the button BEFORE the colour, its icon grey when off and white when on; built,
+     waits for your hand test H2". The user's own 659:817 / 659:818 were only read.
+  3. The scratch worktree C:\SankoTV_pk removed (its two files are splitPK\*.PK, its gate logs fullgate_PK*);
+     C:\SankoTV_probeB is older and not this work's.
+  4. Memory: project_sankotv_trial_report.md's status.
+THE CHECK BEFORE ANY LATER WORK ON THIS TREE (the user's rule: check first, repeat nothing that passed, say so
+before running anything if something changed):
+  a. cd C:\SankoTV; git status -sb must read "## master...origin/master" with the same 12 modified files and
+     app/icons/symmetry.svg untracked; git log -1 must be 76481d1dc.
+  b. sha256sum -c app/build/_probe/split/sha_H2_gate.txt -> 12 OK (the gated sources);
+     sha256sum -c app/build/_probe/split/sha_H2_exes.txt -> 20 OK (the gated exes, the hand-test exe among them);
+     the two files splitPK\*.PK against sha_PK_pick.txt's two hashes (the worktree is gone).
+  c. All OK: both gates stand - run NO gate and NO build again; wait for hand test H2.
+     Anything not OK: tell the user what differs BEFORE running anything.
+  d. After hand test H2, on the user's word only: commit A (the eyedropper's pointer: DrawingCanvas.cpp and the
+     test staged from splitPK\*.PK by git hash-object + update-index, HANDOFF with PART 1 and gate PK), then
+     commit B (batch H: the tree; PART 2 here and PART 2 of "2026-11-22 (evening)"; gate H2), each with
+     git diff --cached --stat equal to --ignore-cr-at-eol --stat and the staged blobs equal to the gated files
+     CR-stripped; push; mark H-1 built in Figma; then batch I's proposal.
+
 ## STATUS 2026-11-22 (night): HAND TEST H READ (THREE RECORDINGS, THE RIGHT BUILD, NOTHING FAILED BESIDE THE USER'S OWN THREE POINTS); VIEW > DRAWING OVERLAYS WITH THE VEIL FIX COMMITTED ALONE (THIS COMMIT), PROVEN ALONE BY GATE P4; BATCH H AND THE EYEDROPPER'S POINTER ARE NOT COMMITTED
 THE USER (2026-11-22, after hand test H): "the veil as the margin's own outline is fine, and so is the grip waiting at
 the edge of the view when zoomed in. Two changes and one problem: 1. The Symmetry button sits BEFORE the colour on the

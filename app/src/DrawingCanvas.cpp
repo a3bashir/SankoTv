@@ -4928,7 +4928,22 @@ void DrawingCanvas::refreshPickCursor()
         m_pickTrackingWas = hasMouseTracking();
         setMouseTracking(true); // a hover without Alt reaches the canvas and takes it down
     }
-    setCursor(dropperCursor(devicePixelRatioF())); // always the black one (D-3)
+    // THE DROPPER IS PUT UP ONCE, NOT AT EVERY MOVE (hand test H, 2026-11-22: during a pick the
+    // dropper kept flickering into the timeline's or the Layers panel's double arrow, and into
+    // the plain arrow). Every hover - the pen's and the mouse's - comes through here while a pick
+    // waits, and each used to set the cursor again. A widget's setCursor reaches the window as
+    // the cursor of the widget Qt last ENTERED; with the Brush that could be the splitter handle
+    // or a dock's edge the pen had crossed (see syncWindowCursor), so every move gave the window
+    // that widget's pointer and then, a moment later, the dropper back: two pointers a move.
+    // The dropper's picture is one per screen scale (outlinedDropper), so "already up" is told
+    // by its picture. (What is left: the ONE time the dropper is put up - I, the panel's button,
+    // Alt - still passes the window that other widget's pointer first, inside the same call.
+    // Taking that away too means letting Qt enter the canvas with the pen - the pen's first
+    // hover left to Qt's mouse - which was tried and taken out again: it changes what (ta1)
+    // rests on, a pen that arrives with no Enter. See HANDOFF, 2026-11-22.)
+    const QCursor dropper = dropperCursor(devicePixelRatioF()); // always the black one (D-3)
+    if (!sameCursor(cursor(), dropper))
+        setCursor(dropper);
     syncPointerOutline(); // the dropper, not the circle (batch G)
 }
 
